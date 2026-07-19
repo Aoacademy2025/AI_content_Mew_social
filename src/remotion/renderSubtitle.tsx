@@ -54,33 +54,38 @@ function getSegmenter(locale: string, granularity: "word" | "grapheme" | "senten
   }
 }
 
-// Tokenize for per-word effects (highlight / karaoke).
+// Tokenize for per-word effects (highlight / karaoke) without losing any source
+// characters. Separators stay in the output but do not participate in timing.
 // Thai is written WITHOUT spaces between words, so a naive `split(/\s+/)`
 // returns the whole line as one token → the entire caption highlights at once
 // (illegible yellow-on-yellow block). Use Intl.Segmenter to split Thai into
-// real words; it also handles spaced scripts (English) correctly. Falls back
-// to whitespace splitting where Segmenter is unavailable.
-function segmentWords(s: string): string[] {
+// real words; it also handles spaced scripts (English) correctly.
+type TokenPart = { text: string; isWordLike: boolean };
+
+function segmentParts(s: string): TokenPart[] {
   const seg = getSegmenter("th", "word");
   if (seg) {
-    const out: string[] = [];
+    const out: TokenPart[] = [];
     for (const { segment, isWordLike } of seg.segment(s)) {
-      // Keep word-like tokens; skip pure whitespace/punctuation separators
-      if (isWordLike && segment.trim().length > 0) out.push(segment);
+      out.push({
+        text: segment,
+        isWordLike: isWordLike === true && segment.trim().length > 0,
+      });
     }
     if (out.length > 0) return out;
   }
-  return s.split(/\s+/).filter(w => w.length > 0);
+
+  const pieces = s.match(/\s+|[\p{L}\p{M}\p{N}]+|[^\s\p{L}\p{M}\p{N}]+/gu) ?? [];
+  return pieces.map((part) => ({
+    text: part,
+    isWordLike: /[\p{L}\p{N}]/u.test(part),
+  }));
 }
 
-type TokenLine = { tokens: string[]; hasInlineSpaces: boolean };
+type TokenLine = { parts: TokenPart[] };
 
 function splitManualLines(s: string): string[] {
   return s.replace(/\r\n?/g, "\n").split("\n");
-}
-
-function lineHasInlineSpaces(s: string): boolean {
-  return /[^\S\r\n]/.test(s);
 }
 
 // Bounded cache: tokenization is frame-invariant, but tokenLines runs once per caption
@@ -94,8 +99,7 @@ function tokenLines(text: string): TokenLine[] {
   const cached = tokenLinesCache.get(text);
   if (cached) return cached;
   const result = splitManualLines(text).map((line) => ({
-    tokens: segmentWords(line),
-    hasInlineSpaces: lineHasInlineSpaces(line),
+    parts: segmentParts(line),
   }));
   if (tokenLinesCache.size >= TOKEN_LINES_CACHE_MAX) {
     const oldest = tokenLinesCache.keys().next().value; // Map preserves insertion order
@@ -105,14 +109,58 @@ function tokenLines(text: string): TokenLine[] {
   return result;
 }
 
-function activeTokenIndex(lines: TokenLine[], frame: number, captionDurFrames: number): number {
-  const tokens = lines.flatMap((line) => line.tokens);
+const KARAOKE_NUMERIC_MIN_ACTIVE_FRAMES = 8;
+
+function activeTokenIndex(
+  lines: TokenLine[],
+  frame: number,
+  captionDurFrames: number,
+  numericMinActiveFrames = 0,
+): number {
+  const tokens = lines.flatMap((line) => line.parts).filter((part) => part.isWordLike);
   if (tokens.length === 0) return -1;
-  const totalChars = tokens.reduce((s, w) => s + w.length, 0) || 1;
+
+  // A one-character number received only ~0.1s under pure character-weighted
+  // timing. For Karaoke, reserve a readable minimum for numeric tokens when the
+  // caption has enough frames, then distribute the remaining time using the
+  // existing character weights. Highlight passes 0 and keeps its old timing.
+  const totalFrames = Math.max(1, Math.round(captionDurFrames));
+  const numericCount = tokens.filter((part) => /\p{N}/u.test(part.text)).length;
+  if (numericMinActiveFrames > 0 && numericCount > 0 && totalFrames >= tokens.length) {
+    const nonNumericCount = tokens.length - numericCount;
+    const numericMinimum = Math.min(
+      numericMinActiveFrames,
+      Math.max(1, Math.floor((totalFrames - nonNumericCount) / numericCount)),
+    );
+    const minimums = tokens.map((part) => /\p{N}/u.test(part.text) ? numericMinimum : 1);
+    const remainingFrames = totalFrames - minimums.reduce((sum, value) => sum + value, 0);
+    const totalWeight = tokens.reduce((sum, part) => sum + Math.max(1, part.text.length), 0);
+    const exactExtras = tokens.map((part) => (
+      remainingFrames * Math.max(1, part.text.length) / totalWeight
+    ));
+    const extras = exactExtras.map(Math.floor);
+    let unassigned = remainingFrames - extras.reduce((sum, value) => sum + value, 0);
+    const remainderOrder = exactExtras
+      .map((value, index) => ({ index, remainder: value - Math.floor(value) }))
+      .sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+    for (let i = 0; i < remainderOrder.length && unassigned > 0; i++, unassigned--) {
+      extras[remainderOrder[i].index] += 1;
+    }
+
+    const targetFrame = Math.max(0, Math.min(totalFrames - 1, Math.floor(frame)));
+    let cumulativeFrames = 0;
+    for (let index = 0; index < tokens.length; index++) {
+      cumulativeFrames += minimums[index] + extras[index];
+      if (targetFrame < cumulativeFrames) return index;
+    }
+    return tokens.length - 1;
+  }
+
+  const totalChars = tokens.reduce((sum, part) => sum + part.text.length, 0) || 1;
   const cumulative: number[] = [];
   let cum = 0;
-  for (const w of tokens) {
-    cum += w.length / totalChars;
+  for (const part of tokens) {
+    cum += part.text.length / totalChars;
     cumulative.push(cum);
   }
   const progress = captionDurFrames > 0 ? frame / captionDurFrames : 1;
@@ -187,7 +235,9 @@ export function renderSubtitle(
     width: "100%",
     letterSpacing: "0.01em",
     whiteSpace: "pre-line",
-    wordBreak: "break-all",
+    // FIX D: no wordBreak:"break-all" — it let Chromium cut a Thai word mid-syllable.
+    // With it gone, Chromium's ICU Thai dictionary wraps on real word boundaries;
+    // overflowWrap:"anywhere" stays as the emergency valve for an unbreakable run.
     overflowWrap: "anywhere",
     color,
   };
@@ -212,6 +262,9 @@ export function renderSubtitle(
     }
 
     if (textEffect === "highlight") {
+      if (frame < 0) {
+        return <span style={withDecorations({ ...base, display: "inline" })}>{text}</span>;
+      }
       const lines = tokenLines(text);
       const active = activeTokenIndex(lines, frame, captionDurFrames);
       if (active < 0) {
@@ -225,24 +278,24 @@ export function renderSubtitle(
         <span style={withDecorations({ ...base, display: "inline" })}>
           {lines.map((line, lineIdx) => (
             <React.Fragment key={lineIdx}>
-              {line.tokens.map((word, wordIdx) => {
+              {line.parts.map((part, partIdx) => {
+                if (!part.isWordLike) {
+                  return <React.Fragment key={`${lineIdx}-${partIdx}`}>{part.text}</React.Fragment>;
+                }
                 const currentIdx = tokenIdx++;
                 const isActive = currentIdx === active;
                 return (
-                  <React.Fragment key={`${lineIdx}-${wordIdx}`}>
-                    <span style={withDecorations({
-                      background: isActive ? accentColor : "transparent",
-                      color: isActive ? "#000" : color,
-                      borderRadius: "0.12em",
-                      padding: isActive ? "0.02em 0.18em" : undefined,
-                      textShadow: isActive ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
-                      WebkitTextStroke: isActive ? undefined : "1px rgba(0,0,0,0.85)",
-                      paintOrder: "stroke fill",
-                      boxDecorationBreak: "clone",
-                      WebkitBoxDecorationBreak: "clone",
-                    } as React.CSSProperties)}>{word}</span>
-                    {line.hasInlineSpaces && wordIdx < line.tokens.length - 1 ? " " : null}
-                  </React.Fragment>
+                  <span key={`${lineIdx}-${partIdx}`} style={withDecorations({
+                    background: isActive ? accentColor : "transparent",
+                    color: isActive ? "#000" : color,
+                    borderRadius: "0.12em",
+                    padding: isActive ? "0.02em 0.18em" : undefined,
+                    textShadow: isActive ? "none" : "0 2px 6px rgba(0,0,0,0.9)",
+                    WebkitTextStroke: isActive ? undefined : "1px rgba(0,0,0,0.85)",
+                    paintOrder: "stroke fill",
+                    boxDecorationBreak: "clone",
+                    WebkitBoxDecorationBreak: "clone",
+                  } as React.CSSProperties)}>{part.text}</span>
                 );
               })}
               {lineIdx < lines.length - 1 ? <br /> : null}
@@ -253,28 +306,49 @@ export function renderSubtitle(
     }
 
     if (textEffect === "karaoke") {
-      const lines = tokenLines(text);
-      const active = activeTokenIndex(lines, frame, captionDurFrames);
-      if (active < 0) {
-        return <span style={withDecorations({ ...base, display: "inline" })}>{text}</span>;
-      }
       const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
+      const lines = tokenLines(text);
+      const wrapKaraoke = (inner: React.ReactNode) => {
+        if (preset === "box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.65)", padding: "6px 20px 8px", borderRadius: 4 }}>{inner}</div>;
+        if (preset === "box-rounded") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.72)", padding: "8px 24px 10px", borderRadius: 16 }}>{inner}</div>;
+        if (preset === "karaoke-box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.75)", padding: "8px 22px 10px", borderRadius: 12 }}>{inner}</div>;
+        return inner;
+      };
+      if (frame < 0) {
+        return wrapKaraoke(
+          <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>{text}</span>,
+        );
+      }
+      const active = activeTokenIndex(
+        lines,
+        frame,
+        captionDurFrames,
+        KARAOKE_NUMERIC_MIN_ACTIVE_FRAMES,
+      );
+      if (active < 0) {
+        return wrapKaraoke(
+          <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>{text}</span>,
+        );
+      }
       let tokenIdx = 0;
       const inner = (
         <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>
           {lines.map((line, lineIdx) => (
             <React.Fragment key={lineIdx}>
-              {line.tokens.map((word, wordIdx) => {
+              {line.parts.map((part, partIdx) => {
+                if (!part.isWordLike) {
+                  return <React.Fragment key={`${lineIdx}-${partIdx}`}>{part.text}</React.Fragment>;
+                }
                 const currentIdx = tokenIdx++;
                 const isActive = currentIdx === active;
                 return (
-                  <React.Fragment key={`${lineIdx}-${wordIdx}`}>
-                    <span style={{
-                      color: isActive ? accentColor : `${color}60`,
-                      fontWeight: isActive ? fontWeight : Math.min(fontWeight, 500),
-                    }}>{word}</span>
-                    {line.hasInlineSpaces && wordIdx < line.tokens.length - 1 ? " " : null}
-                  </React.Fragment>
+                  <span key={`${lineIdx}-${partIdx}`} style={{
+                    // Keep every token readable throughout playback. Karaoke is
+                    // communicated by the accent color, not by making future
+                    // words translucent against unpredictable video footage.
+                    color: isActive ? accentColor : color,
+                    fontWeight: isActive ? fontWeight : Math.min(fontWeight, 500),
+                  }}>{part.text}</span>
                 );
               })}
               {lineIdx < lines.length - 1 ? <br /> : null}
@@ -282,10 +356,7 @@ export function renderSubtitle(
           ))}
         </span>
       );
-      if (preset === "box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.65)", padding: "6px 20px 8px", borderRadius: 4 }}>{inner}</div>;
-      if (preset === "box-rounded") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.72)", padding: "8px 24px 10px", borderRadius: 16 }}>{inner}</div>;
-      if (preset === "karaoke-box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.75)", padding: "8px 22px 10px", borderRadius: 12 }}>{inner}</div>;
-      return inner;
+      return wrapKaraoke(inner);
     }
 
     if (textEffect === "typewriter") {
@@ -356,7 +427,7 @@ export function renderSubtitle(
       return <span style={withDecorations({ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 0 40px #0055cc" })}>{text}</span>;
 
     case "bold-shadow":
-      return <span style={withDecorations({ ...base, fontWeight: Math.max(fontWeight, 900), textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" })}>{text}</span>;
+      return <span style={withDecorations({ ...base, fontWeight, textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" })}>{text}</span>;
 
     case "karaoke-box":
       return (
@@ -385,7 +456,7 @@ export function renderSubtitle(
     case "hormozi":
       return (
         <span style={withDecorations({
-          ...base, color: "#ff2244", fontStyle: "italic", fontWeight: Math.max(fontWeight, 800),
+          ...base, color: "#ff2244", fontStyle: "italic", fontWeight,
           textShadow: "-2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 2px 2px 0 #fff, 0 4px 16px rgba(200,0,30,0.6)",
           WebkitTextStroke: "1px #fff", paintOrder: "stroke fill",
         } as React.CSSProperties)}>{text}</span>

@@ -9,6 +9,25 @@ import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 
+// SSRF-safe axios GET of a user-supplied URL: validate the host, then follow redirects
+// MANUALLY re-validating each hop (axios auto-follow is disabled), so a safe initial URL
+// can't 3xx into a private/internal target. Bounded to maxHops.
+async function safeAxiosGet(url: string, config: Parameters<typeof axios.get>[1] = {}, maxHops = 3) {
+  let current = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    await assertSafeFetchUrl(current);
+    const res = await axios.get(current, { ...config, maxRedirects: 0, validateStatus: (s: number) => s < 400 });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers?.location as string | undefined;
+      if (!loc) return res;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error("too many redirects");
+}
+
 export async function POST(req: Request) {
   try {
     const authUser = await getCurrentUser();
@@ -145,8 +164,8 @@ Focus on ACTIONABLE instructions that AI can follow to replicate this exact writ
 async function extractContentFromUrl(url: string): Promise<string> {
   try {
     new URL(url);
-    await assertSafeFetchUrl(url); // SSRF guard before fetching a user-supplied URL
-    const response = await axios.get(url, {
+    // SSRF guard (host + per-redirect-hop re-validation) lives in safeAxiosGet.
+    const response = await safeAxiosGet(url, {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
       timeout: 10000,
       maxContentLength: 5 * 1024 * 1024,

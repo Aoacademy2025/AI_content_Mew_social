@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { THAI_LOANWORDS } from "@/lib/thai-loanwords";
+import { THAI_COMPOUNDS } from "@/lib/thai-compounds";
 import {
   readLoanwordStore,
   writeLoanwordStore,
@@ -11,6 +12,8 @@ import {
   restoreWord,
   addWord,
   editWord,
+  approveCompound,
+  rejectCompound,
 } from "@/lib/thai-loanwords-runtime";
 
 export const runtime = "nodejs";
@@ -28,11 +31,17 @@ export async function GET() {
     if (error) return error;
     const s = await readLoanwordStore();
     return NextResponse.json({
-      words: s.words,            // auto-mined + manually added (editable here)
+      words: s.words,            // auto-mined + manually added loanwords (editable here)
       denylist: s.denylist,
       lastAdded: s.lastAdded ?? [],
-      seed: THAI_LOANWORDS,      // static, in-code — read-only in the UI
+      seed: THAI_LOANWORDS,      // static loanword seed, in-code — read-only in the UI
       seedCount: THAI_LOANWORDS.length,
+      // native compounds (Part 2): pending = awaiting review, compounds = admin-approved
+      pendingCompounds: s.pendingCompounds ?? [],
+      compounds: s.compounds ?? [],
+      lastCompoundsFound: s.lastCompoundsFound ?? [],
+      compoundSeed: THAI_COMPOUNDS,      // static compound seed, in-code — read-only
+      compoundSeedCount: THAI_COMPOUNDS.length,
     });
   } catch (error) { return apiError({ route: "GET /api/admin/loanwords", error }); }
 }
@@ -57,11 +66,14 @@ export async function POST(req: Request) {
         if (!newWord) return NextResponse.json({ error: "newWord required for edit" }, { status: 400 });
         next = editWord(s, word, newWord);
         break;
+      // native-compound review (human-gated): approve → live merge, reject → denylist
+      case "approveCompound": next = approveCompound(s, word); break;
+      case "rejectCompound":  next = rejectCompound(s, word); break;
       default:
-        return NextResponse.json({ error: "action must be deny|restore|add|edit" }, { status: 400 });
+        return NextResponse.json({ error: "action must be deny|restore|add|edit|approveCompound|rejectCompound" }, { status: 400 });
     }
     await writeLoanwordStore(next);
     await refreshDynamicLoanwords(); // make the change live in this process immediately (not just the 10-min tick)
-    return NextResponse.json({ ok: true, words: next.words, denylist: next.denylist });
+    return NextResponse.json({ ok: true, words: next.words, denylist: next.denylist, compounds: next.compounds ?? [], pendingCompounds: next.pendingCompounds ?? [] });
   } catch (error) { return apiError({ route: "POST /api/admin/loanwords", error }); }
 }

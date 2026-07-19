@@ -108,9 +108,10 @@ export async function GET(
   }
 }
 
-// DELETE — clear stock files for this user + optionally non-gallery renders
+// DELETE — compatibility endpoint, intentionally fail-closed. Stock and render
+// media may still have live graph owners and cannot be deleted from this tool.
 export async function DELETE(
-  req: Request,
+  _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
@@ -119,56 +120,10 @@ export async function DELETE(
     if (!authUser || authUser.role !== "ADMIN")
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-    const { id: userId } = await params;
-    const { includeRenders = false } = await req.json().catch(() => ({}));
-
-    const stocksDir = path.join(process.cwd(), "stocks");
-    const rendersDir = path.join(process.cwd(), "public", "renders");
-
-    const userStockPrefix = `stock-${userId}`;
-    let deleted = 0, savedBytes = 0;
-
-    // Delete user's stock files
-    if (fs.existsSync(stocksDir)) {
-      for (const f of fs.readdirSync(stocksDir)) {
-        if (!f.startsWith(userStockPrefix)) continue;
-        try {
-          const fp = path.join(stocksDir, f);
-          const s = fs.statSync(fp);
-          fs.unlinkSync(fp);
-          deleted++;
-          savedBytes += s.size;
-        } catch {}
-      }
-    }
-
-    // Optionally delete non-gallery renders
-    if (includeRenders && fs.existsSync(rendersDir)) {
-      const galleryVideos = await prisma.video.findMany({ where: { userId }, select: { videoUrl: true, audioUrl: true } });
-      const protectedNames = new Set<string>();
-      for (const v of galleryVideos) {
-        protectRenderName(protectedNames, v.videoUrl);
-        protectRenderName(protectedNames, v.audioUrl);
-      }
-      for (const f of fs.readdirSync(rendersDir)) {
-        if (protectedNames.has(f)) continue;
-        try {
-          const fp = path.join(rendersDir, f);
-          const s = fs.statSync(fp);
-          if (!s.isFile()) continue;
-          fs.unlinkSync(fp);
-          deleted++;
-          savedBytes += s.size;
-        } catch {}
-      }
-    }
-
-    console.log(`[admin/cache] cleared userId=${userId} deleted=${deleted} saved=${Math.round(savedBytes / 1024 / 1024)}MB`);
     return NextResponse.json({
-      deleted,
-      savedMb: Math.round(savedBytes / 1024 / 1024 * 10) / 10,
-      message: `ลบ ${deleted} ไฟล์ ประหยัด ${Math.round(savedBytes / 1024 / 1024 * 10) / 10} MB`,
-    });
+      error: "media_lifecycle_managed",
+      message: "Customer media cleanup requires a reviewed graph/quarantine manifest.",
+    }, { status: 409 });
   } catch (error) {
     return apiError({ route: "DELETE admin/users/[id]/cache", error });
   }

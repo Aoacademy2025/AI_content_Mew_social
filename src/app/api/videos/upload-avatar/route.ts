@@ -2,14 +2,16 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import path from "path";
 import fs from "fs";
 import { randomUUID } from "crypto";
+import { execFile } from "child_process";
 
 export const runtime = "nodejs";
 export const maxDuration = 600; // 10 min — supports large green-screen video uploads
 
-const MAX_SIZE_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB
+const MAX_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
 const MAX_FORM_OVERHEAD_BYTES = 10 * 1024 * 1024; // multipart headers / form fields
 
 type UploadErrorCode =
@@ -35,6 +37,40 @@ function isAllowedAvatarVideo(file: File, ext: string) {
   if (!["mp4", "mov", "webm"].includes(ext)) return false;
   if (!file.type) return true;
   return ["video/mp4", "video/quicktime", "video/webm"].includes(file.type);
+}
+
+function execFileCapture(file: string, args: string[], timeout = 10_000, allowFailure = false): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { encoding: "utf8", maxBuffer: 5 * 1024 * 1024, timeout }, (err, stdout, stderr) => {
+      if (err && !allowFailure) reject(err);
+      else resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function probeDurationMs(filePath: string): Promise<number | null> {
+  const ffmpeg = getFfmpegPath();
+  const ffprobe = ffmpeg.replace(/ffmpeg(\.exe)?$/i, "ffprobe$1");
+  try {
+    const { stdout } = await execFileCapture(ffprobe, [
+      "-v", "error",
+      "-show_entries", "format=duration",
+      "-of", "csv=p=0",
+      filePath,
+    ]);
+    const sec = Number.parseFloat(stdout.trim());
+    if (Number.isFinite(sec) && sec > 0) return Math.round(sec * 1000);
+  } catch {}
+
+  try {
+    const { stderr } = await execFileCapture(ffmpeg, ["-i", filePath], 10_000, true);
+    const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)\.(\d+)/);
+    if (!m) return null;
+    const fractionMs = Math.round(Number(`0.${m[4]}`) * 1000);
+    return ((Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3])) * 1000) + fractionMs;
+  } catch {
+    return null;
+  }
 }
 
 async function recordAvatarUploadTelemetry(
@@ -104,7 +140,7 @@ export async function POST(req: Request) {
         durationMs: Date.now() - startedAt,
         contentLengthBytes: safeContentLength,
       });
-      return jsonError(413, "payload_too_large", "ไฟล์ใหญ่เกิน 2 GB");
+      return jsonError(413, "payload_too_large", "ไฟล์ใหญ่เกิน 500 MB");
     }
 
     const formData = await req.formData();
@@ -162,7 +198,7 @@ export async function POST(req: Request) {
         ext,
         mime,
       });
-      return jsonError(413, "payload_too_large", "ไฟล์ใหญ่เกิน 2 GB");
+      return jsonError(413, "payload_too_large", "ไฟล์ใหญ่เกิน 500 MB");
     }
 
     const rendersDir = path.join(process.cwd(), "public", "renders");
@@ -202,6 +238,7 @@ export async function POST(req: Request) {
 
     const writtenBytes = fs.statSync(outPath).size;
     if (writtenBytes <= 0) throw new Error("empty output file");
+    const durationMs = await probeDurationMs(outPath);
 
     await recordAvatarUploadTelemetry(userId, {
       status: "success",
@@ -213,7 +250,10 @@ export async function POST(req: Request) {
       mime,
     });
 
-    return NextResponse.json({ url: `/api/renders/${filename}` });
+    return NextResponse.json({
+      url: `/api/renders/${filename}`,
+      ...(durationMs && durationMs > 0 ? { durationMs } : {}),
+    });
   } catch (error) {
     if (outPath) {
       try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch {}

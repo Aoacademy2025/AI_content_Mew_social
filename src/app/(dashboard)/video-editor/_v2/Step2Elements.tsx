@@ -6,24 +6,34 @@
  * ปุ่มเรนเดอร์จริง = P4 (VideoJob preview mode) — ตอนนี้เป็น stub แจ้งชัด
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   Shuffle, Film, ImagePlus, Sparkles, ChevronDown, User, UserX, Music2,
   Play, Pause,
 } from "lucide-react";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
+import {
+  BROLL_REGION_OPTIONS,
+  BROLL_STYLE_OPTIONS,
+  type BrollRegionPreference,
+  type BrollVisualStyle,
+} from "@/lib/broll-preferences";
 import { KIE_IMAGE_MODEL_OPTIONS, PRICED_KIE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "../_components/types";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
+import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME } from "@/lib/hero-voice-brand";
+import { OMNIVOICE_UI_ENABLED } from "@/lib/tts-providers";
 import { estimateClipSecV2 } from "./estimate";
+import { minutesFromSeconds } from "@/lib/minute-round";
 import { useBgm } from "../_hooks/useBgm";
 import { useHeygenAvatars } from "../_hooks/useHeygenAvatars";
 import { MusicLibraryModal } from "./MusicLibraryModal";
 import { AvatarPickerModal } from "./AvatarPickerModal";
-import type { V2Project, V2BrollSource } from "./useV2Project";
+import type { V2Project, V2BrollSource, V2VoiceEngine } from "./useV2Project";
 import type { MixPreset } from "./mix-presets";
+import { HeroVoicePicker } from "./HeroVoicePicker";
 
 // Mix Preset (D5.1) — non-admin b-roll AI mix. Copy = brief verbatim (ห้ามแปลใหม่).
 const MIX_PRESETS: { key: MixPreset; label: string; sub: string; badge?: string }[] = [
@@ -51,17 +61,19 @@ function fmtTime(sec: number) {
 
 export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => Promise<void> }) {
   const bgm = useBgm();
-  const estSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
-  const estMin = Math.max(1, Math.ceil(estSec / 60));
+  const scriptEstSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
+  const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
+  const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
+  const displayMin = displaySec > 0 ? minutesFromSeconds(displaySec) : 0;
   const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
   // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
   const elevenVoice = p.voiceEngine === "elevenlabs"
     ? p.elevenVoices?.find(v => v.voice_id === p.voiceId.trim())
     : undefined;
-  // เสียง OmniVoice ที่ตรงกับ omniVoiceId ปัจจุบัน (โชว์คำอธิบายแทน id ดิบ)
   const omniVoice = p.voiceEngine === "omnivoice"
     ? p.omniVoices?.find(v => v.voice_id === p.omniVoiceId)
     : undefined;
+  const heroVoiceVisible = OMNIVOICE_UI_ENABLED || p.voiceEngine === "omnivoice";
   const [submitting, setSubmitting] = useState(false);
   const [musicLibOpen, setMusicLibOpen] = useState(false);
   const avatarLib = useHeygenAvatars();
@@ -167,6 +179,24 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   />
                 )}
               </label>
+              <label className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>แนวภาพ / โซนภาพ</span>
+                <Segmented
+                  value={p.brollRegionPreference}
+                  onChange={(v) => p.setBrollRegionPreference(v as BrollRegionPreference)}
+                  options={BROLL_REGION_OPTIONS}
+                  style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>สไตล์ภาพ</span>
+                <Segmented
+                  value={p.brollVisualStyle}
+                  onChange={(v) => p.setBrollVisualStyle(v as BrollVisualStyle)}
+                  options={BROLL_STYLE_OPTIONS}
+                  style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
+                />
+              </label>
               {(p.isAdmin || p.isPaidManagedKie) && (p.brollSource === "kie-image" || p.brollSource === "automix") && (
                 <label className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>
@@ -225,12 +255,28 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         {/* 2 · เสียงพากย์ */}
         {p.mode !== "upload" && (
         <Group title="เสียงพากย์" desc="เสียง AI อ่านสคริปต์ของคุณ">
-          <Segmented
+          <Segmented<V2VoiceEngine>
             value={p.voiceEngine}
             onChange={p.setVoiceEngine}
-            options={[{ value: "gemini", label: "Gemini" }, { value: "elevenlabs", label: "ElevenLabs" }, { value: "omnivoice", label: "OmniVoice" }]}
+            ariaLabel="ผู้ให้บริการเสียงพากย์"
+            optionPadding="6px clamp(7px, 2vw, 14px)"
+            style={{ display: "grid", gridTemplateColumns: `repeat(${heroVoiceVisible ? 3 : 2},minmax(0,1fr))`, width: "100%" }}
+            options={[
+              { value: "gemini" as const, label: "Gemini" },
+              { value: "elevenlabs" as const, label: "ElevenLabs" },
+              ...(heroVoiceVisible ? [{
+                value: "omnivoice" as const,
+                label: HERO_VOICE_NAME,
+                badge: HERO_VOICE_COMING_SOON,
+                disabled: !p.omniVoiceEnabled,
+                title: p.omniVoiceEnabled ? "เวอร์ชันทดลองก่อนเปิดตัว" : `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}`,
+              }] : []),
+            ]}
           />
-          <Card selected className="flex items-center gap-3" style={{ display: "flex" }}>
+          <Card
+            selected
+            className="grid grid-cols-[34px_minmax(0,1fr)_132px] items-center gap-3 max-[360px]:grid-cols-[34px_minmax(0,1fr)]"
+          >
             <span
               className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full"
               style={{ background: "linear-gradient(135deg,#F472B6,#8B5CF6)", color: "#fff" }}
@@ -238,32 +284,33 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               <Music2 size={15} strokeWidth={1.8} />
             </span>
             <span className="flex min-w-0 flex-1 flex-col">
-              <span style={{ font: `500 13px ${font.heading}` }}>
-                {p.voiceEngine === "gemini" ? geminiVoice.label
-                  : p.voiceEngine === "omnivoice" ? (omniVoice?.desc || "เสียง OmniVoice")
-                  : (elevenVoice?.name || "เสียงโคลนของฉัน")}
+              <span className="truncate" style={{ font: `500 13px ${font.heading}` }}>
+                {p.voiceEngine === "gemini"
+                  ? geminiVoice.label
+                  : p.voiceEngine === "omnivoice"
+                    ? (omniVoice?.desc || `เสียง ${HERO_VOICE_NAME}`)
+                    : (elevenVoice?.name || "เสียงโคลนของฉัน")}
               </span>
-              <span style={{ fontSize: 10.5, color: color.textFaint }}>
+              <span className="truncate" style={{ fontSize: 11, color: color.textSecondary }}>
                 {p.voiceEngine === "gemini"
                   ? `${geminiVoice.gender} · ${geminiVoice.style}`
                   : p.voiceEngine === "omnivoice"
-                  ? (omniVoice?.instruct || "เสียงจาก server ระบบ — ไม่ใช้ API key")
-                  : (p.voiceId ? `Voice ID: ${p.voiceId.slice(0, 12)}…` : "ยังไม่ได้ตั้ง Voice ID — ตั้งได้ที่ขั้นสูง")}
+                    ? (p.omniVoiceEnabled ? "เวอร์ชันทดลองก่อนเปิดตัว" : `ฟีเจอร์ใหม่ ${HERO_VOICE_COMING_SOON}`)
+                    : (p.voiceId ? `Voice ID: ${p.voiceId.slice(0, 12)}…` : "ยังไม่ได้ตั้ง Voice ID — ตั้งได้ที่ขั้นสูง")}
               </span>
             </span>
-            {/* ปุ่มมี w-full+mt-2 ภายใน — คุมความกว้างเองกัน layout ระเบิด */}
-            <span className="w-[132px] shrink-0" style={{ marginTop: -8 }}>
-              <VoicePreviewButton provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} />
+            <span className="w-[132px] shrink-0 self-center max-[360px]:col-span-2 max-[360px]:w-full">
+              <VoicePreviewButton className="mt-0" provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} omniPreviewUrl={omniVoice?.preview_url} />
             </span>
           </Card>
-          <Advanced note="ปรับความเร็ว/อารมณ์เสียง">
+          <Advanced label="เลือกเสียงอื่น">
             {p.voiceEngine === "gemini" ? (
               <label className="flex flex-col gap-1.5">
-                <span style={{ fontSize: 11, color: color.textFaint }}>เลือกเสียง Gemini</span>
+                <span style={{ fontSize: 12, color: color.textSecondary }}>เลือกเสียง Gemini</span>
                 <select
                   value={p.geminiVoiceName}
                   onChange={(e) => p.setGeminiVoiceName(e.target.value)}
-                  className="w-full max-w-[280px]"
+                  className="min-h-11 w-full max-w-[280px]"
                   style={{
                     padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
                     background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
@@ -278,44 +325,34 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 </select>
               </label>
             ) : p.voiceEngine === "omnivoice" ? (
-              <div className="flex flex-col gap-2">
-                <span style={{ fontSize: 11, color: color.textFaint }}>เลือกเสียง OmniVoice — เสียงจาก server ระบบ ไม่ใช้ API key</span>
-                {!p.omniVoices && (
-                  <span style={{ fontSize: 11.5, color: color.textFaint }}>กำลังโหลดรายการเสียง…</span>
+              <div className="flex flex-col gap-1.5">
+                {!p.omniVoiceEnabled ? (
+                  <span role="status" style={{ fontSize: 12, color: color.warning }}>
+                    {HERO_VOICE_NAME} กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้
+                  </span>
+                ) : p.omniVoices === null ? (
+                  <span role="status" style={{ fontSize: 12, color: color.textSecondary }}>กำลังเตรียมรายการเสียง…</span>
+                ) : p.omniVoices.length === 0 ? (
+                  <span className="flex items-center gap-2" role="alert" style={{ fontSize: 12, color: color.danger }}>
+                    เตรียมรายการเสียงไม่สำเร็จ
+                    <button type="button" onClick={p.retryOmniVoices} className="min-h-11 rounded-md px-2 font-semibold underline focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-8">ลองใหม่</button>
+                  </span>
+                ) : (
+                  <HeroVoicePicker voices={p.omniVoices} value={p.omniVoiceId} onChange={p.setOmniVoiceId} />
                 )}
-                {p.omniVoices?.length === 0 && (
-                  <span style={{ fontSize: 11.5, color: color.textFaint }}>เชื่อมต่อ OmniVoice server ไม่ได้ — ลองใหม่อีกครั้ง</span>
-                )}
-                {p.omniVoices?.map(v => (
-                  <button
-                    key={v.voice_id}
-                    type="button"
-                    onClick={() => p.setOmniVoiceId(v.voice_id)}
-                    className="flex items-center gap-2 text-left"
-                    style={{
-                      padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
-                      background: p.omniVoiceId === v.voice_id ? "rgba(139,92,246,.14)" : "rgba(255,255,255,.05)",
-                      border: `1px solid ${p.omniVoiceId === v.voice_id ? "rgba(139,92,246,.4)" : "rgba(255,255,255,.10)"}`,
-                      color: color.text, fontFamily: font.body, cursor: "pointer", width: "100%", maxWidth: 280,
-                    }}
-                  >
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span style={{ fontSize: 12.5 }}>{v.desc}</span>
-                      <span style={{ fontSize: 10.5, color: color.textFaint }}>{v.instruct}</span>
-                    </span>
-                    {p.omniVoiceId === v.voice_id && <span style={{ width: 6, height: 6, borderRadius: 999, background: color.primary500, flexShrink: 0 }} />}
-                  </button>
-                ))}
+                <span style={{ fontSize: 11.5, color: color.textSecondary, lineHeight: 1.65 }}>
+                  ฟังตัวอย่างก่อนเลือก เพื่อหาโทนเสียงที่เข้ากับคลิปของคุณ
+                </span>
               </div>
             ) : (
               <div className="flex flex-col gap-3">
                 {p.elevenVoices && p.elevenVoices.length > 0 && (
                   <label className="flex flex-col gap-1.5">
-                    <span style={{ fontSize: 11, color: color.textFaint }}>เลือกเสียงจากบัญชี ElevenLabs ของคุณ</span>
+                    <span style={{ fontSize: 12, color: color.textSecondary }}>เลือกเสียงจากบัญชี ElevenLabs ของคุณ</span>
                     <select
                       value={elevenVoice ? elevenVoice.voice_id : ""}
                       onChange={(e) => { if (e.target.value) p.setVoiceId(e.target.value); }}
-                      className="w-full max-w-[280px]"
+                      className="min-h-11 w-full max-w-[280px]"
                       style={{
                         padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
                         background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
@@ -332,12 +369,12 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   </label>
                 )}
                 <label className="flex flex-col gap-1.5">
-                  <span style={{ fontSize: 11, color: color.textFaint }}>ElevenLabs Voice ID</span>
+                  <span style={{ fontSize: 12, color: color.textSecondary }}>ElevenLabs Voice ID</span>
                   <input
                     value={p.voiceId}
                     onChange={(e) => p.setVoiceId(e.target.value)}
                     placeholder="วาง ElevenLabs Voice ID"
-                    className="w-full max-w-[280px]"
+                    className="min-h-11 w-full max-w-[280px]"
                     style={{
                       padding: "9px 12px", borderRadius: radius.control, fontSize: 12.5,
                       background: "rgba(255,255,255,.05)", border: `1px solid rgba(255,255,255,.10)`,
@@ -365,13 +402,14 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             className="self-start"
             style={{ fontSize: 11.5, color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}
           >
-            คลังเพลงทั้งหมด ({bgm.systemTracks.length + bgm.userTracks.length}) · อัปโหลดเพลงของคุณ
+            คลังเพลงทั้งหมด ({bgm.systemTracks.length + bgm.userTracks.length}) · {p.canUploadOwnMedia ? "อัปโหลดเพลงของคุณ" : "เพลงของฉัน (Pro)"}
           </button>
           <MusicLibraryModal
             open={musicLibOpen}
             onClose={() => setMusicLibOpen(false)}
             systemTracks={bgm.systemTracks}
             userTracks={bgm.userTracks}
+            canUpload={p.canUploadOwnMedia}
             onUploaded={(t) => bgm.setUserTracks([t, ...bgm.userTracks])}
             selected={p.musicTrack}
             selectedKind={p.musicTrackKind}
@@ -547,19 +585,20 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           {p.mode === "upload" ? (
             <>
               <SummaryRow label="ที่มา" value="คลิปที่อัปโหลดเอง" />
+              <SummaryRow label="ความยาว" value={hasUploadDuration ? fmtTime(p.clipDurationSec) : "กำลังอ่านความยาวคลิป"} />
               <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} · แทรก cutaway`} />
               <SummaryRow label="เสียง" value="จากคลิปของคุณ (ต่อเนื่อง)" />
               <SummaryRow label="ซับไทย" value="ถอดจากเสียงอัตโนมัติ" last />
             </>
           ) : (
             <>
-              <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(estSec)}`} />
+              <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(scriptEstSec)}`} />
               <SummaryRow label="บีโรล" value={p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} />
-              <SummaryRow label="เสียง" value={
-                p.voiceEngine === "gemini" ? `Gemini · ${geminiVoice.label}`
-                : p.voiceEngine === "omnivoice" ? `OmniVoice${omniVoice ? ` · ${omniVoice.desc}` : ""}`
-                : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`
-              } />
+              <SummaryRow label="เสียง" value={p.voiceEngine === "gemini"
+                ? `Gemini · ${geminiVoice.label}`
+                : p.voiceEngine === "omnivoice"
+                  ? `${HERO_VOICE_NAME}${omniVoice ? ` · ${omniVoice.desc}` : ""}`
+                  : `ElevenLabs${elevenVoice ? ` · ${elevenVoice.name}` : ""}`} />
               <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="อวตาร" value={p.useAvatar ? (p.avatarInfo?.name || p.avatarId || "ยังไม่ตั้ง") : "Faceless"} last />
             </>
@@ -570,8 +609,8 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         <div className="flex flex-col gap-2">
           <div className="max-lg:hidden">{primaryCta}</div>
           <span style={{ fontSize: 10.5, color: color.textFaint, textAlign: "center", lineHeight: 1.6 }}>
-            คลิปยาว ~{fmtTime(estSec)}
-            {p.usage?.minutes ? ` · ใช้ ~${estMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
+            {p.mode === "upload" && !hasUploadDuration ? "กำลังอ่านความยาวคลิป" : `คลิปยาว ${hasUploadDuration ? "" : "~"}${fmtTime(displaySec)}`}
+            {p.usage?.minutes && displayMin > 0 ? ` · ใช้ ${hasUploadDuration ? "" : "~"}${displayMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
             {" "}· แก้ทุกอย่างได้ทีหลัง
           </span>
         </div>
@@ -722,7 +761,7 @@ function Group({ title, desc, children }: { title: string; desc: string; childre
     <section className="flex flex-col gap-3">
       <div>
         <div style={{ font: `500 13.5px ${font.heading}` }}>{title}</div>
-        <div style={{ fontSize: 11, color: color.textFaint }}>{desc}</div>
+        <div style={{ fontSize: 11.5, color: color.textSecondary }}>{desc}</div>
       </div>
       {children}
     </section>
@@ -732,20 +771,24 @@ function Group({ title, desc, children }: { title: string; desc: string; childre
 /** ตั้งค่าขั้นสูง — จุดพักของฟีเจอร์เดิมทั้งหมด (นโยบาย "ย้าย ไม่ตัด").
  *  note = ป้ายบอกฟีเจอร์ที่ยังไม่ยกเข้ามา (ไม่มี children → "จะอยู่ตรงนี้", มีบางส่วน → "กำลังตามมา").
  *  ฟีเจอร์ที่ทำเสร็จครบแล้วไม่ต้องส่ง note — จะแสดงแค่ตัวคุมจริง */
-function Advanced({ note, children }: { note?: string; children?: React.ReactNode }) {
+function Advanced({ label = "ตั้งค่าขั้นสูง", note, children }: { label?: string; note?: string; children?: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  const panelId = useId();
   return (
     <div>
       <button
+        type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1"
-        style={{ fontSize: 11, color: color.textFaint, background: "none", border: "none", cursor: "pointer", padding: 0 }}
+        aria-expanded={open}
+        aria-controls={panelId}
+        className="flex min-h-11 items-center gap-1 rounded-md px-1 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-7"
+        style={{ fontSize: 11.5, color: color.textSecondary, background: "none", border: "none", cursor: "pointer", outlineColor: color.primary300 }}
       >
         <ChevronDown size={12} strokeWidth={1.8} style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform 150ms ease" }} />
-        ตั้งค่าขั้นสูง
+        {label}
       </button>
       {open && (
-        <div className="mt-2 flex flex-col gap-2 px-3 py-2.5" style={{ borderRadius: radius.control, border: `1px dashed rgba(255,255,255,.12)` }}>
+        <div id={panelId} className="mt-2 flex flex-col gap-2 px-3 py-2.5" style={{ borderRadius: radius.control, border: `1px dashed rgba(255,255,255,.12)` }}>
           {children}
           {note && (
             <span style={{ fontSize: 11, color: color.textFaintest, lineHeight: 1.7, display: "block" }}>

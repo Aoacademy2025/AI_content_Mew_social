@@ -4,6 +4,7 @@
 // (error: null) was being mislabeled "error" in ToolCallAudit. No DB needed — pure logic.
 //   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-mcp-audit-status.ts
 import { isInBandError } from "../src/lib/mcp/audit";
+import { readFileSync } from "node:fs";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -40,5 +41,17 @@ assert(isInBandError({ error: undefined }) === false, "error: undefined is OK (n
 assert(isInBandError({ error: "" }) === true, "error: '' (empty string) is still an error value");
 assert(isInBandError(null) === false, "null result is OK");
 assert(isInBandError("done") === false, "string result is OK");
+
+// Public consumers must never expose the internal waiting_provider lifecycle value.
+const webStatusRoute = readFileSync("src/app/api/videos/jobs/[id]/route.ts", "utf8");
+const mcpRoute = readFileSync("src/app/api/[transport]/route.ts", "utf8");
+const jobsRoute = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
+const insightsRoute = readFileSync("src/app/api/admin/insights/route.ts", "utf8");
+assert(webStatusRoute.includes("toPublicVideoJobStatus(job.status)"), "web job status normalizes waiting_provider");
+assert(mcpRoute.includes("toPublicVideoJobStatus(job.status)"), "MCP job status normalizes waiting_provider");
+assert(webStatusRoute.includes("...VIDEO_JOB_INFLIGHT_STATUSES"), "DELETE accepts every shared in-flight status");
+assert((jobsRoute.match(/\.\.\.VIDEO_JOB_INFLIGHT_STATUSES/g) ?? []).length === 3, "all three web in-flight limits use the shared status set");
+assert(mcpRoute.includes("...VIDEO_JOB_INFLIGHT_STATUSES"), "MCP in-flight limit includes provider waits");
+assert(insightsRoute.includes("waitingProvider:"), "admin insights reports waiting-provider count separately");
 
 console.log(`\n${passed} assertions passed ✅`);

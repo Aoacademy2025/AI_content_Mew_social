@@ -1,5 +1,6 @@
 import React from "react";
-import { AbsoluteFill, Audio, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
+import { AbsoluteFill, Audio, Img, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
+import { logoOverlayFrame } from "../lib/logo-overlay";
 import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { AnimatedSubtitle } from "./ShortVideoComposition";
 
@@ -25,6 +26,7 @@ export function SubtitleOverlayComposition({
   subtitleOutlineSize = 2,
   bgmFile,
   bgmVolume = 0.12,
+  logoOverlay,
 }: SubtitleOverlayConfig) {
   const { width, height } = useVideoConfig();
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
@@ -46,6 +48,23 @@ export function SubtitleOverlayComposition({
           voice only) still gets BGM in the final burned video. Looped to cover
           the whole duration. */}
       {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
+
+      {logoOverlay && (() => {
+        const box = logoOverlayFrame({
+          position: logoOverlay.position,
+          sizePct: logoOverlay.sizePct,
+          intrinsic: { width: logoOverlay.intrinsicWidth, height: logoOverlay.intrinsicHeight },
+          frameWidth: width,
+          frameHeight: height,
+        });
+        return (
+          <Img
+            data-logo-overlay="true"
+            src={logoOverlay.src}
+            style={{ position: "absolute", ...box, objectFit: "contain", opacity: logoOverlay.opacity }}
+          />
+        );
+      })()}
 
       {/* Subtitles — use the same Sequence + AnimatedSubtitle as ShortVideoComposition */}
       {keywordPopups.map((p) => {

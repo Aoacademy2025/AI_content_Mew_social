@@ -1,8 +1,8 @@
 "use client";
 
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useRef } from "react";
 import { normalizedBox } from "@/lib/avatar-layout";
-import { Plus, Lock, ChevronRight, ChevronDown, Check, Music, Upload, X, Loader2, User } from "lucide-react";
+import { Plus, Lock, ChevronRight, Music, Upload, X, Loader2, User } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
@@ -12,6 +12,7 @@ import { renderSubEl } from "./subtitle-renderer";
 import { EffectPreviewCard, EFFECT_KEYFRAMES } from "./EffectPreviewCard";
 import { SliderRow } from "./SliderRow";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
+import type { TtsProvider } from "@/lib/tts-providers";
 
 export interface RightPanelProps {
   wide: boolean; detached: boolean; dragging: boolean; panelPos: { x: number; y: number };
@@ -33,8 +34,8 @@ export interface RightPanelProps {
   setSubShadow: (v: boolean) => void; setSubOutline: (v: boolean) => void;
   setSubOutlineSize: (v: number) => void;
   displayCaptions: Caption[]; activeSegIdx: number;
-  ttsProvider: "elevenlabs" | "gemini" | "omnivoice"; geminiVoiceName: string; voiceId: string;
-  setTtsProvider: (v: "elevenlabs" | "gemini" | "omnivoice") => void;
+  ttsProvider: TtsProvider; geminiVoiceName: string; voiceId: string;
+  setTtsProvider: (v: TtsProvider) => void;
   setGeminiVoiceName: (v: string) => void; setVoiceId: (v: string) => void;
   bgmEnabled: boolean; bgmFile: string; bgmVolume: number;
   setBgmEnabled: (v: boolean) => void; setBgmFile: (v: string) => void;
@@ -91,17 +92,6 @@ export function RightSettingsPanel(p: RightPanelProps) {
   const dSubAccentColor = useDeferredValue(p.subAccentColor);
   const dSubFontFamily = useDeferredValue(p.subFontFamily);
   const dSubFontWeight = useDeferredValue(p.subFontWeight);
-
-  const [fontOpen, setFontOpen] = useState(false);
-  const fontRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!fontOpen) return;
-    function onClickOutside(e: MouseEvent) {
-      if (fontRef.current && !fontRef.current.contains(e.target as Node)) setFontOpen(false);
-    }
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, [fontOpen]);
 
   return (
     <div
@@ -182,7 +172,8 @@ export function RightSettingsPanel(p: RightPanelProps) {
                         {/* Static preset preview — STYLE only (no motion). The
                             arbitrary selectors force every inner span to one line and
                             shrink the box-preset paddings, because renderSubtitle sets
-                            whiteSpace:pre-line + break-all (correct for real subtitles)
+                            whiteSpace:pre-line and relies on Chromium's normal word-boundary
+                            wrapping (no break-all — removed by FIX D) for real subtitles,
                             which would otherwise wrap "ตัวอย่าง" inside the small card. */}
                         <div style={{ lineHeight: 1, transform: "scale(0.82)" }}>
                           {renderSubEl("ตัวอย่าง", dSubColor, dSubAccentColor, false, pr.value, dSubFontFamily, 15, dSubFontWeight, 1, "pop", -1, 1, p.subShadow, p.subOutline, p.subOutlineSize)}
@@ -232,41 +223,22 @@ export function RightSettingsPanel(p: RightPanelProps) {
             <div>
               <style dangerouslySetInnerHTML={{ __html: EFFECT_KEYFRAMES }} />
               <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-2">Font</div>
-              <div className="relative" ref={fontRef}>
-                {(() => {
-                  const sel = FONTS_LIST.find(f => f.value === p.subFontFamily) ?? FONTS_LIST[0];
-                  const nameOf = (f: typeof FONTS_LIST[number]) => f.label.split("—")[0].trim();
-                  const descOf = (f: typeof FONTS_LIST[number]) => f.label.split("—")[1]?.trim() ?? "";
-                  return (
-                    <>
-                      <button type="button" onClick={() => setFontOpen(v => !v)}
-                        className="w-full bg-[#15151b] border border-[#26262f] rounded-xl px-3 py-2.5 flex items-center gap-2 text-left outline-none hover:border-violet-500/40 transition-colors">
-                        <span className="text-[14px] text-slate-100 truncate" style={{ fontFamily: sel.value }}>{nameOf(sel)}</span>
-                        {descOf(sel) && <span className="text-[9px] text-slate-500 truncate">{descOf(sel)}</span>}
-                        <ChevronDown className={cn("w-3 h-3 text-slate-500 ml-auto shrink-0 transition-transform", fontOpen && "rotate-180")} />
-                      </button>
-                      {fontOpen && (
-                        <div className="absolute z-30 left-0 right-0 mt-1 rounded-xl p-1 shadow-xl max-h-72 overflow-y-auto scrollbar-none"
-                          style={{ background: "hsl(252 30% 8%)", border: "1px solid rgba(139,92,246,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
-                          {FONTS_LIST.map(f => {
-                            const active = f.value === p.subFontFamily;
-                            return (
-                              <button key={f.value} type="button"
-                                onClick={() => { p.setSubFontFamily(f.value); setFontOpen(false); }}
-                                className={cn("w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left transition-colors",
-                                  active ? "bg-violet-500/20" : "hover:bg-violet-500/10")}>
-                                {/* แสดงชื่อฟอนต์ด้วยฟอนต์จริง — เห็นหน้าตาก่อนเลือก */}
-                                <span className={cn("text-[15px] truncate", active ? "text-violet-100" : "text-slate-100")} style={{ fontFamily: f.value }}>{nameOf(f)}</span>
-                                {descOf(f) && <span className="text-[9px] text-slate-500 truncate ml-auto">{descOf(f)}</span>}
-                                {active && <Check className="w-3 h-3 text-violet-300 shrink-0 ml-1" strokeWidth={3} />}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </>
-                  );
-                })()}
+              <div className="relative">
+                <select
+                  value={p.subFontFamily}
+                  onChange={e => p.setSubFontFamily(e.target.value)}
+                  className="w-full bg-[#1a1a22] border border-[#2a2a36] rounded-xl px-3 py-2.5 text-[13px] text-slate-200 outline-none appearance-none cursor-pointer hover:border-violet-500/50 focus:border-violet-500/70 transition-colors pr-8"
+                  style={{ fontFamily: p.subFontFamily }}
+                >
+                  {FONTS_LIST.map(f => (
+                    <option key={f.value} value={f.value} style={{ fontFamily: f.value, background: "#1a1a22", color: "#e2e8f0" }}>
+                      {f.label.split("—")[0].trim()}
+                    </option>
+                  ))}
+                </select>
+                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+                </div>
               </div>
             </div>
             <div>

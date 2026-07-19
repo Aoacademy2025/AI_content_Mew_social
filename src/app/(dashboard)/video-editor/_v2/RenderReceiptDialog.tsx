@@ -56,12 +56,13 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
     return () => window.removeEventListener("keydown", onKey);
   }, [open, submitting, onCancel]);
 
-  // upload mode has no script → estSec 0 → minutesFromSeconds floors to 1 min (clip
-  // length is unknown client-side; the disclaimer + post-render receipt cover the gap).
+  // Upload mode knows the real file duration after metadata/upload. Script mode can only
+  // estimate until TTS returns the actual audio duration.
   const estSec = useMemo(
-    () => estimateClipSecV2(p.mode === "upload" ? "" : p.script),
-    [p.mode, p.script],
+    () => (p.mode === "upload" && p.clipDurationSec > 0 ? p.clipDurationSec : estimateClipSecV2(p.mode === "upload" ? "" : p.script)),
+    [p.mode, p.script, p.clipDurationSec],
   );
+  const exactDuration = p.mode === "upload" && p.clipDurationSec > 0;
 
   // AI usage: non-admins go by preset (ฟรีล้วน = none); admins by the raw b-roll source.
   const usesAi = p.isAdmin
@@ -94,8 +95,9 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       creditBalance: balance,
       minuteCreditRate: creditCostFor("minute"),
       hasAvatar: p.mode !== "upload" && p.useAvatar && !!p.avatarId,
+      exactDuration,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, balance, p.mode, p.useAvatar, p.avatarId],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, balance, p.mode, p.useAvatar, p.avatarId, exactDuration],
   );
 
   if (!open) return null;

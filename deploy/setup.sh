@@ -21,6 +21,31 @@ apt-get install -y nodejs
 echo "=== [3/8] Install PM2 ==="
 npm install -g pm2
 
+echo "=== [3b/8] Enable PM2 boot resurrection (systemd) ==="
+# STAB-1: register the systemd unit that resurrects PM2 (and everything it manages —
+# web, render/mcp workers, crons) on reboot. `pm2 startup` only PRINTS a
+# `sudo env ... pm2 startup ...` command; that printed command is what actually
+# installs+enables the unit, so capture and EXECUTE it (a bare `pm2 startup` in an
+# unattended script is a no-op). Idempotent: re-running just rewrites the same unit.
+STARTUP_CMD="$(pm2 startup systemd -u root --hp /root 2>/dev/null | grep -E '^sudo ' | tail -n1 || true)"
+if [ -n "$STARTUP_CMD" ]; then
+  echo "Registering PM2 systemd unit: $STARTUP_CMD"
+  eval "$STARTUP_CMD"
+else
+  echo "pm2 startup printed no sudo command (already root/configured) — running directly"
+  pm2 startup systemd -u root --hp /root || true
+fi
+# Persist the (currently empty) process list so the unit has a dump to resurrect from;
+# deploy.sh runs `pm2 save` again after the apps are actually started.
+pm2 save || true
+# Verify the unit is enabled — fail LOUD here so provisioning surfaces a broken setup.
+if systemctl is-enabled pm2-root >/dev/null 2>&1; then
+  echo "OK: systemd unit 'pm2-root' is enabled — PM2 will resurrect on reboot."
+else
+  echo "WARNING: systemd unit 'pm2-root' is NOT enabled after setup — reboot will NOT restart PM2."
+  echo "         Re-run this step or, as root: pm2 startup systemd -u root --hp /root && pm2 save"
+fi
+
 echo "=== [4/8] Install Nginx ==="
 apt-get install -y nginx
 

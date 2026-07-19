@@ -3,10 +3,10 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { videoExpiryFor } from "@/lib/plan-limits";
+import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { isGalleryClipFileMissing } from "@/lib/gallery-clip-cleanup";
 import { enqueueLowResPreview } from "@/lib/low-res-preview";
 import {
-  deleteLowResPreviewForVideoUrl,
   existingLowResPreviewFallbackUrlForVideoUrl,
   existingLowResPreviewUrlForVideoUrl,
 } from "@/lib/low-res-preview-paths";
@@ -25,7 +25,19 @@ export async function GET() {
     const now = new Date();
     const videos = await prisma.video.findMany({
       where: { userId: authUser.id },
-      include: { content: { select: { headline: true } } },
+      select: {
+        id: true,
+        status: true,
+        thumbnail: true,
+        videoUrl: true,
+        avatarVideoUrl: true,
+        audioUrl: true,
+        script: true,
+        createdAt: true,
+        expiresAt: true,
+        content: { select: { headline: true } },
+        project: { select: { title: true } },
+      },
       orderBy: { createdAt: "desc" },
     });
 
@@ -40,20 +52,8 @@ export async function GET() {
       return fs.existsSync(filePath);
     }
 
-    function deleteFileIfLocal(url: string | null) {
-      if (!url || url.startsWith("http://") || url.startsWith("https://")) return;
-      try {
-        deleteLowResPreviewForVideoUrl(url);
-        const filePath = url.startsWith("/api/renders/")
-          ? path.join(publicDir, "renders", url.slice("/api/renders/".length))
-          : path.join(publicDir, url);
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-      } catch { /* ignore */ }
-    }
-
-    // ── Lazy cleanup: delete expired records + their files on read ────────
-    const expiredIds: string[] = [];
-    const brokenIds: string[] = [];
+    // GET is deliberately read-only. Hide expired/missing entries, but leave
+    // ownership rows and files for the reviewed graph/quarantine lifecycle.
     const valid: Array<(typeof videos)[number] & {
       previewVideoUrl: string | null;
       previewFallbackVideoUrl: string | null;
@@ -63,39 +63,19 @@ export async function GET() {
     for (const v of videos) {
       // Expired by retention?
       if (v.expiresAt && v.expiresAt <= now) {
-        expiredIds.push(v.id);
-        deleteFileIfLocal(v.videoUrl);
-        deleteFileIfLocal(v.avatarVideoUrl);
-        deleteFileIfLocal(v.audioUrl);
-        deleteFileIfLocal(v.thumbnail);
         continue;
       }
       // Primary playable file missing on disk? (A remote avatarVideoUrl must NOT mask a
       // swept-away local render — see isGalleryClipFileMissing.)
       if (isGalleryClipFileMissing(v, localFileExists)) {
-        brokenIds.push(v.id);
         continue;
       }
 
       const primaryVideoUrl = v.videoUrl || v.avatarVideoUrl;
       const previewVideoUrl = existingLowResPreviewUrlForVideoUrl(primaryVideoUrl);
       const previewFallbackVideoUrl = existingLowResPreviewFallbackUrlForVideoUrl(primaryVideoUrl);
-      let previewStatus: "ready" | "queued" | "unavailable" = previewVideoUrl ? "ready" : "unavailable";
-      if (!previewVideoUrl && v.status === "COMPLETED") {
-        const queued = enqueueLowResPreview(primaryVideoUrl, {
-          userId: authUser.id,
-          videoId: v.id,
-          reason: "gallery_fetch",
-        });
-        previewStatus = queued.status === "queued" ? "queued" : "unavailable";
-      }
+      const previewStatus: "ready" | "unavailable" = previewVideoUrl ? "ready" : "unavailable";
       valid.push({ ...v, previewVideoUrl, previewFallbackVideoUrl, previewStatus });
-    }
-
-    const toDelete = [...expiredIds, ...brokenIds];
-    if (toDelete.length > 0) {
-      await prisma.video.deleteMany({ where: { id: { in: toDelete } } });
-      console.log(`[videos] cleaned up ${expiredIds.length} expired + ${brokenIds.length} broken records`);
     }
 
     return NextResponse.json(valid);
@@ -126,7 +106,11 @@ export async function POST(req: Request) {
       avatarVideoUrl,
       status,
       renderConfig,
+      projectId: rawProjectId,
     } = await req.json();
+    const projectId = typeof rawProjectId === "string" && rawProjectId.trim()
+      ? await assertEditorProjectOwner(authUser.id, rawProjectId.trim())
+      : null;
 
     // Compute expiresAt based on user's current plan (FREE: 3d, PRO: 7d, BUSINESS: 14d)
     const dbUser = await prisma.user.findUnique({
@@ -138,6 +122,7 @@ export async function POST(req: Request) {
     const video = await prisma.video.create({
       data: {
         contentId: contentId ?? null,
+        projectId,
         avatarModel: avatarModel ?? "unknown",
         voiceModel: voiceModel ?? "unknown",
         imageModel: imageModel ?? null,
@@ -153,6 +138,16 @@ export async function POST(req: Request) {
         expiresAt: videoExpiryFor(userPlan),
       },
     });
+    if (projectId) {
+      await prisma.editorProject.updateMany({
+        where: { id: projectId, userId: authUser.id },
+        data: {
+          latestVideoId: video.id,
+          status: video.status === "COMPLETED" ? "exported" : "post",
+          lastOpenedAt: new Date(),
+        },
+      });
+    }
 
     const primaryVideoUrl = video.videoUrl || video.avatarVideoUrl;
     const previewQueue = enqueueLowResPreview(primaryVideoUrl, {
@@ -170,6 +165,9 @@ export async function POST(req: Request) {
       previewStatus: previewVideoUrl ? "ready" : previewQueue.status === "queued" ? "queued" : "unavailable",
     }, { status: 201 });
   } catch (error) {
+    if ((error as { code?: string })?.code === "project_not_found") {
+      return NextResponse.json({ error: "project_not_found" }, { status: 404 });
+    }
     return apiError({ route: "videos", error });
   }
 }

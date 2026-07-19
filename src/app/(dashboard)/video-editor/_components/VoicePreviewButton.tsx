@@ -4,8 +4,9 @@ import React from "react";
 import { Loader2, Pause, Volume2 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import type { TtsProvider } from "@/lib/tts-providers";
+import { HERO_VOICE_NAME } from "@/lib/hero-voice-brand";
 
-type VoiceProvider = "gemini" | "elevenlabs" | "omnivoice";
 const VOICE_PREVIEW_TEXT = "สวัสดีครับ นี่คือตัวอย่างเสียงสำหรับวิดีโอของคุณ";
 
 type PreviewResponse = {
@@ -19,26 +20,35 @@ export function VoicePreviewButton({
   provider,
   geminiVoiceName,
   voiceId,
-  omniVoiceId,
+  omniVoiceId = "voice_01",
+  omniPreviewUrl,
   onPlanError,
+  className,
 }: {
-  provider: VoiceProvider;
+  provider: TtsProvider;
   geminiVoiceName: string;
   voiceId: string;
   omniVoiceId?: string;
+  omniPreviewUrl?: string;
   onPlanError?: (msg: string) => void;
+  className?: string;
 }) {
   const [loading, setLoading] = React.useState(false);
   const [playing, setPlaying] = React.useState(false);
   const [previewUrl, setPreviewUrl] = React.useState("");
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
 
-  const voiceKey = provider === "gemini" ? geminiVoiceName : provider === "omnivoice" ? (omniVoiceId ?? "voice_01") : voiceId.trim();
+  const voiceKey = provider === "gemini"
+    ? geminiVoiceName
+    : provider === "omnivoice"
+      ? omniVoiceId
+      : voiceId.trim();
 
   React.useEffect(() => {
     audioRef.current?.pause();
     audioRef.current = null;
     setPlaying(false);
+    setLoading(false);
     setPreviewUrl("");
   }, [provider, voiceKey]);
 
@@ -52,14 +62,20 @@ export function VoicePreviewButton({
     audioRef.current = audio;
     audio.onended = () => setPlaying(false);
     audio.onerror = () => {
+      setLoading(false);
       setPlaying(false);
       toast.error("เล่นเสียงตัวอย่างไม่สำเร็จ");
     };
-    setPlaying(true);
-    await audio.play().catch(() => {
+    setLoading(true);
+    try {
+      await audio.play();
+      setPlaying(true);
+    } catch {
       setPlaying(false);
       toast.error("เบราว์เซอร์ไม่อนุญาตให้เล่นเสียง ลองกดอีกครั้ง");
-    });
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function runPreview() {
@@ -76,16 +92,26 @@ export function VoicePreviewButton({
       toast.error("ใส่ ElevenLabs Voice ID ก่อนฟังตัวอย่าง");
       return;
     }
+    if (provider === "omnivoice") {
+      if (!omniPreviewUrl) {
+        toast.error(`ยังเตรียมเสียงตัวอย่าง ${HERO_VOICE_NAME} ไม่สำเร็จ`);
+        return;
+      }
+      setPreviewUrl(omniPreviewUrl);
+      await playUrl(omniPreviewUrl);
+      return;
+    }
 
     setLoading(true);
     try {
-      const endpoint = provider === "gemini" ? "/api/videos/tts-gemini" : provider === "omnivoice" ? "/api/videos/tts-omnivoice" : "/api/videos/tts";
+      const endpoint = provider === "gemini"
+        ? "/api/videos/tts-gemini"
+        : "/api/videos/tts";
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(
-          provider === "gemini" ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceName: geminiVoiceName }
-          : provider === "omnivoice" ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceId: voiceKey }
+        body: JSON.stringify(provider === "gemini"
+          ? { preview: true, text: VOICE_PREVIEW_TEXT, voiceName: geminiVoiceName }
           : { preview: true, text: VOICE_PREVIEW_TEXT, voiceId: voiceKey, languageCode: "th" }),
       });
       const data = await res.json().catch(() => ({} as PreviewResponse)) as PreviewResponse;
@@ -113,14 +139,18 @@ export function VoicePreviewButton({
       type="button"
       onClick={runPreview}
       disabled={loading}
+      aria-busy={loading}
+      aria-pressed={playing}
+      aria-label={loading ? "กำลังเตรียมเสียงตัวอย่าง" : playing ? "หยุดเสียงตัวอย่าง" : "ฟังเสียงตัวอย่าง"}
       className={cn(
-        "mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-[11px] font-bold transition-colors",
+        "mt-2 flex min-h-11 w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 text-[11px] font-bold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9",
         playing
           ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-300"
           : "border-[#2a2a36] bg-[#1a1a22] text-slate-400 hover:border-violet-500/35 hover:text-violet-300",
         loading && "cursor-wait opacity-70",
+        className,
       )}
-      title="ฟังเสียงตัวอย่าง"
+      title={playing ? "หยุดเสียงตัวอย่าง" : "ฟังเสียงตัวอย่าง"}
     >
       {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : playing ? <Pause className="h-3.5 w-3.5" /> : <Volume2 className="h-3.5 w-3.5" />}
       {loading ? "กำลังสร้าง..." : playing ? "หยุดตัวอย่าง" : "ฟังตัวอย่าง"}

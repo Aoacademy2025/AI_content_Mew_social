@@ -22,11 +22,73 @@ const pipelineDispatcher = new Agent({
 });
 
 export interface PipelineCaller {
-  /** opts.retries=0 for calls that SPEND on external services (kie image gen) —
+  /** opts.retries=0 for calls that SPEND scarce external/platform capacity (Kie,
+   *  OmniVoice synthesis) —
    *  a transport-timeout retry there means paying for the whole batch again. */
   post<T>(path: string, body: unknown, opts?: { retries?: number }): Promise<T>;
   patch<T>(path: string, body: unknown): Promise<T>;
   get<T>(path: string): Promise<T>;
+}
+
+export class PipelineHttpError extends Error {
+  constructor(
+    public readonly method: "POST" | "GET" | "PATCH",
+    public readonly path: string,
+    public readonly status: number,
+    public readonly body: unknown,
+  ) {
+    const detail = typeof body === "string" ? body : (JSON.stringify(body) ?? String(body));
+    super(`${method} ${path} → ${status}: ${detail.slice(0, 300)}`);
+    this.name = "PipelineHttpError";
+  }
+}
+
+export class PipelineResponseParseError extends Error {
+  constructor(
+    public readonly method: "POST" | "GET" | "PATCH",
+    public readonly path: string,
+    public readonly status: number,
+  ) {
+    super(`${method} ${path} → ${status}: invalid JSON response`);
+    this.name = "PipelineResponseParseError";
+  }
+}
+
+/** Decode the JSON contract shared by every internal pipeline endpoint. */
+export function decodePipelineResponse<T>(
+  method: "POST" | "GET" | "PATCH",
+  path: string,
+  status: number,
+  text: string,
+): T {
+  let parsed: unknown = {};
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      if (status >= 200 && status < 300) {
+        // A 2xx HTML/text body is normally a transient proxy/upstream corruption, not a
+        // valid pipeline result. Throw a transport-like error so withRetry can recover.
+        throw new PipelineResponseParseError(method, path, status);
+      }
+      parsed = text;
+    }
+  }
+  if (status < 200 || status >= 300) throw new PipelineHttpError(method, path, status, parsed);
+  return parsed as T;
+}
+
+function statusFromPipelineError(error: unknown): number | null {
+  if (error instanceof PipelineHttpError) return error.status;
+  if (error instanceof PipelineResponseParseError) return null;
+  // Compatibility with callers/tests that predate PipelineHttpError and throw the old
+  // formatted Error. Without this, a deterministic 4xx was misclassified as transport
+  // and executed three times after the typed-error migration.
+  if (error instanceof Error) {
+    const match = error.message.match(/^(?:POST|GET|PATCH)\s+\S+\s+→\s+(\d{3})(?::|\s|$)/);
+    if (match) return Number(match[1]);
+  }
+  return null;
 }
 
 /** Retry transport errors + 5xx (NOT 4xx). 4xx are in-band errors (missing_key/quota) — never retry. */
@@ -38,9 +100,8 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: { retries?: numbe
     try { return await fn(); }
     catch (e) {
       lastErr = e;
-      const msg = e instanceof Error ? e.message : String(e);
-      const status = msg.match(/→ (\d{3}):/)?.[1];
-      const retriable = !status || Number(status) >= 500; // transport error (no status) or 5xx
+      const status = statusFromPipelineError(e);
+      const retriable = status === null || status >= 500; // transport error (no status) or 5xx
       if (!retriable || attempt === retries) throw e;
       await sleep(1000 * Math.pow(3, attempt)); // 1s, 3s
     }
@@ -59,8 +120,7 @@ export function pipelineCaller(userId: string): PipelineCaller {
     return withRetry(async () => {
       const res = await undiciFetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, dispatcher: pipelineDispatcher });
       const text = await res.text();
-      if (!res.ok) throw new Error(`${method} ${path} → ${res.status}: ${text.slice(0, 300)}`);
-      return (text ? JSON.parse(text) : {}) as T;
+      return decodePipelineResponse<T>(method, path, res.status, text);
     }, { retries: opts?.retries });
   }
   return {
@@ -78,7 +138,10 @@ export async function pollRender(
   opts: { intervalMs?: number; timeoutMs?: number; sleep?: (ms: number) => Promise<void>; checkCanceled?: () => Promise<void> } = {},
 ): Promise<string> {
   const interval = opts.intervalMs ?? 2000;
-  const timeout = opts.timeoutMs ?? 15 * 60 * 1000;
+  // The render worker allows one job up to 45 minutes, and a job may wait behind both
+  // worker slots before it starts. Keep polling beyond that wall-clock budget; genuine
+  // failures and user cancellation are still observed on every poll.
+  const timeout = opts.timeoutMs ?? 60 * 60 * 1000;
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const start = Date.now();
   let consecutiveErrors = 0;

@@ -1,30 +1,85 @@
 import type { User } from "@prisma/client";
+import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
 import { prisma } from "@/lib/prisma";
-import { refundClipUsage } from "@/lib/usage-limits";
+import { refundVideoJobBaseReservation } from "@/lib/render/reservation-settlement";
 import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
-import { setJobStep, finishJob, failJob } from "@/lib/mcp/video-job";
+import {
+  setJobStep,
+  finishJob,
+  finishJobWithTransition,
+  failJob,
+  parseVideoJobOutput,
+  parkProviderJob,
+  saveProviderCheckpoint,
+  VIDEO_JOB_CANCELED_ERROR,
+} from "@/lib/mcp/video-job";
+import { validateWindowEdits, mergeWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
+import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller, pollRender, type PipelineCaller } from "@/lib/mcp/pipeline-client";
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
-  cardsByWordCount, POSITION_TOP_PERCENT,
+  cardsByWordCount, POSITION_TOP_PERCENT, buildDegradedTimingTelemetry,
 } from "@/lib/mcp/orchestrator-steps";
-import { runAvatarComposite } from "@/lib/mcp/avatar-steps";
+import {
+  compositeAvatarVideo,
+  generateAvatarVideo,
+  pollAvatarOnce,
+  prepareAvatarAudio,
+} from "@/lib/mcp/avatar-steps";
+import {
+  parseAvatarProviderCheckpoint,
+  providerPollDelayMs,
+  type AvatarProviderCheckpointV1,
+} from "@/lib/mcp/avatar-provider-checkpoint";
+import {
+  advanceAvatarProvider,
+  type AvatarProviderAdvanceResult,
+} from "@/lib/mcp/avatar-provider-resume";
 import { resolveBgm, moodMenu } from "@/lib/mcp/bgm-resolve";
-import { recordTelemetryEvent } from "@/lib/telemetry";
-import { buildBrollWindows } from "@/lib/broll-windows";
+import {
+  recordTelemetryEvent as recordServerTelemetryEvent,
+  type TelemetryInput,
+} from "@/lib/telemetry";
+import { buildBrollWindows, type BrollWindow } from "@/lib/broll-windows";
 import { planCutaway } from "@/lib/cutaway-plan";
+import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
+import { buildDegradedTtsTiming } from "@/lib/tts-timing";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
+import type { StockProvider } from "@/lib/key-preflight";
+import { audioDurationLimitViolation } from "@/lib/plan-limits";
+import { resolveJobTtsProvider } from "@/lib/tts-providers";
+
+class AvatarProviderFailureError extends Error {
+  constructor(
+    public readonly failure: Extract<AvatarProviderAdvanceResult, { kind: "failed" }>,
+    public readonly reservationRefundReason?: string,
+  ) {
+    super(failure.message);
+    this.name = "AvatarProviderFailureError";
+  }
+}
+
+class AvatarReservationSettlementError extends Error {
+  constructor(public readonly reservationRefundReason: string) {
+    super("คืนโควตาของ base render ยังไม่สำเร็จ — ระบบบันทึกไว้เพื่อลองคืนอัตโนมัติ");
+    this.name = "AvatarReservationSettlementError";
+  }
+}
 
 export interface OrchestratorDeps {
   caller?: PipelineCaller;
   refundOneClip?: (userId: string) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
+  recordTelemetryEvent?: (
+    userId: string | null,
+    input: TelemetryInput,
+  ) => Promise<unknown>;
 }
 
 interface CreateInput {
   script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs" | "omnivoice"; voiceId?: string;
-  /** OmniVoice voice_id (Editor v2) — falls back to "voice_01" when omitted */
+  /** OmniVoice voice_id — defaults to voice_01 only for legacy saved jobs. */
   omniVoiceId?: string;
   avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
   avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number;
@@ -40,10 +95,15 @@ interface CreateInput {
   stockSource?: string;
   /** จำนวนคลิปบีโรลกำหนดเอง (Editor v2 ขั้นสูง) — absent = auto */
   targetClipCount?: number;
+  /** Visual preference hints for B-roll keyword/search/ranking (Editor v2 Advanced) */
+  brollRegionPreference?: string;
+  brollVisualStyle?: string;
   /** โมเดลภาพ AI (Beta, admin-gated at the web route) */
   kieModel?: string;
   /** แหล่งภาพ Auto Mix (Beta, admin-gated at the web route) */
   autoMixProviders?: string[];
+  /** Providers whose keys passed submit-time preflight (unknown remains fail-open). */
+  stockProviders?: StockProvider[];
   /** Editor v2 mix-preset weights (D5.1) — validated at the web route; fetch-stock
    *  honors them only under MANAGED_KIE and force-zeros ai for unauthorized users. */
   autoMixWeights?: { video: number; photo: number; ai: number };
@@ -52,8 +112,22 @@ interface CreateInput {
    * → transcribe เสียงในคลิป → b-roll windows → base reel → composite mode:cutaway.
    * previewMode เสมอ (ยิงจากเว็บเท่านั้น; MCP ไม่ส่ง). Route gates on CLIP_CUTAWAY flag.
    */
-  mode?: "script" | "upload";
+  mode?: "script" | "upload" | "broll-rerender" | "export";
   clipUrl?: string;
+  /**
+   * Editor v2 free per-window b-roll re-render (Phase 2, previewMode-only): reuse the source
+   * job's TTS/avatar, swap only the named b-roll windows, re-render the base WITHOUT charging
+   * minutes again (render route's server-trusted `rerenderOf` skip). Never sent by MCP.
+   */
+  sourceJobId?: string;
+  windowEdits?: WindowEdit[];
+  /**
+   * Editor v2 durable final export: burn the user-edited subtitle overlay and save the
+   * finished video to Gallery from the worker, not from a mounted browser component.
+   */
+  subtitleOverlayConfig?: Record<string, unknown>;
+  exportScript?: string;
+  exportSceneCount?: number;
   /**
    * Editor v2 background render (ADR 0001): stop after the base render (+ avatar
    * composite if any) WITHOUT burning subtitles; persist captions/config in
@@ -63,10 +137,153 @@ interface CreateInput {
   previewMode?: boolean;
 }
 
+export type LogoExportDurationBucket =
+  | "under-30s"
+  | "30-60s"
+  | "1-3m"
+  | "over-3m"
+  | "unknown";
+
+function logoExportDurationBucket(durationMs: unknown): LogoExportDurationBucket {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 0) {
+    return "unknown";
+  }
+  if (durationMs < 30_000) return "under-30s";
+  if (durationMs < 60_000) return "30-60s";
+  if (durationMs < 180_000) return "1-3m";
+  return "over-3m";
+}
+
+/** Allowlist-only server builder: trusted render identity never crosses into telemetry. */
+export function buildLogoExportCompletedTelemetryProperties(
+  subtitleOverlayConfig: unknown,
+  previewDurationMs: unknown,
+): { position: string; durationBucket: LogoExportDurationBucket } | null {
+  if (
+    !subtitleOverlayConfig
+    || typeof subtitleOverlayConfig !== "object"
+    || Array.isArray(subtitleOverlayConfig)
+  ) {
+    return null;
+  }
+  const trustedLogo = normalizeTrustedLogoRenderInput(
+    (subtitleOverlayConfig as Record<string, unknown>).logoOverlay,
+  );
+  if (!trustedLogo) return null;
+  return {
+    position: trustedLogo.position,
+    durationBucket: logoExportDurationBucket(previewDurationMs),
+  };
+}
+
+function brollWindowCaptions(windows: BrollWindow[]): OrchCaption[] {
+  return windows.map((w, i) => ({
+    text: w.text,
+    startMs: w.startMs,
+    endMs: w.endMs,
+    tag: i === 0 ? "hook" : "body",
+  }));
+}
+
+function durationFromTtsTiming(timing: unknown): number {
+  if (!timing || typeof timing !== "object" || !Array.isArray((timing as { segments?: unknown }).segments)) return 0;
+  const segments = (timing as { segments: Array<{ startMs?: unknown; durationMs?: unknown }> }).segments;
+  return Math.round(segments.reduce((latest, segment) => {
+    const startMs = typeof segment?.startMs === "number" && Number.isFinite(segment.startMs) ? segment.startMs : 0;
+    const durationMs = typeof segment?.durationMs === "number" && Number.isFinite(segment.durationMs) ? segment.durationMs : 0;
+    return Math.max(latest, startMs + durationMs);
+  }, 0));
+}
+
+function alignBrollWindowsToKeywords(
+  windows: BrollWindow[],
+  units: OrchCaption[],
+  keywords: string[],
+  alternatives?: string[][],
+): { windows: BrollWindow[]; units: OrchCaption[]; keywords: string[]; alternatives?: string[][] } {
+  if (windows.length === 0 || keywords.length === windows.length) {
+    return { windows, units, keywords, alternatives };
+  }
+
+  const alignedKeywords = windows.map((window, index) =>
+    keywords[index]
+      ?? (keywords.length > 0 ? keywords[index % keywords.length] : undefined)
+      ?? units[index]?.text
+      ?? window.text
+      ?? "general lifestyle",
+  );
+  const alignedAlternatives = alternatives
+    ? windows.map((_, index) =>
+        alternatives[index]
+          ?? (alternatives.length > 0 ? alternatives[index % alternatives.length] : undefined)
+          ?? [alignedKeywords[index]],
+      )
+    : undefined;
+  return {
+    windows,
+    units,
+    keywords: alignedKeywords,
+    alternatives: alignedAlternatives,
+  };
+}
+
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
   const caller = deps.caller ?? pipelineCaller(userId);
-  const refund = deps.refundOneClip ?? refundClipUsage;
   const sleep = deps.sleep;
+  const recordTelemetryEvent = deps.recordTelemetryEvent ?? recordServerTelemetryEvent;
+  let baseReservationSettledThisRun = false;
+
+  const refundBaseReservation = async (reason: string): Promise<boolean> => {
+    if (baseReservationSettledThisRun) return true;
+    // Tests and older embedded callers can provide the legacy seam. Production always
+    // settles the exact RenderJob reservation so minutes/credits/clips are bucket-correct.
+    if (deps.refundOneClip) {
+      await deps.refundOneClip(userId);
+      baseReservationSettledThisRun = true;
+      return true;
+    }
+
+    let result;
+    try {
+      result = await refundVideoJobBaseReservation({
+        videoJobId: jobId,
+        userId,
+        reason,
+      });
+    } catch (error) {
+      emitTelemetry({
+        name: "avatar_base_reservation_settlement",
+        category: "error",
+        source: "server",
+        step: "avatar",
+        status: "error",
+        properties: { pipelineRunId, jobId, reason },
+      });
+      throw error;
+    }
+    emitTelemetry({
+      name: "avatar_base_reservation_settlement",
+      category: result.kind === "not_found" || result.kind === "ambiguous" ? "error" : "pipeline",
+      source: "server",
+      step: "avatar",
+      status: result.kind,
+      value: result.kind === "refunded" ? result.amount : null,
+      properties: {
+        pipelineRunId,
+        jobId,
+        reason,
+        ...(result.kind === "refunded" ? { funding: result.funding } : {}),
+      },
+    });
+    if (result.kind === "not_found" || result.kind === "ambiguous") {
+      console.error(
+        `[mcp-worker] job ${jobId} could not settle base reservation: ${result.kind} reason=${reason}`,
+      );
+    } else {
+      baseReservationSettledThisRun = true;
+    }
+    return baseReservationSettledThisRun;
+  };
 
   // P3: server-side stage telemetry — emitted from the worker so stage done/fail is
   // recorded even when no browser is attached (the web editor emits client-side and
@@ -81,10 +298,39 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   let phaseName = "startup";
   let phaseStartedAt = jobStartedAt;
   const timings: Array<[string, number]> = [];
+  function emitTelemetry(input: TelemetryInput) {
+    void Promise.resolve()
+      .then(() => recordTelemetryEvent(userId, input))
+      .catch(() => {});
+  }
+  function emitBrollStockInventory(requestedWindowCount: number, results: unknown[]) {
+    const assetKeys = results.map((result, index) => {
+      if (!result || typeof result !== "object" || Array.isArray(result)) return `item:${index}`;
+      const asset = result as Record<string, unknown>;
+      return String(
+        asset.pexelsId ?? asset.id ?? asset.localUrl ?? asset.videoUrl ?? asset.imageUrl ?? `item:${index}`,
+      );
+    });
+    emitTelemetry({
+      name: "broll_stock_inventory",
+      category: "pipeline",
+      source: "server",
+      step: "fetchStock",
+      status: "done",
+      properties: {
+        pipelineRunId,
+        jobId,
+        via: "mcp",
+        requestedWindowCount,
+        availableAssetCount: results.length,
+        distinctAssetCount: new Set(assetKeys).size,
+      },
+    });
+  }
   function emitStage(phase: string, status: "started" | "done" | "error", durationMs?: number, extra?: Record<string, unknown>) {
     const step = STEP_TELEMETRY_NAME[phase];
     if (!step) return; // skip startup/captions and other non-pipeline phases
-    void recordTelemetryEvent(userId, {
+    emitTelemetry({
       name: status === "started" ? "pipeline_step_started" : status === "done" ? "pipeline_step_done" : "pipeline_step_error",
       category: status === "error" ? "error" : "pipeline",
       source: "server",
@@ -92,18 +338,17 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       status,
       durationMs: durationMs != null && durationMs >= 0 ? Math.round(durationMs) : null,
       properties: { pipelineRunId, jobId, via: "mcp", ...extra },
-    }).catch(() => {});
+    });
   }
   // step() logs the phase that just ended (worker log, for audits) + emits its `done`
   // telemetry, then advances and emits the new phase's `started`. Render/burn progress
   // callbacks keep calling setJobStep directly so they don't spam this.
-  const JOB_CANCELED = "__job_canceled__";
   async function step(name: string, progress: number) {
     // Cooperative cancel (incident 07-03: kie runaway had no stop lever): the cancel
     // route marks processing jobs `canceled`; we honor it at every step boundary —
     // the current step finishes, nothing further starts, no failJob overwrite.
     const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
-    if (current?.status === "canceled") throw new Error(JOB_CANCELED);
+    if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
     const now = Date.now();
     const ended = now - phaseStartedAt;
     timings.push([phaseName, ended]);
@@ -125,7 +370,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const cur = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
     if (cur?.status !== "canceled") return;
     await caller.post(`/api/videos/render-cancel?jobId=${encodeURIComponent(renderJobId)}`, {}).catch(() => {});
-    throw new Error(JOB_CANCELED);
+    throw new Error(VIDEO_JOB_CANCELED_ERROR);
   };
 
   try {
@@ -134,7 +379,164 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (job.userId !== userId) { await failJob(jobId, "forbidden: job/user mismatch"); return; } // defense-in-depth (IDOR guard)
     const input = JSON.parse(job.inputJson) as CreateInput;
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
-    const provider = input.voiceProvider ?? (user.ttsProvider === "elevenlabs" || user.ttsProvider === "omnivoice" ? user.ttsProvider : "gemini");
+    const requestedProvider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider);
+    if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(userId)) {
+      throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ — กรุณาสลับผู้ให้บริการเสียงแล้วลองใหม่");
+    }
+    const provider = requestedProvider;
+
+    const persistProviderCheckpoint = async (checkpoint: AvatarProviderCheckpointV1): Promise<boolean> => {
+      const saved = await saveProviderCheckpoint(jobId, checkpoint);
+      return saved.count === 1;
+    };
+
+    const advanceProvider = (
+      checkpoint: AvatarProviderCheckpointV1,
+      allowGenerate = false,
+    ) => advanceAvatarProvider(checkpoint, {
+      now: () => new Date(),
+      allowGenerate,
+      generate: (avatarId, audioUrl) => generateAvatarVideo(caller, avatarId, audioUrl),
+      poll: (providerVideoId) => pollAvatarOnce(caller, providerVideoId),
+      composite: async (value) => {
+        const introVideoUrl = value.avatar.introVideoUrl;
+        if (!introVideoUrl) throw new Error("avatar checkpoint missing intro video URL");
+        if (value.avatar.mode === "bookend-both" && !value.avatar.tailVideoUrl) {
+          throw new Error("avatar checkpoint missing tail video URL");
+        }
+        return compositeAvatarVideo(caller, {
+          baseUrl: value.baseUrl,
+          avatarMode: value.avatar.mode,
+          introSecs: value.avatar.introSecs,
+          tailSecs: value.avatar.tailSecs,
+          introVideoUrl,
+          tailVideoUrl: value.avatar.tailVideoUrl,
+          layout: value.avatar.layout,
+        });
+      },
+      persist: persistProviderCheckpoint,
+    });
+
+    const finishPreparedAvatarJob = async (
+      checkpoint: AvatarProviderCheckpointV1,
+      compositeUrl: string,
+    ): Promise<void> => {
+      const avatarVideoUrl = checkpoint.avatar.introVideoUrl;
+      if (!avatarVideoUrl) throw new Error("avatar checkpoint missing intro video URL");
+      const captions: OrchCaption[] = checkpoint.captions.map((caption, index) => ({
+        ...caption,
+        tag: caption.tag ?? (index === 0 ? "hook" : "body"),
+      }));
+
+      if (input.previewMode) {
+        const previewDuration = Date.now() - phaseStartedAt;
+        timings.push([phaseName, previewDuration]);
+        emitStage(phaseName, "done", previewDuration);
+        const totalPreviewS = (Date.now() - jobStartedAt) / 1000;
+        console.log(`[mcp-worker] job ${jobId} PREVIEW TIMINGS total=${totalPreviewS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
+        await finishJob(jobId, {
+          version: 2,
+          mode: "preview",
+          videoUrl: compositeUrl,
+          preview: {
+            captions,
+            config: checkpoint.baseConfig,
+            voiceUrl: checkpoint.voiceUrl,
+            audioDurationMs: checkpoint.audioDurationMs,
+            avatarModel: checkpoint.avatar.id,
+            avatarVideoUrl,
+            avatarMode: checkpoint.avatar.mode,
+            avatarIntroSecs: checkpoint.avatar.introSecs,
+            avatarTailSecs: checkpoint.avatar.tailSecs,
+            compositeBaseUrl: checkpoint.baseUrl,
+            tailAvatarUrl: checkpoint.avatar.tailVideoUrl ?? null,
+            words: checkpoint.words,
+            fullText: checkpoint.fullText,
+          },
+        });
+        return;
+      }
+
+      const created = await caller.post<{ id: string }>("/api/videos", {
+        videoUrl: compositeUrl,
+        audioUrl: checkpoint.voiceUrl,
+        thumbnail: null,
+        script: input.script.trim() || null,
+        avatarModel: checkpoint.avatar.id,
+        avatarVideoUrl,
+        voiceModel: provider === "elevenlabs"
+          ? (input.voiceId ?? "elevenlabs")
+          : provider === "omnivoice"
+            ? (input.omniVoiceId ?? "voice_01")
+            : (user.geminiVoiceName ?? "gemini"),
+        sceneCount: captions.length,
+        renderConfig: checkpoint.baseConfig,
+        status: "PROCESSING",
+      });
+
+      await step("burn", 88);
+      const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
+      const render = await caller.post<{ jobId: string }>("/api/videos/render", {
+        subtitleOverlayConfig: buildBurnConfig(compositeUrl, captions, checkpoint.audioDurationMs, RENDER_FPS, subTop),
+        parentJobId: jobId,
+      });
+      const burnedUrl = await pollRender(
+        caller,
+        render.jobId,
+        (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); },
+        { sleep, checkCanceled: cancelInFlightRender(render.jobId) },
+      );
+      await caller.patch(`/api/videos/${created.id}`, { videoUrl: burnedUrl, status: "COMPLETED" });
+
+      const finalDuration = Date.now() - phaseStartedAt;
+      timings.push([phaseName, finalDuration]);
+      emitStage(phaseName, "done", finalDuration);
+      const totalS = (Date.now() - jobStartedAt) / 1000;
+      console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
+      await finishJob(jobId, { videoUrl: burnedUrl, videoId: created.id });
+    };
+
+    const settleProviderAdvance = async (result: AvatarProviderAdvanceResult): Promise<void> => {
+      if (result.kind === "failed") {
+        if (result.message === "provider checkpoint guard rejected") {
+          const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+          if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+        }
+        let reservationRefundReason: string | undefined;
+        if (result.outcome === "definitive") {
+          const reason = `avatar-provider-${result.code ?? "rejected"}`;
+          const settled = await refundBaseReservation(reason).catch((error) => {
+            console.error(`[mcp-worker] job ${jobId} failed to refund base reservation`, error);
+            return false;
+          });
+          if (!settled) reservationRefundReason = reason;
+        }
+        throw new AvatarProviderFailureError(result, reservationRefundReason);
+      }
+      if (result.kind === "ready") {
+        await finishPreparedAvatarJob(result.checkpoint, result.compositeUrl);
+        return;
+      }
+
+      const nowMs = Date.now();
+      const delayMs = providerPollDelayMs(Date.parse(result.checkpoint.providerStartedAt), nowMs, result.retryAfterSec);
+      const parked = await parkProviderJob(jobId, result.checkpoint, new Date(nowMs + delayMs));
+      if (parked.count === 1) return;
+      const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+      if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+      throw new Error("video_job_not_processing");
+    };
+
+    const rawProviderCheckpoint = job.providerCheckpointJson;
+    const providerCheckpoint = parseAvatarProviderCheckpoint(rawProviderCheckpoint);
+    if (rawProviderCheckpoint && !providerCheckpoint) {
+      throw new Error("invalid avatar provider checkpoint - manual recovery required");
+    }
+    if (providerCheckpoint) {
+      await step(providerCheckpoint.phase === "composite" ? "composite" : "avatar", providerCheckpoint.phase === "composite" ? 86 : 84);
+      await settleProviderAdvance(await advanceProvider(providerCheckpoint));
+      return;
+    }
 
     // Resolve BGM (path | track title | mood word like "ชิล"/"chill"/"ดราม่า") → a
     // real /music path. In chat the client usually sends a title or mood, not a path,
@@ -158,6 +560,167 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       }
     }
 
+    // ── EDITOR V2 FREE PER-WINDOW B-ROLL RE-RENDER (Phase 2, previewMode-only) ──
+    // Reuse the SOURCE preview's captions/TTS/avatar; swap only the edited b-roll windows;
+    // re-render the base for FREE (render route's server-trusted `rerenderOf` skip — never a
+    // client flag). Subtitle timing is untouched: captions/voiceUrl/words/audioDurationMs are
+    // copied through verbatim. MCP never sends this mode.
+    if (input.mode === "broll-rerender") {
+      if (!input.sourceJobId) { await failJob(jobId, "broll-rerender job missing sourceJobId"); return; }
+      const src = await prisma.videoJob.findUnique({ where: { id: input.sourceJobId } });
+      if (!src || src.userId !== userId) { await failJob(jobId, "ไม่พบวิดีโอต้นฉบับ หรือไม่มีสิทธิ์เข้าถึง"); return; } // IDOR guard
+      const parsed = parseVideoJobOutput(src.outputJson);
+      const preview = parsed?.preview;
+      const srcBgVideos = (preview?.config as Record<string, unknown> | undefined)?.bgVideos;
+      if (!preview || !Array.isArray(srcBgVideos)) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูล b-roll ที่แก้ไขได้"); return; }
+
+      // Re-validate the edits server-side (defense-in-depth; the jobs route already validated).
+      const editsRes = validateWindowEdits(input.windowEdits);
+      if ("error" in editsRes) { await failJob(jobId, editsRes.error); return; }
+      const mergeRes = mergeWindowEdits(srcBgVideos, editsRes);
+      if ("error" in mergeRes) { await failJob(jobId, mergeRes.error); return; }
+
+      // New base config: source preview config with merged b-roll, no keyword popups (base render).
+      const rrBaseConfig = { ...(preview.config as Record<string, unknown>), bgVideos: mergeRes.bgVideos, keywordPopups: [] as unknown[] };
+
+      await step("render", 40);
+      const rr = await caller.post<{ jobId: string }>("/api/videos/render", {
+        shortVideoConfig: rrBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
+        rerenderOf: { sourceJobId: input.sourceJobId },
+        parentJobId: jobId,
+      });
+      const rrNewBase = await pollRender(caller, rr.jobId, (pct) => { void setJobStep(jobId, "render", 40 + Math.round(pct * 0.3)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(rr.jobId) });
+
+      // Avatar re-composite (HeyGen only) — EXACTLY like AvatarAdjustOverlay.apply(): a free
+      // chromakey re-composite of the SAME stored avatar assets onto the NEW base (no HeyGen call).
+      let rrFinalUrl = rrNewBase;
+      let rrCompositeBaseUrl: string | null = preview.compositeBaseUrl ?? null;
+      const rrHasAvatar = !!(preview.avatarModel && preview.avatarModel !== "none" && preview.avatarVideoUrl);
+      if (rrHasAvatar) {
+        const heygenModes = new Set(["full", "bookend", "bookend-both"]);
+        const rrAvatarTiming = preview.avatarMode;
+        // chromakey re-composite is only valid for HeyGen avatars (full/bookend/bookend-both) —
+        // the exact set AvatarAdjustOverlay operates on (its gate also requires compositeBaseUrl +
+        // avatarMode). An upload-cutaway preview (avatarModel="upload-cutaway", no avatarMode) is a
+        // DIFFERENT composite (cutaway w/ personRanges); chromakey-ing it would corrupt the video,
+        // so fail cleanly rather than emit garbage. (Per-window edit for uploaded clips = future.)
+        if (!rrAvatarTiming || !heygenModes.has(rrAvatarTiming)) {
+          await failJob(jobId, "การแก้ b-roll รายช่วงยังไม่รองรับวิดีโอที่อัปโหลดคลิปเอง");
+          return;
+        }
+        if (rrAvatarTiming === "bookend-both" && !preview.tailAvatarUrl) {
+          await failJob(jobId, "ข้อมูลอวตารท้ายคลิปไม่ครบ — ปรับ b-roll ไม่ได้"); return;
+        }
+        await step("avatar", 80);
+        const rrLayout = resolveAvatarLayout({}, await getAvatarPreset(userId, preview.avatarModel!));
+        const rrComp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
+          avatarVideoUrl: preview.avatarVideoUrl,
+          ...(preview.tailAvatarUrl ? { tailAvatarVideoUrl: preview.tailAvatarUrl } : {}),
+          bgVideoUrl: rrNewBase,
+          mode: "chromakey",
+          avatarTiming: rrAvatarTiming,
+          avatarBookendSecs: preview.avatarIntroSecs ?? 5,
+          avatarTailSecs: preview.avatarTailSecs ?? 5,
+          avatarLayout: rrLayout,
+        });
+        rrFinalUrl = rrComp.videoUrl;
+        rrCompositeBaseUrl = rrNewBase; // new pre-composite base
+      }
+
+      // flush final phase + one-line log
+      const rrDuration = Date.now() - phaseStartedAt;
+      timings.push([phaseName, rrDuration]);
+      emitStage(phaseName, "done", rrDuration);
+      console.log(`[mcp-worker] job ${jobId} BROLL-RERENDER total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s edits=${editsRes.length} avatar=${rrHasAvatar}`);
+
+      // Preview payload = SOURCE preview copied verbatim (captions/voiceUrl/words/audioDurationMs
+      // /avatar* unchanged — subtitle invariant) with config + videoUrl + compositeBaseUrl updated.
+      await finishJob(jobId, {
+        version: 2,
+        mode: "preview",
+        videoUrl: rrFinalUrl,
+        preview: {
+          ...preview,
+          config: rrBaseConfig,
+          compositeBaseUrl: rrCompositeBaseUrl,
+        },
+      });
+      return;
+    }
+
+    // ── EDITOR V2 DURABLE EXPORT ───────────────────────────────────────────────
+    // Final subtitle burn + Gallery save must be server-owned. If the user switches to
+    // another project, closes the tab, or refreshes, this job keeps running and the
+    // project can later resume from activeExportJobId.
+    if (input.mode === "export") {
+      if (!input.sourceJobId) { await failJob(jobId, "export job missing sourceJobId"); return; }
+      if (!input.subtitleOverlayConfig || typeof input.subtitleOverlayConfig !== "object") {
+        await failJob(jobId, "export job missing subtitle overlay config");
+        return;
+      }
+      const src = await prisma.videoJob.findUnique({ where: { id: input.sourceJobId } });
+      if (!src || src.userId !== userId) { await failJob(jobId, "ไม่พบวิดีโอต้นฉบับ หรือไม่มีสิทธิ์เข้าถึง"); return; }
+      if (src.status !== "done") { await failJob(jobId, "วิดีโอต้นฉบับยังไม่พร้อมสำหรับส่งออก"); return; }
+      const parsed = parseVideoJobOutput(src.outputJson);
+      const preview = parsed?.preview;
+      if (!preview) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับส่งออก"); return; }
+
+      await step("burn", 20);
+      const burn = await caller.post<{ jobId: string }>("/api/videos/render", {
+        subtitleOverlayConfig: input.subtitleOverlayConfig,
+        parentJobId: jobId,
+      });
+      const burnedUrl = await pollRender(
+        caller,
+        burn.jobId,
+        (pct) => { void setJobStep(jobId, "burn", 20 + Math.round(pct * 0.7)).catch(() => {}); },
+        { sleep, checkCanceled: cancelInFlightRender(burn.jobId) },
+      );
+
+      await step("save", 92);
+      const saved = await caller.post<{ videoId?: string; id?: string }>("/api/videos", {
+        videoUrl: burnedUrl,
+        ...(job.projectId ? { projectId: job.projectId } : {}),
+        audioUrl: preview.voiceUrl ?? null,
+        thumbnail: null,
+        script: input.exportScript?.trim() || preview.fullText || null,
+        sceneCount: input.exportSceneCount ?? preview.captions?.length ?? 1,
+        status: "COMPLETED",
+      });
+      const videoId = saved.videoId ?? saved.id;
+
+      const exportDuration = Date.now() - phaseStartedAt;
+      timings.push([phaseName, exportDuration]);
+      emitStage(phaseName, "done", exportDuration);
+      console.log(`[mcp-worker] job ${jobId} EXPORT total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s source=${input.sourceJobId}`);
+
+      const completion = await finishJobWithTransition(jobId, {
+        version: 2,
+        mode: "export",
+        sourceJobId: input.sourceJobId,
+        videoUrl: burnedUrl,
+        ...(videoId ? { videoId } : {}),
+      });
+      const logoCompletionProperties = buildLogoExportCompletedTelemetryProperties(
+        input.subtitleOverlayConfig,
+        preview.audioDurationMs,
+      );
+      if (
+        completion.transitioned
+        && completion.job.status === "done"
+        && logoCompletionProperties
+      ) {
+        emitTelemetry({
+          name: "logo_overlay_export_completed",
+          category: "product",
+          source: "server",
+          status: "done",
+          properties: logoCompletionProperties,
+        });
+      }
+      return;
+    }
+
     // ── EDITOR V2 UPLOAD → CUTAWAY (P6.5, previewMode-only) ───────────────────
     // ข้ามเสียง/อวตาร/เพลงตามดีไซน์: ถอดซับจากเสียงในคลิป → b-roll windows →
     // base reel → composite mode:"cutaway" (เสียงมาจากคลิปเสมอ) → จบที่ preview.
@@ -175,39 +738,55 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         : Math.max(...upCaps.map((c) => c.endMs));
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-      const upWindows = buildBrollWindows(upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), upWindowSec);
+      const upWindows = buildBrollWindows(
+        upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+        upWindowSec,
+        upDurMs,
+      );
+      const upBrollUnits = upWindows.length > 0 ? brollWindowCaptions(upWindows) : upCaps;
 
       await step("keywords", 40);
       const upKw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
         "/api/videos/extract-keywords",
         {
-          ...buildKeywordsPayload(upCaps.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs),
+          ...buildKeywordsPayload(upBrollUnits.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
+          brollRegionPreference: input.brollRegionPreference,
+          brollVisualStyle: input.brollVisualStyle,
+          }),
           ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
         },
       );
 
       await step("stock", 55);
       const upAiGen = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
-      const upTotalDur = (upKw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(upDurMs / 1000);
+      const upAligned = alignBrollWindowsToKeywords(upWindows, upBrollUnits, upKw.keywords ?? [], upKw.keywordAlternatives);
+      const upTotalDur = upAligned.windows.length > 0
+        ? Math.round(upDurMs / 1000)
+        : (upKw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(upDurMs / 1000);
       const upStock = await caller.post<{ results: unknown[] }>(
         "/api/videos/fetch-stock",
         {
-          ...buildStockPayload(upKw.keywords ?? [], upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upCaps, upKw.visualDirection, upKw.keywordAlternatives, upKw.relevanceSpec),
+          ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
+            brollRegionPreference: input.brollRegionPreference,
+            brollVisualStyle: input.brollVisualStyle,
+          }, upAligned.windows.length > 0),
           ...(input.kieModel ? { kieModel: input.kieModel } : {}),
           ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
           ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
+          ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
         },
         upAiGen ? { retries: 0 } : undefined,
       );
+      emitBrollStockInventory(upAligned.windows.length, upStock.results ?? []);
 
       await step("config", 65);
-      const upScc = upWindows.length > 0 ? [] : (upCaps.length === (upKw.keywords ?? []).length ? upCaps.map(() => 1) : (upKw.sceneClipCounts ?? []));
+      const upScc = upAligned.windows.length > 0 ? [] : (upCaps.length === (upKw.keywords ?? []).length ? upCaps.map(() => 1) : (upKw.sceneClipCounts ?? []));
       const upCfg = await caller.post<{ config: Record<string, unknown> }>(
         "/api/videos/generate-config",
         buildConfigPayload(
           upCaps, upStock.results ?? [], input.clipUrl, upDurMs, upCaps.map((c) => c.text),
           upKw.keywordsPerScene ?? 5, upScc, upKw.sceneDurations ?? [],
-          upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+          upAligned.windows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
         ),
       );
 
@@ -215,6 +794,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upBaseConfig = { ...upCfg.config, keywordPopups: [] as unknown[] };
       const upR = await caller.post<{ jobId: string }>("/api/videos/render", {
         shortVideoConfig: upBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
+        parentJobId: jobId,
       });
       const upReelUrl = await pollRender(caller, upR.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.12)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(upR.jobId) });
       // preview: การจองที่ base render คือค่าใช้จ่ายเดียว (เหมือน script preview) — ไม่ refund
@@ -259,9 +839,35 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const tts = provider === "elevenlabs"
       ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts", { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" })
       : provider === "omnivoice"
-      ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-omnivoice", { text: input.script, voiceId: input.omniVoiceId ?? "voice_01" })
-      : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
-    const audioDurationMs = tts.audioDurationMs ?? 0;
+        ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
+            "/api/videos/tts-omnivoice",
+            { text: input.script, voiceId: input.omniVoiceId ?? "voice_01" },
+            { retries: 0 },
+          )
+        : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
+    let audioDurationMs = typeof tts.audioDurationMs === "number" && tts.audioDurationMs > 0
+      ? Math.round(tts.audioDurationMs)
+      : durationFromTtsTiming(tts.timing);
+    if (audioDurationMs <= 0) {
+      const measured = await caller.post<{ durationMs?: number }>(
+        "/api/videos/audio-duration",
+        { audioUrl: tts.voiceUrl },
+      );
+      audioDurationMs = typeof measured.durationMs === "number" && measured.durationMs > 0
+        ? Math.round(measured.durationMs)
+        : 0;
+    }
+    if (audioDurationMs <= 0) {
+      throw new Error("ตรวจสอบความยาวเสียงไม่ได้ — กรุณาลองสร้างใหม่");
+    }
+
+    // Exact duration is known now. Stop before captions, keyword LLM, stock downloads,
+    // rendering, or HeyGen can spend more time/quota; /api/videos/render keeps its own
+    // authoritative backstop for direct callers.
+    const durationViolation = audioDurationLimitViolation(audioDurationMs, user.plan);
+    if (durationViolation) {
+      throw new Error(`${durationViolation.message} — ${durationViolation.userAction}`);
+    }
 
     // 2. Captions (in-process, reuse the pure editor helper)
     await step("captions", 25);
@@ -287,7 +893,31 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       } catch { /* fail-open → deterministic sentence cards */ }
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
+    let capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
+    if (!capRes || capRes.captions.length === 0) {
+      // TTS produced AUDIO but no usable instrumented timing — Gemini's segmented
+      // pass fell open to a single uninstrumented call (returns no `timing`), or a
+      // rare timing/text mismatch. The web editor recovers here via its transcribe
+      // fallback, but this headless path has none, so pre-fix it turned a completed
+      // audio render into a hard failure ("ไม่มี subtitle timing") that a plain
+      // retry rarely cleared (prod: longer scripts = more segments = higher fail-open
+      // odds; 2/4 affected users never recovered by retrying). Derive a single-segment
+      // clock from the EXACT audio duration over the exact spoken text — still 100%
+      // TTS-derived, same char clock, no transcribe, no arithmetic change; only loss
+      // vs the segmented path is per-chunk re-anchoring + silence snap.
+      const degraded = buildDegradedTtsTiming(provider, input.script, audioDurationMs);
+      if (degraded) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        capRes = captionsFromTtsTiming(degraded as any, audioDurationMs, maxCardCharsFor(), null);
+        if (capRes && capRes.captions.length > 0) {
+          const scriptCharCount = input.script.trim().length;
+          console.warn(`[mcp-worker] job ${jobId}: TTS timing absent — recovered with single-segment clock over ${scriptCharCount} chars / ${audioDurationMs}ms`);
+          // Durable marker (fire-and-forget, never fails the job) so degraded videos
+          // are identifiable and a systemic timing regression spikes this event.
+          emitTelemetry(buildDegradedTimingTelemetry({ pipelineRunId, jobId, provider, scriptCharCount, audioDurationMs }));
+        }
+      }
+    }
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
     const baseCaptions = capRes.captions as OrchCaption[];
     const captions = (input.subtitleMode && input.subtitleMode !== "sentence")
@@ -303,15 +933,23 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const brollWindowMode = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
     const brollWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
     const brollWindows = brollWindowMode
-      ? buildBrollWindows(captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), brollWindowSec)
+      ? buildBrollWindows(
+          captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+          brollWindowSec,
+          durMs,
+        )
       : [];
+    const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
 
     // 3. Keywords
     await step("keywords", 40);
     const kw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
       "/api/videos/extract-keywords",
       {
-        ...buildKeywordsPayload(captions.map((c) => c.text), input.script, durMs),
+        ...buildKeywordsPayload(brollUnits.map((c) => c.text), input.script, durMs, {
+          brollRegionPreference: input.brollRegionPreference,
+          brollVisualStyle: input.brollVisualStyle,
+        }),
         // v2 ขั้นสูง: จำนวนคลิปกำหนดเอง (extract-keywords รองรับ field นี้จาก web เดิมอยู่แล้ว)
         ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
       },
@@ -319,28 +957,36 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
     // 4. Stock
     await step("stock", 55);
-    const totalDur = (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
+    const aligned = alignBrollWindowsToKeywords(brollWindows, brollUnits, kw.keywords ?? [], kw.keywordAlternatives);
+    const totalDur = aligned.windows.length > 0
+      ? Math.round(durMs / 1000)
+      : (kw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(durMs / 1000);
     // AI-gen sources (kie-image / auto-mix) SPEND kie credits per image — a transport
     // retry re-generates the entire batch (incident 07-03: 20+ images × 2). retries: 0.
     const aiGenSource = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
     const stock = await caller.post<{ results: unknown[] }>(
       "/api/videos/fetch-stock",
       {
-        ...buildStockPayload(kw.keywords ?? [], totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, captions, kw.visualDirection, kw.keywordAlternatives, kw.relevanceSpec),
+        ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
+          brollRegionPreference: input.brollRegionPreference,
+          brollVisualStyle: input.brollVisualStyle,
+        }, aligned.windows.length > 0),
         // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
         ...(input.kieModel ? { kieModel: input.kieModel } : {}),
         ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
         ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
+        ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
       },
       aiGenSource ? { retries: 0 } : undefined,
     );
+    emitBrollStockInventory(aligned.windows.length, stock.results ?? []);
 
     // 5. Config
     await step("config", 65);
     // Window mode → empty sceneClipCounts so generate-config takes the window branch (one clip
     // per window) instead of per-caption cycling; brollWindows below carries the spans (mirrors
     // web page.tsx runConfig). Otherwise keep the legacy 1-clip-per-caption path.
-    const sceneClipCounts = brollWindows.length > 0
+    const sceneClipCounts = aligned.windows.length > 0
       ? []
       : (captions.length === (kw.keywords ?? []).length ? captions.map(() => 1) : (kw.sceneClipCounts ?? []));
     const cfgRes = await caller.post<{ config: Record<string, unknown> }>(
@@ -348,7 +994,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       buildConfigPayload(
         captions, stock.results ?? [], tts.voiceUrl, durMs, captions.map((c) => c.text),
         kw.keywordsPerScene ?? 5, sceneClipCounts, kw.sceneDurations ?? [],
-        brollWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+        aligned.windows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
       ),
     );
 
@@ -357,14 +1003,31 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const baseConfig = { ...cfgRes.config, keywordPopups: [] as unknown[], ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}) };
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
+      parentJobId: jobId,
     });
     const baseUrl = await pollRender(caller, r1.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r1.jobId) });
-    // Base render reserved 1 clip; the burn render will reserve another. Refund the base's
-    // reservation NOW so a finished video nets exactly 1 clip, and a burn-stage failure (the
-    // burn route refunds its own clip) nets 0 — never over-charges for an undelivered video.
+    // Base render reserved 1 clip. Refund it NOW *only when an avatar composite follows* —
+    // because only then does finalBase become a NEW url (the composite) that the burn step
+    // does NOT recognize as already-paid, so the burn re-reserves a clip. Refunding the base
+    // then nets exactly 1 (base +1, refund −1, burn +1), and an avatar/burn failure nets 0
+    // (the burn route refunds its own clip) — never over-charging an undelivered video.
+    //
+    // NON-AVATAR: finalBase stays == baseUrl, so the burn's isBurnAlreadyPaid() matches the
+    // base's ChargedClip (render/route.ts) and the burn SKIPS its reservation (it is free).
+    // Refunding the base here would then net 0 — a full quota bypass for every delivered
+    // clips-mode video. So do NOT refund: the base's single ChargedClip is the only charge.
+    // (MON-2: docs/audits/2026-07-07-system-optimization-audit.md.)
+    //
     // PREVIEW MODE: no burn follows in this job, so the base reservation must STAND as the
     // single charge (same as the web editor's preview render today) — skip the refund.
-    if (!input.previewMode) await refund(userId).catch(() => {});
+    if (!input.previewMode && input.avatarMode) {
+      const reason = "avatar-composite-replacement";
+      const settled = await refundBaseReservation(reason).catch((error) => {
+        console.error(`[mcp-worker] job ${jobId} failed to refund base reservation`, error);
+        return false;
+      });
+      if (!settled) throw new AvatarReservationSettlementError(reason);
+    }
 
     // 6b. Avatar (optional) — generate + composite onto the base render.
     let finalBase = baseUrl;
@@ -377,16 +1040,45 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // malformed job rather than generating with avatarModel=undefined.
       if (!input.avatarId) throw new Error("avatar job missing avatarId");
       await step("avatar", 80);
-      const av = await runAvatarComposite(caller, {
-        baseUrl, ttsAudioUrl: tts.voiceUrl, avatarMode: input.avatarMode, avatarId: input.avatarId,
-        introSecs: input.avatarIntroSecs ?? 5, tailSecs: input.avatarTailSecs ?? 5, sleep,
-        layout: { scale: input.avatarScale ?? 1, offsetX: input.avatarOffsetX ?? 0, offsetY: input.avatarOffsetY ?? 0 },
-        onStep: (label) => { void setJobStep(jobId, label, 84).catch(() => {}); },
+      const introSecs = input.avatarIntroSecs ?? 5;
+      const tailSecs = input.avatarTailSecs ?? 5;
+      const preparedAudio = await prepareAvatarAudio(caller, {
+        ttsAudioUrl: tts.voiceUrl,
+        avatarMode: input.avatarMode,
+        introSecs,
+        tailSecs,
       });
-      finalBase = av.compositeUrl;
-      avatarModel = input.avatarId;
-      avatarVideoUrl = av.avatarUrl;
-      tailAvatarUrl = av.tailAvatarUrl ?? null;
+      const startedAt = new Date();
+      const checkpoint: AvatarProviderCheckpointV1 = {
+        version: 1,
+        provider: "heygen",
+        phase: "intro_generate",
+        providerStartedAt: startedAt.toISOString(),
+        providerDeadlineAt: new Date(startedAt.getTime() + 2 * 60 * 60_000).toISOString(),
+        baseUrl,
+        voiceUrl: tts.voiceUrl,
+        audioDurationMs: durMs,
+        captions,
+        words: capRes.words,
+        fullText: capRes.fullText,
+        baseConfig,
+        avatar: {
+          mode: input.avatarMode,
+          id: input.avatarId,
+          introSecs,
+          tailSecs,
+          layout: {
+            scale: Number.isFinite(input.avatarScale) ? Number(input.avatarScale) : 1,
+            offsetX: Number.isFinite(input.avatarOffsetX) ? Number(input.avatarOffsetX) : 0,
+            offsetY: Number.isFinite(input.avatarOffsetY) ? Number(input.avatarOffsetY) : 0,
+          },
+          introAudioUrl: preparedAudio.introAudioUrl,
+          tailAudioUrl: preparedAudio.tailAudioUrl,
+        },
+      };
+      if (!await persistProviderCheckpoint(checkpoint)) throw new Error(VIDEO_JOB_CANCELED_ERROR);
+      await settleProviderAdvance(await advanceProvider(checkpoint, true));
+      return;
     }
 
     // PREVIEW MODE (Editor v2): stop here — no burn, no gallery Video row (the web burn
@@ -427,14 +1119,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 7. Create Video row (PROCESSING)
     const created = await caller.post<{ id: string }>("/api/videos", {
       videoUrl: finalBase, audioUrl: tts.voiceUrl, thumbnail: null, script: input.script.trim() || null,
-      avatarModel, avatarVideoUrl, voiceModel: provider === "elevenlabs" ? (input.voiceId ?? "elevenlabs") : provider === "omnivoice" ? (input.omniVoiceId ?? "omnivoice") : (user.geminiVoiceName ?? "gemini"),
+      avatarModel, avatarVideoUrl, voiceModel: provider === "elevenlabs"
+        ? (input.voiceId ?? "elevenlabs")
+        : provider === "omnivoice"
+          ? (input.omniVoiceId ?? "voice_01")
+          : (user.geminiVoiceName ?? "gemini"),
       sceneCount: captions.length, renderConfig: baseConfig, status: "PROCESSING",
     });
 
     // 8. Burn subtitles onto the (possibly avatar-composited) base.
     await step("burn", 88);
     const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
-    const r2 = await caller.post<{ jobId: string }>("/api/videos/render", { subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS, subTop) });
+    const r2 = await caller.post<{ jobId: string }>("/api/videos/render", {
+      subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS, subTop),
+      parentJobId: jobId,
+    });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r2.jobId) });
 
     // 9. Update Video row → COMPLETED (the gallery route is PATCH — see /api/videos/[id])
@@ -450,11 +1149,25 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     await finishJob(jobId, { videoUrl: burnedUrl, videoId: created.id });
   } catch (e) {
     const message = e instanceof Error ? e.message : "internal error";
-    if (message === "__job_canceled__") {
+    if (message === VIDEO_JOB_CANCELED_ERROR) {
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
       return; // status is already 'canceled'; don't overwrite with failed
     }
     emitStage(phaseName, "error", Date.now() - phaseStartedAt, { message });
-    await failJob(jobId, message);
+    await failJob(jobId, e instanceof AvatarProviderFailureError
+      ? {
+          message: e.failure.message,
+          code: e.failure.code,
+          provider: e.failure.provider,
+          reservationRefundReason: e.reservationRefundReason,
+        }
+      : e instanceof AvatarReservationSettlementError
+        ? {
+            message: e.message,
+            code: "reservation_refund_pending",
+            provider: "system",
+            reservationRefundReason: e.reservationRefundReason,
+          }
+      : message);
   }
 }

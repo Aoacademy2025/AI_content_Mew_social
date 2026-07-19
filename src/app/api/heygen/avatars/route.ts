@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { decryptKey } from "@/lib/key-crypto";
 import { apiError } from "@/lib/api-error";
 import { isPaid } from "@/lib/plan-limits";
 import { getHeyGenAvatarList, HeyGenAuthError } from "@/lib/heygen-avatars";
@@ -42,7 +43,7 @@ export async function GET() {
     }
 
     // Decrypt API key
-    const apiKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
+    const apiKey = decryptKey(user.heygenKey);
 
     // Cached + retried + durable-stale fallback: if HeyGen's list endpoint is slow/unreachable we
     // serve the last successful list (flagged stale) instead of 500ing with an empty picker.

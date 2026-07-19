@@ -500,7 +500,12 @@ export async function POST(req: Request) {
       const r = await callGeminiTts(apiKey, fullText, selectedVoice);
       if (!r.ok) { await settleRefund(); return geminiErrorResponse(r.status, r.errBody, geminiMode === "managed"); }
       const failOpenDurationMs = Math.round(pcmDurationMs(r.pcm.length, r.sampleRate));
-      // Reserve minutes AFTER audio is produced (managed users only).
+      // Write the WAV FIRST, then reserve render minutes — same MON-6 ordering as
+      // the success path: a failed disk write can't leak render minutes because the
+      // reserve never runs, and the still-un-settled AI-audio reserve is refunded by
+      // the outer catch on a throw.
+      const { voiceUrl, filePath } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
+      // Reserve minutes AFTER the WAV exists (managed users only).
       // When MINUTE_QUOTA is on, the render route reserves minutes by output duration
       // instead — skip here so the same video isn't charged twice (TTS + render).
       // Flag off → unchanged: managed still reserves at TTS time.
@@ -508,6 +513,7 @@ export async function POST(req: Request) {
         const minutes = Math.max(1, Math.ceil(failOpenDurationMs / 60_000));
         const reserved = await reserveMinutes(authUser.id, minutes);
         if (!reserved.allowed) {
+          try { fs.unlinkSync(filePath); } catch {}
           await settleRefund();
           return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
         }
@@ -520,7 +526,6 @@ export async function POST(req: Request) {
         }).catch(() => {});
       }
       await settleReconcile(failOpenDurationMs / 60_000);
-      const { voiceUrl } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
       return NextResponse.json({
         voiceUrl,
         audioDurationMs: failOpenDurationMs,
@@ -530,8 +535,13 @@ export async function POST(req: Request) {
     // ---- Success: concat PCM, write one WAV, return exact timing ----
     const segments = mergeSegmentTiming(chunks.map((c, i) => ({ text: c.text, durationMs: durations[i] })));
     const audioDurationMs = durations.reduce((a, b) => a + b, 0);
-    // Reserve minutes BEFORE writing the WAV (managed users only) — avoids orphaned
-    // files on disk when a quota race loses after audio is already produced.
+    // Write the WAV FIRST, then reserve render minutes. If the disk write throws
+    // (disk-full — real on this box), reserveMinutes never runs, so a failed save
+    // can't leak render minutes to the outer catch (MON-6). The AI-audio reserve is
+    // still un-settled at this point, so a throw here refunds it via the catch. On a
+    // quota-minutes loss we unlink the just-written WAV so nothing is orphaned.
+    const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
+    // Reserve minutes AFTER the WAV exists (managed users only).
     // When MINUTE_QUOTA is on, the render route reserves minutes by output duration
     // instead — skip here so the same video isn't charged twice (TTS + render).
     // Flag off → unchanged: managed still reserves at TTS time.
@@ -539,6 +549,7 @@ export async function POST(req: Request) {
       const minutes = Math.max(1, Math.ceil(audioDurationMs / 60_000));
       const reserved = await reserveMinutes(authUser.id, minutes);
       if (!reserved.allowed) {
+        try { fs.unlinkSync(filePath); } catch {}
         await settleRefund();
         return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
       }
@@ -551,7 +562,6 @@ export async function POST(req: Request) {
       }).catch(() => {});
     }
     await settleReconcile(audioDurationMs / 60_000);
-    const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
     const sil = await detectSilences(filePath).catch(() => ({ midpoints: [] as number[], intervals: [] as { startMs: number; endMs: number }[] }));
     console.log(`[tts-gemini] done: ${chunks.length} segment(s), ${audioDurationMs}ms total, ${sil.intervals.length} silences`);
     return NextResponse.json({

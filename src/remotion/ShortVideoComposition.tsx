@@ -14,6 +14,7 @@ import {
 } from "remotion";
 import type { ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { renderSubtitle } from "./renderSubtitle";
+import { BROLL_SEQUENCE_GUARD_FRAMES } from "../lib/broll-coverage";
 
 // Re-export for backwards compatibility with any other importers
 export { renderSubtitle };
@@ -26,6 +27,10 @@ const FONTS_CSS =
 
 // CROSSFADE_FRAMES: how many frames both clips are visible simultaneously.
 const CROSSFADE_FRAMES = 8;
+
+if (process.env.NODE_ENV !== "production" && BROLL_SEQUENCE_GUARD_FRAMES < CROSSFADE_FRAMES + 2) {
+  throw new Error("B-roll sequence guard must cover the crossfade and decoder end guard");
+}
 
 const GRADE_FILTER = "brightness(0.92) contrast(1.12) saturate(1.08)";
 
@@ -306,7 +311,7 @@ function __removed_legacy_renderSubtitle(
       return <span style={{ ...base, color: "#00cfff", textShadow: "0 0 8px #00cfff, 0 0 20px #0099ff, 0 2px 4px rgba(0,0,0,0.9)" }}>{text}</span>;
 
     case "bold-shadow":
-      return <span style={{ ...base, fontWeight: Math.max(fontWeight, 900), textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" }}>{text}</span>;
+      return <span style={{ ...base, fontWeight, textShadow: "0 6px 0 rgba(0,0,0,0.9), 0 10px 20px rgba(0,0,0,0.8), 0 2px 0 rgba(0,0,0,1)" }}>{text}</span>;
 
     case "karaoke-box":
       return (
@@ -335,7 +340,7 @@ function __removed_legacy_renderSubtitle(
     case "hormozi":
       return (
         <span style={{
-          ...base, color: "#ff2244", fontStyle: "italic", fontWeight: Math.max(fontWeight, 800),
+          ...base, color: "#ff2244", fontStyle: "italic", fontWeight,
           textShadow: "-2px -2px 0 #fff, 2px -2px 0 #fff, -2px 2px 0 #fff, 2px 2px 0 #fff, 0 4px 16px rgba(200,0,30,0.6)",
           WebkitTextStroke: "1px #fff", paintOrder: "stroke fill",
         } as React.CSSProperties}>{text}</span>
@@ -576,13 +581,9 @@ export function ShortVideoComposition({
           const endFrame   = Math.max(startFrame + 1, Math.round(v.end * fps));
           const clipDuration = v.clipDuration && v.clipDuration > 0 ? v.clipDuration : null;
           const clipOffset   = v.clipOffset ?? 0;
-          // Merge adjacent segments with same src (tolerance 1 frame for rounding)
-          const last = segs[segs.length - 1];
-          if (last && last.src === v.src && Math.abs(last.endFrame - startFrame) <= 1) {
-            last.endFrame = endFrame;
-          } else {
-            segs.push({ src: v.src, startFrame, endFrame, clipOffset, clipDuration });
-          }
+          // Preserve deliberate same-source splits: each split may reset clipOffset to
+          // zero so its requested frames stay inside the probed source duration.
+          segs.push({ src: v.src, startFrame, endFrame, clipOffset, clipDuration });
         }
 
         // 2. Render each segment as a Sequence

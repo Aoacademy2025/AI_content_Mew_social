@@ -18,8 +18,19 @@ import {
   type V2CardLen, type V2SubConfig, type V2Caption, type V2CardOverrides,
 } from "./subtitle-style";
 import { loanwordSpans } from "@/lib/thai-loanwords";
+import { trackEvent } from "@/lib/client-telemetry";
+import {
+  normalizeLogoOverlayConfig,
+  type LogoOverlayConfig,
+} from "@/lib/logo-overlay";
 import type { V2JobState } from "./useV2Job";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
+import {
+  buildLogoTelemetryProperties,
+  useLogoOverlayEditor,
+  type LogoEditorSurface,
+  type LogoProjectSaveStatus,
+} from "./useLogoOverlayEditor";
 
 export type ExportState =
   | { phase: "idle" }
@@ -28,11 +39,47 @@ export type ExportState =
   | { phase: "done"; url: string }
   | { phase: "error"; message: string };
 
+// Phase 2 per-window b-roll editing (Task 11) — batched, applied via the free
+// broll-rerender job mode (Task 10). `kind` drives the source badge/label in the
+// inspector; `label` is a human-readable title (candidate title / "อัปโหลด" / "AI").
+export type WindowEditKind = "stock" | "upload" | "ai";
+export type WindowEdit = { src: string; keyword?: string; kind: WindowEditKind; label: string };
+
+const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
+  void _next;
+};
+const ignoreProjectSaveRetry = () => undefined;
+
+export type UsePostPhaseEditorOptions = {
+  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
+  /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
+   *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
+  onAdoptJob: (next: { id: string; projectId?: string | null }) => void;
+  projectId?: string | null;
+  logoOverlay?: LogoOverlayConfig;
+  onLogoOverlayChange?: (next: LogoOverlayConfig | undefined) => void;
+  logoEligible?: boolean;
+  projectSaveStatus?: LogoProjectSaveStatus;
+  onRetryProjectSave?: () => void;
+  surface?: LogoEditorSurface;
+};
+
 export function usePostPhaseEditor(
   job: V2JobState,
   script: string,
-  { onExported }: { onExported: () => void },
+  options: UsePostPhaseEditorOptions,
 ) {
+  const {
+    onExportJob,
+    onAdoptJob,
+    projectId = job.projectId,
+    logoOverlay,
+    onLogoOverlayChange = ignoreLogoChange,
+    logoEligible = false,
+    projectSaveStatus = "idle",
+    onRetryProjectSave = ignoreProjectSaveRetry,
+    surface = "desktop",
+  } = options;
   const preview = job.output?.preview ?? null;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
   const [captions, setCaptions] = useState<V2Caption[]>(() => preview?.captions ?? []);
@@ -40,6 +87,15 @@ export function usePostPhaseEditor(
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
   const [cfg, setCfg] = useState<V2SubConfig>(DEFAULT_V2_SUB);
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
+  const logo = useLogoOverlayEditor({
+    projectId,
+    eligible: logoEligible,
+    value: logoOverlay,
+    onChange: onLogoOverlayChange,
+    projectSaveStatus,
+    onRetryProjectSave,
+    surface,
+  });
   // ความยาวการ์ด (1 ประโยค / ≤4 / ≤3 / ≤2 / 1 คำ — semantics เดียวกับ v1) —
   // จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
   const originalCapsRef = useRef<V2Caption[]>(preview?.captions ?? []);
@@ -51,12 +107,111 @@ export function usePostPhaseEditor(
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const pollStop = useRef(false);
+  const windowPollStop = useRef(false);
   const [adjustingAvatar, setAdjustingAvatar] = useState(false);
+
+  // ── Phase 2: per-window b-roll editing (Task 11) ──────────────────────────
+  // windowEdits ล้วนอยู่ฝั่ง client จนกว่าจะกด "อัปเดตวิดีโอ" (batched, ไม่เรนเดอร์ทีละจุด).
+  // configOverride แทนที่ preview.config หลัง apply สำเร็จ (เห็น bgVideos ใหม่บน timeline)
+  // — captions/overrides/cfg เป็น state แยกอยู่แล้ว (init ครั้งเดียวจาก preview เดิม) จึงไม่ถูก
+  // เขียนทับตอน config เปลี่ยน (ตามสเปค: ต้องรอด "ไม่แตะ" ของแก้ซับ).
+  const [windowEdits, setWindowEditsState] = useState<Map<number, WindowEdit>>(new Map());
+  const [selectedWindow, setSelectedWindow] = useState<number | null>(null);
+  const [applyingWindows, setApplyingWindows] = useState<{ progress: number } | null>(null);
+  const [configOverride, setConfigOverride] = useState<Record<string, unknown> | null>(null);
+  const previewConfig = configOverride ?? preview?.config ?? null;
+  // compositeBaseUrl แทนที่ preview.compositeBaseUrl หลัง apply สำเร็จ (งาน avatar) —
+  // ไม่งั้น AvatarAdjustOverlay จะ re-composite ทับ base เก่า (ก่อนแก้ b-roll) แล้วเขียน
+  // ทับผลแก้ b-roll ทิ้งอย่างเงียบๆ ตอนกด save ใน Avatar Adjust (บั๊กที่ fix นี้แก้)
+  const [compositeBaseUrlOverride, setCompositeBaseUrlOverride] = useState<string | null>(null);
+  const compositeBaseUrl = compositeBaseUrlOverride ?? preview?.compositeBaseUrl ?? null;
+
+  function setWindowEdit(index: number, edit: WindowEdit) {
+    setWindowEditsState((m) => {
+      const next = new Map(m);
+      next.set(index, edit);
+      return next;
+    });
+  }
+  function clearWindowEdit(index: number) {
+    setWindowEditsState((m) => {
+      if (!m.has(index)) return m;
+      const next = new Map(m);
+      next.delete(index);
+      return next;
+    });
+  }
+
+  /** ส่งงาน broll-rerender (ฟรี, ไม่ใช้นาที) → poll จนเสร็จ → swap videoUrl+config ในที่
+   *  (ตามแนว AvatarAdjustOverlay.apply) → เคลียร์ windowEdits ที่ apply แล้ว */
+  async function applyWindowEdits() {
+    if (windowEdits.size === 0 || applyingWindows) return;
+    const sourceJobId = job.jobId;
+    if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return; }
+    setApplyingWindows({ progress: 0 });
+    const edits = Array.from(windowEdits.entries()).map(([index, e]) => ({
+      index, src: e.src, ...(e.keyword ? { keyword: e.keyword } : {}),
+    }));
+    try {
+      const res = await fetch("/api/videos/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idempotencyKey: `editor-v2-broll-rerender-${globalThis.crypto.randomUUID()}`,
+          mode: "broll-rerender",
+          sourceJobId,
+          windowEdits: edits,
+        }),
+      });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d?.jobId) throw new Error(d?.message ?? d?.error ?? `อัปเดตวิดีโอไม่สำเร็จ (${res.status})`);
+      const newJobId = d.jobId as string;
+
+      let done = false;
+      for (let i = 0; i < 450 && !windowPollStop.current; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        let p: {
+          status?: string; progress?: number; errorMessage?: string; projectId?: string | null;
+          output?: { videoUrl?: string; preview?: { config?: Record<string, unknown>; compositeBaseUrl?: string | null } };
+        } | null = null;
+        try {
+          p = await fetch(`/api/videos/jobs/${encodeURIComponent(newJobId)}`).then((r) => r.json());
+        } catch { continue; }
+        if (!p) continue;
+        if (typeof p.progress === "number") setApplyingWindows({ progress: Math.max(0, Math.min(100, Math.round(p.progress))) });
+        if (p.status === "done") {
+          const newVideoUrl = p.output?.videoUrl;
+          if (!newVideoUrl) throw new Error("อัปเดตวิดีโอไม่สำเร็จ — ไม่พบไฟล์วิดีโอใหม่");
+          setBaseUrl(newVideoUrl);
+          if (p.output?.preview?.config) setConfigOverride(p.output.preview.config);
+          if (p.output?.preview?.compositeBaseUrl) setCompositeBaseUrlOverride(p.output.preview.compositeBaseUrl);
+          const v = videoRef.current;
+          if (v) { v.load(); v.currentTime = 0; }
+          setWindowEditsState(new Map());
+          // Adopt the NEW job: repoint jobId + localStorage resume key so a refresh resumes
+          // this result and the NEXT apply chains onto it (sourceJobId = job.jobId). Caption/
+          // style state is untouched — only the source job identity moves forward.
+          onAdoptJob({ id: newJobId, projectId: p.projectId ?? job.projectId ?? null });
+          toast.success("อัปเดตวิดีโอแล้ว");
+          done = true;
+          break;
+        }
+        if (p.status === "failed" || p.status === "canceled") {
+          throw new Error(p.errorMessage ?? "อัปเดตวิดีโอไม่สำเร็จ");
+        }
+      }
+      if (!done && !windowPollStop.current) throw new Error("อัปเดตวิดีโอไม่เสร็จในเวลาที่กำหนด — เช็คสถานะภายหลัง");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "อัปเดตวิดีโอไม่สำเร็จ");
+    } finally {
+      setApplyingWindows(null);
+    }
+  }
   // ปรับได้เมื่องานนี้มีอวตาร + worker เก็บข้อมูล re-composite ไว้ (งานเก่าก่อนฟีเจอร์นี้ = ซ่อน)
   // bookend-both ต้องมี tailAvatarUrl ด้วย ไม่งั้น composite split ขาดท่อน
   const canAdjustAvatar = !!(
     preview?.avatarModel && preview.avatarModel !== "none" &&
-    preview.avatarVideoUrl && preview.compositeBaseUrl && preview.avatarMode &&
+    preview.avatarVideoUrl && compositeBaseUrl && preview.avatarMode &&
     (preview.avatarMode !== "bookend-both" || preview.tailAvatarUrl)
   );
 
@@ -137,7 +292,7 @@ export function usePostPhaseEditor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => () => { pollStop.current = true; }, []);
+  useEffect(() => () => { pollStop.current = true; windowPollStop.current = true; }, []);
 
   function set<K extends keyof V2SubConfig>(k: K, v: V2SubConfig[K]) {
     setCfg((c) => ({ ...c, [k]: v }));
@@ -189,53 +344,37 @@ export function usePostPhaseEditor(
 
   async function exportVideo() {
     if (!baseUrl || !captions.length || exp.phase === "burning" || exp.phase === "saving") return;
-    setExp({ phase: "burning", progress: 0 });
+    if (!job.jobId) {
+      setExp({ phase: "error", message: "ไม่พบวิดีโอต้นฉบับ" });
+      return;
+    }
+    setExp({ phase: "saving" });
     try {
-      const overlay = buildV2BurnConfig(baseUrl, captions, preview?.audioDurationMs ?? 0, cfg, 30, overrides);
-      const res = await fetch("/api/videos/render", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subtitleOverlayConfig: overlay }),
+      const overlay = buildV2BurnConfig(
+        baseUrl,
+        captions,
+        preview?.audioDurationMs ?? 0,
+        cfg,
+        30,
+        overrides,
+        logoOverlay,
+      );
+      const result = await onExportJob({
+        sourceJobId: job.jobId,
+        subtitleOverlayConfig: overlay,
+        script: script.trim() || preview?.fullText || undefined,
+        sceneCount: captions.length,
       });
-      const d = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(d?.error?.message ?? d?.error ?? `burn failed (${res.status})`);
-
-      let burnedUrl: string | null = d?.videoUrl ?? null;
-      const jobId: string | null = d?.jobId ?? null;
-      if (!burnedUrl && jobId) {
-        // poll จนเสร็จ (แนวเดียวกับ pollRender ฝั่ง worker)
-        for (let i = 0; i < 450 && !pollStop.current; i++) {
-          await new Promise((r) => setTimeout(r, 2000));
-          try {
-            const p = await fetch(`/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`).then((r) => r.json());
-            if (typeof p?.progress === "number") setExp({ phase: "burning", progress: Math.max(0, Math.min(100, Math.round(p.progress))) });
-            if (p?.stage === "done" && p?.videoUrl) { burnedUrl = p.videoUrl; break; }
-            if (p?.stage === "error") throw new Error(p?.error ?? "burn error");
-          } catch (e) {
-            if (e instanceof Error && e.message !== "Failed to fetch") throw e;
-          }
-        }
+      if (!result.ok) throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");
+      const submittedLogo = normalizeLogoOverlayConfig(logoOverlay);
+      if (submittedLogo?.enabled) {
+        trackEvent("logo_overlay_export_submitted", {
+          properties: buildLogoTelemetryProperties({
+            surface,
+            position: submittedLogo.position,
+          }),
+        });
       }
-      if (!burnedUrl) throw new Error("burn ไม่เสร็จในเวลาที่กำหนด — เช็คใน Gallery ภายหลัง");
-
-      // บันทึกเข้า Gallery (โครงเดียวกับ MCP step 7/9 แต่จบที่ COMPLETED เลย)
-      setExp({ phase: "saving" });
-      await fetch("/api/videos", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoUrl: burnedUrl,
-          audioUrl: preview?.voiceUrl ?? null,
-          thumbnail: null,
-          // ชื่อใน Gallery มาจาก script (v1 ก็ทำแบบนี้) — โหมดอัปคลิปใช้ fullText ที่ถอดได้
-          script: script.trim() || preview?.fullText || null,
-          sceneCount: captions.length,
-          status: "COMPLETED",
-        }),
-      }).catch(() => {}); // gallery save best-effort — ไฟล์ burn สำเร็จแล้ว
-
-      onExported(); // งานนี้จบแล้ว — กลับเข้ามาใหม่ต้องเริ่มสด (spec ข้อ 5)
-      setExp({ phase: "done", url: burnedUrl });
     } catch (e) {
       setExp({ phase: "error", message: e instanceof Error ? e.message : "ส่งออกไม่สำเร็จ" });
     }
@@ -243,6 +382,12 @@ export function usePostPhaseEditor(
 
   return {
     preview,
+    logo,
+    previewConfig,
+    compositeBaseUrl,
+    windowEdits, setWindowEdit, clearWindowEdit,
+    selectedWindow, setSelectedWindow,
+    applyWindowEdits, applyingWindows,
     baseUrl, setBaseUrl,
     captions, setCaptions,
     selected, setSelected,

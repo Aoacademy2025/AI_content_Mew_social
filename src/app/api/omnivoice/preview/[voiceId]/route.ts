@@ -1,39 +1,47 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { omnivoiceBaseUrl, omnivoiceAuthHeaders, isValidOmniVoiceId } from "@/lib/omnivoice";
+import {
+  isOmniVoiceUserAllowed,
+  isValidOmniVoiceId,
+  OmniVoiceConfigError,
+  omnivoiceAuthHeaders,
+  omnivoiceConfig,
+} from "@/lib/omnivoice";
 
 export const runtime = "nodejs";
 
-// GET /api/omnivoice/preview/[voiceId] — proxy ไฟล์เสียงตัวอย่าง (audio/wav)
-export async function GET(
-  _req: Request,
-  { params }: { params: Promise<{ voiceId: string }> },
-) {
+export async function GET(_request: Request, context: { params: Promise<{ voiceId: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isOmniVoiceUserAllowed(user.id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { voiceId } = await params;
-  if (!isValidOmniVoiceId(voiceId)) {
-    return NextResponse.json({ error: "voice_id ไม่ถูกต้อง" }, { status: 400 });
-  }
+  const { voiceId } = await context.params;
+  if (!isValidOmniVoiceId(voiceId)) return NextResponse.json({ error: "Invalid voice" }, { status: 400 });
 
   try {
-    const res = await fetch(`${omnivoiceBaseUrl()}/voices/${voiceId}/preview`, {
-      headers: omnivoiceAuthHeaders(),
+    const config = omnivoiceConfig();
+    const response = await fetch(`${config.baseUrl}/voices/${encodeURIComponent(voiceId)}/preview`, {
+      headers: omnivoiceAuthHeaders(config.apiKey),
+      cache: "no-store",
       signal: AbortSignal.timeout(15_000),
     });
-    if (!res.ok) {
-      return NextResponse.json({ error: `OmniVoice ตอบ ${res.status}` }, { status: res.status === 404 ? 404 : 502 });
+    if (!response.ok) {
+      return NextResponse.json(
+        { error: response.status === 404 ? "ไม่พบเสียงที่เลือก" : "Hero Voice ยังไม่พร้อมใช้งาน" },
+        { status: response.status === 404 ? 404 : 503 },
+      );
     }
-    const audio = await res.arrayBuffer();
-    return new NextResponse(audio, {
+    return new NextResponse(response.body, {
       headers: {
         "Content-Type": "audio/wav",
-        "Cache-Control": "public, max-age=86400",
+        "Cache-Control": "private, max-age=86400",
+        "X-Content-Type-Options": "nosniff",
       },
     });
-  } catch (e) {
-    console.error("[omnivoice/preview] fetch failed:", e instanceof Error ? e.message : e);
-    return NextResponse.json({ error: "เชื่อมต่อ OmniVoice server ไม่ได้" }, { status: 503 });
+  } catch (error) {
+    if (!(error instanceof OmniVoiceConfigError)) {
+      console.error("[omnivoice/preview] request failed:", error instanceof Error ? error.message : error);
+    }
+    return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน" }, { status: 503 });
   }
 }

@@ -55,6 +55,7 @@ next-env.d.ts
 # large media files
 /stocks/
 /public/renders/
+/data/brand-assets/
 
 # database — each environment uses its own file, never share via git
 /prisma/*.db
@@ -114,3 +115,7 @@ _vc-*
 _verify-*
 
 .superpowers/
+.worktrees/
+
+# clerk configuration (can include secrets)
+/.clerk/

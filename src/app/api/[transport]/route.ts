@@ -7,17 +7,25 @@ import { verifyClerkToken } from "@clerk/mcp-tools/next";
 import { recordToolCall, isInBandError } from "@/lib/mcp/audit";
 import { SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError } from "@/lib/mcp/onboarding";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { decryptKey } from "@/lib/key-crypto";
+import { preflightElevenLabs, preflightStockProviders } from "@/lib/key-preflight";
+import { checkHeygenReadiness, toHeygenBlockedResponse } from "@/lib/heygen-readiness";
 import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
 } from "@/lib/mcp/tools";
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { createVideoJob } from "@/lib/mcp/video-job";
+import {
+  createVideoJob,
+  toPublicVideoJobStatus,
+  VIDEO_JOB_INFLIGHT_STATUSES,
+} from "@/lib/mcp/video-job";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
+import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 
 export const runtime = "nodejs";
 
@@ -87,7 +95,7 @@ const handler = createMcpHandler(
           const job = await prisma.videoJob.findFirst({ where: { id: args.id, userId: p.userId } });
           if (job) {
             const out = job.outputJson ? (JSON.parse(job.outputJson) as { videoUrl?: string }) : null;
-            return { kind: "job" as const, jobId: job.id, status: job.status, currentStep: job.currentStep, progress: job.progress, videoUrl: out?.videoUrl ?? null, error: job.errorMessage ?? null };
+            return { kind: "job" as const, jobId: job.id, status: toPublicVideoJobStatus(job.status), currentStep: job.currentStep, progress: job.progress, videoUrl: out?.videoUrl ?? null, error: job.errorMessage ?? null };
           }
           const v = await getVideoStatusTool(p.userId, args.id);
           if (!v.found) return { kind: "none" as const, found: false as const, id: args.id };
@@ -140,18 +148,47 @@ const handler = createMcpHandler(
       async (args, extra) =>
         runTool("create_video_job", extra, async (p) => {
           const u = p.user;
+          try {
+            await assertRenderEnqueueOpen();
+          } catch (error) {
+            if (error instanceof RenderDeployDrainError) {
+              return { error: "render_maintenance", retryable: true, message: "ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่" };
+            }
+            throw error;
+          }
           const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
           if (useEleven && !u.elevenlabsKey) return missingKeyError("elevenlabs");
           if (useEleven && !args.voiceId && !u.elevenlabsVoiceId) return missingVoiceIdError();
           try { resolveGeminiKey(u); }
           catch (e) { if (e instanceof KeyRequiredError) return missingKeyError("gemini"); throw e; }
           if (!u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
+          // Key VALIDITY preflight (Task 7, 2026-07-16 stability audit) — mirrors the
+          // same guard in /api/videos/jobs (web). See @/lib/key-preflight for the
+          // fail-open rationale (only a confirmed 401/403 blocks job creation).
+          const [elevenBlock, stockPreflight] = await Promise.all([
+            useEleven && u.elevenlabsKey
+              ? preflightElevenLabs(decryptKey(u.elevenlabsKey))
+              : Promise.resolve(null),
+            preflightStockProviders({
+              pexelsKey: u.pexelsKey ? decryptKey(u.pexelsKey) : null,
+              pixabayKey: u.pixabayKey ? decryptKey(u.pixabayKey) : null,
+            }),
+          ]);
+          const keyBlock = elevenBlock ?? stockPreflight.block;
+          if (keyBlock) return { error: "invalid_key", missingKey: keyBlock.key, message: keyBlock.message };
           const avatar = resolveAvatarRequest(
             { avatarMode: args.avatarMode, avatarId: args.avatarId, avatarIntroSecs: args.avatarIntroSecs, avatarTailSecs: args.avatarTailSecs,
               avatarScale: args.avatarScale, avatarOffsetX: args.avatarOffsetX, avatarOffsetY: args.avatarOffsetY },
             u,
           );
           if (avatar.kind === "error") return avatar.payload;
+          const heygenReadiness = avatar.kind === "ok" && u.heygenKey
+            ? await checkHeygenReadiness({ apiKey: decryptKey(u.heygenKey) })
+            : null;
+          if (heygenReadiness?.kind === "blocked") {
+            return toHeygenBlockedResponse(heygenReadiness).body;
+          }
+          const heygenWarning = heygenReadiness?.kind === "unknown" ? heygenReadiness.message : undefined;
           // Resolve the composite layout: caller-supplied wins; otherwise load the saved preset.
           const avatarLayout =
             avatar.kind === "ok"
@@ -164,7 +201,7 @@ const handler = createMcpHandler(
           if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
           // Throttle: cap in-flight jobs per user so a member can't flood the shared worker
           // queue (there is no global render queue). Adjustable.
-          const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: ["queued", "processing"] } } });
+          const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
           if (inflight >= 3) return { error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" };
           try {
             const job = await createVideoJob(
@@ -178,10 +215,11 @@ const handler = createMcpHandler(
                 ...(args.bgmFile ? { bgmFile: args.bgmFile, bgmVolume: args.bgmVolume } : {}),
                 ...(args.subtitleMode ? { subtitleMode: args.subtitleMode } : {}),
                 ...(args.subtitlePosition ? { subtitlePosition: args.subtitlePosition } : {}),
+                ...(stockPreflight.providers.length ? { stockProviders: stockPreflight.providers } : {}),
               },
               args.idempotencyKey,
             );
-            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว",
+            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว", ...(heygenWarning ? { warning: heygenWarning } : {}),
               nextStep: avatar.kind === "ok"
                 ? "มี avatar (เรนเดอร์ผ่าน HeyGen) — ใช้เวลานาน ~15–25 นาที. เช็คด้วย get_video_status ทุก ~2 นาที (อย่าถี่กว่านั้น)"
                 : "เรนเดอร์ปกติ ~3–6 นาที; คลิปสคริปต์ยาวหรือซับโหมดถี่ (1–2 คำ ฉากเยอะ) อาจถึง ~15–20 นาที. เช็คด้วย get_video_status ทุก ~60–90 วินาที (อย่าถี่กว่านั้น)" };

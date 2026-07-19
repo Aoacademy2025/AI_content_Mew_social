@@ -1,6 +1,8 @@
 import { missingKeyError, missingAvatarError } from "@/lib/mcp/onboarding";
-import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
+import { PipelineHttpError, type PipelineCaller } from "@/lib/mcp/pipeline-client";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
+import { classifyHttpStatus, isProviderErrorCode, toUserMessage, type ProviderErrorCode } from "@/lib/provider-errors";
+import type { AvatarProviderGenerateResult } from "@/lib/mcp/avatar-provider-resume";
 
 export type AvatarMode = "none" | "full" | "bookend" | "bookend-both";
 // HeyGen framing (how HeyGen frames the avatar in ITS render) — sent to generate-with-bg only.
@@ -50,7 +52,39 @@ export function resolveAvatarRequest(args: AvatarArgs, user: AvatarUser): Avatar
 // I/O functions — call existing web endpoints via PipelineCaller
 // ---------------------------------------------------------------------------
 
-type PollAvatarResp = { status: string; videoUrl: string | null; errorMsg: string | null };
+export type AvatarPollOnce = {
+  status: string;
+  videoUrl: string | null;
+  errorMsg: string | null;
+  errorCode?: ProviderErrorCode;
+  retryAfterSec?: number;
+};
+
+type AvatarPollEndpointPayload = AvatarPollOnce & {
+  error?: { code?: string };
+};
+
+function normalizePollErrorCode(code: string | undefined): ProviderErrorCode | undefined {
+  if (code === "insufficient_credit") return "quota";
+  if (code === "invalid_key") return "invalid_key";
+  if (code === "not_found" || code === "provider_failed") return "fatal";
+  return isProviderErrorCode(code) ? code : undefined;
+}
+
+export async function pollAvatarOnce(
+  caller: PipelineCaller,
+  heygenVideoId: string,
+): Promise<AvatarPollOnce> {
+  const result = await caller.post<AvatarPollEndpointPayload>("/api/videos/poll-avatar", { videoId: heygenVideoId });
+  const errorCode = normalizePollErrorCode(result.error?.code ?? result.errorCode);
+  return {
+    status: result.status,
+    videoUrl: result.videoUrl,
+    errorMsg: result.errorMsg,
+    ...(errorCode ? { errorCode } : {}),
+    ...(result.retryAfterSec ? { retryAfterSec: result.retryAfterSec } : {}),
+  };
+}
 
 export async function pollAvatar(
   caller: PipelineCaller,
@@ -62,7 +96,7 @@ export async function pollAvatar(
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    const p = await caller.post<PollAvatarResp>("/api/videos/poll-avatar", { videoId: heygenVideoId });
+    const p = await pollAvatarOnce(caller, heygenVideoId);
     if (p.status === "completed" && p.videoUrl) return p.videoUrl;
     if (p.status === "failed") throw new Error(`avatar generation failed: ${p.errorMsg ?? "unknown"}`);
     await sleep(interval);
@@ -70,12 +104,43 @@ export async function pollAvatar(
   throw new Error("avatar generation timed out");
 }
 
-async function generateAvatar(caller: PipelineCaller, avatarId: string, audioUrl: string): Promise<string> {
-  const g = await caller.post<{ videoId: string }>("/api/heygen/generate-with-bg", {
-    audioUrl, avatarId, greenScreen: true,
-    scale: HEYGEN_FRAMING.scale, offsetX: HEYGEN_FRAMING.offsetX, offsetY: HEYGEN_FRAMING.offsetY,
-  });
-  return g.videoId;
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+export async function generateAvatarVideo(caller: PipelineCaller, avatarId: string, audioUrl: string): Promise<AvatarProviderGenerateResult> {
+  try {
+    const g = await caller.post<{ videoId: string }>("/api/heygen/generate-with-bg", {
+      audioUrl, avatarId, greenScreen: true,
+      scale: HEYGEN_FRAMING.scale, offsetX: HEYGEN_FRAMING.offsetX, offsetY: HEYGEN_FRAMING.offsetY,
+    }, { retries: 0 });
+    return g.videoId
+      ? { kind: "accepted", providerVideoId: g.videoId }
+      : { kind: "unknown", message: "HeyGen generate returned no video ID" };
+  } catch (error) {
+    if (!(error instanceof PipelineHttpError)) return { kind: "unknown" };
+    const body = record(error.body);
+    const rawCode = body?.code;
+    const code = isProviderErrorCode(rawCode)
+      ? rawCode
+      : classifyHttpStatus(error.status);
+    // A transport/5xx response cannot prove whether the paid generate was accepted.
+    if (code === "transient" || error.status >= 500) return { kind: "unknown" };
+    const message = typeof body?.userAction === "string"
+      ? body.userAction
+      : typeof body?.error === "string"
+        ? body.error
+        : toUserMessage(code);
+    return { kind: "rejected", code, message };
+  }
+}
+
+function acceptedVideoId(result: AvatarProviderGenerateResult): string {
+  if (result.kind === "accepted") return result.providerVideoId;
+  if (result.kind === "rejected") throw new Error(result.message);
+  throw new Error("avatar generate has unknown provider outcome - manual recovery required");
 }
 
 export interface AvatarComposeOpts {
@@ -90,39 +155,79 @@ export interface AvatarComposeOpts {
   onStep?: (label: string) => void;
 }
 
+export async function prepareAvatarAudio(
+  caller: PipelineCaller,
+  opts: Pick<AvatarComposeOpts, "ttsAudioUrl" | "avatarMode" | "introSecs" | "tailSecs">,
+): Promise<{ introAudioUrl: string; tailAudioUrl?: string }> {
+  let introAudioUrl = opts.ttsAudioUrl;
+  let tailAudioUrl: string | undefined;
+  if (opts.avatarMode === "bookend" || opts.avatarMode === "bookend-both") {
+    introAudioUrl = (await caller.post<{ audioUrl: string }>("/api/videos/trim-audio", {
+      audioUrl: opts.ttsAudioUrl,
+      durationSecs: opts.introSecs,
+    })).audioUrl;
+  }
+  if (opts.avatarMode === "bookend-both") {
+    tailAudioUrl = (await caller.post<{ audioUrl: string }>("/api/videos/trim-audio", {
+      audioUrl: opts.ttsAudioUrl,
+      tailSecs: opts.tailSecs,
+    })).audioUrl;
+  }
+  return { introAudioUrl, tailAudioUrl };
+}
+
+export interface AvatarCompositeInput {
+  baseUrl: string;
+  avatarMode: "full" | "bookend" | "bookend-both";
+  introSecs: number;
+  tailSecs: number;
+  introVideoUrl: string;
+  tailVideoUrl?: string;
+  layout?: { scale: number; offsetX: number; offsetY: number };
+}
+
+export async function compositeAvatarVideo(
+  caller: PipelineCaller,
+  input: AvatarCompositeInput,
+): Promise<string> {
+  const result = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
+    avatarVideoUrl: input.introVideoUrl,
+    tailAvatarVideoUrl: input.tailVideoUrl,
+    bgVideoUrl: input.baseUrl,
+    mode: "chromakey",
+    avatarTiming: input.avatarMode,
+    avatarBookendSecs: input.introSecs,
+    avatarTailSecs: input.tailSecs,
+    avatarLayout: input.layout ?? DEFAULT_AVATAR_LAYER,
+  });
+  return result.videoUrl;
+}
+
 export async function runAvatarComposite(
   caller: PipelineCaller,
   o: AvatarComposeOpts,
 ): Promise<{ compositeUrl: string; avatarUrl: string; tailAvatarUrl?: string }> {
   // 1. prepare audio for the avatar segment(s)
-  let introAudio = o.ttsAudioUrl;
-  let tailAudio: string | undefined;
-  if (o.avatarMode === "bookend" || o.avatarMode === "bookend-both") {
-    introAudio = (await caller.post<{ audioUrl: string }>("/api/videos/trim-audio", { audioUrl: o.ttsAudioUrl, durationSecs: o.introSecs })).audioUrl;
-  }
-  if (o.avatarMode === "bookend-both") {
-    tailAudio = (await caller.post<{ audioUrl: string }>("/api/videos/trim-audio", { audioUrl: o.ttsAudioUrl, tailSecs: o.tailSecs })).audioUrl;
-  }
+  const prepared = await prepareAvatarAudio(caller, o);
 
   // 2+3. generate + poll (intro, then tail for bookend-both)
   o.onStep?.("avatar");
-  const introUrl = await pollAvatar(caller, await generateAvatar(caller, o.avatarId, introAudio), { sleep: o.sleep });
+  const introUrl = await pollAvatar(caller, acceptedVideoId(await generateAvatarVideo(caller, o.avatarId, prepared.introAudioUrl)), { sleep: o.sleep });
   let tailAvatarUrl: string | undefined;
-  if (o.avatarMode === "bookend-both" && tailAudio) {
-    tailAvatarUrl = await pollAvatar(caller, await generateAvatar(caller, o.avatarId, tailAudio), { sleep: o.sleep });
+  if (o.avatarMode === "bookend-both" && prepared.tailAudioUrl) {
+    tailAvatarUrl = await pollAvatar(caller, acceptedVideoId(await generateAvatarVideo(caller, o.avatarId, prepared.tailAudioUrl)), { sleep: o.sleep });
   }
 
   // 4. composite onto the base render (bg carries the full TTS audio)
   o.onStep?.("composite");
-  const c = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
-    avatarVideoUrl: introUrl,
-    tailAvatarVideoUrl: tailAvatarUrl,
-    bgVideoUrl: o.baseUrl,
-    mode: "chromakey",
-    avatarTiming: o.avatarMode,
-    avatarBookendSecs: o.introSecs,
-    avatarTailSecs: o.tailSecs,
-    avatarLayout: o.layout ?? DEFAULT_AVATAR_LAYER,
+  const compositeUrl = await compositeAvatarVideo(caller, {
+    baseUrl: o.baseUrl,
+    avatarMode: o.avatarMode,
+    introSecs: o.introSecs,
+    tailSecs: o.tailSecs,
+    introVideoUrl: introUrl,
+    tailVideoUrl: tailAvatarUrl,
+    layout: o.layout,
   });
-  return { compositeUrl: c.videoUrl, avatarUrl: introUrl, tailAvatarUrl };
+  return { compositeUrl, avatarUrl: introUrl, tailAvatarUrl };
 }

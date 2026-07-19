@@ -3,8 +3,9 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
-import { isSafeFetchUrl } from "@/lib/safe-fetch";
+import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
+import { decryptKey } from "@/lib/key-crypto";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getFfmpeg(): any {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -22,9 +23,6 @@ function getFfmpeg(): any {
 export const maxDuration = 300;
 export const runtime = "nodejs";
 
-function decrypt(encrypted: string): string {
-  return Buffer.from(encrypted, "base64").toString("utf-8");
-}
 
 interface SceneInput {
   scene: number;
@@ -33,18 +31,53 @@ interface SceneInput {
   audioUrl?: string | null;
 }
 
+// Containment guard: resolve a body-supplied app path under public/ and reject anything
+// that escapes the webroot (path traversal). Returns null on escape.
+function containedPublicPath(url: string): string | null {
+  const joined = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
+  const publicDir = path.resolve(process.cwd(), "public");
+  const resolvedPath = path.resolve(joined);
+  if (resolvedPath !== publicDir && !resolvedPath.startsWith(publicDir + path.sep)) return null;
+  return joined;
+}
+
+// SSRF-safe fetch of a user-supplied external URL: validates the host, then follows
+// redirects MANUALLY, re-validating each hop, so a safe initial URL can't 302 into a
+// private/internal target. Bounded to `maxHops`.
+async function safeFetchFollow(url: string, init: RequestInit = {}, maxHops = 3): Promise<Response> {
+  let current = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    await assertSafeFetchUrl(current);
+    const res = await fetch(current, { ...init, redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) return res;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error("too many redirects");
+}
+
 async function readAsset(url: string, origin: string): Promise<Buffer | null> {
   if (url.startsWith("/")) {
-    const filePath = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
-    if (!fs.existsSync(filePath)) return null;
+    const filePath = containedPublicPath(url);
+    if (!filePath || !fs.existsSync(filePath)) return null;
     return fs.readFileSync(filePath);
   }
-  const target = url.startsWith("http") ? url : `${origin}${url}`;
-  // SSRF guard: only the external http(s) case is user-controlled; reject internal/private targets.
-  if (url.startsWith("http") && !(await isSafeFetchUrl(target))) return null;
-  const res = await fetch(target);
-  if (!res.ok) return null;
-  return Buffer.from(await res.arrayBuffer());
+  try {
+    // Only the external http(s) case is user-controlled → SSRF guard + manual redirect
+    // re-validation. The `${origin}${url}` case is a same-origin fetch of our own server
+    // (origin from req.url, which may be loopback) → fetch it directly, unguarded.
+    const res = url.startsWith("http")
+      ? await safeFetchFollow(url)
+      : await fetch(`${origin}${url}`);
+    if (!res.ok) return null;
+    return Buffer.from(await res.arrayBuffer());
+  } catch {
+    return null;
+  }
 }
 
 async function uploadAsset(
@@ -129,7 +162,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "HeyGen API key ยังไม่ได้ตั้งค่า — ตั้งค่าใน Settings > API Keys", missingKey: "heygen" }, { status: 400 });
     }
 
-    const heygenKey = decrypt(user.heygenKey);
+    const heygenKey = decryptKey(user.heygenKey);
     const origin = new URL(req.url).origin;
 
     let video_inputs: object[];
@@ -139,8 +172,8 @@ export async function POST(req: Request) {
       let reencodedPath = "";
 
       // Re-encode BG video to H.264 baseline for HeyGen compatibility
-      if (bgVideoUrl.startsWith("/")) {
-        const srcPath = path.join(process.cwd(), "public", bgVideoUrl.replace(/^\/api\/renders\//, "/renders/"));
+      const srcPath = bgVideoUrl.startsWith("/") ? containedPublicPath(bgVideoUrl) : null;
+      if (srcPath) {
         reencodedPath = srcPath.replace(/\.mp4$/, `-reenc.mp4`);
         try {
           console.log("[create-avatar] re-encoding BG video for HeyGen compatibility...");

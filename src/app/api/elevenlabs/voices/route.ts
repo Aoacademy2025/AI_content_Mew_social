@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { decryptKey } from "@/lib/key-crypto";
 import { apiError } from "@/lib/api-error";
 import axios from "axios";
 import { isPaid } from "@/lib/plan-limits";
@@ -41,7 +42,7 @@ export async function GET() {
     }
 
     // Decrypt API key
-    const apiKey = Buffer.from(user.elevenlabsKey, "base64").toString("utf-8");
+    const apiKey = decryptKey(user.elevenlabsKey);
 
     // Fetch voices from ElevenLabs API
     const response = await axios.get("https://api.elevenlabs.io/v1/voices", {

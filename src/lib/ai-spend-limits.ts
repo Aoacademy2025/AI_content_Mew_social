@@ -1,6 +1,7 @@
-// ai-spend-limits.ts — managed-Gemini cost guard (L2a)
+// ai-spend-limits.ts — managed AI-audio cost/capacity guard (L2a)
 //
-// When MANAGED_GEMINI=1 the server pays for every Gemini call. The render-minute
+// When the platform supplies Gemini or runs OmniVoice, the server pays for each
+// call in money or worker capacity. The render-minute
 // reserve only caps *render compute* (Remotion/ffmpeg spend 0 Gemini) — the
 // expensive Gemini spend (TTS audio out, transcribe audio in) happens in
 // separate, client-callable, loopable endpoints that bypass the render reserve.
@@ -135,7 +136,7 @@ export async function recordAiAudioMinutes(
 const TTS_ESTIMATE_CHARS_PER_SEC = 14;
 const MIN_TTS_RESERVE_MINUTES = 0.25;
 
-/** Estimate the audio-minutes a Gemini TTS call will produce from its input text,
+/** Estimate the audio-minutes a managed TTS call will produce from its input text,
  *  for the up-front atomic ceiling reserve. Always ≥ MIN_TTS_RESERVE_MINUTES. */
 export function estimateTtsAudioMinutes(text: string): number {
   const chars = (typeof text === "string" ? text : "").replace(/\s+/g, "").length;

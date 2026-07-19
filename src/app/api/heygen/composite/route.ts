@@ -1,9 +1,19 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { decryptKey } from "@/lib/key-crypto";
 import { recordChargedClip } from "@/lib/clip-charge";
-import { clampAvatarLayout, layoutGeometry, type AvatarLayout } from "@/lib/avatar-layout";
+import { clampAvatarLayout, type AvatarLayout } from "@/lib/avatar-layout";
 import { buildEnableExpr } from "@/lib/cutaway-plan";
+import { assertSafeFetchUrl } from "@/lib/safe-fetch";
+import {
+  resolveChromaParams,
+  detectChromaColor,
+  buildCompositeFilter,
+  resolveCompositeEncode,
+  featherSupported,
+  type ChromaParams,
+} from "@/lib/chroma-key";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -20,31 +30,89 @@ function getFfprobePath(): string {
   return process.platform === "win32" ? "ffprobe.exe" : "ffprobe";
 }
 
+// Composite encode knobs (env-tunable, resolved by the shared lib so this route and the verify
+// script exercise the exact same code path — see resolveCompositeEncode in lib/chroma-key).
+function compositeCrf(): string {
+  return String(resolveCompositeEncode().crf);
+}
+function compositePreset(): string {
+  return resolveCompositeEncode().preset;
+}
+
+// Containment guard: reject a body-supplied path that escapes `base` (path traversal).
+// Returns null on escape so the caller throws its normal "not found" without leaking the path.
+function containWithin(base: string, joined: string): string | null {
+  const baseDir = path.resolve(process.cwd(), base);
+  const resolvedPath = path.resolve(joined);
+  if (resolvedPath !== baseDir && !resolvedPath.startsWith(baseDir + path.sep)) return null;
+  return joined;
+}
+
+// Exact hostname match so the user's HeyGen key is only ever attached to a genuine
+// heygen.ai host — not a substring lookalike (evilheygen.ai / heygen.ai.evil.com / …).
+function isHeygenHost(u: string): boolean {
+  try {
+    const h = new URL(u).hostname.toLowerCase();
+    return h === "heygen.ai" || h.endsWith(".heygen.ai");
+  } catch {
+    return false;
+  }
+}
+
+// SSRF-safe fetch: validates the host, then follows redirects MANUALLY, re-validating
+// each hop and rebuilding request headers per hop (so the HeyGen key never rides a 302
+// to a non-heygen host). Bounded to `maxHops`.
+async function safeFetchFollow(
+  url: string,
+  buildInit: (currentUrl: string) => RequestInit,
+  maxHops = 3,
+): Promise<Response> {
+  let current = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    await assertSafeFetchUrl(current);
+    const res = await fetch(current, { ...buildInit(current), redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) return res;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error("too many redirects");
+}
+
 async function downloadFile(url: string, dest: string, heygenKey?: string): Promise<void> {
   if (url.startsWith("/api/stocks/")) {
     const filename = url.replace("/api/stocks/", "");
-    const src = path.join(process.cwd(), "stocks", filename);
-    if (!fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
+    const src = containWithin("stocks", path.join(process.cwd(), "stocks", filename));
+    if (!src || !fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
     fs.copyFileSync(src, dest);
     return;
   }
   if (url.startsWith("/")) {
-    const src = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
-    if (!fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
+    const src = containWithin("public", path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/")));
+    if (!src || !fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
     fs.copyFileSync(src, dest);
     return;
   }
-  const headers: Record<string, string> = { "Accept": "video/mp4,video/*,*/*" };
-  if (heygenKey && url.includes("heygen.ai")) headers["X-Api-Key"] = heygenKey;
-  const res = await fetch(url, { headers });
+  const res = await safeFetchFollow(url, (currentUrl) => {
+    const headers: Record<string, string> = { "Accept": "video/mp4,video/*,*/*" };
+    if (heygenKey && isHeygenHost(currentUrl)) headers["X-Api-Key"] = heygenKey;
+    return { headers };
+  });
   if (!res.ok) throw new Error(`Download failed ${res.status}: ${url}`);
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 }
 
 
+// 30 min — composites of long avatars (multi-minute, bookend-both split into several ffmpeg
+// invocations) are legitimately slow; this just bounds a genuinely hung/stuck process.
+const FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
+
 function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(ffmpegPath, args, { maxBuffer: 100 * 1024 * 1024 }, (err, _stdout, stderr) => {
+    execFile(ffmpegPath, args, { maxBuffer: 100 * 1024 * 1024, timeout: FFMPEG_TIMEOUT_MS }, (err, _stdout, stderr) => {
       if (err) {
         console.error("[ffmpeg stderr]", stderr?.slice(-2000));
         reject(new Error(`ffmpeg failed:\n${stderr?.slice(-1000)}`));
@@ -116,48 +184,26 @@ async function cutawayComposite(
 
 // ─────────────────────────────────────────────
 // Mode: chromakey — pure FFmpeg pipeline
-// chromakey → despill → erosion → gblur → overlay on BG
-// similarity/blend can be tuned per avatar (defaults: 0.28 / 0.04)
+// Avatar is scaled to its display size, keyed AT that resolution at full chroma (yuva444p),
+// despilled, then alpha-feathered before overlay — see buildCompositeFilter in lib/chroma-key.
+// Key color/similarity/blend come pre-resolved (auto-detected or honored) in ChromaParams.
 // ─────────────────────────────────────────────
 async function chromakeyComposite(
   bgPath: string,
   avatarPath: string,
   outPath: string,
-  similarity = 0.28,
-  blend = 0.04,
-  chromaColor = "0x12FF05",
+  params: ChromaParams,
   audioFromAvatar = false,
   layout: AvatarLayout | null = null,
+  feather = true,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
 
-  // Chroma key filter chain — no erosion/blur to preserve face detail
-  const chromaFilter = [
-    `chromakey=color=${chromaColor}:similarity=${similarity}:blend=${blend}`,
-    `despill=type=green:mix=0.5:expand=0`,
-  ].join(",");
-
-  let filterComplex: string;
-
+  const filterComplex = buildCompositeFilter(params, layout, feather);
   if (layout) {
-    // วางเลเยอร์ avatar ตามตำแหน่ง/ขนาดที่ผู้ใช้ตั้ง (สูตรเดียวกับ preview ใน editor)
-    const { w, h, x, y } = layoutGeometry(layout);
-    console.log(`[chromakey] layer layout scale=${layout.scale} offsetPx=(${layout.offsetX},${layout.offsetY}) → ${w}x${h} at (${x},${y})`);
-    filterComplex = [
-      `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
-      `[1:v]${chromaFilter}[fg_key]`,
-      `[fg_key]scale=${w}:${h}:flags=lanczos[fg]`,
-      `[bg][fg]overlay=${x}:${y}:format=auto[out]`,
-    ].join(";");
+    console.log(`[chromakey] layer layout scale=${layout.scale} offsetPx=(${layout.offsetX},${layout.offsetY})`);
   } else {
-    // Default: remove green then scale avatar to match bg exactly, overlay full cover
-    console.log(`[chromakey] scale to bg size, overlay full`);
-    filterComplex = [
-      `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
-      `[1:v]${chromaFilter}[fg_key]`,
-      `[fg_key][bg]scale2ref=iw:ih[fg][bg2]`,
-      `[bg2][fg]overlay=0:0:format=auto[out]`,
-    ].join(";");
+    console.log(`[chromakey] full-cover overlay`);
   }
 
   // Count avatar frames to estimate time
@@ -177,10 +223,10 @@ async function chromakeyComposite(
     }
   } catch {}
 
-  console.log(`[chromakey-ffmpeg] similarity=${similarity} blend=${blend} frames=${frameCount}`);
+  console.log(`[chromakey-ffmpeg] color=${params.color} similarity=${params.similarity} blend=${params.blend} frames=${frameCount}`);
 
-  // Use -threads 0 (auto) + ultrafast preset for max speed
-  // Quality is good enough for social media at crf 20
+  // Encode: COMPOSITE_CRF (default 18) / COMPOSITE_PRESET (default veryfast) — quality over the
+  // old crf 28 ultrafast. -threads 0 (auto), yuv420p, +faststart for progressive playback.
   await runFfmpeg(ffmpeg, [
     "-y",
     "-i", bgPath,
@@ -189,7 +235,7 @@ async function chromakeyComposite(
     "-map", "[out]",
     // Direct URL mode: audio lives in avatarPath (input 1), not bgPath
     "-map", audioFromAvatar ? "1:a?" : "0:a?",
-    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+    "-c:v", "libx264", "-preset", compositePreset(), "-crf", compositeCrf(),
     "-threads", "0",
     "-c:a", "aac", "-b:a", "128k",
     "-pix_fmt", "yuv420p",
@@ -346,11 +392,10 @@ async function applyBookendBothSplit(
   outPath: string,
   introSecs: number,        // exact N from user setting
   tailSecs: number,         // exact T from user setting
-  similarity: number,
-  blend: number,
-  chromaColor: string,
+  params: ChromaParams,     // pre-resolved key color/similarity/blend
   mode: string,
   layout: AvatarLayout | null = null,
+  feather = true,
 ): Promise<void> {
   const rendersDir = path.dirname(outPath);
   const ts = Date.now();
@@ -385,11 +430,6 @@ async function applyBookendBothSplit(
   const introCompPath = path.join(rendersDir, `comp-intro-${ts}.mp4`);
   const tailCompPath  = path.join(rendersDir, `comp-tail-${ts}.mp4`);
 
-  const chromaFilter = [
-    `chromakey=color=${chromaColor}:similarity=${similarity}:blend=${blend}`,
-    `despill=type=green:mix=0.5:expand=0`,
-  ].join(",");
-
   // Composite with -shortest so output = min(bg segment, avatar) = exactly N or T secs
   for (const [bgSeg, avSeg, outSeg, dur] of [
     [bgIntroPath, introAvatarPath, introCompPath, N],
@@ -404,28 +444,13 @@ async function applyBookendBothSplit(
         "-pix_fmt", "yuv420p", outSeg,
       ]);
     } else {
-      // ใช้เลเยอร์ layout เดียวกับ composite หลัก เมื่อ client ส่งมา
-      const segFilter = layout
-        ? (() => {
-            const { w, h, x, y } = layoutGeometry(layout);
-            return [
-              `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
-              `[1:v]${chromaFilter}[fg_key]`,
-              `[fg_key]scale=${w}:${h}:flags=lanczos[fg]`,
-              `[bg][fg]overlay=${x}:${y}:format=auto[out]`,
-            ].join(";");
-          })()
-        : [
-            `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
-            `[1:v]${chromaFilter}[fg_key]`,
-            `[fg_key][bg]scale2ref=iw:ih[fg][bg2]`,
-            `[bg2][fg]overlay=0:0:format=auto[out]`,
-          ].join(";");
+      // Same key-at-display-resolution chain as the main composite (shared builder → can't drift).
+      const segFilter = buildCompositeFilter(params, layout, feather);
       await runFfmpeg(ffmpegPath, [
         "-y", "-i", bgSeg, "-i", avSeg,
         "-filter_complex", segFilter,
         "-map", "[out]", "-t", String(dur),
-        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+        "-c:v", "libx264", "-preset", compositePreset(), "-crf", compositeCrf(),
         "-threads", "0", "-an", "-pix_fmt", "yuv420p", outSeg,
       ]);
     }
@@ -505,7 +530,7 @@ export async function POST(req: Request) {
   if (!bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl required" }, { status: 400 });
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
-  const heygenKey = user?.heygenKey ? Buffer.from(user.heygenKey, "base64").toString("utf-8") : undefined;
+  const heygenKey = user?.heygenKey ? decryptKey(user.heygenKey) : undefined;
 
   const rendersDir = path.join(process.cwd(), "public", "renders");
   fs.mkdirSync(rendersDir, { recursive: true });
@@ -534,6 +559,23 @@ export async function POST(req: Request) {
 
     const ffmpeg = getFfmpegPath();
 
+    // Resolve chroma key params once (auto-detect the real green shade for the legacy-default /
+    // omitted case; honor deliberately-tuned slider values verbatim). Only the green-screen
+    // modes key, so skip detection for direct/cutaway/rembg.
+    const willKey = mode !== "direct" && mode !== "cutaway" && mode !== "rembg";
+    const resolved = resolveChromaParams({ chromaColor, chromaSimilarity, chromaBlend });
+    const chromaParams: ChromaParams = { color: resolved.color, similarity: resolved.similarity, blend: resolved.blend };
+    if (willKey && resolved.autoDetect) {
+      chromaParams.color = await detectChromaColor(avatarTmp, ffmpeg);
+    }
+    // One probe per ffmpeg path per process lifetime (cached in lib/chroma-key) — negligible cost.
+    // Not every ffmpeg build ships erosion/gblur (dev=darwin-arm64, prod=linux-x64 peer build); the
+    // keying path isn't fail-open like detection, so this must be resolved BEFORE building filters.
+    const feather = willKey ? await featherSupported(ffmpeg) : true;
+    if (willKey) {
+      console.log(`[composite] chroma ${resolved.autoDetect ? "auto-detected" : "user-tuned"} → color=${chromaParams.color} similarity=${chromaParams.similarity} blend=${chromaParams.blend} feather=${feather}`);
+    }
+
     // bookend-both split: composite intro and tail separately onto bg segments, then stitch
     if (avatarTiming === "bookend-both" && tailTmp) {
       const finalFile = `composite-${ts}-bookend-both.mp4`;
@@ -543,8 +585,9 @@ export async function POST(req: Request) {
         ffmpeg,
         avatarTmp, tailTmp, bgTmp, finalPath,
         avatarBookendSecs, avatarTailSecs,
-        chromaSimilarity, chromaBlend, chromaColor, mode,
+        chromaParams, mode,
         layout,
+        feather,
       );
 
       console.log("[composite] split output:", finalFile, fs.statSync(finalPath).size, "bytes");
@@ -563,7 +606,7 @@ export async function POST(req: Request) {
     } else if (mode === "rembg") {
       await rembgComposite(bgTmp, avatarTmp, outPath, rembgModel);
     } else {
-      await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaSimilarity, chromaBlend, chromaColor, audioFromAvatar, layout);
+      await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaParams, audioFromAvatar, layout, feather);
     }
 
     if (fs.statSync(outPath).size < 1000) throw new Error("Output too small");

@@ -14,6 +14,13 @@ import {
   type ContentProfile,
 } from "@/lib/broll-profile";
 import { parseRelevanceSpec, type RelevanceSpec } from "@/lib/relevance-spec";
+import {
+  applyBrollPreferenceToSearchQueries,
+  appendBrollPreferenceToDirection,
+  augmentRelevanceSpecWithBrollPreference,
+  brollPreferencePromptBlock,
+  type BrollPreferenceInput,
+} from "@/lib/broll-preferences";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -245,7 +252,18 @@ export async function POST(req: Request) {
   const userId = authUser.id;
 
   const body = await req.json().catch(() => null);
-  const { script, scenes, perSubtitle = false, audioDurationSec = 0, targetClipCount = 0 } = body ?? {};
+  const {
+    script,
+    scenes,
+    perSubtitle = false,
+    audioDurationSec = 0,
+    targetClipCount = 0,
+    brollRegionPreference,
+    brollVisualStyle,
+  } = body ?? {};
+  const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
+  const preferenceBlock = brollPreferencePromptBlock(brollPreference);
+  const withBrollPreference = (queries: string[]) => applyBrollPreferenceToSearchQueries(queries, brollPreference);
 
   // Cap input size server-side to bound LLM cost. scenes[] is the worst amplifier:
   // extract-keywords re-embeds the full script in every 15-item batch (L4 cost guard).
@@ -353,6 +371,7 @@ export async function POST(req: Request) {
   "safeFallbackQueries": ["<6-10 English Pexels search phrases, 2-5 words each, on-topic, filmable, no names/brands>"]
 }
 Ground the topic literally (a script about drones → drone/quadcopter/aerial, NOT generic tech). avoidConcepts come from THIS script's topic, not a fixed category.
+${preferenceBlock ? `\n${preferenceBlock}` : ""}
 
 Script: ${fullScript.slice(0, 1500)}`;
       const raw = (await callLLM(analysisPrompt, 400, false)).trim();
@@ -368,6 +387,8 @@ Script: ${fullScript.slice(0, 1500)}`;
         console.warn("[extract-keywords] visualDirection analysis failed, continuing without it:", e);
       }
     }
+    visualDirection = appendBrollPreferenceToDirection(visualDirection, brollPreference);
+    relevanceSpec = augmentRelevanceSpecWithBrollPreference(relevanceSpec, brollPreference);
 
     const BATCH_SIZE = 15;
     const batches: string[][] = [];
@@ -473,8 +494,8 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
       const batchAlts: string[][] = [];
 
       for (let i = 0; i < batch.length; i++) {
-        const alts = rawAlts[i] ?? [];
-        const fallbackAlts = fallbackQueriesForText(batch[i] ?? fullScript, b * BATCH_SIZE + i, 3, visualDirection, contentProfile);
+        const alts = withBrollPreference(rawAlts[i] ?? []);
+        const fallbackAlts = withBrollPreference(fallbackQueriesForText(batch[i] ?? fullScript, b * BATCH_SIZE + i, 3, visualDirection, contentProfile));
 
         // Pick first valid keyword — in perSubtitle mode allow similar keywords
         // because adjacent subtitles can legitimately share visual themes
@@ -577,6 +598,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
   "safeFallbackQueries": ["<6-10 English Pexels search phrases, 2-5 words each, on-topic, filmable, no names/brands>"]
 }
 Ground the topic literally (a script about drones → drone/quadcopter/aerial, NOT generic tech). avoidConcepts come from THIS script's topic, not a fixed category.
+${preferenceBlock ? `\n${preferenceBlock}` : ""}
 
 Script: ${cleanScript.slice(0, 1500)}`;
     const raw = (await callLLM(analysisPrompt, 400, false)).trim();
@@ -589,6 +611,8 @@ Script: ${cleanScript.slice(0, 1500)}`;
     heuristicFallbackReason = useHeuristicKeywordFallback(e, "normal", numScenes);
     useHeuristicFallback = Boolean(heuristicFallbackReason);
   }
+  visualDirection = appendBrollPreferenceToDirection(visualDirection, brollPreference);
+  relevanceSpec = augmentRelevanceSpecWithBrollPreference(relevanceSpec, brollPreference);
 
   const directionBlock = visualDirection
     ? `\n═══ VISUAL DIRECTION ═══\n${visualDirection}\n${contentProfilePromptBlock(contentProfile)}\n═══ END DIRECTION ═══\n`
@@ -636,15 +660,15 @@ Exactly ${manualClips} distinct queries.`;
     }
 
     // รวม keyword ที่ LLM ให้ + เติม fallback ถ้าไม่ครบ แล้ว dedup ให้ครบ ${manualClips}
-    const flatKws = parsedFlat.map(g => g[0]).filter(Boolean);
-    const fallbackPool = fallbackQueriesForText(cleanScript, 0, manualClips * 2, visualDirection, contentProfile);
+    const flatKws = withBrollPreference(parsedFlat.map(g => g[0]).filter(Boolean));
+    const fallbackPool = withBrollPreference(fallbackQueriesForText(cleanScript, 0, manualClips * 2, visualDirection, contentProfile));
     const merged = [...flatKws, ...fallbackPool];
     const picked = pickDistinctKeywords(merged, merged.map(k => [k]), manualClips);
     // เติมจาก fallback อีกถ้ายังไม่ครบ (กันเคส LLM ให้น้อย + fallback ซ้ำ)
     while (picked.keywords.length < manualClips && fallbackPool.length > 0) {
       const extra = fallbackPool[picked.keywords.length % fallbackPool.length];
       const variant = `${extra} ${["closeup","wide","aerial","slow motion","detail"][picked.keywords.length % 5]}`;
-      picked.keywords.push(sanitizeKeyword(variant) || extra);
+      picked.keywords.push(withBrollPreference([sanitizeKeyword(variant) || extra])[0] ?? extra);
       picked.alternatives.push([extra]);
     }
 
@@ -728,7 +752,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     const allKeywords: string[] = [];
 
     for (let i = 0; i < numScenes; i++) {
-      const sceneAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile);
+      const sceneAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile));
       for (let j = 0; j < kwPerScene; j++) {
         const picked = sceneAlts[j % sceneAlts.length];
         allKeywords.push(picked);
@@ -751,7 +775,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       sceneDurations,
       visualDirection,
       contentProfile,
-      relevanceSpec: null,
+      relevanceSpec,
       fallback: "heuristic",
       fallbackReason: reason,
     });
@@ -778,8 +802,8 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     if (multiKwMode) {
       // แต่ละ scene → kwPerScene keywords แยกกัน
       for (let i = 0; i < numScenes; i++) {
-        const sceneAlts = (parsed[i] ?? []).filter(Boolean);
-        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile);
+        const sceneAlts = withBrollPreference((parsed[i] ?? []).filter(Boolean));
+        const fallbackAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile));
         // เติมถ้า LLM ให้มาน้อยกว่า kwPerScene
         let fallbackIndex = 0;
         while (sceneAlts.length < kwPerScene) {
@@ -802,8 +826,8 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       }
     } else {
       for (let i = 0; i < numScenes; i++) {
-        const alts = (parsed[i] ?? []).filter(Boolean);
-        const fallbackAlts = fallbackQueriesForText(sceneList[i] ?? cleanScript, i, 3, visualDirection, contentProfile);
+        const alts = withBrollPreference((parsed[i] ?? []).filter(Boolean));
+        const fallbackAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, 3, visualDirection, contentProfile));
 
         let picked = "";
         for (const alt of alts) {

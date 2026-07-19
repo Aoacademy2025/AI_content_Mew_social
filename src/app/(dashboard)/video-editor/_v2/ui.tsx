@@ -177,34 +177,77 @@ export function Chip({ selected = false, style, onMouseEnter, onMouseLeave, ...r
 }
 
 /** Segmented control — เช่น ElevenLabs|Gemini, 1|2|3 ประโยค */
-export function Segmented<T extends string>({ options, value, onChange, style }: {
-  options: { value: T; label: string }[];
+export function Segmented<T extends string>({ options, value, onChange, style, optionPadding, semantics, id, ariaLabel }: {
+  options: { value: T; label: string; badge?: string; disabled?: boolean; title?: string }[];
   value: T;
   onChange: (v: T) => void;
   style?: React.CSSProperties;
+  optionPadding?: React.CSSProperties["padding"];
+  semantics?: "tabs";
+  id?: string;
+  ariaLabel?: string;
 }) {
+  function handleTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    if (semantics !== "tabs") return;
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowLeft") nextIndex = (index - 1 + options.length) % options.length;
+    if (event.key === "ArrowRight") nextIndex = (index + 1) % options.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = options.length - 1;
+    if (nextIndex === null) return;
+
+    event.preventDefault();
+    onChange(options[nextIndex].value);
+    const tabs = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    tabs?.[nextIndex]?.focus();
+  }
+
   return (
     <div
+      role={semantics === "tabs" ? "tablist" : ariaLabel ? "group" : undefined}
+      aria-label={ariaLabel}
+      aria-orientation={semantics === "tabs" ? "horizontal" : undefined}
       style={mergeStyle({
         display: "inline-flex", gap: 3, padding: 3, borderRadius: radius.control,
         background: "rgba(255,255,255,.04)", border: `1px solid ${color.cardBorder}`,
       }, style)}
     >
-      {options.map((o) => {
+      {options.map((o, index) => {
         const active = o.value === value;
         return (
           <button
             key={o.value}
-            onClick={() => onChange(o.value)}
+            type="button"
+            role={semantics === "tabs" ? "tab" : undefined}
+            id={semantics === "tabs" && id ? `${id}-${o.value}-tab` : undefined}
+            aria-controls={semantics === "tabs" && id ? `${id}-${o.value}-panel` : undefined}
+            aria-selected={semantics === "tabs" ? active : undefined}
+            aria-pressed={semantics === "tabs" ? undefined : active}
+            aria-label={o.badge ? `${o.label} ${o.badge}` : undefined}
+            title={o.title}
+            disabled={o.disabled}
+            tabIndex={semantics === "tabs" ? (active ? 0 : -1) : undefined}
+            onClick={() => { if (!o.disabled) onChange(o.value); }}
+            onKeyDown={(event) => handleTabKeyDown(event, index)}
+            className="min-h-11 min-w-0 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9"
             style={{
-              padding: "6px 14px", borderRadius: radius.control - 3, border: "none",
+              padding: optionPadding ?? "6px 14px", borderRadius: radius.control - 3, border: "none",
               background: active ? color.gradientPrimary : "none",
               color: active ? "#fff" : color.textSecondary,
               font: `${active ? 500 : 400} 12.5px ${font.body}`,
-              cursor: "pointer", transition: fx.transition,
+              cursor: o.disabled ? "not-allowed" : "pointer", transition: fx.transition,
+              opacity: o.disabled ? 0.62 : 1,
+              outlineColor: color.primary300,
             }}
           >
-            {o.label}
+            <span className="flex min-w-0 flex-col items-center justify-center leading-tight">
+              <span className="max-w-full truncate">{o.label}</span>
+              {o.badge && (
+                <span className="mt-0.5 text-[9px] font-medium" style={{ color: active ? "#FFF3BF" : color.warning }}>
+                  {o.badge}
+                </span>
+              )}
+            </span>
           </button>
         );
       })}

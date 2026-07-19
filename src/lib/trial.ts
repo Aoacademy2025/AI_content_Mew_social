@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { createNotification } from "@/lib/notifications";
@@ -8,13 +9,37 @@ export const TRIAL_MINUTES = 15;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Normalize + hash an email for the UsedTrialEmail guard (MON-5). Hashed (not stored raw)
+ * so a DB dump doesn't leak addresses; normalized (trim+lowercase) so casing tricks can't
+ * dodge the guard.
+ */
+export function hashTrialEmail(email: string): string {
+  return crypto.createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
+}
+
+/**
  * Grant a PRO trial of `days` — only if the user has NEVER trialed and isn't an active
  * subscriber. Atomic via a conditional updateMany (one trial per user, race-safe).
+ *
+ * Anti-farming (MON-5, 2026-07-07): trialStartedAt lives on the User row, which is
+ * hard-deleted on account deletion (Clerk `user.deleted` webhook) — that alone would let
+ * someone delete + re-register with the same email for an unlimited string of new trials.
+ * UsedTrialEmail is a separate, User-independent table: checked BEFORE granting (blocks a
+ * re-signup under a previously-used email even though the row is brand new) and written
+ * right after a successful grant. It outlives the User row across delete/re-create.
  * Returns true if granted, false if skipped. Safe to call from both signup paths.
  */
 export async function grantTrial(userId: string, days: number): Promise<boolean> {
   const now = new Date();
   const end = new Date(now.getTime() + days * DAY_MS);
+
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  if (!user) return false;
+  const emailHash = hashTrialEmail(user.email);
+
+  const alreadyUsed = await prisma.usedTrialEmail.findUnique({ where: { emailHash } });
+  if (alreadyUsed) return false;
+
   const res = await prisma.user.updateMany({
     where: {
       id: userId,
@@ -30,6 +55,12 @@ export async function grantTrial(userId: string, days: number): Promise<boolean>
     },
   });
   if (res.count !== 1) return false;
+
+  // Race-safe: unique constraint on emailHash — a concurrent grant for the same email
+  // (e.g. the webhook + lazy-create both firing) loses this insert but already lost the
+  // updateMany above (trialStartedAt no longer null), so no double-grant either way.
+  await prisma.usedTrialEmail.create({ data: { emailHash } }).catch(() => {});
+
   await extendVideoExpiryForPlan(userId, "PRO").catch(() => {});
   return true;
 }

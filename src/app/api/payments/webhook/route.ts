@@ -1,33 +1,46 @@
 import { NextResponse } from "next/server";
 import { stripe } from "@/lib/stripe";
 import { prisma } from "@/lib/prisma";
-import { createNotification } from "@/lib/notifications";
+import { createNotification, notifyAdmins } from "@/lib/notifications";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { confirmSeat, releaseSeat } from "@/lib/founding";
 import { usageWindowForPlan } from "@/lib/usage-limits";
 import { grantCreditsOnce, ensureMonthlyGrant } from "@/lib/credits";
 import { grantOnPaidActivation } from "@/lib/entitlements";
+import type { Prisma } from "@prisma/client";
 
 export const config = { api: { bodyParser: false } };
 
 /** Set/extend a user's plan access. planExpiresAt extends from the later of now or current expiry,
  *  EXCEPT when the current expiry is just an unconverted trial end — then we measure from now so a
- *  mid-trial buyer doesn't get the leftover trial days gifted on top of the purchased term. */
-async function activatePlan(userId: string, plan: string, periodDays: number) {
+ *  mid-trial buyer doesn't get the leftover trial days gifted on top of the purchased term.
+ *
+ *  Runs ENTIRELY on the passed `db` client so a caller can enroll it in a `$transaction`: the
+ *  planExpiresAt extension is a NON-idempotent money/TIME effect (calling twice extends twice), so
+ *  it must commit ATOMICALLY with the handler's other writes. If a later step throws, the whole tx
+ *  rolls back and MON-1's delete-claim-and-retry re-applies it EXACTLY once — no double-extend.
+ *  The fire-and-forget video-expiry bump is intentionally NOT done here: it uses the global client
+ *  (would deadlock SQLite's single connection inside a tx) and its failure must not roll back the
+ *  activation — callers run it AFTER the tx commits. */
+async function activatePlan(
+  db: Prisma.TransactionClient,
+  userId: string,
+  plan: string,
+  periodDays: number,
+) {
   const now = new Date();
-  const user = await prisma.user.findUnique({
+  const user = await db.user.findUnique({
     where: { id: userId },
     select: { planExpiresAt: true, trialEndsAt: true, subStatus: true },
   });
   const onUnconvertedTrial = !!user?.trialEndsAt && user.trialEndsAt > now && user.subStatus !== "active";
   const base = (!onUnconvertedTrial && user?.planExpiresAt && user.planExpiresAt > now) ? user.planExpiresAt : now;
   const newExpiry = new Date(base.getTime() + periodDays * 24 * 60 * 60 * 1000);
-  await prisma.user.update({
+  await db.user.update({
     where: { id: userId },
     data: { plan: plan as any, planExpiresAt: newExpiry, ...usageWindowForPlan(plan, now), trialEndsAt: null },
   });
-  await extendVideoExpiryForPlan(userId, plan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
   return newExpiry;
 }
 
@@ -40,48 +53,120 @@ function invoiceSubId(inv: any): string | null {
  *  AND `checkout.session.async_payment_succeeded`: PromptPay / bank (delayed) methods fire `completed`
  *  while still unpaid and confirm later via the async event, so activation is gated on
  *  `payment_status === "paid"` and is idempotent (Payment-PAID belt + unique guards). */
-async function handleCheckoutSession(s: any) {
+async function handleCheckoutSession(s: any, eventId: string) {
   // ── Credit-pack purchase ──────────────────────────────────────────────
   if (s.metadata?.type === "credits" && s.metadata.userId) {
     if (process.env.CREDITS_LIVE !== "1") { console.log("[webhook] CREDITS_LIVE off — skipping credit grant for", s.id); return; }
     if (s.payment_status !== "paid") { console.warn("[webhook] credit session not yet paid, status:", s.payment_status, s.id); return; }
-    const creditUser = await prisma.user.findUnique({ where: { id: s.metadata.userId }, select: { id: true } });
+    const creditUser = await prisma.user.findUnique({ where: { id: s.metadata.userId }, select: { id: true, plan: true } });
     if (!creditUser) { console.error("[webhook] credit grant: user not found", s.metadata.userId, s.id); return; }
     const credits = parseInt(s.metadata.credits ?? "0", 10);
     if (!credits || credits <= 0) { console.error("[webhook] bad credit metadata", s.id); return; }
     await grantCreditsOnce(s.metadata.userId, credits, "purchase", "pack:" + s.id)
       .catch((e) => console.error("[webhook] credit grant:", e));
+
+    // MON-9: also log the cash as a Payment row so a credit-pack purchase shows up in
+    // จ่ายจริง/MRR — src/lib/revenue-cohorts.ts treats ANY Payment{status:"PAID"} row for a user
+    // as "has paid cash" (paidUserIds), independent of the Payment.plan/periodDays fields, which
+    // are purely informational here (a credit pack has no plan/term — periodDays:0, plan:<user's
+    // current plan> just for display). Deliberately OUTSIDE the plan-activation $transaction above
+    // (this branch returns before ever reaching it) — this is a separate, best-effort side effect
+    // and must never cause grantCreditsOnce (already committed above) to be retried. Idempotent
+    // via the unique `stripeSessionId`: a webhook retry (MON-1) hits the unique constraint and is
+    // swallowed as "already recorded", same pattern as the couponRedemption insert below.
+    // KNOWN GAP (left as-is, out of this task's scope): /api/payments/history doesn't special-case
+    // note==="credits", so this row will surface in the settings billing list as
+    // "{plan} Plan · 0 วัน" rather than something reading "Credits purchase".
+    try {
+      await prisma.payment.create({
+        data: {
+          userId: s.metadata.userId,
+          stripeSessionId: s.id,
+          stripePaymentIntent: s.payment_intent ?? undefined,
+          plan: creditUser.plan,
+          amount: typeof s.amount_total === "number" ? s.amount_total : 0,
+          currency: "thb",
+          status: "PAID",
+          periodDays: 0,
+          paidAt: new Date(),
+          note: "credits",
+        },
+      });
+    } catch (e) {
+      console.log("[webhook] credit-pack Payment already recorded (retry), skip", s.id, (e as any)?.code ?? e);
+    }
     return;
   }
 
   // ── Plan purchase ─────────────────────────────────────────────────────
   const { userId, plan, period, periodDays } = s.metadata ?? {};
-  if (!(userId && plan)) return;
+  if (!(userId && plan)) {
+    // A completed/paid Checkout Session with no app metadata cannot be activated — it's most
+    // likely a Dashboard/CLI-created session against the live webhook secret, not a real in-app
+    // purchase (both real call sites always set userId+plan). But if it ever IS a genuine
+    // customer payment, this is the only trace: log loudly + alert admins instead of the
+    // previous silent no-op (found a zero-Payment-row orphan on prod 2026-07-13 with nothing
+    // logged anywhere). Ack to Stripe is unchanged — we still just `return` below.
+    const email = s.customer_details?.email ?? s.customer_email ?? null;
+    console.error(
+      "[stripe-webhook] checkout.session.completed missing userId/plan metadata — cannot activate, no Payment row will be created",
+      { eventId, sessionId: s.id, email },
+    );
+    notifyAdmins({
+      type: "ERROR_SYSTEM",
+      title: "⚠️ Stripe checkout completed with no app metadata",
+      body: `Checkout session ${s.id} (event ${eventId}) completed but had no userId/plan metadata — no Payment row was created. Possible orphaned payment. Email: ${email ?? "unknown"}. Check Stripe Dashboard for this session.`,
+    }).catch(() => {});
+    return;
+  }
   // Activate ONLY when truly paid — a PromptPay/bank one-time session fires `completed` while
   // unpaid/processing; the real confirmation arrives as async_payment_succeeded (payment_status=paid).
   if (s.payment_status !== "paid") {
     console.warn("[webhook] plan session not yet paid, status:", s.payment_status, s.id);
     return;
   }
-  // Idempotency belt: if this session's Payment is already PAID we activated it before
-  // (duplicate delivery / completed+async overlap) — do nothing.
-  const existing = await prisma.payment.findUnique({ where: { stripeSessionId: s.id }, select: { status: true } });
-  if (existing?.status === "PAID") { console.log("[webhook] session already activated, skip", s.id); return; }
 
-  const newExpiry = await activatePlan(userId, plan, parseInt(periodDays ?? "30", 10));
-  await prisma.user.update({
-    where: { id: userId },
-    data: {
-      billingPeriod: period ?? null,
-      ...(s.mode === "subscription" && s.subscription
-        ? { stripeSubscriptionId: s.subscription, subStatus: "active" }
-        : {}),
-    },
+  // The money/TIME effect (activatePlan's NON-idempotent planExpiresAt extension) commits in ONE
+  // transaction with its own Payment-PAID marker + the billing/subscription write. If any step
+  // throws, the WHOLE tx rolls back → MON-1 deletes the idempotency claim → Stripe's retry re-runs
+  // this and applies the extension EXACTLY once (no double-extend). The Payment-PAID idempotency
+  // belt is read INSIDE the tx (SQLite serializes writes) so a genuine duplicate — a retry of THIS
+  // event OR the sibling completed/async_payment_succeeded event for the same session — sees PAID
+  // and skips without re-extending.
+  let alreadyActivated = false;
+  let newExpiry: Date | undefined;
+  await prisma.$transaction(async (tx) => {
+    const existing = await tx.payment.findUnique({ where: { stripeSessionId: s.id }, select: { status: true } });
+    if (existing?.status === "PAID") { alreadyActivated = true; return; }
+    newExpiry = await activatePlan(tx, userId, plan, parseInt(periodDays ?? "30", 10));
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        billingPeriod: period ?? null,
+        ...(s.mode === "subscription" && s.subscription
+          ? { stripeSubscriptionId: s.subscription, subStatus: "active" }
+          : {}),
+      },
+    });
+    // updateMany (not update): tolerate a missing Payment row (count 0, no throw — activation still
+    // commits) while a transient DB error still propagates → rollback → retry. Marking PAID inside
+    // the tx makes the belt above RELIABLE (previously it was a swallowed .catch AFTER activation,
+    // so a failed mark left the belt blind → the retry double-extended).
+    await tx.payment.updateMany({
+      where: { stripeSessionId: s.id },
+      data: { status: "PAID", stripePaymentIntent: s.payment_intent ?? undefined, paidAt: new Date() },
+    });
   });
-  await prisma.payment.update({
-    where: { stripeSessionId: s.id },
-    data: { status: "PAID", stripePaymentIntent: s.payment_intent ?? undefined, paidAt: new Date() },
-  }).catch(() => {});
+  if (alreadyActivated || !newExpiry) {
+    console.log("[webhook] session already activated, skip", s.id);
+    return;
+  }
+
+  // Everything below MUST stay fire-and-forget/guarded (never throws): the tx already committed the
+  // money/time effect, so a throw here would make MON-1 delete the claim and Stripe's retry would
+  // re-enter and double-extend. Kept OUTSIDE the tx — global-client calls (would deadlock SQLite in
+  // a tx) whose failure must not roll back the paid activation.
+  extendVideoExpiryForPlan(userId, plan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
   await createNotification({
     userId, type: "VIDEO_COMPLETED",
     title: `ชำระเงินสำเร็จ — ${plan} Plan`,
@@ -135,7 +220,12 @@ export async function POST(req: Request) {
   }
 
   // ── Idempotency: Stripe delivers events at least once. Claim this event.id atomically
-  //    (unique PK); if the insert fails it's a duplicate/already-processed → skip. ──────
+  //    (unique PK) for FAST duplicate-detection — a failed insert means this event was already
+  //    fully processed, so short-circuit 200. The claim is only made DURABLE-ON-SUCCESS: if a
+  //    handler throws below (e.g. SQLITE_BUSY) we DELETE this row and return 500, so Stripe's
+  //    retry of the SAME event.id re-runs the handler instead of being rejected as a duplicate.
+  //    Without this, a transient handler failure would permanently drop a paid activation
+  //    (customer charged, plan/credits never applied). Goal = exactly-once EFFECT, not attempt. ──
   try {
     await prisma.stripeWebhookEvent.create({ data: { id: event.id, type: event.type } });
   } catch {
@@ -143,98 +233,117 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, duplicate: true });
   }
 
-  // ── Checkout finished (sync) OR delayed payment confirmed (PromptPay/bank async) ─────
-  if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
-    await handleCheckoutSession(event.data.object as any);
-  }
+  try {
+    // ── Checkout finished (sync) OR delayed payment confirmed (PromptPay/bank async) ─────
+    if (event.type === "checkout.session.completed" || event.type === "checkout.session.async_payment_succeeded") {
+      await handleCheckoutSession(event.data.object as any, event.id);
+    }
 
-  // ── Delayed payment failed → mark the pending payment failed + free any founding seat ─
-  if (event.type === "checkout.session.async_payment_failed") {
-    const s = event.data.object as any;
-    await prisma.payment.updateMany({ where: { stripeSessionId: s.id }, data: { status: "FAILED" } }).catch(() => {});
-    await releaseSeat(s.id).catch(() => {});
-  }
+    // ── Delayed payment failed → mark the pending payment failed + free any founding seat ─
+    if (event.type === "checkout.session.async_payment_failed") {
+      const s = event.data.object as any;
+      await prisma.payment.updateMany({ where: { stripeSessionId: s.id }, data: { status: "FAILED" } }).catch(() => {});
+      await releaseSeat(s.id).catch(() => {});
+    }
 
-  // ── Subscription renewal (skip the very first invoice — handled above) ───
-  if (event.type === "invoice.paid") {
-    const inv = event.data.object as any;
-    const subId = invoiceSubId(inv);
-    if (subId && inv.billing_reason !== "subscription_create") {
-      const user = await prisma.user.findFirst({
-        where: { stripeSubscriptionId: subId },
-        select: { id: true, plan: true, billingPeriod: true },
-      });
-      if (user) {
-        const days = user.billingPeriod === "annual" ? 365 : 30;
-        await activatePlan(user.id, user.plan, days);
-        await prisma.user.update({ where: { id: user.id }, data: { subStatus: "active" } });
-        // Refresh monthly credit grant on renewal (CREDITS_LIVE-gated, fire-and-forget)
-        if (process.env.CREDITS_LIVE === "1") {
-          ensureMonthlyGrant(user.id).catch(() => {});
+    // ── Subscription renewal (skip the very first invoice — handled above) ───
+    if (event.type === "invoice.paid") {
+      const inv = event.data.object as any;
+      const subId = invoiceSubId(inv);
+      if (subId && inv.billing_reason !== "subscription_create") {
+        const user = await prisma.user.findFirst({
+          where: { stripeSubscriptionId: subId },
+          select: { id: true, plan: true, billingPeriod: true },
+        });
+        if (user) {
+          const days = user.billingPeriod === "annual" ? 365 : 30;
+          // The renewal extends planExpiresAt (NON-idempotent). Wrap the extension + subStatus write
+          // in ONE transaction so a later-step failure rolls the extension back too; MON-1's
+          // delete-claim-and-retry then re-applies it EXACTLY once (no double-extend on retry).
+          // Genuine duplicate deliveries of this same invoice.paid event are already stopped by the
+          // event-id claim above.
+          await prisma.$transaction(async (tx) => {
+            await activatePlan(tx, user.id, user.plan, days);
+            await tx.user.update({ where: { id: user.id }, data: { subStatus: "active" } });
+          });
+          // Fire-and-forget, OUTSIDE the tx (global client; must not roll back the renewal).
+          extendVideoExpiryForPlan(user.id, user.plan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
+          // Refresh monthly credit grant on renewal (CREDITS_LIVE-gated, fire-and-forget)
+          if (process.env.CREDITS_LIVE === "1") {
+            ensureMonthlyGrant(user.id).catch(() => {});
+          }
+          console.log(`[stripe-webhook] renewed subscription for ${user.id} (+${days}d)`);
         }
-        console.log(`[stripe-webhook] renewed subscription for ${user.id} (+${days}d)`);
       }
     }
-  }
 
-  // ── Subscription canceled → mark canceled (access lapses at period end) ──
-  if (event.type === "customer.subscription.deleted") {
-    const sub = event.data.object as any;
-    const user = await prisma.user.findFirst({ where: { stripeSubscriptionId: sub.id }, select: { id: true } });
-    if (user) {
-      // Also clear the scheduled-cancel flags — otherwise ReactivateBanner shows forever with a
-      // past date and its "ใช้ PRO ต่อ" button 400s (no stripeSubscriptionId left to reactivate).
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { subStatus: "canceled", stripeSubscriptionId: null, cancelAtPeriodEnd: false, cancelAt: null },
-      });
-    }
-  }
-
-  // ── Subscription updated → sync scheduled-cancel state (covers cancel AND resume) ──
-  if (event.type === "customer.subscription.updated") {
-    const sub = event.data.object as any;
-    const user = await prisma.user.findFirst({
-      where: { OR: [{ stripeSubscriptionId: sub.id }, { stripeCustomerId: sub.customer }] },
-      select: { id: true },
-    });
-    if (user) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          cancelAtPeriodEnd: !!sub.cancel_at_period_end,
-          cancelAt: sub.cancel_at ? new Date(sub.cancel_at * 1000) : null,
-          subStatus: sub.status,
-        },
-      });
-      console.log(`[stripe-webhook] subscription.updated ${user.id} cancelAtPeriodEnd=${!!sub.cancel_at_period_end}`);
-    } else {
-      console.warn(`[stripe-webhook] subscription.updated: no user for sub ${sub.id}`);
-    }
-  }
-
-  // ── Failed renewal → dunning ─────────────────────────────────────────────
-  if (event.type === "invoice.payment_failed") {
-    const inv = event.data.object as any;
-    const subId = invoiceSubId(inv);
-    if (subId) {
-      const user = await prisma.user.findFirst({ where: { stripeSubscriptionId: subId }, select: { id: true } });
+    // ── Subscription canceled → mark canceled (access lapses at period end) ──
+    if (event.type === "customer.subscription.deleted") {
+      const sub = event.data.object as any;
+      const user = await prisma.user.findFirst({ where: { stripeSubscriptionId: sub.id }, select: { id: true } });
       if (user) {
-        await prisma.user.update({ where: { id: user.id }, data: { subStatus: "past_due" } });
-        await createNotification({
-          userId: user.id, type: "VIDEO_COMPLETED",
-          title: "ชำระเงินไม่สำเร็จ",
-          body: "บัตรของคุณถูกปฏิเสธ — อัปเดตวิธีจ่ายเพื่อใช้งานต่อ",
-        }).catch(() => {});
+        // Also clear the scheduled-cancel flags — otherwise ReactivateBanner shows forever with a
+        // past date and its "ใช้ PRO ต่อ" button 400s (no stripeSubscriptionId left to reactivate).
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { subStatus: "canceled", stripeSubscriptionId: null, cancelAtPeriodEnd: false, cancelAt: null },
+        });
       }
     }
-  }
 
-  // ── Checkout expired → mark payment failed ───────────────────────────────
-  if (event.type === "checkout.session.expired") {
-    const s = event.data.object as any;
-    await prisma.payment.updateMany({ where: { stripeSessionId: s.id }, data: { status: "FAILED" } }).catch(() => {});
-    await releaseSeat(s.id).catch(() => {}); // free the founding seat if this was an unpaid founding checkout
+    // ── Subscription updated → sync scheduled-cancel state (covers cancel AND resume) ──
+    if (event.type === "customer.subscription.updated") {
+      const sub = event.data.object as any;
+      const user = await prisma.user.findFirst({
+        where: { OR: [{ stripeSubscriptionId: sub.id }, { stripeCustomerId: sub.customer }] },
+        select: { id: true },
+      });
+      if (user) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            cancelAtPeriodEnd: !!sub.cancel_at_period_end,
+            cancelAt: sub.cancel_at ? new Date(sub.cancel_at * 1000) : null,
+            subStatus: sub.status,
+          },
+        });
+        console.log(`[stripe-webhook] subscription.updated ${user.id} cancelAtPeriodEnd=${!!sub.cancel_at_period_end}`);
+      } else {
+        console.warn(`[stripe-webhook] subscription.updated: no user for sub ${sub.id}`);
+      }
+    }
+
+    // ── Failed renewal → dunning ─────────────────────────────────────────────
+    if (event.type === "invoice.payment_failed") {
+      const inv = event.data.object as any;
+      const subId = invoiceSubId(inv);
+      if (subId) {
+        const user = await prisma.user.findFirst({ where: { stripeSubscriptionId: subId }, select: { id: true } });
+        if (user) {
+          await prisma.user.update({ where: { id: user.id }, data: { subStatus: "past_due" } });
+          await createNotification({
+            userId: user.id, type: "VIDEO_COMPLETED",
+            title: "ชำระเงินไม่สำเร็จ",
+            body: "บัตรของคุณถูกปฏิเสธ — อัปเดตวิธีจ่ายเพื่อใช้งานต่อ",
+          }).catch(() => {});
+        }
+      }
+    }
+
+    // ── Checkout expired → mark payment failed ───────────────────────────────
+    if (event.type === "checkout.session.expired") {
+      const s = event.data.object as any;
+      await prisma.payment.updateMany({ where: { stripeSessionId: s.id }, data: { status: "FAILED" } }).catch(() => {});
+      await releaseSeat(s.id).catch(() => {}); // free the founding seat if this was an unpaid founding checkout
+    }
+  } catch (err) {
+    // A handler failed AFTER we claimed the event id. Roll back the idempotency claim so Stripe's
+    // automatic retry of this SAME event re-runs the handler rather than seeing it as an
+    // already-processed duplicate. Returning 500 signals Stripe to retry with backoff. This is
+    // what heals a transient failure (e.g. SQLITE_BUSY) instead of silently losing a paid activation.
+    console.error("[stripe-webhook] handler failed — rolling back idempotency claim for retry:", event.id, err);
+    await prisma.stripeWebhookEvent.delete({ where: { id: event.id } }).catch(() => {});
+    return NextResponse.json({ error: "Handler failed, will retry" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

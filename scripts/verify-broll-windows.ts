@@ -27,6 +27,22 @@ check("caption indices are contiguous & cover all", w[0].captionStartIdx === 0 &
 const long = buildBrollWindows([{ startMs: 0, endMs: 6000, text: "x" }], 4);
 check("single long caption → 1 window", long.length === 1 && long[0].endMs === 6000);
 
+// Minimized from duckyhero production timings: natural TTS pauses between semantic
+// windows must hold the prior visual, not become 0.1–0.3s standalone B-roll cuts.
+const duckyGap = buildBrollWindows([
+  { startMs: 0, endMs: 6333, text: "first thought" },
+  { startMs: 6500, endMs: 10900, text: "second thought" },
+], 4, 11200);
+check("real TTS pause is absorbed into adjacent windows",
+  duckyGap.length === 2
+  && duckyGap[0].startMs === 0
+  && duckyGap[0].endMs === 6500
+  && duckyGap[1].startMs === 6500
+  && duckyGap[1].endMs === 11200,
+  JSON.stringify(duckyGap.map(({ startMs, endMs }) => [startMs, endMs])));
+check("real TTS windows tile the full audio timeline",
+  duckyGap.every((win, i) => i === 0 || win.startMs === duckyGap[i - 1].endMs));
+
 // empty / invalid input
 check("empty → []", buildBrollWindows([], 4).length === 0);
 check("invalid caption filtered", buildBrollWindows([{ startMs: 5, endMs: 5, text: "bad" }], 4).length === 0);

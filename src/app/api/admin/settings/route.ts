@@ -44,6 +44,21 @@ const KEYS = [
 
 type SettingKey = typeof KEYS[number];
 
+// Keys whose values are live secrets (Stripe secret/webhook keys, platform Gemini
+// key). These must NEVER be echoed back to the browser in full — GET returns only
+// a { set, last4 } sentinel so the admin UI can show status + let them overwrite,
+// without ever re-reading the current secret value.
+const SECRET_KEYS = new Set<SettingKey>([
+  "stripe_secret_key",
+  "stripe_webhook_secret",
+  "server_gemini_key",
+]);
+
+function maskSecret(value: string): { set: boolean; last4?: string } {
+  if (!value) return { set: false };
+  return { set: true, last4: value.slice(-4) };
+}
+
 async function getConfig(key: SettingKey): Promise<string> {
   const row = await prisma.siteConfig.findUnique({ where: { key } });
   if (row) return row.value;
@@ -90,8 +105,11 @@ export async function GET() {
     const me = await prisma.user.findUnique({ where: { id: authUser.id }, select: { role: true } });
     if (me?.role !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-    const results = await Promise.all(KEYS.map(async k => [k, await getConfig(k)]));
-    const settings = Object.fromEntries(results);
+    const results = await Promise.all(KEYS.map(async k => [k, await getConfig(k)] as const));
+    const settings: Record<string, unknown> = {};
+    for (const [k, v] of results) {
+      settings[k] = SECRET_KEYS.has(k) ? maskSecret(v) : v;
+    }
 
     return NextResponse.json(settings);
   } catch (error) {

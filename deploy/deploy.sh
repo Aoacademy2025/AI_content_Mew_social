@@ -56,7 +56,20 @@ echo "=== [4/6] Prisma sync schema + generate ==="
 # live DB so queries referencing new fields (e.g. cancelAtPeriodEnd) don't 500.
 # No --accept-data-loss: additive changes (new nullable/defaulted columns) apply
 # safely; a destructive change will fail loudly instead of dropping data.
-npx prisma db push --skip-generate
+# P3.3: db push runs FIRST (before build/restart). If it fails, abort with a LOUD
+# banner — set -e would exit anyway, but silently; this makes it unmissable in the log
+# and guarantees we never build+restart onto code that expects columns the DB lacks.
+if ! npx prisma db push --skip-generate; then
+  echo ""
+  echo "########################################################################"
+  echo "## DEPLOY ABORTED — DB SCHEMA NOT APPLIED"
+  echo "## 'prisma db push' failed. Build and PM2 restart were NOT run, so the"
+  echo "## app keeps serving on the OLD schema + OLD code (no partial deploy)."
+  echo "## Likely cause: a destructive/ambiguous schema change needing review, or"
+  echo "## the DB is locked. Resolve the drift, then re-run: bash deploy/deploy.sh"
+  echo "########################################################################"
+  exit 1
+fi
 npx prisma generate
 
 echo "=== [5/6] Build (heap: ${BUILD_HEAP_MB}MB, worker heap: ${BUILD_WORKER_HEAP_MB}MB) ==="
@@ -102,7 +115,24 @@ if [ ! -f "$STAGING_DIR/BUILD_ID" ]; then
   exit 1
 fi
 
-echo "=== [5b/6] Atomic swap .next-staging -> .next ==="
+echo "=== [5a/6] Normalize staged build permissions ==="
+# Build output inherits the caller's umask. Nginx runs as a different user and
+# must be able to traverse directories and read static assets before the swap.
+chmod -R a+rX "$STAGING_DIR"
+
+echo "=== [5b/6] Empty render queue gate ==="
+# Production rollouts set REQUIRE_EMPTY_RENDER_QUEUES=1 after external ingress is
+# blocked. The checker is fail-closed: active queues exit 2 and DB/unknown errors exit
+# nonzero. Abort before touching live .next or restarting any PM2 process.
+if [ "${REQUIRE_EMPTY_RENDER_QUEUES:-0}" = "1" ]; then
+  if ! npx tsx scripts/check-empty-render-queues.ts; then
+    rm -rf "$STAGING_DIR"
+    echo "ERROR: render queues are active or unreadable. Old .next untouched; PM2 was not restarted."
+    exit 1
+  fi
+fi
+
+echo "=== [5c/6] Atomic swap .next-staging -> .next ==="
 # .next.old is kept until the next deploy as a manual rollback
 # (mv .next.old .next && pm2 restart ai-content); costs a few hundred MB.
 rm -rf "$APP_DIR/.next.old"
@@ -113,33 +143,54 @@ mv "$STAGING_DIR" "$APP_DIR/.next"
 unset NEXT_DIST_DIR
 
 echo "=== [6/6] Restart PM2 ==="
-if pm2 describe "$APP_NAME" > /dev/null 2>&1; then
-  pm2 restart "$APP_NAME"
-else
-  pm2 start ecosystem.config.js --only "$APP_NAME"
-fi
+restart_from_ecosystem() {
+  local process_name="$1"
+  if pm2 describe "$process_name" > /dev/null 2>&1; then
+    # Both pieces are load-bearing on the production PM2 version: the ecosystem
+    # file supplies the reviewed values and --update-env replaces the saved env.
+    # Without the flag PM2 warns and keeps stale values even though the file is passed.
+    pm2 restart ecosystem.config.js --only "$process_name" --update-env
+  else
+    pm2 start ecosystem.config.js --only "$process_name" --update-env
+  fi
+}
+
+restart_from_ecosystem "$APP_NAME"
 
 # The MCP async video worker runs the pipeline (orchestrator/pipeline-client) in
 # a SEPARATE process. A deploy that ships new pipeline code to ai-content would
 # otherwise leave the worker on stale code (version skew → silently-failing MCP
-# jobs), so restart it in lockstep right after ai-content. --update-env picks up
-# any ecosystem env changes; falls back to start if it isn't running yet.
+# jobs), so reload it from the checked-in ecosystem config in lockstep with ai-content.
 WORKER_NAME="mcp-video-worker"
-if pm2 describe "$WORKER_NAME" > /dev/null 2>&1; then
-  pm2 restart "$WORKER_NAME" --update-env
-else
-  pm2 start ecosystem.config.js --only "$WORKER_NAME"
-fi
+restart_from_ecosystem "$WORKER_NAME"
 
 # PR-7 durable render queue: the render-worker runs the render core (runRender) in
 # its OWN process, so a deploy must restart it in lockstep with ai-content (else it
-# stays on stale render code → version skew). --update-env picks up ecosystem env
-# changes (RENDER_VIA_QUEUE, heap); kill_timeout (30s) lets the in-flight render drain
-# gracefully (cancel + requeue with no attempt consumed). Falls back to start if absent.
-pm2 restart render-worker --update-env || pm2 start ecosystem.config.js --only render-worker --update-env
+# stays on stale render code → version skew). Reloading the ecosystem file applies the
+# reviewed render profile; kill_timeout (30s) still lets an in-flight render drain
+# gracefully (cancel + requeue with no attempt consumed).
+RENDER_WORKER_NAME="render-worker"
+restart_from_ecosystem "$RENDER_WORKER_NAME"
 
 pm2 save
 pm2 startup
+
+# STAB-1 self-check: verify PM2 reboot-resurrection is actually armed. `pm2 save` above
+# only persists the process list; the systemd UNIT that replays it on boot is registered
+# by deploy/setup.sh (`pm2 startup systemd`). If that unit is missing, a VPS reboot brings
+# back NOTHING (web, workers, crons). Warn LOUD — non-fatal (the deploy itself succeeded),
+# guarded so `is-enabled` returning non-zero can't trip `set -e`.
+echo "=== [self-check] PM2 reboot resurrection (systemd unit) ==="
+if systemctl is-enabled pm2-root >/dev/null 2>&1; then
+  echo "OK: systemd unit 'pm2-root' is enabled — PM2 will resurrect on reboot."
+else
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo "!! WARNING: systemd unit 'pm2-root' is NOT enabled."
+  echo "!! A reboot will NOT restart PM2 — web, workers, and crons stay DOWN."
+  echo "!! Fix once, as root:  pm2 startup systemd -u root --hp /root && pm2 save"
+  echo "!! (or re-run deploy/setup.sh — it registers the unit idempotently)."
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+fi
 
 echo ""
 echo "Deploy finished successfully."

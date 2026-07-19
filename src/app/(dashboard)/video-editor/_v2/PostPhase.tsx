@@ -14,25 +14,86 @@ import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
 import {
   V2_QUICK_STYLES, PRESETS_DATA, EFFECTS_DATA, FONTS_LIST,
+  EDITABLE_EFFECT_PRESETS_DATA, BUILT_IN_EFFECT_PRESETS_DATA,
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   V2_CARD_LEN_OPTIONS, type V2CardLen,
 } from "./subtitle-style";
+import { useId, useMemo, useRef, useState } from "react";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
+import { LogoOverlayControls } from "./LogoOverlayControls";
+import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
+import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import { trackEvent } from "@/lib/client-telemetry";
+import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-export function PostPhase({ job, script, onExported, onNewProject }: {
-  job: V2JobState; script: string; onExported: () => void; onNewProject: () => void;
+const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
+
+export function PostPhase({
+  job,
+  script,
+  onExportJob,
+  onAdoptJob,
+  onNewProject,
+  onPreviewError,
+  projectId,
+  logoOverlay,
+  onLogoOverlayChange,
+  logoEligible,
+  projectSaveStatus,
+  onRetryProjectSave,
+  brollRegionPreference = "auto",
+  brollVisualStyle = "auto",
+  downloadFilename,
+}: {
+  job: V2JobState; script: string;
+  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
+  onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  onPreviewError: () => void;
+  projectId: string | null;
+  logoOverlay?: LogoOverlayConfig;
+  onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  logoEligible: boolean;
+  projectSaveStatus: "idle" | "saving" | "saved" | "error";
+  onRetryProjectSave: () => void;
+  brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
+  downloadFilename: string;
 }) {
-  const ed = usePostPhaseEditor(job, script, { onExported });
+  const [rightTab, setRightTab] = useState<"subtitle" | "logo">("subtitle");
+  const rightTabsId = useId();
+  const logoPanelOpenedRef = useRef(false);
+  const ed = usePostPhaseEditor(job, script, {
+    onExportJob,
+    onAdoptJob,
+    projectId,
+    logoOverlay,
+    onLogoOverlayChange,
+    logoEligible,
+    projectSaveStatus,
+    onRetryProjectSave,
+    surface: "desktop",
+  });
+  const handleRightTabChange = (next: "subtitle" | "logo") => {
+    setRightTab(next);
+    if (next === "logo" && !logoPanelOpenedRef.current) {
+      logoPanelOpenedRef.current = true;
+      trackEvent("logo_overlay_panel_opened", { properties: { surface: "desktop" } });
+    }
+  };
+  // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
+  // (the free re-render's chromakey composite path is only valid for HeyGen avatars).
+  const brollEditEnabled = BROLL_WINDOW_EDIT && ed.preview?.avatarModel !== "upload-cutaway";
+  const editedWindowIndices = useMemo(() => new Set(ed.windowEdits.keys()), [ed.windowEdits]);
 
   if (ed.exp.phase === "done") {
     return (
@@ -43,7 +104,7 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
         </div>
         <video src={ed.exp.url} controls playsInline className="max-h-[52vh]" style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
         <div className="flex flex-wrap items-center justify-center gap-3">
-          <a href={ed.exp.url} download>
+          <a href={ed.exp.url} download={downloadFilename}>
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
           <a href="/videos"><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
@@ -56,94 +117,75 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* แถบสถานะ + CTA เดียว */}
-      <div className="flex shrink-0 items-center justify-between px-5 py-2.5" style={{ borderBottom: `1px solid ${color.cardBorder}` }}>
-        <span className="flex items-center gap-2" style={{ fontSize: 12 }}>
-          <CheckCircle2 size={14} color={color.success} />
-          <span style={{ color: color.success }}>เรนเดอร์เสร็จแล้ว</span>
-          <span style={{ color: color.textFaintest }}>· แก้ซับเห็นผลทันที ไม่ต้องเรนเดอร์ใหม่</span>
-        </span>
-        {!ed.adjustingAvatar && (
-          <div className="flex items-center gap-3">
-            <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
-              เรนเดอร์ใหม่
-            </button>
-            <BtnPrimary
-              onClick={() => void ed.exportVideo()}
-              disabled={ed.exp.phase === "burning" || ed.exp.phase === "saving"}
-              style={{ padding: "9px 20px", ...(ed.exp.phase === "burning" || ed.exp.phase === "saving" ? { opacity: 0.7, cursor: "wait" } : {}) }}
-            >
-              {ed.exp.phase === "burning" ? `กำลังฝังซับ ${ed.exp.progress}%` : ed.exp.phase === "saving" ? "กำลังบันทึก…" : "ส่งออกวิดีโอ"}
-            </BtnPrimary>
-          </div>
-        )}
-      </div>
       {ed.exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
         </div>
       )}
-
       <div className="flex min-h-0 flex-1">
         {/* ── ซ้าย 266px: การ์ดซับ ── */}
-        <aside onScroll={ed.onListScroll} className="flex w-[266px] shrink-0 flex-col gap-2 overflow-y-auto p-3" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
-          <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
-          {ed.captions.map((c, i) => (
-            <div
-              key={`${i}-${c.startMs}`}
-              ref={(el) => { ed.cardRefs.current[i] = el; }}
-              onClick={() => { ed.setSelected(i); ed.setFollow(true); const v = ed.videoRef.current; if (v) v.currentTime = c.startMs / 1000 + 0.01; }}
-              style={{ cursor: "pointer" }}
-            >
-              <Card
-                selected={i === ed.selected}
-                style={i === ed.activeIdx ? { boxShadow: `inset 2.5px 0 0 ${color.primary300}` } : undefined}
+        <aside className="flex min-h-0 w-[266px] shrink-0 flex-col" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+          <div className="shrink-0 px-3 pb-2 pt-3">
+            <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
+          </div>
+          <div onScroll={ed.onListScroll} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3">
+            {ed.captions.map((c, i) => (
+              <div
+                key={`${i}-${c.startMs}`}
+                ref={(el) => { ed.cardRefs.current[i] = el; }}
+                onClick={() => { ed.setSelected(i); ed.setFollow(true); const v = ed.videoRef.current; if (v) v.currentTime = c.startMs / 1000 + 0.01; }}
+                style={{ cursor: "pointer" }}
               >
-                <div className="flex items-center justify-between" style={{ fontSize: 10.5 }}>
-                  <span style={{ color: i === ed.selected ? color.primary300 : color.textFaint }}>
-                    {fmtMs(c.startMs)}–{fmtMs(c.endMs)}{c.tag === "hook" ? " · HOOK" : c.tag === "cta" ? " · CTA" : ""}
-                  </span>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); ed.setSelected(i); ed.setEditingIdx(ed.editingIdx === i ? null : i); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: color.textFaint, padding: 2 }}
-                    aria-label="แก้ข้อความ"
-                  >
-                    <Pencil size={11} strokeWidth={1.7} />
-                  </button>
-                </div>
-                {ed.editingIdx === i ? (
-                  <textarea
-                    autoFocus
-                    value={c.text}
-                    onChange={(e) => ed.setCaptions((caps) => caps.map((cc, ci) => ci === i ? { ...cc, text: e.target.value } : cc))}
-                    onBlur={() => ed.setEditingIdx(null)}
-                    className="mt-1 w-full resize-none bg-transparent outline-none"
-                    rows={2}
-                    style={{ fontSize: 12, lineHeight: 1.5, color: color.text, border: `1px solid ${color.selectedBorder}`, borderRadius: 8, padding: "4px 6px" }}
-                  />
-                ) : (
-                  <div style={{ fontSize: 12, lineHeight: 1.5, marginTop: 4, color: i === ed.selected ? color.text : color.textSecondary }}>
-                    {c.text}
+                <Card
+                  selected={i === ed.selected}
+                  style={i === ed.activeIdx ? { boxShadow: `inset 2.5px 0 0 ${color.primary300}` } : undefined}
+                >
+                  <div className="flex items-center justify-between" style={{ fontSize: 10.5 }}>
+                    <span style={{ color: i === ed.selected ? color.primary300 : color.textFaint }}>
+                      {fmtMs(c.startMs)}–{fmtMs(c.endMs)}{c.tag === "hook" ? " · HOOK" : c.tag === "cta" ? " · CTA" : ""}
+                    </span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); ed.setSelected(i); ed.setEditingIdx(ed.editingIdx === i ? null : i); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: color.textFaint, padding: 2 }}
+                      aria-label="แก้ข้อความ"
+                    >
+                      <Pencil size={11} strokeWidth={1.7} />
+                    </button>
                   </div>
-                )}
-              </Card>
-            </div>
-          ))}
-          {!ed.follow && (
-            <button
-              onClick={ed.resumeFollow}
-              className="sticky bottom-1 z-10 mx-auto flex shrink-0 items-center gap-1.5"
-              style={{
-                padding: "5px 12px", borderRadius: radius.pill,
-                background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
-                color: color.primary300, fontSize: 11, cursor: "pointer",
-                backdropFilter: "blur(6px)",
-              }}
-            >
-              <ArrowDownToLine size={11} strokeWidth={2} /> ตามซับที่กำลังเล่น
-            </button>
-          )}
-          <div className="mt-auto flex gap-2 pt-2">
+                  {ed.editingIdx === i ? (
+                    <textarea
+                      autoFocus
+                      value={c.text}
+                      onChange={(e) => ed.setCaptions((caps) => caps.map((cc, ci) => ci === i ? { ...cc, text: e.target.value } : cc))}
+                      onBlur={() => ed.setEditingIdx(null)}
+                      className="mt-1 w-full resize-none bg-transparent outline-none"
+                      rows={2}
+                      style={{ fontSize: 12, lineHeight: 1.5, color: color.text, border: `1px solid ${color.selectedBorder}`, borderRadius: 8, padding: "4px 6px" }}
+                    />
+                  ) : (
+                    <div style={{ fontSize: 12, lineHeight: 1.5, marginTop: 4, color: i === ed.selected ? color.text : color.textSecondary }}>
+                      {c.text}
+                    </div>
+                  )}
+                </Card>
+              </div>
+            ))}
+            {!ed.follow && (
+              <button
+                onClick={ed.resumeFollow}
+                className="sticky bottom-1 z-10 mx-auto flex shrink-0 items-center gap-1.5"
+                style={{
+                  padding: "5px 12px", borderRadius: radius.pill,
+                  background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
+                  color: color.primary300, fontSize: 11, cursor: "pointer",
+                  backdropFilter: "blur(6px)",
+                }}
+              >
+                <ArrowDownToLine size={11} strokeWidth={2} /> ตามซับที่กำลังเล่น
+              </button>
+            )}
+          </div>
+          <div className="flex shrink-0 gap-2 p-3" style={{ borderTop: `1px solid ${color.cardBorder}`, boxShadow: "0 -10px 24px rgba(0,0,0,.18)" }}>
             <button onClick={ed.mergeSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
               รวมกับใบถัดไป
             </button>
@@ -155,7 +197,11 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
 
         {/* ── กลาง: preview + ซับสด ── */}
         <main className="flex min-w-0 flex-1 items-center justify-center p-4" style={{ background: color.bg0 }}>
-          <div className="relative" style={{ height: "min(72vh, 640px)", aspectRatio: "9/16", containerType: "size" }}>
+          <div
+            className="relative"
+            data-video-preview-frame="true"
+            style={{ height: "min(72vh, 640px)", aspectRatio: "9/16", containerType: "size" }}
+          >
             <video
               ref={ed.videoRef}
               src={ed.baseUrl}
@@ -164,9 +210,11 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
               onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
               onPlay={() => ed.setPlaying(true)}
               onPause={() => ed.setPlaying(false)}
+              onError={onPreviewError}
               className="h-full w-full object-cover"
               style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}` }}
             />
+            <LogoOverlayPreview value={logoOverlay} asset={ed.logo.asset} />
             {/* เส้นไกด์ตำแหน่งซับ */}
             <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
             {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) + ลากปรับตำแหน่งได้ */}
@@ -186,7 +234,7 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
                 tailSecs={ed.preview.avatarTailSecs ?? 5}
                 avatarVideoUrl={ed.preview.avatarVideoUrl!}
                 tailAvatarUrl={ed.preview.tailAvatarUrl ?? null}
-                bgVideoUrl={ed.preview.compositeBaseUrl!}
+                bgVideoUrl={ed.compositeBaseUrl!}
                 jobId={job.jobId}
                 onClose={() => ed.setAdjustingAvatar(false)}
                 onDone={(url) => {
@@ -205,8 +253,28 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
           </div>
         </main>
 
-        {/* ── ขวา 330px: คุมซับ ── */}
+        {/* ── ขวา 330px: คุมซับ / โลโก้ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
+          <Segmented
+            id={rightTabsId}
+            semantics="tabs"
+            ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
+            value={rightTab}
+            onChange={handleRightTabChange}
+            options={[
+              { value: "subtitle", label: "ซับ" },
+              { value: "logo", label: "โลโก้" },
+            ]}
+            style={{ width: "100%", justifyContent: "center" }}
+          />
+
+          {rightTab === "subtitle" && (
+            <div
+              id={`${rightTabsId}-subtitle-panel`}
+              role="tabpanel"
+              aria-labelledby={`${rightTabsId}-subtitle-tab`}
+              className="flex flex-col gap-5"
+            >
           {ed.canAdjustAvatar && (
             <section className="flex flex-col gap-2">
               <GroupLabel>อวตาร</GroupLabel>
@@ -272,9 +340,9 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
           </section>
 
           <section className="flex flex-col gap-2">
-            <GroupLabel>สไตล์ทั้งหมด ({PRESETS_DATA.length})</GroupLabel>
+            <GroupLabel>ปรับเอฟเฟกต์ได้ ({EDITABLE_EFFECT_PRESETS_DATA.length})</GroupLabel>
             <div className="grid grid-cols-3 gap-1.5">
-              {PRESETS_DATA.map((p) => (
+              {EDITABLE_EFFECT_PRESETS_DATA.map((p) => (
                 <button
                   key={p.value}
                   onClick={() => ed.set("preset", p.value)}
@@ -291,6 +359,32 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
                 </button>
               ))}
             </div>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <GroupLabel>เอฟเฟกต์ติดมากับสไตล์ ({BUILT_IN_EFFECT_PRESETS_DATA.length})</GroupLabel>
+            <div className="grid grid-cols-3 gap-1.5">
+              {BUILT_IN_EFFECT_PRESETS_DATA.map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => ed.set("preset", p.value)}
+                  title="สไตล์นี้มีเอฟเฟกต์ในตัว"
+                  style={{
+                    borderRadius: 9, padding: "7px 4px", fontSize: 10.5,
+                    background: ed.cfg.preset === p.value ? color.selectedBg : color.cardBg,
+                    border: `1px solid ${ed.cfg.preset === p.value ? color.selectedBorder : color.cardBorder}`,
+                    color: ed.cfg.preset === p.value ? color.primary300 : color.textSecondary,
+                    cursor: "pointer", transition: "all 150ms ease",
+                    fontFamily: font.body,
+                  }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <span style={{ fontSize: 9.5, color: color.textFaintest }}>
+              เลือกกลุ่มนี้แล้วระบบจะใช้เอฟเฟกต์ประจำสไตล์แทนปุ่มเอฟเฟกต์ด้านล่าง
+            </span>
           </section>
 
           <section className="flex flex-col gap-2">
@@ -443,7 +537,54 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
           <span style={{ fontSize: 10.5, color: color.textFaintest }}>
             ทิป: ลากซับบนจอเพื่อปรับตำแหน่ง · Space เล่น/หยุด · ←/→ ขยับ 1 วิ · Ctrl+Z เลิกทำ
           </span>
+            </div>
+          )}
+
+          {rightTab === "logo" && (
+            <div
+              id={`${rightTabsId}-logo-panel`}
+              role="tabpanel"
+              aria-labelledby={`${rightTabsId}-logo-tab`}
+            >
+              <LogoOverlayControls
+                value={logoOverlay}
+                eligible={logoEligible}
+                editor={ed.logo}
+              />
+            </div>
+          )}
         </aside>
+
+        {brollEditEnabled && ed.selectedWindow != null && (
+          <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} />
+        )}
+      </div>
+
+      {/* DOM order keeps export after editor controls; flex order preserves its top-bar position. */}
+      <div
+        data-desktop-export-bar="true"
+        className="order-first flex shrink-0 items-center justify-between px-5 py-2.5"
+        style={{ borderBottom: `1px solid ${color.cardBorder}` }}
+      >
+        <span className="flex items-center gap-2" style={{ fontSize: 12 }}>
+          <CheckCircle2 size={14} color={color.success} />
+          <span style={{ color: color.success }}>เรนเดอร์เสร็จแล้ว</span>
+          <span style={{ color: color.textFaintest }}>· แก้ซับเห็นผลทันที ไม่ต้องเรนเดอร์ใหม่</span>
+        </span>
+        {!ed.adjustingAvatar && (
+          <div className="flex items-center gap-3">
+            <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
+              เรนเดอร์ใหม่
+            </button>
+            <BtnPrimary
+              onClick={() => void ed.exportVideo()}
+              disabled={ed.exp.phase === "burning" || ed.exp.phase === "saving"}
+              style={{ padding: "9px 20px", ...(ed.exp.phase === "burning" || ed.exp.phase === "saving" ? { opacity: 0.7, cursor: "wait" } : {}) }}
+            >
+              {ed.exp.phase === "burning" ? `กำลังฝังซับ ${ed.exp.progress}%` : ed.exp.phase === "saving" ? "กำลังบันทึก…" : "ส่งออกวิดีโอ"}
+            </BtnPrimary>
+          </div>
+        )}
       </div>
 
       {/* Timeline 4 แทร็ก (P6b) — ซับลากขอบแก้เวลาได้, แทร็กอื่นคลิก jump */}
@@ -458,13 +599,16 @@ export function PostPhase({ job, script, onExported, onNewProject }: {
         timeMs={ed.timeMs}
         onScrub={ed.setTimeMs}
         durationMs={Math.max(ed.preview?.audioDurationMs ?? 0, ed.captions.length ? ed.captions[ed.captions.length - 1].endMs : 0)}
-        config={(ed.preview?.config as Record<string, unknown>) ?? null}
+        config={ed.previewConfig}
+        onSelectBrollWindow={brollEditEnabled ? ed.setSelectedWindow : undefined}
+        editedWindowIndices={brollEditEnabled ? editedWindowIndices : undefined}
         hasAvatar={!!(ed.preview?.avatarModel && ed.preview.avatarModel !== "none")}
         avatarMode={ed.preview?.avatarMode ?? null}
         avatarIntroMs={(ed.preview?.avatarIntroSecs ?? 5) * 1000}
         avatarTailMs={(ed.preview?.avatarTailSecs ?? 5) * 1000}
         voiceUrl={ed.preview?.voiceUrl ?? null}
       />
+      {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
     </div>
   );
 }

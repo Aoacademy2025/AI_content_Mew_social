@@ -5,6 +5,10 @@
  */
 
 import type { VideoJobPreviewData } from "@/lib/mcp/video-job";
+import {
+  normalizeLogoOverlayConfig,
+  type LogoOverlayConfig,
+} from "@/lib/logo-overlay";
 import type { SubPreset, SubTextEffect } from "../_components/types";
 import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "../_components/constants";
 
@@ -24,6 +28,9 @@ export const V2_QUICK_STYLES: { key: string; label: string; desc: string; preset
 export const LOCKED_EFFECT_PRESETS: SubPreset[] = ["classic-yellow", "hormozi", "beast", "neon-green", "neon-red", "neon-blue", "pastel", "retro", "box-white", "box-yellow", "news"];
 export const LOCKED_COLOR_PRESETS: string[] = ["classic-yellow", "hormozi", "beast", "neon-green", "neon-red", "neon-blue", "pastel", "retro", "box-white", "box-yellow", "news"];
 export const LOCKED_ACCENT_PRESETS: string[] = ["neon-green", "neon-red", "neon-blue", "pastel", "classic-yellow", "hormozi", "beast", "box-white", "box-yellow", "retro", "news", "karaoke-box"];
+
+export const EDITABLE_EFFECT_PRESETS_DATA = PRESETS_DATA.filter((p) => !LOCKED_EFFECT_PRESETS.includes(p.value));
+export const BUILT_IN_EFFECT_PRESETS_DATA = PRESETS_DATA.filter((p) => LOCKED_EFFECT_PRESETS.includes(p.value));
 
 export const V2_TEXT_COLORS = ["#FFFFFF", "#FFE500", "#38BDF8", "#F472B6", "#000000"] as const;
 export const V2_ACCENT_COLORS = ["#FFE500", "#F87171", "#34D399", "#38BDF8"] as const;
@@ -120,6 +127,12 @@ export const V2_CARD_LEN_OPTIONS: { value: V2CardLen; label: string }[] = [
 
 type V2TimedWord = { word: string; startMs: number; endMs: number; startChar: number; endChar: number };
 
+// A gap (in fullText, between two consecutive words) that contains a line break or a
+// sentence-final punctuation mark is a HARD card boundary — never pair words across it.
+// LOCKSTEP with the server copy in src/lib/mcp/orchestrator-steps.ts
+// (SENTENCE_BOUNDARY_RE / cardsByWordCount) — แก้ที่นึงต้องแก้อีกที่.
+const SENTENCE_BOUNDARY_RE = /[\n.!?…ฯ]/;
+
 function tagCards(cards: V2Caption[]): V2Caption[] {
   return cards.map((c, i) => ({ ...c, tag: i === 0 ? "hook" : i === cards.length - 1 ? "cta" : "body" }));
 }
@@ -150,14 +163,26 @@ export function regroupCaptions(
   if (len === "sentence") return original.map((c) => ({ ...c }));
   const n = parseInt(len, 10);
   if (words?.length && fullText) {
+    const ft = fullText;
     const out: V2Caption[] = [];
-    for (let i = 0; i < words.length; i += n) {
-      const grp = words.slice(i, i + n);
-      if (!grp.length) continue;
-      const text = fullText.slice(grp[0].startChar, grp[grp.length - 1].endChar).trim();
-      if (!text) continue;
-      out.push({ text, startMs: grp[0].startMs, endMs: grp[grp.length - 1].endMs, tag: "body" });
+    let grp: V2TimedWord[] = [];
+    const flush = () => {
+      if (!grp.length) return;
+      // FIX A: collapse any interior whitespace/newline sliced into the card (a script
+      // line break) to a single space so a card never stacks two lines.
+      const text = ft.slice(grp[0].startChar, grp[grp.length - 1].endChar).replace(/\s+/g, " ").trim();
+      if (text) out.push({ text, startMs: grp[0].startMs, endMs: grp[grp.length - 1].endMs, tag: "body" });
+      grp = [];
+    };
+    for (let i = 0; i < words.length; i++) {
+      if (grp.length >= n) flush();
+      // FIX B: never cross a sentence/line boundary (gap between words in fullText).
+      if (grp.length > 0 && SENTENCE_BOUNDARY_RE.test(ft.slice(grp[grp.length - 1].endChar, words[i].startChar))) {
+        flush();
+      }
+      grp.push(words[i]);
     }
+    flush();
     return tagCards(out);
   }
   // fallback: interpolate เวลาในการ์ดเดิมตามสัดส่วนคำ (v1 page.tsx:3546-3561)
@@ -196,6 +221,7 @@ export function buildV2BurnConfig(
   cfg: V2SubConfig,
   fps = 30,
   overrides: V2CardOverrides = {},
+  logoOverlay?: LogoOverlayConfig,
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
@@ -225,6 +251,7 @@ export function buildV2BurnConfig(
     frameCursor = end;
     return [{ ...popup, start, end }];
   });
+  const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
   return {
     videoUrl: baseVideoUrl,
     keywordPopups,
@@ -236,5 +263,6 @@ export function buildV2BurnConfig(
     subtitleShadow: cfg.shadow,
     subtitleOutline: cfg.outline,
     subtitleOutlineSize: cfg.outlineSize,
+    ...(normalizedLogo?.enabled ? { logoOverlay: normalizedLogo } : {}),
   };
 }

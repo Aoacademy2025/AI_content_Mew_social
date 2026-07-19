@@ -2,7 +2,14 @@
 import { getCurrentUser } from "@/lib/clerk-auth";
 import type { BrollVideo, KeywordPopupItem, ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
 import { evenSplitBgVideos, cyclePoolIndices, buildMinHoldSegments } from "@/lib/broll-even-split";
+import {
+  MAX_BROLL_DURATION_SEC,
+  assignBrollWindows,
+  coverBrollTimeline,
+  isSupportedBrollFps,
+} from "@/lib/broll-coverage";
 import { buildKeywordPopups } from "@/lib/keyword-popups";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 
 export const maxDuration = 120; // 2 min â€” 100+ captions config generation
 export const runtime = "nodejs";
@@ -67,34 +74,10 @@ function normalizeBgVideos(raw: BrollVideo[], audioDurationSec: number, fps: num
   return deduped;
 }
 
-function fillBgGaps(raw: BrollVideo[], audioDurationSec: number): BrollVideo[] {
-  const EPS = 0.01;
-  if (!raw.length) return [];
-
-  raw.sort((a, b) => a.start - b.start);
-
-  // Extend each segment to reach the next one (no filler inserts — avoids duplicate segments)
-  for (let i = 0; i < raw.length - 1; i++) {
-    const cur = raw[i];
-    const next = raw[i + 1];
-    if (next.start > cur.end + EPS) {
-      cur.end = next.start;
-    }
-  }
-
-  // Extend first segment back to 0 if needed
-  if (raw[0].start > EPS) raw[0].start = 0;
-
-  // Extend last segment to audio end if needed
-  const last = raw[raw.length - 1];
-  if (last.end < audioDurationSec - EPS) last.end = audioDurationSec;
-
-  return raw;
-}
-
 type Cap = { text: string; startMs: number; endMs: number; tag?: "hook" | "body" | "cta" };
 type StockVideo = {
   keyword: string;
+  sourceIndex?: number;
   localUrl?: string;
   videoUrl: string;
   duration: number;
@@ -215,7 +198,22 @@ export async function POST(req: Request) {
   console.log(`[config] start: ${stockVideos.length} clips, ${sceneCaptions.length} captions, ${audioDurationMs}ms`);
 
   if (!voiceFile) return NextResponse.json({ error: "voiceFile required" }, { status: 400 });
-  if (!audioDurationMs) return NextResponse.json({ error: "audioDurationMs required" }, { status: 400 });
+  if (
+    !Number.isFinite(audioDurationMs) ||
+    audioDurationMs <= 0 ||
+    audioDurationMs > MAX_BROLL_DURATION_SEC * 1000
+  ) {
+    return NextResponse.json(
+      { error: "invalid_audio_duration", retryable: false },
+      { status: 400 },
+    );
+  }
+  if (!Number.isFinite(fps) || !isSupportedBrollFps(fps)) {
+    return NextResponse.json(
+      { error: "invalid_fps", retryable: false },
+      { status: 400 },
+    );
+  }
 
   const audioDurationSec = audioDurationMs / 1000;
   const durationInFrames = Math.round(audioDurationSec * fps);
@@ -283,6 +281,7 @@ export async function POST(req: Request) {
 
   const validStocks = stockVideos.filter(sv => sv.localUrl || sv.videoUrl);
   let bgVideos: BrollVideo[] = [];
+  let mappingRepairCount = 0;
   const brollMetadataBySrc = new Map<string, Partial<BrollVideo>>();
   for (const sv of validStocks) {
     const src = sv.localUrl ?? sv.videoUrl;
@@ -294,26 +293,40 @@ export async function POST(req: Request) {
       contentProfile: sv.contentProfile,
       selectionReason: sv.selectionReason,
       relevanceScore: sv.relevanceScore,
+      sourceIndex: sv.sourceIndex,
     });
   }
 
   if (validStocks.length > 0 && Array.isArray(brollWindows) && brollWindows.length > 0) {
-    // WINDOW MODE: the editor pre-grouped captions into ~3–4s windows and fetched ONE
-    // asset per window (in window order). Place each clip over its window span — no
-    // per-caption assignment, no min-hold. Subtitles (keywordPopups) are unaffected.
-    const pool = validStocks;
-    const count = Math.min(brollWindows.length, pool.length);
-    for (let wi = 0; wi < count; wi++) {
-      const win = brollWindows[wi];
-      const sv = pool[wi];
-      const src = sv.localUrl ?? sv.videoUrl;
-      if (!src) continue;
-      const start = Math.max(0, Math.min(win.startMs / 1000, audioDurationSec));
-      const end = Math.min(Math.max(win.endMs / 1000, start + 1 / fps), audioDurationSec);
-      if (end - start < 1 / fps) continue;
-      bgVideos.push({ src, start, end, clipOffset: 0, clipDuration: sv.duration > 0 ? sv.duration : 10 });
-    }
-    console.log(`[config] window-mode: ${bgVideos.length} clips over ${brollWindows.length} windows`);
+    // WINDOW MODE: all semantic windows must remain represented even when the distinct
+    // asset pool is capped. The coverage helper reuses/splits playable media as needed.
+    const assigned = assignBrollWindows(
+      brollWindows,
+      validStocks.map((sv) => ({
+        src: (sv.localUrl ?? sv.videoUrl) as string,
+        start: 0,
+        end: 0,
+        sourceIndex: sv.sourceIndex,
+        clipOffset: 0,
+        clipDuration: sv.duration > 0 ? sv.duration : 10,
+        keyword: sv.keyword,
+        title: sv.title,
+        query: sv.query,
+        provider: sv.provider,
+        contentProfile: sv.contentProfile,
+        selectionReason: sv.selectionReason,
+        relevanceScore: sv.relevanceScore,
+      })),
+      audioDurationSec,
+      fps,
+    );
+    bgVideos.push(...assigned.segments);
+    mappingRepairCount = assigned.metrics.repairedSegmentCount;
+    console.log(
+      `[config] window-mode: ${assigned.metrics.outputSegmentCount} segments over ` +
+      `${brollWindows.length} windows, gaps=${assigned.metrics.gapCount}, ` +
+      `tail=${assigned.metrics.uncoveredTailSec.toFixed(3)}s`,
+    );
   } else if (validStocks.length > 0) {
     const n = validStocks.length;
 
@@ -639,8 +652,8 @@ export async function POST(req: Request) {
     }
   }
 
-  // 3. Normalize and ensure coverage: clamp invalid segment times, remove zero-length,
-  // merge/trim overlaps, and fill gaps with nearest clip so the timeline stays continuous.
+  // 3. Normalize and enforce coverage. Never stretch an individual media segment beyond
+  // its playable duration: the coverage helper fills gaps and splits/reuses source media.
   bgVideos = normalizeBgVideos(bgVideos, audioDurationSec, fps);
   if (validStocks.length === 0) {
     return NextResponse.json({ error: "à¹„à¸¡à¹ˆà¸¡à¸µ stock video â€” à¸à¸£à¸¸à¸“à¸² fetch stock à¸à¹ˆà¸­à¸™ generate config", retryable: false }, { status: 400 });
@@ -654,34 +667,61 @@ export async function POST(req: Request) {
     bgVideos.push(...evenSplitBgVideos(validStocks, audioDurationSec));
   }
 
-  bgVideos = fillBgGaps(bgVideos, audioDurationSec);
-  bgVideos = normalizeBgVideos(bgVideos, audioDurationSec, fps);
-  // normalize may drop short segments and create new gaps — fill again
-  bgVideos = fillBgGaps(bgVideos, audioDurationSec);
-
-  // Final hard-clamp: brute-force close any remaining gap by extending prev clip
-  for (let i = 0; i < bgVideos.length - 1; i++) {
-    const gap = bgVideos[i + 1].start - bgVideos[i].end;
-    if (gap > 0.001) {
-      bgVideos[i].end = bgVideos[i + 1].start;
-    }
-  }
-  // Ensure first clip starts at exactly 0 and last ends at exactly audio end
-  if (bgVideos.length > 0) {
-    bgVideos[0].start = 0;
-    bgVideos[bgVideos.length - 1].end = audioDurationSec;
-  }
-
   bgVideos = bgVideos.map((seg) => ({
     ...seg,
     ...(brollMetadataBySrc.get(seg.src) ?? {}),
   }));
+
+  const coverage = coverBrollTimeline(bgVideos, bgVideos, audioDurationSec, fps);
+  const coverageTelemetryProperties = {
+    requestedWindowCount: Array.isArray(brollWindows) ? brollWindows.length : 0,
+    availableAssetCount: validStocks.length,
+    distinctAssetCount: new Set(validStocks.map((stock) => stock.localUrl ?? stock.videoUrl)).size,
+    coverageSegmentCount: coverage.metrics.outputSegmentCount,
+    coverageGapCount: coverage.metrics.gapCount,
+    coverageRepairCount: mappingRepairCount + coverage.metrics.repairedSegmentCount,
+    coverageRatio: coverage.metrics.coverageRatio,
+    uncoveredTailSec: coverage.metrics.uncoveredTailSec,
+    coverageRejected: !coverage.complete,
+  };
+  if (!coverage.complete) {
+    await recordTelemetryEvent(authUser.id, {
+      name: "broll_config_coverage",
+      category: "error",
+      source: "server",
+      step: "config",
+      status: "error",
+      properties: coverageTelemetryProperties,
+    }).catch(() => {});
+    console.error(
+      `[config] b-roll coverage rejected: gaps=${coverage.metrics.gapCount}, ` +
+      `tail=${coverage.metrics.uncoveredTailSec.toFixed(3)}s, ` +
+      `assets=${coverage.metrics.availableAssetCount}`,
+    );
+    return NextResponse.json(
+      {
+        error: "B-roll coverage ไม่ครบ — กรุณาลองค้นหา stock แล้วสร้าง config ใหม่",
+        retryable: true,
+      },
+      { status: 422 },
+    );
+  }
+  bgVideos = coverage.segments;
+  await recordTelemetryEvent(authUser.id, {
+    name: "broll_config_coverage",
+    category: "performance",
+    source: "server",
+    step: "config",
+    status: "done",
+    properties: coverageTelemetryProperties,
+  }).catch(() => {});
 
   console.log(`[config] final bgVideos (${bgVideos.length}):`);
   bgVideos.forEach((v, i) => console.log(`  [${i}] ${v.start.toFixed(2)}s–${v.end.toFixed(2)}s dur=${( v.end-v.start).toFixed(2)}s src=${v.src.split("/").pop()}`));
 
   const config: ShortVideoConfig = {
     bgVideos,
+    requestedBrollWindowCount: Array.isArray(brollWindows) ? brollWindows.length : undefined,
     keywordPopups,
     voiceFile,
     voiceVolume: 1.0,

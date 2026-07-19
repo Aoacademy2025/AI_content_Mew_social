@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { decryptKey } from "@/lib/key-crypto";
 import { isPaid } from "@/lib/plan-limits";
 import { HeyGenAuthError } from "@/lib/heygen-avatars";
 import { getHeyGenOwnAvatars } from "@/lib/heygen-own-avatars";
@@ -36,7 +37,7 @@ export async function GET() {
       );
     }
 
-    const apiKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
+    const apiKey = decryptKey(user.heygenKey);
     const { avatars } = await getHeyGenOwnAvatars(authUser.id, apiKey);
     return NextResponse.json({ avatars, stale: false }, { status: 200 });
   } catch (error: any) {

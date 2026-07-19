@@ -7,18 +7,27 @@ import { checkClipQuota, reserveClipUsage } from "@/lib/usage-limits";
 import { checkMinuteQuota, minutesFromSeconds } from "@/lib/minute-limits";
 import { reserveMinutesOrCredits, refundReservation } from "@/lib/minute-credits";
 import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
+import { rerenderSkipEligible } from "@/lib/broll-rerender";
+import { parseVideoJobOutput } from "@/lib/mcp/video-job";
 import path from "path";
 import fs from "fs";
 import { randomBytes } from "crypto";
-import { isSafeFetchUrl } from "@/lib/safe-fetch";
+import { isSafeFetchUrl, assertSafeFetchUrl, UnsafeUrlError } from "@/lib/safe-fetch";
 import { stripDangerousCss } from "@/lib/sanitize-caption-style";
 import { execFileSync, spawn } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import {
+  BrollCoverageError,
+  prepareBrollRenderAssets,
+} from "@/lib/broll-coverage";
 import { runRender, SupersededError } from "@/lib/render/run-render";
 import type { ResolvedRenderInput } from "@/lib/render/run-render";
 import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
+import { resolveMediaBaseUrl } from "@/lib/render/media-base-url";
 import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
+import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
+import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 import {
   activeRenderCancel,
   cancelByJobId,
@@ -59,6 +68,25 @@ function runTmpCleanup(baseDir: string, pattern: string, minMinutes: number, exc
   } catch {}
 }
 
+// SSRF-safe fetch: validate the host, then follow redirects MANUALLY re-validating each
+// hop, so a safe initial URL can't 302 into a private/internal target. Bounded to maxHops.
+// Throws UnsafeUrlError (from assertSafeFetchUrl) on a private-target hop.
+async function safeFetchFollow(url: string, init: RequestInit = {}, maxHops = 3): Promise<Response> {
+  let current = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    await assertSafeFetchUrl(current);
+    const res = await fetch(current, { ...init, redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) return res;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error("too many redirects");
+}
+
 /** Download external image URL to local public/renders and return a full absolute URL
  *  so Remotion's Chromium (which runs on its own port) can fetch from Next.js server */
 async function cacheImageLocally(url: string, rendersDir: string, baseUrl: string): Promise<string> {
@@ -68,16 +96,19 @@ async function cacheImageLocally(url: string, rendersDir: string, baseUrl: strin
     // SSRF guard: never fetch a private/internal target, and don't pass it downstream
     // to Remotion's Chromium either (drop to "" → scene renders without this image).
     if (!(await isSafeFetchUrl(url))) return "";
-    // external URL — download and re-serve via Next.js
+    // external URL — download and re-serve via Next.js (redirects re-validated per hop)
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      const res = await safeFetchFollow(url, { signal: AbortSignal.timeout(15000) });
       if (!res.ok) return url;
       const buf = Buffer.from(await res.arrayBuffer());
       const ext = url.includes(".png") ? "png" : "jpg";
       const filename = `img-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
       fs.writeFileSync(path.join(rendersDir, filename), buf);
       return `${baseUrl}/api/renders/${filename}`;
-    } catch {
+    } catch (e) {
+      // A redirect into a private target must NOT fall back to handing the URL to
+      // Chromium (which would follow that redirect itself) — drop the image instead.
+      if (e instanceof UnsafeUrlError) return "";
       return url;
     }
   }
@@ -224,6 +255,26 @@ function quotaExceededResponse(message: string, opts?: { canBuyCredits?: boolean
   );
 }
 
+// In-process sliding window capping ACCEPTED free b-roll re-renders (the `rerenderOf`
+// charge-skip). Mirrors `tryConsumeKieImageRate`: per-user, 10/hour, single-process. With
+// RENDER_VIA_QUEUE=1 every render funnels through this one Next.js route, so a per-process
+// window is the effective ceiling. A slot is consumed ONLY when a re-render is otherwise
+// valid (see the caller) — an over-limit re-render just falls through to normal charging.
+const RERENDER_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const RERENDER_RATE_PER_HOUR = 10;
+const rerenderHits = new Map<string, number[]>();
+function tryConsumeRerenderRate(userId: string, now: number = Date.now()): boolean {
+  const cutoff = now - RERENDER_WINDOW_MS;
+  const recent = (rerenderHits.get(userId) ?? []).filter((t) => t > cutoff);
+  if (recent.length >= RERENDER_RATE_PER_HOUR) {
+    rerenderHits.set(userId, recent);
+    return false;
+  }
+  recent.push(now);
+  rerenderHits.set(userId, recent);
+  return true;
+}
+
 export async function POST(req: Request) {
   const requestStartedAt = Date.now();
   loadBundleCache();
@@ -255,6 +306,7 @@ export async function POST(req: Request) {
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    await assertRenderEnqueueOpen();
 
     const renderTmpDir = getRenderTmpDir();
     // Windows uses TEMP / TMP — TMPDIR is a Unix-only convention and is ignored on Windows.
@@ -278,7 +330,7 @@ export async function POST(req: Request) {
     // reserved + completed). Foreign/external/fabricated sources are not found → charge.
     // This still runs before any heavy work (job cancellation / bundle / render), so the
     // PR-1 fail-fast property is preserved.
-    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId } = await req.json();
+    const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId, rerenderOf } = await req.json();
 
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
@@ -290,16 +342,84 @@ export async function POST(req: Request) {
     const renderScopeId = normalizeRenderScopeId(jobScopeId);
     const renderOwnerKey = `${userId}:${renderScopeId}`;
 
+    const rawLogoOverlay =
+      subtitleOverlayConfig
+      && typeof subtitleOverlayConfig === "object"
+      && !Array.isArray(subtitleOverlayConfig)
+        ? subtitleOverlayConfig.logoOverlay
+        : undefined;
+    const normalizedLogoOverlay = normalizeTrustedLogoRenderInput(rawLogoOverlay);
+    if (rawLogoOverlay !== undefined && !normalizedLogoOverlay) {
+      return NextResponse.json({ error: "invalid_logo_overlay" }, { status: 400 });
+    }
+    if (normalizedLogoOverlay) {
+      const logoFilename = normalizedLogoOverlay.src.slice("/api/renders/".length);
+      const logoOverlayPath = path.join(process.cwd(), "public", "renders", logoFilename);
+      try {
+        if (!fs.existsSync(logoOverlayPath)) {
+          return NextResponse.json({ error: "invalid_logo_overlay" }, { status: 400 });
+        }
+        const logoStat = fs.statSync(logoOverlayPath);
+        if (!logoStat.isFile() || logoStat.size <= 0) {
+          return NextResponse.json({ error: "invalid_logo_overlay" }, { status: 400 });
+        }
+      } catch {
+        return NextResponse.json({ error: "invalid_logo_overlay" }, { status: 400 });
+      }
+    }
+
     // A burn is free IFF it references a base render this user already paid for.
     // NOT-found (external / another user's render / fabricated) → falls through and is
     // charged like a normal render below. Server-side check — not gameable from the client.
     const burnAlreadyPaid =
       isSubtitleOverlay && (await isBurnAlreadyPaid(userId, subtitleOverlayConfig?.videoUrl));
 
+    // Server-trusted FREE b-roll re-render (`rerenderOf`, Phase 2 "Per-window Upgrade"). A base
+    // re-render that only swaps b-roll windows reuses the SAME TTS/avatar of an already-paid clip
+    // → it must NOT charge minutes again. This is NEVER granted from a client flag: it's valid
+    // ONLY when the named source job exists, belongs to THIS user, is `done`, its output video
+    // canonicalizes to a `ChargedClip` we recorded for this user (reusing isBurnAlreadyPaid — the
+    // same server-trusted primitive that makes burns free), AND the incoming config matches the
+    // paid source on BOTH duration AND audio identity (`voiceFile`) — `rerenderSkipEligible`. The
+    // rest of shortVideoConfig (scenes/bgVideos/captions) is client-supplied, so binding just the
+    // frame count let a caller keep the same length but swap in a different/longer soundtrack for
+    // free; requiring voiceFile match closes that (a legit per-window edit reuses the source's
+    // voiceFile verbatim). Any mismatch/lie/error → skip=false → falls through to NORMAL charging
+    // (never an error). Accepted skips are rate-capped 10/user/hour.
+    let rerenderSkipCharge = false;
+    if (rerenderOf && typeof rerenderOf === "object") {
+      const sourceJobId = (rerenderOf as { sourceJobId?: unknown }).sourceJobId;
+      if (typeof sourceJobId === "string" && sourceJobId) {
+        try {
+          const src = await prisma.videoJob.findUnique({
+            where: { id: sourceJobId },
+            select: { userId: true, status: true, outputJson: true },
+          });
+          if (src && src.userId === userId && src.status === "done") {
+            const parsed = parseVideoJobOutput(src.outputJson);
+            const sourceConfig = parsed?.preview?.config as Record<string, unknown> | null | undefined;
+            // Config-identity gate (pure, unit-tested): duration frames AND voiceFile must match
+            // the paid source; a forged same-frame config with a swapped voice fails here → charges.
+            // ChargedClip existence for (userId, canonical(source videoUrl)) via the shared primitive.
+            if (
+              rerenderSkipEligible({ sourceConfig, incomingConfig: shortVideoConfig }) &&
+              (await isBurnAlreadyPaid(userId, parsed?.videoUrl))
+            ) {
+              // Valid — consume a rate slot only now (an over-limit request stays chargeable).
+              rerenderSkipCharge = tryConsumeRerenderRate(userId);
+            }
+          }
+        } catch {
+          rerenderSkipCharge = false; // fail-safe: any error → normal charging, never a free bypass
+        }
+      }
+    }
+
     // PR-1 fail-fast: เช็คโควต้าก่อนทำงานหนักทุกอย่าง (ก่อนยกเลิก job เดิม + ก่อน bundle/render).
     // อ่านอย่างเดียว ไม่กินโควต้า — reserveClipUsage ด้านล่างยังเป็นตัวจองจริง (atomic) ตัวเดียว.
     // ข้าม pre-check เฉพาะ burn ที่จ่ายแล้ว (ของตัวเอง) — burn แบบนั้น "ห้ามถูกบล็อก".
-    if (!burnAlreadyPaid) {
+    // ข้าม re-render ฟรี (rerenderSkipCharge) ด้วย: ไม่มีการจองใหม่ จึงไม่ต้อง pre-check โควต้า.
+    if (!burnAlreadyPaid && !rerenderSkipCharge) {
       if (useMinuteQuota) {
         // Fail-fast minute pre-check. SKIP it entirely when creditsLive: an out-of-minutes
         // user can still render by overflowing to credits, so a minute-only 403 here would
@@ -423,8 +543,10 @@ export async function POST(req: Request) {
     // leak quota permanently). An UNPAID burn (external / foreign / fabricated source)
     // is NOT skipped: it reserves like a normal render — no free-render bypass. Both the
     // legacy and queue paths share this single gate.
-    if (burnAlreadyPaid) {
-      // FREE: burn of this user's own paid render — never reserve, never block.
+    if (burnAlreadyPaid || rerenderSkipCharge) {
+      // FREE: a burn of this user's own paid render, OR a server-trusted b-roll re-render of an
+      // already-paid clip (rerenderSkipCharge) — never reserve, never block. quotaReserved stays
+      // false, so every refund path below (in-flight + setup-error) also skips (nothing to refund).
     } else if (useMinuteQuota) {
       // Reserve minutes; with CREDITS_LIVE on, silently overflow to credits when the
       // monthly minute quota is exhausted. CREDITS_LIVE off → reserveMinutesOrCredits
@@ -501,6 +623,24 @@ export async function POST(req: Request) {
       ? `http://${reqUrl.host}`
       : `${reqUrl.protocol}//${reqUrl.host}`;
 
+    // STAB-1 (2026-07-17): internal media base for render-worker fetches.
+    // Every OUR-OWN media URL baked into the render payload (stock videos, music,
+    // renders, scene images, logo, voice, bgm, subtitle video) is fetched by the
+    // render-worker's headless Chromium DURING render. By default those URLs use
+    // `baseUrl` (the public domain via NEXTAUTH_URL), so the worker round-trips
+    // back through nginx — the exact hop that returned 503s mid-render in the
+    // 2026-07-16 audit (§5) and off-loads render media I/O onto nginx during
+    // traffic spikes. When RENDER_INTERNAL_BASE_URL is set (recommended
+    // "http://127.0.0.1:3000"), absolutize that media to the loopback address so
+    // the worker fetches straight from ai-content, bypassing nginx entirely.
+    // Unset (default) => mediaBaseUrl === baseUrl => byte-identical to before.
+    // Only OUR media is affected; external-URL SSRF handling below is unchanged.
+    // Instant rollback: unset the env and restart (see docs / task-1 report).
+    const mediaBaseUrl = resolveMediaBaseUrl(
+      baseUrl,
+      process.env.RENDER_INTERNAL_BASE_URL,
+      (reason) => console.warn(`[render] ignoring RENDER_INTERNAL_BASE_URL (${reason})`),
+    );
 
     const entryPoint = path.resolve(process.cwd(), "src/remotion/index.tsx");
 
@@ -511,7 +651,7 @@ export async function POST(req: Request) {
       resolvedScenes = await Promise.all(
         scenes.map(async (sc: { imageUrl?: string | null; [key: string]: unknown }) => ({
           ...sc,
-          imageUrl: sc.imageUrl ? await cacheImageLocally(sc.imageUrl, rendersDir, baseUrl) : sc.imageUrl,
+          imageUrl: sc.imageUrl ? await cacheImageLocally(sc.imageUrl, rendersDir, mediaBaseUrl) : sc.imageUrl,
         }))
       );
     }
@@ -594,7 +734,7 @@ export async function POST(req: Request) {
         }
       }
       // Always serve from /api/stocks/ — renders/ copy is just a convenience mirror, not required
-      return `${baseUrl}/api/stocks/${filename}`;
+      return `${mediaBaseUrl}/api/stocks/${filename}`;
     }
 
     // Security: resolve a user-supplied path fragment against a known base directory
@@ -637,7 +777,12 @@ export async function POST(req: Request) {
         try {
           const parsed = new URL(url);
           const baseOrigin = new URL(baseUrl).origin;
-          if (parsed.origin === `${new URL(req.url).origin}` || parsed.origin === baseOrigin) {
+          // STAB-1: also recognize the internal media base (loopback) so URLs
+          // absolutized via mediaBaseUrl are still treated as our-own assets.
+          // When RENDER_INTERNAL_BASE_URL is unset, mediaBaseUrl === baseUrl so
+          // mediaOrigin === baseOrigin and this adds nothing (unchanged behavior).
+          const mediaOrigin = new URL(mediaBaseUrl).origin;
+          if (parsed.origin === new URL(req.url).origin || parsed.origin === baseOrigin || parsed.origin === mediaOrigin) {
             return toLocalFilePath(parsed.pathname);
           }
         } catch {
@@ -676,8 +821,8 @@ export async function POST(req: Request) {
       if (!url) return url ?? "";
       if (url.startsWith("http://") || url.startsWith("https://")) return url;
       // Rewrite /music/ → /api/music/ so Next.js API route serves the file dynamically
-      if (url.startsWith("/music/")) return `${baseUrl}/api/music/${url.slice("/music/".length)}`;
-      if (url.startsWith("/")) return `${baseUrl}${url}`;
+      if (url.startsWith("/music/")) return `${mediaBaseUrl}/api/music/${url.slice("/music/".length)}`;
+      if (url.startsWith("/")) return `${mediaBaseUrl}${url}`;
       return url;
     }
 
@@ -706,60 +851,60 @@ export async function POST(req: Request) {
     let resolvedShortConfig = shortVideoConfig;
     if (isShortVideo && shortVideoConfig) {
       // Resolve each bgVideo — skip files that aren't in stocks/ (stale client state)
-      // Also probe duration and clamp clipDuration/end-start to avoid out-of-range frames
-      const resolvedBgVideos: typeof shortVideoConfig.bgVideos = [];
-      for (const v of shortVideoConfig.bgVideos ?? []) {
-        try {
-          const resolvedSrc = toAbsolute(resolveStockUrl(v.src));
-          // Probe local file for actual duration
-          const localPath = toLocalFilePathIfInternal(resolvedSrc);
-          let actualDur: number | null = null;
-          if (localPath) actualDur = await probeVideoDurationSec(localPath);
-
-          let safeClipDuration = v.clipDuration;
-          let safeEnd = v.end;
-          let safeClipOffset = v.clipOffset ?? 0;
-          if (actualDur != null) {
-            // 0.5s safety margin — compositor errors happen when the last frames
-            // are missing from the container even though the duration header claims they exist
-            const safeMax = Math.max(0.5, actualDur - 0.5);
-            if (!safeClipDuration || safeClipDuration > safeMax) safeClipDuration = safeMax;
-            const segLen = v.end - v.start;
-            if (segLen > safeMax) {
-              safeEnd = v.start + safeMax;
-              console.warn(`[render] clamped bgVideo segment ${(v.end - v.start).toFixed(2)}s → ${(safeEnd - v.start).toFixed(2)}s (file is ${actualDur.toFixed(2)}s)`);
-            }
-            // Clamp clipOffset so startFrom never exceeds safe duration
-            if (safeClipOffset >= safeMax) {
-              safeClipOffset = safeClipOffset % safeMax;
-            }
-          }
-          resolvedBgVideos.push({ ...v, src: resolvedSrc, end: safeEnd, clipDuration: safeClipDuration, clipOffset: safeClipOffset });
-        } catch (e) {
-          console.warn(`[render] skipping missing bgVideo: ${v.src} — ${(e as Error).message}`);
+      // Probe duration and clamp source metadata. Keep the desired timeline end intact;
+      // the coverage pass below splits/reuses media instead of creating a black gap.
+      const renderCoverage = await prepareBrollRenderAssets(
+        shortVideoConfig.bgVideos ?? [],
+        durationInFrames / fps,
+        fps,
+        {
+          requestedWindowCount: shortVideoConfig.requestedBrollWindowCount,
+          resolveAsset: (src) => {
+            const resolvedSrc = toAbsolute(resolveStockUrl(src));
+            return {
+              src: resolvedSrc,
+              localPath: toLocalFilePathIfInternal(resolvedSrc),
+            };
+          },
+          isUsableLocalFile: (localPath) =>
+            fs.existsSync(localPath) && fs.statSync(localPath).size > 1_500,
+          probeDurationSec: probeVideoDurationSec,
+          onResolutionError: (asset, error) => {
+            console.warn(
+              `[render] skipping missing bgVideo: ${asset.src} — ${(error as Error).message}`,
+            );
+          },
+        },
+      ).catch(async (error: unknown) => {
+        if (error instanceof BrollCoverageError && error.telemetry) {
+          await recordTelemetryEvent(userId, {
+            name: "broll_coverage_rejected",
+            category: "error",
+            source: "server",
+            step: "render.coverage",
+            status: "error",
+            properties: error.telemetry,
+          }).catch(() => {});
         }
-      }
-      if (resolvedBgVideos.length === 0) {
-        throw new Error("ไม่มี stock video ที่ใช้ได้ — กรุณา RERUN ขั้นตอน Stock แล้วลองใหม่");
-      }
-
-      // Gap-fill pass: if a segment was clamped short, extend the NEXT segment's start
-      // back to fill the gap — prevents black screen between clips (which makes subs
-      // look out of sync even when timing is correct)
-      for (let i = 0; i < resolvedBgVideos.length - 1; i++) {
-        const cur  = resolvedBgVideos[i];
-        const next = resolvedBgVideos[i + 1];
-        if (next.start > cur.end + 0.04) {
-          console.warn(`[render] gap ${cur.end.toFixed(2)}s→${next.start.toFixed(2)}s — extending next segment back`);
-          next.start = cur.end;
-        }
+        throw error;
+      });
+      const { coverage, telemetry: coverageTelemetryProperties } = renderCoverage;
+      if (coverageTelemetryProperties.coverageRepairCount > 0) {
+        await recordTelemetryEvent(userId, {
+          name: "broll_coverage_repaired",
+          category: "performance",
+          source: "server",
+          step: "render.coverage",
+          status: "done",
+          properties: coverageTelemetryProperties,
+        }).catch(() => {});
       }
 
       resolvedShortConfig = {
         ...shortVideoConfig,
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
         bgmFile: safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
-        bgVideos: resolvedBgVideos,
+        bgVideos: coverage.segments,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
       // bgm: safeBgmOrDrop already removed any unplayable value — never throws on music
@@ -777,11 +922,23 @@ export async function POST(req: Request) {
     let resolvedSubtitleConfig = subtitleOverlayConfig;
     if (isSubtitleOverlay && subtitleOverlayConfig) {
       const videoUrl = subtitleOverlayConfig.videoUrl;
-      const resolvedUrl = videoUrl?.startsWith("/") ? `${baseUrl}${videoUrl}` : videoUrl;
+      const resolvedUrl = videoUrl?.startsWith("/") ? `${mediaBaseUrl}${videoUrl}` : videoUrl;
       const resolvedBgm = subtitleOverlayConfig.bgmFile
         ? safeBgmOrDrop(toAbsolute(resolveStockUrl(subtitleOverlayConfig.bgmFile)))
         : undefined;
-      resolvedSubtitleConfig = { ...subtitleOverlayConfig, videoUrl: resolvedUrl, bgmFile: resolvedBgm };
+      resolvedSubtitleConfig = {
+        ...subtitleOverlayConfig,
+        videoUrl: resolvedUrl,
+        bgmFile: resolvedBgm,
+        ...(normalizedLogoOverlay
+          ? {
+              logoOverlay: {
+                ...normalizedLogoOverlay,
+                src: `${mediaBaseUrl}${normalizedLogoOverlay.src}`,
+              },
+            }
+          : {}),
+      };
       if (resolvedSubtitleConfig.videoUrl) assertExistingAsset(videoUrl!, "subtitle video");
       // bgm: best-effort, dropped if unplayable (no throw)
       console.log(`[render] subtitle-overlay bgmFile: ${resolvedBgm ?? "(none)"}`);
@@ -845,6 +1002,9 @@ export async function POST(req: Request) {
     // actually charged — a free burn holds no reservation, an unpaid burn refunds on fail
     // just like a render. The worker claims the row, rebuilds the full input (adding its
     // own bundleCache), renders, and records the ChargedClip on success (RENDER only).
+    // Re-check after reservation in the same setup flow. If drain won the race, the outer
+    // catch refunds the exact funding bucket once and returns retryable maintenance.
+    await assertRenderEnqueueOpen();
     if (process.env.RENDER_VIA_QUEUE === "1") {
       const isBurn = isSubtitleOverlay; // !!body.subtitleOverlayConfig
       // The bundleCache reference cannot cross to a separate worker process — strip it.
@@ -1088,6 +1248,11 @@ export async function POST(req: Request) {
           // 4th arg persists the credit spend (credit-funded overflow). Null → undefined
           // → byte-identical to the prior 3-arg call (creditsSpent stays null on the row).
           await recordChargedClip(userId, videoUrl, useMinuteQuota ? reservedMinutes : undefined, creditsSpent ?? undefined).catch(() => {});
+        } else if (rerenderSkipCharge && !isSubtitleOverlay) {
+          // FREE b-roll re-render (legacy in-process path): record the NEW base as a paid clip so
+          // the subsequent BURN of it is free too (isBurnAlreadyPaid). chargedMinutes=0 = this base
+          // cost no minutes. (The RENDER_VIA_QUEUE worker records the same on its own success path.)
+          await recordChargedClip(userId, videoUrl, 0).catch(() => {});
         }
         createNotification({
           userId,
@@ -1159,11 +1324,35 @@ export async function POST(req: Request) {
       // Bucket-aware refund (mirrors the in-flight refundReservedClip). credit-funded →
       // refundCredits; minute-funded → refundMinutes; else clips. CREDITS_LIVE off →
       // creditsSpent null → identical to the prior refundMinutes/refundClipUsage branch.
-      await refundReservation(
-        reservedUserId,
+      const refund = () => refundReservation(
+        reservedUserId!,
         { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent, creditsFromGranted },
-        "render-setup-refund"
-      ).catch(() => {});
+        "render-setup-refund",
+      );
+      if (error instanceof RenderDeployDrainError) {
+        await error.refundOnce(refund).catch(() => {});
+      } else {
+        await refund().catch(() => {});
+      }
+    }
+    if (error instanceof RenderDeployDrainError) {
+      return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });
+    }
+    if (error instanceof BrollCoverageError) {
+      return NextResponse.json(
+        {
+          error: error.code,
+          retryable: true,
+          metrics: {
+            requestedSpanCount: error.metrics.requestedSpanCount,
+            availableAssetCount: error.metrics.availableAssetCount,
+            coverageSegmentCount: error.metrics.outputSegmentCount,
+            coverageGapCount: error.metrics.gapCount,
+            uncoveredTailSec: error.metrics.uncoveredTailSec,
+          },
+        },
+        { status: 422 },
+      );
     }
     console.error("Render setup error:", error);
     const detail = error instanceof Error ? error.message : String(error);

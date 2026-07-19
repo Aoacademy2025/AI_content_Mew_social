@@ -3,13 +3,10 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import path from "path";
 import fs from "fs";
+import { decryptKey } from "@/lib/key-crypto";
 
 export const maxDuration = 120;
 export const runtime = "nodejs";
-
-function decrypt(k: string) {
-  return Buffer.from(k, "base64").toString("utf-8");
-}
 
 // POST /api/heygen/upload-asset
 // Body: { fileUrl } — local /renders/xxx.mp4 หรือ /renders/img-xxx.png
@@ -24,7 +21,7 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
-  const heygenKey = decrypt(user.heygenKey);
+  const heygenKey = decryptKey(user.heygenKey);
 
   const localPath = path.join(process.cwd(), "public", fileUrl.replace(/^\/api\/renders\//, "/renders/"));
   if (!fs.existsSync(localPath)) return NextResponse.json({ error: `File not found: ${fileUrl}` }, { status: 404 });

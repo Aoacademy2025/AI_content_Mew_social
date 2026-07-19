@@ -3,13 +3,10 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { mapHeygenPollResponse } from "@/lib/heygen-poll";
 import { fetchWithBudget } from "@/lib/fetch-budget";
+import { decryptKey } from "@/lib/key-crypto";
 
 export const maxDuration = 30;
 export const runtime = "nodejs";
-
-function decrypt(encrypted: string): string {
-  return Buffer.from(encrypted, "base64").toString("utf-8");
-}
 
 // POST /api/videos/poll-avatar
 // Body: { videoId: string }
@@ -38,7 +35,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "HeyGen API key not set", missingKey: "heygen" }, { status: 400 });
     }
 
-    const heygenKey = decrypt(user.heygenKey);
+    const heygenKey = decryptKey(user.heygenKey);
 
     // HeyGen status budget: 15s/attempt, 1 retry (network/429/5xx only).
     // returnHttpErrors keeps PR-1's res.status → terminal-state mapping working

@@ -1,3 +1,5 @@
+import { decryptKey } from "@/lib/key-crypto";
+
 export class KeyRequiredError extends Error {
   constructor(public provider = "gemini") { super("KEY_REQUIRED:" + provider); }
 }
@@ -10,7 +12,7 @@ export function resolveGeminiKey(user: { geminiKey: string | null; plan: string 
   if (managed && serverKey) return { key: serverKey, mode: "managed" };
   // Flag off (or managed but server key missing) → legacy BYOK, byte-identical to before.
   if (user.geminiKey && user.geminiKey.trim()) {
-    const decoded = Buffer.from(user.geminiKey.trim(), "base64").toString("utf-8");
+    const decoded = decryptKey(user.geminiKey.trim());
     return { key: decoded, mode: "byok" };
   }
   throw new KeyRequiredError("gemini");

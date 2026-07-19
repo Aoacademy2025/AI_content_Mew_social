@@ -1,0 +1,23 @@
+import { NextResponse } from "next/server";
+import { apiError } from "@/lib/api-error";
+import { getBrandAssetImage } from "@/lib/brand-asset-api.server";
+import { getCurrentUser } from "@/lib/clerk-auth";
+
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+): Promise<NextResponse> {
+  try {
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const { id } = await params;
+    return await getBrandAssetImage(user, id);
+  } catch {
+    return apiError({
+      route: "user/brand-assets/[id]/image",
+      error: "Brand asset image request failed",
+    });
+  }
+}

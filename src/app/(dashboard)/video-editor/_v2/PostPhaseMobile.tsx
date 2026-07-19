@@ -9,15 +9,16 @@
  * (nudge ±100ms / ตั้งจุด=ตำแหน่งที่เล่นอยู่) — ไม่แตะ math ของ subtitle/avatar.
  */
 
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  CheckCircle2, ChevronDown, Download, Loader2, Move, Pause, Pencil, Play, SlidersHorizontal, Undo2,
+  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Loader2, Move, Pause, Pencil, Play, SlidersHorizontal, Undo2,
 } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
 import {
   V2_QUICK_STYLES, PRESETS_DATA, EFFECTS_DATA, FONTS_LIST,
+  EDITABLE_EFFECT_PRESETS_DATA, BUILT_IN_EFFECT_PRESETS_DATA,
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   V2_CARD_LEN_OPTIONS, type V2CardLen,
@@ -26,6 +27,14 @@ import type { V2JobState } from "./useV2Job";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
+import { LogoOverlayControls } from "./LogoOverlayControls";
+import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { MobileSheet } from "./MobileSheet";
+import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
+import { brollWindowSpans } from "@/lib/broll-spans";
+import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
+import { trackEvent } from "@/lib/client-telemetry";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -35,13 +44,58 @@ function fmtMs(ms: number) {
 const avatarModeLabel = (m?: string | null) =>
   m === "full" ? "ทั้งคลิป" : m === "bookend-both" ? "เปิด-ปิด" : m === "bookend" ? "เปิด" : "";
 
-export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
-  job: V2JobState; script: string; onExported: () => void; onNewProject: () => void;
+const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
+
+export function PostPhaseMobile({
+  job,
+  script,
+  onExportJob,
+  onAdoptJob,
+  onNewProject,
+  onPreviewError,
+  projectId,
+  logoOverlay,
+  onLogoOverlayChange,
+  logoEligible,
+  projectSaveStatus,
+  onRetryProjectSave,
+  brollRegionPreference = "auto",
+  brollVisualStyle = "auto",
+  downloadFilename,
+}: {
+  job: V2JobState; script: string;
+  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
+  onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  onPreviewError: () => void;
+  projectId: string | null;
+  logoOverlay?: LogoOverlayConfig;
+  onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  logoEligible: boolean;
+  projectSaveStatus: "idle" | "saving" | "saved" | "error";
+  onRetryProjectSave: () => void;
+  brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
+  downloadFilename: string;
 }) {
-  const ed = usePostPhaseEditor(job, script, { onExported });
+  const ed = usePostPhaseEditor(job, script, {
+    onExportJob,
+    onAdoptJob,
+    projectId,
+    logoOverlay,
+    onLogoOverlayChange,
+    logoEligible,
+    projectSaveStatus,
+    onRetryProjectSave,
+    surface: "mobile",
+  });
   const [styleOpen, setStyleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [logoOpen, setLogoOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const logoTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
+  // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
+  // (same reasoning as PostPhase.tsx's desktop gate).
+  const brollEditEnabled = BROLL_WINDOW_EDIT && ed.preview?.avatarModel !== "upload-cutaway";
 
   const selectedCap = ed.captions[ed.selected];
   const durationMs = Math.max(
@@ -51,6 +105,13 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
   );
   const pct = Math.min(100, Math.max(0, (ed.timeMs / durationMs) * 100));
   const busy = ed.exp.phase === "burning" || ed.exp.phase === "saving";
+  // มือถือไม่มี timeline (ตัดทิ้งตั้งใจ) — แถบชิปนี้คือทางเข้าเลือกหน้าต่างบีโรลแทน
+  const brollSpans = useMemo(() => brollWindowSpans(ed.previewConfig, durationMs), [ed.previewConfig, durationMs]);
+
+  useEffect(() => {
+    if (!logoOpen) return;
+    trackEvent("logo_overlay_panel_opened", { properties: { surface: "mobile" } });
+  }, [logoOpen]);
 
   function togglePlay() {
     const v = ed.videoRef.current;
@@ -71,7 +132,22 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
     const cap = ed.captions[i];
     if (v && cap) v.currentTime = cap.startMs / 1000 + 0.01;
     v?.pause(); // กันเสียงเล่นค้างหลัง sheet ที่บัง preview
+    setStyleOpen(false);
+    setLogoOpen(false);
     setEditOpen(true);
+  }
+
+  function openStyle() {
+    setEditOpen(false);
+    setLogoOpen(false);
+    setStyleOpen(true);
+  }
+
+  function openLogo() {
+    ed.videoRef.current?.pause();
+    setEditOpen(false);
+    setStyleOpen(false);
+    setLogoOpen(true);
   }
 
   // timing edits ทั้งหมดเข้าทาง handleCaptionsChange(next, true) เดียวกับ timeline drag commit
@@ -112,7 +188,7 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
         </div>
         <video src={ed.exp.url} controls playsInline style={{ maxHeight: "44vh", borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
         <div className="flex w-full max-w-[360px] flex-col gap-2.5" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <a href={ed.exp.url} download className="block">
+          <a href={ed.exp.url} download={downloadFilename} className="block">
             <BtnPrimary style={{ width: "100%", minHeight: 46 }}><span className="flex items-center justify-center gap-2"><Download size={15} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
           <a href="/videos" className="block"><BtnSecondary style={{ width: "100%", minHeight: 46 }}>ดูใน Gallery</BtnSecondary></a>
@@ -126,8 +202,8 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* ── preview ติดบน + สครับ ── */}
-      <div className="shrink-0" style={{ background: "#000", borderBottom: `1px solid ${color.cardBorder}` }}>
-        <div style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>
+      <div data-mobile-preview="true" className="shrink-0" style={{ background: "#000", borderBottom: `1px solid ${color.cardBorder}` }}>
+        <div data-mobile-video-preview-frame="true" style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>
           <video
             ref={ed.videoRef}
             src={ed.baseUrl}
@@ -135,8 +211,10 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
             onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
             onPlay={() => ed.setPlaying(true)}
             onPause={() => ed.setPlaying(false)}
+            onError={onPreviewError}
             className="h-full w-full object-cover"
           />
+          <LogoOverlayPreview value={logoOverlay} asset={ed.logo.asset} />
           {/* เส้นไกด์ตำแหน่งซับ */}
           <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
           {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) */}
@@ -166,7 +244,7 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
               tailSecs={ed.preview.avatarTailSecs ?? 5}
               avatarVideoUrl={ed.preview.avatarVideoUrl!}
               tailAvatarUrl={ed.preview.tailAvatarUrl ?? null}
-              bgVideoUrl={ed.preview.compositeBaseUrl!}
+              bgVideoUrl={ed.compositeBaseUrl!}
               jobId={job.jobId}
               onClose={() => ed.setAdjustingAvatar(false)}
               onDone={(url) => {
@@ -206,6 +284,44 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
         )}
       </div>
 
+      <div
+        data-mobile-editor-actions="true"
+        className="flex shrink-0 gap-2 px-3.5 py-2"
+        style={{ background: color.bgTimeline, borderBottom: `1px solid ${color.cardBorder}` }}
+      >
+        <button
+          type="button"
+          data-mobile-editor-action="subtitle"
+          onClick={() => openEdit(ed.activeIdx >= 0 ? ed.activeIdx : ed.selected)}
+          style={mobileEditorActionStyle}
+        >
+          <Pencil size={15} aria-hidden="true" />
+          <span>แก้ซับ</span>
+        </button>
+        <button
+          ref={logoTriggerRef}
+          type="button"
+          data-mobile-editor-action="logo"
+          aria-haspopup="dialog"
+          aria-expanded={logoOpen}
+          onClick={openLogo}
+          style={mobileEditorActionStyle}
+        >
+          <ImageIcon size={16} aria-hidden="true" />
+          <span>โลโก้</span>
+          {logoEnabled && (
+            <span
+              data-logo-enabled-indicator="true"
+              className="inline-flex items-center gap-1"
+              style={{ padding: "2px 6px", borderRadius: radius.pill, background: "rgba(52,211,153,.13)", color: color.success, fontSize: 10, fontWeight: 600 }}
+            >
+              <Check size={11} strokeWidth={3} aria-hidden="true" />
+              เปิดอยู่
+            </span>
+          )}
+        </button>
+      </div>
+
       {/* ── body: สถานะ + รายการ์ดซับ + สรุปคลิป ── */}
       <div onScroll={ed.onListScroll} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" style={{ WebkitOverflowScrolling: "touch" }}>
         <div className="flex items-center justify-between gap-2 px-3.5 pt-3">
@@ -219,6 +335,34 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
         {ed.exp.phase === "error" && (
           <div className="px-3.5 pt-2" style={{ fontSize: 11.5, color: color.danger }}>
             {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
+          </div>
+        )}
+
+        {/* บีโรล — ไม่มี timeline บนมือถือ ชิปแนวนอนนี้คือทางเข้าเลือกหน้าต่างแทน (Task 11) */}
+        {brollEditEnabled && brollSpans.length > 0 && (
+          <div className="px-3.5 pb-1 pt-3">
+            <GroupLabel style={{ display: "block", marginBottom: 8 }}>บีโรล ({brollSpans.length})</GroupLabel>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {brollSpans.map((s) => {
+                const edited = ed.windowEdits.has(s.index);
+                return (
+                  <button
+                    key={s.index}
+                    onClick={() => ed.setSelectedWindow(s.index)}
+                    className="flex shrink-0 flex-col items-start gap-1 text-left"
+                    style={{
+                      padding: "8px 12px", minWidth: 96, borderRadius: radius.card,
+                      background: edited ? color.selectedBg : "rgba(255,255,255,.035)",
+                      border: `1px solid ${edited ? color.selectedBorder : color.cardBorder}`,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 10, color: color.textFaint }}>{fmtMs(s.startMs)}–{fmtMs(s.endMs)}</span>
+                    <span style={{ fontSize: 11.5, color: color.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>{s.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -287,7 +431,7 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
           className="flex shrink-0 items-stretch gap-2.5"
           style={{ padding: "12px 14px calc(12px + env(safe-area-inset-bottom))", borderTop: `1px solid ${color.cardBorder}`, background: "rgba(10,10,16,.92)", backdropFilter: "blur(12px)" }}
         >
-          <BtnSecondary onClick={() => setStyleOpen(true)} style={{ flex: 1, minHeight: 46, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+          <BtnSecondary onClick={openStyle} style={{ flex: 1, minHeight: 46, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
             <SlidersHorizontal size={16} /> สไตล์ซับ
           </BtnSecondary>
           <BtnPrimary
@@ -301,7 +445,7 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
       )}
 
       {/* ── edit bottom-sheet ── */}
-      <Sheet open={editOpen} onClose={() => setEditOpen(false)} title={`การ์ดที่ ${ed.selected + 1}`}>
+      <MobileSheet open={editOpen} onClose={() => setEditOpen(false)} title={`การ์ดที่ ${ed.selected + 1}`} size="large">
         {selectedCap && (
           <>
             <GroupLabel style={{ display: "block", margin: "10px 0 7px" }}>ข้อความ</GroupLabel>
@@ -327,10 +471,10 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
             </div>
           </>
         )}
-      </Sheet>
+      </MobileSheet>
 
       {/* ── style full-screen sheet ── */}
-      <Sheet open={styleOpen} onClose={() => setStyleOpen(false)} title="สไตล์ซับ (ทั้งคลิป)" full>
+      <MobileSheet open={styleOpen} onClose={() => setStyleOpen(false)} title="สไตล์ซับ (ทั้งคลิป)" size="large">
         <div className="flex flex-col gap-5 pt-2">
           {ed.canAdjustAvatar && (
             <section className="flex flex-col gap-2">
@@ -378,9 +522,9 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
           </section>
 
           <section className="flex flex-col gap-2">
-            <GroupLabel>สไตล์ทั้งหมด ({PRESETS_DATA.length})</GroupLabel>
+            <GroupLabel>ปรับเอฟเฟกต์ได้ ({EDITABLE_EFFECT_PRESETS_DATA.length})</GroupLabel>
             <div className="grid grid-cols-3 gap-1.5">
-              {PRESETS_DATA.map((p) => (
+              {EDITABLE_EFFECT_PRESETS_DATA.map((p) => (
                 <button
                   key={p.value}
                   onClick={() => ed.set("preset", p.value)}
@@ -390,6 +534,23 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
                 </button>
               ))}
             </div>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <GroupLabel>เอฟเฟกต์ติดมากับสไตล์ ({BUILT_IN_EFFECT_PRESETS_DATA.length})</GroupLabel>
+            <div className="grid grid-cols-3 gap-1.5">
+              {BUILT_IN_EFFECT_PRESETS_DATA.map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => ed.set("preset", p.value)}
+                  title="สไตล์นี้มีเอฟเฟกต์ในตัว"
+                  style={{ borderRadius: 9, padding: "10px 4px", fontSize: 11, minHeight: 42, background: ed.cfg.preset === p.value ? color.selectedBg : color.cardBg, border: `1px solid ${ed.cfg.preset === p.value ? color.selectedBorder : color.cardBorder}`, color: ed.cfg.preset === p.value ? color.primary300 : color.textSecondary, cursor: "pointer", fontFamily: font.body }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <span style={{ fontSize: 10, color: color.textFaintest }}>เลือกกลุ่มนี้แล้วระบบจะใช้เอฟเฟกต์ประจำสไตล์แทนปุ่มเอฟเฟกต์ด้านล่าง</span>
           </section>
 
           <section className="flex flex-col gap-2">
@@ -514,7 +675,29 @@ export function PostPhaseMobile({ job, script, onExported, onNewProject }: {
             />
           </section>
         </div>
-      </Sheet>
+      </MobileSheet>
+
+      <MobileSheet
+        open={logoOpen}
+        onClose={() => setLogoOpen(false)}
+        title="โลโก้"
+        size="medium"
+        triggerRef={logoTriggerRef}
+      >
+        <div className="pt-2">
+          <LogoOverlayControls
+            value={logoOverlay}
+            eligible={logoEligible}
+            editor={ed.logo}
+          />
+        </div>
+      </MobileSheet>
+
+      {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
+
+      {brollEditEnabled && ed.selectedWindow != null && (
+        <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} />
+      )}
     </div>
   );
 }
@@ -582,48 +765,19 @@ const snapBtnStyle: React.CSSProperties = {
   color: color.primary300, fontSize: 12.5, cursor: "pointer", fontFamily: font.body,
 };
 
-// ── bottom sheet (glass over scrim) ─────────────────────────────────────────
-function Sheet({ open, onClose, title, full, children }: {
-  open: boolean;
-  onClose: () => void;
-  title: string;
-  full?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <>
-      <div
-        onClick={onClose}
-        aria-hidden
-        style={{ position: "fixed", inset: 0, zIndex: 40, background: "rgba(0,0,0,.55)", opacity: open ? 1 : 0, pointerEvents: open ? "auto" : "none", transition: "opacity 220ms ease" }}
-      />
-      <div
-        role="dialog"
-        aria-modal="true"
-        style={{
-          position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 41,
-          maxHeight: full ? "94%" : "88%",
-          display: "flex", flexDirection: "column",
-          transform: open ? "translateY(0)" : "translateY(100%)",
-          transition: "transform 260ms cubic-bezier(.22,1,.36,1)",
-          pointerEvents: open ? "auto" : "none",
-          background: "rgba(20,20,32,.92)",
-          backdropFilter: "blur(28px) saturate(150%)",
-          WebkitBackdropFilter: "blur(28px) saturate(150%)",
-          borderTop: "1px solid rgba(255,255,255,.12)",
-          borderRadius: "22px 22px 0 0",
-          boxShadow: "0 -20px 60px rgba(0,0,0,.5)",
-        }}
-      >
-        <div style={{ width: 40, height: 4, borderRadius: 999, background: "rgba(255,255,255,.22)", margin: "10px auto 4px", flex: "none" }} />
-        <div className="flex items-center justify-between px-4 pb-2 pt-1" style={{ flex: "none" }}>
-          <span style={{ font: `600 15px ${font.heading}`, color: color.text }}>{title}</span>
-          <BtnGhost onClick={onClose} style={{ padding: "7px 14px", minHeight: 36 }}>เสร็จ</BtnGhost>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4" style={{ paddingBottom: "calc(20px + env(safe-area-inset-bottom))", WebkitOverflowScrolling: "touch" }}>
-          {children}
-        </div>
-      </div>
-    </>
-  );
-}
+const mobileEditorActionStyle: React.CSSProperties = {
+  minHeight: 44,
+  flex: 1,
+  minWidth: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 7,
+  padding: "7px 9px",
+  borderRadius: radius.control,
+  border: `1px solid ${color.cardBorder}`,
+  background: "rgba(255,255,255,.045)",
+  color: color.textSecondary,
+  font: `500 12.5px ${font.body}`,
+  cursor: "pointer",
+};

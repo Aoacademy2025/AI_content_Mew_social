@@ -485,7 +485,6 @@ export default function ShortVideoPage() {
   const [systemTracks, setSystemTracks] = useState<SystemTrack[]>([]);
 
   const [stockCacheInfo, setStockCacheInfo] = useState<{ count: number; sizeMb: number } | null>(null);
-  const [clearingCache, setClearingCache] = useState(false);
 
   // Render progress popup
   const [renderPopupOpen, setRenderPopupOpen] = useState(false);
@@ -603,21 +602,6 @@ export default function ShortVideoPage() {
       body: JSON.stringify({ geminiVoiceName: val }),
     }).catch(() => {});
   }
-
-  async function clearStockCache() {
-    setClearingCache(true);
-    try {
-      const res = await fetch("/api/stocks", { method: "DELETE" });
-      const d = await res.json();
-      toast.success(`ลบ stock cache สำเร็จ ${d.deleted} ไฟล์ (${d.sizeMb} MB)`);
-      setStockCacheInfo({ count: 0, sizeMb: 0 });
-    } catch {
-      toast.error("ไม่สามารถลบ cache ได้ กรุณาลองใหม่อีกครั้ง");
-    } finally {
-      setClearingCache(false);
-    }
-  }
-
 
   // Fetch avatar preview image when avatarId changes (debounced)
   useEffect(() => {
@@ -810,7 +794,7 @@ export default function ShortVideoPage() {
       return "ไม่สามารถเชื่อมต่อ Server — กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต";
     if (raw.toLowerCase().includes("keywords required") || raw.includes("ไม่สามารถดึง keywords")) {
       setShowClearCacheDialog(true);
-      return "Keywords ขาดหาย — กรุณาล้างแคชแล้วรันใหม่";
+      return "Keywords ขาดหาย — กรุณารีเซ็ตสถานะงานแล้วรันใหม่";
     }
     if (raw.includes("pexels") || raw.includes("Pexels"))
       return "Pexels API มีปัญหา — กรุณาตรวจสอบ API Key ใน Settings แล้วลองใหม่";
@@ -1187,9 +1171,20 @@ export default function ShortVideoPage() {
       setStep("render", "error", msg);
     };
 
+    // Single consolidated poller (was two overlapping setInterval loops — this one hitting
+    // render-progress @600ms plus a second hitting render-status @3000ms for the same jobId).
+    // render-progress already returns videoUrl/error on completion, so it alone drives both
+    // the progress UI and job resolution below. Pauses while the tab is hidden — avatar
+    // renders run 10-25 min, no reason to hammer the server for a backgrounded tab — mirroring
+    // the visibilitychange pattern the HeyGen avatar poll further down this file already uses.
+    let tabHidden = document.hidden;
+    const handleRenderPollVisibility = () => { tabHidden = document.hidden; };
+    document.addEventListener("visibilitychange", handleRenderPollVisibility);
+
     let pollStopped = false;
     const stopRenderPoll = () => {
       pollStopped = true;
+      document.removeEventListener("visibilitychange", handleRenderPollVisibility);
       if (renderPollTimer !== null) {
         clearInterval(renderPollTimer);
         renderPollTimer = null;
@@ -1202,10 +1197,34 @@ export default function ShortVideoPage() {
     stopRenderPollRef.current = stopRenderPoll;
 
     let resolveRenderUrl: ((url: string) => void) | null = null;
+    let rejectRenderUrl: ((err: Error) => void) | null = null;
     let currentJobId: string | null = null;
 
     renderPollTimer = setInterval(async () => {
-      if (pollStopped || renderFailedMessage) return;
+      if (pollStopped) return;
+      if (tabHidden) return; // paused — tab is backgrounded
+      if (renderFailedMessage) {
+        // Terminal failure was flagged (by this loop or the 120min timeout below) — reject
+        // the awaited render Promise now (this used to be statusInterval's job).
+        if (rejectRenderUrl) {
+          const reject = rejectRenderUrl;
+          rejectRenderUrl = null;
+          resolveRenderUrl = null;
+          reject(new Error(renderFailedMessage));
+        }
+        return;
+      }
+      // If a newer job has taken over, silently abandon this one (was statusInterval's job).
+      if (currentJobId && activeJobIdRef.current !== currentJobId) {
+        pollStopped = true;
+        if (rejectRenderUrl) {
+          const reject = rejectRenderUrl;
+          rejectRenderUrl = null;
+          resolveRenderUrl = null;
+          reject(new Error("__SUPERSEDED__"));
+        }
+        return;
+      }
       // Don't poll without a jobId — avoids reading stale progress file from a previous render
       if (!currentJobId) return;
       try {
@@ -1229,6 +1248,7 @@ export default function ShortVideoPage() {
           if (CREDITS_LIVE_CLIENT && progressData.creditsSpent != null) creditsSpentThisRender = progressData.creditsSpent;
           resolveRenderUrl(progressData.videoUrl);
           resolveRenderUrl = null;
+          rejectRenderUrl = null;
           return;
         }
         if (progressData?.error) {
@@ -1242,8 +1262,20 @@ export default function ShortVideoPage() {
           setRenderProgress(normalized);
           setStep("render", "running", `Rendering... ${normalized}%`);
         }
-      } catch {
+      } catch (e) {
         if (pollStopped) return;
+        // Abort (e.g. user cancels) — reject immediately with the real AbortError, same as
+        // the old statusInterval loop did, so the outer catch's clean-abort path still fires.
+        if (e instanceof Error && e.name === "AbortError") {
+          pollStopped = true;
+          if (rejectRenderUrl) {
+            const reject = rejectRenderUrl;
+            rejectRenderUrl = null;
+            resolveRenderUrl = null;
+            reject(e);
+          }
+          return;
+        }
         pollFailCount += 1;
         if (pollFailCount >= 6) {
           markRenderError("เชื่อมต่อการติดตาม progress ล้มเหลว กรุณารีโหลดหน้าแล้วลองใหม่");
@@ -1308,45 +1340,12 @@ export default function ShortVideoPage() {
       currentJobId = jobId;
       activeJobIdRef.current = jobId; // mark this as the active job
 
-      let statusNotFoundCount = 0;
+      // Resolution/rejection now happens from inside renderPollTimer's tick above (it
+      // already reads videoUrl/error off render-progress, plus supersede + terminal-failure
+      // checks ported in from the old statusInterval loop this replaced).
       const url = await new Promise<string>((resolve, reject) => {
         resolveRenderUrl = resolve;
-        const statusInterval = setInterval(async () => {
-          // If a newer job has taken over, silently abandon this one
-          if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-          if (renderFailedMessage) { clearInterval(statusInterval); reject(new Error(renderFailedMessage)); return; }
-          try {
-            const statusRes = await fetch(`/api/videos/render-status?jobId=${encodeURIComponent(jobId)}`, {
-              cache: "no-store",
-              signal: abortControllerRef.current?.signal,
-            });
-            const statusData = await statusRes.json();
-            if (activeJobIdRef.current !== jobId) { clearInterval(statusInterval); resolveRenderUrl = null; reject(new Error("__SUPERSEDED__")); return; }
-            if (statusData.status === "done" && statusData.videoUrl) {
-              if (CREDITS_LIVE_CLIENT && statusData.creditsSpent != null) creditsSpentThisRender = statusData.creditsSpent;
-              clearInterval(statusInterval);
-              resolveRenderUrl = null;
-              resolve(statusData.videoUrl as string);
-            } else if (statusData.status === "error") {
-              clearInterval(statusInterval);
-              resolveRenderUrl = null;
-              reject(new Error(statusData.error ?? "Render failed"));
-            } else if (statusData.status === "not_found" || statusRes.status === 404) {
-              statusNotFoundCount += 1;
-              if (statusNotFoundCount >= 1200) {
-                clearInterval(statusInterval);
-                resolveRenderUrl = null;
-                reject(new Error("Render job lost — server may have restarted. Please try again."));
-              }
-            }
-          } catch (e) {
-            if (e instanceof Error && e.name === "AbortError") {
-              clearInterval(statusInterval);
-              resolveRenderUrl = null;
-              reject(e);
-            }
-          }
-        }, 3000);
+        rejectRenderUrl = reject;
       });
 
       // Final check: only use result if this job is still active
@@ -1611,6 +1610,9 @@ export default function ShortVideoPage() {
             mode: "chromakey",
             noScale: true,
             chromaColor: chromaColor.replace("#", "0x"),
+            // Sliders default to 0.28/0.04 (legacy triple) → server auto-detects the real green
+            // shade. Moving either away from that default opts OUT of auto-detect and keys with the
+            // hardcoded chromaColor above verbatim — no behavior change, just documenting it.
             chromaSimilarity,
             chromaBlend,
           })
@@ -1627,6 +1629,9 @@ export default function ShortVideoPage() {
             avatarOffsetX,
             avatarOffsetY,
             chromaColor: chromaColor.replace("#", "0x"),
+            // Sliders default to 0.28/0.04 (legacy triple) → server auto-detects the real green
+            // shade. Moving either away from that default opts OUT of auto-detect and keys with the
+            // hardcoded chromaColor above verbatim — no behavior change, just documenting it.
             chromaSimilarity,
             chromaBlend,
           }),
@@ -1750,7 +1755,11 @@ export default function ShortVideoPage() {
     try {
       const keysRes = await fetch("/api/user/api-keys");
       if (keysRes.ok) {
-        const keys = await keysRes.json();
+        // GET /api/user/api-keys returns { field: { set, last4 } } (never the raw key).
+        // Flatten to booleans so the presence checks below stay unchanged.
+        const rawKeys = await keysRes.json();
+        const keys: Record<string, boolean> = {};
+        for (const k in rawKeys) keys[k] = !!rawKeys[k]?.set;
         // Stock key check
         if (stockSource === "kie-image" && !keys.kieKey) {
           setMissingKey({ type: "kie", retryStep: "runAll" });
@@ -2171,7 +2180,11 @@ export default function ShortVideoPage() {
       try {
         const keysRes = await fetch("/api/user/api-keys");
         if (keysRes.ok) {
-          const keys = await keysRes.json();
+          // GET /api/user/api-keys returns { field: { set, last4 } } (never the raw key).
+          // Flatten to booleans so the presence checks below stay unchanged.
+          const rawKeys = await keysRes.json();
+          const keys: Record<string, boolean> = {};
+          for (const k in rawKeys) keys[k] = !!rawKeys[k]?.set;
           if (stockSource === "kie-image" && !keys.kieKey) {
             setMissingKey({ type: "kie", retryStep: step });
             return;
@@ -2539,14 +2552,14 @@ export default function ShortVideoPage() {
           <div className="w-full max-w-sm rounded-2xl overflow-hidden shadow-2xl"
             style={{ background: "hsl(240 9% 7%)", border: "1px solid hsl(0 0% 100% / 0.08)" }}>
             <div className="px-5 py-4" style={{ borderBottom: "1px solid hsl(0 0% 100% / 0.05)" }}>
-              <h3 className="text-base font-semibold text-white">⚠️ พบปัญหา: ข้อมูลหายจาก Cache</h3>
+              <h3 className="text-base font-semibold text-white">⚠️ พบปัญหา: ข้อมูล Keywords ขาดหาย</h3>
             </div>
             <div className="px-5 py-4 space-y-3">
               <p className="text-sm" style={{ color: "hsl(240 5% 70%)" }}>
                 ข้อมูล Keywords หายไปจาก cache ของเบราว์เซอร์ กรุณาลองทำตามขั้นตอนนี้:
               </p>
               <ol className="text-sm space-y-1 list-decimal list-inside" style={{ color: "hsl(240 5% 80%)" }}>
-                <li>กดปุ่ม <strong className="text-white">ล้าง Cache</strong> ด้านล่าง</li>
+                <li>กดปุ่ม <strong className="text-white">รีเซ็ตสถานะงาน</strong> ด้านล่าง</li>
                 <li>กด <strong className="text-white">Run</strong> ใหม่ตั้งแต่ต้น</li>
               </ol>
             </div>
@@ -2562,13 +2575,10 @@ export default function ShortVideoPage() {
                 style={{ background: "hsl(14 90% 55%)" }}
                 onClick={async () => {
                   setShowClearCacheDialog(false);
-                  try {
-                    await fetch("/api/stocks", { method: "DELETE" });
-                  } catch {}
                   pipe.current = {};
-                  toast.success("ล้าง Cache แล้ว — กด Run ได้เลย");
+                  toast.success("รีเซ็ตสถานะงานแล้ว — กด Run ได้เลย");
                 }}>
-                ล้าง Cache แล้วรันใหม่
+                รีเซ็ตแล้วรันใหม่
               </button>
             </div>
           </div>
@@ -3526,13 +3536,12 @@ export default function ShortVideoPage() {
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 {stockCacheInfo && stockCacheInfo.count > 0 && (
-                  <button onClick={clearStockCache} disabled={clearingCache}
-                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:opacity-40"
-                    style={{ background: "hsl(0 80% 35% / 0.15)", color: "hsl(0 80% 65%)", border: "1px solid hsl(0 80% 35% / 0.3)" }}
-                    title={`ลบ stock cache ${stockCacheInfo.count} ไฟล์`}>
-                    {clearingCache ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
-                    <span className="hidden sm:inline ml-1">Cache</span> {stockCacheInfo.sizeMb}MB
-                  </button>
+                  <span
+                    className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-semibold"
+                    style={{ background: "hsl(190 80% 35% / 0.12)", color: "hsl(190 80% 70%)", border: "1px solid hsl(190 80% 35% / 0.25)" }}
+                    title={`Stock media ${stockCacheInfo.count} ไฟล์ จัดการด้วยระบบ lifecycle`}>
+                    <span className="hidden sm:inline">Media</span> {stockCacheInfo.sizeMb}MB
+                  </span>
                 )}
                 {running && (
                   <button onClick={() => { abortRef.current = true; abortControllerRef.current?.abort(); }}

@@ -1,14 +1,7 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
-
-// Constant-time string compare — edge-runtime safe (no Node crypto), avoids
-// leaking the service secret via comparison timing.
-function timingSafeStrEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
+import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { AFF_COOKIE, sanitizeRefCode } from "@/lib/affiliate-ref";
 
 const isPublicRoute = createRouteMatcher([
   "/",
@@ -20,6 +13,7 @@ const isPublicRoute = createRouteMatcher([
   "/api/clerk-webhook(.*)",
   "/api/payments/webhook(.*)",
   "/api/plans(.*)",
+  "/api/health(.*)",   // public up/down probe for the OS watchdog (no auth, SELECT 1)
   "/api/founding/status(.*)",
   "/api/stocks(.*)",
   "/api/renders(.*)",
@@ -47,7 +41,17 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   if (userId && req.nextUrl.pathname === "/") {
-    return NextResponse.redirect(new URL("/dashboard", req.url));
+    const res = NextResponse.redirect(new URL("/dashboard", req.url));
+    const ref = sanitizeRefCode(req.nextUrl.searchParams.get("ref"));
+    if (ref) {
+      res.cookies.set(AFF_COOKIE, ref, {
+        maxAge: 30 * 24 * 60 * 60,
+        path: "/",
+        sameSite: "lax",
+        secure: true,
+      });
+    }
+    return res;
   }
 
   if (isPublicRoute(req)) return NextResponse.next();

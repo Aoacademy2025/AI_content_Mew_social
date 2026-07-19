@@ -54,3 +54,45 @@ export function loadThaiDict(text: string): Set<string> {
   for (const raw of text.split("\n")) { const w = raw.trim(); if (/^[ก-๙]{2,24}$/.test(w)) dict.add(w); }
   return dict;
 }
+
+// ── Native-compound candidate miner (Part 2) ──────────────────────────────────
+// The EXACT COMPLEMENT of mineLoanwords: a dict word ICU mis-split whose EVERY ICU
+// fragment is itself a real dict/common word — the "all fragments are real words"
+// class mineLoanwords rejects (`if (!gibberish) continue`). These are the native
+// compounds (ขี้เกียจ→ขี้|เกียจ, เวลางาน→เวลา|งาน). Because "genuine fixed compound"
+// vs "two words that happen to be adjacent" is subjective and merging real words can
+// false-cut unrelated text, candidates are NEVER auto-applied — the caller stores them
+// in a pending-review bucket. Same scan/frequency machinery as mineLoanwords, no I/O.
+export interface CompoundCandidate { word: string; count: number; frags: string[] }
+
+export function mineCompoundCandidates(scripts: string[], dict: Set<string>, already: Set<string>, opts: MineOpts = {}): CompoundCandidate[] {
+  const minLen = opts.minLen ?? 4;
+  const cap = opts.cap ?? 25;
+  const maxLen = maxLenOf(dict);
+  const seg = new Intl.Segmenter("th", { granularity: "word" });
+  const icuFrags = (w: string) => [...seg.segment(w)].map((t) => t.segment);
+  const freq = new Map<string, number>();
+  for (const script of scripts) {
+    if (typeof script !== "string" || !script) continue;
+    const icu = new Set<number>();
+    for (const tok of seg.segment(script)) icu.add(tok.index);
+    const seen = new Set<string>();
+    const re = /[ก-๙]{2,}/g; let m: RegExpExecArray | null;
+    while ((m = re.exec(script)) !== null) {
+      for (const dw of dictWords(m[0], m.index, dict, maxLen)) {
+        if (dw.word.length < minLen || already.has(dw.word)) continue;
+        let cut = false; for (let b = dw.s + 1; b < dw.e; b++) if (icu.has(b)) { cut = true; break; }
+        if (!cut) continue; // ICU must actually split it (else not a mis-split)
+        const frags = icuFrags(dw.word);
+        // native-compound signature: >=2 fragments AND none is gibberish (all real words)
+        const allReal = frags.length >= 2 && frags.every((f) => dict.has(f) || COMMON.has(f));
+        if (!allReal) continue; // has a gibberish fragment → that's a loanword, not a native compound
+        if (!seen.has(dw.word)) { seen.add(dw.word); freq.set(dw.word, (freq.get(dw.word) ?? 0) + 1); }
+      }
+    }
+  }
+  return [...freq.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, cap)
+    .map(([word, count]) => ({ word, count, frags: icuFrags(word) }));
+}

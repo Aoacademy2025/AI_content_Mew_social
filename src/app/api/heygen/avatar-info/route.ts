@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { decryptKey } from "@/lib/key-crypto";
 import { getHeyGenAvatarDetails, HeyGenAuthError } from "@/lib/heygen-avatars";
 
 export const maxDuration = 30;
@@ -23,7 +24,7 @@ export async function GET(req: Request) {
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   if (!user?.heygenKey) return NextResponse.json({ error: "HeyGen key not set", missingKey: "heygen" }, { status: 400 });
-  const heygenKey = Buffer.from(user.heygenKey, "base64").toString("utf-8");
+  const heygenKey = decryptKey(user.heygenKey);
 
   let details;
   try {

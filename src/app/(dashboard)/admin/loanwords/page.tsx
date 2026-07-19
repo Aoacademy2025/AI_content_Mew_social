@@ -1,11 +1,14 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { Trash2, Pencil, Plus, RotateCcw, Check, X, Loader2, Languages } from "lucide-react";
+import { Trash2, Pencil, Plus, RotateCcw, Check, X, Loader2, Languages, Puzzle } from "lucide-react";
 import { toast } from "sonner";
 
-interface Data { words: string[]; denylist: string[]; lastAdded: string[]; seed: string[]; seedCount: number }
-type Action = "deny" | "restore" | "add" | "edit";
+interface Data {
+  words: string[]; denylist: string[]; lastAdded: string[]; seed: string[]; seedCount: number;
+  pendingCompounds: string[]; compounds: string[]; lastCompoundsFound: string[]; compoundSeed: string[]; compoundSeedCount: number;
+}
+type Action = "deny" | "restore" | "add" | "edit" | "approveCompound" | "rejectCompound";
 
 export default function AdminLoanwordsPage() {
   const [data, setData] = useState<Data | null>(null);
@@ -47,6 +50,10 @@ export default function AdminLoanwordsPage() {
 
   const lastSet = new Set(data.lastAdded);
   const denySet = new Set(data.denylist);
+  const pendingCompounds = data.pendingCompounds ?? [];
+  const approvedCompounds = data.compounds ?? [];
+  const compoundSeed = data.compoundSeed ?? [];
+  const compoundSeedActive = compoundSeed.filter((w) => !denySet.has(w));
   // newest-first (store appends, so reverse), filtered by the search box
   const shownWords = (wordQuery ? data.words.filter((w) => w.includes(wordQuery)) : data.words).slice().reverse();
   // seed words that aren't currently denied; show ALL so admins can audit every word
@@ -60,6 +67,34 @@ export default function AdminLoanwordsPage() {
         <h1 className="text-xl font-semibold text-white">จัดการคำตัดซับ (Loanwords)</h1>
       </div>
       <p className="text-sm text-zinc-400">คำที่ระบบกันไว้ไม่ให้ Intl.Segmenter หั่นกลางคำ. ถอน = ย้ายไป denylist (cron จะไม่เพิ่มกลับ) · แก้ = เปลี่ยนสะกด · เพิ่มเอง = ใส่คำเข้าระบบตรงๆ</p>
+
+      {/* ── PENDING native-compound suggestions (human-gated review queue) ── */}
+      <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 space-y-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-white">
+          <Puzzle className="h-4 w-4 text-amber-400" />
+          คำประสมรอตรวจ (mined) — {pendingCompounds.length} คำ
+        </div>
+        <p className="text-xs text-zinc-400">
+          &quot;คำประสมไทย&quot; ที่ ICU ตัดผิด (ทุกชิ้นเป็นคำจริง เช่น ขี้|เกียจ). ต่างจาก loanword ตรงที่
+          <b className="text-amber-300"> ไม่ auto-apply</b> — ต้องคนกดอนุมัติเอง เพราะการรวมคำจริงเข้าด้วยกันเสี่ยงตัดผิดในบริบทอื่น.
+          อนุมัติ = เอาไปกันคำจริงตอนเรนเดอร์ · ปฏิเสธ = ใส่ denylist (จะไม่ถูกเสนอซ้ำ).
+        </p>
+        {pendingCompounds.length === 0
+          ? <p className="text-xs text-zinc-500">ยังไม่มีคำประสมรอตรวจ (cron ยังไม่เจอ)</p>
+          : <ul className="flex flex-wrap gap-2">
+              {pendingCompounds.map((w) => (
+                <li key={w} className="flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-sm text-white">
+                  <span className="font-mono">{w}</span>
+                  <button disabled={busy === w} onClick={() => act("approveCompound", w)} title="อนุมัติ (เอาไปกันคำจริง)" className="text-green-400 hover:text-green-300 disabled:opacity-40">
+                    {busy === w ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-4 w-4" />}
+                  </button>
+                  <button disabled={busy === w} onClick={() => act("rejectCompound", w)} title="ปฏิเสธ (ใส่ denylist)" className="text-red-400 hover:text-red-300 disabled:opacity-40">
+                    <X className="h-4 w-4" />
+                  </button>
+                </li>
+              ))}
+            </ul>}
+      </section>
 
       {/* ── auto-mined + manual words ─────────────────────────────── */}
       <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-3">
@@ -136,6 +171,43 @@ export default function AdminLoanwordsPage() {
                 <li key={w} className="flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-sm text-zinc-300">
                   <span className="font-mono">{w}</span>
                   <button disabled={busy === w} onClick={() => act("deny", w)} title="ถอน (override ผ่าน denylist)" className="text-red-400/70 hover:text-red-300 disabled:opacity-40">
+                    {busy === w ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  </button>
+                </li>
+              ))}
+        </ul>
+      </section>
+
+      {/* ── approved native compounds (from the review queue) ─────── */}
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-3">
+        <div className="flex items-center gap-2 text-sm font-semibold text-white">
+          <Puzzle className="h-4 w-4 text-violet-400" />
+          คำประสมที่อนุมัติแล้ว — {approvedCompounds.length} คำ
+        </div>
+        {approvedCompounds.length === 0
+          ? <p className="text-xs text-zinc-500">ยังไม่มีคำประสมที่อนุมัติเอง (มีแต่ seed ในโค้ดด้านล่าง)</p>
+          : <ul className="flex flex-wrap gap-2">
+              {approvedCompounds.map((w) => (
+                <li key={w} className="flex items-center gap-1 rounded-lg border border-violet-500/40 bg-violet-500/10 px-2 py-1 text-sm text-white">
+                  <span className="font-mono">{w}</span>
+                  <button disabled={busy === w} onClick={() => act("rejectCompound", w)} title="ถอน (ใส่ denylist)" className="text-red-400 hover:text-red-300 disabled:opacity-40">
+                    {busy === w ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                  </button>
+                </li>
+              ))}
+            </ul>}
+      </section>
+
+      {/* ── compound seed (in-code, deny-able via denylist) ───────── */}
+      <section className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4 space-y-3">
+        <div className="text-sm font-semibold text-white">คำประสม Seed ในโค้ด — {compoundSeedActive.length} คำ <span className="text-xs font-normal text-zinc-500">(ถอนได้ → override ผ่าน denylist · เพิ่มถาวรต้องผ่านโค้ด)</span></div>
+        <ul className="flex flex-wrap gap-2">
+          {compoundSeedActive.length === 0
+            ? <li className="text-xs text-zinc-500">ว่าง</li>
+            : compoundSeedActive.map((w) => (
+                <li key={w} className="flex items-center gap-1 rounded-lg border border-zinc-700 bg-zinc-800/60 px-2 py-1 text-sm text-zinc-300">
+                  <span className="font-mono">{w}</span>
+                  <button disabled={busy === w} onClick={() => act("rejectCompound", w)} title="ถอน (override ผ่าน denylist)" className="text-red-400/70 hover:text-red-300 disabled:opacity-40">
                     {busy === w ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
                   </button>
                 </li>

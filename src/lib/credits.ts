@@ -90,30 +90,34 @@ export async function grantCredits(
 ): Promise<void> {
   if (amount <= 0) throw new Error("grantCredits: amount must be positive");
 
-  // Upsert row so it exists, then increment the correct bucket
-  const updated = await prisma.creditBalance.upsert({
-    where: { userId },
-    create: {
-      userId,
-      granted: kind === "grant" ? amount : 0,
-      purchased: kind === "purchase" ? amount : 0,
-    },
-    update:
-      kind === "grant"
-        ? { granted: { increment: amount } }
-        : { purchased: { increment: amount } },
-  });
+  // Balance mutation + ledger row in ONE transaction so a crash between them can
+  // never diverge the balance from its audit ledger (MON-4).
+  await prisma.$transaction(async (tx) => {
+    // Upsert row so it exists, then increment the correct bucket
+    const updated = await tx.creditBalance.upsert({
+      where: { userId },
+      create: {
+        userId,
+        granted: kind === "grant" ? amount : 0,
+        purchased: kind === "purchase" ? amount : 0,
+      },
+      update:
+        kind === "grant"
+          ? { granted: { increment: amount } }
+          : { purchased: { increment: amount } },
+    });
 
-  const balanceAfter = updated.granted + updated.purchased;
+    const balanceAfter = updated.granted + updated.purchased;
 
-  await prisma.creditLedger.create({
-    data: {
-      userId,
-      delta: amount,
-      kind,
-      action: action ?? null,
-      balanceAfter,
-    },
+    await tx.creditLedger.create({
+      data: {
+        userId,
+        delta: amount,
+        kind,
+        action: action ?? null,
+        balanceAfter,
+      },
+    });
   });
 }
 
@@ -160,51 +164,84 @@ export async function spendCredits(
 > {
   if (amount <= 0) throw new Error("spendCredits: amount must be positive");
 
-  // Read current balance (upserts empty row if missing)
-  const bal = await getBalance(userId);
+  // Whole spend runs in ONE transaction so the guarded debit and its ledger row
+  // commit atomically (MON-4). Inside, on a lost split-bucket race (the guarded
+  // updateMany matches 0 rows because a concurrent spend shifted the granted/
+  // purchased split under our read), RE-READ + recompute the split and re-issue
+  // the guarded update ONCE (MON-3). Still fail-closed: a genuinely insufficient
+  // total (granted+purchased < amount) returns insufficient without writing a
+  // ledger row, and the retry is capped at one extra attempt (no loops, never
+  // over-spends). ALL reads/writes use `tx` — never the global client — so the
+  // single SQLite connection isn't dead-locked mid-transaction.
+  return prisma.$transaction(
+    async (
+      tx
+    ): Promise<
+      | { ok: true; balanceAfter: number; fromGranted: number; fromPurchased: number }
+      | { ok: false; reason: "insufficient"; balanceAfter: number }
+    > => {
+      // Up to 2 attempts: initial + one retry after a split-shift race.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        // Read current balance (upserts empty row if missing)
+        const row = await tx.creditBalance.upsert({
+          where: { userId },
+          create: { userId, granted: 0, purchased: 0 },
+          update: {},
+        });
+        const total = row.granted + row.purchased;
 
-  if (bal.total < amount) {
-    return { ok: false, reason: "insufficient", balanceAfter: bal.total };
-  }
+        if (total < amount) {
+          // Genuinely insufficient — total can't cover it (fail-closed, no ledger row)
+          return { ok: false, reason: "insufficient", balanceAfter: total };
+        }
 
-  // Compute debit from each bucket (granted first)
-  const fromGranted = Math.min(bal.granted, amount);
-  const fromPurchased = amount - fromGranted;
+        // Compute debit from each bucket (granted first)
+        const fromGranted = Math.min(row.granted, amount);
+        const fromPurchased = amount - fromGranted;
 
-  // Atomic conditional update — guard both fields
-  const result = await prisma.creditBalance.updateMany({
-    where: {
-      userId,
-      granted: { gte: fromGranted },
-      purchased: { gte: fromPurchased },
-    },
-    data: {
-      granted: { decrement: fromGranted },
-      purchased: { decrement: fromPurchased },
-    },
-  });
+        // Atomic conditional update — guard both fields
+        const result = await tx.creditBalance.updateMany({
+          where: {
+            userId,
+            granted: { gte: fromGranted },
+            purchased: { gte: fromPurchased },
+          },
+          data: {
+            granted: { decrement: fromGranted },
+            purchased: { decrement: fromPurchased },
+          },
+        });
 
-  if (result.count !== 1) {
-    // Lost the race or balance changed between read and update → re-read
-    const latest = await getBalance(userId);
-    return { ok: false, reason: "insufficient", balanceAfter: latest.total };
-  }
+        if (result.count === 1) {
+          const balanceAfter = total - amount;
+          await tx.creditLedger.create({
+            data: {
+              userId,
+              delta: -amount,
+              kind: "spend",
+              action: action ?? null,
+              balanceAfter,
+            },
+          });
+          return { ok: true, balanceAfter, fromGranted, fromPurchased };
+        }
+        // count !== 1 → the split shifted between our read and update; loop once
+        // more to re-read the current buckets and recompute the split.
+      }
 
-  // Re-read the row to get the authoritative post-update balance
-  const afterBal = await getBalance(userId);
-  const balanceAfter = afterBal.total;
-
-  await prisma.creditLedger.create({
-    data: {
-      userId,
-      delta: -amount,
-      kind: "spend",
-      action: action ?? null,
-      balanceAfter,
-    },
-  });
-
-  return { ok: true, balanceAfter, fromGranted, fromPurchased };
+      // Both attempts lost the split race — re-read for an authoritative balance
+      const latest = await tx.creditBalance.upsert({
+        where: { userId },
+        create: { userId, granted: 0, purchased: 0 },
+        update: {},
+      });
+      return {
+        ok: false,
+        reason: "insufficient",
+        balanceAfter: latest.granted + latest.purchased,
+      };
+    }
+  );
 }
 
 // ── Refund credits ────────────────────────────────────────────────────────────
@@ -236,30 +273,34 @@ export async function refundCredits(
   const total = fromGranted + fromPurchased;
   if (total <= 0) return;
 
-  // Atomically restore both buckets (upsert so row is guaranteed to exist)
-  const updated = await prisma.creditBalance.upsert({
-    where: { userId },
-    create: {
-      userId,
-      granted: fromGranted,
-      purchased: fromPurchased,
-    },
-    update: {
-      granted: { increment: fromGranted },
-      purchased: { increment: fromPurchased },
-    },
-  });
+  // Balance restore + ledger row in ONE transaction so a crash between them can
+  // never diverge the balance from its audit ledger (MON-4).
+  await prisma.$transaction(async (tx) => {
+    // Atomically restore both buckets (upsert so row is guaranteed to exist)
+    const updated = await tx.creditBalance.upsert({
+      where: { userId },
+      create: {
+        userId,
+        granted: fromGranted,
+        purchased: fromPurchased,
+      },
+      update: {
+        granted: { increment: fromGranted },
+        purchased: { increment: fromPurchased },
+      },
+    });
 
-  const balanceAfter = updated.granted + updated.purchased;
+    const balanceAfter = updated.granted + updated.purchased;
 
-  await prisma.creditLedger.create({
-    data: {
-      userId,
-      delta: total,
-      kind: "refund",
-      action: action ?? null,
-      balanceAfter,
-    },
+    await tx.creditLedger.create({
+      data: {
+        userId,
+        delta: total,
+        kind: "refund",
+        action: action ?? null,
+        balanceAfter,
+      },
+    });
   });
 }
 
@@ -270,43 +311,78 @@ export async function refundCredits(
  * and record the reset timestamp + a ledger row.
  *
  * This does NOT touch the `purchased` bucket.
+ *
+ * `guard`, when passed, makes the write CONDITIONAL (MON-7): the reset only commits if
+ * `grantedResetAt` in the DB still equals `guard.priorResetAt` — the value the CALLER observed
+ * before deciding a reset was due. This is for `ensureMonthlyGrant`'s lazy write-on-read path,
+ * where two concurrent callers (e.g. two GET /api/credits/balance requests racing the same
+ * expired-window decision) could otherwise both decide a reset is due and both write a
+ * monthly-reset ledger row. SQLite serializes their transactions, so the first writer's
+ * updateMany matches (its `grantedResetAt` still equals what it observed) and flips the field
+ * forward; the second (later) writer's guard condition no longer matches its now-stale captured
+ * value, so its updateMany affects 0 rows and it no-ops instead of writing a second row.
+ *
+ * Force callers (grantOnPaidActivation, trial-expiry downgrade) must keep calling this WITHOUT
+ * `guard` — they call it explicitly to override state, not lazily on a read, so they should
+ * always win unconditionally.
  */
 export async function resetMonthlyGranted(
   userId: string,
-  plan: string
+  plan: string,
+  guard?: { priorResetAt: Date | null }
 ): Promise<void> {
   const newGranted = MONTHLY_GRANT[plan] ?? 0;
   const now = new Date();
 
-  // Read prior granted so we can record the true delta
-  const prior = await getBalance(userId);
-  const priorGranted = prior.granted;
+  // Prior-read + hard-set + ledger row in ONE transaction so a crash between them
+  // can never diverge the balance from its audit ledger (MON-4). Reading the prior
+  // value inside the transaction also makes the recorded delta consistent with the
+  // value we overwrite.
+  await prisma.$transaction(async (tx) => {
+    // Read prior granted so we can record the true delta (upsert with granted:0 so a
+    // brand-new user's reset logs the full grant as the delta — matches getBalance).
+    const prior = await tx.creditBalance.upsert({
+      where: { userId },
+      create: { userId, granted: 0, purchased: 0 },
+      update: {},
+    });
+    const priorGranted = prior.granted;
 
-  // Upsert so row exists, then hard-set granted and reset timestamp
-  const updated = await prisma.creditBalance.upsert({
-    where: { userId },
-    create: {
-      userId,
-      granted: newGranted,
-      purchased: 0,
-      grantedResetAt: now,
-    },
-    update: {
-      granted: newGranted,
-      grantedResetAt: now,
-    },
-  });
+    let updatedGranted: number;
+    let updatedPurchased: number;
 
-  const balanceAfter = updated.granted + updated.purchased;
+    if (guard) {
+      const flipped = await tx.creditBalance.updateMany({
+        where: { userId, grantedResetAt: guard.priorResetAt },
+        data: { granted: newGranted, grantedResetAt: now },
+      });
+      if (flipped.count !== 1) return; // lost the race — another caller already reset this window
+      updatedGranted = newGranted;
+      updatedPurchased = prior.purchased;
+    } else {
+      // Hard-set granted and reset timestamp (row is guaranteed to exist now)
+      const updated = await tx.creditBalance.update({
+        where: { userId },
+        data: {
+          granted: newGranted,
+          grantedResetAt: now,
+        },
+      });
+      updatedGranted = updated.granted;
+      updatedPurchased = updated.purchased;
+    }
 
-  await prisma.creditLedger.create({
-    data: {
-      userId,
-      delta: newGranted - priorGranted,
-      kind: "grant",
-      action: `monthly-reset:${plan}`,
-      balanceAfter,
-    },
+    const balanceAfter = updatedGranted + updatedPurchased;
+
+    await tx.creditLedger.create({
+      data: {
+        userId,
+        delta: newGranted - priorGranted,
+        kind: "grant",
+        action: `monthly-reset:${plan}`,
+        balanceAfter,
+      },
+    });
   });
 }
 
@@ -354,5 +430,8 @@ export async function ensureMonthlyGrant(userId: string): Promise<void> {
 
   if (withinWindow) return; // already granted this period
 
-  await resetMonthlyGranted(userId, user.plan);
+  // MON-7: guard the reset with the grantedResetAt value we just observed, so a concurrent GET
+  // racing this same expired-window decision can't ALSO write a monthly-reset ledger row — see
+  // resetMonthlyGranted's guarded branch.
+  await resetMonthlyGranted(userId, user.plan, { priorResetAt: balance?.grantedResetAt ?? null });
 }

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useClerk } from "@clerk/nextjs";
-import { Settings, CreditCard, LogOut } from "lucide-react";
+import { Settings, CreditCard, Handshake, LogOut } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -96,6 +96,12 @@ export function AccountMenu({ extraItems }: { extraItems?: React.ReactNode }) {
               <CreditCard className="mr-2 h-4 w-4" />
               Billing
             </Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild className="cursor-pointer">
+            <a href="https://affiliate.heroaiengine.com/affiliate-program" target="_blank" rel="noopener noreferrer">
+              <Handshake className="mr-2 h-4 w-4" />
+              Affiliate — รับค่าคอม 25%
+            </a>
           </DropdownMenuItem>
           <DropdownMenuSeparator style={{ background: "var(--ui-divider)" }} />
           <DropdownMenuItem

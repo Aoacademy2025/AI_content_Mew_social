@@ -1,3 +1,5 @@
+import type { TtsProvider } from "@/lib/tts-providers";
+
 // ─── Pipeline types ────────────────────────────────────────────────────────
 
 export type StepStatus = "idle" | "running" | "done" | "error" | "skip";
@@ -158,7 +160,7 @@ export interface EditorDraft {
   galleryVideoId?: string;
   compositeUrl?: string;
 
-  ttsProvider: "elevenlabs" | "gemini" | "omnivoice";
+  ttsProvider: TtsProvider;
   voiceId: string;
   geminiVoiceName: string;
   omniVoiceId?: string;

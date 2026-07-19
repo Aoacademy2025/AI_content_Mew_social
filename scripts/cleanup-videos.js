@@ -1,5 +1,6 @@
-// Runs daily via PM2 cron to delete expired videos (older than 7 days)
-// Calls the internal API route with CRON_SECRET for auth
+// Runs daily via PM2 cron for bounded operational housekeeping.
+// Customer media lifecycle is handled by the graph/quarantine pipeline.
+// Calls the internal API route with CRON_SECRET for auth.
 const https = require("https");
 const http = require("http");
 

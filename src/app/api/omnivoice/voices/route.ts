@@ -1,36 +1,47 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { omnivoiceBaseUrl, omnivoiceAuthHeaders, type OmniVoiceInfo } from "@/lib/omnivoice";
+import {
+  isOmniVoiceInfo,
+  isOmniVoiceUserAllowed,
+  OmniVoiceConfigError,
+  omnivoiceAuthHeaders,
+  omnivoiceConfig,
+} from "@/lib/omnivoice";
 
 export const runtime = "nodejs";
 
-// GET /api/omnivoice/voices — proxy รายการเสียงจาก OmniVoice server
-// preview_url ถูกเขียนใหม่ให้ชี้ผ่าน proxy ของเรา (client ไม่เห็น/ไม่ต้องถึง host ภายใน)
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isOmniVoiceUserAllowed(user.id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   try {
-    const res = await fetch(`${omnivoiceBaseUrl()}/voices`, {
-      headers: omnivoiceAuthHeaders(),
-      signal: AbortSignal.timeout(10_000),
+    const config = omnivoiceConfig();
+    const response = await fetch(`${config.baseUrl}/voices`, {
+      headers: omnivoiceAuthHeaders(config.apiKey),
       cache: "no-store",
+      signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) {
-      return NextResponse.json({ error: `OmniVoice server ตอบ ${res.status}` }, { status: 502 });
+    if (!response.ok) {
+      console.error(`[omnivoice/voices] upstream status=${response.status}`);
+      return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน" }, { status: 503 });
     }
-    const voices = (await res.json()) as OmniVoiceInfo[];
-    return NextResponse.json(
-      voices.map(v => ({
-        voice_id: v.voice_id,
-        desc: v.desc,
-        instruct: v.instruct,
-        preview_url: `/api/omnivoice/preview/${encodeURIComponent(v.voice_id)}`,
-      })),
-      { headers: { "Cache-Control": "private, max-age=300" } },
-    );
-  } catch (e) {
-    console.error("[omnivoice/voices] fetch failed:", e instanceof Error ? e.message : e);
-    return NextResponse.json({ error: "เชื่อมต่อ OmniVoice server ไม่ได้" }, { status: 503 });
+    const payload: unknown = await response.json();
+    if (!Array.isArray(payload)) throw new Error("invalid voices payload");
+    const voices = payload
+      .filter(isOmniVoiceInfo)
+      .map((voice) => ({
+        voice_id: voice.voice_id,
+        desc: voice.desc.slice(0, 160),
+        instruct: voice.instruct.slice(0, 240),
+        preview_url: `/api/omnivoice/preview/${encodeURIComponent(voice.voice_id)}`,
+      }));
+    if (voices.length === 0) throw new Error("no valid voices returned");
+    return NextResponse.json(voices, { headers: { "Cache-Control": "private, max-age=300" } });
+  } catch (error) {
+    if (!(error instanceof OmniVoiceConfigError)) {
+      console.error("[omnivoice/voices] request failed:", error instanceof Error ? error.message : error);
+    }
+    return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน" }, { status: 503 });
   }
 }

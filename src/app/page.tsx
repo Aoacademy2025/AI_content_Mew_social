@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Script from "next/script";
 import {
   ArrowRight, Bot, Mic, Music, Film, Captions, SlidersHorizontal, Flame, Plus,
   CameraOff, Scissors, Languages, Wand2, FileText, Wallet, MousePointerClick, KeyRound,
@@ -339,6 +340,14 @@ export default async function Home() {
             เริ่มใช้ฟรี <ArrowRight className="h-5 w-5" />
           </Link>
           <p className="mt-4 text-sm text-[#9ca0be]">{MANAGED ? "PRO ฟรี 7 วัน · ไม่ใช้บัตร · เริ่มได้ทันที" : "PRO ฟรี 7 วัน · ไม่ใช้บัตร · ตั้งคีย์ฟรี 5 นาที มีคู่มือพา"}</p>
+          <p className="mt-6">
+            <a
+              href="https://affiliate.heroaiengine.com/affiliate-program"
+              className="text-sm text-white/50 underline-offset-4 hover:text-white hover:underline"
+            >
+              Affiliate — แนะนำ HERO AI รับค่าคอม 25% ทุกเดือน
+            </a>
+          </p>
         </Reveal>
 
         {/* signature: giant glowing wordmark */}
@@ -367,6 +376,10 @@ export default async function Home() {
         </div>
         <p className="pb-10 text-sm text-[#a7adcc]">© 2026 HERO AI Creator Studio</p>
       </footer>
+
+      {/* Affiliate click tracking — sets the aff_ref cookie for anonymous visitors and
+          posts the click to affiliate.heroaiengine.com (CORS opened server-side). */}
+      <Script src="https://affiliate.heroaiengine.com/scripts/affiliate-tracking.js" strategy="afterInteractive" />
     </div>
   );
 }

@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
-import { parseVideoJobOutput } from "@/lib/mcp/video-job";
+import {
+  parseVideoJobOutput,
+  toPublicVideoJobStatus,
+  VIDEO_JOB_INFLIGHT_STATUSES,
+} from "@/lib/mcp/video-job";
+import { resolveProjectMediaState } from "@/lib/media-retention";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
 // Output is included only when done, parsed through the versioned reader (v1 + v2).
@@ -11,17 +16,65 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { id } = await ctx.params;
-    const job = await prisma.videoJob.findFirst({ where: { id, userId: user.id } });
+    // PERF-APP-2: project only what this poll returns/needs. NEVER select `inputJson` (the
+    // full render config) — it was hydrated on every 5s/15s poll for nothing. `outputJson`
+    // is null until the job is done (written once by finishJob), so selecting it costs ~0
+    // pre-done and is decoded only when status === "done".
+    const job = await prisma.videoJob.findFirst({
+      where: { id, userId: user.id },
+      select: {
+        id: true,
+        projectId: true,
+        type: true,
+        status: true,
+        currentStep: true,
+        progress: true,
+        errorMessage: true,
+        errorCode: true,
+        errorProvider: true,
+        idempotencyKey: true,
+        idempotencyFingerprint: true,
+        createdAt: true,
+        videoId: true,
+        outputJson: true,
+        mediaExpiresAt: true,
+      },
+    });
     if (!job) return NextResponse.json({ error: "not_found" }, { status: 404 });
+
+    // A still-queued editor-v2 job is waiting for the (serial) mcp-video-worker to claim it.
+    // Surface a 1-based queue position so the badge can show "คิว #N" instead of a frozen 0%
+    // (PERF-APP-1, editor-v2 side). Counted from the VideoJob queue (the queue an editor-v2
+    // job actually waits in) — the RenderJob-queue helper is for the render-progress route.
+    // Only queried when queued, so the hot processing/done poll path stays a single read.
+    const queuePosition =
+      job.status === "queued"
+        ? (await prisma.videoJob.count({ where: { status: "queued", createdAt: { lt: job.createdAt } } })) + 1
+        : null;
+
+    const output = job.status === "done" ? parseVideoJobOutput(job.outputJson) : null;
+    const mediaState = job.status === "done"
+      ? await resolveProjectMediaState({
+          videoUrl: output?.videoUrl,
+          mediaExpiresAt: job.mediaExpiresAt,
+        })
+      : null;
 
     return NextResponse.json({
       id: job.id,
-      status: job.status, // queued | processing | done | failed | canceled
+      projectId: job.projectId,
+      type: job.type,
+      status: toPublicVideoJobStatus(job.status), // queued | processing | done | failed | canceled
       currentStep: job.currentStep,
       progress: job.progress,
       errorMessage: job.errorMessage,
+      errorCode: job.errorCode,
+      errorProvider: job.errorProvider,
+      idempotencyKey: job.idempotencyKey,
+      idempotencyFingerprint: job.idempotencyFingerprint,
       createdAt: job.createdAt.toISOString(),
-      ...(job.status === "done" ? { output: parseVideoJobOutput(job.outputJson) } : {}),
+      queuePosition,
+      ...(job.status === "done" ? { output, mediaState } : {}),
     });
   } catch (err) {
     console.error("[api/videos/jobs/:id] error:", err);
@@ -38,12 +91,32 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { id } = await ctx.params;
+    const job = await prisma.videoJob.findFirst({
+      where: { id, userId: user.id },
+      select: { id: true, projectId: true, type: true },
+    });
+    if (!job) {
+      return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
+    }
     const res = await prisma.videoJob.updateMany({
-      where: { id, userId: user.id, status: { in: ["queued", "processing"] } },
+      where: { id, userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } },
       data: { status: "canceled", finishedAt: new Date(), errorMessage: "canceled by user (editor v2)" },
     });
     if (res.count !== 1) {
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
+    }
+    if (job.projectId) {
+      if (job.type === "export") {
+        await prisma.editorProject.updateMany({
+          where: { id: job.projectId, userId: user.id, activeExportJobId: job.id },
+          data: { status: "post", lastOpenedAt: new Date() },
+        });
+      } else {
+        await prisma.editorProject.updateMany({
+          where: { id: job.projectId, userId: user.id, activeJobId: job.id },
+          data: { status: "draft", lastOpenedAt: new Date() },
+        });
+      }
     }
     return NextResponse.json({ ok: true });
   } catch (err) {

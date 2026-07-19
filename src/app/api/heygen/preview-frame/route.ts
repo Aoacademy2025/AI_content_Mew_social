@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { decryptKey } from "@/lib/key-crypto";
+import { resolveChromaParams, detectChromaColor, buildKeyChain, featherSupported } from "@/lib/chroma-key";
+import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -13,16 +16,59 @@ function getFfmpegPath(): string {
   return path.join(process.cwd(), "node_modules", "@ffmpeg-installer", `${process.platform}-${process.arch}`, `ffmpeg${ext}`);
 }
 
+// Containment guard: reject a body-supplied path that escapes public/ (path traversal).
+function containedPublicPath(url: string): string | null {
+  const joined = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
+  const publicDir = path.resolve(process.cwd(), "public");
+  const resolvedPath = path.resolve(joined);
+  if (resolvedPath !== publicDir && !resolvedPath.startsWith(publicDir + path.sep)) return null;
+  return joined;
+}
+
+// Exact hostname match — the HeyGen key must never be attached to a substring lookalike.
+function isHeygenHost(u: string): boolean {
+  try {
+    const h = new URL(u).hostname.toLowerCase();
+    return h === "heygen.ai" || h.endsWith(".heygen.ai");
+  } catch {
+    return false;
+  }
+}
+
+// SSRF-safe fetch: validate the host, follow redirects MANUALLY re-validating each hop,
+// rebuild headers per hop so the HeyGen key never rides a 302 off-host. Bounded to maxHops.
+async function safeFetchFollow(
+  url: string,
+  buildInit: (currentUrl: string) => RequestInit,
+  maxHops = 3,
+): Promise<Response> {
+  let current = url;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    await assertSafeFetchUrl(current);
+    const res = await fetch(current, { ...buildInit(current), redirect: "manual" });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get("location");
+      if (!loc) return res;
+      current = new URL(loc, current).toString();
+      continue;
+    }
+    return res;
+  }
+  throw new Error("too many redirects");
+}
+
 async function downloadFile(url: string, dest: string, heygenKey?: string) {
   if (url.startsWith("/")) {
-    const src = path.join(process.cwd(), "public", url.replace(/^\/api\/renders\//, "/renders/"));
-    if (!fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
+    const src = containedPublicPath(url);
+    if (!src || !fs.existsSync(src)) throw new Error(`Local file not found: ${url}`);
     fs.copyFileSync(src, dest);
     return;
   }
-  const headers: Record<string, string> = { Accept: "video/mp4,video/*,*/*" };
-  if (heygenKey && url.includes("heygen.ai")) headers["X-Api-Key"] = heygenKey;
-  const res = await fetch(url, { headers });
+  const res = await safeFetchFollow(url, (currentUrl) => {
+    const headers: Record<string, string> = { Accept: "video/mp4,video/*,*/*" };
+    if (heygenKey && isHeygenHost(currentUrl)) headers["X-Api-Key"] = heygenKey;
+    return { headers };
+  });
   if (!res.ok) throw new Error(`Download failed ${res.status}`);
   fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
 }
@@ -35,11 +81,21 @@ export async function POST(req: Request) {
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { avatarVideoUrl, bgVideoUrl, overlayX = 0, overlayY = 0, overlayW, avatarCrop } = body ?? {};
+  const {
+    avatarVideoUrl, bgVideoUrl, overlayX = 0, overlayY = 0, overlayW, avatarCrop,
+    chromaColor, chromaSimilarity, chromaBlend,
+  } = body ?? {};
   if (!avatarVideoUrl || !bgVideoUrl) return NextResponse.json({ error: "avatarVideoUrl and bgVideoUrl required" }, { status: 400 });
 
+  // Sanitize geometry — these values become ffmpeg args (injection surface).
+  const num = (v: unknown, def = 0) => { const n = Number(v); return Number.isFinite(n) ? n : def; };
+  const clampPct = (v: unknown) => Math.min(100, Math.max(0, num(v, 0)));
+  const ovX = Math.round(num(overlayX));
+  const ovY = Math.round(num(overlayY));
+  const ovW = overlayW != null && Number.isFinite(Number(overlayW)) ? Math.max(2, Math.round(Number(overlayW))) : null;
+
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
-  const heygenKey = user?.heygenKey ? Buffer.from(user.heygenKey, "base64").toString("utf-8") : undefined;
+  const heygenKey = user?.heygenKey ? decryptKey(user.heygenKey) : undefined;
 
   const rendersDir = path.join(process.cwd(), "public", "renders");
   fs.mkdirSync(rendersDir, { recursive: true });
@@ -55,23 +111,32 @@ export async function POST(req: Request) {
       downloadFile(bgVideoUrl, bgTmp, heygenKey),
     ]);
 
-    const crop = avatarCrop ?? { left: 0, right: 0, top: 0, bottom: 0 };
-    const hasCrop = crop.left > 0 || crop.right > 0 || crop.top > 0 || crop.bottom > 0;
+    const cl = clampPct(avatarCrop?.left), cr = clampPct(avatarCrop?.right);
+    const ct = clampPct(avatarCrop?.top), cb = clampPct(avatarCrop?.bottom);
+    const hasCrop = cl > 0 || cr > 0 || ct > 0 || cb > 0;
     const cropPart = hasCrop
-      ? `,crop=floor(iw*(${100 - crop.left - crop.right})/200)*2:floor(ih*(${100 - crop.top - crop.bottom})/200)*2:iw*${crop.left}/100:ih*${crop.top}/100`
+      ? `,crop=floor(iw*(${100 - cl - cr})/200)*2:floor(ih*(${100 - ct - cb})/200)*2:iw*${cl}/100:ih*${ct}/100`
       : "";
 
-    const scaleAndCrop = overlayW
-      ? `scale=${overlayW}:-2${cropPart}`
+    const scaleAndCrop = ovW
+      ? `scale=${ovW}:-2${cropPart}`
       : `scale=iw:ih${cropPart}`;
 
-    const filter = [
-      `[1:v]${scaleAndCrop}[av]`,
-      "[av]colorkey=color=0x00FF00:similarity=0.05:blend=0.0[ck]",
-      `[0:v][ck]overlay=${overlayX}:${overlayY}[out]`,
-    ].join(";");
-
     const ffmpeg = getFfmpegPath();
+
+    // WYSIWYG: use the SAME detection + key chain as the render composite (lib/chroma-key) so the
+    // editor preview matches the final output. Auto-detects the green shade unless sliders are tuned.
+    const resolved = resolveChromaParams({ chromaColor, chromaSimilarity, chromaBlend });
+    const keyColor = resolved.autoDetect ? await detectChromaColor(avatarTmp, ffmpeg) : resolved.color;
+    // Not every ffmpeg build ships erosion/gblur (dev=darwin-arm64, prod=linux-x64 peer build) — the
+    // keying path isn't fail-open, so resolve BEFORE building the filter. Cached per-process.
+    const feather = await featherSupported(ffmpeg);
+    const keyChain = buildKeyChain({ color: keyColor, similarity: resolved.similarity, blend: resolved.blend }, feather);
+
+    const filter = [
+      `[1:v]${scaleAndCrop},${keyChain}[ck]`,
+      `[0:v][ck]overlay=${ovX}:${ovY}[out]`,
+    ].join(";");
     await new Promise<void>((resolve, reject) => {
       const args = [
         "-y",
@@ -83,7 +148,9 @@ export async function POST(req: Request) {
         "-q:v", "2",
         outPath,
       ];
-      execFile(ffmpeg, args, { maxBuffer: 50 * 1024 * 1024 }, (err, _stdout, stderr) => {
+      // 30 min bound — see composite/route.ts FFMPEG_TIMEOUT_MS; this is a single-frame extraction
+      // so it's normally fast, but a hung ffmpeg process should never wedge the request forever.
+      execFile(ffmpeg, args, { maxBuffer: 50 * 1024 * 1024, timeout: 30 * 60 * 1000 }, (err, _stdout, stderr) => {
         if (stderr) console.log("[preview-frame] ffmpeg:", stderr.slice(-600));
         if (err) reject(new Error(err.message));
         else resolve();

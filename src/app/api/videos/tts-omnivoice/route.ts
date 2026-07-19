@@ -1,267 +1,319 @@
+import { execFile } from "child_process";
+import { randomUUID } from "crypto";
+import fs from "fs";
+import path from "path";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { apiError } from "@/lib/api-error";
-import { omnivoiceBaseUrl, omnivoiceAuthHeaders, isValidOmniVoiceId, pcmFromWav, normalizeNumbersForTts, type OmniTtsResponse } from "@/lib/omnivoice";
-import {
-  splitScriptForTts,
-  mergeSegmentTiming,
-  charsPerSecGuard,
-  pcmDurationMs,
-} from "@/lib/tts-timing";
-import {
-  cachedVoicePreview,
-  getVoicePreviewCachePath,
-  normalizeVoicePreviewText,
-} from "@/lib/voice-preview-cache";
-import path from "path";
-import fs from "fs";
-import { execFile } from "child_process";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { checkMinuteQuota, reserveMinutes } from "@/lib/minute-limits";
+import {
+  estimateTtsAudioMinutes,
+  reconcileAiAudioMinutes,
+  refundAiAudioMinutes,
+  reserveAiAudioMinutes,
+} from "@/lib/ai-spend-limits";
+import {
+  isOmniVoiceUserAllowed,
+  isValidOmniVoiceId,
+  normalizeNumbersForTts,
+  OmniVoiceConfigError,
+  omnivoiceAuthHeaders,
+  omnivoiceConfig,
+  pcmFromWav,
+  type OmniTtsResponse,
+} from "@/lib/omnivoice";
+import { recordTelemetryEvent } from "@/lib/telemetry";
+import { omnivoiceAdmission } from "@/lib/omnivoice-admission";
+import {
+  mergeSegmentTiming,
+  pcmDurationMs,
+  splitScriptForTts,
+} from "@/lib/tts-timing";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
 
-// OmniVoice = self-hosted server ของเราเอง (ไม่ใช่ BYOK, ไม่มี per-call spend)
-// → ไม่มี minute-quota / AI-ceiling logic เหมือน tts-gemini; แค่ auth ก็พอ
-// โครง segmented + timing ลอกแบบ tts-gemini เพื่อให้ซับ exact-by-arithmetic
-// (ข้าม transcribe) ตาม gotcha ใน CLAUDE.md
-
-const MAX_ATTEMPTS = 2;
-const SEGMENTED_BUDGET_MS = 240_000;
+type OmniConfig = ReturnType<typeof omnivoiceConfig>;
 
 type CallResult =
-  | { ok: true; pcm: Buffer; sampleRate: number }
-  | { ok: false; status: number; errBody: string };
+  | { ok: true; pcm: Buffer; sampleRate: number; generationTimeSec: number }
+  | { ok: false; status: number; reason: string; retryAfter?: string };
 
 async function callOmniVoice(
+  config: OmniConfig,
   voiceId: string,
   text: string,
   speed: number,
-  deadline?: number,
+  deadline: number,
 ): Promise<CallResult> {
-  let lastStatus = 500;
-  let lastErrBody = "";
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    if (deadline && Date.now() >= deadline) {
-      return { ok: false, status: 408, errBody: "segmented time budget exhausted" };
+  const remainingMs = deadline - Date.now();
+  if (remainingMs < 1_000) return { ok: false, status: 504, reason: "request budget exhausted" };
+
+  try {
+    const response = await fetch(`${config.baseUrl}/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...omnivoiceAuthHeaders(config.apiKey) },
+      body: JSON.stringify({
+        voice_id: voiceId,
+        text,
+        speed,
+        num_step: config.numStep,
+      }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(remainingMs),
+    });
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        reason: (await response.text().catch(() => "")).slice(0, 200),
+        retryAfter: response.headers.get("retry-after") ?? undefined,
+      };
     }
-    try {
-      const res = await fetch(`${omnivoiceBaseUrl()}/tts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...omnivoiceAuthHeaders() },
-        body: JSON.stringify({ voice_id: voiceId, text, speed }),
-        // GPU ~1s/ประโยค แต่ CPU ~30s/ประโยค + คิวภายใน — เผื่อ 180s
-        signal: AbortSignal.timeout(180_000),
-      });
-      if (res.ok) {
-        const data = (await res.json()) as OmniTtsResponse;
-        if (!data.audio_base64) return { ok: false, status: 500, errBody: "no audio in response" };
-        const { pcm, sampleRate } = pcmFromWav(Buffer.from(data.audio_base64, "base64"));
-        return { ok: true, pcm, sampleRate: sampleRate || data.sample_rate || 24000 };
-      }
-      lastStatus = res.status;
-      lastErrBody = await res.text().catch(() => "");
-      // 404 = voice ไม่มี / 422 = body ผิด — retry ไม่ช่วย
-      if (res.status === 404 || res.status === 422) break;
-    } catch (e) {
-      lastStatus = 503;
-      lastErrBody = e instanceof Error ? e.message : String(e);
+
+    const data = (await response.json()) as Partial<OmniTtsResponse>;
+    if (typeof data.audio_base64 !== "string" || data.audio_base64.length === 0 || data.audio_base64.length > 30_000_000) {
+      return { ok: false, status: 502, reason: "invalid audio payload" };
     }
-    if (attempt < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, 1500 * attempt));
+    const { pcm, sampleRate } = pcmFromWav(Buffer.from(data.audio_base64, "base64"));
+    return {
+      ok: true,
+      pcm,
+      sampleRate,
+      generationTimeSec: typeof data.generation_time === "number" ? data.generation_time : 0,
+    };
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    return {
+      ok: false,
+      status: timedOut ? 504 : 503,
+      reason: error instanceof Error ? error.message : "request failed",
+    };
   }
-  return { ok: false, status: lastStatus, errBody: lastErrBody };
 }
 
-function omniErrorResponse(status: number, errBody: string) {
-  if (status === 404) {
-    return NextResponse.json({ error: "ไม่พบเสียง OmniVoice ที่เลือก — เลือกเสียงใหม่อีกครั้ง" }, { status: 404 });
+function upstreamError(result: Extract<CallResult, { ok: false }>) {
+  if (result.status === 404) {
+    return NextResponse.json({ error: "ไม่พบเสียง Hero Voice ที่เลือก — กรุณาเลือกเสียงใหม่" }, { status: 404 });
   }
-  if (status === 422) {
-    return NextResponse.json({ error: "ข้อความไม่ผ่านการตรวจของ OmniVoice server" }, { status: 422 });
+  if (result.status === 422) {
+    return NextResponse.json({ error: "ข้อความไม่ผ่านการตรวจของ Hero Voice" }, { status: 422 });
   }
-  console.error(`[tts-omnivoice] upstream ${status}:`, errBody.slice(0, 200));
-  return NextResponse.json({
-    error: "OmniVoice TTS ขัดข้องชั่วคราว — ลองอีกครั้ง หรือสลับเป็น Gemini/ElevenLabs",
-    retryable: true,
-  }, { status: 503 });
+  if (result.status === 429) {
+    return NextResponse.json(
+      { error: "คิว Hero Voice เต็ม กรุณาลองใหม่ภายหลัง หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
+      { status: 429, headers: { "Retry-After": result.retryAfter ?? "30" } },
+    );
+  }
+  console.error(`[tts-omnivoice] upstream status=${result.status} reason=${result.reason}`);
+  return NextResponse.json(
+    { error: "Hero Voice ขัดข้องชั่วคราว กรุณาลองใหม่หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
+    { status: result.status === 504 ? 504 : 503 },
+  );
 }
 
-// PCM s16le mono → WAV (layout เดียวกับ tts-gemini)
-function wavFromPcm(pcmBuffer: Buffer, sampleRate: number): Buffer {
-  const numChannels = 1;
-  const bitsPerSample = 16;
-  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
-  const blockAlign = numChannels * (bitsPerSample / 8);
-  const h = Buffer.alloc(44);
-  h.write("RIFF", 0);
-  h.writeUInt32LE(36 + pcmBuffer.length, 4);
-  h.write("WAVE", 8);
-  h.write("fmt ", 12);
-  h.writeUInt32LE(16, 16);
-  h.writeUInt16LE(1, 20);
-  h.writeUInt16LE(numChannels, 22);
-  h.writeUInt32LE(sampleRate, 24);
-  h.writeUInt32LE(byteRate, 28);
-  h.writeUInt16LE(blockAlign, 32);
-  h.writeUInt16LE(bitsPerSample, 34);
-  h.write("data", 36);
-  h.writeUInt32LE(pcmBuffer.length, 40);
-  return Buffer.concat([h, pcmBuffer]);
+function wavFromPcm(pcm: Buffer, sampleRate: number): Buffer {
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + pcm.length, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([header, pcm]);
 }
 
-function saveWav(wavBuffer: Buffer): { voiceUrl: string; filePath: string } {
+function saveWav(wav: Buffer): { voiceUrl: string; filePath: string } {
   const rendersDir = path.join(process.cwd(), "public", "renders");
   fs.mkdirSync(rendersDir, { recursive: true });
-  const filename = `tts-omni-${Date.now()}.wav`;
+  const filename = `tts-omni-${Date.now()}-${randomUUID().slice(0, 8)}.wav`;
   const filePath = path.join(rendersDir, filename);
-  fs.writeFileSync(filePath, wavBuffer);
+  fs.writeFileSync(filePath, wav);
   return { voiceUrl: `/api/renders/${filename}`, filePath };
 }
 
-// silencedetect เดียวกับ tts-gemini — card boundary snap ใช้ตอนตัดซับ
-function detectSilences(wavPath: string): Promise<{ midpoints: number[]; intervals: { startMs: number; endMs: number }[] }> {
+function detectSilences(wavPath: string): Promise<{
+  midpoints: number[];
+  intervals: { startMs: number; endMs: number }[];
+}> {
   return new Promise((resolve) => {
     execFile(getFfmpegPath(), [
       "-i", wavPath,
       "-af", "silencedetect=noise=-30dB:d=0.25",
       "-f", "null", "-",
-    ], { maxBuffer: 20 * 1024 * 1024, timeout: 30_000 }, (_err, _stdout, stderr) => {
+    ], { maxBuffer: 20 * 1024 * 1024, timeout: 30_000 }, (_error, _stdout, stderr) => {
       const midpoints: number[] = [];
       const intervals: { startMs: number; endMs: number }[] = [];
-      const re = /silence_start:\s*([\d.]+)[\s\S]*?silence_end:\s*([\d.]+)/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(stderr || "")) !== null) {
-        const start = parseFloat(m[1]);
-        const end = parseFloat(m[2]);
+      const pattern = /silence_start:\s*([\d.]+)[\s\S]*?silence_end:\s*([\d.]+)/g;
+      let match: RegExpExecArray | null;
+      while ((match = pattern.exec(stderr || "")) !== null) {
+        const start = Number.parseFloat(match[1]);
+        const end = Number.parseFloat(match[2]);
         if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
           midpoints.push(Math.round(((start + end) / 2) * 1000));
           intervals.push({ startMs: Math.round(start * 1000), endMs: Math.round(end * 1000) });
         }
       }
-      midpoints.sort((a, b) => a - b);
-      intervals.sort((a, b) => a.startMs - b.startMs);
-      resolve({ midpoints, intervals });
+      resolve({
+        midpoints: midpoints.sort((a, b) => a - b),
+        intervals: intervals.sort((a, b) => a.startMs - b.startMs),
+      });
     });
   });
 }
 
-// POST /api/videos/tts-omnivoice
-// Body: { text, voiceId, speed?, preview? }
-// Returns: { voiceUrl, audioDurationMs, timing? } — สัญญาเดียวกับ tts-gemini
-export async function POST(req: Request) {
+export async function POST(request: Request) {
+  let aiReserveUserId: string | null = null;
+  let aiReservedMin = 0;
+  let aiReserveSettled = true;
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isOmniVoiceUserAllowed(user.id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
   try {
-    const authUser = await getCurrentUser();
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const markReserved = (minutes: number) => {
+      aiReserveUserId = user.id;
+      aiReservedMin = minutes;
+      aiReserveSettled = false;
+    };
+    const settleRefund = async () => {
+      if (!aiReserveSettled && aiReservedMin > 0) {
+        await refundAiAudioMinutes(user.id, aiReservedMin).catch(() => {});
+      }
+      aiReserveSettled = true;
+    };
+    const settleReconcile = async (actualMinutes: number) => {
+      await reconcileAiAudioMinutes(user.id, aiReservedMin, actualMinutes, { enforce: true });
+      aiReserveSettled = true;
+    };
 
-    const body = await req.json().catch(() => null);
-    const { text, voiceId = "voice_01", speed = 1.0, preview = false } = body ?? {};
-    if (!text?.trim()) return NextResponse.json({ error: "text required" }, { status: 400 });
+    const config = omnivoiceConfig();
+    const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+    const fullText = typeof body?.text === "string" ? body.text.trim() : "";
+    const voiceId = typeof body?.voiceId === "string" && body.voiceId.trim() ? body.voiceId.trim() : "voice_01";
+    const preview = body?.preview === true;
+    const parsedSpeed = typeof body?.speed === "number" ? body.speed : Number(body?.speed);
+    const speed = Number.isFinite(parsedSpeed) ? Math.min(3, Math.max(0.3, parsedSpeed)) : 1;
+
+    if (!fullText) return NextResponse.json({ error: "text required" }, { status: 400 });
     if (!isValidOmniVoiceId(voiceId)) return NextResponse.json({ error: "voiceId ไม่ถูกต้อง" }, { status: 400 });
-    const spd = Math.min(3.0, Math.max(0.3, Number(speed) || 1.0));
-
-    if (preview === true) {
-      const previewText = normalizeVoicePreviewText(text);
-      const cache = getVoicePreviewCachePath({
-        provider: "omnivoice",
-        userId: authUser.id,
-        voiceKey: voiceId,
-        text: previewText,
-        ext: "wav",
-      });
-      const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
-      if (cached) return NextResponse.json({ ...cached, preview: true });
-      const r = await callOmniVoice(voiceId, normalizeNumbersForTts(previewText), spd);
-      if (!r.ok) return omniErrorResponse(r.status, r.errBody);
-      fs.writeFileSync(cache.filePath, wavFromPcm(r.pcm, r.sampleRate));
+    if (preview) {
+      return NextResponse.json({ error: "ใช้เสียงตัวอย่างที่เตรียมไว้จากรายการ Hero Voice" }, { status: 400 });
+    }
+    if (!preview && fullText.length > config.maxScriptChars) {
       return NextResponse.json({
-        voiceUrl: cache.voiceUrl,
-        audioDurationMs: Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)),
-        preview: true,
-        cached: false,
-      });
+        code: "OMNIVOICE_SCRIPT_TOO_LONG",
+        error: `Hero Voice รุ่นทดลองรองรับไม่เกิน ${config.maxScriptChars} ตัวอักษรต่อคลิป กรุณาย่อสคริปต์หรือสลับเป็น Gemini/ElevenLabs`,
+        maxChars: config.maxScriptChars,
+      }, { status: 413 });
     }
 
-    // IRON RULE เดียวกับ tts-gemini: fullText คือ string เดียวที่ทั้ง TTS และซับเห็น
-    // (เลขอารบิกเดิม — ผู้ใช้ต้องเห็นสคริปต์/ซับตรงกับที่พิมพ์ ไม่ใช่คำอ่าน)
-    const fullText: string = (text as string).trim();
+    const deadline = Date.now() + config.requestBudgetMs;
+    const quota = await checkMinuteQuota(user.id);
+    if (!quota.allowed) {
+      return NextResponse.json({ code: "QUOTA_MINUTES", message: quota.message }, { status: 409 });
+    }
+
     const chunks = splitScriptForTts(fullText);
-    // normalize แยกไว้ใช้แค่ตอนส่งเข้า OmniVoice เท่านั้น (เลขอารบิกเดี่ยว → คำไทยทีละหลัก
-    // กัน server อ่านผิด) — ซับ/config ยัง merge จาก chunks[i].text (เลขเดิม) เสมอ
-    const ttsTextFor = (i: number) => normalizeNumbersForTts(chunks[i].text);
-    const deadline = Date.now() + SEGMENTED_BUDGET_MS;
-    console.log(`[tts-omnivoice] script ${fullText.length} chars → ${chunks.length} segment(s)`);
-
-    // ---- Segmented pass ----
-    let pcms: Buffer[] | null = [];
+    const pcms: Buffer[] = [];
     const durations: number[] = [];
+    const generationTimes: number[] = [];
     let sampleRate = 0;
-    let failOpen = "";
-
-    for (let i = 0; i < chunks.length; i++) {
-      const r = await callOmniVoice(voiceId, ttsTextFor(i), spd, chunks.length > 1 ? deadline : undefined);
-      if (!r.ok) {
-        if (chunks.length === 1) return omniErrorResponse(r.status, r.errBody);
-        failOpen = `segment ${i + 1}/${chunks.length} failed (${r.status})`;
-        pcms = null;
-        break;
-      }
-      if (sampleRate === 0) sampleRate = r.sampleRate;
-      else if (r.sampleRate !== sampleRate) {
-        failOpen = `sample rate changed mid-clip (${sampleRate} → ${r.sampleRate})`;
-        pcms = null;
-        break;
-      }
-      pcms.push(r.pcm);
-      durations.push(Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)));
+    const admission = omnivoiceAdmission.tryAcquire();
+    if (!admission) {
+      return NextResponse.json(
+        { error: "คิว Hero Voice ฝั่งแอปเต็ม กรุณาลองใหม่ภายหลัง หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
+        { status: 429, headers: { "Retry-After": "30" } },
+      );
     }
+    try {
+      const estimatedMinutes = estimateTtsAudioMinutes(fullText);
+      const aiReserve = await reserveAiAudioMinutes(user.id, estimatedMinutes, { enforce: true });
+      if (!aiReserve.allowed) {
+        return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: aiReserve.message }, { status: 429 });
+      }
+      markReserved(estimatedMinutes);
 
-    // ---- Desync guard: segment ที่อัตราพูดหลุด median = เสียงเพี้ยน → gen ใหม่ ----
-    if (pcms && chunks.length > 1) {
-      const GUARD_ROUNDS = 3;
-      for (let round = 1; round <= GUARD_ROUNDS; round++) {
-        const outliers = charsPerSecGuard(chunks.map((c, i) => ({ text: c.text, durationMs: durations[i] })));
-        if (outliers.length === 0) break;
-        if (round === GUARD_ROUNDS) {
-          failOpen = `guard still failing after retries: [${outliers.join(", ")}]`;
-          pcms = null;
-          break;
+      for (let index = 0; index < chunks.length; index++) {
+        // normalize เฉพาะข้อความที่ส่งเข้า OmniVoice (เลขอารบิกทีละหลัก → คำไทย กัน server อ่านผิด)
+        // — timing/ซับด้านล่างยัง merge จาก chunks[index].text (เลขเดิมที่ผู้ใช้พิมพ์) เสมอ
+        const result = await callOmniVoice(
+          config,
+          voiceId,
+          normalizeNumbersForTts(chunks[index].text),
+          speed,
+          deadline,
+        );
+        if (!result.ok) { await settleRefund(); return upstreamError(result); }
+        if (sampleRate === 0) sampleRate = result.sampleRate;
+        if (result.sampleRate !== sampleRate) {
+          await settleRefund();
+          return NextResponse.json({ error: "Hero Voice ส่งรูปแบบเสียงไม่สม่ำเสมอ", retryable: true }, { status: 503 });
         }
-        console.warn(`[tts-omnivoice] guard round ${round}: outlier segments [${outliers.join(", ")}] — retrying`);
-        for (const idx of outliers) {
-          const r = await callOmniVoice(voiceId, ttsTextFor(idx), spd, deadline);
-          if (r.ok && r.sampleRate === sampleRate) {
-            pcms[idx] = r.pcm;
-            durations[idx] = Math.round(pcmDurationMs(r.pcm.length, sampleRate));
-          }
-        }
+        pcms.push(result.pcm);
+        durations.push(Math.round(pcmDurationMs(result.pcm.length, result.sampleRate)));
+        generationTimes.push(result.generationTimeSec);
       }
+    } finally {
+      admission.release();
     }
 
-    // ---- Fail-open: segmented พัง → single call ไม่มี timing (editor จะใช้ transcribe fallback) ----
-    if (!pcms) {
-      console.warn(`[tts-omnivoice] fail-open → single call (${failOpen})`);
-      const r = await callOmniVoice(voiceId, normalizeNumbersForTts(fullText), spd);
-      if (!r.ok) return omniErrorResponse(r.status, r.errBody);
-      const { voiceUrl } = saveWav(wavFromPcm(r.pcm, r.sampleRate));
-      return NextResponse.json({
-        voiceUrl,
-        audioDurationMs: Math.round(pcmDurationMs(r.pcm.length, r.sampleRate)),
-      });
-    }
-
-    // ---- Success: concat PCM → WAV เดียว → timing ตรงเป๊ะ ----
-    const segments = mergeSegmentTiming(chunks.map((c, i) => ({ text: c.text, durationMs: durations[i] })));
-    const audioDurationMs = durations.reduce((a, b) => a + b, 0);
+    const audioDurationMs = durations.reduce((sum, value) => sum + value, 0);
     const { voiceUrl, filePath } = saveWav(wavFromPcm(Buffer.concat(pcms), sampleRate));
-    const sil = await detectSilences(filePath).catch(() => ({ midpoints: [] as number[], intervals: [] as { startMs: number; endMs: number }[] }));
-    console.log(`[tts-omnivoice] done: ${chunks.length} segment(s), ${audioDurationMs}ms total`);
+    // The worker CPU was successfully spent even if a later render-minute reserve
+    // loses a race, so settle the managed-audio ceiling before that reservation.
+    await settleReconcile(audioDurationMs / 60_000);
+    if (process.env.MINUTE_QUOTA !== "1") {
+      const reserved = await reserveMinutes(user.id, Math.max(1, Math.ceil(audioDurationMs / 60_000)));
+      if (!reserved.allowed) {
+        try { fs.unlinkSync(filePath); } catch {}
+        return NextResponse.json({ code: "QUOTA_MINUTES", message: reserved.message }, { status: 409 });
+      }
+    }
+
+    const silences = await detectSilences(filePath).catch(() => ({
+      midpoints: [] as number[],
+      intervals: [] as { startMs: number; endMs: number }[],
+    }));
+    recordTelemetryEvent(user.id, {
+      name: "omnivoice_tts",
+      category: "product",
+      source: "server",
+      properties: {
+        scriptChars: fullText.length,
+        audioDurationMs,
+        generationTimeMs: Math.round(generationTimes.reduce((sum, value) => sum + value, 0) * 1000),
+        numStep: config.numStep,
+        segments: chunks.length,
+      },
+    }).catch(() => {});
+
     return NextResponse.json({
       voiceUrl,
       audioDurationMs,
-      timing: { provider: "omnivoice" as const, segments, chars: null, silences: sil.midpoints, silenceIntervals: sil.intervals },
+      timing: {
+        provider: "omnivoice" as const,
+        segments: mergeSegmentTiming(chunks.map((chunk, index) => ({ text: chunk.text, durationMs: durations[index] }))),
+        chars: null,
+        silences: silences.midpoints,
+        silenceIntervals: silences.intervals,
+      },
     });
   } catch (error) {
-    console.error("[tts-omnivoice] top-level error:", error);
-    return apiError({ route: "POST /api/videos/tts-omnivoice", error, notifyUser: true });
+    if (!aiReserveSettled && aiReserveUserId && aiReservedMin > 0) {
+      await refundAiAudioMinutes(aiReserveUserId, aiReservedMin).catch(() => {});
+      aiReserveSettled = true;
+    }
+    if (!(error instanceof OmniVoiceConfigError)) {
+      console.error("[tts-omnivoice] request failed:", error);
+    }
+    return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน", retryable: true }, { status: 503 });
   }
 }

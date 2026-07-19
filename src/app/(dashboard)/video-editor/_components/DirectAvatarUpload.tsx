@@ -4,15 +4,23 @@ import { useState } from "react";
 import { Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { isPortraitVideoFile } from "@/lib/video-orientation";
+import { readVideoMetadata } from "@/lib/video-orientation";
 
-const MAX_AVATAR_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // keep in sync with /api/videos/upload-avatar
+const MAX_AVATAR_UPLOAD_BYTES = 500 * 1024 * 1024; // keep in sync with /api/videos/upload-avatar
 
 type UploadResponse = {
   url?: string;
+  durationMs?: number;
+  durationSec?: number;
   error?: string;
   code?: string;
 };
+
+export interface UploadedVideoMetadata {
+  durationSec?: number;
+  width?: number;
+  height?: number;
+}
 
 class PlanRequiredError extends Error {
   constructor(public readonly planMessage: string) {
@@ -30,14 +38,30 @@ function parseUploadResponse(text: string): UploadResponse {
 }
 
 function uploadErrorMessage(status: number, data: UploadResponse) {
+  if (status === 401 || data.code === "unauthorized") return "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง";
   if (data.error) return data.error;
-  if (status === 401) return "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง";
-  if (status === 413) return "ไฟล์ใหญ่เกิน 2 GB";
+  if (status === 413) return "ไฟล์ใหญ่เกิน 500 MB";
   if (status === 507) return "พื้นที่จัดเก็บบนเซิร์ฟเวอร์ไม่พอสำหรับอัปโหลดไฟล์นี้";
   return `อัปโหลดไม่สำเร็จ (HTTP ${status}) — ลองเข้าสู่ระบบใหม่หรือลองอีกครั้ง`;
 }
 
-export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { onUrl: (url: string) => void; onPlanError?: (msg: string) => void; requirePortrait?: boolean }) {
+export function DirectAvatarUpload({
+  onUrl,
+  onPlanError,
+  requirePortrait,
+  label = "อัปโหลดไฟล์วิดีโอ green screen",
+  hint = "mp4 / mov / webm · รองรับถึง 10 นาที",
+  planRequiredMessage = "Avatar ใช้ได้เฉพาะแผน Pro ขึ้นไป",
+  successMessage = "อัปโหลดสำเร็จ",
+}: {
+  onUrl: (url: string, metadata?: UploadedVideoMetadata) => void;
+  onPlanError?: (msg: string) => void;
+  requirePortrait?: boolean;
+  label?: string;
+  hint?: string;
+  planRequiredMessage?: string;
+  successMessage?: string;
+}) {
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState(0);
 
@@ -47,12 +71,23 @@ export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { on
       return;
     }
     if (file.size > MAX_AVATAR_UPLOAD_BYTES) {
-      toast.error("ไฟล์ใหญ่เกิน 2 GB");
+      toast.error("ไฟล์ใหญ่เกิน 500 MB");
       return;
     }
-    if (requirePortrait && !(await isPortraitVideoFile(file))) {
-      toast.error("รองรับเฉพาะคลิปแนวตั้ง (9:16) — คลิปแนวนอน/จัตุรัสยังไม่รองรับในโหมดนี้");
-      return;
+    let localMetadata: UploadedVideoMetadata | undefined;
+    try {
+      const meta = await readVideoMetadata(file);
+      localMetadata = {
+        width: meta.width,
+        height: meta.height,
+        ...(meta.durationSec > 0 ? { durationSec: meta.durationSec } : {}),
+      };
+      if (requirePortrait && !(meta.height > 0 && meta.width > 0 && meta.height > meta.width)) {
+        toast.error("รองรับเฉพาะคลิปแนวตั้ง (9:16) — คลิปแนวนอน/จัตุรัสยังไม่รองรับในโหมดนี้");
+        return;
+      }
+    } catch {
+      // Keep the existing fail-open behavior for metadata read failures.
     }
     setUploading(true);
     setProgress(0);
@@ -63,14 +98,24 @@ export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { on
         fd.append("file", file);
         const xhr = new XMLHttpRequest();
         xhr.open("POST", "/api/videos/upload-avatar");
+        xhr.withCredentials = true;
         xhr.upload.onprogress = e => { if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100)); };
         xhr.onload = () => {
           const data = parseUploadResponse(xhr.responseText);
           if (xhr.status === 200) {
-            if (data.url) { onUrl(data.url); resolve(); }
+            if (data.url) {
+              const serverDurationSec =
+                typeof data.durationMs === "number" && data.durationMs > 0
+                  ? data.durationMs / 1000
+                  : typeof data.durationSec === "number" && data.durationSec > 0
+                    ? data.durationSec
+                    : undefined;
+              onUrl(data.url, { ...localMetadata, ...(serverDurationSec ? { durationSec: serverDurationSec } : {}) });
+              resolve();
+            }
             else reject(new Error(data.error ?? "อัปโหลดไม่สำเร็จ"));
           } else if (xhr.status === 403 || data.code === "plan_required") {
-            reject(new PlanRequiredError(data.error ?? "Avatar ใช้ได้เฉพาะแผน Pro ขึ้นไป"));
+            reject(new PlanRequiredError(planRequiredMessage));
           } else {
             // Non-JSON body (e.g. an HTML error page from the proxy) → give an
             // actionable message instead of an opaque "Upload failed".
@@ -81,7 +126,7 @@ export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { on
         xhr.onabort = () => reject(new Error("ยกเลิกการอัปโหลดแล้ว"));
         xhr.send(fd);
       });
-      toast.success("อัปโหลดสำเร็จ");
+      toast.success(successMessage);
     } catch (e) {
       if (e instanceof PlanRequiredError) {
         onPlanError?.(e.planMessage);
@@ -112,8 +157,8 @@ export function DirectAvatarUpload({ onUrl, onPlanError, requirePortrait }: { on
       ) : (
         <>
           <Upload className="h-4 w-4 text-slate-600" />
-          <span className="text-[10px] text-slate-600">อัปโหลดไฟล์วิดีโอ green screen</span>
-          <span className="text-[9px] text-slate-700">mp4 / mov / webm · รองรับถึง 10 นาที</span>
+          <span className="text-[10px] text-slate-600">{label}</span>
+          <span className="text-[9px] text-slate-700">{hint}</span>
         </>
       )}
     </label>

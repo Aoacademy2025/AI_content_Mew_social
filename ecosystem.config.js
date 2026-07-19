@@ -1,3 +1,28 @@
+const { join } = require("node:path");
+
+// PM2 evaluates this file in the deploy shell, which does not automatically load
+// the application's .env. Load it before resolving process-backed secrets; otherwise
+// --update-env can replace a valid saved secret with an empty fallback.
+require("dotenv").config({ path: join(__dirname, ".env"), quiet: true });
+
+// Reviewed KVM8 runtime profile. Keep render-output settings in ONE object so web
+// fallback rendering, --env production, and the durable render workers cannot drift.
+// These are the effective production values verified on 2026-07-19; Batch A only
+// makes them deterministic and does not tune speed or visual quality.
+const renderRuntimeEnv = Object.freeze({
+  RENDER_CONCURRENCY: "3",
+  RENDER_LOW_RESOURCE: "0",
+  RENDER_OFFTHREAD_CACHE_MB: "128",
+  RENDER_JPEG_QUALITY: "90",
+});
+
+// Stock normalization runs in the ai-content fetch-stock route, not render-worker.
+// Explicit defaults prevent a stale .env or caller shell from silently changing it.
+const stockRuntimeEnv = Object.freeze({
+  STOCK_NORMALIZE_CONCURRENCY: "1",
+  STOCK_NORMALIZE_PRESET: "ultrafast",
+});
+
 module.exports = {
   apps: [
   {
@@ -15,6 +40,13 @@ module.exports = {
       // own node); NODE_OPTIONS in env is the reliable heap setter.
       node_args: "--max-old-space-size=3072",
       max_memory_restart: "4G",
+      // Crash-loop guard (P1.6/STAB-LOW): if the process dies <20s after boot 10 times
+      // in a row, PM2 stops retrying and leaves it `errored` — a DELIBERATE, detectable
+      // stop (shows in `pm2 status` + the ops watchdog) rather than PM2's silent default
+      // that quietly gives up after ~15 fast restarts. Prevents an invisible boot loop
+      // (bad .env / missing .next / migration mismatch) from thrashing the box unnoticed.
+      max_restarts: 10,
+      min_uptime: "20s",
       env: {
         NODE_ENV: "production",
         PORT: 3000,
@@ -24,15 +56,15 @@ module.exports = {
         NODE_OPTIONS: "--max-old-space-size=3072",
         // Render tuning. Offthread cache lowered 512→128MB: a large per-job cache
         // inflates heap usage during long renders, which contributed to the OOM.
-        RENDER_CONCURRENCY: "4",
-        RENDER_OFFTHREAD_CACHE_MB: "128",
-        RENDER_JPEG_QUALITY: "70",
+        ...renderRuntimeEnv,
+        ...stockRuntimeEnv,
         // PR-7 durable render queue: "1" = the thin render route enqueues a
         // RenderJob (returns jobId) instead of rendering in-process; the
         // render-worker app below drains it. ENABLED + validated on prod 2026-06-19
         // (first live queue render OK; web stays ~0.5GB, isolated). ecosystem env
-        // SHADOWS .env — apply changes with `pm2 restart ecosystem.config.js --only
-        // ai-content` (NOT --update-env, which does not re-read this file).
+        // SHADOWS .env — apply changes by replacing the saved environment from the
+        // checked-in file: `pm2 restart ecosystem.config.js --only ai-content --update-env`.
+        // A name-only restart, or omitting --update-env on production PM2, keeps stale values.
         // To revert to legacy: set "0" AND restore the 12288 heap + 13G above.
         RENDER_VIA_QUEUE: "1",
       },
@@ -46,6 +78,25 @@ module.exports = {
         // so the flag would be lost if someone starts with `pm2 ... --env production`.
         // Keep in sync with the env block (see the RENDER_VIA_QUEUE notes above).
         RENDER_VIA_QUEUE: "1",
+        ...renderRuntimeEnv,
+        ...stockRuntimeEnv,
+      },
+    },
+    {
+      name: "db-backup",
+      cwd: "/var/www/ai-content",
+      script: "node_modules/.bin/tsx",
+      args: "scripts/backup-db.ts",
+      cron_restart: "0 2 * * *", // daily 2:00 AM — SQLite snapshot BEFORE the 3:00 cleanup (STAB-3)
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        // scripts/backup-db.ts reads these from the environment / prod .env (via dotenv):
+        //   BACKUP_DIR            default /var/backups/heroai
+        //   BACKUP_RETENTION_DAYS default 14
+        //   BACKUP_RSYNC_TARGET   optional — set in .env to enable off-box copies
+        //                         (unset = local snapshot only, logged, not an error)
       },
     },
     {
@@ -65,8 +116,8 @@ module.exports = {
       name: "media-cleanup",
       cwd: "/var/www/ai-content",
       script: "node_modules/.bin/tsx",
-      args: "scripts/media-cleanup.ts --olderThanDays=3 --includeStocks --apply",
-      cron_restart: "30 3 * * *", // daily 3:30 AM — reference-aware orphan media cleanup
+      args: "scripts/media-cleanup.ts --olderThanDays=3 --includeStocks",
+      cron_restart: "30 3 * * *", // daily 3:30 AM — apply disabled until retention/reference-graph rollout is approved
       autorestart: false,
       watch: false,
       env: {
@@ -161,6 +212,17 @@ module.exports = {
         NODE_ENV: "production",
         MCP_INTERNAL_BASE_URL: process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000",
         MCP_SERVICE_SECRET: process.env.MCP_SERVICE_SECRET || "",
+        // CAP-1 launch-capacity knob: how many videos this single worker orchestrates at
+        // once (docs/audits/2026-07-07-system-optimization-audit.md). Set to 2 after the
+        // KVM8 (8 vCPU/32GB) upgrade and validated by 7 days of live prod operation
+        // (2026-07-09 -> 2026-07-16: 202 done jobs, queue-wait p95 4s, no instability).
+        // Clamp 1..4 lives in the script (scripts/mcp-video-worker.ts), not here.
+        // ecosystem env SHADOWS .env, and a plain `pm2 restart mcp-video-worker` keeps
+        // the OLD env; to apply a change here, restart against the FILE:
+        // `pm2 restart ecosystem.config.js --only mcp-video-worker --update-env`.
+        // Rollback = set back to "1" and restart the same way. Single worker only (NOT
+        // instances:2 — boot-recovery has no per-worker heartbeat guard; see the worker script).
+        MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "2",
       },
     },
     {
@@ -183,6 +245,12 @@ module.exports = {
       watch: false,
       kill_timeout: 30000, // allow graceful drain (cancel render + requeue) before SIGKILL
       max_memory_restart: "5G", // worker heap; web heap shrinks once renders move off ai-content (PR-8)
+      // Crash-loop guard (P1.6/STAB-LOW): same rationale as ai-content — a worker that
+      // dies <20s after boot 10× in a row is left `errored` (deliberate, detectable) rather
+      // than silently abandoned by PM2's default. A boot-crashing worker (bad DATABASE_URL /
+      // missing tsx dep) stops thrashing and is visible to `pm2 status` + the watchdog.
+      max_restarts: 10,
+      min_uptime: "20s",
       env: {
         NODE_ENV: "production",
         // Worker heap for in-process renderMedia (long videos accumulate frame buffers).
@@ -193,9 +261,9 @@ module.exports = {
         // tsx (unlike Next) doesn't auto-load .env; dotenv/config in the script reads it,
         // but ecosystem env SHADOWS .env so pin the prod DB path here as a backstop.
         DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
-        // Render tuning for the worker process (smaller per-job cache / quality floor).
-        RENDER_OFFTHREAD_CACHE_MB: "128",
-        RENDER_JPEG_QUALITY: "60",
+        // Same authoritative profile used by the web fallback. 2 instances x 3 = 6
+        // frame threads <= 8 cores on KVM8; Batch B owns any future tuning experiment.
+        ...renderRuntimeEnv,
       },
     },
   ],

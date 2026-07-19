@@ -216,6 +216,27 @@ export function mergeSegmentTiming(parts: { text: string; durationMs: number }[]
   });
 }
 
+// Degraded single-segment fallback timing. When a TTS route produced AUDIO but
+// no instrumented `timing` (Gemini's segmented pass fell open to a single
+// uninstrumented call, or a rare timing/text mismatch), a headless caller with
+// no transcribe fallback can still build a valid clock from the one fact it has:
+// the exact audio duration, spread over the exact spoken text as ONE segment.
+// This is still 100% TTS-derived (the duration is byte-exact from the route) and
+// runs the SAME char clock as any 1-segment clip — it merely lacks per-chunk
+// re-anchoring and silence snapping, so long pause-heavy scripts drift more.
+// `spokenText` must be exactly what TTS voiced; the routes only .trim() their
+// input, so the caller's trimmed script satisfies the iron rule. Returns null
+// when there is nothing to time (empty text or a non-positive duration).
+export function buildDegradedTtsTiming(
+  provider: "gemini" | "elevenlabs" | "omnivoice",
+  spokenText: string,
+  audioDurationMs: number,
+): TtsTiming | null {
+  const text = spokenText.trim();
+  if (!text || !Number.isFinite(audioDurationMs) || audioDurationMs <= 0) return null;
+  return { provider, segments: [{ text, startMs: 0, durationMs: Math.round(audioDurationMs) }], chars: null };
+}
+
 // ElevenLabs path: offset chunk i by the REAL audio duration (ffprobe) of
 // chunks 0..i-1, not by the alignment's trailing timestamp — the model
 // occasionally clips trailing silence (VideoForge lesson, 02-tts.ts).
@@ -560,10 +581,12 @@ function buildCharClock(timing: TtsTiming, fullText: string): CharClock {
   // startMsAt[i] = time at the boundary BEFORE char i; length fullText.length+1
   const startMsAt = new Float64Array(fullText.length + 1);
   const pauseWeight = ellipsisPauseWeight();
-  // Real-pause anchoring (Gemini only): rebuild each segment's clock around the
+  // Real-pause anchoring (providers without char alignment): rebuild each segment's clock around the
   // detected silences; any segment where that isn't trustworthy falls back to
   // the legacy proportional spread below, float for float.
-  const silAnchors = timing.provider === "gemini" ? usableSilenceIntervals(timing) : null;
+  const silAnchors = timing.provider === "gemini" || timing.provider === "omnivoice"
+    ? usableSilenceIntervals(timing)
+    : null;
   const silBoundaries = silAnchors ? wordBoundaries(fullText) : null;
   let charBase = 0;
   let totalMs = 0;
@@ -666,7 +689,11 @@ export function buildCaptionsFromCards(cards: ScriptCard[], timing: TtsTiming, f
   const caps: TimedCaption[] = [];
   for (const card of cards) {
     const raw = fullText.slice(card.startChar, card.endChar);
-    const text = raw.trim();
+    // FIX A: collapse pipeline-inherited interior whitespace/newlines (a script line
+    // break sliced into a SENTENCE-mode card) to single spaces so the card never stacks
+    // two lines via white-space:pre-line. Timing below still keys off the RAW slice's
+    // leading/trailing whitespace, so start/end arithmetic is unchanged.
+    const text = raw.replace(/\s+/g, " ").trim();
     if (!text) continue;
     // Time the trimmed content, not the surrounding whitespace.
     const lead = raw.length - raw.trimStart().length;

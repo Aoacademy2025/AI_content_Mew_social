@@ -18,3 +18,25 @@
 // bigger gen scale.) See docs/superpowers/specs/2026-07-01-avatar-safe-gen-framing-design.md.
 export type GenFraming = { scale: number; offsetX: number; offsetY: number };
 export const HEYGEN_GEN_FRAMING: GenFraming = { scale: 1.0, offsetX: 0, offsetY: 0 };
+
+// HeyGen generate `dimension` (resolution requested for the green/matted avatar video).
+// 2026-07-05: default bumped from 720×1280 → 1080×1920 — the old 720p source was the
+// cause of the blur users saw after the composite upscaled it back up to the render's
+// 1080-wide canvas. Some accounts/plans don't support 1080 — those calls fail at
+// generate-time, so every call site retries ONCE at AVATAR_GEN_FALLBACK_DIMENSION when
+// the error looks like a resolution/plan limit (see isResolutionFallbackError below).
+export const AVATAR_GEN_DIMENSION = { width: 1080, height: 1920 };
+export const AVATAR_GEN_FALLBACK_DIMENSION = { width: 720, height: 1280 };
+
+/**
+ * True when a HeyGen /v2/video/generate error body/message indicates the account/plan
+ * doesn't support the requested (1080) resolution — the ONLY case call sites should
+ * retry at AVATAR_GEN_FALLBACK_DIMENSION. Matched case-insensitively; any other error
+ * (auth, quota, rate limit, network, etc.) must be left unchanged. No bare "plan" match —
+ * that false-positived on unrelated billing/quota errors ("upgrade your plan", "not
+ * included in your plan"), triggering a doomed 720p retry + misleading warn log.
+ * Plan-tier messages that actually reference 1080 still match via the "1080" alternative.
+ */
+export function isResolutionFallbackError(raw: string): boolean {
+  return /resolution|dimension|1080/i.test(raw);
+}

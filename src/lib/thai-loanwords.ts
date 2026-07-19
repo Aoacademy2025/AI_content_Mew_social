@@ -1,3 +1,5 @@
+import { getActiveCompounds } from "@/lib/thai-compounds";
+
 // Thai loanwords / transliterations that Intl.Segmenter("th",{granularity:"word"})
 // mis-splits because ICU's Thai dictionary doesn't contain them — e.g. it breaks
 // "แอดมิน" => "แอ|ดมิน", "คอมเมนต์" => "คอม|เมน|ต์", "แพลตฟอร์ม"/"แชตบอต"/… mid-word.
@@ -116,12 +118,15 @@ export function getActiveLoanwords(): string[] {
 
 export interface LoanwordSpan { start: number; end: number; }
 
-// All non-overlapping occurrences of any loanword in `text`. When a shorter
-// entry is contained in a longer one at the same place (เอนเกจ ⊂ เอนเกจเมนต์),
-// the longer one wins so we never force a cut INSIDE the longer loanword.
+// All non-overlapping occurrences of any loanword OR curated native compound in
+// `text`. Compounds (thai-compounds.ts) flow through this exact same merge so they
+// stay whole in wordBoundaries on both the MCP + web paths — see getActiveCompounds.
+// When a shorter entry is contained in a longer one at the same place (เอนเกจ ⊂
+// เอนเกจเมนต์, or ขี้เกียจ ⊂ a longer span), the longer one wins so we never force a
+// cut INSIDE the longer entry.
 export function loanwordSpans(text: string): LoanwordSpan[] {
   const raw: LoanwordSpan[] = [];
-  for (const w of getActiveLoanwords()) {
+  for (const w of [...getActiveLoanwords(), ...getActiveCompounds()]) {
     let from = 0;
     let idx: number;
     while ((idx = text.indexOf(w, from)) !== -1) {

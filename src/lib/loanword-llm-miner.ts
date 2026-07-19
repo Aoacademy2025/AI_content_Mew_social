@@ -89,3 +89,44 @@ export async function mineWithLlm(
     return [];
   }
 }
+
+// ── Native-compound RANKING (Part 2, optional noise-reducer) ──────────────────
+// The dictionary-oracle compound miner (loanword-mining.ts mineCompoundCandidates)
+// yields every dict word ICU split into all-real fragments — which includes both
+// genuine fixed compounds (ขี้เกียจ, เวลางาน) AND incidental word sequences. This LLM
+// pass keeps only the genuine compounds so the admin review queue stays low-noise. It
+// never PROPOSES words (input is the miner's candidates), never AUTO-APPLIES anything
+// (output still lands in pendingCompounds for human approval), and only ever narrows the
+// list — every kept word must be one of the inputs (guards against hallucination).
+export function buildCompoundRankPrompt(candidates: string[]): string {
+  return [
+    "You are a Thai NLP assistant. Below is a JSON array of Thai character sequences that",
+    "a word segmenter split apart. For EACH, decide whether it is a GENUINE fixed lexical",
+    "compound or set collocation that should stay as a SINGLE unit in subtitles",
+    "(e.g. ขี้เกียจ, เวลางาน, โรงพยาบาล) — as opposed to two unrelated words that merely",
+    "appeared next to each other. Return ONLY a JSON array containing the ones that ARE",
+    "genuine compounds, each string EXACTLY as given — no new words, no fragments, no",
+    "explanation.",
+    "",
+    "CANDIDATES:",
+    JSON.stringify(candidates),
+  ].join("\n");
+}
+
+export async function rankCompoundsWithLlm(
+  candidates: string[],
+  callLlm: (prompt: string) => Promise<string>,
+): Promise<string[]> {
+  if (candidates.length === 0) return [];
+  try {
+    const raw = await callLlm(buildCompoundRankPrompt(candidates));
+    const allowed = new Set(candidates);
+    const kept = parseMinerResponse(raw).filter((w) => allowed.has(w)); // never introduce non-candidates
+    // A genuine subset → use it. Empty/garbled response → keep ALL for human review
+    // (a flaky LLM must never silently discard candidates; the human gate is the backstop).
+    return kept.length > 0 ? kept : candidates;
+  } catch (e) {
+    console.warn("[llm-compounds] rank failed (fail-open, keeping all):", e instanceof Error ? e.message : e);
+    return candidates;
+  }
+}

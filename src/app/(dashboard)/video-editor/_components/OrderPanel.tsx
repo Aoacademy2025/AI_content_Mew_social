@@ -9,6 +9,13 @@ import type { StepState, StockSource, KieImageModel, StockVideo, AutoMixImagePro
 import { KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 import { VoicePreviewButton } from "./VoicePreviewButton";
+import {
+  OMNIVOICE_UI_ENABLED,
+  type OmniVoiceInfo,
+  type TtsProvider,
+} from "@/lib/tts-providers";
+import { useOmniVoiceAvailability } from "../_hooks/useOmniVoiceAvailability";
+import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME } from "@/lib/hero-voice-brand";
 
 type UserMusicTrack = { id: string; title: string; filename: string; sizeBytes?: number | null };
 
@@ -34,8 +41,8 @@ const BROLL_BADGE: Record<"ai" | "photo" | "video", { label: string; cls: string
 
 export interface OrderPanelProps {
   open: boolean; onToggle: () => void;
-  ttsProvider: "elevenlabs" | "gemini" | "omnivoice"; geminiVoiceName: string; voiceId: string;
-  setTtsProvider: (v: "elevenlabs" | "gemini" | "omnivoice") => void;
+  ttsProvider: TtsProvider; geminiVoiceName: string; voiceId: string;
+  setTtsProvider: (v: TtsProvider) => void;
   setGeminiVoiceName: (v: string) => void; setVoiceId: (v: string) => void;
   omniVoiceId: string; setOmniVoiceId: (v: string) => void;
   bgmEnabled: boolean; bgmFile: string; bgmVolume: number;
@@ -115,35 +122,24 @@ export function OrderPanel(p: OrderPanelProps) {
   const [autoMixProvidersOpen, setAutoMixProvidersOpen] = React.useState(false);
   const autoMixProvidersRef = React.useRef<HTMLDivElement>(null);
   const [geminiVoiceOpen, setGeminiVoiceOpen] = React.useState(false);
-
-  // OmniVoice — โหลดรายการเสียงครั้งแรกที่เลือก provider นี้ + preview player ใน panel
-  const [omniVoices, setOmniVoices] = React.useState<{ voice_id: string; desc: string; instruct: string; preview_url: string }[]>([]);
+  const [omniVoices, setOmniVoices] = React.useState<OmniVoiceInfo[]>([]);
   const [omniVoicesError, setOmniVoicesError] = React.useState("");
-  const omniLoadedRef = React.useRef(false);
-  const omniPreviewRef = React.useRef<HTMLAudioElement | null>(null);
-  const [omniPreviewPlaying, setOmniPreviewPlaying] = React.useState("");
+  const [omniLoadAttempt, setOmniLoadAttempt] = React.useState(0);
+  const omniVoiceAvailability = useOmniVoiceAvailability();
+  const omniVoiceEnabled = omniVoiceAvailability === true;
+  const selectedOmniVoice = omniVoices.find((voice) => voice.voice_id === p.omniVoiceId);
   React.useEffect(() => {
-    if (p.ttsProvider !== "omnivoice" || omniLoadedRef.current) return;
-    omniLoadedRef.current = true;
+    if (!omniVoiceEnabled || p.ttsProvider !== "omnivoice") return;
+    let alive = true;
+    setOmniVoicesError("");
     fetch("/api/omnivoice/voices")
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((list) => { setOmniVoices(list); setOmniVoicesError(""); })
-      .catch(() => { setOmniVoicesError("เชื่อมต่อ OmniVoice server ไม่ได้"); omniLoadedRef.current = false; });
-  }, [p.ttsProvider]);
-  React.useEffect(() => () => { omniPreviewRef.current?.pause(); }, []);
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then((voices) => { if (alive) setOmniVoices(Array.isArray(voices) ? voices : []); })
+      .catch(() => { if (alive) { setOmniVoices([]); setOmniVoicesError(`เตรียมรายการเสียง ${HERO_VOICE_NAME} ไม่สำเร็จ`); } });
+    return () => { alive = false; };
+  }, [omniVoiceEnabled, p.ttsProvider, omniLoadAttempt]);
   const geminiVoiceRef = React.useRef<HTMLDivElement>(null);
   const [voiceGenderFilter, setVoiceGenderFilter] = React.useState<"all" | "Female" | "Male">("all");
-  const [kieModelOpen, setKieModelOpen] = React.useState(false);
-  const kieModelRef = React.useRef<HTMLDivElement>(null);
-
-  React.useEffect(() => {
-    if (!kieModelOpen) return;
-    function onClickOutside(e: MouseEvent) {
-      if (kieModelRef.current && !kieModelRef.current.contains(e.target as Node)) setKieModelOpen(false);
-    }
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, [kieModelOpen]);
 
   React.useEffect(() => {
     if (!autoMixProvidersOpen) return;
@@ -362,38 +358,16 @@ export function OrderPanel(p: OrderPanelProps) {
                   <label className="text-[9px] font-bold text-cyan-300/60 uppercase tracking-wider mb-1 block">
                     Image Model (9:16)
                   </label>
-                  <div className="relative" ref={kieModelRef}>
-                    {(() => {
-                      const selModel = KIE_IMAGE_MODEL_OPTIONS.find(o => o.value === (p.kieModel ?? "nano-banana-pro")) ?? KIE_IMAGE_MODEL_OPTIONS[0];
-                      return (
-                        <>
-                          <button type="button" onClick={() => setKieModelOpen(v => !v)}
-                            className="w-full rounded-lg px-2.5 py-2 flex items-center gap-2 text-left text-[11px] font-semibold text-cyan-100 outline-none transition-colors"
-                            style={{ background: "hsl(222 47% 7%)", border: "1px solid rgba(34,211,238,0.25)" }}>
-                            <span className="truncate">{selModel.label}</span>
-                            <ChevronDown className={cn("w-3 h-3 text-cyan-400/60 ml-auto shrink-0 transition-transform", kieModelOpen && "rotate-180")} />
-                          </button>
-                          {kieModelOpen && (
-                            <div className="absolute z-30 left-0 right-0 mt-1 rounded-lg p-1 shadow-xl max-h-60 overflow-y-auto scrollbar-none"
-                              style={{ background: "hsl(200 40% 6%)", border: "1px solid rgba(34,211,238,0.3)", boxShadow: "0 8px 28px rgba(0,0,0,0.5)" }}>
-                              {KIE_IMAGE_MODEL_OPTIONS.map((opt) => {
-                                const active = opt.value === (p.kieModel ?? "nano-banana-pro");
-                                return (
-                                  <button key={opt.value} type="button"
-                                    onClick={() => { p.setKieModel?.(opt.value); setKieModelOpen(false); }}
-                                    className={cn("w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left text-[11px] font-semibold transition-colors",
-                                      active ? "bg-cyan-500/20 text-cyan-100" : "text-slate-300 hover:bg-cyan-500/10")}>
-                                    <span className="truncate">{opt.label}</span>
-                                    {active && <Check className="w-3 h-3 text-cyan-300 shrink-0 ml-auto" strokeWidth={3} />}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </>
-                      );
-                    })()}
-                  </div>
+                  <select
+                    value={p.kieModel ?? "gpt-image-2-text-to-image"}
+                    onChange={(e) => p.setKieModel?.(e.target.value as KieImageModel)}
+                    className="w-full rounded-lg px-2.5 py-2 text-[11px] font-semibold text-cyan-100 outline-none focus:ring-1 focus:ring-cyan-400/40"
+                    style={{ background: "hsl(222 47% 7%)", border: "1px solid rgba(34,211,238,0.25)" }}
+                  >
+                    {KIE_IMAGE_MODEL_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
                 </div>
               ) : null}
 
@@ -543,14 +517,22 @@ export function OrderPanel(p: OrderPanelProps) {
           <div>
             <SectionLabel>Voice</SectionLabel>
             <div className="flex gap-1.5">
-              {(["gemini","elevenlabs","omnivoice"] as const).map(pv => (
-                <button key={pv} onClick={() => p.setTtsProvider(pv)}
-                  className={cn("flex-1 py-2 rounded-xl border text-[11px] font-bold transition-all",
-                    p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-500 hover:text-slate-300 hover:border-violet-500/30")}
+              {(["gemini", "elevenlabs", ...(OMNIVOICE_UI_ENABLED || p.ttsProvider === "omnivoice" ? ["omnivoice"] : [])] as TtsProvider[]).map(pv => (
+                <button
+                  key={pv}
+                  type="button"
+                  disabled={pv === "omnivoice" && !omniVoiceEnabled}
+                  aria-pressed={p.ttsProvider === pv}
+                  aria-label={pv === "omnivoice" ? `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}` : undefined}
+                  title={pv === "omnivoice" ? `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}` : undefined}
+                  onClick={() => { if (pv !== "omnivoice" || omniVoiceEnabled) p.setTtsProvider(pv); }}
+                  className={cn("flex min-h-11 flex-1 flex-col items-center justify-center rounded-xl border py-1.5 text-[11px] font-bold leading-tight transition-all focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9",
+                    p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-400 hover:text-slate-200 hover:border-violet-500/30")}
                   style={p.ttsProvider === pv
                     ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15), inset 0 1px 0 rgba(255,255,255,0.06)" }
                     : undefined}>
-                  {pv === "gemini" ? "Gemini" : pv === "elevenlabs" ? "ElevenLabs" : "OmniVoice"}
+                  <span>{pv === "gemini" ? "Gemini" : pv === "elevenlabs" ? "ElevenLabs" : HERO_VOICE_NAME}</span>
+                  {pv === "omnivoice" && <span className="mt-0.5 text-[8px] font-medium text-amber-300">{HERO_VOICE_COMING_SOON}</span>}
                 </button>
               ))}
             </div>
@@ -633,57 +615,43 @@ export function OrderPanel(p: OrderPanelProps) {
             )}
             {p.ttsProvider === "omnivoice" && (
               <div className="mt-2 space-y-1.5">
-                <div className="text-[10px] text-slate-600">OmniVoice — เสียงจาก server ระบบ (ไม่ใช้ key)</div>
-                {omniVoicesError && (
+                <div className="text-[10px] leading-relaxed text-slate-400">ฟังตัวอย่างก่อนเลือก เพื่อหาโทนเสียงที่เข้ากับคลิปของคุณ</div>
+                {!omniVoiceEnabled ? (
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-[10px] text-amber-300">
+                    {HERO_VOICE_NAME} กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้
+                  </div>
+                ) : omniVoicesError ? (
                   <div className="flex items-center justify-between rounded-xl border border-red-500/30 bg-red-500/8 px-3 py-2">
                     <span className="text-[10px] text-red-400">{omniVoicesError}</span>
-                    <button type="button" onClick={() => { omniLoadedRef.current = false; setOmniVoicesError(""); p.setTtsProvider("omnivoice"); }}
-                      className="text-[10px] font-bold text-violet-400 hover:text-violet-300">ลองใหม่</button>
+                    <button type="button" onClick={() => setOmniLoadAttempt(value => value + 1)} className="min-h-11 rounded-md px-2 text-[10px] font-bold text-violet-300 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-8">ลองใหม่</button>
                   </div>
+                ) : omniVoices.length === 0 ? (
+                  <div className="px-1 text-[10px] text-slate-400" role="status">กำลังเตรียมรายการเสียง…</div>
+                ) : (
+                  <>
+                    <label htmlFor="legacy-hero-voice-select" className="sr-only">เลือกเสียง {HERO_VOICE_NAME}</label>
+                    <select
+                      id="legacy-hero-voice-select"
+                      value={p.omniVoiceId}
+                      onChange={(event) => p.setOmniVoiceId(event.target.value)}
+                      className="min-h-11 w-full rounded-xl border border-[#26262f] bg-[#15151b] px-3 py-2.5 text-[11px] font-semibold text-slate-300 outline-none focus:border-violet-500/40 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9"
+                    >
+                      {omniVoices.map((voice) => (
+                        <option key={voice.voice_id} value={voice.voice_id}>{voice.desc || voice.voice_id}</option>
+                      ))}
+                    </select>
+                  </>
                 )}
-                {!omniVoicesError && omniVoices.length === 0 && (
-                  <div className="text-[10px] text-slate-600 px-1">กำลังโหลดรายการเสียง…</div>
-                )}
-                {omniVoices.map(v => {
-                  const active = p.omniVoiceId === v.voice_id;
-                  const playing = omniPreviewPlaying === v.voice_id;
-                  return (
-                    <div key={v.voice_id}
-                      className={cn("flex items-center gap-2 rounded-xl border px-3 py-2 transition-colors",
-                        active ? "border-violet-500/45 bg-violet-500/10" : "border-[#26262f] bg-[#15151b] hover:border-violet-500/25")}>
-                      <button type="button" onClick={() => p.setOmniVoiceId(v.voice_id)} className="flex-1 min-w-0 text-left">
-                        <div className={cn("text-[11px] font-bold truncate", active ? "text-violet-200" : "text-slate-300")}>{v.desc}</div>
-                        <div className="text-[9px] text-slate-600 truncate">{v.instruct}</div>
-                      </button>
-                      <button type="button" aria-label="ฟังตัวอย่าง"
-                        onClick={() => {
-                          if (playing) { omniPreviewRef.current?.pause(); setOmniPreviewPlaying(""); return; }
-                          omniPreviewRef.current?.pause();
-                          const audio = new Audio(v.preview_url);
-                          omniPreviewRef.current = audio;
-                          audio.onended = () => setOmniPreviewPlaying("");
-                          audio.onerror = () => setOmniPreviewPlaying("");
-                          setOmniPreviewPlaying(v.voice_id);
-                          audio.play().catch(() => setOmniPreviewPlaying(""));
-                        }}
-                        className={cn("w-7 h-7 shrink-0 rounded-full border grid place-items-center transition-colors",
-                          playing ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300" : "border-[#26262f] bg-[#101016] text-slate-500 hover:text-violet-300")}>
-                        {playing ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3 fill-current" />}
-                      </button>
-                      {active && <Check className="w-3 h-3 text-violet-300 shrink-0" strokeWidth={3} />}
-                    </div>
-                  );
-                })}
               </div>
             )}
-            {p.ttsProvider !== "omnivoice" && (
-              <VoicePreviewButton
-                provider={p.ttsProvider}
-                geminiVoiceName={p.geminiVoiceName}
-                voiceId={p.voiceId}
-                onPlanError={p.onPlanError}
-              />
-            )}
+            <VoicePreviewButton
+              provider={p.ttsProvider}
+              geminiVoiceName={p.geminiVoiceName}
+              voiceId={p.voiceId}
+              omniVoiceId={p.omniVoiceId}
+              omniPreviewUrl={selectedOmniVoice?.preview_url}
+              onPlanError={p.onPlanError}
+            />
           </div>
           ) : (
           <div className="rounded-lg px-3 py-2.5 bg-[#1a1a22] border border-[#2a2a36]">
@@ -694,7 +662,9 @@ export function OrderPanel(p: OrderPanelProps) {
 
           {/* BGM */}
           <div>
-            <SectionLabel>Background Music</SectionLabel>
+            <div className="mb-2">
+              <div className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">Background Music</div>
+            </div>
             <div className="space-y-3">
               <button type="button" onClick={() => p.setBgmFile("")}
                 className={cn("w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[11px] transition-all border",
@@ -706,10 +676,10 @@ export function OrderPanel(p: OrderPanelProps) {
                 {!p.bgmFile && <span className="ml-auto text-violet-400">✓</span>}
               </button>
               {p.bgmFile && (
-                <div className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 bg-[#15151b] border border-[#26262f]">
-                  <span className="text-[10px] font-semibold text-slate-500 w-12 shrink-0">Volume</span>
-                  <input type="range" min={0} max={1} step={0.01} value={p.bgmVolume} onChange={e => p.setBgmVolume(Number(e.target.value))} className="flex-1 accent-violet-500 h-1.5" />
-                  <span className="text-[10px] font-mono font-bold text-violet-300 w-9 text-right tabular-nums">{Math.round(p.bgmVolume * 100)}%</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-600 w-14 shrink-0">Volume</span>
+                  <input type="range" min={0} max={1} step={0.01} value={p.bgmVolume} onChange={e => p.setBgmVolume(Number(e.target.value))} className="flex-1 accent-violet-400 h-1" />
+                  <span className="text-[10px] font-mono text-violet-400 w-8 text-right">{Math.round(p.bgmVolume * 100)}%</span>
                 </div>
               )}
               {p.systemTracks.length > 0 && (

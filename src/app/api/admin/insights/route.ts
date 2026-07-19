@@ -276,7 +276,7 @@ function benignTelemetryReason(row: TelemetryRow): string | null {
 // OUR own plan caps (minute/clip quota) — an EXPECTED business rule (PRO 15-min cap thrown as 409),
 // not a bug and not a customer-key fault. Must NOT inflate "ระบบเรา" (system) OR "คีย์ลูกค้า" (byok);
 // it is a pricing/upgrade signal. Classified BEFORE byok so a plan cap never reads as a BYOK error.
-export function quotaReasonFromText(text: string): string | null {
+function quotaReasonFromText(text: string): string | null {
   if (/QUOTA_MINUTES|เกินโควต้านาที|เกินนาที/i.test(text)) return "ชนเพดานแผน: โควต้านาที";
   if (/QUOTA_CLIPS|QUOTA_[A-Z]+|เกินโควต้าคลิป|clip quota/i.test(text)) return "ชนเพดานแผน: โควต้าคลิป";
   return null;
@@ -307,7 +307,7 @@ function byokErrorReason(row: TelemetryRow): string | null {
 // Classify a VideoJob failure. Order: noise → quota (our plan cap) → managed-key rate-limit → byok →
 // system. `managed` = MANAGED_GEMINI: when on, a 429/RESOURCE_EXHAUSTED/rate-limit is OUR managed key
 // hitting a ceiling (a capacity/infra signal = system), NOT a customer key. Pure + testable.
-export function classifyJobError(message: string | null, managed: boolean): "system" | "byok" | "quota" | "noise" {
+function classifyJobError(message: string | null, managed: boolean): "system" | "byok" | "quota" | "noise" {
   const text = message ?? "";
   if (/__SUPERSEDED__|superseded|AbortError|aborted|cancelled|canceled/i.test(text)) return "noise";
   if (quotaReasonFromText(text)) return "quota";
@@ -397,7 +397,7 @@ function summarizeEditorFunnel(rows: TelemetryRow[]) {
 // of editor version. progress is server-written + monotonic; milestones match orchestrator step()
 // calls: stock=55, config=65, render=75, done→100. This replaces the telemetry funnel above, which
 // went blind when editor v2 became the default (v2 emits no client pipeline telemetry).
-export type JobFunnelRow = { userId: string; status: string; progress: number };
+type JobFunnelRow = { userId: string; status: string; progress: number };
 
 const JOB_FUNNEL_STEPS = [
   { key: "created", label: "เริ่มสร้าง (สั่งเรนเดอร์)", reached: (_j: JobFunnelRow) => true },
@@ -407,7 +407,7 @@ const JOB_FUNNEL_STEPS = [
   { key: "done", label: "เสร็จสมบูรณ์", reached: (j: JobFunnelRow) => j.status === "done" },
 ] as const;
 
-export function summarizeJobFunnel(jobs: JobFunnelRow[]) {
+function summarizeJobFunnel(jobs: JobFunnelRow[]) {
   const funnel = JOB_FUNNEL_STEPS.map((s) => ({
     key: s.key,
     label: s.label,
@@ -425,9 +425,10 @@ export function summarizeJobFunnel(jobs: JobFunnelRow[]) {
 
 // Activation funnel counts (signups → opened → started → first video → repeat), with @aoacademy
 // internal accounts EXCLUDED and everyone else (incl. workshop students) KEPT. Pure + testable so
-// the exclusion rule is locked. `startedPipeline` uses server-truth VideoJob creators, not v1-only
-// editor_script_ready telemetry (which editor v2 never emits).
-export function computeActivationFunnel(input: {
+// the exclusion rule is locked. `startedPipeline` uses server-truth VideoJob creators UNIONED with
+// completed-video creators, not v1-only editor_script_ready telemetry (which editor v2 never emits).
+// Invariant: signups >= openedEditor >= startedPipeline >= completedFirstVideo >= repeatCreators.
+function computeActivationFunnel(input: {
   users: Array<{ id: string; email: string | null; createdAt: Date }>;
   openedUserIds: Array<string | null>;
   jobUserIds: string[];
@@ -438,19 +439,29 @@ export function computeActivationFunnel(input: {
     input.users.filter((u) => (u.email ?? "").toLowerCase().includes("@aoacademy")).map((u) => u.id),
   );
   const notInternal = (id: string) => !internalIds.has(id);
-  // openedEditor = "engaged" = union of {editor_opened telemetry} ∪ {VideoJob creators}. MCP/chat
-  // users create jobs WITHOUT ever opening the web editor, so startedPipeline (server truth, all
-  // surfaces) can exceed a telemetry-only openedEditor count — that would show >100% conversion /
-  // negative drop-off on the funnel step. Anyone who created a job has, by definition, engaged, so
-  // folding jobUserIds into the union keeps openedEditor >= startedPipeline always.
+  // completedUserIds = the same source completedFirstVideo counts. Legacy users completed videos
+  // before the VideoJob system existed, so jobUserIds alone can UNDER-count startedPipeline relative
+  // to completedFirstVideo (started < completed — a logical impossibility: anyone who completed a
+  // video necessarily started). Folding completedUserIds into startedPipeline's set guarantees
+  // startedPipeline >= completedFirstVideo always.
+  const completedUserIds = new Set(input.completedByUser.map((g) => g.userId));
+  const startedIds = new Set<string>();
+  for (const id of input.jobUserIds) startedIds.add(id);
+  for (const id of completedUserIds) startedIds.add(id);
+  // openedEditor = "engaged" = union of {editor_opened telemetry} ∪ {VideoJob creators} ∪ {completed
+  // video creators}. MCP/chat users create jobs WITHOUT ever opening the web editor, and legacy users
+  // completed videos before VideoJob existed, so either surface can exceed a telemetry-only
+  // openedEditor count — that would show >100% conversion / negative drop-off on the funnel step.
+  // Anyone who created a job or completed a video has, by definition, engaged, so folding both into
+  // the union keeps openedEditor >= startedPipeline >= completedFirstVideo always.
   const engagedIds = new Set<string>();
   for (const id of input.openedUserIds) if (id) engagedIds.add(id);
-  for (const id of input.jobUserIds) engagedIds.add(id);
+  for (const id of startedIds) engagedIds.add(id);
   return {
     internalTeam: internalIds.size,
     signups: input.users.length - internalIds.size,
     openedEditor: Array.from(engagedIds).filter(notInternal).length,
-    startedPipeline: input.jobUserIds.filter(notInternal).length,
+    startedPipeline: Array.from(startedIds).filter(notInternal).length,
     completedFirstVideo: input.completedByUser.filter((g) => notInternal(g.userId)).length,
     repeatCreators: input.completedByUser.filter((g) => notInternal(g.userId) && g.count >= 2).length,
     windowSignups: input.users.filter((u) => u.createdAt >= input.since && notInternal(u.id)).length,
@@ -942,7 +953,8 @@ export async function GET(req: Request) {
       total: currentJobs.length,
       done: currentJobs.filter((j) => j.status === "done").length,
       failed: failedJobs.length,
-      processing: currentJobs.filter((j) => j.status === "processing").length,
+      processing: currentJobs.filter((j) => j.status === "processing" || j.status === "waiting_provider").length,
+      waitingProvider: currentJobs.filter((j) => j.status === "waiting_provider").length,
       queued: currentJobs.filter((j) => j.status === "queued").length,
       systemFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "system").length,
       byokFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "byok").length,

@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { sendRenewalReminderEmail } from "@/lib/send-email";
+import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 
 export const runtime = "nodejs";
 
@@ -10,9 +12,11 @@ const REMIND_AT = [14, 7, 1]; // days-before-expiry to remind (cron runs daily â
 
 // GET /api/cron/renewal-reminders  (daily, Bearer CRON_SECRET)
 // Reminds the manual-renew cohort (one-time / PromptPay â€” no auto-renew subscription) before their plan lapses.
+// Fails CLOSED if CRON_SECRET is unset.
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
+  const auth = req.headers.get("authorization");
+  if (!secret || !timingSafeStrEqual(auth ?? "", `Bearer ${secret}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -49,5 +53,6 @@ export async function GET(req: Request) {
     sent++;
   }
 
+  writeCronHeartbeat("renewal-reminders");
   return NextResponse.json({ remindersSent: sent, checked: users.length });
 }

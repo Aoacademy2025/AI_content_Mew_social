@@ -3,7 +3,13 @@
 //   npx tsx scripts/verify-duration-guard.ts
 import assert from "node:assert/strict";
 import { estimateScriptDurationSec } from "../src/app/(dashboard)/video-editor/_lib/estimate-duration";
-import { limitsForPlan, nextPlanFor, durationCapSecFor, PLAN_LABEL } from "../src/lib/plan-limits";
+import {
+  limitsForPlan,
+  nextPlanFor,
+  durationCapSecFor,
+  PLAN_LABEL,
+  audioDurationLimitViolation,
+} from "../src/lib/plan-limits";
 
 let passed = 0;
 function check(name: string, cond: boolean) { assert.ok(cond, name); console.log("✓ " + name); passed++; }
@@ -46,6 +52,13 @@ check("PRO estimate: 397s blocked (clearly over)", gateOk(397, "PRO", true) === 
 // ── BUSINESS top tier ──
 check("BUSINESS exact: 600s ok", gateOk(600, "BUSINESS", false) === true);
 check("BUSINESS exact: 601s blocked", gateOk(601, "BUSINESS", false) === false);
+
+// ── shared server exact-audio seam (called immediately after TTS) ──
+check("server PRO: exactly 360s has no violation", audioDurationLimitViolation(360_000, "PRO") === null);
+check("server PRO: 361s returns structured violation", audioDurationLimitViolation(361_000, "PRO")?.neededPlan === "BUSINESS");
+check("server BUSINESS: exactly 600s has no violation", audioDurationLimitViolation(600_000, "BUSINESS") === null);
+check("server BUSINESS: 601s blocks without impossible upgrade", audioDurationLimitViolation(601_000, "BUSINESS")?.neededPlan === null);
+check("server unknown/zero duration fails open", audioDurationLimitViolation(0, "PRO") === null);
 
 // ── unknown duration must pass (later checks decide) ──
 check("0s / unknown passes", gateOk(0, "PRO", false) === true);

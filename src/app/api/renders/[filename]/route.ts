@@ -35,6 +35,7 @@ const MIME: Record<string, string> = {
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
   png: "image/png",
+  webp: "image/webp",
 };
 
 // No `Access-Control-Allow-Origin: *`: renders are served same-origin (the editor's
@@ -54,11 +55,34 @@ function baseHeaders(contentType: string, total: number) {
     "Content-Type": contentType,
     "Content-Length": String(total),
     "Accept-Ranges": "bytes",
-    "Cache-Control": "public, max-age=86400",
+    // SEC-12: this route has no ownership/auth check (128-bit random filenames make
+    // enumeration impractical, so we're not adding one here — see route-level note
+    // below), but "public" still lets shared/CDN caches store another user's render.
+    // "private" keeps caching to the requesting browser only.
+    "Cache-Control": "private, max-age=86400",
     ...cors,
   };
 }
 
+// SEC-12 note (deliberately NOT adding a stricter filename allowlist here):
+// this single route already serves several legitimate, heterogeneous naming
+// conventions written by different producers — render-<ts>-<32hex>.mp4 (run-render.ts),
+// preview-<name>-<width>p.mp4 (low-res-preview-paths.ts), voice-preview-<provider>-<24hex>
+// (voice-preview-cache.ts), upload-<uuid> (videos/upload/route.ts), thumb-<ts>-<rand>.jpg
+// and img-<ts>-<rand> (videos/render/route.ts), plus stock-* passthrough copies whose
+// names are arbitrary Pexels/Pixabay descriptions (also videos/render/route.ts). A
+// regex tight enough to be meaningful would have to allow that stock-* case anyway,
+// so it wouldn't meaningfully narrow the attack surface beyond what's already enforced
+// below (no path separators + fs.existsSync) — but IS tight enough to risk 404ing a
+// legitimate asset the next time a producer's naming convention drifts. Given renders/
+// previews/voice-previews/uploads are 128-bit-random or sha256-derived (enumeration
+// already impractical) and traversal is blocked, the marginal benefit doesn't justify
+// that breakage risk. Ownership/expiry is also intentionally out of scope here per the
+// task brief (nginx serves prod traffic — see deploy/nginx.conf `/renders/` alias — but
+// note: that alias only matches bare "/renders/…"; every URL this codebase generates is
+// "/api/renders/…", which nginx's `location /` proxies straight to THIS route, so it is
+// the live prod serving path, not just a dev/fallback — confirmed before deciding no
+// auth/ownership change was safe to make here without risking legitimate playback).
 function resolveRenderFile(filename: string) {
   if (!filename || /[/\\]/.test(filename)) {
     return { error: NextResponse.json({ error: "Invalid filename" }, { status: 400 }) };
@@ -121,7 +145,9 @@ export async function GET(
           "Content-Range": `bytes ${start}-${end}/${resolved.total}`,
           "Content-Length": String(chunkSize),
           "Accept-Ranges": "bytes",
-          "Cache-Control": "public, max-age=86400",
+          // SEC-12: see baseHeaders() above — "private" so shared/CDN caches
+          // don't store another user's render.
+          "Cache-Control": "private, max-age=86400",
           ...cors,
         },
       });

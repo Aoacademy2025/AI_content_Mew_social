@@ -1,7 +1,19 @@
 import { prisma } from "@/lib/prisma";
+import { videoExpiryFor } from "@/lib/plan-limits";
+import { assertRenderEnqueueOpen } from "@/lib/render-deploy-drain";
+import {
+  parseAvatarProviderCheckpoint,
+  serializeAvatarProviderCheckpoint,
+  type AvatarProviderCheckpointV1,
+} from "@/lib/mcp/avatar-provider-checkpoint";
+export {
+  toPublicVideoJobStatus,
+  VIDEO_JOB_INFLIGHT_STATUSES,
+} from "@/lib/mcp/video-job-status";
 
 const WORKER_REQUEUE_MESSAGE_RE = /^worker restarted - requeued (\d+)\/(\d+)$/;
-
+export const VIDEO_JOB_CANCELED_ERROR = "__job_canceled__";
+export const VIDEO_JOB_NOT_PROCESSING_ERROR = "video_job_not_processing";
 function restartRequeueCount(errorMessage: string | null): number {
   const match = (errorMessage ?? "").match(WORKER_REQUEUE_MESSAGE_RE);
   return match ? Number(match[1]) : 0;
@@ -14,9 +26,29 @@ function restartRequeueCount(errorMessage: string | null): number {
 // can never double-charge clip quota or HeyGen.
 const SAFE_TO_REQUEUE_STEPS = new Set(["tts", "captions", "keywords", "stock", "config"]);
 
-export async function createVideoJob(userId: string, input: unknown, idempotencyKey?: string) {
-  return prisma.videoJob.create({
-    data: { userId, inputJson: JSON.stringify(input), idempotencyKey: idempotencyKey ?? null, status: "queued" },
+export async function createVideoJob(
+  userId: string,
+  input: unknown,
+  idempotencyKey?: string,
+  opts: {
+    projectId?: string | null;
+    type?: string | null;
+    idempotencyFingerprint?: string | null;
+  } = {},
+) {
+  return prisma.$transaction(async (tx) => {
+    await assertRenderEnqueueOpen(tx);
+    return tx.videoJob.create({
+      data: {
+        userId,
+        projectId: opts.projectId ?? null,
+        ...(opts.type ? { type: opts.type } : {}),
+        inputJson: JSON.stringify(input),
+        idempotencyKey: idempotencyKey ?? null,
+        idempotencyFingerprint: opts.idempotencyFingerprint ?? null,
+        status: "queued",
+      },
+    });
   });
 }
 
@@ -32,15 +64,146 @@ export async function claimNextQueuedJob() {
   return prisma.videoJob.findUnique({ where: { id: next.id } });
 }
 
+/**
+ * Atomically claim either a due provider wait or the oldest queued job. Provider waits have
+ * priority so a completed external job does not sit behind newly-created work.
+ */
+export async function claimNextRunnableJob(now: Date = new Date()) {
+  const due = await prisma.videoJob.findFirst({
+    where: { status: "waiting_provider", providerNextPollAt: { lte: now } },
+    orderBy: [{ providerNextPollAt: "asc" }, { createdAt: "asc" }],
+  });
+  if (due) {
+    const claimed = await prisma.videoJob.updateMany({
+      where: {
+        id: due.id,
+        status: "waiting_provider",
+        providerNextPollAt: { lte: now },
+      },
+      data: { status: "processing", providerNextPollAt: null },
+    });
+    if (claimed.count === 1) return prisma.videoJob.findUnique({ where: { id: due.id } });
+  }
+
+  return claimNextQueuedJob();
+}
+
+export async function saveProviderCheckpoint(id: string, checkpoint: AvatarProviderCheckpointV1) {
+  const composite = checkpoint.phase === "composite";
+  return prisma.videoJob.updateMany({
+    where: { id, status: "processing" },
+    data: {
+      providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint),
+      currentStep: composite ? "composite" : "avatar",
+      progress: composite ? 86 : 84,
+    },
+  });
+}
+
+export async function parkProviderJob(
+  id: string,
+  checkpoint: AvatarProviderCheckpointV1,
+  nextPollAt: Date,
+) {
+  return prisma.videoJob.updateMany({
+    where: { id, status: "processing" },
+    data: {
+      status: "waiting_provider",
+      currentStep: "avatar",
+      progress: 84,
+      providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint),
+      providerNextPollAt: nextPollAt,
+    },
+  });
+}
+
 export async function setJobStep(id: string, currentStep: string, progress: number) {
   await prisma.videoJob.update({ where: { id }, data: { currentStep, progress } });
 }
 
-export async function finishJob(id: string, output: { videoUrl: string; videoId?: string } & Record<string, unknown>) {
-  await prisma.videoJob.update({
+export async function finishJobWithTransition(
+  id: string,
+  output: { videoUrl: string; videoId?: string } & Record<string, unknown>,
+  opts: { now?: Date } = {},
+) {
+  const now = opts.now ?? new Date();
+  const owner = await prisma.videoJob.findUnique({
     where: { id },
-    data: { status: "done", progress: 100, outputJson: JSON.stringify(output), videoId: output.videoId ?? null, finishedAt: new Date() },
+    select: { status: true, user: { select: { plan: true } } },
   });
+  if (!owner) throw new Error("video_job_not_found");
+  if (owner.status === "done") {
+    return {
+      job: await prisma.videoJob.findUniqueOrThrow({ where: { id } }),
+      transitioned: false,
+    };
+  }
+
+  const mediaExpiresAt = videoExpiryFor(owner.user.plan, now);
+
+  return prisma.$transaction(async (tx) => {
+    const transitioned = await tx.videoJob.updateMany({
+      where: { id, status: "processing" },
+      data: {
+        status: "done",
+        progress: 100,
+        outputJson: JSON.stringify(output),
+        videoId: output.videoId ?? null,
+        finishedAt: now,
+        mediaExpiresAt,
+        providerCheckpointJson: null,
+        providerNextPollAt: null,
+      },
+    });
+
+    // Another terminal transition won after the initial owner lookup. Return an
+    // immutable completion, but never resurrect canceled/failed/queued jobs.
+    if (transitioned.count === 0) {
+      const winner = await tx.videoJob.findUniqueOrThrow({ where: { id } });
+      if (winner.status === "done") return { job: winner, transitioned: false };
+      if (winner.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+      throw new Error(VIDEO_JOB_NOT_PROCESSING_ERROR);
+    }
+
+    const job = await tx.videoJob.findUniqueOrThrow({ where: { id } });
+    if (job.projectId) {
+      if (job.type === "export") {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId, status: { not: "archived" } },
+          data: {
+            activeExportJobId: job.id,
+            ...(output.videoId ? { latestVideoId: output.videoId } : {}),
+            status: output.videoId ? "exported" : "post",
+            lastOpenedAt: new Date(),
+          },
+        });
+      } else {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId, status: { not: "archived" } },
+          data: {
+            activeJobId: job.id,
+            ...(output.videoId ? { latestVideoId: output.videoId } : {}),
+            status: output.videoId ? "exported" : "post",
+            lastOpenedAt: new Date(),
+          },
+        });
+      }
+    }
+
+    return { job, transitioned: true };
+  });
+}
+
+/**
+ * Backward-compatible completion API. Callers that need to own a post-completion
+ * side effect should use finishJobWithTransition and require transitioned=true.
+ */
+export async function finishJob(
+  id: string,
+  output: { videoUrl: string; videoId?: string } & Record<string, unknown>,
+  opts: { now?: Date } = {},
+) {
+  return (await finishJobWithTransition(id, output, opts)).job;
 }
 
 // ── Versioned output (ADR 0001) ──────────────────────────────────────────────
@@ -77,6 +240,7 @@ export interface ParsedVideoJobOutput {
   version: 1 | 2;
   videoUrl?: string;
   videoId?: string;
+  sourceJobId?: string;
   /** present only on v2 preview jobs */
   preview?: VideoJobPreviewData | null;
 }
@@ -95,6 +259,7 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
       version,
       videoUrl: typeof raw.videoUrl === "string" ? raw.videoUrl : undefined,
       videoId: typeof raw.videoId === "string" ? raw.videoId : undefined,
+      sourceJobId: typeof raw.sourceJobId === "string" ? raw.sourceJobId : undefined,
       ...(preview ? { preview } : {}),
     };
   } catch {
@@ -102,10 +267,53 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
   }
 }
 
-export async function failJob(id: string, message: string) {
-  await prisma.videoJob.update({
-    where: { id },
-    data: { status: "failed", errorMessage: message.slice(0, 1000), finishedAt: new Date() },
+export type VideoJobFailure = {
+  message: string;
+  code?: string;
+  provider?: string;
+  /** Durable retry marker when terminal failure won before its base reservation settled. */
+  reservationRefundReason?: string;
+};
+
+export async function failJob(id: string, failure: string | VideoJobFailure) {
+  const normalized = typeof failure === "string" ? { message: failure } : failure;
+  return prisma.$transaction(async (tx) => {
+    const transitioned = await tx.videoJob.updateMany({
+      where: { id, status: "processing" },
+      data: {
+        status: "failed",
+        errorMessage: normalized.message.slice(0, 1000),
+        errorCode: normalized.code?.slice(0, 80) ?? null,
+        errorProvider: normalized.provider?.slice(0, 80) ?? null,
+        ...(normalized.reservationRefundReason
+          ? {
+              reservationRefundPending: true,
+              reservationRefundReason: normalized.reservationRefundReason.slice(0, 160),
+            }
+          : {}),
+        finishedAt: new Date(),
+        providerNextPollAt: null,
+      },
+    });
+    if (transitioned.count === 0) {
+      return tx.videoJob.findUniqueOrThrow({ where: { id } });
+    }
+
+    const job = await tx.videoJob.findUniqueOrThrow({ where: { id } });
+    if (job.projectId) {
+      if (job.type === "export") {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId, activeExportJobId: job.id },
+          data: { status: "post", lastOpenedAt: new Date() },
+        });
+      } else {
+        await tx.editorProject.updateMany({
+          where: { id: job.projectId, userId: job.userId, activeJobId: job.id },
+          data: { status: "draft", lastOpenedAt: new Date() },
+        });
+      }
+    }
+    return job;
   });
 }
 
@@ -120,18 +328,74 @@ export async function failJob(id: string, message: string) {
  * duplicate gallery entries. Resuming those stages idempotently is a larger change — see
  * SAFE_TO_REQUEUE_STEPS.
  */
-export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeues?: number } = {}) {
+export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeues?: number; now?: Date } = {}) {
   const rawMaxRequeues = Number(opts.maxRequeues ?? 2);
   const maxRequeues = Number.isFinite(rawMaxRequeues) ? Math.max(0, Math.floor(rawMaxRequeues)) : 2;
+  const now = opts.now ?? new Date();
   const jobs = await prisma.videoJob.findMany({
     where: { status: "processing" },
-    select: { id: true, currentStep: true, errorMessage: true },
+    select: {
+      id: true,
+      currentStep: true,
+      errorMessage: true,
+      providerCheckpointJson: true,
+      providerNextPollAt: true,
+    },
   });
 
   let requeued = 0;
   let failed = 0;
+  let parked = 0;
 
   for (const job of jobs) {
+    const checkpoint = parseAvatarProviderCheckpoint(job.providerCheckpointJson);
+    const isProviderStage = job.currentStep === "avatar" || job.currentStep === "composite";
+    if (checkpoint && isProviderStage) {
+      let resumable = checkpoint;
+      if (checkpoint.phase === "intro_generate") {
+        if (!checkpoint.avatar.introVideoId) {
+          const res = await prisma.videoJob.updateMany({
+            where: { id: job.id, status: "processing" },
+            data: {
+              status: "failed",
+              errorMessage: "worker restarted during HeyGen generate with unknown provider outcome - manual recovery required",
+              finishedAt: now,
+              providerNextPollAt: null,
+            },
+          });
+          if (res.count === 1) failed++;
+          continue;
+        }
+        resumable = { ...checkpoint, phase: "intro_wait" };
+      } else if (checkpoint.phase === "tail_generate") {
+        if (!checkpoint.avatar.tailVideoId) {
+          const res = await prisma.videoJob.updateMany({
+            where: { id: job.id, status: "processing" },
+            data: {
+              status: "failed",
+              errorMessage: "worker restarted during HeyGen generate with unknown provider outcome - manual recovery required",
+              finishedAt: now,
+              providerNextPollAt: null,
+            },
+          });
+          if (res.count === 1) failed++;
+          continue;
+        }
+        resumable = { ...checkpoint, phase: "tail_wait" };
+      }
+
+      const res = await prisma.videoJob.updateMany({
+        where: { id: job.id, status: "processing" },
+        data: {
+          status: "waiting_provider",
+          providerCheckpointJson: serializeAvatarProviderCheckpoint(resumable),
+          providerNextPollAt: job.providerNextPollAt ?? now,
+        },
+      });
+      if (res.count === 1) parked++;
+      continue;
+    }
+
     const previousRequeues = restartRequeueCount(job.errorMessage);
     const isSafeToReplay = job.currentStep === null || SAFE_TO_REQUEUE_STEPS.has(job.currentStep);
     const retryLimitReached = previousRequeues >= maxRequeues;
@@ -147,7 +411,8 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
         data: {
           status: "failed",
           errorMessage: reason,
-          finishedAt: new Date(),
+          finishedAt: now,
+          providerNextPollAt: null,
         },
       });
       if (res.count === 1) failed++;
@@ -169,5 +434,5 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
     if (res.count === 1) requeued++;
   }
 
-  return { inspected: jobs.length, requeued, failed };
+  return { inspected: jobs.length, requeued, parked, failed };
 }

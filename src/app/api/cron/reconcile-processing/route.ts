@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { applyProcessingReconcile, getProcessingReconcilePlan } from "@/lib/video-reconcile";
 import { sweepDeadRenderJobs } from "@/lib/render/job-store";
 import { apiError } from "@/lib/api-error";
+import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
+import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 
 export const runtime = "nodejs";
 
@@ -13,9 +15,11 @@ function parseBool(value: string | null, fallback: boolean) {
 // GET /api/cron/reconcile-processing
 // Conservative backstop for videos that have a completed output file but remain
 // PROCESSING after the editor/client missed its final status update.
+// Fails CLOSED if CRON_SECRET is unset.
 export async function GET(req: Request) {
   const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.get("authorization") !== `Bearer ${secret}`) {
+  const auth = req.headers.get("authorization");
+  if (!secret || !timingSafeStrEqual(auth ?? "", `Bearer ${secret}`)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -49,6 +53,7 @@ export async function GET(req: Request) {
       console.error("[reconcile-processing] sweepDeadRenderJobs error (non-fatal):", sweepErr);
     }
 
+    writeCronHeartbeat("reconcile-processing");
     return NextResponse.json({
       ok: true,
       dryRun,

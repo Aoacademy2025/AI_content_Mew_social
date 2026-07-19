@@ -95,8 +95,6 @@ export function captionsFromTtsTiming(
     // EVERY Gemini clip worse. Pause-accurate splitting needs real word timing
     // (ElevenLabs), not a guess from the drifted clock.
     let intervals: SilenceInterval[] = [];
-    // omnivoice = segment-proportional เหมือน gemini (chars:null + silences จาก ffmpeg)
-    // → ใช้ pause-snap เดียวกัน; elevenlabs มี char timing จริงอยู่แล้ว ไม่ต้อง snap
     if (timing.provider === "gemini" || timing.provider === "omnivoice") {
       const segTotal = timing.segments.reduce((m, s) => Math.max(m, s.startMs + s.durationMs), 0);
       const raw: SilenceInterval[] =

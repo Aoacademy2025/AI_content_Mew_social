@@ -10,11 +10,11 @@
 |---|---|
 | Framework | Next.js 15 (App Router) + React 19, TypeScript |
 | Styling | Tailwind v4 + shadcn/ui |
-| Auth | **Clerk** — `src/lib/auth.ts` (NextAuth) is legacy/leftover, NOT the live auth |
+| Auth | **Clerk** — `src/lib/auth.ts` (NextAuth) is legacy/leftover, NOT the live auth. Still imported by `src/lib/api-error.ts` (session lookup fallback for admin-notify), so it's not dead code — don't delete without also touching that call site. The NextAuth API routes (`register`/`forgot-password`/`reset-password`/`[...nextauth]`) had zero callers and were deleted 2026-07-07. |
 | DB | **SQLite** via Prisma 6 — `prisma/dev.db` (NOT PostgreSQL) |
 | Hosting | **Hostinger VPS** (Ubuntu, 4 vCPU/15GB) + PM2 + Nginx + Let's Encrypt (NOT Vercel) |
 | Render | **Remotion + headless Chromium + ffmpeg**, runs locally on the VPS (software, no GPU) |
-| AI (all **BYOK** — users supply their own keys; no server AI keys) | Gemini (content/transcribe/keywords/TTS), HeyGen (avatar), ElevenLabs (TTS), Pexels/Pixabay (stock) |
+| AI | **BYOK by default:** Gemini (content/transcribe/keywords/TTS), HeyGen (avatar), ElevenLabs (TTS), Pexels/Pixabay (stock). **Managed exception:** team-operated OmniVoice audio-only worker, gated per ADR 0003. |
 | Payments | Stripe — **subscription (auto-renew) + one-time/PromptPay LIVE 06-05**; **Founding-100 (50%/forever, first 100, coupon `FOUNDING100`) + Free trial (7-day PRO) LIVE 06-07**. Config in DB `SiteConfig` (NOT `.env`), loaded by `src/lib/load-stripe-config.ts` |
 | Plans | FREE / PRO / BUSINESS — limits in `src/lib/plan-limits.ts` |
 
@@ -22,7 +22,7 @@
 - Dev: `npm run dev` · Build: `npm run build`
 - DB: `npm run db:migrate` · seed: `npm run db:seed`
 - Deploy (on the VPS): `bash deploy/deploy.sh` → `git pull main` + **`prisma db push`** (additive — syncs new columns/tables BEFORE restart, so column-adding features don't 500) + build (OOM-retry) + `pm2 restart ai-content`. Current safe low-heap deploy env used on prod: `BUILD_HEAP_MB=4096 BUILD_WORKER_HEAP_MB=512 BUILD_HEAP_MB_LOW=3072 BUILD_WORKER_HEAP_MB_LOW=512 BUILD_NO_LINT=1`.
-- **Crons** are separate PM2 apps in `ecosystem.config.js` (`trial-expiry`, `founding-sweep`, `renewal-reminders`, `cleanup-videos`). deploy.sh does NOT start them. Start: `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` then `pm2 start ecosystem.config.js --only <name> --update-env && pm2 save` (the cron 401s without CRON_SECRET in its env).
+- **Crons** are separate PM2 apps in `ecosystem.config.js` (`trial-expiry`, `founding-sweep`, `renewal-reminders`, `cleanup-videos`). deploy.sh does NOT start them. Start: `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` then `pm2 start ecosystem.config.js --only <name> --update-env && pm2 save` (the cron 401s without CRON_SECRET in its env). **`pm2 status` showing a cron app as `stopped` between scheduled runs is BY DESIGN** (`autorestart: false` + `cron_restart` — it runs once then exits until the next cron fire), not a crash — check `pm2 logs <name>` for actual health, don't judge by process status alone.
 - VPS prod `.env` `DATABASE_URL` is **absolute** (`file:/var/www/ai-content/prisma/dev.db`); `prisma/*.db` is gitignored (prod data safe from `git pull`).
 
 ## Key directories
@@ -37,14 +37,14 @@
 ## Gotchas (important)
 - **`main` = production.** The VPS deploys from `main`. Never push broken code to main.
 - **Mew owns the entire project (updated 07-02):** Mew controls every vertical solo — **no coordination with wao on anything** (shared files, render backend, schema, deploy included). She rebases + merges to `main` + deploys herself. Still build-verify render-backend changes before merging (hygiene, not a coordination gate).
-- **Config shadowing (cost hours — beware):** `next.config.js` SHADOWS `next.config.ts` (Next 15 resolves .js first, on EVERY machine incl. local) → everything in `next.config.ts` (serverExternalPackages, OOM `cpus:1`, webpack externals, `/renders` rewrite, `ignoreBuildErrors`) is **INACTIVE**; effective config lives in `next.config.js`. Likewise `ecosystem.config.js` `env:` block shadows `.env` for `RENDER_*`/cache, and a plain `pm2 restart` keeps the OLD env → use `pm2 restart <app> --update-env`.
+- **Config shadowing (HISTORICAL — fixed 06-16, commit `5fb76cb`):** `next.config.js` used to SHADOW `next.config.ts` (Next 15 resolves .js first) → everything in `next.config.ts` was inactive. `next.config.js` was deleted; `next.config.ts` is now the sole active config (serverExternalPackages, OOM `cpus:1`, webpack externals, `/renders` rewrite, `ignoreBuildErrors` all live). If a `next.config.js` ever reappears, it will shadow `.ts` again — treat that as a bug. Likewise `ecosystem.config.js` `env:` block shadows `.env` for `RENDER_*`/cache, and a plain `pm2 restart` keeps the OLD env → use `pm2 restart <app> --update-env`.
 - **Video editor current flow (06-08):** `/video-editor` Render creates an editable preview with voice/avatar+BGM and live subtitle overlay; it must NOT auto burn. `Burn & Download` is the final export step.
 - **Subtitle timing (06-12, PRs #35-#39):** ซับของเสียง TTS (Gemini/ElevenLabs) มาจาก `timing` ใน TTS response — exact-by-arithmetic, **ข้าม transcribe** (`src/lib/tts-timing.ts` + `_components/tts-timing-captions.ts`); การ์ด viral มาจาก `/api/videos/split-script` (text-only LLM, server validate ห้ามแก้ข้อความ). transcribe = fallback สำหรับ avatar/อัปโหลด เท่านั้น. ทุกชั้นมี fail-open → ห้าม "ซ่อม" โดยเอา transcribe กลับมาเป็น path หลัก.
 - **Render has NO global queue**, but clip caps are enforced via `reserveClipUsage` (FREE 2 / PRO 100 / BUSINESS 300 per 30 days) — see `STATUS.md`.
 - **Pricing tiers are admin-editable, NOT hardcoded:** `src/lib/plan-config.ts` is the single source (name/badge/tagline/features/price per tier), read from DB `SiteConfig` keys `plan_<tier>_<field>` (features pipe-delimited) → used by BOTH `/api/plans` (in-app `/pricing`) AND the marketing sale page (`PricingToggle` takes a `plans` prop). Edit at `/admin` → Plan Config. Don't re-hardcode tier features. **Plan LIMITS** (clips/duration/storage) stay in `plan-limits.ts` — backend-ENFORCED, not just display, so they're code not DB.
 - **Pricing display rule:** show effective **monthly price, NO annual total** on both pricing surfaces (full annual amount appears only at Stripe checkout). In-app `/pricing` is a LEAN convert page (personalized trial/usage band) — NOT a second sale page.
 - **Clerk middleware matcher must whitelist static media** (`mp4|webm|mov` in `src/middleware.ts`) or those files get redirected to /login (symptom: poster `.jpg` loads but `<video>` won't play). Any new static media type needs the same.
-- **BYOK:** paid features need the user's own API keys → onboarding must guide key setup.
+- **BYOK by default:** paid external-provider features need the user's own API keys → onboarding must guide key setup. OmniVoice is the sole managed audio exception: server credential only, HTTPS/IP restricted, fail-closed flags + account allowlist, backend AI-audio/minute limits (ADR 0003).
 - Windows-aware (MAX_PATH, ffmpeg installer); render tuned for low-RAM hosts.
 
 ## Working conventions

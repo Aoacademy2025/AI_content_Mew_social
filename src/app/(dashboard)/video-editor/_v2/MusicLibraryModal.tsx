@@ -7,16 +7,17 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Check, Pause, Play, Search, Upload, X } from "lucide-react";
+import { Check, Crown, Pause, Play, Search, Upload, X } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { GlassPanel, GroupLabel, Segmented } from "./ui";
 import type { SystemTrack, UserMusicTrack } from "../_hooks/useBgm";
 
-export function MusicLibraryModal({ open, onClose, systemTracks, userTracks, onUploaded, selected, selectedKind, onSelect }: {
+export function MusicLibraryModal({ open, onClose, systemTracks, userTracks, canUpload, onUploaded, selected, selectedKind, onSelect }: {
   open: boolean;
   onClose: () => void;
   systemTracks: SystemTrack[];
   userTracks: UserMusicTrack[];
+  canUpload: boolean;
   /** เพลงอัปโหลดใหม่ — parent ต้อง setUserTracks เพิ่มเอง */
   onUploaded: (track: UserMusicTrack) => void;
   selected: string | null; // filename · "" = ยังไม่เลือก · null = ไม่ใส่เพลง
@@ -58,6 +59,10 @@ export function MusicLibraryModal({ open, onClose, systemTracks, userTracks, onU
   }
 
   async function handleUpload(file: File) {
+    if (!canUpload) {
+      toast.error("อัปโหลดเพลงส่วนตัวใช้ได้เฉพาะแผน Pro ขึ้นไป");
+      return;
+    }
     setUploading(true);
     try {
       const fd = new FormData();
@@ -125,24 +130,32 @@ export function MusicLibraryModal({ open, onClose, systemTracks, userTracks, onU
                 accept=".mp3,.wav,.ogg,.aac,.m4a,audio/*"
                 className="hidden"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) void handleUpload(f); }}
+                disabled={!canUpload || uploading}
               />
               <button
-                onClick={() => fileRef.current?.click()}
-                disabled={uploading}
+                onClick={() => { if (canUpload) fileRef.current?.click(); }}
+                disabled={uploading || !canUpload}
                 className="mb-2 flex w-full items-center justify-center gap-2"
                 style={{
                   padding: "10px 0", borderRadius: radius.card, background: "none",
-                  border: `1px dashed rgba(255,255,255,.18)`, color: color.textSecondary,
-                  fontSize: 12, cursor: uploading ? "wait" : "pointer",
+                  border: `1px dashed ${canUpload ? "rgba(255,255,255,.18)" : "rgba(251,191,36,.24)"}`,
+                  color: canUpload ? color.textSecondary : color.warning,
+                  fontSize: 12, cursor: uploading ? "wait" : canUpload ? "pointer" : "not-allowed",
+                  opacity: canUpload ? 1 : 0.85,
                 }}
               >
-                <Upload size={13} /> {uploading ? "กำลังอัปโหลด…" : "อัปโหลดเพลงของคุณ (mp3/wav/m4a ≤50MB)"}
+                {canUpload ? <Upload size={13} /> : <Crown size={13} />}
+                {uploading ? "กำลังอัปโหลด…" : canUpload ? "อัปโหลดเพลงของคุณ (mp3/wav/m4a ≤50MB)" : "อัปโหลดเพลงส่วนตัวใช้ได้ใน Pro"}
               </button>
             </>
           )}
           {list.length === 0 && (
             <div className="py-8 text-center" style={{ fontSize: 11.5, color: color.textFaintest }}>
-              {q.trim() ? "ไม่พบเพลงที่ค้นหา" : tab === "user" ? "ยังไม่มีเพลงของคุณ — อัปโหลดได้เลย" : "ยังไม่มีเพลงในระบบ"}
+              {q.trim()
+                ? "ไม่พบเพลงที่ค้นหา"
+                : tab === "user"
+                  ? canUpload ? "ยังไม่มีเพลงของคุณ — อัปโหลดได้เลย" : "แผน Free ยังเลือกเพลงระบบได้ ส่วนอัปโหลดเพลงส่วนตัวใช้ได้ใน Pro"
+                  : "ยังไม่มีเพลงในระบบ"}
             </div>
           )}
           {list.map((t) => {

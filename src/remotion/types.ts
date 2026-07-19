@@ -1,3 +1,5 @@
+import type { LogoPosition } from "../lib/logo-overlay";
+
 export type SceneEffect =
   | "zoom-in" | "zoom-out"
   | "pan-left" | "pan-right" | "pan-up" | "pan-down"
@@ -38,6 +40,7 @@ export interface BrollVideo {
   src: string;         // absolute URL or /renders/xxx.mp4
   start: number;       // timeline position: seconds from video start
   end: number;         // timeline position: seconds from video start
+  sourceIndex?: number; // originating semantic window ordinal
   clipOffset?: number; // where inside the source clip to start playing (seconds, default 0)
   clipDuration?: number; // actual source clip duration in seconds (for Loop)
   keyword?: string;
@@ -114,10 +117,20 @@ export interface SubtitleOverlayConfig {
   subtitleOutlineSize?: number;
   bgmFile?: string;
   bgmVolume?: number;
+  logoOverlay?: {
+    src: string;
+    position: LogoPosition;
+    sizePct: number;
+    opacity: number;
+    intrinsicWidth: number;
+    intrinsicHeight: number;
+  };
 }
 
 export interface ShortVideoConfig {
   bgVideos: BrollVideo[];
+  /** Number of semantic B-roll windows requested before asset-pool reuse/splitting. */
+  requestedBrollWindowCount?: number;
   keywordPopups: KeywordPopupItem[];
   voiceFile: string;
   voiceVolume: number;
