@@ -153,6 +153,7 @@ async function main() {
 
     const out = parseVideoJobOutput(done?.outputJson ?? null);
     ok(out?.version === 2, `A: output version 2 (got ${out?.version})`);
+    ok(out?.preview?.voiceModel === "Puck", `A: exact per-job voiceModel persists in preview (got ${out?.preview?.voiceModel})`);
     ok(out?.videoUrl === "/renders/out-1.mp4", `A: videoUrl = base render (got ${out?.videoUrl})`);
     ok(out?.videoId === undefined, "A: no videoId (gallery row comes at web burn)");
     ok((out?.preview?.captions?.length ?? 0) > 0, `A: captions present (${out?.preview?.captions?.length})`);
