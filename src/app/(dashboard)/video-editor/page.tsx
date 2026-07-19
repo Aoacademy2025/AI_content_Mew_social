@@ -1447,7 +1447,11 @@ function LegacyVideoEditorPage() {
       // WINDOW MODE: group captions into ~3–4s windows; extract ONE keyword per window
       // (from the window's combined text) so each window's b-roll relates to its content.
       const windows = BROLL_WINDOW_MODE && existingCaps.length > 0
-        ? buildBrollWindows(existingCaps.map(c => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), BROLL_WINDOW_SEC)
+        ? buildBrollWindows(
+            existingCaps.map(c => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            BROLL_WINDOW_SEC,
+            pipe.current.audioDurationMs,
+          )
         : [];
       pipe.current.brollWindows = windows.length > 0 ? windows : undefined;
       const sc = windows.length > 0

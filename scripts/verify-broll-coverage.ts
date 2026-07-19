@@ -43,6 +43,91 @@ for (const segment of assigned.segments) {
   );
 }
 
+// Minimized from duckyhero's rendered A→B(0.1–0.2s)→A transitions. A preferred
+// source that is only slightly too short must not leave a micro fallback at the end
+// of each semantic window.
+const duckyRepair = assignBrollWindows(
+  [
+    { startMs: 0, endMs: 4_400 },
+    { startMs: 4_400, endMs: 8_800 },
+  ],
+  [
+    { src: "/ducky-a.mp4", start: 0, end: 0, clipOffset: 0, clipDuration: 4.5, sourceIndex: 0 },
+    { src: "/ducky-b.mp4", start: 0, end: 0, clipOffset: 0, clipDuration: 8, sourceIndex: 2 },
+  ],
+  8.8,
+  fps,
+);
+assert.equal(duckyRepair.complete, true);
+assert.equal(
+  duckyRepair.segments.some((segment) => segment.end - segment.start < 1 - 1e-6),
+  false,
+  "coverage never creates a sub-second visual repair for normal 4s windows",
+);
+assert.equal(
+  duckyRepair.segments.some((segment, index, all) =>
+    index > 0
+    && index < all.length - 1
+    && all[index - 1].src === all[index + 1].src
+    && all[index - 1].src !== segment.src
+    && segment.end - segment.start < 1 - 1e-6),
+  false,
+  "coverage never creates a micro A-B-A flash",
+);
+
+const duckyDistinctRepair = assignBrollWindows(
+  [
+    { startMs: 0, endMs: 4_400 },
+    { startMs: 4_400, endMs: 8_800 },
+  ],
+  [
+    { src: "/ducky-a.mp4", start: 0, end: 0, clipOffset: 0, clipDuration: 4.5, sourceIndex: 0 },
+    { src: "/ducky-c.mp4", start: 0, end: 0, clipOffset: 0, clipDuration: 4.5, sourceIndex: 1 },
+    { src: "/ducky-b.mp4", start: 0, end: 0, clipOffset: 0, clipDuration: 8, sourceIndex: 2 },
+  ],
+  8.8,
+  fps,
+);
+assert.equal(duckyDistinctRepair.complete, true);
+assert.equal(
+  duckyDistinctRepair.segments.some((segment) => segment.end - segment.start < 1 - 1e-6),
+  false,
+  "coverage balances a short repair tail even when adjacent windows use different sources",
+);
+assert.equal(
+  duckyDistinctRepair.segments.some((segment, index, all) => {
+    if (index === 0 || all[index - 1].src !== segment.src) return false;
+    const previous = all[index - 1];
+    const expectedOffset = (previous.clipOffset ?? 0) + (previous.end - previous.start);
+    return Math.abs((segment.clipOffset ?? 0) - expectedOffset) > 1 / fps;
+  }),
+  false,
+  "adjacent same-source repairs continue playback instead of restarting at frame zero",
+);
+assert.equal(
+  duckyDistinctRepair.segments.some((segment, index, all) =>
+    index > 0 && all[index - 1].src === segment.src),
+  false,
+  "continuous same-source repairs are compacted before reaching Remotion",
+);
+const duckySecondCoverage = coverBrollTimeline(
+  duckyDistinctRepair.segments,
+  duckyDistinctRepair.segments,
+  8.8,
+  fps,
+);
+const renderedFrames = (segments: typeof duckyDistinctRepair.segments) => segments.map((segment) => ({
+  src: segment.src,
+  startFrame: Math.round(segment.start * fps),
+  endFrame: Math.round(segment.end * fps),
+  offsetFrame: Math.round((segment.clipOffset ?? 0) * fps),
+}));
+assert.deepEqual(
+  renderedFrames(duckySecondCoverage.segments),
+  renderedFrames(duckyDistinctRepair.segments),
+  "coverage is idempotent when generate-config or render preflight validates an already-safe timeline",
+);
+
 const one = coverBrollTimeline(
   [{ src: "/one.mp4", start: 0, end: 30, clipOffset: 0, clipDuration: 5 }],
   [{ src: "/one.mp4", start: 0, end: 0, clipOffset: 0, clipDuration: 5 }],

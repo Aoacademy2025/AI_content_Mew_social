@@ -726,7 +726,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         : Math.max(...upCaps.map((c) => c.endMs));
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-      const upWindows = buildBrollWindows(upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), upWindowSec);
+      const upWindows = buildBrollWindows(
+        upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+        upWindowSec,
+        upDurMs,
+      );
       const upBrollUnits = upWindows.length > 0 ? brollWindowCaptions(upWindows) : upCaps;
 
       await step("keywords", 40);
@@ -911,7 +915,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const brollWindowMode = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
     const brollWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
     const brollWindows = brollWindowMode
-      ? buildBrollWindows(captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })), brollWindowSec)
+      ? buildBrollWindows(
+          captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+          brollWindowSec,
+          durMs,
+        )
       : [];
     const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
 

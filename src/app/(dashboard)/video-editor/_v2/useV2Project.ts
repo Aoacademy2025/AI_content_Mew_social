@@ -218,6 +218,27 @@ async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
   return normalizeLogoOverlayConfig(data?.defaultLogo?.config);
 }
 
+type AccountVideoDefaults = {
+  voiceEngine: "gemini" | "elevenlabs";
+  geminiVoiceName: string;
+  voiceId: string;
+  avatarId: string;
+};
+
+async function loadAccountVideoDefaults(): Promise<AccountVideoDefaults> {
+  const res = await fetch("/api/user/video-settings", { cache: "no-store" });
+  if (!res.ok) throw new Error("account video defaults unavailable");
+  const data = await res.json();
+  return {
+    voiceEngine: data?.ttsProvider === "elevenlabs" ? "elevenlabs" : "gemini",
+    geminiVoiceName: typeof data?.geminiVoiceName === "string" && data.geminiVoiceName.trim()
+      ? data.geminiVoiceName.trim()
+      : "Aoede",
+    voiceId: typeof data?.elevenlabsVoiceId === "string" ? data.elevenlabsVoiceId.trim() : "",
+    avatarId: typeof data?.heygenAvatarId === "string" ? data.heygenAvatarId.trim() : "",
+  };
+}
+
 function autosaveCandidateFromProject(
   projectId: string,
   project: Record<string, unknown>,
@@ -940,8 +961,12 @@ export function useV2Project() {
     setProjectReady(false);
     setProjectInitialization("loading-defaults");
     let accountDefault: LogoOverlayConfig | null;
+    let accountVideoDefaults: AccountVideoDefaults;
     try {
-      accountDefault = await loadAccountLogoDefault();
+      [accountDefault, accountVideoDefaults] = await Promise.all([
+        loadAccountLogoDefault(),
+        loadAccountVideoDefaults(),
+      ]);
     } catch {
       if (!isCurrentReset()) return null;
       setProjectInitialization("error");
@@ -960,6 +985,10 @@ export function useV2Project() {
       ...DEFAULT_PROJECT,
       autoMixProviders: [...DEFAULT_PROJECT.autoMixProviders],
       mixPreset: nextPreset,
+      voiceEngine: accountVideoDefaults.voiceEngine,
+      geminiVoiceName: accountVideoDefaults.geminiVoiceName,
+      voiceId: accountVideoDefaults.voiceId,
+      avatarId: accountVideoDefaults.avatarId,
       ...(inherited ? { logoOverlay: inherited } : {}),
     };
     draftRef.current = nextDraft;
@@ -986,14 +1015,14 @@ export function useV2Project() {
     setScriptRaw(DEFAULT_PROJECT.script);
     setClipUrlStateRaw(DEFAULT_PROJECT.clipUrl);
     setClipDurationSecStateRaw(DEFAULT_PROJECT.clipDurationSec);
-    setVoiceEngineRaw(DEFAULT_PROJECT.voiceEngine);
-    setGeminiVoiceNameRaw(DEFAULT_PROJECT.geminiVoiceName);
-    setVoiceIdRaw(DEFAULT_PROJECT.voiceId);
+    setVoiceEngineRaw(accountVideoDefaults.voiceEngine);
+    setGeminiVoiceNameRaw(accountVideoDefaults.geminiVoiceName);
+    setVoiceIdRaw(accountVideoDefaults.voiceId);
     setMusicTrackRaw(DEFAULT_PROJECT.musicTrack);
     setMusicTrackKindRaw(DEFAULT_PROJECT.musicTrackKind);
     setBgmVolumeRaw(DEFAULT_PROJECT.bgmVolume);
     setUseAvatarRaw(DEFAULT_PROJECT.useAvatar);
-    setAvatarIdRaw(DEFAULT_PROJECT.avatarId);
+    setAvatarIdRaw(accountVideoDefaults.avatarId);
     setAvatarInfo(null);
     setTargetClipCountRaw(DEFAULT_PROJECT.targetClipCount);
     setAvatarModeRaw(DEFAULT_PROJECT.avatarMode);
@@ -1321,8 +1350,12 @@ export function useV2Project() {
       const seedDraft = hasLocalDraft ? localDraft : buildDraft();
       if (!hasLocalDraft) {
         let accountDefault: LogoOverlayConfig | null;
+        let accountVideoDefaults: AccountVideoDefaults;
         try {
-          accountDefault = await loadAccountLogoDefault();
+          [accountDefault, accountVideoDefaults] = await Promise.all([
+            loadAccountLogoDefault(),
+            loadAccountVideoDefaults(),
+          ]);
         } catch {
           if (!isCurrentBootstrap()) return;
           setProjectReady(false);
@@ -1332,6 +1365,10 @@ export function useV2Project() {
           return;
         }
         if (!isCurrentBootstrap()) return;
+        seedDraft.voiceEngine = accountVideoDefaults.voiceEngine;
+        seedDraft.geminiVoiceName = accountVideoDefaults.geminiVoiceName;
+        seedDraft.voiceId = accountVideoDefaults.voiceId;
+        seedDraft.avatarId = accountVideoDefaults.avatarId;
         const inherited = logoOverlayForNewProject({ hasExistingDraft: false, accountDefault });
         if (inherited) seedDraft.logoOverlay = inherited;
       }

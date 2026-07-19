@@ -209,8 +209,11 @@ function verifyHookSource(value: string): void {
     "reset uses programmatic setters only");
   assert.match(reset, /setLogoOverlayRaw\(inherited\)/);
   assert.match(reset, /setMixPresetRaw\(/);
-  assert.match(reset, /setProjectReady\(false\);\s*setProjectInitialization\("loading-defaults"\);[\s\S]*await loadAccountLogoDefault/,
-    "Reset blocks synchronously before awaiting account defaults");
+  assert.match(
+    reset,
+    /setProjectReady\(false\);\s*setProjectInitialization\("loading-defaults"\);[\s\S]*await Promise\.all\(\[[\s\S]*loadAccountLogoDefault\(\)[\s\S]*loadAccountVideoDefaults\(\)/,
+    "Reset blocks synchronously before awaiting account Logo and Video defaults",
+  );
   assert.match(reset, /if \(!isCurrentReset\(\)\) return null;[\s\S]*setProjectInitialization\("creating-project"\);[\s\S]*createServerProject/,
     "only the owned Reset advances from defaults to project creation");
 

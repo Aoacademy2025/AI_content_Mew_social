@@ -2,6 +2,7 @@ import type { BrollVideo } from "../remotion/types";
 
 export const BROLL_SEQUENCE_GUARD_FRAMES = 10;
 export const BROLL_PROBE_SAFETY_MARGIN_SEC = 0.5;
+export const BROLL_MIN_REPAIR_HOLD_SEC = 1;
 export const BROLL_SUPPORTED_FPS = [24, 30, 50, 60] as const;
 export const MAX_BROLL_DURATION_SEC = 600;
 export const MAX_BROLL_SEGMENTS = MAX_BROLL_DURATION_SEC * 60;
@@ -181,7 +182,18 @@ function makeTargets(
 
     const start = Math.max(cursor, span.start);
     if (span.end > start + EPSILON_SEC) {
-      targets.push({ start, end: span.end, preferred: span });
+      const previous = targets[targets.length - 1];
+      const sameContinuousSource = previous?.preferred?.src === span.src
+        && previous.preferred.sourceIndex === span.sourceIndex
+        && Math.abs(previous.end - start) <= toleranceSec
+        && Math.abs(
+          finiteOr(previous.preferred.clipOffset, 0) - finiteOr(span.clipOffset, 0),
+        ) <= toleranceSec;
+      if (sameContinuousSource) {
+        previous.end = span.end;
+      } else {
+        targets.push({ start, end: span.end, preferred: span });
+      }
       cursor = span.end;
     }
   }
@@ -278,6 +290,33 @@ function summarizeCoverage(
   };
 }
 
+function compactContinuousPlayback(
+  segments: BrollCoverageAsset[],
+  toleranceSec: number,
+  guardSec: number,
+): BrollCoverageAsset[] {
+  const compacted: BrollCoverageAsset[] = [];
+  for (const segment of segments) {
+    const previous = compacted[compacted.length - 1];
+    const previousOffset = previous ? Math.max(0, finiteOr(previous.clipOffset, 0)) : 0;
+    const expectedOffset = previousOffset + (previous ? previous.end - previous.start : 0);
+    const sameSourceIndex = previous?.sourceIndex === segment.sourceIndex
+      || (previous?.sourceIndex === undefined && segment.sourceIndex === undefined);
+    const canMerge = previous?.src === segment.src
+      && sameSourceIndex
+      && Math.abs(previous.end - segment.start) <= toleranceSec
+      && Math.abs(expectedOffset - Math.max(0, finiteOr(segment.clipOffset, 0))) <= toleranceSec
+      && segment.end - previous.start
+        <= playableDuration(previous, previousOffset, guardSec) + toleranceSec;
+    if (canMerge) {
+      previous.end = segment.end;
+    } else {
+      compacted.push({ ...segment });
+    }
+  }
+  return compacted;
+}
+
 export function coverBrollTimeline(
   desired: BrollCoverageAsset[],
   pool: BrollCoverageAsset[],
@@ -315,10 +354,25 @@ export function coverBrollTimeline(
     while (cursor < target.end - EPSILON_SEC) {
       const isPreferredAttempt = preferred !== undefined;
       const asset = preferred ?? assets[poolCursor % Math.max(assets.length, 1)];
-      const offset = preferred
+      let offset = preferred
         ? Math.max(0, finiteOr(asset?.clipOffset, 0))
         : 0;
       preferred = undefined;
+
+      const previousSegment = segments[segments.length - 1];
+      const continuesPreviousSource = isPreferredAttempt
+        && offset <= toleranceSec
+        && previousSegment?.src === asset?.src
+        && Math.abs(previousSegment.end - cursor) <= toleranceSec;
+      if (continuesPreviousSource) {
+        const continuedOffset = Math.max(0, finiteOr(previousSegment.clipOffset, 0))
+          + (previousSegment.end - previousSegment.start);
+        if (playableDuration(asset, continuedOffset, guardSec) >= minPlayableSec - EPSILON_SEC) {
+          offset = continuedOffset;
+        } else {
+          continue;
+        }
+      }
 
       if (
         !asset?.src ||
@@ -331,11 +385,19 @@ export function coverBrollTimeline(
         continue;
       }
 
-      const spanSec = Math.min(
+      let spanSec = Math.min(
         target.end - cursor,
         playableDuration(asset, offset, guardSec),
       );
       if (spanSec <= EPSILON_SEC) break;
+
+      const remainderSec = target.end - (cursor + spanSec);
+      if (remainderSec > EPSILON_SEC && remainderSec < BROLL_MIN_REPAIR_HOLD_SEC) {
+        const shiftSec = BROLL_MIN_REPAIR_HOLD_SEC - remainderSec;
+        if (spanSec - shiftSec >= BROLL_MIN_REPAIR_HOLD_SEC) {
+          spanSec -= shiftSec;
+        }
+      }
 
       if (segments.length >= maxSegmentCount) {
         segmentLimitExceeded = true;
@@ -359,8 +421,9 @@ export function coverBrollTimeline(
     }
   }
 
+  const compactedSegments = compactContinuousPlayback(segments, toleranceSec, guardSec);
   const result = summarizeCoverage(
-    segments,
+    compactedSegments,
     desired.length,
     assets.length,
     safeDurationSec,

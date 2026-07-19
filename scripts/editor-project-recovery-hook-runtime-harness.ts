@@ -1323,6 +1323,73 @@ async function resetBlocksUserMutationWhileDefaultsLoad(): Promise<void> {
     "the attempted Reset value never reaches the replacement project POST");
 }
 
+async function resetInheritsSavedVoiceSettings(): Promise<void> {
+  const harness = createHarness();
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  harness.fetchMock.enqueue("GET", "/api/user/video-settings", response(200, {
+    ttsProvider: "elevenlabs",
+    elevenlabsVoiceId: "duckyhero-saved-voice",
+    geminiVoiceName: "Puck",
+  }));
+
+  await harness.runner.current.resetProject();
+  await settle(harness.runner);
+
+  const createdDraft = postBodies(harness.fetchMock).at(-1)?.draft as JsonRecord;
+  assert.deepEqual({
+    editor: {
+      voiceEngine: harness.runner.current.voiceEngine,
+      voiceId: harness.runner.current.voiceId,
+      geminiVoiceName: harness.runner.current.geminiVoiceName,
+    },
+    persisted: {
+      voiceEngine: createdDraft.voiceEngine,
+      voiceId: createdDraft.voiceId,
+      geminiVoiceName: createdDraft.geminiVoiceName,
+    },
+  }, {
+    editor: {
+      voiceEngine: "elevenlabs",
+      voiceId: "duckyhero-saved-voice",
+      geminiVoiceName: "Puck",
+    },
+    persisted: {
+      voiceEngine: "elevenlabs",
+      voiceId: "duckyhero-saved-voice",
+      geminiVoiceName: "Puck",
+    },
+  }, "Reset inherits the saved account voice in both the editor and replacement project");
+}
+
+async function blankBootstrapInheritsSavedVoiceSettings(): Promise<void> {
+  const harness = createHarness();
+  const savedSettings = response(200, {
+    ttsProvider: "elevenlabs",
+    elevenlabsVoiceId: "duckyhero-saved-voice",
+    geminiVoiceName: "Puck",
+  });
+  // Bootstrap and the compatibility hydration effect may share this account boundary.
+  // A real GET returns the same account settings on both reads.
+  harness.fetchMock.enqueue("GET", "/api/user/video-settings", savedSettings);
+  harness.fetchMock.enqueue("GET", "/api/user/video-settings", savedSettings);
+
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const createdDraft = postBodies(harness.fetchMock).at(-1)?.draft as JsonRecord;
+  assert.deepEqual({
+    voiceEngine: createdDraft.voiceEngine,
+    voiceId: createdDraft.voiceId,
+    geminiVoiceName: createdDraft.geminiVoiceName,
+  }, {
+    voiceEngine: "elevenlabs",
+    voiceId: "duckyhero-saved-voice",
+    geminiVoiceName: "Puck",
+  }, "a blank Editor bootstrap persists the saved account voice in its first project");
+}
+
 async function supersededResetCannotCompleteInitialization(): Promise<void> {
   const harness = createHarness();
   harness.runner.mount();
@@ -2534,6 +2601,8 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["blank-bootstrap-initialization", blankBootstrapBlocksUserMutationDuringInitialization],
     ["explicit-empty-bootstrap", explicitEmptyBootstrapStaysUnpersisted],
     ["reset-initialization", resetBlocksUserMutationWhileDefaultsLoad],
+    ["reset-saved-voice-defaults", resetInheritsSavedVoiceSettings],
+    ["blank-bootstrap-saved-voice-defaults", blankBootstrapInheritsSavedVoiceSettings],
     ["superseded-reset-initialization", supersededResetCannotCompleteInitialization],
     ["blank-bootstrap-unmount", unmountWhileBlankBootstrapAwaitsDefaults],
     ["account-default-failure", accountDefaultFailureFailsClosed],

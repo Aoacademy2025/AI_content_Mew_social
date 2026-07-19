@@ -13,7 +13,11 @@ export type BrollWindow = {
  * caption boundary); a caption longer than the cadence is its own window. Windows tile
  * [0, audioEnd] with no gaps/overlaps. Count ≈ ceil(audioDuration / cadenceSec).
  */
-export function buildBrollWindows(captions: BrollWindowCaption[], cadenceSec: number): BrollWindow[] {
+export function buildBrollWindows(
+  captions: BrollWindowCaption[],
+  cadenceSec: number,
+  audioEndMs?: number,
+): BrollWindow[] {
   const caps = (captions ?? []).filter(
     (c) => c && Number.isFinite(c.startMs) && Number.isFinite(c.endMs) && c.endMs > c.startMs,
   );
@@ -35,6 +39,20 @@ export function buildBrollWindows(captions: BrollWindowCaption[], cadenceSec: nu
       text: caps.slice(i, j + 1).map((c) => c.text.trim()).filter(Boolean).join(" "),
     });
     i = j + 1;
+  }
+
+  // Captions from real TTS contain short natural pauses. Keep the previous visual on
+  // screen through those pauses so coverage never interprets them as standalone cuts.
+  let cursor = 0;
+  for (let index = 0; index < windows.length; index += 1) {
+    const window = windows[index];
+    window.startMs = cursor;
+    if (index < windows.length - 1) {
+      window.endMs = Math.max(window.endMs, windows[index + 1].startMs);
+    } else if (Number.isFinite(audioEndMs) && (audioEndMs ?? 0) > 0) {
+      window.endMs = Math.max(window.endMs, audioEndMs as number);
+    }
+    cursor = window.endMs;
   }
   return windows;
 }

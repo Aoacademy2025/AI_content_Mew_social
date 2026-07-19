@@ -126,6 +126,18 @@ function descendants<T extends ts.Node>(
   return found;
 }
 
+function closestAncestor<T extends ts.Node>(
+  node: ts.Node,
+  predicate: (candidate: ts.Node) => candidate is T,
+): T | null {
+  let current: ts.Node | undefined = node.parent;
+  while (current) {
+    if (predicate(current)) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
 function identifierCalls(root: ts.Node, name: string): ts.CallExpression[] {
   return descendants(root, ts.isCallExpression).filter(
     (call) => ts.isIdentifier(call.expression) && call.expression.text === name,
@@ -316,7 +328,10 @@ function projectDefaultFlow(root: ts.SourceFile): ProjectDefaultFlow {
     (statement) => containsNode(statement.tryBlock, resetLoadCalls[0]),
   );
   assert.equal(resetTry.length, 1, "Reset lookup remains in its approved fail-closed flow");
-  assert.ok(ts.isAwaitExpression(resetLoadCalls[0].parent), "Reset awaits its account-default lookup");
+  assert.ok(
+    closestAncestor(resetLoadCalls[0], ts.isAwaitExpression),
+    "Reset awaits its account-default lookup, directly or inside a shared defaults batch",
+  );
 
   const blankLoadCalls = globalLoadCalls.filter((call) => !containsNode(resetProject, call));
   assert.equal(blankLoadCalls.length, 1, "one account-default lookup belongs to blank bootstrap");
@@ -362,16 +377,23 @@ function verifyBlankProjectDefaultContract(source: string): void {
   const guardBlock = guard.thenStatement;
   assert.ok(ts.isBlock(guardBlock), "classified blank-project guard owns a block");
 
-  const awaitedDefault = loadCall.parent;
-  assert.ok(ts.isAwaitExpression(awaitedDefault), "blank-project account-default lookup is awaited");
+  const awaitedDefault = closestAncestor(loadCall, ts.isAwaitExpression);
+  assert.ok(awaitedDefault, "blank-project account-default lookup is awaited");
   const defaultAssignment = awaitedDefault.parent;
+  const assignedAccountDefault = ts.isBinaryExpression(defaultAssignment)
+    && ts.isArrayLiteralExpression(defaultAssignment.left)
+    ? defaultAssignment.left.elements[0]
+    : ts.isBinaryExpression(defaultAssignment)
+      ? defaultAssignment.left
+      : undefined;
   assert.ok(
     ts.isBinaryExpression(defaultAssignment)
       && defaultAssignment.operatorToken.kind === ts.SyntaxKind.EqualsToken
-      && ts.isIdentifier(defaultAssignment.left),
+      && assignedAccountDefault !== undefined
+      && ts.isIdentifier(assignedAccountDefault),
     "resolved account default is retained for blank-project inheritance",
   );
-  const accountDefaultName = defaultAssignment.left.text;
+  const accountDefaultName = assignedAccountDefault.text;
 
   const catchStatements = catchClause.block.statements;
   assert.ok(
