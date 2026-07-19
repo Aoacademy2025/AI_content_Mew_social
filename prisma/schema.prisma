@@ -243,6 +243,11 @@ model VideoJob {
   inputJson      String
   outputJson     String?
   errorMessage   String?
+  errorCode      String?
+  errorProvider  String?
+  reservationRefundPending  Boolean  @default(false)
+  reservationRefundReason   String?
+  reservationRefundAttempts Int      @default(0)
   idempotencyKey         String?
   idempotencyFingerprint String?
   createdAt      DateTime       @default(now())

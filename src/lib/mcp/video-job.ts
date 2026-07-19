@@ -267,13 +267,30 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
   }
 }
 
-export async function failJob(id: string, message: string) {
+export type VideoJobFailure = {
+  message: string;
+  code?: string;
+  provider?: string;
+  /** Durable retry marker when terminal failure won before its base reservation settled. */
+  reservationRefundReason?: string;
+};
+
+export async function failJob(id: string, failure: string | VideoJobFailure) {
+  const normalized = typeof failure === "string" ? { message: failure } : failure;
   return prisma.$transaction(async (tx) => {
     const transitioned = await tx.videoJob.updateMany({
       where: { id, status: "processing" },
       data: {
         status: "failed",
-        errorMessage: message.slice(0, 1000),
+        errorMessage: normalized.message.slice(0, 1000),
+        errorCode: normalized.code?.slice(0, 80) ?? null,
+        errorProvider: normalized.provider?.slice(0, 80) ?? null,
+        ...(normalized.reservationRefundReason
+          ? {
+              reservationRefundPending: true,
+              reservationRefundReason: normalized.reservationRefundReason.slice(0, 160),
+            }
+          : {}),
         finishedAt: new Date(),
         providerNextPollAt: null,
       },

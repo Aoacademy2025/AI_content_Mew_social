@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { V2Project } from "./useV2Project";
 import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
+import { isProviderErrorCode, type ProviderErrorCode } from "@/lib/provider-errors";
+import type { HeygenProviderAction } from "@/lib/heygen-readiness";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { PRESET_WEIGHTS } from "./mix-presets";
 import { mediaStateFromJobPoll, previewMediaStateAfterVideoError } from "./ExpiredPreviewView";
@@ -63,11 +65,13 @@ export interface V2JobState {
   currentStep: string | null;
   progress: number;
   errorMessage: string | null;
+  errorCode: string | null;
+  errorProvider: string | null;
   output: ParsedVideoJobOutput | null;
   mediaState: ProjectMediaState | null;
 }
 
-const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId: null, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null };
+const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId: null, currentStep: null, progress: 0, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null };
 
 export type SubmitExportInput = {
   sourceJobId: string;
@@ -76,7 +80,18 @@ export type SubmitExportInput = {
   sceneCount?: number;
 };
 
-type SubmitResult = { ok: boolean; message?: string };
+export type SubmitResult = {
+  ok: boolean;
+  message?: string;
+  warning?: string;
+  code?: ProviderErrorCode;
+  provider?: string;
+  actions?: HeygenProviderAction[];
+};
+
+function isHeygenProviderAction(value: unknown): value is HeygenProviderAction {
+  return value === "open_heygen" || value === "switch_faceless";
+}
 type OwnedSubmitAttempt = {
   kind: "create" | "export";
   projectId: string | null;
@@ -147,7 +162,7 @@ export function useV2Job(p: V2Project) {
 
   const applyStatus = useCallback((d: {
     id: string; projectId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
-    errorMessage: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
+    errorMessage: string | null; errorCode?: string | null; errorProvider?: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
     idempotencyKey?: string | null; idempotencyFingerprint?: string | null;
   }) => {
     // done/failed ห้ามลบ jobId ที่จำไว้ — ไม่งั้นออกจากหน้าแล้วกลับมา งาน "หาย" ทั้งที่
@@ -164,16 +179,16 @@ export function useV2Job(p: V2Project) {
       stopPolling();
       setJob({
         phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null,
-        currentStep: d.currentStep, progress: 100, errorMessage: null, output: d.output ?? null,
+        currentStep: d.currentStep, progress: 100, errorMessage: null, errorCode: null, errorProvider: null, output: d.output ?? null,
         // A fresh job poll is authoritative. Project detail is only a compatibility
         // fallback for a rolling deploy where the poll response lacks mediaState.
         mediaState: mediaStateFromJobPoll(d.mediaState, previewMediaStateRef.current),
       });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", output: null, mediaState: null });
+      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
     } else {
-      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, output: null, mediaState: null });
+      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
     }
   }, [stopPolling]);
 
@@ -314,7 +329,7 @@ export function useV2Job(p: V2Project) {
     };
     let ownedPromise!: Promise<SubmitResult>;
     ownedPromise = (async () => {
-      setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
+      setJob((j) => ({ ...j, phase: "submitting", errorMessage: null, errorCode: null, errorProvider: null }));
       let retryAmbiguous = true;
       try {
         attempt.idempotencyFingerprint ??= await attempt.fingerprintPromise;
@@ -331,7 +346,13 @@ export function useV2Job(p: V2Project) {
             || d?.error === "too_many_jobs"
             || d?.error === "quota_exceeded";
           setJob((j) => ({ ...j, phase: "idle" }));
-          return { ok: false, message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})` };
+          return {
+            ok: false,
+            message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})`,
+            code: isProviderErrorCode(d?.code) ? d.code : undefined,
+            provider: typeof d?.provider === "string" ? d.provider : undefined,
+            actions: Array.isArray(d?.actions) ? d.actions.filter(isHeygenProviderAction) : undefined,
+          };
         }
         if (!responseMatchesAttempt(d, attempt, false)) {
           setJob((j) => ({ ...j, phase: "idle" }));
@@ -339,9 +360,9 @@ export function useV2Job(p: V2Project) {
         }
         retryAmbiguous = false;
         try { browserStorage()?.setItem(storageKey(attempt.projectId), d.jobId); } catch {}
-        setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
+        setJob({ phase: "rendering", jobId: d.jobId, jobType: "create", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
         startPolling(d.jobId);
-        return { ok: true };
+        return { ok: true, warning: typeof d?.warning === "string" ? d.warning : undefined };
       } catch {
         setJob((j) => ({ ...j, phase: "idle" }));
         return { ok: false, message: "เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง" };
@@ -392,7 +413,7 @@ export function useV2Job(p: V2Project) {
     };
     let ownedPromise!: Promise<SubmitResult>;
     ownedPromise = (async () => {
-      setJob((j) => ({ ...j, phase: "submitting", errorMessage: null }));
+      setJob((j) => ({ ...j, phase: "submitting", errorMessage: null, errorCode: null, errorProvider: null }));
       let retryAmbiguous = true;
       try {
         attempt.idempotencyFingerprint ??= await attempt.fingerprintPromise;
@@ -420,7 +441,7 @@ export function useV2Job(p: V2Project) {
         }
         retryAmbiguous = false;
         try { browserStorage()?.setItem(storageKey(attempt.projectId), d.jobId); } catch {}
-        setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, output: null, mediaState: null });
+        setJob({ phase: "rendering", jobId: d.jobId, jobType: "export", projectId: attempt.projectId, currentStep: null, progress: 0, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
         startPolling(d.jobId);
         return { ok: true };
       } catch {

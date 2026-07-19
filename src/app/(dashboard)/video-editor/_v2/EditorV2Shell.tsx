@@ -34,7 +34,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useV2Project } from "./useV2Project";
-import { useV2Job, type V2JobState } from "./useV2Job";
+import { useV2Job, type SubmitResult, type V2JobState } from "./useV2Job";
 import { Step1Script } from "./Step1Script";
 import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
@@ -84,6 +84,7 @@ export function EditorV2Shell() {
   // is on; with it off handleRender submits directly (byte-identical to before).
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+  const [heygenQuotaAlert, setHeygenQuotaAlert] = useState<string | null>(null);
   const confirmingRef = useRef(false); // hard guard vs. double-click before re-render
   const activeProjectIdRef = useRef(p.projectId);
   const mountedRef = useRef(false);
@@ -135,11 +136,23 @@ export function EditorV2Shell() {
     setReceiptOpen(false);
   }, [editorBlocked]);
 
+  function handleSubmitResult(result: SubmitResult) {
+    if (result.ok) {
+      if (result.warning) toast.warning(result.warning);
+      return;
+    }
+    if (result.code === "quota" && result.provider === "heygen") {
+      setHeygenQuotaAlert(result.message ?? "เครดิต HeyGen ไม่เพียงพอสำหรับสร้าง Avatar");
+      return;
+    }
+    toast.error(result.message ?? "ส่งงานไม่สำเร็จ");
+  }
+
   async function handleRender() {
     if (!p.canRunProjectOperation()) return;
     if (!CREDITS_LIVE_CLIENT) {
       const r = await submit();
-      if (!r.ok) toast.error(r.message ?? "ส่งงานไม่สำเร็จ");
+      handleSubmitResult(r);
       return;
     }
     setReceiptOpen(true);
@@ -154,7 +167,7 @@ export function EditorV2Shell() {
     setConfirmSubmitting(true);
     try {
       const r = await submit();
-      if (!r.ok) toast.error(r.message ?? "ส่งงานไม่สำเร็จ");
+      handleSubmitResult(r);
     } finally {
       confirmingRef.current = false;
       setConfirmSubmitting(false);
@@ -583,6 +596,12 @@ export function EditorV2Shell() {
         <FailedView
           job={job}
           exportMode={job.jobType === "export"}
+          onSwitchFaceless={() => {
+            p.setUseAvatar(false);
+            reset();
+            setStep(1);
+            toast.success("เปลี่ยนเป็น Faceless แล้ว — พร้อมลองสร้างใหม่");
+          }}
           onBack={() => {
             if (job.jobType === "export" && p.activeJobId) {
               resumeJob(p.activeJobId);
@@ -607,6 +626,32 @@ export function EditorV2Shell() {
           onCancel={() => { if (!confirmSubmitting) setReceiptOpen(false); }}
         />
       )}
+
+      <AlertDialog open={!!heygenQuotaAlert} onOpenChange={(open) => { if (!open) setHeygenQuotaAlert(null); }}>
+        <AlertDialogContent className="border" style={{ background: color.bg1, borderColor: color.cardBorder, color: color.text }}>
+          <AlertDialogHeader>
+            <AlertDialogTitle style={{ color: color.text }}>เครดิต HeyGen ไม่เพียงพอ</AlertDialogTitle>
+            <AlertDialogDescription style={{ color: color.textSecondary }}>
+              {heygenQuotaAlert} ระบบยังไม่ได้เริ่มสร้างคลิปและยังไม่ได้หักนาทีของแพ็กเกจ
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setHeygenQuotaAlert(null)}>ยกเลิก</AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <a href="https://app.heygen.com/settings?nav=API" target="_blank" rel="noreferrer">ไปที่ HeyGen</a>
+            </AlertDialogAction>
+            <AlertDialogAction
+              onClick={() => {
+                p.setUseAvatar(false);
+                setHeygenQuotaAlert(null);
+                toast.success("เปลี่ยนเป็น Faceless แล้ว — กดเริ่มสร้างอีกครั้งได้เลย");
+              }}
+            >
+              ใช้แบบ Faceless
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog
         open={!!deleteProject && !editorBlocked}
@@ -724,7 +769,13 @@ function SaveStatus({ status, onRetry }: {
   return <span>บันทึกอัตโนมัติ</span>;
 }
 
-function FailedView({ job, exportMode = false, onBack }: { job: V2JobState; exportMode?: boolean; onBack: () => void }) {
+function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
+  job: V2JobState;
+  exportMode?: boolean;
+  onBack: () => void;
+  onSwitchFaceless: () => void;
+}) {
+  const isHeygenQuota = job.errorProvider === "heygen" && job.errorCode === "quota";
   return (
     <main className="flex flex-1 items-center justify-center p-6">
       <div className="flex max-w-[560px] flex-col items-center gap-4 text-center">
@@ -735,7 +786,16 @@ function FailedView({ job, exportMode = false, onBack }: { job: V2JobState; expo
         <div style={{ fontSize: 12, color: color.textSecondary, lineHeight: 1.7 }}>
           {job.errorMessage ?? "เกิดข้อผิดพลาด — ลองใหม่อีกครั้ง"}
         </div>
-        <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>
+        {isHeygenQuota ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <a href="https://app.heygen.com/settings?nav=API" target="_blank" rel="noreferrer">
+              <BtnSecondary>เติมเครดิต HeyGen</BtnSecondary>
+            </a>
+            <BtnPrimary onClick={onSwitchFaceless}>เปลี่ยนเป็น Faceless แล้วลองใหม่</BtnPrimary>
+          </div>
+        ) : (
+          <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>
+        )}
       </div>
     </main>
   );

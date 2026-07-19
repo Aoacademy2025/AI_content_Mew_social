@@ -4,11 +4,16 @@ import "dotenv/config"; // load .env BEFORE prisma init — tsx (unlike Next) do
 import { prisma } from "../src/lib/prisma";
 import { claimNextRunnableJob, recoverProcessingJobsAfterWorkerRestart } from "../src/lib/mcp/video-job";
 import { runOrchestrator } from "../src/lib/mcp/orchestrator";
+import { retryPendingVideoJobReservationRefunds } from "../src/lib/render/reservation-settlement";
 import { startLoanwordRefresh } from "../src/lib/thai-loanwords-runtime";
 import { hydrateServerGeminiKeyEnv } from "../src/lib/server-keys";
 
 const POLL_MS = Number(process.env.MCP_WORKER_POLL_MS ?? 4000);
 const ORPHAN_MAX_REQUEUES = Number(process.env.MCP_WORKER_ORPHAN_MAX_REQUEUES ?? 2);
+const REFUND_RETRY_MS = (() => {
+  const value = Number(process.env.MCP_REFUND_RETRY_MS ?? 60_000);
+  return Number.isFinite(value) ? Math.max(15_000, value) : 60_000;
+})();
 
 // How many videos this ONE worker orchestrates concurrently (CAP-1, docs/audits/
 // 2026-07-07-system-optimization-audit.md). The box has 8 vCPU and 2 render-worker
@@ -46,6 +51,13 @@ async function runJob(job: { id: string; userId: string }): Promise<void> {
   console.log(`[mcp-worker] finished job ${job.id}`);
 }
 
+async function retryPendingRefunds(): Promise<void> {
+  const result = await retryPendingVideoJobReservationRefunds({ limit: 20 });
+  if (result.inspected > 0) {
+    console.log(`[mcp-worker] reservation refund retry inspected=${result.inspected} settled=${result.settled} pending=${result.pending}`);
+  }
+}
+
 async function main() {
   if (!process.env.MCP_SERVICE_SECRET) {
     console.error("[mcp-worker] MCP_SERVICE_SECRET not set — refusing to start");
@@ -74,6 +86,9 @@ async function main() {
       `[mcp-worker] recovered orphaned processing job(s): inspected=${recovered.inspected} requeued=${recovered.requeued} parked=${recovered.parked} failed=${recovered.failed}`,
     );
   }
+  await retryPendingRefunds().catch((error) => {
+    console.error("[mcp-worker] reservation refund startup retry failed:", error);
+  });
   startLoanwordRefresh(); // load auto-mined loanwords now + refresh every 10 min (unref'd)
   console.log(`[mcp-worker] started (concurrency=${CONCURRENCY})`);
 
@@ -83,7 +98,14 @@ async function main() {
   // the next findFirst runs. Two slots therefore never claim the same row. Claimed jobs then
   // RUN concurrently: their promises live in `active` and are not awaited by this dispatch loop.
   const active = new Set<Promise<void>>();
+  let nextRefundRetryAt = Date.now() + REFUND_RETRY_MS;
   while (running) {
+    if (Date.now() >= nextRefundRetryAt) {
+      await retryPendingRefunds().catch((error) => {
+        console.error("[mcp-worker] reservation refund retry failed:", error);
+      });
+      nextRefundRetryAt = Date.now() + REFUND_RETRY_MS;
+    }
     let claimedThisRound = false;
     try {
       while (running && active.size < CONCURRENCY) {

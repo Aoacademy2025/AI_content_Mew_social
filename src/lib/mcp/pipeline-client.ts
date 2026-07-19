@@ -29,6 +29,19 @@ export interface PipelineCaller {
   get<T>(path: string): Promise<T>;
 }
 
+export class PipelineHttpError extends Error {
+  constructor(
+    public readonly method: "POST" | "GET" | "PATCH",
+    public readonly path: string,
+    public readonly status: number,
+    public readonly body: unknown,
+  ) {
+    const detail = typeof body === "string" ? body : (JSON.stringify(body) ?? String(body));
+    super(`${method} ${path} → ${status}: ${detail.slice(0, 300)}`);
+    this.name = "PipelineHttpError";
+  }
+}
+
 /** Retry transport errors + 5xx (NOT 4xx). 4xx are in-band errors (missing_key/quota) — never retry. */
 export async function withRetry<T>(fn: () => Promise<T>, opts: { retries?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<T> {
   const retries = opts.retries ?? 2;
@@ -38,9 +51,8 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: { retries?: numbe
     try { return await fn(); }
     catch (e) {
       lastErr = e;
-      const msg = e instanceof Error ? e.message : String(e);
-      const status = msg.match(/→ (\d{3}):/)?.[1];
-      const retriable = !status || Number(status) >= 500; // transport error (no status) or 5xx
+      const status = e instanceof PipelineHttpError ? e.status : null;
+      const retriable = status === null || status >= 500; // transport error (no status) or 5xx
       if (!retriable || attempt === retries) throw e;
       await sleep(1000 * Math.pow(3, attempt)); // 1s, 3s
     }
@@ -59,8 +71,13 @@ export function pipelineCaller(userId: string): PipelineCaller {
     return withRetry(async () => {
       const res = await undiciFetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, dispatcher: pipelineDispatcher });
       const text = await res.text();
-      if (!res.ok) throw new Error(`${method} ${path} → ${res.status}: ${text.slice(0, 300)}`);
-      return (text ? JSON.parse(text) : {}) as T;
+      let parsed: unknown = {};
+      if (text) {
+        try { parsed = JSON.parse(text); }
+        catch { parsed = text; }
+      }
+      if (!res.ok) throw new PipelineHttpError(method, path, res.status, parsed);
+      return parsed as T;
     }, { retries: opts?.retries });
   }
   return {

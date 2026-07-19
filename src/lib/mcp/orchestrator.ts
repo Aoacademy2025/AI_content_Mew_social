@@ -1,6 +1,6 @@
 import type { User } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { refundClipUsage } from "@/lib/usage-limits";
+import { refundVideoJobBaseReservation } from "@/lib/render/reservation-settlement";
 import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
 import {
   setJobStep,
@@ -45,6 +45,23 @@ import { planCutaway } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { buildDegradedTtsTiming } from "@/lib/tts-timing";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
+
+class AvatarProviderFailureError extends Error {
+  constructor(
+    public readonly failure: Extract<AvatarProviderAdvanceResult, { kind: "failed" }>,
+    public readonly reservationRefundReason?: string,
+  ) {
+    super(failure.message);
+    this.name = "AvatarProviderFailureError";
+  }
+}
+
+class AvatarReservationSettlementError extends Error {
+  constructor(public readonly reservationRefundReason: string) {
+    super("คืนโควตาของ base render ยังไม่สำเร็จ — ระบบบันทึกไว้เพื่อลองคืนอัตโนมัติ");
+    this.name = "AvatarReservationSettlementError";
+  }
+}
 
 export interface OrchestratorDeps {
   caller?: PipelineCaller;
@@ -194,9 +211,61 @@ function alignBrollWindowsToKeywords(
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
   const caller = deps.caller ?? pipelineCaller(userId);
-  const refund = deps.refundOneClip ?? refundClipUsage;
   const sleep = deps.sleep;
   const recordTelemetryEvent = deps.recordTelemetryEvent ?? recordServerTelemetryEvent;
+  let baseReservationSettledThisRun = false;
+
+  const refundBaseReservation = async (reason: string): Promise<boolean> => {
+    if (baseReservationSettledThisRun) return true;
+    // Tests and older embedded callers can provide the legacy seam. Production always
+    // settles the exact RenderJob reservation so minutes/credits/clips are bucket-correct.
+    if (deps.refundOneClip) {
+      await deps.refundOneClip(userId);
+      baseReservationSettledThisRun = true;
+      return true;
+    }
+
+    let result;
+    try {
+      result = await refundVideoJobBaseReservation({
+        videoJobId: jobId,
+        userId,
+        reason,
+      });
+    } catch (error) {
+      emitTelemetry({
+        name: "avatar_base_reservation_settlement",
+        category: "error",
+        source: "server",
+        step: "avatar",
+        status: "error",
+        properties: { pipelineRunId, jobId, reason },
+      });
+      throw error;
+    }
+    emitTelemetry({
+      name: "avatar_base_reservation_settlement",
+      category: result.kind === "not_found" || result.kind === "ambiguous" ? "error" : "pipeline",
+      source: "server",
+      step: "avatar",
+      status: result.kind,
+      value: result.kind === "refunded" ? result.amount : null,
+      properties: {
+        pipelineRunId,
+        jobId,
+        reason,
+        ...(result.kind === "refunded" ? { funding: result.funding } : {}),
+      },
+    });
+    if (result.kind === "not_found" || result.kind === "ambiguous") {
+      console.error(
+        `[mcp-worker] job ${jobId} could not settle base reservation: ${result.kind} reason=${reason}`,
+      );
+    } else {
+      baseReservationSettledThisRun = true;
+    }
+    return baseReservationSettledThisRun;
+  };
 
   // P3: server-side stage telemetry — emitted from the worker so stage done/fail is
   // recorded even when no browser is attached (the web editor emits client-side and
@@ -383,6 +452,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
       const render = await caller.post<{ jobId: string }>("/api/videos/render", {
         subtitleOverlayConfig: buildBurnConfig(compositeUrl, captions, checkpoint.audioDurationMs, RENDER_FPS, subTop),
+        parentJobId: jobId,
       });
       const burnedUrl = await pollRender(
         caller,
@@ -406,7 +476,16 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
           if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
         }
-        throw new Error(result.message);
+        let reservationRefundReason: string | undefined;
+        if (result.outcome === "definitive") {
+          const reason = `avatar-provider-${result.code ?? "rejected"}`;
+          const settled = await refundBaseReservation(reason).catch((error) => {
+            console.error(`[mcp-worker] job ${jobId} failed to refund base reservation`, error);
+            return false;
+          });
+          if (!settled) reservationRefundReason = reason;
+        }
+        throw new AvatarProviderFailureError(result, reservationRefundReason);
       }
       if (result.kind === "ready") {
         await finishPreparedAvatarJob(result.checkpoint, result.compositeUrl);
@@ -482,6 +561,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const rr = await caller.post<{ jobId: string }>("/api/videos/render", {
         shortVideoConfig: rrBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
         rerenderOf: { sourceJobId: input.sourceJobId },
+        parentJobId: jobId,
       });
       const rrNewBase = await pollRender(caller, rr.jobId, (pct) => { void setJobStep(jobId, "render", 40 + Math.round(pct * 0.3)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(rr.jobId) });
 
@@ -562,6 +642,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       await step("burn", 20);
       const burn = await caller.post<{ jobId: string }>("/api/videos/render", {
         subtitleOverlayConfig: input.subtitleOverlayConfig,
+        parentJobId: jobId,
       });
       const burnedUrl = await pollRender(
         caller,
@@ -682,6 +763,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upBaseConfig = { ...upCfg.config, keywordPopups: [] as unknown[] };
       const upR = await caller.post<{ jobId: string }>("/api/videos/render", {
         shortVideoConfig: upBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
+        parentJobId: jobId,
       });
       const upReelUrl = await pollRender(caller, upR.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.12)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(upR.jobId) });
       // preview: การจองที่ base render คือค่าใช้จ่ายเดียว (เหมือน script preview) — ไม่ refund
@@ -857,6 +939,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const baseConfig = { ...cfgRes.config, keywordPopups: [] as unknown[], ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}) };
     const r1 = await caller.post<{ jobId: string }>("/api/videos/render", {
       shortVideoConfig: baseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
+      parentJobId: jobId,
     });
     const baseUrl = await pollRender(caller, r1.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r1.jobId) });
     // Base render reserved 1 clip. Refund it NOW *only when an avatar composite follows* —
@@ -873,7 +956,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     //
     // PREVIEW MODE: no burn follows in this job, so the base reservation must STAND as the
     // single charge (same as the web editor's preview render today) — skip the refund.
-    if (!input.previewMode && input.avatarMode) await refund(userId).catch(() => {});
+    if (!input.previewMode && input.avatarMode) {
+      const reason = "avatar-composite-replacement";
+      const settled = await refundBaseReservation(reason).catch((error) => {
+        console.error(`[mcp-worker] job ${jobId} failed to refund base reservation`, error);
+        return false;
+      });
+      if (!settled) throw new AvatarReservationSettlementError(reason);
+    }
 
     // 6b. Avatar (optional) — generate + composite onto the base render.
     let finalBase = baseUrl;
@@ -972,7 +1062,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 8. Burn subtitles onto the (possibly avatar-composited) base.
     await step("burn", 88);
     const subTop = input.subtitlePosition ? POSITION_TOP_PERCENT[input.subtitlePosition] : undefined;
-    const r2 = await caller.post<{ jobId: string }>("/api/videos/render", { subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS, subTop) });
+    const r2 = await caller.post<{ jobId: string }>("/api/videos/render", {
+      subtitleOverlayConfig: buildBurnConfig(finalBase, captions, durMs, RENDER_FPS, subTop),
+      parentJobId: jobId,
+    });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r2.jobId) });
 
     // 9. Update Video row → COMPLETED (the gallery route is PATCH — see /api/videos/[id])
@@ -993,6 +1086,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       return; // status is already 'canceled'; don't overwrite with failed
     }
     emitStage(phaseName, "error", Date.now() - phaseStartedAt, { message });
-    await failJob(jobId, message);
+    await failJob(jobId, e instanceof AvatarProviderFailureError
+      ? {
+          message: e.failure.message,
+          code: e.failure.code,
+          provider: e.failure.provider,
+          reservationRefundReason: e.reservationRefundReason,
+        }
+      : e instanceof AvatarReservationSettlementError
+        ? {
+            message: e.message,
+            code: "reservation_refund_pending",
+            provider: "system",
+            reservationRefundReason: e.reservationRefundReason,
+          }
+      : message);
   }
 }

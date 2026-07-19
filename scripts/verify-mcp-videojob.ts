@@ -49,6 +49,23 @@ async function main() {
   const failed = await prisma.videoJob.findUnique({ where: { id: job2.id } });
   assert(failed?.status === "failed" && failed?.errorMessage === "boom", "failJob → failed + message");
 
+  const structuredJob = await createVideoJob(u.id, { script: "avatar quota" });
+  await claimNextQueuedJob();
+  const structuredFailure = await failJob(structuredJob.id, {
+    message: "เครดิต HeyGen ไม่เพียงพอสำหรับสร้าง Avatar",
+    code: "quota",
+    provider: "heygen",
+    reservationRefundReason: "avatar-provider-quota",
+  });
+  assert(
+    structuredFailure.status === "failed"
+      && structuredFailure.errorCode === "quota"
+      && structuredFailure.errorProvider === "heygen"
+      && structuredFailure.reservationRefundPending === true
+      && structuredFailure.reservationRefundReason === "avatar-provider-quota",
+    "failJob preserves provider failure and a durable reservation-refund marker",
+  );
+
   // idempotency
   const a = await createVideoJob(u.id, { script: "k" }, "key1");
   let dup = false;

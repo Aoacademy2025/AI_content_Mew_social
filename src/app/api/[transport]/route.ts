@@ -9,6 +9,7 @@ import { SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError } from "@/lib
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
 import { preflightElevenLabs, preflightPexels } from "@/lib/key-preflight";
+import { checkHeygenReadiness, toHeygenBlockedResponse } from "@/lib/heygen-readiness";
 import {
   getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
 } from "@/lib/mcp/tools";
@@ -177,6 +178,13 @@ const handler = createMcpHandler(
             u,
           );
           if (avatar.kind === "error") return avatar.payload;
+          const heygenReadiness = avatar.kind === "ok" && u.heygenKey
+            ? await checkHeygenReadiness({ apiKey: decryptKey(u.heygenKey) })
+            : null;
+          if (heygenReadiness?.kind === "blocked") {
+            return toHeygenBlockedResponse(heygenReadiness).body;
+          }
+          const heygenWarning = heygenReadiness?.kind === "unknown" ? heygenReadiness.message : undefined;
           // Resolve the composite layout: caller-supplied wins; otherwise load the saved preset.
           const avatarLayout =
             avatar.kind === "ok"
@@ -206,7 +214,7 @@ const handler = createMcpHandler(
               },
               args.idempotencyKey,
             );
-            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว",
+            return { jobId: job.id, status: "queued", message: "งานเข้าคิวแล้ว", ...(heygenWarning ? { warning: heygenWarning } : {}),
               nextStep: avatar.kind === "ok"
                 ? "มี avatar (เรนเดอร์ผ่าน HeyGen) — ใช้เวลานาน ~15–25 นาที. เช็คด้วย get_video_status ทุก ~2 นาที (อย่าถี่กว่านั้น)"
                 : "เรนเดอร์ปกติ ~3–6 นาที; คลิปสคริปต์ยาวหรือซับโหมดถี่ (1–2 คำ ฉากเยอะ) อาจถึง ~15–20 นาที. เช็คด้วย get_video_status ทุก ~60–90 วินาที (อย่าถี่กว่านั้น)" };

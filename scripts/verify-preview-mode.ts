@@ -135,6 +135,10 @@ async function main() {
 
     const renders = log.filter((c) => c.method === "POST" && c.path === "/api/videos/render");
     ok(renders.length === 1, `A: exactly ONE render (base, no burn) — got ${renders.length}`);
+    ok(
+      renders.every((call) => (call.body as { parentJobId?: string })?.parentJobId === job.id),
+      "A: every render is durably linked to its owning VideoJob",
+    );
     ok(!log.some((c) => c.method === "POST" && c.path === "/api/videos"), "A: NO gallery Video row created");
     ok(!log.some((c) => c.method === "PATCH"), "A: NO gallery PATCH");
     ok(refunds === 0, `A: NO refund — base reservation stands as the single charge (got ${refunds})`);
@@ -452,6 +456,82 @@ async function main() {
   }
 
   // ── C. parser tolerance ────────────────────────────────────────────────────
+  // ── J. definitive HeyGen quota rejection after the base render: preserve the
+  // structured failure and compensate the platform reservation exactly once. ──
+  {
+    const { PipelineHttpError } = await import("../src/lib/mcp/pipeline-client");
+    for (const previewMode of [true, false]) {
+      const label = previewMode ? "preview" : "full-pipeline";
+      const log: CallLog[] = [];
+      let refunds = 0;
+      const job = await createProcessingVideoJob("u-preview", {
+        script: SCRIPT,
+        previewMode,
+        voiceProvider: "gemini",
+        avatarMode: "full",
+        avatarId: "avatar-1",
+      });
+      const base = makeStubCaller(log);
+      const quotaCaller = {
+        ...base,
+        post: async <T,>(path: string, body: unknown): Promise<T> => {
+          if (path === "/api/heygen/generate-with-bg") {
+            log.push({ method: "POST", path, body });
+            throw new PipelineHttpError("POST", path, 402, {
+              code: "quota",
+              provider: "heygen",
+              userAction: "เครดิต HeyGen ไม่เพียงพอสำหรับสร้าง Avatar",
+            });
+          }
+          return base.post<T>(path, body);
+        },
+      };
+      await runOrchestrator(job.id, "u-preview", {
+        caller: quotaCaller,
+        refundOneClip: async () => { refunds++; },
+        sleep: async () => {},
+      });
+      const failed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+      ok(failed.status === "failed", `J/${label}: provider quota becomes terminal failed (got ${failed.status})`);
+      ok(failed.errorCode === "quota" && failed.errorProvider === "heygen", `J/${label}: structured HeyGen quota failure survives the worker`);
+      ok(refunds === 1, `J/${label}: base reservation compensated exactly once (got ${refunds})`);
+      ok(log.filter((call) => call.path === "/api/videos/render").length === 1, `J/${label}: only the base render ran`);
+    }
+
+    const pendingLog: CallLog[] = [];
+    const pendingBase = makeStubCaller(pendingLog);
+    const pendingJob = await createProcessingVideoJob("u-preview", {
+      script: SCRIPT,
+      previewMode: true,
+      voiceProvider: "gemini",
+      avatarMode: "full",
+      avatarId: "avatar-1",
+    });
+    await runOrchestrator(pendingJob.id, "u-preview", {
+      caller: {
+        ...pendingBase,
+        post: async <T,>(path: string, body: unknown): Promise<T> => {
+          if (path === "/api/heygen/generate-with-bg") {
+            throw new PipelineHttpError("POST", path, 402, {
+              code: "quota",
+              provider: "heygen",
+              userAction: "เครดิต HeyGen ไม่เพียงพอสำหรับสร้าง Avatar",
+            });
+          }
+          return pendingBase.post<T>(path, body);
+        },
+      },
+      refundOneClip: async () => { throw new Error("database busy"); },
+      sleep: async () => {},
+    });
+    const pendingFailure = await prisma.videoJob.findUniqueOrThrow({ where: { id: pendingJob.id } });
+    ok(
+      pendingFailure.reservationRefundPending === true
+        && pendingFailure.reservationRefundReason === "avatar-provider-quota",
+      "J/refund-error: failure keeps a durable reservation-refund marker",
+    );
+  }
+
   {
     const { parseVideoJobOutput: parse } = await import("../src/lib/mcp/video-job");
     ok(parse(null) === null, "C: null → null");
