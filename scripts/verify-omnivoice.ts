@@ -2,6 +2,7 @@
 // Run: npm run verify:omnivoice
 
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import {
   createOmniVoiceAdmissionCounter,
   isOmniVoiceInfo,
@@ -96,6 +97,21 @@ check("job admission: OmniVoice readiness is checked before enqueue", jobsRouteS
 check("timing invariant: worker receives the exact chunk text", omniRouteSource.includes("chunks[index].text") && !omniRouteSource.includes("normalizeNumbersForTts"));
 check("capacity: managed AI-audio reserve is enforced", omniRouteSource.includes("reserveAiAudioMinutes(user.id, estimatedMinutes, { enforce: true })"));
 check("timeout: upstream budget leaves post-processing headroom", configSource.includes("250_000, 240_000"));
+
+const backgroundRuntimeImport = spawnSync(
+  process.execPath,
+  ["--import", "tsx", "-e", 'import("./src/lib/mcp/orchestrator.ts")'],
+  {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    env: { ...process.env, OMNIVOICE_ENABLED: "0" },
+  },
+);
+check(
+  "background runtime: MCP orchestrator imports outside Next.js",
+  backgroundRuntimeImport.status === 0,
+  backgroundRuntimeImport.stderr.trim(),
+);
 
 if (failures > 0) {
   console.error(`\n${failures} OmniVoice verification(s) failed.`);

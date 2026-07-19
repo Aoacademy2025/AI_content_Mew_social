@@ -1,5 +1,5 @@
 import type { User } from "@prisma/client";
-import { isOmniVoiceUserAllowed } from "@/lib/omnivoice";
+import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
 import { prisma } from "@/lib/prisma";
 import { refundVideoJobBaseReservation } from "@/lib/render/reservation-settlement";
 import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
