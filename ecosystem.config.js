@@ -1,3 +1,10 @@
+const { join } = require("node:path");
+
+// PM2 evaluates this file in the deploy shell, which does not automatically load
+// the application's .env. Load it before resolving process-backed secrets; otherwise
+// --update-env can replace a valid saved secret with an empty fallback.
+require("dotenv").config({ path: join(__dirname, ".env"), quiet: true });
+
 // Reviewed KVM8 runtime profile. Keep render-output settings in ONE object so web
 // fallback rendering, --env production, and the durable render workers cannot drift.
 // These are the effective production values verified on 2026-07-19; Batch A only

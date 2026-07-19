@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -146,6 +147,40 @@ function verifyRenderConfigContract(): void {
 }
 
 verifyRenderConfigContract();
+
+function verifyEcosystemLoadsDotEnvContract(): void {
+  const source = readFileSync("ecosystem.config.js", "utf8");
+  const processBox = { env: {} as Record<string, string> };
+  const moduleBox = { exports: {} as { apps?: Array<{ name: string; env?: Record<string, string> }> } };
+  let loadedPath: string | null = null;
+  runInNewContext(source, {
+    __dirname: "/srv/ai-content",
+    module: moduleBox,
+    process: processBox,
+    require(id: string) {
+      if (id === "node:path") {
+        return { join: (...parts: string[]) => parts.join("/").replace(/\/{2,}/g, "/") };
+      }
+      if (id === "dotenv") {
+        return {
+          config(options: { path?: string }) {
+            loadedPath = options.path ?? null;
+            processBox.env.MCP_SERVICE_SECRET = "secret-loaded-from-dotenv";
+            return { parsed: { MCP_SERVICE_SECRET: processBox.env.MCP_SERVICE_SECRET } };
+          },
+        };
+      }
+      throw new Error(`unexpected require: ${id}`);
+    },
+  });
+  assert.equal(loadedPath, "/srv/ai-content/.env",
+    "ecosystem config loads the deployment .env before resolving process-backed secrets");
+  const worker = moduleBox.exports.apps?.find((entry) => entry.name === "mcp-video-worker");
+  assert.equal(worker?.env?.MCP_SERVICE_SECRET, "secret-loaded-from-dotenv",
+    "PM2 environment replacement cannot blank the MCP service secret stored in .env");
+}
+
+verifyEcosystemLoadsDotEnvContract();
 
 function verifyDeployReloadContract(): void {
   const deploy = readFileSync("deploy/deploy.sh", "utf8");
