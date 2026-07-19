@@ -177,11 +177,12 @@ export function Chip({ selected = false, style, onMouseEnter, onMouseLeave, ...r
 }
 
 /** Segmented control — เช่น ElevenLabs|Gemini, 1|2|3 ประโยค */
-export function Segmented<T extends string>({ options, value, onChange, style, semantics, id, ariaLabel }: {
+export function Segmented<T extends string>({ options, value, onChange, style, optionPadding, semantics, id, ariaLabel }: {
   options: { value: T; label: string; badge?: string; disabled?: boolean; title?: string }[];
   value: T;
   onChange: (v: T) => void;
   style?: React.CSSProperties;
+  optionPadding?: React.CSSProperties["padding"];
   semantics?: "tabs";
   id?: string;
   ariaLabel?: string;
@@ -230,7 +231,7 @@ export function Segmented<T extends string>({ options, value, onChange, style, s
             onKeyDown={(event) => handleTabKeyDown(event, index)}
             className="min-h-11 min-w-0 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9"
             style={{
-              padding: "6px 14px", borderRadius: radius.control - 3, border: "none",
+              padding: optionPadding ?? "6px 14px", borderRadius: radius.control - 3, border: "none",
               background: active ? color.gradientPrimary : "none",
               color: active ? "#fff" : color.textSecondary,
               font: `${active ? 500 : 400} 12.5px ${font.body}`,

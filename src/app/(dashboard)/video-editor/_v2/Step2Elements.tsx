@@ -259,6 +259,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             value={p.voiceEngine}
             onChange={p.setVoiceEngine}
             ariaLabel="ผู้ให้บริการเสียงพากย์"
+            optionPadding="6px clamp(7px, 2vw, 14px)"
             style={{ display: "grid", gridTemplateColumns: `repeat(${heroVoiceVisible ? 3 : 2},minmax(0,1fr))`, width: "100%" }}
             options={[
               { value: "gemini" as const, label: "Gemini" },
