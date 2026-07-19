@@ -1,6 +1,8 @@
 import { missingKeyError, missingAvatarError } from "@/lib/mcp/onboarding";
-import type { PipelineCaller } from "@/lib/mcp/pipeline-client";
+import { PipelineHttpError, type PipelineCaller } from "@/lib/mcp/pipeline-client";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
+import { classifyHttpStatus, isProviderErrorCode, toUserMessage, type ProviderErrorCode } from "@/lib/provider-errors";
+import type { AvatarProviderGenerateResult } from "@/lib/mcp/avatar-provider-resume";
 
 export type AvatarMode = "none" | "full" | "bookend" | "bookend-both";
 // HeyGen framing (how HeyGen frames the avatar in ITS render) — sent to generate-with-bg only.
@@ -54,14 +56,34 @@ export type AvatarPollOnce = {
   status: string;
   videoUrl: string | null;
   errorMsg: string | null;
+  errorCode?: ProviderErrorCode;
   retryAfterSec?: number;
 };
+
+type AvatarPollEndpointPayload = AvatarPollOnce & {
+  error?: { code?: string };
+};
+
+function normalizePollErrorCode(code: string | undefined): ProviderErrorCode | undefined {
+  if (code === "insufficient_credit") return "quota";
+  if (code === "invalid_key") return "invalid_key";
+  if (code === "not_found" || code === "provider_failed") return "fatal";
+  return isProviderErrorCode(code) ? code : undefined;
+}
 
 export async function pollAvatarOnce(
   caller: PipelineCaller,
   heygenVideoId: string,
 ): Promise<AvatarPollOnce> {
-  return caller.post<AvatarPollOnce>("/api/videos/poll-avatar", { videoId: heygenVideoId });
+  const result = await caller.post<AvatarPollEndpointPayload>("/api/videos/poll-avatar", { videoId: heygenVideoId });
+  const errorCode = normalizePollErrorCode(result.error?.code ?? result.errorCode);
+  return {
+    status: result.status,
+    videoUrl: result.videoUrl,
+    errorMsg: result.errorMsg,
+    ...(errorCode ? { errorCode } : {}),
+    ...(result.retryAfterSec ? { retryAfterSec: result.retryAfterSec } : {}),
+  };
 }
 
 export async function pollAvatar(
@@ -82,12 +104,43 @@ export async function pollAvatar(
   throw new Error("avatar generation timed out");
 }
 
-export async function generateAvatarVideo(caller: PipelineCaller, avatarId: string, audioUrl: string): Promise<string> {
-  const g = await caller.post<{ videoId: string }>("/api/heygen/generate-with-bg", {
-    audioUrl, avatarId, greenScreen: true,
-    scale: HEYGEN_FRAMING.scale, offsetX: HEYGEN_FRAMING.offsetX, offsetY: HEYGEN_FRAMING.offsetY,
-  });
-  return g.videoId;
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+export async function generateAvatarVideo(caller: PipelineCaller, avatarId: string, audioUrl: string): Promise<AvatarProviderGenerateResult> {
+  try {
+    const g = await caller.post<{ videoId: string }>("/api/heygen/generate-with-bg", {
+      audioUrl, avatarId, greenScreen: true,
+      scale: HEYGEN_FRAMING.scale, offsetX: HEYGEN_FRAMING.offsetX, offsetY: HEYGEN_FRAMING.offsetY,
+    }, { retries: 0 });
+    return g.videoId
+      ? { kind: "accepted", providerVideoId: g.videoId }
+      : { kind: "unknown", message: "HeyGen generate returned no video ID" };
+  } catch (error) {
+    if (!(error instanceof PipelineHttpError)) return { kind: "unknown" };
+    const body = record(error.body);
+    const rawCode = body?.code;
+    const code = isProviderErrorCode(rawCode)
+      ? rawCode
+      : classifyHttpStatus(error.status);
+    // A transport/5xx response cannot prove whether the paid generate was accepted.
+    if (code === "transient" || error.status >= 500) return { kind: "unknown" };
+    const message = typeof body?.userAction === "string"
+      ? body.userAction
+      : typeof body?.error === "string"
+        ? body.error
+        : toUserMessage(code);
+    return { kind: "rejected", code, message };
+  }
+}
+
+function acceptedVideoId(result: AvatarProviderGenerateResult): string {
+  if (result.kind === "accepted") return result.providerVideoId;
+  if (result.kind === "rejected") throw new Error(result.message);
+  throw new Error("avatar generate has unknown provider outcome - manual recovery required");
 }
 
 export interface AvatarComposeOpts {
@@ -159,10 +212,10 @@ export async function runAvatarComposite(
 
   // 2+3. generate + poll (intro, then tail for bookend-both)
   o.onStep?.("avatar");
-  const introUrl = await pollAvatar(caller, await generateAvatarVideo(caller, o.avatarId, prepared.introAudioUrl), { sleep: o.sleep });
+  const introUrl = await pollAvatar(caller, acceptedVideoId(await generateAvatarVideo(caller, o.avatarId, prepared.introAudioUrl)), { sleep: o.sleep });
   let tailAvatarUrl: string | undefined;
   if (o.avatarMode === "bookend-both" && prepared.tailAudioUrl) {
-    tailAvatarUrl = await pollAvatar(caller, await generateAvatarVideo(caller, o.avatarId, prepared.tailAudioUrl), { sleep: o.sleep });
+    tailAvatarUrl = await pollAvatar(caller, acceptedVideoId(await generateAvatarVideo(caller, o.avatarId, prepared.tailAudioUrl)), { sleep: o.sleep });
   }
 
   // 4. composite onto the base render (bg carries the full TTS audio)

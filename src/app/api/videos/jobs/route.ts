@@ -10,6 +10,7 @@ import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
 import { preflightElevenLabs, preflightPexels, pexelsStockMayBeUsed } from "@/lib/key-preflight";
+import { checkHeygenReadiness, toHeygenBlockedResponse } from "@/lib/heygen-readiness";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveKieImageAccess } from "@/lib/kie-image-guards";
@@ -343,6 +344,14 @@ export async function POST(req: Request) {
     const avatarLayout = avatar.kind === "ok"
       ? resolveAvatarLayout({}, await getAvatarPreset(user.id, avatar.avatarId))
       : null;
+    const heygenReadiness = avatar.kind === "ok" && user.heygenKey
+      ? await checkHeygenReadiness({ apiKey: decryptKey(user.heygenKey) })
+      : null;
+    if (heygenReadiness?.kind === "blocked") {
+      const blocked = toHeygenBlockedResponse(heygenReadiness);
+      return NextResponse.json(blocked.body, { status: blocked.status });
+    }
+    const heygenWarning = heygenReadiness?.kind === "unknown" ? heygenReadiness.message : undefined;
 
     // Quota + in-flight cap (shared worker, no global render queue)
     const q = await checkClipQuota(user.id);
@@ -452,6 +461,7 @@ export async function POST(req: Request) {
         status: "queued",
         idempotencyKey,
         idempotencyFingerprint,
+        ...(heygenWarning ? { warning: heygenWarning } : {}),
       });
     } catch (e) {
       if ((e as { code?: string })?.code === "P2002") {

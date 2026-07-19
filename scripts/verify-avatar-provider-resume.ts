@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   advanceAvatarProvider,
   type AvatarProviderAdvanceDeps,
+  type AvatarProviderGenerateResult,
 } from "../src/lib/mcp/avatar-provider-resume";
 import type { AvatarProviderCheckpointV1 } from "../src/lib/mcp/avatar-provider-checkpoint";
 
@@ -36,6 +37,10 @@ function checkpoint(
   };
 }
 
+function accepted(providerVideoId: string): AvatarProviderGenerateResult {
+  return { kind: "accepted", providerVideoId };
+}
+
 async function main() {
   // A persisted provider ID is polled, never generated again—even after a worker restart.
   let generateCalls = 0;
@@ -43,7 +48,7 @@ async function main() {
   const persisted: AvatarProviderCheckpointV1[] = [];
   const pendingDeps: AvatarProviderAdvanceDeps = {
     now: () => new Date("2026-07-13T09:20:00.000Z"),
-    generate: async () => { generateCalls++; return "unexpected"; },
+    generate: async () => { generateCalls++; return accepted("unexpected"); },
     poll: async () => ({ status: "processing", videoUrl: null, errorMsg: null }),
     composite: async () => { compositeCalls++; return "/api/renders/composite.mp4"; },
     persist: async (value) => { persisted.push(value); return true; },
@@ -76,15 +81,51 @@ async function main() {
   const fresh = await advanceAvatarProvider(checkpoint("intro_generate"), {
     ...pendingDeps,
     allowGenerate: true,
-    generate: async () => { generateCalls++; return "hg-intro"; },
+    generate: async () => { generateCalls++; return accepted("hg-intro"); },
   });
   assert.equal(fresh.kind, "waiting");
   assert.equal(fresh.kind === "waiting" ? fresh.checkpoint.avatar.introVideoId : null, "hg-intro");
   assert.equal(generateCalls, 1);
 
+  const quotaRejected = await advanceAvatarProvider(checkpoint("intro_generate"), {
+    ...pendingDeps,
+    allowGenerate: true,
+    generate: async () => ({
+      kind: "rejected",
+      code: "quota",
+      message: "เครดิต HeyGen ไม่เพียงพอสำหรับสร้าง Avatar",
+    }),
+  });
+  assert.equal(quotaRejected.kind, "failed");
+  assert.equal(quotaRejected.kind === "failed" ? quotaRejected.code : null, "quota");
+  assert.equal(quotaRejected.kind === "failed" ? quotaRejected.outcome : null, "definitive");
+
+  const transportLost = await advanceAvatarProvider(checkpoint("intro_generate"), {
+    ...pendingDeps,
+    allowGenerate: true,
+    generate: async () => { throw new Error("socket closed"); },
+  });
+  assert.equal(transportLost.kind, "failed");
+  assert.equal(transportLost.kind === "failed" ? transportLost.outcome : null, "unknown");
+  assert.match(transportLost.kind === "failed" ? transportLost.message : "", /unknown provider outcome/);
+
+  const pollQuotaRejected = await advanceAvatarProvider(checkpoint("intro_wait"), {
+    ...pendingDeps,
+    poll: async () => ({
+      status: "failed",
+      videoUrl: null,
+      errorMsg: "เครดิต HeyGen ไม่เพียงพอ",
+      errorCode: "quota",
+    }),
+  });
+  assert.equal(pollQuotaRejected.kind, "failed");
+  assert.equal(pollQuotaRejected.kind === "failed" ? pollQuotaRejected.code : null, "quota");
+  assert.equal(pollQuotaRejected.kind === "failed" ? pollQuotaRejected.provider : null, "heygen");
+  assert.equal(pollQuotaRejected.kind === "failed" ? pollQuotaRejected.outcome : null, "definitive");
+
   const stranded = await advanceAvatarProvider(checkpoint("intro_generate"), {
     ...pendingDeps,
-    generate: async () => { generateCalls++; return "must-not-run"; },
+    generate: async () => { generateCalls++; return accepted("must-not-run"); },
   });
   assert.equal(stranded.kind, "failed");
   assert.match(stranded.kind === "failed" ? stranded.message : "", /unknown provider outcome/);
@@ -100,7 +141,7 @@ async function main() {
     generate: async (_avatarId, audioUrl) => {
       generateCalls++;
       assert.equal(audioUrl, "/api/renders/tail.mp3");
-      return "hg-tail";
+      return accepted("hg-tail");
     },
     poll: async (id) => {
       assert.equal(id, "hg-intro");
@@ -116,7 +157,7 @@ async function main() {
   assert.ok(tailWaiting);
   const afterRestart = await advanceAvatarProvider(tailWaiting, {
     ...pendingDeps,
-    generate: async () => { generateCalls++; return "duplicate"; },
+    generate: async () => { generateCalls++; return accepted("duplicate"); },
     poll: async (id) => {
       assert.equal(id, "hg-tail");
       return { status: "processing", videoUrl: null, errorMsg: null };

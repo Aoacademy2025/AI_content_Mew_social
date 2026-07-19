@@ -12,6 +12,18 @@
 
 export type ProviderErrorCode = "invalid_key" | "quota" | "rate_limit" | "transient" | "fatal";
 
+const PROVIDER_ERROR_CODES = new Set<ProviderErrorCode>([
+  "invalid_key",
+  "quota",
+  "rate_limit",
+  "transient",
+  "fatal",
+]);
+
+export function isProviderErrorCode(value: unknown): value is ProviderErrorCode {
+  return typeof value === "string" && PROVIDER_ERROR_CODES.has(value as ProviderErrorCode);
+}
+
 export interface ProviderError extends Error {
   /** Taxonomy bucket (design doc §8). */
   code: ProviderErrorCode;

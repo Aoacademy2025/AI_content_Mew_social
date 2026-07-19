@@ -1,15 +1,22 @@
 import type { AvatarProviderCheckpointV1 } from "@/lib/mcp/avatar-provider-checkpoint";
+import type { ProviderErrorCode } from "@/lib/provider-errors";
 
 export interface AvatarProviderPollResult {
   status: string;
   videoUrl: string | null;
   errorMsg: string | null;
+  errorCode?: ProviderErrorCode;
   retryAfterSec?: number;
 }
 
+export type AvatarProviderGenerateResult =
+  | { kind: "accepted"; providerVideoId: string }
+  | { kind: "rejected"; code: ProviderErrorCode; message: string }
+  | { kind: "unknown"; message?: string };
+
 export interface AvatarProviderAdvanceDeps {
   now: () => Date;
-  generate: (avatarId: string, audioUrl: string) => Promise<string>;
+  generate: (avatarId: string, audioUrl: string) => Promise<AvatarProviderGenerateResult>;
   poll: (providerVideoId: string) => Promise<AvatarProviderPollResult>;
   composite: (checkpoint: AvatarProviderCheckpointV1) => Promise<string>;
   /** Guarded persistence: false means cancellation/another terminal transition won. */
@@ -21,7 +28,13 @@ export interface AvatarProviderAdvanceDeps {
 export type AvatarProviderAdvanceResult =
   | { kind: "waiting"; checkpoint: AvatarProviderCheckpointV1; retryAfterSec?: number }
   | { kind: "ready"; checkpoint: AvatarProviderCheckpointV1; compositeUrl: string }
-  | { kind: "failed"; message: string };
+  | {
+      kind: "failed";
+      message: string;
+      code?: ProviderErrorCode;
+      provider?: "heygen";
+      outcome?: "definitive" | "unknown";
+    };
 
 const GUARD_REJECTED = "provider checkpoint guard rejected";
 const UNKNOWN_GENERATE_OUTCOME = "avatar generate has unknown provider outcome - manual recovery required";
@@ -49,13 +62,26 @@ async function generatePhase(
   const audioUrl = which === "intro" ? checkpoint.avatar.introAudioUrl : checkpoint.avatar.tailAudioUrl;
   if (!audioUrl) return { kind: "failed", message: `avatar checkpoint missing ${which} audio` };
 
-  let providerVideoId: string;
+  let generated: AvatarProviderGenerateResult;
   try {
-    providerVideoId = await deps.generate(checkpoint.avatar.id, audioUrl);
+    generated = await deps.generate(checkpoint.avatar.id, audioUrl);
   } catch {
     // The external request may have spent credits even when its response was lost. Never retry.
-    return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME };
+    return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME, provider: "heygen", outcome: "unknown" };
   }
+  if (generated.kind === "rejected") {
+    return {
+      kind: "failed",
+      message: generated.message,
+      code: generated.code,
+      provider: "heygen",
+      outcome: "definitive",
+    };
+  }
+  if (generated.kind === "unknown") {
+    return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME, provider: "heygen", outcome: "unknown" };
+  }
+  const providerVideoId = generated.providerVideoId;
   if (!providerVideoId) return { kind: "failed", message: UNKNOWN_GENERATE_OUTCOME };
 
   const waiting = which === "intro"
@@ -95,7 +121,13 @@ async function pollPhase(
     return { kind: "waiting", checkpoint };
   }
   if (polled.status === "failed") {
-    return { kind: "failed", message: `avatar generation failed: ${polled.errorMsg ?? "unknown"}` };
+    return {
+      kind: "failed",
+      message: `avatar generation failed: ${polled.errorMsg ?? "unknown"}`,
+      code: polled.errorCode ?? "fatal",
+      provider: "heygen",
+      outcome: "definitive",
+    };
   }
   if (polled.status !== "completed" || !polled.videoUrl) {
     return {
