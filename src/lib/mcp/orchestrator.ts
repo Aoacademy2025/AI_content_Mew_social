@@ -137,6 +137,73 @@ interface CreateInput {
   previewMode?: boolean;
 }
 
+type SourceVideoJob = {
+  id: string;
+  userId: string;
+  inputJson: string;
+  outputJson: string | null;
+};
+
+function parseCreateInput(inputJson: string): CreateInput | null {
+  try {
+    const value = JSON.parse(inputJson) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as CreateInput
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Canonical Gallery voice identity: the exact per-job voice wins over user defaults. */
+function galleryVoiceModelForInput(
+  input: CreateInput,
+  user: User,
+  provider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider),
+): string {
+  if (provider === "elevenlabs") {
+    return input.voiceId ?? user.elevenlabsVoiceId ?? "elevenlabs";
+  }
+  if (provider === "omnivoice") return input.omniVoiceId ?? "voice_01";
+  return input.geminiVoiceName ?? user.geminiVoiceName ?? "gemini";
+}
+
+/**
+ * New previews persist voiceModel directly. For previews created before that field existed,
+ * recover it from the server-owned source input. Old b-roll re-renders may form a short chain,
+ * so follow only same-owner source jobs with a strict depth/cycle guard.
+ */
+async function resolveExportGalleryVoiceModel(
+  initialSource: SourceVideoJob,
+  userId: string,
+  user: User,
+): Promise<string> {
+  let source: SourceVideoJob | null = initialSource;
+  const seen = new Set<string>();
+
+  for (let depth = 0; source && depth < 8 && !seen.has(source.id); depth++) {
+    seen.add(source.id);
+    const previewVoiceModel = parseVideoJobOutput(source.outputJson)?.preview?.voiceModel;
+    if (typeof previewVoiceModel === "string" && previewVoiceModel.trim()) {
+      return previewVoiceModel;
+    }
+
+    const sourceInput = parseCreateInput(source.inputJson);
+    if (!sourceInput) return "unknown";
+    if (sourceInput.mode === "upload") return "original-audio";
+    if (sourceInput.mode !== "broll-rerender" || !sourceInput.sourceJobId) {
+      return galleryVoiceModelForInput(sourceInput, user);
+    }
+
+    source = await prisma.videoJob.findFirst({
+      where: { id: sourceInput.sourceJobId, userId },
+      select: { id: true, userId: true, inputJson: true, outputJson: true },
+    });
+  }
+
+  return "unknown";
+}
+
 export type LogoExportDurationBucket =
   | "under-30s"
   | "30-60s"
@@ -442,6 +509,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             captions,
             config: checkpoint.baseConfig,
             voiceUrl: checkpoint.voiceUrl,
+            voiceModel: galleryVoiceModelForInput(input, user, provider),
             audioDurationMs: checkpoint.audioDurationMs,
             avatarModel: checkpoint.avatar.id,
             avatarVideoUrl,
@@ -464,11 +532,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         script: input.script.trim() || null,
         avatarModel: checkpoint.avatar.id,
         avatarVideoUrl,
-        voiceModel: provider === "elevenlabs"
-          ? (input.voiceId ?? "elevenlabs")
-          : provider === "omnivoice"
-            ? (input.omniVoiceId ?? "voice_01")
-            : (user.geminiVoiceName ?? "gemini"),
+        voiceModel: galleryVoiceModelForInput(input, user, provider),
         sceneCount: captions.length,
         renderConfig: checkpoint.baseConfig,
         status: "PROCESSING",
@@ -664,6 +728,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const parsed = parseVideoJobOutput(src.outputJson);
       const preview = parsed?.preview;
       if (!preview) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับส่งออก"); return; }
+      const voiceModel = await resolveExportGalleryVoiceModel(src, userId, user);
 
       await step("burn", 20);
       const burn = await caller.post<{ jobId: string }>("/api/videos/render", {
@@ -682,9 +747,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         videoUrl: burnedUrl,
         ...(job.projectId ? { projectId: job.projectId } : {}),
         audioUrl: preview.voiceUrl ?? null,
+        avatarModel: preview.avatarModel ?? "none",
+        avatarVideoUrl: preview.avatarVideoUrl ?? null,
+        voiceModel,
         thumbnail: null,
         script: input.exportScript?.trim() || preview.fullText || null,
         sceneCount: input.exportSceneCount ?? preview.captions?.length ?? 1,
+        renderConfig: preview.config,
         status: "COMPLETED",
       });
       const videoId = saved.videoId ?? saved.id;
@@ -826,6 +895,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           captions: upCaps,
           config: upBaseConfig,
           voiceUrl: input.clipUrl,
+          voiceModel: "original-audio",
           audioDurationMs: upDurMs,
           avatarModel: "upload-cutaway",
           avatarVideoUrl: input.clipUrl,
@@ -1098,6 +1168,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           captions,
           config: baseConfig,
           voiceUrl: tts.voiceUrl,
+          voiceModel: galleryVoiceModelForInput(input, user, provider),
           audioDurationMs: durMs,
           avatarModel,
           avatarVideoUrl,
@@ -1119,11 +1190,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 7. Create Video row (PROCESSING)
     const created = await caller.post<{ id: string }>("/api/videos", {
       videoUrl: finalBase, audioUrl: tts.voiceUrl, thumbnail: null, script: input.script.trim() || null,
-      avatarModel, avatarVideoUrl, voiceModel: provider === "elevenlabs"
-        ? (input.voiceId ?? "elevenlabs")
-        : provider === "omnivoice"
-          ? (input.omniVoiceId ?? "voice_01")
-          : (user.geminiVoiceName ?? "gemini"),
+      avatarModel, avatarVideoUrl, voiceModel: galleryVoiceModelForInput(input, user, provider),
       sceneCount: captions.length, renderConfig: baseConfig, status: "PROCESSING",
     });
 
