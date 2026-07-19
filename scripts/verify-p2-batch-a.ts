@@ -151,8 +151,8 @@ function verifyDeployReloadContract(): void {
   const deploy = readFileSync("deploy/deploy.sh", "utf8");
   assert.match(
     deploy,
-    /restart_from_ecosystem\(\)[\s\S]*pm2 restart ecosystem\.config\.js --only "\$process_name"[\s\S]*pm2 start ecosystem\.config\.js --only "\$process_name"/,
-    "deploy reloads existing processes and starts missing processes from the checked-in ecosystem file",
+    /restart_from_ecosystem\(\)[\s\S]*pm2 restart ecosystem\.config\.js --only "\$process_name" --update-env[\s\S]*pm2 start ecosystem\.config\.js --only "\$process_name" --update-env/,
+    "deploy reloads existing processes and starts missing processes from the checked-in ecosystem file with environment replacement",
   );
   for (const processName of ["$APP_NAME", "$WORKER_NAME", "$RENDER_WORKER_NAME"]) {
     assert.ok(

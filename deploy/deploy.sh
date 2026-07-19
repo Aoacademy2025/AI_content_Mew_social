@@ -146,11 +146,12 @@ echo "=== [6/6] Restart PM2 ==="
 restart_from_ecosystem() {
   local process_name="$1"
   if pm2 describe "$process_name" > /dev/null 2>&1; then
-    # Supplying the ecosystem file is load-bearing: a name-only restart preserves
-    # PM2's old environment and silently ignores checked-in runtime config changes.
-    pm2 restart ecosystem.config.js --only "$process_name"
+    # Both pieces are load-bearing on the production PM2 version: the ecosystem
+    # file supplies the reviewed values and --update-env replaces the saved env.
+    # Without the flag PM2 warns and keeps stale values even though the file is passed.
+    pm2 restart ecosystem.config.js --only "$process_name" --update-env
   else
-    pm2 start ecosystem.config.js --only "$process_name"
+    pm2 start ecosystem.config.js --only "$process_name" --update-env
   fi
 }
 

@@ -55,9 +55,9 @@ module.exports = {
         // RenderJob (returns jobId) instead of rendering in-process; the
         // render-worker app below drains it. ENABLED + validated on prod 2026-06-19
         // (first live queue render OK; web stays ~0.5GB, isolated). ecosystem env
-        // SHADOWS .env — apply changes by restarting against the checked-in file:
-        // `pm2 restart ecosystem.config.js --only ai-content`. A name-only restart
-        // does not re-read this file.
+        // SHADOWS .env — apply changes by replacing the saved environment from the
+        // checked-in file: `pm2 restart ecosystem.config.js --only ai-content --update-env`.
+        // A name-only restart, or omitting --update-env on production PM2, keeps stale values.
         // To revert to legacy: set "0" AND restore the 12288 heap + 13G above.
         RENDER_VIA_QUEUE: "1",
       },
@@ -212,7 +212,7 @@ module.exports = {
         // Clamp 1..4 lives in the script (scripts/mcp-video-worker.ts), not here.
         // ecosystem env SHADOWS .env, and a plain `pm2 restart mcp-video-worker` keeps
         // the OLD env; to apply a change here, restart against the FILE:
-        // `pm2 restart ecosystem.config.js --only mcp-video-worker`.
+        // `pm2 restart ecosystem.config.js --only mcp-video-worker --update-env`.
         // Rollback = set back to "1" and restart the same way. Single worker only (NOT
         // instances:2 — boot-recovery has no per-worker heartbeat guard; see the worker script).
         MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "2",
