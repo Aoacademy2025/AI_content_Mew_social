@@ -45,6 +45,8 @@ import { planCutaway } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { buildDegradedTtsTiming } from "@/lib/tts-timing";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
+import type { StockProvider } from "@/lib/key-preflight";
+import { audioDurationLimitViolation } from "@/lib/plan-limits";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -96,6 +98,8 @@ interface CreateInput {
   kieModel?: string;
   /** แหล่งภาพ Auto Mix (Beta, admin-gated at the web route) */
   autoMixProviders?: string[];
+  /** Providers whose keys passed submit-time preflight (unknown remains fail-open). */
+  stockProviders?: StockProvider[];
   /** Editor v2 mix-preset weights (D5.1) — validated at the web route; fetch-stock
    *  honors them only under MANAGED_KIE and force-zeros ai for unauthorized users. */
   autoMixWeights?: { video: number; photo: number; ai: number };
@@ -175,6 +179,16 @@ function brollWindowCaptions(windows: BrollWindow[]): OrchCaption[] {
     endMs: w.endMs,
     tag: i === 0 ? "hook" : "body",
   }));
+}
+
+function durationFromTtsTiming(timing: unknown): number {
+  if (!timing || typeof timing !== "object" || !Array.isArray((timing as { segments?: unknown }).segments)) return 0;
+  const segments = (timing as { segments: Array<{ startMs?: unknown; durationMs?: unknown }> }).segments;
+  return Math.round(segments.reduce((latest, segment) => {
+    const startMs = typeof segment?.startMs === "number" && Number.isFinite(segment.startMs) ? segment.startMs : 0;
+    const durationMs = typeof segment?.durationMs === "number" && Number.isFinite(segment.durationMs) ? segment.durationMs : 0;
+    return Math.max(latest, startMs + durationMs);
+  }, 0));
 }
 
 function alignBrollWindowsToKeywords(
@@ -743,6 +757,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ...(input.kieModel ? { kieModel: input.kieModel } : {}),
           ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
           ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
+          ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
         },
         upAiGen ? { retries: 0 } : undefined,
       );
@@ -808,7 +823,29 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const tts = provider === "elevenlabs"
       ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts", { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" })
       : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
-    const audioDurationMs = tts.audioDurationMs ?? 0;
+    let audioDurationMs = typeof tts.audioDurationMs === "number" && tts.audioDurationMs > 0
+      ? Math.round(tts.audioDurationMs)
+      : durationFromTtsTiming(tts.timing);
+    if (audioDurationMs <= 0) {
+      const measured = await caller.post<{ durationMs?: number }>(
+        "/api/videos/audio-duration",
+        { audioUrl: tts.voiceUrl },
+      );
+      audioDurationMs = typeof measured.durationMs === "number" && measured.durationMs > 0
+        ? Math.round(measured.durationMs)
+        : 0;
+    }
+    if (audioDurationMs <= 0) {
+      throw new Error("ตรวจสอบความยาวเสียงไม่ได้ — กรุณาลองสร้างใหม่");
+    }
+
+    // Exact duration is known now. Stop before captions, keyword LLM, stock downloads,
+    // rendering, or HeyGen can spend more time/quota; /api/videos/render keeps its own
+    // authoritative backstop for direct callers.
+    const durationViolation = audioDurationLimitViolation(audioDurationMs, user.plan);
+    if (durationViolation) {
+      throw new Error(`${durationViolation.message} — ${durationViolation.userAction}`);
+    }
 
     // 2. Captions (in-process, reuse the pure editor helper)
     await step("captions", 25);
@@ -912,6 +949,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...(input.kieModel ? { kieModel: input.kieModel } : {}),
         ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
         ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
+        ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
       },
       aiGenSource ? { retries: 0 } : undefined,
     );

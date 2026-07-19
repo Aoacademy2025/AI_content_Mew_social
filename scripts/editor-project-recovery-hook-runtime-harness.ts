@@ -93,6 +93,10 @@ class SharedEditorServer {
     return value ? structuredClone(value) : null;
   }
 
+  list(): JsonRecord[] {
+    return [...this.projects.values()].map((value) => structuredClone(value));
+  }
+
   patch(projectId: string, body: JsonRecord): ResponseLike {
     const current = this.projects.get(projectId);
     if (!current) return response(404, { error: "not_found" });
@@ -195,6 +199,11 @@ class FetchMock {
       this.server?.setProject(id, 0, body.draft as JsonRecord);
       return this.honorAbort(Promise.resolve(response(200, {
         project: { id, draftRevision: 0, draft: body.draft, status: "draft" },
+      })), init.signal);
+    }
+    if (url === "/api/editor-projects" && method === "GET" && this.server) {
+      return this.honorAbort(Promise.resolve(response(200, {
+        projects: this.server.list(),
       })), init.signal);
     }
     if (url.startsWith("/api/editor-projects/") && method === "GET" && this.server) {
@@ -1395,6 +1404,144 @@ async function projectCreationFailureFailsClosed(): Promise<void> {
   }, "a non-abort server-project creation failure is visible and fail-closed");
 }
 
+async function staleStoredPointerFallsBackToActiveProject(): Promise<void> {
+  const storage = new MemoryStorage();
+  storage.setItem("editor-v2-project-id", "archived-stale");
+  storage.setItem("editor-v2-project", JSON.stringify({ script: "stale local" }));
+  const server = new SharedEditorServer();
+  server.setProject("active-project", 4, { script: "active server draft" });
+  const harness = createHarness({
+    storage,
+    server,
+    fetchMe: Promise.resolve({ id: "account-a", role: "ADMIN", plan: "PRO" }),
+  });
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.deepEqual({
+    initialization: harness.runner.current.projectInitialization,
+    ready: harness.runner.current.projectReady,
+    recovery: harness.runner.current.recovery.status,
+    projectId: harness.runner.current.projectId,
+    script: harness.runner.current.script,
+    scopedPointer: storage.getItem("editor-v2-project-id:account-a"),
+    legacyPointer: storage.getItem("editor-v2-project-id"),
+  }, {
+    initialization: "ready",
+    ready: true,
+    recovery: "none",
+    projectId: "active-project",
+    script: "active server draft",
+    scopedPointer: "active-project",
+    legacyPointer: null,
+  }, "a stale stored pointer self-heals to the account's active project");
+  assert.equal(postBodies(harness.fetchMock).length, 0, "stale recovery never auto-creates a project");
+}
+
+async function staleStoredPointerWithoutActiveProjectBecomesEmpty(): Promise<void> {
+  const storage = new MemoryStorage();
+  storage.setItem("editor-v2-project-id", "archived-stale");
+  const harness = createHarness({
+    storage,
+    server: new SharedEditorServer(),
+    fetchMe: Promise.resolve({ id: "account-a", role: "ADMIN", plan: "PRO" }),
+  });
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.deepEqual({
+    initialization: harness.runner.current.projectInitialization,
+    ready: harness.runner.current.projectReady,
+    recovery: harness.runner.current.recovery.status,
+    projectId: harness.runner.current.projectId,
+    posts: postBodies(harness.fetchMock).length,
+  }, {
+    initialization: "empty",
+    ready: false,
+    recovery: "none",
+    projectId: null,
+    posts: 0,
+  }, "a stale pointer with no active project enters an explicit empty state");
+}
+
+async function explicitMissingProjectFailsClosed(): Promise<void> {
+  const storage = new MemoryStorage();
+  storage.setItem("editor-v2-project-id", "stored-project");
+  const harness = createHarness({
+    search: "?projectId=missing-explicit",
+    storage,
+    server: new SharedEditorServer(),
+    fetchMe: Promise.resolve({ id: "account-a", role: "ADMIN", plan: "PRO" }),
+  });
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.recovery.status, "load-error");
+  assert.equal(harness.runner.current.projectId, "missing-explicit");
+  assert.equal(storage.getItem("editor-v2-project-id"), "stored-project",
+    "an explicit URL 404 cannot silently replace or clear the user's stored project");
+  assert.equal(harness.fetchMock.calls.some((call) => call.url === "/api/editor-projects"), false,
+    "an explicit URL 404 never falls back to an unrelated project");
+}
+
+async function storedProjectServerErrorRetainsPointer(): Promise<void> {
+  const storage = new MemoryStorage();
+  storage.setItem("editor-v2-project-id", "temporarily-unavailable");
+  const harness = createHarness({
+    storage,
+    fetchMe: Promise.resolve({ id: "account-a", role: "ADMIN", plan: "PRO" }),
+  });
+  harness.fetchMock.enqueue("GET", editorUrl("temporarily-unavailable"), response(503, { error: "down" }));
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.recovery.status, "load-error");
+  assert.equal(storage.getItem("editor-v2-project-id"), "temporarily-unavailable",
+    "5xx keeps the pointer so Retry can reopen the same project");
+}
+
+async function stalePointerListFailureRetainsRetryTarget(): Promise<void> {
+  const storage = new MemoryStorage();
+  storage.setItem("editor-v2-project-id", "stale-list-retry");
+  const harness = createHarness({ storage });
+  harness.fetchMock.enqueue("GET", editorUrl("stale-list-retry"), response(404, { error: "not_found" }));
+  harness.fetchMock.enqueue("GET", "/api/editor-projects", response(503, { error: "down" }));
+  harness.runner.mount();
+  await settle(harness.runner);
+  assert.equal(harness.runner.current.recovery.status, "load-error");
+  assert.equal(storage.getItem("editor-v2-project-id"), "stale-list-retry",
+    "a failed fallback list keeps the stale pointer solely as Retry provenance");
+  assert.equal(postBodies(harness.fetchMock).length, 0);
+}
+
+async function stalePointerSkipsProjectArchivedDuringFallback(): Promise<void> {
+  const storage = new MemoryStorage();
+  storage.setItem("editor-v2-project-id", "stale-race");
+  const harness = createHarness({ storage });
+  harness.fetchMock.enqueue("GET", editorUrl("stale-race"), response(404, { error: "not_found" }));
+  harness.fetchMock.enqueue("GET", "/api/editor-projects", response(200, {
+    projects: [
+      project("archived-during-fallback", 1, { script: "gone" }),
+      project("still-active", 2, { script: "survivor" }),
+    ],
+  }));
+  harness.fetchMock.enqueue("GET", editorUrl("archived-during-fallback"), response(404, { error: "not_found" }));
+  harness.fetchMock.enqueue("GET", editorUrl("still-active"), response(200, {
+    project: project("still-active", 2, { script: "survivor" }),
+  }));
+  harness.runner.mount();
+  await settle(harness.runner, 32);
+  assert.deepEqual({
+    projectId: harness.runner.current.projectId,
+    ready: harness.runner.current.projectReady,
+    initialization: harness.runner.current.projectInitialization,
+    recovery: harness.runner.current.recovery.status,
+    script: harness.runner.current.script,
+  }, {
+    projectId: "still-active",
+    ready: true,
+    initialization: "ready",
+    recovery: "none",
+    script: "survivor",
+  });
+}
+
 async function resetDuringProjectGet(): Promise<void> {
   const getA = deferred<ResponseLike>();
   const brand = deferred<ResponseLike>();
@@ -2391,6 +2538,12 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["blank-bootstrap-unmount", unmountWhileBlankBootstrapAwaitsDefaults],
     ["account-default-failure", accountDefaultFailureFailsClosed],
     ["project-creation-failure", projectCreationFailureFailsClosed],
+    ["stale-stored-pointer-fallback", staleStoredPointerFallsBackToActiveProject],
+    ["stale-stored-pointer-empty", staleStoredPointerWithoutActiveProjectBecomesEmpty],
+    ["explicit-missing-project", explicitMissingProjectFailsClosed],
+    ["stored-project-5xx-retains-pointer", storedProjectServerErrorRetainsPointer],
+    ["stale-pointer-list-failure-retains-retry", stalePointerListFailureRetainsRetryTarget],
+    ["stale-pointer-fallback-race", stalePointerSkipsProjectArchivedDuringFallback],
     ["reset-during-GET", resetDuringProjectGet],
     ["reset-unmount-during-brand", unmountWhileResetAwaitsBrandAssets],
     ["reset-unmount-during-POST", unmountWhileResetPostIsPending],

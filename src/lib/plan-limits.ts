@@ -98,3 +98,37 @@ export function nextPlanFor(plan: string): "PRO" | "BUSINESS" | null {
 export function durationCapSecFor(plan: string): number {
   return limitsForPlan(plan).durationSec;
 }
+
+export interface AudioDurationLimitViolation {
+  code: "duration_exceeded";
+  message: string;
+  userAction: string;
+  plan: string;
+  neededPlan: "PRO" | "BUSINESS" | null;
+  durationSec: number;
+  capSec: number;
+}
+
+/** Exact post-TTS duration gate shared by background pipelines and route backstops. */
+export function audioDurationLimitViolation(
+  audioDurationMs: number,
+  plan: string,
+): AudioDurationLimitViolation | null {
+  if (!Number.isFinite(audioDurationMs) || audioDurationMs <= 0) return null;
+  const durationSec = audioDurationMs / 1000;
+  const capSec = durationCapSecFor(plan);
+  if (durationSec <= capSec) return null;
+  const neededPlan = nextPlanFor(plan);
+  const planLabel = PLAN_LABEL[plan] ?? plan;
+  return {
+    code: "duration_exceeded",
+    message: `คลิปยาว ${(durationSec / 60).toFixed(1)} นาที เกินเพดานแผน ${planLabel} (${capSec / 60} นาที/คลิป)`,
+    userAction: neededPlan
+      ? `อัปเกรดเป็น ${PLAN_LABEL[neededPlan]} (รองรับสูงสุด ${durationCapSecFor(neededPlan) / 60} นาที/คลิป) หรือตัดคลิปให้สั้นลง`
+      : "ตัดคลิปให้สั้นลง",
+    plan,
+    neededPlan,
+    durationSec,
+    capSec,
+  };
+}

@@ -9,7 +9,13 @@ import {
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
-import { preflightElevenLabs, preflightPexels, pexelsStockMayBeUsed } from "@/lib/key-preflight";
+import {
+  preflightElevenLabs,
+  preflightStockProviders,
+  stockVideoProvidersMayBeUsed,
+  type PreflightBlock,
+  type StockProvider,
+} from "@/lib/key-preflight";
 import { checkHeygenReadiness, toHeygenBlockedResponse } from "@/lib/heygen-readiness";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
@@ -325,7 +331,7 @@ export async function POST(req: Request) {
     // ElevenLabs VALIDITY preflight (Task 7, 2026-07-16 stability audit) — see the
     // combined preflight block below (after stockSource is resolved) for the full
     // rationale and the Pexels half, which needs stockSource to gate correctly.
-    const preflightChecks: Promise<{ key: "elevenlabs" | "pexels"; message: string } | null>[] = [];
+    const preflightChecks: Promise<PreflightBlock | null>[] = [];
     if (useEleven && user.elevenlabsKey) preflightChecks.push(preflightElevenLabs(decryptKey(user.elevenlabsKey)));
 
     // Avatar (optional) — same resolver as MCP; layout falls back to the saved preset.
@@ -403,19 +409,29 @@ export async function POST(req: Request) {
     //  - kie-image never touches Pexels/Pixabay at all.
     //  - auto-mix only touches them when the "video" bucket is enabled (default on;
     //    off only if the caller explicitly excluded it via autoMixProviders).
-    //  - Pexels itself is only checked when it's the user's SOLE video-stock source —
-    //    with a Pixabay key also set, fetch-stock already degrades gracefully around a
-    //    broken Pexels key (see fetch-stock's stockProviderError handling), so blocking
-    //    here would reject jobs that would otherwise succeed.
-    const pexelsMayBeUsed = pexelsStockMayBeUsed({ stockSource: requestedSource, autoMixProviders });
-    if (pexelsMayBeUsed && user.pexelsKey && !user.pixabayKey) {
-      preflightChecks.push(preflightPexels(decryptKey(user.pexelsKey)));
-    }
+    // Every configured provider is checked. A confirmed-bad provider is excluded from
+    // this job when another provider remains; known-bad keys can therefore never become a
+    // late stock-stage failure, while a valid backup still lets the job proceed.
+    const stockVideoMayBeUsed = stockVideoProvidersMayBeUsed({ stockSource: requestedSource, autoMixProviders });
+    let stockProviders: StockProvider[] | undefined;
+    const stockPreflightPromise = stockVideoMayBeUsed
+      ? preflightStockProviders({
+          pexelsKey: user.pexelsKey ? decryptKey(user.pexelsKey) : null,
+          pixabayKey: user.pixabayKey ? decryptKey(user.pixabayKey) : null,
+        })
+      : null;
     if (preflightChecks.length) {
-      const blocks = (await Promise.all(preflightChecks)).filter((b): b is { key: "elevenlabs" | "pexels"; message: string } => b !== null);
+      const blocks = (await Promise.all(preflightChecks)).filter((b): b is PreflightBlock => b !== null);
       if (blocks[0]) {
         return NextResponse.json({ error: "invalid_key", missingKey: blocks[0].key, message: blocks[0].message }, { status: 400 });
       }
+    }
+    if (stockPreflightPromise) {
+      const stockPreflight = await stockPreflightPromise;
+      if (stockPreflight.block) {
+        return NextResponse.json({ error: "invalid_key", missingKey: stockPreflight.block.key, message: stockPreflight.block.message }, { status: 400 });
+      }
+      stockProviders = stockPreflight.providers;
     }
 
     const subtitleMode = typeof body.subtitleMode === "string" && SUB_MODES.has(body.subtitleMode) ? body.subtitleMode : undefined;
@@ -444,6 +460,7 @@ export async function POST(req: Request) {
           ...(kieModel ? { kieModel } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),
           ...(autoMixWeights ? { autoMixWeights } : {}),
+          ...(stockProviders?.length ? { stockProviders } : {}),
           ...(subtitleMode ? { subtitleMode } : {}),
           ...(subtitlePosition ? { subtitlePosition } : {}),
         },

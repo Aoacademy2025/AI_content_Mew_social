@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { decryptKey } from "@/lib/key-crypto";
-import { testElevenLabsKey, testPexelsKey } from "@/lib/key-preflight";
+import { testElevenLabsKey, testPexelsKey, testPixabayKey } from "@/lib/key-preflight";
 
 type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 
@@ -114,15 +114,8 @@ async function testPexels(key: string): Promise<{ ok: boolean; message: string }
 }
 
 async function testPixabay(key: string): Promise<{ ok: boolean; message: string }> {
-  try {
-    const res = await fetch(`https://pixabay.com/api/videos/?key=${key}&q=nature&per_page=3`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.hits !== undefined) return { ok: true, message: "Pixabay key ใช้งานได้" };
-    }
-    if (res.status === 400 || res.status === 401) return { ok: false, message: "Key ไม่ถูกต้อง" };
-    return { ok: false, message: `Error ${res.status}` };
-  } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ Pixabay ได้" }; }
+  const r = await testPixabayKey(key, SETTINGS_TEST_TIMEOUT_MS);
+  return { ok: r.ok, message: r.message };
 }
 
 // kie.ai personal API key — เช็คผ่าน /chat/credit (endpoint เบาๆ ใช้ตรวจ auth ได้)

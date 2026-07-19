@@ -161,6 +161,74 @@ async function main() {
     ok(typeof out?.preview?.config === "object" && out?.preview?.config !== null, "A: config present");
   }
 
+  // ── P1. exact post-TTS duration guard: PRO 361s must fail before any downstream
+  // captions/keyword/stock/render work starts. ───────────────────────────────
+  {
+    const log: CallLog[] = [];
+    const base = makeStubCaller(log);
+    const overCapCaller = {
+      ...base,
+      post: async <T,>(path: string, body: unknown): Promise<T> => {
+        if (path === "/api/videos/tts-gemini") {
+          log.push({ method: "POST", path, body });
+          return { voiceUrl: "/api/voices/over-cap.m4a", audioDurationMs: 361_000, timing: TIMING } as T;
+        }
+        return base.post<T>(path, body);
+      },
+    };
+    const job = await createProcessingVideoJob("u-preview", {
+      script: SCRIPT,
+      previewMode: true,
+      voiceProvider: "gemini",
+    });
+    await runOrchestrator(job.id, "u-preview", {
+      caller: overCapCaller,
+      refundOneClip: async () => {},
+      sleep: async () => {},
+    });
+    const failed = await prisma.videoJob.findUnique({ where: { id: job.id } });
+    ok(failed?.status === "failed", `P1-duration: PRO 361s is failed (got ${failed?.status})`);
+    ok(failed?.errorMessage?.includes("เกินเพดานแผน Pro") === true, "P1-duration: user-facing plan message is preserved");
+    ok(!log.some((c) => c.path === "/api/videos/extract-keywords"), "P1-duration: keywords never start");
+    ok(!log.some((c) => c.path === "/api/videos/fetch-stock"), "P1-duration: stock never starts");
+    ok(!log.some((c) => c.path === "/api/videos/render"), "P1-duration: render never starts");
+  }
+
+  // Some provider fallbacks can return audio without instrumented duration/timing. The
+  // worker must probe that local audio before it is allowed past the post-TTS gate.
+  {
+    const log: CallLog[] = [];
+    const base = makeStubCaller(log);
+    const missingDurationCaller = {
+      ...base,
+      post: async <T,>(path: string, body: unknown): Promise<T> => {
+        if (path === "/api/videos/tts-gemini") {
+          log.push({ method: "POST", path, body });
+          return { voiceUrl: "/api/renders/no-duration.m4a" } as T;
+        }
+        if (path === "/api/videos/audio-duration") {
+          log.push({ method: "POST", path, body });
+          return { durationMs: 361_000 } as T;
+        }
+        return base.post<T>(path, body);
+      },
+    };
+    const job = await createProcessingVideoJob("u-preview", {
+      script: SCRIPT,
+      previewMode: true,
+      voiceProvider: "gemini",
+    });
+    await runOrchestrator(job.id, "u-preview", {
+      caller: missingDurationCaller,
+      refundOneClip: async () => {},
+      sleep: async () => {},
+    });
+    const failed = await prisma.videoJob.findUnique({ where: { id: job.id } });
+    ok(log.some((c) => c.path === "/api/videos/audio-duration"), "P1-duration-fallback: exact media probe runs when TTS omits duration");
+    ok(failed?.errorMessage?.includes("เกินเพดานแผน Pro") === true, "P1-duration-fallback: probed 361s is blocked");
+    ok(!log.some((c) => c.path === "/api/videos/extract-keywords"), "P1-duration-fallback: no expensive downstream step starts");
+  }
+
   // ── G. window-mode b-roll parity: keywords/fetch-stock use b-roll windows, not
   // subtitle-card count. This prevents AI-gen full mode from creating one image per
   // subtitle card and timing out before fetch-stock returns. ─────────────────
@@ -432,7 +500,13 @@ async function main() {
   {
     const log: CallLog[] = [];
     let refunds = 0;
-    const job = await createProcessingVideoJob("u-preview", { script: "", mode: "upload", clipUrl: "/api/renders/my-clip.mp4", previewMode: true });
+    const job = await createProcessingVideoJob("u-preview", {
+      script: "",
+      mode: "upload",
+      clipUrl: "/api/renders/my-clip.mp4",
+      previewMode: true,
+      stockProviders: ["pixabay"],
+    });
     await runOrchestrator(job.id, "u-preview", {
       caller: makeStubCaller(log),
       refundOneClip: async () => { refunds++; },
@@ -442,6 +516,11 @@ async function main() {
     ok(done?.status === "done", `E: upload job done (got ${done?.status} err=${done?.errorMessage ?? "-"})`);
     ok(!log.some((c) => c.path === "/api/videos/tts-gemini" || c.path === "/api/videos/tts"), "E: NO TTS call (voice from clip)");
     ok(log.some((c) => c.path === "/api/videos/transcribe"), "E: transcribe called on the clip");
+    const uploadStockCall = log.find((c) => c.path === "/api/videos/fetch-stock");
+    ok(
+      JSON.stringify((uploadStockCall?.body as { stockProviders?: string[] })?.stockProviders) === JSON.stringify(["pixabay"]),
+      "E: upload/cutaway forwards the validated per-job stock provider allowlist",
+    );
     const compCall = log.find((c) => c.path === "/api/heygen/composite");
     const compBody = compCall?.body as { mode?: string; avatarVideoUrl?: string; bgVideoUrl?: string; personRanges?: { start: number; end: number }[] } | undefined;
     ok(compBody?.mode === "cutaway", "E: composite mode = cutaway");

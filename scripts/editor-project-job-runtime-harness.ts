@@ -523,6 +523,13 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
         ) => runtimeRequestFingerprint(operation, body),
       };
     }
+    if (specifier === "@/lib/provider-errors") {
+      return {
+        isProviderErrorCode: (value: unknown) => [
+          "invalid_key", "quota", "rate_limit", "transient", "fatal",
+        ].includes(String(value)),
+      };
+    }
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -666,6 +673,9 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
         ) => runtimeRequestFingerprint(operation, body),
       };
     }
+    if (specifier === "@/lib/provider-errors") {
+      return { isProviderErrorCode: (value: unknown) => ["invalid_key", "quota", "rate_limit", "transient", "fatal"].includes(String(value)) };
+    }
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -764,7 +774,7 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
   assert.equal(committedJobCount, 1, "the lost response still represents one committed server job");
   const retryResult = await runner.current.submit();
   runner.flush();
-  assert.deepEqual(retryResult, { ok: true });
+  assert.deepEqual(retryResult, { ok: true, warning: undefined });
   assert.equal(runner.current.job.phase, "rendering");
   assert.equal(postBodies.length, 2, "only the explicit retry sends another transport request");
   assert.deepEqual(postBodies[1], postBodies[0], "the ambiguous retry preserves the exact logical attempt body");
@@ -841,6 +851,9 @@ function mountAttemptJobHook(
           body: Record<string, unknown>,
         ) => runtimeRequestFingerprint(operation, body),
       };
+    }
+    if (specifier === "@/lib/provider-errors") {
+      return { isProviderErrorCode: (value: unknown) => ["invalid_key", "quota", "rate_limit", "transient", "fatal"].includes(String(value)) };
     }
     throw new Error(`unhandled attempt job hook import: ${specifier}`);
   };
@@ -979,7 +992,7 @@ export async function unrelatedResumeAndProjectReplacementCannotReleaseAttempt(
   runner.flush();
   const retry = await runAttempt(runner, kind);
   runner.flush();
-  assert.deepEqual(retry, { ok: true }, `${kind} exact retry resolves the committed job`);
+  assert.deepEqual(retry, kind === "create" ? { ok: true, warning: undefined } : { ok: true }, `${kind} exact retry resolves the committed job`);
   assert.equal(postBodies.length, 2, `${kind} sends only one explicit retry transport`);
   assert.deepEqual(postBodies[1], postBodies[0], `${kind} retry preserves the full logical body`);
   assert.equal(committedJobCount, 1, `${kind} unrelated resumes and project replacement cannot duplicate creation`);
@@ -1050,7 +1063,7 @@ export async function mutableLimitCannotReleaseAttempt(
   assert.equal(limited.ok, false, `${kind} exposes the mutable limit response`);
   const retry = await runAttempt(runner, kind);
   runner.flush();
-  assert.deepEqual(retry, { ok: true }, `${kind} retries after mutable capacity changes`);
+  assert.deepEqual(retry, kind === "create" ? { ok: true, warning: undefined } : { ok: true }, `${kind} retries after mutable capacity changes`);
   assert.equal(postBodies.length, 2);
   assert.equal(
     postBodies[1].idempotencyKey,
@@ -1138,7 +1151,7 @@ export async function matchingPollReleasesAttempt(
   runner.rerender();
   const nextProjectAttempt = await runAttempt(runner, kind);
   runner.flush();
-  assert.deepEqual(nextProjectAttempt, { ok: true }, `${kind} exact polled identity releases the old descriptor`);
+  assert.deepEqual(nextProjectAttempt, kind === "create" ? { ok: true, warning: undefined } : { ok: true }, `${kind} exact polled identity releases the old descriptor`);
   assert.equal(postBodies.length, 2, `${kind} can create a new-project request after exact poll evidence`);
   assert.notEqual(
     postBodies[1].idempotencyKey,
@@ -1265,7 +1278,9 @@ async function runOwnedArchiveCompletionScenario(
     stopPropagation() {},
   });
   runner.flush();
-  const action = find(marker("AlertDialogAction"));
+  const action = find(marker("AlertDialogAction"), (node) => (
+    typeof node.props.className === "string" && node.props.className.includes("bg-red-600")
+  ));
   assert.ok(action, "actual shell opens delete confirmation");
   (action.props.onClick as (event: { preventDefault(): void }) => void)({ preventDefault() {} });
   runner.flush();
@@ -1377,7 +1392,9 @@ export async function archiveUnmountInvalidatesLateCompletion(): Promise<void> {
     stopPropagation() {},
   });
   runner.flush();
-  const action = find(marker("AlertDialogAction"));
+  const action = find(marker("AlertDialogAction"), (node) => (
+    typeof node.props.className === "string" && node.props.className.includes("bg-red-600")
+  ));
   assert.ok(action, "actual shell confirms archive before unmount");
   (action.props.onClick as (event: { preventDefault(): void }) => void)({ preventDefault() {} });
   runner.flush();
@@ -1469,9 +1486,12 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/key-preflight") {
       return {
         preflightElevenLabs: async () => undefined,
-        preflightPexels: async () => undefined,
-        pexelsStockMayBeUsed: () => false,
+        preflightStockProviders: async () => ({ providers: ["pexels"], block: null }),
+        stockVideoProvidersMayBeUsed: () => false,
       };
+    }
+    if (specifier === "@/lib/heygen-readiness") {
+      return { checkHeygenReadiness: async () => null, toHeygenBlockedResponse: () => ({}) };
     }
     if (specifier === "@/lib/mcp/avatar-steps") return { resolveAvatarRequest: () => ({ kind: "none" }) };
     if (specifier === "@/lib/avatar-preset") return { getAvatarPreset: async () => null, resolveAvatarLayout: () => null };
@@ -1652,9 +1672,12 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/key-preflight") {
       return {
         preflightElevenLabs: async () => undefined,
-        preflightPexels: async () => undefined,
-        pexelsStockMayBeUsed: () => false,
+        preflightStockProviders: async () => ({ providers: ["pexels"], block: null }),
+        stockVideoProvidersMayBeUsed: () => false,
       };
+    }
+    if (specifier === "@/lib/heygen-readiness") {
+      return { checkHeygenReadiness: async () => null, toHeygenBlockedResponse: () => ({}) };
     }
     if (specifier === "@/lib/mcp/avatar-steps") return { resolveAvatarRequest: () => ({ kind: "none" }) };
     if (specifier === "@/lib/avatar-preset") {

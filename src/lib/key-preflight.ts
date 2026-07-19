@@ -117,9 +117,14 @@ export async function testElevenLabsKey(key: string, opts: ElevenLabsCheckOption
 /** Pexels: a plain video search costs no meaningful quota and confirms auth. */
 export async function testPexelsKey(key: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<KeyTestResult> {
   try {
-    const res = await fetch("https://api.pexels.com/videos/search?query=nature&per_page=1", {
+    // Pexels' CDN has been observed serving the same cached 200 response for different
+    // Authorization values on this endpoint. A per-request query token plus no-store makes
+    // the auth verdict come from Pexels, not from a shared cache entry.
+    const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const res = await fetch(`https://api.pexels.com/videos/search?query=nature&per_page=1&_hero_preflight=${nonce}`, {
       headers: { Authorization: key },
       signal: AbortSignal.timeout(timeoutMs),
+      cache: "no-store",
     });
     if (res.ok) return { ok: true, verdict: "valid", message: "Pexels key ใช้งานได้" };
     if (res.status === 401 || res.status === 403) return { ok: false, verdict: "invalid", message: "Key ไม่ถูกต้อง" };
@@ -129,8 +134,33 @@ export async function testPexelsKey(key: string, timeoutMs = DEFAULT_TIMEOUT_MS)
   }
 }
 
+/** Pixabay video search confirms both auth and that the response shape is usable. */
+export async function testPixabayKey(key: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<KeyTestResult> {
+  try {
+    const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    const url = `https://pixabay.com/api/videos/?key=${encodeURIComponent(key)}&q=nature&per_page=3&_hero_preflight=${nonce}`;
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(timeoutMs),
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const data = await res.json().catch(() => null) as { hits?: unknown } | null;
+      if (data && data.hits !== undefined) {
+        return { ok: true, verdict: "valid", message: "Pixabay key ใช้งานได้" };
+      }
+      return { ok: false, verdict: "unknown", message: "รูปแบบข้อมูลจาก Pixabay ไม่ถูกต้อง" };
+    }
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
+      return { ok: false, verdict: "invalid", message: "Key ไม่ถูกต้อง" };
+    }
+    return { ok: false, verdict: "unknown", message: `Error ${res.status}` };
+  } catch {
+    return { ok: false, verdict: "unknown", message: "ไม่สามารถเชื่อมต่อ Pixabay ได้" };
+  }
+}
+
 export interface PreflightBlock {
-  key: "elevenlabs" | "pexels";
+  key: "elevenlabs" | "pexels" | "pixabay" | "broll";
   message: string;
 }
 
@@ -174,6 +204,53 @@ export async function preflightPexels(key: string): Promise<PreflightBlock | nul
   };
 }
 
+export async function preflightPixabay(key: string): Promise<PreflightBlock | null> {
+  const r = await testPixabayKey(key).catch((): KeyTestResult => ({ ok: false, verdict: "unknown", message: "" }));
+  if (r.verdict !== "invalid") return null;
+  return {
+    key: "pixabay",
+    message: `Pixabay API key ใช้ไม่ได้ (${r.message}) — ไปแก้ที่ Settings → API Keys แล้วลองใหม่`,
+  };
+}
+
+export type StockProvider = "pexels" | "pixabay";
+
+/**
+ * Validate every configured stock-video provider before accepting a job. Confirmed-bad
+ * providers are removed from the per-job allowlist; a valid/unknown backup can continue.
+ * We block only when no provider remains, preserving the preflight's fail-open contract for
+ * provider outages while preventing a known-bad key from failing minutes later in stock.
+ */
+export async function preflightStockProviders(input: {
+  pexelsKey?: string | null;
+  pixabayKey?: string | null;
+}): Promise<{ providers: StockProvider[]; block: PreflightBlock | null }> {
+  const checks: Array<Promise<{ provider: StockProvider; result: KeyTestResult }>> = [];
+  if (input.pexelsKey) {
+    checks.push(testPexelsKey(input.pexelsKey)
+      .catch((): KeyTestResult => ({ ok: false, verdict: "unknown", message: "" }))
+      .then((result) => ({ provider: "pexels" as const, result })));
+  }
+  if (input.pixabayKey) {
+    checks.push(testPixabayKey(input.pixabayKey)
+      .catch((): KeyTestResult => ({ ok: false, verdict: "unknown", message: "" }))
+      .then((result) => ({ provider: "pixabay" as const, result })));
+  }
+  const results = await Promise.all(checks);
+  const providers = results
+    .filter(({ result }) => result.verdict !== "invalid")
+    .map(({ provider }) => provider);
+  if (providers.length > 0 || results.length === 0) return { providers, block: null };
+  const labels = results.map(({ provider }) => provider === "pexels" ? "Pexels" : "Pixabay").join(" และ ");
+  return {
+    providers,
+    block: {
+      key: "broll",
+      message: `${labels} API key ใช้ไม่ได้ — ไปแก้ที่ Settings → API Keys แล้วลองใหม่`,
+    },
+  };
+}
+
 /**
  * Whether the resolved b-roll stockSource will actually reach for Pexels/Pixabay video
  * search at all (review round, 2026-07-17 — fixes the Pexels preflight running before
@@ -185,7 +262,7 @@ export async function preflightPexels(key: string): Promise<PreflightBlock | nul
  *    explicitly excluded "video" via autoMixProviders.
  *  - "stock" (default/undefined) or anything else: unchanged, always may be used.
  */
-export function pexelsStockMayBeUsed(input: { stockSource?: string; autoMixProviders?: string[] }): boolean {
+export function stockVideoProvidersMayBeUsed(input: { stockSource?: string; autoMixProviders?: string[] }): boolean {
   if (input.stockSource === "kie-image") return false;
   if (input.stockSource === "auto-mix") {
     // Matches fetch-stock's own `autoMixUsesVideo` exactly: undefined/no list = every

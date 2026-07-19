@@ -1,4 +1,11 @@
 import { prisma } from "@/lib/prisma";
+import {
+  redactTelemetryString,
+  TELEMETRY_MAX_PROPERTIES_BYTES,
+  TELEMETRY_MAX_STRING,
+  TELEMETRY_SECRET_KEY_RE,
+  telemetryStringLimit,
+} from "@/lib/telemetry-sanitize";
 
 export type TelemetryInput = {
   name: string;
@@ -13,12 +20,9 @@ export type TelemetryInput = {
   properties?: Record<string, unknown> | null;
 };
 
-const SECRET_KEY_RE = /(api.?key|token|secret|password|authorization|stripe|webhook|cookie|session)/i;
 const MAX_EVENTS = 20;
-const MAX_STRING = 240;
-const MAX_PROPS_BYTES = 4_000;
 
-function cleanString(value: unknown, max = MAX_STRING): string | null {
+function cleanString(value: unknown, max = TELEMETRY_MAX_STRING): string | null {
   if (typeof value !== "string") return null;
   const v = value.trim();
   if (!v) return null;
@@ -35,27 +39,35 @@ function cleanFloat(value: unknown): number | null {
   return value;
 }
 
-function scrubProperties(properties: unknown): string | null {
+export function serializeTelemetryProperties(properties: unknown): string | null {
   if (!properties || typeof properties !== "object" || Array.isArray(properties)) return null;
 
   const cleaned: Record<string, unknown> = {};
   for (const [rawKey, rawValue] of Object.entries(properties as Record<string, unknown>)) {
     const key = cleanString(rawKey, 64);
-    if (!key || SECRET_KEY_RE.test(key)) continue;
+    if (!key || TELEMETRY_SECRET_KEY_RE.test(key)) continue;
 
     if (typeof rawValue === "string") {
-      if (SECRET_KEY_RE.test(rawValue)) continue;
-      cleaned[key] = rawValue.slice(0, MAX_STRING);
+      // Stack strings commonly contain harmless identifiers such as useSession or
+      // tokenizer; key-name filtering is the reliable privacy boundary here. Preserve
+      // enough stack to identify the failing component while retaining a hard cap.
+      const isErrorStack = key === "stack" || key === "componentStack";
+      const value = redactTelemetryString(rawValue).slice(0, telemetryStringLimit(key));
+      if (!isErrorStack && TELEMETRY_SECRET_KEY_RE.test(value)) continue;
+      const candidate = JSON.stringify({ ...cleaned, [key]: value });
+      if (Buffer.byteLength(candidate, "utf8") <= TELEMETRY_MAX_PROPERTIES_BYTES) cleaned[key] = value;
     } else if (typeof rawValue === "number" && Number.isFinite(rawValue)) {
-      cleaned[key] = rawValue;
+      const candidate = JSON.stringify({ ...cleaned, [key]: rawValue });
+      if (Buffer.byteLength(candidate, "utf8") <= TELEMETRY_MAX_PROPERTIES_BYTES) cleaned[key] = rawValue;
     } else if (typeof rawValue === "boolean" || rawValue === null) {
-      cleaned[key] = rawValue;
+      const candidate = JSON.stringify({ ...cleaned, [key]: rawValue });
+      if (Buffer.byteLength(candidate, "utf8") <= TELEMETRY_MAX_PROPERTIES_BYTES) cleaned[key] = rawValue;
     }
   }
 
   const json = JSON.stringify(cleaned);
   if (json === "{}") return null;
-  return json.slice(0, MAX_PROPS_BYTES);
+  return json;
 }
 
 export function normalizeTelemetry(input: unknown): TelemetryInput | null {
@@ -105,7 +117,7 @@ export async function recordTelemetryEvent(userId: string | null, input: Telemet
       status: input.status ?? null,
       durationMs: input.durationMs ?? null,
       value: input.value ?? null,
-      properties: scrubProperties(input.properties),
+      properties: serializeTelemetryProperties(input.properties),
     },
   });
 }
@@ -124,7 +136,7 @@ export async function recordTelemetryBatch(userId: string | null, events: Teleme
       status: event.status ?? null,
       durationMs: event.durationMs ?? null,
       value: event.value ?? null,
-      properties: scrubProperties(event.properties),
+      properties: serializeTelemetryProperties(event.properties),
     })),
   });
   return { count: events.length };

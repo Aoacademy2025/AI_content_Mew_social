@@ -931,6 +931,7 @@ export async function POST(req: Request) {
     stockSource = "both",
     kieModel,
     autoMixProviders,
+    stockProviders,
     autoMixWeights,
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
@@ -952,6 +953,7 @@ export async function POST(req: Request) {
     stockSource?: string;
     kieModel?: string;
     autoMixProviders?: string[];
+    stockProviders?: Array<"pexels" | "pixabay">;
     autoMixWeights?: unknown;
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
@@ -976,6 +978,7 @@ export async function POST(req: Request) {
     : null;
   // Auto Mix: ผู้ใช้เลือกได้ว่าจะเปิด provider ภาพ fallback ตัวไหนบ้าง (undefined = ทุกตัว, ตาม default เดิม)
   const allowedAutoMixProviders: Set<string> | null = Array.isArray(autoMixProviders) ? new Set(autoMixProviders) : null;
+  const allowedStockProviders: Set<string> | null = Array.isArray(stockProviders) ? new Set(stockProviders) : null;
   const resolvedContentProfile = normalizeContentProfile(
     contentProfile || detectContentProfile([
       fullScript,
@@ -997,8 +1000,10 @@ export async function POST(req: Request) {
   // video จริง ไปใช้ภาพ fallback ล้วน (เช่น kie.ai อย่างเดียว → ได้ภาพ AI ทุก keyword)
   // (undefined = เปิดทุกอย่างตาม default เดิม → video ทำงานปกติ)
   const autoMixUsesVideo = !allowedAutoMixProviders || allowedAutoMixProviders.has("video");
-  const usePexels = stockSource === "pexels" || stockSource === "both" || (useAutoMix && autoMixUsesVideo);
-  const usePixabay = stockSource === "pixabay" || stockSource === "both" || (useAutoMix && autoMixUsesVideo);
+  const usePexels = (stockSource === "pexels" || stockSource === "both" || (useAutoMix && autoMixUsesVideo))
+    && (!allowedStockProviders || allowedStockProviders.has("pexels"));
+  const usePixabay = (stockSource === "pixabay" || stockSource === "both" || (useAutoMix && autoMixUsesVideo))
+    && (!allowedStockProviders || allowedStockProviders.has("pixabay"));
 
   if (!keywords?.length) return NextResponse.json({ error: "keywords required" }, { status: 400 });
 

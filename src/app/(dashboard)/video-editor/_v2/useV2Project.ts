@@ -33,6 +33,11 @@ import {
 
 const DRAFT_KEY = "editor-v2-project";
 const PROJECT_ID_KEY = "editor-v2-project-id";
+const PROJECT_ACCOUNT_KEY = "editor-v2-project-account";
+
+function scopedProjectIdKey(accountId: string | null): string {
+  return accountId ? `${PROJECT_ID_KEY}:${accountId}` : PROJECT_ID_KEY;
+}
 
 interface V2Draft {
   projectTitle?: string;
@@ -373,6 +378,7 @@ export function useV2Project() {
   const d = draftRef.current;
   const accountDraftDefaultsAllowedRef = useRef(true);
   const trustedResumeDraftRef = useRef<V2Draft | null>(null);
+  const projectIdStorageKeyRef = useRef(PROJECT_ID_KEY);
   const bootstrapGenerationRef = useRef(0);
   const bootstrapAbortControllerRef = useRef<AbortController | null>(null);
   const userDraftMutationTokenRef = useRef(0);
@@ -639,7 +645,10 @@ export function useV2Project() {
     const storage = browserStorage();
     clearEditorProjectRecoveryJournal(storage, clearProjectId);
     try {
-      if (storage?.getItem(PROJECT_ID_KEY) === clearProjectId) storage.removeItem(DRAFT_KEY);
+      const pointerKeys = new Set([PROJECT_ID_KEY, projectIdStorageKeyRef.current]);
+      if ([...pointerKeys].some((key) => storage?.getItem(key) === clearProjectId)) {
+        storage?.removeItem(DRAFT_KEY);
+      }
     } catch { /* legacy cleanup is best-effort */ }
   }
 
@@ -702,6 +711,7 @@ export function useV2Project() {
     setProjectInitialization("loading-defaults");
     try {
       const storage = browserStorage();
+      storage?.removeItem(projectIdStorageKeyRef.current);
       storage?.removeItem(PROJECT_ID_KEY);
       storage?.removeItem(DRAFT_KEY);
     } catch {}
@@ -902,7 +912,8 @@ export function useV2Project() {
       setPreviewMediaState((data?.project?.previewMediaState as ProjectMediaState | null | undefined) ?? null);
       try {
         const storage = browserStorage();
-        storage?.setItem(PROJECT_ID_KEY, id);
+        storage?.setItem(projectIdStorageKeyRef.current, id);
+        if (projectIdStorageKeyRef.current !== PROJECT_ID_KEY) storage?.removeItem(PROJECT_ID_KEY);
         storage?.removeItem(DRAFT_KEY);
       } catch {}
       return id;
@@ -966,6 +977,7 @@ export function useV2Project() {
     try {
       const storage = browserStorage();
       storage?.removeItem(DRAFT_KEY);
+      storage?.removeItem(projectIdStorageKeyRef.current);
       storage?.removeItem(PROJECT_ID_KEY);
     } catch {}
 
@@ -1019,6 +1031,10 @@ export function useV2Project() {
       && !controller.signal.aborted;
     async function ensureServerProject() {
       const storage = browserStorage();
+      try {
+        const rememberedAccountId = storage?.getItem(PROJECT_ACCOUNT_KEY) ?? null;
+        projectIdStorageKeyRef.current = scopedProjectIdKey(rememberedAccountId);
+      } catch {}
       const storedLocalDraft = loadDraft();
       const searchParams = new URLSearchParams(window.location.search);
       const urlProjectId = searchParams.get("projectId");
@@ -1037,13 +1053,18 @@ export function useV2Project() {
         setProjectInitialization("empty");
         try {
           storage?.removeItem(PROJECT_ID_KEY);
+          storage?.removeItem(projectIdStorageKeyRef.current);
           storage?.removeItem(DRAFT_KEY);
         } catch {}
         return;
       }
       let storedProjectId: string | null = null;
-      try { storedProjectId = storage?.getItem(PROJECT_ID_KEY) ?? null; } catch {}
-      const existingProjectId = urlProjectId || storedProjectId;
+      try {
+        storedProjectId = storage?.getItem(projectIdStorageKeyRef.current)
+          ?? storage?.getItem(PROJECT_ID_KEY)
+          ?? null;
+      } catch {}
+      let existingProjectId = urlProjectId || storedProjectId;
 
       if (existingProjectId) {
         accountDraftDefaultsAllowedRef.current = false;
@@ -1062,6 +1083,88 @@ export function useV2Project() {
           );
         } catch { /* handled by the fail-closed branch */ }
         if (!isCurrentBootstrap()) return;
+        // A 404 from an implicit browser pointer is stale local state, not a broken
+        // account. Clear only that pointer, then recover to the most recent active
+        // project. Explicit URL links remain fail-closed and 5xx/network errors retain
+        // the pointer so Retry targets the same project.
+        if (response?.status === 404 && !urlProjectId && storedProjectId === existingProjectId) {
+          const staleProjectId = existingProjectId;
+          let listResponse: Response | null = null;
+          try {
+            listResponse = await fetch("/api/editor-projects", {
+              cache: "no-store",
+              signal: controller.signal,
+            });
+          } catch { /* visible load error below */ }
+          if (!isCurrentBootstrap()) return;
+          const listPayload = listResponse?.ok
+            ? await listResponse.json().catch(() => null)
+            : null;
+          if (!isCurrentBootstrap()) return;
+          if (listResponse?.ok) {
+            // Only forget the stale pointer once the authoritative list is available.
+            // If listing itself is down, keeping it gives Retry deterministic provenance
+            // instead of falling through and auto-creating an unrelated project.
+            clearEditorProjectRecoveryJournal(storage, staleProjectId);
+            try {
+              for (const key of new Set([PROJECT_ID_KEY, projectIdStorageKeyRef.current])) {
+                if (storage?.getItem(key) === staleProjectId) storage.removeItem(key);
+              }
+              storage?.removeItem(DRAFT_KEY);
+            } catch {}
+
+            const fallbackIds = Array.isArray(listPayload?.projects)
+              ? listPayload.projects.flatMap((item: unknown) => (
+                  !!item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string"
+                    ? [(item as { id: string }).id]
+                    : []
+                ))
+              : [];
+            let selectedFallback = false;
+            let retryFallback = false;
+            for (const fallbackId of fallbackIds) {
+              let candidateResponse: Response | null = null;
+              try {
+                candidateResponse = await fetch(
+                  `/api/editor-projects/${encodeURIComponent(fallbackId)}`,
+                  { cache: "no-store", signal: controller.signal },
+                );
+              } catch { candidateResponse = null; }
+              if (!isCurrentBootstrap()) return;
+              if (candidateResponse?.ok) {
+                existingProjectId = fallbackId;
+                response = candidateResponse;
+                selectedFallback = true;
+                break;
+              }
+              if (!candidateResponse || candidateResponse.status !== 404) {
+                // The list says this project is active, but its detail endpoint is
+                // temporarily unavailable. Retain it as the exact Retry target.
+                existingProjectId = fallbackId;
+                response = candidateResponse;
+                retryFallback = true;
+                try { storage?.setItem(projectIdStorageKeyRef.current, fallbackId); } catch {}
+                break;
+              }
+            }
+            if (selectedFallback || retryFallback) {
+              setProjectId(existingProjectId);
+            } else {
+              currentProjectIdRef.current = null;
+              setProjectId(null);
+              setProjectReady(false);
+              setProjectStatus("draft");
+              setActiveJobId(null);
+              setActiveExportJobId(null);
+              setLatestVideoId(null);
+              setPreviewMediaState(null);
+              setSaveStatus("idle");
+              setRecoveryState({ status: "none" });
+              setProjectInitialization("empty");
+              return;
+            }
+          }
+        }
         if (!response || !response.ok) {
           setProjectReady(false);
           setProjectInitialization("error");
@@ -1074,12 +1177,14 @@ export function useV2Project() {
           });
           return;
         }
+        if (!existingProjectId) return;
+        const resolvedProjectId = existingProjectId;
         const data = await response.json().catch(() => null);
         if (!isCurrentBootstrap()) return;
         const project = data?.project as Record<string, unknown> | null | undefined;
         if (
           !project
-          || project.id !== existingProjectId
+          || project.id !== resolvedProjectId
           || typeof project.draftRevision !== "number"
           || !Number.isSafeInteger(project.draftRevision)
           || project.draftRevision < 0
@@ -1091,18 +1196,18 @@ export function useV2Project() {
           setRecoveryState({ status: "load-error", message: "ข้อมูลโปรเจกต์ไม่สมบูรณ์ กรุณาลองใหม่" });
           return;
         }
-        const journal = readEditorProjectRecoveryJournal(storage, existingProjectId);
-        const legacyLocalDraft = storedProjectId === existingProjectId && storedLocalDraft
+        const journal = readEditorProjectRecoveryJournal(storage, resolvedProjectId);
+        const legacyLocalDraft = storedProjectId === resolvedProjectId && storedLocalDraft
           ? canonicalizeDraftLogoOverlay(storedLocalDraft)
           : null;
         const decision = decideEditorProjectBootstrap({
-          projectId: existingProjectId,
+          projectId: resolvedProjectId,
           serverRevision: project.draftRevision,
-          revisionWatermark: editorProjectSaveQueue.revisionWatermark(existingProjectId),
+          revisionWatermark: editorProjectSaveQueue.revisionWatermark(resolvedProjectId),
           journal,
           legacyLocalDraft,
         });
-        const serverCandidate = serverCandidateForProject(existingProjectId, project);
+        const serverCandidate = serverCandidateForProject(resolvedProjectId, project);
         if (!serverCandidate) {
           setProjectReady(false);
           setProjectInitialization("error");
@@ -1111,7 +1216,7 @@ export function useV2Project() {
           return;
         }
         editorProjectSaveQueue.seedRevision(project.id as string, project.draftRevision);
-        const tracker = initializeAutosaveLineage(existingProjectId, serverCandidate);
+        const tracker = initializeAutosaveLineage(resolvedProjectId, serverCandidate);
         if (!tracker) {
           setProjectReady(false);
           setProjectInitialization("error");
@@ -1121,12 +1226,15 @@ export function useV2Project() {
         }
         setProjectId(project.id as string);
         applyServerProjectMetadata(project);
-        try { storage?.setItem(PROJECT_ID_KEY, project.id as string); } catch {}
+        try {
+          storage?.setItem(projectIdStorageKeyRef.current, project.id as string);
+          if (projectIdStorageKeyRef.current !== PROJECT_ID_KEY) storage?.removeItem(PROJECT_ID_KEY);
+        } catch {}
 
         if (decision.kind === "server") {
           trustedResumeDraftRef.current = null;
           applyDraft(serverCandidate.draft as V2Draft);
-          clearProjectRecoveryData(existingProjectId);
+          clearProjectRecoveryData(resolvedProjectId);
           lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
           setRecoveryState({ status: "none" });
           setProjectReady(true);
@@ -1136,7 +1244,7 @@ export function useV2Project() {
         }
         if (decision.kind === "resume-local") {
           const localCandidate = createRecoveryCandidate({
-            projectId: existingProjectId,
+            projectId: resolvedProjectId,
             draft: decision.journal.draft,
             revision: decision.journal.baseRevision,
             updatedAt: decision.journal.editedAt,
@@ -1151,7 +1259,7 @@ export function useV2Project() {
           }
           trustedResumeDraftRef.current = localCandidate.draft as V2Draft;
           tracker.latestLocal = createEditorProjectAutosaveCandidate({
-            projectId: existingProjectId,
+            projectId: resolvedProjectId,
             revision: tracker.confirmed.revision,
             draft: localCandidate.draft,
           });
@@ -1167,7 +1275,7 @@ export function useV2Project() {
         if (decision.kind === "conflict") {
           trustedResumeDraftRef.current = null;
           const localCandidate = createRecoveryCandidate({
-            projectId: existingProjectId,
+            projectId: resolvedProjectId,
             draft: decision.local.draft,
             revision: journal?.baseRevision ?? null,
             updatedAt: decision.local.editedAt,
@@ -1238,7 +1346,10 @@ export function useV2Project() {
         signal: controller.signal,
       });
       if (!isCurrentBootstrap() || !id) return;
-      try { storage?.setItem(PROJECT_ID_KEY, id); } catch {}
+      try {
+        storage?.setItem(projectIdStorageKeyRef.current, id);
+        if (projectIdStorageKeyRef.current !== PROJECT_ID_KEY) storage?.removeItem(PROJECT_ID_KEY);
+      } catch {}
     }
     void ensureServerProject();
     return () => {
@@ -1529,6 +1640,18 @@ export function useV2Project() {
       if (u) setUsage(u);
     }).catch(() => {});
     fetchMe().then(m => {
+      const accountId = typeof m?.id === "string" && m.id ? m.id : null;
+      if (accountId) {
+        const storage = browserStorage();
+        projectIdStorageKeyRef.current = scopedProjectIdKey(accountId);
+        try {
+          storage?.setItem(PROJECT_ACCOUNT_KEY, accountId);
+          if (projectReadyRef.current && currentProjectIdRef.current) {
+            storage?.setItem(projectIdStorageKeyRef.current, currentProjectIdRef.current);
+            storage?.removeItem(PROJECT_ID_KEY);
+          }
+        } catch {}
+      }
       const admin = m?.role === "ADMIN";
       setPlan(typeof m?.plan === "string" ? m.plan : "FREE");
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when

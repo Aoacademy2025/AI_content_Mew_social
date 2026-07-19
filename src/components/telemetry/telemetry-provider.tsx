@@ -27,7 +27,7 @@ function errorSignature(value: string) {
 
 function stackSnippet(error: unknown) {
   return error instanceof Error && typeof error.stack === "string"
-    ? error.stack.split("\n").slice(0, 4).join(" | ")
+    ? error.stack.split("\n").slice(0, 12).join(" | ").slice(0, 2_048)
     : null;
 }
 

@@ -24,6 +24,13 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  // Runtime renders are mutable user output (tens of GB in production), served via
+  // nginx/API and never required inside a Next server bundle. Without this exclusion,
+  // dynamic public-path access made every API route trace thousands of render files,
+  // multiplying NFT work and driving production builds close to OOM.
+  outputFileTracingExcludes: {
+    "/**": ["./public/renders/**/*"],
+  },
   experimental: {
     // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
     workerThreads: false,

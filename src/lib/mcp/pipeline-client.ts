@@ -42,6 +42,54 @@ export class PipelineHttpError extends Error {
   }
 }
 
+export class PipelineResponseParseError extends Error {
+  constructor(
+    public readonly method: "POST" | "GET" | "PATCH",
+    public readonly path: string,
+    public readonly status: number,
+  ) {
+    super(`${method} ${path} → ${status}: invalid JSON response`);
+    this.name = "PipelineResponseParseError";
+  }
+}
+
+/** Decode the JSON contract shared by every internal pipeline endpoint. */
+export function decodePipelineResponse<T>(
+  method: "POST" | "GET" | "PATCH",
+  path: string,
+  status: number,
+  text: string,
+): T {
+  let parsed: unknown = {};
+  if (text) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      if (status >= 200 && status < 300) {
+        // A 2xx HTML/text body is normally a transient proxy/upstream corruption, not a
+        // valid pipeline result. Throw a transport-like error so withRetry can recover.
+        throw new PipelineResponseParseError(method, path, status);
+      }
+      parsed = text;
+    }
+  }
+  if (status < 200 || status >= 300) throw new PipelineHttpError(method, path, status, parsed);
+  return parsed as T;
+}
+
+function statusFromPipelineError(error: unknown): number | null {
+  if (error instanceof PipelineHttpError) return error.status;
+  if (error instanceof PipelineResponseParseError) return null;
+  // Compatibility with callers/tests that predate PipelineHttpError and throw the old
+  // formatted Error. Without this, a deterministic 4xx was misclassified as transport
+  // and executed three times after the typed-error migration.
+  if (error instanceof Error) {
+    const match = error.message.match(/^(?:POST|GET|PATCH)\s+\S+\s+→\s+(\d{3})(?::|\s|$)/);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
 /** Retry transport errors + 5xx (NOT 4xx). 4xx are in-band errors (missing_key/quota) — never retry. */
 export async function withRetry<T>(fn: () => Promise<T>, opts: { retries?: number; sleep?: (ms: number) => Promise<void> } = {}): Promise<T> {
   const retries = opts.retries ?? 2;
@@ -51,7 +99,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: { retries?: numbe
     try { return await fn(); }
     catch (e) {
       lastErr = e;
-      const status = e instanceof PipelineHttpError ? e.status : null;
+      const status = statusFromPipelineError(e);
       const retriable = status === null || status >= 500; // transport error (no status) or 5xx
       if (!retriable || attempt === retries) throw e;
       await sleep(1000 * Math.pow(3, attempt)); // 1s, 3s
@@ -71,13 +119,7 @@ export function pipelineCaller(userId: string): PipelineCaller {
     return withRetry(async () => {
       const res = await undiciFetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined, dispatcher: pipelineDispatcher });
       const text = await res.text();
-      let parsed: unknown = {};
-      if (text) {
-        try { parsed = JSON.parse(text); }
-        catch { parsed = text; }
-      }
-      if (!res.ok) throw new PipelineHttpError(method, path, res.status, parsed);
-      return parsed as T;
+      return decodePipelineResponse<T>(method, path, res.status, text);
     }, { retries: opts?.retries });
   }
   return {

@@ -11,9 +11,11 @@ import assert from "node:assert/strict";
 import {
   testElevenLabsKey,
   testPexelsKey,
+  testPixabayKey,
   preflightElevenLabs,
   preflightPexels,
-  pexelsStockMayBeUsed,
+  preflightStockProviders,
+  stockVideoProvidersMayBeUsed,
 } from "../src/lib/key-preflight";
 
 type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
@@ -215,6 +217,19 @@ async function main() {
   });
 
   console.log("Pexels key checks");
+  await check("Pexels probe bypasses shared CDN cache", async () => {
+    let seenUrl = "";
+    let seenInit: RequestInit | undefined;
+    mockFetch(async (url, init) => {
+      seenUrl = url;
+      seenInit = init;
+      return jsonResponse(200, { videos: [] });
+    });
+    await testPexelsKey("k");
+    const probe = new URL(seenUrl);
+    assert.ok(probe.searchParams.get("_hero_preflight"), "probe URL must be unique per request");
+    assert.equal(seenInit?.cache, "no-store");
+  });
   await check("valid key (200) -> valid", async () => {
     mockFetch(async () => jsonResponse(200, { videos: [] }));
     const r = await testPexelsKey("k");
@@ -242,6 +257,35 @@ async function main() {
   await check("network error -> unknown (fail-open)", async () => {
     mockFetch(async () => { throw new TypeError("fetch failed"); });
     const r = await testPexelsKey("k");
+    assert.equal(r.verdict, "unknown");
+  });
+
+  console.log("Pixabay key checks");
+  await check("valid Pixabay key (200 with hits) -> valid and bypasses cache", async () => {
+    let seenUrl = "";
+    let seenInit: RequestInit | undefined;
+    mockFetch(async (url, init) => {
+      seenUrl = url;
+      seenInit = init;
+      return jsonResponse(200, { hits: [] });
+    });
+    const r = await testPixabayKey("k");
+    assert.equal(r.verdict, "valid");
+    const probe = new URL(seenUrl);
+    assert.equal(probe.searchParams.get("key"), "k");
+    assert.ok(probe.searchParams.get("_hero_preflight"));
+    assert.equal(seenInit?.cache, "no-store");
+  });
+
+  await check("invalid Pixabay key (400) -> invalid", async () => {
+    mockFetch(async () => jsonResponse(400, { error: "Invalid API key" }));
+    const r = await testPixabayKey("k");
+    assert.equal(r.verdict, "invalid");
+  });
+
+  await check("Pixabay 5xx -> unknown (fail-open)", async () => {
+    mockFetch(async () => jsonResponse(503, {}));
+    const r = await testPixabayKey("k");
     assert.equal(r.verdict, "unknown");
   });
 
@@ -308,31 +352,58 @@ async function main() {
     assert.equal(block, null, "5xx must fail-open (no block)");
   });
 
-  console.log("pexelsStockMayBeUsed (review round 2026-07-17 — gate Pexels preflight on resolved stockSource)");
+  console.log("stock-provider resolution");
+  await check("invalid Pexels + valid Pixabay excludes Pexels and continues", async () => {
+    mockFetch(async (url) => url.includes("api.pexels.com")
+      ? jsonResponse(401, {})
+      : jsonResponse(200, { hits: [] }));
+    const result = await preflightStockProviders({ pexelsKey: "bad", pixabayKey: "good" });
+    assert.equal(result.block, null);
+    assert.deepEqual(result.providers, ["pixabay"]);
+  });
+
+  await check("both invalid stock keys block before job creation", async () => {
+    mockFetch(async (url) => url.includes("api.pexels.com")
+      ? jsonResponse(401, {})
+      : jsonResponse(400, {}));
+    const result = await preflightStockProviders({ pexelsKey: "bad-p", pixabayKey: "bad-x" });
+    assert.ok(result.block);
+    assert.deepEqual(result.providers, []);
+    assert.equal(result.block?.key, "broll");
+  });
+
+  await check("provider timeout stays fail-open and remains selectable", async () => {
+    mockFetch(async () => { throw new Error("timeout"); });
+    const result = await preflightStockProviders({ pexelsKey: "p", pixabayKey: null });
+    assert.equal(result.block, null);
+    assert.deepEqual(result.providers, ["pexels"]);
+  });
+
+  console.log("stockVideoProvidersMayBeUsed (gate stock-video preflight on resolved stockSource)");
   await check("default/undefined stockSource -> may be used", async () => {
-    assert.equal(pexelsStockMayBeUsed({}), true);
-    assert.equal(pexelsStockMayBeUsed({ stockSource: "stock" }), true);
+    assert.equal(stockVideoProvidersMayBeUsed({}), true);
+    assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "stock" }), true);
   });
 
   await check("kie-image stockSource -> never uses Pexels/Pixabay", async () => {
-    assert.equal(pexelsStockMayBeUsed({ stockSource: "kie-image" }), false);
-    assert.equal(pexelsStockMayBeUsed({ stockSource: "kie-image", autoMixProviders: ["video"] }), false);
+    assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "kie-image" }), false);
+    assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "kie-image", autoMixProviders: ["video"] }), false);
   });
 
   await check("auto-mix with no autoMixProviders list (default = everything on) -> may be used", async () => {
-    assert.equal(pexelsStockMayBeUsed({ stockSource: "auto-mix" }), true);
+    assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "auto-mix" }), true);
   });
 
   await check("auto-mix WITH 'video' in autoMixProviders -> may be used", async () => {
-    assert.equal(pexelsStockMayBeUsed({ stockSource: "auto-mix", autoMixProviders: ["video", "pexels-photo"] }), true);
+    assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "auto-mix", autoMixProviders: ["video", "pexels-photo"] }), true);
   });
 
   await check("auto-mix WITHOUT 'video' in autoMixProviders -> must NOT be used (the exact bug this fixes)", async () => {
-    assert.equal(pexelsStockMayBeUsed({ stockSource: "auto-mix", autoMixProviders: ["kie-ai", "unsplash"] }), false);
+    assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "auto-mix", autoMixProviders: ["kie-ai", "unsplash"] }), false);
   });
 
   await check("auto-mix with an EMPTY autoMixProviders list -> must NOT be used (matches fetch-stock's own semantics)", async () => {
-    assert.equal(pexelsStockMayBeUsed({ stockSource: "auto-mix", autoMixProviders: [] }), false);
+    assert.equal(stockVideoProvidersMayBeUsed({ stockSource: "auto-mix", autoMixProviders: [] }), false);
   });
 
   console.log(`\n${passed} checks passed`);

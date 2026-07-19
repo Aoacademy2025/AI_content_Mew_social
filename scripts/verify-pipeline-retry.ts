@@ -1,6 +1,10 @@
 // Retry wrapper: retries transport errors + 5xx, NOT 4xx; gives up after N; injectable sleep.
 //   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-pipeline-retry.ts
-import { withRetry } from "../src/lib/mcp/pipeline-client";
+import {
+  withRetry,
+  PipelineHttpError,
+  decodePipelineResponse,
+} from "../src/lib/mcp/pipeline-client";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -19,6 +23,27 @@ async function main() {
   let n3 = 0;
   try { await withRetry(async () => { n3++; throw new Error("POST /x → 400: bad"); }, { retries: 2, sleep: noSleep }); } catch {}
   assert(n3 === 1, "does NOT retry 4xx (in-band error) — fails immediately");
+
+  let n4 = 0;
+  try {
+    await withRetry(async () => {
+      n4++;
+      throw new PipelineHttpError("POST", "/x", 403, { error: "forbidden" });
+    }, { retries: 2, sleep: noSleep });
+  } catch {}
+  assert(n4 === 1, "typed PipelineHttpError 4xx also fails immediately");
+
+  let n5 = 0;
+  const decoded = await withRetry(async () => {
+    n5++;
+    return decodePipelineResponse<{ ok: boolean }>(
+      "POST",
+      "/x",
+      200,
+      n5 === 1 ? "upstream proxy emitted html" : "{\"ok\":true}",
+    );
+  }, { retries: 2, sleep: noSleep });
+  assert(n5 === 2 && decoded.ok === true, "malformed 2xx JSON is retried, then valid JSON succeeds");
 
   console.log(`\n${passed} assertions passed ✅`);
 }

@@ -367,7 +367,7 @@ function verifyHookSource(value: string): void {
   assert.match(authoritativeLoad, /cache:\s*"no-store"/,
     "ambiguous outcomes use a fresh authoritative observation");
 
-  const newProject = sourceBetween(value, "await Promise.resolve();", "storage?.setItem(PROJECT_ID_KEY, id)");
+  const newProject = sourceBetween(value, "await Promise.resolve();", "storage?.setItem(projectIdStorageKeyRef.current, id)");
   assert.match(newProject, /if \(!isCurrentBootstrap\(\)\) return;[\s\S]*createServerProject\(canonicalSeedDraft,\s*\{/,
     "StrictMode cleanup wins before the only new-project POST");
   assert.match(newProject, /setProjectInitialization\("creating-project"\);[\s\S]*createServerProject/,

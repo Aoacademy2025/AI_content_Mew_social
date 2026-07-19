@@ -567,7 +567,7 @@ assert.doesNotMatch(
 );
 assert.match(
   serverLoadSource,
-  /const legacyLocalDraft\s*=\s*storedProjectId\s*===\s*existingProjectId/,
+  /const legacyLocalDraft\s*=\s*storedProjectId\s*===\s*resolvedProjectId/,
   "legacy recovery remains associated with the requested project id",
 );
 const idleWaitIndex = serverLoadSource.indexOf("await editorProjectSaveQueue.whenIdle(existingProjectId)");
@@ -580,7 +580,7 @@ assert.ok(
 );
 assert.match(
   serverLoadSource,
-  /revisionWatermark:\s*editorProjectSaveQueue\.revisionWatermark\(existingProjectId\)/,
+  /revisionWatermark:\s*editorProjectSaveQueue\.revisionWatermark\(resolvedProjectId\)/,
   "bootstrap compares GET with the local queue watermark",
 );
 assert.match(
@@ -599,7 +599,7 @@ assert.match(serverLoadSource, /decision\.kind\s*===\s*"conflict"[\s\S]{0,520}se
 const localSeedSource = sourceBetween(
   projectSource,
   "const hasLocalDraft =",
-  "storage?.setItem(PROJECT_ID_KEY, id);",
+  "storage?.setItem(projectIdStorageKeyRef.current, id);",
 );
 assert.match(
   localSeedSource,
