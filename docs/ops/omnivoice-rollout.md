@@ -23,7 +23,7 @@ OMNIVOICE_URL=https://omnivoice.srv1497862.hstgr.cloud
 OMNIVOICE_API_KEY=<secret>
 OMNIVOICE_ALLOWED_USER_IDS=<comma-separated database User.id values>
 OMNIVOICE_NUM_STEP=4
-OMNIVOICE_MAX_SCRIPT_CHARS=300
+OMNIVOICE_MAX_SCRIPT_CHARS=500
 OMNIVOICE_REQUEST_BUDGET_MS=240000
 ```
 
@@ -53,6 +53,10 @@ Add small batches of user IDs. During each batch monitor:
 - worker health, restart count, memory/swap, disk, queue rejections, and generation latency;
 - application `omnivoice_tts`, TTS failure, degraded-timing, render failure, and minute-reservation events;
 - Gemini and ElevenLabs success/error rates to prove the existing paths remain stable.
+
+The 500-character ceiling is a canary usability increase from the original 300-character
+limit. Monitor synthesis latency and queue rejection after the change; restore 300 if the
+request budget or one-active/two-pending worker envelope becomes unstable.
 
 Do not use `*` until capacity and audio quality are accepted. KVM2 remains restricted to audio rendering and short scripts.
 

@@ -10,11 +10,11 @@ const noSleep = (_ms: number) => Promise.resolve();
 
 // Mock caller: records POSTs, returns canned responses by path.
 function mock(pollSeq: Record<string, string[]>) {
-  const calls: { path: string; body: any }[] = [];
+  const calls: { path: string; body: any; opts?: { retries?: number } }[] = [];
   const pollIdx: Record<string, number> = {};
   const caller: PipelineCaller = {
-    async post<T>(path: string, body: any): Promise<T> {
-      calls.push({ path, body });
+    async post<T>(path: string, body: any, opts?: { retries?: number }): Promise<T> {
+      calls.push({ path, body, opts });
       if (path === "/api/videos/trim-audio") return { audioUrl: `trimmed:${body.durationSecs ?? "T" + body.tailSecs}` } as T;
       if (path === "/api/heygen/generate-with-bg") return { videoId: `hg-${body.audioUrl}` } as T;
       if (path === "/api/videos/poll-avatar") {
@@ -44,6 +44,7 @@ async function main() {
     assert(gens.length === 1 && gens[0].body.audioUrl === "TTS" && gens[0].body.greenScreen === true, "full → 1 gen from full TTS audio, greenScreen");
     const comp = calls.find((c) => c.path === "/api/heygen/composite")!;
     assert(comp.body.bgVideoUrl === "BASE" && comp.body.avatarTiming === "full" && !comp.body.tailAvatarVideoUrl, "full → composite bg=BASE, timing=full, no tail");
+    assert(comp.opts?.retries === 0, "full → composite disables automatic HTTP retry");
     const gen0 = calls.find((c) => c.path === "/api/heygen/generate-with-bg")!;
     assert(gen0.body.scale === HEYGEN_FRAMING.scale, "generate uses the shared HeyGen gen-framing constant");
     const comp0 = calls.find((c) => c.path === "/api/heygen/composite")!;

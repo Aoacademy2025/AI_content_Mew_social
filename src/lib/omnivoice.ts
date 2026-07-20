@@ -53,7 +53,7 @@ export function omnivoiceConfig(): {
     apiKey,
     // KVM2 benchmark: step=4 is ~3.8x realtime; higher defaults miss the 300s route budget.
     numStep: clampInteger(process.env.OMNIVOICE_NUM_STEP, 4, 8, 4),
-    maxScriptChars: clampInteger(process.env.OMNIVOICE_MAX_SCRIPT_CHARS, 50, 1000, 300),
+    maxScriptChars: clampInteger(process.env.OMNIVOICE_MAX_SCRIPT_CHARS, 50, 1000, 500),
     // Leave at least 50s inside the 300s route for decode, disk/quota work and
     // silence detection (which has its own 30s cap).
     requestBudgetMs: clampInteger(process.env.OMNIVOICE_REQUEST_BUDGET_MS, 30_000, 250_000, 240_000),

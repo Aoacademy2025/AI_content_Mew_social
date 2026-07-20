@@ -3,17 +3,18 @@ import { Agent, fetch as undiciFetch } from "undici";
 
 const BASE = process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000";
 
-// Pipeline endpoints can legitimately run for minutes — /api/videos/fetch-stock caps at
-// maxDuration=600s (tts/avatar can be slow too). undici's DEFAULT headersTimeout is 300s,
-// SHORTER than the server's own cap: a slow-but-alive request was aborted as a transport
-// error, and withRetry then fired a DUPLICATE concurrent run (re-searching + re-normalizing
-// the same b-roll) — thrashing the shared host and making it even slower. Use one dispatcher
-// whose timeouts sit ABOVE the server cap so we WAIT instead of duplicating.
+// Pipeline endpoints can legitimately run for minutes. /api/videos/fetch-stock caps at
+// 10 minutes, while /api/heygen/composite allows up to 60 minutes and may run several
+// bounded ffmpeg steps. The client timeout must sit ABOVE the longest route cap; otherwise
+// a slow-but-healthy request is abandoned while the server keeps working, and a retry can
+// start the same expensive work again. Use one dispatcher that waits for the route result.
 // (Agent + fetch come from the SAME undici import so the dispatcher is actually honored —
 // handing a node_modules Agent to Node's built-in global fetch is not reliable.)
+export const DEFAULT_PIPELINE_TIMEOUT_MS = 65 * 60 * 1000;
+
 const PIPELINE_TIMEOUT_MS = (() => {
   const raw = Number(process.env.MCP_PIPELINE_TIMEOUT_MS);
-  return Number.isFinite(raw) && raw >= 1000 ? Math.floor(raw) : 12 * 60 * 1000; // default 12 min
+  return Number.isFinite(raw) && raw >= 1000 ? Math.floor(raw) : DEFAULT_PIPELINE_TIMEOUT_MS;
 })();
 const pipelineDispatcher = new Agent({
   headersTimeout: PIPELINE_TIMEOUT_MS,

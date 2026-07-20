@@ -96,6 +96,7 @@ check("orchestrator: OmniVoice synthesis explicitly disables retries", omniCall.
 check("job admission: OmniVoice readiness is checked before enqueue", jobsRouteSource.includes("await checkOmniVoiceReady(config)"));
 check("timing invariant: worker receives the exact chunk text", omniRouteSource.includes("chunks[index].text") && !omniRouteSource.includes("normalizeNumbersForTts"));
 check("capacity: managed AI-audio reserve is enforced", omniRouteSource.includes("reserveAiAudioMinutes(user.id, estimatedMinutes, { enforce: true })"));
+check("capacity: canary script ceiling defaults to 500 characters", configSource.includes("50, 1000, 500"));
 check("timeout: upstream budget leaves post-processing headroom", configSource.includes("250_000, 240_000"));
 
 const backgroundRuntimeImport = spawnSync(
