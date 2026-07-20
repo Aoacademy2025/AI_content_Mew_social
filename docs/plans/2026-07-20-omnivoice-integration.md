@@ -23,4 +23,4 @@ Add the team's self-hosted OmniVoice provider to the existing video-editor voice
 
 ## Launch decision
 
-The KVM2 CPU benchmark makes OmniVoice suitable only for short scripts at four inference steps. Initial production policy is therefore 300 characters, one active synthesis plus two pending requests, and a per-request budget below the app route's 300-second ceiling. Quality of the four-step output must be approved by a human during canary before broad access.
+The KVM2 CPU benchmark makes OmniVoice suitable only for short scripts at four inference steps. The original canary ceiling was 300 characters; it was raised to 500 characters on 2026-07-20 to improve usability while retaining one active synthesis plus two pending requests and a per-request budget below the app route's 300-second ceiling. The rollout must monitor synthesis latency and queue rejection and restore the 300-character ceiling if the worker becomes unstable. Quality of the four-step output must be approved by a human during canary before broad access.

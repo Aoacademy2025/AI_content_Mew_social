@@ -199,7 +199,7 @@ export async function compositeAvatarVideo(
     avatarBookendSecs: input.introSecs,
     avatarTailSecs: input.tailSecs,
     avatarLayout: input.layout ?? DEFAULT_AVATAR_LAYER,
-  });
+  }, { retries: 0 });
   return result.videoUrl;
 }
 

@@ -686,7 +686,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           avatarBookendSecs: preview.avatarIntroSecs ?? 5,
           avatarTailSecs: preview.avatarTailSecs ?? 5,
           avatarLayout: rrLayout,
-        });
+        }, { retries: 0 });
         rrFinalUrl = rrComp.videoUrl;
         rrCompositeBaseUrl = rrNewBase; // new pre-composite base
       }
@@ -880,7 +880,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         avatarVideoUrl: input.clipUrl,
         bgVideoUrl: upReelUrl,
         personRanges,
-      });
+      }, { retries: 0 });
 
       const upFinalDuration = Date.now() - phaseStartedAt;
       timings.push([phaseName, upFinalDuration]);

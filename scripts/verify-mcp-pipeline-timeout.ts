@@ -7,7 +7,7 @@
 // This spins up a deliberately-slow local server and proves:
 //   Test 1 (repro): a too-short dispatcher timeout makes the REAL withRetry hit the server
 //                   multiple times (the duplicate-work storm).
-//   Test 2 (fix):   the REAL pipelineCaller (default 12-min dispatcher) waits and hits once.
+//   Test 2 (fix):   the REAL pipelineCaller (default 65-min dispatcher) waits and hits once.
 //
 // Run: npx tsx scripts/verify-mcp-pipeline-timeout.ts
 import http from "node:http";
@@ -43,7 +43,7 @@ async function main() {
   // env MUST be set before importing pipeline-client (BASE + dispatcher read at module load)
   process.env.MCP_INTERNAL_BASE_URL = `http://127.0.0.1:${port}`;
   process.env.MCP_SERVICE_SECRET = "verify-dummy-secret-verify-dummy-secret";
-  const { pipelineCaller, withRetry } = await import("../src/lib/mcp/pipeline-client");
+  const { DEFAULT_PIPELINE_TIMEOUT_MS, pipelineCaller, withRetry } = await import("../src/lib/mcp/pipeline-client");
 
   // ── Test 1: repro — dispatcher timeout SHORTER than server time → withRetry duplicates ──
   hits["/repro"] = 0;
@@ -63,15 +63,18 @@ async function main() {
   check("repro: too-short timeout makes withRetry give up (throws)", threw);
   check("repro: server was hit MULTIPLE times (the duplicate-work storm)", (hits["/repro"] ?? 0) >= 2, `hits=${hits["/repro"]}`);
 
-  // ── Test 2: fix — REAL pipelineCaller (default 12-min dispatcher) waits → single hit ──
+  // ── Test 2: fix — REAL pipelineCaller (default 65-min dispatcher) waits → single hit ──
   hits["/fix"] = 0;
   const caller = pipelineCaller("verify-user");
   const out = await caller.post<{ ok: boolean }>("/fix", { x: 1 });
   check("fix: real pipelineCaller waits for the slow response and succeeds", out?.ok === true);
   check("fix: server hit EXACTLY once (no duplicate)", hits["/fix"] === 1, `hits=${hits["/fix"]}`);
 
-  // ── sanity: a configurable short timeout via env would still be respected (guard logic) ──
-  check("fix: default dispatcher timeout is well above the 600s server cap", true);
+  check(
+    "fix: default dispatcher timeout is above the 3600s composite route cap",
+    DEFAULT_PIPELINE_TIMEOUT_MS > 3600 * 1000,
+    `timeout=${DEFAULT_PIPELINE_TIMEOUT_MS}ms`,
+  );
 
   server.close();
   console.log(failures === 0 ? "\n✅ ALL PIPELINE-TIMEOUT CHECKS PASSED" : `\n❌ ${failures} CHECK(S) FAILED`);
