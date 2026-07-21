@@ -1532,11 +1532,23 @@ export async function POST(req: Request) {
     const clipsToGenerate = Math.min(clipsToGenerateRaw, heroImageCap);
     const capClampHit = clipsToGenerate < clipsToGenerateRaw;
     const heroCreditCost = creditCostFor("image-open-fast-1k");
+    const heroAiTelemetry = {
+      aiModel: "z-image-turbo",
+      aiCreditCostKey: "image-open-fast-1k",
+      aiCreditCostPerImage: heroCreditCost,
+      aiBillingMode: "durable-credits",
+      aiChargeImages: true,
+      aiUsesManagedKey: true,
+      heroImageProvider: "runpod",
+      heroImageModel: "z-image-turbo",
+      heroImageRoute: "runpod-public",
+    } as const;
     await ensureMonthlyGrant(userId);
     const balance = await getBalance(userId);
     const totalCreditCost = clipsToGenerate * heroCreditCost;
     if (balance.total < totalCreditCost) {
       await recordFetchStockTelemetry("error", {
+        ...heroAiTelemetry,
         providerErrorCode: "insufficient_credits",
         errorProvider: "runpod",
         heroImagePlannedCount: clipsToGenerate,
@@ -1675,6 +1687,7 @@ export async function POST(req: Request) {
     stockTelemetry.servedClipCount = results.length;
     if (failures.length > 0) {
       await recordFetchStockTelemetry("error", {
+        ...heroAiTelemetry,
         providerErrorCode: failures[0].code,
         errorProvider: "runpod",
         failedSceneCount: failures.length,
@@ -1688,9 +1701,7 @@ export async function POST(req: Request) {
       }, { status: failures[0].code === "INSUFFICIENT_CREDITS" ? 402 : 503 });
     }
     await recordFetchStockTelemetry("done", {
-      heroImageProvider: "runpod",
-      heroImageModel: "z-image-turbo",
-      heroImageRoute: "runpod-public",
+      ...heroAiTelemetry,
       heroImageGeneratedCount: results.length,
       heroImageCredits: results.length * heroCreditCost,
     });

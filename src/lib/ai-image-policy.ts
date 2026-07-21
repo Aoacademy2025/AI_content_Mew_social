@@ -126,14 +126,26 @@ export function buildArtworkOnlyPrompt(prompt: string, style: AiImageStyle): {
   negative: string;
 } {
   const subject = prompt.replace(/\s+/g, " ").trim().slice(0, 1_500);
+  // RunPod Public Z-Image currently accepts only a positive prompt. Describe
+  // the wanted composition first without naming unwanted layouts: diffusion
+  // text encoders may otherwise treat a negated concept as a positive cue.
+  const singleFrameGuard = [
+    "ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE",
+    "depict exactly one moment from exactly one camera view",
+    "use one spatially continuous scene across the entire canvas",
+    "keep a consistent subject, setting, lighting and perspective throughout the canvas",
+  ].join(", ");
   const positive = [
+    singleFrameGuard,
     subject,
     STYLE_PROMPT[style],
-    "standalone visual artwork with no written language anywhere in the image",
-    "leave any signage, screens, labels, packaging, clothing and background surfaces completely blank",
+    "standalone language-free visual artwork",
+    "all signage, screens, labels, packaging, clothing and background surfaces are blank and unmarked",
   ].filter(Boolean).join(". ") + ".";
 
   const negative = [
+    "collage", "triptych", "diptych", "contact sheet", "storyboard", "split screen",
+    "grid", "sequence", "repeated scene", "multiple views", "panels", "panel borders",
     "text", "letters", "words", "typography", "caption", "subtitle", "headline",
     "logo", "watermark", "signature", "numbers", "symbols", "signage", "label",
     "Thai writing", "English writing", "Chinese writing", "Japanese writing",

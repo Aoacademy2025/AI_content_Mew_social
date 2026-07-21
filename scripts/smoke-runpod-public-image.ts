@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
 import { buildArtworkOnlyPrompt } from "../src/lib/ai-image-policy";
+import { buildKieImagePrompt } from "../src/lib/kie-image-prompt";
 import { publicZImageProviderInput, type RunpodJobResponse } from "../src/lib/runpod-image-contract";
 
 dotenv.config({ path: ".env", override: false, quiet: true });
@@ -11,10 +12,11 @@ const endpointId = process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID?.trim() || "z-im
 const resumeJobId = process.argv.slice(2).find((item) => item.startsWith("--job-id="))?.slice("--job-id=".length).trim();
 if (!apiKey) throw new Error("RUNPOD_API_KEY is missing");
 
-const prompt = buildArtworkOnlyPrompt(
-  "A Thai specialty coffee shop owner preparing a hand-poured coffee in soft morning window light, vertical cinematic composition",
-  "cinematic",
+const videoPrompt = buildKieImagePrompt(
+  "a Thai specialty coffee shop owner preparing one hand-poured coffee in soft morning window light",
+  { region: "thai", style: "cinematic" },
 );
+const prompt = buildArtworkOnlyPrompt(videoPrompt, "cinematic");
 const providerInput = publicZImageProviderInput({
   prompt: prompt.positive,
   negativePrompt: prompt.negative,

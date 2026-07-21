@@ -26,14 +26,14 @@ check("includes the subject", p1.toLowerCase().includes("bitcoin price surge"));
 check("includes the domain", p1.toLowerCase().includes("cryptocurrency finance"));
 check("includes concrete concepts", p1.toLowerCase().includes("bitcoin coin"));
 check("includes visual direction", p1.toLowerCase().includes("newsroom"));
-check("has anti-text guard", /no text, no watermark/i.test(p1));
+check("has language-free guard", /language-free surfaces/i.test(p1));
 check("ends as one sentence", p1.trim().endsWith("."));
 check("limits concepts to <=2", (p1.match(/bitcoin coin|trading chart|candlestick/gi) ?? []).length <= 2);
 
 // degrades gracefully with no spec/direction
 const p2 = buildKieImagePrompt("a quiet morning coffee", { terms: null });
 check("no-spec: still has subject", p2.toLowerCase().includes("quiet morning coffee"));
-check("no-spec: still has anti-text guard", /no text, no watermark/i.test(p2));
+check("no-spec: still has language-free guard", /language-free surfaces/i.test(p2));
 check("no-spec: no 'general' domain leaks in", !/in a general setting/i.test(p2));
 
 // empty subject must not crash and must still produce a usable prompt
@@ -62,11 +62,12 @@ check("cinematic film still", /film still|dramatic lighting/i.test(cinematic));
 // default unchanged shape
 const def = buildKieImagePrompt("coffee shop");
 check("default photorealistic", /cinematic, photorealistic vertical 9:16 photograph/.test(def));
-check("default keeps grid guard", /no collage, no grid/.test(def));
+check("default keeps a positive single-view guard", /one unified edge-to-edge composition.*one spatially continuous camera view/.test(def));
+check("default does not cue unwanted layouts", !/collage|grid|storyboard|split screen/.test(def));
 
 // no-people region
 const nop = buildKieImagePrompt("desk setup", { region: "no-people" });
-check("no-people clause", /no people, no faces/.test(nop));
+check("no-people clause", /unoccupied setting focused exclusively on objects/.test(nop));
 
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll kie-image-prompt checks passed.");

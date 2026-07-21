@@ -22,10 +22,13 @@ function check(name: string, condition: boolean) {
 
 const guarded = buildArtworkOnlyPrompt("เจ้าของร้านกาแฟในแสงเช้า", "editorial");
 check("image prompt keeps the customer's subject", guarded.positive.includes("เจ้าของร้านกาแฟ"));
-check("image prompt bans all written language", /no written language anywhere/i.test(guarded.positive));
+check("image prompt leads with the single-frame invariant", guarded.positive.startsWith("ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE"));
+check("positive prompt avoids unwanted layout nouns", !/collage|storyboard|split screen|triptych|contact sheet/i.test(guarded.positive));
+check("image prompt requires language-free artwork", /language-free visual artwork/i.test(guarded.positive));
 check("image prompt keeps signs and labels blank", /signage, screens, labels/i.test(guarded.positive));
 check("negative prompt bans Thai and English writing", guarded.negative.includes("Thai writing") && guarded.negative.includes("English writing"));
 check("negative prompt bans logos and watermarks", guarded.negative.includes("logo") && guarded.negative.includes("watermark"));
+check("negative prompt bans multi-panel compositions", guarded.negative.includes("triptych") && guarded.negative.includes("panel borders"));
 check("model registry exposes exactly the allowlisted models", AI_IMAGE_MODELS.length === 4 && AI_IMAGE_MODELS.every((model) => isAiImageModelId(model.id)));
 check(
   "Z-Image uses the official Runpod public endpoint contract",

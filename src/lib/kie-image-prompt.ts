@@ -48,7 +48,7 @@ const REGION_CLAUSES: Record<Exclude<BrollRegionPreference, "auto">, string> = {
   thai: "any people shown are Thai or Southeast Asian, in a Thailand local setting",
   european: "any people shown are European or Western, in a European or Western setting",
   global: "people shown are diverse and international",
-  "no-people": "no people, no faces, focus on objects and environment",
+  "no-people": "an unoccupied setting focused exclusively on objects and environment",
 };
 
 export function buildKieImagePrompt(
@@ -71,10 +71,9 @@ export function buildKieImagePrompt(
   if (domain) parts.push(`in a ${domain} setting`);
   if (concepts.length) parts.push(`featuring ${concepts.join(" and ")}`);
   if (dir) parts.push(dir.replace(/[.?!]+$/g, ""));
-  // A single uninterrupted scene — abstract subjects (e.g. "step by step guide") otherwise
-  // make the model render a multi-panel storyboard/grid, which looks broken as a full-frame
-  // b-roll clip under Ken Burns. Guard the composition explicitly.
-  parts.push("a single uninterrupted scene, one continuous frame");
-  parts.push(`${looks.look}, no text, no watermark, no logo, no caption, no collage, no grid, no split screen, no multiple panels, no storyboard, no comic layout, no borders`);
+  // Use positive-only composition language. Some providers expose only one
+  // prompt field and can turn even negated layout nouns into visual cues.
+  parts.push("one unified edge-to-edge composition, one spatially continuous camera view captured at one decisive moment");
+  parts.push(`${looks.look}, purely visual language-free surfaces, blank unmarked signs and labels`);
   return `${parts.join(", ")}.`;
 }
