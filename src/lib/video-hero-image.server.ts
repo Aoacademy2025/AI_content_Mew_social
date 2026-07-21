@@ -52,6 +52,8 @@ export type HeroImageGenerationResult = {
   jobId: string;
   outputUrl: string;
   creditCost: number;
+  creditsFromGranted: number;
+  creditsFromPurchased: number;
   provider: "runpod";
   providerModel: "z-image-turbo";
   providerRoute: string | null;
@@ -72,6 +74,8 @@ function completedResult(job: AiGenerationJob): HeroImageGenerationResult {
     jobId: job.id,
     outputUrl: job.outputUrl,
     creditCost: job.creditCost,
+    creditsFromGranted: job.creditsFromGranted,
+    creditsFromPurchased: job.creditsFromPurchased,
     provider: "runpod",
     providerModel: "z-image-turbo",
     providerRoute: job.providerRoute,

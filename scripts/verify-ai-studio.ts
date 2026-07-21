@@ -183,6 +183,14 @@ check(
     && heroVideoImage.includes("provider id for later reconciliation"),
 );
 check(
+  "Hero image telemetry carries exact credit buckets and final balance",
+  heroVideoImage.includes("creditsFromGranted: job.creditsFromGranted")
+    && heroVideoImage.includes("creditsFromPurchased: job.creditsFromPurchased")
+    && fetchStockRoute.includes("aiCreditsSpentGranted += generated.creditsFromGranted")
+    && fetchStockRoute.includes("aiCreditsSpentPurchased += generated.creditsFromPurchased")
+    && fetchStockRoute.includes("aiLastCreditBalanceAfterSpend = heroBalanceAfter.total"),
+);
+check(
   "per-scene AI Image stays visible but disabled outside the beta",
   editorInspector.includes('label: "AI Image"') &&
     editorInspector.includes('badge: aiImageEnabled ? undefined : "เร็ว ๆ นี้"') &&

@@ -1639,6 +1639,8 @@ export async function POST(req: Request) {
           aiTelemetry.aiGenSuccessCount++;
           aiTelemetry.aiChargedCount++;
           aiTelemetry.aiCreditsSpent += generated.creditCost;
+          aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted;
+          aiTelemetry.aiCreditsSpentPurchased += generated.creditsFromPurchased;
           await recordTelemetryEvent(userId, {
             name: "hero_ai_image_video_scene_done",
             category: "performance",
@@ -1682,6 +1684,8 @@ export async function POST(req: Request) {
     );
 
     results.sort((a, b) => (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0));
+    const heroBalanceAfter = await getBalance(userId);
+    aiTelemetry.aiLastCreditBalanceAfterSpend = heroBalanceAfter.total;
     stockTelemetry.foundCount = results.length;
     stockTelemetry.cappedCount = results.length;
     stockTelemetry.servedClipCount = results.length;
