@@ -209,7 +209,7 @@ export async function finishJob(
 // ── Versioned output (ADR 0001) ──────────────────────────────────────────────
 // v1 (MCP full pipeline, ORIGINAL shape): { videoUrl, videoId }
 // v2 preview (Editor v2 background render): { version: 2, mode: "preview", videoUrl,
-//   preview: { captions, config, voiceUrl, audioDurationMs, avatarModel, avatarVideoUrl,
+//   preview: { captions, config, voiceUrl, voiceModel, audioDurationMs, avatarModel, avatarVideoUrl,
 //   avatarMode, avatarIntroSecs, avatarTailSecs, compositeBaseUrl, tailAvatarUrl } }
 // Readers MUST accept both — old rows never get migrated.
 
@@ -217,6 +217,8 @@ export interface VideoJobPreviewData {
   captions: { text: string; startMs: number; endMs: number; tag?: string }[];
   config: Record<string, unknown>;
   voiceUrl: string;
+  /** Exact TTS voice used for Gallery metadata. Optional for pre-field preview rows. */
+  voiceModel?: string;
   audioDurationMs: number;
   avatarModel?: string;
   avatarVideoUrl?: string | null;

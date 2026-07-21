@@ -196,11 +196,11 @@ export function PostPhase({
         </aside>
 
         {/* ── กลาง: preview + ซับสด ── */}
-        <main className="flex min-w-0 flex-1 items-center justify-center p-4" style={{ background: color.bg0 }}>
+        <main className="flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden p-4" style={{ background: color.bg0 }}>
           <div
             className="relative"
             data-video-preview-frame="true"
-            style={{ height: "min(72vh, 640px)", aspectRatio: "9/16", containerType: "size" }}
+            style={{ height: "min(100%, 640px)", aspectRatio: "9/16", containerType: "size" }}
           >
             <video
               ref={ed.videoRef}
