@@ -11,6 +11,7 @@ import {
   userInOmniVoiceAllowlist,
 } from "../src/lib/omnivoice-core";
 import { parseTtsProvider, resolveJobTtsProvider } from "../src/lib/tts-providers";
+import { omnivoiceScriptCharCapForPlan } from "../src/lib/omnivoice-limits";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = "") {
@@ -96,8 +97,16 @@ check("orchestrator: OmniVoice synthesis explicitly disables retries", omniCall.
 check("job admission: OmniVoice readiness is checked before enqueue", jobsRouteSource.includes("await checkOmniVoiceReady(config)"));
 check("timing invariant: worker receives the exact chunk text", omniRouteSource.includes("chunks[index].text") && !omniRouteSource.includes("normalizeNumbersForTts"));
 check("capacity: managed AI-audio reserve is enforced", omniRouteSource.includes("reserveAiAudioMinutes(user.id, estimatedMinutes, { enforce: true })"));
-check("capacity: canary script ceiling defaults to 500 characters", configSource.includes("50, 1000, 500"));
-check("timeout: upstream budget leaves post-processing headroom", configSource.includes("250_000, 240_000"));
+check("Studio voice: package minutes are reserved before worker generation", omniRouteSource.includes("studioReservedMin = Math.max(1, Math.ceil(estimatedMinutes))") && omniRouteSource.includes("reserveMinutes(user.id, studioReservedMin)"));
+check("Studio voice: failed worker generation refunds package minutes", omniRouteSource.includes("refundMinutes(user.id, studioReservedMin)"));
+check("capacity: upstream chunks default below legacy 500-char worker ceiling", configSource.includes("800,") && configSource.includes("450,"));
+check("package: Free script cap follows the 2-minute tier", omnivoiceScriptCharCapForPlan("FREE") === 1680);
+check("package: Pro script cap follows the 6-minute tier", omnivoiceScriptCharCapForPlan("PRO") === 5040);
+check("package: Business script cap follows the 10-minute tier", omnivoiceScriptCharCapForPlan("BUSINESS") === 8400);
+check("timeout: route supports long package-compliant jobs", /840_000,\s*540_000/.test(configSource));
+check("RunPod: provider POST is never automatically retried", configSource.includes("Never automatically retry this POST"));
+check("RunPod: queue jobs are polled by their durable provider id", configSource.includes("status/${encodeURIComponent(providerJobId)}"));
+check("RunPod: readiness does not cold-start a paid worker", configSource.includes("RUNPOD_REST_API"));
 
 const backgroundRuntimeImport = spawnSync(
   process.execPath,

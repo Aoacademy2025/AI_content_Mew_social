@@ -1,0 +1,23 @@
+[
+  {
+    "id": "voice_01",
+    "desc": "เสียงผู้ชาย โทนปกติ",
+    "instruct": "male",
+    "ref_audio": "voice_01.wav",
+    "ref_text": "สวัสดีครับ ยินดีต้อนรับเข้าสู่บริการของเรา"
+  },
+  {
+    "id": "voice_02",
+    "desc": "เสียงผู้หญิง โทนปกติ",
+    "instruct": "female",
+    "ref_audio": "voice_02.wav",
+    "ref_text": "สวัสดีค่ะ ยินดีให้บริการนะคะ"
+  },
+  {
+    "id": "voice_03",
+    "desc": "เสียงผู้ชาย โทนสูง สดใส",
+    "instruct": "male, high pitch",
+    "ref_audio": "voice_03.wav",
+    "ref_text": "วันนี้เป็นวันที่ดีมากเลยนะครับ"
+  }
+]

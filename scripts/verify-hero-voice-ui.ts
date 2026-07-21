@@ -23,13 +23,15 @@ const preview = read("src/app/(dashboard)/video-editor/_components/VoicePreviewB
 const shell = read("src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx");
 const jobsRoute = read("src/app/api/videos/jobs/route.ts");
 
-assert.match(brand, /HERO_VOICE_NAME\s*=\s*["']Hero Voice["']/);
+assert.match(brand, /HERO_VOICE_NAME\s*=\s*["']Hero AI Voice["']/);
 assert.match(brand, /HERO_VOICE_COMING_SOON\s*=\s*["']เร็ว ๆ นี้["']/);
+assert.match(brand, /HERO_VOICE_TEASER_VISIBLE\s*=\s*process\.env\.NEXT_PUBLIC_HERO_VOICE_TEASER\s*!==\s*["']0["']/,
+  "Hero Voice teaser is visible by default with an explicit emergency rollback switch");
 
-assert.match(step2, /value:\s*["']omnivoice["'][\s\S]{0,220}badge:\s*HERO_VOICE_COMING_SOON/,
-  "Hero Voice stays visible with its coming-soon badge");
-assert.match(step2, /heroVoiceVisible\s*=\s*OMNIVOICE_UI_ENABLED \|\| p\.voiceEngine === "omnivoice"/,
-  "the emergency client kill switch can still remove the teaser");
+assert.match(step2, /value:\s*["']omnivoice["'][\s\S]{0,260}badge:\s*p\.omniVoiceEnabled \? ["']Beta · RunPod["'] : HERO_VOICE_COMING_SOON/,
+  "Hero AI Voice shows RunPod Beta only when the backend is available");
+assert.match(step2, /heroVoiceVisible\s*=\s*HERO_VOICE_TEASER_VISIBLE \|\| OMNIVOICE_UI_ENABLED \|\| p\.voiceEngine === "omnivoice"/,
+  "the teaser stays visible independently from provider availability");
 assert.match(step2, /disabled:\s*!p\.omniVoiceEnabled/,
   "non-allowlisted users see but cannot select Hero Voice");
 assert.match(step2, /max-\[360px\]:grid-cols-\[34px_minmax\(0,1fr\)\]/,

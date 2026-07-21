@@ -12,12 +12,13 @@ import {
   isValidMp4Path,
   safeUnlink,
 } from "@/lib/broll-asset-lib";
+import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 
 // POST /api/videos/broll-window/select — Phase 2 "เปลี่ยนรูป" tab (Task 7).
 // Downloads the candidate the user picked in /search, re-encodes it Remotion-safe
 // (same pipeline as fetch-stock), and hands back a locally-served src the editor
-// can drop straight into the window's `bgVideos[]` entry. Gated behind
-// NEXT_PUBLIC_BROLL_WINDOW_EDIT, same as /search.
+// can drop straight into the window's `bgVideos[]` entry. Internal AI testers receive
+// the beta before the NEXT_PUBLIC_BROLL_WINDOW_EDIT public rollout, matching /search.
 
 export const runtime = "nodejs";
 
@@ -75,12 +76,12 @@ function ffprobeDurationSec(filePath: string): number {
 }
 
 export async function POST(req: Request) {
-  if (process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT !== "1") {
+  const user = await getCurrentUser();
+  const publicEnabled = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
+  if (!user) return NextResponse.json({ error: publicEnabled ? "Unauthorized" : "not_enabled" }, { status: publicEnabled ? 401 : 404 });
+  if (!isInternalAiBetaEnabledFor(user, publicEnabled)) {
     return NextResponse.json({ error: "not_enabled" }, { status: 404 });
   }
-
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = (await req.json().catch(() => null)) as { videoUrl?: unknown; provider?: unknown; keyword?: unknown } | null;
   const videoUrl = typeof body?.videoUrl === "string" ? body.videoUrl.trim() : "";

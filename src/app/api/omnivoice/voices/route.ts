@@ -13,10 +13,19 @@ export const runtime = "nodejs";
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!isOmniVoiceUserAllowed(user.id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!isOmniVoiceUserAllowed(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   try {
     const config = omnivoiceConfig();
+    if (config.backend === "runpod") {
+      // The queue worker intentionally exposes only TTS jobs. Keep its served
+      // catalog server-owned so listing voices never calls the retired KVM2 API.
+      return NextResponse.json([
+        { voice_id: "voice_01", desc: "เสียงผู้ชาย โทนปกติ", instruct: "male", preview_url: "" },
+        { voice_id: "voice_02", desc: "เสียงผู้หญิง โทนปกติ", instruct: "female", preview_url: "" },
+        { voice_id: "voice_03", desc: "เสียงผู้ชาย โทนสูง สดใส", instruct: "male, high pitch", preview_url: "" },
+      ], { headers: { "Cache-Control": "private, max-age=300" } });
+    }
     const response = await fetch(`${config.baseUrl}/voices`, {
       headers: omnivoiceAuthHeaders(config.apiKey),
       cache: "no-store",

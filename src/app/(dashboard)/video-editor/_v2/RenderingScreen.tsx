@@ -12,13 +12,22 @@ import type { V2JobState } from "./useV2Job";
 
 // map currentStep (tts|captions|keywords|stock|config|render|avatar|burn|composite labels)
 // → เช็กลิสต์ภาษาคน 4-5 ข้อตามดีไซน์
-const CHECKLIST: { key: string; label: string; steps: string[]; optional?: boolean }[] = [
-  { key: "voice", label: "สร้างเสียงพากย์", steps: ["tts"] },
-  { key: "subs", label: "ถอดซับไทยให้ตรงเสียงเป๊ะ", steps: ["captions"] },
-  { key: "broll", label: "กำลังหาบีโรลให้เข้ากับเนื้อหา", steps: ["keywords", "stock"] },
-  { key: "assemble", label: "ประกอบวิดีโอ + เพลง + ซับ", steps: ["config", "render"] },
-  { key: "avatar", label: "สร้างพิธีกร AI + วางบนวิดีโอ", steps: ["avatar"], optional: true },
-];
+type VisualMode = "stock" | "ai-image" | "automix";
+
+function creationChecklist(visualMode: VisualMode) {
+  const visualLabel = visualMode === "ai-image"
+    ? "สร้าง Hero AI Image ตามแต่ละฉาก"
+    : visualMode === "automix"
+      ? "จัด AutoMix ตามแต่ละฉาก"
+      : "ค้นหาบีโรลตามแต่ละฉาก";
+  return [
+    { key: "voice", label: "สร้างเสียงพากย์", steps: ["tts"] },
+    { key: "subs", label: "แบ่งฉากตามจังหวะเสียงจริง", steps: ["captions"] },
+    { key: "broll", label: visualLabel, steps: ["keywords", "stock"] },
+    { key: "assemble", label: "ประกอบวิดีโอ + เพลง + ซับ", steps: ["config", "render"] },
+    { key: "avatar", label: "สร้างพิธีกร AI + วางบนวิดีโอ", steps: ["avatar"], optional: true },
+  ];
+}
 
 function checklistIndex(list: { steps: string[] }[], currentStep: string | null): number {
   if (!currentStep) return 0;
@@ -40,14 +49,15 @@ const EXPORT_CHECKLIST: { key: string; label: string; steps: string[]; optional?
   { key: "save", label: "บันทึกวิดีโอเข้า Gallery", steps: ["save"] },
 ];
 
-export function RenderingScreen({ job, hasAvatar, uploadMode = false, exportMode = false, onCancel }: {
+export function RenderingScreen({ job, hasAvatar, uploadMode = false, exportMode = false, visualMode = "stock", onCancel }: {
   job: V2JobState;
   hasAvatar: boolean;
   uploadMode?: boolean;
   exportMode?: boolean;
+  visualMode?: VisualMode;
   onCancel: () => void;
 }) {
-  const baseList = exportMode ? EXPORT_CHECKLIST : uploadMode ? UPLOAD_CHECKLIST : CHECKLIST;
+  const baseList = exportMode ? EXPORT_CHECKLIST : uploadMode ? UPLOAD_CHECKLIST : creationChecklist(visualMode);
   const items = baseList.filter((c) => !c.optional || hasAvatar);
   const activeIdx = checklistIndex(items, job.currentStep);
   const pct = Math.max(0, Math.min(100, job.progress));

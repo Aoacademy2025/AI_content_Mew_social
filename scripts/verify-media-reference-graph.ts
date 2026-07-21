@@ -553,6 +553,7 @@ async function main(): Promise<void> {
     "project-draft": 16,
     "render-job": 3,
     "generated-image": 5,
+    "ai-generation-job": 0,
   });
 
   for (const [key, expectedOwner, expectedExpiry] of [

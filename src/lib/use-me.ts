@@ -24,6 +24,8 @@ export interface MeData {
   cancelAt?: string | null;
   trialStartedAt?: string | null;
   trialEndsAt?: string | null;
+  internalAiTester?: boolean;
+  heroAiBeta?: boolean;
   [key: string]: unknown;
 }
 

@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+test_contract.py
+test_input.json
+README.md

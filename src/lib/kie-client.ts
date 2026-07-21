@@ -21,8 +21,18 @@ interface KieRecordInfoResponse {
     state: "waiting" | "queuing" | "generating" | "success" | "fail";
     resultJson?: string;
     failMsg?: string;
+    costTime?: number;
+    creditsConsumed?: number;
   };
 }
+
+export type KieTaskSnapshot = {
+  state: "waiting" | "queuing" | "generating" | "success" | "fail";
+  resultUrl?: string;
+  failMessage?: string;
+  executionTimeMs?: number;
+  creditsConsumed?: number;
+};
 
 // อ่าน body เป็น text ก่อนเสมอ — kie.ai อาจตอบ body ว่างหรือ non-JSON เวลา error
 // (เช่น 401/500 บางกรณี) ซึ่งทำให้ res.json() throw "Unexpected end of JSON input"
@@ -43,6 +53,8 @@ export async function kieCreateTask(model: string, input: Record<string, unknown
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ model, input }),
+    cache: "no-store",
+    signal: AbortSignal.timeout(20_000),
   });
   const data = await parseKieResponse<KieCreateTaskResponse>(res);
   const taskId = data.data?.taskId;
@@ -50,22 +62,47 @@ export async function kieCreateTask(model: string, input: Record<string, unknown
   return taskId;
 }
 
+/** Fetch one durable task snapshot. Customer-facing job polling must never hold
+ * a request open for the full provider timeout, so AI Studio uses this one-shot
+ * form while older batch call sites may continue using kiePollResult. */
+export async function kieGetTask(taskId: string, token: string): Promise<KieTaskSnapshot> {
+  const res = await fetch(`${KIE_API_BASE}/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: "no-store",
+    signal: AbortSignal.timeout(20_000),
+  });
+  const response = await parseKieResponse<KieRecordInfoResponse>(res);
+  const data = response.data;
+  if (!data?.state) throw new Error(`kie.ai task ${taskId} returned no state`);
+
+  let resultUrl: string | undefined;
+  if (data.state === "success") {
+    try {
+      const parsed = data.resultJson ? JSON.parse(data.resultJson) as { resultUrls?: unknown } : {};
+      const first = Array.isArray(parsed.resultUrls) ? parsed.resultUrls[0] : undefined;
+      if (typeof first === "string" && first.trim()) resultUrl = first;
+    } catch {
+      throw new Error(`kie.ai task ${taskId} returned invalid resultJson`);
+    }
+    if (!resultUrl) throw new Error(`kie.ai task ${taskId} succeeded but has no resultUrls`);
+  }
+
+  return {
+    state: data.state,
+    resultUrl,
+    failMessage: data.failMsg,
+    executionTimeMs: Number.isFinite(data.costTime) ? Math.max(0, Math.round(data.costTime!)) : undefined,
+    creditsConsumed: Number.isFinite(data.creditsConsumed) ? Math.max(0, Number(data.creditsConsumed)) : undefined,
+  };
+}
+
 // Poll /jobs/recordInfo until state is success/fail, returns resultUrls[0]
 export async function kiePollResult(taskId: string, token: string): Promise<string> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < KIE_POLL_TIMEOUT_MS) {
-    const res = await fetch(`${KIE_API_BASE}/jobs/recordInfo?taskId=${encodeURIComponent(taskId)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await parseKieResponse<KieRecordInfoResponse>(res);
-    const state = data.data?.state;
-    if (state === "success") {
-      const resultJson = data.data?.resultJson ? JSON.parse(data.data.resultJson) : {};
-      const url = resultJson.resultUrls?.[0];
-      if (!url) throw new Error(`kie.ai task ${taskId} succeeded but has no resultUrls`);
-      return url;
-    }
-    if (state === "fail") throw new Error(`kie.ai task ${taskId} failed: ${data.data?.failMsg ?? "unknown error"}`);
+    const snapshot = await kieGetTask(taskId, token);
+    if (snapshot.state === "success") return snapshot.resultUrl!;
+    if (snapshot.state === "fail") throw new Error(`kie.ai task ${taskId} failed: ${snapshot.failMessage ?? "unknown error"}`);
     await new Promise((r) => setTimeout(r, KIE_POLL_INTERVAL_MS));
   }
   throw new Error(`kie.ai task ${taskId} timed out after ${KIE_POLL_TIMEOUT_MS}ms`);

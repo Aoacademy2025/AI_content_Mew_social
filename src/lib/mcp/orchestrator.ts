@@ -49,6 +49,7 @@ import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { resolveJobTtsProvider } from "@/lib/tts-providers";
+import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -81,6 +82,8 @@ interface CreateInput {
   script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs" | "omnivoice"; voiceId?: string;
   /** OmniVoice voice_id — defaults to voice_01 only for legacy saved jobs. */
   omniVoiceId?: string;
+  /** Backend pinned by the accepting server; never selected by a browser. */
+  voiceBackend?: "runpod" | "hostinger";
   avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
   avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number;
   bgmFile?: string; bgmVolume?: number;
@@ -100,6 +103,9 @@ interface CreateInput {
   brollVisualStyle?: string;
   /** โมเดลภาพ AI (Beta, admin-gated at the web route) */
   kieModel?: string;
+  /** Hero AI Image is a separate RunPod-only product seam, not a KIE model. */
+  imageEngine?: "runpod";
+  imageModel?: "z-image-turbo";
   /** แหล่งภาพ Auto Mix (Beta, admin-gated at the web route) */
   autoMixProviders?: string[];
   /** Providers whose keys passed submit-time preflight (unknown remains fail-open). */
@@ -447,7 +453,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const input = JSON.parse(job.inputJson) as CreateInput;
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const requestedProvider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider);
-    if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(userId)) {
+    if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(user)) {
       throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ — กรุณาสลับผู้ให้บริการเสียงแล้วลองใหม่");
     }
     const provider = requestedProvider;
@@ -840,6 +846,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             brollVisualStyle: input.brollVisualStyle,
           }, upAligned.windows.length > 0),
           ...(input.kieModel ? { kieModel: input.kieModel } : {}),
+          ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
+          ...(input.imageModel ? { imageModel: input.imageModel } : {}),
+          videoJobId: jobId,
           ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
           ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
           ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
@@ -911,7 +920,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       : provider === "omnivoice"
         ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
             "/api/videos/tts-omnivoice",
-            { text: input.script, voiceId: input.omniVoiceId ?? "voice_01" },
+            {
+              text: input.script,
+              voiceId: input.omniVoiceId ?? "voice_01",
+              ...(input.voiceBackend ? { backend: input.voiceBackend } : {}),
+            },
             { retries: 0 },
           )
         : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
@@ -1000,7 +1013,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // "พื้นหลังไม่เนียน / แล้วตัด"). Gated on the SAME flag as web so both surfaces stay in
     // lockstep. In window mode generate-config places one clip per window (ignoring
     // sceneClipCounts); subtitle timing is untouched.
-    const brollWindowMode = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
+    const brollWindowMode = isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1");
     const brollWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
     const brollWindows = brollWindowMode
       ? buildBrollWindows(
@@ -1043,6 +1056,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         }, aligned.windows.length > 0),
         // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
         ...(input.kieModel ? { kieModel: input.kieModel } : {}),
+        ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
+        ...(input.imageModel ? { imageModel: input.imageModel } : {}),
+        videoJobId: jobId,
         ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
         ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
         ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),

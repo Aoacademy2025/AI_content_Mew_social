@@ -13,15 +13,52 @@ export {
   isOmniVoiceUserAllowed,
 } from "@/lib/omnivoice-policy";
 
+export type OmniVoiceBackend = "hostinger" | "runpod";
+
 export interface OmniTtsResponse {
   voice_id: string;
-  text: string;
+  text?: string;
   audio_base64: string;
   format: string;
   sample_rate: number;
   duration: number;
   generation_time: number;
+  worker_version?: string;
 }
+
+type OmniVoiceCommonConfig = {
+  backend: OmniVoiceBackend;
+  numStep: number;
+  maxChunkChars: number;
+  requestBudgetMs: number;
+};
+
+export type OmniVoiceConfig = OmniVoiceCommonConfig & (
+  | { backend: "hostinger"; baseUrl: string; apiKey: string }
+  | { backend: "runpod"; endpointId: string; apiKey: string }
+);
+
+export type OmniVoiceCallResult =
+  | {
+      ok: true;
+      response: OmniTtsResponse;
+      providerJobId?: string;
+      delayTimeMs: number;
+      executionTimeMs: number;
+    }
+  | { ok: false; status: number; reason: string; retryAfter?: string };
+
+type RunpodTtsJob = {
+  id?: string;
+  status?: "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED" | "FAILED" | "TIMED_OUT" | "CANCELLED";
+  output?: Partial<OmniTtsResponse> & { error?: string };
+  error?: string;
+  delayTime?: number;
+  executionTime?: number;
+};
+
+const RUNPOD_QUEUE_API = "https://api.runpod.ai/v2";
+const RUNPOD_REST_API = "https://rest.runpod.io/v1";
 
 export class OmniVoiceConfigError extends Error {
   constructor(message: string) {
@@ -30,16 +67,45 @@ export class OmniVoiceConfigError extends Error {
   }
 }
 
-export function omnivoiceConfig(): {
-  baseUrl: string;
-  apiKey: string;
-  numStep: number;
-  maxScriptChars: number;
-  requestBudgetMs: number;
-} {
+function parseBackend(value: string | undefined): OmniVoiceBackend {
+  return value?.trim().toLowerCase() === "runpod" ? "runpod" : "hostinger";
+}
+
+/** Resolve one immutable backend configuration. A VideoJob records this backend
+ * when it is accepted, so a later rollout switch cannot move that job between
+ * providers halfway through its pipeline. */
+export function omnivoiceConfig(pinnedBackend?: OmniVoiceBackend): OmniVoiceConfig {
   if (!isOmniVoiceServerEnabled()) {
     throw new OmniVoiceConfigError("OmniVoice is disabled");
   }
+  const backend = pinnedBackend ?? parseBackend(process.env.OMNIVOICE_BACKEND);
+  const common = {
+    numStep: clampInteger(process.env.OMNIVOICE_NUM_STEP, 4, 8, 4),
+    // Upstream chunk size, not the subscription output ceiling. The RunPod
+    // worker enforces an 800-character hard maximum.
+    maxChunkChars: clampInteger(
+      process.env.OMNIVOICE_MAX_CHUNK_CHARS ?? process.env.OMNIVOICE_MAX_SCRIPT_CHARS,
+      100,
+      800,
+      backend === "runpod" ? 700 : 450,
+    ),
+    requestBudgetMs: clampInteger(
+      process.env.OMNIVOICE_REQUEST_BUDGET_MS,
+      30_000,
+      840_000,
+      540_000,
+    ),
+  };
+
+  if (backend === "runpod") {
+    const endpointId = (process.env.RUNPOD_OMNIVOICE_ENDPOINT_ID ?? "").trim();
+    const apiKey = (process.env.RUNPOD_API_KEY ?? "").trim();
+    if (!endpointId || !apiKey) {
+      throw new OmniVoiceConfigError("RunPod OmniVoice endpoint or API key is missing");
+    }
+    return { backend, endpointId, apiKey, ...common };
+  }
+
   const baseUrl = (process.env.OMNIVOICE_URL ?? "").trim().replace(/\/+$/, "");
   const apiKey = (process.env.OMNIVOICE_API_KEY ?? "").trim();
   if (!baseUrl || !apiKey) {
@@ -48,27 +114,32 @@ export function omnivoiceConfig(): {
   if (process.env.NODE_ENV === "production" && !baseUrl.startsWith("https://")) {
     throw new OmniVoiceConfigError("OmniVoice must use HTTPS in production");
   }
-  return {
-    baseUrl,
-    apiKey,
-    // KVM2 benchmark: step=4 is ~3.8x realtime; higher defaults miss the 300s route budget.
-    numStep: clampInteger(process.env.OMNIVOICE_NUM_STEP, 4, 8, 4),
-    maxScriptChars: clampInteger(process.env.OMNIVOICE_MAX_SCRIPT_CHARS, 50, 1000, 500),
-    // Leave at least 50s inside the 300s route for decode, disk/quota work and
-    // silence detection (which has its own 30s cap).
-    requestBudgetMs: clampInteger(process.env.OMNIVOICE_REQUEST_BUDGET_MS, 30_000, 250_000, 240_000),
-  };
+  return { backend, baseUrl, apiKey, ...common };
 }
 
 export function omnivoiceAuthHeaders(apiKey: string): Record<string, string> {
   return { "X-API-Key": apiKey };
 }
 
+function runpodHeaders(apiKey: string): Record<string, string> {
+  return { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+}
+
 export async function checkOmniVoiceReady(
-  config: ReturnType<typeof omnivoiceConfig>,
+  config: OmniVoiceConfig,
   timeoutMs = 3_000,
 ): Promise<boolean> {
   try {
+    if (config.backend === "runpod") {
+      // Read-only control-plane check: it verifies endpoint + credential without
+      // cold-starting a paid worker or injecting a synthetic queue item.
+      const response = await fetch(`${RUNPOD_REST_API}/endpoints/${encodeURIComponent(config.endpointId)}`, {
+        headers: runpodHeaders(config.apiKey),
+        cache: "no-store",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      return response.ok;
+    }
     const response = await fetch(`${config.baseUrl}/ready`, {
       headers: omnivoiceAuthHeaders(config.apiKey),
       cache: "no-store",
@@ -78,6 +149,180 @@ export async function checkOmniVoiceReady(
   } catch {
     return false;
   }
+}
+
+function validTtsPayload(value: unknown): value is OmniTtsResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const output = value as Partial<OmniTtsResponse>;
+  return typeof output.voice_id === "string"
+    && typeof output.audio_base64 === "string"
+    && output.audio_base64.length > 0
+    && output.audio_base64.length <= 30_000_000
+    && typeof output.sample_rate === "number"
+    && Number.isFinite(output.sample_rate)
+    && output.sample_rate >= 8_000
+    && output.sample_rate <= 96_000;
+}
+
+async function parseRunpodResponse(response: Response): Promise<RunpodTtsJob> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as RunpodTtsJob;
+  } catch {
+    throw new Error(`RunPod returned non-JSON status ${response.status}`);
+  }
+}
+
+async function runpodRequest(
+  config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
+  operation: string,
+  init: RequestInit,
+  deadline: number,
+): Promise<{ response: Response; body: RunpodTtsJob }> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs < 1_000) throw new DOMException("request budget exhausted", "TimeoutError");
+  const response = await fetch(
+    `${RUNPOD_QUEUE_API}/${encodeURIComponent(config.endpointId)}/${operation}`,
+    {
+      ...init,
+      headers: { ...runpodHeaders(config.apiKey), ...(init.headers ?? {}) },
+      cache: "no-store",
+      signal: AbortSignal.timeout(Math.min(20_000, remainingMs)),
+    },
+  );
+  const body = await parseRunpodResponse(response);
+  return { response, body };
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function callRunpodOmniVoice(
+  config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
+  voiceId: string,
+  text: string,
+  speed: number,
+  deadline: number,
+): Promise<OmniVoiceCallResult> {
+  let submitted: { response: Response; body: RunpodTtsJob };
+  try {
+    // Never automatically retry this POST: a lost response could otherwise
+    // submit duplicate paid GPU work.
+    submitted = await runpodRequest(config, "run", {
+      method: "POST",
+      body: JSON.stringify({
+        input: { voice_id: voiceId, text, speed, num_step: config.numStep },
+      }),
+    }, deadline);
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    return { ok: false, status: timedOut ? 504 : 503, reason: error instanceof Error ? error.message : "request failed" };
+  }
+  if (!submitted.response.ok || !submitted.body.id) {
+    return {
+      ok: false,
+      status: submitted.response.status === 429 ? 429 : 503,
+      reason: submitted.body.error || `RunPod submit failed (${submitted.response.status})`,
+      retryAfter: submitted.response.headers.get("retry-after") ?? undefined,
+    };
+  }
+
+  const providerJobId = submitted.body.id;
+  let transientPollFailures = 0;
+  while (Date.now() < deadline - 1_000) {
+    await wait(1_250);
+    try {
+      const polled = await runpodRequest(
+        config,
+        `status/${encodeURIComponent(providerJobId)}`,
+        { method: "GET" },
+        deadline,
+      );
+      if (!polled.response.ok) {
+        transientPollFailures += 1;
+        if (transientPollFailures < 4 && polled.response.status >= 500) continue;
+        return { ok: false, status: 503, reason: polled.body.error || `RunPod status failed (${polled.response.status})` };
+      }
+      transientPollFailures = 0;
+      const snapshot = polled.body;
+      if (snapshot.status === "COMPLETED") {
+        if (!validTtsPayload(snapshot.output)) {
+          return { ok: false, status: 502, reason: "invalid audio payload" };
+        }
+        return {
+          ok: true,
+          response: snapshot.output,
+          providerJobId,
+          delayTimeMs: typeof snapshot.delayTime === "number" ? Math.round(snapshot.delayTime) : 0,
+          executionTimeMs: typeof snapshot.executionTime === "number" ? Math.round(snapshot.executionTime) : 0,
+        };
+      }
+      if (snapshot.status === "FAILED" || snapshot.status === "TIMED_OUT" || snapshot.status === "CANCELLED") {
+        const reason = snapshot.error || snapshot.output?.error || `RunPod job ${snapshot.status.toLowerCase()}`;
+        const status = /VOICE_NOT_SERVED/i.test(reason) ? 404 : /INPUT_|VALIDATION|TEXT_/i.test(reason) ? 422 : 503;
+        return { ok: false, status, reason };
+      }
+    } catch (error) {
+      transientPollFailures += 1;
+      if (transientPollFailures >= 4) {
+        const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+        return { ok: false, status: timedOut ? 504 : 503, reason: error instanceof Error ? error.message : "status request failed" };
+      }
+    }
+  }
+  return { ok: false, status: 504, reason: "request budget exhausted" };
+}
+
+async function callHostingerOmniVoice(
+  config: Extract<OmniVoiceConfig, { backend: "hostinger" }>,
+  voiceId: string,
+  text: string,
+  speed: number,
+  deadline: number,
+): Promise<OmniVoiceCallResult> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs < 1_000) return { ok: false, status: 504, reason: "request budget exhausted" };
+  try {
+    const response = await fetch(`${config.baseUrl}/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...omnivoiceAuthHeaders(config.apiKey) },
+      body: JSON.stringify({ voice_id: voiceId, text, speed, num_step: config.numStep }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(remainingMs),
+    });
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        reason: (await response.text().catch(() => "")).slice(0, 200),
+        retryAfter: response.headers.get("retry-after") ?? undefined,
+      };
+    }
+    const data = await response.json() as unknown;
+    if (!validTtsPayload(data)) return { ok: false, status: 502, reason: "invalid audio payload" };
+    return {
+      ok: true,
+      response: data,
+      delayTimeMs: 0,
+      executionTimeMs: Math.round((data.generation_time || 0) * 1_000),
+    };
+  } catch (error) {
+    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+    return { ok: false, status: timedOut ? 504 : 503, reason: error instanceof Error ? error.message : "request failed" };
+  }
+}
+
+export function callOmniVoice(
+  config: OmniVoiceConfig,
+  voiceId: string,
+  text: string,
+  speed: number,
+  deadline: number,
+): Promise<OmniVoiceCallResult> {
+  return config.backend === "runpod"
+    ? callRunpodOmniVoice(config, voiceId, text, speed, deadline)
+    : callHostingerOmniVoice(config, voiceId, text, speed, deadline);
 }
 
 function clampInteger(value: string | undefined, min: number, max: number, fallback: number): number {

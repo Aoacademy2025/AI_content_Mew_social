@@ -75,6 +75,7 @@ export async function buildMediaReferenceGraph(
     "project-draft": 0,
     "render-job": 0,
     "generated-image": 0,
+    "ai-generation-job": 0,
   };
   const roots = mediaRootPaths(options.workspaceRoot);
   const errorKeys = new Set<string>();
@@ -207,7 +208,7 @@ export async function buildMediaReferenceGraph(
     );
   }
 
-  const [videos, videoJobs, inFlightVideoJobs, projects, renderJobs, generatedImages] = await Promise.all([
+  const [videos, videoJobs, inFlightVideoJobs, projects, renderJobs, generatedImages, aiGenerationJobs] = await Promise.all([
     safeQuery("video", () => prisma.video.findMany({
       select: {
         id: true,
@@ -267,6 +268,14 @@ export async function buildMediaReferenceGraph(
       select: {
         id: true,
         url: true,
+      },
+    })),
+    safeQuery("ai-generation-job", () => prisma.aiGenerationJob.findMany({
+      where: { status: "completed", outputUrl: { not: null } },
+      select: {
+        id: true,
+        outputUrl: true,
+        mediaExpiresAt: true,
       },
     })),
   ]);
@@ -407,6 +416,15 @@ export async function buildMediaReferenceGraph(
       alwaysProtect: true,
     };
     collectOwnerValue(image.url, reference, "url");
+  }
+
+  for (const job of aiGenerationJobs) {
+    const reference: MediaReference = {
+      ownerKind: "ai-generation-job",
+      ownerId: job.id,
+      expiresAt: job.mediaExpiresAt,
+    };
+    collectOwnerValue(job.outputUrl, reference, "outputUrl");
   }
 
   for (const project of projects) {

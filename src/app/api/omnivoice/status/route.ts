@@ -12,7 +12,7 @@ export const runtime = "nodejs";
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!isOmniVoiceUserAllowed(user.id)) {
+  if (!isOmniVoiceUserAllowed(user)) {
     return NextResponse.json({ enabled: false }, { headers: { "Cache-Control": "private, no-store" } });
   }
 

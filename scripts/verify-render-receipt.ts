@@ -106,5 +106,9 @@ check("M: exact upload 184s → 3 minutes", m.estMinutes === 3, `X=${m.estMinute
 check("M: exact minutes copy omits ประมาณ", text(m, "minutes") === "นาทีที่จะใช้: 3 นาที — รวมในแพ็กเกจ (เหลือ 10 จาก 10 นาที)", text(m, "minutes"));
 check("M: exact disclaimer copy", text(m, "disclaimer") === "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง", text(m, "disclaimer"));
 
+// ── N. Hero AI Image never promises a hidden stock fallback ──
+const n = R({ usesAi: true, creditBalance: 0, insufficientCreditBehavior: "block" });
+check("N: Hero image insufficient balance blocks before generation", text(n, "insufficient") === "เครดิตอาจไม่พอ — Hero AI Image จะไม่เริ่มงานจนกว่าเครดิตจะพอครบทุกฉาก", text(n, "insufficient"));
+
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll render-receipt checks passed.");

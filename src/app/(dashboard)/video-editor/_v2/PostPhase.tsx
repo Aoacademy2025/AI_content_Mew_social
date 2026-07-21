@@ -54,6 +54,8 @@ export function PostPhase({
   onRetryProjectSave,
   brollRegionPreference = "auto",
   brollVisualStyle = "auto",
+  internalAiTester,
+  aiImageEnabled,
   downloadFilename,
 }: {
   job: V2JobState; script: string;
@@ -67,6 +69,8 @@ export function PostPhase({
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
+  internalAiTester: boolean;
+  aiImageEnabled: boolean;
   downloadFilename: string;
 }) {
   const [rightTab, setRightTab] = useState<"subtitle" | "logo">("subtitle");
@@ -92,7 +96,7 @@ export function PostPhase({
   };
   // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
   // (the free re-render's chromakey composite path is only valid for HeyGen avatars).
-  const brollEditEnabled = BROLL_WINDOW_EDIT && ed.preview?.avatarModel !== "upload-cutaway";
+  const brollEditEnabled = (BROLL_WINDOW_EDIT || internalAiTester) && ed.preview?.avatarModel !== "upload-cutaway";
   const editedWindowIndices = useMemo(() => new Set(ed.windowEdits.keys()), [ed.windowEdits]);
 
   if (ed.exp.phase === "done") {
@@ -556,7 +560,7 @@ export function PostPhase({
         </aside>
 
         {brollEditEnabled && ed.selectedWindow != null && (
-          <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} />
+          <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
         )}
       </div>
 

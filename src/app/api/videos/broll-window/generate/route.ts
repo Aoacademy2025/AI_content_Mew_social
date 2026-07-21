@@ -31,13 +31,14 @@ import {
   costKeyForKieModel,
   ensureMonthlyGrant,
 } from "@/lib/credits";
+import { isInternalAiBetaEnabledFor, isInternalAiTester } from "@/lib/internal-ai-access";
 
 // POST /api/videos/broll-window/generate — Phase 2 "สร้างด้วย AI" tab (Task 9).
 // Regenerates ONE b-roll window as a fresh AI image (kie.ai text-to-image → Ken Burns
 // motion clip, ~5s), metered to the user's credits on the managed key. The output is a
 // locally-served `stocks/` mp4 the editor drops straight into the window's `bgVideos[]`
-// entry. Gated behind NEXT_PUBLIC_BROLL_WINDOW_EDIT, same as the sibling /search,
-// /select and /upload routes.
+// entry. Internal AI testers receive the beta before NEXT_PUBLIC_BROLL_WINDOW_EDIT
+// opens the scene editor publicly; the managed-image policy below remains authoritative.
 //
 // MONEY PATH — the access gate + token resolution + spend/refund mirror
 // fetch-stock/route.ts's kie-image path EXACTLY (the single source of truth for who
@@ -57,15 +58,12 @@ export const runtime = "nodejs";
 export const maxDuration = 600;
 
 export async function POST(req: Request) {
-  // 1) Feature flag — single switch shared with the client. Flag-off → 404 (today's
-  //    behavior, byte-identical). Checked BEFORE auth so the route is invisible when off.
-  if (process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT !== "1") {
+  const user = await getCurrentUser();
+  const publicEnabled = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
+  if (!user) return NextResponse.json({ error: publicEnabled ? "Unauthorized" : "not_enabled" }, { status: publicEnabled ? 401 : 404 });
+  if (!isInternalAiBetaEnabledFor(user, publicEnabled)) {
     return NextResponse.json({ error: "not_enabled" }, { status: 404 });
   }
-
-  // 2) Auth.
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = (await req.json().catch(() => null)) as
     | { prompt?: unknown; model?: unknown }
@@ -79,15 +77,16 @@ export async function POST(req: Request) {
   const isAdmin = user.role === "ADMIN";
   const isPaidPlan = user.plan === "PRO" || user.plan === "BUSINESS";
   const kieEnvKey = process.env.KIE_API_KEY || null;
-  const { kiePaidUnlocked, chargeImages } = resolveKieImageAccess({
+  const { canUseKieImages, chargeImages } = resolveKieImageAccess({
     managedKieOn,
     creditsLive,
     isAdmin,
     isPaidPlan,
+    isInternalTester: isInternalAiTester(user),
   });
 
   // AI image gen is admin-always; paid users only when fully unlocked (managed + credits + paid).
-  if (!isAdmin && !kiePaidUnlocked) {
+  if (!canUseKieImages) {
     return NextResponse.json(
       { error: "not_unlocked", message: "สร้างรูป AI ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" },
       { status: 403 },

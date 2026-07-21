@@ -21,8 +21,6 @@ const LABEL_W = 92;
 const MIN_CARD_MS = 300;
 const SNAP_MS = 120;
 
-const BROLL_WINDOW_EDIT = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
-
 function fmt(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -60,8 +58,7 @@ export function TimelinePanel({
   avatarIntroMs: number;
   avatarTailMs: number;
   voiceUrl: string | null;
-  /** เลือกหน้าต่างบีโรล (index ใน config.bgVideos[]) — ใช้เมื่อ flag
-   * NEXT_PUBLIC_BROLL_WINDOW_EDIT=1 เปิด (wired จาก PostPhase.tsx, Task 11) */
+  /** เลือกหน้าต่างบีโรล (index ใน config.bgVideos[]) — parent เป็นผู้ตัดสิน feature access. */
   onSelectBrollWindow?: (index: number) => void;
   /** index (ใน config.bgVideos[]) ของหน้าต่างที่แก้ไว้ในเซสชันนี้แต่ยังไม่ apply — จุดม่วงบนคลิป (Task 11) */
   editedWindowIndices?: ReadonlySet<number>;
@@ -289,12 +286,12 @@ export function TimelinePanel({
                   style={{ ...clipStyle(color.trackBroll), left: toPx(s.startMs), width: Math.max(14, toPx(s.endMs - s.startMs) - 2) }}
                   onClick={() => {
                     seekTo(s.startMs);
-                    if (BROLL_WINDOW_EDIT) onSelectBrollWindow?.(s.index);
+                    onSelectBrollWindow?.(s.index);
                   }}
                   title={s.label}
                 >
                   {s.label}
-                  {BROLL_WINDOW_EDIT && editedWindowIndices?.has(s.index) && (
+                  {editedWindowIndices?.has(s.index) && (
                     <span
                       aria-hidden
                       className="absolute"

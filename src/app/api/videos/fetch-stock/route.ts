@@ -29,6 +29,7 @@ import {
   creditCostFor,
   costKeyForKieModel,
   ensureMonthlyGrant,
+  getBalance,
 } from "@/lib/credits";
 import {
   kieMaxImagesPerJob,
@@ -74,6 +75,11 @@ import {
   NORMALIZE_TIMEOUT_MS,
   NORMALIZE_PRESET,
 } from "@/lib/broll-asset-lib";
+import { isHeroAiBetaUser, isInternalAiTester } from "@/lib/internal-ai-access";
+import {
+  generateHeroImageForVideo,
+  HeroImageGenerationError,
+} from "@/lib/video-hero-image.server";
 import path from "path";
 import fs from "fs";
 
@@ -488,11 +494,12 @@ async function searchMet(query: string, limit = 5): Promise<MetArtwork[]> {
 // (createTask → recordInfo polling) เปิดเฉพาะ admin เพื่อทดลอง pipeline ก่อน
 // กันชน id กับ source อื่นๆ — kie.ai generated item ใช้ index เป็น id ฐาน
 const KIE_ID_OFFSET = 2_000_000_000;
+const HERO_RUNPOD_ID_OFFSET = 2_100_000_000;
 
 // Metadata สำหรับ license/attribution ของ asset — ดู StockVideo["assetMeta"] ใน
 // video-editor/_components/types.ts (shape เดียวกัน)
 type AssetMeta = {
-  provider: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "wikimedia" | "flickr" | "nasa" | "met";
+  provider: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "runpod" | "wikimedia" | "flickr" | "nasa" | "met";
   assetId: string;
   downloadUrl?: string;
   creator?: string;
@@ -930,6 +937,9 @@ export async function POST(req: Request) {
     overrideClipCount = 0,
     stockSource = "both",
     kieModel,
+    imageEngine,
+    imageModel,
+    videoJobId,
     autoMixProviders,
     stockProviders,
     autoMixWeights,
@@ -952,6 +962,9 @@ export async function POST(req: Request) {
     overrideClipCount?: number;
     stockSource?: string;
     kieModel?: string;
+    imageEngine?: string;
+    imageModel?: string;
+    videoJobId?: string;
     autoMixProviders?: string[];
     stockProviders?: Array<"pexels" | "pixabay">;
     autoMixWeights?: unknown;
@@ -995,6 +1008,7 @@ export async function POST(req: Request) {
   const resolvedKieModel: KieImageModel = isKieImageModel(kieModel) ? kieModel : DEFAULT_KIE_IMAGE_MODEL;
 
   const useKieImage = stockSource === "kie-image";
+  const useHeroRunpodImage = useKieImage && imageEngine === "runpod";
   const useAutoMix = stockSource === "auto-mix";
   // Auto Mix: ผู้ใช้เลือก "video" ใน autoMixProviders ไหม — ถ้าไม่เลือก = ข้ามการหา
   // video จริง ไปใช้ภาพ fallback ล้วน (เช่น kie.ai อย่างเดียว → ได้ภาพ AI ทุก keyword)
@@ -1009,7 +1023,7 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true },
+    select: { email: true, pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true },
   });
 
   // ── Managed-kie gate + key resolution (flag MANAGED_KIE) ──────────────────
@@ -1022,20 +1036,29 @@ export async function POST(req: Request) {
   const isAdmin = user?.role === "ADMIN";
   const isPaidPlan = user?.plan === "PRO" || user?.plan === "BUSINESS";
   const kieEnvKey = process.env.KIE_API_KEY || null;
-  // Access + metering decision (single source of truth — tested in
-  // scripts/verify-image-credit-spend.ts). Paid users may reach kie sources only
-  // under the full managed+credits flag set; only non-admin paid users are charged.
-  const { kiePaidUnlocked, chargeImages } = resolveKieImageAccess({
-    managedKieOn, creditsLive, isAdmin, isPaidPlan,
+  // Access + metering decision (single source of truth). Non-team users are
+  // denied regardless of role or plan; eligible non-admin testers are charged.
+  const { canUseKieImages, chargeImages } = resolveKieImageAccess({
+    managedKieOn,
+    creditsLive,
+    isAdmin,
+    isPaidPlan,
+    isInternalTester: isInternalAiTester(user),
   });
 
-  // AI Image-to-Video (kie.ai) — admins always; paid users only when un-gated.
-  if (useKieImage && !isAdmin && !kiePaidUnlocked) {
+  // AI Image-to-Video (kie.ai) — private team beta only.
+  if (useHeroRunpodImage && (imageModel !== "z-image-turbo" || !isHeroAiBetaUser(user))) {
+    return NextResponse.json({ error: "Hero AI Image ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
+  }
+  if (useHeroRunpodImage && (typeof videoJobId !== "string" || !/^[A-Za-z0-9_-]{8,120}$/.test(videoJobId))) {
+    return NextResponse.json({ error: "Hero AI Image ต้องมีรหัส VideoJob ที่ถูกต้อง" }, { status: 400 });
+  }
+  if (useKieImage && !useHeroRunpodImage && !canUseKieImages) {
     return NextResponse.json({ error: "AI Image-to-Video (kie.ai) ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
   }
 
   // Auto Mix (video + image fallback ผ่าน Ken Burns) — same gate as kie image.
-  if (useAutoMix && !isAdmin && !kiePaidUnlocked) {
+  if (useAutoMix && !canUseKieImages) {
     return NextResponse.json({ error: "Auto Mix ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
   }
 
@@ -1063,7 +1086,7 @@ export async function POST(req: Request) {
 
   const canUsePexels = usePexels && !!pexelsKey;
   const canUsePixabay = usePixabay && !!pixabayKey;
-  const canUseKieImage = useKieImage && !!kieToken;
+  const canUseKieImage = useKieImage && !useHeroRunpodImage && !!kieToken;
   // Auto Mix: fallback ภาพใช้ตัวไหนก็ได้ที่มี key — ไม่บังคับ ไม่ error ถ้าไม่มี (แค่ skip fallback)
   // Wikimedia/NASA/Met ไม่ต้องใช้ key — เปิดใช้ได้เสมอเมื่อ Auto Mix
   // Pexels/Pixabay photo ใช้ key เดียวกับ video search — ใช้ได้ทันทีถ้ามี key อยู่แล้ว
@@ -1078,7 +1101,7 @@ export async function POST(req: Request) {
   const canUseMetFallback = useAutoMix && isAutoMixProviderAllowed("met");
   const canUseKieFallback = useAutoMix && !!kieToken && isAutoMixProviderAllowed("kie-ai");
 
-  if (useKieImage && !canUseKieImage) {
+  if (useKieImage && !useHeroRunpodImage && !canUseKieImage) {
     return NextResponse.json({ error: "kie.ai API key ยังไม่ได้ตั้งค่า — ไปที่ Settings > API Keys", missingKey: "kie" }, { status: 400 });
   }
 
@@ -1284,14 +1307,14 @@ export async function POST(req: Request) {
     // Editor v2 "mix preset" (D5.1): honor request-supplied autoMixWeights over the env
     // defaults ONLY under MANAGED_KIE and only when they are sane ints 0–9. The ai weight
     // is force-zeroed for users NOT authorized for kie spend — same gate as the 403 above
-    // (isAdmin || kiePaidUnlocked). Flag off / field absent / invalid → reqWeights is null
+    // Private beta access is rechecked server-side. Flag off / invalid → reqWeights is null.
     // and the else branch is BYTE-IDENTICAL to the pre-preset env-only behavior.
     const reqWeights = managedKieOn ? parseAutoMixWeights(autoMixWeights) : null;
     const weights = reqWeights
       ? {
           video: autoMixUsesVideo ? reqWeights.video : 0,
           photo: anyPhotoUsable ? reqWeights.photo : 0,
-          ai: (canUseKieFallback && (isAdmin || kiePaidUnlocked)) ? reqWeights.ai : 0,
+          ai: (canUseKieFallback && canUseKieImages) ? reqWeights.ai : 0,
         }
       : {
           video: autoMixUsesVideo ? readIntEnv("AUTOMIX_WEIGHT_VIDEO", 3, 0, 100) : 0,
@@ -1364,7 +1387,17 @@ export async function POST(req: Request) {
     if (result.status === "failed") stockTelemetry.normalizeFailedCount++;
   }
 
-  const srcLabel = canUseKieImage ? "AI Image-to-Video (kie.ai)" : useAutoMix ? "Auto Mix (video + image fallback)" : canUsePexels && canUsePixabay ? "Pexels+Pixabay" : canUsePexels ? "Pexels" : "Pixabay";
+  const srcLabel = useHeroRunpodImage
+    ? "Hero AI Image (RunPod Public Z-Image)"
+    : canUseKieImage
+      ? "AI Image-to-Video (kie.ai)"
+      : useAutoMix
+        ? "Auto Mix (video + image fallback)"
+        : canUsePexels && canUsePixabay
+          ? "Pexels+Pixabay"
+          : canUsePexels
+            ? "Pexels"
+            : "Pixabay";
 
   async function recordAiGenerationTelemetry(input: {
     status: "done" | "error";
@@ -1481,6 +1514,188 @@ export async function POST(req: Request) {
     selectionReason?: string;
     relevanceScore?: number;
   }[] = [];
+
+  // ── Hero AI Image (RunPod Public Z-Image, internal beta) ────────────────
+  // This branch is intentionally separate from KIE/AutoMix. Every scene owns a
+  // durable generation id + exact credit reservation and there is no provider
+  // fallback, so displayed price, charged price and actual model cannot drift.
+  if (useHeroRunpodImage) {
+    const clipsToGenerateRaw = brollWindowMode
+      ? Math.min(keywords.length, PER_SUBTITLE_DOWNLOAD_LIMIT)
+      : aiGenPieceCount(
+          totalDurationSec,
+          Math.min(keywords.length, downloadClipLimit),
+          isPerSubtitleMode,
+          PER_SUBTITLE_DOWNLOAD_LIMIT,
+        );
+    const heroImageCap = readIntEnv("HERO_AI_IMAGE_MAX_PER_VIDEO", 20, 1, 60);
+    const clipsToGenerate = Math.min(clipsToGenerateRaw, heroImageCap);
+    const capClampHit = clipsToGenerate < clipsToGenerateRaw;
+    const heroCreditCost = creditCostFor("image-open-fast-1k");
+    await ensureMonthlyGrant(userId);
+    const balance = await getBalance(userId);
+    const totalCreditCost = clipsToGenerate * heroCreditCost;
+    if (balance.total < totalCreditCost) {
+      await recordFetchStockTelemetry("error", {
+        providerErrorCode: "insufficient_credits",
+        errorProvider: "runpod",
+        heroImagePlannedCount: clipsToGenerate,
+        heroImageRequiredCredits: totalCreditCost,
+        heroImageBalance: balance.total,
+      });
+      return NextResponse.json({
+        error: `เครดิตไม่พอสำหรับ Hero AI Image ${clipsToGenerate} ฉาก ต้องใช้ ${totalCreditCost} เครดิต (คงเหลือ ${balance.total})`,
+        code: "INSUFFICIENT_CREDITS",
+        requiredCredits: totalCreditCost,
+        balance: balance.total,
+      }, { status: 402 });
+    }
+
+    const directJobs = selectRepresentativeItems(
+      keywords.map((keyword, sourceIndex) => ({ keyword, sourceIndex })),
+      clipsToGenerate,
+    );
+    const failures: Array<{ sourceIndex: number; code: string; message: string }> = [];
+    aiTelemetry.aiGenRequestedCount += clipsToGenerateRaw;
+    aiTelemetry.aiGenPlannedCount += clipsToGenerate;
+    if (capClampHit) trackAiSkip("cap", clipsToGenerateRaw - clipsToGenerate);
+
+    await withConcurrency(
+      directJobs,
+      Math.min(3, DOWNLOAD_CONCURRENCY),
+      async ({ keyword, sourceIndex }) => {
+        const startedAt = Date.now();
+        const id = HERO_RUNPOD_ID_OFFSET + sourceIndex;
+        const imageFile = `${userPrefix}${id}.src.png`;
+        const imagePath = path.join(rendersDir, imageFile);
+        const outFile = `${userPrefix}${id}.mp4`;
+        const outPath = path.join(rendersDir, outFile);
+        const prompt = buildKieImagePrompt(keyword, {
+          visualDirection,
+          terms: relTerms,
+          region: brollPreference.brollRegionPreference,
+          style: brollPreference.brollVisualStyle,
+        });
+        aiTelemetry.aiGenAttemptCount++;
+        try {
+          const generated = await generateHeroImageForVideo({
+            userId,
+            plan: user?.plan ?? "FREE",
+            prompt,
+            idempotencyKey: `video:${videoJobId}:scene:${sourceIndex}`,
+            videoJobId: videoJobId!,
+            sceneIndex: sourceIndex,
+            sceneTitle: subtitleTexts?.[sourceIndex] || keyword,
+          });
+
+          if (download) {
+            if (generated.outputUrl.startsWith("/api/renders/")) {
+              const filename = decodeURIComponent(generated.outputUrl.slice("/api/renders/".length));
+              if (!filename || path.basename(filename) !== filename) throw new Error("invalid local Hero image path");
+              const sourcePath = path.join(process.cwd(), "public", "renders", filename);
+              if (!fs.existsSync(sourcePath)) throw new Error("persisted Hero image is missing");
+              fs.copyFileSync(sourcePath, imagePath);
+            } else {
+              await downloadAndCrop(generated.outputUrl, imagePath);
+            }
+            await applyKenBurns(imagePath, outPath);
+            if (!isValidMp4Path(outPath)) throw new Error("Hero image Ken Burns output is invalid");
+            try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+            stockTelemetry.downloadedCount++;
+            stockTelemetry.normalizeSkippedCount++;
+          }
+
+          results.push({
+            keyword,
+            sourceIndex,
+            pexelsId: id,
+            duration: KEN_BURNS_DURATION_SEC,
+            videoUrl: generated.outputUrl,
+            ...(download ? {
+              localPath: outPath,
+              localUrl: `/api/stocks/${outFile}`,
+              imageLocalUrl: `/api/stocks/${imageFile}`,
+            } : {}),
+            imageUrl: generated.outputUrl,
+            assetMeta: {
+              provider: "runpod",
+              assetId: generated.jobId,
+              downloadUrl: generated.outputUrl,
+              license: "Hero AI generated",
+            },
+          });
+          aiTelemetry.aiGenSuccessCount++;
+          aiTelemetry.aiChargedCount++;
+          aiTelemetry.aiCreditsSpent += generated.creditCost;
+          await recordTelemetryEvent(userId, {
+            name: "hero_ai_image_video_scene_done",
+            category: "performance",
+            source: "server",
+            step: "fetchStock.heroAiImage",
+            status: "done",
+            durationMs: Date.now() - startedAt,
+            properties: {
+              videoJobId,
+              sceneIndex: sourceIndex,
+              aiGenerationJobId: generated.jobId,
+              aiProvider: generated.provider,
+              aiModel: generated.providerModel,
+              aiProviderRoute: generated.providerRoute,
+              aiCreditCost: generated.creditCost,
+              aiProviderDelayTimeMs: generated.delayTimeMs,
+              aiProviderExecutionTimeMs: generated.executionTimeMs,
+              aiProviderReportedCostUsdMicros: generated.providerReportedCostUsdMicros,
+            },
+          }).catch(() => {});
+        } catch (error) {
+          safeUnlink(imagePath);
+          safeUnlink(outPath);
+          safeUnlink(normalizedMarkerPath(outPath));
+          stockTelemetry.downloadFailCount++;
+          aiTelemetry.aiGenFailedCount++;
+          const code = error instanceof HeroImageGenerationError ? error.code : "OUTPUT_INVALID";
+          const message = error instanceof Error ? error.message : "Hero AI Image failed";
+          failures.push({ sourceIndex, code, message });
+          await recordTelemetryEvent(userId, {
+            name: "hero_ai_image_video_scene_error",
+            category: "error",
+            source: "server",
+            step: "fetchStock.heroAiImage",
+            status: "error",
+            durationMs: Date.now() - startedAt,
+            properties: { videoJobId, sceneIndex: sourceIndex, aiProvider: "runpod", aiModel: "z-image-turbo", errorCode: code },
+          }).catch(() => {});
+        }
+      },
+    );
+
+    results.sort((a, b) => (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0));
+    stockTelemetry.foundCount = results.length;
+    stockTelemetry.cappedCount = results.length;
+    stockTelemetry.servedClipCount = results.length;
+    if (failures.length > 0) {
+      await recordFetchStockTelemetry("error", {
+        providerErrorCode: failures[0].code,
+        errorProvider: "runpod",
+        failedSceneCount: failures.length,
+        completedSceneCount: results.length,
+      });
+      return NextResponse.json({
+        error: `Hero AI Image สร้างไม่สำเร็จ ${failures.length} ฉาก — ไม่มีการสลับไปใช้ KIE`,
+        code: failures[0].code,
+        retryable: failures[0].code !== "INSUFFICIENT_CREDITS",
+        failedScenes: failures.map((item) => item.sourceIndex),
+      }, { status: failures[0].code === "INSUFFICIENT_CREDITS" ? 402 : 503 });
+    }
+    await recordFetchStockTelemetry("done", {
+      heroImageProvider: "runpod",
+      heroImageModel: "z-image-turbo",
+      heroImageRoute: "runpod-public",
+      heroImageGeneratedCount: results.length,
+      heroImageCredits: results.length * heroCreditCost,
+    });
+    return NextResponse.json({ results, ...(capClampHit ? { aiSkippedReason: "cap" } : {}) });
+  }
 
   // ── AI Image-to-Video (kie.ai, admin-only) — generation path ──────────────
   // ไม่มี "candidate pool" ให้ค้นหา — generate ภาพ 1 ภาพ/keyword แล้วทำ Ken Burns (ffmpeg pan/zoom)

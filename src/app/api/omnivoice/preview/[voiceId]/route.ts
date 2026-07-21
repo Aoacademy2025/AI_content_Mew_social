@@ -13,13 +13,19 @@ export const runtime = "nodejs";
 export async function GET(_request: Request, context: { params: Promise<{ voiceId: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!isOmniVoiceUserAllowed(user.id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!isOmniVoiceUserAllowed(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const { voiceId } = await context.params;
   if (!isValidOmniVoiceId(voiceId)) return NextResponse.json({ error: "Invalid voice" }, { status: 400 });
 
   try {
     const config = omnivoiceConfig();
+    if (config.backend === "runpod") {
+      return NextResponse.json(
+        { error: "เสียงตัวอย่าง Hero AI Voice กำลังจัดเตรียม แต่สามารถใช้สร้างวิดีโอจริงได้แล้ว" },
+        { status: 404 },
+      );
+    }
     const response = await fetch(`${config.baseUrl}/voices/${encodeURIComponent(voiceId)}/preview`, {
       headers: omnivoiceAuthHeaders(config.apiKey),
       cache: "no-store",

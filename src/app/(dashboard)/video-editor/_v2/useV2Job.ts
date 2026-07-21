@@ -285,7 +285,8 @@ export function useV2Job(p: V2Project) {
       ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
       ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
-      ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
+      ...(p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
+      ...(p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
       ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
       // Mix preset weights (D5.1) — non-admins only; admins keep env weights. Server
       // (fetch-stock) honors these ONLY under MANAGED_KIE and force-zeros ai for the
@@ -312,7 +313,8 @@ export function useV2Job(p: V2Project) {
       ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
       ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
-      ...(p.kieModel && (p.brollSource === "kie-image" || p.brollSource === "automix") ? { kieModel: p.kieModel } : {}),
+      ...(p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
+      ...(p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
       ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
       ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
       subtitleMode: "sentence",

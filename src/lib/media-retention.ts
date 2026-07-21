@@ -23,7 +23,7 @@ export type ResolveProjectMediaStateInput = {
 };
 
 export type MediaReference = {
-  ownerKind: "video" | "video-job" | "project-draft" | "render-job" | "generated-image";
+  ownerKind: "video" | "video-job" | "project-draft" | "render-job" | "generated-image" | "ai-generation-job";
   ownerId: string;
   expiresAt: Date | null;
   alwaysProtect?: boolean;

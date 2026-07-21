@@ -15,7 +15,7 @@ import {
   type TtsProvider,
 } from "@/lib/tts-providers";
 import { useOmniVoiceAvailability } from "../_hooks/useOmniVoiceAvailability";
-import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME } from "@/lib/hero-voice-brand";
+import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME, HERO_VOICE_TEASER_VISIBLE } from "@/lib/hero-voice-brand";
 
 type UserMusicTrack = { id: string; title: string; filename: string; sizeBytes?: number | null };
 
@@ -517,7 +517,7 @@ export function OrderPanel(p: OrderPanelProps) {
           <div>
             <SectionLabel>Voice</SectionLabel>
             <div className="flex gap-1.5">
-              {(["gemini", "elevenlabs", ...(OMNIVOICE_UI_ENABLED || p.ttsProvider === "omnivoice" ? ["omnivoice"] : [])] as TtsProvider[]).map(pv => (
+              {(["gemini", "elevenlabs", ...(HERO_VOICE_TEASER_VISIBLE || OMNIVOICE_UI_ENABLED || p.ttsProvider === "omnivoice" ? ["omnivoice"] : [])] as TtsProvider[]).map(pv => (
                 <button
                   key={pv}
                   type="button"

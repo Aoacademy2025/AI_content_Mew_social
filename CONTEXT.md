@@ -33,6 +33,17 @@ Glossary of domain terms. Definitions only — no implementation details.
 - **Mix Preset** — one of three named b-roll compositions the user picks in Setup: ฟรีล้วน (stock only, 0 credits), ผสม AI แนะนำ (the default for paid plans), AI เต็มที่. Replaces per-source percentage controls.
 - **Per-window Upgrade** — (later phase) replacing a single b-roll window with an AI-generated image or video clip, paid per window; re-rendering for an upgrade never re-charges minutes.
 
+## AI Generation
+
+- **Hero AI Image** — the customer-facing AI image feature in Video Editor. During the internal beta it uses the RunPod AI Engine and the Public Z-Image route; the product name does not expose or redefine the underlying provider.
+- **Hero AI Voice** — the customer-facing voice feature backed by OmniVoice. During the internal beta its Voice Backend is RunPod; it is governed by the subscriber's maximum clip duration rather than a fixed whole-script character ceiling.
+- **AI Engine** — the provider family a customer chooses before choosing an image model. The engine fixes the commercial and operational boundary of that generation job.
+- **RunPod AI** — the AI Engine for open-weight image models executed through RunPod. It never invokes a Cloud API model when unavailable or unsuccessful.
+- **Cloud API** — the separate AI Engine for closed/provider-hosted models such as GPT Image. It has its own models, prices and generation jobs.
+- **Engine Retry** — another attempt within the same AI Engine under that engine's rules. Moving to another engine is a new customer choice, never a retry or fallback.
+- **Voice Backend** — the infrastructure route that executes Hero AI Voice. A video job pins one Voice Backend for its lifetime; changing the rollout switch only affects new jobs.
+- **GPU Fallback** — RunPod selecting the next allowed GPU type for the same custom endpoint when a preferred type is unavailable. It does not change the AI Engine, model, price quote or customer choice.
+
 ## Rollout
 
 - **Rollout Switch** — the two-layer mechanism controlling who sees Editor v2: an environment default for everyone plus a per-person override, so v2 can be QA'd on production before being enabled for all users.

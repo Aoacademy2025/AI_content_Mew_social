@@ -302,8 +302,9 @@ function LegacyVideoEditorPage() {
   useEffect(() => {
     fetchMe().then(d => {
       const isAdmin = d?.role === "ADMIN";
-      setKieImageEnabled(isAdmin);
-      setAutoMixEnabled(isAdmin);
+      const internalAiTester = d?.internalAiTester === true;
+      setKieImageEnabled(isAdmin && internalAiTester);
+      setAutoMixEnabled(isAdmin && internalAiTester);
     }).catch(() => {});
   }, []);
   const [stockVideos, setStockVideos] = useState<StockVideo[]>([]);

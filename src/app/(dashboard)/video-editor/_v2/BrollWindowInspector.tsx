@@ -11,9 +11,9 @@
  * Progressive disclosure (Mew's hard requirement): the AI tab defaults to a single
  * Thai textarea; the composed English prompt only appears behind "ขั้นสูง".
  *
- * Entirely gated by NEXT_PUBLIC_BROLL_WINDOW_EDIT=1 at the mount points (PostPhase/
- * PostPhaseMobile) — this file only executes when a window is selected, which only
- * happens behind that flag.
+ * Mounted for internal AI testers during beta, or for everyone after
+ * NEXT_PUBLIC_BROLL_WINDOW_EDIT=1. AI Image has its own finer-grained access prop
+ * and remains visible-but-disabled outside the managed image beta.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -117,10 +117,11 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
   );
 }
 
-export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualStyle }: {
+export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualStyle, aiImageEnabled }: {
   ed: PostPhaseEditor;
   brollRegionPreference: BrollRegionPreference;
   brollVisualStyle: BrollVisualStyle;
+  aiImageEnabled: boolean;
 }) {
   const isMobile = useIsMobile();
   const index = ed.selectedWindow;
@@ -173,6 +174,10 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     setSearchKeyword(kw);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index]);
+
+  useEffect(() => {
+    if (!aiImageEnabled && tab === "ai") setTab("search");
+  }, [aiImageEnabled, tab]);
 
   // Edge case: a selection with no matching real window (fail-open single-block
   // fallback / stale index after an apply changed bgVideos length) — nothing to
@@ -278,6 +283,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
   }
 
   async function handleGenerate() {
+    if (!aiImageEnabled) { setAiError("AI Image กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้"); return; }
     if (!finalPrompt) { setAiError("กรุณาระบุคำอธิบายรูปภาพที่ต้องการ"); return; }
     setAiBusy(true);
     setAiError(null);
@@ -306,7 +312,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-col gap-0.5">
-          <span style={{ font: `600 13.5px ${font.heading}`, color: color.text }}>บีโรลช่วงที่ {positionLabel}</span>
+          <span style={{ font: `600 13.5px ${font.heading}`, color: color.text }}>ฉากที่ {positionLabel}</span>
           <span style={{ fontSize: 11, color: color.textFaint }}>{fmtMs(span.startMs)} – {fmtMs(span.endMs)} · {currentSourceLabel}</span>
         </div>
         <button onClick={close} aria-label="ปิด" style={{ background: "none", border: "none", color: color.textSecondary, cursor: "pointer", padding: 4 }}>
@@ -317,9 +323,15 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
         value={tab}
         onChange={(v) => setTab(v as Tab)}
         options={[
-          { value: "search", label: "เปลี่ยนรูป" },
+          { value: "search", label: "เปลี่ยนสต็อก" },
           { value: "upload", label: "อัปโหลด" },
-          { value: "ai", label: "AI Gen" },
+          {
+            value: "ai",
+            label: "AI Image",
+            badge: aiImageEnabled ? undefined : "เร็ว ๆ นี้",
+            disabled: !aiImageEnabled,
+            title: aiImageEnabled ? "สร้างภาพใหม่สำหรับฉากนี้" : "AI Image เร็ว ๆ นี้",
+          },
         ]}
         style={{ display: "flex" }}
       />
@@ -345,7 +357,9 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
           </div>
           {searchError && <span style={{ fontSize: 11.5, color: color.danger }}>{searchError}</span>}
           {searchCandidates && searchCandidates.length === 0 && !searchError && (
-            <span style={{ fontSize: 12, color: color.textFaint }}>ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้น หรือใช้แท็บ AI</span>
+            <span style={{ fontSize: 12, color: color.textFaint }}>
+              {aiImageEnabled ? "ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้น หรือใช้ AI Image" : "ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้นอีกครั้ง"}
+            </span>
           )}
           {searchCandidates && searchCandidates.length > 0 && (
             <div className="grid grid-cols-2 gap-2">

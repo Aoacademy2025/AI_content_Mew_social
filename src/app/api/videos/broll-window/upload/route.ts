@@ -14,14 +14,15 @@ import {
   safeUnlink,
   KEN_BURNS_DURATION_SEC,
 } from "@/lib/broll-asset-lib";
+import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 
 // POST /api/videos/broll-window/upload — Phase 2 "อัปโหลดเอง" tab (Task 8).
 // User supplies their own media to replace one b-roll window:
 //   • image (jpg/jpeg/png/webp ≤20MB) → Ken Burns motion clip (5s)
 //   • video (mp4/mov/webm ≤200MB)     → Remotion-safe portrait re-encode
 // The output is a locally-served `stocks/` mp4 the editor drops straight into the
-// window's `bgVideos[]` entry. Gated behind NEXT_PUBLIC_BROLL_WINDOW_EDIT, same as
-// the sibling /search and /select routes.
+// window's `bgVideos[]` entry. Internal AI testers receive the beta before the
+// NEXT_PUBLIC_BROLL_WINDOW_EDIT public rollout, matching the sibling routes.
 //
 // Security notes (this route runs ffmpeg on user-supplied bytes):
 //   • Extension AND MIME are both checked against fixed allowlists BEFORE any ffmpeg
@@ -155,12 +156,12 @@ async function streamToFile(file: File, outPath: string): Promise<void> {
 }
 
 export async function POST(req: Request) {
-  if (process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT !== "1") {
+  const user = await getCurrentUser();
+  const publicEnabled = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
+  if (!user) return NextResponse.json({ error: publicEnabled ? "Unauthorized" : "not_enabled" }, { status: publicEnabled ? 401 : 404 });
+  if (!isInternalAiBetaEnabledFor(user, publicEnabled)) {
     return NextResponse.json({ error: "not_enabled" }, { status: 404 });
   }
-
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   // FREE-plan gate, same as upload-avatar (paid feature).
   if (user.plan === "FREE") {

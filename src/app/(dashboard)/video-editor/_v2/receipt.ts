@@ -35,6 +35,8 @@ export interface ReceiptInput {
   hasAvatar: boolean;
   /** True when estSec is an actual uploaded-media duration, not a script estimate. */
   exactDuration?: boolean;
+  /** Hero AI Image blocks before generation; AutoMix may keep its stock fallback. */
+  insufficientCreditBehavior?: "stock-fallback" | "block";
 }
 
 export type ReceiptLineKind = "info" | "warn";
@@ -59,6 +61,7 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const {
     estSec, remainingMinutes, totalMinutes, usesAi, presetWeights,
     perImageCredits, creditBalance, minuteCreditRate, hasAvatar, exactDuration = false,
+    insufficientCreditBehavior = "stock-fallback",
   } = input;
 
   const estMinutes = minutesFromSeconds(estSec);
@@ -108,7 +111,9 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     lines.push({
       key: "insufficient",
       kind: "warn",
-      text: "เครดิตอาจไม่พอ — ระบบจะใช้ภาพสต็อกแทนช่วงที่เครดิตหมด",
+      text: insufficientCreditBehavior === "block"
+        ? "เครดิตอาจไม่พอ — Hero AI Image จะไม่เริ่มงานจนกว่าเครดิตจะพอครบทุกฉาก"
+        : "เครดิตอาจไม่พอ — ระบบจะใช้ภาพสต็อกแทนช่วงที่เครดิตหมด",
     });
   }
 

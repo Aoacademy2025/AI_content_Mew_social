@@ -23,7 +23,7 @@ import { KIE_IMAGE_MODEL_OPTIONS, PRICED_KIE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OP
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
-import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME } from "@/lib/hero-voice-brand";
+import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME, HERO_VOICE_TEASER_VISIBLE } from "@/lib/hero-voice-brand";
 import { OMNIVOICE_UI_ENABLED } from "@/lib/tts-providers";
 import { estimateClipSecV2 } from "./estimate";
 import { minutesFromSeconds } from "@/lib/minute-round";
@@ -35,20 +35,20 @@ import type { V2Project, V2BrollSource, V2VoiceEngine } from "./useV2Project";
 import type { MixPreset } from "./mix-presets";
 import { HeroVoicePicker } from "./HeroVoicePicker";
 
-// Mix Preset (D5.1) — non-admin b-roll AI mix. Copy = brief verbatim (ห้ามแปลใหม่).
+// AutoMix intensity (D5.1) — shown after an eligible customer selects AutoMix.
 const MIX_PRESETS: { key: MixPreset; label: string; sub: string; badge?: string }[] = [
   { key: "free", label: "ฟรีล้วน", sub: "สต็อกฟรีทั้งหมด · 0 เครดิต" },
-  { key: "recommended", label: "ผสม AI แนะนำ", sub: "สต็อก + ภาพ AI แทรก · ~6–9 เครดิต/คลิป", badge: "แนะนำ" },
+  { key: "recommended", label: "AutoMix แนะนำ", sub: "สต็อก + ภาพ AI แทรก · ~6–9 เครดิต/คลิป", badge: "แนะนำ" },
   { key: "full", label: "AI เต็มที่", sub: "ภาพ AI ทุกช่วง · ~25–45 เครดิต/คลิป" },
 ];
 const MIX_PRESET_LABEL: Record<MixPreset, string> = {
-  free: "ฟรีล้วน", recommended: "ผสม AI แนะนำ", full: "AI เต็มที่",
+  free: "ฟรีล้วน", recommended: "AutoMix แนะนำ", full: "AI เต็มที่",
 };
 
 // ลำดับตามความสำคัญจริง (review 07-03): สต็อกฟรี = default · ที่เหลือ Beta (admin) · วิดีโอ AI ยังไม่เปิด
 const BROLL_OPTIONS: { value: V2BrollSource; title: string; desc: string; icon: React.ReactNode; badge?: string; beta?: boolean; comingSoon?: boolean }[] = [
   { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} />, badge: "ฟรี · แนะนำ" },
-  { value: "kie-image", title: "ภาพ AI", desc: "เจนภาพตามเนื้อหา", icon: <ImagePlus size={16} strokeWidth={1.6} />, beta: true },
+  { value: "kie-image", title: "Hero AI Image", desc: "RunPod · Z-Image Turbo", icon: <ImagePlus size={16} strokeWidth={1.6} />, beta: true },
   { value: "kie-video", title: "วิดีโอ AI", desc: "เร็ว ๆ นี้", icon: <Sparkles size={16} strokeWidth={1.6} />, beta: true, comingSoon: true },
   { value: "automix", title: "AutoMix", desc: "วิดีโอ + ภาพ ผสมอัตโนมัติ", icon: <Shuffle size={16} strokeWidth={1.6} />, beta: true },
 ];
@@ -65,6 +65,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
   const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
   const displayMin = displaySec > 0 ? minutesFromSeconds(displaySec) : 0;
+  const customerBrollLabel = p.brollSource === "kie-image"
+    ? "Hero AI Image"
+    : p.brollSource === "automix"
+      ? `AutoMix · ${MIX_PRESET_LABEL[p.mixPreset]}`
+      : "วิดีโอสต็อก";
   const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
   // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
   const elevenVoice = p.voiceEngine === "elevenlabs"
@@ -73,7 +78,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const omniVoice = p.voiceEngine === "omnivoice"
     ? p.omniVoices?.find(v => v.voice_id === p.omniVoiceId)
     : undefined;
-  const heroVoiceVisible = OMNIVOICE_UI_ENABLED || p.voiceEngine === "omnivoice";
+  const heroVoiceVisible = HERO_VOICE_TEASER_VISIBLE || OMNIVOICE_UI_ENABLED || p.voiceEngine === "omnivoice";
   const [submitting, setSubmitting] = useState(false);
   const [musicLibOpen, setMusicLibOpen] = useState(false);
   const avatarLib = useHeygenAvatars();
@@ -121,8 +126,8 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 
         {/* 1 · บีโรล */}
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
-          {/* Non-admins get the 3 mix presets (D5.1); admins keep the raw source cards +
-              provider checkboxes + model picker (in Advanced) unchanged. */}
+          {/* Customers see the product choices by their public names. Internal admins keep
+              the raw beta controls (including the unreleased AI-video source). */}
           {p.isAdmin ? (
           <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
             {BROLL_OPTIONS.map((o) => {
@@ -159,7 +164,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             })}
           </div>
           ) : (
-            <MixPresetButtons p={p} />
+            <CustomerBrollSourceButtons p={p} />
           )}
           <Advanced note="สลับคลิป/แก้จังหวะรายช่วง (มากับ timeline)">
             <div className="flex flex-col gap-3">
@@ -197,7 +202,18 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
                 />
               </label>
-              {(p.isAdmin || p.isPaidManagedKie) && (p.brollSource === "kie-image" || p.brollSource === "automix") && (
+              {p.heroAiBeta && p.brollSource === "kie-image" && (
+                <div className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>โมเดล Hero AI Image</span>
+                  <div
+                    className="w-full max-w-[320px] rounded-md px-3 py-2"
+                    style={{ fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
+                  >
+                    Realistic · Z-Image Turbo · RunPod · 2 เครดิต/ภาพ
+                  </div>
+                </div>
+              )}
+              {(p.isAdmin || p.isPaidManagedKie) && p.brollSource === "automix" && (
                 <label className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>
                     {p.isAdmin ? "โมเดลภาพ AI (Beta)" : "โมเดลภาพ AI (คิดเครดิตต่อภาพ)"}
@@ -267,9 +283,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               ...(heroVoiceVisible ? [{
                 value: "omnivoice" as const,
                 label: HERO_VOICE_NAME,
-                badge: HERO_VOICE_COMING_SOON,
+                badge: p.omniVoiceEnabled ? "Beta · RunPod" : HERO_VOICE_COMING_SOON,
                 disabled: !p.omniVoiceEnabled,
-                title: p.omniVoiceEnabled ? "เวอร์ชันทดลองก่อนเปิดตัว" : `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}`,
+                title: p.omniVoiceEnabled ? "เวอร์ชันทดลองบน RunPod" : `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}`,
               }] : []),
             ]}
           />
@@ -295,7 +311,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 {p.voiceEngine === "gemini"
                   ? `${geminiVoice.gender} · ${geminiVoice.style}`
                   : p.voiceEngine === "omnivoice"
-                    ? (p.omniVoiceEnabled ? "เวอร์ชันทดลองก่อนเปิดตัว" : `ฟีเจอร์ใหม่ ${HERO_VOICE_COMING_SOON}`)
+                    ? (p.omniVoiceEnabled ? "เวอร์ชันทดลอง · RunPod" : `ฟีเจอร์ใหม่ ${HERO_VOICE_COMING_SOON}`)
                     : (p.voiceId ? `Voice ID: ${p.voiceId.slice(0, 12)}…` : "ยังไม่ได้ตั้ง Voice ID — ตั้งได้ที่ขั้นสูง")}
               </span>
             </span>
@@ -579,6 +595,31 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           </div>
         </div>
 
+        {p.mode === "script" && (
+          <div
+            aria-label="ลำดับการสร้างวิดีโอ"
+            className="grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-4 lg:grid-cols-2"
+            style={{ borderRadius: radius.card, background: "rgba(139,92,246,.055)", border: `1px solid ${color.selectedBorder}`, padding: "12px 14px" }}
+          >
+            {[
+              "สร้างเสียง",
+              "แบ่งฉากตามเสียง",
+              p.brollSource === "kie-image" ? "สร้าง Hero AI Image" : p.brollSource === "automix" ? "จัด AutoMix" : "หาบีโรล",
+              "เรนเดอร์วิดีโอ",
+            ].map((label, index) => (
+              <span key={label} className="flex min-w-0 items-center gap-2">
+                <span
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full"
+                  style={{ background: color.selectedBg, border: `1px solid ${color.selectedBorder}`, color: color.primary300, font: `600 9.5px ${font.heading}` }}
+                >
+                  {index + 1}
+                </span>
+                <span className="truncate" style={{ color: color.textSecondary, fontSize: 10.5 }}>{label}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
         {/* สรุปการตั้งค่า */}
         <div style={{ borderRadius: radius.card, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}>
           <div className="px-4 pt-3 pb-1"><GroupLabel>สรุปการตั้งค่า</GroupLabel></div>
@@ -586,14 +627,14 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             <>
               <SummaryRow label="ที่มา" value="คลิปที่อัปโหลดเอง" />
               <SummaryRow label="ความยาว" value={hasUploadDuration ? fmtTime(p.clipDurationSec) : "กำลังอ่านความยาวคลิป"} />
-              <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} · แทรก cutaway`} />
+              <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} · แทรก cutaway`} />
               <SummaryRow label="เสียง" value="จากคลิปของคุณ (ต่อเนื่อง)" />
               <SummaryRow label="ซับไทย" value="ถอดจากเสียงอัตโนมัติ" last />
             </>
           ) : (
             <>
               <SummaryRow label="สคริปต์" value={`${p.script.split("\n").filter(l => l.trim()).length} เซ็กเมนต์ · คลิปยาว ~${fmtTime(scriptEstSec)}`} />
-              <SummaryRow label="บีโรล" value={p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : MIX_PRESET_LABEL[p.mixPreset]} />
+              <SummaryRow label="บีโรล" value={p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} />
               <SummaryRow label="เสียง" value={p.voiceEngine === "gemini"
                 ? `Gemini · ${geminiVoice.label}`
                 : p.voiceEngine === "omnivoice"
@@ -634,16 +675,99 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   );
 }
 
-/** Mix Preset (D5.1) — 3 ปุ่มเลือกสัดส่วน AI ในบีโรล (แทนบล็อก checkbox ของ admin สำหรับ
- *  ผู้ใช้ทั่วไป). FREE (ไม่ paid) เลือกได้แค่ "ฟรีล้วน"; อีก 2 ปุ่มถูก disable.
- *  Task 7 badge: ก่อนเปิดตัวฟีเจอร์ (managedKieOn=false) locked-copy = "เร็ว ๆ นี้" (ไม่ใช่
- *  ข้อความชวนอัปเกรด เพราะผู้ใช้ paid ก็ยังใช้ไม่ได้ — ฟีเจอร์ยังไม่เปิด ไม่ใช่เพราะเขาไม่จ่าย);
- *  หลังเปิดตัว (managedKieOn=true) แต่ยังไม่ paid → กลับไปใช้ "อัปเกรดเพื่อใช้ภาพ AI" เดิม.
- *  เลือก preset → p.setMixPreset ขับ brollSource/providers/weights. */
+/** Public product choices. Ordinary customers see AI Image and AutoMix but they stay
+ * disabled with a coming-soon badge; eligible internal beta users can select them. */
+function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
+  const heroImageUnlocked = p.heroAiBeta;
+  const autoMixUnlocked = p.internalAiTester && p.isPaidManagedKie;
+  const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
+    { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
+    { value: "kie-image", title: "Hero AI Image", desc: "RunPod · 2 เครดิต/ฉาก", icon: <ImagePlus size={16} strokeWidth={1.6} /> },
+    { value: "automix", title: "AutoMix", desc: "ผสมวิดีโอ + ภาพอัตโนมัติ", icon: <Shuffle size={16} strokeWidth={1.6} /> },
+  ];
+
+  function selectSource(value: "stock" | "kie-image" | "automix") {
+    if (value === "stock") {
+      p.setMixPreset("free");
+      return;
+    }
+    if (value === "kie-image") {
+      if (!heroImageUnlocked) return;
+      p.setBrollSource("kie-image");
+      return;
+    }
+    if (!autoMixUnlocked) return;
+    p.setMixPreset(p.mixPreset === "full" ? "full" : "recommended");
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+        {options.map((option) => {
+          const locked = option.value === "kie-image"
+            ? !heroImageUnlocked
+            : option.value === "automix"
+              ? !autoMixUnlocked
+              : false;
+          const lockedBadge = option.value === "automix" && p.internalAiTester && p.managedKieOn
+            ? "อัปเกรด"
+            : "เร็ว ๆ นี้";
+          const selected = p.brollSource === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              disabled={locked}
+              title={locked ? (lockedBadge === "เร็ว ๆ นี้" ? `${option.title} เร็ว ๆ นี้` : `อัปเกรดเพื่อใช้ ${option.title}`) : undefined}
+              onClick={() => selectSource(option.value)}
+              className="relative flex min-h-11 flex-col items-start gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2"
+              style={{
+                borderRadius: radius.card,
+                padding: "12px 14px",
+                background: selected ? color.selectedBg : color.cardBg,
+                border: `1px solid ${selected ? color.selectedBorder : color.cardBorder}`,
+                cursor: locked ? "not-allowed" : "pointer",
+                opacity: locked ? 0.58 : 1,
+                outlineColor: color.primary300,
+                transition: "background 150ms ease, border-color 150ms ease, opacity 150ms ease",
+              }}
+            >
+              <span
+                className="absolute right-2.5 top-2 rounded-full px-1.5"
+                style={{
+                  fontSize: 9.5,
+                  color: option.value === "stock" ? color.primary300 : color.warning,
+                  border: `1px solid ${option.value === "stock" ? color.selectedBorder : "rgba(251,191,36,.35)"}`,
+                }}
+              >
+                {option.value === "stock" ? "ฟรี · แนะนำ" : locked ? lockedBadge : "Beta"}
+              </span>
+              <IconTile size={32}>{option.icon}</IconTile>
+              <span className="flex flex-col pr-10">
+                <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{option.title}</span>
+                <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>{option.desc}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {autoMixUnlocked && p.brollSource === "automix" && (
+        <div className="flex flex-col gap-2">
+          <GroupLabel>สัดส่วน AutoMix</GroupLabel>
+          <MixPresetButtons p={p} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** AutoMix intensity (D5.1). The top-level customer source cards own Free/AI Image/
+ * AutoMix selection; this nested control only chooses the two AutoMix weight profiles. */
 function MixPresetButtons({ p }: { p: V2Project }) {
   return (
-    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-      {MIX_PRESETS.map((pr) => {
+    <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+      {MIX_PRESETS.filter((preset) => preset.key !== "free").map((pr) => {
         // FREE/feature-off users: only "ฟรีล้วน" is selectable (AI presets locked).
         // Formula unchanged from pre-Task-7 — only the LOCKED-STATE COPY branches below.
         const locked = pr.key !== "free" && !p.isPaidManagedKie;

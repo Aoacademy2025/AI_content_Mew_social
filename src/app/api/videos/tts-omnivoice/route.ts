@@ -5,7 +5,7 @@ import path from "path";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
-import { checkMinuteQuota, reserveMinutes } from "@/lib/minute-limits";
+import { checkMinuteQuota, refundMinutes, reserveMinutes } from "@/lib/minute-limits";
 import {
   estimateTtsAudioMinutes,
   reconcileAiAudioMinutes,
@@ -13,13 +13,14 @@ import {
   reserveAiAudioMinutes,
 } from "@/lib/ai-spend-limits";
 import {
+  callOmniVoice,
   isOmniVoiceUserAllowed,
   isValidOmniVoiceId,
   OmniVoiceConfigError,
-  omnivoiceAuthHeaders,
   omnivoiceConfig,
   pcmFromWav,
-  type OmniTtsResponse,
+  type OmniVoiceBackend,
+  type OmniVoiceCallResult,
 } from "@/lib/omnivoice";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { omnivoiceAdmission } from "@/lib/omnivoice-admission";
@@ -28,70 +29,14 @@ import {
   pcmDurationMs,
   splitScriptForTts,
 } from "@/lib/tts-timing";
+import { audioDurationLimitViolation, videoExpiryFor } from "@/lib/plan-limits";
+import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
+import { prisma } from "@/lib/prisma";
 
-export const maxDuration = 300;
+export const maxDuration = 900;
 export const runtime = "nodejs";
 
-type OmniConfig = ReturnType<typeof omnivoiceConfig>;
-
-type CallResult =
-  | { ok: true; pcm: Buffer; sampleRate: number; generationTimeSec: number }
-  | { ok: false; status: number; reason: string; retryAfter?: string };
-
-async function callOmniVoice(
-  config: OmniConfig,
-  voiceId: string,
-  text: string,
-  speed: number,
-  deadline: number,
-): Promise<CallResult> {
-  const remainingMs = deadline - Date.now();
-  if (remainingMs < 1_000) return { ok: false, status: 504, reason: "request budget exhausted" };
-
-  try {
-    const response = await fetch(`${config.baseUrl}/tts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...omnivoiceAuthHeaders(config.apiKey) },
-      body: JSON.stringify({
-        voice_id: voiceId,
-        text,
-        speed,
-        num_step: config.numStep,
-      }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(remainingMs),
-    });
-    if (!response.ok) {
-      return {
-        ok: false,
-        status: response.status,
-        reason: (await response.text().catch(() => "")).slice(0, 200),
-        retryAfter: response.headers.get("retry-after") ?? undefined,
-      };
-    }
-
-    const data = (await response.json()) as Partial<OmniTtsResponse>;
-    if (typeof data.audio_base64 !== "string" || data.audio_base64.length === 0 || data.audio_base64.length > 30_000_000) {
-      return { ok: false, status: 502, reason: "invalid audio payload" };
-    }
-    const { pcm, sampleRate } = pcmFromWav(Buffer.from(data.audio_base64, "base64"));
-    return {
-      ok: true,
-      pcm,
-      sampleRate,
-      generationTimeSec: typeof data.generation_time === "number" ? data.generation_time : 0,
-    };
-  } catch (error) {
-    const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-    return {
-      ok: false,
-      status: timedOut ? 504 : 503,
-      reason: error instanceof Error ? error.message : "request failed",
-    };
-  }
-}
-
-function upstreamError(result: Extract<CallResult, { ok: false }>) {
+function upstreamError(result: Extract<OmniVoiceCallResult, { ok: false }>) {
   if (result.status === 404) {
     return NextResponse.json({ error: "ไม่พบเสียง Hero Voice ที่เลือก — กรุณาเลือกเสียงใหม่" }, { status: 404 });
   }
@@ -172,9 +117,11 @@ export async function POST(request: Request) {
   let aiReserveUserId: string | null = null;
   let aiReservedMin = 0;
   let aiReserveSettled = true;
+  let studioReservedMin = 0;
+  let studioMinuteReserveSettled = true;
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!isOmniVoiceUserAllowed(user.id)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  if (!isOmniVoiceUserAllowed(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   try {
     const markReserved = (minutes: number) => {
@@ -187,17 +134,31 @@ export async function POST(request: Request) {
         await refundAiAudioMinutes(user.id, aiReservedMin).catch(() => {});
       }
       aiReserveSettled = true;
+      if (!studioMinuteReserveSettled && studioReservedMin > 0) {
+        await refundMinutes(user.id, studioReservedMin).catch(() => {});
+      }
+      studioMinuteReserveSettled = true;
     };
     const settleReconcile = async (actualMinutes: number) => {
       await reconcileAiAudioMinutes(user.id, aiReservedMin, actualMinutes, { enforce: true });
       aiReserveSettled = true;
     };
 
-    const config = omnivoiceConfig();
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+    const requestedBackend: OmniVoiceBackend | undefined = body?.backend === "runpod" || body?.backend === "hostinger"
+      ? body.backend
+      : undefined;
+    const config = omnivoiceConfig();
+    if (requestedBackend && requestedBackend !== config.backend) {
+      return NextResponse.json(
+        { error: "Hero Voice backend ของงานนี้ไม่ตรงกับ rollout ปัจจุบัน กรุณาสร้างงานใหม่", retryable: false },
+        { status: 409 },
+      );
+    }
     const fullText = typeof body?.text === "string" ? body.text.trim() : "";
     const voiceId = typeof body?.voiceId === "string" && body.voiceId.trim() ? body.voiceId.trim() : "voice_01";
     const preview = body?.preview === true;
+    const studio = body?.studio === true;
     const parsedSpeed = typeof body?.speed === "number" ? body.speed : Number(body?.speed);
     const speed = Number.isFinite(parsedSpeed) ? Math.min(3, Math.max(0.3, parsedSpeed)) : 1;
 
@@ -206,11 +167,12 @@ export async function POST(request: Request) {
     if (preview) {
       return NextResponse.json({ error: "ใช้เสียงตัวอย่างที่เตรียมไว้จากรายการ Hero Voice" }, { status: 400 });
     }
-    if (!preview && fullText.length > config.maxScriptChars) {
+    const planScriptCap = omnivoiceScriptCharCapForPlan(user.plan);
+    if (!preview && fullText.length > planScriptCap) {
       return NextResponse.json({
         code: "OMNIVOICE_SCRIPT_TOO_LONG",
-        error: `Hero Voice รุ่นทดลองรองรับไม่เกิน ${config.maxScriptChars} ตัวอักษรต่อคลิป กรุณาย่อสคริปต์หรือสลับเป็น Gemini/ElevenLabs`,
-        maxChars: config.maxScriptChars,
+        error: `สคริปต์ยาวเกินแพ็กเกจ ${user.plan} กรุณาย่อให้ไม่เกินประมาณ ${planScriptCap.toLocaleString("th-TH")} ตัวอักษร`,
+        maxChars: planScriptCap,
       }, { status: 413 });
     }
 
@@ -220,10 +182,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ code: "QUOTA_MINUTES", message: quota.message }, { status: 409 });
     }
 
-    const chunks = splitScriptForTts(fullText);
+    const chunks = splitScriptForTts(fullText, config.maxChunkChars);
     const pcms: Buffer[] = [];
     const durations: number[] = [];
     const generationTimes: number[] = [];
+    const delayTimes: number[] = [];
+    const executionTimes: number[] = [];
+    const providerJobIds: string[] = [];
     let sampleRate = 0;
     const admission = omnivoiceAdmission.tryAcquire();
     if (!admission) {
@@ -239,6 +204,15 @@ export async function POST(request: Request) {
         return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: aiReserve.message }, { status: 429 });
       }
       markReserved(estimatedMinutes);
+      if (studio) {
+        studioReservedMin = Math.max(1, Math.ceil(estimatedMinutes));
+        const studioReserve = await reserveMinutes(user.id, studioReservedMin);
+        if (!studioReserve.allowed) {
+          await settleRefund();
+          return NextResponse.json({ code: "QUOTA_MINUTES", message: studioReserve.message }, { status: 409 });
+        }
+        studioMinuteReserveSettled = false;
+      }
 
       for (let index = 0; index < chunks.length; index++) {
         const result = await callOmniVoice(
@@ -249,14 +223,18 @@ export async function POST(request: Request) {
           deadline,
         );
         if (!result.ok) { await settleRefund(); return upstreamError(result); }
-        if (sampleRate === 0) sampleRate = result.sampleRate;
-        if (result.sampleRate !== sampleRate) {
+        const { pcm, sampleRate: resultSampleRate } = pcmFromWav(Buffer.from(result.response.audio_base64, "base64"));
+        if (sampleRate === 0) sampleRate = resultSampleRate;
+        if (resultSampleRate !== sampleRate) {
           await settleRefund();
           return NextResponse.json({ error: "Hero Voice ส่งรูปแบบเสียงไม่สม่ำเสมอ", retryable: true }, { status: 503 });
         }
-        pcms.push(result.pcm);
-        durations.push(Math.round(pcmDurationMs(result.pcm.length, result.sampleRate)));
-        generationTimes.push(result.generationTimeSec);
+        pcms.push(pcm);
+        durations.push(Math.round(pcmDurationMs(pcm.length, resultSampleRate)));
+        generationTimes.push(typeof result.response.generation_time === "number" ? result.response.generation_time : 0);
+        delayTimes.push(result.delayTimeMs);
+        executionTimes.push(result.executionTimeMs);
+        if (result.providerJobId) providerJobIds.push(result.providerJobId);
       }
     } finally {
       admission.release();
@@ -267,7 +245,33 @@ export async function POST(request: Request) {
     // The worker CPU was successfully spent even if a later render-minute reserve
     // loses a race, so settle the managed-audio ceiling before that reservation.
     await settleReconcile(audioDurationMs / 60_000);
-    if (process.env.MINUTE_QUOTA !== "1") {
+    const durationViolation = audioDurationLimitViolation(audioDurationMs, user.plan);
+    if (durationViolation) {
+      try { fs.unlinkSync(filePath); } catch {}
+      if (!studioMinuteReserveSettled) {
+        await refundMinutes(user.id, studioReservedMin).catch(() => {});
+        studioMinuteReserveSettled = true;
+      }
+      return NextResponse.json(durationViolation, { status: 413 });
+    }
+    if (studio) {
+      const actualBilledMinutes = Math.max(1, Math.ceil(audioDurationMs / 60_000));
+      if (actualBilledMinutes > studioReservedMin) {
+        const extra = actualBilledMinutes - studioReservedMin;
+        const extraReserve = await reserveMinutes(user.id, extra);
+        if (!extraReserve.allowed) {
+          try { fs.unlinkSync(filePath); } catch {}
+          await refundMinutes(user.id, studioReservedMin).catch(() => {});
+          studioMinuteReserveSettled = true;
+          return NextResponse.json({ code: "QUOTA_MINUTES", message: extraReserve.message }, { status: 409 });
+        }
+        studioReservedMin = actualBilledMinutes;
+      } else if (actualBilledMinutes < studioReservedMin) {
+        await refundMinutes(user.id, studioReservedMin - actualBilledMinutes);
+        studioReservedMin = actualBilledMinutes;
+      }
+      studioMinuteReserveSettled = true;
+    } else if (process.env.MINUTE_QUOTA !== "1") {
       const reserved = await reserveMinutes(user.id, Math.max(1, Math.ceil(audioDurationMs / 60_000)));
       if (!reserved.allowed) {
         try { fs.unlinkSync(filePath); } catch {}
@@ -287,14 +291,55 @@ export async function POST(request: Request) {
         scriptChars: fullText.length,
         audioDurationMs,
         generationTimeMs: Math.round(generationTimes.reduce((sum, value) => sum + value, 0) * 1000),
+        providerExecutionTimeMs: executionTimes.reduce((sum, value) => sum + value, 0),
+        providerDelayTimeMs: delayTimes.reduce((sum, value) => sum + value, 0),
+        backend: config.backend,
         numStep: config.numStep,
         segments: chunks.length,
       },
     }).catch(() => {});
 
+    let studioJob: { id: string; status: string; outputUrl: string | null } | null = null;
+    if (studio) {
+      studioJob = await prisma.aiGenerationJob.create({
+        data: {
+          userId: user.id,
+          kind: "voice",
+          provider: config.backend === "runpod" ? "runpod" : "omnivoice",
+          model: voiceId,
+          providerModel: "omnivoice",
+          providerRoute: config.backend === "runpod" ? "runpod-custom" : "hostinger-kvm",
+          providerEndpoint: config.backend === "runpod" ? config.endpointId : config.baseUrl,
+          status: "completed",
+          inputPreview: fullText.replace(/\s+/g, " ").slice(0, 180),
+          inputJson: JSON.stringify({
+            voiceId,
+            speed,
+            scriptChars: fullText.length,
+            backend: config.backend,
+            segments: chunks.length,
+            providerJobIds,
+          }),
+          outputUrl: voiceUrl,
+          creditCost: 0,
+          chargeState: "none",
+          delayTimeMs: delayTimes.reduce((sum, value) => sum + value, 0),
+          executionTimeMs: executionTimes.reduce((sum, value) => sum + value, 0),
+          startedAt: new Date(),
+          finishedAt: new Date(),
+          mediaExpiresAt: videoExpiryFor(user.plan),
+        },
+        select: { id: true, status: true, outputUrl: true },
+      }).catch((error) => {
+        console.error("[tts-omnivoice] could not record AI Studio history:", error instanceof Error ? error.message : error);
+        return null;
+      });
+    }
+
     return NextResponse.json({
       voiceUrl,
       audioDurationMs,
+      studioJob,
       timing: {
         provider: "omnivoice" as const,
         segments: mergeSegmentTiming(chunks.map((chunk, index) => ({ text: chunk.text, durationMs: durations[index] }))),
@@ -307,6 +352,10 @@ export async function POST(request: Request) {
     if (!aiReserveSettled && aiReserveUserId && aiReservedMin > 0) {
       await refundAiAudioMinutes(aiReserveUserId, aiReservedMin).catch(() => {});
       aiReserveSettled = true;
+    }
+    if (!studioMinuteReserveSettled && aiReserveUserId && studioReservedMin > 0) {
+      await refundMinutes(aiReserveUserId, studioReservedMin).catch(() => {});
+      studioMinuteReserveSettled = true;
     }
     if (!(error instanceof OmniVoiceConfigError)) {
       console.error("[tts-omnivoice] request failed:", error);

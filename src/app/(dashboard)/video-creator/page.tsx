@@ -436,11 +436,12 @@ export default function ShortVideoPage() {
   useEffect(() => {
     fetch("/api/user/me").then(r => r.json()).then(d => {
       const isAdmin = d?.role === "ADMIN";
+      const internalAiTester = d?.internalAiTester === true;
       // Managed-kie: paid users (PRO/BUSINESS) are un-gated when the flags are on.
       const kiePaidUnlocked = !!d?.kiePaidUnlocked;
-      setIsAdminUser(isAdmin);
-      setKieImageEnabled(isAdmin || kiePaidUnlocked);
-      setAutoMixEnabled(isAdmin || kiePaidUnlocked);
+      setIsAdminUser(isAdmin && internalAiTester);
+      setKieImageEnabled(internalAiTester && (isAdmin || kiePaidUnlocked));
+      setAutoMixEnabled(internalAiTester && (isAdmin || kiePaidUnlocked));
     }).catch(() => {});
   }, []);
   // Admins pick from all 8 models; non-admin paid users see only the 3 priced ones.

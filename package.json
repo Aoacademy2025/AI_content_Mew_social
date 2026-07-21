@@ -50,7 +50,16 @@
     "verify:broll-rerender": "tsx scripts/verify-broll-rerender.ts",
     "verify:ken-burns-aspect": "tsx scripts/verify-ken-burns-aspect.ts",
     "verify:omnivoice": "tsx scripts/verify-omnivoice.ts",
-    "verify:hero-voice-ui": "tsx scripts/verify-hero-voice-ui.ts"
+    "verify:omnivoice-runpod": "python3 -m unittest discover -s services/omnivoice-runpod -p 'test_contract.py' && python3 -m py_compile services/omnivoice-runpod/contract.py services/omnivoice-runpod/handler.py",
+    "verify:comfyui-z-image-runpod": "python3 -m unittest discover -s services/comfyui-z-image-runpod -p 'test_model_manifest.py' && python3 -m py_compile services/comfyui-z-image-runpod/test_model_manifest.py",
+    "verify:hero-voice-ui": "tsx scripts/verify-hero-voice-ui.ts",
+    "verify:ai-studio": "tsx scripts/verify-ai-studio.ts",
+    "verify:runpod-public-image": "tsx scripts/verify-runpod-public-image.ts",
+    "smoke:runpod-public-image": "tsx scripts/smoke-runpod-public-image.ts",
+    "smoke:runpod-custom-staging": "tsx scripts/smoke-runpod-custom-staging.ts",
+    "smoke:hero-ai-video": "tsx scripts/smoke-hero-ai-video.ts",
+    "check:runpod-readiness": "tsx scripts/check-runpod-ai-readiness.ts",
+    "provision:runpod-staging": "tsx scripts/provision-runpod-staging.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"
