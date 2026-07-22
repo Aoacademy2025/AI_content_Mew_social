@@ -4,6 +4,13 @@
 
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { pcmFromWav } from "../src/lib/omnivoice-core";
+import {
+  RUNPOD_HERO_VOICE_PREVIEWS,
+  RUNPOD_HERO_VOICES,
+  runpodHeroVoicePreviewFilename,
+} from "../src/lib/hero-voice-preview";
 
 const read = (path: string) => readFileSync(path, "utf8");
 const occurrences = (source: string, value: string) => source.split(value).length - 1;
@@ -20,6 +27,8 @@ const step2 = read("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx");
 const ui = read("src/app/(dashboard)/video-editor/_v2/ui.tsx");
 const legacy = read("src/app/(dashboard)/video-editor/_components/OrderPanel.tsx");
 const preview = read("src/app/(dashboard)/video-editor/_components/VoicePreviewButton.tsx");
+const voicesRoute = read("src/app/api/omnivoice/voices/route.ts");
+const previewRoute = read("src/app/api/omnivoice/preview/[voiceId]/route.ts");
 const shell = read("src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx");
 const jobsRoute = read("src/app/api/videos/jobs/route.ts");
 
@@ -57,6 +66,32 @@ assert.match(step2, /aria-controls=\{panelId\}/);
 assert.match(preview, /aria-busy=\{loading\}/);
 assert.match(preview, /aria-pressed=\{playing\}/);
 assert.match(preview, /min-h-11/);
+assert.doesNotMatch(voicesRoute, /preview_url:\s*["']["']/,
+  "every RunPod Hero Voice catalog item has a playable preview URL");
+assert.match(voicesRoute, /RUNPOD_HERO_VOICES/,
+  "the RunPod catalog comes from the shared preview allowlist");
+assert.match(previewRoute, /runpodHeroVoicePreviewFilename/,
+  "the preview route resolves only allowlisted static Hero Voice assets");
+assert.match(previewRoute, /["']Content-Type["']:\s*["']audio\/wav["']/,
+  "the preview route serves browser-playable WAV audio");
+assert.equal(RUNPOD_HERO_VOICE_PREVIEWS.length, 3,
+  "the preview allowlist covers every served RunPod Hero Voice");
+assert.equal(RUNPOD_HERO_VOICES.length, RUNPOD_HERO_VOICE_PREVIEWS.length,
+  "the RunPod catalog and static preview allowlist cannot drift");
+assert.equal(runpodHeroVoicePreviewFilename("../voice_01"), null,
+  "preview filename resolution fails closed outside the allowlist");
+for (const voice of RUNPOD_HERO_VOICE_PREVIEWS) {
+  const catalogItem = RUNPOD_HERO_VOICES.find((item) => item.voice_id === voice.voiceId);
+  assert.equal(catalogItem?.preview_url, `/api/omnivoice/preview/${voice.voiceId}`,
+    `${voice.voiceId} exposes its authenticated preview route`);
+  const assetPath = path.join("assets", "hero-voice-previews", voice.filename);
+  assert.ok(existsSync(assetPath), `${voice.voiceId} static preview exists`);
+  const audio = readFileSync(assetPath);
+  const parsed = pcmFromWav(audio);
+  const durationSec = parsed.pcm.length / (parsed.sampleRate * 2);
+  assert.equal(parsed.sampleRate, 24_000, `${voice.voiceId} matches the worker sample rate`);
+  assert.ok(durationSec >= 2 && durationSec <= 10, `${voice.voiceId} preview duration is browser-friendly`);
+}
 
 assert.match(legacy, /HERO_VOICE_NAME/);
 assert.match(legacy, /HERO_VOICE_COMING_SOON/);

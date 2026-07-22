@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { RUNPOD_HERO_VOICES } from "@/lib/hero-voice-preview";
 import {
   isOmniVoiceInfo,
   isOmniVoiceUserAllowed,
@@ -20,11 +21,9 @@ export async function GET() {
     if (config.backend === "runpod") {
       // The queue worker intentionally exposes only TTS jobs. Keep its served
       // catalog server-owned so listing voices never calls the retired KVM2 API.
-      return NextResponse.json([
-        { voice_id: "voice_01", desc: "เสียงผู้ชาย โทนปกติ", instruct: "male", preview_url: "" },
-        { voice_id: "voice_02", desc: "เสียงผู้หญิง โทนปกติ", instruct: "female", preview_url: "" },
-        { voice_id: "voice_03", desc: "เสียงผู้ชาย โทนสูง สดใส", instruct: "male, high pitch", preview_url: "" },
-      ], { headers: { "Cache-Control": "private, max-age=300" } });
+      return NextResponse.json(RUNPOD_HERO_VOICES, {
+        headers: { "Cache-Control": "private, max-age=300" },
+      });
     }
     const response = await fetch(`${config.baseUrl}/voices`, {
       headers: omnivoiceAuthHeaders(config.apiKey),

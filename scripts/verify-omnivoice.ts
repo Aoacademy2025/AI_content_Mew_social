@@ -68,6 +68,12 @@ check("voice id: enforces length", !isValidOmniVoiceId("v".repeat(65)));
 check("voice payload: accepts required fields", isOmniVoiceInfo({
   voice_id: "voice_01", desc: "Thai voice", instruct: "calm", preview_url: "/preview",
 }));
+check("voice payload: rejects missing preview URL", !isOmniVoiceInfo({
+  voice_id: "voice_01", desc: "Thai voice", instruct: "calm",
+}));
+check("voice payload: rejects empty preview URL", !isOmniVoiceInfo({
+  voice_id: "voice_01", desc: "Thai voice", instruct: "calm", preview_url: "",
+}));
 check("voice payload: rejects invalid id", !isOmniVoiceInfo({
   voice_id: "../../etc", desc: "bad", instruct: "bad", preview_url: "/preview",
 }));

@@ -1,11 +1,15 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { runpodHeroVoicePreviewFilename } from "@/lib/hero-voice-preview";
 import {
   isOmniVoiceUserAllowed,
   isValidOmniVoiceId,
   OmniVoiceConfigError,
   omnivoiceAuthHeaders,
   omnivoiceConfig,
+  pcmFromWav,
 } from "@/lib/omnivoice";
 
 export const runtime = "nodejs";
@@ -21,10 +25,17 @@ export async function GET(_request: Request, context: { params: Promise<{ voiceI
   try {
     const config = omnivoiceConfig();
     if (config.backend === "runpod") {
-      return NextResponse.json(
-        { error: "เสียงตัวอย่าง Hero AI Voice กำลังจัดเตรียม แต่สามารถใช้สร้างวิดีโอจริงได้แล้ว" },
-        { status: 404 },
-      );
+      const filename = runpodHeroVoicePreviewFilename(voiceId);
+      if (!filename) return NextResponse.json({ error: "ไม่พบเสียงที่เลือก" }, { status: 404 });
+      const audio = await fs.readFile(path.join(process.cwd(), "assets", "hero-voice-previews", filename));
+      pcmFromWav(audio);
+      return new NextResponse(new Uint8Array(audio), {
+        headers: {
+          "Content-Type": "audio/wav",
+          "Cache-Control": "private, max-age=86400, immutable",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
     }
     const response = await fetch(`${config.baseUrl}/voices/${encodeURIComponent(voiceId)}/preview`, {
       headers: omnivoiceAuthHeaders(config.apiKey),
