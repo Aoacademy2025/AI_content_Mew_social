@@ -53,6 +53,7 @@
     "verify:omnivoice-runpod": "python3 -m unittest discover -s services/omnivoice-runpod -p 'test_contract.py' && python3 -m py_compile services/omnivoice-runpod/contract.py services/omnivoice-runpod/handler.py",
     "verify:comfyui-z-image-runpod": "python3 -m unittest discover -s services/comfyui-z-image-runpod -p 'test_model_manifest.py' && python3 -m py_compile services/comfyui-z-image-runpod/test_model_manifest.py",
     "verify:hero-voice-ui": "tsx scripts/verify-hero-voice-ui.ts",
+    "verify:hero-ai-broll": "tsx scripts/verify-hero-ai-broll.ts",
     "generate:hero-voice-previews": "tsx scripts/generate-hero-voice-previews.ts",
     "verify:ai-studio": "tsx scripts/verify-ai-studio.ts",
     "verify:runpod-public-image": "tsx scripts/verify-runpod-public-image.ts",

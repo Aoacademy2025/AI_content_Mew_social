@@ -23,6 +23,11 @@ check("6 pieces @ 3:2:1 → 1 ai", t6.ai === 1, JSON.stringify(t6));
 check("interleaved, not blocked (not vvvppa)", p6.join("") !== "videovideovideo" + "photophoto" + "ai");
 check("ai is not first (cost source spread, not front-loaded)", p6[0] !== "ai");
 
+// AutoMix is a product contract: once there are enough slots for every enabled
+// source, the result must actually contain video + stock photo + AI.
+const p3 = planAutoMixSources(3, w321);
+check("3 AutoMix pieces include video, photo, and AI", ["video", "photo", "ai"].every((source) => p3.includes(source as typeof p3[number])), JSON.stringify(p3));
+
 // length always == n
 check("length == n (10)", planAutoMixSources(10, w321).length === 10);
 check("length == n (0)", planAutoMixSources(0, w321).length === 0);

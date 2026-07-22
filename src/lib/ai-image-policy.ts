@@ -140,7 +140,8 @@ export function buildArtworkOnlyPrompt(prompt: string, style: AiImageStyle): {
     subject,
     STYLE_PROMPT[style],
     "standalone language-free visual artwork",
-    "all signage, screens, labels, packaging, clothing and background surfaces are blank and unmarked",
+    "screens display abstract visual states, geometric color shapes and unlabeled controls",
+    "all signage, labels, packaging, clothing and background surfaces are blank and unmarked",
   ].filter(Boolean).join(". ") + ".";
 
   const negative = [

@@ -41,7 +41,11 @@ import {
   recordTelemetryEvent as recordServerTelemetryEvent,
   type TelemetryInput,
 } from "@/lib/telemetry";
-import { buildBrollWindows, type BrollWindow } from "@/lib/broll-windows";
+import {
+  buildBrollWindows,
+  buildFixedCountBrollWindows,
+  type BrollWindow,
+} from "@/lib/broll-windows";
 import { planCutaway } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { buildDegradedTtsTiming } from "@/lib/tts-timing";
@@ -813,11 +817,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         : Math.max(...upCaps.map((c) => c.endMs));
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-      const upWindows = buildBrollWindows(
-        upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
-        upWindowSec,
-        upDurMs,
-      );
+      const upManualBrollCount = input.targetClipCount && input.targetClipCount > 0
+        ? Math.min(60, Math.floor(input.targetClipCount))
+        : 0;
+      const upWindows = upManualBrollCount > 0
+        ? buildFixedCountBrollWindows(
+            upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            upManualBrollCount,
+            upDurMs,
+          )
+        : buildBrollWindows(
+            upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            upWindowSec,
+            upDurMs,
+          );
       const upBrollUnits = upWindows.length > 0 ? brollWindowCaptions(upWindows) : upCaps;
 
       await step("keywords", 40);
@@ -844,7 +857,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
             brollRegionPreference: input.brollRegionPreference,
             brollVisualStyle: input.brollVisualStyle,
-          }, upAligned.windows.length > 0),
+          }, upAligned.windows.length > 0, upAligned.windows),
           ...(input.kieModel ? { kieModel: input.kieModel } : {}),
           ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
           ...(input.imageModel ? { imageModel: input.imageModel } : {}),
@@ -1015,12 +1028,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // sceneClipCounts); subtitle timing is untouched.
     const brollWindowMode = isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1");
     const brollWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-    const brollWindows = brollWindowMode
-      ? buildBrollWindows(
-          captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
-          brollWindowSec,
-          durMs,
-        )
+    const manualBrollCount = input.targetClipCount && input.targetClipCount > 0
+      ? Math.min(60, Math.floor(input.targetClipCount))
+      : 0;
+    const brollWindows = brollWindowMode || manualBrollCount > 0
+      ? manualBrollCount > 0
+        ? buildFixedCountBrollWindows(
+            captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            manualBrollCount,
+            durMs,
+          )
+        : buildBrollWindows(
+            captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            brollWindowSec,
+            durMs,
+          )
       : [];
     const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
 
@@ -1053,7 +1075,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
-        }, aligned.windows.length > 0),
+        }, aligned.windows.length > 0, aligned.windows),
         // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
         ...(input.kieModel ? { kieModel: input.kieModel } : {}),
         ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),

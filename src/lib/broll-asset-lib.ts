@@ -271,23 +271,38 @@ export async function searchPixabay(query: string, pixabayKey: string, minDurati
 export const KEN_BURNS_DURATION_SEC = 5;
 const KEN_BURNS_WIDTH = 1080;
 const KEN_BURNS_HEIGHT = 1920;
+const KEN_BURNS_TOTAL_ZOOM = 0.15;
+
+/** Keep the zoom moving for the whole clip, including long manual B-roll chapters. */
+export function kenBurnsZoomStepForFrames(totalFrames: number): number {
+  const frames = Number.isFinite(totalFrames) ? Math.max(1, Math.floor(totalFrames)) : 1;
+  return KEN_BURNS_TOTAL_ZOOM / frames;
+}
 
 // แปลงภาพนิ่ง 1 ภาพเป็นวิดีโอแนวตั้งด้วย Ken Burns effect (ffmpeg zoompan: pan+zoom ช้าๆ)
-export async function applyKenBurns(imagePath: string, outPath: string): Promise<void> {
+export async function applyKenBurns(
+  imagePath: string,
+  outPath: string,
+  durationSec: number = KEN_BURNS_DURATION_SEC,
+): Promise<void> {
   const ffmpeg = getFfmpegPath();
-  const totalFrames = KEN_BURNS_DURATION_SEC * TARGET_FPS;
+  const resolvedDurationSec = Number.isFinite(durationSec) && durationSec > 0
+    ? Math.min(601, Math.ceil(durationSec * TARGET_FPS) / TARGET_FPS)
+    : KEN_BURNS_DURATION_SEC;
+  const totalFrames = Math.max(1, Math.ceil(resolvedDurationSec * TARGET_FPS));
+  const zoomStep = kenBurnsZoomStepForFrames(totalFrames).toFixed(9);
   // Cover-crop to 9:16 BEFORE zoompan so non-9:16 stills (landscape photos, kie
   // images off-ratio) get cropped like everywhere else (objectFit:"cover"),
   // never stretched. Scale to a larger 1350x2400 (9:16) intermediate first so
   // the zoompan zoom stays crisp, then crop to that exact box; zoompan then
   // does its usual zoom/pan and downsamples to the final 1080x1920 output.
-  const zoompan = `scale=1350:2400:force_original_aspect_ratio=increase,crop=1350:2400,zoompan=z='min(zoom+0.0007,1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${KEN_BURNS_WIDTH}x${KEN_BURNS_HEIGHT}:fps=${TARGET_FPS}`;
+  const zoompan = `scale=1350:2400:force_original_aspect_ratio=increase,crop=1350:2400,zoompan=z='min(zoom+${zoomStep},1.15)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=${totalFrames}:s=${KEN_BURNS_WIDTH}x${KEN_BURNS_HEIGHT}:fps=${TARGET_FPS}`;
   const tmp = `${outPath}.kb.mp4`;
   safeUnlink(tmp);
   await withNormalizeSlot(() => execFileAsync(ffmpeg, [
     "-y", "-loop", "1", "-i", imagePath,
     "-vf", zoompan,
-    "-t", String(KEN_BURNS_DURATION_SEC),
+    "-t", String(resolvedDurationSec),
     "-an",
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
     "-pix_fmt", "yuv420p",
