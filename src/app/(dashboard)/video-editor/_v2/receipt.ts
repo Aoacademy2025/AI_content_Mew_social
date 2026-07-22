@@ -13,6 +13,7 @@
  */
 
 import { minutesFromSeconds } from "@/lib/minute-round";
+import { planAutoMixSources } from "@/lib/automix-plan";
 import { estimatePresetCredits } from "./estimate";
 
 export interface ReceiptInput {
@@ -37,6 +38,8 @@ export interface ReceiptInput {
   exactDuration?: boolean;
   /** Hero AI Image blocks before generation; AutoMix may keep its stock fallback. */
   insufficientCreditBehavior?: "stock-fallback" | "block";
+  /** Explicit B-roll count. When set, the backend plans exactly this many source slots. */
+  targetClipCount?: number;
 }
 
 export type ReceiptLineKind = "info" | "warn";
@@ -61,12 +64,20 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const {
     estSec, remainingMinutes, totalMinutes, usesAi, presetWeights,
     perImageCredits, creditBalance, minuteCreditRate, hasAvatar, exactDuration = false,
-    insufficientCreditBehavior = "stock-fallback",
+    insufficientCreditBehavior = "stock-fallback", targetClipCount = 0,
   } = input;
 
   const estMinutes = minutesFromSeconds(estSec);
+  const manualPieceCount = Number.isFinite(targetClipCount) && targetClipCount > 0
+    ? Math.min(60, Math.floor(targetClipCount))
+    : 0;
+  const manualAiImageCount = manualPieceCount > 0
+    ? planAutoMixSources(manualPieceCount, presetWeights).filter((source) => source === "ai").length
+    : null;
   const estCredits = usesAi
-    ? estimatePresetCredits(estSec, presetWeights, perImageCredits)
+    ? manualAiImageCount != null
+      ? manualAiImageCount * perImageCredits
+      : estimatePresetCredits(estSec, presetWeights, perImageCredits)
     : 0;
 
   const haveMinuteQuota = remainingMinutes != null && totalMinutes != null;
@@ -92,7 +103,9 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     lines.push({
       key: "ai",
       kind: "info",
-      text: `ภาพ AI (ประมาณ): ~${estCredits} เครดิต · หักตามจำนวนที่เจนสำเร็จจริง`,
+      text: manualAiImageCount != null
+        ? `ภาพ AI: ${estCredits} เครดิต (${manualAiImageCount} ภาพ × ${perImageCredits} เครดิต) · หักเมื่อเจนสำเร็จ`
+        : `ภาพ AI (ประมาณ): ~${estCredits} เครดิต · หักตามจำนวนที่เจนสำเร็จจริง`,
     });
   }
 

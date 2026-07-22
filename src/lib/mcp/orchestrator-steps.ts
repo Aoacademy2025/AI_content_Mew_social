@@ -83,6 +83,7 @@ export function buildStockPayload(
   relevanceSpec?: unknown,
   brollPreference?: BrollPreferenceInput,
   brollWindowMode = false,
+  brollWindows: { startMs: number; endMs: number }[] = [],
 ) {
   const perSubtitle = captions.length > 0 && captions.length === keywords.length;
   return {
@@ -91,6 +92,10 @@ export function buildStockPayload(
     totalDurationSec: Math.max(30, Math.round(totalDurationSec)),
     stockSource,
     ...(brollWindowMode ? { brollWindowMode: true as const } : {}),
+    ...(brollWindowMode && brollWindows.length > 0 ? {
+      brollWindowDurationsSec: brollWindows.map((window) =>
+        Math.max(0, window.endMs - window.startMs) / 1000),
+    } : {}),
     preferredLLM: null as string | null,
     ...(perSubtitle ? { perSubtitleMode: true, overrideClipCount: captions.length, subtitleTexts: captions.map((c) => c.text) } : {}),
     ...(visualDirection ? { visualDirection } : {}),

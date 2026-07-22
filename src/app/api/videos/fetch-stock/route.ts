@@ -41,6 +41,7 @@ import {
 } from "@/lib/kie-image-guards";
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { selectRepresentativeItems } from "@/lib/broll-coverage";
+import { planHeroAiWindowGeneration } from "@/lib/hero-ai-broll";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import {
@@ -946,6 +947,7 @@ export async function POST(req: Request) {
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
     brollWindowMode = false,
+    brollWindowDurationsSec,
     fullScript,
     visualDirection,
     contentProfile,
@@ -971,6 +973,7 @@ export async function POST(req: Request) {
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
     brollWindowMode?: boolean;
+    brollWindowDurationsSec?: number[];
     fullScript?: string;
     visualDirection?: string;
     contentProfile?: string;
@@ -1521,16 +1524,33 @@ export async function POST(req: Request) {
   // fallback, so displayed price, charged price and actual model cannot drift.
   if (useHeroRunpodImage) {
     const clipsToGenerateRaw = brollWindowMode
-      ? Math.min(keywords.length, PER_SUBTITLE_DOWNLOAD_LIMIT)
+      ? keywords.length
       : aiGenPieceCount(
           totalDurationSec,
           Math.min(keywords.length, downloadClipLimit),
           isPerSubtitleMode,
           PER_SUBTITLE_DOWNLOAD_LIMIT,
         );
-    const heroImageCap = readIntEnv("HERO_AI_IMAGE_MAX_PER_VIDEO", 20, 1, 60);
-    const clipsToGenerate = Math.min(clipsToGenerateRaw, heroImageCap);
-    const capClampHit = clipsToGenerate < clipsToGenerateRaw;
+    const fallbackWindowDurationSec = keywords.length > 0
+      ? Math.max(0, Number(totalDurationSec) || 0) / keywords.length
+      : 0;
+    const heroWindowDurationsSec = keywords.map((_, index) => {
+      const value = brollWindowDurationsSec?.[index];
+      return typeof value === "number" && Number.isFinite(value) && value > 0
+        ? value
+        : fallbackWindowDurationSec;
+    });
+    const directJobs = brollWindowMode
+      ? planHeroAiWindowGeneration(keywords, heroWindowDurationsSec)
+      : selectRepresentativeItems(
+          keywords.map((keyword, sourceIndex) => ({
+            keyword,
+            sourceIndex,
+            kenBurnsDurationSec: KEN_BURNS_DURATION_SEC,
+          })),
+          clipsToGenerateRaw,
+        );
+    const clipsToGenerate = directJobs.length;
     const heroCreditCost = creditCostFor("image-open-fast-1k");
     const heroAiTelemetry = {
       aiModel: "z-image-turbo",
@@ -1563,19 +1583,14 @@ export async function POST(req: Request) {
       }, { status: 402 });
     }
 
-    const directJobs = selectRepresentativeItems(
-      keywords.map((keyword, sourceIndex) => ({ keyword, sourceIndex })),
-      clipsToGenerate,
-    );
     const failures: Array<{ sourceIndex: number; code: string; message: string }> = [];
     aiTelemetry.aiGenRequestedCount += clipsToGenerateRaw;
     aiTelemetry.aiGenPlannedCount += clipsToGenerate;
-    if (capClampHit) trackAiSkip("cap", clipsToGenerateRaw - clipsToGenerate);
 
     await withConcurrency(
       directJobs,
       Math.min(3, DOWNLOAD_CONCURRENCY),
-      async ({ keyword, sourceIndex }) => {
+      async ({ keyword, sourceIndex, kenBurnsDurationSec }) => {
         const startedAt = Date.now();
         const id = HERO_RUNPOD_ID_OFFSET + sourceIndex;
         const imageFile = `${userPrefix}${id}.src.png`;
@@ -1587,6 +1602,7 @@ export async function POST(req: Request) {
           terms: relTerms,
           region: brollPreference.brollRegionPreference,
           style: brollPreference.brollVisualStyle,
+          creativeBrollSceneIndex: sourceIndex,
         });
         aiTelemetry.aiGenAttemptCount++;
         try {
@@ -1610,7 +1626,7 @@ export async function POST(req: Request) {
             } else {
               await downloadAndCrop(generated.outputUrl, imagePath);
             }
-            await applyKenBurns(imagePath, outPath);
+            await applyKenBurns(imagePath, outPath, kenBurnsDurationSec);
             if (!isValidMp4Path(outPath)) throw new Error("Hero image Ken Burns output is invalid");
             try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
             stockTelemetry.downloadedCount++;
@@ -1621,7 +1637,7 @@ export async function POST(req: Request) {
             keyword,
             sourceIndex,
             pexelsId: id,
-            duration: KEN_BURNS_DURATION_SEC,
+            duration: kenBurnsDurationSec,
             videoUrl: generated.outputUrl,
             ...(download ? {
               localPath: outPath,
@@ -1709,7 +1725,7 @@ export async function POST(req: Request) {
       heroImageGeneratedCount: results.length,
       heroImageCredits: results.length * heroCreditCost,
     });
-    return NextResponse.json({ results, ...(capClampHit ? { aiSkippedReason: "cap" } : {}) });
+    return NextResponse.json({ results });
   }
 
   // ── AI Image-to-Video (kie.ai, admin-only) — generation path ──────────────

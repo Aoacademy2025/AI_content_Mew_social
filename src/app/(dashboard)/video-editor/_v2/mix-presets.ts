@@ -17,7 +17,9 @@ export type MixPreset = "free" | "recommended" | "full";
 export const PRESET_WEIGHTS: Record<MixPreset, { video: number; photo: number; ai: number }> = {
   free: { video: 3, photo: 2, ai: 0 },
   recommended: { video: 3, photo: 2, ai: 1 },
-  full: { video: 0, photo: 0, ai: 1 },
+  // AI-forward AutoMix still contains both stock video and stock photography.
+  // Pure AI belongs to the separate Hero AI Image product.
+  full: { video: 1, photo: 1, ai: 2 },
 };
 
 /** ผู้ให้บริการภาพ AutoMix ที่เปิดใช้ต่อ preset. `null` = ไม่ใช่ AutoMix (สต็อกฟรีล้วน →
@@ -26,8 +28,8 @@ export const PRESET_PROVIDERS: Record<MixPreset, AutoMixImageProvider[] | null> 
   free: null,
   // สต็อก (วิดีโอจริง + ภาพ Pexels/Pixabay ฟรี) + ภาพ AI แทรก
   recommended: ["video", "pexels-photo", "pixabay-photo", "kie-ai"],
-  // ภาพ AI ทุกช่วง
-  full: ["kie-ai"],
+  // AI เด่น แต่ยังคงเป็น AutoMix ที่มีทั้งวิดีโอและภาพสต็อก
+  full: ["video", "pexels-photo", "pixabay-photo", "kie-ai"],
 };
 
 /** b-roll source ที่ preset นี้หมายถึง: ฟรีล้วน → "stock", ที่เหลือ → "automix". */

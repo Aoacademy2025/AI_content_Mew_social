@@ -98,8 +98,9 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       hasAvatar: p.mode !== "upload" && p.useAvatar && !!p.avatarId,
       exactDuration,
       insufficientCreditBehavior: p.brollSource === "kie-image" ? "block" : "stock-fallback",
+      targetClipCount: p.targetClipCount,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, balance, p.mode, p.useAvatar, p.avatarId, p.brollSource, exactDuration],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, balance, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, exactDuration],
   );
 
   if (!open) return null;

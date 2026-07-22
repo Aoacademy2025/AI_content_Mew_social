@@ -39,18 +39,18 @@ import { HeroVoicePicker } from "./HeroVoicePicker";
 const MIX_PRESETS: { key: MixPreset; label: string; sub: string; badge?: string }[] = [
   { key: "free", label: "ฟรีล้วน", sub: "สต็อกฟรีทั้งหมด · 0 เครดิต" },
   { key: "recommended", label: "AutoMix แนะนำ", sub: "สต็อก + ภาพ AI แทรก · ~6–9 เครดิต/คลิป", badge: "แนะนำ" },
-  { key: "full", label: "AI เต็มที่", sub: "ภาพ AI ทุกช่วง · ~25–45 เครดิต/คลิป" },
+  { key: "full", label: "AutoMix · AI เด่น", sub: "วิดีโอสต็อก + ภาพสต็อก + AI สัดส่วนสูง" },
 ];
 const MIX_PRESET_LABEL: Record<MixPreset, string> = {
-  free: "ฟรีล้วน", recommended: "AutoMix แนะนำ", full: "AI เต็มที่",
+  free: "ฟรีล้วน", recommended: "AutoMix แนะนำ", full: "AI เด่น",
 };
 
 // ลำดับตามความสำคัญจริง (review 07-03): สต็อกฟรี = default · ที่เหลือ Beta (admin) · วิดีโอ AI ยังไม่เปิด
 const BROLL_OPTIONS: { value: V2BrollSource; title: string; desc: string; icon: React.ReactNode; badge?: string; beta?: boolean; comingSoon?: boolean }[] = [
   { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} />, badge: "ฟรี · แนะนำ" },
-  { value: "kie-image", title: "Hero AI Image", desc: "RunPod · Z-Image Turbo", icon: <ImagePlus size={16} strokeWidth={1.6} />, beta: true },
+  { value: "kie-image", title: "Hero AI Image", desc: "ภาพ AI ทุกช่วง · ไม่ใช้สต็อก", icon: <ImagePlus size={16} strokeWidth={1.6} />, beta: true },
   { value: "kie-video", title: "วิดีโอ AI", desc: "เร็ว ๆ นี้", icon: <Sparkles size={16} strokeWidth={1.6} />, beta: true, comingSoon: true },
-  { value: "automix", title: "AutoMix", desc: "วิดีโอ + ภาพ ผสมอัตโนมัติ", icon: <Shuffle size={16} strokeWidth={1.6} />, beta: true },
+  { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} />, beta: true },
 ];
 
 function fmtTime(sec: number) {
@@ -65,6 +65,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
   const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
   const displayMin = displaySec > 0 ? minutesFromSeconds(displaySec) : 0;
+  const brollCountLabel = p.brollSource === "kie-image"
+    ? "จำนวนภาพ AI:"
+    : p.brollSource === "automix"
+      ? "จำนวน B-roll รวม:"
+      : "จำนวนคลิปบีโรล:";
   const customerBrollLabel = p.brollSource === "kie-image"
     ? "Hero AI Image"
     : p.brollSource === "automix"
@@ -169,7 +174,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           <Advanced note="สลับคลิป/แก้จังหวะรายช่วง (มากับ timeline)">
             <div className="flex flex-col gap-3">
               <label className="flex items-center gap-2" style={{ fontSize: 11.5, color: color.textSecondary }}>
-                จำนวนคลิปบีโรล:
+                {brollCountLabel}
                 <Segmented
                   value={p.targetClipCount > 0 ? "custom" : "auto"}
                   onChange={(v) => p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || 8))}
@@ -184,6 +189,15 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   />
                 )}
               </label>
+              {p.targetClipCount > 0 && (
+                <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                  {p.brollSource === "kie-image"
+                    ? `สร้างภาพ AI ${p.targetClipCount} ภาพพอดี และไม่ใช้วิดีโอหรือภาพสต็อก`
+                    : p.brollSource === "automix"
+                      ? `สร้าง B-roll รวม ${p.targetClipCount} ชิ้น โดยผสมวิดีโอสต็อก ภาพสต็อก และภาพ AI`
+                      : `ใช้ B-roll สต็อกรวม ${p.targetClipCount} ชิ้น`}
+                </span>
+              )}
               <label className="flex flex-col gap-1.5">
                 <span style={{ fontSize: 11, color: color.textFaint }}>แนวภาพ / โซนภาพ</span>
                 <Segmented
@@ -682,8 +696,8 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
   const autoMixUnlocked = p.internalAiTester && p.isPaidManagedKie;
   const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
     { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
-    { value: "kie-image", title: "Hero AI Image", desc: "RunPod · 2 เครดิต/ฉาก", icon: <ImagePlus size={16} strokeWidth={1.6} /> },
-    { value: "automix", title: "AutoMix", desc: "ผสมวิดีโอ + ภาพอัตโนมัติ", icon: <Shuffle size={16} strokeWidth={1.6} /> },
+    { value: "kie-image", title: "Hero AI Image", desc: "ภาพ AI ล้วน · ไม่ใช้สต็อก · 2 เครดิต/ภาพ", icon: <ImagePlus size={16} strokeWidth={1.6} /> },
+    { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} /> },
   ];
 
   function selectSource(value: "stock" | "kie-image" | "automix") {

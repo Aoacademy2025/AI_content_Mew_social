@@ -1537,7 +1537,13 @@ function LegacyVideoEditorPage() {
         preferredLLM: preferredLLMRef.current,
         // window mode wins: one asset per window. กำหนดเองชนะ per-subtitle รองลงมา.
         ...(windowCount > 0
-          ? { overrideClipCount: windowCount, perSubtitleMode: true, brollWindowMode: true }
+          ? {
+              overrideClipCount: windowCount,
+              perSubtitleMode: true,
+              brollWindowMode: true,
+              brollWindowDurationsSec: pipe.current.brollWindows?.map((window) =>
+                Math.max(0, window.endMs - window.startMs) / 1000),
+            }
           : targetClipCount > 0
           ? { overrideClipCount: targetClipCount }
           : perSubtitleClipCount > 0

@@ -69,5 +69,53 @@ check("default does not cue unwanted layouts", !/collage|grid|storyboard|split s
 const nop = buildKieImagePrompt("desk setup", { region: "no-people" });
 check("no-people clause", /unoccupied setting focused exclusively on objects/.test(nop));
 
+// Hero AI Auto B-roll must use the generative model as an art director, not
+// produce a batch of near-identical stock-search images. This fixture mirrors
+// duckyhero's repeated global relevance terms from the production incident.
+const repeatedTerms: RelevanceTerms = {
+  positive: ["product", "smartphone"],
+  avoid: [],
+  fallbackQueries: [],
+  domainLabel: "AI product photography and image editing",
+};
+const creativeSubjects = [
+  "remove background workflow",
+  "free trial decision",
+  "color accuracy inspection",
+  "brand authenticity",
+  "creative studio planning",
+];
+const creativePrompts = creativeSubjects.map((subject, sceneIndex) =>
+  buildKieImagePrompt(subject, {
+    terms: repeatedTerms,
+    visualDirection: "bright clean creative energy",
+    creativeBrollSceneIndex: sceneIndex,
+  }),
+);
+const tokenSet = (value: string) => new Set(value.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+const pairwiseJaccard: number[] = [];
+for (let left = 0; left < creativePrompts.length; left += 1) {
+  for (let right = left + 1; right < creativePrompts.length; right += 1) {
+    const a = tokenSet(creativePrompts[left]);
+    const b = tokenSet(creativePrompts[right]);
+    const intersection = [...a].filter((token) => b.has(token)).length;
+    pairwiseJaccard.push(intersection / (a.size + b.size - intersection));
+  }
+}
+const averageJaccard = pairwiseJaccard.reduce((sum, value) => sum + value, 0) / pairwiseJaccard.length;
+check(
+  "creative B-roll does not force global props into every scene",
+  creativePrompts.every((prompt) => !/featuring product and smartphone/i.test(prompt)),
+);
+check(
+  "creative B-roll uses authored visual storytelling",
+  creativePrompts.every((prompt) => /art-directed|visual storytelling|editorial/i.test(prompt)),
+);
+check(
+  "creative B-roll prompt batch stays visually diverse",
+  averageJaccard < 0.62,
+  `average token similarity=${averageJaccard.toFixed(3)}`,
+);
+
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll kie-image-prompt checks passed.");

@@ -27,6 +27,46 @@ export function planAutoMixSources(n: number, weights: AutoMixWeights): AutoMixS
   if (entries.length === 0) return Array.from({ length: count }, () => "video" as AutoMixSource);
 
   const total = entries.reduce((a, [, w]) => a + w, 0);
+  // AutoMix must be an actual mix when there are enough slots. Reserve one slot
+  // for every enabled source, then distribute the remainder by weight. This keeps
+  // a short three-piece AutoMix from silently collapsing to video+photo only.
+  if (count >= entries.length) {
+    const target: Record<AutoMixSource, number> = { video: 0, photo: 0, ai: 0 };
+    for (const [source] of entries) target[source] = 1;
+    const remaining = count - entries.length;
+    const extras: Record<AutoMixSource, number> = { video: 0, photo: 0, ai: 0 };
+    for (let i = 0; i < remaining; i += 1) {
+      let best = entries[0][0];
+      let bestDeficit = -Infinity;
+      for (const [source, weight] of entries) {
+        const deficit = ((i + 1) * weight) / total - extras[source];
+        if (deficit > bestDeficit) {
+          bestDeficit = deficit;
+          best = source;
+        }
+      }
+      extras[best]++;
+      target[best]++;
+    }
+
+    const served: Record<AutoMixSource, number> = { video: 0, photo: 0, ai: 0 };
+    const mixed: AutoMixSource[] = [];
+    for (let i = 0; i < count; i += 1) {
+      let best = entries[0][0];
+      let bestDeficit = -Infinity;
+      for (const [source] of entries) {
+        const deficit = ((i + 1) * target[source]) / count - served[source];
+        if (deficit > bestDeficit) {
+          bestDeficit = deficit;
+          best = source;
+        }
+      }
+      mixed.push(best);
+      served[best]++;
+    }
+    return mixed;
+  }
+
   const served: Record<AutoMixSource, number> = { video: 0, photo: 0, ai: 0 };
   const out: AutoMixSource[] = [];
   for (let i = 0; i < count; i++) {
