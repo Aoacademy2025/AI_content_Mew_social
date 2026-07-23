@@ -10,6 +10,10 @@ import {
   pcmFromWav,
   userInOmniVoiceAllowlist,
 } from "../src/lib/omnivoice-core";
+import {
+  prepareHeroVoiceSpeechText,
+  splitHeroVoiceScriptForTts,
+} from "../src/lib/hero-voice-speech";
 import { parseTtsProvider, resolveJobTtsProvider } from "../src/lib/tts-providers";
 import { omnivoiceScriptCharCapForPlan } from "../src/lib/omnivoice-limits";
 
@@ -78,6 +82,63 @@ check("voice payload: rejects invalid id", !isOmniVoiceInfo({
   voice_id: "../../etc", desc: "bad", instruct: "bad", preview_url: "/preview",
 }));
 
+check(
+  "speech text: Thai cardinal numbers follow the approved reading",
+  prepareHeroVoiceSpeechText("ซอย15 เลขที่150 และมากกว่า 150 เท่า")
+    === "ซอยสิบห้า เลขที่หนึ่งร้อยห้าสิบ และมากกว่า หนึ่งร้อยห้าสิบ เท่า",
+);
+check(
+  "speech text: Thai cardinal grammar covers zero, tens, millions, decimals, and negatives",
+  prepareHeroVoiceSpeechText("0 10 11 20 21 101 1,001 1,000,001 1.05 -5")
+    === "ศูนย์ สิบ สิบเอ็ด ยี่สิบ ยี่สิบเอ็ด หนึ่งร้อยเอ็ด หนึ่งพันเอ็ด หนึ่งล้านเอ็ด หนึ่งจุดศูนย์ห้า ลบห้า",
+);
+check(
+  "speech text: attached and spaced Thai repetition marks are spoken",
+  prepareHeroVoiceSpeechText("ค่อยๆ จริง ๆ และกลายๆ")
+    === "ค่อย ค่อย จริง จริง และกลาย กลาย",
+);
+check(
+  "speech text: audited English names use Thai-accent pronunciations",
+  prepareHeroVoiceSpeechText(
+    "ChatGPT MIT Your Brain on ChatGPT Google Roske AI Richard Benjamins AI Telefonica",
+  ) === [
+    "แชต จี พี ที",
+    "เอ็ม ไอ ที",
+    "ยัวร์ เบรน ออน แชต จี พี ที",
+    "กูเกิล",
+    "รอสก์ เอไอ",
+    "ริชาร์ด เบนจามินส์",
+    "เอไอ",
+    "เทเลโฟนิกา",
+  ].join(" "),
+);
+check(
+  "speech text: unlisted English acronyms are spelled with Thai letter names",
+  prepareHeroVoiceSpeechText("CEO ใช้ API และ GPT-5")
+    === "ซี อี โอ ใช้ เอ พี ไอ และ จี พี ที-ห้า",
+);
+check(
+  "speech text: phone and one-time codes are read digit by digit",
+  prepareHeroVoiceSpeechText("เบอร์โทร 081-234-5678 OTP 150 PIN 042")
+    === "เบอร์โทร ศูนย์แปดหนึ่ง-สองสามสี่-ห้าหกเจ็ดแปด โอ ที พี หนึ่งห้าศูนย์ พี ไอ เอ็น ศูนย์สี่สอง",
+);
+const expandingScript = "ยอดเพิ่ม 150 เท่า จริงๆ ChatGPT ".repeat(20).trim();
+const speechChunks = splitHeroVoiceScriptForTts(expandingScript, 90);
+check(
+  "speech chunks: preserve the display script while every provider payload stays within its limit",
+  speechChunks.map((chunk) => chunk.text).join("") === expandingScript
+    && speechChunks.every((chunk) => (
+      chunk.speechText === prepareHeroVoiceSpeechText(chunk.text)
+      && chunk.speechText.length <= 90
+    )),
+);
+const crossBoundaryEnglish = splitHeroVoiceScriptForTts("Your Brain on ChatGPT", 15);
+check(
+  "speech chunks: Thai-accent pronunciation survives an English phrase boundary",
+  crossBoundaryEnglish.map((chunk) => chunk.text).join("") === "Your Brain on ChatGPT"
+    && crossBoundaryEnglish.every((chunk) => !/[A-Za-z]/.test(chunk.speechText)),
+);
+
 const pcm = Buffer.from([0, 0, 1, 0, 255, 255, 2, 0]);
 const parsed = pcmFromWav(monoPcm16Wav(24_000, pcm));
 check("wav parser: preserves PCM bytes", parsed.pcm.equals(pcm));
@@ -101,7 +162,12 @@ const omniCall = orchestratorSource.slice(
 );
 check("orchestrator: OmniVoice synthesis explicitly disables retries", omniCall.includes("{ retries: 0 }"));
 check("job admission: OmniVoice readiness is checked before enqueue", jobsRouteSource.includes("await checkOmniVoiceReady(config)"));
-check("timing invariant: worker receives the exact chunk text", omniRouteSource.includes("chunks[index].text") && !omniRouteSource.includes("normalizeNumbersForTts"));
+check(
+  "speech boundary: worker receives pronunciation text while timing keeps display text",
+  omniRouteSource.includes("splitHeroVoiceScriptForTts(fullText, config.maxChunkChars)")
+    && omniRouteSource.includes("chunks[index].speechText")
+    && omniRouteSource.includes("text: chunk.text"),
+);
 check("capacity: managed AI-audio reserve is enforced", omniRouteSource.includes("reserveAiAudioMinutes(user.id, estimatedMinutes, { enforce: true })"));
 check("Studio voice: package minutes are reserved before worker generation", omniRouteSource.includes("studioReservedMin = Math.max(1, Math.ceil(estimatedMinutes))") && omniRouteSource.includes("reserveMinutes(user.id, studioReservedMin)"));
 check("Studio voice: failed worker generation refunds package minutes", omniRouteSource.includes("refundMinutes(user.id, studioReservedMin)"));

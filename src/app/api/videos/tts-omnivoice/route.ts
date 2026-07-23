@@ -24,10 +24,10 @@ import {
 } from "@/lib/omnivoice";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { omnivoiceAdmission } from "@/lib/omnivoice-admission";
+import { splitHeroVoiceScriptForTts } from "@/lib/hero-voice-speech";
 import {
   mergeSegmentTiming,
   pcmDurationMs,
-  splitScriptForTts,
 } from "@/lib/tts-timing";
 import { audioDurationLimitViolation, videoExpiryFor } from "@/lib/plan-limits";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
@@ -182,7 +182,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ code: "QUOTA_MINUTES", message: quota.message }, { status: 409 });
     }
 
-    const chunks = splitScriptForTts(fullText, config.maxChunkChars);
+    const chunks = splitHeroVoiceScriptForTts(fullText, config.maxChunkChars);
     const pcms: Buffer[] = [];
     const durations: number[] = [];
     const generationTimes: number[] = [];
@@ -221,7 +221,7 @@ export async function POST(request: Request) {
         const result = await callOmniVoice(
           config,
           voiceId,
-          chunks[index].text,
+          chunks[index].speechText,
           speed,
           deadline,
         );
