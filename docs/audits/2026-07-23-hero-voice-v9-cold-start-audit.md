@@ -2,6 +2,17 @@
 
 Date: 2026-07-23 (Asia/Bangkok)
 
+> Production canary update, 09:02 Asia/Bangkok: release commit `57ef586` was
+> deployed to the production application and the allowlisted Hero Voice route
+> was switched to v9 endpoint `k69fz253b59st4`. The production allowlist now
+> contains 17 explicit user IDs, includes `duckyhero@gmail.com`, and contains no
+> wildcard. The same 17-account cohort can use Hero AI Image through RunPod
+> Public Z-Image; ordinary-user policy checks remain false and the editor keeps
+> the disabled “เร็ว ๆ นี้” presentation. Post-deploy health, queue/drain,
+> four PM2 process, 48-voice catalog, image-readiness, and scale-to-zero checks
+> passed. The pre-change environment backup is
+> `.env.pre-hero-ai-v9-20260723T015038Z` on the production host.
+
 ## Outcome
 
 The v9 staging candidate meets the seconds-level target when RunPod resumes an
