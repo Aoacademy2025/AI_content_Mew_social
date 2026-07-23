@@ -30,7 +30,7 @@ Submit one application-generated chunk per Runpod job:
     "operation": "tts",
     "voice_id": "voice_01",
     "text": "ข้อความสำหรับสร้างเสียง",
-    "num_step": 8,
+    "num_step": 32,
     "speed": 1.0
   }
 }
@@ -47,15 +47,16 @@ the input text:
   "sample_rate": 24000,
   "duration": 4.2,
   "generation_time": 1.1,
-  "worker_version": "heroai-omnivoice-runpod-v4-lazy-prompt-cache",
+  "worker_version": "heroai-omnivoice-runpod-v6-all-voices-32",
   "language": "th",
-  "num_step": 8
+  "num_step": 32
 }
 ```
 
-The worker pins Thai generation with `language=th`, defaults to eight diffusion steps,
-and applies the audited 16-step quality floor to `voice_06`, `voice_26`, `voice_32`, and
-`voice_33`. The model loads at worker startup, while each voice-clone prompt is created
+The worker pins Thai generation with `language=th` and fixes every catalog voice
+at the upstream 32-diffusion-step quality setting. Requests below 32 are rejected,
+so an old application or environment override cannot silently lower quality.
+The model loads at worker startup, while each voice-clone prompt is created
 only on that voice's first request and then reused for the lifetime of the worker. It accepts
 at most 800 characters. Raw WAV output is capped at 7 MB so the base64 JSON
 remains below Runpod's 10 MB async payload limit. The worker never logs text or audio.

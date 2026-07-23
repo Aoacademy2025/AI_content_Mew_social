@@ -67,6 +67,14 @@ assert.match(picker, /role="radiogroup"/);
 assert.match(picker, /role="radio"/);
 assert.match(picker, /aria-checked=/);
 assert.match(picker, /min-h-11/);
+assert.match(picker, /voice\.preview_url/,
+  "each Hero Voice row owns its static preview URL");
+assert.match(picker, /ฟังเสียงตัวอย่าง/,
+  "each Hero Voice row exposes a named preview action");
+assert.match(picker, /previewingVoiceId/,
+  "the picker coordinates one active row preview at a time");
+assert.match(step2, /p\.voiceEngine !== ["']omnivoice["'][\s\S]{0,180}<VoicePreviewButton/,
+  "Hero Voice preview moved from the selected card into the voice list");
 
 assert.match(ui, /disabled\?:\s*boolean/);
 assert.match(ui, /aria-pressed=/);

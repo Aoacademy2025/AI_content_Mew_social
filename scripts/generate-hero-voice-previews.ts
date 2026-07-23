@@ -30,15 +30,7 @@ const requestedVoiceIds = process.argv.find((arg) => arg.startsWith("--voices=")
 const selectedVoices = requestedVoiceIds?.length
   ? RUNPOD_HERO_VOICE_PREVIEWS.filter((voice) => requestedVoiceIds.includes(voice.voiceId))
   : RUNPOD_HERO_VOICE_PREVIEWS;
-const requestedNumStep = Number(
-  process.argv.find((arg) => arg.startsWith("--num-step="))?.slice("--num-step=".length) ?? 8,
-);
-const qualityNumStepFloors: Partial<Record<string, number>> = {
-  voice_06: 16,
-  voice_26: 16,
-  voice_32: 16,
-  voice_33: 16,
-};
+const requestedNumStep = 32;
 const apiKey = process.env.RUNPOD_API_KEY?.trim();
 const endpointId = process.env.RUNPOD_OMNIVOICE_ENDPOINT_ID?.trim();
 const outputDirectory = path.resolve("assets", "hero-voice-previews");
@@ -46,8 +38,8 @@ const outputDirectory = path.resolve("assets", "hero-voice-previews");
 if (requestedVoiceIds?.length && selectedVoices.length !== requestedVoiceIds.length) {
   throw new Error("--voices contains an unknown Hero Voice ID");
 }
-if (!Number.isInteger(requestedNumStep) || requestedNumStep < 4 || requestedNumStep > 16) {
-  throw new Error("--num-step must be an integer from 4 to 16");
+if (process.argv.some((arg) => arg.startsWith("--num-step="))) {
+  throw new Error("Hero Voice previews are fixed at 32 inference steps");
 }
 
 async function runpod(operation: string, init?: RequestInit): Promise<RunpodJob> {
@@ -112,15 +104,14 @@ async function generate(voice: (typeof RUNPOD_HERO_VOICE_PREVIEWS)[number]) {
   const completed = await waitForCompletion(submitted.id, submitted);
   const encoded = completed.output?.audio_base64;
   if (!encoded) throw new Error(`RunPod returned no audio for ${voice.voiceId}`);
-  if (completed.output?.worker_version !== "heroai-omnivoice-runpod-v4-lazy-prompt-cache") {
+  if (completed.output?.worker_version !== "heroai-omnivoice-runpod-v6-all-voices-32") {
     throw new Error(`RunPod returned unexpected worker version for ${voice.voiceId}`);
   }
   if (completed.output?.language !== "th") {
     throw new Error(`RunPod did not confirm Thai generation for ${voice.voiceId}`);
   }
-  const expectedNumStep = Math.max(requestedNumStep, qualityNumStepFloors[voice.voiceId] ?? requestedNumStep);
-  if (completed.output?.num_step !== expectedNumStep) {
-    throw new Error(`RunPod did not honor the quality floor for ${voice.voiceId}`);
+  if (completed.output?.num_step !== requestedNumStep) {
+    throw new Error(`RunPod did not honor the fixed 32-step contract for ${voice.voiceId}`);
   }
   const audio = Buffer.from(encoded, "base64");
   const parsed = pcmFromWav(audio);

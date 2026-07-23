@@ -5,7 +5,7 @@ import threading
 import time
 import unittest
 
-from contract import InputError, parse_design_input, parse_tts_input, resolve_num_step
+from contract import InputError, parse_design_input, parse_tts_input
 from prompt_cache import VoicePromptCache
 
 
@@ -15,26 +15,30 @@ ROOT = Path(__file__).resolve().parent
 class ContractTest(unittest.TestCase):
     def test_valid_request(self):
         result = parse_tts_input(
-            {"operation": "tts", "voice_id": "voice_01", "text": " สวัสดีครับ ", "num_step": 4, "speed": 1.0},
+            {"operation": "tts", "voice_id": "voice_01", "text": " สวัสดีครับ ", "num_step": 32, "speed": 1.0},
             max_text_length=800,
-            default_num_step=4,
         )
         self.assertEqual(result.voice_id, "voice_01")
         self.assertEqual(result.text, "สวัสดีครับ")
-        self.assertEqual(result.num_step, 4)
+        self.assertEqual(result.num_step, 32)
 
     def test_defaults(self):
-        result = parse_tts_input({"voice_id": "voice_02", "text": "hello"}, 800, 6)
-        self.assertEqual(result.num_step, 6)
+        result = parse_tts_input({"voice_id": "voice_02", "text": "hello"}, 800)
+        self.assertEqual(result.num_step, 32)
         self.assertEqual(result.speed, 1.0)
 
-    def test_quality_floor_can_raise_only_audited_voices(self):
-        floors = {"voice_06": 16, "voice_26": 16, "voice_32": 16, "voice_33": 16}
-        self.assertEqual(resolve_num_step("voice_01", 8, floors), 8)
-        self.assertEqual(resolve_num_step("voice_06", 8, floors), 16)
-        self.assertEqual(resolve_num_step("voice_26", 8, floors), 16)
-        self.assertEqual(resolve_num_step("voice_32", 8, floors), 16)
-        self.assertEqual(resolve_num_step("voice_33", 16, floors), 16)
+    def test_quality_contract_accepts_upstream_default_steps(self):
+        result = parse_tts_input(
+            {"voice_id": "voice_02", "text": "hello", "num_step": 32},
+            800,
+        )
+        self.assertEqual(result.num_step, 32)
+
+    def test_quality_contract_rejects_lower_steps_for_every_voice(self):
+        for voice_id in ("voice_01", "voice_06", "voice_25", "voice_46", "voice_48"):
+            with self.subTest(voice_id=voice_id), self.assertRaises(InputError) as raised:
+                parse_tts_input({"voice_id": voice_id, "text": "hello", "num_step": 16}, 800)
+            self.assertEqual(raised.exception.code, "INVALID_NUM_STEP")
 
     def test_voice_design_recovery_contract(self):
         result = parse_design_input(
@@ -78,7 +82,7 @@ class ContractTest(unittest.TestCase):
         ]
         for payload, code in bad:
             with self.subTest(code=code), self.assertRaises(InputError) as raised:
-                parse_tts_input(payload, 800, 4)
+                parse_tts_input(payload, 800)
             self.assertEqual(raised.exception.code, code)
 
     def test_v2_manifest_contains_all_original_voices(self):
@@ -148,8 +152,16 @@ class ContractTest(unittest.TestCase):
         )
         self.assertLess(source.index("USER worker"), source.index("snapshot_download"))
         self.assertNotIn("chown -R worker:worker /app", source)
+        self.assertIn("TTS_DEFAULT_NUM_STEP=32", source)
         self.assertIn("COPY --chown=worker:worker contract.py prompt_cache.py handler.py /app/", source)
         self.assertIn("COPY --chown=worker:worker assets/voices/ /app/voices/", source)
+
+    def test_worker_fixes_every_tts_voice_at_32_steps(self):
+        source = (ROOT / "handler.py").read_text(encoding="utf-8")
+        self.assertIn('VERSION = "heroai-omnivoice-runpod-v6-all-voices-32"', source)
+        self.assertIn("DEFAULT_NUM_STEP = 32", source)
+        self.assertIn("effective_num_step = DEFAULT_NUM_STEP", source)
+        self.assertNotIn("QUALITY_NUM_STEP_FLOORS", source)
 
 
 class VoicePromptCacheTest(unittest.TestCase):

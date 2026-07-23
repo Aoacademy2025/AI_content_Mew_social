@@ -61,6 +61,7 @@ type RunpodTtsJob = {
 
 const RUNPOD_QUEUE_API = "https://api.runpod.ai/v2";
 const RUNPOD_REST_API = "https://rest.runpod.io/v1";
+const OMNIVOICE_QUALITY_NUM_STEP = 32;
 
 export class OmniVoiceConfigError extends Error {
   constructor(message: string) {
@@ -82,7 +83,10 @@ export function omnivoiceConfig(pinnedBackend?: OmniVoiceBackend): OmniVoiceConf
   }
   const backend = pinnedBackend ?? parseBackend(process.env.OMNIVOICE_BACKEND);
   const common = {
-    numStep: clampInteger(process.env.OMNIVOICE_NUM_STEP, 4, 8, 4),
+    // Keep every production voice on the upstream quality default. This is
+    // intentionally not environment-configurable: the old 8-step override
+    // produced unstable pronunciation in real customer scripts.
+    numStep: OMNIVOICE_QUALITY_NUM_STEP,
     // Upstream chunk size, not the subscription output ceiling. The RunPod
     // worker enforces an 800-character hard maximum.
     maxChunkChars: clampInteger(

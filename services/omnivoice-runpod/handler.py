@@ -14,11 +14,11 @@ import soundfile as sf
 import torch
 from omnivoice import OmniVoice
 
-from contract import InputError, parse_tts_input, resolve_num_step
+from contract import InputError, parse_tts_input
 from prompt_cache import VoicePromptCache
 
 
-VERSION = "heroai-omnivoice-runpod-v4-lazy-prompt-cache"
+VERSION = "heroai-omnivoice-runpod-v6-all-voices-32"
 SAMPLE_RATE = 24_000
 MODEL_DIR = Path(os.environ.get("TTS_MODEL_DIR", "/app/model"))
 VOICES_DIR = Path(os.environ.get("TTS_VOICES_DIR", "/app/voices"))
@@ -28,16 +28,9 @@ CONFIGURED_VOICE_IDS = tuple(
     if item.strip()
 )
 MAX_TEXT_LENGTH = max(100, min(800, int(os.environ.get("TTS_MAX_TEXT_LENGTH", "800"))))
-DEFAULT_NUM_STEP = max(4, min(16, int(os.environ.get("TTS_DEFAULT_NUM_STEP", "8"))))
+DEFAULT_NUM_STEP = 32
 DEFAULT_LANGUAGE = os.environ.get("TTS_LANGUAGE", "th")
 MAX_WAV_BYTES = max(1_000_000, min(7_000_000, int(os.environ.get("TTS_MAX_WAV_BYTES", "7000000"))))
-QUALITY_NUM_STEP_FLOORS = {
-    "voice_06": 16,
-    "voice_26": 16,
-    "voice_32": 16,
-    "voice_33": 16,
-}
-
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
 LOGGER = logging.getLogger("heroai-omnivoice")
 GENERATE_LOCK = threading.Lock()
@@ -113,7 +106,7 @@ MODEL, VOICE_PROMPTS = load_runtime()
 def handler(job):
     job_id = str(job.get("id", "unknown"))
     try:
-        request = parse_tts_input(job.get("input"), MAX_TEXT_LENGTH, DEFAULT_NUM_STEP)
+        request = parse_tts_input(job.get("input"), MAX_TEXT_LENGTH)
     except InputError as error:
         LOGGER.warning("job rejected job_id=%s code=%s", job_id, error.code)
         raise ValueError(f"{error.code}: {error}") from error
@@ -122,7 +115,7 @@ def handler(job):
         voice_prompt = VOICE_PROMPTS.get(request.voice_id)
     except KeyError:
         raise ValueError("VOICE_NOT_SERVED: requested voice is unavailable")
-    effective_num_step = resolve_num_step(request.voice_id, request.num_step, QUALITY_NUM_STEP_FLOORS)
+    effective_num_step = DEFAULT_NUM_STEP
 
     LOGGER.info(
         "generation started job_id=%s voice_id=%s chars=%d steps=%d language=%s",

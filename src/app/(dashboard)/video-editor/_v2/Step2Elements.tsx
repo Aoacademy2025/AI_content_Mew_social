@@ -306,7 +306,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           />
           <Card
             selected
-            className="grid grid-cols-[34px_minmax(0,1fr)_132px] items-center gap-3 max-[360px]:grid-cols-[34px_minmax(0,1fr)]"
+            className={p.voiceEngine === "omnivoice"
+              ? "grid grid-cols-[34px_minmax(0,1fr)] items-center gap-3"
+              : "grid grid-cols-[34px_minmax(0,1fr)_132px] items-center gap-3 max-[360px]:grid-cols-[34px_minmax(0,1fr)]"}
           >
             <span
               className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full"
@@ -330,9 +332,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     : (p.voiceId ? `Voice ID: ${p.voiceId.slice(0, 12)}…` : "ยังไม่ได้ตั้ง Voice ID — ตั้งได้ที่ขั้นสูง")}
               </span>
             </span>
-            <span className="w-[132px] shrink-0 self-center max-[360px]:col-span-2 max-[360px]:w-full">
-              <VoicePreviewButton className="mt-0" provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} omniPreviewUrl={omniVoice?.preview_url} />
-            </span>
+            {p.voiceEngine !== "omnivoice" && (
+              <span className="w-[132px] shrink-0 self-center max-[360px]:col-span-2 max-[360px]:w-full">
+                <VoicePreviewButton className="mt-0" provider={p.voiceEngine} geminiVoiceName={p.geminiVoiceName} voiceId={p.voiceId} omniVoiceId={p.omniVoiceId} omniPreviewUrl={omniVoice?.preview_url} />
+              </span>
+            )}
           </Card>
           <Advanced label="เลือกเสียงอื่น">
             {p.voiceEngine === "gemini" ? (

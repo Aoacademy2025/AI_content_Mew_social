@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 import re
-from typing import Any, Mapping
+from typing import Any
 
 
 VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -57,12 +57,6 @@ _DESIGN_ATTRIBUTE_CATEGORIES = {
 }
 
 
-def resolve_num_step(voice_id: str, requested_num_step: int, quality_floors: Mapping[str, int]) -> int:
-    """Apply an audited per-voice quality floor without changing other voices."""
-    minimum = quality_floors.get(voice_id, requested_num_step)
-    return max(requested_num_step, minimum)
-
-
 def parse_design_input(payload: Any, max_text_length: int) -> DesignInput:
     """Validate the tightly bounded, staging-only voice-reference recovery input."""
     if not isinstance(payload, dict):
@@ -106,7 +100,7 @@ def parse_design_input(payload: Any, max_text_length: int) -> DesignInput:
     )
 
 
-def parse_tts_input(payload: Any, max_text_length: int, default_num_step: int) -> TtsInput:
+def parse_tts_input(payload: Any, max_text_length: int) -> TtsInput:
     if not isinstance(payload, dict):
         raise InputError("INVALID_INPUT", "input must be an object")
 
@@ -125,9 +119,9 @@ def parse_tts_input(payload: Any, max_text_length: int, default_num_step: int) -
     if len(text) > max_text_length:
         raise InputError("TEXT_TOO_LONG", f"text exceeds {max_text_length} characters")
 
-    raw_num_step = payload.get("num_step", default_num_step)
-    if isinstance(raw_num_step, bool) or not isinstance(raw_num_step, int) or not 4 <= raw_num_step <= 16:
-        raise InputError("INVALID_NUM_STEP", "num_step must be an integer from 4 to 16")
+    raw_num_step = payload.get("num_step", 32)
+    if isinstance(raw_num_step, bool) or raw_num_step != 32:
+        raise InputError("INVALID_NUM_STEP", "num_step must be 32")
 
     raw_speed = payload.get("speed", 1.0)
     if isinstance(raw_speed, bool) or not isinstance(raw_speed, (int, float)):
