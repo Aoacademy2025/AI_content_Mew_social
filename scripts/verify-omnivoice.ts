@@ -105,6 +105,11 @@ check("timing invariant: worker receives the exact chunk text", omniRouteSource.
 check("capacity: managed AI-audio reserve is enforced", omniRouteSource.includes("reserveAiAudioMinutes(user.id, estimatedMinutes, { enforce: true })"));
 check("Studio voice: package minutes are reserved before worker generation", omniRouteSource.includes("studioReservedMin = Math.max(1, Math.ceil(estimatedMinutes))") && omniRouteSource.includes("reserveMinutes(user.id, studioReservedMin)"));
 check("Studio voice: failed worker generation refunds package minutes", omniRouteSource.includes("refundMinutes(user.id, studioReservedMin)"));
+check(
+  "quality: every production voice is fixed at the upstream 32-step default",
+  configSource.includes("const OMNIVOICE_QUALITY_NUM_STEP = 32")
+    && configSource.includes("numStep: OMNIVOICE_QUALITY_NUM_STEP"),
+);
 check("capacity: upstream chunks default below legacy 500-char worker ceiling", configSource.includes("800,") && configSource.includes("450,"));
 check("package: Free script cap follows the 2-minute tier", omnivoiceScriptCharCapForPlan("FREE") === 1680);
 check("package: Pro script cap follows the 6-minute tier", omnivoiceScriptCharCapForPlan("PRO") === 5040);

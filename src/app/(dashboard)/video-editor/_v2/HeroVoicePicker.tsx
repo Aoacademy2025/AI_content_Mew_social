@@ -1,7 +1,8 @@
 "use client";
 
-import { useId, useMemo, useState, type KeyboardEvent } from "react";
-import { Check, Search, X } from "lucide-react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Check, Loader2, Pause, Search, Volume2, X } from "lucide-react";
+import { toast } from "sonner";
 import type { OmniVoiceInfo } from "@/lib/tts-providers";
 import { HERO_VOICE_NAME } from "@/lib/hero-voice-brand";
 import { color, font } from "./tokens";
@@ -20,6 +21,9 @@ export function HeroVoicePicker({
   onChange: (voiceId: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [loadingVoiceId, setLoadingVoiceId] = useState("");
+  const [previewingVoiceId, setPreviewingVoiceId] = useState("");
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const inputId = useId();
   const resultsId = useId();
   const search = normalized(query);
@@ -39,9 +43,49 @@ export function HeroVoicePicker({
     event.preventDefault();
     const next = filtered[nextIndex];
     onChange(next.voice_id);
-    const radioButtons = event.currentTarget.parentElement
+    const radioButtons = event.currentTarget.closest('[role="radiogroup"]')
       ?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
     radioButtons?.[nextIndex]?.focus();
+  }
+
+  useEffect(() => () => {
+    audioRef.current?.pause();
+    audioRef.current = null;
+  }, []);
+
+  async function togglePreview(voice: OmniVoiceInfo) {
+    if (previewingVoiceId === voice.voice_id && audioRef.current && !audioRef.current.paused) {
+      audioRef.current.pause();
+      setPreviewingVoiceId("");
+      return;
+    }
+
+    audioRef.current?.pause();
+    setPreviewingVoiceId("");
+    const audio = new Audio(voice.preview_url);
+    audioRef.current = audio;
+    audio.onended = () => {
+      if (audioRef.current === audio) setPreviewingVoiceId("");
+    };
+    audio.onerror = () => {
+      if (audioRef.current !== audio) return;
+      setLoadingVoiceId("");
+      setPreviewingVoiceId("");
+      toast.error("เล่นเสียงตัวอย่างไม่สำเร็จ");
+    };
+
+    setLoadingVoiceId(voice.voice_id);
+    try {
+      await audio.play();
+      if (audioRef.current === audio) setPreviewingVoiceId(voice.voice_id);
+    } catch {
+      if (audioRef.current === audio) {
+        setPreviewingVoiceId("");
+        toast.error("เบราว์เซอร์ไม่อนุญาตให้เล่นเสียง ลองกดอีกครั้ง");
+      }
+    } finally {
+      if (audioRef.current === audio) setLoadingVoiceId("");
+    }
   }
 
   return (
@@ -98,31 +142,58 @@ export function HeroVoicePicker({
         >
           {filtered.map((voice, index) => {
             const selected = voice.voice_id === value;
+            const loading = loadingVoiceId === voice.voice_id;
+            const previewing = previewingVoiceId === voice.voice_id;
             return (
-              <button
+              <div
                 key={voice.voice_id}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                tabIndex={selected || (!selectedIsVisible && index === 0) ? 0 : -1}
-                onClick={() => onChange(voice.voice_id)}
-                onKeyDown={(event) => handleRadioKeyDown(event, index)}
-                className="flex min-h-11 w-full items-center gap-3 rounded-[10px] px-3 py-2 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2"
+                className="flex min-h-11 w-full items-stretch overflow-hidden rounded-[10px] transition-colors"
                 style={{
                   background: selected ? color.selectedBg : "rgba(255,255,255,.035)",
                   border: `1px solid ${selected ? color.selectedBorder : color.cardBorder}`,
                   color: selected ? color.text : color.textSecondary,
                   fontFamily: font.body,
-                  outlineColor: color.primary300,
                 }}
               >
-                <span className="min-w-0 flex-1 text-[12.5px] font-medium leading-5">{voice.desc || voice.voice_id}</span>
-                {selected && (
-                  <span className="flex shrink-0 items-center gap-1 text-[11px]" style={{ color: color.primary300 }}>
-                    <Check className="h-3.5 w-3.5" aria-hidden="true" /> เลือกแล้ว
-                  </span>
-                )}
-              </button>
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  tabIndex={selected || (!selectedIsVisible && index === 0) ? 0 : -1}
+                  onClick={() => onChange(voice.voice_id)}
+                  onKeyDown={(event) => handleRadioKeyDown(event, index)}
+                  className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left focus-visible:outline-2 focus-visible:outline-offset-[-2px]"
+                  style={{ outlineColor: color.primary300 }}
+                >
+                  <span className="min-w-0 flex-1 text-[12.5px] font-medium leading-5">{voice.desc || voice.voice_id}</span>
+                  {selected && (
+                    <span className="flex shrink-0 items-center gap-1 text-[11px]" style={{ color: color.primary300 }}>
+                      <Check className="h-3.5 w-3.5" aria-hidden="true" /> เลือกแล้ว
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`${previewing ? "หยุดเสียงตัวอย่าง" : "ฟังเสียงตัวอย่าง"} ${voice.desc || voice.voice_id}`}
+                  aria-busy={loading}
+                  aria-pressed={previewing}
+                  disabled={loading}
+                  onClick={() => void togglePreview(voice)}
+                  className="flex w-11 shrink-0 items-center justify-center border-l transition-colors hover:bg-white/[.06] focus-visible:outline-2 focus-visible:outline-offset-[-2px] disabled:cursor-wait"
+                  style={{
+                    borderColor: selected ? color.selectedBorder : color.cardBorder,
+                    color: previewing ? color.primary300 : color.textSecondary,
+                    outlineColor: color.primary300,
+                  }}
+                  title={previewing ? "หยุดเสียงตัวอย่าง" : `ฟังตัวอย่าง ${voice.desc || voice.voice_id}`}
+                >
+                  {loading
+                    ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    : previewing
+                      ? <Pause className="h-4 w-4" aria-hidden="true" />
+                      : <Volume2 className="h-4 w-4" aria-hidden="true" />}
+                </button>
+              </div>
             );
           })}
         </div>
