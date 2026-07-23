@@ -181,6 +181,18 @@ check("package: Free script cap follows the 2-minute tier", omnivoiceScriptCharC
 check("package: Pro script cap follows the 6-minute tier", omnivoiceScriptCharCapForPlan("PRO") === 5040);
 check("package: Business script cap follows the 10-minute tier", omnivoiceScriptCharCapForPlan("BUSINESS") === 8400);
 check("timeout: route supports long package-compliant jobs", /840_000,\s*540_000/.test(configSource));
+check(
+  "cost guard: queued RunPod jobs have a bounded two-minute wait",
+  configSource.includes("OMNIVOICE_QUEUE_WAIT_BUDGET_MS")
+    && /300_000,\s*120_000/.test(configSource)
+    && configSource.includes('snapshot.status === "IN_QUEUE"'),
+);
+check(
+  "cost guard: abandoned RunPod jobs are cancelled before Gemini fallback is offered",
+  configSource.includes("/cancel/${encodeURIComponent(providerJobId)}")
+    && omniRouteSource.includes('"OMNIVOICE_QUEUE_TIMEOUT"')
+    && omniRouteSource.includes('fallbackProvider: cancellationConfirmed ? "gemini" : undefined'),
+);
 check("RunPod: provider POST is never automatically retried", configSource.includes("Never automatically retry this POST"));
 check("RunPod: queue jobs are polled by their durable provider id", configSource.includes("status/${encodeURIComponent(providerJobId)}"));
 check("RunPod: readiness does not cold-start a paid worker", configSource.includes("RUNPOD_REST_API"));
@@ -198,6 +210,25 @@ check(
   "background runtime: MCP orchestrator imports outside Next.js",
   backgroundRuntimeImport.status === 0,
   backgroundRuntimeImport.stderr.trim(),
+);
+
+const runpodCancellationRuntime = spawnSync(
+  process.execPath,
+  [
+    "--conditions=react-server",
+    "--import",
+    "tsx",
+    "scripts/verify-omnivoice-runpod-runtime.ts",
+  ],
+  {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  },
+);
+check(
+  "RunPod runtime: queued job is cancelled before the timeout returns",
+  runpodCancellationRuntime.status === 0,
+  [runpodCancellationRuntime.stdout, runpodCancellationRuntime.stderr].join("\n").trim(),
 );
 
 if (failures > 0) {

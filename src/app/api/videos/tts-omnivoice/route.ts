@@ -37,6 +37,20 @@ export const maxDuration = 900;
 export const runtime = "nodejs";
 
 function upstreamError(result: Extract<OmniVoiceCallResult, { ok: false }>) {
+  if (result.code === "RUNPOD_QUEUE_TIMEOUT") {
+    const cancellationConfirmed = result.cancelled === true;
+    return NextResponse.json(
+      {
+        code: "OMNIVOICE_QUEUE_TIMEOUT",
+        error: cancellationConfirmed
+          ? "Hero Voice หาเครื่องว่างไม่ทันภายใน 2 นาที งานเดิมถูกยกเลิกแล้ว กรุณาลองใหม่หรือสลับเป็น Gemini สำหรับงานเร่งด่วน"
+          : "Hero Voice หาเครื่องว่างไม่ทัน และยังยืนยันการยกเลิกงานเดิมไม่ได้ กรุณารอสักครู่ก่อนลองใหม่",
+        retryable: cancellationConfirmed,
+        fallbackProvider: cancellationConfirmed ? "gemini" : undefined,
+      },
+      { status: 504 },
+    );
+  }
   if (result.status === 404) {
     return NextResponse.json({ error: "ไม่พบเสียง Hero Voice ที่เลือก — กรุณาเลือกเสียงใหม่" }, { status: 404 });
   }

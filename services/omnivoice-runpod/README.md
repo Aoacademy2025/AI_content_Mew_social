@@ -77,8 +77,10 @@ Push the immutable image tag, create a Runpod Serverless template from it, then 
 queue endpoint with Flex workers, `workersMin=0`, `workersMax=1`, FlashBoot enabled and a
 fallback pool of compatible 16–48 GB GPUs. The current low-volume staging baseline uses
 `idleTimeout=60` so back-to-back chunks stay warm while the worker still scales to zero
-between sessions. A narrow A4000/A4500-only pool reproduced capacity throttling; the
-audited staging pool also includes RTX 2000 Ada, L4, RTX 3090, A40, A6000 and RTX 4090.
+between sessions. Use three cost-ordered capacity classes: RTX A4000 (16 GB), L4
+(24 GB), then A40 (48 GB). The 48 GB class is a last-resort capacity fallback, not
+an always-on worker. The application cancels a job that remains `IN_QUEUE` for two
+minutes before offering Gemini as the manual urgent-work fallback.
 Do not enable the Video Editor provider until a real cold/warm benchmark passes.
 
 ## Staging-only reference recovery

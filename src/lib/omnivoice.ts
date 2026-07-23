@@ -33,6 +33,7 @@ type OmniVoiceCommonConfig = {
   numStep: number;
   maxChunkChars: number;
   requestBudgetMs: number;
+  queueWaitBudgetMs: number;
 };
 
 export type OmniVoiceConfig = OmniVoiceCommonConfig & (
@@ -48,7 +49,15 @@ export type OmniVoiceCallResult =
       delayTimeMs: number;
       executionTimeMs: number;
     }
-  | { ok: false; status: number; reason: string; retryAfter?: string };
+  | {
+      ok: false;
+      status: number;
+      reason: string;
+      retryAfter?: string;
+      providerJobId?: string;
+      cancelled?: boolean;
+      code?: "RUNPOD_QUEUE_TIMEOUT";
+    };
 
 type RunpodTtsJob = {
   id?: string;
@@ -100,6 +109,15 @@ export function omnivoiceConfig(pinnedBackend?: OmniVoiceBackend): OmniVoiceConf
       30_000,
       840_000,
       540_000,
+    ),
+    // Cost/latency guard for scale-to-zero workers. If RunPod has not assigned
+    // a worker after two minutes, remove the queued job before returning so a
+    // later Gemini retry cannot race duplicate paid GPU work.
+    queueWaitBudgetMs: clampInteger(
+      process.env.OMNIVOICE_QUEUE_WAIT_BUDGET_MS,
+      30_000,
+      300_000,
+      120_000,
     ),
   };
 
@@ -204,6 +222,45 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function cancelRunpodJob(
+  config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
+  providerJobId: string,
+): Promise<boolean> {
+  try {
+    // Cancellation must have its own short budget. Reusing the synthesis
+    // deadline could leave a paid job orphaned precisely when that deadline
+    // has expired.
+    const response = await fetch(
+      `${RUNPOD_QUEUE_API}/${encodeURIComponent(config.endpointId)}/cancel/${encodeURIComponent(providerJobId)}`,
+      {
+        method: "POST",
+        headers: runpodHeaders(config.apiKey),
+        cache: "no-store",
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    const body = await parseRunpodResponse(response);
+    return response.ok && body.status === "CANCELLED";
+  } catch (error) {
+    console.warn(
+      `[omnivoice] RunPod cancel failed for ${providerJobId}:`,
+      error instanceof Error ? error.message : "request failed",
+    );
+    return false;
+  }
+}
+
+async function cancelRunpodFailure(
+  config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
+  providerJobId: string,
+  status: number,
+  reason: string,
+  code?: "RUNPOD_QUEUE_TIMEOUT",
+): Promise<Extract<OmniVoiceCallResult, { ok: false }>> {
+  const cancelled = await cancelRunpodJob(config, providerJobId);
+  return { ok: false, status, reason, providerJobId, cancelled, ...(code ? { code } : {}) };
+}
+
 async function callRunpodOmniVoice(
   config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
   voiceId: string,
@@ -235,6 +292,7 @@ async function callRunpodOmniVoice(
   }
 
   const providerJobId = submitted.body.id;
+  const queueWaitDeadline = Math.min(deadline, Date.now() + config.queueWaitBudgetMs);
   let transientPollFailures = 0;
   while (Date.now() < deadline - 1_000) {
     await wait(1_250);
@@ -248,7 +306,12 @@ async function callRunpodOmniVoice(
       if (!polled.response.ok) {
         transientPollFailures += 1;
         if (transientPollFailures < 4 && polled.response.status >= 500) continue;
-        return { ok: false, status: 503, reason: polled.body.error || `RunPod status failed (${polled.response.status})` };
+        return cancelRunpodFailure(
+          config,
+          providerJobId,
+          503,
+          polled.body.error || `RunPod status failed (${polled.response.status})`,
+        );
       }
       transientPollFailures = 0;
       const snapshot = polled.body;
@@ -264,6 +327,15 @@ async function callRunpodOmniVoice(
           executionTimeMs: typeof snapshot.executionTime === "number" ? Math.round(snapshot.executionTime) : 0,
         };
       }
+      if (snapshot.status === "IN_QUEUE" && Date.now() >= queueWaitDeadline) {
+        return cancelRunpodFailure(
+          config,
+          providerJobId,
+          504,
+          "RunPod queue wait budget exhausted",
+          "RUNPOD_QUEUE_TIMEOUT",
+        );
+      }
       if (snapshot.status === "FAILED" || snapshot.status === "TIMED_OUT" || snapshot.status === "CANCELLED") {
         const reason = snapshot.error || snapshot.output?.error || `RunPod job ${snapshot.status.toLowerCase()}`;
         const status = /VOICE_NOT_SERVED/i.test(reason) ? 404 : /INPUT_|VALIDATION|TEXT_/i.test(reason) ? 422 : 503;
@@ -273,11 +345,16 @@ async function callRunpodOmniVoice(
       transientPollFailures += 1;
       if (transientPollFailures >= 4) {
         const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
-        return { ok: false, status: timedOut ? 504 : 503, reason: error instanceof Error ? error.message : "status request failed" };
+        return cancelRunpodFailure(
+          config,
+          providerJobId,
+          timedOut ? 504 : 503,
+          error instanceof Error ? error.message : "status request failed",
+        );
       }
     }
   }
-  return { ok: false, status: 504, reason: "request budget exhausted" };
+  return cancelRunpodFailure(config, providerJobId, 504, "request budget exhausted");
 }
 
 async function callHostingerOmniVoice(
