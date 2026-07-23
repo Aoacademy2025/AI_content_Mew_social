@@ -3,6 +3,7 @@
 // Run: npm run verify:hero-voice-ui
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pcmFromWav } from "../src/lib/omnivoice-core";
@@ -37,8 +38,8 @@ assert.match(brand, /HERO_VOICE_COMING_SOON\s*=\s*["']เร็ว ๆ นี้
 assert.match(brand, /HERO_VOICE_TEASER_VISIBLE\s*=\s*process\.env\.NEXT_PUBLIC_HERO_VOICE_TEASER\s*!==\s*["']0["']/,
   "Hero Voice teaser is visible by default with an explicit emergency rollback switch");
 
-assert.match(step2, /value:\s*["']omnivoice["'][\s\S]{0,260}badge:\s*p\.omniVoiceEnabled \? ["']Beta · RunPod["'] : HERO_VOICE_COMING_SOON/,
-  "Hero AI Voice shows RunPod Beta only when the backend is available");
+assert.match(step2, /value:\s*["']omnivoice["'][\s\S]{0,260}badge:\s*p\.omniVoiceEnabled \? ["']แนะนำ · 48 เสียง["'] : HERO_VOICE_COMING_SOON/,
+  "Hero AI Voice advertises its 48-voice recommended catalog only when the backend is available");
 assert.match(step2, /heroVoiceVisible\s*=\s*HERO_VOICE_TEASER_VISIBLE \|\| OMNIVOICE_UI_ENABLED \|\| p\.voiceEngine === "omnivoice"/,
   "the teaser stays visible independently from provider availability");
 assert.match(step2, /disabled:\s*!p\.omniVoiceEnabled/,
@@ -50,6 +51,16 @@ assert.match(step2, /optionPadding="6px clamp\(7px, 2vw, 14px\)"/,
 assert.match(step2, /<HeroVoicePicker/);
 assert.doesNotMatch(step2, /Worker CPU|worker ของระบบ/,
   "end-user voice copy does not expose infrastructure jargon");
+assert.match(step2, /value:\s*["']omnivoice["'][\s\S]{0,220}badge:\s*p\.omniVoiceEnabled \? ["']แนะนำ · 48 เสียง["']/,
+  "Hero AI Voice is presented as the recommended 48-voice option when available");
+assert.ok(
+  step2.indexOf('value: "omnivoice"') < step2.indexOf('value: "gemini"'),
+  "Hero AI Voice appears before Gemini in the V2 provider selector",
+);
+assert.match(ui, /featured\?:\s*boolean/,
+  "the shared provider selector supports a deliberate featured treatment");
+assert.doesNotMatch(step2, /Beta · RunPod|เวอร์ชันทดลอง · RunPod|เวอร์ชันทดลองบน RunPod/,
+  "customer-facing provider selection uses the Hero product, not infrastructure labels");
 
 assert.match(picker, /type="search"/);
 assert.match(picker, /role="radiogroup"/);
@@ -74,12 +85,20 @@ assert.match(previewRoute, /runpodHeroVoicePreviewFilename/,
   "the preview route resolves only allowlisted static Hero Voice assets");
 assert.match(previewRoute, /["']Content-Type["']:\s*["']audio\/wav["']/,
   "the preview route serves browser-playable WAV audio");
-assert.equal(RUNPOD_HERO_VOICE_PREVIEWS.length, 3,
+assert.equal(RUNPOD_HERO_VOICE_PREVIEWS.length, 48,
   "the preview allowlist covers every served RunPod Hero Voice");
 assert.equal(RUNPOD_HERO_VOICES.length, RUNPOD_HERO_VOICE_PREVIEWS.length,
   "the RunPod catalog and static preview allowlist cannot drift");
+assert.deepEqual(
+  RUNPOD_HERO_VOICE_PREVIEWS.map((voice) => voice.voiceId),
+  Array.from({ length: 48 }, (_, index) => `voice_${String(index + 1).padStart(2, "0")}`),
+  "the RunPod catalog preserves all 48 original Hero Voice IDs in order",
+);
 assert.equal(runpodHeroVoicePreviewFilename("../voice_01"), null,
   "preview filename resolution fails closed outside the allowlist");
+const recoveredVoice44 = RUNPOD_HERO_VOICE_PREVIEWS.find((voice) => voice.voiceId === "voice_44");
+assert.equal(recoveredVoice44?.instruct, "male, very high pitch",
+  "voice_44 exposes the repaired high-pitch profile instead of the broken attribute combination");
 for (const voice of RUNPOD_HERO_VOICE_PREVIEWS) {
   const catalogItem = RUNPOD_HERO_VOICES.find((item) => item.voice_id === voice.voiceId);
   assert.equal(catalogItem?.preview_url, `/api/omnivoice/preview/${voice.voiceId}`,
@@ -91,11 +110,22 @@ for (const voice of RUNPOD_HERO_VOICE_PREVIEWS) {
   const durationSec = parsed.pcm.length / (parsed.sampleRate * 2);
   assert.equal(parsed.sampleRate, 24_000, `${voice.voiceId} matches the worker sample rate`);
   assert.ok(durationSec >= 2 && durationSec <= 10, `${voice.voiceId} preview duration is browser-friendly`);
+  if (voice.voiceId === "voice_44") {
+    assert.equal(
+      createHash("sha256").update(audio).digest("hex"),
+      "398da25b34882b6590b1972001d5fa51cb80ad0cd5193fd9d3152e84735f00ac",
+      "voice_44 serves the Thai clone preview that passed the final staging ASR gate",
+    );
+  }
 }
 
 assert.match(legacy, /HERO_VOICE_NAME/);
 assert.match(legacy, /HERO_VOICE_COMING_SOON/);
 assert.match(legacy, /disabled=\{pv === "omnivoice" && !omniVoiceEnabled\}/);
+assert.match(legacy, /\(\[\.\.\.\(HERO_VOICE_TEASER_VISIBLE[\s\S]{0,180}\["omnivoice"\][\s\S]{0,80}"gemini",\s*"elevenlabs"\]/,
+  "the legacy provider selector also leads with Hero AI Voice");
+assert.match(legacy, /pv === "omnivoice"[\s\S]{0,180}omniVoiceEnabled \? "แนะนำ/,
+  "the legacy provider selector identifies available Hero AI Voice as recommended");
 assert.match(legacy, /htmlFor="legacy-hero-voice-select"/);
 assert.match(legacy, /id="legacy-hero-voice-select"/);
 

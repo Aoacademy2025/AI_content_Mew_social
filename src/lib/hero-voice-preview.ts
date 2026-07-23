@@ -1,4 +1,5 @@
 import type { OmniVoiceInfo } from "@/lib/tts-providers";
+import voiceManifest from "../../services/omnivoice-runpod/assets/voices/voices.json";
 
 export type RunpodHeroVoicePreview = {
   voiceId: string;
@@ -8,29 +9,13 @@ export type RunpodHeroVoicePreview = {
   previewText: string;
 };
 
-export const RUNPOD_HERO_VOICE_PREVIEWS = [
-  {
-    voiceId: "voice_01",
-    desc: "เสียงผู้ชาย โทนปกติ",
-    instruct: "male",
-    filename: "voice_01.wav",
-    previewText: "สวัสดีครับ นี่คือตัวอย่างเสียงสำหรับวิดีโอของคุณ",
-  },
-  {
-    voiceId: "voice_02",
-    desc: "เสียงผู้หญิง โทนปกติ",
-    instruct: "female",
-    filename: "voice_02.wav",
-    previewText: "สวัสดีค่ะ นี่คือตัวอย่างเสียงสำหรับวิดีโอของคุณ",
-  },
-  {
-    voiceId: "voice_03",
-    desc: "เสียงผู้ชาย โทนสูง สดใส",
-    instruct: "male, high pitch",
-    filename: "voice_03.wav",
-    previewText: "สวัสดีครับ นี่คือตัวอย่างเสียงสำหรับวิดีโอของคุณ",
-  },
-] as const satisfies readonly RunpodHeroVoicePreview[];
+export const RUNPOD_HERO_VOICE_PREVIEWS: readonly RunpodHeroVoicePreview[] = voiceManifest.map((voice) => ({
+  voiceId: voice.id,
+  desc: voice.desc,
+  instruct: voice.instruct,
+  filename: voice.ref_audio,
+  previewText: voice.preview_text,
+}));
 
 const previewByVoiceId = new Map<string, RunpodHeroVoicePreview>(
   RUNPOD_HERO_VOICE_PREVIEWS.map((voice) => [voice.voiceId, voice]),

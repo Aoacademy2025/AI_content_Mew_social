@@ -14,15 +14,41 @@ type RunpodJob = {
     sample_rate?: number;
     duration?: number;
     worker_version?: string;
+    language?: string;
+    num_step?: number;
   };
   error?: string;
 };
 
 const apply = process.argv.includes("--apply");
 const force = process.argv.includes("--force");
+const requestedVoiceIds = process.argv.find((arg) => arg.startsWith("--voices="))
+  ?.slice("--voices=".length)
+  .split(",")
+  .map((voiceId) => voiceId.trim())
+  .filter(Boolean);
+const selectedVoices = requestedVoiceIds?.length
+  ? RUNPOD_HERO_VOICE_PREVIEWS.filter((voice) => requestedVoiceIds.includes(voice.voiceId))
+  : RUNPOD_HERO_VOICE_PREVIEWS;
+const requestedNumStep = Number(
+  process.argv.find((arg) => arg.startsWith("--num-step="))?.slice("--num-step=".length) ?? 8,
+);
+const qualityNumStepFloors: Partial<Record<string, number>> = {
+  voice_06: 16,
+  voice_26: 16,
+  voice_32: 16,
+  voice_33: 16,
+};
 const apiKey = process.env.RUNPOD_API_KEY?.trim();
 const endpointId = process.env.RUNPOD_OMNIVOICE_ENDPOINT_ID?.trim();
 const outputDirectory = path.resolve("assets", "hero-voice-previews");
+
+if (requestedVoiceIds?.length && selectedVoices.length !== requestedVoiceIds.length) {
+  throw new Error("--voices contains an unknown Hero Voice ID");
+}
+if (!Number.isInteger(requestedNumStep) || requestedNumStep < 4 || requestedNumStep > 16) {
+  throw new Error("--num-step must be an integer from 4 to 16");
+}
 
 async function runpod(operation: string, init?: RequestInit): Promise<RunpodJob> {
   if (!apiKey || !endpointId) throw new Error("RUNPOD_API_KEY and RUNPOD_OMNIVOICE_ENDPOINT_ID are required");
@@ -48,7 +74,10 @@ async function runpod(operation: string, init?: RequestInit): Promise<RunpodJob>
 }
 
 async function waitForCompletion(jobId: string, initial: RunpodJob): Promise<RunpodJob> {
-  const deadline = Date.now() + 15 * 60_000;
+  // A scale-to-zero endpoint can spend well over ten minutes waiting for a
+  // compatible GPU before the first preview. Once warm, the remaining voices
+  // complete quickly, so keep the release job alive through that cold queue.
+  const deadline = Date.now() + 30 * 60_000;
   let result = initial;
   while (result.status !== "COMPLETED") {
     if (["FAILED", "TIMED_OUT", "CANCELLED"].includes(result.status ?? "")) {
@@ -74,7 +103,7 @@ async function generate(voice: (typeof RUNPOD_HERO_VOICE_PREVIEWS)[number]) {
         voice_id: voice.voiceId,
         text: voice.previewText,
         speed: 1,
-        num_step: 4,
+        num_step: requestedNumStep,
       },
     }),
   });
@@ -83,27 +112,59 @@ async function generate(voice: (typeof RUNPOD_HERO_VOICE_PREVIEWS)[number]) {
   const completed = await waitForCompletion(submitted.id, submitted);
   const encoded = completed.output?.audio_base64;
   if (!encoded) throw new Error(`RunPod returned no audio for ${voice.voiceId}`);
+  if (completed.output?.worker_version !== "heroai-omnivoice-runpod-v4-lazy-prompt-cache") {
+    throw new Error(`RunPod returned unexpected worker version for ${voice.voiceId}`);
+  }
+  if (completed.output?.language !== "th") {
+    throw new Error(`RunPod did not confirm Thai generation for ${voice.voiceId}`);
+  }
+  const expectedNumStep = Math.max(requestedNumStep, qualityNumStepFloors[voice.voiceId] ?? requestedNumStep);
+  if (completed.output?.num_step !== expectedNumStep) {
+    throw new Error(`RunPod did not honor the quality floor for ${voice.voiceId}`);
+  }
   const audio = Buffer.from(encoded, "base64");
   const parsed = pcmFromWav(audio);
-  if (audio.length > 7_000_000 || parsed.pcm.length < parsed.sampleRate * 2) {
-    throw new Error(`RunPod returned an invalid preview duration for ${voice.voiceId}`);
+  const durationSeconds = parsed.pcm.length / (parsed.sampleRate * 2);
+  if (durationSeconds < 2 || durationSeconds > 15) {
+    throw new Error(
+      `RunPod returned an invalid preview duration for ${voice.voiceId}: ${durationSeconds.toFixed(2)}s`,
+    );
   }
   const temporaryPath = `${outputPath}.tmp-${process.pid}`;
   fs.writeFileSync(temporaryPath, audio, { mode: 0o644 });
   fs.renameSync(temporaryPath, outputPath);
-  console.log(`saved=${voice.voiceId} bytes=${audio.length} duration_s=${completed.output?.duration ?? "unknown"}`);
+  console.log(
+    `saved=${voice.voiceId} bytes=${audio.length} duration_s=${completed.output?.duration ?? "unknown"}`
+      + ` worker=${completed.output.worker_version} language=${completed.output.language}`
+      + ` num_step=${completed.output.num_step}`,
+  );
 }
 
 async function main() {
   console.log(`output=${outputDirectory}`);
-  console.log(`voices=${RUNPOD_HERO_VOICE_PREVIEWS.map((voice) => voice.voiceId).join(",")}`);
+  console.log(`voices=${selectedVoices.map((voice) => voice.voiceId).join(",")}`);
+  console.log(`num_step=${requestedNumStep}`);
   if (!apply) {
-    console.log("dry_run=YES rerun with --apply to submit three paid RunPod preview jobs");
+    console.log(
+      `dry_run=YES rerun with --apply to submit ${selectedVoices.length} paid RunPod preview jobs`,
+    );
     return;
   }
   if (!apiKey || !endpointId) throw new Error("RUNPOD_API_KEY and RUNPOD_OMNIVOICE_ENDPOINT_ID are required");
   fs.mkdirSync(outputDirectory, { recursive: true, mode: 0o755 });
-  for (const voice of RUNPOD_HERO_VOICE_PREVIEWS) await generate(voice);
+  const failures: string[] = [];
+  for (const voice of selectedVoices) {
+    try {
+      await generate(voice);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "unknown error";
+      failures.push(`${voice.voiceId}: ${message}`);
+      console.error(`failed=${voice.voiceId} reason=${message}`);
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} preview job(s) failed: ${failures.join("; ")}`);
+  }
 }
 
 main().catch((error) => {

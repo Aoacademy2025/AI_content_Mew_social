@@ -24,6 +24,8 @@ export interface OmniTtsResponse {
   duration: number;
   generation_time: number;
   worker_version?: string;
+  language?: string;
+  num_step?: number;
 }
 
 type OmniVoiceCommonConfig = {

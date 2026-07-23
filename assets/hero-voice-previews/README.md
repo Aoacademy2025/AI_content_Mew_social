@@ -10,11 +10,22 @@ Regenerate deliberately with:
 RUNPOD_OMNIVOICE_ENDPOINT_ID=<endpoint> npm run generate:hero-voice-previews -- --apply --force
 ```
 
-Generation settings: `num_step=4`, `speed=1`, 24 kHz mono PCM WAV. The canonical
-Thai text for each voice is defined in `src/lib/hero-voice-preview.ts`.
+Generation settings: `language=th`, `num_step=8`, `speed=1`, 24 kHz mono PCM WAV.
+The audited worker raises `voice_06`, `voice_26`, `voice_32`, and `voice_33` to
+`num_step=16` automatically.
+The canonical 48-voice manifest lives at
+`services/omnivoice-runpod/assets/voices/voices.json`; both the worker image and
+application catalog consume it so their IDs cannot drift.
 
-Initial generation on 2026-07-22:
+Release-candidate generation on 2026-07-22 saved valid v2 outputs for 47 IDs.
+The original `voice_44` reference was rejected because a short Thai fixture expanded
+to about 50 seconds and was unintelligible. On 2026-07-23 it was replaced on staging
+with a bounded Voice Design recovery that retained the `male, very high pitch`
+profile. Its final clone preview is 5.84 seconds, 24 kHz mono PCM, and matched the
+canonical Thai fixture exactly in local Whisper screening (CER 0%).
 
-- `voice_01.wav`: RunPod job `56645698-1f76-404f-9fdf-5b718e75e596-e2`
-- `voice_02.wav`: RunPod job `63380351-f880-48f1-90ab-6b5c0c188ab1-e2`
-- `voice_03.wav`: RunPod job `d0621a74-1a80-4c0c-8d68-15f950ceb6cd-e2`
+On 2026-07-23, the v8 amd64 staging candidate regenerated the audited catalog.
+Fifteen damaged, duplicate, or profile-mismatched references were replaced, and
+the final 48 references plus 48 previews passed the enforced structural, pitch,
+Thai ASR, clone-consistency, and two-model speaker-consensus gates with zero FAIL
+findings. Human listening remains required before any production cutover.

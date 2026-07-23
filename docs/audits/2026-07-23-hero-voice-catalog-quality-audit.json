@@ -1,0 +1,2474 @@
+{
+  "summary": {
+    "voices": 48,
+    "asr_enabled": true,
+    "fail_findings": 0,
+    "review_findings": 71,
+    "speaker_duplicate_threshold": 0.9,
+    "speaker_review_threshold": 0.86,
+    "ecapa_duplicate_threshold": 0.75,
+    "ecapa_review_threshold": 0.7,
+    "asr_fail_cer": 0.1
+  },
+  "findings": [
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_01",
+        "voice_11"
+      ],
+      "message": "Resemblyzer max=0.8589 (reference=0.8589, preview=0.8343); ECAPA max=0.7079 (reference=0.7079, preview=0.6788)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_02",
+        "voice_04"
+      ],
+      "message": "Resemblyzer max=0.9149 (reference=0.8542, preview=0.9149); ECAPA max=0.5588 (reference=0.5027, preview=0.5588)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_02",
+        "voice_08"
+      ],
+      "message": "Resemblyzer max=0.8879 (reference=0.8118, preview=0.8879); ECAPA max=0.6411 (reference=0.5866, preview=0.6411)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_02",
+        "voice_13"
+      ],
+      "message": "Resemblyzer max=0.8824 (reference=0.8351, preview=0.8824); ECAPA max=0.5490 (reference=0.5368, preview=0.5490)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_02",
+        "voice_15"
+      ],
+      "message": "Resemblyzer max=0.8600 (reference=0.8423, preview=0.8600); ECAPA max=0.6032 (reference=0.6032, preview=0.5684)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_02",
+        "voice_16"
+      ],
+      "message": "Resemblyzer max=0.8841 (reference=0.8759, preview=0.8841); ECAPA max=0.6916 (reference=0.6912, preview=0.6916)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_02",
+        "voice_29"
+      ],
+      "message": "Resemblyzer max=0.9079 (reference=0.8712, preview=0.9079); ECAPA max=0.6394 (reference=0.5982, preview=0.6394)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_02",
+        "voice_31"
+      ],
+      "message": "Resemblyzer max=0.8686 (reference=0.8631, preview=0.8686); ECAPA max=0.6621 (reference=0.6520, preview=0.6621)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_02",
+        "voice_41"
+      ],
+      "message": "Resemblyzer max=0.8850 (reference=0.8547, preview=0.8850); ECAPA max=0.7236 (reference=0.7236, preview=0.6403)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_03",
+        "voice_35"
+      ],
+      "message": "Resemblyzer max=0.8603 (reference=0.8603, preview=0.8540); ECAPA max=0.7126 (reference=0.7126, preview=0.6484)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_03",
+        "voice_46"
+      ],
+      "message": "Resemblyzer max=0.8716 (reference=0.8716, preview=0.8589); ECAPA max=0.5348 (reference=0.5348, preview=0.4507)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_04",
+        "voice_08"
+      ],
+      "message": "Resemblyzer max=0.8642 (reference=0.8203, preview=0.8642); ECAPA max=0.5366 (reference=0.5096, preview=0.5366)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_04",
+        "voice_13"
+      ],
+      "message": "Resemblyzer max=0.8954 (reference=0.8285, preview=0.8954); ECAPA max=0.4799 (reference=0.4799, preview=0.4532)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_04",
+        "voice_16"
+      ],
+      "message": "Resemblyzer max=0.8813 (reference=0.8813, preview=0.8766); ECAPA max=0.6566 (reference=0.5707, preview=0.6566)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_04",
+        "voice_29"
+      ],
+      "message": "Resemblyzer max=0.8981 (reference=0.8906, preview=0.8981); ECAPA max=0.7125 (reference=0.6758, preview=0.7125)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_04",
+        "voice_31"
+      ],
+      "message": "Resemblyzer max=0.8686 (reference=0.8221, preview=0.8686); ECAPA max=0.6213 (reference=0.5761, preview=0.6213)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_06",
+        "voice_07"
+      ],
+      "message": "Resemblyzer max=0.8848 (reference=0.8848, preview=0.8756); ECAPA max=0.6410 (reference=0.6410, preview=0.5976)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_06",
+        "voice_08"
+      ],
+      "message": "Resemblyzer max=0.8673 (reference=0.8422, preview=0.8673); ECAPA max=0.5663 (reference=0.5232, preview=0.5663)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_06",
+        "voice_10"
+      ],
+      "message": "Resemblyzer max=0.8618 (reference=0.8618, preview=0.8526); ECAPA max=0.6382 (reference=0.6342, preview=0.6382)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_06",
+        "voice_15"
+      ],
+      "message": "Resemblyzer max=0.8765 (reference=0.8765, preview=0.8630); ECAPA max=0.6253 (reference=0.5936, preview=0.6253)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_06",
+        "voice_17"
+      ],
+      "message": "Resemblyzer max=0.8614 (reference=0.8614, preview=0.8448); ECAPA max=0.5865 (reference=0.5682, preview=0.5865)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_06",
+        "voice_36"
+      ],
+      "message": "Resemblyzer max=0.8970 (reference=0.8970, preview=0.8639); ECAPA max=0.7274 (reference=0.7274, preview=0.7096)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_07",
+        "voice_36"
+      ],
+      "message": "Resemblyzer max=0.8956 (reference=0.8949, preview=0.8956); ECAPA max=0.5589 (reference=0.5588, preview=0.5589)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_08",
+        "voice_10"
+      ],
+      "message": "Resemblyzer max=0.9090 (reference=0.8944, preview=0.9090); ECAPA max=0.7246 (reference=0.7246, preview=0.6376)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_08",
+        "voice_13"
+      ],
+      "message": "Resemblyzer max=0.8697 (reference=0.8697, preview=0.8682); ECAPA max=0.6223 (reference=0.6223, preview=0.5064)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_08",
+        "voice_15"
+      ],
+      "message": "Resemblyzer max=0.8603 (reference=0.8580, preview=0.8603); ECAPA max=0.5054 (reference=0.4543, preview=0.5054)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_08",
+        "voice_16"
+      ],
+      "message": "Resemblyzer max=0.8830 (reference=0.8460, preview=0.8830); ECAPA max=0.6850 (reference=0.6850, preview=0.6776)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_08",
+        "voice_29"
+      ],
+      "message": "Resemblyzer max=0.9075 (reference=0.8606, preview=0.9075); ECAPA max=0.6466 (reference=0.6379, preview=0.6466)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_08",
+        "voice_41"
+      ],
+      "message": "Resemblyzer max=0.8871 (reference=0.8317, preview=0.8871); ECAPA max=0.6625 (reference=0.6230, preview=0.6625)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_09",
+        "voice_14"
+      ],
+      "message": "Resemblyzer max=0.8635 (reference=0.8635, preview=0.8458); ECAPA max=0.6292 (reference=0.6226, preview=0.6292)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_09",
+        "voice_40"
+      ],
+      "message": "Resemblyzer max=0.8631 (reference=0.8631, preview=0.8363); ECAPA max=0.6224 (reference=0.6224, preview=0.5970)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_10",
+        "voice_15"
+      ],
+      "message": "Resemblyzer max=0.8708 (reference=0.8708, preview=0.8643); ECAPA max=0.6404 (reference=0.5903, preview=0.6404)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_10",
+        "voice_29"
+      ],
+      "message": "Resemblyzer max=0.8816 (reference=0.8816, preview=0.8661); ECAPA max=0.6590 (reference=0.6516, preview=0.6590)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_10",
+        "voice_36"
+      ],
+      "message": "Resemblyzer max=0.8633 (reference=0.8471, preview=0.8633); ECAPA max=0.6375 (reference=0.6375, preview=0.5662)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_11",
+        "voice_23"
+      ],
+      "message": "Resemblyzer max=0.8655 (reference=0.8655, preview=0.8103); ECAPA max=0.5676 (reference=0.5676, preview=0.5142)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_13",
+        "voice_29"
+      ],
+      "message": "Resemblyzer max=0.8685 (reference=0.8375, preview=0.8685); ECAPA max=0.4485 (reference=0.4485, preview=0.4169)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_15",
+        "voice_17"
+      ],
+      "message": "Resemblyzer max=0.8686 (reference=0.8686, preview=0.7995); ECAPA max=0.6401 (reference=0.6401, preview=0.5580)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_15",
+        "voice_20"
+      ],
+      "message": "Resemblyzer max=0.8871 (reference=0.8871, preview=0.8486); ECAPA max=0.6017 (reference=0.6017, preview=0.5225)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_15",
+        "voice_29"
+      ],
+      "message": "Resemblyzer max=0.8963 (reference=0.8726, preview=0.8963); ECAPA max=0.6462 (reference=0.5890, preview=0.6462)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_15",
+        "voice_36"
+      ],
+      "message": "Resemblyzer max=0.8855 (reference=0.8855, preview=0.8730); ECAPA max=0.6497 (reference=0.6323, preview=0.6497)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_15",
+        "voice_41"
+      ],
+      "message": "Resemblyzer max=0.8875 (reference=0.8875, preview=0.8613); ECAPA max=0.6338 (reference=0.6263, preview=0.6338)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_16",
+        "voice_29"
+      ],
+      "message": "Resemblyzer max=0.8977 (reference=0.8977, preview=0.8941); ECAPA max=0.7053 (reference=0.7053, preview=0.6818)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_16",
+        "voice_31"
+      ],
+      "message": "Resemblyzer max=0.8795 (reference=0.8795, preview=0.8599); ECAPA max=0.6901 (reference=0.6901, preview=0.6836)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_16",
+        "voice_34"
+      ],
+      "message": "Resemblyzer max=0.8758 (reference=0.8758, preview=0.8581); ECAPA max=0.7086 (reference=0.6520, preview=0.7086)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_16",
+        "voice_41"
+      ],
+      "message": "Resemblyzer max=0.8785 (reference=0.8494, preview=0.8785); ECAPA max=0.6924 (reference=0.6924, preview=0.6585)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_17",
+        "voice_18"
+      ],
+      "message": "Resemblyzer max=0.8780 (reference=0.8780, preview=0.8566); ECAPA max=0.6598 (reference=0.6598, preview=0.6341)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_20",
+        "voice_41"
+      ],
+      "message": "Resemblyzer max=0.8763 (reference=0.8639, preview=0.8763); ECAPA max=0.6102 (reference=0.6102, preview=0.5059)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_21",
+        "voice_37"
+      ],
+      "message": "Resemblyzer max=0.8639 (reference=0.8639, preview=0.8375); ECAPA max=0.5792 (reference=0.5416, preview=0.5792)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_23",
+        "voice_35"
+      ],
+      "message": "Resemblyzer max=0.8697 (reference=0.8541, preview=0.8697); ECAPA max=0.5641 (reference=0.5502, preview=0.5641)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_23",
+        "voice_37"
+      ],
+      "message": "Resemblyzer max=0.8785 (reference=0.8785, preview=0.8622); ECAPA max=0.6620 (reference=0.6573, preview=0.6620)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_29",
+        "voice_31"
+      ],
+      "message": "Resemblyzer max=0.8735 (reference=0.8735, preview=0.8621); ECAPA max=0.7107 (reference=0.7095, preview=0.7107)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_29",
+        "voice_34"
+      ],
+      "message": "Resemblyzer max=0.8587 (reference=0.8555, preview=0.8587); ECAPA max=0.7397 (reference=0.6833, preview=0.7397)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_29",
+        "voice_41"
+      ],
+      "message": "Resemblyzer max=0.8868 (reference=0.8868, preview=0.8799); ECAPA max=0.6905 (reference=0.6785, preview=0.6905)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_29",
+        "voice_45"
+      ],
+      "message": "Resemblyzer max=0.8445 (reference=0.8445, preview=0.8401); ECAPA max=0.7046 (reference=0.7046, preview=0.6774)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_31",
+        "voice_34"
+      ],
+      "message": "Resemblyzer max=0.8797 (reference=0.8797, preview=0.8743); ECAPA max=0.7296 (reference=0.7296, preview=0.6805)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_31",
+        "voice_39"
+      ],
+      "message": "Resemblyzer max=0.8628 (reference=0.8331, preview=0.8628); ECAPA max=0.6860 (reference=0.6569, preview=0.6860)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_31",
+        "voice_41"
+      ],
+      "message": "Resemblyzer max=0.9088 (reference=0.8899, preview=0.9088); ECAPA max=0.6630 (reference=0.6561, preview=0.6630)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_34",
+        "voice_39"
+      ],
+      "message": "Resemblyzer max=0.8408 (reference=0.8408, preview=0.8349); ECAPA max=0.7057 (reference=0.6498, preview=0.7057)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_34",
+        "voice_41"
+      ],
+      "message": "Resemblyzer max=0.8712 (reference=0.8680, preview=0.8712); ECAPA max=0.6460 (reference=0.6146, preview=0.6460)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_34",
+        "voice_45"
+      ],
+      "message": "Resemblyzer max=0.8825 (reference=0.8825, preview=0.8567); ECAPA max=0.6936 (reference=0.6936, preview=0.6793)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_37",
+        "voice_46"
+      ],
+      "message": "Resemblyzer max=0.8701 (reference=0.8701, preview=0.8542); ECAPA max=0.6625 (reference=0.6625, preview=0.6414)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_39",
+        "voice_41"
+      ],
+      "message": "Resemblyzer max=0.8776 (reference=0.8696, preview=0.8776); ECAPA max=0.7258 (reference=0.7258, preview=0.7132)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_39",
+        "voice_43"
+      ],
+      "message": "Resemblyzer max=0.7687 (reference=0.7500, preview=0.7687); ECAPA max=0.7044 (reference=0.7044, preview=0.6653)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_41",
+        "voice_43"
+      ],
+      "message": "Resemblyzer max=0.8486 (reference=0.8252, preview=0.8486); ECAPA max=0.7317 (reference=0.7317, preview=0.7215)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "duplicate",
+      "voices": [
+        "voice_41",
+        "voice_45"
+      ],
+      "message": "Resemblyzer max=0.8773 (reference=0.8532, preview=0.8773); ECAPA max=0.6534 (reference=0.6447, preview=0.6534)"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "thai-asr",
+      "voices": [
+        "voice_03"
+      ],
+      "message": "reference CER=5.77%; transcript=ยินดีต้อนรับสู่ระบบ สร้างวีดีโอพาศสาไทยพร้อม เริ่มต้นสร้างผลงานแล้ววันนี้"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "thai-asr",
+      "voices": [
+        "voice_09"
+      ],
+      "message": "preview CER=7.69%; transcript=ยินดีต้อนรับสู่ระบบสร้างสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "thai-asr",
+      "voices": [
+        "voice_17"
+      ],
+      "message": "preview CER=5.77%; transcript=ยินดีต้อนรับสูตรระบบสร้างวิดอุภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "thai-asr",
+      "voices": [
+        "voice_20"
+      ],
+      "message": "preview CER=5.77%; transcript=ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พอมุรับต้นสร้างผลงานแล้ววันนี้"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "thai-asr",
+      "voices": [
+        "voice_33"
+      ],
+      "message": "reference CER=7.69%; transcript=ยินดีต้นรับสู่ระบบสร้างวิดีโอภาษาไทยพอมเริ่มต้นสร้างปนงานแล้ววันนี้"
+    },
+    {
+      "severity": "REVIEW",
+      "gate": "thai-asr",
+      "voices": [
+        "voice_33"
+      ],
+      "message": "preview CER=9.62%; transcript=ยินดีตอนรับสู่ระพบสร้างวิดีโอภาษาไทย ปร้อมเริ่มตอนสร้างบนงานแล้ววันนี้"
+    }
+  ],
+  "voices": [
+    {
+      "id": "voice_01",
+      "desc": "เสียงผู้ชาย โทนปกติ",
+      "instruct": "male",
+      "reference_metrics": {
+        "duration_seconds": 4.03,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.935,
+        "rms_dbfs": -26.032,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8571,
+        "median_f0_hz": 105.07,
+        "spectral_flatness": 0.0003667,
+        "sha256": "50d427760634492564bce07e81c03ad9ce41c99dea8e5b021468aefe8e1eaa92"
+      },
+      "preview_metrics": {
+        "duration_seconds": 3.67,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -9.974,
+        "rms_dbfs": -28.425,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8439,
+        "median_f0_hz": 100.91,
+        "spectral_flatness": 0.0003909,
+        "sha256": "8d79c89c06286950804baa184a3027382def559e5f6f7439d69b382265c4fa3d"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.964602,
+      "closest_reference_voice": "voice_11",
+      "closest_reference_similarity": 0.858852
+    },
+    {
+      "id": "voice_02",
+      "desc": "เสียงผู้หญิง สำเนียงญี่ปุ่น",
+      "instruct": "female, japanese accent",
+      "reference_metrics": {
+        "duration_seconds": 5.32,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -18.632,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.808,
+        "median_f0_hz": 215.68,
+        "spectral_flatness": 0.0012494,
+        "sha256": "dba06a9c04baf0bfae42a954fe4b6b9246bb1d4bc6c2fc4d78fa9726eb454ea1"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.38,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.09,
+        "rms_dbfs": -19.172,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8883,
+        "median_f0_hz": 206.53,
+        "spectral_flatness": 0.0009111,
+        "sha256": "ba134e4b070683994acb0ff226c5b6e95d9ad5799084bbbe74dc1fb161ffeec3"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.951149,
+      "closest_reference_voice": "voice_16",
+      "closest_reference_similarity": 0.875917
+    },
+    {
+      "id": "voice_03",
+      "desc": "เสียงผู้ชาย โทนสูง สดใส",
+      "instruct": "male, high pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.53,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.621,
+        "rms_dbfs": -21.094,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8115,
+        "median_f0_hz": 245.61,
+        "spectral_flatness": 0.0020927,
+        "sha256": "5be1180b4c508528a1c7abe19435699d4401df5f072241ac2d65bcb1e97a58a0"
+      },
+      "preview_metrics": {
+        "duration_seconds": 5.33,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.413,
+        "rms_dbfs": -21.179,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.828,
+        "median_f0_hz": 249.9,
+        "spectral_flatness": 0.0020795,
+        "sha256": "f6b658a29d5b036900ab3b9a0ceaa3c6d22a8e0ea307ee52c3305dd1aaca83b9"
+      },
+      "reference_cer": 0.057692307692307696,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบ สร้างวีดีโอพาศสาไทยพร้อม เริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวีดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.97784,
+      "closest_reference_voice": "voice_46",
+      "closest_reference_similarity": 0.871593
+    },
+    {
+      "id": "voice_04",
+      "desc": "เสียงผู้หญิง โทนต่ำมาก นุ่มลึก",
+      "instruct": "female, very low pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.72,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -20.382,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8327,
+        "median_f0_hz": 194.38,
+        "spectral_flatness": 0.0007002,
+        "sha256": "7d2524e66096a7b80278338e0a2b402091a9e5b88dd74c3f9d285d90dd727a0b"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.99,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.398,
+        "rms_dbfs": -20.523,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8376,
+        "median_f0_hz": 200.65,
+        "spectral_flatness": 0.000632,
+        "sha256": "a3f3509e4ce5132ee4c52b538ac3a15ad3cbc5041cb9f85b1b3d5787681a2384"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวีดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.958296,
+      "closest_reference_voice": "voice_29",
+      "closest_reference_similarity": 0.890584
+    },
+    {
+      "id": "voice_05",
+      "desc": "เสียงผู้ชาย โทนต่ำมาก หนักแน่น",
+      "instruct": "male, very low pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.7,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.321,
+        "rms_dbfs": -24.06,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.81,
+        "median_f0_hz": 119.31,
+        "spectral_flatness": 6.88e-05,
+        "sha256": "fec780c2e3692ce268755d5736a1da15aec8fdc293e490b3163870b87e3f9334"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.69,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.853,
+        "rms_dbfs": -25.494,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7727,
+        "median_f0_hz": 113.92,
+        "spectral_flatness": 9.78e-05,
+        "sha256": "d55008697c2bd9f5f5888e53f4694ba3299d3050a73c91640d19c14b0c2c0856"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.977964,
+      "closest_reference_voice": "voice_09",
+      "closest_reference_similarity": 0.795638
+    },
+    {
+      "id": "voice_06",
+      "desc": "เสียงผู้หญิง โทนสูงมาก สดใส",
+      "instruct": "female, very high pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.34,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.614,
+        "rms_dbfs": -20.337,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.6773,
+        "median_f0_hz": 397.85,
+        "spectral_flatness": 0.0012808,
+        "sha256": "8ebc3d607cb1e38c141c137fb23c4ee9a21a89fb0458f08b716558208b331ae2"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.84,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -1.548,
+        "rms_dbfs": -21.497,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7841,
+        "median_f0_hz": 372.27,
+        "spectral_flatness": 0.001891,
+        "sha256": "da71e070f03b16ed330147a286ddcc5885071e73174e6dfb253be78f5da495a6"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.019230769230769232,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวีดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้อนสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.954149,
+      "closest_reference_voice": "voice_36",
+      "closest_reference_similarity": 0.896951
+    },
+    {
+      "id": "voice_07",
+      "desc": "เสียงเด็ก",
+      "instruct": "child",
+      "reference_metrics": {
+        "duration_seconds": 5.07,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.845,
+        "rms_dbfs": -22.523,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8866,
+        "median_f0_hz": 345.34,
+        "spectral_flatness": 0.0013371,
+        "sha256": "7456174f3f0e2069a9a26f5b50e25ea4b3f5a1320b745d968cadd84b1cf7a4a8"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.65,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -7.009,
+        "rms_dbfs": -23.823,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8165,
+        "median_f0_hz": 344.35,
+        "spectral_flatness": 0.0011466,
+        "sha256": "f39ad01720ad3c9f83cd2ea58d442f3dbf9f5e5bf6686160c6e2596579c57840"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.962139,
+      "closest_reference_voice": "voice_36",
+      "closest_reference_similarity": 0.894867
+    },
+    {
+      "id": "voice_08",
+      "desc": "เสียงวัยรุ่นหญิง",
+      "instruct": "teenager, female",
+      "reference_metrics": {
+        "duration_seconds": 5.02,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.019,
+        "rms_dbfs": -20.529,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.9068,
+        "median_f0_hz": 239.31,
+        "spectral_flatness": 0.0008079,
+        "sha256": "1af298896902e45df4e20220b422d6e03c66ab130958906a4ae446e45770d81e"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.59,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.889,
+        "rms_dbfs": -21.22,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8981,
+        "median_f0_hz": 239.31,
+        "spectral_flatness": 0.0008275,
+        "sha256": "ea3563e57fd0ff403b596cafec3ac0c92eda1e3c697e53af619d0f6e708fc176"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.958839,
+      "closest_reference_voice": "voice_10",
+      "closest_reference_similarity": 0.894379
+    },
+    {
+      "id": "voice_09",
+      "desc": "เสียงวัยรุ่นชาย โทนกลาง",
+      "instruct": "teenager, male, moderate pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.81,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -22.978,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8628,
+        "median_f0_hz": 137.05,
+        "spectral_flatness": 0.0005141,
+        "sha256": "f7fdf2daa160377a265aadcdf4a2fead85a3b92dda7085dbf97b36277a91431c"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.41,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.529,
+        "rms_dbfs": -24.509,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8841,
+        "median_f0_hz": 139.45,
+        "spectral_flatness": 0.000607,
+        "sha256": "2190402f2b06624a1d40b776e787a1d764337afdb7982dbbf95224a40d28fbc2"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.07692307692307693,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.972149,
+      "closest_reference_voice": "voice_14",
+      "closest_reference_similarity": 0.863539
+    },
+    {
+      "id": "voice_10",
+      "desc": "เสียงผู้หญิงวัยทำงานตอนต้น",
+      "instruct": "young adult, female",
+      "reference_metrics": {
+        "duration_seconds": 5.15,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.968,
+        "rms_dbfs": -22.021,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8926,
+        "median_f0_hz": 239.31,
+        "spectral_flatness": 0.0009703,
+        "sha256": "3d6a20ec573691597fbde09540383cb1d310bba35306614494cbe177d3056182"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.66,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.336,
+        "rms_dbfs": -23.673,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8858,
+        "median_f0_hz": 234.52,
+        "spectral_flatness": 0.0009756,
+        "sha256": "503854a5a16f12ca4a6d260bac0d65b80e4de7d9e78477eee7549abb32d904df"
+      },
+      "reference_cer": 0.038461538461538464,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสูตรบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวีดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.969448,
+      "closest_reference_voice": "voice_08",
+      "closest_reference_similarity": 0.894379
+    },
+    {
+      "id": "voice_11",
+      "desc": "เสียงผู้ชายวัยทำงานตอนต้น",
+      "instruct": "young adult, male",
+      "reference_metrics": {
+        "duration_seconds": 3.91,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.281,
+        "rms_dbfs": -24.57,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8587,
+        "median_f0_hz": 134.7,
+        "spectral_flatness": 0.0006316,
+        "sha256": "f4ed7e6440e7c91b643030762a5e590eeff738b4024d5a8f69e15562412b1aa4"
+      },
+      "preview_metrics": {
+        "duration_seconds": 3.54,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.944,
+        "rms_dbfs": -25.244,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7651,
+        "median_f0_hz": 138.64,
+        "spectral_flatness": 0.000827,
+        "sha256": "56337a4d6a7fb6ee15bab8e6108fb095b2856eb9dc4b9cbc112f1507ff3143d8"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.019230769230769232,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนอับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.970838,
+      "closest_reference_voice": "voice_23",
+      "closest_reference_similarity": 0.86554
+    },
+    {
+      "id": "voice_12",
+      "desc": "เสียงผู้ชายวัยกลางคน",
+      "instruct": "middle-aged, male",
+      "reference_metrics": {
+        "duration_seconds": 4.6,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.976,
+        "rms_dbfs": -24.141,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.6111,
+        "median_f0_hz": 112.61,
+        "spectral_flatness": 0.0006967,
+        "sha256": "53fb2f0e08803162a25b45bdd839978f7b021dcc7e8aaa83e76a0796d67598fa"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.19,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.324,
+        "rms_dbfs": -24.313,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.4213,
+        "median_f0_hz": 113.92,
+        "spectral_flatness": 0.0006717,
+        "sha256": "21e60275ae4573d973b1c666e6fe951897a1ee615830967a330ba8b424d2ae4b"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.972032,
+      "closest_reference_voice": "voice_24",
+      "closest_reference_similarity": 0.78756
+    },
+    {
+      "id": "voice_13",
+      "desc": "เสียงผู้หญิงวัยกลางคน",
+      "instruct": "middle-aged, female",
+      "reference_metrics": {
+        "duration_seconds": 5.11,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.022,
+        "rms_dbfs": -18.81,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8917,
+        "median_f0_hz": 207.13,
+        "spectral_flatness": 0.0011013,
+        "sha256": "d67709e905307c832611ef1cb7c7fc70cc04ee69c1e5f4bece2cde4b585d11af"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.6,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.64,
+        "rms_dbfs": -20.412,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8889,
+        "median_f0_hz": 194.38,
+        "spectral_flatness": 0.0011068,
+        "sha256": "ac02394bbd2a1c7284b9281d3d07c529478a0940a4f0fbc62c6a4301c150d8eb"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.962481,
+      "closest_reference_voice": "voice_08",
+      "closest_reference_similarity": 0.86975
+    },
+    {
+      "id": "voice_14",
+      "desc": "เสียงผู้ชายสูงวัย",
+      "instruct": "elderly, male",
+      "reference_metrics": {
+        "duration_seconds": 4.3,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.14,
+        "rms_dbfs": -20.909,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8564,
+        "median_f0_hz": 123.52,
+        "spectral_flatness": 0.00073,
+        "sha256": "237be5fad28198ffec3d5595ee3ea48c2223b41c36cc67fb842c4d7241fd6ba5"
+      },
+      "preview_metrics": {
+        "duration_seconds": 3.97,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.295,
+        "rms_dbfs": -23.191,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8717,
+        "median_f0_hz": 120.7,
+        "spectral_flatness": 0.0004666,
+        "sha256": "bba9554af4372f4bbbd8f8fc5190d5f37bacc518ec84c4d4d2ac99749afb82d4"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวีดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.972361,
+      "closest_reference_voice": "voice_09",
+      "closest_reference_similarity": 0.863539
+    },
+    {
+      "id": "voice_15",
+      "desc": "เสียงผู้หญิงสูงวัย โทนกลาง สุขุม",
+      "instruct": "elderly, female, moderate pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.75,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -21.173,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8789,
+        "median_f0_hz": 258.72,
+        "spectral_flatness": 0.0009305,
+        "sha256": "1fff71da18acb43b48066792d86c0a0e0eabb8cdd60e5580015c026a17bad14b"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.3,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.609,
+        "rms_dbfs": -22.25,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8465,
+        "median_f0_hz": 264.76,
+        "spectral_flatness": 0.0008735,
+        "sha256": "fc2eb6ac55726cf15a32e1661b8b412000dd39d9a56ce01942d97f5a20c82199"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.961222,
+      "closest_reference_voice": "voice_41",
+      "closest_reference_similarity": 0.887519
+    },
+    {
+      "id": "voice_16",
+      "desc": "เสียงผู้หญิง สำเนียงอังกฤษ (British)",
+      "instruct": "female, british accent",
+      "reference_metrics": {
+        "duration_seconds": 4.41,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.473,
+        "rms_dbfs": -21.807,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8647,
+        "median_f0_hz": 201.82,
+        "spectral_flatness": 0.000854,
+        "sha256": "d2ce5735e39fbc5c0e676d9a79d68c611afdcb270f5cf68566ca9e42a2264558"
+      },
+      "preview_metrics": {
+        "duration_seconds": 3.84,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.791,
+        "rms_dbfs": -22.72,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8453,
+        "median_f0_hz": 204.16,
+        "spectral_flatness": 0.0010044,
+        "sha256": "37bb91e5ecba477599b9a03c9f33379b068a0a989e93d2fd2c3789c36f7322f0"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.038461538461538464,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พอมาเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.962343,
+      "closest_reference_voice": "voice_29",
+      "closest_reference_similarity": 0.897715
+    },
+    {
+      "id": "voice_17",
+      "desc": "เสียงเด็กผู้ชาย",
+      "instruct": "child, male",
+      "reference_metrics": {
+        "duration_seconds": 4.66,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.921,
+        "rms_dbfs": -20.833,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8995,
+        "median_f0_hz": 266.3,
+        "spectral_flatness": 0.0007186,
+        "sha256": "013a09b7727b20fd2103dbdc520b8f594b0b1c2d18b570aab210247eb6ab4350"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.25,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.386,
+        "rms_dbfs": -21.788,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.895,
+        "median_f0_hz": 261.72,
+        "spectral_flatness": 0.0006029,
+        "sha256": "f201a92dd3ebe754b25bbebcf4871143f75ae06b87460907c8313a92561c76a4"
+      },
+      "reference_cer": 0.019230769230769232,
+      "preview_cer": 0.057692307692307696,
+      "reference_transcript": "ยินดีต้องรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสูตรระบบสร้างวิดอุภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.952791,
+      "closest_reference_voice": "voice_18",
+      "closest_reference_similarity": 0.878004
+    },
+    {
+      "id": "voice_18",
+      "desc": "เสียงเด็กผู้หญิง",
+      "instruct": "child, female",
+      "reference_metrics": {
+        "duration_seconds": 5.43,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -20.876,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.902,
+        "median_f0_hz": 248.46,
+        "spectral_flatness": 0.0004705,
+        "sha256": "a6c61b8004655b1db4078bf6ab92dfba2fb33e96437c453f4afa6588d6780c80"
+      },
+      "preview_metrics": {
+        "duration_seconds": 5.08,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -7.614,
+        "rms_dbfs": -21.716,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8494,
+        "median_f0_hz": 254.27,
+        "spectral_flatness": 0.0005361,
+        "sha256": "f8e9bd8e84085ac9382d4f984c4463acfd7b1b2b8155c03b71b4eea98866cc8b"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.974856,
+      "closest_reference_voice": "voice_17",
+      "closest_reference_similarity": 0.878004
+    },
+    {
+      "id": "voice_19",
+      "desc": "เสียงผู้ชาย โทนกลาง",
+      "instruct": "male, moderate pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.76,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.897,
+        "rms_dbfs": -18.515,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8118,
+        "median_f0_hz": 168.73,
+        "spectral_flatness": 0.0004633,
+        "sha256": "b411b5b1863939f416b4eaced193bf7f32e08114437d684ed31b9b06296969bb"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.78,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.75,
+        "rms_dbfs": -18.851,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8356,
+        "median_f0_hz": 169.71,
+        "spectral_flatness": 0.0004186,
+        "sha256": "242ebef17806047366afdc3fb0e005992c01fc8a5d1b00f65cd1f30479d62e74"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.019230769230769232,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้องรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.948149,
+      "closest_reference_voice": "voice_21",
+      "closest_reference_similarity": 0.762178
+    },
+    {
+      "id": "voice_20",
+      "desc": "เสียงผู้หญิง โทนกลาง",
+      "instruct": "female, moderate pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.43,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.431,
+        "rms_dbfs": -24.495,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8558,
+        "median_f0_hz": 239.31,
+        "spectral_flatness": 6.78e-05,
+        "sha256": "e852e62fcabdd848a627d351a0c6b5e4d53041329951ef907223ec4aade38065"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.12,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.03,
+        "rms_dbfs": -25.482,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8454,
+        "median_f0_hz": 231.16,
+        "spectral_flatness": 5.8e-05,
+        "sha256": "075e715b800b8371dc1153c12eacd1c8e16919859ae55f7092c401433deeff4b"
+      },
+      "reference_cer": 0.038461538461538464,
+      "preview_cer": 0.057692307692307696,
+      "reference_transcript": "ยินดีต้อนรับสู่สรบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พอมุรับต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.935205,
+      "closest_reference_voice": "voice_15",
+      "closest_reference_similarity": 0.887075
+    },
+    {
+      "id": "voice_21",
+      "desc": "เสียงวัยรุ่นชาย โทนสูง กระตือรือร้น",
+      "instruct": "teenager, male, high pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.27,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.837,
+        "rms_dbfs": -19.688,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8266,
+        "median_f0_hz": 220.08,
+        "spectral_flatness": 0.0012708,
+        "sha256": "bb38f7ba9da05fa8ea792687f83dbaea1e82874fad145d1969b544b0907b15d2"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.67,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.255,
+        "rms_dbfs": -21.094,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8767,
+        "median_f0_hz": 202.4,
+        "spectral_flatness": 0.0009911,
+        "sha256": "fbaec956a3a759dfd52e2b133fd2fb95eb3f0fd95265de2cc4e72560fc4cfe9c"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.969248,
+      "closest_reference_voice": "voice_37",
+      "closest_reference_similarity": 0.863892
+    },
+    {
+      "id": "voice_22",
+      "desc": "เสียงผู้ชายวัยทำงานตอนต้น โทนต่ำ หนักแน่น",
+      "instruct": "young adult, male, low pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.68,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.388,
+        "rms_dbfs": -24.308,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7753,
+        "median_f0_hz": 143.53,
+        "spectral_flatness": 0.0006414,
+        "sha256": "e1b1506045fac4a2a016405c9657fa75d964470830b5d22a0425055fa5080135"
+      },
+      "preview_metrics": {
+        "duration_seconds": 5.47,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.413,
+        "rms_dbfs": -24.847,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7471,
+        "median_f0_hz": 152.51,
+        "spectral_flatness": 0.0007618,
+        "sha256": "b5f9920881c6df99c94aa56c35d3ec6684f66d460c3241ef08d3a26a35a7d693"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.978959,
+      "closest_reference_voice": "voice_37",
+      "closest_reference_similarity": 0.794801
+    },
+    {
+      "id": "voice_23",
+      "desc": "เสียงผู้ชายวัยทำงานตอนต้น โทนสูง กระฉับกระเฉง",
+      "instruct": "young adult, male, high pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.99,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -23.253,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7009,
+        "median_f0_hz": 244.2,
+        "spectral_flatness": 0.00055,
+        "sha256": "3c497f4a6aea8c3c687cc4066e8a2bf683b5b16ed2b1d92a289ee7feb12aedfa"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.35,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.59,
+        "rms_dbfs": -23.546,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.701,
+        "median_f0_hz": 244.2,
+        "spectral_flatness": 0.0005084,
+        "sha256": "334eb5cbefae504972f246b61d7f9f4e093ed4ba3700c37e1b2af753db3e94d2"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.038461538461538464,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างขนงานแล้ววันนี้",
+      "clone_similarity": 0.965164,
+      "closest_reference_voice": "voice_37",
+      "closest_reference_similarity": 0.878509
+    },
+    {
+      "id": "voice_24",
+      "desc": "เสียงผู้ชายวัยกลางคน โทนต่ำมาก น่าเชื่อถือ",
+      "instruct": "middle-aged, male, very low pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.56,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.659,
+        "rms_dbfs": -18.746,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8318,
+        "median_f0_hz": 120.7,
+        "spectral_flatness": 0.000213,
+        "sha256": "8cbc58133886f9c5e81e3ce0dafeb4500b00fac4aa7feab5c96b102a103976ba"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.12,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.043,
+        "rms_dbfs": -19.515,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8557,
+        "median_f0_hz": 122.8,
+        "spectral_flatness": 0.0002587,
+        "sha256": "849dd6277f7f3925990760c9eff0a60fe57146c395153b330de974db80d064a4"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.963881,
+      "closest_reference_voice": "voice_28",
+      "closest_reference_similarity": 0.813636
+    },
+    {
+      "id": "voice_25",
+      "desc": "เสียงผู้ชายสูงวัย โทนต่ำมาก ใจดี",
+      "instruct": "elderly, male, very low pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.87,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.288,
+        "rms_dbfs": -19.071,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8821,
+        "median_f0_hz": 112.61,
+        "spectral_flatness": 0.0001416,
+        "sha256": "a2c940572e0bc9d420b70f3f992787e6bb76b2f889a67d2a04f81c0e64578e28"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.31,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.335,
+        "rms_dbfs": -20.278,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.867,
+        "median_f0_hz": 110.36,
+        "spectral_flatness": 0.0001125,
+        "sha256": "1c4092134ede4817f9afa03eb34407272daf5f6e092c3bfa8fcf1a536c0fda3f"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.950704,
+      "closest_reference_voice": "voice_42",
+      "closest_reference_similarity": 0.797518
+    },
+    {
+      "id": "voice_26",
+      "desc": "เสียงผู้หญิงสูงวัย โทนสูง อบอุ่น",
+      "instruct": "elderly, female, high pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.72,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.163,
+        "rms_dbfs": -20.272,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8959,
+        "median_f0_hz": 389.88,
+        "spectral_flatness": 0.0016044,
+        "sha256": "edb850905bbe9efdcaa02d2cecd2c7a85156c8e93132466fdf69a96787edb132"
+      },
+      "preview_metrics": {
+        "duration_seconds": 5.66,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.233,
+        "rms_dbfs": -21.277,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8835,
+        "median_f0_hz": 380.98,
+        "spectral_flatness": 0.0016062,
+        "sha256": "ae3211e165b8f559dfa4d9090b8ce358010a38dd94e045714d436c9044a519c3"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.019230769230769232,
+      "reference_transcript": "ยินดีต้อนรับสูระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสูรบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.966495,
+      "closest_reference_voice": "voice_07",
+      "closest_reference_similarity": 0.840226
+    },
+    {
+      "id": "voice_27",
+      "desc": "เสียงผู้ชาย สำเนียงอังกฤษ (British)",
+      "instruct": "male, british accent",
+      "reference_metrics": {
+        "duration_seconds": 4.14,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.12,
+        "rms_dbfs": -20.298,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7897,
+        "median_f0_hz": 96.35,
+        "spectral_flatness": 0.0002808,
+        "sha256": "51bf83f973f9149cec72fcfe75e742c5b9b6de1bfc54173a95355e227393f716"
+      },
+      "preview_metrics": {
+        "duration_seconds": 3.61,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.177,
+        "rms_dbfs": -21.269,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7059,
+        "median_f0_hz": 96.91,
+        "spectral_flatness": 0.0002924,
+        "sha256": "c26c0f807951cde43af13f262e7af35832fb794a02757c882a955095ea3f32c9"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.946879,
+      "closest_reference_voice": "voice_28",
+      "closest_reference_similarity": 0.80097
+    },
+    {
+      "id": "voice_28",
+      "desc": "เสียงผู้ชาย สำเนียงอเมริกัน",
+      "instruct": "male, american accent",
+      "reference_metrics": {
+        "duration_seconds": 3.99,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -8.419,
+        "rms_dbfs": -26.138,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.6064,
+        "median_f0_hz": 125.31,
+        "spectral_flatness": 0.0006136,
+        "sha256": "bc6d3860f4ef7c52c91cd0fd4cad9d1fc8b8446f4a6c7c67606ad8cedbc769a7"
+      },
+      "preview_metrics": {
+        "duration_seconds": 3.57,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -9.38,
+        "rms_dbfs": -28.018,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.5833,
+        "median_f0_hz": 120.0,
+        "spectral_flatness": 0.0007065,
+        "sha256": "f33b5898a21b8e7aa6bfcaa4b5a293e17359c2681517eb546b49859132698931"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวีดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.95256,
+      "closest_reference_voice": "voice_11",
+      "closest_reference_similarity": 0.834408
+    },
+    {
+      "id": "voice_29",
+      "desc": "เสียงผู้หญิง สำเนียงอเมริกัน",
+      "instruct": "female, american accent",
+      "reference_metrics": {
+        "duration_seconds": 5.0,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -22.005,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8894,
+        "median_f0_hz": 207.73,
+        "spectral_flatness": 0.0006648,
+        "sha256": "1cbc5cee5dda78d61186c759fd5507922d9d6d6c9bd1a21260832388d08a55fd"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.42,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.58,
+        "rms_dbfs": -23.303,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8606,
+        "median_f0_hz": 201.82,
+        "spectral_flatness": 0.0009834,
+        "sha256": "119d30a8bfed5cc21fee73f1874a06a6c8cdb1885fab7f176c24557482267234"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.966179,
+      "closest_reference_voice": "voice_16",
+      "closest_reference_similarity": 0.897715
+    },
+    {
+      "id": "voice_30",
+      "desc": "เสียงผู้ชาย สำเนียงออสเตรเลีย",
+      "instruct": "male, australian accent",
+      "reference_metrics": {
+        "duration_seconds": 4.0,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.269,
+        "rms_dbfs": -22.021,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.6755,
+        "median_f0_hz": 115.91,
+        "spectral_flatness": 0.0004828,
+        "sha256": "a62bf46433069cb6f5eb3930d7bdf4dfe4f6a1684c4290d879947e69afd9c4af"
+      },
+      "preview_metrics": {
+        "duration_seconds": 3.49,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.294,
+        "rms_dbfs": -24.568,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.5427,
+        "median_f0_hz": 115.91,
+        "spectral_flatness": 0.0006348,
+        "sha256": "4fef6751bac38169c1655d9cf69bd11df4fe8ef6b8912bb7e5f9dcf22b193e27"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.962617,
+      "closest_reference_voice": "voice_28",
+      "closest_reference_similarity": 0.776667
+    },
+    {
+      "id": "voice_31",
+      "desc": "เสียงผู้หญิง สำเนียงออสเตรเลีย",
+      "instruct": "female, australian accent",
+      "reference_metrics": {
+        "duration_seconds": 4.73,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -21.748,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8514,
+        "median_f0_hz": 198.35,
+        "spectral_flatness": 0.0003946,
+        "sha256": "3ada312cf4bbb1987cfc4330d9168fe300f56db6c814cf53913eb6bb75520179"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.22,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.372,
+        "rms_dbfs": -22.558,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8636,
+        "median_f0_hz": 193.82,
+        "spectral_flatness": 0.0003985,
+        "sha256": "94b2e13282663faa44c0308c2a8a7ea8c2e2f0c3050753bcf03a9d51f84bc506"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.967648,
+      "closest_reference_voice": "voice_41",
+      "closest_reference_similarity": 0.889884
+    },
+    {
+      "id": "voice_32",
+      "desc": "เสียงผู้ชาย กระซิบ",
+      "instruct": "male, whisper",
+      "reference_metrics": {
+        "duration_seconds": 5.11,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -23.643,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.2125,
+        "median_f0_hz": 485.58,
+        "spectral_flatness": 0.0187627,
+        "sha256": "6543de258f58b1ac53b8dfc52c6b1cf03b636cdf14c436d0637c00113617213e"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.92,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -7.023,
+        "rms_dbfs": -24.53,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.1039,
+        "median_f0_hz": 471.75,
+        "spectral_flatness": 0.0178518,
+        "sha256": "d7924552c9972c193315f227d562ef94cd6cbeef03fb0f6831f044ecf098c15b"
+      },
+      "reference_cer": 0.019230769230769232,
+      "preview_cer": 0.038461538461538464,
+      "reference_transcript": "ยินดีตอนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานและวันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอนาภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.979093,
+      "closest_reference_voice": "voice_44",
+      "closest_reference_similarity": 0.772845
+    },
+    {
+      "id": "voice_33",
+      "desc": "เสียงผู้หญิง กระซิบ",
+      "instruct": "female, whisper",
+      "reference_metrics": {
+        "duration_seconds": 5.72,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -23.694,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.0558,
+        "median_f0_hz": 523.44,
+        "spectral_flatness": 0.0080811,
+        "sha256": "c334aa91b1b76e95dd714f6c54b160b56f2afead59ba77f30c372dcfaf88a22c"
+      },
+      "preview_metrics": {
+        "duration_seconds": 5.8,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.715,
+        "rms_dbfs": -25.008,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.1581,
+        "median_f0_hz": 505.61,
+        "spectral_flatness": 0.0097824,
+        "sha256": "9665ca1489e8433cd213e89ba3cfb55d2fa1a6c577c9f24f6cdfa702cb8087fd"
+      },
+      "reference_cer": 0.07692307692307693,
+      "preview_cer": 0.09615384615384616,
+      "reference_transcript": "ยินดีต้นรับสู่ระบบสร้างวิดีโอภาษาไทยพอมเริ่มต้นสร้างปนงานแล้ววันนี้",
+      "preview_transcript": "ยินดีตอนรับสู่ระพบสร้างวิดีโอภาษาไทย ปร้อมเริ่มตอนสร้างบนงานแล้ววันนี้",
+      "clone_similarity": 0.957961,
+      "closest_reference_voice": "voice_32",
+      "closest_reference_similarity": 0.722639
+    },
+    {
+      "id": "voice_34",
+      "desc": "เสียงผู้หญิงวัยกลางคน โทนต่ำมาก เท่",
+      "instruct": "middle-aged, female, very low pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.28,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -19.301,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8669,
+        "median_f0_hz": 188.3,
+        "spectral_flatness": 0.0002132,
+        "sha256": "b09dc39a2a9dda0dbae19f5f614e0801470c4d97fdc4401334d6cc03727380c2"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.72,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.837,
+        "rms_dbfs": -19.78,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8559,
+        "median_f0_hz": 195.51,
+        "spectral_flatness": 0.0002546,
+        "sha256": "de5dfbd0d24e1394d15f6c9e980f129e5160d6b3d389ded538fdd8d7d195694b"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.964547,
+      "closest_reference_voice": "voice_45",
+      "closest_reference_similarity": 0.882545
+    },
+    {
+      "id": "voice_35",
+      "desc": "เสียงวัยรุ่นชาย โทนกลาง",
+      "instruct": "teenager, male, moderate pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.33,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.231,
+        "rms_dbfs": -21.358,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.84,
+        "median_f0_hz": 171.18,
+        "spectral_flatness": 0.0016047,
+        "sha256": "29f6a537f034b09520c97185505ff79b9db3059f89db6f5d6f80b8807936bde7"
+      },
+      "preview_metrics": {
+        "duration_seconds": 5.14,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.779,
+        "rms_dbfs": -22.204,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7884,
+        "median_f0_hz": 170.2,
+        "spectral_flatness": 0.0019899,
+        "sha256": "4fefd930c1f373aa050fa63a60a18c9241d437a6331a5e19d0d9a155545c55e2"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.972564,
+      "closest_reference_voice": "voice_03",
+      "closest_reference_similarity": 0.860285
+    },
+    {
+      "id": "voice_36",
+      "desc": "เสียงผู้หญิงวัยกลางคน โทนสูง สง่างาม",
+      "instruct": "middle-aged, female, high pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.1,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -22.158,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7583,
+        "median_f0_hz": 266.3,
+        "spectral_flatness": 0.0019906,
+        "sha256": "f1aa39169694abe67afead1e4824670fc69e0497240ba296403afc14ee989713"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.43,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.768,
+        "rms_dbfs": -22.833,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7933,
+        "median_f0_hz": 277.28,
+        "spectral_flatness": 0.0018921,
+        "sha256": "0bb9c076f6d2abfb39677eef2cefb7e13175880f3a6a9fb045bafcf864d04855"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.038461538461538464,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อม เริ่มต้นต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.968142,
+      "closest_reference_voice": "voice_06",
+      "closest_reference_similarity": 0.896951
+    },
+    {
+      "id": "voice_37",
+      "desc": "เสียงผู้ชายสูงวัย โทนสูง ร่าเริง",
+      "instruct": "elderly, male, high pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.8,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -22.636,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8628,
+        "median_f0_hz": 233.17,
+        "spectral_flatness": 0.0016803,
+        "sha256": "e5f15cfc023e87e5cbc7d944c4f77f5ab7191821db5b9da2a0b6f845250479d8"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.54,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -7.362,
+        "rms_dbfs": -24.027,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8122,
+        "median_f0_hz": 233.17,
+        "spectral_flatness": 0.001378,
+        "sha256": "9812fd08da09a9276900aff34fc86f6c5e68b98dad54ccc639938ddd9de20fdc"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.961264,
+      "closest_reference_voice": "voice_23",
+      "closest_reference_similarity": 0.878509
+    },
+    {
+      "id": "voice_38",
+      "desc": "เสียงผู้ชาย สำเนียงแคนาดา",
+      "instruct": "male, canadian accent",
+      "reference_metrics": {
+        "duration_seconds": 4.41,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.672,
+        "rms_dbfs": -23.987,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7343,
+        "median_f0_hz": 93.35,
+        "spectral_flatness": 0.0004262,
+        "sha256": "4f13380310a16720f5a8321003f7640664dd707c50f55a9b11b70700936c49b7"
+      },
+      "preview_metrics": {
+        "duration_seconds": 3.91,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.441,
+        "rms_dbfs": -25.227,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7554,
+        "median_f0_hz": 94.7,
+        "spectral_flatness": 0.0003238,
+        "sha256": "6cee7125ee13bc6b97c3437a63324a86520dcf5c2e6089de5a0f63196130a310"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.954577,
+      "closest_reference_voice": "voice_28",
+      "closest_reference_similarity": 0.823484
+    },
+    {
+      "id": "voice_39",
+      "desc": "เสียงผู้หญิง สำเนียงแคนาดา",
+      "instruct": "female, canadian accent",
+      "reference_metrics": {
+        "duration_seconds": 4.88,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.343,
+        "rms_dbfs": -21.654,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8341,
+        "median_f0_hz": 193.82,
+        "spectral_flatness": 0.000773,
+        "sha256": "35f8d1a324f88b8ce995fcd3b08ac8ea7cd3966557843a4884c0cf00cbda0a92"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.37,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.828,
+        "rms_dbfs": -22.653,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8293,
+        "median_f0_hz": 200.66,
+        "spectral_flatness": 0.000848,
+        "sha256": "daa47f2ebdc51449060104ff594aa3d66dbe3375e8a6fba7456948b08828f696"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.970751,
+      "closest_reference_voice": "voice_41",
+      "closest_reference_similarity": 0.869577
+    },
+    {
+      "id": "voice_40",
+      "desc": "เสียงผู้ชาย สำเนียงอินเดีย",
+      "instruct": "male, indian accent",
+      "reference_metrics": {
+        "duration_seconds": 5.3,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -1.447,
+        "rms_dbfs": -20.542,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8434,
+        "median_f0_hz": 148.59,
+        "spectral_flatness": 0.0003624,
+        "sha256": "cf99d5751fa9229f87d9ef26f09ca94f1b239e911acd52a39425598275754df7"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.94,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.825,
+        "rms_dbfs": -22.408,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8578,
+        "median_f0_hz": 141.88,
+        "spectral_flatness": 0.0003823,
+        "sha256": "b8841ea2aadb63309e611220561b5cc59f9e2333b6b7d73b028d94f672086a35"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวีดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.968025,
+      "closest_reference_voice": "voice_09",
+      "closest_reference_similarity": 0.863107
+    },
+    {
+      "id": "voice_41",
+      "desc": "เสียงผู้หญิง สำเนียงอินเดีย",
+      "instruct": "female, indian accent",
+      "reference_metrics": {
+        "duration_seconds": 4.69,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -20.204,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.9091,
+        "median_f0_hz": 230.49,
+        "spectral_flatness": 0.000485,
+        "sha256": "ea22b5792bcecfb9e6ae2368d6267c4fc9cdc90ba081184debeb877264c20f9c"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.16,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.737,
+        "rms_dbfs": -20.8,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.9031,
+        "median_f0_hz": 234.52,
+        "spectral_flatness": 0.0005269,
+        "sha256": "0684a1d88b8f325b400dfd190765cf711e7cdc709cfce9dcc6c10f124538d80f"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.970627,
+      "closest_reference_voice": "voice_31",
+      "closest_reference_similarity": 0.889884
+    },
+    {
+      "id": "voice_42",
+      "desc": "เสียงผู้ชาย สำเนียงจีน",
+      "instruct": "male, chinese accent",
+      "reference_metrics": {
+        "duration_seconds": 4.79,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -4.41,
+        "rms_dbfs": -21.589,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8711,
+        "median_f0_hz": 124.23,
+        "spectral_flatness": 0.0005203,
+        "sha256": "29fec43f0f160852da25365fa94e2571d008973407b0b4d62ef12db245d2813d"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.27,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.763,
+        "rms_dbfs": -22.835,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8657,
+        "median_f0_hz": 120.7,
+        "spectral_flatness": 0.0005245,
+        "sha256": "a926525f590d97d3b5a6e0788295ab761edfdfa21be448ac5a73b70d4ee58f27"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.956249,
+      "closest_reference_voice": "voice_21",
+      "closest_reference_similarity": 0.846348
+    },
+    {
+      "id": "voice_43",
+      "desc": "เสียงผู้หญิง สำเนียงจีน",
+      "instruct": "female, chinese accent",
+      "reference_metrics": {
+        "duration_seconds": 4.9,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.684,
+        "rms_dbfs": -20.058,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8217,
+        "median_f0_hz": 223.93,
+        "spectral_flatness": 0.0008029,
+        "sha256": "1d319b15938e609f240cc697712747bdb1cde34fed536088d1271f722fba90a7"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.46,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.954,
+        "rms_dbfs": -20.647,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8143,
+        "median_f0_hz": 218.81,
+        "spectral_flatness": 0.0008406,
+        "sha256": "33bc213a2d54bf99b21fbe3aebec527f68915937633b995804a0cfdb105ddd5d"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.960249,
+      "closest_reference_voice": "voice_04",
+      "closest_reference_similarity": 0.840468
+    },
+    {
+      "id": "voice_44",
+      "desc": "เสียงผู้ชาย โทนสูงมาก กระตือรือร้น",
+      "instruct": "male, very high pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.88,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -22.852,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.0742,
+        "median_f0_hz": 455.68,
+        "spectral_flatness": 0.0004286,
+        "sha256": "ac84a04cd2b7fc34cb573c2231c4453f8983659fc67449def41e37c365e3d72b"
+      },
+      "preview_metrics": {
+        "duration_seconds": 5.79,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.852,
+        "rms_dbfs": -22.647,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.0,
+        "median_f0_hz": null,
+        "spectral_flatness": 0.0016171,
+        "sha256": "398da25b34882b6590b1972001d5fa51cb80ad0cd5193fd9d3152e84735f00ac"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "สวัสดีครับ วันนี้อากาศดีและเหมาะกับการสร้างวิดีโอภาษาไทย",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.939761,
+      "closest_reference_voice": "voice_32",
+      "closest_reference_similarity": 0.772845
+    },
+    {
+      "id": "voice_45",
+      "desc": "เสียงผู้หญิงวัยทำงานตอนต้น โทนต่ำมาก นุ่มลึก",
+      "instruct": "young adult, female, very low pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.85,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -6.021,
+        "rms_dbfs": -19.565,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.886,
+        "median_f0_hz": 193.82,
+        "spectral_flatness": 8.23e-05,
+        "sha256": "7289f24da51d71bc5b5f94b52fd9a50f7296aa361e2f8653e2c47aec6b42c51e"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.45,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -5.234,
+        "rms_dbfs": -20.423,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8947,
+        "median_f0_hz": 192.7,
+        "spectral_flatness": 9.13e-05,
+        "sha256": "2fe4fbee39d871a7e45ae5a5fc47e697e3dd54fe0a81e29658d752d2c404a7a3"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อม เริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.974957,
+      "closest_reference_voice": "voice_34",
+      "closest_reference_similarity": 0.882545
+    },
+    {
+      "id": "voice_46",
+      "desc": "เสียงผู้ชายวัยกลางคน โทนสูง ร่าเริง",
+      "instruct": "middle-aged, male, high pitch",
+      "reference_metrics": {
+        "duration_seconds": 5.12,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.756,
+        "rms_dbfs": -20.299,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8299,
+        "median_f0_hz": 231.82,
+        "spectral_flatness": 0.0030526,
+        "sha256": "442be9064056c51b997efd842b970f138859932d05ecac385e540a4e309440d4"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.67,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.483,
+        "rms_dbfs": -20.561,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7991,
+        "median_f0_hz": 231.82,
+        "spectral_flatness": 0.0038698,
+        "sha256": "43ac723e847947b043fe825063a3b58d38080647abb40523ca9187a63fd05d1a"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบ สร้างวีดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทยพร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.970218,
+      "closest_reference_voice": "voice_03",
+      "closest_reference_similarity": 0.871593
+    },
+    {
+      "id": "voice_47",
+      "desc": "เสียงผู้หญิงสูงวัย โทนต่ำมาก อ่อนโยน",
+      "instruct": "elderly, female, very low pitch",
+      "reference_metrics": {
+        "duration_seconds": 4.86,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -1.537,
+        "rms_dbfs": -19.978,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8421,
+        "median_f0_hz": 174.18,
+        "spectral_flatness": 0.0010023,
+        "sha256": "2dfe6b3ce5c7606a234c36dc11e0bf61d3fdbbdb65d212ac6b5d3cd8aeb59510"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.41,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.385,
+        "rms_dbfs": -21.755,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8696,
+        "median_f0_hz": 171.18,
+        "spectral_flatness": 0.0013675,
+        "sha256": "9fb56a42a97236fdff5e3453bd6736f9ec8502a7fd09dc730418070e0ce5d26e"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวีดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.952239,
+      "closest_reference_voice": "voice_29",
+      "closest_reference_similarity": 0.851394
+    },
+    {
+      "id": "voice_48",
+      "desc": "เสียงผู้ชาย สำเนียงเกาหลี",
+      "instruct": "male, korean accent",
+      "reference_metrics": {
+        "duration_seconds": 5.14,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -2.926,
+        "rms_dbfs": -20.852,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.8548,
+        "median_f0_hz": 98.32,
+        "spectral_flatness": 0.0006477,
+        "sha256": "590c11fdc5114730260d28f092fe2235e37dd178f563076b642dcff5d10c0249"
+      },
+      "preview_metrics": {
+        "duration_seconds": 4.78,
+        "sample_rate": 24000,
+        "channels": 1,
+        "sample_width_bytes": 2,
+        "peak_dbfs": -3.754,
+        "rms_dbfs": -21.937,
+        "clipping_ratio": 0.0,
+        "voiced_ratio": 0.7867,
+        "median_f0_hz": 99.17,
+        "spectral_flatness": 0.0005575,
+        "sha256": "117e064f2123f1988e81bd0c8bd9c266ff15cfa5d5cede0638bd861bf250cb54"
+      },
+      "reference_cer": 0.0,
+      "preview_cer": 0.0,
+      "reference_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "preview_transcript": "ยินดีต้อนรับสู่ระบบสร้างวิดีโอภาษาไทย พร้อมเริ่มต้นสร้างผลงานแล้ววันนี้",
+      "clone_similarity": 0.968434,
+      "closest_reference_voice": "voice_01",
+      "closest_reference_similarity": 0.839186
+    }
+  ]
+}

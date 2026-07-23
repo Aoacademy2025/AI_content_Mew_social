@@ -517,22 +517,22 @@ export function OrderPanel(p: OrderPanelProps) {
           <div>
             <SectionLabel>Voice</SectionLabel>
             <div className="flex gap-1.5">
-              {(["gemini", "elevenlabs", ...(HERO_VOICE_TEASER_VISIBLE || OMNIVOICE_UI_ENABLED || p.ttsProvider === "omnivoice" ? ["omnivoice"] : [])] as TtsProvider[]).map(pv => (
+              {([...(HERO_VOICE_TEASER_VISIBLE || OMNIVOICE_UI_ENABLED || p.ttsProvider === "omnivoice" ? ["omnivoice"] : []), "gemini", "elevenlabs"] as TtsProvider[]).map(pv => (
                 <button
                   key={pv}
                   type="button"
                   disabled={pv === "omnivoice" && !omniVoiceEnabled}
                   aria-pressed={p.ttsProvider === pv}
-                  aria-label={pv === "omnivoice" ? `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}` : undefined}
-                  title={pv === "omnivoice" ? `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}` : undefined}
+                  aria-label={pv === "omnivoice" ? `${HERO_VOICE_NAME} ${omniVoiceEnabled ? "แนะนำ 48 เสียง" : HERO_VOICE_COMING_SOON}` : undefined}
+                  title={pv === "omnivoice" ? `${HERO_VOICE_NAME} ${omniVoiceEnabled ? "แนะนำ · 48 เสียง" : HERO_VOICE_COMING_SOON}` : undefined}
                   onClick={() => { if (pv !== "omnivoice" || omniVoiceEnabled) p.setTtsProvider(pv); }}
                   className={cn("flex min-h-11 flex-1 flex-col items-center justify-center rounded-xl border py-1.5 text-[11px] font-bold leading-tight transition-all focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9",
-                    p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : "bg-[#15151b] border-[#26262f] text-slate-400 hover:text-slate-200 hover:border-violet-500/30")}
+                    p.ttsProvider === pv ? "border-violet-400/50 text-violet-200" : pv === "omnivoice" && omniVoiceEnabled ? "border-amber-400/25 bg-amber-500/8 text-amber-200 hover:border-amber-400/40" : "bg-[#15151b] border-[#26262f] text-slate-400 hover:text-slate-200 hover:border-violet-500/30")}
                   style={p.ttsProvider === pv
                     ? { background: "linear-gradient(135deg, rgba(139,92,246,0.20), rgba(99,102,241,0.06))", boxShadow: "0 0 14px rgba(139,92,246,0.15), inset 0 1px 0 rgba(255,255,255,0.06)" }
                     : undefined}>
                   <span>{pv === "gemini" ? "Gemini" : pv === "elevenlabs" ? "ElevenLabs" : HERO_VOICE_NAME}</span>
-                  {pv === "omnivoice" && <span className="mt-0.5 text-[8px] font-medium text-amber-300">{HERO_VOICE_COMING_SOON}</span>}
+                  {pv === "omnivoice" && <span className="mt-0.5 text-[8px] font-medium text-amber-300">{omniVoiceEnabled ? "แนะนำ · 48 เสียง" : HERO_VOICE_COMING_SOON}</span>}
                 </button>
               ))}
             </div>

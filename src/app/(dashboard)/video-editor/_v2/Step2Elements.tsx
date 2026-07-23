@@ -292,15 +292,16 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             optionPadding="6px clamp(7px, 2vw, 14px)"
             style={{ display: "grid", gridTemplateColumns: `repeat(${heroVoiceVisible ? 3 : 2},minmax(0,1fr))`, width: "100%" }}
             options={[
-              { value: "gemini" as const, label: "Gemini" },
-              { value: "elevenlabs" as const, label: "ElevenLabs" },
               ...(heroVoiceVisible ? [{
                 value: "omnivoice" as const,
                 label: HERO_VOICE_NAME,
-                badge: p.omniVoiceEnabled ? "Beta · RunPod" : HERO_VOICE_COMING_SOON,
+                badge: p.omniVoiceEnabled ? "แนะนำ · 48 เสียง" : HERO_VOICE_COMING_SOON,
                 disabled: !p.omniVoiceEnabled,
-                title: p.omniVoiceEnabled ? "เวอร์ชันทดลองบน RunPod" : `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}`,
+                featured: p.omniVoiceEnabled,
+                title: p.omniVoiceEnabled ? "เสียงเฉพาะของ Hero AI จำนวน 48 เสียง" : `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}`,
               }] : []),
+              { value: "gemini" as const, label: "Gemini" },
+              { value: "elevenlabs" as const, label: "ElevenLabs" },
             ]}
           />
           <Card
@@ -325,7 +326,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 {p.voiceEngine === "gemini"
                   ? `${geminiVoice.gender} · ${geminiVoice.style}`
                   : p.voiceEngine === "omnivoice"
-                    ? (p.omniVoiceEnabled ? "เวอร์ชันทดลอง · RunPod" : `ฟีเจอร์ใหม่ ${HERO_VOICE_COMING_SOON}`)
+                    ? (p.omniVoiceEnabled ? "48 เสียงเฉพาะ · รองรับภาษาไทย" : `ฟีเจอร์ใหม่ ${HERO_VOICE_COMING_SOON}`)
                     : (p.voiceId ? `Voice ID: ${p.voiceId.slice(0, 12)}…` : "ยังไม่ได้ตั้ง Voice ID — ตั้งได้ที่ขั้นสูง")}
               </span>
             </span>

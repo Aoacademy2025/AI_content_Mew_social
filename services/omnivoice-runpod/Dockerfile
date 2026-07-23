@@ -11,9 +11,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TTS_MODEL_DIR=/app/model \
     TTS_VOICES_DIR=/app/voices \
-    TTS_VOICE_IDS=voice_01,voice_02,voice_03 \
+    TTS_VOICE_IDS="" \
+    TTS_LANGUAGE=th \
     TTS_MAX_TEXT_LENGTH=800 \
-    TTS_DEFAULT_NUM_STEP=4 \
+    TTS_DEFAULT_NUM_STEP=8 \
     TTS_MAX_WAV_BYTES=7000000
 
 RUN apt-get update \
@@ -29,15 +30,15 @@ RUN git clone --filter=blob:none https://github.com/k2-fsa/OmniVoice.git /app/Om
     && git -C /app/OmniVoice checkout --detach "${OMNIVOICE_SOURCE_COMMIT}" \
     && pip install --no-cache-dir --no-deps /app/OmniVoice
 
+RUN useradd --create-home --uid 10001 worker \
+    && install -d -o worker -g worker /app/model /app/voices
+USER worker
+
 RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='k2-fsa/OmniVoice', revision='${OMNIVOICE_MODEL_REVISION}', local_dir='/app/model')" \
     && echo "${OMNIVOICE_MODEL_SHA256}  /app/model/model.safetensors" | sha256sum -c -
 
-COPY contract.py handler.py /app/
-COPY assets/voices/ /app/voices/
-RUN python -c "from pathlib import Path; root=Path('/app/voices'); required=['voices.json','voice_01.wav','voice_02.wav','voice_03.wav']; missing=[name for name in required if not (root/name).is_file()]; assert not missing, f'missing voice assets: {missing}'"
-
-RUN useradd --create-home --uid 10001 worker \
-    && chown -R worker:worker /app
-USER worker
+COPY --chown=worker:worker contract.py prompt_cache.py handler.py /app/
+COPY --chown=worker:worker assets/voices/ /app/voices/
+RUN python -c "import json, soundfile as sf; from pathlib import Path; root=Path('/app/voices'); manifest=json.loads((root/'voices.json').read_text()); expected=[f'voice_{n:02d}' for n in range(1,49)]; ids=[v['id'] for v in manifest]; assert ids == expected, f'invalid voice IDs: {ids}'; missing=[v['ref_audio'] for v in manifest if not (root/v['ref_audio']).is_file()]; assert not missing, f'missing voice assets: {missing}'; infos=[(v['ref_audio'], sf.info(root/v['ref_audio'])) for v in manifest]; bad=[name for name, info in infos if info.samplerate != 24000 or info.channels != 1 or not 2 <= info.duration <= 10]; assert not bad, f'invalid voice assets: {bad}'"
 
 CMD ["python", "-u", "/app/handler.py"]

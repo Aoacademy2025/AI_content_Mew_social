@@ -189,6 +189,9 @@ export async function POST(request: Request) {
     const delayTimes: number[] = [];
     const executionTimes: number[] = [];
     const providerJobIds: string[] = [];
+    const workerVersions = new Set<string>();
+    const workerLanguages = new Set<string>();
+    const workerNumSteps = new Set<number>();
     let sampleRate = 0;
     const admission = omnivoiceAdmission.tryAcquire();
     if (!admission) {
@@ -235,6 +238,9 @@ export async function POST(request: Request) {
         delayTimes.push(result.delayTimeMs);
         executionTimes.push(result.executionTimeMs);
         if (result.providerJobId) providerJobIds.push(result.providerJobId);
+        if (result.response.worker_version) workerVersions.add(result.response.worker_version);
+        if (result.response.language) workerLanguages.add(result.response.language);
+        if (typeof result.response.num_step === "number") workerNumSteps.add(result.response.num_step);
       }
     } finally {
       admission.release();
@@ -295,6 +301,9 @@ export async function POST(request: Request) {
         providerDelayTimeMs: delayTimes.reduce((sum, value) => sum + value, 0),
         backend: config.backend,
         numStep: config.numStep,
+        workerVersions: [...workerVersions].join(","),
+        languageHints: [...workerLanguages].join(","),
+        effectiveNumSteps: [...workerNumSteps].sort((a, b) => a - b).join(","),
         segments: chunks.length,
       },
     }).catch(() => {});
@@ -319,6 +328,9 @@ export async function POST(request: Request) {
             backend: config.backend,
             segments: chunks.length,
             providerJobIds,
+            workerVersions: [...workerVersions],
+            languageHints: [...workerLanguages],
+            effectiveNumSteps: [...workerNumSteps].sort((a, b) => a - b),
           }),
           outputUrl: voiceUrl,
           creditCost: 0,
