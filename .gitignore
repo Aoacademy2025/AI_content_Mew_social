@@ -119,3 +119,6 @@ _verify-*
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# Hero Voice A/B experiment audio packs (large, local-only)
+artifacts/
