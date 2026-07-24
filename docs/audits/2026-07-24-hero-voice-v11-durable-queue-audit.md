@@ -162,9 +162,22 @@ appeared. An inherited low-memory retry from the first deploy script was found a
 together with its parent before a single clean build was attempted. Process-tree checks
 confirmed that no deploy/build process remained afterward.
 
-The old `.next` remained live throughout, health stayed HTTP 200, PM2 was not restarted,
-and customer renders kept progressing. The durable-code PM2 rollout must therefore be
-recorded separately after an operationally quiet deployment window succeeds.
+The old `.next` remained live throughout those aborted attempts, health stayed HTTP 200,
+PM2 was not restarted, and customer renders kept progressing.
+
+After explicit approval and a verified zero count across VideoJob, RenderJob, and durable
+voice queues, the quiet-window deployment completed at 17:13 ICT:
+
+- production source: `8fcdce9` (durable implementation `4981c4c` plus this audit)
+- production Next build ID: `ZJ1ZdtwdmCEBXFku4_FSZ`
+- `ai-content`, `mcp-video-worker`, and both `render-worker` processes: online and
+  restarted from the same release
+- health: HTTP 200
+- `/api/ai-studio/voices`: deployed and returned the expected HTTP 401 without auth
+- active VideoJob / RenderJob / durable voice queues after deploy: 0 / 0 / 0
+- production-host temporary-DB durable submit/poll/pin/cancel runtime check: passed
+
+This completes the durable-code PM2 rollout.
 
 Rollback controls:
 
