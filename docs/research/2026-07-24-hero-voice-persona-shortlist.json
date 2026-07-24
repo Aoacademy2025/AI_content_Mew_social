@@ -2,7 +2,7 @@
   "version": "2026-07-24",
   "personas": [
     {
-      "id": "voice_41",
+      "id": "voice_31",
       "cluster": [
         "voice_16",
         "voice_29",
@@ -10,24 +10,24 @@
         "voice_34",
         "voice_41"
       ],
-      "f0_hz": 230.5,
+      "f0_hz": 198.3,
       "cer_ref": 0.0,
       "cer_preview": 0.0,
-      "voiced": 0.91,
+      "voiced": 0.85,
       "band": "mid-high"
     },
     {
-      "id": "voice_08",
+      "id": "voice_13",
       "cluster": [
         "voice_02",
         "voice_04",
         "voice_08",
         "voice_13"
       ],
-      "f0_hz": 239.3,
+      "f0_hz": 207.1,
       "cer_ref": 0.0,
       "cer_preview": 0.0,
-      "voiced": 0.91,
+      "voiced": 0.89,
       "band": "mid-high"
     },
     {
@@ -69,15 +69,15 @@
       "band": "mid-high"
     },
     {
-      "id": "voice_39",
+      "id": "voice_43",
       "cluster": [
         "voice_39",
         "voice_43"
       ],
-      "f0_hz": 193.8,
+      "f0_hz": 223.9,
       "cer_ref": 0.0,
       "cer_preview": 0.0,
-      "voiced": 0.83,
+      "voiced": 0.82,
       "band": "mid-high"
     },
     {
@@ -105,15 +105,15 @@
       "band": "mid-low"
     },
     {
-      "id": "voice_37",
+      "id": "voice_21",
       "cluster": [
         "voice_21",
         "voice_37"
       ],
-      "f0_hz": 233.2,
+      "f0_hz": 220.1,
       "cer_ref": 0.0,
       "cer_preview": 0.0,
-      "voiced": 0.86,
+      "voiced": 0.83,
       "band": "mid-high"
     },
     {

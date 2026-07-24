@@ -3,13 +3,20 @@
 **Status:** Proposal only. The app catalog code is untouched. This is a screening-data-driven
 shortlist for Mew to confirm (or override) by listening before any catalog change ships.
 
-> **Amendment (controller, same day):** the original single-linkage clustering collapsed a
+> **Amendment 1 (controller, same day):** the original single-linkage clustering collapsed a
 > 20-voice, mostly-female group into a single representative, defeating the plan's own
-> gender/F0-spread preference (final mix landed at 3 female / 13 male). Re-clustered per the
-> controller's fix — see "Method (revised)" below. The original single-linkage 16-list is
-> kept as an **Appendix** at the bottom for traceability.
+> gender/F0-spread preference (final mix landed at 3 female / 13 male). Re-clustered with
+> complete-linkage — see "Method (round 1 fix)" below. Superseded by Amendment 2; kept as
+> **Appendix A**.
+>
+> **Amendment 2 / round 2 (controller, same day):** review found that complete-linkage only
+> guarantees cohesion *within* each clique — it never checked distinctness *across* the 9
+> chosen representatives. 5 of those 9 turned out to be pairwise near-duplicates of each
+> other by the project's own duplicate-REVIEW bar. Fixed by adding a hard **independent-set**
+> constraint across the whole final list — see "Method (round 2 — final)" below. **The table
+> in that section is the one to use.** Round-1's list is now Appendix B.
 
-## Method (revised)
+## Method (round 1 fix)
 
 1. **Similarity clusters, attempt 1 (raised thresholds).** Per the amendment, first tried
    re-splitting the mega-cluster with a stricter single-linkage edge rule:
@@ -31,6 +38,12 @@ shortlist for Mew to confirm (or override) by listening before any catalog chang
    singletons, and — as a side effect — also broke the original two smaller single-linkage
    clusters (B: 8 voices, C: 3 voices) into six 2-voice cliques plus one singleton, since
    those groups were themselves chains, not cliques, under the original thresholds.
+   **Caveat:** greedy maximal-clique-cover is tie-break-dependent, not canonical — when
+   multiple maximal cliques of the same size are available at a given step, the algorithm's
+   iteration order decides which one gets taken, so a different (equally valid) run could
+   partition the same 48 voices into a different-but-still-complete-linkage-valid set of
+   cliques. The 9-clique structure below is *a* correct complete-linkage partition, not
+   *the* unique one.
 3. **Excluded outright (unchanged):** `voice_32`, `voice_33`, `voice_44`.
 4. **One representative per resulting sub-cluster** — same preference order as the original
    task: CER 0%/0% → voiced fraction ≥ 0.6 → lower CER sum → F0-band spread / gender balance,
@@ -70,7 +83,106 @@ shortlist for Mew to confirm (or override) by listening before any catalog chang
 Total: 5+4+4+2+2+2+2+2+2+23 = 48. ✓ (3 of the 23 singletons — `voice_32/33/44` — are the
 excluded-outright voices.)
 
-## Final 16-persona shortlist (revised — use this one)
+## Method (round 2 — final)
+
+Complete-linkage guarantees every *chosen* clique is internally cohesive, but it says
+nothing about distinctness **across** the 9 chosen representatives — two representatives
+from different cliques can still be near-duplicates of each other if an edge happens to
+cross clique boundaries (which is common near a mega-blob: the three cliques carved out of
+the original 20-voice single-linkage blob are still densely interconnected with each other).
+Round-2 review caught exactly this: 5 of the round-1 final 16 were pairwise duplicate-REVIEW
+edges — `voice_41–voice_08`, `voice_41–voice_15`, `voice_41–voice_39`, `voice_08–voice_15`,
+`voice_46–voice_37` (the `41–39` pair clears **both** Resemblyzer ≥0.86 and ECAPA ≥0.70, the
+others clear Resemblyzer only). Ironically, this same "not-a-duplicate-of-what's-already-in"
+check was already being applied when deciding not to promote `voice_45`/`voice_20` — it just
+hadn't been applied to the cluster **representatives** themselves.
+
+**Fix — hard independent-set constraint.** Added the rule: the final persona set must be an
+independent set in the 65-edge duplicate-REVIEW graph (no two chosen voices may share an
+edge). Re-picked representatives only inside the two regions that had conflicts, everything
+else unchanged:
+
+- **Region 1 (mega-blob remnants):** cliques 1/2/3 (5/4/4 voices, all originally part of the
+  20-voice single-linkage blob) plus clique 6 (`voice_39`/`voice_43`) are all
+  cross-connected. Brute-forced all 5×4×4×2 = 160 combinations of one pick per clique,
+  filtered to the 25 that are internally conflict-free, then ranked by (a) all four
+  CER-perfect, (b) highest summed voiced fraction. Considered the amendment's explicit
+  question — keep `voice_41` (the hub, highest individual voiced fraction) and swap its
+  neighbors, or drop `voice_41` — and **dropped `voice_41`**: every conflict-free,
+  all-CER-perfect combination that includes `voice_41` requires clique 3 to fall back to a
+  non-CER-perfect member (voice_41 has a direct edge to `voice_15`, clique 3's only
+  CER-perfect voice, and to both CER-perfect clique-2 candidates `voice_02`/`voice_08`).
+  Dropping `voice_41` instead lets clique 3 keep `voice_15` and clique 2 keep a CER-perfect
+  member, which the reverse choice cannot achieve. Result: `voice_31` (clique 1, female
+  australian accent, was runner-up to `voice_41` on voiced fraction), `voice_13` (clique 2,
+  middle-aged female), `voice_15` (clique 3, unchanged), `voice_43` (clique 6, female
+  chinese accent, swapped in for `voice_39` which has a direct edge to `voice_31`/`voice_34`/
+  `voice_41`). All four are CER-perfect; picked over the marginally-higher-voiced
+  `voice_34`+`voice_13`+`voice_15`+`voice_43` combo to keep an accent label (australian)
+  instead of a generic one — a 0.015 voiced-fraction difference against a real label-diversity
+  gain.
+- **Region 2:** clique 7 (`voice_03`/`voice_46`) vs. clique 9 (`voice_21`/`voice_37`) —
+  `voice_37`–`voice_46` is an edge. `voice_21`–`voice_46` is not, and `voice_21` is
+  CER-perfect (same as `voice_37`, just 0.03 lower voiced fraction), so swapped
+  `voice_37` → `voice_21` and kept `voice_46` — no quality cost, conflict resolved.
+- **Regions 3–5 (cliques 4, 5, 8) and all 7 singletons:** unaffected — none of their voices
+  had an edge to any other chosen representative, verified by checking all
+  C(16,2) = 120 pairs of the new 16 against the full 65-edge set.
+
+**Result: 0 remaining duplicate-adjacent pairs** — the final 16 is now a verified
+independent set. (No "ear-check these pairs" caveat is needed since the hard constraint was
+satisfiable without sacrificing the 12–16 count, gender balance, or band spread — see
+composition below, unchanged from round 1's 7F/8M/1-neutral, mid-high7/deep4/mid-low3/high2.)
+
+**Doc-honesty correction on `voice_45`/`voice_20`** (round-1 said only "lower
+priority/weaker quality"; the real reasons, re-verified against the round-2 final 16):
+- `voice_45` (young adult female, very low pitch, CER 0%/0%, voiced 0.886): its only
+  duplicate-edge was to `voice_41`, which round 2 dropped — so `voice_45` is **not**
+  edge-blocked against the current final 16. It stays unpromoted purely on redundancy/
+  balance grounds: the list already carries 5 mid-high female voices
+  (`voice_31, 13, 15, 18, 43`), and `voice_45` (also mid-high female) wouldn't add
+  band/gender coverage the list doesn't already have.
+- `voice_20` (female, moderate pitch, CER 3.8%/5.8%): **is still edge-blocked** — it has a
+  direct duplicate-REVIEW edge to `voice_15`, which is in the final 16 in both rounds. Its
+  nonzero CER (the worst of any promoted/considered singleton) would have excluded it on
+  quality grounds regardless, but the decisive, structural reason is the edge to `voice_15`.
+
+## Final 16-persona shortlist (round 2 — this is the current, correct list)
+
+| Persona | Sub-cluster represented | F0 (Hz) | Band | CER ref/preview | Voiced | Rationale |
+| --- | --- | ---: | --- | --- | ---: | --- |
+| voice_31 | 5-clique (16, 29, 31, 34, 41) | 198.3 | mid-high | 0.00% / 0.00% | 0.85 | Round-2 pick (was voice_41 — dropped, see above). CER-perfect, conflict-free with all other final picks. Female, australian accent. |
+| voice_13 | 4-clique (02, 04, 08, 13) | 207.1 | mid-high | 0.00% / 0.00% | 0.89 | Round-2 pick (was voice_08 — had an edge to voice_15 and to voice_31's clique). CER-perfect, conflict-free. Middle-aged female. |
+| voice_15 | 4-clique (06, 10, 15, 36) | 258.7 | mid-high | 0.00% / 0.00% | 0.88 | Unchanged from round 1 — only CER-perfect member; still conflict-free once voice_41/voice_08 were removed. Elderly female, moderate pitch. |
+| voice_40 | 2-clique (09, 40) | 148.6 | mid-low | 0.00% / 0.00% | 0.84 | Unchanged. Male, indian accent. |
+| voice_18 | 2-clique (17, 18) | 248.5 | mid-high | 0.00% / 0.00% | 0.90 | Unchanged. Child, female. |
+| voice_43 | 2-clique (39, 43) | 223.9 | mid-high | 0.00% / 0.00% | 0.82 | Round-2 pick (was voice_39 — had an edge to voice_31's clique). CER-perfect, conflict-free. Female, chinese accent. |
+| voice_46 | 2-clique (03, 46) | 231.8 | mid-high | 0.00% / 0.00% | 0.83 | Unchanged. Middle-aged male, high pitch. |
+| voice_11 | 2-clique (11, 23) | 134.7 | mid-low | 0.00% / 1.92% | 0.86 | Unchanged. Young adult male. |
+| voice_21 | 2-clique (21, 37) | 220.1 | mid-high | 0.00% / 0.00% | 0.83 | Round-2 pick (was voice_37 — had an edge to voice_46). CER-perfect, conflict-free, only 0.03 lower voiced fraction than voice_37. Teenager male, high pitch. |
+| voice_07 | singleton | 345.3 | high | 0.00% / 0.00% | 0.89 | Unchanged. Child (gender-neutral label). |
+| voice_26 | singleton | 389.9 | high | 0.00% / 1.92% | 0.90 | Unchanged. Elderly female, high pitch. |
+| voice_47 | singleton | 174.2 | mid-low | 0.00% / 0.00% | 0.84 | Unchanged. Elderly female, very low pitch. |
+| voice_42 | singleton | 124.2 | deep | 0.00% / 0.00% | 0.87 | Unchanged. Male, chinese accent. |
+| voice_48 | singleton | 98.3 | deep | 0.00% / 0.00% | 0.85 | Unchanged. Male, korean accent. |
+| voice_27 | singleton | 96.3 | deep | 0.00% / 0.00% | 0.79 | Unchanged. Male, british accent. |
+| voice_38 | singleton | 93.3 | deep | 0.00% / 0.00% | 0.73 | Unchanged. Male, canadian accent. |
+
+**Verified independent set:** all C(16,2) = 120 pairs checked against the 65-edge
+duplicate-REVIEW graph — **0 edges found**. No "ear-check these pairs" caveat needed.
+
+**Excluded outright (rule 2, unchanged):** `voice_32`, `voice_33`, `voice_44`.
+
+### Final composition (round 2, unchanged from round 1 in aggregate)
+
+- **Gender:** 7 female (`voice_31, 13, 15, 18, 43, 26, 47`) / 8 male
+  (`voice_40, 46, 11, 21, 42, 48, 27, 38`) / 1 gender-neutral label (`voice_07`, "child").
+- **F0 band:** mid-high 7, deep 4, mid-low 3, high 2.
+- Total: 16.
+
+---
+
+## Appendix B — round-1 (complete-linkage, pre-independent-set) 16-list, superseded
 
 | Persona | Sub-cluster represented | F0 (Hz) | Band | CER ref/preview | Voiced | Rationale |
 | --- | --- | ---: | --- | --- | ---: | --- |
@@ -117,11 +229,11 @@ the strongest 4 of the available 6, not an arbitrary cut.
 
 ---
 
-## Appendix — original single-linkage 16-list (superseded, kept for traceability)
+## Appendix A — original single-linkage 16-list (superseded, kept for traceability)
 
 This was the first proposal, built with plain single-linkage (transitive-closure) clustering
-at the original thresholds. It is **superseded** by the revised list above per the
-controller's amendment, but kept here so the reasoning trail is auditable.
+at the original thresholds. It is **superseded** by both later rounds, but kept here so the
+reasoning trail is auditable.
 
 | Persona | Cluster members represented | F0 (Hz) | Band | CER ref/preview | Voiced | Rationale |
 | --- | --- | ---: | --- | --- | ---: | --- |
