@@ -38,6 +38,16 @@ Run (unit tests, no Whisper needed — CER is tested at the string level):
   uv run --python 3.11 --with librosa --with numpy --with 'setuptools<81' \
     python3 -m unittest scripts/test_screen_hero_voice_expressiveness.py -v
 
+Per-file failure isolation
+---------------------------
+One corrupt/unreadable WAV (Whisper's ffmpeg decode raising, librosa unable to
+read the file, or a missing path) never aborts the batch. That file's entry is
+instead recorded with disqualified=True, disqualification_reason=
+"unreadable_audio", every metric field set to null, rank/score null — and the
+run still writes full JSON+MD for every other file. See
+`transcribe_paths_with_model` (per-file transcription isolation) and
+`build_metrics_row_or_unreadable` (per-file decode/analysis isolation).
+
 Ranking / expressiveness score
 -------------------------------
 Guard first: any file with Thai CER > 5% is DISQUALIFIED from ranking (still
@@ -295,7 +305,20 @@ def rank_group(entries: list[dict]) -> list[dict]:
     "disqualified" (bool), "disqualification_reason" (str | None), "score"
     (float), and "rank" (int | None — None for disqualified entries).
     Deterministic: no randomness, ties broken by ascending filename.
+
+    Raises ValueError if two entries share the same "file" within the group —
+    ranking silently collides ranks/labels for duplicates otherwise, which is
+    worse than failing loudly (a manifest bug, not a data condition to survive).
     """
+    file_counts: dict[str, int] = {}
+    for entry in entries:
+        file_counts[entry["file"]] = file_counts.get(entry["file"], 0) + 1
+    duplicate_files = sorted(name for name, count in file_counts.items() if count > 1)
+    if duplicate_files:
+        raise ValueError(
+            f"rank_group received duplicate file name(s) within a group: {duplicate_files}"
+        )
+
     survivors = [entry for entry in entries if entry["cer"] <= CER_DISQUALIFY_THRESHOLD]
 
     def bounds_for(metric: str) -> tuple[float, float]:
@@ -335,10 +358,43 @@ def rank_group(entries: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# ASR (Whisper) — only touched by the CLI path, never by unit tests.
+# ASR (Whisper) — model loading/import only happen on the CLI path, never in
+# unit tests. `transcribe_one`/`transcribe_paths_with_model` accept an
+# already-loaded `model` object (duck-typed: needs `.transcribe(path, ...)`)
+# so per-file failure isolation is unit-testable with a fake model — no
+# Whisper import, no network, no real audio required.
 # ---------------------------------------------------------------------------
 
-def transcribe_all(paths: list[Path], model_name: str) -> dict[Path, str]:
+def transcribe_one(model, path: Path) -> str:
+    output = model.transcribe(
+        str(path),
+        language="th",
+        verbose=False,
+        condition_on_previous_text=False,
+        temperature=0,
+        fp16=False,
+    )
+    return str(output.get("text", "")).strip()
+
+
+def transcribe_paths_with_model(model, paths: list[Path]) -> dict[Path, str | None]:
+    """Transcribe each path with `model`, isolating per-file failures so one
+    corrupt/unreadable WAV (e.g. Whisper's ffmpeg decode step raising) cannot
+    abort the batch. A failed file maps to None instead of propagating the
+    exception; every other file in `paths` is still attempted.
+    """
+    results: dict[Path, str | None] = {}
+    for index, path in enumerate(paths, start=1):
+        try:
+            results[path] = transcribe_one(model, path)
+        except Exception as error:  # noqa: BLE001 - deliberate: isolate one bad file from the batch
+            print(f"ERROR transcription failed file={path.name}: {error}", file=sys.stderr)
+            results[path] = None
+        print(f"asr={index}/{len(paths)} file={path.name}", file=sys.stderr, flush=True)
+    return results
+
+
+def transcribe_all(paths: list[Path], model_name: str) -> dict[Path, str | None]:
     try:
         import whisper
     except ImportError as error:
@@ -348,19 +404,7 @@ def transcribe_all(paths: list[Path], model_name: str) -> dict[Path, str]:
         ) from error
 
     model = whisper.load_model(model_name)
-    results: dict[Path, str] = {}
-    for index, path in enumerate(paths, start=1):
-        output = model.transcribe(
-            str(path),
-            language="th",
-            verbose=False,
-            condition_on_previous_text=False,
-            temperature=0,
-            fp16=False,
-        )
-        results[path] = str(output.get("text", "")).strip()
-        print(f"asr={index}/{len(paths)} file={path.name}", file=sys.stderr, flush=True)
-    return results
+    return transcribe_paths_with_model(model, paths)
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +424,10 @@ def load_manifest(input_dir: Path) -> list[dict]:
     manifest_path = input_dir / "manifest.json"
     if not manifest_path.is_file():
         raise FileNotFoundError(f"manifest.json not found in {input_dir}")
-    entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    try:
+        entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"manifest.json at {manifest_path} is not valid JSON: {error}") from error
     for entry in entries:
         for required in ("file", "transcript"):
             if required not in entry:
@@ -416,6 +463,57 @@ def build_metrics_row(input_dir: Path, manifest_entry: dict, transcript_actual: 
     }
 
 
+def unreadable_row(manifest_entry: dict, reason: str = "unreadable_audio") -> dict:
+    """Final-shaped row for a file that could not be transcribed or decoded.
+    Metrics are all None; disqualified with `reason`; never ranked/scored.
+    Same key set as a `rank_group`-processed row so JSON/MD output stays
+    uniform whether or not a file failed.
+    """
+    return {
+        "file": manifest_entry["file"],
+        "label": manifest_entry.get("label", ""),
+        "group": manifest_entry.get("group", "default"),
+        "transcript_expected": manifest_entry.get("transcript"),
+        "transcript_actual": None,
+        "cer": None,
+        "duration_seconds": None,
+        "f0_median_hz": None,
+        "f0_iqr_hz": None,
+        "voiced_fraction": None,
+        "energy_dynamic_range_db": None,
+        "pause_count": None,
+        "pause_total_duration_seconds": None,
+        "disqualified": True,
+        "disqualification_reason": reason,
+        "score": None,
+        "rank": None,
+    }
+
+
+def build_metrics_row_or_unreadable(input_dir: Path, manifest_entry: dict, transcript_actual: str | None) -> dict:
+    """Compute the full metrics row for one file, isolating decode/analysis
+    failures (librosa unable to read a file, or an upstream transcription
+    failure already signalled via `transcript_actual is None`) into an
+    "unreadable_audio" disqualified row instead of raising — so one bad file
+    cannot abort the whole batch. Never raises.
+    """
+    if transcript_actual is None:
+        return unreadable_row(manifest_entry)
+    try:
+        return build_metrics_row(input_dir, manifest_entry, transcript_actual)
+    except Exception as error:  # noqa: BLE001 - deliberate: isolate one bad file from the batch
+        print(f"ERROR metrics computation failed file={manifest_entry.get('file')}: {error}", file=sys.stderr)
+        return unreadable_row(manifest_entry)
+
+
+def _escape_md_cell(value) -> str:
+    """Escape a value for safe embedding in a Markdown table cell — free-form
+    manifest fields (file/label) could contain `|` or newlines and would
+    otherwise break the table structure.
+    """
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
 def markdown_report(ranked_rows: list[dict]) -> str:
     lines = [
         "# Hero Voice expressiveness screening",
@@ -443,21 +541,26 @@ def markdown_report(ranked_rows: list[dict]) -> str:
         for row in survivors:
             marker = "**" if row["rank"] is not None and row["rank"] <= 3 else ""
             lines.append(
-                f"| {marker}{row['rank']}{marker} | {row['file']} | {row['label']} | "
+                f"| {marker}{row['rank']}{marker} | {_escape_md_cell(row['file'])} | "
+                f"{_escape_md_cell(row['label'])} | "
                 f"{row['cer']:.2%} | {row['score']:.4f} | {row['f0_iqr_hz']:.1f} | "
                 f"{row['energy_dynamic_range_db']:.1f} | {row['pause_count']} | {row['duration_seconds']:.2f} |"
             )
         if survivors:
             lines.append("")
-            lines.append(f"Top-3: {', '.join(r['file'] for r in survivors[:3])}")
+            lines.append(f"Top-3: {', '.join(_escape_md_cell(r['file']) for r in survivors[:3])}")
         if disqualified:
             lines.append("")
-            lines.append("**Disqualified (CER guard):**")
+            lines.append("**Disqualified:**")
             lines.append("")
             lines.append("| File | Label | CER | Reason |")
             lines.append("| --- | --- | ---: | --- |")
             for row in disqualified:
-                lines.append(f"| {row['file']} | {row['label']} | {row['cer']:.2%} | {row['disqualification_reason']} |")
+                cer_display = "—" if row["cer"] is None else f"{row['cer']:.2%}"
+                lines.append(
+                    f"| {_escape_md_cell(row['file'])} | {_escape_md_cell(row['label'])} | "
+                    f"{cer_display} | {_escape_md_cell(row['disqualification_reason'])} |"
+                )
         lines.append("")
 
     return "\n".join(lines)
@@ -468,30 +571,41 @@ def main() -> int:
     manifest = load_manifest(args.input_dir)
 
     paths = [args.input_dir / entry["file"] for entry in manifest]
-    missing = [path for path in paths if not path.is_file()]
-    if missing:
-        for path in missing:
-            print(f"ERROR missing file: {path}", file=sys.stderr)
-        return 1
 
-    transcripts = transcribe_all(paths, args.asr_model)
+    # A missing file is transcribed/decoded by nothing; route it straight to
+    # "unreadable_audio" rather than pre-checking + aborting the whole run —
+    # one missing file must not discard every other completed entry either.
+    existing_paths = [path for path in paths if path.is_file()]
+    for path in paths:
+        if not path.is_file():
+            print(f"ERROR missing file: {path}", file=sys.stderr)
+    transcripts = transcribe_all(existing_paths, args.asr_model)
 
     rows_by_group: dict[str, list[dict]] = defaultdict(list)
+    unreadable_by_group: dict[str, list[dict]] = defaultdict(list)
     for entry, path in zip(manifest, paths):
-        row = build_metrics_row(args.input_dir, entry, transcripts[path])
-        rows_by_group[row["group"]].append(row)
+        transcript_actual = transcripts.get(path)  # None for missing paths (not in the dict) or failed ASR
+        row = build_metrics_row_or_unreadable(args.input_dir, entry, transcript_actual)
+        if row.get("disqualification_reason") == "unreadable_audio":
+            unreadable_by_group[row["group"]].append(row)
+        else:
+            rows_by_group[row["group"]].append(row)
 
     ranked_rows: list[dict] = []
-    for group in sorted(rows_by_group):
-        ranked_rows.extend(rank_group(rows_by_group[group]))
+    all_groups = sorted(set(rows_by_group) | set(unreadable_by_group))
+    for group in all_groups:
+        ranked_rows.extend(rank_group(rows_by_group.get(group, [])))
+        ranked_rows.extend(unreadable_by_group.get(group, []))
 
+    unreadable_count = sum(1 for group_rows in unreadable_by_group.values() for _ in group_rows)
     report = {
         "summary": {
             "files": len(ranked_rows),
-            "groups": sorted(rows_by_group.keys()),
+            "groups": all_groups,
             "cer_disqualify_threshold": CER_DISQUALIFY_THRESHOLD,
             "score_weights": SCORE_WEIGHTS,
             "disqualified": sum(1 for row in ranked_rows if row["disqualified"]),
+            "unreadable": unreadable_count,
         },
         "voices": ranked_rows,
     }

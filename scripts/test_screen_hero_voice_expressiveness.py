@@ -14,9 +14,12 @@ Run:
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+import wave as wave_module
 
 import numpy as np
 
@@ -45,6 +48,19 @@ def make_vibrato_sine(duration_s: float, base_freq_hz: float, depth_hz: float, v
 
 def make_silence(duration_s: float, sr: int = SR) -> np.ndarray:
     return np.zeros(int(duration_s * sr), dtype=np.float64)
+
+
+def write_wav_file(path: Path, audio: np.ndarray, sr: int) -> None:
+    """Write a real mono PCM16 WAV — used only where a genuinely readable
+    file is needed as a control case; failure-injection tests below never
+    need this (they inject via a fake model or a nonexistent path).
+    """
+    pcm16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+    with wave_module.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sr)
+        writer.writeframes(pcm16.tobytes())
 
 
 class CharacterErrorRateTests(unittest.TestCase):
@@ -302,6 +318,180 @@ class RankGroupTests(unittest.TestCase):
         harness.rank_group(entries)
         self.assertNotIn("score", entries[0])
         self.assertNotIn("rank", entries[0])
+
+    def test_duplicate_file_within_group_raises_value_error(self):
+        entries = [
+            self.make_entry("dup.wav", cer=0.0, f0_iqr_hz=10.0, energy_dynamic_range_db=10.0, pause_count=1),
+            self.make_entry("dup.wav", cer=0.0, f0_iqr_hz=20.0, energy_dynamic_range_db=15.0, pause_count=2),
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            harness.rank_group(entries)
+        self.assertIn("dup.wav", str(ctx.exception))
+
+
+class FakeWhisperModel:
+    """Duck-typed stand-in for a loaded `whisper` model — only `.transcribe`
+    is exercised by the harness. Lets transcription-failure isolation be
+    tested without importing openai-whisper or touching real audio/network.
+    """
+
+    def __init__(self, failing_filenames: set[str]):
+        self.failing_filenames = failing_filenames
+        self.calls: list[str] = []
+
+    def transcribe(self, path_str: str, **_kwargs) -> dict:
+        self.calls.append(path_str)
+        name = Path(path_str).name
+        if name in self.failing_filenames:
+            raise RuntimeError(f"simulated ffmpeg decode failure for {name}")
+        return {"text": f"transcript-for-{name}"}
+
+
+class TranscribePathsWithModelTests(unittest.TestCase):
+    def test_one_failing_file_does_not_abort_the_batch(self):
+        paths = [Path("a.wav"), Path("corrupt.wav"), Path("c.wav")]
+        model = FakeWhisperModel(failing_filenames={"corrupt.wav"})
+
+        results = harness.transcribe_paths_with_model(model, paths)
+
+        self.assertEqual(results[Path("a.wav")], "transcript-for-a.wav")
+        self.assertIsNone(results[Path("corrupt.wav")])
+        self.assertEqual(results[Path("c.wav")], "transcript-for-c.wav")
+        # every path was still attempted, in order — the batch was not aborted.
+        self.assertEqual(model.calls, [str(p) for p in paths])
+
+    def test_all_files_failing_returns_all_none_without_raising(self):
+        paths = [Path("x.wav"), Path("y.wav")]
+        model = FakeWhisperModel(failing_filenames={"x.wav", "y.wav"})
+
+        results = harness.transcribe_paths_with_model(model, paths)
+
+        self.assertIsNone(results[Path("x.wav")])
+        self.assertIsNone(results[Path("y.wav")])
+
+    def test_no_failures_returns_all_transcripts(self):
+        paths = [Path("a.wav"), Path("b.wav")]
+        model = FakeWhisperModel(failing_filenames=set())
+
+        results = harness.transcribe_paths_with_model(model, paths)
+
+        self.assertEqual(results[Path("a.wav")], "transcript-for-a.wav")
+        self.assertEqual(results[Path("b.wav")], "transcript-for-b.wav")
+
+
+class UnreadableRowTests(unittest.TestCase):
+    def test_shape_has_all_expected_keys_with_metrics_null(self):
+        entry = {"file": "bad.wav", "transcript": "expected text", "label": "L", "group": "g1"}
+        row = harness.unreadable_row(entry)
+
+        self.assertEqual(row["file"], "bad.wav")
+        self.assertEqual(row["group"], "g1")
+        self.assertTrue(row["disqualified"])
+        self.assertEqual(row["disqualification_reason"], "unreadable_audio")
+        for key in (
+            "transcript_actual", "cer", "duration_seconds", "f0_median_hz", "f0_iqr_hz",
+            "voiced_fraction", "energy_dynamic_range_db", "pause_count",
+            "pause_total_duration_seconds", "score", "rank",
+        ):
+            self.assertIsNone(row[key], f"expected {key} to be None")
+
+    def test_custom_reason_is_used(self):
+        entry = {"file": "bad.wav", "transcript": "x"}
+        row = harness.unreadable_row(entry, reason="custom_reason")
+        self.assertEqual(row["disqualification_reason"], "custom_reason")
+
+
+class BuildMetricsRowOrUnreadableTests(unittest.TestCase):
+    def test_none_transcript_short_circuits_to_unreadable_without_touching_disk(self):
+        # transcript_actual=None signals an upstream transcription failure —
+        # this must not even attempt librosa.load.
+        entry = {"file": "missing.wav", "transcript": "expected", "label": "L", "group": "g"}
+        row = harness.build_metrics_row_or_unreadable(Path("/definitely/does/not/exist"), entry, None)
+
+        self.assertTrue(row["disqualified"])
+        self.assertEqual(row["disqualification_reason"], "unreadable_audio")
+        self.assertIsNone(row["cer"])
+        self.assertIsNone(row["f0_iqr_hz"])
+
+    def test_decode_failure_is_caught_and_marked_unreadable_not_raised(self):
+        # Transcription "succeeded" (a transcript is provided) but the file
+        # itself cannot be decoded (nonexistent path -> librosa.load raises).
+        # This injects a decode-stage failure without any real corrupt audio.
+        entry = {"file": "ghost.wav", "transcript": "expected", "label": "L", "group": "g"}
+        row = harness.build_metrics_row_or_unreadable(
+            Path("/definitely/does/not/exist/either"), entry, "some transcript"
+        )
+
+        self.assertTrue(row["disqualified"])
+        self.assertEqual(row["disqualification_reason"], "unreadable_audio")
+        self.assertIsNone(row["duration_seconds"])
+        self.assertIsNone(row["energy_dynamic_range_db"])
+
+    def test_successful_file_is_unaffected_by_the_isolation_wrapper(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            write_wav_file(tmp_path / "ok.wav", make_sine(0.5, freq_hz=180.0), SR)
+            entry = {"file": "ok.wav", "transcript": "test", "label": "L", "group": "g"}
+            row = harness.build_metrics_row_or_unreadable(tmp_path, entry, "test")
+
+        self.assertNotIn("disqualified", row)
+        self.assertIsNotNone(row["cer"])
+        self.assertIsNotNone(row["duration_seconds"])
+
+
+class LoadManifestTests(unittest.TestCase):
+    def test_missing_manifest_raises_file_not_found(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with self.assertRaises(FileNotFoundError):
+                harness.load_manifest(Path(tmp_dir))
+
+    def test_invalid_json_raises_friendly_value_error(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "manifest.json").write_text("{not valid json", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                harness.load_manifest(Path(tmp_dir))
+            self.assertIn("not valid JSON", str(ctx.exception))
+
+    def test_valid_manifest_loads(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "manifest.json").write_text(
+                json.dumps([{"file": "a.wav", "transcript": "hi"}]), encoding="utf-8"
+            )
+            entries = harness.load_manifest(Path(tmp_dir))
+            self.assertEqual(entries, [{"file": "a.wav", "transcript": "hi"}])
+
+    def test_entry_missing_required_field_raises(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            (Path(tmp_dir) / "manifest.json").write_text(
+                json.dumps([{"file": "a.wav"}]), encoding="utf-8"
+            )
+            with self.assertRaises(ValueError):
+                harness.load_manifest(Path(tmp_dir))
+
+
+class MarkdownReportEscapingTests(unittest.TestCase):
+    def test_pipe_in_survivor_file_and_label_is_escaped(self):
+        rows = [{
+            "file": "weird|name.wav", "label": "config | v2", "group": "g1",
+            "cer": 0.0, "score": 0.5, "f0_iqr_hz": 10.0, "energy_dynamic_range_db": 10.0,
+            "pause_count": 1, "duration_seconds": 1.0, "disqualified": False,
+            "disqualification_reason": None, "rank": 1,
+        }]
+        markdown = harness.markdown_report(rows)
+        self.assertIn("weird\\|name.wav", markdown)
+        self.assertIn("config \\| v2", markdown)
+
+    def test_pipe_in_disqualified_label_is_escaped_and_null_cer_renders(self):
+        rows = [{
+            "file": "bad.wav", "label": "a | b", "group": "g1",
+            "cer": None, "score": None, "f0_iqr_hz": None, "energy_dynamic_range_db": None,
+            "pause_count": None, "duration_seconds": None, "disqualified": True,
+            "disqualification_reason": "unreadable_audio", "rank": None,
+        }]
+        markdown = harness.markdown_report(rows)
+        self.assertIn("a \\| b", markdown)
+        self.assertIn("unreadable_audio", markdown)
+        self.assertIn("—", markdown)
 
 
 if __name__ == "__main__":
