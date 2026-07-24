@@ -66,6 +66,13 @@ non-verbal tags pass through untouched, bump worker version string, extend
 template/endpoint IDs in this file. Baseline invariant: temperature 0.0 on v12 must
 reproduce v11 behavior (same refs, 32 steps) — that is the "current Hero" arm in the A/B.
 
+**T2 status (2026-07-24): BLOCKED on ghcr push auth.** Contract/handler/tests done (25/25
+`python3 -m unittest` pass); image built locally (`ghcr.io/mewic/heroai-omnivoice:staging-20260724-v12-temp-2ace232f`,
+id `0b301dcd295d`) but `docker push` returns `unauthorized` — this machine's docker client has
+no ghcr.io credentials (confirmed via `docker manifest inspect` on the existing v11 tag, also
+unauthorized). Per task brief this is a hard stop, not self-remediated. No template/endpoint
+created, no RunPod jobs spent. See `.superpowers/sdd/hv-emotion/task-2-report.md` for full detail.
+
 ### T3 — Expressiveness screening harness
 New `scripts/screen-hero-voice-expressiveness.py` reusing `scripts/audit-hero-voice-catalog.py`
 machinery: per WAV vs expected transcript → Thai CER (Whisper), F0 median + variability

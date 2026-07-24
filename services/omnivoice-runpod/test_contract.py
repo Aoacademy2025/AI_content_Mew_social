@@ -26,6 +26,63 @@ class ContractTest(unittest.TestCase):
         result = parse_tts_input({"voice_id": "voice_02", "text": "hello"}, 800)
         self.assertEqual(result.num_step, 32)
         self.assertEqual(result.speed, 1.0)
+        self.assertEqual(result.class_temperature, 0.0)
+
+    def test_class_temperature_absent_matches_explicit_zero(self):
+        # T2 requirement: absent/0.0 must be the identical v11 code path.
+        absent = parse_tts_input({"voice_id": "voice_01", "text": "hello"}, 800)
+        explicit_zero = parse_tts_input(
+            {"voice_id": "voice_01", "text": "hello", "class_temperature": 0.0}, 800
+        )
+        self.assertEqual(absent.class_temperature, explicit_zero.class_temperature)
+        self.assertEqual(absent.class_temperature, 0.0)
+
+    def test_class_temperature_accepts_documented_range(self):
+        for value in (0.0, 0.1, 2.5, 5.0):
+            with self.subTest(value=value):
+                result = parse_tts_input(
+                    {"voice_id": "voice_01", "text": "hello", "class_temperature": value},
+                    800,
+                )
+                self.assertEqual(result.class_temperature, float(value))
+
+    def test_class_temperature_accepts_int_input(self):
+        result = parse_tts_input(
+            {"voice_id": "voice_01", "text": "hello", "class_temperature": 1}, 800
+        )
+        self.assertEqual(result.class_temperature, 1.0)
+
+    def test_class_temperature_rejects_out_of_range(self):
+        bad = [-0.1, -1.0, 5.1, 100.0]
+        for value in bad:
+            with self.subTest(value=value), self.assertRaises(InputError) as raised:
+                parse_tts_input(
+                    {"voice_id": "voice_01", "text": "hello", "class_temperature": value},
+                    800,
+                )
+            self.assertEqual(raised.exception.code, "INVALID_CLASS_TEMPERATURE")
+
+    def test_class_temperature_rejects_non_numeric_and_bool(self):
+        bad = ["0.5", None, True, False, [0.5], {}]
+        for value in bad:
+            with self.subTest(value=value), self.assertRaises(InputError) as raised:
+                parse_tts_input(
+                    {"voice_id": "voice_01", "text": "hello", "class_temperature": value},
+                    800,
+                )
+            self.assertEqual(raised.exception.code, "INVALID_CLASS_TEMPERATURE")
+
+    def test_nonverbal_tags_pass_through_verbatim(self):
+        # Upstream ships 13 fixed non-verbal tags (README.md#L249-L259, pinned
+        # commit 346bb75...) that must reach the model unmodified.
+        tagged_text = "[laughter] สวัสดีครับ [sigh] วันนี้อากาศดีมาก"
+        result = parse_tts_input(
+            {"voice_id": "voice_01", "text": tagged_text, "class_temperature": 1.0},
+            800,
+        )
+        self.assertEqual(result.text, tagged_text)
+        self.assertIn("[laughter]", result.text)
+        self.assertIn("[sigh]", result.text)
 
     def test_quality_contract_accepts_upstream_default_steps(self):
         result = parse_tts_input(
@@ -158,10 +215,17 @@ class ContractTest(unittest.TestCase):
 
     def test_worker_fixes_every_tts_voice_at_32_steps(self):
         source = (ROOT / "handler.py").read_text(encoding="utf-8")
-        self.assertIn('VERSION = "heroai-omnivoice-runpod-v6-all-voices-32"', source)
+        self.assertIn('VERSION = "heroai-omnivoice-runpod-v7-all-voices-32-temp"', source)
         self.assertIn("DEFAULT_NUM_STEP = 32", source)
         self.assertIn("effective_num_step = DEFAULT_NUM_STEP", source)
         self.assertNotIn("QUALITY_NUM_STEP_FLOORS", source)
+
+    def test_worker_echoes_effective_class_temperature(self):
+        # T2 requirement: echo class_temperature in the response payload like
+        # num_step is already echoed, and forward it into MODEL.generate().
+        source = (ROOT / "handler.py").read_text(encoding="utf-8")
+        self.assertIn('"class_temperature": request.class_temperature,', source)
+        self.assertIn("class_temperature=request.class_temperature,", source)
 
 
 class VoicePromptCacheTest(unittest.TestCase):

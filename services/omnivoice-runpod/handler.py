@@ -18,7 +18,7 @@ from contract import InputError, parse_tts_input
 from prompt_cache import VoicePromptCache
 
 
-VERSION = "heroai-omnivoice-runpod-v6-all-voices-32"
+VERSION = "heroai-omnivoice-runpod-v7-all-voices-32-temp"
 SAMPLE_RATE = 24_000
 MODEL_DIR = Path(os.environ.get("TTS_MODEL_DIR", "/app/model"))
 VOICES_DIR = Path(os.environ.get("TTS_VOICES_DIR", "/app/voices"))
@@ -118,12 +118,13 @@ def handler(job):
     effective_num_step = DEFAULT_NUM_STEP
 
     LOGGER.info(
-        "generation started job_id=%s voice_id=%s chars=%d steps=%d language=%s",
+        "generation started job_id=%s voice_id=%s chars=%d steps=%d language=%s class_temperature=%s",
         job_id,
         request.voice_id,
         len(request.text),
         effective_num_step,
         DEFAULT_LANGUAGE,
+        request.class_temperature,
     )
     runpod.serverless.progress_update(job, "generating_audio")
     started = time.monotonic()
@@ -134,6 +135,7 @@ def handler(job):
             voice_clone_prompt=voice_prompt,
             num_step=effective_num_step,
             speed=request.speed,
+            class_temperature=request.class_temperature,
         )[0]
     if isinstance(audio, torch.Tensor):
         audio = audio.detach().float().cpu().numpy()
@@ -162,6 +164,7 @@ def handler(job):
         "worker_version": VERSION,
         "language": DEFAULT_LANGUAGE,
         "num_step": effective_num_step,
+        "class_temperature": request.class_temperature,
     }
 
 

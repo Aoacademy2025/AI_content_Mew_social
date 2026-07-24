@@ -7,6 +7,23 @@ from typing import Any
 
 VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
+# Upstream (pinned commit 346bb75330980a236540d61a0808d00767c0973b,
+# docs/generation-parameters.md) documents class_temperature as "Temperature for
+# token sampling at each step. 0 = greedy (deterministic). Higher values increase
+# randomness." — no explicit upper bound is documented anywhere in that pinned
+# source (docs, CLI argparse, or the Gradio demo, which does not expose this
+# parameter at all). The floor of 0.0 is upstream-documented and load-bearing:
+# omnivoice/models/omnivoice.py:1312 only enters the temperature-sampling branch
+# when class_temperature > 0.0, so 0.0 is the exact greedy/v11 code path.
+# The ceiling below is an engineering decision filling that documented gap: it
+# mirrors the upstream default of position_temperature (omnivoice.py:103, default
+# 5.0), the sibling parameter that shares the identical _gumbel_sample transform
+# (omnivoice.py:1502-1506) — the closest same-mechanism evidence upstream provides
+# for what magnitude of temperature the model family treats as a normal operating
+# value.
+CLASS_TEMPERATURE_MIN = 0.0
+CLASS_TEMPERATURE_MAX = 5.0
+
 
 class InputError(ValueError):
     def __init__(self, code: str, message: str):
@@ -20,6 +37,7 @@ class TtsInput:
     text: str
     num_step: int
     speed: float
+    class_temperature: float
 
 
 @dataclass(frozen=True)
@@ -130,4 +148,23 @@ def parse_tts_input(payload: Any, max_text_length: int) -> TtsInput:
     if not 0.3 <= speed <= 3.0:
         raise InputError("INVALID_SPEED", "speed must be a number from 0.3 to 3.0")
 
-    return TtsInput(voice_id=voice_id, text=text, num_step=raw_num_step, speed=speed)
+    raw_class_temperature = payload.get("class_temperature", 0.0)
+    if isinstance(raw_class_temperature, bool) or not isinstance(raw_class_temperature, (int, float)):
+        raise InputError(
+            "INVALID_CLASS_TEMPERATURE",
+            f"class_temperature must be a number from {CLASS_TEMPERATURE_MIN} to {CLASS_TEMPERATURE_MAX}",
+        )
+    class_temperature = float(raw_class_temperature)
+    if not CLASS_TEMPERATURE_MIN <= class_temperature <= CLASS_TEMPERATURE_MAX:
+        raise InputError(
+            "INVALID_CLASS_TEMPERATURE",
+            f"class_temperature must be a number from {CLASS_TEMPERATURE_MIN} to {CLASS_TEMPERATURE_MAX}",
+        )
+
+    return TtsInput(
+        voice_id=voice_id,
+        text=text,
+        num_step=raw_num_step,
+        speed=speed,
+        class_temperature=class_temperature,
+    )
