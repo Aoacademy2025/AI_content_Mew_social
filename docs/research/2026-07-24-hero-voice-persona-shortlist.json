@@ -1,0 +1,197 @@
+{
+  "version": "2026-07-24",
+  "personas": [
+    {
+      "id": "voice_41",
+      "cluster": [
+        "voice_16",
+        "voice_29",
+        "voice_31",
+        "voice_34",
+        "voice_41"
+      ],
+      "f0_hz": 230.5,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.91,
+      "band": "mid-high"
+    },
+    {
+      "id": "voice_08",
+      "cluster": [
+        "voice_02",
+        "voice_04",
+        "voice_08",
+        "voice_13"
+      ],
+      "f0_hz": 239.3,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.91,
+      "band": "mid-high"
+    },
+    {
+      "id": "voice_15",
+      "cluster": [
+        "voice_06",
+        "voice_10",
+        "voice_15",
+        "voice_36"
+      ],
+      "f0_hz": 258.7,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.88,
+      "band": "mid-high"
+    },
+    {
+      "id": "voice_40",
+      "cluster": [
+        "voice_09",
+        "voice_40"
+      ],
+      "f0_hz": 148.6,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.84,
+      "band": "mid-low"
+    },
+    {
+      "id": "voice_18",
+      "cluster": [
+        "voice_17",
+        "voice_18"
+      ],
+      "f0_hz": 248.5,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.9,
+      "band": "mid-high"
+    },
+    {
+      "id": "voice_39",
+      "cluster": [
+        "voice_39",
+        "voice_43"
+      ],
+      "f0_hz": 193.8,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.83,
+      "band": "mid-high"
+    },
+    {
+      "id": "voice_46",
+      "cluster": [
+        "voice_03",
+        "voice_46"
+      ],
+      "f0_hz": 231.8,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.83,
+      "band": "mid-high"
+    },
+    {
+      "id": "voice_11",
+      "cluster": [
+        "voice_11",
+        "voice_23"
+      ],
+      "f0_hz": 134.7,
+      "cer_ref": 0.0,
+      "cer_preview": 1.92,
+      "voiced": 0.86,
+      "band": "mid-low"
+    },
+    {
+      "id": "voice_37",
+      "cluster": [
+        "voice_21",
+        "voice_37"
+      ],
+      "f0_hz": 233.2,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.86,
+      "band": "mid-high"
+    },
+    {
+      "id": "voice_07",
+      "cluster": [
+        "voice_07"
+      ],
+      "f0_hz": 345.3,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.89,
+      "band": "high"
+    },
+    {
+      "id": "voice_26",
+      "cluster": [
+        "voice_26"
+      ],
+      "f0_hz": 389.9,
+      "cer_ref": 0.0,
+      "cer_preview": 1.92,
+      "voiced": 0.9,
+      "band": "high"
+    },
+    {
+      "id": "voice_47",
+      "cluster": [
+        "voice_47"
+      ],
+      "f0_hz": 174.2,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.84,
+      "band": "mid-low"
+    },
+    {
+      "id": "voice_42",
+      "cluster": [
+        "voice_42"
+      ],
+      "f0_hz": 124.2,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.87,
+      "band": "deep"
+    },
+    {
+      "id": "voice_48",
+      "cluster": [
+        "voice_48"
+      ],
+      "f0_hz": 98.3,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.85,
+      "band": "deep"
+    },
+    {
+      "id": "voice_27",
+      "cluster": [
+        "voice_27"
+      ],
+      "f0_hz": 96.3,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.79,
+      "band": "deep"
+    },
+    {
+      "id": "voice_38",
+      "cluster": [
+        "voice_38"
+      ],
+      "f0_hz": 93.3,
+      "cer_ref": 0.0,
+      "cer_preview": 0.0,
+      "voiced": 0.73,
+      "band": "deep"
+    }
+  ]
+}
