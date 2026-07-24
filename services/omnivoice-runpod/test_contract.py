@@ -62,6 +62,22 @@ class ContractTest(unittest.TestCase):
                 )
             self.assertEqual(raised.exception.code, "INVALID_CLASS_TEMPERATURE")
 
+    def test_class_temperature_rejects_nan_and_inf(self):
+        # Pins the current chained-comparison behavior (CLASS_TEMPERATURE_MIN
+        # <= class_temperature <= CLASS_TEMPERATURE_MAX): any comparison
+        # against float('nan') is False, so the chain is False and the value
+        # is rejected; float('inf') simply fails the upper-bound comparison.
+        # This guards against a future refactor to min()/max() clamping,
+        # which would silently clamp nan/inf instead of rejecting them.
+        bad = [float("nan"), float("inf"), float("-inf")]
+        for value in bad:
+            with self.subTest(value=value), self.assertRaises(InputError) as raised:
+                parse_tts_input(
+                    {"voice_id": "voice_01", "text": "hello", "class_temperature": value},
+                    800,
+                )
+            self.assertEqual(raised.exception.code, "INVALID_CLASS_TEMPERATURE")
+
     def test_class_temperature_rejects_non_numeric_and_bool(self):
         bad = ["0.5", None, True, False, [0.5], {}]
         for value in bad:

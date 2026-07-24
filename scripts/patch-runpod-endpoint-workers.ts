@@ -1,10 +1,20 @@
 // Safety-first, single-purpose RunPod endpoint workersMax patcher.
 // Used to free one worker-quota slot for T2 (hv-emotion) by temporarily
-// zeroing an explicitly-approved obsolete staging endpoint. Refuses to touch
-// production or any endpoint not passed --endpoint, asserts pre-conditions
-// (current workersMax must equal the expected "from" value implied by
-// --workers-max direction is NOT assumed — see ASSERT_CURRENT below) and
-// zero queued/in-progress jobs before mutating, then re-reads to confirm.
+// zeroing an explicitly-approved obsolete staging endpoint (and to revert
+// that later). Refuses to touch production or any endpoint not passed
+// --endpoint, asserts pre-conditions, and zero queued/in-progress jobs
+// before mutating, then re-reads to confirm.
+//
+// Direction-aware precondition (fixed 2026-07-25 — the revert path 0 -> 1
+// was previously unreachable because the expected-current value was
+// hardcoded to 1): the expected *current* workersMax is inferred from the
+// requested target, since this script only ever flips a single endpoint
+// between exactly two values, 0 and 1.
+//   --workers-max 0  =>  expected current workersMax = 1  (the "free a slot" direction)
+//   --workers-max 1  =>  expected current workersMax = 0  (the "revert" direction)
+// Any other --workers-max value is rejected outright (see WORKERS_MAX
+// ALLOWED check below) rather than trying to guess an expected-current
+// value for it — that keeps the assertion unambiguous and fail-safe.
 //
 // Usage:
 //   npx tsx scripts/patch-runpod-endpoint-workers.ts --endpoint <id> --workers-max <n>
@@ -25,11 +35,13 @@ const DENYLIST = new Set([
   "zcqf6wc1e848v0", // v5, kept intact as the pre-v11 fallback reference
 ]);
 
-// The only pre-condition this script currently expects before a mutation:
-// the endpoint must currently have workersMax === 1. This matches every
-// approved use so far (freeing a slot by going 1 -> 0, or reverting 0 -> 1
-// is NOT covered by this assertion — see note below).
-const ASSERT_CURRENT_WORKERS_MAX = 1;
+// The only two workersMax values this script is approved to set. Each maps
+// to the workersMax the endpoint must currently have for the mutation to be
+// allowed (see the direction-aware precondition note in the header comment).
+const ALLOWED_TARGET_TO_EXPECTED_CURRENT: Record<number, number> = {
+  0: 1,
+  1: 0,
+};
 
 function arg(name: string): string | undefined {
   const flag = `--${name}`;
@@ -47,6 +59,10 @@ const workersMax = Number(workersMaxRaw);
 if (!Number.isInteger(workersMax) || workersMax < 0) {
   throw new Error("--workers-max must be a non-negative integer");
 }
+if (!(workersMax in ALLOWED_TARGET_TO_EXPECTED_CURRENT)) {
+  throw new Error(`--workers-max must be one of: ${Object.keys(ALLOWED_TARGET_TO_EXPECTED_CURRENT).join(", ")}`);
+}
+const expectedCurrentWorkersMax = ALLOWED_TARGET_TO_EXPECTED_CURRENT[workersMax];
 
 if (DENYLIST.has(endpointId)) {
   throw new Error(`Refusing to touch denylisted endpoint ${endpointId}`);
@@ -95,9 +111,9 @@ async function main() {
   const before = await jsonRequest<Endpoint>(`${REST_BASE}/endpoints/${encodeURIComponent(endpointId!)}`);
   console.log(JSON.stringify({ event: "before", id: before.id, name: before.name, workersMax: before.workersMax, workersMin: before.workersMin }));
 
-  if (before.workersMax !== ASSERT_CURRENT_WORKERS_MAX) {
+  if (before.workersMax !== expectedCurrentWorkersMax) {
     throw new Error(
-      `Refusing to patch: current workersMax=${before.workersMax}, expected ${ASSERT_CURRENT_WORKERS_MAX} — endpoint state does not match what was approved`,
+      `Refusing to patch: current workersMax=${before.workersMax}, expected ${expectedCurrentWorkersMax} — endpoint state does not match what was approved`,
     );
   }
 
