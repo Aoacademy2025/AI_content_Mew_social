@@ -120,6 +120,12 @@ default voices), key from local `.env` (if absent: stop and report, do not impro
 Save WAVs + exact voice/params metadata into the artifacts dir.
 
 ### T5 — Candidate generation + matrix run (staging)
+**Step 0 (amendment 2026-07-25, discovered pre-dispatch):** the v12 contract clones only
+baked-in refs, so candidate refs can't be fed back. Extend the staging worker to v13:
+optional `ref_audio_b64` + `ref_text` (clone-from-payload; bounded size; staging only),
+contract tests, push image, update THIS experiment's own template/endpoint
+(`ij8vpp52nf` / `d66lniwmhsjt51`) in place — other endpoints and prod untouched.
+
 For each T1 persona, on the T2 endpoint, direct RunPod submission (extend
 `scripts/benchmark-hero-voice-runpod.ts`):
 1. **Ref hunting**: generate expressive reference candidates from an emotional ~8 s Thai

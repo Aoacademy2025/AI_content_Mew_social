@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import tempfile
 import threading
 import time
 
@@ -18,7 +19,7 @@ from contract import InputError, parse_tts_input
 from prompt_cache import VoicePromptCache
 
 
-VERSION = "heroai-omnivoice-runpod-v7-all-voices-32-temp"
+VERSION = "heroai-omnivoice-runpod-v8-all-voices-32-temp-dynref"
 SAMPLE_RATE = 24_000
 MODEL_DIR = Path(os.environ.get("TTS_MODEL_DIR", "/app/model"))
 VOICES_DIR = Path(os.environ.get("TTS_VOICES_DIR", "/app/voices"))
@@ -111,32 +112,56 @@ def handler(job):
         LOGGER.warning("job rejected job_id=%s code=%s", job_id, error.code)
         raise ValueError(f"{error.code}: {error}") from error
 
-    try:
-        voice_prompt = VOICE_PROMPTS.get(request.voice_id)
-    except KeyError:
-        raise ValueError("VOICE_NOT_SERVED: requested voice is unavailable")
     effective_num_step = DEFAULT_NUM_STEP
+    payload_ref_tmp_path = None
 
     LOGGER.info(
-        "generation started job_id=%s voice_id=%s chars=%d steps=%d language=%s class_temperature=%s",
+        "generation started job_id=%s voice_id=%s chars=%d steps=%d language=%s class_temperature=%s ref_source=%s",
         job_id,
         request.voice_id,
         len(request.text),
         effective_num_step,
         DEFAULT_LANGUAGE,
         request.class_temperature,
+        request.ref_source,
     )
     runpod.serverless.progress_update(job, "generating_audio")
     started = time.monotonic()
-    with GENERATE_LOCK, torch.inference_mode():
-        audio = MODEL.generate(
-            text=request.text,
-            language=DEFAULT_LANGUAGE,
-            voice_clone_prompt=voice_prompt,
-            num_step=effective_num_step,
-            speed=request.speed,
-            class_temperature=request.class_temperature,
-        )[0]
+    try:
+        if request.ref_source == "payload":
+            # T5 (v13) clone-from-payload: voice_id is telemetry-only here —
+            # the clone prompt is built fresh from the request's own
+            # ref_audio_bytes/ref_text, never cached, never written under the
+            # baked VOICES_DIR tree.
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
+                tmp_file.write(request.ref_audio_bytes)
+                payload_ref_tmp_path = tmp_file.name
+            with GENERATE_LOCK, torch.inference_mode():
+                voice_prompt = MODEL.create_voice_clone_prompt(
+                    ref_audio=payload_ref_tmp_path,
+                    ref_text=request.ref_text,
+                )
+        else:
+            try:
+                voice_prompt = VOICE_PROMPTS.get(request.voice_id)
+            except KeyError:
+                raise ValueError("VOICE_NOT_SERVED: requested voice is unavailable")
+
+        with GENERATE_LOCK, torch.inference_mode():
+            audio = MODEL.generate(
+                text=request.text,
+                language=DEFAULT_LANGUAGE,
+                voice_clone_prompt=voice_prompt,
+                num_step=effective_num_step,
+                speed=request.speed,
+                class_temperature=request.class_temperature,
+            )[0]
+    finally:
+        if payload_ref_tmp_path is not None:
+            try:
+                os.unlink(payload_ref_tmp_path)
+            except OSError:
+                pass
     if isinstance(audio, torch.Tensor):
         audio = audio.detach().float().cpu().numpy()
     duration = len(audio) / SAMPLE_RATE
@@ -165,6 +190,7 @@ def handler(job):
         "language": DEFAULT_LANGUAGE,
         "num_step": effective_num_step,
         "class_temperature": request.class_temperature,
+        "ref_source": request.ref_source,
     }
 
 
