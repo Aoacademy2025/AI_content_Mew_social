@@ -1,3 +1,8 @@
+// ⛔ SUPERSEDED by smoke-hv-emotion-v13.ts — DO NOT RUN. The endpoint now serves
+// the v13 dynref image whose worker version string no longer matches
+// EXPECTED_WORKER_VERSION below, so this script would submit ~4 paid RunPod jobs
+// and then fail its own assertion. Kept only as the T2 audit-trail artifact.
+//
 // T2 (hv-emotion) smoke test for the new v12 staging endpoint.
 // Submits exactly 4 jobs on voice_01 (default / 0.0 / mid / max class_temperature),
 // asserts the contract, records timings, then waits for scale-to-zero (EXITED).

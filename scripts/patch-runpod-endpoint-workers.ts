@@ -1,3 +1,8 @@
+// ⚠️ hv-emotion (2026-07) ONE-SHOT OPERATIONAL TOOL — not a general utility.
+// Only run with an endpoint ID that the current session's task explicitly
+// authorizes; it will zero capacity on ANY non-denylisted endpoint that happens
+// to be idle at workersMax=1, which can silently take a staging lane offline.
+//
 // Safety-first, single-purpose RunPod endpoint workersMax patcher.
 // Used to free one worker-quota slot for T2 (hv-emotion) by temporarily
 // zeroing an explicitly-approved obsolete staging endpoint (and to revert

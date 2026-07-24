@@ -175,4 +175,4 @@ Eval-script + ref-script copy = session model (this plan); workers never invent 
 
 ## Status
 
-interviewed 2026-07-24 | approved: 2026-07-24 (execute) | executed: in-progress | delivered: -
+interviewed 2026-07-24 | approved: 2026-07-24 (execute) | executed: 2026-07-25 (T1–T6 complete, all reviews passed) | delivered: blind pack `artifacts/hero-voice-ab-2026-07-24/pack/index.html` — awaiting Mew listening verdict
