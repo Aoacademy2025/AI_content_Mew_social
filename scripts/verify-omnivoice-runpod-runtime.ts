@@ -39,7 +39,7 @@ async function main() {
       maxChunkChars: 700,
       requestBudgetMs: 5_000,
       // Keep the runtime contract test fast; production config clamps this to
-      // a minimum of 30 seconds and defaults to 120 seconds.
+      // a minimum of 30 seconds and defaults to 300 seconds.
       queueWaitBudgetMs: 1,
     },
     "voice_01",

@@ -40,6 +40,7 @@ import {
   type OmniVoiceBackend,
 } from "@/lib/omnivoice";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
+import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
 import { isHeroAiBetaUser, isInternalAiBetaEnabledFor, isInternalAiTester } from "@/lib/internal-ai-access";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
@@ -367,6 +368,16 @@ export async function POST(req: Request) {
       }
       if (!omniVoiceId || !isValidOmniVoiceId(omniVoiceId)) {
         return NextResponse.json({ error: "missing_voice_id", message: "กรุณาเลือกเสียง Hero Voice" }, { status: 400 });
+      }
+      const blockingSpeechRisks = prepareHeroVoiceSpeech(script).risks.filter(
+        (risk) => risk.severity === "block",
+      );
+      if (blockingSpeechRisks.length > 0) {
+        return NextResponse.json({
+          error: "omnivoice_speech_token_unsupported",
+          message: "Hero Voice พบสัญลักษณ์ที่ยังไม่มีคำอ่านภาษาไทย กรุณาเขียนสัญลักษณ์นั้นเป็นคำแล้วลองใหม่",
+          riskCategories: blockingSpeechRisks.map((risk) => risk.code),
+        }, { status: 422 });
       }
     }
 

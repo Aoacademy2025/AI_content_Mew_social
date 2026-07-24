@@ -1,0 +1,82 @@
+[
+  {
+    "id": "reported-percentages",
+    "category": "percent",
+    "display": "30% 90% 100% 30 % 30.5% -5%",
+    "spoken": "สามสิบเปอร์เซ็นต์ เก้าสิบเปอร์เซ็นต์ หนึ่งร้อยเปอร์เซ็นต์ สามสิบเปอร์เซ็นต์ สามสิบจุดห้าเปอร์เซ็นต์ ลบห้าเปอร์เซ็นต์",
+    "requiredTokens": ["เปอร์เซ็นต์"],
+    "source": "support-ticket-2026-07-24"
+  },
+  {
+    "id": "thai-digit-percent",
+    "category": "percent",
+    "display": "๓๐% และ ๙๐% เพิ่มขึ้น +5%",
+    "spoken": "สามสิบเปอร์เซ็นต์ และ เก้าสิบเปอร์เซ็นต์ เพิ่มขึ้น บวกห้าเปอร์เซ็นต์",
+    "requiredTokens": ["เปอร์เซ็นต์"],
+    "source": "support-ticket-2026-07-24"
+  },
+  {
+    "id": "thai-digit-address",
+    "category": "number-context",
+    "display": "ซอย ๑๕ เลขที่ ๑๕๐",
+    "spoken": "ซอย สิบห้า เลขที่ หนึ่งร้อยห้าสิบ",
+    "requiredTokens": [],
+    "source": "anticipated-thai-digits"
+  },
+  {
+    "id": "baht-amounts",
+    "category": "currency",
+    "display": "฿1,500 1,500 บาท 1,500.50 บาท 0.50 บาท",
+    "spoken": "หนึ่งพันห้าร้อยบาท หนึ่งพันห้าร้อยบาท หนึ่งพันห้าร้อยบาทห้าสิบสตางค์ ห้าสิบสตางค์",
+    "requiredTokens": ["บาท", "สตางค์"],
+    "source": "anticipated-commerce-scripts"
+  },
+  {
+    "id": "foreign-currency-symbols",
+    "category": "currency",
+    "display": "$25 €10 £8",
+    "spoken": "ยี่สิบห้าดอลลาร์ สิบยูโร แปดปอนด์",
+    "requiredTokens": ["ดอลลาร์", "ยูโร", "ปอนด์"],
+    "source": "anticipated-commerce-scripts"
+  },
+  {
+    "id": "clock-time",
+    "category": "time",
+    "display": "เวลา 09:30 น. และ 14:00 น.",
+    "spoken": "เวลา เก้านาฬิกาสามสิบนาที และ สิบสี่นาฬิกา",
+    "requiredTokens": ["นาฬิกา"],
+    "source": "anticipated-scheduling-scripts"
+  },
+  {
+    "id": "calendar-dates-and-years",
+    "category": "date",
+    "display": "วันที่ 24/07/2569 และ 2026-07-24 พ.ศ. 2569 ค.ศ. 2026",
+    "spoken": "วันที่ ยี่สิบสี่ กรกฎาคม ปี สองพันห้าร้อยหกสิบเก้า และ วันที่ ยี่สิบสี่ กรกฎาคม ปี สองพันยี่สิบหก พุทธศักราช สองพันห้าร้อยหกสิบเก้า คริสต์ศักราช สองพันยี่สิบหก",
+    "requiredTokens": ["กรกฎาคม", "พุทธศักราช", "คริสต์ศักราช"],
+    "source": "anticipated-scheduling-scripts"
+  },
+  {
+    "id": "common-units",
+    "category": "unit",
+    "display": "5 kg 10 km 25°C 16 GB 512 MB 2 กก. 3 กม.",
+    "spoken": "ห้ากิโลกรัม สิบกิโลเมตร ยี่สิบห้าองศาเซลเซียส สิบหกกิกะไบต์ ห้าร้อยสิบสองเมกะไบต์ สองกิโลกรัม สามกิโลเมตร",
+    "requiredTokens": ["กิโลกรัม", "กิโลเมตร"],
+    "source": "anticipated-measurement-scripts"
+  },
+  {
+    "id": "numeric-ranges",
+    "category": "range",
+    "display": "10–20 คน และ 5 - 7 วัน",
+    "spoken": "สิบถึงยี่สิบ คน และ ห้าถึงเจ็ด วัน",
+    "requiredTokens": ["ถึง"],
+    "source": "anticipated-statistics-scripts"
+  },
+  {
+    "id": "codes-and-accounts",
+    "category": "digit-sequence",
+    "display": "รหัส 042 เลขบัญชี 012-345",
+    "spoken": "รหัส ศูนย์สี่สอง เลขบัญชี ศูนย์หนึ่งสอง-สามสี่ห้า",
+    "requiredTokens": [],
+    "source": "anticipated-code-scripts"
+  }
+]

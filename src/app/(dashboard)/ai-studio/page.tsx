@@ -48,6 +48,10 @@ type StudioJob = {
   status: string;
   inputPreview: string | null;
   input: Record<string, unknown> | null;
+  voiceResult: {
+    voiceUrl: string;
+    audioDurationMs: number;
+  } | null;
   outputUrl: string | null;
   creditCost: number;
   chargeState: string;
@@ -93,7 +97,11 @@ function JobState({ job }: { job: StudioJob }) {
   if (job.status === "completed") {
     return <span className="flex items-center gap-1 text-[11px] font-medium text-emerald-400"><Check className="h-3 w-3" />เสร็จแล้ว</span>;
   }
-  if (job.status === "failed") return <span className="text-[11px] font-medium text-red-400">ไม่สำเร็จ · คืนเครดิตแล้ว</span>;
+  if (job.status === "failed") {
+    return <span className="text-[11px] font-medium text-red-400">
+      {job.kind === "voice" ? "สร้างเสียงไม่สำเร็จ" : "ไม่สำเร็จ · คืนเครดิตแล้ว"}
+    </span>;
+  }
   return (
     <span className="flex items-center gap-1 text-[11px] font-medium text-amber-300">
       <Loader2 className="h-3 w-3 animate-spin" />
@@ -129,7 +137,9 @@ function ResultItem({ job }: { job: StudioJob }) {
           <div className="text-center">
             <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" style={{ color: ACCENT }} />
             <p className="text-xs" style={{ color: "var(--ui-text-muted)" }}>
-              {job.provider === "runpod" ? "RunPod AI กำลังเตรียม GPU" : "Cloud API กำลังสร้างภาพ"}
+              {job.kind === "voice"
+                ? "Hero Voice กำลังเตรียม GPU"
+                : job.provider === "runpod" ? "RunPod AI กำลังเตรียม GPU" : "Cloud API กำลังสร้างภาพ"}
             </p>
           </div>
         </div>
@@ -207,7 +217,7 @@ export default function AiStudioPage() {
   }, [catalog?.voice.available]);
 
   const activeKey = useMemo(
-    () => jobs.filter((job) => job.kind === "image" && ACTIVE_JOB_STATUS.has(job.status)).map((job) => job.id).join(","),
+    () => jobs.filter((job) => ACTIVE_JOB_STATUS.has(job.status)).map((job) => job.id).join(","),
     [jobs],
   );
 
@@ -290,16 +300,22 @@ export default function AiStudioPage() {
     if (!script.trim() || !voiceId) return;
     setSubmitting(true);
     try {
-      const response = await fetch("/api/videos/tts-omnivoice", {
+      const response = await fetch("/api/ai-studio/voices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: script, voiceId, speed, studio: true }),
+        body: JSON.stringify({
+          text: script,
+          voiceId,
+          speed,
+          idempotencyKey: crypto.randomUUID(),
+        }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
-      toast.success(`สร้างเสียง ${(Number(data.audioDurationMs) / 60_000).toFixed(1)} นาทีสำเร็จ`);
+      const job = data.job as StudioJob;
+      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      toast.success(job.status === "completed" ? "สร้างเสียงสำเร็จ" : "ส่งงานสร้างเสียงแล้ว");
       setScript("");
-      await loadJobs();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "สร้างเสียงไม่สำเร็จ");
     } finally {

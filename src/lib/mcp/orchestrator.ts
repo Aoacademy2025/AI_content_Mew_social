@@ -8,7 +8,9 @@ import {
   finishJob,
   finishJobWithTransition,
   failJob,
+  clearProviderCheckpoint,
   parseVideoJobOutput,
+  parkHeroVoiceProviderJob,
   parkProviderJob,
   saveProviderCheckpoint,
   VIDEO_JOB_CANCELED_ERROR,
@@ -54,6 +56,20 @@ import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { resolveJobTtsProvider } from "@/lib/tts-providers";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import {
+  advanceHeroVoiceGeneration,
+  cancelHeroVoiceGeneration,
+  HeroVoiceGenerationError,
+  heroVoiceProviderDeadlineFromJob,
+  heroVoiceResultFromJob,
+  startHeroVoiceGeneration,
+  type HeroVoiceGenerationResult,
+} from "@/lib/hero-voice-generation.server";
+import {
+  HERO_VOICE_PROVIDER_CHECKPOINT_VERSION,
+  parseHeroVoiceProviderCheckpoint,
+  type HeroVoiceProviderCheckpointV1,
+} from "@/lib/mcp/hero-voice-provider-checkpoint";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -69,6 +85,16 @@ class AvatarReservationSettlementError extends Error {
   constructor(public readonly reservationRefundReason: string) {
     super("คืนโควตาของ base render ยังไม่สำเร็จ — ระบบบันทึกไว้เพื่อลองคืนอัตโนมัติ");
     this.name = "AvatarReservationSettlementError";
+  }
+}
+
+class HeroVoiceProviderFailureError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+  ) {
+    super(message);
+    this.name = "HeroVoiceProviderFailureError";
   }
 }
 
@@ -458,9 +484,65 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const requestedProvider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider);
     if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(user)) {
-      throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ — กรุณาสลับผู้ให้บริการเสียงแล้วลองใหม่");
+      throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ กรุณาติดต่อทีมงานก่อนลองสร้างด้วย Hero Voice อีกครั้ง");
     }
     const provider = requestedProvider;
+    let resumedHeroVoiceTts: HeroVoiceGenerationResult | null = null;
+    let ttsStepAlreadyEntered = false;
+
+    const heroVoiceCheckpointFor = (voiceJob: {
+      id: string;
+      createdAt: Date;
+      kind: string;
+      inputJson: string | null;
+    }): HeroVoiceProviderCheckpointV1 => {
+      const providerDeadlineAt = heroVoiceProviderDeadlineFromJob(voiceJob);
+      if (!providerDeadlineAt) {
+        throw new HeroVoiceProviderFailureError(
+          "Hero Voice job ไม่มี provider deadline ที่บันทึกไว้",
+          "OMNIVOICE_DEADLINE_MISSING",
+        );
+      }
+      return {
+        version: HERO_VOICE_PROVIDER_CHECKPOINT_VERSION,
+        provider: "omnivoice",
+        aiGenerationJobId: voiceJob.id,
+        providerStartedAt: voiceJob.createdAt.toISOString(),
+        providerDeadlineAt,
+      };
+    };
+
+    const settleHeroVoiceJob = async (
+      voiceJob: Awaited<ReturnType<typeof advanceHeroVoiceGeneration>>,
+    ): Promise<HeroVoiceGenerationResult | null> => {
+      if (voiceJob.status === "failed" || voiceJob.status === "canceled") {
+        throw new HeroVoiceProviderFailureError(
+          voiceJob.errorMessage ?? "Hero Voice สร้างเสียงไม่สำเร็จ",
+          voiceJob.errorCode ?? "OMNIVOICE_PROVIDER_FAILED",
+        );
+      }
+      if (voiceJob.status === "completed") {
+        const result = heroVoiceResultFromJob(voiceJob);
+        if (!result) {
+          throw new HeroVoiceProviderFailureError(
+            "Hero Voice สร้างเสียงเสร็จแต่ข้อมูลผลลัพธ์ไม่ครบ",
+            "OMNIVOICE_RESULT_MISSING",
+          );
+        }
+        return result;
+      }
+
+      const checkpoint = heroVoiceCheckpointFor(voiceJob);
+      const nextPollAt = new Date(Date.now() + 5_000);
+      const parked = await parkHeroVoiceProviderJob(jobId, checkpoint, nextPollAt);
+      if (parked.count === 1) return null;
+      const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+      if (current?.status === "canceled") {
+        await cancelHeroVoiceGeneration(userId, voiceJob.id).catch(() => {});
+        throw new Error(VIDEO_JOB_CANCELED_ERROR);
+      }
+      throw new Error("video_job_not_processing");
+    };
 
     const persistProviderCheckpoint = async (checkpoint: AvatarProviderCheckpointV1): Promise<boolean> => {
       const saved = await saveProviderCheckpoint(jobId, checkpoint);
@@ -602,8 +684,31 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     };
 
     const rawProviderCheckpoint = job.providerCheckpointJson;
+    const heroVoiceCheckpoint = parseHeroVoiceProviderCheckpoint(rawProviderCheckpoint);
+    if (heroVoiceCheckpoint) {
+      if (provider !== "omnivoice") {
+        throw new HeroVoiceProviderFailureError(
+          "งานนี้ถูกบันทึกให้ใช้ Hero Voice แต่ provider ของงานเปลี่ยนไป",
+          "OMNIVOICE_PROVIDER_PIN_MISMATCH",
+        );
+      }
+      await step("tts", 10);
+      ttsStepAlreadyEntered = true;
+      const voiceJob = await advanceHeroVoiceGeneration(userId, heroVoiceCheckpoint.aiGenerationJobId);
+      resumedHeroVoiceTts = await settleHeroVoiceJob(voiceJob);
+      if (!resumedHeroVoiceTts) return;
+      const cleared = await clearProviderCheckpoint(jobId, rawProviderCheckpoint!);
+      if (cleared.count !== 1) {
+        const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+        if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+        throw new HeroVoiceProviderFailureError(
+          "Hero Voice checkpoint เปลี่ยนก่อนบันทึกผลลัพธ์",
+          "OMNIVOICE_CHECKPOINT_CONFLICT",
+        );
+      }
+    }
     const providerCheckpoint = parseAvatarProviderCheckpoint(rawProviderCheckpoint);
-    if (rawProviderCheckpoint && !providerCheckpoint) {
+    if (rawProviderCheckpoint && !providerCheckpoint && !heroVoiceCheckpoint) {
       throw new Error("invalid avatar provider checkpoint - manual recovery required");
     }
     if (providerCheckpoint) {
@@ -927,20 +1032,45 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     }
 
     // 1. TTS
-    await step("tts", 10);
-    const tts = provider === "elevenlabs"
-      ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts", { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" })
-      : provider === "omnivoice"
-        ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
-            "/api/videos/tts-omnivoice",
-            {
-              text: input.script,
-              voiceId: input.omniVoiceId ?? "voice_01",
-              ...(input.voiceBackend ? { backend: input.voiceBackend } : {}),
-            },
-            { retries: 0 },
-          )
-        : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
+    if (!ttsStepAlreadyEntered) await step("tts", 10);
+    let tts: { voiceUrl: string; audioDurationMs?: number; timing?: unknown };
+    if (provider === "elevenlabs") {
+      tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
+        "/api/videos/tts",
+        { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" },
+      );
+    } else if (provider === "omnivoice") {
+      if (resumedHeroVoiceTts) {
+        tts = resumedHeroVoiceTts;
+      } else {
+        let started;
+        try {
+          started = await startHeroVoiceGeneration({
+            userId,
+            plan: user.plan,
+            text: input.script,
+            voiceId: input.omniVoiceId ?? "voice_01",
+            speed: 1,
+            studio: false,
+            idempotencyKey: `video-job-${jobId}`,
+            backend: input.voiceBackend,
+          });
+        } catch (error) {
+          if (error instanceof HeroVoiceGenerationError) {
+            throw new HeroVoiceProviderFailureError(error.message, error.code);
+          }
+          throw error;
+        }
+        const result = await settleHeroVoiceJob(started.job);
+        if (!result) return;
+        tts = result;
+      }
+    } else {
+      tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
+        "/api/videos/tts-gemini",
+        { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" },
+      );
+    }
     let audioDurationMs = typeof tts.audioDurationMs === "number" && tts.audioDurationMs > 0
       ? Math.round(tts.audioDurationMs)
       : durationFromTtsTiming(tts.timing);
@@ -1266,6 +1396,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           provider: e.failure.provider,
           reservationRefundReason: e.reservationRefundReason,
         }
+      : e instanceof HeroVoiceProviderFailureError
+        ? {
+            message: e.message,
+            code: e.code,
+            provider: "omnivoice",
+          }
       : e instanceof AvatarReservationSettlementError
         ? {
             message: e.message,

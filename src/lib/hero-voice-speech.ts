@@ -1,4 +1,5 @@
 import { splitScriptForTts } from "@/lib/tts-timing";
+import pronunciationEntries from "../../data/hero-voice/thai-pronunciations.json";
 
 const THAI_DIGIT_WORDS = [
   "ศูนย์",
@@ -14,30 +15,93 @@ const THAI_DIGIT_WORDS = [
 ] as const;
 
 const THAI_PLACE_WORDS = ["", "สิบ", "ร้อย", "พัน", "หมื่น", "แสน"] as const;
-const THAI_WORD_SEGMENTER = new Intl.Segmenter("th", { granularity: "word" });
-const THAI_ACCENT_PRONUNCIATIONS = [
-  ["Your Brain on ChatGPT", "ยัวร์ เบรน ออน แชต จี พี ที"],
-  ["Richard Benjamins", "ริชาร์ด เบนจามินส์"],
-  ["Roske AI", "รอสก์ เอไอ"],
-  ["Telefonica", "เทเลโฟนิกา"],
-  ["ChatGPT", "แชต จี พี ที"],
-  ["Benjamins", "เบนจามินส์"],
-  ["Richard", "ริชาร์ด"],
-  ["Google", "กูเกิล"],
-  ["Brain", "เบรน"],
-  ["Roske", "รอสก์"],
-  ["Your", "ยัวร์"],
-  ["MIT", "เอ็ม ไอ ที"],
-  ["AI", "เอไอ"],
-  ["on", "ออน"],
+const THAI_MONTH_WORDS = [
+  "",
+  "มกราคม",
+  "กุมภาพันธ์",
+  "มีนาคม",
+  "เมษายน",
+  "พฤษภาคม",
+  "มิถุนายน",
+  "กรกฎาคม",
+  "สิงหาคม",
+  "กันยายน",
+  "ตุลาคม",
+  "พฤศจิกายน",
+  "ธันวาคม",
 ] as const;
+const THAI_WORD_SEGMENTER = new Intl.Segmenter("th", { granularity: "word" });
+const THAI_ACCENT_PRONUNCIATIONS = [...pronunciationEntries]
+  .sort((left, right) => right.match.length - left.match.length);
 const THAI_ENGLISH_LETTER_NAMES: Record<string, string> = {
   A: "เอ", B: "บี", C: "ซี", D: "ดี", E: "อี", F: "เอฟ", G: "จี",
   H: "เอช", I: "ไอ", J: "เจ", K: "เค", L: "แอล", M: "เอ็ม", N: "เอ็น",
   O: "โอ", P: "พี", Q: "คิว", R: "อาร์", S: "เอส", T: "ที", U: "ยู",
   V: "วี", W: "ดับเบิลยู", X: "เอ็กซ์", Y: "วาย", Z: "แซด",
 };
-const DIGIT_SEQUENCE_CONTEXT_RE = /(เบอร์(?:โทร(?:ศัพท์)?)?|โทรศัพท์|OTP|PIN)(\s*)(\d(?:[\d -]*\d)?)/giu;
+const THAI_DIGITS = "๐๑๒๓๔๕๖๗๘๙";
+const NUMBER_SOURCE = String.raw`[+-]?\d[\d,]*(?:\.\d+)?`;
+const UNSIGNED_CURRENCY_NUMBER_SOURCE = String.raw`\d[\d,]*(?:\.\d{1,2})?`;
+const CURRENCY_NUMBER_SOURCE = String.raw`[+-]?\d[\d,]*(?:\.\d{1,2})?`;
+const DIGIT_SEQUENCE_CONTEXT_RE = /(เบอร์(?:โทร(?:ศัพท์)?)?|โทรศัพท์|OTP|PIN|รหัส(?:ผ่าน|ยืนยัน|ไปรษณีย์|สินค้า)?|เลขบัญชี|เลขบัตร(?:ประชาชน|เครดิต)?|เลขประจำตัว)(\s*)(\d(?:[\d -]*\d)?)/giu;
+const THAI_SPEECH_UNITS = [
+  { written: "กม./ชม.", spoken: "กิโลเมตรต่อชั่วโมง" },
+  { written: "km/h", spoken: "กิโลเมตรต่อชั่วโมง" },
+  { written: "m/s", spoken: "เมตรต่อวินาที" },
+  { written: "GHz", spoken: "กิกะเฮิรตซ์" },
+  { written: "MHz", spoken: "เมกะเฮิรตซ์" },
+  { written: "kHz", spoken: "กิโลเฮิรตซ์" },
+  { written: "°C", spoken: "องศาเซลเซียส" },
+  { written: "°F", spoken: "องศาฟาเรนไฮต์" },
+  { written: "กก.", spoken: "กิโลกรัม" },
+  { written: "กม.", spoken: "กิโลเมตร" },
+  { written: "ซม.", spoken: "เซนติเมตร" },
+  { written: "มม.", spoken: "มิลลิเมตร" },
+  { written: "มล.", spoken: "มิลลิลิตร" },
+  { written: "kg", spoken: "กิโลกรัม" },
+  { written: "km", spoken: "กิโลเมตร" },
+  { written: "cm", spoken: "เซนติเมตร" },
+  { written: "mm", spoken: "มิลลิเมตร" },
+  { written: "ml", spoken: "มิลลิลิตร" },
+  { written: "TB", spoken: "เทราไบต์" },
+  { written: "GB", spoken: "กิกะไบต์" },
+  { written: "MB", spoken: "เมกะไบต์" },
+  { written: "KB", spoken: "กิโลไบต์" },
+  { written: "Hz", spoken: "เฮิรตซ์" },
+] as const;
+const THAI_SPEECH_UNIT_LOOKUP = new Map(
+  THAI_SPEECH_UNITS.map((unit) => [unit.written.toLocaleLowerCase("en"), unit.spoken]),
+);
+const THAI_SPEECH_UNIT_RE = new RegExp(
+  `(${NUMBER_SOURCE})\\s*(${THAI_SPEECH_UNITS
+    .map((unit) => escapeRegExp(unit.written))
+    .join("|")})(?=$|[^\\p{L}\\p{M}\\p{N}])`,
+  "giu",
+);
+
+export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-07-24.1";
+
+export type HeroVoiceSpeechRiskCode =
+  | "ambiguous_numeric_slash"
+  | "email"
+  | "unexpanded_currency"
+  | "unexpanded_math_symbol"
+  | "unexpanded_number"
+  | "unexpanded_percent"
+  | "unexpanded_repetition"
+  | "unreviewed_latin"
+  | "url";
+
+export interface HeroVoiceSpeechRisk {
+  code: HeroVoiceSpeechRiskCode;
+  severity: "block" | "review";
+}
+
+export interface HeroVoiceSpeechPreparation {
+  speechText: string;
+  risks: HeroVoiceSpeechRisk[];
+  normalizerVersion: string;
+}
 
 function thaiSixDigitGroup(digits: string, hasHigherGroup: boolean): string {
   let result = "";
@@ -81,17 +145,148 @@ function thaiIntegerWords(rawDigits: string): string {
 function thaiNumberWords(rawNumber: string): string {
   const normalized = rawNumber.replaceAll(",", "");
   const negative = normalized.startsWith("-");
-  const unsigned = negative ? normalized.slice(1) : normalized;
+  const positive = normalized.startsWith("+");
+  const unsigned = negative || positive ? normalized.slice(1) : normalized;
   const [integerPart, decimalPart] = unsigned.split(".");
   const integerWords = thaiIntegerWords(integerPart);
   const decimalWords = decimalPart
     ? `จุด${[...decimalPart].map((digit) => THAI_DIGIT_WORDS[Number(digit)]).join("")}`
     : "";
-  return `${negative ? "ลบ" : ""}${integerWords}${decimalWords}`;
+  return `${negative ? "ลบ" : positive ? "บวก" : ""}${integerWords}${decimalWords}`;
+}
+
+function thaiBahtWords(rawNumber: string): string {
+  const normalized = rawNumber.replaceAll(",", "");
+  const negative = normalized.startsWith("-");
+  const positive = normalized.startsWith("+");
+  const unsigned = negative || positive ? normalized.slice(1) : normalized;
+  const [integerPart, decimalPart = ""] = unsigned.split(".");
+  const satangDigits = decimalPart.padEnd(2, "0").slice(0, 2);
+  const integerIsZero = /^0+$/.test(integerPart);
+  const satangIsZero = !satangDigits || /^0+$/.test(satangDigits);
+  const pieces = [
+    integerIsZero ? "" : `${thaiIntegerWords(integerPart)}บาท`,
+    satangIsZero ? "" : `${thaiIntegerWords(satangDigits)}สตางค์`,
+  ].filter(Boolean);
+  const amount = pieces.join("") || "ศูนย์บาท";
+  const sign = amount === "ศูนย์บาท" ? "" : negative ? "ลบ" : positive ? "บวก" : "";
+  return `${sign}${amount}`;
 }
 
 function digitsIndividually(text: string): string {
   return text.replace(/\d/g, (digit) => THAI_DIGIT_WORDS[Number(digit)]);
+}
+
+function normalizeThaiDigits(text: string): string {
+  return text.replace(/[๐-๙]/g, (digit) => String(THAI_DIGITS.indexOf(digit)));
+}
+
+function thaiTimeWords(rawHour: string, rawMinute: string): string | null {
+  const hour = Number(rawHour);
+  const minute = Number(rawMinute);
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+    return null;
+  }
+  const hourWords = thaiIntegerWords(String(hour));
+  return minute === 0
+    ? `${hourWords}นาฬิกา`
+    : `${hourWords}นาฬิกา${thaiIntegerWords(String(minute))}นาที`;
+}
+
+function normalizeThaiSpeechTimes(text: string): string {
+  const withTimePrefix = text.replace(
+    /เวลา(\s*)(\d{1,2})[:.](\d{2})(?:\s*น\.)?/g,
+    (match, spacing: string, hour: string, minute: string) => {
+      const spoken = thaiTimeWords(hour, minute);
+      return spoken ? `เวลา${spacing}${spoken}` : match;
+    },
+  );
+  return withTimePrefix.replace(
+    /(\d{1,2})[:.](\d{2})\s*น\./g,
+    (match, hour: string, minute: string) => thaiTimeWords(hour, minute) ?? match,
+  );
+}
+
+function thaiDateWords(rawDay: string, rawMonth: string, rawYear: string): string | null {
+  const day = Number(rawDay);
+  const month = Number(rawMonth);
+  const year = Number(rawYear);
+  if (
+    !Number.isInteger(day) || day < 1 || day > 31
+    || !Number.isInteger(month) || month < 1 || month > 12
+    || !Number.isInteger(year) || rawYear.length !== 4
+  ) {
+    return null;
+  }
+  return `วันที่ ${thaiIntegerWords(String(day))} ${THAI_MONTH_WORDS[month]} ปี ${thaiIntegerWords(String(year))}`;
+}
+
+function normalizeThaiSpeechDates(text: string): string {
+  const prefixedDate = text.replace(
+    /วันที่\s+(\d{1,2})[/-](\d{1,2})[/-](\d{4})/g,
+    (match, day: string, month: string, year: string) => (
+      thaiDateWords(day, month, year) ?? match
+    ),
+  );
+  return prefixedDate.replace(
+    /(?<!\d)(\d{4})-(\d{2})-(\d{2})(?!\d)/g,
+    (match, year: string, month: string, day: string) => (
+      thaiDateWords(day, month, year) ?? match
+    ),
+  );
+}
+
+function normalizeThaiSpeechAbbreviations(text: string): string {
+  return text
+    .replace(/พ\.ศ\./gu, "พุทธศักราช")
+    .replace(/ค\.ศ\./gu, "คริสต์ศักราช");
+}
+
+function normalizeThaiSpeechRanges(text: string): string {
+  const verbalize = (_match: string, start: string, end: string) => (
+    `${thaiNumberWords(start)}ถึง${thaiNumberWords(end)}`
+  );
+  return text
+    .replace(new RegExp(`(${NUMBER_SOURCE})\\s*[–—]\\s*(${NUMBER_SOURCE})`, "g"), verbalize)
+    .replace(new RegExp(`(${NUMBER_SOURCE})\\s+-\\s+(${NUMBER_SOURCE})`, "g"), verbalize);
+}
+
+function normalizeThaiSpeechCurrencies(text: string): string {
+  const prefixedBaht = text.replace(
+    new RegExp(`([+-]?)฿\\s*(${UNSIGNED_CURRENCY_NUMBER_SOURCE})(?![\\d.])`, "g"),
+    (_match, sign: string, number: string) => thaiBahtWords(`${sign}${number}`),
+  );
+  const suffixedBaht = prefixedBaht.replace(
+    new RegExp(`(?<![\\d.])(${CURRENCY_NUMBER_SOURCE})(?![\\d.])\\s*บาท`, "g"),
+    (_match, number: string) => thaiBahtWords(number),
+  );
+  const currencyNames: Record<string, string> = {
+    "$": "ดอลลาร์",
+    "€": "ยูโร",
+    "£": "ปอนด์",
+  };
+  return suffixedBaht.replace(
+    new RegExp(`([+-]?)([$€£])\\s*(${UNSIGNED_CURRENCY_NUMBER_SOURCE})(?![\\d.])`, "g"),
+    (_match, sign: string, symbol: string, number: string) => (
+      `${thaiNumberWords(`${sign}${number}`)}${currencyNames[symbol]}`
+    ),
+  );
+}
+
+function normalizeThaiSpeechPercents(text: string): string {
+  return text.replace(
+    new RegExp(`(${NUMBER_SOURCE})\\s*%`, "g"),
+    (_match, number: string) => `${thaiNumberWords(number)}เปอร์เซ็นต์`,
+  );
+}
+
+function normalizeThaiSpeechUnits(text: string): string {
+  return text.replace(
+    THAI_SPEECH_UNIT_RE,
+    (_match, number: string, unit: string) => (
+      `${thaiNumberWords(number)}${THAI_SPEECH_UNIT_LOOKUP.get(unit.toLocaleLowerCase("en"))}`
+    ),
+  );
 }
 
 function normalizeThaiSpeechNumbers(text: string): string {
@@ -102,12 +297,12 @@ function normalizeThaiSpeechNumbers(text: string): string {
         `${prefix}${spacing}${digitsIndividually(digits)}`
       ),
     )
-    .replace(/-?\d[\d,]*(?:\.\d+)?/g, (number, offset: number, source: string) => {
-      const attachedHyphen = number.startsWith("-")
+    .replace(/[+-]?\d[\d,]*(?:\.\d+)?/g, (number, offset: number, source: string) => {
+      const attachedSign = /^[+-]/.test(number)
         && offset > 0
         && /[\p{L}\p{M}\p{N}]/u.test(source[offset - 1]);
-      return attachedHyphen
-        ? `-${thaiNumberWords(number.slice(1))}`
+      return attachedSign
+        ? `${number[0]}${thaiNumberWords(number.slice(1))}`
         : thaiNumberWords(number);
     });
 }
@@ -145,34 +340,85 @@ function escapeRegExp(text: string): string {
 }
 
 function applyThaiAccentPronunciations(text: string): string {
-  const aliased = THAI_ACCENT_PRONUNCIATIONS.reduce((result, [written, spoken]) => {
-    const phrase = escapeRegExp(written).replace(/\s+/g, "\\s+");
+  const aliased = THAI_ACCENT_PRONUNCIATIONS.reduce((result, entry) => {
+    const phrase = escapeRegExp(entry.match).replace(/\s+/g, "\\s+");
     const pattern = new RegExp(`(^|[^A-Za-z])${phrase}(?=$|[^A-Za-z])`, "giu");
-    return result.replace(pattern, (_match, prefix: string) => `${prefix}${spoken}`);
+    return result.replace(pattern, (_match, prefix: string) => `${prefix}${entry.spoken}`);
   }, text);
   return aliased.replace(/\b[A-Z]{2,6}\b/g, (acronym) => (
     [...acronym].map((letter) => THAI_ENGLISH_LETTER_NAMES[letter]).join(" ")
   ));
 }
 
-/** Build the text spoken by Hero AI Voice without changing the display script. */
-export function prepareHeroVoiceSpeechText(displayText: string): string {
-  return applyThaiAccentPronunciations(
-    normalizeThaiSpeechNumbers(expandThaiRepetitionMarks(displayText)),
+function speechRisks(displayText: string, speechText: string): HeroVoiceSpeechRisk[] {
+  const risks = new Map<HeroVoiceSpeechRiskCode, HeroVoiceSpeechRisk["severity"]>();
+  const add = (code: HeroVoiceSpeechRiskCode, severity: HeroVoiceSpeechRisk["severity"]) => {
+    risks.set(code, severity);
+  };
+  const asciiDisplayText = normalizeThaiDigits(displayText);
+  const displayTextWithoutSupportedDates = asciiDisplayText.replace(
+    /วันที่\s+\d{1,2}[/-]\d{1,2}[/-]\d{4}/g,
+    "",
   );
+
+  if (/[%‰]/u.test(speechText)) add("unexpanded_percent", "block");
+  if (/[0-9๐-๙]/u.test(speechText)) add("unexpanded_number", "block");
+  if (/ๆ/u.test(speechText)) add("unexpanded_repetition", "block");
+  if (/[฿$€£¥]/u.test(speechText)) add("unexpanded_currency", "block");
+  if (/[+×=<>]/u.test(speechText)) add("unexpanded_math_symbol", "block");
+  if (/\d\s*\/\s*\d/u.test(displayTextWithoutSupportedDates)) {
+    add("ambiguous_numeric_slash", "block");
+  }
+  if (/\b(?:https?:\/\/|www\.)/iu.test(displayText)) add("url", "review");
+  if (/\b[^\s@]+@[^\s@]+\.[^\s@]+\b/iu.test(displayText)) add("email", "review");
+  if (/[A-Za-z]{2,}/u.test(speechText)) add("unreviewed_latin", "review");
+
+  return [...risks].map(([code, severity]) => ({ code, severity }));
+}
+
+/** Build the provider text and privacy-safe risk categories without changing display text. */
+export function prepareHeroVoiceSpeech(displayText: string): HeroVoiceSpeechPreparation {
+  const unicodeText = normalizeThaiDigits(displayText.normalize("NFC"));
+  const structuredText = normalizeThaiSpeechUnits(
+    normalizeThaiSpeechPercents(
+      normalizeThaiSpeechCurrencies(
+        normalizeThaiSpeechRanges(
+          normalizeThaiSpeechAbbreviations(
+            normalizeThaiSpeechDates(
+              normalizeThaiSpeechTimes(expandThaiRepetitionMarks(unicodeText)),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  const speechText = applyThaiAccentPronunciations(normalizeThaiSpeechNumbers(structuredText));
+  return {
+    speechText,
+    risks: speechRisks(displayText, speechText),
+    normalizerVersion: HERO_VOICE_SPEECH_NORMALIZER_VERSION,
+  };
+}
+
+/** Compatibility helper for callers that only need provider text. */
+export function prepareHeroVoiceSpeechText(displayText: string): string {
+  return prepareHeroVoiceSpeech(displayText).speechText;
 }
 
 export interface HeroVoiceSpeechChunk {
   text: string;
   speechText: string;
+  risks: HeroVoiceSpeechRisk[];
   startChar: number;
   endChar: number;
 }
 
 function speechChunk(text: string, startChar: number): HeroVoiceSpeechChunk {
+  const prepared = prepareHeroVoiceSpeech(text);
   return {
     text,
-    speechText: prepareHeroVoiceSpeechText(text),
+    speechText: prepared.speechText,
+    risks: prepared.risks,
     startChar,
     endChar: startChar + text.length,
   };

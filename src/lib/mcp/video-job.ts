@@ -6,6 +6,11 @@ import {
   serializeAvatarProviderCheckpoint,
   type AvatarProviderCheckpointV1,
 } from "@/lib/mcp/avatar-provider-checkpoint";
+import {
+  parseHeroVoiceProviderCheckpoint,
+  serializeHeroVoiceProviderCheckpoint,
+  type HeroVoiceProviderCheckpointV1,
+} from "@/lib/mcp/hero-voice-provider-checkpoint";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -113,6 +118,40 @@ export async function parkProviderJob(
       progress: 84,
       providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint),
       providerNextPollAt: nextPollAt,
+    },
+  });
+}
+
+export async function parkHeroVoiceProviderJob(
+  id: string,
+  checkpoint: HeroVoiceProviderCheckpointV1,
+  nextPollAt: Date,
+) {
+  return prisma.videoJob.updateMany({
+    where: { id, status: "processing" },
+    data: {
+      status: "waiting_provider",
+      currentStep: "tts",
+      progress: 10,
+      providerCheckpointJson: serializeHeroVoiceProviderCheckpoint(checkpoint),
+      providerNextPollAt: nextPollAt,
+    },
+  });
+}
+
+export async function clearProviderCheckpoint(
+  id: string,
+  expectedCheckpointJson: string,
+) {
+  return prisma.videoJob.updateMany({
+    where: {
+      id,
+      status: "processing",
+      providerCheckpointJson: expectedCheckpointJson,
+    },
+    data: {
+      providerCheckpointJson: null,
+      providerNextPollAt: null,
     },
   });
 }
@@ -350,6 +389,20 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
   let parked = 0;
 
   for (const job of jobs) {
+    const heroVoiceCheckpoint = parseHeroVoiceProviderCheckpoint(job.providerCheckpointJson);
+    if (heroVoiceCheckpoint && job.currentStep === "tts") {
+      const res = await prisma.videoJob.updateMany({
+        where: { id: job.id, status: "processing" },
+        data: {
+          status: "waiting_provider",
+          providerCheckpointJson: serializeHeroVoiceProviderCheckpoint(heroVoiceCheckpoint),
+          providerNextPollAt: job.providerNextPollAt ?? now,
+        },
+      });
+      if (res.count === 1) parked++;
+      continue;
+    }
+
     const checkpoint = parseAvatarProviderCheckpoint(job.providerCheckpointJson);
     const isProviderStage = job.currentStep === "avatar" || job.currentStep === "composite";
     if (checkpoint && isProviderStage) {

@@ -17,6 +17,8 @@ import {
 import { runpodImageModelConfig } from "@/lib/runpod-serverless";
 import { apiError } from "@/lib/api-error";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
+import { isOmniVoiceUserAllowed } from "@/lib/omnivoice";
+import { advanceHeroVoiceGeneration } from "@/lib/hero-voice-generation.server";
 
 export const runtime = "nodejs";
 
@@ -29,10 +31,15 @@ export async function GET(
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (!isInternalAiTester(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
     const { id } = await params;
     let job = await prisma.aiGenerationJob.findFirst({ where: { id, userId: user.id } });
     if (!job) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (job.kind === "voice") {
+      if (!isOmniVoiceUserAllowed(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+      if (!TERMINAL.has(job.status)) job = await advanceHeroVoiceGeneration(user.id, job.id);
+      return NextResponse.json({ job: publicAiGenerationJob(job) });
+    }
+    if (!isInternalAiTester(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
     if (job.kind !== "image" || TERMINAL.has(job.status)) {
       return NextResponse.json({ job: publicAiGenerationJob(job) });
     }

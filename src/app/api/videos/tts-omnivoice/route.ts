@@ -24,7 +24,10 @@ import {
 } from "@/lib/omnivoice";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { omnivoiceAdmission } from "@/lib/omnivoice-admission";
-import { splitHeroVoiceScriptForTts } from "@/lib/hero-voice-speech";
+import {
+  HERO_VOICE_SPEECH_NORMALIZER_VERSION,
+  splitHeroVoiceScriptForTts,
+} from "@/lib/hero-voice-speech";
 import {
   mergeSegmentTiming,
   pcmDurationMs,
@@ -43,10 +46,9 @@ function upstreamError(result: Extract<OmniVoiceCallResult, { ok: false }>) {
       {
         code: "OMNIVOICE_QUEUE_TIMEOUT",
         error: cancellationConfirmed
-          ? "Hero Voice หาเครื่องว่างไม่ทันภายใน 2 นาที งานเดิมถูกยกเลิกแล้ว กรุณาลองใหม่หรือสลับเป็น Gemini สำหรับงานเร่งด่วน"
+          ? "Hero Voice หาเครื่องว่างไม่ทันภายในเวลาที่กำหนด งานเดิมถูกยกเลิกแล้ว กรุณาลองสร้างด้วย Hero Voice อีกครั้ง"
           : "Hero Voice หาเครื่องว่างไม่ทัน และยังยืนยันการยกเลิกงานเดิมไม่ได้ กรุณารอสักครู่ก่อนลองใหม่",
         retryable: cancellationConfirmed,
-        fallbackProvider: cancellationConfirmed ? "gemini" : undefined,
       },
       { status: 504 },
     );
@@ -59,13 +61,13 @@ function upstreamError(result: Extract<OmniVoiceCallResult, { ok: false }>) {
   }
   if (result.status === 429) {
     return NextResponse.json(
-      { error: "คิว Hero Voice เต็ม กรุณาลองใหม่ภายหลัง หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
+      { error: "คิว Hero Voice เต็ม กรุณาลองสร้างด้วย Hero Voice อีกครั้งภายหลัง", retryable: true },
       { status: 429, headers: { "Retry-After": result.retryAfter ?? "30" } },
     );
   }
   console.error(`[tts-omnivoice] upstream status=${result.status} reason=${result.reason}`);
   return NextResponse.json(
-    { error: "Hero Voice ขัดข้องชั่วคราว กรุณาลองใหม่หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
+    { error: "Hero Voice ขัดข้องชั่วคราว กรุณาลองสร้างด้วย Hero Voice อีกครั้ง", retryable: true },
     { status: result.status === 504 ? 504 : 503 },
   );
 }
@@ -197,6 +199,28 @@ export async function POST(request: Request) {
     }
 
     const chunks = splitHeroVoiceScriptForTts(fullText, config.maxChunkChars);
+    const speechRisks = [...new Map(
+      chunks.flatMap((chunk) => chunk.risks).map((risk) => [risk.code, risk]),
+    ).values()];
+    const blockingSpeechRisks = speechRisks.filter((risk) => risk.severity === "block");
+    if (blockingSpeechRisks.length > 0) {
+      const riskCategories = blockingSpeechRisks.map((risk) => risk.code).sort().join(",");
+      await recordTelemetryEvent(user.id, {
+        name: "omnivoice_speech_preflight_blocked",
+        category: "error",
+        source: "server",
+        properties: {
+          normalizerVersion: HERO_VOICE_SPEECH_NORMALIZER_VERSION,
+          riskCategories,
+        },
+      }).catch(() => {});
+      return NextResponse.json({
+        code: "OMNIVOICE_SPEECH_TOKEN_UNSUPPORTED",
+        error: "Hero Voice พบสัญลักษณ์ที่ยังไม่มีคำอ่านภาษาไทย กรุณาเขียนสัญลักษณ์นั้นเป็นคำแล้วลองใหม่",
+        riskCategories: blockingSpeechRisks.map((risk) => risk.code),
+      }, { status: 422 });
+    }
+    const speechRiskCategories = speechRisks.map((risk) => risk.code).sort().join(",");
     const pcms: Buffer[] = [];
     const durations: number[] = [];
     const generationTimes: number[] = [];
@@ -210,7 +234,7 @@ export async function POST(request: Request) {
     const admission = omnivoiceAdmission.tryAcquire();
     if (!admission) {
       return NextResponse.json(
-        { error: "คิว Hero Voice ฝั่งแอปเต็ม กรุณาลองใหม่ภายหลัง หรือสลับเป็น Gemini/ElevenLabs", retryable: true },
+        { error: "คิว Hero Voice ฝั่งแอปเต็ม กรุณาลองสร้างด้วย Hero Voice อีกครั้งภายหลัง", retryable: true },
         { status: 429, headers: { "Retry-After": "30" } },
       );
     }
@@ -239,7 +263,26 @@ export async function POST(request: Request) {
           speed,
           deadline,
         );
-        if (!result.ok) { await settleRefund(); return upstreamError(result); }
+        if (!result.ok) {
+          await recordTelemetryEvent(user.id, {
+            name: result.code === "RUNPOD_QUEUE_TIMEOUT"
+              ? "omnivoice_provider_timeout"
+              : "omnivoice_provider_failed",
+            category: "error",
+            source: "server",
+            properties: {
+              backend: config.backend,
+              endpointId: config.backend === "runpod" ? config.endpointId : "",
+              providerJobId: result.providerJobId ?? "",
+              providerStatus: result.status,
+              providerCode: result.code ?? "",
+              cancellationConfirmed: result.cancelled === true,
+              queueWaitBudgetMs: config.queueWaitBudgetMs,
+            },
+          }).catch(() => {});
+          await settleRefund();
+          return upstreamError(result);
+        }
         const { pcm, sampleRate: resultSampleRate } = pcmFromWav(Buffer.from(result.response.audio_base64, "base64"));
         if (sampleRate === 0) sampleRate = resultSampleRate;
         if (resultSampleRate !== sampleRate) {
@@ -319,6 +362,8 @@ export async function POST(request: Request) {
         languageHints: [...workerLanguages].join(","),
         effectiveNumSteps: [...workerNumSteps].sort((a, b) => a - b).join(","),
         segments: chunks.length,
+        speechNormalizerVersion: HERO_VOICE_SPEECH_NORMALIZER_VERSION,
+        speechRiskCategories,
       },
     }).catch(() => {});
 
@@ -345,6 +390,8 @@ export async function POST(request: Request) {
             workerVersions: [...workerVersions],
             languageHints: [...workerLanguages],
             effectiveNumSteps: [...workerNumSteps].sort((a, b) => a - b),
+            speechNormalizerVersion: HERO_VOICE_SPEECH_NORMALIZER_VERSION,
+            speechRiskCategories: speechRisks.map((risk) => risk.code),
           }),
           outputUrl: voiceUrl,
           creditCost: 0,

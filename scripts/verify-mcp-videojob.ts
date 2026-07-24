@@ -4,11 +4,13 @@
 import { prisma } from "../src/lib/prisma";
 import {
   createVideoJob,
+  clearProviderCheckpoint,
   claimNextQueuedJob,
   claimNextRunnableJob,
   VIDEO_JOB_INFLIGHT_STATUSES,
   toPublicVideoJobStatus,
   saveProviderCheckpoint,
+  parkHeroVoiceProviderJob,
   parkProviderJob,
   setJobStep,
   finishJob,
@@ -19,6 +21,10 @@ import {
   serializeAvatarProviderCheckpoint,
   type AvatarProviderCheckpointV1,
 } from "../src/lib/mcp/avatar-provider-checkpoint";
+import {
+  serializeHeroVoiceProviderCheckpoint,
+  type HeroVoiceProviderCheckpointV1,
+} from "../src/lib/mcp/hero-voice-provider-checkpoint";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -141,7 +147,69 @@ async function main() {
   const finishedWait = await prisma.videoJob.findUniqueOrThrow({ where: { id: waiting.id } });
   assert(finishedWait.providerCheckpointJson === null && finishedWait.providerNextPollAt === null, "finish clears provider checkpoint and next poll");
 
+  const heroCheckpoint: HeroVoiceProviderCheckpointV1 = {
+    version: 1,
+    provider: "omnivoice",
+    aiGenerationJobId: "voice-job-pinned-1",
+    providerStartedAt: "2026-07-13T08:00:00.000Z",
+    providerDeadlineAt: "2026-07-13T08:14:00.000Z",
+  };
+  const heroWaiting = await createVideoJob(u.id, { script: "hero durable wait", voiceProvider: "omnivoice" });
+  assert((await claimNextRunnableJob())?.id === heroWaiting.id, "Hero Voice job is claimed before provider submission");
+  const heroDueAt = new Date("2026-07-13T08:03:00.000Z");
+  assert(
+    (await parkHeroVoiceProviderJob(heroWaiting.id, heroCheckpoint, heroDueAt)).count === 1,
+    "Hero Voice parks with its durable AI-generation job id",
+  );
+  const heroParked = await prisma.videoJob.findUniqueOrThrow({ where: { id: heroWaiting.id } });
+  assert(
+    heroParked.status === "waiting_provider"
+      && heroParked.currentStep === "tts"
+      && heroParked.progress === 10
+      && heroParked.providerCheckpointJson === serializeHeroVoiceProviderCheckpoint(heroCheckpoint),
+    "Hero Voice wait records the pinned provider checkpoint at TTS 10%",
+  );
+  assert(
+    (await claimNextRunnableJob(new Date("2026-07-13T08:02:59.000Z"))) === null,
+    "Hero Voice wait does not occupy a worker before its next poll",
+  );
+  assert(
+    (await claimNextRunnableJob(heroDueAt))?.id === heroWaiting.id,
+    "Hero Voice resumes the same checkpoint when its poll is due",
+  );
+  assert(
+    (await clearProviderCheckpoint(
+      heroWaiting.id,
+      serializeHeroVoiceProviderCheckpoint(heroCheckpoint),
+    )).count === 1,
+    "completed Hero Voice clears only its own provider checkpoint",
+  );
+  assert(
+    (await prisma.videoJob.findUniqueOrThrow({ where: { id: heroWaiting.id } })).providerCheckpointJson === null,
+    "later pipeline stages do not retain a stale Hero Voice checkpoint",
+  );
+
   // Restart recovery parks resumable waits/composites instead of replaying billed work.
+  await prisma.videoJob.deleteMany();
+  const orphanHeroVoice = await prisma.videoJob.create({
+    data: {
+      userId: u.id,
+      status: "processing",
+      currentStep: "tts",
+      progress: 10,
+      inputJson: JSON.stringify({ script: "hero restart", voiceProvider: "omnivoice" }),
+      providerCheckpointJson: serializeHeroVoiceProviderCheckpoint(heroCheckpoint),
+    },
+  });
+  const heroRecovery = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });
+  const recoveredHeroVoice = await prisma.videoJob.findUniqueOrThrow({ where: { id: orphanHeroVoice.id } });
+  assert(
+    heroRecovery.parked === 1
+      && recoveredHeroVoice.status === "waiting_provider"
+      && recoveredHeroVoice.providerCheckpointJson === serializeHeroVoiceProviderCheckpoint(heroCheckpoint),
+    "restart recovery parks Hero Voice without replaying provider submission",
+  );
+
   await prisma.videoJob.deleteMany();
   const orphanWait = await prisma.videoJob.create({
     data: {

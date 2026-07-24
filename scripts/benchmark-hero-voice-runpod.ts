@@ -40,6 +40,8 @@ const apply = process.argv.includes("--apply");
 const qualityFloor = process.argv.includes("--quality-floor");
 const roundsSource = process.argv.find((arg) => arg.startsWith("--rounds="))?.slice("--rounds=".length) ?? "1";
 const rounds = Number(roundsSource);
+const numStepSource = process.argv.find((arg) => arg.startsWith("--num-step="))?.slice("--num-step=".length) ?? "32";
+const benchmarkNumStep = Number(numStepSource);
 const expectedWorkerVersion = process.argv.find((arg) => arg.startsWith("--expected-worker-version="))
   ?.slice("--expected-worker-version=".length)
   .trim();
@@ -50,6 +52,9 @@ if (!apiKey) throw new Error("RUNPOD_API_KEY is required");
 if (!endpointId) throw new Error("Pass the explicit staging endpoint with --endpoint=<id>");
 if (!Number.isInteger(rounds) || rounds < 1 || rounds > 5) {
   throw new Error("--rounds must be an integer from 1 to 5");
+}
+if (!Number.isInteger(benchmarkNumStep) || benchmarkNumStep < 1 || benchmarkNumStep > 64) {
+  throw new Error("--num-step must be an integer from 1 to 64");
 }
 
 const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
@@ -123,7 +128,12 @@ async function waitForScaleDown(label: string, idleTimeoutSeconds: number): Prom
   throw new Error(`${label}: worker did not scale down after ${idleTimeoutSeconds + 300} seconds`);
 }
 
-async function runJob(label: string, voiceId: string, expectedNumStep?: number): Promise<Record<string, unknown>> {
+async function runJob(
+  label: string,
+  voiceId: string,
+  requestedNumStep = benchmarkNumStep,
+  expectedNumStep = requestedNumStep,
+): Promise<Record<string, unknown>> {
   const wallStartedAt = Date.now();
   const submitted = await jsonRequest<Job>(`${queueBase}/${encodeURIComponent(endpointId!)}/run`, {
     method: "POST",
@@ -132,7 +142,7 @@ async function runJob(label: string, voiceId: string, expectedNumStep?: number):
         voice_id: voiceId,
         text: "สวัสดีค่ะ นี่คือการทดสอบเสียงภาษาไทยของฮีโร่ เอไอ วอยซ์",
         speed: 1,
-        num_step: 8,
+        num_step: requestedNumStep,
       },
     }),
   });
@@ -207,6 +217,7 @@ async function main() {
       gpuTypeIds: before.gpuTypeIds,
     },
     rounds,
+    benchmarkNumStep,
     expectedWorkerVersion: expectedWorkerVersion || null,
     paidRun: apply,
   }));
@@ -226,9 +237,9 @@ async function main() {
 
   const quality = qualityFloor
     ? [
-        await runJob("quality-floor-voice-32", "voice_32", 16),
-        await runJob("quality-floor-voice-33", "voice_33", 16),
-        await runJob("catalog-tail-voice-48", "voice_48", 8),
+        await runJob("quality-floor-voice-32", "voice_32", 16, 16),
+        await runJob("quality-floor-voice-33", "voice_33", 16, 16),
+        await runJob("catalog-tail-voice-48", "voice_48", 8, 8),
       ]
     : [];
 

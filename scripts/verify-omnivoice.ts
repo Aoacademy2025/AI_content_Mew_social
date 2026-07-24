@@ -3,6 +3,7 @@
 
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import thaiSpeechCases from "../data/hero-voice/thai-speech-cases.json";
 import {
   createOmniVoiceAdmissionCounter,
   isOmniVoiceInfo,
@@ -11,6 +12,7 @@ import {
   userInOmniVoiceAllowlist,
 } from "../src/lib/omnivoice-core";
 import {
+  prepareHeroVoiceSpeech,
   prepareHeroVoiceSpeechText,
   splitHeroVoiceScriptForTts,
 } from "../src/lib/hero-voice-speech";
@@ -122,6 +124,64 @@ check(
   prepareHeroVoiceSpeechText("เบอร์โทร 081-234-5678 OTP 150 PIN 042")
     === "เบอร์โทร ศูนย์แปดหนึ่ง-สองสามสี่-ห้าหกเจ็ดแปด โอ ที พี หนึ่งห้าศูนย์ พี ไอ เอ็น ศูนย์สี่สอง",
 );
+for (const fixture of thaiSpeechCases) {
+  const actual = prepareHeroVoiceSpeechText(fixture.display);
+  check(
+    `speech fixture: ${fixture.id}`,
+    actual === fixture.spoken,
+    `expected=${fixture.spoken}\n        actual=${actual}`,
+  );
+  check(
+    `speech fixture idempotence: ${fixture.id}`,
+    prepareHeroVoiceSpeechText(actual) === actual,
+  );
+  check(
+    `speech fixture required tokens: ${fixture.id}`,
+    fixture.requiredTokens.every((token) => actual.includes(token)),
+  );
+}
+check(
+  "speech preflight: resolved percentage has no blocking risk",
+  prepareHeroVoiceSpeech("แม่น 30%").risks.every((risk) => risk.severity !== "block"),
+);
+check(
+  "speech preflight: unsupported per-mille is blocked before provider spend",
+  prepareHeroVoiceSpeech("ความคลาดเคลื่อน 3‰").risks.some(
+    (risk) => risk.code === "unexpanded_percent" && risk.severity === "block",
+  ),
+);
+check(
+  "speech preflight: ambiguous fraction is blocked instead of guessed",
+  prepareHeroVoiceSpeech("ใช้ส่วนผสม 1/2 ถ้วย").risks.some(
+    (risk) => risk.code === "ambiguous_numeric_slash" && risk.severity === "block",
+  ),
+);
+check(
+  "speech preflight: supported วันที่ DD/MM/YYYY is not mistaken for a fraction",
+  !prepareHeroVoiceSpeech("วันที่ 24/07/2569").risks.some(
+    (risk) => risk.code === "ambiguous_numeric_slash",
+  ),
+);
+check(
+  "speech preflight: unreviewed English is visible without blocking Thai synthesis",
+  prepareHeroVoiceSpeech("เริ่มทำ marketing วันนี้").risks.some(
+    (risk) => risk.code === "unreviewed_latin" && risk.severity === "review",
+  ),
+);
+check(
+  "speech preflight: URLs and email addresses are reviewable without logging their content",
+  ["url", "email"].every((code) => (
+    prepareHeroVoiceSpeech("ดู https://example.com หรือส่ง hello@example.com").risks.some(
+      (risk) => risk.code === code && risk.severity === "review",
+    )
+  )),
+);
+check(
+  "speech preflight: unsupported currency symbol is blocked",
+  prepareHeroVoiceSpeech("ราคา ¥100").risks.some(
+    (risk) => risk.code === "unexpanded_currency" && risk.severity === "block",
+  ),
+);
 const expandingScript = "ยอดเพิ่ม 150 เท่า จริงๆ ChatGPT ".repeat(20).trim();
 const speechChunks = splitHeroVoiceScriptForTts(expandingScript, 90);
 check(
@@ -156,17 +216,43 @@ const orchestratorSource = fs.readFileSync("src/lib/mcp/orchestrator.ts", "utf8"
 const jobsRouteSource = fs.readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
 const omniRouteSource = fs.readFileSync("src/app/api/videos/tts-omnivoice/route.ts", "utf8");
 const configSource = fs.readFileSync("src/lib/omnivoice.ts", "utf8");
-const omniCall = orchestratorSource.slice(
-  orchestratorSource.indexOf('"/api/videos/tts-omnivoice"'),
-  orchestratorSource.indexOf('"/api/videos/tts-gemini"'),
+const durableVoiceSource = fs.readFileSync("src/lib/hero-voice-generation.server.ts", "utf8");
+check(
+  "orchestrator: Hero Voice uses durable provider submit/poll/resume",
+  orchestratorSource.includes("startHeroVoiceGeneration")
+    && orchestratorSource.includes("advanceHeroVoiceGeneration")
+    && orchestratorSource.includes("parkHeroVoiceProviderJob")
+    && !orchestratorSource.includes('"/api/videos/tts-omnivoice"'),
 );
-check("orchestrator: OmniVoice synthesis explicitly disables retries", omniCall.includes("{ retries: 0 }"));
+check(
+  "provider pin: accepted Hero Voice jobs retain endpoint and voice",
+  durableVoiceSource.includes("providerEndpoint: config.endpointId")
+    && durableVoiceSource.includes("endpointId = job.providerEndpoint")
+    && durableVoiceSource.includes("voiceId: input.voiceId"),
+);
+check(
+  "provider pin: Hero Voice errors never recommend a cross-provider fallback",
+  !omniRouteSource.includes("fallbackProvider")
+    && !omniRouteSource.includes("Gemini/ElevenLabs")
+    && !omniRouteSource.includes("สลับเป็น Gemini"),
+);
 check("job admission: OmniVoice readiness is checked before enqueue", jobsRouteSource.includes("await checkOmniVoiceReady(config)"));
 check(
   "speech boundary: worker receives pronunciation text while timing keeps display text",
   omniRouteSource.includes("splitHeroVoiceScriptForTts(fullText, config.maxChunkChars)")
     && omniRouteSource.includes("chunks[index].speechText")
     && omniRouteSource.includes("text: chunk.text"),
+);
+check(
+  "speech preflight: blocking tokens stop before managed-audio reservation",
+  omniRouteSource.indexOf('blockingSpeechRisks.length > 0')
+    < omniRouteSource.indexOf("reserveAiAudioMinutes(user.id, estimatedMinutes, { enforce: true })"),
+);
+check(
+  "job admission: blocking speech tokens fail before a VideoJob is created",
+  jobsRouteSource.includes("prepareHeroVoiceSpeech(script)")
+    && jobsRouteSource.indexOf("blockingSpeechRisks.length > 0")
+      < jobsRouteSource.lastIndexOf("createVideoJob("),
 );
 check("capacity: managed AI-audio reserve is enforced", omniRouteSource.includes("reserveAiAudioMinutes(user.id, estimatedMinutes, { enforce: true })"));
 check("Studio voice: package minutes are reserved before worker generation", omniRouteSource.includes("studioReservedMin = Math.max(1, Math.ceil(estimatedMinutes))") && omniRouteSource.includes("reserveMinutes(user.id, studioReservedMin)"));
@@ -182,16 +268,16 @@ check("package: Pro script cap follows the 6-minute tier", omnivoiceScriptCharCa
 check("package: Business script cap follows the 10-minute tier", omnivoiceScriptCharCapForPlan("BUSINESS") === 8400);
 check("timeout: route supports long package-compliant jobs", /840_000,\s*540_000/.test(configSource));
 check(
-  "cost guard: queued RunPod jobs have a bounded two-minute wait",
+  "cost guard: legacy queued RunPod jobs allow the approved five-minute wait",
   configSource.includes("OMNIVOICE_QUEUE_WAIT_BUDGET_MS")
-    && /300_000,\s*120_000/.test(configSource)
+    && /300_000,\s*300_000/.test(configSource)
     && configSource.includes('snapshot.status === "IN_QUEUE"'),
 );
 check(
-  "cost guard: abandoned RunPod jobs are cancelled before Gemini fallback is offered",
+  "cost guard: abandoned legacy RunPod jobs are cancelled without cross-provider advice",
   configSource.includes("/cancel/${encodeURIComponent(providerJobId)}")
     && omniRouteSource.includes('"OMNIVOICE_QUEUE_TIMEOUT"')
-    && omniRouteSource.includes('fallbackProvider: cancellationConfirmed ? "gemini" : undefined'),
+    && !omniRouteSource.includes("fallbackProvider"),
 );
 check("RunPod: provider POST is never automatically retried", configSource.includes("Never automatically retry this POST"));
 check("RunPod: queue jobs are polled by their durable provider id", configSource.includes("status/${encodeURIComponent(providerJobId)}"));
@@ -229,6 +315,20 @@ check(
   "RunPod runtime: queued job is cancelled before the timeout returns",
   runpodCancellationRuntime.status === 0,
   [runpodCancellationRuntime.stdout, runpodCancellationRuntime.stderr].join("\n").trim(),
+);
+
+const durableRuntime = spawnSync(
+  "npx",
+  ["tsx", "scripts/verify-hero-voice-durable.ts"],
+  {
+    cwd: process.cwd(),
+    encoding: "utf8",
+  },
+);
+check(
+  "durable runtime: >120s queue delay resumes on the pinned provider job",
+  durableRuntime.status === 0,
+  [durableRuntime.stdout, durableRuntime.stderr].join("\n").trim(),
 );
 
 if (failures > 0) {

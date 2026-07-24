@@ -1,5 +1,3 @@
-import "server-only";
-
 import { isOmniVoiceServerEnabled } from "@/lib/omnivoice-policy";
 
 export type { OmniVoiceInfo } from "@/lib/tts-providers";
@@ -68,6 +66,28 @@ type RunpodTtsJob = {
   executionTime?: number;
 };
 
+export type RunpodOmniVoiceSnapshot =
+  | {
+      status: "IN_QUEUE" | "IN_PROGRESS";
+      providerJobId: string;
+      delayTimeMs: number;
+      executionTimeMs: number;
+    }
+  | {
+      status: "COMPLETED";
+      providerJobId: string;
+      response: OmniTtsResponse;
+      delayTimeMs: number;
+      executionTimeMs: number;
+    }
+  | {
+      status: "FAILED" | "TIMED_OUT" | "CANCELLED";
+      providerJobId: string;
+      reason: string;
+      delayTimeMs: number;
+      executionTimeMs: number;
+    };
+
 const RUNPOD_QUEUE_API = "https://api.runpod.ai/v2";
 const RUNPOD_REST_API = "https://rest.runpod.io/v1";
 const OMNIVOICE_QUALITY_NUM_STEP = 32;
@@ -76,6 +96,17 @@ export class OmniVoiceConfigError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "OmniVoiceConfigError";
+  }
+}
+
+export class OmniVoiceProviderError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly retryAfter?: string,
+  ) {
+    super(message);
+    this.name = "OmniVoiceProviderError";
   }
 }
 
@@ -110,14 +141,14 @@ export function omnivoiceConfig(pinnedBackend?: OmniVoiceBackend): OmniVoiceConf
       840_000,
       540_000,
     ),
-    // Cost/latency guard for scale-to-zero workers. If RunPod has not assigned
-    // a worker after two minutes, remove the queued job before returning so a
-    // later Gemini retry cannot race duplicate paid GPU work.
+    // Cost/latency guard for the legacy synchronous route. Durable Hero Voice
+    // jobs use requestBudgetMs and park between polls, so they are not canceled
+    // merely because a scale-to-zero worker takes more than two minutes.
     queueWaitBudgetMs: clampInteger(
       process.env.OMNIVOICE_QUEUE_WAIT_BUDGET_MS,
       30_000,
       300_000,
-      120_000,
+      300_000,
     ),
   };
 
@@ -222,7 +253,7 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function cancelRunpodJob(
+export async function cancelRunpodOmniVoiceJob(
   config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
   providerJobId: string,
 ): Promise<boolean> {
@@ -250,6 +281,88 @@ async function cancelRunpodJob(
   }
 }
 
+/**
+ * Submit exactly one RunPod synthesis job. This operation is intentionally
+ * single-attempt: a lost response has an unknown provider outcome and must not
+ * be replayed automatically.
+ */
+export async function submitRunpodOmniVoiceJob(
+  config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
+  voiceId: string,
+  text: string,
+  speed: number,
+): Promise<{ providerJobId: string; status: "IN_QUEUE" | "IN_PROGRESS" }> {
+  const submitted = await runpodRequest(config, "run", {
+    method: "POST",
+    body: JSON.stringify({
+      input: { voice_id: voiceId, text, speed, num_step: config.numStep },
+    }),
+  }, Date.now() + 20_000);
+  if (!submitted.response.ok || !submitted.body.id) {
+    throw new OmniVoiceProviderError(
+      submitted.body.error || `RunPod submit failed (${submitted.response.status})`,
+      submitted.response.status === 429 ? 429 : 503,
+      submitted.response.headers.get("retry-after") ?? undefined,
+    );
+  }
+  return {
+    providerJobId: submitted.body.id,
+    status: submitted.body.status === "IN_PROGRESS" ? "IN_PROGRESS" : "IN_QUEUE",
+  };
+}
+
+/** Poll one durable RunPod synthesis job without occupying a worker slot. */
+export async function pollRunpodOmniVoiceJob(
+  config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
+  providerJobId: string,
+): Promise<RunpodOmniVoiceSnapshot> {
+  const polled = await runpodRequest(
+    config,
+    `status/${encodeURIComponent(providerJobId)}`,
+    { method: "GET" },
+    Date.now() + 20_000,
+  );
+  if (!polled.response.ok) {
+    throw new OmniVoiceProviderError(
+      polled.body.error || `RunPod status failed (${polled.response.status})`,
+      polled.response.status,
+      polled.response.headers.get("retry-after") ?? undefined,
+    );
+  }
+
+  const delayTimeMs = typeof polled.body.delayTime === "number" ? Math.round(polled.body.delayTime) : 0;
+  const executionTimeMs = typeof polled.body.executionTime === "number" ? Math.round(polled.body.executionTime) : 0;
+  if (polled.body.status === "COMPLETED") {
+    if (!validTtsPayload(polled.body.output)) {
+      throw new OmniVoiceProviderError("RunPod completed with an invalid audio payload", 502);
+    }
+    return {
+      status: "COMPLETED",
+      providerJobId,
+      response: polled.body.output,
+      delayTimeMs,
+      executionTimeMs,
+    };
+  }
+  if (polled.body.status === "FAILED"
+    || polled.body.status === "TIMED_OUT"
+    || polled.body.status === "CANCELLED") {
+    return {
+      status: polled.body.status,
+      providerJobId,
+      reason: polled.body.error || polled.body.output?.error || `RunPod job ${polled.body.status.toLowerCase()}`,
+      delayTimeMs,
+      executionTimeMs,
+    };
+  }
+  return {
+    status: polled.body.status === "IN_PROGRESS" ? "IN_PROGRESS" : "IN_QUEUE",
+    providerJobId,
+    delayTimeMs,
+    executionTimeMs,
+  };
+}
+
 async function cancelRunpodFailure(
   config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
   providerJobId: string,
@@ -257,7 +370,7 @@ async function cancelRunpodFailure(
   reason: string,
   code?: "RUNPOD_QUEUE_TIMEOUT",
 ): Promise<Extract<OmniVoiceCallResult, { ok: false }>> {
-  const cancelled = await cancelRunpodJob(config, providerJobId);
+  const cancelled = await cancelRunpodOmniVoiceJob(config, providerJobId);
   return { ok: false, status, reason, providerJobId, cancelled, ...(code ? { code } : {}) };
 }
 

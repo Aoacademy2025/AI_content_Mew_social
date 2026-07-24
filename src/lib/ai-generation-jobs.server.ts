@@ -2,6 +2,10 @@ import "server-only";
 
 import type { AiGenerationAttempt, AiGenerationJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import {
+  heroVoiceResultFromJob,
+  type HeroVoiceGenerationResult,
+} from "@/lib/hero-voice-generation.server";
 
 export type PublicAiGenerationJob = {
   id: string;
@@ -14,6 +18,7 @@ export type PublicAiGenerationJob = {
   status: string;
   inputPreview: string | null;
   input: Record<string, unknown> | null;
+  voiceResult: HeroVoiceGenerationResult | null;
   outputUrl: string | null;
   creditCost: number;
   chargeState: string;
@@ -39,6 +44,9 @@ function parseInput(value: string | null): Record<string, unknown> | null {
 }
 
 export function publicAiGenerationJob(job: AiGenerationJob): PublicAiGenerationJob {
+  const input = job.kind === "voice"
+    ? { voiceId: job.model, backend: job.provider }
+    : parseInput(job.inputJson);
   return {
     id: job.id,
     kind: job.kind,
@@ -49,7 +57,8 @@ export function publicAiGenerationJob(job: AiGenerationJob): PublicAiGenerationJ
     quoteVersion: job.quoteVersion,
     status: job.status,
     inputPreview: job.inputPreview,
-    input: parseInput(job.inputJson),
+    input,
+    voiceResult: heroVoiceResultFromJob(job),
     outputUrl: job.outputUrl,
     creditCost: job.creditCost,
     chargeState: job.chargeState,
