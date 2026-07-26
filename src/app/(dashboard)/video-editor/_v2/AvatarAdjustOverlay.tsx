@@ -12,10 +12,12 @@ import { Loader2, Move, RotateCcw } from "lucide-react";
 import { color, radius } from "./tokens";
 import { BtnPrimary, BtnGhost, GroupLabel } from "./ui";
 import { normalizedBox, type AvatarLayout } from "@/lib/avatar-layout";
+import type { BrandAssetView, LogoOverlayConfig } from "@/lib/logo-overlay";
+import { LogoOverlayPreview } from "./LogoOverlayPreview";
 
 const DEFAULT_LAYOUT: AvatarLayout = { scale: 1, offsetX: 0, offsetY: 0 };
 
-export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs, avatarVideoUrl, tailAvatarUrl, bgVideoUrl, jobId, onDone, onClose }: {
+export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs, avatarVideoUrl, tailAvatarUrl, bgVideoUrl, logoOverlay, logoAsset, jobId, onDone, onClose }: {
   avatarId: string;
   avatarMode: string;              // full | bookend | bookend-both
   introSecs: number;
@@ -23,6 +25,8 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
   avatarVideoUrl: string;
   tailAvatarUrl: string | null;
   bgVideoUrl: string;              // base render ก่อน composite (compositeBaseUrl)
+  logoOverlay: LogoOverlayConfig | undefined;
+  logoAsset: BrandAssetView | null;
   jobId: string | null;
   onDone: (newVideoUrl: string) => void;
   onClose: () => void;
@@ -267,8 +271,9 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
             )}
           </div>
         </div>
+        <LogoOverlayPreview value={logoOverlay} asset={logoAsset} />
         {busy && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2" style={{ background: "rgba(10,10,16,.66)" }}>
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2" style={{ zIndex: 3, background: "rgba(10,10,16,.66)" }}>
             <Loader2 size={22} className="animate-spin" color={color.primary300} />
             <span style={{ fontSize: 11.5, color: color.textSecondary }}>กำลังวางอวตารตำแหน่งใหม่… (~1-2 นาที ไม่คิดค่า HeyGen เพิ่ม)</span>
           </div>

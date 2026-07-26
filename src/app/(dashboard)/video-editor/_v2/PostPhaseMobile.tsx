@@ -249,6 +249,8 @@ export function PostPhaseMobile({
               avatarVideoUrl={ed.preview.avatarVideoUrl!}
               tailAvatarUrl={ed.preview.tailAvatarUrl ?? null}
               bgVideoUrl={ed.compositeBaseUrl!}
+              logoOverlay={logoOverlay}
+              logoAsset={ed.logo.asset}
               jobId={job.jobId}
               onClose={() => ed.setAdjustingAvatar(false)}
               onDone={(url) => {
