@@ -21,7 +21,9 @@ import {
 
 const STORAGE_KEY = "editor-v2-job";
 const POLL_MS = 5000;
-const PROJECT_OPERATION_BLOCKED_MESSAGE = "โปรเจกต์ยังไม่พร้อม กรุณาจัดการการกู้คืนข้อมูลก่อน";
+// Exported so other v2 editor hooks (e.g. useEditorStylePresets) can reuse the same
+// copy when they gate on p.canRunProjectOperation() instead of inventing new wording.
+export const PROJECT_OPERATION_BLOCKED_MESSAGE = "โปรเจกต์ยังไม่พร้อม กรุณาจัดการการกู้คืนข้อมูลก่อน";
 
 function storageKey(projectId: string | null | undefined) {
   return projectId ? `${STORAGE_KEY}:${projectId}` : STORAGE_KEY;

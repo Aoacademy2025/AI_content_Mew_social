@@ -28,6 +28,7 @@ import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
 import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import { trackEvent } from "@/lib/client-telemetry";
@@ -53,6 +54,7 @@ export function PostPhase({
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
+  canRunProjectOperation,
   brollRegionPreference = "auto",
   brollVisualStyle = "auto",
   internalAiTester,
@@ -69,6 +71,7 @@ export function PostPhase({
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
+  canRunProjectOperation?: () => boolean;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   internalAiTester: boolean;
   aiImageEnabled: boolean;
@@ -86,6 +89,7 @@ export function PostPhase({
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
+    canRunProjectOperation,
     surface: "desktop",
   });
   const handleRightTabChange = (next: "subtitle" | "logo") => {
@@ -288,6 +292,17 @@ export function PostPhase({
               aria-labelledby={`${rightTabsId}-subtitle-tab`}
               className="flex flex-col gap-5"
             >
+          <EditorStylePresetShelf
+            kind="subtitle"
+            presets={ed.stylePresets.subtitle}
+            loading={ed.stylePresets.loading}
+            busy={ed.stylePresets.busy}
+            canSave
+            onSave={(name) => ed.stylePresets.save("subtitle", name)}
+            onApply={ed.stylePresets.apply}
+            onRemove={ed.stylePresets.remove}
+          />
+
           {ed.canAdjustAvatar && (
             <section className="flex flex-col gap-2">
               <GroupLabel>อวตาร</GroupLabel>
@@ -558,7 +573,21 @@ export function PostPhase({
               id={`${rightTabsId}-logo-panel`}
               role="tabpanel"
               aria-labelledby={`${rightTabsId}-logo-tab`}
+              className="flex flex-col gap-5"
             >
+              {logoEligible && (
+                <EditorStylePresetShelf
+                  kind="logo"
+                  presets={ed.stylePresets.logo}
+                  loading={ed.stylePresets.loading}
+                  busy={ed.stylePresets.busy}
+                  canSave={Boolean(logoOverlay)}
+                  saveDisabledHint="อัปโหลดหรือเลือกโลโก้ก่อนบันทึกพรีเซ็ต"
+                  onSave={(name) => ed.stylePresets.save("logo", name)}
+                  onApply={ed.stylePresets.apply}
+                  onRemove={ed.stylePresets.remove}
+                />
+              )}
               <LogoOverlayControls
                 value={logoOverlay}
                 eligible={logoEligible}

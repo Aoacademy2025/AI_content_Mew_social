@@ -1,0 +1,287 @@
+// Run: npx tsx scripts/verify-editor-style-presets.ts
+// Proves named subtitle/logo presets round-trip, remain account-scoped, and keep
+// referenced logo assets alive until the final preset is removed.
+import { execSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const directory = mkdtempSync(join(tmpdir(), "editor-style-presets-"));
+process.env.DATABASE_URL = `file:${join(directory, "test.db")}`;
+execSync("npx prisma db push --skip-generate", {
+  stdio: "inherit",
+  env: process.env,
+});
+
+let passed = 0;
+function ok(condition: boolean, message: string) {
+  if (!condition) {
+    console.error(`❌ ${message}`);
+    process.exit(1);
+  }
+  console.log(`✓ ${message}`);
+  passed += 1;
+}
+
+const SUBTITLE_CONFIG = {
+  preset: "stroke",
+  effect: "pop",
+  fontFamily: "'Kanit', sans-serif",
+  bold: true,
+  fontSize: 80,
+  textColor: "#FFFFFF",
+  accentColor: "#FFE500",
+  shadow: true,
+  outline: false,
+  outlineSize: 2,
+  verticalPos: 82,
+} as const;
+
+async function main() {
+  const {
+    EditorStylePresetError,
+    deleteEditorStylePreset,
+    listEditorStylePresets,
+    saveEditorStylePreset,
+  } = await import("../src/lib/editor-style-presets.server");
+  const { deleteBrandAssetIfUnreferenced } = await import("../src/lib/brand-assets.server");
+  const { prisma } = await import("../src/lib/prisma");
+  const { MAX_EDITOR_STYLE_PRESETS_PER_KIND } = await import("../src/lib/editor-style-preset-contract");
+
+  const owner = await prisma.user.create({
+    data: { name: "Owner", email: "preset-owner@test.local", plan: "PRO" },
+  });
+  const other = await prisma.user.create({
+    data: { name: "Other", email: "preset-other@test.local", plan: "PRO" },
+  });
+  const free = await prisma.user.create({
+    data: { name: "Free", email: "preset-free@test.local", plan: "FREE" },
+  });
+
+  const subtitle = await saveEditorStylePreset({
+    userId: owner.id,
+    plan: owner.plan,
+    kind: "subtitle",
+    name: "  คลิปความรู้   ",
+    config: SUBTITLE_CONFIG,
+  });
+  ok(subtitle.name === "คลิปความรู้", "subtitle preset trims and normalizes its display name");
+  ok(subtitle.kind === "subtitle" && subtitle.config.fontSize === 80, "subtitle preset round-trips its complete style");
+
+  const updatedSubtitle = await saveEditorStylePreset({
+    userId: owner.id,
+    plan: owner.plan,
+    kind: "subtitle",
+    name: "คลิปความรู้",
+    config: { ...SUBTITLE_CONFIG, fontSize: 96 },
+  });
+  ok(updatedSubtitle.id === subtitle.id, "saving the same normalized name updates instead of duplicating");
+  ok((await listEditorStylePresets(owner.id)).length === 1, "same-name update keeps one preset row");
+  ok((await listEditorStylePresets(other.id)).length === 0, "preset lists are isolated by account");
+
+  const asset = await prisma.brandAsset.create({
+    data: {
+      userId: owner.id,
+      storageKey: `${owner.id}/brand.webp`,
+      originalName: "brand.webp",
+      mimeType: "image/webp",
+      sizeBytes: 128,
+      width: 512,
+      height: 256,
+    },
+  });
+
+  let freePlanRejected = false;
+  try {
+    await saveEditorStylePreset({
+      userId: free.id,
+      plan: free.plan,
+      kind: "logo",
+      name: "โลโก้หลัก",
+      config: {
+        enabled: true,
+        assetId: asset.id,
+        position: "top-right",
+        sizePct: 18,
+        opacity: 0.9,
+      },
+    });
+  } catch (error) {
+    freePlanRejected = error instanceof EditorStylePresetError && error.code === "plan_required";
+  }
+  ok(freePlanRejected, "logo presets keep the existing paid-plan entitlement");
+
+  let crossOwnerRejected = false;
+  try {
+    await saveEditorStylePreset({
+      userId: other.id,
+      plan: other.plan,
+      kind: "logo",
+      name: "โลโก้คนอื่น",
+      config: {
+        enabled: true,
+        assetId: asset.id,
+        position: "top-left",
+        sizePct: 20,
+        opacity: 1,
+      },
+    });
+  } catch (error) {
+    crossOwnerRejected = error instanceof EditorStylePresetError && error.code === "asset_not_found";
+  }
+  ok(crossOwnerRejected, "a logo preset cannot claim another account's asset");
+
+  const logo = await saveEditorStylePreset({
+    userId: owner.id,
+    plan: owner.plan,
+    kind: "logo",
+    name: "มุมขวาบน",
+    config: {
+      enabled: true,
+      assetId: asset.id,
+      position: "top-right",
+      sizePct: 24,
+      opacity: 0.82,
+    },
+  });
+  ok(logo.kind === "logo" && logo.config.assetId === asset.id, "logo preset round-trips asset and layout");
+
+  let referencedAssetProtected = false;
+  try {
+    await deleteBrandAssetIfUnreferenced(owner.id, asset.id);
+  } catch (error) {
+    referencedAssetProtected =
+      error instanceof Error
+      && "code" in error
+      && error.code === "asset_in_use";
+  }
+  ok(referencedAssetProtected, "a logo asset cannot retire while a named preset references it");
+
+  ok(await deleteEditorStylePreset(owner.id, logo.id), "owner can delete a named preset");
+  ok(!await deleteEditorStylePreset(other.id, subtitle.id), "another account cannot delete the preset");
+  ok(await deleteBrandAssetIfUnreferenced(owner.id, asset.id), "asset can retire after its final preset reference is removed");
+
+  let invalidSubtitleRejected = false;
+  try {
+    await saveEditorStylePreset({
+      userId: owner.id,
+      plan: owner.plan,
+      kind: "subtitle",
+      name: "ค่าพัง",
+      config: { ...SUBTITLE_CONFIG, fontSize: 999 },
+    });
+  } catch (error) {
+    invalidSubtitleRejected = error instanceof EditorStylePresetError && error.code === "invalid_config";
+  }
+  ok(invalidSubtitleRejected, "invalid subtitle values are rejected instead of persisted");
+
+  // ── 2026-07-26 audit M9/B-3 note: MAX_EDITOR_STYLE_PRESETS_PER_KIND (the one
+  //    anti-DoS guard on this feature) had zero test coverage — cover the cap here. ──
+  const limitOwner = await prisma.user.create({
+    data: { name: "LimitOwner", email: "preset-limit-owner@test.local", plan: "PRO" },
+  });
+  for (let i = 0; i < MAX_EDITOR_STYLE_PRESETS_PER_KIND; i += 1) {
+    await saveEditorStylePreset({
+      userId: limitOwner.id,
+      plan: limitOwner.plan,
+      kind: "subtitle",
+      name: `พรีเซ็ต ${i + 1}`,
+      config: SUBTITLE_CONFIG,
+    });
+  }
+  ok(
+    (await listEditorStylePresets(limitOwner.id)).length === MAX_EDITOR_STYLE_PRESETS_PER_KIND,
+    `saving reaches the ${MAX_EDITOR_STYLE_PRESETS_PER_KIND}-preset cap for one kind`,
+  );
+
+  let limitRejected = false;
+  try {
+    await saveEditorStylePreset({
+      userId: limitOwner.id,
+      plan: limitOwner.plan,
+      kind: "subtitle",
+      name: "เกินโควต้า",
+      config: SUBTITLE_CONFIG,
+    });
+  } catch (error) {
+    limitRejected = error instanceof EditorStylePresetError && error.code === "limit_reached";
+  }
+  ok(limitRejected, "saving a new preset past the per-kind cap is rejected (limit_reached, anti-DoS)");
+  ok(
+    (await listEditorStylePresets(limitOwner.id)).length === MAX_EDITOR_STYLE_PRESETS_PER_KIND,
+    "a rejected over-limit save leaves no partial row behind",
+  );
+
+  let updateAtLimitFailed = false;
+  try {
+    await saveEditorStylePreset({
+      userId: limitOwner.id,
+      plan: limitOwner.plan,
+      kind: "subtitle",
+      name: "พรีเซ็ต 1",
+      config: { ...SUBTITLE_CONFIG, fontSize: 100 },
+    });
+  } catch {
+    updateAtLimitFailed = true;
+  }
+  ok(!updateAtLimitFailed, "updating an existing preset by name still works right at the cap (upsert is not blocked)");
+  const afterLimitUpdate = await listEditorStylePresets(limitOwner.id);
+  ok(afterLimitUpdate.length === MAX_EDITOR_STYLE_PRESETS_PER_KIND, "updating at the cap does not add a row");
+  const updatedAtLimit = afterLimitUpdate.find((preset) => preset.name === "พรีเซ็ต 1");
+  ok(
+    updatedAtLimit?.kind === "subtitle" && updatedAtLimit.config.fontSize === 100,
+    "the updated-at-cap preset carries the new config instead of being silently dropped",
+  );
+
+  // ── The rest of M1/M2/M9 lives in the useEditorStylePresets/usePostPhaseEditor
+  //    React hooks (no DB, no server round-trip) — source-level contract checks in the
+  //    same regex-on-source style already used by this repo's other v2-editor verify
+  //    scripts (layers / broll-window-mgmt / logo) for UI-hook-only logic. ──
+  const postPhaseEditorSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
+    "utf8",
+  );
+  const stylePresetsCallMatch = postPhaseEditorSource.match(
+    /const stylePresets = useEditorStylePresets\(\{[\s\S]*?\n {2}\}\);/,
+  );
+  ok(!!stylePresetsCallMatch, "usePostPhaseEditor wires useEditorStylePresets (M1/M2 source contract present)");
+  const stylePresetsCall = stylePresetsCallMatch![0];
+  ok(
+    /onApplySubtitle:\s*\(config\)\s*=>\s*\{\s*setCfg\(config\);\s*setOverrides\(\{\}\);\s*\}/.test(stylePresetsCall),
+    "M1: apply(subtitle preset) clears per-card overrides (setOverrides({})) alongside setCfg — a saved preset can no longer lose to a stale per-card color override",
+  );
+  ok(
+    /canApplyLogo:\s*canRunProjectOperation/.test(stylePresetsCall),
+    "M2: apply(logo preset) is wired to the same canRunProjectOperation readiness check every other project mutation already gates on",
+  );
+
+  const stylePresetsHookSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/useEditorStylePresets.ts",
+    "utf8",
+  );
+  const applyFnMatch = stylePresetsHookSource.match(/function apply\(preset: EditorStylePreset\) \{[\s\S]*?\n  \}\n/);
+  ok(!!applyFnMatch, "useEditorStylePresets exposes an apply() function to source-check (M2/M9 contract present)");
+  const applyFn = applyFnMatch![0];
+  ok(
+    /if \(input\.canApplyLogo && !input\.canApplyLogo\(\)\) \{\s*toast\.error\(PROJECT_OPERATION_BLOCKED_MESSAGE\);\s*return;\s*\}/.test(applyFn),
+    "M2: apply(logo) exits with toast.error (never toast.success) before calling onApplyLogo when the project can't accept the mutation",
+  );
+  ok(
+    /input\.onApplyLogo\(\{ \.\.\.preset\.config, enabled: input\.logoConfig\?\.enabled \?\? true \}\)/.test(applyFn),
+    "M9: apply(logo) ignores the preset's stored `enabled` and keeps whatever layer-toggle state is live now (no live state = on, so the preset is visibly applied)",
+  );
+  const blockedGuardReturnIndex = applyFn.indexOf("toast.error(PROJECT_OPERATION_BLOCKED_MESSAGE");
+  const successToastIndex = applyFn.indexOf("toast.success(");
+  ok(
+    blockedGuardReturnIndex !== -1 && blockedGuardReturnIndex < successToastIndex,
+    "M2: the not-ready guard runs strictly before the shared success toast, so a blocked apply cannot also report success",
+  );
+
+  console.log(`\n✅ ALL ${passed} EDITOR STYLE PRESET CHECKS PASSED`);
+  await prisma.$disconnect();
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

@@ -364,6 +364,12 @@ export async function deleteBrandAssetIfUnreferenced(userId: string, assetId: st
     });
     if (defaultPreference) throw new BrandAssetError("asset_in_use", 409);
 
+    const namedPreset = await tx.editorStylePreset.findFirst({
+      where: { brandAssetId: assetId },
+      select: { id: true },
+    });
+    if (namedPreset) throw new BrandAssetError("asset_in_use", 409);
+
     const projects = await tx.editorProject.findMany({
       select: { draftJson: true },
     });
