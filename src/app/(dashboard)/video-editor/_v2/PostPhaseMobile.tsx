@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Loader2, Move, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Undo2,
+  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Undo2,
 } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
@@ -30,11 +30,13 @@ import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
 import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
+import { LayerVisibilityControls } from "./LayerVisibilityControls";
 import { MobileSheet } from "./MobileSheet";
 import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
 import { brollWindowSpans } from "@/lib/broll-spans";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
+import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
 import { trackEvent } from "@/lib/client-telemetry";
 import { avatarFadeApplies } from "@/lib/avatar-fade";
 
@@ -58,6 +60,8 @@ export function PostPhaseMobile({
   projectId,
   logoOverlay,
   onLogoOverlayChange,
+  layerVisibility,
+  onLayerVisibilityChange,
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
@@ -75,6 +79,10 @@ export function PostPhaseMobile({
   projectId: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  layerVisibility: EditorLayerVisibility;
+  onLayerVisibilityChange: (
+    next: EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility)
+  ) => void;
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
@@ -90,6 +98,8 @@ export function PostPhaseMobile({
     projectId,
     logoOverlay,
     onLogoOverlayChange,
+    layerVisibility,
+    onLayerVisibilityChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
@@ -99,8 +109,10 @@ export function PostPhaseMobile({
   const [styleOpen, setStyleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [logoOpen, setLogoOpen] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const logoTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const layersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
   // Public flag/internal beta gate only. Upload Avatar now has its own cutaway re-composite path.
   const brollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
@@ -113,6 +125,10 @@ export function PostPhaseMobile({
   );
   const pct = Math.min(100, Math.max(0, (ed.timeMs / durationMs) * 100));
   const busy = ed.exp.phase === "burning" || ed.exp.phase === "saving";
+  const hasAvatar = Boolean(ed.preview?.avatarModel && ed.preview.avatarModel !== "none");
+  const hiddenLayerCount = (["avatar", "subtitles", "logo"] as const)
+    .filter((layer) => ed.layerAvailability[layer] && !ed.layerVisibility[layer])
+    .length;
   // มือถือไม่มี timeline (ตัดทิ้งตั้งใจ) — แถบชิปนี้คือทางเข้าเลือกหน้าต่างบีโรลแทน
   const brollSpans = useMemo(() => brollWindowSpans(ed.previewConfig, durationMs), [ed.previewConfig, durationMs]);
 
@@ -142,6 +158,7 @@ export function PostPhaseMobile({
     v?.pause(); // กันเสียงเล่นค้างหลัง sheet ที่บัง preview
     setStyleOpen(false);
     setLogoOpen(false);
+    setLayersOpen(false);
     setEditOpen(true);
   }
 
@@ -168,6 +185,7 @@ export function PostPhaseMobile({
   function openStyle() {
     setEditOpen(false);
     setLogoOpen(false);
+    setLayersOpen(false);
     setStyleOpen(true);
   }
 
@@ -175,7 +193,16 @@ export function PostPhaseMobile({
     ed.videoRef.current?.pause();
     setEditOpen(false);
     setStyleOpen(false);
+    setLayersOpen(false);
     setLogoOpen(true);
+  }
+
+  function openLayers() {
+    ed.videoRef.current?.pause();
+    setEditOpen(false);
+    setStyleOpen(false);
+    setLogoOpen(false);
+    setLayersOpen(true);
   }
 
   // timing edits ทั้งหมดเข้าทาง handleCaptionsChange(next, true) เดียวกับ timeline drag commit
@@ -234,7 +261,7 @@ export function PostPhaseMobile({
         <div data-mobile-video-preview-frame="true" style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>
           <video
             ref={ed.videoRef}
-            src={ed.baseUrl}
+            src={ed.previewVideoUrl}
             playsInline
             onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
             onPlay={() => ed.setPlaying(true)}
@@ -242,12 +269,18 @@ export function PostPhaseMobile({
             onError={onPreviewError}
             className="h-full w-full object-cover"
           />
-          <LogoOverlayPreview value={logoOverlay} asset={ed.logo.asset} />
-          {/* เส้นไกด์ตำแหน่งซับ */}
-          <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
+          <LogoOverlayPreview
+            value={logoOverlay}
+            asset={ed.logo.asset}
+            visible={ed.layerVisibility.logo}
+          />
+          {ed.layerVisibility.subtitles && (
+            /* เส้นไกด์ตำแหน่งซับ */
+            <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
+          )}
           {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) */}
           <V2CaptionOverlay
-            captions={ed.captions}
+            captions={ed.layerVisibility.subtitles ? ed.captions : []}
             overrides={ed.overrides}
             cfg={ed.cfg}
             videoRef={ed.videoRef}
@@ -347,6 +380,33 @@ export function PostPhaseMobile({
             >
               <Check size={11} strokeWidth={3} aria-hidden="true" />
               เปิดอยู่
+            </span>
+          )}
+        </button>
+        <button
+          ref={layersTriggerRef}
+          type="button"
+          data-mobile-editor-action="layers"
+          aria-haspopup="dialog"
+          aria-expanded={layersOpen}
+          onClick={openLayers}
+          style={mobileEditorActionStyle}
+        >
+          <Layers3 size={16} aria-hidden="true" />
+          <span>เลเยอร์</span>
+          {hiddenLayerCount > 0 && (
+            <span
+              style={{
+                padding: "2px 6px",
+                borderRadius: radius.pill,
+                background: "rgba(251,191,36,.11)",
+                color: color.warning,
+                fontSize: 10,
+                fontWeight: 600,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ปิด {hiddenLayerCount}
             </span>
           )}
         </button>
@@ -818,6 +878,23 @@ export function PostPhaseMobile({
             editor={ed.logo}
           />
         </div>
+      </MobileSheet>
+
+      <MobileSheet
+        open={layersOpen}
+        onClose={() => setLayersOpen(false)}
+        title="เปิด–ปิดเลเยอร์"
+        size="medium"
+        triggerRef={layersTriggerRef}
+      >
+        <LayerVisibilityControls
+          hasAvatar={hasAvatar}
+          hasLogo={ed.layerAvailability.logo}
+          visibility={ed.layerVisibility}
+          availability={ed.layerAvailability}
+          disabled={busy || ed.logo.saving}
+          onChange={ed.setLayerEnabled}
+        />
       </MobileSheet>
 
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}

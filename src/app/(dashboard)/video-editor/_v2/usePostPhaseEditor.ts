@@ -31,6 +31,13 @@ import {
   normalizeLogoOverlayConfig,
   type LogoOverlayConfig,
 } from "@/lib/logo-overlay";
+import {
+  canToggleAvatarLayer,
+  normalizeEditorLayerVisibility,
+  resolveEditorPreviewVideoUrl,
+  type EditableEditorLayer,
+  type EditorLayerVisibility,
+} from "@/lib/editor-layer-visibility";
 import type { V2JobState } from "./useV2Job";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
@@ -98,6 +105,11 @@ const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
 };
 const ignoreProjectSaveRetry = () => undefined;
 const alwaysReadyForProjectOperation = () => true;
+type LayerVisibilityChange = EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility);
+
+const ignoreLayerVisibilityChange = (_next: LayerVisibilityChange) => {
+  void _next;
+};
 
 export type UsePostPhaseEditorOptions = {
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
@@ -107,6 +119,8 @@ export type UsePostPhaseEditorOptions = {
   projectId?: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange?: (next: LogoOverlayConfig | undefined) => void;
+  layerVisibility?: EditorLayerVisibility;
+  onLayerVisibilityChange?: (next: LayerVisibilityChange) => void;
   logoEligible?: boolean;
   projectSaveStatus?: LogoProjectSaveStatus;
   onRetryProjectSave?: () => void;
@@ -128,6 +142,8 @@ export function usePostPhaseEditor(
     projectId = job.projectId,
     logoOverlay,
     onLogoOverlayChange = ignoreLogoChange,
+    layerVisibility,
+    onLayerVisibilityChange = ignoreLayerVisibilityChange,
     logoEligible = false,
     projectSaveStatus = "idle",
     onRetryProjectSave = ignoreProjectSaveRetry,
@@ -170,6 +186,7 @@ export function usePostPhaseEditor(
     canApplyLogo: canRunProjectOperation,
   });
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const pollStop = useRef(false);
@@ -374,6 +391,73 @@ export function usePostPhaseEditor(
     preview.avatarVideoUrl && compositeBaseUrl && preview.avatarMode &&
     (preview.avatarMode !== "bookend-both" || preview.tailAvatarUrl)
   );
+  const hasAvatar = Boolean(preview?.avatarModel && preview.avatarModel !== "none");
+  const canToggleAvatar = canToggleAvatarLayer({
+    hasAvatar,
+    avatarBaseVideoUrl: compositeBaseUrl,
+  });
+  const persistedLayerVisibility = normalizeEditorLayerVisibility(layerVisibility);
+  const effectiveLayerVisibility: EditorLayerVisibility = {
+    ...persistedLayerVisibility,
+    avatar: canToggleAvatar ? persistedLayerVisibility.avatar : true,
+  };
+  const logoConfig = normalizeLogoOverlayConfig(logoOverlay);
+  const editorLayerVisibility: Record<EditableEditorLayer, boolean> = {
+    avatar: effectiveLayerVisibility.avatar,
+    subtitles: effectiveLayerVisibility.subtitles,
+    logo: Boolean(logoConfig?.enabled),
+  };
+  const layerAvailability: Record<EditableEditorLayer, boolean> = {
+    avatar: canToggleAvatar,
+    subtitles: captions.length > 0,
+    logo: Boolean(logoConfig),
+  };
+  const previewVideoUrl = resolveEditorPreviewVideoUrl({
+    renderedVideoUrl: baseUrl,
+    avatarBaseVideoUrl: compositeBaseUrl,
+    avatarVisible: effectiveLayerVisibility.avatar,
+  });
+
+  function setLayerEnabled(layer: EditableEditorLayer, enabled: boolean) {
+    if (!layerAvailability[layer]) return;
+    if (layer === "avatar") {
+      const video = videoRef.current;
+      pendingVideoSourceSwapRef.current = video
+        ? { time: video.currentTime, resume: !video.paused && !video.ended }
+        : null;
+      onLayerVisibilityChange((current) => ({
+        ...normalizeEditorLayerVisibility(current),
+        avatar: enabled,
+      }));
+    } else if (layer === "subtitles") {
+      onLayerVisibilityChange((current) => ({
+        ...normalizeEditorLayerVisibility(current),
+        subtitles: enabled,
+      }));
+    } else {
+      logo.setEnabled(enabled);
+    }
+    trackEvent("editor_layer_visibility_changed", {
+      status: "done",
+      properties: { layer, enabled, surface },
+    });
+  }
+
+  useEffect(() => {
+    const pending = pendingVideoSourceSwapRef.current;
+    const video = videoRef.current;
+    if (!pending || !video) return;
+    const restorePlayback = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : pending.time;
+      video.currentTime = Math.min(pending.time, Math.max(0, duration));
+      setTimeMs(video.currentTime * 1000);
+      pendingVideoSourceSwapRef.current = null;
+      if (pending.resume) void video.play().catch(() => undefined);
+    };
+    video.addEventListener("loadedmetadata", restorePlayback, { once: true });
+    video.load();
+    return () => video.removeEventListener("loadedmetadata", restorePlayback);
+  }, [previewVideoUrl]);
 
   // การ์ดที่ "กำลังพูด" ตาม preview (แยกจาก selected = การ์ดที่เลือกแก้)
   const activeIdx = useMemo(() => findActiveCaptionIdx(captions, timeMs), [captions, timeMs]);
@@ -695,13 +779,14 @@ export function usePostPhaseEditor(
     setExp({ phase: "saving" });
     try {
       const overlay = buildV2BurnConfig(
-        baseUrl,
+        previewVideoUrl,
         captions,
         preview?.audioDurationMs ?? 0,
         cfg,
         30,
         overrides,
         logoOverlay,
+        effectiveLayerVisibility,
       );
       const result = await onExportJob({
         sourceJobId: job.jobId,
@@ -728,6 +813,10 @@ export function usePostPhaseEditor(
     preview,
     logo,
     stylePresets,
+    layerVisibility: editorLayerVisibility,
+    layerAvailability,
+    setLayerEnabled,
+    previewVideoUrl,
     previewConfig,
     compositeBaseUrl,
     windowEdits, setWindowEdit, setWindowEdits, clearWindowEdit,

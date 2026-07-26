@@ -1,14 +1,14 @@
 "use client";
 
 /**
- * Timeline 4 แทร็กหลัก + waveform เสียงพูดสำหรับอ้างอิง (จอ 4b ล่าง, P6b) — decision #5:
+ * Timeline หลายแทร็ก + waveform เสียงพูดสำหรับอ้างอิง (จอ 4b ล่าง, P6b) — decision #5:
  *   ซับ = แก้ได้จริง (ลากขอบ + snap + undo ผ่าน onCaptionsChange) ·
- *   อวตาร/บีโรล/เพลง = แสดงผล + คลิก jump เท่านั้น
+ *   อวตาร/ซับ/โลโก้ = เปิด–ปิดโดยไม่ลบการตั้งค่า · บีโรล/เพลง = คลิก jump
  * สีแทร็กคงที่ตาม Design System: อวตารม่วง · บีโรลฟ้า · ซับเหลือง · เพลงชมพู
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Play, Pause, Magnet, Redo2, ZoomIn, ZoomOut, Undo2 } from "lucide-react";
+import { Eye, EyeOff, Play, Pause, Magnet, Redo2, ZoomIn, ZoomOut, Undo2 } from "lucide-react";
 import { color, font } from "./tokens";
 import type { V2Caption } from "./subtitle-style";
 import { useAudioPeaks } from "../_components/useAudioPeaks";
@@ -17,9 +17,10 @@ import { snapPointsFromPeaks, snapToNearest } from "../_components/waveform-snap
 import { brollWindowSpans, type BrollWindowSpan } from "@/lib/broll-spans";
 import { AVATAR_FADE_DURATION_SEC } from "@/lib/avatar-fade";
 import { nextTimelineScrollLeft } from "./timeline-wheel-scroll";
+import type { EditableEditorLayer } from "@/lib/editor-layer-visibility";
 
 const TRACK_H = 26;
-const LABEL_W = 92;
+const LABEL_W = 112;
 const MIN_CARD_MS = 300;
 const SNAP_MS = 120;
 
@@ -42,6 +43,8 @@ export function TimelinePanel({
   videoRef, timeMs, durationMs, onScrub,
   config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs, avatarFadeApplies,
   voiceUrl, onSelectBrollWindow, editedWindowIndices, disabledWindowIndices,
+  hasLogo, layerVisibility, layerAvailability, onLayerVisibilityChange,
+  layerControlsDisabled = false,
 }: {
   captions: V2Caption[];
   onCaptionsChange: (next: V2Caption[], commit: boolean) => void;
@@ -72,6 +75,11 @@ export function TimelinePanel({
   editedWindowIndices?: ReadonlySet<number>;
   /** B-roll windows that are currently disabled (includes optimistic staged visibility). */
   disabledWindowIndices?: ReadonlySet<number>;
+  hasLogo: boolean;
+  layerVisibility: Record<EditableEditorLayer, boolean>;
+  layerAvailability: Record<EditableEditorLayer, boolean>;
+  onLayerVisibilityChange: (layer: EditableEditorLayer, enabled: boolean) => void;
+  layerControlsDisabled?: boolean;
 }) {
   const [pxPerSec, setPxPerSec] = useState(24);
   const [snap, setSnap] = useState(true);
@@ -195,12 +203,39 @@ export function TimelinePanel({
     onCaptionsChange(captions.map((c) => ({ ...c })), true); // commit → push history
   }
 
-  const trackLabel = (label: string, c: string) => (
+  const trackLabel = (label: string, c: string, layer?: EditableEditorLayer) => {
+    const enabled = layer ? layerVisibility[layer] : true;
+    const available = layer ? layerAvailability[layer] : false;
+    const disabled = layerControlsDisabled || !available;
+    const unavailableTitle = layer === "avatar"
+      ? "วิดีโอนี้รวมอวตารไว้แล้ว จึงปิดแยกจาก Timeline ไม่ได้"
+      : "เลเยอร์นี้ยังไม่พร้อมใช้งาน";
+    return (
     <div className="flex shrink-0 items-center gap-1.5 pl-2" style={{ width: LABEL_W, fontSize: 10, color: color.textSecondary }}>
       <span className="h-[7px] w-[7px] rounded-full" style={{ background: c }} />
-      {label}
+      <span>{label}</span>
+      {layer && (
+        <button
+          type="button"
+          data-layer-toggle={layer}
+          className="timeline-layer-toggle ml-auto flex h-7 w-7 items-center justify-center rounded-md"
+          aria-label={`${enabled ? "ปิด" : "เปิด"}เลเยอร์${label}`}
+          aria-pressed={enabled}
+          disabled={disabled}
+          title={available
+            ? `${enabled ? "ปิด" : "เปิด"}เลเยอร์${label}ใน Preview และไฟล์ส่งออก`
+            : unavailableTitle}
+          onClick={(event) => {
+            event.stopPropagation();
+            onLayerVisibilityChange(layer, !enabled);
+          }}
+        >
+          {enabled ? <Eye size={14} aria-hidden="true" /> : <EyeOff size={14} aria-hidden="true" />}
+        </button>
+      )}
     </div>
-  );
+    );
+  };
 
   const clipStyle = (c: string, isSelected = false): React.CSSProperties => ({
     position: "absolute", top: 3, bottom: 3, borderRadius: 6,
@@ -239,7 +274,7 @@ export function TimelinePanel({
   ) : null;
 
   return (
-    <div className="flex shrink-0 flex-col" style={{ height: peaks && peaks.length > 0 ? 226 : 192, background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
+    <div className="flex shrink-0 flex-col" style={{ height: (peaks && peaks.length > 0 ? 226 : 192) + (hasLogo ? TRACK_H : 0), background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
       {/* Transport 38px */}
       <div className="flex h-[38px] shrink-0 items-center gap-3 px-3" style={{ borderBottom: `1px solid ${color.cardBorder}` }}>
         <button onClick={togglePlay} className="flex h-[24px] w-[24px] items-center justify-center rounded-full" style={{ background: "rgba(255,255,255,.07)", border: `1px solid ${color.cardBorder}`, color: color.text, cursor: "pointer" }} aria-label="เล่น/หยุด">
@@ -272,7 +307,7 @@ export function TimelinePanel({
           className="relative"
           style={{ width: widthPx + LABEL_W + 16, minWidth: "100%" }}
           onPointerDown={(e) => {
-            if ((e.target as HTMLElement).closest("[data-clip],[data-edge]")) return;
+            if ((e.target as HTMLElement).closest("[data-clip],[data-edge],[data-layer-toggle]")) return;
             scrubbingRef.current = true;
             (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
             const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -293,7 +328,7 @@ export function TimelinePanel({
           onPointerCancel={() => { scrubbingRef.current = false; flushPendingSeek(); }}
         >
           {/* ruler */}
-          <div className="relative ml-[92px] h-[24px] cursor-ew-resize" style={{ touchAction: "none" }}>
+          <div className="relative h-[24px] cursor-ew-resize" style={{ marginLeft: LABEL_W, touchAction: "none" }}>
             {Array.from({ length: Math.floor(durMs / 1000) + 1 }, (_, s) => s).filter((s) => s % (pxPerSec < 18 ? 5 : 1) === 0).map((s) => (
               <span key={s} className="absolute top-0 select-none" style={{ left: toPx(s * 1000), fontSize: 8, color: color.textFaintest }}>
                 {fmt(s * 1000)}
@@ -306,8 +341,8 @@ export function TimelinePanel({
               งานเก่าไม่มีโหมด = เต็มคลิปแบบไม่ระบุ */}
           {hasAvatar && (
             <div className="relative flex items-center" style={{ height: TRACK_H }}>
-              {trackLabel("อวตาร", color.trackAvatar)}
-              <div className="relative flex-1" style={{ height: TRACK_H }}>
+              {trackLabel("อวตาร", color.trackAvatar, "avatar")}
+              <div className="relative flex-1" style={{ height: TRACK_H, opacity: layerVisibility.avatar ? 1 : 0.35 }}>
                 {avatarMode === "bookend" || avatarMode === "bookend-both" ? (
                   <>
                     <div data-clip title={avatarFadeTitle} style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(avatarIntroMs)) }} onClick={() => seekTo(0)}>
@@ -383,8 +418,8 @@ export function TimelinePanel({
 
           {/* ซับไทย — แก้ได้ */}
           <div className="relative flex items-center" style={{ height: TRACK_H }}>
-            {trackLabel("ซับไทย", color.trackSub)}
-            <div className="relative flex-1" style={{ height: TRACK_H }} onPointerMove={onEdgeMove} onPointerUp={onEdgeUp}>
+            {trackLabel("ซับไทย", color.trackSub, "subtitles")}
+            <div className="relative flex-1" style={{ height: TRACK_H, opacity: layerVisibility.subtitles ? 1 : 0.35 }} onPointerMove={onEdgeMove} onPointerUp={onEdgeUp}>
               {captions.map((c, i) => (
                 <div
                   key={i}
@@ -401,6 +436,22 @@ export function TimelinePanel({
               ))}
             </div>
           </div>
+
+          {/* โลโก้ — overlay จริงอยู่เหนือวิดีโอและใต้ซับ */}
+          {hasLogo && (
+            <div className="relative flex items-center" style={{ height: TRACK_H }}>
+              {trackLabel("โลโก้", color.primary300, "logo")}
+              <div className="relative flex-1" style={{ height: TRACK_H, opacity: layerVisibility.logo ? 1 : 0.35 }}>
+                <div
+                  data-clip
+                  style={{ ...clipStyle(color.primary300), left: 0, width: Math.max(24, toPx(durMs) - 2) }}
+                  onClick={() => seekTo(0)}
+                >
+                  โลโก้ทั้งคลิป
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* เพลง */}
           {bgmFile && (
@@ -421,6 +472,34 @@ export function TimelinePanel({
           </div>
         </div>
       </div>
+      <style>{`
+        .timeline-layer-toggle {
+          color: ${color.textFaint};
+          background: transparent;
+          border: 1px solid transparent;
+          cursor: pointer;
+        }
+        .timeline-layer-toggle[aria-pressed="false"] {
+          color: ${color.warning};
+          background: rgba(251,191,36,.08);
+          border-color: rgba(251,191,36,.2);
+        }
+        .timeline-layer-toggle:disabled {
+          cursor: not-allowed;
+          opacity: .35;
+        }
+        .timeline-layer-toggle:focus-visible {
+          outline: 2px solid ${color.primary300};
+          outline-offset: 2px;
+        }
+        @media (hover: hover) {
+          .timeline-layer-toggle:not(:disabled):hover {
+            color: ${color.text};
+            background: rgba(255,255,255,.07);
+            border-color: ${color.cardBorder};
+          }
+        }
+      `}</style>
     </div>
   );
 }

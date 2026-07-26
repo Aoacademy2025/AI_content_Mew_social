@@ -11,6 +11,11 @@ import {
 } from "@/lib/logo-overlay";
 import type { SubPreset, SubTextEffect } from "../_components/types";
 import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "../_components/constants";
+import {
+  DEFAULT_EDITOR_LAYER_VISIBILITY,
+  normalizeEditorLayerVisibility,
+  type EditorLayerVisibility,
+} from "@/lib/editor-layer-visibility";
 
 export { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST };
 
@@ -235,13 +240,15 @@ export function buildV2BurnConfig(
   fps = 30,
   overrides: V2CardOverrides = {},
   logoOverlay?: LogoOverlayConfig,
+  layerVisibility: EditorLayerVisibility = DEFAULT_EDITOR_LAYER_VISIBILITY,
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
   const durationInFrames = Math.max(Math.round((durMs / 1000) * fps), fps);
   const fontWeight = cfg.bold ? 900 : 400;
   let frameCursor = 0;
-  const keywordPopups = captions.flatMap((c, idx) => {
+  const layers = normalizeEditorLayerVisibility(layerVisibility);
+  const keywordPopups = layers.subtitles ? captions.flatMap((c, idx) => {
     if (frameCursor >= durationInFrames) return [];
     const ov = overrides[idx] ?? {};
     const textColor = ov.textColor ?? cfg.textColor;
@@ -263,7 +270,7 @@ export function buildV2BurnConfig(
     const end = Math.min(Math.max(popup.end, start + 1), durationInFrames);
     frameCursor = end;
     return [{ ...popup, start, end }];
-  });
+  }) : [];
   const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
   return {
     videoUrl: baseVideoUrl,

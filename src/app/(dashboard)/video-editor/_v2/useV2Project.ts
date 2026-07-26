@@ -31,6 +31,10 @@ import {
   type LogoOverlayConfig,
 } from "@/lib/logo-overlay";
 import {
+  normalizeEditorLayerVisibility,
+  type EditorLayerVisibility,
+} from "@/lib/editor-layer-visibility";
+import {
   parseTtsProvider,
   visibleTtsProvider,
   type OmniVoiceInfo,
@@ -55,6 +59,7 @@ interface V2Draft {
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   logoOverlay?: LogoOverlayConfig;
+  layerVisibility?: EditorLayerVisibility;
 }
 
 type ProjectStatus = "draft" | "rendering" | "post" | "exporting" | "exported" | "archived";
@@ -564,6 +569,13 @@ export function useV2Project() {
   const [logoOverlay, setLogoOverlay, setLogoOverlayRaw] = useUserDraftState<LogoOverlayConfig | undefined>(
     d.logoOverlay, "logoOverlay", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
+  const [layerVisibility, setLayerVisibility, setLayerVisibilityRaw] = useUserDraftState<EditorLayerVisibility>(
+    normalizeEditorLayerVisibility(d.layerVisibility),
+    "layerVisibility",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
   // ── Mix preset (D5.1) — non-admin b-roll AI mix. FREE users are forced to "free";
   // paid (isPaidManagedKie) default to "recommended" (applied in the fetchMe effect
   // once plan is known). Draft value wins if the user already chose one. ──
@@ -587,7 +599,7 @@ export function useV2Project() {
       projectTitle,
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
-      kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay,
+      kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, layerVisibility,
     };
   }
 
@@ -622,6 +634,7 @@ export function useV2Project() {
     if (next.brollRegionPreference) setBrollRegionPreferenceRaw(next.brollRegionPreference);
     if (next.brollVisualStyle) setBrollVisualStyleRaw(next.brollVisualStyle);
     setLogoOverlayRaw(normalizeLogoOverlayConfig(next.logoOverlay) ?? undefined);
+    setLayerVisibilityRaw(normalizeEditorLayerVisibility(next.layerVisibility));
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
@@ -1971,7 +1984,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, layerVisibility, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -2034,6 +2047,7 @@ export function useV2Project() {
     brollRegionPreference, setBrollRegionPreference,
     brollVisualStyle, setBrollVisualStyle,
     logoOverlay, setLogoOverlay,
+    layerVisibility, setLayerVisibility,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, isAdmin, isPaidManagedKie, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,

@@ -441,9 +441,9 @@ function assertMobileLogoRuntimeStructure(source: string) {
     root,
     (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "MobileSheet",
   );
-  assert.equal(mobileSheets.length, 3, "edit, style, and logo must share MobileSheet");
+  assert.equal(mobileSheets.length, 4, "edit, style, logo, and layers must share MobileSheet");
   assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "large").length, 2);
-  assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "medium").length, 1);
+  assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "medium").length, 2);
 }
 
 function assertExactResponsiveBranchStructure(breakpointSource: string, shellSource: string) {
