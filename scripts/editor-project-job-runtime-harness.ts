@@ -5,6 +5,7 @@ import ts from "typescript";
 import {
   canonicalVideoJobRequest,
   fingerprintVideoJobRequest,
+  legacyVideoJobIdempotencyKey,
 } from "../src/lib/video-job-idempotency";
 
 type HookSlot =
@@ -1643,6 +1644,7 @@ async function runExactReplayRouteScenario(input: {
           : body.mode === "broll-rerender"
             ? "broll-rerender"
             : "preview",
+        legacyVideoJobIdempotencyKey: () => "legacy-client-stable-key",
       };
     }
     if (specifier === "@/lib/prisma") {
@@ -1656,16 +1658,17 @@ async function runExactReplayRouteScenario(input: {
             findFirst: async (query: { where: Record<string, unknown> }) => {
               replayQueries.push(query.where);
               lookupCount += 1;
+              const candidate = lookupCount === 1
+                ? (input.persistedRow ?? null)
+                : (input.persistedAfterCreate ?? input.persistedRow ?? null);
               if (
                 query.where.userId !== "route-user"
-                || query.where.idempotencyKey !== input.body.idempotencyKey
+                || candidate?.idempotencyKey !== query.where.idempotencyKey
               ) return null;
               if (input.persistedRowUserId && input.persistedRowUserId !== query.where.userId) {
                 return null;
               }
-              return lookupCount === 1
-                ? (input.persistedRow ?? null)
-                : (input.persistedAfterCreate ?? input.persistedRow ?? null);
+              return candidate;
             },
             findUnique: async () => {
               touchMutable("source-job");
@@ -1753,6 +1756,30 @@ async function runExactReplayRouteScenario(input: {
         RenderDeployDrainError,
       };
     }
+    if (specifier === "@/lib/omnivoice") {
+      return {
+        checkOmniVoiceReady: async () => null,
+        isOmniVoiceUserAllowed: () => false,
+        isValidOmniVoiceId: () => false,
+        OmniVoiceConfigError: class OmniVoiceConfigError extends Error {},
+        omnivoiceConfig: {},
+      };
+    }
+    if (specifier === "@/lib/omnivoice-limits") return { omnivoiceScriptCharCapForPlan: () => 0 };
+    if (specifier === "@/lib/hero-voice-speech") {
+      return { prepareHeroVoiceSpeech: async () => { throw new Error("unused"); } };
+    }
+    if (specifier === "@/lib/internal-ai-access") {
+      return {
+        isHeroAiBetaUser: () => false,
+        isInternalAiBetaEnabledFor: () => false,
+        isInternalAiTester: () => false,
+      };
+    }
+    if (specifier === "@/lib/ai-image-policy") return { AI_IMAGE_MODELS: new Set<string>() };
+    if (specifier === "@/lib/image-generation-provider.server") {
+      return { describeImageOffer: () => null };
+    }
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));
@@ -1805,6 +1832,71 @@ export async function exactReplayIdentityPrecedesMutableGates(): Promise<void> {
     await fingerprintVideoJobRequest("preview", { ...canonicalLeft, ordered: ["1", 1, false] }),
     "array order and JSON scalar types remain significant",
   );
+  const legacyCompatibilityKey = legacyVideoJobIdempotencyKey(canonicalFingerprint);
+  assert.equal(
+    legacyCompatibilityKey,
+    legacyVideoJobIdempotencyKey(canonicalFingerprint),
+    "the compatibility key is stable across retries and cannot race at a time boundary",
+  );
+  assert.equal(
+    legacyCompatibilityKey.length <= 120,
+    true,
+    "the server-generated compatibility key fits the durable schema limit",
+  );
+
+  const legacyBody = {
+    script: "request submitted by a tab opened before idempotency deployment",
+    voiceProvider: "gemini",
+    stockSource: "stock",
+    subtitleMode: "sentence",
+    subtitlePosition: "bottom",
+  };
+  const legacyFingerprint = runtimeRequestFingerprint("preview", legacyBody);
+  const legacyCreate = await runExactReplayRouteScenario({ body: legacyBody });
+  assert.equal(legacyCreate.response.status, 200, "a stale client without a transport key remains compatible");
+  assert.equal(legacyCreate.responseBody.jobId, "new-route-job");
+  assert.equal(legacyCreate.responseBody.legacyClient, true);
+  assert.equal(legacyCreate.responseBody.reloadRecommended, true);
+  assert.equal(legacyCreate.createCalls.length, 1, "a stale client creates one durable job");
+  assert.equal(
+    legacyCreate.createCalls[0].idempotencyKey,
+    "legacy-client-stable-key",
+    "the server assigns a deterministic compatibility key",
+  );
+  assert.equal(
+    legacyCreate.createCalls[0].options.idempotencyFingerprint,
+    legacyFingerprint,
+    "the compatibility request persists the same canonical fingerprint",
+  );
+
+  const legacyReplay = await runExactReplayRouteScenario({
+    body: legacyBody,
+    persistedRow: {
+      id: "legacy-existing-job",
+      status: "processing",
+      idempotencyKey: "legacy-client-stable-key",
+      idempotencyFingerprint: legacyFingerprint,
+    },
+    failOnMutableGate: true,
+  });
+  assert.equal(legacyReplay.response.status, 200, "a stale-client retry replays the durable job");
+  assert.equal(legacyReplay.responseBody.jobId, "legacy-existing-job");
+  assert.equal(legacyReplay.responseBody.idempotentReplay, true);
+  assert.equal(legacyReplay.responseBody.legacyClient, true);
+  assert.deepEqual(legacyReplay.mutableTouches, [], "a stale-client replay touches no mutable gate");
+  assert.equal(legacyReplay.createCalls.length, 0, "a stale-client retry cannot duplicate the job");
+
+  for (const malformedIdempotencyKey of [null, 42, ""]) {
+    const malformed = await runExactReplayRouteScenario({
+      body: { ...legacyBody, idempotencyKey: malformedIdempotencyKey },
+    });
+    assert.equal(
+      malformed.response.status,
+      400,
+      "an explicitly malformed transport key fails closed instead of using compatibility mode",
+    );
+    assert.equal(malformed.createCalls.length, 0);
+  }
 
   const body = {
     idempotencyKey: "exact-preflight-key",

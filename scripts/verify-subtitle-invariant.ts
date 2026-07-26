@@ -2,6 +2,10 @@
 // buildKeywordPopups is the pure extraction of generate-config's inline popup builder.
 // run: npx tsx scripts/verify-subtitle-invariant.ts
 import { buildKeywordPopups } from "../src/lib/keyword-popups";
+import {
+  mergeCaptionWithNext,
+  type V2Caption,
+} from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
 
 let failures = 0;
 const check = (name: string, cond: boolean, detail = "") => {
@@ -26,6 +30,28 @@ check("position passed through", a[0].topPercent === 82);
 // DETERMINISM: identical input → identical output (the invariant the window flag must keep)
 const b = buildKeywordPopups(caps, opts);
 check("deterministic / byte-identical", JSON.stringify(a) === JSON.stringify(b));
+
+const thaiSplitAcrossCards: V2Caption[] = [
+  { text: "แล้วคอมเมน", startMs: 0, endMs: 800, tag: "hook" },
+  { text: "ต์บอกกัน", startMs: 800, endMs: 1500, tag: "body" },
+];
+const mergedThai = mergeCaptionWithNext(thaiSplitAcrossCards, 0);
+check(
+  "merge Thai captions without injecting a word-breaking space",
+  mergedThai[0].text === "แล้วคอมเมนต์บอกกัน",
+  JSON.stringify(mergedThai[0].text),
+);
+
+const latinCards: V2Caption[] = [
+  { text: "hello", startMs: 0, endMs: 800, tag: "hook" },
+  { text: "world", startMs: 800, endMs: 1500, tag: "body" },
+];
+const mergedLatin = mergeCaptionWithNext(latinCards, 0);
+check(
+  "merge Latin captions with one separating space",
+  mergedLatin[0].text === "hello world",
+  JSON.stringify(mergedLatin[0].text),
+);
 
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll subtitle-invariant checks passed.");

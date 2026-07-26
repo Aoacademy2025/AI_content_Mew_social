@@ -42,3 +42,14 @@ export async function fingerprintVideoJobRequest(
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+
+/**
+ * Compatibility for tabs loaded before idempotencyKey became mandatory.
+ * A stable fingerprint-derived key prevents duplicate paid jobs even when retries race.
+ * An intentional identical rerun must come from a refreshed client with its own attempt key.
+ */
+export function legacyVideoJobIdempotencyKey(
+  fingerprint: string,
+): string {
+  return `legacy-v1:${fingerprint}`;
+}
