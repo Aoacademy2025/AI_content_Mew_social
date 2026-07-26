@@ -35,5 +35,11 @@ jobs:
       - name: Verify karaoke subtitle visibility
         run: npm run verify:subtitle-karaoke
 
+      - name: Verify subtitle card invariants
+        run: npm run verify:subtitle-invariant
+
+      - name: Verify editor job runtime (idempotency + project recovery)
+        run: npm run verify:editor-job-runtime
+
       - name: Build
         run: npm run build
