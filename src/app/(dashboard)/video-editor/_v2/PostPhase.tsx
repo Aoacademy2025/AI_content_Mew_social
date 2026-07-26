@@ -22,6 +22,7 @@ import {
 import { useId, useMemo, useRef, useState } from "react";
 import type { V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
+import { avatarFadeApplies } from "@/lib/avatar-fade";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
@@ -612,6 +613,7 @@ export function PostPhase({
         avatarMode={ed.preview?.avatarMode ?? null}
         avatarIntroMs={(ed.preview?.avatarIntroSecs ?? 5) * 1000}
         avatarTailMs={(ed.preview?.avatarTailSecs ?? 5) * 1000}
+        avatarFadeApplies={avatarFadeApplies(ed.preview?.avatarModel ?? null)}
         voiceUrl={ed.preview?.voiceUrl ?? null}
       />
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}

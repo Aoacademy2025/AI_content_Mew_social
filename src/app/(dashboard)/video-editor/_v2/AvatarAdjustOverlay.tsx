@@ -6,7 +6,7 @@
  * ฟรีบน base เดิมผ่าน /api/heygen/composite (ไม่เรียก HeyGen ใหม่) (3) PATCH videoUrl ลง job
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, Move, RotateCcw } from "lucide-react";
 import { color, radius } from "./tokens";
@@ -14,6 +14,8 @@ import { BtnPrimary, BtnGhost, GroupLabel } from "./ui";
 import { normalizedBox, type AvatarLayout } from "@/lib/avatar-layout";
 import type { BrandAssetView, LogoOverlayConfig } from "@/lib/logo-overlay";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { avatarOpacityAtTime, avatarSourceFadeWindows } from "@/lib/avatar-fade";
+import { LIVE_PREVIEW_MAX_SEC } from "@/lib/preview-bg-params";
 
 const DEFAULT_LAYOUT: AvatarLayout = { scale: 1, offsetX: 0, offsetY: 0 };
 
@@ -59,6 +61,57 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
   const [avatarPreviewState, setAvatarPreviewState] = useState<"loading" | "ready" | "fallback">("loading");
   const fallbackToastShown = useRef(false);
 
+  // WYSIWYG fade (H7 must-fix): this keyed preview clip has no fade baked in — buildKeyChain
+  // (preview-bg) skips buildCompositeFilter's fade blend entirely. Recompute the SAME fade
+  // windows export uses (avatarSourceFadeWindows, keyed off avatarMode/introSecs/tailSecs +
+  // the bg's real total duration — see the backdrop <video>'s onLoadedMetadata below, which
+  // is the same file the server probes as `bgDuration`) and drive the preview <video>'s CSS
+  // opacity from currentTime so the position-adjust preview matches what export will render.
+  // Still-frame preview-frame is intentionally left untouched — it's paused, so a fade delta
+  // isn't visible there.
+  const avatarPreviewRef = useRef<HTMLVideoElement | null>(null);
+  const [bgDurationSec, setBgDurationSec] = useState<number | null>(null);
+  const [avatarOpacity, setAvatarOpacity] = useState(0); // matches opacity at t=0 (fade-in starts at 0)
+  const fadeWindows = useMemo(
+    () => (bgDurationSec != null
+      ? avatarSourceFadeWindows({
+          // This preview clip is ALWAYS keyed from `avatarVideoUrl` (the intro clip) — the tail
+          // clip (bookend-both) is a separate HeyGen render this component never fetches (see the
+          // preview-bg call above). Production only ever reaches this component for bookend-both
+          // when a real split composite will run (`canAdjustAvatar` requires tailAvatarUrl), and
+          // that split path fades the intro segment with ITS OWN single [0, introSecs] window —
+          // same shape as plain "bookend" (see composite/route.ts's `segmentFadeWindow =
+          // singleAvatarFadeWindow(dur)`). Feeding "bookend-both" here would add a second
+          // ([introSecs, introSecs+tailSecs]) window for a clip this component never shows, which
+          // can spuriously bleed into the preview's [0, maxSec] loop for a short introSecs — so
+          // normalize to "bookend" instead (mathematically identical for this segment).
+          timing: avatarMode === "bookend-both" ? "bookend" : avatarMode,
+          // Review fix (loop-snap regression): this preview <video> is LOOPED and its actual
+          // playable content never exceeds LIVE_PREVIEW_MAX_SEC (the `-t` bound ffmpeg is given
+          // below — see the preview-bg fetch). Feeding the real bgDurationSec here made "full"
+          // mode (and any bookend/intro longer than the excerpt) compute a window that stays at
+          // opacity=1 well past the loop point, so every loop restart snapped 1→0→1 instead of
+          // fading — a regression this diff introduced, since NO fade at all never had this
+          // problem. Clamping totalDurationSec to the excerpt length means the window's own
+          // fade-out edge now lands exactly at the loop boundary: every loop shows a real fade-in
+          // at 0 and a real fade-out at the excerpt's own end, matching the SHAPE of export's fade
+          // at a segment edge (even though, for full/long-intro clips, it's not literally the same
+          // instant export fades at — export's true edge is off past what a 4s excerpt can show).
+          totalDurationSec: Math.min(bgDurationSec, LIVE_PREVIEW_MAX_SEC),
+          introSecs,
+          tailSecs,
+        })
+      : []),
+    [avatarMode, bgDurationSec, introSecs, tailSecs],
+  );
+  // Re-sync immediately when the windows resolve (bg duration probe can land after the avatar
+  // preview clip has already started looping) instead of waiting for the next timeupdate tick.
+  useEffect(() => {
+    const v = avatarPreviewRef.current;
+    if (!v) return;
+    setAvatarOpacity(avatarOpacityAtTime(fadeWindows, v.currentTime));
+  }, [fadeWindows]);
+
   // `reason: "unsupported"` = the canPlayType probe failed (browser genuinely can't decode a
   // VP9-alpha webm) — keeps the original browser-blaming copy. Every OTHER failure (fetch error,
   // keying error, a 200 response pointing at an undecodable file caught by the <video onError>
@@ -79,6 +132,9 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
     let alive = true;
     setAvatarPreviewUrl(null);
     setAvatarPreviewState("loading");
+    // Reset to the t=0 opacity so a stale value from the PREVIOUS clip can't flash before the
+    // new one's first timeupdate tick lands (avatarId switch mid-session — rare but possible).
+    setAvatarOpacity(0);
 
     // Safari (and any browser without VP9-alpha) can't play the keyed webm at all — bail before
     // even hitting the network.
@@ -98,7 +154,7 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
     fetch("/api/heygen/preview-bg", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ avatarVideoUrl, maxSec: 4, halfRes: true }),
+      body: JSON.stringify({ avatarVideoUrl, maxSec: LIVE_PREVIEW_MAX_SEC, halfRes: true }),
       signal: controller.signal,
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`preview-bg failed (${r.status})`))))
@@ -225,6 +281,7 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
             onLoadedMetadata={(e) => {
               const v = e.currentTarget;
               try { v.currentTime = Math.min(0.05, v.duration || 0.05); } catch { /* ignore */ }
+              if (Number.isFinite(v.duration) && v.duration > 0) setBgDurationSec(v.duration);
             }}
           />
           <div className="absolute inset-0" style={{ background: "rgba(10,10,16,.35)" }} />
@@ -248,6 +305,7 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
           {avatarPreviewState === "ready" && avatarPreviewUrl && (
             <video
               key={avatarPreviewUrl}
+              ref={avatarPreviewRef}
               src={avatarPreviewUrl}
               autoPlay
               muted
@@ -257,7 +315,14 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
               // cache poisoned by a truncated write, or a codec edge case canPlayType missed) —
               // degrade to the same dashed-box fallback rather than showing a broken/blank video.
               onError={() => fallbackToBox("error")}
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 0 }}
+              // WYSIWYG fade sync (H7) — recompute opacity every timeupdate tick from the same
+              // windows/formula export bakes in via ffmpeg's blend filter (avatarOpacityAtTime).
+              onTimeUpdate={(e) => setAvatarOpacity(avatarOpacityAtTime(fadeWindows, e.currentTarget.currentTime))}
+              // [Low, review fix] onTimeUpdate fires at ~4Hz — a bare opacity jump between ticks
+              // can read as a stair-step rather than a smooth ramp. A short linear CSS transition
+              // smooths between ticks without affecting the underlying values avatarOpacityAtTime
+              // computes (still the source of truth; this is purely a rendering smoothing device).
+              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 0, opacity: avatarOpacity, transition: "opacity 100ms linear" }}
             />
           )}
           <div className="relative flex flex-col items-center gap-1" style={{ zIndex: 1 }}>
