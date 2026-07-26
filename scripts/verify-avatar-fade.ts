@@ -15,7 +15,7 @@ import {
   singleAvatarFadeWindow,
 } from "../src/lib/avatar-fade";
 import { buildCompositeFilter } from "../src/lib/chroma-key";
-import { LIVE_PREVIEW_MAX_SEC } from "../src/lib/preview-bg-params";
+import { LIVE_PREVIEW_MAX_SEC } from "../src/lib/preview-bg-constants";
 
 function ffmpegPath(): string {
   return require("@ffmpeg-installer/ffmpeg").path as string;
@@ -409,8 +409,17 @@ try {
   // how they drifted and caused the regression in the first place).
   assert.match(
     avatarAdjustSource,
-    /import \{ LIVE_PREVIEW_MAX_SEC \} from "@\/lib\/preview-bg-params";/,
+    /import \{ LIVE_PREVIEW_MAX_SEC \} from "@\/lib\/preview-bg-constants";/,
     "loop-snap fix: AvatarAdjustOverlay must import the shared excerpt-length constant",
+  );
+  // Build guard: this is a Client Component, and "@/lib/preview-bg-params" imports fs/path.
+  // Importing the constant from THERE type-checks fine but fails the production webpack build
+  // ("Module not found: Can't resolve 'fs'"), which is exactly how it shipped broken — tsc and
+  // the unit checks were both green. The constant lives in the dependency-free sibling instead.
+  assert.doesNotMatch(
+    avatarAdjustSource,
+    /from "@\/lib\/preview-bg-params"/,
+    "a Client Component must never import the fs-backed preview-bg-params module",
   );
   assert.match(
     avatarAdjustSource,

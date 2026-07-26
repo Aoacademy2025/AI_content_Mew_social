@@ -6,6 +6,7 @@ import * as journalModule from "../src/lib/editor-project-recovery-journal";
 import * as logoOverlayModule from "../src/lib/logo-overlay";
 import * as lineageModule from "../src/lib/editor-project-autosave-lineage";
 import * as ttsProvidersModule from "../src/lib/tts-providers";
+import * as editorLayerVisibilityModule from "../src/lib/editor-layer-visibility";
 import {
   createEditorProjectSaveQueue,
   type EditorProjectSaveInput,
@@ -502,6 +503,9 @@ function createHarness(options: HarnessOptions = {}) {
     if (specifier === "@/lib/editor-project-recovery-journal") return journalModule;
     if (specifier === "@/lib/editor-project-autosave-lineage") return lineageModule;
     if (specifier === "@/lib/logo-overlay") return logoOverlayModule;
+    // Pure module (normalize/derive only, no I/O) — same class as logo-overlay above, so run
+    // the real one and let the harness exercise production layer-visibility normalization.
+    if (specifier === "@/lib/editor-layer-visibility") return editorLayerVisibilityModule;
     // Pure module — run the real parser so the harness sees production voice-engine coercion.
     if (specifier === "@/lib/tts-providers") return ttsProvidersModule;
     // The canary hook is a network gate, not project lifecycle: stub it to the value the real

@@ -15,7 +15,9 @@ import { normalizedBox, type AvatarLayout } from "@/lib/avatar-layout";
 import type { BrandAssetView, LogoOverlayConfig } from "@/lib/logo-overlay";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
 import { avatarOpacityAtTime, avatarSourceFadeWindows } from "@/lib/avatar-fade";
-import { LIVE_PREVIEW_MAX_SEC } from "@/lib/preview-bg-params";
+// Constants module, NOT "@/lib/preview-bg-params" — that one imports fs/path and this is a
+// Client Component, so importing it there breaks the production build ("Can't resolve 'fs'").
+import { LIVE_PREVIEW_MAX_SEC } from "@/lib/preview-bg-constants";
 
 const DEFAULT_LAYOUT: AvatarLayout = { scale: 1, offsetX: 0, offsetY: 0 };
 
