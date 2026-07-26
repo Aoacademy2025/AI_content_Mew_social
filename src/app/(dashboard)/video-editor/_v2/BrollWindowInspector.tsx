@@ -394,8 +394,16 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     }
   }
 
+  function enableThisWindow() {
+    ed.setWindowEdit(index!, { enabled: true });
+    toast.success("เปิด B-roll ช่วงนี้แล้ว");
+  }
+
   async function handleGenerate() {
     if (!aiImageEnabled) { setAiError("AI Image กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้"); return; }
+    // Money guard: /api/videos/broll-window/generate spends credits BEFORE anything is shown,
+    // and a disabled window never renders its asset — the user would pay for nothing.
+    if (!enabled) { setAiError("ช่วงนี้ปิด B-roll อยู่ — เปิดก่อนจึงจะสร้างภาพได้ (กันเครดิตหายฟรี)"); return; }
     if (!finalPrompt) { setAiError("กรุณาระบุคำอธิบายรูปภาพที่ต้องการ"); return; }
     setAiBusy(true);
     setAiError(null);
@@ -468,6 +476,39 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
           ariaLabel={enabled ? "ปิด B-roll ช่วงนี้" : "เปิด B-roll ช่วงนี้"}
         />
       </div>
+      {!enabled && (
+        <div
+          role="status"
+          className="flex flex-col gap-2"
+          style={{
+            padding: "10px 12px",
+            borderRadius: radius.card,
+            background: "rgba(251,191,36,.08)",
+            border: "1px solid rgba(251,191,36,.28)",
+          }}
+        >
+          <div className="flex items-start gap-2">
+            <EyeOff size={15} color={color.warning} style={{ flex: "none", marginTop: 1 }} />
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span style={{ fontSize: 12, color: color.warning }}>ปิด B-roll ช่วงนี้อยู่</span>
+              <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>
+                {ed.preview?.avatarModel === "upload-cutaway"
+                  ? "ช่วงนี้จะแสดงคลิป Avatar ต้นฉบับแทน"
+                  : "ช่วงนี้จะใช้พื้นหลังเรียบแทน"}
+                {" — เปลี่ยนหรืออัปโหลดคลิปได้ แต่จะยังไม่แสดงจนกว่าจะเปิด B-roll ช่วงนี้"}
+              </span>
+            </div>
+          </div>
+          <BtnSecondary
+            onClick={enableThisWindow}
+            style={{ alignSelf: "flex-start", minHeight: 40, padding: "8px 14px", fontSize: 11.5 }}
+          >
+            <span className="flex items-center justify-center gap-1.5">
+              <Eye size={13} /> เปิด B-roll ช่วงนี้
+            </span>
+          </BtnSecondary>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-2">
         <BtnSecondary
           onClick={() => swapWith(previousSpan)}
@@ -646,10 +687,26 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
               เครดิตไม่พอ — ต้องใช้ {aiInsufficient.need} เครดิต (มี {aiInsufficient.balance}) — <a href="/pricing" style={{ color: color.link }}>ดูแพ็กเกจ</a>
             </span>
           )}
+          {!enabled && (
+            <div className="flex flex-col gap-2">
+              <span style={{ fontSize: 11.5, color: color.warning, lineHeight: 1.5 }}>
+                ช่วงนี้ปิด B-roll อยู่ — สร้างภาพ AI ไม่ได้ เพราะจะหักเครดิตแต่ภาพไม่ถูกใช้
+              </span>
+              <BtnSecondary
+                onClick={enableThisWindow}
+                style={{ alignSelf: "flex-start", minHeight: 40, padding: "8px 14px", fontSize: 11.5 }}
+              >
+                <span className="flex items-center justify-center gap-1.5">
+                  <Eye size={13} /> เปิด B-roll ช่วงนี้ก่อน
+                </span>
+              </BtnSecondary>
+            </div>
+          )}
           <BtnPrimary
             onClick={() => void handleGenerate()}
-            disabled={aiBusy || !finalPrompt}
-            style={aiBusy || !finalPrompt ? { opacity: 0.7, cursor: aiBusy ? "wait" : "default" } : undefined}
+            disabled={aiBusy || !finalPrompt || !enabled}
+            title={enabled ? undefined : "เปิด B-roll ช่วงนี้ก่อนจึงจะสร้างภาพได้"}
+            style={aiBusy || !finalPrompt || !enabled ? { opacity: 0.7, cursor: aiBusy ? "wait" : "default" } : undefined}
           >
             {aiBusy ? "กำลังสร้างภาพ…" : `สร้างภาพ (ใช้ ${genCost} เครดิต)`}
           </BtnPrimary>
@@ -661,21 +718,25 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
   // Single source of truth for the "here's the chosen clip" preview: derives from the
   // window's actual staged edit (not per-tab local state) so it can never go stale when
   // switching tabs — it always reflects what will actually be used on apply.
-  const stagedPreview = existingEdit?.enabled === false ? (
-    <div
-      className="flex items-center gap-2"
-      style={{
-        padding: "10px 12px",
-        borderRadius: radius.card,
-        background: "rgba(255,255,255,.035)",
-        border: `1px dashed ${color.cardBorder}`,
-      }}
-    >
-      <EyeOff size={15} color={color.textFaint} />
-      <span style={{ fontSize: 11.5, color: color.textSecondary }}>
-        ปิด B-roll ไว้ — จะเห็นผลหลังอัปเดตวิดีโอ
-      </span>
-    </div>
+  // `!enabled` already renders its own warning + CTA in the header, so this only has to
+  // report the staged asset (and stay quiet when the window is hidden).
+  const stagedPreview = !enabled ? (
+    existingEdit?.enabled === false ? (
+      <div
+        className="flex items-center gap-2"
+        style={{
+          padding: "10px 12px",
+          borderRadius: radius.card,
+          background: "rgba(255,255,255,.035)",
+          border: `1px dashed ${color.cardBorder}`,
+        }}
+      >
+        <EyeOff size={15} color={color.textFaint} />
+        <span style={{ fontSize: 11.5, color: color.textSecondary }}>
+          ปิด B-roll ไว้ — จะเห็นผลหลังอัปเดตวิดีโอ
+        </span>
+      </div>
+    ) : null
   ) : existingEdit?.src ? (
     <div className="flex flex-col gap-1.5">
       <span style={{ fontSize: 10.5, color: color.textFaintest }}>ตัวอย่างคลิปที่จะใช้</span>

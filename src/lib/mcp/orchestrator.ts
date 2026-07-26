@@ -48,7 +48,11 @@ import {
   buildFixedCountBrollWindows,
   type BrollWindow,
 } from "@/lib/broll-windows";
-import { planCutaway, resolveCutawayPersonRanges } from "@/lib/cutaway-plan";
+import {
+  planCutaway,
+  planCutawayRecomposite,
+  reconstructCutawayPersonRanges,
+} from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { buildDegradedTtsTiming } from "@/lib/tts-timing";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
@@ -783,33 +787,51 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         if (rrIsCutaway) {
           // Uploaded clip is a full-frame speaker layer, not chromakey footage. Visibility edits
           // control personRanges: B-roll OFF reveals the original uploaded clip; B-roll ON removes
-          // that overlay for the exact fixed window. Existing previews without persisted ranges
-          // reconstruct the original alternating cutaway plan by semantic sourceIndex.
-          rrCutawayPersonRanges = resolveCutawayPersonRanges(
-            mergeRes.bgVideos,
-            preview.cutawayPersonRanges,
-          );
-          const firstWindow = mergeRes.bgVideos
-            .filter((entry) => Number.isFinite(Number(entry.start)) && Number.isFinite(Number(entry.end)))
-            .sort((left, right) => Number(left.start) - Number(right.start))[0];
-          if (
-            rrCutawayPersonRanges.length > 0
-            && firstWindow
-            && firstWindow.brollEnabled !== true
-            && rrCutawayPersonRanges[0].start <= Number(firstWindow.end)
-          ) {
-            // Preserve the original hook fix for leading silence before the first transcript word.
-            rrCutawayPersonRanges[0] = { ...rrCutawayPersonRanges[0], start: 0 };
+          // that overlay for the exact fixed window.
+          //
+          // The baseline is NEVER guessed from the merged segments: new previews persist
+          // `cutawayPersonRanges`, legacy ones replay the creation formula (same captions, same
+          // window cadence / targetClipCount) so "swap one clip" can't reshuffle person ↔ B-roll
+          // across the whole video.
+          let rrBasePersonRanges: { start: number; end: number }[];
+          if (Array.isArray(preview.cutawayPersonRanges)) {
+            rrBasePersonRanges = preview.cutawayPersonRanges;
+          } else {
+            const rrSourceInput = parseCreateInput(src.inputJson);
+            rrBasePersonRanges = reconstructCutawayPersonRanges({
+              captions: preview.captions,
+              audioDurationMs: preview.audioDurationMs,
+              windowSec: Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4,
+              targetClipCount: rrSourceInput?.targetClipCount,
+            });
+            if (rrBasePersonRanges.length === 0) {
+              // No captions to replay => the original layout is unknowable. Fail closed instead
+              // of shipping a video whose person/B-roll spans are a guess.
+              await failJob(jobId, "ข้อมูลช่วงคนพูดของวิดีโอต้นฉบับไม่ครบ — ปรับ B-roll ไม่ได้");
+              return;
+            }
           }
-          await step("composite", 80);
-          const rrComp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
-            avatarVideoUrl: preview.avatarVideoUrl,
-            bgVideoUrl: rrNewBase,
-            mode: "cutaway",
-            personRanges: rrCutawayPersonRanges,
-          }, { retries: 0 });
-          rrFinalUrl = rrComp.videoUrl;
-          rrCompositeBaseUrl = null;
+
+          const rrDecision = planCutawayRecomposite(mergeRes.bgVideos, rrBasePersonRanges);
+          rrCutawayPersonRanges = rrDecision.personRanges;
+          if (rrDecision.skipComposite) {
+            // Every window shows B-roll => there is no speaker overlay left. Compositing would
+            // hand ffmpeg an empty `enable=` expression, which draws the uploaded clip over the
+            // WHOLE video (the exact opposite of the edit). The base render already carries the
+            // clip's own audio (config.voiceFile = the uploaded clip), so it IS the final video.
+            rrFinalUrl = rrNewBase;
+            rrCompositeBaseUrl = null;
+          } else {
+            await step("composite", 80);
+            const rrComp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
+              avatarVideoUrl: preview.avatarVideoUrl,
+              bgVideoUrl: rrNewBase,
+              mode: "cutaway",
+              personRanges: rrCutawayPersonRanges,
+            }, { retries: 0 });
+            rrFinalUrl = rrComp.videoUrl;
+            rrCompositeBaseUrl = null;
+          }
         } else {
           // AI Avatar: free chromakey re-composite, identical to AvatarAdjustOverlay.apply().
           if (!rrAvatarTiming || !heygenModes.has(rrAvatarTiming)) {
@@ -1033,6 +1055,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // ทำให้ base reel (b-roll) โผล่ก่อนหน้าคนพูด — คลุม person range แรกให้เริ่มที่ 0 (บั๊ก kapokja 07-04).
       // person เป็น overlay บน b-roll base (composite mode:cutaway) → ทุกจังหวะที่ไม่มี person range = b-roll โผล่.
       if (personRanges.length > 0) personRanges[0] = { ...personRanges[0], start: 0 };
+      // ไม่มี window เลย (transcript เพี้ยน) = ไม่มี b-roll ให้ตัดสลับ → คลิปครองทั้งไทม์ไลน์.
+      // ต้องระบุช่วงให้ชัด: /api/heygen/composite ปฏิเสธ personRanges ว่างแล้ว (fail-closed)
+      // แทน fail-open เดิมที่วางคลิปทับทั้งคลิปเงียบ ๆ.
+      else if (upDurMs > 0) personRanges.push({ start: 0, end: upDurMs / 1000 });
       const comp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
         mode: "cutaway",
         avatarVideoUrl: input.clipUrl,

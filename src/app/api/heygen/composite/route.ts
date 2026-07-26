@@ -161,9 +161,13 @@ async function cutawayComposite(
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
   const enableExpr = buildEnableExpr(personRangesSec);
-  const overlay = enableExpr
-    ? `[bg][fg]overlay=0:0:format=auto:enable='${enableExpr}'[out]`
-    : `[bg][fg]overlay=0:0:format=auto[out]`; // no ranges => behave like full (fail-open)
+  if (!enableExpr) {
+    // Fail closed. An empty `enable=` used to fall back to a full-clip overlay, which turns
+    // "show B-roll in every window" into "uploaded speaker over the whole video". Callers with
+    // no person ranges must skip the composite and ship the base render instead.
+    throw new Error("cutaway composite requires at least one valid person range");
+  }
+  const overlay = `[bg][fg]overlay=0:0:format=auto:enable='${enableExpr}'[out]`;
   const filter = [
     `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
     `[1:v]scale=1080:1920:flags=lanczos,setsar=1[fg]`,
@@ -528,6 +532,16 @@ export async function POST(req: Request) {
 
   if (!avatarVideoUrl) return NextResponse.json({ error: "avatarVideoUrl required" }, { status: 400 });
   if (!bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl required" }, { status: 400 });
+  // mode:"cutaway" overlays the uploaded speaker ONLY inside personRanges. With no valid range
+  // the overlay would cover the whole clip — the opposite of what an all-B-roll edit asked for.
+  // Reject before downloading anything; the caller (orchestrator) must skip the composite and
+  // ship the base render, which already carries the clip's audio. Other modes are untouched.
+  if (mode === "cutaway" && !buildEnableExpr(personRanges)) {
+    return NextResponse.json(
+      { error: "cutaway requires at least one valid personRange" },
+      { status: 400 },
+    );
+  }
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   const heygenKey = user?.heygenKey ? decryptKey(user.heygenKey) : undefined;

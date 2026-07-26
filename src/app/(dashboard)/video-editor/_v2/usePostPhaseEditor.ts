@@ -31,7 +31,11 @@ import {
   type LogoEditorSurface,
   type LogoProjectSaveStatus,
 } from "./useLogoOverlayEditor";
-import { resolveCutawayPersonRanges } from "@/lib/cutaway-plan";
+import {
+  reconstructCutawayPersonRanges,
+  resolveCutawayPersonRanges,
+  type CutawayBrollSegment,
+} from "@/lib/cutaway-plan";
 
 export type ExportState =
   | { phase: "idle" }
@@ -139,6 +143,24 @@ export function usePostPhaseEditor(
     { start: number; end: number }[] | null
   >(null);
   const cutawayPersonRanges = cutawayPersonRangesOverride ?? preview?.cutawayPersonRanges ?? null;
+  // Legacy upload-cutaway previews (created before `cutawayPersonRanges` was persisted) replay
+  // the original creation formula instead of guessing the alternation from `sourceIndex` — the
+  // same deterministic reconstruction the worker uses. The status poll deliberately never
+  // returns `inputJson`, so a legacy project rendered with a CUSTOM clip count can still show an
+  // approximate eye state here; the render itself is always exact (the worker reconstructs with
+  // that job's targetClipCount) and the first apply persists exact ranges for good.
+  const legacyCutawayBaseRanges = useMemo(
+    () => (
+      preview?.avatarModel === "upload-cutaway" && !Array.isArray(preview?.cutawayPersonRanges)
+        ? reconstructCutawayPersonRanges({
+            captions: preview?.captions,
+            audioDurationMs: preview?.audioDurationMs,
+            windowSec: Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4,
+          })
+        : []
+    ),
+    [preview],
+  );
 
   function commitWindowEdits(next: Map<number, WindowEdit>) {
     windowUndoRef.current.push(new Map(windowEdits));
@@ -199,7 +221,7 @@ export function usePostPhaseEditor(
     if (preview?.avatarModel !== "upload-cutaway") return true;
 
     const ranges = cutawayPersonRanges
-      ?? resolveCutawayPersonRanges(bgVideos as Record<string, unknown>[]);
+      ?? resolveCutawayPersonRanges(bgVideos as CutawayBrollSegment[], legacyCutawayBaseRanges);
     const start = Number(entry.start);
     const end = Number(entry.end);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return true;

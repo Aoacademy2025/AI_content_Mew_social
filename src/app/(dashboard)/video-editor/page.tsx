@@ -2462,6 +2462,18 @@ function LegacyVideoEditorPage() {
         throw new Error(`คลิปยาว ${clipSec.toFixed(1)} วิ สั้นเกินไปสำหรับ Intro ${avatarBookendSecs} วิ + Outro ${avatarTailSecs} วิ — ลดวินาที intro/outro หรือใช้คลิปยาวขึ้น`);
       }
     }
+    // Cutaway overlays the clip ONLY inside these ranges. With no b-roll windows there is
+    // nothing to cut away to, so the clip owns the whole timeline — state that explicitly:
+    // /api/heygen/composite now rejects an empty personRanges instead of silently overlaying
+    // the full clip (that fail-open is what turned "b-roll everywhere" into "person everywhere").
+    const cutawayPersonRanges = planCutaway(pipe.current.brollWindows ?? []).person.map((r) => ({
+      start: r.startMs / 1000,
+      end: r.endMs / 1000,
+    }));
+    if (cutawayPersonRanges.length === 0) {
+      const cutawayClipSec = (pipe.current.audioDurationMs ?? 0) / 1000;
+      if (cutawayClipSec > 0) cutawayPersonRanges.push({ start: 0, end: cutawayClipSec });
+    }
     setStep("composite", "running", isDirect ? "วางทับวิดีโอ (Direct URL)..." : "Chromakey + composite...");
     const compRes = await fetch("/api/heygen/composite", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -2475,10 +2487,7 @@ function LegacyVideoEditorPage() {
                   // Clip is the base; b-roll base shows through during non-person windows.
                   mode: "cutaway",
                   audioFromAvatar: true,
-                  personRanges: planCutaway(pipe.current.brollWindows ?? []).person.map((r) => ({
-                    start: r.startMs / 1000,
-                    end: r.endMs / 1000,
-                  })),
+                  personRanges: cutawayPersonRanges,
                 }
               : directCompositeMode === "full"
                 ? {
