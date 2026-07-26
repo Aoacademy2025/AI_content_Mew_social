@@ -199,29 +199,9 @@ export async function POST(req: Request) {
       const editsRes = validateWindowEdits(body.windowEdits);
       if ("error" in editsRes) return NextResponse.json({ error: "invalid_edits", message: editsRes.error }, { status: 400 });
 
-      const srcJob = await prisma.videoJob.findUnique({ where: { id: sourceJobId }, select: { userId: true, status: true, outputJson: true, projectId: true } });
+      const srcJob = await prisma.videoJob.findUnique({ where: { id: sourceJobId }, select: { userId: true, status: true, projectId: true } });
       if (!srcJob || srcJob.userId !== user.id) return NextResponse.json({ error: "source_not_found", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 404 });
       if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม (ยังเรนเดอร์ไม่เสร็จ)" }, { status: 400 });
-
-      // Fail fast for upload-cutaway sources: the orchestrator's chromakey re-composite path
-      // is only valid for HeyGen avatars (full/bookend/bookend-both); cutaway uses a DIFFERENT
-      // composite (personRanges) that would corrupt the video. Previously this rejection only
-      // fired in the orchestrator AFTER step("render") already produced a new base render —
-      // wasted CPU, an orphan free ChargedClip row, and a consumed in-flight rate slot. Checking
-      // here rejects before enqueue; the orchestrator guard stays as defense-in-depth (the jobs
-      // API is directly reachable, so UI-hiding alone is not sufficient).
-      const srcPreview = parseVideoJobOutput(srcJob.outputJson)?.preview;
-      const heygenAvatarModes = new Set(["full", "bookend", "bookend-both"]);
-      const isCutawaySource = !!srcPreview && (
-        srcPreview.avatarModel === "upload-cutaway"
-        || (!!srcPreview.avatarVideoUrl && !heygenAvatarModes.has(srcPreview.avatarMode ?? ""))
-      );
-      if (isCutawaySource) {
-        return NextResponse.json(
-          { error: "cutaway_not_supported", message: "โปรเจกต์แบบอัปโหลดคลิปเต็มจอยังไม่รองรับการแก้บีโรลราย window" },
-          { status: 400 },
-        );
-      }
 
       const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
       if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });

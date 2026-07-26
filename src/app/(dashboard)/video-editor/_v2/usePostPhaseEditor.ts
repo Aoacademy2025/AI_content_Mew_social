@@ -31,6 +31,11 @@ import {
   type LogoEditorSurface,
   type LogoProjectSaveStatus,
 } from "./useLogoOverlayEditor";
+import {
+  reconstructCutawayPersonRanges,
+  resolveCutawayPersonRanges,
+  type CutawayBrollSegment,
+} from "@/lib/cutaway-plan";
 
 export type ExportState =
   | { phase: "idle" }
@@ -43,7 +48,13 @@ export type ExportState =
 // broll-rerender job mode (Task 10). `kind` drives the source badge/label in the
 // inspector; `label` is a human-readable title (candidate title / "อัปโหลด" / "AI").
 export type WindowEditKind = "stock" | "upload" | "ai";
-export type WindowEdit = { src: string; keyword?: string; kind: WindowEditKind; label: string };
+export type WindowEdit = {
+  src?: string;
+  keyword?: string;
+  kind?: WindowEditKind;
+  label?: string;
+  enabled?: boolean;
+};
 
 const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
   void _next;
@@ -116,6 +127,9 @@ export function usePostPhaseEditor(
   // — captions/overrides/cfg เป็น state แยกอยู่แล้ว (init ครั้งเดียวจาก preview เดิม) จึงไม่ถูก
   // เขียนทับตอน config เปลี่ยน (ตามสเปค: ต้องรอด "ไม่แตะ" ของแก้ซับ).
   const [windowEdits, setWindowEditsState] = useState<Map<number, WindowEdit>>(new Map());
+  const windowUndoRef = useRef<Map<number, WindowEdit>[]>([]);
+  const windowRedoRef = useRef<Map<number, WindowEdit>[]>([]);
+  const [windowHistory, setWindowHistory] = useState({ undo: 0, redo: 0 });
   const [selectedWindow, setSelectedWindow] = useState<number | null>(null);
   const [applyingWindows, setApplyingWindows] = useState<{ progress: number } | null>(null);
   const [configOverride, setConfigOverride] = useState<Record<string, unknown> | null>(null);
@@ -125,21 +139,94 @@ export function usePostPhaseEditor(
   // ทับผลแก้ b-roll ทิ้งอย่างเงียบๆ ตอนกด save ใน Avatar Adjust (บั๊กที่ fix นี้แก้)
   const [compositeBaseUrlOverride, setCompositeBaseUrlOverride] = useState<string | null>(null);
   const compositeBaseUrl = compositeBaseUrlOverride ?? preview?.compositeBaseUrl ?? null;
+  const [cutawayPersonRangesOverride, setCutawayPersonRangesOverride] = useState<
+    { start: number; end: number }[] | null
+  >(null);
+  const cutawayPersonRanges = cutawayPersonRangesOverride ?? preview?.cutawayPersonRanges ?? null;
+  // Legacy upload-cutaway previews (created before `cutawayPersonRanges` was persisted) replay
+  // the original creation formula instead of guessing the alternation from `sourceIndex` — the
+  // same deterministic reconstruction the worker uses. The status poll deliberately never
+  // returns `inputJson`, so a legacy project rendered with a CUSTOM clip count can still show an
+  // approximate eye state here; the render itself is always exact (the worker reconstructs with
+  // that job's targetClipCount) and the first apply persists exact ranges for good.
+  const legacyCutawayBaseRanges = useMemo(
+    () => (
+      preview?.avatarModel === "upload-cutaway" && !Array.isArray(preview?.cutawayPersonRanges)
+        ? reconstructCutawayPersonRanges({
+            captions: preview?.captions,
+            audioDurationMs: preview?.audioDurationMs,
+            windowSec: Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4,
+          })
+        : []
+    ),
+    [preview],
+  );
+
+  function commitWindowEdits(next: Map<number, WindowEdit>) {
+    windowUndoRef.current.push(new Map(windowEdits));
+    if (windowUndoRef.current.length > 50) windowUndoRef.current.shift();
+    windowRedoRef.current = [];
+    setWindowEditsState(next);
+    setWindowHistory({ undo: windowUndoRef.current.length, redo: 0 });
+  }
 
   function setWindowEdit(index: number, edit: WindowEdit) {
-    setWindowEditsState((m) => {
-      const next = new Map(m);
-      next.set(index, edit);
-      return next;
-    });
+    const next = new Map(windowEdits);
+    next.set(index, { ...(next.get(index) ?? {}), ...edit });
+    commitWindowEdits(next);
+  }
+  function setWindowEdits(edits: { index: number; edit: WindowEdit }[]) {
+    const next = new Map(windowEdits);
+    for (const { index, edit } of edits) {
+      next.set(index, { ...(next.get(index) ?? {}), ...edit });
+    }
+    commitWindowEdits(next);
   }
   function clearWindowEdit(index: number) {
-    setWindowEditsState((m) => {
-      if (!m.has(index)) return m;
-      const next = new Map(m);
-      next.delete(index);
-      return next;
+    if (!windowEdits.has(index)) return;
+    const next = new Map(windowEdits);
+    next.delete(index);
+    commitWindowEdits(next);
+  }
+  function undoWindowEdits() {
+    const previous = windowUndoRef.current.pop();
+    if (!previous) return;
+    windowRedoRef.current.push(new Map(windowEdits));
+    setWindowEditsState(new Map(previous));
+    setWindowHistory({
+      undo: windowUndoRef.current.length,
+      redo: windowRedoRef.current.length,
     });
+  }
+  function redoWindowEdits() {
+    const next = windowRedoRef.current.pop();
+    if (!next) return;
+    windowUndoRef.current.push(new Map(windowEdits));
+    setWindowEditsState(new Map(next));
+    setWindowHistory({
+      undo: windowUndoRef.current.length,
+      redo: windowRedoRef.current.length,
+    });
+  }
+
+  function isBrollWindowEnabled(index: number): boolean {
+    const staged = windowEdits.get(index);
+    if (typeof staged?.enabled === "boolean") return staged.enabled;
+    const bgVideos = (previewConfig as { bgVideos?: unknown } | null)?.bgVideos;
+    if (!Array.isArray(bgVideos)) return true;
+    const raw = bgVideos[index];
+    if (!raw || typeof raw !== "object") return true;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.brollEnabled === "boolean") return entry.brollEnabled;
+    if (preview?.avatarModel !== "upload-cutaway") return true;
+
+    const ranges = cutawayPersonRanges
+      ?? resolveCutawayPersonRanges(bgVideos as CutawayBrollSegment[], legacyCutawayBaseRanges);
+    const start = Number(entry.start);
+    const end = Number(entry.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return true;
+    const midpoint = start + (end - start) / 2;
+    return !ranges.some((range) => midpoint >= range.start && midpoint < range.end);
   }
 
   /** ส่งงาน broll-rerender (ฟรี, ไม่ใช้นาที) → poll จนเสร็จ → swap videoUrl+config ในที่
@@ -150,7 +237,10 @@ export function usePostPhaseEditor(
     if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return; }
     setApplyingWindows({ progress: 0 });
     const edits = Array.from(windowEdits.entries()).map(([index, e]) => ({
-      index, src: e.src, ...(e.keyword ? { keyword: e.keyword } : {}),
+      index,
+      ...(e.src ? { src: e.src } : {}),
+      ...(e.keyword ? { keyword: e.keyword } : {}),
+      ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
     }));
     try {
       const res = await fetch("/api/videos/jobs", {
@@ -172,7 +262,14 @@ export function usePostPhaseEditor(
         await new Promise((r) => setTimeout(r, 2000));
         let p: {
           status?: string; progress?: number; errorMessage?: string; projectId?: string | null;
-          output?: { videoUrl?: string; preview?: { config?: Record<string, unknown>; compositeBaseUrl?: string | null } };
+          output?: {
+            videoUrl?: string;
+            preview?: {
+              config?: Record<string, unknown>;
+              compositeBaseUrl?: string | null;
+              cutawayPersonRanges?: { start: number; end: number }[];
+            };
+          };
         } | null = null;
         try {
           p = await fetch(`/api/videos/jobs/${encodeURIComponent(newJobId)}`).then((r) => r.json());
@@ -184,10 +281,18 @@ export function usePostPhaseEditor(
           if (!newVideoUrl) throw new Error("อัปเดตวิดีโอไม่สำเร็จ — ไม่พบไฟล์วิดีโอใหม่");
           setBaseUrl(newVideoUrl);
           if (p.output?.preview?.config) setConfigOverride(p.output.preview.config);
-          if (p.output?.preview?.compositeBaseUrl) setCompositeBaseUrlOverride(p.output.preview.compositeBaseUrl);
+          if (p.output?.preview && "compositeBaseUrl" in p.output.preview) {
+            setCompositeBaseUrlOverride(p.output.preview.compositeBaseUrl ?? null);
+          }
+          if (p.output?.preview && "cutawayPersonRanges" in p.output.preview) {
+            setCutawayPersonRangesOverride(p.output.preview.cutawayPersonRanges ?? []);
+          }
           const v = videoRef.current;
           if (v) { v.load(); v.currentTime = 0; }
           setWindowEditsState(new Map());
+          windowUndoRef.current = [];
+          windowRedoRef.current = [];
+          setWindowHistory({ undo: 0, redo: 0 });
           // Adopt the NEW job: repoint jobId + localStorage resume key so a refresh resumes
           // this result and the NEXT apply chains onto it (sourceJobId = job.jobId). Caption/
           // style state is untouched — only the source job identity moves forward.
@@ -385,7 +490,11 @@ export function usePostPhaseEditor(
     logo,
     previewConfig,
     compositeBaseUrl,
-    windowEdits, setWindowEdit, clearWindowEdit,
+    windowEdits, setWindowEdit, setWindowEdits, clearWindowEdit,
+    undoWindowEdits, redoWindowEdits,
+    canUndoWindowEdits: windowHistory.undo > 0,
+    canRedoWindowEdits: windowHistory.redo > 0,
+    isBrollWindowEnabled,
     selectedWindow, setSelectedWindow,
     applyWindowEdits, applyingWindows,
     baseUrl, setBaseUrl,

@@ -40,7 +40,7 @@ export function TimelinePanel({
   selected, onSelect,
   videoRef, timeMs, durationMs, onScrub,
   config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs, avatarFadeApplies,
-  voiceUrl, onSelectBrollWindow, editedWindowIndices,
+  voiceUrl, onSelectBrollWindow, editedWindowIndices, disabledWindowIndices,
 }: {
   captions: V2Caption[];
   onCaptionsChange: (next: V2Caption[], commit: boolean) => void;
@@ -67,6 +67,8 @@ export function TimelinePanel({
   onSelectBrollWindow?: (index: number) => void;
   /** index (ใน config.bgVideos[]) ของหน้าต่างที่แก้ไว้ในเซสชันนี้แต่ยังไม่ apply — จุดม่วงบนคลิป (Task 11) */
   editedWindowIndices?: ReadonlySet<number>;
+  /** B-roll windows that are currently disabled (includes optimistic staged visibility). */
+  disabledWindowIndices?: ReadonlySet<number>;
 }) {
   const [pxPerSec, setPxPerSec] = useState(24);
   const [snap, setSnap] = useState(true);
@@ -301,27 +303,37 @@ export function TimelinePanel({
           <div className="relative flex items-center" style={{ height: TRACK_H }}>
             {trackLabel("บีโรล", color.trackBroll)}
             <div className="relative flex-1" style={{ height: TRACK_H }}>
-              {brollSpans.map((s, i) => (
-                <div
-                  key={i}
-                  data-clip
-                  style={{ ...clipStyle(color.trackBroll), left: toPx(s.startMs), width: Math.max(14, toPx(s.endMs - s.startMs) - 2) }}
-                  onClick={() => {
-                    seekTo(s.startMs);
-                    onSelectBrollWindow?.(s.index);
-                  }}
-                  title={s.label}
-                >
-                  {s.label}
-                  {editedWindowIndices?.has(s.index) && (
-                    <span
-                      aria-hidden
-                      className="absolute"
-                      style={{ top: 2, right: 2, width: 6, height: 6, borderRadius: "50%", background: color.primary300 }}
-                    />
-                  )}
-                </div>
-              ))}
+              {brollSpans.map((s, i) => {
+                const enabled = !disabledWindowIndices?.has(s.index);
+                return (
+                  <div
+                    key={i}
+                    data-clip
+                    style={{
+                      ...clipStyle(color.trackBroll),
+                      left: toPx(s.startMs),
+                      width: Math.max(14, toPx(s.endMs - s.startMs) - 2),
+                      borderStyle: enabled ? "solid" : "dashed",
+                      opacity: enabled ? 1 : 0.52,
+                    }}
+                    onClick={() => {
+                      seekTo(s.startMs);
+                      onSelectBrollWindow?.(s.index);
+                    }}
+                    title={enabled ? s.label : `ปิด B-roll · ${s.label}`}
+                    aria-label={enabled ? s.label : `ปิด B-roll ${s.label}`}
+                  >
+                    {enabled ? s.label : `ปิด · ${s.label}`}
+                    {editedWindowIndices?.has(s.index) && (
+                      <span
+                        aria-hidden
+                        className="absolute"
+                        style={{ top: 2, right: 2, width: 6, height: 6, borderRadius: "50%", background: color.primary300 }}
+                      />
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 

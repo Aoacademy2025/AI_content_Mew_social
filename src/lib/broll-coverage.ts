@@ -185,6 +185,7 @@ function makeTargets(
       const previous = targets[targets.length - 1];
       const sameContinuousSource = previous?.preferred?.src === span.src
         && previous.preferred.sourceIndex === span.sourceIndex
+        && previous.preferred.brollEnabled === span.brollEnabled
         && Math.abs(previous.end - start) <= toleranceSec
         && Math.abs(
           finiteOr(previous.preferred.clipOffset, 0) - finiteOr(span.clipOffset, 0),
@@ -304,6 +305,7 @@ function compactContinuousPlayback(
       || (previous?.sourceIndex === undefined && segment.sourceIndex === undefined);
     const canMerge = previous?.src === segment.src
       && sameSourceIndex
+      && previous.brollEnabled === segment.brollEnabled
       && Math.abs(previous.end - segment.start) <= toleranceSec
       && Math.abs(expectedOffset - Math.max(0, finiteOr(segment.clipOffset, 0))) <= toleranceSec
       && segment.end - previous.start
@@ -337,8 +339,13 @@ export function coverBrollTimeline(
     ? selectRepresentativeItems(pool, maxSegmentCount)
     : pool;
   const assets = normalizePool(boundedPool, guardSec, minPlayableSec);
+  // Hidden entries are valid timeline placeholders, but must never leak into a repair for a
+  // different visible window. If the whole reel is intentionally hidden, they remain the only
+  // fallback and produce a complete neutral-background render.
+  const visibleAssets = assets.filter((asset) => asset.brollEnabled !== false);
+  const fallbackAssets = visibleAssets.length > 0 ? visibleAssets : assets;
   const assetIndexBySrc = new Map<string, number>();
-  assets.forEach((asset, index) => {
+  fallbackAssets.forEach((asset, index) => {
     if (!assetIndexBySrc.has(asset.src)) assetIndexBySrc.set(asset.src, index);
   });
   const targets = makeTargets(desired, safeDurationSec, toleranceSec);
@@ -353,7 +360,7 @@ export function coverBrollTimeline(
 
     while (cursor < target.end - EPSILON_SEC) {
       const isPreferredAttempt = preferred !== undefined;
-      const asset = preferred ?? assets[poolCursor % Math.max(assets.length, 1)];
+      const asset = preferred ?? fallbackAssets[poolCursor % Math.max(fallbackAssets.length, 1)];
       let offset = preferred
         ? Math.max(0, finiteOr(asset?.clipOffset, 0))
         : 0;
@@ -380,8 +387,8 @@ export function coverBrollTimeline(
       ) {
         if (isPreferredAttempt) continue;
         attemptsWithoutProgress += 1;
-        if (assets.length === 0 || attemptsWithoutProgress >= assets.length) break;
-        poolCursor = (poolCursor + 1) % assets.length;
+        if (fallbackAssets.length === 0 || attemptsWithoutProgress >= fallbackAssets.length) break;
+        poolCursor = (poolCursor + 1) % fallbackAssets.length;
         continue;
       }
 
@@ -414,9 +421,9 @@ export function coverBrollTimeline(
       cursor += spanSec;
       attemptsWithoutProgress = 0;
 
-      if (assets.length > 0) {
+      if (fallbackAssets.length > 0) {
         const matchedIndex = assetIndexBySrc.get(asset.src) ?? -1;
-        poolCursor = ((matchedIndex >= 0 ? matchedIndex : poolCursor) + 1) % assets.length;
+        poolCursor = ((matchedIndex >= 0 ? matchedIndex : poolCursor) + 1) % fallbackAssets.length;
       }
     }
   }
@@ -458,6 +465,16 @@ export function coverProbedBrollTimeline(
   for (const entry of probedAssets) {
     if (!entry.asset?.src) {
       droppedAssetCount += 1;
+      continue;
+    }
+    if (entry.asset.brollEnabled === false) {
+      // A hidden segment renders the composition's neutral background and does not consume
+      // frames from its source file. Preserve it as coverage without requiring disk/network I/O.
+      usable.push({
+        ...entry.asset,
+        clipDuration: durationSec + guardSec + BROLL_PROBE_SAFETY_MARGIN_SEC,
+        clipOffset: 0,
+      });
       continue;
     }
     if (!entry.probeRequired) {
@@ -591,6 +608,14 @@ export async function prepareBrollRenderAssets(
   let resolutionDroppedAssetCount = 0;
 
   for (const asset of assets) {
+    if (asset.brollEnabled === false) {
+      probedAssets.push({
+        asset: { ...asset },
+        actualDurationSec: null,
+        probeRequired: false,
+      });
+      continue;
+    }
     try {
       const resolved = options.resolveAsset(asset.src);
       const probeRequired = resolved.localPath !== null;
