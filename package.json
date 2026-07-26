@@ -63,7 +63,8 @@
     "smoke:runpod-custom-staging": "tsx scripts/smoke-runpod-custom-staging.ts",
     "smoke:hero-ai-video": "tsx scripts/smoke-hero-ai-video.ts",
     "check:runpod-readiness": "tsx scripts/check-runpod-ai-readiness.ts",
-    "provision:runpod-staging": "tsx scripts/provision-runpod-staging.ts"
+    "provision:runpod-staging": "tsx scripts/provision-runpod-staging.ts",
+    "verify:timeline-wheel-scroll": "tsx scripts/verify-timeline-wheel-scroll.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"
