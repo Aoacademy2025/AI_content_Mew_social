@@ -28,6 +28,8 @@ import { BrandAssetError } from "@/lib/brand-assets.server";
 import { createDurableExportWithStagedLogo } from "@/lib/logo-export.server";
 import {
   fingerprintVideoJobRequest,
+  legacyVideoJobKeyPrefix,
+  resolveLegacyVideoJobAttemptKey,
   videoJobOperationKind,
 } from "@/lib/video-job-idempotency";
 import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
@@ -79,6 +81,11 @@ const STOCK_SOURCES = new Set(["stock", "kie-image", "auto-mix"]);
 const SUB_MODES = new Set(["sentence", "1", "2", "3", "4"]);
 const SUB_POSITIONS = new Set(["top", "middle", "bottom"]);
 const AVATAR_MODES = new Set(["none", "full", "bookend", "bookend-both"]);
+// Best-effort only: bundles served before 2026-07-16 have NO code reading `warning` /
+// `reloadRecommended` from this response, so a genuinely stale tab shows nothing. The real
+// mitigation for stale clients is the legacy attempt-key rotation below (a terminal attempt
+// never pins the tab to a dead job), not this payload.
+const LEGACY_CLIENT_WARNING = "หน้าเว็บนี้เป็นเวอร์ชันเก่า งานถูกส่งแล้ว กรุณารีเฟรชหน้าก่อนสั่งงานครั้งถัดไป";
 
 function str(v: unknown, max: number): string | undefined {
   return typeof v === "string" && v.trim() && v.length <= max ? v : undefined;
@@ -91,6 +98,7 @@ async function replayIdempotentVideoJob(
   userId: string,
   idempotencyKey: string,
   idempotencyFingerprint: string,
+  legacyClient = false,
 ) {
   const existing = await prisma.videoJob.findFirst({
     where: { userId, idempotencyKey },
@@ -120,6 +128,13 @@ async function replayIdempotentVideoJob(
     idempotencyKey: existing.idempotencyKey,
     idempotencyFingerprint: existing.idempotencyFingerprint,
     idempotentReplay: true,
+    ...(legacyClient
+      ? {
+          legacyClient: true,
+          reloadRecommended: true,
+          warning: LEGACY_CLIENT_WARNING,
+        }
+      : {}),
   });
 }
 
@@ -131,8 +146,9 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => null)) as Body | null;
     if (!body) return NextResponse.json({ error: "invalid_body" }, { status: 400 });
 
-    const idempotencyKey = str(body.idempotencyKey, 120);
-    if (!idempotencyKey) {
+    const hasIdempotencyKey = Object.prototype.hasOwnProperty.call(body, "idempotencyKey");
+    const requestedIdempotencyKey = str(body.idempotencyKey, 120);
+    if (hasIdempotencyKey && !requestedIdempotencyKey) {
       return NextResponse.json(
         { error: "idempotency_key_required", message: "ไม่พบรหัสยืนยันคำขอ กรุณาลองใหม่" },
         { status: 400 },
@@ -143,10 +159,27 @@ export async function POST(req: Request) {
       operation,
       body as Record<string, unknown>,
     );
+    const legacyClient = !hasIdempotencyKey;
+    // Legacy mode (client ไม่ได้ส่งคีย์เอง): เลือก "ช่อง attempt" ก่อนแตะอะไรที่ mutable.
+    // แท็บเก่าไม่มีคีย์ของตัวเองให้หมุน ถ้าใช้คีย์เดียวตลอดกาล การกดสั่งซ้ำด้วย config เดิม
+    // จะได้ job ใบเดิมที่พังไปแล้วคืนตลอด → หมุนเป็น :r2, :r3 เมื่อใบล่าสุด terminal และพ้น window.
+    // อ่านอย่างเดียว + deterministic ต่อสถานะ DB จึงยัง dedupe ทั้ง retry เร็ว ๆ และสองแท็บพร้อมกัน
+    // (แพ้ unique → P2002 → re-query คีย์เดิมแล้ว replay ด้านล่าง).
+    const idempotencyKey = requestedIdempotencyKey ?? resolveLegacyVideoJobAttemptKey(
+      idempotencyFingerprint,
+      await prisma.videoJob.findMany({
+        where: {
+          userId: user.id,
+          idempotencyKey: { startsWith: legacyVideoJobKeyPrefix(idempotencyFingerprint) },
+        },
+        select: { idempotencyKey: true, status: true, createdAt: true },
+      }),
+    );
     const replay = await replayIdempotentVideoJob(
       user.id,
       idempotencyKey,
       idempotencyFingerprint,
+      legacyClient,
     );
     if (replay) return replay;
     await assertRenderEnqueueOpen();
@@ -209,10 +242,17 @@ export async function POST(req: Request) {
           status: "queued",
           idempotencyKey,
           idempotencyFingerprint,
+          ...(legacyClient
+            ? {
+                legacyClient: true,
+                reloadRecommended: true,
+                warning: LEGACY_CLIENT_WARNING,
+              }
+            : {}),
         });
       } catch (e) {
         if ((e as { code?: string })?.code === "P2002") {
-          return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint))
+          return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint, legacyClient))
             ?? NextResponse.json(
               { error: "idempotency_conflict", message: "idempotencyKey นี้ถูกใช้แล้ว" },
               { status: 409 },
@@ -285,10 +325,17 @@ export async function POST(req: Request) {
           status: "queued",
           idempotencyKey,
           idempotencyFingerprint,
+          ...(legacyClient
+            ? {
+                legacyClient: true,
+                reloadRecommended: true,
+                warning: LEGACY_CLIENT_WARNING,
+              }
+            : {}),
         });
       } catch (e) {
         if ((e as { code?: string })?.code === "P2002") {
-          return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint))
+          return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint, legacyClient))
             ?? NextResponse.json(
               { error: "idempotency_conflict", message: "idempotencyKey นี้ถูกใช้แล้ว" },
               { status: 409 },
@@ -565,11 +612,18 @@ export async function POST(req: Request) {
         status: "queued",
         idempotencyKey,
         idempotencyFingerprint,
-        ...(heygenWarning ? { warning: heygenWarning } : {}),
+        ...((legacyClient || heygenWarning)
+          ? {
+              warning: [legacyClient ? LEGACY_CLIENT_WARNING : null, heygenWarning]
+                .filter((value): value is string => !!value)
+                .join(" "),
+            }
+          : {}),
+        ...(legacyClient ? { legacyClient: true, reloadRecommended: true } : {}),
       });
     } catch (e) {
       if ((e as { code?: string })?.code === "P2002") {
-        return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint))
+        return (await replayIdempotentVideoJob(user.id, idempotencyKey, idempotencyFingerprint, legacyClient))
           ?? NextResponse.json(
             { error: "idempotency_conflict", message: "idempotencyKey นี้ถูกใช้แล้ว" },
             { status: 409 },

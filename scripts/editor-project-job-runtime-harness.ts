@@ -5,6 +5,13 @@ import ts from "typescript";
 import {
   canonicalVideoJobRequest,
   fingerprintVideoJobRequest,
+  isLegacyVideoJobReplayable,
+  legacyVideoJobAttemptNumber,
+  legacyVideoJobIdempotencyKey,
+  legacyVideoJobKeyPrefix,
+  resolveLegacyVideoJobAttemptKey,
+  LEGACY_VIDEO_JOB_REPLAY_WINDOW_MS,
+  type LegacyVideoJobAttemptRow,
 } from "../src/lib/video-job-idempotency";
 
 type HookSlot =
@@ -1582,9 +1589,12 @@ async function runExactReplayRouteScenario(input: {
   persistedAfterCreate?: RouteReplayRow | null;
   createThrowsP2002?: boolean;
   failOnMutableGate?: boolean;
+  /** rows ที่ legacy prefix scan จะเจอ (คือประวัติ attempt ของ fingerprint นี้) */
+  legacyRows?: LegacyVideoJobAttemptRow[];
 }) {
   const module = { exports: {} as Record<string, unknown> };
   const replayQueries: Array<Record<string, unknown>> = [];
+  const legacyScanQueries: Array<Record<string, unknown>> = [];
   const createCalls: Array<{
     idempotencyKey: string | undefined;
     options: Record<string, unknown>;
@@ -1643,6 +1653,10 @@ async function runExactReplayRouteScenario(input: {
           : body.mode === "broll-rerender"
             ? "broll-rerender"
             : "preview",
+        // คีย์ legacy ใช้ของจริง — ถ้า stub เป็นค่าคงที่ การ์ดเรื่อง "body ต่างกันต้องคนละคีย์"
+        // และการหมุน attempt จะกลายเป็นเทสต์ที่ไม่ได้ทดสอบอะไร
+        legacyVideoJobKeyPrefix,
+        resolveLegacyVideoJobAttemptKey,
       };
     }
     if (specifier === "@/lib/prisma") {
@@ -1656,16 +1670,26 @@ async function runExactReplayRouteScenario(input: {
             findFirst: async (query: { where: Record<string, unknown> }) => {
               replayQueries.push(query.where);
               lookupCount += 1;
+              const candidate = lookupCount === 1
+                ? (input.persistedRow ?? null)
+                : (input.persistedAfterCreate ?? input.persistedRow ?? null);
               if (
                 query.where.userId !== "route-user"
-                || query.where.idempotencyKey !== input.body.idempotencyKey
+                || candidate?.idempotencyKey !== query.where.idempotencyKey
               ) return null;
               if (input.persistedRowUserId && input.persistedRowUserId !== query.where.userId) {
                 return null;
               }
-              return lookupCount === 1
-                ? (input.persistedRow ?? null)
-                : (input.persistedAfterCreate ?? input.persistedRow ?? null);
+              return candidate;
+            },
+            findMany: async (query: { where: Record<string, unknown> }) => {
+              legacyScanQueries.push(query.where);
+              const prefix = (query.where.idempotencyKey as { startsWith?: string })?.startsWith ?? "";
+              if (query.where.userId !== "route-user") return [];
+              if (input.persistedRowUserId && input.persistedRowUserId !== query.where.userId) return [];
+              return (input.legacyRows ?? []).filter((row) => (
+                (row.idempotencyKey ?? "").startsWith(prefix)
+              ));
             },
             findUnique: async () => {
               touchMutable("source-job");
@@ -1753,6 +1777,30 @@ async function runExactReplayRouteScenario(input: {
         RenderDeployDrainError,
       };
     }
+    if (specifier === "@/lib/omnivoice") {
+      return {
+        checkOmniVoiceReady: async () => null,
+        isOmniVoiceUserAllowed: () => false,
+        isValidOmniVoiceId: () => false,
+        OmniVoiceConfigError: class OmniVoiceConfigError extends Error {},
+        omnivoiceConfig: {},
+      };
+    }
+    if (specifier === "@/lib/omnivoice-limits") return { omnivoiceScriptCharCapForPlan: () => 0 };
+    if (specifier === "@/lib/hero-voice-speech") {
+      return { prepareHeroVoiceSpeech: async () => { throw new Error("unused"); } };
+    }
+    if (specifier === "@/lib/internal-ai-access") {
+      return {
+        isHeroAiBetaUser: () => false,
+        isInternalAiBetaEnabledFor: () => false,
+        isInternalAiTester: () => false,
+      };
+    }
+    if (specifier === "@/lib/ai-image-policy") return { AI_IMAGE_MODELS: new Set<string>() };
+    if (specifier === "@/lib/image-generation-provider.server") {
+      return { describeImageOffer: () => null };
+    }
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));
@@ -1767,6 +1815,7 @@ async function runExactReplayRouteScenario(input: {
     response,
     responseBody: await response.json() as Record<string, unknown>,
     replayQueries,
+    legacyScanQueries,
     createCalls,
     mutableTouches,
     expectedFingerprint,
@@ -1805,6 +1854,295 @@ export async function exactReplayIdentityPrecedesMutableGates(): Promise<void> {
     await fingerprintVideoJobRequest("preview", { ...canonicalLeft, ordered: ["1", 1, false] }),
     "array order and JSON scalar types remain significant",
   );
+  // ── legacy compatibility key (ฟังก์ชันจริง ไม่ stub) ─────────────────────────────────
+  const legacyCompatibilityKey = legacyVideoJobIdempotencyKey(canonicalFingerprint);
+  assert.equal(
+    legacyCompatibilityKey,
+    legacyVideoJobIdempotencyKey(canonicalFingerprint),
+    "the compatibility key is stable across retries and cannot race at a time boundary",
+  );
+  const otherFingerprint = await fingerprintVideoJobRequest("preview", {
+    ...canonicalLeft,
+    ordered: ["1", 1, false],
+  });
+  assert.notEqual(
+    legacyCompatibilityKey,
+    legacyVideoJobIdempotencyKey(otherFingerprint),
+    "a different logical body can never land on the same compatibility key",
+  );
+  const secondAttemptKey = legacyVideoJobIdempotencyKey(canonicalFingerprint, 2);
+  assert.notEqual(
+    secondAttemptKey,
+    legacyCompatibilityKey,
+    "a later attempt of the same body owns its own durable slot",
+  );
+  assert.deepEqual([
+    legacyVideoJobAttemptNumber(legacyCompatibilityKey, canonicalFingerprint),
+    legacyVideoJobAttemptNumber(secondAttemptKey, canonicalFingerprint),
+    legacyVideoJobAttemptNumber(legacyVideoJobIdempotencyKey(canonicalFingerprint, 3), canonicalFingerprint),
+    legacyVideoJobAttemptNumber("client-chosen-attempt-key", canonicalFingerprint),
+    legacyVideoJobAttemptNumber(legacyVideoJobIdempotencyKey(otherFingerprint, 2), canonicalFingerprint),
+    legacyVideoJobAttemptNumber(null, canonicalFingerprint),
+  ], [1, 2, 3, null, null, null], "attempt numbering round-trips and never claims a foreign key");
+  assert.equal(
+    [legacyCompatibilityKey, secondAttemptKey]
+      .every((key) => key.startsWith(legacyVideoJobKeyPrefix(canonicalFingerprint)) && key.length <= 120),
+    true,
+    "every server-generated attempt key is prefix-scannable and fits the durable schema limit",
+  );
+
+  const clock = Date.UTC(2026, 6, 26, 12, 0, 0);
+  for (const status of ["queued", "processing", "waiting_provider"]) {
+    assert.equal(
+      isLegacyVideoJobReplayable(
+        { status, createdAt: new Date(clock - LEGACY_VIDEO_JOB_REPLAY_WINDOW_MS * 5) },
+        clock,
+      ),
+      true,
+      `an in-flight ${status} attempt always replays, however long it has been running`,
+    );
+  }
+  for (const status of ["done", "failed", "canceled"]) {
+    assert.deepEqual([
+      isLegacyVideoJobReplayable({ status, createdAt: new Date(clock - 1_000) }, clock),
+      isLegacyVideoJobReplayable(
+        { status, createdAt: new Date(clock - LEGACY_VIDEO_JOB_REPLAY_WINDOW_MS) },
+        clock,
+      ),
+      isLegacyVideoJobReplayable(
+        { status, createdAt: new Date(clock - LEGACY_VIDEO_JOB_REPLAY_WINDOW_MS - 1) },
+        clock,
+      ),
+      isLegacyVideoJobReplayable({ status, createdAt: null }, clock),
+    ], [true, true, false, false], `a ${status} attempt dedupes fast retries but stops pinning the tab`);
+  }
+
+  const attemptFingerprint = "a".repeat(64);
+  const attemptBaseKey = legacyVideoJobIdempotencyKey(attemptFingerprint);
+  const aged = (status: string, key: string): LegacyVideoJobAttemptRow => ({
+    idempotencyKey: key,
+    status,
+    createdAt: new Date(clock - LEGACY_VIDEO_JOB_REPLAY_WINDOW_MS - 60_000),
+  });
+  assert.deepEqual([
+    resolveLegacyVideoJobAttemptKey(attemptFingerprint, [], clock),
+    resolveLegacyVideoJobAttemptKey(
+      attemptFingerprint,
+      [{ idempotencyKey: attemptBaseKey, status: "processing", createdAt: new Date(clock - 60_000) }],
+      clock,
+    ),
+    resolveLegacyVideoJobAttemptKey(attemptFingerprint, [aged("failed", attemptBaseKey)], clock),
+    resolveLegacyVideoJobAttemptKey(
+      attemptFingerprint,
+      [
+        aged("failed", attemptBaseKey),
+        aged("canceled", legacyVideoJobIdempotencyKey(attemptFingerprint, 2)),
+      ],
+      clock,
+    ),
+    resolveLegacyVideoJobAttemptKey(
+      attemptFingerprint,
+      [
+        aged("failed", attemptBaseKey),
+        { idempotencyKey: legacyVideoJobIdempotencyKey(attemptFingerprint, 2), status: "queued", createdAt: null },
+      ],
+      clock,
+    ),
+    resolveLegacyVideoJobAttemptKey(
+      attemptFingerprint,
+      [aged("done", "a-client-chosen-key")],
+      clock,
+    ),
+  ], [
+    attemptBaseKey,
+    attemptBaseKey,
+    legacyVideoJobIdempotencyKey(attemptFingerprint, 2),
+    legacyVideoJobIdempotencyKey(attemptFingerprint, 3),
+    legacyVideoJobIdempotencyKey(attemptFingerprint, 2),
+    attemptBaseKey,
+  ], "attempt selection reuses a live slot, rotates past terminal history, and ignores foreign keys");
+
+  // ── legacy route behaviour ────────────────────────────────────────────────────────
+  const legacyWarning = "หน้าเว็บนี้เป็นเวอร์ชันเก่า งานถูกส่งแล้ว กรุณารีเฟรชหน้าก่อนสั่งงานครั้งถัดไป";
+  const legacyBody = {
+    script: "request submitted by a tab opened before idempotency deployment",
+    voiceProvider: "gemini",
+    stockSource: "stock",
+    subtitleMode: "sentence",
+    subtitlePosition: "bottom",
+  };
+  const legacyFingerprint = runtimeRequestFingerprint("preview", legacyBody);
+  const legacyBaseKey = legacyVideoJobIdempotencyKey(legacyFingerprint);
+  const legacyRetryKey = legacyVideoJobIdempotencyKey(legacyFingerprint, 2);
+  const legacyCreate = await runExactReplayRouteScenario({ body: legacyBody });
+  assert.equal(legacyCreate.response.status, 200, "a stale client without a transport key remains compatible");
+  assert.deepEqual(legacyCreate.responseBody, {
+    jobId: "new-route-job",
+    status: "queued",
+    idempotencyKey: legacyBaseKey,
+    idempotencyFingerprint: legacyFingerprint,
+    warning: legacyWarning,
+    legacyClient: true,
+    reloadRecommended: true,
+  }, "a stale-client create returns the exact compatibility payload");
+  assert.equal(legacyCreate.createCalls.length, 1, "a stale client creates one durable job");
+  assert.equal(
+    legacyCreate.createCalls[0].idempotencyKey,
+    legacyBaseKey,
+    "the server assigns a deterministic compatibility key",
+  );
+  assert.equal(
+    legacyCreate.createCalls[0].options.idempotencyFingerprint,
+    legacyFingerprint,
+    "the compatibility request persists the same canonical fingerprint",
+  );
+  assert.deepEqual(legacyCreate.legacyScanQueries, [{
+    userId: "route-user",
+    idempotencyKey: { startsWith: legacyVideoJobKeyPrefix(legacyFingerprint) },
+  }], "the attempt scan is scoped to the authenticated user and this fingerprint only");
+
+  const otherLegacyBody = { ...legacyBody, script: "a different stale request" };
+  const otherLegacyCreate = await runExactReplayRouteScenario({ body: otherLegacyBody });
+  assert.notEqual(
+    otherLegacyCreate.createCalls[0].idempotencyKey,
+    legacyCreate.createCalls[0].idempotencyKey,
+    "two different stale bodies never collide on one compatibility key",
+  );
+  assert.equal(
+    otherLegacyCreate.createCalls[0].idempotencyKey,
+    legacyVideoJobIdempotencyKey(runtimeRequestFingerprint("preview", otherLegacyBody)),
+    "each stale body derives its key from its own canonical fingerprint",
+  );
+
+  const legacyInflightRow = {
+    id: "legacy-existing-job",
+    status: "processing",
+    idempotencyKey: legacyBaseKey,
+    idempotencyFingerprint: legacyFingerprint,
+  };
+  const legacyReplay = await runExactReplayRouteScenario({
+    body: legacyBody,
+    persistedRow: legacyInflightRow,
+    legacyRows: [{ idempotencyKey: legacyBaseKey, status: "processing", createdAt: new Date() }],
+    failOnMutableGate: true,
+  });
+  assert.equal(legacyReplay.response.status, 200, "a stale-client retry replays the durable job");
+  assert.deepEqual(legacyReplay.responseBody, {
+    jobId: "legacy-existing-job",
+    status: "processing",
+    idempotencyKey: legacyBaseKey,
+    idempotencyFingerprint: legacyFingerprint,
+    idempotentReplay: true,
+    legacyClient: true,
+    reloadRecommended: true,
+    warning: legacyWarning,
+  }, "a stale-client replay returns the exact compatibility payload");
+  assert.deepEqual(legacyReplay.mutableTouches, [], "a stale-client replay touches no mutable gate");
+  assert.equal(legacyReplay.createCalls.length, 0, "a stale-client retry cannot duplicate the job");
+
+  const legacyFastRetry = await runExactReplayRouteScenario({
+    body: legacyBody,
+    persistedRow: { ...legacyInflightRow, id: "legacy-just-failed-job", status: "failed" },
+    legacyRows: [{ idempotencyKey: legacyBaseKey, status: "failed", createdAt: new Date() }],
+    failOnMutableGate: true,
+  });
+  assert.equal(legacyFastRetry.responseBody.jobId, "legacy-just-failed-job", "a double-submit inside the window still dedupes");
+  assert.equal(legacyFastRetry.createCalls.length, 0, "a double-submit cannot create a second billable job");
+
+  for (const terminalStatus of ["done", "failed", "canceled"]) {
+    const staleTerminal = await runExactReplayRouteScenario({
+      body: legacyBody,
+      // แถวเดิมยังอยู่: ถ้า route ยังถามคีย์ base มันจะ replay งานที่จบไปแล้วเหมือนเดิม
+      persistedRow: {
+        id: `legacy-${terminalStatus}-job`,
+        status: terminalStatus,
+        idempotencyKey: legacyBaseKey,
+        idempotencyFingerprint: legacyFingerprint,
+      },
+      legacyRows: [{
+        idempotencyKey: legacyBaseKey,
+        status: terminalStatus,
+        createdAt: new Date(Date.now() - LEGACY_VIDEO_JOB_REPLAY_WINDOW_MS - 60_000),
+      }],
+    });
+    assert.equal(staleTerminal.response.status, 200, `an aged ${terminalStatus} attempt still answers 200`);
+    assert.equal(
+      staleTerminal.responseBody.jobId,
+      "new-route-job",
+      `a stale tab resubmitting after an aged ${terminalStatus} attempt gets a NEW job, not the old one`,
+    );
+    assert.equal(staleTerminal.responseBody.idempotentReplay, undefined);
+    assert.equal(staleTerminal.createCalls.length, 1, `the rotated ${terminalStatus} attempt creates exactly one job`);
+    assert.equal(
+      staleTerminal.createCalls[0].idempotencyKey,
+      legacyRetryKey,
+      `the rotated ${terminalStatus} attempt writes a fresh deterministic slot`,
+    );
+    assert.equal(
+      staleTerminal.createCalls[0].options.idempotencyFingerprint,
+      legacyFingerprint,
+      `the rotated ${terminalStatus} attempt keeps the same canonical fingerprint`,
+    );
+  }
+
+  const legacyConcurrentTabs = await runExactReplayRouteScenario({
+    body: legacyBody,
+    legacyRows: [{
+      idempotencyKey: legacyBaseKey,
+      status: "failed",
+      createdAt: new Date(Date.now() - LEGACY_VIDEO_JOB_REPLAY_WINDOW_MS - 60_000),
+    }],
+    persistedRow: null,
+    // แท็บที่ชนะเขียนคีย์ :r2 ไปแล้ว → แท็บนี้โดน unique constraint
+    persistedAfterCreate: {
+      id: "legacy-race-winner-job",
+      status: "queued",
+      idempotencyKey: legacyRetryKey,
+      idempotencyFingerprint: legacyFingerprint,
+    },
+    createThrowsP2002: true,
+  });
+  assert.equal(legacyConcurrentTabs.response.status, 200, "two stale tabs firing at once resolve to one job");
+  assert.equal(legacyConcurrentTabs.responseBody.jobId, "legacy-race-winner-job");
+  assert.equal(legacyConcurrentTabs.responseBody.idempotentReplay, true);
+  assert.equal(legacyConcurrentTabs.createCalls.length, 1, "the losing tab attempts no second durable create");
+  assert.equal(
+    legacyConcurrentTabs.replayQueries.at(-1)?.idempotencyKey,
+    legacyRetryKey,
+    "the P2002 re-query reuses the same rotated attempt key",
+  );
+
+  const legacyCrossUser = await runExactReplayRouteScenario({
+    body: legacyBody,
+    persistedRow: legacyInflightRow,
+    legacyRows: [{ idempotencyKey: legacyBaseKey, status: "processing", createdAt: new Date() }],
+    persistedRowUserId: "different-user",
+  });
+  assert.equal(legacyCrossUser.responseBody.jobId, "new-route-job", "another user's compatibility row cannot be replayed");
+  assert.equal(legacyCrossUser.createCalls.length, 1);
+  assert.equal(
+    legacyCrossUser.createCalls[0].idempotencyKey,
+    legacyBaseKey,
+    "a cross-user collision does not rotate this user's first attempt",
+  );
+  assert.equal(
+    [...legacyCrossUser.legacyScanQueries, ...legacyCrossUser.replayQueries]
+      .every((where) => where.userId === "route-user"),
+    true,
+    "every compatibility lookup is scoped to the authenticated user",
+  );
+
+  for (const malformedIdempotencyKey of [null, 42, ""]) {
+    const malformed = await runExactReplayRouteScenario({
+      body: { ...legacyBody, idempotencyKey: malformedIdempotencyKey },
+    });
+    assert.equal(
+      malformed.response.status,
+      400,
+      "an explicitly malformed transport key fails closed instead of using compatibility mode",
+    );
+    assert.equal(malformed.createCalls.length, 0);
+  }
 
   const body = {
     idempotencyKey: "exact-preflight-key",

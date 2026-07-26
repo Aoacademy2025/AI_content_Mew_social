@@ -72,12 +72,26 @@ export type V2CardOverrides = Record<number, { textColor?: string; accentColor?:
 
 // ── การ์ด: รวม / แยก / จัดกลุ่มความยาว ─────────────────────────────────────
 
+function isThaiCharacter(ch: string): boolean {
+  return /[฀-๿]/.test(ch);
+}
+
+function joinCaptionText(left: string, right: string): string {
+  const trimmedLeft = left.trimEnd();
+  const trimmedRight = right.trimStart();
+  if (!trimmedLeft) return trimmedRight;
+  if (!trimmedRight) return trimmedLeft;
+  const joinsThaiWord = isThaiCharacter(trimmedLeft[trimmedLeft.length - 1])
+    && isThaiCharacter(trimmedRight[0]);
+  return joinsThaiWord ? `${trimmedLeft}${trimmedRight}` : `${trimmedLeft} ${trimmedRight}`;
+}
+
 /** รวมการ์ด i เข้ากับใบถัดไป (ข้อความต่อกัน เวลาคลุมทั้งคู่) */
 export function mergeCaptionWithNext(caps: V2Caption[], i: number): V2Caption[] {
   if (i < 0 || i >= caps.length - 1) return caps;
   const merged: V2Caption = {
     ...caps[i],
-    text: `${caps[i].text.trimEnd()} ${caps[i + 1].text.trimStart()}`,
+    text: joinCaptionText(caps[i].text, caps[i + 1].text),
     endMs: caps[i + 1].endMs,
   };
   return [...caps.slice(0, i), merged, ...caps.slice(i + 2)];
@@ -203,11 +217,10 @@ export function regroupCaptions(
 
 /** ต่อคำไทยไม่แทรกช่องว่าง แทรกเฉพาะรอยต่อที่มีละติน/ตัวเลข (เหมือน joinWords ของ v1) */
 function joinThaiWords(ws: string[]): string {
-  const isThai = (ch: string) => /[฀-๿]/.test(ch);
   let out = "";
   for (const w of ws) {
     if (!out) { out = w; continue; }
-    const noSpace = isThai(out[out.length - 1]) && isThai(w[0]);
+    const noSpace = isThaiCharacter(out[out.length - 1]) && isThaiCharacter(w[0]);
     out += noSpace ? w : ` ${w}`;
   }
   return out;
