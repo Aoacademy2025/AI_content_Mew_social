@@ -77,6 +77,7 @@ model User {
   editorProjects     EditorProject[]
   brandAssets        BrandAsset[]
   brandPreference    BrandPreference?
+  editorStylePresets EditorStylePreset[]
   aiGenerationJobs   AiGenerationJob[]
 }
 
@@ -213,6 +214,7 @@ model BrandAsset {
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
   defaultFor      BrandPreference? @relation("DefaultBrandAsset")
+  stylePresets    EditorStylePreset[]
 
   @@index([userId, createdAt])
   @@index([projectId])
@@ -228,6 +230,24 @@ model BrandPreference {
   opacity        Float      @default(0.9)
   enabled        Boolean    @default(true)
   updatedAt      DateTime   @updatedAt
+}
+
+model EditorStylePreset {
+  id           String      @id @default(cuid())
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind         String // subtitle | logo
+  name         String
+  nameKey      String
+  configJson   String
+  brandAssetId String?
+  brandAsset   BrandAsset? @relation(fields: [brandAssetId], references: [id], onDelete: Cascade)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([userId, kind, nameKey])
+  @@index([userId, kind, updatedAt])
+  @@index([brandAssetId])
 }
 
 model VideoJob {

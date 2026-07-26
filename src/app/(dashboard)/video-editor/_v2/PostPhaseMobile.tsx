@@ -29,6 +29,7 @@ import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
 import { MobileSheet } from "./MobileSheet";
 import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
 import { brollWindowSpans } from "@/lib/broll-spans";
@@ -480,6 +481,17 @@ export function PostPhaseMobile({
       {/* ── style full-screen sheet ── */}
       <MobileSheet open={styleOpen} onClose={() => setStyleOpen(false)} title="สไตล์ซับ (ทั้งคลิป)" size="large">
         <div className="flex flex-col gap-5 pt-2">
+          <EditorStylePresetShelf
+            kind="subtitle"
+            presets={ed.stylePresets.subtitle}
+            loading={ed.stylePresets.loading}
+            busy={ed.stylePresets.busy}
+            canSave
+            onSave={(name) => ed.stylePresets.save("subtitle", name)}
+            onApply={ed.stylePresets.apply}
+            onRemove={ed.stylePresets.remove}
+          />
+
           {ed.canAdjustAvatar && (
             <section className="flex flex-col gap-2">
               <GroupLabel>อวตาร</GroupLabel>
@@ -688,7 +700,20 @@ export function PostPhaseMobile({
         size="medium"
         triggerRef={logoTriggerRef}
       >
-        <div className="pt-2">
+        <div className="flex flex-col gap-5 pt-2">
+          {logoEligible && (
+            <EditorStylePresetShelf
+              kind="logo"
+              presets={ed.stylePresets.logo}
+              loading={ed.stylePresets.loading}
+              busy={ed.stylePresets.busy}
+              canSave={Boolean(logoOverlay)}
+              saveDisabledHint="อัปโหลดหรือเลือกโลโก้ก่อนบันทึกพรีเซ็ต"
+              onSave={(name) => ed.stylePresets.save("logo", name)}
+              onApply={ed.stylePresets.apply}
+              onRemove={ed.stylePresets.remove}
+            />
+          )}
           <LogoOverlayControls
             value={logoOverlay}
             eligible={logoEligible}

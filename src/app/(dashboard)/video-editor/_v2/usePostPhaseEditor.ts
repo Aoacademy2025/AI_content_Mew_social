@@ -31,6 +31,7 @@ import {
   type LogoEditorSurface,
   type LogoProjectSaveStatus,
 } from "./useLogoOverlayEditor";
+import { useEditorStylePresets } from "./useEditorStylePresets";
 
 export type ExportState =
   | { phase: "idle" }
@@ -95,6 +96,12 @@ export function usePostPhaseEditor(
     projectSaveStatus,
     onRetryProjectSave,
     surface,
+  });
+  const stylePresets = useEditorStylePresets({
+    subtitleConfig: cfg,
+    logoConfig: logoOverlay,
+    onApplySubtitle: setCfg,
+    onApplyLogo: onLogoOverlayChange,
   });
   // ความยาวการ์ด (1 ประโยค / ≤4 / ≤3 / ≤2 / 1 คำ — semantics เดียวกับ v1) —
   // จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
@@ -383,6 +390,7 @@ export function usePostPhaseEditor(
   return {
     preview,
     logo,
+    stylePresets,
     previewConfig,
     compositeBaseUrl,
     windowEdits, setWindowEdit, clearWindowEdit,
