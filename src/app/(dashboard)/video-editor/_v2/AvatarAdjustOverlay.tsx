@@ -13,6 +13,7 @@ import { color, radius } from "./tokens";
 import { BtnPrimary, BtnGhost, GroupLabel } from "./ui";
 import { normalizedBox, type AvatarLayout } from "@/lib/avatar-layout";
 import { avatarOpacityAtTime, avatarSourceFadeWindows } from "@/lib/avatar-fade";
+import { LIVE_PREVIEW_MAX_SEC } from "@/lib/preview-bg-params";
 
 const DEFAULT_LAYOUT: AvatarLayout = { scale: 1, offsetX: 0, offsetY: 0 };
 
@@ -81,7 +82,18 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
           // can spuriously bleed into the preview's [0, maxSec] loop for a short introSecs — so
           // normalize to "bookend" instead (mathematically identical for this segment).
           timing: avatarMode === "bookend-both" ? "bookend" : avatarMode,
-          totalDurationSec: bgDurationSec,
+          // Review fix (loop-snap regression): this preview <video> is LOOPED and its actual
+          // playable content never exceeds LIVE_PREVIEW_MAX_SEC (the `-t` bound ffmpeg is given
+          // below — see the preview-bg fetch). Feeding the real bgDurationSec here made "full"
+          // mode (and any bookend/intro longer than the excerpt) compute a window that stays at
+          // opacity=1 well past the loop point, so every loop restart snapped 1→0→1 instead of
+          // fading — a regression this diff introduced, since NO fade at all never had this
+          // problem. Clamping totalDurationSec to the excerpt length means the window's own
+          // fade-out edge now lands exactly at the loop boundary: every loop shows a real fade-in
+          // at 0 and a real fade-out at the excerpt's own end, matching the SHAPE of export's fade
+          // at a segment edge (even though, for full/long-intro clips, it's not literally the same
+          // instant export fades at — export's true edge is off past what a 4s excerpt can show).
+          totalDurationSec: Math.min(bgDurationSec, LIVE_PREVIEW_MAX_SEC),
           introSecs,
           tailSecs,
         })
@@ -138,7 +150,7 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
     fetch("/api/heygen/preview-bg", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ avatarVideoUrl, maxSec: 4, halfRes: true }),
+      body: JSON.stringify({ avatarVideoUrl, maxSec: LIVE_PREVIEW_MAX_SEC, halfRes: true }),
       signal: controller.signal,
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`preview-bg failed (${r.status})`))))
@@ -302,7 +314,11 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
               // WYSIWYG fade sync (H7) — recompute opacity every timeupdate tick from the same
               // windows/formula export bakes in via ffmpeg's blend filter (avatarOpacityAtTime).
               onTimeUpdate={(e) => setAvatarOpacity(avatarOpacityAtTime(fadeWindows, e.currentTarget.currentTime))}
-              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 0, opacity: avatarOpacity }}
+              // [Low, review fix] onTimeUpdate fires at ~4Hz — a bare opacity jump between ticks
+              // can read as a stair-step rather than a smooth ramp. A short linear CSS transition
+              // smooths between ticks without affecting the underlying values avatarOpacityAtTime
+              // computes (still the source of truth; this is purely a rendering smoothing device).
+              style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 0, opacity: avatarOpacity, transition: "opacity 100ms linear" }}
             />
           )}
           <div className="relative flex flex-col items-center gap-1" style={{ zIndex: 1 }}>

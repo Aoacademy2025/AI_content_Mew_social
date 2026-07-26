@@ -15,6 +15,7 @@ import {
   singleAvatarFadeWindow,
 } from "../src/lib/avatar-fade";
 import { buildCompositeFilter } from "../src/lib/chroma-key";
+import { LIVE_PREVIEW_MAX_SEC } from "../src/lib/preview-bg-params";
 
 function ffmpegPath(): string {
   return require("@ffmpeg-installer/ffmpeg").path as string;
@@ -146,6 +147,65 @@ function approxEqual(actual: number, expected: number, label: string, eps = 1e-6
   // window [5,9]) even though the preview never shows the tail clip at all — guard against that
   // regression explicitly.
   approxEqual(avatarOpacityAtTime(clientWindows, 6), 0, "bookend-both@6 (past intro entirely — no phantom tail fade-in)");
+}
+
+// ── Review fix: loop-snap regression ────────────────────────────────────────────────────────
+// AvatarAdjustOverlay's preview <video> is LOOPED and its actual playable content never exceeds
+// LIVE_PREVIEW_MAX_SEC (the ffmpeg `-t` bound preview-bg is given). Feeding the real bgDurationSec
+// into avatarSourceFadeWindows (as the pre-fix code did) made "full" mode — and any bookend/intro
+// longer than the excerpt — compute a window that's still at opacity=1 well past the loop point,
+// so every loop restart SNAPPED 1→0→1 instead of fading. Mirrors AvatarAdjustOverlay.tsx's actual
+// fadeWindows useMemo: clamp totalDurationSec to min(bgDurationSec, LIVE_PREVIEW_MAX_SEC) first.
+function livePreviewFadeWindows(
+  timing: string,
+  bgDurationSec: number,
+  introSecs: number,
+  tailSecs: number,
+) {
+  return avatarSourceFadeWindows({
+    timing: timing === "bookend-both" ? "bookend" : timing,
+    totalDurationSec: Math.min(bgDurationSec, LIVE_PREVIEW_MAX_SEC),
+    introSecs,
+    tailSecs,
+  });
+}
+
+// full mode, a long render (12s) — the excerpt is the binding constraint.
+{
+  const windows = livePreviewFadeWindows("full", 12, 5, 4);
+  assert.deepEqual(windows, [{ startSec: 0, endSec: LIVE_PREVIEW_MAX_SEC }], "full@12s render clamps to the excerpt length");
+  approxEqual(avatarOpacityAtTime(windows, 0), 0, "full-clamped@0");
+  approxEqual(avatarOpacityAtTime(windows, AVATAR_FADE_DURATION_SEC), 1, "full-clamped@edge");
+  approxEqual(avatarOpacityAtTime(windows, 2), 1, "full-clamped@mid (steady)");
+  approxEqual(avatarOpacityAtTime(windows, LIVE_PREVIEW_MAX_SEC), 0, "full-clamped@excerpt-end (fade-out completes exactly at the loop boundary)");
+
+  // Regression proof: the UNCLAMPED (pre-fix) computation is still at opacity=1 at the exact
+  // instant this preview loops — that's the snap the review caught. The clamped version isn't.
+  const unclamped = avatarSourceFadeWindows({ timing: "full", totalDurationSec: 12, introSecs: 5, tailSecs: 4 });
+  approxEqual(avatarOpacityAtTime(unclamped, LIVE_PREVIEW_MAX_SEC), 1, "pre-fix: still opaque at the loop point (the bug)");
+  approxEqual(avatarOpacityAtTime(windows, LIVE_PREVIEW_MAX_SEC), 0, "post-fix: faded out by the loop point (the fix)");
+}
+
+// bookend mode, introSecs (5) >= excerpt (4) — same clamp applies, same shape as "full" here.
+{
+  const windows = livePreviewFadeWindows("bookend", 12, 5, 4);
+  assert.deepEqual(windows, [{ startSec: 0, endSec: LIVE_PREVIEW_MAX_SEC }], "bookend@intro=5s > excerpt clamps to the excerpt length");
+  approxEqual(avatarOpacityAtTime(windows, LIVE_PREVIEW_MAX_SEC), 0, "bookend-clamped@excerpt-end");
+}
+
+// bookend mode, introSecs (2) < excerpt (4) — the REAL intro length is the binding constraint,
+// not the excerpt cap: fade-out must land at 2s, not get stretched out to 4s.
+{
+  const windows = livePreviewFadeWindows("bookend", 12, 2, 4);
+  assert.deepEqual(windows, [{ startSec: 0, endSec: 2 }], "bookend@intro=2s < excerpt keeps the real intro length");
+  approxEqual(avatarOpacityAtTime(windows, 2), 0, "bookend-short-intro@2 (faded out well before the loop boundary)");
+  approxEqual(avatarOpacityAtTime(windows, 3), 0, "bookend-short-intro@3 (still invisible mid-excerpt, not re-appearing)");
+}
+
+// A render itself shorter than the excerpt cap — the real content is the binding constraint.
+{
+  const windows = livePreviewFadeWindows("full", 1.5, 5, 4);
+  assert.deepEqual(windows, [{ startSec: 0, endSec: 1.5 }], "full@short render (1.5s) isn't padded out to the excerpt cap");
 }
 
 // avatarFadeApplies (M10/B-13): drives the timeline gradient/tooltip + mobile hint — must be
@@ -333,6 +393,34 @@ try {
     avatarAdjustSource,
     /opacity: avatarOpacity/,
     "H7: the computed opacity must actually be applied to the preview <video>'s style",
+  );
+  // Review fix (loop-snap): the excerpt cap must be a single shared constant, not a hardcoded
+  // literal duplicated between the preview-bg fetch and the fade-window clamp (which is exactly
+  // how they drifted and caused the regression in the first place).
+  assert.match(
+    avatarAdjustSource,
+    /import \{ LIVE_PREVIEW_MAX_SEC \} from "@\/lib\/preview-bg-params";/,
+    "loop-snap fix: AvatarAdjustOverlay must import the shared excerpt-length constant",
+  );
+  assert.match(
+    avatarAdjustSource,
+    /maxSec: LIVE_PREVIEW_MAX_SEC/,
+    "loop-snap fix: the preview-bg fetch must request the SAME excerpt length the fade clamp assumes",
+  );
+  assert.match(
+    avatarAdjustSource,
+    /totalDurationSec: Math\.min\(bgDurationSec, LIVE_PREVIEW_MAX_SEC\)/,
+    "loop-snap fix: fade windows must be computed against the excerpt actually played, not the full render duration",
+  );
+  assert.doesNotMatch(
+    avatarAdjustSource,
+    /maxSec:\s*4\b/,
+    "no hardcoded maxSec literal should remain — must route through LIVE_PREVIEW_MAX_SEC",
+  );
+  assert.match(
+    avatarAdjustSource,
+    /transition: "opacity 100ms linear"/,
+    "[Low] opacity changes should transition smoothly between ~4Hz timeupdate ticks",
   );
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });

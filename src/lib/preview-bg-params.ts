@@ -11,6 +11,17 @@ const MIN_MAX_SEC = 1;
 const MAX_MAX_SEC = 10;
 
 /**
+ * The `maxSec` AvatarAdjustOverlay's live drag-preview requests from this route — exported
+ * (not hardcoded at the call site) so the client-side fade-window clamp (avatarOpacityAtTime's
+ * caller, AvatarAdjustOverlay.tsx) can never drift from the actual excerpt length ffmpeg
+ * produces. Review fix (fade loop-snap): the preview clip is looped, so its fade windows must
+ * be computed against the EXCERPT length actually played (min(real duration, this constant)),
+ * not the full render duration — otherwise the loop's hard restart lands mid-opacity=1 and
+ * looks like a snap instead of a fade.
+ */
+export const LIVE_PREVIEW_MAX_SEC = 4;
+
+/**
  * Clamp the requested fast-preview duration to [1, 10] seconds.
  * Omitted / non-finite input (e.g. `undefined`, `"evil"`) → `null`, meaning "no cap" — the
  * route keys the full clip, exactly like today's behavior for existing callers.

@@ -99,6 +99,19 @@ export function avatarOpacityAtTime(
   const normalized = normalizeAvatarFadeWindows(windows);
   return normalized.reduce((max, window) => {
     const edge = avatarFadeEdgeDurationSec(window);
+    // `edge === 0` guard (review finding #3): NOT provably unreachable — verified numerically.
+    // avatarFadeEdgeDurationSec rounds (endSec-startSec)/2 to 3 decimals, and for a
+    // near-degenerate window (duration ~0.001-0.002s after rounding) IEEE754 subtraction error
+    // in that division can land just under the .5 boundary and round DOWN to exactly 0 (about
+    // half of all possible 1ms-wide windows do this — confirmed by brute-force scan, not just
+    // symbolic reasoning about the 3-decimal grid, which wrongly suggested it couldn't happen).
+    // avatarOpacityExpression (the ffmpeg blend string this mirrors, export path, out of scope
+    // here) has NO equivalent guard — the same input would divide by zero there (NaN/Inf in the
+    // filter graph). This is pre-existing and unrelated to this diff; not fixed here. In THIS
+    // (client) function it's collapsed to an instant on/off step instead — no crash, no NaN.
+    // In practice it never fires: every window this codebase actually constructs comes from
+    // avatarSourceFadeWindows/singleAvatarFadeWindow fed real avatar/bg durations (HeyGen
+    // renders, TTS-driven bg clips), which are always multiple seconds — never sub-2ms.
     const envelope = edge > 0
       ? clip01((atSec - window.startSec) / edge) * clip01((window.endSec - atSec) / edge)
       : (atSec >= window.startSec && atSec <= window.endSec ? 1 : 0);
