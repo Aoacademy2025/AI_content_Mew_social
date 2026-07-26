@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Timeline 4 แทร็ก (จอ 4b ล่าง, P6b) — decision #5:
+ * Timeline 4 แทร็กหลัก + waveform เสียงพูดสำหรับอ้างอิง (จอ 4b ล่าง, P6b) — decision #5:
  *   ซับ = แก้ได้จริง (ลากขอบ + snap + undo ผ่าน onCaptionsChange) ·
  *   อวตาร/บีโรล/เพลง = แสดงผล + คลิก jump เท่านั้น
  * สีแทร็กคงที่ตาม Design System: อวตารม่วง · บีโรลฟ้า · ซับเหลือง · เพลงชมพู
@@ -221,7 +221,7 @@ export function TimelinePanel({
         <button onClick={onUndo} disabled={!canUndo} title="เลิกทำ (แก้เวลาซับ)" className="flex items-center gap-1" style={{ background: "none", border: "none", color: canUndo ? color.textSecondary : color.textFaintest, cursor: canUndo ? "pointer" : "default", fontSize: 10.5 }}>
           <Undo2 size={12} /> เลิกทำ
         </button>
-        <button onClick={() => setSnap(!snap)} title="Snap ขอบการ์ด/วินาที" className="flex items-center gap-1" style={{ background: "none", border: "none", color: snap ? color.primary300 : color.textFaintest, cursor: "pointer", fontSize: 10.5 }}>
+        <button onClick={() => setSnap(!snap)} title="Snap กับจังหวะเสียง" className="flex items-center gap-1" style={{ background: "none", border: "none", color: snap ? color.primary300 : color.textFaintest, cursor: "pointer", fontSize: 10.5 }}>
           <Magnet size={12} /> Snap
         </button>
         <div className="flex items-center gap-1">
@@ -266,18 +266,6 @@ export function TimelinePanel({
               </span>
             ))}
           </div>
-
-          {/* เสียงพูด (waveform) — ไว้เทียบขอบซับกับ wave ตอนตัดต่อ */}
-          {peaks && peaks.length > 0 && (
-            <div className="relative flex items-center" style={{ height: 34 }}>
-              {trackLabel("เสียงพูด", color.trackVoice)}
-              <div className="relative flex-1 overflow-hidden" style={{ height: 34 }}>
-                <div className="absolute left-0 top-0">
-                  <WaveformCanvas peaks={peaks} width={Math.max(1, Math.round(toPx(waveMs)))} height={34} color={`${color.trackVoice}66`} />
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* อวตาร — บล็อกตามโหมดจริง (เดิม hardcode "พิธีกรเปิด 5s" เสมอ แม้เลือกทั้งคลิป
               — บั๊ก QA 07-04): full = เต็มคลิป · bookend = หัว · bookend-both = หัว+ท้าย ·
@@ -336,6 +324,18 @@ export function TimelinePanel({
               ))}
             </div>
           </div>
+
+          {/* เสียงพูด (waveform) — วางติดเหนือซับเพื่อเทียบขอบกับจังหวะเสียงได้ทันที */}
+          {peaks && peaks.length > 0 && (
+            <div className="relative flex items-center" style={{ height: 34 }}>
+              {trackLabel("เสียงพูด", color.trackVoice)}
+              <div className="relative flex-1 overflow-hidden" style={{ height: 34 }}>
+                <div className="absolute left-0 top-0">
+                  <WaveformCanvas peaks={peaks} width={Math.max(1, Math.round(toPx(waveMs)))} height={34} color={`${color.trackVoice}66`} />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* ซับไทย — แก้ได้ */}
           <div className="relative flex items-center" style={{ height: TRACK_H }}>
