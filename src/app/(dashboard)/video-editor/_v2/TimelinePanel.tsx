@@ -8,7 +8,7 @@
  */
 
 import { useMemo, useRef, useState } from "react";
-import { Play, Pause, Magnet, ZoomIn, ZoomOut, Undo2 } from "lucide-react";
+import { Play, Pause, Magnet, Redo2, ZoomIn, ZoomOut, Undo2 } from "lucide-react";
 import { color, font } from "./tokens";
 import type { V2Caption } from "./subtitle-style";
 import { useAudioPeaks } from "../_components/useAudioPeaks";
@@ -35,7 +35,7 @@ function brollSpansFromConfig(config: Record<string, unknown> | null | undefined
 }
 
 export function TimelinePanel({
-  captions, onCaptionsChange, onUndo, canUndo,
+  captions, onCaptionsChange, onUndo, onRedo, canUndo, canRedo,
   selected, onSelect,
   videoRef, timeMs, durationMs, onScrub,
   config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs,
@@ -44,7 +44,9 @@ export function TimelinePanel({
   captions: V2Caption[];
   onCaptionsChange: (next: V2Caption[], commit: boolean) => void;
   onUndo: () => void;
+  onRedo: () => void;
   canUndo: boolean;
+  canRedo: boolean;
   selected: number;
   onSelect: (i: number) => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -187,8 +189,11 @@ export function TimelinePanel({
           {fmt(timeMs)} / {fmt(durMs)}
         </span>
         <span className="flex-1" />
-        <button onClick={onUndo} disabled={!canUndo} title="เลิกทำ (แก้เวลาซับ)" className="flex items-center gap-1" style={{ background: "none", border: "none", color: canUndo ? color.textSecondary : color.textFaintest, cursor: canUndo ? "pointer" : "default", fontSize: 10.5 }}>
+        <button onClick={onUndo} disabled={!canUndo} title="เลิกทำการแก้ซับ (Ctrl/⌘+Z)" className="flex items-center gap-1" style={{ background: "none", border: "none", color: canUndo ? color.textSecondary : color.textFaintest, cursor: canUndo ? "pointer" : "default", fontSize: 10.5 }}>
           <Undo2 size={12} /> เลิกทำ
+        </button>
+        <button onClick={onRedo} disabled={!canRedo} title="ทำซ้ำการแก้ซับ (Ctrl/⌘+Shift+Z)" className="flex items-center gap-1" style={{ background: "none", border: "none", color: canRedo ? color.textSecondary : color.textFaintest, cursor: canRedo ? "pointer" : "default", fontSize: 10.5 }}>
+          <Redo2 size={12} /> ทำซ้ำ
         </button>
         <button onClick={() => setSnap(!snap)} title="Snap ขอบการ์ด/วินาที" className="flex items-center gap-1" style={{ background: "none", border: "none", color: snap ? color.primary300 : color.textFaintest, cursor: "pointer", fontSize: 10.5 }}>
           <Magnet size={12} /> Snap
