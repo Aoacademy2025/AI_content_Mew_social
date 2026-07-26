@@ -195,6 +195,15 @@ export function renderSubtitle(
   accentColor = "#FFE500",
   decorations: SubtitleDecorationOptions = {},
 ) {
+  // An empty (or whitespace-only) card — e.g. a freshly inserted card the user hasn't
+  // typed into yet — has nothing to draw. Bail BEFORE any preset/effect branch below so
+  // no container (box/box-rounded/karaoke-box/box-white/box-yellow/news backgrounds, or
+  // the karaoke/typewriter wrapKaraoke() box wrapper) ever renders as an empty box.
+  // This function is the single source of truth for BOTH the live preview overlay
+  // (V2CaptionOverlay → renderSubEl) and the Remotion burn pass (ShortVideoComposition),
+  // so guarding here — not at the burn call site — keeps preview and export WYSIWYG.
+  if (!text.trim()) return null;
+
   // Size by the LONGEST line, not total length: manual "\n" breaks split the caption across
   // lines, so counting "\n" + every line's chars would shrink multi-line captions for no
   // visual reason. Single-line text (no "\n") yields [text], so charCount is unchanged.

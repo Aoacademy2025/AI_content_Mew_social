@@ -43,6 +43,7 @@
     "verify:editor-job-runtime": "tsx scripts/verify-editor-project-recovery-hook.ts",
     "verify:editor-preview-layout": "tsx scripts/verify-editor-preview-layout.ts",
     "verify:editor-style-presets": "tsx scripts/verify-editor-style-presets.ts",
+    "verify:caption-card-editing": "tsx scripts/verify-caption-card-editing.ts",
     "verify:export-gallery-metadata": "tsx scripts/verify-export-gallery-metadata.ts",
     "verify:project-menu": "tsx scripts/verify-project-menu.ts",
     "verify:video-export-name": "tsx scripts/verify-video-export-name.ts",

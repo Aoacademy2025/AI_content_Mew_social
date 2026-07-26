@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Loader2, Move, Pause, Pencil, Play, SlidersHorizontal, Undo2,
+  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Loader2, Move, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Undo2,
 } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
@@ -143,6 +143,26 @@ export function PostPhaseMobile({
     setStyleOpen(false);
     setLogoOpen(false);
     setEditOpen(true);
+  }
+
+  function closeEdit() {
+    ed.commitCaptionText();
+    // usePostPhaseEditor.insertCaptionAtPlayhead() sets editingIdx to auto-open this
+    // sheet for a freshly inserted card. Nothing on mobile ever clears it back to null
+    // afterwards (desktop clears it via the card list's inline-edit onBlur/toggle) —
+    // left dangling, the hook's auto-follow effect bails forever (`editingIdx !== null`
+    // guard in usePostPhaseEditor.ts), so "ตามซับที่กำลังเล่น" stops working permanently
+    // after the very first card add. Clear it whenever the edit sheet closes.
+    ed.setEditingIdx(null);
+    setEditOpen(false);
+  }
+
+  function addCaptionAtPlayhead() {
+    if (ed.insertCaptionAtPlayhead()) setEditOpen(true);
+  }
+
+  function deleteCaptionAndClose() {
+    if (ed.deleteSelectedCaption()) setEditOpen(false);
   }
 
   function openStyle() {
@@ -388,7 +408,7 @@ export function PostPhaseMobile({
             <div className="flex items-center gap-2">
               <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
               <button
-                onClick={ed.undoCaptions}
+                onClick={() => ed.undoCaptions()}
                 disabled={ed.historyLen === 0}
                 aria-label="เลิกทำการแก้ไขล่าสุด"
                 title="เลิกทำ"
@@ -402,9 +422,44 @@ export function PostPhaseMobile({
               >
                 <Undo2 size={16} />
               </button>
+              <button
+                onClick={() => ed.redoCaptions()}
+                disabled={ed.redoLen === 0}
+                aria-label="ทำซ้ำการแก้ไขล่าสุด"
+                title="ทำซ้ำ"
+                className="flex items-center justify-center"
+                style={{
+                  width: 44, height: 44, borderRadius: "50%", background: "none",
+                  border: `1px solid ${color.cardBorder}`, color: color.textSecondary,
+                  cursor: ed.redoLen === 0 ? "default" : "pointer",
+                  opacity: ed.redoLen === 0 ? 0.4 : 1, flex: "none",
+                }}
+              >
+                <Redo2 size={16} />
+              </button>
             </div>
             <Chip selected={ed.follow} onClick={ed.resumeFollow} style={{ padding: "5px 11px", fontSize: 11 }}>ตามซับที่กำลังเล่น</Chip>
           </div>
+          <button
+            type="button"
+            data-caption-action="add"
+            onClick={addCaptionAtPlayhead}
+            disabled={!ed.canInsertCaption}
+            title={ed.canInsertCaption ? "เพิ่มการ์ดซับที่ตำแหน่ง Playhead" : (ed.insertCaptionBlockedReason ?? undefined)}
+            className="mb-2.5 flex w-full items-center justify-center gap-2"
+            style={{
+              minHeight: 44,
+              borderRadius: radius.control,
+              background: "rgba(139,92,246,.08)",
+              border: `1px dashed ${color.selectedBorderStrong}`,
+              color: color.primary300,
+              font: `500 12.5px ${font.body}`,
+              cursor: ed.canInsertCaption ? "pointer" : "default",
+              opacity: ed.canInsertCaption ? 1 : 0.45,
+            }}
+          >
+            <Plus size={16} /> เพิ่มกล่องที่ตำแหน่ง Playhead
+          </button>
           {ed.captions.map((c, i) => {
             const isActive = i === ed.activeIdx;
             const tagLabel = c.tag === "hook" ? "HOOK" : c.tag === "cta" ? "CTA" : "เนื้อหา";
@@ -427,7 +482,17 @@ export function PostPhaseMobile({
               >
                 <span style={{ font: `600 11px ${font.heading}`, color: color.textFaintest, width: 16, textAlign: "center", flex: "none", paddingTop: 2, fontVariantNumeric: "tabular-nums" }}>{i + 1}</span>
                 <div className="min-w-0 flex-1">
-                  <div style={{ fontSize: 14, lineHeight: 1.45, color: color.text }}>{c.text}</div>
+                  <div
+                    data-caption-card-empty={!c.text.trim() ? "true" : undefined}
+                    style={{
+                      fontSize: 14,
+                      lineHeight: 1.45,
+                      color: c.text.trim() ? color.text : color.primary300,
+                      fontStyle: c.text.trim() ? "normal" : "italic",
+                    }}
+                  >
+                    {c.text.trim() ? c.text : "กล่องใหม่ — แตะเพื่อพิมพ์"}
+                  </div>
                   <div className="mt-1.5 flex items-center gap-2">
                     <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, fontWeight: 600, ...tagStyle }}>{tagLabel}</span>
                     <span style={{ fontSize: 11, color: color.textFaint, fontVariantNumeric: "tabular-nums" }}>{fmtMs(c.startMs)} – {fmtMs(c.endMs)}</span>
@@ -462,13 +527,15 @@ export function PostPhaseMobile({
       )}
 
       {/* ── edit bottom-sheet ── */}
-      <MobileSheet open={editOpen} onClose={() => setEditOpen(false)} title={`การ์ดที่ ${ed.selected + 1}`} size="large">
+      <MobileSheet open={editOpen} onClose={closeEdit} title={`การ์ดที่ ${ed.selected + 1}`} size="large">
         {selectedCap && (
           <>
             <GroupLabel style={{ display: "block", margin: "10px 0 7px" }}>ข้อความ</GroupLabel>
             <textarea
               value={selectedCap.text}
               onChange={(e) => ed.setCaptions((caps) => caps.map((cc, ci) => (ci === ed.selected ? { ...cc, text: e.target.value } : cc)))}
+              onBlur={ed.commitCaptionText}
+              placeholder="พิมพ์ข้อความซับ"
               rows={3}
               className="w-full resize-none"
               style={{ padding: "12px 14px", borderRadius: 11, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontSize: 13.5, lineHeight: 1.7, fontFamily: font.body, outline: "none" }}
@@ -486,6 +553,25 @@ export function PostPhaseMobile({
               <BtnSecondary onClick={() => ed.mergeSelected()} style={{ flex: 1, minHeight: 44, textAlign: "center" }}>รวมกับใบถัดไป</BtnSecondary>
               <BtnSecondary onClick={() => ed.splitSelected()} style={{ flex: 1, minHeight: 44, textAlign: "center" }}>แยกการ์ด</BtnSecondary>
             </div>
+            <button
+              type="button"
+              data-caption-action="delete"
+              onClick={deleteCaptionAndClose}
+              disabled={ed.captions.length <= 1}
+              className="mt-2.5 flex w-full items-center justify-center gap-2"
+              style={{
+                minHeight: 44,
+                borderRadius: radius.control,
+                background: "rgba(248,113,113,.06)",
+                border: "1px solid rgba(248,113,113,.28)",
+                color: color.danger,
+                font: `500 12.5px ${font.body}`,
+                cursor: ed.captions.length <= 1 ? "default" : "pointer",
+                opacity: ed.captions.length <= 1 ? 0.4 : 1,
+              }}
+            >
+              <Trash2 size={15} /> ลบกล่องซับนี้
+            </button>
           </>
         )}
       </MobileSheet>

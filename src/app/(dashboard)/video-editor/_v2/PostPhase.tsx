@@ -9,7 +9,9 @@
  * เป็นเลย์เอาต์ desktop 3 คอลัมน์ (การ์ดซับ | preview | คุมซับ) + timeline ล้วน ๆ
  */
 
-import { ArrowDownToLine, CheckCircle2, Download, Loader2, Move, Pencil } from "lucide-react";
+import {
+  ArrowDownToLine, CheckCircle2, Download, Loader2, Move, Pencil, Plus, Redo2, Trash2, Undo2,
+} from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Card, GroupLabel, Segmented } from "./ui";
 import {
@@ -140,15 +142,59 @@ export function PostPhase({
       <div className="flex min-h-0 flex-1">
         {/* ── ซ้าย 266px: การ์ดซับ ── */}
         <aside className="flex min-h-0 w-[266px] shrink-0 flex-col" style={{ borderRight: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
-          <div className="shrink-0 px-3 pb-2 pt-3">
+          <div className="flex shrink-0 items-center justify-between gap-2 px-3 pb-2 pt-3">
             <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => ed.undoCaptions()}
+                disabled={ed.historyLen === 0}
+                aria-label="เลิกทำการแก้ซับ"
+                title="เลิกทำ (Ctrl/⌘+Z)"
+                className="flex h-8 w-8 items-center justify-center rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                style={{
+                  background: "none",
+                  border: `1px solid ${color.cardBorder}`,
+                  color: ed.historyLen > 0 ? color.textSecondary : color.textFaintest,
+                  cursor: ed.historyLen > 0 ? "pointer" : "default",
+                  opacity: ed.historyLen > 0 ? 1 : 0.45,
+                  outlineColor: color.primary300,
+                }}
+              >
+                <Undo2 size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={ed.redoCaptions}
+                disabled={ed.redoLen === 0}
+                aria-label="ทำซ้ำการแก้ซับ"
+                title="ทำซ้ำ (Ctrl/⌘+Shift+Z)"
+                className="flex h-8 w-8 items-center justify-center rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                style={{
+                  background: "none",
+                  border: `1px solid ${color.cardBorder}`,
+                  color: ed.redoLen > 0 ? color.textSecondary : color.textFaintest,
+                  cursor: ed.redoLen > 0 ? "pointer" : "default",
+                  opacity: ed.redoLen > 0 ? 1 : 0.45,
+                  outlineColor: color.primary300,
+                }}
+              >
+                <Redo2 size={14} />
+              </button>
+            </div>
           </div>
           <div onScroll={ed.onListScroll} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3">
             {ed.captions.map((c, i) => (
               <div
                 key={`${i}-${c.startMs}`}
                 ref={(el) => { ed.cardRefs.current[i] = el; }}
-                onClick={() => { ed.setSelected(i); ed.setFollow(true); const v = ed.videoRef.current; if (v) v.currentTime = c.startMs / 1000 + 0.01; }}
+                onClick={() => {
+                  ed.setSelected(i);
+                  ed.setFollow(true);
+                  if (!c.text.trim()) ed.setEditingIdx(i);
+                  const v = ed.videoRef.current;
+                  if (v) v.currentTime = c.startMs / 1000 + 0.01;
+                }}
                 style={{ cursor: "pointer" }}
               >
                 <Card
@@ -172,14 +218,29 @@ export function PostPhase({
                       autoFocus
                       value={c.text}
                       onChange={(e) => ed.setCaptions((caps) => caps.map((cc, ci) => ci === i ? { ...cc, text: e.target.value } : cc))}
-                      onBlur={() => ed.setEditingIdx(null)}
+                      onBlur={() => {
+                        ed.commitCaptionText();
+                        ed.setEditingIdx(null);
+                      }}
+                      placeholder="พิมพ์ข้อความซับ"
                       className="mt-1 w-full resize-none bg-transparent outline-none"
                       rows={2}
                       style={{ fontSize: 12, lineHeight: 1.5, color: color.text, border: `1px solid ${color.selectedBorder}`, borderRadius: 8, padding: "4px 6px" }}
                     />
                   ) : (
-                    <div style={{ fontSize: 12, lineHeight: 1.5, marginTop: 4, color: i === ed.selected ? color.text : color.textSecondary }}>
-                      {c.text}
+                    <div
+                      data-caption-card-empty={!c.text.trim() ? "true" : undefined}
+                      style={{
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        marginTop: 4,
+                        color: c.text.trim()
+                          ? (i === ed.selected ? color.text : color.textSecondary)
+                          : color.primary300,
+                        fontStyle: c.text.trim() ? "normal" : "italic",
+                      }}
+                    >
+                      {c.text.trim() ? c.text : "กล่องใหม่ — คลิกเพื่อพิมพ์"}
                     </div>
                   )}
                 </Card>
@@ -200,13 +261,55 @@ export function PostPhase({
               </button>
             )}
           </div>
-          <div className="flex shrink-0 gap-2 p-3" style={{ borderTop: `1px solid ${color.cardBorder}`, boxShadow: "0 -10px 24px rgba(0,0,0,.18)" }}>
-            <button onClick={ed.mergeSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
-              รวมกับใบถัดไป
-            </button>
-            <button onClick={ed.splitSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
-              แยกการ์ด
-            </button>
+          <div className="flex shrink-0 flex-col gap-2 p-3" style={{ borderTop: `1px solid ${color.cardBorder}`, boxShadow: "0 -10px 24px rgba(0,0,0,.18)" }}>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                data-caption-action="add"
+                onClick={ed.insertCaptionAtPlayhead}
+                disabled={!ed.canInsertCaption}
+                title={ed.canInsertCaption ? "เพิ่มการ์ดซับที่ตำแหน่ง Playhead" : (ed.insertCaptionBlockedReason ?? undefined)}
+                className="flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                style={{
+                  background: "rgba(139,92,246,.08)",
+                  border: `1px dashed ${color.selectedBorderStrong}`,
+                  color: color.primary300,
+                  fontSize: 11,
+                  cursor: ed.canInsertCaption ? "pointer" : "default",
+                  opacity: ed.canInsertCaption ? 1 : 0.45,
+                  outlineColor: color.primary300,
+                }}
+              >
+                <Plus size={13} /> เพิ่มที่ Playhead
+              </button>
+              <button
+                type="button"
+                data-caption-action="delete"
+                onClick={ed.deleteSelectedCaption}
+                disabled={ed.captions.length <= 1}
+                aria-label="ลบกล่องซับที่เลือก"
+                title={ed.captions.length <= 1 ? "ต้องเหลืออย่างน้อย 1 กล่องซับ" : "ลบกล่องซับที่เลือก"}
+                className="flex h-9 w-9 items-center justify-center rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+                style={{
+                  background: "rgba(248,113,113,.06)",
+                  border: "1px solid rgba(248,113,113,.24)",
+                  color: color.danger,
+                  cursor: ed.captions.length <= 1 ? "default" : "pointer",
+                  opacity: ed.captions.length <= 1 ? 0.4 : 1,
+                  outlineColor: color.danger,
+                }}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={ed.mergeSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
+                รวมกับใบถัดไป
+              </button>
+              <button onClick={ed.splitSelected} className="flex-1" style={{ padding: "7px 0", borderRadius: 9, background: "none", border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 11, cursor: "pointer" }}>
+                แยกการ์ด
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -633,8 +736,10 @@ export function PostPhase({
       <TimelinePanel
         captions={ed.captions}
         onCaptionsChange={ed.handleCaptionsChange}
-        onUndo={ed.undoCaptions}
+        onUndo={() => ed.undoCaptions()}
+        onRedo={() => ed.redoCaptions()}
         canUndo={ed.historyLen > 0}
+        canRedo={ed.redoLen > 0}
         selected={ed.selected}
         onSelect={ed.setSelected}
         videoRef={ed.videoRef}

@@ -3,11 +3,9 @@
 /**
  * usePostPhaseEditor — เจ้าของ state/logic ทั้งหมดของเฟสแต่งซับ (แยกจาก PostPhase.tsx
  * เพื่อให้จอ desktop และ mobile ใช้ hook ตัวเดียวกัน — one source of truth: caption/
- * style/burn state, undo history, avatar re-composite trigger, export path).
- *
- * ⚠️ นี่คือการ "ย้าย" logic ล้วน (behavior-preserving) — subtitle timing math และ
- * avatar composite ยังคงเดิมทุกบรรทัด. hook เป็นเจ้าของ videoRef (Shell mount จอ
- * แต่งซับทีละจอเท่านั้น → ref ไม่ชนกัน).
+ * style/burn state, caption Undo/Redo history, avatar re-composite trigger, export path).
+ * การเพิ่ม/ลบกล่องซับแก้เฉพาะช่วงเวลาที่ Playhead เลือกและไม่เลื่อนการ์ดถัดไป.
+ * hook เป็นเจ้าของ videoRef (Shell mount จอแต่งซับทีละจอเท่านั้น → ref ไม่ชนกัน).
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -19,6 +17,16 @@ import {
 } from "./subtitle-style";
 import { loanwordSpans } from "@/lib/thai-loanwords";
 import { trackEvent } from "@/lib/client-telemetry";
+import {
+  commitCaptionHistory,
+  deleteCaptionCard,
+  insertCaptionCardAtPlayhead,
+  MIN_CAPTION_CARD_MS,
+  redoCaptionHistory,
+  shiftCaptionOverrides,
+  undoCaptionHistory,
+  type CaptionHistoryState,
+} from "@/lib/caption-card-editing";
 import {
   normalizeLogoOverlayConfig,
   type LogoOverlayConfig,
@@ -56,6 +64,34 @@ export type WindowEdit = {
   label?: string;
   enabled?: boolean;
 };
+
+type CaptionEditSnapshot = {
+  captions: V2Caption[];
+  overrides: V2CardOverrides;
+  selected: number;
+  cardLen: V2CardLen;
+};
+
+function cloneCaptions(captions: readonly V2Caption[]): V2Caption[] {
+  return captions.map((caption) => ({ ...caption }));
+}
+
+function cloneOverrides(overrides: V2CardOverrides): V2CardOverrides {
+  return Object.fromEntries(
+    Object.entries(overrides).map(([index, value]) => [index, { ...value }]),
+  );
+}
+
+function captionsMatch(left: readonly V2Caption[], right: readonly V2Caption[]): boolean {
+  return left.length === right.length && left.every((caption, index) => {
+    const other = right[index];
+    return !!other
+      && caption.text === other.text
+      && caption.startMs === other.startMs
+      && caption.endMs === other.endMs
+      && caption.tag === other.tag;
+  });
+}
 
 const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
   void _next;
@@ -366,31 +402,120 @@ export function usePostPhaseEditor(
     if (el) { lastAutoScrollAt.current = Date.now(); el.scrollIntoView({ block: "nearest", behavior: "auto" }); }
   }
 
-  // Undo history สำหรับการแก้เวลาซับบน timeline (push เฉพาะตอน commit = ปล่อยเมาส์)
-  const historyRef = useRef<V2Caption[][]>([]);
-  const committedRef = useRef<V2Caption[]>(preview?.captions ?? []);
+  // Caption history เก็บทั้งโครงสร้างซับ + override ตาม index เพื่อให้ Undo/Redo หลัง
+  // เพิ่ม/ลบ/รวม/แยก ไม่ย้ายสีของการ์ดไปผิดใบ
+  const historyRef = useRef<CaptionHistoryState<CaptionEditSnapshot>>({ past: [], future: [] });
+  const historyIdRef = useRef(0);
+  const committedRef = useRef<V2Caption[]>(cloneCaptions(preview?.captions ?? []));
   const [historyLen, setHistoryLen] = useState(0);
+  const [redoLen, setRedoLen] = useState(0);
+
+  function syncHistoryCounts(history: CaptionHistoryState<CaptionEditSnapshot>) {
+    setHistoryLen(history.past.length);
+    setRedoLen(history.future.length);
+  }
+
+  function applyCaptionSnapshot(snapshot: CaptionEditSnapshot) {
+    const nextCaptions = cloneCaptions(snapshot.captions);
+    committedRef.current = cloneCaptions(nextCaptions);
+    setCaptions(nextCaptions);
+    setOverrides(cloneOverrides(snapshot.overrides));
+    setSelected(Math.max(0, Math.min(snapshot.selected, nextCaptions.length - 1)));
+    setCardLen(snapshot.cardLen);
+    setEditingIdx(null);
+  }
+
+  function commitCaptionChange(
+    nextCaptions: V2Caption[],
+    nextOverrides: V2CardOverrides = overrides,
+    nextSelected = selected,
+    nextCardLen = cardLen,
+  ): number | null {
+    const normalizedSelected = Math.max(0, Math.min(nextSelected, nextCaptions.length - 1));
+    const hasCaptionChange = !captionsMatch(committedRef.current, nextCaptions);
+    const hasOverrideChange = JSON.stringify(overrides) !== JSON.stringify(nextOverrides);
+    const hasCardLenChange = cardLen !== nextCardLen;
+
+    setCaptions(nextCaptions);
+    setOverrides(nextOverrides);
+    setSelected(normalizedSelected);
+    setCardLen(nextCardLen);
+    if (!hasCaptionChange && !hasOverrideChange && !hasCardLenChange) return null;
+
+    const entry = {
+      id: ++historyIdRef.current,
+      before: {
+        captions: cloneCaptions(committedRef.current),
+        overrides: cloneOverrides(overrides),
+        selected,
+        cardLen,
+      },
+      after: {
+        captions: cloneCaptions(nextCaptions),
+        overrides: cloneOverrides(nextOverrides),
+        selected: normalizedSelected,
+        cardLen: nextCardLen,
+      },
+    };
+    const nextHistory = commitCaptionHistory(historyRef.current, entry);
+    historyRef.current = nextHistory;
+    committedRef.current = cloneCaptions(nextCaptions);
+    syncHistoryCounts(nextHistory);
+    return entry.id;
+  }
+
   function handleCaptionsChange(next: V2Caption[], commit: boolean) {
-    setCaptions(next);
-    if (commit) {
-      historyRef.current.push(committedRef.current.map((c) => ({ ...c })));
-      if (historyRef.current.length > 50) historyRef.current.shift();
-      committedRef.current = next.map((c) => ({ ...c }));
-      setHistoryLen(historyRef.current.length);
+    if (!commit) { setCaptions(next); return; }
+    commitCaptionChange(next);
+  }
+
+  function commitCaptionText() {
+    commitCaptionChange(cloneCaptions(captions));
+  }
+
+  function undoCaptions(expectedEntryId?: number): boolean {
+    // Defensive guard: some call sites are wired straight into a DOM event handler
+    // (onClick={ed.undoCaptions}) — React then passes the SyntheticEvent as the first
+    // arg, which is NOT a number. Treat anything that isn't a number as "no expected
+    // id" instead of letting a stale/mismatched id silently block every undo forever.
+    const safeExpectedEntryId = typeof expectedEntryId === "number" ? expectedEntryId : undefined;
+    const result = undoCaptionHistory(historyRef.current, safeExpectedEntryId);
+    if (!result.snapshot) {
+      if (safeExpectedEntryId !== undefined) {
+        toast("มีการแก้ไขใหม่กว่าแล้ว — ใช้ปุ่มเลิกทำเพื่อย้อนตามลำดับ");
+      }
+      return false;
     }
+    historyRef.current = result.history;
+    applyCaptionSnapshot(result.snapshot);
+    syncHistoryCounts(result.history);
+    return true;
   }
-  function undoCaptions() {
-    const prev = historyRef.current.pop();
-    if (!prev) return;
-    committedRef.current = prev.map((c) => ({ ...c }));
-    setCaptions(prev);
-    setHistoryLen(historyRef.current.length);
+
+  // No expectedEntryId param — unlike undoCaptions, an event-object arg from a bare
+  // onClick={ed.redoCaptions} has nothing to be mistaken for, so no guard needed here.
+  function redoCaptions(): boolean {
+    const result = redoCaptionHistory(historyRef.current);
+    if (!result.snapshot) return false;
+    historyRef.current = result.history;
+    applyCaptionSnapshot(result.snapshot);
+    syncHistoryCounts(result.history);
+    return true;
   }
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       const typing = tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT";
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+      const command = e.metaKey || e.ctrlKey;
+      const key = e.key.toLowerCase();
+      if (command && ((key === "z" && e.shiftKey) || key === "y")) {
+        if (typing) return;
+        e.preventDefault();
+        redoCaptions();
+        return;
+      }
+      if (command && key === "z" && !e.shiftKey) {
         if (typing) return; // ให้ undo ของช่องพิมพ์ทำงานปกติ
         e.preventDefault();
         undoCaptions();
@@ -425,7 +550,10 @@ export function usePostPhaseEditor(
   /** สี text/accent เคารพ scope: ทั้งคลิป = config กลาง · การ์ดนี้ = override รายใบ */
   function setColorScoped(key: "textColor" | "accentColor", v: string) {
     if (scope === "card") {
-      setOverrides((o) => ({ ...o, [selected]: { ...o[selected], [key]: v } }));
+      commitCaptionChange(
+        cloneCaptions(captions),
+        { ...overrides, [selected]: { ...overrides[selected], [key]: v } },
+      );
     } else {
       set(key, v);
     }
@@ -433,37 +561,129 @@ export function usePostPhaseEditor(
   const activeOverride = overrides[selected] ?? {};
 
   function applyCardLen(len: V2CardLen) {
-    setCardLen(len);
-    setOverrides({});
-    handleCaptionsChange(regroupCaptions(originalCapsRef.current, len, preview?.words, preview?.fullText), true);
-    setSelected(0);
+    commitCaptionChange(
+      regroupCaptions(originalCapsRef.current, len, preview?.words, preview?.fullText),
+      {},
+      0,
+      len,
+    );
   }
 
   /** เลื่อน key ของ override รายการ์ดตามการเปลี่ยนโครงการ์ด — ห้ามล้างทั้ง map
    *  (QA 07-03: รวม/แยกการ์ด 2-3 เคยทำให้สีที่ตั้งไว้บนการ์ด 1 หายไปด้วย) */
-  function shiftOverrides(from: number, delta: number, dropIdx?: number) {
-    setOverrides((o) => {
-      const next: V2CardOverrides = {};
-      for (const [k, v] of Object.entries(o)) {
-        const idx = Number(k);
-        if (dropIdx !== undefined && idx === dropIdx) continue;
-        next[idx >= from ? idx + delta : idx] = v;
-      }
-      return next;
-    });
-  }
-
   function mergeSelected() {
     if (selected >= captions.length - 1) { toast("การ์ดสุดท้าย — ไม่มีใบถัดไปให้รวม"); return; }
-    shiftOverrides(selected + 2, -1, selected + 1); // ใบที่ถูกกลืนทิ้ง override ของตัวเอง ที่เหลือเลื่อนซ้าย
-    handleCaptionsChange(mergeCaptionWithNext(captions, selected), true);
+    const nextOverrides = shiftCaptionOverrides(overrides, {
+      from: selected + 2,
+      delta: -1,
+      dropIndex: selected + 1,
+    });
+    commitCaptionChange(mergeCaptionWithNext(captions, selected), nextOverrides);
   }
 
   function splitSelected() {
     const next = splitCaption(captions, selected, loanwordSpans(captions[selected]?.text ?? ""));
     if (next === captions) { toast("การ์ดสั้นเกินไปหรือหาจุดตัดไม่ได้"); return; }
-    shiftOverrides(selected + 1, +1); // ใบครึ่งซ้ายเก็บ override เดิม ใบใหม่ขวาเริ่มว่าง
-    handleCaptionsChange(next, true);
+    const nextOverrides = shiftCaptionOverrides(overrides, {
+      from: selected + 1,
+      delta: 1,
+    });
+    commitCaptionChange(next, nextOverrides);
+  }
+
+  // Duration used by insertCaptionCardAtPlayhead's "is there a real gap at the end"
+  // check — kept as its own memo so the preview below doesn't recompute this max()
+  // on every dependency change.
+  const insertCaptionDurationMs = useMemo(() => Math.max(
+    preview?.audioDurationMs ?? 0,
+    captions.length > 0 ? captions[captions.length - 1].endMs : 0,
+  ), [preview?.audioDurationMs, captions]);
+
+  // Pre-flight: can "เพิ่มที่ Playhead" actually insert at the CURRENT playhead, without
+  // committing anything? insertCaptionCardAtPlayhead is a pure function — calling it here
+  // to preview the outcome is free and keeps MIN_CAPTION_CARD_MS as the single source of
+  // truth (not duplicated/loosened for the button's enabled state).
+  const insertCaptionPreview = useMemo(
+    () => insertCaptionCardAtPlayhead(captions, timeMs, insertCaptionDurationMs),
+    [captions, timeMs, insertCaptionDurationMs],
+  );
+  const canInsertCaption = insertCaptionPreview.ok;
+
+  // insertCaptionCardAtPlayhead only ever returns reason "no_room" — that's correct as a
+  // pure-function contract, but it collapses two very different user situations into one
+  // toast. Disambiguate here (view-layer concern) instead of teaching the lib about UI
+  // copy: sitting inside an existing card too short to split (typically 1-2 word mode,
+  // fixable by switching card length) vs. genuinely packed timeline / real edge (fixable
+  // by moving the playhead).
+  const insertCaptionBlockedReason = useMemo(() => {
+    if (insertCaptionPreview.ok) return null;
+    const containing = captions.find((c) => timeMs > c.startMs && timeMs < c.endMs);
+    if (containing && containing.endMs - containing.startMs < MIN_CAPTION_CARD_MS * 2) {
+      return "การ์ดนี้สั้นเกินจะแทรกเพิ่ม (โหมดคำสั้น) — สลับความยาวการ์ดเป็น ≤4 คำ หรือ 1 ประโยคก่อน แล้วค่อยแทรกที่ Playhead";
+    }
+    return "เพิ่มตรงนี้ไม่ได้ — เลื่อน Playhead ให้ห่างจากขอบซับอย่างน้อย 0.3 วินาที";
+  }, [insertCaptionPreview, captions, timeMs]);
+
+  function insertCaptionAtPlayhead(): boolean {
+    // Fallback path: the button is disabled when !canInsertCaption, but the toast stays
+    // as a safety net for non-button callers (e.g. a future keyboard shortcut) and for
+    // the rare frame where state changed between render and click.
+    if (!insertCaptionPreview.ok) {
+      toast(insertCaptionBlockedReason ?? "เพิ่มตรงนี้ไม่ได้ — เลื่อน Playhead ให้ห่างจากขอบซับอย่างน้อย 0.3 วินาที");
+      return false;
+    }
+    const result = insertCaptionPreview;
+    const nextCaptions = result.captions as V2Caption[];
+    const nextOverrides = shiftCaptionOverrides(overrides, {
+      from: result.index,
+      delta: 1,
+    });
+    commitCaptionChange(nextCaptions, nextOverrides, result.index);
+    setEditingIdx(result.index);
+    setFollow(false);
+    const video = videoRef.current;
+    if (video) {
+      video.pause();
+      video.currentTime = nextCaptions[result.index].startMs / 1000 + 0.01;
+    }
+    trackEvent("editor_caption_card_added", {
+      status: "done",
+      properties: { surface },
+    });
+    toast.success("เพิ่มกล่องซับแล้ว — พิมพ์ข้อความได้เลย");
+    return true;
+  }
+
+  function deleteSelectedCaption(): boolean {
+    const result = deleteCaptionCard(captions, selected);
+    if (!result.ok) {
+      toast(result.reason === "last_caption"
+        ? "ลบไม่ได้ — ต้องเหลืออย่างน้อย 1 กล่องซับ"
+        : "ไม่พบกล่องซับที่เลือก");
+      return false;
+    }
+    const nextOverrides = shiftCaptionOverrides(overrides, {
+      from: selected + 1,
+      delta: -1,
+      dropIndex: selected,
+    });
+    const entryId = commitCaptionChange(
+      result.captions as V2Caption[],
+      nextOverrides,
+      result.selected,
+    );
+    setEditingIdx(null);
+    trackEvent("editor_caption_card_deleted", {
+      status: "done",
+      properties: { surface },
+    });
+    toast("ลบกล่องซับแล้ว", {
+      action: entryId === null ? undefined : {
+        label: "เลิกทำ",
+        onClick: () => { undoCaptions(entryId); },
+      },
+    });
+    return true;
   }
 
   async function exportVideo() {
@@ -535,9 +755,12 @@ export function usePostPhaseEditor(
     follow, setFollow,
     cardRefs,
     historyLen,
+    redoLen,
     activeOverride,
     handleCaptionsChange,
+    commitCaptionText,
     undoCaptions,
+    redoCaptions,
     onListScroll,
     resumeFollow,
     set,
@@ -545,6 +768,10 @@ export function usePostPhaseEditor(
     applyCardLen,
     mergeSelected,
     splitSelected,
+    insertCaptionAtPlayhead,
+    canInsertCaption,
+    insertCaptionBlockedReason,
+    deleteSelectedCaption,
     exportVideo,
   };
 }
