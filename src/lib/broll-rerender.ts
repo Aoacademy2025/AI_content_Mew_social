@@ -1,19 +1,25 @@
 // Pure merge/validation helpers for the free per-window b-roll re-render (job mode
 // `broll-rerender`). No DB, no network — unit-tested by scripts/verify-broll-rerender.ts.
 //
-// Flow: after a user swaps b-roll windows in the Editor v2 Post phase (Tasks 7-9 produce
-// `/api/renders/*.mp4` or `/api/stocks/*.mp4` assets), the client batches the edits and the
-// orchestrator merges them onto the SOURCE preview's `bgVideos[]`, then re-renders the base
-// reusing the job's TTS/avatar (no minute charge — see the render route's `rerenderOf` skip).
+// Flow: after a user swaps, reorders, or changes visibility of b-roll windows in the Editor v2
+// Post phase, the client batches the edits and the orchestrator merges them onto the SOURCE
+// preview's `bgVideos[]`, then re-renders the base reusing the job's TTS/avatar (no minute
+// charge — see the render route's `rerenderOf` skip).
 //
 // Invariants enforced here (violating any = broken subtitle timing or a charge/SSRF hole):
 //  - window TIMING is locked: start/end are copied through untouched, windows are never
 //    reordered/added/dropped (subtitle overlay is aligned to these exact spans).
-//  - `src` is the ONLY place a client-named asset path enters the re-render, so it is
-//    whitelisted to a single flat `.mp4` under our own /api/renders or /api/stocks route
-//    (no traversal, no external host, no nested path).
+//  - optional `src` is the ONLY place a client-named asset path enters the re-render, so it
+//    is whitelisted to a single flat `.mp4` under our own /api/renders or /api/stocks route
+//    (no traversal, no external host, no nested path). Visibility-only edits do not need src.
 
-export type WindowEdit = { index: number; src: string; keyword?: string };
+export type WindowEdit = {
+  index: number;
+  src?: string;
+  keyword?: string;
+  /** Explicit per-window visibility. Tri-state in persisted config: undefined = legacy default. */
+  enabled?: boolean;
+};
 
 // Single flat file under our own render/stock routes. `[\w.-]+` forbids `/` and (with the
 // anchored, single-segment shape) any `..` traversal that would still contain a separator;
@@ -24,9 +30,10 @@ const KEYWORD_MAX = 200;
 
 /**
  * Validate + normalize the client-sent window edits. Returns the deduped edit list (last-wins
- * per index) or `{ error }` with a Thai message. Rejects: non-array, 0 or >40 edits, non-integer
- * or negative index, a `src` that isn't a single flat `.mp4` under /api/renders or /api/stocks,
- * and a non-string keyword.
+ * per index) or `{ error }` with a Thai message. Every item must change at least one of `src` or
+ * `enabled`. Rejects: non-array, 0 or >40 edits, non-integer/negative index, a supplied `src`
+ * that isn't a single flat `.mp4` under /api/renders or /api/stocks, non-boolean `enabled`, and
+ * a keyword without a replacement source.
  */
 export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: string } {
   if (!Array.isArray(edits)) return { error: "รูปแบบการแก้ b-roll ไม่ถูกต้อง" };
@@ -37,18 +44,34 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
   const byIndex = new Map<number, WindowEdit>();
   for (const raw of edits) {
     if (typeof raw !== "object" || raw === null) return { error: "รายการแก้ b-roll ไม่ถูกต้อง" };
-    const { index, src, keyword } = raw as Record<string, unknown>;
+    const { index, src, keyword, enabled } = raw as Record<string, unknown>;
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
       return { error: "ตำแหน่งช่วง b-roll ไม่ถูกต้อง" };
     }
-    if (typeof src !== "string" || !SRC_RE.test(src)) {
+    const hasSrc = src !== undefined;
+    const hasEnabled = enabled !== undefined;
+    if (!hasSrc && !hasEnabled) {
+      return { error: "รายการแก้ b-roll ไม่มีการเปลี่ยนแปลง" };
+    }
+    if (hasSrc && (typeof src !== "string" || !SRC_RE.test(src))) {
       return { error: "ไฟล์ b-roll ไม่ถูกต้อง (ต้องเป็นไฟล์ .mp4 ในระบบ)" };
+    }
+    if (hasEnabled && typeof enabled !== "boolean") {
+      return { error: "สถานะเปิดปิด b-roll ไม่ถูกต้อง" };
     }
     if (keyword !== undefined && typeof keyword !== "string") {
       return { error: "คำค้น b-roll ไม่ถูกต้อง" };
     }
+    if (keyword !== undefined && !hasSrc) {
+      return { error: "คำค้น b-roll ต้องส่งพร้อมไฟล์ที่ใช้แทน" };
+    }
     const trimmedKeyword = typeof keyword === "string" ? keyword.trim().slice(0, KEYWORD_MAX) : "";
-    const edit: WindowEdit = { index, src, ...(trimmedKeyword ? { keyword: trimmedKeyword } : {}) };
+    const edit: WindowEdit = {
+      index,
+      ...(typeof src === "string" ? { src } : {}),
+      ...(trimmedKeyword ? { keyword: trimmedKeyword } : {}),
+      ...(typeof enabled === "boolean" ? { enabled } : {}),
+    };
     byIndex.set(index, edit); // last-wins
   }
   return Array.from(byIndex.values());
@@ -58,9 +81,8 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
  * Apply validated edits onto the source preview's `bgVideos[]`. Returns a NEW array (source not
  * mutated) or `{ error }`. Every edit's index is bounds-checked against `bgVideos.length` first —
  * an out-of-range index rejects the WHOLE merge (no partial application). For each edited window:
- * replace `src` (+ `keyword` when the edit carries one), reset `clipOffset` to 0, and DROP
- * `clipDuration` (the renderer's Loop probes the new clip's real length and loops safely).
- * `start`/`end` and every other field are copied through untouched; order is preserved.
+ * optionally replace `src` (+ `keyword`), optionally persist `brollEnabled`, reset source
+ * playback metadata only for replacements, and keep `start`/`end` untouched. Order is preserved.
  */
 export function mergeWindowEdits(
   bgVideos: unknown[],
@@ -90,20 +112,23 @@ export function mergeWindowEdits(
     const base = { ...(v as Record<string, unknown>) };
     const e = byIndex.get(i);
     if (!e) { merged.push(base); continue; }
-    // Edited window: swap src, reset clipOffset, drop clipDuration (the renderer re-probes the
-    // new clip's real length), and STRIP stale source metadata (provider/title/query/
-    // selectionReason/relevanceScore) — they describe the OLD asset, so leaving them makes the
-    // inspector show a wrong source badge (e.g. "สต็อก" after an AI swap). start/end (window
-    // timing = subtitle invariant) and every non-metadata field are copied through untouched.
-    delete base.clipDuration;
-    delete base.provider;
-    delete base.title;
-    delete base.query;
-    delete base.selectionReason;
-    delete base.relevanceScore;
-    base.src = e.src;
-    if (e.keyword) base.keyword = e.keyword; // replace keyword only when the edit supplies one
-    base.clipOffset = 0;
+    if (e.src) {
+      // Replacement: reset clip playback and strip metadata that describes the OLD asset.
+      delete base.clipDuration;
+      delete base.provider;
+      delete base.title;
+      delete base.query;
+      delete base.selectionReason;
+      delete base.relevanceScore;
+      base.src = e.src;
+      if (e.keyword) base.keyword = e.keyword;
+      base.clipOffset = 0;
+    }
+    if (typeof e.enabled === "boolean") {
+      // Keep true explicitly as well: Upload Avatar defaults alternate by window, so an explicit
+      // true is required to turn B-roll ON over a window that used to show the uploaded speaker.
+      base.brollEnabled = e.enabled;
+    }
     merged.push(base);
   }
   return { bgVideos: merged };

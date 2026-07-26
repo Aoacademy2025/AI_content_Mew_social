@@ -48,7 +48,7 @@ import {
   buildFixedCountBrollWindows,
   type BrollWindow,
 } from "@/lib/broll-windows";
-import { planCutaway } from "@/lib/cutaway-plan";
+import { planCutaway, resolveCutawayPersonRanges } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { buildDegradedTtsTiming } from "@/lib/tts-timing";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
@@ -770,40 +770,70 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       });
       const rrNewBase = await pollRender(caller, rr.jobId, (pct) => { void setJobStep(jobId, "render", 40 + Math.round(pct * 0.3)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(rr.jobId) });
 
-      // Avatar re-composite (HeyGen only) — EXACTLY like AvatarAdjustOverlay.apply(): a free
-      // chromakey re-composite of the SAME stored avatar assets onto the NEW base (no HeyGen call).
+      // Re-composite with the SAME stored avatar/uploaded clip assets (no HeyGen call).
       let rrFinalUrl = rrNewBase;
       let rrCompositeBaseUrl: string | null = preview.compositeBaseUrl ?? null;
+      let rrCutawayPersonRanges = preview.cutawayPersonRanges;
       const rrHasAvatar = !!(preview.avatarModel && preview.avatarModel !== "none" && preview.avatarVideoUrl);
       if (rrHasAvatar) {
         const heygenModes = new Set(["full", "bookend", "bookend-both"]);
         const rrAvatarTiming = preview.avatarMode;
-        // chromakey re-composite is only valid for HeyGen avatars (full/bookend/bookend-both) —
-        // the exact set AvatarAdjustOverlay operates on (its gate also requires compositeBaseUrl +
-        // avatarMode). An upload-cutaway preview (avatarModel="upload-cutaway", no avatarMode) is a
-        // DIFFERENT composite (cutaway w/ personRanges); chromakey-ing it would corrupt the video,
-        // so fail cleanly rather than emit garbage. (Per-window edit for uploaded clips = future.)
-        if (!rrAvatarTiming || !heygenModes.has(rrAvatarTiming)) {
-          await failJob(jobId, "การแก้ b-roll รายช่วงยังไม่รองรับวิดีโอที่อัปโหลดคลิปเอง");
-          return;
+        const rrIsCutaway = preview.avatarModel === "upload-cutaway";
+
+        if (rrIsCutaway) {
+          // Uploaded clip is a full-frame speaker layer, not chromakey footage. Visibility edits
+          // control personRanges: B-roll OFF reveals the original uploaded clip; B-roll ON removes
+          // that overlay for the exact fixed window. Existing previews without persisted ranges
+          // reconstruct the original alternating cutaway plan by semantic sourceIndex.
+          rrCutawayPersonRanges = resolveCutawayPersonRanges(
+            mergeRes.bgVideos,
+            preview.cutawayPersonRanges,
+          );
+          const firstWindow = mergeRes.bgVideos
+            .filter((entry) => Number.isFinite(Number(entry.start)) && Number.isFinite(Number(entry.end)))
+            .sort((left, right) => Number(left.start) - Number(right.start))[0];
+          if (
+            rrCutawayPersonRanges.length > 0
+            && firstWindow
+            && firstWindow.brollEnabled !== true
+            && rrCutawayPersonRanges[0].start <= Number(firstWindow.end)
+          ) {
+            // Preserve the original hook fix for leading silence before the first transcript word.
+            rrCutawayPersonRanges[0] = { ...rrCutawayPersonRanges[0], start: 0 };
+          }
+          await step("composite", 80);
+          const rrComp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
+            avatarVideoUrl: preview.avatarVideoUrl,
+            bgVideoUrl: rrNewBase,
+            mode: "cutaway",
+            personRanges: rrCutawayPersonRanges,
+          }, { retries: 0 });
+          rrFinalUrl = rrComp.videoUrl;
+          rrCompositeBaseUrl = null;
+        } else {
+          // AI Avatar: free chromakey re-composite, identical to AvatarAdjustOverlay.apply().
+          if (!rrAvatarTiming || !heygenModes.has(rrAvatarTiming)) {
+            await failJob(jobId, "ข้อมูลโหมด Avatar ไม่ครบ — ปรับ B-roll ไม่ได้");
+            return;
+          }
+          if (rrAvatarTiming === "bookend-both" && !preview.tailAvatarUrl) {
+            await failJob(jobId, "ข้อมูลอวตารท้ายคลิปไม่ครบ — ปรับ b-roll ไม่ได้"); return;
+          }
+          await step("avatar", 80);
+          const rrLayout = resolveAvatarLayout({}, await getAvatarPreset(userId, preview.avatarModel!));
+          const rrComp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
+            avatarVideoUrl: preview.avatarVideoUrl,
+            ...(preview.tailAvatarUrl ? { tailAvatarVideoUrl: preview.tailAvatarUrl } : {}),
+            bgVideoUrl: rrNewBase,
+            mode: "chromakey",
+            avatarTiming: rrAvatarTiming,
+            avatarBookendSecs: preview.avatarIntroSecs ?? 5,
+            avatarTailSecs: preview.avatarTailSecs ?? 5,
+            avatarLayout: rrLayout,
+          }, { retries: 0 });
+          rrFinalUrl = rrComp.videoUrl;
+          rrCompositeBaseUrl = rrNewBase;
         }
-        if (rrAvatarTiming === "bookend-both" && !preview.tailAvatarUrl) {
-          await failJob(jobId, "ข้อมูลอวตารท้ายคลิปไม่ครบ — ปรับ b-roll ไม่ได้"); return;
-        }
-        await step("avatar", 80);
-        const rrLayout = resolveAvatarLayout({}, await getAvatarPreset(userId, preview.avatarModel!));
-        const rrComp = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
-          avatarVideoUrl: preview.avatarVideoUrl,
-          ...(preview.tailAvatarUrl ? { tailAvatarVideoUrl: preview.tailAvatarUrl } : {}),
-          bgVideoUrl: rrNewBase,
-          mode: "chromakey",
-          avatarTiming: rrAvatarTiming,
-          avatarBookendSecs: preview.avatarIntroSecs ?? 5,
-          avatarTailSecs: preview.avatarTailSecs ?? 5,
-          avatarLayout: rrLayout,
-        }, { retries: 0 });
-        rrFinalUrl = rrComp.videoUrl;
-        rrCompositeBaseUrl = rrNewBase; // new pre-composite base
       }
 
       // flush final phase + one-line log
@@ -822,6 +852,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ...preview,
           config: rrBaseConfig,
           compositeBaseUrl: rrCompositeBaseUrl,
+          ...(rrCutawayPersonRanges ? { cutawayPersonRanges: rrCutawayPersonRanges } : {}),
         },
       });
       return;
@@ -1026,6 +1057,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           audioDurationMs: upDurMs,
           avatarModel: "upload-cutaway",
           avatarVideoUrl: input.clipUrl,
+          cutawayPersonRanges: personRanges,
         },
       });
       return;

@@ -2,15 +2,17 @@
 // (run: npx tsx scripts/verify-broll-rerender.ts — no DB, no network).
 //
 // validateWindowEdits: shape/whitelist gate for the client-sent window edits.
-//   - src MUST match /^\/api\/(renders|stocks)\/[\w.-]+\.mp4$/ (single flat file, no
-//     traversal, no external host, .mp4 only) — this is the ONLY place a client-named
-//     asset path enters the re-render, so a hostile src must be rejected here.
+//   - replacement src MUST match /^\/api\/(renders|stocks)\/[\w.-]+\.mp4$/ (single flat
+//     file, no traversal, no external host, .mp4 only) — this is the ONLY place a
+//     client-named asset path enters the re-render, so a hostile src must be rejected here.
+//   - visibility-only edits carry enabled:boolean and never need a client-supplied src.
 //   - index int >= 0; 1..40 edits; dedupe by index (last wins).
 // mergeWindowEdits: apply validated edits onto the SOURCE preview's bgVideos[].
 //   - NEVER touches start/end (window timing is locked — subtitle invariant); never reorders.
 //   - per edited window: replace src (+ keyword when given), set clipOffset 0, drop clipDuration,
 //     and STRIP stale source metadata (provider/title/query/selectionReason/relevanceScore) so
 //     the inspector badge reflects the NEW asset. UNEDITED windows keep all metadata.
+//   - enabled is persisted as brollEnabled on the server-owned source window.
 //   - bounds-checks index against the source bgVideos length (atomic: any OOB index => error,
 //     no partial merge).
 import { validateWindowEdits, mergeWindowEdits, rerenderSkipEligible, type WindowEdit } from "../src/lib/broll-rerender";
@@ -40,6 +42,10 @@ const isErr = (v: unknown): v is { error: string } =>
 // src whitelist — accept both /api/renders and /api/stocks
 check("accepts /api/renders/*.mp4", !isErr(validateWindowEdits([{ index: 0, src: "/api/renders/render-1700000000000-abc.mp4" }])));
 check("accepts /api/stocks/*.mp4", !isErr(validateWindowEdits([{ index: 0, src: "/api/stocks/stock-user-window-pexels-abc123.mp4" }])));
+check("accepts visibility-only disable", !isErr(validateWindowEdits([{ index: 0, enabled: false }])));
+check("accepts visibility-only enable", !isErr(validateWindowEdits([{ index: 0, enabled: true }])));
+check("rejects edit without replacement or visibility change", isErr(validateWindowEdits([{ index: 0 }])));
+check("rejects non-boolean enabled", isErr(validateWindowEdits([{ index: 0, enabled: "no" as unknown as boolean }])));
 
 // src whitelist — reject hostile / malformed sources
 check("rejects external host url", isErr(validateWindowEdits([{ index: 0, src: "https://evil.example.com/x.mp4" }])));
@@ -61,6 +67,7 @@ check("accepts index 0", !isErr(validateWindowEdits([{ index: 0, src: "/api/stoc
 
 // keyword validation
 check("rejects non-string keyword", isErr(validateWindowEdits([{ index: 0, src: "/api/stocks/a.mp4", keyword: 5 as unknown as string }])));
+check("rejects keyword without replacement src", isErr(validateWindowEdits([{ index: 0, enabled: false, keyword: "unused" }])));
 
 // count bounds
 check("rejects empty array (0 edits)", isErr(validateWindowEdits([])));
@@ -127,6 +134,48 @@ const srcBg = [
     check("existing keyword preserved when edit omits it", m.bgVideos[0].keyword === "cats");
     check("clipOffset reset to 0", m.bgVideos[0].clipOffset === 0);
     check("clipDuration dropped", !("clipDuration" in m.bgVideos[0]));
+  }
+}
+
+// visibility-only edit: source/timing stay intact and brollEnabled is explicit so cutaway
+// projects can override their alternating default in either direction.
+{
+  const edits = validateWindowEdits([{ index: 1, enabled: false }]);
+  const m = mergeWindowEdits(structuredClone(srcBg), edits as WindowEdit[]);
+  check("visibility-only merge succeeds", !isErr(m), JSON.stringify(m));
+  if (!isErr(m)) {
+    check("disable persists brollEnabled=false", m.bgVideos[1].brollEnabled === false);
+    check("disable keeps source", m.bgVideos[1].src === srcBg[1].src);
+    check("disable keeps timing", m.bgVideos[1].start === 4 && m.bgVideos[1].end === 8);
+    check("disable keeps clip metadata", m.bgVideos[1].clipDuration === 4 && m.bgVideos[1].clipOffset === 0);
+  }
+}
+{
+  const hidden = structuredClone(srcBg);
+  hidden[1] = { ...hidden[1], brollEnabled: false };
+  const edits = validateWindowEdits([{ index: 1, enabled: true }]);
+  const m = mergeWindowEdits(hidden, edits as WindowEdit[]);
+  check("visibility enable merge succeeds", !isErr(m), JSON.stringify(m));
+  if (!isErr(m)) {
+    check("enable persists brollEnabled=true", m.bgVideos[1].brollEnabled === true);
+    check("enable keeps timing", m.bgVideos[1].start === 4 && m.bgVideos[1].end === 8);
+  }
+}
+
+// replacement and visibility may be batched on the same window without changing timing.
+{
+  const edits = validateWindowEdits([{
+    index: 2,
+    src: "/api/stocks/replacement-visible.mp4",
+    keyword: "new scene",
+    enabled: true,
+  }]);
+  const m = mergeWindowEdits(structuredClone(srcBg), edits as WindowEdit[]);
+  check("combined replacement + visibility merge succeeds", !isErr(m), JSON.stringify(m));
+  if (!isErr(m)) {
+    check("combined edit replaces source", m.bgVideos[2].src === "/api/stocks/replacement-visible.mp4");
+    check("combined edit enables window", m.bgVideos[2].brollEnabled === true);
+    check("combined edit keeps timing", m.bgVideos[2].start === 8 && m.bgVideos[2].end === 12);
   }
 }
 

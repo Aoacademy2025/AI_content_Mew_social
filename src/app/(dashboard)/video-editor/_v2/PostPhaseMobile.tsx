@@ -97,9 +97,8 @@ export function PostPhaseMobile({
   const [summaryOpen, setSummaryOpen] = useState(false);
   const logoTriggerRef = useRef<HTMLButtonElement | null>(null);
   const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
-  // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
-  // (same reasoning as PostPhase.tsx's desktop gate).
-  const brollEditEnabled = (BROLL_WINDOW_EDIT || internalAiTester) && ed.preview?.avatarModel !== "upload-cutaway";
+  // Public flag/internal beta gate only. Upload Avatar now has its own cutaway re-composite path.
+  const brollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
 
   const selectedCap = ed.captions[ed.selected];
   const durationMs = Math.max(
@@ -349,6 +348,7 @@ export function PostPhaseMobile({
             <div className="flex gap-2 overflow-x-auto pb-1">
               {brollSpans.map((s) => {
                 const edited = ed.windowEdits.has(s.index);
+                const enabled = ed.isBrollWindowEnabled(s.index);
                 return (
                   <button
                     key={s.index}
@@ -358,11 +358,17 @@ export function PostPhaseMobile({
                       padding: "8px 12px", minWidth: 96, borderRadius: radius.card,
                       background: edited ? color.selectedBg : "rgba(255,255,255,.035)",
                       border: `1px solid ${edited ? color.selectedBorder : color.cardBorder}`,
+                      borderStyle: enabled ? "solid" : "dashed",
                       cursor: "pointer",
+                      opacity: enabled ? 1 : 0.58,
+                      minHeight: 44,
                     }}
+                    aria-label={`${enabled ? "แก้" : "เปิดหรือแก้"} B-roll ${fmtMs(s.startMs)} ถึง ${fmtMs(s.endMs)}`}
                   >
                     <span style={{ fontSize: 10, color: color.textFaint }}>{fmtMs(s.startMs)}–{fmtMs(s.endMs)}</span>
-                    <span style={{ fontSize: 11.5, color: color.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>{s.label}</span>
+                    <span style={{ fontSize: 11.5, color: color.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>
+                      {enabled ? s.label : `ปิด · ${s.label}`}
+                    </span>
                   </button>
                 );
               })}

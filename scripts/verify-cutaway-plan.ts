@@ -1,4 +1,8 @@
-import { planCutaway, buildEnableExpr } from "../src/lib/cutaway-plan";
+import {
+  planCutaway,
+  buildEnableExpr,
+  resolveCutawayPersonRanges,
+} from "../src/lib/cutaway-plan";
 
 let failed = 0;
 function assert(cond: boolean, msg: string) {
@@ -77,6 +81,52 @@ assert(buildEnableExpr([]) === "", "empty ranges => empty expr");
   assert(bad([{ start: 5, end: Infinity }]) === "", "Infinity end dropped");
   assert(buildEnableExpr([{ start: -3, end: 5 }]) === "", "negative start dropped");
   assert(buildEnableExpr([{ start: 0, end: 5 }]) === "between(t,0.000,5.000)", "valid range still works");
+}
+
+// 10) Upload Avatar re-render: visibility overrides add/remove the uploaded speaker without
+// changing the fixed B-roll window timings.
+{
+  const basePerson = [{ start: 0, end: 4 }, { start: 8, end: 12 }];
+  const windows = [
+    { src: "/api/stocks/a.mp4", start: 0, end: 4, sourceIndex: 0 },
+    { src: "/api/stocks/b.mp4", start: 4, end: 8, sourceIndex: 1, brollEnabled: false },
+    { src: "/api/stocks/c.mp4", start: 8, end: 12, sourceIndex: 2, brollEnabled: true },
+  ];
+  const resolved = resolveCutawayPersonRanges(windows, basePerson);
+  assert(
+    JSON.stringify(resolved) === JSON.stringify([{ start: 0, end: 8 }]),
+    "disable B-roll reveals uploaded speaker; enable B-roll removes speaker overlay",
+  );
+  assert(windows[1].start === 4 && windows[1].end === 8, "visibility overrides never mutate timing");
+}
+
+// 11) Legacy Upload Avatar previews have no stored personRanges. Reconstruct the same
+// hook/person → B-roll alternation from semantic sourceIndex, including split segments.
+{
+  const legacy = [
+    { src: "/api/stocks/a.mp4", start: 0, end: 2, sourceIndex: 0 },
+    { src: "/api/stocks/a.mp4", start: 2, end: 4, sourceIndex: 0 },
+    { src: "/api/stocks/b.mp4", start: 4, end: 8, sourceIndex: 1 },
+    { src: "/api/stocks/c.mp4", start: 8, end: 12, sourceIndex: 2 },
+  ];
+  assert(
+    JSON.stringify(resolveCutawayPersonRanges(legacy)) ===
+      JSON.stringify([{ start: 0, end: 4 }, { start: 8, end: 12 }]),
+    "legacy cutaway person ranges follow semantic windows, not repaired segment indices",
+  );
+}
+
+// 12) Ranges are sanitized, clamped to valid spans, and coalesced for a compact FFmpeg expr.
+{
+  const resolved = resolveCutawayPersonRanges(
+    [
+      { src: "a", start: 0, end: 4, brollEnabled: false },
+      { src: "b", start: 4, end: 8, brollEnabled: false },
+      { src: "bad", start: 9, end: 8, brollEnabled: false },
+    ],
+    [],
+  );
+  assert(JSON.stringify(resolved) === JSON.stringify([{ start: 0, end: 8 }]), "adjacent person ranges are merged");
 }
 
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);

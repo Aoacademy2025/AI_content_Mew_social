@@ -94,10 +94,16 @@ export function PostPhase({
       trackEvent("logo_overlay_panel_opened", { properties: { surface: "desktop" } });
     }
   };
-  // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
-  // (the free re-render's chromakey composite path is only valid for HeyGen avatars).
-  const brollEditEnabled = (BROLL_WINDOW_EDIT || internalAiTester) && ed.preview?.avatarModel !== "upload-cutaway";
+  // Public flag/internal beta gate only. Upload Avatar now has its own cutaway re-composite path.
+  const brollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
   const editedWindowIndices = useMemo(() => new Set(ed.windowEdits.keys()), [ed.windowEdits]);
+  const disabledWindowIndices = new Set<number>();
+  const brollEntries = (ed.previewConfig as { bgVideos?: unknown } | null)?.bgVideos;
+  if (Array.isArray(brollEntries)) {
+    brollEntries.forEach((_entry, index) => {
+      if (!ed.isBrollWindowEnabled(index)) disabledWindowIndices.add(index);
+    });
+  }
 
   if (ed.exp.phase === "done") {
     return (
@@ -606,6 +612,7 @@ export function PostPhase({
         config={ed.previewConfig}
         onSelectBrollWindow={brollEditEnabled ? ed.setSelectedWindow : undefined}
         editedWindowIndices={brollEditEnabled ? editedWindowIndices : undefined}
+        disabledWindowIndices={brollEditEnabled ? disabledWindowIndices : undefined}
         hasAvatar={!!(ed.preview?.avatarModel && ed.preview.avatarModel !== "none")}
         avatarMode={ed.preview?.avatarMode ?? null}
         avatarIntroMs={(ed.preview?.avatarIntroSecs ?? 5) * 1000}

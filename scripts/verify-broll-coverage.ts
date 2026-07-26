@@ -116,6 +116,38 @@ const duckySecondCoverage = coverBrollTimeline(
   8.8,
   fps,
 );
+
+const hiddenCoverage = coverProbedBrollTimeline(
+  [
+    {
+      asset: {
+        src: "/api/stocks/hidden-does-not-need-a-file.mp4",
+        start: 0,
+        end: 4,
+        sourceIndex: 0,
+        brollEnabled: false,
+      },
+      actualDurationSec: null,
+      probeRequired: false,
+    },
+    {
+      asset: {
+        src: "/api/stocks/visible.mp4",
+        start: 4,
+        end: 8,
+        sourceIndex: 1,
+      },
+      actualDurationSec: 8,
+      probeRequired: true,
+    },
+  ],
+  8,
+  fps,
+);
+assert.equal(hiddenCoverage.complete, true, "hidden windows remain valid coverage without probing media");
+assert.equal(hiddenCoverage.segments[0].brollEnabled, false, "hidden coverage marker survives normalization");
+assert.equal(hiddenCoverage.segments[0].start, 0, "hidden window start is preserved");
+assert.equal(hiddenCoverage.segments[0].end, 4, "hidden window end is preserved");
 const renderedFrames = (segments: typeof duckyDistinctRepair.segments) => segments.map((segment) => ({
   src: segment.src,
   startFrame: Math.round(segment.start * fps),
