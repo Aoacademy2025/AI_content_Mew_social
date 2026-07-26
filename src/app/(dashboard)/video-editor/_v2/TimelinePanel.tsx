@@ -15,6 +15,7 @@ import { useAudioPeaks } from "../_components/useAudioPeaks";
 import { WaveformCanvas } from "../_components/WaveformCanvas";
 import { snapPointsFromPeaks, snapToNearest } from "../_components/waveform-snap";
 import { brollWindowSpans, type BrollWindowSpan } from "@/lib/broll-spans";
+import { AVATAR_FADE_DURATION_SEC } from "@/lib/avatar-fade";
 
 const TRACK_H = 26;
 const LABEL_W = 92;
@@ -175,6 +176,28 @@ export function TimelinePanel({
     overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis",
     cursor: "pointer", userSelect: "none",
   });
+  const avatarFadeEdges = (
+    <>
+      <span
+        data-avatar-fade-edge="in"
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-0 left-0 top-0"
+        style={{
+          width: `min(${Math.max(6, toPx(AVATAR_FADE_DURATION_SEC * 1000))}px, 35%)`,
+          background: `linear-gradient(90deg, ${color.bgTimeline} 0%, transparent 100%)`,
+        }}
+      />
+      <span
+        data-avatar-fade-edge="out"
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-0 right-0 top-0"
+        style={{
+          width: `min(${Math.max(6, toPx(AVATAR_FADE_DURATION_SEC * 1000))}px, 35%)`,
+          background: `linear-gradient(270deg, ${color.bgTimeline} 0%, transparent 100%)`,
+        }}
+      />
+    </>
+  );
 
   return (
     <div className="flex shrink-0 flex-col" style={{ height: peaks && peaks.length > 0 ? 226 : 192, background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
@@ -257,18 +280,21 @@ export function TimelinePanel({
               <div className="relative flex-1" style={{ height: TRACK_H }}>
                 {avatarMode === "bookend" || avatarMode === "bookend-both" ? (
                   <>
-                    <div data-clip style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(avatarIntroMs)) }} onClick={() => seekTo(0)}>
+                    <div data-clip title="เฟดเข้า–ออกอัตโนมัติ" style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(avatarIntroMs)) }} onClick={() => seekTo(0)}>
                       พิธีกรเปิด {Math.round(avatarIntroMs / 1000)}s
+                      {avatarFadeEdges}
                     </div>
                     {avatarMode === "bookend-both" && (
-                      <div data-clip style={{ ...clipStyle(color.trackAvatar), left: toPx(Math.max(0, durMs - avatarTailMs)), width: Math.max(24, toPx(Math.min(avatarTailMs, durMs))) }} onClick={() => seekTo(Math.max(0, durMs - avatarTailMs))}>
+                      <div data-clip title="เฟดเข้า–ออกอัตโนมัติ" style={{ ...clipStyle(color.trackAvatar), left: toPx(Math.max(0, durMs - avatarTailMs)), width: Math.max(24, toPx(Math.min(avatarTailMs, durMs))) }} onClick={() => seekTo(Math.max(0, durMs - avatarTailMs))}>
                         พิธีกรปิด {Math.round(avatarTailMs / 1000)}s
+                        {avatarFadeEdges}
                       </div>
                     )}
                   </>
                 ) : (
-                  <div data-clip style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(durMs) - 2) }} onClick={() => seekTo(0)}>
+                  <div data-clip title="เฟดเข้า–ออกอัตโนมัติ" style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(durMs) - 2) }} onClick={() => seekTo(0)}>
                     {avatarMode === "full" ? "พิธีกรทั้งคลิป" : "พิธีกร"}
+                    {avatarFadeEdges}
                   </div>
                 )}
               </div>

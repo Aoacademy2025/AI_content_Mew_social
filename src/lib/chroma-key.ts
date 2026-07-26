@@ -11,6 +11,11 @@
 import fs from "fs";
 import { execFile } from "child_process";
 import { layoutGeometry, CANVAS_W, CANVAS_H, type AvatarLayout } from "@/lib/avatar-layout";
+import {
+  avatarFadeBlendFilter,
+  normalizeAvatarFadeWindows,
+  type AvatarFadeWindow,
+} from "@/lib/avatar-fade";
 
 export const DEFAULT_CHROMA_COLOR = "0x12FF05";
 
@@ -296,19 +301,39 @@ export function buildKeyChain(params: ChromaParams, feather = true): string {
  * layout=null → full-cover (avatar fills the canvas). Both paths key-at-display-resolution.
  * `feather` is forwarded to buildKeyChain — see its docstring; resolve via featherSupported() first.
  */
-export function buildCompositeFilter(params: ChromaParams, layout: AvatarLayout | null, feather = true): string {
+export function buildCompositeFilter(
+  params: ChromaParams,
+  layout: AvatarLayout | null,
+  feather = true,
+  avatarFadeWindows: readonly AvatarFadeWindow[] = [],
+): string {
   const keyChain = buildKeyChain(params, feather);
+  const fadeWindows = normalizeAvatarFadeWindows(avatarFadeWindows);
+  const backgroundFilter = fadeWindows.length > 0
+    ? `[0:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,setsar=1,split=2[bg][bg_fade]`
+    : `[0:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,setsar=1[bg]`;
+  const overlayOutput = fadeWindows.length > 0 ? "avatar_composite" : "out";
+  const fadeFilter = fadeWindows.length > 0
+    ? avatarFadeBlendFilter({
+        compositeLabel: overlayOutput,
+        backgroundLabel: "bg_fade",
+        outputLabel: "out",
+        windows: fadeWindows,
+      })
+    : null;
   if (layout) {
     const { w, h, x, y } = layoutGeometry(layout);
     return [
-      `[0:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,setsar=1[bg]`,
+      backgroundFilter,
       `[1:v]scale=${w}:${h}:flags=lanczos,${keyChain}[fg]`,
-      `[bg][fg]overlay=${x}:${y}:format=auto[out]`,
+      `[bg][fg]overlay=${x}:${y}:format=auto[${overlayOutput}]`,
+      ...(fadeFilter ? [fadeFilter] : []),
     ].join(";");
   }
   return [
-    `[0:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,setsar=1[bg]`,
+    backgroundFilter,
     `[1:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,${keyChain}[fg]`,
-    `[bg][fg]overlay=0:0:format=auto[out]`,
+    `[bg][fg]overlay=0:0:format=auto[${overlayOutput}]`,
+    ...(fadeFilter ? [fadeFilter] : []),
   ].join(";");
 }
