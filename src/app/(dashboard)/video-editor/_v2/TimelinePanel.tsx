@@ -7,7 +7,7 @@
  * สีแทร็กคงที่ตาม Design System: อวตารม่วง · บีโรลฟ้า · ซับเหลือง · เพลงชมพู
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Play, Pause, Magnet, ZoomIn, ZoomOut, Undo2 } from "lucide-react";
 import { color, font } from "./tokens";
 import type { V2Caption } from "./subtitle-style";
@@ -15,6 +15,7 @@ import { useAudioPeaks } from "../_components/useAudioPeaks";
 import { WaveformCanvas } from "../_components/WaveformCanvas";
 import { snapPointsFromPeaks, snapToNearest } from "../_components/waveform-snap";
 import { brollWindowSpans, type BrollWindowSpan } from "@/lib/broll-spans";
+import { nextTimelineScrollLeft } from "./timeline-wheel-scroll";
 
 const TRACK_H = 26;
 const LABEL_W = 92;
@@ -69,6 +70,29 @@ export function TimelinePanel({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ idx: number; edge: "l" | "r"; startX: number; origStart: number; origEnd: number } | null>(null);
   const scrubbingRef = useRef(false);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const onTimelineWheel = (event: WheelEvent) => {
+      const nextScrollLeft = nextTimelineScrollLeft({
+        scrollLeft: scroller.scrollLeft,
+        scrollWidth: scroller.scrollWidth,
+        clientWidth: scroller.clientWidth,
+        deltaX: event.deltaX,
+        deltaY: event.deltaY,
+        deltaMode: event.deltaMode,
+        ctrlKey: event.ctrlKey,
+      });
+      if (nextScrollLeft == null) return;
+      event.preventDefault();
+      scroller.scrollLeft = nextScrollLeft;
+    };
+    // React 19 delegates wheel as passive; use a native non-passive listener so consuming
+    // a Timeline gesture can stop the page from scrolling at the same time.
+    scroller.addEventListener("wheel", onTimelineWheel, { passive: false });
+    return () => scroller.removeEventListener("wheel", onTimelineWheel);
+  }, []);
 
   const durMs = Math.max(durationMs, 1000);
   const widthPx = (durMs / 1000) * pxPerSec;
