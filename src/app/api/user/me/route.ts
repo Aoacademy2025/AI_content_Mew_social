@@ -7,6 +7,7 @@ import { syncUsageWindow } from "@/lib/usage-limits";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { checkMinuteQuota } from "@/lib/minute-limits";
 import { managedKieLaunchOn } from "@/lib/kie-image-guards";
+import { isHeroAiBetaUser, isInternalAiTester } from "@/lib/internal-ai-access";
 
 export async function GET() {
   try {
@@ -54,11 +55,13 @@ export async function GET() {
     // Task 7 badge: lets the client tell "not launched yet" (เร็ว ๆ นี้) apart from
     // "launched but not paid" (อัปเกรดเพื่อใช้ภาพ AI) for locked AI-image UI.
     const managedKieOn = managedKieLaunchOn();
+    const internalAiTester = isInternalAiTester(authUser);
+    const heroAiBeta = isHeroAiBetaUser(authUser);
     // Managed-kie: is AI image generation un-gated for THIS user? True for paid
     // (PRO/BUSINESS) plans only when both flags are on. Admins always have access
     // (client mirrors already OR this with an isAdmin check), so this is the
     // paid-user signal specifically. Mirrors the server gate in fetch-stock.
-    const kiePaidUnlocked =
+    const kiePaidUnlocked = internalAiTester &&
       managedKieOn && ((user as any).plan === "PRO" || (user as any).plan === "BUSINESS");
 
     return NextResponse.json({
@@ -69,7 +72,11 @@ export async function GET() {
       usagePeriodStartedAt: usage?.usagePeriodStartedAt ?? (user as any).usagePeriodStartedAt,
       usageResetAt: usage?.resetAt ?? null,
       kiePaidUnlocked,
-      managedKieOn,
+      // Public users keep seeing the existing "เร็ว ๆ นี้" state even while the
+      // managed provider is enabled for the internal beta.
+      managedKieOn: internalAiTester && managedKieOn,
+      internalAiTester,
+      heroAiBeta,
       ...minuteFields,
     });
   } catch (error) {

@@ -77,6 +77,7 @@ model User {
   editorProjects     EditorProject[]
   brandAssets        BrandAsset[]
   brandPreference    BrandPreference?
+  aiGenerationJobs   AiGenerationJob[]
 }
 
 model Style {
@@ -560,6 +561,84 @@ model GeneratedImage {
   sceneTitle   String?
   contentTitle String?
   createdAt    DateTime @default(now())
+}
+
+// Shared durable job record for customer-facing AI Studio generations. Provider
+// credentials/workflows stay server-side; the browser only receives this safe
+// projection. Image credit reservations record the exact source buckets so a
+// failed provider job can refund granted/purchased credits without changing
+// their expiry semantics. Voice jobs use plan audio-minutes and therefore keep
+// creditCost=0.
+model AiGenerationJob {
+  id                            String                @id @default(cuid())
+  userId                        String
+  user                          User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind                          String // image | voice
+  provider                      String // runpod | kie | omnivoice
+  model                         String // customer-selected offer/model id
+  providerModel                 String? // exact provider model actually submitted
+  providerRoute                 String? // runpod-public | runpod-custom | kie-market
+  providerEndpoint              String? // exact endpoint/market seam used for durable polling
+  quoteVersion                  String?
+  costBudgetUsdMicros           Int?
+  estimatedCostUsdMicros        Int?
+  providerReportedCostUsdMicros Int?
+  providerReportedCredits       Float?
+  status                        String                @default("queued") // queued | in_progress | completed | failed | canceled
+  inputPreview                  String?
+  inputJson                     String?
+  outputUrl                     String?
+  providerJobId                 String?
+  generatedImageId              String?
+  creditCost                    Int                   @default(0)
+  creditsFromGranted            Int                   @default(0)
+  creditsFromPurchased          Int                   @default(0)
+  chargeState                   String                @default("pending") // pending | reserved | settled | refunded | none
+  errorCode                     String?
+  errorMessage                  String?
+  delayTimeMs                   Int?
+  executionTimeMs               Int?
+  idempotencyKey                String?
+  createdAt                     DateTime              @default(now())
+  updatedAt                     DateTime              @updatedAt
+  startedAt                     DateTime?
+  finishedAt                    DateTime?
+  mediaExpiresAt                DateTime?
+  attempts                      AiGenerationAttempt[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([providerJobId])
+  @@index([status, kind])
+  @@index([mediaExpiresAt])
+}
+
+// Every external provider submission is durable and auditable. Image jobs
+// currently permit exactly one attempt; a different-model retry is a new quoted
+// job so it cannot silently inherit the first job's lower credit price.
+model AiGenerationAttempt {
+  id                            String          @id @default(cuid())
+  jobId                         String
+  job                           AiGenerationJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sequence                      Int
+  provider                      String
+  providerModel                 String
+  providerRoute                 String
+  providerEndpoint              String?
+  providerJobId                 String?
+  status                        String          @default("planned") // planned | submitted | queued | in_progress | completed | failed
+  estimatedCostUsdMicros        Int
+  providerReportedCostUsdMicros Int?
+  providerReportedCredits       Float?
+  errorCode                     String?
+  errorMessage                  String?
+  createdAt                     DateTime        @default(now())
+  submittedAt                   DateTime?
+  finishedAt                    DateTime?
+
+  @@unique([jobId, sequence])
+  @@index([provider, providerJobId])
+  @@index([status, createdAt])
 }
 
 // Records which base-render outputs a user has been CHARGED a clip for, so a

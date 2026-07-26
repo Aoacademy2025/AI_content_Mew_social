@@ -71,7 +71,9 @@ export function isOmniVoiceInfo(value: unknown): value is OmniVoiceInfo {
   return typeof voice.voice_id === "string"
     && isValidOmniVoiceId(voice.voice_id)
     && typeof voice.desc === "string"
-    && typeof voice.instruct === "string";
+    && typeof voice.instruct === "string"
+    && typeof voice.preview_url === "string"
+    && voice.preview_url.trim().length > 0;
 }
 
 /** Extract signed 16-bit PCM from a RIFF/WAV response produced by the worker. */

@@ -6,6 +6,7 @@
 // ai/(video+photo+ai) (0 when the total weight is 0 — div-by-zero guard); credits =
 // ceil(windows × aiShare) × perImageCredits.
 import { estimatePresetCredits } from "../src/app/(dashboard)/video-editor/_v2/estimate";
+import { PRESET_PROVIDERS, PRESET_WEIGHTS } from "../src/app/(dashboard)/video-editor/_v2/mix-presets";
 import { parseAutoMixWeights } from "../src/lib/automix-weights";
 
 let failures = 0;
@@ -14,11 +15,19 @@ const check = (name: string, cond: boolean, detail = "") => {
   if (!cond) failures++;
 };
 
-// Preset weights (must match _v2/mix-presets PRESET_WEIGHTS)
-const FREE = { video: 3, photo: 2, ai: 0 };
-const RECO = { video: 3, photo: 2, ai: 1 };
-const FULL = { video: 0, photo: 0, ai: 1 };
+const FREE = PRESET_WEIGHTS.free;
+const RECO = PRESET_WEIGHTS.recommended;
+const FULL = PRESET_WEIGHTS.full;
 const ZERO = { video: 0, photo: 0, ai: 0 };
+
+check("ทุก AutoMix preset มี video + stock photo + AI", ["recommended", "full"].every((key) => {
+  const weights = PRESET_WEIGHTS[key as "recommended" | "full"];
+  const providers = PRESET_PROVIDERS[key as "recommended" | "full"] ?? [];
+  return weights.video > 0 && weights.photo > 0 && weights.ai > 0
+    && providers.includes("video")
+    && providers.some((provider) => provider === "pexels-photo" || provider === "pixabay-photo")
+    && providers.includes("kie-ai");
+}));
 
 // ── ฟรีล้วน: ai=0 → 0 credits regardless of length/price ──
 check("ฟรีล้วน (ai=0) → 0 credits @30s,3cr", estimatePresetCredits(30, FREE, 3) === 0,
@@ -33,11 +42,11 @@ check("ผสม AI @60s,3cr → 9", estimatePresetCredits(60, RECO, 3) === 9, S
 // nano-2 price 4cr: 30s → ceil(1.333)=2 × 4 = 8
 check("ผสม AI @30s,4cr → 8", estimatePresetCredits(30, RECO, 4) === 8, String(estimatePresetCredits(30, RECO, 4)));
 
-// ── AI เต็มที่ {0,0,1}: aiShare = 1 → windows × perImage ──
-// 30s → windows=8 × 3 = 24
-check("AI เต็มที่ @30s,3cr → 24", estimatePresetCredits(30, FULL, 3) === 24, String(estimatePresetCredits(30, FULL, 3)));
-// 40s → windows=10 × 3 = 30
-check("AI เต็มที่ @40s,3cr → 30", estimatePresetCredits(40, FULL, 3) === 30, String(estimatePresetCredits(40, FULL, 3)));
+// ── AutoMix AI เด่น {1,1,2}: aiShare = 1/2, but stock remains present ──
+// 30s → windows=8 × 1/2 × 3 = 12
+check("AutoMix AI เด่น @30s,3cr → 12", estimatePresetCredits(30, FULL, 3) === 12, String(estimatePresetCredits(30, FULL, 3)));
+// 40s → windows=10 × 1/2 × 3 = 15
+check("AutoMix AI เด่น @40s,3cr → 15", estimatePresetCredits(40, FULL, 3) === 15, String(estimatePresetCredits(40, FULL, 3)));
 
 // ── div-by-zero guard: total weight 0 → share 0 → 0 credits (no NaN/Infinity) ──
 const z = estimatePresetCredits(30, ZERO, 3);

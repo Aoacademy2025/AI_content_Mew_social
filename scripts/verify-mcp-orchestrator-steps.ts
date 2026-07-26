@@ -22,8 +22,26 @@ const stock = buildStockPayload(["a", "b"], 12, "both", caps);
 assert(stock.keywords.length === 2 && stock.download === true && stock.stockSource === "both", "stock payload basics");
 assert(stock.perSubtitleMode === true && stock.overrideClipCount === 2, "per-subtitle mode when caps==keywords count");
 
-const windowStock = buildStockPayload(["a", "b"], 12, "both", caps, undefined, undefined, undefined, undefined, true);
+const windowStock = buildStockPayload(
+  ["a", "b"],
+  12,
+  "both",
+  caps,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  true,
+  [
+    { startMs: 0, endMs: 5_400 },
+    { startMs: 5_400, endMs: 12_000 },
+  ],
+);
 assert(windowStock.brollWindowMode === true, "window-mode flag reaches fetch-stock payload");
+assert(
+  JSON.stringify(windowStock.brollWindowDurationsSec) === JSON.stringify([5.4, 6.6]),
+  "window-mode sends each real semantic-window duration to image generation",
+);
 
 const cfg = buildConfigPayload(caps, [{ src: "x" }], "/v.mp3", 2000, ["สวัสดี", "โลก"], 5, [1, 1], [1, 1]);
 assert(cfg.voiceFile === "/v.mp3" && cfg.audioDurationMs === 2000, "config payload voice/duration");

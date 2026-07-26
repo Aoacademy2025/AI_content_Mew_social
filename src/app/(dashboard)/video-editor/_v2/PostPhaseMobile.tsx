@@ -61,6 +61,8 @@ export function PostPhaseMobile({
   onRetryProjectSave,
   brollRegionPreference = "auto",
   brollVisualStyle = "auto",
+  internalAiTester,
+  aiImageEnabled,
   downloadFilename,
 }: {
   job: V2JobState; script: string;
@@ -74,6 +76,8 @@ export function PostPhaseMobile({
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
+  internalAiTester: boolean;
+  aiImageEnabled: boolean;
   downloadFilename: string;
 }) {
   const ed = usePostPhaseEditor(job, script, {
@@ -95,7 +99,7 @@ export function PostPhaseMobile({
   const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
   // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
   // (same reasoning as PostPhase.tsx's desktop gate).
-  const brollEditEnabled = BROLL_WINDOW_EDIT && ed.preview?.avatarModel !== "upload-cutaway";
+  const brollEditEnabled = (BROLL_WINDOW_EDIT || internalAiTester) && ed.preview?.avatarModel !== "upload-cutaway";
 
   const selectedCap = ed.captions[ed.selected];
   const durationMs = Math.max(
@@ -696,7 +700,7 @@ export function PostPhaseMobile({
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
 
       {brollEditEnabled && ed.selectedWindow != null && (
-        <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} />
+        <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
       )}
     </div>
   );

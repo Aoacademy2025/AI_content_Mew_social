@@ -831,6 +831,7 @@ export async function getMediaCleanupPlan(options: MediaCleanupOptions = {}): Pr
         "project-draft": 0,
         "render-job": 0,
         "generated-image": 0,
+        "ai-generation-job": 0,
       },
     };
   }

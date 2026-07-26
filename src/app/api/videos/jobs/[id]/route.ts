@@ -7,6 +7,8 @@ import {
   VIDEO_JOB_INFLIGHT_STATUSES,
 } from "@/lib/mcp/video-job";
 import { resolveProjectMediaState } from "@/lib/media-retention";
+import { cancelHeroVoiceGeneration } from "@/lib/hero-voice-generation.server";
+import { parseHeroVoiceProviderCheckpoint } from "@/lib/mcp/hero-voice-provider-checkpoint";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
 // Output is included only when done, parsed through the versioned reader (v1 + v2).
@@ -93,7 +95,7 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
     const { id } = await ctx.params;
     const job = await prisma.videoJob.findFirst({
       where: { id, userId: user.id },
-      select: { id: true, projectId: true, type: true },
+      select: { id: true, projectId: true, type: true, providerCheckpointJson: true },
     });
     if (!job) {
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
@@ -104,6 +106,15 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
     });
     if (res.count !== 1) {
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
+    }
+    const heroVoiceCheckpoint = parseHeroVoiceProviderCheckpoint(job.providerCheckpointJson);
+    if (heroVoiceCheckpoint) {
+      await cancelHeroVoiceGeneration(user.id, heroVoiceCheckpoint.aiGenerationJobId).catch((error) => {
+        console.error(
+          `[api/videos/jobs/:id] Hero Voice cancel settlement failed job=${job.id}`,
+          error instanceof Error ? error.message : "unknown error",
+        );
+      });
     }
     if (job.projectId) {
       if (job.type === "export") {

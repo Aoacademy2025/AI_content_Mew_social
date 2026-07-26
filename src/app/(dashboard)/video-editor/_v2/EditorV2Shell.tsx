@@ -565,7 +565,14 @@ export function EditorV2Shell() {
       {emptyProjectState ? (
         <EmptyProjectView onCreate={() => void handleNewProject()} />
       ) : isRendering ? (
-        <RenderingScreen job={job} hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId} uploadMode={p.mode === "upload"} exportMode={job.jobType === "export"} onCancel={handleCancel} />
+        <RenderingScreen
+          job={job}
+          hasAvatar={p.mode !== "upload" && p.useAvatar && !!p.avatarId}
+          uploadMode={p.mode === "upload"}
+          exportMode={job.jobType === "export"}
+          visualMode={p.brollSource === "kie-image" ? "ai-image" : p.brollSource === "automix" ? "automix" : "stock"}
+          onCancel={handleCancel}
+        />
       ) : shouldShowUnavailablePreview(job.phase, job.mediaState) ? (
         <ExpiredPreviewView
           state={job.mediaState}
@@ -574,9 +581,9 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} downloadFilename={downloadFilename} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.internalAiTester && (p.isAdmin || p.isPaidManagedKie)} downloadFilename={downloadFilename} />
           ) : (
-            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} downloadFilename={downloadFilename} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.internalAiTester && (p.isAdmin || p.isPaidManagedKie)} downloadFilename={downloadFilename} />
           )
         ) : (
           <ExportedView

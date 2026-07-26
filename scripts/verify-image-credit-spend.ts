@@ -59,6 +59,7 @@ async function simulateGenerate(opts: {
     creditsLive: opts.creditsLive,
     isAdmin: opts.isAdmin,
     isPaidPlan,
+    isInternalTester: true,
   });
 
   if (!chargeImages) return { charged: false, cost: 0, skipped: null, refunded: false };
@@ -92,7 +93,7 @@ async function runManagedJob(opts: {
 }): Promise<{ generated: number; charged: number; skipped: "credits" | "rate" | "cap" | null }> {
   const isPaidPlan = opts.plan === "PRO" || opts.plan === "BUSINESS";
   const { chargeImages } = resolveKieImageAccess({
-    managedKieOn: opts.managedKieOn, creditsLive: opts.creditsLive, isAdmin: opts.isAdmin, isPaidPlan,
+    managedKieOn: opts.managedKieOn, creditsLive: opts.creditsLive, isAdmin: opts.isAdmin, isPaidPlan, isInternalTester: true,
   });
   const guardImages = shouldGuardKieImages({ usesManagedKey: opts.usesManagedKey, chargeImages });
   const maxPerJob = kieMaxImagesPerJob();
@@ -140,7 +141,7 @@ async function runDirectKieImageJob(opts: {
 }): Promise<{ generated: number; reason: AiSkipReason }> {
   const isPaidPlan = opts.plan === "PRO" || opts.plan === "BUSINESS";
   const { chargeImages } = resolveKieImageAccess({
-    managedKieOn: opts.managedKieOn, creditsLive: opts.creditsLive, isAdmin: opts.isAdmin, isPaidPlan,
+    managedKieOn: opts.managedKieOn, creditsLive: opts.creditsLive, isAdmin: opts.isAdmin, isPaidPlan, isInternalTester: true,
   });
   const guardImages = shouldGuardKieImages({ usesManagedKey: opts.usesManagedKey, chargeImages });
   const maxPerJob = kieMaxImagesPerJob();
@@ -190,23 +191,26 @@ async function main() {
   assert(creditCostFor("image-nano-1k") === 4, 'image-nano-1k = 4 credits');
 
   // ── 2. Access / metering truth table ───────────────────────────────────────
-  const flagOff = resolveKieImageAccess({ managedKieOn: false, creditsLive: true, isAdmin: false, isPaidPlan: true });
+  const flagOff = resolveKieImageAccess({ managedKieOn: false, creditsLive: true, isAdmin: false, isPaidPlan: true, isInternalTester: true });
   assert(!flagOff.kiePaidUnlocked && !flagOff.chargeImages, 'flag-off → not unlocked, not charged (byte-identical)');
 
-  const free = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: false, isPaidPlan: false });
+  const free = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: false, isPaidPlan: false, isInternalTester: true });
   assert(!free.kiePaidUnlocked && !free.chargeImages, 'FREE non-admin → locked (403), not charged');
 
-  const creditsOff = resolveKieImageAccess({ managedKieOn: true, creditsLive: false, isAdmin: false, isPaidPlan: true });
+  const creditsOff = resolveKieImageAccess({ managedKieOn: true, creditsLive: false, isAdmin: false, isPaidPlan: true, isInternalTester: true });
   assert(!creditsOff.kiePaidUnlocked, 'paid but CREDITS_LIVE off → still locked');
 
-  const paid = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: false, isPaidPlan: true });
+  const paid = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: false, isPaidPlan: true, isInternalTester: true });
   assert(paid.kiePaidUnlocked && paid.chargeImages, 'PRO/BUSINESS non-admin managed → unlocked AND charged');
 
-  const admin = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: true, isPaidPlan: true });
+  const admin = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: true, isPaidPlan: true, isInternalTester: true });
   assert(admin.kiePaidUnlocked && !admin.chargeImages, 'admin managed → unlocked but NOT charged (free)');
 
-  const adminFree = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: true, isPaidPlan: false });
+  const adminFree = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: true, isPaidPlan: false, isInternalTester: true });
   assert(!adminFree.chargeImages, 'admin (any plan) never charged');
+
+  const publicAdmin = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: true, isPaidPlan: true, isInternalTester: false });
+  assert(!publicAdmin.canUseKieImages && !publicAdmin.chargeImages, 'non-team admin → private beta denied');
 
   // ── 3. Spend happy path — granted-first ────────────────────────────────────
   const u1 = "img-user-paid-1";
@@ -259,7 +263,7 @@ async function main() {
   // ── 7. FREE 403 — never reaches spend ──────────────────────────────────────
   const u5 = "img-user-free";
   await grantCredits(u5, 100, "grant"); // even with credits, FREE is gated
-  const freeAccess = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: false, isPaidPlan: false });
+  const freeAccess = resolveKieImageAccess({ managedKieOn: true, creditsLive: true, isAdmin: false, isPaidPlan: false, isInternalTester: true });
   assert(!freeAccess.kiePaidUnlocked, 'FREE: kiePaidUnlocked false → route returns 403 before any spend');
   const r5 = await simulateGenerate({ userId: u5, plan: "FREE", isAdmin: false, managedKieOn: true, creditsLive: true, model: "gpt-image-2-text-to-image", kieSucceeds: true });
   assert(!r5.charged, 'FREE: not charged (chargeImages false)');

@@ -496,6 +496,8 @@ export function useV2Project() {
   const [brollSource, setBrollSource, setBrollSourceRaw] = useUserDraftState<V2BrollSource>(
     d.brollSource ?? "stock", "brollSource", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
+  const [internalAiTester, setInternalAiTester] = useState(false);
+  const [heroAiBeta, setHeroAiBeta] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
   const [plan, setPlan] = useState<string | null>(null);
@@ -1710,18 +1712,25 @@ export function useV2Project() {
         } catch {}
       }
       const admin = m?.role === "ADMIN";
+      const internalTester = m?.internalAiTester === true;
+      const heroBeta = m?.heroAiBeta === true;
+      const internalAdmin = admin && internalTester;
+      setInternalAiTester(internalTester);
+      setHeroAiBeta(heroBeta);
       setPlan(typeof m?.plan === "string" ? m.plan : "FREE");
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
       // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
       const paid = !!m?.kiePaidUnlocked;
-      setIsAdmin(admin);
+      // `isAdmin` in the v2 editor controls private AI/AutoMix options, so an
+      // administrator outside the internal tester group must remain locked too.
+      setIsAdmin(internalAdmin);
       setIsPaidManagedKie(paid);
       setManagedKieOn(!!m?.managedKieOn);
       // Preset default/enforcement (non-admins only — admins use the raw controls):
       //   FREE / feature-off → forced "ฟรีล้วน" (the AI presets are disabled in the UI);
       //   paid → default "ผสม AI แนะนำ" unless the user already picked a preset (draft).
       // setMixPreset also re-drives brollSource/autoMixProviders so submit stays consistent.
-      if (!admin && accountDraftDefaultsAllowedRef.current) {
+      if (!internalAdmin && accountDraftDefaultsAllowedRef.current) {
         const defaultPreset = !paid ? "free" : !draftRef.current.mixPreset ? "recommended" : null;
         if (defaultPreset) {
           setMixPresetRaw(defaultPreset);
@@ -2026,7 +2035,7 @@ export function useV2Project() {
     brollVisualStyle, setBrollVisualStyle,
     logoOverlay, setLogoOverlay,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, isAdmin, isPaidManagedKie, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, isAdmin, isPaidManagedKie, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,

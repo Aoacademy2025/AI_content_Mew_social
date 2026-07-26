@@ -37,7 +37,13 @@ import {
   isValidOmniVoiceId,
   OmniVoiceConfigError,
   omnivoiceConfig,
+  type OmniVoiceBackend,
 } from "@/lib/omnivoice";
+import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
+import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
+import { isHeroAiBetaUser, isInternalAiBetaEnabledFor, isInternalAiTester } from "@/lib/internal-ai-access";
+import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
+import { describeImageOffer } from "@/lib/image-generation-provider.server";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -57,6 +63,7 @@ type Body = {
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
+  imageEngine?: unknown; imageModel?: unknown;
   brollRegionPreference?: unknown; brollVisualStyle?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
   // Phase 2 free per-window re-render (mode: "broll-rerender")
@@ -151,7 +158,7 @@ export async function POST(req: Request) {
     // `rerenderOf` skip (not any client flag) is what makes the render itself free; here we only
     // validate shape + ownership up-front and enqueue. The orchestrator re-checks authoritatively.
     if (body.mode === "broll-rerender") {
-      if (process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT !== "1") {
+      if (!isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1")) {
         return NextResponse.json({ error: "not_enabled" }, { status: 404 });
       }
       const sourceJobId = str(body.sourceJobId, 120);
@@ -323,14 +330,19 @@ export async function POST(req: Request) {
     const voiceId = str(body.voiceId, 120);
     const geminiVoiceName = str(body.geminiVoiceName, 60);
     const omniVoiceId = str(body.omniVoiceId, 64);
+    let voiceBackend: OmniVoiceBackend | undefined;
+    const requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
+    const requestedImageEngine = body.imageEngine === "runpod" ? "runpod" : undefined;
+    const requestedImageModel = str(body.imageModel, 60);
 
     if (!uploadMode && voiceProvider === "omnivoice") {
-      if (!isOmniVoiceUserAllowed(user.id)) {
+      if (!isOmniVoiceUserAllowed(user)) {
         return NextResponse.json({ error: "not_enabled", message: "Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
       }
       let config: ReturnType<typeof omnivoiceConfig>;
       try {
         config = omnivoiceConfig();
+        voiceBackend = config.backend;
       } catch (error) {
         if (error instanceof OmniVoiceConfigError) {
           return NextResponse.json({
@@ -346,15 +358,26 @@ export async function POST(req: Request) {
           message: "Hero Voice ยังไม่พร้อมรับงาน กรุณาลองใหม่ภายหลังหรือสลับเป็น Gemini/ElevenLabs",
         }, { status: 503 });
       }
-      if (script.length > config.maxScriptChars) {
+      const planScriptCap = omnivoiceScriptCharCapForPlan(user.plan);
+      if (script.length > planScriptCap) {
         return NextResponse.json({
           error: "omnivoice_script_too_long",
-          message: `Hero Voice รุ่นทดลองรองรับไม่เกิน ${config.maxScriptChars} ตัวอักษรต่อคลิป กรุณาย่อสคริปต์หรือสลับผู้ให้บริการเสียง`,
-          maxChars: config.maxScriptChars,
+          message: `สคริปต์ Hero Voice ยาวเกินแพ็กเกจ ${user.plan} กรุณาย่อให้ไม่เกินประมาณ ${planScriptCap.toLocaleString("th-TH")} ตัวอักษร`,
+          maxChars: planScriptCap,
         }, { status: 413 });
       }
       if (!omniVoiceId || !isValidOmniVoiceId(omniVoiceId)) {
         return NextResponse.json({ error: "missing_voice_id", message: "กรุณาเลือกเสียง Hero Voice" }, { status: 400 });
+      }
+      const blockingSpeechRisks = prepareHeroVoiceSpeech(script).risks.filter(
+        (risk) => risk.severity === "block",
+      );
+      if (blockingSpeechRisks.length > 0) {
+        return NextResponse.json({
+          error: "omnivoice_speech_token_unsupported",
+          message: "Hero Voice พบสัญลักษณ์ที่ยังไม่มีคำอ่านภาษาไทย กรุณาเขียนสัญลักษณ์นั้นเป็นคำแล้วลองใหม่",
+          riskCategories: blockingSpeechRisks.map((risk) => risk.code),
+        }, { status: 422 });
       }
     }
 
@@ -372,7 +395,7 @@ export async function POST(req: Request) {
       if (e instanceof KeyRequiredError) return NextResponse.json({ error: "missing_key", missingKey: "gemini", message: "ต้องใส่ Gemini API key ก่อน (Settings → API Keys)" }, { status: 400 });
       throw e;
     }
-    if (!user.pexelsKey && !user.pixabayKey) {
+    if (requestedSource !== "kie-image" && !user.pexelsKey && !user.pixabayKey) {
       return NextResponse.json({ error: "missing_key", missingKey: "broll", message: "ต้องใส่ Pexels หรือ Pixabay key อย่างน้อย 1 ตัวสำหรับ B-roll" }, { status: 400 });
     }
 
@@ -413,20 +436,33 @@ export async function POST(req: Request) {
     const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
     if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
 
-    // B-roll source: "stock" (default) → orchestrator default "both". AI sources
-    // (kie-image / auto-mix) are open to admins AND paid users un-gated for kie spend
-    // — mirror of the fetch-stock authorization (resolveKieImageAccess), so the v2
-    // background path matches the money path. FREE / flag-off stay blocked here (and
-    // fetch-stock re-checks + force-zeros ai as the authoritative boundary).
-    const requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
+    // B-roll source: "stock" remains public. AI images and AutoMix are a private
+    // team beta; the same server policy is checked again inside fetch-stock.
+    const useHeroRunpodImage = requestedSource === "kie-image" && requestedImageEngine === "runpod";
     const isAdmin = user.role === "ADMIN";
-    const { kiePaidUnlocked } = resolveKieImageAccess({
+    const { canUseKieImages } = resolveKieImageAccess({
       managedKieOn: process.env.MANAGED_KIE === "1",
       creditsLive: process.env.CREDITS_LIVE === "1",
       isAdmin,
       isPaidPlan: user.plan === "PRO" || user.plan === "BUSINESS",
+      isInternalTester: isInternalAiTester(user),
     });
-    if (requestedSource !== "stock" && !isAdmin && !kiePaidUnlocked) {
+    if (useHeroRunpodImage) {
+      if (!isHeroAiBetaUser(user)) {
+        return NextResponse.json({ error: "beta_only", message: "Hero AI Image ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
+      }
+      if (requestedImageModel !== "z-image-turbo") {
+        return NextResponse.json({ error: "invalid_image_model", message: "Hero AI Image ต้องใช้โมเดล Z-Image Turbo" }, { status: 400 });
+      }
+      const model = AI_IMAGE_MODELS.find((item) => item.id === "z-image-turbo")!;
+      const offer = describeImageOffer(model);
+      if (!offer.available || offer.providerRoute !== "runpod-public") {
+        return NextResponse.json({
+          error: "hero_image_unavailable",
+          message: "Hero AI Image ยังไม่พร้อมบน RunPod Public route",
+        }, { status: 503 });
+      }
+    } else if (requestedSource !== "stock" && !canUseKieImages) {
       return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
     }
     const stockSource = requestedSource === "stock" ? undefined : requestedSource;
@@ -436,7 +472,7 @@ export async function POST(req: Request) {
     const targetClipCount = num(body.targetClipCount, 1, 60);
     const brollRegionPreference = normalizeBrollRegionPreference(body.brollRegionPreference);
     const brollVisualStyle = normalizeBrollVisualStyle(body.brollVisualStyle);
-    const kieModel = stockSource ? str(body.kieModel, 60) : undefined;
+    const kieModel = stockSource && !useHeroRunpodImage ? str(body.kieModel, 60) : undefined;
     const autoMixProviders = requestedSource === "auto-mix" && Array.isArray(body.autoMixProviders)
       ? (body.autoMixProviders.filter((x) => typeof x === "string" && x.length <= 40).slice(0, 12) as string[])
       : undefined;
@@ -497,6 +533,7 @@ export async function POST(req: Request) {
           ...(voiceId ? { voiceId } : {}),
           ...(geminiVoiceName ? { geminiVoiceName } : {}),
           ...(omniVoiceId ? { omniVoiceId } : {}),
+          ...(voiceBackend ? { voiceBackend } : {}),
           ...(avatar.kind === "ok" && avatarLayout
             ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
@@ -507,6 +544,7 @@ export async function POST(req: Request) {
           ...(brollRegionPreference ? { brollRegionPreference } : {}),
           ...(brollVisualStyle ? { brollVisualStyle } : {}),
           ...(kieModel ? { kieModel } : {}),
+          ...(useHeroRunpodImage ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),
           ...(autoMixWeights ? { autoMixWeights } : {}),
           ...(stockProviders?.length ? { stockProviders } : {}),

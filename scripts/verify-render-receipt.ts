@@ -106,5 +106,29 @@ check("M: exact upload 184s → 3 minutes", m.estMinutes === 3, `X=${m.estMinute
 check("M: exact minutes copy omits ประมาณ", text(m, "minutes") === "นาทีที่จะใช้: 3 นาที — รวมในแพ็กเกจ (เหลือ 10 จาก 10 นาที)", text(m, "minutes"));
 check("M: exact disclaimer copy", text(m, "disclaimer") === "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง", text(m, "disclaimer"));
 
+// ── N. Hero AI Image never promises a hidden stock fallback ──
+const n = R({ usesAi: true, creditBalance: 0, insufficientCreditBehavior: "block" });
+check("N: Hero image insufficient balance blocks before generation", text(n, "insufficient") === "เครดิตอาจไม่พอ — Hero AI Image จะไม่เริ่มงานจนกว่าเครดิตจะพอครบทุกฉาก", text(n, "insufficient"));
+
+// ── O. Explicit B-roll count uses the same source planner as the render ──
+const oHero = R({
+  estSec: 600,
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 5,
+});
+check("O1: Hero manual 5 reports exactly 5 × 2 = 10 credits", oHero.estCredits === 10, `N=${oHero.estCredits}`);
+check("O1: exact manual Hero copy does not use an approximate amount", text(oHero, "ai") === "ภาพ AI: 10 เครดิต (5 ภาพ × 2 เครดิต) · หักเมื่อเจนสำเร็จ", text(oHero, "ai"));
+
+const oMix = R({
+  estSec: 600,
+  usesAi: true,
+  presetWeights: { video: 3, photo: 2, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 6,
+});
+check("O2: AutoMix manual 6 reports the planner's one AI slot", oMix.estCredits === 2, `N=${oMix.estCredits}`);
+
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll render-receipt checks passed.");

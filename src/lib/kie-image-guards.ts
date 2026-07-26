@@ -14,7 +14,9 @@
 // ── Access / metering decision (single source of truth) ──────────────────────
 
 export interface KieImageAccess {
-  /** Paid (PRO/BUSINESS) users may reach kie image sources (in addition to admins). */
+  /** Private-beta tester may reach the feature under the role/plan launch rules. */
+  canUseKieImages: boolean;
+  /** Internal paid (PRO/BUSINESS) users may reach managed kie image sources. */
   kiePaidUnlocked: boolean;
   /** Meter credits: only non-admin paid users on the managed key are charged.
    *  Admins and flag-off/BYOK are never charged. */
@@ -23,19 +25,21 @@ export interface KieImageAccess {
 
 /**
  * Resolve whether a user may use kie image sources and whether their generations
- * are credit-metered. Flag-off (managedKieOn=false) → everything false → kie stays
- * admin-only + uncharged (byte-identical to pre-managed behavior). FREE plans are
- * never `kiePaidUnlocked` (isPaidPlan=false).
+ * are credit-metered. Non-testers are always denied, including admins and paid
+ * subscribers. Inside the private beta, admins retain BYOK access while paid
+ * non-admin testers require both managed launch flags.
  */
 export function resolveKieImageAccess(opts: {
   managedKieOn: boolean;
   creditsLive: boolean;
   isAdmin: boolean;
   isPaidPlan: boolean;
+  isInternalTester: boolean;
 }): KieImageAccess {
-  const kiePaidUnlocked = opts.managedKieOn && opts.creditsLive && opts.isPaidPlan;
+  const kiePaidUnlocked = opts.isInternalTester && opts.managedKieOn && opts.creditsLive && opts.isPaidPlan;
+  const canUseKieImages = opts.isInternalTester && (opts.isAdmin || kiePaidUnlocked);
   const chargeImages = kiePaidUnlocked && !opts.isAdmin;
-  return { kiePaidUnlocked, chargeImages };
+  return { canUseKieImages, kiePaidUnlocked, chargeImages };
 }
 
 /**

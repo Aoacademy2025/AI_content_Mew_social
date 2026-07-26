@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { fetchMe } from "@/lib/use-me";
 import {
   Settings, Users, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -50,6 +50,7 @@ type SidebarNavItem = {
 const userNavItems: SidebarNavItem[] = [
   { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
+  { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
   { title: "Gallery",      href: "/videos",        icon: Video },
   { title: "วิธีใช้งาน",    href: "/docs",          icon: BookOpen },
   { title: "อัปเดต",       href: "/updates",       icon: Megaphone },
@@ -62,6 +63,7 @@ const userNavItems: SidebarNavItem[] = [
 const adminStudioItems: SidebarNavItem[] = [
   { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
+  { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
   { title: "Gallery",      href: "/videos",        icon: Video },
   { title: "Settings",     href: "/settings",      icon: Settings },
 ];
@@ -128,6 +130,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [minutesLimit, setMinutesLimit] = useState<number>(0);
   const [updatesUnread, setUpdatesUnread] = useState(0);
   const [currentVersion, setCurrentVersion] = useState("v0.1.0");
+  const [internalAiTester, setInternalAiTester] = useState(false);
 
   useEffect(() => {
     fetchMe()
@@ -143,6 +146,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         if (data.minuteQuota === true) setMinuteQuota(true);
         if (typeof data.minutesUsed === "number") setMinutesUsed(data.minutesUsed);
         if (typeof data.minutesLimit === "number") setMinutesLimit(data.minutesLimit);
+        setInternalAiTester(data.internalAiTester === true);
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -189,7 +193,10 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
       ? { ...item, title: updatesUnread > 0 ? "อัปเดตใหม่" : "อัปเดต", badge: updatesUnread }
       : item);
 
-  const userItems = withUpdatesBadge(userNavItems);
+  const internalItemsOnly = (items: SidebarNavItem[]) =>
+    items.filter((item) => item.href !== "/ai-studio" || internalAiTester);
+  const userItems = internalItemsOnly(withUpdatesBadge(userNavItems));
+  const adminItems = internalItemsOnly(adminStudioItems);
 
   function renderNavItem(item: SidebarNavItem) {
     const Icon = item.icon;
@@ -377,7 +384,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         {role === "ADMIN" ? (
           <>
             <SectionLabel collapsed={collapsed}>Studio</SectionLabel>
-            {adminStudioItems.map(renderNavItem)}
+            {adminItems.map(renderNavItem)}
             <SectionLabel collapsed={collapsed} withDivider>Admin</SectionLabel>
             {adminAdminItems.map(renderNavItem)}
           </>

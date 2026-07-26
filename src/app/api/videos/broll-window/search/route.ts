@@ -8,12 +8,13 @@ import {
   type PexelsVideoFile,
   type PixabayVideo,
 } from "@/lib/broll-asset-lib";
+import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 
 // POST /api/videos/broll-window/search — Phase 2 "เปลี่ยนรูป" tab (Task 7).
 // Given the window's (editable) keyword, searches Pexels + Pixabay in parallel and
 // returns portrait-only candidates for the client to pick from. Read-only — no
-// download happens here (that's /select). Gated behind NEXT_PUBLIC_BROLL_WINDOW_EDIT
-// so flag-off deploys 404 byte-identical to today (route doesn't exist yet).
+// download happens here (that's /select). Internal AI testers receive the beta before
+// NEXT_PUBLIC_BROLL_WINDOW_EDIT opens it publicly; everyone else gets a 404.
 
 export const runtime = "nodejs";
 
@@ -54,12 +55,12 @@ function slugToTitle(url: string): string {
 }
 
 export async function POST(req: Request) {
-  if (process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT !== "1") {
+  const user = await getCurrentUser();
+  const publicEnabled = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
+  if (!user) return NextResponse.json({ error: publicEnabled ? "Unauthorized" : "not_enabled" }, { status: publicEnabled ? 401 : 404 });
+  if (!isInternalAiBetaEnabledFor(user, publicEnabled)) {
     return NextResponse.json({ error: "not_enabled" }, { status: 404 });
   }
-
-  const user = await getCurrentUser();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = (await req.json().catch(() => null)) as { keyword?: unknown } | null;
   const keyword = typeof body?.keyword === "string" ? body.keyword.trim().slice(0, 200) : "";

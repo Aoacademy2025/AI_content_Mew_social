@@ -8,7 +8,9 @@ import {
   finishJob,
   finishJobWithTransition,
   failJob,
+  clearProviderCheckpoint,
   parseVideoJobOutput,
+  parkHeroVoiceProviderJob,
   parkProviderJob,
   saveProviderCheckpoint,
   VIDEO_JOB_CANCELED_ERROR,
@@ -41,7 +43,11 @@ import {
   recordTelemetryEvent as recordServerTelemetryEvent,
   type TelemetryInput,
 } from "@/lib/telemetry";
-import { buildBrollWindows, type BrollWindow } from "@/lib/broll-windows";
+import {
+  buildBrollWindows,
+  buildFixedCountBrollWindows,
+  type BrollWindow,
+} from "@/lib/broll-windows";
 import { planCutaway } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { buildDegradedTtsTiming } from "@/lib/tts-timing";
@@ -49,6 +55,21 @@ import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { resolveJobTtsProvider } from "@/lib/tts-providers";
+import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import {
+  advanceHeroVoiceGeneration,
+  cancelHeroVoiceGeneration,
+  HeroVoiceGenerationError,
+  heroVoiceProviderDeadlineFromJob,
+  heroVoiceResultFromJob,
+  startHeroVoiceGeneration,
+  type HeroVoiceGenerationResult,
+} from "@/lib/hero-voice-generation.server";
+import {
+  HERO_VOICE_PROVIDER_CHECKPOINT_VERSION,
+  parseHeroVoiceProviderCheckpoint,
+  type HeroVoiceProviderCheckpointV1,
+} from "@/lib/mcp/hero-voice-provider-checkpoint";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -67,6 +88,16 @@ class AvatarReservationSettlementError extends Error {
   }
 }
 
+class HeroVoiceProviderFailureError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+  ) {
+    super(message);
+    this.name = "HeroVoiceProviderFailureError";
+  }
+}
+
 export interface OrchestratorDeps {
   caller?: PipelineCaller;
   refundOneClip?: (userId: string) => Promise<void>;
@@ -81,6 +112,8 @@ interface CreateInput {
   script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs" | "omnivoice"; voiceId?: string;
   /** OmniVoice voice_id — defaults to voice_01 only for legacy saved jobs. */
   omniVoiceId?: string;
+  /** Backend pinned by the accepting server; never selected by a browser. */
+  voiceBackend?: "runpod" | "hostinger";
   avatarMode?: "full" | "bookend" | "bookend-both"; avatarId?: string; avatarIntroSecs?: number; avatarTailSecs?: number;
   avatarScale?: number; avatarOffsetX?: number; avatarOffsetY?: number;
   bgmFile?: string; bgmVolume?: number;
@@ -100,6 +133,9 @@ interface CreateInput {
   brollVisualStyle?: string;
   /** โมเดลภาพ AI (Beta, admin-gated at the web route) */
   kieModel?: string;
+  /** Hero AI Image is a separate RunPod-only product seam, not a KIE model. */
+  imageEngine?: "runpod";
+  imageModel?: "z-image-turbo";
   /** แหล่งภาพ Auto Mix (Beta, admin-gated at the web route) */
   autoMixProviders?: string[];
   /** Providers whose keys passed submit-time preflight (unknown remains fail-open). */
@@ -447,10 +483,66 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const input = JSON.parse(job.inputJson) as CreateInput;
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const requestedProvider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider);
-    if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(userId)) {
-      throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ — กรุณาสลับผู้ให้บริการเสียงแล้วลองใหม่");
+    if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(user)) {
+      throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ กรุณาติดต่อทีมงานก่อนลองสร้างด้วย Hero Voice อีกครั้ง");
     }
     const provider = requestedProvider;
+    let resumedHeroVoiceTts: HeroVoiceGenerationResult | null = null;
+    let ttsStepAlreadyEntered = false;
+
+    const heroVoiceCheckpointFor = (voiceJob: {
+      id: string;
+      createdAt: Date;
+      kind: string;
+      inputJson: string | null;
+    }): HeroVoiceProviderCheckpointV1 => {
+      const providerDeadlineAt = heroVoiceProviderDeadlineFromJob(voiceJob);
+      if (!providerDeadlineAt) {
+        throw new HeroVoiceProviderFailureError(
+          "Hero Voice job ไม่มี provider deadline ที่บันทึกไว้",
+          "OMNIVOICE_DEADLINE_MISSING",
+        );
+      }
+      return {
+        version: HERO_VOICE_PROVIDER_CHECKPOINT_VERSION,
+        provider: "omnivoice",
+        aiGenerationJobId: voiceJob.id,
+        providerStartedAt: voiceJob.createdAt.toISOString(),
+        providerDeadlineAt,
+      };
+    };
+
+    const settleHeroVoiceJob = async (
+      voiceJob: Awaited<ReturnType<typeof advanceHeroVoiceGeneration>>,
+    ): Promise<HeroVoiceGenerationResult | null> => {
+      if (voiceJob.status === "failed" || voiceJob.status === "canceled") {
+        throw new HeroVoiceProviderFailureError(
+          voiceJob.errorMessage ?? "Hero Voice สร้างเสียงไม่สำเร็จ",
+          voiceJob.errorCode ?? "OMNIVOICE_PROVIDER_FAILED",
+        );
+      }
+      if (voiceJob.status === "completed") {
+        const result = heroVoiceResultFromJob(voiceJob);
+        if (!result) {
+          throw new HeroVoiceProviderFailureError(
+            "Hero Voice สร้างเสียงเสร็จแต่ข้อมูลผลลัพธ์ไม่ครบ",
+            "OMNIVOICE_RESULT_MISSING",
+          );
+        }
+        return result;
+      }
+
+      const checkpoint = heroVoiceCheckpointFor(voiceJob);
+      const nextPollAt = new Date(Date.now() + 5_000);
+      const parked = await parkHeroVoiceProviderJob(jobId, checkpoint, nextPollAt);
+      if (parked.count === 1) return null;
+      const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+      if (current?.status === "canceled") {
+        await cancelHeroVoiceGeneration(userId, voiceJob.id).catch(() => {});
+        throw new Error(VIDEO_JOB_CANCELED_ERROR);
+      }
+      throw new Error("video_job_not_processing");
+    };
 
     const persistProviderCheckpoint = async (checkpoint: AvatarProviderCheckpointV1): Promise<boolean> => {
       const saved = await saveProviderCheckpoint(jobId, checkpoint);
@@ -592,8 +684,31 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     };
 
     const rawProviderCheckpoint = job.providerCheckpointJson;
+    const heroVoiceCheckpoint = parseHeroVoiceProviderCheckpoint(rawProviderCheckpoint);
+    if (heroVoiceCheckpoint) {
+      if (provider !== "omnivoice") {
+        throw new HeroVoiceProviderFailureError(
+          "งานนี้ถูกบันทึกให้ใช้ Hero Voice แต่ provider ของงานเปลี่ยนไป",
+          "OMNIVOICE_PROVIDER_PIN_MISMATCH",
+        );
+      }
+      await step("tts", 10);
+      ttsStepAlreadyEntered = true;
+      const voiceJob = await advanceHeroVoiceGeneration(userId, heroVoiceCheckpoint.aiGenerationJobId);
+      resumedHeroVoiceTts = await settleHeroVoiceJob(voiceJob);
+      if (!resumedHeroVoiceTts) return;
+      const cleared = await clearProviderCheckpoint(jobId, rawProviderCheckpoint!);
+      if (cleared.count !== 1) {
+        const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+        if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+        throw new HeroVoiceProviderFailureError(
+          "Hero Voice checkpoint เปลี่ยนก่อนบันทึกผลลัพธ์",
+          "OMNIVOICE_CHECKPOINT_CONFLICT",
+        );
+      }
+    }
     const providerCheckpoint = parseAvatarProviderCheckpoint(rawProviderCheckpoint);
-    if (rawProviderCheckpoint && !providerCheckpoint) {
+    if (rawProviderCheckpoint && !providerCheckpoint && !heroVoiceCheckpoint) {
       throw new Error("invalid avatar provider checkpoint - manual recovery required");
     }
     if (providerCheckpoint) {
@@ -807,11 +922,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         : Math.max(...upCaps.map((c) => c.endMs));
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-      const upWindows = buildBrollWindows(
-        upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
-        upWindowSec,
-        upDurMs,
-      );
+      const upManualBrollCount = input.targetClipCount && input.targetClipCount > 0
+        ? Math.min(60, Math.floor(input.targetClipCount))
+        : 0;
+      const upWindows = upManualBrollCount > 0
+        ? buildFixedCountBrollWindows(
+            upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            upManualBrollCount,
+            upDurMs,
+          )
+        : buildBrollWindows(
+            upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            upWindowSec,
+            upDurMs,
+          );
       const upBrollUnits = upWindows.length > 0 ? brollWindowCaptions(upWindows) : upCaps;
 
       await step("keywords", 40);
@@ -838,8 +962,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
             brollRegionPreference: input.brollRegionPreference,
             brollVisualStyle: input.brollVisualStyle,
-          }, upAligned.windows.length > 0),
+          }, upAligned.windows.length > 0, upAligned.windows),
           ...(input.kieModel ? { kieModel: input.kieModel } : {}),
+          ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
+          ...(input.imageModel ? { imageModel: input.imageModel } : {}),
+          videoJobId: jobId,
           ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
           ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
           ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
@@ -905,16 +1032,45 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     }
 
     // 1. TTS
-    await step("tts", 10);
-    const tts = provider === "elevenlabs"
-      ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts", { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" })
-      : provider === "omnivoice"
-        ? await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
-            "/api/videos/tts-omnivoice",
-            { text: input.script, voiceId: input.omniVoiceId ?? "voice_01" },
-            { retries: 0 },
-          )
-        : await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>("/api/videos/tts-gemini", { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" });
+    if (!ttsStepAlreadyEntered) await step("tts", 10);
+    let tts: { voiceUrl: string; audioDurationMs?: number; timing?: unknown };
+    if (provider === "elevenlabs") {
+      tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
+        "/api/videos/tts",
+        { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" },
+      );
+    } else if (provider === "omnivoice") {
+      if (resumedHeroVoiceTts) {
+        tts = resumedHeroVoiceTts;
+      } else {
+        let started;
+        try {
+          started = await startHeroVoiceGeneration({
+            userId,
+            plan: user.plan,
+            text: input.script,
+            voiceId: input.omniVoiceId ?? "voice_01",
+            speed: 1,
+            studio: false,
+            idempotencyKey: `video-job-${jobId}`,
+            backend: input.voiceBackend,
+          });
+        } catch (error) {
+          if (error instanceof HeroVoiceGenerationError) {
+            throw new HeroVoiceProviderFailureError(error.message, error.code);
+          }
+          throw error;
+        }
+        const result = await settleHeroVoiceJob(started.job);
+        if (!result) return;
+        tts = result;
+      }
+    } else {
+      tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
+        "/api/videos/tts-gemini",
+        { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" },
+      );
+    }
     let audioDurationMs = typeof tts.audioDurationMs === "number" && tts.audioDurationMs > 0
       ? Math.round(tts.audioDurationMs)
       : durationFromTtsTiming(tts.timing);
@@ -1000,14 +1156,23 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // "พื้นหลังไม่เนียน / แล้วตัด"). Gated on the SAME flag as web so both surfaces stay in
     // lockstep. In window mode generate-config places one clip per window (ignoring
     // sceneClipCounts); subtitle timing is untouched.
-    const brollWindowMode = process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1";
+    const brollWindowMode = isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1");
     const brollWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-    const brollWindows = brollWindowMode
-      ? buildBrollWindows(
-          captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
-          brollWindowSec,
-          durMs,
-        )
+    const manualBrollCount = input.targetClipCount && input.targetClipCount > 0
+      ? Math.min(60, Math.floor(input.targetClipCount))
+      : 0;
+    const brollWindows = brollWindowMode || manualBrollCount > 0
+      ? manualBrollCount > 0
+        ? buildFixedCountBrollWindows(
+            captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            manualBrollCount,
+            durMs,
+          )
+        : buildBrollWindows(
+            captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            brollWindowSec,
+            durMs,
+          )
       : [];
     const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
 
@@ -1040,9 +1205,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
-        }, aligned.windows.length > 0),
+        }, aligned.windows.length > 0, aligned.windows),
         // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
         ...(input.kieModel ? { kieModel: input.kieModel } : {}),
+        ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
+        ...(input.imageModel ? { imageModel: input.imageModel } : {}),
+        videoJobId: jobId,
         ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
         ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
         ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
@@ -1228,6 +1396,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           provider: e.failure.provider,
           reservationRefundReason: e.reservationRefundReason,
         }
+      : e instanceof HeroVoiceProviderFailureError
+        ? {
+            message: e.message,
+            code: e.code,
+            provider: "omnivoice",
+          }
       : e instanceof AvatarReservationSettlementError
         ? {
             message: e.message,

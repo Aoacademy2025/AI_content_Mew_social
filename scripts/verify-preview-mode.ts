@@ -150,6 +150,11 @@ async function main() {
     ok((stockCall?.body as { kieModel?: string })?.kieModel === "gpt-image-2-text-to-image", "A: kieModel reaches fetch-stock");
     const kwCall = log.find((c) => c.path === "/api/videos/extract-keywords");
     ok((kwCall?.body as { targetClipCount?: number })?.targetClipCount === 7, "A: targetClipCount reaches extract-keywords");
+    ok(((kwCall?.body as { scenes?: string[] })?.scenes?.length ?? 0) === 7, "A: manual 7 creates exactly 7 semantic prompt chapters");
+    ok(((stockCall?.body as { keywords?: string[] })?.keywords?.length ?? 0) === 7, "A: manual Hero sends exactly 7 image subjects to fetch-stock");
+    ok((stockCall?.body as { overrideClipCount?: number })?.overrideClipCount === 7, "A: manual Hero fetch count remains exactly 7");
+    const configCall = log.find((c) => c.path === "/api/videos/generate-config");
+    ok(((configCall?.body as { brollWindows?: unknown[] })?.brollWindows?.length ?? 0) === 7, "A: manual Hero timeline contains exactly 7 non-cycling windows");
 
     const out = parseVideoJobOutput(done?.outputJson ?? null);
     ok(out?.version === 2, `A: output version 2 (got ${out?.version})`);

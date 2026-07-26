@@ -65,13 +65,13 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
   const exactDuration = p.mode === "upload" && p.clipDurationSec > 0;
 
   // AI usage: non-admins go by preset (ฟรีล้วน = none); admins by the raw b-roll source.
-  const usesAi = p.isAdmin
-    ? (p.brollSource === "kie-image" || p.brollSource === "automix")
-    : presetUsesAi(p.mixPreset);
+  const usesAi = p.brollSource === "kie-image" || (p.isAdmin
+    ? p.brollSource === "automix"
+    : presetUsesAi(p.mixPreset));
 
   const presetWeights = useMemo(() => {
-    if (!p.isAdmin) return PRESET_WEIGHTS[p.mixPreset];
     if (p.brollSource === "kie-image") return { video: 0, photo: 0, ai: 1 };
+    if (!p.isAdmin) return PRESET_WEIGHTS[p.mixPreset];
     if (p.brollSource === "automix") return PRESET_WEIGHTS.recommended;
     return { video: 1, photo: 0, ai: 0 };
   }, [p.isAdmin, p.brollSource, p.mixPreset]);
@@ -79,10 +79,11 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
   // Per-image price from the SELECTED model, via the same map the server charges from.
   // Non-admins default to gpt-image-2 when unset (matches server coercion + the picker).
   const perImageCredits = useMemo(() => {
+    if (p.brollSource === "kie-image") return creditCostFor("image-open-fast-1k");
     const effectiveModel = p.isAdmin ? p.kieModel : (p.kieModel || "gpt-image-2-text-to-image");
     const costKey = effectiveModel ? costKeyForKieModel(effectiveModel) : null;
     return costKey ? creditCostFor(costKey) : 0;
-  }, [p.isAdmin, p.kieModel]);
+  }, [p.brollSource, p.isAdmin, p.kieModel]);
 
   const model = useMemo(
     () => buildReceipt({
@@ -96,8 +97,10 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       minuteCreditRate: creditCostFor("minute"),
       hasAvatar: p.mode !== "upload" && p.useAvatar && !!p.avatarId,
       exactDuration,
+      insufficientCreditBehavior: p.brollSource === "kie-image" ? "block" : "stock-fallback",
+      targetClipCount: p.targetClipCount,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, balance, p.mode, p.useAvatar, p.avatarId, exactDuration],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, balance, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, exactDuration],
   );
 
   if (!open) return null;

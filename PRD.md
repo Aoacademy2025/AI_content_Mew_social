@@ -22,27 +22,30 @@
 
 > ตารางนี้แก้ให้ตรงกับ **ของจริง** แล้ว (เดิมระบุ NextAuth/OpenAI/Neon/Vercel ซึ่งไม่ตรง)
 
-| เทคโนโลยี | ของจริง (2026-06-04) |
-|---|---|
-| Frontend Framework | Next.js 15 (App Router) + React 19 |
-| Styling | Tailwind v4 + shadcn/ui |
-| Database ORM | Prisma 6 |
-| Database | **SQLite** (`prisma/dev.db`) — *ไม่ใช่ Neon/Postgres* |
-| File Storage | Local disk บน VPS (`public/renders`, `stocks`) |
-| Authentication | **Clerk** — *(NextAuth ใน `src/lib/auth.ts` = ของเก่า)* |
-| AI / LLM | **Google Gemini** (BYOK — user key) |
-| Avatar Video | HeyGen API (BYOK) |
-| Voice / TTS | ElevenLabs + Gemini TTS (BYOK) |
-| Stock footage | Pexels / Pixabay (BYOK) |
-| Render | **Remotion + ffmpeg** บน VPS (local, ไม่มี GPU) |
-| Payments | Stripe (one-time → กำลังเพิ่ม subscription) |
-| Deployment | **Hostinger VPS** + PM2 + Nginx — *ไม่ใช่ Vercel* |
+
+| เทคโนโลยี          | ของจริง (2026-06-04)                                    |
+| ------------------ | ------------------------------------------------------- |
+| Frontend Framework | Next.js 15 (App Router) + React 19                      |
+| Styling            | Tailwind v4 + shadcn/ui                                 |
+| Database ORM       | Prisma 6                                                |
+| Database           | **SQLite** (`prisma/dev.db`) — *ไม่ใช่ Neon/Postgres*   |
+| File Storage       | Local disk บน VPS (`public/renders`, `stocks`)          |
+| Authentication     | **Clerk** — *(NextAuth ใน `src/lib/auth.ts` = ของเก่า)* |
+| AI / LLM           | **Google Gemini** (BYOK — user key)                     |
+| Avatar Video       | HeyGen API (BYOK)                                       |
+| Voice / TTS        | ElevenLabs + Gemini TTS (BYOK)                          |
+| Stock footage      | Pexels / Pixabay (BYOK)                                 |
+| Render             | **Remotion + ffmpeg** บน VPS (local, ไม่มี GPU)         |
+| Payments           | Stripe (one-time → กำลังเพิ่ม subscription)             |
+| Deployment         | **Hostinger VPS** + PM2 + Nginx — *ไม่ใช่ Vercel*       |
+
 
 ---
 
 ## 3. Pricing Plans
 
 ### Free Trial Plan
+
 - **Cost:** ฟรี (ไม่เสียค่าใช้จ่าย)
 - **API Keys:** ใช้ API ของระบบ (ไม่ต้องมี API key ของตัวเอง)
 - **Features:**
@@ -55,6 +58,7 @@
   - Usage limit: 10 ครั้งต่อบัญชี
 
 ### Pro Plan
+
 - **Cost:** ต้องใช้ API key ของตัวเอง (ไม่มีค่าธรรมเนียมแพลตฟอร์ม)
 - **API Keys Required:**
   - OpenAI API Key (Required - สำหรับ AI generation)
@@ -73,40 +77,38 @@
 ### Upgrade Flow (FREE → PRO)
 
 1. **Access Settings Page**
-   - FREE users see "Free Trial Plan" info card
-   - Shows upgrade benefits and requirements
-
+  - FREE users see "Free Trial Plan" info card
+  - Shows upgrade benefits and requirements
 2. **Add OpenAI API Key**
-   - User inputs OpenAI API key in password field
-   - Placeholder: "sk-proj-..."
-   - Link to OpenAI Platform for getting API key
-
+  - User inputs OpenAI API key in password field
+  - Placeholder: "sk-proj-..."
+  - Link to OpenAI Platform for getting API key
 3. **Save API Key**
-   - Click "Save API Key" button
-   - System encrypts and stores key in database (Base64 encoding)
-   - Toast notification confirms save
-
+  - Click "Save API Key" button
+  - System encrypts and stores key in database (Base64 encoding)
+  - Toast notification confirms save
 4. **Upgrade to Pro**
-   - Click "Upgrade to Pro" button (requires saved OpenAI key)
-   - System validates key exists
-   - Updates user plan from FREE to PAID in database
-   - Toast notification: "🎉 Upgraded to Pro Plan!"
-   - UI automatically updates to show Pro features
-
+  - Click "Upgrade to Pro" button (requires saved OpenAI key)
+  - System validates key exists
+  - Updates user plan from FREE to PAID in database
+  - Toast notification: "🎉 Upgraded to Pro Plan!"
+  - UI automatically updates to show Pro features
 5. **Post-Upgrade**
-   - Settings shows "Pro Plan Active" badge
-   - Can manage all API keys (OpenAI, HeyGen, ElevenLabs)
-   - Test buttons available for each API key
-   - Video page becomes accessible
+  - Settings shows "Pro Plan Active" badge
+  - Can manage all API keys (OpenAI, HeyGen, ElevenLabs)
+  - Test buttons available for each API key
+  - Video page becomes accessible
 
 ### API Key Management
 
 **Encryption:**
+
 - API keys encrypted using Base64 encoding before storage
 - Decrypted when needed for API calls
 - Note: For production, use stronger encryption (AES-256)
 
 **Storage:**
+
 ```prisma
 model User {
   openaiKey      String? // Encrypted OpenAI API key
@@ -116,6 +118,7 @@ model User {
 ```
 
 **Testing:**
+
 - Each API key has "Test" button in settings
 - Validates key by making test API call
 - Shows badge: "Connected" (green) or "Invalid" (red)
@@ -125,6 +128,7 @@ model User {
 ## 4. User Roles
 
 ### 4.1 Admin
+
 - ดูข้อมูลผู้ใช้ทั้งหมด (จำนวน, สถานะ, แพลน)
 - จัดการผู้ใช้ (ดู, ระงับ, ลบ)
 - ดู Dashboard สถิติการใช้งาน
@@ -132,12 +136,14 @@ model User {
 - **Plan:** PAID (Pro) with all API keys configured
 
 ### 4.2 User (Free Trial)
+
 - ทดลองใช้ฟรีพร้อมข้อจำกัด (10 ครั้งการ generate)
 - เข้าถึงฟีเจอร์ Style และ Content เท่านั้น
 - ใช้ API Key ของระบบ (SERVER_OPENAI_API_KEY)
 - ไม่สามารถสร้าง Avatar Video ได้
 
 ### 4.3 User (Pro/Paid)
+
 - ใช้งานเต็มรูปแบบไม่จำกัด
 - เข้าถึงฟีเจอร์ทั้งหมดรวม Avatar Video
 - ใช้ API Key ของตัวเอง (OpenAI, HeyGen, ElevenLabs)
@@ -151,6 +157,7 @@ model User {
 ### 5.1 Authentication System
 
 #### 5.1.1 Register (สมัครสมาชิก)
+
 - ฟอร์มสมัคร: ชื่อ, อีเมล, รหัสผ่าน, ยืนยันรหัสผ่าน
 - Validation ครบทุกฟิลด์
 - เช็คอีเมลซ้ำ
@@ -158,11 +165,13 @@ model User {
 - สมัครเสร็จ → เข้าสู่ระบบอัตโนมัติเป็น Free Trial
 
 #### 5.1.2 Login (เข้าสู่ระบบ)
+
 - ฟอร์ม: อีเมล + รหัสผ่าน
 - ใช้ NextAuth.js Credentials Provider
 - Redirect ตาม role (Admin → Admin Dashboard, User → User Dashboard)
 
 #### 5.1.3 Forgot Password (ลืมรหัสผ่าน)
+
 - กรอกอีเมล → ส่งลิงก์ reset password ทางอีเมล
 - ลิงก์มีอายุ 1 ชั่วโมง
 - หน้า Reset Password: รหัสผ่านใหม่ + ยืนยัน
@@ -173,18 +182,22 @@ model User {
 
 ผู้ใช้ Pro ต้องกรอก API Key ของตัวเองเพื่อใช้งานระบบ:
 
-| API Key | ใช้สำหรับ | Required |
-|---|---|---|
-| OpenAI API Key | สร้าง Style Prompt, สร้าง Content | ✅ Required |
-| HeyGen API Key | สร้างวิดีโอ Avatar | Optional |
-| ElevenLabs API Key | สร้างเสียง Voice Cloning | Optional |
+
+| API Key            | ใช้สำหรับ                         | Required   |
+| ------------------ | --------------------------------- | ---------- |
+| OpenAI API Key     | สร้าง Style Prompt, สร้าง Content | ✅ Required |
+| HeyGen API Key     | สร้างวิดีโอ Avatar                | Optional   |
+| ElevenLabs API Key | สร้างเสียง Voice Cloning          | Optional   |
+
 
 **Free Trial Users:**
+
 - ไม่ต้องใส่ API Key
 - ใช้ SERVER_OPENAI_API_KEY จาก environment variable
 - จำกัด 10 ครั้ง/บัญชี
 
 **Pro Users:**
+
 - ต้องใส่ OpenAI API Key อย่างน้อย
 - เก็บ API Key แบบเข้ารหัส (encrypted) ในฐานข้อมูล
 - ปุ่มทดสอบ API Key ว่าใช้งานได้หรือไม่
@@ -199,60 +212,57 @@ model User {
 #### User Flow
 
 1. **Create New Style**
-   - User clicks "Create Style" button
-   - User enters style name (e.g., "Professional", "Casual", "Friendly")
-   - User selects **one** input method using toggle:
-     - **Text Input:** Paste sample text (minimum 100 characters)
-     - **URL Input:** Provide URL to article/content
-   - Note: User must choose either Text OR URL, not both
-
+  - User clicks "Create Style" button
+  - User enters style name (e.g., "Professional", "Casual", "Friendly")
+  - User selects **one** input method using toggle:
+    - **Text Input:** Paste sample text (minimum 100 characters)
+    - **URL Input:** Provide URL to article/content
+  - Note: User must choose either Text OR URL, not both
 2. **AI Style Analysis**
-   - User clicks "✨ Analyze Style" button
-   - System checks user plan:
-     - **FREE Plan:** Uses server's OpenAI API key
-     - **PRO Plan:** Uses user's own OpenAI API key
-   - System sends source material to AI for analysis
-   - AI analyzes writing patterns:
-     - Tone of voice (Formal/Casual/Professional)
-     - Writing structure and paragraph patterns
-     - Language level and vocabulary
-     - Formatting preferences (emoji, line breaks, emphasis)
-     - Engagement techniques (hooks, CTAs, questions)
-   - System returns comprehensive instruction prompt only
-
-3. **Review & Edit**
-   - Generated instruction prompt appears in the Instruction Prompt field
-   - User can manually edit/refine the instructions
-   - User can click "✨ Analyze Style" again to re-analyze with different source
-   - Instruction prompt is editable markdown text
-
+  - User clicks "✨ Analyze Style" button
+  - System checks user plan:
+    - **FREE Plan:** Uses server's OpenAI API key
+    - **PRO Plan:** Uses user's own OpenAI API key
+  - System sends source material to AI for analysis
+  - AI analyzes writing patterns:
+    - Tone of voice (Formal/Casual/Professional)
+    - Writing structure and paragraph patterns
+    - Language level and vocabulary
+    - Formatting preferences (emoji, line breaks, emphasis)
+    - Engagement techniques (hooks, CTAs, questions)
+  - System returns comprehensive instruction prompt only
+3. **Review &amp; Edit**
+  - Generated instruction prompt appears in the Instruction Prompt field
+  - User can manually edit/refine the instructions
+  - User can click "✨ Analyze Style" again to re-analyze with different source
+  - Instruction prompt is editable markdown text
 4. **Save Style**
-   - User clicks "Save Style" button
-   - System saves:
-     - Style name
-     - Source text OR source URL (whatever was used)
-     - Generated instruction prompt
-   - Style becomes available for content generation
-   - User can edit or delete saved styles later
+  - User clicks "Save Style" button
+  - System saves:
+    - Style name
+    - Source text OR source URL (whatever was used)
+    - Generated instruction prompt
+  - Style becomes available for content generation
+  - User can edit or delete saved styles later
 
 #### Input Requirements
 
 **Style Name** (Required)
+
 - Type: Text
 - Length: 3-50 characters
 - Purpose: Identify the style for future use
 
 **Training Source** (Required - Choose One via Toggle)
+
 - User must select either Text OR URL input method (exclusive choice)
 - Toggle UI allows switching between modes
-
 - **Text Input Mode:**
   - Type: Long text (textarea)
   - Min length: 100 characters
   - Purpose: Sample text in the desired writing style
   - Example: Blog post, social media caption, article excerpt
   - When selected: Text textarea is enabled, URL input is hidden
-
 - **URL Input Mode:**
   - Type: Valid URL
   - Purpose: Link to article/content in desired style
@@ -260,6 +270,7 @@ model User {
   - When selected: URL input is enabled, text textarea is hidden
 
 **Instruction Prompt** (Auto-generated, Editable)
+
 - Type: Long text (markdown textarea)
 - Auto-populated after clicking "Analyze Style"
 - User can manually edit the generated prompt
@@ -269,12 +280,14 @@ model User {
 
 The AI generates a comprehensive **Instruction Prompt** containing:
 
-##### 1. ตัวตนและเป้าหมาย (Persona & Goal)
+##### 1. ตัวตนและเป้าหมาย (Persona &amp; Goal)
+
 - Target Audience definition
 - Writing Purpose
 - Brand Voice characteristics
 
-##### 2. น้ำเสียงและสไตล์การเขียน (Tone of Voice & Style)
+##### 2. น้ำเสียงและสไตล์การเขียน (Tone of Voice &amp; Style)
+
 - Tone description (Formal/Casual/Professional/etc.)
 - Language Level
 - Emotional Quality
@@ -283,32 +296,38 @@ The AI generates a comprehensive **Instruction Prompt** containing:
 ##### 3. โครงสร้างการเขียนที่เป็นเอกลักษณ์ (Unique Writing Structure)
 
 **3.1 การเปิดเรื่อง (Hook)**
+
 - Hook Type and technique
 - Length guidelines
 - Opening patterns
 
 **3.2 การอธิบายเนื้อหา (Main Content)**
+
 - Content structure
 - Paragraph length
 - Explanation style
 
 **3.3 การจัดรูปแบบเนื้อหา (Formatting)**
+
 - Emoji usage patterns
 - Line breaks and spacing
 - Text emphasis methods
 - List formatting
 
 **3.4 การสร้างความน่าเชื่อถือ (Credibility)**
+
 - Evidence types used
 - Authority markers
 - Transparency approach
 
-**3.5 การปิดท้าย (CTA & Engagement)**
+**3.5 การปิดท้าย (CTA &amp; Engagement)**
+
 - Call-to-action style
 - Engagement prompts
 - Closing techniques
 
 #### การจัดการ Style
+
 - ตั้งชื่อ Style ได้ (เช่น "สไตล์ขายของ", "สไตล์ให้ความรู้")
 - เปลี่ยนชื่อ Style ได้
 - ลบ Style ได้
@@ -322,6 +341,7 @@ The AI generates a comprehensive **Instruction Prompt** containing:
 **หน้าที่:** ใช้คอนเทนต์ที่อัปโหลดมา สรุปและเขียนใหม่ให้เหมาะกับการโพสต์ โดยใช้สไตล์ที่ฝึกไว้จากหน้า Style
 
 #### Input (ข้อมูลนำเข้า)
+
 - **วางข้อความ (Text):** paste เนื้อหาต้นฉบับ
 - **วาง URL:** ระบบดึงเนื้อหาจาก URL อัตโนมัติ (เหมือนหน้า Style)
 - **เลือก Style:** dropdown เลือกสไตล์ที่บันทึกไว้จากหน้า Style
@@ -333,25 +353,30 @@ The AI generates a comprehensive **Instruction Prompt** containing:
   - 3 นาที ≈ 450-510 คำ (ไทย) / 390-450 คำ (อังกฤษ)
 
 #### Process (กระบวนการ)
+
 1. ผู้ใช้วาง text/URL + เลือก Style + เลือกภาษา + เลือกความยาว
 2. กดปุ่ม **"สร้างคอนเทนต์"**
 3. ระบบตรวจสอบ plan ของ user:
-   - **FREE Plan:** ใช้ SERVER_OPENAI_API_KEY
-   - **PRO Plan:** ใช้ openaiKey ของ user
+  - **FREE Plan:** ใช้ SERVER_OPENAI_API_KEY
+  - **PRO Plan:** ใช้ openaiKey ของ user
 4. ระบบส่ง Instruction Prompt (Style) + เนื้อหาต้นฉบับ ไปยัง OpenAI GPT
 5. GPT สรุป เรียบเรียง และเขียนใหม่ตามสไตล์ + ภาษา + ความยาวที่กำหนด
 
 #### Output (ผลลัพธ์)
+
 แสดงผลแบ่งเป็นส่วน ๆ ชัดเจน:
 
-| ส่วน | รายละเอียด |
-|---|---|
-| ✅ Headline | หัวข้อหลักที่ดึงดูดความสนใจ |
-| ✅ Subheadline | หัวข้อรองอธิบายเพิ่มเติม |
+
+| ส่วน           | รายละเอียด                                      |
+| -------------- | ----------------------------------------------- |
+| ✅ Headline     | หัวข้อหลักที่ดึงดูดความสนใจ                     |
+| ✅ Subheadline  | หัวข้อรองอธิบายเพิ่มเติม                        |
 | ✅ เนื้อหาโพสต์ | เนื้อหาหลักสำหรับโพสต์ (Script ตามเวลาที่เลือก) |
-| ✅ Hashtag | แฮชแท็กที่เกี่ยวข้อง |
+| ✅ Hashtag      | แฮชแท็กที่เกี่ยวข้อง                            |
+
 
 #### ฟังก์ชันเพิ่มเติม
+
 - **Copy ทีละส่วน:** ปุ่ม copy แต่ละหัวข้อ (Headline, Subheadline, เนื้อหา, Hashtag)
 - **Copy ทั้งหมด:** ปุ่ม copy ผลลัพธ์ทั้งหมดในครั้งเดียว
 - **Save Content:** ปุ่มบันทึกคอนเทนต์ไว้ในระบบเพื่อนำไปใช้ต่อ
@@ -365,18 +390,21 @@ The AI generates a comprehensive **Instruction Prompt** containing:
 **หน้าที่:** สร้างวิดีโอ Avatar จากคอนเทนต์ที่สร้างไว้ โดยใช้ AI สร้างภาพ, เสียง, และวิดีโอ
 
 **สิทธิ์การเข้าถึง:**
+
 - ❌ FREE Plan: ไม่สามารถใช้งานได้ (แสดงหน้า Upgrade to Pro)
 - ✅ PRO Plan: เข้าถึงได้เต็มรูปแบบ
 
 #### 3 ส่วนหลัก
 
 ##### 5.5.1 Voice (เสียง)
+
 - เชื่อมต่อ ElevenLabs API
 - ดึงรายการ Voice Model ที่ผู้ใช้มีใน ElevenLabs
 - เลือก Voice Model ที่ต้องการใช้
 - Preview เสียงได้ก่อนใช้งาน
 
 ##### 5.5.2 Image (ภาพ)
+
 - เชื่อมต่อ HeyGen API
 - ดึงรายการ Avatar Model ที่ผู้ใช้มีใน HeyGen
 - เลือก Avatar Model ที่ต้องการใช้
@@ -384,6 +412,7 @@ The AI generates a comprehensive **Instruction Prompt** containing:
 - Preview ภาพ Avatar ก่อนใช้งาน
 
 ##### 5.5.3 Video (วิดีโอ)
+
 - รวม Voice + Image + Content เข้าด้วยกัน
 - ส่งข้อมูลไปยัง n8n Webhook:
   - Avatar Model ที่เลือก
@@ -394,6 +423,7 @@ The AI generates a comprehensive **Instruction Prompt** containing:
 - แสดงวิดีโอที่สร้างเสร็จพร้อมปุ่มดาวน์โหลด
 
 #### Flow การใช้งาน Avatar Cloning
+
 ```
 1. ตรวจสอบ User Plan
    - FREE → แสดงหน้า "Upgrade to Pro"
@@ -527,6 +557,7 @@ enum VideoStatus {
 ## 7. API Routes Structure
 
 ### Authentication
+
 ```
 POST /api/auth/register          สมัครสมาชิก
 POST /api/auth/login             เข้าสู่ระบบ (NextAuth)
@@ -535,6 +566,7 @@ POST /api/auth/reset-password    รีเซ็ตรหัสผ่าน
 ```
 
 ### User Management
+
 ```
 GET  /api/user/me                ดูข้อมูลผู้ใช้ + plan
 PUT  /api/user/profile           อัปเดตข้อมูลผู้ใช้
@@ -545,6 +577,7 @@ POST /api/user/upgrade           Upgrade FREE → PRO
 ```
 
 ### Style Management
+
 ```
 GET    /api/styles               ดู Style ทั้งหมดของผู้ใช้
 POST   /api/styles               สร้าง Style ใหม่
@@ -555,6 +588,7 @@ POST   /api/styles/analyze       วิเคราะห์ text/URL → สร
 ```
 
 ### Content Generation
+
 ```
 GET    /api/contents             ดู Content ทั้งหมดของผู้ใช้
 POST   /api/contents/generate    สร้างคอนเทนต์จาก text/URL + Style (plan-aware)
@@ -564,6 +598,7 @@ DELETE /api/contents/[id]        ลบ Content
 ```
 
 ### Video Generation (PRO Only)
+
 ```
 GET    /api/videos               ดู Video ทั้งหมดของผู้ใช้
 POST   /api/videos/generate      สร้าง Avatar Video (ตรวจสอบ plan)
@@ -572,6 +607,7 @@ DELETE /api/videos/[id]          ลบ Video
 ```
 
 ### Admin (Admin Only)
+
 ```
 GET /api/admin/users             ดูรายการผู้ใช้ทั้งหมด
 GET /api/admin/users/[id]        ดูรายละเอียดผู้ใช้
@@ -612,6 +648,7 @@ app/
 ## 9. Third-Party Integrations
 
 ### 9.1 OpenAI GPT API
+
 - **ใช้สำหรับ:** วิเคราะห์สไตล์ + สร้าง Instruction Prompt + สร้างคอนเทนต์
 - **Model:** gpt-4o-mini (cost-effective, fast, high quality)
 - **API Key:**
@@ -625,14 +662,17 @@ app/
   - Structured JSON output with all required fields
 
 ### 9.2 HeyGen API
+
 - **ใช้สำหรับ:** ดึง Avatar Model + สร้างวิดีโอ
 - **ผู้ใช้ PRO ใส่ API Key ของตัวเอง**
 
 ### 9.3 ElevenLabs API
+
 - **ใช้สำหรับ:** ดึง Voice Model + สร้างเสียง
 - **ผู้ใช้ PRO ใส่ API Key ของตัวเอง**
 
 ### 9.4 n8n Webhook
+
 - **ใช้สำหรับ:** รับข้อมูล Avatar + Voice + Script → ประมวลผลสร้างวิดีโอ → ส่ง public_url กลับ
 - **Config:** ตั้งค่า Webhook URL ใน environment variable
 
@@ -668,11 +708,13 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 
 ## 11. Test Accounts
 
-| Account Type | Email | Password | Plan | API Keys |
-|---|---|---|---|---|
-| **Admin** | admin@test.com | admin123 | PAID | ✅ All configured |
-| **FREE User** | user@test.com | password123 | FREE | ❌ Uses server key |
-| **PRO User** | pro@test.com | password123 | PAID | ✅ All configured |
+
+| Account Type  | Email                                   | Password    | Plan | API Keys          |
+| ------------- | --------------------------------------- | ----------- | ---- | ----------------- |
+| **Admin**     | [admin@test.com](mailto:admin@test.com) | admin123    | PAID | ✅ All configured  |
+| **FREE User** | [user@test.com](mailto:user@test.com)   | password123 | FREE | ❌ Uses server key |
+| **PRO User**  | [pro@test.com](mailto:pro@test.com)     | password123 | PAID | ✅ All configured  |
+
 
 ---
 
@@ -690,9 +732,10 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 
 ---
 
-## 13. Development Status & To-Do List
+## 13. Development Status &amp; To-Do List
 
-### ✅ Phase 1: Project Setup & Foundation
+### ✅ Phase 1: Project Setup &amp; Foundation
+
 - [x] สร้างโปรเจค Next.js (App Router)
 - [x] ติดตั้ง dependencies ทั้งหมด (Tailwind, shadcn/ui, Prisma, NextAuth, etc.)
 - [x] ตั้งค่า Tailwind CSS + shadcn/ui
@@ -703,6 +746,7 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - [x] ตั้งค่า Environment Variables
 
 ### ✅ Phase 2: Authentication System
+
 - [x] ติดตั้ง NextAuth.js + Credentials Provider
 - [x] หน้า Register (สมัครสมาชิก)
 - [x] หน้า Login (เข้าสู่ระบบ)
@@ -711,13 +755,15 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - [x] Middleware ป้องกันหน้าที่ต้อง login
 - [x] Middleware แยก Admin / User routes
 
-### ✅ Phase 3: Layout & Navigation
+### ✅ Phase 3: Layout &amp; Navigation
+
 - [x] Landing Page (หน้าแรก)
 - [x] User Dashboard Layout (Sidebar + Header)
 - [x] Admin Dashboard Layout
 - [x] Responsive Design (Mobile + Desktop)
 
 ### ✅ Phase 4: User Settings
+
 - [x] หน้า Settings - โปรไฟล์ผู้ใช้
 - [x] หน้า Settings - จัดการ API Keys (OpenAI, HeyGen, ElevenLabs)
 - [x] ฟังก์ชันทดสอบ API Key
@@ -726,6 +772,7 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - [x] ปุ่ม Upgrade to Pro สำหรับ FREE users
 
 ### ✅ Phase 5: Feature - Style
+
 - [x] หน้ารายการ Style ทั้งหมด
 - [x] ฟอร์มวาง Text หรือ URL (Toggle exclusive choice)
 - [x] API ดึง text จาก URL (web scraping with cheerio + axios)
@@ -739,6 +786,7 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - [x] UI Improvements: แสดงฟอร์มสร้าง inline แทน popup, เริ่มที่หน้าฟอร์มทันที
 
 ### ✅ Phase 6: Feature - Content
+
 - [x] หน้ารายการ Content ทั้งหมด
 - [x] ฟอร์มวาง Text + URL
 - [x] Dropdown เลือก Style ที่บันทึกไว้
@@ -757,6 +805,7 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - [x] Content output พร้อมส่งต่อเป็น JSON ไปหน้า Avatar
 
 ### 🔄 Phase 7: Feature - Avatar Video (PRO Only)
+
 - [x] หน้า Avatar Cloning หลัก
 - [x] เช็คสถานะ User Plan (FREE → Upgrade prompt, PRO → Full access)
 - [x] เช็คสถานะ API Key (HeyGen + ElevenLabs) - via Settings page
@@ -773,6 +822,7 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - [x] สร้าง n8n workflow integration guide (N8N_SETUP.md)
 
 ### ✅ Phase 8: Pricing System (FREE vs PRO)
+
 - [x] สร้าง FREE plan ใช้ SERVER_OPENAI_API_KEY
 - [x] สร้าง PRO plan ใช้ API keys ของ user
 - [x] API endpoint /api/user/upgrade (FREE → PRO)
@@ -783,6 +833,7 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - [x] Plan detection ใน API routes (analyze, generate)
 
 ### 🔄 Phase 9: Admin Dashboard (Pending)
+
 - [ ] หน้า Admin Dashboard (สถิติรวม)
 - [ ] หน้ารายการผู้ใช้ (ตาราง + ค้นหา + กรอง)
 - [ ] หน้ารายละเอียดผู้ใช้
@@ -790,19 +841,22 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - [ ] ดูสถิติการใช้งาน API
 
 ### 🔄 Phase 10: User Dashboard (Pending)
+
 - [ ] หน้า User Dashboard (สถิติส่วนตัว)
 - [ ] แสดงแพลนปัจจุบัน + จำนวนครั้งที่เหลือ
 - [ ] Quick Actions (ลิงก์ไปยังฟีเจอร์ต่างๆ)
 - [ ] ประวัติล่าสุด (Styles, Contents, Videos)
 
-### 🔄 Phase 11: Usage Tracking & Plan Limits (Pending)
+### 🔄 Phase 11: Usage Tracking &amp; Plan Limits (Pending)
+
 - [ ] ระบบนับจำนวนการใช้งาน (Style, Content, Video)
 - [ ] ตรวจสอบ limit ก่อนทุกการ generate
 - [ ] แสดงข้อความเตือนเมื่อใกล้ถึง limit
 - [ ] แสดงหน้า Upgrade เมื่อถึง limit (FREE users)
 - [ ] Usage statistics API
 
-### 🔄 Phase 12: Polish & Testing (Pending)
+### 🔄 Phase 12: Polish &amp; Testing (Pending)
+
 - [ ] ทดสอบ Flow ทั้งหมด (Register → Style → Content → Avatar)
 - [ ] ทดสอบ FREE Trial limits
 - [ ] ทดสอบ Admin functions
@@ -813,19 +867,21 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - [ ] Cross-browser testing
 
 ### 🔄 Phase 13: Deployment (Pending)
+
 - [ ] ตั้งค่า Vercel Project
 - [ ] ตั้งค่า Environment Variables บน Vercel
 - [ ] Migrate database to PostgreSQL (Neon)
 - [ ] Deploy ครั้งแรก
 - [ ] ทดสอบบน Production
 - [ ] ตั้งค่า Custom Domain (ถ้ามี)
-- [ ] Setup monitoring & error tracking
+- [ ] Setup monitoring &amp; error tracking
 
 ---
 
 ### 🎯 Current Status
 
 **All core features implemented and functional:**
+
 - ✅ User authentication and authorization
 - ✅ FREE trial with server API key
 - ✅ PRO plan with user API keys
@@ -840,6 +896,7 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 - ✅ Upgrade flow (FREE → PRO)
 
 **Completion Status:**
+
 - ✅ Phase 1-8: **100% Complete**
 - 🔄 Phase 9-13: **Pending** (Future development)
 
@@ -848,37 +905,32 @@ SERVER_OPENAI_API_KEY="sk-proj-..."
 ### 📋 Future Enhancements
 
 1. **AI Model Integration**
-   - Replace mock generation with actual OpenAI API calls
-   - Implement proper prompt engineering
-   - Add GPT-4 model selection
-   - Support for other AI models (Claude, Gemini)
-
+  - Replace mock generation with actual OpenAI API calls
+  - Implement proper prompt engineering
+  - Add GPT-4 model selection
+  - Support for other AI models (Claude, Gemini)
 2. **Style Templates**
-   - Pre-built style templates for common use cases
-   - Style marketplace/sharing between users
-   - Import/Export styles
-
+  - Pre-built style templates for common use cases
+  - Style marketplace/sharing between users
+  - Import/Export styles
 3. **Multi-language Support**
-   - Better detection and analysis for different languages
-   - Language-specific formatting rules
-   - Support for more languages
-
-4. **Analytics & Reporting**
-   - Usage statistics dashboard
-   - Content performance metrics
-   - API usage tracking
-   - Export reports
-
+  - Better detection and analysis for different languages
+  - Language-specific formatting rules
+  - Support for more languages
+4. **Analytics &amp; Reporting**
+  - Usage statistics dashboard
+  - Content performance metrics
+  - API usage tracking
+  - Export reports
 5. **Payment Integration**
-   - Stripe integration for paid subscriptions
-   - Usage-based billing options
-   - Multiple pricing tiers
-
+  - Stripe integration for paid subscriptions
+  - Usage-based billing options
+  - Multiple pricing tiers
 6. **URL Content Extraction**
-   - Web scraping for articles
-   - YouTube transcript extraction
-   - PDF parsing
-   - Auto-detect content type
+  - Web scraping for articles
+  - YouTube transcript extraction
+  - PDF parsing
+  - Auto-detect content type
 
 ---
 

@@ -75,15 +75,16 @@ interface RouteResult {
 async function simulateGenerateRoute(input: RouteInput): Promise<RouteResult> {
   const isAdmin = input.isAdmin;
   const isPaidPlan = input.plan === "PRO" || input.plan === "BUSINESS";
-  const { kiePaidUnlocked, chargeImages } = resolveKieImageAccess({
+  const { canUseKieImages, chargeImages } = resolveKieImageAccess({
     managedKieOn: input.managedKieOn,
     creditsLive: input.creditsLive,
     isAdmin,
     isPaidPlan,
+    isInternalTester: true,
   });
 
   // (3) access gate
-  if (!isAdmin && !kiePaidUnlocked) return { status: 403, body: { error: "not_unlocked" } };
+  if (!canUseKieImages) return { status: 403, body: { error: "not_unlocked" } };
 
   // (4) model
   let model: string;

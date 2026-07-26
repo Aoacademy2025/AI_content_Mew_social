@@ -4,13 +4,14 @@ import { useEffect, useState } from "react";
 import {
   Palette, FileText, Video, Crown, Building2, ArrowRight,
   Loader2, AlertTriangle, Clapperboard, BookOpen,
-  Activity, Users, Ticket,
+  Activity, Users, Ticket, WandSparkles,
 } from "lucide-react";
 import Link from "next/link";
 import { DashboardOnboarding } from "@/components/onboarding/DashboardOnboarding";
 import { QuotaStatus } from "@/components/quota-status";
 import { V2JobBadge } from "@/components/v2-job-badge";
 import { DashboardFounderBanner } from "@/components/marketing/founder-banner";
+import { fetchMe } from "@/lib/use-me";
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 type Role = "ADMIN" | "USER";
@@ -108,12 +109,14 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [userName, setUserName] = useState("");
   const [role, setRole] = useState<Role>("USER");
+  const [internalAiTester, setInternalAiTester] = useState(false);
 
   useEffect(() => {
     fetch("/api/user/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
-    fetch("/api/user/me").then(r => r.json()).then(d => {
-      if (d.name) setUserName(d.name);
-      if (d.role === "ADMIN" || d.role === "USER") setRole(d.role);
+    fetchMe().then(d => {
+      if (d?.name) setUserName(d.name);
+      if (d?.role === "ADMIN" || d?.role === "USER") setRole(d.role);
+      setInternalAiTester(d?.internalAiTester === true);
     }).catch(() => {});
   }, []);
 
@@ -216,15 +219,28 @@ export default function DashboardPage() {
             </div>
             <div>
               <SectionLabel>สร้างวิดีโอ</SectionLabel>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className={internalAiTester
+                ? "grid grid-cols-1 gap-3 sm:grid-cols-3"
+                : "grid grid-cols-1 gap-3 sm:grid-cols-2"}>
                 <QuickCard label="Video Editor" desc="Timeline editor" href="/video-editor" Icon={Clapperboard} />
+                {internalAiTester && (
+                  <QuickCard label="AI Studio" desc="สร้างภาพและเสียง" href="/ai-studio" Icon={WandSparkles} />
+                )}
                 <QuickCard label="Gallery" desc="ดู renders เก่า" href="/videos" Icon={Video} />
               </div>
             </div>
           </div>
         ) : (
-          <div className="ve-rise mb-8 grid grid-cols-1 gap-3 sm:grid-cols-3" style={{ animationDelay: "120ms" }}>
+          <div
+            className={internalAiTester
+              ? "ve-rise mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+              : "ve-rise mb-8 grid grid-cols-1 gap-3 sm:grid-cols-3"}
+            style={{ animationDelay: "120ms" }}
+          >
             <QuickCard label="Video Editor" desc="Timeline editor" href="/video-editor" Icon={Clapperboard} />
+            {internalAiTester && (
+              <QuickCard label="AI Studio" desc="สร้างภาพและเสียง" href="/ai-studio" Icon={WandSparkles} />
+            )}
             <QuickCard label="Gallery" desc="ดู renders เก่า" href="/videos" Icon={Video} />
             <QuickCard label="วิธีใช้งาน" desc="คู่มือ & สอนใช้ทีละขั้น" href="/docs" Icon={BookOpen} />
           </div>

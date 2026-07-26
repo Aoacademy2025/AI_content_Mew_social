@@ -178,7 +178,7 @@ export function Chip({ selected = false, style, onMouseEnter, onMouseLeave, ...r
 
 /** Segmented control — เช่น ElevenLabs|Gemini, 1|2|3 ประโยค */
 export function Segmented<T extends string>({ options, value, onChange, style, optionPadding, semantics, id, ariaLabel }: {
-  options: { value: T; label: string; badge?: string; disabled?: boolean; title?: string }[];
+  options: { value: T; label: string; badge?: string; disabled?: boolean; title?: string; featured?: boolean }[];
   value: T;
   onChange: (v: T) => void;
   style?: React.CSSProperties;
@@ -232,12 +232,17 @@ export function Segmented<T extends string>({ options, value, onChange, style, o
             className="min-h-11 min-w-0 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9"
             style={{
               padding: optionPadding ?? "6px 14px", borderRadius: radius.control - 3, border: "none",
-              background: active ? color.gradientPrimary : "none",
-              color: active ? "#fff" : color.textSecondary,
+              background: active
+                ? color.gradientPrimary
+                : o.featured
+                  ? "rgba(245,158,11,.08)"
+                  : "none",
+              color: active ? "#fff" : o.featured ? "#FDE68A" : color.textSecondary,
               font: `${active ? 500 : 400} 12.5px ${font.body}`,
               cursor: o.disabled ? "not-allowed" : "pointer", transition: fx.transition,
               opacity: o.disabled ? 0.62 : 1,
               outlineColor: color.primary300,
+              boxShadow: !active && o.featured ? "inset 0 0 0 1px rgba(245,158,11,.20)" : undefined,
             }}
           >
             <span className="flex min-w-0 flex-col items-center justify-center leading-tight">

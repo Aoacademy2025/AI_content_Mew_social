@@ -1,0 +1,128 @@
+[
+  {
+    "match": "Your Brain on ChatGPT",
+    "spoken": "ยัวร์ เบรน ออน แชต จี พี ที",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Richard Benjamins",
+    "spoken": "ริชาร์ด เบนจามินส์",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Roske AI",
+    "spoken": "รอสก์ เอไอ",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Telefonica",
+    "spoken": "เทเลโฟนิกา",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "ChatGPT",
+    "spoken": "แชต จี พี ที",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Benjamins",
+    "spoken": "เบนจามินส์",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Richard",
+    "spoken": "ริชาร์ด",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Google",
+    "spoken": "กูเกิล",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Brain",
+    "spoken": "เบรน",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Roske",
+    "spoken": "รอสก์",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Your",
+    "spoken": "ยัวร์",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "MIT",
+    "spoken": "เอ็ม ไอ ที",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "AI",
+    "spoken": "เอไอ",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "on",
+    "spoken": "ออน",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "support-ticket-2026-07-24",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-07-24"
+  }
+]
