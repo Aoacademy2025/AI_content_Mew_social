@@ -53,6 +53,7 @@ export function PostPhase({
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
+  canRunProjectOperation,
   brollRegionPreference = "auto",
   brollVisualStyle = "auto",
   internalAiTester,
@@ -69,6 +70,7 @@ export function PostPhase({
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
+  canRunProjectOperation?: () => boolean;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   internalAiTester: boolean;
   aiImageEnabled: boolean;
@@ -86,6 +88,7 @@ export function PostPhase({
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
+    canRunProjectOperation,
     surface: "desktop",
   });
   const handleRightTabChange = (next: "subtitle" | "logo") => {

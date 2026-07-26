@@ -305,6 +305,9 @@ export function EditorV2Shell() {
     logoEligible: p.canUseLogoOverlay,
     projectSaveStatus: p.saveStatus,
     onRetryProjectSave: p.retryProjectSave,
+    // M2: lets the style-preset "apply" toast check readiness before claiming success
+    // for a logo change that p.setLogoOverlay would otherwise drop silently.
+    canRunProjectOperation: p.canRunProjectOperation,
   };
   return (
     <div

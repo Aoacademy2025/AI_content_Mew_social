@@ -2,7 +2,7 @@
 // Proves named subtitle/logo presets round-trip, remain account-scoped, and keep
 // referenced logo assets alive until the final preset is removed.
 import { execSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -46,6 +46,7 @@ async function main() {
   } = await import("../src/lib/editor-style-presets.server");
   const { deleteBrandAssetIfUnreferenced } = await import("../src/lib/brand-assets.server");
   const { prisma } = await import("../src/lib/prisma");
+  const { MAX_EDITOR_STYLE_PRESETS_PER_KIND } = await import("../src/lib/editor-style-preset-contract");
 
   const owner = await prisma.user.create({
     data: { name: "Owner", email: "preset-owner@test.local", plan: "PRO" },
@@ -173,6 +174,108 @@ async function main() {
     invalidSubtitleRejected = error instanceof EditorStylePresetError && error.code === "invalid_config";
   }
   ok(invalidSubtitleRejected, "invalid subtitle values are rejected instead of persisted");
+
+  // ── 2026-07-26 audit M9/B-3 note: MAX_EDITOR_STYLE_PRESETS_PER_KIND (the one
+  //    anti-DoS guard on this feature) had zero test coverage — cover the cap here. ──
+  const limitOwner = await prisma.user.create({
+    data: { name: "LimitOwner", email: "preset-limit-owner@test.local", plan: "PRO" },
+  });
+  for (let i = 0; i < MAX_EDITOR_STYLE_PRESETS_PER_KIND; i += 1) {
+    await saveEditorStylePreset({
+      userId: limitOwner.id,
+      plan: limitOwner.plan,
+      kind: "subtitle",
+      name: `พรีเซ็ต ${i + 1}`,
+      config: SUBTITLE_CONFIG,
+    });
+  }
+  ok(
+    (await listEditorStylePresets(limitOwner.id)).length === MAX_EDITOR_STYLE_PRESETS_PER_KIND,
+    `saving reaches the ${MAX_EDITOR_STYLE_PRESETS_PER_KIND}-preset cap for one kind`,
+  );
+
+  let limitRejected = false;
+  try {
+    await saveEditorStylePreset({
+      userId: limitOwner.id,
+      plan: limitOwner.plan,
+      kind: "subtitle",
+      name: "เกินโควต้า",
+      config: SUBTITLE_CONFIG,
+    });
+  } catch (error) {
+    limitRejected = error instanceof EditorStylePresetError && error.code === "limit_reached";
+  }
+  ok(limitRejected, "saving a new preset past the per-kind cap is rejected (limit_reached, anti-DoS)");
+  ok(
+    (await listEditorStylePresets(limitOwner.id)).length === MAX_EDITOR_STYLE_PRESETS_PER_KIND,
+    "a rejected over-limit save leaves no partial row behind",
+  );
+
+  let updateAtLimitFailed = false;
+  try {
+    await saveEditorStylePreset({
+      userId: limitOwner.id,
+      plan: limitOwner.plan,
+      kind: "subtitle",
+      name: "พรีเซ็ต 1",
+      config: { ...SUBTITLE_CONFIG, fontSize: 100 },
+    });
+  } catch {
+    updateAtLimitFailed = true;
+  }
+  ok(!updateAtLimitFailed, "updating an existing preset by name still works right at the cap (upsert is not blocked)");
+  const afterLimitUpdate = await listEditorStylePresets(limitOwner.id);
+  ok(afterLimitUpdate.length === MAX_EDITOR_STYLE_PRESETS_PER_KIND, "updating at the cap does not add a row");
+  const updatedAtLimit = afterLimitUpdate.find((preset) => preset.name === "พรีเซ็ต 1");
+  ok(
+    updatedAtLimit?.kind === "subtitle" && updatedAtLimit.config.fontSize === 100,
+    "the updated-at-cap preset carries the new config instead of being silently dropped",
+  );
+
+  // ── The rest of M1/M2/M9 lives in the useEditorStylePresets/usePostPhaseEditor
+  //    React hooks (no DB, no server round-trip) — source-level contract checks in the
+  //    same regex-on-source style already used by this repo's other v2-editor verify
+  //    scripts (layers / broll-window-mgmt / logo) for UI-hook-only logic. ──
+  const postPhaseEditorSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
+    "utf8",
+  );
+  const stylePresetsCallMatch = postPhaseEditorSource.match(
+    /const stylePresets = useEditorStylePresets\(\{[\s\S]*?\n {2}\}\);/,
+  );
+  ok(!!stylePresetsCallMatch, "usePostPhaseEditor wires useEditorStylePresets (M1/M2 source contract present)");
+  const stylePresetsCall = stylePresetsCallMatch![0];
+  ok(
+    /onApplySubtitle:\s*\(config\)\s*=>\s*\{\s*setCfg\(config\);\s*setOverrides\(\{\}\);\s*\}/.test(stylePresetsCall),
+    "M1: apply(subtitle preset) clears per-card overrides (setOverrides({})) alongside setCfg — a saved preset can no longer lose to a stale per-card color override",
+  );
+  ok(
+    /canApplyLogo:\s*canRunProjectOperation/.test(stylePresetsCall),
+    "M2: apply(logo preset) is wired to the same canRunProjectOperation readiness check every other project mutation already gates on",
+  );
+
+  const stylePresetsHookSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/useEditorStylePresets.ts",
+    "utf8",
+  );
+  const applyFnMatch = stylePresetsHookSource.match(/function apply\(preset: EditorStylePreset\) \{[\s\S]*?\n  \}\n/);
+  ok(!!applyFnMatch, "useEditorStylePresets exposes an apply() function to source-check (M2/M9 contract present)");
+  const applyFn = applyFnMatch![0];
+  ok(
+    /if \(input\.canApplyLogo && !input\.canApplyLogo\(\)\) \{\s*toast\.error\(PROJECT_OPERATION_BLOCKED_MESSAGE\);\s*return;\s*\}/.test(applyFn),
+    "M2: apply(logo) exits with toast.error (never toast.success) before calling onApplyLogo when the project can't accept the mutation",
+  );
+  ok(
+    /input\.onApplyLogo\(\{ \.\.\.preset\.config, enabled: input\.logoConfig\?\.enabled \?\? true \}\)/.test(applyFn),
+    "M9: apply(logo) ignores the preset's stored `enabled` and keeps whatever layer-toggle state is live now (no live state = on, so the preset is visibly applied)",
+  );
+  const blockedGuardReturnIndex = applyFn.indexOf("toast.error(PROJECT_OPERATION_BLOCKED_MESSAGE");
+  const successToastIndex = applyFn.indexOf("toast.success(");
+  ok(
+    blockedGuardReturnIndex !== -1 && blockedGuardReturnIndex < successToastIndex,
+    "M2: the not-ready guard runs strictly before the shared success toast, so a blocked apply cannot also report success",
+  );
 
   console.log(`\n✅ ALL ${passed} EDITOR STYLE PRESET CHECKS PASSED`);
   await prisma.$disconnect();

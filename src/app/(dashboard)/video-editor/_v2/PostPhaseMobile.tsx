@@ -60,6 +60,7 @@ export function PostPhaseMobile({
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
+  canRunProjectOperation,
   brollRegionPreference = "auto",
   brollVisualStyle = "auto",
   internalAiTester,
@@ -76,6 +77,7 @@ export function PostPhaseMobile({
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
+  canRunProjectOperation?: () => boolean;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   internalAiTester: boolean;
   aiImageEnabled: boolean;
@@ -90,6 +92,7 @@ export function PostPhaseMobile({
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
+    canRunProjectOperation,
     surface: "mobile",
   });
   const [styleOpen, setStyleOpen] = useState(false);

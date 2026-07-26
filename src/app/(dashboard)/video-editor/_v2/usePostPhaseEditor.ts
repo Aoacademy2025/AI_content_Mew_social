@@ -50,6 +50,7 @@ const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
   void _next;
 };
 const ignoreProjectSaveRetry = () => undefined;
+const alwaysReadyForProjectOperation = () => true;
 
 export type UsePostPhaseEditorOptions = {
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
@@ -63,6 +64,10 @@ export type UsePostPhaseEditorOptions = {
   projectSaveStatus?: LogoProjectSaveStatus;
   onRetryProjectSave?: () => void;
   surface?: LogoEditorSurface;
+  /** p.canRunProjectOperation from useV2Project — same readiness check every other
+   *  project mutation in the shell already gates on. Wired through so the style-preset
+   *  "apply" toast never lies about a logo change that got silently dropped (M2). */
+  canRunProjectOperation?: () => boolean;
 };
 
 export function usePostPhaseEditor(
@@ -80,6 +85,7 @@ export function usePostPhaseEditor(
     projectSaveStatus = "idle",
     onRetryProjectSave = ignoreProjectSaveRetry,
     surface = "desktop",
+    canRunProjectOperation = alwaysReadyForProjectOperation,
   } = options;
   const preview = job.output?.preview ?? null;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
@@ -97,12 +103,6 @@ export function usePostPhaseEditor(
     onRetryProjectSave,
     surface,
   });
-  const stylePresets = useEditorStylePresets({
-    subtitleConfig: cfg,
-    logoConfig: logoOverlay,
-    onApplySubtitle: setCfg,
-    onApplyLogo: onLogoOverlayChange,
-  });
   // ความยาวการ์ด (1 ประโยค / ≤4 / ≤3 / ≤2 / 1 คำ — semantics เดียวกับ v1) —
   // จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
   const originalCapsRef = useRef<V2Caption[]>(preview?.captions ?? []);
@@ -110,6 +110,18 @@ export function usePostPhaseEditor(
   // ปรับสี scope รายการ์ด
   const [scope, setScope] = useState<"all" | "card">("all");
   const [overrides, setOverrides] = useState<V2CardOverrides>({});
+  // M1: apply พรีเซ็ตซับต้องล้าง per-card overrides เหมือน applyCardLen ด้านล่าง — ไม่งั้นสี
+  // ที่ตั้งไว้รายใบ (ชนะ cfg เสมอ) จะทำให้พรีเซ็ต "ไม่ติด" เงียบ ๆ บนการ์ดที่เคยแก้สีเอง
+  const stylePresets = useEditorStylePresets({
+    subtitleConfig: cfg,
+    logoConfig: logoOverlay,
+    onApplySubtitle: (config) => {
+      setCfg(config);
+      setOverrides({});
+    },
+    onApplyLogo: onLogoOverlayChange,
+    canApplyLogo: canRunProjectOperation,
+  });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);

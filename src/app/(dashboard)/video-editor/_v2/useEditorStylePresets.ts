@@ -12,6 +12,7 @@ import {
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 import { trackEvent } from "@/lib/client-telemetry";
 import type { V2SubConfig } from "./subtitle-style";
+import { PROJECT_OPERATION_BLOCKED_MESSAGE } from "./useV2Job";
 
 type PresetApiResponse = {
   preset?: unknown;
@@ -29,6 +30,10 @@ export function useEditorStylePresets(input: {
   logoConfig?: LogoOverlayConfig;
   onApplySubtitle: (config: V2SubConfig) => void;
   onApplyLogo: (config: LogoOverlayConfig) => void;
+  /** M2: apply(logo) ต้องรู้ว่า onApplyLogo จะโดนเงียบ (canAcceptUserMutation ของ
+   *  useV2Project = false เช่นระหว่าง recovery conflict) ก่อนจะ toast สำเร็จ — ค่าเดียวกับ
+   *  p.canRunProjectOperation ที่ useV2Job ใช้เช็คก่อนยิง action อื่นทั้งหมด ไม่ระบุ = ถือว่าพร้อมเสมอ */
+  canApplyLogo?: () => boolean;
 }) {
   const [presets, setPresets] = useState<EditorStylePreset[]>([]);
   const [loading, setLoading] = useState(true);
@@ -101,7 +106,18 @@ export function useEditorStylePresets(input: {
     if (preset.kind === "subtitle") {
       input.onApplySubtitle({ ...preset.config });
     } else {
-      input.onApplyLogo({ ...preset.config });
+      // M2: onApplyLogo (p.setLogoOverlay) no-ops silently while the project can't
+      // accept a mutation (e.g. recovery conflict) — check first so we never toast a
+      // success the editor state didn't actually receive.
+      if (input.canApplyLogo && !input.canApplyLogo()) {
+        toast.error(PROJECT_OPERATION_BLOCKED_MESSAGE);
+        return;
+      }
+      // M9: the preset still carries `enabled` for backward compatibility with rows
+      // saved before this fix, but apply must never use it to flip the user's current
+      // layer toggle — keep whatever is live now (no config yet = on, so the preset is
+      // visibly applied instead of landing hidden).
+      input.onApplyLogo({ ...preset.config, enabled: input.logoConfig?.enabled ?? true });
     }
     toast.success(`ใช้พรีเซ็ต “${preset.name}” แล้ว`);
     trackEvent("editor_style_preset_applied", {
