@@ -21,6 +21,7 @@ import {
   commitCaptionHistory,
   deleteCaptionCard,
   insertCaptionCardAtPlayhead,
+  MIN_CAPTION_CARD_MS,
   redoCaptionHistory,
   shiftCaptionOverrides,
   undoCaptionHistory,
@@ -349,9 +350,14 @@ export function usePostPhaseEditor(
   }
 
   function undoCaptions(expectedEntryId?: number): boolean {
-    const result = undoCaptionHistory(historyRef.current, expectedEntryId);
+    // Defensive guard: some call sites are wired straight into a DOM event handler
+    // (onClick={ed.undoCaptions}) — React then passes the SyntheticEvent as the first
+    // arg, which is NOT a number. Treat anything that isn't a number as "no expected
+    // id" instead of letting a stale/mismatched id silently block every undo forever.
+    const safeExpectedEntryId = typeof expectedEntryId === "number" ? expectedEntryId : undefined;
+    const result = undoCaptionHistory(historyRef.current, safeExpectedEntryId);
     if (!result.snapshot) {
-      if (expectedEntryId !== undefined) {
+      if (safeExpectedEntryId !== undefined) {
         toast("มีการแก้ไขใหม่กว่าแล้ว — ใช้ปุ่มเลิกทำเพื่อย้อนตามลำดับ");
       }
       return false;
@@ -362,6 +368,8 @@ export function usePostPhaseEditor(
     return true;
   }
 
+  // No expectedEntryId param — unlike undoCaptions, an event-object arg from a bare
+  // onClick={ed.redoCaptions} has nothing to be mistaken for, so no guard needed here.
   function redoCaptions(): boolean {
     const result = redoCaptionHistory(historyRef.current);
     if (!result.snapshot) return false;
@@ -459,16 +467,48 @@ export function usePostPhaseEditor(
     commitCaptionChange(next, nextOverrides);
   }
 
+  // Duration used by insertCaptionCardAtPlayhead's "is there a real gap at the end"
+  // check — kept as its own memo so the preview below doesn't recompute this max()
+  // on every dependency change.
+  const insertCaptionDurationMs = useMemo(() => Math.max(
+    preview?.audioDurationMs ?? 0,
+    captions.length > 0 ? captions[captions.length - 1].endMs : 0,
+  ), [preview?.audioDurationMs, captions]);
+
+  // Pre-flight: can "เพิ่มที่ Playhead" actually insert at the CURRENT playhead, without
+  // committing anything? insertCaptionCardAtPlayhead is a pure function — calling it here
+  // to preview the outcome is free and keeps MIN_CAPTION_CARD_MS as the single source of
+  // truth (not duplicated/loosened for the button's enabled state).
+  const insertCaptionPreview = useMemo(
+    () => insertCaptionCardAtPlayhead(captions, timeMs, insertCaptionDurationMs),
+    [captions, timeMs, insertCaptionDurationMs],
+  );
+  const canInsertCaption = insertCaptionPreview.ok;
+
+  // insertCaptionCardAtPlayhead only ever returns reason "no_room" — that's correct as a
+  // pure-function contract, but it collapses two very different user situations into one
+  // toast. Disambiguate here (view-layer concern) instead of teaching the lib about UI
+  // copy: sitting inside an existing card too short to split (typically 1-2 word mode,
+  // fixable by switching card length) vs. genuinely packed timeline / real edge (fixable
+  // by moving the playhead).
+  const insertCaptionBlockedReason = useMemo(() => {
+    if (insertCaptionPreview.ok) return null;
+    const containing = captions.find((c) => timeMs > c.startMs && timeMs < c.endMs);
+    if (containing && containing.endMs - containing.startMs < MIN_CAPTION_CARD_MS * 2) {
+      return "การ์ดนี้สั้นเกินจะแทรกเพิ่ม (โหมดคำสั้น) — สลับความยาวการ์ดเป็น ≤4 คำ หรือ 1 ประโยคก่อน แล้วค่อยแทรกที่ Playhead";
+    }
+    return "เพิ่มตรงนี้ไม่ได้ — เลื่อน Playhead ให้ห่างจากขอบซับอย่างน้อย 0.3 วินาที";
+  }, [insertCaptionPreview, captions, timeMs]);
+
   function insertCaptionAtPlayhead(): boolean {
-    const durationMs = Math.max(
-      preview?.audioDurationMs ?? 0,
-      captions.length > 0 ? captions[captions.length - 1].endMs : 0,
-    );
-    const result = insertCaptionCardAtPlayhead(captions, timeMs, durationMs);
-    if (!result.ok) {
-      toast("เพิ่มตรงนี้ไม่ได้ — เลื่อน Playhead ให้ห่างจากขอบซับอย่างน้อย 0.3 วินาที");
+    // Fallback path: the button is disabled when !canInsertCaption, but the toast stays
+    // as a safety net for non-button callers (e.g. a future keyboard shortcut) and for
+    // the rare frame where state changed between render and click.
+    if (!insertCaptionPreview.ok) {
+      toast(insertCaptionBlockedReason ?? "เพิ่มตรงนี้ไม่ได้ — เลื่อน Playhead ให้ห่างจากขอบซับอย่างน้อย 0.3 วินาที");
       return false;
     }
+    const result = insertCaptionPreview;
     const nextCaptions = result.captions as V2Caption[];
     const nextOverrides = shiftCaptionOverrides(overrides, {
       from: result.index,
@@ -600,6 +640,8 @@ export function usePostPhaseEditor(
     mergeSelected,
     splitSelected,
     insertCaptionAtPlayhead,
+    canInsertCaption,
+    insertCaptionBlockedReason,
     deleteSelectedCaption,
     exportVideo,
   };

@@ -143,6 +143,13 @@ export function PostPhaseMobile({
 
   function closeEdit() {
     ed.commitCaptionText();
+    // usePostPhaseEditor.insertCaptionAtPlayhead() sets editingIdx to auto-open this
+    // sheet for a freshly inserted card. Nothing on mobile ever clears it back to null
+    // afterwards (desktop clears it via the card list's inline-edit onBlur/toggle) —
+    // left dangling, the hook's auto-follow effect bails forever (`editingIdx !== null`
+    // guard in usePostPhaseEditor.ts), so "ตามซับที่กำลังเล่น" stops working permanently
+    // after the very first card add. Clear it whenever the edit sheet closes.
+    ed.setEditingIdx(null);
     setEditOpen(false);
   }
 
@@ -403,7 +410,7 @@ export function PostPhaseMobile({
                 <Undo2 size={16} />
               </button>
               <button
-                onClick={ed.redoCaptions}
+                onClick={() => ed.redoCaptions()}
                 disabled={ed.redoLen === 0}
                 aria-label="ทำซ้ำการแก้ไขล่าสุด"
                 title="ทำซ้ำ"
@@ -424,6 +431,8 @@ export function PostPhaseMobile({
             type="button"
             data-caption-action="add"
             onClick={addCaptionAtPlayhead}
+            disabled={!ed.canInsertCaption}
+            title={ed.canInsertCaption ? "เพิ่มการ์ดซับที่ตำแหน่ง Playhead" : (ed.insertCaptionBlockedReason ?? undefined)}
             className="mb-2.5 flex w-full items-center justify-center gap-2"
             style={{
               minHeight: 44,
@@ -432,7 +441,8 @@ export function PostPhaseMobile({
               border: `1px dashed ${color.selectedBorderStrong}`,
               color: color.primary300,
               font: `500 12.5px ${font.body}`,
-              cursor: "pointer",
+              cursor: ed.canInsertCaption ? "pointer" : "default",
+              opacity: ed.canInsertCaption ? 1 : 0.45,
             }}
           >
             <Plus size={16} /> เพิ่มกล่องที่ตำแหน่ง Playhead

@@ -256,13 +256,16 @@ export function PostPhase({
                 type="button"
                 data-caption-action="add"
                 onClick={ed.insertCaptionAtPlayhead}
+                disabled={!ed.canInsertCaption}
+                title={ed.canInsertCaption ? "เพิ่มการ์ดซับที่ตำแหน่ง Playhead" : (ed.insertCaptionBlockedReason ?? undefined)}
                 className="flex min-h-9 flex-1 items-center justify-center gap-1.5 rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
                 style={{
                   background: "rgba(139,92,246,.08)",
                   border: `1px dashed ${color.selectedBorderStrong}`,
                   color: color.primary300,
                   fontSize: 11,
-                  cursor: "pointer",
+                  cursor: ed.canInsertCaption ? "pointer" : "default",
+                  opacity: ed.canInsertCaption ? 1 : 0.45,
                   outlineColor: color.primary300,
                 }}
               >
@@ -695,8 +698,8 @@ export function PostPhase({
       <TimelinePanel
         captions={ed.captions}
         onCaptionsChange={ed.handleCaptionsChange}
-        onUndo={ed.undoCaptions}
-        onRedo={ed.redoCaptions}
+        onUndo={() => ed.undoCaptions()}
+        onRedo={() => ed.redoCaptions()}
         canUndo={ed.historyLen > 0}
         canRedo={ed.redoLen > 0}
         selected={ed.selected}
