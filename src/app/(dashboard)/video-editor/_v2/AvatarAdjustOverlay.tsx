@@ -19,7 +19,7 @@ import { LIVE_PREVIEW_MAX_SEC } from "@/lib/preview-bg-params";
 
 const DEFAULT_LAYOUT: AvatarLayout = { scale: 1, offsetX: 0, offsetY: 0 };
 
-export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs, avatarVideoUrl, tailAvatarUrl, bgVideoUrl, logoOverlay, logoAsset, jobId, onDone, onClose }: {
+export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs, avatarVideoUrl, tailAvatarUrl, bgVideoUrl, logoOverlay, logoAsset, logoVisible = true, jobId, onDone, onClose }: {
   avatarId: string;
   avatarMode: string;              // full | bookend | bookend-both
   introSecs: number;
@@ -29,6 +29,10 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
   bgVideoUrl: string;              // base render ก่อน composite (compositeBaseUrl)
   logoOverlay: LogoOverlayConfig | undefined;
   logoAsset: BrandAssetView | null;
+  /** B-1 (integration): ปุ่มตาเลเยอร์ "โลโก้" บน Timeline ต้องคุมจอนี้ด้วย — ไม่งั้นปิดโลโก้แล้ว
+   *  หน้าปรับอวตารยังวาดโลโก้อยู่ (preview หลักส่ง `visible={ed.layerVisibility.logo}` มาแล้ว
+   *  จอนี้เคยไม่ส่งอะไรเลย → default true). ค่าเดียวกับ preview หลักเป๊ะ ๆ. */
+  logoVisible?: boolean;
   jobId: string | null;
   onDone: (newVideoUrl: string) => void;
   onClose: () => void;
@@ -336,7 +340,7 @@ export function AvatarAdjustOverlay({ avatarId, avatarMode, introSecs, tailSecs,
             )}
           </div>
         </div>
-        <LogoOverlayPreview value={logoOverlay} asset={logoAsset} />
+        <LogoOverlayPreview value={logoOverlay} asset={logoAsset} visible={logoVisible} />
         {busy && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2" style={{ zIndex: 3, background: "rgba(10,10,16,.66)" }}>
             <Loader2 size={22} className="animate-spin" color={color.primary300} />

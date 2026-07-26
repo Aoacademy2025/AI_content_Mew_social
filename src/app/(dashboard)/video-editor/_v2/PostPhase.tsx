@@ -370,6 +370,7 @@ export function PostPhase({
                 bgVideoUrl={ed.compositeBaseUrl!}
                 logoOverlay={logoOverlay}
                 logoAsset={ed.logo.asset}
+                logoVisible={ed.layerVisibility.logo}
                 jobId={job.jobId}
                 onClose={() => ed.setAdjustingAvatar(false)}
                 onDone={(url) => {

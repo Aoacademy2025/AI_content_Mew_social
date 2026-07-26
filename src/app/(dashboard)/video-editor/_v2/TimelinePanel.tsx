@@ -249,8 +249,12 @@ export function TimelinePanel({
   // M10: gradient เป็น "สัญญา" ว่าคลิปนี้จะเฟด — ต้องโผล่เฉพาะโหมดที่ composite route ใส่
   // fade จริง (avatarFadeApplies เช็คจาก avatarModel ที่ parent ส่งมา). upload-cutaway ไม่มี
   // fade เลยแม้ hasAvatar=true → ต้องไม่เห็น gradient/tooltip นี้.
-  const avatarFadeTitle = avatarFadeApplies ? "เฟดเข้า–ออกอัตโนมัติ" : undefined;
-  const avatarFadeEdges = avatarFadeApplies ? (
+  // Integration (b): ปิดเลเยอร์อวตารแล้ว export สลับไปใช้ compositeBaseUrl (ไม่มีอวตาร →
+  // ไม่มี fade เลย) — ปล่อย gradient ไว้ทั้งที่ track หรี่อยู่ = สัญญาที่ไฟล์จริงไม่ทำตาม
+  // เหมือนกรณี cutaway เป๊ะ ๆ จึงใช้เงื่อนไขเดียวกัน: แสดงเฉพาะตอนเฟดเกิดจริง.
+  const avatarFadeIndicated = avatarFadeApplies && layerVisibility.avatar;
+  const avatarFadeTitle = avatarFadeIndicated ? "เฟดเข้า–ออกอัตโนมัติ" : undefined;
+  const avatarFadeEdges = avatarFadeIndicated ? (
     <>
       <span
         data-avatar-fade-edge="in"

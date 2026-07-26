@@ -1464,6 +1464,56 @@ async function main() {
     );
   });
 
+  // B-1 (integration, 2026-07-27): the layer-visibility branch gave LogoOverlayPreview a
+  // `visible` prop (default true) and the MAIN preview passes `visible={ed.layerVisibility.logo}`.
+  // AvatarAdjustOverlay predates that prop, so without this forwarding the avatar-adjust screen
+  // kept drawing the logo after the user turned the logo layer off — two surfaces disagreeing
+  // about the same toggle. Both call sites must pass the exact same expression the main preview
+  // uses, and the overlay must hand it straight to LogoOverlayPreview.
+  await check("avatar adjustment preview honours the logo layer toggle (B-1)", () => {
+    for (const [surface, source] of [
+      ["desktop", desktopSource],
+      ["mobile", mobileSource],
+    ] as const) {
+      const mainPreviewLogo = source.match(/<LogoOverlayPreview[\s\S]*?\/>/)?.[0] ?? "";
+      assert.match(
+        mainPreviewLogo,
+        /visible=\{ed\.layerVisibility\.logo\}/,
+        `${surface} main preview must drive LogoOverlayPreview from the logo layer toggle`,
+      );
+
+      const avatarAdjustCall = source.match(/<AvatarAdjustOverlay[\s\S]*?\/>/)?.[0] ?? "";
+      assert.match(
+        avatarAdjustCall,
+        /logoVisible=\{ed\.layerVisibility\.logo\}/,
+        `${surface} must forward the logo layer toggle into avatar adjustment (B-1)`,
+      );
+    }
+
+    assert.match(
+      avatarAdjustSource,
+      /logoVisible\?:\s*boolean;/,
+      "AvatarAdjustOverlay must accept an optional logoVisible prop (default true keeps old callers safe)",
+    );
+    const frameStart = avatarAdjustSource.indexOf("ref={frameRef}");
+    const previewStart = avatarAdjustSource.indexOf("<LogoOverlayPreview", frameStart);
+    const controlsStart = avatarAdjustSource.indexOf("ref={controlsRef}", frameStart);
+    assert.ok(previewStart > frameStart && previewStart < controlsStart, "logo preview is not inside the avatar-adjust frame");
+    assert.match(
+      avatarAdjustSource.slice(previewStart, controlsStart),
+      /<LogoOverlayPreview[^>]*visible=\{logoVisible\}/,
+      "AvatarAdjustOverlay must forward logoVisible into LogoOverlayPreview",
+    );
+
+    // Mutation guard: dropping the forwarding must fail this check, not pass silently.
+    const dropped = avatarAdjustSource.replace(" visible={logoVisible}", "");
+    assert.notEqual(dropped, avatarAdjustSource, "logoVisible forwarding mutation did not apply");
+    assert.doesNotMatch(
+      dropped.slice(dropped.indexOf("ref={frameRef}")),
+      /<LogoOverlayPreview[^>]*visible=\{logoVisible\}/,
+    );
+  });
+
   await check("mobile forwards the project logo contract with the mobile surface", () => {
     assertMobilePostPhaseEditorForwardingStructure(mobileSource);
   });

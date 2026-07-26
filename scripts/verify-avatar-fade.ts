@@ -334,15 +334,25 @@ try {
   // M10: the gradient/tooltip must be gated on a real avatarFadeApplies prop, not just
   // hasAvatar — that's the whole point of the fix (cutaway has hasAvatar=true, fade=false).
   assert.match(timelineSource, /avatarFadeApplies:\s*boolean/, "TimelinePanel must accept avatarFadeApplies as a typed prop");
+  // Integration (b) reconcile: this branch originally pinned the gate to `avatarFadeApplies`
+  // alone. After merging editor-layer-visibility-toggles, turning the avatar layer OFF makes
+  // export fall back to compositeBaseUrl — a file with no avatar and therefore no fade at all
+  // — so `avatarFadeApplies` alone is no longer the honest gate. The single source of truth is
+  // now `avatarFadeIndicated`, which is strictly narrower (it still excludes cutaway).
   assert.match(
     timelineSource,
-    /const avatarFadeEdges = avatarFadeApplies \? \(/,
-    "avatarFadeEdges must be gated by avatarFadeApplies, not rendered unconditionally",
+    /const avatarFadeIndicated = avatarFadeApplies && layerVisibility\.avatar;/,
+    "the fade indicator gate must combine avatarFadeApplies with the avatar layer toggle",
   );
   assert.match(
     timelineSource,
-    /const avatarFadeTitle = avatarFadeApplies \? "เฟดเข้า–ออกอัตโนมัติ" : undefined;/,
-    "the misleading tooltip must also be gated by avatarFadeApplies",
+    /const avatarFadeEdges = avatarFadeIndicated \? \(/,
+    "avatarFadeEdges must be gated by avatarFadeIndicated, not rendered unconditionally",
+  );
+  assert.match(
+    timelineSource,
+    /const avatarFadeTitle = avatarFadeIndicated \? "เฟดเข้า–ออกอัตโนมัติ" : undefined;/,
+    "the misleading tooltip must also be gated by avatarFadeIndicated",
   );
   assert.doesNotMatch(
     timelineSource,
