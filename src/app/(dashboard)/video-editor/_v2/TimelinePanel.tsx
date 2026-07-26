@@ -39,7 +39,7 @@ export function TimelinePanel({
   captions, onCaptionsChange, onUndo, canUndo,
   selected, onSelect,
   videoRef, timeMs, durationMs, onScrub,
-  config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs,
+  config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs, avatarFadeApplies,
   voiceUrl, onSelectBrollWindow, editedWindowIndices,
 }: {
   captions: V2Caption[];
@@ -58,6 +58,10 @@ export function TimelinePanel({
   avatarMode: string | null;
   avatarIntroMs: number;
   avatarTailMs: number;
+  /** M10: avatar fade เกิดจริงเฉพาะโหมด full/bookend/bookend-both (composite route ผ่าน
+   *  avatarSourceFadeWindows) — upload-cutaway ผ่าน cutawayComposite ที่ไม่รับ fade เลย
+   *  (`@/lib/avatar-fade`'s `avatarFadeApplies`) → gradient/tooltip ต้องไม่โผล่ตอนนั้น */
+  avatarFadeApplies: boolean;
   voiceUrl: string | null;
   /** เลือกหน้าต่างบีโรล (index ใน config.bgVideos[]) — parent เป็นผู้ตัดสิน feature access. */
   onSelectBrollWindow?: (index: number) => void;
@@ -176,7 +180,11 @@ export function TimelinePanel({
     overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis",
     cursor: "pointer", userSelect: "none",
   });
-  const avatarFadeEdges = (
+  // M10: gradient เป็น "สัญญา" ว่าคลิปนี้จะเฟด — ต้องโผล่เฉพาะโหมดที่ composite route ใส่
+  // fade จริง (avatarFadeApplies เช็คจาก avatarModel ที่ parent ส่งมา). upload-cutaway ไม่มี
+  // fade เลยแม้ hasAvatar=true → ต้องไม่เห็น gradient/tooltip นี้.
+  const avatarFadeTitle = avatarFadeApplies ? "เฟดเข้า–ออกอัตโนมัติ" : undefined;
+  const avatarFadeEdges = avatarFadeApplies ? (
     <>
       <span
         data-avatar-fade-edge="in"
@@ -197,7 +205,7 @@ export function TimelinePanel({
         }}
       />
     </>
-  );
+  ) : null;
 
   return (
     <div className="flex shrink-0 flex-col" style={{ height: peaks && peaks.length > 0 ? 226 : 192, background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
@@ -280,19 +288,19 @@ export function TimelinePanel({
               <div className="relative flex-1" style={{ height: TRACK_H }}>
                 {avatarMode === "bookend" || avatarMode === "bookend-both" ? (
                   <>
-                    <div data-clip title="เฟดเข้า–ออกอัตโนมัติ" style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(avatarIntroMs)) }} onClick={() => seekTo(0)}>
+                    <div data-clip title={avatarFadeTitle} style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(avatarIntroMs)) }} onClick={() => seekTo(0)}>
                       พิธีกรเปิด {Math.round(avatarIntroMs / 1000)}s
                       {avatarFadeEdges}
                     </div>
                     {avatarMode === "bookend-both" && (
-                      <div data-clip title="เฟดเข้า–ออกอัตโนมัติ" style={{ ...clipStyle(color.trackAvatar), left: toPx(Math.max(0, durMs - avatarTailMs)), width: Math.max(24, toPx(Math.min(avatarTailMs, durMs))) }} onClick={() => seekTo(Math.max(0, durMs - avatarTailMs))}>
+                      <div data-clip title={avatarFadeTitle} style={{ ...clipStyle(color.trackAvatar), left: toPx(Math.max(0, durMs - avatarTailMs)), width: Math.max(24, toPx(Math.min(avatarTailMs, durMs))) }} onClick={() => seekTo(Math.max(0, durMs - avatarTailMs))}>
                         พิธีกรปิด {Math.round(avatarTailMs / 1000)}s
                         {avatarFadeEdges}
                       </div>
                     )}
                   </>
                 ) : (
-                  <div data-clip title="เฟดเข้า–ออกอัตโนมัติ" style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(durMs) - 2) }} onClick={() => seekTo(0)}>
+                  <div data-clip title={avatarFadeTitle} style={{ ...clipStyle(color.trackAvatar), left: 0, width: Math.max(24, toPx(durMs) - 2) }} onClick={() => seekTo(0)}>
                     {avatarMode === "full" ? "พิธีกรทั้งคลิป" : "พิธีกร"}
                     {avatarFadeEdges}
                   </div>

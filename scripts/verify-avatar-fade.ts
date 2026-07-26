@@ -6,8 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   AVATAR_FADE_DURATION_SEC,
+  avatarFadeApplies,
   avatarFadeBlendFilter,
   avatarFadeEdgeDurationSec,
+  avatarOpacityAtTime,
   avatarOpacityExpression,
   avatarSourceFadeWindows,
   singleAvatarFadeWindow,
@@ -75,6 +77,85 @@ assert.equal(
   avatarFadeEdgeDurationSec({ startSec: 0, endSec: 5 }, 0),
   AVATAR_FADE_DURATION_SEC,
 );
+
+// ── H7 must-fix: client-side live-preview fade (AvatarAdjustOverlay) must compute the
+// EXACT same opacity, at any timestamp, that export bakes in via avatarOpacityExpression's
+// ffmpeg blend — both are built from the same normalizeAvatarFadeWindows/avatarFadeEdgeDurationSec
+// primitives (see avatar-fade.ts docstrings), so this is a real numeric check, not a regex.
+function approxEqual(actual: number, expected: number, label: string, eps = 1e-6) {
+  assert.ok(
+    Math.abs(actual - expected) <= eps,
+    `${label}: expected ${actual} to be within ${eps} of ${expected}`,
+  );
+}
+
+// full: single window spans the whole clip — fades in at 0, steady through the middle, fades
+// out at the very end. introSecs/tailSecs are irrelevant to "full".
+{
+  const windows = avatarSourceFadeWindows({ timing: "full", totalDurationSec: 12, introSecs: 5, tailSecs: 4 });
+  approxEqual(avatarOpacityAtTime(windows, 0), 0, "full@0 (fade-in starts invisible)");
+  approxEqual(avatarOpacityAtTime(windows, AVATAR_FADE_DURATION_SEC), 1, "full@edge (fade-in complete)");
+  approxEqual(avatarOpacityAtTime(windows, 6), 1, "full@mid (steady)");
+  approxEqual(avatarOpacityAtTime(windows, 12 - AVATAR_FADE_DURATION_SEC), 1, "full@(end-edge) (fade-out not yet started)");
+  approxEqual(avatarOpacityAtTime(windows, 12), 0, "full@end (fade-out complete)");
+}
+
+// bookend: single window [0, introSecs] — same fade-in shape as full, but opacity drops to 0
+// once the bookend window ends (avatar isn't composited past that point at all).
+{
+  const windows = avatarSourceFadeWindows({ timing: "bookend", totalDurationSec: 12, introSecs: 5, tailSecs: 4 });
+  approxEqual(avatarOpacityAtTime(windows, 0), 0, "bookend@0");
+  approxEqual(avatarOpacityAtTime(windows, AVATAR_FADE_DURATION_SEC), 1, "bookend@edge");
+  approxEqual(avatarOpacityAtTime(windows, 2.5), 1, "bookend@mid-intro (steady)");
+  approxEqual(avatarOpacityAtTime(windows, 5), 0, "bookend@5 (window end, fully faded out)");
+  approxEqual(avatarOpacityAtTime(windows, 6), 0, "bookend@6 (past the avatar window entirely)");
+}
+
+// bookend-both — AvatarAdjustOverlay's live preview: the component's preview clip is ALWAYS
+// keyed from the INTRO avatar (avatarVideoUrl); the tail is a separate HeyGen render it never
+// fetches. Production only reaches this component for bookend-both when a real split composite
+// will run (canAdjustAvatar requires tailAvatarUrl present), and that split path
+// (applyBookendBothSplit in composite/route.ts) fades the intro segment with its OWN single
+// window: `segmentFadeWindow = singleAvatarFadeWindow(dur)` where dur = min(introSecs, bgDur).
+// The client must reproduce exactly that window — not the two-window combined-timeline shape
+// avatarSourceFadeWindows(timing:"bookend-both", …) returns (that shape is for the LEGACY
+// non-split path, unreachable from this component). Assert the two formulations coincide.
+{
+  const introSecs = 5;
+  const bgDurationSec = 12;
+  // What export's split composite actually uses for the intro segment (mirrors route.ts:509).
+  const exportIntroSegmentWindow = singleAvatarFadeWindow(Math.min(introSecs, bgDurationSec));
+  // What the client computes by normalizing "bookend-both" → "bookend" (AvatarAdjustOverlay.tsx).
+  const clientWindows = avatarSourceFadeWindows({
+    timing: "bookend", // AvatarAdjustOverlay's normalization for bookend-both
+    totalDurationSec: bgDurationSec,
+    introSecs,
+    tailSecs: 4,
+  });
+  assert.deepEqual(
+    clientWindows,
+    exportIntroSegmentWindow,
+    "AvatarAdjustOverlay's bookend-both windows must match the split composite's intro-segment window",
+  );
+  approxEqual(avatarOpacityAtTime(clientWindows, 0), 0, "bookend-both@0 (intro fade-in starts)");
+  approxEqual(avatarOpacityAtTime(clientWindows, AVATAR_FADE_DURATION_SEC), 1, "bookend-both@intro-edge");
+  approxEqual(avatarOpacityAtTime(clientWindows, 2.5), 1, "bookend-both@intro-mid (steady)");
+  approxEqual(avatarOpacityAtTime(clientWindows, 5), 0, "bookend-both@5 (intro segment end, fully faded out)");
+  // A naive combined-timeline model (avatarSourceFadeWindows(timing:"bookend-both", …), which is
+  // NOT what this component uses) would spuriously report opacity 1 here (inside its tail
+  // window [5,9]) even though the preview never shows the tail clip at all — guard against that
+  // regression explicitly.
+  approxEqual(avatarOpacityAtTime(clientWindows, 6), 0, "bookend-both@6 (past intro entirely — no phantom tail fade-in)");
+}
+
+// avatarFadeApplies (M10/B-13): drives the timeline gradient/tooltip + mobile hint — must be
+// true for every HeyGen avatar id (any timing) and false for "none"/"upload-cutaway"/absent,
+// since cutawayComposite never receives fade windows at all.
+assert.equal(avatarFadeApplies("Wayne_20240711"), true, "heygen avatarId → fade applies");
+assert.equal(avatarFadeApplies("upload-cutaway"), false, "cutaway → cutawayComposite never fades");
+assert.equal(avatarFadeApplies("none"), false, "no avatar → no fade");
+assert.equal(avatarFadeApplies(null), false, "absent avatarModel → no fade");
+assert.equal(avatarFadeApplies(undefined), false, "undefined avatarModel → no fade");
 
 const expression = avatarOpacityExpression([
   { startSec: 0, endSec: 5 },
@@ -189,6 +270,70 @@ try {
   );
   assert.match(timelineSource, /data-avatar-fade-edge/);
   assert.match(timelineSource, /AVATAR_FADE_DURATION_SEC/);
+
+  // M10: the gradient/tooltip must be gated on a real avatarFadeApplies prop, not just
+  // hasAvatar — that's the whole point of the fix (cutaway has hasAvatar=true, fade=false).
+  assert.match(timelineSource, /avatarFadeApplies:\s*boolean/, "TimelinePanel must accept avatarFadeApplies as a typed prop");
+  assert.match(
+    timelineSource,
+    /const avatarFadeEdges = avatarFadeApplies \? \(/,
+    "avatarFadeEdges must be gated by avatarFadeApplies, not rendered unconditionally",
+  );
+  assert.match(
+    timelineSource,
+    /const avatarFadeTitle = avatarFadeApplies \? "เฟดเข้า–ออกอัตโนมัติ" : undefined;/,
+    "the misleading tooltip must also be gated by avatarFadeApplies",
+  );
+  assert.doesNotMatch(
+    timelineSource,
+    /title="เฟดเข้า–ออกอัตโนมัติ"/,
+    "no unconditional fade tooltip should remain — must route through avatarFadeTitle",
+  );
+
+  const postPhaseSource = fs.readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/PostPhase.tsx",
+    "utf8",
+  );
+  assert.match(
+    postPhaseSource,
+    /avatarFadeApplies=\{avatarFadeApplies\(ed\.preview\?\.avatarModel \?\? null\)\}/,
+    "PostPhase must wire TimelinePanel's avatarFadeApplies prop from the shared lib/avatar-fade helper",
+  );
+
+  const mobileSource = fs.readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx",
+    "utf8",
+  );
+  assert.match(
+    mobileSource,
+    /avatarFadeApplies\(preview\?\.avatarModel \?\? null\)/,
+    "B-13: mobile ClipSummary must gate the fade hint on avatarFadeApplies too",
+  );
+  assert.match(
+    mobileSource,
+    /hint=\{fadeApplies \? "เฟดเข้า–ออกอัตโนมัติ" : undefined\}/,
+    "B-13: the avatar SummaryRow must pass the fade hint conditionally",
+  );
+
+  const avatarAdjustSource = fs.readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/AvatarAdjustOverlay.tsx",
+    "utf8",
+  );
+  assert.match(
+    avatarAdjustSource,
+    /avatarOpacityAtTime,\s*avatarSourceFadeWindows/,
+    "H7: AvatarAdjustOverlay must import the client fade helpers",
+  );
+  assert.match(
+    avatarAdjustSource,
+    /onTimeUpdate=\{\(e\) => setAvatarOpacity\(avatarOpacityAtTime\(fadeWindows, e\.currentTarget\.currentTime\)\)\}/,
+    "H7: the live keyed preview <video> must sync opacity from fade windows on every timeupdate tick",
+  );
+  assert.match(
+    avatarAdjustSource,
+    /opacity: avatarOpacity/,
+    "H7: the computed opacity must actually be applied to the preview <video>'s style",
+  );
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

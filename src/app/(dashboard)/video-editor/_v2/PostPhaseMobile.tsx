@@ -35,6 +35,7 @@ import { brollWindowSpans } from "@/lib/broll-spans";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import { trackEvent } from "@/lib/client-telemetry";
+import { avatarFadeApplies } from "@/lib/avatar-fade";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -715,6 +716,9 @@ function ClipSummary({ open, onToggle, preview, captionCount, durationMs }: {
   durationMs: number;
 }) {
   const hasAvatar = !!(preview?.avatarModel && preview.avatarModel !== "none");
+  // B-13: hint เฉพาะโหมดที่ fade จริง (เงื่อนไขเดียวกับ TimelinePanel/M10) — upload-cutaway
+  // มี hasAvatar=true แต่ cutawayComposite ไม่รับ fade เลย ต้องไม่บอกว่าเฟด
+  const fadeApplies = avatarFadeApplies(preview?.avatarModel ?? null);
   const bgm = typeof preview?.config?.bgmFile === "string" ? (preview.config.bgmFile as string) : null;
   const bgmName = bgm ? decodeURIComponent(bgm.split("/").pop() ?? bgm).replace(/\.[a-z0-9]+$/i, "") : null;
   return (
@@ -726,7 +730,12 @@ function ClipSummary({ open, onToggle, preview, captionCount, durationMs }: {
       {open && (
         <div className="px-3.5 pb-3">
           {hasAvatar && (
-            <SummaryRow dot={color.trackAvatar} label="พิธีกร AI" value={`${avatarModeLabel(preview?.avatarMode)}${preview?.avatarMode && preview.avatarMode !== "full" ? ` · ${preview.avatarIntroSecs ?? 5} วิ` : ""}`.trim()} />
+            <SummaryRow
+              dot={color.trackAvatar}
+              label="พิธีกร AI"
+              value={`${avatarModeLabel(preview?.avatarMode)}${preview?.avatarMode && preview.avatarMode !== "full" ? ` · ${preview.avatarIntroSecs ?? 5} วิ` : ""}`.trim()}
+              hint={fadeApplies ? "เฟดเข้า–ออกอัตโนมัติ" : undefined}
+            />
           )}
           <SummaryRow dot={color.trackSub} label="ซับไทย" value={`${captionCount} การ์ด`} />
           <SummaryRow dot={color.trackMusic} label="เพลงประกอบ" value={bgmName ?? "ไม่มี"} />
@@ -737,12 +746,17 @@ function ClipSummary({ open, onToggle, preview, captionCount, durationMs }: {
   );
 }
 
-function SummaryRow({ dot, label, value }: { dot: string; label: string; value: string }) {
+function SummaryRow({ dot, label, value, hint }: { dot: string; label: string; value: string; hint?: string }) {
   return (
-    <div className="flex items-center gap-2.5" style={{ padding: "8px 0", borderTop: "1px solid rgba(255,255,255,.05)" }}>
-      <span style={{ width: 9, height: 9, borderRadius: 3, flex: "none", background: dot }} />
-      <span style={{ flex: 1, fontSize: 13, color: color.text }}>{label}</span>
-      <span style={{ fontSize: 12, color: color.textSecondary, textAlign: "right" }}>{value}</span>
+    <div style={{ padding: "8px 0", borderTop: "1px solid rgba(255,255,255,.05)" }}>
+      <div className="flex items-center gap-2.5">
+        <span style={{ width: 9, height: 9, borderRadius: 3, flex: "none", background: dot }} />
+        <span style={{ flex: 1, fontSize: 13, color: color.text }}>{label}</span>
+        <span style={{ fontSize: 12, color: color.textSecondary, textAlign: "right" }}>{value}</span>
+      </div>
+      {hint && (
+        <div style={{ marginTop: 2, marginLeft: 17.5, fontSize: 11, color: color.textFaint }}>{hint}</div>
+      )}
     </div>
   );
 }

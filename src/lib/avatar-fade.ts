@@ -80,6 +80,44 @@ export function avatarSourceFadeWindows(input: {
   return singleAvatarFadeWindow(total);
 }
 
+function clip01(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+/**
+ * Numeric mirror of `avatarOpacityExpression`'s ffmpeg blend formula — same
+ * `max` over per-window `clip((T-start)/edge,0,1) * clip((end-T)/edge,0,1)`
+ * envelopes, evaluated in plain JS instead of an ffmpeg filter string. Used by
+ * the live avatar-adjust preview (client-side, no ffmpeg available) to keep
+ * the moving overlay's opacity in lockstep with what export will bake in —
+ * same windows in, same opacity out, no drift between the two call sites.
+ */
+export function avatarOpacityAtTime(
+  windows: readonly AvatarFadeWindow[],
+  atSec: number,
+): number {
+  const normalized = normalizeAvatarFadeWindows(windows);
+  return normalized.reduce((max, window) => {
+    const edge = avatarFadeEdgeDurationSec(window);
+    const envelope = edge > 0
+      ? clip01((atSec - window.startSec) / edge) * clip01((window.endSec - atSec) / edge)
+      : (atSec >= window.startSec && atSec <= window.endSec ? 1 : 0);
+    return Math.max(max, envelope);
+  }, 0);
+}
+
+/**
+ * Whether avatar fade applies at all for a given `avatarModel` value — mirrors
+ * which composite modes actually run the fade blend server-side. Every HeyGen
+ * chroma/direct/rembg avatar (any non-empty id, timing full/bookend/bookend-both)
+ * goes through `avatarSourceFadeWindows` in the composite route → fades.
+ * `upload-cutaway` goes through `cutawayComposite`, which never receives fade
+ * windows (H7/M10 audit) — so no indicator/hint should claim it does.
+ */
+export function avatarFadeApplies(avatarModel: string | null | undefined): boolean {
+  return !!avatarModel && avatarModel !== "none" && avatarModel !== "upload-cutaway";
+}
+
 function ffmpegNumber(value: number): string {
   return rounded(value).toFixed(3).replace(/\.?0+$/, "");
 }
