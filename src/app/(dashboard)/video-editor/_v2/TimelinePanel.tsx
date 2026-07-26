@@ -75,6 +75,9 @@ export function TimelinePanel({
     const scroller = scrollRef.current;
     if (!scroller) return;
     const onTimelineWheel = (event: WheelEvent) => {
+      // ระหว่างลากขอบการ์ด/scrub playhead ห้าม scroll — onEdgeMove/scrub คำนวณจาก
+      // clientX viewport-space, scroll เปลี่ยนตำแหน่งใต้เมาส์ระหว่างลากทำขอบซับเพี้ยน
+      if (dragRef.current || scrubbingRef.current) return;
       const nextScrollLeft = nextTimelineScrollLeft({
         scrollLeft: scroller.scrollLeft,
         scrollWidth: scroller.scrollWidth,

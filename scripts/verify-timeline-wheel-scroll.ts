@@ -80,5 +80,10 @@ assert.match(
   /removeEventListener\("wheel", onTimelineWheel\)/,
   "the wheel listener is removed when the Timeline unmounts",
 );
+assert.match(
+  timelineSource,
+  /const onTimelineWheel = \(event: WheelEvent\) => \{\s*(?:\/\/.*\s*)*if \(dragRef\.current \|\| scrubbingRef\.current\) return;/,
+  "the wheel handler bails out while a caption edge is being dragged or the playhead is being scrubbed",
+);
 
 console.log("Timeline wheel-scroll wiring verified.");
