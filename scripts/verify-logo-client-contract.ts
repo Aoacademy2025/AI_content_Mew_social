@@ -1427,6 +1427,43 @@ async function main() {
     assertMobilePreviewSiblingStructure(mobileSource);
   });
 
+  const avatarAdjustSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/AvatarAdjustOverlay.tsx",
+    "utf8",
+  );
+  await check("avatar adjustment preview keeps the enabled logo visible", () => {
+    for (const [surface, source] of [
+      ["desktop", desktopSource],
+      ["mobile", mobileSource],
+    ] as const) {
+      const avatarAdjustCall = source.match(/<AvatarAdjustOverlay[\s\S]*?\/>/)?.[0] ?? "";
+      assert.match(
+        avatarAdjustCall,
+        /logoOverlay=\{logoOverlay\}/,
+        `${surface} must forward the project logo into avatar adjustment`,
+      );
+      assert.match(
+        avatarAdjustCall,
+        /logoAsset=\{ed\.logo\.asset\}/,
+        `${surface} must forward the loaded logo asset into avatar adjustment`,
+      );
+    }
+
+    assert.match(avatarAdjustSource, /import\s+\{\s*LogoOverlayPreview\s*\}/);
+    const avatarFrameStart = avatarAdjustSource.indexOf("ref={frameRef}");
+    const logoLayer = avatarAdjustSource.indexOf("<LogoOverlayPreview", avatarFrameStart);
+    const avatarControls = avatarAdjustSource.indexOf("ref={controlsRef}", avatarFrameStart);
+    assert.ok(avatarFrameStart >= 0, "avatar adjustment video frame is missing");
+    assert.ok(
+      logoLayer > avatarFrameStart && logoLayer < avatarControls,
+      "the logo must render inside the 9:16 avatar-adjust video frame, not over its controls",
+    );
+    assert.match(
+      avatarAdjustSource.slice(logoLayer, avatarControls),
+      /value=\{logoOverlay\}[\s\S]{0,100}asset=\{logoAsset\}/,
+    );
+  });
+
   await check("mobile forwards the project logo contract with the mobile surface", () => {
     assertMobilePostPhaseEditorForwardingStructure(mobileSource);
   });
