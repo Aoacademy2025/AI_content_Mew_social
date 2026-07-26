@@ -11,14 +11,18 @@ import {
 export function LogoOverlayPreview({
   value,
   asset,
+  visible = true,
 }: {
   value: LogoOverlayConfig | undefined;
   asset: BrandAssetView | null;
+  visible?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [frameSize, setFrameSize] = useState({ width: 0, height: 0 });
   const config = useMemo(() => normalizeLogoOverlayConfig(value), [value]);
-  const visible = !!(
+  const isVisible = !!(
+    visible
+    &&
     config?.enabled
     && asset
     && asset.id === config.assetId
@@ -26,7 +30,7 @@ export function LogoOverlayPreview({
   );
 
   useEffect(() => {
-    if (!visible) return;
+    if (!isVisible) return;
     const element = containerRef.current;
     if (!element) return;
 
@@ -43,9 +47,9 @@ export function LogoOverlayPreview({
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [visible]);
+  }, [isVisible]);
 
-  if (!visible || !config || !asset) return null;
+  if (!isVisible || !config || !asset) return null;
 
   const box = logoOverlayFrame({
     position: config.position,

@@ -41,6 +41,7 @@
     "verify:mcp-parity": "tsx scripts/verify-mcp-parity.ts",
     "verify:editor-projects": "tsx scripts/verify-editor-projects.ts",
     "verify:editor-preview-layout": "tsx scripts/verify-editor-preview-layout.ts",
+    "verify:editor-layer-visibility": "tsx scripts/verify-editor-layer-visibility.ts",
     "verify:export-gallery-metadata": "tsx scripts/verify-export-gallery-metadata.ts",
     "verify:project-menu": "tsx scripts/verify-project-menu.ts",
     "verify:video-export-name": "tsx scripts/verify-video-export-name.ts",

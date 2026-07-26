@@ -3,7 +3,7 @@
 /**
  * เฟสแต่งซับ (สเต็ป 3, จอ 4b) — P6a: การ์ดซับซ้าย (แก้ข้อความได้) + preview กลางพร้อม
  * ซับสดตามสไตล์ + แผงคุมซับขวา + "ส่งออกวิดีโอ" (burn ผ่าน render path เดิม — ฟรี
- * เพราะ base render จ่ายแล้ว isBurnAlreadyPaid) · timeline 4 แทร็ก = P6b
+ * เพราะ base render จ่ายแล้ว isBurnAlreadyPaid) · timeline หลายแทร็ก = P6b
  *
  * state/logic ทั้งหมดอยู่ใน usePostPhaseEditor (ใช้ร่วมกับ PostPhaseMobile) — ไฟล์นี้
  * เป็นเลย์เอาต์ desktop 3 คอลัมน์ (การ์ดซับ | preview | คุมซับ) + timeline ล้วน ๆ
@@ -31,6 +31,7 @@ import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspect
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import { trackEvent } from "@/lib/client-telemetry";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
+import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -49,6 +50,8 @@ export function PostPhase({
   projectId,
   logoOverlay,
   onLogoOverlayChange,
+  layerVisibility,
+  onLayerVisibilityChange,
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
@@ -65,6 +68,10 @@ export function PostPhase({
   projectId: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  layerVisibility: EditorLayerVisibility;
+  onLayerVisibilityChange: (
+    next: EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility)
+  ) => void;
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
@@ -82,6 +89,8 @@ export function PostPhase({
     projectId,
     logoOverlay,
     onLogoOverlayChange,
+    layerVisibility,
+    onLayerVisibilityChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
@@ -208,7 +217,7 @@ export function PostPhase({
           >
             <video
               ref={ed.videoRef}
-              src={ed.baseUrl}
+              src={ed.previewVideoUrl}
               controls
               playsInline
               onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
@@ -218,12 +227,18 @@ export function PostPhase({
               className="h-full w-full object-cover"
               style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}` }}
             />
-            <LogoOverlayPreview value={logoOverlay} asset={ed.logo.asset} />
-            {/* เส้นไกด์ตำแหน่งซับ */}
-            <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
+            <LogoOverlayPreview
+              value={logoOverlay}
+              asset={ed.logo.asset}
+              visible={ed.layerVisibility.logo}
+            />
+            {ed.layerVisibility.subtitles && (
+              /* เส้นไกด์ตำแหน่งซับ */
+              <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
+            )}
             {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) + ลากปรับตำแหน่งได้ */}
             <V2CaptionOverlay
-              captions={ed.captions}
+              captions={ed.layerVisibility.subtitles ? ed.captions : []}
               overrides={ed.overrides}
               cfg={ed.cfg}
               videoRef={ed.videoRef}
@@ -591,7 +606,7 @@ export function PostPhase({
         )}
       </div>
 
-      {/* Timeline 4 แทร็ก (P6b) — ซับลากขอบแก้เวลาได้, แทร็กอื่นคลิก jump */}
+      {/* Timeline หลายแทร็ก (P6b) — ซับลากขอบแก้เวลาได้ และเลเยอร์ที่แยกได้เปิด–ปิดได้ */}
       <TimelinePanel
         captions={ed.captions}
         onCaptionsChange={ed.handleCaptionsChange}
@@ -611,6 +626,11 @@ export function PostPhase({
         avatarIntroMs={(ed.preview?.avatarIntroSecs ?? 5) * 1000}
         avatarTailMs={(ed.preview?.avatarTailSecs ?? 5) * 1000}
         voiceUrl={ed.preview?.voiceUrl ?? null}
+        hasLogo={ed.layerAvailability.logo}
+        layerVisibility={ed.layerVisibility}
+        layerAvailability={ed.layerAvailability}
+        onLayerVisibilityChange={ed.setLayerEnabled}
+        layerControlsDisabled={ed.exp.phase === "burning" || ed.exp.phase === "saving" || ed.logo.saving}
       />
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
     </div>
