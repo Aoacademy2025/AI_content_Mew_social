@@ -38,9 +38,12 @@ SQL
 
 ```bash
 nginx -T 2>&1 | less
+install -d -m 0700 /etc/nginx/config-backups
 cp /etc/nginx/sites-enabled/ACTIVE_CONFIG \
-  /etc/nginx/sites-enabled/ACTIVE_CONFIG.before-heygen-rollout
+  /etc/nginx/config-backups/ACTIVE_CONFIG.before-heygen-rollout
 ```
+
+ห้ามวางไฟล์ backup ไว้ใน `sites-enabled` เพราะ Nginx จะ include ไฟล์นั้นเป็น config อีกชุดและเกิด duplicate `listen`/`server`
 
 ตรวจว่า static maintenance page จาก release นี้อ่านได้ก่อนแก้ Nginx:
 
