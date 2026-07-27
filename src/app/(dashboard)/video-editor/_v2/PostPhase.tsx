@@ -31,7 +31,11 @@ import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
 import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
-import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
+import {
+  BrollWindowInspector,
+  PendingBrollChangesDialog,
+  WindowEditsBottomBar,
+} from "./BrollWindowInspector";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import { trackEvent } from "@/lib/client-telemetry";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
@@ -92,6 +96,7 @@ export function PostPhase({
   const ed = usePostPhaseEditor(job, script, {
     onExportJob,
     onAdoptJob,
+    onNewProject,
     projectId,
     logoOverlay,
     onLogoOverlayChange,
@@ -135,7 +140,7 @@ export function PostPhase({
           </a>
           <a href="/videos"><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
-          <BtnGhost onClick={onNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
+          <BtnGhost onClick={ed.requestNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>
       </main>
     );
@@ -734,15 +739,21 @@ export function PostPhase({
         </span>
         {!ed.adjustingAvatar && (
           <div className="flex items-center gap-3">
-            <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
+            <button onClick={ed.requestNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
               เรนเดอร์ใหม่
             </button>
             <BtnPrimary
               onClick={() => void ed.exportVideo()}
-              disabled={ed.exp.phase === "burning" || ed.exp.phase === "saving"}
-              style={{ padding: "9px 20px", ...(ed.exp.phase === "burning" || ed.exp.phase === "saving" ? { opacity: 0.7, cursor: "wait" } : {}) }}
+              disabled={ed.exp.phase === "burning" || ed.exp.phase === "saving" || !!ed.applyingWindows}
+              style={{ padding: "9px 20px", ...(ed.exp.phase === "burning" || ed.exp.phase === "saving" || ed.applyingWindows ? { opacity: 0.7, cursor: "wait" } : {}) }}
             >
-              {ed.exp.phase === "burning" ? `กำลังฝังซับ ${ed.exp.progress}%` : ed.exp.phase === "saving" ? "กำลังบันทึก…" : "ส่งออกวิดีโอ"}
+              {ed.applyingWindows
+                ? `กำลังอัปเดต B-roll ${ed.applyingWindows.progress}%`
+                : ed.exp.phase === "burning"
+                  ? `กำลังฝังซับ ${ed.exp.progress}%`
+                  : ed.exp.phase === "saving"
+                    ? "กำลังบันทึก…"
+                    : "ส่งออกวิดีโอ"}
             </BtnPrimary>
           </div>
         )}
@@ -779,6 +790,7 @@ export function PostPhase({
         layerControlsDisabled={ed.exp.phase === "burning" || ed.exp.phase === "saving" || ed.logo.saving}
       />
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
+      {brollEditEnabled && <PendingBrollChangesDialog ed={ed} />}
     </div>
   );
 }

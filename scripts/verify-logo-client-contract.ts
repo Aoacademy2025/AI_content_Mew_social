@@ -1293,7 +1293,7 @@ async function main() {
       () => assertLogoExportTelemetryControlFlow(nonExitingMutation),
       /must throw\/exit/,
     );
-    const exportStart = postPhaseEditorSource.indexOf("async function exportVideo()");
+    const exportStart = postPhaseEditorSource.indexOf("async function exportVideo(");
     const exportEnd = postPhaseEditorSource.indexOf("\n  return {", exportStart);
     assert.ok(exportStart >= 0 && exportEnd > exportStart, "exportVideo source is missing");
     const exportSource = postPhaseEditorSource.slice(exportStart, exportEnd);
