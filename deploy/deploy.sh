@@ -38,6 +38,13 @@ else
   git checkout "$DEFAULT_BRANCH"
 fi
 
+# Keep the maintenance document outside the working tree that this deploy
+# updates. Nginx can continue serving it while git and .next are changing.
+MAINTENANCE_PAGE_DIR="/var/www/heroai-maintenance"
+install -d -m 0755 "$MAINTENANCE_PAGE_DIR"
+install -m 0644 "$APP_DIR/deploy/maintenance.html" "$MAINTENANCE_PAGE_DIR/maintenance.html.next"
+mv "$MAINTENANCE_PAGE_DIR/maintenance.html.next" "$MAINTENANCE_PAGE_DIR/maintenance.html"
+
 echo "=== [2/6] Install dependencies ==="
 cd "$APP_DIR"
 npm install --no-audit --no-fund

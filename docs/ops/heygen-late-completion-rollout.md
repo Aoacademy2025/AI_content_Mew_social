@@ -45,11 +45,13 @@ cp /etc/nginx/sites-enabled/ACTIVE_CONFIG \
 
 ห้ามวางไฟล์ backup ไว้ใน `sites-enabled` เพราะ Nginx จะ include ไฟล์นั้นเป็น config อีกชุดและเกิด duplicate `listen`/`server`
 
-ตรวจว่า static maintenance page จาก release นี้อ่านได้ก่อนแก้ Nginx:
+ติดตั้ง static maintenance page จาก release นี้ไว้ **นอก working tree** ก่อนแก้ Nginx เพื่อให้ `git checkout/pull` ระหว่าง deploy ไม่กระทบหน้าที่กำลังเสิร์ฟ:
 
 ```bash
-test -r /var/www/ai-content/deploy/maintenance.html
-chmod a+r /var/www/ai-content/deploy/maintenance.html
+install -d -m 0755 /var/www/heroai-maintenance
+install -m 0644 /var/www/ai-content/deploy/maintenance.html \
+  /var/www/heroai-maintenance/maintenance.html
+test -r /var/www/heroai-maintenance/maintenance.html
 ```
 
 ใน HTTPS `server` block ของ config จริง เพิ่ม error document นี้หนึ่งครั้ง:
@@ -58,7 +60,7 @@ chmod a+r /var/www/ai-content/deploy/maintenance.html
 error_page 503 /maintenance.html;
 
 location = /maintenance.html {
-    root /var/www/ai-content/deploy;
+    root /var/www/heroai-maintenance;
     internal;
     add_header Retry-After "120" always;
     add_header Cache-Control "no-store, no-cache, must-revalidate" always;

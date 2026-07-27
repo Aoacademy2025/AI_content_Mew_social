@@ -17,6 +17,7 @@ assert.ok(gateFlag > buildReady, "empty-queue gate runs only after a successful 
 assert.ok(queueCheck >= gateFlag && queueCheck < swap, "queue checker runs immediately before swap");
 assert.ok(swap < restart, "swap remains before restart");
 assert.match(deploy, /if \[ "\$\{REQUIRE_EMPTY_RENDER_QUEUES:-0\}" = "1" \]; then/);
+assert.match(deploy, /MAINTENANCE_PAGE_DIR="\/var\/www\/heroai-maintenance"[\s\S]*maintenance\.html\.next[\s\S]*mv "\$MAINTENANCE_PAGE_DIR\/maintenance\.html\.next"/);
 assert.match(deploy, /if ! npx tsx scripts\/check-empty-render-queues\.ts; then[\s\S]*rm -rf "\$STAGING_DIR"[\s\S]*exit 1[\s\S]*fi/);
 assert.ok(deploy.indexOf('rm -rf "$APP_DIR/.next.old"') > queueCheck, "gate failure leaves live .next and .next.old untouched");
 assert.ok(!deploy.includes("render-cancel") && !deploy.includes("ops:cancel") && !/status\s*=\s*['\"]CANCEL/i.test(deploy), "deploy never cancels user work");
@@ -25,6 +26,7 @@ assert.ok(nginx.includes("if (-f /var/www/ai-content/.deploy-maintenance)"), "ng
 assert.ok(nginx.includes("return 503;"), "maintenance marker returns 503");
 assert.match(nginx, /error_page\s+503\s+\/maintenance\.html;/, "503 uses the branded maintenance document");
 assert.match(nginx, /location\s*=\s*\/maintenance\.html[\s\S]*\binternal;/, "maintenance document is internal-only");
+assert.match(nginx, /root\s+\/var\/www\/heroai-maintenance;/, "maintenance document lives outside the release working tree");
 assert.match(nginx, /Retry-After\s+\"?120\"?\s+always;/, "maintenance response tells clients when to retry");
 assert.match(nginx, /Cache-Control\s+\"no-store[^\"]*\"\s+always;/, "maintenance response is never cached");
 assert.match(maintenance, /<html[^>]+lang="th"/i, "maintenance page declares Thai");
