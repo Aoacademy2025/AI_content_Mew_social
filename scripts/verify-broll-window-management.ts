@@ -50,4 +50,23 @@ assert.match(inspector, /ปิด B-roll ช่วงนี้อยู่/u);
 assert.match(inspector, /disabled=\{aiBusy \|\| !finalPrompt \|\| !enabled\}/u);
 assert.match(inspector, /เปิด B-roll ช่วงนี้ก่อน/u);
 
+// P1 — uploaded/staged B-roll must never be silently dropped by Export or "Render new".
+const exportStart = editor.indexOf("async function exportVideo(");
+const exportEnd = editor.indexOf("\n  return {", exportStart);
+assert.ok(exportStart >= 0 && exportEnd > exportStart, "exportVideo source is missing");
+const exportSource = editor.slice(exportStart, exportEnd);
+assert.match(exportSource, /resolveBrollExportSource/u);
+assert.match(exportSource, /pendingEditCount:\s*windowEdits\.size/u);
+assert.doesNotMatch(exportSource, /sourceJobId:\s*job\.jobId/u);
+assert.match(editor, /pendingBrollIntent/u);
+assert.match(editor, /requestNewProject/u);
+assert.match(editor, /applyPendingBrollAndContinue/u);
+assert.match(editor, /discardPendingBrollAndContinue/u);
+assert.match(desktop, /PendingBrollChangesDialog/u);
+assert.match(mobile, /PendingBrollChangesDialog/u);
+assert.doesNotMatch(desktop, /onClick=\{onNewProject\}/u);
+assert.doesNotMatch(mobile, /onClick=\{onNewProject\}/u);
+assert.match(inspector, /อัปเดต B-roll แล้วส่งออก/u);
+assert.match(inspector, /ทิ้งการแก้ไขแล้วเรนเดอร์ใหม่/u);
+
 console.log("B-roll window management UI/render contract passed");

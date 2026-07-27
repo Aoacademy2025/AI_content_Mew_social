@@ -51,6 +51,10 @@ import {
   resolveCutawayPersonRanges,
   type CutawayBrollSegment,
 } from "@/lib/cutaway-plan";
+import {
+  resolveBrollExportSource,
+  type BrollExportSource,
+} from "@/lib/broll-rerender";
 import { useEditorStylePresets } from "./useEditorStylePresets";
 
 export type ExportState =
@@ -71,6 +75,8 @@ export type WindowEdit = {
   label?: string;
   enabled?: boolean;
 };
+
+export type PendingBrollIntent = "export" | "new-project";
 
 type CaptionEditSnapshot = {
   captions: V2Caption[];
@@ -116,6 +122,7 @@ export type UsePostPhaseEditorOptions = {
   /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
    *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
   onAdoptJob: (next: { id: string; projectId?: string | null }) => void;
+  onNewProject: () => void;
   projectId?: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange?: (next: LogoOverlayConfig | undefined) => void;
@@ -139,6 +146,7 @@ export function usePostPhaseEditor(
   const {
     onExportJob,
     onAdoptJob,
+    onNewProject,
     projectId = job.projectId,
     logoOverlay,
     onLogoOverlayChange = ignoreLogoChange,
@@ -187,6 +195,7 @@ export function usePostPhaseEditor(
   });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
+  const windowApplyInFlightRef = useRef(false);
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const pollStop = useRef(false);
@@ -204,6 +213,7 @@ export function usePostPhaseEditor(
   const [windowHistory, setWindowHistory] = useState({ undo: 0, redo: 0 });
   const [selectedWindow, setSelectedWindow] = useState<number | null>(null);
   const [applyingWindows, setApplyingWindows] = useState<{ progress: number } | null>(null);
+  const [pendingBrollIntent, setPendingBrollIntent] = useState<PendingBrollIntent | null>(null);
   const [configOverride, setConfigOverride] = useState<Record<string, unknown> | null>(null);
   const previewConfig = configOverride ?? preview?.config ?? null;
   // compositeBaseUrl แทนที่ preview.compositeBaseUrl หลัง apply สำเร็จ (งาน avatar) —
@@ -233,6 +243,19 @@ export function usePostPhaseEditor(
     ),
     [preview],
   );
+
+  // Upload/select results are already server-side assets, but their placement is browser-only
+  // until `applyWindowEdits` succeeds. A refresh/close must therefore use the browser's native
+  // unsaved-changes guard instead of silently orphaning the staged edits.
+  useEffect(() => {
+    if (windowEdits.size === 0) return;
+    const warnAboutPendingBroll = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnAboutPendingBroll);
+    return () => window.removeEventListener("beforeunload", warnAboutPendingBroll);
+  }, [windowEdits.size]);
 
   function commitWindowEdits(next: Map<number, WindowEdit>) {
     windowUndoRef.current.push(new Map(windowEdits));
@@ -303,10 +326,11 @@ export function usePostPhaseEditor(
 
   /** ส่งงาน broll-rerender (ฟรี, ไม่ใช้นาที) → poll จนเสร็จ → swap videoUrl+config ในที่
    *  (ตามแนว AvatarAdjustOverlay.apply) → เคลียร์ windowEdits ที่ apply แล้ว */
-  async function applyWindowEdits() {
-    if (windowEdits.size === 0 || applyingWindows) return;
+  async function applyWindowEdits(): Promise<BrollExportSource | null> {
+    if (windowEdits.size === 0 || applyingWindows || windowApplyInFlightRef.current) return null;
     const sourceJobId = job.jobId;
-    if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return; }
+    if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return null; }
+    windowApplyInFlightRef.current = true;
     setApplyingWindows({ progress: 0 });
     const edits = Array.from(windowEdits.entries()).map(([index, e]) => ({
       index,
@@ -329,7 +353,7 @@ export function usePostPhaseEditor(
       if (!res.ok || !d?.jobId) throw new Error(d?.message ?? d?.error ?? `อัปเดตวิดีโอไม่สำเร็จ (${res.status})`);
       const newJobId = d.jobId as string;
 
-      let done = false;
+      let applied: BrollExportSource | null = null;
       for (let i = 0; i < 450 && !windowPollStop.current; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         let p: {
@@ -351,10 +375,13 @@ export function usePostPhaseEditor(
         if (p.status === "done") {
           const newVideoUrl = p.output?.videoUrl;
           if (!newVideoUrl) throw new Error("อัปเดตวิดีโอไม่สำเร็จ — ไม่พบไฟล์วิดีโอใหม่");
+          const nextCompositeBaseUrl = p.output?.preview && "compositeBaseUrl" in p.output.preview
+            ? p.output.preview.compositeBaseUrl ?? null
+            : compositeBaseUrl;
           setBaseUrl(newVideoUrl);
           if (p.output?.preview?.config) setConfigOverride(p.output.preview.config);
           if (p.output?.preview && "compositeBaseUrl" in p.output.preview) {
-            setCompositeBaseUrlOverride(p.output.preview.compositeBaseUrl ?? null);
+            setCompositeBaseUrlOverride(nextCompositeBaseUrl);
           }
           if (p.output?.preview && "cutawayPersonRanges" in p.output.preview) {
             setCutawayPersonRangesOverride(p.output.preview.cutawayPersonRanges ?? []);
@@ -370,17 +397,24 @@ export function usePostPhaseEditor(
           // style state is untouched — only the source job identity moves forward.
           onAdoptJob({ id: newJobId, projectId: p.projectId ?? job.projectId ?? null });
           toast.success("อัปเดตวิดีโอแล้ว");
-          done = true;
+          applied = {
+            jobId: newJobId,
+            videoUrl: newVideoUrl,
+            compositeBaseUrl: nextCompositeBaseUrl,
+          };
           break;
         }
         if (p.status === "failed" || p.status === "canceled") {
           throw new Error(p.errorMessage ?? "อัปเดตวิดีโอไม่สำเร็จ");
         }
       }
-      if (!done && !windowPollStop.current) throw new Error("อัปเดตวิดีโอไม่เสร็จในเวลาที่กำหนด — เช็คสถานะภายหลัง");
+      if (!applied && !windowPollStop.current) throw new Error("อัปเดตวิดีโอไม่เสร็จในเวลาที่กำหนด — เช็คสถานะภายหลัง");
+      return applied;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "อัปเดตวิดีโอไม่สำเร็จ");
+      return null;
     } finally {
+      windowApplyInFlightRef.current = false;
       setApplyingWindows(null);
     }
   }
@@ -770,16 +804,47 @@ export function usePostPhaseEditor(
     return true;
   }
 
-  async function exportVideo() {
-    if (!baseUrl || !captions.length || exp.phase === "burning" || exp.phase === "saving") return;
+  async function exportVideo(pendingConfirmed = false) {
+    if (
+      !baseUrl
+      || !captions.length
+      || exp.phase === "burning"
+      || exp.phase === "saving"
+      || applyingWindows
+      || windowApplyInFlightRef.current
+    ) return;
     if (!job.jobId) {
       setExp({ phase: "error", message: "ไม่พบวิดีโอต้นฉบับ" });
       return;
     }
-    setExp({ phase: "saving" });
+
+    if (windowEdits.size > 0 && !pendingConfirmed) {
+      setPendingBrollIntent("export");
+      return;
+    }
+
     try {
+      const exportSource = await resolveBrollExportSource({
+        pendingEditCount: windowEdits.size,
+        current: {
+          jobId: job.jobId,
+          videoUrl: baseUrl,
+          compositeBaseUrl,
+        },
+        applyPending: applyWindowEdits,
+      });
+      // Applying pending B-roll failed or was interrupted. The apply path already surfaced the
+      // specific error; never fall back to the old source because that recreates the incident.
+      if (!exportSource) return;
+
+      const exportVideoUrl = resolveEditorPreviewVideoUrl({
+        renderedVideoUrl: exportSource.videoUrl,
+        avatarBaseVideoUrl: exportSource.compositeBaseUrl,
+        avatarVisible: effectiveLayerVisibility.avatar,
+      });
+      setExp({ phase: "saving" });
       const overlay = buildV2BurnConfig(
-        previewVideoUrl,
+        exportVideoUrl,
         captions,
         preview?.audioDurationMs ?? 0,
         cfg,
@@ -789,7 +854,7 @@ export function usePostPhaseEditor(
         effectiveLayerVisibility,
       );
       const result = await onExportJob({
-        sourceJobId: job.jobId,
+        sourceJobId: exportSource.jobId,
         subtitleOverlayConfig: overlay,
         script: script.trim() || preview?.fullText || undefined,
         sceneCount: captions.length,
@@ -809,6 +874,36 @@ export function usePostPhaseEditor(
     }
   }
 
+  function requestNewProject() {
+    if (windowEdits.size > 0) {
+      setPendingBrollIntent("new-project");
+      return;
+    }
+    onNewProject();
+  }
+
+  function cancelPendingBrollIntent() {
+    setPendingBrollIntent(null);
+  }
+
+  async function applyPendingBrollAndContinue() {
+    const intent = pendingBrollIntent;
+    if (!intent) return;
+    setPendingBrollIntent(null);
+    if (intent === "export") {
+      await exportVideo(true);
+      return;
+    }
+    const applied = await applyWindowEdits();
+    if (applied) onNewProject();
+  }
+
+  function discardPendingBrollAndContinue() {
+    if (pendingBrollIntent !== "new-project") return;
+    setPendingBrollIntent(null);
+    onNewProject();
+  }
+
   return {
     preview,
     logo,
@@ -826,6 +921,11 @@ export function usePostPhaseEditor(
     isBrollWindowEnabled,
     selectedWindow, setSelectedWindow,
     applyWindowEdits, applyingWindows,
+    pendingBrollIntent,
+    requestNewProject,
+    cancelPendingBrollIntent,
+    applyPendingBrollAndContinue,
+    discardPendingBrollAndContinue,
     baseUrl, setBaseUrl,
     captions, setCaptions,
     selected, setSelected,

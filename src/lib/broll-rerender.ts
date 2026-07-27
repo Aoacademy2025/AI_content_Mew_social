@@ -21,6 +21,29 @@ export type WindowEdit = {
   enabled?: boolean;
 };
 
+/** The exact media/job pair an export must bind to after any pending B-roll apply. */
+export type BrollExportSource = {
+  jobId: string;
+  videoUrl: string;
+  compositeBaseUrl: string | null;
+};
+
+/**
+ * Resolve the source used by Export without ever falling back to stale media.
+ *
+ * Pending window edits live in browser state until a free `broll-rerender` job succeeds.
+ * Exporting the current source while edits are pending silently drops uploaded/selected B-roll,
+ * so a failed apply returns `null` and aborts Export instead of using `current`.
+ */
+export async function resolveBrollExportSource(input: {
+  pendingEditCount: number;
+  current: BrollExportSource;
+  applyPending: () => Promise<BrollExportSource | null>;
+}): Promise<BrollExportSource | null> {
+  if (input.pendingEditCount <= 0) return input.current;
+  return input.applyPending();
+}
+
 // Single flat file under our own render/stock routes. `[\w.-]+` forbids `/` and (with the
 // anchored, single-segment shape) any `..` traversal that would still contain a separator;
 // a bare `..secret.mp4` can't traverse without a `/`, and the route serves flat basenames.

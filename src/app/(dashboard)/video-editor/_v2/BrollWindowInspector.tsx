@@ -36,6 +36,16 @@ import { buildKieImagePrompt } from "@/lib/kie-image-prompt";
 import { creditCostFor, costKeyForKieModel } from "@/lib/credit-costs";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 function fmtMs(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -172,6 +182,66 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
         {busy ? `กำลังอัปเดต ${ed.applyingWindows!.progress}%` : `อัปเดตวิดีโอ (${ed.windowEdits.size} จุด) — ฟรี ไม่ใช้นาทีเพิ่ม`}
       </BtnPrimary>
     </div>
+  );
+}
+
+/** Blocks destructive navigation and stale export while browser-only B-roll edits are pending. */
+export function PendingBrollChangesDialog({ ed }: { ed: PostPhaseEditor }) {
+  const intent = ed.pendingBrollIntent;
+  const count = ed.windowEdits.size;
+  const isExport = intent === "export";
+  return (
+    <AlertDialog
+      open={intent !== null}
+      onOpenChange={(open) => {
+        if (!open) ed.cancelPendingBrollIntent();
+      }}
+    >
+      <AlertDialogContent
+        className="w-[calc(100%_-_28px)] max-w-md border"
+        overlayClassName="z-[80]"
+        style={{
+          zIndex: 81,
+          background: color.bg1,
+          borderColor: color.cardBorder,
+          color: color.text,
+          borderRadius: radius.cardLg,
+        }}
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle style={{ font: `600 17px ${font.heading}`, color: color.text }}>
+            มี B-roll ที่ยังไม่ได้อัปเดต {count} จุด
+          </AlertDialogTitle>
+          <AlertDialogDescription style={{ color: color.textSecondary, lineHeight: 1.7 }}>
+            {isExport
+              ? "ระบบต้องอัปเดต B-roll ลงวิดีโอก่อน จึงจะส่งออกโดยไม่ทำให้รูปหรือคลิปที่เลือกหาย"
+              : "ถ้าเรนเดอร์ใหม่ตอนนี้ รูปหรือคลิป B-roll ที่เลือกไว้จะถูกทิ้ง เลือกอัปเดตงานเดิมก่อน หรือทิ้งการแก้ไขเพื่อเริ่มใหม่"}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="mt-2 flex-col gap-2 sm:flex-row sm:space-x-0">
+          <AlertDialogCancel
+            onClick={ed.cancelPendingBrollIntent}
+            style={{ minHeight: 44, borderColor: color.cardBorder, background: "transparent", color: color.textSecondary }}
+          >
+            กลับไปตรวจ
+          </AlertDialogCancel>
+          {!isExport && (
+            <AlertDialogAction
+              onClick={ed.discardPendingBrollAndContinue}
+              style={{ minHeight: 44, background: "rgba(248,113,113,.12)", color: color.danger, border: `1px solid ${color.danger}` }}
+            >
+              ทิ้งการแก้ไขแล้วเรนเดอร์ใหม่
+            </AlertDialogAction>
+          )}
+          <AlertDialogAction
+            onClick={() => void ed.applyPendingBrollAndContinue()}
+            style={{ minHeight: 44, background: color.gradientPrimary, color: color.text }}
+          >
+            {isExport ? "อัปเดต B-roll แล้วส่งออก" : "อัปเดต B-roll แล้วเรนเดอร์ใหม่"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 

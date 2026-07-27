@@ -32,7 +32,11 @@ import { LogoOverlayPreview } from "./LogoOverlayPreview";
 import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
 import { LayerVisibilityControls } from "./LayerVisibilityControls";
 import { MobileSheet } from "./MobileSheet";
-import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
+import {
+  BrollWindowInspector,
+  PendingBrollChangesDialog,
+  WindowEditsBottomBar,
+} from "./BrollWindowInspector";
 import { brollWindowSpans } from "@/lib/broll-spans";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
@@ -95,6 +99,7 @@ export function PostPhaseMobile({
   const ed = usePostPhaseEditor(job, script, {
     onExportJob,
     onAdoptJob,
+    onNewProject,
     projectId,
     logoOverlay,
     onLogoOverlayChange,
@@ -124,7 +129,7 @@ export function PostPhaseMobile({
     1,
   );
   const pct = Math.min(100, Math.max(0, (ed.timeMs / durationMs) * 100));
-  const busy = ed.exp.phase === "burning" || ed.exp.phase === "saving";
+  const busy = ed.exp.phase === "burning" || ed.exp.phase === "saving" || !!ed.applyingWindows;
   const hasAvatar = Boolean(ed.preview?.avatarModel && ed.preview.avatarModel !== "none");
   const hiddenLayerCount = (["avatar", "subtitles", "logo"] as const)
     .filter((layer) => ed.layerAvailability[layer] && !ed.layerVisibility[layer])
@@ -248,7 +253,7 @@ export function PostPhaseMobile({
           </a>
           <a href="/videos" className="block"><BtnSecondary style={{ width: "100%", minHeight: 46 }}>ดูใน Gallery</BtnSecondary></a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })} style={{ width: "100%", minHeight: 44 }}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
-          <BtnGhost onClick={onNewProject} style={{ width: "100%", minHeight: 44 }}>เริ่มโปรเจกต์ใหม่</BtnGhost>
+          <BtnGhost onClick={ed.requestNewProject} style={{ width: "100%", minHeight: 44 }}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>
       </main>
     );
@@ -420,7 +425,7 @@ export function PostPhaseMobile({
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: color.success, flex: "none" }} />
             <span style={{ fontSize: 12, color: color.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>เรนเดอร์เสร็จแล้ว · แก้ซับเห็นผลทันที</span>
           </span>
-          <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer", flex: "none" }}>เรนเดอร์ใหม่</button>
+          <button onClick={ed.requestNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer", flex: "none" }}>เรนเดอร์ใหม่</button>
         </div>
 
         {ed.exp.phase === "error" && (
@@ -582,7 +587,13 @@ export function PostPhaseMobile({
             disabled={busy}
             style={{ flex: 2, minHeight: 46, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, ...(busy ? { opacity: 0.7, cursor: "wait" } : {}) }}
           >
-            {ed.exp.phase === "burning" ? `กำลังฝังซับ ${ed.exp.progress}%` : ed.exp.phase === "saving" ? "กำลังบันทึก…" : (<><Download size={16} /> ส่งออกวิดีโอ</>)}
+            {ed.applyingWindows
+              ? `กำลังอัปเดต B-roll ${ed.applyingWindows.progress}%`
+              : ed.exp.phase === "burning"
+                ? `กำลังฝังซับ ${ed.exp.progress}%`
+                : ed.exp.phase === "saving"
+                  ? "กำลังบันทึก…"
+                  : (<><Download size={16} /> ส่งออกวิดีโอ</>)}
           </BtnPrimary>
         </div>
       )}
@@ -899,6 +910,7 @@ export function PostPhaseMobile({
       </MobileSheet>
 
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
+      {brollEditEnabled && <PendingBrollChangesDialog ed={ed} />}
 
       {brollEditEnabled && ed.selectedWindow != null && (
         <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
