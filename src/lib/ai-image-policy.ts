@@ -121,7 +121,11 @@ export function dimensionsForAspectRatio(aspectRatio: AiImageAspectRatio) {
  * same artwork-only invariant so neither Thai nor English copy is intentionally
  * painted into the result. This is a generation guard, not an OCR guarantee.
  */
-export function buildArtworkOnlyPrompt(prompt: string, style: AiImageStyle): {
+export function buildArtworkOnlyPrompt(
+  prompt: string,
+  style: AiImageStyle,
+  opts?: { interfaceExpected?: boolean },
+): {
   positive: string;
   negative: string;
 } {
@@ -140,7 +144,9 @@ export function buildArtworkOnlyPrompt(prompt: string, style: AiImageStyle): {
     subject,
     STYLE_PROMPT[style],
     "standalone language-free visual artwork",
-    "screens display abstract visual states, geometric color shapes and unlabeled controls",
+    opts?.interfaceExpected
+      ? "the single in-context screen or interface displays simple abstract visual states and unlabeled controls"
+      : "",
     "all signage, labels, packaging, clothing and background surfaces are blank and unmarked",
   ].filter(Boolean).join(". ") + ".";
 

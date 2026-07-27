@@ -7,6 +7,7 @@ import {
   buildArtworkOnlyPrompt,
   dimensionsForAspectRatio,
   previewGenerationInput,
+  type AiImageStyle,
 } from "@/lib/ai-image-policy";
 import { ensureMonthlyGrant } from "@/lib/credits";
 import { videoExpiryFor } from "@/lib/plan-limits";
@@ -103,14 +104,18 @@ export async function generateHeroImageForVideo(input: {
   videoJobId: string;
   sceneIndex: number;
   sceneTitle?: string;
+  style?: AiImageStyle;
+  interfaceExpected?: boolean;
   timeoutMs?: number;
 }): Promise<HeroImageGenerationResult> {
   const timeoutMs = Math.max(30_000, Math.min(input.timeoutMs ?? 240_000, 600_000));
   const deadline = Date.now() + timeoutMs;
   const aspectRatio = "9:16" as const;
-  const style = "cinematic" as const;
+  const style = input.style ?? "photoreal";
   const { width, height } = dimensionsForAspectRatio(aspectRatio);
-  const artworkPrompt = buildArtworkOnlyPrompt(input.prompt, style);
+  const artworkPrompt = buildArtworkOnlyPrompt(input.prompt, style, {
+    interfaceExpected: input.interfaceExpected,
+  });
   let prepared;
   try {
     prepared = prepareImageGeneration(MODEL, {
@@ -148,6 +153,7 @@ export async function generateHeroImageForVideo(input: {
       artworkOnly: true,
       videoJobId: input.videoJobId,
       sceneIndex: input.sceneIndex,
+      interfaceExpected: input.interfaceExpected === true,
     }),
     creditCost: prepared.quote.credits,
     quoteVersion: prepared.quote.version,

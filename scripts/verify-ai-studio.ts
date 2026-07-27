@@ -26,10 +26,11 @@ check("image prompt leads with the single-frame invariant", guarded.positive.sta
 check("positive prompt avoids unwanted layout nouns", !/collage|storyboard|split screen|triptych|contact sheet/i.test(guarded.positive));
 check("image prompt requires language-free artwork", /language-free visual artwork/i.test(guarded.positive));
 check("image prompt keeps signs and labels blank", /signage, labels.*blank and unmarked/i.test(guarded.positive));
+check("ordinary image prompts do not manufacture a screen or interface", !/screens display abstract|unlabeled controls/i.test(guarded.positive));
+const interfaceGuarded = buildArtworkOnlyPrompt("เจ้าของร้านกำลังตรวจ dashboard ยอดขาย", "editorial", { interfaceExpected: true });
 check(
-  "image prompt allows expressive abstract UI instead of forcing every screen blank",
-  /screens display abstract.*unlabeled controls/i.test(guarded.positive)
-    && !/signage, screens, labels.*blank and unmarked/i.test(guarded.positive),
+  "explicit interface scenes keep the interface language-free",
+  /single in-context screen or interface.*unlabeled controls/i.test(interfaceGuarded.positive),
 );
 check("negative prompt bans Thai and English writing", guarded.negative.includes("Thai writing") && guarded.negative.includes("English writing"));
 check("negative prompt bans logos and watermarks", guarded.negative.includes("logo") && guarded.negative.includes("watermark"));

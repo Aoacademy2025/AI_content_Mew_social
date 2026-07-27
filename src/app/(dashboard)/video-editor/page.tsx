@@ -1479,7 +1479,13 @@ function LegacyVideoEditorPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         // targetClipCount > 0 (กำหนดเอง) → ให้ LLM สร้าง keyword ตามจำนวนนั้นพอดี
         // 0 (Auto) → ใช้สูตรเดิม (คำนวณจาก audioDurationSec)
-        body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), targetClipCount, preferredLLM: preferredLLMRef.current }),
+        body: JSON.stringify({
+          scenes: sc,
+          script: scriptOverride.trim() || script,
+          audioDurationSec: Math.min(1800, estimatedDurSec),
+          targetClipCount,
+          preferredLLM: preferredLLMRef.current,
+        }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -1526,6 +1532,9 @@ function LegacyVideoEditorPage() {
     // WINDOW MODE: keywords are already 1-per-window; fetch exactly that many (one asset
     // per window). The window unit drives the count — no per-caption fetch/over-fetch.
     const windowCount = pipe.current.brollWindows?.length ?? 0;
+    const sceneTextsForFetch = windowCount > 0
+      ? (pipe.current.brollWindows ?? []).map((window) => window.text)
+      : caps.map((caption) => caption.text);
     const res = await fetch("/api/videos/fetch-stock", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1553,7 +1562,10 @@ function LegacyVideoEditorPage() {
         ...(pipe.current.relevanceSpec ? { relevanceSpec: pipe.current.relevanceSpec } : {}),
         ...(pipe.current.contentProfile ? { contentProfile: pipe.current.contentProfile } : {}),
         ...(pipe.current.keywordAlternatives?.length ? { keywordAlternatives: pipe.current.keywordAlternatives } : {}),
-        ...(targetClipCount === 0 && perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
+        ...(sceneTextsForFetch.length > 0
+          && (stockSource === "kie-image" || stockSource === "auto-mix" || (targetClipCount === 0 && perSubtitleClipCount > 0))
+          ? { subtitleTexts: sceneTextsForFetch }
+          : {}),
       }),
       signal: abortControllerRef.current?.signal,
     });

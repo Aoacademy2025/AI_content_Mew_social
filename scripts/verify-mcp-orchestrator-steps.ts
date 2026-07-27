@@ -17,6 +17,7 @@ assert(maxCardCharsFor(80) === Math.max(10, Math.floor((1080 - 160) / (80 * 0.47
 const kw = buildKeywordsPayload(caps.map((c) => c.text), "สคริปต์", 2000);
 assert(JSON.stringify(kw.scenes) === JSON.stringify(["สวัสดี", "โลก"]), "keywords payload scenes = caption texts");
 assert(kw.audioDurationSec === 2 && kw.preferredLLM === null, "keywords payload duration + preferredLLM:null");
+assert(kw.script === "สคริปต์", "keywords payload forwards the full script");
 
 const stock = buildStockPayload(["a", "b"], 12, "both", caps);
 assert(stock.keywords.length === 2 && stock.download === true && stock.stockSource === "both", "stock payload basics");
@@ -42,6 +43,21 @@ assert(
   JSON.stringify(windowStock.brollWindowDurationsSec) === JSON.stringify([5.4, 6.6]),
   "window-mode sends each real semantic-window duration to image generation",
 );
+
+const contextualStock = buildStockPayload(
+  ["a", "b"],
+  12,
+  "kie-image",
+  caps,
+  undefined,
+  undefined,
+  undefined,
+  undefined,
+  false,
+  [],
+  { fullScript: "เรื่องทั้งหมดของวิดีโอ" },
+);
+assert(contextualStock.fullScript === "เรื่องทั้งหมดของวิดีโอ", "stock payload forwards full-script context for AI image planning");
 
 const cfg = buildConfigPayload(caps, [{ src: "x" }], "/v.mp3", 2000, ["สวัสดี", "โลก"], 5, [1, 1], [1, 1]);
 assert(cfg.voiceFile === "/v.mp3" && cfg.audioDurationMs === 2000, "config payload voice/duration");

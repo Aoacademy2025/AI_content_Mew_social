@@ -1015,7 +1015,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
             brollRegionPreference: input.brollRegionPreference,
             brollVisualStyle: input.brollVisualStyle,
-          }, upAligned.windows.length > 0, upAligned.windows),
+          }, upAligned.windows.length > 0, upAligned.windows, {
+            fullScript: upCaps.map((caption) => caption.text).join("\n"),
+          }),
           ...(input.kieModel ? { kieModel: input.kieModel } : {}),
           ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
           ...(input.imageModel ? { imageModel: input.imageModel } : {}),
@@ -1263,7 +1265,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
-        }, aligned.windows.length > 0, aligned.windows),
+        }, aligned.windows.length > 0, aligned.windows, {
+          fullScript: input.script,
+        }),
         // v2 ขั้นสูง (Beta): โมเดลภาพ AI + แหล่ง Auto Mix — fetch-stock มี server default ให้ทั้งคู่
         ...(input.kieModel ? { kieModel: input.kieModel } : {}),
         ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),

@@ -42,6 +42,12 @@ import {
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { selectRepresentativeItems } from "@/lib/broll-coverage";
 import { planHeroAiWindowGeneration } from "@/lib/hero-ai-broll";
+import {
+  buildHeroImagePrompt,
+  heroImagePlannerCallCount,
+  planHeroImageScenes,
+  resolveHeroImageProviderStyle,
+} from "@/lib/hero-image-scene-brief";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import {
@@ -1583,6 +1589,49 @@ export async function POST(req: Request) {
       }, { status: 402 });
     }
 
+    const heroTimeline = (Array.isArray(subtitleTexts) && subtitleTexts.length > 0
+      ? subtitleTexts
+      : keywords
+    ).map((text, sceneIndex) => ({
+      sceneIndex,
+      text: typeof text === "string" ? text : "",
+    }));
+    const heroPlanningInput = {
+      fullScript: typeof fullScript === "string" && fullScript.trim()
+        ? fullScript
+        : heroTimeline.map((scene) => scene.text).join("\n"),
+      timeline: heroTimeline,
+      scenes: directJobs.map(({ keyword, sourceIndex }) => ({
+        sceneIndex: sourceIndex,
+        text: subtitleTexts?.[sourceIndex] || keyword,
+        fallbackSubject: keyword,
+      })),
+      visualDirection,
+      region: brollPreference.brollRegionPreference,
+      style: brollPreference.brollVisualStyle,
+    };
+    const heroPlannerCalls = heroImagePlannerCallCount(heroPlanningInput.scenes.length);
+    let heroPlannerAllowed = Boolean(llmKey);
+    if (llmKey && heroPlannerCalls > 0) {
+      const plannerReserve = await reserveAiTextCall(userId, {
+        enforce: llmMode === "managed",
+        count: heroPlannerCalls,
+      });
+      heroPlannerAllowed = plannerReserve.allowed;
+      if (!plannerReserve.allowed) {
+        console.warn("[fetch-stock] Hero scene planner text-call ceiling reached — using script-aware deterministic fallback");
+      }
+    }
+    const heroScenePlan = await planHeroImageScenes(
+      heroPlanningInput,
+      heroPlannerAllowed && llmKey
+        ? (prompt, maxOutputTokens) => geminiGenerateText(llmKey!, prompt, maxOutputTokens, 0.2)
+        : null,
+    );
+    const heroBriefByScene = new Map(
+      heroScenePlan.briefs.map((brief) => [brief.sceneIndex, brief]),
+    );
+
     const failures: Array<{ sourceIndex: number; code: string; message: string }> = [];
     aiTelemetry.aiGenRequestedCount += clipsToGenerateRaw;
     aiTelemetry.aiGenPlannedCount += clipsToGenerate;
@@ -1597,13 +1646,16 @@ export async function POST(req: Request) {
         const imagePath = path.join(rendersDir, imageFile);
         const outFile = `${userPrefix}${id}.mp4`;
         const outPath = path.join(rendersDir, outFile);
-        const prompt = buildKieImagePrompt(keyword, {
-          visualDirection,
-          terms: relTerms,
+        const brief = heroBriefByScene.get(sourceIndex);
+        if (!brief) throw new Error(`Hero scene brief missing for scene ${sourceIndex}`);
+        const prompt = buildHeroImagePrompt(brief, {
           region: brollPreference.brollRegionPreference,
           style: brollPreference.brollVisualStyle,
-          creativeBrollSceneIndex: sourceIndex,
         });
+        const providerStyle = resolveHeroImageProviderStyle(
+          brief,
+          brollPreference.brollVisualStyle,
+        );
         aiTelemetry.aiGenAttemptCount++;
         try {
           const generated = await generateHeroImageForVideo({
@@ -1614,6 +1666,8 @@ export async function POST(req: Request) {
             videoJobId: videoJobId!,
             sceneIndex: sourceIndex,
             sceneTitle: subtitleTexts?.[sourceIndex] || keyword,
+            style: providerStyle,
+            interfaceExpected: brief.includesInterface,
           });
 
           if (download) {
@@ -1675,6 +1729,9 @@ export async function POST(req: Request) {
               aiProviderDelayTimeMs: generated.delayTimeMs,
               aiProviderExecutionTimeMs: generated.executionTimeMs,
               aiProviderReportedCostUsdMicros: generated.providerReportedCostUsdMicros,
+              heroScenePlanSource: heroScenePlan.source,
+              heroSceneVisualMode: brief.visualMode,
+              heroSceneProviderStyle: providerStyle,
             },
           }).catch(() => {});
         } catch (error) {
@@ -1712,6 +1769,9 @@ export async function POST(req: Request) {
         errorProvider: "runpod",
         failedSceneCount: failures.length,
         completedSceneCount: results.length,
+        heroScenePlanSource: heroScenePlan.source,
+        heroScenePlannerCallCount: heroScenePlan.plannerCallCount,
+        heroScenePlannerFailedBatchCount: heroScenePlan.failedBatchCount,
       });
       return NextResponse.json({
         error: `Hero AI Image สร้างไม่สำเร็จ ${failures.length} ฉาก — ไม่มีการสลับไปใช้ KIE`,
@@ -1724,6 +1784,9 @@ export async function POST(req: Request) {
       ...heroAiTelemetry,
       heroImageGeneratedCount: results.length,
       heroImageCredits: results.length * heroCreditCost,
+      heroScenePlanSource: heroScenePlan.source,
+      heroScenePlannerCallCount: heroScenePlan.plannerCallCount,
+      heroScenePlannerFailedBatchCount: heroScenePlan.failedBatchCount,
     });
     return NextResponse.json({ results });
   }

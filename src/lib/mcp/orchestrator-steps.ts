@@ -66,6 +66,7 @@ export function buildKeywordsPayload(
   const scenes = captionTexts.length > 0 ? captionTexts : script.split(/\n+/).map((s) => s.trim()).filter(Boolean);
   return {
     scenes,
+    ...(script.trim() ? { script: script.trim() } : {}),
     audioDurationSec: Math.min(1800, Math.max(1, Math.round(audioDurationMs / 1000))),
     preferredLLM: null as string | null,
     ...(brollPreference?.brollRegionPreference ? { brollRegionPreference: brollPreference.brollRegionPreference } : {}),
@@ -84,6 +85,7 @@ export function buildStockPayload(
   brollPreference?: BrollPreferenceInput,
   brollWindowMode = false,
   brollWindows: { startMs: number; endMs: number }[] = [],
+  scriptContext?: { fullScript?: string },
 ) {
   const perSubtitle = captions.length > 0 && captions.length === keywords.length;
   return {
@@ -103,6 +105,7 @@ export function buildStockPayload(
     ...(relevanceSpec ? { relevanceSpec } : {}),
     ...(brollPreference?.brollRegionPreference ? { brollRegionPreference: brollPreference.brollRegionPreference } : {}),
     ...(brollPreference?.brollVisualStyle ? { brollVisualStyle: brollPreference.brollVisualStyle } : {}),
+    ...(scriptContext?.fullScript?.trim() ? { fullScript: scriptContext.fullScript.trim() } : {}),
   };
 }
 

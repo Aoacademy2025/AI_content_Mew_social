@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const deploy = readFileSync("deploy/deploy.sh", "utf8");
 const nginx = readFileSync("deploy/nginx.conf", "utf8");
+const maintenance = readFileSync("deploy/maintenance.html", "utf8");
 const runbook = readFileSync("docs/ops/heygen-late-completion-rollout.md", "utf8");
 
 const buildReady = deploy.indexOf('test -f "$STAGING_DIR/BUILD_ID"');
@@ -22,6 +23,16 @@ assert.ok(!deploy.includes("render-cancel") && !deploy.includes("ops:cancel") &&
 
 assert.ok(nginx.includes("if (-f /var/www/ai-content/.deploy-maintenance)"), "nginx template honors the first-rollout marker");
 assert.ok(nginx.includes("return 503;"), "maintenance marker returns 503");
+assert.match(nginx, /error_page\s+503\s+\/maintenance\.html;/, "503 uses the branded maintenance document");
+assert.match(nginx, /location\s*=\s*\/maintenance\.html[\s\S]*\binternal;/, "maintenance document is internal-only");
+assert.match(nginx, /Retry-After\s+\"?120\"?\s+always;/, "maintenance response tells clients when to retry");
+assert.match(nginx, /Cache-Control\s+\"no-store[^\"]*\"\s+always;/, "maintenance response is never cached");
+assert.match(maintenance, /<html[^>]+lang="th"/i, "maintenance page declares Thai");
+assert.match(maintenance, /<title>[^<]*กำลังอัปเดตระบบ[^<]*<\/title>/i, "maintenance page has a useful browser title");
+assert.match(maintenance, /กำลังอัปเดตระบบ/, "maintenance page explains the service state");
+assert.match(maintenance, /ลองเชื่อมต่อใหม่อัตโนมัติ/, "maintenance page explains automatic retry");
+assert.match(maintenance, /http-equiv="refresh"\s+content="30"/i, "maintenance page retries automatically");
+assert.doesNotMatch(maintenance, /https?:\/\//i, "maintenance page has no deploy-fragile external assets");
 
 for (const required of [
   "PRAGMA quick_check",
