@@ -14,6 +14,16 @@ const previewHeightMatch = postPhaseSource.match(
 assert.ok(previewHeightMatch, "desktop preview must declare an inline height contract");
 const previewHeight = previewHeightMatch[1];
 
+const postPhaseRootClassMatch = postPhaseSource.match(
+  /return\s*\(\s*<div className="([^"]*flex min-h-0[^"]*flex-1[^"]*flex-col[^"]*)">/,
+);
+assert.ok(postPhaseRootClassMatch, "desktop post-production root must declare its layout contract");
+const postPhaseRootClasses = postPhaseRootClassMatch[1].split(/\s+/);
+assert.ok(
+  postPhaseRootClasses.includes("min-w-0"),
+  "desktop PostPhase must allow its duration-sized timeline to shrink within the viewport",
+);
+
 const VIEWPORTS = [
   { width: 1024, height: 768 },
   { width: 1366, height: 768 },
@@ -123,8 +133,84 @@ async function main(): Promise<void> {
       );
     }
 
+    // Regression: a duration-sized timeline used to make PostPhase honor its
+    // ~2053px min-content width. Clicking a B-roll window then mounted the
+    // 340px inspector beyond the right edge of a 1512px desktop viewport.
+    await page.setViewport({ width: 1512, height: 862, deviceScaleFactor: 1 });
+    await page.setContent(`<!doctype html>
+      <html>
+        <head>
+          <style>
+            * { box-sizing: border-box; }
+            html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+            #shell { display: flex; width: 100vw; height: 100vh; flex-direction: column; }
+            #post-phase {
+              display: flex;
+              min-width: ${postPhaseRootClasses.includes("min-w-0") ? "0" : "auto"};
+              min-height: 0;
+              flex: 1;
+              flex-direction: column;
+            }
+            #editor-row { display: flex; min-height: 0; flex: 1; }
+            #left-panel { width: 266px; flex: none; }
+            #workspace { min-width: 0; flex: 1; }
+            #right-panel { width: 330px; flex: none; }
+            #inspector { display: none; width: 340px; flex: none; }
+            #timeline { display: flex; height: 192px; flex: none; flex-direction: column; }
+            #timeline-scroller { flex: 1; overflow-x: auto; overflow-y: hidden; }
+            #timeline-inner { position: relative; width: 2052.576px; min-width: 100%; }
+          </style>
+        </head>
+        <body>
+          <div id="shell">
+            <div id="post-phase">
+              <div id="editor-row">
+                <aside id="left-panel"></aside>
+                <main id="workspace">
+                  <button id="broll-window" type="button">B-roll</button>
+                </main>
+                <aside id="right-panel"></aside>
+                <aside id="inspector">B-roll inspector</aside>
+              </div>
+              <div id="timeline">
+                <div id="timeline-scroller"><div id="timeline-inner"></div></div>
+              </div>
+            </div>
+          </div>
+          <script>
+            document.querySelector("#broll-window").addEventListener("click", () => {
+              document.querySelector("#inspector").style.display = "flex";
+            });
+          </script>
+        </body>
+      </html>`);
+    await page.click("#broll-window");
+
+    const brollBounds = await page.evaluate(() => {
+      const inspector = document.querySelector<HTMLElement>("#inspector");
+      const postPhase = document.querySelector<HTMLElement>("#post-phase");
+      if (!inspector || !postPhase) throw new Error("B-roll layout fixture is incomplete");
+      const inspectorRect = inspector.getBoundingClientRect();
+      const postPhaseRect = postPhase.getBoundingClientRect();
+      return {
+        inspectorLeft: inspectorRect.left,
+        inspectorRight: inspectorRect.right,
+        inspectorWidth: inspectorRect.width,
+        postPhaseWidth: postPhaseRect.width,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    assert.ok(
+      brollBounds.inspectorWidth > 0
+        && brollBounds.inspectorLeft >= 0
+        && brollBounds.inspectorRight <= brollBounds.viewportWidth,
+      `80.274s B-roll inspector (${brollBounds.inspectorLeft.toFixed(2)}-`
+        + `${brollBounds.inspectorRight.toFixed(2)}) must remain visible at `
+        + `1512x862; PostPhase width was ${brollBounds.postPhaseWidth.toFixed(2)}px`,
+    );
+
     await page.close();
-    console.log(`editor preview layout verified with height: ${previewHeight}`);
+    console.log(`editor preview and B-roll inspector layouts verified with height: ${previewHeight}`);
   } finally {
     await browser.close();
   }
