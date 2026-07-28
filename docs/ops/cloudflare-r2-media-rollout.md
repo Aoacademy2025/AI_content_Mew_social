@@ -112,7 +112,7 @@ systemctl daemon-reload
 systemctl enable --now heroai-r2-reconcile.timer
 ```
 
-The oneshot service uploads at most 1,000 new objects per run, never overlaps
+The oneshot service uploads at most 100 new objects per run, never overlaps
 itself, runs behind customer-facing work, and is capped at 4 GiB. The next run
 starts 15 minutes after the previous run exits. Inspect it without exposing
 credentials:
