@@ -14,6 +14,7 @@ const MAX_RETRY_MS = 6 * 60 * 60 * 1000;
 export type MediaCatalogClaim = {
   id: string;
   identity: MediaIdentity;
+  remoteIdentity: MediaIdentity;
   objectKey: string;
   version: number;
   attempts: number;
@@ -28,6 +29,7 @@ export type MediaCatalogClaimResult =
 type LocalMediaObservation = {
   descriptor: MediaDescriptor;
   localMtimeMs: number;
+  remoteIdentity?: MediaIdentity;
 };
 
 function safeInteger(value: bigint): number {
@@ -62,6 +64,8 @@ export class MediaCatalog {
       select: {
         remoteState: true,
         sizeBytes: true,
+        sha256: true,
+        remoteFilename: true,
         localMtimeMs: true,
         nextRetryAt: true,
         lastErrorCode: true,
@@ -81,7 +85,12 @@ export class MediaCatalog {
 
     const { descriptor } = observation;
     const objectKey = mediaObjectKey(descriptor.identity);
+    const remoteIdentity = observation.remoteIdentity ?? descriptor.identity;
     if (descriptor.objectKey !== objectKey) throw new Error("media catalog key mismatch");
+    if (remoteIdentity.area !== descriptor.identity.area) {
+      throw new Error("media catalog remote area mismatch");
+    }
+    mediaObjectKey(remoteIdentity);
     const localMtimeMs = Math.trunc(observation.localMtimeMs);
     if (
       !Number.isSafeInteger(descriptor.sizeBytes) ||
@@ -109,11 +118,16 @@ export class MediaCatalog {
       },
     });
 
+    const storedRemoteFilename = row.remoteFilename ?? row.filename;
+    const remoteTargetChanged = storedRemoteFilename !== remoteIdentity.filename;
     const unchanged =
       row.sizeBytes === BigInt(descriptor.sizeBytes) &&
-      row.localMtimeMs === BigInt(localMtimeMs);
+      row.localMtimeMs === BigInt(localMtimeMs) &&
+      !remoteTargetChanged;
     if (row.remoteState === "verified" && unchanged) return { status: "verified" };
-    if (row.remoteState === "conflict") return { status: "conflict" };
+    if (row.remoteState === "conflict" && !remoteTargetChanged) {
+      return { status: "conflict" };
+    }
     if (
       (row.remoteState === "uploading" || row.remoteState === "failed") &&
       row.nextRetryAt &&
@@ -149,6 +163,10 @@ export class MediaCatalog {
           area: descriptor.identity.area,
           filename: descriptor.identity.filename,
         },
+        remoteIdentity: {
+          area: remoteIdentity.area,
+          filename: remoteIdentity.filename,
+        },
         objectKey,
         version: row.version + 1,
         attempts: row.attempts + 1,
@@ -164,9 +182,9 @@ export class MediaCatalog {
     now = new Date(),
   ): Promise<boolean> {
     if (
-      receipt.objectKey !== claim.objectKey ||
-      receipt.identity.area !== claim.identity.area ||
-      receipt.identity.filename !== claim.identity.filename ||
+      receipt.objectKey !== mediaObjectKey(claim.remoteIdentity) ||
+      receipt.identity.area !== claim.remoteIdentity.area ||
+      receipt.identity.filename !== claim.remoteIdentity.filename ||
       receipt.sizeBytes !== claim.sizeBytes
     ) {
       throw new Error("media catalog receipt mismatch");
@@ -180,6 +198,7 @@ export class MediaCatalog {
       },
       data: {
         sha256: receipt.sha256,
+        remoteFilename: receipt.identity.filename,
         remoteState: "verified",
         lastVerifiedAt: now,
         nextRetryAt: null,
@@ -188,6 +207,27 @@ export class MediaCatalog {
       },
     });
     return updated.count === 1;
+  }
+
+  async resolveRemoteIdentity(identity: MediaIdentity): Promise<MediaIdentity | null> {
+    const objectKey = mediaObjectKey(identity);
+    const row = await this.db.mediaObject.findUnique({
+      where: { objectKey },
+      select: {
+        area: true,
+        filename: true,
+        remoteFilename: true,
+        remoteState: true,
+      },
+    });
+    if (!row || (!row.remoteFilename && row.remoteState !== "verified")) return null;
+    if (row.area !== identity.area || row.filename !== identity.filename) {
+      throw new Error("media catalog identity mismatch");
+    }
+    return {
+      area: identity.area,
+      filename: row.remoteFilename ?? row.filename,
+    };
   }
 
   async markFailed(

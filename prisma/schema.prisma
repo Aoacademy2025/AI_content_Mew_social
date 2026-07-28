@@ -539,6 +539,7 @@ model MediaObject {
   contentType    String
   sizeBytes      BigInt
   sha256         String?
+  remoteFilename String?
   r2Etag         String?
   remoteState    String   @default("none")
   localState     String   @default("present")

@@ -98,6 +98,103 @@ async function main() {
   const row = await catalog.inspect(identity);
   assert.equal(row?.remoteState, "conflict");
   assert.equal(row?.lastErrorCode, "MediaCollisionError");
+
+  const { contentAddressedStockIdentity, mediaObjectKey } =
+    await import("../src/lib/media-storage");
+  const stockIdentity = { area: "stocks" as const, filename: "mutable-slot.mp4" };
+  const stockDescriptor = {
+    identity: stockIdentity,
+    objectKey: mediaObjectKey(stockIdentity),
+    canonicalUrl: "/api/stocks/mutable-slot.mp4",
+    contentType: "video/mp4",
+    sizeBytes: 20,
+    lastModified: new Date("2026-07-28T02:00:00.000Z"),
+  };
+  const legacyStock = await catalog.claim({
+    descriptor: stockDescriptor,
+    localMtimeMs: 3000,
+  }, { now });
+  assert.equal(legacyStock.status, "claimed");
+  if (legacyStock.status !== "claimed") throw new Error("expected legacy stock claim");
+  assert.equal(
+    await catalog.markFailed(
+      legacyStock.claim,
+      new (await import("../src/lib/media-storage")).MediaCollisionError(),
+      now,
+    ),
+    true,
+  );
+  assert.deepEqual(
+    await catalog.claim({
+      descriptor: stockDescriptor,
+      localMtimeMs: 3000,
+    }, { now }),
+    { status: "conflict" },
+  );
+
+  const firstStockPhysical = contentAddressedStockIdentity(
+    stockIdentity,
+    "b".repeat(64),
+  );
+  const firstStock = await catalog.claim({
+    descriptor: stockDescriptor,
+    localMtimeMs: 3000,
+    remoteIdentity: firstStockPhysical,
+  }, { now });
+  assert.equal(firstStock.status, "claimed");
+  if (firstStock.status !== "claimed") {
+    throw new Error("content-addressed target must recover a legacy stock conflict");
+  }
+  assert.equal(
+    await catalog.markVerified(firstStock.claim, {
+      ...stockDescriptor,
+      identity: firstStockPhysical,
+      objectKey: mediaObjectKey(firstStockPhysical),
+      sha256: "b".repeat(64),
+    }, now),
+    true,
+  );
+  assert.deepEqual(
+    await catalog.resolveRemoteIdentity(stockIdentity),
+    firstStockPhysical,
+  );
+
+  const replacementPhysical = contentAddressedStockIdentity(
+    stockIdentity,
+    "c".repeat(64),
+  );
+  const replacement = await catalog.claim({
+    descriptor: {
+      ...stockDescriptor,
+      sizeBytes: 21,
+      lastModified: new Date("2026-07-28T02:00:01.000Z"),
+    },
+    localMtimeMs: 4000,
+    remoteIdentity: replacementPhysical,
+  }, { now });
+  assert.equal(replacement.status, "claimed");
+  if (replacement.status !== "claimed") throw new Error("expected replacement stock claim");
+  assert.deepEqual(
+    await catalog.resolveRemoteIdentity(stockIdentity),
+    firstStockPhysical,
+    "the last verified alias stays readable while its replacement uploads",
+  );
+  assert.equal(
+    await catalog.markVerified(replacement.claim, {
+      ...stockDescriptor,
+      identity: replacementPhysical,
+      objectKey: mediaObjectKey(replacementPhysical),
+      sizeBytes: 21,
+      sha256: "c".repeat(64),
+    }, now),
+    true,
+  );
+  assert.deepEqual(
+    await catalog.resolveRemoteIdentity(stockIdentity),
+    replacementPhysical,
+    "the alias switches only after the replacement blob is verified",
+  );
+
   await prisma.$disconnect();
   console.log("PASS media catalog");
 }

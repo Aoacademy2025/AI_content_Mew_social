@@ -141,7 +141,30 @@ function safeIdentity(identity: MediaIdentity): MediaIdentity {
 
 export function mediaObjectKey(identity: MediaIdentity): string {
   const safe = safeIdentity(identity);
+  const stockBlob = /^sha256-([a-f0-9]{64})(\.[a-z0-9]+)$/.exec(safe.filename);
+  if (safe.area === "stocks" && stockBlob) {
+    return `media/v2/stocks/blobs/${stockBlob[1]!.slice(0, 2)}/${safe.filename}`;
+  }
   return `media/v1/${safe.area}/${safe.filename}`;
+}
+
+/**
+ * Maps a mutable logical stock identity to its immutable physical identity.
+ */
+export function contentAddressedStockIdentity(
+  identity: MediaIdentity,
+  sha256: string,
+): MediaIdentity {
+  const safe = safeIdentity(identity);
+  if (safe.area !== "stocks" || !/^[a-f0-9]{64}$/.test(sha256)) {
+    throw new InvalidMediaIdentityError();
+  }
+  const extension = path.extname(safe.filename).toLowerCase();
+  const safeExtension = /^\.[a-z0-9]{1,16}$/.test(extension) ? extension : ".bin";
+  return {
+    area: "stocks",
+    filename: `sha256-${sha256}${safeExtension}`,
+  };
 }
 
 export function canonicalMediaUrl(identity: MediaIdentity): string {
