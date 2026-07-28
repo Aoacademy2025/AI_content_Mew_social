@@ -87,6 +87,34 @@ Increase the batch size gradually only while failures and conflicts remain zero.
 A failed upload retains the local file and is retried with backoff. A key
 collision is fail-closed and requires review.
 
+After the 10- and 100-object canaries pass, install the non-overlapping
+reconciliation timer. It keeps direct-to-local producer paths covered during the
+migration and after future restarts:
+
+```sh
+install -m 0644 \
+  deploy/systemd/heroai-r2-reconcile.service \
+  /etc/systemd/system/heroai-r2-reconcile.service
+install -m 0644 \
+  deploy/systemd/heroai-r2-reconcile.timer \
+  /etc/systemd/system/heroai-r2-reconcile.timer
+systemctl daemon-reload
+systemctl enable --now heroai-r2-reconcile.timer
+```
+
+The oneshot service uploads at most 1,000 new objects per run, never overlaps
+itself, runs behind customer-facing work, and is capped at 4 GiB. The next run
+starts 15 minutes after the previous run exits. Inspect it without exposing
+credentials:
+
+```sh
+systemctl status heroai-r2-reconcile.timer
+systemctl status heroai-r2-reconcile.service
+journalctl -u heroai-r2-reconcile.service -n 100 --no-pager
+```
+
+The timer is copy-only. It does not authorize local eviction or R2 deletion.
+
 ## Stage 4: read canary
 
 After a representative verified backfill, change only:
