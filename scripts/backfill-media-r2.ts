@@ -1,0 +1,145 @@
+import "dotenv/config";
+import { lstat, readdir } from "node:fs/promises";
+import path from "node:path";
+import { MediaCatalog } from "../src/lib/media-catalog";
+import {
+  LocalMediaStorageAdapter,
+  MediaCollisionError,
+  defaultLocalMediaRoots,
+  type MediaArea,
+  type MediaIdentity,
+} from "../src/lib/media-storage";
+import { createR2MediaStorageFromEnv } from "../src/lib/media-storage-r2";
+import { prisma } from "../src/lib/prisma";
+
+type BackfillMode = "dry-run" | "apply";
+
+function modeFromArgs(args: string[]): BackfillMode {
+  const known = new Set(["--apply", "--dry-run"]);
+  if (args.some((arg) => !known.has(arg))) throw new Error("unknown backfill argument");
+  if (args.includes("--apply") && args.includes("--dry-run")) {
+    throw new Error("choose either --apply or --dry-run");
+  }
+  return args.includes("--apply") ? "apply" : "dry-run";
+}
+
+function boundedMax(raw: string | undefined): number {
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 1_000 ? parsed : 100;
+}
+
+async function localIdentities(
+  roots: ReturnType<typeof defaultLocalMediaRoots>,
+): Promise<MediaIdentity[]> {
+  const identities: MediaIdentity[] = [];
+  for (const area of ["renders", "stocks"] as const satisfies readonly MediaArea[]) {
+    const root = roots[area];
+    const rootStat = await lstat(root).catch(() => null);
+    if (!rootStat) continue;
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw new Error(`unsafe ${area} media root`);
+    }
+    const entries = await readdir(root, { withFileTypes: true });
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (entry.isFile()) identities.push({ area, filename: entry.name });
+    }
+  }
+  return identities;
+}
+
+async function main() {
+  const mode = modeFromArgs(process.argv.slice(2));
+  if (mode === "apply" && process.env.R2_BACKFILL_ENABLED !== "1") {
+    throw new Error("R2 backfill apply requires R2_BACKFILL_ENABLED=1");
+  }
+
+  const maxUploads = boundedMax(process.env.R2_BACKFILL_MAX_OBJECTS);
+  const roots = defaultLocalMediaRoots();
+  const local = new LocalMediaStorageAdapter(roots);
+  const catalog = new MediaCatalog(prisma);
+  const remote = mode === "apply"
+    ? createR2MediaStorageFromEnv(process.env, "write")
+    : null;
+  const totals = {
+    scanned: 0,
+    candidates: 0,
+    attempted: 0,
+    verified: 0,
+    alreadyVerified: 0,
+    deferred: 0,
+    conflicts: 0,
+    failed: 0,
+  };
+
+  try {
+    for (const identity of await localIdentities(roots)) {
+      totals.scanned += 1;
+      const descriptor = await local.stat(identity);
+      if (!descriptor) continue;
+      const localMtimeMs = descriptor.lastModified.getTime();
+
+      if (mode === "dry-run") {
+        const row = await catalog.inspect(identity);
+        const verified =
+          row?.remoteState === "verified" &&
+          row.sizeBytes === BigInt(descriptor.sizeBytes) &&
+          row.localMtimeMs === BigInt(Math.trunc(localMtimeMs));
+        if (verified) totals.alreadyVerified += 1;
+        else totals.candidates += 1;
+        if (totals.candidates >= maxUploads) break;
+        continue;
+      }
+
+      const claimed = await catalog.claim({ descriptor, localMtimeMs });
+      if (claimed.status === "verified") {
+        totals.alreadyVerified += 1;
+        continue;
+      }
+      if (claimed.status === "deferred" || claimed.status === "busy") {
+        totals.deferred += 1;
+        continue;
+      }
+      if (claimed.status === "conflict") {
+        totals.conflicts += 1;
+        continue;
+      }
+
+      totals.candidates += 1;
+      totals.attempted += 1;
+      const materialized = await local.materialize(identity);
+      if (!materialized) {
+        await catalog.markFailed(claimed.claim, new Error("LocalMediaMissing"));
+        totals.failed += 1;
+        continue;
+      }
+      try {
+        const receipt = await remote!.commit({
+          identity,
+          sourcePath: materialized.absolutePath,
+        });
+        if (!await catalog.markVerified(claimed.claim, receipt)) {
+          throw new Error("MediaCatalogLeaseLost");
+        }
+        totals.verified += 1;
+      } catch (error) {
+        await catalog.markFailed(claimed.claim, error);
+        if (error instanceof MediaCollisionError) totals.conflicts += 1;
+        else totals.failed += 1;
+      } finally {
+        await materialized.release();
+      }
+      if (totals.attempted >= maxUploads) break;
+    }
+  } finally {
+    await prisma.$disconnect();
+  }
+
+  console.log(JSON.stringify({ mode, maxUploads, ...totals }));
+  if (totals.failed > 0 || totals.conflicts > 0) process.exitCode = 1;
+}
+
+main().catch(async (error) => {
+  console.error(error instanceof Error ? error.message : "R2 backfill failed");
+  await prisma.$disconnect().catch(() => {});
+  process.exit(1);
+});

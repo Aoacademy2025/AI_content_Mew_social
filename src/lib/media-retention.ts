@@ -1,6 +1,8 @@
 import { lstat } from "node:fs/promises";
 import path from "node:path";
 import { storageDaysForPlan, videoExpiryFor } from "@/lib/plan-limits";
+import type { MediaStorage } from "@/lib/media-storage";
+import { runtimeMediaStorage } from "@/lib/media-storage-rollout";
 
 export type ProjectMediaState =
   | { status: "available"; expiresAt: string }
@@ -19,6 +21,7 @@ export type ResolveProjectMediaStateInput = {
   mediaExpiresAt: Date | null;
   now?: Date;
   rendersRoot?: string;
+  storage?: Pick<MediaStorage, "stat">;
   canRerender?: boolean;
 };
 
@@ -123,16 +126,31 @@ export async function resolveProjectMediaState({
   videoUrl,
   mediaExpiresAt,
   now = new Date(),
-  rendersRoot = path.join(process.cwd(), "public", "renders"),
+  rendersRoot,
+  storage,
   canRerender = true,
 }: ResolveProjectMediaStateInput): Promise<ProjectMediaState> {
   if (mediaExpiresAt === null || now.getTime() >= mediaExpiresAt.getTime()) {
     return projectMediaState({ mediaExpiresAt, mediaAvailable: false, now, canRerender });
   }
 
-  const mediaAvailable = typeof videoUrl === "string" && videoUrl.trim().length > 0
-    ? await localRenderIsAvailable(videoUrl, rendersRoot)
-    : false;
+  let mediaAvailable = false;
+  if (typeof videoUrl === "string" && videoUrl.trim().length > 0) {
+    const filename = localRenderFilename(videoUrl);
+    if (filename === undefined) {
+      mediaAvailable = true;
+    } else if (filename !== null) {
+      if (storage) {
+        mediaAvailable = Boolean(await storage.stat({ area: "renders", filename }));
+      } else if (rendersRoot) {
+        mediaAvailable = await localRenderIsAvailable(videoUrl, rendersRoot);
+      } else {
+        mediaAvailable = Boolean(
+          await runtimeMediaStorage().stat({ area: "renders", filename }),
+        );
+      }
+    }
+  }
   return projectMediaState({ mediaExpiresAt, mediaAvailable, now, canRerender });
 }
 
