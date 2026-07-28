@@ -11,6 +11,10 @@
     "db:seed": "npx tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset",
     "verify:disk-watch": "tsx scripts/verify-disk-watch.ts",
+    "verify:media-storage": "tsx scripts/verify-media-storage-foundation.ts && tsx scripts/verify-media-storage-r2.ts && tsx scripts/verify-media-storage-rollout.ts && tsx scripts/verify-media-serving.ts && tsx scripts/verify-media-catalog.ts",
+    "smoke:r2-staging": "tsx scripts/smoke-r2-staging.ts",
+    "smoke:r2-production": "DOTENV_CONFIG_PATH=.env.r2.production R2_PRODUCTION_SMOKE_ENABLED=1 tsx scripts/smoke-r2-staging.ts",
+    "backfill:r2": "tsx scripts/backfill-media-r2.ts",
     "verify:render-queue": "tsx scripts/verify-render-queue.ts",
     "verify:render-reservation-settlement": "tsx scripts/verify-render-reservation-settlement.ts",
     "verify:render-poll-timeout": "tsx scripts/verify-render-poll-timeout.ts",
@@ -67,6 +71,7 @@
     "seed": "npx tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1096.0",
     "@clerk/mcp-tools": "^0.5.0",
     "@clerk/nextjs": "^7.4.1",
     "@eslint/eslintrc": "^3.3.3",
@@ -88,6 +93,7 @@
     "@remotion/captions": "^4.0.431",
     "@remotion/player": "^4.0.427",
     "@remotion/renderer": "^4.0.427",
+    "@smithy/node-http-handler": "^4.9.12",
     "@stripe/stripe-js": "^9.6.0",
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",

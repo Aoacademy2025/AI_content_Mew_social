@@ -528,6 +528,35 @@ model SiteConfig {
   updatedAt DateTime @updatedAt
 }
 
+// Physical media catalog for the local -> R2 migration. Existing Video/VideoJob
+// URLs remain authoritative ownership references; this row records where the
+// immutable bytes are stored and whether the remote copy has been verified.
+model MediaObject {
+  id             String   @id @default(cuid())
+  area           String
+  filename       String
+  objectKey      String   @unique
+  contentType    String
+  sizeBytes      BigInt
+  sha256         String?
+  r2Etag         String?
+  remoteState    String   @default("none")
+  localState     String   @default("present")
+  localMtimeMs   BigInt?
+  producedAt     DateTime @default(now())
+  lastVerifiedAt DateTime?
+  nextRetryAt    DateTime?
+  lastErrorCode  String?
+  attempts       Int      @default(0)
+  version        Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([area, filename])
+  @@index([remoteState, nextRetryAt])
+  @@index([localState, producedAt])
+}
+
 model Music {
   id        String   @id @default(cuid())
   title     String
