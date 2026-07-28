@@ -5,6 +5,7 @@ import { MediaCatalog } from "../src/lib/media-catalog";
 import {
   LocalMediaStorageAdapter,
   MediaCollisionError,
+  UnsafeMediaFileError,
   defaultLocalMediaRoots,
   type MediaArea,
   type MediaIdentity,
@@ -69,12 +70,22 @@ async function main() {
     deferred: 0,
     conflicts: 0,
     failed: 0,
+    skippedInvalid: 0,
   };
 
   try {
     for (const identity of await localIdentities(roots)) {
       totals.scanned += 1;
-      const descriptor = await local.stat(identity);
+      let descriptor;
+      try {
+        descriptor = await local.stat(identity);
+      } catch (error) {
+        if (error instanceof UnsafeMediaFileError) {
+          totals.skippedInvalid += 1;
+          continue;
+        }
+        throw error;
+      }
       if (!descriptor) continue;
       const localMtimeMs = descriptor.lastModified.getTime();
 
