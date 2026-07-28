@@ -13,6 +13,8 @@ import {
   mediaStorageRuntimeConfig,
   type MediaStorageRuntimeConfig,
 } from "@/lib/media-storage-config";
+import { MediaCatalog } from "@/lib/media-catalog";
+import { AliasResolvingMediaStorage } from "@/lib/media-storage-alias";
 import { createR2MediaStorageFromEnv } from "@/lib/media-storage-r2";
 
 export type MediaStorageRolloutEvent = {
@@ -272,7 +274,10 @@ export function createRuntimeMediaStorage(
     }
     if (config.readMode !== "local") {
       try {
-        remoteRead = createR2MediaStorageFromEnv(env, "read");
+        remoteRead = new AliasResolvingMediaStorage(
+          createR2MediaStorageFromEnv(env, "read"),
+          new MediaCatalog(),
+        );
       } catch (error) {
         options.observe?.({
           operation: "configure",

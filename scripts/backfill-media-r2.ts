@@ -1,15 +1,17 @@
 import "dotenv/config";
 import { lstat, readdir } from "node:fs/promises";
 import path from "node:path";
-import { MediaCatalog } from "../src/lib/media-catalog";
+import { MediaCatalog, type MediaCatalogClaim } from "../src/lib/media-catalog";
 import {
   LocalMediaStorageAdapter,
   MediaCollisionError,
   UnsafeMediaFileError,
+  contentAddressedStockIdentity,
   defaultLocalMediaRoots,
   type MediaArea,
   type MediaIdentity,
 } from "../src/lib/media-storage";
+import { sha256MediaFile } from "../src/lib/media-storage-support";
 import { createR2MediaStorageFromEnv } from "../src/lib/media-storage-r2";
 import { prisma } from "../src/lib/prisma";
 
@@ -91,53 +93,87 @@ async function main() {
 
       if (mode === "dry-run") {
         const row = await catalog.inspect(identity);
+        const versionedTargetVerified =
+          identity.area !== "stocks" ||
+          (
+            typeof row?.sha256 === "string" &&
+            row.remoteFilename ===
+              contentAddressedStockIdentity(identity, row.sha256).filename
+          );
         const verified =
           row?.remoteState === "verified" &&
           row.sizeBytes === BigInt(descriptor.sizeBytes) &&
-          row.localMtimeMs === BigInt(Math.trunc(localMtimeMs));
+          row.localMtimeMs === BigInt(Math.trunc(localMtimeMs)) &&
+          versionedTargetVerified;
         if (verified) totals.alreadyVerified += 1;
         else totals.candidates += 1;
         if (totals.candidates >= maxUploads) break;
         continue;
       }
 
-      const claimed = await catalog.claim({ descriptor, localMtimeMs });
-      if (claimed.status === "verified") {
-        totals.alreadyVerified += 1;
-        continue;
-      }
-      if (claimed.status === "deferred" || claimed.status === "busy") {
-        totals.deferred += 1;
-        continue;
-      }
-      if (claimed.status === "conflict") {
-        totals.conflicts += 1;
-        continue;
-      }
-
-      totals.candidates += 1;
-      totals.attempted += 1;
-      const materialized = await local.materialize(identity);
-      if (!materialized) {
-        await catalog.markFailed(claimed.claim, new Error("LocalMediaMissing"));
-        totals.failed += 1;
-        continue;
-      }
+      let materialized = null as Awaited<ReturnType<typeof local.materialize>>;
+      let activeClaim: MediaCatalogClaim | null = null;
       try {
+        let remoteIdentity = identity;
+        let expectedSha256: string | undefined;
+        if (identity.area === "stocks") {
+          materialized = await local.materialize(identity);
+          if (!materialized) {
+            totals.deferred += 1;
+            continue;
+          }
+          try {
+            expectedSha256 = await sha256MediaFile(materialized.absolutePath);
+          } catch {
+            totals.deferred += 1;
+            continue;
+          }
+          remoteIdentity = contentAddressedStockIdentity(identity, expectedSha256);
+        }
+
+        const claimed = await catalog.claim({
+          descriptor,
+          localMtimeMs,
+          remoteIdentity,
+        });
+        if (claimed.status === "verified") {
+          totals.alreadyVerified += 1;
+          continue;
+        }
+        if (claimed.status === "deferred" || claimed.status === "busy") {
+          totals.deferred += 1;
+          continue;
+        }
+        if (claimed.status === "conflict") {
+          totals.conflicts += 1;
+          continue;
+        }
+        activeClaim = claimed.claim;
+
+        totals.candidates += 1;
+        totals.attempted += 1;
+        materialized ??= await local.materialize(identity);
+        if (!materialized) {
+          await catalog.markFailed(claimed.claim, new Error("LocalMediaMissing"));
+          totals.failed += 1;
+          continue;
+        }
         const receipt = await remote!.commit({
-          identity,
+          identity: claimed.claim.remoteIdentity,
           sourcePath: materialized.absolutePath,
+          expectedSha256,
         });
         if (!await catalog.markVerified(claimed.claim, receipt)) {
           throw new Error("MediaCatalogLeaseLost");
         }
         totals.verified += 1;
       } catch (error) {
-        await catalog.markFailed(claimed.claim, error);
+        if (!activeClaim) throw error;
+        await catalog.markFailed(activeClaim, error);
         if (error instanceof MediaCollisionError) totals.conflicts += 1;
         else totals.failed += 1;
       } finally {
-        await materialized.release();
+        await materialized?.release();
       }
       if (totals.attempted >= maxUploads) break;
     }

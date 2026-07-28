@@ -11,6 +11,9 @@ domain.
 - Local storage remains the required copy until R2 upload and SHA-256 metadata
   verification succeed.
 - R2 writes use `If-None-Match: *`, `Content-MD5`, and immutable object keys.
+- Stock filenames are mutable logical aliases. Their bytes are stored under
+  `media/v2/stocks/blobs/<sha-prefix>/sha256-<sha>.<ext>`, and the catalog
+  publishes `remoteFilename` only after the physical object is verified.
 - Backfill is idempotent, lease-based, bounded per run, and disabled unless both
   the command flag and environment gate are present.
 - `MEDIA_LOCAL_EVICTION` and `MEDIA_R2_DELETE` stay off during migration.
@@ -86,6 +89,13 @@ R2_BACKFILL_ENABLED=1 R2_BACKFILL_MAX_OBJECTS=10 npm run backfill:r2 -- --apply
 Increase the batch size gradually only while failures and conflicts remain zero.
 A failed upload retains the local file and is retried with backoff. A key
 collision is fail-closed and requires review.
+
+Legacy stock rows that were uploaded to mutable `media/v1/stocks/*` keys are
+intentionally candidates again after the additive `remoteFilename` schema change.
+The backfill hashes the current local bytes, uploads a new immutable v2 object,
+and switches the logical alias only after verification. It does not overwrite or
+delete the legacy object. Existing legacy collision rows can therefore recover
+without discarding either byte version.
 
 After the 10- and 100-object canaries pass, install the non-overlapping
 reconciliation timer. It keeps direct-to-local producer paths covered during the
