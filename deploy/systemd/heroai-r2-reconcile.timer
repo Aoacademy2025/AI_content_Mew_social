@@ -1,0 +1,14 @@
+[Unit]
+Description=Run HeroAI Cloudflare R2 media reconciliation without overlap
+Documentation=file:/var/www/ai-content/docs/ops/cloudflare-r2-media-rollout.md
+
+[Timer]
+Unit=heroai-r2-reconcile.service
+OnBootSec=5min
+OnUnitInactiveSec=15min
+RandomizedDelaySec=1min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
