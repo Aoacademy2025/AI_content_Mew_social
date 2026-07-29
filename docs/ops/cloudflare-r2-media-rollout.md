@@ -1,6 +1,7 @@
 # Cloudflare R2 media rollout
 
-Status: code-ready, production remains local-only.
+Status: production reads R2 first with local fallback; copy reconciliation is
+continuous. R2 deletion remains disabled.
 
 This migration keeps `/api/renders/*` and `/api/stocks/*` stable. The application
 proxies private R2 objects, so the bucket does not need public access or a custom
@@ -17,7 +18,8 @@ domain.
   publishes `remoteFilename` only after the physical object is verified.
 - Backfill is idempotent, lease-based, bounded per run, and disabled unless both
   the command flag and environment gate are present.
-- `MEDIA_LOCAL_EVICTION` and `MEDIA_R2_DELETE` stay off during migration.
+- Local eviction is a separate verified workflow. It never deletes R2 objects.
+- `MEDIA_R2_DELETE` stays off during migration and local eviction.
 - Never paste R2 credentials into tickets, chat, commands, or logs.
 
 ## Required Cloudflare resources
@@ -146,12 +148,57 @@ not delete or mutate local media. Roll back immediately by returning
 `local-r2` is available for local-first fallback testing, but it does not exercise
 R2 while the local copy exists.
 
-## Stop point before disk eviction
+## Stage 5: verified local eviction
 
-Do not enable `MEDIA_LOCAL_EVICTION=1` or `MEDIA_R2_DELETE=1` yet. Local cache
-eviction and retention-driven R2 deletion require their own reviewed apply path
-and production canary evidence. The current rollout coordinator blocks mixed-mode
-deletion intentionally.
+Local eviction is allowed only while reads use `r2-local` or `r2`. The workflow
+starts from the retention/reference-graph cleanup plan and therefore selects only:
+
+- media whose complete reference set has expired under its 3/7/14-day policy; or
+- media with no reference and a local mtime older than 14 days.
+
+Before removing each local copy it requires an unchanged catalog observation,
+`remoteState=verified`, a matching immutable v2 alias (or immutable legacy render),
+matching size/mtime/SHA-256, and a second R2 HEAD verification after the local file
+has been atomically quarantined. The catalog state changes with a compare-and-set.
+Any pre-delete failure restores the local path. R2 deletion is explicitly rejected.
+
+Run a read-only bounded inventory:
+
+```sh
+DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/evict-local-media.ts \
+  --olderThanDays=3 --includeStocks --maxObjects=10 --maxBytesMb=1024
+```
+
+Run a small canary only after the dry-run has zero errors:
+
+```sh
+MEDIA_LOCAL_EVICTION=1 DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/evict-local-media.ts \
+  --apply --olderThanDays=3 --includeStocks --maxObjects=3 --maxBytesMb=256
+```
+
+Verify health, Range playback for an evicted identity, queue state, disk free
+space, and logs before installing the daily timer:
+
+```sh
+install -m 0644 \
+  deploy/systemd/heroai-media-local-eviction.service \
+  /etc/systemd/system/heroai-media-local-eviction.service
+install -m 0644 \
+  deploy/systemd/heroai-media-local-eviction.timer \
+  /etc/systemd/system/heroai-media-local-eviction.timer
+install -m 0644 \
+  deploy/systemd/heroai-r2-reconcile.service \
+  /etc/systemd/system/heroai-r2-reconcile.service
+systemctl daemon-reload
+systemctl enable --now heroai-media-local-eviction.timer
+```
+
+The reconciliation and eviction services share an exclusive lock, so upload
+catalog transitions cannot overlap eviction. The daily job is capped at 25
+objects and 5 GiB per run. Keep `MEDIA_R2_DELETE=0`; lifecycle deletion from R2
+is a separate future policy and is not required to protect VPS disk capacity.
 
 Cloudflare references:
 

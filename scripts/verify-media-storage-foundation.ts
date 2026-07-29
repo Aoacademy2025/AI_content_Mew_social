@@ -125,6 +125,18 @@ async function main() {
   assert.equal(invalid.r2DeleteEnabled, false);
   assert.equal(invalid.warnings.length, 4);
 
+  const reconciledLocalWrites = mediaStorageRuntimeConfig({
+    MEDIA_WRITE_MODE: "local",
+    MEDIA_READ_MODE: "r2-local",
+    MEDIA_LOCAL_EVICTION: "1",
+  });
+  assert.equal(
+    reconciledLocalWrites.localEvictionEnabled,
+    true,
+    "verified cleanup candidates may evict locally while new writes reconcile asynchronously",
+  );
+  assert.equal(reconciledLocalWrites.r2DeleteEnabled, false);
+
   const gated = mediaStorageRuntimeConfig({
     MEDIA_WRITE_MODE: "r2-required",
     MEDIA_READ_MODE: "r2",

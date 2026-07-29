@@ -63,10 +63,12 @@ export class MediaCatalog {
       where: { objectKey },
       select: {
         remoteState: true,
+        localState: true,
         sizeBytes: true,
         sha256: true,
         remoteFilename: true,
         localMtimeMs: true,
+        lastVerifiedAt: true,
         nextRetryAt: true,
         lastErrorCode: true,
       },
@@ -228,6 +230,56 @@ export class MediaCatalog {
       area: identity.area,
       filename: row.remoteFilename ?? row.filename,
     };
+  }
+
+  async markLocalEvicted(input: {
+    identity: MediaIdentity;
+    sizeBytes: number;
+    localMtimeMs: number;
+    sha256: string;
+    remoteFilename: string | null;
+  }): Promise<boolean> {
+    const updated = await this.db.mediaObject.updateMany({
+      where: {
+        objectKey: mediaObjectKey(input.identity),
+        remoteState: "verified",
+        localState: "present",
+        sizeBytes: BigInt(input.sizeBytes),
+        localMtimeMs: BigInt(Math.trunc(input.localMtimeMs)),
+        sha256: input.sha256,
+        remoteFilename: input.remoteFilename,
+      },
+      data: {
+        localState: "evicted",
+        version: { increment: 1 },
+      },
+    });
+    return updated.count === 1;
+  }
+
+  async markLocalPresent(input: {
+    identity: MediaIdentity;
+    sizeBytes: number;
+    localMtimeMs: number;
+    sha256: string;
+    remoteFilename: string | null;
+  }): Promise<boolean> {
+    const updated = await this.db.mediaObject.updateMany({
+      where: {
+        objectKey: mediaObjectKey(input.identity),
+        remoteState: "verified",
+        localState: "evicted",
+        sizeBytes: BigInt(input.sizeBytes),
+        localMtimeMs: BigInt(Math.trunc(input.localMtimeMs)),
+        sha256: input.sha256,
+        remoteFilename: input.remoteFilename,
+      },
+      data: {
+        localState: "present",
+        version: { increment: 1 },
+      },
+    });
+    return updated.count === 1;
   }
 
   async markFailed(
