@@ -14,7 +14,10 @@ import {
   type MediaStorageRuntimeConfig,
 } from "@/lib/media-storage-config";
 import { MediaCatalog } from "@/lib/media-catalog";
-import { AliasResolvingMediaStorage } from "@/lib/media-storage-alias";
+import {
+  AliasResolvingMediaStorage,
+  LocalFreshnessMediaAliasResolver,
+} from "@/lib/media-storage-alias";
 import { createR2MediaStorageFromEnv } from "@/lib/media-storage-r2";
 
 export type MediaStorageRolloutEvent = {
@@ -253,6 +256,7 @@ export function createRuntimeMediaStorage(
   } = {},
 ): MediaStorage {
   const config = mediaStorageRuntimeConfig(env);
+  const local = options.local ?? new LocalMediaStorageAdapter();
   const needsRemote =
     config.writeMode !== "local" ||
     config.readMode !== "local";
@@ -276,7 +280,7 @@ export function createRuntimeMediaStorage(
       try {
         remoteRead = new AliasResolvingMediaStorage(
           createR2MediaStorageFromEnv(env, "read"),
-          new MediaCatalog(),
+          new LocalFreshnessMediaAliasResolver(new MediaCatalog(), local),
         );
       } catch (error) {
         options.observe?.({
@@ -291,7 +295,7 @@ export function createRuntimeMediaStorage(
 
   return new RolloutMediaStorage({
     config,
-    local: options.local ?? new LocalMediaStorageAdapter(),
+    local,
     remoteRead,
     remoteWrite,
     observe: options.observe,

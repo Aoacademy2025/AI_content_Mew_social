@@ -1,9 +1,37 @@
 const { join } = require("node:path");
+const dotenv = require("dotenv");
 
 // PM2 evaluates this file in the deploy shell, which does not automatically load
 // the application's .env. Load it before resolving process-backed secrets; otherwise
 // --update-env can replace a valid saved secret with an empty fallback.
-require("dotenv").config({ path: join(__dirname, ".env"), quiet: true });
+dotenv.config({ path: join(__dirname, ".env"), quiet: true });
+
+// R2 credentials and rollout switches live in a separate root-only file so they
+// do not need to be duplicated into the application's general .env. Keep the
+// allowlist narrow: PM2 should expose only media-storage configuration to the
+// web process, while the reconciliation timer continues to read the same file.
+const r2MediaConfig = dotenv.config({
+  path: join(__dirname, ".env.r2.production"),
+  quiet: true,
+}).parsed ?? {};
+const r2MediaRuntimeEnv = Object.fromEntries([
+  "R2_ACCOUNT_ID",
+  "R2_BUCKET",
+  "R2_ENDPOINT",
+  "R2_READ_ACCESS_KEY_ID",
+  "R2_READ_SECRET_ACCESS_KEY",
+  "R2_WRITE_ACCESS_KEY_ID",
+  "R2_WRITE_SECRET_ACCESS_KEY",
+  "R2_MAX_ATTEMPTS",
+  "R2_REQUEST_TIMEOUT_MS",
+  "R2_MATERIALIZE_ROOT",
+  "MEDIA_WRITE_MODE",
+  "MEDIA_READ_MODE",
+  "MEDIA_LOCAL_EVICTION",
+  "MEDIA_R2_DELETE",
+].flatMap((key) => typeof r2MediaConfig[key] === "string"
+  ? [[key, r2MediaConfig[key]]]
+  : []));
 
 // Reviewed KVM8 runtime profile. Keep render-output settings in ONE object so web
 // fallback rendering, --env production, and the durable render workers cannot drift.
@@ -58,6 +86,7 @@ module.exports = {
         // inflates heap usage during long renders, which contributed to the OOM.
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
+        ...r2MediaRuntimeEnv,
         // PR-7 durable render queue: "1" = the thin render route enqueues a
         // RenderJob (returns jobId) instead of rendering in-process; the
         // render-worker app below drains it. ENABLED + validated on prod 2026-06-19
@@ -80,6 +109,7 @@ module.exports = {
         RENDER_VIA_QUEUE: "1",
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
+        ...r2MediaRuntimeEnv,
       },
     },
     {

@@ -14,10 +14,61 @@ export interface MediaAliasResolver {
   resolveRemoteIdentity(identity: MediaIdentity): Promise<MediaIdentity | null>;
 }
 
+export interface MediaAliasCatalogInspection {
+  inspect(identity: MediaIdentity): Promise<{
+    remoteState: string;
+    sizeBytes: bigint;
+    remoteFilename: string | null;
+    localMtimeMs: bigint | null;
+  } | null>;
+}
+
 export class MediaAliasMutationBlockedError extends Error {
   constructor() {
     super("media alias adapter is read-only");
     this.name = "MediaAliasMutationBlockedError";
+  }
+}
+
+/**
+ * Publishes a remote alias only while it still describes the current local
+ * observation. Direct-to-local producers can create or replace a logical file
+ * before the reconciliation worker updates its catalog row; returning null in
+ * that window makes r2-local reads fall back to the newer local bytes.
+ *
+ * Once a local copy is evicted, the last verified remote alias remains readable.
+ */
+export class LocalFreshnessMediaAliasResolver implements MediaAliasResolver {
+  private readonly aliases: MediaAliasCatalogInspection;
+  private readonly local: Pick<MediaStorage, "stat">;
+
+  constructor(
+    aliases: MediaAliasCatalogInspection,
+    local: Pick<MediaStorage, "stat">,
+  ) {
+    this.aliases = aliases;
+    this.local = local;
+  }
+
+  async resolveRemoteIdentity(identity: MediaIdentity): Promise<MediaIdentity | null> {
+    const [row, descriptor] = await Promise.all([
+      this.aliases.inspect(identity),
+      this.local.stat(identity),
+    ]);
+    if (!row || row.remoteState !== "verified") return null;
+    if (
+      descriptor &&
+      (
+        row.sizeBytes !== BigInt(descriptor.sizeBytes) ||
+        row.localMtimeMs !== BigInt(Math.trunc(descriptor.lastModified.getTime()))
+      )
+    ) {
+      return null;
+    }
+    return {
+      area: identity.area,
+      filename: row.remoteFilename ?? identity.filename,
+    };
   }
 }
 
