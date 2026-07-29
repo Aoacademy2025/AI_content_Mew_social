@@ -132,6 +132,28 @@ async function main() {
     await catalog.resolveRemoteIdentity(identity),
     recoveredRenderPhysical,
   );
+  assert.equal(
+    await catalog.markLocalEvicted({
+      identity,
+      sizeBytes: 11,
+      localMtimeMs: 2000,
+      sha256: "d".repeat(64),
+      remoteFilename: recoveredRenderPhysical.filename,
+    }),
+    true,
+  );
+  assert.equal((await catalog.inspect(identity))?.localState, "evicted");
+  assert.equal(
+    await catalog.markLocalPresent({
+      identity,
+      sizeBytes: 11,
+      localMtimeMs: 2000,
+      sha256: "d".repeat(64),
+      remoteFilename: recoveredRenderPhysical.filename,
+    }),
+    true,
+  );
+  assert.equal((await catalog.inspect(identity))?.localState, "present");
 
   const stockIdentity = { area: "stocks" as const, filename: "mutable-slot.mp4" };
   const stockDescriptor = {

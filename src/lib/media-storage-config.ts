@@ -32,8 +32,9 @@ function safeMode<T extends string>(
  * Fail-safe rollout configuration.
  *
  * Missing or invalid values preserve today's local-only behavior. Destructive
- * switches are gated by compatible read/write modes so one bad environment
- * value cannot evict or delete the only copy of customer media.
+ * switches are gated by compatible read modes. Local eviction independently
+ * verifies the catalog and R2 replica; R2 deletion still requires the final
+ * remote-only write/read mode.
  */
 export function mediaStorageRuntimeConfig(
   env: MediaStorageEnvironment = process.env,
@@ -57,7 +58,6 @@ export function mediaStorageRuntimeConfig(
   const evictionRequested = env.MEDIA_LOCAL_EVICTION === "1";
   const localEvictionEnabled =
     evictionRequested &&
-    writeMode === "r2-required" &&
     (readMode === "r2-local" || readMode === "r2");
   if (evictionRequested && !localEvictionEnabled) {
     warnings.push("MEDIA_LOCAL_EVICTION_blocked_by_rollout_mode");

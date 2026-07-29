@@ -158,6 +158,30 @@ async function main() {
   assert.equal(committed.canonicalUrl, "/api/renders/r2%20sample.mp4");
   assert.equal(committed.sha256, sha256);
   assert.equal((await storage.stat(identity))?.sizeBytes, 10);
+  assert.equal(
+    await storage.verifyReplica({
+      identity,
+      expectedSizeBytes: 10,
+      expectedSha256: sha256,
+    }),
+    true,
+  );
+  assert.equal(
+    await storage.verifyReplica({
+      identity: { area: "renders", filename: "missing.mp4" },
+      expectedSizeBytes: 10,
+      expectedSha256: sha256,
+    }),
+    false,
+  );
+  await assert.rejects(
+    storage.verifyReplica({
+      identity,
+      expectedSizeBytes: 11,
+      expectedSha256: sha256,
+    }),
+    MediaCollisionError,
+  );
   await assert.rejects(
     storage.commit({
       identity: { area: "renders", filename: "../escape.mp4" },

@@ -63,6 +63,14 @@ export type R2ObjectHead = {
 
 export type R2PutResult = "created" | "precondition_failed";
 
+export interface RemoteMediaReplicaVerifier {
+  verifyReplica(input: {
+    identity: MediaIdentity;
+    expectedSizeBytes: number;
+    expectedSha256: string;
+  }): Promise<boolean>;
+}
+
 /**
  * Internal seam around the true external S3 dependency. Production uses the
  * AWS SDK adapter below; verification uses an in-memory mock.
@@ -365,7 +373,7 @@ function sameFileSnapshot(
   );
 }
 
-export class R2MediaStorageAdapter implements MediaStorage {
+export class R2MediaStorageAdapter implements MediaStorage, RemoteMediaReplicaVerifier {
   private readonly client: R2ObjectClientPort;
   private readonly materializeRoot: string;
 
@@ -449,6 +457,18 @@ export class R2MediaStorageAdapter implements MediaStorage {
     const safe = validatedIdentity(identity);
     const head = await this.client.head(mediaObjectKey(safe));
     return head ? this.descriptor(safe, verifiedHead(head)) : null;
+  }
+
+  async verifyReplica(input: {
+    identity: MediaIdentity;
+    expectedSizeBytes: number;
+    expectedSha256: string;
+  }): Promise<boolean> {
+    const safe = validatedIdentity(input.identity);
+    const head = await this.client.head(mediaObjectKey(safe));
+    if (!head) return false;
+    this.matchingRemote(head, input.expectedSizeBytes, input.expectedSha256);
+    return true;
   }
 
   async open(identity: MediaIdentity, range?: MediaByteRange): Promise<MediaRead | null> {
