@@ -67,7 +67,6 @@ async function catalogRender(
       remoteState: "verified",
       localState: "present",
       localMtimeMs: BigInt(file.mtimeMs),
-      lastVerifiedAt: now,
     },
   });
 }
