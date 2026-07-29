@@ -173,6 +173,8 @@ Recovery resources (2026-07-30):
   `z6rultw0btxy3n` are parked at `workersMin=0`, `workersMax=0`.
 - Production candidate template `ltjv0onr72` and endpoint `e10knh9zjtr2pl` passed a
   fully fresh pull, warm inference, and scale-to-zero FlashBoot revival.
+- Auth-fixed OmniVoice template `12m7gs1797` and endpoint `0t5ta1alo5nzqo` passed a
+  production-contract 32-step TTS smoke (24 kHz mono PCM WAV).
 - The live gate temporarily used registry auth `cms6euknu003npi42luhxaa4t`. Replace it
   with a dedicated classic PAT that has only `read:packages`; do not retain the local
   GitHub CLI's write-capable credential as a permanent production dependency.

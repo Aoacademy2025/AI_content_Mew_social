@@ -103,7 +103,11 @@ RunPod capacity changes:
   smoke remained queued for 50 minutes without any worker allocation. The last pool
   spans cost-effective 48 GB, newer inference, and 80 GB datacenter capacity.
 - superseded OmniVoice v1 endpoint `xbn9a1ynd6byeu`: `workersMax 1 → 0`
-- production voice endpoint `txvrmtzfc8au3b`: unchanged
+- former production voice endpoint `txvrmtzfc8au3b`: its template used the same expired
+  registry credential; the never-started production-smoke job was cancelled with
+  `cost=null`
+- auth-fixed production voice endpoint `0t5ta1alo5nzqo`: valid 24 kHz mono PCM WAV,
+  102 ms queue delay, 3,947 ms execution, `workersMin=0`, `workersMax=1`
 
 The worker-quota mutations passed the zero queued/in-progress precondition. GPU fallback
 changes were made only with zero in-progress jobs and zero running workers; the one durable
@@ -133,6 +137,12 @@ The three images were visually inspected. The RunPod job response did not report
 The allocated A40 showed USD 1.22/hour while running; after `workersMin=0` took effect,
 the worker returned to idle/ready FlashBoot state and account `currentSpendPerHr`
 returned to USD 0.
+
+The production e2e smoke also proved that the expired registry credential affected the
+OmniVoice template, not only Z-Image. A replacement endpoint using the same immutable v11
+image completed job `fd3c2e46-992b-437e-877f-79a7d50fa76c-e1`: 126,284-byte, 2.63-second,
+24 kHz mono PCM WAV. The smoke contract was corrected to the production worker's required
+`num_step=32`.
 
 After both gates pass, configure production with the guarded, dry-run-by-default command:
 

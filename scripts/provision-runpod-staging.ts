@@ -29,7 +29,7 @@ type EndpointSpec = {
   flashboot: true;
   gpuCount: 1;
   gpuTypeIds: string[];
-  idleTimeout: 5;
+  idleTimeout: 5 | 60;
   minCudaVersion: "12.1" | "12.6";
   scalerType: "QUEUE_DELAY";
   scalerValue: 4;
@@ -57,22 +57,22 @@ function workerSpecs(): WorkerSpec[] {
       key: "omnivoice",
       template: {
         imageName: requiredEnv("RUNPOD_OMNIVOICE_IMAGE"),
-        name: "heroai-omnivoice-staging-v1",
+        name: "heroai-omnivoice-production-v12-authfix",
         category: "NVIDIA",
         containerDiskInGb: 20,
         ...registry,
         dockerEntrypoint: [],
         dockerStartCmd: [],
-        env: {},
+        env: { RUNPOD_INIT_TIMEOUT: "800" },
         isPublic: false,
         isServerless: true,
         ports: [],
-        readme: "Internal HERO AI OmniVoice staging worker. Scale-to-zero only.",
+        readme: "Internal HERO AI OmniVoice production worker. Scale-to-zero only.",
         volumeInGb: 0,
         volumeMountPath: "/workspace",
       },
       endpoint: {
-        name: "heroai-omnivoice-staging-v1",
+        name: "heroai-omnivoice-production-v12-authfix",
         computeType: "GPU",
         executionTimeoutMs: 600_000,
         flashboot: true,
@@ -82,7 +82,7 @@ function workerSpecs(): WorkerSpec[] {
           "NVIDIA RTX A4500",
           "NVIDIA RTX 4000 Ada Generation",
         ],
-        idleTimeout: 5,
+        idleTimeout: 60,
         minCudaVersion: "12.1",
         scalerType: "QUEUE_DELAY",
         scalerValue: 4,

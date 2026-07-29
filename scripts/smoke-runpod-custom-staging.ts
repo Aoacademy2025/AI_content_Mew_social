@@ -85,7 +85,7 @@ function buildPayload(): Record<string, unknown> {
         op: "tts",
         text: "สวัสดีค่ะ นี่คือการทดสอบเสียงจากระบบฮีโร่เอไอ",
         voice_id: "voice_01",
-        num_step: 4,
+        num_step: 32,
         speed: 1,
       },
     };
