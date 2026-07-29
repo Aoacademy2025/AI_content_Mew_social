@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { aiAudioCeilingFor, estimateTtsAudioMinutes } from "@/lib/ai-spend-limits";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { heroVoiceGapMsAfterChunk, heroVoiceSilencePcm } from "@/lib/hero-voice-audio";
 import {
   HERO_VOICE_SPEECH_NORMALIZER_VERSION,
   splitHeroVoiceScriptForTts,
@@ -523,8 +524,10 @@ export async function startHeroVoiceGeneration(input: {
 
 async function finalizeVoiceJob(job: AiGenerationJob, state: HeroVoiceGenerationStateV1): Promise<AiGenerationJob> {
   const pcms: Buffer[] = [];
+  const effectiveDurations: number[] = [];
   let sampleRate = 0;
-  for (const chunk of state.chunks) {
+  for (let index = 0; index < state.chunks.length; index++) {
+    const chunk = state.chunks[index];
     if (!chunk.partFilename) {
       throw new HeroVoiceGenerationError("Hero Voice chunk file หาย", "OMNIVOICE_CHUNK_FILE_MISSING", 500);
     }
@@ -535,21 +538,29 @@ async function finalizeVoiceJob(job: AiGenerationJob, state: HeroVoiceGeneration
       throw new HeroVoiceGenerationError("Hero Voice ส่ง sample rate ไม่สม่ำเสมอ", "OMNIVOICE_SAMPLE_RATE_MISMATCH", 502);
     }
     pcms.push(parsed.pcm);
+    let chunkDurationMs = chunk.durationMs ?? 0;
+    const gapMs = heroVoiceGapMsAfterChunk(chunk.text, index === state.chunks.length - 1);
+    if (gapMs > 0) {
+      const silence = heroVoiceSilencePcm(sampleRate, gapMs);
+      pcms.push(silence);
+      chunkDurationMs += Math.round(pcmDurationMs(silence.length, sampleRate));
+    }
+    effectiveDurations.push(chunkDurationMs);
   }
 
   const filename = finalFilename(job.id);
   const filePath = path.join(ensureRendersDir(), filename);
   fs.writeFileSync(filePath, wavFromPcm(Buffer.concat(pcms), sampleRate));
-  const audioDurationMs = state.chunks.reduce((sum, chunk) => sum + (chunk.durationMs ?? 0), 0);
+  const audioDurationMs = effectiveDurations.reduce((sum, value) => sum + value, 0);
   const silences = await detectSilences(filePath);
   const result: HeroVoiceGenerationResult = {
     voiceUrl: `/api/renders/${filename}`,
     audioDurationMs,
     timing: {
       provider: "omnivoice",
-      segments: mergeSegmentTiming(state.chunks.map((chunk) => ({
+      segments: mergeSegmentTiming(state.chunks.map((chunk, index) => ({
         text: chunk.text,
-        durationMs: chunk.durationMs ?? 0,
+        durationMs: effectiveDurations[index],
       }))),
       chars: null,
       silences: silences.midpoints,

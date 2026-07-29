@@ -28,6 +28,8 @@ import {
   HERO_VOICE_SPEECH_NORMALIZER_VERSION,
   splitHeroVoiceScriptForTts,
 } from "@/lib/hero-voice-speech";
+import { heroVoiceGapMsAfterChunk, heroVoiceSilencePcm } from "@/lib/hero-voice-audio";
+import { polishScriptForTts } from "@/lib/tts-script-polish";
 import {
   mergeSegmentTiming,
   pcmDurationMs,
@@ -171,7 +173,7 @@ export async function POST(request: Request) {
         { status: 409 },
       );
     }
-    const fullText = typeof body?.text === "string" ? body.text.trim() : "";
+    let fullText = typeof body?.text === "string" ? body.text.trim() : "";
     const voiceId = typeof body?.voiceId === "string" && body.voiceId.trim() ? body.voiceId.trim() : "voice_01";
     const preview = body?.preview === true;
     const studio = body?.studio === true;
@@ -191,6 +193,16 @@ export async function POST(request: Request) {
         maxChars: planScriptCap,
       }, { status: 413 });
     }
+
+    // Silent pre-TTS polish (fail-open): the polished text replaces fullText
+    // BEFORE chunking, so audio, timing segments, and subtitles all derive
+    // from the same string — the spoken==displayed iron rule is preserved.
+    const polish = await polishScriptForTts(
+      { id: user.id, geminiKey: user.geminiKey, plan: user.plan },
+      fullText,
+      planScriptCap,
+    );
+    fullText = polish.text;
 
     const deadline = Date.now() + config.requestBudgetMs;
     const quota = await checkMinuteQuota(user.id);
@@ -290,7 +302,14 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: "Hero Voice ส่งรูปแบบเสียงไม่สม่ำเสมอ", retryable: true }, { status: 503 });
         }
         pcms.push(pcm);
-        durations.push(Math.round(pcmDurationMs(pcm.length, resultSampleRate)));
+        let chunkDurationMs = Math.round(pcmDurationMs(pcm.length, resultSampleRate));
+        const gapMs = heroVoiceGapMsAfterChunk(chunks[index].text, index === chunks.length - 1);
+        if (gapMs > 0) {
+          const silence = heroVoiceSilencePcm(resultSampleRate, gapMs);
+          pcms.push(silence);
+          chunkDurationMs += Math.round(pcmDurationMs(silence.length, resultSampleRate));
+        }
+        durations.push(chunkDurationMs);
         generationTimes.push(typeof result.response.generation_time === "number" ? result.response.generation_time : 0);
         delayTimes.push(result.delayTimeMs);
         executionTimes.push(result.executionTimeMs);
@@ -383,6 +402,7 @@ export async function POST(request: Request) {
           inputJson: JSON.stringify({
             voiceId,
             speed,
+            script: fullText,
             scriptChars: fullText.length,
             backend: config.backend,
             segments: chunks.length,

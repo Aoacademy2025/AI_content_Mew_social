@@ -55,6 +55,8 @@ import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { resolveJobTtsProvider } from "@/lib/tts-providers";
+import { expandThaiSpeechAbbreviations } from "@/lib/hero-voice-speech";
+import { polishScriptForTts } from "@/lib/tts-script-polish";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import {
   advanceHeroVoiceGeneration,
@@ -110,6 +112,12 @@ export interface OrchestratorDeps {
 
 interface CreateInput {
   script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs" | "omnivoice"; voiceId?: string;
+  /**
+   * Set by the worker after the one-time silent pre-TTS polish + abbreviation
+   * expansion ran and the result was persisted back into inputJson. Guarantees
+   * a requeued/resumed job replays with the exact text the first run spoke.
+   */
+  scriptPolished?: boolean;
   /** OmniVoice voice_id — defaults to voice_01 only for legacy saved jobs. */
   omniVoiceId?: string;
   /** Backend pinned by the accepting server; never selected by a browser. */
@@ -482,6 +490,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (job.userId !== userId) { await failJob(jobId, "forbidden: job/user mismatch"); return; } // defense-in-depth (IDOR guard)
     const input = JSON.parse(job.inputJson) as CreateInput;
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
+    // One-time silent pre-TTS pass, shared by EVERY provider (Gemini/ElevenLabs/
+    // Hero Voice): Gemini polish (fail-open) + deterministic abbreviation
+    // expansion (จนท. → เจ้าหน้าที่, …) as the backstop when polish is skipped.
+    // The result is persisted into inputJson so a requeued/resumed job replays
+    // with the exact text the first run spoke — captions can never drift.
+    if (!input.scriptPolished && typeof input.script === "string" && input.script.trim()) {
+      const polished = await polishScriptForTts(
+        { id: user.id, geminiKey: user.geminiKey, plan: user.plan },
+        input.script,
+        20_000,
+      );
+      input.script = expandThaiSpeechAbbreviations(polished.text);
+      input.scriptPolished = true;
+      await prisma.videoJob.update({ where: { id: jobId }, data: { inputJson: JSON.stringify(input) } });
+    }
     const requestedProvider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider);
     if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(user)) {
       throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ กรุณาติดต่อทีมงานก่อนลองสร้างด้วย Hero Voice อีกครั้ง");

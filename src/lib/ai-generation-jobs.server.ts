@@ -17,6 +17,7 @@ export type PublicAiGenerationJob = {
   quoteVersion: string | null;
   status: string;
   inputPreview: string | null;
+  inputText: string | null;
   input: Record<string, unknown> | null;
   voiceResult: HeroVoiceGenerationResult | null;
   outputUrl: string | null;
@@ -43,6 +44,27 @@ function parseInput(value: string | null): Record<string, unknown> | null {
   }
 }
 
+function extractInputText(job: AiGenerationJob): string | null {
+  const parsed = parseInput(job.inputJson);
+  if (parsed) {
+    if (typeof parsed.prompt === "string" && parsed.prompt.trim()) return parsed.prompt;
+    if (typeof parsed.script === "string" && parsed.script.trim()) return parsed.script;
+    if (Array.isArray(parsed.chunks)) {
+      const text = parsed.chunks
+        .map((chunk) => {
+          if (!chunk || typeof chunk !== "object") return "";
+          const chunkText = (chunk as Record<string, unknown>).text;
+          return typeof chunkText === "string" ? chunkText : "";
+        })
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (text) return text;
+    }
+  }
+  return job.inputPreview;
+}
+
 export function publicAiGenerationJob(job: AiGenerationJob): PublicAiGenerationJob {
   const input = job.kind === "voice"
     ? { voiceId: job.model, backend: job.provider }
@@ -57,6 +79,7 @@ export function publicAiGenerationJob(job: AiGenerationJob): PublicAiGenerationJ
     quoteVersion: job.quoteVersion,
     status: job.status,
     inputPreview: job.inputPreview,
+    inputText: extractInputText(job),
     input,
     voiceResult: heroVoiceResultFromJob(job),
     outputUrl: job.outputUrl,

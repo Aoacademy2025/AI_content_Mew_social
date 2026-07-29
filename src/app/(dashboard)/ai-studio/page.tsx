@@ -6,6 +6,7 @@ import {
   Check,
   Cloud,
   Coins,
+  Copy,
   Download,
   ImageIcon,
   Loader2,
@@ -47,6 +48,7 @@ type StudioJob = {
   quoteVersion: string | null;
   status: string;
   inputPreview: string | null;
+  inputText: string | null;
   input: Record<string, unknown> | null;
   voiceResult: {
     voiceUrl: string;
@@ -111,9 +113,21 @@ function JobState({ job }: { job: StudioJob }) {
 }
 
 function ResultItem({ job }: { job: StudioJob }) {
+  const [expanded, setExpanded] = useState(false);
   const engineLabel = job.kind === "voice"
     ? "Hero Voice"
     : job.provider === "runpod" ? "RunPod AI" : "Cloud API";
+  const inputText = job.inputText || job.inputPreview || "";
+  const expandable = inputText.length > 80;
+
+  const copyInputText = async () => {
+    try {
+      await navigator.clipboard.writeText(inputText);
+      toast.success(job.kind === "voice" ? "คัดลอกสคริปต์แล้ว" : "คัดลอก prompt แล้ว");
+    } catch {
+      toast.error("คัดลอกไม่สำเร็จ");
+    }
+  };
   return (
     <article className="group overflow-hidden border-b py-5 first:pt-0" style={{ borderColor: "var(--ui-divider)" }}>
       {job.kind === "image" && job.outputUrl ? (
@@ -146,9 +160,37 @@ function ResultItem({ job }: { job: StudioJob }) {
       ) : null}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="line-clamp-2 text-sm font-medium leading-relaxed" style={{ color: "var(--ui-text-primary)" }}>
-            {job.inputPreview || (job.kind === "voice" ? "เสียงจาก Hero Voice" : "AI artwork")}
+          <p
+            className={`${expanded ? "" : "line-clamp-2 "}whitespace-pre-wrap text-sm font-medium leading-relaxed${expandable ? " cursor-pointer" : ""}`}
+            style={{ color: "var(--ui-text-primary)" }}
+            onClick={expandable ? () => setExpanded((current) => !current) : undefined}
+          >
+            {inputText || (job.kind === "voice" ? "เสียงจาก Hero Voice" : "AI artwork")}
           </p>
+          {(expandable || inputText) && (
+            <div className="mt-1 flex items-center gap-3">
+              {expandable && (
+                <button
+                  type="button"
+                  className="text-[11px] font-medium hover:underline"
+                  style={{ color: ACCENT }}
+                  onClick={() => setExpanded((current) => !current)}
+                >
+                  {expanded ? "ย่อ" : "ดูเพิ่มเติม"}
+                </button>
+              )}
+              {inputText && (
+                <button
+                  type="button"
+                  className="flex items-center gap-1 text-[11px] hover:underline"
+                  style={{ color: "var(--ui-text-muted)" }}
+                  onClick={copyInputText}
+                >
+                  <Copy className="h-3 w-3" />คัดลอก
+                </button>
+              )}
+            </div>
+          )}
           <p className="mt-1 text-[10px]" style={{ color: "var(--ui-text-muted)" }}>
             {formatJobTime(job.createdAt)} · {engineLabel} · {job.providerModel || job.model}
           </p>
@@ -522,7 +564,7 @@ export default function AiStudioPage() {
                       <div>
                         <label htmlFor="voice-speed" className="mb-2 block text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ความเร็ว</label>
                         <select id="voice-speed" value={speed} onChange={(event) => setSpeed(Number(event.target.value))} className="h-12 w-full rounded-xl px-4 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }}>
-                          <option value={0.85}>ช้า · 0.85×</option><option value={1}>ปกติ · 1×</option><option value={1.15}>เร็ว · 1.15×</option><option value={1.3}>เร็วมาก · 1.3×</option>
+                          <option value={0.85}>ช้า · 0.85×</option><option value={0.9}>ช้าเล็กน้อย · 0.9×</option><option value={0.95}>สบาย ๆ · 0.95×</option><option value={1}>ปกติ · 1×</option><option value={1.15}>เร็ว · 1.15×</option><option value={1.3}>เร็วมาก · 1.3×</option>
                         </select>
                       </div>
                     </div>

@@ -94,7 +94,7 @@ export async function POST(request: Request) {
       userId: user.id,
       model: model.id,
       inputPreview: previewGenerationInput(prompt),
-      inputJson: JSON.stringify({ engine, aspectRatio, style, seed, width, height, artworkOnly: true }),
+      inputJson: JSON.stringify({ prompt, engine, aspectRatio, style, seed, width, height, artworkOnly: true }),
       creditCost,
       quoteVersion: preparedProviderJob.quote.version,
       costBudgetUsdMicros: preparedProviderJob.quote.costBudgetUsdMicros,

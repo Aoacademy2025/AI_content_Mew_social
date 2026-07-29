@@ -11,6 +11,8 @@ import {
   isValidOmniVoiceId,
   OmniVoiceConfigError,
 } from "@/lib/omnivoice";
+import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
+import { polishScriptForTts } from "@/lib/tts-script-polish";
 
 export const runtime = "nodejs";
 
@@ -30,10 +32,21 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "voiceId ไม่ถูกต้อง" }, { status: 400 });
     }
 
+    // Silent pre-TTS polish (fail-open) — same rule as the video-editor route:
+    // the polished text is what gets chunked, spoken, and timed, so subtitles
+    // always match the audio.
+    const polishedText = text
+      ? (await polishScriptForTts(
+          { id: user.id, geminiKey: user.geminiKey, plan: user.plan },
+          text,
+          omnivoiceScriptCharCapForPlan(user.plan),
+        )).text
+      : text;
+
     const result = await startHeroVoiceGeneration({
       userId: user.id,
       plan: user.plan,
-      text,
+      text: polishedText,
       voiceId,
       speed,
       studio: true,

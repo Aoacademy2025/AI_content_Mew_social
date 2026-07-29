@@ -79,7 +79,63 @@ const THAI_SPEECH_UNIT_RE = new RegExp(
   "giu",
 );
 
-export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-07-24.1";
+export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-07-27.1";
+
+// Common Thai abbreviations expanded to their full spoken form. Longest-first
+// so compound forms (ตร.กม.) win over their prefixes (ตร.). Guards: never
+// followed by another dotted Thai letter (protects ส.ค.ส. from reading as
+// สิงหาคม) and never preceded by "/" (protects the กม./ชม. speech unit).
+// `guardThaiPrefix` additionally rejects a Thai character right before the
+// match — only for short forms that are also the tail of real words
+// (เมตร. → ตร., ชื่นชม. → ชม., ต้นสน. → สน., บิดร. → ดร., วานร. → นร., สรร. → รร.);
+// the rest must stay unguarded because Thai runs words together (และกรุงเทพฯ).
+const THAI_SPEECH_ABBREVIATIONS: ReadonlyArray<{ written: string; spoken: string; guardThaiPrefix?: boolean }> = [
+  { written: "ตร.กม.", spoken: "ตารางกิโลเมตร" },
+  { written: "ตร.ม.", spoken: "ตารางเมตร" },
+  { written: "ตร.ว.", spoken: "ตารางวา" },
+  { written: "กรุงเทพฯ", spoken: "กรุงเทพมหานคร" },
+  { written: "กทม.", spoken: "กรุงเทพมหานคร" },
+  { written: "จนท.", spoken: "เจ้าหน้าที่" },
+  { written: "ปชช.", spoken: "ประชาชน" },
+  { written: "ครม.", spoken: "คณะรัฐมนตรี" },
+  { written: "น.ส.", spoken: "นางสาว" },
+  { written: "ด.ช.", spoken: "เด็กชาย" },
+  { written: "ด.ญ.", spoken: "เด็กหญิง" },
+  { written: "นพ.", spoken: "นายแพทย์" },
+  { written: "พญ.", spoken: "แพทย์หญิง" },
+  { written: "ดร.", spoken: "ดอกเตอร์", guardThaiPrefix: true },
+  { written: "ผอ.", spoken: "ผู้อำนวยการ" },
+  { written: "นร.", spoken: "นักเรียน", guardThaiPrefix: true },
+  { written: "นศ.", spoken: "นักศึกษา" },
+  { written: "ร.ร.", spoken: "โรงเรียน" },
+  { written: "รร.", spoken: "โรงเรียน", guardThaiPrefix: true },
+  { written: "รพ.", spoken: "โรงพยาบาล" },
+  { written: "สน.", spoken: "สถานีตำรวจ", guardThaiPrefix: true },
+  { written: "สภ.", spoken: "สถานีตำรวจภูธร" },
+  { written: "ชม.", spoken: "ชั่วโมง", guardThaiPrefix: true },
+  { written: "ตร.", spoken: "ตำรวจ", guardThaiPrefix: true },
+  { written: "ส.ส.", spoken: "สมาชิกสภาผู้แทนราษฎร" },
+  { written: "ส.ว.", spoken: "สมาชิกวุฒิสภา" },
+  { written: "ม.ค.", spoken: "มกราคม" },
+  { written: "ก.พ.", spoken: "กุมภาพันธ์" },
+  { written: "มี.ค.", spoken: "มีนาคม" },
+  { written: "เม.ย.", spoken: "เมษายน" },
+  { written: "พ.ค.", spoken: "พฤษภาคม" },
+  { written: "มิ.ย.", spoken: "มิถุนายน" },
+  { written: "ก.ค.", spoken: "กรกฎาคม" },
+  { written: "ส.ค.", spoken: "สิงหาคม" },
+  { written: "ก.ย.", spoken: "กันยายน" },
+  { written: "ต.ค.", spoken: "ตุลาคม" },
+  { written: "พ.ย.", spoken: "พฤศจิกายน" },
+  { written: "ธ.ค.", spoken: "ธันวาคม" },
+];
+const THAI_SPEECH_ABBREVIATION_RULES = THAI_SPEECH_ABBREVIATIONS.map((entry) => ({
+  pattern: new RegExp(
+    `(?<!${entry.guardThaiPrefix ? "[\\u0E00-\\u0E7F/]" : "/"})${escapeRegExp(entry.written)}(?![\\u0E00-\\u0E7F]\\.)`,
+    "gu",
+  ),
+  spoken: entry.spoken,
+}));
 
 export type HeroVoiceSpeechRiskCode =
   | "ambiguous_numeric_slash"
@@ -236,10 +292,31 @@ function normalizeThaiSpeechDates(text: string): string {
   );
 }
 
+// ชม. glued straight onto a Thai number/quantifier word ("สามชม.", "หลายชม.") is
+// blocked by guardThaiPrefix (which protects ชื่นชม.) — this positive-lookbehind
+// companion rule catches exactly those numeric usages.
+const THAI_HOUR_AFTER_QUANTIFIER_RE =
+  /(?<=หนึ่ง|สอง|สาม|สี่|ห้า|หก|เจ็ด|แปด|เก้า|สิบ|เอ็ด|กี่|หลาย|ครึ่ง|บาง)ชม\.(?![฀-๿]\.)/gu;
+
 function normalizeThaiSpeechAbbreviations(text: string): string {
-  return text
+  const base = text
     .replace(/พ\.ศ\./gu, "พุทธศักราช")
     .replace(/ค\.ศ\./gu, "คริสต์ศักราช");
+  return THAI_SPEECH_ABBREVIATION_RULES.reduce(
+    (result, rule) => result.replace(rule.pattern, rule.spoken),
+    base,
+  ).replace(THAI_HOUR_AFTER_QUANTIFIER_RE, "ชั่วโมง");
+}
+
+/**
+ * Public script-level pass: expand Thai abbreviations to their full spoken
+ * form. Used by the video pipeline BEFORE TTS so every provider (Gemini/
+ * ElevenLabs/Hero Voice) reads full words AND the subtitles show the same
+ * text that is spoken. Deterministic and idempotent (expanded text contains
+ * no abbreviations), so job requeues replay byte-identically.
+ */
+export function expandThaiSpeechAbbreviations(text: string): string {
+  return normalizeThaiSpeechAbbreviations(text);
 }
 
 function normalizeThaiSpeechRanges(text: string): string {
