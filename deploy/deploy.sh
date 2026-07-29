@@ -88,6 +88,8 @@ echo "=== [5/6] Build (heap: ${BUILD_HEAP_MB}MB, worker heap: ${BUILD_WORKER_HEA
 STAGING_DIR="$APP_DIR/.next-staging"
 export NEXT_DIST_DIR=".next-staging"
 run_next_build() {
+  local media_root
+  local media_shadow
   rm -rf "$STAGING_DIR"
   mkdir -p "$STAGING_DIR"
   # Preserve the webpack/SWC build cache from the LIVE .next so the compile is
@@ -99,9 +101,33 @@ run_next_build() {
   if [ -d "$APP_DIR/.next/cache" ]; then
     cp -a "$APP_DIR/.next/cache" "$STAGING_DIR/cache" 2>/dev/null || true
   fi
-  if ! npm run build; then
+
+  # Next traces dynamic filesystem reads before applying NFT exclusions. On a
+  # live media host that made the build enumerate thousands of runtime renders
+  # and stocks, consuming almost all RAM even though none belongs in the bundle.
+  # A private mount namespace gives only the build empty views of those roots;
+  # the running web/workers continue to see the real files on the host.
+  for media_root in "$APP_DIR/public/renders" "$APP_DIR/stocks"; do
+    if [ ! -d "$media_root" ] || [ -L "$media_root" ]; then
+      echo "ERROR: unsafe runtime media root for isolated build: $media_root"
+      return 1
+    fi
+  done
+  mkdir -p "$APP_DIR/.tmp"
+  media_shadow="$(mktemp -d "$APP_DIR/.tmp/next-build-media.XXXXXX")"
+  if ! unshare --mount --propagation private sh -c '
+    set -eu
+    media_shadow="$1"
+    app_dir="$2"
+    mount --bind "$media_shadow" "$app_dir/public/renders"
+    mount --bind "$media_shadow" "$app_dir/stocks"
+    cd "$app_dir"
+    npm run build
+  ' sh "$media_shadow" "$APP_DIR"; then
+    rmdir "$media_shadow"
     return 1
   fi
+  rmdir "$media_shadow"
   test -f "$STAGING_DIR/BUILD_ID"
 }
 
