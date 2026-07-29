@@ -13,7 +13,7 @@ WorkingDirectory=/var/www/ai-content
 Environment=NODE_ENV=production
 Environment=DOTENV_CONFIG_PATH=/var/www/ai-content/.env.r2.production
 Environment=MEDIA_LOCAL_EVICTION=1
-ExecStart=/usr/bin/flock --exclusive --wait 600 /run/lock/heroai-media-storage.lock /var/www/ai-content/node_modules/.bin/tsx scripts/evict-local-media.ts --apply --olderThanDays=3 --includeStocks --maxObjects=250 --maxBytesMb=20480
+ExecStart=/usr/bin/flock --exclusive --wait 3600 /run/lock/heroai-media-storage.lock /var/www/ai-content/node_modules/.bin/tsx scripts/evict-local-media.ts --apply --olderThanDays=3 --includeStocks --maxObjects=250 --maxBytesMb=20480
 
 Nice=15
 CPUWeight=10
