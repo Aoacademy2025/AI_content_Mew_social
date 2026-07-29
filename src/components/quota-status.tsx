@@ -18,6 +18,13 @@ interface QuotaData {
   minutes?: MinutesQuota;
 }
 
+interface CreditBalance {
+  granted: number;
+  purchased: number;
+  total: number;
+  live: boolean;
+}
+
 interface QuotaStatusProps {
   /** "chip" = compact inline pill (default); "row" = fuller one-line block for settings */
   variant?: "chip" | "row";
@@ -46,22 +53,37 @@ function isLowQuota(remaining: number, limit: number): boolean {
 
 export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaStatusProps) {
   const [quota, setQuota] = useState<QuotaData | null>(null);
+  const [credits, setCredits] = useState<CreditBalance | null>(null);
   // null = loading, "error" = failed silently
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/videos/usage", { cache: "no-store" })
-      .then(r => {
-        if (!r.ok) return null;
-        return r.json() as Promise<QuotaData & { minutes?: MinutesQuota }>;
-      })
-      .then(data => {
-        if (!cancelled) setQuota(data);
-      })
-      .catch(() => {
-        // fail-soft: never throw, never block the page
+    function refreshBalances() {
+      void Promise.all([
+        fetch("/api/videos/usage", { cache: "no-store" })
+          .then(r => r.ok ? r.json() as Promise<QuotaData> : null)
+          .catch(() => null),
+        fetch("/api/credits/balance", { cache: "no-store" })
+          .then(r => r.ok ? r.json() as Promise<CreditBalance> : null)
+          .catch(() => null),
+      ]).then(([nextQuota, nextCredits]) => {
+        if (cancelled) return;
+        if (nextQuota) setQuota(nextQuota);
+        if (nextCredits) setCredits(nextCredits);
       });
-    return () => { cancelled = true; };
+    }
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") refreshBalances();
+    }
+
+    refreshBalances();
+    window.addEventListener("focus", refreshBalances);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refreshBalances);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
@@ -74,61 +96,78 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
     ? isLowQuota(mins.remaining, mins.limit)
     : isLowQuota(quota.remaining, quota.limit);
   const resetStr = formatThaiDate(quota.resetAt);
+  const liveCredits = credits?.live ? credits : null;
 
   if (variant === "chip") {
     // Minutes-based chip (primary) — falls back to clip display if minutes absent
     if (mins) {
       return (
-        <div
-          className={cn(
-            "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium select-none",
-            low
-              ? "bg-amber-500/15 border border-amber-500/30 text-amber-300"
-              : "bg-white/5 border border-white/8 text-white/45",
-            className
-          )}
-          title={`แผน ${quota.plan} · เหลือ ${mins.remaining}/${mins.limit} นาที · รีเซ็ต ${resetStr}`}
-          aria-label={`โควต้า: เหลือ ${mins.remaining} จาก ${mins.limit} นาที รีเซ็ต ${resetStr}`}
-        >
-          {low && (
-            <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden />
-          )}
-          <span>
+        <div className={cn("inline-flex flex-wrap items-center gap-1.5", className)}>
+          <div
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-medium select-none",
+              low
+                ? "border-amber-500/30 bg-amber-500/15 text-amber-300"
+                : "border-white/8 bg-white/5 text-white/45",
+            )}
+            title={`แผน ${quota.plan} · โควต้านาทีเหลือ ${mins.remaining}/${mins.limit} · รีเซ็ต ${resetStr}`}
+            aria-label={`โควต้านาที: เหลือ ${mins.remaining} จาก ${mins.limit} นาที รีเซ็ต ${resetStr}`}
+          >
+            {low && (
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" aria-hidden />
+            )}
+            <span>โควต้านาที</span>
             <span className={cn("font-semibold", low ? "text-amber-200" : "text-white/70")}>
               {mins.remaining}/{mins.limit}
-            </span>{" "}
-            นาที
-          </span>
+            </span>
+          </div>
+          {liveCredits && (
+            <a
+              href="/settings#credits"
+              className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/8 px-2.5 py-1 text-[10px] font-medium text-emerald-200/80 transition-colors hover:border-emerald-400/35 hover:text-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+              title={`Hero credits คงเหลือ ${liveCredits.total.toLocaleString()} · ดูรายละเอียด`}
+              aria-label={`Hero credits คงเหลือ ${liveCredits.total.toLocaleString()} ดูรายละเอียด`}
+            >
+              <span>Hero credits</span>
+              <strong className="font-semibold text-emerald-100">{liveCredits.total.toLocaleString()}</strong>
+            </a>
+          )}
         </div>
       );
     }
 
     // Fallback: clip-based chip (minutes not in response)
     return (
-      <div
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium select-none",
-          low
-            ? "bg-amber-500/15 border border-amber-500/30 text-amber-300"
-            : "bg-white/5 border border-white/8 text-white/45",
-          className
-        )}
-        title={`แผน ${quota.plan} · ใช้ไป ${quota.used}/${quota.limit} คลิป · รีเซ็ต ${resetStr}`}
-        aria-label={`โควต้าคลิป: ใช้ไป ${quota.used} จาก ${quota.limit} คลิป เหลือ ${quota.remaining} คลิป รีเซ็ต ${resetStr}`}
-      >
-        {low && (
-          <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden />
-        )}
-        <span>
-          ใช้ไป{" "}
+      <div className={cn("inline-flex flex-wrap items-center gap-1.5", className)}>
+        <div
+          className={cn(
+            "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-medium select-none",
+            low
+              ? "border-amber-500/30 bg-amber-500/15 text-amber-300"
+              : "border-white/8 bg-white/5 text-white/45",
+          )}
+          title={`แผน ${quota.plan} · ใช้ไป ${quota.used}/${quota.limit} คลิป · รีเซ็ต ${resetStr}`}
+          aria-label={`โควต้าคลิป: ใช้ไป ${quota.used} จาก ${quota.limit} คลิป เหลือ ${quota.remaining} คลิป รีเซ็ต ${resetStr}`}
+        >
+          {low && (
+            <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" aria-hidden />
+          )}
+          <span>โควต้าคลิป</span>
           <span className={cn("font-semibold", low ? "text-amber-200" : "text-white/70")}>
-            {quota.used}/{quota.limit}
-          </span>{" "}
-          คลิป · เหลือ{" "}
-          <span className={cn("font-semibold", low ? "text-amber-200" : "text-white/70")}>
-            {quota.remaining}
+            {quota.remaining}/{quota.limit}
           </span>
-        </span>
+        </div>
+        {liveCredits && (
+          <a
+            href="/settings#credits"
+            className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/8 px-2.5 py-1 text-[10px] font-medium text-emerald-200/80 transition-colors hover:border-emerald-400/35 hover:text-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+            title={`Hero credits คงเหลือ ${liveCredits.total.toLocaleString()} · ดูรายละเอียด`}
+            aria-label={`Hero credits คงเหลือ ${liveCredits.total.toLocaleString()} ดูรายละเอียด`}
+          >
+            <span>Hero credits</span>
+            <strong className="font-semibold text-emerald-100">{liveCredits.total.toLocaleString()}</strong>
+          </a>
+        )}
       </div>
     );
   }
@@ -164,7 +203,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
             : "bg-white/4 border border-white/7",
           className
         )}
-        aria-label={`โควต้า: เหลือ ${mins.remaining} จาก ${mins.limit} นาที · รีเซ็ต ${resetStr}`}
+        aria-label={`โควต้านาที: เหลือ ${mins.remaining} จาก ${mins.limit} นาที · รีเซ็ต ${resetStr}${liveCredits ? ` · Hero credits ${liveCredits.total}` : ""}`}
       >
         {/* Plan badge */}
         <span className="text-[10px] font-bold tracking-widest px-2 py-0.5 rounded-full" style={planBadgeStyle}>
@@ -175,13 +214,22 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
         <span className={cn("flex items-center gap-1", low ? "text-amber-300" : "text-white/55")}>
           {low && <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden />}
           <span>
-            เหลือ{" "}
+            โควต้านาที · เหลือ{" "}
             <strong className={low ? "text-amber-200" : "text-white/80"}>
               {mins.remaining}/{mins.limit}
             </strong>{" "}
             นาที
           </span>
         </span>
+
+        {liveCredits && (
+          <a
+            href="#credits"
+            className="text-xs font-medium text-emerald-300/80 transition-colors hover:text-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+          >
+            Hero credits <strong className="text-emerald-200">{liveCredits.total.toLocaleString()}</strong>
+          </a>
+        )}
 
         {/* Reset date */}
         <span className="text-white/30 text-xs">
@@ -225,7 +273,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
       <span className={cn("flex items-center gap-1", low ? "text-amber-300" : "text-white/55")}>
         {low && <span className="h-1.5 w-1.5 rounded-full bg-amber-400 shrink-0" aria-hidden />}
         <span>
-          ใช้ไป{" "}
+          โควต้าคลิป · ใช้ไป{" "}
           <strong className={low ? "text-amber-200" : "text-white/80"}>
             {quota.used}/{quota.limit}
           </strong>{" "}
@@ -236,6 +284,15 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
           คลิป
         </span>
       </span>
+
+      {liveCredits && (
+        <a
+          href="#credits"
+          className="text-xs font-medium text-emerald-300/80 transition-colors hover:text-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
+        >
+          Hero credits <strong className="text-emerald-200">{liveCredits.total.toLocaleString()}</strong>
+        </a>
+      )}
 
       {/* Reset date */}
       <span className="text-white/30 text-xs">

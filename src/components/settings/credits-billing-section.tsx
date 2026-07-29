@@ -135,7 +135,7 @@ export function CreditsBillingSection() {
   if (!balance || !balance.live) return null;
 
   return (
-    <div className="space-y-4 pt-6 border-t border-white/5">
+    <div id="credits" className="scroll-mt-6 space-y-4 pt-6 border-t border-white/5">
       {/* Section header */}
       <div className="flex items-center gap-2">
         <Coins
