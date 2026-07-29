@@ -5,6 +5,7 @@ import { ensureMonthlyGrant, getBalance } from "@/lib/credits";
 import { durationCapSecFor } from "@/lib/plan-limits";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
+import { omnivoiceBackendName } from "@/lib/omnivoice";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { apiError } from "@/lib/api-error";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
@@ -34,6 +35,9 @@ export async function GET() {
       }),
       voice: {
         available: isOmniVoiceUserAllowed(user),
+        // hostinger/local backend has no durable queue — the studio client
+        // must call the synchronous tts-omnivoice route instead.
+        backend: omnivoiceBackendName(),
         maxDurationSec: durationCapSecFor(user.plan),
         maxScriptChars: omnivoiceScriptCharCapForPlan(user.plan),
       },

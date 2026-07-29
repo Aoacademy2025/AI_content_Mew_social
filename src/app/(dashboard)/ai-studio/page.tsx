@@ -33,7 +33,7 @@ type ImageModel = {
 };
 type Catalog = {
   imageModels: ImageModel[];
-  voice: { available: boolean; maxDurationSec: number; maxScriptChars: number };
+  voice: { available: boolean; backend?: "runpod" | "hostinger"; maxDurationSec: number; maxScriptChars: number };
   plan: string;
   balance: { granted: number; purchased: number; total: number };
 };
@@ -357,21 +357,36 @@ export default function AiStudioPage() {
     if (!script.trim() || !voiceId) return;
     setSubmitting(true);
     try {
-      const response = await fetch("/api/ai-studio/voices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: script,
-          voiceId,
-          speed,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
-      const job = data.job as StudioJob;
-      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-      toast.success(job.status === "completed" ? "สร้างเสียงสำเร็จ" : "ส่งงานสร้างเสียงแล้ว");
+      // hostinger/local backend ไม่มี durable queue — ใช้ route synchronous ที่
+      // บันทึกประวัติเข้า AI Studio ให้อยู่แล้ว (studio: true)
+      const durable = (catalog?.voice.backend ?? "runpod") === "runpod";
+      if (durable) {
+        const response = await fetch("/api/ai-studio/voices", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text: script,
+            voiceId,
+            speed,
+            idempotencyKey: crypto.randomUUID(),
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
+        const job = data.job as StudioJob;
+        setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+        toast.success(job.status === "completed" ? "สร้างเสียงสำเร็จ" : "ส่งงานสร้างเสียงแล้ว");
+      } else {
+        const response = await fetch("/api/videos/tts-omnivoice", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: script, voiceId, speed, studio: true }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
+        await loadJobs().catch(() => {});
+        toast.success("สร้างเสียงสำเร็จ");
+      }
       setScript("");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "สร้างเสียงไม่สำเร็จ");

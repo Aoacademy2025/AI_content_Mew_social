@@ -115,6 +115,11 @@ function parseBackend(value: string | undefined): OmniVoiceBackend {
   return value?.trim().toLowerCase() === "runpod" ? "runpod" : "hostinger";
 }
 
+/** Current rollout backend name, without requiring a full (throwing) config. */
+export function omnivoiceBackendName(): OmniVoiceBackend {
+  return parseBackend(process.env.OMNIVOICE_BACKEND);
+}
+
 /** Resolve one immutable backend configuration. A VideoJob records this backend
  * when it is accepted, so a later rollout switch cannot move that job between
  * providers halfway through its pipeline. */
