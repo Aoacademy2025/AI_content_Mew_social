@@ -94,7 +94,7 @@ function workerSpecs(): WorkerSpec[] {
       key: "z-image",
       template: {
         imageName: requiredEnv("RUNPOD_Z_IMAGE_IMAGE"),
-        name: "heroai-z-image-turbo-staging-v1",
+        name: "heroai-z-image-turbo-production-v2",
         category: "NVIDIA",
         // The verified private image is 28.17 GB compressed. Reserve enough
         // space for layer extraction plus ComfyUI's runtime files.
@@ -102,25 +102,28 @@ function workerSpecs(): WorkerSpec[] {
         ...registry,
         dockerEntrypoint: [],
         dockerStartCmd: [],
-        env: {},
+        // The private BF16 image is ~28 GB compressed and a fresh host needs
+        // longer than RunPod's default seven-minute initialization window.
+        env: { RUNPOD_INIT_TIMEOUT: "800" },
         isPublic: false,
         isServerless: true,
         ports: [],
-        readme: "Internal HERO AI Z-Image Turbo BF16 quality-baseline worker. Scale-to-zero only.",
+        readme: "Internal HERO AI Z-Image Turbo BF16 production worker. Scale-to-zero only.",
         volumeInGb: 0,
         volumeMountPath: "/workspace",
       },
       endpoint: {
-        name: "heroai-z-image-turbo-staging-v1",
+        name: "heroai-z-image-turbo-production-v3",
         computeType: "GPU",
         executionTimeoutMs: 600_000,
         flashboot: true,
         gpuCount: 1,
         // Use the cost-effective 48 GB class for the BF16 baseline so the first
         // benchmark is deterministic. Test 24 GB/quantized variants later.
-        // Keep a cost-effective Ampere option first, then use Ada Pro 48 GB
-        // fallbacks so production does not depend on one scarce GPU pool.
-        gpuTypeIds: ["NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40S"],
+        // Keep a cost-effective 48 GB option first, then span newer inference
+        // and 80 GB datacenter pools so production does not depend on one
+        // scarce hardware generation.
+        gpuTypeIds: ["NVIDIA A40", "NVIDIA L40S", "NVIDIA A100 80GB PCIe"],
         idleTimeout: 5,
         minCudaVersion: "12.6",
         scalerType: "QUEUE_DELAY",

@@ -39,15 +39,18 @@ async function main() {
   if (process.env.AI_STUDIO_IMAGE_ENABLED !== "1" || process.env.CREDITS_LIVE !== "1") {
     throw new Error("Hero AI Image flags are not live");
   }
-  if (process.env.AI_STUDIO_Z_IMAGE_ROUTE === "custom") {
-    throw new Error("Smoke refuses the custom Z-Image route; expected RunPod Public");
+  if (process.env.AI_STUDIO_Z_IMAGE_ROUTE !== "custom") {
+    throw new Error("Smoke requires the isolated custom Z-Image route");
+  }
+  if (!process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID || !process.env.RUNPOD_IMAGE_Z_IMAGE_WORKFLOW_PATH) {
+    throw new Error("Custom Z-Image configuration is incomplete");
   }
 
   const before = await getBalance(user.id);
   const idempotencyKey = `ops-hero-ai-${Date.now()}`;
   const job = await createVideoJob(user.id, {
     script,
-    title: "Hero AI RunPod production smoke",
+    title: "Hero AI custom RunPod production smoke",
     previewMode: true,
     voiceProvider: "omnivoice",
     omniVoiceId: "voice_02",

@@ -120,7 +120,11 @@ export async function generateHeroImageForVideo(input: {
   interfaceExpected?: boolean;
   timeoutMs?: number;
 }): Promise<HeroImageGenerationResult> {
-  const timeoutMs = Math.max(30_000, Math.min(input.timeoutMs ?? 540_000, 600_000));
+  // The verified private BF16 image needs about ten minutes for a completely
+  // fresh 28 GB pull, while FlashBoot revivals complete in seconds. Keep the
+  // wait bounded above the worker's 800-second initialization ceiling so the
+  // exact provider job can still be cancelled and refunded on exhaustion.
+  const timeoutMs = Math.max(30_000, Math.min(input.timeoutMs ?? 840_000, 900_000));
   const deadline = Date.now() + timeoutMs;
   const aspectRatio = "9:16" as const;
   const style = input.style ?? "photoreal";

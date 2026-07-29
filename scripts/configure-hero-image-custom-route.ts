@@ -3,7 +3,7 @@ import path from "node:path";
 
 const desired = {
   AI_STUDIO_Z_IMAGE_ROUTE: "custom",
-  RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID: "0c6eadcsuhuhor",
+  RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID: "e10knh9zjtr2pl",
   RUNPOD_IMAGE_Z_IMAGE_WORKFLOW_PATH: "config/ai-workflows/z-image-turbo.json",
   AI_IMAGE_Z_IMAGE_TURBO_ESTIMATED_COST_USD_MICROS: "50000",
   AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED: "0",
