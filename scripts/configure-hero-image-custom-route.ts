@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const disable = process.argv.includes("--disable");
 const desired = {
-  AI_STUDIO_Z_IMAGE_ROUTE: "custom",
+  AI_STUDIO_Z_IMAGE_ROUTE: disable ? "disabled" : "custom",
   RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID: "e10knh9zjtr2pl",
   RUNPOD_IMAGE_Z_IMAGE_WORKFLOW_PATH: "config/ai-workflows/z-image-turbo.json",
   RUNPOD_OMNIVOICE_ENDPOINT_ID: "0t5ta1alo5nzqo",
@@ -37,7 +38,7 @@ for (const [key, value] of Object.entries(desired)) {
 }
 const next = `${updated.join("\n").replace(/\n+$/u, "")}\n`;
 console.log(JSON.stringify({
-  mode: apply ? "apply" : "dry-run",
+  mode: apply ? (disable ? "disable-apply" : "apply") : (disable ? "disable-dry-run" : "dry-run"),
   envPath,
   desired,
   changed: next !== original,

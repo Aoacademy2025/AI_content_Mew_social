@@ -110,11 +110,20 @@ for (const model of AI_IMAGE_MODELS) {
         try {
           const source = fs.readFileSync(workflowPath, "utf8");
           const parsed = JSON.parse(source);
-          const requiredTokens = ["{{PROMPT}}", "{{NEGATIVE_PROMPT}}", "{{WIDTH}}", "{{HEIGHT}}", "{{SEED}}"];
+          const requiredTokens = ["{{PROMPT}}", "{{WIDTH}}", "{{HEIGHT}}", "{{SEED}}"];
           const hasAllTokens = requiredTokens.every((token) => source.includes(token));
+          const hasUnsafeNegativePromptInjection = model.id === "z-image-turbo"
+            && source.includes("{{NEGATIVE_PROMPT}}");
           const hasImageOutput = source.includes('"class_type"')
             && (source.includes('"SaveImage"') || source.includes('"PreviewImage"'));
-          workflowOk = Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed) && hasAllTokens && hasImageOutput);
+          workflowOk = Boolean(
+            parsed
+            && typeof parsed === "object"
+            && !Array.isArray(parsed)
+            && hasAllTokens
+            && !hasUnsafeNegativePromptInjection
+            && hasImageOutput
+          );
           details.push(`workflow=${workflowOk ? "VALID" : "INVALID_CONTRACT"}`);
         } catch {
           details.push("workflow=INVALID_JSON");

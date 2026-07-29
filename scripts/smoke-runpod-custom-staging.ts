@@ -96,8 +96,7 @@ function buildPayload(): Record<string, unknown> {
   );
   const source = JSON.parse(fs.readFileSync(workflowPath, "utf8")) as unknown;
   const workflow = replaceTokens(source, {
-    "{{PROMPT}}": "A Thai specialty coffee shop owner preparing hand-poured coffee in soft morning window light, cinematic vertical editorial photograph, natural skin texture, realistic hands, no text, no logo",
-    "{{NEGATIVE_PROMPT}}": "letters, words, typography, watermark, logo, malformed hands, extra fingers, low quality",
+    "{{PROMPT}}": "ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE. Depict exactly one moment from exactly one camera view: a Thai specialty coffee shop owner preparing hand-poured coffee in soft morning window light, cinematic vertical editorial photograph, natural skin texture, realistic hands, blank unmarked surfaces",
     "{{WIDTH}}": 720,
     "{{HEIGHT}}": 1280,
     "{{SEED}}": requestedSeed,

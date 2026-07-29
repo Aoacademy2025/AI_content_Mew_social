@@ -334,7 +334,7 @@ export function buildHeroImagePrompt(
     `in ${cleanText(brief.setting)}`,
     cleanText(brief.action),
     `story purpose: ${cleanText(brief.narrativeBeat)}`,
-    `${cleanText(brief.camera)}, vertical 9:16 single-camera composition`,
+    `${cleanText(brief.camera)}, vertical 9:16 single-camera composition filling the entire canvas`,
     cleanText(brief.lighting),
     `context-specific palette and materials: ${cleanText(brief.palette)}`,
     explicitStyle ? EXPLICIT_STYLE_LOOK[explicitStyle] : "",
@@ -346,8 +346,8 @@ export function buildHeroImagePrompt(
     brief.includesInterface
       ? "a single believable interface may appear only as an in-context story element, using simple abstract unlabeled states"
       : "",
-    "specific lived-in detail, believable materials, no staged stock-photo pose",
-    "one continuous edge-to-edge moment, no designed mockup layout",
+    "specific lived-in detail and believable materials captured with natural observational timing",
+    "one uninterrupted edge-to-edge camera view with one primary framing and one consistent perspective",
   ].filter(Boolean);
   return `${clauses.join(", ")}.`;
 }

@@ -24,7 +24,7 @@
     "class_type": "CLIPTextEncode",
     "inputs": {
       "clip": ["2", 0],
-      "text": "{{PROMPT}}\n\nAvoid these elements: {{NEGATIVE_PROMPT}}"
+      "text": "{{PROMPT}}"
     }
   },
   "5": {

@@ -257,6 +257,12 @@ check(
     && runpod.includes("explicitEndpointId === model.endpointDefault")
     && runpod.includes('route: "runpod-custom"'),
 );
+const zImageWorkflow = fs.readFileSync("config/ai-workflows/z-image-turbo.json", "utf8");
+check(
+  "custom Z-Image never injects negative concept nouns into its positive-only conditioning",
+  zImageWorkflow.includes('"text": "{{PROMPT}}"')
+    && !zImageWorkflow.includes("{{NEGATIVE_PROMPT}}"),
+);
 check(
   "the broken public Z-Image route remains quarantined without an explicit recovery flag",
   runpod.includes("AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED")

@@ -88,6 +88,8 @@ assert.match(documentaryPrompt, /pottery studio/i);
 assert.match(documentaryPrompt, /documentary/i);
 assert.doesNotMatch(documentaryPrompt, /art-directed cinematic vertical 9:16 visual story/i);
 assert.doesNotMatch(documentaryPrompt, /interfaces expressed through abstract/i);
+assert.doesNotMatch(documentaryPrompt, /\b(?:collage|grid|panel|contact sheet|mockup|layout)\b/i);
+assert.match(documentaryPrompt, /one uninterrupted edge-to-edge camera view/i);
 assert.match(interfacePrompt, /checkout flow/i);
 assert.match(interfacePrompt, /single.*interface|interface.*single/i);
 
@@ -98,6 +100,7 @@ assert.equal(resolveHeroImageProviderStyle(planned.briefs[0], "lifestyle"), "pho
 
 const noUiGuard = buildArtworkOnlyPrompt(documentaryPrompt, "photoreal");
 assert.doesNotMatch(noUiGuard.positive, /screens display abstract visual states/i);
+assert.doesNotMatch(noUiGuard.positive, /\b(?:collage|grid|panel|contact sheet|mockup|layout)\b/i);
 const uiGuard = buildArtworkOnlyPrompt(interfacePrompt, "editorial", { interfaceExpected: true });
 assert.match(uiGuard.positive, /interface|screen/i);
 assert.match(uiGuard.positive, /unlabeled/i);
