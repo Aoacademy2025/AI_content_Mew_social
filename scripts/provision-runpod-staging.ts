@@ -129,7 +129,18 @@ function workerSpecs(): WorkerSpec[] {
         // Keep a cost-effective 48 GB option first, then span newer inference
         // and 80 GB datacenter pools so production does not depend on one
         // scarce hardware generation.
-        gpuTypeIds: ["NVIDIA A40", "NVIDIA L40S", "NVIDIA A100 80GB PCIe"],
+        gpuTypeIds: [
+          "NVIDIA A40",
+          "NVIDIA RTX A6000",
+          "NVIDIA L40",
+          "NVIDIA RTX 6000 Ada Generation",
+          "NVIDIA L40S",
+          "NVIDIA A100 80GB PCIe",
+          "NVIDIA A100-SXM4-80GB",
+          "NVIDIA H100 PCIe",
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 NVL",
+        ],
         idleTimeout: 5,
         minCudaVersion: "12.6",
         scalerType: "QUEUE_DELAY",
