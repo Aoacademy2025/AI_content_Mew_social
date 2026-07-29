@@ -263,6 +263,13 @@ check(
   zImageWorkflow.includes('"text": "{{PROMPT}}"')
     && !zImageWorkflow.includes("{{NEGATIVE_PROMPT}}"),
 );
+const routeConfigurator = fs.readFileSync("scripts/configure-hero-image-custom-route.ts", "utf8");
+check(
+  "production route configuration can atomically refresh and verify PM2 environment state",
+  routeConfigurator.includes("--restart-pm2")
+    && routeConfigurator.includes('["restart", ...desiredProcessNames, "--update-env"]')
+    && routeConfigurator.includes("did not load ${key}"),
+);
 check(
   "the broken public Z-Image route remains quarantined without an explicit recovery flag",
   runpod.includes("AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED")
