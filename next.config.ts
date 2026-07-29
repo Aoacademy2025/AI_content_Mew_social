@@ -24,12 +24,13 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
-  // Runtime renders are mutable user output (tens of GB in production), served via
-  // nginx/API and never required inside a Next server bundle. Without this exclusion,
-  // dynamic public-path access made every API route trace thousands of render files,
-  // multiplying NFT work and driving production builds close to OOM.
+  // Runtime renders and stock cache entries are mutable media (hundreds of GB in
+  // production), served through API storage adapters and never required inside
+  // a Next server bundle. Without both exclusions, dynamic filesystem access
+  // makes every route trace thousands of media files and can exhaust the VPS
+  // while webpack collects dependencies.
   outputFileTracingExcludes: {
-    "/**": ["./public/renders/**/*"],
+    "/**": ["./public/renders/**/*", "./stocks/**/*"],
   },
   experimental: {
     // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
