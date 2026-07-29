@@ -119,3 +119,6 @@ _verify-*
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# Custom Hero Voice reference uploads (user audio - never commit)
+/uploads/user-voices/

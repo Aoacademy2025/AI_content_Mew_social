@@ -27,6 +27,53 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(result.num_step, 32)
         self.assertEqual(result.speed, 1.0)
 
+    def test_custom_ref_accepted_with_both_fields(self):
+        result = parse_tts_input(
+            {
+                "voice_id": "user_abc123",
+                "text": "hello",
+                "ref_audio_base64": "UklGRg==",
+                "ref_text": " สวัสดีครับ ผมชื่อทดสอบ ",
+            },
+            800,
+        )
+        self.assertEqual(result.ref_audio_base64, "UklGRg==")
+        self.assertEqual(result.ref_text, "สวัสดีครับ ผมชื่อทดสอบ")
+
+    def test_custom_ref_defaults_to_none(self):
+        result = parse_tts_input({"voice_id": "voice_01", "text": "hello"}, 800)
+        self.assertIsNone(result.ref_audio_base64)
+        self.assertIsNone(result.ref_text)
+
+    def test_custom_ref_requires_ref_text(self):
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "user_abc123", "text": "hello", "ref_audio_base64": "UklGRg=="},
+                800,
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_TEXT")
+
+    def test_custom_ref_requires_ref_audio(self):
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "user_abc123", "text": "hello", "ref_text": "สวัสดี"},
+                800,
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_custom_ref_rejects_oversized_audio(self):
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {
+                    "voice_id": "user_abc123",
+                    "text": "hello",
+                    "ref_audio_base64": "A" * 6_000_001,
+                    "ref_text": "สวัสดี",
+                },
+                800,
+            )
+        self.assertEqual(raised.exception.code, "REF_AUDIO_TOO_LARGE")
+
     def test_quality_contract_accepts_upstream_default_steps(self):
         result = parse_tts_input(
             {"voice_id": "voice_02", "text": "hello", "num_step": 32},
@@ -158,7 +205,7 @@ class ContractTest(unittest.TestCase):
 
     def test_worker_fixes_every_tts_voice_at_32_steps(self):
         source = (ROOT / "handler.py").read_text(encoding="utf-8")
-        self.assertIn('VERSION = "heroai-omnivoice-runpod-v6-all-voices-32"', source)
+        self.assertIn('VERSION = "heroai-omnivoice-runpod-v7-custom-ref"', source)
         self.assertIn("DEFAULT_NUM_STEP = 32", source)
         self.assertIn("effective_num_step = DEFAULT_NUM_STEP", source)
         self.assertNotIn("QUALITY_NUM_STEP_FLOORS", source)

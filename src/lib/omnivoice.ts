@@ -282,6 +282,25 @@ export async function cancelRunpodOmniVoiceJob(
   }
 }
 
+/** Custom voice-clone reference forwarded to the worker per request. */
+export type OmniVoiceCustomRef = { audioBase64: string; refText: string };
+
+function omniVoiceTtsInput(
+  config: OmniVoiceConfig,
+  voiceId: string,
+  text: string,
+  speed: number,
+  voiceRef?: OmniVoiceCustomRef,
+) {
+  return {
+    voice_id: voiceId,
+    text,
+    speed,
+    num_step: config.numStep,
+    ...(voiceRef ? { ref_audio_base64: voiceRef.audioBase64, ref_text: voiceRef.refText } : {}),
+  };
+}
+
 /**
  * Submit exactly one RunPod synthesis job. This operation is intentionally
  * single-attempt: a lost response has an unknown provider outcome and must not
@@ -292,11 +311,12 @@ export async function submitRunpodOmniVoiceJob(
   voiceId: string,
   text: string,
   speed: number,
+  voiceRef?: OmniVoiceCustomRef,
 ): Promise<{ providerJobId: string; status: "IN_QUEUE" | "IN_PROGRESS" }> {
   const submitted = await runpodRequest(config, "run", {
     method: "POST",
     body: JSON.stringify({
-      input: { voice_id: voiceId, text, speed, num_step: config.numStep },
+      input: omniVoiceTtsInput(config, voiceId, text, speed, voiceRef),
     }),
   }, Date.now() + 20_000);
   if (!submitted.response.ok || !submitted.body.id) {
@@ -381,6 +401,7 @@ async function callRunpodOmniVoice(
   text: string,
   speed: number,
   deadline: number,
+  voiceRef?: OmniVoiceCustomRef,
 ): Promise<OmniVoiceCallResult> {
   let submitted: { response: Response; body: RunpodTtsJob };
   try {
@@ -389,7 +410,7 @@ async function callRunpodOmniVoice(
     submitted = await runpodRequest(config, "run", {
       method: "POST",
       body: JSON.stringify({
-        input: { voice_id: voiceId, text, speed, num_step: config.numStep },
+        input: omniVoiceTtsInput(config, voiceId, text, speed, voiceRef),
       }),
     }, deadline);
   } catch (error) {
@@ -477,6 +498,7 @@ async function callHostingerOmniVoice(
   text: string,
   speed: number,
   deadline: number,
+  voiceRef?: OmniVoiceCustomRef,
 ): Promise<OmniVoiceCallResult> {
   const remainingMs = deadline - Date.now();
   if (remainingMs < 1_000) return { ok: false, status: 504, reason: "request budget exhausted" };
@@ -484,7 +506,7 @@ async function callHostingerOmniVoice(
     const response = await fetch(`${config.baseUrl}/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...omnivoiceAuthHeaders(config.apiKey) },
-      body: JSON.stringify({ voice_id: voiceId, text, speed, num_step: config.numStep }),
+      body: JSON.stringify(omniVoiceTtsInput(config, voiceId, text, speed, voiceRef)),
       cache: "no-store",
       signal: AbortSignal.timeout(remainingMs),
     });
@@ -516,10 +538,11 @@ export function callOmniVoice(
   text: string,
   speed: number,
   deadline: number,
+  voiceRef?: OmniVoiceCustomRef,
 ): Promise<OmniVoiceCallResult> {
   return config.backend === "runpod"
-    ? callRunpodOmniVoice(config, voiceId, text, speed, deadline)
-    : callHostingerOmniVoice(config, voiceId, text, speed, deadline);
+    ? callRunpodOmniVoice(config, voiceId, text, speed, deadline, voiceRef)
+    : callHostingerOmniVoice(config, voiceId, text, speed, deadline, voiceRef);
 }
 
 function clampInteger(value: string | undefined, min: number, max: number, fallback: number): number {

@@ -79,6 +79,23 @@ model User {
   brandPreference    BrandPreference?
   editorStylePresets EditorStylePreset[]
   aiGenerationJobs   AiGenerationJob[]
+  userVoices         UserVoice[]
+}
+
+// Custom Hero Voice clones: a user-supplied reference recording + its transcript.
+// The audio file lives on disk (uploads/user-voices, NOT public/); the worker
+// receives it per-request as base64 — nothing voice-related is stored provider-side.
+model UserVoice {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  refText    String
+  filename   String
+  durationMs Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
 }
 
 model Style {

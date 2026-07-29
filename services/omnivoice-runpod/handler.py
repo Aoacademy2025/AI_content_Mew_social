@@ -1,10 +1,13 @@
 """Runpod queue worker for the existing HERO AI OmniVoice model and stock voices."""
 
 import base64
+import hashlib
 import io
 import json
 import logging
 import os
+import tempfile
+from collections import OrderedDict
 from pathlib import Path
 import threading
 import time
@@ -18,7 +21,7 @@ from contract import InputError, parse_tts_input
 from prompt_cache import VoicePromptCache
 
 
-VERSION = "heroai-omnivoice-runpod-v6-all-voices-32"
+VERSION = "heroai-omnivoice-runpod-v7-custom-ref"
 SAMPLE_RATE = 24_000
 MODEL_DIR = Path(os.environ.get("TTS_MODEL_DIR", "/app/model"))
 VOICES_DIR = Path(os.environ.get("TTS_VOICES_DIR", "/app/voices"))
@@ -102,6 +105,51 @@ def load_runtime():
 
 MODEL, VOICE_PROMPTS = load_runtime()
 
+# Clone prompts built from request-supplied reference audio, keyed by content
+# hash. Bounded LRU: a long script arrives as many chunk jobs with the SAME
+# reference, so each worker instance pays the prompt-prep cost once per voice.
+CUSTOM_PROMPT_CACHE: "OrderedDict[str, object]" = OrderedDict()
+CUSTOM_PROMPT_CACHE_MAX = max(1, min(16, int(os.environ.get("TTS_CUSTOM_PROMPT_CACHE", "8"))))
+
+
+def custom_voice_prompt(ref_audio_base64, ref_text):
+    try:
+        ref_bytes = base64.b64decode(ref_audio_base64, validate=False)
+    except Exception as error:
+        raise ValueError("INVALID_REF_AUDIO: reference audio is not decodable") from error
+    if not ref_bytes:
+        raise ValueError("INVALID_REF_AUDIO: reference audio is empty")
+
+    key = hashlib.sha256(ref_bytes + b"\x00" + ref_text.encode("utf-8")).hexdigest()
+    cached = CUSTOM_PROMPT_CACHE.get(key)
+    if cached is not None:
+        CUSTOM_PROMPT_CACHE.move_to_end(key)
+        return cached
+
+    prompt_started = time.monotonic()
+    suffix = ".wav"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as handle:
+        handle.write(ref_bytes)
+        temp_path = handle.name
+    try:
+        with GENERATE_LOCK, torch.inference_mode():
+            prompt = MODEL.create_voice_clone_prompt(ref_audio=temp_path, ref_text=ref_text)
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+    LOGGER.info(
+        "custom voice prompt ready version=%s key=%s load_ms=%d",
+        VERSION,
+        key[:12],
+        round((time.monotonic() - prompt_started) * 1000),
+    )
+    CUSTOM_PROMPT_CACHE[key] = prompt
+    while len(CUSTOM_PROMPT_CACHE) > CUSTOM_PROMPT_CACHE_MAX:
+        CUSTOM_PROMPT_CACHE.popitem(last=False)
+    return prompt
+
 
 def handler(job):
     job_id = str(job.get("id", "unknown"))
@@ -111,10 +159,13 @@ def handler(job):
         LOGGER.warning("job rejected job_id=%s code=%s", job_id, error.code)
         raise ValueError(f"{error.code}: {error}") from error
 
-    try:
-        voice_prompt = VOICE_PROMPTS.get(request.voice_id)
-    except KeyError:
-        raise ValueError("VOICE_NOT_SERVED: requested voice is unavailable")
+    if request.ref_audio_base64 and request.ref_text:
+        voice_prompt = custom_voice_prompt(request.ref_audio_base64, request.ref_text)
+    else:
+        try:
+            voice_prompt = VOICE_PROMPTS.get(request.voice_id)
+        except KeyError:
+            raise ValueError("VOICE_NOT_SERVED: requested voice is unavailable")
     effective_num_step = DEFAULT_NUM_STEP
 
     LOGGER.info(

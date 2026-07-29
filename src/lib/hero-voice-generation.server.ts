@@ -20,7 +20,9 @@ import {
   pollRunpodOmniVoiceJob,
   submitRunpodOmniVoiceJob,
   type OmniVoiceConfig,
+  type OmniVoiceCustomRef,
 } from "@/lib/omnivoice";
+import { isUserVoiceId, loadUserVoiceRef } from "@/lib/user-voices.server";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { mergeSegmentTiming, pcmDurationMs } from "@/lib/tts-timing";
@@ -298,7 +300,17 @@ async function submitPendingAttempt(job: AiGenerationJob): Promise<AiGenerationJ
 
   try {
     const config = pinnedRunpodConfig(job, state);
-    const submitted = await submitRunpodOmniVoiceJob(config, state.voiceId, chunk.speechText, state.speed);
+    // Custom clone voices (user_*): resolve the owner's reference at submit
+    // time — the recording stays on OUR disk; the worker gets it per-request.
+    let voiceRef: OmniVoiceCustomRef | undefined;
+    if (isUserVoiceId(state.voiceId)) {
+      const ref = await loadUserVoiceRef(job.userId, state.voiceId);
+      if (!ref) {
+        return failAndRefundVoiceJob(job, state, "OMNIVOICE_USER_VOICE_MISSING", "ไม่พบเสียงโคลนที่ใช้กับงานนี้");
+      }
+      voiceRef = { audioBase64: ref.audioBase64, refText: ref.refText };
+    }
+    const submitted = await submitRunpodOmniVoiceJob(config, state.voiceId, chunk.speechText, state.speed, voiceRef);
     const now = new Date();
     const updated = await prisma.$transaction(async (tx) => {
       const recorded = await tx.aiGenerationAttempt.updateMany({

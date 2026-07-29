@@ -13,6 +13,7 @@ import {
 } from "@/lib/omnivoice";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
 import { polishScriptForTts } from "@/lib/tts-script-polish";
+import { isUserVoiceId, loadUserVoiceRef } from "@/lib/user-voices.server";
 
 export const runtime = "nodejs";
 
@@ -30,6 +31,13 @@ export async function POST(request: Request) {
     const speed = Number.isFinite(parsedSpeed) ? Math.min(3, Math.max(0.3, parsedSpeed)) : 1;
     if (!isValidOmniVoiceId(voiceId)) {
       return NextResponse.json({ error: "voiceId ไม่ถูกต้อง" }, { status: 400 });
+    }
+    // Custom clone voices (user_*) — admin-only v1; verify ownership up front
+    // so we fail BEFORE reserving quota (the durable submit re-resolves later).
+    if (isUserVoiceId(voiceId)) {
+      if (user.role !== "ADMIN") return NextResponse.json({ error: "Not found" }, { status: 404 });
+      const ref = await loadUserVoiceRef(user.id, voiceId);
+      if (!ref) return NextResponse.json({ error: "ไม่พบเสียงโคลนนี้" }, { status: 404 });
     }
 
     // Silent pre-TTS polish (fail-open) — same rule as the video-editor route:

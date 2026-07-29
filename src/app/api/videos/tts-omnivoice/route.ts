@@ -30,6 +30,8 @@ import {
 } from "@/lib/hero-voice-speech";
 import { heroVoiceGapMsAfterChunk, heroVoiceSilencePcm } from "@/lib/hero-voice-audio";
 import { polishScriptForTts } from "@/lib/tts-script-polish";
+import { isUserVoiceId, loadUserVoiceRef } from "@/lib/user-voices.server";
+import type { OmniVoiceCustomRef } from "@/lib/omnivoice";
 import {
   mergeSegmentTiming,
   pcmDurationMs,
@@ -182,6 +184,14 @@ export async function POST(request: Request) {
 
     if (!fullText) return NextResponse.json({ error: "text required" }, { status: 400 });
     if (!isValidOmniVoiceId(voiceId)) return NextResponse.json({ error: "voiceId ไม่ถูกต้อง" }, { status: 400 });
+    // Custom clone voices (user_*) — admin-only v1, ownership enforced.
+    let voiceRef: OmniVoiceCustomRef | undefined;
+    if (isUserVoiceId(voiceId)) {
+      if (user.role !== "ADMIN") return NextResponse.json({ error: "Not found" }, { status: 404 });
+      const ref = await loadUserVoiceRef(user.id, voiceId);
+      if (!ref) return NextResponse.json({ error: "ไม่พบเสียงโคลนนี้" }, { status: 404 });
+      voiceRef = { audioBase64: ref.audioBase64, refText: ref.refText };
+    }
     if (preview) {
       return NextResponse.json({ error: "ใช้เสียงตัวอย่างที่เตรียมไว้จากรายการ Hero Voice" }, { status: 400 });
     }
@@ -274,6 +284,7 @@ export async function POST(request: Request) {
           chunks[index].speechText,
           speed,
           deadline,
+          voiceRef,
         );
         if (!result.ok) {
           await recordTelemetryEvent(user.id, {

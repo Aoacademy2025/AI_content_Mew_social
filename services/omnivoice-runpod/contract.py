@@ -20,6 +20,10 @@ class TtsInput:
     text: str
     num_step: int
     speed: float
+    # Custom voice cloning: when both are present the worker builds the clone
+    # prompt from this reference instead of the served manifest voice.
+    ref_audio_base64: str | None = None
+    ref_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -130,4 +134,31 @@ def parse_tts_input(payload: Any, max_text_length: int) -> TtsInput:
     if not 0.3 <= speed <= 3.0:
         raise InputError("INVALID_SPEED", "speed must be a number from 0.3 to 3.0")
 
-    return TtsInput(voice_id=voice_id, text=text, num_step=raw_num_step, speed=speed)
+    raw_ref_audio = payload.get("ref_audio_base64")
+    raw_ref_text = payload.get("ref_text")
+    if raw_ref_audio is None and raw_ref_text is None:
+        return TtsInput(voice_id=voice_id, text=text, num_step=raw_num_step, speed=speed)
+
+    if not isinstance(raw_ref_audio, str) or not raw_ref_audio.strip():
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_base64 is required with ref_text")
+    ref_audio = raw_ref_audio.strip()
+    # ~4.5MB of audio once decoded — enough for a 30s 24kHz WAV reference.
+    if len(ref_audio) > 6_000_000:
+        raise InputError("REF_AUDIO_TOO_LARGE", "ref_audio_base64 exceeds the size limit")
+    if not re.fullmatch(r"[A-Za-z0-9+/=\s]+", ref_audio):
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_base64 is not valid base64")
+
+    if not isinstance(raw_ref_text, str) or not raw_ref_text.strip():
+        raise InputError("INVALID_REF_TEXT", "ref_text is required with ref_audio_base64")
+    ref_text = raw_ref_text.strip()
+    if len(ref_text) > 500:
+        raise InputError("REF_TEXT_TOO_LONG", "ref_text exceeds 500 characters")
+
+    return TtsInput(
+        voice_id=voice_id,
+        text=text,
+        num_step=raw_num_step,
+        speed=speed,
+        ref_audio_base64=ref_audio,
+        ref_text=ref_text,
+    )
