@@ -147,7 +147,10 @@ export function describeImageOffer(model: AiImageModelDefinition): ImageOfferAva
     }
   }
 
-  const quote = quoteAiImageModel(model, estimatedCostUsdMicros, costPolicy());
+  const quoteModel = providerRoute === "runpod-custom" && model.customCreditCostKey
+    ? { ...model, creditCostKey: model.customCreditCostKey }
+    : model;
+  const quote = quoteAiImageModel(quoteModel, estimatedCostUsdMicros, costPolicy());
   if (!configured) {
     return {
       available: false,

@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { put } from "@vercel/blob";
 import type { RunpodImageOutput } from "@/lib/runpod-serverless";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
+import { fetchImageResponseWithRetry } from "@/lib/ai-generation-image-download";
 
 export type AiGenerationImageOutput = RunpodImageOutput | {
   filename: string;
@@ -65,11 +66,7 @@ export async function persistAiGenerationImage(image: AiGenerationImageOutput): 
       throw new Error("Runpod returned an untrusted temporary image URL");
     }
     await assertSafeFetchUrl(url.toString());
-    const response = await fetch(url, {
-      cache: "no-store",
-      redirect: "error",
-      signal: AbortSignal.timeout(30_000),
-    });
+    const response = await fetchImageResponseWithRetry(url.toString());
     if (!response.ok) throw new Error(`Runpod image download failed (${response.status})`);
     const declaredLength = Number(response.headers.get("content-length") ?? 0);
     if (Number.isFinite(declaredLength) && declaredLength > MAX_IMAGE_BYTES) {

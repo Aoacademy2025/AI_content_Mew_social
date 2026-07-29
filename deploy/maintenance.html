@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta http-equiv="refresh" content="30">
+  <meta name="theme-color" content="#17152a">
+  <title>Hero AI — กำลังอัปเดตระบบ</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17152a;
+      --ink-soft: #555267;
+      --paper: #f7f4ed;
+      --paper-strong: #fffdf8;
+      --line: rgba(23, 21, 42, .13);
+      --violet: #6c4cf4;
+      --violet-dark: #4d32c7;
+      --amber: #f1b94c;
+      --green: #2f7d61;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { min-height: 100%; }
+
+    body {
+      margin: 0;
+      min-width: 280px;
+      background:
+        linear-gradient(rgba(23, 21, 42, .035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 21, 42, .035) 1px, transparent 1px),
+        var(--paper);
+      background-size: 32px 32px;
+      color: var(--ink);
+      font-family: "Noto Sans Thai", "Leelawadee UI", Tahoma, Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      background:
+        radial-gradient(circle at 8% 4%, rgba(108, 76, 244, .12), transparent 32rem),
+        radial-gradient(circle at 92% 94%, rgba(241, 185, 76, .14), transparent 28rem);
+      content: "";
+      pointer-events: none;
+    }
+
+    .shell {
+      display: grid;
+      min-height: 100vh;
+      min-height: 100svh;
+      place-items: center;
+      padding: clamp(20px, 5vw, 72px);
+    }
+
+    .panel {
+      display: grid;
+      width: min(1100px, 100%);
+      min-height: min(690px, calc(100svh - 40px));
+      grid-template-columns: minmax(220px, .72fr) minmax(0, 2fr);
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 32px;
+      background: rgba(255, 253, 248, .94);
+      box-shadow: 0 24px 80px rgba(23, 21, 42, .13);
+    }
+
+    .rail {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: clamp(28px, 4vw, 48px);
+      background:
+        radial-gradient(circle at 0 0, rgba(139, 102, 248, .28), transparent 21rem),
+        var(--ink);
+      color: #fffdf8;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      font-weight: 750;
+      letter-spacing: -.02em;
+    }
+
+    .mark {
+      display: grid;
+      width: 46px;
+      height: 46px;
+      place-items: center;
+      border-radius: 14px;
+      background: linear-gradient(160deg, #9271ff, var(--violet));
+      box-shadow: 0 9px 24px rgba(108, 76, 244, .32);
+    }
+
+    .mark svg { width: 27px; height: 27px; }
+
+    .rail-copy {
+      margin-top: 64px;
+    }
+
+    .rail-label {
+      margin: 0 0 14px;
+      color: rgba(255, 253, 248, .58);
+      font-size: .72rem;
+      font-weight: 800;
+      letter-spacing: .15em;
+      text-transform: uppercase;
+    }
+
+    .rail-copy p {
+      max-width: 19rem;
+      margin: 0;
+      color: rgba(255, 253, 248, .78);
+      font-size: .94rem;
+    }
+
+    .steps {
+      display: grid;
+      gap: 18px;
+      margin: 44px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 12px 1fr;
+      gap: 13px;
+      align-items: center;
+      color: rgba(255, 253, 248, .48);
+      font-size: .83rem;
+    }
+
+    .step::before {
+      width: 8px;
+      height: 8px;
+      border: 2px solid rgba(255, 253, 248, .28);
+      border-radius: 50%;
+      content: "";
+    }
+
+    .step.done { color: rgba(255, 253, 248, .8); }
+    .step.done::before { border-color: #79c7a6; background: #79c7a6; }
+    .step.active { color: #fffdf8; font-weight: 700; }
+    .step.active::before {
+      border-color: var(--amber);
+      background: var(--amber);
+      box-shadow: 0 0 0 6px rgba(241, 185, 76, .13);
+      animation: breathe 1.8s ease-in-out infinite;
+    }
+
+    .rail-foot {
+      margin-top: 48px;
+      color: rgba(255, 253, 248, .42);
+      font-size: .75rem;
+    }
+
+    .content {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: clamp(36px, 7vw, 92px);
+    }
+
+    .status {
+      display: inline-flex;
+      width: fit-content;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 28px;
+      padding: 8px 13px;
+      border: 1px solid rgba(107, 75, 13, .18);
+      border-radius: 999px;
+      background: rgba(241, 185, 76, .18);
+      color: #6b4b0d;
+      font-size: .76rem;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    .status::before {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--amber);
+      content: "";
+    }
+
+    h1 {
+      max-width: 760px;
+      margin: 0;
+      font-size: clamp(2.55rem, 6vw, 5.6rem);
+      font-weight: 760;
+      letter-spacing: -.055em;
+      line-height: .98;
+      text-wrap: balance;
+    }
+
+    .lede {
+      max-width: 660px;
+      margin: 28px 0 0;
+      color: var(--ink-soft);
+      font-size: clamp(1rem, 2vw, 1.22rem);
+      text-wrap: pretty;
+    }
+
+    .reassurance {
+      display: grid;
+      max-width: 680px;
+      grid-template-columns: 42px 1fr;
+      gap: 15px;
+      margin-top: 38px;
+      padding: 19px 20px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(247, 244, 237, .72);
+    }
+
+    .reassurance-icon {
+      display: grid;
+      width: 38px;
+      height: 38px;
+      place-items: center;
+      border-radius: 12px;
+      background: rgba(47, 125, 97, .11);
+      color: var(--green);
+      font-weight: 900;
+    }
+
+    .reassurance strong {
+      display: block;
+      margin-bottom: 2px;
+      font-size: .94rem;
+    }
+
+    .reassurance p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: .88rem;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 18px;
+      margin-top: 34px;
+    }
+
+    button {
+      min-height: 48px;
+      padding: 0 22px;
+      border: 0;
+      border-radius: 14px;
+      background: var(--ink);
+      color: #fffdf8;
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+      transition: transform .18s ease, background .18s ease;
+    }
+
+    button:hover { background: var(--violet-dark); transform: translateY(-1px); }
+    button:focus-visible { outline: 3px solid rgba(108, 76, 244, .4); outline-offset: 3px; }
+
+    .retry-note {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: .84rem;
+    }
+
+    @keyframes breathe {
+      0%, 100% { box-shadow: 0 0 0 4px rgba(241, 185, 76, .1); }
+      50% { box-shadow: 0 0 0 8px rgba(241, 185, 76, .18); }
+    }
+
+    @media (max-width: 760px) {
+      .shell { padding: 0; place-items: stretch; }
+      .panel {
+        min-height: 100vh;
+        min-height: 100svh;
+        grid-template-columns: 1fr;
+        border: 0;
+        border-radius: 0;
+      }
+      .rail {
+        display: block;
+        padding: 22px 24px;
+      }
+      .rail-copy, .steps, .rail-foot { display: none; }
+      .content {
+        justify-content: flex-start;
+        padding: clamp(42px, 10vw, 72px) 24px 48px;
+      }
+      h1 { font-size: clamp(2.8rem, 14vw, 4.6rem); }
+      .lede { margin-top: 24px; }
+      .reassurance { grid-template-columns: 36px 1fr; padding: 17px; }
+      .actions { align-items: flex-start; flex-direction: column; }
+      button { width: 100%; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .001ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="panel" aria-labelledby="maintenance-title">
+      <aside class="rail" aria-label="สถานะการอัปเดต">
+        <div>
+          <div class="brand">
+            <span class="mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32" fill="none">
+                <rect x="6" y="5" width="5" height="22" rx="1.8" fill="white"></rect>
+                <rect x="21" y="5" width="5" height="22" rx="1.8" fill="white"></rect>
+                <rect x="6" y="13.5" width="20" height="5" rx="1.8" fill="white"></rect>
+              </svg>
+            </span>
+            <span>Hero AI</span>
+          </div>
+          <div class="rail-copy">
+            <p class="rail-label">System update</p>
+            <p>เรากำลังติดตั้งเวอร์ชันใหม่และตรวจสอบบริการให้พร้อม ก่อนเปิดให้ใช้งานอีกครั้ง</p>
+          </div>
+          <ol class="steps" aria-label="ขั้นตอนการอัปเดต">
+            <li class="step done">เตรียมเวอร์ชันใหม่</li>
+            <li class="step active">อัปเดตและตรวจสอบระบบ</li>
+            <li class="step">เปิดให้บริการอีกครั้ง</li>
+          </ol>
+        </div>
+        <p class="rail-foot">Hero AI · Planned maintenance</p>
+      </aside>
+
+      <div class="content" role="status" aria-live="polite">
+        <div class="status">Planned maintenance</div>
+        <h1 id="maintenance-title">กำลังอัปเดตระบบ</h1>
+        <p class="lede">ขอเวลาอีกสักครู่ เรากำลังนำเวอร์ชันใหม่ขึ้นระบบและตรวจสอบความพร้อม เพื่อให้กลับมาใช้งานได้อย่างราบรื่น</p>
+
+        <div class="reassurance">
+          <span class="reassurance-icon" aria-hidden="true">✓</span>
+          <div>
+            <strong>ไม่ต้องส่งงานซ้ำ</strong>
+            <p>ระบบจะลองเชื่อมต่อใหม่อัตโนมัติทุก 30 วินาที โดยหน้านี้จะหายไปเองเมื่อบริการพร้อม</p>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button type="button" onclick="window.location.reload()">ลองอีกครั้ง</button>
+          <p class="retry-note">หน้านี้จะลองเชื่อมต่อใหม่อัตโนมัติ</p>
+        </div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -1479,7 +1479,13 @@ function LegacyVideoEditorPage() {
         method: "POST", headers: { "Content-Type": "application/json" },
         // targetClipCount > 0 (กำหนดเอง) → ให้ LLM สร้าง keyword ตามจำนวนนั้นพอดี
         // 0 (Auto) → ใช้สูตรเดิม (คำนวณจาก audioDurationSec)
-        body: JSON.stringify({ scenes: sc, audioDurationSec: Math.min(1800, estimatedDurSec), targetClipCount, preferredLLM: preferredLLMRef.current }),
+        body: JSON.stringify({
+          scenes: sc,
+          script: scriptOverride.trim() || script,
+          audioDurationSec: Math.min(1800, estimatedDurSec),
+          targetClipCount,
+          preferredLLM: preferredLLMRef.current,
+        }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -1526,6 +1532,9 @@ function LegacyVideoEditorPage() {
     // WINDOW MODE: keywords are already 1-per-window; fetch exactly that many (one asset
     // per window). The window unit drives the count — no per-caption fetch/over-fetch.
     const windowCount = pipe.current.brollWindows?.length ?? 0;
+    const sceneTextsForFetch = windowCount > 0
+      ? (pipe.current.brollWindows ?? []).map((window) => window.text)
+      : caps.map((caption) => caption.text);
     const res = await fetch("/api/videos/fetch-stock", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -1553,7 +1562,10 @@ function LegacyVideoEditorPage() {
         ...(pipe.current.relevanceSpec ? { relevanceSpec: pipe.current.relevanceSpec } : {}),
         ...(pipe.current.contentProfile ? { contentProfile: pipe.current.contentProfile } : {}),
         ...(pipe.current.keywordAlternatives?.length ? { keywordAlternatives: pipe.current.keywordAlternatives } : {}),
-        ...(targetClipCount === 0 && perSubtitleClipCount > 0 ? { subtitleTexts: caps.map(c => c.text) } : {}),
+        ...(sceneTextsForFetch.length > 0
+          && (stockSource === "kie-image" || stockSource === "auto-mix" || (targetClipCount === 0 && perSubtitleClipCount > 0))
+          ? { subtitleTexts: sceneTextsForFetch }
+          : {}),
       }),
       signal: abortControllerRef.current?.signal,
     });
@@ -2462,6 +2474,18 @@ function LegacyVideoEditorPage() {
         throw new Error(`คลิปยาว ${clipSec.toFixed(1)} วิ สั้นเกินไปสำหรับ Intro ${avatarBookendSecs} วิ + Outro ${avatarTailSecs} วิ — ลดวินาที intro/outro หรือใช้คลิปยาวขึ้น`);
       }
     }
+    // Cutaway overlays the clip ONLY inside these ranges. With no b-roll windows there is
+    // nothing to cut away to, so the clip owns the whole timeline — state that explicitly:
+    // /api/heygen/composite now rejects an empty personRanges instead of silently overlaying
+    // the full clip (that fail-open is what turned "b-roll everywhere" into "person everywhere").
+    const cutawayPersonRanges = planCutaway(pipe.current.brollWindows ?? []).person.map((r) => ({
+      start: r.startMs / 1000,
+      end: r.endMs / 1000,
+    }));
+    if (cutawayPersonRanges.length === 0) {
+      const cutawayClipSec = (pipe.current.audioDurationMs ?? 0) / 1000;
+      if (cutawayClipSec > 0) cutawayPersonRanges.push({ start: 0, end: cutawayClipSec });
+    }
     setStep("composite", "running", isDirect ? "วางทับวิดีโอ (Direct URL)..." : "Chromakey + composite...");
     const compRes = await fetch("/api/heygen/composite", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -2475,10 +2499,7 @@ function LegacyVideoEditorPage() {
                   // Clip is the base; b-roll base shows through during non-person windows.
                   mode: "cutaway",
                   audioFromAvatar: true,
-                  personRanges: planCutaway(pipe.current.brollWindows ?? []).person.map((r) => ({
-                    start: r.startMs / 1000,
-                    end: r.endMs / 1000,
-                  })),
+                  personRanges: cutawayPersonRanges,
                 }
               : directCompositeMode === "full"
                 ? {

@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Loader2, Move, Pause, Pencil, Play, SlidersHorizontal, Undo2,
+  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Undo2,
 } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
@@ -29,12 +29,20 @@ import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
+import { LayerVisibilityControls } from "./LayerVisibilityControls";
 import { MobileSheet } from "./MobileSheet";
-import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
+import {
+  BrollWindowInspector,
+  PendingBrollChangesDialog,
+  WindowEditsBottomBar,
+} from "./BrollWindowInspector";
 import { brollWindowSpans } from "@/lib/broll-spans";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
+import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
 import { trackEvent } from "@/lib/client-telemetry";
+import { avatarFadeApplies } from "@/lib/avatar-fade";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -56,9 +64,12 @@ export function PostPhaseMobile({
   projectId,
   logoOverlay,
   onLogoOverlayChange,
+  layerVisibility,
+  onLayerVisibilityChange,
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
+  canRunProjectOperation,
   brollRegionPreference = "auto",
   brollVisualStyle = "auto",
   internalAiTester,
@@ -72,9 +83,14 @@ export function PostPhaseMobile({
   projectId: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  layerVisibility: EditorLayerVisibility;
+  onLayerVisibilityChange: (
+    next: EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility)
+  ) => void;
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
+  canRunProjectOperation?: () => boolean;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   internalAiTester: boolean;
   aiImageEnabled: boolean;
@@ -83,23 +99,28 @@ export function PostPhaseMobile({
   const ed = usePostPhaseEditor(job, script, {
     onExportJob,
     onAdoptJob,
+    onNewProject,
     projectId,
     logoOverlay,
     onLogoOverlayChange,
+    layerVisibility,
+    onLayerVisibilityChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
+    canRunProjectOperation,
     surface: "mobile",
   });
   const [styleOpen, setStyleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [logoOpen, setLogoOpen] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const logoTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const layersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
-  // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
-  // (same reasoning as PostPhase.tsx's desktop gate).
-  const brollEditEnabled = (BROLL_WINDOW_EDIT || internalAiTester) && ed.preview?.avatarModel !== "upload-cutaway";
+  // Public flag/internal beta gate only. Upload Avatar now has its own cutaway re-composite path.
+  const brollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
 
   const selectedCap = ed.captions[ed.selected];
   const durationMs = Math.max(
@@ -108,7 +129,11 @@ export function PostPhaseMobile({
     1,
   );
   const pct = Math.min(100, Math.max(0, (ed.timeMs / durationMs) * 100));
-  const busy = ed.exp.phase === "burning" || ed.exp.phase === "saving";
+  const busy = ed.exp.phase === "burning" || ed.exp.phase === "saving" || !!ed.applyingWindows;
+  const hasAvatar = Boolean(ed.preview?.avatarModel && ed.preview.avatarModel !== "none");
+  const hiddenLayerCount = (["avatar", "subtitles", "logo"] as const)
+    .filter((layer) => ed.layerAvailability[layer] && !ed.layerVisibility[layer])
+    .length;
   // มือถือไม่มี timeline (ตัดทิ้งตั้งใจ) — แถบชิปนี้คือทางเข้าเลือกหน้าต่างบีโรลแทน
   const brollSpans = useMemo(() => brollWindowSpans(ed.previewConfig, durationMs), [ed.previewConfig, durationMs]);
 
@@ -138,12 +163,34 @@ export function PostPhaseMobile({
     v?.pause(); // กันเสียงเล่นค้างหลัง sheet ที่บัง preview
     setStyleOpen(false);
     setLogoOpen(false);
+    setLayersOpen(false);
     setEditOpen(true);
+  }
+
+  function closeEdit() {
+    ed.commitCaptionText();
+    // usePostPhaseEditor.insertCaptionAtPlayhead() sets editingIdx to auto-open this
+    // sheet for a freshly inserted card. Nothing on mobile ever clears it back to null
+    // afterwards (desktop clears it via the card list's inline-edit onBlur/toggle) —
+    // left dangling, the hook's auto-follow effect bails forever (`editingIdx !== null`
+    // guard in usePostPhaseEditor.ts), so "ตามซับที่กำลังเล่น" stops working permanently
+    // after the very first card add. Clear it whenever the edit sheet closes.
+    ed.setEditingIdx(null);
+    setEditOpen(false);
+  }
+
+  function addCaptionAtPlayhead() {
+    if (ed.insertCaptionAtPlayhead()) setEditOpen(true);
+  }
+
+  function deleteCaptionAndClose() {
+    if (ed.deleteSelectedCaption()) setEditOpen(false);
   }
 
   function openStyle() {
     setEditOpen(false);
     setLogoOpen(false);
+    setLayersOpen(false);
     setStyleOpen(true);
   }
 
@@ -151,7 +198,16 @@ export function PostPhaseMobile({
     ed.videoRef.current?.pause();
     setEditOpen(false);
     setStyleOpen(false);
+    setLayersOpen(false);
     setLogoOpen(true);
+  }
+
+  function openLayers() {
+    ed.videoRef.current?.pause();
+    setEditOpen(false);
+    setStyleOpen(false);
+    setLogoOpen(false);
+    setLayersOpen(true);
   }
 
   // timing edits ทั้งหมดเข้าทาง handleCaptionsChange(next, true) เดียวกับ timeline drag commit
@@ -197,7 +253,7 @@ export function PostPhaseMobile({
           </a>
           <a href="/videos" className="block"><BtnSecondary style={{ width: "100%", minHeight: 46 }}>ดูใน Gallery</BtnSecondary></a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })} style={{ width: "100%", minHeight: 44 }}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
-          <BtnGhost onClick={onNewProject} style={{ width: "100%", minHeight: 44 }}>เริ่มโปรเจกต์ใหม่</BtnGhost>
+          <BtnGhost onClick={ed.requestNewProject} style={{ width: "100%", minHeight: 44 }}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>
       </main>
     );
@@ -210,7 +266,7 @@ export function PostPhaseMobile({
         <div data-mobile-video-preview-frame="true" style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>
           <video
             ref={ed.videoRef}
-            src={ed.baseUrl}
+            src={ed.previewVideoUrl}
             playsInline
             onTimeUpdate={(e) => ed.setTimeMs(e.currentTarget.currentTime * 1000)}
             onPlay={() => ed.setPlaying(true)}
@@ -218,12 +274,18 @@ export function PostPhaseMobile({
             onError={onPreviewError}
             className="h-full w-full object-cover"
           />
-          <LogoOverlayPreview value={logoOverlay} asset={ed.logo.asset} />
-          {/* เส้นไกด์ตำแหน่งซับ */}
-          <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
+          <LogoOverlayPreview
+            value={logoOverlay}
+            asset={ed.logo.asset}
+            visible={ed.layerVisibility.logo}
+          />
+          {ed.layerVisibility.subtitles && (
+            /* เส้นไกด์ตำแหน่งซับ */
+            <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
+          )}
           {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) */}
           <V2CaptionOverlay
-            captions={ed.captions}
+            captions={ed.layerVisibility.subtitles ? ed.captions : []}
             overrides={ed.overrides}
             cfg={ed.cfg}
             videoRef={ed.videoRef}
@@ -249,6 +311,9 @@ export function PostPhaseMobile({
               avatarVideoUrl={ed.preview.avatarVideoUrl!}
               tailAvatarUrl={ed.preview.tailAvatarUrl ?? null}
               bgVideoUrl={ed.compositeBaseUrl!}
+              logoOverlay={logoOverlay}
+              logoAsset={ed.logo.asset}
+              logoVisible={ed.layerVisibility.logo}
               jobId={job.jobId}
               onClose={() => ed.setAdjustingAvatar(false)}
               onDone={(url) => {
@@ -324,6 +389,33 @@ export function PostPhaseMobile({
             </span>
           )}
         </button>
+        <button
+          ref={layersTriggerRef}
+          type="button"
+          data-mobile-editor-action="layers"
+          aria-haspopup="dialog"
+          aria-expanded={layersOpen}
+          onClick={openLayers}
+          style={mobileEditorActionStyle}
+        >
+          <Layers3 size={16} aria-hidden="true" />
+          <span>เลเยอร์</span>
+          {hiddenLayerCount > 0 && (
+            <span
+              style={{
+                padding: "2px 6px",
+                borderRadius: radius.pill,
+                background: "rgba(251,191,36,.11)",
+                color: color.warning,
+                fontSize: 10,
+                fontWeight: 600,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ปิด {hiddenLayerCount}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* ── body: สถานะ + รายการ์ดซับ + สรุปคลิป ── */}
@@ -333,7 +425,7 @@ export function PostPhaseMobile({
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: color.success, flex: "none" }} />
             <span style={{ fontSize: 12, color: color.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>เรนเดอร์เสร็จแล้ว · แก้ซับเห็นผลทันที</span>
           </span>
-          <button onClick={onNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer", flex: "none" }}>เรนเดอร์ใหม่</button>
+          <button onClick={ed.requestNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer", flex: "none" }}>เรนเดอร์ใหม่</button>
         </div>
 
         {ed.exp.phase === "error" && (
@@ -349,6 +441,7 @@ export function PostPhaseMobile({
             <div className="flex gap-2 overflow-x-auto pb-1">
               {brollSpans.map((s) => {
                 const edited = ed.windowEdits.has(s.index);
+                const enabled = ed.isBrollWindowEnabled(s.index);
                 return (
                   <button
                     key={s.index}
@@ -358,11 +451,17 @@ export function PostPhaseMobile({
                       padding: "8px 12px", minWidth: 96, borderRadius: radius.card,
                       background: edited ? color.selectedBg : "rgba(255,255,255,.035)",
                       border: `1px solid ${edited ? color.selectedBorder : color.cardBorder}`,
+                      borderStyle: enabled ? "solid" : "dashed",
                       cursor: "pointer",
+                      opacity: enabled ? 1 : 0.58,
+                      minHeight: 44,
                     }}
+                    aria-label={`${enabled ? "แก้" : "เปิดหรือแก้"} B-roll ${fmtMs(s.startMs)} ถึง ${fmtMs(s.endMs)}`}
                   >
                     <span style={{ fontSize: 10, color: color.textFaint }}>{fmtMs(s.startMs)}–{fmtMs(s.endMs)}</span>
-                    <span style={{ fontSize: 11.5, color: color.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>{s.label}</span>
+                    <span style={{ fontSize: 11.5, color: color.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 }}>
+                      {enabled ? s.label : `ปิด · ${s.label}`}
+                    </span>
                   </button>
                 );
               })}
@@ -375,7 +474,7 @@ export function PostPhaseMobile({
             <div className="flex items-center gap-2">
               <GroupLabel>การ์ดซับ ({ed.captions.length})</GroupLabel>
               <button
-                onClick={ed.undoCaptions}
+                onClick={() => ed.undoCaptions()}
                 disabled={ed.historyLen === 0}
                 aria-label="เลิกทำการแก้ไขล่าสุด"
                 title="เลิกทำ"
@@ -389,9 +488,44 @@ export function PostPhaseMobile({
               >
                 <Undo2 size={16} />
               </button>
+              <button
+                onClick={() => ed.redoCaptions()}
+                disabled={ed.redoLen === 0}
+                aria-label="ทำซ้ำการแก้ไขล่าสุด"
+                title="ทำซ้ำ"
+                className="flex items-center justify-center"
+                style={{
+                  width: 44, height: 44, borderRadius: "50%", background: "none",
+                  border: `1px solid ${color.cardBorder}`, color: color.textSecondary,
+                  cursor: ed.redoLen === 0 ? "default" : "pointer",
+                  opacity: ed.redoLen === 0 ? 0.4 : 1, flex: "none",
+                }}
+              >
+                <Redo2 size={16} />
+              </button>
             </div>
             <Chip selected={ed.follow} onClick={ed.resumeFollow} style={{ padding: "5px 11px", fontSize: 11 }}>ตามซับที่กำลังเล่น</Chip>
           </div>
+          <button
+            type="button"
+            data-caption-action="add"
+            onClick={addCaptionAtPlayhead}
+            disabled={!ed.canInsertCaption}
+            title={ed.canInsertCaption ? "เพิ่มการ์ดซับที่ตำแหน่ง Playhead" : (ed.insertCaptionBlockedReason ?? undefined)}
+            className="mb-2.5 flex w-full items-center justify-center gap-2"
+            style={{
+              minHeight: 44,
+              borderRadius: radius.control,
+              background: "rgba(139,92,246,.08)",
+              border: `1px dashed ${color.selectedBorderStrong}`,
+              color: color.primary300,
+              font: `500 12.5px ${font.body}`,
+              cursor: ed.canInsertCaption ? "pointer" : "default",
+              opacity: ed.canInsertCaption ? 1 : 0.45,
+            }}
+          >
+            <Plus size={16} /> เพิ่มกล่องที่ตำแหน่ง Playhead
+          </button>
           {ed.captions.map((c, i) => {
             const isActive = i === ed.activeIdx;
             const tagLabel = c.tag === "hook" ? "HOOK" : c.tag === "cta" ? "CTA" : "เนื้อหา";
@@ -414,7 +548,17 @@ export function PostPhaseMobile({
               >
                 <span style={{ font: `600 11px ${font.heading}`, color: color.textFaintest, width: 16, textAlign: "center", flex: "none", paddingTop: 2, fontVariantNumeric: "tabular-nums" }}>{i + 1}</span>
                 <div className="min-w-0 flex-1">
-                  <div style={{ fontSize: 14, lineHeight: 1.45, color: color.text }}>{c.text}</div>
+                  <div
+                    data-caption-card-empty={!c.text.trim() ? "true" : undefined}
+                    style={{
+                      fontSize: 14,
+                      lineHeight: 1.45,
+                      color: c.text.trim() ? color.text : color.primary300,
+                      fontStyle: c.text.trim() ? "normal" : "italic",
+                    }}
+                  >
+                    {c.text.trim() ? c.text : "กล่องใหม่ — แตะเพื่อพิมพ์"}
+                  </div>
                   <div className="mt-1.5 flex items-center gap-2">
                     <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, fontWeight: 600, ...tagStyle }}>{tagLabel}</span>
                     <span style={{ fontSize: 11, color: color.textFaint, fontVariantNumeric: "tabular-nums" }}>{fmtMs(c.startMs)} – {fmtMs(c.endMs)}</span>
@@ -443,19 +587,27 @@ export function PostPhaseMobile({
             disabled={busy}
             style={{ flex: 2, minHeight: 46, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, ...(busy ? { opacity: 0.7, cursor: "wait" } : {}) }}
           >
-            {ed.exp.phase === "burning" ? `กำลังฝังซับ ${ed.exp.progress}%` : ed.exp.phase === "saving" ? "กำลังบันทึก…" : (<><Download size={16} /> ส่งออกวิดีโอ</>)}
+            {ed.applyingWindows
+              ? `กำลังอัปเดต B-roll ${ed.applyingWindows.progress}%`
+              : ed.exp.phase === "burning"
+                ? `กำลังฝังซับ ${ed.exp.progress}%`
+                : ed.exp.phase === "saving"
+                  ? "กำลังบันทึก…"
+                  : (<><Download size={16} /> ส่งออกวิดีโอ</>)}
           </BtnPrimary>
         </div>
       )}
 
       {/* ── edit bottom-sheet ── */}
-      <MobileSheet open={editOpen} onClose={() => setEditOpen(false)} title={`การ์ดที่ ${ed.selected + 1}`} size="large">
+      <MobileSheet open={editOpen} onClose={closeEdit} title={`การ์ดที่ ${ed.selected + 1}`} size="large">
         {selectedCap && (
           <>
             <GroupLabel style={{ display: "block", margin: "10px 0 7px" }}>ข้อความ</GroupLabel>
             <textarea
               value={selectedCap.text}
               onChange={(e) => ed.setCaptions((caps) => caps.map((cc, ci) => (ci === ed.selected ? { ...cc, text: e.target.value } : cc)))}
+              onBlur={ed.commitCaptionText}
+              placeholder="พิมพ์ข้อความซับ"
               rows={3}
               className="w-full resize-none"
               style={{ padding: "12px 14px", borderRadius: 11, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontSize: 13.5, lineHeight: 1.7, fontFamily: font.body, outline: "none" }}
@@ -473,6 +625,25 @@ export function PostPhaseMobile({
               <BtnSecondary onClick={() => ed.mergeSelected()} style={{ flex: 1, minHeight: 44, textAlign: "center" }}>รวมกับใบถัดไป</BtnSecondary>
               <BtnSecondary onClick={() => ed.splitSelected()} style={{ flex: 1, minHeight: 44, textAlign: "center" }}>แยกการ์ด</BtnSecondary>
             </div>
+            <button
+              type="button"
+              data-caption-action="delete"
+              onClick={deleteCaptionAndClose}
+              disabled={ed.captions.length <= 1}
+              className="mt-2.5 flex w-full items-center justify-center gap-2"
+              style={{
+                minHeight: 44,
+                borderRadius: radius.control,
+                background: "rgba(248,113,113,.06)",
+                border: "1px solid rgba(248,113,113,.28)",
+                color: color.danger,
+                font: `500 12.5px ${font.body}`,
+                cursor: ed.captions.length <= 1 ? "default" : "pointer",
+                opacity: ed.captions.length <= 1 ? 0.4 : 1,
+              }}
+            >
+              <Trash2 size={15} /> ลบกล่องซับนี้
+            </button>
           </>
         )}
       </MobileSheet>
@@ -480,6 +651,17 @@ export function PostPhaseMobile({
       {/* ── style full-screen sheet ── */}
       <MobileSheet open={styleOpen} onClose={() => setStyleOpen(false)} title="สไตล์ซับ (ทั้งคลิป)" size="large">
         <div className="flex flex-col gap-5 pt-2">
+          <EditorStylePresetShelf
+            kind="subtitle"
+            presets={ed.stylePresets.subtitle}
+            loading={ed.stylePresets.loading}
+            busy={ed.stylePresets.busy}
+            canSave
+            onSave={(name) => ed.stylePresets.save("subtitle", name)}
+            onApply={ed.stylePresets.apply}
+            onRemove={ed.stylePresets.remove}
+          />
+
           {ed.canAdjustAvatar && (
             <section className="flex flex-col gap-2">
               <GroupLabel>อวตาร</GroupLabel>
@@ -688,7 +870,20 @@ export function PostPhaseMobile({
         size="medium"
         triggerRef={logoTriggerRef}
       >
-        <div className="pt-2">
+        <div className="flex flex-col gap-5 pt-2">
+          {logoEligible && (
+            <EditorStylePresetShelf
+              kind="logo"
+              presets={ed.stylePresets.logo}
+              loading={ed.stylePresets.loading}
+              busy={ed.stylePresets.busy}
+              canSave={Boolean(logoOverlay)}
+              saveDisabledHint="อัปโหลดหรือเลือกโลโก้ก่อนบันทึกพรีเซ็ต"
+              onSave={(name) => ed.stylePresets.save("logo", name)}
+              onApply={ed.stylePresets.apply}
+              onRemove={ed.stylePresets.remove}
+            />
+          )}
           <LogoOverlayControls
             value={logoOverlay}
             eligible={logoEligible}
@@ -697,7 +892,25 @@ export function PostPhaseMobile({
         </div>
       </MobileSheet>
 
+      <MobileSheet
+        open={layersOpen}
+        onClose={() => setLayersOpen(false)}
+        title="เปิด–ปิดเลเยอร์"
+        size="medium"
+        triggerRef={layersTriggerRef}
+      >
+        <LayerVisibilityControls
+          hasAvatar={hasAvatar}
+          hasLogo={ed.layerAvailability.logo}
+          visibility={ed.layerVisibility}
+          availability={ed.layerAvailability}
+          disabled={busy || ed.logo.saving}
+          onChange={ed.setLayerEnabled}
+        />
+      </MobileSheet>
+
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
+      {brollEditEnabled && <PendingBrollChangesDialog ed={ed} />}
 
       {brollEditEnabled && ed.selectedWindow != null && (
         <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
@@ -715,6 +928,9 @@ function ClipSummary({ open, onToggle, preview, captionCount, durationMs }: {
   durationMs: number;
 }) {
   const hasAvatar = !!(preview?.avatarModel && preview.avatarModel !== "none");
+  // B-13: hint เฉพาะโหมดที่ fade จริง (เงื่อนไขเดียวกับ TimelinePanel/M10) — upload-cutaway
+  // มี hasAvatar=true แต่ cutawayComposite ไม่รับ fade เลย ต้องไม่บอกว่าเฟด
+  const fadeApplies = avatarFadeApplies(preview?.avatarModel ?? null);
   const bgm = typeof preview?.config?.bgmFile === "string" ? (preview.config.bgmFile as string) : null;
   const bgmName = bgm ? decodeURIComponent(bgm.split("/").pop() ?? bgm).replace(/\.[a-z0-9]+$/i, "") : null;
   return (
@@ -726,7 +942,12 @@ function ClipSummary({ open, onToggle, preview, captionCount, durationMs }: {
       {open && (
         <div className="px-3.5 pb-3">
           {hasAvatar && (
-            <SummaryRow dot={color.trackAvatar} label="พิธีกร AI" value={`${avatarModeLabel(preview?.avatarMode)}${preview?.avatarMode && preview.avatarMode !== "full" ? ` · ${preview.avatarIntroSecs ?? 5} วิ` : ""}`.trim()} />
+            <SummaryRow
+              dot={color.trackAvatar}
+              label="พิธีกร AI"
+              value={`${avatarModeLabel(preview?.avatarMode)}${preview?.avatarMode && preview.avatarMode !== "full" ? ` · ${preview.avatarIntroSecs ?? 5} วิ` : ""}`.trim()}
+              hint={fadeApplies ? "เฟดเข้า–ออกอัตโนมัติ" : undefined}
+            />
           )}
           <SummaryRow dot={color.trackSub} label="ซับไทย" value={`${captionCount} การ์ด`} />
           <SummaryRow dot={color.trackMusic} label="เพลงประกอบ" value={bgmName ?? "ไม่มี"} />
@@ -737,12 +958,17 @@ function ClipSummary({ open, onToggle, preview, captionCount, durationMs }: {
   );
 }
 
-function SummaryRow({ dot, label, value }: { dot: string; label: string; value: string }) {
+function SummaryRow({ dot, label, value, hint }: { dot: string; label: string; value: string; hint?: string }) {
   return (
-    <div className="flex items-center gap-2.5" style={{ padding: "8px 0", borderTop: "1px solid rgba(255,255,255,.05)" }}>
-      <span style={{ width: 9, height: 9, borderRadius: 3, flex: "none", background: dot }} />
-      <span style={{ flex: 1, fontSize: 13, color: color.text }}>{label}</span>
-      <span style={{ fontSize: 12, color: color.textSecondary, textAlign: "right" }}>{value}</span>
+    <div style={{ padding: "8px 0", borderTop: "1px solid rgba(255,255,255,.05)" }}>
+      <div className="flex items-center gap-2.5">
+        <span style={{ width: 9, height: 9, borderRadius: 3, flex: "none", background: dot }} />
+        <span style={{ flex: 1, fontSize: 13, color: color.text }}>{label}</span>
+        <span style={{ fontSize: 12, color: color.textSecondary, textAlign: "right" }}>{value}</span>
+      </div>
+      {hint && (
+        <div style={{ marginTop: 2, marginLeft: 17.5, fontSize: 11, color: color.textFaint }}>{hint}</div>
+      )}
     </div>
   );
 }

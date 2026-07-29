@@ -11,6 +11,12 @@ assert.ok(
   )),
   "all server routes must exclude runtime public/renders media from NFT build traces",
 );
+assert.ok(
+  Object.entries(excludes).some(([route, patterns]) => (
+    route === "/**" && patterns.some((pattern) => pattern.includes("stocks"))
+  )),
+  "all server routes must exclude runtime stock media from NFT build traces",
+);
 assert.equal(
   Object.values(excludes).flat().some((pattern) => (
     pattern.includes("public/") && !pattern.includes("public/renders")
@@ -29,9 +35,15 @@ const tracedEntries = traceFiles.flatMap((file) => {
   return (parsed.files ?? []).map((entry) => ({ file, normalized: entry.replaceAll("\\", "/") }));
 });
 const leaked = tracedEntries
-  .filter(({ normalized }) => normalized.includes("/public/renders/"))
+  .filter(({ normalized }) => (
+    normalized.includes("/public/renders/") ||
+    (
+      normalized.includes("/stocks/") &&
+      /\.(?:avif|gif|jpe?g|m4a|mov|mp3|mp4|png|webm|webp|wav)$/i.test(normalized)
+    )
+  ))
   .map(({ file, normalized }) => `${file}: ${normalized}`);
-assert.deepEqual(leaked.slice(0, 10), [], `runtime render files leaked into NFT traces (${leaked.length})`);
+assert.deepEqual(leaked.slice(0, 10), [], `runtime media files leaked into NFT traces (${leaked.length})`);
 assert.ok(
   tracedEntries.some(({ normalized }) => normalized.includes("/public/") && !normalized.includes("/public/renders/")),
   "non-render public assets remain traceable",

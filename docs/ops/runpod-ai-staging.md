@@ -1,8 +1,10 @@
 # Runpod AI image staging
 
 This runbook validates one real image provider without changing the public Video Editor
-or production feature flags. The first staging model is Runpod's official Z-Image Turbo
-Public Endpoint, so it does not require a custom Serverless template or ComfyUI workflow.
+or production feature flags. The first staging model was Runpod's official Z-Image Turbo
+Public Endpoint. Following the 2026-07-29 nested WaveSpeed credential incident, Hero
+Video is pinned to the isolated custom Serverless endpoint; the public endpoint is no
+longer an eligible Hero Video route.
 
 ## Safety boundary
 
@@ -55,13 +57,14 @@ URLs expire after seven days, which is why application storage is part of accept
 
 ## After the smoke test
 
-Do not connect Runpod to Video Editor automatically. The approved customer policy is:
+The approved customer policy is:
 
 - RunPod AI and Cloud API are separate AI Engines selected before the model.
-- Runpod Public Z-Image Turbo is the default 2-credit offer inside RunPod AI.
-- The custom Z-Image worker remains a canary and is never selected merely because its
-  endpoint ID exists. It requires `AI_STUDIO_Z_IMAGE_ROUTE=custom` and must pass the
-  same cost guard.
+- Runpod Public Z-Image Turbo remains a separate 2-credit contract, but is quarantined
+  unless `AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED=1`; Hero Video rejects it regardless.
+- Hero Video uses the isolated custom Z-Image worker at 3 credits/image. It requires
+  `AI_STUDIO_Z_IMAGE_ROUTE=custom`, the explicit endpoint/workflow settings, a passing
+  cost guard, and a successful live smoke before traffic is enabled.
 - GPT Image 2 1K is a 3-credit model inside the separate Cloud API Engine, not a
   RunPod backup.
 - One HERO AI image job has one selected Engine and exactly one external provider
@@ -141,8 +144,8 @@ Provisioned staging resources (2026-07-21):
 - Z-Image template `cdi0oruo2b`, endpoint `0c6eadcsuhuhor`.
 - Both use registry auth `cmrusznvj000q25gsb3hdtjmk`, `workersMin=0`, `workersMax=1`,
   and FlashBoot.
-- Z-Image accepts the 48 GB GPU fallback order `NVIDIA A40`, `NVIDIA L40S`, then
-  `NVIDIA RTX 6000 Ada Generation` to reduce scarce-pool queueing.
+- Z-Image accepts the 48 GB GPU fallback order `NVIDIA A40`, `NVIDIA RTX A6000`, then
+  `NVIDIA L40S` to cover both cost-effective Ampere pools before the faster fallback.
 - OmniVoice smoke passed with delay 17,584 ms, execution 759 ms, and a valid 24 kHz
   mono PCM WAV (138,284 bytes).
 - Z-Image smoke job `b1cfa851-37c7-4681-ae4b-625e11924bd2-e1` completed. It spent about
@@ -163,7 +166,7 @@ Default planning assumptions are one credit = THB 1, USD/THB = 36 and minimum gr
 | Offer | Customer price | Provider estimate | Maximum COGS | State |
 | --- | ---: | ---: | ---: | --- |
 | Runpod Public Z-Image | 2 credits | USD 0.005 | USD 0.038888 | enabled |
-| Custom Z-Image canary | 2 credits | USD 0.050 conservative | USD 0.038888 | blocked |
+| Custom Z-Image / Hero Video | 3 credits | USD 0.050 conservative | USD 0.058333 | cost-safe; live smoke required |
 | Cloud API · GPT Image 2 1K | 3 credits | USD 0.030 | USD 0.058333 | cost-safe, configuration required |
 
 The public Z price comes from Runpod's
@@ -173,7 +176,7 @@ Kie requests are pinned to `resolution: 1K`; their
 supports all four product aspect ratios. Provider result URLs are copied immediately into
 owned storage.
 
-Current local readiness is RunPod AI 1/3 and Cloud API 0/1. Public Z passes; Cloud GPT
-Image 2 lacks `MANAGED_KIE=1` and a server-managed `KIE_API_KEY`; FLUX and HiDream lack
-endpoints/workflows and are also conservatively cost-blocked. This is the intended
-fail-closed state for each independent Engine.
+Readiness output is configuration-only and says so explicitly. A passing configuration
+check must never be treated as proof that the provider can generate. Before switching
+Hero traffic, run `smoke:runpod-custom-staging -- z-image`, record the terminal provider
+job and cost, and only then change the production route.

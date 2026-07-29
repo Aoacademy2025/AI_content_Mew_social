@@ -1,0 +1,13 @@
+[Unit]
+Description=Run verified local media eviction daily
+Documentation=file:/var/www/ai-content/docs/ops/cloudflare-r2-media-rollout.md
+
+[Timer]
+Unit=heroai-media-local-eviction.service
+OnCalendar=*-*-* 04:30:00 Asia/Bangkok
+RandomizedDelaySec=10min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

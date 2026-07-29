@@ -77,6 +77,7 @@ model User {
   editorProjects     EditorProject[]
   brandAssets        BrandAsset[]
   brandPreference    BrandPreference?
+  editorStylePresets EditorStylePreset[]
   aiGenerationJobs   AiGenerationJob[]
 }
 
@@ -213,6 +214,7 @@ model BrandAsset {
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt
   defaultFor      BrandPreference? @relation("DefaultBrandAsset")
+  stylePresets    EditorStylePreset[]
 
   @@index([userId, createdAt])
   @@index([projectId])
@@ -228,6 +230,24 @@ model BrandPreference {
   opacity        Float      @default(0.9)
   enabled        Boolean    @default(true)
   updatedAt      DateTime   @updatedAt
+}
+
+model EditorStylePreset {
+  id           String      @id @default(cuid())
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind         String // subtitle | logo
+  name         String
+  nameKey      String
+  configJson   String
+  brandAssetId String?
+  brandAsset   BrandAsset? @relation(fields: [brandAssetId], references: [id], onDelete: Cascade)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([userId, kind, nameKey])
+  @@index([userId, kind, updatedAt])
+  @@index([brandAssetId])
 }
 
 model VideoJob {
@@ -526,6 +546,36 @@ model SiteConfig {
   key       String   @id
   value     String
   updatedAt DateTime @updatedAt
+}
+
+// Physical media catalog for the local -> R2 migration. Existing Video/VideoJob
+// URLs remain authoritative ownership references; this row records where the
+// immutable bytes are stored and whether the remote copy has been verified.
+model MediaObject {
+  id             String   @id @default(cuid())
+  area           String
+  filename       String
+  objectKey      String   @unique
+  contentType    String
+  sizeBytes      BigInt
+  sha256         String?
+  remoteFilename String?
+  r2Etag         String?
+  remoteState    String   @default("none")
+  localState     String   @default("present")
+  localMtimeMs   BigInt?
+  producedAt     DateTime @default(now())
+  lastVerifiedAt DateTime?
+  nextRetryAt    DateTime?
+  lastErrorCode  String?
+  attempts       Int      @default(0)
+  version        Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([area, filename])
+  @@index([remoteState, nextRetryAt])
+  @@index([localState, producedAt])
 }
 
 model Music {

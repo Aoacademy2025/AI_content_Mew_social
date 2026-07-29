@@ -849,7 +849,7 @@ export default function ShortVideoPage() {
     const kwRes = await fetch("/api/videos/extract-keywords", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scenes: sc, preferredLLM: preferredLLMRef.current }),
+      body: JSON.stringify({ scenes: sc, script: cleanScript, preferredLLM: preferredLLMRef.current }),
       signal: abortControllerRef.current?.signal,
     });
     const kwData = await kwRes.json();
@@ -897,6 +897,8 @@ export default function ShortVideoPage() {
         stockSource,
         ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
         preferredLLM: preferredLLMRef.current,
+        fullScript: cleanScript,
+        ...(pipe.current.scenes?.length ? { subtitleTexts: pipe.current.scenes } : {}),
         ...(targetClipCount > 0 ? { overrideClipCount: targetClipCount } : {}),
         ...(pipe.current.visualDirection ? { visualDirection: pipe.current.visualDirection } : {}),
         ...(pipe.current.relevanceSpec ? { relevanceSpec: pipe.current.relevanceSpec } : {}),
@@ -1909,6 +1911,7 @@ export default function ShortVideoPage() {
                   keywords: kwsToFetch,
                   keywordAlternatives: altsToFetch,
                   subtitleTexts: textsToFetch,
+                  fullScript: cleanScript,
                   download: true,
                   totalDurationSec: audioDurSec,
                   stockSource,
@@ -2272,6 +2275,7 @@ export default function ShortVideoPage() {
                 keywords: kwsToFetch2,
                 keywordAlternatives: altsToFetch2,
                 subtitleTexts: textsToFetch2,
+                fullScript: cleanScript,
                 download: true, totalDurationSec: audioDurSec2, stockSource,
                 ...(stockSource === "kie-image" || stockSource === "auto-mix" ? { kieModel } : {}),
                 overrideClipCount: perSubKws2.length,

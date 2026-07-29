@@ -3,7 +3,7 @@ import type { AiImageModelDefinition } from "@/lib/ai-image-policy";
 
 /** Retail quote policy. One credit is ฿1; provider routes must fit inside this
  * COGS envelope before the customer can reserve credits. */
-export const AI_IMAGE_QUOTE_VERSION = "ai-image-2026-07-21-v1";
+export const AI_IMAGE_QUOTE_VERSION = "ai-image-2026-07-29-v2";
 export const DEFAULT_AI_IMAGE_USD_THB_RATE = 36;
 export const DEFAULT_AI_IMAGE_MIN_GROSS_MARGIN_BPS = 3_000;
 

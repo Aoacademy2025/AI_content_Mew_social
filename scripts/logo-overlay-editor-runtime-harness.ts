@@ -462,7 +462,7 @@ function compileHook(source: string): string {
 
 function createHarness(
   source: string,
-  initial: { projectId: string; assetId: string },
+  initial: { projectId: string; assetId?: string },
 ) {
   const telemetry: TelemetryCall[] = [];
   const onChanges: Array<{
@@ -476,11 +476,11 @@ function createHarness(
   const stableOnChange = (value: LogoOverlayConfig | undefined) => {
     onChanges.push({ projectId: props.projectId, value });
   };
-  const setProject = (projectId: string, assetId: string): void => {
+  const setProject = (projectId: string, assetId?: string): void => {
     props = {
       projectId,
       eligible: true,
-      value: config(assetId),
+      value: assetId ? config(assetId) : undefined,
       onChange: stableOnChange,
       projectSaveStatus: "idle",
       onRetryProjectSave() {},
@@ -561,11 +561,11 @@ function createHarness(
     idleProjectIds,
     fetchMock,
     scheduler,
-    setProject(projectId: string, assetId: string) {
+    setProject(projectId: string, assetId?: string) {
       setProject(projectId, assetId);
       runner.rerender();
     },
-    renderProjectWithoutCommit(projectId: string, assetId: string) {
+    renderProjectWithoutCommit(projectId: string, assetId?: string) {
       const committedProps = props;
       setProject(projectId, assetId);
       try {
@@ -932,6 +932,33 @@ async function normalSuccessAppliesOnceAndCleansReplacement(source: string): Pro
   assert.equal(eventCount(harness.telemetry, "logo_overlay_upload_done"), 1);
 }
 
+async function firstUploadEnablesLogoImmediately(source: string): Promise<void> {
+  const harness = createHarness(source, { projectId: "project-first-upload" });
+  harness.fetchMock.enqueueUpload(response(201, { asset: asset("first-logo") }));
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const result = await harness.runner.current.upload(uploadFile("first-logo.png"));
+  await settle(harness.runner);
+
+  assert.equal(result, true);
+  assert.equal(harness.runner.current.asset?.id, "first-logo");
+  assert.deepEqual(
+    harness.onChanges.map((change) => [
+      change.projectId,
+      change.value?.assetId,
+      change.value?.enabled,
+    ]),
+    [["project-first-upload", "first-logo", true]],
+    "the first successful upload must select and display the logo immediately",
+  );
+  assert.deepEqual(
+    harness.fetchMock.deletedAssetIds,
+    [],
+    "a first upload has no prior asset to clean up",
+  );
+}
+
 async function staleKnownCreatedAssetCleansOnlyItsOrphan(source: string): Promise<void> {
   const harness = createHarness(source, { projectId: "project-A", assetId: "old-A" });
   const pendingJson = deferred<unknown>();
@@ -1045,6 +1072,7 @@ export async function verifyLogoOverlayEditorRuntime(
   await assetChangeMakesLateDefaultSuccessInert(source);
   await lateInvalidDefaultJsonAfterProjectChangeIsInert(source);
   await unmountAbortsAndMakesLateDefaultInert(source);
+  await firstUploadEnablesLogoImmediately(source);
   await normalSuccessAppliesOnceAndCleansReplacement(source);
   await staleKnownCreatedAssetCleansOnlyItsOrphan(source);
   await staleExistingAndUnprovenAssetsNeverCleanup(source);

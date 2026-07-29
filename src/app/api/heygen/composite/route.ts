@@ -14,6 +14,13 @@ import {
   featherSupported,
   type ChromaParams,
 } from "@/lib/chroma-key";
+import {
+  avatarFadeBlendFilter,
+  avatarSourceFadeWindows,
+  normalizeAvatarFadeWindows,
+  singleAvatarFadeWindow,
+  type AvatarFadeWindow,
+} from "@/lib/avatar-fade";
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
@@ -126,14 +133,38 @@ function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
 // Input: transparent webm (already bg-removed) + bg mp4
 // Avatar fills full bg, centered
 // ─────────────────────────────────────────────
-async function directComposite(bgPath: string, avatarPath: string, outPath: string): Promise<void> {
+function buildDirectCompositeFilter(
+  avatarFadeWindows: readonly AvatarFadeWindow[],
+): string {
+  const fadeWindows = normalizeAvatarFadeWindows(avatarFadeWindows);
+  const backgroundFilter = fadeWindows.length > 0
+    ? `[0:v]scale=1080:1920:flags=lanczos,setsar=1,split=2[bg][bg_fade]`
+    : `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`;
+  const overlayOutput = fadeWindows.length > 0 ? "avatar_composite" : "out";
+  return [
+    backgroundFilter,
+    `[1:v]scale=1080:1920:flags=lanczos,setsar=1[fg]`,
+    `[bg][fg]overlay=0:0:format=auto[${overlayOutput}]`,
+    ...(fadeWindows.length > 0
+      ? [avatarFadeBlendFilter({
+          compositeLabel: overlayOutput,
+          backgroundLabel: "bg_fade",
+          outputLabel: "out",
+          windows: fadeWindows,
+        })]
+      : []),
+  ].join(";");
+}
+
+async function directComposite(
+  bgPath: string,
+  avatarPath: string,
+  outPath: string,
+  avatarFadeWindows: readonly AvatarFadeWindow[],
+): Promise<void> {
   const ffmpeg = getFfmpegPath();
   // Scale bg to 1080x1920, overlay avatar centered, take audio from avatarPath (has TTS audio)
-  const filter = [
-    `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
-    `[1:v]scale=1080:1920:flags=lanczos,setsar=1[fg]`,
-    `[bg][fg]overlay=0:0:format=auto[out]`,
-  ].join(";");
+  const filter = buildDirectCompositeFilter(avatarFadeWindows);
 
   console.log("[direct-composite] filter:", filter);
   await runFfmpeg(ffmpeg, [
@@ -161,9 +192,13 @@ async function cutawayComposite(
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
   const enableExpr = buildEnableExpr(personRangesSec);
-  const overlay = enableExpr
-    ? `[bg][fg]overlay=0:0:format=auto:enable='${enableExpr}'[out]`
-    : `[bg][fg]overlay=0:0:format=auto[out]`; // no ranges => behave like full (fail-open)
+  if (!enableExpr) {
+    // Fail closed. An empty `enable=` used to fall back to a full-clip overlay, which turns
+    // "show B-roll in every window" into "uploaded speaker over the whole video". Callers with
+    // no person ranges must skip the composite and ship the base render instead.
+    throw new Error("cutaway composite requires at least one valid person range");
+  }
+  const overlay = `[bg][fg]overlay=0:0:format=auto:enable='${enableExpr}'[out]`;
   const filter = [
     `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
     `[1:v]scale=1080:1920:flags=lanczos,setsar=1[fg]`,
@@ -196,10 +231,16 @@ async function chromakeyComposite(
   audioFromAvatar = false,
   layout: AvatarLayout | null = null,
   feather = true,
+  avatarFadeWindows: readonly AvatarFadeWindow[] = [],
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
 
-  const filterComplex = buildCompositeFilter(params, layout, feather);
+  const filterComplex = buildCompositeFilter(
+    params,
+    layout,
+    feather,
+    avatarFadeWindows,
+  );
   if (layout) {
     console.log(`[chromakey] layer layout scale=${layout.scale} offsetPx=(${layout.offsetX},${layout.offsetY})`);
   } else {
@@ -295,6 +336,40 @@ async function rembgComposite(bgPath: string, avatarPath: string, outPath: strin
       reject(new Error(`rembg spawn error: ${e.message} — run: pip install rembg onnxruntime`));
     });
   });
+}
+
+async function fadeCompositeAgainstBackground(
+  ffmpegPath: string,
+  compositePath: string,
+  bgPath: string,
+  outPath: string,
+  avatarFadeWindows: readonly AvatarFadeWindow[],
+): Promise<void> {
+  const fadeWindows = normalizeAvatarFadeWindows(avatarFadeWindows);
+  if (fadeWindows.length === 0) {
+    fs.copyFileSync(compositePath, outPath);
+    return;
+  }
+  const filter = [
+    `[0:v]scale=1080:1920:flags=lanczos,setsar=1[avatar_composite]`,
+    `[1:v]scale=1080:1920:flags=lanczos,setsar=1[bg_fade]`,
+    avatarFadeBlendFilter({
+      compositeLabel: "avatar_composite",
+      backgroundLabel: "bg_fade",
+      outputLabel: "out",
+      windows: fadeWindows,
+    }),
+  ].join(";");
+  await runFfmpeg(ffmpegPath, [
+    "-y", "-i", compositePath, "-i", bgPath,
+    "-filter_complex", filter,
+    "-map", "[out]", "-map", "0:a?",
+    "-c:v", "libx264", "-preset", compositePreset(), "-crf", compositeCrf(),
+    "-threads", "0",
+    "-c:a", "aac", "-b:a", "128k",
+    "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+    outPath,
+  ]);
 }
 
 // ─────────────────────────────────────────────
@@ -435,17 +510,23 @@ async function applyBookendBothSplit(
     [bgIntroPath, introAvatarPath, introCompPath, N],
     [bgTailPath,  tailAvatarPath,  tailCompPath,  T],
   ] as [string, string, string, number][]) {
+    const segmentFadeWindow = singleAvatarFadeWindow(dur);
     if (mode === "direct") {
       await runFfmpeg(ffmpegPath, [
         "-y", "-i", bgSeg, "-i", avSeg,
-        "-filter_complex", `[1:v][0:v]scale2ref=iw:ih[fg_s][bg];[fg_s]format=yuva444p[fg];[bg][fg]overlay=0.5*W-w/2:0.5*H-h/2:format=auto[out]`,
+        "-filter_complex", buildDirectCompositeFilter(segmentFadeWindow),
         "-map", "[out]", "-t", String(dur),
         "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-an",
         "-pix_fmt", "yuv420p", outSeg,
       ]);
     } else {
       // Same key-at-display-resolution chain as the main composite (shared builder → can't drift).
-      const segFilter = buildCompositeFilter(params, layout, feather);
+      const segFilter = buildCompositeFilter(
+        params,
+        layout,
+        feather,
+        segmentFadeWindow,
+      );
       await runFfmpeg(ffmpegPath, [
         "-y", "-i", bgSeg, "-i", avSeg,
         "-filter_complex", segFilter,
@@ -528,6 +609,16 @@ export async function POST(req: Request) {
 
   if (!avatarVideoUrl) return NextResponse.json({ error: "avatarVideoUrl required" }, { status: 400 });
   if (!bgVideoUrl) return NextResponse.json({ error: "bgVideoUrl required" }, { status: 400 });
+  // mode:"cutaway" overlays the uploaded speaker ONLY inside personRanges. With no valid range
+  // the overlay would cover the whole clip — the opposite of what an all-B-roll edit asked for.
+  // Reject before downloading anything; the caller (orchestrator) must skip the composite and
+  // ship the base render, which already carries the clip's audio. Other modes are untouched.
+  if (mode === "cutaway" && !buildEnableExpr(personRanges)) {
+    return NextResponse.json(
+      { error: "cutaway requires at least one valid personRange" },
+      { status: 400 },
+    );
+  }
 
   const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { heygenKey: true } });
   const heygenKey = user?.heygenKey ? decryptKey(user.heygenKey) : undefined;
@@ -599,14 +690,42 @@ export async function POST(req: Request) {
     }
 
     // Standard composite (full / bookend / bookend-both legacy)
+    const bgDuration = await probeDuration(ffmpeg, bgTmp);
+    const sourceFadeWindows = avatarSourceFadeWindows({
+      timing: avatarTiming,
+      totalDurationSec: bgDuration,
+      introSecs: avatarBookendSecs,
+      tailSecs: avatarTailSecs,
+    });
     if (mode === "direct") {
-      await directComposite(bgTmp, avatarTmp, outPath);
+      await directComposite(bgTmp, avatarTmp, outPath, sourceFadeWindows);
     } else if (mode === "cutaway") {
       await cutawayComposite(bgTmp, avatarTmp, outPath, personRanges);
     } else if (mode === "rembg") {
-      await rembgComposite(bgTmp, avatarTmp, outPath, rembgModel);
+      const rembgRawPath = path.join(rendersDir, `composite-${ts}-rembg-raw.mp4`);
+      try {
+        await rembgComposite(bgTmp, avatarTmp, rembgRawPath, rembgModel);
+        await fadeCompositeAgainstBackground(
+          ffmpeg,
+          rembgRawPath,
+          bgTmp,
+          outPath,
+          sourceFadeWindows,
+        );
+      } finally {
+        try { if (fs.existsSync(rembgRawPath)) fs.unlinkSync(rembgRawPath); } catch {}
+      }
     } else {
-      await chromakeyComposite(bgTmp, avatarTmp, outPath, chromaParams, audioFromAvatar, layout, feather);
+      await chromakeyComposite(
+        bgTmp,
+        avatarTmp,
+        outPath,
+        chromaParams,
+        audioFromAvatar,
+        layout,
+        feather,
+        sourceFadeWindows,
+      );
     }
 
     if (fs.statSync(outPath).size < 1000) throw new Error("Output too small");

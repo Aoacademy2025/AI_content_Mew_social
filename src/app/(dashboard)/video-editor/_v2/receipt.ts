@@ -30,7 +30,7 @@ export interface ReceiptInput {
   perImageCredits: number;
   /** Credit balance from /api/credits/balance → total. null when unknown (still loading). */
   creditBalance: number | null;
-  /** Credits charged per overflow minute (creditCostFor("minute") = 2). */
+  /** Credits charged per render minute when the package cannot fund the whole job. */
   minuteCreditRate: number;
   /** True when a HeyGen avatar is on (avatar mode ≠ none). */
   hasAvatar: boolean;
@@ -42,7 +42,7 @@ export interface ReceiptInput {
   targetClipCount?: number;
 }
 
-export type ReceiptLineKind = "info" | "warn";
+export type ReceiptLineKind = "info" | "success" | "warn";
 export interface ReceiptLine {
   key: string;
   kind: ReceiptLineKind;
@@ -56,7 +56,15 @@ export interface ReceiptModel {
   estCredits: number;
   /** M — minutes over the package (0 when within package or quota unknown). */
   overflowMinutes: number;
+  /** Credits charged when the whole render falls back from minutes to credits. */
+  overflowCredits: number;
+  /** Hero credits estimated for this job: AI images + a credit-funded render. */
+  totalEstimatedCredits: number;
   lines: ReceiptLine[];
+}
+
+function formatCredits(value: number): string {
+  return value.toLocaleString("en-US");
 }
 
 /** Build the receipt model: computed numbers + the exact set of lines to render. */
@@ -85,6 +93,14 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const overflowMinutes = haveMinuteQuota
     ? Math.max(0, estMinutes - remainingMinutes!)
     : 0;
+  // reserveMinutesOrCredits is deliberately all-or-nothing: when the remaining
+  // package minutes cannot cover the whole render, it leaves those minutes
+  // untouched and funds the whole render with credits.
+  const overflowCredits = overflowMinutes > 0 ? estMinutes * minuteCreditRate : 0;
+  // Support-ticket invariant: sufficiency must cover the whole job estimate, not
+  // only AI images. Otherwise a user can have enough for every image but fail at
+  // the later render-overflow reservation.
+  const totalEstimatedCredits = estCredits + overflowCredits;
 
   const lines: ReceiptLine[] = [];
 
@@ -113,20 +129,33 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   if (overflowMinutes > 0) {
     lines.push({
       key: "overflow",
-      kind: "warn",
-      text: `นาทีในแพ็กเกจไม่พอ — ส่วนที่เกิน ~${overflowMinutes} นาที จะหักเครดิต ${overflowMinutes * minuteCreditRate} เครดิต (${minuteCreditRate} เครดิต/นาที)`,
+      // Running out of package minutes is not an error when Hero credits cover
+      // the job. The combined balance status below owns success/error styling.
+      kind: "info",
+      text: `นาทีในแพ็กเกจเหลือ ${remainingMinutes} นาที ไม่พอสำหรับงาน ~${estMinutes} นาที — งานนี้จึงใช้ Hero credits ทั้งหมด ${overflowCredits} เครดิต (${minuteCreditRate} เครดิต/นาที) และจะไม่หักนาทีแพ็กเกจ`,
     });
   }
 
-  // 4) Insufficient-credit warning — the AI image estimate exceeds the balance
-  //    (server then falls back to stock for the windows where credits run out).
-  if (usesAi && creditBalance != null && estCredits > creditBalance) {
+  // 4) Hero-credit summary — make the three different quota systems legible:
+  //    package minutes above, Hero credits here, and HeyGen's own key below.
+  //    The combined check includes BOTH AI-image and credit-funded render spend.
+  if (creditBalance != null && totalEstimatedCredits > 0 && totalEstimatedCredits <= creditBalance) {
+    lines.push({
+      key: "credits",
+      kind: "success",
+      text: `พร้อมสร้าง · Hero credits มี ${formatCredits(creditBalance)} · งานนี้ใช้ประมาณ ${formatCredits(totalEstimatedCredits)} · คาดว่าเหลือ ${formatCredits(creditBalance - totalEstimatedCredits)}`,
+    });
+  } else if (creditBalance != null && totalEstimatedCredits > creditBalance) {
+    const deficit = totalEstimatedCredits - creditBalance;
+    const recovery = usesAi
+      ? insufficientCreditBehavior === "block"
+        ? "เติมเครดิตหรือลดจำนวนภาพก่อนเริ่มงาน"
+        : "เติมเครดิต หรือลดจำนวนภาพ/เลือกฟรีล้วนก่อนเริ่มงาน"
+      : "เติมเครดิตหรือลดความยาวก่อนเริ่มงาน";
     lines.push({
       key: "insufficient",
       kind: "warn",
-      text: insufficientCreditBehavior === "block"
-        ? "เครดิตอาจไม่พอ — Hero AI Image จะไม่เริ่มงานจนกว่าเครดิตจะพอครบทุกฉาก"
-        : "เครดิตอาจไม่พอ — ระบบจะใช้ภาพสต็อกแทนช่วงที่เครดิตหมด",
+      text: `Hero credits ไม่พอ · มี ${formatCredits(creditBalance)} · งานนี้ใช้ประมาณ ${formatCredits(totalEstimatedCredits)} · ขาดประมาณ ${formatCredits(deficit)} — ${recovery}`,
     });
   }
 
@@ -148,5 +177,5 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
       : "ตัวเลขเป็นประมาณการ — ยอดจริงคำนวณจากความยาวเสียงจริงหลังสร้างเสียง",
   });
 
-  return { estMinutes, estCredits, overflowMinutes, lines };
+  return { estMinutes, estCredits, overflowMinutes, overflowCredits, totalEstimatedCredits, lines };
 }

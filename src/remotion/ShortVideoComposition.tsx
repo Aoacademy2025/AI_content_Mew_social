@@ -574,7 +574,14 @@ export function ShortVideoComposition({
       {/* ── Stock video clips ─────────────────────────────────────────────── */}
       {(() => {
         // 1. Convert bgVideos to integer frame ranges
-        type Seg = { src: string; startFrame: number; endFrame: number; clipOffset: number; clipDuration: number | null };
+        type Seg = {
+          src: string;
+          startFrame: number;
+          endFrame: number;
+          clipOffset: number;
+          clipDuration: number | null;
+          brollEnabled: boolean;
+        };
         const segs: Seg[] = [];
         for (const v of bgVideos) {
           const startFrame = Math.max(0, Math.round(v.start * fps));
@@ -583,7 +590,14 @@ export function ShortVideoComposition({
           const clipOffset   = v.clipOffset ?? 0;
           // Preserve deliberate same-source splits: each split may reset clipOffset to
           // zero so its requested frames stay inside the probed source duration.
-          segs.push({ src: v.src, startFrame, endFrame, clipOffset, clipDuration });
+          segs.push({
+            src: v.src,
+            startFrame,
+            endFrame,
+            clipOffset,
+            clipDuration,
+            brollEnabled: v.brollEnabled !== false,
+          });
         }
 
         // 2. Render each segment as a Sequence
@@ -601,8 +615,12 @@ export function ShortVideoComposition({
           const cfAt = (a: number, b: number) => Math.min(CROSSFADE_FRAMES, Math.floor(Math.min(a, b) / 3));
           const nextDur = isLast ? 0 : segs[i + 1].endFrame - segs[i + 1].startFrame;
           const prevDur = i === 0 ? 0 : segs[i - 1].endFrame - segs[i - 1].startFrame;
-          const tailFrames    = isLast ? 0 : cfAt(segDurFrames, nextDur); // stay visible for next clip's fade-in
-          const headFrames    = i === 0 ? 0 : cfAt(prevDur, segDurFrames); // fade in over previous clip
+          const tailFrames = isLast || !v.brollEnabled || !segs[i + 1].brollEnabled
+            ? 0
+            : cfAt(segDurFrames, nextDur);
+          const headFrames = i === 0 || !v.brollEnabled || !segs[i - 1].brollEnabled
+            ? 0
+            : cfAt(prevDur, segDurFrames);
 
           const clipDurFrames = v.clipDuration ? Math.max(1, Math.round(v.clipDuration * fps)) : null;
           const clipOffsetFrames = Math.round(v.clipOffset * fps);
@@ -613,6 +631,8 @@ export function ShortVideoComposition({
           // Sequence starts at the hard-cut frame, runs for segDurFrames + tailFrames
           const seqFrom = v.startFrame;
           const seqDur  = segDurFrames + tailFrames;
+
+          if (!v.brollEnabled) return null;
 
           return (
             <Sequence key={`${i}-${v.src}-${v.startFrame}`} from={seqFrom} durationInFrames={seqDur} layout="none">

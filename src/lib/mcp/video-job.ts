@@ -269,6 +269,8 @@ export interface VideoJobPreviewData {
   compositeBaseUrl?: string | null;
   /** อวตารท้ายคลิป (bookend-both) — จำเป็นตอน re-composite โหมดนั้น */
   tailAvatarUrl?: string | null;
+  /** Uploaded-clip cutaway: ranges where the original full-frame speaker overlays B-roll. */
+  cutawayPersonRanges?: { start: number; end: number }[];
   /** per-word TTS timeline (script path only) — lets the editor regroup cards
    *  by word count (1/2/3/4 คำ) with exact timing. Absent on cutaway/old jobs
    *  → editor falls back to proportional split. */

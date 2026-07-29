@@ -3,11 +3,9 @@
 /**
  * usePostPhaseEditor — เจ้าของ state/logic ทั้งหมดของเฟสแต่งซับ (แยกจาก PostPhase.tsx
  * เพื่อให้จอ desktop และ mobile ใช้ hook ตัวเดียวกัน — one source of truth: caption/
- * style/burn state, undo history, avatar re-composite trigger, export path).
- *
- * ⚠️ นี่คือการ "ย้าย" logic ล้วน (behavior-preserving) — subtitle timing math และ
- * avatar composite ยังคงเดิมทุกบรรทัด. hook เป็นเจ้าของ videoRef (Shell mount จอ
- * แต่งซับทีละจอเท่านั้น → ref ไม่ชนกัน).
+ * style/burn state, caption Undo/Redo history, avatar re-composite trigger, export path).
+ * การเพิ่ม/ลบกล่องซับแก้เฉพาะช่วงเวลาที่ Playhead เลือกและไม่เลื่อนการ์ดถัดไป.
+ * hook เป็นเจ้าของ videoRef (Shell mount จอแต่งซับทีละจอเท่านั้น → ref ไม่ชนกัน).
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -20,9 +18,26 @@ import {
 import { loanwordSpans } from "@/lib/thai-loanwords";
 import { trackEvent } from "@/lib/client-telemetry";
 import {
+  commitCaptionHistory,
+  deleteCaptionCard,
+  insertCaptionCardAtPlayhead,
+  MIN_CAPTION_CARD_MS,
+  redoCaptionHistory,
+  shiftCaptionOverrides,
+  undoCaptionHistory,
+  type CaptionHistoryState,
+} from "@/lib/caption-card-editing";
+import {
   normalizeLogoOverlayConfig,
   type LogoOverlayConfig,
 } from "@/lib/logo-overlay";
+import {
+  canToggleAvatarLayer,
+  normalizeEditorLayerVisibility,
+  resolveEditorPreviewVideoUrl,
+  type EditableEditorLayer,
+  type EditorLayerVisibility,
+} from "@/lib/editor-layer-visibility";
 import type { V2JobState } from "./useV2Job";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
@@ -31,6 +46,16 @@ import {
   type LogoEditorSurface,
   type LogoProjectSaveStatus,
 } from "./useLogoOverlayEditor";
+import {
+  reconstructCutawayPersonRanges,
+  resolveCutawayPersonRanges,
+  type CutawayBrollSegment,
+} from "@/lib/cutaway-plan";
+import {
+  resolveBrollExportSource,
+  type BrollExportSource,
+} from "@/lib/broll-rerender";
+import { useEditorStylePresets } from "./useEditorStylePresets";
 
 export type ExportState =
   | { phase: "idle" }
@@ -43,25 +68,74 @@ export type ExportState =
 // broll-rerender job mode (Task 10). `kind` drives the source badge/label in the
 // inspector; `label` is a human-readable title (candidate title / "อัปโหลด" / "AI").
 export type WindowEditKind = "stock" | "upload" | "ai";
-export type WindowEdit = { src: string; keyword?: string; kind: WindowEditKind; label: string };
+export type WindowEdit = {
+  src?: string;
+  keyword?: string;
+  kind?: WindowEditKind;
+  label?: string;
+  enabled?: boolean;
+};
+
+export type PendingBrollIntent = "export" | "new-project";
+
+type CaptionEditSnapshot = {
+  captions: V2Caption[];
+  overrides: V2CardOverrides;
+  selected: number;
+  cardLen: V2CardLen;
+};
+
+function cloneCaptions(captions: readonly V2Caption[]): V2Caption[] {
+  return captions.map((caption) => ({ ...caption }));
+}
+
+function cloneOverrides(overrides: V2CardOverrides): V2CardOverrides {
+  return Object.fromEntries(
+    Object.entries(overrides).map(([index, value]) => [index, { ...value }]),
+  );
+}
+
+function captionsMatch(left: readonly V2Caption[], right: readonly V2Caption[]): boolean {
+  return left.length === right.length && left.every((caption, index) => {
+    const other = right[index];
+    return !!other
+      && caption.text === other.text
+      && caption.startMs === other.startMs
+      && caption.endMs === other.endMs
+      && caption.tag === other.tag;
+  });
+}
 
 const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
   void _next;
 };
 const ignoreProjectSaveRetry = () => undefined;
+const alwaysReadyForProjectOperation = () => true;
+type LayerVisibilityChange = EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility);
+
+const ignoreLayerVisibilityChange = (_next: LayerVisibilityChange) => {
+  void _next;
+};
 
 export type UsePostPhaseEditorOptions = {
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
   /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
    *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
   onAdoptJob: (next: { id: string; projectId?: string | null }) => void;
+  onNewProject: () => void;
   projectId?: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange?: (next: LogoOverlayConfig | undefined) => void;
+  layerVisibility?: EditorLayerVisibility;
+  onLayerVisibilityChange?: (next: LayerVisibilityChange) => void;
   logoEligible?: boolean;
   projectSaveStatus?: LogoProjectSaveStatus;
   onRetryProjectSave?: () => void;
   surface?: LogoEditorSurface;
+  /** p.canRunProjectOperation from useV2Project — same readiness check every other
+   *  project mutation in the shell already gates on. Wired through so the style-preset
+   *  "apply" toast never lies about a logo change that got silently dropped (M2). */
+  canRunProjectOperation?: () => boolean;
 };
 
 export function usePostPhaseEditor(
@@ -72,13 +146,17 @@ export function usePostPhaseEditor(
   const {
     onExportJob,
     onAdoptJob,
+    onNewProject,
     projectId = job.projectId,
     logoOverlay,
     onLogoOverlayChange = ignoreLogoChange,
+    layerVisibility,
+    onLayerVisibilityChange = ignoreLayerVisibilityChange,
     logoEligible = false,
     projectSaveStatus = "idle",
     onRetryProjectSave = ignoreProjectSaveRetry,
     surface = "desktop",
+    canRunProjectOperation = alwaysReadyForProjectOperation,
   } = options;
   const preview = job.output?.preview ?? null;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
@@ -103,7 +181,21 @@ export function usePostPhaseEditor(
   // ปรับสี scope รายการ์ด
   const [scope, setScope] = useState<"all" | "card">("all");
   const [overrides, setOverrides] = useState<V2CardOverrides>({});
+  // M1: apply พรีเซ็ตซับต้องล้าง per-card overrides เหมือน applyCardLen ด้านล่าง — ไม่งั้นสี
+  // ที่ตั้งไว้รายใบ (ชนะ cfg เสมอ) จะทำให้พรีเซ็ต "ไม่ติด" เงียบ ๆ บนการ์ดที่เคยแก้สีเอง
+  const stylePresets = useEditorStylePresets({
+    subtitleConfig: cfg,
+    logoConfig: logoOverlay,
+    onApplySubtitle: (config) => {
+      setCfg(config);
+      setOverrides({});
+    },
+    onApplyLogo: onLogoOverlayChange,
+    canApplyLogo: canRunProjectOperation,
+  });
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
+  const windowApplyInFlightRef = useRef(false);
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const pollStop = useRef(false);
@@ -116,8 +208,12 @@ export function usePostPhaseEditor(
   // — captions/overrides/cfg เป็น state แยกอยู่แล้ว (init ครั้งเดียวจาก preview เดิม) จึงไม่ถูก
   // เขียนทับตอน config เปลี่ยน (ตามสเปค: ต้องรอด "ไม่แตะ" ของแก้ซับ).
   const [windowEdits, setWindowEditsState] = useState<Map<number, WindowEdit>>(new Map());
+  const windowUndoRef = useRef<Map<number, WindowEdit>[]>([]);
+  const windowRedoRef = useRef<Map<number, WindowEdit>[]>([]);
+  const [windowHistory, setWindowHistory] = useState({ undo: 0, redo: 0 });
   const [selectedWindow, setSelectedWindow] = useState<number | null>(null);
   const [applyingWindows, setApplyingWindows] = useState<{ progress: number } | null>(null);
+  const [pendingBrollIntent, setPendingBrollIntent] = useState<PendingBrollIntent | null>(null);
   const [configOverride, setConfigOverride] = useState<Record<string, unknown> | null>(null);
   const previewConfig = configOverride ?? preview?.config ?? null;
   // compositeBaseUrl แทนที่ preview.compositeBaseUrl หลัง apply สำเร็จ (งาน avatar) —
@@ -125,32 +221,122 @@ export function usePostPhaseEditor(
   // ทับผลแก้ b-roll ทิ้งอย่างเงียบๆ ตอนกด save ใน Avatar Adjust (บั๊กที่ fix นี้แก้)
   const [compositeBaseUrlOverride, setCompositeBaseUrlOverride] = useState<string | null>(null);
   const compositeBaseUrl = compositeBaseUrlOverride ?? preview?.compositeBaseUrl ?? null;
+  const [cutawayPersonRangesOverride, setCutawayPersonRangesOverride] = useState<
+    { start: number; end: number }[] | null
+  >(null);
+  const cutawayPersonRanges = cutawayPersonRangesOverride ?? preview?.cutawayPersonRanges ?? null;
+  // Legacy upload-cutaway previews (created before `cutawayPersonRanges` was persisted) replay
+  // the original creation formula instead of guessing the alternation from `sourceIndex` — the
+  // same deterministic reconstruction the worker uses. The status poll deliberately never
+  // returns `inputJson`, so a legacy project rendered with a CUSTOM clip count can still show an
+  // approximate eye state here; the render itself is always exact (the worker reconstructs with
+  // that job's targetClipCount) and the first apply persists exact ranges for good.
+  const legacyCutawayBaseRanges = useMemo(
+    () => (
+      preview?.avatarModel === "upload-cutaway" && !Array.isArray(preview?.cutawayPersonRanges)
+        ? reconstructCutawayPersonRanges({
+            captions: preview?.captions,
+            audioDurationMs: preview?.audioDurationMs,
+            windowSec: Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4,
+          })
+        : []
+    ),
+    [preview],
+  );
+
+  // Upload/select results are already server-side assets, but their placement is browser-only
+  // until `applyWindowEdits` succeeds. A refresh/close must therefore use the browser's native
+  // unsaved-changes guard instead of silently orphaning the staged edits.
+  useEffect(() => {
+    if (windowEdits.size === 0) return;
+    const warnAboutPendingBroll = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnAboutPendingBroll);
+    return () => window.removeEventListener("beforeunload", warnAboutPendingBroll);
+  }, [windowEdits.size]);
+
+  function commitWindowEdits(next: Map<number, WindowEdit>) {
+    windowUndoRef.current.push(new Map(windowEdits));
+    if (windowUndoRef.current.length > 50) windowUndoRef.current.shift();
+    windowRedoRef.current = [];
+    setWindowEditsState(next);
+    setWindowHistory({ undo: windowUndoRef.current.length, redo: 0 });
+  }
 
   function setWindowEdit(index: number, edit: WindowEdit) {
-    setWindowEditsState((m) => {
-      const next = new Map(m);
-      next.set(index, edit);
-      return next;
-    });
+    const next = new Map(windowEdits);
+    next.set(index, { ...(next.get(index) ?? {}), ...edit });
+    commitWindowEdits(next);
+  }
+  function setWindowEdits(edits: { index: number; edit: WindowEdit }[]) {
+    const next = new Map(windowEdits);
+    for (const { index, edit } of edits) {
+      next.set(index, { ...(next.get(index) ?? {}), ...edit });
+    }
+    commitWindowEdits(next);
   }
   function clearWindowEdit(index: number) {
-    setWindowEditsState((m) => {
-      if (!m.has(index)) return m;
-      const next = new Map(m);
-      next.delete(index);
-      return next;
+    if (!windowEdits.has(index)) return;
+    const next = new Map(windowEdits);
+    next.delete(index);
+    commitWindowEdits(next);
+  }
+  function undoWindowEdits() {
+    const previous = windowUndoRef.current.pop();
+    if (!previous) return;
+    windowRedoRef.current.push(new Map(windowEdits));
+    setWindowEditsState(new Map(previous));
+    setWindowHistory({
+      undo: windowUndoRef.current.length,
+      redo: windowRedoRef.current.length,
     });
+  }
+  function redoWindowEdits() {
+    const next = windowRedoRef.current.pop();
+    if (!next) return;
+    windowUndoRef.current.push(new Map(windowEdits));
+    setWindowEditsState(new Map(next));
+    setWindowHistory({
+      undo: windowUndoRef.current.length,
+      redo: windowRedoRef.current.length,
+    });
+  }
+
+  function isBrollWindowEnabled(index: number): boolean {
+    const staged = windowEdits.get(index);
+    if (typeof staged?.enabled === "boolean") return staged.enabled;
+    const bgVideos = (previewConfig as { bgVideos?: unknown } | null)?.bgVideos;
+    if (!Array.isArray(bgVideos)) return true;
+    const raw = bgVideos[index];
+    if (!raw || typeof raw !== "object") return true;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.brollEnabled === "boolean") return entry.brollEnabled;
+    if (preview?.avatarModel !== "upload-cutaway") return true;
+
+    const ranges = cutawayPersonRanges
+      ?? resolveCutawayPersonRanges(bgVideos as CutawayBrollSegment[], legacyCutawayBaseRanges);
+    const start = Number(entry.start);
+    const end = Number(entry.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return true;
+    const midpoint = start + (end - start) / 2;
+    return !ranges.some((range) => midpoint >= range.start && midpoint < range.end);
   }
 
   /** ส่งงาน broll-rerender (ฟรี, ไม่ใช้นาที) → poll จนเสร็จ → swap videoUrl+config ในที่
    *  (ตามแนว AvatarAdjustOverlay.apply) → เคลียร์ windowEdits ที่ apply แล้ว */
-  async function applyWindowEdits() {
-    if (windowEdits.size === 0 || applyingWindows) return;
+  async function applyWindowEdits(): Promise<BrollExportSource | null> {
+    if (windowEdits.size === 0 || applyingWindows || windowApplyInFlightRef.current) return null;
     const sourceJobId = job.jobId;
-    if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return; }
+    if (!sourceJobId) { toast.error("ไม่พบวิดีโอต้นฉบับ"); return null; }
+    windowApplyInFlightRef.current = true;
     setApplyingWindows({ progress: 0 });
     const edits = Array.from(windowEdits.entries()).map(([index, e]) => ({
-      index, src: e.src, ...(e.keyword ? { keyword: e.keyword } : {}),
+      index,
+      ...(e.src ? { src: e.src } : {}),
+      ...(e.keyword ? { keyword: e.keyword } : {}),
+      ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
     }));
     try {
       const res = await fetch("/api/videos/jobs", {
@@ -167,12 +353,19 @@ export function usePostPhaseEditor(
       if (!res.ok || !d?.jobId) throw new Error(d?.message ?? d?.error ?? `อัปเดตวิดีโอไม่สำเร็จ (${res.status})`);
       const newJobId = d.jobId as string;
 
-      let done = false;
+      let applied: BrollExportSource | null = null;
       for (let i = 0; i < 450 && !windowPollStop.current; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         let p: {
           status?: string; progress?: number; errorMessage?: string; projectId?: string | null;
-          output?: { videoUrl?: string; preview?: { config?: Record<string, unknown>; compositeBaseUrl?: string | null } };
+          output?: {
+            videoUrl?: string;
+            preview?: {
+              config?: Record<string, unknown>;
+              compositeBaseUrl?: string | null;
+              cutawayPersonRanges?: { start: number; end: number }[];
+            };
+          };
         } | null = null;
         try {
           p = await fetch(`/api/videos/jobs/${encodeURIComponent(newJobId)}`).then((r) => r.json());
@@ -182,28 +375,46 @@ export function usePostPhaseEditor(
         if (p.status === "done") {
           const newVideoUrl = p.output?.videoUrl;
           if (!newVideoUrl) throw new Error("อัปเดตวิดีโอไม่สำเร็จ — ไม่พบไฟล์วิดีโอใหม่");
+          const nextCompositeBaseUrl = p.output?.preview && "compositeBaseUrl" in p.output.preview
+            ? p.output.preview.compositeBaseUrl ?? null
+            : compositeBaseUrl;
           setBaseUrl(newVideoUrl);
           if (p.output?.preview?.config) setConfigOverride(p.output.preview.config);
-          if (p.output?.preview?.compositeBaseUrl) setCompositeBaseUrlOverride(p.output.preview.compositeBaseUrl);
+          if (p.output?.preview && "compositeBaseUrl" in p.output.preview) {
+            setCompositeBaseUrlOverride(nextCompositeBaseUrl);
+          }
+          if (p.output?.preview && "cutawayPersonRanges" in p.output.preview) {
+            setCutawayPersonRangesOverride(p.output.preview.cutawayPersonRanges ?? []);
+          }
           const v = videoRef.current;
           if (v) { v.load(); v.currentTime = 0; }
           setWindowEditsState(new Map());
+          windowUndoRef.current = [];
+          windowRedoRef.current = [];
+          setWindowHistory({ undo: 0, redo: 0 });
           // Adopt the NEW job: repoint jobId + localStorage resume key so a refresh resumes
           // this result and the NEXT apply chains onto it (sourceJobId = job.jobId). Caption/
           // style state is untouched — only the source job identity moves forward.
           onAdoptJob({ id: newJobId, projectId: p.projectId ?? job.projectId ?? null });
           toast.success("อัปเดตวิดีโอแล้ว");
-          done = true;
+          applied = {
+            jobId: newJobId,
+            videoUrl: newVideoUrl,
+            compositeBaseUrl: nextCompositeBaseUrl,
+          };
           break;
         }
         if (p.status === "failed" || p.status === "canceled") {
           throw new Error(p.errorMessage ?? "อัปเดตวิดีโอไม่สำเร็จ");
         }
       }
-      if (!done && !windowPollStop.current) throw new Error("อัปเดตวิดีโอไม่เสร็จในเวลาที่กำหนด — เช็คสถานะภายหลัง");
+      if (!applied && !windowPollStop.current) throw new Error("อัปเดตวิดีโอไม่เสร็จในเวลาที่กำหนด — เช็คสถานะภายหลัง");
+      return applied;
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "อัปเดตวิดีโอไม่สำเร็จ");
+      return null;
     } finally {
+      windowApplyInFlightRef.current = false;
       setApplyingWindows(null);
     }
   }
@@ -214,6 +425,73 @@ export function usePostPhaseEditor(
     preview.avatarVideoUrl && compositeBaseUrl && preview.avatarMode &&
     (preview.avatarMode !== "bookend-both" || preview.tailAvatarUrl)
   );
+  const hasAvatar = Boolean(preview?.avatarModel && preview.avatarModel !== "none");
+  const canToggleAvatar = canToggleAvatarLayer({
+    hasAvatar,
+    avatarBaseVideoUrl: compositeBaseUrl,
+  });
+  const persistedLayerVisibility = normalizeEditorLayerVisibility(layerVisibility);
+  const effectiveLayerVisibility: EditorLayerVisibility = {
+    ...persistedLayerVisibility,
+    avatar: canToggleAvatar ? persistedLayerVisibility.avatar : true,
+  };
+  const logoConfig = normalizeLogoOverlayConfig(logoOverlay);
+  const editorLayerVisibility: Record<EditableEditorLayer, boolean> = {
+    avatar: effectiveLayerVisibility.avatar,
+    subtitles: effectiveLayerVisibility.subtitles,
+    logo: Boolean(logoConfig?.enabled),
+  };
+  const layerAvailability: Record<EditableEditorLayer, boolean> = {
+    avatar: canToggleAvatar,
+    subtitles: captions.length > 0,
+    logo: Boolean(logoConfig),
+  };
+  const previewVideoUrl = resolveEditorPreviewVideoUrl({
+    renderedVideoUrl: baseUrl,
+    avatarBaseVideoUrl: compositeBaseUrl,
+    avatarVisible: effectiveLayerVisibility.avatar,
+  });
+
+  function setLayerEnabled(layer: EditableEditorLayer, enabled: boolean) {
+    if (!layerAvailability[layer]) return;
+    if (layer === "avatar") {
+      const video = videoRef.current;
+      pendingVideoSourceSwapRef.current = video
+        ? { time: video.currentTime, resume: !video.paused && !video.ended }
+        : null;
+      onLayerVisibilityChange((current) => ({
+        ...normalizeEditorLayerVisibility(current),
+        avatar: enabled,
+      }));
+    } else if (layer === "subtitles") {
+      onLayerVisibilityChange((current) => ({
+        ...normalizeEditorLayerVisibility(current),
+        subtitles: enabled,
+      }));
+    } else {
+      logo.setEnabled(enabled);
+    }
+    trackEvent("editor_layer_visibility_changed", {
+      status: "done",
+      properties: { layer, enabled, surface },
+    });
+  }
+
+  useEffect(() => {
+    const pending = pendingVideoSourceSwapRef.current;
+    const video = videoRef.current;
+    if (!pending || !video) return;
+    const restorePlayback = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : pending.time;
+      video.currentTime = Math.min(pending.time, Math.max(0, duration));
+      setTimeMs(video.currentTime * 1000);
+      pendingVideoSourceSwapRef.current = null;
+      if (pending.resume) void video.play().catch(() => undefined);
+    };
+    video.addEventListener("loadedmetadata", restorePlayback, { once: true });
+    video.load();
+    return () => video.removeEventListener("loadedmetadata", restorePlayback);
+  }, [previewVideoUrl]);
 
   // การ์ดที่ "กำลังพูด" ตาม preview (แยกจาก selected = การ์ดที่เลือกแก้)
   const activeIdx = useMemo(() => findActiveCaptionIdx(captions, timeMs), [captions, timeMs]);
@@ -242,31 +520,120 @@ export function usePostPhaseEditor(
     if (el) { lastAutoScrollAt.current = Date.now(); el.scrollIntoView({ block: "nearest", behavior: "auto" }); }
   }
 
-  // Undo history สำหรับการแก้เวลาซับบน timeline (push เฉพาะตอน commit = ปล่อยเมาส์)
-  const historyRef = useRef<V2Caption[][]>([]);
-  const committedRef = useRef<V2Caption[]>(preview?.captions ?? []);
+  // Caption history เก็บทั้งโครงสร้างซับ + override ตาม index เพื่อให้ Undo/Redo หลัง
+  // เพิ่ม/ลบ/รวม/แยก ไม่ย้ายสีของการ์ดไปผิดใบ
+  const historyRef = useRef<CaptionHistoryState<CaptionEditSnapshot>>({ past: [], future: [] });
+  const historyIdRef = useRef(0);
+  const committedRef = useRef<V2Caption[]>(cloneCaptions(preview?.captions ?? []));
   const [historyLen, setHistoryLen] = useState(0);
+  const [redoLen, setRedoLen] = useState(0);
+
+  function syncHistoryCounts(history: CaptionHistoryState<CaptionEditSnapshot>) {
+    setHistoryLen(history.past.length);
+    setRedoLen(history.future.length);
+  }
+
+  function applyCaptionSnapshot(snapshot: CaptionEditSnapshot) {
+    const nextCaptions = cloneCaptions(snapshot.captions);
+    committedRef.current = cloneCaptions(nextCaptions);
+    setCaptions(nextCaptions);
+    setOverrides(cloneOverrides(snapshot.overrides));
+    setSelected(Math.max(0, Math.min(snapshot.selected, nextCaptions.length - 1)));
+    setCardLen(snapshot.cardLen);
+    setEditingIdx(null);
+  }
+
+  function commitCaptionChange(
+    nextCaptions: V2Caption[],
+    nextOverrides: V2CardOverrides = overrides,
+    nextSelected = selected,
+    nextCardLen = cardLen,
+  ): number | null {
+    const normalizedSelected = Math.max(0, Math.min(nextSelected, nextCaptions.length - 1));
+    const hasCaptionChange = !captionsMatch(committedRef.current, nextCaptions);
+    const hasOverrideChange = JSON.stringify(overrides) !== JSON.stringify(nextOverrides);
+    const hasCardLenChange = cardLen !== nextCardLen;
+
+    setCaptions(nextCaptions);
+    setOverrides(nextOverrides);
+    setSelected(normalizedSelected);
+    setCardLen(nextCardLen);
+    if (!hasCaptionChange && !hasOverrideChange && !hasCardLenChange) return null;
+
+    const entry = {
+      id: ++historyIdRef.current,
+      before: {
+        captions: cloneCaptions(committedRef.current),
+        overrides: cloneOverrides(overrides),
+        selected,
+        cardLen,
+      },
+      after: {
+        captions: cloneCaptions(nextCaptions),
+        overrides: cloneOverrides(nextOverrides),
+        selected: normalizedSelected,
+        cardLen: nextCardLen,
+      },
+    };
+    const nextHistory = commitCaptionHistory(historyRef.current, entry);
+    historyRef.current = nextHistory;
+    committedRef.current = cloneCaptions(nextCaptions);
+    syncHistoryCounts(nextHistory);
+    return entry.id;
+  }
+
   function handleCaptionsChange(next: V2Caption[], commit: boolean) {
-    setCaptions(next);
-    if (commit) {
-      historyRef.current.push(committedRef.current.map((c) => ({ ...c })));
-      if (historyRef.current.length > 50) historyRef.current.shift();
-      committedRef.current = next.map((c) => ({ ...c }));
-      setHistoryLen(historyRef.current.length);
+    if (!commit) { setCaptions(next); return; }
+    commitCaptionChange(next);
+  }
+
+  function commitCaptionText() {
+    commitCaptionChange(cloneCaptions(captions));
+  }
+
+  function undoCaptions(expectedEntryId?: number): boolean {
+    // Defensive guard: some call sites are wired straight into a DOM event handler
+    // (onClick={ed.undoCaptions}) — React then passes the SyntheticEvent as the first
+    // arg, which is NOT a number. Treat anything that isn't a number as "no expected
+    // id" instead of letting a stale/mismatched id silently block every undo forever.
+    const safeExpectedEntryId = typeof expectedEntryId === "number" ? expectedEntryId : undefined;
+    const result = undoCaptionHistory(historyRef.current, safeExpectedEntryId);
+    if (!result.snapshot) {
+      if (safeExpectedEntryId !== undefined) {
+        toast("มีการแก้ไขใหม่กว่าแล้ว — ใช้ปุ่มเลิกทำเพื่อย้อนตามลำดับ");
+      }
+      return false;
     }
+    historyRef.current = result.history;
+    applyCaptionSnapshot(result.snapshot);
+    syncHistoryCounts(result.history);
+    return true;
   }
-  function undoCaptions() {
-    const prev = historyRef.current.pop();
-    if (!prev) return;
-    committedRef.current = prev.map((c) => ({ ...c }));
-    setCaptions(prev);
-    setHistoryLen(historyRef.current.length);
+
+  // No expectedEntryId param — unlike undoCaptions, an event-object arg from a bare
+  // onClick={ed.redoCaptions} has nothing to be mistaken for, so no guard needed here.
+  function redoCaptions(): boolean {
+    const result = redoCaptionHistory(historyRef.current);
+    if (!result.snapshot) return false;
+    historyRef.current = result.history;
+    applyCaptionSnapshot(result.snapshot);
+    syncHistoryCounts(result.history);
+    return true;
   }
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       const typing = tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT";
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+      const command = e.metaKey || e.ctrlKey;
+      const key = e.key.toLowerCase();
+      if (command && ((key === "z" && e.shiftKey) || key === "y")) {
+        if (typing) return;
+        e.preventDefault();
+        redoCaptions();
+        return;
+      }
+      if (command && key === "z" && !e.shiftKey) {
         if (typing) return; // ให้ undo ของช่องพิมพ์ทำงานปกติ
         e.preventDefault();
         undoCaptions();
@@ -301,7 +668,10 @@ export function usePostPhaseEditor(
   /** สี text/accent เคารพ scope: ทั้งคลิป = config กลาง · การ์ดนี้ = override รายใบ */
   function setColorScoped(key: "textColor" | "accentColor", v: string) {
     if (scope === "card") {
-      setOverrides((o) => ({ ...o, [selected]: { ...o[selected], [key]: v } }));
+      commitCaptionChange(
+        cloneCaptions(captions),
+        { ...overrides, [selected]: { ...overrides[selected], [key]: v } },
+      );
     } else {
       set(key, v);
     }
@@ -309,58 +679,190 @@ export function usePostPhaseEditor(
   const activeOverride = overrides[selected] ?? {};
 
   function applyCardLen(len: V2CardLen) {
-    setCardLen(len);
-    setOverrides({});
-    handleCaptionsChange(regroupCaptions(originalCapsRef.current, len, preview?.words, preview?.fullText), true);
-    setSelected(0);
+    commitCaptionChange(
+      regroupCaptions(originalCapsRef.current, len, preview?.words, preview?.fullText),
+      {},
+      0,
+      len,
+    );
   }
 
   /** เลื่อน key ของ override รายการ์ดตามการเปลี่ยนโครงการ์ด — ห้ามล้างทั้ง map
    *  (QA 07-03: รวม/แยกการ์ด 2-3 เคยทำให้สีที่ตั้งไว้บนการ์ด 1 หายไปด้วย) */
-  function shiftOverrides(from: number, delta: number, dropIdx?: number) {
-    setOverrides((o) => {
-      const next: V2CardOverrides = {};
-      for (const [k, v] of Object.entries(o)) {
-        const idx = Number(k);
-        if (dropIdx !== undefined && idx === dropIdx) continue;
-        next[idx >= from ? idx + delta : idx] = v;
-      }
-      return next;
-    });
-  }
-
   function mergeSelected() {
     if (selected >= captions.length - 1) { toast("การ์ดสุดท้าย — ไม่มีใบถัดไปให้รวม"); return; }
-    shiftOverrides(selected + 2, -1, selected + 1); // ใบที่ถูกกลืนทิ้ง override ของตัวเอง ที่เหลือเลื่อนซ้าย
-    handleCaptionsChange(mergeCaptionWithNext(captions, selected), true);
+    const nextOverrides = shiftCaptionOverrides(overrides, {
+      from: selected + 2,
+      delta: -1,
+      dropIndex: selected + 1,
+    });
+    commitCaptionChange(mergeCaptionWithNext(captions, selected), nextOverrides);
   }
 
   function splitSelected() {
     const next = splitCaption(captions, selected, loanwordSpans(captions[selected]?.text ?? ""));
     if (next === captions) { toast("การ์ดสั้นเกินไปหรือหาจุดตัดไม่ได้"); return; }
-    shiftOverrides(selected + 1, +1); // ใบครึ่งซ้ายเก็บ override เดิม ใบใหม่ขวาเริ่มว่าง
-    handleCaptionsChange(next, true);
+    const nextOverrides = shiftCaptionOverrides(overrides, {
+      from: selected + 1,
+      delta: 1,
+    });
+    commitCaptionChange(next, nextOverrides);
   }
 
-  async function exportVideo() {
-    if (!baseUrl || !captions.length || exp.phase === "burning" || exp.phase === "saving") return;
+  // Duration used by insertCaptionCardAtPlayhead's "is there a real gap at the end"
+  // check — kept as its own memo so the preview below doesn't recompute this max()
+  // on every dependency change.
+  const insertCaptionDurationMs = useMemo(() => Math.max(
+    preview?.audioDurationMs ?? 0,
+    captions.length > 0 ? captions[captions.length - 1].endMs : 0,
+  ), [preview?.audioDurationMs, captions]);
+
+  // Pre-flight: can "เพิ่มที่ Playhead" actually insert at the CURRENT playhead, without
+  // committing anything? insertCaptionCardAtPlayhead is a pure function — calling it here
+  // to preview the outcome is free and keeps MIN_CAPTION_CARD_MS as the single source of
+  // truth (not duplicated/loosened for the button's enabled state).
+  const insertCaptionPreview = useMemo(
+    () => insertCaptionCardAtPlayhead(captions, timeMs, insertCaptionDurationMs),
+    [captions, timeMs, insertCaptionDurationMs],
+  );
+  const canInsertCaption = insertCaptionPreview.ok;
+
+  // insertCaptionCardAtPlayhead only ever returns reason "no_room" — that's correct as a
+  // pure-function contract, but it collapses two very different user situations into one
+  // toast. Disambiguate here (view-layer concern) instead of teaching the lib about UI
+  // copy: sitting inside an existing card too short to split (typically 1-2 word mode,
+  // fixable by switching card length) vs. genuinely packed timeline / real edge (fixable
+  // by moving the playhead).
+  const insertCaptionBlockedReason = useMemo(() => {
+    if (insertCaptionPreview.ok) return null;
+    const containing = captions.find((c) => timeMs > c.startMs && timeMs < c.endMs);
+    if (containing && containing.endMs - containing.startMs < MIN_CAPTION_CARD_MS * 2) {
+      return "การ์ดนี้สั้นเกินจะแทรกเพิ่ม (โหมดคำสั้น) — สลับความยาวการ์ดเป็น ≤4 คำ หรือ 1 ประโยคก่อน แล้วค่อยแทรกที่ Playhead";
+    }
+    return "เพิ่มตรงนี้ไม่ได้ — เลื่อน Playhead ให้ห่างจากขอบซับอย่างน้อย 0.3 วินาที";
+  }, [insertCaptionPreview, captions, timeMs]);
+
+  function insertCaptionAtPlayhead(): boolean {
+    // Fallback path: the button is disabled when !canInsertCaption, but the toast stays
+    // as a safety net for non-button callers (e.g. a future keyboard shortcut) and for
+    // the rare frame where state changed between render and click.
+    if (!insertCaptionPreview.ok) {
+      toast(insertCaptionBlockedReason ?? "เพิ่มตรงนี้ไม่ได้ — เลื่อน Playhead ให้ห่างจากขอบซับอย่างน้อย 0.3 วินาที");
+      return false;
+    }
+    const result = insertCaptionPreview;
+    const nextCaptions = result.captions as V2Caption[];
+    const nextOverrides = shiftCaptionOverrides(overrides, {
+      from: result.index,
+      delta: 1,
+    });
+    commitCaptionChange(nextCaptions, nextOverrides, result.index);
+    setEditingIdx(result.index);
+    setFollow(false);
+    const video = videoRef.current;
+    if (video) {
+      video.pause();
+      video.currentTime = nextCaptions[result.index].startMs / 1000 + 0.01;
+    }
+    trackEvent("editor_caption_card_added", {
+      status: "done",
+      properties: { surface },
+    });
+    toast.success("เพิ่มกล่องซับแล้ว — พิมพ์ข้อความได้เลย");
+    return true;
+  }
+
+  function deleteSelectedCaption(): boolean {
+    const result = deleteCaptionCard(captions, selected);
+    if (!result.ok) {
+      toast(result.reason === "last_caption"
+        ? "ลบไม่ได้ — ต้องเหลืออย่างน้อย 1 กล่องซับ"
+        : "ไม่พบกล่องซับที่เลือก");
+      return false;
+    }
+    const nextOverrides = shiftCaptionOverrides(overrides, {
+      from: selected + 1,
+      delta: -1,
+      dropIndex: selected,
+    });
+    const entryId = commitCaptionChange(
+      result.captions as V2Caption[],
+      nextOverrides,
+      result.selected,
+    );
+    setEditingIdx(null);
+    trackEvent("editor_caption_card_deleted", {
+      status: "done",
+      properties: { surface },
+    });
+    toast("ลบกล่องซับแล้ว", {
+      action: entryId === null ? undefined : {
+        label: "เลิกทำ",
+        onClick: () => { undoCaptions(entryId); },
+      },
+    });
+    return true;
+  }
+
+  async function exportVideo(pendingConfirmed = false) {
+    if (
+      !baseUrl
+      || !captions.length
+      || exp.phase === "burning"
+      || exp.phase === "saving"
+      || applyingWindows
+      || windowApplyInFlightRef.current
+    ) return;
     if (!job.jobId) {
       setExp({ phase: "error", message: "ไม่พบวิดีโอต้นฉบับ" });
       return;
     }
-    setExp({ phase: "saving" });
+
+    if (windowEdits.size > 0 && !pendingConfirmed) {
+      setPendingBrollIntent("export");
+      trackEvent("editor_pending_broll_dialog_opened", {
+        status: "info",
+        properties: {
+          intent: "export",
+          pendingEditCount: windowEdits.size,
+          surface,
+        },
+      });
+      return;
+    }
+
     try {
+      const exportSource = await resolveBrollExportSource({
+        pendingEditCount: windowEdits.size,
+        current: {
+          jobId: job.jobId,
+          videoUrl: baseUrl,
+          compositeBaseUrl,
+        },
+        applyPending: applyWindowEdits,
+      });
+      // Applying pending B-roll failed or was interrupted. The apply path already surfaced the
+      // specific error; never fall back to the old source because that recreates the incident.
+      if (!exportSource) return;
+
+      const exportVideoUrl = resolveEditorPreviewVideoUrl({
+        renderedVideoUrl: exportSource.videoUrl,
+        avatarBaseVideoUrl: exportSource.compositeBaseUrl,
+        avatarVisible: effectiveLayerVisibility.avatar,
+      });
+      setExp({ phase: "saving" });
       const overlay = buildV2BurnConfig(
-        baseUrl,
+        exportVideoUrl,
         captions,
         preview?.audioDurationMs ?? 0,
         cfg,
         30,
         overrides,
         logoOverlay,
+        effectiveLayerVisibility,
       );
       const result = await onExportJob({
-        sourceJobId: job.jobId,
+        sourceJobId: exportSource.jobId,
         subtitleOverlayConfig: overlay,
         script: script.trim() || preview?.fullText || undefined,
         sceneCount: captions.length,
@@ -380,14 +882,99 @@ export function usePostPhaseEditor(
     }
   }
 
+  function requestNewProject() {
+    if (windowEdits.size > 0) {
+      setPendingBrollIntent("new-project");
+      trackEvent("editor_pending_broll_dialog_opened", {
+        status: "info",
+        properties: {
+          intent: "new-project",
+          pendingEditCount: windowEdits.size,
+          surface,
+        },
+      });
+      return;
+    }
+    onNewProject();
+  }
+
+  function cancelPendingBrollIntent() {
+    if (pendingBrollIntent) {
+      trackEvent("editor_pending_broll_action_selected", {
+        status: "info",
+        properties: {
+          intent: pendingBrollIntent,
+          action: "cancel",
+          pendingEditCount: windowEdits.size,
+          surface,
+        },
+      });
+    }
+    setPendingBrollIntent(null);
+  }
+
+  async function applyPendingBrollAndContinue() {
+    const intent = pendingBrollIntent;
+    if (!intent) return;
+    trackEvent("editor_pending_broll_action_selected", {
+      status: "started",
+      properties: {
+        intent,
+        action: "apply",
+        pendingEditCount: windowEdits.size,
+        surface,
+      },
+    });
+    setPendingBrollIntent(null);
+    if (intent === "export") {
+      await exportVideo(true);
+      return;
+    }
+    const applied = await applyWindowEdits();
+    if (applied) {
+      toast.success("บันทึก B-roll ในงานเดิมแล้ว — กำลังเปิดโปรเจกต์ใหม่");
+      onNewProject();
+    }
+  }
+
+  function discardPendingBrollAndContinue() {
+    if (pendingBrollIntent !== "new-project") return;
+    trackEvent("editor_pending_broll_action_selected", {
+      status: "done",
+      properties: {
+        intent: "new-project",
+        action: "discard",
+        pendingEditCount: windowEdits.size,
+        surface,
+      },
+    });
+    setPendingBrollIntent(null);
+    toast("ทิ้งเฉพาะ B-roll ที่ยังไม่อัปเดตแล้ว — กำลังเปิดโปรเจกต์ใหม่");
+    onNewProject();
+  }
+
   return {
     preview,
     logo,
+    stylePresets,
+    layerVisibility: editorLayerVisibility,
+    layerAvailability,
+    setLayerEnabled,
+    previewVideoUrl,
     previewConfig,
     compositeBaseUrl,
-    windowEdits, setWindowEdit, clearWindowEdit,
+    windowEdits, setWindowEdit, setWindowEdits, clearWindowEdit,
+    undoWindowEdits, redoWindowEdits,
+    canUndoWindowEdits: windowHistory.undo > 0,
+    canRedoWindowEdits: windowHistory.redo > 0,
+    isBrollWindowEnabled,
     selectedWindow, setSelectedWindow,
     applyWindowEdits, applyingWindows,
+    pendingBrollIntent,
+    requestNewProject,
+    cancelPendingBrollIntent,
+    applyPendingBrollAndContinue,
+    discardPendingBrollAndContinue,
     baseUrl, setBaseUrl,
     captions, setCaptions,
     selected, setSelected,
@@ -406,9 +993,12 @@ export function usePostPhaseEditor(
     follow, setFollow,
     cardRefs,
     historyLen,
+    redoLen,
     activeOverride,
     handleCaptionsChange,
+    commitCaptionText,
     undoCaptions,
+    redoCaptions,
     onListScroll,
     resumeFollow,
     set,
@@ -416,6 +1006,10 @@ export function usePostPhaseEditor(
     applyCardLen,
     mergeSelected,
     splitSelected,
+    insertCaptionAtPlayhead,
+    canInsertCaption,
+    insertCaptionBlockedReason,
+    deleteSelectedCaption,
     exportVideo,
   };
 }

@@ -14,13 +14,13 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { color, font } from "./tokens";
 import { GlassPanel, BtnPrimary, BtnSecondary, GroupLabel } from "./ui";
 import { buildReceipt } from "./receipt";
 import { estimateClipSecV2 } from "./estimate";
 import { PRESET_WEIGHTS, presetUsesAi } from "./mix-presets";
-import { costKeyForKieModel, creditCostFor } from "@/lib/credit-costs";
+import { costKeyForKieModel, creditCostFor, HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 import type { V2Project } from "./useV2Project";
 
@@ -79,7 +79,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
   // Per-image price from the SELECTED model, via the same map the server charges from.
   // Non-admins default to gpt-image-2 when unset (matches server coercion + the picker).
   const perImageCredits = useMemo(() => {
-    if (p.brollSource === "kie-image") return creditCostFor("image-open-fast-1k");
+    if (p.brollSource === "kie-image") return HERO_AI_IMAGE_CREDITS;
     const effectiveModel = p.isAdmin ? p.kieModel : (p.kieModel || "gpt-image-2-text-to-image");
     const costKey = effectiveModel ? costKeyForKieModel(effectiveModel) : null;
     return costKey ? creditCostFor(costKey) : 0;
@@ -121,19 +121,41 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
         <div className="px-5 pb-1 pt-4"><GroupLabel>สรุปก่อนเรนเดอร์</GroupLabel></div>
 
         <div className="flex flex-col gap-2 px-5 pb-4 pt-2">
-          {model.lines.map((l) => (
+          {[
+            ...model.lines.filter((l) => l.key === "credits" || l.key === "insufficient"),
+            ...model.lines.filter((l) => l.key !== "credits" && l.key !== "insufficient"),
+          ].map((l) => (
             <div
               key={l.key}
-              className="flex items-start gap-2"
+              className={`flex items-start gap-2 ${l.kind === "info" ? "" : "rounded-xl px-3 py-2.5"}`}
+              role={l.kind === "warn" ? "alert" : l.kind === "success" ? "status" : undefined}
               style={{
-                fontSize: 12.5,
+                fontSize: l.kind === "info" ? 12.5 : 13,
                 lineHeight: 1.6,
                 fontFamily: font.body,
-                color: l.kind === "warn" ? color.warning : color.textSecondary,
+                fontWeight: l.kind === "info" ? 400 : 600,
+                color: l.kind === "warn"
+                  ? color.warning
+                  : l.kind === "success"
+                    ? color.success
+                    : color.textSecondary,
+                background: l.kind === "warn"
+                  ? "rgba(251,191,36,.08)"
+                  : l.kind === "success"
+                    ? "rgba(52,211,153,.08)"
+                    : undefined,
+                border: l.kind === "warn"
+                  ? "1px solid rgba(251,191,36,.20)"
+                  : l.kind === "success"
+                    ? "1px solid rgba(52,211,153,.20)"
+                    : undefined,
               }}
             >
               {l.kind === "warn" && (
                 <AlertTriangle size={14} strokeWidth={1.8} style={{ marginTop: 2, flex: "none" }} />
+              )}
+              {l.kind === "success" && (
+                <CheckCircle2 size={14} strokeWidth={2} style={{ marginTop: 2, flex: "none" }} />
               )}
               <span>{l.text}</span>
             </div>

@@ -11,6 +11,11 @@ import {
 } from "@/lib/logo-overlay";
 import type { SubPreset, SubTextEffect } from "../_components/types";
 import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "../_components/constants";
+import {
+  DEFAULT_EDITOR_LAYER_VISIBILITY,
+  normalizeEditorLayerVisibility,
+  type EditorLayerVisibility,
+} from "@/lib/editor-layer-visibility";
 
 export { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST };
 
@@ -72,12 +77,26 @@ export type V2CardOverrides = Record<number, { textColor?: string; accentColor?:
 
 // ── การ์ด: รวม / แยก / จัดกลุ่มความยาว ─────────────────────────────────────
 
+function isThaiCharacter(ch: string): boolean {
+  return /[฀-๿]/.test(ch);
+}
+
+function joinCaptionText(left: string, right: string): string {
+  const trimmedLeft = left.trimEnd();
+  const trimmedRight = right.trimStart();
+  if (!trimmedLeft) return trimmedRight;
+  if (!trimmedRight) return trimmedLeft;
+  const joinsThaiWord = isThaiCharacter(trimmedLeft[trimmedLeft.length - 1])
+    && isThaiCharacter(trimmedRight[0]);
+  return joinsThaiWord ? `${trimmedLeft}${trimmedRight}` : `${trimmedLeft} ${trimmedRight}`;
+}
+
 /** รวมการ์ด i เข้ากับใบถัดไป (ข้อความต่อกัน เวลาคลุมทั้งคู่) */
 export function mergeCaptionWithNext(caps: V2Caption[], i: number): V2Caption[] {
   if (i < 0 || i >= caps.length - 1) return caps;
   const merged: V2Caption = {
     ...caps[i],
-    text: `${caps[i].text.trimEnd()} ${caps[i + 1].text.trimStart()}`,
+    text: joinCaptionText(caps[i].text, caps[i + 1].text),
     endMs: caps[i + 1].endMs,
   };
   return [...caps.slice(0, i), merged, ...caps.slice(i + 2)];
@@ -203,11 +222,10 @@ export function regroupCaptions(
 
 /** ต่อคำไทยไม่แทรกช่องว่าง แทรกเฉพาะรอยต่อที่มีละติน/ตัวเลข (เหมือน joinWords ของ v1) */
 function joinThaiWords(ws: string[]): string {
-  const isThai = (ch: string) => /[฀-๿]/.test(ch);
   let out = "";
   for (const w of ws) {
     if (!out) { out = w; continue; }
-    const noSpace = isThai(out[out.length - 1]) && isThai(w[0]);
+    const noSpace = isThaiCharacter(out[out.length - 1]) && isThaiCharacter(w[0]);
     out += noSpace ? w : ` ${w}`;
   }
   return out;
@@ -222,13 +240,15 @@ export function buildV2BurnConfig(
   fps = 30,
   overrides: V2CardOverrides = {},
   logoOverlay?: LogoOverlayConfig,
+  layerVisibility: EditorLayerVisibility = DEFAULT_EDITOR_LAYER_VISIBILITY,
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
   const durationInFrames = Math.max(Math.round((durMs / 1000) * fps), fps);
   const fontWeight = cfg.bold ? 900 : 400;
   let frameCursor = 0;
-  const keywordPopups = captions.flatMap((c, idx) => {
+  const layers = normalizeEditorLayerVisibility(layerVisibility);
+  const keywordPopups = layers.subtitles ? captions.flatMap((c, idx) => {
     if (frameCursor >= durationInFrames) return [];
     const ov = overrides[idx] ?? {};
     const textColor = ov.textColor ?? cfg.textColor;
@@ -250,7 +270,7 @@ export function buildV2BurnConfig(
     const end = Math.min(Math.max(popup.end, start + 1), durationInFrames);
     frameCursor = end;
     return [{ ...popup, start, end }];
-  });
+  }) : [];
   const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
   return {
     videoUrl: baseVideoUrl,

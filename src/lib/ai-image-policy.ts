@@ -10,12 +10,18 @@ export type AiImageAspectRatio = "1:1" | "4:5" | "9:16" | "16:9";
 export type AiImageStyle = "photoreal" | "cinematic" | "editorial" | "illustration" | "product";
 export type AiImageProvider = "runpod" | "kie";
 export type AiImageEngine = "runpod" | "cloud";
+export type AiImageCreditCostKey =
+  | "image-open-fast-1k"
+  | "image-open-custom-1k"
+  | "image-open-quality-1k"
+  | "image-gpt-1k";
 
 export type AiImageModelDefinition = {
   id: AiImageModelId;
   label: string;
   description: string;
-  creditCostKey: "image-open-fast-1k" | "image-open-quality-1k" | "image-gpt-1k";
+  creditCostKey: AiImageCreditCostKey;
+  customCreditCostKey?: AiImageCreditCostKey;
   engine: AiImageEngine;
   provider: AiImageProvider;
   providerModel: string;
@@ -32,6 +38,7 @@ export const AI_IMAGE_MODELS: readonly AiImageModelDefinition[] = [
     label: "Realistic · Z-Image Turbo",
     description: "ภาพคน สินค้า อาหาร และฉากสมจริง",
     creditCostKey: "image-open-fast-1k",
+    customCreditCostKey: "image-open-custom-1k",
     engine: "runpod",
     provider: "runpod",
     providerModel: "z-image-turbo",
@@ -121,7 +128,11 @@ export function dimensionsForAspectRatio(aspectRatio: AiImageAspectRatio) {
  * same artwork-only invariant so neither Thai nor English copy is intentionally
  * painted into the result. This is a generation guard, not an OCR guarantee.
  */
-export function buildArtworkOnlyPrompt(prompt: string, style: AiImageStyle): {
+export function buildArtworkOnlyPrompt(
+  prompt: string,
+  style: AiImageStyle,
+  opts?: { interfaceExpected?: boolean },
+): {
   positive: string;
   negative: string;
 } {
@@ -140,7 +151,9 @@ export function buildArtworkOnlyPrompt(prompt: string, style: AiImageStyle): {
     subject,
     STYLE_PROMPT[style],
     "standalone language-free visual artwork",
-    "screens display abstract visual states, geometric color shapes and unlabeled controls",
+    opts?.interfaceExpected
+      ? "the single in-context screen or interface displays simple abstract visual states and unlabeled controls"
+      : "",
     "all signage, labels, packaging, clothing and background surfaces are blank and unmarked",
   ].filter(Boolean).join(". ") + ".";
 

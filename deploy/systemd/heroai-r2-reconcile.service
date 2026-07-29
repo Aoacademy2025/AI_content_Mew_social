@@ -1,0 +1,43 @@
+[Unit]
+Description=HeroAI media copy-only reconciliation to Cloudflare R2
+Documentation=file:/var/www/ai-content/docs/ops/cloudflare-r2-media-rollout.md
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/var/www/ai-content/.env.r2.production
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/var/www/ai-content
+Environment=NODE_ENV=production
+Environment=DOTENV_CONFIG_PATH=/var/www/ai-content/.env.r2.production
+Environment=R2_BACKFILL_ENABLED=1
+Environment=R2_BACKFILL_MAX_OBJECTS=100
+ExecStart=/usr/bin/flock --exclusive --wait 3600 /run/lock/heroai-media-storage.lock /var/www/ai-content/node_modules/.bin/tsx scripts/backfill-media-r2.ts --apply
+
+# Keep reconciliation behind customer-facing web and render work.
+Nice=10
+CPUWeight=20
+IOWeight=20
+MemoryMax=4G
+TimeoutStartSec=infinity
+UMask=0077
+
+# The job needs network access and write access only to the application tree
+# (SQLite catalog and local temporary files). R2 credentials remain read-only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/www/ai-content
+ReadOnlyPaths=/var/www/ai-content/.env.r2.production
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native

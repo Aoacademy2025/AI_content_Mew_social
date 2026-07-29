@@ -1,4 +1,5 @@
 // Unit tests for the pure waveform/snap helpers. Run: npx tsx scripts/verify-waveform-snap.ts
+import { readFileSync } from "node:fs";
 import { snapPointsFromSilence, downsamplePeaks, snapPointsFromPeaks, snapToNearest } from "../src/app/(dashboard)/video-editor/_components/waveform-snap";
 
 let passed = 0;
@@ -7,7 +8,7 @@ function check(name: string, ok: boolean) {
   console.log(`PASS: ${name}`);
   passed++;
 }
-function arrEq(a: number[], b: number[]) { return a.length === b.length && a.every((v, i) => v === b[i]); }
+function arrEq<T>(a: T[], b: T[]) { return a.length === b.length && a.every((v, i) => v === b[i]); }
 
 // snapPointsFromSilence: interval edges, clamped, sorted, deduped
 check("silence: edges sorted+deduped+clamped", arrEq(
@@ -35,4 +36,36 @@ check("snap: outside threshold → unchanged", snapToNearest(1500, [0, 1000, 200
 check("snap: empty points → unchanged", snapToNearest(1500, [], 120) === 1500);
 check("snap: picks nearest of two", snapToNearest(1490, [1000, 1500], 120) === 1500);
 
-console.log(`\n${passed}/11 passed`);
+// Timeline UX contract: the waveform is a visual reference for subtitle timing, so the
+// two tracks stay adjacent on the same time scale instead of being split by visual tracks.
+const timelineSource = readFileSync(
+  "src/app/(dashboard)/video-editor/_v2/TimelinePanel.tsx",
+  "utf8",
+);
+const trackOrder = Array.from(
+  timelineSource.matchAll(/trackLabel\("([^"]+)"/g),
+  (match) => match[1],
+);
+// The invariant this branch actually owns: nothing may be inserted BETWEEN the waveform and the
+// subtitle track. Asserted directly (not implied by a frozen full list) so a future track added
+// elsewhere in the timeline can't be mistaken for an adjacency regression — and, conversely, so
+// inserting anything between these two still fails even if the full list is updated.
+const voiceIdx = trackOrder.indexOf("เสียงพูด");
+const subIdx = trackOrder.indexOf("ซับไทย");
+check(
+  "timeline: voice waveform sits immediately above subtitles",
+  voiceIdx >= 0 && subIdx === voiceIdx + 1,
+);
+// Full order, kept as a change detector. "โลโก้" was added by editor-layer-visibility-toggles
+// and sits BELOW subtitles, matching the real z-order (logo renders above the video and under
+// the captions) — it does not break the adjacency invariant above.
+check(
+  "timeline: track order stays avatar → b-roll → voice → subtitles → logo → music",
+  arrEq(trackOrder, ["อวตาร", "บีโรล", "เสียงพูด", "ซับไทย", "โลโก้", "เพลง"]),
+);
+check(
+  "timeline: Snap tooltip explains the voice-timing behavior",
+  timelineSource.includes('title="Snap กับจังหวะเสียง"'),
+);
+
+console.log(`\n${passed}/14 passed`);

@@ -42,6 +42,12 @@ import {
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { selectRepresentativeItems } from "@/lib/broll-coverage";
 import { planHeroAiWindowGeneration } from "@/lib/hero-ai-broll";
+import {
+  buildHeroImagePrompt,
+  heroImagePlannerCallCount,
+  planHeroImageScenes,
+  resolveHeroImageProviderStyle,
+} from "@/lib/hero-image-scene-brief";
 import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import {
@@ -77,10 +83,16 @@ import {
   NORMALIZE_PRESET,
 } from "@/lib/broll-asset-lib";
 import { isHeroAiBetaUser, isInternalAiTester } from "@/lib/internal-ai-access";
+import { refundSettledVideoImageBatch } from "@/lib/ai-generation-jobs.server";
 import {
+  describeHeroImageOffer,
   generateHeroImageForVideo,
   HeroImageGenerationError,
 } from "@/lib/video-hero-image.server";
+import {
+  forEachInFailFastBatches,
+  heroRunpodCircuitState,
+} from "@/lib/hero-image-resilience";
 import path from "path";
 import fs from "fs";
 
@@ -1391,7 +1403,7 @@ export async function POST(req: Request) {
   }
 
   const srcLabel = useHeroRunpodImage
-    ? "Hero AI Image (RunPod Public Z-Image)"
+    ? "Hero AI Image (isolated RunPod Z-Image)"
     : canUseKieImage
       ? "AI Image-to-Video (kie.ai)"
       : useAutoMix
@@ -1518,7 +1530,7 @@ export async function POST(req: Request) {
     relevanceScore?: number;
   }[] = [];
 
-  // ── Hero AI Image (RunPod Public Z-Image, internal beta) ────────────────
+  // ── Hero AI Image (isolated RunPod Z-Image, internal beta) ─────────────
   // This branch is intentionally separate from KIE/AutoMix. Every scene owns a
   // durable generation id + exact credit reservation and there is no provider
   // fallback, so displayed price, charged price and actual model cannot drift.
@@ -1551,18 +1563,51 @@ export async function POST(req: Request) {
           clipsToGenerateRaw,
         );
     const clipsToGenerate = directJobs.length;
-    const heroCreditCost = creditCostFor("image-open-fast-1k");
+    const heroOffer = describeHeroImageOffer();
+    if (!heroOffer.available || heroOffer.providerRoute !== "runpod-custom") {
+      return NextResponse.json({
+        error: "Hero AI Image ยังไม่พร้อมใช้งานในขณะนี้",
+        code: heroOffer.unavailableCode ?? "NOT_CONFIGURED",
+        retryable: false,
+        failedScenes: directJobs.map((item) => item.sourceIndex),
+      }, { status: 503 });
+    }
+    const heroCreditCost = heroOffer.quote.credits;
+    const heroCreditCostKey = "image-open-custom-1k";
     const heroAiTelemetry = {
       aiModel: "z-image-turbo",
-      aiCreditCostKey: "image-open-fast-1k",
+      aiCreditCostKey: heroCreditCostKey,
       aiCreditCostPerImage: heroCreditCost,
       aiBillingMode: "durable-credits",
       aiChargeImages: true,
       aiUsesManagedKey: true,
       heroImageProvider: "runpod",
       heroImageModel: "z-image-turbo",
-      heroImageRoute: "runpod-public",
+      heroImageRoute: heroOffer.providerRoute,
     } as const;
+    const circuit = heroRunpodCircuitState();
+    if (circuit.open) {
+      await recordFetchStockTelemetry("error", {
+        ...heroAiTelemetry,
+        providerErrorCode: circuit.code,
+        errorProvider: "runpod",
+        failedSceneCount: directJobs.length,
+        completedSceneCount: 0,
+        providerCircuitOpen: true,
+        providerCircuitRetryAfterMs: circuit.retryAfterMs,
+      });
+      return NextResponse.json({
+        error: "ผู้ให้บริการ Hero AI Image ยังไม่พร้อม ระบบหยุดงานก่อนหักเครดิต กรุณาลองใหม่ภายหลัง",
+        code: "PROVIDER_UNAVAILABLE",
+        providerCode: circuit.code,
+        retryable: true,
+        retryAfterSec: Math.ceil(circuit.retryAfterMs / 1000),
+        failedScenes: directJobs.map((item) => item.sourceIndex),
+      }, {
+        status: 503,
+        headers: { "Retry-After": String(Math.max(1, Math.ceil(circuit.retryAfterMs / 1000))) },
+      });
+    }
     await ensureMonthlyGrant(userId);
     const balance = await getBalance(userId);
     const totalCreditCost = clipsToGenerate * heroCreditCost;
@@ -1583,11 +1628,61 @@ export async function POST(req: Request) {
       }, { status: 402 });
     }
 
-    const failures: Array<{ sourceIndex: number; code: string; message: string }> = [];
+    const heroTimeline = (Array.isArray(subtitleTexts) && subtitleTexts.length > 0
+      ? subtitleTexts
+      : keywords
+    ).map((text, sceneIndex) => ({
+      sceneIndex,
+      text: typeof text === "string" ? text : "",
+    }));
+    const heroPlanningInput = {
+      fullScript: typeof fullScript === "string" && fullScript.trim()
+        ? fullScript
+        : heroTimeline.map((scene) => scene.text).join("\n"),
+      timeline: heroTimeline,
+      scenes: directJobs.map(({ keyword, sourceIndex }) => ({
+        sceneIndex: sourceIndex,
+        text: subtitleTexts?.[sourceIndex] || keyword,
+        fallbackSubject: keyword,
+      })),
+      visualDirection,
+      region: brollPreference.brollRegionPreference,
+      style: brollPreference.brollVisualStyle,
+    };
+    const heroPlannerCalls = heroImagePlannerCallCount(heroPlanningInput.scenes.length);
+    let heroPlannerAllowed = Boolean(llmKey);
+    if (llmKey && heroPlannerCalls > 0) {
+      const plannerReserve = await reserveAiTextCall(userId, {
+        enforce: llmMode === "managed",
+        count: heroPlannerCalls,
+      });
+      heroPlannerAllowed = plannerReserve.allowed;
+      if (!plannerReserve.allowed) {
+        console.warn("[fetch-stock] Hero scene planner text-call ceiling reached — using script-aware deterministic fallback");
+      }
+    }
+    const heroScenePlan = await planHeroImageScenes(
+      heroPlanningInput,
+      heroPlannerAllowed && llmKey
+        ? (prompt, maxOutputTokens) => geminiGenerateText(llmKey!, prompt, maxOutputTokens, 0.2)
+        : null,
+    );
+    const heroBriefByScene = new Map(
+      heroScenePlan.briefs.map((brief) => [brief.sceneIndex, brief]),
+    );
+
+    const failures: Array<{
+      sourceIndex: number;
+      code: string;
+      message: string;
+      providerCode?: string;
+      systemic: boolean;
+      retryable: boolean;
+    }> = [];
     aiTelemetry.aiGenRequestedCount += clipsToGenerateRaw;
     aiTelemetry.aiGenPlannedCount += clipsToGenerate;
 
-    await withConcurrency(
+    const batchOutcome = await forEachInFailFastBatches(
       directJobs,
       Math.min(3, DOWNLOAD_CONCURRENCY),
       async ({ keyword, sourceIndex, kenBurnsDurationSec }) => {
@@ -1597,15 +1692,18 @@ export async function POST(req: Request) {
         const imagePath = path.join(rendersDir, imageFile);
         const outFile = `${userPrefix}${id}.mp4`;
         const outPath = path.join(rendersDir, outFile);
-        const prompt = buildKieImagePrompt(keyword, {
-          visualDirection,
-          terms: relTerms,
-          region: brollPreference.brollRegionPreference,
-          style: brollPreference.brollVisualStyle,
-          creativeBrollSceneIndex: sourceIndex,
-        });
         aiTelemetry.aiGenAttemptCount++;
         try {
+          const brief = heroBriefByScene.get(sourceIndex);
+          if (!brief) throw new Error(`Hero scene brief missing for scene ${sourceIndex}`);
+          const prompt = buildHeroImagePrompt(brief, {
+            region: brollPreference.brollRegionPreference,
+            style: brollPreference.brollVisualStyle,
+          });
+          const providerStyle = resolveHeroImageProviderStyle(
+            brief,
+            brollPreference.brollVisualStyle,
+          );
           const generated = await generateHeroImageForVideo({
             userId,
             plan: user?.plan ?? "FREE",
@@ -1614,6 +1712,8 @@ export async function POST(req: Request) {
             videoJobId: videoJobId!,
             sceneIndex: sourceIndex,
             sceneTitle: subtitleTexts?.[sourceIndex] || keyword,
+            style: providerStyle,
+            interfaceExpected: brief.includesInterface,
           });
 
           if (download) {
@@ -1675,8 +1775,12 @@ export async function POST(req: Request) {
               aiProviderDelayTimeMs: generated.delayTimeMs,
               aiProviderExecutionTimeMs: generated.executionTimeMs,
               aiProviderReportedCostUsdMicros: generated.providerReportedCostUsdMicros,
+              heroScenePlanSource: heroScenePlan.source,
+              heroSceneVisualMode: brief.visualMode,
+              heroSceneProviderStyle: providerStyle,
             },
           }).catch(() => {});
+          return { systemic: false };
         } catch (error) {
           safeUnlink(imagePath);
           safeUnlink(outPath);
@@ -1685,7 +1789,17 @@ export async function POST(req: Request) {
           aiTelemetry.aiGenFailedCount++;
           const code = error instanceof HeroImageGenerationError ? error.code : "OUTPUT_INVALID";
           const message = error instanceof Error ? error.message : "Hero AI Image failed";
-          failures.push({ sourceIndex, code, message });
+          const providerFailure = error instanceof HeroImageGenerationError
+            ? error.providerFailure
+            : undefined;
+          failures.push({
+            sourceIndex,
+            code,
+            message,
+            providerCode: providerFailure?.code,
+            systemic: providerFailure?.systemic ?? false,
+            retryable: providerFailure?.retryable ?? true,
+          });
           await recordTelemetryEvent(userId, {
             name: "hero_ai_image_video_scene_error",
             category: "error",
@@ -1693,37 +1807,94 @@ export async function POST(req: Request) {
             step: "fetchStock.heroAiImage",
             status: "error",
             durationMs: Date.now() - startedAt,
-            properties: { videoJobId, sceneIndex: sourceIndex, aiProvider: "runpod", aiModel: "z-image-turbo", errorCode: code },
+            properties: {
+              videoJobId,
+              sceneIndex: sourceIndex,
+              aiProvider: "runpod",
+              aiModel: "z-image-turbo",
+              errorCode: code,
+              providerErrorCode: providerFailure?.code,
+              systemicProviderFailure: providerFailure?.systemic ?? false,
+            },
           }).catch(() => {});
+          return { systemic: providerFailure?.systemic ?? false };
         }
       },
+      (outcome) => outcome.systemic,
     );
+    if (batchOutcome.skipped.length > 0) {
+      const systemicFailure = failures.find((failure) => failure.systemic);
+      for (const skipped of batchOutcome.skipped) {
+        failures.push({
+          sourceIndex: skipped.sourceIndex,
+          code: "PROVIDER_UNAVAILABLE",
+          message: "Skipped because the RunPod provider circuit is open",
+          providerCode: systemicFailure?.providerCode,
+          systemic: true,
+          retryable: systemicFailure?.retryable ?? true,
+        });
+      }
+    }
 
     results.sort((a, b) => (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0));
-    const heroBalanceAfter = await getBalance(userId);
-    aiTelemetry.aiLastCreditBalanceAfterSpend = heroBalanceAfter.total;
     stockTelemetry.foundCount = results.length;
     stockTelemetry.cappedCount = results.length;
     stockTelemetry.servedClipCount = results.length;
     if (failures.length > 0) {
+      const compensation = await refundSettledVideoImageBatch({
+        userId,
+        videoJobId: videoJobId!,
+        reason: failures.some((failure) => failure.systemic)
+          ? "systemic_provider_failure"
+          : "video_image_batch_incomplete",
+      });
+      aiTelemetry.aiChargedCount = Math.max(0, aiTelemetry.aiChargedCount - compensation.refundedJobs);
+      aiTelemetry.aiCreditsSpent = Math.max(0, aiTelemetry.aiCreditsSpent - compensation.refundedCredits);
+      aiTelemetry.aiCreditsSpentGranted = Math.max(
+        0,
+        aiTelemetry.aiCreditsSpentGranted - compensation.creditsFromGranted,
+      );
+      aiTelemetry.aiCreditsSpentPurchased = Math.max(
+        0,
+        aiTelemetry.aiCreditsSpentPurchased - compensation.creditsFromPurchased,
+      );
+      const heroBalanceAfter = await getBalance(userId);
+      aiTelemetry.aiLastCreditBalanceAfterSpend = heroBalanceAfter.total;
+      const systemicFailure = failures.find((failure) => failure.systemic);
       await recordFetchStockTelemetry("error", {
         ...heroAiTelemetry,
-        providerErrorCode: failures[0].code,
+        providerErrorCode: systemicFailure?.providerCode ?? failures[0].code,
         errorProvider: "runpod",
         failedSceneCount: failures.length,
         completedSceneCount: results.length,
+        providerCircuitOpened: Boolean(systemicFailure),
+        skippedSceneCount: batchOutcome.skipped.length,
+        compensatedSceneCount: compensation.refundedJobs,
+        compensatedCredits: compensation.refundedCredits,
+        heroScenePlanSource: heroScenePlan.source,
+        heroScenePlannerCallCount: heroScenePlan.plannerCallCount,
+        heroScenePlannerFailedBatchCount: heroScenePlan.failedBatchCount,
       });
       return NextResponse.json({
-        error: `Hero AI Image สร้างไม่สำเร็จ ${failures.length} ฉาก — ไม่มีการสลับไปใช้ KIE`,
-        code: failures[0].code,
-        retryable: failures[0].code !== "INSUFFICIENT_CREDITS",
-        failedScenes: failures.map((item) => item.sourceIndex),
+        error: systemicFailure
+          ? "ผู้ให้บริการ Hero AI Image ขัดข้อง ระบบหยุดฉากที่เหลือและคืนเครดิตของงานนี้แล้ว"
+          : `Hero AI Image สร้างไม่ครบ ${failures.length} ฉาก ระบบคืนเครดิตภาพของงานนี้แล้ว`,
+        code: systemicFailure ? "PROVIDER_UNAVAILABLE" : failures[0].code,
+        providerCode: systemicFailure?.providerCode,
+        retryable: systemicFailure ? systemicFailure.retryable : true,
+        failedScenes: failures.map((item) => item.sourceIndex).sort((a, b) => a - b),
+        refundedCredits: compensation.refundedCredits,
       }, { status: failures[0].code === "INSUFFICIENT_CREDITS" ? 402 : 503 });
     }
+    const heroBalanceAfter = await getBalance(userId);
+    aiTelemetry.aiLastCreditBalanceAfterSpend = heroBalanceAfter.total;
     await recordFetchStockTelemetry("done", {
       ...heroAiTelemetry,
       heroImageGeneratedCount: results.length,
       heroImageCredits: results.length * heroCreditCost,
+      heroScenePlanSource: heroScenePlan.source,
+      heroScenePlannerCallCount: heroScenePlan.plannerCallCount,
+      heroScenePlannerFailedBatchCount: heroScenePlan.failedBatchCount,
     });
     return NextResponse.json({ results });
   }

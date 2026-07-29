@@ -10,6 +10,11 @@ import path from "path";
 const MIN_MAX_SEC = 1;
 const MAX_MAX_SEC = 10;
 
+// Single definition lives in the dependency-free sibling so Client Components can import it
+// without pulling this module's `fs`/`path` imports into the browser bundle. Re-exported here
+// so server-side callers (the route, scripts/verify-preview-bg.ts) keep one import site.
+export { LIVE_PREVIEW_MAX_SEC } from "./preview-bg-constants";
+
 /**
  * Clamp the requested fast-preview duration to [1, 10] seconds.
  * Omitted / non-finite input (e.g. `undefined`, `"evil"`) → `null`, meaning "no cap" — the

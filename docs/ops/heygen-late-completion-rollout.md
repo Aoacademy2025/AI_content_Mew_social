@@ -38,17 +38,50 @@ SQL
 
 ```bash
 nginx -T 2>&1 | less
+install -d -m 0700 /etc/nginx/config-backups
 cp /etc/nginx/sites-enabled/ACTIVE_CONFIG \
-  /etc/nginx/sites-enabled/ACTIVE_CONFIG.before-heygen-rollout
+  /etc/nginx/config-backups/ACTIVE_CONFIG.before-heygen-rollout
 ```
 
-เพิ่ม guard นี้ใน HTTPS `server` block ของ config ที่ใช้งานจริง (และ HTTP block ถ้ามี endpoint ที่ไม่ redirect):
+ห้ามวางไฟล์ backup ไว้ใน `sites-enabled` เพราะ Nginx จะ include ไฟล์นั้นเป็น config อีกชุดและเกิด duplicate `listen`/`server`
+
+ติดตั้ง static maintenance page จาก release นี้ไว้ **นอก working tree** ก่อนแก้ Nginx เพื่อให้ `git checkout/pull` ระหว่าง deploy ไม่กระทบหน้าที่กำลังเสิร์ฟ:
+
+```bash
+install -d -m 0755 /var/www/heroai-maintenance
+install -m 0644 /var/www/ai-content/deploy/maintenance.html \
+  /var/www/heroai-maintenance/maintenance.html
+test -r /var/www/heroai-maintenance/maintenance.html
+```
+
+ใน HTTPS `server` block ของ config จริง เพิ่ม error document นี้หนึ่งครั้ง:
 
 ```nginx
-if (-f /var/www/ai-content/.deploy-maintenance) {
-    return 503;
+error_page 503 /maintenance.html;
+
+location = /maintenance.html {
+    root /var/www/heroai-maintenance;
+    internal;
+    add_header Retry-After "120" always;
+    add_header Cache-Control "no-store, no-cache, must-revalidate" always;
 }
 ```
+
+จากนั้นใส่ marker guard ไว้ด้านบนของ public `location /` ที่ proxy เข้า Next.js:
+
+```nginx
+location / {
+    if (-f /var/www/ai-content/.deploy-maintenance) {
+        return 503;
+    }
+
+    # proxy_pass และ proxy headers เดิมอยู่ต่อจากนี้
+}
+```
+
+ถ้า config มี public static locations แยก เช่น `/_next/static/` หรือ `/renders/` ให้ใส่ guard เดียวกันใน location เหล่านั้นด้วย แต่ **ห้ามวาง guard ไว้ระดับ `server` และห้ามใส่ใน `location = /maintenance.html`** เพราะ internal redirect จะถูก guard ซ้ำและกลับไปเป็นหน้า 503 มาตรฐานของ Nginx
+
+HTTP server block ใช้รูปแบบเดียวกัน: มี `error_page` + internal maintenance location และย้าย redirect เดิมเข้า `location /` หลัง marker guard
 
 ตรวจ syntax/reload โดยยังไม่สร้าง marker:
 
@@ -76,6 +109,17 @@ touch /var/www/ai-content/.deploy-maintenance
 ```
 
 เมื่อ trap ทำงานจะลบ `.deploy-maintenance` ก่อน แล้วสั่ง `npm run ops:render-drain -- off` เพื่อไม่ทิ้งระบบไว้ใน maintenance โดยไม่ตั้งใจ
+
+ตรวจ public response ทันที ต้องยังเป็น HTTP 503 (ไม่ใช่ 200), มี `Retry-After: 120`, `Cache-Control: no-store...` และ body เป็นหน้า “กำลังอัปเดตระบบ”:
+
+```bash
+curl -sS -D /tmp/hero-maintenance.headers \
+  https://YOUR_PRODUCTION_DOMAIN/ \
+  -o /tmp/hero-maintenance.html
+grep -E 'HTTP/.* 503|Retry-After: 120|Cache-Control: no-store' \
+  /tmp/hero-maintenance.headers
+grep 'กำลังอัปเดตระบบ' /tmp/hero-maintenance.html
+```
 
 marker กัน request ใหม่จากภายนอก แต่ worker ภายในที่เรียก `127.0.0.1:3000` ยังทำงานเดิมต่อได้ ให้รัน SQL ในข้อ 1 ซ้ำจนทั้งสอง query ไม่มีแถว **โดยไม่ cancel งาน** แล้วเช็คซ้ำอีกครั้งหลังเว้นระยะหนึ่งเพื่อปิด race
 

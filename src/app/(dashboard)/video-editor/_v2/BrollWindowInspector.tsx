@@ -18,15 +18,34 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Loader2, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Eye,
+  EyeOff,
+  Loader2,
+  Redo2,
+  Undo2,
+  X,
+} from "lucide-react";
 import { color, font, radius } from "./tokens";
-import { BtnPrimary, BtnSecondary, Chip, GroupLabel, Segmented } from "./ui";
+import { BtnPrimary, BtnSecondary, Chip, GroupLabel, Segmented, Toggle } from "./ui";
 import { useIsMobile } from "./useIsMobile";
 import { brollWindowSpans } from "@/lib/broll-spans";
 import { buildKieImagePrompt } from "@/lib/kie-image-prompt";
 import { creditCostFor, costKeyForKieModel } from "@/lib/credit-costs";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 function fmtMs(ms: number) {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -57,13 +76,30 @@ function inferKindFromSrc(src: unknown): WindowEditKind {
   return "stock";
 }
 
+function entrySourceKind(entry: Record<string, unknown> | null): WindowEditKind {
+  if (entry?.provider === "kie-ai") return "ai";
+  return inferKindFromSrc(entry?.src);
+}
+
 // Source badge for a live bgVideos entry: trust `provider` when present (kie-ai → AI, any other
 // provider → stock), else fall back to filename inference for post-apply edited windows.
 function entrySourceLabel(entry: Record<string, unknown> | null): string {
   const provider = entry?.provider;
   if (provider === "kie-ai") return "AI";
   if (typeof provider === "string" && provider) return "สต็อก";
-  return sourceLabel(inferKindFromSrc(entry?.src));
+  return sourceLabel(entrySourceKind(entry));
+}
+
+function editableInternalSrc(raw: unknown): string | null {
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  let src = raw.trim();
+  if (/^https?:\/\//i.test(src)) {
+    try { src = new URL(src).pathname; } catch { return null; }
+  }
+  const queryAt = src.search(/[?#]/);
+  if (queryAt !== -1) src = src.slice(0, queryAt);
+  if (src.startsWith("/renders/")) src = `/api/renders/${src.slice("/renders/".length)}`;
+  return /^\/api\/(renders|stocks)\/[\w.-]+\.mp4$/.test(src) ? src : null;
 }
 
 const AI_MODELS: { id: string; label: string }[] = [
@@ -106,6 +142,38 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
       <span className="mr-auto hidden sm:inline" style={{ fontSize: 11.5, color: color.textFaint }}>
         แก้บีโรลไว้ {ed.windowEdits.size} จุด
       </span>
+      <button
+        type="button"
+        onClick={ed.undoWindowEdits}
+        disabled={busy || !ed.canUndoWindowEdits}
+        aria-label="เลิกทำการแก้ B-roll"
+        title="เลิกทำ"
+        className="flex min-h-11 min-w-11 items-center justify-center lg:min-h-9 lg:min-w-9"
+        style={{
+          border: "none",
+          background: "none",
+          color: ed.canUndoWindowEdits ? color.textSecondary : color.textFaintest,
+          cursor: busy || !ed.canUndoWindowEdits ? "default" : "pointer",
+        }}
+      >
+        <Undo2 size={15} />
+      </button>
+      <button
+        type="button"
+        onClick={ed.redoWindowEdits}
+        disabled={busy || !ed.canRedoWindowEdits}
+        aria-label="ทำซ้ำการแก้ B-roll"
+        title="ทำซ้ำ"
+        className="flex min-h-11 min-w-11 items-center justify-center lg:min-h-9 lg:min-w-9"
+        style={{
+          border: "none",
+          background: "none",
+          color: ed.canRedoWindowEdits ? color.textSecondary : color.textFaintest,
+          cursor: busy || !ed.canRedoWindowEdits ? "default" : "pointer",
+        }}
+      >
+        <Redo2 size={15} />
+      </button>
       <BtnPrimary
         onClick={() => void ed.applyWindowEdits()}
         disabled={busy}
@@ -114,6 +182,71 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
         {busy ? `กำลังอัปเดต ${ed.applyingWindows!.progress}%` : `อัปเดตวิดีโอ (${ed.windowEdits.size} จุด) — ฟรี ไม่ใช้นาทีเพิ่ม`}
       </BtnPrimary>
     </div>
+  );
+}
+
+/** Blocks destructive navigation and stale export while browser-only B-roll edits are pending. */
+export function PendingBrollChangesDialog({ ed }: { ed: PostPhaseEditor }) {
+  const intent = ed.pendingBrollIntent;
+  const count = ed.windowEdits.size;
+  const isExport = intent === "export";
+  return (
+    <AlertDialog
+      open={intent !== null}
+      onOpenChange={(open) => {
+        if (!open) ed.cancelPendingBrollIntent();
+      }}
+    >
+      <AlertDialogContent
+        className="w-[calc(100%_-_28px)] max-w-md border"
+        overlayClassName="z-[80]"
+        style={{
+          zIndex: 81,
+          background: color.bg1,
+          borderColor: color.cardBorder,
+          color: color.text,
+          borderRadius: radius.cardLg,
+        }}
+      >
+        <AlertDialogHeader>
+          <AlertDialogTitle style={{ font: `600 17px ${font.heading}`, color: color.text }}>
+            {isExport ? `มี B-roll ที่ยังไม่ได้อัปเดต ${count} จุด` : "กำลังจะสร้างโปรเจกต์ใหม่"}
+          </AlertDialogTitle>
+          <AlertDialogDescription style={{ color: color.textSecondary, lineHeight: 1.7 }}>
+            {isExport
+              ? "ระบบต้องอัปเดต B-roll ลงวิดีโอก่อน จึงจะส่งออกโดยไม่ทำให้รูปหรือคลิปที่เลือกหาย"
+              : (
+                <>
+                  มี B-roll ที่ยังไม่ได้อัปเดต {count} จุด งานเดิมยังอยู่ในรายการโปรเจกต์
+                  การอัปเดต B-roll ครั้งนี้ฟรีและไม่ใช้นาทีเพิ่ม เลือกบันทึก B-roll
+                  ในงานเดิมก่อน หรือทิ้งเฉพาะการแก้ B-roll แล้วสร้างโปรเจกต์ใหม่
+                </>
+              )}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter className="mt-2 flex-col gap-2 sm:flex-row sm:space-x-0">
+          <AlertDialogCancel
+            style={{ minHeight: 44, borderColor: color.cardBorder, background: "transparent", color: color.textSecondary }}
+          >
+            กลับไปตรวจ
+          </AlertDialogCancel>
+          {!isExport && (
+            <AlertDialogAction
+              onClick={ed.discardPendingBrollAndContinue}
+              style={{ minHeight: 44, background: "rgba(248,113,113,.12)", color: color.danger, border: `1px solid ${color.danger}` }}
+            >
+              ทิ้ง B-roll แล้วสร้างโปรเจกต์ใหม่
+            </AlertDialogAction>
+          )}
+          <AlertDialogAction
+            onClick={() => void ed.applyPendingBrollAndContinue()}
+            style={{ minHeight: 44, background: color.gradientPrimary, color: color.text }}
+          >
+            {isExport ? "อัปเดต B-roll แล้วส่งออก" : "อัปเดต B-roll แล้วสร้างโปรเจกต์ใหม่"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -190,10 +323,13 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
   if (index == null || !span) return null;
 
   const existingEdit = ed.windowEdits.get(index) ?? null;
-  const currentSourceLabel = existingEdit
+  const currentSourceLabel = existingEdit?.kind
     ? sourceLabel(existingEdit.kind)
     : entrySourceLabel(rawEntry);
   const positionLabel = (spans.findIndex((s) => s.index === index) + 1) || index + 1;
+  const enabled = ed.isBrollWindowEnabled(index);
+  const previousSpan = positionLabel > 1 ? spans[positionLabel - 2] : null;
+  const nextSpan = positionLabel < spans.length ? spans[positionLabel] : null;
 
   const composedPrompt = buildKieImagePrompt(aiSimpleText, {
     region: brollRegionPreference,
@@ -208,6 +344,57 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
   function markEdited(kind: WindowEditKind, src: string, keyword?: string, label?: string) {
     ed.setWindowEdit(index!, { src, kind, ...(keyword ? { keyword } : {}), label: label ?? sourceLabel(kind) });
     toast.success(kind === "ai" ? "สร้างภาพสำเร็จ — เลือกใช้แล้ว" : "เปลี่ยนคลิปแล้ว");
+  }
+
+  function effectiveAsset(windowIndex: number): {
+    src: string;
+    keyword?: string;
+    kind: WindowEditKind;
+    label: string;
+  } | null {
+    const raw = rawBgVideoAt(ed.previewConfig, windowIndex);
+    const staged = ed.windowEdits.get(windowIndex);
+    const src = editableInternalSrc(staged?.src ?? raw?.src);
+    if (!src) return null;
+    const rawKeyword = typeof raw?.keyword === "string" ? raw.keyword : undefined;
+    return {
+      src,
+      keyword: staged?.keyword ?? rawKeyword,
+      kind: staged?.kind ?? entrySourceKind(raw),
+      label: staged?.label ?? entrySourceLabel(raw),
+    };
+  }
+
+  function swapWith(target: typeof previousSpan) {
+    if (!target) return;
+    const currentAsset = effectiveAsset(index!);
+    const targetAsset = effectiveAsset(target.index);
+    if (!currentAsset || !targetAsset) {
+      toast.error("ย้ายคลิปนี้ไม่ได้ — ลองเปลี่ยนคลิปก่อนแล้วสลับอีกครั้ง");
+      return;
+    }
+    ed.setWindowEdits([
+      {
+        index: index!,
+        edit: {
+          src: targetAsset.src,
+          keyword: targetAsset.keyword,
+          kind: targetAsset.kind,
+          label: targetAsset.label,
+        },
+      },
+      {
+        index: target.index,
+        edit: {
+          src: currentAsset.src,
+          keyword: currentAsset.keyword,
+          kind: currentAsset.kind,
+          label: currentAsset.label,
+        },
+      },
+    ]);
+    ed.setSelectedWindow(target.index);
+    toast.success("สลับตำแหน่ง B-roll แล้ว");
   }
 
   async function handleSearch() {
@@ -282,8 +469,16 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     }
   }
 
+  function enableThisWindow() {
+    ed.setWindowEdit(index!, { enabled: true });
+    toast.success("เปิด B-roll ช่วงนี้แล้ว");
+  }
+
   async function handleGenerate() {
     if (!aiImageEnabled) { setAiError("AI Image กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้"); return; }
+    // Money guard: /api/videos/broll-window/generate spends credits BEFORE anything is shown,
+    // and a disabled window never renders its asset — the user would pay for nothing.
+    if (!enabled) { setAiError("ช่วงนี้ปิด B-roll อยู่ — เปิดก่อนจึงจะสร้างภาพได้ (กันเครดิตหายฟรี)"); return; }
     if (!finalPrompt) { setAiError("กรุณาระบุคำอธิบายรูปภาพที่ต้องการ"); return; }
     setAiBusy(true);
     setAiError(null);
@@ -315,9 +510,111 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
           <span style={{ font: `600 13.5px ${font.heading}`, color: color.text }}>ฉากที่ {positionLabel}</span>
           <span style={{ fontSize: 11, color: color.textFaint }}>{fmtMs(span.startMs)} – {fmtMs(span.endMs)} · {currentSourceLabel}</span>
         </div>
-        <button onClick={close} aria-label="ปิด" style={{ background: "none", border: "none", color: color.textSecondary, cursor: "pointer", padding: 4 }}>
+        <button
+          onClick={close}
+          aria-label="ปิดแผงแก้ B-roll"
+          className="flex min-h-11 min-w-11 items-center justify-center lg:min-h-9 lg:min-w-9"
+          style={{ background: "none", border: "none", color: color.textSecondary, cursor: "pointer", padding: 0 }}
+        >
           <X size={18} />
         </button>
+      </div>
+      <div
+        className="flex items-center gap-3"
+        style={{
+          minHeight: 52,
+          padding: "8px 10px",
+          borderRadius: radius.card,
+          background: enabled ? "rgba(52,211,153,.07)" : "rgba(255,255,255,.035)",
+          border: `1px solid ${enabled ? "rgba(52,211,153,.20)" : color.cardBorder}`,
+        }}
+      >
+        {enabled ? <Eye size={17} color={color.success} /> : <EyeOff size={17} color={color.textFaint} />}
+        <div className="min-w-0 flex-1">
+          <div style={{ fontSize: 12.5, color: color.text }}>แสดง B-roll ช่วงนี้</div>
+          <div style={{ fontSize: 10.5, color: color.textFaint }}>
+            {ed.preview?.avatarModel === "upload-cutaway"
+              ? enabled
+                ? "ช่วงนี้แสดงภาพ B-roll"
+                : "ช่วงนี้แสดงคลิป Avatar ต้นฉบับ"
+              : enabled
+                ? "ช่วงนี้แสดงภาพ B-roll"
+                : "ช่วงนี้ใช้พื้นหลังเรียบ"}
+          </div>
+        </div>
+        <Toggle
+          on={enabled}
+          onChange={(next) => {
+            ed.setWindowEdit(index!, { enabled: next });
+            toast.success(next ? "เปิด B-roll ช่วงนี้แล้ว" : "ปิด B-roll ช่วงนี้แล้ว");
+          }}
+          ariaLabel={enabled ? "ปิด B-roll ช่วงนี้" : "เปิด B-roll ช่วงนี้"}
+        />
+      </div>
+      {!enabled && (
+        <div
+          role="status"
+          className="flex flex-col gap-2"
+          style={{
+            padding: "10px 12px",
+            borderRadius: radius.card,
+            background: "rgba(251,191,36,.08)",
+            border: "1px solid rgba(251,191,36,.28)",
+          }}
+        >
+          <div className="flex items-start gap-2">
+            <EyeOff size={15} color={color.warning} style={{ flex: "none", marginTop: 1 }} />
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span style={{ fontSize: 12, color: color.warning }}>ปิด B-roll ช่วงนี้อยู่</span>
+              <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>
+                {ed.preview?.avatarModel === "upload-cutaway"
+                  ? "ช่วงนี้จะแสดงคลิป Avatar ต้นฉบับแทน"
+                  : "ช่วงนี้จะใช้พื้นหลังเรียบแทน"}
+                {" — เปลี่ยนหรืออัปโหลดคลิปได้ แต่จะยังไม่แสดงจนกว่าจะเปิด B-roll ช่วงนี้"}
+              </span>
+            </div>
+          </div>
+          <BtnSecondary
+            onClick={enableThisWindow}
+            style={{ alignSelf: "flex-start", minHeight: 40, padding: "8px 14px", fontSize: 11.5 }}
+          >
+            <span className="flex items-center justify-center gap-1.5">
+              <Eye size={13} /> เปิด B-roll ช่วงนี้
+            </span>
+          </BtnSecondary>
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-2">
+        <BtnSecondary
+          onClick={() => swapWith(previousSpan)}
+          disabled={!previousSpan}
+          style={{
+            minHeight: 44,
+            padding: "8px 10px",
+            fontSize: 11.5,
+            opacity: previousSpan ? 1 : 0.45,
+            cursor: previousSpan ? "pointer" : "default",
+          }}
+        >
+          <span className="flex items-center justify-center gap-1.5">
+            <ArrowLeft size={13} /> สลับกับฉากก่อนหน้า
+          </span>
+        </BtnSecondary>
+        <BtnSecondary
+          onClick={() => swapWith(nextSpan)}
+          disabled={!nextSpan}
+          style={{
+            minHeight: 44,
+            padding: "8px 10px",
+            fontSize: 11.5,
+            opacity: nextSpan ? 1 : 0.45,
+            cursor: nextSpan ? "pointer" : "default",
+          }}
+        >
+          <span className="flex items-center justify-center gap-1.5">
+            สลับกับฉากถัดไป <ArrowRight size={13} />
+          </span>
+        </BtnSecondary>
       </div>
       <Segmented
         value={tab}
@@ -465,10 +762,26 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
               เครดิตไม่พอ — ต้องใช้ {aiInsufficient.need} เครดิต (มี {aiInsufficient.balance}) — <a href="/pricing" style={{ color: color.link }}>ดูแพ็กเกจ</a>
             </span>
           )}
+          {!enabled && (
+            <div className="flex flex-col gap-2">
+              <span style={{ fontSize: 11.5, color: color.warning, lineHeight: 1.5 }}>
+                ช่วงนี้ปิด B-roll อยู่ — สร้างภาพ AI ไม่ได้ เพราะจะหักเครดิตแต่ภาพไม่ถูกใช้
+              </span>
+              <BtnSecondary
+                onClick={enableThisWindow}
+                style={{ alignSelf: "flex-start", minHeight: 40, padding: "8px 14px", fontSize: 11.5 }}
+              >
+                <span className="flex items-center justify-center gap-1.5">
+                  <Eye size={13} /> เปิด B-roll ช่วงนี้ก่อน
+                </span>
+              </BtnSecondary>
+            </div>
+          )}
           <BtnPrimary
             onClick={() => void handleGenerate()}
-            disabled={aiBusy || !finalPrompt}
-            style={aiBusy || !finalPrompt ? { opacity: 0.7, cursor: aiBusy ? "wait" : "default" } : undefined}
+            disabled={aiBusy || !finalPrompt || !enabled}
+            title={enabled ? undefined : "เปิด B-roll ช่วงนี้ก่อนจึงจะสร้างภาพได้"}
+            style={aiBusy || !finalPrompt || !enabled ? { opacity: 0.7, cursor: aiBusy ? "wait" : "default" } : undefined}
           >
             {aiBusy ? "กำลังสร้างภาพ…" : `สร้างภาพ (ใช้ ${genCost} เครดิต)`}
           </BtnPrimary>
@@ -480,7 +793,26 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
   // Single source of truth for the "here's the chosen clip" preview: derives from the
   // window's actual staged edit (not per-tab local state) so it can never go stale when
   // switching tabs — it always reflects what will actually be used on apply.
-  const stagedPreview = existingEdit?.src && (
+  // `!enabled` already renders its own warning + CTA in the header, so this only has to
+  // report the staged asset (and stay quiet when the window is hidden).
+  const stagedPreview = !enabled ? (
+    existingEdit?.enabled === false ? (
+      <div
+        className="flex items-center gap-2"
+        style={{
+          padding: "10px 12px",
+          borderRadius: radius.card,
+          background: "rgba(255,255,255,.035)",
+          border: `1px dashed ${color.cardBorder}`,
+        }}
+      >
+        <EyeOff size={15} color={color.textFaint} />
+        <span style={{ fontSize: 11.5, color: color.textSecondary }}>
+          ปิด B-roll ไว้ — จะเห็นผลหลังอัปเดตวิดีโอ
+        </span>
+      </div>
+    ) : null
+  ) : existingEdit?.src ? (
     <div className="flex flex-col gap-1.5">
       <span style={{ fontSize: 10.5, color: color.textFaintest }}>ตัวอย่างคลิปที่จะใช้</span>
       <video
@@ -492,7 +824,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
         style={{ borderRadius: radius.card, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16", maxHeight: 200, objectFit: "cover" }}
       />
     </div>
-  );
+  ) : null;
 
   const footerSummary = ed.windowEdits.size > 0 && (
     <div className="flex flex-col gap-1.5 pt-3" style={{ borderTop: `1px solid ${color.cardBorder}` }}>
@@ -501,7 +833,11 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
         const pos = (spans.findIndex((s) => s.index === idx) + 1) || idx + 1;
         return (
           <div key={idx} className="flex items-center justify-between gap-2">
-            <span style={{ fontSize: 11.5, color: color.textSecondary }}>ช่วงที่ {pos} · {sourceLabel(e.kind)}</span>
+            <span style={{ fontSize: 11.5, color: color.textSecondary }}>
+              ช่วงที่ {pos}
+              {e.src ? ` · ${sourceLabel(e.kind ?? null)}` : ""}
+              {typeof e.enabled === "boolean" ? ` · ${e.enabled ? "เปิด" : "ปิด"}` : ""}
+            </span>
             <button
               onClick={() => ed.clearWindowEdit(idx)}
               style={{ color: color.link, background: "none", border: "none", cursor: "pointer", fontSize: 11 }}

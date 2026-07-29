@@ -7,6 +7,7 @@ import {
   buildArtworkOnlyPrompt,
   dimensionsForAspectRatio,
   previewGenerationInput,
+  type AiImageStyle,
 } from "@/lib/ai-image-policy";
 import { ensureMonthlyGrant } from "@/lib/credits";
 import { videoExpiryFor } from "@/lib/plan-limits";
@@ -22,11 +23,18 @@ import {
 import { persistAiGenerationImage } from "@/lib/ai-generation-media.server";
 import {
   ImageGenerationConfigError,
+  describeImageOffer,
   pollImageGenerationAttempt,
   prepareImageGeneration,
   submitPreparedImageGeneration,
   type ImageGenerationAttemptRef,
 } from "@/lib/image-generation-provider.server";
+import {
+  classifyRunpodTerminalFailure,
+  openHeroRunpodCircuit,
+  type RunpodTerminalFailure,
+} from "@/lib/hero-image-resilience";
+import { cancelRunpodImageJob } from "@/lib/runpod-serverless";
 
 const MODEL = AI_IMAGE_MODELS.find((item) => item.id === "z-image-turbo")!;
 const TERMINAL_PROVIDER = new Set(["FAILED", "TIMED_OUT", "CANCELLED"]);
@@ -42,10 +50,15 @@ export class HeroImageGenerationError extends Error {
       | "PROVIDER_TIMEOUT"
       | "OUTPUT_INVALID",
     readonly status = 503,
+    readonly providerFailure?: RunpodTerminalFailure,
   ) {
     super(message);
     this.name = "HeroImageGenerationError";
   }
+}
+
+export function describeHeroImageOffer() {
+  return describeImageOffer(MODEL);
 }
 
 export type HeroImageGenerationResult = {
@@ -103,14 +116,18 @@ export async function generateHeroImageForVideo(input: {
   videoJobId: string;
   sceneIndex: number;
   sceneTitle?: string;
+  style?: AiImageStyle;
+  interfaceExpected?: boolean;
   timeoutMs?: number;
 }): Promise<HeroImageGenerationResult> {
-  const timeoutMs = Math.max(30_000, Math.min(input.timeoutMs ?? 240_000, 600_000));
+  const timeoutMs = Math.max(30_000, Math.min(input.timeoutMs ?? 540_000, 600_000));
   const deadline = Date.now() + timeoutMs;
   const aspectRatio = "9:16" as const;
-  const style = "cinematic" as const;
+  const style = input.style ?? "photoreal";
   const { width, height } = dimensionsForAspectRatio(aspectRatio);
-  const artworkPrompt = buildArtworkOnlyPrompt(input.prompt, style);
+  const artworkPrompt = buildArtworkOnlyPrompt(input.prompt, style, {
+    interfaceExpected: input.interfaceExpected,
+  });
   let prepared;
   try {
     prepared = prepareImageGeneration(MODEL, {
@@ -127,9 +144,9 @@ export async function generateHeroImageForVideo(input: {
       "NOT_CONFIGURED",
     );
   }
-  if (prepared.provider !== "runpod" || prepared.providerRoute !== "runpod-public") {
+  if (prepared.provider !== "runpod" || prepared.providerRoute !== "runpod-custom") {
     throw new HeroImageGenerationError(
-      "Hero AI Image ถูกตั้งค่าออกนอก RunPod Public route จึงหยุดงานเพื่อป้องกันต้นทุนผิดราคา",
+      "Hero AI Image ต้องใช้ RunPod custom endpoint ที่ผ่านการตรวจสอบ จึงหยุดงานก่อนหักเครดิต",
       "NOT_CONFIGURED",
     );
   }
@@ -148,6 +165,7 @@ export async function generateHeroImageForVideo(input: {
       artworkOnly: true,
       videoJobId: input.videoJobId,
       sceneIndex: input.sceneIndex,
+      interfaceExpected: input.interfaceExpected === true,
     }),
     creditCost: prepared.quote.credits,
     quoteVersion: prepared.quote.version,
@@ -171,7 +189,13 @@ export async function generateHeroImageForVideo(input: {
   let job = reserved.job;
   if (job.status === "completed") return completedResult(job);
   if (job.status === "failed" || job.chargeState === "refunded") {
-    throw new HeroImageGenerationError(job.errorMessage || "งาน Hero AI Image นี้ล้มเหลวแล้ว", "PROVIDER_FAILED");
+    const providerFailure = classifyRunpodTerminalFailure(job.errorMessage || job.errorCode);
+    throw new HeroImageGenerationError(
+      job.errorMessage || "งาน Hero AI Image นี้ล้มเหลวแล้ว",
+      "PROVIDER_FAILED",
+      503,
+      providerFailure,
+    );
   }
 
   if (reserved.created) {
@@ -184,13 +208,21 @@ export async function generateHeroImageForVideo(input: {
         inProgress: submitted.status === "IN_PROGRESS",
       }) ?? job;
     } catch (error) {
+      const detail = error instanceof Error ? error.message : "RunPod submission failed";
+      const providerFailure = classifyRunpodTerminalFailure(detail);
+      if (providerFailure.systemic) openHeroRunpodCircuit(providerFailure.code);
       await failAndRefundAiJob(
         input.userId,
         job.id,
-        error instanceof ImageGenerationConfigError ? error.code : "PROVIDER_SUBMIT_FAILED",
-        error instanceof Error ? error.message : "RunPod submission failed",
+        error instanceof ImageGenerationConfigError ? error.code : providerFailure.code,
+        detail,
       );
-      throw new HeroImageGenerationError("ส่งงาน Hero AI Image ไป RunPod ไม่สำเร็จ เครดิตถูกคืนแล้ว", "PROVIDER_FAILED");
+      throw new HeroImageGenerationError(
+        "ส่งงาน Hero AI Image ไป RunPod ไม่สำเร็จ เครดิตถูกคืนแล้ว",
+        "PROVIDER_FAILED",
+        503,
+        providerFailure,
+      );
     }
   }
 
@@ -200,7 +232,13 @@ export async function generateHeroImageForVideo(input: {
     job = await prisma.aiGenerationJob.findFirst({ where: { id: job.id, userId: input.userId } }) ?? job;
     if (job.status === "completed") return completedResult(job);
     if (job.status === "failed") {
-      throw new HeroImageGenerationError(job.errorMessage || "Hero AI Image ล้มเหลว", "PROVIDER_FAILED");
+      const providerFailure = classifyRunpodTerminalFailure(job.errorMessage || job.errorCode);
+      throw new HeroImageGenerationError(
+        job.errorMessage || "Hero AI Image ล้มเหลว",
+        "PROVIDER_FAILED",
+        503,
+        providerFailure,
+      );
     }
     providerJobId = job.providerJobId;
   }
@@ -220,6 +258,10 @@ export async function generateHeroImageForVideo(input: {
     providerEndpoint: durableAttempt.providerEndpoint,
     providerJobId: durableAttempt.providerJobId,
   };
+  const providerEndpoint = attempt.providerEndpoint;
+  if (!providerEndpoint) {
+    throw new HeroImageGenerationError("ข้อมูล RunPod endpoint ของงานไม่ครบ", "PROVIDER_POLL_FAILED");
+  }
 
   let pollFailures = 0;
   while (Date.now() < deadline - 1_000) {
@@ -274,18 +316,49 @@ export async function generateHeroImageForVideo(input: {
       }
     }
     if (TERMINAL_PROVIDER.has(snapshot.status)) {
+      const providerFailure = classifyRunpodTerminalFailure(snapshot.error);
+      if (providerFailure.systemic) openHeroRunpodCircuit(providerFailure.code);
       await failAndRefundAiJob(
         input.userId,
         job.id,
-        `RUNPOD_${snapshot.status}`,
+        providerFailure.code === "RUNPOD_FAILED"
+          ? `RUNPOD_${snapshot.status}`
+          : providerFailure.code,
         snapshot.error || `RunPod job ${snapshot.status.toLowerCase()}`,
       );
-      throw new HeroImageGenerationError("RunPod สร้างภาพไม่สำเร็จ เครดิตถูกคืนแล้ว", "PROVIDER_FAILED");
+      throw new HeroImageGenerationError(
+        "RunPod สร้างภาพไม่สำเร็จ เครดิตถูกคืนแล้ว",
+        "PROVIDER_FAILED",
+        503,
+        providerFailure,
+      );
     }
   }
 
-  // Public Z normally completes in seconds. At the hard deadline retain the
-  // reservation and provider id for later reconciliation; never submit a hidden
-  // fallback or duplicate job at a different price.
-  throw new HeroImageGenerationError("Hero AI Image ยังอยู่ในคิว RunPod เกินเวลาที่กำหนด", "PROVIDER_TIMEOUT", 504);
+  // A scale-to-zero custom worker can exhaust the route's bounded wait. Cancel
+  // the exact durable job before refunding; never submit a hidden fallback or
+  // duplicate provider attempt.
+  const providerFailure: RunpodTerminalFailure = {
+    code: "RUNPOD_QUEUE_TIMEOUT",
+    systemic: true,
+    retryable: true,
+  };
+  openHeroRunpodCircuit(providerFailure.code);
+  const cancelled = await cancelRunpodImageJob(providerEndpoint, providerJobId);
+  if (cancelled) {
+    await failAndRefundAiJob(
+      input.userId,
+      job.id,
+      providerFailure.code,
+      "RunPod image job exceeded the bounded queue wait and was cancelled",
+    );
+  }
+  throw new HeroImageGenerationError(
+    cancelled
+      ? "Hero AI Image รอ RunPod เกินเวลาที่กำหนด งานเดิมถูกยกเลิกและคืนเครดิตแล้ว"
+      : "Hero AI Image รอ RunPod เกินเวลาที่กำหนด ระบบหยุดงานที่เหลือเพื่อตรวจสอบงานเดิม",
+    "PROVIDER_TIMEOUT",
+    504,
+    providerFailure,
+  );
 }

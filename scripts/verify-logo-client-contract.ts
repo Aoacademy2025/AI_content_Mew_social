@@ -441,9 +441,9 @@ function assertMobileLogoRuntimeStructure(source: string) {
     root,
     (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "MobileSheet",
   );
-  assert.equal(mobileSheets.length, 3, "edit, style, and logo must share MobileSheet");
+  assert.equal(mobileSheets.length, 4, "edit, style, logo, and layers must share MobileSheet");
   assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "large").length, 2);
-  assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "medium").length, 1);
+  assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "medium").length, 2);
 }
 
 function assertExactResponsiveBranchStructure(breakpointSource: string, shellSource: string) {
@@ -1293,7 +1293,7 @@ async function main() {
       () => assertLogoExportTelemetryControlFlow(nonExitingMutation),
       /must throw\/exit/,
     );
-    const exportStart = postPhaseEditorSource.indexOf("async function exportVideo()");
+    const exportStart = postPhaseEditorSource.indexOf("async function exportVideo(");
     const exportEnd = postPhaseEditorSource.indexOf("\n  return {", exportStart);
     assert.ok(exportStart >= 0 && exportEnd > exportStart, "exportVideo source is missing");
     const exportSource = postPhaseEditorSource.slice(exportStart, exportEnd);
@@ -1425,6 +1425,93 @@ async function main() {
 
   await check("mobile logo preview is layered before captions", () => {
     assertMobilePreviewSiblingStructure(mobileSource);
+  });
+
+  const avatarAdjustSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/AvatarAdjustOverlay.tsx",
+    "utf8",
+  );
+  await check("avatar adjustment preview keeps the enabled logo visible", () => {
+    for (const [surface, source] of [
+      ["desktop", desktopSource],
+      ["mobile", mobileSource],
+    ] as const) {
+      const avatarAdjustCall = source.match(/<AvatarAdjustOverlay[\s\S]*?\/>/)?.[0] ?? "";
+      assert.match(
+        avatarAdjustCall,
+        /logoOverlay=\{logoOverlay\}/,
+        `${surface} must forward the project logo into avatar adjustment`,
+      );
+      assert.match(
+        avatarAdjustCall,
+        /logoAsset=\{ed\.logo\.asset\}/,
+        `${surface} must forward the loaded logo asset into avatar adjustment`,
+      );
+    }
+
+    assert.match(avatarAdjustSource, /import\s+\{\s*LogoOverlayPreview\s*\}/);
+    const avatarFrameStart = avatarAdjustSource.indexOf("ref={frameRef}");
+    const logoLayer = avatarAdjustSource.indexOf("<LogoOverlayPreview", avatarFrameStart);
+    const avatarControls = avatarAdjustSource.indexOf("ref={controlsRef}", avatarFrameStart);
+    assert.ok(avatarFrameStart >= 0, "avatar adjustment video frame is missing");
+    assert.ok(
+      logoLayer > avatarFrameStart && logoLayer < avatarControls,
+      "the logo must render inside the 9:16 avatar-adjust video frame, not over its controls",
+    );
+    assert.match(
+      avatarAdjustSource.slice(logoLayer, avatarControls),
+      /value=\{logoOverlay\}[\s\S]{0,100}asset=\{logoAsset\}/,
+    );
+  });
+
+  // B-1 (integration, 2026-07-27): the layer-visibility branch gave LogoOverlayPreview a
+  // `visible` prop (default true) and the MAIN preview passes `visible={ed.layerVisibility.logo}`.
+  // AvatarAdjustOverlay predates that prop, so without this forwarding the avatar-adjust screen
+  // kept drawing the logo after the user turned the logo layer off — two surfaces disagreeing
+  // about the same toggle. Both call sites must pass the exact same expression the main preview
+  // uses, and the overlay must hand it straight to LogoOverlayPreview.
+  await check("avatar adjustment preview honours the logo layer toggle (B-1)", () => {
+    for (const [surface, source] of [
+      ["desktop", desktopSource],
+      ["mobile", mobileSource],
+    ] as const) {
+      const mainPreviewLogo = source.match(/<LogoOverlayPreview[\s\S]*?\/>/)?.[0] ?? "";
+      assert.match(
+        mainPreviewLogo,
+        /visible=\{ed\.layerVisibility\.logo\}/,
+        `${surface} main preview must drive LogoOverlayPreview from the logo layer toggle`,
+      );
+
+      const avatarAdjustCall = source.match(/<AvatarAdjustOverlay[\s\S]*?\/>/)?.[0] ?? "";
+      assert.match(
+        avatarAdjustCall,
+        /logoVisible=\{ed\.layerVisibility\.logo\}/,
+        `${surface} must forward the logo layer toggle into avatar adjustment (B-1)`,
+      );
+    }
+
+    assert.match(
+      avatarAdjustSource,
+      /logoVisible\?:\s*boolean;/,
+      "AvatarAdjustOverlay must accept an optional logoVisible prop (default true keeps old callers safe)",
+    );
+    const frameStart = avatarAdjustSource.indexOf("ref={frameRef}");
+    const previewStart = avatarAdjustSource.indexOf("<LogoOverlayPreview", frameStart);
+    const controlsStart = avatarAdjustSource.indexOf("ref={controlsRef}", frameStart);
+    assert.ok(previewStart > frameStart && previewStart < controlsStart, "logo preview is not inside the avatar-adjust frame");
+    assert.match(
+      avatarAdjustSource.slice(previewStart, controlsStart),
+      /<LogoOverlayPreview[^>]*visible=\{logoVisible\}/,
+      "AvatarAdjustOverlay must forward logoVisible into LogoOverlayPreview",
+    );
+
+    // Mutation guard: dropping the forwarding must fail this check, not pass silently.
+    const dropped = avatarAdjustSource.replace(" visible={logoVisible}", "");
+    assert.notEqual(dropped, avatarAdjustSource, "logoVisible forwarding mutation did not apply");
+    assert.doesNotMatch(
+      dropped.slice(dropped.indexOf("ref={frameRef}")),
+      /<LogoOverlayPreview[^>]*visible=\{logoVisible\}/,
+    );
   });
 
   await check("mobile forwards the project logo contract with the mobile surface", () => {

@@ -15,6 +15,7 @@ import { v2FontClass } from "./fonts";
 import { StepIndicator, BtnPrimary, BtnSecondary, BtnGhost } from "./ui";
 import { AccountMenu } from "@/components/layout/account-menu";
 import { NotificationBell } from "@/components/layout/notification-bell";
+import { QuotaStatus } from "@/components/quota-status";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -302,9 +303,14 @@ export function EditorV2Shell() {
     projectId: p.projectId,
     logoOverlay: p.logoOverlay,
     onLogoOverlayChange: p.setLogoOverlay,
+    layerVisibility: p.layerVisibility,
+    onLayerVisibilityChange: p.setLayerVisibility,
     logoEligible: p.canUseLogoOverlay,
     projectSaveStatus: p.saveStatus,
     onRetryProjectSave: p.retryProjectSave,
+    // M2: lets the style-preset "apply" toast check readiness before claiming success
+    // for a logo change that p.setLogoOverlay would otherwise drop silently.
+    canRunProjectOperation: p.canRunProjectOperation,
   };
   return (
     <div
@@ -537,6 +543,9 @@ export function EditorV2Shell() {
 
         {/* ── Right: bell + help (desktop) + account menu (always; folds help/escape on mobile) ── */}
         <div className="flex shrink-0 items-center gap-3">
+          <div className="hidden lg:flex">
+            <QuotaStatus variant="chip" refreshKey={job.phase === "done" ? 1 : 0} />
+          </div>
           <div className="hidden items-center gap-3 lg:flex">
             <NotificationBell />
             <Link
@@ -561,6 +570,13 @@ export function EditorV2Shell() {
           />
         </div>
       </header>
+
+      <div
+        className="flex min-h-9 shrink-0 items-center justify-center px-2 py-1 lg:hidden"
+        style={{ borderBottom: `1px solid ${color.cardBorder}`, background: color.bg1 }}
+      >
+        <QuotaStatus variant="chip" refreshKey={job.phase === "done" ? 1 : 0} />
+      </div>
 
       {emptyProjectState ? (
         <EmptyProjectView onCreate={() => void handleNewProject()} />

@@ -39,6 +39,8 @@ export function runpodImageModelConfig(model: AiImageModelDefinition): RunpodIma
   const explicitEndpointId = (process.env[model.endpointEnv] ?? "").trim();
   const useCustomZImage = model.id === "z-image-turbo"
     && process.env.AI_STUDIO_Z_IMAGE_ROUTE === "custom";
+  const allowPublicZImage = model.id !== "z-image-turbo"
+    || process.env.AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED === "1";
   const endpointId = model.id === "z-image-turbo" && !useCustomZImage
     ? (model.endpointDefault ?? "").trim()
     : explicitEndpointId || (model.endpointDefault ?? "").trim();
@@ -57,6 +59,10 @@ export function runpodImageModelConfig(model: AiImageModelDefinition): RunpodIma
       if (!fs.existsSync(workflowPath)) return null;
       return { protocol: "comfy-workflow", endpointId, workflowPath, route: "runpod-custom" };
     }
+    // The public Z-Image endpoint is quarantined after its nested WaveSpeed
+    // credential incident. Recovery must be an explicit, separately reviewed
+    // opt-in; a missing/custom-route typo fails closed.
+    if (!allowPublicZImage) return null;
     return { protocol: "public-z-image", endpointId, route: "runpod-public" };
   }
   if (!model.workflowEnv) return null;
@@ -167,4 +173,21 @@ export async function submitRunpodImageJob(prepared: PreparedRunpodImageJob) {
 
 export function getRunpodJob(endpointId: string, providerJobId: string) {
   return runpodFetch(endpointId, `status/${encodeURIComponent(providerJobId)}`);
+}
+
+export async function cancelRunpodImageJob(endpointId: string, providerJobId: string): Promise<boolean> {
+  try {
+    const result = await runpodFetch(
+      endpointId,
+      `cancel/${encodeURIComponent(providerJobId)}`,
+      { method: "POST" },
+    );
+    return result.status === "CANCELLED";
+  } catch (error) {
+    console.warn(
+      `[runpod-image] cancel failed for ${providerJobId}:`,
+      error instanceof Error ? error.message : "request failed",
+    );
+    return false;
+  }
 }

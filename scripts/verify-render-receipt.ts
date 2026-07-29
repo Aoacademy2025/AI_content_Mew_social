@@ -54,8 +54,9 @@ const c = R({ estSec: 480, remainingMinutes: 3, totalMinutes: 10, usesAi: false 
 check("C: estMinutes = 8 (480s)", c.estMinutes === 8, `X=${c.estMinutes}`);
 check("C: overflowMinutes M = 5", c.overflowMinutes === 5, `M=${c.overflowMinutes}`);
 check("C: overflow line shown", has(c, "overflow"));
-check("C: overflow copy interpolates M and 2×M", text(c, "overflow") === "นาทีในแพ็กเกจไม่พอ — ส่วนที่เกิน ~5 นาที จะหักเครดิต 10 เครดิต (2 เครดิต/นาที)", text(c, "overflow"));
-check("C: overflow line kind = warn", c.lines.find((l) => l.key === "overflow")?.kind === "warn");
+check("C: an under-quota render is wholly credit-funded, matching reserveMinutesOrCredits", c.overflowCredits === 16, `credits=${c.overflowCredits}`);
+check("C: overflow copy explains all-or-nothing minute funding", text(c, "overflow") === "นาทีในแพ็กเกจเหลือ 3 นาที ไม่พอสำหรับงาน ~8 นาที — งานนี้จึงใช้ Hero credits ทั้งหมด 16 เครดิต (2 เครดิต/นาที) และจะไม่หักนาทีแพ็กเกจ", text(c, "overflow"));
+check("C: minute fallback is informational when Hero credits can fund it", c.lines.find((l) => l.key === "overflow")?.kind === "info");
 
 // ── D. boundary: minutes EXACTLY equal → no overflow (strict >) ──
 const d = R({ estSec: 300, remainingMinutes: 5, totalMinutes: 10, usesAi: false });
@@ -66,7 +67,7 @@ check("D: overflowMinutes = 0 at equality", d.overflowMinutes === 0);
 // ── E. zero balance + AI → insufficient ──
 const e = R({ usesAi: true, perImageCredits: 3, creditBalance: 0 });
 check("E: estCredits = 9 > balance 0 → insufficient shown", has(e, "insufficient"));
-check("E: insufficient copy exact", text(e, "insufficient") === "เครดิตอาจไม่พอ — ระบบจะใช้ภาพสต็อกแทนช่วงที่เครดิตหมด", text(e, "insufficient"));
+check("E: insufficient copy explains balance, deficit, and recovery", text(e, "insufficient") === "Hero credits ไม่พอ · มี 0 · งานนี้ใช้ประมาณ 9 · ขาดประมาณ 9 — เติมเครดิต หรือลดจำนวนภาพ/เลือกฟรีล้วนก่อนเริ่มงาน", text(e, "insufficient"));
 
 // ── F. boundary: estCredits EXACTLY equal balance → no insufficient (strict >) ──
 const f = R({ usesAi: true, perImageCredits: 3, creditBalance: 9 });
@@ -108,7 +109,7 @@ check("M: exact disclaimer copy", text(m, "disclaimer") === "ความยา�
 
 // ── N. Hero AI Image never promises a hidden stock fallback ──
 const n = R({ usesAi: true, creditBalance: 0, insufficientCreditBehavior: "block" });
-check("N: Hero image insufficient balance blocks before generation", text(n, "insufficient") === "เครดิตอาจไม่พอ — Hero AI Image จะไม่เริ่มงานจนกว่าเครดิตจะพอครบทุกฉาก", text(n, "insufficient"));
+check("N: Hero image insufficient balance gives a concrete recovery", text(n, "insufficient") === "Hero credits ไม่พอ · มี 0 · งานนี้ใช้ประมาณ 9 · ขาดประมาณ 9 — เติมเครดิตหรือลดจำนวนภาพก่อนเริ่มงาน", text(n, "insufficient"));
 
 // ── O. Explicit B-roll count uses the same source planner as the render ──
 const oHero = R({
@@ -129,6 +130,41 @@ const oMix = R({
   targetClipCount: 6,
 });
 check("O2: AutoMix manual 6 reports the planner's one AI slot", oMix.estCredits === 2, `N=${oMix.estCredits}`);
+
+// ── P. Support regression: exhausted minutes are not exhausted Hero credits ──
+// This is the exact shape of duckyhero's receipt: 7 AI images (14 credits) plus
+// one overflow minute (2 credits). The receipt must total both costs and show the
+// live before/after Hero balance so "นาทีในแพ็กเกจไม่พอ" cannot be mistaken for
+// "Hero credits หมด".
+const pEnough = R({
+  estSec: 60,
+  remainingMinutes: 0,
+  totalMinutes: 150,
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 7,
+  creditBalance: 1_024,
+});
+check("P1: total includes AI images + overflow minute", pEnough.totalEstimatedCredits === 16, `total=${pEnough.totalEstimatedCredits}`);
+check("P1: ample balance gets a ready state with before/use/after totals", text(pEnough, "credits") === "พร้อมสร้าง · Hero credits มี 1,024 · งานนี้ใช้ประมาณ 16 · คาดว่าเหลือ 1,008", text(pEnough, "credits"));
+check("P1: ample Hero balance is a success state", pEnough.lines.find((l) => l.key === "credits")?.kind === "success");
+check("P1: minute overflow with ample Hero balance is not insufficient", !has(pEnough, "insufficient"), JSON.stringify(keys(pEnough)));
+check("P1: no warning styling when minutes are empty but Hero credits are ample", !pEnough.lines.some((l) => l.kind === "warn"), JSON.stringify(pEnough.lines));
+
+const pShort = R({
+  estSec: 60,
+  remainingMinutes: 0,
+  totalMinutes: 150,
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 7,
+  creditBalance: 15,
+  insufficientCreditBehavior: "block",
+});
+check("P2: combined 16-credit cost catches a 15-credit balance", has(pShort, "insufficient"), JSON.stringify(keys(pShort)));
+check("P2: combined shortage copy shows required, balance, deficit, and recovery", text(pShort, "insufficient") === "Hero credits ไม่พอ · มี 15 · งานนี้ใช้ประมาณ 16 · ขาดประมาณ 1 — เติมเครดิตหรือลดจำนวนภาพก่อนเริ่มงาน", text(pShort, "insufficient"));
 
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll render-receipt checks passed.");
