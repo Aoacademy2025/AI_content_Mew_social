@@ -13,6 +13,11 @@ import {
   type MediaStorageRolloutEvent,
 } from "../src/lib/media-storage-rollout";
 import { mediaStorageRuntimeConfig } from "../src/lib/media-storage-config";
+import {
+  AliasResolvingMediaStorage,
+  LocalFreshnessMediaAliasResolver,
+  type MediaAliasCatalogInspection,
+} from "../src/lib/media-storage-alias";
 
 function storage(root: string, name: string): InMemoryMediaStorageAdapter {
   return new InMemoryMediaStorageAdapter(path.join(root, name));
@@ -93,6 +98,56 @@ async function main() {
     remoteRead: failingStorage(readRemote, "open"),
   });
   assert.equal(await body(await remoteFailure.open(identity)), "local-copy");
+
+  const freshnessLocal = storage(root, "freshness-local");
+  const freshnessRemote = storage(root, "freshness-remote");
+  const remoteSourcePath = path.join(root, "remote-source.mp4");
+  writeFileSync(remoteSourcePath, "remote-old");
+  await freshnessLocal.commit({ identity, sourcePath });
+  await freshnessRemote.commit({ identity, sourcePath: remoteSourcePath });
+  const localDescriptor = await freshnessLocal.stat(identity);
+  assert(localDescriptor);
+
+  let catalogRow: Awaited<ReturnType<MediaAliasCatalogInspection["inspect"]>> = {
+    remoteState: "verified",
+    sizeBytes: BigInt(localDescriptor.sizeBytes),
+    remoteFilename: null,
+    localMtimeMs: BigInt(Math.trunc(localDescriptor.lastModified.getTime())),
+  };
+  const freshnessAliases = new LocalFreshnessMediaAliasResolver(
+    { inspect: async () => catalogRow },
+    freshnessLocal,
+  );
+  const freshnessRead = new RolloutMediaStorage({
+    config: mediaStorageRuntimeConfig({ MEDIA_READ_MODE: "r2-local" }),
+    local: freshnessLocal,
+    remoteRead: new AliasResolvingMediaStorage(freshnessRemote, freshnessAliases),
+  });
+  assert.equal(
+    await body(await freshnessRead.open(identity)),
+    "remote-old",
+    "a current verified alias is read from R2 first",
+  );
+
+  catalogRow = {
+    ...catalogRow,
+    localMtimeMs: catalogRow!.localMtimeMs! - 1n,
+  };
+  assert.equal(
+    await body(await freshnessRead.open(identity)),
+    "local-copy",
+    "a replaced direct-to-local file bypasses a stale R2 alias",
+  );
+
+  catalogRow = {
+    ...catalogRow,
+    remoteState: "uploading",
+  };
+  assert.equal(
+    await body(await freshnessRead.open(identity)),
+    "local-copy",
+    "an unverified alias remains local",
+  );
 
   await assert.rejects(
     localThenR2.remove({ identity, expectedSha256: "0".repeat(64) }),
