@@ -148,6 +148,18 @@ not delete or mutate local media. Roll back immediately by returning
 `local-r2` is available for local-first fallback testing, but it does not exercise
 R2 while the local copy exists.
 
+The edge must not terminate a missing local `/renders`, `/stocks`,
+`/api/renders`, or `/api/stocks` request with an alias-only 404. Keep the static
+Nginx fast path, but configure `try_files` to fall through to the
+`@media_storage_fallback` named location in `deploy/nginx.conf`. That location
+normalizes legacy media URLs to their `/api/...` route and proxies only the local
+miss to the application's R2-aware reader. After every Nginx change, require
+`nginx -t`, a zero-downtime reload, and successful 1 KiB Range canaries for:
+
+- a local render and stock file;
+- an evicted render and stock file; and
+- both the `/api/...` and legacy non-API URL forms.
+
 ## Stage 5: verified local eviction
 
 Local eviction is allowed only while reads use `r2-local` or `r2`. The workflow
