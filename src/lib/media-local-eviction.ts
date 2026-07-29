@@ -113,7 +113,7 @@ export function verifiedLocalReplica(
     typeof row.sha256 !== "string" ||
     !SHA256_PATTERN.test(row.sha256) ||
     row.sizeBytes !== BigInt(record.sizeBytes) ||
-    row.localMtimeMs !== BigInt(Math.trunc(record.mtimeMs))
+    row.localMtimeMs !== BigInt(Math.round(record.mtimeMs))
   ) {
     return null;
   }

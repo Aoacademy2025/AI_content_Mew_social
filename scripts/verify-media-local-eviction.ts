@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     { prisma },
     { MediaCatalog },
     { getMediaCleanupPlan },
-    { runLocalMediaEviction },
+    { runLocalMediaEviction, verifiedLocalReplica },
   ] = await Promise.all([
     import("../src/lib/prisma"),
     import("../src/lib/media-catalog"),
@@ -84,6 +84,32 @@ async function main(): Promise<void> {
     import("../src/lib/media-local-eviction"),
   ]);
   const catalog = new MediaCatalog(prisma);
+
+  assert(
+    verifiedLocalReplica(
+      {
+        key: "renders/fractional-mtime.mp4",
+        absolutePath: path.join(root, "public", "renders", "fractional-mtime.mp4"),
+        sizeBytes: 10,
+        mtimeMs: 1000.75,
+        effectiveExpiresAt: null,
+        reason: "unreferenced_14d",
+        fingerprint: "fixture",
+      },
+      {
+        remoteState: "verified",
+        localState: "present",
+        sizeBytes: 10n,
+        sha256: "a".repeat(64),
+        remoteFilename: null,
+        localMtimeMs: 1001n,
+        lastVerifiedAt: null,
+        nextRetryAt: null,
+        lastErrorCode: null,
+      },
+    ),
+    "filesystem Date rounding and cleanup mtime validation must use the same millisecond",
+  );
 
   const successName = "evict-success.mp4";
   const successFile = writeOldRender(successName, "verified-r2-copy");
