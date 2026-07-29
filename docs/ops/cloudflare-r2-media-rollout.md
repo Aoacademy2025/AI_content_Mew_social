@@ -11,8 +11,9 @@ domain.
 - Local storage remains the required copy until R2 upload and SHA-256 metadata
   verification succeed.
 - R2 writes use `If-None-Match: *`, `Content-MD5`, and immutable object keys.
-- Stock filenames are mutable logical aliases. Their bytes are stored under
-  `media/v2/stocks/blobs/<sha-prefix>/sha256-<sha>.<ext>`, and the catalog
+- Render and stock filenames are mutable logical aliases. New or changed bytes
+  are stored under
+  `media/v2/<area>/blobs/<sha-prefix>/sha256-<sha>.<ext>`, and the catalog
   publishes `remoteFilename` only after the physical object is verified.
 - Backfill is idempotent, lease-based, bounded per run, and disabled unless both
   the command flag and environment gate are present.
@@ -96,6 +97,11 @@ The backfill hashes the current local bytes, uploads a new immutable v2 object,
 and switches the logical alias only after verification. It does not overwrite or
 delete the legacy object. Existing legacy collision rows can therefore recover
 without discarding either byte version.
+
+Verified, unchanged legacy renders may remain on their existing v1 objects.
+New, changed, or collided renders use immutable v2 objects, so a producer that
+reuses a logical render filename cannot overwrite or collide with an earlier
+byte version.
 
 After the 10- and 100-object canaries pass, install the non-overlapping
 reconciliation timer. It keeps direct-to-local producer paths covered during the

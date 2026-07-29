@@ -99,8 +99,40 @@ async function main() {
   assert.equal(row?.remoteState, "conflict");
   assert.equal(row?.lastErrorCode, "MediaCollisionError");
 
-  const { contentAddressedStockIdentity, mediaObjectKey } =
+  const {
+    contentAddressedMediaIdentity,
+    contentAddressedStockIdentity,
+    mediaObjectKey,
+  } =
     await import("../src/lib/media-storage");
+  const recoveredRenderPhysical = contentAddressedMediaIdentity(
+    identity,
+    "d".repeat(64),
+  );
+  const recoveredRender = await catalog.claim({
+    descriptor: { ...descriptor, sizeBytes: 11 },
+    localMtimeMs: 2000,
+    remoteIdentity: recoveredRenderPhysical,
+  }, { now });
+  assert.equal(recoveredRender.status, "claimed");
+  if (recoveredRender.status !== "claimed") {
+    throw new Error("content-addressed target must recover a legacy render conflict");
+  }
+  assert.equal(
+    await catalog.markVerified(recoveredRender.claim, {
+      ...descriptor,
+      identity: recoveredRenderPhysical,
+      objectKey: mediaObjectKey(recoveredRenderPhysical),
+      sizeBytes: 11,
+      sha256: "d".repeat(64),
+    }, now),
+    true,
+  );
+  assert.deepEqual(
+    await catalog.resolveRemoteIdentity(identity),
+    recoveredRenderPhysical,
+  );
+
   const stockIdentity = { area: "stocks" as const, filename: "mutable-slot.mp4" };
   const stockDescriptor = {
     identity: stockIdentity,
