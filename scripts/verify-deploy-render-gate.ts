@@ -6,12 +6,21 @@ const nginx = readFileSync("deploy/nginx.conf", "utf8");
 const runbook = readFileSync("docs/ops/heygen-late-completion-rollout.md", "utf8");
 
 const buildReady = deploy.indexOf('test -f "$STAGING_DIR/BUILD_ID"');
+const isolatedBuild = deploy.indexOf("unshare --mount --propagation private");
 const gateFlag = deploy.indexOf('REQUIRE_EMPTY_RENDER_QUEUES');
 const queueCheck = deploy.indexOf('scripts/check-empty-render-queues.ts');
 const swap = deploy.indexOf('Atomic swap .next-staging -> .next');
 const restart = deploy.indexOf('Restart PM2');
 
 assert.ok(buildReady >= 0, "deploy verifies staged BUILD_ID");
+assert.ok(isolatedBuild >= 0 && isolatedBuild < buildReady, "build hides runtime media in a private mount namespace");
+assert.match(deploy, /mount --bind "\$media_shadow" "\$app_dir\/public\/renders"/);
+assert.match(deploy, /mount --bind "\$media_shadow" "\$app_dir\/stocks"/);
+assert.match(deploy, /\[ ! -d "\$media_root" \] \|\| \[ -L "\$media_root" \]/);
+assert.ok(
+  deploy.indexOf('npm run build', isolatedBuild) < buildReady,
+  "the Next build runs inside the private media namespace",
+);
 assert.ok(gateFlag > buildReady, "empty-queue gate runs only after a successful staging build");
 assert.ok(queueCheck >= gateFlag && queueCheck < swap, "queue checker runs immediately before swap");
 assert.ok(swap < restart, "swap remains before restart");
