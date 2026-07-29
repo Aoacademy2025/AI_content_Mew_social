@@ -110,7 +110,6 @@ export function verifiedLocalReplica(
     !row ||
     row.remoteState !== "verified" ||
     row.localState !== "present" ||
-    !row.lastVerifiedAt ||
     typeof row.sha256 !== "string" ||
     !SHA256_PATTERN.test(row.sha256) ||
     row.sizeBytes !== BigInt(record.sizeBytes) ||

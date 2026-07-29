@@ -196,8 +196,8 @@ systemctl enable --now heroai-media-local-eviction.timer
 ```
 
 The reconciliation and eviction services share an exclusive lock, so upload
-catalog transitions cannot overlap eviction. The daily job is capped at 25
-objects and 5 GiB per run. Keep `MEDIA_R2_DELETE=0`; lifecycle deletion from R2
+catalog transitions cannot overlap eviction. The daily job is capped at 250
+objects and 20 GiB per run. Keep `MEDIA_R2_DELETE=0`; lifecycle deletion from R2
 is a separate future policy and is not required to protect VPS disk capacity.
 
 Cloudflare references:
