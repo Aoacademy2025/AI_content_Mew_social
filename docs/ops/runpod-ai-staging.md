@@ -122,21 +122,31 @@ GHCR_PULL_TOKEN=... # read:packages only, stored in Runpod registry auth
 ```
 
 Do not paste either token into chat or commit it. After both immutable image tags are
-pushed, set `RUNPOD_OMNIVOICE_IMAGE`, `RUNPOD_Z_IMAGE_IMAGE` and the resulting
+pushed, validate the exact GitHub identity and manifest pull scope before storing the
+credential in Runpod:
+
+```bash
+npm run check:ghcr-pull-token
+```
+
+Set `RUNPOD_OMNIVOICE_IMAGE`, `RUNPOD_Z_IMAGE_IMAGE` and the resulting
 `RUNPOD_CONTAINER_REGISTRY_AUTH_ID`, inspect the dry-run plan, then use:
 
 ```bash
 npm run provision:runpod-staging -- --apply
 ```
 
-The Z-Image BF16 endpoint intentionally starts on the 48 GB A40/A6000 class for a stable
-quality baseline. Current Runpod Serverless pricing lists that class around USD 1.22/hour,
-billed per second while starting/running; the worker still scales to zero. Quantized and
-24 GB variants come only after the BF16 result is recorded.
+The Z-Image BF16 endpoint prefers the 48 GB A40 class for a stable, cost-effective
+quality baseline, with L40S and A100 80 GB as capacity fallbacks. Current Runpod
+Serverless pricing lists those tiers at USD 0.00034, 0.00053, and 0.00076 per second,
+respectively, billed while starting/running; the worker still scales to zero. Quantized
+and 24 GB variants come only after the BF16 result is recorded.
 
 The verified private Z-Image image contains 30 registry layers totaling 28,168,330,207
 compressed bytes. Its staging template therefore reserves 70 GB of container disk for
 layer extraction and ComfyUI runtime files rather than relying on the earlier 50 GB estimate.
+It also sets `RUNPOD_INIT_TIMEOUT=800`: a fresh authenticated pull measured about ten
+minutes, longer than Runpod's default seven-minute initialization window.
 
 Provisioned staging resources (2026-07-21):
 
@@ -144,8 +154,9 @@ Provisioned staging resources (2026-07-21):
 - Z-Image template `cdi0oruo2b`, endpoint `0c6eadcsuhuhor`.
 - Both use registry auth `cmrusznvj000q25gsb3hdtjmk`, `workersMin=0`, `workersMax=1`,
   and FlashBoot.
-- Z-Image accepts the 48 GB GPU fallback order `NVIDIA A40`, `NVIDIA RTX A6000`, then
-  `NVIDIA L40S` to cover both cost-effective Ampere pools before the faster fallback.
+- Z-Image accepts the GPU fallback order `NVIDIA A40`, `NVIDIA L40S`, then
+  `NVIDIA A100 80GB PCIe` to span cost-effective 48 GB, newer inference, and 80 GB
+  datacenter pools.
 - OmniVoice smoke passed with delay 17,584 ms, execution 759 ms, and a valid 24 kHz
   mono PCM WAV (138,284 bytes).
 - Z-Image smoke job `b1cfa851-37c7-4681-ae4b-625e11924bd2-e1` completed. It spent about
@@ -153,6 +164,18 @@ Provisioned staging resources (2026-07-21):
   audit window contained two custom-worker records totaling USD 0.0469449223 across
   138,526 billed milliseconds. Treat that as a canary-window observation, not a stable
   per-image price.
+
+Recovery resources (2026-07-30):
+
+- The old registry credential `cmrusznvj000q25gsb3hdtjmk` failed GitHub identity
+  validation with HTTP 401 and GHCR pull-scope exchange with HTTP 403.
+- Original Z-Image endpoint `0c6eadcsuhuhor` and diagnostic replacement
+  `z6rultw0btxy3n` are parked at `workersMin=0`, `workersMax=0`.
+- Production candidate template `ltjv0onr72` and endpoint `e10knh9zjtr2pl` passed a
+  fully fresh pull, warm inference, and scale-to-zero FlashBoot revival.
+- The live gate temporarily used registry auth `cms6euknu003npi42luhxaa4t`. Replace it
+  with a dedicated classic PAT that has only `read:packages`; do not retain the local
+  GitHub CLI's write-capable credential as a permanent production dependency.
 
 ## Customer route and cost guard — 2026-07-21
 
@@ -165,7 +188,7 @@ Default planning assumptions are one credit = THB 1, USD/THB = 36 and minimum gr
 
 | Offer | Customer price | Provider estimate | Maximum COGS | State |
 | --- | ---: | ---: | ---: | --- |
-| Runpod Public Z-Image | 2 credits | USD 0.005 | USD 0.038888 | enabled |
+| Runpod Public Z-Image | 2 credits | USD 0.005 | USD 0.038888 | quarantined after nested WaveSpeed 401 |
 | Custom Z-Image / Hero Video | 3 credits | USD 0.050 conservative | USD 0.058333 | cost-safe; live smoke required |
 | Cloud API · GPT Image 2 1K | 3 credits | USD 0.030 | USD 0.058333 | cost-safe, configuration required |
 

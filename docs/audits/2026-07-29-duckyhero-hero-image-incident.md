@@ -41,13 +41,28 @@ integration, not the Hero AI production RunPod credential.
 
 The evidence report was sent from the account owner mailbox to `help@runpod.io`, with
 `support@wavespeed.ai` copied, under subject “RunPod public z-image-turbo accepted jobs
-but failed on nested WaveSpeed 401”. No API key or secret was included.
+but failed on nested WaveSpeed 401”. RunPod assigned ticket `#44090`. The ticket was
+updated with the custom-worker allocation evidence. No API key or secret was included.
+
+The first custom recovery endpoint then exposed a second independent root cause. Its
+stored GHCR credential could no longer authenticate:
+
+- GitHub `/user`: HTTP 401 `Bad credentials`
+- GHCR repository pull-scope exchange: HTTP 403 `DENIED`
+- a fresh endpoint bound to that credential allocated a worker immediately, but the
+  worker became unhealthy before the handler initialized
+- the replacement credential returned HTTP 200 for the exact image manifest digest
+  `sha256:79b55eb182e41a255d71d6dd2602d6e4aa5b259b5e94d76dec7705b46ee05618`,
+  after which the worker changed to `initializing` and completed normally
+
+The public WaveSpeed 401 caused the user incident. The expired private-registry credential
+was a separate recovery-path defect that would have prevented a safe custom failover.
 
 ## Permanent remediation
 
 Hero Video is now fail-closed on the isolated custom endpoint
-`0c6eadcsuhuhor` (`heroai-z-image-turbo-staging-v1`). It does not fall back to KIE or
-another AI engine.
+`e10knh9zjtr2pl` (`heroai-z-image-turbo-production-v3`). It does not fall back to KIE
+or another AI engine.
 
 Application changes:
 
@@ -69,18 +84,30 @@ Application changes:
    budget instead of failing after one 30-second attempt.
 6. Make readiness output explicitly distinguish configuration validation from the
    required live provider smoke.
+7. Bound a completely fresh custom-worker wait at 14 minutes (15-minute hard maximum),
+   then cancel and refund the exact durable job. The verified 28 GB image needed about
+   ten minutes for a fresh pull, while FlashBoot revivals completed in seconds.
+8. Add `npm run check:ghcr-pull-token`, which validates both GitHub credential validity
+   and the exact GHCR manifest pull scope without printing the credential.
 
 RunPod capacity changes:
 
 - superseded voice v9 staging endpoint `k69fz253b59st4`: `workersMax 1 → 0`
-- isolated Z-Image endpoint `0c6eadcsuhuhor`: `workersMax 0 → 1`
-- Z-Image 48 GB fallback pool: `A40 / L40S / RTX 6000 Ada` →
-  `A40 / RTX A6000 / L40S` after a live smoke remained queued without any worker
-  allocation
+- original Z-Image endpoint `0c6eadcsuhuhor`: parked at `workersMin=0`,
+  `workersMax=0` after a never-started smoke was cancelled with `cost=null`
+- replacement endpoint `z6rultw0btxy3n`: parked at `0/0` after it proved the expired
+  registry credential by allocating an unhealthy worker
+- production candidate `e10knh9zjtr2pl`: `workersMin=0`, `workersMax=1`, FlashBoot
+- Z-Image fallback pool: `A40 / L40S / RTX 6000 Ada` →
+  `A40 / RTX A6000 / L40S`, then `A40 / L40S / A100 80 GB` after the same live
+  smoke remained queued for 50 minutes without any worker allocation. The last pool
+  spans cost-effective 48 GB, newer inference, and 80 GB datacenter capacity.
+- superseded OmniVoice v1 endpoint `xbn9a1ynd6byeu`: `workersMax 1 → 0`
 - production voice endpoint `txvrmtzfc8au3b`: unchanged
 
-Both capacity mutations passed the zero queued/in-progress precondition and are
-reversible.
+The worker-quota mutations passed the zero queued/in-progress precondition. GPU fallback
+changes were made only with zero in-progress jobs and zero running workers; the one durable
+queued smoke job was preserved. All changes are reversible.
 
 ## Verification
 
@@ -94,10 +121,18 @@ reversible.
 - `npm run verify:render-receipt`
 - `npx tsc --noEmit`
 
-The isolated endpoint fully-cold warm-up must complete, followed by a second live smoke
-whose queue + execution time fits inside the application's bounded nine-minute wait,
-before production traffic is switched. Record both terminal job IDs, queue delay,
-execution time, provider cost, and stored image result here during rollout.
+Live custom verification on endpoint `e10knh9zjtr2pl`:
+
+| Gate | Job | Queue/cold delay | Execution | Result |
+| --- | --- | ---: | ---: | --- |
+| fully fresh pull | `a9638fca-e62d-4d3f-a0c0-04cc1cf66fbf-e2` | 602,423 ms | 11,475 ms | valid 862,128-byte PNG |
+| warm, new seed | `d2e8ec43-df5c-4ca6-bb12-37af8487017b-e2` | 95 ms | 5,699 ms | valid 867,743-byte PNG |
+| scale-to-zero FlashBoot revival, new seed | `cd465da5-e312-4bc8-9a0f-34ef3d9d1016-e1` | 1,121 ms | 5,379 ms | valid 911,964-byte PNG |
+
+The three images were visually inspected. The RunPod job response did not report a cost.
+The allocated A40 showed USD 1.22/hour while running; after `workersMin=0` took effect,
+the worker returned to idle/ready FlashBoot state and account `currentSpendPerHr`
+returned to USD 0.
 
 After both gates pass, configure production with the guarded, dry-run-by-default command:
 
@@ -115,7 +150,7 @@ closed, and creates a timestamped environment backup before the atomic update.
 Production audit before compensation:
 
 - balance: 14 granted + 958 purchased credits
-- incident batch: 26 completed/settled images = 52 purchased credits
+- incident batch: 26 completed/settled images = 52 granted credits
 - prior whole-batch refunds: 0
 
 Use the guarded, dry-run-by-default command after deployment:
@@ -128,7 +163,13 @@ npm run ops:refund-video-image-batch -- \
   --apply
 ```
 
-The expected result is 26 jobs and 52 purchased credits restored exactly once.
+Applied production result:
+
+- 26 jobs changed from settled to refunded
+- 52 granted credits restored exactly once
+- balance changed from 14 granted + 958 purchased (972 total) to
+  66 granted + 958 purchased (1,024 total)
+- 26 refund-ledger rows total 52 credits and a second dry run finds zero refundable jobs
 
 ## Rollback
 
@@ -137,6 +178,6 @@ If the custom live smoke or production smoke fails:
 1. Keep `AI_STUDIO_Z_IMAGE_ROUTE` unset/public. Because Hero Video is pinned to custom,
    this leaves the feature safely unavailable before charge instead of returning traffic
    to the broken public endpoint.
-2. Set endpoint `0c6eadcsuhuhor` back to `workersMax=0`.
+2. Set endpoint `e10knh9zjtr2pl` back to `workersMax=0`.
 3. If voice v9 staging capacity is needed again, restore `k69fz253b59st4` to
    `workersMax=1` after the Z-Image endpoint is parked.
