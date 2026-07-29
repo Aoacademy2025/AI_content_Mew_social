@@ -820,6 +820,14 @@ export function usePostPhaseEditor(
 
     if (windowEdits.size > 0 && !pendingConfirmed) {
       setPendingBrollIntent("export");
+      trackEvent("editor_pending_broll_dialog_opened", {
+        status: "info",
+        properties: {
+          intent: "export",
+          pendingEditCount: windowEdits.size,
+          surface,
+        },
+      });
       return;
     }
 
@@ -877,30 +885,71 @@ export function usePostPhaseEditor(
   function requestNewProject() {
     if (windowEdits.size > 0) {
       setPendingBrollIntent("new-project");
+      trackEvent("editor_pending_broll_dialog_opened", {
+        status: "info",
+        properties: {
+          intent: "new-project",
+          pendingEditCount: windowEdits.size,
+          surface,
+        },
+      });
       return;
     }
     onNewProject();
   }
 
   function cancelPendingBrollIntent() {
+    if (pendingBrollIntent) {
+      trackEvent("editor_pending_broll_action_selected", {
+        status: "info",
+        properties: {
+          intent: pendingBrollIntent,
+          action: "cancel",
+          pendingEditCount: windowEdits.size,
+          surface,
+        },
+      });
+    }
     setPendingBrollIntent(null);
   }
 
   async function applyPendingBrollAndContinue() {
     const intent = pendingBrollIntent;
     if (!intent) return;
+    trackEvent("editor_pending_broll_action_selected", {
+      status: "started",
+      properties: {
+        intent,
+        action: "apply",
+        pendingEditCount: windowEdits.size,
+        surface,
+      },
+    });
     setPendingBrollIntent(null);
     if (intent === "export") {
       await exportVideo(true);
       return;
     }
     const applied = await applyWindowEdits();
-    if (applied) onNewProject();
+    if (applied) {
+      toast.success("บันทึก B-roll ในงานเดิมแล้ว — กำลังเปิดโปรเจกต์ใหม่");
+      onNewProject();
+    }
   }
 
   function discardPendingBrollAndContinue() {
     if (pendingBrollIntent !== "new-project") return;
+    trackEvent("editor_pending_broll_action_selected", {
+      status: "done",
+      properties: {
+        intent: "new-project",
+        action: "discard",
+        pendingEditCount: windowEdits.size,
+        surface,
+      },
+    });
     setPendingBrollIntent(null);
+    toast("ทิ้งเฉพาะ B-roll ที่ยังไม่อัปเดตแล้ว — กำลังเปิดโปรเจกต์ใหม่");
     onNewProject();
   }
 

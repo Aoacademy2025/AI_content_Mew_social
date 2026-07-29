@@ -67,6 +67,22 @@ assert.match(mobile, /PendingBrollChangesDialog/u);
 assert.doesNotMatch(desktop, /onClick=\{onNewProject\}/u);
 assert.doesNotMatch(mobile, /onClick=\{onNewProject\}/u);
 assert.match(inspector, /อัปเดต B-roll แล้วส่งออก/u);
-assert.match(inspector, /ทิ้งการแก้ไขแล้วเรนเดอร์ใหม่/u);
+
+// Support regression cms4jnk0o02mhlcpiz462hd65 — a "new project" confirmation
+// must never promise only a re-render when both successful actions actually call
+// onNewProject(). That mismatch made a successful free B-roll apply look like the
+// editor closed and the charged render disappeared.
+const pendingDialogStart = inspector.indexOf("export function PendingBrollChangesDialog");
+const pendingDialogEnd = inspector.indexOf("\nexport function BrollWindowInspector", pendingDialogStart);
+assert.ok(pendingDialogStart >= 0 && pendingDialogEnd > pendingDialogStart, "pending B-roll dialog source is missing");
+const pendingDialog = inspector.slice(pendingDialogStart, pendingDialogEnd);
+assert.match(pendingDialog, /กำลังจะสร้างโปรเจกต์ใหม่/u);
+assert.match(pendingDialog, /งานเดิมยังอยู่ในรายการโปรเจกต์/u);
+assert.match(pendingDialog, /ฟรีและไม่ใช้นาทีเพิ่ม/u);
+assert.match(pendingDialog, /ทิ้ง B-roll แล้วสร้างโปรเจกต์ใหม่/u);
+assert.match(pendingDialog, /อัปเดต B-roll แล้วสร้างโปรเจกต์ใหม่/u);
+assert.doesNotMatch(pendingDialog, /แล้วเรนเดอร์ใหม่/u);
+assert.match(editor, /editor_pending_broll_dialog_opened/u);
+assert.match(editor, /editor_pending_broll_action_selected/u);
 
 console.log("B-roll window management UI/render contract passed");

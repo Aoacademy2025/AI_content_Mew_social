@@ -210,17 +210,22 @@ export function PendingBrollChangesDialog({ ed }: { ed: PostPhaseEditor }) {
       >
         <AlertDialogHeader>
           <AlertDialogTitle style={{ font: `600 17px ${font.heading}`, color: color.text }}>
-            มี B-roll ที่ยังไม่ได้อัปเดต {count} จุด
+            {isExport ? `มี B-roll ที่ยังไม่ได้อัปเดต ${count} จุด` : "กำลังจะสร้างโปรเจกต์ใหม่"}
           </AlertDialogTitle>
           <AlertDialogDescription style={{ color: color.textSecondary, lineHeight: 1.7 }}>
             {isExport
               ? "ระบบต้องอัปเดต B-roll ลงวิดีโอก่อน จึงจะส่งออกโดยไม่ทำให้รูปหรือคลิปที่เลือกหาย"
-              : "ถ้าเรนเดอร์ใหม่ตอนนี้ รูปหรือคลิป B-roll ที่เลือกไว้จะถูกทิ้ง เลือกอัปเดตงานเดิมก่อน หรือทิ้งการแก้ไขเพื่อเริ่มใหม่"}
+              : (
+                <>
+                  มี B-roll ที่ยังไม่ได้อัปเดต {count} จุด งานเดิมยังอยู่ในรายการโปรเจกต์
+                  การอัปเดต B-roll ครั้งนี้ฟรีและไม่ใช้นาทีเพิ่ม เลือกบันทึก B-roll
+                  ในงานเดิมก่อน หรือทิ้งเฉพาะการแก้ B-roll แล้วสร้างโปรเจกต์ใหม่
+                </>
+              )}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter className="mt-2 flex-col gap-2 sm:flex-row sm:space-x-0">
           <AlertDialogCancel
-            onClick={ed.cancelPendingBrollIntent}
             style={{ minHeight: 44, borderColor: color.cardBorder, background: "transparent", color: color.textSecondary }}
           >
             กลับไปตรวจ
@@ -230,14 +235,14 @@ export function PendingBrollChangesDialog({ ed }: { ed: PostPhaseEditor }) {
               onClick={ed.discardPendingBrollAndContinue}
               style={{ minHeight: 44, background: "rgba(248,113,113,.12)", color: color.danger, border: `1px solid ${color.danger}` }}
             >
-              ทิ้งการแก้ไขแล้วเรนเดอร์ใหม่
+              ทิ้ง B-roll แล้วสร้างโปรเจกต์ใหม่
             </AlertDialogAction>
           )}
           <AlertDialogAction
             onClick={() => void ed.applyPendingBrollAndContinue()}
             style={{ minHeight: 44, background: color.gradientPrimary, color: color.text }}
           >
-            {isExport ? "อัปเดต B-roll แล้วส่งออก" : "อัปเดต B-roll แล้วเรนเดอร์ใหม่"}
+            {isExport ? "อัปเดต B-roll แล้วส่งออก" : "อัปเดต B-roll แล้วสร้างโปรเจกต์ใหม่"}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
