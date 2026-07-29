@@ -346,6 +346,12 @@ async function seed(prisma: PrismaClient): Promise<void> {
         draftJson: JSON.stringify({ clipUrl: "/api/renders/missing-unowned.mp4" }),
       },
       {
+        id: "graph-project-remote-evicted",
+        userId: "graph-free",
+        status: "archived",
+        draftJson: JSON.stringify({ clipUrl: "/api/renders/remote-evicted.mp4" }),
+      },
+      {
         id: "graph-project-malformed",
         userId: "graph-pro",
         draftJson: "{not-json",
@@ -359,6 +365,21 @@ async function seed(prisma: PrismaClient): Promise<void> {
         latestVideoId: "graph-archived-video",
       },
     ],
+  });
+  await prisma.mediaObject.create({
+    data: {
+      area: "renders",
+      filename: "remote-evicted.mp4",
+      objectKey: "media/v1/renders/remote-evicted.mp4",
+      contentType: "video/mp4",
+      sizeBytes: 1234n,
+      sha256: "a".repeat(64),
+      remoteFilename: `sha256-${"a".repeat(64)}.mp4`,
+      remoteState: "verified",
+      localState: "evicted",
+      localMtimeMs: BigInt(dateAtOffset(-20).getTime()),
+      lastVerifiedAt: NOW,
+    },
   });
 
   await Promise.all([
@@ -550,11 +571,25 @@ async function main(): Promise<void> {
   assert.deepEqual(graph.scannedOwners, {
     video: 8,
     "video-job": 8,
-    "project-draft": 16,
+    "project-draft": 17,
     "render-job": 3,
     "generated-image": 5,
     "ai-generation-job": 0,
   });
+
+  const remoteEvictedRef = refsFor(graph, "renders/remote-evicted.mp4").find(
+    (ref) => ref.ownerId === "graph-project-remote-evicted",
+  );
+  assert.equal(
+    remoteEvictedRef?.expiresAt?.toISOString(),
+    dateAtOffset(-17).toISOString(),
+    "a verified R2 replica uses the catalog mtime after its local replica is evicted",
+  );
+  assert.equal(
+    graph.errors.some((error) => error.ownerId === "graph-project-remote-evicted"),
+    false,
+    "verified remote-only draft media is not reported as unexpectedly missing",
+  );
 
   for (const [key, expectedOwner, expectedExpiry] of [
     ["renders/free-boundary.mp4", "graph-project-free-boundary", NOW],
