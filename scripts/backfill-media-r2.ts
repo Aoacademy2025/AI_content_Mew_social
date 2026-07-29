@@ -6,8 +6,9 @@ import {
   LocalMediaStorageAdapter,
   MediaCollisionError,
   UnsafeMediaFileError,
-  contentAddressedStockIdentity,
+  contentAddressedMediaIdentity,
   defaultLocalMediaRoots,
+  type MediaDescriptor,
   type MediaArea,
   type MediaIdentity,
 } from "../src/lib/media-storage";
@@ -29,6 +30,37 @@ function modeFromArgs(args: string[]): BackfillMode {
 function boundedMax(raw: string | undefined): number {
   const parsed = Number(raw);
   return Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 1_000 ? parsed : 100;
+}
+
+type CatalogInspection = Awaited<ReturnType<MediaCatalog["inspect"]>>;
+
+function localObservationMatches(
+  row: CatalogInspection,
+  descriptor: MediaDescriptor,
+  localMtimeMs: number,
+): boolean {
+  return Boolean(
+    row &&
+    row.sizeBytes === BigInt(descriptor.sizeBytes) &&
+    row.localMtimeMs === BigInt(Math.trunc(localMtimeMs)),
+  );
+}
+
+function verifiedRemoteIdentity(
+  identity: MediaIdentity,
+  descriptor: MediaDescriptor,
+  localMtimeMs: number,
+  row: CatalogInspection,
+): MediaIdentity | null {
+  if (row?.remoteState !== "verified" || !localObservationMatches(row, descriptor, localMtimeMs)) {
+    return null;
+  }
+  if (typeof row.sha256 === "string" && row.remoteFilename) {
+    const physical = contentAddressedMediaIdentity(identity, row.sha256);
+    return row.remoteFilename === physical.filename ? physical : null;
+  }
+  // Existing verified renders may remain on their immutable legacy v1 key.
+  return identity.area === "renders" && !row.remoteFilename ? identity : null;
 }
 
 async function localIdentities(
@@ -90,21 +122,10 @@ async function main() {
       }
       if (!descriptor) continue;
       const localMtimeMs = descriptor.lastModified.getTime();
+      const row = await catalog.inspect(identity);
 
       if (mode === "dry-run") {
-        const row = await catalog.inspect(identity);
-        const versionedTargetVerified =
-          identity.area !== "stocks" ||
-          (
-            typeof row?.sha256 === "string" &&
-            row.remoteFilename ===
-              contentAddressedStockIdentity(identity, row.sha256).filename
-          );
-        const verified =
-          row?.remoteState === "verified" &&
-          row.sizeBytes === BigInt(descriptor.sizeBytes) &&
-          row.localMtimeMs === BigInt(Math.trunc(localMtimeMs)) &&
-          versionedTargetVerified;
+        const verified = verifiedRemoteIdentity(identity, descriptor, localMtimeMs, row);
         if (verified) totals.alreadyVerified += 1;
         else totals.candidates += 1;
         if (totals.candidates >= maxUploads) break;
@@ -114,9 +135,10 @@ async function main() {
       let materialized = null as Awaited<ReturnType<typeof local.materialize>>;
       let activeClaim: MediaCatalogClaim | null = null;
       try {
-        let remoteIdentity = identity;
+        let remoteIdentity =
+          verifiedRemoteIdentity(identity, descriptor, localMtimeMs, row);
         let expectedSha256: string | undefined;
-        if (identity.area === "stocks") {
+        if (!remoteIdentity) {
           materialized = await local.materialize(identity);
           if (!materialized) {
             totals.deferred += 1;
@@ -128,7 +150,7 @@ async function main() {
             totals.deferred += 1;
             continue;
           }
-          remoteIdentity = contentAddressedStockIdentity(identity, expectedSha256);
+          remoteIdentity = contentAddressedMediaIdentity(identity, expectedSha256);
         }
 
         const claimed = await catalog.claim({
