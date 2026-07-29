@@ -120,7 +120,7 @@ function workerSpecs(): WorkerSpec[] {
         // benchmark is deterministic. Test 24 GB/quantized variants later.
         // Keep a cost-effective Ampere option first, then use Ada Pro 48 GB
         // fallbacks so production does not depend on one scarce GPU pool.
-        gpuTypeIds: ["NVIDIA A40", "NVIDIA L40S", "NVIDIA RTX 6000 Ada Generation"],
+        gpuTypeIds: ["NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40S"],
         idleTimeout: 5,
         minCudaVersion: "12.6",
         scalerType: "QUEUE_DELAY",

@@ -34,6 +34,7 @@ import { AvatarPickerModal } from "./AvatarPickerModal";
 import type { V2Project, V2BrollSource, V2VoiceEngine } from "./useV2Project";
 import type { MixPreset } from "./mix-presets";
 import { HeroVoicePicker } from "./HeroVoicePicker";
+import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 
 // AutoMix intensity (D5.1) — shown after an eligible customer selects AutoMix.
 const MIX_PRESETS: { key: MixPreset; label: string; sub: string; badge?: string }[] = [
@@ -223,7 +224,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     className="w-full max-w-[320px] rounded-md px-3 py-2"
                     style={{ fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
                   >
-                    Realistic · Z-Image Turbo · RunPod · 2 เครดิต/ภาพ
+                    Realistic · Z-Image Turbo · RunPod · {HERO_AI_IMAGE_CREDITS} เครดิต/ภาพ
                   </div>
                 </div>
               )}
@@ -701,7 +702,7 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
   const autoMixUnlocked = p.internalAiTester && p.isPaidManagedKie;
   const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
     { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
-    { value: "kie-image", title: "Hero AI Image", desc: "ภาพ AI ล้วน · ไม่ใช้สต็อก · 2 เครดิต/ภาพ", icon: <ImagePlus size={16} strokeWidth={1.6} /> },
+    { value: "kie-image", title: "Hero AI Image", desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · ${HERO_AI_IMAGE_CREDITS} เครดิต/ภาพ`, icon: <ImagePlus size={16} strokeWidth={1.6} /> },
     { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} /> },
   ];
 

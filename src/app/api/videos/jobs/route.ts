@@ -483,10 +483,10 @@ export async function POST(req: Request) {
       }
       const model = AI_IMAGE_MODELS.find((item) => item.id === "z-image-turbo")!;
       const offer = describeImageOffer(model);
-      if (!offer.available || offer.providerRoute !== "runpod-public") {
+      if (!offer.available || offer.providerRoute !== "runpod-custom") {
         return NextResponse.json({
           error: "hero_image_unavailable",
-          message: "Hero AI Image ยังไม่พร้อมบน RunPod Public route",
+          message: "Hero AI Image ยังไม่พร้อมบน RunPod custom endpoint ที่ผ่านการตรวจสอบ",
         }, { status: 503 });
       }
     } else if (requestedSource !== "stock" && !canUseKieImages) {
