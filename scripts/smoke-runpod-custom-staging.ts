@@ -10,6 +10,7 @@ type RunpodJob = {
   status?: string;
   output?: Record<string, unknown>;
   error?: string;
+  message?: string;
   delayTime?: number;
   executionTime?: number;
   cost?: number;
@@ -47,7 +48,13 @@ async function runpod(operation: string, init?: RequestInit): Promise<RunpodJob>
   } catch {
     throw new Error(`Runpod returned non-JSON status ${response.status}`);
   }
-  if (!response.ok) throw new Error(body.error || `Runpod request failed (${response.status})`);
+  if (!response.ok) {
+    throw new Error(
+      body.error
+      || body.message
+      || `Runpod request failed (${response.status}): ${source.slice(0, 500)}`,
+    );
+  }
   return body;
 }
 
@@ -95,7 +102,10 @@ function buildPayload(): Record<string, unknown> {
 }
 
 async function waitForCompletion(jobId: string, initial: RunpodJob): Promise<RunpodJob> {
-  const deadline = Date.now() + 45 * 60_000;
+  // A fully cold 28 GB BF16 image has previously waited ~55 minutes for the
+  // scarce 48 GB pool. Keep following the same durable job instead of timing
+  // out locally and tempting an operator to submit a duplicate.
+  const deadline = Date.now() + 75 * 60_000;
   let result = initial;
   let lastStatus = "";
   let lastUpdate = 0;

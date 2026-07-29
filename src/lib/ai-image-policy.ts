@@ -10,12 +10,18 @@ export type AiImageAspectRatio = "1:1" | "4:5" | "9:16" | "16:9";
 export type AiImageStyle = "photoreal" | "cinematic" | "editorial" | "illustration" | "product";
 export type AiImageProvider = "runpod" | "kie";
 export type AiImageEngine = "runpod" | "cloud";
+export type AiImageCreditCostKey =
+  | "image-open-fast-1k"
+  | "image-open-custom-1k"
+  | "image-open-quality-1k"
+  | "image-gpt-1k";
 
 export type AiImageModelDefinition = {
   id: AiImageModelId;
   label: string;
   description: string;
-  creditCostKey: "image-open-fast-1k" | "image-open-quality-1k" | "image-gpt-1k";
+  creditCostKey: AiImageCreditCostKey;
+  customCreditCostKey?: AiImageCreditCostKey;
   engine: AiImageEngine;
   provider: AiImageProvider;
   providerModel: string;
@@ -32,6 +38,7 @@ export const AI_IMAGE_MODELS: readonly AiImageModelDefinition[] = [
     label: "Realistic · Z-Image Turbo",
     description: "ภาพคน สินค้า อาหาร และฉากสมจริง",
     creditCostKey: "image-open-fast-1k",
+    customCreditCostKey: "image-open-custom-1k",
     engine: "runpod",
     provider: "runpod",
     providerModel: "z-image-turbo",

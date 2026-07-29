@@ -128,11 +128,19 @@ for (const model of AI_IMAGE_MODELS) {
         model.id === "z-image-turbo" ? 50_000 : model.estimatedCostUsdMicros,
       );
     } else {
+      if (model.id === "z-image-turbo") {
+        const publicEnabled = process.env.AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED === "1";
+        configured = configured && publicEnabled;
+        details.push(`publicRecoveryGate=${publicEnabled ? "OPEN" : "BLOCK"}`);
+      }
       details.push("workflow=NOT_REQUIRED");
     }
   }
 
-  const quote = quoteAiImageModel(model, estimatedCostUsdMicros, policy);
+  const quoteModel = details.includes("route=runpod-custom") && model.customCreditCostKey
+    ? { ...model, creditCostKey: model.customCreditCostKey }
+    : model;
+  const quote = quoteAiImageModel(quoteModel, estimatedCostUsdMicros, policy);
   const costSafe = isAiImageQuoteCostSafe(quote);
   details.push(`credits=${quote.credits}`);
   details.push(`cogs=${dollars(quote.estimatedProviderCostUsdMicros)}`);
@@ -179,7 +187,8 @@ async function finishReadinessCheck() {
   const cloudOffers = checks.filter((item) => item.label.startsWith("offer ") && item.detail.includes("engine=cloud"));
   console.log(`\nRunPod AI ready: ${runpodOffers.filter((item) => item.ok).length}/${runpodOffers.length}`);
   console.log(`Cloud API ready: ${cloudOffers.filter((item) => item.ok).length}/${cloudOffers.length}`);
-  console.log(`Application deployment gate: ${durableSchemaReady && readyOffers > 0 ? "PASS" : "BLOCK"}`);
+  console.log(`Configuration deployment gate: ${durableSchemaReady && readyOffers > 0 ? "PASS" : "BLOCK"}`);
+  console.log("Live provider gate: NOT RUN (a successful provider smoke is required before traffic is enabled)");
   if (!durableSchemaReady || readyOffers === 0) process.exitCode = 1;
 }
 

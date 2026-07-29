@@ -37,23 +37,26 @@ check("negative prompt bans logos and watermarks", guarded.negative.includes("lo
 check("negative prompt bans multi-panel compositions", guarded.negative.includes("triptych") && guarded.negative.includes("panel borders"));
 check("model registry exposes exactly the allowlisted models", AI_IMAGE_MODELS.length === 4 && AI_IMAGE_MODELS.every((model) => isAiImageModelId(model.id)));
 check(
-  "Z-Image uses the official Runpod public endpoint contract",
+  "Z-Image keeps the official public contract and an explicit isolated custom route",
   AI_IMAGE_MODELS.some((model) => model.id === "z-image-turbo"
     && model.runpodProtocol === "public-z-image"
     && model.provider === "runpod"
     && model.estimatedCostUsdMicros === 5_000
+    && model.customCreditCostKey === "image-open-custom-1k"
     && model.endpointDefault === "z-image-turbo"
     && model.workflowEnv === "RUNPOD_IMAGE_Z_IMAGE_WORKFLOW_PATH"),
 );
 const zImage = AI_IMAGE_MODELS.find((model) => model.id === "z-image-turbo")!;
+const customZImage = { ...zImage, creditCostKey: zImage.customCreditCostKey! };
 const gptImage = AI_IMAGE_MODELS.find((model) => model.id === "gpt-image-2")!;
 check(
   "public Z-Image fits the 2-credit cost envelope",
   isAiImageQuoteCostSafe(quoteAiImageModel(zImage, 5_000)),
 );
 check(
-  "observed custom-worker cost is blocked at the 2-credit price",
-  !isAiImageQuoteCostSafe(quoteAiImageModel(zImage, 50_000)),
+  "custom Z-Image receives a 3-credit quote that covers the conservative worker estimate",
+  quoteAiImageModel(customZImage, 50_000).credits === 3
+    && isAiImageQuoteCostSafe(quoteAiImageModel(customZImage, 50_000)),
 );
 check(
   "GPT Image 2 has a separate 3-credit quote that fits its provider cost",
@@ -131,6 +134,7 @@ const imageProvider = fs.readFileSync("src/lib/image-generation-provider.server.
 const catalogRoute = fs.readFileSync("src/app/api/ai-studio/catalog/route.ts", "utf8");
 const studioPage = fs.readFileSync("src/app/(dashboard)/ai-studio/page.tsx", "utf8");
 const mediaStorage = fs.readFileSync("src/lib/ai-generation-media.server.ts", "utf8");
+const imageDownload = fs.readFileSync("src/lib/ai-generation-image-download.ts", "utf8");
 const prismaSchema = fs.readFileSync("prisma/schema.prisma", "utf8");
 const mediaGraph = fs.readFileSync("src/lib/media-reference-graph.ts", "utf8");
 const studioLayout = fs.readFileSync("src/app/(dashboard)/ai-studio/layout.tsx", "utf8");
@@ -178,15 +182,16 @@ check(
     && heroVideoImage.includes("latestImageGenerationAttempt"),
 );
 check(
-  "Hero video image path is pinned to RunPod Public without KIE fallback",
-  heroVideoImage.includes('prepared.providerRoute !== "runpod-public"')
+  "Hero video image path is pinned to the isolated RunPod custom endpoint without KIE fallback",
+  heroVideoImage.includes('prepared.providerRoute !== "runpod-custom"')
     && !heroVideoImage.includes("kieCreateTask")
-    && fetchStockRoute.includes("ไม่มีการสลับไปใช้ KIE"),
+    && fetchStockRoute.includes("intentionally separate from KIE/AutoMix"),
 );
 check(
-  "Hero image failures refund only the failed durable reservation",
+  "Hero image failures refund failed reservations and compensate settled scenes in an unusable batch",
   heroVideoImage.includes("failAndRefundAiJob")
-    && heroVideoImage.includes("provider id for later reconciliation"),
+    && heroVideoImage.includes("cancelRunpodImageJob")
+    && fetchStockRoute.includes("refundSettledVideoImageBatch"),
 );
 check(
   "Hero image telemetry carries exact credit buckets and final balance",
@@ -253,6 +258,11 @@ check(
     && runpod.includes('route: "runpod-custom"'),
 );
 check(
+  "the broken public Z-Image route remains quarantined without an explicit recovery flag",
+  runpod.includes("AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED")
+    && runpod.includes("if (!allowPublicZImage) return null"),
+);
+check(
   "official Z-Image requests keep the provider safety checker enabled",
   fs.readFileSync("src/lib/runpod-image-contract.ts", "utf8").includes("enable_safety_checker: true"),
 );
@@ -262,7 +272,8 @@ check(
     mediaStorage.includes('type: "external_url"')
     && mediaStorage.includes('url.hostname !== "image.runpod.ai"')
     && mediaStorage.includes("assertSafeFetchUrl")
-    && mediaStorage.includes('redirect: "error"'),
+    && mediaStorage.includes("fetchImageResponseWithRetry")
+    && imageDownload.includes('redirect: "error"'),
 );
 check(
   "provider attempts are durable and limited to one sequence per job",
