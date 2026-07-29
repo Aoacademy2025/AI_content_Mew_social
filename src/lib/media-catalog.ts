@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@prisma/client";
 import {
+  contentAddressedMediaIdentity,
   MediaCollisionError,
   mediaObjectKey,
   type MediaCommitReceipt,
@@ -73,6 +74,35 @@ export class MediaCatalog {
         lastErrorCode: true,
       },
     });
+  }
+
+  async inspectVerifiedRemoteOnly(
+    identity: MediaIdentity,
+  ): Promise<{ localMtimeMs: number } | null> {
+    const row = await this.inspect(identity);
+    if (
+      !row ||
+      row.remoteState !== "verified" ||
+      row.localState !== "evicted" ||
+      !row.lastVerifiedAt ||
+      typeof row.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/.test(row.sha256) ||
+      row.sizeBytes <= BigInt(0) ||
+      row.localMtimeMs === null
+    ) {
+      return null;
+    }
+
+    if (row.remoteFilename) {
+      const expected = contentAddressedMediaIdentity(identity, row.sha256);
+      if (row.remoteFilename !== expected.filename) return null;
+    } else if (identity.area !== "renders") {
+      // Legacy render aliases were immutable and SHA-verified before eviction.
+      // Mutable legacy stock aliases are never valid remote-only replicas.
+      return null;
+    }
+
+    return { localMtimeMs: safeInteger(row.localMtimeMs) };
   }
 
   async claim(

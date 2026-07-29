@@ -6,6 +6,7 @@ import {
   type CanonicalMediaRef,
   type MediaKey,
 } from "@/lib/media-cleanup";
+import { MediaCatalog } from "@/lib/media-catalog";
 import { lowResPreviewFilenamesForRender } from "@/lib/low-res-preview-paths";
 import { prisma } from "@/lib/prisma";
 import {
@@ -78,6 +79,7 @@ export async function buildMediaReferenceGraph(
     "ai-generation-job": 0,
   };
   const roots = mediaRootPaths(options.workspaceRoot);
+  const mediaCatalog = new MediaCatalog();
   const errorKeys = new Set<string>();
   let quarantinedMedia = new Map<MediaKey, { mtimeMs: number }>(options.inFlightQuarantinedMedia);
 
@@ -530,6 +532,31 @@ export async function buildMediaReferenceGraph(
             "draftJson",
           );
           continue;
+        }
+        if (code === "ENOENT" || code === "ENOTDIR") {
+          try {
+            const remoteOnly = await mediaCatalog.inspectVerifiedRemoteOnly({
+              area: canonicalRef.area,
+              filename: canonicalRef.filename,
+            });
+            if (remoteOnly) {
+              addCanonicalRef(
+                canonicalRef,
+                {
+                  ...owner,
+                  expiresAt: expiryForMedia(
+                    project.user.plan,
+                    new Date(remoteOnly.localMtimeMs),
+                  ),
+                },
+                "draftJson",
+              );
+              continue;
+            }
+          } catch {
+            addError(owner, "draftJson", "media_catalog_query_failed");
+            continue;
+          }
         }
         addError(
           owner,
