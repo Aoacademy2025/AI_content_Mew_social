@@ -69,8 +69,16 @@ async function main() {
     createScriptWithinCap,
     sendScriptToEditor,
     SCRIPT_WINDOW_DAYS,
+    // Fix wave (final review)
+    isModelUnavailableError,
+    MODEL_UNAVAILABLE_CODE,
+    MODEL_UNAVAILABLE_MESSAGE,
+    PRO_TIER_TEXT_CALL_COST,
   } = await import("../src/lib/hero-script.server");
   const { BRAND_PROFILE_CAPS, checkBrandProfileFieldLimits } = await import("../src/lib/brand-profile-limits");
+  const { providerError } = await import("../src/lib/provider-errors");
+  const { reserveAiTextCall, aiTextCallCeilingFor } = await import("../src/lib/ai-text-limits");
+  const { syncMinuteWindow } = await import("../src/lib/minute-limits");
   const {
     buildAnalyzePrompt,
     buildNicheDrilldownPrompt,
@@ -473,6 +481,73 @@ async function main() {
     const putInvalid = putCtaStyle({ ctaStyle: "drop-table" });
     ok(putInvalid !== undefined && isValidCtaStyleKey(putInvalid) === false,
       "PUT rejects an invalid ctaStyle key (400)");
+  }
+
+  // ── isModelUnavailableError: the 404 'model is gone' class only ─────────
+  {
+    ok(MODEL_UNAVAILABLE_CODE === "MODEL_UNAVAILABLE", "MODEL_UNAVAILABLE_CODE is the documented code");
+    ok(MODEL_UNAVAILABLE_MESSAGE === "โมเดล AI สำหรับเขียนสคริปต์ไม่พร้อมใช้งานชั่วคราว โปรดลองใหม่อีกครั้งหรือแจ้งทีมงาน",
+      "MODEL_UNAVAILABLE_MESSAGE matches the agreed Thai copy verbatim");
+
+    const notFound = providerError(
+      "fatal", "gemini",
+      '{"error":{"code":404,"message":"models/gemini-2.5-pro is not found for API version v1beta, or is not supported for generateContent"}}',
+      { status: 404 }
+    );
+    ok(isModelUnavailableError(notFound) === true, "isModelUnavailableError: 404 model-not-found → true");
+
+    const retired = providerError(
+      "fatal", "gemini",
+      '{"error":{"code":404,"message":"Gemini 2.5 Pro is no longer available to new users"}}',
+      { status: 404 }
+    );
+    ok(isModelUnavailableError(retired) === true, "isModelUnavailableError: 404 'no longer available' → true");
+
+    // Everything else keeps its own handling — no hijacking quota/rate/timeout.
+    ok(isModelUnavailableError(providerError("rate_limit", "gemini", "429 RESOURCE_EXHAUSTED quota", { status: 429 })) === false,
+      "isModelUnavailableError: a 429 quota error → false");
+    ok(isModelUnavailableError(providerError("transient", "gemini", "503 model is overloaded", { status: 503 })) === false,
+      "isModelUnavailableError: a 503 overloaded error → false (retryable, different bucket)");
+    ok(isModelUnavailableError(providerError("invalid_key", "gemini", "401 API_KEY_INVALID", { status: 401 })) === false,
+      "isModelUnavailableError: an invalid-key error → false");
+    ok(isModelUnavailableError(new Error("script not found")) === false,
+      "isModelUnavailableError: an unrelated 'not found' (no model mention) → false");
+    ok(isModelUnavailableError(null) === false && isModelUnavailableError(undefined) === false,
+      "isModelUnavailableError: null/undefined → false");
+  }
+
+  // ── Pro-tier quota weighting (reserveAiTextCall count) ──────────────────
+  {
+    ok(PRO_TIER_TEXT_CALL_COST === 2, "PRO_TIER_TEXT_CALL_COST = 2 (a pro request = up to 4 model round-trips)");
+
+    await prisma.user.create({
+      data: { id: "hs-count", name: "Count", email: "hs-count@example.test", plan: "PRO" },
+    });
+    // First sync opens the 30-day window (and writes the plan's minutesLimit),
+    // so the ceiling below is the one the reserve will actually compare against.
+    const synced = await syncMinuteWindow("hs-count");
+    const ceiling = aiTextCallCeilingFor(synced!.minutesLimit);
+    ok(ceiling > 3, `text-call ceiling for a PRO user is ${ceiling} (sanity)`);
+
+    // enforce:true is the managed path (BYOK never reaches the counter).
+    const one = await reserveAiTextCall("hs-count", { enforce: true });
+    ok(one.allowed === true && one.used === 1, "reserveAiTextCall default count = 1 (flash routes unchanged)");
+    const two = await reserveAiTextCall("hs-count", { enforce: true, count: PRO_TIER_TEXT_CALL_COST });
+    ok(two.allowed === true && two.used === 3, "reserveAiTextCall({count: 2}) reserves 2 calls (pro routes)");
+    const off = await reserveAiTextCall("hs-count", { enforce: false, count: PRO_TIER_TEXT_CALL_COST });
+    ok(off.allowed === true && off.used === 0,
+      "reserveAiTextCall(enforce:false) is still a no-op with a count (BYOK unchanged)");
+
+    // The ceiling is respected in units of `count`, not requests.
+    await prisma.user.update({ where: { id: "hs-count" }, data: { aiTextCallsUsed: ceiling - 1 } });
+    const overshoot = await reserveAiTextCall("hs-count", { enforce: true, count: PRO_TIER_TEXT_CALL_COST });
+    ok(overshoot.allowed === false,
+      "reserveAiTextCall({count: 2}) is refused when only 1 call is left under the ceiling");
+    ok((await prisma.user.findUnique({ where: { id: "hs-count" } }))?.aiTextCallsUsed === ceiling - 1,
+      "a refused count-2 reserve consumes nothing");
+    const lastOne = await reserveAiTextCall("hs-count", { enforce: true });
+    ok(lastOne.allowed === true && lastOne.used === ceiling,
+      "the single remaining call is still reservable at count 1");
   }
 
   // ── viral-frameworks.ts: HOOK_FORMULAS / STORY_STRUCTURES / RETENTION_RULES / CTA_STYLES ──

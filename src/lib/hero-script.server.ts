@@ -181,6 +181,54 @@ export function heroScriptModel(tier: HeroScriptModelTier): string {
   return raw?.trim() || fallback;
 }
 
+/** Text-LLM calls a PRO-tier route reserves per request (flash routes stay 1).
+ *  See resolveLlmTriad's `opts.count` for the reasoning. */
+export const PRO_TIER_TEXT_CALL_COST = 2;
+
+// ── Model-unavailable (the 404 class) ──────────────────────────────────────
+//
+// The configured pro model can stop existing under us: Google retires ids and
+// answers `404 NOT_FOUND — "models/<id> is not found for API version v1beta,
+// or is not supported for generateContent"` / "…is no longer available…" (this
+// is exactly why HERO_SCRIPT_MODEL_PRO_DEFAULT had to move off gemini-2.5-pro
+// on 2026-07-31). getGeminiErrorInfo has no bucket for that, so it lands in
+// `unknown` → ProviderError("fatal", status 404) and the route's generic catch
+// reports "เกิดข้อผิดพลาดจากระบบ AI" — a message that tells nobody the model id
+// is dead and invites the user to retry forever.
+//
+// There is deliberately NO fallback to the fast model: cross-tier fallback is
+// forbidden (ADR 0004) — the pro tier is a product promise, and silently
+// answering with flash would ship worse scripts under a better label. The
+// honest move is a distinct 503 that tells the user to try again or ping the
+// team, and puts the model id in the admin log where an operator can fix it.
+
+export const MODEL_UNAVAILABLE_CODE = "MODEL_UNAVAILABLE";
+
+export const MODEL_UNAVAILABLE_MESSAGE =
+  "โมเดล AI สำหรับเขียนสคริปต์ไม่พร้อมใช้งานชั่วคราว โปรดลองใหม่อีกครั้งหรือแจ้งทีมงาน";
+
+/** Is this the "the model id itself is gone/unusable" failure class?
+ *
+ *  Primary signal is the upstream 404 (ProviderError carries the upstream
+ *  status; the message keeps the raw body as a fallback): generateContent's
+ *  ONLY 404 is "this model id does not exist / is not usable with this method",
+ *  and the callers of this predicate talk to nothing but Gemini. The message
+ *  branch is the belt-and-braces path for when the status is lost — it demands
+ *  both a mention of a model and an explicit gone/unsupported phrase, so
+ *  quota / rate-limit / overloaded / key errors keep their own handling. */
+export function isModelUnavailableError(error: unknown): boolean {
+  if (!error) return false;
+  const status = (error as { status?: unknown }).status;
+  if (status === 404) return true;
+  const raw = error instanceof Error ? error.message : String(error);
+  const haystack = raw.toLowerCase();
+  if (/"code"\s*:\s*404/.test(haystack)) return true;
+  return (
+    /model/.test(haystack) &&
+    /not found|no longer available|not supported for generatecontent|is not supported/.test(haystack)
+  );
+}
+
 /** Call Gemini and validate its JSON response, retrying once on parse/validation
  *  failure (per the API contracts table: "1 retry on parse/validation failure,
  *  then 502"). Returns null when both attempts fail to validate — the caller
@@ -287,10 +335,19 @@ export type LlmTriadResult =
  *  send to Gemini (script text / scenes / words — see checkAiInputCaps). On
  *  success returns the resolved API key + mode; on failure returns the exact
  *  { status, body } the route should respond with (byte-identical to what
- *  analyze/niche-ideas returned inline before this was extracted). */
+ *  analyze/niche-ideas returned inline before this was extracted).
+ *
+ *  `opts.count` is how many text-LLM calls to reserve (default 1 — every flash
+ *  route). The PRO-tier routes pass 2: one request there can issue up to FOUR
+ *  model round-trips (generateValidatedJson retries a bad parse once, and the
+ *  banned-words guard can run the whole thing a second time), on a model that
+ *  costs multiples of flash per token — while the ceiling in ai-text-limits.ts
+ *  was calibrated against a 1-call flash route. Reserving 2 keeps a pro request
+ *  from being the cheapest way to burn the managed key. */
 export async function resolveLlmTriad(
   userId: string,
-  inputCapsInput: LlmInputCapsInput
+  inputCapsInput: LlmInputCapsInput,
+  opts: { count?: number } = {}
 ): Promise<LlmTriadResult> {
   const inputCaps = checkAiInputCaps(inputCapsInput);
   if (!inputCaps.ok) return { ok: false, status: 400, body: { error: inputCaps.message } };
@@ -315,7 +372,10 @@ export async function resolveLlmTriad(
   }
 
   // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
-  const textReserve = await reserveAiTextCall(userId, { enforce: geminiMode === "managed" });
+  const textReserve = await reserveAiTextCall(userId, {
+    enforce: geminiMode === "managed",
+    count: opts.count,
+  });
   if (!textReserve.allowed) {
     return { ok: false, status: 429, body: { code: "QUOTA_AI_TEXT", message: textReserve.message } };
   }
