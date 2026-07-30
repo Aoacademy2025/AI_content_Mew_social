@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRe
 import { fetchMe } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
+import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
@@ -379,31 +380,10 @@ export interface V2ElevenVoice {
 
 export type V2OmniVoice = OmniVoiceInfo;
 
-const DEFAULT_PROJECT = {
-  projectTitle: "New Project",
-  mode: "script" as V2Mode,
-  script: "",
-  clipUrl: "",
-  clipDurationSec: 0,
-  voiceEngine: "gemini" as V2VoiceEngine,
-  geminiVoiceName: "Aoede",
-  voiceId: "",
-  omniVoiceId: "voice_01",
-  musicTrack: "" as string | null,
-  musicTrackKind: "system" as const,
-  bgmVolume: 0.12,
-  useAvatar: false,
-  avatarId: "",
-  targetClipCount: 0,
-  avatarMode: "bookend" as V2AvatarMode,
-  avatarIntroSecs: 5,
-  avatarTailSecs: 5,
-  kieModel: "" as KieImageModel | "",
-  autoMixProviders: DEFAULT_AUTO_MIX_PROVIDERS,
-  mixPreset: "free" as MixPreset,
-  brollRegionPreference: "auto" as BrollRegionPreference,
-  brollVisualStyle: "auto" as BrollVisualStyle,
-};
+/** The new-project defaults. Lives in @/lib/editor-default-draft so the Hero
+ *  Script "ส่งไปตัดต่อ" handoff (which creates EditorProjects on the server)
+ *  seeds the exact same draft this hook does — same object, no second copy. */
+const DEFAULT_PROJECT = EDITOR_DEFAULT_DRAFT;
 
 export function useV2Project() {
   // Keep the first client render byte-compatible with SSR. Local/server drafts are
