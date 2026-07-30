@@ -32,7 +32,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  const [balance, setBalance] = useState<number | null>(null);
+  const [credits, setCredits] = useState<{ available: number; reserved: number } | null>(null);
 
   // Fresh credit balance each time the dialog opens (best-effort — same endpoint the
   // post-render receipt uses). null while loading → insufficient-credit warning stays
@@ -40,10 +40,18 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
   useEffect(() => {
     if (!open || !CREDITS_LIVE_CLIENT) return;
     let alive = true;
-    setBalance(null);
+    setCredits(null);
     fetch("/api/credits/balance")
       .then((r) => (r.ok ? r.json() : null))
-      .then((b) => { if (alive) setBalance(typeof b?.total === "number" ? b.total : null); })
+      .then((b) => {
+        if (!alive) return;
+        setCredits(typeof b?.total === "number"
+          ? {
+              available: b.total,
+              reserved: typeof b?.reserved === "number" ? b.reserved : 0,
+            }
+          : null);
+      })
       .catch(() => {});
     return () => { alive = false; };
   }, [open]);
@@ -93,14 +101,15 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       usesAi,
       presetWeights,
       perImageCredits,
-      creditBalance: balance,
+      creditBalance: credits?.available ?? null,
+      reservedCredits: credits?.reserved ?? 0,
       minuteCreditRate: creditCostFor("minute"),
       hasAvatar: p.mode !== "upload" && p.useAvatar && !!p.avatarId,
       exactDuration,
       insufficientCreditBehavior: p.brollSource === "kie-image" ? "block" : "stock-fallback",
       targetClipCount: p.targetClipCount,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, balance, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, exactDuration],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, exactDuration],
   );
 
   if (!open) return null;

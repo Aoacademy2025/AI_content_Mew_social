@@ -295,6 +295,7 @@ async function main() {
     const res = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });
     const row = await prisma.videoJob.findUnique({ where: { id: billable.id } });
     assert(res.failed === 1 && res.requeued === 0 && row?.status === "failed" && (row.errorMessage ?? "").includes("billable"), `recovery fails (not requeues) billable step "${stepName}"`);
+    assert(row?.reservationRefundPending === true, `recovery marks billable step "${stepName}" for financial settlement`);
   }
 
   // (d) retry cap on a safe step → failed
@@ -311,6 +312,7 @@ async function main() {
   const exhaustedResult = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });
   const exhaustedFailed = await prisma.videoJob.findUnique({ where: { id: exhausted.id } });
   assert(exhaustedResult.failed === 1 && exhaustedFailed?.status === "failed", "recovery fails a safe step after retry cap");
+  assert(exhaustedFailed?.reservationRefundPending === true, "retry-cap failure marks completed scene credits for settlement");
 
   // (e) burn → failed with the gallery-row reason
   await prisma.videoJob.deleteMany();
@@ -320,6 +322,7 @@ async function main() {
   const burnResult = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });
   const burnFailed = await prisma.videoJob.findUnique({ where: { id: burn.id } });
   assert(burnResult.failed === 1 && burnFailed?.status === "failed" && (burnFailed.errorMessage ?? "").includes("during burn"), "recovery does not replay burn stage");
+  assert(burnFailed?.reservationRefundPending === true, "burn restart failure is durably marked for financial settlement");
 
   await prisma.videoJob.deleteMany();
   await prisma.user.deleteMany();

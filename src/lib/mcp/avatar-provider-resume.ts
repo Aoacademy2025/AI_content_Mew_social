@@ -161,7 +161,13 @@ export async function advanceAvatarProvider(
   deps: AvatarProviderAdvanceDeps,
 ): Promise<AvatarProviderAdvanceResult> {
   if (deps.now().getTime() > Date.parse(checkpoint.providerDeadlineAt)) {
-    return { kind: "failed", message: "avatar provider deadline exceeded" };
+    return {
+      kind: "failed",
+      message: "avatar provider deadline exceeded",
+      code: "transient",
+      provider: "heygen",
+      outcome: "definitive",
+    };
   }
 
   switch (checkpoint.phase) {

@@ -30,6 +30,8 @@ export interface ReceiptInput {
   perImageCredits: number;
   /** Credit balance from /api/credits/balance → total. null when unknown (still loading). */
   creditBalance: number | null;
+  /** Credits already removed from the available balance for provider/render work in flight. */
+  reservedCredits?: number;
   /** Credits charged per render minute when the package cannot fund the whole job. */
   minuteCreditRate: number;
   /** True when a HeyGen avatar is on (avatar mode ≠ none). */
@@ -71,7 +73,7 @@ function formatCredits(value: number): string {
 export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const {
     estSec, remainingMinutes, totalMinutes, usesAi, presetWeights,
-    perImageCredits, creditBalance, minuteCreditRate, hasAvatar, exactDuration = false,
+    perImageCredits, creditBalance, reservedCredits = 0, minuteCreditRate, hasAvatar, exactDuration = false,
     insufficientCreditBehavior = "stock-fallback", targetClipCount = 0,
   } = input;
 
@@ -120,8 +122,8 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
       key: "ai",
       kind: "info",
       text: manualAiImageCount != null
-        ? `ภาพ AI: ${estCredits} เครดิต (${manualAiImageCount} ภาพ × ${perImageCredits} เครดิต) · หักเมื่อเจนสำเร็จ`
-        : `ภาพ AI (ประมาณ): ~${estCredits} เครดิต · หักตามจำนวนที่เจนสำเร็จจริง`,
+        ? `ภาพ AI: ${estCredits} เครดิต (${manualAiImageCount} ภาพ × ${perImageCredits} เครดิต) · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`
+        : `ภาพ AI (ประมาณ): ~${estCredits} เครดิต · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`,
     });
   }
 
@@ -140,10 +142,13 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   //    package minutes above, Hero credits here, and HeyGen's own key below.
   //    The combined check includes BOTH AI-image and credit-funded render spend.
   if (creditBalance != null && totalEstimatedCredits > 0 && totalEstimatedCredits <= creditBalance) {
+    const reserved = reservedCredits > 0
+      ? ` · มี ${formatCredits(reservedCredits)} เครดิตกำลังกันไว้กับงานอื่น`
+      : "";
     lines.push({
       key: "credits",
       kind: "success",
-      text: `พร้อมสร้าง · Hero credits มี ${formatCredits(creditBalance)} · งานนี้ใช้ประมาณ ${formatCredits(totalEstimatedCredits)} · คาดว่าเหลือ ${formatCredits(creditBalance - totalEstimatedCredits)}`,
+      text: `พร้อมสร้าง · Hero credits พร้อมใช้ ${formatCredits(creditBalance)}${reserved} · วงเงินประเมินสำหรับงานนี้ ${formatCredits(totalEstimatedCredits)} · หากใช้ตามประมาณการจะเหลือ ${formatCredits(creditBalance - totalEstimatedCredits)}`,
     });
   } else if (creditBalance != null && totalEstimatedCredits > creditBalance) {
     const deficit = totalEstimatedCredits - creditBalance;
@@ -155,7 +160,7 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     lines.push({
       key: "insufficient",
       kind: "warn",
-      text: `Hero credits ไม่พอ · มี ${formatCredits(creditBalance)} · งานนี้ใช้ประมาณ ${formatCredits(totalEstimatedCredits)} · ขาดประมาณ ${formatCredits(deficit)} — ${recovery}`,
+      text: `Hero credits ไม่พอ · พร้อมใช้ ${formatCredits(creditBalance)} · วงเงินประเมินสำหรับงานนี้ ${formatCredits(totalEstimatedCredits)} · ขาดประมาณ ${formatCredits(deficit)} — ${recovery}`,
     });
   }
 
@@ -173,8 +178,8 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     key: "disclaimer",
     kind: "info",
     text: exactDuration
-      ? "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง"
-      : "ตัวเลขเป็นประมาณการ — ยอดจริงคำนวณจากความยาวเสียงจริงหลังสร้างเสียง",
+      ? "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ"
+      : "ตัวเลขเป็นประมาณการ — จำนวนภาพและยอดเรนเดอร์จริงคำนวณหลังสร้างเสียง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ",
   });
 
   return { estMinutes, estCredits, overflowMinutes, overflowCredits, totalEstimatedCredits, lines };

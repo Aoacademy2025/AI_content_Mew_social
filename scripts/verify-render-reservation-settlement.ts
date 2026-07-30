@@ -11,12 +11,13 @@ execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.e
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { checkMinuteQuota } = await import("../src/lib/minute-limits");
-  const { getBalance } = await import("../src/lib/credits");
+  const { getBalance, getReservedCredits } = await import("../src/lib/credits");
   const { isBurnAlreadyPaid, recordChargedClip } = await import("../src/lib/clip-charge");
   const {
     refundRenderReservationById,
     retryPendingVideoJobReservationRefunds,
     refundVideoJobBaseReservation,
+    refundVideoJobTerminalRenderReservations,
   } = await import("../src/lib/render/reservation-settlement");
   const {
     applyAvatarQuotaRefund,
@@ -121,6 +122,87 @@ async function main() {
     reason: "avatar-provider-quota",
   });
   assert.equal(missing.kind, "not_found");
+
+  await prisma.renderJob.create({
+    data: {
+      id: "in-flight-render",
+      userId: creditUser.id,
+      parentJobId: "in-flight-video-job",
+      type: "RENDER",
+      status: "RUNNING",
+      payload: "{}",
+      reservedQuota: true,
+      creditsSpent: 4,
+      creditsFromGranted: 0,
+    },
+  });
+  const inFlight = await refundVideoJobBaseReservation({
+    videoJobId: "in-flight-video-job",
+    userId: creditUser.id,
+    reason: "video_render_failed",
+  });
+  assert.deepEqual(inFlight, { kind: "in_flight", renderJobId: "in-flight-render" });
+  assert.equal(
+    (await prisma.renderJob.findUniqueOrThrow({ where: { id: "in-flight-render" } })).reservedQuota,
+    true,
+  );
+  assert.deepEqual(
+    await refundVideoJobTerminalRenderReservations({
+      videoJobId: "in-flight-video-job",
+      userId: creditUser.id,
+      reason: "video_render_failed",
+    }),
+    { kind: "in_flight", candidateJobs: 1, refundedJobs: 0, inFlightJobs: 1 },
+  );
+  await prisma.renderJob.update({
+    where: { id: "in-flight-render" },
+    data: { status: "FAILED" },
+  });
+  assert.deepEqual(
+    await refundVideoJobTerminalRenderReservations({
+      videoJobId: "in-flight-video-job",
+      userId: creditUser.id,
+      reason: "video_render_failed",
+    }),
+    { kind: "settled", candidateJobs: 1, refundedJobs: 1 },
+  );
+
+  await prisma.renderJob.createMany({
+    data: [
+      {
+        id: "burn-transfer-base",
+        userId: creditUser.id,
+        parentJobId: "burn-transfer-video-job",
+        type: "RENDER",
+        status: "DONE",
+        payload: "{}",
+        reservedQuota: false,
+      },
+      {
+        id: "burn-transfer-final",
+        userId: creditUser.id,
+        parentJobId: "burn-transfer-video-job",
+        type: "BURN",
+        status: "FAILED",
+        payload: "{}",
+        reservedQuota: true,
+        creditsSpent: 2,
+        creditsFromGranted: 0,
+      },
+    ],
+  });
+  assert.deepEqual(
+    await refundVideoJobTerminalRenderReservations({
+      videoJobId: "burn-transfer-video-job",
+      userId: creditUser.id,
+      reason: "video_burn_failed",
+    }),
+    { kind: "settled", candidateJobs: 2, refundedJobs: 1 },
+  );
+  assert.equal(
+    (await prisma.renderJob.findUniqueOrThrow({ where: { id: "burn-transfer-final" } })).reservedQuota,
+    false,
+  );
 
   await prisma.user.update({ where: { id: minuteUser.id }, data: { usageCount: 1 } });
   await prisma.renderJob.create({
@@ -237,12 +319,94 @@ async function main() {
       reservedMinutes: 2,
     },
   });
+  await prisma.aiGenerationJob.create({
+    data: {
+      id: "pending-avatar-refund-image",
+      userId: minuteUser.id,
+      kind: "image",
+      provider: "runpod",
+      model: "z-image-turbo",
+      status: "completed",
+      chargeState: "settled",
+      creditCost: 3,
+      creditsFromGranted: 0,
+      creditsFromPurchased: 3,
+      idempotencyKey: "video:pending-avatar-refund-job:scene:0",
+    },
+  });
   const swept = await retryPendingVideoJobReservationRefunds({ limit: 10 });
   assert.deepEqual(swept, { inspected: 1, settled: 1, pending: 0 });
   const sweptJob = await prisma.videoJob.findUniqueOrThrow({ where: { id: "pending-avatar-refund-job" } });
   assert.equal(sweptJob.reservationRefundPending, false);
   assert.equal(sweptJob.reservationRefundReason, null);
   assert.equal((await checkMinuteQuota(minuteUser.id)).used, 0);
+  assert.equal(
+    (await prisma.aiGenerationJob.findUniqueOrThrow({
+      where: { id: "pending-avatar-refund-image" },
+    })).chargeState,
+    "refunded",
+  );
+  assert.equal((await getBalance(minuteUser.id)).total, 3);
+
+  const snapshotUser = await prisma.user.create({
+    data: {
+      id: "reserved-snapshot-user",
+      name: "Reserved snapshot",
+      email: "reserved-snapshot@example.com",
+      plan: "PRO",
+    },
+  });
+  await prisma.aiGenerationJob.createMany({
+    data: [
+      {
+        id: "reserved-snapshot-ai",
+        userId: snapshotUser.id,
+        kind: "image",
+        provider: "runpod",
+        model: "z-image-turbo",
+        status: "in_progress",
+        chargeState: "reserved",
+        creditCost: 3,
+      },
+      {
+        id: "settled-snapshot-ai",
+        userId: snapshotUser.id,
+        kind: "image",
+        provider: "runpod",
+        model: "z-image-turbo",
+        status: "completed",
+        chargeState: "settled",
+        creditCost: 5,
+      },
+    ],
+  });
+  await prisma.renderJob.createMany({
+    data: [
+      {
+        id: "reserved-snapshot-render",
+        userId: snapshotUser.id,
+        type: "RENDER",
+        status: "QUEUED",
+        payload: "{}",
+        reservedQuota: true,
+        creditsSpent: 4,
+      },
+      {
+        id: "settled-snapshot-render",
+        userId: snapshotUser.id,
+        type: "RENDER",
+        status: "DONE",
+        payload: "{}",
+        reservedQuota: true,
+        creditsSpent: 8,
+      },
+    ],
+  });
+  assert.equal(
+    await getReservedCredits(snapshotUser.id),
+    7,
+    "reserved balance disclosure includes only in-flight AI/render reservations",
+  );
 
   await prisma.$disconnect();
   console.log("ALL PASS");

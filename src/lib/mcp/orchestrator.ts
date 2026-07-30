@@ -1,7 +1,11 @@
 import type { User } from "@prisma/client";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
 import { prisma } from "@/lib/prisma";
-import { refundVideoJobBaseReservation } from "@/lib/render/reservation-settlement";
+import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
+import {
+  refundVideoJobBaseReservation,
+  refundVideoJobTerminalRenderReservations,
+} from "@/lib/render/reservation-settlement";
 import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
 import {
   setJobStep,
@@ -370,7 +374,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     }
     emitTelemetry({
       name: "avatar_base_reservation_settlement",
-      category: result.kind === "not_found" || result.kind === "ambiguous" ? "error" : "pipeline",
+      category: result.kind === "not_found" || result.kind === "ambiguous" || result.kind === "in_flight"
+        ? "error"
+        : "pipeline",
       source: "server",
       step: "avatar",
       status: result.kind,
@@ -382,7 +388,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...(result.kind === "refunded" ? { funding: result.funding } : {}),
       },
     });
-    if (result.kind === "not_found" || result.kind === "ambiguous") {
+    if (result.kind === "not_found" || result.kind === "ambiguous" || result.kind === "in_flight") {
       console.error(
         `[mcp-worker] job ${jobId} could not settle base reservation: ${result.kind} reason=${reason}`,
       );
@@ -410,6 +416,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       .then(() => recordTelemetryEvent(userId, input))
       .catch(() => {});
   }
+
+  const renderReservationStages = new Set(["render", "avatar", "composite", "burn"]);
   function emitBrollStockInventory(requestedWindowCount: number, results: unknown[]) {
     const assetKeys = results.map((result, index) => {
       if (!result || typeof result !== "object" || Array.isArray(result)) return `item:${index}`;
@@ -1450,27 +1458,55 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
       return; // status is already 'canceled'; don't overwrite with failed
     }
+    const settlementReason = `video_${phaseName || "unknown"}_failed`;
+    let financialSettlementPending = false;
+    try {
+      await refundSettledVideoImageBatch({
+        userId,
+        videoJobId: jobId,
+        reason: settlementReason,
+      });
+    } catch (settlementError) {
+      financialSettlementPending = true;
+      console.error(`[mcp-worker] job ${jobId} failed to refund settled image batch`, settlementError);
+    }
+    if (renderReservationStages.has(phaseName)) {
+      const result = await refundVideoJobTerminalRenderReservations({
+        videoJobId: jobId,
+        userId,
+        reason: settlementReason,
+      }).catch((settlementError) => {
+        console.error(`[mcp-worker] job ${jobId} failed to refund render reservations`, settlementError);
+        return null;
+      });
+      if (!result || result.kind === "in_flight") financialSettlementPending = true;
+    }
     emitStage(phaseName, "error", Date.now() - phaseStartedAt, { message });
     await failJob(jobId, e instanceof AvatarProviderFailureError
       ? {
           message: e.failure.message,
           code: e.failure.code,
           provider: e.failure.provider,
-          reservationRefundReason: e.reservationRefundReason,
+          ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
         }
       : e instanceof HeroVoiceProviderFailureError
         ? {
             message: e.message,
             code: e.code,
             provider: "omnivoice",
+            ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
           }
       : e instanceof AvatarReservationSettlementError
         ? {
             message: e.message,
             code: "reservation_refund_pending",
             provider: "system",
-            reservationRefundReason: e.reservationRefundReason,
+            ...(financialSettlementPending
+              ? { reservationRefundReason: settlementReason }
+              : {}),
           }
-      : message);
+      : financialSettlementPending
+        ? { message, reservationRefundReason: settlementReason }
+        : message);
   }
 }
