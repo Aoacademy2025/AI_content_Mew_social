@@ -1,14 +1,10 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
-import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
-import { reserveAiTextCall } from "@/lib/ai-text-limits";
-import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { buildAnalyzePrompt } from "@/lib/prompts/hero-script";
-import { generateValidatedJson, validateAnalyzeResponse } from "@/lib/hero-script.server";
+import { generateValidatedJson, resolveLlmTriad, validateAnalyzeResponse } from "@/lib/hero-script.server";
 
 // SSRF-safe axios GET of a user-supplied URL: validate the host, then follow redirects
 // MANUALLY re-validating each hop (axios auto-follow is disabled), so a safe initial URL
@@ -59,33 +55,9 @@ export async function POST(req: Request) {
     // Same 4,000-char truncation convention as /api/contents/generate.
     const truncated = textContent.substring(0, 4000);
 
-    const inputCaps = checkAiInputCaps({ script: truncated });
-    if (!inputCaps.ok) return NextResponse.json({ error: inputCaps.message }, { status: 400 });
-
-    const user = await prisma.user.findUnique({
-      where: { id: authUser.id },
-      select: { geminiKey: true, plan: true },
-    });
-    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
-
-    let apiKey: string;
-    let geminiMode: "managed" | "byok";
-    try {
-      const resolved = resolveGeminiKey(user);
-      apiKey = resolved.key;
-      geminiMode = resolved.mode;
-    } catch (e) {
-      if (e instanceof KeyRequiredError) {
-        return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
-      }
-      throw e;
-    }
-
-    // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
-    const textReserve = await reserveAiTextCall(authUser.id, { enforce: geminiMode === "managed" });
-    if (!textReserve.allowed) {
-      return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
-    }
+    const triad = await resolveLlmTriad(authUser.id, { script: truncated });
+    if (!triad.ok) return NextResponse.json(triad.body, { status: triad.status });
+    const { apiKey } = triad;
 
     const prompt = buildAnalyzePrompt(truncated);
     const result = await generateValidatedJson({

@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
-import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
-import { reserveAiTextCall } from "@/lib/ai-text-limits";
-import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { buildNicheDrilldownPrompt } from "@/lib/prompts/hero-script";
-import { generateValidatedJson, validateNicheIdeasResponse, validateNicheSeed } from "@/lib/hero-script.server";
+import {
+  generateValidatedJson,
+  resolveLlmTriad,
+  validateNicheIdeasResponse,
+  validateNicheSeed,
+} from "@/lib/hero-script.server";
 
 // POST /api/brand-profiles/niche-ideas - {seed} → {niches: [...] x 7}
 // (ใช้ endpoint เดียวกันขุดซ้ำได้: ส่งนิชที่เพิ่งเลือกกลับมาเป็น seed เพื่อลงลึกอีกชั้น)
@@ -19,33 +20,9 @@ export async function POST(req: Request) {
     const seedCheck = validateNicheSeed(body?.seed);
     if (!seedCheck.ok) return NextResponse.json({ error: seedCheck.message }, { status: 400 });
 
-    const inputCaps = checkAiInputCaps({ script: seedCheck.seed });
-    if (!inputCaps.ok) return NextResponse.json({ error: inputCaps.message }, { status: 400 });
-
-    const user = await prisma.user.findUnique({
-      where: { id: authUser.id },
-      select: { geminiKey: true, plan: true },
-    });
-    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
-
-    let apiKey: string;
-    let geminiMode: "managed" | "byok";
-    try {
-      const resolved = resolveGeminiKey(user);
-      apiKey = resolved.key;
-      geminiMode = resolved.mode;
-    } catch (e) {
-      if (e instanceof KeyRequiredError) {
-        return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
-      }
-      throw e;
-    }
-
-    // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
-    const textReserve = await reserveAiTextCall(authUser.id, { enforce: geminiMode === "managed" });
-    if (!textReserve.allowed) {
-      return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
-    }
+    const triad = await resolveLlmTriad(authUser.id, { script: seedCheck.seed });
+    if (!triad.ok) return NextResponse.json(triad.body, { status: triad.status });
+    const { apiKey } = triad;
 
     const prompt = buildNicheDrilldownPrompt(seedCheck.seed);
     const result = await generateValidatedJson({
