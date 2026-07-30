@@ -99,10 +99,11 @@ export default function HeroScriptPage() {
             onSelectedHookChange={setSelectedHook}
           />
 
-          {/* ── Step 4: สคริปต์เต็ม (+ the step-5 CTA, wired in Task 4) ── */}
+          {/* ── Step 4: สคริปต์เต็ม (+ the step-5 ส่งไปตัดต่อ CTA) ── */}
           <ScriptEditorStep
             topic={topic}
             durationSec={durationSec}
+            plan={plan}
             selectedProfileId={selectedProfileId}
             selectedHook={selectedHook}
             onSelectedHookChange={setSelectedHook}

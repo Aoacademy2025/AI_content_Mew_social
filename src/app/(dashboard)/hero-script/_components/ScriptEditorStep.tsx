@@ -9,22 +9,29 @@
 // returns a hook — line 1 of the saved script is always the exact text the user
 // picked/edited in step 3.
 //
-// "ส่งไปตัดต่อ" is rendered here but stays disabled: Task 4 wires
-// POST /api/scripts/[id]/send-to-editor + the FREE upsell state.
+// Step 5 ("ส่งไปตัดต่อ") is the money path and lives here too: paid plans POST
+// /api/scripts/[id]/send-to-editor and land in the editor on the new project;
+// FREE sees the locked CTA + the /pricing upsell.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Check, Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { Check, Loader2, Lock, RefreshCw, Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { tokenizeWords } from "@/lib/tts-timing";
+import { limitsForPlan } from "@/lib/plan-limits";
 import { TTS_WORDS_PER_SECOND } from "@/lib/prompts/content-generator";
 import type { HookChoice } from "./HookStep";
 
 const VIOLET = "#8B5CF6";
+const VIOLET_LIGHT = "#B9A6FF";
 
 // 429 quota copy — exact Thai string from the shared spec's "Quota/error states" table.
 const QUOTA_MESSAGE = "ใช้โควตา AI ครบรอบนี้แล้ว รอรีเซ็ตหรืออัปเกรดแผน";
+/** Locked-CTA copy for FREE (UI spec step 5) — the API's 403 EDITOR_LOCKED says the same. */
+const EDITOR_LOCKED_MESSAGE = "อัปเกรดเป็น PRO เพื่อส่งเข้าตัดต่อ";
 
 const AUTOSAVE_DELAY_MS = 1200;
 /** ±15% — the tolerance the GENERATE prompt states around the word budget. */
@@ -46,12 +53,24 @@ export interface ScriptDraft {
 
 type RegenTarget = "hook" | "body" | "cta";
 
-async function toastErrorResponse(res: Response, fallback: string) {
+async function toastErrorResponse(
+  res: Response,
+  fallback: string,
+  opts?: { onUpgrade?: () => void }
+) {
   let data: { error?: string; code?: string } | null = null;
   try { data = await res.json(); } catch { /* no body */ }
   if (res.status === 429) { toast.error(QUOTA_MESSAGE); return; }
   if (res.status === 409 && data?.code === "KEY_REQUIRED") {
     toast.error("ยังไม่ได้ตั้งค่า Gemini API key — ไปที่ Settings เพื่อเพิ่มคีย์");
+    return;
+  }
+  // Plan walls (FREE script cap / editor locked) — offer the pricing page.
+  if (res.status === 403 && (data?.code === "SCRIPT_LIMIT" || data?.code === "EDITOR_LOCKED") && opts?.onUpgrade) {
+    toast.error(data.error || fallback, {
+      duration: 8000,
+      action: { label: "ดูแผนราคา", onClick: opts.onUpgrade },
+    });
     return;
   }
   toast.error(data?.error || fallback);
@@ -66,6 +85,8 @@ function assembleForCount(draft: ScriptDraft): string {
 interface ScriptEditorStepProps {
   topic: string;
   durationSec: number;
+  /** Effective plan — decides whether step 5 sends or upsells. */
+  plan: string;
   selectedProfileId: string | null;
   selectedHook: HookChoice | null;
   onSelectedHookChange: (hook: HookChoice | null) => void;
@@ -76,12 +97,15 @@ interface ScriptEditorStepProps {
 }
 
 export function ScriptEditorStep({
-  topic, durationSec, selectedProfileId, selectedHook, onSelectedHookChange,
+  topic, durationSec, plan, selectedProfileId, selectedHook, onSelectedHookChange,
   draft, onDraftChange, onSaved,
 }: ScriptEditorStepProps) {
+  const router = useRouter();
   const [generating, setGenerating] = useState(false);
   const [regenTarget, setRegenTarget] = useState<RegenTarget | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [sending, setSending] = useState(false);
+  const goToPricing = useCallback(() => router.push("/pricing"), [router]);
 
   // Refs so the debounced autosave always reads the freshest values without
   // re-arming itself on every parent re-render.
@@ -158,7 +182,8 @@ export function ScriptEditorStep({
       if (generationRef.current !== generation) return;
       if (!res.ok) {
         setSaveState("idle");
-        await toastErrorResponse(res, "บันทึกสคริปต์ไม่สำเร็จ");
+        // 403 SCRIPT_LIMIT lands here — the FREE 3-scripts/30-days cap.
+        await toastErrorResponse(res, "บันทึกสคริปต์ไม่สำเร็จ", { onUpgrade: goToPricing });
         return;
       }
       const saved = await res.json();
@@ -174,7 +199,7 @@ export function ScriptEditorStep({
         toast.error("บันทึกสคริปต์ไม่สำเร็จ");
       }
     }
-  }, [snapshotOf]);
+  }, [snapshotOf, goToPricing]);
 
   // Debounced autosave.
   useEffect(() => {
@@ -279,11 +304,45 @@ export function ScriptEditorStep({
     }
   }
 
+  // Step 5 — hand the saved script to the video editor and go there.
+  // The row must exist first (the autosave creates it), so the CTA stays
+  // disabled until this draft has an id.
+  async function handleSendToEditor() {
+    const d = draftRef.current;
+    const scriptId = d?.id ?? rowIdRef.current;
+    if (!d || !scriptId || sending) return;
+    setSending(true);
+    try {
+      const res = await fetch(`/api/scripts/${scriptId}/send-to-editor`, { method: "POST" });
+      if (!res.ok) {
+        await toastErrorResponse(res, "ส่งไปตัดต่อไม่สำเร็จ", { onUpgrade: goToPricing });
+        return;
+      }
+      const data = await res.json();
+      const projectId = typeof data?.projectId === "string" ? data.projectId : "";
+      if (!projectId) { toast.error("ส่งไปตัดต่อไม่สำเร็จ"); return; }
+      // Flip the local status so the history chip reads "ส่งแล้ว" even if the
+      // navigation takes a moment.
+      const latest = draftRef.current;
+      if (latest) onDraftChangeRef.current({ ...latest, status: "sent" });
+      onSavedRef.current?.();
+      router.push(`/video-editor?projectId=${encodeURIComponent(projectId)}`);
+    } catch {
+      toast.error("ส่งไปตัดต่อไม่สำเร็จ");
+    } finally {
+      setSending(false);
+    }
+  }
+
   function editSection(patch: Partial<ScriptDraft>) {
     const current = draftRef.current;
     if (!current) return;
     onDraftChange({ ...current, ...patch });
   }
+
+  // Plan gate for step 5 — the same `allowVideoEditor` limit the API enforces
+  // (a FREE user who forces the request still gets 403 EDITOR_LOCKED).
+  const canSendToEditor = limitsForPlan(plan).allowVideoEditor;
 
   const budgetDuration = draft?.durationSec ?? durationSec;
   // Same formula as wordBudgetForDuration() on the server — one pacing constant.
@@ -358,10 +417,31 @@ export function ScriptEditorStep({
               {saveState === "saving" && <><Loader2 className="h-3 w-3 animate-spin" /> กำลังบันทึก…</>}
               {saveState === "saved" && <><Check className="h-3 w-3" /> บันทึกแล้ว</>}
             </span>
-            {/* Task 4 wires this to POST /api/scripts/[id]/send-to-editor. */}
-            <Button disabled className="text-white" style={{ background: VIOLET }}>
-              ส่งไปตัดต่อ
-            </Button>
+            {/* ── Step 5: ส่งไปตัดต่อ ── */}
+            {canSendToEditor ? (
+              <Button
+                onClick={handleSendToEditor}
+                disabled={!draft.id || sending}
+                className="gap-1.5 text-white"
+                style={{ background: VIOLET }}
+              >
+                {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                ส่งไปตัดต่อ
+              </Button>
+            ) : (
+              <div
+                className="rounded-lg border px-3 py-2.5 text-xs"
+                style={{ borderColor: "var(--ui-card-border)", color: "var(--ui-text-muted)" }}
+              >
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <Lock className="h-3.5 w-3.5 shrink-0" />
+                  <span>{EDITOR_LOCKED_MESSAGE}</span>
+                </div>
+                <Link href="/pricing" className="font-medium underline" style={{ color: VIOLET_LIGHT }}>
+                  ดูแผนราคา
+                </Link>
+              </div>
+            )}
           </div>
         </div>
       )}
