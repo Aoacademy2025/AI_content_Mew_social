@@ -10,10 +10,14 @@
 // the shared LLM-triad route helper (resolveLlmTriad — extracted from the
 // duplicated checkAiInputCaps/resolveGeminiKey/reserveAiTextCall block in
 // analyze + niche-ideas), wordBudgetForDuration, getRecentScriptTopics (the
-// IDEAS continuity query), and the ideas/hooks response validators. The
-// remaining script-level helpers (assembleScript, containsBannedWord,
-// countScriptsInWindow, canCreateScript, sendScriptToEditor) are added by
-// later Hero Script tasks per the shared spec.
+// IDEAS continuity query), and the ideas/hooks response validators. Task 3
+// adds the full-script engine's service layer: model-tier resolution
+// (heroScriptModel), assembleScript, the banned-words guard
+// (containsBannedWord / generateWithBannedWordGuard), the GENERATE/REGEN
+// response validators, and Script persistence (create/list/get/update/delete,
+// every query scoped to the owning user). The plan-cap + send-to-editor
+// helpers (countScriptsInWindow, canCreateScript, sendScriptToEditor) belong
+// to Task 4 per the shared spec.
 
 import type { BrandProfile } from "@prisma/client";
 import { limitsForPlan, PLAN_LABEL } from "@/lib/plan-limits";
@@ -23,8 +27,9 @@ import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { tokenizeWords } from "@/lib/tts-timing";
-import { isValidHookFormulaKey } from "@/lib/viral-frameworks";
+import { isValidHookFormulaKey, isValidStoryStructureKey } from "@/lib/viral-frameworks";
 import { TTS_WORDS_PER_SECOND } from "@/lib/prompts/content-generator";
+import { buildBannedWordRetryNote } from "@/lib/prompts/hero-script";
 
 // ── bannedWords: stored as a JSON string array on BrandProfile ─────────────
 
@@ -142,20 +147,53 @@ export function parseJsonResponse(raw: string | null | undefined): unknown | nul
   }
 }
 
+// ── Model tiers (spec Global Constraints) ──────────────────────────────────
+//
+// hooks/ideas/analyze run on the FAST model; full-script generate + section
+// regenerate run on the PRO model. Both ids are env-overridable so prod can
+// move to a newer model without a code change.
+
+export const HERO_SCRIPT_MODEL_FAST_DEFAULT = "gemini-2.5-flash";
+export const HERO_SCRIPT_MODEL_PRO_DEFAULT = "gemini-2.5-pro";
+
+/** Minimum thinking budget for the pro tier. Pro-tier Gemini models are
+ *  thinking-only and reject a 0 budget outright (see GeminiTextOptions in
+ *  src/lib/gemini.ts); 128 is the smallest accepted value, which keeps both
+ *  latency and the thought-token share of maxOutputTokens small. Flash-tier
+ *  calls keep thinking fully disabled (budget 0), unchanged. */
+export const HERO_SCRIPT_PRO_THINKING_BUDGET = 128;
+
+export type HeroScriptModelTier = "fast" | "pro";
+
+/** Resolve the Gemini model id for a Hero Script tier from the environment
+ *  (`HERO_SCRIPT_MODEL_FAST` / `HERO_SCRIPT_MODEL_PRO`), falling back to the
+ *  spec's defaults. */
+export function heroScriptModel(tier: HeroScriptModelTier): string {
+  const raw = tier === "pro" ? process.env.HERO_SCRIPT_MODEL_PRO : process.env.HERO_SCRIPT_MODEL_FAST;
+  const fallback = tier === "pro" ? HERO_SCRIPT_MODEL_PRO_DEFAULT : HERO_SCRIPT_MODEL_FAST_DEFAULT;
+  return raw?.trim() || fallback;
+}
+
 /** Call Gemini and validate its JSON response, retrying once on parse/validation
  *  failure (per the API contracts table: "1 retry on parse/validation failure,
  *  then 502"). Returns null when both attempts fail to validate — the caller
- *  is responsible for the 502 `{ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }`. */
+ *  is responsible for the 502 `{ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }`.
+ *
+ *  `tier` picks the model + thinking config: "fast" (default — the ideas/hooks/
+ *  analyze routes) or "pro" (full-script generate + section regenerate). */
 export async function generateValidatedJson<T>(params: {
   apiKey: string;
   prompt: string;
   maxOutputTokens?: number;
+  tier?: HeroScriptModelTier;
   validate: (data: unknown) => T | null;
 }): Promise<T | null> {
-  const { apiKey, prompt, maxOutputTokens = 2048, validate } = params;
+  const { apiKey, prompt, maxOutputTokens = 2048, tier = "fast", validate } = params;
+  const model = heroScriptModel(tier);
+  const thinkingBudget = tier === "pro" ? HERO_SCRIPT_PRO_THINKING_BUDGET : 0;
   const attempts = 2;
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const raw = await geminiGenerateText(apiKey, prompt, maxOutputTokens);
+    const raw = await geminiGenerateText(apiKey, prompt, maxOutputTokens, 0, { model, thinkingBudget });
     const parsed = parseJsonResponse(raw);
     if (parsed !== null) {
       const validated = validate(parsed);
@@ -359,6 +397,10 @@ export function countWords(text: string): number {
   return tokenizeWords(text).length;
 }
 
+/** Max words in a hook line — "ยาวไม่เกิน 20 คำ" (HOOK_COMMON_RULES). Enforced
+ *  on both the HOOKS route and the hook target of regen-section. */
+export const HOOK_MAX_WORDS = 20;
+
 /** Validate the HOOKS route's `{hooks: [...] x 5}` JSON contract: exactly 5
  *  items, each a valid ∈ HOOK_FORMULAS key, all 5 formula keys DISTINCT, text
  *  non-empty and ≤ 20 คำ. */
@@ -377,9 +419,265 @@ export function validateHooksResponse(data: unknown): HooksResult | null {
     if (!formula || !text) return null;
     if (!isValidHookFormulaKey(formula)) return null;
     if (seenFormulas.has(formula)) return null; // must be 5 DISTINCT formula keys
-    if (countWords(text) > 20) return null;
+    if (countWords(text) > HOOK_MAX_WORDS) return null;
     seenFormulas.add(formula);
     hooks.push({ formula, text });
   }
   return { hooks };
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Task 3: full-script engine (generate / regen-section) + Script persistence
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── assembleScript ─────────────────────────────────────────────────────────
+
+/** Minimal Script shape the assembler/warning helpers need — a persisted
+ *  Script row satisfies it, and so does an unsaved editor draft. */
+export interface ScriptSections {
+  hookText: string;
+  bodyText: string;
+  ctaText: string;
+}
+
+/** The full spoken script as ONE string: `hookText + "\n" + bodyText + "\n" +
+ *  ctaText` (spec). Layout is literal — 1 line = 1 spoken sentence, which is
+ *  what the editor turns into Segments — so nothing here trims or re-wraps. */
+export function assembleScript(script: ScriptSections): string {
+  return `${script.hookText}\n${script.bodyText}\n${script.ctaText}`;
+}
+
+/** Drop the first body line when the model echoed the user's hook into it.
+ *  The server always reattaches the user's own hook (verbatim), so an echoed
+ *  copy would show up twice in the assembled script. Comparison is
+ *  whitespace-insensitive; anything else is left untouched. */
+export function stripEchoedHook(bodyText: string, hookText: string): string {
+  const hook = hookText.trim();
+  if (!hook || !bodyText) return bodyText;
+  const lines = bodyText.split("\n");
+  if (lines[0].trim() !== hook) return bodyText;
+  return lines.slice(1).join("\n").replace(/^\n+/, "");
+}
+
+// ── Banned-words guard (spec: retry once, then warn — never block) ─────────
+
+/** Case-insensitive substring check of `text` against a profile's bannedWords.
+ *  Case matters only for latin words (Thai is caseless), but the spec asks for
+ *  case-insensitive matching, so both sides are lowercased. */
+export function containsBannedWord(text: string, bannedWords: readonly string[]): boolean {
+  return findBannedWord(text, bannedWords) !== null;
+}
+
+/** Like containsBannedWord, but returns the offending word (first match in
+ *  `bannedWords` order) so the caller can name it in the Thai warning. */
+export function findBannedWord(text: string, bannedWords: readonly string[]): string | null {
+  if (!text || bannedWords.length === 0) return null;
+  const haystack = text.toLowerCase();
+  for (const word of bannedWords) {
+    const needle = word.trim().toLowerCase();
+    if (needle && haystack.includes(needle)) return word;
+  }
+  return null;
+}
+
+/** The spec's Thai warning copy for a banned word that survived the retry. */
+export function bannedWordWarning(word: string): string {
+  return `มีคำต้องห้ามหลุดมา: ${word}`;
+}
+
+export interface GuardedGeneration<T> {
+  result: T;
+  /** Set only when a banned word survived the retry (spec: warn, never block). */
+  warning?: string;
+}
+
+/** Banned-words guard shared by /api/scripts/generate and /regen-section:
+ *  generate → check → on a hit, ONE retry with the stern banned-words note
+ *  appended to the prompt → if the word is still there, return the result
+ *  anyway with the Thai `warning` (the user is never blocked).
+ *
+ *  `generate(sternNote)` is the caller's LLM round-trip: it appends `sternNote`
+ *  (empty string on the first attempt) to its prompt and returns the validated
+ *  payload, or null when the LLM output was unusable. `extractText` returns the
+ *  part of the payload that must be screened. Returns null only when the FIRST
+ *  attempt produced nothing usable — that's the caller's 502. */
+export async function generateWithBannedWordGuard<T>(params: {
+  bannedWords: readonly string[];
+  extractText: (result: T) => string;
+  generate: (sternNote: string) => Promise<T | null>;
+}): Promise<GuardedGeneration<T> | null> {
+  const { bannedWords, extractText, generate } = params;
+
+  const first = await generate("");
+  if (!first) return null;
+
+  const firstHit = findBannedWord(extractText(first), bannedWords);
+  if (!firstHit) return { result: first };
+
+  const retried = await generate(buildBannedWordRetryNote(bannedWords));
+  // Retry produced nothing usable → keep what we have, warn about it.
+  if (!retried) return { result: first, warning: bannedWordWarning(firstHit) };
+
+  const retryHit = findBannedWord(extractText(retried), bannedWords);
+  if (!retryHit) return { result: retried };
+  return { result: retried, warning: bannedWordWarning(retryHit) };
+}
+
+// ── GENERATE / REGEN response validators ───────────────────────────────────
+
+export interface GenerateScriptResult {
+  structure: string;
+  bodyText: string;
+  ctaText: string;
+}
+
+/** Normalize a model-written multi-line block: CRLF → LF, trim each line's
+ *  trailing whitespace, drop leading/trailing blank lines. Internal blank
+ *  lines are kept as-is (they're the model's own paragraphing). */
+function normalizeLines(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .replace(/^\n+/, "")
+    .replace(/\n+$/, "");
+}
+
+/** Validate the GENERATE route's `{structure, bodyText, ctaText}` contract.
+ *  `structure` must be one of the 5 STORY_STRUCTURES keys (the model picks it;
+ *  we never take its word for the key being real). Note there is deliberately
+ *  no hook field — the server reattaches the user's own hook verbatim. */
+export function validateGenerateResponse(data: unknown): GenerateScriptResult | null {
+  if (!data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+  const structure = typeof d.structure === "string" ? d.structure.trim() : "";
+  const bodyText = typeof d.bodyText === "string" ? normalizeLines(d.bodyText) : "";
+  const ctaText = typeof d.ctaText === "string" ? normalizeLines(d.ctaText) : "";
+  if (!structure || !isValidStoryStructureKey(structure)) return null;
+  if (!bodyText || !ctaText) return null;
+  return { structure, bodyText, ctaText };
+}
+
+export const REGEN_TARGETS = ["hook", "body", "cta"] as const;
+export type RegenTarget = (typeof REGEN_TARGETS)[number];
+
+export function isValidRegenTarget(target: unknown): target is RegenTarget {
+  return typeof target === "string" && (REGEN_TARGETS as readonly string[]).includes(target);
+}
+
+export interface RegenSectionResult {
+  text: string;
+  /** Only for target="hook" — the new (different) HOOK_FORMULAS key. */
+  formula?: string;
+}
+
+/** Validate the REGEN route's `{text}` (+ `{formula}` for hook) contract.
+ *  For target="hook" the formula must be a real HOOK_FORMULAS key AND differ
+ *  from `currentFormula` (spec: "hook regen returns a new hook from a
+ *  *different* formula"), and the hook must respect the ≤20 คำ rule. */
+export function validateRegenResponse(
+  data: unknown,
+  opts: { target: RegenTarget; currentFormula?: string | null }
+): RegenSectionResult | null {
+  if (!data || typeof data !== "object") return null;
+  const d = data as Record<string, unknown>;
+  const text = typeof d.text === "string" ? normalizeLines(d.text) : "";
+  if (!text) return null;
+
+  if (opts.target !== "hook") return { text };
+
+  const formula = typeof d.formula === "string" ? d.formula.trim() : "";
+  if (!formula || !isValidHookFormulaKey(formula)) return null;
+  if (opts.currentFormula && formula === opts.currentFormula.trim()) return null;
+  if (countWords(text) > HOOK_MAX_WORDS) return null;
+  return { text, formula };
+}
+
+// ── Script persistence (all queries scoped to the owning user) ─────────────
+
+/** GET /api/scripts: "list own (newest first, take 50)". */
+export const SCRIPT_LIST_LIMIT = 50;
+
+export interface ScriptCreateInput {
+  topic: string;
+  durationSec: number;
+  hookFormula?: string | null;
+  structure?: string | null;
+  hookText: string;
+  bodyText: string;
+  ctaText: string;
+  brandProfileId?: string | null;
+}
+
+/** Partial patch for PUT /api/scripts/[id]. Absent keys stay `undefined` so
+ *  Prisma skips them (an omitted field must never reset a saved value — see
+ *  the Task 2 ctaStyle regression). `status`/`editorProjectId` are deliberately
+ *  NOT patchable here: only the send-to-editor path may mark a script "sent". */
+export interface ScriptPatch {
+  topic?: string;
+  durationSec?: number;
+  hookFormula?: string | null;
+  structure?: string | null;
+  hookText?: string;
+  bodyText?: string;
+  ctaText?: string;
+  brandProfileId?: string | null;
+}
+
+/** Does `brandProfileId` belong to `userId`? Guards the POST/PUT script routes
+ *  against attaching someone else's BrandProfile to your own Script (the FK
+ *  alone only proves the row exists, not who owns it). */
+export async function ownsBrandProfile(userId: string, brandProfileId: string): Promise<boolean> {
+  const row = await prisma.brandProfile.findFirst({
+    where: { id: brandProfileId, userId },
+    select: { id: true },
+  });
+  return row !== null;
+}
+
+export async function createScript(userId: string, input: ScriptCreateInput) {
+  return prisma.script.create({
+    data: {
+      userId,
+      topic: input.topic,
+      durationSec: input.durationSec,
+      hookFormula: input.hookFormula ?? null,
+      structure: input.structure ?? null,
+      hookText: input.hookText,
+      bodyText: input.bodyText,
+      ctaText: input.ctaText,
+      brandProfileId: input.brandProfileId ?? null,
+    },
+  });
+}
+
+export async function listScripts(userId: string, take = SCRIPT_LIST_LIMIT) {
+  return prisma.script.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+    take,
+  });
+}
+
+export async function getScript(userId: string, id: string) {
+  return prisma.script.findFirst({ where: { id, userId } });
+}
+
+/** Partial update, scoped to the owner. Returns null when the script doesn't
+ *  exist OR isn't the caller's (updateMany's where-clause is the IDOR guard —
+ *  same shape as the brand-profiles routes). */
+export async function updateScript(userId: string, id: string, patch: ScriptPatch) {
+  // A patch with nothing in it is a no-op read (an empty `data` is not a valid
+  // UPDATE) — still ownership-scoped, so a foreign id keeps returning null.
+  if (Object.keys(patch).length === 0) return getScript(userId, id);
+  const updated = await prisma.script.updateMany({ where: { id, userId }, data: patch });
+  if (updated.count === 0) return null;
+  return prisma.script.findUnique({ where: { id } });
+}
+
+/** Delete, scoped to the owner. Returns false when nothing was deleted. */
+export async function deleteScript(userId: string, id: string): Promise<boolean> {
+  const deleted = await prisma.script.deleteMany({ where: { id, userId } });
+  return deleted.count > 0;
 }
