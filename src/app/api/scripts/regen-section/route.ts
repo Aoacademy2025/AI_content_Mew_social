@@ -11,6 +11,8 @@ import {
   assembleScript,
   generateValidatedJson,
   generateWithBannedWordGuard,
+  heroScriptModel,
+  isModelUnavailableError,
   isValidDurationSec,
   isValidRegenTarget,
   parseBannedWords,
@@ -19,6 +21,10 @@ import {
   validateRegenResponse,
   validateTopic,
   wordBudgetForDuration,
+  MODEL_UNAVAILABLE_CODE,
+  MODEL_UNAVAILABLE_MESSAGE,
+  PRO_TIER_TEXT_CALL_COST,
+  type GuardedGeneration,
   type RegenSectionResult,
 } from "@/lib/hero-script.server";
 
@@ -83,7 +89,13 @@ export async function POST(req: Request) {
       ctaStyle = row.ctaStyle || "follow";
     }
 
-    const triad = await resolveLlmTriad(authUser.id, { script: assembleScript(current) });
+    // count: PRO tier — one request can be up to 4 model round-trips on the
+    // expensive model (see resolveLlmTriad).
+    const triad = await resolveLlmTriad(
+      authUser.id,
+      { script: assembleScript(current) },
+      { count: PRO_TIER_TEXT_CALL_COST }
+    );
     if (!triad.ok) return NextResponse.json(triad.body, { status: triad.status });
     const { apiKey } = triad;
 
@@ -98,18 +110,34 @@ export async function POST(req: Request) {
       profile,
     });
 
-    const guarded = await generateWithBannedWordGuard<RegenSectionResult>({
-      bannedWords,
-      extractText: (r) => r.text,
-      generate: (sternNote) =>
-        generateValidatedJson({
-          apiKey,
-          prompt: `${prompt}${sternNote}`,
-          maxOutputTokens: target === "body" ? 4096 : 2048,
-          tier: "pro",
-          validate: (data) => validateRegenResponse(data, { target, currentFormula: currentFormula || null }),
-        }),
-    });
+    let guarded: GuardedGeneration<RegenSectionResult> | null;
+    try {
+      guarded = await generateWithBannedWordGuard<RegenSectionResult>({
+        bannedWords,
+        extractText: (r) => r.text,
+        generate: (sternNote) =>
+          generateValidatedJson({
+            apiKey,
+            prompt: `${prompt}${sternNote}`,
+            maxOutputTokens: target === "body" ? 4096 : 2048,
+            tier: "pro",
+            validate: (data) => validateRegenResponse(data, { target, currentFormula: currentFormula || null }),
+          }),
+      });
+    } catch (error) {
+      // The pro model id itself is gone/unusable → say so (503), never fall
+      // back to the fast model (ADR 0004). Everything else keeps its own path.
+      if (isModelUnavailableError(error)) {
+        // Model id only — the raw provider message can embed the API key, and
+        // this path does not go through apiError's scrubber.
+        console.error(`[hero-script] pro model unavailable (regen-section): model=${heroScriptModel("pro")}`);
+        return NextResponse.json(
+          { code: MODEL_UNAVAILABLE_CODE, error: MODEL_UNAVAILABLE_MESSAGE },
+          { status: 503 }
+        );
+      }
+      throw error;
+    }
     if (!guarded) {
       return NextResponse.json({ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }, { status: 502 });
     }

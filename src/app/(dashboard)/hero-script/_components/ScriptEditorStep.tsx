@@ -32,6 +32,12 @@ const VIOLET_LIGHT = "#B9A6FF";
 const QUOTA_MESSAGE = "ใช้โควตา AI ครบรอบนี้แล้ว รอรีเซ็ตหรืออัปเกรดแผน";
 /** Locked-CTA copy for FREE (UI spec step 5) — the API's 403 EDITOR_LOCKED says the same. */
 const EDITOR_LOCKED_MESSAGE = "อัปเกรดเป็น PRO เพื่อส่งเข้าตัดต่อ";
+/** 503 from the pro-tier routes when the configured model id is gone/unusable.
+ *  Mirrors MODEL_UNAVAILABLE_CODE/MESSAGE in src/lib/hero-script.server.ts
+ *  (a server module — it can't be imported here), same as the two above. */
+const MODEL_UNAVAILABLE_CODE = "MODEL_UNAVAILABLE";
+const MODEL_UNAVAILABLE_MESSAGE =
+  "โมเดล AI สำหรับเขียนสคริปต์ไม่พร้อมใช้งานชั่วคราว โปรดลองใหม่อีกครั้งหรือแจ้งทีมงาน";
 
 const AUTOSAVE_DELAY_MS = 1200;
 /** ±15% — the tolerance the GENERATE prompt states around the word budget. */
@@ -63,6 +69,13 @@ async function toastErrorResponse(
   if (res.status === 429) { toast.error(QUOTA_MESSAGE); return; }
   if (res.status === 409 && data?.code === "KEY_REQUIRED") {
     toast.error("ยังไม่ได้ตั้งค่า Gemini API key — ไปที่ Settings เพื่อเพิ่มคีย์");
+    return;
+  }
+  // The pro model id is gone/unusable (503 MODEL_UNAVAILABLE) — a different
+  // problem from "AI ตอบผิดรูปแบบ", and retrying the same call won't fix it,
+  // so it gets its own (longer-lived) toast instead of the generic one.
+  if (res.status === 503 && data?.code === MODEL_UNAVAILABLE_CODE) {
+    toast.error(data.error || MODEL_UNAVAILABLE_MESSAGE, { duration: 8000 });
     return;
   }
   // Plan walls (FREE script cap / editor locked) — offer the pricing page.
