@@ -1,10 +1,13 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { isValidHookFormulaKey, isValidStoryStructureKey } from "@/lib/viral-frameworks";
 import {
   assembleScript,
+  canCreateScript,
+  countScriptsInWindow,
   createScript,
   isValidDurationSec,
   listScripts,
@@ -26,8 +29,9 @@ export async function GET() {
 
 // POST /api/scripts — save a script (the step-4 editor's first autosave).
 //
-// No plan cap here: the FREE `scripts` cap (403 SCRIPT_LIMIT) is Task 4's
-// scope per the shared spec, and lands in this handler when it ships.
+// Enforces the `scripts` plan cap (FREE 3 / 30 days) → 403 SCRIPT_LIMIT. Only
+// CREATE is capped: editing (PUT) an existing script is always free, so a FREE
+// user at the cap keeps full control of the 3 scripts they already have.
 export async function POST(req: Request) {
   try {
     const authUser = await getCurrentUser();
@@ -69,6 +73,16 @@ export async function POST(req: Request) {
     // someone else's BrandProfile to this user's Script.
     if (brandProfileId && !(await ownsBrandProfile(authUser.id, brandProfileId))) {
       return NextResponse.json({ error: "ไม่พบโปรไฟล์แบรนด์" }, { status: 404 });
+    }
+
+    // Plan cap: FREE 3 scripts per rolling 30 days (same shape as the
+    // PROFILE_LIMIT check on /api/brand-profiles).
+    const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { plan: true } });
+    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+
+    const capCheck = canCreateScript(user.plan, await countScriptsInWindow(authUser.id));
+    if (!capCheck.allowed) {
+      return NextResponse.json({ code: "SCRIPT_LIMIT", error: capCheck.message }, { status: 403 });
     }
 
     const script = await createScript(authUser.id, {
