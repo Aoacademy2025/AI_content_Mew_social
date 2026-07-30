@@ -165,15 +165,23 @@ export async function getEditorProjectWithMediaState(
   return { ...editorProjectResponse(project), previewMediaState };
 }
 
+/** Create a project.
+ *
+ *  `tx` lets a caller enlist this create in an OUTER interactive transaction:
+ *  Hero Script's send-to-editor creates the project and marks the Script "sent"
+ *  as one unit, so a Script that disappears mid-handoff rolls the project back
+ *  instead of orphaning it. Callers that omit `tx` keep the previous behavior
+ *  byte-for-byte — this function opens its own transaction, as before. */
 export async function createEditorProject(
   userId: string,
   input: { title?: unknown; draft?: unknown; status?: unknown } = {},
+  tx?: Prisma.TransactionClient,
 ) {
   const draftJson = encodeEditorProjectDraft(input.draft);
   const assetFence = await prepareEditorProjectBrandAsset(userId, draftJson);
   const status = normalizeEditorProjectStatus(input.status) ?? "draft";
-  const project = await prisma.$transaction(async (tx) => {
-    const created = await tx.editorProject.create({
+  const create = async (client: Prisma.TransactionClient) => {
+    const created = await client.editorProject.create({
       data: {
         userId,
         title: sanitizeEditorProjectTitle(input.title),
@@ -182,9 +190,10 @@ export async function createEditorProject(
         lastOpenedAt: new Date(),
       },
     });
-    await advanceEditorProjectBrandAsset(tx, userId, assetFence);
+    await advanceEditorProjectBrandAsset(client, userId, assetFence);
     return created;
-  });
+  };
+  const project = tx ? await create(tx) : await prisma.$transaction(create);
   return editorProjectResponse(project);
 }
 
