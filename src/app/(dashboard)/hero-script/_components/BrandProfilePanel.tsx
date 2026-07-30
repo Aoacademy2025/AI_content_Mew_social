@@ -27,6 +27,7 @@ import {
 import { cn } from "@/lib/utils";
 import { limitsForPlan, PLAN_LABEL } from "@/lib/plan-limits";
 import { CTA_STYLES } from "@/lib/viral-frameworks";
+import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 
 const VIOLET = "#8B5CF6";
 const VIOLET_LIGHT = "#B9A6FF";
@@ -79,7 +80,15 @@ async function toastErrorResponse(res: Response, fallback: string) {
   toast.error(data?.error || fallback);
 }
 
-const emptyForm = { name: "", niche: "", audience: "", tone: "", bannedWordsText: "", ctaStyle: "follow" };
+// `analysisNotes` (+ the sample it came from) are carried in the form, not just
+// shown: they are what the analyze step is FOR — the server renders
+// analysisNotes into the brand block of every later prompt (buildBrandBlock),
+// so dropping them client-side left the column NULL and the block reading
+// "ไม่มี" forever, i.e. the analyze feature bought the user nothing.
+const emptyForm = {
+  name: "", niche: "", audience: "", tone: "", bannedWordsText: "", ctaStyle: "follow",
+  analysisNotes: "", analyzedSampleText: "", analyzedSampleUrl: "",
+};
 
 export function BrandProfilePanel({
   plan, selectedProfileId, onSelectedProfileIdChange, durationSec, onDurationSecChange,
@@ -148,6 +157,10 @@ export function BrandProfilePanel({
       name: p.name, niche: p.niche, audience: p.audience, tone: p.tone,
       bannedWordsText: p.bannedWords.join(", "),
       ctaStyle: p.ctaStyle || "follow",
+      // Carried through an edit so a PUT never silently drops what analyze found.
+      analysisNotes: p.analysisNotes ?? "",
+      analyzedSampleText: p.sampleText ?? "",
+      analyzedSampleUrl: p.sampleUrl ?? "",
     });
     setEditingId(p.id);
     setFormTab("manual");
@@ -161,17 +174,32 @@ export function BrandProfilePanel({
     }
     setAnalyzing(true);
     try {
+      // Exactly what the server analyzed: text wins over URL, and the text is
+      // truncated to the same bound the route applies before prompting.
+      const usedText = sampleText.trim().slice(0, BRAND_PROFILE_CAPS.longFieldChars);
+      const usedUrl = usedText ? "" : sampleUrl.trim().slice(0, BRAND_PROFILE_CAPS.urlChars);
       const res = await fetch("/api/brand-profiles/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sampleText: sampleText.trim() || undefined,
-          sampleUrl: !sampleText.trim() ? sampleUrl.trim() || undefined : undefined,
+          sampleText: usedText || undefined,
+          sampleUrl: usedUrl || undefined,
         }),
       });
       if (!res.ok) { await toastErrorResponse(res, "วิเคราะห์ไม่สำเร็จ"); return; }
       const data = await res.json();
-      setForm((f) => ({ ...f, niche: data.niche, audience: data.audience, tone: data.tone }));
+      setForm((f) => ({
+        ...f,
+        niche: data.niche,
+        audience: data.audience,
+        tone: data.tone,
+        // Persisted with the profile — this is the brand block's style note.
+        analysisNotes: typeof data.analysisNotes === "string"
+          ? data.analysisNotes.slice(0, BRAND_PROFILE_CAPS.longFieldChars)
+          : "",
+        analyzedSampleText: usedText,
+        analyzedSampleUrl: usedUrl,
+      }));
       setFormTab("manual");
       toast.success("วิเคราะห์เสร็จแล้ว ตรวจสอบและแก้ไขได้ก่อนบันทึก");
     } catch {
@@ -231,6 +259,11 @@ export function BrandProfilePanel({
           tone: form.tone.trim(),
           bannedWords,
           ctaStyle: form.ctaStyle,
+          // Omitted (undefined) when there is nothing from analyze: PUT is
+          // skip-if-absent, so an edit never wipes a stored note.
+          analysisNotes: form.analysisNotes.trim() || undefined,
+          sampleText: form.analyzedSampleText.trim() || undefined,
+          sampleUrl: form.analyzedSampleUrl.trim() || undefined,
         }),
       });
       if (!res.ok) {
