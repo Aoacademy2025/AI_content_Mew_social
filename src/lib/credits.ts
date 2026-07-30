@@ -74,6 +74,33 @@ export async function getBalance(
   };
 }
 
+/**
+ * Credits already removed from the available balance while provider/render work
+ * is still in flight. Settled successful work is intentionally excluded.
+ */
+export async function getReservedCredits(userId: string): Promise<number> {
+  const [ai, render] = await Promise.all([
+    prisma.aiGenerationJob.aggregate({
+      where: {
+        userId,
+        chargeState: "reserved",
+        creditCost: { gt: 0 },
+      },
+      _sum: { creditCost: true },
+    }),
+    prisma.renderJob.aggregate({
+      where: {
+        userId,
+        status: { in: ["QUEUED", "RUNNING"] },
+        reservedQuota: true,
+        creditsSpent: { gt: 0 },
+      },
+      _sum: { creditsSpent: true },
+    }),
+  ]);
+  return (ai._sum.creditCost ?? 0) + (render._sum.creditsSpent ?? 0);
+}
+
 // ── Grant credits ─────────────────────────────────────────────────────────────
 
 /**

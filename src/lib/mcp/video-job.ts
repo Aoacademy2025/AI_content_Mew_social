@@ -468,6 +468,8 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
         data: {
           status: "failed",
           errorMessage: reason,
+          reservationRefundPending: true,
+          reservationRefundReason: `worker_restart_${job.currentStep ?? "unknown"}_failed`,
           finishedAt: now,
           providerNextPollAt: null,
         },

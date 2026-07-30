@@ -188,6 +188,9 @@ async function main() {
   });
   assert.equal(expired.kind, "failed");
   assert.match(expired.kind === "failed" ? expired.message : "", /deadline/);
+  assert.equal(expired.kind === "failed" ? expired.provider : null, "heygen");
+  assert.equal(expired.kind === "failed" ? expired.code : null, "transient");
+  assert.equal(expired.kind === "failed" ? expired.outcome : null, "definitive");
 
   console.log("ALL PASS");
 }
