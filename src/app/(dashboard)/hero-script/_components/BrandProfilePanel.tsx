@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { cn } from "@/lib/utils";
 import { limitsForPlan, PLAN_LABEL } from "@/lib/plan-limits";
+import { CTA_STYLES } from "@/lib/viral-frameworks";
 
 const VIOLET = "#8B5CF6";
 const VIOLET_LIGHT = "#B9A6FF";
@@ -78,7 +79,7 @@ async function toastErrorResponse(res: Response, fallback: string) {
   toast.error(data?.error || fallback);
 }
 
-const emptyForm = { name: "", niche: "", audience: "", tone: "", bannedWordsText: "" };
+const emptyForm = { name: "", niche: "", audience: "", tone: "", bannedWordsText: "", ctaStyle: "follow" };
 
 export function BrandProfilePanel({
   plan, selectedProfileId, onSelectedProfileIdChange, durationSec, onDurationSecChange,
@@ -146,6 +147,7 @@ export function BrandProfilePanel({
     setForm({
       name: p.name, niche: p.niche, audience: p.audience, tone: p.tone,
       bannedWordsText: p.bannedWords.join(", "),
+      ctaStyle: p.ctaStyle || "follow",
     });
     setEditingId(p.id);
     setFormTab("manual");
@@ -228,6 +230,7 @@ export function BrandProfilePanel({
           audience: form.audience.trim(),
           tone: form.tone.trim(),
           bannedWords,
+          ctaStyle: form.ctaStyle,
         }),
       });
       if (!res.ok) {
@@ -472,6 +475,25 @@ export function BrandProfilePanel({
                   rows={2}
                   placeholder="เช่น โกหก, หลอกลวง"
                 />
+              </div>
+              <div>
+                <Label className="mb-1.5 block text-xs">สไตล์ CTA</Label>
+                <Select
+                  value={form.ctaStyle}
+                  onValueChange={(v) => setForm((f) => ({ ...f, ctaStyle: v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CTA_STYLES.map((c) => (
+                      <SelectItem key={c.key} value={c.key}>{c.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="mt-1.5 text-[11px]" style={{ color: "var(--ui-text-muted)" }}>
+                  {CTA_STYLES.find((c) => c.key === form.ctaStyle)?.description}
+                </p>
               </div>
             </div>
           )}
