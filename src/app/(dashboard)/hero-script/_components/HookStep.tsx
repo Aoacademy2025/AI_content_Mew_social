@@ -81,9 +81,15 @@ export function HookStep({
     onSelectedHookChange({ ...hook });
   }
 
+  // Write the edit back into the `hooks` state array (keyed by index, formula
+  // key untouched) — not just the ephemeral lifted `selectedHook` — so
+  // picking card B then reselecting card A restores the edited text instead
+  // of silently reverting to the original LLM output.
   function editSelectedText(text: string) {
-    if (!selectedHook) return;
-    onSelectedHookChange({ ...selectedHook, text });
+    if (selectedIndex === null || !selectedHook) return;
+    const updated = { ...selectedHook, text };
+    onSelectedHookChange(updated);
+    setHooks((prev) => prev.map((h, i) => (i === selectedIndex ? updated : h)));
   }
 
   return (
