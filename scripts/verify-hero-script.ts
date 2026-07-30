@@ -61,6 +61,13 @@ async function main() {
     deleteScript,
     ownsBrandProfile,
     SCRIPT_LIST_LIMIT,
+    // Task 4
+    normalizeLines,
+    assembleScriptForHandoff,
+    countScriptsInWindow,
+    canCreateScript,
+    sendScriptToEditor,
+    SCRIPT_WINDOW_DAYS,
   } = await import("../src/lib/hero-script.server");
   const {
     buildAnalyzePrompt,
@@ -855,6 +862,173 @@ async function main() {
     ok((await ownsBrandProfile("hs-owner", ownerProfile.id)) === true, "ownsBrandProfile: own profile → true");
     ok((await ownsBrandProfile("hs-other", ownerProfile.id)) === false,
       "ownsBrandProfile: another user's profile → false (blocks cross-user attach)");
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Task 4: handoff (send-to-editor) + the FREE scripts cap
+  // ════════════════════════════════════════════════════════════════════════
+
+  // ── plan-limits: scripts caps ───────────────────────────────────────────
+  ok(FREE_LIMITS.scripts === 3, "plan-limits: FREE scripts cap = 3 / 30 days");
+  ok(PRO_LIMITS.scripts === Infinity, "plan-limits: PRO scripts cap = Infinity");
+  ok(BUSINESS_LIMITS.scripts === Infinity, "plan-limits: BUSINESS scripts cap = Infinity");
+  ok(SCRIPT_WINDOW_DAYS === 30, "SCRIPT_WINDOW_DAYS = 30 (rolling window)");
+
+  // ── canCreateScript: FREE 3 / 30 days, paid unlimited ───────────────────
+  {
+    for (let n = 0; n < 3; n++) {
+      ok(canCreateScript("FREE", n).allowed === true, `canCreateScript(FREE, ${n} in window) → allowed (cap 3)`);
+    }
+    const blocked = canCreateScript("FREE", 3);
+    ok(blocked.allowed === false, "canCreateScript(FREE, 3 in window) → blocked (4th script)");
+    ok(blocked.message === "แผนฟรีเขียนได้ 3 สคริปต์/30 วัน — อัปเกรดเพื่อเขียนไม่จำกัด",
+      "SCRIPT_LIMIT message matches the UI spec verbatim");
+    ok(canCreateScript("FREE", 99).allowed === false, "canCreateScript(FREE, over cap) → still blocked");
+    ok(canCreateScript("PRO", 500).allowed === true, "canCreateScript(PRO, 500) → allowed (Infinity cap)");
+    ok(canCreateScript("BUSINESS", 5000).allowed === true, "canCreateScript(BUSINESS, 5000) → allowed (Infinity cap)");
+  }
+
+  // ── countScriptsInWindow + the route's cap decision, against real rows ──
+  {
+    await prisma.user.createMany({
+      data: [
+        { id: "hs4-free", name: "Free 4", email: "hs4-free@example.test", plan: "FREE" },
+        { id: "hs4-pro", name: "Pro 4", email: "hs4-pro@example.test", plan: "PRO" },
+      ],
+    });
+    const row = (userId: string, topic: string, createdAt: Date) => prisma.script.create({
+      data: { userId, topic, hookText: "h", bodyText: "b", ctaText: "c", createdAt },
+    });
+    const now = new Date();
+    const daysAgo = (d: number) => new Date(now.getTime() - d * 24 * 60 * 60 * 1000);
+
+    ok((await countScriptsInWindow("hs4-free")) === 0, "countScriptsInWindow: no scripts → 0");
+
+    await row("hs4-free", "ใหม่ 1", daysAgo(0));
+    await row("hs4-free", "ใหม่ 2", daysAgo(10));
+    await row("hs4-free", "ใหม่ 3", daysAgo(29));
+    // Outside the rolling window — must NOT count against the cap.
+    await row("hs4-free", "เก่า", daysAgo(31));
+    // Another user's script — must NOT count either.
+    await row("hs4-pro", "ของคนอื่น", daysAgo(1));
+
+    const freeInWindow = await countScriptsInWindow("hs4-free");
+    ok(freeInWindow === 3, "countScriptsInWindow counts only the caller's rows inside the 30-day window");
+    ok(canCreateScript("FREE", freeInWindow).allowed === false,
+      "FREE with 3 scripts in window → 4th create blocked (SCRIPT_LIMIT)");
+
+    // 5 scripts on PRO are fine (the verify case named in the task brief).
+    for (let i = 0; i < 5; i++) {
+      const count = await countScriptsInWindow("hs4-pro");
+      ok(canCreateScript("PRO", count).allowed === true, `PRO script #${i + 1} in window → allowed`);
+      await row("hs4-pro", `pro-${i}`, daysAgo(0));
+    }
+    ok((await countScriptsInWindow("hs4-pro")) === 6, "PRO user ends with 6 scripts in window (1 seed + 5) — never capped");
+  }
+
+  // ── normalizeLines / assembleScriptForHandoff: no blank lines EVER ──────
+  {
+    ok(normalizeLines("a\n\nb") === "a\nb", "normalizeLines drops internal blank lines");
+    ok(normalizeLines("\r\n a \r\n\r\n b \r\n") === "a\nb", "normalizeLines handles CRLF + trims each line");
+    ok(normalizeLines("   ") === "", "normalizeLines of a whitespace-only block → ''");
+
+    // The Task 3 carry-forward: user-typed blank lines survive the PUT autosave
+    // (it stores bodyText verbatim), so the handoff assembly is the last line of
+    // defence — the editor turns 1 line into 1 Segment.
+    const typed = {
+      hookText: "hook",
+      bodyText: "บรรทัด 1\n\n   \nบรรทัด 2\n",
+      ctaText: "\ncta",
+    };
+    const assembled = assembleScriptForHandoff(typed);
+    ok(assembled === "hook\nบรรทัด 1\nบรรทัด 2\ncta",
+      "assembleScriptForHandoff strips user-typed blank lines from every section");
+    ok(!assembled.split("\n").some((line) => line.trim() === ""),
+      "assembleScriptForHandoff output has no blank line anywhere");
+    ok(assembleScript(typed).includes("\n\n"),
+      "regression guard: the raw assembleScript of that same draft DOES contain blank lines");
+    // An empty section must not leave a dangling blank line either.
+    ok(assembleScriptForHandoff({ hookText: "hook", bodyText: "", ctaText: "cta" }) === "hook\ncta",
+      "assembleScriptForHandoff: an empty section leaves no blank line");
+  }
+
+  // ── sendScriptToEditor ──────────────────────────────────────────────────
+  {
+    const { getEditorProject } = await import("../src/lib/editor-projects");
+
+    const paidScript = await createScript("hs4-pro", {
+      topic: "ส่งเข้าตัดต่อ",
+      durationSec: 60,
+      hookFormula: "curiosity-gap",
+      structure: "pas",
+      hookText: "hook ที่เลือกไว้",
+      // user-typed blank lines (PUT stores them verbatim)
+      bodyText: "ประโยค 1\n\nประโยค 2\n   \nประโยค 3",
+      ctaText: "ตามไว้เลย",
+    });
+
+    const sent = await sendScriptToEditor("hs4-pro", paidScript.id);
+    ok(sent.ok === true, "sendScriptToEditor (paid) → ok");
+    if (sent.ok) {
+      ok(typeof sent.projectId === "string" && sent.projectId.length > 0,
+        "sendScriptToEditor returns the new projectId");
+
+      const project = await getEditorProject("hs4-pro", sent.projectId);
+      ok(project !== null, "sendScriptToEditor created a real EditorProject owned by the caller");
+      const draft = (project?.draft ?? {}) as Record<string, unknown>;
+      ok(draft.mode === "script", "handoff draftJson has mode: 'script'");
+      ok(draft.script === "hook ที่เลือกไว้\nประโยค 1\nประโยค 2\nประโยค 3\nตามไว้เลย",
+        "handoff draftJson.script === the assembled, blank-line-stripped script");
+      ok(!String(draft.script).split("\n").some((line) => line.trim() === ""),
+        "handoff draftJson.script contains no blank line (1 line = 1 Segment)");
+      // The draft must be the editor's own default shape, not a hand-rolled object.
+      ok(draft.voiceEngine !== undefined && draft.bgmVolume !== undefined && draft.mixPreset !== undefined,
+        "handoff draftJson carries the editor's default project fields (shared default-draft builder)");
+      ok(draft.projectTitle === "ส่งเข้าตัดต่อ" && project?.title === "ส่งเข้าตัดต่อ",
+        "handoff project is titled after the script topic (draft + row agree)");
+      // The editor's bootstrap rejects a project whose stored draft doesn't
+      // materialize (→ "ข้อมูลโปรเจกต์ไม่สมบูรณ์"), so the handoff draft must
+      // pass the editor's own validator, not just be valid JSON.
+      const { materializeEditorProjectDraft } = await import("../src/lib/editor-project-recovery-journal");
+      ok(materializeEditorProjectDraft(draft) !== null,
+        "handoff draftJson passes the editor's own recovery-draft validator (bootstrap accepts it)");
+
+      const after = await getScript("hs4-pro", paidScript.id);
+      ok(after?.status === "sent", "sendScriptToEditor flips Script.status to 'sent'");
+      ok(after?.editorProjectId === sent.projectId, "sendScriptToEditor stores editorProjectId on the Script");
+    }
+
+    // FREE plan → EDITOR_LOCKED, and nothing is created/mutated.
+    const freeScript = await createScript("hs4-free", {
+      topic: "ฟรีส่งไม่ได้", durationSec: 60, hookText: "h", bodyText: "b", ctaText: "c",
+    });
+    const projectsBefore = await prisma.editorProject.count({ where: { userId: "hs4-free" } });
+    const locked = await sendScriptToEditor("hs4-free", freeScript.id);
+    ok(locked.ok === false && locked.code === "EDITOR_LOCKED",
+      "sendScriptToEditor (FREE) → EDITOR_LOCKED");
+    ok(locked.ok === false && locked.message === "อัปเกรดเป็น PRO เพื่อส่งเข้าตัดต่อ",
+      "EDITOR_LOCKED carries the UI spec's Thai upsell copy");
+    ok((await prisma.editorProject.count({ where: { userId: "hs4-free" } })) === projectsBefore,
+      "sendScriptToEditor (FREE) creates no EditorProject");
+    ok((await getScript("hs4-free", freeScript.id))?.status === "draft",
+      "sendScriptToEditor (FREE) leaves the Script as a draft");
+
+    // IDOR: another user's script id is a 404, never a handoff.
+    const foreign = await sendScriptToEditor("hs4-pro", freeScript.id);
+    ok(foreign.ok === false && foreign.code === "NOT_FOUND",
+      "sendScriptToEditor refuses another user's script (IDOR → NOT_FOUND)");
+    ok((await getScript("hs4-free", freeScript.id))?.editorProjectId === null,
+      "the foreign sendScriptToEditor attempt did not touch the row");
+    ok((await sendScriptToEditor("hs4-pro", "does-not-exist")).ok === false,
+      "sendScriptToEditor on a missing id → not ok");
+
+    // A script whose sections are all blank can't become an empty editor draft.
+    const blankScript = await prisma.script.create({
+      data: { userId: "hs4-pro", topic: "ว่าง", hookText: " ", bodyText: "\n \n", ctaText: "" },
+    });
+    const blank = await sendScriptToEditor("hs4-pro", blankScript.id);
+    ok(blank.ok === false && blank.code === "EMPTY_SCRIPT",
+      "sendScriptToEditor rejects a script that is blank after normalization");
   }
 
   console.log(`\n${failures === 0 ? "✅" : "❌"} ${passed} passed, ${failures} failed`);
