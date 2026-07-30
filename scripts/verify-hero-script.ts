@@ -43,6 +43,24 @@ async function main() {
     validateTopic,
     TOPIC_MAX_CHARS,
     isValidDurationSec,
+    // Task 3
+    assembleScript,
+    containsBannedWord,
+    findBannedWord,
+    bannedWordWarning,
+    generateWithBannedWordGuard,
+    heroScriptModel,
+    validateGenerateResponse,
+    validateRegenResponse,
+    isValidRegenTarget,
+    stripEchoedHook,
+    createScript,
+    listScripts,
+    getScript,
+    updateScript,
+    deleteScript,
+    ownsBrandProfile,
+    SCRIPT_LIST_LIMIT,
   } = await import("../src/lib/hero-script.server");
   const {
     buildAnalyzePrompt,
@@ -50,6 +68,10 @@ async function main() {
     buildBrandBlock,
     buildIdeasPrompt,
     buildHooksPrompt,
+    // Task 3
+    buildGeneratePrompt,
+    buildRegenPrompt,
+    buildBannedWordRetryNote,
   } = await import("../src/lib/prompts/hero-script");
   const {
     HOOK_FORMULAS,
@@ -476,6 +498,309 @@ async function main() {
       ok(withKey.apiKey === "test-gemini-key-1234", "resolveLlmTriad decrypts the stored BYOK key");
       ok(withKey.geminiMode === "byok", "resolveLlmTriad reports byok mode when MANAGED_GEMINI is off");
     }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Task 3: full-script engine (generate / regen-section) + Script CRUD
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ── assembleScript: hookText + "\n" + bodyText + "\n" + ctaText ─────────
+  {
+    const assembled = assembleScript({ hookText: "H", bodyText: "B1\nB2", ctaText: "C" });
+    ok(assembled === "H\nB1\nB2\nC", "assembleScript joins hook/body/cta with single newlines");
+    ok(assembled.split("\n").length === 4, "assembleScript newline layout: 1 line = 1 spoken sentence");
+    ok(assembleScript({ hookText: "H", bodyText: "", ctaText: "C" }) === "H\n\nC",
+      "assembleScript keeps the layout literal (no trimming of an empty body)");
+  }
+
+  // ── containsBannedWord / findBannedWord / bannedWordWarning ─────────────
+  ok(containsBannedWord("อย่าลืมกดไลก์", ["กดไลก์"]) === true,
+    'containsBannedWord("อย่าลืมกดไลก์", ["กดไลก์"]) === true');
+  ok(containsBannedWord("อย่าลืมกดไลก์", []) === false, "containsBannedWord with no banned words → false");
+  ok(containsBannedWord("ข้อความสะอาด", ["กดไลก์"]) === false, "containsBannedWord: clean text → false");
+  ok(containsBannedWord("Please SUBSCRIBE now", ["subscribe"]) === true,
+    "containsBannedWord is case-insensitive (latin)");
+  ok(findBannedWord("อย่าลืมกดไลก์ แล้วกดแชร์", ["กดแชร์", "กดไลก์"]) === "กดแชร์",
+    "findBannedWord returns the first matching banned word (list order)");
+  ok(findBannedWord("สะอาด", ["กดไลก์"]) === null, "findBannedWord: clean text → null");
+  ok(bannedWordWarning("กดไลก์") === "มีคำต้องห้ามหลุดมา: กดไลก์",
+    "bannedWordWarning matches the spec's warning copy verbatim");
+
+  // ── heroScriptModel: env-configurable fast/pro model ids ────────────────
+  {
+    delete process.env.HERO_SCRIPT_MODEL_FAST;
+    delete process.env.HERO_SCRIPT_MODEL_PRO;
+    ok(heroScriptModel("fast") === "gemini-2.5-flash", "heroScriptModel('fast') defaults to gemini-2.5-flash");
+    ok(heroScriptModel("pro") === "gemini-2.5-pro", "heroScriptModel('pro') defaults to gemini-2.5-pro");
+    process.env.HERO_SCRIPT_MODEL_PRO = "gemini-pro-latest";
+    ok(heroScriptModel("pro") === "gemini-pro-latest", "HERO_SCRIPT_MODEL_PRO overrides the pro model id");
+    process.env.HERO_SCRIPT_MODEL_FAST = "gemini-flash-latest";
+    ok(heroScriptModel("fast") === "gemini-flash-latest", "HERO_SCRIPT_MODEL_FAST overrides the fast model id");
+    delete process.env.HERO_SCRIPT_MODEL_FAST;
+    delete process.env.HERO_SCRIPT_MODEL_PRO;
+  }
+
+  // ── GENERATE prompt builder ─────────────────────────────────────────────
+  {
+    const hookText = "ใครที่ลงคลิปทุกวันแต่ยอดวิวไม่ขยับ ฟังทางนี้";
+    const prompt = buildGeneratePrompt({
+      topic: "ทำไมคลิปไม่ปัง",
+      durationSec: 60,
+      wordBudget: wordBudgetForDuration(60),
+      hookText,
+      ctaStyle: "follow",
+      profile: { niche: "n", audience: "a", tone: "t", bannedWords: ["ห้ามคำนี้"], analysisNotes: null },
+    });
+    ok(prompt.includes(`"${hookText}"`), "buildGeneratePrompt embeds the chosen hook VERBATIM (quoted)");
+    ok(prompt.includes("Hook ที่ผู้ใช้เลือก (ห้ามแก้แม้แต่คำเดียว จะถูกใช้เป็นบรรทัดแรกเสมอ)"),
+      "buildGeneratePrompt includes the do-not-touch-the-hook line from the spec");
+    ok(prompt.includes("งบคำทั้งคลิป ~240 คำ (±15%)"), "buildGeneratePrompt states the word budget with ±15%");
+    ok(prompt.includes("ความยาว 60 วินาที"), "buildGeneratePrompt states the duration");
+    ok(prompt.includes("ทำไมคลิปไม่ปัง"), "buildGeneratePrompt embeds the topic");
+    for (const s of STORY_STRUCTURES) {
+      ok(prompt.includes(s.key), `buildGeneratePrompt includes the story-structure key '${s.key}'`);
+    }
+    for (const r of RETENTION_RULES) {
+      ok(prompt.includes(r), "buildGeneratePrompt includes every RETENTION_RULES line verbatim");
+    }
+    ok(prompt.includes("ฝากติดตาม"), "buildGeneratePrompt includes the selected CTA style (label)");
+    ok(prompt.includes('{"structure":"<key>","bodyText":"บรรทัดละประโยค\\nคั่นด้วย \\\\n","ctaText":"..."}'),
+      "buildGeneratePrompt includes the exact JSON contract from the spec");
+    ok(prompt.includes("นิช=n") && prompt.includes("ห้ามคำนี้"),
+      "buildGeneratePrompt embeds the brand block + banned words when a profile is given");
+  }
+
+  // ── REGEN prompt builder (per-target instruction) ────────────────────────
+  {
+    const current = { hookText: "hook เดิม", bodyText: "บรรทัด 1\nบรรทัด 2", ctaText: "cta เดิม" };
+    const bodyPrompt = buildRegenPrompt({
+      target: "body", topic: "หัวข้อ", durationSec: 60, wordBudget: 240, current, ctaStyle: "follow",
+    });
+    ok(bodyPrompt.includes("เขียน body ใหม่ให้ต่างจากเดิมชัดเจน โดยคง hook และ CTA เดิม"),
+      "buildRegenPrompt(body) uses the spec's body instruction verbatim");
+    ok(bodyPrompt.includes("hook เดิม") && bodyPrompt.includes("บรรทัด 1") && bodyPrompt.includes("cta เดิม"),
+      "buildRegenPrompt(body) includes the current script as context");
+    ok(bodyPrompt.includes('ตอบเป็น JSON เท่านั้น: {"text":"..."}'),
+      "buildRegenPrompt(body) uses the {\"text\":\"...\"} contract");
+
+    const ctaPrompt = buildRegenPrompt({
+      target: "cta", topic: "หัวข้อ", durationSec: 60, wordBudget: 240, current, ctaStyle: "share",
+    });
+    ok(ctaPrompt.includes("เขียน CTA ใหม่สไตล์ ชวนแชร์/เซฟ ให้ต่างจากเดิม"),
+      "buildRegenPrompt(cta) uses the spec's CTA instruction with the selected style");
+
+    const hookPrompt = buildRegenPrompt({
+      target: "hook", topic: "หัวข้อ", durationSec: 60, wordBudget: 240, current, ctaStyle: "follow",
+      currentFormula: "curiosity-gap",
+    });
+    ok(hookPrompt.includes("เขียน hook ใหม่ 1 อันจากสูตรอื่นที่ไม่ใช่ curiosity-gap"),
+      "buildRegenPrompt(hook) uses the spec's hook instruction naming the current formula");
+    ok(hookPrompt.includes('ตอบเป็น JSON เท่านั้น: {"text":"...","formula":"<key>"}'),
+      "buildRegenPrompt(hook) asks for the formula key alongside the text");
+    for (const f of HOOK_FORMULAS) {
+      ok(hookPrompt.includes(f.key), `buildRegenPrompt(hook) lists the formula key '${f.key}' to choose from`);
+    }
+  }
+
+  // ── banned-word retry note (appended to the prompt on the 1 retry) ───────
+  {
+    const note = buildBannedWordRetryNote(["กดไลก์", "กดแชร์"]);
+    ok(note.includes("กดไลก์") && note.includes("กดแชร์"), "buildBannedWordRetryNote lists the banned words");
+    ok(buildBannedWordRetryNote([]) === "", "buildBannedWordRetryNote([]) → '' (nothing to warn about)");
+  }
+
+  // ── validateGenerateResponse ────────────────────────────────────────────
+  {
+    const good = { structure: "pas", bodyText: "บรรทัด 1\nบรรทัด 2", ctaText: "ตามไว้" };
+    ok(validateGenerateResponse(null) === null, "validateGenerateResponse(null) → null");
+    ok(validateGenerateResponse({ ...good, structure: "not-a-structure" }) === null,
+      "validateGenerateResponse rejects an unknown structure key");
+    ok(validateGenerateResponse({ ...good, structure: "" }) === null,
+      "validateGenerateResponse rejects a blank structure");
+    ok(validateGenerateResponse({ ...good, bodyText: "" }) === null,
+      "validateGenerateResponse rejects an empty bodyText");
+    ok(validateGenerateResponse({ ...good, ctaText: "" }) === null,
+      "validateGenerateResponse rejects an empty ctaText");
+    const parsed = validateGenerateResponse(good);
+    ok(parsed?.structure === "pas" && parsed?.bodyText === "บรรทัด 1\nบรรทัด 2",
+      "validateGenerateResponse accepts a valid payload");
+    const crlf = validateGenerateResponse({ ...good, bodyText: "บรรทัด 1\r\nบรรทัด 2\r\n" });
+    ok(crlf?.bodyText === "บรรทัด 1\nบรรทัด 2",
+      "validateGenerateResponse normalizes CRLF and trims trailing blank lines");
+  }
+
+  // ── validateRegenResponse ───────────────────────────────────────────────
+  {
+    ok(validateRegenResponse({ text: "ใหม่" }, { target: "body" })?.text === "ใหม่",
+      "validateRegenResponse(body) accepts {text}");
+    ok(validateRegenResponse({ text: "" }, { target: "body" }) === null,
+      "validateRegenResponse rejects an empty text");
+    ok(validateRegenResponse({ text: "ใหม่" }, { target: "hook" }) === null,
+      "validateRegenResponse(hook) requires a formula");
+    ok(validateRegenResponse({ text: "ใหม่", formula: "nope" }, { target: "hook" }) === null,
+      "validateRegenResponse(hook) rejects an unknown formula key");
+    ok(validateRegenResponse({ text: "ใหม่", formula: "curiosity-gap" }, { target: "hook", currentFormula: "curiosity-gap" }) === null,
+      "validateRegenResponse(hook) rejects the SAME formula as the current one");
+    const regenerated = validateRegenResponse(
+      { text: "ใหม่", formula: "contrarian" },
+      { target: "hook", currentFormula: "curiosity-gap" }
+    );
+    ok(regenerated?.formula === "contrarian", "validateRegenResponse(hook) accepts a DIFFERENT valid formula");
+    const twentyOneWords = Array.from({ length: 21 }, (_, i) => `word${i + 1}`).join(" ");
+    ok(validateRegenResponse({ text: twentyOneWords, formula: "contrarian" }, { target: "hook" }) === null,
+      "validateRegenResponse(hook) enforces the ≤20 คำ hook rule");
+  }
+
+  // ── isValidRegenTarget ──────────────────────────────────────────────────
+  ok(isValidRegenTarget("hook") && isValidRegenTarget("body") && isValidRegenTarget("cta"),
+    "isValidRegenTarget accepts hook/body/cta");
+  ok(!isValidRegenTarget("intro") && !isValidRegenTarget(42), "isValidRegenTarget rejects anything else");
+
+  // ── stripEchoedHook: the server reattaches the hook, never the model ────
+  {
+    const hook = "ใครที่ลงคลิปทุกวันแต่ยอดวิวไม่ขยับ ฟังทางนี้";
+    ok(stripEchoedHook(`${hook}\nบรรทัด 1\nบรรทัด 2`, hook) === "บรรทัด 1\nบรรทัด 2",
+      "stripEchoedHook drops a body first line that echoes the hook");
+    ok(stripEchoedHook(`  ${hook}  \nบรรทัด 1`, hook) === "บรรทัด 1",
+      "stripEchoedHook ignores surrounding whitespace when comparing");
+    ok(stripEchoedHook("บรรทัด 1\nบรรทัด 2", hook) === "บรรทัด 1\nบรรทัด 2",
+      "stripEchoedHook leaves a body that does not echo the hook untouched");
+    ok(stripEchoedHook("", hook) === "", "stripEchoedHook('') → ''");
+  }
+
+  // ── generateWithBannedWordGuard: retry once, then warn (never block) ────
+  {
+    const calls: string[] = [];
+    const clean = await generateWithBannedWordGuard<{ text: string }>({
+      bannedWords: ["กดไลก์"],
+      extractText: (r) => r.text,
+      generate: async (note) => { calls.push(note); return { text: "ข้อความสะอาด" }; },
+    });
+    ok(clean?.result.text === "ข้อความสะอาด" && clean?.warning === undefined,
+      "generateWithBannedWordGuard: clean first attempt → no warning");
+    ok(calls.length === 1, "generateWithBannedWordGuard: clean first attempt → exactly 1 LLM call");
+  }
+  {
+    const calls: string[] = [];
+    const retried = await generateWithBannedWordGuard<{ text: string }>({
+      bannedWords: ["กดไลก์"],
+      extractText: (r) => r.text,
+      generate: async (note) => {
+        calls.push(note);
+        return { text: calls.length === 1 ? "อย่าลืมกดไลก์" : "ข้อความสะอาด" };
+      },
+    });
+    ok(calls.length === 2, "generateWithBannedWordGuard: banned hit → exactly 1 retry");
+    ok(calls[0] === "" && calls[1].includes("กดไลก์"),
+      "generateWithBannedWordGuard: the retry appends the stern banned-words note");
+    ok(retried?.result.text === "ข้อความสะอาด" && retried?.warning === undefined,
+      "generateWithBannedWordGuard: clean retry → returns the retry result with no warning");
+  }
+  {
+    const calls: string[] = [];
+    const stillDirty = await generateWithBannedWordGuard<{ text: string }>({
+      bannedWords: ["กดไลก์"],
+      extractText: (r) => r.text,
+      generate: async (note) => { calls.push(note); return { text: "อย่าลืมกดไลก์" }; },
+    });
+    ok(calls.length === 2, "generateWithBannedWordGuard: still dirty → stops after the 1 retry");
+    ok(stillDirty?.result.text === "อย่าลืมกดไลก์", "generateWithBannedWordGuard never blocks the user");
+    ok(stillDirty?.warning === "มีคำต้องห้ามหลุดมา: กดไลก์",
+      "generateWithBannedWordGuard returns the spec's Thai warning when the word survives the retry");
+  }
+  {
+    const nulled = await generateWithBannedWordGuard<{ text: string }>({
+      bannedWords: [], extractText: (r) => r.text, generate: async () => null,
+    });
+    ok(nulled === null, "generateWithBannedWordGuard: unusable LLM output → null (route 502s)");
+  }
+  {
+    // Retry itself fails to produce anything → keep the first result + warn.
+    let n = 0;
+    const firstOnly = await generateWithBannedWordGuard<{ text: string }>({
+      bannedWords: ["กดไลก์"],
+      extractText: (r) => r.text,
+      generate: async () => (++n === 1 ? { text: "อย่าลืมกดไลก์" } : null),
+    });
+    ok(firstOnly?.result.text === "อย่าลืมกดไลก์" && firstOnly?.warning === "มีคำต้องห้ามหลุดมา: กดไลก์",
+      "generateWithBannedWordGuard: failed retry → first result kept, warning attached");
+  }
+
+  // ── Script CRUD roundtrip (service layer, throwaway SQLite) ─────────────
+  {
+    await prisma.user.createMany({
+      data: [
+        { id: "hs-owner", name: "Owner", email: "hs-owner@example.test", plan: "PRO" },
+        { id: "hs-other", name: "Other", email: "hs-other@example.test", plan: "PRO" },
+      ],
+    });
+    const ownerProfile = await prisma.brandProfile.create({
+      data: { userId: "hs-owner", name: "Owner profile", niche: "x", audience: "x", tone: "x" },
+    });
+
+    ok(SCRIPT_LIST_LIMIT === 50, "SCRIPT_LIST_LIMIT = 50 (list own, newest first, take 50)");
+
+    const script = await createScript("hs-owner", {
+      topic: "หัวข้อทดสอบ",
+      durationSec: 60,
+      hookFormula: "curiosity-gap",
+      structure: "pas",
+      hookText: "hook ทดสอบ",
+      bodyText: "บรรทัด 1\nบรรทัด 2",
+      ctaText: "cta ทดสอบ",
+      brandProfileId: ownerProfile.id,
+    });
+    ok(!!script.id && script.userId === "hs-owner", "createScript persists a Script owned by the caller");
+    ok(script.status === "draft", "createScript defaults status to 'draft'");
+    ok(assembleScript(script) === "hook ทดสอบ\nบรรทัด 1\nบรรทัด 2\ncta ทดสอบ",
+      "assembleScript works on a persisted Script row (the string Task 4 sends to the editor)");
+
+    ok((await getScript("hs-owner", script.id))?.id === script.id, "getScript returns the owner's own script");
+    ok((await getScript("hs-other", script.id)) === null, "getScript does NOT return another user's script (IDOR)");
+
+    const updated = await updateScript("hs-owner", script.id, { bodyText: "บรรทัดใหม่" });
+    ok(updated?.bodyText === "บรรทัดใหม่", "updateScript persists a changed section");
+    ok(updated?.topic === "หัวข้อทดสอบ" && updated?.hookText === "hook ทดสอบ",
+      "updateScript is a partial patch — omitted fields are left untouched");
+    ok(updated?.structure === "pas" && updated?.hookFormula === "curiosity-gap",
+      "updateScript does not reset hookFormula/structure when they are omitted");
+    ok((await updateScript("hs-other", script.id, { bodyText: "แฮก" })) === null,
+      "updateScript refuses to touch another user's script (IDOR)");
+    ok((await updateScript("hs-owner", script.id, {}))?.id === script.id,
+      "updateScript with an empty patch is a no-op read (never an empty UPDATE)");
+    ok((await updateScript("hs-other", script.id, {})) === null,
+      "updateScript with an empty patch is still ownership-scoped (IDOR)");
+    ok((await getScript("hs-owner", script.id))?.bodyText === "บรรทัดใหม่",
+      "the foreign updateScript attempt left the row unchanged");
+
+    // listScripts: own only, newest first, capped at SCRIPT_LIST_LIMIT.
+    const base = Date.now();
+    for (let i = 0; i < 55; i++) {
+      await prisma.script.create({
+        data: {
+          userId: "hs-owner", topic: `list-${i}`, hookText: "h", bodyText: "b", ctaText: "c",
+          createdAt: new Date(base + i * 1000),
+        },
+      });
+    }
+    await prisma.script.create({
+      data: { userId: "hs-other", topic: "ของคนอื่น", hookText: "h", bodyText: "b", ctaText: "c" },
+    });
+    const listed = await listScripts("hs-owner");
+    ok(listed.length === SCRIPT_LIST_LIMIT, "listScripts takes at most 50 rows");
+    ok(listed[0].topic === "list-54", "listScripts orders newest first");
+    ok(listed.every((s) => s.userId === "hs-owner"), "listScripts only ever returns the caller's own scripts (IDOR)");
+
+    ok((await deleteScript("hs-other", script.id)) === false,
+      "deleteScript refuses to delete another user's script (IDOR)");
+    ok((await getScript("hs-owner", script.id)) !== null, "the foreign deleteScript attempt did not delete the row");
+    ok((await deleteScript("hs-owner", script.id)) === true, "deleteScript removes the owner's own script");
+    ok((await getScript("hs-owner", script.id)) === null, "deleteScript actually removed the row");
+
+    // brandProfile ownership guard used by the POST/PUT routes.
+    ok((await ownsBrandProfile("hs-owner", ownerProfile.id)) === true, "ownsBrandProfile: own profile → true");
+    ok((await ownsBrandProfile("hs-other", ownerProfile.id)) === false,
+      "ownsBrandProfile: another user's profile → false (blocks cross-user attach)");
   }
 
   console.log(`\n${failures === 0 ? "✅" : "❌"} ${passed} passed, ${failures} failed`);
