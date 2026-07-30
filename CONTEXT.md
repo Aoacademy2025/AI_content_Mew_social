@@ -47,3 +47,12 @@ Glossary of domain terms. Definitions only — no implementation details.
 ## Rollout
 
 - **Rollout Switch** — the two-layer mechanism controlling who sees Editor v2: an environment default for everyone plus a per-person override, so v2 can be QA'd on production before being enabled for all users.
+
+## Hero Script
+
+- **Hero Script** — the viral script writer at `/hero-script` (menu: "เขียนสคริปต์ AI"): topic → hook variants → full script → 1-click handoff into the editor. Sibling of Hero AI Image / Hero AI Voice.
+- **BrandProfile** — a saved, structured niche identity (นิชเจาะลึก, audience, tone, banned words, CTA style, analysis notes) that conditions every Hero Script generation. Plan-capped (FREE 1 / PRO 5 / BUSINESS ∞). Distinct from the legacy `Style` blob and from `BrandPreference` (visual logo defaults).
+- **Niche Drill-down (ขุดนิช)** — turns a broad seed ("การเงิน") into 7 specific sub-niche angles ("การเงินสาย dark…"); re-drilling a picked niche goes one level deeper. v1 is LLM-knowledge-only.
+- **Viral Framework** — the curated library in `src/lib/viral-frameworks.ts`: 10 hook formulas, 5 story structures, retention rules, 4 CTA styles. The flow is hook-first: the user picks/edits a hook before the full script exists; the chosen hook is never rewritten by the model.
+- **Continuity** — idea generation is conditioned on the profile's saved script topics: never repeat, and ≥2 of 8 ideas must continue/serialize past topics.
+- **Script Handoff (ส่งไปตัดต่อ)** — atomic creation of an EditorProject from a saved Script using the editor's own default-draft builder; the assembled script is blank-line-stripped so "1 line = 1 Segment" always holds. FREE plan: locked (editor is PRO+).
