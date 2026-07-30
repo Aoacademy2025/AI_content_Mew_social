@@ -2,11 +2,12 @@
 
 // /hero-script — "เขียนสคริปต์ AI" page shell.
 //
-// Task 1 ships the Setup rail (BrandProfilePanel: profile picker + duration +
-// create/edit dialog + Niche Drill-down). Later Hero Script tasks mount the
-// remaining stepper sections (หัวข้อ → เลือก Hook → สคริปต์เต็ม → ส่งไปตัดต่อ,
-// plus the "สคริปต์ของฉัน" history list) below/alongside this rail — the
-// lifted `selectedProfileId`/`durationSec` state here is what they consume.
+// Task 1 shipped the Setup rail (BrandProfilePanel: profile picker + duration
+// + create/edit dialog + Niche Drill-down). Task 2 adds steps 2-3 (หัวข้อ →
+// เลือก Hook). Later Hero Script tasks mount the remaining stepper sections
+// (สคริปต์เต็ม → ส่งไปตัดต่อ, plus the "สคริปต์ของฉัน" history list) below/
+// alongside this rail — the lifted `selectedProfileId`/`durationSec`/`topic`/
+// `selectedHook` state here is what they consume.
 
 import { useEffect, useState } from "react";
 import { fetchMe } from "@/lib/use-me";
@@ -14,6 +15,8 @@ import {
   BrandProfilePanel,
   type DurationSec,
 } from "./_components/BrandProfilePanel";
+import { TopicStep } from "./_components/TopicStep";
+import { HookStep, type HookChoice } from "./_components/HookStep";
 
 const VIOLET_LIGHT = "#B9A6FF";
 
@@ -21,6 +24,8 @@ export default function HeroScriptPage() {
   const [plan, setPlan] = useState("FREE");
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
   const [durationSec, setDurationSec] = useState<DurationSec>(60);
+  const [topic, setTopic] = useState("");
+  const [selectedHook, setSelectedHook] = useState<HookChoice | null>(null);
 
   useEffect(() => {
     fetchMe().then((me) => {
@@ -54,8 +59,24 @@ export default function HeroScriptPage() {
             onDurationSecChange={setDurationSec}
           />
 
-          {/* Steps 2-5 (หัวข้อ / เลือก Hook / สคริปต์เต็ม / ส่งไปตัดต่อ) and the
-              "สคริปต์ของฉัน" history list mount here in later Hero Script tasks. */}
+          {/* ── Step 2: หัวข้อ ── */}
+          <TopicStep
+            selectedProfileId={selectedProfileId}
+            topic={topic}
+            onTopicChange={setTopic}
+          />
+
+          {/* ── Step 3: เลือก Hook ── */}
+          <HookStep
+            topic={topic}
+            durationSec={durationSec}
+            selectedProfileId={selectedProfileId}
+            selectedHook={selectedHook}
+            onSelectedHookChange={setSelectedHook}
+          />
+
+          {/* Steps 4-5 (สคริปต์เต็ม / ส่งไปตัดต่อ) and the "สคริปต์ของฉัน"
+              history list mount here in later Hero Script tasks. */}
         </div>
       </div>
     </div>
