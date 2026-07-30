@@ -663,9 +663,10 @@ model AiGenerationJob {
   @@index([mediaExpiresAt])
 }
 
-// Every external provider submission is durable and auditable. Image jobs
-// currently permit exactly one attempt; a different-model retry is a new quoted
-// job so it cannot silently inherit the first job's lower credit price.
+// Every external provider submission is durable and auditable. Image jobs may
+// retry the exact same provider/model once after a confirmed cancellation. A
+// different-model retry remains a new quoted job so it cannot silently inherit
+// the first job's lower credit price.
 model AiGenerationAttempt {
   id                            String          @id @default(cuid())
   jobId                         String
@@ -676,7 +677,7 @@ model AiGenerationAttempt {
   providerRoute                 String
   providerEndpoint              String?
   providerJobId                 String?
-  status                        String          @default("planned") // planned | submitted | queued | in_progress | completed | failed
+  status                        String          @default("planned") // planned | submitting | submitted | queued | in_progress | completed | failed | canceled
   estimatedCostUsdMicros        Int
   providerReportedCostUsdMicros Int?
   providerReportedCredits       Float?
@@ -689,6 +690,36 @@ model AiGenerationAttempt {
   @@unique([jobId, sequence])
   @@index([provider, providerJobId])
   @@index([status, createdAt])
+}
+
+// Hourly provider invoices for the private RunPod image endpoint. The numerator
+// deliberately includes worker initialization, execution, idle time, failed
+// attempts, retries, and operational smokes. Product COGS can therefore be
+// compared against a managed per-image API without hiding infrastructure waste.
+model RunpodBillingBucket {
+  id              String   @id @default(cuid())
+  endpointId      String
+  bucketStart     DateTime
+  gpuTypeId       String
+  amountUsdMicros Int
+  timeBilledMs    Int
+  syncedAt        DateTime @updatedAt
+
+  @@unique([endpointId, bucketStart, gpuTypeId])
+  @@index([endpointId, bucketStart])
+}
+
+// A separate checkpoint makes an empty-but-successful billing response
+// distinguishable from a broken sync. Admission can fail closed when telemetry
+// becomes stale without inventing a cost for a brand-new endpoint.
+model RunpodBillingSync {
+  endpointId      String    @id
+  lastWindowStart DateTime
+  lastWindowEnd   DateTime
+  lastSuccessAt   DateTime?
+  rowsSeen        Int       @default(0)
+  lastError       String?
+  updatedAt       DateTime  @updatedAt
 }
 
 // Records which base-render outputs a user has been CHARGED a clip for, so a

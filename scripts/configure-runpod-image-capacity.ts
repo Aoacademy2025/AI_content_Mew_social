@@ -9,8 +9,25 @@ type Endpoint = {
   flashboot: boolean;
   workersMin: number;
   workersMax: number;
+  idleTimeout: number;
   gpuTypeIds: string[];
 };
+
+type EndpointHealth = {
+  jobs?: {
+    inQueue?: number;
+    inProgress?: number;
+  };
+  workers?: {
+    idle?: number;
+    running?: number;
+  };
+};
+
+const rollback = process.argv.includes("--rollback");
+const productionWorkersMax = 2;
+const desiredWorkersMax = rollback ? 1 : productionWorkersMax;
+const desiredIdleTimeout = 5;
 
 // The immutable BF16 worker needs at least 48 GB VRAM. Keep low-cost 48 GB
 // cards first, then add datacenter fallbacks so scale-to-zero does not depend
@@ -60,6 +77,28 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+async function endpointHealth(): Promise<EndpointHealth> {
+  const response = await fetch(
+    `https://api.runpod.ai/v2/${encodeURIComponent(endpointId!)}/health`,
+    {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      cache: "no-store",
+      signal: AbortSignal.timeout(30_000),
+    },
+  );
+  const source = await response.text();
+  let body: unknown;
+  try {
+    body = source ? JSON.parse(source) : null;
+  } catch {
+    throw new Error(`RunPod health returned non-JSON status ${response.status}`);
+  }
+  if (!response.ok || !body || typeof body !== "object") {
+    throw new Error(`RunPod endpoint health failed (${response.status})`);
+  }
+  return body as EndpointHealth;
+}
+
 function sameValues(actual: string[], expected: string[]): boolean {
   const actualSet = new Set(actual);
   return actualSet.size === expected.length
@@ -71,29 +110,59 @@ async function main() {
   if (before.id !== endpointId || !/z-image/i.test(before.name)) {
     throw new Error("Refusing to mutate an unexpected RunPod endpoint");
   }
-  if (before.workersMin !== 0 || before.workersMax !== 1 || !before.flashboot) {
-    throw new Error("Capacity patch requires scale-to-zero, workersMax=1, and FlashBoot");
+  if (
+    before.workersMin !== 0
+    || ![1, desiredWorkersMax].includes(before.workersMax)
+    || before.idleTimeout !== desiredIdleTimeout
+    || !before.flashboot
+  ) {
+    throw new Error("Capacity patch requires scale-to-zero, workersMax=1|2, idleTimeout=5, and FlashBoot");
   }
 
-  const changed = !sameValues(before.gpuTypeIds, desiredGpuTypeIds);
+  const health = await endpointHealth();
+  const queued = Math.max(0, Math.floor(Number(health.jobs?.inQueue) || 0));
+  const inProgress = Math.max(0, Math.floor(Number(health.jobs?.inProgress) || 0));
+  const changed = before.workersMax !== desiredWorkersMax
+    || !sameValues(before.gpuTypeIds, desiredGpuTypeIds);
   console.log(JSON.stringify({
-    mode: apply ? "apply" : "dry-run",
+    mode: apply
+      ? rollback ? "rollback-apply" : "apply"
+      : rollback ? "rollback-dry-run" : "dry-run",
     endpoint: { id: before.id, name: before.name, templateId: before.templateId },
+    beforeWorkersMax: before.workersMax,
+    desiredWorkersMax,
+    idleTimeout: before.idleTimeout,
+    health: {
+      queued,
+      inProgress,
+      idleWorkers: Math.max(0, Math.floor(Number(health.workers?.idle) || 0)),
+      runningWorkers: Math.max(0, Math.floor(Number(health.workers?.running) || 0)),
+    },
     beforeGpuTypeIds: before.gpuTypeIds,
     desiredGpuTypeIds,
     changed,
   }));
   if (!apply || !changed) return;
+  if (queued > 0 || inProgress > 0) {
+    throw new Error("Refusing to change RunPod image capacity while jobs are queued or in progress");
+  }
 
   await request<Endpoint>(`/endpoints/${encodeURIComponent(endpointId!)}`, {
     method: "PATCH",
-    body: JSON.stringify({ gpuTypeIds: desiredGpuTypeIds }),
+    body: JSON.stringify({
+      gpuTypeIds: desiredGpuTypeIds,
+      workersMin: 0,
+      workersMax: desiredWorkersMax,
+      idleTimeout: desiredIdleTimeout,
+      flashboot: true,
+    }),
   });
   const after = await request<Endpoint>(`/endpoints/${encodeURIComponent(endpointId!)}`);
   if (
     after.templateId !== before.templateId
     || after.workersMin !== 0
-    || after.workersMax !== 1
+    || after.workersMax !== desiredWorkersMax
+    || after.idleTimeout !== desiredIdleTimeout
     || !after.flashboot
     || !sameValues(after.gpuTypeIds, desiredGpuTypeIds)
   ) {
@@ -105,6 +174,7 @@ async function main() {
     gpuTypeIds: after.gpuTypeIds,
     workersMin: after.workersMin,
     workersMax: after.workersMax,
+    idleTimeout: after.idleTimeout,
     flashboot: after.flashboot,
   }));
 }

@@ -93,6 +93,7 @@ import {
   forEachInFailFastBatches,
   heroRunpodCircuitState,
 } from "@/lib/hero-image-resilience";
+import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import path from "path";
 import fs from "fs";
 
@@ -110,6 +111,7 @@ function readIntEnv(name: string, fallback: number, min: number, max: number): n
 
 const SEARCH_CONCURRENCY = readConcurrencyEnv("STOCK_SEARCH_CONCURRENCY", 8, 20);
 const DOWNLOAD_CONCURRENCY = readConcurrencyEnv("STOCK_DOWNLOAD_CONCURRENCY", 2, 6);
+const HERO_RUNPOD_CONCURRENCY = readConcurrencyEnv("HERO_RUNPOD_CONCURRENCY", 2, 2);
 const PER_SUBTITLE_DOWNLOAD_LIMIT = readIntEnv("STOCK_PER_SUBTITLE_DOWNLOAD_LIMIT", 36, 6, 120);
 
 type StockProvider = "pexels" | "pixabay";
@@ -1585,6 +1587,30 @@ export async function POST(req: Request) {
       heroImageModel: "z-image-turbo",
       heroImageRoute: heroOffer.providerRoute,
     } as const;
+    const runpodCost = await getRunpodImageCostSnapshot({
+      endpointId: heroOffer.providerEndpoint,
+    });
+    if (!runpodCost.admitted) {
+      await recordFetchStockTelemetry("error", {
+        ...heroAiTelemetry,
+        providerErrorCode: "runpod_cost_guard",
+        errorProvider: "runpod",
+        heroImageCostStatus: runpodCost.status,
+        heroImageCostBahtPerImage: runpodCost.costBahtPerImage,
+        heroImageCostHardLimitBaht: runpodCost.hardLimitBahtPerImage,
+        heroImageCostDeliveredSample: runpodCost.deliveredImages,
+        failedSceneCount: directJobs.length,
+        completedSceneCount: 0,
+      });
+      return NextResponse.json({
+        error: runpodCost.status === "stale"
+          ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงหยุดงานก่อนหักเครดิต"
+          : "ต้นทุน Hero AI Image สูงกว่าเพดานที่กำหนด ระบบหยุดงานก่อนหักเครดิต",
+        code: "RUNPOD_COST_GUARD",
+        retryable: true,
+        failedScenes: directJobs.map((item) => item.sourceIndex),
+      }, { status: 503 });
+    }
     const circuit = heroRunpodCircuitState();
     if (circuit.open) {
       await recordFetchStockTelemetry("error", {
@@ -1678,20 +1704,29 @@ export async function POST(req: Request) {
       providerCode?: string;
       systemic: boolean;
       retryable: boolean;
+      stopBatch: boolean;
+    }> = [];
+    type HeroGeneratedImage = Awaited<ReturnType<typeof generateHeroImageForVideo>>;
+    const generatedScenes: Array<{
+      keyword: string;
+      sourceIndex: number;
+      kenBurnsDurationSec: number;
+      startedAt: number;
+      generated: HeroGeneratedImage;
+      briefVisualMode: string;
+      providerStyle: string;
     }> = [];
     aiTelemetry.aiGenRequestedCount += clipsToGenerateRaw;
     aiTelemetry.aiGenPlannedCount += clipsToGenerate;
 
+    // Provider phase first: keep both RunPod workers fed continuously. Local
+    // downloads and ffmpeg Ken Burns run only after the provider queue drains,
+    // so CPU work cannot make the GPU endpoint repeatedly scale to zero.
     const batchOutcome = await forEachInFailFastBatches(
       directJobs,
-      Math.min(3, DOWNLOAD_CONCURRENCY),
+      HERO_RUNPOD_CONCURRENCY,
       async ({ keyword, sourceIndex, kenBurnsDurationSec }) => {
         const startedAt = Date.now();
-        const id = HERO_RUNPOD_ID_OFFSET + sourceIndex;
-        const imageFile = `${userPrefix}${id}.src.png`;
-        const imagePath = path.join(rendersDir, imageFile);
-        const outFile = `${userPrefix}${id}.mp4`;
-        const outPath = path.join(rendersDir, outFile);
         aiTelemetry.aiGenAttemptCount++;
         try {
           const brief = heroBriefByScene.get(sourceIndex);
@@ -1715,76 +1750,21 @@ export async function POST(req: Request) {
             style: providerStyle,
             interfaceExpected: brief.includesInterface,
           });
-
-          if (download) {
-            if (generated.outputUrl.startsWith("/api/renders/")) {
-              const filename = decodeURIComponent(generated.outputUrl.slice("/api/renders/".length));
-              if (!filename || path.basename(filename) !== filename) throw new Error("invalid local Hero image path");
-              const sourcePath = path.join(process.cwd(), "public", "renders", filename);
-              if (!fs.existsSync(sourcePath)) throw new Error("persisted Hero image is missing");
-              fs.copyFileSync(sourcePath, imagePath);
-            } else {
-              await downloadAndCrop(generated.outputUrl, imagePath);
-            }
-            await applyKenBurns(imagePath, outPath, kenBurnsDurationSec);
-            if (!isValidMp4Path(outPath)) throw new Error("Hero image Ken Burns output is invalid");
-            try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
-            stockTelemetry.downloadedCount++;
-            stockTelemetry.normalizeSkippedCount++;
-          }
-
-          results.push({
+          generatedScenes.push({
             keyword,
             sourceIndex,
-            pexelsId: id,
-            duration: kenBurnsDurationSec,
-            videoUrl: generated.outputUrl,
-            ...(download ? {
-              localPath: outPath,
-              localUrl: `/api/stocks/${outFile}`,
-              imageLocalUrl: `/api/stocks/${imageFile}`,
-            } : {}),
-            imageUrl: generated.outputUrl,
-            assetMeta: {
-              provider: "runpod",
-              assetId: generated.jobId,
-              downloadUrl: generated.outputUrl,
-              license: "Hero AI generated",
-            },
+            kenBurnsDurationSec,
+            startedAt,
+            generated,
+            briefVisualMode: brief.visualMode,
+            providerStyle,
           });
-          aiTelemetry.aiGenSuccessCount++;
           aiTelemetry.aiChargedCount++;
           aiTelemetry.aiCreditsSpent += generated.creditCost;
           aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted;
           aiTelemetry.aiCreditsSpentPurchased += generated.creditsFromPurchased;
-          await recordTelemetryEvent(userId, {
-            name: "hero_ai_image_video_scene_done",
-            category: "performance",
-            source: "server",
-            step: "fetchStock.heroAiImage",
-            status: "done",
-            durationMs: Date.now() - startedAt,
-            properties: {
-              videoJobId,
-              sceneIndex: sourceIndex,
-              aiGenerationJobId: generated.jobId,
-              aiProvider: generated.provider,
-              aiModel: generated.providerModel,
-              aiProviderRoute: generated.providerRoute,
-              aiCreditCost: generated.creditCost,
-              aiProviderDelayTimeMs: generated.delayTimeMs,
-              aiProviderExecutionTimeMs: generated.executionTimeMs,
-              aiProviderReportedCostUsdMicros: generated.providerReportedCostUsdMicros,
-              heroScenePlanSource: heroScenePlan.source,
-              heroSceneVisualMode: brief.visualMode,
-              heroSceneProviderStyle: providerStyle,
-            },
-          }).catch(() => {});
-          return { systemic: false };
+          return { stopBatch: false };
         } catch (error) {
-          safeUnlink(imagePath);
-          safeUnlink(outPath);
-          safeUnlink(normalizedMarkerPath(outPath));
           stockTelemetry.downloadFailCount++;
           aiTelemetry.aiGenFailedCount++;
           const code = error instanceof HeroImageGenerationError ? error.code : "OUTPUT_INVALID";
@@ -1799,6 +1779,7 @@ export async function POST(req: Request) {
             providerCode: providerFailure?.code,
             systemic: providerFailure?.systemic ?? false,
             retryable: providerFailure?.retryable ?? true,
+            stopBatch: providerFailure?.stopBatch ?? providerFailure?.systemic ?? false,
           });
           await recordTelemetryEvent(userId, {
             name: "hero_ai_image_video_scene_error",
@@ -1817,23 +1798,128 @@ export async function POST(req: Request) {
               systemicProviderFailure: providerFailure?.systemic ?? false,
             },
           }).catch(() => {});
-          return { systemic: providerFailure?.systemic ?? false };
+          return {
+            stopBatch: providerFailure?.stopBatch ?? providerFailure?.systemic ?? false,
+          };
         }
       },
-      (outcome) => outcome.systemic,
+      (outcome) => outcome.stopBatch,
     );
     if (batchOutcome.skipped.length > 0) {
-      const systemicFailure = failures.find((failure) => failure.systemic);
+      const stoppingFailure = failures.find((failure) => failure.stopBatch);
       for (const skipped of batchOutcome.skipped) {
         failures.push({
           sourceIndex: skipped.sourceIndex,
-          code: "PROVIDER_UNAVAILABLE",
-          message: "Skipped because the RunPod provider circuit is open",
-          providerCode: systemicFailure?.providerCode,
-          systemic: true,
-          retryable: systemicFailure?.retryable ?? true,
+          code: stoppingFailure?.systemic ? "PROVIDER_UNAVAILABLE" : "PROVIDER_QUEUE_STALLED",
+          message: stoppingFailure?.systemic
+            ? "Skipped because the RunPod provider circuit is open"
+            : "Skipped because this video batch encountered a stalled RunPod queue",
+          providerCode: stoppingFailure?.providerCode,
+          systemic: stoppingFailure?.systemic ?? false,
+          retryable: stoppingFailure?.retryable ?? true,
+          stopBatch: true,
         });
       }
+    }
+
+    if (failures.length === 0) {
+      await forEachInFailFastBatches(
+        generatedScenes,
+        DOWNLOAD_CONCURRENCY,
+        async ({
+          keyword,
+          sourceIndex,
+          kenBurnsDurationSec,
+          startedAt,
+          generated,
+          briefVisualMode,
+          providerStyle,
+        }) => {
+          const id = HERO_RUNPOD_ID_OFFSET + sourceIndex;
+          const imageFile = `${userPrefix}${id}.src.png`;
+          const imagePath = path.join(rendersDir, imageFile);
+          const outFile = `${userPrefix}${id}.mp4`;
+          const outPath = path.join(rendersDir, outFile);
+          try {
+            if (download) {
+              if (generated.outputUrl.startsWith("/api/renders/")) {
+                const filename = decodeURIComponent(generated.outputUrl.slice("/api/renders/".length));
+                if (!filename || path.basename(filename) !== filename) throw new Error("invalid local Hero image path");
+                const sourcePath = path.join(process.cwd(), "public", "renders", filename);
+                if (!fs.existsSync(sourcePath)) throw new Error("persisted Hero image is missing");
+                fs.copyFileSync(sourcePath, imagePath);
+              } else {
+                await downloadAndCrop(generated.outputUrl, imagePath);
+              }
+              await applyKenBurns(imagePath, outPath, kenBurnsDurationSec);
+              if (!isValidMp4Path(outPath)) throw new Error("Hero image Ken Burns output is invalid");
+              try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+              stockTelemetry.downloadedCount++;
+              stockTelemetry.normalizeSkippedCount++;
+            }
+
+            results.push({
+              keyword,
+              sourceIndex,
+              pexelsId: id,
+              duration: kenBurnsDurationSec,
+              videoUrl: generated.outputUrl,
+              ...(download ? {
+                localPath: outPath,
+                localUrl: `/api/stocks/${outFile}`,
+                imageLocalUrl: `/api/stocks/${imageFile}`,
+              } : {}),
+              imageUrl: generated.outputUrl,
+              assetMeta: {
+                provider: "runpod",
+                assetId: generated.jobId,
+                downloadUrl: generated.outputUrl,
+                license: "Hero AI generated",
+              },
+            });
+            aiTelemetry.aiGenSuccessCount++;
+            await recordTelemetryEvent(userId, {
+              name: "hero_ai_image_video_scene_done",
+              category: "performance",
+              source: "server",
+              step: "fetchStock.heroAiImage",
+              status: "done",
+              durationMs: Date.now() - startedAt,
+              properties: {
+                videoJobId,
+                sceneIndex: sourceIndex,
+                aiGenerationJobId: generated.jobId,
+                aiProvider: generated.provider,
+                aiModel: generated.providerModel,
+                aiProviderRoute: generated.providerRoute,
+                aiCreditCost: generated.creditCost,
+                aiProviderDelayTimeMs: generated.delayTimeMs,
+                aiProviderExecutionTimeMs: generated.executionTimeMs,
+                aiProviderReportedCostUsdMicros: generated.providerReportedCostUsdMicros,
+                heroScenePlanSource: heroScenePlan.source,
+                heroSceneVisualMode: briefVisualMode,
+                heroSceneProviderStyle: providerStyle,
+              },
+            }).catch(() => {});
+          } catch (error) {
+            safeUnlink(imagePath);
+            safeUnlink(outPath);
+            safeUnlink(normalizedMarkerPath(outPath));
+            stockTelemetry.downloadFailCount++;
+            aiTelemetry.aiGenFailedCount++;
+            failures.push({
+              sourceIndex,
+              code: "OUTPUT_INVALID",
+              message: error instanceof Error ? error.message : "Hero image post-processing failed",
+              systemic: false,
+              retryable: true,
+              stopBatch: false,
+            });
+          }
+          return null;
+        },
+        () => false,
+      );
     }
 
     results.sort((a, b) => (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0));
@@ -1861,9 +1947,12 @@ export async function POST(req: Request) {
       const heroBalanceAfter = await getBalance(userId);
       aiTelemetry.aiLastCreditBalanceAfterSpend = heroBalanceAfter.total;
       const systemicFailure = failures.find((failure) => failure.systemic);
+      const stoppingFailure = failures.find((failure) => failure.stopBatch);
       await recordFetchStockTelemetry("error", {
         ...heroAiTelemetry,
-        providerErrorCode: systemicFailure?.providerCode ?? failures[0].code,
+        providerErrorCode: systemicFailure?.providerCode
+          ?? stoppingFailure?.providerCode
+          ?? failures[0].code,
         errorProvider: "runpod",
         failedSceneCount: failures.length,
         completedSceneCount: results.length,
@@ -1878,10 +1967,14 @@ export async function POST(req: Request) {
       return NextResponse.json({
         error: systemicFailure
           ? "ผู้ให้บริการ Hero AI Image ขัดข้อง ระบบหยุดฉากที่เหลือและคืนเครดิตของงานนี้แล้ว"
+          : stoppingFailure
+            ? "คิว Hero AI Image ของงานนี้ค้าง ระบบหยุดเฉพาะงานนี้และคืนเครดิตภาพที่สร้างไว้แล้ว"
           : `Hero AI Image สร้างไม่ครบ ${failures.length} ฉาก ระบบคืนเครดิตภาพของงานนี้แล้ว`,
-        code: systemicFailure ? "PROVIDER_UNAVAILABLE" : failures[0].code,
-        providerCode: systemicFailure?.providerCode,
-        retryable: systemicFailure ? systemicFailure.retryable : true,
+        code: systemicFailure
+          ? "PROVIDER_UNAVAILABLE"
+          : stoppingFailure?.providerCode ?? failures[0].code,
+        providerCode: systemicFailure?.providerCode ?? stoppingFailure?.providerCode,
+        retryable: systemicFailure?.retryable ?? stoppingFailure?.retryable ?? true,
         failedScenes: failures.map((item) => item.sourceIndex).sort((a, b) => a - b),
         refundedCredits: compensation.refundedCredits,
       }, { status: failures[0].code === "INSUFFICIENT_CREDITS" ? 402 : 503 });

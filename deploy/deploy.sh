@@ -205,6 +205,12 @@ restart_from_ecosystem "$WORKER_NAME"
 RENDER_WORKER_NAME="render-worker"
 restart_from_ecosystem "$RENDER_WORKER_NAME"
 
+# Hourly RunPod invoice sync. Starting/restarting the cron app also performs one
+# immediate sync after schema deployment, so the new web process does not wait
+# up to an hour before its fully-loaded COGS guard has fresh data.
+RUNPOD_IMAGE_COST_SYNC_NAME="runpod-image-cost-sync"
+restart_from_ecosystem "$RUNPOD_IMAGE_COST_SYNC_NAME"
+
 pm2 save
 pm2 startup
 

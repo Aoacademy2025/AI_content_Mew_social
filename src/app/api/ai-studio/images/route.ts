@@ -13,6 +13,7 @@ import {
 } from "@/lib/ai-image-policy";
 import { ensureMonthlyGrant } from "@/lib/credits";
 import {
+  claimPlannedImageAttemptSubmission,
   createReservedImageJob,
   failAndRefundAiJob,
   markImageAttemptSubmitted,
@@ -27,6 +28,7 @@ import {
 import { apiError } from "@/lib/api-error";
 import { videoExpiryFor } from "@/lib/plan-limits";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
+import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 
 export const runtime = "nodejs";
 
@@ -88,6 +90,24 @@ export async function POST(request: Request) {
       throw error;
     }
 
+    if (
+      preparedProviderJob.provider === "runpod"
+      && preparedProviderJob.providerRoute === "runpod-custom"
+    ) {
+      const runpodCost = await getRunpodImageCostSnapshot({
+        endpointId: preparedProviderJob.providerEndpoint,
+      });
+      if (!runpodCost.admitted) {
+        return NextResponse.json({
+          error: runpodCost.status === "stale"
+            ? "ระบบตรวจสอบต้นทุน RunPod ขาดข้อมูลล่าสุด จึงหยุดงานก่อนหักเครดิต"
+            : "ต้นทุน RunPod สูงกว่าเพดานที่กำหนด จึงหยุดงานก่อนหักเครดิต",
+          code: "RUNPOD_COST_GUARD",
+          retryable: true,
+        }, { status: 503 });
+      }
+    }
+
     await ensureMonthlyGrant(user.id);
     const creditCost = preparedProviderJob.quote.credits;
     const reserved = await createReservedImageJob({
@@ -119,10 +139,22 @@ export async function POST(request: Request) {
     }
 
     try {
+      const claimed = await claimPlannedImageAttemptSubmission({
+        userId: user.id,
+        jobId: reserved.job.id,
+        sequence: 1,
+      });
+      if (!claimed) {
+        return NextResponse.json({
+          job: publicAiGenerationJob(reserved.job),
+          balance: reserved.balanceAfter,
+        }, { status: 202 });
+      }
       const submitted = await submitPreparedImageGeneration(preparedProviderJob, user.id);
       const job = await markImageAttemptSubmitted({
         userId: user.id,
         jobId: reserved.job.id,
+        sequence: 1,
         providerJobId: submitted.providerJobId,
         inProgress: submitted.status === "IN_PROGRESS",
       });

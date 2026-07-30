@@ -289,7 +289,7 @@ check(
     && imageDownload.includes('redirect: "error"'),
 );
 check(
-  "provider attempts are durable and limited to one sequence per job",
+  "provider attempts are durable and uniquely sequenced per job",
   prismaSchema.includes("model AiGenerationAttempt")
     && prismaSchema.includes("@@unique([jobId, sequence])")
     && prismaSchema.includes("providerReportedCredits")

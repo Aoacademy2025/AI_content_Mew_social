@@ -9,6 +9,7 @@ import {
   computeBreakEvenTarget,
 } from "@/lib/cost-rates";
 import { getRevenueCohorts } from "@/lib/revenue-cohorts";
+import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -104,6 +105,7 @@ export async function GET(req: Request) {
       chargedClipsMonth,
       imageSpendMonth,
       imageRefundMonth,
+      runpodImageCost,
     ] = await Promise.all([
       getCostRates(),
 
@@ -181,6 +183,7 @@ export async function GET(req: Request) {
         where: { kind: "refund", action: "ai-image-refund", createdAt: { gte: monthFrom } },
         select: { delta: true },
       }),
+      getRunpodImageCostSnapshot({ windowDays: Math.min(days, 30) }).catch(() => null),
     ]);
 
     // ── Managed minutes — sum ChargedClip.chargedMinutes (minutes billed per video) ──
@@ -355,6 +358,7 @@ export async function GET(req: Request) {
         subs: cohorts.breakEvenSubs,
         target: breakEvenTarget,
       },
+      runpodImageCost,
       trend,
     });
   } catch (error) {
