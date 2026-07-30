@@ -74,6 +74,18 @@ interface UsageMetrics {
 interface TopUser { userId: string; cogs: number; minutes: number; images: number }
 interface BreakEven { subs: number; target: number }
 interface TrendRow { date: string; revenue: number; cogs: number }
+interface RunpodImageCost {
+  billedUsd: number;
+  billedTimeMs: number;
+  deliveredImages: number;
+  costBahtPerImage: number | null;
+  targetBahtPerImage: number;
+  hardLimitBahtPerImage: number;
+  minimumSample: number;
+  status: "insufficient_data" | "healthy" | "warning" | "hard_stop" | "stale";
+  admitted: boolean;
+  lastSuccessfulSyncAt: string | null;
+}
 
 interface CostsResponse {
   period: { days: number; from: string };
@@ -84,6 +96,7 @@ interface CostsResponse {
   usage: UsageMetrics;
   topUsers: TopUser[];
   breakEven: BreakEven;
+  runpodImageCost: RunpodImageCost | null;
   trend: TrendRow[];
 }
 
@@ -176,6 +189,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
   const bd = data?.breakdown;
   const u = data?.usage;
   const be = data?.breakEven;
+  const runpodCost = data?.runpodImageCost;
   const trend = data?.trend ?? [];
   const windowLabel = days === 1 ? "24 ชม." : `${days} วัน`;
 
@@ -310,6 +324,48 @@ export default function CostMarginPanel({ days }: { days: number }) {
               </div>
 
               {/* ── Margin KPIs ───────────────────────────────────────────────────── */}
+              {runpodCost && (
+                <div className={cn(
+                  "rounded-lg border p-4",
+                  runpodCost.status === "healthy"
+                    ? "border-emerald-400/25 bg-emerald-500/[0.06]"
+                    : runpodCost.status === "warning" || runpodCost.status === "insufficient_data"
+                      ? "border-amber-400/25 bg-amber-500/[0.06]"
+                      : "border-rose-400/25 bg-rose-500/[0.08]",
+                )}>
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-300">
+                        RunPod Image · Fully-loaded COGS
+                      </div>
+                      <div className="mt-1 text-xs text-slate-500">
+                        รวม cold start, idle, fail/retry และ smoke · {fmtNum(runpodCost.deliveredImages)} รูปส่งมอบ
+                      </div>
+                    </div>
+                    <div className="flex items-end gap-3">
+                      <span className="text-2xl font-bold text-white">
+                        {runpodCost.costBahtPerImage === null
+                          ? "รอข้อมูล"
+                          : `฿${fmtNum(runpodCost.costBahtPerImage, 3)}/รูป`}
+                      </span>
+                      <span className={cn(
+                        "rounded-full px-2.5 py-1 text-[11px] font-semibold",
+                        runpodCost.admitted
+                          ? "bg-emerald-500/15 text-emerald-200"
+                          : "bg-rose-500/15 text-rose-200",
+                      )}>
+                        {runpodCost.admitted ? "รับงานได้" : "หยุดรับงาน"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid gap-2 border-t border-white/10 pt-3 text-xs text-slate-400 sm:grid-cols-3">
+                    <span>เป้าหมาย ≤ ฿{fmtNum(runpodCost.targetBahtPerImage, 2)}</span>
+                    <span>Hard stop &gt; ฿{fmtNum(runpodCost.hardLimitBahtPerImage, 2)}</span>
+                    <span>Sample ขั้นต่ำ {fmtNum(runpodCost.minimumSample)} รูป</span>
+                  </div>
+                </div>
+              )}
+
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 <KpiTile label="ต้นทุนผันแปร AI (COGS)" value={fmtBaht(h.variableCogs)} sub="ต่อเดือน (30 วัน) · Gemini TTS + AI image" icon={Zap} tone="text-amber-300 bg-amber-500/12 border-amber-400/20" />
                 <KpiTile label="Gross Margin %" value={fmtPct(h.grossMarginPct)} sub="(MRR - COGS) / MRR" icon={BarChart3} tone={marginTone(h.grossMarginPct)} />

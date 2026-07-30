@@ -51,6 +51,18 @@ const stockRuntimeEnv = Object.freeze({
   STOCK_NORMALIZE_PRESET: "ultrafast",
 });
 
+// Two provider submissions match the guarded RunPod workersMax=2 contract.
+// Scale-to-zero and the five-second idle timeout keep the second worker free
+// when traffic is sparse; the fully-loaded invoice guard remains authoritative.
+const heroImageRuntimeEnv = Object.freeze({
+  HERO_RUNPOD_CONCURRENCY: "2",
+  HERO_RUNPOD_ORPHAN_QUEUE_MS: "120000",
+  HERO_RUNPOD_COST_TARGET_BAHT: "0.90",
+  HERO_RUNPOD_COST_HARD_LIMIT_BAHT: "1.08",
+  HERO_RUNPOD_COST_MIN_SAMPLE: "20",
+  HERO_RUNPOD_COST_STALE_MS: "10800000",
+});
+
 module.exports = {
   apps: [
   {
@@ -86,6 +98,7 @@ module.exports = {
         // inflates heap usage during long renders, which contributed to the OOM.
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
+        ...heroImageRuntimeEnv,
         ...r2MediaRuntimeEnv,
         // PR-7 durable render queue: "1" = the thin render route enqueues a
         // RenderJob (returns jobId) instead of rendering in-process; the
@@ -109,6 +122,7 @@ module.exports = {
         RENDER_VIA_QUEUE: "1",
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
+        ...heroImageRuntimeEnv,
         ...r2MediaRuntimeEnv,
       },
     },
@@ -229,6 +243,22 @@ module.exports = {
         NODE_ENV: "production",
         NEXT_PUBLIC_APP_URL: "http://localhost:3000",
         CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
+    {
+      name: "runpod-image-cost-sync",
+      cwd: "/var/www/ai-content",
+      script: "node",
+      args: "--conditions=react-server --import tsx scripts/sync-runpod-image-cost.ts",
+      cron_restart: "7 * * * *", // hourly actual invoice sync; hard cost guard reads these durable buckets
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
+        RUNPOD_API_KEY: process.env.RUNPOD_API_KEY || "",
+        RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID: process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID || "",
+        ...heroImageRuntimeEnv,
       },
     },
     {

@@ -46,6 +46,7 @@ import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
 import { isHeroAiBetaUser, isInternalAiBetaEnabledFor, isInternalAiTester } from "@/lib/internal-ai-access";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
+import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -487,6 +488,18 @@ export async function POST(req: Request) {
         return NextResponse.json({
           error: "hero_image_unavailable",
           message: "Hero AI Image ยังไม่พร้อมบน RunPod custom endpoint ที่ผ่านการตรวจสอบ",
+        }, { status: 503 });
+      }
+      const runpodCost = await getRunpodImageCostSnapshot({
+        endpointId: offer.providerEndpoint,
+      });
+      if (!runpodCost.admitted) {
+        return NextResponse.json({
+          error: "runpod_cost_guard",
+          message: runpodCost.status === "stale"
+            ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงยังไม่รับงานใหม่"
+            : "ต้นทุน Hero AI Image สูงกว่าเพดาน ฿1.08/รูป จึงยังไม่รับงานใหม่",
+          retryable: true,
         }, { status: 503 });
       }
     } else if (requestedSource !== "stock" && !canUseKieImages) {

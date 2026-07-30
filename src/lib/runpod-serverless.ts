@@ -175,6 +175,45 @@ export function getRunpodJob(endpointId: string, providerJobId: string) {
   return runpodFetch(endpointId, `status/${encodeURIComponent(providerJobId)}`);
 }
 
+export type RunpodEndpointHealth = {
+  jobs: {
+    completed: number;
+    failed: number;
+    inProgress: number;
+    inQueue: number;
+    retried: number;
+  };
+  workers: {
+    idle: number;
+    running: number;
+  };
+};
+
+export async function getRunpodEndpointHealth(
+  endpointId: string,
+): Promise<RunpodEndpointHealth> {
+  const result = await runpodFetch(endpointId, "health") as RunpodJobResponse & {
+    jobs?: Partial<RunpodEndpointHealth["jobs"]>;
+    workers?: Partial<RunpodEndpointHealth["workers"]>;
+  };
+  const number = (value: unknown) => Number.isFinite(Number(value))
+    ? Math.max(0, Math.floor(Number(value)))
+    : 0;
+  return {
+    jobs: {
+      completed: number(result.jobs?.completed),
+      failed: number(result.jobs?.failed),
+      inProgress: number(result.jobs?.inProgress),
+      inQueue: number(result.jobs?.inQueue),
+      retried: number(result.jobs?.retried),
+    },
+    workers: {
+      idle: number(result.workers?.idle),
+      running: number(result.workers?.running),
+    },
+  };
+}
+
 export async function cancelRunpodImageJob(endpointId: string, providerJobId: string): Promise<boolean> {
   try {
     const result = await runpodFetch(

@@ -18,6 +18,17 @@ export type RunpodJobResponse = {
   error?: string;
   delayTime?: number;
   executionTime?: number;
+  jobs?: {
+    completed?: number;
+    failed?: number;
+    inProgress?: number;
+    inQueue?: number;
+    retried?: number;
+  };
+  workers?: {
+    idle?: number;
+    running?: number;
+  };
 };
 
 export type RunpodImageInput = {

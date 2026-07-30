@@ -7,6 +7,9 @@ import {
   forEachInFailFastBatches,
   heroRunpodCircuitState,
   openHeroRunpodCircuit,
+  recordHeroRunpodFailure,
+  recordHeroRunpodSuccess,
+  shouldRetryQueuedRunpodJob,
 } from "../src/lib/hero-image-resilience";
 import { fetchImageResponseWithRetry } from "../src/lib/ai-generation-image-download";
 import { HERO_AI_IMAGE_CREDITS } from "../src/lib/credit-costs";
@@ -24,6 +27,12 @@ async function main() {
     code: "RUNPOD_FAILED",
     systemic: false,
     retryable: true,
+  });
+  assert.deepEqual(classifyRunpodTerminalFailure("RUNPOD_QUEUE_TIMEOUT"), {
+    code: "RUNPOD_QUEUE_TIMEOUT",
+    systemic: false,
+    retryable: true,
+    stopBatch: true,
   });
 
   const attempted: number[] = [];
@@ -51,6 +60,49 @@ async function main() {
   });
   assert.equal(heroRunpodCircuitState(1_000 + 10 * 60_000).open, false);
   closeHeroRunpodCircuit();
+  assert.deepEqual(recordHeroRunpodFailure("RUNPOD_QUEUE_TIMEOUT", "job-a", 2_000), {
+    circuitOpened: false,
+    independentSignals: 1,
+  });
+  assert.equal(heroRunpodCircuitState(2_001).open, false, "one queue timeout must not stop other accounts");
+  assert.deepEqual(recordHeroRunpodFailure("RUNPOD_QUEUE_TIMEOUT", "job-a", 2_002), {
+    circuitOpened: false,
+    independentSignals: 1,
+  }, "the same durable job must not count twice");
+  assert.deepEqual(recordHeroRunpodFailure("RUNPOD_QUEUE_TIMEOUT", "job-b", 2_003), {
+    circuitOpened: true,
+    independentSignals: 2,
+  });
+  assert.deepEqual(heroRunpodCircuitState(2_004), {
+    open: true,
+    code: "RUNPOD_QUEUE_TIMEOUT",
+    retryAfterMs: 60_000 - 1,
+  });
+  assert.deepEqual(heroRunpodCircuitState(2_003 + 60_000), {
+    open: false,
+    halfOpen: true,
+  });
+  assert.equal(
+    heroRunpodCircuitState(2_003 + 60_001).open,
+    true,
+    "only one request may claim the half-open probe",
+  );
+  recordHeroRunpodSuccess();
+  assert.equal(heroRunpodCircuitState().open, false);
+  assert.equal(shouldRetryQueuedRunpodJob({
+    queuedMs: 120_000,
+    health: {
+      jobs: { inQueue: 1, inProgress: 0 },
+      workers: { idle: 1, running: 1 },
+    },
+  }), true, "an idle worker plus a long queued job is an orphan signal");
+  assert.equal(shouldRetryQueuedRunpodJob({
+    queuedMs: 120_000,
+    health: {
+      jobs: { inQueue: 1, inProgress: 1 },
+      workers: { idle: 0, running: 1 },
+    },
+  }), false, "a busy worker is normal capacity pressure, not an orphan");
   assert.equal(HERO_AI_IMAGE_CREDITS, 3, "the custom Hero route needs the approved 3-credit cost envelope");
 
   let imageHits = 0;
@@ -88,18 +140,33 @@ async function main() {
   const heroImage = fs.readFileSync("src/lib/video-hero-image.server.ts", "utf8");
   const media = fs.readFileSync("src/lib/ai-generation-media.server.ts", "utf8");
   const runpod = fs.readFileSync("src/lib/runpod-serverless.ts", "utf8");
+  const capacity = fs.readFileSync("scripts/configure-runpod-image-capacity.ts", "utf8");
   const provider = fs.readFileSync("src/lib/image-generation-provider.server.ts", "utf8");
   const videoJobs = fs.readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
   const editor = fs.readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
   const receipt = fs.readFileSync("src/app/(dashboard)/video-editor/_v2/RenderReceiptDialog.tsx", "utf8");
   assert.match(fetchStock, /forEachInFailFastBatches/, "the real Hero video route must use fail-fast batching");
+  assert.match(fetchStock, /HERO_RUNPOD_CONCURRENCY/, "app concurrency must be explicit and capped to the endpoint contract");
+  assert.match(
+    fetchStock,
+    /Provider phase first:[\s\S]+Local[\s\S]+Ken Burns run only after the provider queue drains/,
+    "provider generation must be decoupled from local Ken Burns processing",
+  );
   assert.match(fetchStock, /refundSettledVideoImageBatch/, "the real Hero video route must compensate settled scene credits");
   assert.match(fetchStock, /heroRunpodCircuitState/, "the route must reject requests while the Hero provider circuit is open");
   assert.match(heroImage, /classifyRunpodTerminalFailure/, "provider terminal errors must retain systemic classification");
   assert.match(heroImage, /prepared\.providerRoute !== "runpod-custom"/, "Hero video must stay pinned to the verified custom endpoint");
   assert.match(heroImage, /cancelRunpodImageJob/, "a bounded custom-worker timeout must cancel the exact durable provider job");
-  assert.match(heroImage, /RUNPOD_QUEUE_TIMEOUT/, "queue exhaustion must be systemic so later scenes stop");
+  assert.match(heroImage, /replaceCanceledImageAttempt/, "a confirmed orphan cancellation must create one durable same-engine retry");
+  assert.match(heroImage, /getRunpodEndpointHealth/, "orphan detection must consult live endpoint capacity");
+  assert.match(heroImage, /RUNPOD_QUEUE_TIMEOUT/, "queue exhaustion must stop only the affected video batch");
   assert.match(runpod, /cancelRunpodImageJob/, "the image provider must expose guarded cancellation");
+  assert.match(runpod, /getRunpodEndpointHealth/, "the image provider must expose endpoint health for orphan detection");
+  assert.match(capacity, /productionWorkersMax = 2/, "the guarded capacity command must target two workers");
+  assert.match(capacity, /rollback \? 1 : productionWorkersMax/, "the guarded command must support an explicit one-worker rollback");
+  assert.match(capacity, /queued > 0 \|\| inProgress > 0/, "capacity mutation must refuse a non-empty provider queue");
+  assert.match(capacity, /workersMin: 0/, "capacity must preserve scale-to-zero");
+  assert.match(capacity, /idleTimeout: desiredIdleTimeout/, "capacity must preserve the five-second idle timeout");
   assert.match(provider, /model\.customCreditCostKey/, "the custom endpoint must receive its route-specific quote");
   assert.match(videoJobs, /offer\.providerRoute !== "runpod-custom"/, "job creation must reject an accidental public-route rollback");
   assert.match(editor, /HERO_AI_IMAGE_CREDITS/, "the editor must disclose the custom-route price from the shared table");

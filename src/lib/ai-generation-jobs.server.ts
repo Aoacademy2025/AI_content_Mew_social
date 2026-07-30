@@ -183,9 +183,36 @@ export async function latestImageGenerationAttempt(
   });
 }
 
+/**
+ * Claim the right to perform the external submission before crossing the
+ * network boundary. Concurrent idempotent callers can poll the same durable
+ * attempt, but only one may create the provider job.
+ */
+export async function claimPlannedImageAttemptSubmission(input: {
+  userId: string;
+  jobId: string;
+  sequence: number;
+}): Promise<boolean> {
+  const claimed = await prisma.aiGenerationAttempt.updateMany({
+    where: {
+      jobId: input.jobId,
+      sequence: input.sequence,
+      status: "planned",
+      job: {
+        userId: input.userId,
+        chargeState: "reserved",
+        status: { in: ["queued", "in_progress"] },
+      },
+    },
+    data: { status: "submitting" },
+  });
+  return claimed.count === 1;
+}
+
 export async function markImageAttemptSubmitted(input: {
   userId: string;
   jobId: string;
+  sequence: number;
   providerJobId: string;
   inProgress: boolean;
 }): Promise<AiGenerationJob | null> {
@@ -194,7 +221,11 @@ export async function markImageAttemptSubmitted(input: {
     if (!job) return null;
     const now = new Date();
     await tx.aiGenerationAttempt.updateMany({
-      where: { jobId: job.id, sequence: 1, status: "planned" },
+      where: {
+        jobId: job.id,
+        sequence: input.sequence,
+        status: { in: ["planned", "submitting"] },
+      },
       data: {
         providerJobId: input.providerJobId,
         status: input.inProgress ? "in_progress" : "queued",
@@ -215,6 +246,7 @@ export async function markImageAttemptSubmitted(input: {
 export async function markImageAttemptProgress(input: {
   userId: string;
   jobId: string;
+  sequence: number;
   inProgress: boolean;
   delayTimeMs?: number;
 }): Promise<AiGenerationJob | null> {
@@ -223,7 +255,11 @@ export async function markImageAttemptProgress(input: {
     if (!job) return null;
     const now = new Date();
     await tx.aiGenerationAttempt.updateMany({
-      where: { jobId: job.id, sequence: 1, status: { in: ["submitted", "queued", "in_progress"] } },
+      where: {
+        jobId: job.id,
+        sequence: input.sequence,
+        status: { in: ["submitted", "submitting", "queued", "in_progress"] },
+      },
       data: { status: input.inProgress ? "in_progress" : "queued" },
     });
     return tx.aiGenerationJob.update({
@@ -234,6 +270,84 @@ export async function markImageAttemptProgress(input: {
         delayTimeMs: input.delayTimeMs ?? job.delayTimeMs,
       },
     });
+  });
+}
+
+/**
+ * Replace one confirmed-cancelled same-engine attempt without touching the
+ * customer's reservation. The provider/model/endpoint and cost estimate are
+ * copied from the canceled attempt, so this cannot become a silent fallback.
+ */
+export async function replaceCanceledImageAttempt(input: {
+  userId: string;
+  jobId: string;
+  sequence: number;
+  providerJobId: string;
+  cancellationConfirmed: boolean;
+  reason: string;
+}): Promise<AiGenerationAttempt | null> {
+  if (!input.cancellationConfirmed) return null;
+  return prisma.$transaction(async (tx) => {
+    const job = await tx.aiGenerationJob.findFirst({
+      where: { id: input.jobId, userId: input.userId },
+    });
+    if (!job || job.kind !== "image" || job.chargeState !== "reserved") return null;
+    if (job.status === "completed" || job.status === "failed") return null;
+
+    const attempt = await tx.aiGenerationAttempt.findUnique({
+      where: {
+        jobId_sequence: {
+          jobId: job.id,
+          sequence: input.sequence,
+        },
+      },
+    });
+    if (
+      !attempt
+      || attempt.sequence >= 2
+      || attempt.providerJobId !== input.providerJobId
+      || !["submitted", "queued", "in_progress"].includes(attempt.status)
+    ) {
+      return null;
+    }
+
+    const claimed = await tx.aiGenerationAttempt.updateMany({
+      where: {
+        id: attempt.id,
+        providerJobId: input.providerJobId,
+        status: { in: ["submitted", "queued", "in_progress"] },
+      },
+      data: {
+        status: "canceled",
+        errorCode: "RUNPOD_QUEUE_TIMEOUT",
+        errorMessage: input.reason.slice(0, 500),
+        finishedAt: new Date(),
+      },
+    });
+    if (claimed.count !== 1) return null;
+
+    const replacement = await tx.aiGenerationAttempt.create({
+      data: {
+        jobId: job.id,
+        sequence: attempt.sequence + 1,
+        provider: attempt.provider,
+        providerModel: attempt.providerModel,
+        providerRoute: attempt.providerRoute,
+        providerEndpoint: attempt.providerEndpoint,
+        estimatedCostUsdMicros: attempt.estimatedCostUsdMicros,
+      },
+    });
+    await tx.aiGenerationJob.update({
+      where: { id: job.id },
+      data: {
+        providerJobId: null,
+        status: "queued",
+        errorCode: null,
+        errorMessage: null,
+        finishedAt: null,
+      },
+    });
+    return replacement;
   });
 }
 
@@ -249,7 +363,7 @@ export async function failAndRefundAiJob(
     if (job.status === "completed" || job.chargeState === "settled") return job;
 
     await tx.aiGenerationAttempt.updateMany({
-      where: { jobId: job.id, status: { in: ["planned", "submitted", "queued", "in_progress"] } },
+      where: { jobId: job.id, status: { in: ["planned", "submitting", "submitted", "queued", "in_progress"] } },
       data: {
         status: "failed",
         errorCode,
