@@ -4,6 +4,7 @@ import { apiError } from "@/lib/api-error";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { isValidHookFormulaKey, isValidStoryStructureKey } from "@/lib/viral-frameworks";
 import {
+  assembleScript,
   deleteScript,
   getScript,
   isValidDurationSec,
@@ -84,12 +85,6 @@ export async function PUT(
       patch.ctaText = body.ctaText;
     }
 
-    // Bound the stored script size with the same sanity cap the AI routes use.
-    const sizeCheck = checkAiInputCaps({
-      script: [patch.hookText, patch.bodyText, patch.ctaText].filter((v) => typeof v === "string").join("\n"),
-    });
-    if (!sizeCheck.ok) return NextResponse.json({ error: sizeCheck.message }, { status: 400 });
-
     if (body.hookFormula !== undefined) {
       const hookFormula = typeof body.hookFormula === "string" ? body.hookFormula.trim() : "";
       if (hookFormula && !isValidHookFormulaKey(hookFormula)) {
@@ -114,6 +109,22 @@ export async function PUT(
       }
       patch.brandProfileId = brandProfileId;
     }
+
+    // Bound the stored script size with the same sanity cap the AI routes use.
+    // The cap applies to the MERGED row this patch produces, not just to the
+    // fields in this request — otherwise repeated single-field PUTs could grow
+    // a row well past the cap one section at a time. The load is
+    // ownership-scoped, so a foreign id 404s here too.
+    const existing = await getScript(authUser.id, id);
+    if (!existing) return NextResponse.json({ error: "ไม่พบสคริปต์" }, { status: 404 });
+    const sizeCheck = checkAiInputCaps({
+      script: assembleScript({
+        hookText: patch.hookText ?? existing.hookText,
+        bodyText: patch.bodyText ?? existing.bodyText,
+        ctaText: patch.ctaText ?? existing.ctaText,
+      }),
+    });
+    if (!sizeCheck.ok) return NextResponse.json({ error: sizeCheck.message }, { status: 400 });
 
     const updated = await updateScript(authUser.id, id, patch);
     if (!updated) return NextResponse.json({ error: "ไม่พบสคริปต์" }, { status: 404 });
