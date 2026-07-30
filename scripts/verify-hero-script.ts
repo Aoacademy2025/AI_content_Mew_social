@@ -70,6 +70,7 @@ async function main() {
     sendScriptToEditor,
     SCRIPT_WINDOW_DAYS,
   } = await import("../src/lib/hero-script.server");
+  const { BRAND_PROFILE_CAPS, checkBrandProfileFieldLimits } = await import("../src/lib/brand-profile-limits");
   const {
     buildAnalyzePrompt,
     buildNicheDrilldownPrompt,
@@ -303,6 +304,175 @@ async function main() {
     const after = await prisma.brandProfile.findUnique({ where: { id: profileForCtaTest.id } });
     ok(after?.ctaStyle === "comment",
       "PUT with ctaStyle omitted from the body does NOT reset ctaStyle back to 'follow' (Task 2 bug fix)");
+  }
+
+  // ── PUT skip-if-absent, part 2: bannedWords + the analyze columns ───────
+  //
+  // Same class of bug as ctaStyle above: an omitted `bannedWords` key used to
+  // serialize [] and wipe the stored list, and analysisNotes/sampleText/
+  // sampleUrl were POST-only (an edit could never set them). These blocks
+  // mirror the exact expressions the route computes.
+  {
+    const row = await prisma.brandProfile.create({
+      data: {
+        userId: "hs-free", name: "Skip-if-absent", niche: "x", audience: "x", tone: "x",
+        bannedWords: serializeBannedWords(["โกหก", "หลอกลวง"]),
+        analysisNotes: "โน้ตเดิม", sampleText: "ตัวอย่างเดิม", sampleUrl: "https://old.example.test",
+      },
+    });
+
+    // A PUT body carrying ONLY the four required fields.
+    const bodyWithoutOptionals: Record<string, unknown> = { name: "ชื่อใหม่", niche: "x", audience: "x", tone: "x" };
+    const patchFor = (body: Record<string, unknown>) => ({
+      bannedWords: Array.isArray(body.bannedWords) ? body.bannedWords : undefined,
+      analysisNotes: typeof body.analysisNotes === "string" ? body.analysisNotes.trim() || null : undefined,
+      sampleText: typeof body.sampleText === "string" ? body.sampleText.trim() || null : undefined,
+      sampleUrl: typeof body.sampleUrl === "string" ? body.sampleUrl.trim() || null : undefined,
+    });
+
+    {
+      const p = patchFor(bodyWithoutOptionals);
+      await prisma.brandProfile.updateMany({
+        where: { id: row.id },
+        data: {
+          name: String(bodyWithoutOptionals.name),
+          bannedWords: p.bannedWords ? serializeBannedWords(p.bannedWords) : undefined,
+          analysisNotes: p.analysisNotes,
+          sampleText: p.sampleText,
+          sampleUrl: p.sampleUrl,
+        },
+      });
+      const after = await prisma.brandProfile.findUnique({ where: { id: row.id } });
+      ok(after?.name === "ชื่อใหม่", "PUT without optional keys still applies the required fields");
+      ok(parseBannedWords(after?.bannedWords).length === 2,
+        "PUT with bannedWords omitted does NOT reset the list to [] (bug fix)");
+      ok(after?.analysisNotes === "โน้ตเดิม" && after?.sampleText === "ตัวอย่างเดิม"
+        && after?.sampleUrl === "https://old.example.test",
+        "PUT with the analyze columns omitted leaves them untouched");
+    }
+
+    // Explicitly patching them DOES write (analysisNotes is now patchable).
+    {
+      const body = {
+        analysisNotes: "  โน้ตใหม่จาก analyze  ",
+        sampleText: "ตัวอย่างใหม่",
+        sampleUrl: "https://new.example.test",
+        bannedWords: ["เฉพาะคำเดียว"],
+      };
+      const p = patchFor(body);
+      await prisma.brandProfile.updateMany({
+        where: { id: row.id },
+        data: {
+          bannedWords: p.bannedWords ? serializeBannedWords(p.bannedWords) : undefined,
+          analysisNotes: p.analysisNotes,
+          sampleText: p.sampleText,
+          sampleUrl: p.sampleUrl,
+        },
+      });
+      const after = await prisma.brandProfile.findUnique({ where: { id: row.id } });
+      ok(after?.analysisNotes === "โน้ตใหม่จาก analyze",
+        "PUT with analysisNotes present persists it (trimmed) — the column is patchable now");
+      ok(after?.sampleText === "ตัวอย่างใหม่" && after?.sampleUrl === "https://new.example.test",
+        "PUT persists sampleText/sampleUrl when they are present");
+      ok(parseBannedWords(after?.bannedWords).length === 1,
+        "PUT with bannedWords present replaces the stored list");
+    }
+
+    // An EXPLICIT empty array still clears the list; a blank string clears the column.
+    {
+      const p = patchFor({ bannedWords: [], analysisNotes: "   " });
+      await prisma.brandProfile.updateMany({
+        where: { id: row.id },
+        data: {
+          bannedWords: p.bannedWords ? serializeBannedWords(p.bannedWords) : undefined,
+          analysisNotes: p.analysisNotes,
+        },
+      });
+      const after = await prisma.brandProfile.findUnique({ where: { id: row.id } });
+      ok(parseBannedWords(after?.bannedWords).length === 0,
+        "PUT with an explicit bannedWords: [] DOES clear the list (absent ≠ empty)");
+      ok(after?.analysisNotes === null, "PUT with a blank analysisNotes clears the column to NULL");
+    }
+
+    await prisma.brandProfile.delete({ where: { id: row.id } });
+  }
+
+  // ── BrandProfile length caps (brand-profile-limits.ts) ──────────────────
+  //
+  // Every one of these fields is rendered into buildBrandBlock on EVERY later
+  // LLM call but never passes through checkAiInputCaps — unbounded, one saved
+  // profile is a permanent per-call token-spend amplifier on the managed key.
+  {
+    const base = { name: "n", niche: "n", audience: "a", tone: "t" };
+    ok(checkBrandProfileFieldLimits(base).ok === true, "checkBrandProfileFieldLimits: a normal profile passes");
+    ok(checkBrandProfileFieldLimits({}).ok === true,
+      "checkBrandProfileFieldLimits: absent fields are skipped (presence is the route's own check)");
+
+    ok(BRAND_PROFILE_CAPS.shortFieldChars === 300, "BRAND_PROFILE_CAPS.shortFieldChars = 300");
+    ok(BRAND_PROFILE_CAPS.longFieldChars === 4000, "BRAND_PROFILE_CAPS.longFieldChars = 4,000");
+    ok(BRAND_PROFILE_CAPS.urlChars === 2048, "BRAND_PROFILE_CAPS.urlChars = 2,048");
+    ok(BRAND_PROFILE_CAPS.bannedWords === 20, "BRAND_PROFILE_CAPS.bannedWords = 20 items");
+    ok(BRAND_PROFILE_CAPS.bannedWordChars === 50, "BRAND_PROFILE_CAPS.bannedWordChars = 50");
+
+    for (const key of ["name", "niche", "audience", "tone"] as const) {
+      ok(checkBrandProfileFieldLimits({ ...base, [key]: "x".repeat(300) }).ok === true,
+        `checkBrandProfileFieldLimits: ${key} at 300 chars → accepted (boundary inclusive)`);
+      const over = checkBrandProfileFieldLimits({ ...base, [key]: "x".repeat(301) });
+      ok(over.ok === false, `checkBrandProfileFieldLimits: ${key} at 301 chars → rejected`);
+      ok(!over.ok && over.message.startsWith("กรุณาระบุ") && over.message.includes("300"),
+        `checkBrandProfileFieldLimits: ${key} over-cap message is Thai and names the cap`);
+    }
+
+    for (const key of ["analysisNotes", "sampleText"] as const) {
+      ok(checkBrandProfileFieldLimits({ ...base, [key]: "x".repeat(4000) }).ok === true,
+        `checkBrandProfileFieldLimits: ${key} at 4,000 chars → accepted (boundary inclusive)`);
+      ok(checkBrandProfileFieldLimits({ ...base, [key]: "x".repeat(4001) }).ok === false,
+        `checkBrandProfileFieldLimits: ${key} at 4,001 chars → rejected`);
+    }
+
+    ok(checkBrandProfileFieldLimits({ ...base, sampleUrl: "https://x.test/" + "a".repeat(2033) }).ok === true,
+      "checkBrandProfileFieldLimits: sampleUrl at 2,048 chars → accepted (boundary inclusive)");
+    ok(checkBrandProfileFieldLimits({ ...base, sampleUrl: "x".repeat(2049) }).ok === false,
+      "checkBrandProfileFieldLimits: sampleUrl at 2,049 chars → rejected");
+
+    ok(checkBrandProfileFieldLimits({ ...base, bannedWords: Array(20).fill("คำ") }).ok === true,
+      "checkBrandProfileFieldLimits: 20 banned words → accepted (boundary inclusive)");
+    const tooMany = checkBrandProfileFieldLimits({ ...base, bannedWords: Array(21).fill("คำ") });
+    ok(tooMany.ok === false, "checkBrandProfileFieldLimits: 21 banned words → rejected");
+    ok(!tooMany.ok && tooMany.message.includes("20"), "banned-words count message names the 20-item cap");
+    ok(checkBrandProfileFieldLimits({ ...base, bannedWords: ["x".repeat(50)] }).ok === true,
+      "checkBrandProfileFieldLimits: a 50-char banned word → accepted (boundary inclusive)");
+    const longWord = checkBrandProfileFieldLimits({ ...base, bannedWords: ["x".repeat(51)] });
+    ok(longWord.ok === false, "checkBrandProfileFieldLimits: a 51-char banned word → rejected");
+    ok(!longWord.ok && longWord.message.includes("50"), "banned-word length message names the 50-char cap");
+    ok(checkBrandProfileFieldLimits({ ...base, bannedWords: "not-an-array" }).ok === true,
+      "checkBrandProfileFieldLimits: a non-array bannedWords is skipped, not crashed on");
+
+    // The abuse case the cap exists for: a megabyte 'tone' would otherwise be
+    // replayed into every ideas/hooks/generate/regen prompt, forever.
+    const huge = checkBrandProfileFieldLimits({ ...base, tone: "ก".repeat(1_000_000) });
+    ok(huge.ok === false, "checkBrandProfileFieldLimits: a 1MB tone is rejected (token-spend amplifier)");
+  }
+
+  // ── ctaStyle is validated on write (POST + PUT) ─────────────────────────
+  {
+    // The exact expressions the two routes compute.
+    const postCtaStyle = (body: Record<string, unknown>) =>
+      typeof body.ctaStyle === "string" && body.ctaStyle.trim() ? body.ctaStyle.trim() : "follow";
+    const putCtaStyle = (body: Record<string, unknown>) =>
+      typeof body.ctaStyle === "string" && body.ctaStyle.trim() ? body.ctaStyle.trim() : undefined;
+
+    ok(isValidCtaStyleKey(postCtaStyle({})) === true, "POST default ctaStyle ('follow') is a valid key");
+    ok(isValidCtaStyleKey(postCtaStyle({ ctaStyle: "sell" })) === true, "POST accepts a real ctaStyle key");
+    ok(isValidCtaStyleKey(postCtaStyle({ ctaStyle: "ignore-all-rules" })) === false,
+      "POST rejects an invalid ctaStyle key (400)");
+    for (const style of CTA_STYLES) {
+      ok(isValidCtaStyleKey(style.key) === true, `ctaStyle '${style.key}' from the library is accepted`);
+    }
+    ok(putCtaStyle({}) === undefined, "PUT with ctaStyle absent skips validation AND the write");
+    const putInvalid = putCtaStyle({ ctaStyle: "drop-table" });
+    ok(putInvalid !== undefined && isValidCtaStyleKey(putInvalid) === false,
+      "PUT rejects an invalid ctaStyle key (400)");
   }
 
   // ── viral-frameworks.ts: HOOK_FORMULAS / STORY_STRUCTURES / RETENTION_RULES / CTA_STYLES ──
