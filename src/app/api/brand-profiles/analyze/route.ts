@@ -33,12 +33,17 @@ export async function POST(req: Request) {
     const authUser = await getCurrentUser();
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const { sampleText, sampleUrl } = await req.json();
+    // `.catch(() => null)` (same as every other Hero Script route): a malformed
+    // body must be a clean 400, not a thrown 500 — apiError writes an admin
+    // Notification row for every 500, so an unguarded parse is floodable.
+    const body = await req.json().catch(() => null);
+    const sampleText = typeof body?.sampleText === "string" ? body.sampleText : "";
+    const sampleUrl = typeof body?.sampleUrl === "string" ? body.sampleUrl : "";
     if (!sampleText && !sampleUrl) {
       return NextResponse.json({ error: "กรุณาใส่ตัวอย่างข้อความหรือ URL" }, { status: 400 });
     }
 
-    let textContent: string = typeof sampleText === "string" ? sampleText : "";
+    let textContent: string = sampleText;
     if (!textContent && sampleUrl) {
       try {
         // SSRF guard (host + per-redirect-hop re-validation) lives in safeAxiosGet.
