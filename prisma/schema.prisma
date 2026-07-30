@@ -79,6 +79,8 @@ model User {
   brandPreference    BrandPreference?
   editorStylePresets EditorStylePreset[]
   aiGenerationJobs   AiGenerationJob[]
+  brandProfiles      BrandProfile[]
+  scripts            Script[]
 }
 
 model Style {
@@ -248,6 +250,48 @@ model EditorStylePreset {
   @@unique([userId, kind, nameKey])
   @@index([userId, kind, updatedAt])
   @@index([brandAssetId])
+}
+
+model BrandProfile {
+  id            String   @id @default(cuid())
+  userId        String
+  name          String                    // ชื่อแบรนด์/โปรไฟล์
+  niche         String                    // นิช เช่น "การเงินส่วนบุคคล"
+  audience      String                    // กลุ่มเป้าหมาย เช่น "มนุษย์เงินเดือน 25-35"
+  tone          String                    // โทนเสียง เช่น "เป็นกันเอง ขี้เล่น มีสาระ"
+  bannedWords   String   @default("[]")   // JSON string array
+  ctaStyle      String   @default("follow") // follow | comment | share | sell
+  language      String   @default("th")
+  sampleText    String?                   // แหล่งที่ใช้ตอน analyze (ถ้ามี)
+  sampleUrl     String?
+  analysisNotes String?                   // โน้ตสไตล์การเขียนที่ LLM สกัดได้
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scripts       Script[]
+
+  @@index([userId])
+}
+
+model Script {
+  id              String   @id @default(cuid())
+  userId          String
+  brandProfileId  String?
+  topic           String
+  durationSec     Int      @default(60)   // 30 | 60 | 90
+  hookFormula     String?                 // key จาก HOOK_FORMULAS
+  structure       String?                 // key จาก STORY_STRUCTURES
+  hookText        String
+  bodyText        String                  // หลายบรรทัด: 1 บรรทัด = 1 ประโยค
+  ctaText         String
+  status          String   @default("draft") // draft | sent
+  editorProjectId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brandProfile    BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
 }
 
 model VideoJob {
