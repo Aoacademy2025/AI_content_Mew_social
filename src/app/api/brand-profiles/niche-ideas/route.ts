@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
+import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { buildNicheDrilldownPrompt } from "@/lib/prompts/hero-script";
 import { generateValidatedJson, validateNicheIdeasResponse, validateNicheSeed } from "@/lib/hero-script.server";
 
@@ -17,6 +18,9 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const seedCheck = validateNicheSeed(body?.seed);
     if (!seedCheck.ok) return NextResponse.json({ error: seedCheck.message }, { status: 400 });
+
+    const inputCaps = checkAiInputCaps({ script: seedCheck.seed });
+    if (!inputCaps.ok) return NextResponse.json({ error: inputCaps.message }, { status: 400 });
 
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
