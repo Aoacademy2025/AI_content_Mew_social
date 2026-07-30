@@ -148,7 +148,7 @@ if [ ! -f "$STAGING_DIR/BUILD_ID" ]; then
   exit 1
 fi
 
-CURRENT_STATIC_MANIFEST="$STAGING_DIR/.heroai-current-static-manifest"
+CURRENT_STATIC_MANIFEST="$APP_DIR/.next-static-manifest-staging"
 if [ -d "$STAGING_DIR/static" ]; then
   (
     cd "$STAGING_DIR/static"
@@ -162,7 +162,7 @@ fi
 # before this merge, so the next deploy copies only this build (bounded to N-1,
 # rather than accumulating every historical chunk forever).
 if [ -d "$APP_DIR/.next/static" ] && [ -d "$STAGING_DIR/static" ]; then
-  PRIOR_STATIC_MANIFEST="$APP_DIR/.next/.heroai-current-static-manifest"
+  PRIOR_STATIC_MANIFEST="$APP_DIR/.next-static-manifest"
   if [ -s "$PRIOR_STATIC_MANIFEST" ]; then
     tar -C "$APP_DIR/.next/static" -cf - -T "$PRIOR_STATIC_MANIFEST" \
       | tar --skip-old-files -C "$STAGING_DIR/static" -xf -
@@ -197,6 +197,7 @@ if [ -d "$APP_DIR/.next" ]; then
   mv "$APP_DIR/.next" "$APP_DIR/.next.old"
 fi
 mv "$STAGING_DIR" "$APP_DIR/.next"
+mv "$CURRENT_STATIC_MANIFEST" "$APP_DIR/.next-static-manifest"
 unset NEXT_DIST_DIR
 
 echo "=== [6/6] Restart PM2 ==="
