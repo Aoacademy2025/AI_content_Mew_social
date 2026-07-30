@@ -19,22 +19,47 @@ function codeFromGeminiInfo(kind: GeminiErrorKind, status: number, retryable: bo
   return "fatal";
 }
 
+/**
+ * Per-call overrides for geminiGenerateText. Omitting this argument keeps the
+ * historical behaviour byte-identical (model `gemini-2.5-flash`, thinking
+ * disabled) — every pre-existing call site relies on that default.
+ */
+export interface GeminiTextOptions {
+  /** Model id. Defaults to GEMINI_MODEL (`gemini-2.5-flash`). */
+  model?: string;
+  /**
+   * Thinking budget in tokens. Default 0 = thinking off, which keeps JSON
+   * output free of thought text on flash-tier models.
+   *
+   * ⚠️ Pro-tier models are thinking-ONLY: `gemini-2.5-pro` / `gemini-pro-latest`
+   * / `gemini-3.x-pro-*` reject a 0 budget with
+   * `400 INVALID_ARGUMENT — "Budget 0 is invalid. This model only works in
+   * thinking mode."` (verified live against the Gemini API on 2026-07-31).
+   * Callers on those models must pass a non-zero budget (128 = the minimum,
+   * and enough to keep the reply a clean JSON object — thought tokens are not
+   * included in `response.text`, but they DO count against maxOutputTokens).
+   */
+  thinkingBudget?: number;
+}
+
 export async function geminiGenerateText(
   apiKey: string,
   prompt: string,
   maxOutputTokens = 4096,
   temperature = 0,
+  options: GeminiTextOptions = {},
 ): Promise<string> {
+  const { model = GEMINI_MODEL, thinkingBudget = 0 } = options;
   const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: GEMINI_TEXT_TIMEOUT_MS } });
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
       const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
+        model,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
         config: {
           maxOutputTokens,
           temperature,
-          thinkingConfig: { thinkingBudget: 0 },  // disable thinking — JSON output must not be prefixed with thought text
+          thinkingConfig: { thinkingBudget },  // 0 = disable thinking — JSON output must not be prefixed with thought text
           abortSignal: AbortSignal.timeout(GEMINI_TEXT_TIMEOUT_MS),
         },
       });
