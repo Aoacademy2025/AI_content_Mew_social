@@ -66,6 +66,7 @@ async function main() {
     assembleScriptForHandoff,
     countScriptsInWindow,
     canCreateScript,
+    createScriptWithinCap,
     sendScriptToEditor,
     SCRIPT_WINDOW_DAYS,
   } = await import("../src/lib/hero-script.server");
@@ -926,6 +927,66 @@ async function main() {
     ok((await countScriptsInWindow("hs4-pro")) === 6, "PRO user ends with 6 scripts in window (1 seed + 5) — never capped");
   }
 
+  // ── createScriptWithinCap: count + check + insert as ONE transaction ────
+  {
+    await prisma.user.createMany({
+      data: [
+        { id: "hs4-cap-free", name: "Cap Free", email: "hs4-cap-free@example.test", plan: "FREE" },
+        { id: "hs4-cap-pro", name: "Cap Pro", email: "hs4-cap-pro@example.test", plan: "PRO" },
+        { id: "hs4-race", name: "Race", email: "hs4-race@example.test", plan: "FREE" },
+      ],
+    });
+    const input = (topic: string) => ({
+      topic, durationSec: 60, hookText: "h", bodyText: "b", ctaText: "c",
+    });
+
+    for (let i = 1; i <= 3; i++) {
+      const r = await createScriptWithinCap("hs4-cap-free", "FREE", input(`free-${i}`));
+      ok(r.ok === true, `createScriptWithinCap: FREE script #${i} → created`);
+    }
+    const blocked = await createScriptWithinCap("hs4-cap-free", "FREE", input("free-4"));
+    ok(blocked.ok === false, "createScriptWithinCap: FREE 4th script in window → blocked (SCRIPT_LIMIT)");
+    ok(blocked.ok === false && blocked.capCheck.message === "แผนฟรีเขียนได้ 3 สคริปต์/30 วัน — อัปเกรดเพื่อเขียนไม่จำกัด",
+      "createScriptWithinCap: blocked result carries the SCRIPT_LIMIT message");
+    ok((await prisma.script.count({ where: { userId: "hs4-cap-free" } })) === 3,
+      "createScriptWithinCap: the blocked create wrote NO row");
+
+    for (let i = 1; i <= 5; i++) {
+      const r = await createScriptWithinCap("hs4-cap-pro", "PRO", input(`pro-${i}`));
+      ok(r.ok === true, `createScriptWithinCap: PRO script #${i} → created (Infinity cap)`);
+    }
+    ok((await prisma.script.count({ where: { userId: "hs4-cap-pro" } })) === 5,
+      "createScriptWithinCap: PRO wrote all 5 rows");
+
+    // A row aging out of the rolling window frees a slot again.
+    const oldest = await prisma.script.findFirst({
+      where: { userId: "hs4-cap-free" }, orderBy: { createdAt: "asc" },
+    });
+    await prisma.script.update({
+      where: { id: oldest!.id },
+      data: { createdAt: new Date(Date.now() - 31 * 24 * 60 * 60 * 1000) },
+    });
+    ok((await createScriptWithinCap("hs4-cap-free", "FREE", input("free-5"))).ok === true,
+      "createScriptWithinCap: a row aged out of the 30-day window frees a slot");
+
+    // TOCTOU: two creates fired together while the user sits at 2/3. Counting
+    // outside the transaction let BOTH pass; serialized, exactly one wins.
+    await prisma.script.createMany({
+      data: [
+        { userId: "hs4-race", topic: "race-1", hookText: "h", bodyText: "b", ctaText: "c" },
+        { userId: "hs4-race", topic: "race-2", hookText: "h", bodyText: "b", ctaText: "c" },
+      ],
+    });
+    const raced = await Promise.all([
+      createScriptWithinCap("hs4-race", "FREE", input("race-3a")),
+      createScriptWithinCap("hs4-race", "FREE", input("race-3b")),
+    ]);
+    ok(raced.filter((r) => r.ok).length === 1 && raced.filter((r) => !r.ok).length === 1,
+      "createScriptWithinCap: 2 concurrent creates at 2/3 → exactly 1 created, 1 SCRIPT_LIMIT");
+    ok((await prisma.script.count({ where: { userId: "hs4-race" } })) === 3,
+      "createScriptWithinCap: the concurrent pair never pushed the FREE user past the cap");
+  }
+
   // ── normalizeLines / assembleScriptForHandoff: no blank lines EVER ──────
   {
     ok(normalizeLines("a\n\nb") === "a\nb", "normalizeLines drops internal blank lines");
@@ -1021,6 +1082,50 @@ async function main() {
       "the foreign sendScriptToEditor attempt did not touch the row");
     ok((await sendScriptToEditor("hs4-pro", "does-not-exist")).ok === false,
       "sendScriptToEditor on a missing id → not ok");
+
+    // ── Atomicity: the handoff is one transaction ────────────────────────
+    // A script that is gone by the time the handoff runs must fail AND leave no
+    // EditorProject behind (the Script write, not the ownership load, is the
+    // authoritative check — count 0 rolls the project back).
+    {
+      const doomed = await createScript("hs4-pro", {
+        topic: "โดนลบระหว่างส่ง", durationSec: 60, hookText: "h", bodyText: "b", ctaText: "c",
+      });
+      const projectsBefore = await prisma.editorProject.count({ where: { userId: "hs4-pro" } });
+      await prisma.script.delete({ where: { id: doomed.id } });
+      const gone = await sendScriptToEditor("hs4-pro", doomed.id);
+      ok(gone.ok === false && gone.code === "NOT_FOUND",
+        "sendScriptToEditor on a script deleted before the call → NOT_FOUND");
+      ok((await prisma.editorProject.count({ where: { userId: "hs4-pro" } })) === projectsBefore,
+        "sendScriptToEditor on a deleted script leaves NO orphaned EditorProject");
+    }
+    {
+      // The rollback mechanism itself: the project create now runs INSIDE the
+      // caller's transaction, so the throw that a count-0 Script write raises
+      // undoes it. (Prisma 6 has no $use middleware to fault-inject the race
+      // point, so the guarantee is exercised through the same code path with
+      // the same tx client.)
+      const { createEditorProject } = await import("../src/lib/editor-projects");
+      const before = await prisma.editorProject.count({ where: { userId: "hs4-pro" } });
+      const sentinel = new Error("rollback probe");
+      let threw = false;
+      try {
+        await prisma.$transaction(async (tx) => {
+          await createEditorProject("hs4-pro", { title: "rollback probe", draft: { mode: "script" } }, tx);
+          throw sentinel;
+        });
+      } catch (e) {
+        threw = e === sentinel;
+      }
+      ok(threw, "createEditorProject(tx): the probe transaction threw as expected");
+      ok((await prisma.editorProject.count({ where: { userId: "hs4-pro" } })) === before,
+        "createEditorProject(tx): a failed outer transaction rolls the project back (no orphan)");
+      // The editor's own callers pass no tx and must keep working unchanged.
+      const standalone = await createEditorProject("hs4-pro", { title: "no-tx caller" });
+      ok(typeof standalone.id === "string",
+        "createEditorProject without a tx still creates a project (editor's own callers unchanged)");
+      await prisma.editorProject.delete({ where: { id: standalone.id } });
+    }
 
     // A script whose sections are all blank can't become an empty editor draft.
     const blankScript = await prisma.script.create({

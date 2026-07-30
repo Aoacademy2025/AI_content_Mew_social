@@ -20,7 +20,7 @@
 // canCreateScript) and the 1-click handoff into the video editor
 // (assembleScriptForHandoff + sendScriptToEditor).
 
-import type { BrandProfile } from "@prisma/client";
+import type { BrandProfile, Prisma } from "@prisma/client";
 import { limitsForPlan, PLAN_LABEL } from "@/lib/plan-limits";
 import { geminiGenerateText } from "@/lib/gemini";
 import { prisma } from "@/lib/prisma";
@@ -664,8 +664,15 @@ export async function ownsBrandProfile(userId: string, brandProfileId: string): 
   return row !== null;
 }
 
-export async function createScript(userId: string, input: ScriptCreateInput) {
-  return prisma.script.create({
+/** `client` defaults to the global prisma client; pass a transaction client to
+ *  enlist the create in an outer interactive transaction (see
+ *  createScriptWithinCap, where the cap count and the create must be one unit). */
+export async function createScript(
+  userId: string,
+  input: ScriptCreateInput,
+  client: Prisma.TransactionClient = prisma
+) {
+  return client.script.create({
     data: {
       userId,
       topic: input.topic,
@@ -723,9 +730,14 @@ export const SCRIPT_WINDOW_DAYS = 30;
 const SCRIPT_WINDOW_MS = SCRIPT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
 /** How many Scripts `userId` created inside the rolling window (the number the
- *  cap is checked against). Own rows only. */
-export async function countScriptsInWindow(userId: string, now: Date = new Date()): Promise<number> {
-  return prisma.script.count({
+ *  cap is checked against). Own rows only. `client` takes a transaction client
+ *  so the count can be serialized with the create it guards. */
+export async function countScriptsInWindow(
+  userId: string,
+  now: Date = new Date(),
+  client: Prisma.TransactionClient = prisma
+): Promise<number> {
+  return client.script.count({
     where: { userId, createdAt: { gte: new Date(now.getTime() - SCRIPT_WINDOW_MS) } },
   });
 }
@@ -751,6 +763,31 @@ export function canCreateScript(plan: string, currentCount: number): ScriptCapCh
     plan,
     message: `แผนฟรีเขียนได้ ${cap} สคริปต์/${SCRIPT_WINDOW_DAYS} วัน — อัปเกรดเพื่อเขียนไม่จำกัด`,
   };
+}
+
+export type CreateScriptWithinCapResult =
+  | { ok: true; script: Awaited<ReturnType<typeof createScript>> }
+  | { ok: false; capCheck: ScriptCapCheck };
+
+/** POST /api/scripts, cap included: count the window, decide, and create — all
+ *  inside ONE interactive transaction.
+ *
+ *  Counting outside the transaction was a TOCTOU hole: two concurrent POSTs
+ *  from a FREE user sitting at 2 scripts could both read 2, both pass the cap,
+ *  and both insert. Prisma serializes interactive transactions on this
+ *  project's SQLite connection, so the count and the insert it authorizes can no
+ *  longer interleave. Nothing is written on the blocked path, so returning
+ *  (rather than throwing) leaves nothing to roll back. */
+export async function createScriptWithinCap(
+  userId: string,
+  plan: string,
+  input: ScriptCreateInput
+): Promise<CreateScriptWithinCapResult> {
+  return prisma.$transaction(async (tx) => {
+    const capCheck = canCreateScript(plan, await countScriptsInWindow(userId, new Date(), tx));
+    if (!capCheck.allowed) return { ok: false as const, capCheck };
+    return { ok: true as const, script: await createScript(userId, input, tx) };
+  });
 }
 
 // ── send-to-editor ─────────────────────────────────────────────────────────
@@ -780,7 +817,12 @@ export type SendScriptToEditorResult =
  *  5. the Script is marked "sent" and points at that project.
  *
  *  Re-sending an already-sent script is allowed: it creates a fresh project and
- *  re-points the row (the previous project may well have been deleted). */
+ *  re-points the row (the previous project may well have been deleted).
+ *
+ *  Steps 4+5 run in ONE interactive transaction: the Script write is the real
+ *  existence check (the load in step 1 is only a fast path), so a script deleted
+ *  from another tab mid-handoff rolls the EditorProject back instead of leaving
+ *  an orphan behind a `{ok:true}` that never marked anything "sent". */
 export async function sendScriptToEditor(
   userId: string,
   scriptId: string
@@ -810,27 +852,36 @@ export async function sendScriptToEditor(
   }
 
   const title = sanitizeEditorProjectTitle(script.topic);
-  const project = await createEditorProject(userId, {
-    title,
-    draft: buildScriptHandoffDraft({
-      script: text,
-      projectTitle: title,
-      accountDefaults: {
-        // Mirrors the editor's loadAccountVideoDefaults() (/api/user/video-settings).
-        voiceEngine: visibleTtsProvider(user.ttsProvider),
-        geminiVoiceName: user.geminiVoiceName?.trim() || undefined,
-        voiceId: user.elevenlabsVoiceId?.trim() ?? "",
-        avatarId: user.heygenAvatarId?.trim() ?? "",
-      },
-    }),
+  const draft = buildScriptHandoffDraft({
+    script: text,
+    projectTitle: title,
+    accountDefaults: {
+      // Mirrors the editor's loadAccountVideoDefaults() (/api/user/video-settings).
+      voiceEngine: visibleTtsProvider(user.ttsProvider),
+      geminiVoiceName: user.geminiVoiceName?.trim() || undefined,
+      voiceId: user.elevenlabsVoiceId?.trim() ?? "",
+      avatarId: user.heygenAvatarId?.trim() ?? "",
+    },
   });
 
-  // Ownership-scoped write (the load above already proved it, but the guard
-  // costs nothing and keeps every Script write IDOR-safe by construction).
-  await prisma.script.updateMany({
-    where: { id: scriptId, userId },
-    data: { status: "sent", editorProjectId: project.id },
-  });
-
-  return { ok: true, projectId: project.id };
+  // Sentinel: thrown to roll the whole handoff back, never surfaced to callers.
+  const scriptGone = new Error("hero_script_send_target_missing");
+  try {
+    const projectId = await prisma.$transaction(async (tx) => {
+      const project = await createEditorProject(userId, { title, draft }, tx);
+      // Ownership-scoped write — and the authoritative existence check: a
+      // concurrent DELETE between the load above and here makes count 0, which
+      // must undo the project rather than report a handoff that never happened.
+      const marked = await tx.script.updateMany({
+        where: { id: scriptId, userId },
+        data: { status: "sent", editorProjectId: project.id },
+      });
+      if (marked.count === 0) throw scriptGone;
+      return project.id;
+    });
+    return { ok: true, projectId };
+  } catch (error) {
+    if (error === scriptGone) return { ok: false, code: "NOT_FOUND", message: "ไม่พบสคริปต์" };
+    throw error;
+  }
 }

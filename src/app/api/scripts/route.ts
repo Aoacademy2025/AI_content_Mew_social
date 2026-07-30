@@ -6,9 +6,7 @@ import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { isValidHookFormulaKey, isValidStoryStructureKey } from "@/lib/viral-frameworks";
 import {
   assembleScript,
-  canCreateScript,
-  countScriptsInWindow,
-  createScript,
+  createScriptWithinCap,
   isValidDurationSec,
   listScripts,
   ownsBrandProfile,
@@ -75,17 +73,13 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "ไม่พบโปรไฟล์แบรนด์" }, { status: 404 });
     }
 
-    // Plan cap: FREE 3 scripts per rolling 30 days (same shape as the
-    // PROFILE_LIMIT check on /api/brand-profiles).
+    // Plan cap: FREE 3 scripts per rolling 30 days. The count, the cap check and
+    // the insert run in ONE transaction inside createScriptWithinCap — counting
+    // out here let two concurrent POSTs at the boundary both pass (TOCTOU).
     const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { plan: true } });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const capCheck = canCreateScript(user.plan, await countScriptsInWindow(authUser.id));
-    if (!capCheck.allowed) {
-      return NextResponse.json({ code: "SCRIPT_LIMIT", error: capCheck.message }, { status: 403 });
-    }
-
-    const script = await createScript(authUser.id, {
+    const created = await createScriptWithinCap(authUser.id, user.plan, {
       topic: topicCheck.topic,
       durationSec,
       hookFormula: hookFormula || null,
@@ -95,8 +89,11 @@ export async function POST(req: Request) {
       ctaText,
       brandProfileId,
     });
+    if (!created.ok) {
+      return NextResponse.json({ code: "SCRIPT_LIMIT", error: created.capCheck.message }, { status: 403 });
+    }
 
-    return NextResponse.json(script, { status: 201 });
+    return NextResponse.json(created.script, { status: 201 });
   } catch (error) {
     return apiError({ route: "POST /api/scripts", error });
   }
