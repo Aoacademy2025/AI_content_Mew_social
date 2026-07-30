@@ -1,0 +1,61 @@
+import { NextResponse } from "next/server";
+import { getCurrentUser } from "@/lib/clerk-auth";
+import { prisma } from "@/lib/prisma";
+import { apiError } from "@/lib/api-error";
+import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
+import { reserveAiTextCall } from "@/lib/ai-text-limits";
+import { buildNicheDrilldownPrompt } from "@/lib/prompts/hero-script";
+import { generateValidatedJson, validateNicheIdeasResponse, validateNicheSeed } from "@/lib/hero-script.server";
+
+// POST /api/brand-profiles/niche-ideas - {seed} → {niches: [...] x 7}
+// (ใช้ endpoint เดียวกันขุดซ้ำได้: ส่งนิชที่เพิ่งเลือกกลับมาเป็น seed เพื่อลงลึกอีกชั้น)
+export async function POST(req: Request) {
+  try {
+    const authUser = await getCurrentUser();
+    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+    const body = await req.json().catch(() => null);
+    const seedCheck = validateNicheSeed(body?.seed);
+    if (!seedCheck.ok) return NextResponse.json({ error: seedCheck.message }, { status: 400 });
+
+    const user = await prisma.user.findUnique({
+      where: { id: authUser.id },
+      select: { geminiKey: true, plan: true },
+    });
+    if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+
+    let apiKey: string;
+    let geminiMode: "managed" | "byok";
+    try {
+      const resolved = resolveGeminiKey(user);
+      apiKey = resolved.key;
+      geminiMode = resolved.mode;
+    } catch (e) {
+      if (e instanceof KeyRequiredError) {
+        return NextResponse.json({ code: "KEY_REQUIRED", action: "/settings?tab=api-keys" }, { status: 409 });
+      }
+      throw e;
+    }
+
+    // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
+    const textReserve = await reserveAiTextCall(authUser.id, { enforce: geminiMode === "managed" });
+    if (!textReserve.allowed) {
+      return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
+    }
+
+    const prompt = buildNicheDrilldownPrompt(seedCheck.seed);
+    const result = await generateValidatedJson({
+      apiKey,
+      prompt,
+      maxOutputTokens: 2500,
+      validate: validateNicheIdeasResponse,
+    });
+    if (!result) {
+      return NextResponse.json({ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }, { status: 502 });
+    }
+
+    return NextResponse.json(result);
+  } catch (error) {
+    return apiError({ route: "POST /api/brand-profiles/niche-ideas", error });
+  }
+}
