@@ -26,7 +26,9 @@ export async function PUT(
         { status: 400 }
       );
     }
-    const ctaStyle = typeof body?.ctaStyle === "string" && body.ctaStyle.trim() ? body.ctaStyle.trim() : "follow";
+    // Skip-if-absent (matches `language` two lines below) — omitting ctaStyle
+    // from the PUT body must NOT reset it back to "follow" (bug fix, Task 2 review).
+    const ctaStyle = typeof body?.ctaStyle === "string" && body.ctaStyle.trim() ? body.ctaStyle.trim() : undefined;
     const bannedWords = Array.isArray(body?.bannedWords) ? body.bannedWords : [];
 
     const updated = await prisma.brandProfile.updateMany({
