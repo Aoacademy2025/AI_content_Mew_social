@@ -10,6 +10,7 @@ import {
   type LogoOverlayConfig,
 } from "@/lib/logo-overlay";
 import type { SubPreset, SubTextEffect } from "../_components/types";
+import type { SubtitleCardLen } from "@/lib/editor-style-preset-contract";
 import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "../_components/constants";
 import {
   DEFAULT_EDITOR_LAYER_VISIBILITY,
@@ -134,7 +135,7 @@ export function splitCaption(caps: V2Caption[], i: number, loanSpans: { start: n
 }
 
 /** ความยาวการ์ดแบบเดียวกับ v1 (page.tsx splitMode): 1 ประโยค หรือซับสั้นแบบ TikTok ≤N คำ */
-export type V2CardLen = "sentence" | "4" | "3" | "2" | "1";
+export type V2CardLen = SubtitleCardLen;
 
 export const V2_CARD_LEN_OPTIONS: { value: V2CardLen; label: string }[] = [
   { value: "sentence", label: "1 ประโยค" },

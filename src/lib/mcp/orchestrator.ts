@@ -78,6 +78,7 @@ import {
   parseHeroVoiceProviderCheckpoint,
   type HeroVoiceProviderCheckpointV1,
 } from "@/lib/mcp/hero-voice-provider-checkpoint";
+import { shouldEmitPipelineStepStarted } from "@/lib/pipeline-telemetry";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -462,7 +463,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // Cooperative cancel (incident 07-03: kie runaway had no stop lever): the cancel
     // route marks processing jobs `canceled`; we honor it at every step boundary —
     // the current step finishes, nothing further starts, no failJob overwrite.
-    const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+    const current = await prisma.videoJob.findUnique({
+      where: { id: jobId },
+      select: { status: true, currentStep: true },
+    });
     if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
     const now = Date.now();
     const ended = now - phaseStartedAt;
@@ -471,7 +475,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     emitStage(phaseName, "done", ended);
     phaseName = name;
     phaseStartedAt = now;
-    emitStage(name, "started");
+    if (shouldEmitPipelineStepStarted(current?.currentStep, name)) {
+      emitStage(name, "started");
+    }
     await setJobStep(jobId, name, progress);
   }
   // Cancel mid-RENDER (QA 07-03 Flow 4.2): the render step is the only one whose cost is

@@ -11,7 +11,7 @@ import {
 } from "@/lib/editor-style-preset-contract";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 import { trackEvent } from "@/lib/client-telemetry";
-import type { V2SubConfig } from "./subtitle-style";
+import type { V2CardLen, V2SubConfig } from "./subtitle-style";
 import { PROJECT_OPERATION_BLOCKED_MESSAGE } from "./useV2Job";
 
 type PresetApiResponse = {
@@ -27,8 +27,9 @@ function apiMessage(data: PresetApiResponse | null, fallback: string): string {
 
 export function useEditorStylePresets(input: {
   subtitleConfig: V2SubConfig;
+  subtitleCardLen: V2CardLen;
   logoConfig?: LogoOverlayConfig;
-  onApplySubtitle: (config: V2SubConfig) => void;
+  onApplySubtitle: (config: V2SubConfig, cardLen: V2CardLen) => void;
   onApplyLogo: (config: LogoOverlayConfig) => void;
   /** M2: apply(logo) ต้องรู้ว่า onApplyLogo จะโดนเงียบ (canAcceptUserMutation ของ
    *  useV2Project = false เช่นระหว่าง recovery conflict) ก่อนจะ toast สำเร็จ — ค่าเดียวกับ
@@ -71,7 +72,9 @@ export function useEditorStylePresets(input: {
   );
 
   async function save(kind: EditorStylePresetKind, name: string): Promise<boolean> {
-    const config = kind === "subtitle" ? input.subtitleConfig : input.logoConfig;
+    const config = kind === "subtitle"
+      ? { ...input.subtitleConfig, cardLen: input.subtitleCardLen }
+      : input.logoConfig;
     if (!config || busy) return false;
     setBusy(true);
     try {
@@ -104,7 +107,8 @@ export function useEditorStylePresets(input: {
 
   function apply(preset: EditorStylePreset) {
     if (preset.kind === "subtitle") {
-      input.onApplySubtitle({ ...preset.config });
+      const { cardLen, ...config } = preset.config;
+      input.onApplySubtitle(config, cardLen);
     } else {
       // M2: onApplyLogo (p.setLogoOverlay) no-ops silently while the project can't
       // accept a mutation (e.g. recovery conflict) — check first so we never toast a
