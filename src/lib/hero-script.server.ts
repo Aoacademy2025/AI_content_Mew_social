@@ -154,7 +154,10 @@ export function parseJsonResponse(raw: string | null | undefined): unknown | nul
 // move to a newer model without a code change.
 
 export const HERO_SCRIPT_MODEL_FAST_DEFAULT = "gemini-2.5-flash";
-export const HERO_SCRIPT_MODEL_PRO_DEFAULT = "gemini-2.5-pro";
+/** Amended 2026-07-31 (plan doc updated): the original default `gemini-2.5-pro`
+ *  returns 404 "no longer available to new users" on the project's server key;
+ *  `gemini-pro-latest` was verified working live. */
+export const HERO_SCRIPT_MODEL_PRO_DEFAULT = "gemini-pro-latest";
 
 /** Minimum thinking budget for the pro tier. Pro-tier Gemini models are
  *  thinking-only and reject a 0 budget outright (see GeminiTextOptions in
@@ -531,17 +534,21 @@ export interface GenerateScriptResult {
   ctaText: string;
 }
 
-/** Normalize a model-written multi-line block: CRLF → LF, trim each line's
- *  trailing whitespace, drop leading/trailing blank lines. Internal blank
- *  lines are kept as-is (they're the model's own paragraphing). */
+/** Normalize a model-written block: CRLF → LF, trim each line, and drop EVERY
+ *  blank/whitespace-only line — leading, trailing and internal.
+ *
+ *  Dropping internal blanks is the project invariant, not cosmetics: 1 บรรทัด =
+ *  1 ประโยคที่พูดจริง, and the editor turns 1 line into 1 Segment (CONTEXT.md).
+ *  A blank line is not a spoken sentence — it would become an empty segment and
+ *  drag subtitle timing off — so no section (and therefore no assembleScript
+ *  output) may contain one, whatever paragraphing the model felt like adding. */
 function normalizeLines(text: string): string {
   return text
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .map((line) => line.trim())
-    .join("\n")
-    .replace(/^\n+/, "")
-    .replace(/\n+$/, "");
+    .filter((line) => line.length > 0)
+    .join("\n");
 }
 
 /** Validate the GENERATE route's `{structure, bodyText, ctaText}` contract.

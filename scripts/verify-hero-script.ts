@@ -83,6 +83,7 @@ async function main() {
     isValidStoryStructureKey,
     isValidCtaStyleKey,
   } = await import("../src/lib/viral-frameworks");
+  const { checkAiInputCaps } = await import("../src/lib/ai-input-caps");
   const { prisma } = await import("../src/lib/prisma");
   const { FREE_LIMITS, PRO_LIMITS, BUSINESS_LIMITS } = await import("../src/lib/plan-limits");
   const { encryptKey } = await import("../src/lib/key-crypto");
@@ -531,9 +532,11 @@ async function main() {
     delete process.env.HERO_SCRIPT_MODEL_FAST;
     delete process.env.HERO_SCRIPT_MODEL_PRO;
     ok(heroScriptModel("fast") === "gemini-2.5-flash", "heroScriptModel('fast') defaults to gemini-2.5-flash");
-    ok(heroScriptModel("pro") === "gemini-2.5-pro", "heroScriptModel('pro') defaults to gemini-2.5-pro");
-    process.env.HERO_SCRIPT_MODEL_PRO = "gemini-pro-latest";
-    ok(heroScriptModel("pro") === "gemini-pro-latest", "HERO_SCRIPT_MODEL_PRO overrides the pro model id");
+    // Amended 2026-07-31 (plan doc + controller): gemini-2.5-pro returns 404
+    // "no longer available to new users" on the project server key.
+    ok(heroScriptModel("pro") === "gemini-pro-latest", "heroScriptModel('pro') defaults to gemini-pro-latest");
+    process.env.HERO_SCRIPT_MODEL_PRO = "gemini-3.1-pro-preview";
+    ok(heroScriptModel("pro") === "gemini-3.1-pro-preview", "HERO_SCRIPT_MODEL_PRO overrides the pro model id");
     process.env.HERO_SCRIPT_MODEL_FAST = "gemini-flash-latest";
     ok(heroScriptModel("fast") === "gemini-flash-latest", "HERO_SCRIPT_MODEL_FAST overrides the fast model id");
     delete process.env.HERO_SCRIPT_MODEL_FAST;
@@ -627,6 +630,33 @@ async function main() {
     const crlf = validateGenerateResponse({ ...good, bodyText: "บรรทัด 1\r\nบรรทัด 2\r\n" });
     ok(crlf?.bodyText === "บรรทัด 1\nบรรทัด 2",
       "validateGenerateResponse normalizes CRLF and trims trailing blank lines");
+  }
+
+  // ── 1 บรรทัด = 1 ประโยค: NO blank line may survive into any section ──────
+  {
+    const good = { structure: "pas", bodyText: "บรรทัด 1\nบรรทัด 2", ctaText: "ตามไว้" };
+    const internal = validateGenerateResponse({ ...good, bodyText: "บรรทัด 1\n\nบรรทัด 2" });
+    ok(internal?.bodyText === "บรรทัด 1\nบรรทัด 2",
+      "validateGenerateResponse strips an INTERNAL blank line from bodyText (1 บรรทัด = 1 ประโยค)");
+    const multi = validateGenerateResponse({ ...good, bodyText: "\n\nบรรทัด 1\n\n\nบรรทัด 2\n\n" });
+    ok(multi?.bodyText === "บรรทัด 1\nบรรทัด 2",
+      "validateGenerateResponse strips multiple consecutive blank lines (leading/internal/trailing)");
+    const whitespaceOnly = validateGenerateResponse({ ...good, bodyText: "บรรทัด 1\n   \n\t\nบรรทัด 2" });
+    ok(whitespaceOnly?.bodyText === "บรรทัด 1\nบรรทัด 2",
+      "validateGenerateResponse strips whitespace-only lines, not just empty ones");
+    const crlfBlanks = validateGenerateResponse({ ...good, bodyText: "บรรทัด 1\r\n\r\nบรรทัด 2\r\n\r\n" });
+    ok(crlfBlanks?.bodyText === "บรรทัด 1\nบรรทัด 2",
+      "validateGenerateResponse strips CRLF blank lines too");
+    const blankCta = validateGenerateResponse({ ...good, ctaText: "ตามไว้\n\nเดี๋ยวพาร์ทสองมา" });
+    ok(blankCta?.ctaText === "ตามไว้\nเดี๋ยวพาร์ทสองมา",
+      "validateGenerateResponse strips blank lines from ctaText as well");
+    const parsed = validateGenerateResponse({ ...good, bodyText: "บรรทัด 1\n\nบรรทัด 2", ctaText: "\nตามไว้\n" })!;
+    const assembled = assembleScript({ hookText: "hook", bodyText: parsed.bodyText, ctaText: parsed.ctaText });
+    ok(!assembled.split("\n").some((line) => line.trim() === ""),
+      "assembleScript over a validated GENERATE result can never contain a blank line");
+    const regen = validateRegenResponse({ text: "บรรทัด 1\n \nบรรทัด 2\n\n" }, { target: "body" });
+    ok(regen?.text === "บรรทัด 1\nบรรทัด 2",
+      "validateRegenResponse strips blank lines from a regenerated section");
   }
 
   // ── validateRegenResponse ───────────────────────────────────────────────
@@ -796,6 +826,30 @@ async function main() {
     ok((await getScript("hs-owner", script.id)) !== null, "the foreign deleteScript attempt did not delete the row");
     ok((await deleteScript("hs-owner", script.id)) === true, "deleteScript removes the owner's own script");
     ok((await getScript("hs-owner", script.id)) === null, "deleteScript actually removed the row");
+
+    // PUT size guard: the cap applies to the MERGED row, not just the patched
+    // fields — mirrors what src/app/api/scripts/[id]/route.ts now computes, so
+    // repeated single-field PUTs can't grow a row past AI_INPUT_CAPS.scriptChars.
+    {
+      const big = "ก".repeat(3000);
+      const row = await createScript("hs-owner", {
+        topic: "ใหญ่", durationSec: 60, hookText: big, bodyText: big, ctaText: big,
+      });
+      const mergedWith = (patch: { hookText?: string; bodyText?: string; ctaText?: string }) =>
+        checkAiInputCaps({
+          script: assembleScript({
+            hookText: patch.hookText ?? row.hookText,
+            bodyText: patch.bodyText ?? row.bodyText,
+            ctaText: patch.ctaText ?? row.ctaText,
+          }),
+        });
+      ok(mergedWith({}).ok === true, "PUT size guard: a 3k+3k+3k row is inside the cap");
+      ok(mergedWith({ bodyText: "ก".repeat(12000) }).ok === false,
+        "PUT size guard: growing ONE field past the cap on top of the stored row is rejected (merged check)");
+      ok(checkAiInputCaps({ script: "ก".repeat(12000) }).ok === true,
+        "PUT size guard: that same patch alone would have passed a patch-only check (regression guard)");
+      await deleteScript("hs-owner", row.id);
+    }
 
     // brandProfile ownership guard used by the POST/PUT routes.
     ok((await ownsBrandProfile("hs-owner", ownerProfile.id)) === true, "ownsBrandProfile: own profile → true");
