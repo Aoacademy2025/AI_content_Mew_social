@@ -315,4 +315,4 @@ Session model: authors this plan's copy (done — framework library + prompts ab
 
 ## Status
 
-interviewed 2026-07-31 | approved: 2026-07-31 | executed: in-progress 2026-07-31 | delivered: -
+interviewed 2026-07-31 | approved: 2026-07-31 | executed: 2026-07-31 (5 tasks + final hardening wave, all reviews clean) | delivered: 2026-07-31 PR to main
