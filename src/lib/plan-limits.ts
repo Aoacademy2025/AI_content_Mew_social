@@ -7,6 +7,7 @@ export const FREE_LIMITS = {
   contents: 5,
   images: Infinity,
   brandProfiles: 1,   // Hero Script — จำนวนโปรไฟล์แบรนด์/นิชที่เซฟได้
+  scripts: 3,         // Hero Script — จำนวนสคริปต์ที่เขียนได้/30 วัน
   // ฟีเจอร์ที่ไม่รองรับ
   allowHeyGen: false,
   allowElevenLabs: false,
@@ -25,6 +26,7 @@ export const PRO_LIMITS = {
   contents: Infinity,
   images: Infinity,
   brandProfiles: 5,   // Hero Script — จำนวนโปรไฟล์แบรนด์/นิชที่เซฟได้
+  scripts: Infinity,  // Hero Script — เขียนสคริปต์ได้ไม่จำกัด
   allowHeyGen: true,
   allowElevenLabs: true,
   allowBackgroundRemoval: true,
@@ -42,6 +44,7 @@ export const BUSINESS_LIMITS = {
   contents: Infinity,
   images: Infinity,
   brandProfiles: Infinity, // Hero Script — จำนวนโปรไฟล์แบรนด์/นิชที่เซฟได้
+  scripts: Infinity,       // Hero Script — เขียนสคริปต์ได้ไม่จำกัด
   allowHeyGen: true,
   allowElevenLabs: true,
   allowBackgroundRemoval: true,

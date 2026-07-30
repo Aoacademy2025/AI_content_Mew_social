@@ -15,14 +15,18 @@
 // (heroScriptModel), assembleScript, the banned-words guard
 // (containsBannedWord / generateWithBannedWordGuard), the GENERATE/REGEN
 // response validators, and Script persistence (create/list/get/update/delete,
-// every query scoped to the owning user). The plan-cap + send-to-editor
-// helpers (countScriptsInWindow, canCreateScript, sendScriptToEditor) belong
-// to Task 4 per the shared spec.
+// every query scoped to the owning user). Task 4 closes the loop with the
+// money path: the rolling-window `scripts` plan cap (countScriptsInWindow /
+// canCreateScript) and the 1-click handoff into the video editor
+// (assembleScriptForHandoff + sendScriptToEditor).
 
 import type { BrandProfile } from "@prisma/client";
 import { limitsForPlan, PLAN_LABEL } from "@/lib/plan-limits";
 import { geminiGenerateText } from "@/lib/gemini";
 import { prisma } from "@/lib/prisma";
+import { createEditorProject, sanitizeEditorProjectTitle } from "@/lib/editor-projects";
+import { buildScriptHandoffDraft } from "@/lib/editor-default-draft";
+import { visibleTtsProvider } from "@/lib/tts-providers";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
@@ -450,6 +454,19 @@ export function assembleScript(script: ScriptSections): string {
   return `${script.hookText}\n${script.bodyText}\n${script.ctaText}`;
 }
 
+/** The script as the EDITOR must receive it: assembleScript, then every
+ *  blank/whitespace-only line removed (see normalizeLines).
+ *
+ *  assembleScript is deliberately literal, and the autosave PUT stores whatever
+ *  the user typed — so a user who hits Enter twice in the เนื้อหา textarea has
+ *  blank lines sitting in the row. The editor treats 1 line = 1 Segment, so this
+ *  is the last chance to strip them before they become empty segments and pull
+ *  subtitle timing out of sync. Normalizing the ASSEMBLED string (rather than
+ *  each section) also collapses the join when a section is empty. */
+export function assembleScriptForHandoff(script: ScriptSections): string {
+  return normalizeLines(assembleScript(script));
+}
+
 /** Drop the first body line when the model echoed the user's hook into it.
  *  The server always reattaches the user's own hook (verbatim), so an echoed
  *  copy would show up twice in the assembled script. Comparison is
@@ -534,15 +551,19 @@ export interface GenerateScriptResult {
   ctaText: string;
 }
 
-/** Normalize a model-written block: CRLF → LF, trim each line, and drop EVERY
+/** Normalize a written block: CRLF → LF, trim each line, and drop EVERY
  *  blank/whitespace-only line — leading, trailing and internal.
  *
  *  Dropping internal blanks is the project invariant, not cosmetics: 1 บรรทัด =
  *  1 ประโยคที่พูดจริง, and the editor turns 1 line into 1 Segment (CONTEXT.md).
  *  A blank line is not a spoken sentence — it would become an empty segment and
  *  drag subtitle timing off — so no section (and therefore no assembleScript
- *  output) may contain one, whatever paragraphing the model felt like adding. */
-function normalizeLines(text: string): string {
+ *  output) may contain one, whatever paragraphing the model felt like adding.
+ *
+ *  Exported because it guards TWO doors: the LLM validators below (model
+ *  paragraphing) and assembleScriptForHandoff (blank lines the USER typed —
+ *  PUT /api/scripts/[id] stores section text verbatim, by design). */
+export function normalizeLines(text: string): string {
   return text
     .replace(/\r\n?/g, "\n")
     .split("\n")
@@ -687,4 +708,129 @@ export async function updateScript(userId: string, id: string, patch: ScriptPatc
 export async function deleteScript(userId: string, id: string): Promise<boolean> {
   const deleted = await prisma.script.deleteMany({ where: { id, userId } });
   return deleted.count > 0;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Task 4: the scripts plan cap + the 1-click handoff into the video editor
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── Plan cap: scripts (FREE 3 / 30 days, PRO+BUSINESS unlimited) ───────────
+
+/** The `scripts` cap is a ROLLING 30-day window (spec), not a calendar month —
+ *  same shape as the clip cap (reserveClipUsage). */
+export const SCRIPT_WINDOW_DAYS = 30;
+
+const SCRIPT_WINDOW_MS = SCRIPT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+/** How many Scripts `userId` created inside the rolling window (the number the
+ *  cap is checked against). Own rows only. */
+export async function countScriptsInWindow(userId: string, now: Date = new Date()): Promise<number> {
+  return prisma.script.count({
+    where: { userId, createdAt: { gte: new Date(now.getTime() - SCRIPT_WINDOW_MS) } },
+  });
+}
+
+export interface ScriptCapCheck {
+  allowed: boolean;
+  cap: number;
+  plan: string;
+  /** Thai upsell message — only set when allowed === false. */
+  message?: string;
+}
+
+/** scripts plan cap check for POST /api/scripts → 403 SCRIPT_LIMIT.
+ *  `currentCount` comes from countScriptsInWindow. The message is the UI spec's
+ *  copy; only FREE has a finite cap, so it names that plan directly (paid plans
+ *  are Infinity and can never reach this branch). */
+export function canCreateScript(plan: string, currentCount: number): ScriptCapCheck {
+  const cap = limitsForPlan(plan).scripts;
+  if (currentCount < cap) return { allowed: true, cap, plan };
+  return {
+    allowed: false,
+    cap,
+    plan,
+    message: `แผนฟรีเขียนได้ ${cap} สคริปต์/${SCRIPT_WINDOW_DAYS} วัน — อัปเกรดเพื่อเขียนไม่จำกัด`,
+  };
+}
+
+// ── send-to-editor ─────────────────────────────────────────────────────────
+
+/** The UI spec's locked-CTA copy, reused verbatim as the 403 body so the API
+ *  and the button say the same thing. */
+export const EDITOR_LOCKED_MESSAGE = "อัปเกรดเป็น PRO เพื่อส่งเข้าตัดต่อ";
+
+export type SendScriptToEditorResult =
+  | { ok: true; projectId: string }
+  | { ok: false; code: "NOT_FOUND"; message: string }
+  | { ok: false; code: "EDITOR_LOCKED"; message: string }
+  | { ok: false; code: "EMPTY_SCRIPT"; message: string };
+
+/** POST /api/scripts/[id]/send-to-editor — hand a finished script to the video
+ *  editor in one click.
+ *
+ *  1. the script must be the caller's own (IDOR guard — a foreign id is a plain
+ *     NOT_FOUND, never a handoff),
+ *  2. the plan must allow the editor at all (FREE → EDITOR_LOCKED upsell),
+ *  3. the script text is assembled with blank lines stripped (1 line = 1
+ *     Segment — see assembleScriptForHandoff),
+ *  4. an EditorProject is created through the editor's own create path with the
+ *     editor's own default draft (never a hand-rolled draftJson), seeded with
+ *     the account's saved voice/avatar defaults exactly like a project created
+ *     inside the editor,
+ *  5. the Script is marked "sent" and points at that project.
+ *
+ *  Re-sending an already-sent script is allowed: it creates a fresh project and
+ *  re-points the row (the previous project may well have been deleted). */
+export async function sendScriptToEditor(
+  userId: string,
+  scriptId: string
+): Promise<SendScriptToEditorResult> {
+  const script = await getScript(userId, scriptId);
+  if (!script) return { ok: false, code: "NOT_FOUND", message: "ไม่พบสคริปต์" };
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      plan: true,
+      ttsProvider: true,
+      geminiVoiceName: true,
+      elevenlabsVoiceId: true,
+      heygenAvatarId: true,
+    },
+  });
+  if (!user) return { ok: false, code: "NOT_FOUND", message: "ไม่พบผู้ใช้" };
+
+  if (!limitsForPlan(user.plan).allowVideoEditor) {
+    return { ok: false, code: "EDITOR_LOCKED", message: EDITOR_LOCKED_MESSAGE };
+  }
+
+  const text = assembleScriptForHandoff(script);
+  if (!text) {
+    return { ok: false, code: "EMPTY_SCRIPT", message: "สคริปต์ยังว่างอยู่ กรุณาเขียนเนื้อหาก่อนส่งไปตัดต่อ" };
+  }
+
+  const title = sanitizeEditorProjectTitle(script.topic);
+  const project = await createEditorProject(userId, {
+    title,
+    draft: buildScriptHandoffDraft({
+      script: text,
+      projectTitle: title,
+      accountDefaults: {
+        // Mirrors the editor's loadAccountVideoDefaults() (/api/user/video-settings).
+        voiceEngine: visibleTtsProvider(user.ttsProvider),
+        geminiVoiceName: user.geminiVoiceName?.trim() || undefined,
+        voiceId: user.elevenlabsVoiceId?.trim() ?? "",
+        avatarId: user.heygenAvatarId?.trim() ?? "",
+      },
+    }),
+  });
+
+  // Ownership-scoped write (the load above already proved it, but the guard
+  // costs nothing and keeps every Script write IDOR-safe by construction).
+  await prisma.script.updateMany({
+    where: { id: scriptId, userId },
+    data: { status: "sent", editorProjectId: project.id },
+  });
+
+  return { ok: true, projectId: project.id };
 }
