@@ -148,6 +148,30 @@ if [ ! -f "$STAGING_DIR/BUILD_ID" ]; then
   exit 1
 fi
 
+CURRENT_STATIC_MANIFEST="$STAGING_DIR/.heroai-current-static-manifest"
+if [ -d "$STAGING_DIR/static" ]; then
+  (
+    cd "$STAGING_DIR/static"
+    find . -type f -print | LC_ALL=C sort
+  ) > "$CURRENT_STATIC_MANIFEST"
+fi
+
+# Retain prior immutable Next.js assets for one release. Browsers with an open tab
+# can request the previous build's content-hashed chunks after a deploy; deleting
+# them immediately produced noisy 404s and broken tabs. The manifest is captured
+# before this merge, so the next deploy copies only this build (bounded to N-1,
+# rather than accumulating every historical chunk forever).
+if [ -d "$APP_DIR/.next/static" ] && [ -d "$STAGING_DIR/static" ]; then
+  PRIOR_STATIC_MANIFEST="$APP_DIR/.next/.heroai-current-static-manifest"
+  if [ -s "$PRIOR_STATIC_MANIFEST" ]; then
+    tar -C "$APP_DIR/.next/static" -cf - -T "$PRIOR_STATIC_MANIFEST" \
+      | tar --skip-old-files -C "$STAGING_DIR/static" -xf -
+  else
+    # First deploy with retention enabled: the live tree contains one release.
+    cp -an "$APP_DIR/.next/static/." "$STAGING_DIR/static/"
+  fi
+fi
+
 echo "=== [5a/6] Normalize staged build permissions ==="
 # Build output inherits the caller's umask. Nginx runs as a different user and
 # must be able to traverse directories and read static assets before the swap.

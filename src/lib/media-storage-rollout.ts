@@ -36,6 +36,14 @@ export type MediaStorageRolloutOptions = {
   observe?: (event: MediaStorageRolloutEvent) => void;
 };
 
+export function logRuntimeMediaStorageEvent(event: MediaStorageRolloutEvent): void {
+  if (event.outcome === "fallback") {
+    console.info("[media-storage-rollout]", event);
+    return;
+  }
+  console.warn("[media-storage-rollout]", event);
+}
+
 export class MediaRemoteUnavailableError extends Error {
   constructor(options?: ErrorOptions) {
     super("remote media storage is unavailable", options);
@@ -304,7 +312,7 @@ export function createRuntimeMediaStorage(
 
 export function runtimeMediaStorage(): MediaStorage {
   runtimeStorage ??= createRuntimeMediaStorage(process.env, {
-    observe: (event) => console.warn("[media-storage-rollout]", event),
+    observe: logRuntimeMediaStorageEvent,
   });
   return runtimeStorage;
 }

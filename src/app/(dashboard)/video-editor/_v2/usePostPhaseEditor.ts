@@ -185,10 +185,11 @@ export function usePostPhaseEditor(
   // ที่ตั้งไว้รายใบ (ชนะ cfg เสมอ) จะทำให้พรีเซ็ต "ไม่ติด" เงียบ ๆ บนการ์ดที่เคยแก้สีเอง
   const stylePresets = useEditorStylePresets({
     subtitleConfig: cfg,
+    subtitleCardLen: cardLen,
     logoConfig: logoOverlay,
-    onApplySubtitle: (config) => {
+    onApplySubtitle: (config, presetCardLen) => {
       setCfg(config);
-      setOverrides({});
+      applyCardLen(presetCardLen);
     },
     onApplyLogo: onLogoOverlayChange,
     canApplyLogo: canRunProjectOperation,

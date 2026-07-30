@@ -10,6 +10,7 @@ import {
   MediaDeleteBlockedError,
   RolloutMediaStorage,
   createRuntimeMediaStorage,
+  logRuntimeMediaStorageEvent,
   type MediaStorageRolloutEvent,
 } from "../src/lib/media-storage-rollout";
 import { mediaStorageRuntimeConfig } from "../src/lib/media-storage-config";
@@ -153,6 +154,33 @@ async function main() {
     localThenR2.remove({ identity, expectedSha256: "0".repeat(64) }),
     MediaDeleteBlockedError,
   );
+
+  const infoEvents: unknown[][] = [];
+  const warnEvents: unknown[][] = [];
+  const originalInfo = console.info;
+  const originalWarn = console.warn;
+  console.info = (...args: unknown[]) => infoEvents.push(args);
+  console.warn = (...args: unknown[]) => warnEvents.push(args);
+  try {
+    logRuntimeMediaStorageEvent({
+      operation: "open",
+      backend: "local",
+      outcome: "fallback",
+      area: "renders",
+    });
+    logRuntimeMediaStorageEvent({
+      operation: "open",
+      backend: "r2",
+      outcome: "failed",
+      area: "renders",
+      errorName: "TimeoutError",
+    });
+  } finally {
+    console.info = originalInfo;
+    console.warn = originalWarn;
+  }
+  assert.equal(infoEvents.length, 1, "expected local fallback is informational (stdout)");
+  assert.equal(warnEvents.length, 1, "real remote failure remains a warning (stderr)");
 
   console.log("PASS media storage rollout");
 }

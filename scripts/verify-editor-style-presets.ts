@@ -26,6 +26,7 @@ function ok(condition: boolean, message: string) {
 const SUBTITLE_CONFIG = {
   preset: "stroke",
   effect: "pop",
+  cardLen: "3",
   fontFamily: "'Kanit', sans-serif",
   bold: true,
   fontSize: 80,
@@ -67,6 +68,10 @@ async function main() {
   });
   ok(subtitle.name === "คลิปความรู้", "subtitle preset trims and normalizes its display name");
   ok(subtitle.kind === "subtitle" && subtitle.config.fontSize === 80, "subtitle preset round-trips its complete style");
+  ok(
+    subtitle.kind === "subtitle" && subtitle.config.cardLen === "3",
+    "subtitle preset round-trips the selected ≤3-word card length",
+  );
 
   const updatedSubtitle = await saveEditorStylePreset({
     userId: owner.id,
@@ -247,8 +252,8 @@ async function main() {
   ok(!!stylePresetsCallMatch, "usePostPhaseEditor wires useEditorStylePresets (M1/M2 source contract present)");
   const stylePresetsCall = stylePresetsCallMatch![0];
   ok(
-    /onApplySubtitle:\s*\(config\)\s*=>\s*\{\s*setCfg\(config\);\s*setOverrides\(\{\}\);\s*\}/.test(stylePresetsCall),
-    "M1: apply(subtitle preset) clears per-card overrides (setOverrides({})) alongside setCfg — a saved preset can no longer lose to a stale per-card color override",
+    /onApplySubtitle:\s*\(config,\s*presetCardLen\)\s*=>\s*\{\s*setCfg\(config\);\s*applyCardLen\(presetCardLen\);\s*\}/.test(stylePresetsCall),
+    "M1: apply(subtitle preset) restores card length through applyCardLen, which also clears stale per-card overrides",
   );
   ok(
     /canApplyLogo:\s*canRunProjectOperation/.test(stylePresetsCall),
