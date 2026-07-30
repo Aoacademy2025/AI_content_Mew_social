@@ -383,6 +383,7 @@ function mountEditorShell(input: {
     }
     if (specifier === "@/components/layout/account-menu") return { AccountMenu: marker("AccountMenu") };
     if (specifier === "@/components/layout/notification-bell") return { NotificationBell: marker("NotificationBell") };
+    if (specifier === "@/components/quota-status") return { QuotaStatus: marker("QuotaStatus") };
     if (specifier === "@/components/ui/dropdown-menu") {
       return Object.fromEntries([
         "DropdownMenu", "DropdownMenuContent", "DropdownMenuItem", "DropdownMenuLabel",
@@ -1548,6 +1549,9 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/logo-export.server") {
       return { createDurableExportWithStagedLogo: async () => { throw new Error("unused"); } };
     }
+    if (specifier === "@/lib/runpod-image-cost.server") {
+      return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
+    }
     throw new Error(`unhandled jobs route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(source));
@@ -1800,6 +1804,9 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/ai-image-policy") return { AI_IMAGE_MODELS: new Set<string>() };
     if (specifier === "@/lib/image-generation-provider.server") {
       return { describeImageOffer: () => null };
+    }
+    if (specifier === "@/lib/runpod-image-cost.server") {
+      return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
