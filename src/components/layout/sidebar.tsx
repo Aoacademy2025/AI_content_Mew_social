@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { fetchMe } from "@/lib/use-me";
 import {
   Settings, Users, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -42,6 +42,8 @@ type SidebarNavItem = {
    *  also light up on every /admin/* sub-route (e.g. /admin/users). */
   exact?: boolean;
   badge?: number;
+  /** Small text pill (e.g. "ใหม่") instead of the numeric unread-count badge. */
+  badgeText?: string;
 };
 
 // USER (non-admin) — one lean list, no section labels.
@@ -51,6 +53,7 @@ const userNavItems: SidebarNavItem[] = [
   { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
   { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
+  { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
   { title: "Gallery",      href: "/videos",        icon: Video },
   { title: "วิธีใช้งาน",    href: "/docs",          icon: BookOpen },
   { title: "อัปเดต",       href: "/updates",       icon: Megaphone },
@@ -257,9 +260,14 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
                 {(item.badge ?? 0) > 9 ? "9+" : item.badge}
               </span>
             )}
+            {item.badgeText && (
+              <span className="flex h-5 items-center justify-center rounded-full bg-violet-500 px-1.5 text-[10px] font-bold leading-none text-white">
+                {item.badgeText}
+              </span>
+            )}
           </>
         )}
-        {collapsed && (item.badge ?? 0) > 0 && (
+        {collapsed && ((item.badge ?? 0) > 0 || item.badgeText) && (
           <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-violet-400" />
         )}
       </Link>
