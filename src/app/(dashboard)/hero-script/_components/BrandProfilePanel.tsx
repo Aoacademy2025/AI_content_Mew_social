@@ -319,7 +319,7 @@ export function BrandProfilePanel({
             value={selectedProfileId ?? "none"}
             onValueChange={(v) => onSelectedProfileIdChange(v === "none" ? null : v)}
           >
-            <SelectTrigger>
+            <SelectTrigger className="min-h-11">
               <SelectValue placeholder="เลือกโปรไฟล์แบรนด์" />
             </SelectTrigger>
             <SelectContent>
@@ -338,7 +338,7 @@ export function BrandProfilePanel({
             value={String(durationSec)}
             onValueChange={(v) => onDurationSecChange(Number(v) as DurationSec)}
           >
-            <SelectTrigger>
+            <SelectTrigger className="min-h-11">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -376,11 +376,12 @@ export function BrandProfilePanel({
                 <p className="truncate font-medium" style={{ color: "var(--ui-text-primary)" }}>{p.name}</p>
                 <p className="truncate" style={{ color: "var(--ui-text-muted)" }}>{p.niche}</p>
               </button>
-              <div className="flex shrink-0 items-center gap-1">
-                <button onClick={() => openEditDialog(p)} className="rounded p-1.5 hover:bg-black/5 dark:hover:bg-white/5" aria-label="แก้ไข">
+              <div className="flex shrink-0 items-center">
+                {/* 44x44 hit area (was p-1.5 ≈ 26px) — icon-only buttons need the full touch target, not just the visible glyph */}
+                <button onClick={() => openEditDialog(p)} className="flex h-11 w-11 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5" aria-label="แก้ไข">
                   <Pencil className="h-3.5 w-3.5" style={{ color: "var(--ui-text-muted)" }} />
                 </button>
-                <button onClick={() => setDeleteId(p.id)} className="rounded p-1.5 hover:bg-black/5 dark:hover:bg-white/5" aria-label="ลบ">
+                <button onClick={() => setDeleteId(p.id)} className="flex h-11 w-11 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5" aria-label="ลบ">
                   <Trash2 className="h-3.5 w-3.5" style={{ color: "var(--ui-text-muted)" }} />
                 </button>
               </div>
@@ -400,7 +401,7 @@ export function BrandProfilePanel({
             <Link href="/pricing" className="font-medium underline" style={{ color: VIOLET_LIGHT }}>ดูแผนราคา</Link>
           </div>
         ) : (
-          <Button onClick={openCreateDialog} size="sm" className="gap-1.5 text-white" style={{ background: VIOLET }}>
+          <Button onClick={openCreateDialog} size="sm" className="min-h-11 w-full gap-1.5 text-white sm:w-auto" style={{ background: VIOLET }}>
             <Plus className="h-3.5 w-3.5" /> สร้างโปรไฟล์แบรนด์
           </Button>
         )}
@@ -408,7 +409,9 @@ export function BrandProfilePanel({
 
       {/* Create/Edit dialog */}
       <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetDialog(); }}>
-        <DialogContent className="max-w-lg">
+        {/* max-h + overflow so the full form (name/niche/audience/tone/banned words/CTA)
+            never gets clipped below the viewport on short mobile screens (iPhone SE etc). */}
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingId ? "แก้ไขโปรไฟล์แบรนด์" : "สร้างโปรไฟล์แบรนด์"}</DialogTitle>
           </DialogHeader>
@@ -418,7 +421,7 @@ export function BrandProfilePanel({
               <button
                 type="button"
                 onClick={() => setFormTab("manual")}
-                className="flex-1 rounded-md py-1.5 text-xs font-medium transition-colors"
+                className="min-h-11 flex-1 rounded-md py-1.5 text-xs font-medium transition-colors"
                 style={{
                   background: formTab === "manual" ? VIOLET : "transparent",
                   color: formTab === "manual" ? "#fff" : "var(--ui-text-secondary)",
@@ -429,7 +432,7 @@ export function BrandProfilePanel({
               <button
                 type="button"
                 onClick={() => setFormTab("analyze")}
-                className="flex-1 rounded-md py-1.5 text-xs font-medium transition-colors"
+                className="min-h-11 flex-1 rounded-md py-1.5 text-xs font-medium transition-colors"
                 style={{
                   background: formTab === "analyze" ? VIOLET : "transparent",
                   color: formTab === "analyze" ? "#fff" : "var(--ui-text-secondary)",
@@ -461,7 +464,7 @@ export function BrandProfilePanel({
                   disabled={!!sampleText.trim()}
                 />
               </div>
-              <Button onClick={handleAnalyze} disabled={analyzing} className="w-full gap-1.5 text-white" style={{ background: VIOLET }}>
+              <Button onClick={handleAnalyze} disabled={analyzing} className="min-h-11 w-full gap-1.5 text-white" style={{ background: VIOLET }}>
                 {analyzing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
                 วิเคราะห์
               </Button>
@@ -479,7 +482,7 @@ export function BrandProfilePanel({
                     type="button" variant="ghost" size="sm"
                     onClick={() => handleDrilldown(form.niche)}
                     disabled={nicheLoading}
-                    className="h-6 gap-1 px-2 text-[11px]"
+                    className="min-h-11 gap-1 px-2 text-[11px]"
                     style={{ color: VIOLET_LIGHT }}
                   >
                     {nicheLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
@@ -515,7 +518,7 @@ export function BrandProfilePanel({
                   value={form.ctaStyle}
                   onValueChange={(v) => setForm((f) => ({ ...f, ctaStyle: v }))}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="min-h-11">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -533,8 +536,8 @@ export function BrandProfilePanel({
 
           {showManualForm && (
             <DialogFooter>
-              <Button variant="outline" onClick={() => setDialogOpen(false)}>ยกเลิก</Button>
-              <Button onClick={handleSave} disabled={saving} className="gap-1.5 text-white" style={{ background: VIOLET }}>
+              <Button variant="outline" className="min-h-11" onClick={() => setDialogOpen(false)}>ยกเลิก</Button>
+              <Button onClick={handleSave} disabled={saving} className="min-h-11 gap-1.5 text-white" style={{ background: VIOLET }}>
                 {saving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                 บันทึก
               </Button>
@@ -545,7 +548,7 @@ export function BrandProfilePanel({
 
       {/* Niche drill-down cards */}
       <Dialog open={drilldownOpen} onOpenChange={setDrilldownOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
           <DialogHeader>
             <DialogTitle>เลือกนิชเจาะลึก</DialogTitle>
           </DialogHeader>
@@ -578,8 +581,8 @@ export function BrandProfilePanel({
             <AlertDialogDescription>การลบไม่สามารถย้อนกลับได้</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>ยกเลิก</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDelete} disabled={deleting}>ลบ</AlertDialogAction>
+            <AlertDialogCancel className="min-h-11">ยกเลิก</AlertDialogCancel>
+            <AlertDialogAction className="min-h-11" onClick={confirmDelete} disabled={deleting}>ลบ</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

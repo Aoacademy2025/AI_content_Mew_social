@@ -108,18 +108,23 @@ export function ScriptHistory({ refreshKey, activeScriptId, onRestore, onDeleted
             return (
               <div
                 key={s.id}
-                className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-xs"
+                // items-start (not center): the topic can now wrap to 2 lines
+                // (line-clamp-2 below), so the chip/delete button must anchor to
+                // the top of the row instead of the vertical middle of two lines.
+                className="flex items-start justify-between gap-2 rounded-lg border px-3 py-2 text-xs"
                 style={{
                   borderColor: isActive ? VIOLET : "var(--ui-card-border)",
                   background: isActive ? "rgba(139,92,246,.08)" : "transparent",
                 }}
               >
                 <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onRestore(s)}>
-                  <p className="truncate font-medium" style={{ color: "var(--ui-text-primary)" }}>{s.topic}</p>
-                  <p style={{ color: "var(--ui-text-muted)" }}>{formatDate(s.createdAt)}</p>
+                  {/* line-clamp-2 (was truncate/1-line) — a long topic no longer
+                      collapses to a few unreadable characters + ellipsis. */}
+                  <p className="line-clamp-2 font-medium" style={{ color: "var(--ui-text-primary)" }}>{s.topic}</p>
+                  <p className="mt-0.5" style={{ color: "var(--ui-text-muted)" }}>{formatDate(s.createdAt)}</p>
                 </button>
                 <span
-                  className="shrink-0 rounded-full px-2 py-0.5 text-[10px]"
+                  className="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[10px]"
                   style={{
                     background: sent ? "rgba(139,92,246,.15)" : "var(--ui-btn-bg)",
                     color: sent ? VIOLET : "var(--ui-text-muted)",
@@ -127,9 +132,10 @@ export function ScriptHistory({ refreshKey, activeScriptId, onRestore, onDeleted
                 >
                   {sent ? "ส่งแล้ว" : "ร่าง"}
                 </span>
+                {/* 44x44 hit area (was p-1.5 ≈ 26px) */}
                 <button
                   onClick={() => setDeleteId(s.id)}
-                  className="shrink-0 rounded p-1.5 hover:bg-black/5 dark:hover:bg-white/5"
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5"
                   aria-label="ลบ"
                 >
                   <Trash2 className="h-3.5 w-3.5" style={{ color: "var(--ui-text-muted)" }} />
@@ -147,8 +153,8 @@ export function ScriptHistory({ refreshKey, activeScriptId, onRestore, onDeleted
             <AlertDialogDescription>การลบไม่สามารถย้อนกลับได้</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>ยกเลิก</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDelete} disabled={deleting}>ลบ</AlertDialogAction>
+            <AlertDialogCancel className="min-h-11">ยกเลิก</AlertDialogCancel>
+            <AlertDialogAction className="min-h-11" onClick={confirmDelete} disabled={deleting}>ลบ</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

@@ -101,7 +101,7 @@ export function HookStep({
           disabled={loading || !topic.trim()}
           size="sm"
           variant="outline"
-          className="gap-1.5"
+          className="min-h-11 gap-1.5"
         >
           {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
           ขออีกชุด

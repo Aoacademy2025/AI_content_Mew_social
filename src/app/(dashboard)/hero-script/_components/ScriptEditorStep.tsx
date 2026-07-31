@@ -377,7 +377,9 @@ export function ScriptEditorStep({
     <div className="rounded-2xl p-5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>สคริปต์เต็ม</h2>
-        <div className="flex items-center gap-3">
+        {/* flex-wrap so the budget indicator drops below the button instead of
+            squeezing/overflowing next to it at 360px */}
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {draft && (
             <span className="text-[11px]" style={{ color: withinBudget ? VIOLET : "var(--ui-text-muted)" }}>
               {wordCount} คำ / งบคำ ~{wordBudget} คำ (±15%)
@@ -387,7 +389,7 @@ export function ScriptEditorStep({
             onClick={handleGenerate}
             disabled={generating || !selectedHook || !topic.trim()}
             size="sm"
-            className="gap-1.5 text-white"
+            className="min-h-11 gap-1.5 text-white"
             style={{ background: VIOLET }}
           >
             {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
@@ -407,7 +409,7 @@ export function ScriptEditorStep({
                   disabled={regenTarget !== null}
                   size="sm"
                   variant="ghost"
-                  className="h-6 gap-1 px-2 text-[11px]"
+                  className="min-h-11 gap-1 px-2 text-[11px]"
                   style={{ color: VIOLET }}
                 >
                   {regenTarget === section.key
@@ -425,7 +427,10 @@ export function ScriptEditorStep({
             </div>
           ))}
 
-          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+          {/* flex-col on mobile: the send-to-editor CTA (the money path) becomes a
+              full-width, easily-reachable one-handed tap target below the save-status
+              line, instead of squeezed into a row next to it. */}
+          <div className="flex flex-col gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <span className="flex items-center gap-1.5 text-[11px]" style={{ color: "var(--ui-text-muted)" }}>
               {saveState === "saving" && <><Loader2 className="h-3 w-3 animate-spin" /> กำลังบันทึก…</>}
               {saveState === "saved" && <><Check className="h-3 w-3" /> บันทึกแล้ว</>}
@@ -435,7 +440,7 @@ export function ScriptEditorStep({
               <Button
                 onClick={handleSendToEditor}
                 disabled={!draft.id || sending}
-                className="gap-1.5 text-white"
+                className="min-h-11 gap-1.5 text-white sm:w-auto"
                 style={{ background: VIOLET }}
               >
                 {sending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
