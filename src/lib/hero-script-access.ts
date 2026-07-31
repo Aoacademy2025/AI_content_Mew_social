@@ -15,10 +15,19 @@
  * Does `email` satisfy one entry of the comma-separated allowlist?
  *
  * - Comparison is case-insensitive throughout.
- * - An entry starting with "@" is a SUFFIX match against the email (after
- *   stripping the leading "@"), so "@aoacademy" matches any email ending in
- *   "aoacademy" — this covers both domain-style entries ("@aoacademy.co")
- *   and bare account-style entries ("@aoacademy").
+ * - An entry starting with "@" is an ANCHORED DOMAIN match against the
+ *   email's domain (the part after the last "@") — never a raw string
+ *   suffix, which would be bypassable (e.g. "@aoacademy" naively matching
+ *   "attacker@evilaoacademy"). The domain must match one of:
+ *     - exactly the entry domain ("aoacademy.com" === "aoacademy.com")
+ *     - a real subdomain of it (ends with ".aoacademy.com")
+ *     - the entry domain itself as a left-anchored label followed by a dot
+ *       (starts with "aoacademy." — so a bare entry like "@aoacademy",
+ *       written without a TLD, still matches "aoacademy.com" /
+ *       "aoacademy.co.th" / bare "aoacademy", but NOT "evilaoacademy.com")
+ *   This covers both domain-style entries ("@aoacademy.co") and bare
+ *   account-style entries ("@aoacademy") while staying anchored — no
+ *   crafted domain can smuggle the entry as a mere substring.
  * - Any other entry is an EXACT email match.
  * - Malformed entries (blank after trim, or a bare "@" with nothing after
  *   it) never match anything — they're silently skipped, not an error.
@@ -37,8 +46,20 @@ export function isHeroScriptAllowedEmail(
 
   for (const entry of entries) {
     if (entry.startsWith("@")) {
-      const suffix = entry.slice(1);
-      if (suffix && normalizedEmail.endsWith(suffix)) return true;
+      const entryDomain = entry.slice(1);
+      if (!entryDomain) continue;
+
+      const atIdx = normalizedEmail.lastIndexOf("@");
+      if (atIdx < 0) continue;
+      const emailDomain = normalizedEmail.slice(atIdx + 1);
+
+      if (
+        emailDomain === entryDomain ||
+        emailDomain.endsWith("." + entryDomain) ||
+        emailDomain.startsWith(entryDomain + ".")
+      ) {
+        return true;
+      }
     } else if (entry === normalizedEmail) {
       return true;
     }
