@@ -18,16 +18,16 @@
  * - An entry starting with "@" is an ANCHORED DOMAIN match against the
  *   email's domain (the part after the last "@") — never a raw string
  *   suffix, which would be bypassable (e.g. "@aoacademy" naively matching
- *   "attacker@evilaoacademy"). The domain must match one of:
- *     - exactly the entry domain ("aoacademy.com" === "aoacademy.com")
- *     - a real subdomain of it (ends with ".aoacademy.com")
- *     - the entry domain itself as a left-anchored label followed by a dot
- *       (starts with "aoacademy." — so a bare entry like "@aoacademy",
- *       written without a TLD, still matches "aoacademy.com" /
- *       "aoacademy.co.th" / bare "aoacademy", but NOT "evilaoacademy.com")
- *   This covers both domain-style entries ("@aoacademy.co") and bare
- *   account-style entries ("@aoacademy") while staying anchored — no
- *   crafted domain can smuggle the entry as a mere substring.
+ *   "attacker@evilaoacademy"). The domain must be EXACTLY the entry domain,
+ *   or a real subdomain of it (ends with ".<entry>").
+ *   Deliberately NO "starts-with" / TLD-agnostic fallback: that branch was
+ *   found to be its own unanchored bypass — with entry "@aoacademy",
+ *   "attacker@aoacademy.evilhacker.io" would satisfy a naive
+ *   `startsWith("aoacademy.")` check, since anyone who owns ANY domain can
+ *   prefix it with "aoacademy.". The consequence is deliberate: allowlist
+ *   entries must be exact emails or FULL domains including the TLD — a
+ *   TLD-less entry like "@aoacademy" matches ONLY the literal domain
+ *   "aoacademy" (and its subdomains), never "aoacademy.com" etc.
  * - Any other entry is an EXACT email match.
  * - Malformed entries (blank after trim, or a bare "@" with nothing after
  *   it) never match anything — they're silently skipped, not an error.
@@ -53,11 +53,7 @@ export function isHeroScriptAllowedEmail(
       if (atIdx < 0) continue;
       const emailDomain = normalizedEmail.slice(atIdx + 1);
 
-      if (
-        emailDomain === entryDomain ||
-        emailDomain.endsWith("." + entryDomain) ||
-        emailDomain.startsWith(entryDomain + ".")
-      ) {
+      if (emailDomain === entryDomain || emailDomain.endsWith("." + entryDomain)) {
         return true;
       }
     } else if (entry === normalizedEmail) {

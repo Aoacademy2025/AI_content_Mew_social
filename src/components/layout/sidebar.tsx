@@ -66,6 +66,9 @@ const userNavItems: SidebarNavItem[] = [
 // directly, so those are omitted here (matches the approved mockup).
 const adminStudioItems: SidebarNavItem[] = [
   { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
+  // Writing comes before editing in the user flow — kept directly above Video Editor
+  // (same placement as userNavItems; admins are allowlist-gated too, see internalItemsOnly).
+  { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
   { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
   { title: "Gallery",      href: "/videos",        icon: Video },
