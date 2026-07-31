@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
-import { sendScriptToEditor } from "@/lib/hero-script.server";
+import { requireHeroScriptUser, sendScriptToEditor } from "@/lib/hero-script.server";
 
 // POST /api/scripts/[id]/send-to-editor — the Hero Script step-5 handoff.
 //
@@ -17,9 +16,10 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUser = await getCurrentUser();
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
     const { id } = await params;
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const result = await sendScriptToEditor(authUser.id, id);
     if (result.ok) return NextResponse.json({ projectId: result.projectId });

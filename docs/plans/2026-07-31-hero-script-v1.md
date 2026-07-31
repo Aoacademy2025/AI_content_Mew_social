@@ -316,3 +316,10 @@ Session model: authors this plan's copy (done — framework library + prompts ab
 ## Status
 
 interviewed 2026-07-31 | approved: 2026-07-31 | executed: 2026-07-31 (5 tasks + final hardening wave, all reviews clean) | delivered: 2026-07-31 PR to main
+
+## Post-review amendments (2026-07-31, Mew)
+
+- **Nav placement:** "เขียนสคริปต์ AI" moved to sit immediately BEFORE Video Editor in `src/components/layout/sidebar.tsx` (writing comes before editing in the user flow). The "ใหม่" badge is unchanged.
+- **Internal-beta account allowlist (fail-closed):** Hero Script is gated to allowlisted accounts only, enforced in three layers — nav (sidebar item hidden unless allowlisted), page (`/hero-script` server-redirects non-allowlisted users to `/dashboard`), and API (all 11 `/api/brand-profiles*` + `/api/scripts*` routes return 403 `FEATURE_LOCKED` via the shared `requireHeroScriptUser()` gate in `src/lib/hero-script.server.ts`). The matcher lives in `src/lib/hero-script-access.ts` and reads `HERO_SCRIPT_ALLOWED_EMAILS` (comma-separated, case-insensitive; `@`-prefixed entries are suffix matches, everything else is an exact match). An empty/unset env disables the feature for EVERYONE, matching ADR-0003's fail-closed convention — **prod must set `HERO_SCRIPT_ALLOWED_EMAILS` explicitly at deploy**, including `duckyhero@gmail.com` and the aoacademy account entry, or no one (not even the product owner) will see the feature. Allowlisted users still follow their normal plan limits — this is a visibility/access gate, not a bypass.
+- **Mobile-responsive pass:** deferred to a separate commit (not bundled with this amendment).
+- **Model-provider question:** whether Hero Script generation should move off Gemini onto OpenRouter's `luna`/`terra` models is under research — decision pending, no code change yet.

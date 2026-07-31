@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
-import { serializeBannedWords, toBrandProfileDTO } from "@/lib/hero-script.server";
+import { requireHeroScriptUser, serializeBannedWords, toBrandProfileDTO } from "@/lib/hero-script.server";
 import { checkBrandProfileFieldLimits } from "@/lib/brand-profile-limits";
 import { isValidCtaStyleKey } from "@/lib/viral-frameworks";
 
@@ -13,9 +12,10 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUser = await getCurrentUser();
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
     const { id } = await params;
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json().catch(() => null);
     const name = typeof body?.name === "string" ? body.name.trim() : "";
@@ -80,9 +80,10 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUser = await getCurrentUser();
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
     const { id } = await params;
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const deleted = await prisma.brandProfile.deleteMany({ where: { id, userId: authUser.id } });
     if (deleted.count === 0) return NextResponse.json({ error: "ไม่พบโปรไฟล์" }, { status: 404 });

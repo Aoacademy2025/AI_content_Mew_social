@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { isValidHookFormulaKey, isValidStoryStructureKey } from "@/lib/viral-frameworks";
@@ -9,6 +8,7 @@ import {
   getScript,
   isValidDurationSec,
   ownsBrandProfile,
+  requireHeroScriptUser,
   updateScript,
   validateTopic,
   type ScriptPatch,
@@ -20,9 +20,10 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUser = await getCurrentUser();
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
     const { id } = await params;
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const script = await getScript(authUser.id, id);
     if (!script) return NextResponse.json({ error: "ไม่พบสคริปต์" }, { status: 404 });
@@ -43,9 +44,10 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUser = await getCurrentUser();
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
     const { id } = await params;
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== "object") {
@@ -141,9 +143,10 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const authUser = await getCurrentUser();
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
     const { id } = await params;
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const deleted = await deleteScript(authUser.id, id);
     if (!deleted) return NextResponse.json({ error: "ไม่พบสคริปต์" }, { status: 404 });

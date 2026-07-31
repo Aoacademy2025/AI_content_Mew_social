@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { isValidHookFormulaKey } from "@/lib/viral-frameworks";
@@ -14,6 +13,7 @@ import {
   isModelUnavailableError,
   isValidDurationSec,
   parseBannedWords,
+  requireHeroScriptUser,
   resolveLlmTriad,
   stripEchoedHook,
   toBrandProfileDTO,
@@ -39,8 +39,9 @@ import {
 // (stripEchoedHook), otherwise the assembled script would say it twice.
 export async function POST(req: Request) {
   try {
-    const authUser = await getCurrentUser();
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
 
     const body = await req.json().catch(() => null);
 

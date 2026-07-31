@@ -1,10 +1,14 @@
 import { NextResponse } from "next/server";
 import axios from "axios";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { buildAnalyzePrompt } from "@/lib/prompts/hero-script";
-import { generateValidatedJson, resolveLlmTriad, validateAnalyzeResponse } from "@/lib/hero-script.server";
+import {
+  generateValidatedJson,
+  requireHeroScriptUser,
+  resolveLlmTriad,
+  validateAnalyzeResponse,
+} from "@/lib/hero-script.server";
 
 // SSRF-safe axios GET of a user-supplied URL: validate the host, then follow redirects
 // MANUALLY re-validating each hop (axios auto-follow is disabled), so a safe initial URL
@@ -30,8 +34,9 @@ async function safeAxiosGet(url: string, config: Parameters<typeof axios.get>[1]
 // only (never auto-saved) — {niche, audience, tone, analysisNotes}
 export async function POST(req: Request) {
   try {
-    const authUser = await getCurrentUser();
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
 
     // `.catch(() => null)` (same as every other Hero Script route): a malformed
     // body must be a clean 400, not a thrown 500 — apiError writes an admin

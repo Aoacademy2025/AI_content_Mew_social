@@ -20,10 +20,17 @@
 // canCreateScript) and the 1-click handoff into the video editor
 // (assembleScriptForHandoff + sendScriptToEditor).
 
-import type { BrandProfile, Prisma } from "@prisma/client";
+import type { BrandProfile, Prisma, User } from "@prisma/client";
+import { NextResponse } from "next/server";
 import { limitsForPlan, PLAN_LABEL } from "@/lib/plan-limits";
 import { geminiGenerateText } from "@/lib/gemini";
 import { prisma } from "@/lib/prisma";
+import { getCurrentUser } from "@/lib/clerk-auth";
+import {
+  isHeroScriptAllowedUser,
+  HERO_SCRIPT_LOCKED_CODE,
+  HERO_SCRIPT_LOCKED_MESSAGE,
+} from "@/lib/hero-script-access";
 import { createEditorProject, sanitizeEditorProjectTitle } from "@/lib/editor-projects";
 import { buildScriptHandoffDraft } from "@/lib/editor-default-draft";
 import { visibleTtsProvider } from "@/lib/tts-providers";
@@ -34,6 +41,33 @@ import { tokenizeWords } from "@/lib/tts-timing";
 import { isValidHookFormulaKey, isValidStoryStructureKey } from "@/lib/viral-frameworks";
 import { TTS_WORDS_PER_SECOND } from "@/lib/prompts/content-generator";
 import { buildBannedWordRetryNote } from "@/lib/prompts/hero-script";
+
+// ── Auth + internal-beta allowlist gate (shared by all 11 routes) ──────────
+//
+// Post-review amendment (2026-07-31): Hero Script is internal-beta only.
+// Every route calls this instead of getCurrentUser() directly, so the 403
+// FEATURE_LOCKED response is defined once, not copy-pasted 11 times.
+
+export type HeroScriptAuthResult =
+  | { ok: true; user: User }
+  | { ok: false; response: NextResponse };
+
+export async function requireHeroScriptUser(): Promise<HeroScriptAuthResult> {
+  const authUser = await getCurrentUser();
+  if (!authUser) {
+    return { ok: false, response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  }
+  if (!isHeroScriptAllowedUser(authUser)) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        { code: HERO_SCRIPT_LOCKED_CODE, error: HERO_SCRIPT_LOCKED_MESSAGE },
+        { status: 403 }
+      ),
+    };
+  }
+  return { ok: true, user: authUser };
+}
 
 // ── bannedWords: stored as a JSON string array on BrandProfile ─────────────
 
