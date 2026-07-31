@@ -89,10 +89,14 @@ async function main() {
     isOpenRouterAuthError,
     extractOpenRouterContent,
     scrubOpenRouterSecrets,
+    wrapOpenRouterTransportError,
     OPENROUTER_CREDIT_MESSAGE,
     OPENROUTER_MODEL_FAST_DEFAULT,
     OPENROUTER_MODEL_PRO_DEFAULT,
   } = await import("../src/lib/openrouter");
+  // The generic scrubber every route's error path runs through (defense in
+  // depth for the sk-or- key shape — see the OpenRouter classification block).
+  const { scrubSecrets: scrubApiErrorSecrets } = await import("../src/lib/api-error");
   const { BRAND_PROFILE_CAPS, checkBrandProfileFieldLimits } = await import("../src/lib/brand-profile-limits");
   const { providerError, toErrorResponse } = await import("../src/lib/provider-errors");
   const { reserveAiTextCall, aiTextCallCeilingFor } = await import("../src/lib/ai-text-limits");
@@ -1094,6 +1098,41 @@ async function main() {
       "scrubOpenRouterSecrets redacts an sk-or- key / Bearer token");
     ok(!openRouterError("fatal", "boom sk-or-v1-abcdef0123456789abcdef").message.includes("abcdef0123456789"),
       "openRouterError scrubs the technical message before it can reach a log");
+
+    // …including on the TRANSPORT path. fetchWithBudget is provider-agnostic and
+    // builds its own plain ProviderError straight from the raw network message,
+    // so that construction site is re-wrapped by the OpenRouter caller — without
+    // the wrap, a cause chain / request echo carrying the Authorization header
+    // would reach a log unscrubbed.
+    const rawTransport = providerError(
+      "transient",
+      "openrouter",
+      "openrouter fetch failed (attempt 3/3): connect ECONNREFUSED — sent Authorization: Bearer sk-or-v1-abcdef0123456789abcdef",
+    );
+    ok(rawTransport.message.includes("abcdef0123456789"),
+      "regression guard: fetchWithBudget's own transport error DOES carry the raw message (hence the re-wrap)");
+    const wrapped = wrapOpenRouterTransportError(rawTransport);
+    ok(!wrapped.message.includes("abcdef0123456789") && !wrapped.message.includes("sk-or-v1-abcdef"),
+      "wrapOpenRouterTransportError scrubs an sk-or- key out of a network/timeout error message");
+    ok(wrapped.openRouterClass === "transient" && wrapped.provider === "openrouter",
+      "wrapOpenRouterTransportError classifies a transport failure as transient");
+    ok(toErrorResponse(wrapped).status === 503,
+      "a wrapped transport failure answers 503, not a credit/model error");
+    ok(isOpenRouterCreditError(wrapped) === false && isModelUnavailableError(wrapped) === false,
+      "a transport failure is neither the credit nor the dead-model class");
+    ok(!wrapOpenRouterTransportError(new Error("fetch failed: Bearer sk-or-v1-abcdef0123456789abcdef")).message.includes("abcdef0123456789"),
+      "wrapOpenRouterTransportError scrubs a plain Error too (Node folds the cause chain into .message)");
+    const alreadyClassified = openRouterError("provider_credit", "HTTP 402", 402);
+    ok(wrapOpenRouterTransportError(alreadyClassified) === alreadyClassified,
+      "wrapOpenRouterTransportError passes an already-classified OpenRouter error through unchanged");
+
+    // Defense in depth: the generic api-error scrubber knows the sk-or- shape
+    // too, so an OpenRouter token cannot reach an admin notification through any
+    // other route's error path either.
+    ok(!scrubApiErrorSecrets("boom sk-or-v1-abcdef0123456789abcdef").includes("abcdef0123456789"),
+      "api-error's scrubSecrets redacts a BARE sk-or- key (no Bearer prefix to catch it)");
+    ok(scrubApiErrorSecrets("AIzaSyA1234567890abcdefghijklmnop").includes("<redacted>"),
+      "api-error's scrubSecrets still redacts the pre-existing key shapes (AIza…)");
 
     // Response extraction (the shape the JSON validators are fed).
     ok(extractOpenRouterContent({ choices: [{ message: { content: '{"ok":true}' } }] }) === '{"ok":true}',
