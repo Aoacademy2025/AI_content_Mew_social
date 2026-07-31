@@ -107,20 +107,21 @@ async function main() {
   const { isHeroScriptAllowedEmail } = await import("../src/lib/hero-script-access");
 
   // ── Post-review amendment (2026-07-31): Hero Script internal-beta allowlist
-  // matcher — exact match, @-suffix match, case-insensitivity, empty env =
-  // deny (fail-closed), malformed entries ignored. ───────────────────────────
+  // matcher — exact match, ANCHORED @-domain match (not a raw string suffix —
+  // that was a confirmed security bypass, fixed same day), case-insensitivity
+  // on both sides, empty env = deny (fail-closed), malformed entries ignored.
   {
     const env = "duckyhero@gmail.com,@aoacademy";
     ok(isHeroScriptAllowedEmail("duckyhero@gmail.com", env) === true,
       "isHeroScriptAllowedEmail: exact match allowed");
     ok(isHeroScriptAllowedEmail("DuckyHero@Gmail.com", env) === true,
       "isHeroScriptAllowedEmail: exact match is case-insensitive");
-    ok(isHeroScriptAllowedEmail("someone@aoacademy", env) === true,
-      "isHeroScriptAllowedEmail: @-suffix match allowed (bare account-style)");
-    ok(isHeroScriptAllowedEmail("SOMEONE@AOACADEMY", env) === true,
-      "isHeroScriptAllowedEmail: @-suffix match is case-insensitive");
-    ok(isHeroScriptAllowedEmail("team.lead@aoacademy", env) === true,
-      "isHeroScriptAllowedEmail: @-suffix match covers any local-part before the suffix");
+    ok(isHeroScriptAllowedEmail("y@aoacademy", env) === true,
+      "isHeroScriptAllowedEmail: @-domain match allowed against the bare domain itself (exact)");
+    ok(isHeroScriptAllowedEmail("Y@AOACADEMY", env) === true,
+      "isHeroScriptAllowedEmail: @-domain match is case-insensitive on the email side");
+    ok(isHeroScriptAllowedEmail("team@aoacademy", "duckyhero@gmail.com,@AOACADEMY") === true,
+      "isHeroScriptAllowedEmail: @-domain match is case-insensitive on the entry side");
     ok(isHeroScriptAllowedEmail("random@gmail.com", env) === false,
       "isHeroScriptAllowedEmail: non-matching email denied");
     ok(isHeroScriptAllowedEmail("notduckyhero@gmail.com", env) === false,
@@ -131,18 +132,25 @@ async function main() {
       "isHeroScriptAllowedEmail: undefined email denied");
     ok(isHeroScriptAllowedEmail("  ", env) === false,
       "isHeroScriptAllowedEmail: blank/whitespace email denied");
+    // Security fix (2026-07-31): a TLD-less entry like "@aoacademy" must be an
+    // ANCHORED domain match, not a raw endsWith() suffix — the old suffix form
+    // both let a crafted "evilaoacademy(.com)" domain sail past the check AND
+    // failed to match the real "aoacademy.com" / "aoacademy.co.th" domains it
+    // was meant to cover.
     ok(isHeroScriptAllowedEmail("attacker@evilaoacademy", env) === false,
-      "isHeroScriptAllowedEmail: neighbor-domain bypass denied (bare)");
+      "isHeroScriptAllowedEmail: crafted 'evilaoacademy' domain denied (anchored, not raw suffix)");
     ok(isHeroScriptAllowedEmail("attacker@evilaoacademy.com", env) === false,
-      "isHeroScriptAllowedEmail: neighbor-domain bypass denied (dotted)");
+      "isHeroScriptAllowedEmail: crafted 'evilaoacademy.com' domain denied");
     ok(isHeroScriptAllowedEmail("team@aoacademy.com", env) === true,
-      "isHeroScriptAllowedEmail: TLD-agnostic left-anchored domain allowed (.com)");
+      "isHeroScriptAllowedEmail: TLD-less entry matches the real 'aoacademy.com' domain (left-anchored)");
     ok(isHeroScriptAllowedEmail("x@aoacademy.co.th", env) === true,
-      "isHeroScriptAllowedEmail: TLD-agnostic left-anchored domain allowed (.co.th)");
+      "isHeroScriptAllowedEmail: TLD-less entry matches 'aoacademy.co.th' too (any TLD)");
     ok(isHeroScriptAllowedEmail("a@sub.aoacademy.com", "@aoacademy.com") === true,
-      "isHeroScriptAllowedEmail: dot-suffix subdomain match allowed");
-    ok(isHeroScriptAllowedEmail("b@notaoacademy.com", "@aoacademy.com") === false,
-      "isHeroScriptAllowedEmail: dotted-entry neighbor domain denied");
+      "isHeroScriptAllowedEmail: a dotted entry matches a real subdomain (sub.aoacademy.com)");
+    ok(isHeroScriptAllowedEmail("a@evilaoacademy.com", "@aoacademy.com") === false,
+      "isHeroScriptAllowedEmail: a dotted entry denies a crafted lookalike domain");
+    ok(isHeroScriptAllowedEmail("a@aoacademy.com", "@aoacademy.com") === true,
+      "isHeroScriptAllowedEmail: a dotted entry matches its exact domain");
     // Fail-closed: empty/unset env locks EVERYONE out, including the product owner.
     ok(isHeroScriptAllowedEmail("duckyhero@gmail.com", undefined) === false,
       "isHeroScriptAllowedEmail: unset env denies even the default product-owner email (fail-closed)");
