@@ -180,6 +180,25 @@ export function isOpenRouterAuthError(error: unknown): boolean {
   return isOpenRouterErrorOfClass(error, "provider_auth");
 }
 
+/** Re-wrap a TRANSPORT failure (connection refused / DNS / per-attempt timeout)
+ *  raised by fetchWithBudget into a scrubbed, classified OpenRouterError.
+ *
+ *  fetchWithBudget is shared by every provider in the app (HeyGen, ElevenLabs,
+ *  stock CDNs, …), so it stays provider-agnostic and builds its own plain
+ *  ProviderError straight from the raw transport message — the one error
+ *  construction site this module's scrubber could not reach. Teaching that
+ *  generic helper about OpenRouter's key format would be wrong-direction
+ *  coupling, so the OpenRouter caller owns the wrap instead: with this, EVERY
+ *  error thrown out of openRouterGenerateText is scrubbed and carries an
+ *  openRouterClass. Node's fetch folds its cause chain into `message`, and a
+ *  request echo can carry the Authorization header — so this scrubs, it does
+ *  not merely reclassify. */
+export function wrapOpenRouterTransportError(error: unknown): OpenRouterError {
+  if (isOpenRouterError(error)) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  return openRouterError("transient", `openrouter transport failure: ${message}`);
+}
+
 // ── Response shape ─────────────────────────────────────────────────────────
 
 /** Pull the assistant text out of a chat-completions payload. Tolerates the
@@ -233,35 +252,42 @@ export async function openRouterGenerateText(
     throw openRouterError("provider_auth", "OPENROUTER_API_KEY is not configured");
   }
 
-  const res = await fetchWithBudget(
-    OPENROUTER_CHAT_URL,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        // OpenRouter's recommended attribution headers.
-        "HTTP-Referer": OPENROUTER_REFERER,
-        "X-Title": OPENROUTER_TITLE,
+  let res: Response;
+  try {
+    res = await fetchWithBudget(
+      OPENROUTER_CHAT_URL,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          // OpenRouter's recommended attribution headers.
+          "HTTP-Referer": OPENROUTER_REFERER,
+          "X-Title": OPENROUTER_TITLE,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: prompt }],
+          temperature,
+          max_tokens: maxOutputTokens,
+        }),
       },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: prompt }],
-        temperature,
-        max_tokens: maxOutputTokens,
-      }),
-    },
-    {
-      timeoutMs: OPENROUTER_TIMEOUT_MS,
-      retries: OPENROUTER_MAX_ATTEMPTS - 1,
-      retryOn: OPENROUTER_RETRY_ON,
-      wallClockMs: OPENROUTER_WALL_CLOCK_MS,
-      provider: "openrouter",
-      // Non-ok responses come back instead of throwing so the body can be read
-      // and classified precisely (402 vs 404 vs 400-bad-model).
-      returnHttpErrors: true,
-    }
-  );
+      {
+        timeoutMs: OPENROUTER_TIMEOUT_MS,
+        retries: OPENROUTER_MAX_ATTEMPTS - 1,
+        retryOn: OPENROUTER_RETRY_ON,
+        wallClockMs: OPENROUTER_WALL_CLOCK_MS,
+        provider: "openrouter",
+        // Non-ok responses come back instead of throwing so the body can be read
+        // and classified precisely (402 vs 404 vs 400-bad-model).
+        returnHttpErrors: true,
+      }
+    );
+  } catch (error) {
+    // Transport failure only (retries already exhausted inside fetchWithBudget).
+    // Re-wrapped so it is scrubbed + classified like every other failure here.
+    throw wrapOpenRouterTransportError(error);
+  }
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
