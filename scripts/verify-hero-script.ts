@@ -74,9 +74,27 @@ async function main() {
     MODEL_UNAVAILABLE_CODE,
     MODEL_UNAVAILABLE_MESSAGE,
     PRO_TIER_TEXT_CALL_COST,
+    // Task 7: provider switch (Gemini ⇄ OpenRouter)
+    resolveHeroScriptProvider,
+    heroScriptProvider,
+    heroScriptLlmErrorResponse,
+    HERO_SCRIPT_PROVIDER_DEFAULT,
+    PROVIDER_CREDIT_CODE,
+    PROVIDER_UNAVAILABLE_CODE,
   } = await import("../src/lib/hero-script.server");
+  const {
+    classifyOpenRouterFailure,
+    openRouterError,
+    isOpenRouterCreditError,
+    isOpenRouterAuthError,
+    extractOpenRouterContent,
+    scrubOpenRouterSecrets,
+    OPENROUTER_CREDIT_MESSAGE,
+    OPENROUTER_MODEL_FAST_DEFAULT,
+    OPENROUTER_MODEL_PRO_DEFAULT,
+  } = await import("../src/lib/openrouter");
   const { BRAND_PROFILE_CAPS, checkBrandProfileFieldLimits } = await import("../src/lib/brand-profile-limits");
-  const { providerError } = await import("../src/lib/provider-errors");
+  const { providerError, toErrorResponse } = await import("../src/lib/provider-errors");
   const { reserveAiTextCall, aiTextCallCeilingFor } = await import("../src/lib/ai-text-limits");
   const { syncMinuteWindow } = await import("../src/lib/minute-limits");
   const {
@@ -797,8 +815,13 @@ async function main() {
   }
 
   // ── resolveLlmTriad: shared checkAiInputCaps→resolveGeminiKey→reserveAiTextCall preamble ──
+  // NOTE: prisma.config.ts pulls in `dotenv/config`, so the developer's REAL
+  // .env is visible here — every env this block depends on must be cleared
+  // explicitly (that is why MANAGED_GEMINI/GEMINI_SERVER_KEY are deleted, and
+  // why HERO_SCRIPT_PROVIDER joined them when the provider switch landed).
   delete process.env.MANAGED_GEMINI;
   delete process.env.GEMINI_SERVER_KEY;
+  delete process.env.HERO_SCRIPT_PROVIDER;
   {
     const missing = await resolveLlmTriad("hs-does-not-exist", {});
     ok(missing.ok === false && !missing.ok && missing.status === 404, "resolveLlmTriad: unknown user → 404");
@@ -824,7 +847,75 @@ async function main() {
     if (withKey.ok) {
       ok(withKey.apiKey === "test-gemini-key-1234", "resolveLlmTriad decrypts the stored BYOK key");
       ok(withKey.geminiMode === "byok", "resolveLlmTriad reports byok mode when MANAGED_GEMINI is off");
+      ok(withKey.provider === "gemini", "resolveLlmTriad reports the gemini provider when the switch is unset");
     }
+  }
+
+  // ── Task 7 metering matrix: who pays decides who is metered ─────────────
+  //
+  // Under HERO_SCRIPT_PROVIDER=openrouter every Hero Script call runs on the
+  // SERVER's OpenRouter key — including calls from users who are BYOK for
+  // Gemini — so (a) resolveGeminiKey is skipped entirely (no 409 KEY_REQUIRED
+  // can lock a BYOK-less user out) and (b) reserveAiTextCall is enforced for
+  // EVERYONE. Under gemini the old rule stands: managed → enforce, BYOK → no-op.
+  {
+    await prisma.user.create({
+      data: { id: "hs-or", name: "OpenRouter user", email: "hs-or@example.test", plan: "PRO" },
+    });
+    const usedFor = async (id: string) =>
+      (await prisma.user.findUnique({ where: { id }, select: { aiTextCallsUsed: true } }))?.aiTextCallsUsed ?? -1;
+
+    // Baseline (gemini, managed off): a user with NO stored key is locked out.
+    delete process.env.HERO_SCRIPT_PROVIDER;
+    const geminiNoKey = await resolveLlmTriad("hs-or", {});
+    ok(geminiNoKey.ok === false && !geminiNoKey.ok && geminiNoKey.status === 409,
+      "provider=gemini: a user with no geminiKey still gets 409 KEY_REQUIRED (unchanged)");
+    ok((await usedFor("hs-or")) === 0,
+      "provider=gemini: the 409 path reserves nothing");
+
+    // Same user, provider=openrouter → served by the server key, and metered.
+    process.env.HERO_SCRIPT_PROVIDER = "openrouter";
+    const orNoKey = await resolveLlmTriad("hs-or", {});
+    ok(orNoKey.ok === true, "provider=openrouter: a user with NO gemini key is served (no 409 KEY_REQUIRED)");
+    if (orNoKey.ok) {
+      ok(orNoKey.provider === "openrouter", "provider=openrouter: the triad reports the openrouter provider");
+      ok(orNoKey.apiKey === "" && orNoKey.geminiMode === null,
+        "provider=openrouter: no Gemini key is resolved at all (server key lives in the client)");
+    }
+    ok((await usedFor("hs-or")) === 1,
+      "provider=openrouter: the call is METERED for a user who is not managed-Gemini (server is the cost bearer)");
+
+    // A BYOK-for-Gemini user is metered too under openrouter — their Gemini key
+    // pays for nothing here.
+    const beforeByok = await usedFor("hs-free");
+    const orByok = await resolveLlmTriad("hs-free", {});
+    ok(orByok.ok === true, "provider=openrouter: a Gemini-BYOK user is served as well");
+    ok((await usedFor("hs-free")) === beforeByok + 1,
+      "provider=openrouter: a Gemini-BYOK user is METERED (BYOK no longer means unmetered)");
+
+    // Pro-tier weighting still applies on top of the always-enforce rule.
+    const beforePro = await usedFor("hs-or");
+    const orPro = await resolveLlmTriad("hs-or", {}, { count: PRO_TIER_TEXT_CALL_COST });
+    ok(orPro.ok === true, "provider=openrouter: a pro-tier reserve is allowed under the ceiling");
+    ok((await usedFor("hs-or")) === beforePro + PRO_TIER_TEXT_CALL_COST,
+      "provider=openrouter: the pro tier still reserves count=2");
+
+    // The ceiling is a real gate on this path, not just bookkeeping.
+    const synced = await syncMinuteWindow("hs-or");
+    const ceiling = aiTextCallCeilingFor(synced!.minutesLimit);
+    await prisma.user.update({ where: { id: "hs-or" }, data: { aiTextCallsUsed: ceiling } });
+    const exhausted = await resolveLlmTriad("hs-or", {});
+    ok(exhausted.ok === false && !exhausted.ok && exhausted.status === 429 && exhausted.body?.code === "QUOTA_AI_TEXT",
+      "provider=openrouter: a user at the ceiling gets 429 QUOTA_AI_TEXT");
+
+    // Back to gemini + BYOK: metering is a no-op again (byte-identical).
+    delete process.env.HERO_SCRIPT_PROVIDER;
+    const geminiByokAfter = await usedFor("hs-free");
+    const backToGemini = await resolveLlmTriad("hs-free", {});
+    ok(backToGemini.ok === true && backToGemini.ok && backToGemini.geminiMode === "byok",
+      "rollback to provider=gemini: the BYOK user resolves their own key again");
+    ok((await usedFor("hs-free")) === geminiByokAfter,
+      "rollback to provider=gemini: a BYOK call reserves nothing (enforce:false, unchanged)");
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -855,6 +946,7 @@ async function main() {
 
   // ── heroScriptModel: env-configurable fast/pro model ids ────────────────
   {
+    delete process.env.HERO_SCRIPT_PROVIDER; // gemini is the code default
     delete process.env.HERO_SCRIPT_MODEL_FAST;
     delete process.env.HERO_SCRIPT_MODEL_PRO;
     ok(heroScriptModel("fast") === "gemini-2.5-flash", "heroScriptModel('fast') defaults to gemini-2.5-flash");
@@ -867,6 +959,189 @@ async function main() {
     ok(heroScriptModel("fast") === "gemini-flash-latest", "HERO_SCRIPT_MODEL_FAST overrides the fast model id");
     delete process.env.HERO_SCRIPT_MODEL_FAST;
     delete process.env.HERO_SCRIPT_MODEL_PRO;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // Task 7 (2026-07-31): the Hero Script LLM provider switch
+  // ══════════════════════════════════════════════════════════════════════
+
+  // ── Provider resolution matrix: unset → gemini (fail-safe), known value →
+  //    itself, anything else → gemini + a warning. ─────────────────────────
+  {
+    ok(HERO_SCRIPT_PROVIDER_DEFAULT === "gemini",
+      "HERO_SCRIPT_PROVIDER_DEFAULT is gemini (the fail-safe / instant-rollback provider)");
+    ok(resolveHeroScriptProvider(undefined).provider === "gemini",
+      "resolveHeroScriptProvider(unset) → gemini");
+    ok(resolveHeroScriptProvider(undefined).warning === undefined,
+      "resolveHeroScriptProvider(unset) does NOT warn (unset is the supported default)");
+    ok(resolveHeroScriptProvider(null).provider === "gemini", "resolveHeroScriptProvider(null) → gemini");
+    ok(resolveHeroScriptProvider("").provider === "gemini", "resolveHeroScriptProvider('') → gemini");
+    ok(resolveHeroScriptProvider("   ").provider === "gemini",
+      "resolveHeroScriptProvider(whitespace) → gemini");
+    ok(resolveHeroScriptProvider("gemini").provider === "gemini", "resolveHeroScriptProvider('gemini') → gemini");
+    ok(resolveHeroScriptProvider("openrouter").provider === "openrouter",
+      "resolveHeroScriptProvider('openrouter') → openrouter");
+    ok(resolveHeroScriptProvider("  OpenRouter  ").provider === "openrouter",
+      "resolveHeroScriptProvider is case- and whitespace-insensitive");
+    const bogus = resolveHeroScriptProvider("claude");
+    ok(bogus.provider === "gemini",
+      "resolveHeroScriptProvider(unknown value) falls back to gemini (never leaves the feature dark)");
+    ok(typeof bogus.warning === "string" && bogus.warning.includes("claude"),
+      "resolveHeroScriptProvider(unknown value) returns a warning naming the bad value");
+
+    // …and the env-reading wrapper agrees.
+    delete process.env.HERO_SCRIPT_PROVIDER;
+    ok(heroScriptProvider() === "gemini", "heroScriptProvider(): unset env → gemini");
+    process.env.HERO_SCRIPT_PROVIDER = "openrouter";
+    ok(heroScriptProvider() === "openrouter", "heroScriptProvider(): HERO_SCRIPT_PROVIDER=openrouter → openrouter");
+    process.env.HERO_SCRIPT_PROVIDER = "not-a-provider";
+    ok(heroScriptProvider() === "gemini", "heroScriptProvider(): invalid env value → gemini (fail-safe)");
+    delete process.env.HERO_SCRIPT_PROVIDER;
+  }
+
+  // ── Model resolution per provider (each provider has its OWN env pair) ──
+  {
+    delete process.env.HERO_SCRIPT_MODEL_FAST;
+    delete process.env.HERO_SCRIPT_MODEL_PRO;
+    delete process.env.HERO_SCRIPT_OR_MODEL_FAST;
+    delete process.env.HERO_SCRIPT_OR_MODEL_PRO;
+
+    process.env.HERO_SCRIPT_PROVIDER = "openrouter";
+    ok(heroScriptModel("fast") === OPENROUTER_MODEL_FAST_DEFAULT && OPENROUTER_MODEL_FAST_DEFAULT === "openai/gpt-5.6-luna",
+      "provider=openrouter: fast tier → openai/gpt-5.6-luna");
+    ok(heroScriptModel("pro") === OPENROUTER_MODEL_PRO_DEFAULT && OPENROUTER_MODEL_PRO_DEFAULT === "openai/gpt-5.6-terra",
+      "provider=openrouter: pro tier → openai/gpt-5.6-terra");
+
+    // The Gemini overrides must NOT leak into the OpenRouter path (a Gemini
+    // model id is not a routable OpenRouter slug) — and vice versa.
+    process.env.HERO_SCRIPT_MODEL_FAST = "gemini-flash-latest";
+    process.env.HERO_SCRIPT_MODEL_PRO = "gemini-pro-latest";
+    ok(heroScriptModel("fast") === OPENROUTER_MODEL_FAST_DEFAULT,
+      "provider=openrouter ignores HERO_SCRIPT_MODEL_FAST (gemini-only override)");
+    process.env.HERO_SCRIPT_OR_MODEL_FAST = "openai/gpt-5.6-sol";
+    process.env.HERO_SCRIPT_OR_MODEL_PRO = "openai/gpt-5.6-terra-pro";
+    ok(heroScriptModel("fast") === "openai/gpt-5.6-sol", "HERO_SCRIPT_OR_MODEL_FAST overrides the OpenRouter fast slug");
+    ok(heroScriptModel("pro") === "openai/gpt-5.6-terra-pro", "HERO_SCRIPT_OR_MODEL_PRO overrides the OpenRouter pro slug");
+
+    process.env.HERO_SCRIPT_PROVIDER = "gemini";
+    ok(heroScriptModel("fast") === "gemini-flash-latest" && heroScriptModel("pro") === "gemini-pro-latest",
+      "provider=gemini ignores the HERO_SCRIPT_OR_MODEL_* overrides (gemini path unchanged)");
+
+    // The explicit-provider argument wins over the env (used by the error helper).
+    ok(heroScriptModel("pro", "openrouter") === "openai/gpt-5.6-terra-pro",
+      "heroScriptModel(tier, provider) honours an explicit provider argument");
+
+    delete process.env.HERO_SCRIPT_PROVIDER;
+    delete process.env.HERO_SCRIPT_MODEL_FAST;
+    delete process.env.HERO_SCRIPT_MODEL_PRO;
+    delete process.env.HERO_SCRIPT_OR_MODEL_FAST;
+    delete process.env.HERO_SCRIPT_OR_MODEL_PRO;
+  }
+
+  // ── OpenRouter error classification (the classifier, not live HTTP) ─────
+  {
+    ok(classifyOpenRouterFailure(404, "") === "model_unavailable",
+      "classifyOpenRouterFailure(404) → model_unavailable");
+    ok(classifyOpenRouterFailure(404, '{"error":{"message":"No endpoints found for openai/gpt-5.6-luna"}}') === "model_unavailable",
+      "classifyOpenRouterFailure(404 + 'No endpoints found') → model_unavailable");
+    ok(classifyOpenRouterFailure(400, '{"error":{"message":"openai/gpt-9 is not a valid model ID"}}') === "model_unavailable",
+      "classifyOpenRouterFailure(400 + 'not a valid model ID') → model_unavailable (OpenRouter's other bad-model shape)");
+    ok(classifyOpenRouterFailure(402, '{"error":{"message":"Insufficient credits"}}') === "provider_credit",
+      "classifyOpenRouterFailure(402) → provider_credit");
+    ok(classifyOpenRouterFailure(429, "Rate limit exceeded") === "provider_credit",
+      "classifyOpenRouterFailure(429) → provider_credit");
+    ok(classifyOpenRouterFailure(401, "no auth") === "provider_auth" && classifyOpenRouterFailure(403, "") === "provider_auth",
+      "classifyOpenRouterFailure(401/403) → provider_auth (server credential, never the user's key)");
+    ok(classifyOpenRouterFailure(500, "") === "transient" && classifyOpenRouterFailure(503, "") === "transient",
+      "classifyOpenRouterFailure(5xx) → transient");
+    ok(classifyOpenRouterFailure(undefined, "fetch failed") === "transient",
+      "classifyOpenRouterFailure(network/no status) → transient");
+    ok(classifyOpenRouterFailure(400, '{"error":{"message":"messages: field required"}}') === "fatal",
+      "classifyOpenRouterFailure(other 4xx) → fatal (never retried)");
+
+    // …and the errors those classes build behave the way the routes expect.
+    const gone = openRouterError("model_unavailable", "openrouter returned HTTP 404 for model=openai/gpt-9", 404);
+    ok(isModelUnavailableError(gone) === true,
+      "a model_unavailable OpenRouter error trips isModelUnavailableError (→ the existing MODEL_UNAVAILABLE 503 path)");
+    ok(isOpenRouterCreditError(gone) === false, "a model_unavailable error is NOT the provider-credit class");
+
+    const broke = openRouterError("provider_credit", "openrouter returned HTTP 402: Insufficient credits", 402);
+    ok(isOpenRouterCreditError(broke) === true, "a 402-built error is the provider-credit class");
+    ok(isModelUnavailableError(broke) === false,
+      "a provider-credit error is NOT mistaken for a dead model (no cross-class leakage)");
+    ok(broke.userAction === OPENROUTER_CREDIT_MESSAGE &&
+      OPENROUTER_CREDIT_MESSAGE === "ระบบ AI ไม่พร้อมใช้งานชั่วคราว (เครดิตผู้ให้บริการ)",
+      "provider-credit carries the spec's Thai copy");
+    ok(toErrorResponse(broke).status === 503, "provider-credit maps to a 503 (never a 402 'top up your key' answer)");
+    ok(broke.provider === "openrouter" && broke.code !== "invalid_key",
+      "provider-credit is never classified invalid_key (the user has no OpenRouter key to fix)");
+
+    const throttled = openRouterError("provider_credit", "openrouter returned HTTP 429: rate limited on model x", 429);
+    ok(isOpenRouterCreditError(throttled) === true && isModelUnavailableError(throttled) === false,
+      "a 429-built error is provider-credit, not model_unavailable (429 bodies can name a model)");
+
+    const noKey = openRouterError("provider_auth", "OPENROUTER_API_KEY is not configured");
+    ok(isOpenRouterAuthError(noKey) === true && toErrorResponse(noKey).status === 503,
+      "a missing/rejected server credential is a 503, not a user-facing key error");
+
+    // A Gemini ProviderError must never be picked up by the OpenRouter classes.
+    const geminiQuota = providerError("quota", "gemini", "429 RESOURCE_EXHAUSTED", { status: 429 });
+    ok(isOpenRouterCreditError(geminiQuota) === false && isOpenRouterAuthError(geminiQuota) === false,
+      "a Gemini error is never treated as an OpenRouter class (gemini path byte-identical)");
+
+    // Secrets never travel in a provider message.
+    ok(!scrubOpenRouterSecrets("Authorization: Bearer sk-or-v1-abcdef0123456789abcdef").includes("abcdef0123456789"),
+      "scrubOpenRouterSecrets redacts an sk-or- key / Bearer token");
+    ok(!openRouterError("fatal", "boom sk-or-v1-abcdef0123456789abcdef").message.includes("abcdef0123456789"),
+      "openRouterError scrubs the technical message before it can reach a log");
+
+    // Response extraction (the shape the JSON validators are fed).
+    ok(extractOpenRouterContent({ choices: [{ message: { content: '{"ok":true}' } }] }) === '{"ok":true}',
+      "extractOpenRouterContent reads choices[0].message.content");
+    ok(extractOpenRouterContent({ choices: [{ message: { content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] } }] }) === "ab",
+      "extractOpenRouterContent joins an array-of-parts content");
+    ok(extractOpenRouterContent({ choices: [] }) === "" && extractOpenRouterContent(null) === "" &&
+      extractOpenRouterContent({ choices: [{ message: {} }] }) === "",
+      "extractOpenRouterContent returns '' for an empty/odd payload (→ the caller's parse-retry, never a throw)");
+  }
+
+  // ── heroScriptLlmErrorResponse: one 503 mapping shared by all 6 routes ──
+  {
+    const modelGone = heroScriptLlmErrorResponse(
+      openRouterError("model_unavailable", "HTTP 404", 404),
+      { route: "test", tier: "pro" }
+    );
+    ok(modelGone?.status === 503, "heroScriptLlmErrorResponse: dead model → 503");
+    ok((await modelGone!.json()).code === MODEL_UNAVAILABLE_CODE,
+      "heroScriptLlmErrorResponse: dead model keeps the existing MODEL_UNAVAILABLE code");
+    ok((await heroScriptLlmErrorResponse(providerError("fatal", "gemini", "404 model not found", { status: 404 }), { route: "test", tier: "pro" })!.json()).error === MODEL_UNAVAILABLE_MESSAGE,
+      "heroScriptLlmErrorResponse: a Gemini 404 keeps the same Thai MODEL_UNAVAILABLE copy");
+
+    const credit = heroScriptLlmErrorResponse(
+      openRouterError("provider_credit", "HTTP 402", 402),
+      { route: "test", tier: "fast" }
+    );
+    ok(credit?.status === 503, "heroScriptLlmErrorResponse: provider credit spent → 503");
+    const creditBody = await credit!.json();
+    ok(creditBody.code === PROVIDER_CREDIT_CODE && creditBody.error === OPENROUTER_CREDIT_MESSAGE,
+      "heroScriptLlmErrorResponse: provider credit → PROVIDER_CREDIT + the Thai credit copy");
+
+    // A missing/rejected SERVER credential is its own code — the user has no
+    // OpenRouter key, so this must never read as "check your API key" (and must
+    // not be mislabelled as a credit problem in a log/HAR either).
+    const badCredential = heroScriptLlmErrorResponse(
+      openRouterError("provider_auth", "OPENROUTER_API_KEY is not configured"),
+      { route: "test", tier: "fast" }
+    );
+    ok(badCredential?.status === 503, "heroScriptLlmErrorResponse: rejected server credential → 503");
+    const credentialBody = await badCredential!.json();
+    ok(credentialBody.code === PROVIDER_UNAVAILABLE_CODE && !credentialBody.error.includes("Key"),
+      "heroScriptLlmErrorResponse: server-credential failure → PROVIDER_UNAVAILABLE, never a 'fix your key' message");
+
+    ok(heroScriptLlmErrorResponse(new Error("something else"), { route: "test", tier: "fast" }) === null,
+      "heroScriptLlmErrorResponse returns null for unrelated errors (they keep going to apiError)");
+    ok(heroScriptLlmErrorResponse(providerError("rate_limit", "gemini", "429 quota", { status: 429 }), { route: "test", tier: "fast" }) === null,
+      "heroScriptLlmErrorResponse leaves a Gemini 429 alone (gemini path byte-identical)");
   }
 
   // ── GENERATE prompt builder ─────────────────────────────────────────────
