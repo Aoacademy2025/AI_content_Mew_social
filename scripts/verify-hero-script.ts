@@ -132,25 +132,36 @@ async function main() {
       "isHeroScriptAllowedEmail: undefined email denied");
     ok(isHeroScriptAllowedEmail("  ", env) === false,
       "isHeroScriptAllowedEmail: blank/whitespace email denied");
-    // Security fix (2026-07-31): a TLD-less entry like "@aoacademy" must be an
-    // ANCHORED domain match, not a raw endsWith() suffix — the old suffix form
-    // both let a crafted "evilaoacademy(.com)" domain sail past the check AND
-    // failed to match the real "aoacademy.com" / "aoacademy.co.th" domains it
-    // was meant to cover.
+    // Security fix (2026-07-31, round 2): a "starts-with" / TLD-agnostic
+    // fallback for TLD-less entries ("@aoacademy" reaching "aoacademy.com")
+    // was ITSELF an unanchored bypass — anyone who owns ANY domain can prefix
+    // it with "aoacademy." (e.g. "attacker@aoacademy.evilhacker.io") and pass
+    // a naive startsWith("aoacademy.") check. That branch is REMOVED. Final
+    // rule for "@X" entries: emailDomain === X || emailDomain.endsWith("."+X)
+    // only. Consequence (deliberate): entries must be exact emails or FULL
+    // domains including the TLD — a TLD-less entry like "@aoacademy" matches
+    // ONLY the literal domain "aoacademy" (and real subdomains of it), never
+    // "aoacademy.com" / "aoacademy.co.th".
     ok(isHeroScriptAllowedEmail("attacker@evilaoacademy", env) === false,
       "isHeroScriptAllowedEmail: crafted 'evilaoacademy' domain denied (anchored, not raw suffix)");
     ok(isHeroScriptAllowedEmail("attacker@evilaoacademy.com", env) === false,
       "isHeroScriptAllowedEmail: crafted 'evilaoacademy.com' domain denied");
-    ok(isHeroScriptAllowedEmail("team@aoacademy.com", env) === true,
-      "isHeroScriptAllowedEmail: TLD-less entry matches the real 'aoacademy.com' domain (left-anchored)");
-    ok(isHeroScriptAllowedEmail("x@aoacademy.co.th", env) === true,
-      "isHeroScriptAllowedEmail: TLD-less entry matches 'aoacademy.co.th' too (any TLD)");
+    ok(isHeroScriptAllowedEmail("attacker@aoacademy.evilhacker.io", env) === false,
+      "isHeroScriptAllowedEmail: TLD-less entry does NOT let attacker-owned 'aoacademy.evilhacker.io' pass (starts-with bypass removed)");
+    ok(isHeroScriptAllowedEmail("attacker@aoacademy.attacker-domain.com", env) === false,
+      "isHeroScriptAllowedEmail: TLD-less entry does NOT let attacker-owned 'aoacademy.attacker-domain.com' pass");
+    ok(isHeroScriptAllowedEmail("team@aoacademy.com", env) === false,
+      "isHeroScriptAllowedEmail: TLD-less entry no longer matches 'aoacademy.com' (must be the literal domain now)");
+    ok(isHeroScriptAllowedEmail("x@aoacademy.co.th", env) === false,
+      "isHeroScriptAllowedEmail: TLD-less entry no longer matches 'aoacademy.co.th' either");
     ok(isHeroScriptAllowedEmail("a@sub.aoacademy.com", "@aoacademy.com") === true,
-      "isHeroScriptAllowedEmail: a dotted entry matches a real subdomain (sub.aoacademy.com)");
+      "isHeroScriptAllowedEmail: a FULL-domain entry (with TLD) still matches a real subdomain (sub.aoacademy.com)");
     ok(isHeroScriptAllowedEmail("a@evilaoacademy.com", "@aoacademy.com") === false,
-      "isHeroScriptAllowedEmail: a dotted entry denies a crafted lookalike domain");
+      "isHeroScriptAllowedEmail: a full-domain entry denies a crafted lookalike domain");
+    ok(isHeroScriptAllowedEmail("attacker@aoacademy.com.evilhacker.io", "@aoacademy.com") === false,
+      "isHeroScriptAllowedEmail: a full-domain entry does NOT let attacker-owned 'aoacademy.com.evilhacker.io' pass");
     ok(isHeroScriptAllowedEmail("a@aoacademy.com", "@aoacademy.com") === true,
-      "isHeroScriptAllowedEmail: a dotted entry matches its exact domain");
+      "isHeroScriptAllowedEmail: a full-domain entry matches its exact domain");
     // Fail-closed: empty/unset env locks EVERYONE out, including the product owner.
     ok(isHeroScriptAllowedEmail("duckyhero@gmail.com", undefined) === false,
       "isHeroScriptAllowedEmail: unset env denies even the default product-owner email (fail-closed)");
