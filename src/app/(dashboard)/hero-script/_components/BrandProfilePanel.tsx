@@ -376,7 +376,7 @@ export function BrandProfilePanel({
                 <p className="truncate font-medium" style={{ color: "var(--ui-text-primary)" }}>{p.name}</p>
                 <p className="truncate" style={{ color: "var(--ui-text-muted)" }}>{p.niche}</p>
               </button>
-              <div className="flex shrink-0 items-center">
+              <div className="flex shrink-0 items-center gap-2">
                 {/* 44x44 hit area (was p-1.5 ≈ 26px) — icon-only buttons need the full touch target, not just the visible glyph */}
                 <button onClick={() => openEditDialog(p)} className="flex h-11 w-11 items-center justify-center rounded hover:bg-black/5 dark:hover:bg-white/5" aria-label="แก้ไข">
                   <Pencil className="h-3.5 w-3.5" style={{ color: "var(--ui-text-muted)" }} />
