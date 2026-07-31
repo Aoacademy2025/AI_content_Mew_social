@@ -131,6 +131,18 @@ async function main() {
       "isHeroScriptAllowedEmail: undefined email denied");
     ok(isHeroScriptAllowedEmail("  ", env) === false,
       "isHeroScriptAllowedEmail: blank/whitespace email denied");
+    ok(isHeroScriptAllowedEmail("attacker@evilaoacademy", env) === false,
+      "isHeroScriptAllowedEmail: neighbor-domain bypass denied (bare)");
+    ok(isHeroScriptAllowedEmail("attacker@evilaoacademy.com", env) === false,
+      "isHeroScriptAllowedEmail: neighbor-domain bypass denied (dotted)");
+    ok(isHeroScriptAllowedEmail("team@aoacademy.com", env) === true,
+      "isHeroScriptAllowedEmail: TLD-agnostic left-anchored domain allowed (.com)");
+    ok(isHeroScriptAllowedEmail("x@aoacademy.co.th", env) === true,
+      "isHeroScriptAllowedEmail: TLD-agnostic left-anchored domain allowed (.co.th)");
+    ok(isHeroScriptAllowedEmail("a@sub.aoacademy.com", "@aoacademy.com") === true,
+      "isHeroScriptAllowedEmail: dot-suffix subdomain match allowed");
+    ok(isHeroScriptAllowedEmail("b@notaoacademy.com", "@aoacademy.com") === false,
+      "isHeroScriptAllowedEmail: dotted-entry neighbor domain denied");
     // Fail-closed: empty/unset env locks EVERYONE out, including the product owner.
     ok(isHeroScriptAllowedEmail("duckyhero@gmail.com", undefined) === false,
       "isHeroScriptAllowedEmail: unset env denies even the default product-owner email (fail-closed)");
