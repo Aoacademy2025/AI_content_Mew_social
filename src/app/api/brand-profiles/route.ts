@@ -1,16 +1,21 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
-import { canCreateBrandProfile, serializeBannedWords, toBrandProfileDTO } from "@/lib/hero-script.server";
+import {
+  canCreateBrandProfile,
+  requireHeroScriptUser,
+  serializeBannedWords,
+  toBrandProfileDTO,
+} from "@/lib/hero-script.server";
 import { checkBrandProfileFieldLimits } from "@/lib/brand-profile-limits";
 import { isValidCtaStyleKey } from "@/lib/viral-frameworks";
 
 // GET /api/brand-profiles - list the current user's brand profiles
 export async function GET() {
   try {
-    const authUser = await getCurrentUser();
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
 
     const profiles = await prisma.brandProfile.findMany({
       where: { userId: authUser.id },
@@ -26,8 +31,9 @@ export async function GET() {
 // POST /api/brand-profiles - create a brand profile (enforces the plan cap)
 export async function POST(req: Request) {
   try {
-    const authUser = await getCurrentUser();
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
 
     const body = await req.json().catch(() => null);
     const name = typeof body?.name === "string" ? body.name.trim() : "";

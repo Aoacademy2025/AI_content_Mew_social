@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { buildIdeasPrompt, type BrandProfileForPrompt } from "@/lib/prompts/hero-script";
 import {
   generateValidatedJson,
   getRecentScriptTopics,
+  requireHeroScriptUser,
   resolveLlmTriad,
   toBrandProfileDTO,
   validateIdeasResponse,
@@ -23,8 +23,9 @@ import {
 // when omitted, ideas are generated without brand context or continuity.
 export async function POST(req: Request) {
   try {
-    const authUser = await getCurrentUser();
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
 
     const body = await req.json().catch(() => null);
     const brandProfileId =

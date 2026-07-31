@@ -104,6 +104,48 @@ async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { FREE_LIMITS, PRO_LIMITS, BUSINESS_LIMITS } = await import("../src/lib/plan-limits");
   const { encryptKey } = await import("../src/lib/key-crypto");
+  const { isHeroScriptAllowedEmail } = await import("../src/lib/hero-script-access");
+
+  // ── Post-review amendment (2026-07-31): Hero Script internal-beta allowlist
+  // matcher — exact match, @-suffix match, case-insensitivity, empty env =
+  // deny (fail-closed), malformed entries ignored. ───────────────────────────
+  {
+    const env = "duckyhero@gmail.com,@aoacademy";
+    ok(isHeroScriptAllowedEmail("duckyhero@gmail.com", env) === true,
+      "isHeroScriptAllowedEmail: exact match allowed");
+    ok(isHeroScriptAllowedEmail("DuckyHero@Gmail.com", env) === true,
+      "isHeroScriptAllowedEmail: exact match is case-insensitive");
+    ok(isHeroScriptAllowedEmail("someone@aoacademy", env) === true,
+      "isHeroScriptAllowedEmail: @-suffix match allowed (bare account-style)");
+    ok(isHeroScriptAllowedEmail("SOMEONE@AOACADEMY", env) === true,
+      "isHeroScriptAllowedEmail: @-suffix match is case-insensitive");
+    ok(isHeroScriptAllowedEmail("team.lead@aoacademy", env) === true,
+      "isHeroScriptAllowedEmail: @-suffix match covers any local-part before the suffix");
+    ok(isHeroScriptAllowedEmail("random@gmail.com", env) === false,
+      "isHeroScriptAllowedEmail: non-matching email denied");
+    ok(isHeroScriptAllowedEmail("notduckyhero@gmail.com", env) === false,
+      "isHeroScriptAllowedEmail: exact-match entry does not do substring/suffix matching");
+    ok(isHeroScriptAllowedEmail(null, env) === false,
+      "isHeroScriptAllowedEmail: null email denied");
+    ok(isHeroScriptAllowedEmail(undefined, env) === false,
+      "isHeroScriptAllowedEmail: undefined email denied");
+    ok(isHeroScriptAllowedEmail("  ", env) === false,
+      "isHeroScriptAllowedEmail: blank/whitespace email denied");
+    // Fail-closed: empty/unset env locks EVERYONE out, including the product owner.
+    ok(isHeroScriptAllowedEmail("duckyhero@gmail.com", undefined) === false,
+      "isHeroScriptAllowedEmail: unset env denies even the default product-owner email (fail-closed)");
+    ok(isHeroScriptAllowedEmail("duckyhero@gmail.com", "") === false,
+      "isHeroScriptAllowedEmail: empty-string env denies everyone (fail-closed)");
+    ok(isHeroScriptAllowedEmail("duckyhero@gmail.com", "   ") === false,
+      "isHeroScriptAllowedEmail: whitespace-only env denies everyone (fail-closed)");
+    // Malformed entries (blank segments, a bare "@") are ignored, not errors —
+    // and never accidentally match everything.
+    const malformed = "  , @ ,,duckyhero@gmail.com,  ";
+    ok(isHeroScriptAllowedEmail("duckyhero@gmail.com", malformed) === true,
+      "isHeroScriptAllowedEmail: malformed entries ignored, the valid entry still matches");
+    ok(isHeroScriptAllowedEmail("anything@example.com", malformed) === false,
+      "isHeroScriptAllowedEmail: a bare '@' entry matches nothing (not a wildcard)");
+  }
 
   // ── plan-limits: brandProfiles caps ─────────────────────────────────────
   ok(FREE_LIMITS.brandProfiles === 1, "plan-limits: FREE brandProfiles cap = 1");

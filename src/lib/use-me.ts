@@ -26,6 +26,7 @@ export interface MeData {
   trialEndsAt?: string | null;
   internalAiTester?: boolean;
   heroAiBeta?: boolean;
+  heroScriptAllowed?: boolean;
   [key: string]: unknown;
 }
 

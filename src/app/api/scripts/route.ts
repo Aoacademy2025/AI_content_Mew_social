@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
@@ -10,14 +9,16 @@ import {
   isValidDurationSec,
   listScripts,
   ownsBrandProfile,
+  requireHeroScriptUser,
   validateTopic,
 } from "@/lib/hero-script.server";
 
 // GET /api/scripts — list the current user's scripts (newest first, take 50).
 export async function GET() {
   try {
-    const authUser = await getCurrentUser();
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
 
     return NextResponse.json(await listScripts(authUser.id));
   } catch (error) {
@@ -32,8 +33,9 @@ export async function GET() {
 // user at the cap keeps full control of the 3 scripts they already have.
 export async function POST(req: Request) {
   try {
-    const authUser = await getCurrentUser();
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
 
     const body = await req.json().catch(() => null);
 

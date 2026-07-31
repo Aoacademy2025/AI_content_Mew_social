@@ -135,6 +135,9 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [updatesUnread, setUpdatesUnread] = useState(0);
   const [currentVersion, setCurrentVersion] = useState("v0.1.0");
   const [internalAiTester, setInternalAiTester] = useState(false);
+  // Hero Script internal-beta allowlist (fail-closed — see hero-script-access.ts):
+  // hidden from the sidebar until /api/user/me confirms this account is allowlisted.
+  const [heroScriptAllowed, setHeroScriptAllowed] = useState(false);
 
   useEffect(() => {
     fetchMe()
@@ -151,6 +154,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         if (typeof data.minutesUsed === "number") setMinutesUsed(data.minutesUsed);
         if (typeof data.minutesLimit === "number") setMinutesLimit(data.minutesLimit);
         setInternalAiTester(data.internalAiTester === true);
+        setHeroScriptAllowed(data.heroScriptAllowed === true);
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -198,7 +202,9 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
       : item);
 
   const internalItemsOnly = (items: SidebarNavItem[]) =>
-    items.filter((item) => item.href !== "/ai-studio" || internalAiTester);
+    items
+      .filter((item) => item.href !== "/ai-studio" || internalAiTester)
+      .filter((item) => item.href !== "/hero-script" || heroScriptAllowed);
   const userItems = internalItemsOnly(withUpdatesBadge(userNavItems));
   const adminItems = internalItemsOnly(adminStudioItems);
 

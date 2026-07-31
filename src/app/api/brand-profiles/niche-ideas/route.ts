@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
 import { buildNicheDrilldownPrompt } from "@/lib/prompts/hero-script";
 import {
   generateValidatedJson,
+  requireHeroScriptUser,
   resolveLlmTriad,
   validateNicheIdeasResponse,
   validateNicheSeed,
@@ -13,8 +13,9 @@ import {
 // (ใช้ endpoint เดียวกันขุดซ้ำได้: ส่งนิชที่เพิ่งเลือกกลับมาเป็น seed เพื่อลงลึกอีกชั้น)
 export async function POST(req: Request) {
   try {
-    const authUser = await getCurrentUser();
-    if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const access = await requireHeroScriptUser();
+    if (!access.ok) return access.response;
+    const authUser = access.user;
 
     const body = await req.json().catch(() => null);
     const seedCheck = validateNicheSeed(body?.seed);
