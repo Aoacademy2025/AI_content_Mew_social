@@ -69,12 +69,12 @@ export function TopicStep({ selectedProfileId, topic, onTopicChange }: TopicStep
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div className="flex-1">
           <Label className="mb-1.5 block text-xs" style={{ color: "var(--ui-text-secondary)" }}>หัวข้อคลิป</Label>
-          <Input value={topic} onChange={(e) => onTopicChange(e.target.value)} />
+          <Input className="min-h-11" value={topic} onChange={(e) => onTopicChange(e.target.value)} />
         </div>
         <Button
           onClick={handleGenerateIdeas}
           disabled={loading}
-          className="gap-1.5 text-white sm:shrink-0"
+          className="min-h-11 gap-1.5 text-white sm:shrink-0"
           style={{ background: VIOLET }}
         >
           {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
