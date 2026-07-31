@@ -51,9 +51,10 @@ type SidebarNavItem = {
 // are intentionally removed from nav; their routes/pages still work if visited directly.
 const userNavItems: SidebarNavItem[] = [
   { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
+  // Writing comes before editing in the user flow — kept directly above Video Editor.
+  { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
   { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
-  { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
   { title: "Gallery",      href: "/videos",        icon: Video },
   { title: "วิธีใช้งาน",    href: "/docs",          icon: BookOpen },
   { title: "อัปเดต",       href: "/updates",       icon: Megaphone },
