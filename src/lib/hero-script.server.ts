@@ -34,6 +34,15 @@ import {
 import { createEditorProject, sanitizeEditorProjectTitle } from "@/lib/editor-projects";
 import { buildScriptHandoffDraft } from "@/lib/editor-default-draft";
 import { visibleTtsProvider } from "@/lib/tts-providers";
+import {
+  openRouterGenerateText,
+  isOpenRouterAuthError,
+  isOpenRouterCreditError,
+  OPENROUTER_CREDIT_MESSAGE,
+  OPENROUTER_MODEL_FAST_DEFAULT,
+  OPENROUTER_MODEL_PRO_DEFAULT,
+  OPENROUTER_UNAVAILABLE_MESSAGE,
+} from "@/lib/openrouter";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
@@ -206,13 +215,99 @@ export const HERO_SCRIPT_PRO_THINKING_BUDGET = 128;
 
 export type HeroScriptModelTier = "fast" | "pro";
 
-/** Resolve the Gemini model id for a Hero Script tier from the environment
- *  (`HERO_SCRIPT_MODEL_FAST` / `HERO_SCRIPT_MODEL_PRO`), falling back to the
- *  spec's defaults. */
-export function heroScriptModel(tier: HeroScriptModelTier): string {
+// ── Provider switch (2026-07-31) ───────────────────────────────────────────
+//
+// Hero Script — and ONLY Hero Script — can run its LLM calls on OpenRouter
+// (GPT-5.6 luna/terra) instead of Gemini. The other 11 Gemini call sites in the
+// app are untouched by this switch. The code default is "gemini" so a missing
+// or garbled env value can never take a working feature offline; the beta runs
+// with HERO_SCRIPT_PROVIDER=openrouter in .env, and rollback is that one line
+// (set it to `gemini`, restart) with no rebuild of logic.
+
+export type HeroScriptProvider = "gemini" | "openrouter";
+
+/** Fail-safe default: the provider Hero Script shipped on. */
+export const HERO_SCRIPT_PROVIDER_DEFAULT: HeroScriptProvider = "gemini";
+
+export interface HeroScriptProviderResolution {
+  provider: HeroScriptProvider;
+  /** Set only when the configured value was unusable (logged once by heroScriptProvider). */
+  warning?: string;
+}
+
+/** Pure resolver for `HERO_SCRIPT_PROVIDER` — unset/blank → gemini, known value
+ *  (case/whitespace-insensitive) → itself, anything else → gemini + a warning.
+ *  Exported separately from heroScriptProvider() so the warning branch is
+ *  testable without capturing console output. */
+export function resolveHeroScriptProvider(raw: string | null | undefined): HeroScriptProviderResolution {
+  const value = (raw ?? "").trim().toLowerCase();
+  if (!value) return { provider: HERO_SCRIPT_PROVIDER_DEFAULT };
+  if (value === "gemini" || value === "openrouter") return { provider: value };
+  return {
+    provider: HERO_SCRIPT_PROVIDER_DEFAULT,
+    warning: `HERO_SCRIPT_PROVIDER="${raw}" is not a known provider — falling back to "${HERO_SCRIPT_PROVIDER_DEFAULT}"`,
+  };
+}
+
+/** Deduped so a misconfigured env warns once per value, not once per LLM call. */
+let lastProviderWarning = "";
+
+/** The active Hero Script LLM provider (reads the env on every call so a
+ *  restart-free env change in dev takes effect immediately). */
+export function heroScriptProvider(): HeroScriptProvider {
+  const { provider, warning } = resolveHeroScriptProvider(process.env.HERO_SCRIPT_PROVIDER);
+  if (warning && warning !== lastProviderWarning) {
+    lastProviderWarning = warning;
+    console.warn(`[hero-script] ${warning}`);
+  }
+  return provider;
+}
+
+/** Resolve the model id for a Hero Script tier, for the ACTIVE provider:
+ *  gemini → `HERO_SCRIPT_MODEL_FAST` / `HERO_SCRIPT_MODEL_PRO`,
+ *  openrouter → `HERO_SCRIPT_OR_MODEL_FAST` / `HERO_SCRIPT_OR_MODEL_PRO`,
+ *  each falling back to that provider's default. The two env pairs are separate
+ *  on purpose: a Gemini model id is meaningless to OpenRouter (and vice versa),
+ *  so switching providers must never inherit the other one's override. */
+export function heroScriptModel(
+  tier: HeroScriptModelTier,
+  provider: HeroScriptProvider = heroScriptProvider()
+): string {
+  if (provider === "openrouter") {
+    const raw = tier === "pro" ? process.env.HERO_SCRIPT_OR_MODEL_PRO : process.env.HERO_SCRIPT_OR_MODEL_FAST;
+    const fallback = tier === "pro" ? OPENROUTER_MODEL_PRO_DEFAULT : OPENROUTER_MODEL_FAST_DEFAULT;
+    return raw?.trim() || fallback;
+  }
   const raw = tier === "pro" ? process.env.HERO_SCRIPT_MODEL_PRO : process.env.HERO_SCRIPT_MODEL_FAST;
   const fallback = tier === "pro" ? HERO_SCRIPT_MODEL_PRO_DEFAULT : HERO_SCRIPT_MODEL_FAST_DEFAULT;
   return raw?.trim() || fallback;
+}
+
+/** The ONE seam where Hero Script's text generation meets a provider.
+ *
+ *  Every Hero Script LLM call site reaches the model through here (via
+ *  generateValidatedJson), so the provider switch needs no per-route code.
+ *
+ *  `apiKey` is the caller's resolved GEMINI key — it is unused on the OpenRouter
+ *  path, where the request runs on the server's OPENROUTER_API_KEY for every
+ *  user (see resolveLlmTriad's metering note). Nothing here ever falls back to
+ *  the other provider: a failure is reported as a failure (ADR 0004). */
+export async function heroScriptGenerateText(params: {
+  apiKey: string;
+  prompt: string;
+  maxOutputTokens: number;
+  tier: HeroScriptModelTier;
+}): Promise<string> {
+  const { apiKey, prompt, maxOutputTokens, tier } = params;
+  const provider = heroScriptProvider();
+  const model = heroScriptModel(tier, provider);
+
+  if (provider === "openrouter") {
+    return openRouterGenerateText(prompt, { model, maxOutputTokens, temperature: 0 });
+  }
+
+  const thinkingBudget = tier === "pro" ? HERO_SCRIPT_PRO_THINKING_BUDGET : 0;
+  return geminiGenerateText(apiKey, prompt, maxOutputTokens, 0, { model, thinkingBudget });
 }
 
 /** Text-LLM calls a PRO-tier route reserves per request (flash routes stay 1).
@@ -263,13 +358,64 @@ export function isModelUnavailableError(error: unknown): boolean {
   );
 }
 
-/** Call Gemini and validate its JSON response, retrying once on parse/validation
- *  failure (per the API contracts table: "1 retry on parse/validation failure,
- *  then 502"). Returns null when both attempts fail to validate — the caller
- *  is responsible for the 502 `{ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }`.
+/** Response code for "the PROVIDER's credit/allowance is spent" (OpenRouter
+ *  402/429). Distinct from QUOTA_AI_TEXT (the user's own metered ceiling) —
+ *  here the user did nothing wrong and has nothing to top up. */
+export const PROVIDER_CREDIT_CODE = "PROVIDER_CREDIT";
+
+/** Response code for "the provider is unusable for a reason only an operator
+ *  can fix" (e.g. the server credential was rejected). Kept separate from
+ *  PROVIDER_CREDIT so a log/HAR never mislabels a config problem as a bill. */
+export const PROVIDER_UNAVAILABLE_CODE = "PROVIDER_UNAVAILABLE";
+
+/** Turn an LLM failure that the user can neither fix nor usefully retry-loop on
+ *  into the honest 503, or null when the caller should keep handling it.
  *
- *  `tier` picks the model + thinking config: "fast" (default — the ideas/hooks/
- *  analyze routes) or "pro" (full-script generate + section regenerate). */
+ *  Shared by all 6 Hero Script LLM routes so the copy + the operator log are
+ *  defined once. Order matters: the provider-credit class is checked before the
+ *  model-unavailable predicate, because a 429 body can mention a model name.
+ *
+ *  Never falls back to another model or provider (ADR 0004) — a pro-tier request
+ *  answered by the fast model would be a worse script under a better label. */
+export function heroScriptLlmErrorResponse(
+  error: unknown,
+  ctx: { route: string; tier: HeroScriptModelTier }
+): NextResponse | null {
+  const provider = heroScriptProvider();
+  // Provider + model id ONLY in the log: a raw provider message can embed an
+  // API key, and this path does not go through apiError's scrubber.
+  const where = `${ctx.route}: provider=${provider} model=${heroScriptModel(ctx.tier, provider)}`;
+
+  if (isOpenRouterCreditError(error)) {
+    console.error(`[hero-script] provider credit/allowance exhausted (${where})`);
+    return NextResponse.json({ code: PROVIDER_CREDIT_CODE, error: OPENROUTER_CREDIT_MESSAGE }, { status: 503 });
+  }
+  if (isOpenRouterAuthError(error)) {
+    // Server-side credential problem — the user has no OpenRouter key of their
+    // own, so they must never be told to "check your API key".
+    console.error(`[hero-script] provider credential rejected/missing (${where})`);
+    return NextResponse.json({ code: PROVIDER_UNAVAILABLE_CODE, error: OPENROUTER_UNAVAILABLE_MESSAGE }, { status: 503 });
+  }
+  if (isModelUnavailableError(error)) {
+    console.error(`[hero-script] model unavailable (${where})`);
+    return NextResponse.json(
+      { code: MODEL_UNAVAILABLE_CODE, error: MODEL_UNAVAILABLE_MESSAGE },
+      { status: 503 }
+    );
+  }
+  return null;
+}
+
+/** Call the active LLM provider (heroScriptGenerateText) and validate its JSON
+ *  response, retrying once on parse/validation failure (per the API contracts
+ *  table: "1 retry on parse/validation failure, then 502"). Returns null when
+ *  both attempts fail to validate — the caller is responsible for the 502
+ *  `{ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }`.
+ *
+ *  `tier` picks the model (+ thinking config on Gemini): "fast" (default — the
+ *  ideas/hooks/analyze routes) or "pro" (full-script generate + section
+ *  regenerate). `apiKey` is the Gemini key; it is ignored under
+ *  HERO_SCRIPT_PROVIDER=openrouter (server key). */
 export async function generateValidatedJson<T>(params: {
   apiKey: string;
   prompt: string;
@@ -278,11 +424,9 @@ export async function generateValidatedJson<T>(params: {
   validate: (data: unknown) => T | null;
 }): Promise<T | null> {
   const { apiKey, prompt, maxOutputTokens = 2048, tier = "fast", validate } = params;
-  const model = heroScriptModel(tier);
-  const thinkingBudget = tier === "pro" ? HERO_SCRIPT_PRO_THINKING_BUDGET : 0;
   const attempts = 2;
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const raw = await geminiGenerateText(apiKey, prompt, maxOutputTokens, 0, { model, thinkingBudget });
+    const raw = await heroScriptGenerateText({ apiKey, prompt, maxOutputTokens, tier });
     const parsed = parseJsonResponse(raw);
     if (parsed !== null) {
       const validated = validate(parsed);
@@ -361,15 +505,26 @@ export function validateNicheIdeasResponse(data: unknown): NicheIdeasResult | nu
 export type LlmInputCapsInput = Parameters<typeof checkAiInputCaps>[0];
 
 export type LlmTriadResult =
-  | { ok: true; apiKey: string; geminiMode: "managed" | "byok" }
+  | {
+      ok: true;
+      /** Gemini key — "" on the OpenRouter path (server key, resolved in the client). */
+      apiKey: string;
+      provider: HeroScriptProvider;
+      /** null on the OpenRouter path: no Gemini key was resolved at all. */
+      geminiMode: "managed" | "byok" | null;
+    }
   | { ok: false; status: number; body: Record<string, unknown> };
 
 /** Run the shared checkAiInputCaps → resolveGeminiKey → reserveAiTextCall
  *  preamble for `userId`. `inputCapsInput` is whatever the caller is about to
- *  send to Gemini (script text / scenes / words — see checkAiInputCaps). On
- *  success returns the resolved API key + mode; on failure returns the exact
- *  { status, body } the route should respond with (byte-identical to what
- *  analyze/niche-ideas returned inline before this was extracted).
+ *  send to the model (script text / scenes / words — see checkAiInputCaps). On
+ *  success returns the resolved API key + provider + mode; on failure returns
+ *  the exact { status, body } the route should respond with (byte-identical to
+ *  what analyze/niche-ideas returned inline before this was extracted).
+ *
+ *  Under HERO_SCRIPT_PROVIDER=openrouter the resolveGeminiKey step is SKIPPED
+ *  (no 409 KEY_REQUIRED — the server key serves everyone) and the call meter is
+ *  enforced for every user, because the server is then the cost bearer.
  *
  *  `opts.count` is how many text-LLM calls to reserve (default 1 — every flash
  *  route). The PRO-tier routes pass 2: one request there can issue up to FOUR
@@ -392,29 +547,38 @@ export async function resolveLlmTriad(
   });
   if (!user) return { ok: false, status: 404, body: { error: "User not found" } };
 
-  let apiKey: string;
-  let geminiMode: "managed" | "byok";
-  try {
-    const resolved = resolveGeminiKey(user);
-    apiKey = resolved.key;
-    geminiMode = resolved.mode;
-  } catch (e) {
-    if (e instanceof KeyRequiredError) {
-      return { ok: false, status: 409, body: { code: "KEY_REQUIRED", action: "/settings?tab=api-keys" } };
-    }
-    throw e;
-  }
+  const provider = heroScriptProvider();
 
-  // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
-  const textReserve = await reserveAiTextCall(userId, {
-    enforce: geminiMode === "managed",
-    count: opts.count,
-  });
+  let apiKey = "";
+  let geminiMode: "managed" | "byok" | null = null;
+  if (provider === "gemini") {
+    try {
+      const resolved = resolveGeminiKey(user);
+      apiKey = resolved.key;
+      geminiMode = resolved.mode;
+    } catch (e) {
+      if (e instanceof KeyRequiredError) {
+        return { ok: false, status: 409, body: { code: "KEY_REQUIRED", action: "/settings?tab=api-keys" } };
+      }
+      throw e;
+    }
+  }
+  // provider === "openrouter": NO Gemini key is resolved and NO 409 KEY_REQUIRED
+  // is possible — the call runs on the server's OPENROUTER_API_KEY, so a user
+  // who never set up Gemini BYOK is served all the same.
+
+  // H1: bound server-paid text-LLM call frequency. Under OpenRouter the SERVER
+  // pays for every Hero Script call — including calls from users who are BYOK
+  // for Gemini — so the meter is enforced for EVERYONE, not just managed-Gemini
+  // users. Under Gemini the rule is unchanged (managed → enforce, BYOK → no-op,
+  // byte-identical). `count` (2 for pro-tier routes) applies to both.
+  const enforce = provider === "openrouter" ? true : geminiMode === "managed";
+  const textReserve = await reserveAiTextCall(userId, { enforce, count: opts.count });
   if (!textReserve.allowed) {
     return { ok: false, status: 429, body: { code: "QUOTA_AI_TEXT", message: textReserve.message } };
   }
 
-  return { ok: true, apiKey, geminiMode };
+  return { ok: true, apiKey, provider, geminiMode };
 }
 
 // ── Word budget (Task 2) ────────────────────────────────────────────────────

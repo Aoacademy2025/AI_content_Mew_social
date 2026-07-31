@@ -10,8 +10,7 @@ import {
   assembleScript,
   generateValidatedJson,
   generateWithBannedWordGuard,
-  heroScriptModel,
-  isModelUnavailableError,
+  heroScriptLlmErrorResponse,
   isValidDurationSec,
   isValidRegenTarget,
   parseBannedWords,
@@ -21,8 +20,6 @@ import {
   validateRegenResponse,
   validateTopic,
   wordBudgetForDuration,
-  MODEL_UNAVAILABLE_CODE,
-  MODEL_UNAVAILABLE_MESSAGE,
   PRO_TIER_TEXT_CALL_COST,
   type GuardedGeneration,
   type RegenSectionResult,
@@ -126,17 +123,14 @@ export async function POST(req: Request) {
           }),
       });
     } catch (error) {
-      // The pro model id itself is gone/unusable → say so (503), never fall
-      // back to the fast model (ADR 0004). Everything else keeps its own path.
-      if (isModelUnavailableError(error)) {
-        // Model id only — the raw provider message can embed the API key, and
-        // this path does not go through apiError's scrubber.
-        console.error(`[hero-script] pro model unavailable (regen-section): model=${heroScriptModel("pro")}`);
-        return NextResponse.json(
-          { code: MODEL_UNAVAILABLE_CODE, error: MODEL_UNAVAILABLE_MESSAGE },
-          { status: 503 }
-        );
-      }
+      // The pro model id is gone/unusable, or the provider's credit is spent →
+      // say so (503), never fall back to the fast model or the other provider
+      // (ADR 0004). Everything else keeps its own path.
+      const llmError = heroScriptLlmErrorResponse(error, {
+        route: "POST /api/scripts/regen-section",
+        tier: "pro",
+      });
+      if (llmError) return llmError;
       throw error;
     }
     if (!guarded) {

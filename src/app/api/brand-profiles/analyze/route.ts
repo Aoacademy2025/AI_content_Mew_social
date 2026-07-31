@@ -5,6 +5,7 @@ import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { buildAnalyzePrompt } from "@/lib/prompts/hero-script";
 import {
   generateValidatedJson,
+  heroScriptLlmErrorResponse,
   requireHeroScriptUser,
   resolveLlmTriad,
   validateAnalyzeResponse,
@@ -82,6 +83,13 @@ export async function POST(req: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
+    // Model gone / provider credit spent → an honest 503 with Thai copy, never
+    // a generic 500 and never a fallback to another model (ADR 0004).
+    const llmError = heroScriptLlmErrorResponse(error, {
+      route: "POST /api/brand-profiles/analyze",
+      tier: "fast",
+    });
+    if (llmError) return llmError;
     return apiError({ route: "POST /api/brand-profiles/analyze", error });
   }
 }
