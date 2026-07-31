@@ -2,7 +2,11 @@ import { missingKeyError, missingAvatarError } from "@/lib/mcp/onboarding";
 import { PipelineHttpError, type PipelineCaller } from "@/lib/mcp/pipeline-client";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 import { classifyHttpStatus, isProviderErrorCode, toUserMessage, type ProviderErrorCode } from "@/lib/provider-errors";
-import type { AvatarProviderGenerateResult } from "@/lib/mcp/avatar-provider-resume";
+import type {
+  AvatarCompositeAttemptResult,
+  AvatarCompositeFailureCode,
+  AvatarProviderGenerateResult,
+} from "@/lib/mcp/avatar-provider-resume";
 
 export type AvatarMode = "none" | "full" | "bookend" | "bookend-both";
 // HeyGen framing (how HeyGen frames the avatar in ITS render) — sent to generate-with-bg only.
@@ -186,20 +190,80 @@ export interface AvatarCompositeInput {
   layout?: { scale: number; offsetX: number; offsetY: number };
 }
 
+const COMPOSITE_FAILURE_CODES = new Set<AvatarCompositeFailureCode>([
+  "COMPOSITE_TIMEOUT",
+  "COMPOSITE_STALLED",
+  "COMPOSITE_TRANSIENT",
+  "COMPOSITE_FAILED",
+  "COMPOSITE_RETRY_EXHAUSTED",
+]);
+
+function compositeFailureCode(value: unknown): AvatarCompositeFailureCode | null {
+  return typeof value === "string" && COMPOSITE_FAILURE_CODES.has(value as AvatarCompositeFailureCode)
+    ? value as AvatarCompositeFailureCode
+    : null;
+}
+
+export async function attemptAvatarComposite(
+  caller: PipelineCaller,
+  input: AvatarCompositeInput,
+): Promise<AvatarCompositeAttemptResult> {
+  try {
+    const result = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
+      avatarVideoUrl: input.introVideoUrl,
+      tailAvatarVideoUrl: input.tailVideoUrl,
+      bgVideoUrl: input.baseUrl,
+      mode: "chromakey",
+      avatarTiming: input.avatarMode,
+      avatarBookendSecs: input.introSecs,
+      avatarTailSecs: input.tailSecs,
+      avatarLayout: input.layout ?? DEFAULT_AVATAR_LAYER,
+    }, { retries: 0 });
+    if (typeof result.videoUrl !== "string" || result.videoUrl.length === 0) {
+      return {
+        kind: "failed",
+        code: "COMPOSITE_FAILED",
+        message: "composite returned no video URL",
+        retryable: false,
+      };
+    }
+    return { kind: "completed", videoUrl: result.videoUrl };
+  } catch (error) {
+    if (!(error instanceof PipelineHttpError)) {
+      return {
+        kind: "failed",
+        code: "COMPOSITE_TRANSIENT",
+        message: error instanceof Error ? error.message : "composite transport failed",
+        retryable: true,
+      };
+    }
+    const body = record(error.body);
+    const typedCode = compositeFailureCode(body?.code);
+    const code = typedCode && typedCode !== "COMPOSITE_RETRY_EXHAUSTED"
+      ? typedCode
+      : error.status >= 500
+        ? "COMPOSITE_TRANSIENT"
+        : "COMPOSITE_FAILED";
+    const message = typeof body?.error === "string"
+      ? body.error
+      : typeof body?.message === "string"
+        ? body.message
+        : error.message;
+    return {
+      kind: "failed",
+      code,
+      message,
+      retryable: code === "COMPOSITE_TRANSIENT" && body?.retryable !== false,
+    };
+  }
+}
+
 export async function compositeAvatarVideo(
   caller: PipelineCaller,
   input: AvatarCompositeInput,
 ): Promise<string> {
-  const result = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
-    avatarVideoUrl: input.introVideoUrl,
-    tailAvatarVideoUrl: input.tailVideoUrl,
-    bgVideoUrl: input.baseUrl,
-    mode: "chromakey",
-    avatarTiming: input.avatarMode,
-    avatarBookendSecs: input.introSecs,
-    avatarTailSecs: input.tailSecs,
-    avatarLayout: input.layout ?? DEFAULT_AVATAR_LAYER,
-  }, { retries: 0 });
+  const result = await attemptAvatarComposite(caller, input);
+  if (result.kind === "failed") throw new Error(result.message);
   return result.videoUrl;
 }
 

@@ -21,6 +21,8 @@ export interface AvatarProviderCheckpointV1 {
   phase: AvatarProviderPhase;
   providerStartedAt: string;
   providerDeadlineAt: string;
+  /** Number of local composite executions already started. Optional for v1 checkpoints. */
+  compositeAttempts?: number;
   baseUrl: string;
   voiceUrl: string;
   audioDurationMs: number;
@@ -120,6 +122,8 @@ export function parseAvatarProviderCheckpoint(raw: string | null | undefined): A
     || !phases.includes(value.phase as AvatarProviderPhase)
     || !isIsoDate(value.providerStartedAt)
     || !isIsoDate(value.providerDeadlineAt)
+    || (value.compositeAttempts !== undefined
+      && (!Number.isInteger(value.compositeAttempts) || Number(value.compositeAttempts) < 0))
     || !isNonEmptyString(value.baseUrl)
     || !isNonEmptyString(value.voiceUrl)
     || !isFiniteNumber(value.audioDurationMs)

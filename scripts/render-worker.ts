@@ -21,6 +21,9 @@ import {
 } from "../src/lib/render/job-store";
 import { runRender, type ResolvedRenderInput } from "../src/lib/render/run-render";
 import { recordChargedClip } from "../src/lib/clip-charge";
+import { HeavyMediaAdmission, type HeavyMediaLease } from "../src/lib/heavy-media-admission";
+import os from "node:os";
+import path from "node:path";
 
 const POLL_MS = Number(process.env.RENDER_WORKER_POLL_MS) || 3000;
 const STALL_MS = Number(process.env.RENDER_STALL_MS) || 120_000; // no progress for 2 min ⇒ stuck
@@ -33,6 +36,11 @@ const SWEEP_STALE_MS = STALL_MS + WATCHDOG_MS * 3; // 120s + 30s = 150s (was a f
 
 let draining = false;
 let current: { id: string; cancel: () => void } | null = null;
+const heavyMediaAdmission = new HeavyMediaAdmission({
+  rootDir: process.env.HEAVY_MEDIA_ADMISSION_DIR
+    || path.join(os.tmpdir(), "ai-content-heavy-media-admission"),
+  enabled: process.env.COMPOSITE_ADMISSION_ENABLED === "1",
+});
 
 // Process-level bundle cache (the cross-process seam). The persisted payload is a
 // ResolvedRenderInput MINUS `bundleCache` — a by-reference object with methods that
@@ -65,7 +73,7 @@ function isCancelError(e: unknown): boolean {
   return /cancel|aborted|Request closed|stopped/i.test(msg);
 }
 
-async function runOne(job: ClaimedJob): Promise<void> {
+async function runOne(job: ClaimedJob, admissionLease: HeavyMediaLease): Promise<void> {
   const { cancel, cancelSignal } = makeCancelSignal();
   current = { id: job.id, cancel };
   const startedAt = Date.now();
@@ -95,7 +103,7 @@ async function runOne(job: ClaimedJob): Promise<void> {
         cancelledByWatchdog = true;
         cancel();
       } else {
-        await heartbeat(job.id);
+        await Promise.all([heartbeat(job.id), admissionLease.heartbeat()]);
       }
     } catch {
       // fail-open: a transient DB hiccup in the watchdog must never crash the worker
@@ -145,11 +153,22 @@ async function runOne(job: ClaimedJob): Promise<void> {
 
 async function loop(): Promise<void> {
   while (!draining) {
+    const admissionLease = await heavyMediaAdmission.tryAcquireRender().catch((e) => {
+      console.error("[render-worker] admission error:", e);
+      return null;
+    });
+    if (!admissionLease) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      continue;
+    }
     const job = await claimNextRenderJob().catch((e) => {
       console.error("[render-worker] claim error:", e);
       return null;
     });
-    if (draining) break; // a drain may have started while we were claiming
+    if (draining) {
+      await admissionLease.release().catch(() => {});
+      break;
+    }
     if (!job) {
       // Idle: sweep RUNNING jobs with a stale heartbeat (worker presumed dead).
       // This gives sub-POLL_MS detection of dead workers (a dead worker's job sits
@@ -162,11 +181,16 @@ async function loop(): Promise<void> {
       } catch (sweepErr) {
         console.error("[render-worker] sweepDeadRenderJobs error (non-fatal):", sweepErr);
       }
+      await admissionLease.release().catch(() => {});
       await new Promise((r) => setTimeout(r, POLL_MS));
       continue;
     }
     console.log(`[render-worker] claimed ${job.id} (${job.type})`);
-    await runOne(job);
+    try {
+      await runOne(job, admissionLease);
+    } finally {
+      await admissionLease.release().catch(() => {});
+    }
   }
 }
 

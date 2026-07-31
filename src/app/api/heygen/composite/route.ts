@@ -7,6 +7,17 @@ import { clampAvatarLayout, type AvatarLayout } from "@/lib/avatar-layout";
 import { buildEnableExpr } from "@/lib/cutaway-plan";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import {
+  CompositeExecutionError,
+  executeCompositeFfmpeg,
+  isCompositeStabilityCanary,
+  resolveCompositeTimeoutMs,
+} from "@/lib/composite-execution";
+import {
+  HeavyMediaAdmission,
+  HeavyMediaAdmissionTimeoutError,
+  type HeavyMediaLease,
+} from "@/lib/heavy-media-admission";
+import {
   resolveChromaParams,
   detectChromaColor,
   buildCompositeFilter,
@@ -23,6 +34,7 @@ import {
 } from "@/lib/avatar-fade";
 import path from "path";
 import fs from "fs";
+import os from "os";
 import { execFile } from "child_process";
 
 export const maxDuration = 3600;
@@ -113,19 +125,11 @@ async function downloadFile(url: string, dest: string, heygenKey?: string): Prom
 }
 
 
-// 30 min — composites of long avatars (multi-minute, bookend-both split into several ffmpeg
-// invocations) are legitimately slow; this just bounds a genuinely hung/stuck process.
-const FFMPEG_TIMEOUT_MS = 30 * 60 * 1000;
-
-function runFfmpeg(ffmpegPath: string, args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(ffmpegPath, args, { maxBuffer: 100 * 1024 * 1024, timeout: FFMPEG_TIMEOUT_MS }, (err, _stdout, stderr) => {
-      if (err) {
-        console.error("[ffmpeg stderr]", stderr?.slice(-2000));
-        reject(new Error(`ffmpeg failed:\n${stderr?.slice(-1000)}`));
-      } else resolve(stderr ?? "");
-    });
-  });
+function runFfmpeg(ffmpegPath: string, args: string[], timeoutMs: number): Promise<string> {
+  const outputPath = args.at(-1);
+  if (!outputPath) return Promise.reject(new Error("ffmpeg output path missing"));
+  return executeCompositeFfmpeg({ ffmpegPath, args, outputPath, timeoutMs })
+    .then((result) => result.stderr);
 }
 
 // ─────────────────────────────────────────────
@@ -161,6 +165,7 @@ async function directComposite(
   avatarPath: string,
   outPath: string,
   avatarFadeWindows: readonly AvatarFadeWindow[],
+  timeoutMs: number,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
   // Scale bg to 1080x1920, overlay avatar centered, take audio from avatarPath (has TTS audio)
@@ -175,7 +180,7 @@ async function directComposite(
     "-c:a", "aac", "-b:a", "128k",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     outPath,
-  ]);
+  ], timeoutMs);
   console.log("[direct-composite] done");
 }
 
@@ -189,6 +194,7 @@ async function cutawayComposite(
   avatarPath: string,
   outPath: string,
   personRangesSec: { start: number; end: number }[],
+  timeoutMs: number,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
   const enableExpr = buildEnableExpr(personRangesSec);
@@ -213,7 +219,7 @@ async function cutawayComposite(
     "-c:a", "aac", "-b:a", "128k",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     outPath,
-  ]);
+  ], timeoutMs);
   console.log("[cutaway-composite] done");
 }
 
@@ -228,10 +234,12 @@ async function chromakeyComposite(
   avatarPath: string,
   outPath: string,
   params: ChromaParams,
+  timeoutMs: number,
   audioFromAvatar = false,
   layout: AvatarLayout | null = null,
   feather = true,
   avatarFadeWindows: readonly AvatarFadeWindow[] = [],
+  cropToVisibleCanvas = false,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
 
@@ -240,6 +248,7 @@ async function chromakeyComposite(
     layout,
     feather,
     avatarFadeWindows,
+    cropToVisibleCanvas,
   );
   if (layout) {
     console.log(`[chromakey] layer layout scale=${layout.scale} offsetPx=(${layout.offsetX},${layout.offsetY})`);
@@ -282,7 +291,7 @@ async function chromakeyComposite(
     "-pix_fmt", "yuv420p",
     "-movflags", "+faststart",
     outPath,
-  ]);
+  ], timeoutMs);
 
   console.log("[chromakey-ffmpeg] done");
 }
@@ -344,6 +353,7 @@ async function fadeCompositeAgainstBackground(
   bgPath: string,
   outPath: string,
   avatarFadeWindows: readonly AvatarFadeWindow[],
+  timeoutMs: number,
 ): Promise<void> {
   const fadeWindows = normalizeAvatarFadeWindows(avatarFadeWindows);
   if (fadeWindows.length === 0) {
@@ -369,7 +379,7 @@ async function fadeCompositeAgainstBackground(
     "-c:a", "aac", "-b:a", "128k",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     outPath,
-  ]);
+  ], timeoutMs);
 }
 
 // ─────────────────────────────────────────────
@@ -385,7 +395,14 @@ function probeDuration(ffmpegPath: string, filePath: string): Promise<number> {
   });
 }
 
-async function applyBookend(ffmpegPath: string, compositePath: string, bgPath: string, outPath: string, introSecs: number): Promise<void> {
+async function applyBookend(
+  ffmpegPath: string,
+  compositePath: string,
+  bgPath: string,
+  outPath: string,
+  introSecs: number,
+  timeoutMs: number,
+): Promise<void> {
   const totalDur = await probeDuration(ffmpegPath, bgPath);
   const N = Math.min(introSecs, totalDur);
   if (N >= totalDur) { fs.copyFileSync(compositePath, outPath); return; }
@@ -404,7 +421,7 @@ async function applyBookend(ffmpegPath: string, compositePath: string, bgPath: s
     "-c:v", "libx264", "-preset", "fast", "-crf", "18",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     outPath,
-  ]);
+  ], timeoutMs);
 }
 
 async function applyBookendBoth(
@@ -414,6 +431,7 @@ async function applyBookendBoth(
   outPath: string,
   introSecs: number,
   tailSecs: number,
+  timeoutMs: number,
 ): Promise<void> {
   const totalDur = await probeDuration(ffmpegPath, bgPath);
   const N = Math.min(introSecs, totalDur);
@@ -448,7 +466,7 @@ async function applyBookendBoth(
     "-c:v", "libx264", "-preset", "fast", "-crf", "18",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
     outPath,
-  ]);
+  ], timeoutMs);
 }
 
 // ─────────────────────────────────────────────
@@ -469,13 +487,32 @@ async function applyBookendBothSplit(
   tailSecs: number,         // exact T from user setting
   params: ChromaParams,     // pre-resolved key color/similarity/blend
   mode: string,
+  timeoutMs: number,
+  cropToVisibleCanvas: boolean,
   layout: AvatarLayout | null = null,
   feather = true,
 ): Promise<void> {
   const rendersDir = path.dirname(outPath);
   const ts = Date.now();
+  const bgIntroPath = path.join(rendersDir, `bgseg-intro-${ts}.mp4`);
+  const bgTailPath = path.join(rendersDir, `bgseg-tail-${ts}.mp4`);
+  const introCompPath = path.join(rendersDir, `comp-intro-${ts}.mp4`);
+  const tailCompPath = path.join(rendersDir, `comp-tail-${ts}.mp4`);
+  const bgMidPath = path.join(rendersDir, `bgseg-mid-${ts}.mp4`);
+  const listPath = path.join(rendersDir, `concat-${ts}.txt`);
+  const videoOnlyPath = path.join(rendersDir, `concat-video-${ts}.mp4`);
+  const tempPaths = [
+    bgIntroPath,
+    bgTailPath,
+    introCompPath,
+    tailCompPath,
+    bgMidPath,
+    listPath,
+    videoOnlyPath,
+  ];
 
-  const bgDur = await probeDuration(ffmpegPath, bgPath);
+  try {
+    const bgDur = await probeDuration(ffmpegPath, bgPath);
 
   // Use user-specified N and T, clamped to bg duration
   const N = Math.min(introSecs, bgDur);
@@ -487,24 +524,18 @@ async function applyBookendBothSplit(
   console.log(`[bookend-both-split] segments: intro=0-${N}s mid=${midStart}-${midEnd}s tail=${bgDur-T}-${bgDur}s`);
 
   // Step 1: Slice bg into intro segment and tail segment
-  const bgIntroPath = path.join(rendersDir, `bgseg-intro-${ts}.mp4`);
-  const bgTailPath  = path.join(rendersDir, `bgseg-tail-${ts}.mp4`);
-
   await runFfmpeg(ffmpegPath, [
     "-y", "-i", bgPath, "-ss", "0", "-t", String(N),
     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
     "-pix_fmt", "yuv420p", bgIntroPath,
-  ]);
+  ], timeoutMs);
   await runFfmpeg(ffmpegPath, [
     "-y", "-i", bgPath, "-ss", String(bgDur - T), "-t", String(T),
     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
     "-pix_fmt", "yuv420p", bgTailPath,
-  ]);
+  ], timeoutMs);
 
   // Step 2: Composite intro/tail avatars onto their bg segments, clamped to exact duration
-  const introCompPath = path.join(rendersDir, `comp-intro-${ts}.mp4`);
-  const tailCompPath  = path.join(rendersDir, `comp-tail-${ts}.mp4`);
-
   // Composite with -shortest so output = min(bg segment, avatar) = exactly N or T secs
   for (const [bgSeg, avSeg, outSeg, dur] of [
     [bgIntroPath, introAvatarPath, introCompPath, N],
@@ -518,7 +549,7 @@ async function applyBookendBothSplit(
         "-map", "[out]", "-t", String(dur),
         "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-an",
         "-pix_fmt", "yuv420p", outSeg,
-      ]);
+      ], timeoutMs);
     } else {
       // Same key-at-display-resolution chain as the main composite (shared builder → can't drift).
       const segFilter = buildCompositeFilter(
@@ -526,6 +557,7 @@ async function applyBookendBothSplit(
         layout,
         feather,
         segmentFadeWindow,
+        cropToVisibleCanvas,
       );
       await runFfmpeg(ffmpegPath, [
         "-y", "-i", bgSeg, "-i", avSeg,
@@ -533,34 +565,31 @@ async function applyBookendBothSplit(
         "-map", "[out]", "-t", String(dur),
         "-c:v", "libx264", "-preset", compositePreset(), "-crf", compositeCrf(),
         "-threads", "0", "-an", "-pix_fmt", "yuv420p", outSeg,
-      ]);
+      ], timeoutMs);
     }
   }
 
   // Step 3: Slice bg middle segment (video only, no re-encode)
-  const bgMidPath = path.join(rendersDir, `bgseg-mid-${ts}.mp4`);
   if (midEnd > midStart) {
     await runFfmpeg(ffmpegPath, [
       "-y", "-i", bgPath, "-ss", String(midStart), "-t", String(midEnd - midStart),
       "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
       "-pix_fmt", "yuv420p", bgMidPath,
-    ]);
+    ], timeoutMs);
   }
 
   // Step 4: Stitch intro + mid + tail, audio from full bg
-  const listPath = path.join(rendersDir, `concat-${ts}.txt`);
   let concatContent = `file '${introCompPath.replace(/\\/g, "/")}'\n`;
   if (midEnd > midStart) concatContent += `file '${bgMidPath.replace(/\\/g, "/")}'\n`;
   concatContent += `file '${tailCompPath.replace(/\\/g, "/")}'`;
   fs.writeFileSync(listPath, concatContent);
 
   // Concat video-only first, then mux audio from full bg
-  const videoOnlyPath = path.join(rendersDir, `concat-video-${ts}.mp4`);
   await runFfmpeg(ffmpegPath, [
     "-y", "-f", "concat", "-safe", "0", "-i", listPath,
     "-c:v", "libx264", "-preset", "fast", "-crf", "18",
     "-pix_fmt", "yuv420p", "-an", videoOnlyPath,
-  ]);
+  ], timeoutMs);
 
   // Mux audio from full bg
   await runFfmpeg(ffmpegPath, [
@@ -569,11 +598,12 @@ async function applyBookendBothSplit(
     "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
     "-shortest", "-movflags", "+faststart",
     outPath,
-  ]);
+  ], timeoutMs);
 
-  // Cleanup temp files
-  for (const f of [bgIntroPath, bgTailPath, introCompPath, tailCompPath, bgMidPath, listPath, videoOnlyPath]) {
-    try { fs.unlinkSync(f); } catch {}
+  } finally {
+    for (const filePath of tempPaths) {
+      try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch {}
+    }
   }
 }
 
@@ -585,6 +615,8 @@ async function applyBookendBothSplit(
 export async function POST(req: Request) {
   const authUser = await getCurrentUser();
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const ffmpegTimeoutMs = resolveCompositeTimeoutMs({ userId: authUser.id });
+  const stabilityCanary = isCompositeStabilityCanary({ userId: authUser.id });
 
   const dbUser = await prisma.user.findUnique({ where: { id: authUser.id }, select: { plan: true } });
   if (dbUser?.plan === "FREE") return NextResponse.json({ error: "Avatar composite ใช้ได้เฉพาะแผน Pro ขึ้นไป" }, { status: 403 });
@@ -633,9 +665,13 @@ export async function POST(req: Request) {
   const bgTmp      = path.join(rendersDir, `bg-tmp-${ts}.mp4`);
   const outFile    = `composite-${ts}.mp4`;
   const outPath    = path.join(rendersDir, outFile);
+  const attemptOutputs = new Set<string>([outPath]);
+  let publishedOutput: string | null = null;
+  let compositeLease: HeavyMediaLease | null = null;
+  let admissionHeartbeat: ReturnType<typeof setInterval> | null = null;
 
   try {
-    console.log(`[composite] mode=${mode} timing=${avatarTiming} splitTail=${!!tailAvatarVideoUrl}`);
+    console.log(`[composite] mode=${mode} timing=${avatarTiming} splitTail=${!!tailAvatarVideoUrl} timeoutMs=${ffmpegTimeoutMs} visibleCrop=${stabilityCanary}`);
 
     await downloadFile(avatarVideoUrl, avatarTmp, heygenKey);
     if (fs.statSync(avatarTmp).size < 1000) throw new Error("Avatar too small");
@@ -647,6 +683,21 @@ export async function POST(req: Request) {
       await downloadFile(tailAvatarVideoUrl, tailTmp, heygenKey);
       if (fs.statSync(tailTmp).size < 1000) throw new Error("Tail avatar too small");
     }
+
+    const admission = new HeavyMediaAdmission({
+      rootDir: process.env.HEAVY_MEDIA_ADMISSION_DIR
+        || path.join(os.tmpdir(), "ai-content-heavy-media-admission"),
+      enabled: stabilityCanary && process.env.COMPOSITE_ADMISSION_ENABLED === "1",
+    });
+    const rawAdmissionWaitMs = Number(process.env.COMPOSITE_ADMISSION_MAX_WAIT_MS);
+    const admissionWaitMs = Number.isFinite(rawAdmissionWaitMs)
+      ? Math.min(20 * 60_000, Math.max(10_000, Math.floor(rawAdmissionWaitMs)))
+      : 15 * 60_000;
+    compositeLease = await admission.acquireComposite({ maxWaitMs: admissionWaitMs, pollMs: 1_000 });
+    admissionHeartbeat = setInterval(() => {
+      void compositeLease?.heartbeat().catch(() => {});
+    }, 10_000);
+    admissionHeartbeat.unref?.();
 
     const ffmpeg = getFfmpegPath();
 
@@ -671,17 +722,21 @@ export async function POST(req: Request) {
     if (avatarTiming === "bookend-both" && tailTmp) {
       const finalFile = `composite-${ts}-bookend-both.mp4`;
       const finalPath = path.join(rendersDir, finalFile);
+      attemptOutputs.add(finalPath);
 
       await applyBookendBothSplit(
         ffmpeg,
         avatarTmp, tailTmp, bgTmp, finalPath,
         avatarBookendSecs, avatarTailSecs,
         chromaParams, mode,
+        ffmpegTimeoutMs,
+        stabilityCanary,
         layout,
         feather,
       );
 
       console.log("[composite] split output:", finalFile, fs.statSync(finalPath).size, "bytes");
+      publishedOutput = finalPath;
       // Record composite output as paid so a subsequent burn of this composite is free
       // (the base render already charged the clip; composite is a processing step, not new charge).
       // Fail-open: a bookkeeping failure must never break the composite response.
@@ -698,9 +753,9 @@ export async function POST(req: Request) {
       tailSecs: avatarTailSecs,
     });
     if (mode === "direct") {
-      await directComposite(bgTmp, avatarTmp, outPath, sourceFadeWindows);
+      await directComposite(bgTmp, avatarTmp, outPath, sourceFadeWindows, ffmpegTimeoutMs);
     } else if (mode === "cutaway") {
-      await cutawayComposite(bgTmp, avatarTmp, outPath, personRanges);
+      await cutawayComposite(bgTmp, avatarTmp, outPath, personRanges, ffmpegTimeoutMs);
     } else if (mode === "rembg") {
       const rembgRawPath = path.join(rendersDir, `composite-${ts}-rembg-raw.mp4`);
       try {
@@ -711,6 +766,7 @@ export async function POST(req: Request) {
           bgTmp,
           outPath,
           sourceFadeWindows,
+          ffmpegTimeoutMs,
         );
       } finally {
         try { if (fs.existsSync(rembgRawPath)) fs.unlinkSync(rembgRawPath); } catch {}
@@ -721,10 +777,12 @@ export async function POST(req: Request) {
         avatarTmp,
         outPath,
         chromaParams,
+        ffmpegTimeoutMs,
         audioFromAvatar,
         layout,
         feather,
         sourceFadeWindows,
+        stabilityCanary,
       );
     }
 
@@ -735,20 +793,31 @@ export async function POST(req: Request) {
     if (avatarTiming === "bookend" && avatarBookendSecs > 0) {
       const bookendFile = `composite-${ts}-bookend.mp4`;
       const bookendPath = path.join(rendersDir, bookendFile);
-      await applyBookend(ffmpeg, outPath, bgTmp, bookendPath, avatarBookendSecs);
+      attemptOutputs.add(bookendPath);
+      await applyBookend(ffmpeg, outPath, bgTmp, bookendPath, avatarBookendSecs, ffmpegTimeoutMs);
       try { fs.unlinkSync(outPath); } catch {}
       finalFile = bookendFile;
       finalPath = bookendPath;
     } else if (avatarTiming === "bookend-both") {
       const bookendFile = `composite-${ts}-bookend-both.mp4`;
       const bookendPath = path.join(rendersDir, bookendFile);
-      await applyBookendBoth(ffmpeg, outPath, bgTmp, bookendPath, avatarBookendSecs, avatarTailSecs);
+      attemptOutputs.add(bookendPath);
+      await applyBookendBoth(
+        ffmpeg,
+        outPath,
+        bgTmp,
+        bookendPath,
+        avatarBookendSecs,
+        avatarTailSecs,
+        ffmpegTimeoutMs,
+      );
       try { fs.unlinkSync(outPath); } catch {}
       finalFile = bookendFile;
       finalPath = bookendPath;
     }
 
     console.log("[composite] output:", finalFile, fs.statSync(finalPath).size, "bytes");
+    publishedOutput = finalPath;
     // Record composite output as paid so a subsequent burn of this composite is free
     // (the base render already charged the clip; composite is a processing step, not new charge).
     // Fail-open: a bookkeeping failure must never break the composite response.
@@ -756,8 +825,29 @@ export async function POST(req: Request) {
     return NextResponse.json({ videoUrl: `/api/renders/${finalFile}`, usedMode: mode });
   } catch (error) {
     console.error("[composite] error:", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Composite failed" }, { status: 500 });
+    if (error instanceof HeavyMediaAdmissionTimeoutError) {
+      return NextResponse.json(
+        { error: error.message, code: "COMPOSITE_TRANSIENT", retryable: true },
+        { status: 503 },
+      );
+    }
+    if (error instanceof CompositeExecutionError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code, retryable: error.retryable },
+        { status: error.code === "COMPOSITE_TIMEOUT" ? 504 : 500 },
+      );
+    }
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Composite failed", code: "COMPOSITE_FAILED", retryable: false },
+      { status: 500 },
+    );
   } finally {
+    if (admissionHeartbeat) clearInterval(admissionHeartbeat);
+    await compositeLease?.release().catch(() => {});
+    for (const candidate of attemptOutputs) {
+      if (candidate === publishedOutput) continue;
+      try { if (fs.existsSync(candidate)) fs.unlinkSync(candidate); } catch {}
+    }
     try { if (fs.existsSync(avatarTmp)) fs.unlinkSync(avatarTmp); } catch {}
     try { if (tailTmp && fs.existsSync(tailTmp)) fs.unlinkSync(tailTmp); } catch {}
     try { if (fs.existsSync(bgTmp)) fs.unlinkSync(bgTmp); } catch {}

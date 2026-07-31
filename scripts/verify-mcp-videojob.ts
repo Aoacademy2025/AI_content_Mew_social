@@ -147,6 +147,25 @@ async function main() {
   const finishedWait = await prisma.videoJob.findUniqueOrThrow({ where: { id: waiting.id } });
   assert(finishedWait.providerCheckpointJson === null && finishedWait.providerNextPollAt === null, "finish clears provider checkpoint and next poll");
 
+  const compositeWaiting = await createVideoJob(u.id, { script: "composite retry" });
+  assert((await claimNextRunnableJob())?.id === compositeWaiting.id, "composite retry job is claimed before parking");
+  const compositeCheckpoint: AvatarProviderCheckpointV1 = {
+    ...checkpoint,
+    phase: "composite",
+    compositeAttempts: 1,
+    avatar: { ...checkpoint.avatar, introVideoUrl: "https://files2.heygen.ai/intro.mp4" },
+  };
+  assert(
+    (await parkProviderJob(compositeWaiting.id, compositeCheckpoint, dueAt)).count === 1,
+    "transient composite retry parks atomically",
+  );
+  const parkedComposite = await prisma.videoJob.findUniqueOrThrow({ where: { id: compositeWaiting.id } });
+  assert(
+    parkedComposite.currentStep === "composite" && parkedComposite.progress === 86,
+    "parked composite stays on the indeterminate composite status instead of jumping back to avatar 84%",
+  );
+  await prisma.videoJob.update({ where: { id: compositeWaiting.id }, data: { status: "canceled" } });
+
   const heroCheckpoint: HeroVoiceProviderCheckpointV1 = {
     version: 1,
     provider: "omnivoice",
@@ -226,7 +245,7 @@ async function main() {
   assert(waitRecovery.parked === 1 && recoveredWait.status === "waiting_provider" && !!recoveredWait.providerNextPollAt, "restart recovery parks a valid provider wait");
 
   await prisma.videoJob.deleteMany();
-  const compositeCheckpoint: AvatarProviderCheckpointV1 = {
+  const restartCompositeCheckpoint: AvatarProviderCheckpointV1 = {
     ...checkpoint,
     phase: "composite",
     avatar: { ...checkpoint.avatar, introVideoUrl: "https://files2.heygen.ai/intro.mp4" },
@@ -238,7 +257,7 @@ async function main() {
       currentStep: "composite",
       progress: 86,
       inputJson: JSON.stringify({ script: "composite" }),
-      providerCheckpointJson: serializeAvatarProviderCheckpoint(compositeCheckpoint),
+      providerCheckpointJson: serializeAvatarProviderCheckpoint(restartCompositeCheckpoint),
     },
   });
   const compositeRecovery = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });

@@ -306,9 +306,20 @@ export function buildCompositeFilter(
   layout: AvatarLayout | null,
   feather = true,
   avatarFadeWindows: readonly AvatarFadeWindow[] = [],
+  cropToVisibleCanvas = false,
 ): string {
   const keyChain = buildKeyChain(params, feather);
   const fadeWindows = normalizeAvatarFadeWindows(avatarFadeWindows);
+  const geometry = layout ? layoutGeometry(layout) : null;
+  if (geometry && cropToVisibleCanvas) {
+    const left = Math.max(0, -geometry.x);
+    const top = Math.max(0, -geometry.y);
+    const right = Math.min(geometry.w, CANVAS_W - geometry.x);
+    const bottom = Math.min(geometry.h, CANVAS_H - geometry.y);
+    if (right <= left || bottom <= top) {
+      return `[0:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,setsar=1[out]`;
+    }
+  }
   const backgroundFilter = fadeWindows.length > 0
     ? `[0:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,setsar=1,split=2[bg][bg_fade]`
     : `[0:v]scale=${CANVAS_W}:${CANVAS_H}:flags=lanczos,setsar=1[bg]`;
@@ -322,7 +333,24 @@ export function buildCompositeFilter(
       })
     : null;
   if (layout) {
-    const { w, h, x, y } = layoutGeometry(layout);
+    const { w, h, x, y } = geometry ?? layoutGeometry(layout);
+    if (cropToVisibleCanvas) {
+      const left = Math.max(0, -x);
+      const top = Math.max(0, -y);
+      const right = Math.min(w, CANVAS_W - x);
+      const bottom = Math.min(h, CANVAS_H - y);
+      const visibleW = right - left;
+      const visibleH = bottom - top;
+      const avatarFilter = left > 0 || top > 0 || visibleW < w || visibleH < h
+        ? `[1:v]scale=${w}:${h}:flags=lanczos,crop=${visibleW}:${visibleH}:${left}:${top},${keyChain}[fg]`
+        : `[1:v]scale=${w}:${h}:flags=lanczos,${keyChain}[fg]`;
+      return [
+        backgroundFilter,
+        avatarFilter,
+        `[bg][fg]overlay=${Math.max(0, x)}:${Math.max(0, y)}:format=auto[${overlayOutput}]`,
+        ...(fadeFilter ? [fadeFilter] : []),
+      ].join(";");
+    }
     return [
       backgroundFilter,
       `[1:v]scale=${w}:${h}:flags=lanczos,${keyChain}[fg]`,

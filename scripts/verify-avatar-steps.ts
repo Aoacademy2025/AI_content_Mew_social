@@ -1,8 +1,8 @@
 // avatar-steps orchestration against a mock PipelineCaller: correct endpoint calls per mode
 // and burn target = compositeUrl.
 //   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-avatar-steps.ts
-import { runAvatarComposite, pollAvatar, HEYGEN_FRAMING } from "../src/lib/mcp/avatar-steps";
-import type { PipelineCaller } from "../src/lib/mcp/pipeline-client";
+import { attemptAvatarComposite, runAvatarComposite, pollAvatar, HEYGEN_FRAMING } from "../src/lib/mcp/avatar-steps";
+import { PipelineHttpError, type PipelineCaller } from "../src/lib/mcp/pipeline-client";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -92,6 +92,64 @@ async function main() {
     let threw = false;
     try { await pollAvatar(c2, "hg-y", { intervalMs: 1, sleep: noSleep }); } catch { threw = true; }
     assert(threw, "pollAvatar throws on failed");
+  }
+
+  // The HTTP adapter preserves a deterministic executor timeout as a terminal composite
+  // outcome so the provider-resume policy cannot mistake it for a transient provider wait.
+  {
+    const caller: PipelineCaller = {
+      post: async () => {
+        throw new PipelineHttpError("POST", "/api/heygen/composite", 504, {
+          code: "COMPOSITE_TIMEOUT",
+          error: "ประกอบวิดีโอใช้เวลานานเกินกำหนด",
+          retryable: false,
+        });
+      },
+      patch: async () => ({} as never),
+      get: async () => ({} as never),
+    };
+    const result = await attemptAvatarComposite(caller, {
+      baseUrl: "BASE",
+      avatarMode: "full",
+      introSecs: 5,
+      tailSecs: 5,
+      introVideoUrl: "AVATAR",
+    });
+    assert(
+      result.kind === "failed"
+        && result.code === "COMPOSITE_TIMEOUT"
+        && result.retryable === false,
+      "composite adapter preserves terminal timeout classification",
+    );
+  }
+
+  // A typed executor-capacity failure remains retryable; retry count is owned by the
+  // provider-resume policy, not by this HTTP adapter.
+  {
+    const caller: PipelineCaller = {
+      post: async () => {
+        throw new PipelineHttpError("POST", "/api/heygen/composite", 503, {
+          code: "COMPOSITE_TRANSIENT",
+          error: "composite capacity temporarily unavailable",
+          retryable: true,
+        });
+      },
+      patch: async () => ({} as never),
+      get: async () => ({} as never),
+    };
+    const result = await attemptAvatarComposite(caller, {
+      baseUrl: "BASE",
+      avatarMode: "full",
+      introSecs: 5,
+      tailSecs: 5,
+      introVideoUrl: "AVATAR",
+    });
+    assert(
+      result.kind === "failed"
+        && result.code === "COMPOSITE_TRANSIENT"
+        && result.retryable === true,
+      "composite adapter preserves retryable capacity classification",
+    );
   }
 
   console.log(`\n${passed} assertions passed ✅`);

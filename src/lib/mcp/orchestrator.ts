@@ -28,7 +28,7 @@ import {
   cardsByWordCount, POSITION_TOP_PERCENT, buildDegradedTimingTelemetry,
 } from "@/lib/mcp/orchestrator-steps";
 import {
-  compositeAvatarVideo,
+  attemptAvatarComposite,
   generateAvatarVideo,
   pollAvatarOnce,
   prepareAvatarAudio,
@@ -581,7 +581,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         if (value.avatar.mode === "bookend-both" && !value.avatar.tailVideoUrl) {
           throw new Error("avatar checkpoint missing tail video URL");
         }
-        return compositeAvatarVideo(caller, {
+        return attemptAvatarComposite(caller, {
           baseUrl: value.baseUrl,
           avatarMode: value.avatar.mode,
           introSecs: value.avatar.introSecs,

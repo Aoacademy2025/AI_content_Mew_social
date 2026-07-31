@@ -20,6 +20,7 @@
     "verify:render-poll-timeout": "tsx scripts/verify-render-poll-timeout.ts",
     "verify:avatar-provider-checkpoint": "tsx scripts/verify-avatar-provider-checkpoint.ts",
     "verify:avatar-provider-resume": "tsx scripts/verify-avatar-provider-resume.ts",
+    "verify:composite-stability": "tsx scripts/verify-composite-execution.ts && tsx scripts/verify-heavy-media-admission.ts && tsx scripts/verify-video-job-progress.ts && tsx scripts/verify-avatar-provider-checkpoint.ts && tsx scripts/verify-avatar-provider-resume.ts && tsx scripts/verify-avatar-steps.ts && tsx scripts/verify-composite-quality.ts",
     "verify:avatar-generate-outcome": "tsx scripts/verify-avatar-generate-outcome.ts",
     "verify:heygen-readiness": "tsx scripts/verify-heygen-readiness.ts",
     "ops:refund-avatar-quota": "tsx scripts/refund-avatar-quota-job.ts",

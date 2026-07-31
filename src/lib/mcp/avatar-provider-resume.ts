@@ -14,11 +14,27 @@ export type AvatarProviderGenerateResult =
   | { kind: "rejected"; code: ProviderErrorCode; message: string }
   | { kind: "unknown"; message?: string };
 
+export type AvatarCompositeFailureCode =
+  | "COMPOSITE_TIMEOUT"
+  | "COMPOSITE_STALLED"
+  | "COMPOSITE_TRANSIENT"
+  | "COMPOSITE_FAILED"
+  | "COMPOSITE_RETRY_EXHAUSTED";
+
+export type AvatarCompositeAttemptResult =
+  | { kind: "completed"; videoUrl: string }
+  | {
+      kind: "failed";
+      code: Exclude<AvatarCompositeFailureCode, "COMPOSITE_RETRY_EXHAUSTED">;
+      message: string;
+      retryable: boolean;
+    };
+
 export interface AvatarProviderAdvanceDeps {
   now: () => Date;
   generate: (avatarId: string, audioUrl: string) => Promise<AvatarProviderGenerateResult>;
   poll: (providerVideoId: string) => Promise<AvatarProviderPollResult>;
-  composite: (checkpoint: AvatarProviderCheckpointV1) => Promise<string>;
+  composite: (checkpoint: AvatarProviderCheckpointV1) => Promise<AvatarCompositeAttemptResult>;
   /** Guarded persistence: false means cancellation/another terminal transition won. */
   persist?: (checkpoint: AvatarProviderCheckpointV1) => Promise<boolean>;
   /** Only the fresh orchestrator call that already persisted generate intent may set this. */
@@ -31,13 +47,14 @@ export type AvatarProviderAdvanceResult =
   | {
       kind: "failed";
       message: string;
-      code?: ProviderErrorCode;
-      provider?: "heygen";
+      code?: ProviderErrorCode | AvatarCompositeFailureCode;
+      provider?: "heygen" | "composite";
       outcome?: "definitive" | "unknown";
     };
 
 const GUARD_REJECTED = "provider checkpoint guard rejected";
 const UNKNOWN_GENERATE_OUTCOME = "avatar generate has unknown provider outcome - manual recovery required";
+const MAX_COMPOSITE_ATTEMPTS = 2;
 
 function withAvatar(
   checkpoint: AvatarProviderCheckpointV1,
@@ -95,15 +112,39 @@ async function composite(
   checkpoint: AvatarProviderCheckpointV1,
   deps: AvatarProviderAdvanceDeps,
 ): Promise<AvatarProviderAdvanceResult> {
-  const readyToComposite = { ...checkpoint, phase: "composite" as const };
+  const attempt = (checkpoint.compositeAttempts ?? 0) + 1;
+  const readyToComposite = {
+    ...checkpoint,
+    phase: "composite" as const,
+    compositeAttempts: attempt,
+  };
   if (!await persist(readyToComposite, deps)) return { kind: "failed", message: GUARD_REJECTED };
+  let result: AvatarCompositeAttemptResult;
   try {
-    const compositeUrl = await deps.composite(readyToComposite);
-    return { kind: "ready", checkpoint: readyToComposite, compositeUrl };
+    result = await deps.composite(readyToComposite);
   } catch {
-    // Composite is internally retryable and does not spend HeyGen generation credits.
-    return { kind: "waiting", checkpoint: readyToComposite };
+    result = {
+      kind: "failed",
+      code: "COMPOSITE_TRANSIENT",
+      message: "composite worker temporarily unavailable",
+      retryable: true,
+    };
   }
+  if (result.kind === "completed") {
+    return { kind: "ready", checkpoint: readyToComposite, compositeUrl: result.videoUrl };
+  }
+  if (result.retryable && attempt < MAX_COMPOSITE_ATTEMPTS) {
+    return { kind: "waiting", checkpoint: readyToComposite, retryAfterSec: 60 };
+  }
+  return {
+    kind: "failed",
+    message: result.retryable
+      ? `ประกอบวิดีโอไม่สำเร็จหลังลอง ${attempt} ครั้ง: ${result.message}`
+      : result.message,
+    code: result.retryable ? "COMPOSITE_RETRY_EXHAUSTED" : result.code,
+    provider: "composite",
+    outcome: "definitive",
+  };
 }
 
 async function pollPhase(
@@ -160,7 +201,10 @@ export async function advanceAvatarProvider(
   checkpoint: AvatarProviderCheckpointV1,
   deps: AvatarProviderAdvanceDeps,
 ): Promise<AvatarProviderAdvanceResult> {
-  if (deps.now().getTime() > Date.parse(checkpoint.providerDeadlineAt)) {
+  // The provider deadline bounds HeyGen generation/polling only. Once provider media is
+  // persisted, composite is local work with its own executor timeout/retry policy.
+  if (checkpoint.phase !== "composite"
+    && deps.now().getTime() > Date.parse(checkpoint.providerDeadlineAt)) {
     return {
       kind: "failed",
       message: "avatar provider deadline exceeded",
