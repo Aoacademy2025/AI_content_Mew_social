@@ -4,6 +4,7 @@ import { apiError } from "@/lib/api-error";
 import { buildHooksPrompt, type BrandProfileForPrompt } from "@/lib/prompts/hero-script";
 import {
   generateValidatedJson,
+  heroScriptLlmErrorResponse,
   isValidDurationSec,
   requireHeroScriptUser,
   resolveLlmTriad,
@@ -60,6 +61,10 @@ export async function POST(req: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
+    // Model gone / provider credit spent → an honest 503 with Thai copy, never
+    // a generic 500 and never a fallback to another model (ADR 0004).
+    const llmError = heroScriptLlmErrorResponse(error, { route: "POST /api/scripts/hooks", tier: "fast" });
+    if (llmError) return llmError;
     return apiError({ route: "POST /api/scripts/hooks", error });
   }
 }
