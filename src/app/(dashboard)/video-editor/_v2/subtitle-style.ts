@@ -151,7 +151,24 @@ type V2TimedWord = { word: string; startMs: number; endMs: number; startChar: nu
 // sentence-final punctuation mark is a HARD card boundary — never pair words across it.
 // LOCKSTEP with the server copy in src/lib/mcp/orchestrator-steps.ts
 // (SENTENCE_BOUNDARY_RE / cardsByWordCount) — แก้ที่นึงต้องแก้อีกที่.
-const SENTENCE_BOUNDARY_RE = /[\n.!?…ฯ]/;
+const SENTENCE_BOUNDARY_RE = /[\n,.!?…ฯ;:，；：]/;
+
+// LOCKSTEP with src/lib/mcp/orchestrator-steps.ts. Thai word segmentation is
+// much finer than what a viewer perceives as a phrase, so permit a bounded
+// N+1 (or mode-2 N+2 closing auxiliary) rather than stranding a function word.
+const THAI_BINDS_NEXT = new Set([
+  "ไม่", "ได้", "จะ", "กำลัง", "ต้อง", "ควร", "อยาก", "ให้", "ใน", "จาก",
+  "ของ", "กับ", "เพื่อ", "โดย", "เพราะ", "ถ้า", "เมื่อ", "คือ", "เป็น", "อย่าง", "ทุก",
+  "ช่วง", "ซับ", "นำ", "งาน",
+]);
+const THAI_BINDS_PREVIOUS = new Set([
+  "เดียว", "แล้ว", "อยู่", "ไว้", "มาก", "ขึ้น", "ลง", "ก่อน", "หลัง", "ทันที", "เสมอ", "ได้",
+]);
+const THAI_FINAL_CLOSING_TOKENS = new Set(["ได้"]);
+
+function completesNaturalThaiPhrase(previous: string, current: string): boolean {
+  return THAI_BINDS_NEXT.has(previous) || THAI_BINDS_PREVIOUS.has(current);
+}
 
 function tagCards(cards: V2Caption[]): V2Caption[] {
   return cards.map((c, i) => ({ ...c, tag: i === 0 ? "hook" : i === cards.length - 1 ? "cta" : "body" }));
@@ -195,10 +212,20 @@ export function regroupCaptions(
       grp = [];
     };
     for (let i = 0; i < words.length; i++) {
-      if (grp.length >= n) flush();
-      // FIX B: never cross a sentence/line boundary (gap between words in fullText).
-      if (grp.length > 0 && SENTENCE_BOUNDARY_RE.test(ft.slice(grp[grp.length - 1].endChar, words[i].startChar))) {
-        flush();
+      if (grp.length > 0) {
+        // FIX B: never cross a sentence/line boundary (gap between words in fullText).
+        const hardBoundary = SENTENCE_BOUNDARY_RE.test(
+          ft.slice(grp[grp.length - 1].endChar, words[i].startChar),
+        );
+        if (hardBoundary) {
+          flush();
+        } else if (grp.length >= n) {
+          const allowOneNaturalToken = n <= 3 && grp.length === n
+            && completesNaturalThaiPhrase(grp[grp.length - 1].word, words[i].word);
+          const allowFinalClosingToken = n <= 2 && grp.length === n + 1
+            && THAI_FINAL_CLOSING_TOKENS.has(words[i].word);
+          if (!allowOneNaturalToken && !allowFinalClosingToken) flush();
+        }
       }
       grp.push(words[i]);
     }

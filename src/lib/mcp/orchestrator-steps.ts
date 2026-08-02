@@ -122,7 +122,7 @@ type CharWord = { word: string; startMs: number; endMs: number; startChar: numbe
 // flushes so a card never spans across a sentence end or an authored line break.
 // Kept in LOCKSTEP with the v2 copy in video-editor/_v2/subtitle-style.ts
 // (SENTENCE_BOUNDARY_RE / regroupCaptions) — แก้ที่นึงต้องแก้อีกที่.
-const SENTENCE_BOUNDARY_RE = /[\n.!?…ฯ]/;
+const SENTENCE_BOUNDARY_RE = /[\n,.!?…ฯ;:，；：]/;
 
 // A strict N-token flush can strand Thai function words/modifiers at a card
 // edge (production examples: "เริ่มต้นให้|ชัดเจน", "วัน|เดียว"). Permit one
@@ -131,10 +131,12 @@ const SENTENCE_BOUNDARY_RE = /[\n.!?…ฯ]/;
 const THAI_BINDS_NEXT = new Set([
   "ไม่", "ได้", "จะ", "กำลัง", "ต้อง", "ควร", "อยาก", "ให้", "ใน", "จาก",
   "ของ", "กับ", "เพื่อ", "โดย", "เพราะ", "ถ้า", "เมื่อ", "คือ", "เป็น", "อย่าง", "ทุก",
+  "ช่วง", "ซับ", "นำ", "งาน",
 ]);
 const THAI_BINDS_PREVIOUS = new Set([
-  "เดียว", "แล้ว", "อยู่", "ไว้", "มาก", "ขึ้น", "ลง", "ก่อน", "หลัง", "ทันที", "เสมอ",
+  "เดียว", "แล้ว", "อยู่", "ไว้", "มาก", "ขึ้น", "ลง", "ก่อน", "หลัง", "ทันที", "เสมอ", "ได้",
 ]);
+const THAI_FINAL_CLOSING_TOKENS = new Set(["ได้"]);
 
 function completesNaturalThaiPhrase(previous: string, current: string): boolean {
   return THAI_BINDS_NEXT.has(previous) || THAI_BINDS_PREVIOUS.has(current);
@@ -174,7 +176,12 @@ export function cardsByWordCount(words: CharWord[], n: number, fullText: string)
       } else if (grp.length >= n) {
         const allowOneNaturalToken = n <= 3 && grp.length === n
           && completesNaturalThaiPhrase(grp[grp.length - 1].word, words[i].word);
-        if (!allowOneNaturalToken) flush();
+        // Mode 2 may need one final closing auxiliary after the N+1 phrase
+        // (e.g. ใช้+งาน+จริง+ได้). This is still bounded at N+2 and keeps the
+        // exact provider timing for every token.
+        const allowFinalClosingToken = n <= 2 && grp.length === n + 1
+          && THAI_FINAL_CLOSING_TOKENS.has(words[i].word);
+        if (!allowOneNaturalToken && !allowFinalClosingToken) flush();
       }
     }
     grp.push(words[i]);

@@ -81,4 +81,28 @@ assert(
   "natural grouping never splits วันเดียว across adjacent subtitle cards",
 );
 
+// Real mode-2 avatar QA exposed three mechanical boundaries even though the
+// transcript/timing release gate passed: "และช่วง | ปิดผ่าน", "ให้ซับ | ตรงเสียง",
+// and "ใช้งานจริง | ได้". A ≤2-word card may use bounded extra timed tokens
+// when a Thai modifier needs its next word or a closing auxiliary belongs to it.
+const avatarQaText = "วันนี้เราจะทดสอบ Video Avatar ช่วงเปิด และช่วงปิดผ่าน MCP ให้ซับตรง เสียงชัด และนำไปใช้งานจริงได้";
+const avatarQaWords = timedWords(avatarQaText, [
+  "วันนี้", "เรา", "จะ", "ทดสอบ", "Video", "Avatar", "ช่วง", "เปิด",
+  "และ", "ช่วง", "ปิด", "ผ่าน", "MCP", "ให้", "ซับ", "ตรง", "เสียง",
+  "ชัด", "และ", "นำ", "ไป", "ใช้", "งาน", "จริง", "ได้",
+]);
+const avatarQaCards = cardsByWordCount(avatarQaWords, 2, avatarQaText);
+assert(
+  avatarQaCards.some((card) => card.text === "และช่วงปิด"),
+  "mode 2 keeps และช่วงปิด as one natural Thai phrase",
+);
+assert(
+  avatarQaCards.some((card) => card.text === "ให้ซับตรง"),
+  "mode 2 keeps ให้ซับตรง as one natural Thai phrase",
+);
+assert(
+  avatarQaCards.some((card) => card.text === "ใช้งานจริงได้"),
+  "mode 2 never strands final ได้ on its own card",
+);
+
 console.log(`\n${passed} assertions passed ✅`);

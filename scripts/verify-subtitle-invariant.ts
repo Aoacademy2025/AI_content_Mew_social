@@ -4,6 +4,7 @@
 import { buildKeywordPopups } from "../src/lib/keyword-popups";
 import {
   mergeCaptionWithNext,
+  regroupCaptions,
   type V2Caption,
 } from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
 
@@ -102,6 +103,26 @@ check(
   "merging the last card is an identity",
   mergeCaptionWithNext(chain, chain.length - 1) === chain
     && mergeCaptionWithNext(chain, -1) === chain,
+);
+
+// UI regrouping must stay in lockstep with the server/MCP grouping. Otherwise
+// opening a completed MCP job in the editor silently changes its Thai cards.
+const naturalText = "และช่วงปิด ให้ซับตรง และนำไปใช้งานจริงได้";
+const naturalTokens = ["และ", "ช่วง", "ปิด", "ให้", "ซับ", "ตรง", "และ", "นำ", "ไป", "ใช้", "งาน", "จริง", "ได้"];
+let naturalOffset = 0;
+const naturalWords = naturalTokens.map((word, index) => {
+  const startChar = naturalText.indexOf(word, naturalOffset);
+  const endChar = startChar + word.length;
+  naturalOffset = endChar;
+  return { word, startMs: index * 100, endMs: index * 100 + 90, startChar, endChar };
+});
+const regroupedNatural = regroupCaptions([], "2", naturalWords, naturalText);
+check(
+  "editor mode 2 keeps natural Thai phrases in lockstep with MCP",
+  regroupedNatural.some((card) => card.text === "และช่วงปิด")
+    && regroupedNatural.some((card) => card.text === "ให้ซับตรง")
+    && regroupedNatural.some((card) => card.text === "ใช้งานจริงได้"),
+  JSON.stringify(regroupedNatural.map((card) => card.text)),
 );
 
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
