@@ -6,6 +6,42 @@ async function safe<T>(fn: () => Promise<T>): Promise<T | { error: string }> {
   try { return await fn(); } catch (e) { return { error: e instanceof Error ? e.message : "failed" }; }
 }
 
+const MCP_AVATAR_OPTION_LIMIT = 24;
+
+type McpAvatarOption = {
+  avatarId: string;
+  name: string;
+  preview: string | null;
+  isPublic: boolean;
+  saved: boolean;
+};
+
+function compactAvatarCatalog(
+  avatars: Omit<McpAvatarOption, "saved">[],
+  savedAvatarId: string | null,
+  limit: number = MCP_AVATAR_OPTION_LIMIT,
+) {
+  const unique = [...new Map(avatars.map((avatar) => [avatar.avatarId, avatar])).values()];
+  const saved = savedAvatarId ? unique.find((avatar) => avatar.avatarId === savedAvatarId) : undefined;
+  const privateAvatars = unique.filter((avatar) => !avatar.isPublic && avatar.avatarId !== savedAvatarId);
+  const publicAvatars = unique.filter((avatar) => avatar.isPublic && avatar.avatarId !== savedAvatarId);
+  const options = [
+    ...(saved ? [{ ...saved, saved: true }] : []),
+    ...privateAvatars.map((avatar) => ({ ...avatar, saved: false })),
+    ...publicAvatars.map((avatar) => ({ ...avatar, saved: false })),
+  ].slice(0, limit);
+
+  return {
+    options,
+    meta: {
+      totalAvailable: unique.length,
+      returned: options.length,
+      truncated: unique.length > options.length,
+      selection: "saved avatar first, then custom avatars, then public examples",
+    },
+  };
+}
+
 export async function getVideoOptions(
   caller: PipelineCaller,
   user: {
@@ -37,8 +73,13 @@ export async function getVideoOptions(
     }),
     user.heygenKey
       ? safe(async () => {
-          const r = await caller.get<{ avatars: { avatar_id: string; avatar_name: string; preview_image_url?: string }[] }>("/api/heygen/avatars");
-          return (r.avatars ?? []).map((a) => ({ avatarId: a.avatar_id, name: a.avatar_name, preview: a.preview_image_url ?? null }));
+          const r = await caller.get<{ avatars: { avatar_id: string; avatar_name: string; preview_image_url?: string; is_public?: boolean }[] }>("/api/heygen/avatars");
+          return (r.avatars ?? []).map((a) => ({
+            avatarId: a.avatar_id,
+            name: a.avatar_name,
+            preview: a.preview_image_url ?? null,
+            isPublic: a.is_public === true,
+          }));
         })
       : Promise.resolve({ needsKey: true }),
     user.elevenlabsKey
@@ -55,9 +96,19 @@ export async function getVideoOptions(
       : Promise.resolve({ needsKey: true }),
   ]);
 
+  const compactAvatars = Array.isArray(avatars)
+    ? compactAvatarCatalog(avatars, user.heygenAvatarId)
+    : null;
+
   return {
     music,
-    avatars,
+    avatars: compactAvatars?.options ?? avatars,
+    avatarsMeta: compactAvatars?.meta ?? {
+      totalAvailable: null,
+      returned: 0,
+      truncated: false,
+      selection: "avatar catalog unavailable",
+    },
     savedAvatarId: user.heygenAvatarId ?? null,
     avatarModes: ["none", "full", "bookend", "bookend-both"] as const,
     voices: {
