@@ -12,16 +12,17 @@ type MockAvatar = {
   is_public?: boolean;
 };
 
-function mock(opts: { failVoices?: boolean; avatars?: MockAvatar[] } = {}): PipelineCaller {
+function mock(opts: { failVoices?: boolean; avatars?: MockAvatar[]; requestedPaths?: string[] } = {}): PipelineCaller {
   return {
     async get<T>(path: string): Promise<T> {
+      opts.requestedPaths?.push(path);
       if (path === "/api/music") {
         return {
           tracks: [{ id: "m1", title: "Lofi-RnB-Laid Back", filename: "chill.mp3" }],
           userTracks: [{ id: "um1", title: "Cinematic-Dramatic Custom", filename: "user-1.wav" }],
         } as T;
       }
-      if (path === "/api/heygen/avatars") return { avatars: opts.avatars ?? [{ avatar_id: "av1", avatar_name: "Host", preview_image_url: "p.jpg" }] } as T;
+      if (path === "/api/heygen/my-avatars") return { avatars: opts.avatars ?? [{ avatar_id: "av1", avatar_name: "Host", preview_image_url: "p.jpg" }] } as T;
       if (path === "/api/elevenlabs/voices") {
         if (opts.failVoices) throw new Error("GET /api/elevenlabs/voices → 500: boom");
         return { voices: [{ voice_id: "v1", name: "Rachel" }] } as T;
@@ -35,13 +36,15 @@ function mock(opts: { failVoices?: boolean; avatars?: MockAvatar[] } = {}): Pipe
 
 async function main() {
   const u = { heygenKey: "k", elevenlabsKey: "k", heygenAvatarId: "av1", geminiVoiceName: "Aoede", elevenlabsVoiceId: "v1" };
-  const o = await getVideoOptions(mock(), u);
+  const requestedPaths: string[] = [];
+  const o = await getVideoOptions(mock({ requestedPaths }), u);
   const moodTracks = "byMood" in o.music
     ? o.music.byMood.flatMap((bucket) => bucket.tracks)
     : [];
   assert(moodTracks.some((m) => m.bgmFile === "/music/chill.mp3" && m.title === "Lofi-RnB-Laid Back"), "music mapped to bgmFile path");
   assert(moodTracks.some((m) => m.bgmFile === "/api/music/user-1.wav" && m.title === "Cinematic-Dramatic Custom"), "user uploaded music mapped to api music bgmFile path");
   assert(Array.isArray(o.avatars) && (o.avatars as any[])[0].avatarId === "av1", "avatars mapped");
+  assert(requestedPaths.includes("/api/heygen/my-avatars") && !requestedPaths.includes("/api/heygen/avatars"), "MCP uses the fast own-avatar catalog, not the huge public catalog");
   assert(o.savedAvatarId === "av1", "saved avatar id surfaced");
   assert(Array.isArray(o.voices.gemini) && o.voices.gemini.length > 0, "gemini voices present (static)");
   assert(Array.isArray(o.voices.elevenlabs) && (o.voices.elevenlabs as any[])[0].voiceId === "v1", "elevenlabs voices mapped");

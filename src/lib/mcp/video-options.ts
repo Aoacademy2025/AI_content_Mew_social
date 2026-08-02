@@ -73,7 +73,12 @@ export async function getVideoOptions(
     }),
     user.heygenKey
       ? safe(async () => {
-          const r = await caller.get<{ avatars: { avatar_id: string; avatar_name: string; preview_image_url?: string; is_public?: boolean }[] }>("/api/heygen/avatars");
+          // The full /api/heygen/avatars endpoint includes HeyGen's entire public
+          // catalog (~1,000+ rows and tens of seconds on real accounts). MCP only
+          // needs the user's generation-ready looks, which is also what editor v2
+          // uses. The compaction below remains a fail-safe for unusually large own
+          // catalogs and duplicate provider rows.
+          const r = await caller.get<{ avatars: { avatar_id: string; avatar_name: string; preview_image_url?: string; is_public?: boolean }[] }>("/api/heygen/my-avatars");
           return (r.avatars ?? []).map((a) => ({
             avatarId: a.avatar_id,
             name: a.avatar_name,
