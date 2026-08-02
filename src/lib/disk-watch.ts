@@ -25,6 +25,12 @@ export type DiskWatchResult = {
   swept: SweepResult;
 };
 
+/** Invalid configuration must never silently disable the low-disk alarm. */
+export function normalizeDiskThreshold(value: unknown): number {
+  const parsed = Number(value ?? 80);
+  return Number.isFinite(parsed) && parsed >= 1 && parsed <= 100 ? parsed : 80;
+}
+
 /** Best-effort recursive size in MB; symlinks and unreadable entries count as 0. */
 export function entrySizeMb(target: string): number {
   try {
@@ -121,7 +127,7 @@ export async function runDiskWatch(opts?: {
   now?: number;
 }): Promise<DiskWatchResult> {
   const cwd = opts?.cwd ?? process.cwd();
-  const threshold = opts?.threshold ?? Number(process.env.DISK_ALERT_THRESHOLD ?? 80);
+  const threshold = normalizeDiskThreshold(opts?.threshold ?? process.env.DISK_ALERT_THRESHOLD);
   const now = opts?.now ?? Date.now();
 
   const pre = await getStorageHealth(cwd);

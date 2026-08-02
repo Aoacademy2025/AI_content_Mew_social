@@ -262,7 +262,7 @@ function verifyHookSource(value: string): void {
   assert.match(existing, /setRecoveryState\(\{\s*status:\s*"loading"\s*\}\)/);
   assert.match(existing, /setProjectReady\(false\)/);
   const idleIndex = existing.indexOf("await editorProjectSaveQueue.whenIdle(existingProjectId)");
-  const getIndex = existing.indexOf("await fetch(", idleIndex);
+  const getIndex = existing.indexOf("await authenticatedFetch(", idleIndex);
   const journalIndex = existing.indexOf("readEditorProjectRecoveryJournal", getIndex);
   const decisionIndex = existing.indexOf("decideEditorProjectBootstrap", journalIndex);
   assert.ok(idleIndex >= 0 && getIndex > idleIndex && journalIndex > getIndex && decisionIndex > journalIndex,

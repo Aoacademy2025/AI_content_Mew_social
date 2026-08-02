@@ -86,6 +86,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     : undefined;
   const heroVoiceVisible = HERO_VOICE_TEASER_VISIBLE || OMNIVOICE_UI_ENABLED || p.voiceEngine === "omnivoice";
   const [submitting, setSubmitting] = useState(false);
+  const [savingDefault, setSavingDefault] = useState<"voice" | "avatar" | null>(null);
   const [musicLibOpen, setMusicLibOpen] = useState(false);
   const avatarLib = useHeygenAvatars();
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
@@ -109,6 +110,36 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     if (submitting) return;
     setSubmitting(true);
     try { await onRender(); } finally { setSubmitting(false); }
+  }
+
+  async function saveVoiceDefault() {
+    if (!p.voiceId.trim() || savingDefault) return;
+    setSavingDefault("voice");
+    try {
+      await p.saveAccountVideoDefaults({
+        elevenlabsVoiceId: p.voiceId,
+        ttsProvider: p.voiceEngine,
+        geminiVoiceName: p.geminiVoiceName,
+      });
+      toast.success("บันทึกเสียงเริ่มต้นแล้ว — โปรเจกต์ใหม่จะใช้เสียงนี้");
+    } catch {
+      toast.error("บันทึกเสียงเริ่มต้นไม่สำเร็จ กรุณาลองอีกครั้ง");
+    } finally {
+      setSavingDefault(null);
+    }
+  }
+
+  async function saveAvatarDefault() {
+    if (!p.avatarId.trim() || savingDefault) return;
+    setSavingDefault("avatar");
+    try {
+      await p.saveAccountVideoDefaults({ heygenAvatarId: p.avatarId });
+      toast.success("บันทึกอวตารเริ่มต้นแล้ว — โปรเจกต์ใหม่จะใช้อวตารนี้");
+    } catch {
+      toast.error("บันทึกอวตารเริ่มต้นไม่สำเร็จ กรุณาลองอีกครั้ง");
+    } finally {
+      setSavingDefault(null);
+    }
   }
 
   // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
@@ -423,6 +454,19 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     </span>
                   )}
                 </label>
+                <button
+                  type="button"
+                  onClick={() => void saveVoiceDefault()}
+                  disabled={!p.voiceId.trim() || savingDefault !== null}
+                  className="min-h-11 self-start rounded-lg px-3 text-[11.5px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{
+                    color: color.primary300,
+                    background: color.selectedBg,
+                    border: `1px solid ${color.selectedBorder}`,
+                  }}
+                >
+                  {savingDefault === "voice" ? "กำลังบันทึก…" : "บันทึกเสียงนี้เป็นค่าเริ่มต้น"}
+                </button>
               </div>
             )}
           </Advanced>
@@ -534,6 +578,19 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   }}
                 />
               </label>
+              <button
+                type="button"
+                onClick={() => void saveAvatarDefault()}
+                disabled={!p.avatarId.trim() || savingDefault !== null}
+                className="min-h-11 self-start rounded-lg px-3 text-[11.5px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                style={{
+                  color: color.primary300,
+                  background: color.selectedBg,
+                  border: `1px solid ${color.selectedBorder}`,
+                }}
+              >
+                {savingDefault === "avatar" ? "กำลังบันทึก…" : "บันทึกอวตารนี้เป็นค่าเริ่มต้น"}
+              </button>
             </div>
           )}
           {!p.useAvatar && (

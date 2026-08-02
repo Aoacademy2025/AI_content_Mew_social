@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
+import { fetchClientJson } from "@/lib/client-request-cache";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
 
 /**
  * Minute-quota + credit-overflow domain — extracted verbatim from page.tsx
@@ -22,7 +24,7 @@ export function useCreditsQuota() {
   /** Start a Stripe checkout for a credit pack and redirect to it. */
   async function buyCredits(pack: "starter" | "popular" | "pro" = "popular") {
     try {
-      const res = await fetch("/api/payments/credits", {
+      const res = await authenticatedFetch("/api/payments/credits", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pack }),
@@ -47,7 +49,8 @@ export function useCreditsQuota() {
     if (!Number.isFinite(spent) || spent <= 0) return;
     let left: number | null = null;
     try {
-      const b = await fetch("/api/credits/balance").then(r => (r.ok ? r.json() : null));
+      const result = await fetchClientJson<{ total?: number }>("/api/credits/balance");
+      const b = result.ok ? result.data : null;
       left = typeof b?.total === "number" ? b.total : null;
     } catch { /* balance fetch is best-effort — still show the spend */ }
     toast(`ใช้ ${spent} เครดิต (฿${spent})${left != null ? ` · เหลือ ${left} เครดิต` : ""}`);

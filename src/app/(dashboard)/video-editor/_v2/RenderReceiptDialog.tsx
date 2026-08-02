@@ -23,6 +23,9 @@ import { PRESET_WEIGHTS, presetUsesAi } from "./mix-presets";
 import { costKeyForKieModel, creditCostFor, HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 import type { V2Project } from "./useV2Project";
+import { fetchClientJson } from "@/lib/client-request-cache";
+
+type CreditBalanceResponse = { total?: number; reserved?: number };
 
 export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }: {
   p: V2Project;
@@ -41,10 +44,10 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
     if (!open || !CREDITS_LIVE_CLIENT) return;
     let alive = true;
     setCredits(null);
-    fetch("/api/credits/balance")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((b) => {
+    fetchClientJson<CreditBalanceResponse>("/api/credits/balance")
+      .then((result) => {
         if (!alive) return;
+        const b = result.ok ? result.data : null;
         setCredits(typeof b?.total === "number"
           ? {
               available: b.total,

@@ -23,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { tokenizeWords } from "@/lib/tts-timing";
 import { limitsForPlan } from "@/lib/plan-limits";
 import { TTS_WORDS_PER_SECOND } from "@/lib/prompts/content-generator";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import type { HookChoice } from "./HookStep";
 
 const VIOLET = "#8B5CF6";
@@ -67,6 +68,10 @@ async function toastErrorResponse(
   let data: { error?: string; code?: string } | null = null;
   try { data = await res.json(); } catch { /* no body */ }
   if (res.status === 429) { toast.error(QUOTA_MESSAGE); return; }
+  if (res.status === 401) {
+    toast.error("เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง");
+    return;
+  }
   if (res.status === 409 && data?.code === "KEY_REQUIRED") {
     toast.error("ยังไม่ได้ตั้งค่า Gemini API key — ไปที่ Settings เพื่อเพิ่มคีย์");
     return;
@@ -180,12 +185,12 @@ export function ScriptEditorStep({
     setSaveState("saving");
     try {
       const res = rowId
-        ? await fetch(`/api/scripts/${rowId}`, {
+        ? await authenticatedFetch(`/api/scripts/${rowId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
           })
-        : await fetch("/api/scripts", {
+        : await authenticatedFetch("/api/scripts", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -239,7 +244,7 @@ export function ScriptEditorStep({
     if (!selectedHook || !topic.trim()) return;
     setGenerating(true);
     try {
-      const res = await fetch("/api/scripts/generate", {
+      const res = await authenticatedFetch("/api/scripts/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -282,7 +287,7 @@ export function ScriptEditorStep({
     if (!d) return;
     setRegenTarget(target);
     try {
-      const res = await fetch("/api/scripts/regen-section", {
+      const res = await authenticatedFetch("/api/scripts/regen-section", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -326,7 +331,7 @@ export function ScriptEditorStep({
     if (!d || !scriptId || sending) return;
     setSending(true);
     try {
-      const res = await fetch(`/api/scripts/${scriptId}/send-to-editor`, { method: "POST" });
+      const res = await authenticatedFetch(`/api/scripts/${scriptId}/send-to-editor`, { method: "POST" });
       if (!res.ok) {
         await toastErrorResponse(res, "ส่งไปตัดต่อไม่สำเร็จ", { onUpgrade: goToPricing });
         return;

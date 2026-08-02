@@ -14,6 +14,8 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
+import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
 
 interface Notification {
   id: string;
@@ -51,14 +53,49 @@ export function NotificationBell() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const pollerRef = useRef<ClientPoller | null>(null);
+  const openRef = useRef(open);
+
+  openRef.current = open;
 
   const unread = notifications.filter((n) => !n.read).length;
 
-  // Fetch on mount + every 30s
+  // Poll one request at a time. Hidden tabs pause; repeated failures back off.
   useEffect(() => {
-    fetchNotifications();
-    const id = setInterval(fetchNotifications, 30000);
-    return () => clearInterval(id);
+    let alive = true;
+    const poller = createClientPoller({
+      task: async (signal) => {
+        if (alive) setLoading(true);
+        try {
+          const res = await authenticatedFetch("/api/notifications", { signal });
+          if (!res.ok) throw new Error(`notifications_poll_${res.status}`);
+          const next = await res.json() as Notification[];
+          if (alive && !signal.aborted) setNotifications(next);
+        } finally {
+          if (alive && !signal.aborted) setLoading(false);
+        }
+      },
+      isActive: () => alive,
+      isVisible: () => document.visibilityState === "visible",
+      nextDelayMs: ({ isVisible, failures }) => {
+        if (!isVisible) return null;
+        return failures >= 3 ? 300_000 : openRef.current ? 15_000 : 60_000;
+      },
+    });
+    pollerRef.current = poller;
+    const wake = () => {
+      if (document.visibilityState === "visible") poller.wake();
+    };
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    poller.start();
+    return () => {
+      alive = false;
+      poller.stop();
+      if (pollerRef.current === poller) pollerRef.current = null;
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
   }, []);
 
   // Close panel on outside click
@@ -72,35 +109,27 @@ export function NotificationBell() {
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  async function fetchNotifications() {
-    setLoading(true);
-    try {
-      const res = await fetch("/api/notifications");
-      if (res.ok) setNotifications(await res.json());
-    } catch {
-      // network error or dev server not ready — fail silently
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function markAllRead() {
-    await fetch("/api/notifications", { method: "PATCH" });
+    const res = await authenticatedFetch("/api/notifications", { method: "PATCH" });
+    if (!res.ok) return;
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
   }
 
   async function clearAll() {
-    await fetch("/api/notifications", { method: "DELETE" });
+    const res = await authenticatedFetch("/api/notifications", { method: "DELETE" });
+    if (!res.ok) return;
     setNotifications([]);
   }
 
   async function dismissOne(id: string) {
-    await fetch(`/api/notifications/${id}`, { method: "DELETE" });
+    const res = await authenticatedFetch(`/api/notifications/${id}`, { method: "DELETE" });
+    if (!res.ok) return;
     setNotifications((prev) => prev.filter((n) => n.id !== id));
   }
 
   async function markOneRead(id: string) {
-    await fetch(`/api/notifications/${id}`, { method: "PATCH" });
+    const res = await authenticatedFetch(`/api/notifications/${id}`, { method: "PATCH" });
+    if (!res.ok) return;
     setNotifications((prev) => prev.map((n) => n.id === id ? { ...n, read: true } : n));
   }
 
@@ -115,7 +144,7 @@ export function NotificationBell() {
     <div className="relative" ref={panelRef}>
       {/* Bell button */}
       <button
-        onClick={() => { setOpen((v) => !v); if (!open) fetchNotifications(); }}
+        onClick={() => { setOpen((v) => !v); if (!open) pollerRef.current?.wake(); }}
         className="relative flex h-9 w-9 items-center justify-center rounded-xl transition-colors hover:bg-white/10"
         style={{ color: "var(--ui-sidebar-text)" }}
         aria-label="การแจ้งเตือน"

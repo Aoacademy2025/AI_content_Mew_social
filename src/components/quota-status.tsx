@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
+import { fetchClientJson } from "@/lib/client-request-cache";
 
 interface MinutesQuota {
   used: number;
@@ -60,11 +61,11 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
     let cancelled = false;
     function refreshBalances() {
       void Promise.all([
-        fetch("/api/videos/usage", { cache: "no-store" })
-          .then(r => r.ok ? r.json() as Promise<QuotaData> : null)
+        fetchClientJson<QuotaData>("/api/videos/usage", { cache: "no-store" })
+          .then(r => r.ok ? r.data : null)
           .catch(() => null),
-        fetch("/api/credits/balance", { cache: "no-store" })
-          .then(r => r.ok ? r.json() as Promise<CreditBalance> : null)
+        fetchClientJson<CreditBalance>("/api/credits/balance", { cache: "no-store" })
+          .then(r => r.ok ? r.data : null)
           .catch(() => null),
       ]).then(([nextQuota, nextCredits]) => {
         if (cancelled) return;

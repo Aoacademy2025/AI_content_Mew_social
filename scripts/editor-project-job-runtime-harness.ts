@@ -207,6 +207,35 @@ function compileJobHook(source: string): string {
   }).outputText;
 }
 
+function createImmediateClientPoller(options: {
+  task(signal: AbortSignal): Promise<void>;
+}) {
+  let running = false;
+  let controller: AbortController | null = null;
+  const run = () => {
+    if (!running || controller) return;
+    const current = new AbortController();
+    controller = current;
+    void options.task(current.signal).catch(() => {}).finally(() => {
+      if (controller === current) controller = null;
+    });
+  };
+  return {
+    start() { if (!running) { running = true; run(); } },
+    stop() { running = false; controller?.abort(); controller = null; },
+    wake() { run(); },
+    isRunning() { return running; },
+  };
+}
+
+function browserDocumentMock() {
+  return {
+    visibilityState: "visible",
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
+}
+
 function compileEditorShell(source: string): string {
   return ts.transpileModule(source, {
     compilerOptions: {
@@ -510,10 +539,19 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     "exports",
     "fetch",
     "window",
+    "document",
     "setInterval",
     "clearInterval",
     compileJobHook(source),
   );
+  const fetchRuntime = async (url: string, init: Record<string, unknown> = {}) => {
+    fetchCalls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      async json() { return { jobId: "unexpected-job" }; },
+    };
+  };
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
     if (specifier === "./mix-presets") return { PRESET_WEIGHTS: { free: {} } };
@@ -538,6 +576,12 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
         ].includes(String(value)),
       };
     }
+    if (specifier === "@/lib/authenticated-fetch") {
+      return { authenticatedFetch: fetchRuntime };
+    }
+    if (specifier === "@/lib/client-polling") {
+      return { createClientPoller: createImmediateClientPoller };
+    }
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -556,21 +600,17 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     requireMock,
     module,
     module.exports,
-    async (url: string, init: Record<string, unknown> = {}) => {
-      fetchCalls.push({ url, init });
-      return {
-        ok: true,
-        status: 200,
-        async json() { return { jobId: "unexpected-job" }; },
-      };
-    },
+    fetchRuntime,
     {
       localStorage: {
         getItem: () => null,
         setItem: (key: string) => storageOperations.push(`set:${key}`),
         removeItem: (key: string) => storageOperations.push(`remove:${key}`),
       },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
     },
+    browserDocumentMock(),
     () => ({}) as unknown,
     () => undefined,
   );
@@ -660,10 +700,36 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     "exports",
     "fetch",
     "window",
+    "document",
     "setInterval",
     "clearInterval",
     compileJobHook(source),
   );
+  const fetchRuntime = async (url: string, init: Record<string, unknown> = {}) => {
+    if (url !== "/api/videos/jobs" || init.method !== "POST") {
+      throw new Error(`unexpected fetch while submit is pending: ${url}`);
+    }
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    postBodies.push(body);
+    const key = typeof body.idempotencyKey === "string" ? body.idempotencyKey : null;
+    if (!committedIdempotencyKey) {
+      committedIdempotencyKey = key;
+      committedJobCount += 1;
+      return postResponse.promise;
+    }
+    assert.equal(key, committedIdempotencyKey, "an ambiguous retry reuses the committed attempt key");
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          jobId: "owned-job",
+          idempotencyKey: key,
+          idempotencyFingerprint: runtimeRequestFingerprint("preview", body),
+        };
+      },
+    };
+  };
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
     if (specifier === "./mix-presets") return { PRESET_WEIGHTS: { free: {} } };
@@ -684,6 +750,12 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     if (specifier === "@/lib/provider-errors") {
       return { isProviderErrorCode: (value: unknown) => ["invalid_key", "quota", "rate_limit", "transient", "fatal"].includes(String(value)) };
     }
+    if (specifier === "@/lib/authenticated-fetch") {
+      return { authenticatedFetch: fetchRuntime };
+    }
+    if (specifier === "@/lib/client-polling") {
+      return { createClientPoller: createImmediateClientPoller };
+    }
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -702,38 +774,17 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     requireMock,
     module,
     module.exports,
-    async (url: string, init: Record<string, unknown> = {}) => {
-      if (url !== "/api/videos/jobs" || init.method !== "POST") {
-        throw new Error(`unexpected fetch while submit is pending: ${url}`);
-      }
-      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-      postBodies.push(body);
-      const key = typeof body.idempotencyKey === "string" ? body.idempotencyKey : null;
-      if (!committedIdempotencyKey) {
-        committedIdempotencyKey = key;
-        committedJobCount += 1;
-        return postResponse.promise;
-      }
-      assert.equal(key, committedIdempotencyKey, "an ambiguous retry reuses the committed attempt key");
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return {
-            jobId: "owned-job",
-            idempotencyKey: key,
-            idempotencyFingerprint: runtimeRequestFingerprint("preview", body),
-          };
-        },
-      };
-    },
+    fetchRuntime,
     {
       localStorage: {
         getItem: () => null,
         setItem: () => undefined,
         removeItem: () => undefined,
       },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
     },
+    browserDocumentMock(),
     () => ({}) as unknown,
     () => undefined,
   );
@@ -839,6 +890,7 @@ function mountAttemptJobHook(
     "exports",
     "fetch",
     "window",
+    "document",
     "setInterval",
     "clearInterval",
     compileJobHook(source),
@@ -862,6 +914,12 @@ function mountAttemptJobHook(
     }
     if (specifier === "@/lib/provider-errors") {
       return { isProviderErrorCode: (value: unknown) => ["invalid_key", "quota", "rate_limit", "transient", "fatal"].includes(String(value)) };
+    }
+    if (specifier === "@/lib/authenticated-fetch") {
+      return { authenticatedFetch: fetchImpl };
+    }
+    if (specifier === "@/lib/client-polling") {
+      return { createClientPoller: createImmediateClientPoller };
     }
     throw new Error(`unhandled attempt job hook import: ${specifier}`);
   };
@@ -888,7 +946,10 @@ function mountAttemptJobHook(
         setItem: () => undefined,
         removeItem: () => undefined,
       },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
     },
+    browserDocumentMock(),
     () => ({}) as unknown,
     () => undefined,
   );

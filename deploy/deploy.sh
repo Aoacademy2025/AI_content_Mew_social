@@ -11,6 +11,17 @@ REPO_URL="https://github.com/Aoacademy2025/AI_content_Mew_social.git"
 APP_NAME="ai-content"
 DEFAULT_BRANCH="${DEPLOY_BRANCH:-main}"
 MIGRATE="${SKIP_DB_MIGRATE:-0}"
+DEPLOY_HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:3000/api/health}"
+DEPLOY_HEALTH_TIMEOUT_SEC="${DEPLOY_HEALTH_TIMEOUT_SEC:-90}"
+DEPLOY_HEALTH_INTERVAL_SEC="${DEPLOY_HEALTH_INTERVAL_SEC:-3}"
+
+for numeric_setting in DEPLOY_HEALTH_TIMEOUT_SEC DEPLOY_HEALTH_INTERVAL_SEC; do
+  numeric_value="${!numeric_setting}"
+  if [[ ! "$numeric_value" =~ ^[0-9]+$ ]] || [ "$numeric_value" -lt 1 ]; then
+    echo "ERROR: ${numeric_setting} must be a positive integer"
+    exit 1
+  fi
+done
 
 # Build tuning for low-memory VPS
 BUILD_HEAP_MB="${BUILD_HEAP_MB:-12000}"
@@ -192,6 +203,11 @@ fi
 echo "=== [5c/6] Atomic swap .next-staging -> .next ==="
 # .next.old is kept until the next deploy as a manual rollback
 # (mv .next.old .next && pm2 restart ai-content); costs a few hundred MB.
+ROLLBACK_STATIC_MANIFEST="$APP_DIR/.next-static-manifest.rollback"
+rm -f "$ROLLBACK_STATIC_MANIFEST"
+if [ -f "$APP_DIR/.next-static-manifest" ]; then
+  cp -p "$APP_DIR/.next-static-manifest" "$ROLLBACK_STATIC_MANIFEST"
+fi
 rm -rf "$APP_DIR/.next.old"
 if [ -d "$APP_DIR/.next" ]; then
   mv "$APP_DIR/.next" "$APP_DIR/.next.old"
@@ -213,7 +229,65 @@ restart_from_ecosystem() {
   fi
 }
 
-restart_from_ecosystem "$APP_NAME"
+wait_for_web_health() {
+  local deadline=$((SECONDS + DEPLOY_HEALTH_TIMEOUT_SEC))
+  echo "Waiting up to ${DEPLOY_HEALTH_TIMEOUT_SEC}s for ${DEPLOY_HEALTH_URL}"
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if curl --fail --silent --show-error --max-time 5 "$DEPLOY_HEALTH_URL" > /dev/null; then
+      echo "OK: web health check passed"
+      return 0
+    fi
+    sleep "$DEPLOY_HEALTH_INTERVAL_SEC"
+  done
+  echo "ERROR: web health check did not recover before timeout"
+  return 1
+}
+
+rollback_web_build() {
+  if [ ! -d "$APP_DIR/.next.old" ]; then
+    echo "ERROR: no prior .next build is available for automatic rollback"
+    return 1
+  fi
+
+  local failed_build_dir
+  failed_build_dir="$APP_DIR/.next.failed-$(date -u +%Y%m%dT%H%M%SZ)"
+  if [ -e "$failed_build_dir" ]; then
+    failed_build_dir="${failed_build_dir}-$$"
+  fi
+  echo "Rolling web build back; failed release retained at ${failed_build_dir}"
+  mv "$APP_DIR/.next" "$failed_build_dir"
+  mv "$APP_DIR/.next.old" "$APP_DIR/.next"
+  if [ -f "$ROLLBACK_STATIC_MANIFEST" ]; then
+    mv "$ROLLBACK_STATIC_MANIFEST" "$APP_DIR/.next-static-manifest"
+  else
+    rm -f "$APP_DIR/.next-static-manifest"
+  fi
+  restart_from_ecosystem "$APP_NAME"
+}
+
+# Gate worker restarts on web+DB health. If the new build cannot start, restore
+# the previous .next while the existing workers are still running their prior
+# in-memory code, then verify that rollback before returning a failed deploy.
+release_failed=0
+if ! restart_from_ecosystem "$APP_NAME"; then
+  echo "ERROR: PM2 could not start the new web build"
+  release_failed=1
+elif ! wait_for_web_health; then
+  release_failed=1
+fi
+if [ "$release_failed" = "1" ]; then
+  if ! rollback_web_build; then
+    echo "ERROR: new web build failed health and automatic rollback was unavailable"
+    exit 1
+  fi
+  if ! wait_for_web_health; then
+    echo "ERROR: the prior web build also failed health after rollback"
+    exit 1
+  fi
+  echo "ERROR: release failed health; prior web build was restored successfully"
+  exit 1
+fi
+rm -f "$ROLLBACK_STATIC_MANIFEST"
 
 # The MCP async video worker runs the pipeline (orchestrator/pipeline-client) in
 # a SEPARATE process. A deploy that ships new pipeline code to ai-content would
@@ -237,7 +311,6 @@ RUNPOD_IMAGE_COST_SYNC_NAME="runpod-image-cost-sync"
 restart_from_ecosystem "$RUNPOD_IMAGE_COST_SYNC_NAME"
 
 pm2 save
-pm2 startup
 
 # STAB-1 self-check: verify PM2 reboot-resurrection is actually armed. `pm2 save` above
 # only persists the process list; the systemd UNIT that replays it on boot is registered

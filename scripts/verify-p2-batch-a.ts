@@ -152,7 +152,7 @@ function verifyEcosystemLoadsDotEnvContract(): void {
   const source = readFileSync("ecosystem.config.js", "utf8");
   const processBox = { env: {} as Record<string, string> };
   const moduleBox = { exports: {} as { apps?: Array<{ name: string; env?: Record<string, string> }> } };
-  let loadedPath: string | null = null;
+  const loadedPaths: string[] = [];
   runInNewContext(source, {
     __dirname: "/srv/ai-content",
     module: moduleBox,
@@ -164,17 +164,23 @@ function verifyEcosystemLoadsDotEnvContract(): void {
       if (id === "dotenv") {
         return {
           config(options: { path?: string }) {
-            loadedPath = options.path ?? null;
-            processBox.env.MCP_SERVICE_SECRET = "secret-loaded-from-dotenv";
-            return { parsed: { MCP_SERVICE_SECRET: processBox.env.MCP_SERVICE_SECRET } };
+            const loadedPath = options.path ?? "";
+            loadedPaths.push(loadedPath);
+            if (loadedPath === "/srv/ai-content/.env") {
+              processBox.env.MCP_SERVICE_SECRET = "secret-loaded-from-dotenv";
+              return { parsed: { MCP_SERVICE_SECRET: processBox.env.MCP_SERVICE_SECRET } };
+            }
+            return { parsed: {} };
           },
         };
       }
       throw new Error(`unexpected require: ${id}`);
     },
   });
-  assert.equal(loadedPath, "/srv/ai-content/.env",
-    "ecosystem config loads the deployment .env before resolving process-backed secrets");
+  assert.deepEqual(loadedPaths, [
+    "/srv/ai-content/.env",
+    "/srv/ai-content/.env.r2.production",
+  ], "ecosystem loads the deployment .env before the separate R2 allowlist file");
   const worker = moduleBox.exports.apps?.find((entry) => entry.name === "mcp-video-worker");
   assert.equal(worker?.env?.MCP_SERVICE_SECRET, "secret-loaded-from-dotenv",
     "PM2 environment replacement cannot blank the MCP service secret stored in .env");

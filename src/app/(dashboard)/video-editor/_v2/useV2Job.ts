@@ -12,6 +12,8 @@ import {
   fingerprintVideoJobRequest,
   type VideoJobOperation,
 } from "@/lib/video-job-idempotency";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
+import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -145,7 +147,7 @@ function storedJobId(projectId: string | null | undefined): string | null {
 
 export function useV2Job(p: V2Project) {
   const [job, setJob] = useState<V2JobState>(IDLE);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ClientPoller | null>(null);
   const jobIdRef = useRef<string | null>(null);
   const lastPreviewJobIdRef = useRef<string | null>(null);
   const pollGenerationRef = useRef(0);
@@ -160,7 +162,8 @@ export function useV2Job(p: V2Project) {
 
   const stopPolling = useCallback(() => {
     pollGenerationRef.current += 1;
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    pollRef.current?.stop();
+    pollRef.current = null;
   }, []);
 
   const applyStatus = useCallback((d: {
@@ -196,9 +199,14 @@ export function useV2Job(p: V2Project) {
     }
   }, [stopPolling]);
 
-  const pollOnce = useCallback(async (jobId: string, generation: number, requestId: number) => {
+  const pollOnce = useCallback(async (
+    jobId: string,
+    generation: number,
+    requestId: number,
+    signal: AbortSignal,
+  ) => {
     try {
-      const res = await fetch(`/api/videos/jobs/${encodeURIComponent(jobId)}`);
+      const res = await authenticatedFetch(`/api/videos/jobs/${encodeURIComponent(jobId)}`, { signal });
       if (!pollResponseIsCurrent({
         responseGeneration: generation,
         currentGeneration: pollGenerationRef.current,
@@ -214,7 +222,7 @@ export function useV2Job(p: V2Project) {
         setJob(IDLE);
         return;
       }
-      if (!res.ok) return; // transient — คง state เดิม รอรอบถัดไป
+      if (!res.ok) throw new Error(`video_job_poll_${res.status}`);
       const d = await res.json();
       if (!pollResponseIsCurrent({
         responseGeneration: generation,
@@ -226,20 +234,45 @@ export function useV2Job(p: V2Project) {
       })) return;
       lastAppliedPollRequestRef.current = requestId;
       applyStatus(d);
-    } catch { /* transient network — รอรอบถัดไป */ }
+    } catch (error) {
+      if (signal.aborted) return;
+      throw error;
+    }
   }, [applyStatus, p.projectId, stopPolling]);
 
   const startPolling = useCallback((jobId: string) => {
     stopPolling();
     jobIdRef.current = jobId;
     const generation = pollGenerationRef.current;
-    const request = () => {
-      const requestId = ++pollRequestSequenceRef.current;
-      void pollOnce(jobId, generation, requestId);
-    };
-    request();
-    pollRef.current = setInterval(request, POLL_MS);
+    const poller = createClientPoller({
+      task: (signal) => {
+        const requestId = ++pollRequestSequenceRef.current;
+        return pollOnce(jobId, generation, requestId, signal);
+      },
+      isActive: () => (
+        generation === pollGenerationRef.current
+        && jobIdRef.current === jobId
+      ),
+      isVisible: () => document.visibilityState === "visible",
+      nextDelayMs: ({ isVisible, failures }) => (
+        failures >= 3 ? 30_000 : isVisible ? POLL_MS : 30_000
+      ),
+    });
+    pollRef.current = poller;
+    poller.start();
   }, [pollOnce, stopPolling]);
+
+  useEffect(() => {
+    const wake = () => {
+      if (document.visibilityState === "visible") pollRef.current?.wake();
+    };
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
+  }, []);
 
   // Resume from the server project row first. localStorage is only a per-project fallback
   // for older/in-flight rows that predate activeJobId/activeExportJobId wiring.
@@ -340,7 +373,7 @@ export function useV2Job(p: V2Project) {
       let retryAmbiguous = true;
       try {
         attempt.idempotencyFingerprint ??= await attempt.fingerprintPromise;
-        const res = await fetch("/api/videos/jobs", {
+        const res = await authenticatedFetch("/api/videos/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(attempt.body),
@@ -427,7 +460,7 @@ export function useV2Job(p: V2Project) {
         lastPreviewJobIdRef.current = typeof attempt.body.sourceJobId === "string"
           ? attempt.body.sourceJobId
           : input.sourceJobId;
-        const res = await fetch("/api/videos/jobs", {
+        const res = await authenticatedFetch("/api/videos/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(attempt.body),
@@ -471,7 +504,7 @@ export function useV2Job(p: V2Project) {
     const id = jobIdRef.current ?? job.jobId;
     if (!id) return { ok: false };
     try {
-      const res = await fetch(`/api/videos/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const res = await authenticatedFetch(`/api/videos/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
       if (res.ok) {
         stopPolling();
         const keyProjectId = job.projectId ?? p.projectId;

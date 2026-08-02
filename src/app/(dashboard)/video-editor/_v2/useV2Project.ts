@@ -42,6 +42,12 @@ import {
   type TtsProvider,
 } from "@/lib/tts-providers";
 import { useOmniVoiceAvailability } from "../_hooks/useOmniVoiceAvailability";
+import {
+  saveVideoAccountDefaults,
+  type VideoAccountDefaultsPatch,
+} from "@/lib/video-account-defaults";
+import { fetchClientJson } from "@/lib/client-request-cache";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
 
 const DRAFT_KEY = "editor-v2-project";
 const PROJECT_ID_KEY = "editor-v2-project-id";
@@ -225,7 +231,7 @@ function loadDraft(): V2Draft | null {
 }
 
 async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
-  const res = await fetch("/api/user/brand-assets", { cache: "no-store" });
+  const res = await authenticatedFetch("/api/user/brand-assets", { cache: "no-store" });
   if (!res.ok) throw new Error("account defaults unavailable");
   const data = await res.json();
   return normalizeLogoOverlayConfig(data?.defaultLogo?.config);
@@ -239,7 +245,7 @@ type AccountVideoDefaults = {
 };
 
 async function loadAccountVideoDefaults(): Promise<AccountVideoDefaults> {
-  const res = await fetch("/api/user/video-settings", { cache: "no-store" });
+  const res = await authenticatedFetch("/api/user/video-settings", { cache: "no-store" });
   if (!res.ok) throw new Error("account video defaults unavailable");
   const data = await res.json();
   return {
@@ -282,7 +288,7 @@ async function saveEditorProjectDraft(
   signal: AbortSignal,
 ): Promise<EditorProjectDraftAttemptResult> {
   try {
-    const res = await fetch(`/api/editor-projects/${encodeURIComponent(snapshot.projectId)}`, {
+    const res = await authenticatedFetch(`/api/editor-projects/${encodeURIComponent(snapshot.projectId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -326,7 +332,7 @@ async function loadAuthoritativeEditorProjectDraft(
   project: Record<string, unknown>;
 } | null> {
   try {
-    const response = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+    const response = await authenticatedFetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
       cache: "no-store",
       signal,
     });
@@ -911,7 +917,7 @@ export function useV2Project() {
       setRecoveryState({ status: "load-error", message: "สร้างโปรเจกต์ไม่สำเร็จ กรุณาลองใหม่" });
     };
     try {
-      const res = await fetch("/api/editor-projects", {
+      const res = await authenticatedFetch("/api/editor-projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: draft.projectTitle ?? DEFAULT_PROJECT.projectTitle, draft }),
@@ -1121,7 +1127,7 @@ export function useV2Project() {
         if (!isCurrentBootstrap()) return;
         let response: Response | null = null;
         try {
-          response = await fetch(
+          response = await authenticatedFetch(
             `/api/editor-projects/${encodeURIComponent(existingProjectId)}`,
             { cache: "no-store", signal: controller.signal },
           );
@@ -1135,7 +1141,7 @@ export function useV2Project() {
           const staleProjectId = existingProjectId;
           let listResponse: Response | null = null;
           try {
-            listResponse = await fetch("/api/editor-projects", {
+            listResponse = await authenticatedFetch("/api/editor-projects", {
               cache: "no-store",
               signal: controller.signal,
             });
@@ -1169,7 +1175,7 @@ export function useV2Project() {
             for (const fallbackId of fallbackIds) {
               let candidateResponse: Response | null = null;
               try {
-                candidateResponse = await fetch(
+                candidateResponse = await authenticatedFetch(
                   `/api/editor-projects/${encodeURIComponent(fallbackId)}`,
                   { cache: "no-store", signal: controller.signal },
                 );
@@ -1423,7 +1429,7 @@ export function useV2Project() {
       && recoveryRef.current.status === "conflict"
       && recoveryRef.current.local === conflict.local);
     try {
-      const response = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+      const response = await authenticatedFetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
         cache: "no-store",
         signal: ownership.signal,
       });
@@ -1524,7 +1530,7 @@ export function useV2Project() {
       && recoveryRef.current.server === conflict.server
       && recoveryRef.current.resolving === "local";
     try {
-      const res = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+      const res = await authenticatedFetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1674,7 +1680,7 @@ export function useV2Project() {
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
-    fetch("/api/user/video-settings").then(r => r.json()).then(s => {
+    authenticatedFetch("/api/user/video-settings").then(r => r.json()).then(s => {
       if (!accountDraftDefaultsAllowedRef.current) return;
       const hadDraft = Object.keys(draftRef.current).length > 0;
       if (!hadDraft) {
@@ -1688,7 +1694,7 @@ export function useV2Project() {
         if (s.elevenlabsVoiceId && !draftRef.current.voiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
       }
     }).catch(() => {});
-    fetch("/api/videos/usage").then(r => (r.ok ? r.json() : null)).then(u => {
+    fetchClientJson<V2Usage>("/api/videos/usage").then(r => r.ok ? r.data : null).then(u => {
       if (u) setUsage(u);
     }).catch(() => {});
     fetchMe().then(m => {
@@ -1972,7 +1978,7 @@ export function useV2Project() {
     if (!avatarId.trim()) { setAvatarInfo(null); return; }
     let alive = true;
     const t = setTimeout(() => {
-      fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(avatarId.trim())}`)
+      authenticatedFetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(avatarId.trim())}`)
         .then(r => (r.ok ? r.json() : null))
         .then(d => { if (alive && d) setAvatarInfo({ name: d.name, previewUrl: d.previewImageUrl || d.previewUrl }); })
         .catch(() => { if (alive) setAvatarInfo(null); });
@@ -1984,7 +1990,7 @@ export function useV2Project() {
   useEffect(() => {
     if (voiceEngine !== "elevenlabs" || elevenVoices !== null) return;
     let alive = true;
-    fetch("/api/elevenlabs/voices")
+    authenticatedFetch("/api/elevenlabs/voices")
       .then(r => (r.ok ? r.json() : null))
       .then(d => { if (alive && Array.isArray(d?.voices)) setElevenVoices(d.voices); })
       .catch(() => {});
@@ -1994,7 +2000,7 @@ export function useV2Project() {
   useEffect(() => {
     if (!omniVoiceEnabled || voiceEngine !== "omnivoice" || omniVoices !== null) return;
     let alive = true;
-    fetch("/api/omnivoice/voices")
+    authenticatedFetch("/api/omnivoice/voices")
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
       .then((data) => { if (alive) setOmniVoices(Array.isArray(data) ? data : []); })
       .catch(() => { if (alive) setOmniVoices([]); });
@@ -2002,6 +2008,10 @@ export function useV2Project() {
   }, [omniVoiceEnabled, voiceEngine, omniVoices]);
 
   const retryOmniVoices = useCallback(() => setOmniVoices(null), []);
+  const saveAccountVideoDefaults = useCallback(
+    (patch: VideoAccountDefaultsPatch) => saveVideoAccountDefaults(patch),
+    [],
+  );
 
   return {
     projectTitle, setProjectTitle,
@@ -2033,7 +2043,7 @@ export function useV2Project() {
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,
-    canRunProjectOperation,
+    canRunProjectOperation, saveAccountVideoDefaults,
   };
 }
 

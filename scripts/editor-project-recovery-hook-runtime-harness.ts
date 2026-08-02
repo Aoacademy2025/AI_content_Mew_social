@@ -7,6 +7,7 @@ import * as logoOverlayModule from "../src/lib/logo-overlay";
 import * as lineageModule from "../src/lib/editor-project-autosave-lineage";
 import * as ttsProvidersModule from "../src/lib/tts-providers";
 import * as editorLayerVisibilityModule from "../src/lib/editor-layer-visibility";
+import * as editorDefaultDraftModule from "../src/lib/editor-default-draft";
 import {
   createEditorProjectSaveQueue,
   type EditorProjectSaveInput,
@@ -498,6 +499,7 @@ function createHarness(options: HarnessOptions = {}) {
         presetBrollSource: (preset: string) => preset === "free" ? "stock" : "automix",
       };
     }
+    if (specifier === "@/lib/editor-default-draft") return editorDefaultDraftModule;
     if (specifier === "@/lib/editor-project-save-queue") return { editorProjectSaveQueue: queue };
     if (specifier === "@/lib/editor-project-bootstrap") return bootstrapModule;
     if (specifier === "@/lib/editor-project-recovery-journal") return journalModule;
@@ -508,6 +510,17 @@ function createHarness(options: HarnessOptions = {}) {
     if (specifier === "@/lib/editor-layer-visibility") return editorLayerVisibilityModule;
     // Pure module — run the real parser so the harness sees production voice-engine coercion.
     if (specifier === "@/lib/tts-providers") return ttsProvidersModule;
+    if (specifier === "@/lib/video-account-defaults") {
+      return { saveVideoAccountDefaults: async () => ({ ok: true }) };
+    }
+    if (specifier === "@/lib/client-request-cache") {
+      return {
+        fetchClientJson: async () => ({ ok: true, status: 200, data: null }),
+      };
+    }
+    if (specifier === "@/lib/authenticated-fetch") {
+      return { authenticatedFetch: fetchMock.fetch };
+    }
     // The canary hook is a network gate, not project lifecycle: stub it to the value the real
     // hook returns when NEXT_PUBLIC_OMNIVOICE_ENABLED is unset (the CI/build default).
     if (specifier === "../_hooks/useOmniVoiceAvailability") {
