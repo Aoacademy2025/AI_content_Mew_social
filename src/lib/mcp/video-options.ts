@@ -23,10 +23,19 @@ function compactAvatarCatalog(
 ) {
   const unique = [...new Map(avatars.map((avatar) => [avatar.avatarId, avatar])).values()];
   const saved = savedAvatarId ? unique.find((avatar) => avatar.avatarId === savedAvatarId) : undefined;
+  // HeyGen's own-avatar group endpoint can omit a still-generation-ready saved
+  // default (notably some Instant Avatar variants). Keep that known-good ID in
+  // the MCP menu even when provider metadata/preview is unavailable.
+  const savedOption = saved ?? (savedAvatarId ? {
+    avatarId: savedAvatarId,
+    name: "Saved avatar (default)",
+    preview: null,
+    isPublic: false,
+  } : undefined);
   const privateAvatars = unique.filter((avatar) => !avatar.isPublic && avatar.avatarId !== savedAvatarId);
   const publicAvatars = unique.filter((avatar) => avatar.isPublic && avatar.avatarId !== savedAvatarId);
   const options = [
-    ...(saved ? [{ ...saved, saved: true }] : []),
+    ...(savedOption ? [{ ...savedOption, saved: true }] : []),
     ...privateAvatars.map((avatar) => ({ ...avatar, saved: false })),
     ...publicAvatars.map((avatar) => ({ ...avatar, saved: false })),
   ].slice(0, limit);
@@ -34,10 +43,10 @@ function compactAvatarCatalog(
   return {
     options,
     meta: {
-      totalAvailable: unique.length,
+      totalAvailable: unique.length + (savedAvatarId && !saved ? 1 : 0),
       returned: options.length,
-      truncated: unique.length > options.length,
-      selection: "saved avatar first, then custom avatars, then public examples",
+      truncated: unique.length + (savedAvatarId && !saved ? 1 : 0) > options.length,
+      selection: "saved avatar first, then the user's own avatars",
     },
   };
 }

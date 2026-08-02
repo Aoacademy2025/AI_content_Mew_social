@@ -87,6 +87,19 @@ async function main() {
   assert(compact.avatarsMeta.totalAvailable === 260 && compact.avatarsMeta.truncated === true, "avatar catalog metadata reports unique total and truncation");
   assert(JSON.stringify(compact).length < 20_000, "get_video_options result stays comfortably below MCP client limits");
 
+  const missingSaved = await getVideoOptions(mock({ avatars: manyAvatars }), {
+    ...u,
+    heygenAvatarId: "saved-not-returned-by-own-catalog",
+  });
+  const missingSavedAvatars = missingSaved.avatars as Array<{ avatarId: string; saved?: boolean; preview?: string | null }>;
+  assert(
+    missingSavedAvatars[0]?.avatarId === "saved-not-returned-by-own-catalog"
+      && missingSavedAvatars[0]?.saved === true
+      && missingSavedAvatars[0]?.preview === null,
+    "saved default remains the first selectable option when the provider own-avatar endpoint omits it",
+  );
+  assert(missingSaved.avatarsMeta.totalAvailable === 261, "saved fallback is included in catalog totals");
+
   console.log(`\n${passed} assertions passed ✅`);
 }
 
