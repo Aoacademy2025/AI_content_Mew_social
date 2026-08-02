@@ -126,6 +126,10 @@ assert(
   productionCards.every((card) => !/^[\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]/u.test(card.text)),
   "mode 2 cards remain grapheme-safe with the production compound catalog",
 );
+assert(
+  productionCards.some((card) => card.text === "และนำไปใช้งานจริงได้"),
+  "production compound overlap keeps the closing ใช้งานจริงได้ phrase together",
+);
 setDynamicCompounds([], []);
 
 console.log(`\n${passed} assertions passed ✅`);
