@@ -149,7 +149,13 @@ function wordBoundaries(fullText: string): number[] {
   for (const tok of seg.segment(fullText)) {
     if (tok.index > 0 && isValidThaiWordStart(fullText, tok.index) && !insideLoanword(tok.index)) set.add(tok.index);
   }
-  for (const s of spans) { if (s.start > 0) set.add(s.start); if (s.end < fullText.length) set.add(s.end); }
+  // Defense in depth: loanwordSpans already rejects unsafe substring
+  // occurrences, but no catalog entry may force a token edge before a Thai
+  // combining/garan cluster even if a future span source bypasses that guard.
+  for (const s of spans) {
+    if (s.start > 0 && isValidThaiWordStart(fullText, s.start)) set.add(s.start);
+    if (s.end < fullText.length && isValidThaiWordStart(fullText, s.end)) set.add(s.end);
+  }
   return [...set].sort((a, b) => a - b);
 }
 

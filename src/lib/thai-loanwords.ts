@@ -118,6 +118,21 @@ export function getActiveLoanwords(): string[] {
 
 export interface LoanwordSpan { start: number; end: number; }
 
+// A dynamic/admin-approved entry can be valid in isolation but unsafe at a
+// particular substring occurrence. Example: "งานจร" inside "งานจริง" ends
+// immediately before ◌ิ. Forcing that edge would make the next word/card start
+// with a Thai combining mark. Mirror the tokenizer's grapheme boundary guard
+// here so unsafe occurrences never enter the overlap merge in the first place.
+function isSafeThaiTokenStart(text: string, index: number): boolean {
+  if (index <= 0 || index >= text.length) return true;
+  const code = text.charCodeAt(index);
+  const leftBindingMark = code === 0x0e31
+    || (code >= 0x0e33 && code <= 0x0e3a)
+    || (code >= 0x0e47 && code <= 0x0e4e);
+  if (leftBindingMark) return false;
+  return text[index + 1] !== "์";
+}
+
 // All non-overlapping occurrences of any loanword OR curated native compound in
 // `text`. Compounds (thai-compounds.ts) flow through this exact same merge so they
 // stay whole in wordBoundaries on both the MCP + web paths — see getActiveCompounds.
@@ -130,7 +145,10 @@ export function loanwordSpans(text: string): LoanwordSpan[] {
     let from = 0;
     let idx: number;
     while ((idx = text.indexOf(w, from)) !== -1) {
-      raw.push({ start: idx, end: idx + w.length });
+      const end = idx + w.length;
+      if (isSafeThaiTokenStart(text, idx) && isSafeThaiTokenStart(text, end)) {
+        raw.push({ start: idx, end });
+      }
       from = idx + w.length;
     }
   }

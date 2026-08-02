@@ -2,6 +2,8 @@
 // Thai glued, "ๆ"/script/English spaces preserved), timing untouched (sync unchanged).
 //   DATABASE_URL="file:$(pwd)/prisma/dev.db" npx tsx scripts/verify-subtitle-cards.ts
 import { cardsByWordCount, POSITION_TOP_PERCENT } from "../src/lib/mcp/orchestrator-steps";
+import { setDynamicCompounds } from "../src/lib/thai-compounds";
+import { tokenizeWords } from "../src/lib/tts-timing";
 let passed = 0; function assert(c: boolean, m: string){ if(!c){console.error("❌ "+m);process.exit(1);} console.log("✓ "+m); passed++; }
 
 // Original text: Thai words run together (no spaces), but a space before "ๆ" and around "HERO".
@@ -104,5 +106,26 @@ assert(
   avatarQaCards.some((card) => card.text === "ใช้งานจริงได้"),
   "mode 2 never strands final ได้ on its own card",
 );
+
+// Production's approved-compound catalog contained overlapping entries
+// "นำไปใช้" + "ใช้งาน" + "งานจร". The last occurrence inside "งานจริง"
+// ended immediately before ◌ิ, which previously forced the next token/card to
+// begin with a combining mark and correctly tripped the release gate.
+setDynamicCompounds(["วันนี้", "ใช้งาน", "งานจร", "นำไปใช้"], []);
+const productionWords = tokenizeWords(avatarQaText).map((word, index) => ({
+  ...word,
+  startMs: index * 300,
+  endMs: index * 300 + 280,
+}));
+const productionCards = cardsByWordCount(productionWords, 2, avatarQaText);
+assert(
+  productionWords.every((word) => !/^[\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]/u.test(word.word)),
+  "dynamic compound matches never create a token that starts with a Thai combining mark",
+);
+assert(
+  productionCards.every((card) => !/^[\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]/u.test(card.text)),
+  "mode 2 cards remain grapheme-safe with the production compound catalog",
+);
+setDynamicCompounds([], []);
 
 console.log(`\n${passed} assertions passed ✅`);
