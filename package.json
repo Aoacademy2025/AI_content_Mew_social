@@ -46,6 +46,7 @@
     "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts",
     "verify:render-duration-bill": "tsx scripts/verify-render-duration-bill.ts",
     "verify:mcp-parity": "tsx scripts/verify-mcp-parity.ts",
+    "verify:mcp-perfect": "tsx scripts/verify-mcp-create-input.ts && tsx scripts/verify-orchestrator-timing-fallback.ts && tsx scripts/verify-mcp-billing-receipt.ts && tsx scripts/verify-mcp-release-gates.ts",
     "verify:editor-projects": "tsx scripts/verify-editor-projects.ts",
     "verify:editor-job-runtime": "tsx scripts/verify-editor-project-recovery-hook.ts",
     "verify:editor-preview-layout": "tsx scripts/verify-editor-preview-layout.ts",

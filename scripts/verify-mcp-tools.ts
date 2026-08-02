@@ -4,7 +4,7 @@
 //   DATABASE_URL="file:$ROOT/prisma/test-mcp.db?connection_limit=1" npx tsx scripts/verify-mcp-tools.ts
 import { prisma } from "../src/lib/prisma";
 import {
-  getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
+  getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoJobStatusTool, getVideoTool, downloadVideoTool,
 } from "../src/lib/mcp/tools";
 
 let passed = 0;
@@ -43,6 +43,43 @@ async function main() {
   const st = await getVideoStatusTool(alice.id, done.id);
   assert(st.found && st.status === "COMPLETED" && st.hasDownload === true, "get_video_status: owner sees COMPLETED");
   assert((await getVideoStatusTool(alice.id, bobVideo.id)).found === false, "get_video_status denies cross-user");
+
+  const completedJob = await prisma.videoJob.create({
+    data: {
+      userId: alice.id,
+      status: "done",
+      progress: 100,
+      inputJson: JSON.stringify({ script: "พร้อมใช้" }),
+      outputJson: JSON.stringify({
+        videoUrl: "/api/renders/final.mp4",
+        subtitleQa: {
+          status: "passed",
+          timingSource: "provider_alignment",
+          textExact: true,
+          captionCount: 2,
+          audioDurationMs: 3000,
+        },
+        billingReceipt: {
+          status: "settled",
+          funding: "credits",
+          renderMinutes: 1,
+          chargedMinutes: 0,
+          chargedCredits: 2,
+        },
+      }),
+    },
+  });
+  const completedJobStatus = await getVideoJobStatusTool(alice.id, completedJob.id);
+  assert(
+    completedJobStatus?.subtitleQa?.status === "passed"
+      && completedJobStatus.billingReceipt?.status === "settled"
+      && completedJobStatus.billingReceipt.funding === "credits",
+    "get_video_status exposes final subtitle QA and billing receipt",
+  );
+  assert(
+    (await getVideoJobStatusTool(bob.id, completedJob.id)) === null,
+    "get_video_status never exposes another user's job receipt",
+  );
 
   // get_video
   const gv = await getVideoTool(alice.id, pending.id);

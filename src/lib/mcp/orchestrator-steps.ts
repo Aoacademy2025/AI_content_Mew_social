@@ -2,41 +2,8 @@
 // chain (verified against page.tsx 2026-06-13). No I/O — unit-testable.
 
 import type { BrollPreferenceInput } from "@/lib/broll-preferences";
-import type { TelemetryInput } from "@/lib/telemetry";
-import type { TtsProvider } from "@/lib/tts-providers";
 
 export interface OrchCaption { text: string; startMs: number; endMs: number; tag: "hook" | "body" | "cta" }
-
-// Durable, queryable marker for the degraded-timing recovery path (stab-task-2).
-// Emitted (fire-and-forget) ONLY when the orchestrator had to rebuild subtitle
-// timing from the raw audio duration because the TTS route produced audio but no
-// instrumented `timing` (Gemini's segmented pass fell open to a single call). It
-// lands in TelemetryEvent alongside pipeline_step_*, so (1) degraded videos are
-// identifiable later and (2) a systemic timing regression shows up as a spike in
-// this event name instead of being silently papered over by the recovery.
-export function buildDegradedTimingTelemetry(args: {
-  pipelineRunId: string;
-  jobId: string;
-  provider: TtsProvider;
-  scriptCharCount: number;
-  audioDurationMs: number;
-}): TelemetryInput {
-  return {
-    name: "tts_timing_degraded",
-    category: "pipeline",
-    source: "server",
-    step: "captions",
-    status: "recovered",
-    properties: {
-      pipelineRunId: args.pipelineRunId,
-      jobId: args.jobId,
-      via: "mcp",
-      provider: args.provider,
-      scriptCharCount: args.scriptCharCount,
-      audioDurationMs: args.audioDurationMs,
-    },
-  };
-}
 
 export const DEFAULT_STYLE = {
   fontFamily: "'Kanit', sans-serif",

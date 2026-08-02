@@ -11,6 +11,8 @@ import {
   serializeHeroVoiceProviderCheckpoint,
   type HeroVoiceProviderCheckpointV1,
 } from "@/lib/mcp/hero-voice-provider-checkpoint";
+import type { SubtitleQualityReport } from "@/lib/mcp/subtitle-quality";
+import type { VideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -285,6 +287,8 @@ export interface ParsedVideoJobOutput {
   videoUrl?: string;
   videoId?: string;
   sourceJobId?: string;
+  subtitleQa?: SubtitleQualityReport;
+  billingReceipt?: VideoJobBillingReceipt;
   /** present only on v2 preview jobs */
   preview?: VideoJobPreviewData | null;
 }
@@ -299,11 +303,19 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
     const preview = version === 2 && typeof raw.preview === "object" && raw.preview !== null
       ? (raw.preview as unknown as VideoJobPreviewData)
       : null;
+    const subtitleQa = typeof raw.subtitleQa === "object" && raw.subtitleQa !== null
+      ? raw.subtitleQa as unknown as SubtitleQualityReport
+      : null;
+    const billingReceipt = typeof raw.billingReceipt === "object" && raw.billingReceipt !== null
+      ? raw.billingReceipt as unknown as VideoJobBillingReceipt
+      : null;
     return {
       version,
       videoUrl: typeof raw.videoUrl === "string" ? raw.videoUrl : undefined,
       videoId: typeof raw.videoId === "string" ? raw.videoId : undefined,
       sourceJobId: typeof raw.sourceJobId === "string" ? raw.sourceJobId : undefined,
+      ...(subtitleQa ? { subtitleQa } : {}),
+      ...(billingReceipt ? { billingReceipt } : {}),
       ...(preview ? { preview } : {}),
     };
   } catch {

@@ -12,6 +12,7 @@ import {
   saveProviderCheckpoint,
   parkHeroVoiceProviderJob,
   parkProviderJob,
+  parseVideoJobOutput,
   setJobStep,
   finishJob,
   failJob,
@@ -45,9 +46,33 @@ async function main() {
   const mid = await prisma.videoJob.findUnique({ where: { id: job.id } });
   assert(mid?.currentStep === "tts" && mid?.progress === 20, "setJobStep updates step+progress");
 
-  await finishJob(job.id, { videoUrl: "/v.mp4", videoId: "vid_1" });
+  await finishJob(job.id, {
+    videoUrl: "/v.mp4",
+    videoId: "vid_1",
+    subtitleQa: {
+      status: "passed",
+      timingSource: "provider_alignment",
+      textExact: true,
+      captionCount: 3,
+      audioDurationMs: 5000,
+    },
+    billingReceipt: {
+      status: "settled",
+      funding: "minutes",
+      renderMinutes: 1,
+      chargedMinutes: 1,
+      chargedCredits: 0,
+    },
+  });
   const done = await prisma.videoJob.findUnique({ where: { id: job.id } });
   assert(done?.status === "done" && done?.videoId === "vid_1" && !!done?.outputJson, "finishJob → done + output");
+  const parsedDone = parseVideoJobOutput(done?.outputJson ?? null);
+  assert(
+    parsedDone?.subtitleQa?.status === "passed"
+      && parsedDone.billingReceipt?.status === "settled"
+      && parsedDone.billingReceipt.funding === "minutes",
+    "job output exposes subtitle QA and the settled billing receipt",
+  );
 
   const job2 = await createVideoJob(u.id, { script: "x" });
   await claimNextQueuedJob();

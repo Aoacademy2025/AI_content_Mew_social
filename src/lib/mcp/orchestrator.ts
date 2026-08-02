@@ -25,7 +25,7 @@ import { pipelineCaller, pollRender, type PipelineCaller } from "@/lib/mcp/pipel
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
-  cardsByWordCount, POSITION_TOP_PERCENT, buildDegradedTimingTelemetry,
+  cardsByWordCount, POSITION_TOP_PERCENT,
 } from "@/lib/mcp/orchestrator-steps";
 import {
   attemptAvatarComposite,
@@ -58,7 +58,6 @@ import {
   reconstructCutawayPersonRanges,
 } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
-import { buildDegradedTtsTiming } from "@/lib/tts-timing";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
@@ -79,6 +78,12 @@ import {
   type HeroVoiceProviderCheckpointV1,
 } from "@/lib/mcp/hero-voice-provider-checkpoint";
 import { shouldEmitPipelineStepStarted } from "@/lib/pipeline-telemetry";
+import {
+  alignTranscriptWordsToSource,
+  validateSubtitleQuality,
+  type SubtitleTimingSource,
+} from "@/lib/mcp/subtitle-quality";
+import { getVideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -87,13 +92,6 @@ class AvatarProviderFailureError extends Error {
   ) {
     super(failure.message);
     this.name = "AvatarProviderFailureError";
-  }
-}
-
-class AvatarReservationSettlementError extends Error {
-  constructor(public readonly reservationRefundReason: string) {
-    super("คืนโควตาของ base render ยังไม่สำเร็จ — ระบบบันทึกไว้เพื่อลองคืนอัตโนมัติ");
-    this.name = "AvatarReservationSettlementError";
   }
 }
 
@@ -604,6 +602,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...caption,
         tag: caption.tag ?? (index === 0 ? "hook" : "body"),
       }));
+      const subtitleQa = validateSubtitleQuality({
+        script: checkpoint.fullText,
+        captions,
+        audioDurationMs: checkpoint.audioDurationMs,
+        timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
+      });
+      if (subtitleQa.status !== "passed") {
+        throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+      }
 
       if (input.previewMode) {
         const previewDuration = Date.now() - phaseStartedAt;
@@ -615,6 +622,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           version: 2,
           mode: "preview",
           videoUrl: compositeUrl,
+          subtitleQa,
           preview: {
             captions,
             config: checkpoint.baseConfig,
@@ -660,6 +668,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); },
         { sleep, checkCanceled: cancelInFlightRender(render.jobId) },
       );
+
+      const billingReceipt = process.env.RENDER_VIA_QUEUE === "1"
+        ? await getVideoJobBillingReceipt({ videoJobId: jobId, userId })
+        : null;
+      if (billingReceipt && billingReceipt.status !== "settled") {
+        throw new Error(`ตรวจสอบการคิดนาที/เครดิตไม่ผ่าน (${billingReceipt.code}) — ระบบหยุดก่อนส่งมอบงาน`);
+      }
       await caller.patch(`/api/videos/${created.id}`, { videoUrl: burnedUrl, status: "COMPLETED" });
 
       const finalDuration = Date.now() - phaseStartedAt;
@@ -667,7 +682,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       emitStage(phaseName, "done", finalDuration);
       const totalS = (Date.now() - jobStartedAt) / 1000;
       console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
-      await finishJob(jobId, { videoUrl: burnedUrl, videoId: created.id });
+      await finishJob(jobId, {
+        videoUrl: burnedUrl,
+        videoId: created.id,
+        subtitleQa,
+        ...(billingReceipt ? { billingReceipt } : {}),
+      });
     };
 
     const settleProviderAdvance = async (result: AvatarProviderAdvanceResult): Promise<void> => {
@@ -1193,29 +1213,43 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       } catch { /* fail-open → deterministic sentence cards */ }
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let subtitleTimingSource: SubtitleTimingSource = provider === "elevenlabs"
+      ? "provider_alignment"
+      : "tts_segment_timing";
     let capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
     if (!capRes || capRes.captions.length === 0) {
-      // TTS produced AUDIO but no usable instrumented timing — Gemini's segmented
-      // pass fell open to a single uninstrumented call (returns no `timing`), or a
-      // rare timing/text mismatch. The web editor recovers here via its transcribe
-      // fallback, but this headless path has none, so pre-fix it turned a completed
-      // audio render into a hard failure ("ไม่มี subtitle timing") that a plain
-      // retry rarely cleared (prod: longer scripts = more segments = higher fail-open
-      // odds; 2/4 affected users never recovered by retrying). Derive a single-segment
-      // clock from the EXACT audio duration over the exact spoken text — still 100%
-      // TTS-derived, same char clock, no transcribe, no arithmetic change; only loss
-      // vs the segmented path is per-chunk re-anchoring + silence snap.
-      const degraded = buildDegradedTtsTiming(provider, input.script, audioDurationMs);
-      if (degraded) {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        capRes = captionsFromTtsTiming(degraded as any, audioDurationMs, maxCardCharsFor(), null);
-        if (capRes && capRes.captions.length > 0) {
-          const scriptCharCount = input.script.trim().length;
-          console.warn(`[mcp-worker] job ${jobId}: TTS timing absent — recovered with single-segment clock over ${scriptCharCount} chars / ${audioDurationMs}ms`);
-          // Durable marker (fire-and-forget, never fails the job) so degraded videos
-          // are identifiable and a systemic timing regression spikes this event.
-          emitTelemetry(buildDegradedTimingTelemetry({ pipelineRunId, jobId, provider, scriptCharCount, audioDurationMs }));
-        }
+      // Provider timing is missing or unusable. Never ship a final video built from a
+      // single-segment character clock: it preserves text but cannot prove caption/audio
+      // alignment. Reuse the production transcribe path to recover boundaries from the
+      // generated audio itself. A later quality gate validates this response fail-closed.
+      const aligned = await caller.post<{
+        captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
+        words?: Array<{ word: string; startMs: number; endMs: number }>;
+        audioDurationMs?: number;
+      }>("/api/videos/transcribe", {
+        audioUrl: tts.voiceUrl,
+        scriptPrompt: input.script.trim().slice(0, 800),
+        script: input.script.trim(),
+      });
+      const recoveredCaptions: OrchCaption[] = (aligned.captions ?? [])
+        .filter((caption) => typeof caption?.text === "string" && caption.text.trim())
+        .map((caption, index) => ({
+          text: caption.text!.trim(),
+          startMs: Number(caption.startMs),
+          endMs: Number(caption.endMs),
+          tag: caption.tag ?? (index === 0 ? "hook" : "body"),
+        }));
+      if (recoveredCaptions.length > 0) {
+        subtitleTimingSource = "forced_alignment";
+        const recoveredFullText = input.script.trim();
+        capRes = {
+          captions: recoveredCaptions,
+          words: alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []) ?? [],
+          audioDurationMs: Number(aligned.audioDurationMs) > 0
+            ? Math.round(Number(aligned.audioDurationMs))
+            : audioDurationMs,
+          fullText: recoveredFullText,
+        };
       }
     }
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
@@ -1224,6 +1258,23 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       ? cardsByWordCount(capRes.words, parseInt(input.subtitleMode), capRes.fullText)
       : baseCaptions;
     const durMs = capRes.audioDurationMs || audioDurationMs;
+    const subtitleQa = validateSubtitleQuality({
+      script: capRes.fullText,
+      captions,
+      audioDurationMs: durMs,
+      timingSource: subtitleTimingSource,
+    });
+    if (subtitleQa.status !== "passed") {
+      emitTelemetry({
+        name: "subtitle_quality_gate_failed",
+        category: "error",
+        source: "server",
+        step: "captions",
+        status: subtitleQa.code,
+        properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleTimingSource },
+      });
+      throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+    }
 
     // B-roll cadence PARITY with the web editor: group captions into ~4s windows so the
     // background holds one clip per window instead of cutting on every caption (the strobing
@@ -1320,28 +1371,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       parentJobId: jobId,
     });
     const baseUrl = await pollRender(caller, r1.jobId, (pct) => { void setJobStep(jobId, "render", 75 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r1.jobId) });
-    // Base render reserved 1 clip. Refund it NOW *only when an avatar composite follows* —
-    // because only then does finalBase become a NEW url (the composite) that the burn step
-    // does NOT recognize as already-paid, so the burn re-reserves a clip. Refunding the base
-    // then nets exactly 1 (base +1, refund −1, burn +1), and an avatar/burn failure nets 0
-    // (the burn route refunds its own clip) — never over-charging an undelivered video.
+    // The base render owns the delivered video's single reservation for every success path,
+    // including avatar composites. /api/heygen/composite publishes a paid marker for the
+    // derived composite URL, allowing the later burn to stay free without moving the actual
+    // minute/credit reservation. Refunding here would leave a successful avatar video with a
+    // net-zero charge: base +1, refund -1, composite marker +0, burn +0.
     //
-    // NON-AVATAR: finalBase stays == baseUrl, so the burn's isBurnAlreadyPaid() matches the
-    // base's ChargedClip (render/route.ts) and the burn SKIPS its reservation (it is free).
-    // Refunding the base here would then net 0 — a full quota bypass for every delivered
-    // clips-mode video. So do NOT refund: the base's single ChargedClip is the only charge.
-    // (MON-2: docs/audits/2026-07-07-system-optimization-audit.md.)
-    //
-    // PREVIEW MODE: no burn follows in this job, so the base reservation must STAND as the
-    // single charge (same as the web editor's preview render today) — skip the refund.
-    if (!input.previewMode && input.avatarMode) {
-      const reason = "avatar-composite-replacement";
-      const settled = await refundBaseReservation(reason).catch((error) => {
-        console.error(`[mcp-worker] job ${jobId} failed to refund base reservation`, error);
-        return false;
-      });
-      if (!settled) throw new AvatarReservationSettlementError(reason);
-    }
+    // Terminal avatar/provider/burn failures are still settled by the failure paths below,
+    // which refund this retained base reservation exactly once.
 
     // 6b. Avatar (optional) — generate + composite onto the base render.
     let finalBase = baseUrl;
@@ -1375,6 +1412,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         captions,
         words: capRes.words,
         fullText: capRes.fullText,
+        subtitleTimingSource,
         baseConfig,
         avatar: {
           mode: input.avatarMode,
@@ -1408,6 +1446,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         version: 2,
         mode: "preview",
         videoUrl: finalBase,
+        subtitleQa,
         preview: {
           captions,
           config: baseConfig,
@@ -1447,6 +1486,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     });
     const burnedUrl = await pollRender(caller, r2.jobId, (pct) => { void setJobStep(jobId, "burn", 88 + Math.round(pct * 0.1)).catch(() => {}); }, { sleep, checkCanceled: cancelInFlightRender(r2.jobId) });
 
+    const billingReceipt = process.env.RENDER_VIA_QUEUE === "1"
+      ? await getVideoJobBillingReceipt({ videoJobId: jobId, userId })
+      : null;
+    if (billingReceipt && billingReceipt.status !== "settled") {
+      throw new Error(`ตรวจสอบการคิดนาที/เครดิตไม่ผ่าน (${billingReceipt.code}) — ระบบหยุดก่อนส่งมอบงาน`);
+    }
+
     // 9. Update Video row → COMPLETED (the gallery route is PATCH — see /api/videos/[id])
     await caller.patch(`/api/videos/${created.id}`, { videoUrl: burnedUrl, status: "COMPLETED" });
 
@@ -1457,7 +1503,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const totalS = (Date.now() - jobStartedAt) / 1000;
     console.log(`[mcp-worker] job ${jobId} TIMINGS total=${totalS.toFixed(0)}s ${timings.map(([n, ms]) => `${n}=${(ms / 1000).toFixed(0)}s`).join(" ")} scenes=${captions.length} subMode=${input.subtitleMode ?? "sentence"}`);
 
-    await finishJob(jobId, { videoUrl: burnedUrl, videoId: created.id });
+    await finishJob(jobId, {
+      videoUrl: burnedUrl,
+      videoId: created.id,
+      subtitleQa,
+      ...(billingReceipt ? { billingReceipt } : {}),
+    });
   } catch (e) {
     const message = e instanceof Error ? e.message : "internal error";
     if (message === VIDEO_JOB_CANCELED_ERROR) {
@@ -1501,15 +1552,6 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             code: e.code,
             provider: "omnivoice",
             ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
-          }
-      : e instanceof AvatarReservationSettlementError
-        ? {
-            message: e.message,
-            code: "reservation_refund_pending",
-            provider: "system",
-            ...(financialSettlementPending
-              ? { reservationRefundReason: settlementReason }
-              : {}),
           }
       : financialSettlementPending
         ? { message, reservationRefundReason: settlementReason }

@@ -2,6 +2,7 @@ import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
+import { parseVideoJobOutput, toPublicVideoJobStatus } from "@/lib/mcp/video-job";
 
 function deriveTitle(v: { content: { headline: string | null } | null; script: string | null }): string {
   const h = v.content?.headline?.trim();
@@ -72,6 +73,33 @@ export async function getVideoStatusTool(userId: string, videoId: string) {
     status: v.status, // PENDING | PROCESSING | COMPLETED | FAILED
     hasDownload: !!v.videoUrl,
     updatedAt: v.updatedAt.toISOString(),
+  };
+}
+
+export async function getVideoJobStatusTool(userId: string, jobId: string) {
+  const job = await prisma.videoJob.findFirst({
+    where: { id: jobId, userId },
+    select: {
+      id: true,
+      status: true,
+      currentStep: true,
+      progress: true,
+      outputJson: true,
+      errorMessage: true,
+    },
+  });
+  if (!job) return null;
+  const output = parseVideoJobOutput(job.outputJson);
+  return {
+    kind: "job" as const,
+    jobId: job.id,
+    status: toPublicVideoJobStatus(job.status),
+    currentStep: job.currentStep,
+    progress: job.progress,
+    videoUrl: output?.videoUrl ?? null,
+    error: job.errorMessage ?? null,
+    subtitleQa: output?.subtitleQa ?? null,
+    billingReceipt: output?.billingReceipt ?? null,
   };
 }
 
