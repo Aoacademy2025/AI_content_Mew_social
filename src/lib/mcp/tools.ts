@@ -4,6 +4,40 @@ import { classifyEntitlement } from "@/lib/entitlements";
 import { buildSetupGuide } from "@/lib/mcp/onboarding";
 import { parseVideoJobOutput, toPublicVideoJobStatus } from "@/lib/mcp/video-job";
 
+const DEFAULT_MCP_PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
+
+function publicVideoUrl(value: string | null): string | null {
+  if (!value) return null;
+  try {
+    const origin = process.env.MCP_PUBLIC_ORIGIN?.trim()
+      || process.env.NEXT_PUBLIC_APP_URL?.trim()
+      || DEFAULT_MCP_PUBLIC_ORIGIN;
+    const url = new URL(value, origin);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : value;
+  } catch {
+    return value;
+  }
+}
+
+function renderDurationSec(value: string | null | undefined): number | null {
+  if (!value) return null;
+  try {
+    const config = JSON.parse(value) as { durationInFrames?: unknown; fps?: unknown; audioDurationMs?: unknown };
+    const audioDurationMs = Number(config.audioDurationMs);
+    if (Number.isFinite(audioDurationMs) && audioDurationMs > 0) {
+      return Math.round(audioDurationMs / 10) / 100;
+    }
+    const frames = Number(config.durationInFrames);
+    const fps = Number(config.fps) > 0 ? Number(config.fps) : 30;
+    if (Number.isFinite(frames) && frames > 0) return Math.round((frames / fps) * 100) / 100;
+  } catch {}
+  return null;
+}
+
+function durationSec(v: { content: { videoDuration: number | null } | null; renderConfig?: string | null }): number | null {
+  return v.content?.videoDuration ?? renderDurationSec(v.renderConfig);
+}
+
 function deriveTitle(v: { content: { headline: string | null } | null; script: string | null }): string {
   const h = v.content?.headline?.trim();
   if (h) return h;
@@ -39,7 +73,7 @@ export async function listMyVideosTool(userId: string, opts: { limit?: number; s
     orderBy: { createdAt: "desc" },
     take: limit,
     select: {
-      id: true, status: true, videoUrl: true, createdAt: true, script: true,
+      id: true, status: true, videoUrl: true, createdAt: true, script: true, renderConfig: true,
       content: { select: { headline: true, videoDuration: true } },
     },
   });
@@ -47,8 +81,9 @@ export async function listMyVideosTool(userId: string, opts: { limit?: number; s
     id: v.id,
     title: deriveTitle(v),
     status: v.status,
-    durationSec: v.content?.videoDuration ?? null,
+    durationSec: durationSec(v),
     hasDownload: !!v.videoUrl,
+    downloadUrl: v.status === "COMPLETED" ? publicVideoUrl(v.videoUrl) : null,
     createdAt: v.createdAt.toISOString(),
   }));
 }
@@ -58,7 +93,7 @@ async function ownedVideo(userId: string, videoId: string) {
     where: { id: videoId, userId },
     select: {
       id: true, status: true, videoUrl: true, createdAt: true, updatedAt: true, script: true,
-      avatarModel: true, voiceModel: true, sceneCount: true,
+      avatarModel: true, voiceModel: true, sceneCount: true, renderConfig: true,
       content: { select: { headline: true, videoDuration: true } },
     },
   });
@@ -96,7 +131,7 @@ export async function getVideoJobStatusTool(userId: string, jobId: string) {
     status: toPublicVideoJobStatus(job.status),
     currentStep: job.currentStep,
     progress: job.progress,
-    videoUrl: output?.videoUrl ?? null,
+    videoUrl: publicVideoUrl(output?.videoUrl ?? null),
     error: job.errorMessage ?? null,
     subtitleQa: output?.subtitleQa ?? null,
     billingReceipt: output?.billingReceipt ?? null,
@@ -111,11 +146,12 @@ export async function getVideoTool(userId: string, videoId: string) {
     videoId: v.id,
     title: deriveTitle(v),
     status: v.status,
-    durationSec: v.content?.videoDuration ?? null,
+    durationSec: durationSec(v),
     avatarModel: v.avatarModel,
     voiceModel: v.voiceModel,
     sceneCount: v.sceneCount,
     hasDownload: !!v.videoUrl,
+    downloadUrl: v.status === "COMPLETED" ? publicVideoUrl(v.videoUrl) : null,
     createdAt: v.createdAt.toISOString(),
     updatedAt: v.updatedAt.toISOString(),
   };
@@ -125,5 +161,10 @@ export async function downloadVideoTool(userId: string, videoId: string) {
   const v = await ownedVideo(userId, videoId);
   if (!v) return { found: false as const };
   if (v.status !== "COMPLETED" || !v.videoUrl) return { found: true as const, ready: false as const, status: v.status };
-  return { found: true as const, ready: true as const, url: v.videoUrl };
+  return {
+    found: true as const,
+    ready: true as const,
+    url: publicVideoUrl(v.videoUrl)!,
+    durationSec: durationSec(v),
+  };
 }

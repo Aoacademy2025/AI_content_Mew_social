@@ -71,6 +71,10 @@ async function main() {
     console.error("[mcp-worker] DATABASE_URL not set — refusing to start");
     process.exit(1);
   }
+  if (process.env.NODE_ENV === "production" && process.env.RENDER_VIA_QUEUE !== "1") {
+    console.error("[mcp-worker] RENDER_VIA_QUEUE=1 required in production — refusing to start without billing receipts");
+    process.exit(1);
+  }
 
   // Managed Gemini: this standalone worker doesn't run Next's instrumentation, and the
   // platform key now lives in SiteConfig (set via /admin) rather than .env — so hydrate

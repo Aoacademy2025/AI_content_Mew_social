@@ -61,6 +61,7 @@ import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
+import { avatarBookendDurationViolation } from "@/lib/avatar-duration";
 import { resolveJobTtsProvider } from "@/lib/tts-providers";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import {
@@ -1188,6 +1189,17 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (durationViolation) {
       throw new Error(`${durationViolation.message} — ${durationViolation.userAction}`);
     }
+
+    // Web parity + provider-spend guard: a split intro/outro must leave a real
+    // middle interval. Stop immediately after exact TTS duration, before keyword
+    // LLM, stock downloads, base render, or either HeyGen generation.
+    const avatarDurationViolation = avatarBookendDurationViolation({
+      mode: input.avatarMode,
+      audioDurationMs,
+      introSec: input.avatarIntroSecs ?? 5,
+      tailSec: input.avatarTailSecs ?? 5,
+    });
+    if (avatarDurationViolation) throw new Error(avatarDurationViolation.message);
 
     // 2. Captions (in-process, reuse the pure editor helper)
     await step("captions", 25);

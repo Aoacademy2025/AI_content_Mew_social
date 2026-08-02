@@ -272,6 +272,10 @@ module.exports = {
         NODE_ENV: "production",
         MCP_INTERNAL_BASE_URL: process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000",
         MCP_SERVICE_SECRET: process.env.MCP_SERVICE_SECRET || "",
+        // The orchestrator reads the settled base RenderJob only when the durable
+        // queue is active. Keep this explicit in the MCP worker environment so a
+        // successful tool call can never silently omit billingReceipt.
+        RENDER_VIA_QUEUE: "1",
         // CAP-1 launch-capacity knob: how many videos this single worker orchestrates at
         // once (docs/audits/2026-07-07-system-optimization-audit.md). Set to 2 after the
         // KVM8 (8 vCPU/32GB) upgrade and validated by 7 days of live prod operation

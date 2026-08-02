@@ -46,4 +46,39 @@ const cardIndexOfWord = (w: string) => bCards.findIndex((c) => c.text.includes(w
 assert(cardIndexOfWord("นี้") !== cardIndexOfWord("ชอบ"), "FIX B: words either side of the '.' sentence boundary are in different cards");
 assert(cardIndexOfWord("กด") !== cardIndexOfWord("ไลค์"), "FIX B: words either side of the '\\n' line-break boundary are in different cards");
 
+// Production MCP QA regressions (duckyhero, 2026-08-03): a hard N-token flush
+// produced "เริ่มต้นให้" → "ชัดเจน" and "เกิดในวัน" → "เดียว". A card may
+// exceed the requested count by one token when that single token completes a
+// natural Thai phrase; exact source slicing and word timing remain unchanged.
+function timedWords(fullText: string, tokens: string[]) {
+  let offset = 0;
+  return tokens.map((word, index) => {
+    const startChar = fullText.indexOf(word, offset);
+    const endChar = startChar + word.length;
+    offset = endChar;
+    return { word, startMs: index * 200, endMs: index * 200 + 180, startChar, endChar };
+  });
+}
+
+const clearText = "เริ่มต้นให้ชัดเจน แล้วลงมือทำทันที";
+const clearCards = cardsByWordCount(
+  timedWords(clearText, ["เริ่มต้น", "ให้", "ชัดเจน", "แล้ว", "ลงมือ", "ทำ", "ทันที"]),
+  2,
+  clearText,
+);
+assert(clearCards[0].text === "เริ่มต้นให้ชัดเจน", "natural grouping keeps ให้ชัดเจน with its leading phrase");
+
+const oneDayText = "ความสำเร็จไม่ได้เกิดในวันเดียว แต่เกิดจากการลงมือทำทุกวัน";
+const oneDayCards = cardsByWordCount(
+  timedWords(oneDayText, ["ความสำเร็จ", "ไม่", "ได้", "เกิด", "ใน", "วัน", "เดียว", "แต่", "เกิด", "จาก", "การ", "ลงมือ", "ทำ", "ทุก", "วัน"]),
+  3,
+  oneDayText,
+);
+assert(
+  oneDayCards.some((card) => card.text.includes("วันเดียว"))
+    && !oneDayCards.some((card, index) =>
+      card.text.endsWith("วัน") && oneDayCards[index + 1]?.text.startsWith("เดียว")),
+  "natural grouping never splits วันเดียว across adjacent subtitle cards",
+);
+
 console.log(`\n${passed} assertions passed ✅`);
