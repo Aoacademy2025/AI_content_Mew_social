@@ -417,7 +417,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       .catch(() => {});
   }
 
-  const renderReservationStages = new Set(["render", "avatar", "composite", "burn"]);
+  const renderReservationStages = new Set(["render", "avatar", "composite_queue", "composite", "burn"]);
   function emitBrollStockInventory(requestedWindowCount: number, results: unknown[]) {
     const assetKeys = results.map((result, index) => {
       if (!result || typeof result !== "object" || Array.isArray(result)) return `item:${index}`;
@@ -581,6 +581,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           throw new Error("avatar checkpoint missing tail video URL");
         }
         return attemptAvatarComposite(caller, {
+          videoJobId: jobId,
           baseUrl: value.baseUrl,
           avatarMode: value.avatar.mode,
           introSecs: value.avatar.introSecs,

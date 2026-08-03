@@ -419,7 +419,9 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
     }
 
     const checkpoint = parseAvatarProviderCheckpoint(job.providerCheckpointJson);
-    const isProviderStage = job.currentStep === "avatar" || job.currentStep === "composite";
+    const isProviderStage = job.currentStep === "avatar"
+      || job.currentStep === "composite_queue"
+      || job.currentStep === "composite";
     if (checkpoint && isProviderStage) {
       let resumable = checkpoint;
       if (checkpoint.phase === "intro_generate") {

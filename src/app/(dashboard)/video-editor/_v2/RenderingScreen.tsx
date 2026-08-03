@@ -26,7 +26,7 @@ function creationChecklist(visualMode: VisualMode) {
     { key: "subs", label: "แบ่งฉากตามจังหวะเสียงจริง", steps: ["captions"] },
     { key: "broll", label: visualLabel, steps: ["keywords", "stock"] },
     { key: "assemble", label: "ประกอบวิดีโอ + เพลง + ซับ", steps: ["config", "render"] },
-    { key: "avatar", label: "สร้างพิธีกร AI + วางบนวิดีโอ", steps: ["avatar"], optional: true },
+    { key: "avatar", label: "สร้างพิธีกร AI + วางบนวิดีโอ", steps: ["avatar", "composite_queue", "composite"], optional: true },
   ];
 }
 
@@ -42,7 +42,7 @@ const UPLOAD_CHECKLIST: { key: string; label: string; steps: string[]; optional?
   { key: "subs", label: "ถอดซับไทยจากเสียงในคลิป", steps: ["captions"] },
   { key: "broll", label: "กำลังหาบีโรลให้เข้ากับเนื้อหา", steps: ["keywords", "stock"] },
   { key: "assemble", label: "ประกอบม้วนบีโรล", steps: ["config", "render"] },
-  { key: "cutaway", label: "วางคลิปของคุณสลับกับบีโรล", steps: ["composite"] },
+  { key: "cutaway", label: "วางคลิปของคุณสลับกับบีโรล", steps: ["composite_queue", "composite"] },
 ];
 
 const EXPORT_CHECKLIST: { key: string; label: string; steps: string[]; optional?: boolean }[] = [

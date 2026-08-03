@@ -7,6 +7,11 @@ assert.equal(composite.indeterminate, true);
 assert.equal(composite.ringText, null);
 assert.match(composite.statusText ?? "", /ประกอบวิดีโอ/);
 
+const compositeQueue = videoJobProgressPresentation("composite_queue", 86);
+assert.equal(compositeQueue.indeterminate, true);
+assert.equal(compositeQueue.ringText, null);
+assert.match(compositeQueue.statusText ?? "", /รอคิว/);
+
 const render = videoJobProgressPresentation("render", 57.8);
 assert.equal(render.indeterminate, false);
 assert.equal(render.percent, 58);

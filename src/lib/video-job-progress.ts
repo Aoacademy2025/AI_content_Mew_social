@@ -10,6 +10,14 @@ export function videoJobProgressPresentation(
   rawProgress: number,
 ): VideoJobProgressPresentation {
   const percent = Math.max(0, Math.min(100, Math.round(rawProgress)));
+  if (currentStep === "composite_queue") {
+    return {
+      percent,
+      indeterminate: true,
+      ringText: null,
+      statusText: "กำลังรอคิวประกอบวิดีโอ — ระบบจะเริ่มให้อัตโนมัติ",
+    };
+  }
   if (currentStep === "composite") {
     return {
       percent,

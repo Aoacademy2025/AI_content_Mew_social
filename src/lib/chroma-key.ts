@@ -341,8 +341,12 @@ export function buildCompositeFilter(
       const bottom = Math.min(h, CANVAS_H - y);
       const visibleW = right - left;
       const visibleH = bottom - top;
+      // Crop in SOURCE coordinates before scaling. The old scale→crop order produced the
+      // same visible rectangle, but a zoomed/off-canvas avatar paid the expensive upscale,
+      // yuva444p conversion, chromakey, despill and feather cost for pixels that were then
+      // discarded. Ratio expressions keep this correct for both 720p and 1080p sources.
       const avatarFilter = left > 0 || top > 0 || visibleW < w || visibleH < h
-        ? `[1:v]scale=${w}:${h}:flags=lanczos,crop=${visibleW}:${visibleH}:${left}:${top},${keyChain}[fg]`
+        ? `[1:v]crop='max(2,trunc(iw*${visibleW}/${w}/2)*2)':'max(2,trunc(ih*${visibleH}/${h}/2)*2)':'trunc(iw*${left}/${w}/2)*2':'trunc(ih*${top}/${h}/2)*2',scale=${visibleW}:${visibleH}:flags=lanczos,${keyChain}[fg]`
         : `[1:v]scale=${w}:${h}:flags=lanczos,${keyChain}[fg]`;
       return [
         backgroundFilter,

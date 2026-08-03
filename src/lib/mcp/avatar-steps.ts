@@ -181,6 +181,7 @@ export async function prepareAvatarAudio(
 }
 
 export interface AvatarCompositeInput {
+  videoJobId?: string;
   baseUrl: string;
   avatarMode: "full" | "bookend" | "bookend-both";
   introSecs: number;
@@ -210,6 +211,7 @@ export async function attemptAvatarComposite(
 ): Promise<AvatarCompositeAttemptResult> {
   try {
     const result = await caller.post<{ videoUrl: string }>("/api/heygen/composite", {
+      videoJobId: input.videoJobId,
       avatarVideoUrl: input.introVideoUrl,
       tailAvatarVideoUrl: input.tailVideoUrl,
       bgVideoUrl: input.baseUrl,

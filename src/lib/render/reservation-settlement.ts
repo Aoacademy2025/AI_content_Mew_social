@@ -232,7 +232,7 @@ export async function retryPendingVideoJobReservationRefunds(
         videoJobId: job.id,
         reason,
       });
-      const expectsRenderReservation = ["render", "avatar", "composite", "burn"]
+      const expectsRenderReservation = ["render", "avatar", "composite_queue", "composite", "burn"]
         .includes(job.currentStep ?? "");
       const result = expectsRenderReservation
         ? await refundVideoJobTerminalRenderReservations({

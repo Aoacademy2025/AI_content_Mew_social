@@ -132,6 +132,24 @@ function runFfmpeg(ffmpegPath: string, args: string[], timeoutMs: number): Promi
     .then((result) => result.stderr);
 }
 
+async function markOwningCompositeJob(
+  videoJobId: unknown,
+  userId: string,
+  currentStep: "composite_queue" | "composite",
+  progress: number,
+): Promise<void> {
+  if (typeof videoJobId !== "string" || videoJobId.length === 0 || videoJobId.length > 191) return;
+  // Ownership + inflight state are part of the update predicate: a caller cannot mutate
+  // another user's job or resurrect a terminal job by supplying an arbitrary id.
+  await prisma.videoJob.updateMany({
+    where: { id: videoJobId, userId, status: "processing" },
+    data: { currentStep, progress },
+  }).catch((error) => {
+    // Status detail is observability, not a reason to discard a valid render.
+    console.warn(`[composite] could not mark ${currentStep} for job ${videoJobId}`, error);
+  });
+}
+
 // ─────────────────────────────────────────────
 // Mode: direct
 // Input: transparent webm (already bg-removed) + bg mp4
@@ -470,17 +488,17 @@ async function applyBookendBoth(
 }
 
 // ─────────────────────────────────────────────
-// bookend-both SPLIT: intro avatar + tail avatar generated separately
+// Segmented bookend: intro avatar + optional separately-generated tail avatar.
 // Correct flow:
 //   1. Slice bg into 3 segments: bg[0..N], bg[N..bgDur-T], bg[bgDur-T..bgDur]
 //   2. Composite intro avatar onto bg[0..N]
-//   3. Composite tail avatar onto bg[bgDur-T..bgDur]
+//   3. Composite tail avatar onto bg[bgDur-T..bgDur] when present
 //   4. Stitch: introComp + bgMid + tailComp, audio from full bg
 // ─────────────────────────────────────────────
-async function applyBookendBothSplit(
+async function applyBookendSegmented(
   ffmpegPath: string,
   introAvatarPath: string,  // raw green-screen intro avatar
-  tailAvatarPath: string,   // raw green-screen tail avatar
+  tailAvatarPath: string | null, // raw green-screen tail avatar (two-sided only)
   bgPath: string,           // full bg video (has TTS audio)
   outPath: string,
   introSecs: number,        // exact N from user setting
@@ -516,12 +534,14 @@ async function applyBookendBothSplit(
 
   // Use user-specified N and T, clamped to bg duration
   const N = Math.min(introSecs, bgDur);
-  const T = Math.min(tailSecs, Math.max(0, bgDur - N));
+  const T = tailAvatarPath
+    ? Math.min(tailSecs, Math.max(0, bgDur - N))
+    : 0;
   const midStart = N;
   const midEnd = Math.max(midStart, bgDur - T);
 
-  console.log(`[bookend-both-split] bg=${bgDur.toFixed(2)}s N=${N}s T=${T}s`);
-  console.log(`[bookend-both-split] segments: intro=0-${N}s mid=${midStart}-${midEnd}s tail=${bgDur-T}-${bgDur}s`);
+  console.log(`[bookend-segmented] bg=${bgDur.toFixed(2)}s N=${N}s T=${T}s`);
+  console.log(`[bookend-segmented] segments: intro=0-${N}s mid=${midStart}-${midEnd}s${tailAvatarPath ? ` tail=${bgDur-T}-${bgDur}s` : ""}`);
 
   // Step 1: Slice bg into intro segment and tail segment
   await runFfmpeg(ffmpegPath, [
@@ -529,18 +549,22 @@ async function applyBookendBothSplit(
     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
     "-pix_fmt", "yuv420p", bgIntroPath,
   ], timeoutMs);
-  await runFfmpeg(ffmpegPath, [
-    "-y", "-i", bgPath, "-ss", String(bgDur - T), "-t", String(T),
-    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
-    "-pix_fmt", "yuv420p", bgTailPath,
-  ], timeoutMs);
+  if (tailAvatarPath && T > 0) {
+    await runFfmpeg(ffmpegPath, [
+      "-y", "-i", bgPath, "-ss", String(bgDur - T), "-t", String(T),
+      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
+      "-pix_fmt", "yuv420p", bgTailPath,
+    ], timeoutMs);
+  }
 
-  // Step 2: Composite intro/tail avatars onto their bg segments, clamped to exact duration
-  // Composite with -shortest so output = min(bg segment, avatar) = exactly N or T secs
-  for (const [bgSeg, avSeg, outSeg, dur] of [
+  // Step 2: Composite intro/tail avatars onto their bg segments, clamped with -t to N/T.
+  const avatarSegments: [string, string, string, number][] = [
     [bgIntroPath, introAvatarPath, introCompPath, N],
-    [bgTailPath,  tailAvatarPath,  tailCompPath,  T],
-  ] as [string, string, string, number][]) {
+  ];
+  if (tailAvatarPath && T > 0) {
+    avatarSegments.push([bgTailPath, tailAvatarPath, tailCompPath, T]);
+  }
+  for (const [bgSeg, avSeg, outSeg, dur] of avatarSegments) {
     const segmentFadeWindow = singleAvatarFadeWindow(dur);
     if (mode === "direct") {
       await runFfmpeg(ffmpegPath, [
@@ -569,11 +593,12 @@ async function applyBookendBothSplit(
     }
   }
 
-  // Step 3: Slice bg middle segment (video only, no re-encode)
+  // Step 3: Normalize the middle segment to the same codec/preset as the composited ends.
+  // This makes the final concat eligible for a stream copy instead of another full-video encode.
   if (midEnd > midStart) {
     await runFfmpeg(ffmpegPath, [
       "-y", "-i", bgPath, "-ss", String(midStart), "-t", String(midEnd - midStart),
-      "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-an",
+      "-c:v", "libx264", "-preset", compositePreset(), "-crf", compositeCrf(), "-an",
       "-pix_fmt", "yuv420p", bgMidPath,
     ], timeoutMs);
   }
@@ -581,15 +606,27 @@ async function applyBookendBothSplit(
   // Step 4: Stitch intro + mid + tail, audio from full bg
   let concatContent = `file '${introCompPath.replace(/\\/g, "/")}'\n`;
   if (midEnd > midStart) concatContent += `file '${bgMidPath.replace(/\\/g, "/")}'\n`;
-  concatContent += `file '${tailCompPath.replace(/\\/g, "/")}'`;
+  if (tailAvatarPath && T > 0) {
+    concatContent += `file '${tailCompPath.replace(/\\/g, "/")}'`;
+  }
   fs.writeFileSync(listPath, concatContent);
 
   // Concat video-only first, then mux audio from full bg
-  await runFfmpeg(ffmpegPath, [
-    "-y", "-f", "concat", "-safe", "0", "-i", listPath,
-    "-c:v", "libx264", "-preset", "fast", "-crf", "18",
-    "-pix_fmt", "yuv420p", "-an", videoOnlyPath,
-  ], timeoutMs);
+  try {
+    await runFfmpeg(ffmpegPath, [
+      "-y", "-f", "concat", "-safe", "0", "-i", listPath,
+      "-c:v", "copy", "-an", videoOnlyPath,
+    ], timeoutMs);
+  } catch (error) {
+    // A legacy or unusual input can still produce incompatible segment headers/timebases.
+    // Preserve correctness with the prior encode path while keeping the normal path O(stitch).
+    console.warn("[bookend-segmented] stream-copy concat failed; falling back to encode", error);
+    await runFfmpeg(ffmpegPath, [
+      "-y", "-f", "concat", "-safe", "0", "-i", listPath,
+      "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+      "-pix_fmt", "yuv420p", "-an", videoOnlyPath,
+    ], timeoutMs);
+  }
 
   // Mux audio from full bg
   await runFfmpeg(ffmpegPath, [
@@ -609,8 +646,8 @@ async function applyBookendBothSplit(
 
 // ─────────────────────────────────────────────
 // POST /api/heygen/composite
-// Body: { avatarVideoUrl, tailAvatarVideoUrl?, bgVideoUrl, mode, avatarTiming?, avatarBookendSecs?, avatarTailSecs? }
-// When tailAvatarVideoUrl is provided + avatarTiming=bookend-both → use split mode
+// Body: { videoJobId?, avatarVideoUrl, tailAvatarVideoUrl?, bgVideoUrl, mode, avatarTiming?, avatarBookendSecs?, avatarTailSecs? }
+// Chromakey/direct bookends use segmented mode; tailAvatarVideoUrl enables the two-sided variant.
 // ─────────────────────────────────────────────
 export async function POST(req: Request) {
   const authUser = await getCurrentUser();
@@ -623,6 +660,7 @@ export async function POST(req: Request) {
 
   const body = await req.json().catch(() => null);
   const {
+    videoJobId,
     avatarVideoUrl, tailAvatarVideoUrl, bgVideoUrl,
     mode = "chromakey",
     avatarTiming = "full",
@@ -693,7 +731,9 @@ export async function POST(req: Request) {
     const admissionWaitMs = Number.isFinite(rawAdmissionWaitMs)
       ? Math.min(20 * 60_000, Math.max(10_000, Math.floor(rawAdmissionWaitMs)))
       : 15 * 60_000;
+    await markOwningCompositeJob(videoJobId, authUser.id, "composite_queue", 86);
     compositeLease = await admission.acquireComposite({ maxWaitMs: admissionWaitMs, pollMs: 1_000 });
+    await markOwningCompositeJob(videoJobId, authUser.id, "composite", 87);
     admissionHeartbeat = setInterval(() => {
       void compositeLease?.heartbeat().catch(() => {});
     }, 10_000);
@@ -718,16 +758,28 @@ export async function POST(req: Request) {
       console.log(`[composite] chroma ${resolved.autoDetect ? "auto-detected" : "user-tuned"} → color=${chromaParams.color} similarity=${chromaParams.similarity} blend=${chromaParams.blend} feather=${feather}`);
     }
 
-    // bookend-both split: composite intro and tail separately onto bg segments, then stitch
-    if (avatarTiming === "bookend-both" && tailTmp) {
-      const finalFile = `composite-${ts}-bookend-both.mp4`;
+    // Segmented bookends: key only the short intro/tail clips. The long middle is encoded
+    // without chroma filters, then all compatible segments are stitched by stream copy.
+    // rembg keeps its existing path because its external Python pipeline is not segment-aware.
+    const segmentedBookend = (mode === "direct" || willKey)
+      && avatarBookendSecs > 0
+      && (
+        avatarTiming === "bookend"
+        || (avatarTiming === "bookend-both" && tailTmp !== null)
+      );
+    if (segmentedBookend) {
+      const finalFile = `composite-${ts}-${avatarTiming}.mp4`;
       const finalPath = path.join(rendersDir, finalFile);
       attemptOutputs.add(finalPath);
 
-      await applyBookendBothSplit(
+      await applyBookendSegmented(
         ffmpeg,
-        avatarTmp, tailTmp, bgTmp, finalPath,
-        avatarBookendSecs, avatarTailSecs,
+        avatarTmp,
+        avatarTiming === "bookend-both" ? tailTmp : null,
+        bgTmp,
+        finalPath,
+        avatarBookendSecs,
+        avatarTiming === "bookend-both" ? avatarTailSecs : 0,
         chromaParams, mode,
         ffmpegTimeoutMs,
         stabilityCanary,
@@ -735,7 +787,7 @@ export async function POST(req: Request) {
         feather,
       );
 
-      console.log("[composite] split output:", finalFile, fs.statSync(finalPath).size, "bytes");
+      console.log("[composite] segmented output:", finalFile, fs.statSync(finalPath).size, "bytes");
       publishedOutput = finalPath;
       // Record composite output as paid so a subsequent burn of this composite is free
       // (the base render already charged the clip; composite is a processing step, not new charge).

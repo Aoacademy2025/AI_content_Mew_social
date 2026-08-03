@@ -279,14 +279,14 @@ async function main() {
     data: {
       userId: u.id,
       status: "processing",
-      currentStep: "composite",
+      currentStep: "composite_queue",
       progress: 86,
       inputJson: JSON.stringify({ script: "composite" }),
       providerCheckpointJson: serializeAvatarProviderCheckpoint(restartCompositeCheckpoint),
     },
   });
   const compositeRecovery = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });
-  assert(compositeRecovery.parked === 1 && (await prisma.videoJob.findUniqueOrThrow({ where: { id: orphanComposite.id } })).status === "waiting_provider", "restart recovery parks a valid composite checkpoint");
+  assert(compositeRecovery.parked === 1 && (await prisma.videoJob.findUniqueOrThrow({ where: { id: orphanComposite.id } })).status === "waiting_provider", "restart recovery parks a valid queued composite checkpoint");
 
   await prisma.videoJob.deleteMany();
   const generateCheckpoint: AvatarProviderCheckpointV1 = {

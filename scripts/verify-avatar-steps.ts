@@ -34,6 +34,23 @@ function mock(pollSeq: Record<string, string[]>) {
 }
 
 async function main() {
+  // A durable VideoJob id follows the internal composite request so the route can expose
+  // admission-queue vs active-ffmpeg state without trusting an arbitrary user's job.
+  {
+    const { caller, calls } = mock({});
+    const result = await attemptAvatarComposite(caller, {
+      baseUrl: "BASE",
+      avatarMode: "bookend",
+      introSecs: 5,
+      tailSecs: 5,
+      introVideoUrl: "AVATAR",
+      videoJobId: "job-123",
+    });
+    const comp = calls.find((call) => call.path === "/api/heygen/composite")!;
+    assert(result.kind === "completed", "composite request completes in the mock");
+    assert(comp.body.videoJobId === "job-123", "composite request carries its owning VideoJob id");
+  }
+
   // full: no trim, 1 gen, composite without tailAvatarVideoUrl
   {
     const { caller, calls } = mock({});
