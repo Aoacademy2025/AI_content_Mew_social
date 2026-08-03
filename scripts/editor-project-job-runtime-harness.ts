@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import * as headlineHookModule from "../src/lib/headline-hook";
 import {
   canonicalVideoJobRequest,
   fingerprintVideoJobRequest,
@@ -1869,6 +1870,7 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/runpod-image-cost.server") {
       return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
+    if (specifier === "@/lib/headline-hook") return headlineHookModule;
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));

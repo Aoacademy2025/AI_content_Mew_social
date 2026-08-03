@@ -130,6 +130,17 @@ type EditorProjectDraftAttemptResult =
 
 type SetState<T> = Dispatch<SetStateAction<T>>;
 
+function withUserDraftField<T>(
+  draft: V2Draft,
+  field: keyof V2Draft,
+  value: T,
+): V2Draft {
+  if (value !== undefined) return { ...draft, [field]: value };
+  const next = { ...draft };
+  delete next[field];
+  return next;
+}
+
 function useUserDraftState<T>(
   initial: T,
   field: keyof V2Draft,
@@ -142,14 +153,14 @@ function useUserDraftState<T>(
   const initializedFieldRef = useRef(false);
   if (!initializedFieldRef.current) {
     initializedFieldRef.current = true;
-    effectiveDraftRef.current = { ...effectiveDraftRef.current, [field]: value };
+    effectiveDraftRef.current = withUserDraftField(effectiveDraftRef.current, field, value);
   }
   const setSynchronized = useCallback<SetState<T>>((next) => {
     const resolved = typeof next === "function"
       ? (next as (current: T) => T)(valueRef.current)
       : next;
     valueRef.current = resolved;
-    effectiveDraftRef.current = { ...effectiveDraftRef.current, [field]: resolved };
+    effectiveDraftRef.current = withUserDraftField(effectiveDraftRef.current, field, resolved);
     setRaw(resolved);
   }, [effectiveDraftRef, field]);
   const setFromUser = useCallback<SetState<T>>((next) => {
