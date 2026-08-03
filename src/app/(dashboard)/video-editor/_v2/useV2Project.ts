@@ -49,6 +49,7 @@ import {
 import { fetchClientJson } from "@/lib/client-request-cache";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import {
+  headlineHookDraftFragment,
   normalizeHeadlineHook,
   type HeadlineHookConfig,
 } from "@/lib/headline-hook";
@@ -598,7 +599,8 @@ export function useV2Project() {
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
       kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
-      logoOverlay, layerVisibility, headlineHook,
+      logoOverlay, layerVisibility,
+      ...headlineHookDraftFragment(headlineHook),
     };
   }
 

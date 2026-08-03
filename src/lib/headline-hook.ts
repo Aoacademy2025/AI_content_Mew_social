@@ -142,6 +142,13 @@ export function createDefaultHeadlineHook(
   };
 }
 
+/** Optional draft fields must be omitted because editor autosave accepts JSON values only. */
+export function headlineHookDraftFragment(
+  hook: HeadlineHookConfig | null | undefined,
+): { headlineHook?: HeadlineHookConfig } {
+  return hook ? { headlineHook: hook } : {};
+}
+
 export function headlineHookEndMs(
   hook: HeadlineHookConfig | null | undefined,
   totalDurationMs: number,

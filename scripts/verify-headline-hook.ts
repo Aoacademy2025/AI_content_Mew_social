@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import {
   autoHeadlineHookDurationMs,
   createDefaultHeadlineHook,
+  headlineHookDraftFragment,
   headlineHookEndFrame,
   normalizeHeadlineHook,
   normalizeHeadlineHookSuggestions,
   visibleCaptionRangeAfterHeadline,
 } from "@/lib/headline-hook";
+import { createEditorProjectAutosaveCandidate } from "@/lib/editor-project-autosave-lineage";
 import { headlineHookMotionAt } from "@/remotion/HeadlineHookView";
 import {
   DEFAULT_V2_SUB,
@@ -56,6 +58,29 @@ const hook = normalizeHeadlineHook({
   preset: "news",
   topPercent: 20,
 }, 60_000)!;
+
+const setupDraft = {
+  script: "สคริปต์ที่กำลังแก้ไข",
+  ...headlineHookDraftFragment(undefined),
+};
+assert.equal(Object.hasOwn(setupDraft, "headlineHook"), false);
+assert.ok(createEditorProjectAutosaveCandidate({
+  projectId: "headline-hook-setup-draft",
+  revision: 0,
+  draft: setupDraft,
+}), "setup draft without a configured headline must remain autosave-safe");
+
+const configuredDraft = {
+  script: "สคริปต์ที่กำลังแก้ไข",
+  ...headlineHookDraftFragment(hook),
+};
+assert.deepEqual(configuredDraft.headlineHook, hook);
+assert.ok(createEditorProjectAutosaveCandidate({
+  projectId: "headline-hook-configured-draft",
+  revision: 0,
+  draft: configuredDraft,
+}), "configured headline draft must remain autosave-safe");
+
 assert.equal(visibleCaptionRangeAfterHeadline({ startMs: 0, endMs: 4_000 }, hook, 60_000), null);
 assert.deepEqual(
   visibleCaptionRangeAfterHeadline({ startMs: 8_000, endMs: 12_000 }, hook, 60_000),
