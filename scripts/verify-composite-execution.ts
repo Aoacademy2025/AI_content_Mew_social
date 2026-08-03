@@ -11,9 +11,39 @@ import {
   type CompositeExecFile,
 } from "../src/lib/composite-execution";
 
+const AFFECTED_COMPOSITE_CANARY_USER_ID = "cmpz3vpis002clce2ygzhty3m";
+
+type EcosystemApp = {
+  name: string;
+  env?: Record<string, string>;
+  env_production?: Record<string, string>;
+};
+
+const ecosystem = require("../ecosystem.config.js") as { apps: EcosystemApp[] };
+
+function canaryIds(raw: string | undefined): string[] {
+  return (raw ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+}
+
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "composite-execution-"));
 
 async function main() {
+  const web = ecosystem.apps.find((app) => app.name === "ai-content");
+  const renderWorker = ecosystem.apps.find((app) => app.name === "render-worker");
+  assert.ok(web?.env && web.env_production, "web runtime config must define both PM2 environments");
+  assert.ok(renderWorker?.env, "render worker runtime config must exist");
+  assert.ok(
+    canaryIds(web.env.COMPOSITE_STABILITY_CANARY_USER_IDS).includes(AFFECTED_COMPOSITE_CANARY_USER_ID),
+    "the approved composite canary must survive normal PM2 deploys",
+  );
+  assert.ok(
+    canaryIds(web.env_production.COMPOSITE_STABILITY_CANARY_USER_IDS).includes(AFFECTED_COMPOSITE_CANARY_USER_ID),
+    "the approved composite canary must survive PM2 production deploys",
+  );
+  assert.equal(web.env.COMPOSITE_ADMISSION_ENABLED, "1", "web composite admission must be enabled");
+  assert.equal(web.env_production.COMPOSITE_ADMISSION_ENABLED, "1", "production web composite admission must be enabled");
+  assert.equal(renderWorker.env.COMPOSITE_ADMISSION_ENABLED, "1", "render workers must honor composite admission");
+
   assert.equal(
     resolveCompositeTimeoutMs({ userId: "normal-user", env: {} }),
     30 * 60 * 1000,

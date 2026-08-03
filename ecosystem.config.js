@@ -63,6 +63,25 @@ const heroImageRuntimeEnv = Object.freeze({
   HERO_RUNPOD_COST_STALE_MS: "10800000",
 });
 
+// The long-avatar adjustment canary must be part of the checked-in PM2 contract.
+// Keeping it only in a one-off shell/PM2 environment made a later --update-env deploy
+// silently remove the approved remediation. Preserve any additional reviewed canaries
+// from .env while always retaining the production incident cohort below.
+const approvedCompositeCanaryUserIds = ["cmpz3vpis002clce2ygzhty3m"];
+const compositeStabilityRuntimeEnv = Object.freeze({
+  COMPOSITE_STABILITY_CANARY_USER_IDS: [...new Set([
+    ...(process.env.COMPOSITE_STABILITY_CANARY_USER_IDS || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    ...approvedCompositeCanaryUserIds,
+  ])].join(","),
+  COMPOSITE_CANARY_TIMEOUT_MS: process.env.COMPOSITE_CANARY_TIMEOUT_MS || "3300000",
+  // Explicit "0" remains an emergency rollback; normal deploys default to the reviewed
+  // admission guard so a long composite cannot contend with render workers for the host.
+  COMPOSITE_ADMISSION_ENABLED: process.env.COMPOSITE_ADMISSION_ENABLED === "0" ? "0" : "1",
+});
+
 module.exports = {
   apps: [
   {
@@ -99,6 +118,7 @@ module.exports = {
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
         ...heroImageRuntimeEnv,
+        ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
         // PR-7 durable render queue: "1" = the thin render route enqueues a
         // RenderJob (returns jobId) instead of rendering in-process; the
@@ -123,6 +143,7 @@ module.exports = {
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
         ...heroImageRuntimeEnv,
+        ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
       },
     },
@@ -328,6 +349,7 @@ module.exports = {
         // Same authoritative profile used by the web fallback. 2 instances x 3 = 6
         // frame threads <= 8 cores on KVM8; Batch B owns any future tuning experiment.
         ...renderRuntimeEnv,
+        ...compositeStabilityRuntimeEnv,
       },
     },
   ],
