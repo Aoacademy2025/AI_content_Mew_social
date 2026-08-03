@@ -1,279 +1,207 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "crypto";
-import os from "os";
-import path from "path";
-import fs from "fs";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { decryptKey } from "@/lib/key-crypto";
+import { prisma } from "@/lib/prisma";
 import {
-  DEFAULT_KIE_IMAGE_MODEL,
-  isKieAuthenticationError,
-  isKieImageModel,
-  type KieImageModel,
-} from "@/lib/kie-client";
-import {
-  generateKieImageKenBurns,
+  applyKenBurns,
+  downloadAndCrop,
   isValidMp4Path,
   normalizedMarkerPath,
   safeUnlink,
-  KEN_BURNS_DURATION_SEC,
 } from "@/lib/broll-asset-lib";
+import { parseHeroBrollWindowRequest } from "@/lib/broll-window-hero";
+import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
+import { getBalance } from "@/lib/credits";
+import { isHeroAiBetaUser } from "@/lib/internal-ai-access";
+import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import {
-  resolveKieImageAccess,
-  shouldGuardKieImages,
-  tryConsumeKieImageRate,
-  capKiePrompt,
-} from "@/lib/kie-image-guards";
-import {
-  spendCredits,
-  refundCredits,
-  getBalance,
-  creditCostFor,
-  costKeyForKieModel,
-  ensureMonthlyGrant,
-} from "@/lib/credits";
-import { isInternalAiBetaEnabledFor, isInternalAiTester } from "@/lib/internal-ai-access";
+  describeHeroImageOffer,
+  generateHeroImageForVideo,
+  HeroImageGenerationError,
+  type HeroImageGenerationResult,
+} from "@/lib/video-hero-image.server";
+import { refundSettledVideoImageJob } from "@/lib/video-image-batch-settlement";
 
-// POST /api/videos/broll-window/generate — Phase 2 "สร้างด้วย AI" tab (Task 9).
-// Regenerates ONE b-roll window as a fresh AI image (kie.ai text-to-image → Ken Burns
-// motion clip, ~5s), metered to the user's credits on the managed key. The output is a
-// locally-served `stocks/` mp4 the editor drops straight into the window's `bgVideos[]`
-// entry. Internal AI testers receive the beta before NEXT_PUBLIC_BROLL_WINDOW_EDIT
-// opens the scene editor publicly; the managed-image policy below remains authoritative.
-//
-// MONEY PATH — the access gate + token resolution + spend/refund mirror
-// fetch-stock/route.ts's kie-image path EXACTLY (the single source of truth for who
-// may reach kie and who is charged is src/lib/kie-image-guards.ts::resolveKieImageAccess).
-// Security invariants:
-//   • A crafted request body can never skip the spend: `chargeImages` is derived from
-//     server env + the user's role/plan, never from the body. FREE/locked users never
-//     reach generation (403). Non-admins are restricted to PRICED models (403 otherwise),
-//     so `chargeImages` always implies cost > 0 — no free unpriced generation.
-//   • Spend happens BEFORE generation; on ANY post-spend failure the EXACT buckets the
-//     spend drained are refunded (never over-refunded — we pass back spend.fromGranted /
-//     spend.fromPurchased) under a matched `broll-window-image-refund:<id>` action.
-//   • The kie token (managed KIE_API_KEY or admin BYOK) is never logged.
-
+// POST /api/videos/broll-window/generate — regenerate one existing B-roll
+// window through the same RunPod-only Hero AI Image product used by new videos.
+// Browser-supplied model/provider fields are intentionally ignored: this route
+// never reads a KIE key and cannot cross-fallback to Cloud API.
 export const runtime = "nodejs";
-// kie poll (≤180s) + image download + Ken Burns encode can legitimately take minutes.
-export const maxDuration = 600;
+export const maxDuration = 900;
+
+async function copyOwnedHeroImage(outputUrl: string, imagePath: string): Promise<void> {
+  if (!outputUrl.startsWith("/api/renders/")) {
+    await downloadAndCrop(outputUrl, imagePath);
+    return;
+  }
+  const filename = decodeURIComponent(outputUrl.slice("/api/renders/".length));
+  if (!filename || path.basename(filename) !== filename) {
+    throw new Error("invalid local Hero image path");
+  }
+  const sourcePath = path.join(process.cwd(), "public", "renders", filename);
+  if (!fs.existsSync(sourcePath)) throw new Error("persisted Hero image is missing");
+  fs.copyFileSync(sourcePath, imagePath);
+}
 
 export async function POST(req: Request) {
   const user = await getCurrentUser();
-  const publicEnabled = process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1";
-  if (!user) return NextResponse.json({ error: publicEnabled ? "Unauthorized" : "not_enabled" }, { status: publicEnabled ? 401 : 404 });
-  if (!isInternalAiBetaEnabledFor(user, publicEnabled)) {
-    return NextResponse.json({ error: "not_enabled" }, { status: 404 });
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isHeroAiBetaUser(user)) {
+    return NextResponse.json(
+      { error: "beta_only", message: "Hero AI Image ยังเปิดเฉพาะทีมงาน (Beta)" },
+      { status: 403 },
+    );
   }
 
-  const body = (await req.json().catch(() => null)) as
-    | { prompt?: unknown; model?: unknown }
-    | null;
+  const body = await req.json().catch(() => null);
+  const parsed = parseHeroBrollWindowRequest(body);
+  if (!parsed.ok) {
+    return NextResponse.json(
+      { error: parsed.error, message: parsed.message },
+      { status: 400 },
+    );
+  }
+  const input = parsed.value;
 
-  // 3) Managed-kie access gate + metering decision — single source of truth
-  //    (resolveKieImageAccess), identical to fetch-stock. Flag-off → kiePaidUnlocked
-  //    false → admin-only; FREE non-admin never unlocked.
-  const managedKieOn = process.env.MANAGED_KIE === "1";
-  const creditsLive = process.env.CREDITS_LIVE === "1";
-  const isAdmin = user.role === "ADMIN";
-  const isPaidPlan = user.plan === "PRO" || user.plan === "BUSINESS";
-  const kieEnvKey = process.env.KIE_API_KEY || null;
-  const { canUseKieImages, chargeImages } = resolveKieImageAccess({
-    managedKieOn,
-    creditsLive,
-    isAdmin,
-    isPaidPlan,
-    isInternalTester: isInternalAiTester(user),
+  const sourceJob = await prisma.videoJob.findFirst({
+    where: { id: input.videoJobId, userId: user.id },
+    select: { status: true },
   });
-
-  // AI image gen is admin-always; paid users only when fully unlocked (managed + credits + paid).
-  if (!canUseKieImages) {
+  if (!sourceJob) {
     return NextResponse.json(
-      { error: "not_unlocked", message: "สร้างรูป AI ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" },
-      { status: 403 },
+      { error: "video_not_found", message: "ไม่พบวิดีโอต้นฉบับ" },
+      { status: 404 },
+    );
+  }
+  if (sourceJob.status !== "done") {
+    return NextResponse.json(
+      { error: "video_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อมแก้ไข" },
+      { status: 409 },
     );
   }
 
-  // 4) Model: default when omitted; reject unknown (400). Non-admins are restricted to
-  //    PRICED models server-side (403 otherwise) — we never coerce, so a paid user can't
-  //    request an unpriced/admin-only model and get free generation.
-  const rawModel = body?.model;
-  let model: KieImageModel;
-  if (rawModel === undefined || rawModel === null || rawModel === "") {
-    model = DEFAULT_KIE_IMAGE_MODEL;
-  } else if (isKieImageModel(rawModel)) {
-    model = rawModel;
-  } else {
-    return NextResponse.json(
-      { error: "invalid_model", message: "โมเดลรูปภาพไม่ถูกต้อง" },
-      { status: 400 },
-    );
-  }
-  const costKey = costKeyForKieModel(model);
-  if (!isAdmin && costKey === null) {
-    return NextResponse.json(
-      { error: "model_not_available", message: "โมเดลนี้ยังไม่เปิดให้ใช้งาน" },
-      { status: 403 },
-    );
-  }
-
-  // 5) Prompt: required, non-empty; length-capped (defense-in-depth, same 2000-char cap
-  //    fetch-stock applies on the managed path).
-  const rawPrompt = typeof body?.prompt === "string" ? body.prompt.trim() : "";
-  if (!rawPrompt) {
-    return NextResponse.json(
-      { error: "empty_prompt", message: "กรุณาระบุคำอธิบายรูปภาพที่ต้องการ" },
-      { status: 400 },
-    );
-  }
-  const prompt = capKiePrompt(rawPrompt);
-
-  // 6) Token actually sent to kie.ai — mirrors fetch-stock's resolution order:
-  //    flag-off → BYOK; admin → managed key when set else own BYOK; paid → managed key only.
-  const kieKey = user.kieKey ? decryptKey(user.kieKey) : null;
-  const kieToken: string | null = !managedKieOn
-    ? kieKey
-    : isAdmin
-      ? kieEnvKey ?? kieKey
-      : isPaidPlan
-        ? kieEnvKey
-        : kieKey;
-  if (!kieToken) {
+  const offer = describeHeroImageOffer();
+  if (!offer.available || offer.providerRoute !== "runpod-custom") {
     return NextResponse.json(
       {
-        error: "missing_key",
-        missingKey: "kie",
-        message: "ยังไม่ได้ตั้งค่า kie.ai API key — ไปที่ Settings > API Keys",
+        error: "hero_image_unavailable",
+        message: "Hero AI Image ยังไม่พร้อมบน RunPod custom endpoint ที่ผ่านการตรวจสอบ",
       },
-      { status: 400 },
+      { status: 503 },
     );
   }
-  // Does this request run on the shared server key? Guardrails (hourly rate) apply to any
-  // managed-key generation — admins included (still uncharged) — so one client can't loop
-  // the shared key. BYOK/admin-BYOK stays unguarded (byte-identical to fetch-stock).
-  const usesManagedKey = managedKieOn && !!kieEnvKey && kieToken === kieEnvKey;
-  const guardImages = shouldGuardKieImages({ usesManagedKey, chargeImages });
-
-  // 7) Per-user hourly rate ceiling on managed-key generations. Runs AFTER validation so
-  //    a rejected (400/403) request never consumes a rate slot, and BEFORE any spend.
-  if (guardImages && !tryConsumeKieImageRate(user.id)) {
+  const costSnapshot = await getRunpodImageCostSnapshot({ endpointId: offer.providerEndpoint });
+  if (!costSnapshot.admitted) {
     return NextResponse.json(
-      { error: "rate_limited", message: "สร้างรูป AI บ่อยเกินไปในชั่วโมงนี้ กรุณาลองใหม่ภายหลัง" },
-      { status: 429 },
+      {
+        error: "runpod_cost_guard",
+        retryable: true,
+        message: costSnapshot.status === "stale"
+          ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงยังไม่รับงานใหม่"
+          : "ต้นทุน Hero AI Image สูงกว่าเพดาน จึงยังไม่รับงานใหม่",
+      },
+      { status: 503 },
     );
   }
 
-  // 8) Spend-before-generate (non-admin managed only). `cost` is > 0 here whenever
-  //    chargeImages is true (non-admins were restricted to priced models above).
-  const cost = costKey ? creditCostFor(costKey) : 0;
-  const spendId = randomUUID();
-  let charged = false;
-  let spent: { fromGranted: number; fromPurchased: number; balanceAfter: number } | null = null;
-  if (chargeImages) {
-    // Ensure the paid user's current-period monthly allowance is granted before the first
-    // spend (idempotent; itself CREDITS_LIVE-gated). Non-fatal.
-    try {
-      await ensureMonthlyGrant(user.id);
-    } catch {
-      /* non-fatal */
-    }
-    const spend = await spendCredits(user.id, cost, `broll-window-image:${spendId}`);
-    if (!spend.ok) {
-      return NextResponse.json(
-        {
-          error: "insufficient_credits",
-          need: cost,
-          balance: spend.balanceAfter,
-          message: "เครดิตไม่พอสำหรับสร้างรูป AI",
-        },
-        { status: 402 },
-      );
-    }
-    charged = true;
-    spent = {
-      fromGranted: spend.fromGranted,
-      fromPurchased: spend.fromPurchased,
-      balanceAfter: spend.balanceAfter,
-    };
-  }
-
-  // 9) Generate: kie text-to-image → 5s vertical Ken Burns clip, served from stocks/.
-  //    Output name is 100% server-generated (Date.now()+randomUUID) — the /api/stocks/
-  //    [filename] route only serves flat basenames, so nothing escapes the stocks dir.
   const stocksDir = path.join(process.cwd(), "stocks");
   fs.mkdirSync(stocksDir, { recursive: true });
   const stamp = `${Date.now()}-${randomUUID()}`;
   const outFile = `broll-ai-${stamp}.mp4`;
   const outPath = path.join(stocksDir, outFile);
-  // Scratch input for the downloaded source image (Ken Burns reads it, writes a fresh mp4).
-  const tmpImagePath = path.join(os.tmpdir(), `broll-ai-src-${stamp}.jpg`);
+  const tmpImagePath = path.join(os.tmpdir(), `broll-hero-src-${stamp}.png`);
+  let generated: HeroImageGenerationResult | null = null;
 
   try {
-    const { duration } = await generateKieImageKenBurns(
-      prompt,
-      "broll-window",
-      kieToken,
-      model,
-      tmpImagePath,
-      outPath,
-    );
-    if (!isValidMp4Path(outPath)) {
-      throw new Error("kie Ken Burns produced no usable output");
-    }
-    // Ken Burns output is already CFR/no-B-frame/yuv420p @30fps — mark it normalized so a
-    // later render step skips a redundant (and possibly failing) re-encode. Mirrors
-    // fetch-stock's AI path.
-    try {
-      fs.writeFileSync(normalizedMarkerPath(outPath), "");
-    } catch {}
+    generated = await generateHeroImageForVideo({
+      userId: user.id,
+      plan: user.plan,
+      prompt: input.prompt,
+      idempotencyKey: input.idempotencyKey,
+      videoJobId: input.videoJobId,
+      sceneIndex: input.sceneIndex,
+      sceneTitle: `B-roll scene ${input.sceneIndex + 1}`,
+      style: input.heroStyle,
+    });
+    await copyOwnedHeroImage(generated.outputUrl, tmpImagePath);
+    await applyKenBurns(tmpImagePath, outPath, input.kenBurnsDurationSec);
+    if (!isValidMp4Path(outPath)) throw new Error("Hero Ken Burns produced no usable output");
+    try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
 
-    const clipDuration = duration || KEN_BURNS_DURATION_SEC;
-    // Charged path: authoritative post-spend balance. Uncharged (admin/BYOK): read current.
-    const balanceAfter = charged && spent ? spent.balanceAfter : (await getBalance(user.id)).total;
+    const balanceAfter = (await getBalance(user.id)).total;
     return NextResponse.json({
       src: `/api/stocks/${outFile}`,
-      clipDuration,
-      creditsSpent: charged ? cost : 0,
+      clipDuration: input.kenBurnsDurationSec,
+      creditsSpent: generated.creditCost,
       balanceAfter,
+      provider: generated.provider,
+      model: generated.providerModel,
     });
-  } catch (e) {
-    // Drop any partial output, then refund the EXACT buckets the spend drained (matched
-    // action id). Refund failure is logged but still surfaces the 502 — never swallow the
-    // gen error.
+  } catch (error) {
     safeUnlink(outPath);
     safeUnlink(normalizedMarkerPath(outPath));
-    if (charged && spent) {
+    let refundPending = false;
+
+    // The durable Hero service refunds provider failures itself. If RunPod
+    // succeeded but the customer-facing clip failed locally, compensate that
+    // exact settled image so the user never pays for an unusable B-roll asset.
+    if (generated) {
       try {
-        await refundCredits(
-          user.id,
-          spent.fromGranted,
-          spent.fromPurchased,
-          `broll-window-image-refund:${spendId}`,
-        );
-      } catch (re) {
-        console.error("[broll-window/generate] refund failed after gen error:", re);
+        await refundSettledVideoImageJob({
+          userId: user.id,
+          jobId: generated.jobId,
+          reason: "broll_window_post_processing_failed",
+        });
+      } catch (refundError) {
+        refundPending = true;
+        console.error("[broll-window/generate] Hero output refund failed:", refundError);
       }
     }
-    console.error("[broll-window/generate] generation failed:", e);
-    if (isKieAuthenticationError(e)) {
+
+    console.error("[broll-window/generate] Hero generation failed:", error);
+    if (refundPending) {
       return NextResponse.json(
-        usesManagedKey
-          ? {
-              error: "provider_configuration_error",
-              retryable: false,
-              message: "ระบบสร้างรูป AI ปิดปรับปรุงชั่วคราว ทีมงานกำลังแก้ไข",
-            }
-          : {
-              error: "invalid_key",
-              retryable: false,
-              message: "kie.ai API key ใช้งานไม่ได้ กรุณาตรวจสอบ key ใน Settings",
-            },
+        {
+          error: "refund_pending",
+          retryable: true,
+          retrySameRequest: true,
+          message: "สร้างคลิปจากภาพไม่สำเร็จและยังยืนยันการคืนเครดิตไม่ได้ กรุณาลองคำขอเดิมอีกครั้ง",
+        },
         { status: 503 },
       );
     }
+    if (error instanceof HeroImageGenerationError) {
+      if (error.code === "INSUFFICIENT_CREDITS") {
+        const balance = (await getBalance(user.id)).total;
+        return NextResponse.json(
+          {
+            error: "insufficient_credits",
+            need: HERO_AI_IMAGE_CREDITS,
+            balance,
+            message: "เครดิตไม่พอสำหรับ Hero AI Image",
+          },
+          { status: 402 },
+        );
+      }
+      return NextResponse.json(
+        {
+          error: error.code.toLowerCase(),
+          retryable: error.providerFailure?.retryable ?? error.code !== "NOT_CONFIGURED",
+          message: error.message || "Hero AI Image ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
+        },
+        { status: error.status },
+      );
+    }
     return NextResponse.json(
-      { error: "generation_failed", message: "สร้างรูป AI ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" },
-      { status: 502 },
+      {
+        error: "generation_failed",
+        retryable: true,
+        message: "สร้าง Hero AI Image ไม่สำเร็จ ระบบคืนเครดิตแล้ว กรุณาลองใหม่อีกครั้ง",
+      },
+      { status: 503 },
     );
   } finally {
     safeUnlink(tmpImagePath);

@@ -725,7 +725,7 @@ export function PostPhase({
         </aside>
 
         {brollEditEnabled && ed.selectedWindow != null && (
-          <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
+          <BrollWindowInspector ed={ed} videoJobId={job.jobId} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
         )}
       </div>
 

@@ -123,3 +123,7 @@ export function buildKieImagePrompt(
     : `${looks.look}, purely visual language-free surfaces, blank unmarked signs and labels`);
   return `${parts.join(", ")}.`;
 }
+
+/** Provider-neutral name for Hero/Video Editor call sites. The legacy export
+ * remains for Cloud API and AutoMix compatibility. */
+export const buildBrollImagePrompt = buildKieImagePrompt;

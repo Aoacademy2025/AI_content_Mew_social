@@ -59,6 +59,7 @@
     "verify:broll-preferences": "tsx scripts/verify-broll-preferences.ts",
     "verify:broll-spans": "tsx scripts/verify-broll-spans.ts",
     "verify:broll-window-gen": "tsx scripts/verify-broll-window-gen.ts",
+    "verify:hero-broll-window-migration": "tsx scripts/verify-hero-broll-window-migration.ts",
     "verify:broll-rerender": "tsx scripts/verify-broll-rerender.ts",
     "verify:broll-window-management": "tsx scripts/verify-broll-window-management.ts && tsx scripts/verify-broll-pending-actions.ts && tsx scripts/verify-cutaway-plan.ts",
     "verify:ken-burns-aspect": "tsx scripts/verify-ken-burns-aspect.ts",

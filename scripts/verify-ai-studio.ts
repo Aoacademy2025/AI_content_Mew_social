@@ -208,9 +208,11 @@ check(
     editorInspector.includes("disabled: !aiImageEnabled"),
 );
 check(
-  "internal testers can edit individual scenes before the public flag opens",
+  "individual Hero scenes use the same product-owner beta as new-video generation",
   editorPostPhase.includes("BROLL_WINDOW_EDIT || internalAiTester") &&
-    brollGenerateRoute.includes("isInternalAiBetaEnabledFor(user, publicEnabled)"),
+    brollGenerateRoute.includes("isHeroAiBetaUser(user)") &&
+    brollGenerateRoute.includes("generateHeroImageForVideo") &&
+    !brollGenerateRoute.includes("generateKieImageKenBurns"),
 );
 const ttsStepIndex = editorOrchestrator.indexOf('await step("tts", 10)');
 const sceneSplitIndex = editorOrchestrator.indexOf("const brollWindows = brollWindowMode");

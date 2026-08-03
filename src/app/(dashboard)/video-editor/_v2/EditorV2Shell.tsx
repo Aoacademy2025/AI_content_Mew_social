@@ -597,9 +597,9 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.internalAiTester && (p.isAdmin || p.isPaidManagedKie)} downloadFilename={downloadFilename} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.heroAiBeta} downloadFilename={downloadFilename} />
           ) : (
-            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.internalAiTester && (p.isAdmin || p.isPaidManagedKie)} downloadFilename={downloadFilename} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.heroAiBeta} downloadFilename={downloadFilename} />
           )
         ) : (
           <ExportedView

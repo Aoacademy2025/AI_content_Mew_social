@@ -16,7 +16,7 @@
  * and remains visible-but-disabled outside the managed image beta.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ArrowLeft,
@@ -32,8 +32,8 @@ import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, Chip, GroupLabel, Segmented, Toggle } from "./ui";
 import { useIsMobile } from "./useIsMobile";
 import { brollWindowSpans } from "@/lib/broll-spans";
-import { buildKieImagePrompt } from "@/lib/kie-image-prompt";
-import { creditCostFor, costKeyForKieModel } from "@/lib/credit-costs";
+import { buildBrollImagePrompt } from "@/lib/kie-image-prompt";
+import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
 import {
@@ -77,15 +77,15 @@ function inferKindFromSrc(src: unknown): WindowEditKind {
 }
 
 function entrySourceKind(entry: Record<string, unknown> | null): WindowEditKind {
-  if (entry?.provider === "kie-ai") return "ai";
+  if (entry?.provider === "kie-ai" || entry?.provider === "runpod") return "ai";
   return inferKindFromSrc(entry?.src);
 }
 
-// Source badge for a live bgVideos entry: trust `provider` when present (kie-ai → AI, any other
-// provider → stock), else fall back to filename inference for post-apply edited windows.
+// Source badge for a live bgVideos entry: both the legacy Cloud path and Hero
+// RunPod path are AI; otherwise fall back to filename inference after apply.
 function entrySourceLabel(entry: Record<string, unknown> | null): string {
   const provider = entry?.provider;
-  if (provider === "kie-ai") return "AI";
+  if (provider === "kie-ai" || provider === "runpod") return "AI";
   if (typeof provider === "string" && provider) return "สต็อก";
   return sourceLabel(entrySourceKind(entry));
 }
@@ -101,12 +101,6 @@ function editableInternalSrc(raw: unknown): string | null {
   if (src.startsWith("/renders/")) src = `/api/renders/${src.slice("/renders/".length)}`;
   return /^\/api\/(renders|stocks)\/[\w.-]+\.mp4$/.test(src) ? src : null;
 }
-
-const AI_MODELS: { id: string; label: string }[] = [
-  { id: "flux-2/pro-text-to-image", label: "Flux" },
-  { id: "gpt-image-2-text-to-image", label: "GPT" },
-  { id: "nano-banana-2", label: "Nano" },
-];
 
 const IMAGE_EXTS = new Set(["jpg", "jpeg", "png", "webp"]);
 const VIDEO_EXTS = new Set(["mp4", "mov", "webm"]);
@@ -250,8 +244,9 @@ export function PendingBrollChangesDialog({ ed }: { ed: PostPhaseEditor }) {
   );
 }
 
-export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualStyle, aiImageEnabled }: {
+export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, brollVisualStyle, aiImageEnabled }: {
   ed: PostPhaseEditor;
+  videoJobId: string | null;
   brollRegionPreference: BrollRegionPreference;
   brollVisualStyle: BrollVisualStyle;
   aiImageEnabled: boolean;
@@ -281,10 +276,10 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
   const [aiSimpleText, setAiSimpleText] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [advancedOverride, setAdvancedOverride] = useState<string | null>(null);
-  const [aiModel, setAiModel] = useState<string>("gpt-image-2-text-to-image");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiInsufficient, setAiInsufficient] = useState<{ need: number; balance: number } | null>(null);
+  const aiRequestRef = useRef<{ key: string; id: string } | null>(null);
 
   const rawEntry = index != null ? rawBgVideoAt(ed.previewConfig, index) : null;
 
@@ -299,10 +294,10 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     setAiSimpleText("");
     setAdvancedOpen(false);
     setAdvancedOverride(null);
-    setAiModel("gpt-image-2-text-to-image");
     setAiBusy(false);
     setAiError(null);
     setAiInsufficient(null);
+    aiRequestRef.current = null;
     const kw = typeof rawEntry?.keyword === "string" ? rawEntry.keyword : "";
     setSearchKeyword(kw);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -328,16 +323,17 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
     : entrySourceLabel(rawEntry);
   const positionLabel = (spans.findIndex((s) => s.index === index) + 1) || index + 1;
   const enabled = ed.isBrollWindowEnabled(index);
+  const windowDurationSec = (span.endMs - span.startMs) / 1_000;
   const previousSpan = positionLabel > 1 ? spans[positionLabel - 2] : null;
   const nextSpan = positionLabel < spans.length ? spans[positionLabel] : null;
 
-  const composedPrompt = buildKieImagePrompt(aiSimpleText, {
+  const composedPrompt = buildBrollImagePrompt(aiSimpleText, {
     region: brollRegionPreference,
     style: brollVisualStyle,
     terms: null,
   });
   const finalPrompt = (advancedOverride ?? composedPrompt).trim();
-  const genCost = creditCostFor(costKeyForKieModel(aiModel) ?? "image-gpt-1k");
+  const genCost = HERO_AI_IMAGE_CREDITS;
 
   function close() { ed.setSelectedWindow(null); }
 
@@ -481,21 +477,38 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
   }
 
   async function handleGenerate() {
-    if (!aiImageEnabled) { setAiError("AI Image กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้"); return; }
+    if (!aiImageEnabled) { setAiError("Hero AI Image กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้"); return; }
     // Money guard: /api/videos/broll-window/generate spends credits BEFORE anything is shown,
     // and a disabled window never renders its asset — the user would pay for nothing.
     if (!enabled) { setAiError("ช่วงนี้ปิด B-roll อยู่ — เปิดก่อนจึงจะสร้างภาพได้ (กันเครดิตหายฟรี)"); return; }
     if (!finalPrompt) { setAiError("กรุณาระบุคำอธิบายรูปภาพที่ต้องการ"); return; }
+    if (!videoJobId) { setAiError("ไม่พบวิดีโอต้นฉบับ กรุณาโหลดโปรเจกต์ใหม่"); return; }
     setAiBusy(true);
     setAiError(null);
     setAiInsufficient(null);
+    const requestKey = `${videoJobId}:${index}:${finalPrompt}`;
+    const requestId = aiRequestRef.current?.key === requestKey
+      ? aiRequestRef.current.id
+      : crypto.randomUUID();
+    aiRequestRef.current = { key: requestKey, id: requestId };
     try {
       const res = await fetch("/api/videos/broll-window/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: finalPrompt, model: aiModel }),
+        body: JSON.stringify({
+          prompt: finalPrompt,
+          requestId,
+          videoJobId,
+          sceneIndex: index,
+          durationSec: windowDurationSec,
+          visualStyle: brollVisualStyle,
+        }),
       });
       const d = await res.json().catch(() => null);
+      // A definite HTTP response closes this attempt. Only an ambiguous network
+      // failure or an unconfirmed refund keeps the same id so retry cannot
+      // reserve credits twice.
+      if (d?.retrySameRequest !== true) aiRequestRef.current = null;
       if (res.status === 402) {
         setAiInsufficient({ need: d?.need ?? genCost, balance: d?.balance ?? 0 });
         return;
@@ -735,14 +748,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            {AI_MODELS.map((m) => {
-              const cost = creditCostFor(costKeyForKieModel(m.id) ?? "");
-              return (
-                <Chip key={m.id} selected={aiModel === m.id} onClick={() => setAiModel(m.id)}>
-                  {m.label} · {cost} เครดิต
-                </Chip>
-              );
-            })}
+            <Chip selected>Hero · Z-Image Turbo · RunPod · {genCost} เครดิต</Chip>
           </div>
           <button
             onClick={() => setAdvancedOpen((o) => !o)}
@@ -789,7 +795,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
             title={enabled ? undefined : "เปิด B-roll ช่วงนี้ก่อนจึงจะสร้างภาพได้"}
             style={aiBusy || !finalPrompt || !enabled ? { opacity: 0.7, cursor: aiBusy ? "wait" : "default" } : undefined}
           >
-            {aiBusy ? "กำลังสร้างภาพ…" : `สร้างภาพ (ใช้ ${genCost} เครดิต)`}
+            {aiBusy ? "กำลังสร้าง Hero AI Image…" : `สร้าง Hero AI Image (ใช้ ${genCost} เครดิต)`}
           </BtnPrimary>
         </div>
       )}

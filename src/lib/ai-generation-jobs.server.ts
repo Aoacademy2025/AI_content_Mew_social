@@ -6,7 +6,10 @@ import {
   heroVoiceResultFromJob,
   type HeroVoiceGenerationResult,
 } from "@/lib/hero-voice-generation.server";
-export { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
+export {
+  refundSettledVideoImageBatch,
+  refundSettledVideoImageJob,
+} from "@/lib/video-image-batch-settlement";
 
 export type PublicAiGenerationJob = {
   id: string;

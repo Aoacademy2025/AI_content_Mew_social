@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { prisma } from "../src/lib/prisma";
-import { refundSettledVideoImageBatch } from "../src/lib/ai-generation-jobs.server";
+import {
+  refundSettledVideoImageBatch,
+  refundSettledVideoImageJob,
+} from "../src/lib/ai-generation-jobs.server";
 
 const userId = "hero-image-refund-user";
 const videoJobId = "hero-video-job";
@@ -60,6 +63,19 @@ async function main() {
         creditsFromGranted: 2,
         creditsFromPurchased: 0,
         idempotencyKey: `video:${videoJobId}:scene:2`,
+      },
+      {
+        id: "window-settled",
+        userId,
+        kind: "image",
+        provider: "runpod",
+        model: "z-image-turbo",
+        status: "completed",
+        chargeState: "settled",
+        creditCost: 3,
+        creditsFromGranted: 0,
+        creditsFromPurchased: 3,
+        idempotencyKey: `broll-window:${videoJobId}:scene:3:request:fdfbf8f4-1964-4ac8-98f7-6cc25bf86fd3`,
       },
       {
         id: "other-video-settled",
@@ -127,6 +143,39 @@ async function main() {
     }),
     2,
     "batch compensation must be idempotent",
+  );
+
+  const windowRefund = await refundSettledVideoImageJob({
+    userId,
+    jobId: "window-settled",
+    reason: "broll_window_post_processing_failed",
+  });
+  assert.deepEqual(windowRefund, { refunded: true, refundedCredits: 3 });
+  const windowJob = await prisma.aiGenerationJob.findUniqueOrThrow({
+    where: { id: "window-settled" },
+  });
+  assert.equal(windowJob.status, "failed");
+  assert.equal(windowJob.chargeState, "refunded");
+  assert.equal(windowJob.errorCode, "POST_PROCESSING_FAILED");
+  const afterWindowRefund = await prisma.creditBalance.findUniqueOrThrow({ where: { userId } });
+  assert.deepEqual(
+    { granted: afterWindowRefund.granted, purchased: afterWindowRefund.purchased },
+    { granted: 10, purchased: 43 },
+  );
+  assert.deepEqual(
+    await refundSettledVideoImageJob({
+      userId,
+      jobId: "window-settled",
+      reason: "broll_window_post_processing_failed",
+    }),
+    { refunded: false, refundedCredits: 0 },
+    "per-window output compensation must be idempotent",
+  );
+  assert.equal(
+    await prisma.creditLedger.count({
+      where: { userId, action: { startsWith: "ai-image-output-refund:window-settled:" } },
+    }),
+    1,
   );
 
   console.log("verify-hero-image-batch-refund: ALL PASS");
