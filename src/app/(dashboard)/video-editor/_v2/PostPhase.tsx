@@ -40,6 +40,9 @@ import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-prefer
 import { trackEvent } from "@/lib/client-telemetry";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
+import { HeadlineHookControls } from "./HeadlineHookControls";
+import { HeadlineHookPreview } from "./HeadlineHookPreview";
+import type { HeadlineHookConfig } from "@/lib/headline-hook";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -60,6 +63,8 @@ export function PostPhase({
   onLogoOverlayChange,
   layerVisibility,
   onLayerVisibilityChange,
+  headlineHook,
+  onHeadlineHookChange,
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
@@ -81,6 +86,8 @@ export function PostPhase({
   onLayerVisibilityChange: (
     next: EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility)
   ) => void;
+  headlineHook?: HeadlineHookConfig;
+  onHeadlineHookChange: (next: HeadlineHookConfig | undefined) => void;
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
@@ -90,7 +97,7 @@ export function PostPhase({
   aiImageEnabled: boolean;
   downloadFilename: string;
 }) {
-  const [rightTab, setRightTab] = useState<"subtitle" | "logo">("subtitle");
+  const [rightTab, setRightTab] = useState<"hook" | "subtitle" | "logo">("hook");
   const rightTabsId = useId();
   const logoPanelOpenedRef = useRef(false);
   const ed = usePostPhaseEditor(job, script, {
@@ -102,13 +109,15 @@ export function PostPhase({
     onLogoOverlayChange,
     layerVisibility,
     onLayerVisibilityChange,
+    headlineHook,
+    onHeadlineHookChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
     canRunProjectOperation,
     surface: "desktop",
   });
-  const handleRightTabChange = (next: "subtitle" | "logo") => {
+  const handleRightTabChange = (next: "hook" | "subtitle" | "logo") => {
     setRightTab(next);
     if (next === "logo" && !logoPanelOpenedRef.current) {
       logoPanelOpenedRef.current = true;
@@ -351,6 +360,13 @@ export function PostPhase({
               asset={ed.logo.asset}
               visible={ed.layerVisibility.logo}
             />
+            <HeadlineHookPreview
+              hook={ed.headlineHook}
+              totalDurationMs={ed.totalDurationMs}
+              videoRef={ed.videoRef}
+              playing={ed.playing}
+              onTopPercent={(topPercent) => ed.setHeadlineHook({ topPercent })}
+            />
             {ed.layerVisibility.subtitles && (
               /* เส้นไกด์ตำแหน่งซับ */
               <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
@@ -363,6 +379,7 @@ export function PostPhase({
               videoRef={ed.videoRef}
               playing={ed.playing}
               onVerticalPos={(p) => ed.set("verticalPos", p)}
+              suppressUntilMs={ed.subtitleSuppressionEndMs}
             />
             {ed.adjustingAvatar && ed.canAdjustAvatar && ed.preview && (
               <AvatarAdjustOverlay
@@ -394,7 +411,7 @@ export function PostPhase({
           </div>
         </main>
 
-        {/* ── ขวา 330px: คุมซับ / โลโก้ ── */}
+        {/* ── ขวา 330px: พาดหัว / ซับ / โลโก้ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
           <Segmented
             id={rightTabsId}
@@ -403,11 +420,22 @@ export function PostPhase({
             value={rightTab}
             onChange={handleRightTabChange}
             options={[
+              { value: "hook", label: "พาดหัว" },
               { value: "subtitle", label: "ซับ" },
               { value: "logo", label: "โลโก้" },
             ]}
             style={{ width: "100%", justifyContent: "center" }}
           />
+
+          {rightTab === "hook" && (
+            <div
+              id={`${rightTabsId}-hook-panel`}
+              role="tabpanel"
+              aria-labelledby={`${rightTabsId}-hook-tab`}
+            >
+              <HeadlineHookControls editor={ed} logoOverlay={logoOverlay} />
+            </div>
+          )}
 
           {rightTab === "subtitle" && (
             <div
@@ -762,7 +790,7 @@ export function PostPhase({
         )}
       </div>
 
-      {/* Timeline หลายแทร็ก (P6b) — ซับลากขอบแก้เวลาได้ และเลเยอร์ที่แยกได้เปิด–ปิดได้ */}
+      {/* Timeline หลายแทร็ก (P6b) — พาดหัว/ซับลากเวลาได้ และเลเยอร์ที่แยกได้เปิด–ปิดได้ */}
       <TimelinePanel
         captions={ed.captions}
         onCaptionsChange={ed.handleCaptionsChange}
@@ -791,6 +819,8 @@ export function PostPhase({
         layerAvailability={ed.layerAvailability}
         onLayerVisibilityChange={ed.setLayerEnabled}
         layerControlsDisabled={ed.exp.phase === "burning" || ed.exp.phase === "saving" || ed.logo.saving}
+        headlineHook={ed.headlineHook}
+        onHeadlineHookDurationChange={(durationMs) => ed.setHeadlineHook({ durationMs })}
       />
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
       {brollEditEnabled && <PendingBrollChangesDialog ed={ed} />}

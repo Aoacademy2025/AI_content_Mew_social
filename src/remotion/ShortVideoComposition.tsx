@@ -17,6 +17,8 @@ import type { ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "
 import { renderSubtitle } from "./renderSubtitle";
 import { BROLL_SEQUENCE_GUARD_FRAMES } from "../lib/broll-coverage";
 import { resolveBrollPlaybackPlan } from "../lib/broll-playback";
+import { headlineHookEndFrame } from "../lib/headline-hook";
+import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
 
 // Re-export for backwards compatibility with any other importers
 export { renderSubtitle };
@@ -549,6 +551,7 @@ function EndFade({ totalFrames }: { totalFrames: number }) {
 export function ShortVideoComposition({
   bgVideos,
   keywordPopups,
+  headlineHook,
   voiceFile,
   voiceVolume = 1,
   bgmFile,
@@ -569,6 +572,7 @@ export function ShortVideoComposition({
   const preset = subtitleStylePreset ?? "stroke";
   const textEffect: SubtitleTextEffect = subtitleTextEffect ?? "pop";
   const accentColor = subtitleAccentColor ?? "#FFE500";
+  const hookEndFrame = headlineHookEndFrame(headlineHook, fps, durationInFrames);
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
@@ -663,13 +667,20 @@ export function ShortVideoComposition({
       {/* Background music */}
       {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
 
+      {headlineHook?.enabled && hookEndFrame > 0 && (
+        <Sequence from={0} durationInFrames={hookEndFrame} layout="none">
+          <HeadlineHookOverlay hook={headlineHook} durationInFrames={hookEndFrame} />
+        </Sequence>
+      )}
+
       {/* Subtitles */}
       {keywordPopups.map((p) => {
-        const dur = p.end - p.start;
+        const visibleStart = Math.max(p.start, hookEndFrame);
+        const dur = p.end - visibleStart;
         if (dur <= 0) return null;
         const capPreset = p.stylePreset ?? preset;
         return (
-          <Sequence key={`sub-${p.start}-${p.end}`} from={p.start} durationInFrames={dur} layout="none">
+          <Sequence key={`sub-${p.start}-${p.end}`} from={visibleStart} durationInFrames={dur} layout="none">
             <AnimatedSubtitle
               popup={p}
               preset={capPreset}

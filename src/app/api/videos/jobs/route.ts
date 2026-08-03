@@ -47,6 +47,7 @@ import { isHeroAiBetaUser, isInternalAiBetaEnabledFor, isInternalAiTester } from
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
+import { normalizeHeadlineHook } from "@/lib/headline-hook";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -267,6 +268,23 @@ export async function POST(req: Request) {
       const sourceProjectId = srcJob.projectId;
       const parsed = parseVideoJobOutput(srcJob.outputJson);
       if (!parsed?.preview) return NextResponse.json({ error: "source_not_exportable", message: "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับแก้ซับ/ส่งออก" }, { status: 400 });
+
+      const rawHeadlineHook = subtitleOverlayConfig.headlineHook;
+      if (rawHeadlineHook !== undefined) {
+        const overlayDurationFrames = Number(subtitleOverlayConfig.durationInFrames);
+        const overlayDurationMs = Number.isFinite(overlayDurationFrames) && overlayDurationFrames > 0
+          ? (overlayDurationFrames / 30) * 1_000
+          : 0;
+        const headlineHook = normalizeHeadlineHook(
+          rawHeadlineHook,
+          Math.max(parsed.preview.audioDurationMs, overlayDurationMs),
+        );
+        if (!headlineHook) {
+          return NextResponse.json({ error: "invalid_headline_hook", message: "ข้อมูลพาดหัวเปิดคลิปไม่ถูกต้อง" }, { status: 400 });
+        }
+        if (headlineHook.enabled) subtitleOverlayConfig.headlineHook = headlineHook;
+        else delete subtitleOverlayConfig.headlineHook;
+      }
 
       const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
       if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });

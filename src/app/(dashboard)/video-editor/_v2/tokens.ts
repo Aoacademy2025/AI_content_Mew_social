@@ -39,6 +39,7 @@ export const color = {
   // Track colors (คงที่ทั้งระบบ)
   trackAvatar: "#8B5CF6",
   trackBroll: "#38BDF8",
+  trackHook: "#F97316",
   trackSub: "#FBBF24",
   trackVoice: "#34D399",
   trackMusic: "#F472B6",

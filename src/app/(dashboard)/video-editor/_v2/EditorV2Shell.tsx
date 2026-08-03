@@ -305,6 +305,8 @@ export function EditorV2Shell() {
     onLogoOverlayChange: p.setLogoOverlay,
     layerVisibility: p.layerVisibility,
     onLayerVisibilityChange: p.setLayerVisibility,
+    headlineHook: p.headlineHook,
+    onHeadlineHookChange: p.setHeadlineHook,
     logoEligible: p.canUseLogoOverlay,
     projectSaveStatus: p.saveStatus,
     onRetryProjectSave: p.retryProjectSave,
