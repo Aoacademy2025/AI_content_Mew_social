@@ -85,11 +85,21 @@ check("allowlist matching is case-insensitive and trims whitespace", isInternalA
 check("subdomains do not inherit private-beta access", !isInternalAiTesterEmail("tester@sub.aoacademy.co"));
 
 const previousAdditionalEmails = process.env.INTERNAL_AI_ALLOWED_EMAILS;
+const previousAdditionalDomains = process.env.INTERNAL_AI_ALLOWED_DOMAINS;
 process.env.INTERNAL_AI_ALLOWED_EMAILS = "beta.user@example.com";
+process.env.INTERNAL_AI_ALLOWED_DOMAINS = "example.net";
 check("environment allowlist adds an exact beta account", isInternalAiTesterEmail("BETA.USER@example.com"));
 check("environment allowlist does not admit neighboring accounts", !isInternalAiTesterEmail("other.user@example.com"));
+check("environment domain allowlist adds internal AI testers", isInternalAiTesterEmail("tester@example.net"));
+check(
+  "environment allowlists cannot expand Hero editor access",
+  !isHeroAiBetaUser({ email: "beta.user@example.com", role: "USER" })
+    && !isHeroAiBetaUser({ email: "tester@example.net", role: "USER" }),
+);
 if (previousAdditionalEmails === undefined) delete process.env.INTERNAL_AI_ALLOWED_EMAILS;
 else process.env.INTERNAL_AI_ALLOWED_EMAILS = previousAdditionalEmails;
+if (previousAdditionalDomains === undefined) delete process.env.INTERNAL_AI_ALLOWED_DOMAINS;
+else process.env.INTERNAL_AI_ALLOWED_DOMAINS = previousAdditionalDomains;
 check("private feature opens for an internal tester before the public flag", isInternalAiBetaEnabledFor({ email: "tester@aoacademy.co" }, false));
 check("private feature stays closed for a public admin-like account", !isInternalAiBetaEnabledFor({ email: "admin@gmail.com" }, false));
 check("public rollout flag opens the coarse feature gate", isInternalAiBetaEnabledFor({ email: "customer@gmail.com" }, true));
@@ -97,6 +107,9 @@ check("Hero editor beta admits every administrator", isHeroAiBetaUser({ email: "
 check("Hero editor beta admits AO Academy without an admin role", isHeroAiBetaUser({ email: "tester@aoacademy.co", role: "USER" }));
 check("Hero editor beta admits DuckyHero without an admin role", isHeroAiBetaUser({ email: "duckyhero@gmail.com", role: "USER" }));
 check("Hero editor beta rejects an ordinary customer", !isHeroAiBetaUser({ email: "customer@gmail.com", role: "USER" }));
+check("Hero editor beta rejects AO Academy lookalike and subdomains",
+  !isHeroAiBetaUser({ email: "tester@evil-aoacademy.co", role: "USER" })
+  && !isHeroAiBetaUser({ email: "tester@sub.aoacademy.co", role: "USER" }));
 
 const publicAdminImages = resolveKieImageAccess({
   managedKieOn: true,

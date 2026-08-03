@@ -4,8 +4,10 @@
  * Keep this server-side and fail closed. Environment values only ADD testers to
  * the two product-owner defaults; they never remove the original team access.
  */
-const DEFAULT_ALLOWED_EMAILS = ["duckyhero@gmail.com"];
-const DEFAULT_ALLOWED_DOMAINS = ["aoacademy.co"];
+const HERO_AI_OWNER_EMAIL = "duckyhero@gmail.com";
+const HERO_AI_TEAM_DOMAIN = "aoacademy.co";
+const DEFAULT_ALLOWED_EMAILS = [HERO_AI_OWNER_EMAIL];
+const DEFAULT_ALLOWED_DOMAINS = [HERO_AI_TEAM_DOMAIN];
 
 function commaSeparatedValues(value: string | undefined): string[] {
   return (value ?? "")
@@ -43,6 +45,18 @@ export function isInternalAiTester(
   return isInternalAiTesterEmail(actor?.email);
 }
 
+/** Fixed product-owner cohort. Unlike the broader internal tooling allowlist,
+ * Hero Editor access must never be expanded by environment configuration. */
+function isHeroAiProductOwnerEmail(email: string | null | undefined): boolean {
+  const normalized = email?.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === HERO_AI_OWNER_EMAIL) return true;
+
+  const separator = normalized.lastIndexOf("@");
+  if (separator <= 0 || separator === normalized.length - 1) return false;
+  return normalized.slice(separator + 1) === HERO_AI_TEAM_DOMAIN;
+}
+
 /**
  * Product-owner rollout for Hero AI Image and Hero AI Voice inside the Video
  * Editor. This is deliberately a separate policy from the private AI Studio:
@@ -52,7 +66,7 @@ export function isInternalAiTester(
 export function isHeroAiBetaUser(
   actor: { email?: string | null; role?: string | null } | null | undefined,
 ): boolean {
-  return actor?.role === "ADMIN" || isInternalAiTester(actor);
+  return actor?.role === "ADMIN" || isHeroAiProductOwnerEmail(actor?.email);
 }
 
 /** Feature rollout helper: internal testers receive the beta before a public flag
