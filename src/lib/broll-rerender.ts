@@ -17,6 +17,8 @@ export type WindowEdit = {
   index: number;
   src?: string;
   keyword?: string;
+  /** Actual replacement duration from the server-side upload/select/generate response. */
+  clipDuration?: number;
   /** Explicit per-window visibility. Tri-state in persisted config: undefined = legacy default. */
   enabled?: boolean;
 };
@@ -50,6 +52,7 @@ export async function resolveBrollExportSource(input: {
 const SRC_RE = /^\/api\/(renders|stocks)\/[\w.-]+\.mp4$/;
 const MAX_EDITS = 40;
 const KEYWORD_MAX = 200;
+const MAX_CLIP_DURATION_SECONDS = 24 * 60 * 60;
 
 /**
  * Validate + normalize the client-sent window edits. Returns the deduped edit list (last-wins
@@ -67,7 +70,7 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
   const byIndex = new Map<number, WindowEdit>();
   for (const raw of edits) {
     if (typeof raw !== "object" || raw === null) return { error: "รายการแก้ b-roll ไม่ถูกต้อง" };
-    const { index, src, keyword, enabled } = raw as Record<string, unknown>;
+    const { index, src, keyword, clipDuration, enabled } = raw as Record<string, unknown>;
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
       return { error: "ตำแหน่งช่วง b-roll ไม่ถูกต้อง" };
     }
@@ -88,11 +91,24 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
     if (keyword !== undefined && !hasSrc) {
       return { error: "คำค้น b-roll ต้องส่งพร้อมไฟล์ที่ใช้แทน" };
     }
+    if (
+      clipDuration !== undefined
+      && (
+        !hasSrc
+        || typeof clipDuration !== "number"
+        || !Number.isFinite(clipDuration)
+        || clipDuration <= 0
+        || clipDuration > MAX_CLIP_DURATION_SECONDS
+      )
+    ) {
+      return { error: "ความยาวไฟล์ b-roll ไม่ถูกต้อง" };
+    }
     const trimmedKeyword = typeof keyword === "string" ? keyword.trim().slice(0, KEYWORD_MAX) : "";
     const edit: WindowEdit = {
       index,
       ...(typeof src === "string" ? { src } : {}),
       ...(trimmedKeyword ? { keyword: trimmedKeyword } : {}),
+      ...(typeof clipDuration === "number" ? { clipDuration } : {}),
       ...(typeof enabled === "boolean" ? { enabled } : {}),
     };
     byIndex.set(index, edit); // last-wins
@@ -145,6 +161,7 @@ export function mergeWindowEdits(
       delete base.relevanceScore;
       base.src = e.src;
       if (e.keyword) base.keyword = e.keyword;
+      if (e.clipDuration !== undefined) base.clipDuration = e.clipDuration;
       base.clipOffset = 0;
     }
     if (typeof e.enabled === "boolean") {

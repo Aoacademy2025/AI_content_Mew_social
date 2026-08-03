@@ -11,6 +11,10 @@ import {
 } from "@/lib/logo-overlay";
 import type { SubPreset, SubTextEffect } from "../_components/types";
 import type { SubtitleCardLen } from "@/lib/editor-style-preset-contract";
+import {
+  resolveSubtitleFontWeight,
+  type SubtitleFontWeight,
+} from "@/lib/subtitle-font-weight";
 import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "../_components/constants";
 import {
   DEFAULT_EDITOR_LAYER_VISIBILITY,
@@ -46,6 +50,8 @@ export interface V2SubConfig {
   effect: SubTextEffect;
   fontFamily: string;
   bold: boolean;
+  /** Explicit 400/600/900. Optional only for drafts saved before medium weight existed. */
+  fontWeight?: SubtitleFontWeight;
   /** px บนเฟรม 1080×1920 (เท่ากับ subFontSize ของ v1: 30–160) */
   fontSize: number;
   textColor: string;
@@ -62,6 +68,7 @@ export const DEFAULT_V2_SUB: V2SubConfig = {
   effect: "pop",
   fontFamily: "Kanit",
   bold: true,
+  fontWeight: 900,
   fontSize: 80,
   textColor: "#FFFFFF",
   accentColor: "#FFE500",
@@ -70,6 +77,9 @@ export const DEFAULT_V2_SUB: V2SubConfig = {
   outlineSize: 2,
   verticalPos: 82,
 };
+
+export type V2FontWeight = SubtitleFontWeight;
+export const resolveV2FontWeight = resolveSubtitleFontWeight;
 
 export type V2Caption = VideoJobPreviewData["captions"][number];
 
@@ -273,7 +283,7 @@ export function buildV2BurnConfig(
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
   const durationInFrames = Math.max(Math.round((durMs / 1000) * fps), fps);
-  const fontWeight = cfg.bold ? 900 : 400;
+  const fontWeight = resolveV2FontWeight(cfg);
   let frameCursor = 0;
   const layers = normalizeEditorLayerVisibility(layerVisibility);
   const keywordPopups = layers.subtitles ? captions.flatMap((c, idx) => {

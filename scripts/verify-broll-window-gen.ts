@@ -34,6 +34,8 @@ import {
 } from "../src/lib/kie-image-guards";
 import {
   DEFAULT_KIE_IMAGE_MODEL,
+  interpretKieCreditResponse,
+  isKieAuthenticationError,
   isKieImageModel,
 } from "../src/lib/kie-client";
 import { randomUUID } from "crypto";
@@ -158,6 +160,23 @@ async function main() {
   await prisma.creditLedger.deleteMany();
   await prisma.creditBalance.deleteMany();
   __resetKieImageRateForTest();
+
+  assert(
+    isKieAuthenticationError(new Error("kie.ai createTask error: Unauthorized – Authentication failed")),
+    "production KIE credential rejection is classified as an authentication/configuration failure",
+  );
+  assert(
+    !isKieAuthenticationError(new Error("kie.ai task timed out after 180000ms")),
+    "provider timeout is not misclassified as an authentication failure",
+  );
+  const creditAuthFailure = interpretKieCreditResponse(200, { code: 401, msg: "Unauthorized" });
+  assert(
+    !creditAuthFailure.ok && creditAuthFailure.reason === "auth",
+    "KIE credit endpoint HTTP 200 + payload code 401 is rejected as an invalid key",
+  );
+  const creditOk = interpretKieCreditResponse(200, { code: 200, data: 12.5 });
+  assert(creditOk.ok && creditOk.credits === 12.5,
+    "KIE credit endpoint payload code 200 is accepted with its balance");
 
   // ── 1. Access gate: FREE non-admin → 403, never charged ─────────────────────
   const free = await simulateGenerateRoute({

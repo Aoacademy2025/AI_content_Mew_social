@@ -9,12 +9,13 @@
 //
 // Run: npx tsx scripts/verify-hero-script.ts
 import { execSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const dir = mkdtempSync(join(tmpdir(), "heroscript-"));
 process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
+process.env.BRAND_ASSET_ROOT = join(dir, "brand-assets");
 execSync("npx prisma db push --skip-generate", { stdio: "inherit", env: process.env });
 
 let passed = 0;
@@ -1649,6 +1650,34 @@ async function main() {
   {
     const { getEditorProject } = await import("../src/lib/editor-projects");
 
+    // Account default present before the handoff. This is the exact path that regressed in
+    // production: projects created inside the editor inherited it, while Hero Script handoffs
+    // silently omitted it from draftJson.
+    const logoStorageKey = "hs4-pro/default-logo.webp";
+    mkdirSync(join(process.env.BRAND_ASSET_ROOT!, "hs4-pro"), { recursive: true });
+    writeFileSync(join(process.env.BRAND_ASSET_ROOT!, logoStorageKey), "test-logo");
+    const defaultLogo = await prisma.brandAsset.create({
+      data: {
+        userId: "hs4-pro",
+        storageKey: logoStorageKey,
+        originalName: "default-logo.webp",
+        mimeType: "image/webp",
+        sizeBytes: 9,
+        width: 512,
+        height: 256,
+      },
+    });
+    await prisma.brandPreference.create({
+      data: {
+        userId: "hs4-pro",
+        defaultAssetId: defaultLogo.id,
+        position: "top-left",
+        sizePct: 26,
+        opacity: 0.9,
+        enabled: true,
+      },
+    });
+
     const paidScript = await createScript("hs4-pro", {
       topic: "ส่งเข้าตัดต่อ",
       durationSec: 60,
@@ -1679,6 +1708,16 @@ async function main() {
         "handoff draftJson carries the editor's default project fields (shared default-draft builder)");
       ok(draft.projectTitle === "ส่งเข้าตัดต่อ" && project?.title === "ส่งเข้าตัดต่อ",
         "handoff project is titled after the script topic (draft + row agree)");
+      ok(
+        JSON.stringify(draft.logoOverlay) === JSON.stringify({
+          enabled: true,
+          assetId: defaultLogo.id,
+          position: "top-left",
+          sizePct: 26,
+          opacity: 0.9,
+        }),
+        "handoff draft inherits the account default logo exactly like a new editor project",
+      );
       // The editor's bootstrap rejects a project whose stored draft doesn't
       // materialize (→ "ข้อมูลโปรเจกต์ไม่สมบูรณ์"), so the handoff draft must
       // pass the editor's own validator, not just be valid JSON.

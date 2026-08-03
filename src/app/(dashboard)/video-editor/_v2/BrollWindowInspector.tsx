@@ -341,8 +341,14 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
 
   function close() { ed.setSelectedWindow(null); }
 
-  function markEdited(kind: WindowEditKind, src: string, keyword?: string, label?: string) {
-    ed.setWindowEdit(index!, { src, kind, ...(keyword ? { keyword } : {}), label: label ?? sourceLabel(kind) });
+  function markEdited(kind: WindowEditKind, src: string, keyword?: string, label?: string, clipDuration?: number) {
+    ed.setWindowEdit(index!, {
+      src,
+      kind,
+      ...(keyword ? { keyword } : {}),
+      ...(typeof clipDuration === "number" ? { clipDuration } : {}),
+      label: label ?? sourceLabel(kind),
+    });
     toast.success(kind === "ai" ? "สร้างภาพสำเร็จ — เลือกใช้แล้ว" : "เปลี่ยนคลิปแล้ว");
   }
 
@@ -429,7 +435,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
       });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.src) { toast.error(d?.message ?? `เปลี่ยนคลิปไม่สำเร็จ (${res.status})`); return; }
-      markEdited("stock", d.src, searchKeyword.trim() || undefined, c.title || "สต็อก");
+      markEdited("stock", d.src, searchKeyword.trim() || undefined, c.title || "สต็อก", d.clipDuration);
     } catch {
       toast.error("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
     } finally {
@@ -461,7 +467,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
       const res = await fetch("/api/videos/broll-window/upload", { method: "POST", body: form });
       const d = await res.json().catch(() => null);
       if (!res.ok || !d?.src) { setUploadError(d?.message ?? `อัปโหลดไม่สำเร็จ (${res.status})`); return; }
-      markEdited("upload", d.src, undefined, "อัปโหลด");
+      markEdited("upload", d.src, undefined, "อัปโหลด", d.clipDuration);
     } catch {
       setUploadError("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
     } finally {
@@ -495,7 +501,7 @@ export function BrollWindowInspector({ ed, brollRegionPreference, brollVisualSty
         return;
       }
       if (!res.ok || !d?.src) { setAiError(d?.message ?? `สร้างรูปไม่สำเร็จ (${res.status})`); return; }
-      markEdited("ai", d.src, undefined, "AI");
+      markEdited("ai", d.src, undefined, "AI", d.clipDuration);
     } catch {
       setAiError("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
     } finally {

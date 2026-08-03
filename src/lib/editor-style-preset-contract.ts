@@ -3,6 +3,10 @@ import {
   normalizeLogoOverlayConfig,
   type LogoOverlayConfig,
 } from "@/lib/logo-overlay";
+import {
+  normalizeSubtitleFontWeight,
+  type SubtitleFontWeight,
+} from "@/lib/subtitle-font-weight";
 
 export const EDITOR_STYLE_PRESET_KINDS = ["subtitle", "logo"] as const;
 export type EditorStylePresetKind = (typeof EDITOR_STYLE_PRESET_KINDS)[number];
@@ -18,6 +22,7 @@ export type SubtitleStylePresetConfig = {
   cardLen: SubtitleCardLen;
   fontFamily: string;
   bold: boolean;
+  fontWeight: SubtitleFontWeight;
   fontSize: number;
   textColor: string;
   accentColor: string;
@@ -130,6 +135,9 @@ export function normalizeSubtitleStylePresetConfig(
   // enough information to reconstruct the user's old grouping. Keep them usable with
   // the editor's historical default; re-saving upgrades the row to the full contract.
   const cardLen = value.cardLen === undefined ? "sentence" : value.cardLen;
+  const fontWeight = value.fontWeight === undefined
+    ? (value.bold === true ? 900 : 400)
+    : normalizeSubtitleFontWeight(value.fontWeight);
   if (
     typeof value.preset !== "string"
     || !SUBTITLE_PRESETS.has(value.preset as SubPreset)
@@ -141,6 +149,7 @@ export function normalizeSubtitleStylePresetConfig(
     || !value.fontFamily.trim()
     || value.fontFamily.length > 120
     || typeof value.bold !== "boolean"
+    || fontWeight === null
     || !isFiniteNumberInRange(value.fontSize, 30, 160)
     || typeof value.textColor !== "string"
     || !COLOR_PATTERN.test(value.textColor)
@@ -160,6 +169,7 @@ export function normalizeSubtitleStylePresetConfig(
     cardLen: cardLen as SubtitleCardLen,
     fontFamily: value.fontFamily.trim(),
     bold: value.bold,
+    fontWeight,
     fontSize: value.fontSize,
     textColor: value.textColor.toUpperCase(),
     accentColor: value.accentColor.toUpperCase(),

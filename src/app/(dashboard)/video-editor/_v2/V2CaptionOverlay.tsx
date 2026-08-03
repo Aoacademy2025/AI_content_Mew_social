@@ -3,7 +3,7 @@
 import React, { memo, useEffect, useRef, useState } from "react";
 import { renderSubEl } from "../_components/subtitle-renderer";
 import type { SubPreset, SubTextEffect } from "../_components/types";
-import type { V2Caption, V2CardOverrides, V2SubConfig } from "./subtitle-style";
+import { resolveV2FontWeight, type V2Caption, type V2CardOverrides, type V2SubConfig } from "./subtitle-style";
 
 /**
  * ซับสดบน preview ของ v2 — ใช้ `renderSubEl` ตัวเดียวกับ Remotion render
@@ -125,7 +125,7 @@ export const V2CaptionOverlay = memo(function V2CaptionOverlay({
         <div style={{ transform: tf || undefined, opacity: op, transformOrigin: effect === "flip" ? "center top" : "center" }}>
           {renderSubEl(
             cap.text, textColor, accentColor, isHook,
-            cfg.preset as SubPreset, cfg.fontFamily, cfg.fontSize, cfg.bold ? 900 : 400,
+            cfg.preset as SubPreset, cfg.fontFamily, cfg.fontSize, resolveV2FontWeight(cfg),
             scale, cfg.effect, frame, capDurFrames,
             cfg.shadow, cfg.outline, cfg.outlineSize,
           )}

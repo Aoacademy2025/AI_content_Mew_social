@@ -14,6 +14,7 @@ import type { AutoMixImageProvider, KieImageModel } from "@/app/(dashboard)/vide
 import { DEFAULT_AUTO_MIX_PROVIDERS } from "@/app/(dashboard)/video-editor/_components/types";
 import type { MixPreset } from "@/app/(dashboard)/video-editor/_v2/mix-presets";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 import type { TtsProvider } from "@/lib/tts-providers";
 
 /** Editor step-1 mode: write a script vs upload your own clip. Mirrors V2Mode. */
@@ -44,6 +45,7 @@ export interface EditorDefaultDraft {
   mixPreset: MixPreset;
   brollRegionPreference: BrollRegionPreference;
   brollVisualStyle: BrollVisualStyle;
+  logoOverlay?: LogoOverlayConfig;
 }
 
 export const EDITOR_DEFAULT_DRAFT: EditorDefaultDraft = {
@@ -92,8 +94,9 @@ export function buildScriptHandoffDraft(params: {
   script: string;
   projectTitle: string;
   accountDefaults?: EditorAccountVideoDefaults;
+  logoOverlay?: LogoOverlayConfig;
 }): EditorDefaultDraft {
-  const { script, projectTitle, accountDefaults } = params;
+  const { script, projectTitle, accountDefaults, logoOverlay } = params;
   return {
     ...EDITOR_DEFAULT_DRAFT,
     autoMixProviders: [...EDITOR_DEFAULT_DRAFT.autoMixProviders],
@@ -104,5 +107,6 @@ export function buildScriptHandoffDraft(params: {
     geminiVoiceName: accountDefaults?.geminiVoiceName ?? EDITOR_DEFAULT_DRAFT.geminiVoiceName,
     voiceId: accountDefaults?.voiceId ?? EDITOR_DEFAULT_DRAFT.voiceId,
     avatarId: accountDefaults?.avatarId ?? EDITOR_DEFAULT_DRAFT.avatarId,
+    ...(logoOverlay ? { logoOverlay: { ...logoOverlay } } : {}),
   };
 }

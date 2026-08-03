@@ -34,6 +34,42 @@ export type KieTaskSnapshot = {
   creditsConsumed?: number;
 };
 
+/** Provider credential failures need operational action, not an endless customer retry loop. */
+export function isKieAuthenticationError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /unauthori[sz]ed|authentication failed|invalid (?:api )?key|status 401/iu.test(message);
+}
+
+export type KieCreditResponseResult =
+  | { ok: true; credits?: number }
+  | { ok: false; reason: "auth" | "provider"; providerCode: number | null };
+
+/** kie.ai may return HTTP 200 with an auth failure in its JSON `code`; inspect both layers. */
+export function interpretKieCreditResponse(
+  httpStatus: number,
+  body: unknown,
+): KieCreditResponseResult {
+  const record = body && typeof body === "object" && !Array.isArray(body)
+    ? body as Record<string, unknown>
+    : null;
+  const rawCode = record?.code;
+  const providerCode = typeof rawCode === "number" && Number.isFinite(rawCode)
+    ? rawCode
+    : typeof rawCode === "string" && rawCode.trim() && Number.isFinite(Number(rawCode))
+      ? Number(rawCode)
+      : null;
+  if (httpStatus === 401 || httpStatus === 403 || providerCode === 401 || providerCode === 403) {
+    return { ok: false, reason: "auth", providerCode };
+  }
+  if (httpStatus >= 200 && httpStatus < 300 && providerCode === 200) {
+    const credits = record && typeof record.data === "number" && Number.isFinite(record.data)
+      ? record.data
+      : undefined;
+    return { ok: true, ...(credits !== undefined ? { credits } : {}) };
+  }
+  return { ok: false, reason: "provider", providerCode };
+}
+
 // อ่าน body เป็น text ก่อนเสมอ — kie.ai อาจตอบ body ว่างหรือ non-JSON เวลา error
 // (เช่น 401/500 บางกรณี) ซึ่งทำให้ res.json() throw "Unexpected end of JSON input"
 async function parseKieResponse<T>(res: Response): Promise<T> {

@@ -205,6 +205,20 @@ assert.match(mobile, /data-caption-action="add"/, "mobile exposes Add caption");
 assert.match(mobile, /data-caption-action="delete"/, "mobile exposes Delete caption");
 assert.match(timeline, /onRedo/, "Timeline exposes Redo beside Undo");
 
+// Playback follow must be visually obvious on desktop without mutating `selected` (which owns
+// edit scope). Mobile already gives the active card a full active surface; desktop previously
+// showed only a 2.5px inset bar, which users reasonably read as "highlight does not follow play".
+assert.match(
+  desktop,
+  /selected=\{i === ed\.selected \|\| i === ed\.activeIdx\}/,
+  "desktop caption card gives the playing card the full selected surface",
+);
+assert.match(
+  desktop,
+  /i === ed\.selected \|\| i === ed\.activeIdx \? color\.primary300 : color\.textFaint/,
+  "desktop playing-card timestamp follows the same active visual state",
+);
+
 // ── H4: onUndo/onRedo must be wrapped in an arrow at every call site — TimelinePanel's
 // <button onClick={onUndo}> forwards the click SyntheticEvent as the first argument, so
 // wiring `onUndo={ed.undoCaptions}` directly makes React hand that event to undoCaptions

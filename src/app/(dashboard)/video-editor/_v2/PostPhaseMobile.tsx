@@ -21,7 +21,7 @@ import {
   EDITABLE_EFFECT_PRESETS_DATA, BUILT_IN_EFFECT_PRESETS_DATA,
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
-  V2_CARD_LEN_OPTIONS, type V2CardLen,
+  V2_CARD_LEN_OPTIONS, resolveV2FontWeight, type V2CardLen, type V2FontWeight,
 } from "./subtitle-style";
 import type { V2JobState } from "./useV2Job";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
@@ -771,9 +771,12 @@ export function PostPhaseMobile({
                 {FONTS_LIST.map((f) => <option key={f.value} value={f.value} style={{ background: color.bg1 }}>{f.label}</option>)}
               </select>
               <Segmented
-                value={ed.cfg.bold ? "bold" : "regular"}
-                onChange={(v) => ed.set("bold", v === "bold")}
-                options={[{ value: "bold", label: "หนา" }, { value: "regular", label: "บาง" }]}
+                value={resolveV2FontWeight(ed.cfg) === 900 ? "bold" : resolveV2FontWeight(ed.cfg) === 600 ? "medium" : "regular"}
+                onChange={(v) => {
+                  const fontWeight: V2FontWeight = v === "bold" ? 900 : v === "medium" ? 600 : 400;
+                  ed.setCfg((current) => ({ ...current, fontWeight, bold: fontWeight === 900 }));
+                }}
+                options={[{ value: "bold", label: "หนา" }, { value: "medium", label: "กลาง" }, { value: "regular", label: "บาง" }]}
               />
             </div>
             <input type="range" min={30} max={160} value={ed.cfg.fontSize} onChange={(e) => ed.set("fontSize", Number(e.target.value))} style={{ accentColor: color.primary500, height: 28 }} />

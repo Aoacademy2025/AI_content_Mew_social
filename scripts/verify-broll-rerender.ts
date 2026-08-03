@@ -9,13 +9,14 @@
 //   - index int >= 0; 1..40 edits; dedupe by index (last wins).
 // mergeWindowEdits: apply validated edits onto the SOURCE preview's bgVideos[].
 //   - NEVER touches start/end (window timing is locked — subtitle invariant); never reorders.
-//   - per edited window: replace src (+ keyword when given), set clipOffset 0, drop clipDuration,
+//   - per edited window: replace src (+ keyword/duration when given), set clipOffset 0,
 //     and STRIP stale source metadata (provider/title/query/selectionReason/relevanceScore) so
 //     the inspector badge reflects the NEW asset. UNEDITED windows keep all metadata.
 //   - enabled is persisted as brollEnabled on the server-owned source window.
 //   - bounds-checks index against the source bgVideos length (atomic: any OOB index => error,
 //     no partial merge).
 import { validateWindowEdits, mergeWindowEdits, rerenderSkipEligible, type WindowEdit } from "../src/lib/broll-rerender";
+import { resolveBrollPlaybackPlan } from "../src/lib/broll-playback";
 import { readFileSync } from "node:fs";
 
 let failures = 0;
@@ -69,6 +70,19 @@ check("accepts index 0", !isErr(validateWindowEdits([{ index: 0, src: "/api/stoc
 check("rejects non-string keyword", isErr(validateWindowEdits([{ index: 0, src: "/api/stocks/a.mp4", keyword: 5 as unknown as string }])));
 check("rejects keyword without replacement src", isErr(validateWindowEdits([{ index: 0, enabled: false, keyword: "unused" }])));
 
+// replacement duration is server-derived metadata from upload/select/generate. Keeping it lets
+// Remotion loop a short replacement instead of exposing the following B-roll before the locked
+// subtitle window ends (production incident: 3.53s upload inside a 4.70s window).
+{
+  const r = validateWindowEdits([{ index: 0, src: "/api/stocks/short.mp4", clipDuration: 3.533 }]);
+  check("accepts positive replacement clipDuration", !isErr(r), JSON.stringify(r));
+  if (!isErr(r)) check("replacement clipDuration is preserved by validation", r[0].clipDuration === 3.533);
+}
+check("rejects zero clipDuration", isErr(validateWindowEdits([{ index: 0, src: "/api/stocks/a.mp4", clipDuration: 0 }])));
+check("rejects negative clipDuration", isErr(validateWindowEdits([{ index: 0, src: "/api/stocks/a.mp4", clipDuration: -1 }])));
+check("rejects non-numeric clipDuration", isErr(validateWindowEdits([{ index: 0, src: "/api/stocks/a.mp4", clipDuration: "3" }])));
+check("rejects clipDuration without replacement src", isErr(validateWindowEdits([{ index: 0, enabled: true, clipDuration: 3 }])));
+
 // count bounds
 check("rejects empty array (0 edits)", isErr(validateWindowEdits([])));
 check("rejects non-array", isErr(validateWindowEdits({ index: 0, src: "/api/stocks/a.mp4" } as unknown)));
@@ -101,9 +115,10 @@ const srcBg = [
   { src: "/api/stocks/orig-2.mp4", start: 8, end: 12, clipDuration: 4, keyword: "birds" },
 ];
 
-// valid merge: only edited window changes; start/end untouched; clipOffset->0; clipDuration dropped
+// valid merge: only edited window changes; start/end untouched; clipOffset->0; replacement
+// clipDuration preserved so short assets can loop for the complete locked window.
 {
-  const edits = validateWindowEdits([{ index: 1, src: "/api/renders/new-1.mp4", keyword: "puppies" }]);
+  const edits = validateWindowEdits([{ index: 1, src: "/api/renders/new-1.mp4", keyword: "puppies", clipDuration: 3.533 }]);
   const m = mergeWindowEdits(structuredClone(srcBg), edits as WindowEdit[]);
   check("merge succeeds", !isErr(m), JSON.stringify(m));
   if (!isErr(m)) {
@@ -113,7 +128,7 @@ const srcBg = [
     check("edited src replaced", out[1].src === "/api/renders/new-1.mp4");
     check("edited keyword replaced", out[1].keyword === "puppies");
     check("edited clipOffset reset to 0", out[1].clipOffset === 0);
-    check("edited clipDuration dropped", !("clipDuration" in out[1]));
+    check("edited replacement clipDuration preserved", out[1].clipDuration === 3.533);
     check("edited start UNTOUCHED", out[1].start === 4);
     check("edited end UNTOUCHED", out[1].end === 8);
     // untouched windows are byte-identical
@@ -122,6 +137,19 @@ const srcBg = [
     check("window 0 keeps clipOffset", out[0].clipOffset === 1.5);
     check("window 2 untouched", out[2].src === "/api/stocks/orig-2.mp4" && out[2].clipDuration === 4);
   }
+}
+
+// Playback plan for the exact production shape: 4.70s (141f) target and 3.53s (106f)
+// replacement. The source must loop after its guarded usable range instead of ending early.
+{
+  const plan = resolveBrollPlaybackPlan({ startFrom: 0, totalFrames: 141, clipDurFrames: 106 });
+  check("short replacement produces a loop plan", plan.loopDurationInFrames === 104, JSON.stringify(plan));
+  check("short replacement never decodes past its guarded source end", plan.endAt === 104, JSON.stringify(plan));
+}
+{
+  const plan = resolveBrollPlaybackPlan({ startFrom: 0, totalFrames: 90, clipDurFrames: 150 });
+  check("long replacement does not loop", plan.loopDurationInFrames === null, JSON.stringify(plan));
+  check("long replacement keeps the requested playback range", plan.endAt === 90, JSON.stringify(plan));
 }
 
 // edit WITHOUT keyword keeps the window's existing keyword
@@ -333,9 +361,26 @@ const postPhaseSource = readFileSync(
   "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
   "utf8",
 );
+const inspectorSource = readFileSync(
+  "src/app/(dashboard)/video-editor/_v2/BrollWindowInspector.tsx",
+  "utf8",
+);
+const compositionSource = readFileSync("src/remotion/ShortVideoComposition.tsx", "utf8");
 check(
   "b-roll rerender client supplies an explicit operation-scoped idempotency key",
   /idempotencyKey:\s*`editor-v2-broll-rerender-\$\{globalThis\.crypto\.randomUUID\(\)\}`/u.test(postPhaseSource),
+);
+check(
+  "b-roll inspector stages server-derived replacement duration",
+  /markEdited\([^\n]+d\.clipDuration\)/u.test(inspectorSource),
+);
+check(
+  "b-roll rerender payload carries staged replacement duration",
+  /typeof e\.clipDuration === "number" \? \{ clipDuration: e\.clipDuration \} : \{\}/u.test(postPhaseSource),
+);
+check(
+  "Remotion composition applies the short-source loop plan",
+  /<Loop durationInFrames=\{playback\.loopDurationInFrames\}/u.test(compositionSource),
 );
 
 if (failures) { console.error(`\n${failures} FAILED (${passed} passed)`); process.exit(1); }

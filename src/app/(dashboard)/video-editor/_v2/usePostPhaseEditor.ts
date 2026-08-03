@@ -71,6 +71,7 @@ export type WindowEditKind = "stock" | "upload" | "ai";
 export type WindowEdit = {
   src?: string;
   keyword?: string;
+  clipDuration?: number;
   kind?: WindowEditKind;
   label?: string;
   enabled?: boolean;
@@ -337,6 +338,7 @@ export function usePostPhaseEditor(
       index,
       ...(e.src ? { src: e.src } : {}),
       ...(e.keyword ? { keyword: e.keyword } : {}),
+      ...(typeof e.clipDuration === "number" ? { clipDuration: e.clipDuration } : {}),
       ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
     }));
     try {

@@ -7,6 +7,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { decryptKey } from "@/lib/key-crypto";
 import {
   DEFAULT_KIE_IMAGE_MODEL,
+  isKieAuthenticationError,
   isKieImageModel,
   type KieImageModel,
 } from "@/lib/kie-client";
@@ -254,6 +255,22 @@ export async function POST(req: Request) {
       }
     }
     console.error("[broll-window/generate] generation failed:", e);
+    if (isKieAuthenticationError(e)) {
+      return NextResponse.json(
+        usesManagedKey
+          ? {
+              error: "provider_configuration_error",
+              retryable: false,
+              message: "ระบบสร้างรูป AI ปิดปรับปรุงชั่วคราว ทีมงานกำลังแก้ไข",
+            }
+          : {
+              error: "invalid_key",
+              retryable: false,
+              message: "kie.ai API key ใช้งานไม่ได้ กรุณาตรวจสอบ key ใน Settings",
+            },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(
       { error: "generation_failed", message: "สร้างรูป AI ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" },
       { status: 502 },

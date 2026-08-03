@@ -33,6 +33,7 @@ import {
 } from "@/lib/hero-script-access";
 import { createEditorProject, sanitizeEditorProjectTitle } from "@/lib/editor-projects";
 import { buildScriptHandoffDraft } from "@/lib/editor-default-draft";
+import { getDefaultBrandPreference } from "@/lib/brand-assets.server";
 import { visibleTtsProvider } from "@/lib/tts-providers";
 import {
   openRouterGenerateText,
@@ -1070,7 +1071,7 @@ export type SendScriptToEditorResult =
  *     Segment — see assembleScriptForHandoff),
  *  4. an EditorProject is created through the editor's own create path with the
  *     editor's own default draft (never a hand-rolled draftJson), seeded with
- *     the account's saved voice/avatar defaults exactly like a project created
+ *     the account's saved voice/avatar/logo defaults exactly like a project created
  *     inside the editor,
  *  5. the Script is marked "sent" and points at that project.
  *
@@ -1110,6 +1111,7 @@ export async function sendScriptToEditor(
   }
 
   const title = sanitizeEditorProjectTitle(script.topic);
+  const brandDefault = await getDefaultBrandPreference(userId);
   const draft = buildScriptHandoffDraft({
     script: text,
     projectTitle: title,
@@ -1120,6 +1122,7 @@ export async function sendScriptToEditor(
       voiceId: user.elevenlabsVoiceId?.trim() ?? "",
       avatarId: user.heygenAvatarId?.trim() ?? "",
     },
+    logoOverlay: brandDefault?.config,
   });
 
   // Sentinel: thrown to roll the whole handoff back, never surfaced to callers.
