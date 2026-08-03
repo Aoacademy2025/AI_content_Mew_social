@@ -128,7 +128,7 @@ function branchValueFromEquality(expression: ts.Expression) {
     if (
       expressionPath(candidate) === "rightTab"
       && ts.isStringLiteral(literal)
-      && (literal.text === "subtitle" || literal.text === "logo")
+      && (literal.text === "hook" || literal.text === "subtitle" || literal.text === "logo")
     ) {
       return literal.text;
     }
@@ -441,8 +441,8 @@ function assertMobileLogoRuntimeStructure(source: string) {
     root,
     (node): node is JsxElementNode => isJsxElementNode(node) && jsxTagName(node) === "MobileSheet",
   );
-  assert.equal(mobileSheets.length, 3, "edit, style, and logo must share MobileSheet");
-  assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "large").length, 2);
+  assert.equal(mobileSheets.length, 4, "edit, headline, style, and logo must share MobileSheet");
+  assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "large").length, 3);
   assert.equal(mobileSheets.filter((sheet) => jsxStringAttribute(sheet, "size") === "medium").length, 1);
 }
 
@@ -515,14 +515,14 @@ function assertDesktopTabLinkageStructure(desktopSource: string, uiSource: strin
   const optionValues = (unwrapExpression(options) as ts.ArrayLiteralExpression).elements
     .filter(ts.isObjectLiteralExpression)
     .map((option) => objectLiteralStringProperty(option, "value"));
-  assert.deepEqual(optionValues, ["subtitle", "logo"], "desktop tab values must remain stable");
+  assert.deepEqual(optionValues, ["hook", "subtitle", "logo"], "desktop tab values must remain stable");
 
   const tabPanels = collectNodes(
     desktopRoot,
     (node): node is JsxElementNode =>
       isJsxElementNode(node) && jsxStringAttribute(node, "role") === "tabpanel",
   );
-  for (const value of ["subtitle", "logo"] as const) {
+  for (const value of ["hook", "subtitle", "logo"] as const) {
     const panels = tabPanels.filter((panel) => rightTabBranchValue(panel) === value);
     assert.equal(panels.length, 1, `${value} must have exactly one active tabpanel branch`);
     assertSingleSpanTemplate(
@@ -1368,8 +1368,9 @@ async function main() {
     );
     assertPreviewSiblingStructure(desktopSource);
   });
-  await check("desktop exposes subtitle and logo branches with project wiring", () => {
-    assert.match(desktopSource, /useState<\s*["']subtitle["']\s*\|\s*["']logo["']\s*>\(\s*["']subtitle["']\s*\)/);
+  await check("desktop exposes headline, subtitle, and logo branches with project wiring", () => {
+    assert.match(desktopSource, /useState<\s*["']hook["']\s*\|\s*["']subtitle["']\s*\|\s*["']logo["']\s*>\(\s*["']hook["']\s*\)/);
+    assert.match(desktopSource, /value:\s*["']hook["']\s*,\s*label:\s*["']พาดหัว["']/);
     assert.match(desktopSource, /value:\s*["']subtitle["']\s*,\s*label:\s*["']ซับ["']/);
     assert.match(desktopSource, /value:\s*["']logo["']\s*,\s*label:\s*["']โลโก้["']/);
     assertPostPhaseEditorForwardingStructure(desktopSource);
@@ -1528,8 +1529,11 @@ async function main() {
               ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
               value={rightTab}
               onChange={setRightTab}
-              options={[{ value: "subtitle", label: "ซับ" }, { value: "logo", label: "โลโก้" }]}
+              options={[{ value: "hook", label: "พาดหัว" }, { value: "subtitle", label: "ซับ" }, { value: "logo", label: "โลโก้" }]}
             />
+            {rightTab === "hook" && (
+              <div id={\`\${rightTabsId}-hook-panel\`} role="tabpanel" aria-labelledby={\`\${rightTabsId}-hook-tab\`} />
+            )}
             {rightTab === "subtitle" && (
               <div id="wrong-panel" role="tabpanel" aria-labelledby={\`\${rightTabsId}-subtitle-tab\`} />
             )}
@@ -1561,8 +1565,11 @@ async function main() {
               ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
               value={rightTab}
               onChange={setRightTab}
-              options={[{ value: "subtitle", label: "ซับ" }, { value: "logo", label: "โลโก้" }]}
+              options={[{ value: "hook", label: "พาดหัว" }, { value: "subtitle", label: "ซับ" }, { value: "logo", label: "โลโก้" }]}
             />
+            {rightTab === "hook" && (
+              <div id={\`\${rightTabsId}-hook-panel\`} role="tabpanel" aria-labelledby={\`\${rightTabsId}-hook-tab\`} />
+            )}
             {rightTab === "subtitle" && (
               <div id={\`\${rightTabsId}-subtitle-panel\`} role="tabpanel" aria-labelledby="wrong-tab" />
             )}

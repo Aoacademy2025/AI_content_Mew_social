@@ -1,0 +1,117 @@
+import assert from "node:assert/strict";
+
+import {
+  autoHeadlineHookDurationMs,
+  createDefaultHeadlineHook,
+  headlineHookEndFrame,
+  normalizeHeadlineHook,
+  normalizeHeadlineHookSuggestions,
+  visibleCaptionRangeAfterHeadline,
+} from "@/lib/headline-hook";
+import { headlineHookMotionAt } from "@/remotion/HeadlineHookView";
+import {
+  DEFAULT_V2_SUB,
+  buildV2BurnConfig,
+  type V2Caption,
+} from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
+
+assert.equal(autoHeadlineHookDurationMs(20_000), 5_000);
+assert.equal(autoHeadlineHookDurationMs(29_000), 7_250);
+assert.equal(autoHeadlineHookDurationMs(30_000), 10_000);
+assert.equal(autoHeadlineHookDurationMs(90_000), 15_000);
+assert.equal(autoHeadlineHookDurationMs(180_000), 20_000);
+
+const normalized = normalizeHeadlineHook({
+  enabled: true,
+  headline: "  เมืองไทย\nกำลังเปลี่ยน?\nบรรทัดเกิน  ",
+  subheadline: "  เข้าใจประเด็น   แม้ปิดเสียง  ",
+  durationMs: 99_000,
+  preset: "not-a-preset",
+  topPercent: -10,
+}, 60_000);
+assert.deepEqual(normalized, {
+  enabled: true,
+  headline: "เมืองไทย\nกำลังเปลี่ยน?",
+  subheadline: "เข้าใจประเด็น แม้ปิดเสียง",
+  durationMs: 20_000,
+  preset: "viral",
+  topPercent: 10,
+});
+
+assert.equal(normalizeHeadlineHook({ enabled: true, headline: "" }, 60_000)?.enabled, false);
+assert.equal(normalizeHeadlineHook(null), null);
+
+const generatedDefault = createDefaultHeadlineHook(
+  "นี่คือประเด็นแรกที่ต้องรู้! ประโยคถัดไปไม่ควรถูกนำมาใช้",
+  45_000,
+);
+assert.equal(generatedDefault.enabled, true);
+assert.equal(generatedDefault.headline, "นี่คือประเด็นแรกที่ต้องรู้!");
+assert.equal(generatedDefault.durationMs, 10_000);
+
+const hook = normalizeHeadlineHook({
+  enabled: true,
+  headline: "Headline",
+  durationMs: 10_000,
+  preset: "news",
+  topPercent: 20,
+}, 60_000)!;
+assert.equal(visibleCaptionRangeAfterHeadline({ startMs: 0, endMs: 4_000 }, hook, 60_000), null);
+assert.deepEqual(
+  visibleCaptionRangeAfterHeadline({ startMs: 8_000, endMs: 12_000 }, hook, 60_000),
+  { startMs: 10_000, endMs: 12_000 },
+);
+assert.deepEqual(
+  visibleCaptionRangeAfterHeadline({ startMs: 14_000, endMs: 18_000 }, hook, 60_000),
+  { startMs: 14_000, endMs: 18_000 },
+);
+assert.equal(headlineHookEndFrame(hook, 30, 1_800), 300);
+
+const suggestions = normalizeHeadlineHookSuggestions({
+  suggestions: [
+    { headline: "คำถามเดียวกัน", subheadline: "แบบแรก" },
+    { headline: "คำถามเดียวกัน", subheadline: "ซ้ำ" },
+    { headline: "มุมขัดแย้ง" },
+    { headline: "ผลกระทบต่อคนดู" },
+    { headline: "ตัวเลือกเกิน" },
+  ],
+});
+assert.deepEqual(suggestions, [
+  { headline: "คำถามเดียวกัน", subheadline: "แบบแรก" },
+  { headline: "มุมขัดแย้ง" },
+  { headline: "ผลกระทบต่อคนดู" },
+]);
+
+const captions: V2Caption[] = [
+  { text: "ซับแรก", startMs: 0, endMs: 4_000, tag: "hook" },
+  { text: "ซับคร่อม", startMs: 8_000, endMs: 12_000, tag: "body" },
+  { text: "ซับหลังพาดหัว", startMs: 14_000, endMs: 18_000, tag: "body" },
+];
+const burn = buildV2BurnConfig(
+  "https://example.com/video.mp4",
+  captions,
+  60_000,
+  DEFAULT_V2_SUB,
+  30,
+  {},
+  undefined,
+  hook,
+);
+assert.deepEqual(burn.headlineHook, hook);
+assert.deepEqual(burn.keywordPopups.map((popup) => [popup.start, popup.end]), [
+  [0, 120],
+  [240, 360],
+  [420, 540],
+]);
+assert.deepEqual(captions.map((caption) => [caption.startMs, caption.endMs]), [
+  [0, 4_000],
+  [8_000, 12_000],
+  [14_000, 18_000],
+]);
+
+assert.equal(headlineHookMotionAt(0, 10_000).opacity, 0);
+assert.equal(headlineHookMotionAt(240, 10_000).opacity, 1);
+assert.equal(headlineHookMotionAt(5_000, 10_000).opacity, 1);
+assert.ok(headlineHookMotionAt(9_900, 10_000).opacity < 1);
+
+console.log("headline-hook: all checks passed");

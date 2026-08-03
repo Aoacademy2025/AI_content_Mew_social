@@ -3,7 +3,7 @@
 /**
  * เฟสแต่งซับ (สเต็ป 3, จอ 4b) — P6a: การ์ดซับซ้าย (แก้ข้อความได้) + preview กลางพร้อม
  * ซับสดตามสไตล์ + แผงคุมซับขวา + "ส่งออกวิดีโอ" (burn ผ่าน render path เดิม — ฟรี
- * เพราะ base render จ่ายแล้ว isBurnAlreadyPaid) · timeline 4 แทร็ก = P6b
+ * เพราะ base render จ่ายแล้ว isBurnAlreadyPaid) · timeline หลายแทร็ก = P6b
  *
  * state/logic ทั้งหมดอยู่ใน usePostPhaseEditor (ใช้ร่วมกับ PostPhaseMobile) — ไฟล์นี้
  * เป็นเลย์เอาต์ desktop 3 คอลัมน์ (การ์ดซับ | preview | คุมซับ) + timeline ล้วน ๆ
@@ -27,10 +27,13 @@ import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { HeadlineHookControls } from "./HeadlineHookControls";
+import { HeadlineHookPreview } from "./HeadlineHookPreview";
 import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import { trackEvent } from "@/lib/client-telemetry";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
+import type { HeadlineHookConfig } from "@/lib/headline-hook";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -49,6 +52,8 @@ export function PostPhase({
   projectId,
   logoOverlay,
   onLogoOverlayChange,
+  headlineHook,
+  onHeadlineHookChange,
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
@@ -65,6 +70,8 @@ export function PostPhase({
   projectId: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  headlineHook?: HeadlineHookConfig;
+  onHeadlineHookChange: (next: HeadlineHookConfig | undefined) => void;
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
@@ -73,7 +80,7 @@ export function PostPhase({
   aiImageEnabled: boolean;
   downloadFilename: string;
 }) {
-  const [rightTab, setRightTab] = useState<"subtitle" | "logo">("subtitle");
+  const [rightTab, setRightTab] = useState<"hook" | "subtitle" | "logo">("hook");
   const rightTabsId = useId();
   const logoPanelOpenedRef = useRef(false);
   const ed = usePostPhaseEditor(job, script, {
@@ -82,12 +89,14 @@ export function PostPhase({
     projectId,
     logoOverlay,
     onLogoOverlayChange,
+    headlineHook,
+    onHeadlineHookChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
     surface: "desktop",
   });
-  const handleRightTabChange = (next: "subtitle" | "logo") => {
+  const handleRightTabChange = (next: "hook" | "subtitle" | "logo") => {
     setRightTab(next);
     if (next === "logo" && !logoPanelOpenedRef.current) {
       logoPanelOpenedRef.current = true;
@@ -219,6 +228,13 @@ export function PostPhase({
               style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}` }}
             />
             <LogoOverlayPreview value={logoOverlay} asset={ed.logo.asset} />
+            <HeadlineHookPreview
+              hook={ed.headlineHook}
+              totalDurationMs={ed.totalDurationMs}
+              videoRef={ed.videoRef}
+              playing={ed.playing}
+              onTopPercent={(topPercent) => ed.setHeadlineHook({ topPercent })}
+            />
             {/* เส้นไกด์ตำแหน่งซับ */}
             <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
             {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) + ลากปรับตำแหน่งได้ */}
@@ -229,6 +245,7 @@ export function PostPhase({
               videoRef={ed.videoRef}
               playing={ed.playing}
               onVerticalPos={(p) => ed.set("verticalPos", p)}
+              suppressUntilMs={ed.subtitleSuppressionEndMs}
             />
             {ed.adjustingAvatar && ed.canAdjustAvatar && ed.preview && (
               <AvatarAdjustOverlay
@@ -257,7 +274,7 @@ export function PostPhase({
           </div>
         </main>
 
-        {/* ── ขวา 330px: คุมซับ / โลโก้ ── */}
+        {/* ── ขวา 330px: พาดหัว / ซับ / โลโก้ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
           <Segmented
             id={rightTabsId}
@@ -266,11 +283,22 @@ export function PostPhase({
             value={rightTab}
             onChange={handleRightTabChange}
             options={[
+              { value: "hook", label: "พาดหัว" },
               { value: "subtitle", label: "ซับ" },
               { value: "logo", label: "โลโก้" },
             ]}
             style={{ width: "100%", justifyContent: "center" }}
           />
+
+          {rightTab === "hook" && (
+            <div
+              id={`${rightTabsId}-hook-panel`}
+              role="tabpanel"
+              aria-labelledby={`${rightTabsId}-hook-tab`}
+            >
+              <HeadlineHookControls editor={ed} logoOverlay={logoOverlay} />
+            </div>
+          )}
 
           {rightTab === "subtitle" && (
             <div
@@ -591,7 +619,7 @@ export function PostPhase({
         )}
       </div>
 
-      {/* Timeline 4 แทร็ก (P6b) — ซับลากขอบแก้เวลาได้, แทร็กอื่นคลิก jump */}
+      {/* Timeline (P6b) — พาดหัวลากจุดจบได้, ซับลากสองขอบ, แทร็กอื่นคลิก jump */}
       <TimelinePanel
         captions={ed.captions}
         onCaptionsChange={ed.handleCaptionsChange}
@@ -611,6 +639,8 @@ export function PostPhase({
         avatarIntroMs={(ed.preview?.avatarIntroSecs ?? 5) * 1000}
         avatarTailMs={(ed.preview?.avatarTailSecs ?? 5) * 1000}
         voiceUrl={ed.preview?.voiceUrl ?? null}
+        headlineHook={ed.headlineHook}
+        onHeadlineHookDurationChange={(durationMs) => ed.setHeadlineHook({ durationMs })}
       />
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
     </div>

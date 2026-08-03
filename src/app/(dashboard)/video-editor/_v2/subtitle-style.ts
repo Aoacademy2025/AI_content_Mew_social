@@ -11,6 +11,10 @@ import {
 } from "@/lib/logo-overlay";
 import type { SubPreset, SubTextEffect } from "../_components/types";
 import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "../_components/constants";
+import {
+  normalizeHeadlineHook,
+  type HeadlineHookConfig,
+} from "@/lib/headline-hook";
 
 export { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST };
 
@@ -222,6 +226,7 @@ export function buildV2BurnConfig(
   fps = 30,
   overrides: V2CardOverrides = {},
   logoOverlay?: LogoOverlayConfig,
+  headlineHook?: HeadlineHookConfig,
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
@@ -252,6 +257,7 @@ export function buildV2BurnConfig(
     return [{ ...popup, start, end }];
   });
   const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
+  const normalizedHeadlineHook = normalizeHeadlineHook(headlineHook, durMs);
   return {
     videoUrl: baseVideoUrl,
     keywordPopups,
@@ -263,6 +269,7 @@ export function buildV2BurnConfig(
     subtitleShadow: cfg.shadow,
     subtitleOutline: cfg.outline,
     subtitleOutlineSize: cfg.outlineSize,
+    ...(normalizedHeadlineHook?.enabled ? { headlineHook: normalizedHeadlineHook } : {}),
     ...(normalizedLogo?.enabled ? { logoOverlay: normalizedLogo } : {}),
   };
 }

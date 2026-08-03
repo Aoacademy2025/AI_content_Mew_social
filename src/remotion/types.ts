@@ -1,4 +1,5 @@
 import type { LogoPosition } from "../lib/logo-overlay";
+import type { HeadlineHookConfig } from "../lib/headline-hook";
 
 export type SceneEffect =
   | "zoom-in" | "zoom-out"
@@ -108,6 +109,7 @@ export interface SubtitleOverlayConfig {
   videoUrl: string;
   keywordPopups: KeywordPopupItem[];
   durationInFrames: number;
+  headlineHook?: HeadlineHookConfig;
   fontFamily?: string;
   subtitleStylePreset?: SubtitleStylePreset;
   subtitleTextEffect?: SubtitleTextEffect;
@@ -132,6 +134,7 @@ export interface ShortVideoConfig {
   /** Number of semantic B-roll windows requested before asset-pool reuse/splitting. */
   requestedBrollWindowCount?: number;
   keywordPopups: KeywordPopupItem[];
+  headlineHook?: HeadlineHookConfig;
   voiceFile: string;
   voiceVolume: number;
   bgmFile?: string;

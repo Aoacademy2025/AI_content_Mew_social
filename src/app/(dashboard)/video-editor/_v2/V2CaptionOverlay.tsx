@@ -17,7 +17,7 @@ import type { V2Caption, V2CardOverrides, V2SubConfig } from "./subtitle-style";
  * ลากซับขึ้น/ลงบนจอได้เหมือน v1 (pointer drag → verticalPos %)
  */
 export const V2CaptionOverlay = memo(function V2CaptionOverlay({
-  captions, overrides, cfg, videoRef, playing, onVerticalPos,
+  captions, overrides, cfg, videoRef, playing, onVerticalPos, suppressUntilMs = 0,
 }: {
   captions: V2Caption[];
   overrides: V2CardOverrides;
@@ -25,6 +25,8 @@ export const V2CaptionOverlay = memo(function V2CaptionOverlay({
   videoRef: React.RefObject<HTMLVideoElement | null>;
   playing: boolean;
   onVerticalPos: (pos: number) => void;
+  /** Hide the visual overlay until this point without changing source caption timing. */
+  suppressUntilMs?: number;
 }) {
   // 60fps playback clock — leaf re-render เฉพาะคอมโพเนนต์นี้ (แบบเดียวกับ
   // usePlaybackMsDisplay ของ v1 แต่ผูกกับ videoRef ตรง ๆ ไม่ใช้ singleton ร่วม)
@@ -69,14 +71,17 @@ export const V2CaptionOverlay = memo(function V2CaptionOverlay({
   }
   function onPointerUp() { dragRef.current = null; setDragging(false); }
 
-  const activeIdx = captions.findIndex((c) => videoMs >= c.startMs && videoMs < c.endMs);
+  const activeIdx = videoMs < suppressUntilMs
+    ? -1
+    : captions.findIndex((c) => videoMs >= c.startMs && videoMs < c.endMs);
   const cap = activeIdx >= 0 ? captions[activeIdx] : null;
   if (!cap) return <div ref={rootRef} className="hidden" />;
 
   const PREVIEW_FPS = 30;
-  const capDurMs = Math.max(1, cap.endMs - cap.startMs);
+  const visibleStartMs = Math.max(cap.startMs, suppressUntilMs);
+  const capDurMs = Math.max(1, cap.endMs - visibleStartMs);
   const capDurFrames = Math.max(1, Math.round((capDurMs / 1000) * PREVIEW_FPS));
-  const elapsedMs = Math.max(0, Math.min(capDurMs, videoMs - cap.startMs));
+  const elapsedMs = Math.max(0, Math.min(capDurMs, videoMs - visibleStartMs));
   // frame ของเอฟเฟกต์ใน text (glow-pulse/highlight/karaoke/typewriter); -1 ตอน pause = โชว์เต็ม
   const frame = playing ? Math.round((elapsedMs / 1000) * PREVIEW_FPS) : -1;
 

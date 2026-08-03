@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Loader2, Move, Pause, Pencil, Play, SlidersHorizontal, Undo2,
+  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Loader2, Move, Pause, Pencil, Play, SlidersHorizontal, Type, Undo2,
 } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
@@ -29,12 +29,15 @@ import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
+import { HeadlineHookControls } from "./HeadlineHookControls";
+import { HeadlineHookPreview } from "./HeadlineHookPreview";
 import { MobileSheet } from "./MobileSheet";
 import { BrollWindowInspector, WindowEditsBottomBar } from "./BrollWindowInspector";
 import { brollWindowSpans } from "@/lib/broll-spans";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import { trackEvent } from "@/lib/client-telemetry";
+import type { HeadlineHookConfig } from "@/lib/headline-hook";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -56,6 +59,8 @@ export function PostPhaseMobile({
   projectId,
   logoOverlay,
   onLogoOverlayChange,
+  headlineHook,
+  onHeadlineHookChange,
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
@@ -72,6 +77,8 @@ export function PostPhaseMobile({
   projectId: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  headlineHook?: HeadlineHookConfig;
+  onHeadlineHookChange: (next: HeadlineHookConfig | undefined) => void;
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
@@ -86,6 +93,8 @@ export function PostPhaseMobile({
     projectId,
     logoOverlay,
     onLogoOverlayChange,
+    headlineHook,
+    onHeadlineHookChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
@@ -93,9 +102,11 @@ export function PostPhaseMobile({
   });
   const [styleOpen, setStyleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [headlineOpen, setHeadlineOpen] = useState(false);
   const [logoOpen, setLogoOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const logoTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const headlineTriggerRef = useRef<HTMLButtonElement | null>(null);
   const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
   // Per-window b-roll editing (Task 11) — hidden entirely for upload-cutaway projects
   // (same reasoning as PostPhase.tsx's desktop gate).
@@ -137,12 +148,14 @@ export function PostPhaseMobile({
     if (v && cap) v.currentTime = cap.startMs / 1000 + 0.01;
     v?.pause(); // กันเสียงเล่นค้างหลัง sheet ที่บัง preview
     setStyleOpen(false);
+    setHeadlineOpen(false);
     setLogoOpen(false);
     setEditOpen(true);
   }
 
   function openStyle() {
     setEditOpen(false);
+    setHeadlineOpen(false);
     setLogoOpen(false);
     setStyleOpen(true);
   }
@@ -151,7 +164,16 @@ export function PostPhaseMobile({
     ed.videoRef.current?.pause();
     setEditOpen(false);
     setStyleOpen(false);
+    setHeadlineOpen(false);
     setLogoOpen(true);
+  }
+
+  function openHeadline() {
+    ed.videoRef.current?.pause();
+    setEditOpen(false);
+    setStyleOpen(false);
+    setLogoOpen(false);
+    setHeadlineOpen(true);
   }
 
   // timing edits ทั้งหมดเข้าทาง handleCaptionsChange(next, true) เดียวกับ timeline drag commit
@@ -180,6 +202,7 @@ export function PostPhaseMobile({
     const v = ed.videoRef.current;
     if (v) { v.pause(); v.currentTime = 0; }
     setStyleOpen(false);
+    setHeadlineOpen(false);
     ed.setAdjustingAvatar(true);
   }
 
@@ -219,6 +242,13 @@ export function PostPhaseMobile({
             className="h-full w-full object-cover"
           />
           <LogoOverlayPreview value={logoOverlay} asset={ed.logo.asset} />
+          <HeadlineHookPreview
+            hook={ed.headlineHook}
+            totalDurationMs={ed.totalDurationMs}
+            videoRef={ed.videoRef}
+            playing={ed.playing}
+            onTopPercent={(topPercent) => ed.setHeadlineHook({ topPercent })}
+          />
           {/* เส้นไกด์ตำแหน่งซับ */}
           <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
           {/* ซับสด — renderer เดียวกับไฟล์ burn (WYSIWYG) */}
@@ -229,6 +259,7 @@ export function PostPhaseMobile({
             videoRef={ed.videoRef}
             playing={ed.playing}
             onVerticalPos={(p) => ed.set("verticalPos", p)}
+            suppressUntilMs={ed.subtitleSuppressionEndMs}
           />
           {!ed.playing && !ed.adjustingAvatar && !busy && (
             <button
@@ -294,6 +325,21 @@ export function PostPhaseMobile({
         style={{ background: color.bgTimeline, borderBottom: `1px solid ${color.cardBorder}` }}
       >
         <button
+          ref={headlineTriggerRef}
+          type="button"
+          data-mobile-editor-action="headline"
+          aria-haspopup="dialog"
+          aria-expanded={headlineOpen}
+          onClick={openHeadline}
+          style={mobileEditorActionStyle}
+        >
+          <Type size={16} aria-hidden="true" />
+          <span>พาดหัว</span>
+          {ed.headlineHook.enabled && (
+            <span aria-label="เปิดอยู่" style={{ width: 7, height: 7, borderRadius: "50%", background: color.trackHook, boxShadow: "0 0 0 3px rgba(249,115,22,.12)" }} />
+          )}
+        </button>
+        <button
           type="button"
           data-mobile-editor-action="subtitle"
           onClick={() => openEdit(ed.activeIdx >= 0 ? ed.activeIdx : ed.selected)}
@@ -317,9 +363,9 @@ export function PostPhaseMobile({
             <span
               data-logo-enabled-indicator="true"
               className="inline-flex items-center gap-1"
-              style={{ padding: "2px 6px", borderRadius: radius.pill, background: "rgba(52,211,153,.13)", color: color.success, fontSize: 10, fontWeight: 600 }}
+              style={{ padding: "1px 4px", borderRadius: radius.pill, background: "rgba(52,211,153,.13)", color: color.success, fontSize: 8.5, fontWeight: 600, gap: 2 }}
             >
-              <Check size={11} strokeWidth={3} aria-hidden="true" />
+              <Check size={9} strokeWidth={3} aria-hidden="true" />
               เปิดอยู่
             </span>
           )}
@@ -475,6 +521,18 @@ export function PostPhaseMobile({
             </div>
           </>
         )}
+      </MobileSheet>
+
+      <MobileSheet
+        open={headlineOpen}
+        onClose={() => setHeadlineOpen(false)}
+        title="พาดหัวเปิดคลิป"
+        size="large"
+        triggerRef={headlineTriggerRef}
+      >
+        <div className="pt-2">
+          <HeadlineHookControls editor={ed} logoOverlay={logoOverlay} />
+        </div>
       </MobileSheet>
 
       {/* ── style full-screen sheet ── */}
@@ -776,12 +834,12 @@ const mobileEditorActionStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  gap: 7,
-  padding: "7px 9px",
+  gap: 5,
+  padding: "7px 5px",
   borderRadius: radius.control,
   border: `1px solid ${color.cardBorder}`,
   background: "rgba(255,255,255,.045)",
   color: color.textSecondary,
-  font: `500 12.5px ${font.body}`,
+  font: `500 12px ${font.body}`,
   cursor: "pointer",
 };

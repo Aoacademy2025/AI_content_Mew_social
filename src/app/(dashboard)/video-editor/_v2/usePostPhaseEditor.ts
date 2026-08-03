@@ -23,6 +23,14 @@ import {
   normalizeLogoOverlayConfig,
   type LogoOverlayConfig,
 } from "@/lib/logo-overlay";
+import {
+  createDefaultHeadlineHook,
+  headlineHookEndMs,
+  normalizeHeadlineHook,
+  normalizeHeadlineHookSuggestions,
+  type HeadlineHookConfig,
+  type HeadlineHookSuggestion,
+} from "@/lib/headline-hook";
 import type { V2JobState } from "./useV2Job";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
@@ -48,6 +56,9 @@ export type WindowEdit = { src: string; keyword?: string; kind: WindowEditKind; 
 const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
   void _next;
 };
+const ignoreHeadlineHookChange = (_next: HeadlineHookConfig | undefined) => {
+  void _next;
+};
 const ignoreProjectSaveRetry = () => undefined;
 
 export type UsePostPhaseEditorOptions = {
@@ -58,6 +69,8 @@ export type UsePostPhaseEditorOptions = {
   projectId?: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange?: (next: LogoOverlayConfig | undefined) => void;
+  headlineHook?: HeadlineHookConfig;
+  onHeadlineHookChange?: (next: HeadlineHookConfig | undefined) => void;
   logoEligible?: boolean;
   projectSaveStatus?: LogoProjectSaveStatus;
   onRetryProjectSave?: () => void;
@@ -75,6 +88,8 @@ export function usePostPhaseEditor(
     projectId = job.projectId,
     logoOverlay,
     onLogoOverlayChange = ignoreLogoChange,
+    headlineHook,
+    onHeadlineHookChange = ignoreHeadlineHookChange,
     logoEligible = false,
     projectSaveStatus = "idle",
     onRetryProjectSave = ignoreProjectSaveRetry,
@@ -109,6 +124,84 @@ export function usePostPhaseEditor(
   const pollStop = useRef(false);
   const windowPollStop = useRef(false);
   const [adjustingAvatar, setAdjustingAvatar] = useState(false);
+  const totalDurationMs = useMemo(() => Math.max(
+    1_000,
+    preview?.audioDurationMs ?? 0,
+    captions[captions.length - 1]?.endMs ?? 0,
+  ), [captions, preview?.audioDurationMs]);
+  const headlineSourceText = useMemo(() => (
+    script.trim()
+    || preview?.fullText?.trim()
+    || captions.map((caption) => caption.text).join(" ").trim()
+  ), [captions, preview?.fullText, script]);
+  const resolvedHeadlineHook = useMemo(() => (
+    normalizeHeadlineHook(headlineHook, totalDurationMs)
+    ?? createDefaultHeadlineHook(headlineSourceText, totalDurationMs)
+  ), [headlineHook, headlineSourceText, totalDurationMs]);
+  const [headlineSuggestions, setHeadlineSuggestions] = useState<HeadlineHookSuggestion[]>([]);
+  const [headlineSuggestionState, setHeadlineSuggestionState] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [headlineSuggestionError, setHeadlineSuggestionError] = useState("");
+  const headlineSuggestionAbortRef = useRef<AbortController | null>(null);
+
+  function setHeadlineHook(patch: Partial<HeadlineHookConfig>) {
+    const next = normalizeHeadlineHook(
+      { ...resolvedHeadlineHook, ...patch },
+      totalDurationMs,
+    );
+    onHeadlineHookChange(next ?? undefined);
+  }
+
+  function selectHeadlineSuggestion(suggestion: HeadlineHookSuggestion) {
+    setHeadlineHook({
+      enabled: true,
+      headline: suggestion.headline,
+      subheadline: suggestion.subheadline,
+    });
+    trackEvent("headline_hook_suggestion_selected", {
+      properties: { surface },
+    });
+  }
+
+  async function generateHeadlineSuggestions() {
+    if (!headlineSourceText || headlineSuggestionState === "loading") return;
+    headlineSuggestionAbortRef.current?.abort();
+    const controller = new AbortController();
+    headlineSuggestionAbortRef.current = controller;
+    setHeadlineSuggestionState("loading");
+    setHeadlineSuggestionError("");
+    try {
+      const response = await fetch("/api/videos/headline-hook-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: headlineSourceText.slice(0, 12_000) }),
+        signal: controller.signal,
+      });
+      const body = await response.json().catch(() => null) as {
+        suggestions?: unknown;
+        message?: string;
+        error?: string;
+      } | null;
+      if (!response.ok) {
+        throw new Error(body?.message ?? body?.error ?? "AI เขียนพาดหัวไม่สำเร็จ");
+      }
+      const suggestions = normalizeHeadlineHookSuggestions(body);
+      if (suggestions.length === 0) throw new Error("AI ยังส่งพาดหัวที่ใช้ได้ไม่สำเร็จ");
+      setHeadlineSuggestions(suggestions);
+      setHeadlineSuggestionState("success");
+      trackEvent("headline_hook_suggestions_generated", {
+        properties: { surface, count: suggestions.length },
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      const message = error instanceof Error ? error.message : "AI เขียนพาดหัวไม่สำเร็จ";
+      setHeadlineSuggestionError(message);
+      setHeadlineSuggestionState("error");
+    } finally {
+      if (headlineSuggestionAbortRef.current === controller) {
+        headlineSuggestionAbortRef.current = null;
+      }
+    }
+  }
 
   // ── Phase 2: per-window b-roll editing (Task 11) ──────────────────────────
   // windowEdits ล้วนอยู่ฝั่ง client จนกว่าจะกด "อัปเดตวิดีโอ" (batched, ไม่เรนเดอร์ทีละจุด).
@@ -292,7 +385,11 @@ export function usePostPhaseEditor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => () => { pollStop.current = true; windowPollStop.current = true; }, []);
+  useEffect(() => () => {
+    pollStop.current = true;
+    windowPollStop.current = true;
+    headlineSuggestionAbortRef.current?.abort();
+  }, []);
 
   function set<K extends keyof V2SubConfig>(k: K, v: V2SubConfig[K]) {
     setCfg((c) => ({ ...c, [k]: v }));
@@ -358,6 +455,7 @@ export function usePostPhaseEditor(
         30,
         overrides,
         logoOverlay,
+        resolvedHeadlineHook,
       );
       const result = await onExportJob({
         sourceJobId: job.jobId,
@@ -375,6 +473,15 @@ export function usePostPhaseEditor(
           }),
         });
       }
+      if (resolvedHeadlineHook.enabled) {
+        trackEvent("headline_hook_export_submitted", {
+          properties: {
+            surface,
+            preset: resolvedHeadlineHook.preset,
+            durationMs: resolvedHeadlineHook.durationMs,
+          },
+        });
+      }
     } catch (e) {
       setExp({ phase: "error", message: e instanceof Error ? e.message : "ส่งออกไม่สำเร็จ" });
     }
@@ -383,6 +490,16 @@ export function usePostPhaseEditor(
   return {
     preview,
     logo,
+    headlineHook: resolvedHeadlineHook,
+    totalDurationMs,
+    headlineSourceText,
+    subtitleSuppressionEndMs: headlineHookEndMs(resolvedHeadlineHook, totalDurationMs),
+    headlineSuggestions,
+    headlineSuggestionState,
+    headlineSuggestionError,
+    setHeadlineHook,
+    selectHeadlineSuggestion,
+    generateHeadlineSuggestions,
     previewConfig,
     compositeBaseUrl,
     windowEdits, setWindowEdit, clearWindowEdit,

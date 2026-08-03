@@ -1,8 +1,10 @@
 import React from "react";
 import { AbsoluteFill, Audio, Img, OffthreadVideo, Sequence, useVideoConfig } from "remotion";
 import { logoOverlayFrame } from "../lib/logo-overlay";
+import { headlineHookEndFrame } from "../lib/headline-hook";
 import type { SubtitleOverlayConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { AnimatedSubtitle } from "./ShortVideoComposition";
+import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
 
 // Keep in sync with src/app/layout.tsx GOOGLE_FONTS_URL — burn output must use
 // the same font files (and weights) as the editor preview.
@@ -17,6 +19,7 @@ const FONTS_CSS =
 export function SubtitleOverlayComposition({
   videoUrl,
   keywordPopups,
+  headlineHook,
   fontFamily,
   subtitleStylePreset = "stroke",
   subtitleTextEffect = "pop",
@@ -28,11 +31,12 @@ export function SubtitleOverlayComposition({
   bgmVolume = 0.12,
   logoOverlay,
 }: SubtitleOverlayConfig) {
-  const { width, height } = useVideoConfig();
+  const { width, height, fps, durationInFrames } = useVideoConfig();
   const resolvedFont = fontFamily || "'Kanit', 'Noto Sans Thai', sans-serif";
   const preset: SubtitleStylePreset = subtitleStylePreset ?? "stroke";
   const textEffect: SubtitleTextEffect = subtitleTextEffect ?? "pop";
   const accentColor = subtitleAccentColor ?? "#FFE500";
+  const hookEndFrame = headlineHookEndFrame(headlineHook, fps, durationInFrames);
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
@@ -66,13 +70,20 @@ export function SubtitleOverlayComposition({
         );
       })()}
 
+      {headlineHook?.enabled && hookEndFrame > 0 && (
+        <Sequence from={0} durationInFrames={hookEndFrame} layout="none">
+          <HeadlineHookOverlay hook={headlineHook} durationInFrames={hookEndFrame} />
+        </Sequence>
+      )}
+
       {/* Subtitles — use the same Sequence + AnimatedSubtitle as ShortVideoComposition */}
       {keywordPopups.map((p) => {
-        const dur = p.end - p.start;
+        const visibleStart = Math.max(p.start, hookEndFrame);
+        const dur = p.end - visibleStart;
         if (dur <= 0) return null;
         const capPreset = p.stylePreset ?? preset;
         return (
-          <Sequence key={`sub-${p.start}-${p.end}`} from={p.start} durationInFrames={dur} layout="none">
+          <Sequence key={`sub-${p.start}-${p.end}`} from={visibleStart} durationInFrames={dur} layout="none">
             <AnimatedSubtitle
               popup={p}
               preset={capPreset}
