@@ -34,6 +34,7 @@ export async function GET() {
         trialStartedAt: true,
         trialEndsAt: true,
         subStatus: true,
+        billingPeriod: true,
       } as any,
     });
 
