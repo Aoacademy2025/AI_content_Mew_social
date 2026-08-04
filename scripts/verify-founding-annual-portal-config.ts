@@ -1,4 +1,7 @@
-import { buildFoundingAnnualPortalConfig } from "../src/lib/founding-annual-portal-config";
+import {
+  buildFoundingAnnualPortalConfig,
+  buildFoundingAnnualPortalFeatures,
+} from "../src/lib/founding-annual-portal-config";
 
 let passed = 0;
 function assert(condition: boolean, message: string) {
@@ -34,6 +37,15 @@ assert(
 );
 assert(config.products.length === 2, "PRO and BUSINESS products are allowlisted");
 assert(config.products[0].prices.includes("price_pro_month") && config.products[0].prices.includes("price_pro_year"), "PRO monthly and annual prices share one portal product");
+
+const features = buildFoundingAnnualPortalFeatures({
+  proMonthly: price("price_pro_month", "prod_pro", "month"),
+  proAnnual: price("price_pro_year", "prod_pro", "year"),
+  businessMonthly: price("price_business_month", "prod_business", "month"),
+  businessAnnual: price("price_business_year", "prod_business", "year"),
+});
+assert(features.payment_method_update.enabled, "Stripe-required payment method update is enabled");
+assert(features.subscription_update.proration_behavior === "always_invoice", "Founding subscription update remains configured");
 
 let rejectedWrongInterval = false;
 try {

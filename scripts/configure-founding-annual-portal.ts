@@ -8,7 +8,7 @@
 import "dotenv/config";
 
 import {
-  buildFoundingAnnualPortalConfig,
+  buildFoundingAnnualPortalFeatures,
   type FoundingPortalPrice,
 } from "../src/lib/founding-annual-portal-config";
 import { ensureStripeConfig } from "../src/lib/load-stripe-config";
@@ -50,7 +50,7 @@ async function main() {
     loadPrice(priceIds.businessMonthly),
     loadPrice(priceIds.businessAnnual),
   ]);
-  const subscriptionUpdate = buildFoundingAnnualPortalConfig({
+  const features = buildFoundingAnnualPortalFeatures({
     proMonthly,
     proAnnual,
     businessMonthly,
@@ -61,7 +61,7 @@ async function main() {
   console.log(JSON.stringify({
     mode: process.argv.includes("--apply") ? "apply" : "dry-run",
     existingConfigurationId: existingId,
-    subscriptionUpdate,
+    features,
   }, null, 2));
 
   if (!process.argv.includes("--apply")) {
@@ -71,7 +71,7 @@ async function main() {
 
   const common = {
     name: "MewSocial Founding annual conversion",
-    features: { subscription_update: subscriptionUpdate },
+    features,
     metadata: { purpose: "founding_annual_conversion", managed_by: "configure-founding-annual-portal" },
   } as const;
   const configuration = existingId
