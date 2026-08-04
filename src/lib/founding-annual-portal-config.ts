@@ -26,6 +26,11 @@ export type FoundingPortalSubscriptionUpdate = {
   }>;
 };
 
+export type FoundingPortalFeatures = {
+  payment_method_update: { enabled: true };
+  subscription_update: FoundingPortalSubscriptionUpdate;
+};
+
 function assertPrice(
   label: string,
   price: FoundingPortalPrice,
@@ -82,5 +87,15 @@ export function buildFoundingAnnualPortalConfig(
         adjustable_quantity: { enabled: false },
       },
     ],
+  };
+}
+
+/** Stripe requires payment-method updates whenever subscription updates are enabled. */
+export function buildFoundingAnnualPortalFeatures(
+  prices: FoundingPortalPriceSet,
+): FoundingPortalFeatures {
+  return {
+    payment_method_update: { enabled: true },
+    subscription_update: buildFoundingAnnualPortalConfig(prices),
   };
 }
