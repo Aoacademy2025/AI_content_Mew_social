@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-type StudioMode = "image" | "voice";
+type StudioMode = "image" | "voice" | "cloning";
 type ImageEngine = "runpod" | "cloud";
 type ImageModel = {
   id: string;
@@ -221,7 +221,9 @@ export default function AiStudioPage() {
   const [script, setScript] = useState("");
   const [speed, setSpeed] = useState(1);
   const [cloneVoices, setCloneVoices] = useState<CloneVoice[] | null>(null);
-  const [cloneEngine, setCloneEngine] = useState<"omnivoice" | "jaitts">("omnivoice");
+  const [cloneVoiceId, setCloneVoiceId] = useState("");
+  const [cloningScript, setCloningScript] = useState("");
+  const [cloningSubmitting, setCloningSubmitting] = useState(false);
   const [cloneName, setCloneName] = useState("");
   const [cloneRefText, setCloneRefText] = useState("");
   const [cloneFile, setCloneFile] = useState<File | null>(null);
@@ -262,17 +264,21 @@ export default function AiStudioPage() {
   }, []);
 
   useEffect(() => {
-    if (!catalog?.voice.available) return;
-    loadVoices().catch((error) => toast.error(error instanceof Error ? error.message : "โหลดรายการเสียงไม่สำเร็จ"));
-    // 404 = ไม่ใช่แอดมิน → ซ่อนส่วนจัดการเสียงโคลน
+    if (catalog?.voice.available) {
+      loadVoices().catch((error) => toast.error(error instanceof Error ? error.message : "โหลดรายการเสียงไม่สำเร็จ"));
+    }
+    // เสียงโคลน (Hero Cloning) แยกจาก Hero Voice — โหลดเมื่อแท็บโคลนเปิดให้บัญชีนี้
+    if (!catalog?.voice.cloning) return;
     fetch("/api/omnivoice/user-voices", { cache: "no-store" })
       .then(async (response) => {
         if (!response.ok) return;
         const data = await response.json();
-        if (Array.isArray(data)) setCloneVoices(data as CloneVoice[]);
+        if (!Array.isArray(data)) return;
+        setCloneVoices(data as CloneVoice[]);
+        setCloneVoiceId((current) => current || (data[0] as CloneVoice | undefined)?.voiceId || "");
       })
       .catch(() => {});
-  }, [catalog?.voice.available, loadVoices]);
+  }, [catalog?.voice.available, catalog?.voice.cloning, loadVoices]);
 
   const activeKey = useMemo(
     () => jobs.filter((job) => ACTIVE_JOB_STATUS.has(job.status)).map((job) => job.id).join(","),
@@ -358,22 +364,6 @@ export default function AiStudioPage() {
     if (!script.trim() || !voiceId) return;
     setSubmitting(true);
     try {
-      // Hero Cloning (JaiTTS) — เอนจินโคลนทดลอง ใช้ได้กับเสียงโคลน (user_*) เท่านั้น
-      const useJaitts = catalog?.voice.cloning && cloneEngine === "jaitts" && voiceId.startsWith("user_");
-      if (useJaitts) {
-        const response = await fetch("/api/ai-studio/hero-cloning", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: script, voiceId, speed }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
-        const job = data.job as StudioJob;
-        setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-        toast.success("Hero Cloning สร้างเสียงสำเร็จ");
-        setScript("");
-        return;
-      }
       // hostinger/local backend ไม่มี durable queue — ใช้ route synchronous ที่
       // บันทึกประวัติเข้า AI Studio ให้อยู่แล้ว (studio: true)
       const durable = (catalog?.voice.backend ?? "runpod") === "runpod";
@@ -428,13 +418,34 @@ export default function AiStudioPage() {
       setCloneName("");
       setCloneRefText("");
       setCloneFile(null);
-      await loadVoices().catch(() => {});
-      setVoiceId((data as CloneVoice).voiceId);
-      toast.success("สร้างเสียงโคลนแล้ว — เลือกใช้ได้จากรายการเสียง");
+      setCloneVoiceId((data as CloneVoice).voiceId);
+      toast.success("สร้างเสียงโคลนแล้ว — พร้อมให้พูดได้เลย");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "สร้างเสียงโคลนไม่สำเร็จ");
     } finally {
       setCloneSubmitting(false);
+    }
+  }
+
+  async function submitCloning() {
+    if (!cloningScript.trim() || !cloneVoiceId || cloningSubmitting) return;
+    setCloningSubmitting(true);
+    try {
+      const response = await fetch("/api/ai-studio/hero-cloning", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: cloningScript, voiceId: cloneVoiceId, speed }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
+      const job = data.job as StudioJob;
+      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      toast.success("Hero Cloning สร้างเสียงสำเร็จ");
+      setCloningScript("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "สร้างเสียงไม่สำเร็จ");
+    } finally {
+      setCloningSubmitting(false);
     }
   }
 
@@ -475,11 +486,11 @@ export default function AiStudioPage() {
         </header>
 
         <div className="mb-6 inline-flex rounded-xl p-1" style={{ background: "var(--ui-badge-neutral-bg)", border: "1px solid var(--ui-card-border)" }}>
-          {([[
-            "image", "สร้างภาพ", ImageIcon,
-          ], [
-            "voice", "สร้างเสียง", AudioLines,
-          ]] as const).map(([value, label, Icon]) => (
+          {([
+            ["image", "สร้างภาพ", ImageIcon],
+            ["voice", "สร้างเสียง", AudioLines],
+            ...(catalog?.voice.cloning ? [["cloning", "โคลนเสียง", WandSparkles]] as const : []),
+          ] as ReadonlyArray<readonly [StudioMode, string, typeof ImageIcon]>).map(([value, label, Icon]) => (
             <button
               key={value}
               type="button"
@@ -614,7 +625,7 @@ export default function AiStudioPage() {
                   งานนี้ใช้เฉพาะ {imageEngine === "runpod" ? "RunPod AI" : "Cloud API"} หากไม่สำเร็จระบบจะคืนเครดิตและไม่ส่งต่อไปอีก Engine
                 </p>
               </form>
-            ) : (
+            ) : mode === "voice" ? (
               <form onSubmit={submitVoice} className="space-y-7">
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl px-4 py-3" style={{ background: "rgba(139,92,246,.08)", border: "1px solid rgba(139,92,246,.24)" }}>
                   <p className="text-sm font-medium" style={{ color: "var(--ui-text-primary)" }}>{catalog?.plan} · ยาวสุด {(catalog?.voice.maxDurationSec ?? 0) / 60} นาทีต่อเสียง</p>
@@ -654,84 +665,87 @@ export default function AiStudioPage() {
                       </div>
                     </div>
 
-                    {catalog.voice.cloning && voiceId.startsWith("user_") && (
-                      <div className="rounded-2xl p-4" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
-                        <p className="mb-2 text-xs font-semibold" style={{ color: "var(--ui-text-primary)" }}>เอนจินโคลนเสียง</p>
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          {([
-                            ["omnivoice", "Hero Voice", "เอนจินหลัก · เร็ว"],
-                            ["jaitts", "Hero Cloning", "JaiTTS · ทดลอง · ช้า (หลายนาที)"],
-                          ] as const).map(([engine, label, desc]) => (
-                            <button
-                              key={engine}
-                              type="button"
-                              onClick={() => setCloneEngine(engine)}
-                              className="rounded-xl px-3 py-2 text-left"
-                              style={{
-                                border: `1px solid ${cloneEngine === engine ? ACCENT : "var(--ui-card-border)"}`,
-                                background: cloneEngine === engine ? `${ACCENT}1a` : "transparent",
-                              }}
-                            >
-                              <span className="block text-xs font-semibold" style={{ color: "var(--ui-text-primary)" }}>{label}</span>
-                              <span className="block text-[10px]" style={{ color: "var(--ui-text-muted)" }}>{desc}</span>
-                            </button>
-                          ))}
-                        </div>
-                        {cloneEngine === "jaitts" && (
-                          <p className="mt-2 text-[10px] leading-relaxed" style={{ color: "#FBBF24" }}>
-                            Hero Cloning เป็นโหมดทดลอง — สคริปต์สั้น (~500 ตัวอักษร) และใช้เวลาสร้าง 2–5 นาที อย่าปิดหน้าระหว่างรอ
-                          </p>
-                        )}
-                      </div>
-                    )}
-
                     <button type="submit" disabled={submitting || !script.trim() || !voiceId} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-45" style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
-                      {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}
-                      {catalog.voice.cloning && voiceId.startsWith("user_") && cloneEngine === "jaitts" ? "สร้างเสียงด้วย Hero Cloning" : "สร้างเสียง Hero Voice"}
+                      {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}สร้างเสียง Hero Voice
                     </button>
 
-                    {cloneVoices !== null && (
-                      <div className="rounded-2xl p-5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
-                        <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>🎙 เสียงโคลนของฉัน <span className="text-[10px] font-normal" style={{ color: "var(--ui-text-muted)" }}>(แอดมินเท่านั้น)</span></p>
-                        <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--ui-text-muted)" }}>
-                          อัปไฟล์เสียงพูดชัด ๆ 5–30 วินาที (mp3/wav/m4a) พร้อมพิมพ์ข้อความที่พูดในไฟล์ให้ตรงเป๊ะ — Hero Voice จะเลียนเสียงนี้ตอนสร้าง TTS
-                        </p>
-                        {(cloneVoices.length > 0) && (
-                          <ul className="mt-3 space-y-2">
-                            {cloneVoices.map((voice) => (
-                              <li key={voice.id} className="flex items-center justify-between gap-3 rounded-xl px-3 py-2" style={{ border: "1px solid var(--ui-divider)" }}>
-                                <div className="min-w-0">
-                                  <p className="truncate text-xs font-semibold" style={{ color: "var(--ui-text-primary)" }}>{voice.name}</p>
-                                  <p className="text-[10px]" style={{ color: "var(--ui-text-muted)" }}>{(voice.durationMs / 1000).toFixed(1)} วิ · {voice.voiceId}</p>
-                                </div>
-                                <div className="flex shrink-0 items-center gap-2">
-                                  <audio controls preload="none" src={`/api/omnivoice/user-voices/${encodeURIComponent(voice.id)}`} className="h-8 max-w-[160px]" />
-                                  <button type="button" onClick={() => removeCloneVoice(voice.id)} className="text-[11px] text-red-400 hover:underline">ลบ</button>
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        )}
-                        <div className="mt-4 grid gap-3">
-                          <input value={cloneName} onChange={(event) => setCloneName(event.target.value.slice(0, 60))} placeholder="ชื่อเสียง เช่น เสียงพากย์ของฉัน" className="h-10 w-full rounded-xl px-3 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
-                          <textarea value={cloneRefText} onChange={(event) => setCloneRefText(event.target.value.slice(0, 500))} rows={2} placeholder="พิมพ์ข้อความที่พูดในไฟล์เสียง (ต้องตรงคำต่อคำ)" className="w-full resize-none rounded-xl px-3 py-2 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
-                          <input type="file" accept="audio/*,.m4a" onChange={(event) => setCloneFile(event.target.files?.[0] ?? null)} className="text-xs" style={{ color: "var(--ui-text-muted)" }} />
-                          <button
-                            type="button"
-                            onClick={submitCloneVoice}
-                            disabled={cloneSubmitting || !cloneFile || !cloneName.trim() || cloneRefText.trim().length < 8}
-                            className="flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-xs font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-45"
-                            style={{ color: ACCENT, border: `1px solid ${ACCENT}66` }}
-                          >
-                            {cloneSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <WandSparkles className="h-3.5 w-3.5" />}
-                            {cloneSubmitting ? "กำลังสร้างเสียงโคลน..." : "สร้างเสียงโคลน"}
-                          </button>
-                        </div>
-                      </div>
-                    )}
                   </>
                 )}
               </form>
+            ) : null}
+            {!loading && mode === "cloning" && (
+              <div className="space-y-6">
+                <div className="rounded-2xl p-5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
+                  <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>🎙 เสียงโคลนของฉัน <span className="text-[10px] font-normal" style={{ color: "var(--ui-text-muted)" }}>(Hero Cloning · JaiTTS)</span></p>
+                  <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--ui-text-muted)" }}>
+                    อัปไฟล์เสียงพูดชัด ๆ 5–30 วินาที (mp3/wav/m4a) พร้อมพิมพ์ข้อความที่พูดในไฟล์ให้ตรงเป๊ะ — ระบบจะเลียนเสียงนี้ตอนสร้างเสียงพูด
+                  </p>
+                  {cloneVoices !== null && cloneVoices.length > 0 && (
+                    <ul className="mt-3 space-y-2">
+                      {cloneVoices.map((voice) => (
+                        <li key={voice.id} className="flex items-center justify-between gap-3 rounded-xl px-3 py-2" style={{ border: "1px solid var(--ui-divider)" }}>
+                          <div className="min-w-0">
+                            <p className="truncate text-xs font-semibold" style={{ color: "var(--ui-text-primary)" }}>{voice.name}</p>
+                            <p className="text-[10px]" style={{ color: "var(--ui-text-muted)" }}>{(voice.durationMs / 1000).toFixed(1)} วิ</p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <audio controls preload="none" src={`/api/omnivoice/user-voices/${encodeURIComponent(voice.id)}`} className="h-8 max-w-40" />
+                            <button type="button" onClick={() => removeCloneVoice(voice.id)} className="text-[11px] text-red-400 hover:underline">ลบ</button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className="mt-4 grid gap-3">
+                    <input value={cloneName} onChange={(event) => setCloneName(event.target.value.slice(0, 60))} placeholder="ชื่อเสียง เช่น เสียงพากย์ของฉัน" className="h-10 w-full rounded-xl px-3 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
+                    <textarea value={cloneRefText} onChange={(event) => setCloneRefText(event.target.value.slice(0, 500))} rows={2} placeholder="พิมพ์ข้อความที่พูดในไฟล์เสียง (ต้องตรงคำต่อคำ)" className="w-full resize-none rounded-xl px-3 py-2 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
+                    <input type="file" accept="audio/*,.m4a" onChange={(event) => setCloneFile(event.target.files?.[0] ?? null)} className="text-xs" style={{ color: "var(--ui-text-muted)" }} />
+                    <button
+                      type="button"
+                      onClick={submitCloneVoice}
+                      disabled={cloneSubmitting || !cloneFile || !cloneName.trim() || cloneRefText.trim().length < 8}
+                      className="flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-xs font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-45"
+                      style={{ color: ACCENT, border: `1px solid ${ACCENT}66` }}
+                    >
+                      {cloneSubmitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <WandSparkles className="h-3.5 w-3.5" />}
+                      {cloneSubmitting ? "กำลังสร้างเสียงโคลน..." : "สร้างเสียงโคลน"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl p-5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
+                  <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ให้เสียงโคลนพูด</p>
+                  <div className="mt-3 grid gap-3">
+                    <select value={cloneVoiceId} onChange={(event) => setCloneVoiceId(event.target.value)} className="h-11 w-full rounded-xl px-3 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }}>
+                      <option value="">— เลือกเสียงโคลน —</option>
+                      {(cloneVoices ?? []).map((voice) => <option key={voice.id} value={voice.voiceId}>{voice.name}</option>)}
+                    </select>
+                    <div>
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-xs font-semibold" style={{ color: "var(--ui-text-primary)" }}>ข้อความ</span>
+                        <span className="text-[11px]" style={{ color: cloningScript.length > 450 ? "#FBBF24" : "var(--ui-text-muted)" }}>{cloningScript.length}/500</span>
+                      </div>
+                      <textarea value={cloningScript} onChange={(event) => setCloningScript(event.target.value.slice(0, 500))} rows={5} placeholder="พิมพ์ข้อความสั้น ๆ ที่อยากให้เสียงโคลนพูด..." className="w-full resize-none rounded-xl px-3 py-2 text-sm leading-6 outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
+                    </div>
+                    <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} className="h-11 w-full rounded-xl px-3 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }}>
+                      <option value={0.85}>ช้า · 0.85×</option><option value={0.95}>สบาย ๆ · 0.95×</option><option value={1}>ปกติ · 1×</option><option value={1.15}>เร็ว · 1.15×</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={submitCloning}
+                      disabled={cloningSubmitting || !cloningScript.trim() || !cloneVoiceId}
+                      className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-45"
+                      style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}
+                    >
+                      {cloningSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}
+                      {cloningSubmitting ? "กำลังสร้างเสียง (2–5 นาที)..." : "สร้างเสียงด้วย Hero Cloning"}
+                    </button>
+                    <p className="text-[10px] leading-relaxed" style={{ color: "#FBBF24" }}>
+                      โหมดทดลอง — ประมวลผลบน CPU ใช้เวลา 2–5 นาทีต่อข้อความสั้น อย่าปิดหน้าระหว่างรอ
+                    </p>
+                  </div>
+                </div>
+              </div>
             )}
           </section>
 

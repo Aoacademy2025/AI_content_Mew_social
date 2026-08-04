@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { isOmniVoiceUserAllowed } from "@/lib/omnivoice";
 import { deleteUserVoice, readUserVoiceWav } from "@/lib/user-voices.server";
 
 export const runtime = "nodejs";
@@ -8,7 +7,7 @@ export const runtime = "nodejs";
 async function requireAdmin() {
   const user = await getCurrentUser();
   if (!user) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-  if (user.role !== "ADMIN" || !isOmniVoiceUserAllowed(user)) {
+  if (user.role !== "ADMIN") {
     return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
   }
   return { user };

@@ -3,7 +3,6 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { isOmniVoiceUserAllowed } from "@/lib/omnivoice";
 import { callJaiTtsClone, jaittsConfig, JaiTtsConfigError } from "@/lib/jaitts";
 import { prepareHeroVoiceSpeechText } from "@/lib/hero-voice-speech";
 import { isUserVoiceId, loadUserVoiceRef } from "@/lib/user-voices.server";
@@ -21,7 +20,8 @@ export const maxDuration = 900;
 export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (user.role !== "ADMIN" || !isOmniVoiceUserAllowed(user)) {
+  // Standalone JaiTTS feature — not tied to any OmniVoice rollout flag.
+  if (user.role !== "ADMIN") {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 

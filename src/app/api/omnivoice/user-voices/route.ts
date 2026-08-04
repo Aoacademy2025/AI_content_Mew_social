@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { isOmniVoiceUserAllowed } from "@/lib/omnivoice";
 import {
   createUserVoice,
   listUserVoices,
@@ -11,13 +10,14 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-// Custom Hero Voice clones — admin-only v1 (product decision 2026-07-30):
-// cloning consumes managed GPU (ADR 0003), so it stays behind the admin role
-// until quota/abuse policy for general users is decided.
+// Custom clone voices — admin-only v1 (product decision 2026-07-30): cloning
+// consumes managed compute (ADR 0003), so it stays behind the admin role until
+// quota/abuse policy for general users is decided. Deliberately NOT tied to
+// the OmniVoice rollout flags — Hero Cloning (JaiTTS) uses these voices too.
 async function requireAdmin() {
   const user = await getCurrentUser();
   if (!user) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
-  if (user.role !== "ADMIN" || !isOmniVoiceUserAllowed(user)) {
+  if (user.role !== "ADMIN") {
     return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) };
   }
   return { user };
