@@ -2,6 +2,16 @@ export const HEADLINE_HOOK_PRESETS = ["viral", "news", "clean"] as const;
 
 export type HeadlineHookPreset = (typeof HEADLINE_HOOK_PRESETS)[number];
 
+export const HEADLINE_HOOK_FONTS = [
+  { value: "Kanit", label: "Kanit — หนา ชัด", cssFamily: "'Kanit', 'Noto Sans Thai', sans-serif" },
+  { value: "Prompt", label: "Prompt — โมเดิร์น", cssFamily: "'Prompt', 'Noto Sans Thai', sans-serif" },
+  { value: "Sarabun", label: "Sarabun — อ่านง่าย", cssFamily: "'Sarabun', 'Noto Sans Thai', sans-serif" },
+  { value: "Mitr", label: "Mitr — เป็นกันเอง", cssFamily: "'Mitr', 'Noto Sans Thai', sans-serif" },
+  { value: "Noto Sans Thai", label: "Noto Sans Thai — เรียบกลาง", cssFamily: "'Noto Sans Thai', sans-serif" },
+] as const;
+
+export type HeadlineHookFontFamily = (typeof HEADLINE_HOOK_FONTS)[number]["value"];
+
 export type HeadlineHookConfig = {
   enabled: boolean;
   headline: string;
@@ -9,6 +19,10 @@ export type HeadlineHookConfig = {
   durationMs: number;
   preset: HeadlineHookPreset;
   topPercent: number;
+  /** Omitted means the legacy Kanit default. */
+  fontFamily?: HeadlineHookFontFamily;
+  /** Omitted means size automatically follows headline length. */
+  fontSize?: number;
 };
 
 export type HeadlineHookSuggestion = {
@@ -24,6 +38,9 @@ export const MAX_HEADLINE_HOOK_CHARS = 64;
 export const MAX_HEADLINE_HOOK_SUBHEAD_CHARS = 90;
 export const DEFAULT_HEADLINE_HOOK_PRESET: HeadlineHookPreset = "viral";
 export const DEFAULT_HEADLINE_HOOK_TOP_PERCENT = 20;
+export const DEFAULT_HEADLINE_HOOK_FONT: HeadlineHookFontFamily = "Kanit";
+export const MIN_HEADLINE_HOOK_FONT_SIZE = 52;
+export const MAX_HEADLINE_HOOK_FONT_SIZE = 120;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -52,6 +69,20 @@ export function sanitizeHeadlineHookText(
 function isHeadlineHookPreset(value: unknown): value is HeadlineHookPreset {
   return typeof value === "string"
     && HEADLINE_HOOK_PRESETS.some((preset) => preset === value);
+}
+
+function isHeadlineHookFontFamily(value: unknown): value is HeadlineHookFontFamily {
+  return typeof value === "string"
+    && HEADLINE_HOOK_FONTS.some((font) => font.value === value);
+}
+
+export function headlineHookFontCssFamily(value: HeadlineHookFontFamily | null | undefined): string {
+  return HEADLINE_HOOK_FONTS.find((font) => font.value === value)?.cssFamily
+    ?? HEADLINE_HOOK_FONTS[0].cssFamily;
+}
+
+export function clampHeadlineHookFontSize(value: number): number {
+  return Math.round(clamp(value, MIN_HEADLINE_HOOK_FONT_SIZE, MAX_HEADLINE_HOOK_FONT_SIZE));
 }
 
 /**
@@ -108,6 +139,12 @@ export function normalizeHeadlineHook(
       MIN_HEADLINE_HOOK_TOP_PERCENT,
       MAX_HEADLINE_HOOK_TOP_PERCENT,
     )),
+    ...(isHeadlineHookFontFamily(input.fontFamily)
+      ? { fontFamily: input.fontFamily }
+      : {}),
+    ...(typeof input.fontSize === "number" && Number.isFinite(input.fontSize)
+      ? { fontSize: clampHeadlineHookFontSize(input.fontSize) }
+      : {}),
   };
 }
 
@@ -209,11 +246,17 @@ export function normalizeHeadlineHookSuggestions(value: unknown): HeadlineHookSu
   return out;
 }
 
-export function headlineHookFontSizes(headline: string): { headline: number; subheadline: number } {
+export function headlineHookFontSizes(
+  headline: string,
+  fontSize?: number,
+): { headline: number; subheadline: number } {
   const longestLine = Math.max(...headline.split("\n").map((line) => Array.from(line).length), 0);
-  const headlineSize = longestLine <= 22 ? 96
+  const autoHeadlineSize = longestLine <= 22 ? 96
     : longestLine <= 32 ? 84
       : longestLine <= 44 ? 72
         : 58;
+  const headlineSize = typeof fontSize === "number" && Number.isFinite(fontSize)
+    ? clampHeadlineHookFontSize(fontSize)
+    : autoHeadlineSize;
   return { headline: headlineSize, subheadline: Math.max(42, Math.round(headlineSize * 0.62)) };
 }

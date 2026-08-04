@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   autoHeadlineHookDurationMs,
   createDefaultHeadlineHook,
+  headlineHookFontCssFamily,
   headlineHookEndFrame,
+  headlineHookFontSizes,
   normalizeHeadlineHook,
   normalizeHeadlineHookSuggestions,
   visibleCaptionRangeAfterHeadline,
@@ -28,6 +31,8 @@ const normalized = normalizeHeadlineHook({
   durationMs: 99_000,
   preset: "not-a-preset",
   topPercent: -10,
+  fontFamily: "Prompt",
+  fontSize: 84,
 }, 60_000);
 assert.deepEqual(normalized, {
   enabled: true,
@@ -36,10 +41,22 @@ assert.deepEqual(normalized, {
   durationMs: 20_000,
   preset: "viral",
   topPercent: 10,
+  fontFamily: "Prompt",
+  fontSize: 84,
 });
 
 assert.equal(normalizeHeadlineHook({ enabled: true, headline: "" }, 60_000)?.enabled, false);
 assert.equal(normalizeHeadlineHook(null), null);
+assert.equal(headlineHookFontCssFamily("Prompt"), "'Prompt', 'Noto Sans Thai', sans-serif");
+assert.deepEqual(headlineHookFontSizes("หัวข้อ", 84), { headline: 84, subheadline: 52 });
+const guardedTypography = normalizeHeadlineHook({
+  enabled: true,
+  headline: "ทดสอบขอบเขต",
+  fontFamily: "Comic Sans",
+  fontSize: 999,
+})!;
+assert.equal(guardedTypography.fontFamily, undefined);
+assert.equal(guardedTypography.fontSize, 120);
 
 const generatedDefault = createDefaultHeadlineHook(
   "นี่คือประเด็นแรกที่ต้องรู้! ประโยคถัดไปไม่ควรถูกนำมาใช้",
@@ -55,6 +72,8 @@ const hook = normalizeHeadlineHook({
   durationMs: 10_000,
   preset: "news",
   topPercent: 20,
+  fontFamily: "Prompt",
+  fontSize: 84,
 }, 60_000)!;
 assert.equal(visibleCaptionRangeAfterHeadline({ startMs: 0, endMs: 4_000 }, hook, 60_000), null);
 assert.deepEqual(
@@ -113,5 +132,13 @@ assert.equal(headlineHookMotionAt(0, 10_000).opacity, 0);
 assert.equal(headlineHookMotionAt(240, 10_000).opacity, 1);
 assert.equal(headlineHookMotionAt(5_000, 10_000).opacity, 1);
 assert.ok(headlineHookMotionAt(9_900, 10_000).opacity < 1);
+
+const controlsSource = readFileSync(
+  "src/app/(dashboard)/video-editor/_v2/HeadlineHookControls.tsx",
+  "utf8",
+);
+assert.match(controlsSource, /aria-label="ตั้งค่าขั้นสูงของพาดหัว"/);
+assert.match(controlsSource, /aria-label="ฟอนต์พาดหัว"/);
+assert.match(controlsSource, /aria-label="ขนาดพาดหัว"/);
 
 console.log("headline-hook: all checks passed");
