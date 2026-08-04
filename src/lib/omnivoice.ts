@@ -206,7 +206,17 @@ export async function checkOmniVoiceReady(
       cache: "no-store",
       signal: AbortSignal.timeout(timeoutMs),
     });
-    return response.ok;
+    if (response.ok) return true;
+    // Newer/local FastAPI servers expose /health (no /ready). Accept a healthy
+    // status there too so the editor doesn't lock Hero Voice behind a 404.
+    const health = await fetch(`${config.baseUrl}/health`, {
+      headers: omnivoiceAuthHeaders(config.apiKey),
+      cache: "no-store",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!health.ok) return false;
+    const body = await health.json().catch(() => null) as { status?: string } | null;
+    return body?.status === "ok";
   } catch {
     return false;
   }
