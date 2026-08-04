@@ -699,7 +699,22 @@ export default function AiStudioPage() {
                   <div className="mt-4 grid gap-3">
                     <input value={cloneName} onChange={(event) => setCloneName(event.target.value.slice(0, 60))} placeholder="ชื่อเสียง เช่น เสียงพากย์ของฉัน" className="h-10 w-full rounded-xl px-3 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
                     <textarea value={cloneRefText} onChange={(event) => setCloneRefText(event.target.value.slice(0, 500))} rows={2} placeholder="พิมพ์ข้อความที่พูดในไฟล์เสียง (ต้องตรงคำต่อคำ)" className="w-full resize-none rounded-xl px-3 py-2 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
-                    <input type="file" accept="audio/*,.m4a" onChange={(event) => setCloneFile(event.target.files?.[0] ?? null)} className="text-xs" style={{ color: "var(--ui-text-muted)" }} />
+                    <label
+                      className="flex min-h-[72px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl px-4 py-3 text-center transition-colors"
+                      style={{
+                        border: `1.5px dashed ${cloneFile ? ACCENT : "var(--ui-card-border)"}`,
+                        background: cloneFile ? `${ACCENT}12` : "transparent",
+                      }}
+                    >
+                      <input type="file" accept="audio/*,.m4a" className="hidden" onChange={(event) => setCloneFile(event.target.files?.[0] ?? null)} />
+                      <span className="flex items-center gap-2 text-xs font-semibold" style={{ color: cloneFile ? ACCENT : "var(--ui-text-primary)" }}>
+                        <AudioLines className="h-4 w-4" />
+                        {cloneFile ? cloneFile.name : "แตะเพื่อเลือกไฟล์เสียง"}
+                      </span>
+                      <span className="text-[10px]" style={{ color: "var(--ui-text-muted)" }}>
+                        {cloneFile ? `${(cloneFile.size / (1024 * 1024)).toFixed(2)} MB · แตะเพื่อเปลี่ยนไฟล์` : "mp3 / wav / m4a · เสียงพูดชัด ๆ 5–30 วินาที"}
+                      </span>
+                    </label>
                     <button
                       type="button"
                       onClick={submitCloneVoice}
