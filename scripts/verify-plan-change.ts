@@ -1,7 +1,11 @@
 // Proof of the self-serve checkout guard (server-side enforcement of plan changes).
 // Pure logic — no DB needed:
 //   npx tsx scripts/verify-plan-change.ts
-import { checkoutAllowed, paidPlanCardMode } from "../src/lib/plan-change";
+import {
+  checkoutAllowed,
+  isFoundingAnnualConversionEligible,
+  paidPlanCardMode,
+} from "../src/lib/plan-change";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -46,5 +50,46 @@ assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: "active", isTrialPlan: 
 assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: "active", isTrialPlan: false }, "BUSINESS") === "manage", "active subscription changes via Billing");
 assert(paidPlanCardMode({ currentPlan: "BUSINESS", subStatus: null, isTrialPlan: false }, "PRO") === "downgrade", "BUSINESS cannot pay to downgrade");
 assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: null, isTrialPlan: false }, "BUSINESS") === "purchase", "non-subscription PRO can upgrade");
+
+// An active monthly subscriber selecting the same tier's annual card is not on
+// the "current" product. The existing subscription must be changed in place so
+// Stripe can show the Founding discount and unused-month credit before confirm.
+const periodAwareMode = paidPlanCardMode as unknown as (
+  state: { currentPlan: string; subStatus: string | null; isTrialPlan: boolean; billingPeriod: string | null },
+  cardPlan: string,
+  cardPeriod: "monthly" | "annual",
+) => ReturnType<typeof paidPlanCardMode>;
+assert(
+  periodAwareMode(
+    { currentPlan: "PRO", subStatus: "active", isTrialPlan: false, billingPeriod: "monthly" },
+    "PRO",
+    "annual",
+  ) === "manage",
+  "active monthly PRO → annual PRO is a subscription change, not current",
+);
+assert(
+  periodAwareMode(
+    { currentPlan: "PRO", subStatus: "active", isTrialPlan: false, billingPeriod: "monthly" },
+    "PRO",
+    "monthly",
+  ) === "current",
+  "active monthly PRO → monthly PRO remains current",
+);
+
+const foundingCandidate = {
+  currentPlan: "PRO",
+  targetPlan: "PRO",
+  subStatus: "active",
+  billingPeriod: "monthly",
+  selectedPeriod: "annual" as const,
+  paymentMethod: "card" as const,
+  foundingActive: true,
+};
+assert(isFoundingAnnualConversionEligible(foundingCandidate), "active monthly PRO can convert to Founding PRO annual by card");
+assert(isFoundingAnnualConversionEligible({ ...foundingCandidate, targetPlan: "BUSINESS" }), "active monthly PRO can upgrade to Founding BUSINESS annual");
+assert(!isFoundingAnnualConversionEligible({ ...foundingCandidate, currentPlan: "BUSINESS", targetPlan: "PRO" }), "Founding conversion never downgrades BUSINESS → PRO");
+assert(!isFoundingAnnualConversionEligible({ ...foundingCandidate, paymentMethod: "promptpay" }), "active subscription cannot overlap a PromptPay annual purchase");
+assert(!isFoundingAnnualConversionEligible({ ...foundingCandidate, billingPeriod: "annual" }), "existing annual subscription is not converted again");
+assert(!isFoundingAnnualConversionEligible({ ...foundingCandidate, foundingActive: false }), "sold-out Founding offer cannot start conversion");
 
 console.log(`\n✅ ALL ${passed} PLAN-CHANGE GUARD CHECKS PASSED`);

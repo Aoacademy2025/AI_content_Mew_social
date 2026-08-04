@@ -4,10 +4,20 @@ import { prisma } from "@/lib/prisma";
 import { createNotification, notifyAdmins } from "@/lib/notifications";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
-import { confirmSeat, releaseSeat } from "@/lib/founding";
+import {
+  confirmLatestSeatForUser,
+  confirmSeat,
+  getFoundingCoupon,
+  releasePendingSeatForUser,
+  releaseSeat,
+} from "@/lib/founding";
 import { usageWindowForPlan } from "@/lib/usage-limits";
 import { grantCreditsOnce, ensureMonthlyGrant } from "@/lib/credits";
 import { grantOnPaidActivation } from "@/lib/entitlements";
+import {
+  recurringPriceCatalogFromEnv,
+  resolveRecurringEntitlement,
+} from "@/lib/stripe-subscription-entitlement";
 import type { Prisma } from "@prisma/client";
 
 export const config = { api: { bodyParser: false } };
@@ -246,7 +256,11 @@ export async function POST(req: Request) {
       await releaseSeat(s.id).catch(() => {});
     }
 
-    // ── Subscription renewal (skip the very first invoice — handled above) ───
+    // ── Subscription renewal / paid in-place plan change ──────────────────
+    // Skip the first invoice because checkout.session.completed owns initial
+    // activation. For later invoices, Stripe's actual recurring Price and item
+    // period end are authoritative; DB plan/billingPeriod can be stale during a
+    // monthly → annual Portal conversion.
     if (event.type === "invoice.paid") {
       const inv = event.data.object as any;
       const subId = invoiceSubId(inv);
@@ -256,23 +270,66 @@ export async function POST(req: Request) {
           select: { id: true, plan: true, billingPeriod: true },
         });
         if (user) {
-          const days = user.billingPeriod === "annual" ? 365 : 30;
-          // The renewal extends planExpiresAt (NON-idempotent). Wrap the extension + subStatus write
-          // in ONE transaction so a later-step failure rolls the extension back too; MON-1's
-          // delete-claim-and-retry then re-applies it EXACTLY once (no double-extend on retry).
-          // Genuine duplicate deliveries of this same invoice.paid event are already stopped by the
-          // event-id claim above.
-          await prisma.$transaction(async (tx) => {
-            await activatePlan(tx, user.id, user.plan, days);
-            await tx.user.update({ where: { id: user.id }, data: { subStatus: "active" } });
-          });
-          // Fire-and-forget, OUTSIDE the tx (global client; must not roll back the renewal).
-          extendVideoExpiryForPlan(user.id, user.plan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
-          // Refresh monthly credit grant on renewal (CREDITS_LIVE-gated, fire-and-forget)
-          if (process.env.CREDITS_LIVE === "1") {
-            ensureMonthlyGrant(user.id).catch(() => {});
+          const subscription = await stripe.subscriptions.retrieve(subId, { expand: ["discounts"] });
+          const entitlement = resolveRecurringEntitlement({
+            items: subscription.items.data.map((item) => ({
+              priceId: item.price.id,
+              currentPeriodEnd: item.current_period_end,
+            })),
+          }, recurringPriceCatalogFromEnv());
+          if (!entitlement) {
+            const detail = `subscription ${subId} has an unsupported or unconfigured recurring price`;
+            console.error(`[stripe-webhook] ${detail}`);
+            notifyAdmins({
+              type: "ERROR_SYSTEM",
+              title: "⚠️ Stripe invoice paid but entitlement could not be resolved",
+              body: `${detail} (invoice ${inv.id}, user ${user.id}). Webhook will retry after configuration is corrected.`,
+            }).catch(() => {});
+            throw new Error(detail);
           }
-          console.log(`[stripe-webhook] renewed subscription for ${user.id} (+${days}d)`);
+
+          const now = new Date();
+          await prisma.user.update({
+            where: { id: user.id },
+            data: {
+              plan: entitlement.plan,
+              billingPeriod: entitlement.billingPeriod,
+              planExpiresAt: entitlement.periodEnd,
+              subStatus: subscription.status,
+              trialEndsAt: null,
+              cancelAtPeriodEnd: subscription.cancel_at_period_end,
+              cancelAt: subscription.cancel_at ? new Date(subscription.cancel_at * 1000) : null,
+              ...usageWindowForPlan(entitlement.plan, now),
+            },
+          });
+
+          // The Founding discount is forever, so future annual renewals still
+          // contain it. confirmLatestSeatForUser is deliberately idempotent.
+          const foundingCoupon = entitlement.billingPeriod === "annual"
+            ? await getFoundingCoupon()
+            : null;
+          const hasFoundingPromotion = !!foundingCoupon && subscription.discounts.some((discount) => {
+            if (typeof discount === "string") return false;
+            const promotionCode = discount.promotion_code;
+            return (typeof promotionCode === "string" ? promotionCode : promotionCode?.id)
+              === foundingCoupon.stripePromotionCodeId;
+          });
+          if (hasFoundingPromotion) await confirmLatestSeatForUser(user.id);
+
+          extendVideoExpiryForPlan(user.id, entitlement.plan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
+          // A tier/period conversion starts a new billing cycle now, while a
+          // routine renewal uses the ordinary lazy monthly grant guard.
+          if (process.env.CREDITS_LIVE === "1") {
+            const changedPlanOrPeriod = user.plan !== entitlement.plan
+              || user.billingPeriod !== entitlement.billingPeriod;
+            (changedPlanOrPeriod
+              ? grantOnPaidActivation(user.id, entitlement.plan)
+              : ensureMonthlyGrant(user.id)
+            ).catch(() => {});
+          }
+          console.log(
+            `[stripe-webhook] synced subscription for ${user.id}: ${entitlement.plan}/${entitlement.billingPeriod} until ${entitlement.periodEnd.toISOString()}`,
+          );
         }
       }
     }
@@ -321,6 +378,7 @@ export async function POST(req: Request) {
         const user = await prisma.user.findFirst({ where: { stripeSubscriptionId: subId }, select: { id: true } });
         if (user) {
           await prisma.user.update({ where: { id: user.id }, data: { subStatus: "past_due" } });
+          await releasePendingSeatForUser(user.id);
           await createNotification({
             userId: user.id, type: "VIDEO_COMPLETED",
             title: "ชำระเงินไม่สำเร็จ",

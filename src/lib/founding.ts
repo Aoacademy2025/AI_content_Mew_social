@@ -117,6 +117,25 @@ export async function confirmSeat(stripeSessionId: string): Promise<void> {
 }
 
 /**
+ * Confirm the latest Founding attempt for a user after a paid subscription
+ * invoice. Billing Portal update webhooks identify the subscription owner but
+ * do not carry the Portal session id that was used for the reservation.
+ *
+ * The newest row is considered even when already CONFIRMED. That detail keeps
+ * webhook retries from falling through to an older RELEASED attempt and
+ * accidentally confirming/counting two seats for the same user.
+ */
+export async function confirmLatestSeatForUser(userId: string): Promise<void> {
+  const reservation = await prisma.foundingReservation.findFirst({
+    where: { userId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { stripeSessionId: true },
+  });
+  if (!reservation) return;
+  await confirmSeat(reservation.stripeSessionId);
+}
+
+/**
  * Release a held seat (expiry / failure). Atomic + idempotent: only the flip RESERVED→RELEASED decrements.
  * Returns true iff THIS call performed the release (so callers can count real releases).
  */
@@ -136,6 +155,21 @@ export async function releaseSeat(stripeSessionId: string): Promise<boolean> {
     await tx.coupon.updateMany({ where: { code: FOUNDING_CODE }, data: { usedCount: { decrement: 1 } } });
     return true;
   });
+}
+
+/**
+ * Release only the user's newest Portal conversion attempt after its invoice
+ * fails. Looking at the newest row regardless of status makes repeated failure
+ * webhooks a no-op instead of walking backwards and releasing older attempts.
+ */
+export async function releasePendingSeatForUser(userId: string): Promise<boolean> {
+  const reservation = await prisma.foundingReservation.findFirst({
+    where: { userId },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { stripeSessionId: true, status: true },
+  });
+  if (!reservation || reservation.status !== "RESERVED") return false;
+  return releaseSeat(reservation.stripeSessionId);
 }
 
 /**

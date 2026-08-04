@@ -15,18 +15,56 @@ export type CheckoutDecision =
 
 export type PaidPlanCardMode = "purchase" | "renew" | "current" | "manage" | "downgrade";
 
+export type FoundingAnnualConversionState = {
+  currentPlan: string;
+  targetPlan: string;
+  subStatus: string | null;
+  billingPeriod: string | null;
+  selectedPeriod: "monthly" | "annual";
+  paymentMethod: "card" | "promptpay";
+  foundingActive: boolean;
+};
+
+/**
+ * Whether Pricing may offer the dedicated in-place Stripe conversion. PromptPay
+ * remains a separate one-time purchase and must never overlap an active card
+ * subscription. The API repeats the subscription and rank checks server-side.
+ */
+export function isFoundingAnnualConversionEligible(
+  state: FoundingAnnualConversionState,
+): boolean {
+  return state.foundingActive
+    && state.subStatus === "active"
+    && state.billingPeriod === "monthly"
+    && state.selectedPeriod === "annual"
+    && state.paymentMethod === "card"
+    && (PLAN_RANK[state.targetPlan] ?? 0) >= (PLAN_RANK[state.currentPlan] ?? 0);
+}
+
 /**
  * Classify the CTA shown for a paid tier on the Pricing page.
  * Checkout authorization still belongs to `checkoutAllowed`; this function keeps
  * presentation aligned without treating a temporary/manual PRO grant as a Stripe sub.
  */
 export function paidPlanCardMode(
-  state: { currentPlan: string; subStatus: string | null; isTrialPlan: boolean },
+  state: {
+    currentPlan: string;
+    subStatus: string | null;
+    isTrialPlan: boolean;
+    billingPeriod?: string | null;
+  },
   cardPlan: string,
+  cardPeriod?: "monthly" | "annual",
 ): PaidPlanCardMode {
   if (state.isTrialPlan) return "purchase";
   if (cardPlan === state.currentPlan) {
     if (cardPlan === "PRO" && state.subStatus !== "active") return "renew";
+    if (
+      state.subStatus === "active"
+      && state.billingPeriod
+      && cardPeriod
+      && state.billingPeriod !== cardPeriod
+    ) return "manage";
     return "current";
   }
   if (state.subStatus === "active") return "manage";

@@ -8,6 +8,7 @@ import { prisma } from "../src/lib/prisma";
 import {
   FOUNDING_CODE, getFoundingCoupon, foundingStatus,
   claimSeat, attachReservation, releaseSeat, confirmSeat,
+  confirmLatestSeatForUser, releasePendingSeatForUser,
   releaseUnattachedSeat, releaseStaleReservations,
 } from "../src/lib/founding";
 
@@ -88,6 +89,31 @@ async function main() {
   cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 1, "paid-after-release re-counts the seat");
   await confirmSeat("sess_C");                                          // webhook retry
   cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 1, "confirm idempotent (no double re-count)");
+
+  // ── Billing Portal conversions are confirmed/released by subscription owner ──
+  // Stripe's invoice webhook identifies the subscription/user, not the Portal session id.
+  await reset(); await seed(5, 0);
+  await claimSeat("portal-paid"); await attachReservation("portal-paid", "bps_paid");
+  await confirmLatestSeatForUser("portal-paid");
+  const portalPaid = await prisma.foundingReservation.findUnique({ where: { stripeSessionId: "bps_paid" } });
+  assert(portalPaid?.status === "CONFIRMED", "portal invoice confirms the user's latest reservation");
+  cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 1, "portal confirmation keeps the reserved count");
+  await confirmLatestSeatForUser("portal-paid");
+  cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 1, "portal confirmation is idempotent");
+
+  await reset(); await seed(5, 0);
+  await claimSeat("portal-late"); await attachReservation("portal-late", "bps_late");
+  await releaseSeat("bps_late");
+  await confirmLatestSeatForUser("portal-late");
+  const portalLate = await prisma.foundingReservation.findUnique({ where: { stripeSessionId: "bps_late" } });
+  assert(portalLate?.status === "CONFIRMED", "late portal payment restores a swept reservation");
+  cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 1, "late portal payment re-counts its seat");
+
+  await reset(); await seed(5, 0);
+  await claimSeat("portal-failed"); await attachReservation("portal-failed", "bps_failed");
+  assert(await releasePendingSeatForUser("portal-failed"), "failed portal invoice releases the pending seat");
+  assert(!(await releasePendingSeatForUser("portal-failed")), "portal release is idempotent");
+  cpn = await getFoundingCoupon(); assert(cpn!.usedCount === 0, "failed portal payment returns the seat to inventory");
 
   // ── releaseUnattachedSeat: decrements once, never below zero (claim-then-Stripe-fails rollback) ──
   await reset(); await seed(5, 1);
