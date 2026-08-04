@@ -60,6 +60,10 @@ async function toReferenceWav(sourceBuffer: Buffer): Promise<Buffer> {
       "-ar", String(TARGET_SAMPLE_RATE),
       "-sample_fmt", "s16",
       "-map_metadata", "-1",
+      // Trim leading + trailing silence (front pass, reverse, front pass,
+      // reverse back). Dead air in the reference skews F5-style duration
+      // estimation (seconds-per-char) and produces garbled speech.
+      "-af", "silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.15,areverse,silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.15,areverse",
       targetPath,
     ], { timeout: 60_000 });
     return fs.readFileSync(targetPath);
@@ -133,7 +137,7 @@ export async function readUserVoiceWav(userId: string, id: string): Promise<{ wa
   }
 }
 
-export type UserVoiceRef = { audioBase64: string; refText: string; name: string };
+export type UserVoiceRef = { audioBase64: string; refText: string; name: string; durationMs: number };
 
 /**
  * Resolve a `user_<id>` voiceId to the worker reference payload. Ownership is
@@ -148,7 +152,7 @@ export async function loadUserVoiceRef(userId: string, voiceId: string): Promise
   if (!voice || voice.filename === "pending") return null;
   try {
     const wav = fs.readFileSync(path.join(userVoicesDir(), voice.filename));
-    return { audioBase64: wav.toString("base64"), refText: voice.refText, name: voice.name };
+    return { audioBase64: wav.toString("base64"), refText: voice.refText, name: voice.name, durationMs: voice.durationMs };
   } catch {
     return null;
   }

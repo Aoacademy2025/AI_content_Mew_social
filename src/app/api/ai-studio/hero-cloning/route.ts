@@ -57,6 +57,18 @@ export async function POST(request: Request) {
   // Same deterministic speech pass as Hero Voice (numbers, abbreviations, dates).
   const speechText = prepareHeroVoiceSpeechText(text);
 
+  // F5-style models size the output from the reference's seconds-per-char
+  // ratio: estimated total = ref + ref * (target chars / ref chars). Beyond
+  // ~40s the model's max sequence blows up (tensor size mismatch upstream) —
+  // reject early with an actionable message instead of burning minutes of CPU.
+  const refSec = ref.durationMs / 1000;
+  const estimatedTotalSec = refSec * (1 + speechText.length / Math.max(1, ref.refText.length));
+  if (refSec > 0 && estimatedTotalSec > 40) {
+    return NextResponse.json({
+      error: "ข้อความยาวเกินกำลังของเสียงโคลนนี้ — ลองย่อข้อความให้สั้นลง หรืออัดเสียงอ้างอิงใหม่ให้พูดต่อเนื่อง 10-15 วินาทีพร้อมพิมพ์ข้อความกำกับให้ครบทุกคำ",
+    }, { status: 422 });
+  }
+
   const result = await callJaiTtsClone(config, {
     refWav: Buffer.from(ref.audioBase64, "base64"),
     refText: ref.refText,
