@@ -2,12 +2,19 @@
 
 import { Check, Sparkles } from "lucide-react";
 import {
+  DEFAULT_HEADLINE_HOOK_FONT,
+  HEADLINE_HOOK_FONTS,
   HEADLINE_HOOK_PRESETS,
   MAX_HEADLINE_HOOK_CHARS,
   MAX_HEADLINE_HOOK_DURATION_MS,
+  MAX_HEADLINE_HOOK_FONT_SIZE,
   MAX_HEADLINE_HOOK_SUBHEAD_CHARS,
   MIN_HEADLINE_HOOK_DURATION_MS,
+  MIN_HEADLINE_HOOK_FONT_SIZE,
   autoHeadlineHookDurationMs,
+  headlineHookFontCssFamily,
+  headlineHookFontSizes,
+  type HeadlineHookFontFamily,
   type HeadlineHookPreset,
 } from "@/lib/headline-hook";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
@@ -105,6 +112,9 @@ export function HeadlineHookControls({
   const maxDuration = Math.min(MAX_HEADLINE_HOOK_DURATION_MS, editor.totalDurationMs);
   const minDuration = Math.min(MIN_HEADLINE_HOOK_DURATION_MS, maxDuration);
   const isAutoDuration = hook.durationMs === autoDuration;
+  const resolvedFontSize = headlineHookFontSizes(hook.headline, hook.fontSize).headline;
+  const isAutoFontSize = hook.fontSize === undefined;
+  const selectedFont = hook.fontFamily ?? DEFAULT_HEADLINE_HOOK_FONT;
   const logo = normalizeLogoOverlayConfig(logoOverlay);
   const overlapsTopLogo = !!(
     hook.enabled
@@ -314,6 +324,95 @@ export function HeadlineHookControls({
             })}
           </div>
         </section>
+
+        <details
+          aria-label="ตั้งค่าขั้นสูงของพาดหัว"
+          style={{
+            padding: "10px 11px",
+            borderRadius: radius.control,
+            border: `1px solid ${color.cardBorder}`,
+            background: "rgba(255,255,255,.025)",
+          }}
+        >
+          <summary
+            style={{
+              color: color.textSecondary,
+              font: `500 11px ${font.heading}`,
+              cursor: "pointer",
+              userSelect: "none",
+            }}
+          >
+            ปรับขั้นสูง · ฟอนต์และขนาด
+          </summary>
+          <div className="mt-4 flex flex-col gap-4">
+            <label className="flex flex-col gap-2">
+              <GroupLabel>ฟอนต์พาดหัว</GroupLabel>
+              <select
+                aria-label="ฟอนต์พาดหัว"
+                value={selectedFont}
+                onChange={(event) => editor.setHeadlineHook({
+                  fontFamily: event.target.value as HeadlineHookFontFamily,
+                })}
+                style={{
+                  width: "100%",
+                  padding: "9px 10px",
+                  borderRadius: radius.control,
+                  border: "1px solid rgba(255,255,255,.11)",
+                  background: "#17171f",
+                  color: color.text,
+                  fontFamily: headlineHookFontCssFamily(selectedFont),
+                  fontSize: 12,
+                  outline: "none",
+                }}
+              >
+                {HEADLINE_HOOK_FONTS.map((fontOption) => (
+                  <option key={fontOption.value} value={fontOption.value}>
+                    {fontOption.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <GroupLabel>ขนาดพาดหัว</GroupLabel>
+                <span style={{ fontSize: 10, color: color.textSecondary }}>{resolvedFontSize}px</span>
+              </div>
+              <input
+                type="range"
+                min={MIN_HEADLINE_HOOK_FONT_SIZE}
+                max={MAX_HEADLINE_HOOK_FONT_SIZE}
+                step={2}
+                value={resolvedFontSize}
+                aria-label="ขนาดพาดหัว"
+                onChange={(event) => editor.setHeadlineHook({ fontSize: Number(event.target.value) })}
+                style={{ width: "100%", accentColor: "#F97316" }}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <span style={{ fontSize: 9.5, lineHeight: 1.4, color: color.textFaint }}>
+                  บรรทัดเสริมจะย่อ-ขยายตามพาดหัวอัตโนมัติ
+                </span>
+                <button
+                  type="button"
+                  aria-pressed={isAutoFontSize}
+                  onClick={() => editor.setHeadlineHook({ fontSize: undefined })}
+                  style={{
+                    flex: "none",
+                    padding: "4px 8px",
+                    borderRadius: 999,
+                    border: `1px solid ${isAutoFontSize ? "rgba(249,115,22,.5)" : color.cardBorder}`,
+                    background: isAutoFontSize ? "rgba(249,115,22,.1)" : "transparent",
+                    color: isAutoFontSize ? "#FDBA74" : color.textSecondary,
+                    fontSize: 9.5,
+                    cursor: "pointer",
+                  }}
+                >
+                  Auto
+                </button>
+              </div>
+            </div>
+          </div>
+        </details>
 
         <section className="flex flex-col gap-2">
           <div className="flex items-center justify-between">

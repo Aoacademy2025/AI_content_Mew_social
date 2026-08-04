@@ -1,5 +1,6 @@
 import React from "react";
 import {
+  headlineHookFontCssFamily,
   headlineHookFontSizes,
   type HeadlineHookConfig,
 } from "../lib/headline-hook";
@@ -43,13 +44,14 @@ export function HeadlineHookView({
   frameScale?: number;
   motion?: HeadlineHookMotion;
 }) {
-  const sizes = headlineHookFontSizes(hook.headline);
+  const sizes = headlineHookFontSizes(hook.headline, hook.fontSize);
   const headlineSize = sizes.headline * frameScale;
   const subheadlineSize = sizes.subheadline * frameScale;
+  const fontFamily = headlineHookFontCssFamily(hook.fontFamily);
   const commonHeadline: React.CSSProperties = {
     margin: 0,
     color: "#F8F7FC",
-    fontFamily: "'Kanit', 'Noto Sans Thai', sans-serif",
+    fontFamily,
     fontSize: headlineSize,
     fontWeight: 900,
     lineHeight: 1.08,
@@ -63,7 +65,7 @@ export function HeadlineHookView({
     margin: 0,
     marginTop: 12 * frameScale,
     color: "#FFE44D",
-    fontFamily: "'Kanit', 'Noto Sans Thai', sans-serif",
+    fontFamily,
     fontSize: subheadlineSize,
     fontWeight: 800,
     lineHeight: 1.18,
