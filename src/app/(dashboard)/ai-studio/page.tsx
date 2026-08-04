@@ -364,6 +364,21 @@ export default function AiStudioPage() {
     if (!script.trim() || !voiceId) return;
     setSubmitting(true);
     try {
+      // เสียงโคลน (user_*) พูดผ่านเอนจิน Hero Cloning (JaiTTS) โดยอัตโนมัติ
+      if (voiceId.startsWith("user_") && catalog?.voice.cloning) {
+        const response = await fetch("/api/ai-studio/hero-cloning", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: script, voiceId, speed }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
+        const job = data.job as StudioJob;
+        setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+        toast.success("Hero Cloning สร้างเสียงสำเร็จ");
+        setScript("");
+        return;
+      }
       // hostinger/local backend ไม่มี durable queue — ใช้ route synchronous ที่
       // บันทึกประวัติเข้า AI Studio ให้อยู่แล้ว (studio: true)
       const durable = (catalog?.voice.backend ?? "runpod") === "runpod";
@@ -419,7 +434,9 @@ export default function AiStudioPage() {
       setCloneRefText("");
       setCloneFile(null);
       setCloneVoiceId((data as CloneVoice).voiceId);
-      toast.success("สร้างเสียงโคลนแล้ว — พร้อมให้พูดได้เลย");
+      // ให้เสียงโคลนใหม่โผล่ใน dropdown ของแท็บ "สร้างเสียง" ทันทีด้วย
+      await loadVoices().catch(() => {});
+      toast.success("สร้างเสียงโคลนแล้ว — เลือกใช้ได้ทั้งแท็บโคลนเสียงและสร้างเสียง");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "สร้างเสียงโคลนไม่สำเร็จ");
     } finally {

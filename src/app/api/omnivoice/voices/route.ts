@@ -61,6 +61,11 @@ export async function GET() {
     if (!(error instanceof OmniVoiceConfigError)) {
       console.error("[omnivoice/voices] request failed:", error instanceof Error ? error.message : error);
     }
+    // Stock catalog unavailable (worker down / disabled) — still serve the
+    // caller's own clone voices so they never vanish from the pickers.
+    if (cloneVoices.length > 0) {
+      return NextResponse.json(cloneVoices, { headers: { "Cache-Control": "private, no-store" } });
+    }
     return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน" }, { status: 503 });
   }
 }
