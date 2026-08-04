@@ -33,7 +33,7 @@ type ImageModel = {
 };
 type Catalog = {
   imageModels: ImageModel[];
-  voice: { available: boolean; backend?: "runpod" | "hostinger"; maxDurationSec: number; maxScriptChars: number };
+  voice: { available: boolean; backend?: "runpod" | "hostinger"; cloning?: boolean; maxDurationSec: number; maxScriptChars: number };
   plan: string;
   balance: { granted: number; purchased: number; total: number };
 };
@@ -221,6 +221,7 @@ export default function AiStudioPage() {
   const [script, setScript] = useState("");
   const [speed, setSpeed] = useState(1);
   const [cloneVoices, setCloneVoices] = useState<CloneVoice[] | null>(null);
+  const [cloneEngine, setCloneEngine] = useState<"omnivoice" | "jaitts">("omnivoice");
   const [cloneName, setCloneName] = useState("");
   const [cloneRefText, setCloneRefText] = useState("");
   const [cloneFile, setCloneFile] = useState<File | null>(null);
@@ -357,6 +358,22 @@ export default function AiStudioPage() {
     if (!script.trim() || !voiceId) return;
     setSubmitting(true);
     try {
+      // Hero Cloning (JaiTTS) — เอนจินโคลนทดลอง ใช้ได้กับเสียงโคลน (user_*) เท่านั้น
+      const useJaitts = catalog?.voice.cloning && cloneEngine === "jaitts" && voiceId.startsWith("user_");
+      if (useJaitts) {
+        const response = await fetch("/api/ai-studio/hero-cloning", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: script, voiceId, speed }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
+        const job = data.job as StudioJob;
+        setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+        toast.success("Hero Cloning สร้างเสียงสำเร็จ");
+        setScript("");
+        return;
+      }
       // hostinger/local backend ไม่มี durable queue — ใช้ route synchronous ที่
       // บันทึกประวัติเข้า AI Studio ให้อยู่แล้ว (studio: true)
       const durable = (catalog?.voice.backend ?? "runpod") === "runpod";
@@ -637,8 +654,40 @@ export default function AiStudioPage() {
                       </div>
                     </div>
 
+                    {catalog.voice.cloning && voiceId.startsWith("user_") && (
+                      <div className="rounded-2xl p-4" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
+                        <p className="mb-2 text-xs font-semibold" style={{ color: "var(--ui-text-primary)" }}>เอนจินโคลนเสียง</p>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                          {([
+                            ["omnivoice", "Hero Voice", "เอนจินหลัก · เร็ว"],
+                            ["jaitts", "Hero Cloning", "JaiTTS · ทดลอง · ช้า (หลายนาที)"],
+                          ] as const).map(([engine, label, desc]) => (
+                            <button
+                              key={engine}
+                              type="button"
+                              onClick={() => setCloneEngine(engine)}
+                              className="rounded-xl px-3 py-2 text-left"
+                              style={{
+                                border: `1px solid ${cloneEngine === engine ? ACCENT : "var(--ui-card-border)"}`,
+                                background: cloneEngine === engine ? `${ACCENT}1a` : "transparent",
+                              }}
+                            >
+                              <span className="block text-xs font-semibold" style={{ color: "var(--ui-text-primary)" }}>{label}</span>
+                              <span className="block text-[10px]" style={{ color: "var(--ui-text-muted)" }}>{desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                        {cloneEngine === "jaitts" && (
+                          <p className="mt-2 text-[10px] leading-relaxed" style={{ color: "#FBBF24" }}>
+                            Hero Cloning เป็นโหมดทดลอง — สคริปต์สั้น (~500 ตัวอักษร) และใช้เวลาสร้าง 2–5 นาที อย่าปิดหน้าระหว่างรอ
+                          </p>
+                        )}
+                      </div>
+                    )}
+
                     <button type="submit" disabled={submitting || !script.trim() || !voiceId} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-45" style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
-                      {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}สร้างเสียง Hero Voice
+                      {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}
+                      {catalog.voice.cloning && voiceId.startsWith("user_") && cloneEngine === "jaitts" ? "สร้างเสียงด้วย Hero Cloning" : "สร้างเสียง Hero Voice"}
                     </button>
 
                     {cloneVoices !== null && (
