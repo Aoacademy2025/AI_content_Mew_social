@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
+import { limitsForPlan, minutesPerMonthForPlan, TRIAL_MINUTES } from "@/lib/plan-limits";
 import { syncUserEntitlement } from "@/lib/entitlements";
 
 export const USAGE_PERIOD_DAYS = 30;
@@ -29,8 +29,99 @@ export function usageResetAt(startedAt: Date): Date {
   return new Date(startedAt.getTime() + USAGE_PERIOD_MS);
 }
 
-function isWindowExpired(startedAt: Date | null, now: Date): boolean {
-  return !startedAt || startedAt.getTime() + USAGE_PERIOD_MS <= now.getTime();
+export type SyncedUsageCycle = {
+  plan: string;
+  usageCount: number;
+  usageLimit: number;
+  minutesUsed: number;
+  minutesLimit: number;
+  aiAudioMinutesUsed: number;
+  aiTextCallsUsed: number;
+  usagePeriodStartedAt: Date;
+};
+
+/**
+ * Synchronize the single 30-day cycle shared by clip, render-minute and managed-AI
+ * counters. Every caller must cross this seam before reading one of those meters.
+ *
+ * The rollover is a conditional update so two first requests in a new cycle cannot
+ * both reset it and wipe usage reserved between their writes.
+ */
+export async function syncSharedUsageCycle(
+  userId: string,
+  now: Date = new Date(),
+): Promise<SyncedUsageCycle | null> {
+  await syncUserEntitlement(userId, now);
+
+  const select = {
+    plan: true,
+    usageCount: true,
+    usageLimit: true,
+    minutesUsed: true,
+    minutesLimit: true,
+    aiAudioMinutesUsed: true,
+    aiTextCallsUsed: true,
+    usagePeriodStartedAt: true,
+    trialEndsAt: true,
+  } as const;
+  const user = await prisma.user.findUnique({ where: { id: userId }, select });
+  if (!user) return null;
+
+  const usageLimit = usageLimitForPlan(user.plan);
+  const isActiveTrial = !!user.trialEndsAt && user.trialEndsAt > now;
+  const minutesLimit = isActiveTrial
+    ? Math.min(minutesPerMonthForPlan(user.plan), TRIAL_MINUTES)
+    : minutesPerMonthForPlan(user.plan);
+  const expiredBefore = new Date(now.getTime() - USAGE_PERIOD_MS);
+
+  await prisma.user.updateMany({
+    where: {
+      id: userId,
+      OR: [
+        { usagePeriodStartedAt: null },
+        { usagePeriodStartedAt: { lte: expiredBefore } },
+      ],
+    },
+    data: {
+      usageCount: 0,
+      usageLimit,
+      minutesUsed: 0,
+      minutesLimit,
+      aiAudioMinutesUsed: 0,
+      aiTextCallsUsed: 0,
+      usagePeriodStartedAt: now,
+    },
+  });
+
+  // Re-read after the conditional rollover. If another request won the reset race,
+  // this preserves any usage it reserved in the new cycle instead of returning stale data.
+  let current = await prisma.user.findUnique({ where: { id: userId }, select });
+  if (!current?.usagePeriodStartedAt) return null;
+
+  const currentUsageLimit = usageLimitForPlan(current.plan);
+  const currentIsActiveTrial = !!current.trialEndsAt && current.trialEndsAt > now;
+  const currentMinutesLimit = currentIsActiveTrial
+    ? Math.min(minutesPerMonthForPlan(current.plan), TRIAL_MINUTES)
+    : minutesPerMonthForPlan(current.plan);
+
+  if (current.usageLimit !== currentUsageLimit || current.minutesLimit !== currentMinutesLimit) {
+    current = await prisma.user.update({
+      where: { id: userId },
+      data: { usageLimit: currentUsageLimit, minutesLimit: currentMinutesLimit },
+      select,
+    });
+  }
+
+  return {
+    plan: current.plan,
+    usageCount: current.usageCount,
+    usageLimit: currentUsageLimit,
+    minutesUsed: current.minutesUsed,
+    minutesLimit: currentMinutesLimit,
+    aiAudioMinutesUsed: current.aiAudioMinutesUsed,
+    aiTextCallsUsed: current.aiTextCallsUsed,
+    usagePeriodStartedAt: current.usagePeriodStartedAt!,
+  };
 }
 
 export type SyncedUsage = {
@@ -42,38 +133,15 @@ export type SyncedUsage = {
 };
 
 export async function syncUsageWindow(userId: string): Promise<SyncedUsage | null> {
-  const now = new Date();
-  await syncUserEntitlement(userId, now);
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      plan: true,
-      usageCount: true,
-      usageLimit: true,
-      usagePeriodStartedAt: true,
-    },
-  });
-
+  const user = await syncSharedUsageCycle(userId);
   if (!user) return null;
-
-  const usageLimit = usageLimitForPlan(user.plan);
-  const shouldReset = isWindowExpired(user.usagePeriodStartedAt, now);
-  const usagePeriodStartedAt = shouldReset ? now : user.usagePeriodStartedAt!;
-  const usageCount = shouldReset ? 0 : user.usageCount;
-
-  if (shouldReset || user.usageLimit !== usageLimit) {
-    await prisma.user.update({
-      where: { id: userId },
-      data: { usageCount, usageLimit, usagePeriodStartedAt },
-    });
-  }
 
   return {
     plan: user.plan,
-    usageCount,
-    usageLimit,
-    usagePeriodStartedAt,
-    resetAt: usageResetAt(usagePeriodStartedAt),
+    usageCount: user.usageCount,
+    usageLimit: user.usageLimit,
+    usagePeriodStartedAt: user.usagePeriodStartedAt,
+    resetAt: usageResetAt(user.usagePeriodStartedAt),
   };
 }
 
