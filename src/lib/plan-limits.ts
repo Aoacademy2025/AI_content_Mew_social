@@ -15,6 +15,9 @@ export const FREE_LIMITS = {
   allowVideoEditor: false,
 } as const;
 
+/** Render-minute allowance while a user is in the time-limited PRO trial. */
+export const TRIAL_MINUTES = 15;
+
 export const PRO_LIMITS = {
   clips: 100,          // คลิป/เดือน
   durationSec: 360,    // สูงสุด 6 นาที/คลิป
