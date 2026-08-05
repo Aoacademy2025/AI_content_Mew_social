@@ -38,6 +38,197 @@ export type SanitizedChunk = ChunkResult & {
   };
 };
 
+// Keep the long-audio planning policy in a Prisma-free module so the production
+// route and its regression harness exercise the same seam.
+export const TRANSCRIBE_CHUNK_MAX_MS = 110_000;
+export const TRANSCRIBE_CHUNK_MIN_MS = 30_000;
+
+/**
+ * Return balanced internal cut points (milliseconds), preferring detected
+ * silence without ever creating a >110s chunk or a tiny tail. The old route
+ * gated this planner at 240s, leaving the 110-240s reliability gap that caused
+ * the production 180.11s/200.12s failures.
+ */
+export function planTranscriptionChunkBoundaries(totalMs: number, silences: number[]): number[] {
+  if (!(totalMs > TRANSCRIBE_CHUNK_MAX_MS)) return [];
+  const chunkCount = Math.ceil(totalMs / TRANSCRIBE_CHUNK_MAX_MS);
+  const cuts: number[] = [];
+  let lastCut = 0;
+  for (let index = 1; index < chunkCount; index++) {
+    const remainingChunks = chunkCount - index;
+    const target = Math.round((totalMs * index) / chunkCount);
+    const lo = Math.max(
+      lastCut + TRANSCRIBE_CHUNK_MIN_MS,
+      totalMs - remainingChunks * TRANSCRIBE_CHUNK_MAX_MS,
+    );
+    const hi = Math.min(
+      lastCut + TRANSCRIBE_CHUNK_MAX_MS,
+      totalMs - remainingChunks * TRANSCRIBE_CHUNK_MIN_MS,
+    );
+    const boundedTarget = Math.max(lo, Math.min(hi, target));
+    let best = -1;
+    let bestDist = Infinity;
+    for (const silence of silences) {
+      if (silence < lo || silence > hi) continue;
+      const dist = Math.abs(silence - boundedTarget);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = silence;
+      }
+    }
+    const cut = best >= 0 ? best : boundedTarget;
+    cuts.push(cut);
+    lastCut = cut;
+  }
+  return cuts;
+}
+
+export type RawGeminiWord = {
+  word?: unknown;
+  start?: unknown;
+  end?: unknown;
+  startMs?: unknown;
+  endMs?: unknown;
+};
+
+export type NormalizedGeminiWords = {
+  words: ChunkWord[];
+  detectedUnit: "seconds" | "milliseconds" | "mixed" | "invalid";
+};
+
+/**
+ * Normalize Gemini word timestamps to the route's internal seconds unit.
+ * New prompts request explicit startMs/endMs. Legacy start/end responses are
+ * duration-classified because Gemini sometimes returned milliseconds there,
+ * which the old parser multiplied by another 1000 (135s → 135,000,000ms).
+ */
+export function normalizeGeminiWords(
+  rawWords: RawGeminiWord[],
+  audioDurationMs: number,
+): NormalizedGeminiWords {
+  const explicitMs = rawWords.filter(
+    (word) =>
+      typeof word.word === "string"
+      && typeof word.startMs === "number"
+      && Number.isFinite(word.startMs)
+      && typeof word.endMs === "number"
+      && Number.isFinite(word.endMs),
+  );
+  const legacy = rawWords.filter(
+    (word) =>
+      typeof word.word === "string"
+      && typeof word.start === "number"
+      && Number.isFinite(word.start)
+      && typeof word.end === "number"
+      && Number.isFinite(word.end),
+  );
+
+  let legacyUnit: "seconds" | "milliseconds" | "invalid" = "seconds";
+  if (legacy.length > 0 && audioDurationMs > 0) {
+    const maxEnd = Math.max(...legacy.map((word) => word.end as number));
+    const secondsLimit = audioDurationMs / 1000 * 1.2 + 2;
+    const millisecondsLimit = audioDurationMs * 1.2 + 2000;
+    legacyUnit = maxEnd <= secondsLimit
+      ? "seconds"
+      : maxEnd <= millisecondsLimit
+        ? "milliseconds"
+        : "invalid";
+  }
+
+  const durationLimitSec = audioDurationMs > 0
+    ? (audioDurationMs + 2000) / 1000
+    : Number.POSITIVE_INFINITY;
+  const words: ChunkWord[] = [];
+  for (const word of explicitMs) {
+    const start = (word.startMs as number) / 1000;
+    const end = (word.endMs as number) / 1000;
+    if (start >= 0 && end > start && end <= durationLimitSec) {
+      words.push({ word: (word.word as string).trim(), start, end });
+    }
+  }
+  if (legacyUnit !== "invalid") {
+    const scale = legacyUnit === "milliseconds" ? 1 / 1000 : 1;
+    for (const word of legacy) {
+      const start = (word.start as number) * scale;
+      const end = (word.end as number) * scale;
+      if (start >= 0 && end > start && end <= durationLimitSec) {
+        words.push({ word: (word.word as string).trim(), start, end });
+      }
+    }
+  }
+
+  const cleaned = words.filter((word) => word.word.length > 0).sort((a, b) => a.start - b.start);
+  const detectedUnit = explicitMs.length > 0 && legacy.length > 0
+    ? "mixed"
+    : explicitMs.length > 0
+      ? "milliseconds"
+      : legacyUnit;
+  return { words: cleaned, detectedUnit };
+}
+
+const TRANSCRIPTION_INCOMPLETE_GAP_MS = 5000;
+const TRANSCRIPTION_OVERSHOOT_RATIO = 1.10;
+const TRANSCRIPTION_OVERSHOOT_TAIL_MS = 2000;
+
+function transcriptionQualityDistance(captions: ChunkCaption[], durationMs: number): number {
+  if (!(durationMs > 0) || captions.length === 0) return Number.POSITIVE_INFINITY;
+  let previousEnd = -1;
+  for (const caption of captions) {
+    if (
+      !Number.isFinite(caption.startMs)
+      || !Number.isFinite(caption.endMs)
+      || caption.startMs < 0
+      || caption.endMs <= caption.startMs
+      || caption.startMs < previousEnd
+    ) return Number.POSITIVE_INFINITY;
+    previousEnd = caption.endMs;
+  }
+  return Math.abs(captions[captions.length - 1].endMs - durationMs);
+}
+
+/** Match the route's terminal incomplete/desync guards before returning 422. */
+export function transcriptionNeedsRetry(captions: ChunkCaption[], durationMs: number): boolean {
+  if (!Number.isFinite(transcriptionQualityDistance(captions, durationMs))) return true;
+  const gap = chunkTailGapMs(captions, durationMs);
+  if (gap < -TRANSCRIPTION_INCOMPLETE_GAP_MS) return true;
+  return gap > TRANSCRIPTION_OVERSHOOT_TAIL_MS
+    && captions[captions.length - 1].endMs > durationMs * TRANSCRIPTION_OVERSHOOT_RATIO;
+}
+
+/** Retry semantic timeline failures and retain the closest valid attempt. */
+export async function runTranscriptionQualityRetries<T extends ChunkResult>(
+  attempt: (attemptNumber: number) => Promise<T>,
+  durationMs: number,
+  maxAttempts = 3,
+  onRetry?: (input: { nextAttempt: number; tailGapMs: number }) => void,
+): Promise<{ result: T; attempts: number; accepted: boolean }> {
+  const boundedAttempts = Math.max(1, Math.floor(maxAttempts));
+  let attempts = 1;
+  let best = await attempt(1);
+  let bestDistance = transcriptionQualityDistance(best.geminiDirectCaptions, durationMs);
+
+  while (attempts < boundedAttempts && transcriptionNeedsRetry(best.geminiDirectCaptions, durationMs)) {
+    const nextAttempt = attempts + 1;
+    onRetry?.({
+      nextAttempt,
+      tailGapMs: chunkTailGapMs(best.geminiDirectCaptions, durationMs),
+    });
+    const candidate = await attempt(nextAttempt);
+    attempts = nextAttempt;
+    const candidateDistance = transcriptionQualityDistance(candidate.geminiDirectCaptions, durationMs);
+    if (candidateDistance < bestDistance) {
+      best = candidate;
+      bestDistance = candidateDistance;
+    }
+  }
+
+  return {
+    result: best,
+    attempts,
+    accepted: !transcriptionNeedsRetry(best.geminiDirectCaptions, durationMs),
+  };
+}
+
 // Timestamps may legitimately run slightly past the slice end (codec frame
 // padding, breath tails) — anything beyond this margin is hallucinated.
 const BOGUS_MARGIN_MS = 2000;

@@ -21,7 +21,12 @@ import {
 } from "@/lib/mcp/video-job";
 import { validateWindowEdits, mergeWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
-import { pipelineCaller, pollRender, type PipelineCaller } from "@/lib/mcp/pipeline-client";
+import {
+  pipelineCaller,
+  pipelineFailureDetails,
+  pollRender,
+  type PipelineCaller,
+} from "@/lib/mcp/pipeline-client";
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
@@ -1524,6 +1529,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     });
   } catch (e) {
     const message = e instanceof Error ? e.message : "internal error";
+    const pipelineFailure = pipelineFailureDetails(e);
     if (message === VIDEO_JOB_CANCELED_ERROR) {
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
       return; // status is already 'canceled'; don't overwrite with failed
@@ -1568,6 +1574,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           }
       : financialSettlementPending
         ? { message, reservationRefundReason: settlementReason }
+      : pipelineFailure
+        ? pipelineFailure
         : message);
   }
 }

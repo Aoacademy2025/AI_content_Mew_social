@@ -4,6 +4,7 @@ import {
   withRetry,
   PipelineHttpError,
   decodePipelineResponse,
+  pipelineFailureDetails,
 } from "../src/lib/mcp/pipeline-client";
 
 let passed = 0;
@@ -32,6 +33,19 @@ async function main() {
     }, { retries: 2, sleep: noSleep });
   } catch {}
   assert(n4 === 1, "typed PipelineHttpError 4xx also fails immediately");
+
+  const failure = pipelineFailureDetails(new PipelineHttpError("POST", "/api/videos/transcribe", 422, {
+    error: "ถอดซับไม่ครบหลังลองใหม่ 3 ครั้ง",
+    reason: "transcribe_incomplete",
+    provider: "gemini",
+    retryable: true,
+  }));
+  assert(
+    failure?.message === "ถอดซับไม่ครบหลังลองใหม่ 3 ครั้ง"
+      && failure.code === "transcribe_incomplete"
+      && failure.provider === "gemini",
+    "structured 422 failure is preserved for durable VideoJob diagnostics",
+  );
 
   let n5 = 0;
   const decoded = await withRetry(async () => {

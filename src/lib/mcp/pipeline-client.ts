@@ -55,6 +55,41 @@ export class PipelineResponseParseError extends Error {
   }
 }
 
+export type PipelineFailureDetails = {
+  message: string;
+  code?: string;
+  provider?: string;
+};
+
+/** Preserve structured endpoint failures when a background pipeline job becomes terminal. */
+export function pipelineFailureDetails(error: unknown): PipelineFailureDetails | null {
+  if (!(error instanceof PipelineHttpError)) return null;
+
+  const body = error.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  const nestedError = record.error;
+  const message = typeof nestedError === "string"
+    ? nestedError
+    : nestedError && typeof nestedError === "object" && !Array.isArray(nestedError)
+      ? (nestedError as Record<string, unknown>).message
+      : undefined;
+  const nestedCode = nestedError && typeof nestedError === "object" && !Array.isArray(nestedError)
+    ? (nestedError as Record<string, unknown>).code
+    : undefined;
+  const code = typeof record.reason === "string"
+    ? record.reason
+    : typeof record.code === "string"
+      ? record.code
+      : typeof nestedCode === "string"
+        ? nestedCode
+        : undefined;
+  const provider = typeof record.provider === "string" ? record.provider : undefined;
+
+  if (typeof message !== "string" || message.trim().length === 0) return null;
+  return { message: message.trim(), ...(code ? { code } : {}), ...(provider ? { provider } : {}) };
+}
+
 /** Decode the JSON contract shared by every internal pipeline endpoint. */
 export function decodePipelineResponse<T>(
   method: "POST" | "GET" | "PATCH",
