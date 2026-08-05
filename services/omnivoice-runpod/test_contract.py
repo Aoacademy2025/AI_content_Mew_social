@@ -1,15 +1,32 @@
+import base64
+import io
 import json
 import hashlib
 from pathlib import Path
 import threading
 import time
 import unittest
+import wave
 
 from contract import InputError, parse_design_input, parse_tts_input
 from prompt_cache import VoicePromptCache
 
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _make_wav_b64(*, channels=1, sampwidth=2, framerate=24_000, duration_seconds=5.0):
+    """Build a base64-encoded silent WAV fixture with the given format, for
+    T5 (v13) ref_audio_b64 contract tests. Pure stdlib (wave), matches how
+    contract.py itself parses the payload."""
+    frame_count = int(round(duration_seconds * framerate))
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sampwidth)
+        wav_file.setframerate(framerate)
+        wav_file.writeframes(b"\x00" * frame_count * channels * sampwidth)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 class ContractTest(unittest.TestCase):
@@ -26,6 +43,79 @@ class ContractTest(unittest.TestCase):
         result = parse_tts_input({"voice_id": "voice_02", "text": "hello"}, 800)
         self.assertEqual(result.num_step, 32)
         self.assertEqual(result.speed, 1.0)
+        self.assertEqual(result.class_temperature, 0.0)
+
+    def test_class_temperature_absent_matches_explicit_zero(self):
+        # T2 requirement: absent/0.0 must be the identical v11 code path.
+        absent = parse_tts_input({"voice_id": "voice_01", "text": "hello"}, 800)
+        explicit_zero = parse_tts_input(
+            {"voice_id": "voice_01", "text": "hello", "class_temperature": 0.0}, 800
+        )
+        self.assertEqual(absent.class_temperature, explicit_zero.class_temperature)
+        self.assertEqual(absent.class_temperature, 0.0)
+
+    def test_class_temperature_accepts_documented_range(self):
+        for value in (0.0, 0.1, 2.5, 5.0):
+            with self.subTest(value=value):
+                result = parse_tts_input(
+                    {"voice_id": "voice_01", "text": "hello", "class_temperature": value},
+                    800,
+                )
+                self.assertEqual(result.class_temperature, float(value))
+
+    def test_class_temperature_accepts_int_input(self):
+        result = parse_tts_input(
+            {"voice_id": "voice_01", "text": "hello", "class_temperature": 1}, 800
+        )
+        self.assertEqual(result.class_temperature, 1.0)
+
+    def test_class_temperature_rejects_out_of_range(self):
+        bad = [-0.1, -1.0, 5.1, 100.0]
+        for value in bad:
+            with self.subTest(value=value), self.assertRaises(InputError) as raised:
+                parse_tts_input(
+                    {"voice_id": "voice_01", "text": "hello", "class_temperature": value},
+                    800,
+                )
+            self.assertEqual(raised.exception.code, "INVALID_CLASS_TEMPERATURE")
+
+    def test_class_temperature_rejects_nan_and_inf(self):
+        # Pins the current chained-comparison behavior (CLASS_TEMPERATURE_MIN
+        # <= class_temperature <= CLASS_TEMPERATURE_MAX): any comparison
+        # against float('nan') is False, so the chain is False and the value
+        # is rejected; float('inf') simply fails the upper-bound comparison.
+        # This guards against a future refactor to min()/max() clamping,
+        # which would silently clamp nan/inf instead of rejecting them.
+        bad = [float("nan"), float("inf"), float("-inf")]
+        for value in bad:
+            with self.subTest(value=value), self.assertRaises(InputError) as raised:
+                parse_tts_input(
+                    {"voice_id": "voice_01", "text": "hello", "class_temperature": value},
+                    800,
+                )
+            self.assertEqual(raised.exception.code, "INVALID_CLASS_TEMPERATURE")
+
+    def test_class_temperature_rejects_non_numeric_and_bool(self):
+        bad = ["0.5", None, True, False, [0.5], {}]
+        for value in bad:
+            with self.subTest(value=value), self.assertRaises(InputError) as raised:
+                parse_tts_input(
+                    {"voice_id": "voice_01", "text": "hello", "class_temperature": value},
+                    800,
+                )
+            self.assertEqual(raised.exception.code, "INVALID_CLASS_TEMPERATURE")
+
+    def test_nonverbal_tags_pass_through_verbatim(self):
+        # Upstream ships 13 fixed non-verbal tags (README.md#L249-L259, pinned
+        # commit 346bb75...) that must reach the model unmodified.
+        tagged_text = "[laughter] สวัสดีครับ [sigh] วันนี้อากาศดีมาก"
+        result = parse_tts_input(
+            {"voice_id": "voice_01", "text": tagged_text, "class_temperature": 1.0},
+            800,
+        )
+        self.assertEqual(result.text, tagged_text)
+        self.assertIn("[laughter]", result.text)
+        self.assertIn("[sigh]", result.text)
 
     def test_quality_contract_accepts_upstream_default_steps(self):
         result = parse_tts_input(
@@ -158,10 +248,199 @@ class ContractTest(unittest.TestCase):
 
     def test_worker_fixes_every_tts_voice_at_32_steps(self):
         source = (ROOT / "handler.py").read_text(encoding="utf-8")
-        self.assertIn('VERSION = "heroai-omnivoice-runpod-v6-all-voices-32"', source)
+        self.assertIn('VERSION = "heroai-omnivoice-runpod-v8-all-voices-32-temp-dynref"', source)
         self.assertIn("DEFAULT_NUM_STEP = 32", source)
         self.assertIn("effective_num_step = DEFAULT_NUM_STEP", source)
         self.assertNotIn("QUALITY_NUM_STEP_FLOORS", source)
+
+    def test_worker_echoes_effective_class_temperature(self):
+        # T2 requirement: echo class_temperature in the response payload like
+        # num_step is already echoed, and forward it into MODEL.generate().
+        source = (ROOT / "handler.py").read_text(encoding="utf-8")
+        self.assertIn('"class_temperature": request.class_temperature,', source)
+        self.assertIn("class_temperature=request.class_temperature,", source)
+
+
+class DynamicRefContractTest(unittest.TestCase):
+    """T5 (v13): optional clone-from-payload ref_audio_b64/ref_text."""
+
+    def test_absent_ref_audio_matches_v12_baked_behavior(self):
+        result = parse_tts_input({"voice_id": "voice_01", "text": "hello"}, 800)
+        self.assertIsNone(result.ref_audio_bytes)
+        self.assertIsNone(result.ref_text)
+        self.assertEqual(result.ref_source, "baked")
+
+    def test_valid_payload_ref_is_accepted(self):
+        wav_b64 = _make_wav_b64(duration_seconds=5.0)
+        result = parse_tts_input(
+            {
+                "voice_id": "voice_01",
+                "text": "hello",
+                "ref_audio_b64": wav_b64,
+                "ref_text": "สวัสดีค่ะ นี่คือเสียงอ้างอิง",
+            },
+            800,
+        )
+        self.assertEqual(result.ref_source, "payload")
+        self.assertIsInstance(result.ref_audio_bytes, bytes)
+        self.assertEqual(result.ref_text, "สวัสดีค่ะ นี่คือเสียงอ้างอิง")
+        # decoding round-trips to the same PCM16/24kHz/mono format
+        with wave.open(io.BytesIO(result.ref_audio_bytes), "rb") as wav_file:
+            self.assertEqual(wav_file.getnchannels(), 1)
+            self.assertEqual(wav_file.getsampwidth(), 2)
+            self.assertEqual(wav_file.getframerate(), 24_000)
+
+    def test_ref_text_is_stripped(self):
+        wav_b64 = _make_wav_b64(duration_seconds=5.0)
+        result = parse_tts_input(
+            {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64, "ref_text": "  หนึ่ง  "},
+            800,
+        )
+        self.assertEqual(result.ref_text, "หนึ่ง")
+
+    def test_ref_text_required_when_ref_audio_present(self):
+        wav_b64 = _make_wav_b64(duration_seconds=5.0)
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input({"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64}, 800)
+        self.assertEqual(raised.exception.code, "INVALID_REF_TEXT")
+
+    def test_ref_text_without_ref_audio_is_rejected_as_mismatched(self):
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input({"voice_id": "voice_01", "text": "hello", "ref_text": "หนึ่ง"}, 800)
+        self.assertEqual(raised.exception.code, "INVALID_REF_TEXT")
+
+    def test_ref_text_rejects_too_long(self):
+        wav_b64 = _make_wav_b64(duration_seconds=5.0)
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64, "ref_text": "ก" * 301},
+                800,
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_TEXT")
+
+    def test_ref_text_accepts_boundary_300_chars(self):
+        wav_b64 = _make_wav_b64(duration_seconds=5.0)
+        result = parse_tts_input(
+            {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64, "ref_text": "ก" * 300},
+            800,
+        )
+        self.assertEqual(len(result.ref_text), 300)
+
+    def test_ref_audio_rejects_non_string(self):
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": 12345, "ref_text": "หนึ่ง"}, 800
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_ref_audio_rejects_invalid_base64(self):
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {
+                    "voice_id": "voice_01",
+                    "text": "hello",
+                    "ref_audio_b64": "not-valid-base64!!!",
+                    "ref_text": "หนึ่ง",
+                },
+                800,
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_ref_audio_rejects_non_wav_bytes(self):
+        garbage_b64 = base64.b64encode(b"not a wav file at all, just junk bytes").decode("ascii")
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": garbage_b64, "ref_text": "หนึ่ง"},
+                800,
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_ref_audio_rejects_stereo(self):
+        wav_b64 = _make_wav_b64(channels=2, duration_seconds=5.0)
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64, "ref_text": "หนึ่ง"}, 800
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_ref_audio_rejects_wrong_sample_width(self):
+        wav_b64 = _make_wav_b64(sampwidth=1, duration_seconds=5.0)
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64, "ref_text": "หนึ่ง"}, 800
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_ref_audio_rejects_wrong_frame_rate(self):
+        wav_b64 = _make_wav_b64(framerate=16_000, duration_seconds=5.0)
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64, "ref_text": "หนึ่ง"}, 800
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_ref_audio_rejects_too_short(self):
+        wav_b64 = _make_wav_b64(duration_seconds=2.9)
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64, "ref_text": "หนึ่ง"}, 800
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_ref_audio_rejects_too_long(self):
+        wav_b64 = _make_wav_b64(duration_seconds=20.1)
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64, "ref_text": "หนึ่ง"}, 800
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_ref_audio_accepts_boundary_durations(self):
+        for duration in (3.0, 20.0):
+            with self.subTest(duration=duration):
+                wav_b64 = _make_wav_b64(duration_seconds=duration)
+                result = parse_tts_input(
+                    {
+                        "voice_id": "voice_01",
+                        "text": "hello",
+                        "ref_audio_b64": wav_b64,
+                        "ref_text": "หนึ่ง",
+                    },
+                    800,
+                )
+                self.assertEqual(result.ref_source, "payload")
+
+    def test_ref_audio_rejects_oversized_decoded_payload(self):
+        # ~2.06s over the 2MB cap at 24kHz/16-bit/mono (48000 bytes/sec).
+        wav_b64 = _make_wav_b64(duration_seconds=44.0)
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": wav_b64, "ref_text": "หนึ่ง"}, 800
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_ref_audio_rejects_empty_string(self):
+        with self.assertRaises(InputError) as raised:
+            parse_tts_input(
+                {"voice_id": "voice_01", "text": "hello", "ref_audio_b64": "", "ref_text": "หนึ่ง"}, 800
+            )
+        self.assertEqual(raised.exception.code, "INVALID_REF_AUDIO")
+
+    def test_handler_builds_clone_prompt_from_payload_when_present(self):
+        source = (ROOT / "handler.py").read_text(encoding="utf-8")
+        self.assertIn('if request.ref_source == "payload":', source)
+        self.assertIn("ref_audio=payload_ref_tmp_path,", source)
+        self.assertIn("ref_text=request.ref_text,", source)
+        # never caches/persists payload refs under the baked voices tree
+        self.assertNotIn("VOICES_DIR / request.ref_audio", source)
+
+    def test_handler_echoes_ref_source(self):
+        source = (ROOT / "handler.py").read_text(encoding="utf-8")
+        self.assertIn('"ref_source": request.ref_source,', source)
+
+    def test_handler_cleans_up_temp_ref_file(self):
+        source = (ROOT / "handler.py").read_text(encoding="utf-8")
+        self.assertIn("os.unlink(payload_ref_tmp_path)", source)
 
 
 class VoicePromptCacheTest(unittest.TestCase):

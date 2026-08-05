@@ -1,11 +1,44 @@
 """Pure input contract for the HERO AI OmniVoice Runpod worker."""
 
+import base64
 from dataclasses import dataclass
+import io
 import re
-from typing import Any
+from typing import Any, Optional
+import wave
 
 
 VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+# T5 (v13): optional clone-from-payload reference audio. Kept intentionally
+# narrow — this worker only ever produces/consumes its own 24kHz mono PCM16
+# WAV output (SAMPLE_RATE in handler.py, sf.write(..., subtype="PCM_16")), so
+# "accept 24 kHz PCM16" is read as an exact match, not a range, avoiding any
+# resampling/format-conversion code in a worker that's meant to stay pure.
+REF_AUDIO_MAX_DECODED_BYTES = 2 * 1024 * 1024  # 2 MB decoded-size cap (brief)
+REF_AUDIO_MIN_DURATION_SECONDS = 3.0
+REF_AUDIO_MAX_DURATION_SECONDS = 20.0
+REF_AUDIO_REQUIRED_CHANNELS = 1
+REF_AUDIO_REQUIRED_SAMPLE_WIDTH_BYTES = 2  # PCM16
+REF_AUDIO_REQUIRED_FRAME_RATE = 24_000
+REF_TEXT_MAX_LENGTH = 300
+
+# Upstream (pinned commit 346bb75330980a236540d61a0808d00767c0973b,
+# docs/generation-parameters.md) documents class_temperature as "Temperature for
+# token sampling at each step. 0 = greedy (deterministic). Higher values increase
+# randomness." — no explicit upper bound is documented anywhere in that pinned
+# source (docs, CLI argparse, or the Gradio demo, which does not expose this
+# parameter at all). The floor of 0.0 is upstream-documented and load-bearing:
+# omnivoice/models/omnivoice.py:1312 only enters the temperature-sampling branch
+# when class_temperature > 0.0, so 0.0 is the exact greedy/v11 code path.
+# The ceiling below is an engineering decision filling that documented gap: it
+# mirrors the upstream default of position_temperature (omnivoice.py:103, default
+# 5.0), the sibling parameter that shares the identical _gumbel_sample transform
+# (omnivoice.py:1502-1506) — the closest same-mechanism evidence upstream provides
+# for what magnitude of temperature the model family treats as a normal operating
+# value.
+CLASS_TEMPERATURE_MIN = 0.0
+CLASS_TEMPERATURE_MAX = 5.0
 
 
 class InputError(ValueError):
@@ -20,6 +53,10 @@ class TtsInput:
     text: str
     num_step: int
     speed: float
+    class_temperature: float
+    ref_audio_bytes: Optional[bytes]
+    ref_text: Optional[str]
+    ref_source: str  # "payload" | "baked"
 
 
 @dataclass(frozen=True)
@@ -100,6 +137,68 @@ def parse_design_input(payload: Any, max_text_length: int) -> DesignInput:
     )
 
 
+def _parse_ref_audio(payload: Any) -> tuple[Optional[bytes], Optional[str]]:
+    """Validate the optional v13 clone-from-payload reference. Returns
+    (decoded_wav_bytes, ref_text) or (None, None) when absent (v12 behavior)."""
+    raw_ref_audio_b64 = payload.get("ref_audio_b64")
+    raw_ref_text = payload.get("ref_text")
+
+    if raw_ref_audio_b64 is None:
+        if raw_ref_text is not None:
+            raise InputError("INVALID_REF_TEXT", "ref_text requires ref_audio_b64 to be present")
+        return None, None
+
+    if not isinstance(raw_ref_audio_b64, str) or not raw_ref_audio_b64.strip():
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_b64 must be a non-empty base64 string")
+
+    try:
+        decoded = base64.b64decode(raw_ref_audio_b64, validate=True)
+    except (ValueError, TypeError) as error:
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_b64 is not valid base64") from error
+
+    if not decoded:
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_b64 decoded to empty audio")
+    if len(decoded) > REF_AUDIO_MAX_DECODED_BYTES:
+        raise InputError(
+            "INVALID_REF_AUDIO",
+            f"ref_audio_b64 decoded size exceeds {REF_AUDIO_MAX_DECODED_BYTES} bytes",
+        )
+
+    try:
+        with wave.open(io.BytesIO(decoded), "rb") as wav_file:
+            channels = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            frame_rate = wav_file.getframerate()
+            frame_count = wav_file.getnframes()
+    except (wave.Error, EOFError) as error:
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_b64 is not a readable WAV file") from error
+
+    if channels != REF_AUDIO_REQUIRED_CHANNELS:
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_b64 must be mono")
+    if sample_width != REF_AUDIO_REQUIRED_SAMPLE_WIDTH_BYTES:
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_b64 must be 16-bit PCM")
+    if frame_rate != REF_AUDIO_REQUIRED_FRAME_RATE:
+        raise InputError("INVALID_REF_AUDIO", f"ref_audio_b64 must be {REF_AUDIO_REQUIRED_FRAME_RATE} Hz")
+    if frame_rate <= 0:
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_b64 has an invalid frame rate")
+
+    duration_seconds = frame_count / frame_rate
+    if not REF_AUDIO_MIN_DURATION_SECONDS <= duration_seconds <= REF_AUDIO_MAX_DURATION_SECONDS:
+        raise InputError(
+            "INVALID_REF_AUDIO",
+            f"ref_audio_b64 duration must be {REF_AUDIO_MIN_DURATION_SECONDS}-"
+            f"{REF_AUDIO_MAX_DURATION_SECONDS} seconds",
+        )
+
+    if not isinstance(raw_ref_text, str) or not raw_ref_text.strip():
+        raise InputError("INVALID_REF_TEXT", "ref_text is required when ref_audio_b64 is present")
+    ref_text = raw_ref_text.strip()
+    if len(ref_text) > REF_TEXT_MAX_LENGTH:
+        raise InputError("INVALID_REF_TEXT", f"ref_text exceeds {REF_TEXT_MAX_LENGTH} characters")
+
+    return decoded, ref_text
+
+
 def parse_tts_input(payload: Any, max_text_length: int) -> TtsInput:
     if not isinstance(payload, dict):
         raise InputError("INVALID_INPUT", "input must be an object")
@@ -130,4 +229,28 @@ def parse_tts_input(payload: Any, max_text_length: int) -> TtsInput:
     if not 0.3 <= speed <= 3.0:
         raise InputError("INVALID_SPEED", "speed must be a number from 0.3 to 3.0")
 
-    return TtsInput(voice_id=voice_id, text=text, num_step=raw_num_step, speed=speed)
+    raw_class_temperature = payload.get("class_temperature", 0.0)
+    if isinstance(raw_class_temperature, bool) or not isinstance(raw_class_temperature, (int, float)):
+        raise InputError(
+            "INVALID_CLASS_TEMPERATURE",
+            f"class_temperature must be a number from {CLASS_TEMPERATURE_MIN} to {CLASS_TEMPERATURE_MAX}",
+        )
+    class_temperature = float(raw_class_temperature)
+    if not CLASS_TEMPERATURE_MIN <= class_temperature <= CLASS_TEMPERATURE_MAX:
+        raise InputError(
+            "INVALID_CLASS_TEMPERATURE",
+            f"class_temperature must be a number from {CLASS_TEMPERATURE_MIN} to {CLASS_TEMPERATURE_MAX}",
+        )
+
+    ref_audio_bytes, ref_text = _parse_ref_audio(payload)
+
+    return TtsInput(
+        voice_id=voice_id,
+        text=text,
+        num_step=raw_num_step,
+        speed=speed,
+        class_temperature=class_temperature,
+        ref_audio_bytes=ref_audio_bytes,
+        ref_text=ref_text,
+        ref_source="payload" if ref_audio_bytes is not None else "baked",
+    )
