@@ -6,6 +6,7 @@ import { Providers } from "@/components/providers";
 import { Toaster } from "sonner";
 import { RouteProgress } from "@/components/layout/route-progress";
 import { TelemetryProvider } from "@/components/telemetry/telemetry-provider";
+import { MetaPixel } from "@/components/telemetry/meta-pixel";
 import { StaleBundleGuard } from "@/components/stale-bundle-guard";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -52,6 +53,7 @@ export default function RootLayout({
       </head>
       <body className={inter.className}>
         <Providers>
+          <MetaPixel />
           <TelemetryProvider />
           <StaleBundleGuard />
           <RouteProgress />
