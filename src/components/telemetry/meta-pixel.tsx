@@ -49,16 +49,18 @@ fbq('init','${META_PIXEL_ID}');fbq('track','PageView');
           `.trim(),
         }}
       />
-      <noscript>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          height="1"
-          width="1"
-          style={{ display: "none" }}
-          src={`https://www.facebook.com/tr?id=${META_PIXEL_ID}&ev=PageView&noscript=1`}
-          alt=""
-        />
-      </noscript>
+      {/*
+        Rendered via dangerouslySetInnerHTML (not JSX <img>) so Next.js/React's
+        SSR image-preload heuristic can't see it and hoist an unconditional
+        <link rel="preload" as="image"> into <head> — that preload fires for
+        every visitor (JS-enabled or not), double-counting PageView against
+        the fbq() call above. Byte-equivalent output for JS-disabled visitors.
+      */}
+      <noscript
+        dangerouslySetInnerHTML={{
+          __html: `<img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=${META_PIXEL_ID}&ev=PageView&noscript=1" alt="" />`,
+        }}
+      />
     </>
   );
 }
