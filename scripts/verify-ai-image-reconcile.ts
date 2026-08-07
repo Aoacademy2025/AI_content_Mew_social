@@ -61,6 +61,7 @@ async function main() {
 
   // ── 1. RunPod stub keyed by provider job id; any other host is a failure ───
   let statusCalls = 0;
+  const cancelledProviderJobIds: string[] = [];
   const outboundHosts = new Set<string>();
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -100,10 +101,18 @@ async function main() {
       if (providerJobId === "stub-poll-throws") {
         return new Response("<html>502 bad gateway</html>", { status: 502 });
       }
-      if (providerJobId === "stub-still-queued") {
+      if (providerJobId === "stub-still-queued" || providerJobId === "stub-still-queued-cancel-throws") {
         return json({ status: "IN_QUEUE", delayTime: 1_900_000 });
       }
       throw new Error(`unstubbed provider job id: ${providerJobId}`);
+    }
+    if (url.includes("/cancel/")) {
+      const providerJobId = decodeURIComponent(url.split("/cancel/")[1] ?? "");
+      cancelledProviderJobIds.push(providerJobId);
+      if (providerJobId === "stub-still-queued-cancel-throws") {
+        throw new TypeError("fetch failed: connection reset by peer");
+      }
+      return json({ status: "CANCELLED" });
     }
     throw new Error(`unstubbed RunPod operation: ${url}`);
   }) as typeof fetch;
@@ -274,6 +283,12 @@ async function main() {
   await submit(userG.id, jobG.id, "stub-kie-task");
   await backdate(jobG.id, 120);
 
+  // C3 — still IN_QUEUE, and the best-effort cancel itself throws.
+  const userC3 = await makeUser("queuedcancelfails", 0, 2);
+  const jobC3 = await reserve({ userId: userC3.id, idempotencyKey: "broll-window:w9:2" });
+  await submit(userC3.id, jobC3.id, "stub-still-queued-cancel-throws");
+  await backdate(jobC3.id, 110);
+
   // E — fresh reservation (5 minutes old): outside the window, must be untouched.
   const userE = await makeUser("fresh", 5, 0);
   const jobE = await reserve({ userId: userE.id, idempotencyKey: "video:v5:scene:0" });
@@ -295,13 +310,23 @@ async function main() {
   await failAndRefundAiJob(userF.id, jobFRefunded.id, "PROVIDER_FAILED", "already refunded by the request path");
   await backdate(jobFRefunded.id, 300);
 
-  const staleIdsInOrder = [jobA.id, jobB.id, jobB2.id, jobC.id, jobC2.id, jobD.id, jobG.id];
+  const staleIdsInOrder = [jobA.id, jobB.id, jobB2.id, jobC.id, jobC2.id, jobD.id, jobG.id, jobC3.id];
   check(
-    "seeded 9 reserved (7 stale + 1 fresh + 1 later-settled…) + 1 settled + 1 refunded",
-    (await prisma.aiGenerationJob.count({ where: { chargeState: "reserved" } })) === 8
+    "seeded 9 reserved (8 stale + 1 fresh) + 1 settled + 1 refunded",
+    (await prisma.aiGenerationJob.count({ where: { chargeState: "reserved" } })) === 9
       && (await prisma.aiGenerationJob.count({ where: { chargeState: "settled" } })) === 1
       && (await prisma.aiGenerationJob.count({ where: { chargeState: "refunded" } })) === 1,
     `reserved=${await prisma.aiGenerationJob.count({ where: { chargeState: "reserved" } })}`,
+  );
+
+  // The 15-minute sweep query must be index-covered, not a table scan.
+  const indexes = await prisma.$queryRawUnsafe<Array<{ name: string }>>(
+    "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'AiGenerationJob'",
+  );
+  check(
+    "prisma db push created the sweep's covering index (kind, chargeState, updatedAt)",
+    indexes.some((row) => row.name === "AiGenerationJob_kind_chargeState_updatedAt_idx"),
+    indexes.map((row) => row.name).join(", "),
   );
 
   // ── 3. dryRun: correct would-do counts, zero mutations ────────────────────
@@ -309,7 +334,7 @@ async function main() {
   const beforeDry = await snapshot();
   const statusCallsBeforeDry = statusCalls;
   const dry = await sweepStaleReservedImageJobs({ dryRun: true });
-  check("dryRun scanned exactly the 7 stale reserved jobs", dry.scanned === 7, `got ${dry.scanned}`);
+  check("dryRun scanned exactly the 8 stale reserved jobs", dry.scanned === 8, `got ${dry.scanned}`);
   // A dry run reports an UPPER BOUND on settlements: it cannot prove the image is
   // still retrievable without storing it, so B2 (COMPLETED, unretrievable) reads as
   // "would settle" here and becomes a SWEEP_OUTPUT_LOST refund in the live run.
@@ -318,10 +343,10 @@ async function main() {
     dry.settled === 2,
     `got ${dry.settled}`,
   );
-  check("dryRun would refund the other 5", dry.refunded === 5, `got ${dry.refunded}`);
+  check("dryRun would refund the other 6", dry.refunded === 6, `got ${dry.refunded}`);
   check(
-    "dryRun would refund 10 credits (5 × 2cr)",
-    dry.refundedCredits === 10,
+    "dryRun would refund 12 credits (6 × 2cr)",
+    dry.refundedCredits === 12,
     `got ${dry.refundedCredits}`,
   );
   check("dryRun reports no errors", dry.errors.length === 0, JSON.stringify(dry.errors));
@@ -332,8 +357,13 @@ async function main() {
   );
   check(
     "dryRun still polls RunPod (read-only) exactly once per pollable RunPod job",
-    statusCalls - statusCallsBeforeDry === 5,
+    statusCalls - statusCallsBeforeDry === 6,
     `got ${statusCalls - statusCallsBeforeDry}`,
+  );
+  check(
+    "dryRun cancels nothing at the provider",
+    cancelledProviderJobIds.length === 0 && dry.decisions.every((d) => d.cancelAttempted !== true),
+    cancelledProviderJobIds.join(","),
   );
   check("dryRun mutated nothing", (await snapshot()) === beforeDry);
   check(
@@ -345,10 +375,10 @@ async function main() {
   // ── 4. Real sweep ─────────────────────────────────────────────────────────
   console.log("\n[4] Live sweep");
   const live = await sweepStaleReservedImageJobs({});
-  check("live sweep scanned 7", live.scanned === 7, `got ${live.scanned}`);
+  check("live sweep scanned 8", live.scanned === 8, `got ${live.scanned}`);
   check("live sweep settled 1", live.settled === 1, `got ${live.settled}`);
-  check("live sweep refunded 6", live.refunded === 6, `got ${live.refunded}`);
-  check("live sweep refunded 12 credits", live.refundedCredits === 12, `got ${live.refundedCredits}`);
+  check("live sweep refunded 7", live.refunded === 7, `got ${live.refunded}`);
+  check("live sweep refunded 14 credits", live.refundedCredits === 14, `got ${live.refundedCredits}`);
   check("live sweep skipped 0", live.skipped === 0, `got ${live.skipped}`);
   check("live sweep reported no errors", live.errors.length === 0, JSON.stringify(live.errors));
   const dryActions = new Map(dry.decisions.map((d) => [d.jobId, d.action]));
@@ -442,14 +472,47 @@ async function main() {
   );
   check("C balance restored (3/3)", balC.granted === 3 && balC.purchased === 3);
 
-  // C2 — still queued → refunded.
+  // C2 — still queued → orphan cancelled at the provider, then refunded.
   const afterC2 = await jobById(jobC2.id);
+  const decisionC2 = live.decisions.find((d) => d.jobId === jobC2.id);
   check(
     "C2 still-IN_QUEUE past the window: refunded under SWEEP_STALE_RESERVED",
     afterC2.chargeState === "refunded" && afterC2.errorCode === "SWEEP_STALE_RESERVED",
     `${afterC2.chargeState}/${afterC2.errorCode}`,
   );
   check("C2 balance restored (2 granted)", (await balanceOf(userC2.id)).granted === 2);
+  check(
+    "C2 asked RunPod to cancel the orphaned job before refunding",
+    cancelledProviderJobIds.includes("stub-still-queued")
+      && decisionC2?.cancelAttempted === true
+      && decisionC2?.cancelOk === true,
+    JSON.stringify(decisionC2),
+  );
+
+  // C3 — still queued, cancel throws: the refund must still happen, exactly once.
+  const afterC3 = await jobById(jobC3.id);
+  const decisionC3 = live.decisions.find((d) => d.jobId === jobC3.id);
+  check(
+    "C3 cancel failure never blocks the refund",
+    afterC3.chargeState === "refunded" && afterC3.errorCode === "SWEEP_STALE_RESERVED",
+    `${afterC3.chargeState}/${afterC3.errorCode}`,
+  );
+  check(
+    "C3 records the failed cancel (cancelAttempted, not cancelOk) and refunds once",
+    decisionC3?.cancelAttempted === true
+      && decisionC3?.cancelOk === false
+      && (await refundRows(userC3.id)).length === 1
+      && (await balanceOf(userC3.id)).purchased === 2,
+    JSON.stringify(decisionC3),
+  );
+  check(
+    "cancel is attempted only for still-running provider jobs (not terminal/no-id/unpollable ones)",
+    live.decisions
+      .filter((d) => ![jobC2.id, jobC3.id].includes(d.jobId))
+      .every((d) => d.cancelAttempted !== true)
+      && cancelledProviderJobIds.length === 2,
+    cancelledProviderJobIds.join(","),
+  );
 
   // D — no provider job id → refunded without any provider call.
   const afterD = await jobById(jobD.id);

@@ -13,6 +13,7 @@ import {
   type ImageProviderSnapshot,
 } from "@/lib/image-generation-provider.server";
 import { prisma } from "@/lib/prisma";
+import { cancelRunpodImageJob } from "@/lib/runpod-serverless";
 
 /**
  * Money-safety backstop for AI image credit reservations.
@@ -31,9 +32,16 @@ import { prisma } from "@/lib/prisma";
  * a job can never be refunded twice or settled after a refund.
  */
 
-/** An in-flight hero request can legitimately hold a reservation for ~28 minutes
- * (two bounded 840s provider attempts plus queue waits), so the sweep window can
- * never be tightened below the 30 minutes the launch plan specifies. */
+/**
+ * The safety property here is `updatedAt`, not age: a live request refreshes its job
+ * row on every poll tick (markImageAttemptProgress, roughly once a second), so
+ * `updatedAt < cutoff` can only match rows that nobody is driving any more. The
+ * 30-minute floor is generous margin over the ~28-minute worst case from creation to
+ * abandonment (two bounded 840s provider attempts plus queue waits).
+ *
+ * NEVER switch this query to `createdAt` — that would match jobs a request is still
+ * actively polling and would reintroduce the double-spend race this sweep closes.
+ */
 export const SWEEP_MIN_STALE_MINUTES = 30;
 export const SWEEP_MAX_STALE_MINUTES = 10_080; // 7 days
 export const SWEEP_DEFAULT_STALE_MINUTES = 30;
@@ -56,7 +64,12 @@ export type StaleReservedImageDecision = {
   /** Why the sweep chose this action — operator-facing, never provider payloads. */
   reason: string;
   credits: number;
+  /** Set when the sweep tried to stop a still-running provider job before refunding. */
+  cancelAttempted?: boolean;
+  cancelOk?: boolean;
 };
+
+type CancelOutcome = { cancelAttempted: boolean; cancelOk: boolean };
 
 export type StaleReservedImageSweepSummary = {
   dryRun: boolean;
@@ -105,24 +118,56 @@ function sceneTitleForJob(job: AiGenerationJob): string | undefined {
   return undefined;
 }
 
+/**
+ * Ask the provider to stop work we are about to refund, so an abandoned job stops
+ * burning COGS. Strictly best-effort: every failure is swallowed and only logged, so
+ * it can never block, reorder or fail the refund that follows.
+ */
+async function bestEffortCancel(input: {
+  jobId: string;
+  attemptProvider: string;
+  providerEndpoint: string | null;
+  providerJobId: string;
+}): Promise<CancelOutcome> {
+  if (input.attemptProvider !== "runpod" || !input.providerEndpoint) {
+    return { cancelAttempted: false, cancelOk: false };
+  }
+  try {
+    const cancelled = await cancelRunpodImageJob(input.providerEndpoint, input.providerJobId);
+    if (!cancelled) {
+      console.warn(
+        `[reconcile-ai-images] orphaned RunPod job ${input.providerJobId} (image job ${input.jobId}) was not confirmed cancelled`,
+      );
+    }
+    return { cancelAttempted: true, cancelOk: cancelled };
+  } catch (error) {
+    console.warn(
+      `[reconcile-ai-images] orphaned RunPod job ${input.providerJobId} (image job ${input.jobId}) cancel failed: ${safeMessage(error)}`,
+    );
+    return { cancelAttempted: true, cancelOk: false };
+  }
+}
+
 async function refundJob(input: {
   job: AiGenerationJob;
   errorCode: typeof REFUND_STALE | typeof REFUND_OUTPUT_LOST;
   errorMessage: string;
   reason: string;
   dryRun: boolean;
+  cancel?: CancelOutcome;
 }): Promise<StaleReservedImageDecision> {
   const { job, reason } = input;
+  const cancel = input.cancel ?? {};
   if (input.dryRun) {
-    return { jobId: job.id, action: "refund", reason, credits: job.creditCost };
+    return { jobId: job.id, action: "refund", reason, credits: job.creditCost, ...cancel };
   }
   const updated = await failAndRefundAiJob(job.userId, job.id, input.errorCode, input.errorMessage);
   if (updated?.chargeState !== "refunded") {
     // Another worker (or the original request) settled/refunded it first. The
     // transition guard inside failAndRefundAiJob already prevented a second payout.
-    return { jobId: job.id, action: "skip", reason: "already_terminal", credits: 0 };
+    return { jobId: job.id, action: "skip", reason: "already_terminal", credits: 0, ...cancel };
   }
-  return { jobId: job.id, action: "refund", reason, credits: job.creditCost };
+  return { jobId: job.id, action: "refund", reason, credits: job.creditCost, ...cancel };
 }
 
 async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<StaleReservedImageDecision> {
@@ -218,13 +263,23 @@ async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<Stal
   }
 
   // Still queued/running long after the caller's own bounded wait expired, or an
-  // unrecognized status. The image is no longer deliverable to that request.
+  // unrecognized status. The image is no longer deliverable to that request, so the
+  // money goes back — after a best-effort attempt to stop the orphaned provider job.
+  const cancel = dryRun
+    ? undefined
+    : await bestEffortCancel({
+        jobId: job.id,
+        attemptProvider: attempt.provider,
+        providerEndpoint: attempt.providerEndpoint,
+        providerJobId,
+      });
   return refundJob({
     job,
     errorCode: REFUND_STALE,
     errorMessage: `Provider still reports ${snapshot.status} after the reservation went stale`,
     reason: `provider_${String(snapshot.status).toLowerCase()}`,
     dryRun,
+    cancel,
   });
 }
 
