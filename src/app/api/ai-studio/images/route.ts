@@ -57,9 +57,14 @@ export async function POST(request: Request) {
       || !isAiImageStyle(style)) {
       return NextResponse.json({ error: "รูปแบบการสร้างภาพไม่ถูกต้อง" }, { status: 400 });
     }
-    if (!/^[A-Za-z0-9:_-]{8,120}$/.test(idempotencyKey)) {
+    if (!/^[A-Za-z0-9:_-]{8,113}$/.test(idempotencyKey)) {
       return NextResponse.json({ error: "idempotencyKey ไม่ถูกต้อง" }, { status: 400 });
     }
+    // Namespace the caller-minted key server-side. Without this a Studio caller could
+    // mint a `video:<jobId>:…` key and have their image swept by a video-failure
+    // compensation sweep (refundSettledVideoImageBatch matches on that prefix).
+    // 113 + "studio:" keeps the stored key inside the 120-char contract.
+    const storedIdempotencyKey = `studio:${idempotencyKey}`;
 
     const model = AI_IMAGE_MODELS.find((item) => item.id === modelId)!;
     if (model.engine !== engine) {
@@ -123,7 +128,7 @@ export async function POST(request: Request) {
       providerRoute: preparedProviderJob.providerRoute,
       providerEndpoint: preparedProviderJob.providerEndpoint,
       estimatedCostUsdMicros: preparedProviderJob.quote.estimatedProviderCostUsdMicros,
-      idempotencyKey,
+      idempotencyKey: storedIdempotencyKey,
       mediaExpiresAt: videoExpiryFor(user.plan),
     });
     if (!reserved.ok) {

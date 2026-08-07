@@ -67,6 +67,7 @@ type Body = {
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
+  maxAiImages?: unknown;
   imageEngine?: unknown; imageModel?: unknown;
   brollRegionPreference?: unknown; brollVisualStyle?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
@@ -547,6 +548,12 @@ export async function POST(req: Request) {
     const autoMixWeights = requestedSource === "auto-mix"
       ? parseAutoMixWeights(body.autoMixWeights) ?? undefined
       : undefined;
+    // Disclosure ceiling: the exact AI-image count the client's Render Receipt showed.
+    // fetch-stock clamps its AutoMix plan to it so the charge can never exceed the
+    // quote the user approved. Absent/invalid = no ceiling (legacy callers unchanged).
+    const maxAiImages = requestedSource === "auto-mix"
+      ? num(body.maxAiImages, 0, 60)
+      : undefined;
 
     // Pexels VALIDITY preflight (Task 7, 2026-07-16 stability audit): 20/59 weekly
     // VideoJob failures were BYOK keys that exist but don't work (ElevenLabs missing
@@ -613,6 +620,7 @@ export async function POST(req: Request) {
           ...(useHeroRunpodImage ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),
           ...(autoMixWeights ? { autoMixWeights } : {}),
+          ...(maxAiImages !== undefined ? { maxAiImages: Math.round(maxAiImages) } : {}),
           ...(stockProviders?.length ? { stockProviders } : {}),
           ...(subtitleMode ? { subtitleMode } : {}),
           ...(subtitlePosition ? { subtitlePosition } : {}),

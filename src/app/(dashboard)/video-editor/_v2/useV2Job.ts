@@ -7,6 +7,7 @@ import { isProviderErrorCode, type ProviderErrorCode } from "@/lib/provider-erro
 import type { HeygenProviderAction } from "@/lib/heygen-readiness";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { PRESET_WEIGHTS } from "./mix-presets";
+import { disclosedAutoMixAiImageCount, estimateClipSecV2 } from "./estimate";
 import { mediaStateFromJobPoll, previewMediaStateAfterVideoError } from "./ExpiredPreviewView";
 import {
   fingerprintVideoJobRequest,
@@ -310,6 +311,18 @@ export function useV2Job(p: V2Project) {
     if (existingAttempt?.promise) return existingAttempt.promise;
     if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
     const idempotencyKey = existingAttempt?.idempotencyKey ?? createSubmitIdempotencyKey("create");
+    // Disclose-then-charge: send the EXACT AutoMix AI-image count the Render Receipt
+    // showed as a hard server-side ceiling. The server plans with the source families
+    // it can actually serve, which can raise the AI share above the quoted one — the
+    // ceiling keeps the charge inside the number the user approved. Mirrors
+    // RenderReceiptDialog's inputs exactly (same weights, same duration estimate).
+    const receiptWeights = p.isAdmin ? PRESET_WEIGHTS.recommended : PRESET_WEIGHTS[p.mixPreset];
+    const receiptEstSec = p.mode === "upload" && p.clipDurationSec > 0
+      ? p.clipDurationSec
+      : estimateClipSecV2(p.mode === "upload" ? "" : p.script);
+    const maxAiImages = p.brollSource === "automix"
+      ? disclosedAutoMixAiImageCount(receiptEstSec, receiptWeights, p.targetClipCount)
+      : null;
     // โหมดอัปคลิปเอง (cutaway): ส่งแค่คลิป + b-roll — เสียง/เพลง/อวตารมาจากคลิป
     const body: Record<string, unknown> = existingAttempt?.body ?? (p.mode === "upload" ? {
       idempotencyKey,
@@ -327,6 +340,7 @@ export function useV2Job(p: V2Project) {
       // (fetch-stock) honors these ONLY under MANAGED_KIE and force-zeros ai for the
       // unauthorized. brollSource is already "automix" for any preset ≠ ฟรีล้วน.
       ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
+      ...(maxAiImages !== null ? { maxAiImages } : {}),
       subtitleMode: "sentence",
       subtitlePosition: "bottom",
     } : {
@@ -352,6 +366,7 @@ export function useV2Job(p: V2Project) {
       ...(p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
       ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
       ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
+      ...(maxAiImages !== null ? { maxAiImages } : {}),
       subtitleMode: "sentence",
       subtitlePosition: "bottom",
     });

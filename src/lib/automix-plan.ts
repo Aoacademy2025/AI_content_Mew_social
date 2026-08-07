@@ -84,6 +84,25 @@ export function planAutoMixSources(n: number, weights: AutoMixWeights): AutoMixS
 }
 
 /**
+ * Cap the paid "ai" slots of a plan at `keep`, keeping the EARLIEST slots (the order
+ * the generator processes them in). Returns both halves; the caller decides what the
+ * demoted slots become — fetch-stock turns them into FREE photo slots.
+ *
+ * `keep = null` means "no ceiling" — nothing is demoted. Two ceilings use this:
+ *   1. the AI-image count the client disclosed in its Render Receipt (`maxAiImages`),
+ *   2. how many slots the user's credit balance can actually fund.
+ */
+export function clampAutoMixAiSlots(
+  slots: Iterable<number>,
+  keep: number | null,
+): { kept: number[]; demoted: number[] } {
+  const ordered = [...slots].sort((a, b) => a - b);
+  if (keep === null || !Number.isFinite(keep)) return { kept: ordered, demoted: [] };
+  const limit = Math.max(0, Math.floor(keep));
+  return { kept: ordered.slice(0, limit), demoted: ordered.slice(limit) };
+}
+
+/**
  * Pick `n` evenly-spaced indices from [0, total) (ascending, unique). Used to choose
  * which captions become active b-roll pieces when the cadence cap wants fewer pieces
  * than there are captions — spreads the chosen captions across the whole script.

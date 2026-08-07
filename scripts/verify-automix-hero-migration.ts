@@ -85,9 +85,9 @@ async function main() {
 
   // ── 1. Planner ↔ estimate parity (no credit-quote drift) ──────────────────
   console.log("\n[1] AutoMix planner ↔ Render Receipt estimate");
-  const { planAutoMixSources } = await import("../src/lib/automix-plan");
+  const { planAutoMixSources, clampAutoMixAiSlots } = await import("../src/lib/automix-plan");
   const { HERO_AI_IMAGE_CREDITS } = await import("../src/lib/credit-costs");
-  const { estimateAutoMixAiImageCount, estimatePresetCredits } = await import(
+  const { disclosedAutoMixAiImageCount, estimateAutoMixAiImageCount, estimatePresetCredits } = await import(
     "../src/app/(dashboard)/video-editor/_v2/estimate"
   );
   const { buildReceipt } = await import("../src/app/(dashboard)/video-editor/_v2/receipt");
@@ -152,6 +152,57 @@ async function main() {
     "Render Receipt prices AutoMix AI slots at the Hero price (60s, 3:2:1 → 6 credits)",
     receipt.estCredits === 6,
     `got ${receipt.estCredits}`,
+  );
+
+  // ── 1b. Disclosure ceiling (maxAiImages): quoted count caps the charge ─────
+  // The receipt plans with the RAW preset weights; the server plans with the source
+  // families it can actually serve, which can raise the AI share (worst case: no
+  // photo provider + video off → every piece becomes AI). The clamp is what keeps
+  // the charge inside the quote the user approved.
+  const disclosedManual = disclosedAutoMixAiImageCount(0, aiForward, 15);
+  const disclosedAuto = disclosedAutoMixAiImageCount(60, aiForward, 0, 4);
+  check(
+    "disclosedAutoMixAiImageCount: manual clip count plans from that exact count",
+    disclosedManual === plannerAi(15, aiForward) && disclosedManual === 7,
+    `got ${disclosedManual}`,
+  );
+  check(
+    "disclosedAutoMixAiImageCount: auto falls back to the duration estimate (same 7)",
+    disclosedAuto === 7,
+    `got ${disclosedAuto}`,
+  );
+  // Server-side worst case: every family but AI is unavailable → planner says 15 AI.
+  const serverSidePlan = planAutoMixSources(15, { video: 0, photo: 0, ai: 1 });
+  const serverAiSlots = serverSidePlan
+    .map((source, index) => (source === "ai" ? index : -1))
+    .filter((index) => index >= 0);
+  check(
+    "unclamped worst case would over-charge (15 images = 30 credits vs a 14-credit quote)",
+    serverAiSlots.length === 15 && serverAiSlots.length * HERO_AI_IMAGE_CREDITS === 30,
+    `${serverAiSlots.length} slots`,
+  );
+  const clamped = clampAutoMixAiSlots(serverAiSlots, disclosedAuto);
+  check(
+    "clampAutoMixAiSlots honors maxAiImages: charge never exceeds the disclosed quote",
+    clamped.kept.length === disclosedAuto
+      && clamped.demoted.length === 15 - disclosedAuto
+      && clamped.kept.length * HERO_AI_IMAGE_CREDITS === disclosedAuto * HERO_AI_IMAGE_CREDITS,
+    `kept=${clamped.kept.length} demoted=${clamped.demoted.length}`,
+  );
+  check(
+    "clampAutoMixAiSlots keeps the earliest slots and never reorders",
+    clamped.kept.every((value, index) => value === serverAiSlots[index])
+      && clamped.demoted.every((value, index) => value === serverAiSlots[disclosedAuto + index]),
+  );
+  check(
+    "clampAutoMixAiSlots with no ceiling demotes nothing",
+    clampAutoMixAiSlots(serverAiSlots, null).demoted.length === 0
+      && clampAutoMixAiSlots(serverAiSlots, null).kept.length === 15,
+  );
+  check(
+    "clampAutoMixAiSlots(…, 0) demotes every paid slot",
+    clampAutoMixAiSlots(serverAiSlots, 0).kept.length === 0
+      && clampAutoMixAiSlots(serverAiSlots, 0).demoted.length === 15,
   );
 
   // ── 2. RunPod stub: every provider call is intercepted ────────────────────
@@ -398,6 +449,9 @@ async function main() {
     { key: `video:${videoJobId}:scene:0`, credits: 2 },
     { key: `video:${videoJobId}:automix:3`, credits: 2 },
     { key: `broll-window:${videoJobId}:scene:4:request:${windowRequestIds[0]}`, credits: 2 },
+    // AI Studio keys are caller-minted. Server-side `studio:` namespacing is what stops
+    // a caller from minting `video:<jobId>:…` and getting a free refund from a sweep.
+    { key: `studio:video:${videoJobId}:scene:0`, credits: 2 },
   ];
   for (const seed of settledSeed) {
     await prisma.aiGenerationJob.create({
@@ -435,12 +489,39 @@ async function main() {
     "a deliberate per-window purchase is NOT swept by the video-failure batch refund",
     untouchedWindowJob.chargeState === "settled",
   );
+  const untouchedStudioJob = await prisma.aiGenerationJob.findFirstOrThrow({
+    where: { userId: user.id, idempotencyKey: { startsWith: "studio:" } },
+  });
+  check(
+    "an AI Studio job whose caller-minted key embeds `video:<id>:` is NOT swept",
+    untouchedStudioJob.chargeState === "settled",
+  );
   const secondPass = await refundSettledVideoImageBatch({
     userId: user.id,
     videoJobId,
     reason: "verify_automix_hero",
   });
   check("batch compensation is idempotent (second pass refunds nothing)", secondPass.refundedJobs === 0);
+
+  // ── 4b. The cost guard really can throw — the preflight must survive it ────
+  // getRunpodImageCostSnapshot reads env + the billing ledger; a missing endpoint or a
+  // transient DB error rejects. AutoMix must degrade to free slots, never 500 the whole
+  // fetch (which would also lose the free video/photo b-roll).
+  console.log("\n[4b] Cost guard failure is survivable");
+  const { getRunpodImageCostSnapshot } = await import("../src/lib/runpod-image-cost.server");
+  const savedEndpointId = process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID;
+  delete process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID;
+  let costGuardThrew = false;
+  try {
+    await getRunpodImageCostSnapshot({ endpointId: "" });
+  } catch {
+    costGuardThrew = true;
+  }
+  process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID = savedEndpointId;
+  check(
+    "getRunpodImageCostSnapshot can reject (so an unguarded await would 500 the route)",
+    costGuardThrew,
+  );
 
   globalThis.fetch = realFetch;
   await prisma.$disconnect();
@@ -493,6 +574,67 @@ async function main() {
   check(
     "AutoMix mode follows the Hero rollout gate in job creation",
     /requestedSource === "auto-mix"[\s\S]{0,400}?isHeroAiBetaUser\(user\)/.test(videoJobs),
+  );
+
+  // The cost-guard await MUST sit inside a try whose catch continues without AI.
+  const costGuardAt = fetchStock.indexOf("runpodCost = await getRunpodImageCostSnapshot({");
+  let costGuardWrapped = false;
+  if (costGuardAt >= 0) {
+    const tryAt = fetchStock.lastIndexOf("try {", costGuardAt);
+    if (tryAt >= 0) {
+      const [, tryClose] = blockRange(fetchStock, tryAt);
+      const tail = fetchStock.slice(tryClose, tryClose + 400);
+      costGuardWrapped = costGuardAt < tryClose
+        && /^\s*}?\s*catch/.test(tail)
+        && !/throw/.test(tail.slice(0, tail.indexOf("}\n") + 1));
+    }
+  }
+  check(
+    "the AutoMix cost-guard call is wrapped in try/catch and never rethrows (no 500 on a DB blip)",
+    costGuardWrapped && fetchStock.includes("heroAutoMixCostGuardError"),
+  );
+  check(
+    "the disclosed AI-image ceiling is enforced server-side via the shared clamp",
+    /maxAiImages !== null && autoMixAiSlots\.size > maxAiImages/.test(fetchStock)
+      && fetchStock.includes("clampAutoMixAiSlots(autoMixAiSlots, keep)")
+      && /const maxAiImages: number \| null =/.test(fetchStock),
+  );
+  check(
+    "a provider-side degrade tells the client 'provider', not 'credits'",
+    /aiSkippedReason = "provider"/.test(fetchStock)
+      && fetchStock.includes('degradeReason === "provider_circuit_open" || degradeReason === "provider_cost_guard"'),
+  );
+
+  // Output-file namespaces: AutoMix hero slots must not share hero-only mode's id space.
+  const offsetOf = (name: string): number | null => {
+    const match = new RegExp(`const ${name} = ([0-9_]+);`).exec(fetchStock);
+    return match ? Number(match[1].replace(/_/g, "")) : null;
+  };
+  const heroOffset = offsetOf("HERO_RUNPOD_ID_OFFSET");
+  const automixOffset = offsetOf("AUTOMIX_RUNPOD_ID_OFFSET");
+  const kieOffset = offsetOf("KIE_ID_OFFSET");
+  check(
+    "AutoMix hero outputs use their own id offset, far from hero-mode and kie",
+    automixOffset === 2_200_000_000
+      && heroOffset === 2_100_000_000
+      && kieOffset === 2_000_000_000
+      && Math.abs(automixOffset! - heroOffset!) >= 1_000
+      && Math.abs(automixOffset! - kieOffset!) >= 1_000,
+    `hero=${heroOffset} automix=${automixOffset} kie=${kieOffset}`,
+  );
+  check(
+    "the AutoMix hero block writes files under AUTOMIX_RUNPOD_ID_OFFSET",
+    fetchStock.includes("const id = AUTOMIX_RUNPOD_ID_OFFSET + slot;")
+      && fetchStock.includes("const id = HERO_RUNPOD_ID_OFFSET + sourceIndex;"),
+  );
+
+  // AI Studio keys are namespaced server-side so they can never enter a video sweep.
+  const studioImages = readFileSync("src/app/api/ai-studio/images/route.ts", "utf8");
+  check(
+    "AI Studio prefixes caller-minted idempotency keys with `studio:`",
+    studioImages.includes("const storedIdempotencyKey = `studio:${idempotencyKey}`;")
+      && studioImages.includes("idempotencyKey: storedIdempotencyKey,")
+      && /\{8,113\}/.test(studioImages),
   );
 
   // Containment: every kie image call in fetch-stock sits inside an admin-gated block.

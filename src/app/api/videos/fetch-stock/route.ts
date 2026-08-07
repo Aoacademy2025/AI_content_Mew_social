@@ -38,6 +38,7 @@ import {
   resolveKieImageAccess,
   shouldGuardKieImages,
   mergeCapClampReason,
+  type AiSkipReason,
 } from "@/lib/kie-image-guards";
 import { aiGenPieceCount } from "@/lib/broll-even-split";
 import { selectRepresentativeItems } from "@/lib/broll-coverage";
@@ -48,7 +49,7 @@ import {
   planHeroImageScenes,
   resolveHeroImageProviderStyle,
 } from "@/lib/hero-image-scene-brief";
-import { planAutoMixSources, pickEvenIndices } from "@/lib/automix-plan";
+import { planAutoMixSources, pickEvenIndices, clampAutoMixAiSlots } from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import {
   applyBrollPreferenceToSearchQueries,
@@ -516,6 +517,10 @@ async function searchMet(query: string, limit = 5): Promise<MetArtwork[]> {
 // กันชน id กับ source อื่นๆ — kie.ai generated item ใช้ index เป็น id ฐาน
 const KIE_ID_OFFSET = 2_000_000_000;
 const HERO_RUNPOD_ID_OFFSET = 2_100_000_000;
+// AutoMix Hero slots keep their OWN id space: hero-only mode indexes by scene while
+// AutoMix indexes by image-job slot, so a shared offset would let two concurrent
+// renders of one user collide on the same `stock-<userId>-<id>.mp4` output file.
+const AUTOMIX_RUNPOD_ID_OFFSET = 2_200_000_000;
 
 // Metadata สำหรับ license/attribution ของ asset — ดู StockVideo["assetMeta"] ใน
 // video-editor/_components/types.ts (shape เดียวกัน)
@@ -964,6 +969,7 @@ export async function POST(req: Request) {
     autoMixProviders,
     stockProviders,
     autoMixWeights,
+    maxAiImages: maxAiImagesRaw,
     subtitleTexts,
     perSubtitleMode: perSubtitleFlag = false,
     brollWindowMode = false,
@@ -990,6 +996,7 @@ export async function POST(req: Request) {
     autoMixProviders?: string[];
     stockProviders?: Array<"pexels" | "pixabay">;
     autoMixWeights?: unknown;
+    maxAiImages?: unknown;
     subtitleTexts?: string[];
     perSubtitleMode?: boolean;
     brollWindowMode?: boolean;
@@ -1003,6 +1010,15 @@ export async function POST(req: Request) {
     pipelineRunId?: string;
     draftId?: string;
   } = body ?? {};
+  // Hard ceiling on paid AutoMix AI images for this request — the exact count the
+  // client disclosed in its Render Receipt. Ignored unless it is a sane int 0–60.
+  const maxAiImages: number | null =
+    typeof maxAiImagesRaw === "number"
+      && Number.isFinite(maxAiImagesRaw)
+      && maxAiImagesRaw >= 0
+      && maxAiImagesRaw <= 60
+      ? Math.floor(maxAiImagesRaw)
+      : null;
   const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
   const withBrollPreference = (queries: string[]) => applyBrollPreferenceToSearchQueries(queries, brollPreference);
   const preferenceInstruction = brollPreferenceInstruction(brollPreference);
@@ -1249,7 +1265,7 @@ export async function POST(req: Request) {
     aiLastCreditBalanceAfterSpend: null as number | null,
   };
 
-  function trackAiSkip(reason: "credits" | "rate" | "cap" | null, count = 1) {
+  function trackAiSkip(reason: AiSkipReason, count = 1) {
     aiTelemetry.aiGenSkippedCount += count;
     if (reason === "credits") aiTelemetry.aiGenSkippedCreditsCount += count;
     if (reason === "rate") aiTelemetry.aiGenSkippedRateCount += count;
@@ -1263,14 +1279,15 @@ export async function POST(req: Request) {
   }
 
   // Signal surfaced in the response when AI generation was skipped mid-job:
-  //   "credits" = out of credits · "rate" = hourly rate ceiling · "cap" = per-job cap.
-  let aiSkippedReason: "credits" | "rate" | "cap" | null = null;
+  //   "credits" = out of credits · "rate" = hourly rate ceiling · "cap" = per-job cap
+  //   · "provider" = image provider unavailable (circuit/cost guard/systemic stop).
+  let aiSkippedReason: AiSkipReason = null;
   let aiGenCount = 0; // managed-key generation attempts this job (charged OR admin-free)
 
   type ImageSpendGate =
     | { proceed: true; charged: false }
     | { proceed: true; charged: true; creditsSpent: number; balanceAfter: number; fromGranted: number; fromPurchased: number }
-    | { proceed: false; reason: "credits" | "rate" | "cap" | null };
+    | { proceed: false; reason: AiSkipReason };
 
   // Gate before each managed-key generation. Guardrails (per-job cap + hourly rate)
   // apply to EVERY managed-key request — admins included (uncharged) — so one admin
@@ -1406,6 +1423,30 @@ export async function POST(req: Request) {
     aiTelemetry.aiGenRequestedCount += autoMixAiSlots.size;
     console.log(`[fetch-stock] Auto Mix plan: ${pieceCount} pieces over ${keywords.length} kw → ${autoMixActiveVideo.size} video / ${autoMixPhotoSlots.size} photo / ${autoMixAiSlots.size} ai (weights v${weights.video}:p${weights.photo}:a${weights.ai})`);
 
+    /** Keep the lowest-index `keep` AI slots; the rest become FREE photo slots. */
+    const demoteAiSlotsTo = (keep: number | null): number[] => {
+      const { demoted } = clampAutoMixAiSlots(autoMixAiSlots, keep);
+      for (const ki of demoted) {
+        autoMixAiSlots.delete(ki);
+        autoMixPhotoSlots.add(ki);
+      }
+      return demoted;
+    };
+
+    // ── Disclosure cap: never generate more AI images than the client quoted ──
+    // The Render Receipt plans with the RAW preset weights, but the server zeroes
+    // source families it cannot serve (no photo key, video excluded), which raises
+    // the realized AI share (60s @1:1:2 → quoted 7 images, planned 10). The client
+    // sends the exact count it disclosed; the plan is clamped to it so a customer is
+    // never charged for more images than the receipt they approved.
+    if (maxAiImages !== null && autoMixAiSlots.size > maxAiImages) {
+      const demoted = demoteAiSlotsTo(maxAiImages);
+      trackAiSkip("cap", demoted.length);
+      heroAutoMixTelemetry.heroAutoMixDisclosedMaxAiImages = maxAiImages;
+      heroAutoMixTelemetry.heroAutoMixClampedSlotCount = demoted.length;
+      console.log(`[fetch-stock] Auto Mix AI slots clamped to the disclosed quote: ${maxAiImages} (dropped ${demoted.length})`);
+    }
+
     // ── Hero-seam preflight for the paid AI slots ───────────────────────────
     // Disclose-then-spend: provider readiness, the live COGS guard and the credit
     // balance are all checked BEFORE the first reservation. Anything short degrades
@@ -1422,11 +1463,21 @@ export async function POST(req: Request) {
         affordableAiSlots = 0;
         heroAutoMixTelemetry.heroAutoMixCircuitCode = circuit.code;
       } else {
-        const runpodCost = await getRunpodImageCostSnapshot({
-          endpointId: heroAutoMixOffer!.providerEndpoint,
-        });
-        heroAutoMixTelemetry.heroAutoMixCostStatus = runpodCost.status;
-        if (!runpodCost.admitted) {
+        // The cost guard reads the billing ledger. A transient DB/provider hiccup must
+        // NOT throw out of this route: AutoMix would lose its free video/photo slots
+        // too. Treat any failure as "cannot admit AI spend" and continue without AI.
+        let runpodCost: Awaited<ReturnType<typeof getRunpodImageCostSnapshot>> | null = null;
+        try {
+          runpodCost = await getRunpodImageCostSnapshot({
+            endpointId: heroAutoMixOffer!.providerEndpoint,
+          });
+        } catch (error) {
+          heroAutoMixTelemetry.heroAutoMixCostGuardError =
+            error instanceof Error ? error.message.slice(0, 200) : "cost guard failed";
+          console.error("[fetch-stock] Auto Mix hero cost guard failed — continuing without AI slots:", error);
+        }
+        heroAutoMixTelemetry.heroAutoMixCostStatus = runpodCost?.status ?? "unavailable";
+        if (!runpodCost?.admitted) {
           degradeReason = "provider_cost_guard";
           affordableAiSlots = 0;
         } else {
@@ -1444,13 +1495,14 @@ export async function POST(req: Request) {
           }
         }
       }
+      if (degradeReason === "provider_circuit_open" || degradeReason === "provider_cost_guard") {
+        // Provider-side degrade: nothing was charged, and the client needs a different
+        // explanation than "out of credits".
+        aiSkippedReason = "provider";
+      }
       if (affordableAiSlots < autoMixAiSlots.size) {
-        const demoted = [...autoMixAiSlots].sort((a, b) => a - b).slice(affordableAiSlots);
-        for (const ki of demoted) {
-          autoMixAiSlots.delete(ki);
-          autoMixPhotoSlots.add(ki);
-        }
-        trackAiSkip(degradeReason === "insufficient_credits" ? "credits" : null, demoted.length);
+        const demoted = demoteAiSlotsTo(affordableAiSlots);
+        trackAiSkip(degradeReason === "insufficient_credits" ? "credits" : "provider", demoted.length);
         heroAutoMixTelemetry.heroAutoMixDegradedSlotCount = demoted.length;
         heroAutoMixTelemetry.heroAutoMixDegradeReason = degradeReason;
         console.warn(`[fetch-stock] Auto Mix hero AI degraded ${demoted.length} slot(s) → free photo (${degradeReason})`);
@@ -2841,12 +2893,14 @@ export async function POST(req: Request) {
         // (the piece is skipped) — it never falls back to another engine.
         if (kind === "ai" && autoMixAiEngine === "runpod") {
           if (heroAutoMixStopped) {
-            trackAiSkip(null);
+            // Already reported through aiSkippedReason by whichever failure stopped
+            // the batch; the remaining slots are simply dropped, never charged.
+            trackAiSkip(aiSkippedReason);
             return;
           }
           aiTelemetry.aiGenAttemptCount++;
           const aiStartedAt = Date.now();
-          const id = HERO_RUNPOD_ID_OFFSET + slot;
+          const id = AUTOMIX_RUNPOD_ID_OFFSET + slot;
           const imageFile = `${userPrefix}${id}.src.png`;
           const imagePath = path.join(rendersDir, imageFile);
           const outFile = `${userPrefix}${id}.mp4`;
@@ -2918,7 +2972,10 @@ export async function POST(req: Request) {
               trackAiSkip("credits");
             }
             if (heroError?.providerFailure?.stopBatch || heroError?.providerFailure?.systemic) {
+              // Provider-side stop: the remaining slots are dropped without a charge, so
+              // tell the client it was the provider — not their credits — that ran out.
               heroAutoMixStopped = true;
+              aiSkippedReason = "provider";
               heroAutoMixTelemetry.heroAutoMixStopReason = heroError.providerFailure?.code ?? heroError.code;
             }
             // The seam refunds its own provider failures. Only a locally-failed

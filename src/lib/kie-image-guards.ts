@@ -68,7 +68,10 @@ export function shouldGuardKieImages(opts: { usesManagedKey: boolean; chargeImag
   return opts.usesManagedKey || opts.chargeImages;
 }
 
-export type AiSkipReason = "credits" | "rate" | "cap" | null;
+/** Why AI images were skipped mid-job, surfaced to the client so the UI can explain
+ *  the missing images. "provider" = the image provider was unavailable (open circuit,
+ *  cost guard, or a systemic failure that stopped the batch) — nothing was charged. */
+export type AiSkipReason = "credits" | "rate" | "cap" | "provider" | null;
 
 /**
  * Merge the direct kie-image path's PRE-LOOP cap-clamp signal with any reason a

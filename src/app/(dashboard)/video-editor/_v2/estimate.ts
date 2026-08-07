@@ -75,3 +75,26 @@ export function estimatePresetCredits(
 ): number {
   return estimateAutoMixAiImageCount(estSec, preset, windowSec) * perImageCredits;
 }
+
+/**
+ * จำนวนภาพ AI ที่ "แจ้งผู้ใช้ไปแล้ว" ใน Render Receipt — SINGLE SOURCE ของตัวเลขที่
+ * disclose. ใช้ทั้งใน receipt (แสดงผล) และ useV2Job (ส่งเป็นเพดาน `maxAiImages` ให้ server)
+ * เพื่อไม่ให้ตัวเลขที่ผู้ใช้เห็นกับเพดานที่หักเงินจริงหลุดจากกัน:
+ * - กำหนดจำนวนคลิปเอง (targetClipCount > 0) → วางแผนจากจำนวนชิ้นนั้นตรง ๆ
+ * - อัตโนมัติ → ประมาณจากความยาวคลิป (window cadence)
+ */
+export function disclosedAutoMixAiImageCount(
+  estSec: number,
+  preset: { video: number; photo: number; ai: number },
+  targetClipCount = 0,
+  windowSec: number = BROLL_WINDOW_SEC,
+): number {
+  const manualPieceCount = Number.isFinite(targetClipCount) && targetClipCount > 0
+    ? Math.min(60, Math.floor(targetClipCount))
+    : 0;
+  if (manualPieceCount > 0) {
+    if (preset.ai <= 0) return 0;
+    return planAutoMixSources(manualPieceCount, preset).filter((source) => source === "ai").length;
+  }
+  return estimateAutoMixAiImageCount(estSec, preset, windowSec);
+}

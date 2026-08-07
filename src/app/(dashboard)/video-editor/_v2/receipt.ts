@@ -13,8 +13,7 @@
  */
 
 import { minutesFromSeconds } from "@/lib/minute-round";
-import { planAutoMixSources } from "@/lib/automix-plan";
-import { estimatePresetCredits } from "./estimate";
+import { disclosedAutoMixAiImageCount, estimatePresetCredits } from "./estimate";
 
 export interface ReceiptInput {
   /** Estimated clip length in seconds (estimateClipSecV2(script)). */
@@ -81,8 +80,10 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const manualPieceCount = Number.isFinite(targetClipCount) && targetClipCount > 0
     ? Math.min(60, Math.floor(targetClipCount))
     : 0;
+  // Shared with useV2Job, which sends this exact number to the server as the
+  // `maxAiImages` ceiling — the disclosed count and the charged ceiling are one value.
   const manualAiImageCount = manualPieceCount > 0
-    ? planAutoMixSources(manualPieceCount, presetWeights).filter((source) => source === "ai").length
+    ? disclosedAutoMixAiImageCount(estSec, presetWeights, manualPieceCount)
     : null;
   const estCredits = usesAi
     ? manualAiImageCount != null
