@@ -139,7 +139,9 @@ export async function POST(req: Request) {
               ...(isFounding ? { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 } : {}),
             }
           : { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 }), // one-time session expires in 30 min
-        success_url: `${origin}/settings?tab=billing&payment=success`,
+        // The result page confirms this exact, authenticated checkout against
+        // our webhook-backed Payment row before it claims that access is ready.
+        success_url: `${origin}/settings?tab=billing&payment=success&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${origin}/pricing?payment=cancelled`,
       });
     } catch (e) {

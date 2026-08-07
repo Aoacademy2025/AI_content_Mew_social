@@ -1,6 +1,7 @@
 import type { DocEntry, DocMeta } from "./types";
 import * as gettingStarted from "./getting-started";
 import * as setupApiKeys from "./setup-api-keys";
+import * as heroScript from "./hero-script";
 import * as createVideo from "./create-video";
 import * as subtitles from "./subtitles";
 import * as avatar from "./avatar";
@@ -11,6 +12,7 @@ import * as troubleshooting from "./troubleshooting";
 const modules = [
   gettingStarted,
   setupApiKeys,
+  heroScript,
   createVideo,
   subtitles,
   avatar,

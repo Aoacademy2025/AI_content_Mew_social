@@ -19,6 +19,7 @@ import { TopicStep } from "./_components/TopicStep";
 import { HookStep, hookContextKey, type HookChoice } from "./_components/HookStep";
 import { ScriptEditorStep, type ScriptDraft } from "./_components/ScriptEditorStep";
 import { ScriptHistory, type SavedScript } from "./_components/ScriptHistory";
+import { HeroScriptQuickStart } from "./_components/HeroScriptQuickStart";
 
 const VIOLET_LIGHT = "#B9A6FF";
 
@@ -75,6 +76,8 @@ export default function HeroScriptPage() {
               เขียนสคริปต์ AI
             </h1>
           </div>
+
+          <HeroScriptQuickStart />
 
           {/* ── Step 1: Setup rail ── */}
           <BrandProfilePanel

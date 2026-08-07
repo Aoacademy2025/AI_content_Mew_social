@@ -38,6 +38,14 @@ interface PaymentRecord {
   paidAt: string | null;
 }
 
+type PaymentPopupState = "confirming" | "confirmed" | "delayed" | "failed" | "cancelled";
+
+interface PaymentConfirmationResponse {
+  confirmed?: boolean;
+  status?: "PROCESSING" | "PENDING" | "PAID" | "FAILED" | "REFUNDED" | "VOIDED";
+  plan?: "PRO" | "BUSINESS";
+}
+
 const STATUS_CONFIG: Record<string, { label: string; color: string; bg: string; icon: React.ElementType }> = {
   PAID:     { label: "ชำระแล้ว",  color: "text-emerald-400", bg: "hsl(142 60% 50% / 0.15)", icon: Check },
   PENDING:  { label: "รอชำระ",    color: "text-amber-400",   bg: "hsl(38 92% 55% / 0.15)",  icon: Clock },
@@ -227,13 +235,15 @@ function BillingTab() {
 function SettingsContent() {
   const [meUser, setMeUser] = useState<{ name?: string; email?: string; role?: string; plan?: string; effectivePlan?: string } | null>(null);
   const [tab, setTab] = useState("profile");
-  const [paymentPopup, setPaymentPopup] = useState<"success" | "cancelled" | null>(null);
+  const [paymentPopup, setPaymentPopup] = useState<PaymentPopupState | null>(null);
+  const [checkoutSessionId, setCheckoutSessionId] = useState("");
+  const [confirmationAttempt, setConfirmationAttempt] = useState(0);
   // managed mode: server supplies the Gemini key → hide BYOK-Gemini "Get/Enable" links
   // (kept in sync with ApiKeySettings, which hides the Gemini key field in the same mode)
   const [managed, setManaged] = useState(false);
 
   useEffect(() => {
-    fetch("/api/user/me").then(r => r.json()).then(setMeUser).catch(() => {});
+    fetch("/api/user/me", { cache: "no-store" }).then(r => r.json()).then(setMeUser).catch(() => {});
     fetch("/api/user/api-keys/status", { cache: "no-store" })
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d?.managed) setManaged(true); })
@@ -244,13 +254,73 @@ function SettingsContent() {
     const params = new URLSearchParams(window.location.search);
     const t = params.get("tab");
     const p = params.get("payment");
+    const sessionId = params.get("session_id")?.trim() ?? "";
     if (t === "api-keys" || t === "billing" || t === "mcp") setTab(t);
-    if (p === "success" || p === "cancelled") {
-      setPaymentPopup(p as "success" | "cancelled");
+    if (p === "success") {
+      setCheckoutSessionId(sessionId);
+      setPaymentPopup(sessionId.startsWith("cs_") ? "confirming" : "delayed");
+      window.history.replaceState({}, "", window.location.pathname + (t ? `?tab=${t}` : ""));
+      document.body.style.overflow = "hidden";
+    } else if (p === "cancelled") {
+      setPaymentPopup("cancelled");
       window.history.replaceState({}, "", window.location.pathname + (t ? `?tab=${t}` : ""));
       document.body.style.overflow = "hidden";
     }
+    return () => { document.body.style.overflow = ""; };
   }, []);
+
+  useEffect(() => {
+    if (paymentPopup !== "confirming" || !checkoutSessionId) return;
+    let stopped = false;
+
+    async function confirmPaidCheckout() {
+      try {
+        for (let check = 0; check < 12 && !stopped; check++) {
+          const res = await fetch(
+            `/api/payments/confirmation?session_id=${encodeURIComponent(checkoutSessionId)}`,
+            { cache: "no-store" },
+          );
+          if (!res.ok) throw new Error("Payment confirmation request failed");
+          const result = await res.json() as PaymentConfirmationResponse;
+
+          if (result.confirmed && result.status === "PAID") {
+            const freshMe = await fetch("/api/user/me", { cache: "no-store" })
+              .then(r => r.ok ? r.json() : null)
+              .catch(() => null);
+            if (stopped) return;
+            if (freshMe) setMeUser(freshMe);
+            else if (result.plan) setMeUser(current => ({ ...(current ?? {}), plan: result.plan }));
+            setPaymentPopup("confirmed");
+            return;
+          }
+
+          if (result.status === "FAILED" || result.status === "REFUNDED" || result.status === "VOIDED") {
+            setPaymentPopup("failed");
+            return;
+          }
+
+          await new Promise(resolve => window.setTimeout(resolve, 1250));
+        }
+        if (!stopped) setPaymentPopup("delayed");
+      } catch {
+        if (!stopped) setPaymentPopup("delayed");
+      }
+    }
+
+    void confirmPaidCheckout();
+    return () => { stopped = true; };
+  }, [checkoutSessionId, confirmationAttempt, paymentPopup]);
+
+  function closePaymentPopup() {
+    setPaymentPopup(null);
+    document.body.style.overflow = "";
+  }
+
+  function retryPaymentConfirmation() {
+    if (!checkoutSessionId) return;
+    setConfirmationAttempt(current => current + 1);
+    setPaymentPopup("confirming");
+  }
 
   const tabs = [
     { id: "profile",  label: "Profile",  icon: User },
@@ -258,6 +328,11 @@ function SettingsContent() {
     { id: "mcp",      label: "Agent / MCP", icon: Terminal },
     { id: "billing",  label: "Billing",  icon: CreditCard },
   ];
+  const paymentConfirmed = paymentPopup === "confirmed";
+  const paymentWaiting = paymentPopup === "confirming";
+  const paymentDelayed = paymentPopup === "delayed";
+  const paymentPlan = meUser?.effectivePlan ?? meUser?.plan ?? "PRO";
+  const paymentIsBusiness = paymentPlan === "BUSINESS";
 
   return (
     <div className="max-w-5xl mx-auto space-y-6 px-0">
@@ -267,31 +342,44 @@ function SettingsContent() {
         <div
           className="fixed inset-0 z-9999 flex items-center justify-center px-4"
           style={{ background: "rgba(0,0,0,0.85)", backdropFilter: "blur(16px)" }}
-          onClick={() => { setPaymentPopup(null); document.body.style.overflow = ""; }}
+          onClick={() => { if (!paymentWaiting) closePaymentPopup(); }}
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payment-result-title"
             className="relative w-full max-w-sm overflow-hidden rounded-3xl text-center"
             onClick={e => e.stopPropagation()}
             style={{
-              background: paymentPopup === "success"
+              background: paymentConfirmed
                 ? "linear-gradient(160deg, #0a1a12 0%, #060d09 100%)"
-                : "linear-gradient(160deg, #1a0a0a 0%, #0d0606 100%)",
-              border: paymentPopup === "success"
+                : paymentWaiting || paymentDelayed
+                  ? "linear-gradient(160deg, #171126 0%, #09070f 100%)"
+                  : "linear-gradient(160deg, #1a0a0a 0%, #0d0606 100%)",
+              border: paymentConfirmed
                 ? "1px solid hsl(142 60% 35% / 0.5)"
-                : "1px solid hsl(0 70% 35% / 0.5)",
-              boxShadow: paymentPopup === "success"
+                : paymentWaiting || paymentDelayed
+                  ? "1px solid hsl(258 70% 55% / 0.45)"
+                  : "1px solid hsl(0 70% 35% / 0.5)",
+              boxShadow: paymentConfirmed
                 ? "0 32px 80px hsl(142 60% 20% / 0.5), 0 0 0 1px hsl(142 60% 50% / 0.08) inset"
-                : "0 32px 80px hsl(0 70% 20% / 0.5), 0 0 0 1px hsl(0 70% 50% / 0.08) inset",
+                : paymentWaiting || paymentDelayed
+                  ? "0 32px 80px hsl(258 60% 18% / 0.55), 0 0 0 1px hsl(258 70% 60% / 0.08) inset"
+                  : "0 32px 80px hsl(0 70% 20% / 0.5), 0 0 0 1px hsl(0 70% 50% / 0.08) inset",
             }}
           >
-            {/* Ambient glow top */}
             <div className="absolute -top-16 left-1/2 -translate-x-1/2 h-40 w-40 rounded-full blur-3xl pointer-events-none"
-              style={{ background: paymentPopup === "success" ? "hsl(142 70% 45% / 0.25)" : "hsl(0 70% 45% / 0.2)" }} />
+              style={{
+                background: paymentConfirmed
+                  ? "hsl(142 70% 45% / 0.25)"
+                  : paymentWaiting || paymentDelayed
+                    ? "hsl(258 80% 60% / 0.25)"
+                    : "hsl(0 70% 45% / 0.2)",
+              }} />
 
             <div className="relative px-8 pb-7 pt-9">
-              {paymentPopup === "success" ? (
+              {paymentConfirmed ? (
                 <>
-                  {/* Success icon with rings */}
                   <div className="mx-auto mb-6 relative w-24 h-24">
                     <div className="absolute inset-0 rounded-full animate-ping opacity-20"
                       style={{ background: "hsl(142 60% 50% / 0.3)" }} />
@@ -305,58 +393,92 @@ function SettingsContent() {
                     </div>
                   </div>
 
-                  {/* Badge — shows actual plan */}
-                  {(() => {
-                    const plan = meUser?.plan ?? "PRO";
-                    const isBiz = plan === "BUSINESS";
-                    return (
-                      <div className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 mb-4"
-                        style={{
-                          background: isBiz ? "hsl(252 70% 60% / 0.12)" : "hsl(142 60% 50% / 0.12)",
-                          border: isBiz ? "1px solid hsl(252 70% 60% / 0.3)" : "1px solid hsl(142 60% 50% / 0.25)",
-                        }}>
-                        <Crown className="h-3 w-3" style={{ color: isBiz ? "hsl(252 70% 70%)" : "hsl(142 60% 60%)" }} />
-                        <span className="text-xs font-semibold tracking-wide" style={{ color: isBiz ? "hsl(252 70% 70%)" : "hsl(142 60% 60%)" }}>
-                          {isBiz ? "BUSINESS MEMBER" : "PRO MEMBER"}
-                        </span>
-                      </div>
-                    );
-                  })()}
+                  <div className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 mb-4"
+                    style={{
+                      background: paymentIsBusiness ? "hsl(252 70% 60% / 0.12)" : "hsl(142 60% 50% / 0.12)",
+                      border: paymentIsBusiness ? "1px solid hsl(252 70% 60% / 0.3)" : "1px solid hsl(142 60% 50% / 0.25)",
+                    }}>
+                    <Crown className="h-3 w-3" style={{ color: paymentIsBusiness ? "hsl(252 70% 70%)" : "hsl(142 60% 60%)" }} />
+                    <span className="text-xs font-semibold tracking-wide" style={{ color: paymentIsBusiness ? "hsl(252 70% 70%)" : "hsl(142 60% 60%)" }}>
+                      {paymentIsBusiness ? "BUSINESS MEMBER" : "PRO MEMBER"}
+                    </span>
+                  </div>
 
-                  <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">ชำระเงินสำเร็จ!</h2>
+                  <h2 id="payment-result-title" className="text-2xl font-bold text-white mb-2 tracking-tight">ชำระเงินสำเร็จ!</h2>
                   <p className="text-sm text-emerald-300/70 leading-relaxed mb-1">
-                    ยินดีด้วย! แพ็กเกจของคุณได้รับการอัปเกรดแล้ว
+                    ระบบยืนยันธุรกรรมและอัปเดตแพ็กเกจเรียบร้อยแล้ว
                   </p>
-                  <p className="text-xs text-zinc-600 mb-6">สิทธิ์ทั้งหมดพร้อมใช้งานทันที</p>
+                  <p className="text-xs text-zinc-500 mb-6">Hero Script พร้อมใช้งานแล้ว</p>
 
                   <button
-                    onClick={() => { setPaymentPopup(null); document.body.style.overflow = ""; }}
+                    onClick={() => { closePaymentPopup(); window.location.href = "/hero-script"; }}
                     className="w-full rounded-2xl py-3 text-sm font-bold text-white tracking-wide transition-all hover:brightness-110 hover:-translate-y-0.5 active:translate-y-0"
                     style={{
-                      background: meUser?.plan === "BUSINESS"
+                      background: paymentIsBusiness
                         ? "linear-gradient(135deg, hsl(252 70% 50%), hsl(280 70% 45%))"
                         : "linear-gradient(135deg, hsl(142 60% 38%), hsl(160 65% 32%))",
-                      boxShadow: meUser?.plan === "BUSINESS"
+                      boxShadow: paymentIsBusiness
                         ? "0 8px 24px hsl(252 70% 40% / 0.4), inset 0 1px 0 rgba(255,255,255,0.15)"
                         : "0 8px 24px hsl(142 60% 35% / 0.4), inset 0 1px 0 rgba(255,255,255,0.15)",
                     }}>
-                    เริ่มใช้งานเลย →
+                    เริ่มเขียนสคริปต์ →
                   </button>
+                </>
+              ) : paymentWaiting ? (
+                <>
+                  <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full"
+                    style={{ background: "hsl(258 70% 55% / 0.1)", border: "1px solid hsl(258 70% 60% / 0.25)", boxShadow: "0 8px 24px hsl(258 60% 35% / 0.25)" }}>
+                    <Loader2 className="h-9 w-9 animate-spin text-violet-300" strokeWidth={1.75} />
+                  </div>
+
+                  <h2 id="payment-result-title" className="text-2xl font-bold text-white mb-2 tracking-tight">กำลังยืนยันการชำระเงิน</h2>
+                  <p className="text-sm text-violet-200/70 leading-relaxed mb-1">ระบบกำลังตรวจสอบธุรกรรมกับ Stripe</p>
+                  <p className="text-xs text-zinc-500">ยังไม่เปิดสิทธิ์จนกว่าจะยืนยันสำเร็จ</p>
+                </>
+              ) : paymentDelayed ? (
+                <>
+                  <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full"
+                    style={{ background: "hsl(38 90% 55% / 0.1)", border: "1px solid hsl(38 90% 55% / 0.25)" }}>
+                    <Clock className="h-9 w-9 text-amber-300" strokeWidth={1.75} />
+                  </div>
+
+                  <h2 id="payment-result-title" className="text-2xl font-bold text-white mb-2 tracking-tight">การยืนยันใช้เวลานานกว่าปกติ</h2>
+                  <p className="text-sm text-amber-100/70 leading-relaxed mb-1">ยังไม่มีการยืนยันสิทธิ์จากระบบ จึงยังไม่แสดงว่าชำระสำเร็จ</p>
+                  <p className="text-xs text-zinc-500 mb-6">ลองตรวจสอบอีกครั้ง หรือแจ้ง Support หากเกิน 5 นาที</p>
+
+                  <div className="space-y-2">
+                    <button
+                      onClick={retryPaymentConfirmation}
+                      disabled={!checkoutSessionId}
+                      className="w-full rounded-2xl py-3 text-sm font-bold text-white transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+                      style={{ background: VIOLET_GRAD }}>
+                      ตรวจสอบอีกครั้ง
+                    </button>
+                    <button
+                      onClick={() => { closePaymentPopup(); setSupportOpen(true); }}
+                      className="w-full rounded-2xl py-2.5 text-sm font-semibold text-white/70 transition-all hover:bg-white/10 hover:text-white"
+                      style={{ border: "1px solid rgba(255,255,255,0.1)" }}>
+                      ติดต่อ Support
+                    </button>
+                  </div>
                 </>
               ) : (
                 <>
-                  {/* Cancel icon */}
                   <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full"
                     style={{ background: "hsl(0 70% 50% / 0.1)", border: "1px solid hsl(0 70% 50% / 0.25)", boxShadow: "0 8px 24px hsl(0 70% 40% / 0.2)" }}>
                     <XCircle className="h-10 w-10 text-red-400" strokeWidth={1.5} />
                   </div>
 
-                  <h2 className="text-2xl font-bold text-white mb-2 tracking-tight">ยกเลิกการชำระเงิน</h2>
-                  <p className="text-sm text-red-300/70 leading-relaxed mb-1">ไม่มีการตัดเงินจากบัตรของคุณ</p>
-                  <p className="text-xs text-zinc-600 mb-6">คุณสามารถลองชำระเงินใหม่ได้เมื่อพร้อม</p>
+                  <h2 id="payment-result-title" className="text-2xl font-bold text-white mb-2 tracking-tight">
+                    {paymentPopup === "cancelled" ? "ยกเลิกการชำระเงิน" : "ยังไม่สามารถยืนยันการชำระเงิน"}
+                  </h2>
+                  <p className="text-sm text-red-300/70 leading-relaxed mb-1">
+                    {paymentPopup === "cancelled" ? "ระบบยังไม่ได้ยืนยันธุรกรรมนี้" : "ธุรกรรมนี้ยังไม่ได้เปิดสิทธิ์แพ็กเกจ"}
+                  </p>
+                  <p className="text-xs text-zinc-500 mb-6">ตรวจสอบประวัติการชำระเงิน หรือลองใหม่เมื่อพร้อม</p>
 
                   <button
-                    onClick={() => { setPaymentPopup(null); document.body.style.overflow = ""; }}
+                    onClick={closePaymentPopup}
                     className="w-full rounded-2xl py-3 text-sm font-semibold text-white/70 transition-all hover:text-white hover:bg-white/10"
                     style={{ border: "1px solid rgba(255,255,255,0.1)" }}>
                     ปิด

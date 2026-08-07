@@ -18,41 +18,9 @@ import {
   recurringPriceCatalogFromEnv,
   resolveRecurringEntitlement,
 } from "@/lib/stripe-subscription-entitlement";
-import type { Prisma } from "@prisma/client";
+import { activatePaidCheckout } from "@/lib/checkout-plan-activation";
 
 export const config = { api: { bodyParser: false } };
-
-/** Set/extend a user's plan access. planExpiresAt extends from the later of now or current expiry,
- *  EXCEPT when the current expiry is just an unconverted trial end — then we measure from now so a
- *  mid-trial buyer doesn't get the leftover trial days gifted on top of the purchased term.
- *
- *  Runs ENTIRELY on the passed `db` client so a caller can enroll it in a `$transaction`: the
- *  planExpiresAt extension is a NON-idempotent money/TIME effect (calling twice extends twice), so
- *  it must commit ATOMICALLY with the handler's other writes. If a later step throws, the whole tx
- *  rolls back and MON-1's delete-claim-and-retry re-applies it EXACTLY once — no double-extend.
- *  The fire-and-forget video-expiry bump is intentionally NOT done here: it uses the global client
- *  (would deadlock SQLite's single connection inside a tx) and its failure must not roll back the
- *  activation — callers run it AFTER the tx commits. */
-async function activatePlan(
-  db: Prisma.TransactionClient,
-  userId: string,
-  plan: string,
-  periodDays: number,
-) {
-  const now = new Date();
-  const user = await db.user.findUnique({
-    where: { id: userId },
-    select: { planExpiresAt: true, trialEndsAt: true, subStatus: true },
-  });
-  const onUnconvertedTrial = !!user?.trialEndsAt && user.trialEndsAt > now && user.subStatus !== "active";
-  const base = (!onUnconvertedTrial && user?.planExpiresAt && user.planExpiresAt > now) ? user.planExpiresAt : now;
-  const newExpiry = new Date(base.getTime() + periodDays * 24 * 60 * 60 * 1000);
-  await db.user.update({
-    where: { id: userId },
-    data: { plan: plan as any, planExpiresAt: newExpiry, ...usageWindowForPlan(plan, now), trialEndsAt: null },
-  });
-  return newExpiry;
-}
 
 // Stripe moved invoice.subscription under parent.subscription_details in recent API versions — handle both.
 function invoiceSubId(inv: any): string | null {
@@ -136,41 +104,30 @@ async function handleCheckoutSession(s: any, eventId: string) {
     return;
   }
 
-  // The money/TIME effect (activatePlan's NON-idempotent planExpiresAt extension) commits in ONE
+  // The money/TIME effect (the planExpiresAt extension) commits in ONE
   // transaction with its own Payment-PAID marker + the billing/subscription write. If any step
   // throws, the WHOLE tx rolls back → MON-1 deletes the idempotency claim → Stripe's retry re-runs
   // this and applies the extension EXACTLY once (no double-extend). The Payment-PAID idempotency
   // belt is read INSIDE the tx (SQLite serializes writes) so a genuine duplicate — a retry of THIS
   // event OR the sibling completed/async_payment_succeeded event for the same session — sees PAID
   // and skips without re-extending.
-  let alreadyActivated = false;
-  let newExpiry: Date | undefined;
-  await prisma.$transaction(async (tx) => {
-    const existing = await tx.payment.findUnique({ where: { stripeSessionId: s.id }, select: { status: true } });
-    if (existing?.status === "PAID") { alreadyActivated = true; return; }
-    newExpiry = await activatePlan(tx, userId, plan, parseInt(periodDays ?? "30", 10));
-    await tx.user.update({
-      where: { id: userId },
-      data: {
-        billingPeriod: period ?? null,
-        ...(s.mode === "subscription" && s.subscription
-          ? { stripeSubscriptionId: s.subscription, subStatus: "active" }
-          : {}),
-      },
-    });
-    // updateMany (not update): tolerate a missing Payment row (count 0, no throw — activation still
-    // commits) while a transient DB error still propagates → rollback → retry. Marking PAID inside
-    // the tx makes the belt above RELIABLE (previously it was a swallowed .catch AFTER activation,
-    // so a failed mark left the belt blind → the retry double-extended).
-    await tx.payment.updateMany({
-      where: { stripeSessionId: s.id },
-      data: { status: "PAID", stripePaymentIntent: s.payment_intent ?? undefined, paidAt: new Date() },
-    });
+  const activation = await activatePaidCheckout({
+    sessionId: s.id,
+    userId,
+    plan,
+    billingPeriod: period,
+    periodDays: parseInt(periodDays ?? "30", 10),
+    mode: s.mode,
+    subscriptionId: typeof s.subscription === "string" ? s.subscription : s.subscription?.id ?? null,
+    paymentIntentId: typeof s.payment_intent === "string" ? s.payment_intent : s.payment_intent?.id ?? null,
+    amountTotal: s.amount_total,
+    currency: s.currency,
   });
-  if (alreadyActivated || !newExpiry) {
+  if (!activation.activated) {
     console.log("[webhook] session already activated, skip", s.id);
     return;
   }
+  const { newExpiry } = activation;
 
   // Everything below MUST stay fire-and-forget/guarded (never throws): the tx already committed the
   // money/time effect, so a throw here would make MON-1 delete the claim and Stripe's retry would

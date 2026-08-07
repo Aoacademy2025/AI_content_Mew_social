@@ -295,6 +295,15 @@ async function main() {
       const beforePayment = await resolveHeroScriptAccess(paidUser);
       ok(!beforePayment.canUse && beforePayment.canPreview,
         "resolve access: active PRO without a payment remains preview-only");
+      await prisma.payment.create({
+        data: {
+          userId: paidUser.id, stripeSessionId: "hs-rollout-credits", plan: "PRO",
+          amount: 19900, status: "PAID", periodDays: 0, note: "credits", paidAt: new Date(),
+        },
+      });
+      const afterCredits = await resolveHeroScriptAccess(paidUser);
+      ok(!afterCredits.canUse,
+        "resolve access: buying a credit pack does not masquerade as a paid plan purchase");
       const payment = await prisma.payment.create({
         data: {
           userId: paidUser.id, stripeSessionId: "hs-rollout-pending", plan: "PRO",

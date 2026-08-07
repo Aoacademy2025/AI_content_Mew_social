@@ -108,7 +108,10 @@ export async function resolveHeroScriptAccess(user: User): Promise<HeroScriptAcc
   let cashPaid = false;
   if (!internal && paidEntitlement) {
     cashPaid = !!(await prisma.payment.findFirst({
-      where: { userId: user.id, status: "PAID" },
+      // A credit-pack purchase is also recorded as PAID for revenue reporting,
+      // but it is not a plan/subscription purchase and must never unlock this
+      // paid-plan feature for a comped PRO account.
+      where: { userId: user.id, status: "PAID", periodDays: { gt: 0 } },
       select: { id: true },
     }));
   }

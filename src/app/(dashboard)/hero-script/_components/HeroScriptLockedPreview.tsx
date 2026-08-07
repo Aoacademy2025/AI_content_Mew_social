@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect } from "react";
-import { ArrowRight, Check, LockKeyhole, NotebookPen, Sparkles, Video } from "lucide-react";
+import { ArrowRight, BookOpen, Check, LockKeyhole, NotebookPen, Sparkles, Video } from "lucide-react";
 import { trackEvent } from "@/lib/client-telemetry";
 
 export function HeroScriptLockedPreview({ entitlementSource }: { entitlementSource: string }) {
@@ -47,11 +47,18 @@ export function HeroScriptLockedPreview({ entitlementSource }: { entitlementSour
                 {trialWaiting ? "ดูแผนหลังช่วงทดลอง" : "ดูแผนสมาชิก"}
                 <ArrowRight className="h-4 w-4" />
               </Link>
-              <div className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-[var(--ui-card-border)] px-5 text-sm text-[var(--ui-text-muted)]">
-                <LockKeyhole className="h-4 w-4" />
-                {trialWaiting ? "Trial กำลังทยอยเปิดเป็นกลุ่ม" : "เปิดเต็มรูปแบบให้สมาชิกก่อน"}
-              </div>
+              <Link
+                href="/docs/hero-script"
+                onClick={() => trackEvent("hero_script_guide_docs_clicked", { properties: { surface: "preview" } })}
+                className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl border border-[var(--ui-card-border)] px-5 text-sm font-semibold text-[var(--ui-text-secondary)] transition-colors hover:bg-white/5"
+              >
+                <BookOpen className="h-4 w-4" /> อ่านวิธีใช้งาน
+              </Link>
             </div>
+            <p className="mt-3 flex items-center gap-2 text-xs text-[var(--ui-text-muted)]">
+              <LockKeyhole className="h-3.5 w-3.5" />
+              {trialWaiting ? "Trial กำลังทยอยเปิดเป็นกลุ่ม" : "เปิดเต็มรูปแบบให้สมาชิกก่อน"}
+            </p>
           </div>
 
           <div className="rounded-2xl border border-violet-400/15 bg-black/15 p-5 backdrop-blur-sm md:p-6">
