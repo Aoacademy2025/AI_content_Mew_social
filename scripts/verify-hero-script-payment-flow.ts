@@ -94,6 +94,26 @@ async function main() {
   check((await findPlanPaymentConfirmation(otherUser.id, "cs_credit_pack")) === null,
     "credit-pack purchases cannot masquerade as confirmed plan upgrades");
 
+  await prisma.payment.create({
+    data: {
+      userId: otherUser.id, stripeSessionId: "cs_owner_mismatch", plan: "PRO", amount: 299500,
+      status: "PENDING", periodDays: 365,
+    },
+  });
+  let ownerMismatchRejected = false;
+  try {
+    await activatePaidCheckout({
+      sessionId: "cs_owner_mismatch", userId: cardUser.id, plan: "PRO", billingPeriod: "annual",
+      periodDays: 365, mode: "payment", amountTotal: 299500, currency: "thb",
+    }, now);
+  } catch {
+    ownerMismatchRejected = true;
+  }
+  const mismatchedPayment = await prisma.payment.findUnique({ where: { stripeSessionId: "cs_owner_mismatch" } });
+  check(ownerMismatchRejected, "activation rejects a checkout reservation owned by another user");
+  check(mismatchedPayment?.userId === otherUser.id && mismatchedPayment.status === "PENDING",
+    "owner mismatch cannot move the other user's Payment to PAID");
+
   // PromptPay async success can heal a missing local reservation row. This is
   // important for paid access: an active plan without a plan Payment would be
   // invisible to the money-backed feature gate.

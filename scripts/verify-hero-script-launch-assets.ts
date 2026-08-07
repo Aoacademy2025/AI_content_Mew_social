@@ -99,8 +99,9 @@ check(activation.includes("entitlementExpiresAt") && activation.includes("amount
   "activation persists Stripe's exact subscription period and verified charged amount");
 
 const webhook = source("src/app/api/payments/webhook/route.ts");
-check(webhook.includes("activatePaidCheckout") && webhook.includes('s.payment_status !== "paid"'),
-  "webhook rejects unpaid sessions and uses the atomic activation path");
+check(webhook.includes("activatePaidCheckout") && webhook.includes("checkoutPaymentSettled(s)")
+    && webhook.includes('session.payment_status === "no_payment_required"'),
+  "webhook rejects unsettled sessions, accepts verified zero-total coupons, and uses the atomic activation path");
 check(webhook.includes("stripe.subscriptions.retrieve(subscriptionId)") && webhook.includes("entitlement.periodEnd"),
   "initial subscription checkout resolves its authoritative Stripe period end");
 
@@ -132,6 +133,11 @@ check(announcement.includes("AFTER the paid rollout + public preview flags are l
 const updateBanner = source("src/components/layout/product-update-banner.tsx");
 check(!updateBanner.includes("SURFACE_PATHS") && updateBanner.includes('pathname.startsWith("/admin")'),
   "untargeted announcements surface across authenticated product pages but stay out of admin");
+const dashboardLayout = source("src/components/layout/dashboard-layout.tsx");
+check(dashboardLayout.includes('pathname === "/video-editor"')
+    && dashboardLayout.includes('className="absolute inset-x-0 top-0 z-[300]"')
+    && dashboardLayout.includes("<ProductUpdateBanner />"),
+  "full-screen Video Editor receives announcements without changing editor geometry");
 
 console.log(`\n${failed === 0 ? "✅" : "❌"} ${passed} launch checks passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

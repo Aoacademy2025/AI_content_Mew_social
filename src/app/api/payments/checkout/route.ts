@@ -35,7 +35,15 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { email: true, name: true, stripeCustomerId: true, plan: true, subStatus: true, trialEndsAt: true },
+      select: {
+        email: true,
+        name: true,
+        stripeCustomerId: true,
+        plan: true,
+        subStatus: true,
+        trialEndsAt: true,
+        planExpiresAt: true,
+      },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
@@ -58,14 +66,23 @@ export async function POST(req: Request) {
     //  2. a paid user paying to "upgrade" to a LOWER tier (downgrade-by-pay).
     // FREE users and trial users (no active sub) are unaffected — they upgrade normally.
     const decision = checkoutAllowed(
-      { plan: user.plan, subStatus: user.subStatus, trialEndsAt: user.trialEndsAt },
+      {
+        plan: user.plan,
+        subStatus: user.subStatus,
+        trialEndsAt: user.trialEndsAt,
+        planExpiresAt: user.planExpiresAt,
+      },
       plan,
+      new Date(),
+      { recurring: isSub },
     );
     if (!decision.allowed) {
       const error = decision.reason === "active_sub"
         ? "คุณมีสมาชิกแบบต่ออัตโนมัติอยู่แล้ว — เปลี่ยนหรืออัปเกรดแผนได้ที่ การตั้งค่า → การเงิน"
+        : decision.reason === "active_timed_plan"
+          ? `แพ็กเกจปัจจุบันยังใช้ได้ถึง ${user.planExpiresAt?.toLocaleDateString("th-TH")} — เพื่อไม่ให้วันคงเหลือหาย กรุณาเริ่มสมาชิกแบบบัตรหลังวันดังกล่าว หรือต่ออายุแบบ PromptPay`
         : "ไม่สามารถปรับลดแผนทางนี้ได้ — จัดการแผนที่ การตั้งค่า → การเงิน";
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, code: decision.reason.toUpperCase() }, { status: 400 });
     }
 
     // ── Ensure a Stripe Customer (needed for subscriptions + billing portal) ──

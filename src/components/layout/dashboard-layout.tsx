@@ -44,7 +44,12 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
   // <main> padding — ONLY on this route. Every other path renders unchanged below.
   if (pathname === "/video-editor") {
     return (
-      <div className="flex h-screen flex-col overflow-hidden bg-background">
+      <div className="relative flex h-screen flex-col overflow-hidden bg-background">
+        {/* Overlay keeps the editor's h-screen geometry unchanged while ensuring
+            users who work only in the editor still receive launch announcements. */}
+        <div className="absolute inset-x-0 top-0 z-[300]">
+          <ProductUpdateBanner />
+        </div>
         {children}
       </div>
     );

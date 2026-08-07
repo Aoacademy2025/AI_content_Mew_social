@@ -7,13 +7,14 @@ export type PlanChangeState = {
   plan: string;
   subStatus: string | null;
   trialEndsAt: Date | null;
+  planExpiresAt?: Date | null;
 };
 
 export type CheckoutDecision =
   | { allowed: true }
-  | { allowed: false; reason: "active_sub" | "downgrade" };
+  | { allowed: false; reason: "active_sub" | "active_timed_plan" | "downgrade" };
 
-export type PaidPlanCardMode = "purchase" | "renew" | "current" | "manage" | "downgrade";
+export type PaidPlanCardMode = "purchase" | "renew" | "current" | "manage" | "wait" | "downgrade";
 
 export type FoundingAnnualConversionState = {
   currentPlan: string;
@@ -52,23 +53,28 @@ export function paidPlanCardMode(
     subStatus: string | null;
     isTrialPlan: boolean;
     billingPeriod?: string | null;
+    planExpiresAt?: Date | null;
+    paymentMethod?: "card" | "promptpay";
   },
   cardPlan: string,
   cardPeriod?: "monthly" | "annual",
+  now: Date = new Date(),
 ): PaidPlanCardMode {
   if (state.isTrialPlan) return "purchase";
+  if (state.subStatus === "active") {
+    if (cardPlan === state.currentPlan) {
+      if (state.billingPeriod && cardPeriod && state.billingPeriod !== cardPeriod) return "manage";
+      return "current";
+    }
+    return "manage";
+  }
+  if ((PLAN_RANK[cardPlan] ?? 0) < (PLAN_RANK[state.currentPlan] ?? 0)) return "downgrade";
+  const recurring = cardPeriod === "monthly" || state.paymentMethod === "card";
+  if (recurring && state.planExpiresAt && state.planExpiresAt > now) return "wait";
   if (cardPlan === state.currentPlan) {
     if (cardPlan === "PRO" && state.subStatus !== "active") return "renew";
-    if (
-      state.subStatus === "active"
-      && state.billingPeriod
-      && cardPeriod
-      && state.billingPeriod !== cardPeriod
-    ) return "manage";
     return "current";
   }
-  if (state.subStatus === "active") return "manage";
-  if ((PLAN_RANK[cardPlan] ?? 0) < (PLAN_RANK[state.currentPlan] ?? 0)) return "downgrade";
   return "purchase";
 }
 
@@ -83,11 +89,19 @@ export function paidPlanCardMode(
 export function checkoutAllowed(
   state: PlanChangeState,
   requestedPlan: string,
-  now: Date = new Date()
+  now: Date = new Date(),
+  options: { recurring?: boolean } = {},
 ): CheckoutDecision {
   if (state.subStatus === "active") return { allowed: false, reason: "active_sub" };
   const onActiveTrial = !!state.trialEndsAt && state.trialEndsAt > now;
   const currentRank = onActiveTrial ? 0 : (PLAN_RANK[state.plan] ?? 0);
   if ((PLAN_RANK[requestedPlan] ?? 0) < currentRank) return { allowed: false, reason: "downgrade" };
+  // A new card subscription starts billing now. Do not let it overlap an
+  // existing one-time term: Stripe's calendar period would either erase the
+  // prepaid expiry or charge for months the user already owns. PromptPay
+  // one-time renewal remains additive and is intentionally allowed.
+  if (options.recurring && !onActiveTrial && state.planExpiresAt && state.planExpiresAt > now) {
+    return { allowed: false, reason: "active_timed_plan" };
+  }
   return { allowed: true };
 }

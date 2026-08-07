@@ -35,6 +35,7 @@ export async function GET() {
         trialEndsAt: true,
         subStatus: true,
         billingPeriod: true,
+        planExpiresAt: true,
       } as any,
     });
 

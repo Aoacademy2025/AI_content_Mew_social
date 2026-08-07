@@ -27,6 +27,11 @@ function invoiceSubId(inv: any): string | null {
   return inv.subscription ?? inv.parent?.subscription_details?.subscription ?? null;
 }
 
+function checkoutPaymentSettled(session: any): boolean {
+  return session.payment_status === "paid"
+    || (session.payment_status === "no_payment_required" && session.amount_total === 0);
+}
+
 /** Process a finished Checkout session — credit pack OR plan. Shared by `checkout.session.completed`
  *  AND `checkout.session.async_payment_succeeded`: PromptPay / bank (delayed) methods fire `completed`
  *  while still unpaid and confirm later via the async event, so activation is gated on
@@ -99,12 +104,12 @@ async function handleCheckoutSession(s: any, eventId: string) {
   }
   // Activate ONLY when truly paid — a PromptPay/bank one-time session fires `completed` while
   // unpaid/processing; the real confirmation arrives as async_payment_succeeded (payment_status=paid).
-  if (s.payment_status !== "paid") {
+  if (!checkoutPaymentSettled(s)) {
     console.warn("[webhook] plan session not yet paid, status:", s.payment_status, s.id);
     return;
   }
 
-  const parsedPeriodDays = Number(periodDays);
+  let verifiedPeriodDays = Number(periodDays);
   const subscriptionId = typeof s.subscription === "string" ? s.subscription : s.subscription?.id ?? null;
   let verifiedPlan = plan;
   let verifiedPeriod = period;
@@ -133,6 +138,7 @@ async function handleCheckoutSession(s: any, eventId: string) {
     // session metadata is only routing context created before payment.
     verifiedPlan = entitlement.plan;
     verifiedPeriod = entitlement.billingPeriod;
+    verifiedPeriodDays = entitlement.billingPeriod === "annual" ? 365 : 30;
     entitlementExpiresAt = entitlement.periodEnd;
   }
 
@@ -148,7 +154,7 @@ async function handleCheckoutSession(s: any, eventId: string) {
     userId,
     plan: verifiedPlan,
     billingPeriod: verifiedPeriod,
-    periodDays: parsedPeriodDays,
+    periodDays: verifiedPeriodDays,
     mode: s.mode,
     subscriptionId,
     paymentIntentId: typeof s.payment_intent === "string" ? s.payment_intent : s.payment_intent?.id ?? null,

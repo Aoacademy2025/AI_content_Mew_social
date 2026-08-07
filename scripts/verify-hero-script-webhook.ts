@@ -46,7 +46,7 @@ async function postEvent(event: Record<string, unknown>, validSignature = true) 
   }));
 }
 
-function checkoutEvent(id: string, type: string, paymentStatus: "unpaid" | "paid") {
+function checkoutEvent(id: string, type: string, paymentStatus: "unpaid" | "paid" | "no_payment_required") {
   return {
     id,
     object: "event",
@@ -122,6 +122,31 @@ async function main() {
     "replayed Stripe event is detected as a duplicate");
   check(afterReplay?.planExpiresAt?.getTime() === expiry,
     "replayed event cannot extend the paid term twice");
+
+  await prisma.user.create({
+    data: { id: "coupon-route-user", name: "Coupon Route", email: "coupon-route@example.com" },
+  });
+  await prisma.payment.create({
+    data: {
+      userId: "coupon-route-user",
+      stripeSessionId: "cs_coupon_route",
+      plan: "PRO",
+      amount: 299500,
+      status: "PENDING",
+      periodDays: 365,
+    },
+  });
+  const couponEvent = checkoutEvent("evt_coupon_free", "checkout.session.completed", "no_payment_required") as any;
+  couponEvent.data.object.id = "cs_coupon_route";
+  couponEvent.data.object.amount_total = 0;
+  couponEvent.data.object.payment_intent = null;
+  couponEvent.data.object.metadata.userId = "coupon-route-user";
+  const couponResponse = await postEvent(couponEvent);
+  const couponPayment = await prisma.payment.findUnique({ where: { stripeSessionId: "cs_coupon_route" } });
+  const couponUser = await prisma.user.findUnique({ where: { id: "coupon-route-user" } });
+  check(couponResponse.status === 200 && couponPayment?.status === "PAID" && couponPayment.amount === 0
+      && couponUser?.plan === "PRO",
+    "a Stripe-confirmed 100% discount activates its zero-total plan without payment/access mismatch");
 
   await new Promise(resolve => setTimeout(resolve, 25));
   await prisma.$disconnect();

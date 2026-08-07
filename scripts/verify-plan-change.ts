@@ -38,6 +38,29 @@ assert(bizOneTime.allowed === false && !bizOneTime.allowed && bizOneTime.reason 
 assert(checkoutAllowed({ plan: "PRO", subStatus: null, trialEndsAt: null }, "BUSINESS", now).allowed === true, "PRO one-time → BUSINESS allowed (upgrade, additive)");
 assert(checkoutAllowed({ plan: "PRO", subStatus: null, trialEndsAt: null }, "PRO", now).allowed === true, "PRO one-time → PRO allowed (renew/extend)");
 
+// An active one-time term can be extended by another one-time payment, but a
+// card subscription would start billing immediately and overlap/erase prepaid time.
+const timedCard = checkoutAllowed(
+  { plan: "PRO", subStatus: null, trialEndsAt: null, planExpiresAt: future },
+  "PRO",
+  now,
+  { recurring: true },
+);
+assert(!timedCard.allowed && timedCard.reason === "active_timed_plan",
+  "active PromptPay/timed plan → card subscription BLOCKED until expiry");
+assert(checkoutAllowed(
+  { plan: "PRO", subStatus: null, trialEndsAt: null, planExpiresAt: future },
+  "PRO",
+  now,
+  { recurring: false },
+).allowed === true, "active PromptPay/timed plan → PromptPay renewal remains additive");
+assert(checkoutAllowed(
+  { plan: "PRO", subStatus: null, trialEndsAt: null, planExpiresAt: past },
+  "PRO",
+  now,
+  { recurring: true },
+).allowed === true, "expired timed plan → card subscription allowed");
+
 // Expired trial (trialEndsAt in past, plan still PRO, no sub) → treated as PRO rank, not FREE.
 // A still-PRO row with an expired trial is mid-downgrade; buying PRO again is fine (allowed).
 assert(checkoutAllowed({ plan: "PRO", subStatus: null, trialEndsAt: past }, "PRO", now).allowed === true, "expired-trial PRO → PRO allowed");
@@ -50,6 +73,12 @@ assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: "active", isTrialPlan: 
 assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: "active", isTrialPlan: false }, "BUSINESS") === "manage", "active subscription changes via Billing");
 assert(paidPlanCardMode({ currentPlan: "BUSINESS", subStatus: null, isTrialPlan: false }, "PRO") === "downgrade", "BUSINESS cannot pay to downgrade");
 assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: null, isTrialPlan: false }, "BUSINESS") === "purchase", "non-subscription PRO can upgrade");
+assert(paidPlanCardMode({
+  currentPlan: "PRO", subStatus: null, isTrialPlan: false, planExpiresAt: future, paymentMethod: "card",
+}, "PRO", "monthly", now) === "wait", "pricing blocks card while a timed plan still has prepaid days");
+assert(paidPlanCardMode({
+  currentPlan: "PRO", subStatus: null, isTrialPlan: false, planExpiresAt: future, paymentMethod: "promptpay",
+}, "PRO", "annual", now) === "renew", "pricing still offers additive PromptPay renewal for a timed plan");
 
 // An active monthly subscriber selecting the same tier's annual card is not on
 // the "current" product. The existing subscription must be changed in place so

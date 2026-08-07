@@ -51,6 +51,7 @@ type Me = {
   trialEndsAt?: string | null;
   subStatus?: string | null;
   billingPeriod?: BillingPeriod | null;
+  planExpiresAt?: string | null;
   minuteQuota?: boolean;
   minutesUsed?: number;
   minutesLimit?: number;
@@ -349,6 +350,8 @@ function PricingContent() {
                 subStatus: me?.subStatus ?? null,
                 isTrialPlan,
                 billingPeriod: me?.billingPeriod ?? null,
+                planExpiresAt: me?.planExpiresAt ? new Date(me.planExpiresAt) : null,
+                paymentMethod: period === "monthly" ? "card" : method,
               }, key, period)
             : null;
           const isCurrentTier = !!currentPlan && currentPlan === key && !isTrialPlan;
@@ -376,6 +379,7 @@ function PricingContent() {
             && method === "promptpay"
             && (PLAN_RANK[key] ?? 0) >= (PLAN_RANK[currentPlan] ?? 0);
           const isManageViaPortal = cardMode === "manage";
+          const isTimedPlanCardWait = cardMode === "wait";
           const isDowngradeLocked = cardMode === "downgrade";
 
           const card = (
@@ -449,6 +453,10 @@ function PricingContent() {
                 ) : isPromptPayOverlap ? (
                   <div className="ve-card inline-flex w-full items-center justify-center rounded-full px-4 py-3 text-center text-sm font-semibold" style={{ color: "var(--ui-text-muted)" }}>
                     PromptPay รายปีเริ่มได้หลังสมาชิกรายเดือนสิ้นสุด
+                  </div>
+                ) : isTimedPlanCardWait ? (
+                  <div className="ve-card inline-flex w-full items-center justify-center rounded-full px-4 py-3 text-center text-sm font-semibold" style={{ color: "var(--ui-text-muted)" }}>
+                    เริ่มบัตรได้หลังแพ็กเกจเดิมสิ้นสุด เพื่อรักษาวันคงเหลือ
                   </div>
                 ) : isCurrent ? (
                   <div className="ve-card inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-semibold" style={{ color: "var(--ui-text-secondary)" }}><ShieldCheck className="h-4 w-4" strokeWidth={2.5} /> แผนปัจจุบัน</div>
