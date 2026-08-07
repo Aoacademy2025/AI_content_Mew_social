@@ -1,12 +1,15 @@
 // Publish the Hero Script launch announcement to /updates.
 // Run on production only AFTER the paid rollout + public preview flags are live:
-//   cd /var/www/ai-content && npx tsx scripts/publish-v1.5.0-hero-script.ts
+//   cd /var/www/ai-content && RUN=1 npx tsx scripts/publish-v1.5.0-hero-script.ts
 //
 // /updates renders body as plain text (whitespace-pre-wrap), not Markdown.
-// Idempotent: an existing v1.5.0 ProductUpdate is left untouched.
+// Without RUN=1 this is a read-only preview. A deterministic ID makes concurrent
+// invocations safe even though the legacy ProductUpdate.version column is not unique.
 import { prisma } from "../src/lib/prisma";
 
+const UPDATE_ID = "product-update-v1-5-0-hero-script";
 const VERSION = "v1.5.0";
+const RUN = process.env.RUN === "1";
 const TITLE = "v1.5.0 — Hero Script เขียนสคริปต์พร้อมส่งตัดต่อได้ใน flow เดียว";
 const SUMMARY =
   "ฟีเจอร์ใหม่สำหรับคิดหัวข้อ เลือก Hook เขียนสคริปต์ตามโทนแบรนด์ " +
@@ -46,14 +49,23 @@ const BODY = `✍️ Hero Script เปิดให้ใช้งานแล�
 ลองเริ่มจากคลิป 30–60 วินาทีหนึ่งหัวข้อ แล้วส่ง feedback หรือแจ้งปัญหาได้จากปุ่ม Support ในระบบครับ`;
 
 async function main() {
-  const existing = await prisma.productUpdate.findFirst({ where: { version: VERSION } });
-  if (existing) {
-    console.log(`[publish] ${VERSION} already exists (id=${existing.id}, state=${existing.state}) — skipping.`);
+  const matches = await prisma.productUpdate.findMany({ where: { version: VERSION }, take: 2 });
+  if (matches.length > 1) {
+    throw new Error(`${VERSION} has duplicate ProductUpdate rows; resolve them before publishing`);
+  }
+  const existing = matches[0] ?? null;
+  if (existing?.state === "PUBLISHED") {
+    console.log(`[publish] ${VERSION} is already published (id=${existing.id}) — skipping.`);
     return;
   }
 
-  const created = await prisma.productUpdate.create({
-    data: {
+  console.log(`[publish] ${RUN ? "apply" : "dry-run"} ${VERSION}`);
+  console.log(TITLE);
+  console.log(SUMMARY);
+  console.log(BODY);
+  if (!RUN) return;
+
+  const data = {
       version: VERSION,
       title: TITLE,
       summary: SUMMARY,
@@ -62,12 +74,20 @@ async function main() {
       importance: "BANNER",
       state: "PUBLISHED",
       isPinned: true,
-      targetPath: "/hero-script",
+      // null = announce across authenticated product surfaces; CTA still lands
+      // directly on Hero Script.
+      targetPath: null,
       publishedAt: new Date(),
       ctaLabel: "ลองเขียนสคริปต์",
       ctaHref: "/hero-script",
-    },
-  });
+  } as const;
+  const created = existing
+    ? await prisma.productUpdate.update({ where: { id: existing.id }, data })
+    : await prisma.productUpdate.upsert({
+        where: { id: UPDATE_ID },
+        create: { id: UPDATE_ID, ...data },
+        update: data,
+      });
   console.log(`[publish] published ${created.version} (id=${created.id}) — pinned BANNER.`);
 }
 

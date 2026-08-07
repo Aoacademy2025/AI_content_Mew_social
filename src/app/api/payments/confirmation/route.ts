@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
-import { findPlanPaymentConfirmation } from "@/lib/payment-confirmation";
+import { findPlanPaymentConfirmation, isStripeCheckoutSessionId } from "@/lib/payment-confirmation";
 
 export async function GET(req: Request) {
   try {
@@ -9,7 +9,7 @@ export async function GET(req: Request) {
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const sessionId = new URL(req.url).searchParams.get("session_id")?.trim() ?? "";
-    if (!sessionId.startsWith("cs_") || sessionId.length > 255) {
+    if (!isStripeCheckoutSessionId(sessionId)) {
       return NextResponse.json({ error: "Invalid checkout session" }, { status: 400 });
     }
 

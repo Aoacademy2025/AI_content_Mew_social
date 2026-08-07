@@ -30,6 +30,7 @@ async function main() {
   const { resolveHeroScriptAccess } = await import("../src/lib/hero-script-rollout.server");
   const now = new Date("2026-08-07T04:00:00.000Z");
   const dayMs = 24 * 60 * 60 * 1000;
+  const cardPeriodEnd = new Date("2026-09-07T04:00:00.000Z");
 
   // Card subscription: the same transaction must activate the plan and mark
   // the reservation PAID, which is the evidence Hero Script consumes.
@@ -48,15 +49,18 @@ async function main() {
   const card = await activatePaidCheckout({
     sessionId: "cs_card", userId: cardUser.id, plan: "PRO", billingPeriod: "monthly",
     periodDays: 30, mode: "subscription", subscriptionId: "sub_card",
-    paymentIntentId: "pi_card", amountTotal: 59900, currency: "thb",
+    paymentIntentId: "pi_card", amountTotal: 49900, currency: "thb",
+    entitlementExpiresAt: cardPeriodEnd,
   }, now);
   check(card.activated, "card checkout activates once");
   const cardAfter = await prisma.user.findUnique({ where: { id: cardUser.id } });
   const cardPayment = await prisma.payment.findUnique({ where: { stripeSessionId: "cs_card" } });
   check(cardAfter?.plan === "PRO" && cardAfter.subStatus === "active" && cardAfter.stripeSubscriptionId === "sub_card",
     "card checkout commits the subscription entitlement");
-  check(cardPayment?.status === "PAID" && cardPayment.periodDays === 30,
-    "card checkout commits durable paid-plan evidence");
+  check(cardPayment?.status === "PAID" && cardPayment.periodDays === 30 && cardPayment.amount === 49900,
+    "card checkout commits the discounted Stripe amount as durable paid-plan evidence");
+  check(cardAfter?.planExpiresAt?.getTime() === cardPeriodEnd.getTime(),
+    "card checkout uses Stripe's exact calendar period end");
   const cardConfirmation = await findPlanPaymentConfirmation(cardUser.id, "cs_card");
   check(cardConfirmation?.confirmed === true && cardConfirmation.status === "PAID" && cardConfirmation.plan === "PRO",
     "checkout result confirms only after the owned plan payment is PAID");
@@ -67,7 +71,8 @@ async function main() {
   const expiryAfterFirst = cardAfter?.planExpiresAt?.getTime();
   const duplicate = await activatePaidCheckout({
     sessionId: "cs_card", userId: cardUser.id, plan: "PRO", billingPeriod: "monthly",
-    periodDays: 30, mode: "subscription", subscriptionId: "sub_card", amountTotal: 59900,
+    periodDays: 30, mode: "subscription", subscriptionId: "sub_card", amountTotal: 49900,
+    currency: "thb", entitlementExpiresAt: cardPeriodEnd,
   }, new Date(now.getTime() + dayMs));
   const afterDuplicate = await prisma.user.findUnique({ where: { id: cardUser.id } });
   check(!duplicate.activated && duplicate.reason === "already_paid",
@@ -128,11 +133,12 @@ async function main() {
   await activatePaidCheckout({
     sessionId: "cs_trial", userId: trialUser.id, plan: "PRO", billingPeriod: "monthly",
     periodDays: 30, mode: "subscription", subscriptionId: "sub_trial", amountTotal: 59900,
+    currency: "thb", entitlementExpiresAt: cardPeriodEnd,
   }, now);
   const converted = await prisma.user.findUnique({ where: { id: trialUser.id } });
   check(converted?.trialEndsAt === null, "paid conversion clears the active trial marker");
-  check(converted?.planExpiresAt?.getTime() === now.getTime() + 30 * dayMs,
-    "paid conversion starts the purchased term at payment time");
+  check(converted?.planExpiresAt?.getTime() === cardPeriodEnd.getTime(),
+    "paid conversion uses Stripe's exact purchased period end rather than adding trial time");
   check((await resolveHeroScriptAccess(converted!)).cohort === "paid",
     "converted trial moves from trial to paid Hero Script cohort");
 
@@ -148,6 +154,20 @@ async function main() {
   check(invalidRejected, "invalid paid-plan metadata fails closed");
   check((await prisma.payment.findUnique({ where: { stripeSessionId: "cs_invalid" } })) === null,
     "invalid payment metadata writes no Payment row");
+
+  let missingPeriodEndRejected = false;
+  try {
+    await activatePaidCheckout({
+      sessionId: "cs_missing_period", userId: cardUser.id, plan: "PRO", billingPeriod: "monthly",
+      periodDays: 30, mode: "subscription", subscriptionId: "sub_missing_period",
+      amountTotal: 59900, currency: "thb",
+    }, now);
+  } catch {
+    missingPeriodEndRejected = true;
+  }
+  check(missingPeriodEndRejected, "subscription activation fails closed without Stripe's period end");
+  check((await prisma.payment.findUnique({ where: { stripeSessionId: "cs_missing_period" } })) === null,
+    "missing subscription period end commits no Payment row");
 
   await prisma.$disconnect();
   console.log(`\n${failed === 0 ? "✅" : "❌"} ${passed} passed, ${failed} failed`);

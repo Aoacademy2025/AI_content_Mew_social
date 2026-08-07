@@ -3,6 +3,7 @@
 // documentation, or the post-deploy announcement from the release branch.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 
 const root = process.cwd();
 let passed = 0;
@@ -22,6 +23,34 @@ function check(condition: boolean, message: string) {
   }
 }
 
+const HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE"]);
+
+function exportedHandlersCall(path: string, calleeName: string): boolean {
+  const file = source(path);
+  const tree = ts.createSourceFile(path, file, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const handlers = tree.statements.filter((node): node is ts.FunctionDeclaration => (
+    ts.isFunctionDeclaration(node)
+    && !!node.name
+    && HTTP_METHODS.has(node.name.text)
+    && !!node.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
+  ));
+  if (handlers.length === 0) return false;
+
+  return handlers.every((handler) => {
+    let found = false;
+    function visit(node: ts.Node) {
+      if (
+        ts.isCallExpression(node)
+        && ts.isIdentifier(node.expression)
+        && node.expression.text === calleeName
+      ) found = true;
+      if (!found) ts.forEachChild(node, visit);
+    }
+    visit(handler);
+    return found;
+  });
+}
+
 const gatedRoutes = [
   "src/app/api/brand-profiles/[id]/route.ts",
   "src/app/api/brand-profiles/analyze/route.ts",
@@ -37,12 +66,15 @@ const gatedRoutes = [
 ];
 
 for (const path of gatedRoutes) {
-  check(source(path).includes("requireHeroScriptUser"), `${path} keeps the server-side rollout gate`);
+  check(exportedHandlersCall(path, "requireHeroScriptUser"),
+    `${path} calls the server-side rollout gate inside every exported HTTP handler`);
 }
 
 const checkout = source("src/app/api/payments/checkout/route.ts");
 check(checkout.includes("session_id={CHECKOUT_SESSION_ID}"),
   "Stripe return URL carries the exact checkout session for confirmation");
+check(checkout.includes("new URL(req.url).origin") && !checkout.includes('req.headers.get("origin")'),
+  "Stripe redirects use the configured/server origin rather than a caller-controlled header");
 
 const confirmationRoute = source("src/app/api/payments/confirmation/route.ts");
 check(confirmationRoute.includes("getCurrentUser") && confirmationRoute.includes("findPlanPaymentConfirmation"),
@@ -63,10 +95,14 @@ check(settings.includes("การยืนยันใช้เวลานา�
 const activation = source("src/lib/checkout-plan-activation.ts");
 check(activation.includes("prisma.$transaction") && activation.includes("tx.payment.upsert") && activation.includes('status: "PAID"'),
   "plan entitlement and PAID evidence commit atomically");
+check(activation.includes("entitlementExpiresAt") && activation.includes("amount: amountTotal as number"),
+  "activation persists Stripe's exact subscription period and verified charged amount");
 
 const webhook = source("src/app/api/payments/webhook/route.ts");
 check(webhook.includes("activatePaidCheckout") && webhook.includes('s.payment_status !== "paid"'),
   "webhook rejects unpaid sessions and uses the atomic activation path");
+check(webhook.includes("stripe.subscriptions.retrieve(subscriptionId)") && webhook.includes("entitlement.periodEnd"),
+  "initial subscription checkout resolves its authoritative Stripe period end");
 
 const rollout = source("src/lib/hero-script-rollout.server.ts");
 check(rollout.includes("periodDays: { gt: 0 }") && rollout.includes('status: "PAID"'),
@@ -88,8 +124,14 @@ const announcement = source("scripts/publish-v1.5.0-hero-script.ts");
 check(announcement.includes('const VERSION = "v1.5.0"') && announcement.includes('state: "PUBLISHED"')
     && announcement.includes('importance: "BANNER"') && announcement.includes('ctaHref: "/hero-script"'),
   "post-deploy announcement is versioned, prominent, published, and actionable");
-check(announcement.includes("AFTER the paid rollout + public preview flags are live") && announcement.includes("ภายใน 5 นาที"),
-  "announcement is explicitly post-live and contains the payment support path");
+check(announcement.includes("AFTER the paid rollout + public preview flags are live")
+    && announcement.includes("ภายใน 5 นาที") && announcement.includes('process.env.RUN === "1"')
+    && announcement.includes("UPDATE_ID") && announcement.includes("targetPath: null"),
+  "announcement is post-live, dry-run guarded, concurrency-safe, system-wide, and contains the payment support path");
+
+const updateBanner = source("src/components/layout/product-update-banner.tsx");
+check(!updateBanner.includes("SURFACE_PATHS") && updateBanner.includes('pathname.startsWith("/admin")'),
+  "untargeted announcements surface across authenticated product pages but stay out of admin");
 
 console.log(`\n${failed === 0 ? "✅" : "❌"} ${passed} launch checks passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

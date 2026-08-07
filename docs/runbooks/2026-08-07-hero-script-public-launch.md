@@ -47,10 +47,10 @@
 
    ```bash
    cd /var/www/ai-content
-   npx tsx scripts/publish-v1.5.0-hero-script.ts
+   RUN=1 npx tsx scripts/publish-v1.5.0-hero-script.ts
    ```
 
-   สคริปต์ idempotent และสร้าง pinned banner พร้อมลิงก์เข้า Hero Script
+   หากไม่ใส่ `RUN=1` สคริปต์จะเป็น dry-run แบบอ่านอย่างเดียว เมื่อ apply แล้วจะสร้าง pinned banner ที่แสดงข้ามหน้าหลักของระบบพร้อมลิงก์เข้า Hero Script
 
 ## เกณฑ์ Go / No-go สำหรับ paid 100%
 

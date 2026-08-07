@@ -104,6 +104,38 @@ async function handleCheckoutSession(s: any, eventId: string) {
     return;
   }
 
+  const parsedPeriodDays = Number(periodDays);
+  const subscriptionId = typeof s.subscription === "string" ? s.subscription : s.subscription?.id ?? null;
+  let verifiedPlan = plan;
+  let verifiedPeriod = period;
+  let entitlementExpiresAt: Date | null = null;
+
+  if (s.mode === "subscription") {
+    if (!subscriptionId) throw new Error(`Paid subscription checkout ${s.id} has no subscription id`);
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    const entitlement = resolveRecurringEntitlement({
+      items: subscription.items.data.map((item) => ({
+        priceId: item.price.id,
+        currentPeriodEnd: item.current_period_end,
+      })),
+    }, recurringPriceCatalogFromEnv());
+    if (!entitlement) {
+      const detail = `checkout ${s.id} subscription ${subscriptionId} has an unsupported or unconfigured recurring price`;
+      console.error(`[stripe-webhook] ${detail}`);
+      notifyAdmins({
+        type: "ERROR_SYSTEM",
+        title: "⚠️ Stripe checkout paid but entitlement could not be resolved",
+        body: `${detail}. Webhook will retry after configuration is corrected.`,
+      }).catch(() => {});
+      throw new Error(detail);
+    }
+    // Stripe's purchased Price and exact calendar period are authoritative;
+    // session metadata is only routing context created before payment.
+    verifiedPlan = entitlement.plan;
+    verifiedPeriod = entitlement.billingPeriod;
+    entitlementExpiresAt = entitlement.periodEnd;
+  }
+
   // The money/TIME effect (the planExpiresAt extension) commits in ONE
   // transaction with its own Payment-PAID marker + the billing/subscription write. If any step
   // throws, the WHOLE tx rolls back → MON-1 deletes the idempotency claim → Stripe's retry re-runs
@@ -114,14 +146,15 @@ async function handleCheckoutSession(s: any, eventId: string) {
   const activation = await activatePaidCheckout({
     sessionId: s.id,
     userId,
-    plan,
-    billingPeriod: period,
-    periodDays: parseInt(periodDays ?? "30", 10),
+    plan: verifiedPlan,
+    billingPeriod: verifiedPeriod,
+    periodDays: parsedPeriodDays,
     mode: s.mode,
-    subscriptionId: typeof s.subscription === "string" ? s.subscription : s.subscription?.id ?? null,
+    subscriptionId,
     paymentIntentId: typeof s.payment_intent === "string" ? s.payment_intent : s.payment_intent?.id ?? null,
     amountTotal: s.amount_total,
     currency: s.currency,
+    entitlementExpiresAt,
   });
   if (!activation.activated) {
     console.log("[webhook] session already activated, skip", s.id);
@@ -133,11 +166,11 @@ async function handleCheckoutSession(s: any, eventId: string) {
   // money/time effect, so a throw here would make MON-1 delete the claim and Stripe's retry would
   // re-enter and double-extend. Kept OUTSIDE the tx — global-client calls (would deadlock SQLite in
   // a tx) whose failure must not roll back the paid activation.
-  extendVideoExpiryForPlan(userId, plan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
+  extendVideoExpiryForPlan(userId, verifiedPlan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
   await createNotification({
     userId, type: "VIDEO_COMPLETED",
-    title: `ชำระเงินสำเร็จ — ${plan} Plan`,
-    body: `แพ็กเกจ ${plan} ของคุณใช้งานได้ถึง ${newExpiry.toLocaleDateString("th-TH")}`,
+    title: `ชำระเงินสำเร็จ — ${verifiedPlan} Plan`,
+    body: `แพ็กเกจ ${verifiedPlan} ของคุณใช้งานได้ถึง ${newExpiry.toLocaleDateString("th-TH")}`,
   }).catch(() => {});
   const couponId = s.metadata?.couponId;
   if (couponId) {
@@ -159,8 +192,8 @@ async function handleCheckoutSession(s: any, eventId: string) {
   // allowance 0, so a within-30-days trial→paid subscriber would be skipped by the window
   // check and get 0 credits (bug H4). grantOnPaidActivation is CREDITS_LIVE-gated internally
   // (flag-off = no-op → byte-identical). Fire-and-forget.
-  grantOnPaidActivation(userId, plan).catch(() => {});
-  console.log(`[stripe-webhook] ${userId} → ${plan} until ${newExpiry} (mode=${s.mode})`);
+  grantOnPaidActivation(userId, verifiedPlan).catch(() => {});
+  console.log(`[stripe-webhook] ${userId} → ${verifiedPlan} until ${newExpiry} (mode=${s.mode})`);
 }
 
 export async function POST(req: Request) {

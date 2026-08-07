@@ -289,7 +289,9 @@ function SettingsContent() {
               .catch(() => null);
             if (stopped) return;
             if (freshMe) setMeUser(freshMe);
-            else if (result.plan) setMeUser(current => ({ ...(current ?? {}), plan: result.plan }));
+            else if (result.plan) {
+              setMeUser(current => ({ ...(current ?? {}), plan: result.plan, effectivePlan: result.plan }));
+            }
             setPaymentPopup("confirmed");
             return;
           }

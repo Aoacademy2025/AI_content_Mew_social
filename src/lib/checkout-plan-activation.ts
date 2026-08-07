@@ -15,6 +15,8 @@ export type PaidCheckoutActivationInput = {
   paymentIntentId?: string | null;
   amountTotal?: number | null;
   currency?: string | null;
+  /** Stripe's authoritative current_period_end for subscription checkouts. */
+  entitlementExpiresAt?: Date | null;
 };
 
 export type PaidCheckoutActivationResult =
@@ -50,8 +52,11 @@ export async function activatePaidCheckout(
   return prisma.$transaction(async (tx) => {
     const existing = await tx.payment.findUnique({
       where: { stripeSessionId: input.sessionId },
-      select: { status: true },
+      select: { status: true, userId: true },
     });
+    if (existing && existing.userId !== input.userId) {
+      throw new Error(`Paid checkout owner mismatch: ${input.sessionId}`);
+    }
     if (existing?.status === "PAID") return { activated: false as const, reason: "already_paid" as const };
 
     const user = await tx.user.findUnique({
@@ -60,15 +65,33 @@ export async function activatePaidCheckout(
     });
     if (!user) throw new Error(`Paid checkout user not found: ${input.userId}`);
 
-    // A converted trial starts its purchased term now. Renewals and one-time
-    // extensions start from the later of now or the current paid expiry.
-    const onUnconvertedTrial = !!user.trialEndsAt
-      && user.trialEndsAt > now
-      && user.subStatus !== "active";
-    const base = !onUnconvertedTrial && user.planExpiresAt && user.planExpiresAt > now
-      ? user.planExpiresAt
-      : now;
-    const newExpiry = new Date(base.getTime() + input.periodDays * DAY_MS);
+    const exactExpiry = input.entitlementExpiresAt;
+    if (input.mode === "subscription" && !exactExpiry) {
+      throw new Error("Subscription checkout is missing Stripe period end");
+    }
+    if (exactExpiry && (
+      !Number.isFinite(exactExpiry.getTime())
+      || exactExpiry <= now
+      || exactExpiry.getTime() > now.getTime() + 3660 * DAY_MS
+    )) {
+      throw new Error("Invalid Stripe entitlement period end");
+    }
+
+    // Stripe defines recurring periods (calendar months/years), so subscription
+    // access ends at its exact item current_period_end. Only one-time purchases
+    // use the later-of-now/current-expiry extension rule.
+    let newExpiry: Date;
+    if (exactExpiry) {
+      newExpiry = new Date(exactExpiry);
+    } else {
+      const onUnconvertedTrial = !!user.trialEndsAt
+        && user.trialEndsAt > now
+        && user.subStatus !== "active";
+      const base = !onUnconvertedTrial && user.planExpiresAt && user.planExpiresAt > now
+        ? user.planExpiresAt
+        : now;
+      newExpiry = new Date(base.getTime() + input.periodDays * DAY_MS);
+    }
 
     await tx.user.update({
       where: { id: input.userId },
@@ -84,13 +107,20 @@ export async function activatePaidCheckout(
       },
     });
 
+    const amountTotal = input.amountTotal;
+    if (!Number.isInteger(amountTotal) || (amountTotal ?? -1) < 0) {
+      throw new Error("Paid checkout is missing its verified amount");
+    }
+    const currency = input.currency?.trim().toLowerCase();
+    if (!currency || !/^[a-z]{3}$/.test(currency)) {
+      throw new Error("Paid checkout is missing its verified currency");
+    }
+
     const paymentData = {
       userId: input.userId,
       plan: input.plan as Plan,
-      amount: Number.isInteger(input.amountTotal) && (input.amountTotal ?? 0) >= 0
-        ? input.amountTotal ?? 0
-        : 0,
-      currency: input.currency?.toLowerCase() || "thb",
+      amount: amountTotal as number,
+      currency,
       status: "PAID" as const,
       periodDays: input.periodDays,
       stripePaymentIntent: input.paymentIntentId || null,
@@ -101,7 +131,11 @@ export async function activatePaidCheckout(
       where: { stripeSessionId: input.sessionId },
       create: { stripeSessionId: input.sessionId, ...paymentData },
       update: {
+        plan: input.plan as Plan,
+        amount: amountTotal as number,
+        currency,
         status: "PAID",
+        periodDays: input.periodDays,
         stripePaymentIntent: input.paymentIntentId || undefined,
         paidAt: now,
       },

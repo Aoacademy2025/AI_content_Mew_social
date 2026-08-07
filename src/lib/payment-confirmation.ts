@@ -8,6 +8,10 @@ export type PlanPaymentConfirmation = {
   paidAt: Date | null;
 };
 
+export function isStripeCheckoutSessionId(value: string): boolean {
+  return value.startsWith("cs_") && value.length <= 255;
+}
+
 /**
  * Resolve a checkout result only from a plan-payment row owned by the caller.
  * Credit-pack purchases use periodDays=0 and must never confirm a plan upgrade.
@@ -16,7 +20,7 @@ export async function findPlanPaymentConfirmation(
   userId: string,
   stripeSessionId: string,
 ): Promise<PlanPaymentConfirmation | null> {
-  if (!userId || !stripeSessionId.startsWith("cs_") || stripeSessionId.length > 255) return null;
+  if (!userId || !isStripeCheckoutSessionId(stripeSessionId)) return null;
 
   const payment = await prisma.payment.findFirst({
     where: {

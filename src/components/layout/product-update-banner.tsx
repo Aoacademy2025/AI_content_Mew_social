@@ -27,11 +27,11 @@ type UpdatesSummary = {
   attentionUpdate: AttentionUpdate | null;
 };
 
-const SURFACE_PATHS = ["/dashboard", "/video-editor"];
-
 function shouldSurface(pathname: string, update: AttentionUpdate) {
-  if (!SURFACE_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))) return false;
-  if (pathname === "/updates" || pathname.startsWith("/admin/updates")) return false;
+  // This component only mounts inside the authenticated dashboard layout.
+  // Untargeted announcements therefore reach every product surface, while a
+  // targetPath can still narrow a contextual update to one feature.
+  if (pathname === "/updates" || pathname.startsWith("/admin")) return false;
   if (pathname === "/dashboard") return true;
   if (!update.targetPath) return true;
   return pathname === update.targetPath || pathname.startsWith(`${update.targetPath}/`);

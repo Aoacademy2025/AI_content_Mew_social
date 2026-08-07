@@ -116,7 +116,9 @@ export async function POST(req: Request) {
     const appliedCouponId = discountCoupon?.id ?? foundingClaim?.couponId ?? null;
     const isFounding = !!foundingClaim;
 
-    const origin = req.headers.get("origin") ?? process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+    // Never trust the caller-controlled Origin header for Stripe redirects.
+    // Prefer the configured canonical app URL, then the server request URL.
+    const origin = process.env.NEXTAUTH_URL?.replace(/\/$/, "") || new URL(req.url).origin;
 
     let checkoutSession;
     try {
