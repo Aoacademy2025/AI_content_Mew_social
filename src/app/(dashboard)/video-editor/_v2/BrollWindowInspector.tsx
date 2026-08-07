@@ -522,6 +522,8 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
     }
   }
 
+  const currentAssetPreview = effectiveAsset(index);
+
   const header = (
     <div className="flex flex-col gap-2.5">
       <div className="flex items-center justify-between gap-2">
@@ -537,6 +539,36 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
         >
           <X size={18} />
         </button>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <span style={{ fontSize: 10.5, color: color.textFaintest }}>
+          ภาพที่กำลังแก้ · {currentAssetPreview?.label ?? currentSourceLabel}
+        </span>
+        <div
+          className="flex w-full items-center justify-center overflow-hidden"
+          style={{
+            aspectRatio: "16/9",
+            borderRadius: radius.card,
+            border: `1px solid ${color.cardBorder}`,
+            background: "#050507",
+          }}
+        >
+          {currentAssetPreview ? (
+            <video
+              key={currentAssetPreview.src}
+              src={currentAssetPreview.src}
+              aria-label={`ตัวอย่าง B-roll ฉากที่ ${positionLabel}`}
+              muted
+              loop
+              autoPlay
+              playsInline
+              preload="metadata"
+              className="h-full w-full object-contain"
+            />
+          ) : (
+            <span style={{ fontSize: 11.5, color: color.textFaint }}>ไม่พบไฟล์ตัวอย่างของฉากนี้</span>
+          )}
+        </div>
       </div>
       <div
         className="flex items-center gap-3"
@@ -802,42 +834,6 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
     </div>
   );
 
-  // Single source of truth for the "here's the chosen clip" preview: derives from the
-  // window's actual staged edit (not per-tab local state) so it can never go stale when
-  // switching tabs — it always reflects what will actually be used on apply.
-  // `!enabled` already renders its own warning + CTA in the header, so this only has to
-  // report the staged asset (and stay quiet when the window is hidden).
-  const stagedPreview = !enabled ? (
-    existingEdit?.enabled === false ? (
-      <div
-        className="flex items-center gap-2"
-        style={{
-          padding: "10px 12px",
-          borderRadius: radius.card,
-          background: "rgba(255,255,255,.035)",
-          border: `1px dashed ${color.cardBorder}`,
-        }}
-      >
-        <EyeOff size={15} color={color.textFaint} />
-        <span style={{ fontSize: 11.5, color: color.textSecondary }}>
-          ปิด B-roll ไว้ — จะเห็นผลหลังอัปเดตวิดีโอ
-        </span>
-      </div>
-    ) : null
-  ) : existingEdit?.src ? (
-    <div className="flex flex-col gap-1.5">
-      <span style={{ fontSize: 10.5, color: color.textFaintest }}>ตัวอย่างคลิปที่จะใช้</span>
-      <video
-        src={existingEdit.src}
-        muted
-        loop
-        autoPlay
-        playsInline
-        style={{ borderRadius: radius.card, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16", maxHeight: 200, objectFit: "cover" }}
-      />
-    </div>
-  ) : null;
-
   const footerSummary = ed.windowEdits.size > 0 && (
     <div className="flex flex-col gap-1.5 pt-3" style={{ borderTop: `1px solid ${color.cardBorder}` }}>
       <GroupLabel>แก้ไขแล้ว ({ed.windowEdits.size})</GroupLabel>
@@ -889,7 +885,6 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
             <div className="flex flex-col gap-3 pt-1">
               {header}
               {tabContent}
-              {stagedPreview}
               {footerSummary}
             </div>
           </div>
@@ -907,7 +902,6 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
         <div className="flex flex-col gap-3">
           {header}
           {tabContent}
-          {stagedPreview}
           {footerSummary}
         </div>
       </div>

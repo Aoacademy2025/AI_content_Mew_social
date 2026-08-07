@@ -1030,45 +1030,76 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             upWindowSec,
             upDurMs,
           );
-      const upBrollUnits = upWindows.length > 0 ? brollWindowCaptions(upWindows) : upCaps;
+      // Plan the final composite before any provider request. The uploaded presenter
+      // covers every `person` range, so media generated for those ranges can never be
+      // seen and must not consume image credits.
+      const upCutawayPlan = planCutaway(upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })));
+      const visibleBrollRanges = new Set(
+        upCutawayPlan.broll.map((range) => `${range.startMs}:${range.endMs}`),
+      );
+      const upVisibleWindows = upWindows.filter((window) =>
+        visibleBrollRanges.has(`${window.startMs}:${window.endMs}`),
+      );
+      const upBrollUnits = brollWindowCaptions(upVisibleWindows);
 
       await step("keywords", 40);
-      const upKw = await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
-        "/api/videos/extract-keywords",
-        {
-          ...buildKeywordsPayload(upBrollUnits.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
-          brollRegionPreference: input.brollRegionPreference,
-          brollVisualStyle: input.brollVisualStyle,
-          }),
-          ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
-        },
-      );
+      const upKw = upBrollUnits.length > 0
+        ? await caller.post<{ keywords: string[]; keywordsPerScene?: number; sceneClipCounts?: number[]; sceneDurations?: number[]; visualDirection?: string; keywordAlternatives?: string[][]; relevanceSpec?: unknown }>(
+            "/api/videos/extract-keywords",
+            {
+              ...buildKeywordsPayload(upBrollUnits.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
+                brollRegionPreference: input.brollRegionPreference,
+                brollVisualStyle: input.brollVisualStyle,
+              }),
+              ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
+            },
+          )
+        : {
+            keywords: [] as string[],
+            keywordsPerScene: 1,
+            sceneClipCounts: [] as number[],
+            sceneDurations: [] as number[],
+            visualDirection: "",
+            keywordAlternatives: [] as string[][],
+            relevanceSpec: undefined as unknown,
+          };
 
       await step("stock", 55);
       const upAiGen = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
-      const upAligned = alignBrollWindowsToKeywords(upWindows, upBrollUnits, upKw.keywords ?? [], upKw.keywordAlternatives);
+      const upAligned = alignBrollWindowsToKeywords(upVisibleWindows, upBrollUnits, upKw.keywords ?? [], upKw.keywordAlternatives);
       const upTotalDur = upAligned.windows.length > 0
         ? Math.round(upDurMs / 1000)
         : (upKw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(upDurMs / 1000);
-      const upStock = await caller.post<{ results: unknown[] }>(
-        "/api/videos/fetch-stock",
-        {
-          ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
-            brollRegionPreference: input.brollRegionPreference,
-            brollVisualStyle: input.brollVisualStyle,
-          }, upAligned.windows.length > 0, upAligned.windows, {
-            fullScript: upCaps.map((caption) => caption.text).join("\n"),
-          }),
-          ...(input.kieModel ? { kieModel: input.kieModel } : {}),
-          ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
-          ...(input.imageModel ? { imageModel: input.imageModel } : {}),
-          videoJobId: jobId,
-          ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
-          ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
-          ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
-        },
-        upAiGen ? { retries: 0 } : undefined,
-      );
+      const upStock = upAligned.windows.length > 0
+        ? await caller.post<{ results: unknown[] }>(
+            "/api/videos/fetch-stock",
+            {
+              ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
+                brollRegionPreference: input.brollRegionPreference,
+                brollVisualStyle: input.brollVisualStyle,
+              }, true, upAligned.windows, {
+                fullScript: upCaps.map((caption) => caption.text).join("\n"),
+              }),
+              ...(input.kieModel ? { kieModel: input.kieModel } : {}),
+              ...(input.imageEngine ? { imageEngine: input.imageEngine } : {}),
+              ...(input.imageModel ? { imageModel: input.imageModel } : {}),
+              videoJobId: jobId,
+              ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
+              ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
+              ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
+            },
+            upAiGen ? { retries: 0 } : undefined,
+          )
+        : {
+            // With fewer than two windows the presenter covers the whole clip. Reuse
+            // that clip as the hidden render background without calling stock/AI.
+            results: [{
+              videoUrl: input.clipUrl,
+              keyword: "uploaded presenter clip",
+              duration: Math.max(1, upDurMs / 1000),
+              sourceIndex: 0,
+            }] as unknown[],
+          };
       emitBrollStockInventory(upAligned.windows.length, upStock.results ?? []);
 
       await step("config", 65);
@@ -1092,8 +1123,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // preview: การจองที่ base render คือค่าใช้จ่ายเดียว (เหมือน script preview) — ไม่ refund
 
       await step("composite", 90);
-      const plan = planCutaway(upWindows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })));
-      const personRanges = plan.person.map((r) => ({ start: r.startMs / 1000, end: r.endMs / 1000 }));
+      const personRanges = upCutawayPlan.person.map((r) => ({ start: r.startMs / 1000, end: r.endMs / 1000 }));
       // hook = คลิปที่อัปต้องเป็นเฟรมแรกเสมอ. transcribe เว้นช่วง [0, คำแรก) ไว้ (เงียบ/หายใจ/อินโทร)
       // ทำให้ base reel (b-roll) โผล่ก่อนหน้าคนพูด — คลุม person range แรกให้เริ่มที่ 0 (บั๊ก kapokja 07-04).
       // person เป็น overlay บน b-roll base (composite mode:cutaway) → ทุกจังหวะที่ไม่มี person range = b-roll โผล่.
@@ -1112,7 +1142,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upFinalDuration = Date.now() - phaseStartedAt;
       timings.push([phaseName, upFinalDuration]);
       emitStage(phaseName, "done", upFinalDuration);
-      console.log(`[mcp-worker] job ${jobId} UPLOAD-CUTAWAY total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s scenes=${upCaps.length} windows=${upWindows.length}`);
+      console.log(`[mcp-worker] job ${jobId} UPLOAD-CUTAWAY total=${((Date.now() - jobStartedAt) / 1000).toFixed(0)}s scenes=${upCaps.length} windows=${upWindows.length} visibleBroll=${upVisibleWindows.length}`);
 
       await finishJob(jobId, {
         version: 2,

@@ -161,7 +161,7 @@ button, a {
 
   /* Input fields */
   --ui-input-bg:        hsl(220 14% 90%);
-  --ui-input-border:    hsl(220 13% 81%);
+  --ui-input-border:    hsl(220 14% 58%);
 
   /* Dividers */
   --ui-divider:         hsl(220 13% 84%);
@@ -216,7 +216,7 @@ button, a {
 
   /* Input fields */
   --ui-input-bg:        hsl(240 16% 7%);
-  --ui-input-border:    hsl(0 0% 100% / 0.09);
+  --ui-input-border:    hsl(240 4% 38%);
 
   /* Dividers */
   --ui-divider:         hsl(0 0% 100% / 0.06);
@@ -302,7 +302,8 @@ button, a {
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
     --border: 220 13% 89%;
-    --input: 220 13% 92%;
+    /* Input is a border token (not a fill): keep a visible control boundary on cards. */
+    --input: 220 14% 58%;
     --ring: 252 83% 57%;
     --radius: 0.75rem;
     --chart-1: 252 83% 57%;
@@ -333,7 +334,8 @@ button, a {
     --destructive: 0 75% 60%;
     --destructive-foreground: 0 0% 100%;
     --border: 0 0% 100% / 0.06;
-    --input: 240 8% 9%;
+    /* Opaque mid-gray keeps the 1px control boundary visible on bg and card surfaces. */
+    --input: 240 4% 38%;
     --ring: 220 90% 65%;
     --radius: 0.75rem;
     --chart-1: 220 90% 65%;

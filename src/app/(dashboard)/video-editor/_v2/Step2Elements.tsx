@@ -75,7 +75,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     ? "Hero AI Image"
     : p.brollSource === "automix"
       ? `AutoMix · ${MIX_PRESET_LABEL[p.mixPreset]}`
-      : "วิดีโอสต็อก";
+      : "สต็อกฟรี";
   const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
   // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
   const elevenVoice = p.voiceEngine === "elevenlabs"
@@ -758,7 +758,7 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
   const heroImageUnlocked = p.heroAiBeta;
   const autoMixUnlocked = p.internalAiTester && p.isPaidManagedKie;
   const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
-    { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
+    { value: "stock", title: "สต็อกฟรี", desc: "0 เครดิต AI · Pexels/Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
     { value: "kie-image", title: "Hero AI Image", desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · ${HERO_AI_IMAGE_CREDITS} เครดิต/ภาพ`, icon: <ImagePlus size={16} strokeWidth={1.6} /> },
     { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} /> },
   ];
@@ -828,6 +828,24 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
           );
         })}
       </div>
+
+      {p.brollSource === "stock" && (
+        <div
+          role="status"
+          className="flex flex-col gap-1 rounded-xl px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3"
+          style={{
+            background: "rgba(52,211,153,.07)",
+            border: "1px solid rgba(52,211,153,.24)",
+          }}
+        >
+          <span className="shrink-0" style={{ font: `600 11.5px ${font.heading}`, color: "#6ee7b7" }}>
+            เส้นทางใช้ฟรีพร้อมแล้ว
+          </span>
+          <span style={{ fontSize: 11, lineHeight: 1.55, color: color.textSecondary }}>
+            ต่อไปเลือกเสียงและกดเรนเดอร์ — สต็อกใช้ 0 เครดิต AI และใช้เฉพาะนาทีในแพ็กเกจ
+          </span>
+        </div>
+      )}
 
       {autoMixUnlocked && p.brollSource === "automix" && (
         <div className="flex flex-col gap-2">
