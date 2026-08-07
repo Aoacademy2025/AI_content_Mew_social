@@ -78,3 +78,40 @@ export function isInternalAiBetaEnabledFor(
 ): boolean {
   return publicEnabled || isInternalAiTester(actor);
 }
+
+/**
+ * Public-launch eligibility for Hero AI Image — the ONE gate shared by all three
+ * entry points (Hero-only b-roll mode, AutoMix "ai" slots, per-window regen).
+ * The internal beta cohort (`isHeroAiBetaUser`) always passes, same as today.
+ * Once `HERO_AI_IMAGE_PUBLIC=1` is set, any PRO/BUSINESS actor is admitted too.
+ *
+ * Active-trial accounts are intentionally included here: `grantTrial` (trial.ts)
+ * sets `plan: "PRO"` for the trial period, so a trial user satisfies the same
+ * `plan === "PRO"` check as a paying customer and needs no separate branch. This
+ * is deliberate, not an oversight — a trial account's 0-credit starting balance
+ * (topped up only by the one-time taste grant) is the real spend limiter, not
+ * this gate. FREE always stays excluded, even if it somehow holds purchased
+ * credits (credits alone never unlock a plan-gated feature).
+ *
+ * Flag unset (or any value other than the literal string "1") → behavior is
+ * byte-identical to the beta-only gate that shipped before public launch.
+ */
+export function isHeroAiImageEligible(
+  actor: { email?: string | null; role?: string | null; plan?: string | null; trialEndsAt?: Date | null } | null | undefined,
+): boolean {
+  if (isHeroAiBetaUser(actor)) return true;
+  if (process.env.HERO_AI_IMAGE_PUBLIC !== "1") return false;
+  return actor?.plan === "PRO" || actor?.plan === "BUSINESS";
+}
+
+/** Shared 403 payload for a plan-gated Hero AI Image request once the public
+ * flag is live but the actor's plan doesn't qualify (FREE). Kept as one literal
+ * so the three entry points can never drift on copy or the upgrade link. */
+export const HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE = {
+  status: 403 as const,
+  body: {
+    error: "plan_required" as const,
+    message: "Hero AI Image ใช้ได้กับแผน PRO/BUSINESS — อัปเกรดเพื่อใช้งาน",
+    upgradeUrl: "/pricing" as const,
+  },
+};

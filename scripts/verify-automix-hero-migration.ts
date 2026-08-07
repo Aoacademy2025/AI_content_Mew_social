@@ -573,7 +573,11 @@ async function main() {
   );
   check(
     "AutoMix mode follows the Hero rollout gate in job creation",
-    /requestedSource === "auto-mix"[\s\S]{0,400}?isHeroAiBetaUser\(user\)/.test(videoJobs),
+    // Task 4 (public-launch plan gate) widened this call site from the beta-only
+    // isHeroAiBetaUser to isHeroAiImageEligible, which still admits the beta
+    // cohort unconditionally and additionally opens to PRO/BUSINESS/trial once
+    // HERO_AI_IMAGE_PUBLIC=1 — see internal-ai-access.ts.
+    /requestedSource === "auto-mix"[\s\S]{0,400}?isHeroAiImageEligible\(user\)/.test(videoJobs),
   );
 
   // The cost-guard await MUST sit inside a try whose catch continues without AI.

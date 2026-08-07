@@ -221,9 +221,12 @@ check(
     editorInspector.includes("disabled: !aiImageEnabled"),
 );
 check(
-  "individual Hero scenes use the same product-owner beta as new-video generation",
+  "individual Hero scenes use the same product-owner-or-public plan gate as new-video generation",
+  // Task 4 widened this route from the beta-only isHeroAiBetaUser to
+  // isHeroAiImageEligible (beta cohort still admitted unconditionally; PRO/
+  // BUSINESS/trial admitted once HERO_AI_IMAGE_PUBLIC=1) — see internal-ai-access.ts.
   editorPostPhase.includes("BROLL_WINDOW_EDIT || internalAiTester") &&
-    brollGenerateRoute.includes("isHeroAiBetaUser(user)") &&
+    brollGenerateRoute.includes("isHeroAiImageEligible(user)") &&
     brollGenerateRoute.includes("generateHeroImageForVideo") &&
     !brollGenerateRoute.includes("generateKieImageKenBurns"),
 );

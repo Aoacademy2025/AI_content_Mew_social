@@ -83,11 +83,16 @@ import {
   NORMALIZE_TIMEOUT_MS,
   NORMALIZE_PRESET,
 } from "@/lib/broll-asset-lib";
-import { isHeroAiBetaUser, isInternalAiTester } from "@/lib/internal-ai-access";
+import {
+  HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
+  isHeroAiImageEligible,
+  isInternalAiTester,
+} from "@/lib/internal-ai-access";
 import {
   refundSettledVideoImageBatch,
   refundSettledVideoImageJob,
 } from "@/lib/ai-generation-jobs.server";
+import { checkHeroImageRate, heroImageRateLimitMessage } from "@/lib/hero-image-rate-limit";
 import { heroImageStyleForBrollWindow } from "@/lib/broll-window-hero";
 import { HERO_AI_IMAGE_CREDIT_COST_KEY, HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import {
@@ -1062,7 +1067,7 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { email: true, pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true },
+    select: { email: true, pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true, trialEndsAt: true },
   });
 
   // ── Managed-kie gate + key resolution (flag MANAGED_KIE) ──────────────────
@@ -1088,10 +1093,16 @@ export async function POST(req: Request) {
   // Hero AI Image rollout gate — ONE policy for every Hero seam entry point
   // (Hero-only mode below and the AutoMix "ai" slots). Widening this helper opens
   // both paths at once, so the two can never drift apart.
-  const heroAiEligible = isHeroAiBetaUser(user);
+  const heroAiEligible = isHeroAiImageEligible(user);
 
   // AI Image-to-Video (kie.ai) — private team beta only.
-  if (useHeroRunpodImage && (imageModel !== "z-image-turbo" || !heroAiEligible)) {
+  if (useHeroRunpodImage && imageModel !== "z-image-turbo") {
+    return NextResponse.json({ error: "Hero AI Image ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
+  }
+  if (useHeroRunpodImage && !heroAiEligible) {
+    if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+      return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+    }
     return NextResponse.json({ error: "Hero AI Image ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
   }
   if (useHeroRunpodImage && (typeof videoJobId !== "string" || !/^[A-Za-z0-9_-]{8,120}$/.test(videoJobId))) {
@@ -1107,6 +1118,9 @@ export async function POST(req: Request) {
   // the Hero RunPod seam, so Hero eligibility alone unlocks the mode; the legacy
   // managed-kie beta cohort keeps its existing access.
   if (useAutoMix && !canUseKieImages && !heroAiEligible) {
+    if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+      return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+    }
     return NextResponse.json({ error: "Auto Mix ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
   }
 
@@ -1456,42 +1470,53 @@ export async function POST(req: Request) {
     // spends, so it must not pay for the preflight round-trips either.)
     if (download && autoMixAiEngine === "runpod" && autoMixAiSlots.size > 0) {
       let affordableAiSlots = autoMixAiSlots.size;
-      let degradeReason: "provider_circuit_open" | "provider_cost_guard" | "insufficient_credits" | null = null;
-      const circuit = heroRunpodCircuitState();
-      if (circuit.open) {
-        degradeReason = "provider_circuit_open";
+      let degradeReason: "rate_limited" | "provider_circuit_open" | "provider_cost_guard" | "insufficient_credits" | null = null;
+      // Rate cap first (cheap DB check, no external round-trip) — public-launch
+      // abuse guard, admins exempt (team ops; see hero-image-rate-limit.ts).
+      const heroRate = isAdmin ? null : await checkHeroImageRate(userId, autoMixAiSlots.size);
+      if (heroRate && !heroRate.ok) {
+        degradeReason = "rate_limited";
         affordableAiSlots = 0;
-        heroAutoMixTelemetry.heroAutoMixCircuitCode = circuit.code;
+        heroAutoMixTelemetry.heroAutoMixRateScope = heroRate.scope;
+        heroAutoMixTelemetry.heroAutoMixRateUsedHour = heroRate.usedHour;
+        heroAutoMixTelemetry.heroAutoMixRateUsedDay = heroRate.usedDay;
       } else {
-        // The cost guard reads the billing ledger. A transient DB/provider hiccup must
-        // NOT throw out of this route: AutoMix would lose its free video/photo slots
-        // too. Treat any failure as "cannot admit AI spend" and continue without AI.
-        let runpodCost: Awaited<ReturnType<typeof getRunpodImageCostSnapshot>> | null = null;
-        try {
-          runpodCost = await getRunpodImageCostSnapshot({
-            endpointId: heroAutoMixOffer!.providerEndpoint,
-          });
-        } catch (error) {
-          heroAutoMixTelemetry.heroAutoMixCostGuardError =
-            error instanceof Error ? error.message.slice(0, 200) : "cost guard failed";
-          console.error("[fetch-stock] Auto Mix hero cost guard failed — continuing without AI slots:", error);
-        }
-        heroAutoMixTelemetry.heroAutoMixCostStatus = runpodCost?.status ?? "unavailable";
-        if (!runpodCost?.admitted) {
-          degradeReason = "provider_cost_guard";
+        const circuit = heroRunpodCircuitState();
+        if (circuit.open) {
+          degradeReason = "provider_circuit_open";
           affordableAiSlots = 0;
+          heroAutoMixTelemetry.heroAutoMixCircuitCode = circuit.code;
         } else {
-          try { await ensureMonthlyGrant(userId); } catch { /* non-fatal */ }
-          const balance = await getBalance(userId);
-          affordableAiSlots = heroAutoMixCreditCost > 0
-            ? Math.max(0, Math.floor(balance.total / heroAutoMixCreditCost))
-            : 0;
-          heroAutoMixTelemetry.heroAutoMixBalanceBefore = balance.total;
-          if (affordableAiSlots < autoMixAiSlots.size) {
-            degradeReason = "insufficient_credits";
-            // Same skip marker the kie path used when credits ran out mid-job, so the
-            // client keeps telling the user why fewer AI images appeared.
-            aiSkippedReason = "credits";
+          // The cost guard reads the billing ledger. A transient DB/provider hiccup must
+          // NOT throw out of this route: AutoMix would lose its free video/photo slots
+          // too. Treat any failure as "cannot admit AI spend" and continue without AI.
+          let runpodCost: Awaited<ReturnType<typeof getRunpodImageCostSnapshot>> | null = null;
+          try {
+            runpodCost = await getRunpodImageCostSnapshot({
+              endpointId: heroAutoMixOffer!.providerEndpoint,
+            });
+          } catch (error) {
+            heroAutoMixTelemetry.heroAutoMixCostGuardError =
+              error instanceof Error ? error.message.slice(0, 200) : "cost guard failed";
+            console.error("[fetch-stock] Auto Mix hero cost guard failed — continuing without AI slots:", error);
+          }
+          heroAutoMixTelemetry.heroAutoMixCostStatus = runpodCost?.status ?? "unavailable";
+          if (!runpodCost?.admitted) {
+            degradeReason = "provider_cost_guard";
+            affordableAiSlots = 0;
+          } else {
+            try { await ensureMonthlyGrant(userId); } catch { /* non-fatal */ }
+            const balance = await getBalance(userId);
+            affordableAiSlots = heroAutoMixCreditCost > 0
+              ? Math.max(0, Math.floor(balance.total / heroAutoMixCreditCost))
+              : 0;
+            heroAutoMixTelemetry.heroAutoMixBalanceBefore = balance.total;
+            if (affordableAiSlots < autoMixAiSlots.size) {
+              degradeReason = "insufficient_credits";
+              // Same skip marker the kie path used when credits ran out mid-job, so the
+              // client keeps telling the user why fewer AI images appeared.
+              aiSkippedReason = "credits";
+            }
           }
         }
       }
@@ -1499,10 +1524,15 @@ export async function POST(req: Request) {
         // Provider-side degrade: nothing was charged, and the client needs a different
         // explanation than "out of credits".
         aiSkippedReason = "provider";
+      } else if (degradeReason === "rate_limited") {
+        aiSkippedReason = "rate";
       }
       if (affordableAiSlots < autoMixAiSlots.size) {
         const demoted = demoteAiSlotsTo(affordableAiSlots);
-        trackAiSkip(degradeReason === "insufficient_credits" ? "credits" : "provider", demoted.length);
+        trackAiSkip(
+          degradeReason === "insufficient_credits" ? "credits" : degradeReason === "rate_limited" ? "rate" : "provider",
+          demoted.length,
+        );
         heroAutoMixTelemetry.heroAutoMixDegradedSlotCount = demoted.length;
         heroAutoMixTelemetry.heroAutoMixDegradeReason = degradeReason;
         console.warn(`[fetch-stock] Auto Mix hero AI degraded ${demoted.length} slot(s) → free photo (${degradeReason})`);
@@ -1808,6 +1838,33 @@ export async function POST(req: Request) {
         status: 503,
         headers: { "Retry-After": String(Math.max(1, Math.ceil(circuit.retryAfterMs / 1000))) },
       });
+    }
+    // Rate cap (public-launch abuse guard) — runs before any credit work. Admins
+    // are exempt (team ops; see hero-image-rate-limit.ts).
+    if (!isAdmin) {
+      const heroRate = await checkHeroImageRate(userId, clipsToGenerate);
+      if (!heroRate.ok) {
+        await recordFetchStockTelemetry("error", {
+          ...heroAiTelemetry,
+          providerErrorCode: "RATE_LIMITED",
+          errorProvider: "runpod",
+          heroImageRateScope: heroRate.scope,
+          heroImageRateUsedHour: heroRate.usedHour,
+          heroImageRateUsedDay: heroRate.usedDay,
+          failedSceneCount: directJobs.length,
+          completedSceneCount: 0,
+        });
+        return NextResponse.json({
+          error: heroImageRateLimitMessage(heroRate),
+          code: "RATE_LIMITED",
+          retryable: true,
+          retryAfterSec: heroRate.retryAfterSec,
+          failedScenes: directJobs.map((item) => item.sourceIndex),
+        }, {
+          status: 429,
+          headers: { "Retry-After": String(heroRate.retryAfterSec) },
+        });
+      }
     }
     await ensureMonthlyGrant(userId);
     const balance = await getBalance(userId);

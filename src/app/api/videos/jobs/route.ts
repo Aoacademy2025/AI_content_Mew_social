@@ -43,7 +43,12 @@ import {
 } from "@/lib/omnivoice";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
 import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
-import { isHeroAiBetaUser, isInternalAiBetaEnabledFor, isInternalAiTester } from "@/lib/internal-ai-access";
+import {
+  HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
+  isHeroAiImageEligible,
+  isInternalAiBetaEnabledFor,
+  isInternalAiTester,
+} from "@/lib/internal-ai-access";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
@@ -495,7 +500,10 @@ export async function POST(req: Request) {
       isInternalTester: isInternalAiTester(user),
     });
     if (useHeroRunpodImage) {
-      if (!isHeroAiBetaUser(user)) {
+      if (!isHeroAiImageEligible(user)) {
+        if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+          return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+        }
         return NextResponse.json({ error: "beta_only", message: "Hero AI Image ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
       }
       if (requestedImageModel !== "z-image-turbo") {
@@ -525,7 +533,10 @@ export async function POST(req: Request) {
       // AutoMix "ai" slots now generate on the Hero RunPod seam (fetch-stock), so the
       // mode follows the SAME Hero rollout gate as Hero-only mode; the legacy
       // managed-kie beta cohort keeps its existing access. fetch-stock re-checks both.
-      if (!isHeroAiBetaUser(user) && !canUseKieImages) {
+      if (!isHeroAiImageEligible(user) && !canUseKieImages) {
+        if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+          return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+        }
         return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
       }
     } else if (requestedSource !== "stock" && (!canUseKieImages || !isAdmin)) {
