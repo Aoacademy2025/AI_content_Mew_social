@@ -780,7 +780,7 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Chip selected>Hero · Z-Image Turbo · RunPod · {genCost} เครดิต</Chip>
+            <Chip selected>Hero AI Image · Realistic · Z-Image Turbo · {genCost} เครดิต</Chip>
           </div>
           <button
             onClick={() => setAdvancedOpen((o) => !o)}
@@ -827,7 +827,7 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
             title={enabled ? undefined : "เปิด B-roll ช่วงนี้ก่อนจึงจะสร้างภาพได้"}
             style={aiBusy || !finalPrompt || !enabled ? { opacity: 0.7, cursor: aiBusy ? "wait" : "default" } : undefined}
           >
-            {aiBusy ? "กำลังสร้าง Hero AI Image…" : `สร้าง Hero AI Image (ใช้ ${genCost} เครดิต)`}
+            {aiBusy ? "กำลังสร้างภาพ…" : `สร้างภาพ (ใช้ ${genCost} เครดิต)`}
           </BtnPrimary>
         </div>
       )}

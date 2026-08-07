@@ -1,4 +1,5 @@
 import { cleanScriptLine } from "../_lib/preprocess-script";
+import { planAutoMixSources } from "@/lib/automix-plan";
 
 /** b-roll window length (วิ/ช่วง) — SAME knob the real window planner reads
  *  (video-editor/page.tsx:56, mcp/orchestrator.ts). Default 4. Keeping the estimator on
@@ -35,17 +36,36 @@ export function countWordsV2(text: string): number {
 }
 
 /**
- * ประมาณเครดิตที่ preset "ผสม AI" จะใช้ต่อ 1 คลิป — PURE (ไม่มี side effect, ไม่มี hook).
- * ใช้โดยจอ Render Receipt (Task 5) และ label ปุ่ม preset.
+ * จำนวนภาพ AI ที่ AutoMix จะสร้างจริงต่อ 1 คลิป — PURE (ไม่มี side effect, ไม่มี hook).
  *
  * b-roll แบ่งเป็น "windows" ตาม NEXT_PUBLIC_BROLL_WINDOW_SEC (default 4 — ตรงกับ window
- * planner จริง); สัดส่วนที่เป็นภาพ AI = ai / (video+photo+ai) (กัน div-by-zero: ถ้าน้ำหนัก
- * รวมเป็น 0 → share = 0); เครดิต = ceil(windows × share) × เครดิตต่อภาพ.
+ * planner จริง) แล้ว **เรียก planAutoMixSources ตัวเดียวกับที่ server ใช้วางแผน slot**
+ * (reserve 1 slot/แหล่ง แล้วค่อยกระจายที่เหลือตามน้ำหนัก) จึงนับ slot "ai" ได้ตรงกับที่
+ * fetch-stock จะหักเครดิตจริง — สูตรเดิม (ceil(windows × ai/total)) เพี้ยนจากแผนจริงได้
+ * เช่น 60 วิ preset "AI เด่น" (1:1:2) เดิมได้ 8 ภาพ แต่ planner สร้างจริง 7 ภาพ.
  *
- * @param estSec           ความยาวคลิปโดยประมาณ (วินาที) — จาก estimateClipSecV2
- * @param preset           น้ำหนัก {video,photo,ai} ของ preset ที่เลือก
- * @param perImageCredits  เครดิตต่อภาพ AI 1 รูป (ตามโมเดล kie ที่ใช้)
- * @param windowSec        ความยาว window (วิ) — default = NEXT_PUBLIC_BROLL_WINDOW_SEC (ทดสอบ override ได้)
+ * @param estSec    ความยาวคลิปโดยประมาณ (วินาที) — จาก estimateClipSecV2
+ * @param preset    น้ำหนัก {video,photo,ai} ของ preset ที่เลือก
+ * @param windowSec ความยาว window (วิ) — default = NEXT_PUBLIC_BROLL_WINDOW_SEC (ทดสอบ override ได้)
+ */
+export function estimateAutoMixAiImageCount(
+  estSec: number,
+  preset: { video: number; photo: number; ai: number },
+  windowSec: number = BROLL_WINDOW_SEC,
+): number {
+  const secPerWindow = windowSec > 0 ? windowSec : 4;
+  const windows = Math.max(0, Math.ceil(estSec / secPerWindow));
+  if (windows === 0 || preset.ai <= 0) return 0;
+  return planAutoMixSources(windows, preset).filter((source) => source === "ai").length;
+}
+
+/**
+ * ประมาณเครดิตที่ preset "ผสม AI" จะใช้ต่อ 1 คลิป — PURE.
+ * ใช้โดยจอ Render Receipt (Task 5) และ label ปุ่ม preset.
+ *
+ * เครดิต = จำนวนภาพ AI ตามแผนจริง × เครดิตต่อภาพ (Hero AI Image — HERO_AI_IMAGE_CREDITS).
+ *
+ * @param perImageCredits  เครดิตต่อภาพ AI 1 รูป
  */
 export function estimatePresetCredits(
   estSec: number,
@@ -53,9 +73,5 @@ export function estimatePresetCredits(
   perImageCredits: number,
   windowSec: number = BROLL_WINDOW_SEC,
 ): number {
-  const secPerWindow = windowSec > 0 ? windowSec : 4;
-  const windows = Math.ceil(estSec / secPerWindow);
-  const totalWeight = preset.video + preset.photo + preset.ai;
-  const aiShare = totalWeight === 0 ? 0 : preset.ai / totalWeight;
-  return Math.ceil(windows * aiShare) * perImageCredits;
+  return estimateAutoMixAiImageCount(estSec, preset, windowSec) * perImageCredits;
 }

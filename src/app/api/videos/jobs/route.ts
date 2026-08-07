@@ -520,7 +520,15 @@ export async function POST(req: Request) {
           retryable: true,
         }, { status: 503 });
       }
-    } else if (requestedSource !== "stock" && !canUseKieImages) {
+    } else if (requestedSource === "auto-mix") {
+      // AutoMix "ai" slots now generate on the Hero RunPod seam (fetch-stock), so the
+      // mode follows the SAME Hero rollout gate as Hero-only mode; the legacy
+      // managed-kie beta cohort keeps its existing access. fetch-stock re-checks both.
+      if (!isHeroAiBetaUser(user) && !canUseKieImages) {
+        return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
+      }
+    } else if (requestedSource !== "stock" && (!canUseKieImages || !isAdmin)) {
+      // Legacy kie image mode: paused for customers, admin-only (ADR 0004).
       return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
     }
     const stockSource = requestedSource === "stock" ? undefined : requestedSource;

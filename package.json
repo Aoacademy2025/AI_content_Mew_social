@@ -88,6 +88,7 @@
     "generate:hero-voice-previews": "tsx scripts/generate-hero-voice-previews.ts",
     "verify:ai-studio": "tsx scripts/verify-ai-studio.ts",
     "verify:hero-image-price": "node --conditions=react-server --import tsx scripts/verify-hero-image-price.ts",
+    "verify:automix-hero": "node --conditions=react-server --import tsx scripts/verify-automix-hero-migration.ts",
     "verify:runpod-public-image": "tsx scripts/verify-runpod-public-image.ts",
     "smoke:runpod-public-image": "tsx scripts/smoke-runpod-public-image.ts",
     "smoke:runpod-custom-staging": "tsx scripts/smoke-runpod-custom-staging.ts",

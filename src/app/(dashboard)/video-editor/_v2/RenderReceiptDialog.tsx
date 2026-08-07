@@ -20,7 +20,7 @@ import { GlassPanel, BtnPrimary, BtnSecondary, GroupLabel } from "./ui";
 import { buildReceipt } from "./receipt";
 import { estimateClipSecV2 } from "./estimate";
 import { PRESET_WEIGHTS, presetUsesAi } from "./mix-presets";
-import { costKeyForKieModel, creditCostFor, HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
+import { creditCostFor, HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 import type { V2Project } from "./useV2Project";
 import { fetchClientJson } from "@/lib/client-request-cache";
@@ -87,14 +87,12 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
     return { video: 1, photo: 0, ai: 0 };
   }, [p.isAdmin, p.brollSource, p.mixPreset]);
 
-  // Per-image price from the SELECTED model, via the same map the server charges from.
-  // Non-admins default to gpt-image-2 when unset (matches server coercion + the picker).
+  // Per-image price — ONE price for every customer AI image. Hero AI Image mode and
+  // AutoMix "ai" slots both generate on the Hero RunPod seam (fetch-stock), charged
+  // from the same cost key the server reserves against, so the quote cannot drift.
   const perImageCredits = useMemo(() => {
-    if (p.brollSource === "kie-image") return HERO_AI_IMAGE_CREDITS;
-    const effectiveModel = p.isAdmin ? p.kieModel : (p.kieModel || "gpt-image-2-text-to-image");
-    const costKey = effectiveModel ? costKeyForKieModel(effectiveModel) : null;
-    return costKey ? creditCostFor(costKey) : 0;
-  }, [p.brollSource, p.isAdmin, p.kieModel]);
+    return HERO_AI_IMAGE_CREDITS;
+  }, []);
 
   const model = useMemo(
     () => buildReceipt({
