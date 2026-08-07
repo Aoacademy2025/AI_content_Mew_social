@@ -345,10 +345,12 @@ function PricingContent() {
           const isPaid = key !== "FREE";
           const isTrialPlan = onTrial && key === "PRO";
           const cardMode = currentPlan && isPaid
-            ? paidPlanCardMode({
+              ? paidPlanCardMode({
                 currentPlan,
                 subStatus: me?.subStatus ?? null,
-                isTrialPlan,
+                // Trial state belongs to the account, not only the PRO card:
+                // an active PRO trial must also be able to convert to BUSINESS.
+                isTrialPlan: onTrial,
                 billingPeriod: me?.billingPeriod ?? null,
                 planExpiresAt: me?.planExpiresAt ? new Date(me.planExpiresAt) : null,
                 paymentMethod: period === "monthly" ? "card" : method,

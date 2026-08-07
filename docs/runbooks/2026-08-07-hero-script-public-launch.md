@@ -5,6 +5,15 @@
 
 > คำว่า “พร้อมเปิด” ใน runbook นี้หมายถึง critical paths ที่กำหนดไว้ผ่านครบและไม่มี incident ระหว่าง cohort จริง ไม่ได้หมายความว่าซอฟต์แวร์จะพิสูจน์ได้ว่าไม่มี bug ทุกชนิด
 
+## Production cohort baseline (read-only)
+
+ตรวจเมื่อ 7 สิงหาคม 2026 โดยไม่อ่านอีเมลหรือแก้ข้อมูล:
+
+- สมาชิกบัตรต่ออัตโนมัติ active 5 บัญชี; มี Payment `PAID` ที่ `periodDays > 0` ครบ 5/5; missing 0
+- สมาชิกแบบกำหนดเวลา/PromptPay ที่ยัง active 6 บัญชี; มี Payment `PAID` ที่ `periodDays > 0` ครบ 6/6
+- รวม paid-first cohort 11 บัญชี
+- active trial 28 บัญชี; ยังคงปิดด้วย `HERO_SCRIPT_TRIAL_PERCENT=0`
+
 ## สิ่งที่ต้องผ่านก่อน deploy
 
 - `npm run verify:hero-script-launch` ผ่านทั้งหมด

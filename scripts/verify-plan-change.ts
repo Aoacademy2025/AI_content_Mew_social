@@ -68,6 +68,9 @@ assert(checkoutAllowed({ plan: "PRO", subStatus: null, trialEndsAt: past }, "PRO
 // Pricing-page presentation must mirror the checkout rules without mistaking every
 // PRO account for an active paid subscription.
 assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: null, isTrialPlan: true }, "PRO") === "purchase", "signup-trial PRO stays purchasable");
+assert(paidPlanCardMode({
+  currentPlan: "PRO", subStatus: null, isTrialPlan: true, planExpiresAt: future, paymentMethod: "card",
+}, "BUSINESS", "monthly", now) === "purchase", "active PRO trial can convert directly to BUSINESS by card");
 assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: null, isTrialPlan: false }, "PRO") === "renew", "granted/one-time PRO can renew PRO");
 assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: "active", isTrialPlan: false }, "PRO") === "current", "active PRO cannot duplicate PRO");
 assert(paidPlanCardMode({ currentPlan: "PRO", subStatus: "active", isTrialPlan: false }, "BUSINESS") === "manage", "active subscription changes via Billing");
