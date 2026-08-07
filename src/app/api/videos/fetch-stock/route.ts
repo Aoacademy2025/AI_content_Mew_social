@@ -1433,8 +1433,10 @@ export async function POST(req: Request) {
   let heroAutoMixStopped = false; // a systemic/stop-batch provider failure halts the rest
   if (useAutoMix) {
     if (heroAutoMixMint && !heroAutoMixMint.ok) {
-      // Visible in telemetry so a blocked (or misrouted) caller is diagnosable without
-      // guessing why an AutoMix run produced no AI slots.
+      // Symmetric with the credits/rate/provider degrades below: name the reason on the
+      // response so the caller can explain the missing AI images, and record the exact
+      // denial in telemetry so a blocked (or misrouted) caller is diagnosable.
+      aiSkippedReason = "unauthorized";
       heroAutoMixTelemetry.heroAutoMixMintDenied = heroAutoMixMint.reason;
     }
     const anyPhotoUsable =

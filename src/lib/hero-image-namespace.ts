@@ -19,11 +19,18 @@ import { prisma } from "@/lib/prisma";
  * and AI Studio mints under `studio:`. Neither is swept.
  */
 
-/** VideoJob.status values after which the pipeline can no longer consume new images. */
-export const TERMINAL_VIDEO_JOB_STATUSES: ReadonlySet<string> = new Set([
-  "done",
-  "failed",
-  "canceled",
+/**
+ * VideoJob.status values in which the render pipeline can still consume a newly minted
+ * image. ALLOWLIST on purpose: the contract is
+ * `queued|processing|waiting_provider|done|failed|canceled` (prisma/schema.prisma,
+ * model VideoJob, `status` field). A denylist of the terminal three would silently
+ * treat any status added later — say `expired` — as mintable; here a new live state has
+ * to be added deliberately and anything unknown is refused.
+ */
+export const LIVE_VIDEO_JOB_STATUSES: ReadonlySet<string> = new Set([
+  "queued",
+  "processing",
+  "waiting_provider",
 ]);
 
 export type HeroVideoMintDenialReason =
@@ -31,7 +38,7 @@ export type HeroVideoMintDenialReason =
   | "pipeline_only"
   /** No such VideoJob for this user (missing, or owned by somebody else). */
   | "video_not_found"
-  /** The VideoJob already reached a terminal state; new images could never be delivered. */
+  /** The VideoJob is not in a live render state; new images could never be delivered. */
   | "video_terminal";
 
 export type HeroVideoMintDecision =
@@ -51,7 +58,7 @@ export function decideHeroVideoMint(input: {
   if (!input.videoJob || input.videoJob.userId !== input.userId) {
     return { ok: false, reason: "video_not_found" };
   }
-  if (TERMINAL_VIDEO_JOB_STATUSES.has(input.videoJob.status)) {
+  if (!LIVE_VIDEO_JOB_STATUSES.has(input.videoJob.status)) {
     return { ok: false, reason: "video_terminal" };
   }
   return { ok: true };

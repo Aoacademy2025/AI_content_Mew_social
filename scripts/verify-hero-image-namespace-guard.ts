@@ -95,7 +95,7 @@ async function main() {
   // 2. Mint policy (pure) — provenance first, then ownership, then state
   // ═══════════════════════════════════════════════════════════════════════════
   console.log("\n[2] decideHeroVideoMint policy matrix");
-  const { decideHeroVideoMint, TERMINAL_VIDEO_JOB_STATUSES, HERO_VIDEO_MINT_DENIAL_RESPONSES } =
+  const { decideHeroVideoMint, LIVE_VIDEO_JOB_STATUSES, HERO_VIDEO_MINT_DENIAL_RESPONSES } =
     await import("../src/lib/hero-image-namespace");
 
   const owned = { userId: "user-1", status: "processing" };
@@ -133,8 +133,16 @@ async function main() {
     );
   }
   check(
-    "terminal set matches the VideoJob.status contract exactly (done|failed|canceled)",
-    [...TERMINAL_VIDEO_JOB_STATUSES].sort().join(",") === "canceled,done,failed",
+    "live-state set is the ALLOWLIST from the VideoJob.status contract (queued|processing|waiting_provider)",
+    [...LIVE_VIDEO_JOB_STATUSES].sort().join(",") === "processing,queued,waiting_provider",
+  );
+  // The allowlist is what makes a future schema addition fail CLOSED — a denylist of
+  // the three terminal states would have admitted this unknown status silently.
+  check(
+    "an unknown future status (e.g. `expired`) is refused, not treated as mintable",
+    JSON.stringify(
+      decideHeroVideoMint({ fromRenderPipeline: true, userId: "user-1", videoJob: { userId: "user-1", status: "expired" } }),
+    ) === JSON.stringify({ ok: false, reason: "video_terminal" }),
   );
   check(
     "pipeline_only answers 403 with a Thai message pointing at the editor's Render flow",
@@ -333,6 +341,45 @@ async function main() {
   });
   check("a different user cannot sweep this video's images", crossUser.refundedJobs === 0);
 
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 4b. Cross-kind key adoption — the free-image variant via a caller-minted key
+  // ═══════════════════════════════════════════════════════════════════════════
+  // /api/ai-studio/voices took its idempotencyKey verbatim, so an allowlisted user could
+  // pre-create a VOICE row keyed `video:<theirJobId>:scene:0`. createReservedImageJob's
+  // replay short-circuit would then hand that row back as the image's reservation — an
+  // image generated with no credit debit. Two independent guards now stop it.
+  console.log("\n[4b] A voice row can never be adopted as an image reservation");
+  const poisonedKey = `video:${attackerRunning.id}:scene:9`;
+  await prisma.aiGenerationJob.create({
+    data: {
+      userId: attacker.id,
+      kind: "voice",
+      provider: "runpod",
+      model: "voice_01",
+      status: "queued",
+      chargeState: "pending",
+      creditCost: 0,
+      idempotencyKey: poisonedKey,
+    },
+  });
+  const balanceBeforePoison = await balanceNow();
+  let adoptionError: unknown = null;
+  try {
+    await reserve(poisonedKey);
+  } catch (error) {
+    adoptionError = error;
+  }
+  check(
+    "createReservedImageJob refuses to adopt a non-image row holding the same key",
+    adoptionError instanceof Error && /non-image job/.test(adoptionError.message),
+    adoptionError instanceof Error ? adoptionError.message : String(adoptionError),
+  );
+  check(
+    "the refused adoption debited nothing and created no image job",
+    (await balanceNow()) === balanceBeforePoison
+      && (await prisma.aiGenerationJob.count({ where: { userId: attacker.id, kind: "image" } })) === 4,
+  );
+
   await prisma.$disconnect();
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -354,6 +401,51 @@ async function main() {
     mintSites.length === 2
       && mintSites.every((site) => site.startsWith("src/app/api/videos/fetch-stock/route.ts@")),
     mintSites.join(" | ") || "no mint site found",
+  );
+
+  // 5a-ii. The literal above only catches an inline `idempotencyKey: \`video:…\``. Catch
+  // the evasion where the key is built into a variable first: EVERY `video:${…}` template
+  // in src/ must be either the sweep prefix or one of the two gated mints.
+  const KNOWN_VIDEO_TEMPLATES: Record<string, number> = {
+    "src/lib/video-image-batch-settlement.ts": 1, // the sweep prefix itself
+    "src/app/api/videos/fetch-stock/route.ts": 2, // the two gated mints
+  };
+  const strayTemplates: string[] = [];
+  const templateCounts: Record<string, number> = {};
+  for (const file of walkSources("src")) {
+    const rel = file.replace(/\\/g, "/");
+    const source = readFileSync(file, "utf8");
+    for (const at of allIndexesOf(source, "`video:${")) {
+      // Ignore prose: a doc comment naming the namespace is not a mint.
+      const lineStart = source.lastIndexOf("\n", at) + 1;
+      const line = source.slice(lineStart, source.indexOf("\n", at));
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
+      templateCounts[rel] = (templateCounts[rel] ?? 0) + 1;
+      if (!(rel in KNOWN_VIDEO_TEMPLATES)) strayTemplates.push(`${rel}: ${line.trim().slice(0, 90)}`);
+    }
+  }
+  check(
+    "every `video:${…}` template in src/ is either the sweep prefix or a gated mint",
+    strayTemplates.length === 0
+      && Object.entries(KNOWN_VIDEO_TEMPLATES).every(([file, count]) => templateCounts[file] === count),
+    strayTemplates.join(" | ") || JSON.stringify(templateCounts),
+  );
+
+  // 5a-iii. The hero seam itself may only be called from files that carry a gate.
+  const HERO_SEAM_CALLERS = new Set([
+    "src/app/api/videos/fetch-stock/route.ts",          // gated by authorizeHeroVideoMint
+    "src/app/api/videos/broll-window/generate/route.ts", // ownership + status + `broll-window:` namespace
+    "src/lib/video-hero-image.server.ts",                // the seam's own definition
+  ]);
+  const seamCallers = new Set<string>();
+  for (const file of walkSources("src")) {
+    const rel = file.replace(/\\/g, "/");
+    if (readFileSync(file, "utf8").includes("generateHeroImageForVideo(")) seamCallers.add(rel);
+  }
+  check(
+    "generateHeroImageForVideo is reachable only from the three known, gated files",
+    [...seamCallers].every((file) => HERO_SEAM_CALLERS.has(file)) && seamCallers.size === 3,
+    [...seamCallers].join(" | "),
   );
 
   // 5b. Provenance comes from the service-credential header check, nothing else.
@@ -424,6 +516,41 @@ async function main() {
     settlement.includes("const prefix = `video:${input.videoJobId}:`;")
       && settlement.includes("idempotencyKey: { startsWith: prefix }")
       && settlement.includes("userId: input.userId,"),
+  );
+
+  // 5f. EVERY surface that lets a caller mint its own idempotency key namespaces it
+  // server-side, so none of them can land in (or collide with) the `video:` namespace.
+  const studioImages = readFileSync("src/app/api/ai-studio/images/route.ts", "utf8");
+  const studioVoices = readFileSync("src/app/api/ai-studio/voices/route.ts", "utf8");
+  check(
+    "AI Studio images prefix the caller-minted key with `studio:`",
+    studioImages.includes("const storedIdempotencyKey = `studio:${idempotencyKey}`;")
+      && studioImages.includes("idempotencyKey: storedIdempotencyKey,"),
+  );
+  check(
+    "AI Studio voices prefix the caller-minted key with `studio-voice:` (never passed verbatim)",
+    studioVoices.includes("const storedIdempotencyKey = `studio-voice:${idempotencyKey}`;")
+      && studioVoices.includes("idempotencyKey: storedIdempotencyKey,")
+      && !/idempotencyKey,\s*\n\s*\}\);/.test(studioVoices),
+  );
+  check(
+    "the voice route bounds the caller key so prefix+key stays within the 120-char contract",
+    /\{8,107\}/.test(studioVoices) && "studio-voice:".length + 107 === 120,
+  );
+  check(
+    "createReservedImageJob refuses to adopt a row of another kind (backstop for the next surface)",
+    readFileSync("src/lib/ai-generation-jobs.server.ts", "utf8")
+      .includes('if (existing.kind !== "image") {'),
+  );
+
+  // 5g. The AutoMix denial is diagnosable client-side, like every other degrade.
+  check(
+    "an AutoMix mint denial reports aiSkippedReason=\"unauthorized\" alongside its telemetry marker",
+    /aiSkippedReason = "unauthorized";[\s\S]{0,200}?heroAutoMixTelemetry\.heroAutoMixMintDenied = heroAutoMixMint\.reason;/.test(
+      fetchStock,
+    )
+      && readFileSync("src/lib/kie-image-guards.ts", "utf8")
+        .includes('export type AiSkipReason = "credits" | "rate" | "cap" | "provider" | "unauthorized" | null;'),
   );
 
   if (failures > 0) {

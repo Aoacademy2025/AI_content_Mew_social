@@ -32,6 +32,11 @@ export function isValidServiceCredential(
  * from the server-side render pipeline)? Header-only — no DB round-trip — so callers
  * can use it as a cheap provenance gate. A browser can never satisfy it: the secret
  * is a server-only env value that is never shipped to the client.
+ *
+ * Narrower than resolveServiceActor by design: it answers "is the CALLER the pipeline?",
+ * not "which user is it acting as?", and deliberately does not verify that the acted-as
+ * row exists. Use it alongside getCurrentUser (which already resolved and returned that
+ * user), never as a substitute for it.
  */
 export async function isServiceActorRequest(): Promise<boolean> {
   if (!process.env.MCP_SERVICE_SECRET) return false; // fast off-switch (same as resolveServiceActor)
