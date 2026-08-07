@@ -16,7 +16,7 @@ import {
   type DurationSec,
 } from "./_components/BrandProfilePanel";
 import { TopicStep } from "./_components/TopicStep";
-import { HookStep, type HookChoice } from "./_components/HookStep";
+import { HookStep, hookContextKey, type HookChoice } from "./_components/HookStep";
 import { ScriptEditorStep, type ScriptDraft } from "./_components/ScriptEditorStep";
 import { ScriptHistory, type SavedScript } from "./_components/ScriptHistory";
 
@@ -43,9 +43,11 @@ export default function HeroScriptPage() {
     setSelectedProfileId(script.brandProfileId);
     setDurationSec(script.durationSec as DurationSec);
     setTopic(script.topic);
-    setSelectedHook({ formula: script.hookFormula ?? "", text: script.hookText });
+    const contextKey = hookContextKey(script.topic, script.durationSec, script.brandProfileId);
+    setSelectedHook({ formula: script.hookFormula ?? "", text: script.hookText, contextKey });
     setDraft({
       id: script.id,
+      brandProfileId: script.brandProfileId,
       topic: script.topic,
       durationSec: script.durationSec,
       hookFormula: script.hookFormula,

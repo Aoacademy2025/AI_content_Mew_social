@@ -8,7 +8,7 @@ import { classifyEntitlement } from "@/lib/entitlements";
 import { checkMinuteQuota } from "@/lib/minute-limits";
 import { managedKieLaunchOn } from "@/lib/kie-image-guards";
 import { isHeroAiBetaUser, isInternalAiTester } from "@/lib/internal-ai-access";
-import { isHeroScriptAllowedUser } from "@/lib/hero-script-access";
+import { resolveHeroScriptAccess } from "@/lib/hero-script-rollout.server";
 
 export async function GET() {
   try {
@@ -59,9 +59,7 @@ export async function GET() {
     const managedKieOn = managedKieLaunchOn();
     const internalAiTester = isInternalAiTester(authUser);
     const heroAiBeta = isHeroAiBetaUser(authUser);
-    // Internal-beta allowlist (post-review amendment 2026-07-31, fail-closed —
-    // see hero-script-access.ts): drives the sidebar's "เขียนสคริปต์ AI" item.
-    const heroScriptAllowed = isHeroScriptAllowedUser(authUser);
+    const heroScriptAccess = await resolveHeroScriptAccess(authUser);
     // Managed-kie: is AI image generation un-gated for THIS user? True for paid
     // (PRO/BUSINESS) plans only when both flags are on. Admins always have access
     // (client mirrors already OR this with an isAdmin check), so this is the
@@ -82,7 +80,9 @@ export async function GET() {
       managedKieOn: internalAiTester && managedKieOn,
       internalAiTester,
       heroAiBeta,
-      heroScriptAllowed,
+      heroScriptAllowed: heroScriptAccess.canUse,
+      heroScriptPreview: heroScriptAccess.canPreview,
+      heroScriptCohort: heroScriptAccess.cohort,
       ...minuteFields,
     });
   } catch (error) {

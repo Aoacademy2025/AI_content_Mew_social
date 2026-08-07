@@ -82,6 +82,11 @@ async function main() {
     HERO_SCRIPT_PROVIDER_DEFAULT,
     PROVIDER_CREDIT_CODE,
     PROVIDER_UNAVAILABLE_CODE,
+    reserveScriptGeneration,
+    settleScriptGeneration,
+    heroScriptGenerationLimit,
+    HERO_SCRIPT_FREE_GENERATIONS,
+    HERO_SCRIPT_TRIAL_GENERATIONS,
   } = await import("../src/lib/hero-script.server");
   const {
     classifyOpenRouterFailure,
@@ -128,6 +133,13 @@ async function main() {
   const { FREE_LIMITS, PRO_LIMITS, BUSINESS_LIMITS } = await import("../src/lib/plan-limits");
   const { encryptKey } = await import("../src/lib/key-crypto");
   const { isHeroScriptAllowedEmail } = await import("../src/lib/hero-script-access");
+  const {
+    decideHeroScriptAccess,
+    heroScriptRolloutBucket,
+    heroScriptRolloutFlags,
+    rolloutPercent,
+    resolveHeroScriptAccess,
+  } = await import("../src/lib/hero-script-rollout.server");
 
   // ── Post-review amendment (2026-07-31): Hero Script internal-beta allowlist
   // matcher — exact match, ANCHORED @-domain match (not a raw string suffix —
@@ -199,6 +211,111 @@ async function main() {
       "isHeroScriptAllowedEmail: malformed entries ignored, the valid entry still matches");
     ok(isHeroScriptAllowedEmail("anything@example.com", malformed) === false,
       "isHeroScriptAllowedEmail: a bare '@' entry matches nothing (not a wildcard)");
+  }
+
+  // ── Paid-first rollout: deterministic cohorts + fail-closed flags ──────
+  {
+    const paidEntitlement = {
+      effectivePlan: "PRO", source: "SUBSCRIPTION" as const, action: "KEEP" as const,
+      reason: "active_subscription", expiresAt: null,
+    };
+    const trialEntitlement = {
+      effectivePlan: "PRO", source: "TRIAL" as const, action: "KEEP" as const,
+      reason: "active_trial", expiresAt: new Date(Date.now() + 86400000),
+    };
+    const freeEntitlement = {
+      effectivePlan: "FREE", source: "FREE" as const, action: "KEEP" as const,
+      reason: "free_plan", expiresAt: null,
+    };
+    const off = { paidEnabled: false, publicPreview: false, trialPercent: 0, freePercent: 0 };
+
+    ok(heroScriptRolloutFlags({} as NodeJS.ProcessEnv).paidEnabled === false,
+      "rollout flags: paid access defaults OFF");
+    ok(heroScriptRolloutFlags({} as NodeJS.ProcessEnv).publicPreview === false,
+      "rollout flags: public preview defaults OFF");
+    ok(rolloutPercent("-1") === 0 && rolloutPercent("101") === 100 && rolloutPercent("10.9") === 10,
+      "rolloutPercent clamps to an integer between 0 and 100");
+    ok(heroScriptRolloutBucket("same-user", "trial") === heroScriptRolloutBucket("same-user", "trial"),
+      "rollout bucket is deterministic for the same user and salt");
+
+    const internal = decideHeroScriptAccess({
+      userId: "internal", internal: true, cashPaid: false, entitlement: freeEntitlement, flags: off,
+    });
+    ok(internal.canUse && internal.cohort === "internal",
+      "rollout: internal allowlist remains a full-access backdoor while flags are off");
+
+    const unpaidPro = decideHeroScriptAccess({
+      userId: "unpaid-pro", internal: false, cashPaid: false, entitlement: paidEntitlement,
+      flags: { ...off, paidEnabled: true, publicPreview: true },
+    });
+    ok(!unpaidPro.canUse && unpaidPro.canPreview && unpaidPro.cohort === "preview",
+      "rollout: PRO entitlement without a PAID payment sees preview, not full access");
+
+    const paid = decideHeroScriptAccess({
+      userId: "paid", internal: false, cashPaid: true, entitlement: paidEntitlement,
+      flags: { ...off, paidEnabled: true },
+    });
+    ok(paid.canUse && paid.cohort === "paid",
+      "rollout: money-backed active entitlement gets full paid access");
+
+    const waitingTrial = decideHeroScriptAccess({
+      userId: "trial", internal: false, cashPaid: false, entitlement: trialEntitlement,
+      flags: { ...off, publicPreview: true, trialPercent: 0 },
+    });
+    ok(!waitingTrial.canUse && waitingTrial.canPreview,
+      "rollout: trial cohort stays in preview at 0 percent");
+    const allTrial = decideHeroScriptAccess({
+      userId: "trial", internal: false, cashPaid: false, entitlement: trialEntitlement,
+      flags: { ...off, trialPercent: 100 },
+    });
+    ok(allTrial.canUse && allTrial.cohort === "trial",
+      "rollout: trial cohort opens at 100 percent");
+    const allFree = decideHeroScriptAccess({
+      userId: "free", internal: false, cashPaid: false, entitlement: freeEntitlement,
+      flags: { ...off, freePercent: 100 },
+    });
+    ok(allFree.canUse && allFree.cohort === "free",
+      "rollout: free cohort opens at 100 percent");
+
+    const previousFlags = {
+      allowlist: process.env.HERO_SCRIPT_ALLOWED_EMAILS,
+      paid: process.env.HERO_SCRIPT_PAID_ENABLED,
+      preview: process.env.HERO_SCRIPT_PUBLIC_PREVIEW,
+    };
+    process.env.HERO_SCRIPT_ALLOWED_EMAILS = "";
+    process.env.HERO_SCRIPT_PAID_ENABLED = "1";
+    process.env.HERO_SCRIPT_PUBLIC_PREVIEW = "1";
+    try {
+      const paidUser = await prisma.user.create({
+        data: {
+          id: "hs-rollout-paid", name: "paid rollout", email: "hs-rollout-paid@example.com",
+          plan: "PRO", subStatus: "active",
+        },
+      });
+      const beforePayment = await resolveHeroScriptAccess(paidUser);
+      ok(!beforePayment.canUse && beforePayment.canPreview,
+        "resolve access: active PRO without a payment remains preview-only");
+      const payment = await prisma.payment.create({
+        data: {
+          userId: paidUser.id, stripeSessionId: "hs-rollout-pending", plan: "PRO",
+          amount: 9900, status: "PENDING",
+        },
+      });
+      const pendingPayment = await resolveHeroScriptAccess(paidUser);
+      ok(!pendingPayment.canUse,
+        "resolve access: a PENDING checkout is not treated as money-backed access");
+      await prisma.payment.update({ where: { id: payment.id }, data: { status: "PAID", paidAt: new Date() } });
+      const afterPayment = await resolveHeroScriptAccess(paidUser);
+      ok(afterPayment.canUse && afterPayment.cohort === "paid",
+        "resolve access: the same active entitlement opens only after Payment becomes PAID");
+    } finally {
+      if (previousFlags.allowlist === undefined) delete process.env.HERO_SCRIPT_ALLOWED_EMAILS;
+      else process.env.HERO_SCRIPT_ALLOWED_EMAILS = previousFlags.allowlist;
+      if (previousFlags.paid === undefined) delete process.env.HERO_SCRIPT_PAID_ENABLED;
+      else process.env.HERO_SCRIPT_PAID_ENABLED = previousFlags.paid;
+      if (previousFlags.preview === undefined) delete process.env.HERO_SCRIPT_PUBLIC_PREVIEW;
+      else process.env.HERO_SCRIPT_PUBLIC_PREVIEW = previousFlags.preview;
+    }
   }
 
   // ── plan-limits: brandProfiles caps ─────────────────────────────────────
@@ -1805,6 +1922,79 @@ async function main() {
     const blank = await sendScriptToEditor("hs4-pro", blankScript.id);
     ok(blank.ok === false && blank.code === "EMPTY_SCRIPT",
       "sendScriptToEditor rejects a script that is blank after normalization");
+  }
+
+  // ── Durable full-generation quota (FREE 3 / TRIAL 10) ──────────────────
+  {
+    const quotaUsers = ["hs-quota-free", "hs-quota-failed", "hs-quota-expired", "hs-quota-race", "hs-quota-trial"];
+    await prisma.user.createMany({
+      data: quotaUsers.map((id) => ({
+        id,
+        name: id,
+        email: `${id}@example.com`,
+        plan: id.endsWith("trial") ? "PRO" : "FREE",
+      })),
+    });
+
+    ok(heroScriptGenerationLimit("free") === HERO_SCRIPT_FREE_GENERATIONS,
+      "generation quota: FREE limit is 3 full scripts");
+    ok(heroScriptGenerationLimit("trial") === HERO_SCRIPT_TRIAL_GENERATIONS,
+      "generation quota: TRIAL limit is 10 full scripts");
+    const paidReservation = await reserveScriptGeneration("no-row-needed", "paid");
+    ok(paidReservation.allowed && paidReservation.reservationId === null,
+      "generation quota: paid cohort is unlimited and creates no quota row");
+
+    for (let i = 0; i < HERO_SCRIPT_FREE_GENERATIONS; i++) {
+      const reservation = await reserveScriptGeneration("hs-quota-free", "free");
+      ok(reservation.allowed, `generation quota: FREE reservation ${i + 1} is allowed`);
+      if (reservation.allowed) await settleScriptGeneration("hs-quota-free", reservation.reservationId, true);
+    }
+    // Deleting saved Script rows cannot touch the independent generation ledger.
+    const deletable = await createScript("hs-quota-free", {
+      topic: "delete bypass probe", durationSec: 30, hookText: "h", bodyText: "b", ctaText: "c",
+    });
+    await deleteScript("hs-quota-free", deletable.id);
+    const afterDelete = await reserveScriptGeneration("hs-quota-free", "free");
+    ok(!afterDelete.allowed && afterDelete.used === HERO_SCRIPT_FREE_GENERATIONS,
+      "generation quota: deleting a saved Script does not restore a consumed generation");
+
+    const failed = await reserveScriptGeneration("hs-quota-failed", "free");
+    ok(failed.allowed, "generation quota: failure probe reserves a slot");
+    if (failed.allowed) await settleScriptGeneration("hs-quota-failed", failed.reservationId, false);
+    const retry = await reserveScriptGeneration("hs-quota-failed", "free");
+    ok(retry.allowed && retry.used === 1,
+      "generation quota: a failed provider attempt releases its product slot");
+    if (retry.allowed) await settleScriptGeneration("hs-quota-failed", retry.reservationId, true);
+
+    const old = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    await prisma.scriptGenerationUsage.create({
+      data: {
+        userId: "hs-quota-expired", bucket: "free", slot: 1, status: "succeeded",
+        createdAt: old, expiresAt: old, completedAt: old,
+      },
+    });
+    const recycled = await reserveScriptGeneration("hs-quota-expired", "free");
+    ok(recycled.allowed && recycled.used === 1,
+      "generation quota: a generation older than the rolling window is recycled");
+
+    for (let i = 0; i < HERO_SCRIPT_FREE_GENERATIONS - 1; i++) {
+      const reservation = await reserveScriptGeneration("hs-quota-race", "free");
+      if (reservation.allowed) await settleScriptGeneration("hs-quota-race", reservation.reservationId, true);
+    }
+    const race = await Promise.all([
+      reserveScriptGeneration("hs-quota-race", "free"),
+      reserveScriptGeneration("hs-quota-race", "free"),
+    ]);
+    ok(race.filter((result) => result.allowed).length === 1 && race.filter((result) => !result.allowed).length === 1,
+      "generation quota: concurrent requests cannot both claim the final FREE slot");
+
+    for (let i = 0; i < HERO_SCRIPT_TRIAL_GENERATIONS; i++) {
+      const reservation = await reserveScriptGeneration("hs-quota-trial", "trial");
+      if (reservation.allowed) await settleScriptGeneration("hs-quota-trial", reservation.reservationId, true);
+    }
+    const trialBlocked = await reserveScriptGeneration("hs-quota-trial", "trial");
+    ok(!trialBlocked.allowed && trialBlocked.used === HERO_SCRIPT_TRIAL_GENERATIONS,
+      "generation quota: TRIAL blocks the 11th full script in the rolling window");
   }
 
   console.log(`\n${failures === 0 ? "✅" : "❌"} ${passed} passed, ${failures} failed`);

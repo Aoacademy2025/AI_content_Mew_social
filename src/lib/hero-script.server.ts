@@ -27,10 +27,14 @@ import { geminiGenerateText } from "@/lib/gemini";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import {
-  isHeroScriptAllowedUser,
   HERO_SCRIPT_LOCKED_CODE,
   HERO_SCRIPT_LOCKED_MESSAGE,
 } from "@/lib/hero-script-access";
+import {
+  resolveHeroScriptAccess,
+  type HeroScriptAccessDecision,
+  type HeroScriptCohort,
+} from "@/lib/hero-script-rollout.server";
 import { createEditorProject, sanitizeEditorProjectTitle } from "@/lib/editor-projects";
 import { buildScriptHandoffDraft } from "@/lib/editor-default-draft";
 import { getDefaultBrandPreference } from "@/lib/brand-assets.server";
@@ -59,7 +63,7 @@ import { buildBannedWordRetryNote } from "@/lib/prompts/hero-script";
 // FEATURE_LOCKED response is defined once, not copy-pasted 11 times.
 
 export type HeroScriptAuthResult =
-  | { ok: true; user: User }
+  | { ok: true; user: User; access: HeroScriptAccessDecision }
   | { ok: false; response: NextResponse };
 
 export async function requireHeroScriptUser(): Promise<HeroScriptAuthResult> {
@@ -67,7 +71,8 @@ export async function requireHeroScriptUser(): Promise<HeroScriptAuthResult> {
   if (!authUser) {
     return { ok: false, response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
   }
-  if (!isHeroScriptAllowedUser(authUser)) {
+  const access = await resolveHeroScriptAccess(authUser);
+  if (!access.canUse) {
     return {
       ok: false,
       response: NextResponse.json(
@@ -76,7 +81,7 @@ export async function requireHeroScriptUser(): Promise<HeroScriptAuthResult> {
       ),
     };
   }
-  return { ok: true, user: authUser };
+  return { ok: true, user: authUser, access };
 }
 
 // ── bannedWords: stored as a JSON string array on BrandProfile ─────────────
@@ -987,6 +992,99 @@ export async function deleteScript(userId: string, id: string): Promise<boolean>
 export const SCRIPT_WINDOW_DAYS = 30;
 
 const SCRIPT_WINDOW_MS = SCRIPT_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+// Full-generation product quota. Unlike the legacy Script-row count below,
+// this ledger is charged before /generate calls the server-paid provider and
+// survives deleting the resulting saved Script.
+export const HERO_SCRIPT_FREE_GENERATIONS = 3;
+export const HERO_SCRIPT_TRIAL_GENERATIONS = 10;
+export const HERO_SCRIPT_RESERVATION_MINUTES = 10;
+
+export function heroScriptGenerationLimit(cohort: HeroScriptCohort): number {
+  if (cohort === "free") return HERO_SCRIPT_FREE_GENERATIONS;
+  if (cohort === "trial") return HERO_SCRIPT_TRIAL_GENERATIONS;
+  return Number.POSITIVE_INFINITY;
+}
+
+export type ScriptGenerationReservation =
+  | { allowed: true; reservationId: string | null; used: number; limit: number }
+  | { allowed: false; reservationId: null; used: number; limit: number; message: string };
+
+/** Atomically reserve one full-script generation for finite FREE/TRIAL
+ *  cohorts. Active reservations count until they expire, closing concurrent
+ *  request races without permanently burning quota after a crashed request. */
+export async function reserveScriptGeneration(
+  userId: string,
+  cohort: HeroScriptCohort,
+  now: Date = new Date(),
+): Promise<ScriptGenerationReservation> {
+  const limit = heroScriptGenerationLimit(cohort);
+  if (!Number.isFinite(limit)) {
+    return { allowed: true, reservationId: null, used: 0, limit };
+  }
+
+  const bucket = cohort === "trial" ? "trial" : "free";
+  const windowStart = new Date(now.getTime() - SCRIPT_WINDOW_MS);
+  const expiresAt = new Date(now.getTime() + HERO_SCRIPT_RESERVATION_MINUTES * 60 * 1000);
+
+  // Recycle only reservations that can no longer count. A fixed unique slot
+  // per cohort makes admission safe across concurrent app processes: two
+  // requests cannot both claim the same last slot.
+  await prisma.scriptGenerationUsage.deleteMany({
+    where: {
+      userId,
+      bucket,
+      OR: [
+        { status: "failed" },
+        { status: "succeeded", createdAt: { lt: windowStart } },
+        { status: "reserved", expiresAt: { lte: now } },
+      ],
+    },
+  });
+
+  for (let slot = 1; slot <= limit; slot++) {
+    try {
+      const row = await prisma.scriptGenerationUsage.create({
+        data: { userId, bucket, slot, status: "reserved", expiresAt },
+        select: { id: true },
+      });
+      const used = await prisma.scriptGenerationUsage.count({
+        where: { userId, bucket },
+      });
+      return { allowed: true as const, reservationId: row.id, used, limit };
+    } catch (error) {
+      if ((error as { code?: string })?.code === "P2002") continue;
+      throw error;
+    }
+  }
+
+  const used = await prisma.scriptGenerationUsage.count({ where: { userId, bucket } });
+  const message = cohort === "trial"
+    ? `ช่วงทดลองใช้เขียนสคริปต์เต็มได้ ${limit} ครั้ง — อัปเกรดเพื่อเขียนไม่จำกัด`
+    : `แผนฟรีเขียนได้ ${limit} สคริปต์/${SCRIPT_WINDOW_DAYS} วัน — อัปเกรดเพื่อเขียนไม่จำกัด`;
+  return { allowed: false as const, reservationId: null, used, limit, message };
+}
+
+/** Settle a reservation exactly once. Failed generations do not consume the
+ *  product quota; the separate AI-call meter still charges provider attempts. */
+export async function settleScriptGeneration(
+  userId: string,
+  reservationId: string | null,
+  succeeded: boolean,
+  now: Date = new Date(),
+): Promise<void> {
+  if (!reservationId) return;
+  if (!succeeded) {
+    await prisma.scriptGenerationUsage.deleteMany({
+      where: { id: reservationId, userId, status: "reserved" },
+    });
+    return;
+  }
+  await prisma.scriptGenerationUsage.updateMany({
+    where: { id: reservationId, userId, status: "reserved" },
+    data: { status: "succeeded", completedAt: now },
+  });
+}
 
 /** How many Scripts `userId` created inside the rolling window (the number the
  *  cap is checked against). Own rows only. `client` takes a transaction client

@@ -41,5 +41,8 @@ jobs:
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 
+      - name: Verify Hero Script rollout, quota, and workflow
+        run: npm run verify:hero-script
+
       - name: Build
         run: npm run build

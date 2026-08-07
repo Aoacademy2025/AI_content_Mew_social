@@ -8,12 +8,13 @@
 // Produces a HookChoice ({formula, text}) — the interface Task 3's GENERATE
 // step consumes (lifted into page.tsx as `selectedHook`).
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { HOOK_FORMULAS } from "@/lib/viral-frameworks";
+import { trackEvent } from "@/lib/client-telemetry";
 
 const VIOLET = "#8B5CF6";
 
@@ -23,6 +24,12 @@ const QUOTA_MESSAGE = "ใช้โควตา AI ครบรอบนี้�
 export interface HookChoice {
   formula: string;
   text: string;
+  /** Inputs that produced this hook; prevents generating with stale upstream state. */
+  contextKey: string;
+}
+
+export function hookContextKey(topic: string, durationSec: number, profileId: string | null): string {
+  return JSON.stringify([topic.trim(), durationSec, profileId]);
 }
 
 function hookFormulaName(key: string): string {
@@ -54,9 +61,26 @@ export function HookStep({
   const [loading, setLoading] = useState(false);
   const [hooks, setHooks] = useState<HookChoice[]>([]);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const currentContext = hookContextKey(topic, durationSec, selectedProfileId);
+  const previousContextRef = useRef(currentContext);
+  const currentContextRef = useRef(currentContext);
+
+  useEffect(() => {
+    currentContextRef.current = currentContext;
+    if (previousContextRef.current === currentContext) return;
+    previousContextRef.current = currentContext;
+    setSelectedIndex(null);
+    if (selectedHook && selectedHook.contextKey !== currentContext) onSelectedHookChange(null);
+  }, [currentContext, selectedHook, onSelectedHookChange]);
 
   async function handleFetchHooks() {
     if (!topic.trim()) return;
+    const requestContext = hookContextKey(topic, durationSec, selectedProfileId);
+    const startedAt = performance.now();
+    trackEvent("hero_script_hooks_requested", {
+      status: "started",
+      properties: { durationSec, profileUsed: Boolean(selectedProfileId) },
+    });
     setLoading(true);
     try {
       const res = await fetch("/api/scripts/hooks", {
@@ -64,12 +88,37 @@ export function HookStep({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ topic: topic.trim(), brandProfileId: selectedProfileId, durationSec }),
       });
-      if (!res.ok) { await toastErrorResponse(res, "สร้าง hook ไม่สำเร็จ"); return; }
+      if (!res.ok) {
+        trackEvent("hero_script_hooks_failed", {
+          category: "error", status: "error", durationMs: performance.now() - startedAt,
+          properties: { httpStatus: res.status, durationSec, profileUsed: Boolean(selectedProfileId) },
+        });
+        await toastErrorResponse(res, "สร้าง hook ไม่สำเร็จ");
+        return;
+      }
       const data = await res.json();
-      setHooks(Array.isArray(data.hooks) ? data.hooks : []);
+      if (currentContextRef.current !== requestContext) {
+        trackEvent("hero_script_hooks_discarded", {
+          status: "skip", durationMs: performance.now() - startedAt,
+          properties: { reason: "inputs_changed" },
+        });
+        return;
+      }
+      const nextHooks = Array.isArray(data.hooks)
+        ? data.hooks.map((hook: Omit<HookChoice, "contextKey">) => ({ ...hook, contextKey: requestContext }))
+        : [];
+      setHooks(nextHooks);
       setSelectedIndex(null);
       onSelectedHookChange(null);
+      trackEvent("hero_script_hooks_generated", {
+        status: "done", durationMs: performance.now() - startedAt, value: nextHooks.length,
+        properties: { durationSec, profileUsed: Boolean(selectedProfileId) },
+      });
     } catch {
+      trackEvent("hero_script_hooks_failed", {
+        category: "error", status: "error", durationMs: performance.now() - startedAt,
+        properties: { failure: "network", durationSec, profileUsed: Boolean(selectedProfileId) },
+      });
       toast.error("สร้าง hook ไม่สำเร็จ");
     } finally {
       setLoading(false);
@@ -79,6 +128,9 @@ export function HookStep({
   function selectHook(index: number, hook: HookChoice) {
     setSelectedIndex(index);
     onSelectedHookChange({ ...hook });
+    trackEvent("hero_script_hook_selected", {
+      properties: { formula: hook.formula, position: index + 1 },
+    });
   }
 
   // Write the edit back into the `hooks` state array (keyed by index, formula

@@ -13,7 +13,9 @@ import {
   isValidDurationSec,
   parseBannedWords,
   requireHeroScriptUser,
+  reserveScriptGeneration,
   resolveLlmTriad,
+  settleScriptGeneration,
   stripEchoedHook,
   toBrandProfileDTO,
   validateGenerateResponse,
@@ -35,6 +37,25 @@ import {
 // model echoes the hook as the first body line we drop that line instead
 // (stripEchoedHook), otherwise the assembled script would say it twice.
 export async function POST(req: Request) {
+  let reservedUserId: string | null = null;
+  let reservationId: string | null = null;
+  async function settle(succeeded: boolean) {
+    if (!reservedUserId || !reservationId) return;
+    const id = reservationId;
+    if (succeeded) {
+      // A successful output must not be returned unless its durable quota row
+      // is committed. If this throws, the outer catch releases the reservation
+      // and returns an error instead of silently creating a quota bypass.
+      await settleScriptGeneration(reservedUserId, id, true);
+      reservationId = null;
+      return;
+    }
+    reservationId = null;
+    await settleScriptGeneration(reservedUserId, id, false).catch((error) => {
+      console.error("[hero-script] failed to release generation reservation", error);
+    });
+  }
+
   try {
     const access = await requireHeroScriptUser();
     if (!access.ok) return access.response;
@@ -79,6 +100,19 @@ export async function POST(req: Request) {
       ctaStyle = row.ctaStyle || "follow";
     }
 
+    // Product entitlement is reserved BEFORE the provider call. This closes
+    // the old hole where FREE users received the full output and only hit the
+    // 3-script wall later during autosave (or deleted rows to restore slots).
+    const generationReserve = await reserveScriptGeneration(authUser.id, access.access.cohort);
+    if (!generationReserve.allowed) {
+      return NextResponse.json(
+        { code: "SCRIPT_LIMIT", error: generationReserve.message },
+        { status: 403 },
+      );
+    }
+    reservedUserId = authUser.id;
+    reservationId = generationReserve.reservationId;
+
     // count: PRO tier — one request can be up to 4 model round-trips on the
     // expensive model (see resolveLlmTriad).
     const triad = await resolveLlmTriad(
@@ -86,7 +120,10 @@ export async function POST(req: Request) {
       { script: `${topicCheck.topic}\n${hookText}` },
       { count: PRO_TIER_TEXT_CALL_COST }
     );
-    if (!triad.ok) return NextResponse.json(triad.body, { status: triad.status });
+    if (!triad.ok) {
+      await settle(false);
+      return NextResponse.json(triad.body, { status: triad.status });
+    }
     const { apiKey } = triad;
 
     const prompt = buildGeneratePrompt({
@@ -122,14 +159,19 @@ export async function POST(req: Request) {
         route: "POST /api/scripts/generate",
         tier: "pro",
       });
-      if (llmError) return llmError;
+      if (llmError) {
+        await settle(false);
+        return llmError;
+      }
       throw error;
     }
     if (!guarded) {
+      await settle(false);
       return NextResponse.json({ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }, { status: 502 });
     }
 
     const { structure, bodyText, ctaText } = guarded.result;
+    await settle(true);
     return NextResponse.json({
       structure,
       bodyText: stripEchoedHook(bodyText, hookText),
@@ -137,6 +179,7 @@ export async function POST(req: Request) {
       ...(guarded.warning ? { warning: guarded.warning } : {}),
     });
   } catch (error) {
+    await settle(false);
     return apiError({ route: "POST /api/scripts/generate", error });
   }
 }

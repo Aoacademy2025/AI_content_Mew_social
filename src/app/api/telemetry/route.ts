@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { normalizeTelemetryBatch, recordTelemetryBatch } from "@/lib/telemetry";
+import { resolveHeroScriptAccess } from "@/lib/hero-script-rollout.server";
 
 export const runtime = "nodejs";
 
@@ -26,7 +27,23 @@ export async function POST(req: Request) {
     if (events.length === 0) return NextResponse.json({ ok: true, count: 0 });
 
     const user = await getCurrentUser().catch(() => null);
-    const result = await recordTelemetryBatch(user?.id ?? null, events);
+    let enrichedEvents = events;
+    if (user && events.some((event) => event.name.startsWith("hero_script_"))) {
+      const access = await resolveHeroScriptAccess(user).catch(() => null);
+      if (access) {
+        enrichedEvents = events.map((event) => event.name.startsWith("hero_script_")
+          ? {
+              ...event,
+              properties: {
+                ...(event.properties ?? {}),
+                cohort: access.cohort,
+                entitlementSource: access.entitlementSource,
+              },
+            }
+          : event);
+      }
+    }
+    const result = await recordTelemetryBatch(user?.id ?? null, enrichedEvents);
     return NextResponse.json({ ok: true, count: result.count });
   } catch {
     return NextResponse.json({ ok: true, count: 0 });

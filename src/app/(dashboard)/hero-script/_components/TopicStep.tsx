@@ -12,6 +12,7 @@ import { Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { trackEvent } from "@/lib/client-telemetry";
 
 const VIOLET = "#8B5CF6";
 
@@ -45,6 +46,11 @@ export function TopicStep({ selectedProfileId, topic, onTopicChange }: TopicStep
   const [ideas, setIdeas] = useState<ScriptIdea[]>([]);
 
   async function handleGenerateIdeas() {
+    const startedAt = performance.now();
+    trackEvent("hero_script_ideas_requested", {
+      status: "started",
+      properties: { profileUsed: Boolean(selectedProfileId) },
+    });
     setLoading(true);
     try {
       const res = await fetch("/api/scripts/ideas", {
@@ -52,10 +58,26 @@ export function TopicStep({ selectedProfileId, topic, onTopicChange }: TopicStep
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ brandProfileId: selectedProfileId }),
       });
-      if (!res.ok) { await toastErrorResponse(res, "คิดไอเดียไม่สำเร็จ"); return; }
+      if (!res.ok) {
+        trackEvent("hero_script_ideas_failed", {
+          category: "error", status: "error", durationMs: performance.now() - startedAt,
+          properties: { httpStatus: res.status, profileUsed: Boolean(selectedProfileId) },
+        });
+        await toastErrorResponse(res, "คิดไอเดียไม่สำเร็จ");
+        return;
+      }
       const data = await res.json();
-      setIdeas(Array.isArray(data.ideas) ? data.ideas : []);
+      const nextIdeas = Array.isArray(data.ideas) ? data.ideas : [];
+      setIdeas(nextIdeas);
+      trackEvent("hero_script_ideas_generated", {
+        status: "done", durationMs: performance.now() - startedAt, value: nextIdeas.length,
+        properties: { profileUsed: Boolean(selectedProfileId) },
+      });
     } catch {
+      trackEvent("hero_script_ideas_failed", {
+        category: "error", status: "error", durationMs: performance.now() - startedAt,
+        properties: { failure: "network", profileUsed: Boolean(selectedProfileId) },
+      });
       toast.error("คิดไอเดียไม่สำเร็จ");
     } finally {
       setLoading(false);
@@ -88,7 +110,10 @@ export function TopicStep({ selectedProfileId, topic, onTopicChange }: TopicStep
             <button
               key={i}
               type="button"
-              onClick={() => onTopicChange(idea.topic)}
+              onClick={() => {
+                trackEvent("hero_script_idea_selected", { properties: { position: i + 1 } });
+                onTopicChange(idea.topic);
+              }}
               className="rounded-lg border p-3 text-left text-xs transition-colors hover:border-violet-400"
               style={{
                 borderColor: topic === idea.topic ? VIOLET : "var(--ui-card-border)",

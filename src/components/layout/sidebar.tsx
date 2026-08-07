@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { useClerk } from "@clerk/nextjs";
 import { cn } from "@/lib/utils";
 import { fetchMe } from "@/lib/use-me";
+import { trackEvent } from "@/lib/client-telemetry";
 import {
   Settings, Users, Shield, Lock,
   LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen,
@@ -138,9 +139,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [updatesUnread, setUpdatesUnread] = useState(0);
   const [currentVersion, setCurrentVersion] = useState("v0.1.0");
   const [internalAiTester, setInternalAiTester] = useState(false);
-  // Hero Script internal-beta allowlist (fail-closed — see hero-script-access.ts):
-  // hidden from the sidebar until /api/user/me confirms this account is allowlisted.
   const [heroScriptAllowed, setHeroScriptAllowed] = useState(false);
+  const [heroScriptPreview, setHeroScriptPreview] = useState(false);
 
   useEffect(() => {
     fetchMe()
@@ -158,6 +158,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         if (typeof data.minutesLimit === "number") setMinutesLimit(data.minutesLimit);
         setInternalAiTester(data.internalAiTester === true);
         setHeroScriptAllowed(data.heroScriptAllowed === true);
+        setHeroScriptPreview(data.heroScriptPreview === true);
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -207,7 +208,10 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const internalItemsOnly = (items: SidebarNavItem[]) =>
     items
       .filter((item) => item.href !== "/ai-studio" || internalAiTester)
-      .filter((item) => item.href !== "/hero-script" || heroScriptAllowed);
+      .filter((item) => item.href !== "/hero-script" || heroScriptAllowed || heroScriptPreview)
+      .map((item) => item.href === "/hero-script" && !heroScriptAllowed
+        ? { ...item, badgeText: "PRO" }
+        : item);
   const userItems = internalItemsOnly(withUpdatesBadge(userNavItems));
   const adminItems = internalItemsOnly(adminStudioItems);
 
@@ -243,6 +247,13 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
       <Link key={item.href} href={item.href} title={collapsed ? item.title : undefined}
         prefetch={true}
         onMouseEnter={() => prefetchOnce(item.href)}
+        onClick={() => {
+          if (item.href === "/hero-script") {
+            trackEvent("hero_script_menu_clicked", {
+              properties: { access: heroScriptAllowed ? "full" : "preview" },
+            });
+          }
+        }}
         className={cn(
           "relative flex items-center rounded-lg border-0 outline-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6]/60",

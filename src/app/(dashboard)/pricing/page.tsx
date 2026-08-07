@@ -17,6 +17,7 @@ import {
   paidPlanCardMode,
   PLAN_RANK,
 } from "@/lib/plan-change";
+import { trackEvent } from "@/lib/client-telemetry";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
 // Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
@@ -81,6 +82,7 @@ function PricingContent() {
   const [planConfig, setPlanConfig] = useState<PlanConfig | null>(null);
 
   const paymentResult = searchParams.get("payment");
+  const acquisitionSource = searchParams.get("source");
   const yearly = period === "annual";
 
   useEffect(() => {
@@ -105,6 +107,13 @@ function PricingContent() {
     fetch("/api/founding/status").then((r) => r.json()).then(setFounding).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    if (!acquisitionSource?.startsWith("hero_script")) return;
+    trackEvent("hero_script_pricing_viewed", {
+      properties: { source: acquisitionSource },
+    });
+  }, [acquisitionSource]);
+
   const currentPlan = me?.plan ?? null;
   const daysLeft = me?.trialEndsAt ? Math.max(0, Math.ceil((new Date(me.trialEndsAt).getTime() - Date.now()) / 86400000)) : 0;
   const onTrial = currentPlan === "PRO" && daysLeft > 0;
@@ -118,6 +127,17 @@ function PricingContent() {
     if (userChecked && !currentPlan) {
       window.location.href = "/register";
       return;
+    }
+    if (acquisitionSource?.startsWith("hero_script")) {
+      trackEvent("hero_script_checkout_requested", {
+        status: "started",
+        properties: {
+          source: acquisitionSource,
+          plan: planKey,
+          period,
+          method: period === "monthly" ? "card" : method,
+        },
+      });
     }
     setLoading(planKey);
     try {

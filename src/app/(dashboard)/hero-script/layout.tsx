@@ -1,13 +1,20 @@
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { isHeroScriptAllowedUser } from "@/lib/hero-script-access";
+import { resolveHeroScriptAccess } from "@/lib/hero-script-rollout.server";
+import { HeroScriptLockedPreview } from "./_components/HeroScriptLockedPreview";
 
-// Internal-beta gate for /hero-script (post-review amendment, 2026-07-31):
-// same server-side redirect pattern as the legacy admin-gated /style, /content
-// routes (see their layout.tsx). Non-allowlisted users never see the page —
-// they're bounced to /dashboard before any client code runs.
+// Server-side rollout gate: internal and enabled cohorts get the product;
+// everyone else either gets the public locked preview or is redirected when
+// preview itself is disabled. API routes independently enforce the same gate.
 export default async function HeroScriptLayout({ children }: { children: React.ReactNode }) {
   const user = await getCurrentUser();
-  if (!user || !isHeroScriptAllowedUser(user)) redirect("/dashboard");
+  if (!user) redirect("/login?redirect_url=/hero-script");
+  const access = await resolveHeroScriptAccess(user);
+  if (!access.canUse) {
+    if (access.canPreview) {
+      return <HeroScriptLockedPreview entitlementSource={access.entitlementSource} />;
+    }
+    redirect("/dashboard");
+  }
   return <>{children}</>;
 }
