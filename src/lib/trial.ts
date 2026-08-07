@@ -70,7 +70,8 @@ export async function grantTrial(userId: string, days: number): Promise<boolean>
   // in the updateMany, a user can never get this twice, even via retries/races between the
   // webhook and lazy-create entry points. Fail-open: a grant error must not roll back or
   // block the trial itself (mirrors extendVideoExpiryForPlan below).
-  await grantCreditsOnce(userId, TRIAL_TASTE_CREDITS, "grant", `trial-taste:${userId}`).catch(() => {});
+  await grantCreditsOnce(userId, TRIAL_TASTE_CREDITS, "grant", `trial-taste:${userId}`)
+    .catch((err) => console.error(`[trial-taste] grant failed for ${userId}:`, err));
 
   await extendVideoExpiryForPlan(userId, "PRO").catch(() => {});
   return true;

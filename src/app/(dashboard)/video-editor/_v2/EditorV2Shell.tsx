@@ -57,6 +57,7 @@ import {
   type ProjectStatusFilter,
 } from "./project-menu";
 import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
+import { classifyFailure, failureViewCopy } from "./failure-view";
 
 export function EditorV2Shell() {
   const p = useV2Project();
@@ -788,33 +789,20 @@ function SaveStatus({ status, onRetry }: {
   return <span>บันทึกอัตโนมัติ</span>;
 }
 
-// Hero AI Image failure markers (Task 5, section C). The pipeline forwards fetch-stock's
-// JSON `code` verbatim onto VideoJob.errorCode via mcp/orchestrator.ts's
-// pipelineFailureDetails(), so job.errorCode is normally the exact string below — the
-// message-text fallback only covers an edge path that carried text but no code.
-const INSUFFICIENT_CREDITS_MARKER = /INSUFFICIENT_CREDITS|เครดิตไม่พอ/;
-const RATE_LIMITED_MARKER = /RATE_LIMITED/;
-
 function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
   job: V2JobState;
   exportMode?: boolean;
   onBack: () => void;
   onSwitchFaceless: () => void;
 }) {
-  const isHeygenQuota = job.errorProvider === "heygen" && job.errorCode === "quota";
-  const failureText = `${job.errorCode ?? ""} ${job.errorMessage ?? ""}`;
-  const isInsufficientCredits = !isHeygenQuota && INSUFFICIENT_CREDITS_MARKER.test(failureText);
-  const isRateLimited = !isHeygenQuota && !isInsufficientCredits && RATE_LIMITED_MARKER.test(failureText);
-  const heading = isInsufficientCredits
-    ? "เครดิต AI ไม่พอ"
-    : isRateLimited
-      ? "ถึงเพดานการเจนรูปชั่วคราว"
-      : exportMode ? "ส่งออกไม่สำเร็จ" : "เรนเดอร์ไม่สำเร็จ";
-  // Insufficient-credits gets a fixed, reassuring explanation (no partial charge);
-  // rate-limited and every other failure keep showing the server's own Thai message.
-  const body = isInsufficientCredits
-    ? "งานนี้ต้องใช้เครดิตมากกว่าที่มีอยู่ ระบบไม่หักเครดิตส่วนที่ไม่สำเร็จ — เติมเครดิตหรือลดจำนวนรูปแล้วลองใหม่"
-    : job.errorMessage ?? "เกิดข้อผิดพลาด — ลองใหม่อีกครั้ง";
+  // Classification + copy live in failure-view.ts (pure, unit-tested in
+  // scripts/verify-hero-image-disclosure.ts) so the exact-code matching that fixed the
+  // OMNIVOICE_PROVIDER_RATE_LIMITED false-positive stays covered by real fixtures,
+  // not just a regex over this component's source.
+  const kind = classifyFailure(job);
+  const isHeygenQuota = kind === "heygen-quota";
+  const isInsufficientCredits = kind === "insufficient-credits";
+  const { heading, body } = failureViewCopy(kind, job, exportMode);
   return (
     <main className="flex flex-1 items-center justify-center p-6">
       <div className="flex max-w-[560px] flex-col items-center gap-4 text-center">

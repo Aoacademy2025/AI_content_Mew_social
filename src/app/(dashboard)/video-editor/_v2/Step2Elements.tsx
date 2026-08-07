@@ -209,7 +209,12 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   onClick={() => {
                     if (locked) return;
                     p.setBrollSource(o.value);
-                    if (o.value === "kie-image") p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount));
+                    // Default-8 only applies while the user hasn't touched the count
+                    // control themselves — otherwise re-selecting Hero AI Image after
+                    // switching away would clobber an explicit "อัตโนมัติ" (0) choice.
+                    if (o.value === "kie-image" && !p.heroCountTouched) {
+                      p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount));
+                    }
                   }}
                   className="relative flex flex-col items-start gap-2 text-left"
                   style={{
@@ -245,7 +250,13 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 {brollCountLabel}
                 <Segmented
                   value={p.targetClipCount > 0 ? "custom" : "auto"}
-                  onChange={(v) => p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || heroDefaultN))}
+                  onChange={(v) => {
+                    // Any direct interaction with this control is an explicit user choice
+                    // (including picking "อัตโนมัติ") — stop the Hero default-8 from ever
+                    // overriding it again this session (fast-follow fix, see p.heroCountTouched).
+                    p.setHeroCountTouched(true);
+                    p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || heroDefaultN));
+                  }}
                   options={p.brollSource === "kie-image"
                     ? [
                         { value: "auto", label: `อัตโนมัติ (1 รูป/ช่วง ≈ ${heroAutoProjectedCount} รูป)` },
@@ -256,7 +267,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 {p.targetClipCount > 0 && (
                   <input
                     type="number" min={1} max={60} value={p.targetClipCount}
-                    onChange={(e) => p.setTargetClipCount(Math.max(1, Math.min(60, Number(e.target.value) || 1)))}
+                    onChange={(e) => {
+                      p.setHeroCountTouched(true);
+                      p.setTargetClipCount(Math.max(1, Math.min(60, Number(e.target.value) || 1)));
+                    }}
                     className="w-[64px]"
                     style={{ padding: "6px 8px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
                   />
@@ -837,9 +851,11 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
     if (value === "kie-image") {
       if (!heroImageUnlocked) return;
       p.setBrollSource("kie-image");
-      // Hero default = กำหนดเอง 8 รูป (Task 5 item 2) — a fresh selection always lands
-      // on a concrete, budget-safe quote; an existing custom count is left untouched.
-      p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount));
+      // Hero default = กำหนดเอง 8 รูป (Task 5 item 2) — a fresh (never-touched) selection
+      // lands on a concrete, budget-safe quote. Once the user has touched the count
+      // control directly (incl. explicitly picking "อัตโนมัติ"), leave it alone — don't
+      // clobber an explicit choice when they switch away and back (fast-follow fix).
+      if (!p.heroCountTouched) p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount));
       return;
     }
     if (!autoMixUnlocked) return;

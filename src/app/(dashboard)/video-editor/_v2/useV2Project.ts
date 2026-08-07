@@ -553,6 +553,13 @@ export function useV2Project() {
   const [targetClipCount, setTargetClipCount, setTargetClipCountRaw] = useUserDraftState(
     d.targetClipCount ?? 0, "targetClipCount", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   ); // 0 = auto
+  // Hero AI Image default-8 guard (Task 5 fast-follow): plain session-only state (NOT
+  // useUserDraftState — no server persistence needed) so a fresh page load always starts
+  // untouched. Set true only by the count Segmented/number input itself; the Hero
+  // AI Image selection handlers that apply the default-8 count must NEVER set this,
+  // otherwise the programmatic default would look like a user edit and stop being
+  // idempotent on repeated re-selection (see Step2Elements.tsx callers).
+  const [heroCountTouched, setHeroCountTouched] = useState(false);
   const [avatarMode, setAvatarMode, setAvatarModeRaw] = useUserDraftState<V2AvatarMode>(
     d.avatarMode ?? "bookend", "avatarMode", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -2064,6 +2071,7 @@ export function useV2Project() {
     useAvatar, setUseAvatar,
     avatarId, setAvatarId,
     targetClipCount, setTargetClipCount,
+    heroCountTouched, setHeroCountTouched,
     avatarMode, setAvatarMode,
     avatarIntroSecs, setAvatarIntroSecs,
     avatarTailSecs, setAvatarTailSecs,
