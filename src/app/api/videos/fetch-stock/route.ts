@@ -93,6 +93,11 @@ import {
   refundSettledVideoImageJob,
 } from "@/lib/ai-generation-jobs.server";
 import { checkHeroImageRate, heroImageRateLimitMessage } from "@/lib/hero-image-rate-limit";
+import {
+  authorizeHeroVideoMint,
+  HERO_VIDEO_MINT_DENIAL_RESPONSES,
+} from "@/lib/hero-image-namespace";
+import { isServiceActorRequest } from "@/lib/mcp/service-actor";
 import { heroImageStyleForBrollWindow } from "@/lib/broll-window-hero";
 import { HERO_AI_IMAGE_CREDIT_COST_KEY, HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import {
@@ -958,6 +963,12 @@ export async function POST(req: Request) {
   const authUser = await getCurrentUser();
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const userId = authUser.id;
+  // Provenance (P0-6): only the server-side render pipeline may mint paid Hero image
+  // reservations into the refundable `video:<videoJobId>:` namespace — those images are
+  // consumed by a render the user never receives, which is what makes the batch refund
+  // on video failure correct. Header-only check against the server-only MCP secret; a
+  // browser cannot forge it. See src/lib/hero-image-namespace.ts for the full rationale.
+  const fromRenderPipeline = await isServiceActorRequest();
 
   const body = await req.json().catch(() => null);
   const {
@@ -1108,6 +1119,17 @@ export async function POST(req: Request) {
   if (useHeroRunpodImage && (typeof videoJobId !== "string" || !/^[A-Za-z0-9_-]{8,120}$/.test(videoJobId))) {
     return NextResponse.json({ error: "Hero AI Image ต้องมีรหัส VideoJob ที่ถูกต้อง" }, { status: 400 });
   }
+  // Refundable-namespace guard: hero-only mode reserves `video:<videoJobId>:scene:<i>`,
+  // so it is pipeline-only and the VideoJob must be the caller's own and still running.
+  // No legitimate browser flow reaches here (the editor renders through the pipeline;
+  // per-window regeneration uses /api/videos/broll-window/generate instead).
+  if (useHeroRunpodImage) {
+    const mint = await authorizeHeroVideoMint({ fromRenderPipeline, userId, videoJobId: videoJobId! });
+    if (!mint.ok) {
+      const denial = HERO_VIDEO_MINT_DENIAL_RESPONSES[mint.reason];
+      return NextResponse.json(denial.body, { status: denial.status });
+    }
+  }
   // Legacy kie image mode is PAUSED for customers (ADR 0004: engines never
   // cross-fallback, kie is not deleted — only gated). Admins keep it for testing.
   if (useKieImage && !useHeroRunpodImage && (!canUseKieImages || !isAdmin)) {
@@ -1179,14 +1201,24 @@ export async function POST(req: Request) {
     && canUseKieImages
     && !!kieToken;
   const heroAutoMixOffer = autoMixAiRequested && !autoMixKieAdminOnly ? describeHeroImageOffer() : null;
+  // AutoMix AI slots reserve `video:<videoJobId>:automix:<i>` — the same refundable
+  // namespace as hero-only mode — so they need the same provenance + ownership proof.
+  // AutoMix degrades instead of failing: a browser-originated request keeps its free
+  // video/photo b-roll and simply plans zero paid AI slots (exactly what it already did
+  // before any videoJobId was supplied), while the pipeline path is unchanged.
+  const heroAutoMixMint = autoMixAiRequested && !autoMixKieAdminOnly && heroVideoJobIdOk
+    ? await authorizeHeroVideoMint({ fromRenderPipeline, userId, videoJobId: videoJobId! })
+    : null;
   /** AutoMix AI slots may run on the Hero seam: offer live on the verified custom
-   *  route, caller inside the Hero rollout, and a durable VideoJob id to key
-   *  reservations on. Anything missing → no AI slots (weights force ai=0). */
+   *  route, caller inside the Hero rollout, a durable VideoJob id to key reservations
+   *  on, and authorization to mint in the refundable `video:` namespace. Anything
+   *  missing → no AI slots (weights force ai=0). */
   const canUseHeroAutoMixAi = Boolean(
     heroAutoMixOffer?.available
     && heroAutoMixOffer.providerRoute === "runpod-custom"
     && heroAiEligible
-    && heroVideoJobIdOk,
+    && heroVideoJobIdOk
+    && heroAutoMixMint?.ok,
   );
   const autoMixAiEngine: "runpod" | "kie" | null = autoMixKieAdminOnly
     ? "kie"
@@ -1400,6 +1432,11 @@ export async function POST(req: Request) {
   const heroAutoMixCreditCost = heroAutoMixOffer?.quote.credits ?? HERO_AI_IMAGE_CREDITS;
   let heroAutoMixStopped = false; // a systemic/stop-batch provider failure halts the rest
   if (useAutoMix) {
+    if (heroAutoMixMint && !heroAutoMixMint.ok) {
+      // Visible in telemetry so a blocked (or misrouted) caller is diagnosable without
+      // guessing why an AutoMix run produced no AI slots.
+      heroAutoMixTelemetry.heroAutoMixMintDenied = heroAutoMixMint.reason;
+    }
     const anyPhotoUsable =
       canUseUnsplashFallback || canUsePexelsPhotoFallback || canUsePixabayPhotoFallback ||
       canUseFlickrFallback || canUseWikimediaFallback || canUseNasaFallback || canUseMetFallback;

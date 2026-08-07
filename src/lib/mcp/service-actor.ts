@@ -27,6 +27,22 @@ export function isValidServiceCredential(
   return true;
 }
 
+/**
+ * Does THIS request carry a valid internal service credential (i.e. did it originate
+ * from the server-side render pipeline)? Header-only — no DB round-trip — so callers
+ * can use it as a cheap provenance gate. A browser can never satisfy it: the secret
+ * is a server-only env value that is never shipped to the client.
+ */
+export async function isServiceActorRequest(): Promise<boolean> {
+  if (!process.env.MCP_SERVICE_SECRET) return false; // fast off-switch (same as resolveServiceActor)
+  const h = await headers();
+  return isValidServiceCredential(
+    process.env.MCP_SERVICE_SECRET,
+    h.get(SERVICE_SECRET_HEADER),
+    h.get(SERVICE_ACTAS_HEADER),
+  );
+}
+
 /** The acted-as User if the request carries a valid internal service credential, else null. */
 export async function resolveServiceActor(): Promise<User | null> {
   if (!process.env.MCP_SERVICE_SECRET) return null; // fast off-switch

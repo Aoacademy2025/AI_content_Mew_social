@@ -91,6 +91,7 @@
     "verify:hero-image-price": "node --conditions=react-server --import tsx scripts/verify-hero-image-price.ts",
     "verify:automix-hero": "node --conditions=react-server --import tsx scripts/verify-automix-hero-migration.ts",
     "verify:hero-image-gate": "node --conditions=react-server --import tsx scripts/verify-hero-image-gate.ts",
+    "verify:hero-image-namespace-guard": "node --conditions=react-server --import tsx scripts/verify-hero-image-namespace-guard.ts",
     "verify:trial-taste-grant": "tsx scripts/verify-trial-taste-grant.ts",
     "verify:ai-image-reconcile": "node --conditions=react-server --import tsx scripts/verify-ai-image-reconcile.ts",
     "verify:runpod-public-image": "tsx scripts/verify-runpod-public-image.ts",
