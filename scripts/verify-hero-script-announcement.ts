@@ -21,7 +21,7 @@ function check(condition: boolean, message: string) {
 }
 
 function publish(run: boolean) {
-  execFileSync("npx", ["tsx", "scripts/publish-v1.5.0-hero-script.ts"], {
+  execFileSync("npx", ["tsx", "scripts/publish-v1.5.1-hero-script.ts"], {
     cwd: process.cwd(),
     stdio: "ignore",
     env: { ...process.env, RUN: run ? "1" : "0" },
@@ -30,7 +30,7 @@ function publish(run: boolean) {
 
 function publishAsync() {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn("npx", ["tsx", "scripts/publish-v1.5.0-hero-script.ts"], {
+    const child = spawn("npx", ["tsx", "scripts/publish-v1.5.1-hero-script.ts"], {
       cwd: process.cwd(),
       stdio: "ignore",
       env: { ...process.env, RUN: "1" },
@@ -47,27 +47,27 @@ async function main() {
   check(await prisma.productUpdate.count() === 0, "default announcement run is read-only");
 
   await Promise.all([publishAsync(), publishAsync()]);
-  const concurrentRows = await prisma.productUpdate.findMany({ where: { version: "v1.5.0" } });
+  const concurrentRows = await prisma.productUpdate.findMany({ where: { version: "v1.5.1" } });
   check(concurrentRows.length === 1, "two concurrent apply runs create exactly one announcement");
   check(concurrentRows[0]?.state === "PUBLISHED" && concurrentRows[0]?.targetPath === null,
     "created announcement is published system-wide");
 
   publish(true);
-  check(await prisma.productUpdate.count({ where: { version: "v1.5.0" } }) === 1,
+  check(await prisma.productUpdate.count({ where: { version: "v1.5.1" } }) === 1,
     "re-running after publish remains idempotent");
 
   await prisma.productUpdate.deleteMany({});
   const legacy = await prisma.productUpdate.create({
     data: {
-      id: "legacy-v1-5-draft",
-      version: "v1.5.0",
+      id: "legacy-v1-5-1-draft",
+      version: "v1.5.1",
       title: "draft",
       summary: "draft",
       state: "DRAFT",
     },
   });
   publish(true);
-  const republished = await prisma.productUpdate.findMany({ where: { version: "v1.5.0" } });
+  const republished = await prisma.productUpdate.findMany({ where: { version: "v1.5.1" } });
   check(republished.length === 1 && republished[0]?.id === legacy.id && republished[0]?.state === "PUBLISHED",
     "an existing draft is updated and published without creating a duplicate");
 

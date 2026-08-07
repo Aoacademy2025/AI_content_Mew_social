@@ -1,16 +1,16 @@
 // Publish the Hero Script launch announcement to /updates.
 // Run on production only AFTER the paid rollout + public preview flags are live:
-//   cd /var/www/ai-content && RUN=1 npx tsx scripts/publish-v1.5.0-hero-script.ts
+//   cd /var/www/ai-content && RUN=1 npx tsx scripts/publish-v1.5.1-hero-script.ts
 //
 // /updates renders body as plain text (whitespace-pre-wrap), not Markdown.
 // Without RUN=1 this is a read-only preview. A deterministic ID makes concurrent
 // invocations safe even though the legacy ProductUpdate.version column is not unique.
 import { prisma } from "../src/lib/prisma";
 
-const UPDATE_ID = "product-update-v1-5-0-hero-script";
-const VERSION = "v1.5.0";
+const UPDATE_ID = "product-update-v1-5-1-hero-script";
+const VERSION = "v1.5.1";
 const RUN = process.env.RUN === "1";
-const TITLE = "v1.5.0 — Hero Script เขียนสคริปต์พร้อมส่งตัดต่อได้ใน flow เดียว";
+const TITLE = "v1.5.1 — Hero Script เขียนสคริปต์พร้อมส่งตัดต่อได้ใน flow เดียว";
 const SUMMARY =
   "ฟีเจอร์ใหม่สำหรับคิดหัวข้อ เลือก Hook เขียนสคริปต์ตามโทนแบรนด์ " +
   "แก้ทีละส่วน และส่งเข้า Video Editor โดยไม่ต้องคัดลอกใหม่";

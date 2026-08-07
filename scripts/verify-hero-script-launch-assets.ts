@@ -121,8 +121,8 @@ check(docsRegistry.includes('import * as heroScript from "./hero-script"') && do
 check(docs.includes("สิทธิ์ใช้งานและการชำระเงิน") && docs.includes("ภายใน 5 นาที") && docs.includes('href="/hero-script"'),
   "guide covers payment troubleshooting, timing, and the feature entry point");
 
-const announcement = source("scripts/publish-v1.5.0-hero-script.ts");
-check(announcement.includes('const VERSION = "v1.5.0"') && announcement.includes('state: "PUBLISHED"')
+const announcement = source("scripts/publish-v1.5.1-hero-script.ts");
+check(announcement.includes('const VERSION = "v1.5.1"') && announcement.includes('state: "PUBLISHED"')
     && announcement.includes('importance: "BANNER"') && announcement.includes('ctaHref: "/hero-script"'),
   "post-deploy announcement is versioned, prominent, published, and actionable");
 check(announcement.includes("AFTER the paid rollout + public preview flags are live")
