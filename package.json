@@ -87,6 +87,7 @@
     "ops:configure-runpod-image-capacity": "tsx scripts/configure-runpod-image-capacity.ts",
     "generate:hero-voice-previews": "tsx scripts/generate-hero-voice-previews.ts",
     "verify:ai-studio": "tsx scripts/verify-ai-studio.ts",
+    "verify:hero-image-disclosure": "tsx scripts/verify-hero-image-disclosure.ts",
     "verify:hero-image-price": "node --conditions=react-server --import tsx scripts/verify-hero-image-price.ts",
     "verify:automix-hero": "node --conditions=react-server --import tsx scripts/verify-automix-hero-migration.ts",
     "verify:hero-image-gate": "node --conditions=react-server --import tsx scripts/verify-hero-image-gate.ts",

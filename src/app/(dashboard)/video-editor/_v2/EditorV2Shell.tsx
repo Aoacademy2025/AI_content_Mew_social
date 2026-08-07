@@ -788,6 +788,13 @@ function SaveStatus({ status, onRetry }: {
   return <span>บันทึกอัตโนมัติ</span>;
 }
 
+// Hero AI Image failure markers (Task 5, section C). The pipeline forwards fetch-stock's
+// JSON `code` verbatim onto VideoJob.errorCode via mcp/orchestrator.ts's
+// pipelineFailureDetails(), so job.errorCode is normally the exact string below — the
+// message-text fallback only covers an edge path that carried text but no code.
+const INSUFFICIENT_CREDITS_MARKER = /INSUFFICIENT_CREDITS|เครดิตไม่พอ/;
+const RATE_LIMITED_MARKER = /RATE_LIMITED/;
+
 function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
   job: V2JobState;
   exportMode?: boolean;
@@ -795,15 +802,28 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
   onSwitchFaceless: () => void;
 }) {
   const isHeygenQuota = job.errorProvider === "heygen" && job.errorCode === "quota";
+  const failureText = `${job.errorCode ?? ""} ${job.errorMessage ?? ""}`;
+  const isInsufficientCredits = !isHeygenQuota && INSUFFICIENT_CREDITS_MARKER.test(failureText);
+  const isRateLimited = !isHeygenQuota && !isInsufficientCredits && RATE_LIMITED_MARKER.test(failureText);
+  const heading = isInsufficientCredits
+    ? "เครดิต AI ไม่พอ"
+    : isRateLimited
+      ? "ถึงเพดานการเจนรูปชั่วคราว"
+      : exportMode ? "ส่งออกไม่สำเร็จ" : "เรนเดอร์ไม่สำเร็จ";
+  // Insufficient-credits gets a fixed, reassuring explanation (no partial charge);
+  // rate-limited and every other failure keep showing the server's own Thai message.
+  const body = isInsufficientCredits
+    ? "งานนี้ต้องใช้เครดิตมากกว่าที่มีอยู่ ระบบไม่หักเครดิตส่วนที่ไม่สำเร็จ — เติมเครดิตหรือลดจำนวนรูปแล้วลองใหม่"
+    : job.errorMessage ?? "เกิดข้อผิดพลาด — ลองใหม่อีกครั้ง";
   return (
     <main className="flex flex-1 items-center justify-center p-6">
       <div className="flex max-w-[560px] flex-col items-center gap-4 text-center">
         <div className="flex items-center gap-2">
           <XCircle size={18} color={color.danger} />
-          <span style={{ font: `600 16px ${font.heading}`, color: color.danger }}>{exportMode ? "ส่งออกไม่สำเร็จ" : "เรนเดอร์ไม่สำเร็จ"}</span>
+          <span style={{ font: `600 16px ${font.heading}`, color: color.danger }}>{heading}</span>
         </div>
         <div style={{ fontSize: 12, color: color.textSecondary, lineHeight: 1.7 }}>
-          {job.errorMessage ?? "เกิดข้อผิดพลาด — ลองใหม่อีกครั้ง"}
+          {body}
         </div>
         {isHeygenQuota ? (
           <div className="flex flex-wrap items-center justify-center gap-3">
@@ -811,6 +831,13 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
               <BtnSecondary>เติมเครดิต HeyGen</BtnSecondary>
             </a>
             <BtnPrimary onClick={onSwitchFaceless}>เปลี่ยนเป็น Faceless แล้วลองใหม่</BtnPrimary>
+          </div>
+        ) : isInsufficientCredits ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Link href="/pricing?from=editor">
+              <BtnSecondary>เติมเครดิต</BtnSecondary>
+            </Link>
+            <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>
           </div>
         ) : (
           <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>

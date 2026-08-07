@@ -113,6 +113,11 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
     [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, exactDuration],
   );
 
+  // Deficit disables the render CTA (Task 5 item B) — buildReceipt already computed
+  // the exact "Hero credits ไม่พอ" line above; reuse that decision instead of
+  // re-deriving a second insufficiency check that could drift from it.
+  const insufficientCredits = model.lines.some((l) => l.key === "insufficient");
+
   if (!open) return null;
 
   return (
@@ -172,23 +177,43 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
           ))}
         </div>
 
-        <div className="flex gap-2 px-5 pb-5">
-          <BtnSecondary
-            className="flex-1"
-            onClick={onCancel}
-            disabled={submitting}
-            style={submitting ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-          >
-            กลับไปแก้ไข
-          </BtnSecondary>
-          <BtnPrimary
-            className="flex-1"
-            onClick={onConfirm}
-            disabled={submitting}
-            style={submitting ? { opacity: 0.6, cursor: "wait" } : undefined}
-          >
-            {submitting ? "กำลังส่งงาน…" : "เริ่มเรนเดอร์"}
-          </BtnPrimary>
+        <div className="flex flex-col gap-2 px-5 pb-5">
+          <div className="flex gap-2">
+            <BtnSecondary
+              className="flex-1"
+              onClick={onCancel}
+              disabled={submitting}
+              style={submitting ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+            >
+              กลับไปแก้ไข
+            </BtnSecondary>
+            <BtnPrimary
+              className="flex-1"
+              onClick={onConfirm}
+              disabled={submitting || insufficientCredits}
+              title={insufficientCredits ? "เครดิตไม่พอ — เติมเครดิตก่อนเริ่มเรนเดอร์" : undefined}
+              style={submitting
+                ? { opacity: 0.6, cursor: "wait" }
+                : insufficientCredits
+                  ? { opacity: 0.5, cursor: "not-allowed" }
+                  : undefined}
+            >
+              {submitting ? "กำลังส่งงาน…" : "เริ่มเรนเดอร์"}
+            </BtnPrimary>
+          </div>
+          {insufficientCredits && (
+            <a
+              href="/pricing?from=editor"
+              className="flex min-h-11 items-center justify-center rounded-lg text-center focus-visible:outline-2 focus-visible:outline-offset-2"
+              style={{
+                fontSize: 12.5, fontWeight: 500, color: color.primary300,
+                background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
+                padding: "10px 16px",
+              }}
+            >
+              เติมเครดิต
+            </a>
+          )}
         </div>
       </GlassPanel>
     </div>

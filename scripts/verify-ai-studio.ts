@@ -176,11 +176,11 @@ check(
     dashboard.includes("internalAiTester &&"),
 );
 check(
-  "public editor keeps AI Image and AutoMix visible with coming-soon locks",
+  "public editor keeps AI Image and AutoMix visible, gated by the public-launch eligibility helper",
   editorStep2.includes('title: "Hero AI Image"') &&
     editorStep2.includes('title: "AutoMix"') &&
-    editorStep2.includes("const heroImageUnlocked = p.heroAiBeta") &&
-    editorStep2.includes("const autoMixUnlocked = p.internalAiTester && p.isPaidManagedKie") &&
+    editorStep2.includes("const heroImageUnlocked = p.heroAiImageEligible") &&
+    editorStep2.includes("const autoMixUnlocked = p.heroAiImageEligible") &&
     editorStep2.includes("disabled={locked}"),
 );
 check(

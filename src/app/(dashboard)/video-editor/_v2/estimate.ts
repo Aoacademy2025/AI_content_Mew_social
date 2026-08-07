@@ -98,3 +98,23 @@ export function disclosedAutoMixAiImageCount(
   }
   return estimateAutoMixAiImageCount(estSec, preset, windowSec);
 }
+
+/**
+ * Hero AI Image default count (Task 5, D8) — PURE. When the user has not set a
+ * custom count yet (0/unset), default to 8 (mode "กำหนดเอง") so the very first
+ * disclosed number is a concrete, budget-safe quote instead of an open-ended
+ * "อัตโนมัติ" estimate. Any positive count already chosen is left untouched.
+ */
+export function heroDefaultTargetClipCount(current: number): number {
+  return Number.isFinite(current) && current > 0 ? Math.floor(current) : 8;
+}
+
+/**
+ * เวลาที่แต่ละภาพค้างจอโดยประมาณ (วิ) = ความยาวคลิป / จำนวนภาพ — PURE.
+ * ใช้เตือนผู้ใช้เมื่อเลือกจำนวนภาพน้อยเกินไปเทียบกับความยาวคลิป (Task 5 ข้อ 6).
+ * n<=0 หรือ durationSec ติดลบ → 0 (กัน divide-by-zero / ผลลัพธ์ไม่มีความหมาย).
+ */
+export function heroHoldLengthSec(durationSec: number, n: number): number {
+  if (!(n > 0) || !(durationSec >= 0)) return 0;
+  return Math.round(durationSec / n);
+}
