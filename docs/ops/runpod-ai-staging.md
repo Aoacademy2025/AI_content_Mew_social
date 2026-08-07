@@ -62,7 +62,7 @@ The approved customer policy is:
 - RunPod AI and Cloud API are separate AI Engines selected before the model.
 - Runpod Public Z-Image Turbo remains a separate 2-credit contract, but is quarantined
   unless `AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED=1`; Hero Video rejects it regardless.
-- Hero Video uses the isolated custom Z-Image worker at 3 credits/image. It requires
+- Hero Video uses the isolated custom Z-Image worker at 2 credits/image (repriced 2026-08-07, Option B — measured COGS ~USD 0.0052/image, see docs/research/2026-08-07-runpod-custom-billing.md). It requires
   `AI_STUDIO_Z_IMAGE_ROUTE=custom`, the explicit endpoint/workflow settings, a passing
   cost guard, and a successful live smoke before traffic is enabled.
 - GPT Image 2 1K is a 3-credit model inside the separate Cloud API Engine, not a
@@ -191,7 +191,7 @@ Default planning assumptions are one credit = THB 1, USD/THB = 36 and minimum gr
 | Offer | Customer price | Provider estimate | Maximum COGS | State |
 | --- | ---: | ---: | ---: | --- |
 | Runpod Public Z-Image | 2 credits | USD 0.005 | USD 0.038888 | quarantined after nested WaveSpeed 401 |
-| Custom Z-Image / Hero Video | 3 credits | USD 0.050 conservative | USD 0.058333 | cost-safe; live smoke required |
+| Custom Z-Image / Hero Video | 2 credits | USD 0.010 (2x measured) | USD 0.038888 | cost-safe; live smoke required |
 | Cloud API · GPT Image 2 1K | 3 credits | USD 0.030 | USD 0.058333 | cost-safe, configuration required |
 
 The public Z price comes from Runpod's
