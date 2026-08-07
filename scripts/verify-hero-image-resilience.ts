@@ -103,7 +103,7 @@ async function main() {
       workers: { idle: 0, running: 1 },
     },
   }), false, "a busy worker is normal capacity pressure, not an orphan");
-  assert.equal(HERO_AI_IMAGE_CREDITS, 3, "the custom Hero route needs the approved 3-credit cost envelope");
+  assert.equal(HERO_AI_IMAGE_CREDITS, 2, "the custom Hero route needs the approved 2-credit cost envelope");
 
   let imageHits = 0;
   const server = http.createServer((req, res) => {

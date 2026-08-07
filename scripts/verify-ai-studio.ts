@@ -54,9 +54,9 @@ check(
   isAiImageQuoteCostSafe(quoteAiImageModel(zImage, 5_000)),
 );
 check(
-  "custom Z-Image receives a 3-credit quote that covers the conservative worker estimate",
-  quoteAiImageModel(customZImage, 50_000).credits === 3
-    && isAiImageQuoteCostSafe(quoteAiImageModel(customZImage, 50_000)),
+  "custom Z-Image receives a 2-credit quote that covers the measured worker cost",
+  quoteAiImageModel(customZImage, 10_000).credits === 2
+    && isAiImageQuoteCostSafe(quoteAiImageModel(customZImage, 10_000)),
 );
 check(
   "GPT Image 2 has a separate 3-credit quote that fits its provider cost",

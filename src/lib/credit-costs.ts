@@ -23,7 +23,7 @@ export const CREDIT_COST: Record<string, number> = {
   "image-nano-8k": 12,
   // Runpod open-weight image tiers (AI Studio)
   "image-open-fast-1k": 2,
-  "image-open-custom-1k": 3,
+  "image-open-custom-1k": 2,
   "image-open-quality-1k": 4,
   // Video generation
   "video-seedance-5s": 10,
