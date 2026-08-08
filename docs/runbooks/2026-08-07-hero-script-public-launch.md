@@ -1,7 +1,7 @@
 # Hero Script public-launch runbook
 
 วันที่จัดทำ: 7 สิงหาคม 2026
-เป้าหมาย: เปิด Hero Script ให้สมาชิกแบบชำระเงิน 100% โดยไม่เปิด free/trial cohort ในรอบแรก และให้ผู้ใช้ทุกคนเห็นเมนู/Preview/คู่มือ
+เป้าหมาย: เปิด Hero Script ให้สมาชิกแบบชำระเงินและสมาชิกที่มี active GRANT coupon 100% โดยไม่เปิด free/trial cohort ในรอบแรก และให้ผู้ใช้ทุกคนเห็นเมนู/Preview/คู่มือ
 
 > คำว่า “พร้อมเปิด” ใน runbook นี้หมายถึง critical paths ที่กำหนดไว้ผ่านครบและไม่มี incident ระหว่าง cohort จริง ไม่ได้หมายความว่าซอฟต์แวร์จะพิสูจน์ได้ว่าไม่มี bug ทุกชนิด
 
@@ -52,7 +52,7 @@
    HERO_SCRIPT_FREE_PERCENT=0
    ```
 
-4. ตรวจสมาชิกแบบชำระเงินจริงทั้ง 11 บัญชี: เข้า feature ได้; บัญชี free/trial เห็นเมนูและ Preview แต่เรียก API ไม่ได้
+4. ตรวจสมาชิกแบบชำระเงินจริงและ active GRANT coupon: เข้า feature ได้; บัญชี free/trial เห็นเมนูและ Preview แต่เรียก API ไม่ได้
 5. เฝ้าดูอย่างน้อย 5–7 วันก่อนถือว่า paid cohort พร้อม 100%
 6. เมื่อ production live และ smoke ผ่านแล้วเท่านั้น จึงประกาศอัปเดต:
 

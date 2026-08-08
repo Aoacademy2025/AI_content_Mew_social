@@ -29,7 +29,7 @@ export interface MeData {
   heroAiImageEligible?: boolean;
   heroScriptAllowed?: boolean;
   heroScriptPreview?: boolean;
-  heroScriptCohort?: "internal" | "paid" | "trial" | "free" | "preview";
+  heroScriptCohort?: "internal" | "paid" | "coupon" | "trial" | "free" | "preview";
   [key: string]: unknown;
 }
 
