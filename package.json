@@ -26,6 +26,7 @@
     "ops:refund-avatar-quota": "tsx scripts/refund-avatar-quota-job.ts",
     "verify:render-deploy-drain": "tsx scripts/verify-render-deploy-drain.ts",
     "verify:deploy-render-gate": "tsx scripts/verify-deploy-render-gate.ts",
+    "verify:upload-streaming": "tsx scripts/verify-upload-request-streaming.ts && tsx scripts/verify-upload-auth-feedback.ts",
     "verify:deploy-health-rollback": "tsx scripts/verify-deploy-health-rollback.ts",
     "ops:render-drain": "tsx scripts/set-render-deploy-drain.ts",
     "ops:check-render-queues": "tsx scripts/check-empty-render-queues.ts",

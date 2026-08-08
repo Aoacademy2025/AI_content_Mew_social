@@ -378,10 +378,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           </Advanced>
         </Group>
 
-        {/* โหมดอัปคลิปเอง: เสียง/เพลง/อวตาร ไม่เกี่ยว (เสียงมาจากคลิป) */}
+        {/* โหมดอัปคลิปเอง: เสียงพูดมาจากคลิป แต่ยังเลือกเพลงประกอบได้ */}
         {p.mode === "upload" && (
           <div className="px-3 py-2.5" style={{ borderRadius: radius.card, border: `1px dashed rgba(255,255,255,.14)`, fontSize: 11.5, color: color.textFaint, lineHeight: 1.7 }}>
-            โหมดใช้คลิปของคุณ: เสียงพูดมาจากคลิปโดยตรง — ระบบข้ามเสียงพากย์ / เพลง / อวตารให้อัตโนมัติ
+            โหมดใช้คลิปของคุณ: เสียงพูดมาจากคลิปโดยตรง — เลือกเพลงประกอบด้านล่างได้ ระบบจะข้ามเฉพาะเสียงพากย์และอวตาร
           </div>
         )}
 
@@ -545,7 +545,6 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         )}
 
         {/* 3 · เพลงประกอบ */}
-        {p.mode !== "upload" && (
         <Group title="เพลงประกอบ" desc="เพลงเบา ๆ ใต้เสียงพูด (ลดเสียงอัตโนมัติ) · กดไอคอนเพื่อฟังตัวอย่าง">
           <MusicChips p={p} tracks={chipTracks} />
           <button
@@ -589,7 +588,6 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             </label>
           </Advanced>
         </Group>
-        )}
 
         {/* 4 · อวตารพิธีกร */}
         {p.mode !== "upload" && (
@@ -777,6 +775,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               <SummaryRow label="ความยาว" value={hasUploadDuration ? fmtTime(p.clipDurationSec) : "กำลังอ่านความยาวคลิป"} />
               <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} · แทรก cutaway`} />
               <SummaryRow label="เสียง" value="จากคลิปของคุณ (ต่อเนื่อง)" />
+              <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="ซับไทย" value="ถอดจากเสียงอัตโนมัติ" last />
             </>
           ) : (

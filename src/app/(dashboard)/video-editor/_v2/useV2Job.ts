@@ -14,6 +14,7 @@ import {
   type VideoJobOperation,
 } from "@/lib/video-job-idempotency";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
+import { buildBgmSelectionInput } from "@/lib/bgm-selection";
 import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
 
 /**
@@ -323,7 +324,8 @@ export function useV2Job(p: V2Project) {
     const maxAiImages = p.brollSource === "automix"
       ? disclosedAutoMixAiImageCount(receiptEstSec, receiptWeights, p.targetClipCount)
       : null;
-    // โหมดอัปคลิปเอง (cutaway): ส่งแค่คลิป + b-roll — เสียง/เพลง/อวตารมาจากคลิป
+    const bgmInput = buildBgmSelectionInput(p.musicTrack, p.musicTrackKind, p.bgmVolume);
+    // โหมดอัปคลิปเอง (cutaway): เสียงพูดมาจากคลิป ส่วนเพลงใช้ตัวเลือกเดียวกับโหมดสคริปต์
     const body: Record<string, unknown> = existingAttempt?.body ?? (p.mode === "upload" ? {
       idempotencyKey,
       ...(p.projectId ? { projectId: p.projectId } : {}),
@@ -341,6 +343,7 @@ export function useV2Job(p: V2Project) {
       // unauthorized. brollSource is already "automix" for any preset ≠ ฟรีล้วน.
       ...(!p.isAdmin && p.brollSource === "automix" ? { autoMixWeights: PRESET_WEIGHTS[p.mixPreset] } : {}),
       ...(maxAiImages !== null ? { maxAiImages } : {}),
+      ...bgmInput,
       subtitleMode: "sentence",
       subtitlePosition: "bottom",
     } : {
@@ -351,8 +354,7 @@ export function useV2Job(p: V2Project) {
       ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
       ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
       ...(p.voiceEngine === "omnivoice" ? { omniVoiceId: p.omniVoiceId } : {}),
-      // เพลง: system → /music/<f> (resolver เดิม) · ของผู้ใช้ → /api/music/<f> (แบบ v1)
-      ...(p.musicTrack ? { bgmFile: p.musicTrackKind === "user" ? `/api/music/${p.musicTrack}` : `/music/${p.musicTrack}`, bgmVolume: p.bgmVolume } : {}),
+      ...bgmInput,
       // b-roll source ที่เลือกจริง (kie-image/auto-mix = Beta, server เช็ค admin ซ้ำ)
       stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
       // อวตาร: โหมด/วินาทีจากขั้นสูง (default bookend 5 วิ — ประหยัด HeyGen)

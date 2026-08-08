@@ -12,6 +12,9 @@ export const HEADLINE_HOOK_FONTS = [
 
 export type HeadlineHookFontFamily = (typeof HEADLINE_HOOK_FONTS)[number]["value"];
 
+export const HEADLINE_HOOK_FONT_WEIGHTS = [400, 600, 900] as const;
+export type HeadlineHookFontWeight = (typeof HEADLINE_HOOK_FONT_WEIGHTS)[number];
+
 export type HeadlineHookConfig = {
   enabled: boolean;
   headline: string;
@@ -23,6 +26,10 @@ export type HeadlineHookConfig = {
   fontFamily?: HeadlineHookFontFamily;
   /** Omitted means size automatically follows headline length. */
   fontSize?: number;
+  /** Omitted preserves the legacy extra-bold headline/subheadline pair. */
+  fontWeight?: HeadlineHookFontWeight;
+  /** Omitted means size automatically follows the headline size. */
+  subheadlineFontSize?: number;
 };
 
 export type HeadlineHookSuggestion = {
@@ -41,6 +48,8 @@ export const DEFAULT_HEADLINE_HOOK_TOP_PERCENT = 20;
 export const DEFAULT_HEADLINE_HOOK_FONT: HeadlineHookFontFamily = "Kanit";
 export const MIN_HEADLINE_HOOK_FONT_SIZE = 52;
 export const MAX_HEADLINE_HOOK_FONT_SIZE = 120;
+export const MIN_HEADLINE_HOOK_SUBHEAD_FONT_SIZE = 32;
+export const MAX_HEADLINE_HOOK_SUBHEAD_FONT_SIZE = 88;
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -76,6 +85,11 @@ function isHeadlineHookFontFamily(value: unknown): value is HeadlineHookFontFami
     && HEADLINE_HOOK_FONTS.some((font) => font.value === value);
 }
 
+function isHeadlineHookFontWeight(value: unknown): value is HeadlineHookFontWeight {
+  return typeof value === "number"
+    && HEADLINE_HOOK_FONT_WEIGHTS.some((weight) => weight === value);
+}
+
 export function headlineHookFontCssFamily(value: HeadlineHookFontFamily | null | undefined): string {
   return HEADLINE_HOOK_FONTS.find((font) => font.value === value)?.cssFamily
     ?? HEADLINE_HOOK_FONTS[0].cssFamily;
@@ -83,6 +97,22 @@ export function headlineHookFontCssFamily(value: HeadlineHookFontFamily | null |
 
 export function clampHeadlineHookFontSize(value: number): number {
   return Math.round(clamp(value, MIN_HEADLINE_HOOK_FONT_SIZE, MAX_HEADLINE_HOOK_FONT_SIZE));
+}
+
+export function clampHeadlineHookSubheadFontSize(value: number): number {
+  return Math.round(clamp(
+    value,
+    MIN_HEADLINE_HOOK_SUBHEAD_FONT_SIZE,
+    MAX_HEADLINE_HOOK_SUBHEAD_FONT_SIZE,
+  ));
+}
+
+export function headlineHookFontWeights(
+  value: HeadlineHookFontWeight | null | undefined,
+): { headline: number; subheadline: number } {
+  if (value === 400) return { headline: 400, subheadline: 400 };
+  if (value === 600) return { headline: 600, subheadline: 600 };
+  return { headline: 900, subheadline: 800 };
 }
 
 /**
@@ -144,6 +174,12 @@ export function normalizeHeadlineHook(
       : {}),
     ...(typeof input.fontSize === "number" && Number.isFinite(input.fontSize)
       ? { fontSize: clampHeadlineHookFontSize(input.fontSize) }
+      : {}),
+    ...(isHeadlineHookFontWeight(input.fontWeight)
+      ? { fontWeight: input.fontWeight }
+      : {}),
+    ...(typeof input.subheadlineFontSize === "number" && Number.isFinite(input.subheadlineFontSize)
+      ? { subheadlineFontSize: clampHeadlineHookSubheadFontSize(input.subheadlineFontSize) }
       : {}),
   };
 }
@@ -256,6 +292,7 @@ export function normalizeHeadlineHookSuggestions(value: unknown): HeadlineHookSu
 export function headlineHookFontSizes(
   headline: string,
   fontSize?: number,
+  subheadlineFontSize?: number,
 ): { headline: number; subheadline: number } {
   const longestLine = Math.max(...headline.split("\n").map((line) => Array.from(line).length), 0);
   const autoHeadlineSize = longestLine <= 22 ? 96
@@ -265,5 +302,8 @@ export function headlineHookFontSizes(
   const headlineSize = typeof fontSize === "number" && Number.isFinite(fontSize)
     ? clampHeadlineHookFontSize(fontSize)
     : autoHeadlineSize;
-  return { headline: headlineSize, subheadline: Math.max(42, Math.round(headlineSize * 0.62)) };
+  const resolvedSubheadlineSize = typeof subheadlineFontSize === "number" && Number.isFinite(subheadlineFontSize)
+    ? clampHeadlineHookSubheadFontSize(subheadlineFontSize)
+    : Math.max(42, Math.round(headlineSize * 0.62));
+  return { headline: headlineSize, subheadline: resolvedSubheadlineSize };
 }

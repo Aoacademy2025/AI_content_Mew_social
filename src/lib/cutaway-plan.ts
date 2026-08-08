@@ -19,6 +19,13 @@ export type CutawayBrollSegment = {
   sourceIndex?: unknown;
   brollEnabled?: unknown;
 };
+export type CutawayBackgroundAsset = {
+  sourceIndex?: number;
+  clipOffset?: number;
+  [key: string]: unknown;
+};
+
+const rangeKey = (range: CutawayRange) => `${range.startMs}:${range.endMs}`;
 
 /**
  * window 0 (hook) = person; then every odd-index window is b-roll. Guarantees:
@@ -40,6 +47,66 @@ export function planCutaway(windows: { startMs: number; endMs: number }[]): Cuta
     (i % 2 === 1 ? broll : person).push({ startMs: w.startMs, endMs: w.endMs });
   });
   return { person, broll };
+}
+
+/**
+ * Re-expands the intentionally sparse, billable B-roll result into the complete
+ * upload timeline expected by generate-config.
+ *
+ * AI/stock media is requested only for visible cutaway ranges. Person ranges get
+ * the uploaded clip as a hidden background filler, with its media offset aligned
+ * to the timeline. This prevents assignBrollWindows from consuming the next AI
+ * asset under a presenter range and then flashing/reusing another asset when the
+ * cutaway becomes visible.
+ */
+export function buildCutawayBackgroundTimeline({
+  windows,
+  brollRanges,
+  brollAssets,
+  presenterAsset,
+}: {
+  windows: CutawayRange[];
+  brollRanges: CutawayRange[];
+  brollAssets: CutawayBackgroundAsset[];
+  presenterAsset: CutawayBackgroundAsset;
+}): { windows: CutawayRange[]; assets: CutawayBackgroundAsset[] } {
+  const validWindows = (windows ?? []).filter(
+    (window) => window
+      && Number.isFinite(window.startMs)
+      && Number.isFinite(window.endMs)
+      && window.endMs > window.startMs,
+  );
+  const visibleRanges = new Set(
+    (brollRanges ?? [])
+      .filter((range) => range && Number.isFinite(range.startMs) && Number.isFinite(range.endMs))
+      .map(rangeKey),
+  );
+  const visibleAssets = Array.isArray(brollAssets) ? brollAssets.filter(Boolean) : [];
+  const indexedVisibleAssets = new Map<number, CutawayBackgroundAsset>();
+  visibleAssets.forEach((asset, index) => {
+    const sourceIndex = Number.isFinite(asset.sourceIndex) ? Number(asset.sourceIndex) : index;
+    if (!indexedVisibleAssets.has(sourceIndex)) indexedVisibleAssets.set(sourceIndex, asset);
+  });
+
+  let visibleIndex = 0;
+  const assets = validWindows.map((window, windowIndex) => {
+    if (!visibleRanges.has(rangeKey(window))) {
+      return {
+        ...presenterAsset,
+        sourceIndex: windowIndex,
+        clipOffset: window.startMs / 1_000,
+      };
+    }
+
+    const selected = indexedVisibleAssets.get(visibleIndex)
+      ?? visibleAssets[visibleIndex]
+      ?? visibleAssets[visibleIndex % Math.max(1, visibleAssets.length)]
+      ?? presenterAsset;
+    visibleIndex += 1;
+    return { ...selected, sourceIndex: windowIndex };
+  });
+
+  return { windows: validWindows, assets };
 }
 
 function normalizeRanges(ranges: CutawayRangeSec[]): CutawayRangeSec[] {

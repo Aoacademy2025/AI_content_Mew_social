@@ -2,6 +2,7 @@ import React from "react";
 import {
   headlineHookFontCssFamily,
   headlineHookFontSizes,
+  headlineHookFontWeights,
   type HeadlineHookConfig,
 } from "../lib/headline-hook";
 
@@ -44,7 +45,8 @@ export function HeadlineHookView({
   frameScale?: number;
   motion?: HeadlineHookMotion;
 }) {
-  const sizes = headlineHookFontSizes(hook.headline, hook.fontSize);
+  const sizes = headlineHookFontSizes(hook.headline, hook.fontSize, hook.subheadlineFontSize);
+  const weights = headlineHookFontWeights(hook.fontWeight);
   const headlineSize = sizes.headline * frameScale;
   const subheadlineSize = sizes.subheadline * frameScale;
   const fontFamily = headlineHookFontCssFamily(hook.fontFamily);
@@ -53,7 +55,7 @@ export function HeadlineHookView({
     color: "#F8F7FC",
     fontFamily,
     fontSize: headlineSize,
-    fontWeight: 900,
+    fontWeight: weights.headline,
     lineHeight: 1.08,
     letterSpacing: `${-1.2 * frameScale}px`,
     textAlign: "center",
@@ -67,7 +69,7 @@ export function HeadlineHookView({
     color: "#FFE44D",
     fontFamily,
     fontSize: subheadlineSize,
-    fontWeight: 800,
+    fontWeight: weights.subheadline,
     lineHeight: 1.18,
     textAlign: "center",
     whiteSpace: "pre-line",

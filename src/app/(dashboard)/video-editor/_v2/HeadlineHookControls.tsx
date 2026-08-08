@@ -4,13 +4,16 @@ import { Check, Sparkles } from "lucide-react";
 import {
   DEFAULT_HEADLINE_HOOK_FONT,
   HEADLINE_HOOK_FONTS,
+  HEADLINE_HOOK_FONT_WEIGHTS,
   HEADLINE_HOOK_PRESETS,
   MAX_HEADLINE_HOOK_CHARS,
   MAX_HEADLINE_HOOK_DURATION_MS,
   MAX_HEADLINE_HOOK_FONT_SIZE,
+  MAX_HEADLINE_HOOK_SUBHEAD_FONT_SIZE,
   MAX_HEADLINE_HOOK_SUBHEAD_CHARS,
   MIN_HEADLINE_HOOK_DURATION_MS,
   MIN_HEADLINE_HOOK_FONT_SIZE,
+  MIN_HEADLINE_HOOK_SUBHEAD_FONT_SIZE,
   autoHeadlineHookDurationMs,
   headlineHookFontCssFamily,
   headlineHookFontSizes,
@@ -112,8 +115,16 @@ export function HeadlineHookControls({
   const maxDuration = Math.min(MAX_HEADLINE_HOOK_DURATION_MS, editor.totalDurationMs);
   const minDuration = Math.min(MIN_HEADLINE_HOOK_DURATION_MS, maxDuration);
   const isAutoDuration = hook.durationMs === autoDuration;
-  const resolvedFontSize = headlineHookFontSizes(hook.headline, hook.fontSize).headline;
+  const resolvedFontSizes = headlineHookFontSizes(
+    hook.headline,
+    hook.fontSize,
+    hook.subheadlineFontSize,
+  );
+  const resolvedFontSize = resolvedFontSizes.headline;
+  const resolvedSubheadlineFontSize = resolvedFontSizes.subheadline;
   const isAutoFontSize = hook.fontSize === undefined;
+  const isAutoSubheadlineFontSize = hook.subheadlineFontSize === undefined;
+  const selectedFontWeight = hook.fontWeight ?? 900;
   const selectedFont = hook.fontFamily ?? DEFAULT_HEADLINE_HOOK_FONT;
   const logo = normalizeLogoOverlayConfig(logoOverlay);
   const overlapsTopLogo = !!(
@@ -374,6 +385,41 @@ export function HeadlineHookControls({
             </label>
 
             <div className="flex flex-col gap-2">
+              <GroupLabel>น้ำหนักตัวอักษร</GroupLabel>
+              <div
+                role="group"
+                aria-label="น้ำหนักตัวอักษรพาดหัว"
+                className="grid grid-cols-3 gap-2"
+              >
+                {HEADLINE_HOOK_FONT_WEIGHTS.map((weight) => {
+                  const selected = selectedFontWeight === weight;
+                  const label = weight === 400 ? "บาง" : weight === 600 ? "กลาง" : "หนา";
+                  return (
+                    <button
+                      key={weight}
+                      type="button"
+                      aria-pressed={selected}
+                      onClick={() => editor.setHeadlineHook({ fontWeight: weight })}
+                      className="min-h-11 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-400 sm:min-h-9"
+                      style={{
+                        borderRadius: radius.control,
+                        border: `1px solid ${selected ? "rgba(249,115,22,.55)" : color.cardBorder}`,
+                        background: selected ? "rgba(249,115,22,.12)" : "rgba(255,255,255,.025)",
+                        color: selected ? "#FDBA74" : color.textSecondary,
+                        fontFamily: headlineHookFontCssFamily(selectedFont),
+                        fontSize: 11,
+                        fontWeight: weight,
+                        cursor: "pointer",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-2">
                 <GroupLabel>ขนาดพาดหัว</GroupLabel>
                 <span style={{ fontSize: 10, color: color.textSecondary }}>{resolvedFontSize}px</span>
@@ -390,7 +436,7 @@ export function HeadlineHookControls({
               />
               <div className="flex items-center justify-between gap-3">
                 <span style={{ fontSize: 9.5, lineHeight: 1.4, color: color.textFaint }}>
-                  บรรทัดเสริมจะย่อ-ขยายตามพาดหัวอัตโนมัติ
+                  ขนาดพาดหัวปรับตามความยาวข้อความอัตโนมัติ
                 </span>
                 <button
                   type="button"
@@ -403,6 +449,49 @@ export function HeadlineHookControls({
                     border: `1px solid ${isAutoFontSize ? "rgba(249,115,22,.5)" : color.cardBorder}`,
                     background: isAutoFontSize ? "rgba(249,115,22,.1)" : "transparent",
                     color: isAutoFontSize ? "#FDBA74" : color.textSecondary,
+                    fontSize: 9.5,
+                    cursor: "pointer",
+                  }}
+                >
+                  Auto
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center justify-between gap-2">
+                <GroupLabel>ขนาดบรรทัดเสริม</GroupLabel>
+                <span style={{ fontSize: 10, color: color.textSecondary }}>
+                  {resolvedSubheadlineFontSize}px
+                </span>
+              </div>
+              <input
+                type="range"
+                min={MIN_HEADLINE_HOOK_SUBHEAD_FONT_SIZE}
+                max={MAX_HEADLINE_HOOK_SUBHEAD_FONT_SIZE}
+                step={2}
+                value={resolvedSubheadlineFontSize}
+                aria-label="ขนาดบรรทัดเสริม"
+                onChange={(event) => editor.setHeadlineHook({
+                  subheadlineFontSize: Number(event.target.value),
+                })}
+                style={{ width: "100%", accentColor: "#F97316" }}
+              />
+              <div className="flex items-center justify-between gap-3">
+                <span style={{ fontSize: 9.5, lineHeight: 1.4, color: color.textFaint }}>
+                  ปรับแยกจากพาดหัวหลักได้
+                </span>
+                <button
+                  type="button"
+                  aria-pressed={isAutoSubheadlineFontSize}
+                  onClick={() => editor.setHeadlineHook({ subheadlineFontSize: undefined })}
+                  style={{
+                    flex: "none",
+                    padding: "4px 8px",
+                    borderRadius: 999,
+                    border: `1px solid ${isAutoSubheadlineFontSize ? "rgba(249,115,22,.5)" : color.cardBorder}`,
+                    background: isAutoSubheadlineFontSize ? "rgba(249,115,22,.1)" : "transparent",
+                    color: isAutoSubheadlineFontSize ? "#FDBA74" : color.textSecondary,
                     fontSize: 9.5,
                     cursor: "pointer",
                   }}
