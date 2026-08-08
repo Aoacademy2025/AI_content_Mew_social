@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import * as bgmSelectionModule from "../src/lib/bgm-selection";
 import * as headlineHookModule from "../src/lib/headline-hook";
 import {
   canonicalVideoJobRequest,
@@ -646,6 +647,7 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     if (specifier === "@/lib/client-polling") {
       return { createClientPoller: createImmediateClientPoller };
     }
+    if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -821,6 +823,7 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     if (specifier === "@/lib/client-polling") {
       return { createClientPoller: createImmediateClientPoller };
     }
+    if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -987,6 +990,7 @@ function mountAttemptJobHook(
     if (specifier === "@/lib/client-polling") {
       return { createClientPoller: createImmediateClientPoller };
     }
+    if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     throw new Error(`unhandled attempt job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
