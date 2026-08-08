@@ -58,6 +58,7 @@ import {
   type BrollWindow,
 } from "@/lib/broll-windows";
 import {
+  buildCutawayBackgroundTimeline,
   planCutaway,
   planCutawayRecomposite,
   reconstructCutawayPersonRanges,
@@ -809,7 +810,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       if ("error" in mergeRes) { await failJob(jobId, mergeRes.error); return; }
 
       // New base config: source preview config with merged b-roll, no keyword popups (base render).
-      const rrBaseConfig = { ...(preview.config as Record<string, unknown>), bgVideos: mergeRes.bgVideos, keywordPopups: [] as unknown[] };
+      const rrBaseConfig: Record<string, unknown> = {
+        ...(preview.config as Record<string, unknown>),
+        bgVideos: mergeRes.bgVideos,
+        keywordPopups: [] as unknown[],
+      };
 
       await step("render", 40);
       const rr = await caller.post<{ jobId: string }>("/api/videos/render", {
@@ -873,6 +878,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               bgVideoUrl: rrNewBase,
               mode: "cutaway",
               personRanges: rrCutawayPersonRanges,
+              cutawayAudioFromBackground: typeof rrBaseConfig.bgmFile === "string"
+                && rrBaseConfig.bgmFile.length > 0,
             }, { retries: 0 });
             rrFinalUrl = rrComp.videoUrl;
             rrCompositeBaseUrl = null;
@@ -1004,8 +1011,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     }
 
     // ── EDITOR V2 UPLOAD → CUTAWAY (P6.5, previewMode-only) ───────────────────
-    // ข้ามเสียง/อวตาร/เพลงตามดีไซน์: ถอดซับจากเสียงในคลิป → b-roll windows →
-    // base reel → composite mode:"cutaway" (เสียงมาจากคลิปเสมอ) → จบที่ preview.
+    // ข้ามเสียงพากย์/อวตาร: ถอดซับจากเสียงในคลิป → b-roll windows →
+    // base reel (เสียงคลิป + เพลงที่เลือก) → composite mode:"cutaway" → จบที่ preview.
     if (input.mode === "upload") {
       if (!input.clipUrl) { await failJob(jobId, "upload job missing clipUrl"); return; }
 
@@ -1109,17 +1116,31 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
       await step("config", 65);
       const upScc = upAligned.windows.length > 0 ? [] : (upCaps.length === (upKw.keywords ?? []).length ? upCaps.map(() => 1) : (upKw.sceneClipCounts ?? []));
+      const upBackgroundTimeline = buildCutawayBackgroundTimeline({
+        windows: upWindows.map((window) => ({ startMs: window.startMs, endMs: window.endMs })),
+        brollRanges: upCutawayPlan.broll,
+        brollAssets: (upStock.results ?? []) as Record<string, unknown>[],
+        presenterAsset: {
+          videoUrl: input.clipUrl,
+          keyword: "uploaded presenter clip",
+          duration: Math.max(1, upDurMs / 1_000),
+        },
+      });
       const upCfg = await caller.post<{ config: Record<string, unknown> }>(
         "/api/videos/generate-config",
         buildConfigPayload(
-          upCaps, upStock.results ?? [], input.clipUrl, upDurMs, upCaps.map((c) => c.text),
+          upCaps, upBackgroundTimeline.assets, input.clipUrl, upDurMs, upCaps.map((c) => c.text),
           upKw.keywordsPerScene ?? 5, upScc, upKw.sceneDurations ?? [],
-          upAligned.windows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+          upBackgroundTimeline.windows,
         ),
       );
 
       await step("render", 75);
-      const upBaseConfig = { ...upCfg.config, keywordPopups: [] as unknown[] };
+      const upBaseConfig = {
+        ...upCfg.config,
+        keywordPopups: [] as unknown[],
+        ...(input.bgmFile ? { bgmFile: input.bgmFile, bgmVolume: input.bgmVolume ?? 0.12 } : {}),
+      };
       const upR = await caller.post<{ jobId: string }>("/api/videos/render", {
         shortVideoConfig: upBaseConfig, fps: RENDER_FPS, jpegQuality: RENDER_JPEG_QUALITY,
         parentJobId: jobId,
@@ -1142,6 +1163,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         avatarVideoUrl: input.clipUrl,
         bgVideoUrl: upReelUrl,
         personRanges,
+        cutawayAudioFromBackground: Boolean(input.bgmFile),
       }, { retries: 0 });
 
       const upFinalDuration = Date.now() - phaseStartedAt;

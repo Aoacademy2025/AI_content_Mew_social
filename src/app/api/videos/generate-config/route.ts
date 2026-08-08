@@ -78,6 +78,7 @@ type Cap = { text: string; startMs: number; endMs: number; tag?: "hook" | "body"
 type StockVideo = {
   keyword: string;
   sourceIndex?: number;
+  clipOffset?: number;
   localUrl?: string;
   videoUrl: string;
   duration: number;
@@ -307,7 +308,9 @@ export async function POST(req: Request) {
         start: 0,
         end: 0,
         sourceIndex: sv.sourceIndex,
-        clipOffset: 0,
+        clipOffset: Number.isFinite(sv.clipOffset) && (sv.clipOffset ?? 0) > 0
+          ? Number(sv.clipOffset)
+          : 0,
         clipDuration: sv.duration > 0 ? sv.duration : 10,
         keyword: sv.keyword,
         title: sv.title,

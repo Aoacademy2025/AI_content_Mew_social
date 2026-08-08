@@ -1,10 +1,12 @@
 import {
+  buildCutawayBackgroundTimeline,
   planCutaway,
   planCutawayRecomposite,
   buildEnableExpr,
   reconstructCutawayPersonRanges,
   resolveCutawayPersonRanges,
 } from "../src/lib/cutaway-plan";
+import { assignBrollWindows } from "../src/lib/broll-coverage";
 import { buildBrollWindows, buildFixedCountBrollWindows } from "../src/lib/broll-windows";
 
 let failed = 0;
@@ -269,6 +271,53 @@ const legacyBase = reconstructCutawayPersonRanges({
     [],
   );
   assert(JSON.stringify(resolved) === JSON.stringify([{ start: 0, end: 8 }]), "adjacent person ranges are merged");
+}
+
+// 13) Sparse billable cutaways are expanded before coverage assignment. Without
+// this mapping, person windows consume the next AI asset under the presenter and
+// create a one-frame flash/reused image at the visible cutaway boundary.
+{
+  const windows = mk(4);
+  const plan = planCutaway(windows);
+  const timeline = buildCutawayBackgroundTimeline({
+    windows,
+    brollRanges: plan.broll,
+    brollAssets: [
+      { videoUrl: "/ai-0.png", duration: 8, sourceIndex: 0 },
+      { videoUrl: "/ai-1.png", duration: 8, sourceIndex: 1 },
+    ],
+    presenterAsset: { videoUrl: "/uploaded-presenter.mp4", duration: 16 },
+  });
+  assert(timeline.windows.length === 4, "render timeline keeps all person + cutaway windows");
+  assert(timeline.assets.length === 4, "render timeline has one preferred asset per full window");
+  assert(timeline.assets[0]?.videoUrl === "/uploaded-presenter.mp4", "person window uses uploaded clip filler");
+  assert(timeline.assets[0]?.clipOffset === 0, "first presenter filler starts at matching media offset");
+  assert(timeline.assets[1]?.videoUrl === "/ai-0.png", "first visible cutaway keeps its first AI image");
+  assert(timeline.assets[2]?.clipOffset === 8, "later presenter filler stays aligned to source time");
+  assert(timeline.assets[3]?.videoUrl === "/ai-1.png", "second visible cutaway keeps its second AI image");
+
+  const coverage = assignBrollWindows(
+    timeline.windows,
+    timeline.assets.map((asset) => ({
+      src: String(asset.videoUrl),
+      start: 0,
+      end: 0,
+      sourceIndex: asset.sourceIndex,
+      clipOffset: Number(asset.clipOffset ?? 0),
+      clipDuration: Number(asset.duration ?? 8),
+    })),
+    16,
+    30,
+  );
+  const visible = plan.broll.map((range) => coverage.segments.filter((segment) =>
+    segment.end > range.startMs / 1_000 && segment.start < range.endMs / 1_000,
+  ));
+  assert(coverage.complete, "expanded upload timeline has complete frame coverage");
+  assert(visible.every((segments) => segments.length === 1), "each visible cutaway has no short flash segment");
+  assert(
+    visible[0]?.[0]?.src === "/ai-0.png" && visible[1]?.[0]?.src === "/ai-1.png",
+    "visible cutaways use distinct AI images in order",
+  );
 }
 
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Loader2, Upload } from "lucide-react";
 import { toast } from "sonner";
+import { probeUploadSession, uploadErrorMessage } from "@/lib/avatar-upload-error";
 import { cn } from "@/lib/utils";
 import { readVideoMetadata } from "@/lib/video-orientation";
 
@@ -35,14 +36,6 @@ function parseUploadResponse(text: string): UploadResponse {
   } catch {
     return {};
   }
-}
-
-function uploadErrorMessage(status: number, data: UploadResponse) {
-  if (status === 401 || data.code === "unauthorized") return "เซสชันหมดอายุ กรุณาเข้าสู่ระบบใหม่แล้วลองอีกครั้ง";
-  if (data.error) return data.error;
-  if (status === 413) return "ไฟล์ใหญ่เกิน 500 MB";
-  if (status === 507) return "พื้นที่จัดเก็บบนเซิร์ฟเวอร์ไม่พอสำหรับอัปโหลดไฟล์นี้";
-  return `อัปโหลดไม่สำเร็จ (HTTP ${status}) — ลองเข้าสู่ระบบใหม่หรือลองอีกครั้ง`;
 }
 
 export function DirectAvatarUpload({
@@ -100,7 +93,7 @@ export function DirectAvatarUpload({
         xhr.open("POST", "/api/videos/upload-avatar");
         xhr.withCredentials = true;
         xhr.upload.onprogress = e => { if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100)); };
-        xhr.onload = () => {
+        xhr.onload = async () => {
           const data = parseUploadResponse(xhr.responseText);
           if (xhr.status === 200) {
             if (data.url) {
@@ -119,7 +112,10 @@ export function DirectAvatarUpload({
           } else {
             // Non-JSON body (e.g. an HTML error page from the proxy) → give an
             // actionable message instead of an opaque "Upload failed".
-            reject(new Error(uploadErrorMessage(xhr.status, data)));
+            const sessionState = xhr.status === 401 || data.code === "unauthorized"
+              ? await probeUploadSession()
+              : "unknown";
+            reject(new Error(uploadErrorMessage(xhr.status, data, sessionState)));
           }
         };
         xhr.onerror = () => reject(new Error("Network error — เช็กอินเทอร์เน็ตแล้วลองอีกครั้ง"));

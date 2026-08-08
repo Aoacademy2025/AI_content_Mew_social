@@ -205,7 +205,8 @@ async function directComposite(
 // ─────────────────────────────────────────────
 // Mode: cutaway — uploaded clip is the base video; the content-matched b-roll (bg)
 // peeks through during NON-person windows. Overlay the clip only during person ranges
-// (enable=between). Audio always from the clip (input 1). No green screen needed.
+// (enable=between). Audio normally comes from the clip (input 1). When the base
+// render contains selected BGM, use input 0 so it carries clip voice + music once.
 // ─────────────────────────────────────────────
 async function cutawayComposite(
   bgPath: string,
@@ -213,6 +214,7 @@ async function cutawayComposite(
   outPath: string,
   personRangesSec: { start: number; end: number }[],
   timeoutMs: number,
+  audioFromBackground = false,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
   const enableExpr = buildEnableExpr(personRangesSec);
@@ -232,7 +234,7 @@ async function cutawayComposite(
   await runFfmpeg(ffmpeg, [
     "-y", "-i", bgPath, "-i", avatarPath,
     "-filter_complex", filter,
-    "-map", "[out]", "-map", "1:a?",
+    "-map", "[out]", "-map", audioFromBackground ? "0:a?" : "1:a?",
     "-c:v", "libx264", "-preset", "fast", "-crf", "18",
     "-c:a", "aac", "-b:a", "128k",
     "-pix_fmt", "yuv420p", "-movflags", "+faststart",
@@ -671,6 +673,7 @@ export async function POST(req: Request) {
     chromaColor = "0x12FF05",
     rembgModel = "u2net",
     audioFromAvatar = false,
+    cutawayAudioFromBackground = false,
     avatarLayout = null,
     personRanges = [],
   } = body ?? {};
@@ -807,7 +810,14 @@ export async function POST(req: Request) {
     if (mode === "direct") {
       await directComposite(bgTmp, avatarTmp, outPath, sourceFadeWindows, ffmpegTimeoutMs);
     } else if (mode === "cutaway") {
-      await cutawayComposite(bgTmp, avatarTmp, outPath, personRanges, ffmpegTimeoutMs);
+      await cutawayComposite(
+        bgTmp,
+        avatarTmp,
+        outPath,
+        personRanges,
+        ffmpegTimeoutMs,
+        cutawayAudioFromBackground === true,
+      );
     } else if (mode === "rembg") {
       const rembgRawPath = path.join(rendersDir, `composite-${ts}-rembg-raw.mp4`);
       try {

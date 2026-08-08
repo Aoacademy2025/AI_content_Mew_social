@@ -511,6 +511,8 @@ async function main() {
       mode: "upload",
       clipUrl: "/api/renders/my-clip.mp4",
       previewMode: true,
+      bgmFile: "/music/calm.mp3",
+      bgmVolume: 0.18,
       stockSource: "kie-image",
       stockProviders: ["pixabay"],
     });
@@ -540,14 +542,32 @@ async function main() {
     ok(uploadStockBody?.overrideClipCount === 1,
       `E-credit: image generation count excludes the presenter-covered window (got ${uploadStockBody?.overrideClipCount ?? 0})`);
     const uploadConfigCall = log.find((c) => c.path === "/api/videos/generate-config");
-    ok(((uploadConfigCall?.body as { brollWindows?: unknown[] })?.brollWindows?.length ?? 0) === 1,
-      "E-credit: rendered B-roll timeline contains only the visible cutaway window");
+    const uploadConfigBody = uploadConfigCall?.body as {
+      brollWindows?: unknown[];
+      stockVideos?: { videoUrl?: string; sourceIndex?: number }[];
+    } | undefined;
+    ok((uploadConfigBody?.brollWindows?.length ?? 0) === 2,
+      "E-timeline: render keeps person + cutaway windows even though only one image is billed");
+    ok((uploadConfigBody?.stockVideos?.length ?? 0) === 2,
+      "E-timeline: render receives one preferred background asset for every full window");
+    ok(uploadConfigBody?.stockVideos?.[0]?.videoUrl === "/api/renders/my-clip.mp4",
+      "E-timeline: hidden person range uses the uploaded clip instead of consuming the AI image");
+    ok(uploadConfigBody?.stockVideos?.[1]?.sourceIndex === 1,
+      "E-timeline: visible AI image is remapped to its full-timeline window index");
+    const uploadRenderCall = log.find((c) => c.path === "/api/videos/render");
+    const uploadRenderConfig = (uploadRenderCall?.body as {
+      shortVideoConfig?: { bgmFile?: string; bgmVolume?: number };
+    } | undefined)?.shortVideoConfig;
+    ok(uploadRenderConfig?.bgmFile === "/music/calm.mp3" && uploadRenderConfig.bgmVolume === 0.18,
+      "E-music: selected upload BGM reaches the base render mix");
     const compCall = log.find((c) => c.path === "/api/heygen/composite");
-    const compBody = compCall?.body as { mode?: string; avatarVideoUrl?: string; bgVideoUrl?: string; personRanges?: { start: number; end: number }[] } | undefined;
+    const compBody = compCall?.body as { mode?: string; avatarVideoUrl?: string; bgVideoUrl?: string; personRanges?: { start: number; end: number }[]; cutawayAudioFromBackground?: boolean } | undefined;
     ok(compBody?.mode === "cutaway", "E: composite mode = cutaway");
     ok(compBody?.avatarVideoUrl === "/api/renders/my-clip.mp4", "E: clip is the composite foreground");
     ok(compBody?.bgVideoUrl === "/renders/out-1.mp4", "E: b-roll reel is the composite background");
     ok(Array.isArray(compBody?.personRanges) && compBody.personRanges.length > 0, "E: personRanges present");
+    ok(compBody?.cutawayAudioFromBackground === true,
+      "E-music: composite keeps the base audio mix instead of dropping selected BGM");
     ok(refunds === 0, "E: no refund (preview charge stands)");
     ok(!log.some((c) => c.method === "POST" && c.path === "/api/videos"), "E: no gallery row (comes at web burn)");
     const out = parseVideoJobOutput(done?.outputJson ?? null);
@@ -589,8 +609,19 @@ async function main() {
     ok(!log.some((c) => c.path === "/api/videos/extract-keywords"), "E2-credit: no visible B-roll skips keyword generation");
     ok(!log.some((c) => c.path === "/api/videos/fetch-stock"), "E2-credit: no visible B-roll skips every stock/AI credit request");
     const configCall = log.find((c) => c.path === "/api/videos/generate-config");
-    ok(((configCall?.body as { brollWindows?: unknown[] })?.brollWindows?.length ?? 0) === 0,
-      "E2-credit: config has no billable B-roll windows");
+    const shortConfig = configCall?.body as {
+      brollWindows?: unknown[];
+      stockVideos?: { videoUrl?: string }[];
+    } | undefined;
+    ok((shortConfig?.brollWindows?.length ?? 0) === 1,
+      "E2-timeline: config keeps the presenter-only timeline window");
+    ok(shortConfig?.stockVideos?.[0]?.videoUrl === "/api/renders/short-presenter.mp4",
+      "E2-timeline: presenter-only config uses the uploaded clip without stock spend");
+    const shortComposite = log.find((c) => c.path === "/api/heygen/composite")?.body as {
+      cutawayAudioFromBackground?: boolean;
+    } | undefined;
+    ok(shortComposite?.cutawayAudioFromBackground === false,
+      "E2-music: no selected BGM keeps audio directly from the uploaded clip");
     ok(log.filter((c) => c.path === "/api/videos/render").length === 1, "E2: base render still runs for normal minute metering");
     ok(log.some((c) => c.path === "/api/heygen/composite"), "E2: uploaded presenter is still composited into the final preview");
   }

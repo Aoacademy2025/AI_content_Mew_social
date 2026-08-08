@@ -8,6 +8,7 @@ import {
   headlineHookFontCssFamily,
   headlineHookEndFrame,
   headlineHookFontSizes,
+  headlineHookFontWeights,
   normalizeHeadlineHook,
   normalizeHeadlineHookSuggestions,
   visibleCaptionRangeAfterHeadline,
@@ -35,6 +36,8 @@ const normalized = normalizeHeadlineHook({
   topPercent: -10,
   fontFamily: "Prompt",
   fontSize: 84,
+  fontWeight: 600,
+  subheadlineFontSize: 48,
 }, 60_000);
 assert.deepEqual(normalized, {
   enabled: true,
@@ -45,20 +48,30 @@ assert.deepEqual(normalized, {
   topPercent: 10,
   fontFamily: "Prompt",
   fontSize: 84,
+  fontWeight: 600,
+  subheadlineFontSize: 48,
 });
 
 assert.equal(normalizeHeadlineHook({ enabled: true, headline: "" }, 60_000)?.enabled, false);
 assert.equal(normalizeHeadlineHook(null), null);
 assert.equal(headlineHookFontCssFamily("Prompt"), "'Prompt', 'Noto Sans Thai', sans-serif");
 assert.deepEqual(headlineHookFontSizes("หัวข้อ", 84), { headline: 84, subheadline: 52 });
+assert.deepEqual(headlineHookFontSizes("หัวข้อ", 84, 64), { headline: 84, subheadline: 64 });
+assert.deepEqual(headlineHookFontWeights(undefined), { headline: 900, subheadline: 800 });
+assert.deepEqual(headlineHookFontWeights(400), { headline: 400, subheadline: 400 });
+assert.deepEqual(headlineHookFontWeights(600), { headline: 600, subheadline: 600 });
 const guardedTypography = normalizeHeadlineHook({
   enabled: true,
   headline: "ทดสอบขอบเขต",
   fontFamily: "Comic Sans",
   fontSize: 999,
+  fontWeight: 500,
+  subheadlineFontSize: 999,
 })!;
 assert.equal(guardedTypography.fontFamily, undefined);
 assert.equal(guardedTypography.fontSize, 120);
+assert.equal(guardedTypography.fontWeight, undefined);
+assert.equal(guardedTypography.subheadlineFontSize, 88);
 
 const generatedDefault = createDefaultHeadlineHook(
   "นี่คือประเด็นแรกที่ต้องรู้! ประโยคถัดไปไม่ควรถูกนำมาใช้",
@@ -166,5 +179,7 @@ const controlsSource = readFileSync(
 assert.match(controlsSource, /aria-label="ตั้งค่าขั้นสูงของพาดหัว"/);
 assert.match(controlsSource, /aria-label="ฟอนต์พาดหัว"/);
 assert.match(controlsSource, /aria-label="ขนาดพาดหัว"/);
+assert.match(controlsSource, /aria-label="น้ำหนักตัวอักษรพาดหัว"/);
+assert.match(controlsSource, /aria-label="ขนาดบรรทัดเสริม"/);
 
 console.log("headline-hook: all checks passed");

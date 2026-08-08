@@ -622,7 +622,7 @@ export async function POST(req: Request) {
             ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
             : {}),
-          ...(!uploadMode && bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
+          ...(bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
           ...(stockSource ? { stockSource } : {}),
           ...(targetClipCount ? { targetClipCount: Math.round(targetClipCount) } : {}),
           ...(brollRegionPreference ? { brollRegionPreference } : {}),
