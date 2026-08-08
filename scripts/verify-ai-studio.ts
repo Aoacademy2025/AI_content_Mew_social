@@ -54,9 +54,9 @@ check(
   isAiImageQuoteCostSafe(quoteAiImageModel(zImage, 5_000)),
 );
 check(
-  "custom Z-Image receives a 3-credit quote that covers the conservative worker estimate",
-  quoteAiImageModel(customZImage, 50_000).credits === 3
-    && isAiImageQuoteCostSafe(quoteAiImageModel(customZImage, 50_000)),
+  "custom Z-Image receives a 2-credit quote that covers the measured worker cost",
+  quoteAiImageModel(customZImage, 10_000).credits === 2
+    && isAiImageQuoteCostSafe(quoteAiImageModel(customZImage, 10_000)),
 );
 check(
   "GPT Image 2 has a separate 3-credit quote that fits its provider cost",
@@ -176,11 +176,11 @@ check(
     dashboard.includes("internalAiTester &&"),
 );
 check(
-  "public editor keeps AI Image and AutoMix visible with coming-soon locks",
+  "public editor keeps AI Image and AutoMix visible, gated by the public-launch eligibility helper",
   editorStep2.includes('title: "Hero AI Image"') &&
     editorStep2.includes('title: "AutoMix"') &&
-    editorStep2.includes("const heroImageUnlocked = p.heroAiBeta") &&
-    editorStep2.includes("const autoMixUnlocked = p.internalAiTester && p.isPaidManagedKie") &&
+    editorStep2.includes("const heroImageUnlocked = p.heroAiImageEligible") &&
+    editorStep2.includes("const autoMixUnlocked = p.heroAiImageEligible") &&
     editorStep2.includes("disabled={locked}"),
 );
 check(
@@ -221,9 +221,12 @@ check(
     editorInspector.includes("disabled: !aiImageEnabled"),
 );
 check(
-  "individual Hero scenes use the same product-owner beta as new-video generation",
+  "individual Hero scenes use the same product-owner-or-public plan gate as new-video generation",
+  // Task 4 widened this route from the beta-only isHeroAiBetaUser to
+  // isHeroAiImageEligible (beta cohort still admitted unconditionally; PRO/
+  // BUSINESS/trial admitted once HERO_AI_IMAGE_PUBLIC=1) — see internal-ai-access.ts.
   editorPostPhase.includes("BROLL_WINDOW_EDIT || internalAiTester") &&
-    brollGenerateRoute.includes("isHeroAiBetaUser(user)") &&
+    brollGenerateRoute.includes("isHeroAiImageEligible(user)") &&
     brollGenerateRoute.includes("generateHeroImageForVideo") &&
     !brollGenerateRoute.includes("generateKieImageKenBurns"),
 );

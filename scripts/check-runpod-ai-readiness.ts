@@ -134,7 +134,9 @@ for (const model of AI_IMAGE_MODELS) {
       configured = configured && workflowOk;
       estimatedCostUsdMicros = nonNegativeInteger(
         process.env[estimateEnvName(model)],
-        model.id === "z-image-turbo" ? 50_000 : model.estimatedCostUsdMicros,
+        // Keep in sync with customRouteEstimate() in image-generation-provider.server.ts —
+        // measured real COGS ≈5,200 µUSD (docs/research/2026-08-07-runpod-custom-billing.md).
+        model.id === "z-image-turbo" ? 10_000 : model.estimatedCostUsdMicros,
       );
     } else {
       if (model.id === "z-image-turbo") {

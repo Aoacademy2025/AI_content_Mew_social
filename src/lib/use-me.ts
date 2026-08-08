@@ -26,6 +26,7 @@ export interface MeData {
   trialEndsAt?: string | null;
   internalAiTester?: boolean;
   heroAiBeta?: boolean;
+  heroAiImageEligible?: boolean;
   heroScriptAllowed?: boolean;
   heroScriptPreview?: boolean;
   heroScriptCohort?: "internal" | "paid" | "trial" | "free" | "preview";

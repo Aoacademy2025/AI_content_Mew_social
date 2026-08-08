@@ -20,7 +20,7 @@ import { GlassPanel, BtnPrimary, BtnSecondary, GroupLabel } from "./ui";
 import { buildReceipt } from "./receipt";
 import { estimateClipSecV2 } from "./estimate";
 import { PRESET_WEIGHTS, presetUsesAi } from "./mix-presets";
-import { costKeyForKieModel, creditCostFor, HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
+import { creditCostFor, HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 import type { V2Project } from "./useV2Project";
 import { fetchClientJson } from "@/lib/client-request-cache";
@@ -87,14 +87,12 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
     return { video: 1, photo: 0, ai: 0 };
   }, [p.isAdmin, p.brollSource, p.mixPreset]);
 
-  // Per-image price from the SELECTED model, via the same map the server charges from.
-  // Non-admins default to gpt-image-2 when unset (matches server coercion + the picker).
+  // Per-image price — ONE price for every customer AI image. Hero AI Image mode and
+  // AutoMix "ai" slots both generate on the Hero RunPod seam (fetch-stock), charged
+  // from the same cost key the server reserves against, so the quote cannot drift.
   const perImageCredits = useMemo(() => {
-    if (p.brollSource === "kie-image") return HERO_AI_IMAGE_CREDITS;
-    const effectiveModel = p.isAdmin ? p.kieModel : (p.kieModel || "gpt-image-2-text-to-image");
-    const costKey = effectiveModel ? costKeyForKieModel(effectiveModel) : null;
-    return costKey ? creditCostFor(costKey) : 0;
-  }, [p.brollSource, p.isAdmin, p.kieModel]);
+    return HERO_AI_IMAGE_CREDITS;
+  }, []);
 
   const model = useMemo(
     () => buildReceipt({
@@ -114,6 +112,11 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
     }),
     [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, exactDuration],
   );
+
+  // Deficit disables the render CTA (Task 5 item B) — buildReceipt already computed
+  // the exact "Hero credits ไม่พอ" line above; reuse that decision instead of
+  // re-deriving a second insufficiency check that could drift from it.
+  const insufficientCredits = model.lines.some((l) => l.key === "insufficient");
 
   if (!open) return null;
 
@@ -174,23 +177,43 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
           ))}
         </div>
 
-        <div className="flex gap-2 px-5 pb-5">
-          <BtnSecondary
-            className="flex-1"
-            onClick={onCancel}
-            disabled={submitting}
-            style={submitting ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-          >
-            กลับไปแก้ไข
-          </BtnSecondary>
-          <BtnPrimary
-            className="flex-1"
-            onClick={onConfirm}
-            disabled={submitting}
-            style={submitting ? { opacity: 0.6, cursor: "wait" } : undefined}
-          >
-            {submitting ? "กำลังส่งงาน…" : "เริ่มเรนเดอร์"}
-          </BtnPrimary>
+        <div className="flex flex-col gap-2 px-5 pb-5">
+          <div className="flex gap-2">
+            <BtnSecondary
+              className="flex-1"
+              onClick={onCancel}
+              disabled={submitting}
+              style={submitting ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+            >
+              กลับไปแก้ไข
+            </BtnSecondary>
+            <BtnPrimary
+              className="flex-1"
+              onClick={onConfirm}
+              disabled={submitting || insufficientCredits}
+              title={insufficientCredits ? "เครดิตไม่พอ — เติมเครดิตก่อนเริ่มเรนเดอร์" : undefined}
+              style={submitting
+                ? { opacity: 0.6, cursor: "wait" }
+                : insufficientCredits
+                  ? { opacity: 0.5, cursor: "not-allowed" }
+                  : undefined}
+            >
+              {submitting ? "กำลังส่งงาน…" : "เริ่มเรนเดอร์"}
+            </BtnPrimary>
+          </div>
+          {insufficientCredits && (
+            <a
+              href="/pricing?from=editor"
+              className="flex min-h-11 items-center justify-center rounded-lg text-center focus-visible:outline-2 focus-visible:outline-offset-2"
+              style={{
+                fontSize: 12.5, fontWeight: 500, color: color.primary300,
+                background: color.selectedBg, border: `1px solid ${color.selectedBorder}`,
+                padding: "10px 16px",
+              }}
+            >
+              เติมเครดิต
+            </a>
+          )}
         </div>
       </GlassPanel>
     </div>

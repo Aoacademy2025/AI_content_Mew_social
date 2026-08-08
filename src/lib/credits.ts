@@ -53,6 +53,15 @@ export const MONTHLY_GRANT: Record<string, number> = {
   BUSINESS: 150,
 };
 
+/**
+ * One-time credit grant handed to every NEW trial account (decision b, 2026-08-07),
+ * so a trial user can actually try Hero AI Image (3-5 images at 2cr each) without
+ * buying credits first. Granted via `grantCreditsOnce` in `grantTrial` (trial.ts) —
+ * that helper's unique-ref dedup is the sole abuse guard beyond the existing
+ * `UsedTrialEmail` re-trial prevention.
+ */
+export const TRIAL_TASTE_CREDITS = 10;
+
 // ── Balance helpers ───────────────────────────────────────────────────────────
 
 /**

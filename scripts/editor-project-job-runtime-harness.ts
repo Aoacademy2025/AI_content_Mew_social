@@ -197,6 +197,67 @@ const shellSource = readFileSync(shellPath, "utf8");
 const jobsRoutePath = "src/app/api/videos/jobs/route.ts";
 const jobsRouteSource = readFileSync(jobsRoutePath, "utf8");
 
+// useV2Job computes its `maxAiImages` disclose-then-charge ceiling from the REAL
+// ./estimate module rather than a stub — the number it sends the server must match
+// the number the Render Receipt already showed the user (see useV2Job.ts comment on
+// `submit`). estimate.ts and its two dependencies are pure (no DOM/network/React), so
+// they're loaded and transpiled the same way jobSource/shellSource are above, instead
+// of hand-rolling a mock that could drift from the real disclose math.
+function compilePlainModule(source: string, fileName: string): string {
+  return ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+    fileName,
+  }).outputText;
+}
+
+function loadPlainModule(
+  source: string,
+  fileName: string,
+  requireMock: (specifier: string) => unknown,
+): Record<string, unknown> {
+  const module = { exports: {} as Record<string, unknown> };
+  const factory = new Function("require", "module", "exports", compilePlainModule(source, fileName));
+  factory(requireMock, module, module.exports);
+  return module.exports;
+}
+
+const preprocessScriptPath = "src/app/(dashboard)/video-editor/_lib/preprocess-script.ts";
+const preprocessScriptModule = loadPlainModule(
+  readFileSync(preprocessScriptPath, "utf8"),
+  preprocessScriptPath,
+  (specifier) => { throw new Error(`unhandled preprocess-script import: ${specifier}`); },
+);
+const automixPlanPath = "src/lib/automix-plan.ts";
+const automixPlanModule = loadPlainModule(
+  readFileSync(automixPlanPath, "utf8"),
+  automixPlanPath,
+  (specifier) => { throw new Error(`unhandled automix-plan import: ${specifier}`); },
+);
+const estimatePath = "src/app/(dashboard)/video-editor/_v2/estimate.ts";
+const estimateModule = loadPlainModule(
+  readFileSync(estimatePath, "utf8"),
+  estimatePath,
+  (specifier) => {
+    if (specifier === "../_lib/preprocess-script") return preprocessScriptModule;
+    if (specifier === "@/lib/automix-plan") return automixPlanModule;
+    throw new Error(`unhandled estimate module import: ${specifier}`);
+  },
+);
+
+// EditorV2Shell's FailedView delegates classification/copy to failure-view.ts (pure,
+// no imports) so the exact-code matching stays covered by the real fixtures instead of
+// a mock that could silently drift — same rationale as ./estimate above.
+const failureViewPath = "src/app/(dashboard)/video-editor/_v2/failure-view.ts";
+const failureViewModule = loadPlainModule(
+  readFileSync(failureViewPath, "utf8"),
+  failureViewPath,
+  (specifier) => { throw new Error(`unhandled failure-view module import: ${specifier}`); },
+);
+
 function compileJobHook(source: string): string {
   return ts.transpileModule(source, {
     compilerOptions: {
@@ -390,6 +451,7 @@ function mountEditorShell(input: {
     if (specifier === "next/navigation") {
       return { useRouter: () => ({ push: () => undefined }) };
     }
+    if (specifier === "./failure-view") return failureViewModule;
     if (specifier === "sonner") {
       return { toast: { error: () => undefined, success: () => undefined } };
     }
@@ -556,6 +618,7 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
     if (specifier === "./mix-presets") return { PRESET_WEIGHTS: { free: {} } };
+    if (specifier === "./estimate") return estimateModule;
     if (specifier === "./ExpiredPreviewView") {
       return {
         mediaStateFromJobPoll: (state: unknown, fallback: unknown) => state ?? fallback,
@@ -734,6 +797,7 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
     if (specifier === "./mix-presets") return { PRESET_WEIGHTS: { free: {} } };
+    if (specifier === "./estimate") return estimateModule;
     if (specifier === "./ExpiredPreviewView") {
       return {
         mediaStateFromJobPoll: (state: unknown, fallback: unknown) => state ?? fallback,
@@ -899,6 +963,7 @@ function mountAttemptJobHook(
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
     if (specifier === "./mix-presets") return { PRESET_WEIGHTS: { free: {} } };
+    if (specifier === "./estimate") return estimateModule;
     if (specifier === "./ExpiredPreviewView") {
       return {
         mediaStateFromJobPoll: (state: unknown, fallback: unknown) => state ?? fallback,

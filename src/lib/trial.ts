@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { createNotification } from "@/lib/notifications";
 import { usageWindowForPlan } from "@/lib/usage-limits";
+import { grantCreditsOnce, TRIAL_TASTE_CREDITS } from "@/lib/credits";
 
 export { TRIAL_MINUTES } from "@/lib/plan-limits";
 
@@ -61,6 +62,16 @@ export async function grantTrial(userId: string, days: number): Promise<boolean>
   // (e.g. the webhook + lazy-create both firing) loses this insert but already lost the
   // updateMany above (trialStartedAt no longer null), so no double-grant either way.
   await prisma.usedTrialEmail.create({ data: { emailHash } }).catch(() => {});
+
+  // Decision b (2026-08-07): one-time 10cr taste grant so a new trial user can actually
+  // try Hero AI Image (3-5 images at 2cr each) without buying credits first.
+  // grantCreditsOnce's unique-ref dedup (ref = "trial-taste:<userId>") is the abuse guard
+  // here — combined with the UsedTrialEmail check above and the trialStartedAt-null guard
+  // in the updateMany, a user can never get this twice, even via retries/races between the
+  // webhook and lazy-create entry points. Fail-open: a grant error must not roll back or
+  // block the trial itself (mirrors extendVideoExpiryForPlan below).
+  await grantCreditsOnce(userId, TRIAL_TASTE_CREDITS, "grant", `trial-taste:${userId}`)
+    .catch((err) => console.error(`[trial-taste] grant failed for ${userId}:`, err));
 
   await extendVideoExpiryForPlan(userId, "PRO").catch(() => {});
   return true;

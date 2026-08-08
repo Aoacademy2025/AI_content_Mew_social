@@ -57,6 +57,7 @@ import {
   type ProjectStatusFilter,
 } from "./project-menu";
 import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
+import { classifyFailure, failureViewCopy } from "./failure-view";
 
 export function EditorV2Shell() {
   const p = useV2Project();
@@ -794,16 +795,23 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
   onBack: () => void;
   onSwitchFaceless: () => void;
 }) {
-  const isHeygenQuota = job.errorProvider === "heygen" && job.errorCode === "quota";
+  // Classification + copy live in failure-view.ts (pure, unit-tested in
+  // scripts/verify-hero-image-disclosure.ts) so the exact-code matching that fixed the
+  // OMNIVOICE_PROVIDER_RATE_LIMITED false-positive stays covered by real fixtures,
+  // not just a regex over this component's source.
+  const kind = classifyFailure(job);
+  const isHeygenQuota = kind === "heygen-quota";
+  const isInsufficientCredits = kind === "insufficient-credits";
+  const { heading, body } = failureViewCopy(kind, job, exportMode);
   return (
     <main className="flex flex-1 items-center justify-center p-6">
       <div className="flex max-w-[560px] flex-col items-center gap-4 text-center">
         <div className="flex items-center gap-2">
           <XCircle size={18} color={color.danger} />
-          <span style={{ font: `600 16px ${font.heading}`, color: color.danger }}>{exportMode ? "ส่งออกไม่สำเร็จ" : "เรนเดอร์ไม่สำเร็จ"}</span>
+          <span style={{ font: `600 16px ${font.heading}`, color: color.danger }}>{heading}</span>
         </div>
         <div style={{ fontSize: 12, color: color.textSecondary, lineHeight: 1.7 }}>
-          {job.errorMessage ?? "เกิดข้อผิดพลาด — ลองใหม่อีกครั้ง"}
+          {body}
         </div>
         {isHeygenQuota ? (
           <div className="flex flex-wrap items-center justify-center gap-3">
@@ -811,6 +819,13 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
               <BtnSecondary>เติมเครดิต HeyGen</BtnSecondary>
             </a>
             <BtnPrimary onClick={onSwitchFaceless}>เปลี่ยนเป็น Faceless แล้วลองใหม่</BtnPrimary>
+          </div>
+        ) : isInsufficientCredits ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Link href="/pricing?from=editor">
+              <BtnSecondary>เติมเครดิต</BtnSecondary>
+            </Link>
+            <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>
           </div>
         ) : (
           <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>

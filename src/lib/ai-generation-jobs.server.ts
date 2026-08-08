@@ -103,6 +103,15 @@ export async function createReservedImageJob(input: {
       where: { userId: input.userId, idempotencyKey: input.idempotencyKey },
     });
     if (existing) {
+      // Fail closed if the key was already claimed by another KIND of generation. The
+      // replay short-circuit exists so a retried image request reuses its own paid
+      // reservation; adopting, say, a voice row would hand back a job that never
+      // debited image credits — a free image. Only reachable if some caller-minted key
+      // leaked into this namespace, which the per-surface prefixes (`studio:`,
+      // `studio-voice:`) already prevent; this is the backstop for the next surface.
+      if (existing.kind !== "image") {
+        throw new Error("Image reservation key is already claimed by a non-image job");
+      }
       const balance = await tx.creditBalance.findUnique({ where: { userId: input.userId } });
       return { ok: true, created: false, job: existing, balanceAfter: (balance?.granted ?? 0) + (balance?.purchased ?? 0) };
     }

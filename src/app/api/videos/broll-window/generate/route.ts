@@ -15,7 +15,8 @@ import {
 import { parseHeroBrollWindowRequest } from "@/lib/broll-window-hero";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { getBalance } from "@/lib/credits";
-import { isHeroAiBetaUser } from "@/lib/internal-ai-access";
+import { checkHeroImageRate, heroImageRateLimitMessage } from "@/lib/hero-image-rate-limit";
+import { HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE, isHeroAiImageEligible } from "@/lib/internal-ai-access";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import {
   describeHeroImageOffer,
@@ -49,11 +50,30 @@ async function copyOwnedHeroImage(outputUrl: string, imagePath: string): Promise
 export async function POST(req: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!isHeroAiBetaUser(user)) {
+  const isAdmin = user.role === "ADMIN";
+  if (!isHeroAiImageEligible(user)) {
+    if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+      return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+    }
     return NextResponse.json(
       { error: "beta_only", message: "Hero AI Image ยังเปิดเฉพาะทีมงาน (Beta)" },
       { status: 403 },
     );
+  }
+  // Rate cap (public-launch abuse guard) — one regenerated window = one planned
+  // image. Runs before any credit reservation. Admins are exempt (team ops).
+  if (!isAdmin) {
+    const heroRate = await checkHeroImageRate(user.id, 1);
+    if (!heroRate.ok) {
+      return NextResponse.json(
+        {
+          error: "RATE_LIMITED",
+          message: heroImageRateLimitMessage(heroRate),
+          retryAfterSec: heroRate.retryAfterSec,
+        },
+        { status: 429, headers: { "Retry-After": String(heroRate.retryAfterSec) } },
+      );
+    }
   }
 
   const body = await req.json().catch(() => null);

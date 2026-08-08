@@ -78,7 +78,12 @@ export async function refundSettledVideoImageBatch(input: {
   creditsFromGranted: number;
   creditsFromPurchased: number;
 }> {
-  const prefix = `video:${input.videoJobId}:scene:`;
+  // Every image charged to a video shares the `video:<jobId>:` idempotency namespace
+  // (`:scene:` for Hero-only mode, `:automix:` for AutoMix AI slots), so one prefix
+  // compensates the whole video. Per-window regenerations live in the separate
+  // `broll-window:` namespace and are deliberately NOT swept here — they are explicit,
+  // already-delivered purchases against a finished video.
+  const prefix = `video:${input.videoJobId}:`;
   const reason = input.reason.replace(/[^a-z0-9_-]+/gi, "_").slice(0, 80) || "video_failed";
   return prisma.$transaction(async (tx) => {
     const jobs = await tx.aiGenerationJob.findMany({

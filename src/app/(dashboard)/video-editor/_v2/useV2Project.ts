@@ -506,6 +506,11 @@ export function useV2Project() {
   );
   const [internalAiTester, setInternalAiTester] = useState(false);
   const [heroAiBeta, setHeroAiBeta] = useState(false);
+  // Public-launch eligibility for Hero AI Image (Task 4's plan gate — beta cohort
+  // OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS/active-trial). Distinct from
+  // `heroAiBeta` above, which stays beta-only forever; Task 5's disclosure UX
+  // reads this one.
+  const [heroAiImageEligible, setHeroAiImageEligible] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
   const [plan, setPlan] = useState<string | null>(null);
@@ -548,6 +553,13 @@ export function useV2Project() {
   const [targetClipCount, setTargetClipCount, setTargetClipCountRaw] = useUserDraftState(
     d.targetClipCount ?? 0, "targetClipCount", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   ); // 0 = auto
+  // Hero AI Image default-8 guard (Task 5 fast-follow): plain session-only state (NOT
+  // useUserDraftState — no server persistence needed) so a fresh page load always starts
+  // untouched. Set true only by the count Segmented/number input itself; the Hero
+  // AI Image selection handlers that apply the default-8 count must NEVER set this,
+  // otherwise the programmatic default would look like a user edit and stop being
+  // idempotent on repeated re-selection (see Step2Elements.tsx callers).
+  const [heroCountTouched, setHeroCountTouched] = useState(false);
   const [avatarMode, setAvatarMode, setAvatarModeRaw] = useUserDraftState<V2AvatarMode>(
     d.avatarMode ?? "bookend", "avatarMode", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -1741,9 +1753,11 @@ export function useV2Project() {
       const admin = m?.role === "ADMIN";
       const internalTester = m?.internalAiTester === true;
       const heroBeta = m?.heroAiBeta === true;
+      const heroImageEligible = m?.heroAiImageEligible === true;
       const internalAdmin = admin && internalTester;
       setInternalAiTester(internalTester);
       setHeroAiBeta(heroBeta);
+      setHeroAiImageEligible(heroImageEligible);
       setPlan(typeof m?.plan === "string" ? m.plan : "FREE");
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
       // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
@@ -2057,6 +2071,7 @@ export function useV2Project() {
     useAvatar, setUseAvatar,
     avatarId, setAvatarId,
     targetClipCount, setTargetClipCount,
+    heroCountTouched, setHeroCountTouched,
     avatarMode, setAvatarMode,
     avatarIntroSecs, setAvatarIntroSecs,
     avatarTailSecs, setAvatarTailSecs,
@@ -2068,7 +2083,7 @@ export function useV2Project() {
     layerVisibility, setLayerVisibility,
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, isAdmin, isPaidManagedKie, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, isAdmin, isPaidManagedKie, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,

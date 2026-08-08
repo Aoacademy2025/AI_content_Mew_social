@@ -727,6 +727,9 @@ model AiGenerationJob {
   @@index([providerJobId])
   @@index([status, kind])
   @@index([mediaExpiresAt])
+  // Covers the stale-reserved credit sweep (src/lib/ai-image-reconcile.ts), which
+  // scans kind + chargeState against an updatedAt cutoff every 15 minutes.
+  @@index([kind, chargeState, updatedAt])
 }
 
 // Every external provider submission is durable and auditable. Image jobs may

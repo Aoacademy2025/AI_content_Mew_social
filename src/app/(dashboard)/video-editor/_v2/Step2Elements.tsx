@@ -25,21 +25,35 @@ import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
 import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME, HERO_VOICE_TEASER_VISIBLE } from "@/lib/hero-voice-brand";
 import { OMNIVOICE_UI_ENABLED } from "@/lib/tts-providers";
-import { estimateClipSecV2 } from "./estimate";
+import {
+  estimateClipSecV2,
+  estimateAutoMixAiImageCount,
+  disclosedAutoMixAiImageCount,
+  heroDefaultTargetClipCount,
+  heroHoldLengthSec,
+} from "./estimate";
 import { minutesFromSeconds } from "@/lib/minute-round";
 import { useBgm } from "../_hooks/useBgm";
 import { useHeygenAvatars } from "../_hooks/useHeygenAvatars";
 import { MusicLibraryModal } from "./MusicLibraryModal";
 import { AvatarPickerModal } from "./AvatarPickerModal";
 import type { V2Project, V2BrollSource, V2VoiceEngine } from "./useV2Project";
-import type { MixPreset } from "./mix-presets";
+import { PRESET_WEIGHTS, type MixPreset } from "./mix-presets";
 import { HeroVoicePicker } from "./HeroVoicePicker";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 
+/** Hero AI Image locked-state copy (Task 5 D8) — one string pair for every locked
+ *  surface (customer cards, AutoMix preset picker) so eligibility copy never drifts. */
+const HERO_UPGRADE_BADGE = "อัปเกรด";
+const HERO_UPGRADE_TITLE = "Hero AI Image ใช้ได้กับแผน PRO/BUSINESS";
+
 // AutoMix intensity (D5.1) — shown after an eligible customer selects AutoMix.
+// `sub` is the price-free base copy; MixPresetButtons appends the live
+// `~{total} เครดิต/คลิป` line (Task 5 item 4) computed from HERO_AI_IMAGE_CREDITS —
+// no credit numbers are hardcoded here.
 const MIX_PRESETS: { key: MixPreset; label: string; sub: string; badge?: string }[] = [
   { key: "free", label: "ฟรีล้วน", sub: "สต็อกฟรีทั้งหมด · 0 เครดิต" },
-  { key: "recommended", label: "AutoMix แนะนำ", sub: "สต็อก + ภาพ AI แทรก · ~6–9 เครดิต/คลิป", badge: "แนะนำ" },
+  { key: "recommended", label: "AutoMix แนะนำ", sub: "สต็อก + ภาพ AI แทรก", badge: "แนะนำ" },
   { key: "full", label: "AutoMix · AI เด่น", sub: "วิดีโอสต็อก + ภาพสต็อก + AI สัดส่วนสูง" },
 ];
 const MIX_PRESET_LABEL: Record<MixPreset, string> = {
@@ -66,6 +80,19 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
   const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
   const displayMin = displaySec > 0 ? minutesFromSeconds(displaySec) : 0;
+  // Hero AI Image (Task 5, D8): the fresh-selection default (8 รูป, "กำหนดเอง") and the
+  // "อัตโนมัติ" projected count — the SAME window-based estimate buildReceipt uses (an
+  // all-AI preset over the same estimated duration), so this screen's numbers never
+  // drift from what the Render Receipt discloses right before render.
+  const heroDefaultN = heroDefaultTargetClipCount(0);
+  const heroAutoProjectedCount = useMemo(
+    () => estimateAutoMixAiImageCount(displaySec, { video: 0, photo: 0, ai: 1 }),
+    [displaySec],
+  );
+  const heroHoldSec = useMemo(
+    () => heroHoldLengthSec(displaySec, p.targetClipCount),
+    [displaySec, p.targetClipCount],
+  );
   const brollCountLabel = p.brollSource === "kie-image"
     ? "จำนวนภาพ AI:"
     : p.brollSource === "automix"
@@ -170,11 +197,25 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             {BROLL_OPTIONS.map((o) => {
               // Beta = admin เสมอ · paid (managed-kie) ปลดล็อกภาพ AI/AutoMix · วิดีโอ AI (comingSoon) ยังไม่เปิดให้ใคร
               const locked = o.comingSoon || (o.beta && !p.isAdmin && !p.isPaidManagedKie);
+              // Admin card parity (Task 5 item 5): same total-price info as the customer
+              // card, using the same fresh-selection default (8 รูป) the click below applies.
+              const desc = o.value === "kie-image"
+                ? `${o.desc} · เริ่มต้น ${heroDefaultN} รูป × ${HERO_AI_IMAGE_CREDITS} เครดิต = ${heroDefaultN * HERO_AI_IMAGE_CREDITS} เครดิต`
+                : o.desc;
               return (
                 <button
                   key={o.value}
                   disabled={locked}
-                  onClick={() => !locked && p.setBrollSource(o.value)}
+                  onClick={() => {
+                    if (locked) return;
+                    p.setBrollSource(o.value);
+                    // Default-8 only applies while the user hasn't touched the count
+                    // control themselves — otherwise re-selecting Hero AI Image after
+                    // switching away would clobber an explicit "อัตโนมัติ" (0) choice.
+                    if (o.value === "kie-image" && !p.heroCountTouched) {
+                      p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount));
+                    }
+                  }}
                   className="relative flex flex-col items-start gap-2 text-left"
                   style={{
                     borderRadius: radius.card, padding: "12px 14px",
@@ -194,14 +235,14 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   <IconTile size={32}>{o.icon}</IconTile>
                   <span className="flex flex-col">
                     <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{o.title}</span>
-                    <span style={{ fontSize: 10.5, color: color.textFaint }}>{o.desc}</span>
+                    <span style={{ fontSize: 10.5, color: color.textFaint }}>{desc}</span>
                   </span>
                 </button>
               );
             })}
           </div>
           ) : (
-            <CustomerBrollSourceButtons p={p} />
+            <CustomerBrollSourceButtons p={p} durationSec={displaySec} />
           )}
           <Advanced note="สลับคลิป/แก้จังหวะรายช่วง (มากับ timeline)">
             <div className="flex flex-col gap-3">
@@ -209,13 +250,27 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 {brollCountLabel}
                 <Segmented
                   value={p.targetClipCount > 0 ? "custom" : "auto"}
-                  onChange={(v) => p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || 8))}
-                  options={[{ value: "auto", label: "Auto" }, { value: "custom", label: "กำหนดเอง" }]}
+                  onChange={(v) => {
+                    // Any direct interaction with this control is an explicit user choice
+                    // (including picking "อัตโนมัติ") — stop the Hero default-8 from ever
+                    // overriding it again this session (fast-follow fix, see p.heroCountTouched).
+                    p.setHeroCountTouched(true);
+                    p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || heroDefaultN));
+                  }}
+                  options={p.brollSource === "kie-image"
+                    ? [
+                        { value: "auto", label: `อัตโนมัติ (1 รูป/ช่วง ≈ ${heroAutoProjectedCount} รูป)` },
+                        { value: "custom", label: "กำหนดจำนวนรูป (แนะนำ)" },
+                      ]
+                    : [{ value: "auto", label: "Auto" }, { value: "custom", label: "กำหนดเอง" }]}
                 />
                 {p.targetClipCount > 0 && (
                   <input
                     type="number" min={1} max={60} value={p.targetClipCount}
-                    onChange={(e) => p.setTargetClipCount(Math.max(1, Math.min(60, Number(e.target.value) || 1)))}
+                    onChange={(e) => {
+                      p.setHeroCountTouched(true);
+                      p.setTargetClipCount(Math.max(1, Math.min(60, Number(e.target.value) || 1)));
+                    }}
                     className="w-[64px]"
                     style={{ padding: "6px 8px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
                   />
@@ -224,10 +279,24 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               {p.targetClipCount > 0 && (
                 <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
                   {p.brollSource === "kie-image"
-                    ? `สร้างภาพ AI ${p.targetClipCount} ภาพพอดี และไม่ใช้วิดีโอหรือภาพสต็อก`
+                    // Total-price disclosure (Task 5 item 3) — every hero count/price hint
+                    // shows the TOTAL (n × HERO_AI_IMAGE_CREDITS), never a bare count.
+                    ? `${p.targetClipCount} รูป × ${HERO_AI_IMAGE_CREDITS} เครดิต = ${p.targetClipCount * HERO_AI_IMAGE_CREDITS} เครดิต · ไม่ใช้วิดีโอหรือภาพสต็อก`
                     : p.brollSource === "automix"
                       ? `สร้าง B-roll รวม ${p.targetClipCount} ชิ้น โดยผสมวิดีโอสต็อก ภาพสต็อก และภาพ AI`
                       : `ใช้ B-roll สต็อกรวม ${p.targetClipCount} ชิ้น`}
+                </span>
+              )}
+              {p.targetClipCount > 0 && p.brollSource === "kie-image" && (
+                <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                  {/* Hold-length hint (Task 5 item 6) — warn when few images must cover a
+                      long clip, so a budget-safe default doesn't quietly look static. */}
+                  รูปละ ~{heroHoldSec} วิ{heroHoldSec > 12 ? " (ภาพค้างนาน — เพิ่มจำนวนรูปช่วยให้คลิปดูมีชีวิตขึ้น)" : ""}
+                </span>
+              )}
+              {p.targetClipCount === 0 && p.brollSource === "kie-image" && (
+                <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                  ~{heroAutoProjectedCount} รูป ≈ ~{heroAutoProjectedCount * HERO_AI_IMAGE_CREDITS} เครดิต
                 </span>
               )}
               <label className="flex flex-col gap-1.5">
@@ -248,14 +317,16 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
                 />
               </label>
-              {p.heroAiBeta && p.brollSource === "kie-image" && (
+              {p.heroAiImageEligible && p.brollSource === "kie-image" && (
                 <div className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>โมเดล Hero AI Image</span>
                   <div
                     className="w-full max-w-[320px] rounded-md px-3 py-2"
                     style={{ fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
                   >
-                    Realistic · Z-Image Turbo · RunPod · {HERO_AI_IMAGE_CREDITS} เครดิต/ภาพ
+                    {/* Total-price disclosure (item 3) — same n × HERO_AI_IMAGE_CREDITS total
+                        as the hint above, so this box never shows a bare per-image price. */}
+                    Realistic · Z-Image Turbo · RunPod · {(p.targetClipCount > 0 ? p.targetClipCount : heroAutoProjectedCount)} รูป × {HERO_AI_IMAGE_CREDITS} เครดิต = {(p.targetClipCount > 0 ? p.targetClipCount : heroAutoProjectedCount) * HERO_AI_IMAGE_CREDITS} เครดิต
                   </div>
                 </div>
               )}
@@ -753,13 +824,22 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 }
 
 /** Public product choices. Ordinary customers see AI Image and AutoMix but they stay
- * disabled with a coming-soon badge; eligible internal beta users can select them. */
-function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
-  const heroImageUnlocked = p.heroAiBeta;
-  const autoMixUnlocked = p.internalAiTester && p.isPaidManagedKie;
+ * locked with an upgrade badge until `p.heroAiImageEligible` (Task 4's plan gate —
+ * beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS/active-trial) turns true. */
+function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; durationSec: number }) {
+  const heroImageUnlocked = p.heroAiImageEligible;
+  const autoMixUnlocked = p.heroAiImageEligible;
+  const heroDefaultN = heroDefaultTargetClipCount(0);
   const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
     { value: "stock", title: "สต็อกฟรี", desc: "0 เครดิต AI · Pexels/Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
-    { value: "kie-image", title: "Hero AI Image", desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · ${HERO_AI_IMAGE_CREDITS} เครดิต/ภาพ`, icon: <ImagePlus size={16} strokeWidth={1.6} /> },
+    {
+      value: "kie-image",
+      title: "Hero AI Image",
+      // Total-price disclosure (Task 5 item 3): the fresh-selection default (8 รูป)
+      // this card applies on click, priced out — never a bare per-image number.
+      desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · เริ่มต้น ${heroDefaultN} รูป × ${HERO_AI_IMAGE_CREDITS} เครดิต = ${heroDefaultN * HERO_AI_IMAGE_CREDITS} เครดิต`,
+      icon: <ImagePlus size={16} strokeWidth={1.6} />,
+    },
     { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} /> },
   ];
 
@@ -771,6 +851,11 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
     if (value === "kie-image") {
       if (!heroImageUnlocked) return;
       p.setBrollSource("kie-image");
+      // Hero default = กำหนดเอง 8 รูป (Task 5 item 2) — a fresh (never-touched) selection
+      // lands on a concrete, budget-safe quote. Once the user has touched the count
+      // control directly (incl. explicitly picking "อัตโนมัติ"), leave it alone — don't
+      // clobber an explicit choice when they switch away and back (fast-follow fix).
+      if (!p.heroCountTouched) p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount));
       return;
     }
     if (!autoMixUnlocked) return;
@@ -786,16 +871,13 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
             : option.value === "automix"
               ? !autoMixUnlocked
               : false;
-          const lockedBadge = option.value === "automix" && p.internalAiTester && p.managedKieOn
-            ? "อัปเกรด"
-            : "เร็ว ๆ นี้";
           const selected = p.brollSource === option.value;
           return (
             <button
               key={option.value}
               type="button"
               disabled={locked}
-              title={locked ? (lockedBadge === "เร็ว ๆ นี้" ? `${option.title} เร็ว ๆ นี้` : `อัปเกรดเพื่อใช้ ${option.title}`) : undefined}
+              title={locked ? HERO_UPGRADE_TITLE : undefined}
               onClick={() => selectSource(option.value)}
               className="relative flex min-h-11 flex-col items-start gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2"
               style={{
@@ -817,7 +899,7 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
                   border: `1px solid ${option.value === "stock" ? color.selectedBorder : "rgba(251,191,36,.35)"}`,
                 }}
               >
-                {option.value === "stock" ? "ฟรี · แนะนำ" : locked ? lockedBadge : "Beta"}
+                {option.value === "stock" ? "ฟรี · แนะนำ" : locked ? HERO_UPGRADE_BADGE : "Beta"}
               </span>
               <IconTile size={32}>{option.icon}</IconTile>
               <span className="flex flex-col pr-10">
@@ -850,7 +932,7 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
       {autoMixUnlocked && p.brollSource === "automix" && (
         <div className="flex flex-col gap-2">
           <GroupLabel>สัดส่วน AutoMix</GroupLabel>
-          <MixPresetButtons p={p} />
+          <MixPresetButtons p={p} durationSec={durationSec} />
         </div>
       )}
     </div>
@@ -859,21 +941,24 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
 
 /** AutoMix intensity (D5.1). The top-level customer source cards own Free/AI Image/
  * AutoMix selection; this nested control only chooses the two AutoMix weight profiles. */
-function MixPresetButtons({ p }: { p: V2Project }) {
+function MixPresetButtons({ p, durationSec }: { p: V2Project; durationSec: number }) {
   return (
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
       {MIX_PRESETS.filter((preset) => preset.key !== "free").map((pr) => {
-        // FREE/feature-off users: only "ฟรีล้วน" is selectable (AI presets locked).
-        // Formula unchanged from pre-Task-7 — only the LOCKED-STATE COPY branches below.
-        const locked = pr.key !== "free" && !p.isPaidManagedKie;
-        // Sub-reason for the lock, copy-only: not launched yet vs. launched-but-not-paid.
-        const comingSoon = locked && !p.managedKieOn;
+        // Same gate as the AutoMix card itself (Task 5 item 1) — a customer who can open
+        // AutoMix can pick either intensity; only ineligible users see the lock.
+        const locked = !p.heroAiImageEligible;
         const selected = p.mixPreset === pr.key;
+        // AutoMix "AI เด่น"/"แนะนำ" preset price (Task 5 item 4) — the SAME disclosed
+        // count buildReceipt uses (manual targetClipCount when set, else the window
+        // estimate), so this label can never drift from the Render Receipt's number.
+        const aiCount = disclosedAutoMixAiImageCount(durationSec, PRESET_WEIGHTS[pr.key], p.targetClipCount);
+        const priceLine = `${pr.sub} · ~${aiCount * HERO_AI_IMAGE_CREDITS} เครดิต/คลิป`;
         return (
           <button
             key={pr.key}
             disabled={locked}
-            title={locked ? (comingSoon ? "เร็ว ๆ นี้ — กำลังเตรียมเปิดให้ใช้งาน" : "อัปเกรดเพื่อใช้ภาพ AI") : undefined}
+            title={locked ? HERO_UPGRADE_TITLE : undefined}
             onClick={() => { if (!locked) p.setMixPreset(pr.key); }}
             className="relative flex flex-col items-start gap-1.5 text-left"
             style={{
@@ -885,13 +970,13 @@ function MixPresetButtons({ p }: { p: V2Project }) {
               transition: "all 150ms ease",
             }}
           >
-            {comingSoon ? (
-              <span className="absolute right-2.5 top-2 rounded-full px-1.5" style={{ fontSize: 9.5, color: color.warning, border: "1px solid rgba(251,191,36,.35)" }}>เร็ว ๆ นี้</span>
+            {locked ? (
+              <span className="absolute right-2.5 top-2 rounded-full px-1.5" style={{ fontSize: 9.5, color: color.warning, border: "1px solid rgba(251,191,36,.35)" }}>{HERO_UPGRADE_BADGE}</span>
             ) : pr.badge && (
               <span className="absolute right-2.5 top-2" style={{ fontSize: 10, color: color.primary300, fontWeight: 500 }}>{pr.badge}</span>
             )}
             <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{pr.label}</span>
-            <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>{pr.sub}</span>
+            <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>{priceLine}</span>
           </button>
         );
       })}

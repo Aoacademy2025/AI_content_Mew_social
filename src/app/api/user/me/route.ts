@@ -7,7 +7,7 @@ import { syncUsageWindow } from "@/lib/usage-limits";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { checkMinuteQuota } from "@/lib/minute-limits";
 import { managedKieLaunchOn } from "@/lib/kie-image-guards";
-import { isHeroAiBetaUser, isInternalAiTester } from "@/lib/internal-ai-access";
+import { isHeroAiBetaUser, isHeroAiImageEligible, isInternalAiTester } from "@/lib/internal-ai-access";
 import { resolveHeroScriptAccess } from "@/lib/hero-script-rollout.server";
 
 export async function GET() {
@@ -60,6 +60,10 @@ export async function GET() {
     const managedKieOn = managedKieLaunchOn();
     const internalAiTester = isInternalAiTester(authUser);
     const heroAiBeta = isHeroAiBetaUser(authUser);
+    // Public-launch eligibility (Task 5 consumes this for the editor's Hero AI
+    // Image UI): beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS (active
+    // trial included — see isHeroAiImageEligible's doc comment for why).
+    const heroAiImageEligible = isHeroAiImageEligible(authUser);
     const heroScriptAccess = await resolveHeroScriptAccess(authUser);
     // Managed-kie: is AI image generation un-gated for THIS user? True for paid
     // (PRO/BUSINESS) plans only when both flags are on. Admins always have access
@@ -81,6 +85,7 @@ export async function GET() {
       managedKieOn: internalAiTester && managedKieOn,
       internalAiTester,
       heroAiBeta,
+      heroAiImageEligible,
       heroScriptAllowed: heroScriptAccess.canUse,
       heroScriptPreview: heroScriptAccess.canPreview,
       heroScriptCohort: heroScriptAccess.cohort,

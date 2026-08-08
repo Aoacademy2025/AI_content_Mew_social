@@ -156,6 +156,10 @@ interface CreateInput {
   /** Editor v2 mix-preset weights (D5.1) — validated at the web route; fetch-stock
    *  honors them only under MANAGED_KIE and force-zeros ai for unauthorized users. */
   autoMixWeights?: { video: number; photo: number; ai: number };
+  /** Ceiling on paid AutoMix AI images = the exact count the client's Render Receipt
+   *  disclosed. Validated at the web route; fetch-stock clamps its plan to it so the
+   *  charge can never exceed the approved quote. */
+  maxAiImages?: number;
   /**
    * Editor v2 "ใช้คลิปที่ถ่ายเอง" (cutaway, launch-coupled): clip แนวตั้งของผู้ใช้
    * → transcribe เสียงในคลิป → b-roll windows → base reel → composite mode:cutaway.
@@ -1086,6 +1090,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               videoJobId: jobId,
               ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
               ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
+              ...(typeof input.maxAiImages === "number" ? { maxAiImages: input.maxAiImages } : {}),
               ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
             },
             upAiGen ? { retries: 0 } : undefined,
@@ -1388,6 +1393,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         videoJobId: jobId,
         ...(input.autoMixProviders?.length ? { autoMixProviders: input.autoMixProviders } : {}),
         ...(input.autoMixWeights ? { autoMixWeights: input.autoMixWeights } : {}),
+        ...(typeof input.maxAiImages === "number" ? { maxAiImages: input.maxAiImages } : {}),
         ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
       },
       aiGenSource ? { retries: 0 } : undefined,

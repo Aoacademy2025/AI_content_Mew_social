@@ -43,7 +43,12 @@ import {
 } from "@/lib/omnivoice";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
 import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
-import { isHeroAiBetaUser, isInternalAiBetaEnabledFor, isInternalAiTester } from "@/lib/internal-ai-access";
+import {
+  HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
+  isHeroAiImageEligible,
+  isInternalAiBetaEnabledFor,
+  isInternalAiTester,
+} from "@/lib/internal-ai-access";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
@@ -67,6 +72,7 @@ type Body = {
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
+  maxAiImages?: unknown;
   imageEngine?: unknown; imageModel?: unknown;
   brollRegionPreference?: unknown; brollVisualStyle?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
@@ -494,7 +500,10 @@ export async function POST(req: Request) {
       isInternalTester: isInternalAiTester(user),
     });
     if (useHeroRunpodImage) {
-      if (!isHeroAiBetaUser(user)) {
+      if (!isHeroAiImageEligible(user)) {
+        if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+          return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+        }
         return NextResponse.json({ error: "beta_only", message: "Hero AI Image ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
       }
       if (requestedImageModel !== "z-image-turbo") {
@@ -520,7 +529,18 @@ export async function POST(req: Request) {
           retryable: true,
         }, { status: 503 });
       }
-    } else if (requestedSource !== "stock" && !canUseKieImages) {
+    } else if (requestedSource === "auto-mix") {
+      // AutoMix "ai" slots now generate on the Hero RunPod seam (fetch-stock), so the
+      // mode follows the SAME Hero rollout gate as Hero-only mode; the legacy
+      // managed-kie beta cohort keeps its existing access. fetch-stock re-checks both.
+      if (!isHeroAiImageEligible(user) && !canUseKieImages) {
+        if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+          return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+        }
+        return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
+      }
+    } else if (requestedSource !== "stock" && (!canUseKieImages || !isAdmin)) {
+      // Legacy kie image mode: paused for customers, admin-only (ADR 0004).
       return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
     }
     const stockSource = requestedSource === "stock" ? undefined : requestedSource;
@@ -538,6 +558,12 @@ export async function POST(req: Request) {
     // fetch-stock re-validates + gates them behind MANAGED_KIE authoritatively.
     const autoMixWeights = requestedSource === "auto-mix"
       ? parseAutoMixWeights(body.autoMixWeights) ?? undefined
+      : undefined;
+    // Disclosure ceiling: the exact AI-image count the client's Render Receipt showed.
+    // fetch-stock clamps its AutoMix plan to it so the charge can never exceed the
+    // quote the user approved. Absent/invalid = no ceiling (legacy callers unchanged).
+    const maxAiImages = requestedSource === "auto-mix"
+      ? num(body.maxAiImages, 0, 60)
       : undefined;
 
     // Pexels VALIDITY preflight (Task 7, 2026-07-16 stability audit): 20/59 weekly
@@ -605,6 +631,7 @@ export async function POST(req: Request) {
           ...(useHeroRunpodImage ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),
           ...(autoMixWeights ? { autoMixWeights } : {}),
+          ...(maxAiImages !== undefined ? { maxAiImages: Math.round(maxAiImages) } : {}),
           ...(stockProviders?.length ? { stockProviders } : {}),
           ...(subtitleMode ? { subtitleMode } : {}),
           ...(subtitlePosition ? { subtitlePosition } : {}),
