@@ -233,7 +233,7 @@ async function main() {
   // fetch-stock AutoMix AI slots: rate check before the AutoMix generateHeroImageForVideo call.
   assertBefore(
     fetchStock,
-    'const heroRate = isAdmin ? null : await checkHeroImageRate(userId, autoMixAiSlots.size);',
+    "const heroRate = isAdmin ? null : await checkHeroImageRate(userId, aiSlotsNeedingGeneration().length);",
     "generated = await generateHeroImageForVideo({",
     "fetch-stock AutoMix: checkHeroImageRate runs before generateHeroImageForVideo (reservation)",
   );
@@ -247,8 +247,8 @@ async function main() {
 
   check(
     "ADMIN is exempted from the rate cap at every call site (skip-the-call pattern)",
-    /if \(!isAdmin\) \{\s*const heroRate = await checkHeroImageRate\(userId, clipsToGenerate\);/.test(fetchStock)
-      && fetchStock.includes("const heroRate = isAdmin ? null : await checkHeroImageRate(userId, autoMixAiSlots.size);")
+    /if \(!isAdmin\) \{\s*if \(clipsToGenerate > 0\) \{\s*const heroRate = await checkHeroImageRate\(userId, clipsToGenerate\);/.test(fetchStock)
+      && fetchStock.includes("const heroRate = isAdmin ? null : await checkHeroImageRate(userId, aiSlotsNeedingGeneration().length);")
       && /if \(!isAdmin\) \{\s*const heroRate = await checkHeroImageRate\(user\.id, 1\);/.test(brollWindowGenerate),
   );
 

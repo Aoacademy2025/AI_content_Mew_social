@@ -19,11 +19,13 @@ import type { TtsProvider } from "@/lib/tts-providers";
 
 /** Editor step-1 mode: write a script vs upload your own clip. Mirrors V2Mode. */
 export type EditorDraftMode = "script" | "upload";
+export type EditorNarrativeSourceKind = "ai-script" | "creator-script" | "upload-transcript";
 export type EditorDraftAvatarMode = "bookend" | "bookend-both" | "full";
 
 export interface EditorDefaultDraft {
   projectTitle: string;
   mode: EditorDraftMode;
+  narrativeSourceKind: EditorNarrativeSourceKind;
   script: string;
   clipUrl: string;
   clipDurationSec: number;
@@ -51,6 +53,7 @@ export interface EditorDefaultDraft {
 export const EDITOR_DEFAULT_DRAFT: EditorDefaultDraft = {
   projectTitle: "New Project",
   mode: "script",
+  narrativeSourceKind: "creator-script",
   script: "",
   clipUrl: "",
   clipDurationSec: 0,
@@ -102,6 +105,7 @@ export function buildScriptHandoffDraft(params: {
     autoMixProviders: [...EDITOR_DEFAULT_DRAFT.autoMixProviders],
     projectTitle,
     mode: "script",
+    narrativeSourceKind: "ai-script",
     script,
     voiceEngine: accountDefaults?.voiceEngine ?? EDITOR_DEFAULT_DRAFT.voiceEngine,
     geminiVoiceName: accountDefaults?.geminiVoiceName ?? EDITOR_DEFAULT_DRAFT.geminiVoiceName,

@@ -3,7 +3,7 @@
 // Run: npx tsx scripts/verify-hero-image-disclosure.ts
 //
 // Two layers, matching the established verify-* pattern:
-//   1. Pure-function unit tests for the new estimate.ts helpers (heroDefaultTargetClipCount,
+//   1. Pure-function unit tests for the estimate.ts helpers (heroDefaultTargetClipCount,
 //      heroHoldLengthSec) and the new failure-view.ts classifier (classifyFailure,
 //      failureViewCopy) — these carry the actual decision math, so they get real
 //      fixture-based assertions, including the Tier-1 regression fixture (a prefixed
@@ -35,8 +35,10 @@ check("default: negative (defensive) → 8", heroDefaultTargetClipCount(-1) === 
 check("default: NaN (defensive) → 8", heroDefaultTargetClipCount(NaN) === 8);
 check("default: existing custom count (5) is left untouched", heroDefaultTargetClipCount(5) === 5);
 check("default: floors a fractional existing count", heroDefaultTargetClipCount(5.9) === 5);
-check("trial taste: unset count defaults to 5 (10 credits / 2 per image)", heroDefaultTargetClipCount(0, true) === 5);
-check("trial taste: an existing custom count is never overwritten", heroDefaultTargetClipCount(3, true) === 3);
+check("starter allowance: full 8 remaining defaults to 8", heroDefaultTargetClipCount(0, 8) === 8);
+check("starter allowance: 3 remaining clamps the default to 3", heroDefaultTargetClipCount(0, 3) === 3);
+check("starter allowance: exhausted defaults to 0", heroDefaultTargetClipCount(0, 0) === 0);
+check("starter allowance: an existing custom count is never overwritten", heroDefaultTargetClipCount(3, 0) === 3);
 
 // ── 2. heroHoldLengthSec — PURE ──────────────────────────────────────────────
 check("hold: 60s / 8 รูป → 8 วิ", heroHoldLengthSec(60, 8) === 8, String(heroHoldLengthSec(60, 8)));
@@ -99,19 +101,19 @@ check("locked cards use the pinned อัปเกรด badge + PRO/BUSINESS to
   step2.includes('const HERO_UPGRADE_BADGE = "อัปเกรด"')
     && step2.includes('const HERO_UPGRADE_TITLE = "Hero AI Image ใช้ได้กับแผน PRO/BUSINESS"'));
 
-check("selecting Hero AI Image uses the shared trial-aware default helper",
-  /if \(value === "kie-image"\) \{[\s\S]{0,500}heroDefaultTargetClipCount\(p\.targetClipCount, p\.isActiveTrial\)/.test(step2));
-check("the admin Hero AI Image card applies the same default on selection",
-  /if \(o\.value === "kie-image" && !p\.heroCountTouched\) \{[\s\S]{0,180}heroDefaultTargetClipCount\(p\.targetClipCount, p\.isActiveTrial\)/.test(step2));
+check("selecting Hero AI Image uses the shared allowance-aware default helper",
+  /if \(value === "kie-image"\) \{[\s\S]{0,700}heroDefaultTargetClipCount\(p\.targetClipCount, starterRemaining\(p\)\)/.test(step2));
+check("the admin Hero AI Image card applies the same allowance-aware default",
+  /if \(o\.value === "kie-image" && !p\.heroCountTouched\) \{[\s\S]{0,180}heroDefaultTargetClipCount\(p\.targetClipCount, starterRemaining\(p\)\)/.test(step2));
 // Fast-follow fix: the default-8 must NOT re-fire once the user has touched the count
 // control themselves (would otherwise clobber an explicit "อัตโนมัติ" choice on re-select).
 // Pin the guard at BOTH call sites — customer selectSource() and the admin card onClick.
-check("customer selectSource() guards the trial-aware default with !p.heroCountTouched",
-  /if \(!p\.heroCountTouched\) p\.setTargetClipCount\(heroDefaultTargetClipCount\(p\.targetClipCount, p\.isActiveTrial\)\)/.test(step2));
+check("customer selectSource() guards the allowance-aware default with !p.heroCountTouched",
+  /if \(!p\.heroCountTouched\) \{[\s\S]{0,120}heroDefaultTargetClipCount\(p\.targetClipCount, starterRemaining\(p\)\)/.test(step2));
 check("admin card onClick guards the trial-aware default with !p.heroCountTouched",
   step2.includes('if (o.value === "kie-image" && !p.heroCountTouched) {'));
 check("programmatic default calls never mark heroCountTouched themselves (must stay idempotent on re-selection)",
-  !/heroDefaultTargetClipCount\(p\.targetClipCount, p\.isActiveTrial\)\)[\s\S]{0,40}p\.setHeroCountTouched/.test(step2));
+  !/heroDefaultTargetClipCount\(p\.targetClipCount, starterRemaining\(p\)\)\)[\s\S]{0,40}p\.setHeroCountTouched/.test(step2));
 check("the count Segmented control marks heroCountTouched on any direct user interaction (incl. picking อัตโนมัติ)",
   /onChange=\{\(v\) => \{[\s\S]{0,400}p\.setHeroCountTouched\(true\)[\s\S]{0,150}p\.setTargetClipCount\(v === "auto"/.test(step2));
 check("the custom-count number input marks heroCountTouched on direct user input",
@@ -122,30 +124,34 @@ check("the auto option discloses its projected count using the shared window est
   /label: `อัตโนมัติ \(1 รูป\/ช่วง ≈ \$\{heroAutoProjectedCount\} รูป\)`/.test(step2)
     && step2.includes("estimateAutoMixAiImageCount(displaySec, { video: 0, photo: 0, ai: 1 })"));
 
-check("custom-count total-price template matches n รูป × price = total",
-  /\$\{p\.targetClipCount\} รูป × \$\{HERO_AI_IMAGE_CREDITS\} เครดิต = \$\{p\.targetClipCount \* HERO_AI_IMAGE_CREDITS\} เครดิต/.test(step2));
-check("auto-mode total-price template matches ~n รูป ≈ ~total เครดิต",
-  /~\{heroAutoProjectedCount\} รูป ≈ ~\{heroAutoProjectedCount \* HERO_AI_IMAGE_CREDITS\} เครดิต/.test(step2));
+check("paid custom-count total uses the shared n × price funding helper",
+  /function imageFundingLine[\s\S]{0,500}requested \* HERO_AI_IMAGE_CREDITS/.test(step2)
+    && step2.includes("imageFundingLine(p, p.targetClipCount)"));
+check("auto-mode disclosure uses the same allowance/credit funding helper",
+  step2.includes("imageFundingLine(p, heroAutoProjectedCount, true)"));
+check("starter disclosure clamps to remaining allowance and never labels it credits",
+  step2.includes("const admitted = Math.min(requested, remaining)")
+    && step2.includes("ภาพจากสิทธิ์ทดลอง"));
 check("hold-length hint uses the shared pure helper and the >12s follow-up copy",
   step2.includes("heroHoldLengthSec(displaySec, p.targetClipCount)")
     && step2.includes("รูปละ ~{heroHoldSec} วิ")
     && step2.includes("ภาพค้างนาน — เพิ่มจำนวนรูปช่วยให้คลิปดูมีชีวิตขึ้น"));
 
-check("AutoMix AI เด่น/แนะนำ preset price is computed from disclosedAutoMixAiImageCount × HERO_AI_IMAGE_CREDITS",
+check("AutoMix AI เด่น/แนะนำ uses disclosed count with the shared funding helper",
   /disclosedAutoMixAiImageCount\(durationSec, PRESET_WEIGHTS\[pr\.key\], p\.targetClipCount\)/.test(step2)
-    && /aiCount \* HERO_AI_IMAGE_CREDITS/.test(step2));
+    && step2.includes("imageFundingLine(p, aiCount, true)"));
 check("the old hardcoded AutoMix แนะนำ range copy is gone",
   !step2.includes("~6–9 เครดิต/คลิป"));
 
 check("admin Hero card description carries the same total-price info as the customer card",
-  /o\.value === "kie-image"[\s\S]{0,200}เริ่มต้น \$\{heroDefaultN\} รูป × \$\{HERO_AI_IMAGE_CREDITS\} เครดิต/.test(step2));
+  /o\.value === "kie-image"[\s\S]{0,200}imageFundingLine\(p, heroDefaultN\)/.test(step2));
 
 // ── 5. Static checks — RenderReceiptDialog.tsx ───────────────────────────────
 const receiptDialogPath = "src/app/(dashboard)/video-editor/_v2/RenderReceiptDialog.tsx";
 const receiptDialog = readFileSync(receiptDialogPath, "utf8");
 
 check("the render CTA disables on a credit deficit (reuses the receipt's own insufficient line)",
-  /const insufficientCredits = model\.lines\.some\(\(l\) => l\.key === "insufficient"\)/.test(receiptDialog)
+  /const insufficientCredits = model\.lines\.some\(\(l\) => l\.key === "insufficient" \|\| l\.key === "allowance-insufficient"\)/.test(receiptDialog)
     && /disabled=\{submitting \|\| insufficientCredits\}/.test(receiptDialog));
 check("the disabled render CTA carries the deficit tooltip copy",
   receiptDialog.includes('"เครดิตไม่พอ — เติมเครดิตก่อนเริ่มเรนเดอร์"'));

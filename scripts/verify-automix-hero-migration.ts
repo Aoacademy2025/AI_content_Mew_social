@@ -244,16 +244,22 @@ async function main() {
     offer.available && offer.providerRoute === "runpod-custom" && offer.quote.credits === 2,
   );
 
-  // plan FREE keeps ensureMonthlyGrant a no-op so the seeded balance is exact.
+  // Active paid evidence selects the existing shared Credit wallet. Starter
+  // allowance behavior has its own regression suite.
   const user = await prisma.user.create({
-    data: { name: "AutoMix Hero Verify", email: "automix-hero-verify@example.invalid", plan: "FREE" },
+    data: {
+      name: "AutoMix Hero Verify",
+      email: "automix-hero-verify@example.invalid",
+      plan: "PRO",
+      subStatus: "active",
+    },
   });
   const videoJobId = "video-job-automix-verify";
   const seedBalance = async (granted: number, purchased: number) => {
     await prisma.creditBalance.upsert({
       where: { userId: user.id },
-      create: { userId: user.id, granted, purchased },
-      update: { granted, purchased },
+      create: { userId: user.id, granted, purchased, grantedResetAt: new Date() },
+      update: { granted, purchased, grantedResetAt: new Date() },
     });
   };
   const balanceNow = async () => {
@@ -269,7 +275,7 @@ async function main() {
     try {
       await generateHeroImageForVideo({
         userId: user.id,
-        plan: "FREE",
+        plan: "PRO",
         prompt: "thai street food market at golden hour",
         idempotencyKey,
         videoJobId,
@@ -316,7 +322,7 @@ async function main() {
   try {
     await generateHeroImageForVideo({
       userId: user.id,
-      plan: "FREE",
+      plan: "PRO",
       prompt: "same video, hero-mode scene 0",
       idempotencyKey: `video:${videoJobId}:scene:0`,
       videoJobId,
@@ -394,7 +400,7 @@ async function main() {
     try {
       await generateHeroImageForVideo({
         userId: user.id,
-        plan: "FREE",
+        plan: "PRO",
         prompt: parsed.value.prompt,
         idempotencyKey: parsed.value.idempotencyKey,
         videoJobId: parsed.value.videoJobId,
@@ -570,6 +576,14 @@ async function main() {
     "AutoMix credit preflight runs before any reservation and degrades instead of overspending",
     fetchStock.includes("Math.floor(balance.total / heroAutoMixCreditCost)")
       && fetchStock.includes("heroAutoMixDegradeReason"),
+  );
+  check(
+    "AutoMix reuses unchanged current Visual Beats before provider/rate/funding work",
+    fetchStock.includes("autoMixReusableByScene")
+      && fetchStock.includes("reusableVisualBeatAssetsForVideoJob")
+      && fetchStock.includes("const retained = autoMixReusableByScene.get(ki)")
+      && fetchStock.includes('step: "fetchStock.autoMixHero"')
+      && fetchStock.includes("aiSlotsNeedingGeneration().length"),
   );
   check(
     "AutoMix mode follows the Hero rollout gate in job creation",

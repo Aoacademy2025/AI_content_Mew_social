@@ -304,6 +304,8 @@ export function EditorV2Shell() {
     projectId: p.projectId,
     logoOverlay: p.logoOverlay,
     onLogoOverlayChange: p.setLogoOverlay,
+    initialSubtitleConfig: p.brandSubtitleDefault,
+    brandVisualAllowed: p.brandVisualAllowed,
     layerVisibility: p.layerVisibility,
     onLayerVisibilityChange: p.setLayerVisibility,
     headlineHook: p.headlineHook,

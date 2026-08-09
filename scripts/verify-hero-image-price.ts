@@ -96,7 +96,12 @@ async function main() {
   );
 
   const user = await prisma.user.create({
-    data: { name: "Hero Image Price Verify", email: "hero-image-price-verify@example.invalid" },
+    data: {
+      name: "Hero Image Price Verify",
+      email: "hero-image-price-verify@example.invalid",
+      plan: "PRO",
+      subStatus: "active",
+    },
   });
   // granted=1 < creditCost=2 forces the reservation to draw the remaining
   // credit from purchased, proving the granted-first split.
@@ -151,7 +156,12 @@ async function main() {
   //      AiGenerationJob is created. This is the gap that made launch-day 402s
   //      invisible in the job/error audit.
   const shortUser = await prisma.user.create({
-    data: { name: "Hero Image Credit Reject Verify", email: "hero-image-reject-verify@example.invalid" },
+    data: {
+      name: "Hero Image Credit Reject Verify",
+      email: "hero-image-reject-verify@example.invalid",
+      plan: "PRO",
+      subStatus: "active",
+    },
   });
   await prisma.creditBalance.create({ data: { userId: shortUser.id, granted: 1, purchased: 0 } });
   const rejected = await createReservedImageJob({

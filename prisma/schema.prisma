@@ -82,6 +82,10 @@ model User {
   brandProfiles      BrandProfile[]
   scripts            Script[]
   scriptGenerationUsages ScriptGenerationUsage[]
+  contentPreflights       ContentPreflight[]
+  projectVisualBeats      ProjectVisualBeat[]
+  brandLookPreviewBatches BrandLookPreviewBatch[]
+  starterAiImageAllowance StarterAiImageAllowance?
 }
 
 model Style {
@@ -176,28 +180,36 @@ model AvatarPreset {
 }
 
 model EditorProject {
-  id            String     @id @default(cuid())
-  userId        String
-  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title         String     @default("New Project")
-  status        String     @default("draft") // draft|rendering|post|exporting|exported|archived
-  draftJson     String?
-  draftRevision Int        @default(0)
-  activeJobId   String?
-  activeExportJobId String?
-  latestVideoId String?
-  lastOpenedAt  DateTime?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-  jobs          VideoJob[]
-  videos        Video[]
-  brandAssets   BrandAsset[]
+  id                      String                  @id @default(cuid())
+  userId                  String
+  user                    User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title                   String                  @default("New Project")
+  status                  String                  @default("draft") // draft|rendering|post|exporting|exported|archived
+  draftJson               String?
+  draftRevision           Int                     @default(0)
+  activeJobId             String?
+  activeExportJobId       String?
+  latestVideoId           String?
+  brandProfileRevisionId  String?
+  projectLookJson         String?
+  projectLookUpdatedAt    DateTime?
+  lastOpenedAt            DateTime?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+  jobs                    VideoJob[]
+  videos                  Video[]
+  brandAssets             BrandAsset[]
+  brandProfileRevision    BrandProfileRevision?   @relation(fields: [brandProfileRevisionId], references: [id], onDelete: SetNull)
+  contentPreflights       ContentPreflight[]
+  visualBeats             ProjectVisualBeat[]
+  brandLookPreviewBatches BrandLookPreviewBatch[]
 
   @@index([userId, updatedAt])
   @@index([userId, status, updatedAt])
   @@index([activeJobId])
   @@index([activeExportJobId])
   @@index([latestVideoId])
+  @@index([brandProfileRevisionId])
 }
 
 model BrandAsset {
@@ -254,24 +266,159 @@ model EditorStylePreset {
 }
 
 model BrandProfile {
-  id            String   @id @default(cuid())
-  userId        String
-  name          String                    // ชื่อแบรนด์/โปรไฟล์
-  niche         String                    // นิช เช่น "การเงินส่วนบุคคล"
-  audience      String                    // กลุ่มเป้าหมาย เช่น "มนุษย์เงินเดือน 25-35"
-  tone          String                    // โทนเสียง เช่น "เป็นกันเอง ขี้เล่น มีสาระ"
-  bannedWords   String   @default("[]")   // JSON string array
-  ctaStyle      String   @default("follow") // follow | comment | share | sell
-  language      String   @default("th")
-  sampleText    String?                   // แหล่งที่ใช้ตอน analyze (ถ้ามี)
-  sampleUrl     String?
-  analysisNotes String?                   // โน้ตสไตล์การเขียนที่ LLM สกัดได้
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  scripts       Script[]
+  id                   String                  @id @default(cuid())
+  userId               String
+  name                 String // ชื่อแบรนด์/โปรไฟล์
+  niche                String // นิช เช่น "การเงินส่วนบุคคล"
+  audience             String // กลุ่มเป้าหมาย เช่น "มนุษย์เงินเดือน 25-35"
+  tone                 String // โทนเสียง เช่น "เป็นกันเอง ขี้เล่น มีสาระ"
+  bannedWords          String                  @default("[]") // JSON string array
+  ctaStyle             String                  @default("follow") // follow | comment | share | sell
+  language             String                  @default("th")
+  sampleText           String? // แหล่งที่ใช้ตอน analyze (ถ้ามี)
+  sampleUrl            String?
+  analysisNotes        String? // โน้ตสไตล์การเขียนที่ LLM สกัดได้
+  activeRevisionNumber Int                     @default(0) // 0 = legacy profile not published into Brand Visual System yet
+  frozenAt             DateTime? // downgrade overflow: readable/pinned, unavailable for new projects
+  lastUsedAt           DateTime?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  user                 User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scripts              Script[]
+  draft                BrandProfileDraft?
+  revisions            BrandProfileRevision[]
+  previewBatches       BrandLookPreviewBatch[]
 
   @@index([userId])
+  @@index([userId, frozenAt, updatedAt])
+}
+
+// One mutable working copy per Brand Profile. The typed payload is validated by
+// the Brand Profile Library module; edits and previews never affect active work.
+model BrandProfileDraft {
+  id                 String                  @id @default(cuid())
+  brandProfileId     String                  @unique
+  baseRevisionNumber Int                     @default(0)
+  payloadJson        String
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  brandProfile       BrandProfile            @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  previewBatches     BrandLookPreviewBatch[]
+}
+
+// Immutable snapshot. A project pins this row, not BrandProfile's mutable head.
+// visualRecipeJson stores the resolved format/recipe so future catalog changes
+// cannot silently alter an old render (ADR-0005).
+model BrandProfileRevision {
+  id               String                  @id @default(cuid())
+  brandProfileId   String
+  version          Int
+  payloadJson      String
+  visualRecipeJson String
+  source           String                  @default("manual") // manual | project-look
+  createdAt        DateTime                @default(now())
+  brandProfile     BrandProfile            @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  projects         EditorProject[]
+  previewBatches   BrandLookPreviewBatch[]
+
+  @@unique([brandProfileId, version])
+  @@index([brandProfileId, createdAt])
+}
+
+// Cached lazy analysis of one Narrative Source version. A changed source gets a
+// new hash/row; the original remains auditable and reusable for exact rerenders.
+model ContentPreflight {
+  id                      String              @id @default(cuid())
+  userId                  String
+  projectId               String
+  narrativeSourceKind     String // ai-script | creator-script | upload-transcript
+  sourceHash              String
+  analyzerVersion         String
+  contentDomain           String
+  suggestedVisualFormatId String
+  suggestedTreatmentJson  String
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  user                    User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project                 EditorProject       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  visualBeats             ProjectVisualBeat[]
+
+  @@unique([projectId, sourceHash, analyzerVersion])
+  @@index([userId, createdAt])
+  @@index([projectId, updatedAt])
+}
+
+// Structured story intent for one B-roll window. The asset is deliberately not
+// overwritten when status becomes outdated; regeneration is a separate action.
+model ProjectVisualBeat {
+  id                 String           @id @default(cuid())
+  userId             String
+  projectId          String
+  preflightId        String
+  beatKey            String
+  sequence           Int
+  startMs            Int?
+  endMs              Int?
+  sourceExcerptHash  String
+  beatJson           String
+  status             String           @default("current") // current | outdated
+  existingAssetUrl   String?
+  existingImageJobId String?
+  outdatedAt         DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project            EditorProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  preflight          ContentPreflight @relation(fields: [preflightId], references: [id], onDelete: Cascade)
+
+  @@unique([preflightId, beatKey])
+  @@index([projectId, status, sequence])
+  @@index([existingImageJobId])
+}
+
+// One logical Brand Look Preview, backed by three independently durable image
+// jobs (or three reused project assets). Partial failures can be retried per item.
+model BrandLookPreviewBatch {
+  id                     String                 @id @default(cuid())
+  userId                 String
+  projectId              String?
+  brandProfileId         String?
+  brandProfileDraftId    String?
+  brandProfileRevisionId String?
+  status                 String                 @default("queued") // queued | in_progress | completed | partial | failed
+  sourceSnapshotJson     String
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  finishedAt             DateTime?
+  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project                EditorProject?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  brandProfile           BrandProfile?          @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+  brandProfileDraft      BrandProfileDraft?     @relation(fields: [brandProfileDraftId], references: [id], onDelete: SetNull)
+  brandProfileRevision   BrandProfileRevision?  @relation(fields: [brandProfileRevisionId], references: [id], onDelete: SetNull)
+  items                  BrandLookPreviewItem[]
+
+  @@index([userId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([brandProfileId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model BrandLookPreviewItem {
+  id                String                @id @default(cuid())
+  batchId           String
+  phase             String // hook | explain | close
+  sourceType        String // generated | reused
+  aiGenerationJobId String?               @unique
+  outputUrl         String?
+  status            String                @default("queued") // queued | in_progress | completed | failed
+  errorCode         String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  batch             BrandLookPreviewBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  aiGenerationJob   AiGenerationJob?      @relation(fields: [aiGenerationJobId], references: [id], onDelete: SetNull)
+
+  @@unique([batchId, phase])
+  @@index([batchId, status])
 }
 
 model Script {
@@ -709,6 +856,8 @@ model AiGenerationJob {
   creditCost                    Int                   @default(0)
   creditsFromGranted            Int                   @default(0)
   creditsFromPurchased          Int                   @default(0)
+  fundingSource                 String                @default("credits") // credits | starter_allowance | none
+  allowanceUnits                Int                   @default(0)
   chargeState                   String                @default("pending") // pending | reserved | settled | refunded | none
   errorCode                     String?
   errorMessage                  String?
@@ -721,6 +870,7 @@ model AiGenerationJob {
   finishedAt                    DateTime?
   mediaExpiresAt                DateTime?
   attempts                      AiGenerationAttempt[]
+  brandLookPreviewItem          BrandLookPreviewItem?
 
   @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
@@ -730,6 +880,20 @@ model AiGenerationJob {
   // Covers the stale-reserved credit sweep (src/lib/ai-image-reconcile.ts), which
   // scans kind + chargeState against an updatedAt cutoff every 15 minutes.
   @@index([kind, chargeState, updatedAt])
+}
+
+// Activation entitlement for an account that has not yet paid. It follows the
+// signup/trial-origin 30-day window and therefore does not reset at trial expiry.
+model StarterAiImageAllowance {
+  userId          String   @id
+  windowStartedAt DateTime
+  limitImages     Int      @default(8)
+  reservedImages  Int      @default(0)
+  usedImages      Int      @default(0)
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([windowStartedAt])
 }
 
 // Every external provider submission is durable and auditable. Image jobs may

@@ -9,6 +9,8 @@ import { checkMinuteQuota } from "@/lib/minute-limits";
 import { managedKieLaunchOn } from "@/lib/kie-image-guards";
 import { isHeroAiBetaUser, isHeroAiImageEligible, isInternalAiTester } from "@/lib/internal-ai-access";
 import { resolveHeroScriptAccess } from "@/lib/hero-script-rollout.server";
+import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 
 export async function GET() {
   try {
@@ -65,6 +67,10 @@ export async function GET() {
     // trial included — see isHeroAiImageEligible's doc comment for why).
     const heroAiImageEligible = isHeroAiImageEligible(authUser);
     const heroScriptAccess = await resolveHeroScriptAccess(authUser);
+    const brandVisualAccess = decideBrandVisualAccess(authUser);
+    const starterAllowance = brandVisualAccess.canUse
+      ? await getStarterAiImageAllowanceStatus(authUser.id)
+      : null;
     // Managed-kie: is AI image generation un-gated for THIS user? True for paid
     // (PRO/BUSINESS) plans only when both flags are on. Admins always have access
     // (client mirrors already OR this with an isAdmin check), so this is the
@@ -89,6 +95,14 @@ export async function GET() {
       heroScriptAllowed: heroScriptAccess.canUse,
       heroScriptPreview: heroScriptAccess.canPreview,
       heroScriptCohort: heroScriptAccess.cohort,
+      brandVisualAllowed: brandVisualAccess.canUse,
+      brandVisualCohort: brandVisualAccess.cohort,
+      brandVisualRolloutBucket: brandVisualAccess.bucket,
+      starterAiImageAllowance: starterAllowance ? {
+        ...starterAllowance,
+        windowStartedAt: starterAllowance.windowStartedAt.toISOString(),
+        windowEndsAt: starterAllowance.windowEndsAt.toISOString(),
+      } : null,
       ...minuteFields,
     });
   } catch (error) {

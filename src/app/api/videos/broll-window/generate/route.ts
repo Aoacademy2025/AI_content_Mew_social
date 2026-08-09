@@ -155,7 +155,10 @@ export async function POST(req: Request) {
     return NextResponse.json({
       src: `/api/stocks/${outFile}`,
       clipDuration: input.kenBurnsDurationSec,
-      creditsSpent: generated.creditCost,
+      creditsSpent: generated.fundingSource === "credits" ? generated.creditCost : 0,
+      quotedCreditCost: generated.creditCost,
+      fundingSource: generated.fundingSource,
+      allowanceUsed: generated.allowanceUnits,
       balanceAfter,
       provider: generated.provider,
       model: generated.providerModel,
@@ -194,6 +197,18 @@ export async function POST(req: Request) {
       );
     }
     if (error instanceof HeroImageGenerationError) {
+      if (error.code === "ALLOWANCE_EXHAUSTED") {
+        return NextResponse.json(
+          {
+            error: "allowance_exhausted",
+            remainingImages: 0,
+            message: error.message,
+            upgradeUrl: "/pricing",
+            stockAction: "use-stock",
+          },
+          { status: 402 },
+        );
+      }
       if (error.code === "INSUFFICIENT_CREDITS") {
         const balance = (await getBalance(user.id)).total;
         return NextResponse.json(

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { restoreSettledStarterAiImageAllowance } from "@/lib/starter-ai-image-allowance.server";
 
 /**
  * Compensate one completed Hero image when the customer-facing derivative
@@ -39,6 +40,13 @@ export async function refundSettledVideoImageJob(input: {
     });
     if (claimed.count !== 1) return { refunded: false, refundedCredits: 0 };
 
+    if (job.fundingSource === "starter_allowance") {
+      await restoreSettledStarterAiImageAllowance(tx, {
+        userId: input.userId,
+        units: job.allowanceUnits,
+      });
+      return { refunded: true, refundedCredits: 0 };
+    }
     const restored = await tx.creditBalance.upsert({
       where: { userId: input.userId },
       create: {
@@ -107,6 +115,15 @@ export async function refundSettledVideoImageBatch(input: {
         data: { chargeState: "refunded" },
       });
       if (claimed.count !== 1) continue;
+
+      if (job.fundingSource === "starter_allowance") {
+        await restoreSettledStarterAiImageAllowance(tx, {
+          userId: input.userId,
+          units: job.allowanceUnits,
+        });
+        refundedJobs += 1;
+        continue;
+      }
 
       const restored = await tx.creditBalance.upsert({
         where: { userId: input.userId },

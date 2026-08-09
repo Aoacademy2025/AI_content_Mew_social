@@ -4,6 +4,11 @@ import type { AiGenerationAttempt, AiGenerationJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
+  reserveStarterAiImageAllowance,
+  settleStarterAiImageAllowance,
+  starterAllowanceStatusInTransaction,
+} from "@/lib/starter-ai-image-allowance.server";
+import {
   heroVoiceResultFromJob,
   type HeroVoiceGenerationResult,
 } from "@/lib/hero-voice-generation.server";
@@ -26,6 +31,8 @@ export type PublicAiGenerationJob = {
   voiceResult: HeroVoiceGenerationResult | null;
   outputUrl: string | null;
   creditCost: number;
+  fundingSource: string;
+  allowanceUnits: number;
   chargeState: string;
   errorCode: string | null;
   errorMessage: string | null;
@@ -66,6 +73,8 @@ export function publicAiGenerationJob(job: AiGenerationJob): PublicAiGenerationJ
     voiceResult: heroVoiceResultFromJob(job),
     outputUrl: job.outputUrl,
     creditCost: job.creditCost,
+    fundingSource: job.fundingSource,
+    allowanceUnits: job.allowanceUnits,
     chargeState: job.chargeState,
     errorCode: job.errorCode,
     errorMessage: job.errorMessage,
@@ -93,8 +102,20 @@ export async function createReservedImageJob(input: {
   idempotencyKey: string;
   mediaExpiresAt: Date;
 }): Promise<
-  | { ok: true; created: boolean; job: AiGenerationJob; balanceAfter: number }
-  | { ok: false; reason: "insufficient"; balanceAfter: number }
+  | {
+      ok: true;
+      created: boolean;
+      job: AiGenerationJob;
+      balanceAfter: number;
+      fundingSource: "credits" | "starter_allowance";
+      allowanceRemaining: number | null;
+    }
+  | {
+      ok: false;
+      reason: "insufficient" | "allowance_exhausted";
+      balanceAfter: number;
+      allowanceRemaining: number | null;
+    }
 > {
   if (input.estimatedCostUsdMicros > input.costBudgetUsdMicros) {
     throw new Error("Image provider route exceeds the quoted COGS budget");
@@ -114,7 +135,17 @@ export async function createReservedImageJob(input: {
         throw new Error("Image reservation key is already claimed by a non-image job");
       }
       const balance = await tx.creditBalance.findUnique({ where: { userId: input.userId } });
-      return { ok: true as const, created: false, job: existing, balanceAfter: (balance?.granted ?? 0) + (balance?.purchased ?? 0) };
+      const allowance = existing.fundingSource === "starter_allowance"
+        ? await starterAllowanceStatusInTransaction(tx, input.userId)
+        : null;
+      return {
+        ok: true as const,
+        created: false,
+        job: existing,
+        balanceAfter: (balance?.granted ?? 0) + (balance?.purchased ?? 0),
+        fundingSource: existing.fundingSource === "starter_allowance" ? "starter_allowance" as const : "credits" as const,
+        allowanceRemaining: allowance?.remainingImages ?? null,
+      };
     }
 
     const balance = await tx.creditBalance.upsert({
@@ -123,22 +154,49 @@ export async function createReservedImageJob(input: {
       update: {},
     });
     const total = balance.granted + balance.purchased;
-    if (total < input.creditCost) return { ok: false as const, reason: "insufficient" as const, balanceAfter: total };
-
-    const fromGranted = Math.min(balance.granted, input.creditCost);
-    const fromPurchased = input.creditCost - fromGranted;
-    const debited = await tx.creditBalance.updateMany({
-      where: {
-        userId: input.userId,
-        granted: { gte: fromGranted },
-        purchased: { gte: fromPurchased },
-      },
-      data: {
-        granted: { decrement: fromGranted },
-        purchased: { decrement: fromPurchased },
-      },
-    });
-    if (debited.count !== 1) return { ok: false as const, reason: "insufficient" as const, balanceAfter: total };
+    const allowance = await reserveStarterAiImageAllowance(tx, input.userId);
+    if (allowance.kind === "allowance_exhausted") {
+      return {
+        ok: false as const,
+        reason: "allowance_exhausted" as const,
+        balanceAfter: total,
+        allowanceRemaining: allowance.status.remainingImages,
+      };
+    }
+    const fundingSource = allowance.kind === "reserved" ? "starter_allowance" as const : "credits" as const;
+    let fromGranted = 0;
+    let fromPurchased = 0;
+    if (fundingSource === "credits") {
+      if (total < input.creditCost) {
+        return {
+          ok: false as const,
+          reason: "insufficient" as const,
+          balanceAfter: total,
+          allowanceRemaining: null,
+        };
+      }
+      fromGranted = Math.min(balance.granted, input.creditCost);
+      fromPurchased = input.creditCost - fromGranted;
+      const debited = await tx.creditBalance.updateMany({
+        where: {
+          userId: input.userId,
+          granted: { gte: fromGranted },
+          purchased: { gte: fromPurchased },
+        },
+        data: {
+          granted: { decrement: fromGranted },
+          purchased: { decrement: fromPurchased },
+        },
+      });
+      if (debited.count !== 1) {
+        return {
+          ok: false as const,
+          reason: "insufficient" as const,
+          balanceAfter: total,
+          allowanceRemaining: null,
+        };
+      }
+    }
 
     const job = await tx.aiGenerationJob.create({
       data: {
@@ -158,6 +216,8 @@ export async function createReservedImageJob(input: {
         creditCost: input.creditCost,
         creditsFromGranted: fromGranted,
         creditsFromPurchased: fromPurchased,
+        fundingSource,
+        allowanceUnits: fundingSource === "starter_allowance" ? 1 : 0,
         chargeState: "reserved",
         idempotencyKey: input.idempotencyKey,
         mediaExpiresAt: input.mediaExpiresAt,
@@ -173,17 +233,26 @@ export async function createReservedImageJob(input: {
         },
       },
     });
-    const balanceAfter = total - input.creditCost;
-    await tx.creditLedger.create({
-      data: {
-        userId: input.userId,
-        delta: -input.creditCost,
-        kind: "spend",
-        action: `ai-image:${job.id}`,
-        balanceAfter,
-      },
-    });
-    return { ok: true as const, created: true, job, balanceAfter };
+    const balanceAfter = fundingSource === "credits" ? total - input.creditCost : total;
+    if (fundingSource === "credits") {
+      await tx.creditLedger.create({
+        data: {
+          userId: input.userId,
+          delta: -input.creditCost,
+          kind: "spend",
+          action: `ai-image:${job.id}`,
+          balanceAfter,
+        },
+      });
+    }
+    return {
+      ok: true as const,
+      created: true,
+      job,
+      balanceAfter,
+      fundingSource,
+      allowanceRemaining: allowance.kind === "reserved" ? allowance.status.remainingImages : null,
+    };
   });
 
   // A rejected reservation creates no AiGenerationJob by design, so without a
@@ -201,11 +270,12 @@ export async function createReservedImageJob(input: {
       category: "error",
       source: "server",
       step: "credit_reservation",
-      status: "insufficient_credits",
+      status: result.reason === "allowance_exhausted" ? "allowance_exhausted" : "insufficient_credits",
       value: input.creditCost,
       properties: {
         requiredCredits: input.creditCost,
         availableCredits: result.balanceAfter,
+        allowanceRemaining: result.allowanceRemaining,
         model: input.model,
         provider: input.provider,
         providerRoute: input.providerRoute,
@@ -420,27 +490,35 @@ export async function failAndRefundAiJob(
 
     let chargeState = job.chargeState;
     if (job.chargeState === "reserved") {
-      const restored = await tx.creditBalance.upsert({
-        where: { userId },
-        create: {
+      if (job.fundingSource === "starter_allowance") {
+        await settleStarterAiImageAllowance(tx, {
           userId,
-          granted: job.creditsFromGranted,
-          purchased: job.creditsFromPurchased,
-        },
-        update: {
-          granted: { increment: job.creditsFromGranted },
-          purchased: { increment: job.creditsFromPurchased },
-        },
-      });
-      await tx.creditLedger.create({
-        data: {
-          userId,
-          delta: job.creditCost,
-          kind: "refund",
-          action: `ai-image-refund:${job.id}`,
-          balanceAfter: restored.granted + restored.purchased,
-        },
-      });
+          units: job.allowanceUnits,
+          outcome: "refunded",
+        });
+      } else {
+        const restored = await tx.creditBalance.upsert({
+          where: { userId },
+          create: {
+            userId,
+            granted: job.creditsFromGranted,
+            purchased: job.creditsFromPurchased,
+          },
+          update: {
+            granted: { increment: job.creditsFromGranted },
+            purchased: { increment: job.creditsFromPurchased },
+          },
+        });
+        await tx.creditLedger.create({
+          data: {
+            userId,
+            delta: job.creditCost,
+            kind: "refund",
+            action: `ai-image-refund:${job.id}`,
+            balanceAfter: restored.granted + restored.purchased,
+          },
+        });
+      }
       chargeState = "refunded";
     }
 
@@ -491,6 +569,13 @@ export async function completeImageJob(input: {
         finishedAt: new Date(),
       },
     });
+    if (job.chargeState === "reserved" && job.fundingSource === "starter_allowance") {
+      await settleStarterAiImageAllowance(tx, {
+        userId: input.userId,
+        units: job.allowanceUnits,
+        outcome: "completed",
+      });
+    }
     return tx.aiGenerationJob.update({
       where: { id: job.id },
       data: {

@@ -41,6 +41,8 @@ import type { V2Project, V2BrollSource, V2VoiceEngine } from "./useV2Project";
 import { PRESET_WEIGHTS, type MixPreset } from "./mix-presets";
 import { HeroVoicePicker } from "./HeroVoicePicker";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
+import { BrandVisualSelector } from "./BrandVisualSelector";
+import { trackEvent } from "@/lib/client-telemetry";
 
 /** Hero AI Image locked-state copy (Task 5 D8) — one string pair for every locked
  *  surface (customer cards, AutoMix preset picker) so eligibility copy never drifts. */
@@ -74,18 +76,38 @@ function fmtTime(sec: number) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function starterRemaining(p: V2Project): number | null {
+  return p.starterAiImageAllowance?.eligible
+    ? p.starterAiImageAllowance.remainingImages
+    : null;
+}
+
+function heroDefaultImageCount(p: V2Project): number {
+  return heroDefaultTargetClipCount(0, starterRemaining(p));
+}
+
+function imageFundingLine(p: V2Project, requested: number, approximate = false): string {
+  const remaining = starterRemaining(p);
+  if (remaining === null) {
+    return `${approximate ? "~" : ""}${requested} รูป × ${HERO_AI_IMAGE_CREDITS} เครดิต = ${approximate ? "~" : ""}${requested * HERO_AI_IMAGE_CREDITS} เครดิต`;
+  }
+  const admitted = Math.min(requested, remaining);
+  const density = admitted < requested ? ` · ลดความถี่จากแผน ${requested} รูป` : "";
+  return `${approximate ? "~" : ""}${admitted} ภาพจากสิทธิ์ทดลอง · เหลือ ${remaining}/${p.starterAiImageAllowance?.limitImages ?? 8}${density}`;
+}
+
 export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => Promise<void> }) {
   const bgm = useBgm();
   const scriptEstSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
   const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
   const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
   const displayMin = displaySec > 0 ? minutesFromSeconds(displaySec) : 0;
-  // Hero AI Image (Task 5, D8): fresh selection defaults to 5 images on trial
-  // (fits the 10-credit taste) or 8 on paid accounts, plus the
+  // Hero AI Image: fresh selection defaults to 8 images and clamps to the
+  // remaining Starter AI Image Allowance for never-paid accounts, plus the
   // "อัตโนมัติ" projected count — the SAME window-based estimate buildReceipt uses (an
   // all-AI preset over the same estimated duration), so this screen's numbers never
   // drift from what the Render Receipt discloses right before render.
-  const heroDefaultN = heroDefaultTargetClipCount(0, p.isActiveTrial);
+  const heroDefaultN = heroDefaultImageCount(p);
   const heroAutoProjectedCount = useMemo(
     () => estimateAutoMixAiImageCount(displaySec, { video: 0, photo: 0, ai: 1 }),
     [displaySec],
@@ -118,6 +140,26 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const [musicLibOpen, setMusicLibOpen] = useState(false);
   const avatarLib = useHeygenAvatars();
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const step2TelemetryKeyRef = useRef("");
+  useEffect(() => {
+    const measurableCohort = p.brandVisualCohort === "control"
+      || p.brandVisualCohort === "treatment-10"
+      || p.brandVisualCohort === "treatment-50"
+      || p.brandVisualCohort === "treatment-100";
+    if (!p.projectReady || !p.projectId || !measurableCohort) return;
+    const key = `${p.projectId}:${p.brandVisualCohort}`;
+    if (step2TelemetryKeyRef.current === key) return;
+    step2TelemetryKeyRef.current = key;
+    trackEvent("editor_step2_reached", {
+      step: "editor.step2",
+      status: "viewed",
+      properties: {
+        projectId: p.projectId,
+        cohort: p.brandVisualCohort,
+        bucket: p.brandVisualRolloutBucket,
+      },
+    });
+  }, [p.brandVisualCohort, p.brandVisualRolloutBucket, p.projectId, p.projectReady]);
   const openAvatarPicker = () => { setAvatarPickerOpen(true); avatarLib.load(); };
   // Prime the avatar list as soon as avatar mode is on, so it's ready by the time the user
   // opens the picker. load() is idempotent (no-op once loaded/loading) → never double-fetches.
@@ -189,6 +231,8 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
       <div className="flex min-w-0 flex-1 flex-col gap-6 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6">
         {/* ย้อนกลับ = คลิก step pill บน topbar (ตัดปุ่มเล็กซ้ำซ้อนออก 07-03) */}
 
+        <BrandVisualSelector p={p} />
+
         {/* 1 · บีโรล */}
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
           {/* Customers see the product choices by their public names. Internal admins keep
@@ -201,7 +245,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               // Admin card parity (Task 5 item 5): same total-price info as the customer
               // card, using the same fresh-selection default (8 รูป) the click below applies.
               const desc = o.value === "kie-image"
-                ? `${o.desc} · เริ่มต้น ${heroDefaultN} รูป × ${HERO_AI_IMAGE_CREDITS} เครดิต = ${heroDefaultN * HERO_AI_IMAGE_CREDITS} เครดิต`
+                ? `${o.desc} · ${imageFundingLine(p, heroDefaultN)}`
                 : o.desc;
               return (
                 <button
@@ -210,11 +254,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   onClick={() => {
                     if (locked) return;
                     p.setBrollSource(o.value);
-                    // Default-8 only applies while the user hasn't touched the count
+                    // The funding-aware default only applies while the user hasn't touched the count
                     // control themselves — otherwise re-selecting Hero AI Image after
                     // switching away would clobber an explicit "อัตโนมัติ" (0) choice.
                     if (o.value === "kie-image" && !p.heroCountTouched) {
-                      p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount, p.isActiveTrial));
+                      p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount, starterRemaining(p)));
                     }
                   }}
                   className="relative flex flex-col items-start gap-2 text-left"
@@ -282,7 +326,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   {p.brollSource === "kie-image"
                     // Total-price disclosure (Task 5 item 3) — every hero count/price hint
                     // shows the TOTAL (n × HERO_AI_IMAGE_CREDITS), never a bare count.
-                    ? `${p.targetClipCount} รูป × ${HERO_AI_IMAGE_CREDITS} เครดิต = ${p.targetClipCount * HERO_AI_IMAGE_CREDITS} เครดิต · ไม่ใช้วิดีโอหรือภาพสต็อก`
+                    ? `${imageFundingLine(p, p.targetClipCount)} · ไม่ใช้วิดีโอหรือภาพสต็อก`
                     : p.brollSource === "automix"
                       ? `สร้าง B-roll รวม ${p.targetClipCount} ชิ้น โดยผสมวิดีโอสต็อก ภาพสต็อก และภาพ AI`
                       : `ใช้ B-roll สต็อกรวม ${p.targetClipCount} ชิ้น`}
@@ -297,7 +341,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               )}
               {p.targetClipCount === 0 && p.brollSource === "kie-image" && (
                 <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
-                  ~{heroAutoProjectedCount} รูป ≈ ~{heroAutoProjectedCount * HERO_AI_IMAGE_CREDITS} เครดิต
+                  {imageFundingLine(p, heroAutoProjectedCount, true)}
                 </span>
               )}
               <label className="flex flex-col gap-1.5">
@@ -327,7 +371,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   >
                     {/* Total-price disclosure (item 3) — same n × HERO_AI_IMAGE_CREDITS total
                         as the hint above, so this box never shows a bare per-image price. */}
-                    Realistic · Z-Image Turbo · RunPod · {(p.targetClipCount > 0 ? p.targetClipCount : heroAutoProjectedCount)} รูป × {HERO_AI_IMAGE_CREDITS} เครดิต = {(p.targetClipCount > 0 ? p.targetClipCount : heroAutoProjectedCount) * HERO_AI_IMAGE_CREDITS} เครดิต
+                    Z-Image Turbo · RunPod · {imageFundingLine(p, p.targetClipCount > 0 ? p.targetClipCount : heroAutoProjectedCount)}
                   </div>
                 </div>
               )}
@@ -827,9 +871,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
  * locked with an upgrade badge until `p.heroAiImageEligible` (Task 4's plan gate —
  * beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS/active-trial) turns true. */
 function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; durationSec: number }) {
-  const heroImageUnlocked = p.heroAiImageEligible;
-  const autoMixUnlocked = p.heroAiImageEligible;
-  const heroDefaultN = heroDefaultTargetClipCount(0, p.isActiveTrial);
+  const hasFunding = starterRemaining(p) === null || (starterRemaining(p) ?? 0) > 0;
+  const heroImageUnlocked = p.heroAiImageEligible && hasFunding;
+  const autoMixUnlocked = p.heroAiImageEligible && hasFunding;
+  const heroDefaultN = heroDefaultImageCount(p);
   const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
     { value: "stock", title: "สต็อกฟรี", desc: "0 เครดิต AI · Pexels/Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
     {
@@ -837,7 +882,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
       title: "Hero AI Image",
       // Total-price disclosure (Task 5 item 3): the fresh-selection default (8 รูป)
       // this card applies on click, priced out — never a bare per-image number.
-      desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · เริ่มต้น ${heroDefaultN} รูป × ${HERO_AI_IMAGE_CREDITS} เครดิต = ${heroDefaultN * HERO_AI_IMAGE_CREDITS} เครดิต`,
+      desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · ${imageFundingLine(p, heroDefaultN)}`,
       icon: <ImagePlus size={16} strokeWidth={1.6} />,
     },
     { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} /> },
@@ -851,11 +896,13 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
     if (value === "kie-image") {
       if (!heroImageUnlocked) return;
       p.setBrollSource("kie-image");
-      // Hero default = 5 trial / 8 paid (Task 5 item 2) — a fresh selection
-      // lands on a concrete, budget-safe quote. Once the user has touched the count
+      // Hero defaults to 8 and clamps to remaining starter allowance — a fresh
+      // selection lands on a concrete, budget-safe quote. Once the user has touched the count
       // control directly (incl. explicitly picking "อัตโนมัติ"), leave it alone — don't
       // clobber an explicit choice when they switch away and back (fast-follow fix).
-      if (!p.heroCountTouched) p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount, p.isActiveTrial));
+      if (!p.heroCountTouched) {
+        p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount, starterRemaining(p)));
+      }
       return;
     }
     if (!autoMixUnlocked) return;
@@ -953,7 +1000,7 @@ function MixPresetButtons({ p, durationSec }: { p: V2Project; durationSec: numbe
         // count buildReceipt uses (manual targetClipCount when set, else the window
         // estimate), so this label can never drift from the Render Receipt's number.
         const aiCount = disclosedAutoMixAiImageCount(durationSec, PRESET_WEIGHTS[pr.key], p.targetClipCount);
-        const priceLine = `${pr.sub} · ~${aiCount * HERO_AI_IMAGE_CREDITS} เครดิต/คลิป`;
+        const priceLine = `${pr.sub} · ${imageFundingLine(p, aiCount, true)}`;
         return (
           <button
             key={pr.key}

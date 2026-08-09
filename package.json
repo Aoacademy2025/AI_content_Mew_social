@@ -94,7 +94,7 @@
     "verify:automix-hero": "node --conditions=react-server --import tsx scripts/verify-automix-hero-migration.ts",
     "verify:hero-image-gate": "node --conditions=react-server --import tsx scripts/verify-hero-image-gate.ts",
     "verify:hero-image-namespace-guard": "node --conditions=react-server --import tsx scripts/verify-hero-image-namespace-guard.ts",
-    "verify:trial-taste-grant": "tsx scripts/verify-trial-taste-grant.ts",
+    "verify:trial-taste-grant": "node --conditions=react-server --import tsx scripts/verify-trial-taste-grant.ts",
     "verify:ai-image-reconcile": "node --conditions=react-server --import tsx scripts/verify-ai-image-reconcile.ts",
     "verify:runpod-public-image": "tsx scripts/verify-runpod-public-image.ts",
     "smoke:runpod-public-image": "tsx scripts/smoke-runpod-public-image.ts",
@@ -102,7 +102,8 @@
     "smoke:hero-ai-video": "tsx scripts/smoke-hero-ai-video.ts",
     "check:runpod-readiness": "tsx scripts/check-runpod-ai-readiness.ts",
     "provision:runpod-staging": "tsx scripts/provision-runpod-staging.ts",
-    "verify:timeline-wheel-scroll": "tsx scripts/verify-timeline-wheel-scroll.ts"
+    "verify:timeline-wheel-scroll": "tsx scripts/verify-timeline-wheel-scroll.ts",
+    "verify:brand-visual-system": "tsx scripts/verify-brand-visual-system.ts && tsx scripts/verify-brand-visual-migration.ts && node --conditions=react-server --import tsx scripts/verify-brand-profile-library.ts && node --conditions=react-server --import tsx scripts/verify-content-preflight.ts && node --conditions=react-server --import tsx scripts/verify-project-look.ts && node --conditions=react-server --import tsx scripts/verify-starter-ai-image-allowance.ts && node --conditions=react-server --import tsx scripts/verify-brand-visual-rollout.ts && tsx scripts/verify-brand-visual-funnel.ts && node --conditions=react-server --import tsx scripts/verify-brand-visual-funnel-health.ts && node --conditions=react-server --import tsx scripts/verify-brand-visual-rollout-health.ts && node --conditions=react-server --import tsx scripts/verify-brand-look-preview.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"

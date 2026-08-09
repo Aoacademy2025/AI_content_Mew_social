@@ -13,6 +13,8 @@ async function main() {
     data: {
       name: "Hero Retry Test",
       email: "hero-retry@example.invalid",
+      plan: "PRO",
+      subStatus: "active",
     },
   });
   await prisma.creditBalance.create({

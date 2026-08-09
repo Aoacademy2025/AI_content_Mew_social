@@ -9,7 +9,7 @@ import { fetchMe } from "@/lib/use-me";
 import { trackEvent } from "@/lib/client-telemetry";
 import {
   Settings, Users, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen, SwatchBook,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -54,6 +54,7 @@ const userNavItems: SidebarNavItem[] = [
   { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
   // Writing comes before editing in the user flow — kept directly above Video Editor.
   { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
+  { title: "แบรนด์ของฉัน", href: "/brands", icon: SwatchBook, badgeText: "ใหม่" },
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
   { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
   { title: "Gallery",      href: "/videos",        icon: Video },
@@ -70,6 +71,7 @@ const adminStudioItems: SidebarNavItem[] = [
   // Writing comes before editing in the user flow — kept directly above Video Editor
   // (same placement as userNavItems; admins are allowlist-gated too, see internalItemsOnly).
   { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
+  { title: "แบรนด์ของฉัน", href: "/brands", icon: SwatchBook, badgeText: "ใหม่" },
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
   { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
   { title: "Gallery",      href: "/videos",        icon: Video },
@@ -141,6 +143,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [internalAiTester, setInternalAiTester] = useState(false);
   const [heroScriptAllowed, setHeroScriptAllowed] = useState(false);
   const [heroScriptPreview, setHeroScriptPreview] = useState(false);
+  const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
 
   useEffect(() => {
     fetchMe()
@@ -159,6 +162,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         setInternalAiTester(data.internalAiTester === true);
         setHeroScriptAllowed(data.heroScriptAllowed === true);
         setHeroScriptPreview(data.heroScriptPreview === true);
+        setBrandVisualAllowed(data.brandVisualAllowed === true);
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -209,6 +213,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
     items
       .filter((item) => item.href !== "/ai-studio" || internalAiTester)
       .filter((item) => item.href !== "/hero-script" || heroScriptAllowed || heroScriptPreview)
+      .filter((item) => item.href !== "/brands" || brandVisualAllowed)
       .map((item) => item.href === "/hero-script" && !heroScriptAllowed
         ? { ...item, badgeText: "PRO" }
         : item);
@@ -252,6 +257,9 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
             trackEvent("hero_script_menu_clicked", {
               properties: { access: heroScriptAllowed ? "full" : "preview" },
             });
+          }
+          if (item.href === "/brands") {
+            trackEvent("brand_library_menu_clicked", { properties: { access: "full" } });
           }
         }}
         className={cn(

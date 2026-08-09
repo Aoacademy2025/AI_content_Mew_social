@@ -117,5 +117,9 @@ _verify-*
 .superpowers/
 .worktrees/
 
+# Local source PNGs/manifests for the Brand Visual System qualification runs.
+# Reviewed card derivatives live under public/brand-visual-formats instead.
+artifacts/brand-visual-quality-gate/
+
 # clerk configuration (can include secrets)
 /.clerk/

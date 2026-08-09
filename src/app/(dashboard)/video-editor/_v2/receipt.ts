@@ -41,6 +41,9 @@ export interface ReceiptInput {
   insufficientCreditBehavior?: "stock-fallback" | "block";
   /** Explicit B-roll count. When set, the backend plans exactly this many source slots. */
   targetClipCount?: number;
+  /** Activation-only image entitlement. When present, image generation spends
+   * these units instead of Hero credits; render-overflow credits stay separate. */
+  starterImageAllowance?: { remaining: number; limit: number } | null;
 }
 
 export type ReceiptLineKind = "info" | "success" | "warn";
@@ -73,7 +76,7 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const {
     estSec, remainingMinutes, totalMinutes, usesAi, presetWeights,
     perImageCredits, creditBalance, reservedCredits = 0, minuteCreditRate, hasAvatar, exactDuration = false,
-    insufficientCreditBehavior = "stock-fallback", targetClipCount = 0,
+    insufficientCreditBehavior = "stock-fallback", targetClipCount = 0, starterImageAllowance = null,
   } = input;
 
   const estMinutes = minutesFromSeconds(estSec);
@@ -85,11 +88,15 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const manualAiImageCount = manualPieceCount > 0
     ? disclosedAutoMixAiImageCount(estSec, presetWeights, manualPieceCount)
     : null;
-  const estCredits = usesAi
+  const estimatedAiImages = usesAi
     ? manualAiImageCount != null
-      ? manualAiImageCount * perImageCredits
-      : estimatePresetCredits(estSec, presetWeights, perImageCredits)
+      ? manualAiImageCount
+      : Math.round(estimatePresetCredits(estSec, presetWeights, perImageCredits) / perImageCredits)
     : 0;
+  const admittedStarterImages = starterImageAllowance
+    ? Math.min(estimatedAiImages, Math.max(0, starterImageAllowance.remaining))
+    : 0;
+  const estCredits = usesAi && !starterImageAllowance ? estimatedAiImages * perImageCredits : 0;
 
   const haveMinuteQuota = remainingMinutes != null && totalMinutes != null;
   // M — only meaningful when we know the remaining package minutes.
@@ -122,10 +129,23 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     lines.push({
       key: "ai",
       kind: "info",
-      text: manualAiImageCount != null
+      text: starterImageAllowance
+        ? starterImageAllowance.remaining === 0
+          ? "สิทธิ์ทดลองภาพ AI เหลือ 0 ภาพ — ระบบจะไม่เริ่มเจนและจะไม่เปลี่ยนเป็น Stock เอง"
+          : estimatedAiImages > admittedStarterImages
+            ? `ภาพ AI: ใช้สิทธิ์ทดลอง ${admittedStarterImages} ภาพจากที่แผนเดิมต้องใช้ ${estimatedAiImages} ภาพ · ระบบกระจายภาพให้ครอบคลุมคลิปและลดความถี่การเปลี่ยนภาพ`
+            : `ภาพ AI: ใช้สิทธิ์ทดลอง ${admittedStarterImages} ภาพ · หลังเริ่มงานจะเหลือ ${starterImageAllowance.remaining - admittedStarterImages} จาก ${starterImageAllowance.limit} ภาพ`
+        : manualAiImageCount != null
         ? `ภาพ AI: ${estCredits} เครดิต (${manualAiImageCount} ภาพ × ${perImageCredits} เครดิต) · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`
         : `ภาพ AI (ประมาณ): ~${estCredits} เครดิต · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`,
     });
+    if (starterImageAllowance?.remaining === 0) {
+      lines.push({
+        key: "allowance-insufficient",
+        kind: "warn",
+        text: "ใช้สิทธิ์ทดลองภาพ AI ครบแล้ว — อัปเกรดเป็นแผนรายเดือน หรือกลับไปเลือก Stock ฟรี",
+      });
+    }
   }
 
   // 3) Overflow warning — package minutes not enough (X > Y).

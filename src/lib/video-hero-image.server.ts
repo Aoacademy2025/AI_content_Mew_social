@@ -43,6 +43,10 @@ import {
   cancelRunpodImageJob,
   getRunpodEndpointHealth,
 } from "@/lib/runpod-serverless";
+import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
+import { recordVisualBeatAsset } from "@/lib/content-preflight.server";
+import type { CompiledBrandVisualPrompt } from "@/lib/brand-visual-system";
+import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 
 const MODEL = AI_IMAGE_MODELS.find((item) => item.id === "z-image-turbo")!;
 const TERMINAL_PROVIDER = new Set(["FAILED", "TIMED_OUT", "CANCELLED"]);
@@ -52,6 +56,7 @@ export class HeroImageGenerationError extends Error {
     message: string,
     readonly code:
       | "INSUFFICIENT_CREDITS"
+      | "ALLOWANCE_EXHAUSTED"
       | "NOT_CONFIGURED"
       | "PROVIDER_FAILED"
       | "PROVIDER_POLL_FAILED"
@@ -73,6 +78,8 @@ export type HeroImageGenerationResult = {
   jobId: string;
   outputUrl: string;
   creditCost: number;
+  fundingSource: string;
+  allowanceUnits: number;
   creditsFromGranted: number;
   creditsFromPurchased: number;
   provider: "runpod";
@@ -95,6 +102,8 @@ function completedResult(job: AiGenerationJob): HeroImageGenerationResult {
     jobId: job.id,
     outputUrl: job.outputUrl,
     creditCost: job.creditCost,
+    fundingSource: job.fundingSource,
+    allowanceUnits: job.allowanceUnits,
     creditsFromGranted: job.creditsFromGranted,
     creditsFromPurchased: job.creditsFromPurchased,
     provider: "runpod",
@@ -127,6 +136,12 @@ export async function generateHeroImageForVideo(input: {
   style?: AiImageStyle;
   interfaceExpected?: boolean;
   timeoutMs?: number;
+  brandVisualPrompt?: {
+    source: "project-look" | "brand-revision" | "suggested";
+    compiled: CompiledBrandVisualPrompt;
+    visualBeatId?: string;
+    identityKey?: string;
+  };
 }): Promise<HeroImageGenerationResult> {
   // The verified private BF16 image needs about ten minutes for a completely
   // fresh 28 GB pull, while FlashBoot revivals complete in seconds. Keep the
@@ -140,9 +155,31 @@ export async function generateHeroImageForVideo(input: {
   const aspectRatio = "9:16" as const;
   const style = input.style ?? "photoreal";
   const { width, height } = dimensionsForAspectRatio(aspectRatio);
-  const artworkPrompt = buildArtworkOnlyPrompt(input.prompt, style, {
-    interfaceExpected: input.interfaceExpected,
+  const projectVisual = input.brandVisualPrompt ?? await resolveProjectVisualPromptForVideoScene({
+    userId: input.userId,
+    videoJobId: input.videoJobId,
+    sceneIndex: input.sceneIndex,
   });
+  const brandVisualActor = projectVisual
+    ? await prisma.user.findUnique({
+        where: { id: input.userId },
+        select: { id: true, email: true, role: true, createdAt: true },
+      })
+    : null;
+  const brandVisualAccess = brandVisualActor
+    ? decideBrandVisualAccess(brandVisualActor)
+    : null;
+  // This is the exact provider-neutral prompt contract that passed the
+  // 21-image gate. Appending the legacy photoreal preset would overwrite a
+  // creator-selected comic, marker or retro format.
+  const artworkPrompt = projectVisual
+    ? {
+        positive: projectVisual.compiled.positive,
+        negative: projectVisual.compiled.negative,
+      }
+    : buildArtworkOnlyPrompt(input.prompt, style, {
+        interfaceExpected: input.interfaceExpected,
+      });
   let prepared;
   try {
     prepared = prepareImageGeneration(MODEL, {
@@ -181,6 +218,13 @@ export async function generateHeroImageForVideo(input: {
       videoJobId: input.videoJobId,
       sceneIndex: input.sceneIndex,
       interfaceExpected: input.interfaceExpected === true,
+      brandVisualSource: projectVisual?.source ?? null,
+      visualFormatId: projectVisual?.compiled.visualFormatId ?? null,
+      visualRecipeVersion: projectVisual?.compiled.recipeVersion ?? null,
+      visualBeatId: projectVisual?.visualBeatId ?? null,
+      brandVisualIdentityKey: projectVisual?.identityKey ?? null,
+      brandVisualCohort: brandVisualAccess?.cohort ?? null,
+      brandVisualRolloutBucket: brandVisualAccess?.bucket ?? null,
     }),
     creditCost: prepared.quote.credits,
     quoteVersion: prepared.quote.version,
@@ -194,6 +238,13 @@ export async function generateHeroImageForVideo(input: {
     mediaExpiresAt: videoExpiryFor(input.plan),
   });
   if (!reserved.ok) {
+    if (reserved.reason === "allowance_exhausted") {
+      throw new HeroImageGenerationError(
+        "ใช้สิทธิ์ทดลองภาพ AI ครบ 8 ภาพในรอบนี้แล้ว อัปเกรดเพื่อสร้างต่อหรือเปลี่ยนไปใช้ Stock ฟรี",
+        "ALLOWANCE_EXHAUSTED",
+        402,
+      );
+    }
     throw new HeroImageGenerationError(
       `เครดิตไม่พอสำหรับ Hero AI Image ต้องใช้ ${prepared.quote.credits} เครดิตต่อฉาก (คงเหลือ ${reserved.balanceAfter})`,
       "INSUFFICIENT_CREDITS",
@@ -202,7 +253,17 @@ export async function generateHeroImageForVideo(input: {
   }
 
   let job = reserved.job;
-  if (job.status === "completed") return completedResult(job);
+  if (job.status === "completed") {
+    if (projectVisual?.visualBeatId && job.outputUrl) {
+      await recordVisualBeatAsset({
+        userId: input.userId,
+        beatId: projectVisual.visualBeatId,
+        outputUrl: job.outputUrl,
+        imageJobId: job.id,
+      }).catch((error) => console.error("[brand-visual] failed to attach replayed image:", error));
+    }
+    return completedResult(job);
+  }
   if (job.status === "failed" || job.chargeState === "refunded") {
     const providerFailure = classifyRunpodTerminalFailure(job.errorMessage || job.errorCode);
     throw new HeroImageGenerationError(
@@ -412,6 +473,14 @@ export async function generateHeroImageForVideo(input: {
             providerReportedCredits: snapshot.providerReportedCredits,
             sceneTitle: input.sceneTitle || `Video ${input.videoJobId} · scene ${input.sceneIndex + 1}`,
           }) ?? job;
+          if (projectVisual?.visualBeatId && job.outputUrl) {
+            await recordVisualBeatAsset({
+              userId: input.userId,
+              beatId: projectVisual.visualBeatId,
+              outputUrl: job.outputUrl,
+              imageJobId: job.id,
+            }).catch((error) => console.error("[brand-visual] failed to attach generated image:", error));
+          }
           recordHeroRunpodSuccess();
           return completedResult(job);
         } catch (error) {

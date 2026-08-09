@@ -30,6 +30,19 @@ export interface MeData {
   heroScriptAllowed?: boolean;
   heroScriptPreview?: boolean;
   heroScriptCohort?: "internal" | "paid" | "coupon" | "trial" | "free" | "preview";
+  brandVisualAllowed?: boolean;
+  brandVisualCohort?: "off" | "internal" | "control" | "treatment-10" | "treatment-50" | "treatment-100";
+  brandVisualRolloutBucket?: number | null;
+  starterAiImageAllowance?: {
+    eligible: boolean;
+    fundingSource: "starter_allowance" | "credits";
+    windowStartedAt: string;
+    windowEndsAt: string;
+    limitImages: number;
+    reservedImages: number;
+    usedImages: number;
+    remainingImages: number;
+  } | null;
   [key: string]: unknown;
 }
 

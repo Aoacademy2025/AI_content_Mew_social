@@ -139,9 +139,15 @@ async function main() {
   let userSeq = 0;
   async function makeUser(label: string, granted: number, purchased: number) {
     userSeq += 1;
-    // plan FREE keeps ensureMonthlyGrant a no-op elsewhere, so seeded balances are exact.
+    // Paid evidence selects the shared Credit wallet; these assertions pin the
+    // existing granted-first split rather than the new never-paid allowance.
     const user = await prisma.user.create({
-      data: { name: `Reconcile ${label}`, email: `reconcile-${userSeq}-${label}@example.invalid`, plan: "FREE" },
+      data: {
+        name: `Reconcile ${label}`,
+        email: `reconcile-${userSeq}-${label}@example.invalid`,
+        plan: "PRO",
+        subStatus: "active",
+      },
     });
     await prisma.creditBalance.create({ data: { userId: user.id, granted, purchased } });
     return user;

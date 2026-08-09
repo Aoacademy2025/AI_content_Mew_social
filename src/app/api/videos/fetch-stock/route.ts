@@ -111,6 +111,8 @@ import {
   heroRunpodCircuitState,
 } from "@/lib/hero-image-resilience";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
+import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
+import { reusableVisualBeatAssetsForVideoJob } from "@/lib/content-preflight.server";
 import path from "path";
 import fs from "fs";
 
@@ -1427,6 +1429,12 @@ export async function POST(req: Request) {
   const autoMixActiveVideo = new Set<number>();   // ki → fetch a real video clip
   const autoMixPhotoSlots = new Set<number>();    // ki → free-photo provider (Ken Burns)
   const autoMixAiSlots = new Set<number>();       // ki → generated AI image (paid)
+  const autoMixReusableByScene = new Map<number, {
+    beatId: string;
+    sceneIndex: number;
+    outputUrl: string;
+    imageJobId: string | null;
+  }>();
   // Hero-seam facts for the AutoMix AI slots, surfaced in fetch-stock telemetry.
   const heroAutoMixTelemetry: Record<string, unknown> = {};
   const heroAutoMixCreditCost = heroAutoMixOffer?.quote.credits ?? HERO_AI_IMAGE_CREDITS;
@@ -1473,7 +1481,6 @@ export async function POST(req: Request) {
       else if (src === "photo") autoMixPhotoSlots.add(ki);
       else autoMixActiveVideo.add(ki);
     });
-    aiTelemetry.aiGenRequestedCount += autoMixAiSlots.size;
     console.log(`[fetch-stock] Auto Mix plan: ${pieceCount} pieces over ${keywords.length} kw → ${autoMixActiveVideo.size} video / ${autoMixPhotoSlots.size} photo / ${autoMixAiSlots.size} ai (weights v${weights.video}:p${weights.photo}:a${weights.ai})`);
 
     /** Keep the lowest-index `keep` AI slots; the rest become FREE photo slots. */
@@ -1500,6 +1507,37 @@ export async function POST(req: Request) {
       console.log(`[fetch-stock] Auto Mix AI slots clamped to the disclosed quote: ${maxAiImages} (dropped ${demoted.length})`);
     }
 
+    // A current Visual Beat already owns a delivered image. Keep its AI slot in
+    // the visual-coverage plan, but exclude it from rate, provider and funding
+    // preflights; the image loop below rebuilds only its Ken Burns derivative.
+    if (download && autoMixAiEngine === "runpod" && autoMixAiSlots.size > 0) {
+      const reusable = await reusableVisualBeatAssetsForVideoJob({
+        userId,
+        videoJobId: videoJobId!,
+      });
+      for (const asset of reusable) {
+        if (autoMixAiSlots.has(asset.sceneIndex)) {
+          autoMixReusableByScene.set(asset.sceneIndex, asset);
+        }
+      }
+    }
+    const aiSlotsNeedingGeneration = () => [...autoMixAiSlots]
+      .filter((sceneIndex) => !autoMixReusableByScene.has(sceneIndex));
+    aiTelemetry.aiGenRequestedCount += aiSlotsNeedingGeneration().length;
+
+    /** Reduce only unpaid/new AI slots. Retained AI assets stay in place and
+     * the remaining new slots are spread across the planned AutoMix windows. */
+    const demoteGeneratedAiSlotsTo = (keep: number): number[] => {
+      const candidates = aiSlotsNeedingGeneration();
+      const keptPositions = new Set(pickEvenIndices(candidates.length, Math.max(0, keep)));
+      const demoted = candidates.filter((_, index) => !keptPositions.has(index));
+      for (const sceneIndex of demoted) {
+        autoMixAiSlots.delete(sceneIndex);
+        autoMixPhotoSlots.add(sceneIndex);
+      }
+      return demoted;
+    };
+
     // ── Hero-seam preflight for the paid AI slots ───────────────────────────
     // Disclose-then-spend: provider readiness, the live COGS guard and the credit
     // balance are all checked BEFORE the first reservation. Anything short degrades
@@ -1507,12 +1545,12 @@ export async function POST(req: Request) {
     // it never hard-fails the whole b-roll fetch, and it never falls back to kie).
     // (Only the download pass generates images — a search-only/preview call never
     // spends, so it must not pay for the preflight round-trips either.)
-    if (download && autoMixAiEngine === "runpod" && autoMixAiSlots.size > 0) {
-      let affordableAiSlots = autoMixAiSlots.size;
-      let degradeReason: "rate_limited" | "provider_circuit_open" | "provider_cost_guard" | "insufficient_credits" | null = null;
+    if (download && autoMixAiEngine === "runpod" && aiSlotsNeedingGeneration().length > 0) {
+      let affordableAiSlots = aiSlotsNeedingGeneration().length;
+      let degradeReason: "rate_limited" | "provider_circuit_open" | "provider_cost_guard" | "insufficient_credits" | "starter_allowance_density" | null = null;
       // Rate cap first (cheap DB check, no external round-trip) — public-launch
       // abuse guard, admins exempt (team ops; see hero-image-rate-limit.ts).
-      const heroRate = isAdmin ? null : await checkHeroImageRate(userId, autoMixAiSlots.size);
+      const heroRate = isAdmin ? null : await checkHeroImageRate(userId, aiSlotsNeedingGeneration().length);
       if (heroRate && !heroRate.ok) {
         degradeReason = "rate_limited";
         affordableAiSlots = 0;
@@ -1546,12 +1584,28 @@ export async function POST(req: Request) {
           } else {
             try { await ensureMonthlyGrant(userId); } catch { /* non-fatal */ }
             const balance = await getBalance(userId);
-            affordableAiSlots = heroAutoMixCreditCost > 0
-              ? Math.max(0, Math.floor(balance.total / heroAutoMixCreditCost))
-              : 0;
+            const imageFunding = await getStarterAiImageAllowanceStatus(userId);
+            affordableAiSlots = imageFunding.eligible
+              ? imageFunding.remainingImages
+              : heroAutoMixCreditCost > 0
+                ? Math.max(0, Math.floor(balance.total / heroAutoMixCreditCost))
+                : 0;
             heroAutoMixTelemetry.heroAutoMixBalanceBefore = balance.total;
-            if (affordableAiSlots < autoMixAiSlots.size) {
-              degradeReason = "insufficient_credits";
+            heroAutoMixTelemetry.heroAutoMixFundingSource = imageFunding.fundingSource;
+            heroAutoMixTelemetry.heroAutoMixAllowanceRemaining = imageFunding.eligible
+              ? imageFunding.remainingImages
+              : null;
+            if (imageFunding.eligible && imageFunding.remainingImages === 0 && aiSlotsNeedingGeneration().length > 0) {
+              return NextResponse.json({
+                error: "ใช้สิทธิ์ทดลองภาพ AI ครบ 8 ภาพในรอบนี้แล้ว เลือก Stock ฟรีหรืออัปเกรดเพื่อสร้างต่อ",
+                code: "ALLOWANCE_EXHAUSTED",
+                remainingImages: 0,
+                upgradeUrl: "/pricing",
+                stockAction: "use-stock",
+              }, { status: 402 });
+            }
+            if (affordableAiSlots < aiSlotsNeedingGeneration().length) {
+              degradeReason = imageFunding.eligible ? "starter_allowance_density" : "insufficient_credits";
               // Same skip marker the kie path used when credits ran out mid-job, so the
               // client keeps telling the user why fewer AI images appeared.
               aiSkippedReason = "credits";
@@ -1566,22 +1620,26 @@ export async function POST(req: Request) {
       } else if (degradeReason === "rate_limited") {
         aiSkippedReason = "rate";
       }
-      if (affordableAiSlots < autoMixAiSlots.size) {
-        const demoted = demoteAiSlotsTo(affordableAiSlots);
+      if (affordableAiSlots < aiSlotsNeedingGeneration().length) {
+        const demoted = demoteGeneratedAiSlotsTo(affordableAiSlots);
         trackAiSkip(
-          degradeReason === "insufficient_credits" ? "credits" : degradeReason === "rate_limited" ? "rate" : "provider",
+          degradeReason === "insufficient_credits" || degradeReason === "starter_allowance_density"
+            ? "credits"
+            : degradeReason === "rate_limited" ? "rate" : "provider",
           demoted.length,
         );
         heroAutoMixTelemetry.heroAutoMixDegradedSlotCount = demoted.length;
         heroAutoMixTelemetry.heroAutoMixDegradeReason = degradeReason;
         console.warn(`[fetch-stock] Auto Mix hero AI degraded ${demoted.length} slot(s) → free photo (${degradeReason})`);
       }
-      heroAutoMixTelemetry.heroAutoMixRequiredCredits = autoMixAiSlots.size * heroAutoMixCreditCost;
+      heroAutoMixTelemetry.heroAutoMixRequiredCredits = aiSlotsNeedingGeneration().length * heroAutoMixCreditCost;
     }
-    aiTelemetry.aiGenPlannedCount += autoMixAiSlots.size;
+    aiTelemetry.aiGenPlannedCount += aiSlotsNeedingGeneration().length;
     if (autoMixAiEngine) {
       heroAutoMixTelemetry.heroAutoMixAiEngine = autoMixAiEngine;
       heroAutoMixTelemetry.heroAutoMixAiSlotCount = autoMixAiSlots.size;
+      heroAutoMixTelemetry.heroAutoMixGeneratedSlotCount = aiSlotsNeedingGeneration().length;
+      heroAutoMixTelemetry.heroAutoMixReusedSlotCount = autoMixReusableByScene.size;
       if (autoMixAiEngine === "runpod") {
         heroAutoMixTelemetry.heroAutoMixCreditCostKey = HERO_AI_IMAGE_CREDIT_COST_KEY;
         heroAutoMixTelemetry.heroAutoMixCreditCostPerImage = heroAutoMixCreditCost;
@@ -1798,7 +1856,7 @@ export async function POST(req: Request) {
         ? value
         : fallbackWindowDurationSec;
     });
-    const directJobs = brollWindowMode
+    const requestedDirectJobs = brollWindowMode
       ? planHeroAiWindowGeneration(keywords, heroWindowDurationsSec)
       : selectRepresentativeItems(
           keywords.map((keyword, sourceIndex) => ({
@@ -1808,9 +1866,19 @@ export async function POST(req: Request) {
           })),
           clipsToGenerateRaw,
         );
-    const clipsToGenerate = directJobs.length;
+    const reusableAssets = await reusableVisualBeatAssetsForVideoJob({
+      userId,
+      videoJobId: videoJobId!,
+    });
+    const reusableByScene = new Map(reusableAssets.map((asset) => [asset.sceneIndex, asset]));
+    const reusedJobs = requestedDirectJobs.flatMap((job) => {
+      const asset = reusableByScene.get(job.sourceIndex);
+      return asset ? [{ ...job, asset }] : [];
+    });
+    let directJobs = requestedDirectJobs.filter((job) => !reusableByScene.has(job.sourceIndex));
+    const clipsNeedingGeneration = directJobs.length;
     const heroOffer = describeHeroImageOffer();
-    if (!heroOffer.available || heroOffer.providerRoute !== "runpod-custom") {
+    if (directJobs.length > 0 && (!heroOffer.available || heroOffer.providerRoute !== "runpod-custom")) {
       return NextResponse.json({
         error: "Hero AI Image ยังไม่พร้อมใช้งานในขณะนี้",
         code: heroOffer.unavailableCode ?? "NOT_CONFIGURED",
@@ -1818,23 +1886,39 @@ export async function POST(req: Request) {
         failedScenes: directJobs.map((item) => item.sourceIndex),
       }, { status: 503 });
     }
-    const heroCreditCost = heroOffer.quote.credits;
+    const heroCreditCost = heroOffer.available ? heroOffer.quote.credits : HERO_AI_IMAGE_CREDITS;
+    const imageFunding = await getStarterAiImageAllowanceStatus(userId);
+    if (imageFunding.eligible) {
+      if (imageFunding.remainingImages === 0 && directJobs.length > 0) {
+        return NextResponse.json({
+          error: "ใช้สิทธิ์ทดลองภาพ AI ครบ 8 ภาพในรอบนี้แล้ว อัปเกรดเพื่อสร้างต่อหรือเปลี่ยนไปใช้ Stock ฟรี",
+          code: "ALLOWANCE_EXHAUSTED",
+          remainingImages: 0,
+          upgradeUrl: "/pricing",
+          stockAction: "use-stock",
+        }, { status: 402 });
+      }
+      if (directJobs.length > imageFunding.remainingImages) {
+        directJobs = selectRepresentativeItems(directJobs, imageFunding.remainingImages);
+      }
+    }
+    const clipsToGenerate = directJobs.length;
     const heroCreditCostKey = "image-open-custom-1k";
     const heroAiTelemetry = {
       aiModel: "z-image-turbo",
       aiCreditCostKey: heroCreditCostKey,
       aiCreditCostPerImage: heroCreditCost,
-      aiBillingMode: "durable-credits",
+      aiBillingMode: imageFunding.eligible ? "starter-allowance" : "durable-credits",
       aiChargeImages: true,
       aiUsesManagedKey: true,
       heroImageProvider: "runpod",
       heroImageModel: "z-image-turbo",
       heroImageRoute: heroOffer.providerRoute,
     } as const;
-    const runpodCost = await getRunpodImageCostSnapshot({
-      endpointId: heroOffer.providerEndpoint,
-    });
-    if (!runpodCost.admitted) {
+    const runpodCost = clipsToGenerate > 0
+      ? await getRunpodImageCostSnapshot({ endpointId: heroOffer.providerEndpoint })
+      : null;
+    if (runpodCost && !runpodCost.admitted) {
       await recordFetchStockTelemetry("error", {
         ...heroAiTelemetry,
         providerErrorCode: "runpod_cost_guard",
@@ -1856,7 +1940,7 @@ export async function POST(req: Request) {
       }, { status: 503 });
     }
     const circuit = heroRunpodCircuitState();
-    if (circuit.open) {
+    if (clipsToGenerate > 0 && circuit.open) {
       await recordFetchStockTelemetry("error", {
         ...heroAiTelemetry,
         providerErrorCode: circuit.code,
@@ -1881,34 +1965,36 @@ export async function POST(req: Request) {
     // Rate cap (public-launch abuse guard) — runs before any credit work. Admins
     // are exempt (team ops; see hero-image-rate-limit.ts).
     if (!isAdmin) {
-      const heroRate = await checkHeroImageRate(userId, clipsToGenerate);
-      if (!heroRate.ok) {
-        await recordFetchStockTelemetry("error", {
-          ...heroAiTelemetry,
-          providerErrorCode: "RATE_LIMITED",
-          errorProvider: "runpod",
-          heroImageRateScope: heroRate.scope,
-          heroImageRateUsedHour: heroRate.usedHour,
-          heroImageRateUsedDay: heroRate.usedDay,
-          failedSceneCount: directJobs.length,
-          completedSceneCount: 0,
-        });
-        return NextResponse.json({
-          error: heroImageRateLimitMessage(heroRate),
-          code: "RATE_LIMITED",
-          retryable: true,
-          retryAfterSec: heroRate.retryAfterSec,
-          failedScenes: directJobs.map((item) => item.sourceIndex),
-        }, {
-          status: 429,
-          headers: { "Retry-After": String(heroRate.retryAfterSec) },
-        });
+      if (clipsToGenerate > 0) {
+        const heroRate = await checkHeroImageRate(userId, clipsToGenerate);
+        if (!heroRate.ok) {
+          await recordFetchStockTelemetry("error", {
+            ...heroAiTelemetry,
+            providerErrorCode: "RATE_LIMITED",
+            errorProvider: "runpod",
+            heroImageRateScope: heroRate.scope,
+            heroImageRateUsedHour: heroRate.usedHour,
+            heroImageRateUsedDay: heroRate.usedDay,
+            failedSceneCount: directJobs.length,
+            completedSceneCount: 0,
+          });
+          return NextResponse.json({
+            error: heroImageRateLimitMessage(heroRate),
+            code: "RATE_LIMITED",
+            retryable: true,
+            retryAfterSec: heroRate.retryAfterSec,
+            failedScenes: directJobs.map((item) => item.sourceIndex),
+          }, {
+            status: 429,
+            headers: { "Retry-After": String(heroRate.retryAfterSec) },
+          });
+        }
       }
     }
-    await ensureMonthlyGrant(userId);
+    if (clipsToGenerate > 0) await ensureMonthlyGrant(userId);
     const balance = await getBalance(userId);
     const totalCreditCost = clipsToGenerate * heroCreditCost;
-    if (balance.total < totalCreditCost) {
+    if (!imageFunding.eligible && balance.total < totalCreditCost) {
       await recordFetchStockTelemetry("error", {
         ...heroAiTelemetry,
         providerErrorCode: "insufficient_credits",
@@ -1987,8 +2073,89 @@ export async function POST(req: Request) {
       briefVisualMode: string;
       providerStyle: string;
     }> = [];
-    aiTelemetry.aiGenRequestedCount += clipsToGenerateRaw;
+    aiTelemetry.aiGenRequestedCount += clipsNeedingGeneration;
     aiTelemetry.aiGenPlannedCount += clipsToGenerate;
+
+    // A cached, current Visual Beat is already a paid/delivered image. Reuse it
+    // as the source for a fresh Ken Burns clip; only new/outdated beats enter
+    // the provider queue below. If retained media disappeared, mark that one
+    // beat outdated so the next confirmed render regenerates it.
+    await forEachInFailFastBatches(
+      reusedJobs,
+      DOWNLOAD_CONCURRENCY,
+      async ({ keyword, sourceIndex, kenBurnsDurationSec, asset }) => {
+        const startedAt = Date.now();
+        const id = HERO_RUNPOD_ID_OFFSET + sourceIndex;
+        const imageFile = `${userPrefix}${id}.src.png`;
+        const imagePath = path.join(rendersDir, imageFile);
+        const outFile = `${userPrefix}${id}.mp4`;
+        const outPath = path.join(rendersDir, outFile);
+        try {
+          if (download) {
+            if (asset.outputUrl.startsWith("/api/renders/")) {
+              const filename = decodeURIComponent(asset.outputUrl.slice("/api/renders/".length));
+              if (!filename || path.basename(filename) !== filename) throw new Error("invalid retained Hero image path");
+              const sourcePath = path.join(process.cwd(), "public", "renders", filename);
+              if (!fs.existsSync(sourcePath)) throw new Error("retained Hero image is missing");
+              fs.copyFileSync(sourcePath, imagePath);
+            } else {
+              await downloadAndCrop(asset.outputUrl, imagePath);
+            }
+            await applyKenBurns(imagePath, outPath, kenBurnsDurationSec);
+            if (!isValidMp4Path(outPath)) throw new Error("retained Hero image Ken Burns output is invalid");
+            try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+            stockTelemetry.downloadedCount++;
+            stockTelemetry.normalizeSkippedCount++;
+          }
+          results.push({
+            keyword,
+            sourceIndex,
+            pexelsId: id,
+            duration: kenBurnsDurationSec,
+            videoUrl: asset.outputUrl,
+            ...(download ? {
+              localPath: outPath,
+              localUrl: `/api/stocks/${outFile}`,
+              imageLocalUrl: `/api/stocks/${imageFile}`,
+            } : {}),
+            imageUrl: asset.outputUrl,
+            assetMeta: {
+              provider: "runpod",
+              assetId: asset.imageJobId ?? asset.beatId,
+              downloadUrl: asset.outputUrl,
+              license: "Hero AI generated",
+            },
+          });
+          await recordTelemetryEvent(userId, {
+            name: "brand_visual_scene_reused",
+            category: "performance",
+            source: "server",
+            step: "fetchStock.heroAiImage",
+            status: "done",
+            durationMs: Date.now() - startedAt,
+            properties: { videoJobId, sceneIndex: sourceIndex, visualBeatId: asset.beatId },
+          }).catch(() => {});
+        } catch (error) {
+          safeUnlink(imagePath);
+          safeUnlink(outPath);
+          safeUnlink(normalizedMarkerPath(outPath));
+          await prisma.projectVisualBeat.updateMany({
+            where: { id: asset.beatId, userId },
+            data: { status: "outdated", outdatedAt: new Date() },
+          }).catch(() => {});
+          failures.push({
+            sourceIndex,
+            code: "RETAINED_ASSET_UNAVAILABLE",
+            message: error instanceof Error ? error.message : "Retained Brand Visual asset is unavailable",
+            systemic: false,
+            retryable: true,
+            stopBatch: false,
+          });
+        }
+        return { stopBatch: false };
+      },
+      () => false,
+    );
 
     // Provider phase first: keep both RunPod workers fed continuously. Local
     // downloads and ffmpeg Ken Burns run only after the provider queue drains,
@@ -2031,7 +2198,7 @@ export async function POST(req: Request) {
             providerStyle,
           });
           aiTelemetry.aiChargedCount++;
-          aiTelemetry.aiCreditsSpent += generated.creditCost;
+          aiTelemetry.aiCreditsSpent += generated.fundingSource === "credits" ? generated.creditCost : 0;
           aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted;
           aiTelemetry.aiCreditsSpentPurchased += generated.creditsFromPurchased;
           return { stopBatch: false };
@@ -2164,6 +2331,8 @@ export async function POST(req: Request) {
                 aiModel: generated.providerModel,
                 aiProviderRoute: generated.providerRoute,
                 aiCreditCost: generated.creditCost,
+                aiFundingSource: generated.fundingSource,
+                aiAllowanceUnits: generated.allowanceUnits,
                 aiProviderDelayTimeMs: generated.delayTimeMs,
                 aiProviderExecutionTimeMs: generated.executionTimeMs,
                 aiProviderReportedCostUsdMicros: generated.providerReportedCostUsdMicros,
@@ -2248,19 +2417,27 @@ export async function POST(req: Request) {
         retryable: systemicFailure?.retryable ?? stoppingFailure?.retryable ?? true,
         failedScenes: failures.map((item) => item.sourceIndex).sort((a, b) => a - b),
         refundedCredits: compensation.refundedCredits,
-      }, { status: failures[0].code === "INSUFFICIENT_CREDITS" ? 402 : 503 });
+      }, { status: failures[0].code === "INSUFFICIENT_CREDITS" || failures[0].code === "ALLOWANCE_EXHAUSTED" ? 402 : 503 });
     }
     const heroBalanceAfter = await getBalance(userId);
     aiTelemetry.aiLastCreditBalanceAfterSpend = heroBalanceAfter.total;
     await recordFetchStockTelemetry("done", {
       ...heroAiTelemetry,
-      heroImageGeneratedCount: results.length,
-      heroImageCredits: results.length * heroCreditCost,
+      heroImageGeneratedCount: generatedScenes.length,
+      heroImageReusedCount: reusedJobs.length,
+      heroImageCredits: generatedScenes.length * heroCreditCost,
       heroScenePlanSource: heroScenePlan.source,
       heroScenePlannerCallCount: heroScenePlan.plannerCallCount,
       heroScenePlannerFailedBatchCount: heroScenePlan.failedBatchCount,
     });
-    return NextResponse.json({ results });
+    return NextResponse.json({
+      results,
+      generationSummary: {
+        generatedImages: generatedScenes.length,
+        reusedImages: reusedJobs.length,
+        quotedCredits: generatedScenes.length * heroCreditCost,
+      },
+    });
   }
 
   // ── AI Image-to-Video (kie.ai, admin-only) — generation path ──────────────
@@ -2988,6 +3165,76 @@ export async function POST(req: Request) {
         // post-processing to the legacy kie path. A failed slot degrades to nothing
         // (the piece is skipped) — it never falls back to another engine.
         if (kind === "ai" && autoMixAiEngine === "runpod") {
+          const retained = autoMixReusableByScene.get(ki);
+          if (retained) {
+            const startedAt = Date.now();
+            const id = AUTOMIX_RUNPOD_ID_OFFSET + slot;
+            const imageFile = `${userPrefix}${id}.src.png`;
+            const imagePath = path.join(rendersDir, imageFile);
+            const outFile = `${userPrefix}${id}.mp4`;
+            const outPath = path.join(rendersDir, outFile);
+            try {
+              if (retained.outputUrl.startsWith("/api/renders/")) {
+                const filename = decodeURIComponent(retained.outputUrl.slice("/api/renders/".length));
+                if (!filename || path.basename(filename) !== filename) throw new Error("invalid retained AutoMix image path");
+                const sourcePath = path.join(process.cwd(), "public", "renders", filename);
+                if (!fs.existsSync(sourcePath)) throw new Error("retained AutoMix image is missing");
+                fs.copyFileSync(sourcePath, imagePath);
+              } else {
+                await downloadAndCrop(retained.outputUrl, imagePath);
+              }
+              await applyKenBurns(imagePath, outPath);
+              if (!isValidMp4Path(outPath)) throw new Error("retained AutoMix Ken Burns output is invalid");
+              stockTelemetry.downloadedCount++;
+              stockTelemetry.normalizeSkippedCount++;
+              try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+              results.push({
+                keyword: kw,
+                sourceIndex: ki,
+                pexelsId: id,
+                duration: KEN_BURNS_DURATION_SEC,
+                videoUrl: retained.outputUrl,
+                localPath: outPath,
+                localUrl: `/api/stocks/${outFile}`,
+                imageUrl: retained.outputUrl,
+                imageLocalUrl: `/api/stocks/${imageFile}`,
+                assetMeta: {
+                  provider: "runpod",
+                  assetId: retained.imageJobId ?? retained.beatId,
+                  downloadUrl: retained.outputUrl,
+                  license: "Hero AI generated",
+                },
+              });
+              await recordTelemetryEvent(userId, {
+                name: "brand_visual_scene_reused",
+                category: "performance",
+                source: "server",
+                step: "fetchStock.autoMixHero",
+                status: "done",
+                durationMs: Date.now() - startedAt,
+                properties: { videoJobId, sceneIndex: ki, visualBeatId: retained.beatId },
+              }).catch(() => {});
+            } catch (error) {
+              safeUnlink(imagePath);
+              safeUnlink(outPath);
+              safeUnlink(normalizedMarkerPath(outPath));
+              stockTelemetry.downloadFailCount++;
+              await prisma.projectVisualBeat.updateMany({
+                where: { id: retained.beatId, userId },
+                data: { status: "outdated", outdatedAt: new Date() },
+              }).catch(() => {});
+              await recordTelemetryEvent(userId, {
+                name: "brand_visual_scene_reuse_failed",
+                category: "error",
+                source: "server",
+                step: "fetchStock.autoMixHero",
+                status: "error",
+                durationMs: Date.now() - startedAt,
+                properties: { videoJobId, sceneIndex: ki, visualBeatId: retained.beatId },
+              }).catch(() => {});
+            }
+            return;
+          }
           if (heroAutoMixStopped) {
             // Already reported through aiSkippedReason by whichever failure stopped
             // the batch; the remaining slots are simply dropped, never charged.
@@ -3023,7 +3270,7 @@ export async function POST(req: Request) {
               style: heroImageStyleForBrollWindow(brollPreference.brollVisualStyle),
             });
             aiTelemetry.aiChargedCount++;
-            aiTelemetry.aiCreditsSpent += generated.creditCost;
+            aiTelemetry.aiCreditsSpent += generated.fundingSource === "credits" ? generated.creditCost : 0;
             aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted;
             aiTelemetry.aiCreditsSpentPurchased += generated.creditsFromPurchased;
             if (generated.outputUrl.startsWith("/api/renders/")) {
@@ -3060,7 +3307,7 @@ export async function POST(req: Request) {
             stockTelemetry.downloadFailCount++;
             const heroError = error instanceof HeroImageGenerationError ? error : null;
             failureReason = heroError ? heroError.code.toLowerCase() : "post_processing_error";
-            if (heroError?.code === "INSUFFICIENT_CREDITS") {
+            if (heroError?.code === "INSUFFICIENT_CREDITS" || heroError?.code === "ALLOWANCE_EXHAUSTED") {
               // Racing spend drained the balance after the preflight — stop asking for
               // more paid slots instead of retrying a reservation that cannot succeed.
               aiSkippedReason = "credits";
@@ -3112,7 +3359,7 @@ export async function POST(req: Request) {
               assetId: id,
               durationMs: Date.now() - aiStartedAt,
               charged: Boolean(generated) && creditsRefunded === 0,
-              creditsSpent: generated?.creditCost ?? 0,
+              creditsSpent: generated?.fundingSource === "credits" ? generated.creditCost : 0,
               creditsRefunded,
               fromGranted: generated?.creditsFromGranted ?? 0,
               fromPurchased: generated?.creditsFromPurchased ?? 0,

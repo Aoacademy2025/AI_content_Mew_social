@@ -1825,6 +1825,8 @@ async function main() {
       ok(project !== null, "sendScriptToEditor created a real EditorProject owned by the caller");
       const draft = (project?.draft ?? {}) as Record<string, unknown>;
       ok(draft.mode === "script", "handoff draftJson has mode: 'script'");
+      ok(draft.narrativeSourceKind === "ai-script",
+        "Hero Script handoff preserves AI-script provenance for Content Preflight");
       ok(draft.script === "hook ที่เลือกไว้\nประโยค 1\nประโยค 2\nประโยค 3\nตามไว้เลย",
         "handoff draftJson.script === the assembled, blank-line-stripped script");
       ok(!String(draft.script).split("\n").some((line) => line.trim() === ""),

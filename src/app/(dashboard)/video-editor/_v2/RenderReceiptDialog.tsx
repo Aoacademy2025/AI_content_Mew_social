@@ -109,14 +109,18 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       exactDuration,
       insufficientCreditBehavior: p.brollSource === "kie-image" ? "block" : "stock-fallback",
       targetClipCount: p.targetClipCount,
+      starterImageAllowance: p.starterAiImageAllowance?.eligible ? {
+        remaining: p.starterAiImageAllowance.remainingImages,
+        limit: p.starterAiImageAllowance.limitImages,
+      } : null,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, exactDuration],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, p.starterAiImageAllowance, exactDuration],
   );
 
   // Deficit disables the render CTA (Task 5 item B) — buildReceipt already computed
   // the exact "Hero credits ไม่พอ" line above; reuse that decision instead of
   // re-deriving a second insufficiency check that could drift from it.
-  const insufficientCredits = model.lines.some((l) => l.key === "insufficient");
+  const insufficientCredits = model.lines.some((l) => l.key === "insufficient" || l.key === "allowance-insufficient");
 
   if (!open) return null;
 
@@ -211,7 +215,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
                 padding: "10px 16px",
               }}
             >
-              เติมเครดิต
+              {p.starterAiImageAllowance?.eligible ? "ดูแผนรายเดือน" : "เติมเครดิต"}
             </a>
           )}
         </div>

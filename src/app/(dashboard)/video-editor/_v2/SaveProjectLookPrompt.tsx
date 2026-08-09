@@ -1,0 +1,50 @@
+"use client";
+
+import Link from "next/link";
+import { BookmarkPlus, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { trackEvent } from "@/lib/client-telemetry";
+import { color, font } from "./tokens";
+
+export function SaveProjectLookPrompt({
+  projectId,
+  brandVisualAllowed,
+}: {
+  projectId: string | null;
+  brandVisualAllowed: boolean;
+}) {
+  const [source, setSource] = useState<"loading" | "brand-revision" | "project-look" | "suggested" | "error">("loading");
+  const tracked = useRef(false);
+
+  useEffect(() => {
+    if (!projectId || !brandVisualAllowed) return;
+    const controller = new AbortController();
+    fetch(`/api/editor-projects/${encodeURIComponent(projectId)}/visual-context`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error("visual context unavailable")))
+      .then((value) => {
+        const next = value?.context?.source;
+        setSource(next === "brand-revision" || next === "project-look" || next === "suggested" ? next : "error");
+      })
+      .catch((error) => { if ((error as Error).name !== "AbortError") setSource("error"); });
+    return () => controller.abort();
+  }, [brandVisualAllowed, projectId]);
+
+  if (!brandVisualAllowed || !projectId || source === "brand-revision" || source === "error") return null;
+  if (source === "loading") {
+    return <div className="flex min-h-10 items-center gap-2 px-4 text-[11px]" style={{ color: color.textFaint }}><Loader2 size={13} className="animate-spin" /> กำลังตรวจแนวภาพของคลิป…</div>;
+  }
+  if (!tracked.current) {
+    tracked.current = true;
+    trackEvent("brand_profile_save_prompt_shown", {
+      path: "/video-editor",
+      properties: { projectId, source },
+    });
+  }
+  return <div className="mx-3 mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3" style={{ background: "rgba(56,189,248,.10)", border: "1px solid rgba(56,189,248,.28)" }}>
+    <div className="flex min-w-0 items-start gap-2.5"><BookmarkPlus size={17} color="#38BDF8" className="mt-0.5 shrink-0" /><div><p style={{ color: color.text, font: `600 12px ${font.heading}` }}>ชอบแนวภาพของคลิปนี้ไหม?</p><p className="mt-0.5" style={{ color: color.textSecondary, fontSize: 10.5 }}>บันทึกเป็นแบรนด์หลังเห็นผลงานจริง โปรเจกต์นี้จะ pin Revision ที่สร้างขึ้น</p></div></div>
+    <Link href={`/brands?new=1&projectId=${encodeURIComponent(projectId)}`} onClick={() => trackEvent("brand_profile_save_prompt_clicked", { path: "/video-editor", properties: { projectId, source } })} className="min-h-9 rounded-lg bg-[#38BDF8] px-3 py-2 text-[10.5px] font-bold text-[#151515]">บันทึกแนวนี้เป็นแบรนด์</Link>
+  </div>;
+}

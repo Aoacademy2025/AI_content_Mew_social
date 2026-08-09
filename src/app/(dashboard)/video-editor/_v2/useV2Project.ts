@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { fetchMe } from "@/lib/use-me";
+import { fetchMe, type MeData } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
@@ -49,6 +49,10 @@ import {
 import { fetchClientJson } from "@/lib/client-request-cache";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import {
+  normalizeSubtitleStylePresetConfig,
+  type SubtitleStylePresetConfig,
+} from "@/lib/editor-style-preset-contract";
+import {
   headlineHookDraftFragment,
   normalizeHeadlineHook,
   type HeadlineHookConfig,
@@ -63,7 +67,7 @@ function scopedProjectIdKey(accountId: string | null): string {
 }
 
 interface V2Draft {
-  projectTitle?: string;
+  projectTitle?: string; narrativeSourceKind?: V2NarrativeSourceKind;
   mode?: V2Mode; script?: string; clipUrl?: string; clipDurationSec?: number; brollSource?: V2BrollSource;
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string; omniVoiceId?: string;
   musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string;
@@ -71,6 +75,7 @@ interface V2Draft {
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   logoOverlay?: LogoOverlayConfig;
+  brandSubtitleDefault?: SubtitleStylePresetConfig;
   layerVisibility?: EditorLayerVisibility;
   headlineHook?: HeadlineHookConfig;
 }
@@ -374,6 +379,7 @@ async function loadAuthoritativeEditorProjectDraft(
  */
 
 export type V2Mode = "script" | "upload";
+export type V2NarrativeSourceKind = "ai-script" | "creator-script" | "upload-transcript";
 export type V2BrollSource = "automix" | "stock" | "kie-image" | "kie-video";
 export type V2VoiceEngine = TtsProvider;
 export type V2AvatarMode = "bookend" | "bookend-both" | "full";
@@ -472,6 +478,13 @@ export function useV2Project() {
   const [mode, setMode, setModeRaw] = useUserDraftState<V2Mode>(
     d.mode ?? "script", "mode", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
+  const [narrativeSourceKind, , setNarrativeSourceKindRaw] = useUserDraftState<V2NarrativeSourceKind>(
+    d.narrativeSourceKind ?? (d.mode === "upload" ? "upload-transcript" : "creator-script"),
+    "narrativeSourceKind",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
   const [script, setScript, setScriptRaw] = useUserDraftState(
     d.script ?? "", "script", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -511,6 +524,10 @@ export function useV2Project() {
   // `heroAiBeta` above, which stays beta-only forever; Task 5's disclosure UX
   // reads this one.
   const [heroAiImageEligible, setHeroAiImageEligible] = useState(false);
+  const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
+  const [brandVisualCohort, setBrandVisualCohort] = useState<NonNullable<MeData["brandVisualCohort"]>>("off");
+  const [brandVisualRolloutBucket, setBrandVisualRolloutBucket] = useState<number | null>(null);
+  const [starterAiImageAllowance, setStarterAiImageAllowance] = useState<MeData["starterAiImageAllowance"]>(null);
   const [isActiveTrial, setIsActiveTrial] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
@@ -585,6 +602,13 @@ export function useV2Project() {
   const [logoOverlay, setLogoOverlay, setLogoOverlayRaw] = useUserDraftState<LogoOverlayConfig | undefined>(
     d.logoOverlay, "logoOverlay", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
+  const [brandSubtitleDefault, setBrandSubtitleDefault, setBrandSubtitleDefaultRaw] = useUserDraftState<SubtitleStylePresetConfig | undefined>(
+    normalizeSubtitleStylePresetConfig(d.brandSubtitleDefault) ?? undefined,
+    "brandSubtitleDefault",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
   const [layerVisibility, setLayerVisibility, setLayerVisibilityRaw] = useUserDraftState<EditorLayerVisibility>(
     normalizeEditorLayerVisibility(d.layerVisibility),
     "layerVisibility",
@@ -618,12 +642,12 @@ export function useV2Project() {
 
   function buildDraft(): V2Draft {
     return {
-      mode, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
+      mode, narrativeSourceKind, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
       projectTitle,
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
       kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
-      logoOverlay, layerVisibility,
+      logoOverlay, brandSubtitleDefault, layerVisibility,
       ...headlineHookDraftFragment(headlineHook),
     };
   }
@@ -632,6 +656,7 @@ export function useV2Project() {
     draftRef.current = next;
     if (next.projectTitle !== undefined) setProjectTitleRaw(next.projectTitle || DEFAULT_PROJECT.projectTitle);
     if (next.mode) setModeRaw(next.mode);
+    if (next.narrativeSourceKind) setNarrativeSourceKindRaw(next.narrativeSourceKind);
     if (next.script !== undefined) setScriptRaw(next.script);
     if (next.clipUrl !== undefined) setClipUrlStateRaw(next.clipUrl);
     if (next.clipDurationSec !== undefined) {
@@ -659,6 +684,7 @@ export function useV2Project() {
     if (next.brollRegionPreference) setBrollRegionPreferenceRaw(next.brollRegionPreference);
     if (next.brollVisualStyle) setBrollVisualStyleRaw(next.brollVisualStyle);
     setLogoOverlayRaw(normalizeLogoOverlayConfig(next.logoOverlay) ?? undefined);
+    setBrandSubtitleDefaultRaw(normalizeSubtitleStylePresetConfig(next.brandSubtitleDefault) ?? undefined);
     setLayerVisibilityRaw(normalizeEditorLayerVisibility(next.layerVisibility));
     setHeadlineHookRaw(normalizeHeadlineHook(next.headlineHook) ?? undefined);
   }
@@ -719,7 +745,10 @@ export function useV2Project() {
   const omniVoiceAvailability = useOmniVoiceAvailability();
   const omniVoiceEnabled = omniVoiceAvailability === true;
   const canUploadOwnMedia = plan === "PRO" || plan === "BUSINESS";
-  const logoEligible = plan === "PRO" || plan === "BUSINESS";
+  // Brand Visual sells production capacity and profile count, not the ability
+  // to express the profile. Treatment Free accounts may therefore inherit and
+  // override their Brand Mark just like paid accounts.
+  const logoEligible = brandVisualAllowed || plan === "PRO" || plan === "BUSINESS";
 
   function clearProjectRecoveryData(clearProjectId: string): void {
     const storage = browserStorage();
@@ -1096,6 +1125,7 @@ export function useV2Project() {
     setBrollVisualStyleRaw(DEFAULT_PROJECT.brollVisualStyle);
     setMixPresetRaw(nextPreset);
     setLogoOverlayRaw(inherited);
+    setBrandSubtitleDefaultRaw(undefined);
     setHeadlineHookRaw(undefined);
     setSaveStatus("idle");
     return await createServerProject(nextDraft, {
@@ -1760,6 +1790,10 @@ export function useV2Project() {
       setInternalAiTester(internalTester);
       setHeroAiBeta(heroBeta);
       setHeroAiImageEligible(heroImageEligible);
+      setBrandVisualAllowed(m?.brandVisualAllowed === true);
+      setBrandVisualCohort(m?.brandVisualCohort ?? "off");
+      setBrandVisualRolloutBucket(typeof m?.brandVisualRolloutBucket === "number" ? m.brandVisualRolloutBucket : null);
+      setStarterAiImageAllowance(m?.starterAiImageAllowance ?? null);
       setIsActiveTrial(Number.isFinite(trialEndMs) && trialEndMs > Date.now());
       setPlan(typeof m?.plan === "string" ? m.plan : "FREE");
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
@@ -2015,7 +2049,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, layerVisibility, headlineHook, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -2060,7 +2094,7 @@ export function useV2Project() {
 
   return {
     projectTitle, setProjectTitle,
-    mode, setMode,
+    mode, setMode, narrativeSourceKind,
     script, setScript,
     clipUrl, setClipUrl, clipDurationSec, setClipDurationSec,
     brollSource, setBrollSource,
@@ -2083,10 +2117,11 @@ export function useV2Project() {
     brollRegionPreference, setBrollRegionPreference,
     brollVisualStyle, setBrollVisualStyle,
     logoOverlay, setLogoOverlay,
+    brandSubtitleDefault, setBrandSubtitleDefault,
     layerVisibility, setLayerVisibility,
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, isActiveTrial, isAdmin, isPaidManagedKie, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, brandVisualAllowed, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,

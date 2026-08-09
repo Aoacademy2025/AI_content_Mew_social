@@ -1,3 +1,5 @@
+import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+
 /**
  * Private beta access for GPU-backed features that are not ready for customers.
  *
@@ -83,23 +85,36 @@ export function isInternalAiBetaEnabledFor(
  * Public-launch eligibility for Hero AI Image — the ONE gate shared by all three
  * entry points (Hero-only b-roll mode, AutoMix "ai" slots, per-window regen).
  * The internal beta cohort (`isHeroAiBetaUser`) always passes, same as today.
- * Once `HERO_AI_IMAGE_PUBLIC=1` is set, any PRO/BUSINESS actor is admitted too.
+ * Brand Visual treatment accounts are admitted as an activation cohort even
+ * when they are Free; their eight-image Starter Allowance is the hard spend
+ * boundary. Outside that experiment, `HERO_AI_IMAGE_PUBLIC=1` retains the
+ * existing PRO/BUSINESS launch behavior.
  *
  * Active-trial accounts are intentionally included here: `grantTrial` (trial.ts)
- * sets `plan: "PRO"` for the trial period, so a trial user satisfies the same
- * `plan === "PRO"` check as a paying customer and needs no separate branch. This
- * is deliberate, not an oversight — a trial account's 0-credit starting balance
- * (topped up only by the one-time taste grant) is the real spend limiter, not
- * this gate. FREE always stays excluded, even if it somehow holds purchased
- * credits (credits alone never unlock a plan-gated feature).
+ * sets `plan: "PRO"` for the trial period. Starter settlement separately checks
+ * payment evidence, so an unconverted trial continues to consume the same
+ * signup-anchored allowance after reverting to Free and is never issued credits.
  *
- * Flag unset (or any value other than the literal string "1") → behavior is
- * byte-identical to the beta-only gate that shipped before public launch.
+ * Both public paths fail closed: the legacy public flag must equal "1", while
+ * the Brand Visual path must pass its own master flag and stable cohort policy.
  */
 export function isHeroAiImageEligible(
-  actor: { email?: string | null; role?: string | null; plan?: string | null; trialEndsAt?: Date | null } | null | undefined,
+  actor: {
+    id?: string;
+    email?: string | null;
+    role?: string | null;
+    plan?: string | null;
+    trialEndsAt?: Date | null;
+    createdAt?: Date;
+  } | null | undefined,
 ): boolean {
   if (isHeroAiBetaUser(actor)) return true;
+  if (actor?.id && actor.createdAt && decideBrandVisualAccess({
+    id: actor.id,
+    email: actor.email,
+    role: actor.role,
+    createdAt: actor.createdAt,
+  }).canUse) return true;
   if (process.env.HERO_AI_IMAGE_PUBLIC !== "1") return false;
   return actor?.plan === "PRO" || actor?.plan === "BUSINESS";
 }

@@ -164,10 +164,20 @@ async function main() {
   const { authorizeHeroVideoMint } = await import("../src/lib/hero-image-namespace");
 
   const attacker = await prisma.user.create({
-    data: { name: "Namespace Verify Attacker", email: "hero-namespace-attacker@example.invalid", plan: "PRO" },
+    data: {
+      name: "Namespace Verify Attacker",
+      email: "hero-namespace-attacker@example.invalid",
+      plan: "PRO",
+      subStatus: "active",
+    },
   });
   const victim = await prisma.user.create({
-    data: { name: "Namespace Verify Victim", email: "hero-namespace-victim@example.invalid", plan: "PRO" },
+    data: {
+      name: "Namespace Verify Victim",
+      email: "hero-namespace-victim@example.invalid",
+      plan: "PRO",
+      subStatus: "active",
+    },
   });
   const makeJob = async (userId: string, status: string) =>
     prisma.videoJob.create({ data: { userId, status, inputJson: "{}" } });
@@ -435,6 +445,7 @@ async function main() {
   const HERO_SEAM_CALLERS = new Set([
     "src/app/api/videos/fetch-stock/route.ts",          // gated by authorizeHeroVideoMint
     "src/app/api/videos/broll-window/generate/route.ts", // ownership + status + `broll-window:` namespace
+    "src/lib/brand-look-preview.server.ts",              // Brand access + owned draft/revision preview batches
     "src/lib/video-hero-image.server.ts",                // the seam's own definition
   ]);
   const seamCallers = new Set<string>();
@@ -443,8 +454,8 @@ async function main() {
     if (readFileSync(file, "utf8").includes("generateHeroImageForVideo(")) seamCallers.add(rel);
   }
   check(
-    "generateHeroImageForVideo is reachable only from the three known, gated files",
-    [...seamCallers].every((file) => HERO_SEAM_CALLERS.has(file)) && seamCallers.size === 3,
+    "generateHeroImageForVideo is reachable only from the four known, gated files",
+    [...seamCallers].every((file) => HERO_SEAM_CALLERS.has(file)) && seamCallers.size === 4,
     [...seamCallers].join(" | "),
   );
 

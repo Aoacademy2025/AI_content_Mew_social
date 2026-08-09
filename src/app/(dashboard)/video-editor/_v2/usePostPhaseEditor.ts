@@ -64,6 +64,7 @@ import {
   type BrollExportSource,
 } from "@/lib/broll-rerender";
 import { useEditorStylePresets } from "./useEditorStylePresets";
+import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 
 export type ExportState =
   | { phase: "idle" }
@@ -150,7 +151,16 @@ export type UsePostPhaseEditorOptions = {
    *  project mutation in the shell already gates on. Wired through so the style-preset
    *  "apply" toast never lies about a logo change that got silently dropped (M2). */
   canRunProjectOperation?: () => boolean;
+  initialSubtitleConfig?: SubtitleStylePresetConfig;
 };
+
+function subtitleConfigFromBrandDefault(
+  value: SubtitleStylePresetConfig | undefined,
+): V2SubConfig {
+  if (!value) return DEFAULT_V2_SUB;
+  const { cardLen: _cardLen, ...config } = value;
+  return config;
+}
 
 export function usePostPhaseEditor(
   job: V2JobState,
@@ -173,13 +183,14 @@ export function usePostPhaseEditor(
     onRetryProjectSave = ignoreProjectSaveRetry,
     surface = "desktop",
     canRunProjectOperation = alwaysReadyForProjectOperation,
+    initialSubtitleConfig,
   } = options;
   const preview = job.output?.preview ?? null;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
   const [captions, setCaptions] = useState<V2Caption[]>(() => preview?.captions ?? []);
   const [selected, setSelected] = useState(0);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
-  const [cfg, setCfg] = useState<V2SubConfig>(DEFAULT_V2_SUB);
+  const [cfg, setCfg] = useState<V2SubConfig>(() => subtitleConfigFromBrandDefault(initialSubtitleConfig));
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
   const logo = useLogoOverlayEditor({
     projectId,
@@ -193,7 +204,7 @@ export function usePostPhaseEditor(
   // ความยาวการ์ด (1 ประโยค / ≤4 / ≤3 / ≤2 / 1 คำ — semantics เดียวกับ v1) —
   // จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
   const originalCapsRef = useRef<V2Caption[]>(preview?.captions ?? []);
-  const [cardLen, setCardLen] = useState<V2CardLen>("sentence");
+  const [cardLen, setCardLen] = useState<V2CardLen>(initialSubtitleConfig?.cardLen ?? "sentence");
   // ปรับสี scope รายการ์ด
   const [scope, setScope] = useState<"all" | "card">("all");
   const [overrides, setOverrides] = useState<V2CardOverrides>({});
