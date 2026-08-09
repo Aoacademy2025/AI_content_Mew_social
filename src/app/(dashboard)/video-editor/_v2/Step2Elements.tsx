@@ -80,11 +80,12 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
   const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
   const displayMin = displaySec > 0 ? minutesFromSeconds(displaySec) : 0;
-  // Hero AI Image (Task 5, D8): the fresh-selection default (8 รูป, "กำหนดเอง") and the
+  // Hero AI Image (Task 5, D8): fresh selection defaults to 5 images on trial
+  // (fits the 10-credit taste) or 8 on paid accounts, plus the
   // "อัตโนมัติ" projected count — the SAME window-based estimate buildReceipt uses (an
   // all-AI preset over the same estimated duration), so this screen's numbers never
   // drift from what the Render Receipt discloses right before render.
-  const heroDefaultN = heroDefaultTargetClipCount(0);
+  const heroDefaultN = heroDefaultTargetClipCount(0, p.isActiveTrial);
   const heroAutoProjectedCount = useMemo(
     () => estimateAutoMixAiImageCount(displaySec, { video: 0, photo: 0, ai: 1 }),
     [displaySec],
@@ -213,7 +214,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     // control themselves — otherwise re-selecting Hero AI Image after
                     // switching away would clobber an explicit "อัตโนมัติ" (0) choice.
                     if (o.value === "kie-image" && !p.heroCountTouched) {
-                      p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount));
+                      p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount, p.isActiveTrial));
                     }
                   }}
                   className="relative flex flex-col items-start gap-2 text-left"
@@ -828,7 +829,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; durationSec: number }) {
   const heroImageUnlocked = p.heroAiImageEligible;
   const autoMixUnlocked = p.heroAiImageEligible;
-  const heroDefaultN = heroDefaultTargetClipCount(0);
+  const heroDefaultN = heroDefaultTargetClipCount(0, p.isActiveTrial);
   const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
     { value: "stock", title: "สต็อกฟรี", desc: "0 เครดิต AI · Pexels/Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
     {
@@ -850,11 +851,11 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
     if (value === "kie-image") {
       if (!heroImageUnlocked) return;
       p.setBrollSource("kie-image");
-      // Hero default = กำหนดเอง 8 รูป (Task 5 item 2) — a fresh (never-touched) selection
+      // Hero default = 5 trial / 8 paid (Task 5 item 2) — a fresh selection
       // lands on a concrete, budget-safe quote. Once the user has touched the count
       // control directly (incl. explicitly picking "อัตโนมัติ"), leave it alone — don't
       // clobber an explicit choice when they switch away and back (fast-follow fix).
-      if (!p.heroCountTouched) p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount));
+      if (!p.heroCountTouched) p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount, p.isActiveTrial));
       return;
     }
     if (!autoMixUnlocked) return;

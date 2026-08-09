@@ -147,6 +147,44 @@ async function main() {
   check("balance.granted === 1 after refund (restored to the granted bucket)", afterRefund.granted === 1);
   check("balance.purchased === 5 after refund (restored to the purchased bucket)", afterRefund.purchased === 5);
 
+  // ── 7. A pre-job credit rejection must be observable even though no durable
+  //      AiGenerationJob is created. This is the gap that made launch-day 402s
+  //      invisible in the job/error audit.
+  const shortUser = await prisma.user.create({
+    data: { name: "Hero Image Credit Reject Verify", email: "hero-image-reject-verify@example.invalid" },
+  });
+  await prisma.creditBalance.create({ data: { userId: shortUser.id, granted: 1, purchased: 0 } });
+  const rejected = await createReservedImageJob({
+    userId: shortUser.id,
+    model: "z-image-turbo",
+    inputPreview: "must not be copied to telemetry",
+    inputJson: "{}",
+    creditCost: offer.quote.credits,
+    quoteVersion: offer.quote.version,
+    costBudgetUsdMicros: offer.quote.costBudgetUsdMicros,
+    provider: offer.provider,
+    providerModel: offer.providerModel,
+    providerRoute: offer.providerRoute,
+    providerEndpoint: offer.providerEndpoint,
+    estimatedCostUsdMicros: offer.quote.estimatedProviderCostUsdMicros,
+    idempotencyKey: "video:verify-credit-reject:scene:0",
+    mediaExpiresAt: new Date(Date.now() + 60_000),
+  });
+  check("a 1-credit balance is rejected before job creation", !rejected.ok && rejected.balanceAfter === 1);
+  const rejectionEvent = await prisma.telemetryEvent.findFirst({
+    where: { userId: shortUser.id, name: "ai_image_credit_reservation_rejected" },
+  });
+  check("credit rejection writes server error telemetry despite having no job row", rejectionEvent !== null);
+  check(
+    "credit rejection telemetry carries required/available/model/surface without prompt text",
+    rejectionEvent?.status === "insufficient_credits"
+      && rejectionEvent.properties?.includes('"requiredCredits":2') === true
+      && rejectionEvent.properties?.includes('"availableCredits":1') === true
+      && rejectionEvent.properties?.includes('"model":"z-image-turbo"') === true
+      && rejectionEvent.properties?.includes('"surface":"video"') === true
+      && !rejectionEvent.properties?.includes("must not be copied"),
+  );
+
   await prisma.$disconnect();
 
   if (failures > 0) {

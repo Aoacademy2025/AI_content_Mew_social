@@ -71,6 +71,7 @@ export function buildFixedCountBrollWindows(
   captions: BrollWindowCaption[],
   requestedCount: number,
   audioEndMs?: number,
+  maxCount = 60,
 ): BrollWindow[] {
   const caps = (captions ?? [])
     .filter((caption) => (
@@ -80,8 +81,9 @@ export function buildFixedCountBrollWindows(
       && caption.endMs > caption.startMs
     ))
     .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+  const countCap = Number.isFinite(maxCount) ? Math.max(0, Math.floor(maxCount)) : 60;
   const count = Number.isFinite(requestedCount)
-    ? Math.max(0, Math.min(60, Math.floor(requestedCount)))
+    ? Math.max(0, Math.min(countCap, Math.floor(requestedCount)))
     : 0;
   if (caps.length === 0 || count === 0) return [];
 

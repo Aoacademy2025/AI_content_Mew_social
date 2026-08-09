@@ -101,12 +101,12 @@ export function disclosedAutoMixAiImageCount(
 
 /**
  * Hero AI Image default count (Task 5, D8) — PURE. When the user has not set a
- * custom count yet (0/unset), default to 8 (mode "กำหนดเอง") so the very first
- * disclosed number is a concrete, budget-safe quote instead of an open-ended
- * "อัตโนมัติ" estimate. Any positive count already chosen is left untouched.
+ * custom count yet (0/unset), paid accounts default to 8 while an active trial
+ * defaults to 5 — exactly the 10-credit trial taste at 2 credits/image. Any
+ * positive count already chosen is left untouched.
  */
-export function heroDefaultTargetClipCount(current: number): number {
-  return Number.isFinite(current) && current > 0 ? Math.floor(current) : 8;
+export function heroDefaultTargetClipCount(current: number, isActiveTrial = false): number {
+  return Number.isFinite(current) && current > 0 ? Math.floor(current) : isActiveTrial ? 5 : 8;
 }
 
 /**

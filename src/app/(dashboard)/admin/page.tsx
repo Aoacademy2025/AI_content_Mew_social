@@ -449,6 +449,7 @@ export default function AdminDashboardPage() {
 
   // Cost-rate editor state
   const [costRenderPerMinute, setCostRenderPerMinute] = useState("");
+  const [costImageHero1k, setCostImageHero1k] = useState("");
   const [costImageFlux1k, setCostImageFlux1k] = useState("");
   const [costImageGpt1k, setCostImageGpt1k] = useState("");
   const [costImageNano1k, setCostImageNano1k] = useState("");
@@ -491,6 +492,7 @@ export default function AdminDashboardPage() {
       if (d.server_gemini_key && typeof d.server_gemini_key === "object") setServerGeminiKeyStatus(d.server_gemini_key);
       // Cost rates
       if (d.cost_render_per_minute) setCostRenderPerMinute(d.cost_render_per_minute);
+      if (d.cost_image_hero_1k) setCostImageHero1k(d.cost_image_hero_1k);
       if (d.cost_image_flux_1k) setCostImageFlux1k(d.cost_image_flux_1k);
       if (d.cost_image_gpt_1k) setCostImageGpt1k(d.cost_image_gpt_1k);
       if (d.cost_image_nano_1k) setCostImageNano1k(d.cost_image_nano_1k);
@@ -510,6 +512,7 @@ export default function AdminDashboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cost_render_per_minute: costRenderPerMinute,
+          cost_image_hero_1k: costImageHero1k,
           cost_image_flux_1k: costImageFlux1k,
           cost_image_gpt_1k: costImageGpt1k,
           cost_image_nano_1k: costImageNano1k,
@@ -1877,6 +1880,19 @@ export default function AdminDashboardPage() {
                 value={costRenderPerMinute}
                 onChange={e => setCostRenderPerMinute(e.target.value)}
                 placeholder="0.014"
+                className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                Hero AI Image · Z-Image RunPod — ฿/รูป
+              </label>
+              <input
+                type="number"
+                step="0.0001"
+                value={costImageHero1k}
+                onChange={e => setCostImageHero1k(e.target.value)}
+                placeholder="0.20"
                 className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
               />
             </div>

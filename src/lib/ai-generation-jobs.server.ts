@@ -2,6 +2,7 @@ import "server-only";
 
 import type { AiGenerationAttempt, AiGenerationJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   heroVoiceResultFromJob,
   type HeroVoiceGenerationResult,
@@ -98,7 +99,7 @@ export async function createReservedImageJob(input: {
   if (input.estimatedCostUsdMicros > input.costBudgetUsdMicros) {
     throw new Error("Image provider route exceeds the quoted COGS budget");
   }
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const existing = await tx.aiGenerationJob.findFirst({
       where: { userId: input.userId, idempotencyKey: input.idempotencyKey },
     });
@@ -113,7 +114,7 @@ export async function createReservedImageJob(input: {
         throw new Error("Image reservation key is already claimed by a non-image job");
       }
       const balance = await tx.creditBalance.findUnique({ where: { userId: input.userId } });
-      return { ok: true, created: false, job: existing, balanceAfter: (balance?.granted ?? 0) + (balance?.purchased ?? 0) };
+      return { ok: true as const, created: false, job: existing, balanceAfter: (balance?.granted ?? 0) + (balance?.purchased ?? 0) };
     }
 
     const balance = await tx.creditBalance.upsert({
@@ -184,6 +185,38 @@ export async function createReservedImageJob(input: {
     });
     return { ok: true as const, created: true, job, balanceAfter };
   });
+
+  // A rejected reservation creates no AiGenerationJob by design, so without a
+  // separate event it is invisible to launch/error audits. Keep the event free
+  // of prompts or provider credentials and never let telemetry failure affect
+  // the user's credit decision.
+  if (!result.ok) {
+    const surface = input.idempotencyKey.startsWith("video:")
+      ? "video"
+      : input.idempotencyKey.startsWith("studio:")
+        ? "studio"
+        : "other";
+    await recordTelemetryEvent(input.userId, {
+      name: "ai_image_credit_reservation_rejected",
+      category: "error",
+      source: "server",
+      step: "credit_reservation",
+      status: "insufficient_credits",
+      value: input.creditCost,
+      properties: {
+        requiredCredits: input.creditCost,
+        availableCredits: result.balanceAfter,
+        model: input.model,
+        provider: input.provider,
+        providerRoute: input.providerRoute,
+        surface,
+      },
+    }).catch((error) => {
+      console.error("[ai-image] failed to record credit reservation rejection telemetry:", error);
+    });
+  }
+
+  return result;
 }
 
 export async function latestImageGenerationAttempt(

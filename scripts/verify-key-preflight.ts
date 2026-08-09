@@ -74,6 +74,26 @@ async function main() {
     assert.equal(fetchCallCount, 1, "invalid_api_key is a free, definitive signal — must not fire the paid TTS call");
   });
 
+  await check("definitive bad key returned as HTTP 400 -> invalid WITHOUT the TTS call (1 fetch)", async () => {
+    mockFetch(async () => jsonResponse(400, {
+      detail: {
+        status: "invalid_api_key",
+        code: "api_key_id_used_as_api_key",
+        message: "This API key ID cannot be used as an API key",
+      },
+    }));
+    const r = await testElevenLabsKey("k");
+    assert.equal(r.verdict, "invalid");
+    assert.equal(fetchCallCount, 1, "a definitive HTTP 400 auth body must not trigger a paid TTS probe");
+  });
+
+  await check("ordinary HTTP 400 without an auth marker -> unknown (fail-open)", async () => {
+    mockFetch(async () => jsonResponse(400, { detail: "language_code is not supported" }));
+    const r = await testElevenLabsKey("k");
+    assert.equal(r.verdict, "unknown");
+    assert.equal(fetchCallCount, 1);
+  });
+
   await check("ambiguous 401 (not missing_permissions) -> escalates to the real TTS call, probe-401 -> invalid (2 fetches)", async () => {
     let call = 0;
     mockFetch(async () => {
@@ -132,6 +152,15 @@ async function main() {
     mockFetch(async () => jsonResponse(401, { detail: { status: "invalid_api_key", message: "Invalid API key" } }));
     const r = await testElevenLabsKey("k", { mode: "preflight" });
     assert.equal(r.verdict, "invalid");
+    assert.equal(fetchCallCount, 1);
+  });
+
+  await check("HTTP 400 invalid_api_key -> preflight BLOCK, 1 fetch", async () => {
+    mockFetch(async () => jsonResponse(400, {
+      detail: { status: "invalid_api_key", code: "api_key_id_used_as_api_key" },
+    }));
+    const block = await preflightElevenLabs("k");
+    assert.equal(block?.key, "elevenlabs");
     assert.equal(fetchCallCount, 1);
   });
 

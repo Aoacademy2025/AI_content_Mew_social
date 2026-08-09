@@ -4,12 +4,15 @@
  * Must FAIL before src/lib/provider-errors.ts exists, PASS after.
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   providerError,
   isProviderError,
   isRetryable,
   toUserMessage,
   classifyHttpStatus,
+  classifyHttpResponse,
+  shouldStopProviderFallback,
   httpStatusForCode,
   toErrorResponse,
   type ProviderErrorCode,
@@ -25,6 +28,32 @@ assert.equal(classifyHttpStatus(502), "transient");
 assert.equal(classifyHttpStatus(503), "transient");
 assert.equal(classifyHttpStatus(400), "fatal");
 assert.equal(classifyHttpStatus(404), "fatal");
+
+// ElevenLabs can return a definitive authentication failure as HTTP 400
+// (`api_key_id_used_as_api_key`). The response body must override the generic
+// status mapping so callers surface the Settings recovery instead of retrying.
+const elevenInvalid400 = JSON.stringify({
+  detail: {
+    status: "invalid_api_key",
+    code: "api_key_id_used_as_api_key",
+    message: "This API key ID cannot be used as an API key",
+  },
+});
+assert.equal(classifyHttpResponse(400, elevenInvalid400), "invalid_key");
+assert.equal(shouldStopProviderFallback(400, elevenInvalid400), true);
+assert.equal(classifyHttpResponse(400, '{"detail":"language_code is not supported"}'), "fatal");
+assert.equal(shouldStopProviderFallback(400, '{"detail":"language_code is not supported"}'), false);
+assert.equal(classifyHttpResponse(400, '{"detail":{"status":"quota_exceeded"}}'), "quota");
+assert.equal(shouldStopProviderFallback(400, '{"detail":{"status":"quota_exceeded"}}'), true);
+const ttsRoute = readFileSync("src/app/api/videos/tts/route.ts", "utf8");
+assert.ok(
+  ttsRoute.includes("shouldStopProviderFallback(res.status, lastErrBody)"),
+  "ElevenLabs variant loop uses the body-aware terminal-failure helper",
+);
+assert.ok(
+  (ttsRoute.match(/classifyHttpResponse\(r\.status, r\.errBody\)/g) ?? []).length === 2,
+  "preview and full-script TTS responses both use body-aware classification",
+);
 
 // ── HTTP statuses OUR routes return per code (§8: 401/402/429/503/500) ──
 assert.equal(httpStatusForCode("invalid_key"), 401);

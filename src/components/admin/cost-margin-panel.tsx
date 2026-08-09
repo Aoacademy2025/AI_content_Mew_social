@@ -63,7 +63,7 @@ interface CashByType {
 
 interface UsageMetrics {
   managedMinutes: number;
-  images: { flux1k: number; gpt1k: number; nano1k: number; gpt2k: number; nano2k: number };
+  images: { hero1k: number; flux1k: number; gpt1k: number; nano1k: number; gpt2k: number; nano2k: number };
   creditsSpent: number;
   creditsGranted: number;
   rendersWeb: number;

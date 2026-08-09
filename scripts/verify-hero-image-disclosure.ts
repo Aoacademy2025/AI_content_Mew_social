@@ -35,6 +35,8 @@ check("default: negative (defensive) → 8", heroDefaultTargetClipCount(-1) === 
 check("default: NaN (defensive) → 8", heroDefaultTargetClipCount(NaN) === 8);
 check("default: existing custom count (5) is left untouched", heroDefaultTargetClipCount(5) === 5);
 check("default: floors a fractional existing count", heroDefaultTargetClipCount(5.9) === 5);
+check("trial taste: unset count defaults to 5 (10 credits / 2 per image)", heroDefaultTargetClipCount(0, true) === 5);
+check("trial taste: an existing custom count is never overwritten", heroDefaultTargetClipCount(3, true) === 3);
 
 // ── 2. heroHoldLengthSec — PURE ──────────────────────────────────────────────
 check("hold: 60s / 8 รูป → 8 วิ", heroHoldLengthSec(60, 8) === 8, String(heroHoldLengthSec(60, 8)));
@@ -97,19 +99,19 @@ check("locked cards use the pinned อัปเกรด badge + PRO/BUSINESS to
   step2.includes('const HERO_UPGRADE_BADGE = "อัปเกรด"')
     && step2.includes('const HERO_UPGRADE_TITLE = "Hero AI Image ใช้ได้กับแผน PRO/BUSINESS"'));
 
-check("selecting Hero AI Image defaults an unset count to 8 via the shared helper",
-  /if \(value === "kie-image"\) \{[\s\S]{0,500}heroDefaultTargetClipCount\(p\.targetClipCount\)/.test(step2));
+check("selecting Hero AI Image uses the shared trial-aware default helper",
+  /if \(value === "kie-image"\) \{[\s\S]{0,500}heroDefaultTargetClipCount\(p\.targetClipCount, p\.isActiveTrial\)/.test(step2));
 check("the admin Hero AI Image card applies the same default on selection",
-  /if \(o\.value === "kie-image" && !p\.heroCountTouched\) \{[\s\S]{0,150}heroDefaultTargetClipCount\(p\.targetClipCount\)/.test(step2));
+  /if \(o\.value === "kie-image" && !p\.heroCountTouched\) \{[\s\S]{0,180}heroDefaultTargetClipCount\(p\.targetClipCount, p\.isActiveTrial\)/.test(step2));
 // Fast-follow fix: the default-8 must NOT re-fire once the user has touched the count
 // control themselves (would otherwise clobber an explicit "อัตโนมัติ" choice on re-select).
 // Pin the guard at BOTH call sites — customer selectSource() and the admin card onClick.
-check("customer selectSource() guards the default-8 with !p.heroCountTouched",
-  /if \(!p\.heroCountTouched\) p\.setTargetClipCount\(heroDefaultTargetClipCount\(p\.targetClipCount\)\)/.test(step2));
-check("admin card onClick guards the default-8 with !p.heroCountTouched",
+check("customer selectSource() guards the trial-aware default with !p.heroCountTouched",
+  /if \(!p\.heroCountTouched\) p\.setTargetClipCount\(heroDefaultTargetClipCount\(p\.targetClipCount, p\.isActiveTrial\)\)/.test(step2));
+check("admin card onClick guards the trial-aware default with !p.heroCountTouched",
   step2.includes('if (o.value === "kie-image" && !p.heroCountTouched) {'));
-check("the programmatic default-8 calls never mark heroCountTouched themselves (must stay idempotent on re-selection)",
-  !/heroDefaultTargetClipCount\(p\.targetClipCount\)\)[\s\S]{0,40}p\.setHeroCountTouched/.test(step2));
+check("programmatic default calls never mark heroCountTouched themselves (must stay idempotent on re-selection)",
+  !/heroDefaultTargetClipCount\(p\.targetClipCount, p\.isActiveTrial\)\)[\s\S]{0,40}p\.setHeroCountTouched/.test(step2));
 check("the count Segmented control marks heroCountTouched on any direct user interaction (incl. picking อัตโนมัติ)",
   /onChange=\{\(v\) => \{[\s\S]{0,400}p\.setHeroCountTouched\(true\)[\s\S]{0,150}p\.setTargetClipCount\(v === "auto"/.test(step2));
 check("the custom-count number input marks heroCountTouched on direct user input",

@@ -511,6 +511,7 @@ export function useV2Project() {
   // `heroAiBeta` above, which stays beta-only forever; Task 5's disclosure UX
   // reads this one.
   const [heroAiImageEligible, setHeroAiImageEligible] = useState(false);
+  const [isActiveTrial, setIsActiveTrial] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
   const [plan, setPlan] = useState<string | null>(null);
@@ -1754,10 +1755,12 @@ export function useV2Project() {
       const internalTester = m?.internalAiTester === true;
       const heroBeta = m?.heroAiBeta === true;
       const heroImageEligible = m?.heroAiImageEligible === true;
+      const trialEndMs = typeof m?.trialEndsAt === "string" ? Date.parse(m.trialEndsAt) : Number.NaN;
       const internalAdmin = admin && internalTester;
       setInternalAiTester(internalTester);
       setHeroAiBeta(heroBeta);
       setHeroAiImageEligible(heroImageEligible);
+      setIsActiveTrial(Number.isFinite(trialEndMs) && trialEndMs > Date.now());
       setPlan(typeof m?.plan === "string" ? m.plan : "FREE");
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
       // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
@@ -2083,7 +2086,7 @@ export function useV2Project() {
     layerVisibility, setLayerVisibility,
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, isAdmin, isPaidManagedKie, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, isActiveTrial, isAdmin, isPaidManagedKie, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,

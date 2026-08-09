@@ -3,9 +3,11 @@ import {
   planCutaway,
   planCutawayRecomposite,
   buildEnableExpr,
+  manualCutawayWindowCount,
   reconstructCutawayPersonRanges,
   resolveCutawayPersonRanges,
 } from "../src/lib/cutaway-plan";
+import { readFileSync } from "node:fs";
 import { assignBrollWindows } from "../src/lib/broll-coverage";
 import { buildBrollWindows, buildFixedCountBrollWindows } from "../src/lib/broll-windows";
 
@@ -53,6 +55,27 @@ assert(
   "enable expr joins ranges with +",
 );
 assert(buildEnableExpr([]) === "", "empty ranges => empty expr");
+
+// A manual upload count is a customer-facing count of VISIBLE B-roll pieces.
+// planCutaway reserves every even window for the uploaded presenter, so the
+// fixed-count builder needs two internal windows per requested B-roll piece.
+assert(manualCutawayWindowCount(3) === 6, "manual upload target 3 => 6 alternating internal windows");
+assert(manualCutawayWindowCount(60) === 120, "manual upload target caps at 60 visible pieces => 120 windows");
+assert(manualCutawayWindowCount(0) === 0, "manual upload target 0 keeps automatic cadence");
+{
+  const captions = Array.from({ length: 12 }, (_, i) => ({
+    startMs: i * 1000,
+    endMs: (i + 1) * 1000,
+    text: `ช่วง ${i + 1}`,
+  }));
+  const windows = buildFixedCountBrollWindows(captions, manualCutawayWindowCount(3), 12000, 120);
+  assert(planCutaway(windows).broll.length === 3, "manual upload target 3 produces exactly 3 visible B-roll pieces");
+}
+const orchestratorSource = readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
+assert(
+  orchestratorSource.includes("manualCutawayWindowCount(input.targetClipCount)"),
+  "upload orchestrator converts the visible target through the shared helper",
+);
 
 // 7) small-window behavior is intentional (product ruling): short clips get fewer cutaways
 {
@@ -198,7 +221,7 @@ const legacyBase = reconstructCutawayPersonRanges({
   if (expectedFixed.length > 0) expectedFixed[0] = { ...expectedFixed[0], start: 0 };
   assert(
     JSON.stringify(fixed) === JSON.stringify(expectedFixed) && fixed.length > 0,
-    "legacy reconstruct === creation formula (buildFixedCountBrollWindows path)",
+    "legacy reconstruct preserves the pre-fix creation formula (buildFixedCountBrollWindows path)",
   );
   assert(
     JSON.stringify(fixed) !== JSON.stringify(legacyBase),

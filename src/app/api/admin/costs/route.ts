@@ -10,6 +10,13 @@ import {
 } from "@/lib/cost-rates";
 import { getRevenueCohorts } from "@/lib/revenue-cohorts";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
+import {
+  aiImageCostBucket,
+  aiImageJobIdFromAction,
+  aiImageLedgerActionWhere,
+  emptyAiImageCounts,
+  type AiImageCounts,
+} from "@/lib/ai-image-ledger-report";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -20,21 +27,6 @@ const PACK_CREDIT_TO_BAHT: Record<number, number> = {
   1150: 999,
 };
 
-// AI-image spend delta → image model bucket.
-// MUST stay in sync with CREDIT_COST and costKeyForKieModel() in src/lib/credit-costs.ts
-// (which maps kie model → cost-key → credit delta). Reachable non-admin-paid deltas
-// under managed-kie: 2 (flux-1k), 3 (gpt-1k), 4 (nano-1k). 5/6 reserved (no live model
-// maps to them yet — costKeyForKieModel returns null for every other kie model, so
-// those deltas are unreachable on the managed-kie money path today).
-function imageModelBucket(absDelta: number): "flux1k" | "gpt1k" | "nano1k" | "gpt2k" | "nano2k" | null {
-  if (absDelta === 2) return "flux1k";
-  if (absDelta === 3) return "gpt1k";
-  if (absDelta === 4) return "nano1k";
-  if (absDelta === 5) return "gpt2k";
-  if (absDelta === 6) return "nano2k";
-  return null;
-}
-
 type CogsRates = Awaited<ReturnType<typeof getCostRates>>;
 
 // Net variable COGS (฿) from raw rows — TTS minutes + AI-image spends, netting image refunds.
@@ -43,15 +35,17 @@ type CogsRates = Awaited<ReturnType<typeof getCostRates>>;
 // monthly MRR with 1 day of COGS and read misleadingly profitable).
 function netCogs(
   clips: Array<{ chargedMinutes: number | null }>,
-  spendRows: Array<{ delta: number }>,
+  spendRows: Array<{ delta: number; action: string | null }>,
   refundRows: Array<{ delta: number }>,
   rates: CogsRates,
+  jobModels: ReadonlyMap<string, string>,
 ) {
   const managedMinutes = clips.reduce((s, r) => s + (r.chargedMinutes ?? 0), 0);
-  const imageCounts = { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+  const imageCounts = emptyAiImageCounts();
   let grossImageSpend = 0;
   for (const r of spendRows) {
-    const bucket = imageModelBucket(Math.abs(r.delta));
+    const jobId = aiImageJobIdFromAction(r.action);
+    const bucket = aiImageCostBucket({ model: jobId ? jobModels.get(jobId) : null, delta: r.delta });
     if (!bucket) continue;
     imageCounts[bucket]++;
     grossImageSpend += Math.abs(r.delta);
@@ -124,8 +118,8 @@ export async function GET(req: Request) {
 
       // AI-image spends in window
       prisma.creditLedger.findMany({
-        where: { kind: "spend", action: "ai-image", createdAt: { gte: from } },
-        select: { userId: true, delta: true, createdAt: true },
+        where: { kind: "spend", ...aiImageLedgerActionWhere("spend"), createdAt: { gte: from } },
+        select: { userId: true, delta: true, action: true, createdAt: true },
       }),
 
       // Credit-pack purchases in window (kind="purchase")
@@ -166,7 +160,7 @@ export async function GET(req: Request) {
       // (kind="refund", action="ai-image-refund"); the original spend row remains.
       // We net these out so image COGS/creditsSpent are not upward-biased.
       prisma.creditLedger.findMany({
-        where: { kind: "refund", action: "ai-image-refund", createdAt: { gte: from } },
+        where: { kind: "refund", ...aiImageLedgerActionWhere("refund"), createdAt: { gte: from } },
         select: { delta: true },
       }),
 
@@ -176,15 +170,30 @@ export async function GET(req: Request) {
         select: { chargedMinutes: true },
       }),
       prisma.creditLedger.findMany({
-        where: { kind: "spend", action: "ai-image", createdAt: { gte: monthFrom } },
-        select: { delta: true },
+        where: { kind: "spend", ...aiImageLedgerActionWhere("spend"), createdAt: { gte: monthFrom } },
+        select: { delta: true, action: true },
       }),
       prisma.creditLedger.findMany({
-        where: { kind: "refund", action: "ai-image-refund", createdAt: { gte: monthFrom } },
+        where: { kind: "refund", ...aiImageLedgerActionWhere("refund"), createdAt: { gte: monthFrom } },
         select: { delta: true },
       }),
       getRunpodImageCostSnapshot({ windowDays: Math.min(days, 30) }).catch(() => null),
     ]);
+
+    // Durable ledger actions carry the AiGenerationJob id. Join once so two-credit
+    // Z-Image rows are costed as Hero/RunPod instead of being mislabeled as legacy Flux.
+    const imageJobIds = Array.from(new Set(
+      [...imageSpendRows, ...imageSpendMonth]
+        .map((row) => aiImageJobIdFromAction(row.action))
+        .filter((jobId): jobId is string => Boolean(jobId)),
+    ));
+    const imageJobs = imageJobIds.length > 0
+      ? await prisma.aiGenerationJob.findMany({
+          where: { id: { in: imageJobIds }, kind: "image" },
+          select: { id: true, model: true },
+        })
+      : [];
+    const imageJobModels = new Map(imageJobs.map((job) => [job.id, job.model]));
 
     // ── Managed minutes — sum ChargedClip.chargedMinutes (minutes billed per video) ──
     let managedMinutes = 0;
@@ -198,14 +207,15 @@ export async function GET(req: Request) {
     }
 
     // ── AI-image counts ───────────────────────────────────────────────────────
-    const imageCounts = { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
-    const perUserImages = new Map<string, { flux1k: number; gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
+    const imageCounts = emptyAiImageCounts();
+    const perUserImages = new Map<string, AiImageCounts>();
     for (const row of imageSpendRows) {
-      const bucket = imageModelBucket(Math.abs(row.delta));
+      const jobId = aiImageJobIdFromAction(row.action);
+      const bucket = aiImageCostBucket({ model: jobId ? imageJobModels.get(jobId) : null, delta: row.delta });
       if (!bucket) continue;
       imageCounts[bucket]++;
       if (row.userId) {
-        const u = perUserImages.get(row.userId) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+        const u = perUserImages.get(row.userId) ?? emptyAiImageCounts();
         u[bucket]++;
         perUserImages.set(row.userId, u);
       }
@@ -213,13 +223,14 @@ export async function GET(req: Request) {
 
     // ── Credit-pack cash ──────────────────────────────────────────────────────
     let packCash = 0;
-    // FIX 2: creditsSpent counts only BUCKETED ai-image deltas {3,4,5,6} so it
+    // creditsSpent counts only attributable AI-image deltas so it
     // matches imageCounts (non-bucketed rows are unknown spend not attributable
     // to a model and should not inflate the gross).
     let grossImageSpend = 0;
     for (const row of imageSpendRows) {
       const absDelta = Math.abs(row.delta);
-      if (imageModelBucket(absDelta) !== null) {
+      const jobId = aiImageJobIdFromAction(row.action);
+      if (aiImageCostBucket({ model: jobId ? imageJobModels.get(jobId) : null, delta: row.delta }) !== null) {
         grossImageSpend += absDelta;
       }
     }
@@ -254,7 +265,7 @@ export async function GET(req: Request) {
     // COGS/margin/profit are a MONTHLY P&L (30-day COGS + full monthly infra vs monthly MRR),
     // independent of the health-window selector — otherwise a 24h window shows ~1 day of COGS
     // against a full month of MRR and profit reads far too rosy.
-    const cogs = netCogs(chargedClipsMonth, imageSpendMonth, imageRefundMonth, rates);
+    const cogs = netCogs(chargedClipsMonth, imageSpendMonth, imageRefundMonth, rates, imageJobModels);
     const margins = computeMargins({
       revenue: mrr,
       variableCogs: cogs.total,
@@ -276,9 +287,9 @@ export async function GET(req: Request) {
     const topUsers = Array.from(allUserIds)
       .map((userId) => {
         const mins = perUserMinutes.get(userId) ?? 0;
-        const imgs = perUserImages.get(userId) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+        const imgs = perUserImages.get(userId) ?? emptyAiImageCounts();
         const userCogs = computeCogs({ managedMinutes: mins, imageCounts: imgs, rates });
-        const images = imgs.flux1k + imgs.gpt1k + imgs.nano1k + imgs.gpt2k + imgs.nano2k;
+        const images = Object.values(imgs).reduce((sum, count) => sum + count, 0);
         return { userId, cogs: userCogs.total, minutes: mins, images };
       })
       .sort((a, b) => b.cogs - a.cogs)
@@ -293,12 +304,13 @@ export async function GET(req: Request) {
       dailyMinutes.set(label, (dailyMinutes.get(label) ?? 0) + mins);
     }
 
-    const dailyImages = new Map<string, { flux1k: number; gpt1k: number; nano1k: number; gpt2k: number; nano2k: number }>();
+    const dailyImages = new Map<string, AiImageCounts>();
     for (const row of imageSpendRows) {
-      const bucket = imageModelBucket(Math.abs(row.delta));
+      const jobId = aiImageJobIdFromAction(row.action);
+      const bucket = aiImageCostBucket({ model: jobId ? imageJobModels.get(jobId) : null, delta: row.delta });
       if (!bucket) continue;
       const label = dateLabel(row.createdAt);
-      const d = dailyImages.get(label) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+      const d = dailyImages.get(label) ?? emptyAiImageCounts();
       d[bucket]++;
       dailyImages.set(label, d);
     }
@@ -311,7 +323,7 @@ export async function GET(req: Request) {
       const d = new Date(from.getTime() + i * DAY_MS);
       const label = dateLabel(d);
       const dayMins = dailyMinutes.get(label) ?? 0;
-      const dayImgs = dailyImages.get(label) ?? { flux1k: 0, gpt1k: 0, nano1k: 0, gpt2k: 0, nano2k: 0 };
+      const dayImgs = dailyImages.get(label) ?? emptyAiImageCounts();
       const dayCogs = computeCogs({ managedMinutes: dayMins, imageCounts: dayImgs, rates });
       trend.push({ date: label, revenue: dailyMrr, cogs: dayCogs.total });
     }

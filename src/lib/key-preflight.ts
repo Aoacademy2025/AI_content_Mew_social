@@ -6,7 +6,8 @@
  *
  * Same HTTP checks, two different needs:
  *  - Settings wants a friendly ok/message pair, shown regardless of the reason for failure.
- *  - The job-submit preflight wants FAIL-OPEN: only a DEFINITIVE 401/403 blocks job
+ *  - The job-submit preflight wants FAIL-OPEN: only a DEFINITIVE authentication
+ *    response (including ElevenLabs' HTTP 400 invalid-key body) blocks job
  *    submission — a network error, timeout, or a still-ambiguous result after probing
  *    must NOT block a legitimate job (a flaky provider check must never be worse than
  *    not checking at all). `verdict` carries that distinction; `ok`/`message` behave
@@ -17,6 +18,8 @@
  *    text_to_speech itself — and the probe only ever costs the user anything when it
  *    SUCCEEDS, at which point the key was fine anyway.
  */
+
+import { responseHasInvalidKeyMarker } from "./provider-errors";
 
 export type KeyVerdict = "valid" | "invalid" | "unknown";
 
@@ -83,12 +86,12 @@ export async function testElevenLabsKey(key: string, opts: ElevenLabsCheckOption
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (res.ok) return { ok: true, verdict: "valid", message: "✓ ElevenLabs key ใช้งานได้" };
-    if (res.status !== 401) return { ok: false, verdict: "unknown", message: `Error ${res.status}` };
     const body = (await res.text().catch(() => "")).toLowerCase();
     // Definitive + free (no extra call, both modes): the key itself doesn't exist / was revoked.
-    if (body.includes("invalid_api_key")) {
+    if (responseHasInvalidKeyMarker(body)) {
       return { ok: false, verdict: "invalid", message: "Key ไม่ถูกต้องหรือหมดอายุ" };
     }
+    if (res.status !== 401) return { ok: false, verdict: "unknown", message: `Error ${res.status}` };
     // Scoped key missing user_read (needed by /v1/user, not by us). Settings trusts the
     // historical shortcut and stops here; preflight falls through to the real probe —
     // this is exactly the ambiguity that let the 10 real ElevenLabs failures through.
@@ -105,7 +108,8 @@ export async function testElevenLabsKey(key: string, opts: ElevenLabsCheckOption
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (ttsRes.ok) return { ok: true, verdict: "valid", message: "✓ ElevenLabs key ใช้งานได้ (ยืนยันด้วยการสร้างเสียง)" };
-    if (ttsRes.status === 401 || ttsRes.status === 403) {
+    const ttsBody = await ttsRes.text().catch(() => "");
+    if (ttsRes.status === 401 || ttsRes.status === 403 || responseHasInvalidKeyMarker(ttsBody)) {
       return { ok: false, verdict: "invalid", message: "Key ไม่มีสิทธิ์สร้างเสียง (text_to_speech) — ตรวจสอบสิทธิ์ key ที่ elevenlabs.io" };
     }
     return { ok: false, verdict: "unknown", message: `Error ${ttsRes.status}` };
@@ -179,7 +183,7 @@ export interface PreflightBlock {
  * (the probe only ever costs the user anything when it succeeds, at which point the key
  * was fine and would have spent that same TTS call for real moments later anyway).
  * Final behavior — see the "Fix round" table in the Task 7 report for the full matrix:
- *   - `invalid_api_key` on /v1/user → BLOCK (free, one call).
+ *   - `invalid_api_key` on /v1/user (HTTP 400 or 401) → BLOCK (free, one call).
  *   - `missing_permissions` or any other ambiguous 401 on /v1/user → probe the real TTS
  *     endpoint (one more call, ≤3s): probe 401/403 → BLOCK (definitively missing
  *     text_to_speech); probe 200 → PASS; probe network-error/timeout/other → PASS

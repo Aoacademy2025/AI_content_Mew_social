@@ -59,6 +59,7 @@ import {
 } from "@/lib/broll-windows";
 import {
   buildCutawayBackgroundTimeline,
+  manualCutawayWindowCount,
   planCutaway,
   planCutawayRecomposite,
   reconstructCutawayPersonRanges,
@@ -1027,14 +1028,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         : Math.max(...upCaps.map((c) => c.endMs));
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-      const upManualBrollCount = input.targetClipCount && input.targetClipCount > 0
-        ? Math.min(60, Math.floor(input.targetClipCount))
-        : 0;
-      const upWindows = upManualBrollCount > 0
+      const upManualWindowCount = manualCutawayWindowCount(input.targetClipCount);
+      const upWindows = upManualWindowCount > 0
         ? buildFixedCountBrollWindows(
             upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
-            upManualBrollCount,
+            upManualWindowCount,
             upDurMs,
+            120,
           )
         : buildBrollWindows(
             upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),

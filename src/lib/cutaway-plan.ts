@@ -28,6 +28,20 @@ export type CutawayBackgroundAsset = {
 const rangeKey = (range: CutawayRange) => `${range.startMs}:${range.endMs}`;
 
 /**
+ * `targetClipCount` in upload mode is a count of visible B-roll pieces, not a
+ * count of the alternating presenter+B-roll timeline windows. The cutaway plan
+ * starts on the presenter and uses every odd window for B-roll, so each visible
+ * piece needs two internal windows. Public input remains capped at 60 pieces.
+ */
+export function manualCutawayWindowCount(targetClipCount: unknown): number {
+  const raw = Number(targetClipCount);
+  const visibleCount = Number.isFinite(raw) && raw > 0
+    ? Math.min(60, Math.floor(raw))
+    : 0;
+  return visibleCount * 2;
+}
+
+/**
  * window 0 (hook) = person; then every odd-index window is b-roll. Guarantees:
  * hook is always the person, no two consecutive b-roll windows. B-roll ratio is
  * ~40–50% for clips with >= 4 windows; short clips intentionally get fewer cutaways
@@ -184,7 +198,10 @@ export function reconstructCutawayPersonRanges(input: CutawayReconstructInput): 
     ? Math.round(rawDurationMs)
     : undefined;
 
-  // Mirrors `upManualBrollCount` in the orchestrator's upload path.
+  // Legacy previews reached this fallback before the visible-count fix and used
+  // targetClipCount directly as the TOTAL window count. Preserve that old formula
+  // here so re-rendering an existing project does not change its layout. New jobs
+  // persist `cutawayPersonRanges` and never need this reconstruction path.
   const rawCount = Number(input?.targetClipCount);
   const manualCount = Number.isFinite(rawCount) && rawCount > 0
     ? Math.min(60, Math.floor(rawCount))
