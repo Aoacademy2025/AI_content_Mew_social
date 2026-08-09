@@ -113,6 +113,10 @@ import {
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { reusableVisualBeatAssetsForVideoJob } from "@/lib/content-preflight.server";
+import {
+  materializeRetainedBrandImage,
+  retainedBrandImageAssetMeta,
+} from "@/lib/retained-brand-image.server";
 import path from "path";
 import fs from "fs";
 
@@ -1080,7 +1084,7 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { email: true, pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true, trialEndsAt: true },
+    select: { id: true, createdAt: true, email: true, pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true, trialEndsAt: true },
   });
 
   // ── Managed-kie gate + key resolution (flag MANAGED_KIE) ──────────────────
@@ -2092,18 +2096,12 @@ export async function POST(req: Request) {
         const outPath = path.join(rendersDir, outFile);
         try {
           if (download) {
-            if (asset.outputUrl.startsWith("/api/renders/")) {
-              const filename = decodeURIComponent(asset.outputUrl.slice("/api/renders/".length));
-              if (!filename || path.basename(filename) !== filename) throw new Error("invalid retained Hero image path");
-              const sourcePath = path.join(process.cwd(), "public", "renders", filename);
-              if (!fs.existsSync(sourcePath)) throw new Error("retained Hero image is missing");
-              fs.copyFileSync(sourcePath, imagePath);
-            } else {
-              await downloadAndCrop(asset.outputUrl, imagePath);
-            }
-            await applyKenBurns(imagePath, outPath, kenBurnsDurationSec);
-            if (!isValidMp4Path(outPath)) throw new Error("retained Hero image Ken Burns output is invalid");
-            try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+            await materializeRetainedBrandImage({
+              asset,
+              imagePath,
+              outputPath: outPath,
+              durationSec: kenBurnsDurationSec,
+            });
             stockTelemetry.downloadedCount++;
             stockTelemetry.normalizeSkippedCount++;
           }
@@ -2119,12 +2117,7 @@ export async function POST(req: Request) {
               imageLocalUrl: `/api/stocks/${imageFile}`,
             } : {}),
             imageUrl: asset.outputUrl,
-            assetMeta: {
-              provider: "runpod",
-              assetId: asset.imageJobId ?? asset.beatId,
-              downloadUrl: asset.outputUrl,
-              license: "Hero AI generated",
-            },
+            assetMeta: retainedBrandImageAssetMeta(asset),
           });
           await recordTelemetryEvent(userId, {
             name: "brand_visual_scene_reused",
@@ -3174,20 +3167,13 @@ export async function POST(req: Request) {
             const outFile = `${userPrefix}${id}.mp4`;
             const outPath = path.join(rendersDir, outFile);
             try {
-              if (retained.outputUrl.startsWith("/api/renders/")) {
-                const filename = decodeURIComponent(retained.outputUrl.slice("/api/renders/".length));
-                if (!filename || path.basename(filename) !== filename) throw new Error("invalid retained AutoMix image path");
-                const sourcePath = path.join(process.cwd(), "public", "renders", filename);
-                if (!fs.existsSync(sourcePath)) throw new Error("retained AutoMix image is missing");
-                fs.copyFileSync(sourcePath, imagePath);
-              } else {
-                await downloadAndCrop(retained.outputUrl, imagePath);
-              }
-              await applyKenBurns(imagePath, outPath);
-              if (!isValidMp4Path(outPath)) throw new Error("retained AutoMix Ken Burns output is invalid");
+              await materializeRetainedBrandImage({
+                asset: retained,
+                imagePath,
+                outputPath: outPath,
+              });
               stockTelemetry.downloadedCount++;
               stockTelemetry.normalizeSkippedCount++;
-              try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
               results.push({
                 keyword: kw,
                 sourceIndex: ki,
@@ -3198,12 +3184,7 @@ export async function POST(req: Request) {
                 localUrl: `/api/stocks/${outFile}`,
                 imageUrl: retained.outputUrl,
                 imageLocalUrl: `/api/stocks/${imageFile}`,
-                assetMeta: {
-                  provider: "runpod",
-                  assetId: retained.imageJobId ?? retained.beatId,
-                  downloadUrl: retained.outputUrl,
-                  license: "Hero AI generated",
-                },
+                assetMeta: retainedBrandImageAssetMeta(retained),
               });
               await recordTelemetryEvent(userId, {
                 name: "brand_visual_scene_reused",

@@ -2,14 +2,12 @@ import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import {
   brandLookPreviewRequiresGeneration,
-  checkBrandLookPreviewFunding,
   createUnsavedBrandLookPreview,
 } from "@/lib/brand-look-preview.server";
+import { admitBrandLookGeneration } from "@/lib/brand-look-preview-admission.server";
 import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
 import { brandProfilePayloadSchema } from "@/lib/brand-profile-library.server";
-import { checkHeroImageRate, heroImageRateLimitMessage } from "@/lib/hero-image-rate-limit";
-import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
-import { describeHeroImageOffer, HeroImageGenerationError } from "@/lib/video-hero-image.server";
+import { HeroImageGenerationError } from "@/lib/video-hero-image.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
 export const runtime = "nodejs";
@@ -28,44 +26,24 @@ export async function POST(req: Request) {
     const projectId = typeof body?.projectId === "string" && body.projectId.trim()
       ? body.projectId.trim()
       : undefined;
-    const generating = await brandLookPreviewRequiresGeneration({ userId: auth.user.id, projectId });
+    const generating = await brandLookPreviewRequiresGeneration({
+      userId: auth.user.id,
+      projectId,
+      payload: parsed.data,
+    });
     if (generating) {
-      const funding = await checkBrandLookPreviewFunding({ userId: auth.user.id, imageCount: 3 });
-      if (!funding.ok) {
-        if (funding.code === "ALLOWANCE_EXHAUSTED") {
-          return NextResponse.json({
-            error: "allowance_exhausted",
-            message: `สิทธิ์ทดลองภาพ AI เหลือ ${funding.remainingImages ?? 0} ภาพ แต่การทดลองแนวภาพใหม่ต้องใช้ 3 ภาพ`,
-            remainingImages: funding.remainingImages ?? 0,
-            upgradeUrl: "/pricing",
-            stockAction: "use-stock",
-          }, { status: 402 });
-        }
-        return NextResponse.json({
-          code: "INSUFFICIENT_CREDITS",
-          error: "INSUFFICIENT_CREDITS",
-          message: `เครดิตไม่พอสำหรับภาพทดลอง 3 ภาพ ต้องใช้ ${funding.requiredCredits} เครดิต (คงเหลือ ${funding.balance})`,
-          requiredCredits: funding.requiredCredits,
-          balance: funding.balance,
-        }, { status: 402 });
+      const admission = await admitBrandLookGeneration({
+        userId: auth.user.id,
+        role: auth.user.role,
+        imageCount: 3,
+        purpose: "preview",
+      });
+      if (!admission.ok) {
+        return NextResponse.json(admission.body, {
+          status: admission.status,
+          headers: admission.headers,
+        });
       }
-    }
-    if (generating && auth.user.role !== "ADMIN") {
-      const rate = await checkHeroImageRate(auth.user.id, 3);
-      if (!rate.ok) {
-        return NextResponse.json(
-          { error: "RATE_LIMITED", message: heroImageRateLimitMessage(rate), retryAfterSec: rate.retryAfterSec },
-          { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
-        );
-      }
-    }
-    if (generating) {
-      const offer = describeHeroImageOffer();
-      if (!offer.available || offer.providerRoute !== "runpod-custom") {
-        return NextResponse.json({ error: "hero_image_unavailable", message: "ระบบทดลองแนวภาพยังไม่พร้อม" }, { status: 503 });
-      }
-      const cost = await getRunpodImageCostSnapshot({ endpointId: offer.providerEndpoint });
-      if (!cost.admitted) return NextResponse.json({ error: "runpod_cost_guard", retryable: true }, { status: 503 });
     }
     const batch = await createUnsavedBrandLookPreview({
       userId: auth.user.id,

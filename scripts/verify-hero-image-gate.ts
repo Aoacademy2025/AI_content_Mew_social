@@ -39,7 +39,14 @@ async function main() {
   // ═══════════════════════════════════════════════════════════════════════
   const { isHeroAiImageEligible } = await import("../src/lib/internal-ai-access");
 
-  type Actor = { email?: string | null; role?: string | null; plan?: string | null; trialEndsAt?: Date | null };
+  type Actor = {
+    id?: string;
+    email?: string | null;
+    role?: string | null;
+    plan?: string | null;
+    trialEndsAt?: Date | null;
+    createdAt?: Date;
+  };
   const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
   const admin: Actor = { email: "admin@example.com", role: "ADMIN", plan: "FREE", trialEndsAt: null };
@@ -83,6 +90,39 @@ async function main() {
   withPublicFlag("true", () => {
     check("flag=\"true\" (not the literal \"1\") behaves like unset for PRO", isHeroAiImageEligible(proUser) === false);
   });
+
+  const rolloutEnv = {
+    BRAND_VISUAL_SYSTEM_ENABLED: process.env.BRAND_VISUAL_SYSTEM_ENABLED,
+    BRAND_VISUAL_ROLLOUT_PERCENT: process.env.BRAND_VISUAL_ROLLOUT_PERCENT,
+    BRAND_VISUAL_ROLLOUT_STARTED_AT: process.env.BRAND_VISUAL_ROLLOUT_STARTED_AT,
+  };
+  process.env.BRAND_VISUAL_SYSTEM_ENABLED = "1";
+  process.env.BRAND_VISUAL_ROLLOUT_PERCENT = "100";
+  process.env.BRAND_VISUAL_ROLLOUT_STARTED_AT = "2026-08-01T00:00:00.000Z";
+  try {
+    const treatmentFree: Actor = {
+      id: "brand-visual-treatment-free",
+      email: "treatment-free@example.com",
+      role: "USER",
+      plan: "FREE",
+      trialEndsAt: null,
+      createdAt: new Date("2026-08-02T00:00:00.000Z"),
+    };
+    const treatmentTrial: Actor = {
+      ...treatmentFree,
+      id: "brand-visual-treatment-trial",
+      email: "treatment-trial@example.com",
+      plan: "PRO",
+      trialEndsAt: future,
+    };
+    check("Brand Visual treatment FREE actor is Hero AI Image eligible", isHeroAiImageEligible(treatmentFree) === true);
+    check("Brand Visual treatment trial actor is Hero AI Image eligible", isHeroAiImageEligible(treatmentTrial) === true);
+  } finally {
+    for (const [name, value] of Object.entries(rolloutEnv)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 
   // ═══════════════════════════════════════════════════════════════════════
   // 2. Rate math
@@ -207,6 +247,10 @@ async function main() {
   check(
     "fetch-stock calls isHeroAiImageEligible",
     fetchStock.includes("isHeroAiImageEligible(user)"),
+  );
+  check(
+    "fetch-stock selects the stable Brand Visual cohort fields before checking Hero eligibility",
+    /select:\s*\{[^}]*\bid:\s*true[^}]*\bcreatedAt:\s*true[^}]*\}/s.test(fetchStock),
   );
   check(
     "videos/jobs calls isHeroAiImageEligible at both the hero-mode and AutoMix gate",

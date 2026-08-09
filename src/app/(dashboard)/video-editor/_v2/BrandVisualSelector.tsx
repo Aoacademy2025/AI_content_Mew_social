@@ -45,42 +45,52 @@ export function BrandVisualSelector({ p }: { p: V2Project }) {
   const [error, setError] = useState<string | null>(null);
 
   const narrative = p.script.trim();
+  const canLoadWithoutNarrative = p.mode === "upload";
   const treatment = useMemo(() => preflight
     ? `${preflight.suggestedTreatment.label}, ${preflight.suggestedTreatment.mood}`
     : "ชัดเจนและเหมาะกับเนื้อหา", [preflight]);
   const outdatedBeatCount = preflight?.visualBeats.filter((beat) => beat.status === "outdated").length ?? 0;
 
   async function loadContext(signal?: AbortSignal) {
-    if (!p.projectId || !narrative) return;
+    if (!p.projectId || (!narrative && !canLoadWithoutNarrative)) return;
     setLoading(true); setError(null);
     try {
-      const libraryRequest = fetch("/api/brand-library", { cache: "no-store", signal });
-      const preflightRequest = fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/content-preflight`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          narrativeSource: {
-            kind: p.mode === "upload" ? "upload-transcript" : p.narrativeSourceKind,
-            text: narrative,
-          },
-        }),
+      const libraryRequest = fetch("/api/brand-library", { cache: "no-store", signal }).then(payload);
+      const visualRequest = fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
+        cache: "no-store",
         signal,
-      });
-      const [libraryResult, preflightResult] = await Promise.all([libraryRequest.then(payload), preflightRequest.then(payload)]);
+      }).then(payload);
+      const preflightRequest = narrative
+        ? fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/content-preflight`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              narrativeSource: {
+                kind: p.mode === "upload" ? "upload-transcript" : p.narrativeSourceKind,
+                text: narrative,
+              },
+            }),
+            signal,
+          }).then(payload)
+        : Promise.resolve(null);
+      const [libraryResult, visualResult, preflightResult] = await Promise.all([
+        libraryRequest,
+        visualRequest,
+        preflightRequest,
+      ]);
       if (!libraryResult.response.ok) throw new Error(libraryResult.body.error || "โหลด Brand Library ไม่สำเร็จ");
-      if (!preflightResult.response.ok) throw new Error(preflightResult.body.error || "วิเคราะห์เนื้อหาไม่สำเร็จ");
+      if (!visualResult.response.ok) throw new Error(visualResult.body.error || "โหลดแนวภาพไม่สำเร็จ");
+      if (preflightResult && !preflightResult.response.ok) throw new Error(preflightResult.body.error || "วิเคราะห์เนื้อหาไม่สำเร็จ");
       setFormats(libraryResult.body.visualFormats ?? []);
       setProfiles(libraryResult.body.profiles ?? []);
-      setPreflight(preflightResult.body.preflight);
-      const visualResult = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, { cache: "no-store", signal }));
-      if (!visualResult.response.ok) throw new Error(visualResult.body.error || "โหลดแนวภาพไม่สำเร็จ");
+      setPreflight(preflightResult?.body.preflight ?? null);
       setContext(visualResult.body.context);
       trackEvent("brand_visual_step2_reached", {
         path: "/video-editor",
         properties: {
           source: visualResult.body.context?.source,
           visualFormatId: visualResult.body.context?.visualFormatId,
-          beatCount: preflightResult.body.preflight?.visualBeats?.length ?? 0,
+          beatCount: preflightResult?.body.preflight?.visualBeats?.length ?? 0,
         },
       });
     } catch (caught) {
@@ -89,7 +99,7 @@ export function BrandVisualSelector({ p }: { p: V2Project }) {
   }
 
   useEffect(() => {
-    if (!p.brandVisualAllowed || !p.projectId || !narrative) return;
+    if (!p.brandVisualAllowed || !p.projectId || (!narrative && !canLoadWithoutNarrative)) return;
     const controller = new AbortController();
     void loadContext(controller.signal);
     return () => controller.abort();
@@ -146,27 +156,28 @@ export function BrandVisualSelector({ p }: { p: V2Project }) {
   }
 
   if (!p.brandVisualAllowed) return null;
-  if (!narrative) return <div className="px-3 py-3" style={{ border: `1px dashed ${color.cardBorder}`, borderRadius: radius.card, color: color.textFaint, fontSize: 11.5 }}>ใส่สคริปต์หรือ transcript ก่อน ระบบจึงจะแนะนำแนวภาพจากเนื้อหาจริง</div>;
+  if (!narrative && !canLoadWithoutNarrative) return <div className="px-3 py-3" style={{ border: `1px dashed ${color.cardBorder}`, borderRadius: radius.card, color: color.textFaint, fontSize: 11.5 }}>ใส่สคริปต์ก่อน ระบบจึงจะแนะนำแนวภาพจากเนื้อหาจริง</div>;
 
   const selected = context?.visualFormatId ?? preflight?.suggestedVisualFormatId;
   return <section style={{ border: `1px solid ${color.cardBorder}`, borderRadius: radius.card, background: color.cardBg, overflow: "hidden" }}>
     <button type="button" onClick={() => setExpanded((value) => !value)} className="flex min-h-12 w-full items-center gap-3 px-4 py-3 text-left" aria-expanded={expanded}>
-      <span className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: "rgba(56,189,248,.12)", color: "#38BDF8" }}><SwatchBook size={16} /></span>
+      <span className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: "rgba(56,189,248,.12)", color: color.info }}><SwatchBook size={16} /></span>
       <span className="min-w-0 flex-1"><span className="block" style={{ font: `600 13px ${font.heading}`, color: color.text }}>แนวภาพของคลิปนี้</span><span className="block truncate" style={{ fontSize: 10.5, color: color.textFaint }}>{loading ? "กำลังอ่านเนื้อหา…" : context?.source === "brand-revision" ? "ใช้ Brand Profile Revision" : context?.source === "project-look" ? "คุณเลือกทับสำหรับโปรเจกต์นี้" : "AI แนะนำจากเนื้อหา — คุณเปลี่ยนได้"}</span></span>
-      {p.starterAiImageAllowance?.eligible && <span className="rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: "#7dd3fc", fontSize: 10, fontWeight: 600 }}>เหลือ {p.starterAiImageAllowance.remainingImages}/8 ภาพ</span>}
+      {p.starterAiImageAllowance?.eligible && <span className="rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: color.infoText, fontSize: 10, fontWeight: 600 }}>เหลือ {p.starterAiImageAllowance.remainingImages}/8 ภาพ</span>}
       <ChevronDown size={15} style={{ color: color.textFaint, transform: expanded ? "rotate(180deg)" : undefined, transition: "transform 150ms" }} />
     </button>
     {expanded && <div className="border-t px-4 py-4" style={{ borderColor: color.cardBorder }}>
-      {error && <div className="mb-3 rounded-lg px-3 py-2" style={{ background: "rgba(248,113,113,.09)", color: "#fca5a5", fontSize: 11 }}>{error}</div>}
+      {error && <div className="mb-3 rounded-lg px-3 py-2" style={{ background: "rgba(248,113,113,.09)", color: color.dangerText, fontSize: 11 }}>{error}</div>}
+      {!narrative && canLoadWithoutNarrative && <div className="mb-3 rounded-lg px-3 py-2" style={{ background: "rgba(56,189,248,.08)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>เลือก Brand Profile หรือแนวภาพล่วงหน้าได้ ระบบจะวิเคราะห์ transcript จากเสียงหลังเริ่มสร้าง และใช้ผลนั้นกับภาพของคลิปนี้ก่อนเรียกผู้ให้บริการภาพ</div>}
       {loading ? <div className="flex items-center gap-2 py-5" style={{ color: color.textFaint, fontSize: 11 }}><Loader2 size={14} className="animate-spin" /> กำลังหา Content Domain และ Visual Beats ครั้งแรก…</div> : <>
         {profiles.length > 0 && <label className="mb-4 flex flex-col gap-1.5"><span style={{ color: color.textFaint, fontSize: 10.5 }}>Brand Profile (ถ้ามี)</span><select defaultValue="" disabled={changing} onChange={(event) => { if (event.target.value) void pinProfile(event.target.value); }} className="min-h-10 w-full max-w-sm rounded-lg px-3" style={{ background: "rgba(255,255,255,.05)", border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 12 }}><option value="" style={{ background: color.bg1 }}>ใช้แนวภาพของคลิปนี้</option>{profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={profile.frozen} style={{ background: color.bg1 }}>{profile.name} · Revision {profile.activeRevisionNumber}{profile.frozen ? " (อ่านอย่างเดียว)" : ""}</option>)}</select></label>}
-        {preflight && <div className="mb-3 flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1 rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: "#7dd3fc", fontSize: 10 }}><Sparkles size={11} /> AI แนะนำ {formats.find((item) => item.id === preflight.suggestedVisualFormatId)?.label}</span><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight.suggestedTreatment.label}</span></div>}
-        {outdatedBeatCount > 0 && <div className="mb-3 rounded-xl px-3 py-2.5" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.25)" }}><p style={{ color: "#fcd34d", font: `600 11px ${font.heading}` }}>สคริปต์เปลี่ยน {outdatedBeatCount} Visual Beat · ราคา {outdatedBeatCount * 2} เครดิต</p><p className="mt-1" style={{ color: color.textSecondary, fontSize: 10.5, lineHeight: 1.55 }}>ภาพเดิมยังอยู่และยังไม่ถูกคิดเงิน เมื่อคุณยืนยันสร้างครั้งถัดไป ระบบจะใช้ภาพที่ยังตรงกับสคริปต์ซ้ำ และสร้างใหม่เฉพาะ {outdatedBeatCount} ภาพนี้</p></div>}
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{formats.map((format) => { const isSelected = selected === format.id; return <button key={format.id} type="button" disabled={changing} onClick={() => void applyLook(format.id)} className="relative overflow-hidden text-left" style={{ border: `1px solid ${isSelected ? "#38BDF8" : color.cardBorder}`, borderRadius: 8, background: isSelected ? "rgba(56,189,248,.09)" : "rgba(255,255,255,.025)", opacity: changing ? .65 : 1 }}><div className="relative aspect-[16/9] overflow-hidden"><img src={format.previewUrl} alt="" className="h-full w-full object-cover object-[center_30%]" /></div><div className="flex min-h-10 items-center justify-between gap-1 px-2 py-1.5"><span style={{ color: isSelected ? "#7dd3fc" : color.textSecondary, font: `500 10.5px ${font.heading}`, lineHeight: 1.25 }}>{format.label}</span>{isSelected && <Check size={12} color="#38BDF8" />}</div></button>; })}</div>
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight?.visualBeats.length ?? 0} Visual Beats · การวิเคราะห์ไม่ใช้เครดิต</span><span className="flex flex-wrap gap-3"><Link href={p.projectId ? `/brands?new=1&projectId=${encodeURIComponent(p.projectId)}` : "/brands?new=1"} className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: "#7dd3fc", fontWeight: 600 }}>+ สร้างแบรนด์จากคลิปนี้</Link><Link href="/brands" className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.textFaint, fontWeight: 600 }}>จัดการคลัง</Link></span></div>
+        {preflight && <div className="mb-3 flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1 rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: color.infoText, fontSize: 10 }}><Sparkles size={11} /> AI แนะนำ {formats.find((item) => item.id === preflight.suggestedVisualFormatId)?.label}</span><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight.suggestedTreatment.label}</span></div>}
+        {outdatedBeatCount > 0 && <div className="mb-3 rounded-xl px-3 py-2.5" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.25)" }}><p style={{ color: color.warningText, font: `600 11px ${font.heading}` }}>สคริปต์เปลี่ยน {outdatedBeatCount} Visual Beat · ราคา {outdatedBeatCount * 2} เครดิต</p><p className="mt-1" style={{ color: color.textSecondary, fontSize: 10.5, lineHeight: 1.55 }}>ภาพเดิมยังอยู่และยังไม่ถูกคิดเงิน เมื่อคุณยืนยันสร้างครั้งถัดไป ระบบจะใช้ภาพที่ยังตรงกับสคริปต์ซ้ำ และสร้างใหม่เฉพาะ {outdatedBeatCount} ภาพนี้</p></div>}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{formats.map((format) => { const isSelected = selected === format.id; return <button key={format.id} type="button" disabled={changing} onClick={() => void applyLook(format.id)} className="relative overflow-hidden text-left" style={{ border: `1px solid ${isSelected ? color.info : color.cardBorder}`, borderRadius: 8, background: isSelected ? "rgba(56,189,248,.09)" : "rgba(255,255,255,.025)", opacity: changing ? .65 : 1 }}><div className="relative aspect-[16/9] overflow-hidden"><img src={format.previewUrl} alt="" className="h-full w-full object-cover object-[center_30%]" /></div><div className="flex min-h-10 items-center justify-between gap-1 px-2 py-1.5"><span style={{ color: isSelected ? color.infoText : color.textSecondary, font: `500 10.5px ${font.heading}`, lineHeight: 1.25 }}>{format.label}</span>{isSelected && <Check size={12} color={color.info} />}</div></button>; })}</div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight?.visualBeats.length ?? 0} Visual Beats · การวิเคราะห์ไม่ใช้เครดิต</span><span className="flex flex-wrap gap-3"><Link href={p.projectId ? `/brands?new=1&projectId=${encodeURIComponent(p.projectId)}` : "/brands?new=1"} className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.infoText, fontWeight: 600 }}>+ สร้างแบรนด์จากคลิปนี้</Link><Link href="/brands" className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.textFaint, fontWeight: 600 }}>จัดการคลัง</Link></span></div>
       </>}
-      {pending && <div className="mt-4 rounded-xl p-3" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.28)" }}><div className="flex gap-2"><ImageIcon size={15} color="#fbbf24" className="mt-0.5 shrink-0" /><div><p style={{ color: color.text, font: `600 11.5px ${font.heading}` }}>มีภาพเดิม {pending.existingImageCount} ภาพ</p><p className="mt-1" style={{ color: color.textSecondary, fontSize: 10.5, lineHeight: 1.55 }}>ระบบจะไม่สร้างใหม่เอง เลือกว่าจะเตรียมสร้างทั้งหมดใหม่ ({pending.quotedCredits} เครดิตตามราคา 2 เครดิต/ภาพ) หรือใช้ “{pending.label}” เฉพาะภาพต่อจากนี้</p></div></div><div className="mt-3 flex flex-wrap gap-2"><button disabled={changing} onClick={() => pending.kind === "look" ? void applyLook(pending.formatId, "regenerate-all") : void pinProfile(pending.profileId, "regenerate-all")} className="min-h-9 rounded-lg px-3" style={{ background: "#fbbf24", color: "#1c1917", fontSize: 10.5, fontWeight: 700 }}>สร้างทุกภาพใหม่ให้เป็นแนวเดียวกัน</button><button disabled={changing} onClick={() => pending.kind === "look" ? void applyLook(pending.formatId, "new-only") : void pinProfile(pending.profileId, "new-only")} className="min-h-9 rounded-lg px-3" style={{ border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 10.5 }}>ใช้แนวใหม่เฉพาะภาพต่อจากนี้</button></div><p className="mt-2" style={{ color: "#fcd34d", fontSize: 10 }}>ตัวเลือกหลังทำให้คลิปมีมากกว่าหนึ่งแนวภาพ</p></div>}
-      {p.starterAiImageAllowance?.eligible && p.starterAiImageAllowance.remainingImages === 0 && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl p-3" style={{ background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.25)" }}><span className="flex items-center gap-2" style={{ fontSize: 11, color: "#fca5a5" }}><LockKeyhole size={14} /> ใช้สิทธิ์ทดลองภาพครบแล้ว ระบบจะไม่เปลี่ยนเป็น Stock เอง</span><span className="flex gap-2"><Link href="/pricing" className="rounded-lg bg-white px-3 py-2 text-[10.5px] font-bold text-black">อัปเกรดรายเดือน</Link><button onClick={() => p.setMixPreset("free")} className="rounded-lg px-3 py-2" style={{ border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 10.5 }}>ใช้ Stock ฟรี</button></span></div>}
+      {pending && <div className="mt-4 rounded-xl p-3" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.28)" }}><div className="flex gap-2"><ImageIcon size={15} color={color.warning} className="mt-0.5 shrink-0" /><div><p style={{ color: color.text, font: `600 11.5px ${font.heading}` }}>มีภาพเดิม {pending.existingImageCount} ภาพ</p><p className="mt-1" style={{ color: color.textSecondary, fontSize: 10.5, lineHeight: 1.55 }}>ระบบจะไม่สร้างใหม่เอง เลือกว่าจะเตรียมสร้างทั้งหมดใหม่ ({pending.quotedCredits} เครดิตตามราคา 2 เครดิต/ภาพ) หรือใช้ “{pending.label}” เฉพาะภาพต่อจากนี้</p></div></div><div className="mt-3 flex flex-wrap gap-2"><button disabled={changing} onClick={() => pending.kind === "look" ? void applyLook(pending.formatId, "regenerate-all") : void pinProfile(pending.profileId, "regenerate-all")} className="min-h-9 rounded-lg px-3" style={{ background: color.warning, color: color.bg0, fontSize: 10.5, fontWeight: 700 }}>สร้างทุกภาพใหม่ให้เป็นแนวเดียวกัน</button><button disabled={changing} onClick={() => pending.kind === "look" ? void applyLook(pending.formatId, "new-only") : void pinProfile(pending.profileId, "new-only")} className="min-h-9 rounded-lg px-3" style={{ border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 10.5 }}>ใช้แนวใหม่เฉพาะภาพต่อจากนี้</button></div><p className="mt-2" style={{ color: color.warningText, fontSize: 10 }}>ตัวเลือกหลังทำให้คลิปมีมากกว่าหนึ่งแนวภาพ</p></div>}
+      {p.starterAiImageAllowance?.eligible && p.starterAiImageAllowance.remainingImages === 0 && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl p-3" style={{ background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.25)" }}><span className="flex items-center gap-2" style={{ fontSize: 11, color: color.dangerText }}><LockKeyhole size={14} /> ใช้สิทธิ์ทดลองภาพครบแล้ว ระบบจะไม่เปลี่ยนเป็น Stock เอง</span><span className="flex gap-2"><Link href="/pricing" className="rounded-lg bg-white px-3 py-2 text-[10.5px] font-bold text-black">อัปเกรดรายเดือน</Link><button onClick={() => p.setMixPreset("free")} className="rounded-lg px-3 py-2" style={{ border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 10.5 }}>ใช้ Stock ฟรี</button></span></div>}
     </div>}
   </section>;
 }

@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
-import { checkBrandLookPreviewFunding, rerollBrandLookPreviewItem } from "@/lib/brand-look-preview.server";
+import { rerollBrandLookPreviewItem } from "@/lib/brand-look-preview.server";
+import { admitBrandLookGeneration } from "@/lib/brand-look-preview-admission.server";
 import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
-import { checkHeroImageRate, heroImageRateLimitMessage } from "@/lib/hero-image-rate-limit";
-import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
-import { describeHeroImageOffer, HeroImageGenerationError } from "@/lib/video-hero-image.server";
+import { HeroImageGenerationError } from "@/lib/video-hero-image.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
 export const runtime = "nodejs";
@@ -19,39 +18,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ itemId:
     if (typeof body?.requestId !== "string" || !body.requestId.trim()) {
       return NextResponse.json({ error: "requestId is required" }, { status: 400 });
     }
-    const funding = await checkBrandLookPreviewFunding({ userId: auth.user.id, imageCount: 1 });
-    if (!funding.ok) {
-      if (funding.code === "ALLOWANCE_EXHAUSTED") {
-        return NextResponse.json({
-          error: "allowance_exhausted",
-          message: "ใช้สิทธิ์ทดลองภาพ AI ครบแล้ว ภาพเดิมยังอยู่",
-          remainingImages: funding.remainingImages ?? 0,
-          upgradeUrl: "/pricing",
-        }, { status: 402 });
-      }
-      return NextResponse.json({
-        error: "INSUFFICIENT_CREDITS",
-        code: "INSUFFICIENT_CREDITS",
-        message: `เครดิตไม่พอสำหรับลองภาพนี้ใหม่ ต้องใช้ ${funding.requiredCredits} เครดิต (คงเหลือ ${funding.balance})`,
-        requiredCredits: funding.requiredCredits,
-        balance: funding.balance,
-      }, { status: 402 });
+    const admission = await admitBrandLookGeneration({
+      userId: auth.user.id,
+      role: auth.user.role,
+      imageCount: 1,
+      purpose: "reroll",
+    });
+    if (!admission.ok) {
+      return NextResponse.json(admission.body, {
+        status: admission.status,
+        headers: admission.headers,
+      });
     }
-    if (auth.user.role !== "ADMIN") {
-      const rate = await checkHeroImageRate(auth.user.id, 1);
-      if (!rate.ok) {
-        return NextResponse.json(
-          { error: "RATE_LIMITED", message: heroImageRateLimitMessage(rate), retryAfterSec: rate.retryAfterSec },
-          { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
-        );
-      }
-    }
-    const offer = describeHeroImageOffer();
-    if (!offer.available || offer.providerRoute !== "runpod-custom") {
-      return NextResponse.json({ error: "hero_image_unavailable" }, { status: 503 });
-    }
-    const cost = await getRunpodImageCostSnapshot({ endpointId: offer.providerEndpoint });
-    if (!cost.admitted) return NextResponse.json({ error: "runpod_cost_guard", retryable: true }, { status: 503 });
     const { itemId } = await params;
     const item = await rerollBrandLookPreviewItem({
       userId: auth.user.id,

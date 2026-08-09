@@ -12,6 +12,10 @@ import {
   heroVoiceResultFromJob,
   type HeroVoiceGenerationResult,
 } from "@/lib/hero-voice-generation.server";
+import {
+  linkBrandLookPreviewJobInTransaction,
+  syncBrandLookPreviewJobInTransaction,
+} from "@/lib/brand-look-preview-job-link.server";
 export {
   refundSettledVideoImageBatch,
   refundSettledVideoImageJob,
@@ -101,6 +105,13 @@ export async function createReservedImageJob(input: {
   estimatedCostUsdMicros: number;
   idempotencyKey: string;
   mediaExpiresAt: Date;
+  /** Starter allowance belongs only to the Brand Visual activation surface.
+   * Every generic/legacy image caller defaults to the shared credit wallet. */
+  fundingPolicy?: "credits-only" | "brand-visual-activation";
+  reservationLink?: {
+    brandLookPreviewItemId: string;
+    expectedImageJobId: string | null;
+  };
 }): Promise<
   | {
       ok: true;
@@ -138,6 +149,13 @@ export async function createReservedImageJob(input: {
       const allowance = existing.fundingSource === "starter_allowance"
         ? await starterAllowanceStatusInTransaction(tx, input.userId)
         : null;
+      if (input.reservationLink) {
+        await linkBrandLookPreviewJobInTransaction(tx, {
+          userId: input.userId,
+          ...input.reservationLink,
+          job: existing,
+        });
+      }
       return {
         ok: true as const,
         created: false,
@@ -154,7 +172,9 @@ export async function createReservedImageJob(input: {
       update: {},
     });
     const total = balance.granted + balance.purchased;
-    const allowance = await reserveStarterAiImageAllowance(tx, input.userId);
+    const allowance = input.fundingPolicy === "brand-visual-activation"
+      ? await reserveStarterAiImageAllowance(tx, input.userId)
+      : { kind: "credits" as const };
     if (allowance.kind === "allowance_exhausted") {
       return {
         ok: false as const,
@@ -245,6 +265,13 @@ export async function createReservedImageJob(input: {
         },
       });
     }
+    if (input.reservationLink) {
+      await linkBrandLookPreviewJobInTransaction(tx, {
+        userId: input.userId,
+        ...input.reservationLink,
+        job,
+      });
+    }
     return {
       ok: true as const,
       created: true,
@@ -280,6 +307,7 @@ export async function createReservedImageJob(input: {
         provider: input.provider,
         providerRoute: input.providerRoute,
         surface,
+        fundingPolicy: input.fundingPolicy ?? "credits-only",
       },
     }).catch((error) => {
       console.error("[ai-image] failed to record credit reservation rejection telemetry:", error);
@@ -522,7 +550,7 @@ export async function failAndRefundAiJob(
       chargeState = "refunded";
     }
 
-    return tx.aiGenerationJob.update({
+    const updated = await tx.aiGenerationJob.update({
       where: { id: job.id },
       data: {
         status: "failed",
@@ -532,6 +560,8 @@ export async function failAndRefundAiJob(
         finishedAt: new Date(),
       },
     });
+    await syncBrandLookPreviewJobInTransaction(tx, updated);
+    return updated;
   });
 }
 
@@ -576,7 +606,7 @@ export async function completeImageJob(input: {
         outcome: "completed",
       });
     }
-    return tx.aiGenerationJob.update({
+    const updated = await tx.aiGenerationJob.update({
       where: { id: job.id },
       data: {
         status: "completed",
@@ -590,5 +620,7 @@ export async function completeImageJob(input: {
         finishedAt: new Date(),
       },
     });
+    await syncBrandLookPreviewJobInTransaction(tx, updated);
+    return updated;
   });
 }

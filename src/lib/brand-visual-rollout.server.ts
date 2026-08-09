@@ -1,5 +1,3 @@
-import "server-only";
-
 export type BrandVisualRolloutPercent = 0 | 10 | 50 | 100;
 
 export type BrandVisualRolloutFlags = {

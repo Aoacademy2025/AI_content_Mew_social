@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { evaluateBrandVisualSafety } from "../src/lib/brand-visual-safety";
+import {
+  evaluateBrandVisualSafety,
+  summarizeBrandVisualDailyCogs,
+} from "../src/lib/brand-visual-safety";
 
 const passing = evaluateBrandVisualSafety({
   terminalJobs: 100,
@@ -40,5 +43,30 @@ for (const failing of [
   });
   assert.equal(result.canExpand, false, `expected ${JSON.stringify(failing)} to block expansion`);
 }
+
+const unattributed = summarizeBrandVisualDailyCogs({
+  costsByDay: new Map([
+    ["2026-08-08", 10_000],
+    ["2026-08-09", 20_000],
+  ]),
+  imagesByDay: new Map([["2026-08-08", 2]]),
+  usdThbRate: 35,
+});
+assert.equal(unattributed.highestDailyCogsBahtPerImage, null);
+assert.deepEqual(unattributed.unattributedCostDays, ["2026-08-09"]);
+
+const attributed = summarizeBrandVisualDailyCogs({
+  costsByDay: new Map([
+    ["2026-08-08", 10_000],
+    ["2026-08-09", 20_000],
+  ]),
+  imagesByDay: new Map([
+    ["2026-08-08", 2],
+    ["2026-08-09", 4],
+  ]),
+  usdThbRate: 35,
+});
+assert.ok(Math.abs((attributed.highestDailyCogsBahtPerImage ?? 0) - 0.175) < 1e-9);
+assert.deepEqual(attributed.unattributedCostDays, []);
 
 console.log("brand visual rollout health verification: ok");

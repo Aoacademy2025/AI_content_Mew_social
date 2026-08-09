@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -114,8 +114,82 @@ async function main() {
     "the next confirmed render must reuse only unchanged current beats",
   );
 
+  const { ensureUploadContentPreflight } = await import("../src/lib/upload-content-preflight.server");
+  const priorRollout = {
+    BRAND_VISUAL_SYSTEM_ENABLED: process.env.BRAND_VISUAL_SYSTEM_ENABLED,
+    BRAND_VISUAL_ROLLOUT_PERCENT: process.env.BRAND_VISUAL_ROLLOUT_PERCENT,
+    BRAND_VISUAL_ROLLOUT_STARTED_AT: process.env.BRAND_VISUAL_ROLLOUT_STARTED_AT,
+  };
+  process.env.BRAND_VISUAL_SYSTEM_ENABLED = "1";
+  process.env.BRAND_VISUAL_ROLLOUT_PERCENT = "100";
+  process.env.BRAND_VISUAL_ROLLOUT_STARTED_AT = "2026-08-01T00:00:00.000Z";
+  try {
+    const calls: Array<{ kind: string; text: string; projectId: string }> = [];
+    const result = await ensureUploadContentPreflight({
+      actor: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        createdAt: new Date("2026-08-02T00:00:00.000Z"),
+      },
+      projectId: project.id,
+      transcriptText: "เสียงจากคลิปอัปโหลดที่ถอดแล้ว",
+    }, {
+      resolve: async (input) => {
+        calls.push({
+          kind: input.narrativeSource.kind,
+          text: input.narrativeSource.text,
+          projectId: input.projectId,
+        });
+        return first;
+      },
+      createAnalyzer: () => analyzer,
+    });
+    assert.equal(result.kind, "resolved");
+    assert.deepEqual(calls, [{
+      kind: "upload-transcript",
+      text: "เสียงจากคลิปอัปโหลดที่ถอดแล้ว",
+      projectId: project.id,
+    }]);
+
+    const control = await ensureUploadContentPreflight({
+      actor: {
+        id: "pre-rollout-user",
+        email: "pre-rollout@example.test",
+        role: "USER",
+        createdAt: new Date("2026-07-31T00:00:00.000Z"),
+      },
+      projectId: project.id,
+      transcriptText: "ไม่ควรวิเคราะห์ใน control",
+    }, {
+      resolve: async () => { throw new Error("control must not call analyzer"); },
+      createAnalyzer: () => analyzer,
+    });
+    assert.deepEqual(control, { kind: "skipped", reason: "not-in-treatment" });
+  } finally {
+    for (const [name, value] of Object.entries(priorRollout)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+
+  const orchestratorSource = readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
+  const uploadBranch = orchestratorSource.slice(orchestratorSource.indexOf('if (input.mode === "upload")'));
+  assert.ok(
+    uploadBranch.indexOf("await ensureUploadContentPreflight({") >= 0
+      && uploadBranch.indexOf("await ensureUploadContentPreflight({") < uploadBranch.indexOf('await step("keywords", 40)'),
+    "upload transcript preflight must resolve before keyword/image generation",
+  );
+
+  const selectorSource = readFileSync("src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx", "utf8");
+  assert.ok(
+    selectorSource.includes('const canLoadWithoutNarrative = p.mode === "upload";')
+      && selectorSource.includes("if (!narrative && !canLoadWithoutNarrative)"),
+    "upload mode must expose Brand Profile/Project Look before a transcript exists",
+  );
+
   await prisma.$disconnect();
-  console.log("verify-content-preflight: PASS lazy cache + selective staleness + unchanged asset reuse");
+  console.log("verify-content-preflight: PASS lazy cache + selective staleness + upload transcript integration");
 }
 
 main().catch((error) => {

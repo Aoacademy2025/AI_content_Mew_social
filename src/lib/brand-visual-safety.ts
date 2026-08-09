@@ -10,6 +10,33 @@ export type BrandVisualSafetyInputs = {
   highestDailyCogsBahtPerImage: number | null;
 };
 
+export function summarizeBrandVisualDailyCogs(input: {
+  costsByDay: ReadonlyMap<string, number>;
+  imagesByDay: ReadonlyMap<string, number>;
+  usdThbRate: number;
+}): {
+  highestDailyCogsBahtPerImage: number | null;
+  unattributedCostDays: string[];
+} {
+  const unattributedCostDays = [...input.costsByDay]
+    .filter(([key, usdMicros]) => usdMicros > 0 && (input.imagesByDay.get(key) ?? 0) === 0)
+    .map(([key]) => key)
+    .sort();
+  if (unattributedCostDays.length > 0) {
+    return { highestDailyCogsBahtPerImage: null, unattributedCostDays };
+  }
+  const dailyCosts = [...input.costsByDay].flatMap(([key, usdMicros]) => {
+    const images = input.imagesByDay.get(key) ?? 0;
+    return images > 0
+      ? [(usdMicros / 1_000_000) * input.usdThbRate / images]
+      : [];
+  });
+  return {
+    highestDailyCogsBahtPerImage: dailyCosts.length ? Math.max(...dailyCosts) : null,
+    unattributedCostDays,
+  };
+}
+
 export function evaluateBrandVisualSafety(input: BrandVisualSafetyInputs) {
   const enoughSample = input.terminalJobs >= 100;
   const usableRate = input.terminalJobs > 0 ? input.usableJobs / input.terminalJobs : null;

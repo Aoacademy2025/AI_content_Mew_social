@@ -58,6 +58,7 @@ async function main() {
     estimatedCostUsdMicros: 10_000,
     idempotencyKey: "video:starter-trial:scene:0",
     mediaExpiresAt: new Date(Date.now() + 60_000),
+    fundingPolicy: "brand-visual-activation",
   });
   assert.equal(reserved.ok, true);
   if (!reserved.ok) throw new Error("expected starter allowance reservation");

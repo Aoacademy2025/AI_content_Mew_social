@@ -92,6 +92,7 @@ import {
   type SubtitleTimingSource,
 } from "@/lib/mcp/subtitle-quality";
 import { getVideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
+import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -1026,6 +1027,34 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upDurMs = (tx.audioDurationMs && tx.audioDurationMs > 0)
         ? Math.round(tx.audioDurationMs)
         : Math.max(...upCaps.map((c) => c.endMs));
+
+      const uploadPreflight = await ensureUploadContentPreflight({
+        actor: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          createdAt: user.createdAt,
+        },
+        projectId: job.projectId,
+        transcriptText: upCaps.map((caption) => caption.text).join("\n"),
+      });
+      if (uploadPreflight.kind === "resolved") {
+        emitTelemetry({
+          name: "brand_visual_preflight_resolved",
+          category: "performance",
+          source: "server",
+          step: "editor.step2",
+          status: uploadPreflight.preflight.cached ? "cached" : "analyzed",
+          properties: {
+            projectId: job.projectId,
+            preflightId: uploadPreflight.preflight.id,
+            sourceKind: "upload-transcript",
+            visualFormatId: uploadPreflight.preflight.suggestedVisualFormatId,
+            beatCount: uploadPreflight.preflight.visualBeats.length,
+            via: "upload-worker",
+          },
+        });
+      }
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
       const upManualWindowCount = manualCutawayWindowCount(input.targetClipCount);

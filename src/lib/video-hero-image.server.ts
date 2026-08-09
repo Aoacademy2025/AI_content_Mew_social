@@ -142,6 +142,10 @@ export async function generateHeroImageForVideo(input: {
     visualBeatId?: string;
     identityKey?: string;
   };
+  brandLookPreviewReservation?: {
+    itemId: string;
+    expectedImageJobId: string | null;
+  };
 }): Promise<HeroImageGenerationResult> {
   // The verified private BF16 image needs about ten minutes for a completely
   // fresh 28 GB pull, while FlashBoot revivals complete in seconds. Keep the
@@ -236,6 +240,13 @@ export async function generateHeroImageForVideo(input: {
     estimatedCostUsdMicros: prepared.quote.estimatedProviderCostUsdMicros,
     idempotencyKey: input.idempotencyKey,
     mediaExpiresAt: videoExpiryFor(input.plan),
+    fundingPolicy: projectVisual && brandVisualAccess?.canUse
+      ? "brand-visual-activation"
+      : "credits-only",
+    reservationLink: input.brandLookPreviewReservation ? {
+      brandLookPreviewItemId: input.brandLookPreviewReservation.itemId,
+      expectedImageJobId: input.brandLookPreviewReservation.expectedImageJobId,
+    } : undefined,
   });
   if (!reserved.ok) {
     if (reserved.reason === "allowance_exhausted") {

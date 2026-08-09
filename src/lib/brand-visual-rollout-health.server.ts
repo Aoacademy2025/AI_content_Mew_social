@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import {
   evaluateBrandVisualSafety,
+  summarizeBrandVisualDailyCogs,
   type BrandVisualSafetyInputs,
 } from "@/lib/brand-visual-safety";
 import { evaluateBrandVisualFunnel } from "@/lib/brand-visual-funnel";
@@ -307,6 +308,7 @@ export async function getBrandVisualRolloutHealth(input: {
   const costSnapshot = await getRunpodImageCostSnapshot({ endpointId, now, windowDays: days })
     .catch(() => null);
   let highestDailyCogsBahtPerImage: number | null = null;
+  let unattributedCostDays: string[] = [];
   if (costSnapshot) {
     const [buckets, delivered] = await Promise.all([
       prisma.runpodBillingBucket.findMany({
@@ -339,13 +341,13 @@ export async function getBrandVisualRolloutHealth(input: {
       const key = dayKey(job.finishedAt);
       imagesByDay.set(key, (imagesByDay.get(key) ?? 0) + 1);
     }
-    const dailyCosts = [...costsByDay].flatMap(([key, usdMicros]) => {
-      const images = imagesByDay.get(key) ?? 0;
-      return images > 0
-        ? [(usdMicros / 1_000_000) * costSnapshot.usdThbRate / images]
-        : [];
+    const daily = summarizeBrandVisualDailyCogs({
+      costsByDay,
+      imagesByDay,
+      usdThbRate: costSnapshot.usdThbRate,
     });
-    highestDailyCogsBahtPerImage = dailyCosts.length ? Math.max(...dailyCosts) : null;
+    highestDailyCogsBahtPerImage = daily.highestDailyCogsBahtPerImage;
+    unattributedCostDays = daily.unattributedCostDays;
   }
 
   const inputs: BrandVisualSafetyInputs = {
@@ -380,6 +382,7 @@ export async function getBrandVisualRolloutHealth(input: {
     cogs: costSnapshot ? {
       averageBahtPerImage: costSnapshot.costBahtPerImage,
       highestDailyBahtPerImage: highestDailyCogsBahtPerImage,
+      unattributedCostDays,
       deliveredImages: costSnapshot.deliveredImages,
       lastSuccessfulSyncAt: costSnapshot.lastSuccessfulSyncAt,
       status: costSnapshot.status,

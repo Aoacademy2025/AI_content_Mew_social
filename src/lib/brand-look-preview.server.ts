@@ -2,7 +2,8 @@ import "server-only";
 
 import type { BrandLookPreviewBatch, BrandLookPreviewItem } from "@prisma/client";
 import {
-  BRAND_VISUAL_BENCHMARK_SCENES,
+  VISUAL_FORMATS,
+  brandVisualIdentityKey,
   compileBrandVisualPrompt,
   type BrandVisualLanguage,
   type VisualBeat,
@@ -21,6 +22,7 @@ type PreviewScene = {
   visualBeat: Omit<VisualBeat, "phase">;
 };
 type PreviewGenerator = (input: {
+  itemId: string;
   phase: BrandLookPreviewPhase;
   batchId: string;
   compiled: ReturnType<typeof compileBrandVisualPrompt>;
@@ -28,22 +30,90 @@ type PreviewGenerator = (input: {
 
 export type BrandLookPreviewResult = BrandLookPreviewBatch & { items: BrandLookPreviewItem[] };
 
-function standardPreviewScenes(contentDomain: string): PreviewScene[] {
-  return BRAND_VISUAL_BENCHMARK_SCENES.map((scene) => ({
-    phase: scene.id,
-    contentDomain,
-    visualBeat: scene.visualBeat,
-  }));
+function brandVisualLanguageFor(payload: BrandProfilePayload): BrandVisualLanguage {
+  return {
+    palette: payload.visual.palette,
+    personality: payload.visual.personality,
+    peopleAndSetting: payload.visual.peopleAndSetting,
+    memorableCues: payload.visual.memorableCues,
+    visualNotes: payload.visual.visualNotes,
+  };
+}
+
+function previewIdentityKey(payload: BrandProfilePayload): string {
+  const format = VISUAL_FORMATS.find((candidate) => candidate.id === payload.visual.primaryVisualFormatId);
+  if (!format) throw new Error("Unsupported Visual Format");
+  return brandVisualIdentityKey({
+    visualFormatId: format.id,
+    recipeVersion: format.recipeVersion,
+    treatment: payload.visual.defaultTreatment,
+    brandVisualLanguage: brandVisualLanguageFor(payload),
+  });
+}
+
+/** Product previews represent the creator's niche. The fixed history/health/
+ * commerce matrix belongs exclusively to the 21-image Quality Gate. */
+function standardPreviewScenes(payload: BrandProfilePayload): PreviewScene[] {
+  const contentDomain = `${payload.niche} for ${payload.audience}`;
+  return [
+    {
+      phase: "hook",
+      contentDomain,
+      visualBeat: {
+        subject: `one member of ${payload.audience} facing a recognizable ${payload.niche} turning point`,
+        action: "pauses as one concrete problem becomes impossible to ignore",
+        setting: `an authentic everyday environment connected to ${payload.niche}`,
+        emotion: "immediate curiosity and useful tension",
+        emphasis: "the single problem this story will resolve",
+      },
+    },
+    {
+      phase: "explain",
+      contentDomain,
+      visualBeat: {
+        subject: `a trusted ${payload.niche} guide and three concrete cause-and-effect objects for ${payload.audience}`,
+        action: "demonstrates one clear relationship between the objects",
+        setting: `a practical working environment connected to ${payload.niche}`,
+        emotion: "calm confidence and clarity",
+        emphasis: "the one relationship that makes the lesson understandable",
+      },
+    },
+    {
+      phase: "close",
+      contentDomain,
+      visualBeat: {
+        subject: `the same member of ${payload.audience} with one useful ${payload.niche} outcome`,
+        action: "takes one confident next action toward the outcome",
+        setting: `the same authentic ${payload.niche} world now opened toward forward motion`,
+        emotion: "earned optimism and momentum",
+        emphasis: "the concrete next action the audience can picture taking",
+      },
+    },
+  ];
 }
 
 function representativeRows<T>(rows: T[]): readonly [T, T, T] | null {
-  if (rows.length === 0) return null;
+  if (rows.length < 3) return null;
   return [rows[0], rows[Math.floor((rows.length - 1) / 2)], rows[rows.length - 1]] as const;
+}
+
+function jobIdentityKey(inputJson: string | null): string | null {
+  if (!inputJson) return null;
+  try {
+    const parsed = JSON.parse(inputJson) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const value = (parsed as Record<string, unknown>).brandVisualIdentityKey;
+    return typeof value === "string" && value.trim() ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 async function resolveProjectPreview(input: {
   userId: string;
   projectId?: string;
+  expectedIdentityKey: string;
+  fallbackScenes: PreviewScene[];
 }): Promise<{
   existing: readonly [string, string, string] | null;
   scenes: PreviewScene[] | null;
@@ -63,7 +133,7 @@ async function resolveProjectPreview(input: {
   if (!latest || !selected) return { existing: null, scenes: null };
   const phases = ["hook", "explain", "close"] as const;
   const scenes = selected.map((beat, index): PreviewScene => {
-    const fallback = BRAND_VISUAL_BENCHMARK_SCENES[index].visualBeat;
+    const fallback = input.fallbackScenes[index].visualBeat;
     try {
       const parsed = JSON.parse(beat.beatJson) as Partial<Omit<VisualBeat, "phase">>;
       const valid = [parsed.subject, parsed.action, parsed.setting, parsed.emotion, parsed.emphasis]
@@ -78,17 +148,50 @@ async function resolveProjectPreview(input: {
     }
   });
   const urls = selected.map((beat) => beat.existingAssetUrl);
-  const existing = urls.every((url): url is string => typeof url === "string" && Boolean(url.trim()))
-    ? urls as [string, string, string]
-    : null;
+  const jobIds = selected.map((beat) => beat.existingImageJobId);
+  let existing: readonly [string, string, string] | null = null;
+  if (
+    urls.every((url): url is string => typeof url === "string" && Boolean(url.trim()))
+    && jobIds.every((jobId): jobId is string => typeof jobId === "string" && Boolean(jobId.trim()))
+  ) {
+    const jobs = await prisma.aiGenerationJob.findMany({
+      where: { userId: input.userId, id: { in: jobIds } },
+      select: { id: true, inputJson: true },
+    });
+    const identities = new Map(jobs.map((job) => [job.id, jobIdentityKey(job.inputJson)]));
+    if (jobIds.every((jobId) => identities.get(jobId) === input.expectedIdentityKey)) {
+      existing = urls as [string, string, string];
+    }
+  }
   return { existing, scenes };
 }
 
 export async function brandLookPreviewRequiresGeneration(input: {
   userId: string;
   projectId?: string;
+  payload?: BrandProfilePayload;
+  profileId?: string;
+  useDraft?: boolean;
 }): Promise<boolean> {
-  return !(await resolveProjectPreview(input)).existing;
+  if (!input.projectId) return true;
+  let payload = input.payload ? brandProfilePayloadSchema.parse(input.payload) : null;
+  if (!payload && input.profileId) {
+    const profile = await prisma.brandProfile.findFirst({
+      where: { id: input.profileId, userId: input.userId },
+      include: { draft: true, revisions: { orderBy: { version: "desc" }, take: 1 } },
+    });
+    const sourceJson = input.useDraft ? profile?.draft?.payloadJson : profile?.revisions[0]?.payloadJson;
+    if (!sourceJson) return true;
+    payload = brandProfilePayloadSchema.parse(JSON.parse(sourceJson));
+  }
+  if (!payload) return true;
+  const fallbackScenes = standardPreviewScenes(payload);
+  return !(await resolveProjectPreview({
+    userId: input.userId,
+    projectId: input.projectId,
+    expectedIdentityKey: previewIdentityKey(payload),
+    fallbackScenes,
+  })).existing;
 }
 
 /** UX preflight only. Durable per-image reservations remain authoritative, but
@@ -137,9 +240,17 @@ export async function createBrandLookPreview(input: {
   if (!sourceJson) throw new Error("Brand Profile has no previewable revision");
   const payload = brandProfilePayloadSchema.parse(JSON.parse(sourceJson));
 
-  const projectPreview = await resolveProjectPreview(input);
+  const brandVisualLanguage = brandVisualLanguageFor(payload);
+  const identityKey = previewIdentityKey(payload);
+  const fallbackScenes = standardPreviewScenes(payload);
+  const projectPreview = await resolveProjectPreview({
+    userId: input.userId,
+    projectId: input.projectId,
+    expectedIdentityKey: identityKey,
+    fallbackScenes,
+  });
   const existing = projectPreview.existing;
-  const previewScenes = projectPreview.scenes ?? standardPreviewScenes(payload.niche);
+  const previewScenes = projectPreview.scenes ?? fallbackScenes;
 
   const phases = ["hook", "explain", "close"] as const;
   if (existing) {
@@ -180,14 +291,7 @@ export async function createBrandLookPreview(input: {
     include: { items: true },
   });
 
-  const brandVisualLanguage: BrandVisualLanguage = {
-    palette: payload.visual.palette,
-    personality: payload.visual.personality,
-    peopleAndSetting: payload.visual.peopleAndSetting,
-    memorableCues: payload.visual.memorableCues,
-    visualNotes: payload.visual.visualNotes,
-  };
-  const generator: PreviewGenerator = input.generator ?? (async ({ phase, batchId, compiled }) => {
+  const generator: PreviewGenerator = input.generator ?? (async ({ itemId, phase, batchId, compiled }) => {
     const sceneIndex = phases.indexOf(phase);
     const result = await generateHeroImageForVideo({
       userId: input.userId,
@@ -197,7 +301,8 @@ export async function createBrandLookPreview(input: {
       videoJobId: `brand-preview-${batchId}`,
       sceneIndex,
       sceneTitle: `${payload.name} · ${phase}`,
-      brandVisualPrompt: { source: "brand-revision", compiled },
+      brandVisualPrompt: { source: "brand-revision", compiled, identityKey },
+      brandLookPreviewReservation: { itemId, expectedImageJobId: null },
     });
     return { jobId: result.jobId, outputUrl: result.outputUrl };
   });
@@ -214,7 +319,7 @@ export async function createBrandLookPreview(input: {
     });
     await prisma.brandLookPreviewItem.update({ where: { id: item.id }, data: { status: "in_progress" } });
     try {
-      const generated = await generator({ phase, batchId: batch.id, compiled });
+      const generated = await generator({ itemId: item.id, phase, batchId: batch.id, compiled });
       await prisma.brandLookPreviewItem.update({
         where: { id: item.id },
         data: {
@@ -268,23 +373,18 @@ export async function rerollBrandLookPreviewItem(input: {
   };
   const payload = brandProfilePayloadSchema.parse(snapshot.payload);
   const scene = snapshot.previewScenes?.find((candidate) => candidate.phase === phase)
-    ?? standardPreviewScenes(payload.niche).find((candidate) => candidate.phase === phase)!;
+    ?? standardPreviewScenes(payload).find((candidate) => candidate.phase === phase)!;
+  const identityKey = previewIdentityKey(payload);
   const compiled = compileBrandVisualPrompt({
     visualFormatId: payload.visual.primaryVisualFormatId,
     contentDomain: scene.contentDomain,
     treatment: payload.visual.defaultTreatment,
     visualBeat: { ...scene.visualBeat, phase },
-    brandVisualLanguage: {
-      palette: payload.visual.palette,
-      personality: payload.visual.personality,
-      peopleAndSetting: payload.visual.peopleAndSetting,
-      memorableCues: payload.visual.memorableCues,
-      visualNotes: payload.visual.visualNotes,
-    },
+    brandVisualLanguage: brandVisualLanguageFor(payload),
   });
   const requestId = input.requestId.replace(/[^a-z0-9_-]+/gi, "-").slice(0, 80);
   if (!requestId) throw new Error("Preview reroll request id is required");
-  const generator: PreviewGenerator = input.generator ?? (async ({ batchId, compiled: prompt }) => {
+  const generator: PreviewGenerator = input.generator ?? (async ({ itemId, batchId, compiled: prompt }) => {
     const result = await generateHeroImageForVideo({
       userId: input.userId,
       plan: item.batch.user.plan,
@@ -293,7 +393,11 @@ export async function rerollBrandLookPreviewItem(input: {
       videoJobId: `brand-preview-${batchId}`,
       sceneIndex: phase === "hook" ? 0 : phase === "explain" ? 1 : 2,
       sceneTitle: `${payload.name} · ${phase} reroll`,
-      brandVisualPrompt: { source: "brand-revision", compiled: prompt },
+      brandVisualPrompt: { source: "brand-revision", compiled: prompt, identityKey },
+      brandLookPreviewReservation: {
+        itemId,
+        expectedImageJobId: item.aiGenerationJobId,
+      },
     });
     return { jobId: result.jobId, outputUrl: result.outputUrl };
   });
@@ -302,7 +406,7 @@ export async function rerollBrandLookPreviewItem(input: {
     data: { status: "in_progress", errorCode: null },
   });
   try {
-    const generated = await generator({ phase, batchId: item.batchId, compiled });
+    const generated = await generator({ itemId: item.id, phase, batchId: item.batchId, compiled });
     const updated = await prisma.brandLookPreviewItem.update({
       where: { id: item.id },
       data: {
@@ -350,8 +454,15 @@ export async function createUnsavedBrandLookPreview(input: {
   const user = await prisma.user.findUnique({ where: { id: input.userId }, select: { plan: true } });
   if (!user) throw new Error("User not found");
   const phases = ["hook", "explain", "close"] as const;
-  const projectPreview = await resolveProjectPreview(input);
-  const previewScenes = projectPreview.scenes ?? standardPreviewScenes(payload.niche);
+  const identityKey = previewIdentityKey(payload);
+  const fallbackScenes = standardPreviewScenes(payload);
+  const projectPreview = await resolveProjectPreview({
+    userId: input.userId,
+    projectId: input.projectId,
+    expectedIdentityKey: identityKey,
+    fallbackScenes,
+  });
+  const previewScenes = projectPreview.scenes ?? fallbackScenes;
   if (projectPreview.existing) {
     return prisma.brandLookPreviewBatch.create({
       data: {
@@ -382,7 +493,7 @@ export async function createUnsavedBrandLookPreview(input: {
     },
     include: { items: true },
   });
-  const generator: PreviewGenerator = input.generator ?? (async ({ phase, batchId, compiled }) => {
+  const generator: PreviewGenerator = input.generator ?? (async ({ itemId, phase, batchId, compiled }) => {
     const result = await generateHeroImageForVideo({
       userId: input.userId,
       plan: user.plan,
@@ -391,7 +502,8 @@ export async function createUnsavedBrandLookPreview(input: {
       videoJobId: `brand-preview-${batchId}`,
       sceneIndex: phases.indexOf(phase),
       sceneTitle: `${payload.name} · ${phase}`,
-      brandVisualPrompt: { source: "project-look", compiled },
+      brandVisualPrompt: { source: "project-look", compiled, identityKey },
+      brandLookPreviewReservation: { itemId, expectedImageJobId: null },
     });
     return { jobId: result.jobId, outputUrl: result.outputUrl };
   });
@@ -403,17 +515,11 @@ export async function createUnsavedBrandLookPreview(input: {
       contentDomain: scene.contentDomain,
       treatment: payload.visual.defaultTreatment,
       visualBeat: { ...scene.visualBeat, phase },
-      brandVisualLanguage: {
-        palette: payload.visual.palette,
-        personality: payload.visual.personality,
-        peopleAndSetting: payload.visual.peopleAndSetting,
-        memorableCues: payload.visual.memorableCues,
-        visualNotes: payload.visual.visualNotes,
-      },
+      brandVisualLanguage: brandVisualLanguageFor(payload),
     });
     await prisma.brandLookPreviewItem.update({ where: { id: item.id }, data: { status: "in_progress" } });
     try {
-      const generated = await generator({ phase, batchId: batch.id, compiled });
+      const generated = await generator({ itemId: item.id, phase, batchId: batch.id, compiled });
       await prisma.brandLookPreviewItem.update({
         where: { id: item.id },
         data: { status: "completed", outputUrl: generated.outputUrl, aiGenerationJobId: generated.jobId },

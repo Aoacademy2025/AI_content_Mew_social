@@ -37,7 +37,11 @@ async function main() {
     data: { userId: starter.id, granted: 10, purchased: 0 },
   });
 
-  const reserve = (userId: string, key: string) => createReservedImageJob({
+  const reserve = (
+    userId: string,
+    key: string,
+    fundingPolicy: "credits-only" | "brand-visual-activation" = "brand-visual-activation",
+  ) => createReservedImageJob({
     userId,
     model: "z-image-turbo",
     inputPreview: "safe preview",
@@ -52,7 +56,36 @@ async function main() {
     estimatedCostUsdMicros: 1_000,
     idempotencyKey: key,
     mediaExpiresAt: new Date(now.getTime() + DAY_MS),
+    fundingPolicy,
   });
+
+  const genericTrialUser = await prisma.user.create({
+    data: {
+      name: "Generic image trial",
+      email: "generic-image-trial@example.test",
+      plan: "PRO",
+      createdAt: new Date(now.getTime() - DAY_MS),
+      trialStartedAt: new Date(now.getTime() - DAY_MS),
+      trialEndsAt: new Date(now.getTime() + 6 * DAY_MS),
+    },
+  });
+  await prisma.creditBalance.create({
+    data: { userId: genericTrialUser.id, granted: 4, purchased: 0 },
+  });
+  const genericReservation = await reserve(
+    genericTrialUser.id,
+    "studio:generic-image",
+    "credits-only",
+  );
+  assert.equal(genericReservation.ok, true);
+  if (!genericReservation.ok) throw new Error("generic reservation failed");
+  assert.equal(genericReservation.fundingSource, "credits", "generic image surfaces must never consume Brand Visual activation allowance");
+  assert.equal(genericReservation.balanceAfter, 2);
+  assert.equal(
+    await prisma.starterAiImageAllowance.count({ where: { userId: genericTrialUser.id } }),
+    0,
+    "credits-only image generation must not materialize an allowance row",
+  );
 
   const first = await reserve(starter.id, "brand:first");
   assert.equal(first.ok, true);

@@ -44,7 +44,7 @@ export function SaveProjectLookPrompt({
     });
   }
   return <div className="mx-3 mt-3 flex flex-wrap items-center justify-between gap-3 rounded-xl px-4 py-3" style={{ background: "rgba(56,189,248,.10)", border: "1px solid rgba(56,189,248,.28)" }}>
-    <div className="flex min-w-0 items-start gap-2.5"><BookmarkPlus size={17} color="#38BDF8" className="mt-0.5 shrink-0" /><div><p style={{ color: color.text, font: `600 12px ${font.heading}` }}>ชอบแนวภาพของคลิปนี้ไหม?</p><p className="mt-0.5" style={{ color: color.textSecondary, fontSize: 10.5 }}>บันทึกเป็นแบรนด์หลังเห็นผลงานจริง โปรเจกต์นี้จะ pin Revision ที่สร้างขึ้น</p></div></div>
-    <Link href={`/brands?new=1&projectId=${encodeURIComponent(projectId)}`} onClick={() => trackEvent("brand_profile_save_prompt_clicked", { path: "/video-editor", properties: { projectId, source } })} className="min-h-9 rounded-lg bg-[#38BDF8] px-3 py-2 text-[10.5px] font-bold text-[#151515]">บันทึกแนวนี้เป็นแบรนด์</Link>
+    <div className="flex min-w-0 items-start gap-2.5"><BookmarkPlus size={17} color={color.info} className="mt-0.5 shrink-0" /><div><p style={{ color: color.text, font: `600 12px ${font.heading}` }}>ชอบแนวภาพของคลิปนี้ไหม?</p><p className="mt-0.5" style={{ color: color.textSecondary, fontSize: 10.5 }}>บันทึกเป็นแบรนด์หลังเห็นผลงานจริง โปรเจกต์นี้จะ pin Revision ที่สร้างขึ้น</p></div></div>
+    <Link href={`/brands?new=1&projectId=${encodeURIComponent(projectId)}`} onClick={() => trackEvent("brand_profile_save_prompt_clicked", { path: "/video-editor", properties: { projectId, source } })} className="min-h-9 rounded-lg px-3 py-2 text-[10.5px] font-bold" style={{ background: color.info, color: color.bg0 }}>บันทึกแนวนี้เป็นแบรนด์</Link>
   </div>;
 }

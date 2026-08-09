@@ -130,6 +130,7 @@ export async function POST(request: Request) {
       estimatedCostUsdMicros: preparedProviderJob.quote.estimatedProviderCostUsdMicros,
       idempotencyKey: storedIdempotencyKey,
       mediaExpiresAt: videoExpiryFor(user.plan),
+      fundingPolicy: "credits-only",
     });
     if (!reserved.ok) {
       return NextResponse.json({
