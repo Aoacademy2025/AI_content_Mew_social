@@ -40,6 +40,9 @@ async function main() {
         version: AVATAR_PROVIDER_CHECKPOINT_VERSION,
         provider: "heygen",
         phase: "composite",
+        // Resume the final allowed local-composite attempt. Provider deadlines do
+        // not govern this phase; the executor's own retry budget does.
+        compositeAttempts: 1,
         providerStartedAt: "2026-07-30T10:00:00.000Z",
         providerDeadlineAt: "2026-07-30T10:30:00.000Z",
         baseUrl: "/api/renders/base.mp4",
@@ -112,6 +115,18 @@ async function main() {
   });
 
   await runOrchestrator(videoJobId, userId, {
+    caller: {
+      async post<T>(path: string): Promise<T> {
+        assert.equal(path, "/api/heygen/composite");
+        throw new Error("composite executor deadline exceeded");
+      },
+      async patch<T>(path: string): Promise<T> {
+        throw new Error(`unexpected PATCH ${path}`);
+      },
+      async get<T>(path: string): Promise<T> {
+        throw new Error(`unexpected GET ${path}`);
+      },
+    },
     recordTelemetryEvent: async () => {},
   });
 

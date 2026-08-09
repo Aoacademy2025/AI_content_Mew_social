@@ -1615,13 +1615,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       });
       if (!result || result.kind === "in_flight") financialSettlementPending = true;
     }
+    const reservationRefundReason = financialSettlementPending
+      ? settlementReason
+      : e instanceof AvatarProviderFailureError
+        ? e.reservationRefundReason
+        : undefined;
     emitStage(phaseName, "error", Date.now() - phaseStartedAt, { message });
     await failJob(jobId, e instanceof AvatarProviderFailureError
       ? {
           message: e.failure.message,
           code: e.failure.code,
           provider: e.failure.provider,
-          ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
+          ...(reservationRefundReason ? { reservationRefundReason } : {}),
         }
       : e instanceof HeroVoiceProviderFailureError
         ? {
