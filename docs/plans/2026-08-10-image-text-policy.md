@@ -9,11 +9,20 @@ Two facts established on 2026-08-10, both verified against production code and r
 
 ### 1. The text-free contract has never been enforced
 
-`publicZImageProviderInput()` in `src/lib/runpod-image-contract.ts:42-55` builds the RunPod payload
-from `{ prompt, size, seed, output_format, enable_safety_checker }`. It accepts `negativePrompt` in
-its input type and **silently drops it**. That function is the only path every production
-`z-image-turbo` call takes (`src/lib/runpod-serverless.ts:159-161`). Only the `comfy-workflow`
-protocol consumes `{{NEGATIVE_PROMPT}}`.
+`z-image-turbo` is positive-only on **both** of its routes.
+
+- **Public route** — `publicZImageProviderInput()` in `src/lib/runpod-image-contract.ts:42-55` builds
+  the RunPod payload from `{ prompt, size, seed, output_format, enable_safety_checker }`. It accepts
+  `negativePrompt` in its input type and **silently drops it**. The endpoint neither rejects nor
+  honours the field: same seed, three payloads, byte-identical PNGs.
+- **Custom route** — which is what production actually runs (`video-hero-image.server.ts` hard-fails
+  unless `providerRoute === "runpod-custom"`). Its workflow `config/ai-workflows/z-image-turbo.json`
+  runs at `cfg: 1` with `ConditioningZeroOut` feeding the sampler's negative input, and carries no
+  `{{NEGATIVE_PROMPT}}` token **by design**.
+
+> Correction: an earlier draft of this plan said the public route was "the only path every production
+> call takes". That was inverted — production runs the custom route. The conclusion is unchanged and
+> now holds on both. `{{NEGATIVE_PROMPT}}` remains genuinely live for the `comfy-workflow` engines.
 
 So `TEXT_FREE_NEGATIVE_PROMPT_TERMS` — ~60 terms including `text`, `letters`, `logo`, `watermark`,
 `screen text` — is computed on every call and thrown away. **CONTEXT.md's "Text-free AI Image"
