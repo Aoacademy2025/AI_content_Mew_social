@@ -40,6 +40,12 @@ import { buildScriptHandoffDraft } from "@/lib/editor-default-draft";
 import { getDefaultBrandPreference } from "@/lib/brand-assets.server";
 import { visibleTtsProvider } from "@/lib/tts-providers";
 import {
+  applyBrandRevisionDefaultsToProjectDraft,
+  BrandProfileLibraryError,
+  resolveBrandProfileRevisionForNewProjectInTransaction,
+} from "@/lib/brand-profile-library.server";
+import { brandLookIdentityKey, VISUAL_FORMATS } from "@/lib/brand-visual-system";
+import {
   openRouterGenerateText,
   isOpenRouterAuthError,
   isOpenRouterCreditError,
@@ -54,7 +60,10 @@ import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { tokenizeWords } from "@/lib/tts-timing";
 import { isValidHookFormulaKey, isValidStoryStructureKey } from "@/lib/viral-frameworks";
 import { TTS_WORDS_PER_SECOND } from "@/lib/prompts/content-generator";
-import { buildBannedWordRetryNote } from "@/lib/prompts/hero-script";
+import {
+  buildBannedWordRetryNote,
+  type BrandProfileForPrompt,
+} from "@/lib/prompts/hero-script";
 
 // ── Auth + internal-beta allowlist gate (shared by all 11 routes) ──────────
 //
@@ -113,6 +122,81 @@ export type BrandProfileDTO = Omit<BrandProfile, "bannedWords"> & { bannedWords:
 /** Map a raw BrandProfile row to its API-facing DTO (bannedWords parsed). */
 export function toBrandProfileDTO(row: BrandProfile): BrandProfileDTO {
   return { ...row, bannedWords: parseBannedWords(row.bannedWords) };
+}
+
+export type HeroScriptBrandProfileResolution =
+  | {
+      ok: true;
+      profile: BrandProfileForPrompt;
+      bannedWords: string[];
+      ctaStyle: string;
+    }
+  | { ok: false; code: "NOT_FOUND" | "UNAVAILABLE"; message: string };
+
+/** Resolve brand writing defaults for a NEW Hero Script operation.
+ *
+ * Legacy revision-0 rows keep their historical mutable behavior until the
+ * creator explicitly imports them. Published Brand Library rows instead read
+ * the immutable active Revision payload and pass the same plan-authoritative
+ * freeze check used by Editor pinning. This prevents a mutable top-level row or
+ * a downgraded overflow profile from changing new work. */
+export async function resolveHeroScriptBrandProfile(
+  userId: string,
+  brandProfileId: string,
+): Promise<HeroScriptBrandProfileResolution> {
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const row = await tx.brandProfile.findFirst({
+        where: { id: brandProfileId, userId },
+      });
+      if (!row) {
+        return { ok: false as const, code: "NOT_FOUND" as const, message: "ไม่พบโปรไฟล์แบรนด์" };
+      }
+      if (row.activeRevisionNumber <= 0) {
+        if (row.frozenAt) {
+          return {
+            ok: false as const,
+            code: "UNAVAILABLE" as const,
+            message: "แบรนด์นี้อยู่ในโหมดอ่านอย่างเดียวตามแผนปัจจุบัน",
+          };
+        }
+        const profile = toBrandProfileDTO(row);
+        return {
+          ok: true as const,
+          profile,
+          bannedWords: profile.bannedWords,
+          ctaStyle: row.ctaStyle || "follow",
+        };
+      }
+
+      const resolved = await resolveBrandProfileRevisionForNewProjectInTransaction(tx, {
+        userId,
+        profileId: row.id,
+      });
+      if (!resolved) {
+        return { ok: false as const, code: "UNAVAILABLE" as const, message: "แบรนด์นี้ยังไม่พร้อมใช้งาน" };
+      }
+      const scriptDefaults = resolved.payload.script;
+      const bannedWords = [...scriptDefaults.bannedWords];
+      return {
+        ok: true as const,
+        profile: {
+          niche: resolved.payload.niche,
+          audience: resolved.payload.audience,
+          tone: scriptDefaults.tone,
+          bannedWords,
+          analysisNotes: scriptDefaults.analysisNotes ?? null,
+        },
+        bannedWords,
+        ctaStyle: scriptDefaults.ctaStyle || "follow",
+      };
+    });
+  } catch (error) {
+    if (error instanceof BrandProfileLibraryError) {
+      return { ok: false, code: "UNAVAILABLE", message: error.message };
+    }
+    throw error;
+  }
 }
 
 // ── Plan cap: brandProfiles (FREE 1 / PRO 5 / BUSINESS Infinity) ───────────
@@ -921,11 +1005,7 @@ export interface ScriptPatch {
  *  against attaching someone else's BrandProfile to your own Script (the FK
  *  alone only proves the row exists, not who owns it). */
 export async function ownsBrandProfile(userId: string, brandProfileId: string): Promise<boolean> {
-  const row = await prisma.brandProfile.findFirst({
-    where: { id: brandProfileId, userId },
-    select: { id: true },
-  });
-  return row !== null;
+  return (await resolveHeroScriptBrandProfile(userId, brandProfileId)).ok;
 }
 
 /** `client` defaults to the global prisma client; pass a transaction client to
@@ -1154,9 +1234,16 @@ export async function createScriptWithinCap(
 export const EDITOR_LOCKED_MESSAGE = "อัปเกรดเป็น PRO เพื่อส่งเข้าตัดต่อ";
 
 export type SendScriptToEditorResult =
-  | { ok: true; projectId: string }
+  | {
+      ok: true;
+      projectId: string;
+      brandProfileRevisionId: string | null;
+      brandLookIdentityKey: string | null;
+      visualFormatId: string | null;
+    }
   | { ok: false; code: "NOT_FOUND"; message: string }
   | { ok: false; code: "EDITOR_LOCKED"; message: string }
+  | { ok: false; code: "BRAND_PROFILE_UNAVAILABLE"; message: string }
   | { ok: false; code: "EMPTY_SCRIPT"; message: string };
 
 /** POST /api/scripts/[id]/send-to-editor — hand a finished script to the video
@@ -1210,7 +1297,7 @@ export async function sendScriptToEditor(
 
   const title = sanitizeEditorProjectTitle(script.topic);
   const brandDefault = await getDefaultBrandPreference(userId);
-  const draft = buildScriptHandoffDraft({
+  const accountDraft = buildScriptHandoffDraft({
     script: text,
     projectTitle: title,
     accountDefaults: {
@@ -1226,21 +1313,67 @@ export async function sendScriptToEditor(
   // Sentinel: thrown to roll the whole handoff back, never surfaced to callers.
   const scriptGone = new Error("hero_script_send_target_missing");
   try {
-    const projectId = await prisma.$transaction(async (tx) => {
-      const project = await createEditorProject(userId, { title, draft }, tx);
+    const handoff = await prisma.$transaction(async (tx) => {
+      const revision = script.brandProfileId
+        ? await resolveBrandProfileRevisionForNewProjectInTransaction(tx, {
+            userId,
+            profileId: script.brandProfileId,
+          })
+        : null;
+      const draft = revision
+        ? applyBrandRevisionDefaultsToProjectDraft({ draft: { ...accountDraft }, payload: revision.payload })
+        : accountDraft;
+      const project = await createEditorProject(userId, {
+        title,
+        draft,
+        brandProfileRevisionId: revision?.revisionId,
+      }, tx);
       // Ownership-scoped write — and the authoritative existence check: a
       // concurrent DELETE between the load above and here makes count 0, which
       // must undo the project rather than report a handoff that never happened.
       const marked = await tx.script.updateMany({
-        where: { id: scriptId, userId },
+        where: { id: scriptId, userId, brandProfileId: script.brandProfileId },
         data: { status: "sent", editorProjectId: project.id },
       });
       if (marked.count === 0) throw scriptGone;
-      return project.id;
+      const visual = revision?.payload.visual;
+      const format = visual
+        ? VISUAL_FORMATS.find((candidate) => candidate.id === visual.primaryVisualFormatId)
+        : null;
+      const language = visual?.languageMode === "defined"
+        ? {
+            palette: visual.palette,
+            personality: visual.personality,
+            peopleAndSetting: visual.peopleAndSetting,
+            memorableCues: visual.memorableCues,
+            visualNotes: visual.visualNotes,
+          }
+        : null;
+      return {
+        projectId: project.id,
+        brandProfileRevisionId: revision?.revisionId ?? null,
+        brandLookIdentityKey: visual && format
+          ? brandLookIdentityKey({
+              visualFormatId: visual.primaryVisualFormatId,
+              recipeVersion: format.recipeVersion,
+              treatment: visual.defaultTreatment,
+              brandVisualLanguage: language,
+            })
+          : null,
+        visualFormatId: visual?.primaryVisualFormatId ?? null,
+      };
     });
-    return { ok: true, projectId };
+    return { ok: true, ...handoff };
   } catch (error) {
     if (error === scriptGone) return { ok: false, code: "NOT_FOUND", message: "ไม่พบสคริปต์" };
+    if (error instanceof BrandProfileLibraryError) {
+      if (error.code === "NOT_FOUND") {
+        return { ok: false, code: "NOT_FOUND", message: "ไม่พบแบรนด์ของสคริปต์นี้" };
+      }
+      if (error.code === "FROZEN" || error.code === "PREFERRED_REQUIRED" || error.code === "NO_REVISION") {
+        return { ok: false, code: "BRAND_PROFILE_UNAVAILABLE", message: error.message };
+      }
+    }
     throw error;
   }
 }

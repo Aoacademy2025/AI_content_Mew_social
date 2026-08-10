@@ -38,6 +38,8 @@ function brandedJobInput(value: string | null): {
   videoJobId: string;
   visualFormatId: string | null;
   identityKey: string | null;
+  lookIdentityKey: string | null;
+  cohort: "internal" | "treatment-10" | "treatment-50" | "treatment-100" | null;
 } | null {
   if (!value) return null;
   try {
@@ -45,30 +47,40 @@ function brandedJobInput(value: string | null): {
     const source = parsed.brandVisualSource;
     if (source !== "project-look" && source !== "brand-revision" && source !== "suggested") return null;
     if (typeof parsed.videoJobId !== "string" || !parsed.videoJobId) return null;
+    const cohort = parsed.brandVisualCohort === "internal"
+      || parsed.brandVisualCohort === "treatment-10"
+      || parsed.brandVisualCohort === "treatment-50"
+      || parsed.brandVisualCohort === "treatment-100"
+      ? parsed.brandVisualCohort
+      : null;
     return {
       videoJobId: parsed.videoJobId,
       visualFormatId: typeof parsed.visualFormatId === "string" ? parsed.visualFormatId : null,
       identityKey: typeof parsed.brandVisualIdentityKey === "string" ? parsed.brandVisualIdentityKey : null,
+      lookIdentityKey: typeof parsed.brandLookIdentityKey === "string" ? parsed.brandLookIdentityKey : null,
+      cohort,
     };
   } catch {
     return null;
   }
 }
 
-function isBrandedInput(value: string | null): boolean {
-  if (!value) return false;
-  try {
-    const parsed = JSON.parse(value) as { brandVisualSource?: unknown };
-    return parsed.brandVisualSource === "project-look"
-      || parsed.brandVisualSource === "brand-revision"
-      || parsed.brandVisualSource === "suggested";
-  } catch {
-    return false;
-  }
-}
-
 function dayKey(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+function rate(numerator: number, denominator: number): number | null {
+  return denominator > 0 ? numerator / denominator : null;
+}
+
+function percentile(values: number[], target: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.ceil((target / 100) * sorted.length) - 1),
+  );
+  return sorted[index];
 }
 
 export async function getBrandVisualFunnelHealth(input: { from: Date; now: Date }) {
@@ -129,14 +141,18 @@ export async function getBrandVisualFunnelHealth(input: { from: Date; now: Date 
           finishedAt: { not: null },
         },
         select: { userId: true, finishedAt: true },
+        orderBy: { finishedAt: "asc" },
       })
     : [];
   const firstRenderSuccessIds = new Set<string>();
+  const firstVideoSuccess = new Map<string, Date>();
   for (const job of firstRenderJobs) {
     const user = userById.get(job.userId);
     if (!user || !job.finishedAt) continue;
     const elapsed = job.finishedAt.getTime() - user.createdAt.getTime();
-    if (elapsed >= 0 && elapsed <= DAY_MS) firstRenderSuccessIds.add(job.userId);
+    if (elapsed < 0) continue;
+    if (!firstVideoSuccess.has(job.userId)) firstVideoSuccess.set(job.userId, job.finishedAt);
+    if (elapsed <= DAY_MS) firstRenderSuccessIds.add(job.userId);
   }
 
   const imageJobs = treatmentIds.length
@@ -178,6 +194,7 @@ export async function getBrandVisualFunnelHealth(input: { from: Date; now: Date 
     at: Date;
     projectId: string | null;
     identityKey: string | null;
+    lookIdentityKey: string | null;
     visualFormatId: string | null;
   }>();
   for (const video of completedVideos) {
@@ -188,6 +205,7 @@ export async function getBrandVisualFunnelHealth(input: { from: Date; now: Date 
       at: video.finishedAt,
       projectId: video.projectId,
       identityKey: visual.detail.identityKey,
+      lookIdentityKey: visual.detail.lookIdentityKey,
       visualFormatId: visual.detail.visualFormatId,
     });
   }
@@ -220,8 +238,10 @@ export async function getBrandVisualFunnelHealth(input: { from: Date; now: Date 
       const elapsed = event.createdAt.getTime() - success.at.getTime();
       if (elapsed < 0 || elapsed > SEVEN_DAYS_MS) return false;
       const detail = properties(event.properties);
-      const sameLook = success.identityKey && typeof detail.brandVisualIdentityKey === "string"
-        ? detail.brandVisualIdentityKey === success.identityKey
+      const sameLook = success.lookIdentityKey && typeof detail.brandLookIdentityKey === "string"
+        ? detail.brandLookIdentityKey === success.lookIdentityKey
+        : success.identityKey && typeof detail.brandVisualIdentityKey === "string"
+          ? detail.brandVisualIdentityKey === success.identityKey
         : success.visualFormatId && typeof detail.visualFormatId === "string"
           ? detail.visualFormatId === success.visualFormatId
           : false;
@@ -232,6 +252,48 @@ export async function getBrandVisualFunnelHealth(input: { from: Date; now: Date 
     });
     if (qualified) qualifiedWithin7dUsers += 1;
   }
+
+  const observedControlSuccesses = controlIds.flatMap((userId) => {
+    const at = firstVideoSuccess.get(userId);
+    return at && at.getTime() + SEVEN_DAYS_MS <= input.now.getTime()
+      ? [{ userId, at }]
+      : [];
+  });
+  const observedTreatmentSuccesses = observedSuccesses.map(([userId, success]) => ({
+    userId,
+    at: success.at,
+  }));
+  const paidObservationIds = [
+    ...observedControlSuccesses.map(({ userId }) => userId),
+    ...observedTreatmentSuccesses.map(({ userId }) => userId),
+  ];
+  const paidPayments = paidObservationIds.length
+    ? await prisma.payment.findMany({
+        where: {
+          userId: { in: paidObservationIds },
+          status: "PAID",
+          periodDays: { gt: 0 },
+          paidAt: { not: null, lt: input.now },
+        },
+        select: { userId: true, paidAt: true },
+      })
+    : [];
+  const paidByUser = new Map<string, Date[]>();
+  for (const payment of paidPayments) {
+    if (!payment.paidAt) continue;
+    const current = paidByUser.get(payment.userId) ?? [];
+    current.push(payment.paidAt);
+    paidByUser.set(payment.userId, current);
+  }
+  const convertedWithin7d = (rows: Array<{ userId: string; at: Date }>) => rows.filter((row) =>
+    (paidByUser.get(row.userId) ?? []).some((paidAt) => {
+      const elapsed = paidAt.getTime() - row.at.getTime();
+      return elapsed >= 0 && elapsed <= SEVEN_DAYS_MS;
+    })).length;
+  const controlPaidConversions = convertedWithin7d(observedControlSuccesses);
+  const treatmentPaidConversions = convertedWithin7d(observedTreatmentSuccesses);
+  const controlPaidRate = rate(controlPaidConversions, observedControlSuccesses.length);
+  const treatmentPaidRate = rate(treatmentPaidConversions, observedTreatmentSuccesses.length);
 
   const evaluation = evaluateBrandVisualFunnel({
     controlStep2Users: controlIds.length,
@@ -253,6 +315,22 @@ export async function getBrandVisualFunnelHealth(input: { from: Date; now: Date 
         ? null
         : "Set BRAND_VISUAL_50_PERCENT_STARTED_AT before using this funnel to authorize 100% rollout.",
     },
+    paidConversion7d: {
+      observationalOnly: true as const,
+      control: {
+        observedUsers: observedControlSuccesses.length,
+        convertedUsers: controlPaidConversions,
+        rate: controlPaidRate,
+      },
+      treatment: {
+        observedUsers: observedTreatmentSuccesses.length,
+        convertedUsers: treatmentPaidConversions,
+        rate: treatmentPaidRate,
+      },
+      treatmentVsControlPercentagePointDelta: controlPaidRate !== null && treatmentPaidRate !== null
+        ? (treatmentPaidRate - controlPaidRate) * 100
+        : null,
+    },
     ...evaluation,
   };
 }
@@ -263,22 +341,44 @@ export async function getBrandVisualRolloutHealth(input: {
 } = {}) {
   const now = input.now ?? new Date();
   const days = Math.max(1, Math.min(90, Math.floor(input.days ?? 30)));
-  const from = new Date(now.getTime() - days * DAY_MS);
+  const rollout = brandVisualRolloutFlags();
+  const requestedFrom = new Date(now.getTime() - days * DAY_MS);
+  const from = rollout.startedAt && rollout.startedAt > requestedFrom
+    ? rollout.startedAt
+    : requestedFrom;
+  const safetyCohort = rollout.percent === 10
+    ? "treatment-10" as const
+    : rollout.percent === 50
+      ? "treatment-50" as const
+      : rollout.percent === 100
+        ? "treatment-100" as const
+        : null;
   const staleBefore = new Date(now.getTime() - THIRTY_MINUTES_MS);
-  const jobs = (await prisma.aiGenerationJob.findMany({
+  const brandedCandidates = (await prisma.aiGenerationJob.findMany({
     where: { kind: "image", provider: "runpod", createdAt: { gte: from, lt: now } },
     select: {
       id: true,
+      userId: true,
       status: true,
       chargeState: true,
       fundingSource: true,
       outputUrl: true,
       inputJson: true,
+      createdAt: true,
       updatedAt: true,
       finishedAt: true,
       providerEndpoint: true,
     },
-  })).filter((job) => isBrandedInput(job.inputJson));
+  })).flatMap((job) => {
+    const detail = brandedJobInput(job.inputJson);
+    return detail ? [{ ...job, detail }] : [];
+  });
+  // The 100-image safety sample belongs to the stable public treatment cohort
+  // for the CURRENT rollout stage. Internal/ducky/test jobs and historical
+  // stage labels remain observable but can never authorize expansion.
+  const jobs = safetyCohort
+    ? brandedCandidates.filter((job) => job.detail.cohort === safetyCohort)
+    : [];
 
   const terminal = jobs.filter((job) =>
     job.status === "completed" || job.status === "failed" || job.status === "canceled");
@@ -289,20 +389,46 @@ export async function getBrandVisualRolloutHealth(input: {
     job.chargeState === "refunded" || job.chargeState === "none");
   const staleReservations = jobs.filter((job) =>
     job.chargeState === "reserved" && job.updatedAt < staleBefore).length;
+  const terminalDurations = terminal.flatMap((job) => {
+    if (!job.finishedAt) return [];
+    const durationMs = job.finishedAt.getTime() - job.createdAt.getTime();
+    return Number.isFinite(durationMs) && durationMs >= 0 ? [durationMs] : [];
+  });
 
-  const [negativeCreditBalances, allowanceRows] = await Promise.all([
+  const creditSpendActions = jobs
+    .filter((job) => job.fundingSource === "credits")
+    .map((job) => `ai-image:${job.id}`);
+  const [negativeCreditBalances, allowanceRows, spendLedgerRows] = await Promise.all([
     prisma.creditBalance.count({
       where: { OR: [{ granted: { lt: 0 } }, { purchased: { lt: 0 } }] },
     }),
     prisma.starterAiImageAllowance.findMany({
       select: { limitImages: true, reservedImages: true, usedImages: true },
     }),
+    creditSpendActions.length
+      ? prisma.creditLedger.findMany({
+          where: {
+            kind: "spend",
+            action: { in: creditSpendActions },
+            createdAt: { gte: from, lt: now },
+          },
+          select: { userId: true, action: true },
+        })
+      : Promise.resolve([]),
   ]);
   const invalidAllowances = allowanceRows.filter((row) =>
     row.limitImages !== 8
     || row.reservedImages < 0
     || row.usedImages < 0
     || row.reservedImages + row.usedImages > row.limitImages).length;
+  const spendCounts = new Map<string, number>();
+  for (const row of spendLedgerRows) {
+    if (!row.action) continue;
+    const key = `${row.userId}:${row.action}`;
+    spendCounts.set(key, (spendCounts.get(key) ?? 0) + 1);
+  }
+  const duplicateDeductions = [...spendCounts.values()]
+    .reduce((total, count) => total + Math.max(0, count - 1), 0);
 
   const endpointId = jobs.find((job) => job.providerEndpoint)?.providerEndpoint ?? undefined;
   const costSnapshot = await getRunpodImageCostSnapshot({ endpointId, now, windowDays: days })
@@ -356,16 +482,41 @@ export async function getBrandVisualRolloutHealth(input: {
     failedJobs: failed.length,
     correctlyRestoredFailedJobs: restored.length,
     staleReservations,
+    duplicateDeductions,
     negativeCreditBalances,
     invalidAllowances,
+    cogsDataAdmitted: costSnapshot?.admitted === true && costSnapshot.status !== "stale",
     averageCogsBahtPerImage: costSnapshot?.costBahtPerImage ?? null,
     highestDailyCogsBahtPerImage,
   };
   const safety = evaluateBrandVisualSafety(inputs);
+  const rerollEvents = safetyCohort
+    ? await prisma.telemetryEvent.findMany({
+        where: {
+          name: "brand_look_scene_rerolled",
+          createdAt: { gte: from, lt: now },
+        },
+        select: { properties: true },
+      })
+    : [];
+  const rerollCount = rerollEvents.filter((event) =>
+    properties(event.properties).cohort === safetyCohort).length;
+  const activatedUsers = new Set(usable.map((job) => job.userId)).size;
+  const estimatedCogsBahtPerActivatedUser = costSnapshot?.costBahtPerImage !== null
+    && costSnapshot?.costBahtPerImage !== undefined
+    && activatedUsers > 0
+    ? costSnapshot.costBahtPerImage * usable.length / activatedUsers
+    : null;
   const funnel = await getBrandVisualFunnelHealth({ from, now });
-  const rollout = brandVisualRolloutFlags();
   return {
     window: { from: from.toISOString(), to: now.toISOString(), days },
+    canary: {
+      cohort: safetyCohort,
+      candidateBrandedJobs: brandedCandidates.length,
+      excludedInternalJobs: brandedCandidates.filter((job) => job.detail.cohort === "internal").length,
+      excludedOtherCohortJobs: brandedCandidates.filter((job) =>
+        job.detail.cohort !== "internal" && job.detail.cohort !== safetyCohort).length,
+    },
     jobs: {
       accepted: jobs.length,
       terminal: terminal.length,
@@ -374,10 +525,23 @@ export async function getBrandVisualRolloutHealth(input: {
       restored: restored.length,
       inFlight: jobs.length - terminal.length,
     },
+    latency: {
+      sampleJobs: terminalDurations.length,
+      p50Ms: percentile(terminalDurations, 50),
+      p95Ms: percentile(terminalDurations, 95),
+      blocksCanary: false,
+    },
     settlement: {
       staleReservations,
+      duplicateDeductions,
       negativeCreditBalances,
       invalidAllowances,
+    },
+    leadingMetrics: {
+      rerolls: rerollCount,
+      rerollsPerUsableImage: rate(rerollCount, usable.length),
+      activatedUsers,
+      estimatedRunpodCogsBahtPerActivatedUser: estimatedCogsBahtPerActivatedUser,
     },
     cogs: costSnapshot ? {
       averageBahtPerImage: costSnapshot.costBahtPerImage,

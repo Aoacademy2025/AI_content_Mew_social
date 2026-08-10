@@ -10,6 +10,52 @@
 export type AutoMixSource = "video" | "photo" | "ai";
 export type AutoMixWeights = { video: number; photo: number; ai: number };
 
+/** Parse the exact new-image ceiling approved in Render Receipt. Fail closed:
+ * strings, fractions, negatives and out-of-range numbers are not equivalent to
+ * an unlimited budget. Public API/worker seams share this parser. */
+export function parseAutoMixReceiptImageCeiling(value: unknown): number | null {
+  return typeof value === "number"
+    && Number.isInteger(value)
+    && value >= 0
+    && value <= 60
+    ? value
+    : null;
+}
+
+/** Product-level lazy trigger for Content Preflight. Loading the Brand Library
+ * is cheap and independent; semantic scene analysis begins only when an AI
+ * visual path, explicit settings, or an established immutable pin needs it. */
+export function shouldLoadBrandVisualContext(input: {
+  brollSource: string;
+  mixPreset: string;
+  hasPersistedVisualPin: boolean;
+  settingsOpen: boolean;
+}): boolean {
+  return input.hasPersistedVisualPin
+    || input.settingsOpen
+    || input.brollSource === "kie-image"
+    || ((input.brollSource === "automix" || input.brollSource === "auto-mix")
+      && input.mixPreset !== "free");
+}
+
+/**
+ * Product default for a brand-new paid project. This is deliberately separate
+ * from the legacy managed-KIE/internal-tester gate: that gate controls old
+ * provider tooling, while the public Hero/Brand Visual policies decide whether
+ * the recommended AutoMix can actually generate an AI slot.
+ *
+ * Existing projects never call this as a migration. Their persisted Mix Preset
+ * remains authoritative.
+ */
+export function shouldDefaultToRecommendedAutoMix(input: {
+  effectivePlan: string | null | undefined;
+  heroAiImageEligible: boolean;
+  brandVisualAllowed: boolean;
+}): boolean {
+  const paidPlan = input.effectivePlan === "PRO" || input.effectivePlan === "BUSINESS";
+  return paidPlan && (input.heroAiImageEligible || input.brandVisualAllowed);
+}
+
 /**
  * Assign a source to each of `n` pieces by weight, smoothly interleaved (not blocked).
  * Sources with weight 0 never appear. If every weight is 0, returns all "video"
@@ -86,7 +132,8 @@ export function planAutoMixSources(n: number, weights: AutoMixWeights): AutoMixS
 /**
  * Cap the paid "ai" slots of a plan at `keep`, keeping the EARLIEST slots (the order
  * the generator processes them in). Returns both halves; the caller decides what the
- * demoted slots become — fetch-stock turns them into FREE photo slots.
+ * demoted slots become — the caller may omit them to reduce AI density or use
+ * an explicit fallback for non-entitlement failures.
  *
  * `keep = null` means "no ceiling" — nothing is demoted. Two ceilings use this:
  *   1. the AI-image count the client disclosed in its Render Receipt (`maxAiImages`),
@@ -100,6 +147,22 @@ export function clampAutoMixAiSlots(
   if (keep === null || !Number.isFinite(keep)) return { kept: ordered, demoted: [] };
   const limit = Math.max(0, Math.floor(keep));
   return { kept: ordered.slice(0, limit), demoted: ordered.slice(limit) };
+}
+
+/** Keep a reduced set of NEW AI slots distributed across the timeline. This is
+ * used after reusable assets have been removed from the paid-work set, so the
+ * remaining allowance/receipt budget produces lower density instead of a
+ * front-loaded cluster or hidden Stock substitutions. */
+export function distributeAutoMixAiSlots(
+  slots: Iterable<number>,
+  keep: number,
+): { kept: number[]; demoted: number[] } {
+  const ordered = [...slots].sort((left, right) => left - right);
+  const keptPositions = new Set(pickEvenIndices(ordered.length, Math.max(0, keep)));
+  return {
+    kept: ordered.filter((_, index) => keptPositions.has(index)),
+    demoted: ordered.filter((_, index) => !keptPositions.has(index)),
+  };
 }
 
 /**

@@ -9,6 +9,9 @@ import {
 import { resolveProjectMediaState } from "@/lib/media-retention";
 import { cancelHeroVoiceGeneration } from "@/lib/hero-voice-generation.server";
 import { parseHeroVoiceProviderCheckpoint } from "@/lib/mcp/hero-voice-provider-checkpoint";
+import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
+import { refundVideoJobTerminalRenderReservations } from "@/lib/render/reservation-settlement";
+import { parseProjectVisualContext } from "@/lib/project-look.server";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
 // Output is included only when done, parsed through the versioned reader (v1 + v2).
@@ -27,6 +30,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       select: {
         id: true,
         projectId: true,
+        contentPreflightId: true,
+        projectVisualContextJson: true,
         type: true,
         status: true,
         currentStep: true,
@@ -65,6 +70,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     return NextResponse.json({
       id: job.id,
       projectId: job.projectId,
+      contentPreflightId: job.contentPreflightId,
+      projectVisualContext: parseProjectVisualContext(job.projectVisualContextJson),
       type: job.type,
       status: toPublicVideoJobStatus(job.status), // queued | processing | done | failed | canceled
       currentStep: job.currentStep,
@@ -95,14 +102,26 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
     const { id } = await ctx.params;
     const job = await prisma.videoJob.findFirst({
       where: { id, userId: user.id },
-      select: { id: true, projectId: true, type: true, providerCheckpointJson: true },
+      select: {
+        id: true,
+        projectId: true,
+        type: true,
+        currentStep: true,
+        providerCheckpointJson: true,
+      },
     });
     if (!job) {
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
     }
     const res = await prisma.videoJob.updateMany({
       where: { id, userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } },
-      data: { status: "canceled", finishedAt: new Date(), errorMessage: "canceled by user (editor v2)" },
+      data: {
+        status: "canceled",
+        finishedAt: new Date(),
+        errorMessage: "canceled by user (editor v2)",
+        reservationRefundPending: true,
+        reservationRefundReason: "video_user_canceled",
+      },
     });
     if (res.count !== 1) {
       return NextResponse.json({ error: "not_cancelable", message: "งานจบไปแล้ว — ยกเลิกไม่ได้" }, { status: 409 });
@@ -116,6 +135,44 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
         );
       });
     }
+    let settlementPending = false;
+    try {
+      await refundSettledVideoImageBatch({
+        userId: user.id,
+        videoJobId: job.id,
+        reason: "video_user_canceled",
+      });
+    } catch (error) {
+      settlementPending = true;
+      console.error(
+        `[api/videos/jobs/:id] image settlement failed job=${job.id}`,
+        error instanceof Error ? error.message : "unknown error",
+      );
+    }
+    try {
+      const renderSettlement = await refundVideoJobTerminalRenderReservations({
+        videoJobId: job.id,
+        userId: user.id,
+        reason: "video_user_canceled",
+      });
+      if (renderSettlement.kind === "in_flight") settlementPending = true;
+    } catch (error) {
+      settlementPending = true;
+      console.error(
+        `[api/videos/jobs/:id] render settlement failed job=${job.id}`,
+        error instanceof Error ? error.message : "unknown error",
+      );
+    }
+    await prisma.videoJob.updateMany({
+      where: { id: job.id, userId: user.id, status: "canceled" },
+      data: settlementPending
+        ? { reservationRefundAttempts: { increment: 1 } }
+        : {
+            reservationRefundPending: false,
+            reservationRefundReason: null,
+            reservationRefundAttempts: { increment: 1 },
+          },
+    });
     if (job.projectId) {
       if (job.type === "export") {
         await prisma.editorProject.updateMany({
@@ -129,7 +186,7 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
         });
       }
     }
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, settlementPending });
   } catch (err) {
     console.error("[api/videos/jobs/:id] cancel error:", err);
     return NextResponse.json({ error: "internal_error" }, { status: 500 });

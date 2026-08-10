@@ -4,6 +4,30 @@ import { apiError } from "@/lib/api-error";
 import { requireHeroScriptUser, serializeBannedWords, toBrandProfileDTO } from "@/lib/hero-script.server";
 import { checkBrandProfileFieldLimits } from "@/lib/brand-profile-limits";
 import { isValidCtaStyleKey } from "@/lib/viral-frameworks";
+import {
+  isVersionedBrandProfile,
+  legacyBrandProfileMutableWhere,
+} from "@/lib/brand-profile-library.server";
+
+async function legacyMutationTarget(userId: string, id: string) {
+  return prisma.brandProfile.findFirst({
+    where: { id, userId },
+    select: {
+      id: true,
+      activeRevisionNumber: true,
+      frozenAt: true,
+      _count: { select: { revisions: true } },
+    },
+  });
+}
+
+function versionedReadOnlyResponse() {
+  return NextResponse.json({
+    code: "VERSIONED_PROFILE_READ_ONLY",
+    error: "โปรไฟล์นี้มีแนวภาพหลายรุ่นแล้ว กรุณาแก้หรือจัดการจากหน้าแบรนด์ของฉัน",
+    manageUrl: "/brands",
+  }, { status: 409 });
+}
 
 // PUT /api/brand-profiles/[id] - update a brand profile (full update, same
 // required fields as POST — matches the existing /api/styles/[id] convention)
@@ -16,6 +40,13 @@ export async function PUT(
     if (!access.ok) return access.response;
     const authUser = access.user;
     const { id } = await params;
+    const target = await legacyMutationTarget(authUser.id, id);
+    if (!target) return NextResponse.json({ error: "ไม่พบโปรไฟล์" }, { status: 404 });
+    if (isVersionedBrandProfile({
+      activeRevisionNumber: target.activeRevisionNumber,
+      frozenAt: target.frozenAt,
+      revisionCount: target._count.revisions,
+    })) return versionedReadOnlyResponse();
 
     const body = await req.json().catch(() => null);
     const name = typeof body?.name === "string" ? body.name.trim() : "";
@@ -51,7 +82,7 @@ export async function PUT(
     if (!limits.ok) return NextResponse.json({ error: limits.message }, { status: 400 });
 
     const updated = await prisma.brandProfile.updateMany({
-      where: { id, userId: authUser.id },
+      where: legacyBrandProfileMutableWhere(authUser.id, id),
       data: {
         name,
         niche,
@@ -65,7 +96,12 @@ export async function PUT(
         language: typeof body?.language === "string" && body.language.trim() ? body.language.trim() : undefined,
       },
     });
-    if (updated.count === 0) return NextResponse.json({ error: "ไม่พบโปรไฟล์" }, { status: 404 });
+    if (updated.count === 0) {
+      const current = await legacyMutationTarget(authUser.id, id);
+      return current
+        ? versionedReadOnlyResponse()
+        : NextResponse.json({ error: "ไม่พบโปรไฟล์" }, { status: 404 });
+    }
 
     const row = await prisma.brandProfile.findUnique({ where: { id } });
     return NextResponse.json(row ? toBrandProfileDTO(row) : null);
@@ -84,9 +120,23 @@ export async function DELETE(
     if (!access.ok) return access.response;
     const authUser = access.user;
     const { id } = await params;
+    const target = await legacyMutationTarget(authUser.id, id);
+    if (!target) return NextResponse.json({ error: "ไม่พบโปรไฟล์" }, { status: 404 });
+    if (isVersionedBrandProfile({
+      activeRevisionNumber: target.activeRevisionNumber,
+      frozenAt: target.frozenAt,
+      revisionCount: target._count.revisions,
+    })) return versionedReadOnlyResponse();
 
-    const deleted = await prisma.brandProfile.deleteMany({ where: { id, userId: authUser.id } });
-    if (deleted.count === 0) return NextResponse.json({ error: "ไม่พบโปรไฟล์" }, { status: 404 });
+    const deleted = await prisma.brandProfile.deleteMany({
+      where: legacyBrandProfileMutableWhere(authUser.id, id),
+    });
+    if (deleted.count === 0) {
+      const current = await legacyMutationTarget(authUser.id, id);
+      return current
+        ? versionedReadOnlyResponse()
+        : NextResponse.json({ error: "ไม่พบโปรไฟล์" }, { status: 404 });
+    }
 
     return NextResponse.json({ message: "ลบโปรไฟล์แล้ว" });
   } catch (error) {

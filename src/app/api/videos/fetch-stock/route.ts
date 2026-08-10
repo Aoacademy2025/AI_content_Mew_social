@@ -49,7 +49,12 @@ import {
   planHeroImageScenes,
   resolveHeroImageProviderStyle,
 } from "@/lib/hero-image-scene-brief";
-import { planAutoMixSources, pickEvenIndices, clampAutoMixAiSlots } from "@/lib/automix-plan";
+import {
+  distributeAutoMixAiSlots,
+  parseAutoMixReceiptImageCeiling,
+  planAutoMixSources,
+  pickEvenIndices,
+} from "@/lib/automix-plan";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import {
   applyBrollPreferenceToSearchQueries,
@@ -111,8 +116,15 @@ import {
   heroRunpodCircuitState,
 } from "@/lib/hero-image-resilience";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
-import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
+import {
+  getStarterAiImageAllowanceWindowStatus,
+} from "@/lib/starter-ai-image-allowance.server";
 import { reusableVisualBeatAssetsForVideoJob } from "@/lib/content-preflight.server";
+import {
+  resolveBrandVisualJobAcceptanceEnvelope,
+  validateBrandVisualAcceptedReuse,
+  type BrandVisualJobAcceptance,
+} from "@/lib/brand-visual-job-acceptance.server";
 import {
   materializeRetainedBrandImage,
   retainedBrandImageAssetMeta,
@@ -1032,15 +1044,9 @@ export async function POST(req: Request) {
     pipelineRunId?: string;
     draftId?: string;
   } = body ?? {};
-  // Hard ceiling on paid AutoMix AI images for this request — the exact count the
-  // client disclosed in its Render Receipt. Ignored unless it is a sane int 0–60.
-  const maxAiImages: number | null =
-    typeof maxAiImagesRaw === "number"
-      && Number.isFinite(maxAiImagesRaw)
-      && maxAiImagesRaw >= 0
-      && maxAiImagesRaw <= 60
-      ? Math.floor(maxAiImagesRaw)
-      : null;
+  // Hard ceiling on NEW paid AutoMix AI images for this request — current Visual
+  // Beat assets are reused outside this count. Ignored unless it is a sane int 0–60.
+  const maxAiImages = parseAutoMixReceiptImageCeiling(maxAiImagesRaw);
   const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
   const withBrollPreference = (queries: string[]) => applyBrollPreferenceToSearchQueries(queries, brollPreference);
   const preferenceInstruction = brollPreferenceInstruction(brollPreference);
@@ -1110,19 +1116,46 @@ export async function POST(req: Request) {
   // Hero AI Image rollout gate — ONE policy for every Hero seam entry point
   // (Hero-only mode below and the AutoMix "ai" slots). Widening this helper opens
   // both paths at once, so the two can never drift apart.
-  const heroAiEligible = isHeroAiImageEligible(user);
+  const liveHeroAiEligible = isHeroAiImageEligible(user);
+  const heroVideoJobIdOk = typeof videoJobId === "string" && /^[A-Za-z0-9_-]{8,120}$/.test(videoJobId);
+  const heroVideoMint = (useHeroRunpodImage || useAutoMix) && heroVideoJobIdOk
+    ? await authorizeHeroVideoMint({ fromRenderPipeline, userId, videoJobId: videoJobId! })
+    : null;
+  const brandVisualAcceptanceEnvelope = heroVideoMint?.ok
+    ? resolveBrandVisualJobAcceptanceEnvelope(heroVideoMint.brandVisualAcceptanceJson)
+    : { state: "legacy" as const };
+  if (brandVisualAcceptanceEnvelope.state === "invalid") {
+    return NextResponse.json({
+      error: "ข้อมูลรับงานแนวภาพเสียหาย ระบบหยุดก่อนเปลี่ยนสิทธิ์หรือหักเครดิต",
+      code: "BRAND_VISUAL_ACCEPTANCE_INVALID",
+      retryable: false,
+    }, { status: 409 });
+  }
+  const brandVisualAcceptance: BrandVisualJobAcceptance | null =
+    brandVisualAcceptanceEnvelope.state === "accepted"
+      ? brandVisualAcceptanceEnvelope.acceptance
+      : null;
+  const imageFundingStatusForRequest = async () => {
+    // A null snapshot is a legacy/non-Brand-Visual job. Its generic image path
+    // reserves credits-only, so admission must never advertise Starter quota.
+    if (!brandVisualAcceptance) {
+      return { eligible: false as const, fundingSource: "credits" as const, remainingImages: 0 };
+    }
+    if (brandVisualAcceptance.funding.source === "credits") {
+      return { eligible: false as const, fundingSource: "credits" as const, remainingImages: 0 };
+    }
+    return getStarterAiImageAllowanceWindowStatus(
+      userId,
+      new Date(brandVisualAcceptance.funding.windowStartedAt),
+    );
+  };
+  const heroAiEligible = liveHeroAiEligible || Boolean(brandVisualAcceptance);
 
   // AI Image-to-Video (kie.ai) — private team beta only.
   if (useHeroRunpodImage && imageModel !== "z-image-turbo") {
     return NextResponse.json({ error: "Hero AI Image ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
   }
-  if (useHeroRunpodImage && !heroAiEligible) {
-    if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
-      return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
-    }
-    return NextResponse.json({ error: "Hero AI Image ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
-  }
-  if (useHeroRunpodImage && (typeof videoJobId !== "string" || !/^[A-Za-z0-9_-]{8,120}$/.test(videoJobId))) {
+  if (useHeroRunpodImage && !heroVideoJobIdOk) {
     return NextResponse.json({ error: "Hero AI Image ต้องมีรหัส VideoJob ที่ถูกต้อง" }, { status: 400 });
   }
   // Refundable-namespace guard: hero-only mode reserves `video:<videoJobId>:scene:<i>`,
@@ -1130,10 +1163,16 @@ export async function POST(req: Request) {
   // No legitimate browser flow reaches here (the editor renders through the pipeline;
   // per-window regeneration uses /api/videos/broll-window/generate instead).
   if (useHeroRunpodImage) {
-    const mint = await authorizeHeroVideoMint({ fromRenderPipeline, userId, videoJobId: videoJobId! });
-    if (!mint.ok) {
-      const denial = HERO_VIDEO_MINT_DENIAL_RESPONSES[mint.reason];
+    if (!heroVideoMint?.ok) {
+      const reason = heroVideoMint?.reason ?? "video_not_found";
+      const denial = HERO_VIDEO_MINT_DENIAL_RESPONSES[reason];
       return NextResponse.json(denial.body, { status: denial.status });
+    }
+    if (!heroAiEligible) {
+      if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+        return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+      }
+      return NextResponse.json({ error: "Hero AI Image ยังไม่เปิดใช้งานสำหรับบัญชีนี้" }, { status: 403 });
     }
   }
   // Legacy kie image mode is PAUSED for customers (ADR 0004: engines never
@@ -1199,7 +1238,6 @@ export async function POST(req: Request) {
   // (imageEngine="kie"); it is never a fallback when the Hero seam is unavailable.
   // The historical "kie-ai" provider id remains the client's "include AI images"
   // switch (Editor v2 presets send it), so the request contract is unchanged.
-  const heroVideoJobIdOk = typeof videoJobId === "string" && /^[A-Za-z0-9_-]{8,120}$/.test(videoJobId);
   const autoMixAiRequested = useAutoMix && isAutoMixProviderAllowed("kie-ai");
   const autoMixKieAdminOnly = autoMixAiRequested
     && isAdmin
@@ -1212,9 +1250,7 @@ export async function POST(req: Request) {
   // AutoMix degrades instead of failing: a browser-originated request keeps its free
   // video/photo b-roll and simply plans zero paid AI slots (exactly what it already did
   // before any videoJobId was supplied), while the pipeline path is unchanged.
-  const heroAutoMixMint = autoMixAiRequested && !autoMixKieAdminOnly && heroVideoJobIdOk
-    ? await authorizeHeroVideoMint({ fromRenderPipeline, userId, videoJobId: videoJobId! })
-    : null;
+  const heroAutoMixMint = autoMixAiRequested && !autoMixKieAdminOnly ? heroVideoMint : null;
   /** AutoMix AI slots may run on the Hero seam: offer live on the verified custom
    *  route, caller inside the Hero rollout, a durable VideoJob id to key reservations
    *  on, and authorization to mint in the refundable `video:` namespace. Anything
@@ -1487,38 +1523,32 @@ export async function POST(req: Request) {
     });
     console.log(`[fetch-stock] Auto Mix plan: ${pieceCount} pieces over ${keywords.length} kw → ${autoMixActiveVideo.size} video / ${autoMixPhotoSlots.size} photo / ${autoMixAiSlots.size} ai (weights v${weights.video}:p${weights.photo}:a${weights.ai})`);
 
-    /** Keep the lowest-index `keep` AI slots; the rest become FREE photo slots. */
-    const demoteAiSlotsTo = (keep: number | null): number[] => {
-      const { demoted } = clampAutoMixAiSlots(autoMixAiSlots, keep);
-      for (const ki of demoted) {
-        autoMixAiSlots.delete(ki);
-        autoMixPhotoSlots.add(ki);
-      }
-      return demoted;
-    };
-
-    // ── Disclosure cap: never generate more AI images than the client quoted ──
-    // The Render Receipt plans with the RAW preset weights, but the server zeroes
-    // source families it cannot serve (no photo key, video excluded), which raises
-    // the realized AI share (60s @1:1:2 → quoted 7 images, planned 10). The client
-    // sends the exact count it disclosed; the plan is clamped to it so a customer is
-    // never charged for more images than the receipt they approved.
-    if (maxAiImages !== null && autoMixAiSlots.size > maxAiImages) {
-      const demoted = demoteAiSlotsTo(maxAiImages);
-      trackAiSkip("cap", demoted.length);
-      heroAutoMixTelemetry.heroAutoMixDisclosedMaxAiImages = maxAiImages;
-      heroAutoMixTelemetry.heroAutoMixClampedSlotCount = demoted.length;
-      console.log(`[fetch-stock] Auto Mix AI slots clamped to the disclosed quote: ${maxAiImages} (dropped ${demoted.length})`);
-    }
-
     // A current Visual Beat already owns a delivered image. Keep its AI slot in
     // the visual-coverage plan, but exclude it from rate, provider and funding
     // preflights; the image loop below rebuilds only its Ken Burns derivative.
     if (download && autoMixAiEngine === "runpod" && autoMixAiSlots.size > 0) {
-      const reusable = await reusableVisualBeatAssetsForVideoJob({
-        userId,
-        videoJobId: videoJobId!,
-      });
+      let reusable;
+      if (brandVisualAcceptance) {
+        const validated = await validateBrandVisualAcceptedReuse({
+          userId,
+          acceptance: brandVisualAcceptance,
+          requestedSceneIndices: [...autoMixAiSlots],
+        });
+        if (validated.invalidSceneIndices.length > 0) {
+          return NextResponse.json({
+            error: "ภาพเดิมที่แสดงในใบรับงานถูกคืนสิทธิ์ไปแล้ว กรุณากดเรนเดอร์ใหม่เพื่อคำนวณราคาอีกครั้ง",
+            code: "REUSABLE_ASSET_INVALIDATED",
+            retryable: true,
+            invalidSceneIndices: validated.invalidSceneIndices,
+          }, { status: 409 });
+        }
+        reusable = validated.assets;
+      } else {
+        reusable = await reusableVisualBeatAssetsForVideoJob({
+          userId,
+          videoJobId: videoJobId!,
+        });
+      }
       for (const asset of reusable) {
         if (autoMixAiSlots.has(asset.sceneIndex)) {
           autoMixReusableByScene.set(asset.sceneIndex, asset);
@@ -1529,18 +1559,38 @@ export async function POST(req: Request) {
       .filter((sceneIndex) => !autoMixReusableByScene.has(sceneIndex));
     aiTelemetry.aiGenRequestedCount += aiSlotsNeedingGeneration().length;
 
+    // Defense in depth for direct/stale public callers. Admin legacy tooling is
+    // the only explicit exception; a missing or malformed receipt value must
+    // never become an unlimited paid-image budget at the worker seam.
+    if (download && !isAdmin && maxAiImages === null && aiSlotsNeedingGeneration().length > 0) {
+      return NextResponse.json({
+        error: "render_receipt_required",
+        message: "กรุณาตรวจและยืนยันใบรับงานก่อนเริ่มสร้างภาพ AutoMix",
+      }, { status: 400 });
+    }
+
     /** Reduce only unpaid/new AI slots. Retained AI assets stay in place and
      * the remaining new slots are spread across the planned AutoMix windows. */
-    const demoteGeneratedAiSlotsTo = (keep: number): number[] => {
+    const demoteGeneratedAiSlotsTo = (keep: number, replacement: "omit" | "photo"): number[] => {
       const candidates = aiSlotsNeedingGeneration();
-      const keptPositions = new Set(pickEvenIndices(candidates.length, Math.max(0, keep)));
-      const demoted = candidates.filter((_, index) => !keptPositions.has(index));
+      const { demoted } = distributeAutoMixAiSlots(candidates, keep);
       for (const sceneIndex of demoted) {
         autoMixAiSlots.delete(sceneIndex);
-        autoMixPhotoSlots.add(sceneIndex);
+        if (replacement === "photo") autoMixPhotoSlots.add(sceneIndex);
       }
       return demoted;
     };
+
+    // ── Disclosure cap: never create more NEW AI images than the receipt quoted. ──
+    // Retained/current assets remain in the timeline at zero cost; only affected
+    // scenes are spread across the remaining slots and admitted for generation.
+    if (maxAiImages !== null && aiSlotsNeedingGeneration().length > maxAiImages) {
+      const demoted = demoteGeneratedAiSlotsTo(maxAiImages, "omit");
+      trackAiSkip("cap", demoted.length);
+      heroAutoMixTelemetry.heroAutoMixDisclosedMaxAiImages = maxAiImages;
+      heroAutoMixTelemetry.heroAutoMixClampedSlotCount = demoted.length;
+      console.log(`[fetch-stock] Auto Mix new AI jobs clamped to the affected-scene quote: ${maxAiImages} (density reduced by ${demoted.length})`);
+    }
 
     // ── Hero-seam preflight for the paid AI slots ───────────────────────────
     // Disclose-then-spend: provider readiness, the live COGS guard and the credit
@@ -1588,7 +1638,7 @@ export async function POST(req: Request) {
           } else {
             try { await ensureMonthlyGrant(userId); } catch { /* non-fatal */ }
             const balance = await getBalance(userId);
-            const imageFunding = await getStarterAiImageAllowanceStatus(userId);
+            const imageFunding = await imageFundingStatusForRequest();
             affordableAiSlots = imageFunding.eligible
               ? imageFunding.remainingImages
               : heroAutoMixCreditCost > 0
@@ -1600,13 +1650,19 @@ export async function POST(req: Request) {
               ? imageFunding.remainingImages
               : null;
             if (imageFunding.eligible && imageFunding.remainingImages === 0 && aiSlotsNeedingGeneration().length > 0) {
-              return NextResponse.json({
-                error: "ใช้สิทธิ์ทดลองภาพ AI ครบ 8 ภาพในรอบนี้แล้ว เลือก Stock ฟรีหรืออัปเกรดเพื่อสร้างต่อ",
-                code: "ALLOWANCE_EXHAUSTED",
-                remainingImages: 0,
-                upgradeUrl: "/pricing",
-                stockAction: "use-stock",
-              }, { status: 402 });
+              if (brandVisualAcceptance?.preserveEstablishedDensity) {
+                const omitted = demoteGeneratedAiSlotsTo(0, "omit");
+                trackAiSkip("credits", omitted.length);
+                degradeReason = "starter_allowance_density";
+              } else {
+                return NextResponse.json({
+                  error: "ใช้สิทธิ์ทดลองภาพ AI ครบ 8 ภาพในรอบนี้แล้ว เลือก Stock ฟรีหรืออัปเกรดเพื่อสร้างต่อ",
+                  code: "ALLOWANCE_EXHAUSTED",
+                  remainingImages: 0,
+                  upgradeUrl: "/pricing",
+                  stockAction: "use-stock",
+                }, { status: 402 });
+              }
             }
             if (affordableAiSlots < aiSlotsNeedingGeneration().length) {
               degradeReason = imageFunding.eligible ? "starter_allowance_density" : "insufficient_credits";
@@ -1625,7 +1681,11 @@ export async function POST(req: Request) {
         aiSkippedReason = "rate";
       }
       if (affordableAiSlots < aiSlotsNeedingGeneration().length) {
-        const demoted = demoteGeneratedAiSlotsTo(affordableAiSlots);
+        const densityReduction = degradeReason === "starter_allowance_density";
+        const demoted = demoteGeneratedAiSlotsTo(
+          affordableAiSlots,
+          densityReduction ? "omit" : "photo",
+        );
         trackAiSkip(
           degradeReason === "insufficient_credits" || degradeReason === "starter_allowance_density"
             ? "credits"
@@ -1634,7 +1694,7 @@ export async function POST(req: Request) {
         );
         heroAutoMixTelemetry.heroAutoMixDegradedSlotCount = demoted.length;
         heroAutoMixTelemetry.heroAutoMixDegradeReason = degradeReason;
-        console.warn(`[fetch-stock] Auto Mix hero AI degraded ${demoted.length} slot(s) → free photo (${degradeReason})`);
+        console.warn(`[fetch-stock] Auto Mix hero AI degraded ${demoted.length} slot(s) → ${densityReduction ? "lower image density" : "free photo"} (${degradeReason})`);
       }
       heroAutoMixTelemetry.heroAutoMixRequiredCredits = aiSlotsNeedingGeneration().length * heroAutoMixCreditCost;
     }
@@ -1870,17 +1930,35 @@ export async function POST(req: Request) {
           })),
           clipsToGenerateRaw,
         );
-    const reusableAssets = await reusableVisualBeatAssetsForVideoJob({
-      userId,
-      videoJobId: videoJobId!,
-    });
+    let reusableAssets;
+    if (brandVisualAcceptance) {
+      const validated = await validateBrandVisualAcceptedReuse({
+        userId,
+        acceptance: brandVisualAcceptance,
+        requestedSceneIndices: requestedDirectJobs.map((job) => job.sourceIndex),
+      });
+      if (validated.invalidSceneIndices.length > 0) {
+        return NextResponse.json({
+          error: "ภาพเดิมที่แสดงในใบรับงานถูกคืนสิทธิ์ไปแล้ว กรุณากดเรนเดอร์ใหม่เพื่อคำนวณราคาอีกครั้ง",
+          code: "REUSABLE_ASSET_INVALIDATED",
+          retryable: true,
+          invalidSceneIndices: validated.invalidSceneIndices,
+        }, { status: 409 });
+      }
+      reusableAssets = validated.assets;
+    } else {
+      reusableAssets = await reusableVisualBeatAssetsForVideoJob({
+        userId,
+        videoJobId: videoJobId!,
+      });
+    }
     const reusableByScene = new Map(reusableAssets.map((asset) => [asset.sceneIndex, asset]));
     const reusedJobs = requestedDirectJobs.flatMap((job) => {
       const asset = reusableByScene.get(job.sourceIndex);
       return asset ? [{ ...job, asset }] : [];
     });
     let directJobs = requestedDirectJobs.filter((job) => !reusableByScene.has(job.sourceIndex));
-    const clipsNeedingGeneration = directJobs.length;
+    let clipsNeedingGeneration = directJobs.length;
     const heroOffer = describeHeroImageOffer();
     if (directJobs.length > 0 && (!heroOffer.available || heroOffer.providerRoute !== "runpod-custom")) {
       return NextResponse.json({
@@ -1891,21 +1969,26 @@ export async function POST(req: Request) {
       }, { status: 503 });
     }
     const heroCreditCost = heroOffer.available ? heroOffer.quote.credits : HERO_AI_IMAGE_CREDITS;
-    const imageFunding = await getStarterAiImageAllowanceStatus(userId);
+    const imageFunding = await imageFundingStatusForRequest();
     if (imageFunding.eligible) {
       if (imageFunding.remainingImages === 0 && directJobs.length > 0) {
-        return NextResponse.json({
-          error: "ใช้สิทธิ์ทดลองภาพ AI ครบ 8 ภาพในรอบนี้แล้ว อัปเกรดเพื่อสร้างต่อหรือเปลี่ยนไปใช้ Stock ฟรี",
-          code: "ALLOWANCE_EXHAUSTED",
-          remainingImages: 0,
-          upgradeUrl: "/pricing",
-          stockAction: "use-stock",
-        }, { status: 402 });
+        if (brandVisualAcceptance?.preserveEstablishedDensity) {
+          directJobs = [];
+        } else {
+          return NextResponse.json({
+            error: "ใช้สิทธิ์ทดลองภาพ AI ครบ 8 ภาพในรอบนี้แล้ว อัปเกรดเพื่อสร้างต่อหรือเปลี่ยนไปใช้ Stock ฟรี",
+            code: "ALLOWANCE_EXHAUSTED",
+            remainingImages: 0,
+            upgradeUrl: "/pricing",
+            stockAction: "use-stock",
+          }, { status: 402 });
+        }
       }
       if (directJobs.length > imageFunding.remainingImages) {
         directJobs = selectRepresentativeItems(directJobs, imageFunding.remainingImages);
       }
     }
+    clipsNeedingGeneration = directJobs.length;
     const clipsToGenerate = directJobs.length;
     const heroCreditCostKey = "image-open-custom-1k";
     const heroAiTelemetry = {
@@ -1938,7 +2021,7 @@ export async function POST(req: Request) {
         error: runpodCost.status === "stale"
           ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงหยุดงานก่อนหักเครดิต"
           : "ต้นทุน Hero AI Image สูงกว่าเพดานที่กำหนด ระบบหยุดงานก่อนหักเครดิต",
-        code: "RUNPOD_COST_GUARD",
+        code: "HERO_IMAGE_COST_GUARD",
         retryable: true,
         failedScenes: directJobs.map((item) => item.sourceIndex),
       }, { status: 503 });
@@ -1956,8 +2039,7 @@ export async function POST(req: Request) {
       });
       return NextResponse.json({
         error: "ผู้ให้บริการ Hero AI Image ยังไม่พร้อม ระบบหยุดงานก่อนหักเครดิต กรุณาลองใหม่ภายหลัง",
-        code: "PROVIDER_UNAVAILABLE",
-        providerCode: circuit.code,
+        code: "HERO_IMAGE_UNAVAILABLE",
         retryable: true,
         retryAfterSec: Math.ceil(circuit.retryAfterMs / 1000),
         failedScenes: directJobs.map((item) => item.sourceIndex),
@@ -2180,6 +2262,7 @@ export async function POST(req: Request) {
             sceneTitle: subtitleTexts?.[sourceIndex] || keyword,
             style: providerStyle,
             interfaceExpected: brief.includesInterface,
+            brandVisualAcceptance: brandVisualAcceptance ?? undefined,
           });
           generatedScenes.push({
             keyword,
@@ -2381,6 +2464,20 @@ export async function POST(req: Request) {
       aiTelemetry.aiLastCreditBalanceAfterSpend = heroBalanceAfter.total;
       const systemicFailure = failures.find((failure) => failure.systemic);
       const stoppingFailure = failures.find((failure) => failure.stopBatch);
+      const firstFailure = failures[0];
+      const publicFailureCode = systemicFailure
+        ? "HERO_IMAGE_UNAVAILABLE"
+        : stoppingFailure
+          ? "HERO_IMAGE_TIMEOUT"
+          : firstFailure.code === "RATE_LIMITED"
+            || firstFailure.code === "INSUFFICIENT_CREDITS"
+            || firstFailure.code === "ALLOWANCE_EXHAUSTED"
+            ? firstFailure.code
+            : firstFailure.code === "RETAINED_ASSET_UNAVAILABLE"
+              ? "HERO_IMAGE_ASSET_UNAVAILABLE"
+              : firstFailure.code === "OUTPUT_INVALID"
+                ? "HERO_IMAGE_OUTPUT_FAILED"
+                : "HERO_IMAGE_FAILED";
       await recordFetchStockTelemetry("error", {
         ...heroAiTelemetry,
         providerErrorCode: systemicFailure?.providerCode
@@ -2403,14 +2500,15 @@ export async function POST(req: Request) {
           : stoppingFailure
             ? "คิว Hero AI Image ของงานนี้ค้าง ระบบหยุดเฉพาะงานนี้และคืนเครดิตภาพที่สร้างไว้แล้ว"
           : `Hero AI Image สร้างไม่ครบ ${failures.length} ฉาก ระบบคืนเครดิตภาพของงานนี้แล้ว`,
-        code: systemicFailure
-          ? "PROVIDER_UNAVAILABLE"
-          : stoppingFailure?.providerCode ?? failures[0].code,
-        providerCode: systemicFailure?.providerCode ?? stoppingFailure?.providerCode,
+        code: publicFailureCode,
         retryable: systemicFailure?.retryable ?? stoppingFailure?.retryable ?? true,
         failedScenes: failures.map((item) => item.sourceIndex).sort((a, b) => a - b),
         refundedCredits: compensation.refundedCredits,
-      }, { status: failures[0].code === "INSUFFICIENT_CREDITS" || failures[0].code === "ALLOWANCE_EXHAUSTED" ? 402 : 503 });
+      }, {
+        status: failures[0].code === "RATE_LIMITED" ? 429
+          : failures[0].code === "INSUFFICIENT_CREDITS" || failures[0].code === "ALLOWANCE_EXHAUSTED" ? 402
+            : 503,
+      });
     }
     const heroBalanceAfter = await getBalance(userId);
     aiTelemetry.aiLastCreditBalanceAfterSpend = heroBalanceAfter.total;
@@ -3249,6 +3347,7 @@ export async function POST(req: Request) {
               sceneIndex: ki,
               sceneTitle: subtitleTexts?.[ki] || kw,
               style: heroImageStyleForBrollWindow(brollPreference.brollVisualStyle),
+              brandVisualAcceptance: brandVisualAcceptance ?? undefined,
             });
             aiTelemetry.aiChargedCount++;
             aiTelemetry.aiCreditsSpent += generated.fundingSource === "credits" ? generated.creditCost : 0;

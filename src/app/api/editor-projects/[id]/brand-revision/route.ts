@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
-import { BrandProfileLibraryError, pinProjectBrandRevision } from "@/lib/brand-profile-library.server";
+import { BrandProfileLibraryError, applyProjectBrandRevision } from "@/lib/brand-profile-library.server";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { brandVisualIdentityKey, type BrandVisualLanguage, type VisualFormatId } from "@/lib/brand-visual-system";
+import { brandLookIdentityKey, brandVisualIdentityKey, type BrandVisualLanguage, type VisualFormatId } from "@/lib/brand-visual-system";
+import { editorProjectResponse } from "@/lib/editor-projects";
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -16,11 +17,28 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       return NextResponse.json({ code: "INVALID_PROFILE", error: "กรุณาเลือกแบรนด์" }, { status: 400 });
     }
     const { id } = await params;
+    const requestedPreflightId = typeof body?.preflightId === "string" && body.preflightId.trim()
+      ? body.preflightId.trim()
+      : undefined;
     const preflight = await prisma.contentPreflight.findFirst({
-      where: { projectId: id, userId: auth.user.id },
-      orderBy: { createdAt: "desc" },
+      where: {
+        projectId: id,
+        userId: auth.user.id,
+        ...(requestedPreflightId ? { id: requestedPreflightId } : {}),
+      },
+      orderBy: requestedPreflightId ? undefined : { createdAt: "desc" },
       include: { visualBeats: true },
     });
+    if (requestedPreflightId && !preflight) {
+      return NextResponse.json({ code: "PREFLIGHT_NOT_FOUND", error: "ไม่พบข้อมูลฉากชุดนี้" }, { status: 404 });
+    }
+    if (!requestedPreflightId && preflight) {
+      return NextResponse.json({
+        code: "PREFLIGHT_ID_REQUIRED",
+        error: "กรุณาโหลดผลวิเคราะห์เนื้อหาเวอร์ชันปัจจุบันก่อนเลือกแบรนด์",
+        currentPreflightId: preflight.id,
+      }, { status: 409 });
+    }
     const existingImageCount = preflight?.visualBeats.filter((beat) => Boolean(beat.existingAssetUrl)).length ?? 0;
     const applyMode = body?.applyMode;
     if (existingImageCount > 0 && applyMode !== "new-only" && applyMode !== "regenerate-all") {
@@ -30,18 +48,14 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         quotedCredits: existingImageCount * HERO_AI_IMAGE_CREDITS,
       }, { status: 409 });
     }
-    const pinned = await pinProjectBrandRevision({
+    const pinned = await applyProjectBrandRevision({
       userId: auth.user.id,
       projectId: id,
       profileId: body.profileId,
       revisionId: typeof body.revisionId === "string" ? body.revisionId : undefined,
+      preflightId: requestedPreflightId,
+      applyMode,
     });
-    if (applyMode === "regenerate-all" && preflight) {
-      await prisma.projectVisualBeat.updateMany({
-        where: { preflightId: preflight.id, existingAssetUrl: { not: null } },
-        data: { status: "outdated", outdatedAt: new Date() },
-      });
-    }
     const visualRecipe = JSON.parse(pinned.revision.visualRecipeJson) as {
       visualFormatId: VisualFormatId;
       recipeVersion: string;
@@ -55,10 +69,17 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       status: applyMode || "no-existing-images",
       properties: {
         projectId: id,
+        preflightId: preflight?.id ?? null,
         profileId: body.profileId,
         revisionId: pinned.project.brandProfileRevisionId,
         visualFormatId: visualRecipe.visualFormatId,
-        brandVisualIdentityKey: brandVisualIdentityKey({
+        brandVisualIdentityKey: pinned.generationIdentityKey ?? brandVisualIdentityKey({
+          visualFormatId: visualRecipe.visualFormatId,
+          recipeVersion: visualRecipe.recipeVersion,
+          treatment: visualRecipe.defaultTreatment,
+          brandVisualLanguage: visualRecipe.brandVisualLanguage ?? null,
+        }),
+        brandLookIdentityKey: brandLookIdentityKey({
           visualFormatId: visualRecipe.visualFormatId,
           recipeVersion: visualRecipe.recipeVersion,
           treatment: visualRecipe.defaultTreatment,
@@ -69,6 +90,8 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }).catch(() => {});
     return NextResponse.json({
       projectId: pinned.project.id,
+      project: editorProjectResponse(pinned.project),
+      preflightId: preflight?.id ?? null,
       revisionId: pinned.project.brandProfileRevisionId,
       revisionDefaults: JSON.parse(pinned.revision.payloadJson) as unknown,
       applyMode: applyMode ?? null,
@@ -81,8 +104,22 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     });
   } catch (error) {
     if (error instanceof BrandProfileLibraryError) {
-      const status = error.code === "NOT_FOUND" || error.code === "NO_REVISION" ? 404 : error.code === "FROZEN" ? 403 : 409;
-      return NextResponse.json({ code: error.code, error: error.message }, { status });
+      if (error.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
+        const existingImageCount = error.details?.existingImageCount ?? 0;
+        return NextResponse.json({
+          code: error.code,
+          existingImageCount,
+          quotedCredits: existingImageCount * HERO_AI_IMAGE_CREDITS,
+        }, { status: 409 });
+      }
+      const status = error.code === "NOT_FOUND" || error.code === "NO_REVISION"
+        ? 404
+        : error.code === "FROZEN" ? 403 : 409;
+      return NextResponse.json({
+        code: error.code,
+        error: error.message,
+        currentPreflightId: error.details?.currentPreflightId,
+      }, { status });
     }
     return apiError({ route: "PUT /api/editor-projects/[id]/brand-revision", error });
   }

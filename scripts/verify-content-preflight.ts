@@ -10,11 +10,74 @@ execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.e
 
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
+  const { buildNarrativeAlignedBrollWindows } = await import("../src/lib/broll-windows");
+  const { tokenizeWords } = await import("../src/lib/tts-timing");
   const {
+    planNarrativeVisualWindows,
     recordVisualBeatAsset,
     resolveContentPreflight,
     reusableVisualBeatAssetsForVideoJob,
   } = await import("../src/lib/content-preflight.server");
+
+  const spokenText = "Hook short. Explanation sentence one. Explanation sentence two. Close.";
+  const spokenDurationMs = 9_000;
+  const timedWords = tokenizeWords(spokenText).map((word) => ({
+    ...word,
+    startMs: Math.round((word.startChar / spokenText.length) * spokenDurationMs),
+    endMs: Math.max(
+      Math.round((word.startChar / spokenText.length) * spokenDurationMs) + 1,
+      Math.round((word.endChar / spokenText.length) * spokenDurationMs),
+    ),
+  }));
+  const narrativeWindows = [
+    "Hook short.",
+    "Explanation sentence one.\nExplanation sentence two.",
+    "Close.",
+  ];
+  const narrativeAligned = buildNarrativeAlignedBrollWindows({
+    captions: [
+      { text: "Hook short.", startMs: 0, endMs: 1_000 },
+      { text: "Explanation sentence one.", startMs: 1_000, endMs: 3_000 },
+      { text: "Explanation sentence two.", startMs: 3_000, endMs: 8_000 },
+      { text: "Close.", startMs: 8_000, endMs: 9_000 },
+    ],
+    words: timedWords,
+    spokenText,
+    narrativeWindows,
+    audioEndMs: spokenDurationMs,
+  });
+  assert.ok(narrativeAligned, "the exact accepted Narrative windows align onto the TTS timeline");
+  assert.deepEqual(
+    narrativeAligned.map((window) => window.text),
+    narrativeWindows,
+    "render windows use the same story intent boundaries the Content Preflight analyzed",
+  );
+  assert.equal(narrativeAligned[0].startMs, 0);
+  assert.equal(narrativeAligned.at(-1)?.endMs, spokenDurationMs);
+  assert.ok(
+    narrativeAligned[0].endMs < 3_000 && narrativeAligned[1].endMs > 6_000,
+    "timing follows Narrative boundaries rather than unrelated equal-time fixed-count groups",
+  );
+  assert.equal(buildNarrativeAlignedBrollWindows({
+    captions: [{ text: "different", startMs: 0, endMs: 1_000 }],
+    words: timedWords,
+    spokenText,
+    narrativeWindows: ["a different narrative"],
+    audioEndMs: spokenDurationMs,
+  }), null, "a mismatched accepted Narrative fails closed instead of pairing the wrong Beat by index");
+
+  const stableWindowSource = [
+    "ปัญหาแรกเกิดขึ้นในวันนี้",
+    "วิธีแก้ที่สองทำได้ทุกเดือน",
+    "ผลลัพธ์สุดท้ายชัดเจนและวัดได้",
+  ].join("\n");
+  const stableWindows = planNarrativeVisualWindows(stableWindowSource, 3);
+  const prefixedStableWindows = planNarrativeVisualWindows(`เกริ่นสั้นๆ ${stableWindowSource}`, 3);
+  assert.deepEqual(
+    prefixedStableWindows.slice(1),
+    stableWindows.slice(1),
+    "a local prefix edit must not shift the unchanged downstream Narrative windows",
+  );
 
   const user = await prisma.user.create({
     data: { name: "Preflight owner", email: "preflight@example.test" },
@@ -24,9 +87,12 @@ async function main() {
   });
   let analysisCalls = 0;
   let edited = false;
+  let meaningShift = false;
+  let analyzedWindowCount = 0;
   const analyzer = {
-    async analyze() {
+    async analyze(input: { windows: Array<{ text: string }> }) {
       analysisCalls += 1;
+      analyzedWindowCount = input.windows.length;
       return {
         contentDomain: "personal finance",
         suggestedVisualFormatId: "clear-infographic" as const,
@@ -46,8 +112,8 @@ async function main() {
           {
             beatKey: "window-1",
             sourceExcerpt: "เริ่มวันนี้แล้วทำต่อทุกเดือน",
-            subject: "the same first-jobber and a calendar rhythm",
-            action: "repeats the saving habit",
+            subject: meaningShift ? "a payroll team and a mandatory deduction calendar" : "the same first-jobber and a calendar rhythm",
+            action: meaningShift ? "changes the rule behind the monthly transfer" : "repeats the saving habit",
             setting: "the same apartment desk",
             emotion: "confident momentum",
             emphasis: "consistent monthly action",
@@ -63,6 +129,10 @@ async function main() {
     narrativeSource: {
       kind: "creator-script" as const,
       text: "เก็บเงินก้อนแรกให้ได้ด้วยวิธีนี้\nเริ่มวันนี้แล้วทำต่อทุกเดือน",
+      windows: [
+        { text: "เก็บเงินก้อนแรกให้ได้ด้วยวิธีนี้" },
+        { text: "เริ่มวันนี้แล้วทำต่อทุกเดือน" },
+      ],
     },
     analyzer,
   };
@@ -72,17 +142,48 @@ async function main() {
   assert.equal(analysisCalls, 1, "opening multiple AI visual surfaces must reuse one lazy analysis");
   assert.equal(cached.id, first.id);
   assert.equal(first.visualBeats.length, 2);
+  assert.equal(analyzedWindowCount, 2, "the analyzer receives the authoritative B-roll window plan");
   assert.equal(await prisma.contentPreflight.count(), 1);
 
+  const settledHookJob = await prisma.aiGenerationJob.create({
+    data: {
+      userId: user.id,
+      kind: "image",
+      provider: "runpod",
+      model: "z-image",
+      status: "completed",
+      outputUrl: "/api/generated/old-hook.webp",
+      fundingSource: "credits",
+      chargeState: "settled",
+      creditCost: 2,
+    },
+  });
+  const settledCloseJob = await prisma.aiGenerationJob.create({
+    data: {
+      userId: user.id,
+      kind: "image",
+      provider: "runpod",
+      model: "z-image",
+      status: "completed",
+      outputUrl: "/api/generated/unchanged-close.webp",
+      fundingSource: "credits",
+      chargeState: "settled",
+      creditCost: 2,
+    },
+  });
   await recordVisualBeatAsset({
     userId: user.id,
     beatId: first.visualBeats[0].id,
     outputUrl: "/api/generated/old-hook.webp",
+    imageJobId: settledHookJob.id,
+    identityKey: "content-preflight-identity-v1",
   });
   await recordVisualBeatAsset({
     userId: user.id,
     beatId: first.visualBeats[1].id,
     outputUrl: "/api/generated/unchanged-close.webp",
+    imageJobId: settledCloseJob.id,
+    identityKey: "content-preflight-identity-v1",
   });
   edited = true;
   const afterEdit = await resolveContentPreflight({
@@ -90,6 +191,10 @@ async function main() {
     narrativeSource: {
       ...request.narrativeSource,
       text: "เก็บเงินก้อนแรกให้ได้ด้วยการโอนอัตโนมัติ\nเริ่มวันนี้แล้วทำต่อทุกเดือน",
+      windows: [
+        { text: "เก็บเงินก้อนแรกให้ได้ด้วยการโอนอัตโนมัติ" },
+        { text: "เริ่มวันนี้แล้วทำต่อทุกเดือน" },
+      ],
     },
   });
   assert.equal(afterEdit.visualBeats.filter((beat) => beat.status === "outdated").length, 1);
@@ -101,6 +206,14 @@ async function main() {
     data: {
       userId: user.id,
       projectId: project.id,
+      contentPreflightId: afterEdit.id,
+      projectVisualContextJson: JSON.stringify({
+        source: "suggested",
+        visualFormatId: "clear-infographic",
+        recipeVersion: "clear-infographic-v2",
+        treatment: "clear",
+        brandVisualLanguage: null,
+      }),
       inputJson: "{}",
     },
   });
@@ -114,6 +227,191 @@ async function main() {
     "the next confirmed render must reuse only unchanged current beats",
   );
 
+  meaningShift = true;
+  const semanticEdit = await resolveContentPreflight({
+    ...request,
+    narrativeSource: {
+      ...request.narrativeSource,
+      text: "กฎบริษัทเปลี่ยนบริบทของคำแนะนำ\nเก็บเงินก้อนแรกให้ได้ด้วยการโอนอัตโนมัติ\nเริ่มวันนี้แล้วทำต่อทุกเดือน",
+      windows: [
+        { text: "เก็บเงินก้อนแรกให้ได้ด้วยการโอนอัตโนมัติ" },
+        { text: "เริ่มวันนี้แล้วทำต่อทุกเดือน" },
+      ],
+    },
+  });
+  assert.equal(
+    semanticEdit.visualBeats[1].status,
+    "current",
+    "analyzer paraphrasing alone cannot invalidate an unchanged authoritative source window",
+  );
+
+  // Exercise the production planner path (text + windowCount, no hand-aligned
+  // windows). The second request explicitly names its lineage so another tab's
+  // newer preflight cannot become the carry-forward source.
+  const alignmentProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Stable window alignment" },
+  });
+  const alignmentAnalyzer = {
+    async analyze(input: { windows: Array<{ text: string }> }) {
+      return {
+        contentDomain: "creator workflow",
+        suggestedVisualFormatId: "stick-figure-story" as const,
+        suggestedTreatment: { label: "clear", mood: "focused" },
+        beats: input.windows.map((window, index) => ({
+          beatKey: `window-${index}`,
+          sourceExcerpt: window.text,
+          subject: `creator scene ${index + 1}`,
+          action: "shows one concrete step",
+          setting: "a practical creator workspace",
+          emotion: "focused confidence",
+          emphasis: "the current step",
+        })),
+      };
+    },
+  };
+  const alignmentFirst = await resolveContentPreflight({
+    userId: user.id,
+    projectId: alignmentProject.id,
+    narrativeSource: {
+      kind: "creator-script",
+      text: stableWindowSource,
+      windowCount: 3,
+    },
+    analyzer: alignmentAnalyzer,
+  });
+  for (const [index, beat] of alignmentFirst.visualBeats.entries()) {
+    const imageJob = await prisma.aiGenerationJob.create({
+      data: {
+        userId: user.id,
+        kind: "image",
+        provider: "runpod",
+        model: "z-image",
+        status: "completed",
+        outputUrl: `/api/generated/aligned-${index}.webp`,
+        fundingSource: "credits",
+        chargeState: "settled",
+        creditCost: 2,
+      },
+    });
+    await recordVisualBeatAsset({
+      userId: user.id,
+      beatId: beat.id,
+      outputUrl: `/api/generated/aligned-${index}.webp`,
+      imageJobId: imageJob.id,
+      identityKey: "stable-alignment-identity",
+    });
+  }
+  const alignmentAfterPrefix = await resolveContentPreflight({
+    userId: user.id,
+    projectId: alignmentProject.id,
+    previousPreflightId: alignmentFirst.id,
+    narrativeSource: {
+      kind: "creator-script",
+      text: `เกริ่นสั้นๆ ${stableWindowSource}`,
+      windowCount: 3,
+    },
+    analyzer: alignmentAnalyzer,
+  });
+  assert.deepEqual(
+    alignmentAfterPrefix.visualBeats.map((beat) => ({
+      status: beat.status,
+      asset: beat.existingAssetUrl,
+    })),
+    [
+      { status: "outdated", asset: "/api/generated/aligned-0.webp" },
+      { status: "current", asset: "/api/generated/aligned-1.webp" },
+      { status: "current", asset: "/api/generated/aligned-2.webp" },
+    ],
+    "production text+windowCount planning regenerates only the locally changed Visual Beat",
+  );
+
+  // A cached narrative must still reconcile assets from the caller's exact
+  // lineage. This covers A -> B (cached before images) -> A gains images -> B.
+  const cacheRebaseProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Cached lineage asset rebase" },
+  });
+  const cacheRebaseAnalyzer = {
+    async analyze(input: { windows: Array<{ text: string }> }) {
+      return {
+        contentDomain: "creator workflow",
+        suggestedVisualFormatId: "clear-infographic" as const,
+        suggestedTreatment: { label: "clear", mood: "focused" },
+        beats: input.windows.map((window, index) => ({
+          beatKey: `window-${index}`,
+          sourceExcerpt: window.text,
+          subject: `shared scene ${index + 1}`,
+          action: "shows one durable step",
+          setting: "creator desk",
+          emotion: "focused",
+          emphasis: "the shared source window",
+        })),
+      };
+    },
+  };
+  const cacheA = await resolveContentPreflight({
+    userId: user.id,
+    projectId: cacheRebaseProject.id,
+    narrativeSource: {
+      kind: "creator-script",
+      text: "context A",
+      windows: [{ text: "shared one" }, { text: "shared two" }],
+    },
+    analyzer: cacheRebaseAnalyzer,
+  });
+  const cacheB = await resolveContentPreflight({
+    userId: user.id,
+    projectId: cacheRebaseProject.id,
+    previousPreflightId: cacheA.id,
+    narrativeSource: {
+      kind: "creator-script",
+      text: "context B",
+      windows: [{ text: "shared one" }, { text: "shared two" }],
+    },
+    analyzer: cacheRebaseAnalyzer,
+  });
+  const cacheAsset = async (beatId: string, outputUrl: string, identityKey: string) => {
+    const imageJob = await prisma.aiGenerationJob.create({
+      data: {
+        userId: user.id,
+        kind: "image",
+        provider: "runpod",
+        model: "z-image",
+        status: "completed",
+        outputUrl,
+        fundingSource: "credits",
+        chargeState: "settled",
+        creditCost: 2,
+      },
+    });
+    await recordVisualBeatAsset({
+      userId: user.id,
+      beatId,
+      outputUrl,
+      imageJobId: imageJob.id,
+      identityKey,
+    });
+  };
+  await cacheAsset(cacheA.visualBeats[0].id, "/api/generated/cache-a-0.webp", "cache-a");
+  await cacheAsset(cacheA.visualBeats[1].id, "/api/generated/cache-a-1.webp", "cache-a");
+  await cacheAsset(cacheB.visualBeats[1].id, "/api/generated/cache-b-own.webp", "cache-b");
+  const cacheBRebased = await resolveContentPreflight({
+    userId: user.id,
+    projectId: cacheRebaseProject.id,
+    previousPreflightId: cacheA.id,
+    narrativeSource: {
+      kind: "creator-script",
+      text: "context B",
+      windows: [{ text: "shared one" }, { text: "shared two" }],
+    },
+    analyzer: cacheRebaseAnalyzer,
+  });
+  assert.equal(cacheBRebased.cached, true);
+  assert.deepEqual(
+    cacheBRebased.visualBeats.map((beat) => beat.existingAssetUrl),
+    ["/api/generated/cache-a-0.webp", "/api/generated/cache-b-own.webp"],
+    "a cache hit rebases exact unchanged assets while preserving the cached preflight's own current asset",
+  );
+
   const { ensureUploadContentPreflight } = await import("../src/lib/upload-content-preflight.server");
   const priorRollout = {
     BRAND_VISUAL_SYSTEM_ENABLED: process.env.BRAND_VISUAL_SYSTEM_ENABLED,
@@ -124,7 +422,7 @@ async function main() {
   process.env.BRAND_VISUAL_ROLLOUT_PERCENT = "100";
   process.env.BRAND_VISUAL_ROLLOUT_STARTED_AT = "2026-08-01T00:00:00.000Z";
   try {
-    const calls: Array<{ kind: string; text: string; projectId: string }> = [];
+    const calls: Array<{ kind: string; text: string; projectId: string; windowCount: number }> = [];
     const result = await ensureUploadContentPreflight({
       actor: {
         id: user.id,
@@ -134,12 +432,14 @@ async function main() {
       },
       projectId: project.id,
       transcriptText: "เสียงจากคลิปอัปโหลดที่ถอดแล้ว",
+      windows: [{ text: "ช่วงภาพแรก", startMs: 0, endMs: 4_000 }],
     }, {
       resolve: async (input) => {
         calls.push({
           kind: input.narrativeSource.kind,
           text: input.narrativeSource.text,
           projectId: input.projectId,
+          windowCount: input.narrativeSource.windows?.length ?? 0,
         });
         return first;
       },
@@ -150,7 +450,42 @@ async function main() {
       kind: "upload-transcript",
       text: "เสียงจากคลิปอัปโหลดที่ถอดแล้ว",
       projectId: project.id,
+      windowCount: 1,
     }]);
+
+    process.env.BRAND_VISUAL_SYSTEM_ENABLED = "0";
+    const acceptedBeforeFlagChange = await ensureUploadContentPreflight({
+      actor: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        createdAt: new Date("2026-08-02T00:00:00.000Z"),
+      },
+      projectId: project.id,
+      transcriptText: "งานนี้รับสิทธิ์ไว้ก่อนปิด flag",
+      brandVisualAccepted: true,
+    }, {
+      resolve: async () => first,
+      createAnalyzer: () => analyzer,
+    });
+    assert.equal(acceptedBeforeFlagChange.kind, "resolved",
+      "an accepted upload keeps its treatment snapshot when rollout flags change in queue");
+    process.env.BRAND_VISUAL_SYSTEM_ENABLED = "1";
+    const rejectedBeforeFlagChange = await ensureUploadContentPreflight({
+      actor: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        createdAt: new Date("2026-08-02T00:00:00.000Z"),
+      },
+      projectId: project.id,
+      transcriptText: "งาน control ห้ามถูกเปิดระหว่างรอคิว",
+      brandVisualAccepted: false,
+    }, {
+      resolve: async () => { throw new Error("acceptance-time control must stay control"); },
+      createAnalyzer: () => analyzer,
+    });
+    assert.deepEqual(rejectedBeforeFlagChange, { kind: "skipped", reason: "not-in-treatment" });
 
     const control = await ensureUploadContentPreflight({
       actor: {
@@ -180,12 +515,47 @@ async function main() {
       && uploadBranch.indexOf("await ensureUploadContentPreflight({") < uploadBranch.indexOf('await step("keywords", 40)'),
     "upload transcript preflight must resolve before keyword/image generation",
   );
+  const scriptWindowBranch = orchestratorSource.slice(orchestratorSource.indexOf("const pinnedBrandVisualWindows"));
+  assert.ok(
+    scriptWindowBranch.includes("await narrativeVisualWindowsForPreflight({")
+      && scriptWindowBranch.includes("buildNarrativeAlignedBrollWindows({")
+      && scriptWindowBranch.indexOf("buildNarrativeAlignedBrollWindows({")
+        < scriptWindowBranch.indexOf('await step("keywords", 40)'),
+    "script renders must lay the exact accepted Narrative windows onto TTS timing before keyword/image generation",
+  );
 
   const selectorSource = readFileSync("src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx", "utf8");
   assert.ok(
     selectorSource.includes('const canLoadWithoutNarrative = p.mode === "upload";')
       && selectorSource.includes("if (!narrative && !canLoadWithoutNarrative)"),
     "upload mode must expose Brand Profile/Project Look before a transcript exists",
+  );
+  const step2Source = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
+  assert.ok(
+    selectorSource.includes("onPreflightStatusChange")
+      && selectorSource.includes('onPreflightStatusChange?.("loading")')
+      && selectorSource.includes('onPreflightStatusChange?.("ready")')
+      && selectorSource.includes('onPreflightStatusChange?.("error")'),
+    "Brand Visual selector must report preflight lifecycle to the render owner",
+  );
+  const preflightRouteSource = readFileSync(
+    "src/app/api/editor-projects/[id]/content-preflight/route.ts",
+    "utf8",
+  );
+  assert.ok(
+    selectorSource.includes("previousPreflightId: preflight?.id")
+      && preflightRouteSource.includes("previousPreflightId")
+      && preflightRouteSource.includes("previousPreflightId,"),
+    "selective carry-forward must bind to the caller's exact prior preflight, not another tab's latest row",
+  );
+  assert.ok(
+    step2Source.includes("requiresBrandPreflight")
+      && step2Source.includes('p.mode !== "upload"')
+      && step2Source.includes('p.brollSource === "kie-image"')
+      && step2Source.includes('p.brollSource === "automix" && p.mixPreset !== "free"')
+      && step2Source.includes("brandPreflightStatus !== \"ready\"")
+      && step2Source.includes("disabled={submitting || brandPreflightBlocked}"),
+    "non-upload AI-image renders must stay disabled until Content Preflight is ready",
   );
 
   await prisma.$disconnect();

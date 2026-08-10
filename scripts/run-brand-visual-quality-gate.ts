@@ -9,6 +9,14 @@ import {
   publicZImageProviderInput,
   type RunpodJobResponse,
 } from "../src/lib/runpod-image-contract";
+import {
+  BRAND_VISUAL_GATE_COMPILER_CONTRACT,
+  qualityGateCaseHash,
+  qualityGateCompilerHash,
+  qualityGateEntrySelected,
+  reconcileQualityGateEntry,
+  type QualityGateEntry,
+} from "./brand-visual-quality-gate-manifest";
 
 const root = process.cwd();
 for (const candidate of [
@@ -35,74 +43,63 @@ const manifestPath = path.join(outputRoot, "manifest.json");
 const concurrency = Math.max(1, Math.min(4, Number(process.env.BRAND_VISUAL_BENCHMARK_CONCURRENCY) || 3));
 const only = process.argv.find((arg) => arg.startsWith("--only="))?.slice("--only=".length);
 
-type ManifestEntry = {
-  id: string;
-  benchmark: "visual-format" | "brand-differentiation";
-  sceneId: "hook" | "explain" | "close";
-  variant: "neutral" | "mewsocial" | "control";
-  visualFormatId: string;
-  recipeVersion: string;
-  seed: number;
-  prompt: string;
-  negativePrompt: string;
-  status: "pending" | "submitted" | "completed" | "failed";
-  providerJobId?: string;
-  providerStatus?: string;
-  providerCostUsd?: number;
-  delayTimeMs?: number;
-  executionTimeMs?: number;
-  imagePath?: string;
-  sha256?: string;
-  width?: number;
-  height?: number;
-  bytes?: number;
-  error?: string;
-  submittedAt?: string;
-  completedAt?: string;
-};
-
 type Manifest = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   gate: "brand-visual-v1-pre-ui";
   model: "z-image-turbo";
   endpointId: string;
+  compilerContract?: string;
+  compilerHash?: string;
   productionDataAccess: "read-only-aggregate-selects";
   generatedAt: string;
-  entries: ManifestEntry[];
+  entries: QualityGateEntry[];
 };
 
 fs.mkdirSync(imageRoot, { recursive: true });
-const cases = buildBrandVisualBenchmarkCases().filter((item) => !only || item.id.includes(only));
+const cases = buildBrandVisualBenchmarkCases();
 const existing = fs.existsSync(manifestPath)
   ? JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Manifest
   : null;
 const existingById = new Map(existing?.entries.map((entry) => [entry.id, entry]) ?? []);
+const entries = cases.map((item): QualityGateEntry => {
+  const currentWithoutHash = {
+    id: item.id,
+    benchmark: item.benchmark,
+    sceneId: item.sceneId,
+    variant: item.variant,
+    visualFormatId: item.visualFormatId,
+    recipeVersion: item.compiled.recipeVersion,
+    seed: item.seed,
+    prompt: item.compiled.positive,
+    negativePrompt: item.compiled.negative,
+  };
+  const current: QualityGateEntry = {
+    ...currentWithoutHash,
+    caseHash: qualityGateCaseHash({
+      ...currentWithoutHash,
+      endpointId,
+      model: "z-image-turbo",
+      width: 720,
+      height: 1280,
+    }),
+    status: "pending",
+  };
+  return reconcileQualityGateEntry({
+    current,
+    prior: existingById.get(item.id),
+    imageExists: (relativePath) => fs.existsSync(path.resolve(outputRoot, relativePath)),
+  });
+});
 const manifest: Manifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   gate: "brand-visual-v1-pre-ui",
   model: "z-image-turbo",
   endpointId,
+  compilerContract: BRAND_VISUAL_GATE_COMPILER_CONTRACT,
+  compilerHash: qualityGateCompilerHash(entries),
   productionDataAccess: "read-only-aggregate-selects",
   generatedAt: new Date().toISOString(),
-  entries: cases.map((item) => {
-    const prior = existingById.get(item.id);
-    return {
-      id: item.id,
-      benchmark: item.benchmark,
-      sceneId: item.sceneId,
-      variant: item.variant,
-      visualFormatId: item.visualFormatId,
-      recipeVersion: item.compiled.recipeVersion,
-      seed: item.seed,
-      prompt: item.compiled.positive,
-      negativePrompt: item.compiled.negative,
-      status: prior?.status === "completed" && prior.imagePath
-        && fs.existsSync(path.resolve(outputRoot, prior.imagePath))
-        ? "completed"
-        : "pending",
-      ...(prior ?? {}),
-    };
-  }),
+  entries,
 };
 
 function saveManifest() {
@@ -167,7 +164,7 @@ async function downloadImage(url: string): Promise<{ bytes: Buffer; contentType:
   return { bytes, contentType };
 }
 
-async function generate(entry: ManifestEntry) {
+async function generate(entry: QualityGateEntry) {
   if (entry.status === "completed") {
     console.log(`SKIP ${entry.id}`);
     return;
@@ -246,7 +243,7 @@ async function generate(entry: ManifestEntry) {
 
 async function main() {
   saveManifest();
-  const queue = manifest.entries.slice();
+  const queue = manifest.entries.filter((entry) => qualityGateEntrySelected(entry.id, only));
   await Promise.all(Array.from({ length: concurrency }, async () => {
     while (queue.length) {
       const entry = queue.shift();

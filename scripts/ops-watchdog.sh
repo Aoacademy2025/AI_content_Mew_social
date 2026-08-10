@@ -51,6 +51,7 @@ PM2_ONLINE_APPS="ai-content render-worker mcp-video-worker"
 CRON_HEARTBEATS="
 founding-sweep:900
 reconcile-processing:900
+reconcile-ai-images:900
 cleanup-videos:86400
 trial-expiry:86400
 renewal-reminders:86400

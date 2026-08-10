@@ -436,6 +436,8 @@ export function useV2Project() {
     stageExplicitUserDraftMutationRef.current();
   }, []);
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [brandContentPreflightId, setBrandContentPreflightId] = useState<string | null>(null);
+  const [hasPersistedVisualPin, setHasPersistedVisualPin] = useState(false);
   const [projectReady, setProjectReadyRaw] = useState(false);
   const projectReadyRef = useRef(false);
   const setProjectReady = useCallback((next: boolean) => {
@@ -468,6 +470,11 @@ export function useV2Project() {
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>("draft");
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeExportJobId, setActiveExportJobId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setBrandContentPreflightId(null);
+    setHasPersistedVisualPin(false);
+  }, [projectId]);
   const [latestVideoId, setLatestVideoId] = useState<string | null>(null);
   const [previewMediaState, setPreviewMediaState] = useState<ProjectMediaState | null>(null);
 
@@ -531,6 +538,7 @@ export function useV2Project() {
   const [isActiveTrial, setIsActiveTrial] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
+  const [recommendedAutoMixDefault, setRecommendedAutoMixDefault] = useState(false);
   const [plan, setPlan] = useState<string | null>(null);
   /** Task 7 badge: server launch-state signal (MANAGED_KIE && CREDITS_LIVE), independent
    *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
@@ -623,9 +631,9 @@ export function useV2Project() {
     canAcceptUserMutation,
     markUserDraftMutation,
   );
-  // ── Mix preset (D5.1) — non-admin b-roll AI mix. FREE users are forced to "free";
-  // paid (isPaidManagedKie) default to "recommended" (applied in the fetchMe effect
-  // once plan is known). Draft value wins if the user already chose one. ──
+  // ── Mix preset (D5.1) — persisted project choices remain authoritative. A brand-new
+  // paid project is seeded as "recommended" before its POST (see bootstrap below),
+  // independently from the legacy internal managed-KIE gate. ──
   const [mixPreset, setMixPresetFromUser, setMixPresetRaw] = useUserDraftState<MixPreset>(
     d.mixPreset ?? "free", "mixPreset", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -748,7 +756,7 @@ export function useV2Project() {
   // Brand Visual sells production capacity and profile count, not the ability
   // to express the profile. Treatment Free accounts may therefore inherit and
   // override their Brand Mark just like paid accounts.
-  const logoEligible = brandVisualAllowed || plan === "PRO" || plan === "BUSINESS";
+  const logoEligible = brandVisualAllowed || hasPersistedVisualPin || plan === "PRO" || plan === "BUSINESS";
 
   function clearProjectRecoveryData(clearProjectId: string): void {
     const storage = browserStorage();
@@ -767,6 +775,7 @@ export function useV2Project() {
     setActiveExportJobId(typeof project.activeExportJobId === "string" ? project.activeExportJobId : null);
     setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
     setPreviewMediaState((project.previewMediaState as ProjectMediaState | null | undefined) ?? null);
+    setHasPersistedVisualPin(project.hasPersistedVisualPin === true);
   }
 
   function serverCandidateForProject(
@@ -855,6 +864,30 @@ export function useV2Project() {
     editorProjectSaveQueue.seedRevision(nextProjectId, confirmed.revision);
     return tracker;
   }, []);
+
+  /** Adopt a server mutation that atomically changed both project semantics
+   * and draft defaults (for example a Brand Revision pin). Rebase the local
+   * autosave lineage before another debounced write can replay the stale draft
+   * over that transaction. */
+  function acceptAuthoritativeProjectSnapshot(project: Record<string, unknown>): boolean {
+    const currentId = currentProjectIdRef.current;
+    if (!currentId || project.id !== currentId) return false;
+    const candidate = serverCandidateForProject(currentId, project);
+    if (!candidate || candidate.revision === null) return false;
+    invalidateLocalChoiceRequest();
+    trustedResumeDraftRef.current = null;
+    applyDraft(candidate.draft as V2Draft);
+    if (!initializeAutosaveLineage(currentId, candidate)) return false;
+    lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+    latestQueuedSaveRef.current = { projectId: null, revision: null };
+    applyServerProjectMetadata(project);
+    clearProjectRecoveryData(currentId);
+    setProjectReady(true);
+    setProjectInitialization("ready");
+    setSaveStatus("saved");
+    setRecoveryState({ status: "none" });
+    return true;
+  }
 
   const ownsAutosaveLineage = useCallback((
     tracker: AutosaveLineageTracker,
@@ -1064,14 +1097,15 @@ export function useV2Project() {
     }
     if (!isCurrentReset()) return null;
     setProjectInitialization("creating-project");
-    const nextPreset = isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset;
+    const nextPreset = recommendedAutoMixDefault ? "recommended" : DEFAULT_PROJECT.mixPreset;
     const inherited = logoOverlayForNewProject({
       hasExistingDraft: false,
       accountDefault,
     });
     const nextDraft: V2Draft = {
       ...DEFAULT_PROJECT,
-      autoMixProviders: [...DEFAULT_PROJECT.autoMixProviders],
+      autoMixProviders: [...(PRESET_PROVIDERS[nextPreset] ?? DEFAULT_PROJECT.autoMixProviders)],
+      brollSource: presetBrollSource(nextPreset),
       mixPreset: nextPreset,
       voiceEngine: accountVideoDefaults.voiceEngine,
       geminiVoiceName: accountVideoDefaults.geminiVoiceName,
@@ -1132,7 +1166,7 @@ export function useV2Project() {
       isCurrent: isCurrentReset,
       signal: resetController.signal,
     });
-  }, [createServerProject, invalidateAutosaveLineage, invalidateLocalChoiceRequest, isPaidManagedKie, projectId, saveRevision, setProjectInitialization, setRecoveryState]);
+  }, [createServerProject, invalidateAutosaveLineage, invalidateLocalChoiceRequest, projectId, recommendedAutoMixDefault, saveRevision, setProjectInitialization, setRecoveryState]);
 
   useEffect(() => {
     let alive = true;
@@ -1439,14 +1473,17 @@ export function useV2Project() {
         ? null
         : storedLocalDraft;
       const hasLocalDraft = localDraft !== null;
+      if (hasLocalDraft) accountDraftDefaultsAllowedRef.current = false;
       const seedDraft = hasLocalDraft ? localDraft : buildDraft();
       if (!hasLocalDraft) {
         let accountDefault: LogoOverlayConfig | null;
         let accountVideoDefaults: AccountVideoDefaults;
+        let account: MeData | null;
         try {
-          [accountDefault, accountVideoDefaults] = await Promise.all([
+          [accountDefault, accountVideoDefaults, account] = await Promise.all([
             loadAccountLogoDefault(),
             loadAccountVideoDefaults(),
+            fetchMe(),
           ]);
         } catch {
           if (!isCurrentBootstrap()) return;
@@ -1461,6 +1498,14 @@ export function useV2Project() {
         seedDraft.geminiVoiceName = accountVideoDefaults.geminiVoiceName;
         seedDraft.voiceId = accountVideoDefaults.voiceId;
         seedDraft.avatarId = accountVideoDefaults.avatarId;
+        const initialPreset = account?.recommendedAutoMixDefault === true
+          ? "recommended"
+          : DEFAULT_PROJECT.mixPreset;
+        seedDraft.mixPreset = initialPreset;
+        seedDraft.brollSource = presetBrollSource(initialPreset);
+        seedDraft.autoMixProviders = [
+          ...(PRESET_PROVIDERS[initialPreset] ?? DEFAULT_PROJECT.autoMixProviders),
+        ];
         const inherited = logoOverlayForNewProject({ hasExistingDraft: false, accountDefault });
         if (inherited) seedDraft.logoOverlay = inherited;
       }
@@ -1799,17 +1844,18 @@ export function useV2Project() {
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
       // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
       const paid = !!m?.kiePaidUnlocked;
+      const recommendedDefault = m?.recommendedAutoMixDefault === true;
       // `isAdmin` in the v2 editor controls private AI/AutoMix options, so an
       // administrator outside the internal tester group must remain locked too.
       setIsAdmin(internalAdmin);
       setIsPaidManagedKie(paid);
+      setRecommendedAutoMixDefault(recommendedDefault);
       setManagedKieOn(!!m?.managedKieOn);
-      // Preset default/enforcement (non-admins only — admins use the raw controls):
-      //   FREE / feature-off → forced "ฟรีล้วน" (the AI presets are disabled in the UI);
-      //   paid → default "ผสม AI แนะนำ" unless the user already picked a preset (draft).
-      // setMixPreset also re-drives brollSource/autoMixProviders so submit stays consistent.
+      // Defensive fallback for a legacy blank draft. Fresh projects already receive
+      // this product default before their POST in ensureServerProject; existing
+      // project choices are protected by accountDraftDefaultsAllowedRef.
       if (!internalAdmin && accountDraftDefaultsAllowedRef.current) {
-        const defaultPreset = !paid ? "free" : !draftRef.current.mixPreset ? "recommended" : null;
+        const defaultPreset = recommendedDefault ? "recommended" : null;
         if (defaultPreset) {
           setMixPresetRaw(defaultPreset);
           setBrollSourceRaw(presetBrollSource(defaultPreset));
@@ -2121,11 +2167,13 @@ export function useV2Project() {
     layerVisibility, setLayerVisibility,
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, brandVisualAllowed, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, brandVisualAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
+    brandContentPreflightId, setBrandContentPreflightId,
     saveStatus, retryProjectSave,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,
     canRunProjectOperation, saveAccountVideoDefaults,
+    acceptAuthoritativeProjectSnapshot,
   };
 }
 

@@ -86,7 +86,9 @@ function userStateDeclaration(
     if (
       ts.isVariableDeclaration(node)
       && ts.isArrayBindingPattern(node.name)
-      && node.name.elements.map((element) => element.name.getText(root)).join(",")
+      && node.name.elements.map((element) => (
+        ts.isOmittedExpression(element) ? "" : element.name.getText(root)
+      )).join(",")
         === expectedNames.join(",")
       && node.initializer
       && ts.isCallExpression(node.initializer)

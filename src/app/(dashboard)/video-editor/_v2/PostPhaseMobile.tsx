@@ -40,7 +40,7 @@ import {
   WindowEditsBottomBar,
 } from "./BrollWindowInspector";
 import { brollWindowSpans } from "@/lib/broll-spans";
-import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { MeData } from "@/lib/use-me";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
 import { trackEvent } from "@/lib/client-telemetry";
@@ -79,15 +79,14 @@ export function PostPhaseMobile({
   projectSaveStatus,
   onRetryProjectSave,
   canRunProjectOperation,
-  brollRegionPreference = "auto",
-  brollVisualStyle = "auto",
   internalAiTester,
-  aiImageEnabled,
+  sceneRerollEnabled,
+  starterImageAllowance,
   downloadFilename,
 }: {
   job: V2JobState; script: string;
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
-  onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
   logoOverlay?: LogoOverlayConfig;
@@ -104,9 +103,9 @@ export function PostPhaseMobile({
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   canRunProjectOperation?: () => boolean;
-  brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   internalAiTester: boolean;
-  aiImageEnabled: boolean;
+  sceneRerollEnabled: boolean;
+  starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
 }) {
   const ed = usePostPhaseEditor(job, script, {
@@ -137,8 +136,8 @@ export function PostPhaseMobile({
   const layersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const headlineTriggerRef = useRef<HTMLButtonElement | null>(null);
   const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
-  // Public flag/internal beta gate only. Upload Avatar now has its own cutaway re-composite path.
-  const brollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
 
   const selectedCap = ed.captions[ed.selected];
   const durationMs = Math.max(
@@ -293,7 +292,7 @@ export function PostPhaseMobile({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <SaveProjectLookPrompt projectId={projectId} brandVisualAllowed={brandVisualAllowed} />
+      <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandVisualAllowed={brandVisualAllowed} />
       {/* ── preview ติดบน + สครับ ── */}
       <div data-mobile-preview="true" className="shrink-0" style={{ background: "#000", borderBottom: `1px solid ${color.cardBorder}` }}>
         <div data-mobile-video-preview-frame="true" style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>
@@ -984,7 +983,13 @@ export function PostPhaseMobile({
       {brollEditEnabled && <PendingBrollChangesDialog ed={ed} />}
 
       {brollEditEnabled && ed.selectedWindow != null && (
-        <BrollWindowInspector ed={ed} videoJobId={job.jobId} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
+        <BrollWindowInspector
+          ed={ed}
+          videoJobId={job.jobId}
+          fullBrollEditEnabled={fullBrollEditEnabled}
+          sceneRerollEnabled={sceneRerollEnabled}
+          starterImageAllowance={starterImageAllowance}
+        />
       )}
     </div>
   );

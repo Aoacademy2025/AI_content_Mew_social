@@ -7,25 +7,11 @@ import { planHeroAiWindowGeneration } from "@/lib/hero-ai-broll";
 
 const VIDEO_JOB_ID = /^[A-Za-z0-9_-]{8,120}$/;
 const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const BROLL_VISUAL_STYLES = new Set<BrollVisualStyle>([
-  "auto",
-  "documentary",
-  "cinematic",
-  "business",
-  "lifestyle",
-  "tech",
-  "minimal",
-  "surreal",
-]);
-
 export type HeroBrollWindowRequest = {
-  prompt: string;
   requestId: string;
   videoJobId: string;
   sceneIndex: number;
   durationSec: number;
-  visualStyle: BrollVisualStyle;
-  heroStyle: AiImageStyle;
   kenBurnsDurationSec: number;
   idempotencyKey: string;
 };
@@ -53,10 +39,6 @@ export function parseHeroBrollWindowRequest(body: unknown): HeroBrollWindowReque
     return { ok: false, error: "invalid_body", message: "ข้อมูลคำขอไม่ถูกต้อง" };
   }
   const raw = body as Record<string, unknown>;
-  const prompt = typeof raw.prompt === "string" ? raw.prompt.replace(/\s+/g, " ").trim() : "";
-  if (!prompt) {
-    return { ok: false, error: "empty_prompt", message: "กรุณาระบุคำอธิบายรูปภาพที่ต้องการ" };
-  }
   if (typeof raw.requestId !== "string" || !REQUEST_ID.test(raw.requestId)) {
     return { ok: false, error: "invalid_request_id", message: "ไม่พบรหัสยืนยันคำขอ กรุณาลองใหม่" };
   }
@@ -69,27 +51,19 @@ export function parseHeroBrollWindowRequest(body: unknown): HeroBrollWindowReque
   if (typeof raw.durationSec !== "number" || !Number.isFinite(raw.durationSec) || raw.durationSec <= 0) {
     return { ok: false, error: "invalid_duration", message: "ระยะเวลา B-roll ไม่ถูกต้อง" };
   }
-  if (raw.visualStyle !== undefined && (
-    typeof raw.visualStyle !== "string"
-    || !BROLL_VISUAL_STYLES.has(raw.visualStyle as BrollVisualStyle)
-  )) {
-    return { ok: false, error: "invalid_visual_style", message: "สไตล์ภาพไม่ถูกต้อง" };
-  }
-
   const sceneIndex = Number(raw.sceneIndex);
   const durationSec = Math.min(600, raw.durationSec);
-  const visualStyle = (raw.visualStyle ?? "auto") as BrollVisualStyle;
-  const kenBurnsDurationSec = planHeroAiWindowGeneration([prompt], [durationSec])[0].kenBurnsDurationSec;
+  const kenBurnsDurationSec = planHeroAiWindowGeneration(
+    [`scene-${sceneIndex}`],
+    [durationSec],
+  )[0].kenBurnsDurationSec;
   return {
     ok: true,
     value: {
-      prompt: prompt.slice(0, 1_500),
       requestId: raw.requestId,
       videoJobId: raw.videoJobId,
       sceneIndex,
       durationSec,
-      visualStyle,
-      heroStyle: heroImageStyleForBrollWindow(visualStyle),
       kenBurnsDurationSec,
       idempotencyKey: `broll-window:${raw.videoJobId}:scene:${sceneIndex}:request:${raw.requestId}`,
     },

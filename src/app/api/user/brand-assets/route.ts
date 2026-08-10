@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import {
+  brandAssetActorForUser,
   getBrandAssetCollection,
   postBrandAsset,
 } from "@/lib/brand-asset-api.server";
@@ -12,7 +13,7 @@ export async function GET(): Promise<NextResponse> {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    return getBrandAssetCollection(user);
+    return getBrandAssetCollection(brandAssetActorForUser(user));
   } catch {
     return apiError({
       route: "user/brand-assets",
@@ -27,7 +28,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    return await postBrandAsset(user, request);
+    return await postBrandAsset(brandAssetActorForUser(user), request);
   } catch {
     return apiError({
       route: "user/brand-assets",

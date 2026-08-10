@@ -1,11 +1,12 @@
 import "server-only";
 
-import type { AiGenerationAttempt, AiGenerationJob } from "@prisma/client";
+import type { AiGenerationAttempt, AiGenerationJob, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   reserveStarterAiImageAllowance,
   settleStarterAiImageAllowance,
+  starterAllowanceStatusForWindowInTransaction,
   starterAllowanceStatusInTransaction,
 } from "@/lib/starter-ai-image-allowance.server";
 import {
@@ -16,6 +17,10 @@ import {
   linkBrandLookPreviewJobInTransaction,
   syncBrandLookPreviewJobInTransaction,
 } from "@/lib/brand-look-preview-job-link.server";
+import {
+  linkVisualBeatAssetInTransaction,
+  visualBeatLinkFromImageJob,
+} from "@/lib/project-visual-assets.server";
 export {
   refundSettledVideoImageBatch,
   refundSettledVideoImageJob,
@@ -47,6 +52,10 @@ export type PublicAiGenerationJob = {
   mediaExpiresAt: string | null;
 };
 
+export type ImageFundingSnapshot =
+  | { fundingSource: "credits" }
+  | { fundingSource: "starter_allowance"; windowStartedAt: Date };
+
 function parseInput(value: string | null): Record<string, unknown> | null {
   if (!value) return null;
   try {
@@ -57,6 +66,41 @@ function parseInput(value: string | null): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+const LIVE_VIDEO_JOB_STATUSES = ["queued", "processing", "waiting_provider"] as const;
+
+function parentVideoJobIdFromImageKey(idempotencyKey: string | null | undefined): string | null {
+  const match = /^video:([^:]+):/.exec(idempotencyKey ?? "");
+  return match?.[1]?.trim() || null;
+}
+
+/** Lock an existing parent VideoJob and prove it is still live in the same
+ * transaction that reserves/settles its child image. Legacy keys whose parent
+ * row no longer exists remain supported; a known terminal parent fails closed. */
+async function claimLiveParentVideoJob(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  idempotencyKey: string | null | undefined,
+): Promise<boolean> {
+  const parentId = parentVideoJobIdFromImageKey(idempotencyKey);
+  if (!parentId) return true;
+  const parent = await tx.videoJob.findFirst({
+    where: { id: parentId, userId },
+    select: { id: true },
+  });
+  if (!parent) return true;
+  const claimed = await tx.videoJob.updateMany({
+    where: {
+      id: parentId,
+      userId,
+      status: { in: [...LIVE_VIDEO_JOB_STATUSES] },
+    },
+    // This no-op counter update takes the parent row lock. A concurrent cancel
+    // then waits until the child reservation commits and its batch sweep can see it.
+    data: { reservationRefundAttempts: { increment: 0 } },
+  });
+  return claimed.count === 1;
 }
 
 export function publicAiGenerationJob(job: AiGenerationJob): PublicAiGenerationJob {
@@ -108,6 +152,13 @@ export async function createReservedImageJob(input: {
   /** Starter allowance belongs only to the Brand Visual activation surface.
    * Every generic/legacy image caller defaults to the shared credit wallet. */
   fundingPolicy?: "credits-only" | "brand-visual-activation";
+  /** Durable VideoJob acceptance may pin both funding source and allowance
+   * window. This bypasses later plan/rollout re-evaluation, not reservation
+   * capacity or the exact-window settlement invariants. */
+  fundingSnapshot?: ImageFundingSnapshot;
+  /** Final hard-cap guard. The per-user wallet row is locked before counting,
+   * so concurrent requests cannot all pass a count-then-create race. */
+  dailyRateLimit?: { cap: number; now?: Date };
   reservationLink?: {
     brandLookPreviewItemId: string;
     expectedImageJobId: string | null;
@@ -123,15 +174,26 @@ export async function createReservedImageJob(input: {
     }
   | {
       ok: false;
-      reason: "insufficient" | "allowance_exhausted";
+      reason: "insufficient" | "allowance_exhausted" | "rate_limited" | "parent_terminal";
       balanceAfter: number;
       allowanceRemaining: number | null;
+      usedDay?: number;
+      retryAfterSec?: number;
     }
 > {
   if (input.estimatedCostUsdMicros > input.costBudgetUsdMicros) {
     throw new Error("Image provider route exceeds the quoted COGS budget");
   }
   const result = await prisma.$transaction(async (tx) => {
+    if (!await claimLiveParentVideoJob(tx, input.userId, input.idempotencyKey)) {
+      const balance = await tx.creditBalance.findUnique({ where: { userId: input.userId } });
+      return {
+        ok: false as const,
+        reason: "parent_terminal" as const,
+        balanceAfter: (balance?.granted ?? 0) + (balance?.purchased ?? 0),
+        allowanceRemaining: null,
+      };
+    }
     const existing = await tx.aiGenerationJob.findFirst({
       where: { userId: input.userId, idempotencyKey: input.idempotencyKey },
     });
@@ -147,7 +209,13 @@ export async function createReservedImageJob(input: {
       }
       const balance = await tx.creditBalance.findUnique({ where: { userId: input.userId } });
       const allowance = existing.fundingSource === "starter_allowance"
-        ? await starterAllowanceStatusInTransaction(tx, input.userId)
+        ? existing.allowanceWindowStartedAt
+          ? await starterAllowanceStatusForWindowInTransaction(
+              tx,
+              input.userId,
+              existing.allowanceWindowStartedAt,
+            )
+          : await starterAllowanceStatusInTransaction(tx, input.userId)
         : null;
       if (input.reservationLink) {
         await linkBrandLookPreviewJobInTransaction(tx, {
@@ -172,9 +240,45 @@ export async function createReservedImageJob(input: {
       update: {},
     });
     const total = balance.granted + balance.purchased;
-    const allowance = input.fundingPolicy === "brand-visual-activation"
-      ? await reserveStarterAiImageAllowance(tx, input.userId)
-      : { kind: "credits" as const };
+    if (input.dailyRateLimit) {
+      // SQLite serializes this no-op wallet write; databases with row-level
+      // locking serialize only this user's reservations. Count and job insert
+      // therefore live behind the same durable per-user lock.
+      await tx.creditBalance.update({
+        where: { userId: input.userId },
+        data: { granted: { increment: 0 } },
+      });
+      const now = input.dailyRateLimit.now ?? new Date();
+      const dayCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const recent = await tx.aiGenerationJob.findMany({
+        where: { userId: input.userId, kind: "image", createdAt: { gte: dayCutoff } },
+        select: { createdAt: true },
+        orderBy: { createdAt: "asc" },
+      });
+      const cap = Math.max(1, Math.floor(input.dailyRateLimit.cap));
+      if (recent.length >= cap) {
+        const oldest = recent[0]?.createdAt.getTime() ?? now.getTime();
+        return {
+          ok: false as const,
+          reason: "rate_limited" as const,
+          balanceAfter: total,
+          allowanceRemaining: null,
+          usedDay: recent.length,
+          retryAfterSec: Math.max(1, Math.ceil((oldest + 24 * 60 * 60 * 1000 - now.getTime()) / 1000)),
+        };
+      }
+    }
+    const allowance = input.fundingSnapshot?.fundingSource === "starter_allowance"
+      ? await reserveStarterAiImageAllowance(
+          tx,
+          input.userId,
+          input.fundingSnapshot.windowStartedAt,
+        )
+      : input.fundingSnapshot?.fundingSource === "credits"
+        ? { kind: "credits" as const }
+        : input.fundingPolicy === "brand-visual-activation"
+          ? await reserveStarterAiImageAllowance(tx, input.userId)
+          : { kind: "credits" as const };
     if (allowance.kind === "allowance_exhausted") {
       return {
         ok: false as const,
@@ -238,6 +342,9 @@ export async function createReservedImageJob(input: {
         creditsFromPurchased: fromPurchased,
         fundingSource,
         allowanceUnits: fundingSource === "starter_allowance" ? 1 : 0,
+        allowanceWindowStartedAt: allowance.kind === "reserved"
+          ? allowance.status.windowStartedAt
+          : null,
         chargeState: "reserved",
         idempotencyKey: input.idempotencyKey,
         mediaExpiresAt: input.mediaExpiresAt,
@@ -297,7 +404,13 @@ export async function createReservedImageJob(input: {
       category: "error",
       source: "server",
       step: "credit_reservation",
-      status: result.reason === "allowance_exhausted" ? "allowance_exhausted" : "insufficient_credits",
+      status: result.reason === "allowance_exhausted"
+        ? "allowance_exhausted"
+        : result.reason === "rate_limited"
+          ? "rate_limited"
+          : result.reason === "parent_terminal"
+            ? "parent_video_terminal"
+          : "insufficient_credits",
       value: input.creditCost,
       properties: {
         requiredCredits: input.creditCost,
@@ -308,6 +421,8 @@ export async function createReservedImageJob(input: {
         providerRoute: input.providerRoute,
         surface,
         fundingPolicy: input.fundingPolicy ?? "credits-only",
+        usedDay: result.usedDay ?? null,
+        retryAfterSec: result.retryAfterSec ?? null,
       },
     }).catch((error) => {
       console.error("[ai-image] failed to record credit reservation rejection telemetry:", error);
@@ -519,8 +634,12 @@ export async function failAndRefundAiJob(
     let chargeState = job.chargeState;
     if (job.chargeState === "reserved") {
       if (job.fundingSource === "starter_allowance") {
+        if (!job.allowanceWindowStartedAt) {
+          throw new Error("Starter allowance job is missing its usage window");
+        }
         await settleStarterAiImageAllowance(tx, {
           userId,
+          windowStartedAt: job.allowanceWindowStartedAt,
           units: job.allowanceUnits,
           outcome: "refunded",
         });
@@ -581,6 +700,63 @@ export async function completeImageJob(input: {
     if (job.status === "completed") return job;
     if (job.status === "failed" || job.chargeState === "refunded") return job;
 
+    if (!await claimLiveParentVideoJob(tx, input.userId, job.idempotencyKey)) {
+      const errorCode = "PARENT_VIDEO_TERMINAL";
+      const errorMessage = "Parent video is no longer deliverable";
+      await tx.aiGenerationAttempt.updateMany({
+        where: {
+          jobId: job.id,
+          status: { in: ["planned", "submitting", "submitted", "queued", "in_progress"] },
+        },
+        data: { status: "failed", errorCode, errorMessage, finishedAt: new Date() },
+      });
+      if (job.chargeState === "reserved") {
+        if (job.fundingSource === "starter_allowance") {
+          if (!job.allowanceWindowStartedAt) {
+            throw new Error("Starter allowance job is missing its usage window");
+          }
+          await settleStarterAiImageAllowance(tx, {
+            userId: input.userId,
+            windowStartedAt: job.allowanceWindowStartedAt,
+            units: job.allowanceUnits,
+            outcome: "refunded",
+          });
+        } else {
+          const restored = await tx.creditBalance.upsert({
+            where: { userId: input.userId },
+            create: {
+              userId: input.userId,
+              granted: job.creditsFromGranted,
+              purchased: job.creditsFromPurchased,
+            },
+            update: {
+              granted: { increment: job.creditsFromGranted },
+              purchased: { increment: job.creditsFromPurchased },
+            },
+          });
+          await tx.creditLedger.create({
+            data: {
+              userId: input.userId,
+              delta: job.creditCost,
+              kind: "refund",
+              action: `ai-image-refund:${job.id}`,
+              balanceAfter: restored.granted + restored.purchased,
+            },
+          });
+        }
+      }
+      return tx.aiGenerationJob.update({
+        where: { id: job.id },
+        data: {
+          status: "failed",
+          chargeState: job.chargeState === "reserved" ? "refunded" : job.chargeState,
+          errorCode,
+          errorMessage,
+          finishedAt: new Date(),
+        },
+      });
+    }
+
     const image = await tx.generatedImage.create({
       data: {
         userId: input.userId,
@@ -600,8 +776,12 @@ export async function completeImageJob(input: {
       },
     });
     if (job.chargeState === "reserved" && job.fundingSource === "starter_allowance") {
+      if (!job.allowanceWindowStartedAt) {
+        throw new Error("Starter allowance job is missing its usage window");
+      }
       await settleStarterAiImageAllowance(tx, {
         userId: input.userId,
+        windowStartedAt: job.allowanceWindowStartedAt,
         units: job.allowanceUnits,
         outcome: "completed",
       });
@@ -620,6 +800,16 @@ export async function completeImageJob(input: {
         finishedAt: new Date(),
       },
     });
+    const visualBeatLink = visualBeatLinkFromImageJob(job);
+    if (visualBeatLink) {
+      await linkVisualBeatAssetInTransaction(tx, {
+        userId: input.userId,
+        beatId: visualBeatLink.beatId,
+        outputUrl: input.outputUrl,
+        imageJobId: updated.id,
+        identityKey: visualBeatLink.identityKey,
+      });
+    }
     await syncBrandLookPreviewJobInTransaction(tx, updated);
     return updated;
   });

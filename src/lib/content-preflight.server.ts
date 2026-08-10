@@ -3,12 +3,21 @@ import type { ContentPreflight, ProjectVisualBeat } from "@prisma/client";
 import { z } from "zod";
 import { VISUAL_FORMAT_IDS, type VisualFormatId } from "@/lib/brand-visual-system";
 import { prisma } from "@/lib/prisma";
+import {
+  linkCompletedVisualBeatAsset,
+  reusableProjectVisualAssets,
+} from "@/lib/project-visual-assets.server";
 import { geminiGenerateText } from "@/lib/gemini";
 import { KeyRequiredError, resolveGeminiKey } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 
-export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v1";
+export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v3-stable-windows";
+const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
+  CONTENT_PREFLIGHT_ANALYZER_VERSION,
+  "brand-content-preflight-v2-windowed",
+] as const;
 export type NarrativeSourceKind = "ai-script" | "creator-script" | "upload-transcript";
+export type NarrativeVisualWindow = { text: string; startMs?: number; endMs?: number };
 
 const analysisSchema = z.object({
   contentDomain: z.string().trim().min(1).max(160),
@@ -44,6 +53,7 @@ export type ContentPreflightAnalyzer = {
   analyze(input: {
     kind: NarrativeSourceKind;
     text: string;
+    windows: NarrativeVisualWindow[];
   }): Promise<ContentPreflightAnalysis>;
 };
 
@@ -62,6 +72,44 @@ export type ResolvedContentPreflight = {
   visualBeats: ResolvedVisualBeat[];
   cached: boolean;
 };
+
+/** Exact story windows owned by one immutable preflight. The worker consumes
+ * this same ordered list when it lays B-roll onto the TTS timeline. */
+export async function narrativeVisualWindowsForPreflight(input: {
+  userId: string;
+  projectId: string;
+  preflightId: string;
+}): Promise<NarrativeVisualWindow[]> {
+  const beats = await prisma.projectVisualBeat.findMany({
+    where: {
+      userId: input.userId,
+      projectId: input.projectId,
+      preflightId: input.preflightId,
+    },
+    orderBy: { sequence: "asc" },
+    select: { sequence: true, startMs: true, endMs: true, beatJson: true },
+  });
+  if (beats.length === 0 || beats.some((beat, index) => beat.sequence !== index)) {
+    throw new ContentPreflightError("INVALID_ANALYSIS", "ข้อมูลฉากมีลำดับไม่ครบ");
+  }
+  const windows = beats.map((beat) => {
+    let sourceExcerpt = "";
+    try {
+      const parsed = JSON.parse(beat.beatJson) as { sourceExcerpt?: unknown };
+      sourceExcerpt = typeof parsed.sourceExcerpt === "string" ? parsed.sourceExcerpt : "";
+    } catch {}
+    return {
+      text: sourceExcerpt,
+      ...(beat.startMs !== null ? { startMs: beat.startMs } : {}),
+      ...(beat.endMs !== null ? { endMs: beat.endMs } : {}),
+    };
+  });
+  const normalized = normalizedWindows(windows);
+  if (normalized.length !== beats.length) {
+    throw new ContentPreflightError("INVALID_ANALYSIS", "ข้อมูลช่วงเนื้อหาสำหรับแต่ละฉากไม่ครบ");
+  }
+  return normalized;
+}
 
 export class ContentPreflightError extends Error {
   constructor(
@@ -112,9 +160,11 @@ export function createGeminiContentPreflightAnalyzer(userId: string): ContentPre
         "Return one JSON object only. Do not wrap it in markdown.",
         `sourceKind: ${input.kind}`,
         "Choose suggestedVisualFormatId from: cinematic-realism, stick-figure-story, dramatic-comic, clear-infographic, retro-story.",
-        "Break the source into stable sequential visual beats. Use beatKey window-0, window-1, and so on.",
+        `Return exactly ${input.windows.length} beats, one for each supplied B-roll window, in the same order. Use beatKey window-0, window-1, and so on.`,
         "Each beat must describe one text-free frozen visual moment, not a montage and not typography.",
         "Schema: {contentDomain:string,suggestedVisualFormatId:string,suggestedTreatment:{label:string,mood:string},beats:[{beatKey:string,sourceExcerpt:string,startMs?:integer,endMs?:integer,subject:string,action:string,setting:string,emotion:string,emphasis:string}]}",
+        "B-roll windows (authoritative; copy each text into the matching sourceExcerpt):",
+        JSON.stringify(input.windows),
         "Narrative Source:",
         input.text,
       ].join("\n"), 8_192, 0.2);
@@ -131,14 +181,120 @@ function normalizedNarrative(text: string): string {
   return text.replace(/\r\n?/g, "\n").replace(/[ \t]+/g, " ").trim();
 }
 
-export function contentPreflightSourceHash(kind: NarrativeSourceKind, text: string): string {
+export function planNarrativeVisualWindows(
+  text: string,
+  requestedCount?: number,
+): NarrativeVisualWindow[] {
+  const normalized = normalizedNarrative(text);
+  if (!normalized) return [];
+  const manualCount = Number.isFinite(requestedCount) && (requestedCount ?? 0) > 0
+    ? Math.min(60, Math.max(1, Math.floor(requestedCount!)))
+    : 0;
+  const thaiChars = (normalized.match(/[฀-๿]/g) ?? []).length;
+  const englishWords = normalized.replace(/[฀-๿]/g, " ").split(/\s+/).filter(Boolean).length;
+  const estimatedSeconds = thaiChars / 11 + englishWords / 2.5;
+  const count = manualCount || Math.min(60, Math.max(1, Math.ceil(estimatedSeconds / 4)));
+  const units = normalized
+    .split(/\n+/u)
+    .flatMap((line) => line.match(/[^.!?。！？]+(?:[.!?。！？]+|$)/gu) ?? [])
+    .map((unit) => unit.trim())
+    .filter(Boolean);
+  const windows = units.length > 0 ? units : [normalized];
+
+  // Grow at natural boundaries first. Thai often has no whitespace, so the
+  // fallback splits Unicode code points near the midpoint rather than bytes.
+  while (windows.length < count) {
+    let longestIndex = -1;
+    let longestLength = 0;
+    windows.forEach((window, index) => {
+      const length = Array.from(window).length;
+      if (length > longestLength && length > 1) {
+        longestIndex = index;
+        longestLength = length;
+      }
+    });
+    if (longestIndex < 0) {
+      windows.push(windows[windows.length - 1] ?? normalized);
+      continue;
+    }
+    const window = windows[longestIndex];
+    const characters = Array.from(window);
+    const midpoint = Math.floor(characters.length / 2);
+    const whitespaceCandidates = characters
+      .map((character, index) => (/\s/u.test(character) ? index : -1))
+      .filter((index) => index > 0 && index < characters.length - 1)
+      .sort((a, b) => Math.abs(a - midpoint) - Math.abs(b - midpoint));
+    const splitAt = whitespaceCandidates[0] ?? midpoint;
+    const left = characters.slice(0, splitAt).join("").trim();
+    const right = characters.slice(splitAt).join("").trim();
+    if (!left || !right) {
+      windows.push(window);
+      continue;
+    }
+    windows.splice(longestIndex, 1, left, right);
+  }
+
+  // When the narrative has more natural units than requested windows, merge
+  // the smallest adjacent pair. Boundaries stay anchored to sentences/lines,
+  // so a local prefix edit cannot shift every later Visual Beat.
+  while (windows.length > count) {
+    let mergeAt = 0;
+    let smallest = Number.POSITIVE_INFINITY;
+    for (let index = 0; index < windows.length - 1; index += 1) {
+      const combined = Array.from(windows[index]).length + Array.from(windows[index + 1]).length;
+      if (combined < smallest) {
+        smallest = combined;
+        mergeAt = index;
+      }
+    }
+    windows.splice(mergeAt, 2, `${windows[mergeAt]}\n${windows[mergeAt + 1]}`);
+  }
+
+  return windows.map((window) => ({ text: window }));
+}
+
+function normalizedWindows(windows: readonly NarrativeVisualWindow[]): NarrativeVisualWindow[] {
+  return windows.slice(0, 120).flatMap((window) => {
+    const text = normalizedNarrative(window.text);
+    if (!text) return [];
+    const startMs = Number.isSafeInteger(window.startMs) && (window.startMs ?? -1) >= 0
+      ? window.startMs
+      : undefined;
+    const endMs = Number.isSafeInteger(window.endMs) && (window.endMs ?? 0) > 0
+      ? window.endMs
+      : undefined;
+    return [{ text, ...(startMs !== undefined ? { startMs } : {}), ...(endMs !== undefined ? { endMs } : {}) }];
+  });
+}
+
+export function contentPreflightSourceHash(
+  kind: NarrativeSourceKind,
+  text: string,
+  options: { windowCount?: number; windows?: readonly NarrativeVisualWindow[] } = {},
+): string {
+  const normalized = normalizedNarrative(text);
+  const windows = normalizedWindows(
+    options.windows ?? planNarrativeVisualWindows(normalized, options.windowCount),
+  );
   return createHash("sha256")
-    .update(`${kind}\0${normalizedNarrative(text)}`)
+    .update(JSON.stringify({ kind, text: normalized, windows }))
     .digest("hex");
 }
 
-function excerptHash(excerpt: string): string {
-  return createHash("sha256").update(normalizedNarrative(excerpt)).digest("hex");
+function sourceWindowHash(sourceExcerpt: string): string {
+  return createHash("sha256")
+    .update(normalizedNarrative(sourceExcerpt).normalize("NFKC").toLocaleLowerCase())
+    .digest("hex");
+}
+
+function storedSourceWindowHash(beat: ProjectVisualBeat): string {
+  try {
+    const parsed = JSON.parse(beat.beatJson) as { sourceExcerpt?: unknown };
+    if (typeof parsed.sourceExcerpt === "string" && parsed.sourceExcerpt.trim()) {
+      return sourceWindowHash(parsed.sourceExcerpt);
+    }
+  } catch {}
+  return beat.sourceExcerptHash;
 }
 
 type StoredPreflight = ContentPreflight & { visualBeats: ProjectVisualBeat[] };
@@ -164,13 +320,100 @@ function resolved(row: StoredPreflight, cached: boolean): ResolvedContentPreflig
   };
 }
 
+/** Cache identity owns analysis, not mutable asset lineage. When a creator
+ * returns to an already-analyzed source, copy only exact current windows from
+ * the explicitly named predecessor into cache rows that do not already own a
+ * current asset. This keeps analysis lazy without losing later generations. */
+async function rebaseCachedPreflightAssetsFromLineage(input: {
+  userId: string;
+  projectId: string;
+  cachedPreflightId: string;
+  previousPreflightId: string;
+}): Promise<StoredPreflight> {
+  return prisma.$transaction(async (tx) => {
+    const [cached, previous] = await Promise.all([
+      tx.contentPreflight.findFirst({
+        where: {
+          id: input.cachedPreflightId,
+          projectId: input.projectId,
+          userId: input.userId,
+        },
+        include: { visualBeats: true },
+      }),
+      tx.contentPreflight.findFirst({
+        where: {
+          id: input.previousPreflightId,
+          projectId: input.projectId,
+          userId: input.userId,
+        },
+        include: { visualBeats: true },
+      }),
+    ]);
+    if (!cached || !previous || cached.id === previous.id) {
+      if (!cached) throw new ContentPreflightError("NOT_FOUND", "ไม่พบข้อมูลฉากที่บันทึกไว้");
+      return cached;
+    }
+
+    const targets = cached.visualBeats.slice().sort((a, b) => a.sequence - b.sequence);
+    const sources = previous.visualBeats
+      .filter((beat) => beat.status === "current"
+        && Boolean(beat.existingAssetUrl)
+        && Boolean(beat.existingImageJobId))
+      .sort((a, b) => a.sequence - b.sequence);
+    const usedSourceIds = new Set<string>();
+
+    for (const target of targets) {
+      const targetHash = storedSourceWindowHash(target);
+      const source = sources
+        .filter((candidate) => !usedSourceIds.has(candidate.id)
+          && storedSourceWindowHash(candidate) === targetHash)
+        .sort((a, b) => Math.abs(a.sequence - target.sequence) - Math.abs(b.sequence - target.sequence))[0];
+      if (!source) continue;
+      usedSourceIds.add(source.id);
+      const ownsCurrentAsset = target.status === "current"
+        && Boolean(target.existingAssetUrl)
+        && Boolean(target.existingImageJobId);
+      if (ownsCurrentAsset) continue;
+      await tx.projectVisualBeat.updateMany({
+        where: {
+          id: target.id,
+          userId: input.userId,
+          OR: [
+            { status: { not: "current" } },
+            { existingAssetUrl: null },
+            { existingImageJobId: null },
+          ],
+        },
+        data: {
+          existingAssetUrl: source.existingAssetUrl,
+          existingImageJobId: source.existingImageJobId,
+          generationIdentityKey: source.generationIdentityKey,
+          status: "current",
+          outdatedAt: null,
+        },
+      });
+    }
+
+    return tx.contentPreflight.findUniqueOrThrow({
+      where: { id: cached.id },
+      include: { visualBeats: true },
+    });
+  });
+}
+
 /** Resolve once per normalized Narrative Source and analyzer version. The
  * external analyzer sits behind an injected port; persistence and callers see
  * only the structured Content Preflight interface. */
 export async function resolveContentPreflight(input: {
   userId: string;
   projectId: string;
-  narrativeSource: { kind: NarrativeSourceKind; text: string };
+  previousPreflightId?: string;
+  narrativeSource: {
+    kind: NarrativeSourceKind;
+    text: string;
+    windowCount?: number;
+    windows?: NarrativeVisualWindow[];
+  };
   analyzer?: ContentPreflightAnalyzer;
 }): Promise<ResolvedContentPreflight> {
   const text = normalizedNarrative(input.narrativeSource.text);
@@ -182,7 +425,27 @@ export async function resolveContentPreflight(input: {
     select: { id: true },
   });
   if (!project) throw new ContentPreflightError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
-  const sourceHash = contentPreflightSourceHash(input.narrativeSource.kind, text);
+  if (input.previousPreflightId) {
+    const previousExists = await prisma.contentPreflight.findFirst({
+      where: {
+        id: input.previousPreflightId,
+        projectId: project.id,
+        userId: input.userId,
+      },
+      select: { id: true },
+    });
+    if (!previousExists) {
+      throw new ContentPreflightError("INVALID_SOURCE", "ข้อมูลฉากชุดก่อนหน้าไม่ตรงกับโปรเจกต์นี้");
+    }
+  }
+  const windows = normalizedWindows(
+    input.narrativeSource.windows
+      ?? planNarrativeVisualWindows(text, input.narrativeSource.windowCount),
+  );
+  if (windows.length === 0 || windows.length > 120) {
+    throw new ContentPreflightError("INVALID_SOURCE", "Narrative Source ไม่มี B-roll window ที่ใช้วิเคราะห์ได้");
+  }
+  const sourceHash = contentPreflightSourceHash(input.narrativeSource.kind, text, { windows });
   const cached = await prisma.contentPreflight.findUnique({
     where: {
       projectId_sourceHash_analyzerVersion: {
@@ -193,7 +456,17 @@ export async function resolveContentPreflight(input: {
     },
     include: { visualBeats: true },
   });
-  if (cached) return resolved(cached, true);
+  if (cached) {
+    const rebased = input.previousPreflightId
+      ? await rebaseCachedPreflightAssetsFromLineage({
+          userId: input.userId,
+          projectId: project.id,
+          cachedPreflightId: cached.id,
+          previousPreflightId: input.previousPreflightId,
+        })
+      : cached;
+    return resolved(rebased, true);
+  }
   if (!input.analyzer) {
     throw new ContentPreflightError("ANALYZER_UNAVAILABLE", "ยังไม่ได้เชื่อมตัววิเคราะห์เนื้อหา");
   }
@@ -201,6 +474,7 @@ export async function resolveContentPreflight(input: {
   const analyzed = analysisSchema.safeParse(await input.analyzer.analyze({
     kind: input.narrativeSource.kind,
     text,
+    windows,
   }));
   if (!analyzed.success) {
     throw new ContentPreflightError(
@@ -208,7 +482,22 @@ export async function resolveContentPreflight(input: {
       analyzed.error.issues[0]?.message || "ผลวิเคราะห์เนื้อหาไม่ครบ",
     );
   }
-  const analysis = analyzed.data;
+  if (analyzed.data.beats.length !== windows.length) {
+    throw new ContentPreflightError(
+      "INVALID_ANALYSIS",
+      `ผลวิเคราะห์ต้องมีข้อมูลครบทั้ง ${windows.length} ฉาก`,
+    );
+  }
+  const analysis: ContentPreflightAnalysis = {
+    ...analyzed.data,
+    beats: analyzed.data.beats.map((beat, index) => ({
+      ...beat,
+      beatKey: `window-${index}`,
+      sourceExcerpt: windows[index].text,
+      startMs: windows[index].startMs,
+      endMs: windows[index].endMs,
+    })),
+  };
   const stored = await prisma.$transaction(async (tx) => {
     const raced = await tx.contentPreflight.findUnique({
       where: {
@@ -222,16 +511,51 @@ export async function resolveContentPreflight(input: {
     });
     if (raced) return raced;
     const previous = await tx.contentPreflight.findFirst({
-      where: {
-        projectId: project.id,
-        analyzerVersion: CONTENT_PREFLIGHT_ANALYZER_VERSION,
-      },
-      orderBy: { createdAt: "desc" },
+      where: input.previousPreflightId
+        ? {
+            id: input.previousPreflightId,
+            projectId: project.id,
+            userId: input.userId,
+          }
+        : {
+            projectId: project.id,
+            userId: input.userId,
+            analyzerVersion: { in: [...COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS] },
+          },
+      orderBy: input.previousPreflightId ? undefined : { createdAt: "desc" },
       include: { visualBeats: true },
     });
-    const previousByKey = new Map(
-      previous?.visualBeats.map((beat) => [beat.beatKey, beat]) ?? [],
-    );
+    const preparedBeats = analysis.beats.map((beat) => ({
+      beat,
+      sourceExcerptHash: sourceWindowHash(beat.sourceExcerpt),
+    }));
+    const priorBeats = previous?.visualBeats.slice().sort((a, b) => a.sequence - b.sequence) ?? [];
+    const usedPriorBeatIds = new Set<string>();
+    const exactPriorBySequence = new Map<number, ProjectVisualBeat>();
+
+    // Exact source windows are assigned first, independent of positional key.
+    // Inserting/deleting one window therefore shifts sequences without losing
+    // the assets for unchanged downstream windows.
+    preparedBeats.forEach((prepared, sequence) => {
+      const candidate = priorBeats
+        .filter((prior) => !usedPriorBeatIds.has(prior.id)
+          && storedSourceWindowHash(prior) === prepared.sourceExcerptHash)
+        .sort((a, b) => Math.abs(a.sequence - sequence) - Math.abs(b.sequence - sequence))[0];
+      if (!candidate) return;
+      usedPriorBeatIds.add(candidate.id);
+      exactPriorBySequence.set(sequence, candidate);
+    });
+
+    const fallbackPriorBySequence = new Map<number, ProjectVisualBeat>();
+    preparedBeats.forEach((prepared, sequence) => {
+      if (exactPriorBySequence.has(sequence)) return;
+      const candidate = priorBeats.find((prior) =>
+        !usedPriorBeatIds.has(prior.id)
+        && (prior.beatKey === prepared.beat.beatKey || prior.sequence === sequence));
+      if (!candidate) return;
+      usedPriorBeatIds.add(candidate.id);
+      fallbackPriorBySequence.set(sequence, candidate);
+    });
     return tx.contentPreflight.create({
       data: {
         userId: input.userId,
@@ -243,10 +567,9 @@ export async function resolveContentPreflight(input: {
         suggestedVisualFormatId: analysis.suggestedVisualFormatId,
         suggestedTreatmentJson: JSON.stringify(analysis.suggestedTreatment),
         visualBeats: {
-          create: analysis.beats.map((beat, sequence) => {
-            const sourceExcerptHash = excerptHash(beat.sourceExcerpt);
-            const prior = previousByKey.get(beat.beatKey);
-            const sameExcerpt = prior?.sourceExcerptHash === sourceExcerptHash;
+          create: preparedBeats.map(({ beat, sourceExcerptHash }, sequence) => {
+            const prior = exactPriorBySequence.get(sequence) ?? fallbackPriorBySequence.get(sequence);
+            const sameExcerpt = exactPriorBySequence.has(sequence);
             const retainsAsset = Boolean(prior?.existingAssetUrl || prior?.existingImageJobId);
             const status = sameExcerpt
               ? (prior?.status ?? "current")
@@ -263,6 +586,7 @@ export async function resolveContentPreflight(input: {
               status,
               existingAssetUrl: prior?.existingAssetUrl,
               existingImageJobId: prior?.existingImageJobId,
+              generationIdentityKey: prior?.generationIdentityKey,
               outdatedAt: status === "outdated" ? new Date() : prior?.outdatedAt,
             };
           }),
@@ -280,26 +604,21 @@ export async function recordVisualBeatAsset(input: {
   userId: string;
   beatId: string;
   outputUrl: string;
-  imageJobId?: string;
-}): Promise<void> {
+  imageJobId: string;
+  identityKey: string;
+}): Promise<{ linked: boolean }> {
   const outputUrl = input.outputUrl.trim();
   if (!outputUrl) {
     throw new ContentPreflightError("INVALID_SOURCE", "ตำแหน่งภาพต้องไม่ว่าง");
   }
-  const beat = await prisma.projectVisualBeat.findFirst({
-    where: { id: input.beatId, userId: input.userId },
-    select: { id: true },
-  });
-  if (!beat) throw new ContentPreflightError("NOT_FOUND", "ไม่พบ Visual Beat นี้");
-  await prisma.projectVisualBeat.update({
-    where: { id: beat.id },
-    data: {
-      existingAssetUrl: outputUrl,
-      existingImageJobId: input.imageJobId ?? null,
-      status: "current",
-      outdatedAt: null,
-    },
-  });
+  try {
+    return await linkCompletedVisualBeatAsset({ ...input, outputUrl });
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("not completed and settled")) {
+      throw new ContentPreflightError("INVALID_SOURCE", error.message);
+    }
+    throw error;
+  }
 }
 
 /** Current assets survive a Narrative Source edit when their exact beat excerpt
@@ -316,34 +635,21 @@ export async function reusableVisualBeatAssetsForVideoJob(input: {
 }>> {
   const job = await prisma.videoJob.findFirst({
     where: { id: input.videoJobId, userId: input.userId },
-    select: { projectId: true },
+    select: { projectId: true, contentPreflightId: true, projectVisualContextJson: true },
   });
-  if (!job?.projectId) return [];
+  if (!job?.projectId || !job.contentPreflightId || !job.projectVisualContextJson) return [];
   const preflight = await prisma.contentPreflight.findFirst({
-    where: { userId: input.userId, projectId: job.projectId },
-    orderBy: { createdAt: "desc" },
+    where: {
+      userId: input.userId,
+      projectId: job.projectId,
+      id: job.contentPreflightId,
+    },
     select: { id: true },
   });
   if (!preflight) return [];
-  const beats = await prisma.projectVisualBeat.findMany({
-    where: {
-      userId: input.userId,
-      preflightId: preflight.id,
-      status: "current",
-      existingAssetUrl: { not: null },
-    },
-    orderBy: { sequence: "asc" },
-    select: {
-      id: true,
-      sequence: true,
-      existingAssetUrl: true,
-      existingImageJobId: true,
-    },
+  return reusableProjectVisualAssets({
+    userId: input.userId,
+    projectId: job.projectId,
+    preflightId: preflight.id,
   });
-  return beats.flatMap((beat) => beat.existingAssetUrl ? [{
-    beatId: beat.id,
-    sceneIndex: beat.sequence,
-    outputUrl: beat.existingAssetUrl,
-    imageJobId: beat.existingImageJobId,
-  }] : []);
 }

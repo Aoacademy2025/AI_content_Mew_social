@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import {
+  brandAssetActorForUser,
   deleteBrandAssetItem,
   getBrandAssetItem,
   patchBrandAssetItem,
@@ -17,7 +18,7 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const { id } = await params;
-    return await getBrandAssetItem(user, id);
+    return await getBrandAssetItem(brandAssetActorForUser(user), id);
   } catch {
     return apiError({
       route: "user/brand-assets/[id]",
@@ -36,7 +37,7 @@ export async function PATCH(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const { id } = await params;
-    return await patchBrandAssetItem(user, id, request);
+    return await patchBrandAssetItem(brandAssetActorForUser(user), id, request);
   } catch {
     return apiError({
       route: "user/brand-assets/[id]",
@@ -55,7 +56,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const { id } = await params;
-    return await deleteBrandAssetItem(user, id);
+    return await deleteBrandAssetItem(brandAssetActorForUser(user), id);
   } catch {
     return apiError({
       route: "user/brand-assets/[id]",

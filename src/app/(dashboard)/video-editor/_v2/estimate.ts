@@ -89,14 +89,42 @@ export function disclosedAutoMixAiImageCount(
   targetClipCount = 0,
   windowSec: number = BROLL_WINDOW_SEC,
 ): number {
+  return disclosedAutoMixAiSlotIndices(estSec, preset, targetClipCount, windowSec).length;
+}
+
+/**
+ * Scene indices that the shared AutoMix planner assigns to AI. Reuse is safe
+ * only when a delivered Visual Beat has the same scene index; subtracting an
+ * aggregate asset count can underquote after the script/window plan changes.
+ */
+export function disclosedAutoMixAiSlotIndices(
+  estSec: number,
+  preset: { video: number; photo: number; ai: number },
+  targetClipCount = 0,
+  windowSec: number = BROLL_WINDOW_SEC,
+): number[] {
   const manualPieceCount = Number.isFinite(targetClipCount) && targetClipCount > 0
     ? Math.min(60, Math.floor(targetClipCount))
     : 0;
-  if (manualPieceCount > 0) {
-    if (preset.ai <= 0) return 0;
-    return planAutoMixSources(manualPieceCount, preset).filter((source) => source === "ai").length;
-  }
-  return estimateAutoMixAiImageCount(estSec, preset, windowSec);
+  const pieceCount = manualPieceCount > 0
+    ? manualPieceCount
+    : Math.max(0, Math.ceil(estSec / (windowSec > 0 ? windowSec : 4)));
+  if (pieceCount === 0 || preset.ai <= 0) return [];
+  return planAutoMixSources(pieceCount, preset).flatMap((source, index) => (
+    source === "ai" ? [index] : []
+  ));
+}
+
+export function reusableAutoMixAiSlotCount(
+  aiSlotIndices: readonly number[],
+  reusableSceneIndices: readonly number[],
+): number {
+  const reusable = new Set(
+    reusableSceneIndices.filter((value) => Number.isSafeInteger(value) && value >= 0),
+  );
+  return new Set(aiSlotIndices).size === 0
+    ? 0
+    : [...new Set(aiSlotIndices)].filter((index) => reusable.has(index)).length;
 }
 
 /**

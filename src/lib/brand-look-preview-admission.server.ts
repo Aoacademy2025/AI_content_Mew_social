@@ -45,20 +45,21 @@ export async function admitBrandLookGeneration(
   input: {
     userId: string;
     role?: string | null;
-    imageCount: 1 | 3;
+    imageCount: number;
     purpose: "preview" | "reroll";
   },
   dependencies: AdmissionDependencies = defaultDependencies,
 ): Promise<BrandLookGenerationAdmission> {
+  const imageCount = Math.min(3, Math.max(1, Math.floor(input.imageCount)));
   const funding = await dependencies.checkFunding({
     userId: input.userId,
-    imageCount: input.imageCount,
+    imageCount,
   });
   if (!funding.ok) {
     if (funding.code === "ALLOWANCE_EXHAUSTED") {
       const message = input.purpose === "reroll"
         ? "ใช้สิทธิ์ทดลองภาพ AI ครบแล้ว ภาพเดิมยังอยู่"
-        : `สิทธิ์ทดลองภาพ AI เหลือ ${funding.remainingImages ?? 0} ภาพ แต่การทดลองแนวภาพใหม่ต้องใช้ ${input.imageCount} ภาพ`;
+        : `สิทธิ์ทดลองภาพ AI เหลือ ${funding.remainingImages ?? 0} ภาพ แต่การทดลองแนวภาพใหม่ต้องใช้ ${imageCount} ภาพ`;
       return {
         ok: false,
         status: 402,
@@ -74,7 +75,7 @@ export async function admitBrandLookGeneration(
     }
     const message = input.purpose === "reroll"
       ? `เครดิตไม่พอสำหรับลองภาพนี้ใหม่ ต้องใช้ ${funding.requiredCredits} เครดิต (คงเหลือ ${funding.balance})`
-      : `เครดิตไม่พอสำหรับภาพทดลอง ${input.imageCount} ภาพ ต้องใช้ ${funding.requiredCredits} เครดิต (คงเหลือ ${funding.balance})`;
+      : `เครดิตไม่พอสำหรับภาพทดลอง ${imageCount} ภาพ ต้องใช้ ${funding.requiredCredits} เครดิต (คงเหลือ ${funding.balance})`;
     return {
       ok: false,
       status: 402,
@@ -89,7 +90,7 @@ export async function admitBrandLookGeneration(
   }
 
   if (input.role !== "ADMIN") {
-    const rate = await dependencies.checkRate(input.userId, input.imageCount);
+    const rate = await dependencies.checkRate(input.userId, imageCount);
     if (!rate.ok) {
       return {
         ok: false,
@@ -118,7 +119,7 @@ export async function admitBrandLookGeneration(
       ok: false,
       status: 503,
       body: {
-        error: "runpod_cost_guard",
+        error: "hero_image_cost_guard",
         retryable: true,
         message: "ระบบพักงานใหม่เพื่อควบคุมต้นทุนภาพ",
       },

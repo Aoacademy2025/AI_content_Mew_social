@@ -134,7 +134,7 @@ export type UsePostPhaseEditorOptions = {
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
   /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
    *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
-  onAdoptJob: (next: { id: string; projectId?: string | null }) => void;
+  onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void;
   onNewProject: () => void;
   projectId?: string | null;
   logoOverlay?: LogoOverlayConfig;
@@ -464,7 +464,7 @@ export function usePostPhaseEditor(
       for (let i = 0; i < 450 && !windowPollStop.current; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         let p: {
-          status?: string; progress?: number; errorMessage?: string; projectId?: string | null;
+          status?: string; progress?: number; errorMessage?: string; projectId?: string | null; contentPreflightId?: string | null;
           output?: {
             videoUrl?: string;
             preview?: {
@@ -502,7 +502,11 @@ export function usePostPhaseEditor(
           // Adopt the NEW job: repoint jobId + localStorage resume key so a refresh resumes
           // this result and the NEXT apply chains onto it (sourceJobId = job.jobId). Caption/
           // style state is untouched — only the source job identity moves forward.
-          onAdoptJob({ id: newJobId, projectId: p.projectId ?? job.projectId ?? null });
+          onAdoptJob({
+            id: newJobId,
+            projectId: p.projectId ?? job.projectId ?? null,
+            contentPreflightId: p.contentPreflightId ?? job.contentPreflightId ?? null,
+          });
           toast.success("อัปเดตวิดีโอแล้ว");
           applied = {
             jobId: newJobId,

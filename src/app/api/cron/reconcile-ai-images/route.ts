@@ -11,8 +11,11 @@ import {
 import { apiError } from "@/lib/api-error";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
 import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
+import { sweepStaleUnlinkedBrandLookPreviewItems } from "@/lib/brand-look-preview-job-link.server";
+import { resumeBrandLookPreviewBatch } from "@/lib/brand-look-preview.server";
 
 export const runtime = "nodejs";
+export const maxDuration = 900;
 
 function parseBool(value: string | null, fallback: boolean) {
   if (value == null) return fallback;
@@ -56,12 +59,31 @@ export async function GET(req: Request) {
     );
 
     const summary = await sweepStaleReservedImageJobs({ olderThanMinutes, limit, dryRun });
+    const previewSummary = await sweepStaleUnlinkedBrandLookPreviewItems({
+      olderThanMinutes,
+      limit,
+      dryRun,
+    });
+    const previewRecoveryResults = dryRun
+      ? []
+      : await Promise.allSettled(
+          previewSummary.batchIds.slice(0, 3).map((batchId) => resumeBrandLookPreviewBatch(batchId)),
+        );
+    const previewResumed = previewRecoveryResults.filter((result) =>
+      result.status === "fulfilled" && result.value !== null).length;
+    const previewRecoveryErrors = previewRecoveryResults.flatMap((result) =>
+      result.status === "rejected"
+        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+        : []);
 
     console.log(
       `[reconcile-ai-images] ${new Date().toISOString()} dryRun=${dryRun} ` +
       `olderThanMinutes=${summary.olderThanMinutes} limit=${summary.limit} ` +
       `scanned=${summary.scanned} settled=${summary.settled} refunded=${summary.refunded} ` +
-      `refundedCredits=${summary.refundedCredits} skipped=${summary.skipped} errors=${summary.errors.length}`,
+      `refundedCredits=${summary.refundedCredits} skipped=${summary.skipped} errors=${summary.errors.length} ` +
+      `previewOrphans=${previewSummary.scanned} previewResumable=${previewSummary.resumable} ` +
+      `previewResumed=${previewResumed} previewFailed=${previewSummary.failed} ` +
+      `previewRecoveryErrors=${previewRecoveryErrors.length}`,
     );
 
     writeCronHeartbeat("reconcile-ai-images");
@@ -70,6 +92,8 @@ export async function GET(req: Request) {
       dryRun,
       options: { olderThanMinutes: summary.olderThanMinutes, limit: summary.limit },
       summary,
+      previewSummary,
+      previewRecovery: { resumed: previewResumed, errors: previewRecoveryErrors },
     });
   } catch (error) {
     return apiError({ route: "GET /api/cron/reconcile-ai-images", error });

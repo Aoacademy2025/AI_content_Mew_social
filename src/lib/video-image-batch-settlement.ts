@@ -1,5 +1,8 @@
 import { prisma } from "@/lib/prisma";
-import { restoreSettledStarterAiImageAllowance } from "@/lib/starter-ai-image-allowance.server";
+import {
+  restoreSettledStarterAiImageAllowance,
+  settleStarterAiImageAllowance,
+} from "@/lib/starter-ai-image-allowance.server";
 
 /**
  * Compensate one completed Hero image when the customer-facing derivative
@@ -40,9 +43,18 @@ export async function refundSettledVideoImageJob(input: {
     });
     if (claimed.count !== 1) return { refunded: false, refundedCredits: 0 };
 
+    await tx.projectVisualBeat.updateMany({
+      where: { userId: input.userId, existingImageJobId: job.id },
+      data: { status: "outdated", outdatedAt: new Date() },
+    });
+
     if (job.fundingSource === "starter_allowance") {
+      if (!job.allowanceWindowStartedAt) {
+        throw new Error("Starter allowance job is missing its usage window");
+      }
       await restoreSettledStarterAiImageAllowance(tx, {
         userId: input.userId,
+        windowStartedAt: job.allowanceWindowStartedAt,
         units: job.allowanceUnits,
       });
       return { refunded: true, refundedCredits: 0 };
@@ -73,8 +85,9 @@ export async function refundSettledVideoImageJob(input: {
 }
 
 /**
- * Compensate completed scene images when their parent video cannot be delivered.
- * Each job is claimed by chargeState inside the transaction, making retries safe.
+ * Compensate every charged/reserved scene image when its parent video cannot be
+ * delivered. Claiming both states in one transaction closes the race where the
+ * provider completes a reserved child only after the parent already failed.
  */
 export async function refundSettledVideoImageBatch(input: {
   userId: string;
@@ -98,8 +111,7 @@ export async function refundSettledVideoImageBatch(input: {
       where: {
         userId: input.userId,
         kind: "image",
-        status: "completed",
-        chargeState: "settled",
+        chargeState: { in: ["reserved", "settled"] },
         idempotencyKey: { startsWith: prefix },
       },
       orderBy: { createdAt: "asc" },
@@ -110,17 +122,55 @@ export async function refundSettledVideoImageBatch(input: {
     let creditsFromPurchased = 0;
 
     for (const job of jobs) {
+      const previousChargeState = job.chargeState;
       const claimed = await tx.aiGenerationJob.updateMany({
-        where: { id: job.id, userId: input.userId, chargeState: "settled" },
-        data: { chargeState: "refunded" },
+        where: { id: job.id, userId: input.userId, chargeState: previousChargeState },
+        data: {
+          status: "failed",
+          chargeState: "refunded",
+          errorCode: "PARENT_VIDEO_FAILED",
+          errorMessage: `Parent video failed: ${reason}`,
+          finishedAt: new Date(),
+        },
       });
       if (claimed.count !== 1) continue;
 
+      await tx.aiGenerationAttempt.updateMany({
+        where: {
+          jobId: job.id,
+          status: { in: ["planned", "submitting", "submitted", "queued", "in_progress"] },
+        },
+        data: {
+          status: "failed",
+          errorCode: "PARENT_VIDEO_FAILED",
+          errorMessage: `Parent video failed: ${reason}`,
+          finishedAt: new Date(),
+        },
+      });
+
+      await tx.projectVisualBeat.updateMany({
+        where: { userId: input.userId, existingImageJobId: job.id },
+        data: { status: "outdated", outdatedAt: new Date() },
+      });
+
       if (job.fundingSource === "starter_allowance") {
-        await restoreSettledStarterAiImageAllowance(tx, {
-          userId: input.userId,
-          units: job.allowanceUnits,
-        });
+        if (!job.allowanceWindowStartedAt) {
+          throw new Error("Starter allowance job is missing its usage window");
+        }
+        if (previousChargeState === "reserved") {
+          await settleStarterAiImageAllowance(tx, {
+            userId: input.userId,
+            windowStartedAt: job.allowanceWindowStartedAt,
+            units: job.allowanceUnits,
+            outcome: "refunded",
+          });
+        } else {
+          await restoreSettledStarterAiImageAllowance(tx, {
+            userId: input.userId,
+            windowStartedAt: job.allowanceWindowStartedAt,
+            units: job.allowanceUnits,
+          });
+        }
         refundedJobs += 1;
         continue;
       }

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { buildHooksPrompt, type BrandProfileForPrompt } from "@/lib/prompts/hero-script";
 import {
@@ -7,8 +6,8 @@ import {
   heroScriptLlmErrorResponse,
   isValidDurationSec,
   requireHeroScriptUser,
+  resolveHeroScriptBrandProfile,
   resolveLlmTriad,
-  toBrandProfileDTO,
   validateHooksResponse,
   validateTopic,
 } from "@/lib/hero-script.server";
@@ -37,11 +36,14 @@ export async function POST(req: Request) {
 
     let profile: BrandProfileForPrompt | null = null;
     if (brandProfileId) {
-      const row = await prisma.brandProfile.findFirst({
-        where: { id: brandProfileId, userId: authUser.id },
-      });
-      if (!row) return NextResponse.json({ error: "ไม่พบโปรไฟล์แบรนด์" }, { status: 404 });
-      profile = toBrandProfileDTO(row);
+      const resolved = await resolveHeroScriptBrandProfile(authUser.id, brandProfileId);
+      if (!resolved.ok) {
+        return NextResponse.json(
+          { code: resolved.code === "UNAVAILABLE" ? "BRAND_PROFILE_UNAVAILABLE" : undefined, error: resolved.message },
+          { status: resolved.code === "NOT_FOUND" ? 404 : 403 },
+        );
+      }
+      profile = resolved.profile;
     }
 
     const triad = await resolveLlmTriad(authUser.id, { script: topicCheck.topic });

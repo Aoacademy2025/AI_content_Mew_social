@@ -40,6 +40,13 @@ fi
 echo "=== [1/6] Pull latest code ==="
 if [ -d "$APP_DIR/.git" ]; then
   cd "$APP_DIR"
+  if ! git diff --quiet --ignore-submodules -- \
+    || ! git diff --cached --quiet --ignore-submodules --; then
+    echo "ERROR: tracked production files have staged or unstaged changes."
+    echo "Deploy stopped before fetch/checkout/pull so local production work is preserved."
+    git status --short --untracked-files=no
+    exit 1
+  fi
   git fetch --all --prune
   git checkout "$DEFAULT_BRANCH"
   git pull origin "$DEFAULT_BRANCH"
@@ -70,8 +77,9 @@ if [ ! -f "$APP_DIR/.env" ]; then
 fi
 
 echo "=== [4/6] Prisma sync schema + generate ==="
-# SQLite project uses db push (no migrations dir). Sync new columns into the
-# live DB so queries referencing new fields (e.g. cancelAtPeriodEnd) don't 500.
+# Existing production SQLite databases predate the checked-in migration
+# baseline, so deploy uses drift-aware db push for live upgrades. The migration
+# chain remains authoritative for clean databases and CI migration rehearsals.
 # No --accept-data-loss: additive changes (new nullable/defaulted columns) apply
 # safely; a destructive change will fail loudly instead of dropping data.
 # P3.3: db push runs FIRST (before build/restart). If it fails, abort with a LOUD

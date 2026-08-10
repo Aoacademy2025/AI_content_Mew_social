@@ -211,8 +211,9 @@ export async function retryPendingVideoJobReservationRefunds(
   opts: { limit?: number } = {},
 ): Promise<{ inspected: number; settled: number; pending: number }> {
   const limit = Math.max(1, Math.min(100, Math.floor(opts.limit ?? 20)));
+  const terminalStatuses = ["failed", "canceled"] as const;
   const jobs = await prisma.videoJob.findMany({
-    where: { status: "failed", reservationRefundPending: true },
+    where: { status: { in: [...terminalStatuses] }, reservationRefundPending: true },
     select: {
       id: true,
       userId: true,
@@ -243,7 +244,11 @@ export async function retryPendingVideoJobReservationRefunds(
         : { kind: "settled" as const, candidateJobs: 0, refundedJobs: 0 };
       const done = result.kind === "settled";
       await prisma.videoJob.updateMany({
-        where: { id: job.id, status: "failed", reservationRefundPending: true },
+        where: {
+          id: job.id,
+          status: { in: [...terminalStatuses] },
+          reservationRefundPending: true,
+        },
         data: done
           ? {
               reservationRefundPending: false,
@@ -255,7 +260,11 @@ export async function retryPendingVideoJobReservationRefunds(
       if (done) settled++;
     } catch {
       await prisma.videoJob.updateMany({
-        where: { id: job.id, status: "failed", reservationRefundPending: true },
+        where: {
+          id: job.id,
+          status: { in: [...terminalStatuses] },
+          reservationRefundPending: true,
+        },
         data: { reservationRefundAttempts: { increment: 1 } },
       }).catch(() => {});
     }

@@ -1,7 +1,7 @@
 # Brand Visual System V1 rollout and rollback
 
 Date: 2026-08-09
-Status: release authorized on 2026-08-09; begin with the internal canary and keep public cohorts closed
+Status: release candidate under verification; production deployment is not authorized
 
 ## Safety contract
 
@@ -67,6 +67,9 @@ Do not perform these steps without separate production/deploy authorization.
 
 1. Deploy code and migration with the master switch off.
 2. Confirm the existing `/api/cron/reconcile-ai-images` schedule and heartbeat.
+   The same pass must settle durable image reservations and fail preview items
+   that were queued for more than 30 minutes without a linked image job, so a
+   crashed request cannot leave its batch permanently pending.
 3. Set the master switch to 1 with rollout 0; smoke test `duckyhero`, one Admin,
    and explicit test Free/Trial/Paid accounts.
 4. Verify create draft → preview → publish revision → pin project → render →
@@ -103,6 +106,11 @@ data, incorrect revision pins, silent generation after an edit, double charge,
 wrong-wallet settlement, or a Sev-1/Sev-2 incident even if the aggregate gate
 is green.
 
+The response also reports branded image terminal latency as
+`latency.sampleJobs`, `latency.p50Ms`, and `latency.p95Ms`. Latency is an
+operational signal (`latency.blocksCanary` is always false in V1), not an
+automatic rollout gate; investigate a sustained regression before expanding.
+
 At 50%, `rollout.canExpandFrom50To100` additionally stays false until all of
 these measured funnel checks pass:
 
@@ -116,8 +124,10 @@ these measured funnel checks pass:
 
 The endpoint deduplicates each user, keys “same look” from the full resolved
 Visual Format + recipe + treatment + Brand Visual Language, and reports both
-the numerator and denominator. Paid conversion remains observational and is
-not an expansion gate.
+the numerator and denominator. `funnel.paidConversion7d` counts only cash-paid
+subscriptions with a positive billing period inside the seven-day observation
+window; credit-pack purchases and later payments are excluded. Paid conversion
+remains observational and is not an expansion gate.
 
 ## Rollback
 

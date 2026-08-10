@@ -602,9 +602,9 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.heroAiBeta} downloadFilename={downloadFilename} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={p.heroAiImageEligible || Boolean(job.contentPreflightId)} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
           ) : (
-            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.heroAiBeta} downloadFilename={downloadFilename} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={p.heroAiImageEligible || Boolean(job.contentPreflightId)} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
           )
         ) : (
           <ExportedView

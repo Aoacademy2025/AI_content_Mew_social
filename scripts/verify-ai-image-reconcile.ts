@@ -253,6 +253,31 @@ async function main() {
   await submit(userB.id, jobB.id, "stub-completed");
   await backdate(jobB.id, 170);
 
+  // B1 — the provider completed only after its parent video had already failed.
+  // This output can no longer be delivered, so the stale reservation must refund
+  // instead of being settled by the reconciler.
+  const userB1 = await makeUser("terminalparent", 0, 10);
+  await prisma.videoJob.create({
+    data: {
+      id: "terminal-parent-failed",
+      userId: userB1.id,
+      status: "processing",
+      inputJson: "{}",
+    },
+  });
+  const jobB1 = await reserve({
+    userId: userB1.id,
+    idempotencyKey: "video:terminal-parent-failed:scene:0",
+    videoJobId: "terminal-parent-failed",
+    sceneIndex: 0,
+  });
+  await submit(userB1.id, jobB1.id, "stub-completed");
+  await prisma.videoJob.update({
+    where: { id: "terminal-parent-failed" },
+    data: { status: "failed", finishedAt: new Date() },
+  });
+  await backdate(jobB1.id, 165);
+
   // B2 — COMPLETED but the output cannot be stored.
   const userB2 = await makeUser("outputlost", 4, 0);
   const jobB2 = await reserve({ userId: userB2.id, idempotencyKey: "broll-window:w7:1" });
@@ -316,10 +341,10 @@ async function main() {
   await failAndRefundAiJob(userF.id, jobFRefunded.id, "PROVIDER_FAILED", "already refunded by the request path");
   await backdate(jobFRefunded.id, 300);
 
-  const staleIdsInOrder = [jobA.id, jobB.id, jobB2.id, jobC.id, jobC2.id, jobD.id, jobG.id, jobC3.id];
+  const staleIdsInOrder = [jobA.id, jobB.id, jobB1.id, jobB2.id, jobC.id, jobC2.id, jobD.id, jobG.id, jobC3.id];
   check(
-    "seeded 9 reserved (8 stale + 1 fresh) + 1 settled + 1 refunded",
-    (await prisma.aiGenerationJob.count({ where: { chargeState: "reserved" } })) === 9
+    "seeded 10 reserved (9 stale + 1 fresh) + 1 settled + 1 refunded",
+    (await prisma.aiGenerationJob.count({ where: { chargeState: "reserved" } })) === 10
       && (await prisma.aiGenerationJob.count({ where: { chargeState: "settled" } })) === 1
       && (await prisma.aiGenerationJob.count({ where: { chargeState: "refunded" } })) === 1,
     `reserved=${await prisma.aiGenerationJob.count({ where: { chargeState: "reserved" } })}`,
@@ -340,19 +365,19 @@ async function main() {
   const beforeDry = await snapshot();
   const statusCallsBeforeDry = statusCalls;
   const dry = await sweepStaleReservedImageJobs({ dryRun: true });
-  check("dryRun scanned exactly the 8 stale reserved jobs", dry.scanned === 8, `got ${dry.scanned}`);
+  check("dryRun scanned exactly the 9 stale reserved jobs", dry.scanned === 9, `got ${dry.scanned}`);
   // A dry run reports an UPPER BOUND on settlements: it cannot prove the image is
   // still retrievable without storing it, so B2 (COMPLETED, unretrievable) reads as
   // "would settle" here and becomes a SWEEP_OUTPUT_LOST refund in the live run.
   check(
-    "dryRun would settle 2 (both provider-COMPLETED jobs)",
+    "dryRun would settle 2 deliverable provider-COMPLETED jobs",
     dry.settled === 2,
     `got ${dry.settled}`,
   );
-  check("dryRun would refund the other 6", dry.refunded === 6, `got ${dry.refunded}`);
+  check("dryRun would refund the other 7, including the terminal-parent child", dry.refunded === 7, `got ${dry.refunded}`);
   check(
-    "dryRun would refund 12 credits (6 × 2cr)",
-    dry.refundedCredits === 12,
+    "dryRun would refund 14 credits (7 × 2cr)",
+    dry.refundedCredits === 14,
     `got ${dry.refundedCredits}`,
   );
   check("dryRun reports no errors", dry.errors.length === 0, JSON.stringify(dry.errors));
@@ -381,10 +406,10 @@ async function main() {
   // ── 4. Real sweep ─────────────────────────────────────────────────────────
   console.log("\n[4] Live sweep");
   const live = await sweepStaleReservedImageJobs({});
-  check("live sweep scanned 8", live.scanned === 8, `got ${live.scanned}`);
+  check("live sweep scanned 9", live.scanned === 9, `got ${live.scanned}`);
   check("live sweep settled 1", live.settled === 1, `got ${live.settled}`);
-  check("live sweep refunded 7", live.refunded === 7, `got ${live.refunded}`);
-  check("live sweep refunded 14 credits", live.refundedCredits === 14, `got ${live.refundedCredits}`);
+  check("live sweep refunded 8", live.refunded === 8, `got ${live.refunded}`);
+  check("live sweep refunded 16 credits", live.refundedCredits === 16, `got ${live.refundedCredits}`);
   check("live sweep skipped 0", live.skipped === 0, `got ${live.skipped}`);
   check("live sweep reported no errors", live.errors.length === 0, JSON.stringify(live.errors));
   const dryActions = new Map(dry.decisions.map((d) => [d.jobId, d.action]));
@@ -448,6 +473,18 @@ async function main() {
     afterB.delayTimeMs === 900 && afterB.executionTimeMs === 4200 && afterB.providerReportedCostUsdMicros === 5200,
     `${afterB.delayTimeMs}/${afterB.executionTimeMs}/${afterB.providerReportedCostUsdMicros}`,
   );
+
+  const afterB1 = await jobById(jobB1.id);
+  const balB1 = await balanceOf(userB1.id);
+  check(
+    "B1 terminal parent: provider-completed child is refunded, never settled",
+    afterB1.status === "failed"
+      && afterB1.chargeState === "refunded"
+      && afterB1.errorCode === "PARENT_VIDEO_TERMINAL"
+      && afterB1.outputUrl === null,
+    `${afterB1.status}/${afterB1.chargeState}/${afterB1.errorCode}`,
+  );
+  check("B1 restores the full reservation", balB1.granted === 0 && balB1.purchased === 10);
   const imageB = afterB.generatedImageId
     ? await prisma.generatedImage.findUnique({ where: { id: afterB.generatedImageId } })
     : null;
@@ -605,6 +642,60 @@ async function main() {
     reRefundB?.chargeState === "settled"
       && (await refundRows(userB.id)).length === 0
       && (await balanceOf(userB.id)).purchased === 8,
+  );
+
+  // ── 5B. A provider result that arrives after AutoMix already finished ─────
+  // AutoMix may deliberately omit an ambiguous Hero slot and still finish the
+  // parent video. A late provider COMPLETED result was not delivered in that
+  // video, so reconciliation must refund it before persisting/settling output.
+  console.log("\n[5B] Late provider completion after parent video is done");
+  const userDone = await makeUser("doneparent", 0, 6);
+  await prisma.videoJob.create({
+    data: {
+      id: "terminal-parent-done",
+      userId: userDone.id,
+      status: "processing",
+      inputJson: "{}",
+    },
+  });
+  const jobDone = await reserve({
+    userId: userDone.id,
+    idempotencyKey: "video:terminal-parent-done:automix:2",
+    videoJobId: "terminal-parent-done",
+    sceneIndex: 2,
+  });
+  await submit(userDone.id, jobDone.id, "stub-completed");
+  await prisma.videoJob.update({
+    where: { id: "terminal-parent-done" },
+    data: { status: "done", finishedAt: new Date() },
+  });
+  await backdate(jobDone.id, 90);
+  const statusCallsBeforeDoneParent = statusCalls;
+  const doneParentSweep = await sweepStaleReservedImageJobs({});
+  const afterDone = await jobById(jobDone.id);
+  check(
+    "done-parent late child is reported as one refund, not a settlement/skip",
+    doneParentSweep.scanned === 1
+      && doneParentSweep.refunded === 1
+      && doneParentSweep.settled === 0
+      && doneParentSweep.skipped === 0
+      && doneParentSweep.decisions[0]?.reason === "parent_done",
+    JSON.stringify(doneParentSweep),
+  );
+  check(
+    "done-parent late child is refunded without accepting provider output",
+    afterDone.status === "failed"
+      && afterDone.chargeState === "refunded"
+      && afterDone.errorCode === "PARENT_VIDEO_TERMINAL"
+      && afterDone.outputUrl === null
+      && afterDone.generatedImageId === null,
+    `${afterDone.status}/${afterDone.chargeState}/${afterDone.errorCode}`,
+  );
+  check(
+    "done-parent refund restores credits before polling the late provider result",
+    (await balanceOf(userDone.id)).purchased === 6
+      && statusCalls === statusCallsBeforeDoneParent,
+    `purchased=${(await balanceOf(userDone.id)).purchased} statusCalls=${statusCalls - statusCallsBeforeDoneParent}`,
   );
 
   // ── 6. limit + oldest-first ordering ──────────────────────────────────────

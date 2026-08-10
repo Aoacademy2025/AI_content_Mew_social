@@ -22,6 +22,10 @@ import {
   markImageAttemptSubmitted,
   replaceCanceledImageAttempt,
 } from "@/lib/ai-generation-jobs.server";
+import {
+  imageFundingSnapshotFromBrandVisualAcceptance,
+  type BrandVisualJobAcceptance,
+} from "@/lib/brand-visual-job-acceptance.server";
 import { persistAiGenerationImage } from "@/lib/ai-generation-media.server";
 import {
   ImageGenerationConfigError,
@@ -47,6 +51,7 @@ import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.serv
 import { recordVisualBeatAsset } from "@/lib/content-preflight.server";
 import type { CompiledBrandVisualPrompt } from "@/lib/brand-visual-system";
 import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { HERO_IMAGE_DAILY_CAP } from "@/lib/hero-image-rate-limit";
 
 const MODEL = AI_IMAGE_MODELS.find((item) => item.id === "z-image-turbo")!;
 const TERMINAL_PROVIDER = new Set(["FAILED", "TIMED_OUT", "CANCELLED"]);
@@ -57,6 +62,8 @@ export class HeroImageGenerationError extends Error {
     readonly code:
       | "INSUFFICIENT_CREDITS"
       | "ALLOWANCE_EXHAUSTED"
+      | "RATE_LIMITED"
+      | "PARENT_VIDEO_TERMINAL"
       | "NOT_CONFIGURED"
       | "PROVIDER_FAILED"
       | "PROVIDER_POLL_FAILED"
@@ -125,7 +132,7 @@ function sleep(ms: number): Promise<void> {
  * This seam is RunPod-only by contract: it never imports or invokes KIE and it
  * never changes provider/model after credits have been quoted and reserved.
  */
-export async function generateHeroImageForVideo(input: {
+export type HeroImageGenerationInput = {
   userId: string;
   plan: string;
   prompt: string;
@@ -141,12 +148,22 @@ export async function generateHeroImageForVideo(input: {
     compiled: CompiledBrandVisualPrompt;
     visualBeatId?: string;
     identityKey?: string;
+    lookIdentityKey?: string;
   };
+  /** Scene Reroll must not replace the reusable Visual Beat until its Ken
+   * Burns derivative is actually deliverable. The caller links explicitly
+   * after post-processing succeeds. */
+  deferVisualBeatLink?: boolean;
+  /** Immutable policy captured when the parent VideoJob was accepted. Preview,
+   * Studio and post-phase reroll surfaces omit it and use live admission. */
+  brandVisualAcceptance?: BrandVisualJobAcceptance;
   brandLookPreviewReservation?: {
     itemId: string;
     expectedImageJobId: string | null;
   };
-}): Promise<HeroImageGenerationResult> {
+};
+
+async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
   // The verified private BF16 image needs about ten minutes for a completely
   // fresh 28 GB pull, while FlashBoot revivals complete in seconds. Keep the
   // wait bounded above the worker's 800-second initialization ceiling so the
@@ -164,14 +181,18 @@ export async function generateHeroImageForVideo(input: {
     videoJobId: input.videoJobId,
     sceneIndex: input.sceneIndex,
   });
-  const brandVisualActor = projectVisual
-    ? await prisma.user.findUnique({
-        where: { id: input.userId },
-        select: { id: true, email: true, role: true, createdAt: true },
-      })
-    : null;
-  const brandVisualAccess = brandVisualActor
-    ? decideBrandVisualAccess(brandVisualActor)
+  const actor = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { id: true, email: true, role: true, createdAt: true },
+  });
+  const brandVisualAccess = projectVisual
+    ? input.brandVisualAcceptance
+      ? {
+          canUse: true,
+          cohort: input.brandVisualAcceptance.cohort,
+          bucket: input.brandVisualAcceptance.rolloutBucket,
+        }
+      : actor ? decideBrandVisualAccess(actor) : null
     : null;
   // This is the exact provider-neutral prompt contract that passed the
   // 21-image gate. Appending the legacy photoreal preset would overwrite a
@@ -194,15 +215,15 @@ export async function generateHeroImageForVideo(input: {
       seed: deterministicSeed(input.idempotencyKey),
       aspectRatio,
     });
-  } catch (error) {
+  } catch {
     throw new HeroImageGenerationError(
-      error instanceof Error ? error.message : "Hero AI Image ยังไม่ได้เชื่อม RunPod",
+      "Hero AI Image ยังไม่พร้อมใช้งานในขณะนี้",
       "NOT_CONFIGURED",
     );
   }
   if (prepared.provider !== "runpod" || prepared.providerRoute !== "runpod-custom") {
     throw new HeroImageGenerationError(
-      "Hero AI Image ต้องใช้ RunPod custom endpoint ที่ผ่านการตรวจสอบ จึงหยุดงานก่อนหักเครดิต",
+      "Hero AI Image ยังไม่พร้อมใช้งาน จึงหยุดงานก่อนหักเครดิต",
       "NOT_CONFIGURED",
     );
   }
@@ -225,8 +246,9 @@ export async function generateHeroImageForVideo(input: {
       brandVisualSource: projectVisual?.source ?? null,
       visualFormatId: projectVisual?.compiled.visualFormatId ?? null,
       visualRecipeVersion: projectVisual?.compiled.recipeVersion ?? null,
-      visualBeatId: projectVisual?.visualBeatId ?? null,
-      brandVisualIdentityKey: projectVisual?.identityKey ?? null,
+      visualBeatId: input.deferVisualBeatLink ? null : projectVisual?.visualBeatId ?? null,
+      brandVisualIdentityKey: input.deferVisualBeatLink ? null : projectVisual?.identityKey ?? null,
+      brandLookIdentityKey: projectVisual?.lookIdentityKey ?? null,
       brandVisualCohort: brandVisualAccess?.cohort ?? null,
       brandVisualRolloutBucket: brandVisualAccess?.bucket ?? null,
     }),
@@ -243,12 +265,30 @@ export async function generateHeroImageForVideo(input: {
     fundingPolicy: projectVisual && brandVisualAccess?.canUse
       ? "brand-visual-activation"
       : "credits-only",
+    fundingSnapshot: input.brandVisualAcceptance
+      ? imageFundingSnapshotFromBrandVisualAcceptance(input.brandVisualAcceptance)
+      : undefined,
+    dailyRateLimit: actor?.role === "ADMIN" ? undefined : { cap: HERO_IMAGE_DAILY_CAP },
     reservationLink: input.brandLookPreviewReservation ? {
       brandLookPreviewItemId: input.brandLookPreviewReservation.itemId,
       expectedImageJobId: input.brandLookPreviewReservation.expectedImageJobId,
     } : undefined,
   });
   if (!reserved.ok) {
+    if (reserved.reason === "parent_terminal") {
+      throw new HeroImageGenerationError(
+        "งานวิดีโอถูกยกเลิกหรือจบแล้ว จึงไม่เริ่มสร้างภาพใหม่",
+        "PARENT_VIDEO_TERMINAL",
+        409,
+      );
+    }
+    if (reserved.reason === "rate_limited") {
+      throw new HeroImageGenerationError(
+        `Hero AI Image ใช้ครบโควต้าต่อวันแล้ว ลองใหม่ได้ในอีก ~${reserved.retryAfterSec ?? 1} วินาที`,
+        "RATE_LIMITED",
+        429,
+      );
+    }
     if (reserved.reason === "allowance_exhausted") {
       throw new HeroImageGenerationError(
         "ใช้สิทธิ์ทดลองภาพ AI ครบ 8 ภาพในรอบนี้แล้ว อัปเกรดเพื่อสร้างต่อหรือเปลี่ยนไปใช้ Stock ฟรี",
@@ -263,29 +303,59 @@ export async function generateHeroImageForVideo(input: {
     );
   }
 
+  return {
+    timeoutMs,
+    orphanQueueMs,
+    prepared,
+    projectVisual,
+    reserved,
+  };
+}
+
+/** Reserve and durably link one image job without submitting provider work.
+ * Preview uses this to commit all three paid/allowance work items before any
+ * long poll begins. Calling generateHeroImageForVideo with the same input then
+ * resumes this exact reservation and submits it once. */
+export async function reserveHeroImageForVideo(input: HeroImageGenerationInput) {
+  return (await prepareHeroImageReservation(input)).reserved.job;
+}
+
+export async function generateHeroImageForVideo(
+  input: HeroImageGenerationInput,
+): Promise<HeroImageGenerationResult> {
+  const {
+    timeoutMs,
+    orphanQueueMs,
+    prepared,
+    projectVisual,
+    reserved,
+  } = await prepareHeroImageReservation(input);
   let job = reserved.job;
   if (job.status === "completed") {
-    if (projectVisual?.visualBeatId && job.outputUrl) {
+    if (!input.deferVisualBeatLink && projectVisual?.visualBeatId && projectVisual.identityKey && job.outputUrl) {
       await recordVisualBeatAsset({
         userId: input.userId,
         beatId: projectVisual.visualBeatId,
         outputUrl: job.outputUrl,
         imageJobId: job.id,
-      }).catch((error) => console.error("[brand-visual] failed to attach replayed image:", error));
+        identityKey: projectVisual.identityKey,
+      });
     }
     return completedResult(job);
   }
   if (job.status === "failed" || job.chargeState === "refunded") {
     const providerFailure = classifyRunpodTerminalFailure(job.errorMessage || job.errorCode);
     throw new HeroImageGenerationError(
-      job.errorMessage || "งาน Hero AI Image นี้ล้มเหลวแล้ว",
+      "งาน Hero AI Image นี้สร้างไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว",
       "PROVIDER_FAILED",
       503,
       providerFailure,
     );
   }
 
-  let sequenceToSubmit = reserved.created ? 1 : null;
+  let sequenceToSubmit = reserved.created
+    ? 1
+    : (await latestImageGenerationAttempt(input.userId, job.id)) ? null : 1;
 
   // At most two durable submissions of the exact same prepared request. Credits
   // stay reserved across the retry and are settled/refunded exactly once.
@@ -310,7 +380,7 @@ export async function generateHeroImageForVideo(input: {
           inProgress: submitted.status === "IN_PROGRESS",
         }) ?? job;
       } catch (error) {
-        const detail = error instanceof Error ? error.message : "RunPod submission failed";
+        const detail = error instanceof Error ? error.message : "Image provider submission failed";
         const providerFailure = classifyRunpodTerminalFailure(detail);
         if (providerFailure.systemic) {
           recordHeroRunpodFailure(providerFailure.code, job.id);
@@ -322,7 +392,7 @@ export async function generateHeroImageForVideo(input: {
           detail,
         );
         throw new HeroImageGenerationError(
-          "ส่งงาน Hero AI Image ไป RunPod ไม่สำเร็จ เครดิตถูกคืนแล้ว",
+          "ส่งงาน Hero AI Image ไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว",
           "PROVIDER_FAILED",
           503,
           providerFailure,
@@ -343,7 +413,7 @@ export async function generateHeroImageForVideo(input: {
       if (job.status === "failed") {
         const providerFailure = classifyRunpodTerminalFailure(job.errorMessage || job.errorCode);
         throw new HeroImageGenerationError(
-          job.errorMessage || "Hero AI Image ล้มเหลว",
+          "Hero AI Image สร้างไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว",
           "PROVIDER_FAILED",
           503,
           providerFailure,
@@ -356,7 +426,7 @@ export async function generateHeroImageForVideo(input: {
       // An external submission without a durable provider id cannot be safely
       // canceled or duplicated. Keep the reservation for reconciliation.
       throw new HeroImageGenerationError(
-        "RunPod ไม่คืนรหัสงานที่ตรวจสอบได้ ระบบพักงานนี้ไว้เพื่อป้องกันการสร้างหรือคืนเงินซ้ำ",
+        "ระบบยังยืนยันสถานะงานสร้างภาพไม่ได้ จึงพักงานไว้เพื่อป้องกันการสร้างหรือคืนเงินซ้ำ",
         "PROVIDER_POLL_FAILED",
         503,
         {
@@ -377,7 +447,7 @@ export async function generateHeroImageForVideo(input: {
     };
     const providerEndpoint = attempt.providerEndpoint;
     if (!providerEndpoint) {
-      throw new HeroImageGenerationError("ข้อมูล RunPod endpoint ของงานไม่ครบ", "PROVIDER_POLL_FAILED");
+      throw new HeroImageGenerationError("ข้อมูลติดตามงานสร้างภาพไม่ครบ", "PROVIDER_POLL_FAILED");
     }
 
     let pollFailures = 0;
@@ -397,7 +467,7 @@ export async function generateHeroImageForVideo(input: {
         // Keep the reservation and provider id durable: a temporary status outage
         // must not refund work that RunPod may already have completed.
         throw new HeroImageGenerationError(
-          error instanceof Error ? error.message : "ตรวจสถานะ RunPod ไม่สำเร็จ",
+          "ตรวจสถานะงานสร้างภาพไม่สำเร็จ ระบบจะใช้รหัสงานเดิมเพื่อตรวจต่อ",
           "PROVIDER_POLL_FAILED",
           503,
           {
@@ -437,7 +507,7 @@ export async function generateHeroImageForVideo(input: {
             const cancelled = await cancelRunpodImageJob(providerEndpoint, providerJobId);
             if (!cancelled) {
               throw new HeroImageGenerationError(
-                "RunPod ค้างในคิวและยังยืนยันการยกเลิกงานเดิมไม่ได้ ระบบพักงานนี้เพื่อป้องกันงานซ้ำ",
+                "งานสร้างภาพค้างในคิวและยังยืนยันการยกเลิกไม่ได้ ระบบพักงานนี้เพื่อป้องกันงานซ้ำ",
                 "PROVIDER_TIMEOUT",
                 504,
                 {
@@ -484,14 +554,6 @@ export async function generateHeroImageForVideo(input: {
             providerReportedCredits: snapshot.providerReportedCredits,
             sceneTitle: input.sceneTitle || `Video ${input.videoJobId} · scene ${input.sceneIndex + 1}`,
           }) ?? job;
-          if (projectVisual?.visualBeatId && job.outputUrl) {
-            await recordVisualBeatAsset({
-              userId: input.userId,
-              beatId: projectVisual.visualBeatId,
-              outputUrl: job.outputUrl,
-              imageJobId: job.id,
-            }).catch((error) => console.error("[brand-visual] failed to attach generated image:", error));
-          }
           recordHeroRunpodSuccess();
           return completedResult(job);
         } catch (error) {
@@ -501,7 +563,7 @@ export async function generateHeroImageForVideo(input: {
             "OUTPUT_INVALID",
             error instanceof Error ? error.message : "RunPod output could not be stored",
           );
-          throw new HeroImageGenerationError("บันทึกภาพจาก RunPod ไม่สำเร็จ เครดิตถูกคืนแล้ว", "OUTPUT_INVALID");
+          throw new HeroImageGenerationError("บันทึกภาพไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว", "OUTPUT_INVALID");
         }
       }
       if (TERMINAL_PROVIDER.has(snapshot.status)) {
@@ -518,7 +580,7 @@ export async function generateHeroImageForVideo(input: {
           snapshot.error || `RunPod job ${snapshot.status.toLowerCase()}`,
         );
         throw new HeroImageGenerationError(
-          "RunPod สร้างภาพไม่สำเร็จ เครดิตถูกคืนแล้ว",
+          "Hero AI Image สร้างไม่สำเร็จ เครดิตหรือสิทธิ์ถูกคืนแล้ว",
           "PROVIDER_FAILED",
           503,
           providerFailure,
@@ -586,7 +648,7 @@ export async function generateHeroImageForVideo(input: {
     }
     throw new HeroImageGenerationError(
       cancelled
-        ? "Hero AI Image รอ RunPod เกินเวลาที่กำหนด งานเดิมถูกยกเลิกและคืนเครดิตแล้ว"
+        ? "Hero AI Image รอนานเกินเวลาที่กำหนด งานเดิมถูกยกเลิกและคืนเครดิตหรือสิทธิ์แล้ว"
         : "Hero AI Image เกินเวลาที่กำหนดแต่ยังยืนยันการยกเลิกไม่ได้ ระบบพักงานนี้เพื่อป้องกันงานซ้ำ",
       "PROVIDER_TIMEOUT",
       504,

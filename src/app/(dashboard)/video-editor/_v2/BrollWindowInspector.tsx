@@ -8,12 +8,9 @@
  * column, no overlay), mobile renders as a bottom sheet (position:fixed, same
  * pattern as PostPhaseMobile's other sheets) — chosen internally via useIsMobile().
  *
- * Progressive disclosure (Mew's hard requirement): the AI tab defaults to a single
- * Thai textarea; the composed English prompt only appears behind "ขั้นสูง".
- *
- * Mounted for internal AI testers during beta, or for everyone after
- * NEXT_PUBLIC_BROLL_WINDOW_EDIT=1. AI Image has its own finer-grained access prop
- * and remains visible-but-disabled outside the managed image beta.
+ * V1 Scene Reroll is intentionally narrower than the legacy per-window editor:
+ * it rerolls an existing AI Visual Beat with its server-owned Brand Visual
+ * Language. There is no editable provider prompt and no Stock-to-AI upgrade.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -32,10 +29,13 @@ import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, Chip, GroupLabel, Segmented, Toggle } from "./ui";
 import { useIsMobile } from "./useIsMobile";
 import { brollWindowSpans } from "@/lib/broll-spans";
-import { buildBrollImagePrompt } from "@/lib/kie-image-prompt";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
-import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
+import {
+  clearPendingBrollSceneReroll,
+  readPendingBrollSceneReroll,
+  writePendingBrollSceneReroll,
+} from "@/lib/broll-reroll-client-state";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -244,12 +244,24 @@ export function PendingBrollChangesDialog({ ed }: { ed: PostPhaseEditor }) {
   );
 }
 
-export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, brollVisualStyle, aiImageEnabled }: {
+type StarterImageAllowance = {
+  eligible: boolean;
+  remainingImages: number;
+  limitImages: number;
+} | null | undefined;
+
+export function BrollWindowInspector({
+  ed,
+  videoJobId,
+  fullBrollEditEnabled,
+  sceneRerollEnabled,
+  starterImageAllowance,
+}: {
   ed: PostPhaseEditor;
   videoJobId: string | null;
-  brollRegionPreference: BrollRegionPreference;
-  brollVisualStyle: BrollVisualStyle;
-  aiImageEnabled: boolean;
+  fullBrollEditEnabled: boolean;
+  sceneRerollEnabled: boolean;
+  starterImageAllowance?: StarterImageAllowance;
 }) {
   const isMobile = useIsMobile();
   const index = ed.selectedWindow;
@@ -263,7 +275,7 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
   const span = index != null ? spans.find((s) => s.index === index) ?? null : null;
 
   // ── per-window form state — reset whenever the selected window changes ──────
-  const [tab, setTab] = useState<Tab>("search");
+  const [tab, setTab] = useState<Tab>(fullBrollEditEnabled ? "search" : "ai");
   const [searchKeyword, setSearchKeyword] = useState("");
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -273,39 +285,46 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
   const [uploadBusy, setUploadBusy] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  const [aiSimpleText, setAiSimpleText] = useState("");
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [advancedOverride, setAdvancedOverride] = useState<string | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
-  const [aiInsufficient, setAiInsufficient] = useState<{ need: number; balance: number } | null>(null);
-  const aiRequestRef = useRef<{ key: string; id: string } | null>(null);
+  const [aiInsufficient, setAiInsufficient] = useState<
+    | { kind: "allowance" }
+    | { kind: "credits"; need: number; balance: number }
+    | null
+  >(null);
+  const [allowanceRemaining, setAllowanceRemaining] = useState(
+    starterImageAllowance?.eligible ? starterImageAllowance.remainingImages : null,
+  );
+  const [pendingRerollRequestId, setPendingRerollRequestId] = useState<string | null>(null);
+  const autoRecoveryAttemptRef = useRef<string | null>(null);
 
   const rawEntry = index != null ? rawBgVideoAt(ed.previewConfig, index) : null;
 
   useEffect(() => {
-    setTab("search");
+    setTab(fullBrollEditEnabled ? "search" : "ai");
     setSearchLoading(false);
     setSearchError(null);
     setSearchCandidates(null);
     setSelectingId(null);
     setUploadBusy(false);
     setUploadError(null);
-    setAiSimpleText("");
-    setAdvancedOpen(false);
-    setAdvancedOverride(null);
     setAiBusy(false);
     setAiError(null);
     setAiInsufficient(null);
-    aiRequestRef.current = null;
     const kw = typeof rawEntry?.keyword === "string" ? rawEntry.keyword : "";
     setSearchKeyword(kw);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [index]);
+  }, [fullBrollEditEnabled, index]);
 
   useEffect(() => {
-    if (!aiImageEnabled && tab === "ai") setTab("search");
-  }, [aiImageEnabled, tab]);
+    if (!sceneRerollEnabled && tab === "ai" && fullBrollEditEnabled) setTab("search");
+  }, [fullBrollEditEnabled, sceneRerollEnabled, tab]);
+
+  useEffect(() => {
+    setAllowanceRemaining(
+      starterImageAllowance?.eligible ? starterImageAllowance.remainingImages : null,
+    );
+  }, [starterImageAllowance]);
 
   // Edge case: a selection with no matching real window (fail-open single-block
   // fallback / stale index after an apply changed bgVideos length) — nothing to
@@ -314,6 +333,27 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
     if (index != null && !span) ed.setSelectedWindow(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, span]);
+
+  // A response can disappear after the eighth allowance image (or after a
+  // credit-funded request). Resume that exact durable request on reopen before
+  // consulting today's live funding state. The server replays by requestId
+  // before admission, so this never creates a second reservation.
+  useEffect(() => {
+    autoRecoveryAttemptRef.current = null;
+    if (!videoJobId || index == null || !span) {
+      setPendingRerollRequestId(null);
+      return;
+    }
+    const pending = readPendingBrollSceneReroll(window.localStorage, videoJobId, index);
+    setPendingRerollRequestId(pending?.requestId ?? null);
+    if (pending && autoRecoveryAttemptRef.current !== pending.requestId) {
+      autoRecoveryAttemptRef.current = pending.requestId;
+      void handleGenerate(pending.requestId);
+    }
+    // handleGenerate is deliberately omitted: this effect is keyed to the
+    // durable operation/scene, not to each render of the editor controls.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [index, span?.index, videoJobId]);
 
   if (index == null || !span) return null;
 
@@ -327,13 +367,12 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
   const previousSpan = positionLabel > 1 ? spans[positionLabel - 2] : null;
   const nextSpan = positionLabel < spans.length ? spans[positionLabel] : null;
 
-  const composedPrompt = buildBrollImagePrompt(aiSimpleText, {
-    region: brollRegionPreference,
-    style: brollVisualStyle,
-    terms: null,
-  });
-  const finalPrompt = (advancedOverride ?? composedPrompt).trim();
   const genCost = HERO_AI_IMAGE_CREDITS;
+  const currentSourceIsAi = (existingEdit?.kind ?? entrySourceKind(rawEntry)) === "ai";
+  const allowanceEligible = starterImageAllowance?.eligible === true;
+  const fundingLabel = allowanceEligible
+    ? `สิทธิ์ทดลอง 1 ภาพ · เหลือ ${allowanceRemaining ?? starterImageAllowance.remainingImages}/${starterImageAllowance.limitImages}`
+    : `${genCost} เครดิต`;
 
   function close() { ed.setSelectedWindow(null); }
 
@@ -476,44 +515,63 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
     toast.success("เปิด B-roll ช่วงนี้แล้ว");
   }
 
-  async function handleGenerate() {
-    if (!aiImageEnabled) { setAiError("Hero AI Image กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้"); return; }
-    // Money guard: /api/videos/broll-window/generate spends credits BEFORE anything is shown,
-    // and a disabled window never renders its asset — the user would pay for nothing.
-    if (!enabled) { setAiError("ช่วงนี้ปิด B-roll อยู่ — เปิดก่อนจึงจะสร้างภาพได้ (กันเครดิตหายฟรี)"); return; }
-    if (!finalPrompt) { setAiError("กรุณาระบุคำอธิบายรูปภาพที่ต้องการ"); return; }
+  async function handleGenerate(recoveryRequestId?: string) {
     if (!videoJobId) { setAiError("ไม่พบวิดีโอต้นฉบับ กรุณาโหลดโปรเจกต์ใหม่"); return; }
+    const storage = window.localStorage;
+    const pending = readPendingBrollSceneReroll(storage, videoJobId, index!);
+    const requestId = recoveryRequestId ?? pending?.requestId ?? crypto.randomUUID();
+    const isRecovery = Boolean(recoveryRequestId || pending);
+    if (!isRecovery) {
+      if (!sceneRerollEnabled) { setAiError("การลองภาพใหม่ยังไม่เปิดสำหรับคลิปนี้"); return; }
+      // Money guard: a disabled window never renders its asset. Recovery skips
+      // fresh admission because the exact request was already reserved.
+      if (!enabled) { setAiError("ช่วงนี้ปิด B-roll อยู่ — เปิดก่อนจึงจะสร้างภาพได้ (กันเครดิตหายฟรี)"); return; }
+      if (!currentSourceIsAi) { setAiError("ลองภาพใหม่ได้เฉพาะฉากที่มีภาพ AI เดิมอยู่แล้ว"); return; }
+      if (allowanceEligible && (allowanceRemaining ?? 0) <= 0) {
+        setAiInsufficient({ kind: "allowance" });
+        return;
+      }
+    }
     setAiBusy(true);
     setAiError(null);
     setAiInsufficient(null);
-    const requestKey = `${videoJobId}:${index}:${finalPrompt}`;
-    const requestId = aiRequestRef.current?.key === requestKey
-      ? aiRequestRef.current.id
-      : crypto.randomUUID();
-    aiRequestRef.current = { key: requestKey, id: requestId };
+    if (!pending) {
+      writePendingBrollSceneReroll(storage, {
+        version: 1,
+        videoJobId,
+        sceneIndex: index!,
+        requestId,
+        createdAt: new Date().toISOString(),
+      });
+      setPendingRerollRequestId(requestId);
+    }
     try {
       const res = await fetch("/api/videos/broll-window/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          prompt: finalPrompt,
           requestId,
           videoJobId,
-          sceneIndex: index,
+          sceneIndex: index!,
           durationSec: windowDurationSec,
-          visualStyle: brollVisualStyle,
         }),
       });
       const d = await res.json().catch(() => null);
       // A definite HTTP response closes this attempt. Only an ambiguous network
       // failure or an unconfirmed refund keeps the same id so retry cannot
       // reserve credits twice.
-      if (d?.retrySameRequest !== true) aiRequestRef.current = null;
+      if (d?.retrySameRequest !== true) {
+        clearPendingBrollSceneReroll(storage, videoJobId, index!, requestId);
+        setPendingRerollRequestId(null);
+      }
       if (res.status === 402) {
-        setAiInsufficient({ need: d?.need ?? genCost, balance: d?.balance ?? 0 });
+        setAiInsufficient(d?.error === "allowance_exhausted"
+          ? { kind: "allowance" }
+          : { kind: "credits", need: d?.need ?? genCost, balance: d?.balance ?? 0 });
         return;
       }
       if (!res.ok || !d?.src) { setAiError(d?.message ?? `สร้างรูปไม่สำเร็จ (${res.status})`); return; }
+      if (typeof d.allowanceRemaining === "number") setAllowanceRemaining(d.allowanceRemaining);
       markEdited("ai", d.src, undefined, "AI", d.clipDuration);
     } catch {
       setAiError("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
@@ -570,39 +628,41 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
           )}
         </div>
       </div>
-      <div
-        className="flex items-center gap-3"
-        style={{
-          minHeight: 52,
-          padding: "8px 10px",
-          borderRadius: radius.card,
-          background: enabled ? "rgba(52,211,153,.07)" : "rgba(255,255,255,.035)",
-          border: `1px solid ${enabled ? "rgba(52,211,153,.20)" : color.cardBorder}`,
-        }}
-      >
-        {enabled ? <Eye size={17} color={color.success} /> : <EyeOff size={17} color={color.textFaint} />}
-        <div className="min-w-0 flex-1">
-          <div style={{ fontSize: 12.5, color: color.text }}>แสดง B-roll ช่วงนี้</div>
-          <div style={{ fontSize: 10.5, color: color.textFaint }}>
-            {ed.preview?.avatarModel === "upload-cutaway"
-              ? enabled
-                ? "ช่วงนี้แสดงภาพ B-roll"
-                : "ช่วงนี้แสดงคลิป Avatar ต้นฉบับ"
-              : enabled
-                ? "ช่วงนี้แสดงภาพ B-roll"
-                : "ช่วงนี้ใช้พื้นหลังเรียบ"}
-          </div>
-        </div>
-        <Toggle
-          on={enabled}
-          onChange={(next) => {
-            ed.setWindowEdit(index!, { enabled: next });
-            toast.success(next ? "เปิด B-roll ช่วงนี้แล้ว" : "ปิด B-roll ช่วงนี้แล้ว");
+      {fullBrollEditEnabled && (
+        <div
+          className="flex items-center gap-3"
+          style={{
+            minHeight: 52,
+            padding: "8px 10px",
+            borderRadius: radius.card,
+            background: enabled ? "rgba(52,211,153,.07)" : "rgba(255,255,255,.035)",
+            border: `1px solid ${enabled ? "rgba(52,211,153,.20)" : color.cardBorder}`,
           }}
-          ariaLabel={enabled ? "ปิด B-roll ช่วงนี้" : "เปิด B-roll ช่วงนี้"}
-        />
-      </div>
-      {!enabled && (
+        >
+          {enabled ? <Eye size={17} color={color.success} /> : <EyeOff size={17} color={color.textFaint} />}
+          <div className="min-w-0 flex-1">
+            <div style={{ fontSize: 12.5, color: color.text }}>แสดง B-roll ช่วงนี้</div>
+            <div style={{ fontSize: 10.5, color: color.textFaint }}>
+              {ed.preview?.avatarModel === "upload-cutaway"
+                ? enabled
+                  ? "ช่วงนี้แสดงภาพ B-roll"
+                  : "ช่วงนี้แสดงคลิป Avatar ต้นฉบับ"
+                : enabled
+                  ? "ช่วงนี้แสดงภาพ B-roll"
+                  : "ช่วงนี้ใช้พื้นหลังเรียบ"}
+            </div>
+          </div>
+          <Toggle
+            on={enabled}
+            onChange={(next) => {
+              ed.setWindowEdit(index!, { enabled: next });
+              toast.success(next ? "เปิด B-roll ช่วงนี้แล้ว" : "ปิด B-roll ช่วงนี้แล้ว");
+            }}
+            ariaLabel={enabled ? "ปิด B-roll ช่วงนี้" : "เปิด B-roll ช่วงนี้"}
+          />
+        </div>
+      )}
+      {!enabled && fullBrollEditEnabled && (
         <div
           role="status"
           className="flex flex-col gap-2"
@@ -635,54 +695,59 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
           </BtnSecondary>
         </div>
       )}
-      <div className="grid grid-cols-2 gap-2">
-        <BtnSecondary
-          onClick={() => swapWith(previousSpan)}
-          disabled={!previousSpan}
-          style={{
-            minHeight: 44,
-            padding: "8px 10px",
-            fontSize: 11.5,
-            opacity: previousSpan ? 1 : 0.45,
-            cursor: previousSpan ? "pointer" : "default",
-          }}
-        >
-          <span className="flex items-center justify-center gap-1.5">
-            <ArrowLeft size={13} /> สลับกับฉากก่อนหน้า
-          </span>
-        </BtnSecondary>
-        <BtnSecondary
-          onClick={() => swapWith(nextSpan)}
-          disabled={!nextSpan}
-          style={{
-            minHeight: 44,
-            padding: "8px 10px",
-            fontSize: 11.5,
-            opacity: nextSpan ? 1 : 0.45,
-            cursor: nextSpan ? "pointer" : "default",
-          }}
-        >
-          <span className="flex items-center justify-center gap-1.5">
-            สลับกับฉากถัดไป <ArrowRight size={13} />
-          </span>
-        </BtnSecondary>
-      </div>
-      <Segmented
-        value={tab}
-        onChange={(v) => setTab(v as Tab)}
-        options={[
-          { value: "search", label: "เปลี่ยนสต็อก" },
-          { value: "upload", label: "อัปโหลด" },
-          {
-            value: "ai",
-            label: "AI Image",
-            badge: aiImageEnabled ? undefined : "เร็ว ๆ นี้",
-            disabled: !aiImageEnabled,
-            title: aiImageEnabled ? "สร้างภาพใหม่สำหรับฉากนี้" : "AI Image เร็ว ๆ นี้",
-          },
-        ]}
-        style={{ display: "flex" }}
-      />
+      {fullBrollEditEnabled && (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            <BtnSecondary
+              onClick={() => swapWith(previousSpan)}
+              disabled={!previousSpan}
+              style={{
+                minHeight: 44,
+                padding: "8px 10px",
+                fontSize: 11.5,
+                opacity: previousSpan ? 1 : 0.45,
+                cursor: previousSpan ? "pointer" : "default",
+              }}
+            >
+              <span className="flex items-center justify-center gap-1.5">
+                <ArrowLeft size={13} /> สลับกับฉากก่อนหน้า
+              </span>
+            </BtnSecondary>
+            <BtnSecondary
+              onClick={() => swapWith(nextSpan)}
+              disabled={!nextSpan}
+              style={{
+                minHeight: 44,
+                padding: "8px 10px",
+                fontSize: 11.5,
+                opacity: nextSpan ? 1 : 0.45,
+                cursor: nextSpan ? "pointer" : "default",
+              }}
+            >
+              <span className="flex items-center justify-center gap-1.5">
+                สลับกับฉากถัดไป <ArrowRight size={13} />
+              </span>
+            </BtnSecondary>
+          </div>
+          <Segmented
+            value={tab}
+            onChange={(v) => setTab(v as Tab)}
+            options={[
+              { value: "search", label: "เปลี่ยนสต็อก" },
+              { value: "upload", label: "อัปโหลด" },
+              {
+                value: "ai",
+                label: "ลองภาพใหม่",
+                disabled: !sceneRerollEnabled || !currentSourceIsAi,
+                title: currentSourceIsAi
+                  ? "ลองภาพใหม่โดยคงแนวภาพเดิม"
+                  : "V1 ลองใหม่ได้เฉพาะฉากที่เป็นภาพ AI อยู่แล้ว",
+              },
+            ]}
+            style={{ display: "flex" }}
+          />
+        </>
+      )}
     </div>
   );
 
@@ -706,7 +771,9 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
           {searchError && <span style={{ fontSize: 11.5, color: color.danger }}>{searchError}</span>}
           {searchCandidates && searchCandidates.length === 0 && !searchError && (
             <span style={{ fontSize: 12, color: color.textFaint }}>
-              {aiImageEnabled ? "ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้น หรือใช้ AI Image" : "ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้นอีกครั้ง"}
+              {sceneRerollEnabled && currentSourceIsAi
+                ? "ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้น หรือใช้ลองภาพใหม่"
+                : "ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้นอีกครั้ง"}
             </span>
           )}
           {searchCandidates && searchCandidates.length > 0 && (
@@ -768,42 +835,37 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
 
       {tab === "ai" && (
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1.5">
-            <GroupLabel>บรรยายภาพที่อยากได้</GroupLabel>
-            <textarea
-              value={aiSimpleText}
-              onChange={(e) => setAiSimpleText(e.target.value)}
-              placeholder="เช่น ร้านกาแฟไทยตอนเช้า มีคนกำลังชงกาแฟ"
-              rows={3}
-              className="w-full resize-none"
-              style={{ padding: "10px 12px", borderRadius: radius.control, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text, fontSize: 13, lineHeight: 1.6, fontFamily: font.body, outline: "none" }}
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Chip selected>Hero AI Image · Realistic · Z-Image Turbo · {genCost} เครดิต</Chip>
-          </div>
-          <button
-            onClick={() => setAdvancedOpen((o) => !o)}
-            style={{ alignSelf: "flex-start", background: "none", border: "none", color: color.link, fontSize: 11.5, cursor: "pointer", padding: 0 }}
+          <div
+            className="flex flex-col gap-2.5"
+            style={{
+              padding: "14px",
+              borderRadius: radius.card,
+              border: "1px solid rgba(129,140,248,.28)",
+              background: "linear-gradient(145deg, rgba(129,140,248,.12), rgba(56,189,248,.05))",
+            }}
           >
-            {advancedOpen ? "▲ ขั้นสูง" : "▼ ขั้นสูง"}
-          </button>
-          {advancedOpen && (
-            <div className="flex flex-col gap-1.5">
-              <GroupLabel>พรอมต์เต็ม (แก้ไขได้)</GroupLabel>
-              <textarea
-                value={advancedOverride ?? composedPrompt}
-                onChange={(e) => setAdvancedOverride(e.target.value)}
-                rows={5}
-                className="w-full resize-none"
-                style={{ padding: "10px 12px", borderRadius: radius.control, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.textSecondary, fontSize: 12, lineHeight: 1.6, fontFamily: font.body, outline: "none" }}
-              />
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex min-w-0 flex-col gap-1">
+                <span style={{ font: `600 14px ${font.heading}`, color: color.text }}>ลองภาพนี้ใหม่</span>
+                <span style={{ fontSize: 11.5, color: color.textSecondary, lineHeight: 1.6 }}>
+                  ระบบคงแนวภาพของแบรนด์และเนื้อหาฉากนี้ไว้ แล้วเปลี่ยนเฉพาะภาพ
+                </span>
+              </div>
+              <Chip selected>แนวภาพเดิม</Chip>
             </div>
+            <span style={{ fontSize: 11, color: color.textFaint }}>{fundingLabel}</span>
+          </div>
+          {!currentSourceIsAi && (
+            <span style={{ fontSize: 11.5, color: color.warning, lineHeight: 1.55 }}>
+              ฉากนี้ใช้ภาพสต็อกหรือไฟล์อัปโหลด — V1 ลองใหม่ได้เฉพาะฉากที่มีภาพ AI เดิม
+            </span>
           )}
           {aiError && <span style={{ fontSize: 11.5, color: color.danger }}>{aiError}</span>}
           {aiInsufficient && (
             <span style={{ fontSize: 11.5, color: color.danger }}>
-              เครดิตไม่พอ — ต้องใช้ {aiInsufficient.need} เครดิต (มี {aiInsufficient.balance}) — <a href="/pricing" style={{ color: color.link }}>ดูแพ็กเกจ</a>
+              {aiInsufficient.kind === "allowance"
+                ? "ใช้สิทธิ์ทดลองครบแล้ว — อัปเกรดเพื่อใช้เครดิตร่วม หรือกลับไปใช้ภาพเดิม"
+                : <>เครดิตไม่พอ — ต้องใช้ {aiInsufficient.need} เครดิต (มี {aiInsufficient.balance}) — <a href="/pricing" style={{ color: color.link }}>ดูแพ็กเกจ</a></>}
             </span>
           )}
           {!enabled && (
@@ -823,11 +885,21 @@ export function BrollWindowInspector({ ed, videoJobId, brollRegionPreference, br
           )}
           <BtnPrimary
             onClick={() => void handleGenerate()}
-            disabled={aiBusy || !finalPrompt || !enabled}
-            title={enabled ? undefined : "เปิด B-roll ช่วงนี้ก่อนจึงจะสร้างภาพได้"}
-            style={aiBusy || !finalPrompt || !enabled ? { opacity: 0.7, cursor: aiBusy ? "wait" : "default" } : undefined}
+            disabled={aiBusy || (!pendingRerollRequestId && (!sceneRerollEnabled || !currentSourceIsAi || !enabled || (allowanceEligible && (allowanceRemaining ?? 0) <= 0)))}
+            title={!enabled
+              ? "เปิด B-roll ช่วงนี้ก่อนจึงจะลองภาพใหม่ได้"
+              : !currentSourceIsAi
+                ? "V1 ลองใหม่ได้เฉพาะฉากที่มีภาพ AI เดิม"
+                : undefined}
+            style={aiBusy || !sceneRerollEnabled || !currentSourceIsAi || !enabled
+              ? { opacity: 0.7, cursor: aiBusy ? "wait" : "default" }
+              : undefined}
           >
-            {aiBusy ? "กำลังสร้างภาพ…" : `สร้างภาพ (ใช้ ${genCost} เครดิต)`}
+            {aiBusy
+              ? pendingRerollRequestId ? "กำลังกู้คืนภาพที่สร้างไว้…" : "กำลังลองภาพใหม่…"
+              : pendingRerollRequestId
+                ? "กู้คืนภาพที่สร้างไว้"
+                : `ลองภาพนี้ใหม่ · ${allowanceEligible ? "สิทธิ์ทดลอง 1 ภาพ" : `${genCost} เครดิต`}`}
           </BtnPrimary>
         </div>
       )}

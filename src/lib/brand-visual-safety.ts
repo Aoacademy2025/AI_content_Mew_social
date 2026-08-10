@@ -4,8 +4,10 @@ export type BrandVisualSafetyInputs = {
   failedJobs: number;
   correctlyRestoredFailedJobs: number;
   staleReservations: number;
+  duplicateDeductions: number;
   negativeCreditBalances: number;
   invalidAllowances: number;
+  cogsDataAdmitted: boolean;
   averageCogsBahtPerImage: number | null;
   highestDailyCogsBahtPerImage: number | null;
 };
@@ -48,8 +50,10 @@ export function evaluateBrandVisualSafety(input: BrandVisualSafetyInputs) {
     usableRateAtLeast95Percent: usableRate !== null && usableRate >= 0.95,
     failedJobsRestored100Percent: restorationRate === 1,
     noStaleReservations: input.staleReservations === 0,
+    noDuplicateDeductions: input.duplicateDeductions === 0,
     noNegativeBalances: input.negativeCreditBalances === 0,
     noInvalidAllowances: input.invalidAllowances === 0,
+    cogsDataAdmitted: input.cogsDataAdmitted,
     averageCogsAtMost030Baht: input.averageCogsBahtPerImage !== null
       && input.averageCogsBahtPerImage <= 0.30,
     dailyCogsAtMost050Baht: input.highestDailyCogsBahtPerImage !== null

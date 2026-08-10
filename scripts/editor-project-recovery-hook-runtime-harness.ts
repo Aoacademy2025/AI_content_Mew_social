@@ -9,6 +9,7 @@ import * as lineageModule from "../src/lib/editor-project-autosave-lineage";
 import * as ttsProvidersModule from "../src/lib/tts-providers";
 import * as editorLayerVisibilityModule from "../src/lib/editor-layer-visibility";
 import * as editorDefaultDraftModule from "../src/lib/editor-default-draft";
+import * as editorStylePresetModule from "../src/lib/editor-style-preset-contract";
 import {
   createEditorProjectSaveQueue,
   type EditorProjectSaveInput,
@@ -510,6 +511,8 @@ function createHarness(options: HarnessOptions = {}) {
     // Pure module (normalize/derive only, no I/O) — same class as logo-overlay above, so run
     // the real one and let the harness exercise production layer-visibility normalization.
     if (specifier === "@/lib/editor-layer-visibility") return editorLayerVisibilityModule;
+    // Pure module — keep project-bootstrap tests on the same subtitle-default coercion as runtime.
+    if (specifier === "@/lib/editor-style-preset-contract") return editorStylePresetModule;
     // Pure module — run the real parser so the harness sees production voice-engine coercion.
     if (specifier === "@/lib/tts-providers") return ttsProvidersModule;
     if (specifier === "@/lib/video-account-defaults") {
@@ -1220,7 +1223,16 @@ async function settingsAfterServerHydration(): Promise<void> {
     ttsProvider: "elevenlabs",
     geminiVoiceName: "Late Voice",
   }));
-  me.resolve({ role: "USER", plan: "FREE", kiePaidUnlocked: false, managedKieOn: true });
+  me.resolve({
+    role: "USER",
+    plan: "PRO",
+    effectivePlan: "PRO",
+    kiePaidUnlocked: false,
+    heroAiImageEligible: true,
+    brandVisualAllowed: true,
+    recommendedAutoMixDefault: true,
+    managedKieOn: true,
+  });
   await settle(harness.runner);
   assert.deepEqual({
     avatarId: harness.runner.current.avatarId,
@@ -1239,6 +1251,76 @@ async function settingsAfterServerHydration(): Promise<void> {
     brollSource: "automix",
     providers: ["kie-ai"],
   }, "late account initialization cannot overwrite the chosen server draft");
+}
+
+async function paidBrandVisualDefaultsNewProjectToRecommendedAutoMix(): Promise<void> {
+  const harness = createHarness({
+    fetchMe: Promise.resolve({
+      role: "USER",
+      plan: "PRO",
+      effectivePlan: "PRO",
+      kiePaidUnlocked: false,
+      heroAiImageEligible: true,
+      brandVisualAllowed: true,
+      recommendedAutoMixDefault: true,
+    }),
+  });
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const created = postBodies(harness.fetchMock)[0];
+  assert.ok(created, "a fresh paid Brand Visual account creates one durable project");
+  assert.deepEqual({
+    persistedPreset: (created.draft as JsonRecord).mixPreset,
+    persistedSource: (created.draft as JsonRecord).brollSource,
+    persistedProviders: (created.draft as JsonRecord).autoMixProviders,
+    visiblePreset: harness.runner.current.mixPreset,
+    visibleSource: harness.runner.current.brollSource,
+    visibleProviders: harness.runner.current.autoMixProviders,
+  }, {
+    persistedPreset: "recommended",
+    persistedSource: "automix",
+    persistedProviders: ["video", "pexels-photo", "pixabay-photo", "kie-ai"],
+    visiblePreset: "recommended",
+    visibleSource: "automix",
+    visibleProviders: ["video", "pexels-photo", "pixabay-photo", "kie-ai"],
+  }, "a paid Brand Visual user's first durable draft defaults to recommended AutoMix without the internal KIE gate");
+}
+
+async function paidBrandVisualHydrationPreservesExistingMixChoice(): Promise<void> {
+  const harness = createHarness({
+    search: "?projectId=paid-existing-choice",
+    fetchMe: Promise.resolve({
+      role: "USER",
+      plan: "PRO",
+      effectivePlan: "PRO",
+      kiePaidUnlocked: false,
+      heroAiImageEligible: true,
+      brandVisualAllowed: true,
+      recommendedAutoMixDefault: true,
+    }),
+  });
+  harness.fetchMock.enqueue("GET", editorUrl("paid-existing-choice"), response(200, {
+    project: project("paid-existing-choice", 4, {
+      mixPreset: "free",
+      brollSource: "stock",
+      autoMixProviders: ["video", "pexels-photo", "pixabay-photo"],
+    }),
+  }));
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  assert.deepEqual({
+    preset: harness.runner.current.mixPreset,
+    source: harness.runner.current.brollSource,
+    providers: harness.runner.current.autoMixProviders,
+    patches: patchBodies(harness.fetchMock).length,
+  }, {
+    preset: "free",
+    source: "stock",
+    providers: ["video", "pexels-photo", "pixabay-photo"],
+    patches: 0,
+  }, "paid-plan defaults never overwrite an existing project's explicit Stock choice");
 }
 
 async function exactEqualRevisionResume(): Promise<void> {
@@ -2633,6 +2715,8 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["late-patch-callbacks", resetAndUnmountIgnoreLatePatchResponse],
     ["second-ambiguity-refresh", secondAmbiguityLocksUntilGetOnlyRefresh],
     ["settings-after-GET", settingsAfterServerHydration],
+    ["paid-brand-visual-default", paidBrandVisualDefaultsNewProjectToRecommendedAutoMix],
+    ["paid-brand-visual-existing-choice", paidBrandVisualHydrationPreservesExistingMixChoice],
     ["equal-revision-resume", exactEqualRevisionResume],
     ["blank-bootstrap-initialization", blankBootstrapBlocksUserMutationDuringInitialization],
     ["explicit-empty-bootstrap", explicitEmptyBootstrapStaysUnpersisted],

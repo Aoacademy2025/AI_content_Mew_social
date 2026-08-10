@@ -118,8 +118,31 @@ function draftReferencesAsset(draftJson: string | null, assetId: string): boolea
   }
 }
 
+function brandProfilePayloadReferencesAsset(payloadJson: string, assetId: string): boolean {
+  try {
+    const payload = JSON.parse(payloadJson) as unknown;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+    const brandMark = (payload as Record<string, unknown>).brandMark;
+    return Boolean(
+      brandMark
+      && typeof brandMark === "object"
+      && !Array.isArray(brandMark)
+      && (brandMark as Record<string, unknown>).assetId === assetId,
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function canUseLogoOverlay(plan: string): boolean {
   return plan === "PRO" || plan === "BUSINESS";
+}
+
+/** Brand Visual sells generation capacity and profile count, not the ability
+ * to complete a Brand Profile. Treatment Free users may therefore manage the
+ * profile's Brand Mark while legacy/control users keep the paid overlay gate. */
+export function canManageBrandMark(plan: string, brandVisualAllowed = false): boolean {
+  return canUseLogoOverlay(plan) || brandVisualAllowed;
 }
 
 export function tryConsumeBrandAssetUpload(userId: string, now = Date.now()): boolean {
@@ -137,18 +160,22 @@ export function tryConsumeBrandAssetUpload(userId: string, now = Date.now()): bo
 export async function saveBrandAsset(input: {
   userId: string;
   plan: string;
-  projectId: string;
+  brandVisualAllowed?: boolean;
+  projectId?: string | null;
   file: File;
 }): Promise<BrandAssetView> {
-  if (!canUseLogoOverlay(input.plan)) {
+  if (!canManageBrandMark(input.plan, input.brandVisualAllowed)) {
     throw new BrandAssetError("plan_required", 403);
   }
 
-  const project = await prisma.editorProject.findFirst({
-    where: { id: input.projectId, userId: input.userId, status: { not: "archived" } },
-    select: { id: true },
-  });
-  if (!project) throw new BrandAssetError("project_not_found", 404);
+  const requestedProjectId = input.projectId?.trim() || null;
+  const project = requestedProjectId
+    ? await prisma.editorProject.findFirst({
+        where: { id: requestedProjectId, userId: input.userId, status: { not: "archived" } },
+        select: { id: true },
+      })
+    : null;
+  if (requestedProjectId && !project) throw new BrandAssetError("project_not_found", 404);
 
   if (!tryConsumeBrandAssetUpload(input.userId)) {
     throw new BrandAssetError("rate_limited", 429);
@@ -212,7 +239,7 @@ export async function saveBrandAsset(input: {
     const asset = await prisma.brandAsset.create({
       data: {
         userId: input.userId,
-        projectId: project.id,
+        projectId: project?.id ?? null,
         storageKey,
         originalName: cleanDisplayName(input.file.name),
         mimeType: "image/webp",
@@ -301,10 +328,11 @@ export async function getDefaultBrandPreference(userId: string): Promise<{
 export async function setDefaultBrandPreference(input: {
   userId: string;
   plan: string;
+  brandVisualAllowed?: boolean;
   assetId: string;
   config: LogoOverlayConfig;
 }): Promise<void> {
-  if (!canUseLogoOverlay(input.plan)) {
+  if (!canManageBrandMark(input.plan, input.brandVisualAllowed)) {
     throw new BrandAssetError("plan_required", 403);
   }
   const config = normalizeLogoOverlayConfig(input.config);
@@ -374,6 +402,26 @@ export async function deleteBrandAssetIfUnreferenced(userId: string, assetId: st
       select: { draftJson: true },
     });
     if (projects.some((project) => draftReferencesAsset(project.draftJson, assetId))) {
+      throw new BrandAssetError("asset_in_use", 409);
+    }
+
+    // Brand Profile Revisions are immutable and may be pinned years later.
+    // Retiring their Brand Mark would make the historical revision impossible
+    // to reproduce, so both published history and a saved draft are references.
+    const [profileDrafts, profileRevisions] = await Promise.all([
+      tx.brandProfileDraft.findMany({
+        where: { payloadJson: { contains: assetId } },
+        select: { payloadJson: true },
+      }),
+      tx.brandProfileRevision.findMany({
+        where: { payloadJson: { contains: assetId } },
+        select: { payloadJson: true },
+      }),
+    ]);
+    if (
+      profileDrafts.some((draft) => brandProfilePayloadReferencesAsset(draft.payloadJson, assetId))
+      || profileRevisions.some((revision) => brandProfilePayloadReferencesAsset(revision.payloadJson, assetId))
+    ) {
       throw new BrandAssetError("asset_in_use", 409);
     }
 

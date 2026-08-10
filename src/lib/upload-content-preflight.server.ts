@@ -2,6 +2,7 @@ import {
   createGeminiContentPreflightAnalyzer,
   resolveContentPreflight,
   type ContentPreflightAnalyzer,
+  type NarrativeVisualWindow,
   type ResolvedContentPreflight,
 } from "@/lib/content-preflight.server";
 import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
@@ -33,6 +34,10 @@ export async function ensureUploadContentPreflight(
     actor: UploadPreflightActor;
     projectId?: string | null;
     transcriptText: string;
+    windows?: NarrativeVisualWindow[];
+    /** Acceptance-time treatment decision persisted on the VideoJob. When set,
+     * rollout changes while the job waits cannot add or remove Brand Visual. */
+    brandVisualAccepted?: boolean;
   },
   dependencies: UploadPreflightDependencies = {
     resolve: resolveContentPreflight,
@@ -40,7 +45,8 @@ export async function ensureUploadContentPreflight(
   },
 ): Promise<UploadContentPreflightResult> {
   if (!input.projectId) return { kind: "skipped", reason: "no-project" };
-  if (!decideBrandVisualAccess(input.actor).canUse) {
+  const canUse = input.brandVisualAccepted ?? decideBrandVisualAccess(input.actor).canUse;
+  if (!canUse) {
     return { kind: "skipped", reason: "not-in-treatment" };
   }
 
@@ -50,6 +56,7 @@ export async function ensureUploadContentPreflight(
     narrativeSource: {
       kind: "upload-transcript",
       text: input.transcriptText,
+      ...(input.windows ? { windows: input.windows } : {}),
     },
     analyzer: dependencies.createAnalyzer(input.actor.id),
   });

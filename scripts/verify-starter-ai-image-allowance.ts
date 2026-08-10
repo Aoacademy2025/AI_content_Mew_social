@@ -166,6 +166,72 @@ async function main() {
   assert.equal(paidReservation.balanceAfter, 2);
   assert.equal(await prisma.starterAiImageAllowance.count({ where: { userId: paid.id } }), 0);
 
+  const manualBusiness = await prisma.user.create({
+    data: {
+      name: "Manual Business",
+      email: "manual-business@example.test",
+      plan: "BUSINESS",
+      subStatus: null,
+      trialStartedAt: null,
+      trialEndsAt: null,
+    },
+  });
+  await prisma.creditBalance.create({ data: { userId: manualBusiness.id, granted: 4, purchased: 0 } });
+  const manualBusinessReservation = await reserve(manualBusiness.id, "brand:manual-business");
+  assert.equal(manualBusinessReservation.ok, true);
+  if (!manualBusinessReservation.ok) throw new Error("manual Business reservation failed");
+  assert.equal(
+    manualBusinessReservation.fundingSource,
+    "credits",
+    "an effective manual BUSINESS entitlement uses the shared credit wallet, never Starter allowance",
+  );
+
+  const creditPackOnly = await prisma.user.create({
+    data: {
+      name: "Credit pack only",
+      email: "credit-pack-only@example.test",
+      plan: "FREE",
+      createdAt: new Date(now.getTime() - 2 * DAY_MS),
+    },
+  });
+  await prisma.payment.create({
+    data: {
+      userId: creditPackOnly.id,
+      stripeSessionId: "verify-credit-pack",
+      plan: "PRO",
+      amount: 9900,
+      status: "PAID",
+      periodDays: 0,
+      paidAt: now,
+    },
+  });
+  await prisma.creditBalance.create({ data: { userId: creditPackOnly.id, granted: 0, purchased: 10 } });
+  const creditPackReservation = await reserve(creditPackOnly.id, "brand:credit-pack-only");
+  assert.equal(creditPackReservation.ok, true);
+  if (!creditPackReservation.ok) throw new Error("credit-pack reservation failed");
+  assert.equal(
+    creditPackReservation.fundingSource,
+    "starter_allowance",
+    "buying a credit pack is not a paid subscription and cannot forfeit activation allowance",
+  );
+
+  const delayedTrial = await prisma.user.create({
+    data: {
+      name: "Delayed trial",
+      email: "delayed-trial@example.test",
+      plan: "PRO",
+      createdAt: new Date(now.getTime() - 35 * DAY_MS),
+      trialStartedAt: new Date(now.getTime() - 5 * DAY_MS),
+      trialEndsAt: new Date(now.getTime() + 2 * DAY_MS),
+    },
+  });
+  const delayedStatus = await getStarterAiImageAllowanceStatus(delayedTrial.id, now);
+  assert.equal(
+    delayedStatus.windowStartedAt.getTime(),
+    delayedTrial.createdAt.getTime() + 30 * DAY_MS,
+    "the 30-day activation window stays anchored to signup rather than a later trial start",
+  );
+
   const rollover = await prisma.user.create({
     data: {
       name: "Rollover",
@@ -185,6 +251,46 @@ async function main() {
   const rolled = await getStarterAiImageAllowanceStatus(rollover.id);
   assert.equal(rolled.usedImages, 0);
   assert.equal(rolled.remainingImages, 8, "the signup-anchored 30-day window resets once");
+
+  const boundary = await prisma.user.create({
+    data: {
+      name: "Settled rollover refund",
+      email: "settled-rollover-refund@example.test",
+      plan: "FREE",
+      createdAt: new Date(now.getTime() - 29 * DAY_MS),
+    },
+  });
+  await prisma.creditBalance.create({ data: { userId: boundary.id, granted: 0, purchased: 0 } });
+  const boundaryReservation = await reserve(boundary.id, "brand:rollover-refund");
+  assert.equal(boundaryReservation.ok, true);
+  if (!boundaryReservation.ok) throw new Error("boundary reservation failed");
+  assert.ok(
+    boundaryReservation.job.allowanceWindowStartedAt,
+    "an allowance-backed job must pin the exact usage window it reserved",
+  );
+  await completeImageJob({
+    userId: boundary.id,
+    jobId: boundaryReservation.job.id,
+    outputUrl: "/generated/boundary.webp",
+  });
+  const nextWindowStatus = await getStarterAiImageAllowanceStatus(
+    boundary.id,
+    new Date(now.getTime() + 2 * DAY_MS),
+  );
+  assert.equal(nextWindowStatus.usedImages, 0, "a later usage window starts independently");
+  const boundaryRefund = await refundSettledVideoImageJob({
+    userId: boundary.id,
+    jobId: boundaryReservation.job.id,
+    reason: "cross_window_post_process",
+  });
+  assert.equal(boundaryRefund.refunded, true);
+  const allowanceWindows = await prisma.starterAiImageAllowance.findMany({
+    where: { userId: boundary.id },
+    orderBy: { windowStartedAt: "asc" },
+  });
+  assert.equal(allowanceWindows.length, 2, "old settlement history survives a window rollover");
+  assert.equal(allowanceWindows[0].usedImages, 0, "refund restores the exact old window");
+  assert.equal(allowanceWindows[1].usedImages, 0, "refund never mutates the new window");
 
   await prisma.$disconnect();
   console.log("verify-starter-ai-image-allowance: PASS reserve + settle + refund + rollover");

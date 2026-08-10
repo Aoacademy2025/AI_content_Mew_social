@@ -55,6 +55,8 @@ const TERMINAL_PROVIDER_STATUS = new Set(["FAILED", "TIMED_OUT", "CANCELLED"]);
 const REFUND_STALE = "SWEEP_STALE_RESERVED";
 /** Provider says the work completed but the image can no longer be retrieved. */
 const REFUND_OUTPUT_LOST = "SWEEP_OUTPUT_LOST";
+/** The provider result arrived after its parent video became undeliverable. */
+const REFUND_PARENT_TERMINAL = "PARENT_VIDEO_TERMINAL";
 
 export type StaleReservedImageAction = "settle" | "refund" | "skip";
 
@@ -118,6 +120,23 @@ function sceneTitleForJob(job: AiGenerationJob): string | undefined {
   return undefined;
 }
 
+function parentVideoJobId(job: AiGenerationJob): string | null {
+  const match = /^video:([^:]+):/.exec(job.idempotencyKey ?? "");
+  return match?.[1]?.trim() || null;
+}
+
+async function terminalParentVideoStatus(job: AiGenerationJob): Promise<"done" | "failed" | "canceled" | null> {
+  const videoJobId = parentVideoJobId(job);
+  if (!videoJobId) return null;
+  const parent = await prisma.videoJob.findFirst({
+    where: { id: videoJobId, userId: job.userId },
+    select: { status: true },
+  });
+  return parent?.status === "done" || parent?.status === "failed" || parent?.status === "canceled"
+    ? parent.status
+    : null;
+}
+
 /**
  * Ask the provider to stop work we are about to refund, so an abandoned job stops
  * burning COGS. Strictly best-effort: every failure is swallowed and only logged, so
@@ -150,7 +169,7 @@ async function bestEffortCancel(input: {
 
 async function refundJob(input: {
   job: AiGenerationJob;
-  errorCode: typeof REFUND_STALE | typeof REFUND_OUTPUT_LOST;
+  errorCode: typeof REFUND_STALE | typeof REFUND_OUTPUT_LOST | typeof REFUND_PARENT_TERMINAL;
   errorMessage: string;
   reason: string;
   dryRun: boolean;
@@ -171,6 +190,20 @@ async function refundJob(input: {
 }
 
 async function reconcileJob(job: AiGenerationJob, dryRun: boolean): Promise<StaleReservedImageDecision> {
+  const parentStatus = await terminalParentVideoStatus(job);
+  if (parentStatus) {
+    // A terminal parent can no longer consume a reserved image. This includes a
+    // successful `done` AutoMix which deliberately omitted an ambiguous slot:
+    // accepting a late provider result would charge for an image that is absent
+    // from the delivered video. Refund before polling or persisting output.
+    return refundJob({
+      job,
+      errorCode: REFUND_PARENT_TERMINAL,
+      errorMessage: `Parent video is ${parentStatus}`,
+      reason: `parent_${parentStatus}`,
+      dryRun,
+    });
+  }
   const attempt = await latestImageGenerationAttempt(job.userId, job.id);
   const providerJobId = attempt?.providerJobId ?? job.providerJobId;
   if (!attempt || !providerJobId) {

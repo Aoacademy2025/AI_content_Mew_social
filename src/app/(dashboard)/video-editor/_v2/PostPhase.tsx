@@ -36,7 +36,7 @@ import {
   PendingBrollChangesDialog,
   WindowEditsBottomBar,
 } from "./BrollWindowInspector";
-import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { MeData } from "@/lib/use-me";
 import { trackEvent } from "@/lib/client-telemetry";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
@@ -73,15 +73,14 @@ export function PostPhase({
   projectSaveStatus,
   onRetryProjectSave,
   canRunProjectOperation,
-  brollRegionPreference = "auto",
-  brollVisualStyle = "auto",
   internalAiTester,
-  aiImageEnabled,
+  sceneRerollEnabled,
+  starterImageAllowance,
   downloadFilename,
 }: {
   job: V2JobState; script: string;
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
-  onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
   logoOverlay?: LogoOverlayConfig;
@@ -98,9 +97,9 @@ export function PostPhase({
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   canRunProjectOperation?: () => boolean;
-  brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   internalAiTester: boolean;
-  aiImageEnabled: boolean;
+  sceneRerollEnabled: boolean;
+  starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
 }) {
   const [rightTab, setRightTab] = useState<"hook" | "subtitle" | "logo">("hook");
@@ -131,8 +130,10 @@ export function PostPhase({
       trackEvent("logo_overlay_panel_opened", { properties: { surface: "desktop" } });
     }
   };
-  // Public flag/internal beta gate only. Upload Avatar now has its own cutaway re-composite path.
-  const brollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  // The full editor remains behind its legacy gate. Brand Visual V1 exposes
+  // only Scene Reroll, without enabling Stock-to-AI or raw-prompt controls.
+  const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
   const editedWindowIndices = useMemo(() => new Set(ed.windowEdits.keys()), [ed.windowEdits]);
   const disabledWindowIndices = new Set<number>();
   const brollEntries = (ed.previewConfig as { bgVideos?: unknown } | null)?.bgVideos;
@@ -164,7 +165,7 @@ export function PostPhase({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <SaveProjectLookPrompt projectId={projectId} brandVisualAllowed={brandVisualAllowed} />
+      <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandVisualAllowed={brandVisualAllowed} />
       {ed.exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
@@ -761,7 +762,13 @@ export function PostPhase({
         </aside>
 
         {brollEditEnabled && ed.selectedWindow != null && (
-          <BrollWindowInspector ed={ed} videoJobId={job.jobId} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
+          <BrollWindowInspector
+            ed={ed}
+            videoJobId={job.jobId}
+            fullBrollEditEnabled={fullBrollEditEnabled}
+            sceneRerollEnabled={sceneRerollEnabled}
+            starterImageAllowance={starterImageAllowance}
+          />
         )}
       </div>
 

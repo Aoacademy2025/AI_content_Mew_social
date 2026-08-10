@@ -84,7 +84,8 @@ type StockVideo = {
   duration: number;
   title?: string;
   query?: string;
-  provider?: "pexels" | "pixabay";
+  provider?: BrollVideo["provider"];
+  assetMeta?: { provider?: BrollVideo["provider"] };
   contentProfile?: string;
   selectionReason?: string;
   relevanceScore?: number;
@@ -286,11 +287,12 @@ export async function POST(req: Request) {
   const brollMetadataBySrc = new Map<string, Partial<BrollVideo>>();
   for (const sv of validStocks) {
     const src = sv.localUrl ?? sv.videoUrl;
+    const provider = sv.assetMeta?.provider ?? sv.provider;
     brollMetadataBySrc.set(src, {
       keyword: sv.keyword,
       title: sv.title,
       query: sv.query,
-      provider: sv.provider,
+      provider,
       contentProfile: sv.contentProfile,
       selectionReason: sv.selectionReason,
       relevanceScore: sv.relevanceScore,
@@ -315,7 +317,7 @@ export async function POST(req: Request) {
         keyword: sv.keyword,
         title: sv.title,
         query: sv.query,
-        provider: sv.provider,
+        provider: sv.assetMeta?.provider ?? sv.provider,
         contentProfile: sv.contentProfile,
         selectionReason: sv.selectionReason,
         relevanceScore: sv.relevanceScore,

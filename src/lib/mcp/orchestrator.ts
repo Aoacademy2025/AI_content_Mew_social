@@ -55,6 +55,7 @@ import {
 import {
   buildBrollWindows,
   buildFixedCountBrollWindows,
+  buildNarrativeAlignedBrollWindows,
   type BrollWindow,
 } from "@/lib/broll-windows";
 import {
@@ -93,6 +94,8 @@ import {
 } from "@/lib/mcp/subtitle-quality";
 import { getVideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
+import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
+import { narrativeVisualWindowsForPreflight } from "@/lib/content-preflight.server";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -1028,34 +1031,6 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ? Math.round(tx.audioDurationMs)
         : Math.max(...upCaps.map((c) => c.endMs));
 
-      const uploadPreflight = await ensureUploadContentPreflight({
-        actor: {
-          id: user.id,
-          email: user.email,
-          role: user.role,
-          createdAt: user.createdAt,
-        },
-        projectId: job.projectId,
-        transcriptText: upCaps.map((caption) => caption.text).join("\n"),
-      });
-      if (uploadPreflight.kind === "resolved") {
-        emitTelemetry({
-          name: "brand_visual_preflight_resolved",
-          category: "performance",
-          source: "server",
-          step: "editor.step2",
-          status: uploadPreflight.preflight.cached ? "cached" : "analyzed",
-          properties: {
-            projectId: job.projectId,
-            preflightId: uploadPreflight.preflight.id,
-            sourceKind: "upload-transcript",
-            visualFormatId: uploadPreflight.preflight.suggestedVisualFormatId,
-            beatCount: uploadPreflight.preflight.visualBeats.length,
-            via: "upload-worker",
-          },
-        });
-      }
-
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
       const upManualWindowCount = manualCutawayWindowCount(input.targetClipCount);
       const upWindows = upManualWindowCount > 0
@@ -1081,6 +1056,48 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         visibleBrollRanges.has(`${window.startMs}:${window.endMs}`),
       );
       const upBrollUnits = brollWindowCaptions(upVisibleWindows);
+
+      if (upVisibleWindows.length > 0) {
+        const uploadPreflight = await ensureUploadContentPreflight({
+          actor: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            createdAt: user.createdAt,
+          },
+          projectId: job.projectId,
+          transcriptText: upCaps.map((caption) => caption.text).join("\n"),
+          windows: upVisibleWindows.map((window) => ({
+            text: window.text,
+            startMs: window.startMs,
+            endMs: window.endMs,
+          })),
+          brandVisualAccepted: Boolean(job.projectVisualContextJson),
+        });
+        if (uploadPreflight.kind === "resolved") {
+          await pinProjectVisualContextToVideoJob({
+            userId: user.id,
+            projectId: job.projectId!,
+            videoJobId: jobId,
+            preflightId: uploadPreflight.preflight.id,
+          });
+          emitTelemetry({
+            name: "brand_visual_preflight_resolved",
+            category: "performance",
+            source: "server",
+            step: "editor.step2",
+            status: uploadPreflight.preflight.cached ? "cached" : "analyzed",
+            properties: {
+              projectId: job.projectId,
+              preflightId: uploadPreflight.preflight.id,
+              sourceKind: "upload-transcript",
+              visualFormatId: uploadPreflight.preflight.suggestedVisualFormatId,
+              beatCount: uploadPreflight.preflight.visualBeats.length,
+              via: "upload-worker",
+            },
+          });
+        }
+      }
 
       await step("keywords", 40);
       const upKw = upBrollUnits.length > 0
@@ -1387,22 +1404,48 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // sceneClipCounts); subtitle timing is untouched.
     const brollWindowMode = isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1");
     const brollWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
+    const pinnedBrandVisualWindows = job.contentPreflightId && job.projectVisualContextJson && job.projectId
+      ? await narrativeVisualWindowsForPreflight({
+          userId,
+          projectId: job.projectId,
+          preflightId: job.contentPreflightId,
+        })
+      : [];
+    const pinnedBrandVisualWindowCount = pinnedBrandVisualWindows.length;
     const manualBrollCount = input.targetClipCount && input.targetClipCount > 0
       ? Math.min(60, Math.floor(input.targetClipCount))
-      : 0;
-    const brollWindows = brollWindowMode || manualBrollCount > 0
-      ? manualBrollCount > 0
+      : Math.min(60, pinnedBrandVisualWindowCount);
+    const timedCaptionInput = captions.map((caption) => ({
+      startMs: caption.startMs,
+      endMs: caption.endMs,
+      text: caption.text,
+    }));
+    const narrativeAlignedWindows = pinnedBrandVisualWindowCount > 0
+      ? buildNarrativeAlignedBrollWindows({
+          captions: timedCaptionInput,
+          words: capRes.words,
+          spokenText: capRes.fullText,
+          narrativeWindows: pinnedBrandVisualWindows.map((window) => window.text),
+          audioEndMs: durMs,
+        })
+      : null;
+    if (pinnedBrandVisualWindowCount > 0 && !narrativeAlignedWindows) {
+      throw new Error("ข้อมูลฉากไม่ตรงกับเนื้อหาที่เสียงพูดจริง — กรุณาเตรียมแนวภาพใหม่");
+    }
+    const brollWindows = narrativeAlignedWindows
+      ?? (brollWindowMode || manualBrollCount > 0
+        ? manualBrollCount > 0
         ? buildFixedCountBrollWindows(
-            captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            timedCaptionInput,
             manualBrollCount,
             durMs,
           )
         : buildBrollWindows(
-            captions.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            timedCaptionInput,
             brollWindowSec,
             durMs,
           )
-      : [];
+        : []);
     const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
 
     // 3. Keywords
@@ -1619,6 +1662,39 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const pipelineFailure = pipelineFailureDetails(e);
     if (message === VIDEO_JOB_CANCELED_ERROR) {
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
+      const reason = `video_${phaseName || "unknown"}_canceled`;
+      let settlementPending = false;
+      try {
+        await refundSettledVideoImageBatch({ userId, videoJobId: jobId, reason });
+      } catch (settlementError) {
+        settlementPending = true;
+        console.error(`[mcp-worker] canceled job ${jobId} failed to refund image batch`, settlementError);
+      }
+      try {
+        const result = await refundVideoJobTerminalRenderReservations({
+          videoJobId: jobId,
+          userId,
+          reason,
+        });
+        if (result.kind === "in_flight") settlementPending = true;
+      } catch (settlementError) {
+        settlementPending = true;
+        console.error(`[mcp-worker] canceled job ${jobId} failed to refund render reservations`, settlementError);
+      }
+      await prisma.videoJob.updateMany({
+        where: { id: jobId, userId, status: "canceled" },
+        data: settlementPending
+          ? {
+              reservationRefundPending: true,
+              reservationRefundReason: reason,
+              reservationRefundAttempts: { increment: 1 },
+            }
+          : {
+              reservationRefundPending: false,
+              reservationRefundReason: null,
+              reservationRefundAttempts: { increment: 1 },
+            },
+      });
       return; // status is already 'canceled'; don't overwrite with failed
     }
     const settlementReason = `video_${phaseName || "unknown"}_failed`;

@@ -16,8 +16,18 @@ import { parseHeroBrollWindowRequest } from "@/lib/broll-window-hero";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { getBalance } from "@/lib/credits";
 import { checkHeroImageRate, heroImageRateLimitMessage } from "@/lib/hero-image-rate-limit";
-import { HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE, isHeroAiImageEligible } from "@/lib/internal-ai-access";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
+import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import {
+  parseBrandVisualJobAcceptance,
+  prepareBrandVisualJobAcceptance,
+  resolveBrandVisualRenderAccess,
+} from "@/lib/brand-visual-job-acceptance.server";
+import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
+import { recordVisualBeatAsset } from "@/lib/content-preflight.server";
+import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
+import { recordTelemetryEvent } from "@/lib/telemetry";
+import { reusableProjectVisualAssets } from "@/lib/project-visual-assets.server";
 import {
   describeHeroImageOffer,
   generateHeroImageForVideo,
@@ -50,32 +60,6 @@ async function copyOwnedHeroImage(outputUrl: string, imagePath: string): Promise
 export async function POST(req: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const isAdmin = user.role === "ADMIN";
-  if (!isHeroAiImageEligible(user)) {
-    if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
-      return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
-    }
-    return NextResponse.json(
-      { error: "beta_only", message: "Hero AI Image ยังเปิดเฉพาะทีมงาน (Beta)" },
-      { status: 403 },
-    );
-  }
-  // Rate cap (public-launch abuse guard) — one regenerated window = one planned
-  // image. Runs before any credit reservation. Admins are exempt (team ops).
-  if (!isAdmin) {
-    const heroRate = await checkHeroImageRate(user.id, 1);
-    if (!heroRate.ok) {
-      return NextResponse.json(
-        {
-          error: "RATE_LIMITED",
-          message: heroImageRateLimitMessage(heroRate),
-          retryAfterSec: heroRate.retryAfterSec,
-        },
-        { status: 429, headers: { "Retry-After": String(heroRate.retryAfterSec) } },
-      );
-    }
-  }
-
   const body = await req.json().catch(() => null);
   const parsed = parseHeroBrollWindowRequest(body);
   if (!parsed.ok) {
@@ -88,7 +72,12 @@ export async function POST(req: Request) {
 
   const sourceJob = await prisma.videoJob.findFirst({
     where: { id: input.videoJobId, userId: user.id },
-    select: { status: true },
+    select: {
+      status: true,
+      projectId: true,
+      contentPreflightId: true,
+      projectVisualContextJson: true,
+    },
   });
   if (!sourceJob) {
     return NextResponse.json(
@@ -102,29 +91,113 @@ export async function POST(req: Request) {
       { status: 409 },
     );
   }
-
-  const offer = describeHeroImageOffer();
-  if (!offer.available || offer.providerRoute !== "runpod-custom") {
+  if (!sourceJob.projectId || !sourceJob.contentPreflightId || !sourceJob.projectVisualContextJson) {
     return NextResponse.json(
       {
-        error: "hero_image_unavailable",
-        message: "Hero AI Image ยังไม่พร้อมบน RunPod custom endpoint ที่ผ่านการตรวจสอบ",
+        error: "scene_reroll_unavailable",
+        message: "คลิปนี้ยังไม่มีแนวภาพและฉากที่ยืนยันไว้สำหรับลองภาพใหม่",
       },
-      { status: 503 },
+      { status: 409 },
     );
   }
-  const costSnapshot = await getRunpodImageCostSnapshot({ endpointId: offer.providerEndpoint });
-  if (!costSnapshot.admitted) {
+  const brandVisualPrompt = await resolveProjectVisualPromptForVideoScene({
+    userId: user.id,
+    videoJobId: input.videoJobId,
+    sceneIndex: input.sceneIndex,
+  });
+  if (!brandVisualPrompt?.visualBeatId || !brandVisualPrompt.identityKey) {
     return NextResponse.json(
       {
-        error: "runpod_cost_guard",
-        retryable: true,
-        message: costSnapshot.status === "stale"
-          ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงยังไม่รับงานใหม่"
-          : "ต้นทุน Hero AI Image สูงกว่าเพดาน จึงยังไม่รับงานใหม่",
+        error: "scene_reroll_unavailable",
+        message: "ไม่พบฉากที่ตรงกับคลิปนี้ กรุณาโหลดโปรเจกต์ใหม่",
       },
-      { status: 503 },
+      { status: 409 },
     );
+  }
+  // Replay is resolved before every mutable admission gate. A response lost at
+  // the daily-cap boundary or after COGS telemetry becomes stale must still
+  // recover the exact paid/allowance image instead of minting a second request.
+  const existingImageJob = await prisma.aiGenerationJob.findFirst({
+    where: { userId: user.id, idempotencyKey: input.idempotencyKey },
+  });
+
+  let acceptance = null;
+  if (!existingImageJob) {
+    const sourceAssets = await reusableProjectVisualAssets({
+      userId: user.id,
+      projectId: sourceJob.projectId,
+      preflightId: sourceJob.contentPreflightId,
+    });
+    if (!sourceAssets.some((asset) => asset.beatId === brandVisualPrompt.visualBeatId)) {
+      return NextResponse.json(
+        {
+          error: "scene_reroll_requires_ai_asset",
+          message: "ลองภาพใหม่ได้เฉพาะฉากที่มีภาพ AI เดิมอยู่แล้ว",
+        },
+        { status: 409 },
+      );
+    }
+    const access = resolveBrandVisualRenderAccess({
+      requestsBrandVisualImage: true,
+      hasPersistedProjectPin: true,
+      liveAccess: decideBrandVisualAccess(user),
+    });
+    if (!access) {
+      return NextResponse.json(
+        { error: "brand_visual_unavailable", message: "แนวภาพยังไม่เปิดให้บัญชีนี้ใช้งาน" },
+        { status: 403 },
+      );
+    }
+
+    // Rate cap (public-launch abuse guard) — one rerolled scene = one planned
+    // image. Existing idempotent work bypasses this preflight above; the image
+    // reservation transaction remains the final concurrency-safe cap.
+    if (user.role !== "ADMIN") {
+      const heroRate = await checkHeroImageRate(user.id, 1);
+      if (!heroRate.ok) {
+        return NextResponse.json(
+          {
+            error: "RATE_LIMITED",
+            message: heroImageRateLimitMessage(heroRate),
+            retryAfterSec: heroRate.retryAfterSec,
+          },
+          { status: 429, headers: { "Retry-After": String(heroRate.retryAfterSec) } },
+        );
+      }
+    }
+
+    const offer = describeHeroImageOffer();
+    if (!offer.available || offer.providerRoute !== "runpod-custom") {
+      return NextResponse.json(
+        {
+          error: "hero_image_unavailable",
+          message: "Hero AI Image ยังไม่พร้อมใช้งานในขณะนี้",
+        },
+        { status: 503 },
+      );
+    }
+    const costSnapshot = await getRunpodImageCostSnapshot({ endpointId: offer.providerEndpoint });
+    if (!costSnapshot.admitted) {
+      return NextResponse.json(
+        {
+          error: "hero_image_cost_guard",
+          retryable: true,
+          message: costSnapshot.status === "stale"
+            ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงยังไม่รับงานใหม่"
+            : "ต้นทุน Hero AI Image สูงกว่าเพดาน จึงยังไม่รับงานใหม่",
+        },
+        { status: 503 },
+      );
+    }
+    acceptance = parseBrandVisualJobAcceptance(await prepareBrandVisualJobAcceptance({
+      userId: user.id,
+      projectId: sourceJob.projectId,
+      projectVisualPin: {
+        contentPreflightId: sourceJob.contentPreflightId,
+        projectVisualContextJson: sourceJob.projectVisualContextJson,
+      },
+      access,
+    }));
   }
 
   const stocksDir = path.join(process.cwd(), "stocks");
@@ -133,35 +206,86 @@ export async function POST(req: Request) {
   const outFile = `broll-ai-${stamp}.mp4`;
   const outPath = path.join(stocksDir, outFile);
   const tmpImagePath = path.join(os.tmpdir(), `broll-hero-src-${stamp}.png`);
-  let generated: HeroImageGenerationResult | null = null;
+  let generated: Pick<
+    HeroImageGenerationResult,
+    "jobId" | "outputUrl" | "creditCost" | "fundingSource" | "allowanceUnits"
+  > | null = null;
 
   try {
-    generated = await generateHeroImageForVideo({
-      userId: user.id,
-      plan: user.plan,
-      prompt: input.prompt,
-      idempotencyKey: input.idempotencyKey,
-      videoJobId: input.videoJobId,
-      sceneIndex: input.sceneIndex,
-      sceneTitle: `B-roll scene ${input.sceneIndex + 1}`,
-      style: input.heroStyle,
-    });
+    generated = existingImageJob?.status === "completed"
+      && existingImageJob.chargeState === "settled"
+      && existingImageJob.outputUrl
+      ? {
+          jobId: existingImageJob.id,
+          outputUrl: existingImageJob.outputUrl,
+          creditCost: existingImageJob.creditCost,
+          fundingSource: existingImageJob.fundingSource,
+          allowanceUnits: existingImageJob.allowanceUnits,
+        }
+      : await generateHeroImageForVideo({
+          userId: user.id,
+          plan: user.plan,
+          prompt: `Scene reroll ${input.sceneIndex + 1}`,
+          idempotencyKey: input.idempotencyKey,
+          videoJobId: input.videoJobId,
+          sceneIndex: input.sceneIndex,
+          sceneTitle: `B-roll scene ${input.sceneIndex + 1}`,
+          brandVisualPrompt,
+          deferVisualBeatLink: true,
+          ...(acceptance ? { brandVisualAcceptance: acceptance } : {}),
+        });
     await copyOwnedHeroImage(generated.outputUrl, tmpImagePath);
     await applyKenBurns(tmpImagePath, outPath, input.kenBurnsDurationSec);
     if (!isValidMp4Path(outPath)) throw new Error("Hero Ken Burns produced no usable output");
     try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+    await recordVisualBeatAsset({
+      userId: user.id,
+      beatId: brandVisualPrompt.visualBeatId,
+      outputUrl: generated.outputUrl,
+      imageJobId: generated.jobId,
+      identityKey: brandVisualPrompt.identityKey,
+    });
 
-    const balanceAfter = (await getBalance(user.id)).total;
+    const [balance, allowanceStatus] = await Promise.all([
+      getBalance(user.id),
+      getStarterAiImageAllowanceStatus(user.id),
+    ]);
+    if (!existingImageJob) {
+      await recordTelemetryEvent(user.id, {
+        name: "brand_look_scene_rerolled",
+        category: "product",
+        source: "server",
+        step: "scene_reroll",
+        status: "succeeded",
+        value: 1,
+        properties: {
+          surface: "post-phase",
+          videoJobId: input.videoJobId,
+          sceneIndex: input.sceneIndex,
+          aiGenerationJobId: generated.jobId,
+          visualFormatId: brandVisualPrompt.compiled.visualFormatId,
+          brandVisualIdentityKey: brandVisualPrompt.identityKey,
+          brandLookIdentityKey: brandVisualPrompt.lookIdentityKey,
+          cohort: acceptance?.cohort ?? null,
+          fundingSource: generated.fundingSource,
+        },
+      }).catch((error) => {
+        console.error("[broll-window/generate] telemetry failed:", error);
+      });
+    }
     return NextResponse.json({
       src: `/api/stocks/${outFile}`,
       clipDuration: input.kenBurnsDurationSec,
+      imageJobId: generated.jobId,
+      imageOutputUrl: generated.outputUrl,
       creditsSpent: generated.fundingSource === "credits" ? generated.creditCost : 0,
       quotedCreditCost: generated.creditCost,
       fundingSource: generated.fundingSource,
       allowanceUsed: generated.allowanceUnits,
-      balanceAfter,
-      provider: generated.provider,
-      model: generated.providerModel,
+      allowanceRemaining: allowanceStatus.eligible ? allowanceStatus.remainingImages : null,
+      allowanceLimit: allowanceStatus.eligible ? allowanceStatus.limitImages : null,
+      balanceAfter: balance.total,
+      replayed: Boolean(existingImageJob),
     });
   } catch (error) {
     safeUnlink(outPath);
@@ -171,7 +295,7 @@ export async function POST(req: Request) {
     // The durable Hero service refunds provider failures itself. If RunPod
     // succeeded but the customer-facing clip failed locally, compensate that
     // exact settled image so the user never pays for an unusable B-roll asset.
-    if (generated) {
+    if (generated && !existingImageJob) {
       try {
         await refundSettledVideoImageJob({
           userId: user.id,
@@ -182,6 +306,18 @@ export async function POST(req: Request) {
         refundPending = true;
         console.error("[broll-window/generate] Hero output refund failed:", refundError);
       }
+    }
+
+    if (generated && existingImageJob) {
+      return NextResponse.json(
+        {
+          error: "reroll_derivative_failed",
+          retryable: true,
+          retrySameRequest: true,
+          message: "เตรียมภาพสำหรับวิดีโอยังไม่สำเร็จ กรุณาลองคำขอเดิมอีกครั้ง",
+        },
+        { status: 503 },
+      );
     }
 
     console.error("[broll-window/generate] Hero generation failed:", error);
@@ -197,6 +333,13 @@ export async function POST(req: Request) {
       );
     }
     if (error instanceof HeroImageGenerationError) {
+      const durable = await prisma.aiGenerationJob.findFirst({
+        where: { userId: user.id, idempotencyKey: input.idempotencyKey },
+        select: { status: true, chargeState: true },
+      });
+      const retrySameRequest = Boolean(
+        durable && durable.status !== "failed" && durable.chargeState !== "refunded",
+      );
       if (error.code === "ALLOWANCE_EXHAUSTED") {
         return NextResponse.json(
           {
@@ -225,6 +368,7 @@ export async function POST(req: Request) {
         {
           error: error.code.toLowerCase(),
           retryable: error.providerFailure?.retryable ?? error.code !== "NOT_CONFIGURED",
+          ...(retrySameRequest ? { retrySameRequest: true } : {}),
           message: error.message || "Hero AI Image ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง",
         },
         { status: error.status },

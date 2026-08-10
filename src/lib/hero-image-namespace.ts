@@ -42,7 +42,7 @@ export type HeroVideoMintDenialReason =
   | "video_terminal";
 
 export type HeroVideoMintDecision =
-  | { ok: true }
+  | { ok: true; brandVisualAcceptanceJson?: string | null }
   | { ok: false; reason: HeroVideoMintDenialReason };
 
 /**
@@ -77,13 +77,16 @@ export async function authorizeHeroVideoMint(input: {
   if (!input.fromRenderPipeline) return { ok: false, reason: "pipeline_only" };
   const videoJob = await prisma.videoJob.findUnique({
     where: { id: input.videoJobId },
-    select: { userId: true, status: true },
+    select: { userId: true, status: true, brandVisualAcceptanceJson: true },
   });
-  return decideHeroVideoMint({
+  const decision = decideHeroVideoMint({
     fromRenderPipeline: input.fromRenderPipeline,
     userId: input.userId,
     videoJob,
   });
+  return decision.ok
+    ? { ...decision, brandVisualAcceptanceJson: videoJob?.brandVisualAcceptanceJson ?? null }
+    : decision;
 }
 
 /** One literal per denial so every entry point answers with identical copy/status. */

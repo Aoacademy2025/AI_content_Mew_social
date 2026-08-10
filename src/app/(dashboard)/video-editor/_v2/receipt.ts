@@ -13,7 +13,12 @@
  */
 
 import { minutesFromSeconds } from "@/lib/minute-round";
-import { disclosedAutoMixAiImageCount, estimatePresetCredits } from "./estimate";
+import {
+  disclosedAutoMixAiImageCount,
+  disclosedAutoMixAiSlotIndices,
+  estimatePresetCredits,
+  reusableAutoMixAiSlotCount,
+} from "./estimate";
 
 export interface ReceiptInput {
   /** Estimated clip length in seconds (estimateClipSecV2(script)). */
@@ -44,6 +49,13 @@ export interface ReceiptInput {
   /** Activation-only image entitlement. When present, image generation spends
    * these units instead of Hero credits; render-overflow credits stay separate. */
   starterImageAllowance?: { remaining: number; limit: number } | null;
+  /** Identity-validated delivered Visual Beats for the exact current
+   * Content Preflight. Only indices intersecting planned AI slots are free. */
+  reusableAiSceneIndices?: readonly number[];
+  /** The exact preflight already delivered a reduced-density Starter clip.
+   * At zero remaining allowance, missing slots are intentional and must not
+   * be quoted as new work on an unchanged rerender. */
+  preserveEstablishedAiDensity?: boolean;
 }
 
 export type ReceiptLineKind = "info" | "success" | "warn";
@@ -64,6 +76,9 @@ export interface ReceiptModel {
   overflowCredits: number;
   /** Hero credits estimated for this job: AI images + a credit-funded render. */
   totalEstimatedCredits: number;
+  estimatedAiImages: number;
+  billableAiImages: number;
+  reusableAiImages: number;
   lines: ReceiptLine[];
 }
 
@@ -77,6 +92,7 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     estSec, remainingMinutes, totalMinutes, usesAi, presetWeights,
     perImageCredits, creditBalance, reservedCredits = 0, minuteCreditRate, hasAvatar, exactDuration = false,
     insufficientCreditBehavior = "stock-fallback", targetClipCount = 0, starterImageAllowance = null,
+    reusableAiSceneIndices = [], preserveEstablishedAiDensity = false,
   } = input;
 
   const estMinutes = minutesFromSeconds(estSec);
@@ -93,10 +109,25 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
       ? manualAiImageCount
       : Math.round(estimatePresetCredits(estSec, presetWeights, perImageCredits) / perImageCredits)
     : 0;
-  const admittedStarterImages = starterImageAllowance
-    ? Math.min(estimatedAiImages, Math.max(0, starterImageAllowance.remaining))
+  const plannedAiSlotIndices = usesAi
+    ? disclosedAutoMixAiSlotIndices(estSec, presetWeights, targetClipCount)
+    : [];
+  const reusableAiImages = usesAi
+    ? reusableAutoMixAiSlotCount(plannedAiSlotIndices, reusableAiSceneIndices)
     : 0;
-  const estCredits = usesAi && !starterImageAllowance ? estimatedAiImages * perImageCredits : 0;
+  const preservesStarterDensity = Boolean(
+    starterImageAllowance
+    && starterImageAllowance.remaining === 0
+    && preserveEstablishedAiDensity
+    && reusableAiImages > 0,
+  );
+  const billableAiImages = preservesStarterDensity
+    ? 0
+    : Math.max(0, estimatedAiImages - reusableAiImages);
+  const admittedStarterImages = starterImageAllowance
+    ? Math.min(billableAiImages, Math.max(0, starterImageAllowance.remaining))
+    : 0;
+  const estCredits = usesAi && !starterImageAllowance ? billableAiImages * perImageCredits : 0;
 
   const haveMinuteQuota = remainingMinutes != null && totalMinutes != null;
   // M — only meaningful when we know the remaining package minutes.
@@ -130,16 +161,20 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
       key: "ai",
       kind: "info",
       text: starterImageAllowance
-        ? starterImageAllowance.remaining === 0
+        ? billableAiImages === 0
+          ? preservesStarterDensity
+            ? `ภาพ AI: ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ และรักษาความถี่ภาพเดิมของคลิปนี้`
+            : `ภาพ AI: ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดสิทธิ์หรือเครดิตซ้ำ`
+          : starterImageAllowance.remaining === 0
           ? "สิทธิ์ทดลองภาพ AI เหลือ 0 ภาพ — ระบบจะไม่เริ่มเจนและจะไม่เปลี่ยนเป็น Stock เอง"
-          : estimatedAiImages > admittedStarterImages
-            ? `ภาพ AI: ใช้สิทธิ์ทดลอง ${admittedStarterImages} ภาพจากที่แผนเดิมต้องใช้ ${estimatedAiImages} ภาพ · ระบบกระจายภาพให้ครอบคลุมคลิปและลดความถี่การเปลี่ยนภาพ`
-            : `ภาพ AI: ใช้สิทธิ์ทดลอง ${admittedStarterImages} ภาพ · หลังเริ่มงานจะเหลือ ${starterImageAllowance.remaining - admittedStarterImages} จาก ${starterImageAllowance.limit} ภาพ`
+          : billableAiImages > admittedStarterImages
+            ? `ภาพ AI: ใช้สิทธิ์ทดลอง ${admittedStarterImages} ภาพจาก ${billableAiImages} ฉากที่ต้องสร้าง${reusableAiImages ? ` · ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ` : ""} · ระบบกระจายภาพให้ครอบคลุมคลิปและลดความถี่การเปลี่ยนภาพ`
+            : `ภาพ AI: ใช้สิทธิ์ทดลอง ${admittedStarterImages} ภาพ${reusableAiImages ? ` · ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ` : ""} · หลังเริ่มงานจะเหลือ ${starterImageAllowance.remaining - admittedStarterImages} จาก ${starterImageAllowance.limit} ภาพ`
         : manualAiImageCount != null
-        ? `ภาพ AI: ${estCredits} เครดิต (${manualAiImageCount} ภาพ × ${perImageCredits} เครดิต) · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`
-        : `ภาพ AI (ประมาณ): ~${estCredits} เครดิต · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`,
+        ? `ภาพ AI: ${estCredits} เครดิต (${billableAiImages} ภาพ × ${perImageCredits} เครดิต)${reusableAiImages ? ` · ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ` : ""} · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`
+        : `ภาพ AI (ประมาณ): ~${estCredits} เครดิต${reusableAiImages ? ` · ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ` : ""} · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`,
     });
-    if (starterImageAllowance?.remaining === 0) {
+    if (starterImageAllowance?.remaining === 0 && billableAiImages > 0) {
       lines.push({
         key: "allowance-insufficient",
         kind: "warn",
@@ -203,5 +238,15 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
       : "ตัวเลขเป็นประมาณการ — จำนวนภาพและยอดเรนเดอร์จริงคำนวณหลังสร้างเสียง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ",
   });
 
-  return { estMinutes, estCredits, overflowMinutes, overflowCredits, totalEstimatedCredits, lines };
+  return {
+    estMinutes,
+    estCredits,
+    overflowMinutes,
+    overflowCredits,
+    totalEstimatedCredits,
+    estimatedAiImages,
+    billableAiImages,
+    reusableAiImages,
+    lines,
+  };
 }

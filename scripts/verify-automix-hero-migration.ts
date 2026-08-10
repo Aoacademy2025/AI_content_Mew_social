@@ -85,7 +85,12 @@ async function main() {
 
   // ── 1. Planner ↔ estimate parity (no credit-quote drift) ──────────────────
   console.log("\n[1] AutoMix planner ↔ Render Receipt estimate");
-  const { planAutoMixSources, clampAutoMixAiSlots } = await import("../src/lib/automix-plan");
+  const {
+    planAutoMixSources,
+    clampAutoMixAiSlots,
+    distributeAutoMixAiSlots,
+    parseAutoMixReceiptImageCeiling,
+  } = await import("../src/lib/automix-plan");
   const { HERO_AI_IMAGE_CREDITS } = await import("../src/lib/credit-costs");
   const { disclosedAutoMixAiImageCount, estimateAutoMixAiImageCount, estimatePresetCredits } = await import(
     "../src/app/(dashboard)/video-editor/_v2/estimate"
@@ -98,6 +103,13 @@ async function main() {
     planAutoMixSources(pieces, weights).filter((source) => source === "ai").length;
 
   check("HERO_AI_IMAGE_CREDITS === 2", (HERO_AI_IMAGE_CREDITS as number) === 2);
+  check(
+    "the public AutoMix receipt ceiling accepts only exact integer image counts",
+    parseAutoMixReceiptImageCeiling(0) === 0
+      && parseAutoMixReceiptImageCeiling(60) === 60
+      && [undefined, null, "3", -1, 1.5, 61, Number.NaN]
+        .every((value) => parseAutoMixReceiptImageCeiling(value) === null),
+  );
   check(
     "planAutoMixSources(15, 3:2:1) yields exactly 3 ai slots",
     plannerAi(15, recommended) === 3,
@@ -203,6 +215,13 @@ async function main() {
     "clampAutoMixAiSlots(…, 0) demotes every paid slot",
     clampAutoMixAiSlots(serverAiSlots, 0).kept.length === 0
       && clampAutoMixAiSlots(serverAiSlots, 0).demoted.length === 15,
+  );
+  const distributed = distributeAutoMixAiSlots([0, 2, 4, 6, 8], 2);
+  check(
+    "allowance density keeps new AI work distributed across the timeline",
+    JSON.stringify(distributed.kept) === JSON.stringify([2, 6])
+      && JSON.stringify(distributed.demoted) === JSON.stringify([0, 4, 8]),
+    JSON.stringify(distributed),
   );
 
   // ── 2. RunPod stub: every provider call is intercepted ────────────────────
@@ -401,7 +420,10 @@ async function main() {
       await generateHeroImageForVideo({
         userId: user.id,
         plan: "PRO",
-        prompt: parsed.value.prompt,
+        // The browser contract intentionally strips raw prompts in Brand
+        // Visual V1. This lower-level funding regression supplies a trusted
+        // server-side prompt directly.
+        prompt: "thai coffee shop in morning light",
         idempotencyKey: parsed.value.idempotencyKey,
         videoJobId: parsed.value.videoJobId,
         sceneIndex: parsed.value.sceneIndex,
@@ -612,15 +634,37 @@ async function main() {
     costGuardWrapped && fetchStock.includes("heroAutoMixCostGuardError"),
   );
   check(
-    "the disclosed AI-image ceiling is enforced server-side via the shared clamp",
-    /maxAiImages !== null && autoMixAiSlots\.size > maxAiImages/.test(fetchStock)
-      && fetchStock.includes("clampAutoMixAiSlots(autoMixAiSlots, keep)")
-      && /const maxAiImages: number \| null =/.test(fetchStock),
+    "the disclosed AI-image ceiling is enforced after zero-cost reusable assets are removed",
+    /maxAiImages !== null && aiSlotsNeedingGeneration\(\)\.length > maxAiImages/.test(fetchStock)
+      && fetchStock.includes("distributeAutoMixAiSlots(candidates, keep)")
+      && fetchStock.includes('demoteGeneratedAiSlotsTo(maxAiImages, "omit")')
+      && fetchStock.includes("const maxAiImages = parseAutoMixReceiptImageCeiling(maxAiImagesRaw)"),
+  );
+  check(
+    "Starter allowance shortfall reduces AI density instead of adding hidden Stock slots",
+    fetchStock.includes('const densityReduction = degradeReason === "starter_allowance_density"')
+      && fetchStock.includes('densityReduction ? "omit" : "photo"')
+      && /if \(replacement === "photo"\) autoMixPhotoSlots\.add\(sceneIndex\)/.test(fetchStock),
   );
   check(
     "a provider-side degrade tells the client 'provider', not 'credits'",
     /aiSkippedReason = "provider"/.test(fetchStock)
       && fetchStock.includes('degradeReason === "provider_circuit_open" || degradeReason === "provider_cost_guard"'),
+  );
+  check(
+    "public Hero failures expose product-level codes while raw provider codes stay telemetry-only",
+    fetchStock.includes('code: "HERO_IMAGE_COST_GUARD"')
+      && !fetchStock.includes('code: "RUNPOD_COST_GUARD"')
+      && fetchStock.includes("const publicFailureCode =")
+      && fetchStock.includes("code: publicFailureCode,"),
+  );
+  check(
+    "public AutoMix fails closed when the Render Receipt ceiling is missing or malformed",
+    videoJobs.includes("parseAutoMixReceiptImageCeiling(body.maxAiImages)")
+      && videoJobs.includes('error: "render_receipt_required"')
+      && videoJobs.includes("autoMixRequestsAi && !isAdmin && maxAiImages === null")
+      && fetchStock.includes("download && !isAdmin && maxAiImages === null")
+      && fetchStock.includes('error: "render_receipt_required"'),
   );
 
   // Output-file namespaces: AutoMix hero slots must not share hero-only mode's id space.

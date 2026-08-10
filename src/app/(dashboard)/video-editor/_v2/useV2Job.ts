@@ -7,7 +7,11 @@ import { isProviderErrorCode, type ProviderErrorCode } from "@/lib/provider-erro
 import type { HeygenProviderAction } from "@/lib/heygen-readiness";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { PRESET_WEIGHTS } from "./mix-presets";
-import { disclosedAutoMixAiImageCount, estimateClipSecV2 } from "./estimate";
+import {
+  disclosedAutoMixAiSlotIndices,
+  estimateClipSecV2,
+  reusableAutoMixAiSlotCount,
+} from "./estimate";
 import { mediaStateFromJobPoll, previewMediaStateAfterVideoError } from "./ExpiredPreviewView";
 import {
   fingerprintVideoJobRequest,
@@ -68,6 +72,7 @@ export interface V2JobState {
   jobId: string | null;
   jobType: string | null;
   projectId: string | null;
+  contentPreflightId?: string | null;
   currentStep: string | null;
   progress: number;
   queuePosition: number | null;
@@ -169,7 +174,7 @@ export function useV2Job(p: V2Project) {
   }, []);
 
   const applyStatus = useCallback((d: {
-    id: string; projectId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
+    id: string; projectId?: string | null; contentPreflightId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
     queuePosition?: number | null;
     errorMessage: string | null; errorCode?: string | null; errorProvider?: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
     idempotencyKey?: string | null; idempotencyFingerprint?: string | null;
@@ -187,7 +192,7 @@ export function useV2Job(p: V2Project) {
     if (d.status === "done") {
       stopPolling();
       setJob({
-        phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null,
+        phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null,
         currentStep: d.currentStep, progress: 100, queuePosition: null, errorMessage: null, errorCode: null, errorProvider: null, output: d.output ?? null,
         // A fresh job poll is authoritative. Project detail is only a compatibility
         // fallback for a rolling deploy where the poll response lacks mediaState.
@@ -195,9 +200,9 @@ export function useV2Job(p: V2Project) {
       });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: null, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
+      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: null, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
     } else {
-      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
+      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
     }
   }, [stopPolling]);
 
@@ -312,8 +317,8 @@ export function useV2Job(p: V2Project) {
     if (existingAttempt?.promise) return existingAttempt.promise;
     if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
     const idempotencyKey = existingAttempt?.idempotencyKey ?? createSubmitIdempotencyKey("create");
-    // Disclose-then-charge: send the EXACT AutoMix AI-image count the Render Receipt
-    // showed as a hard server-side ceiling. The server plans with the source families
+    // Disclose-then-charge: send the EXACT affected/new AutoMix AI-image count the
+    // Render Receipt showed as a hard server-side ceiling. The server plans with the source families
     // it can actually serve, which can raise the AI share above the quoted one — the
     // ceiling keeps the charge inside the number the user approved. Mirrors
     // RenderReceiptDialog's inputs exactly (same weights, same duration estimate).
@@ -321,9 +326,39 @@ export function useV2Job(p: V2Project) {
     const receiptEstSec = p.mode === "upload" && p.clipDurationSec > 0
       ? p.clipDurationSec
       : estimateClipSecV2(p.mode === "upload" ? "" : p.script);
-    const maxAiImages = p.brollSource === "automix"
-      ? disclosedAutoMixAiImageCount(receiptEstSec, receiptWeights, p.targetClipCount)
+    const disclosedAiSlots = p.brollSource === "automix"
+      ? disclosedAutoMixAiSlotIndices(receiptEstSec, receiptWeights, p.targetClipCount)
       : null;
+    let reusableAiImages = 0;
+    if (
+      !existingAttempt
+      && disclosedAiSlots !== null
+      && (p.brandVisualAllowed || p.hasPersistedVisualPin)
+      && p.projectId
+      && p.brandContentPreflightId
+    ) {
+      try {
+        const response = await authenticatedFetch(
+          `/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context?preflightId=${encodeURIComponent(p.brandContentPreflightId)}`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) {
+          return { ok: false, message: "ยืนยันจำนวนฉากที่ต้องสร้างใหม่ไม่สำเร็จ กรุณาลองอีกครั้ง" };
+        }
+        const visual = await response.json() as {
+          reusableAiSceneIndices?: number[];
+        };
+        reusableAiImages = reusableAutoMixAiSlotCount(
+          disclosedAiSlots,
+          Array.isArray(visual.reusableAiSceneIndices) ? visual.reusableAiSceneIndices : [],
+        );
+      } catch {
+        return { ok: false, message: "ยืนยันจำนวนฉากที่ต้องสร้างใหม่ไม่สำเร็จ กรุณาลองอีกครั้ง" };
+      }
+    }
+    const maxAiImages = disclosedAiSlots === null
+      ? null
+      : Math.max(0, disclosedAiSlots.length - reusableAiImages);
     const bgmInput = buildBgmSelectionInput(p.musicTrack, p.musicTrackKind, p.bgmVolume);
     // โหมดอัปคลิปเอง (cutaway): เสียงพูดมาจากคลิป ส่วนเพลงใช้ตัวเลือกเดียวกับโหมดสคริปต์
     const body: Record<string, unknown> = existingAttempt?.body ?? (p.mode === "upload" ? {
@@ -349,6 +384,10 @@ export function useV2Job(p: V2Project) {
     } : {
       idempotencyKey,
       ...(p.projectId ? { projectId: p.projectId } : {}),
+      ...((p.brandVisualAllowed || p.hasPersistedVisualPin) && p.brandContentPreflightId ? {
+        contentPreflightId: p.brandContentPreflightId,
+        narrativeSourceKind: p.narrativeSourceKind,
+      } : {}),
       script: p.script,
       voiceProvider: p.voiceEngine,
       ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
@@ -556,12 +595,18 @@ export function useV2Job(p: V2Project) {
    *  reads job.jobId as sourceJobId). The caller already holds the finished output and swapped
    *  the video/config in place, so this stays phase "done" without re-polling and does NOT
    *  touch caption/subtitle state. projectId is unchanged (the new job inherited the source's). */
-  const adoptJob = useCallback((next: { id: string; projectId?: string | null }) => {
+  const adoptJob = useCallback((next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => {
     stopPolling();
     jobIdRef.current = next.id;
     lastPreviewJobIdRef.current = next.id;
     try { browserStorage()?.setItem(storageKey(next.projectId ?? p.projectId), next.id); } catch {}
-    setJob((j) => ({ ...j, jobId: next.id, jobType: j.jobType ?? "create", projectId: next.projectId ?? j.projectId }));
+    setJob((j) => ({
+      ...j,
+      jobId: next.id,
+      jobType: j.jobType ?? "create",
+      projectId: next.projectId ?? j.projectId,
+      contentPreflightId: next.contentPreflightId ?? j.contentPreflightId ?? null,
+    }));
   }, [p.projectId, stopPolling]);
 
   const resumeJob = useCallback((jobId: string) => {

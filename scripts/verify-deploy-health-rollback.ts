@@ -6,6 +6,13 @@ const deploy = readFileSync("deploy/deploy.sh", "utf8");
 const syntax = spawnSync("bash", ["-n", "deploy/deploy.sh"], { encoding: "utf8" });
 
 assert.equal(syntax.status, 0, syntax.stderr || "deploy script must be valid bash");
+const trackedDirtyGuard = deploy.indexOf("git diff --quiet --ignore-submodules --");
+const stagedDirtyGuard = deploy.indexOf("git diff --cached --quiet --ignore-submodules --");
+const firstFetch = deploy.indexOf("git fetch --all --prune");
+assert.ok(
+  trackedDirtyGuard >= 0 && stagedDirtyGuard >= 0 && firstFetch > stagedDirtyGuard,
+  "deploy must abort on staged or unstaged tracked production changes before fetch/checkout/pull",
+);
 assert.match(deploy, /DEPLOY_HEALTH_URL="\$\{DEPLOY_HEALTH_URL:-http:\/\/127\.0\.0\.1:3000\/api\/health\}"/);
 assert.match(deploy, /DEPLOY_HEALTH_TIMEOUT_SEC="\$\{DEPLOY_HEALTH_TIMEOUT_SEC:-90\}"/);
 assert.match(deploy, /wait_for_web_health\(\)/, "deploy defines a bounded health probe");

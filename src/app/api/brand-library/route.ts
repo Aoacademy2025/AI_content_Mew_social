@@ -5,16 +5,19 @@ import {
   BrandProfileLibraryError,
   brandProfilePayloadSchema,
   createBrandProfileFromPayload,
+  getBrandProfileAvailabilityState,
 } from "@/lib/brand-profile-library.server";
 import {
   VISUAL_FORMATS,
+  brandLookIdentityKey,
   brandVisualIdentityKey,
   type BrandVisualLanguage,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
-import { limitsForPlan } from "@/lib/plan-limits";
+import { currentBrandVoiceDefaults } from "@/lib/brand-profile-seed";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 
 function json(value: string | null | undefined) {
   if (!value) return null;
@@ -38,9 +41,10 @@ export async function GET() {
   try {
     const auth = await requireBrandVisualUser();
     if (!auth.ok) return auth.response;
-    const [profiles, brandPreference, subtitlePreset, writingStyle] = await Promise.all([
+    const availability = await getBrandProfileAvailabilityState({ userId: auth.user.id });
+    const [profiles, brandPreference, subtitlePresets, writingStyle, brandAssets, starterAllowance] = await Promise.all([
       prisma.brandProfile.findMany({
-        where: { userId: auth.user.id },
+        where: { userId: auth.user.id, activeRevisionNumber: { gt: 0 } },
         orderBy: [{ frozenAt: "asc" }, { lastUsedAt: "desc" }, { updatedAt: "desc" }],
         include: {
           draft: true,
@@ -51,7 +55,7 @@ export async function GET() {
         where: { userId: auth.user.id },
         include: { defaultAsset: { select: { id: true, originalName: true } } },
       }),
-      prisma.editorStylePreset.findFirst({
+      prisma.editorStylePreset.findMany({
         where: { userId: auth.user.id, kind: "subtitle" },
         orderBy: { updatedAt: "desc" },
       }),
@@ -59,12 +63,16 @@ export async function GET() {
         where: { userId: auth.user.id },
         orderBy: { updatedAt: "desc" },
       }),
+      prisma.brandAsset.findMany({
+        where: { userId: auth.user.id, retiredAt: null },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true, originalName: true },
+      }),
+      getStarterAiImageAllowanceStatus(auth.user.id),
     ]);
-    const cap = limitsForPlan(auth.user.plan).brandProfiles;
-    const availableProfileCount = profiles.filter((profile) => !profile.frozenAt).length;
-    const availabilitySelectionRequired = Number.isFinite(cap)
-      && profiles.length > cap
-      && availableProfileCount > cap;
+    const subtitlePreset = subtitlePresets[0];
+    const cap = availability.cap;
+    const availabilitySelectionRequired = availability.selectionRequired;
     return NextResponse.json({
       profiles: profiles.map((profile) => ({
         id: profile.id,
@@ -78,7 +86,8 @@ export async function GET() {
         analysisNotes: profile.analysisNotes,
         sampleText: profile.sampleText,
         activeRevisionNumber: profile.activeRevisionNumber,
-        frozen: Boolean(profile.frozenAt),
+        activeRevisionId: profile.revisions[0]?.id ?? null,
+        frozen: availabilitySelectionRequired || availability.frozenProfileIds.includes(profile.id),
         frozenAt: profile.frozenAt,
         lastUsedAt: profile.lastUsedAt,
         updatedAt: profile.updatedAt,
@@ -97,15 +106,20 @@ export async function GET() {
         })),
       })),
       cap: Number.isFinite(cap) ? cap : null,
-      canCreate: !Number.isFinite(cap) || profiles.length < cap,
+      canCreate: !starterAllowance.eligible && (!Number.isFinite(cap) || profiles.length < cap),
+      creationRequiresResult: starterAllowance.eligible,
       availabilitySelectionRequired,
-      canRestoreAll: Number.isFinite(cap)
-        && profiles.length <= cap
-        && profiles.some((profile) => Boolean(profile.frozenAt)),
+      canRestoreAll: false,
       visualFormats: VISUAL_FORMATS.map((format) => ({
         ...format,
         previewUrl: `/brand-visual-formats/${format.id}.webp`,
       })),
+      subtitlePresets: subtitlePresets.map((preset) => ({
+        id: preset.id,
+        name: preset.name,
+        config: json(preset.configJson) ?? {},
+      })),
+      brandAssets: brandAssets.map((asset) => ({ id: asset.id, name: asset.originalName })),
       defaults: {
         script: {
           styleId: writingStyle?.id ?? null,
@@ -113,12 +127,7 @@ export async function GET() {
           analysisNotes: writingStyle?.instructionPrompt.slice(0, 4_000) ?? null,
           sampleText: writingStyle?.sampleText?.slice(0, 4_000) ?? null,
         },
-        voice: {
-          provider: auth.user.ttsProvider || "elevenlabs",
-          voiceId: auth.user.ttsProvider === "gemini"
-            ? auth.user.geminiVoiceName || null
-            : auth.user.elevenlabsVoiceId || null,
-        },
+        voice: currentBrandVoiceDefaults(auth.user),
         subtitle: {
           presetId: subtitlePreset?.id ?? null,
           config: json(subtitlePreset?.configJson) ?? {},
@@ -143,6 +152,13 @@ export async function POST(req: Request) {
   try {
     const auth = await requireBrandVisualUser();
     if (!auth.ok) return auth.response;
+    const starterAllowance = await getStarterAiImageAllowanceStatus(auth.user.id);
+    if (starterAllowance.eligible) {
+      return NextResponse.json({
+        code: "RESULT_REQUIRED",
+        error: "สร้างคลิปให้เสร็จก่อน แล้วบันทึกแนวภาพจากผลงานจริงเป็นแบรนด์",
+      }, { status: 409 });
+    }
     const body = await req.json().catch(() => null);
     const parsed = brandProfilePayloadSchema.safeParse(body?.payload ?? body);
     if (!parsed.success) {
@@ -173,6 +189,12 @@ export async function POST(req: Request) {
         cohort: auth.access.cohort,
         visualFormatId: parsed.data.visual.primaryVisualFormatId,
         brandVisualIdentityKey: brandVisualIdentityKey({
+          visualFormatId: visualRecipe.visualFormatId,
+          recipeVersion: visualRecipe.recipeVersion,
+          treatment: visualRecipe.defaultTreatment,
+          brandVisualLanguage: visualRecipe.brandVisualLanguage ?? null,
+        }),
+        brandLookIdentityKey: brandLookIdentityKey({
           visualFormatId: visualRecipe.visualFormatId,
           recipeVersion: visualRecipe.recipeVersion,
           treatment: visualRecipe.defaultTreatment,

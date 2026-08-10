@@ -1671,6 +1671,7 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/avatar-preset") return { getAvatarPreset: async () => null, resolveAvatarLayout: () => null };
     if (specifier === "@/lib/kie-image-guards") return { resolveKieImageAccess: () => ({ kiePaidUnlocked: false }) };
     if (specifier === "@/lib/automix-weights") return { parseAutoMixWeights: () => null };
+    if (specifier === "@/lib/automix-plan") return automixPlanModule;
     if (specifier === "@/lib/broll-preferences") {
       return { normalizeBrollRegionPreference: () => null, normalizeBrollVisualStyle: () => null };
     }
@@ -1885,6 +1886,7 @@ async function runExactReplayRouteScenario(input: {
     }
     if (specifier === "@/lib/kie-image-guards") return { resolveKieImageAccess: () => ({ kiePaidUnlocked: false }) };
     if (specifier === "@/lib/automix-weights") return { parseAutoMixWeights: () => null };
+    if (specifier === "@/lib/automix-plan") return automixPlanModule;
     if (specifier === "@/lib/broll-preferences") {
       return { normalizeBrollRegionPreference: () => null, normalizeBrollVisualStyle: () => null };
     }
@@ -1928,6 +1930,7 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/internal-ai-access") {
       return {
         isHeroAiBetaUser: () => false,
+        isHeroAiImageEligible: () => true,
         isInternalAiBetaEnabledFor: () => false,
         isInternalAiTester: () => false,
       };
@@ -1940,6 +1943,43 @@ async function runExactReplayRouteScenario(input: {
       return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
     if (specifier === "@/lib/headline-hook") return headlineHookModule;
+    if (specifier === "@/lib/brand-visual-rollout.server") {
+      return { decideBrandVisualAccess: async () => ({ allowed: false, reason: "disabled" }) };
+    }
+    if (specifier === "@/lib/brand-visual-job-acceptance.server") {
+      return {
+        resolveBrandVisualRenderAccess: ({
+          requestsBrandVisualImage,
+          hasPersistedProjectPin,
+          liveAccess,
+        }: {
+          requestsBrandVisualImage: boolean;
+          hasPersistedProjectPin: boolean;
+          liveAccess: { canUse?: boolean };
+        }) => requestsBrandVisualImage && (liveAccess.canUse || hasPersistedProjectPin)
+          ? liveAccess.canUse
+            ? liveAccess
+            : { canUse: true, cohort: "existing-pin", bucket: null }
+          : null,
+        prepareBrandVisualJobAcceptance: async () => {
+          touchMutable("brand-visual-job-acceptance");
+          return null;
+        },
+      };
+    }
+    if (specifier === "@/lib/project-look.server") {
+      return {
+        projectHasPersistedVisualPin: async () => false,
+        prepareProjectVisualPin: async () => {
+          touchMutable("project-visual-pin");
+          return null;
+        },
+        ProjectLookError: class ProjectLookError extends Error {},
+      };
+    }
+    if (specifier === "@/lib/content-preflight.server") {
+      return { contentPreflightSourceHash: (kind: string, script: string) => `${kind}:${script}` };
+    }
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));
@@ -2139,6 +2179,45 @@ export async function exactReplayIdentityPrecedesMutableGates(): Promise<void> {
     userId: "route-user",
     idempotencyKey: { startsWith: legacyVideoJobKeyPrefix(legacyFingerprint) },
   }], "the attempt scan is scoped to the authenticated user and this fingerprint only");
+
+  const missingAutoMixReceipt = await runExactReplayRouteScenario({
+    body: {
+      script: "public AutoMix must approve a receipt",
+      voiceProvider: "gemini",
+      stockSource: "auto-mix",
+      autoMixWeights: { video: 3, photo: 2, ai: 1 },
+    },
+  });
+  assert.equal(missingAutoMixReceipt.response.status, 400,
+    "public AutoMix cannot mint an unlimited AI-image budget by omitting Render Receipt");
+  assert.equal(missingAutoMixReceipt.responseBody.error, "render_receipt_required");
+  assert.equal(missingAutoMixReceipt.createCalls.length, 0);
+
+  const fractionalAutoMixReceipt = await runExactReplayRouteScenario({
+    body: {
+      script: "fractional ceiling is not an approved receipt",
+      voiceProvider: "gemini",
+      stockSource: "auto-mix",
+      autoMixWeights: { video: 3, photo: 2, ai: 1 },
+      maxAiImages: 1.5,
+    },
+  });
+  assert.equal(fractionalAutoMixReceipt.response.status, 400,
+    "a malformed public AutoMix ceiling fails closed instead of being rounded or ignored");
+  assert.equal(fractionalAutoMixReceipt.createCalls.length, 0);
+
+  const zeroAutoMixReceipt = await runExactReplayRouteScenario({
+    body: {
+      script: "zero new images is a valid receipt",
+      voiceProvider: "gemini",
+      stockSource: "auto-mix",
+      autoMixWeights: { video: 3, photo: 2, ai: 1 },
+      maxAiImages: 0,
+    },
+  });
+  assert.equal(zeroAutoMixReceipt.response.status, 200,
+    "an explicit zero-image receipt remains valid for retained/reduced-density AutoMix");
+  assert.equal(zeroAutoMixReceipt.createCalls.length, 1);
 
   const otherLegacyBody = { ...legacyBody, script: "a different stale request" };
   const otherLegacyCreate = await runExactReplayRouteScenario({ body: otherLegacyBody });

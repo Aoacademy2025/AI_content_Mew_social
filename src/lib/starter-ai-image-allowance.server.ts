@@ -25,25 +25,31 @@ function anchoredWindowStart(origin: Date, now: Date): Date {
   return new Date(origin.getTime() + Math.floor(elapsed / WINDOW_MS) * WINDOW_MS);
 }
 
-async function eligibility(tx: DbClient, userId: string) {
+async function eligibility(tx: DbClient, userId: string, now: Date) {
   const user = await tx.user.findUnique({
     where: { id: userId },
     select: {
       createdAt: true,
       trialStartedAt: true,
+      trialEndsAt: true,
+      plan: true,
       subStatus: true,
       payments: {
-        where: { status: "PAID" },
+        where: { status: "PAID", periodDays: { gt: 0 } },
         select: { id: true },
         take: 1,
       },
     },
   });
   if (!user) throw new Error("Starter allowance user not found");
-  const hasPaid = user.subStatus === "active" || user.payments.length > 0;
+  const isActiveTrial = Boolean(user.trialEndsAt && user.trialEndsAt > now);
+  const hasEffectivePaidPlan = (user.plan === "PRO" || user.plan === "BUSINESS")
+    && !isActiveTrial
+    && user.trialEndsAt === null;
+  const hasPaid = user.subStatus === "active" || user.payments.length > 0 || hasEffectivePaidPlan;
   return {
     eligible: !hasPaid,
-    origin: user.trialStartedAt ?? user.createdAt,
+    origin: user.createdAt,
   };
 }
 
@@ -65,15 +71,15 @@ function toStatus(row: {
   };
 }
 
-/** Lazily creates and advances the signup-anchored window. An old window with
- * live reservations is kept until reconciliation settles it, preventing a
- * cross-boundary failure from refunding into a newly reset counter. */
+/** Lazily materialize the signup-anchored current window. Historical windows
+ * remain immutable ledger rows so a late settle/refund always targets the
+ * window the AiGenerationJob actually reserved. */
 export async function starterAllowanceStatusInTransaction(
   tx: DbClient,
   userId: string,
   now = new Date(),
 ): Promise<StarterAiImageAllowanceStatus> {
-  const access = await eligibility(tx, userId);
+  const access = await eligibility(tx, userId, now);
   const desiredStart = anchoredWindowStart(access.origin, now);
   if (!access.eligible) {
     return {
@@ -88,7 +94,9 @@ export async function starterAllowanceStatusInTransaction(
     };
   }
 
-  let row = await tx.starterAiImageAllowance.findUnique({ where: { userId } });
+  let row = await tx.starterAiImageAllowance.findUnique({
+    where: { userId_windowStartedAt: { userId, windowStartedAt: desiredStart } },
+  });
   if (!row) {
     row = await tx.starterAiImageAllowance.create({
       data: {
@@ -97,20 +105,19 @@ export async function starterAllowanceStatusInTransaction(
         limitImages: STARTER_AI_IMAGE_ALLOWANCE_LIMIT,
       },
     });
-  } else if (
-    desiredStart.getTime() > row.windowStartedAt.getTime()
-    && row.reservedImages === 0
-  ) {
-    row = await tx.starterAiImageAllowance.update({
-      where: { userId },
-      data: {
-        windowStartedAt: desiredStart,
-        limitImages: STARTER_AI_IMAGE_ALLOWANCE_LIMIT,
-        reservedImages: 0,
-        usedImages: 0,
-      },
-    });
   }
+  return toStatus(row);
+}
+
+export async function starterAllowanceStatusForWindowInTransaction(
+  tx: DbClient,
+  userId: string,
+  windowStartedAt: Date,
+): Promise<StarterAiImageAllowanceStatus> {
+  const row = await tx.starterAiImageAllowance.findUnique({
+    where: { userId_windowStartedAt: { userId, windowStartedAt } },
+  });
+  if (!row) throw new Error("Starter allowance window not found");
   return toStatus(row);
 }
 
@@ -121,15 +128,29 @@ export async function getStarterAiImageAllowanceStatus(
   return prisma.$transaction((tx) => starterAllowanceStatusInTransaction(tx, userId, now));
 }
 
+export async function getStarterAiImageAllowanceWindowStatus(
+  userId: string,
+  windowStartedAt: Date,
+): Promise<StarterAiImageAllowanceStatus> {
+  return prisma.$transaction((tx) => starterAllowanceStatusForWindowInTransaction(
+    tx,
+    userId,
+    windowStartedAt,
+  ));
+}
+
 export async function reserveStarterAiImageAllowance(
   tx: DbClient,
   userId: string,
+  pinnedWindowStartedAt?: Date,
 ): Promise<
   | { kind: "credits" }
   | { kind: "allowance_exhausted"; status: StarterAiImageAllowanceStatus }
   | { kind: "reserved"; status: StarterAiImageAllowanceStatus }
 > {
-  const status = await starterAllowanceStatusInTransaction(tx, userId);
+  const status = pinnedWindowStartedAt
+    ? await starterAllowanceStatusForWindowInTransaction(tx, userId, pinnedWindowStartedAt)
+    : await starterAllowanceStatusInTransaction(tx, userId);
   if (!status.eligible) return { kind: "credits" };
   if (status.remainingImages < 1) return { kind: "allowance_exhausted", status };
 
@@ -158,12 +179,18 @@ export async function reserveStarterAiImageAllowance(
 
 export async function settleStarterAiImageAllowance(
   tx: DbClient,
-  input: { userId: string; units: number; outcome: "completed" | "refunded" },
+  input: {
+    userId: string;
+    windowStartedAt: Date;
+    units: number;
+    outcome: "completed" | "refunded";
+  },
 ): Promise<void> {
   if (input.units <= 0) return;
   const updated = await tx.starterAiImageAllowance.updateMany({
     where: {
       userId: input.userId,
+      windowStartedAt: input.windowStartedAt,
       reservedImages: { gte: input.units },
     },
     data: input.outcome === "completed"
@@ -182,11 +209,15 @@ export async function settleStarterAiImageAllowance(
  * the creator (for example Ken Burns post-processing failed). */
 export async function restoreSettledStarterAiImageAllowance(
   tx: DbClient,
-  input: { userId: string; units: number },
+  input: { userId: string; windowStartedAt: Date; units: number },
 ): Promise<void> {
   if (input.units <= 0) return;
   const updated = await tx.starterAiImageAllowance.updateMany({
-    where: { userId: input.userId, usedImages: { gte: input.units } },
+    where: {
+      userId: input.userId,
+      windowStartedAt: input.windowStartedAt,
+      usedImages: { gte: input.units },
+    },
     data: { usedImages: { decrement: input.units } },
   });
   if (updated.count !== 1) throw new Error("Starter allowance compensation invariant failed");

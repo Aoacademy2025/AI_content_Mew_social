@@ -26,7 +26,7 @@ function attempt(retries) {
     res.on("data", (chunk) => { data += chunk; });
     res.on("end", () => {
       console.log(`[reconcile-ai-images] ${new Date().toISOString()} status=${res.statusCode} body=${data}`);
-      process.exit(res.statusCode && res.statusCode < 500 ? 0 : 1);
+      process.exit(res.statusCode && res.statusCode >= 200 && res.statusCode < 300 ? 0 : 1);
     });
   });
 

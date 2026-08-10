@@ -14,7 +14,7 @@
 
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -91,7 +91,7 @@ async function main() {
   //      partially-empty granted bucket), then refund exactly 2 to the same
   //      buckets on failure. ──
   const { prisma } = await import("../src/lib/prisma");
-  const { createReservedImageJob, failAndRefundAiJob } = await import(
+  const { completeImageJob, createReservedImageJob, failAndRefundAiJob } = await import(
     "../src/lib/ai-generation-jobs.server"
   );
 
@@ -193,6 +193,126 @@ async function main() {
       && rejectionEvent.properties?.includes('"model":"z-image-turbo"') === true
       && rejectionEvent.properties?.includes('"surface":"video"') === true
       && !rejectionEvent.properties?.includes("must not be copied"),
+  );
+
+  // ── 8. The hard daily cap is checked while holding the same per-user wallet
+  //      lock as the job insert. Two concurrent admissions at one remaining
+  //      slot may create exactly one provider-backed job, never two. ──
+  const rateUser = await prisma.user.create({
+    data: {
+      name: "Hero Image Atomic Rate Verify",
+      email: "hero-image-rate-verify@example.invalid",
+      plan: "PRO",
+      subStatus: "active",
+    },
+  });
+  await prisma.creditBalance.create({ data: { userId: rateUser.id, granted: 10, purchased: 0 } });
+  const reserveAtHardCap = (suffix: string) => createReservedImageJob({
+    userId: rateUser.id,
+    model: "z-image-turbo",
+    inputPreview: "atomic hard-cap verify",
+    inputJson: "{}",
+    creditCost: offer.quote.credits,
+    quoteVersion: offer.quote.version,
+    costBudgetUsdMicros: offer.quote.costBudgetUsdMicros,
+    provider: offer.provider,
+    providerModel: offer.providerModel,
+    providerRoute: offer.providerRoute,
+    providerEndpoint: offer.providerEndpoint,
+    estimatedCostUsdMicros: offer.quote.estimatedProviderCostUsdMicros,
+    idempotencyKey: `video:verify-rate:${suffix}`,
+    mediaExpiresAt: new Date(Date.now() + 60_000),
+    dailyRateLimit: { cap: 1 },
+  });
+  const concurrentRateResults = await Promise.all([
+    reserveAtHardCap("first"),
+    reserveAtHardCap("second"),
+  ]);
+  check(
+    "concurrent hard-cap reservations create exactly one image job",
+    concurrentRateResults.filter((result) => result.ok).length === 1
+      && concurrentRateResults.filter((result) => !result.ok && result.reason === "rate_limited").length === 1
+      && await prisma.aiGenerationJob.count({ where: { userId: rateUser.id } }) === 1,
+  );
+  const fetchStockSource = readFileSync("src/app/api/videos/fetch-stock/route.ts", "utf8");
+  check(
+    "an atomic hard-cap loss inside a direct-image batch returns HTTP 429",
+    fetchStockSource.includes('failures[0].code === "RATE_LIMITED" ? 429'),
+  );
+
+  // ── 9. Parent VideoJob lifecycle is part of the reservation transaction. ──
+  // An authorization check before this seam is insufficient: cancellation can
+  // win between auth and reserve, or between reserve and provider completion.
+  const parentUser = await prisma.user.create({
+    data: {
+      name: "Hero Image Parent Guard Verify",
+      email: "hero-image-parent-guard@example.invalid",
+      plan: "PRO",
+      subStatus: "active",
+    },
+  });
+  await prisma.creditBalance.create({ data: { userId: parentUser.id, granted: 10, purchased: 0 } });
+  const canceledBeforeReserve = await prisma.videoJob.create({
+    data: {
+      id: "verify-canceled-before-reserve",
+      userId: parentUser.id,
+      status: "canceled",
+      inputJson: "{}",
+      finishedAt: new Date(),
+    },
+  });
+  const reserveForParent = (parentId: string, suffix: string) => createReservedImageJob({
+    userId: parentUser.id,
+    model: "z-image-turbo",
+    inputPreview: "parent lifecycle guard",
+    inputJson: JSON.stringify({ videoJobId: parentId, sceneIndex: 0 }),
+    creditCost: offer.quote.credits,
+    quoteVersion: offer.quote.version,
+    costBudgetUsdMicros: offer.quote.costBudgetUsdMicros,
+    provider: offer.provider,
+    providerModel: offer.providerModel,
+    providerRoute: offer.providerRoute,
+    providerEndpoint: offer.providerEndpoint,
+    estimatedCostUsdMicros: offer.quote.estimatedProviderCostUsdMicros,
+    idempotencyKey: `video:${parentId}:scene:${suffix}`,
+    mediaExpiresAt: new Date(Date.now() + 60_000),
+  });
+  const terminalReservation = await reserveForParent(canceledBeforeReserve.id, "0");
+  check(
+    "cancel-before-reserve is rejected atomically without debiting credits",
+    !terminalReservation.ok
+      && terminalReservation.reason === "parent_terminal"
+      && (await prisma.creditBalance.findUniqueOrThrow({ where: { userId: parentUser.id } })).granted === 10,
+  );
+
+  const canceledBeforeComplete = await prisma.videoJob.create({
+    data: {
+      id: "verify-canceled-before-complete",
+      userId: parentUser.id,
+      status: "processing",
+      inputJson: "{}",
+    },
+  });
+  const liveReservation = await reserveForParent(canceledBeforeComplete.id, "0");
+  if (!liveReservation.ok) throw new Error(`expected live parent reservation: ${liveReservation.reason}`);
+  await prisma.videoJob.update({
+    where: { id: canceledBeforeComplete.id },
+    data: { status: "canceled", finishedAt: new Date() },
+  });
+  const lateCompletion = await completeImageJob({
+    userId: parentUser.id,
+    jobId: liveReservation.job.id,
+    outputUrl: "https://verify.invalid/late-provider-output.png",
+  });
+  const guardedBalance = await prisma.creditBalance.findUniqueOrThrow({ where: { userId: parentUser.id } });
+  check(
+    "cancel-before-complete refunds the reservation and refuses the late provider output",
+    lateCompletion?.status === "failed"
+      && lateCompletion.chargeState === "refunded"
+      && lateCompletion.errorCode === "PARENT_VIDEO_TERMINAL"
+      && lateCompletion.outputUrl === null
+      && lateCompletion.generatedImageId === null
+      && guardedBalance.granted === 10,
   );
 
   await prisma.$disconnect();

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { isValidHookFormulaKey } from "@/lib/viral-frameworks";
 import {
@@ -11,13 +10,12 @@ import {
   generateWithBannedWordGuard,
   heroScriptLlmErrorResponse,
   isValidDurationSec,
-  parseBannedWords,
   requireHeroScriptUser,
   reserveScriptGeneration,
+  resolveHeroScriptBrandProfile,
   resolveLlmTriad,
   settleScriptGeneration,
   stripEchoedHook,
-  toBrandProfileDTO,
   validateGenerateResponse,
   validateTopic,
   wordBudgetForDuration,
@@ -91,13 +89,16 @@ export async function POST(req: Request) {
     let bannedWords: string[] = [];
     let ctaStyle = "follow";
     if (brandProfileId) {
-      const row = await prisma.brandProfile.findFirst({
-        where: { id: brandProfileId, userId: authUser.id },
-      });
-      if (!row) return NextResponse.json({ error: "ไม่พบโปรไฟล์แบรนด์" }, { status: 404 });
-      profile = toBrandProfileDTO(row);
-      bannedWords = parseBannedWords(row.bannedWords);
-      ctaStyle = row.ctaStyle || "follow";
+      const resolved = await resolveHeroScriptBrandProfile(authUser.id, brandProfileId);
+      if (!resolved.ok) {
+        return NextResponse.json(
+          { code: resolved.code === "UNAVAILABLE" ? "BRAND_PROFILE_UNAVAILABLE" : undefined, error: resolved.message },
+          { status: resolved.code === "NOT_FOUND" ? 404 : 403 },
+        );
+      }
+      profile = resolved.profile;
+      bannedWords = resolved.bannedWords;
+      ctaStyle = resolved.ctaStyle;
     }
 
     // Product entitlement is reserved BEFORE the provider call. This closes

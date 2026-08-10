@@ -41,6 +41,11 @@ export async function createVideoJob(
     projectId?: string | null;
     type?: string | null;
     idempotencyFingerprint?: string | null;
+    projectVisualPin?: {
+      contentPreflightId: string | null;
+      projectVisualContextJson: string;
+    } | null;
+    brandVisualAcceptanceJson?: string | null;
   } = {},
 ) {
   return prisma.$transaction(async (tx) => {
@@ -49,6 +54,9 @@ export async function createVideoJob(
       data: {
         userId,
         projectId: opts.projectId ?? null,
+        contentPreflightId: opts.projectVisualPin?.contentPreflightId ?? null,
+        projectVisualContextJson: opts.projectVisualPin?.projectVisualContextJson ?? null,
+        brandVisualAcceptanceJson: opts.brandVisualAcceptanceJson ?? null,
         ...(opts.type ? { type: opts.type } : {}),
         inputJson: JSON.stringify(input),
         idempotencyKey: idempotencyKey ?? null,

@@ -14,7 +14,7 @@ cd /var/www/ai-content || exit 9
 # 1) non-cron pm2 apps not online (cron apps stopped = by design)
 BAD=$(pm2 jlist 2>/dev/null | python3 -c "
 import json,sys
-CRON={\"trial-expiry\",\"founding-sweep\",\"renewal-reminders\",\"cleanup-videos\",\"reconcile-processing\",\"mine-loanwords\",\"disk-watch\",\"db-backup\",\"media-cleanup\"}
+CRON={\"trial-expiry\",\"founding-sweep\",\"renewal-reminders\",\"cleanup-videos\",\"reconcile-processing\",\"reconcile-ai-images\",\"mine-loanwords\",\"disk-watch\",\"db-backup\",\"media-cleanup\"}
 apps=json.load(sys.stdin)
 print(\",\".join(p[\"name\"]+\":\"+p[\"pm2_env\"][\"status\"] for p in apps if p[\"name\"] not in CRON and p[\"pm2_env\"][\"status\"]!=\"online\") or \"none\")
 ")

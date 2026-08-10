@@ -61,6 +61,7 @@ async function main() {
     updateScript,
     deleteScript,
     ownsBrandProfile,
+    resolveHeroScriptBrandProfile,
     SCRIPT_LIST_LIMIT,
     // Task 4
     normalizeLines,
@@ -1804,6 +1805,83 @@ async function main() {
       },
     });
 
+    const { createBrandProfileFromPayload } = await import("../src/lib/brand-profile-library.server");
+    const handoffBrand = await createBrandProfileFromPayload({
+      userId: "hs4-pro",
+      payload: {
+        schemaVersion: 1,
+        name: "Immutable handoff brand",
+        niche: "creator education",
+        audience: "Thai creators",
+        script: {
+          styleId: "brand-script-style",
+          tone: "คม ชัด และอบอุ่น",
+          bannedWords: ["รับประกัน"],
+          ctaStyle: "follow",
+          language: "th",
+          analysisNotes: "เปิดด้วยภาพเปรียบเทียบและจบด้วยคำชวนที่กระชับ",
+          sampleText: "ตัวอย่างน้ำเสียงของแบรนด์",
+        },
+        voice: { provider: "elevenlabs", voiceId: "brand-revision-voice" },
+        subtitle: {
+          presetId: "brand-subtitle",
+          config: {
+            preset: "stroke",
+            effect: "karaoke",
+            cardLen: "sentence",
+            fontFamily: "Kanit",
+            bold: true,
+            fontWeight: 900,
+            fontSize: 72,
+            textColor: "#FFFFFF",
+            accentColor: "#38BDF8",
+            shadow: true,
+            outline: true,
+            outlineSize: 3,
+            verticalPos: 78,
+          },
+        },
+        brandMark: {
+          assetId: defaultLogo.id,
+          enabled: true,
+          position: "bottom-right",
+          sizePct: 17,
+          opacity: 0.75,
+        },
+        visual: {
+          primaryVisualFormatId: "stick-figure-story",
+          languageMode: "defined",
+          palette: ["#111111", "#F8F5EE", "#38BDF8"],
+          personality: "bold raw energetic",
+          peopleAndSetting: "Thai creator contexts",
+          memorableCues: ["blue marker circle", "blue marker arrow"],
+          visualNotes: "thick imperfect marker lines",
+          defaultTreatment: "clear and energetic",
+        },
+      },
+    });
+    await prisma.brandProfile.update({
+      where: { id: handoffBrand.profile.id },
+      data: {
+        tone: "mutable legacy drift that must not reach new work",
+        bannedWords: JSON.stringify(["mutable-only"]),
+        ctaStyle: "sell",
+      },
+    });
+    const immutableScriptDefaults = await resolveHeroScriptBrandProfile(
+      "hs4-pro",
+      handoffBrand.profile.id,
+    );
+    ok(immutableScriptDefaults.ok, "versioned Hero Script profile resolves for new work");
+    if (immutableScriptDefaults.ok) {
+      ok(immutableScriptDefaults.profile.tone === "คม ชัด และอบอุ่น",
+        "versioned Hero Script reads tone from the immutable active Revision");
+      ok(immutableScriptDefaults.bannedWords.join(",") === "รับประกัน",
+        "versioned Hero Script reads banned words from the immutable active Revision");
+      ok(immutableScriptDefaults.ctaStyle === "follow",
+        "versioned Hero Script reads CTA style from the immutable active Revision");
+    }
+
     const paidScript = await createScript("hs4-pro", {
       topic: "ส่งเข้าตัดต่อ",
       durationSec: 60,
@@ -1813,6 +1891,7 @@ async function main() {
       // user-typed blank lines (PUT stores them verbatim)
       bodyText: "ประโยค 1\n\nประโยค 2\n   \nประโยค 3",
       ctaText: "ตามไว้เลย",
+      brandProfileId: handoffBrand.profile.id,
     });
 
     const sent = await sendScriptToEditor("hs4-pro", paidScript.id);
@@ -1820,9 +1899,20 @@ async function main() {
     if (sent.ok) {
       ok(typeof sent.projectId === "string" && sent.projectId.length > 0,
         "sendScriptToEditor returns the new projectId");
+      ok(sent.brandProfileRevisionId === handoffBrand.revision.id,
+        "handoff exposes the exact pinned Revision for retention telemetry");
+      ok(typeof sent.brandLookIdentityKey === "string" && sent.brandLookIdentityKey.startsWith("bl1-"),
+        "handoff exposes the treatment-independent Brand Look identity");
+      ok(sent.visualFormatId === "stick-figure-story",
+        "handoff telemetry identifies the selected visual format");
 
       const project = await getEditorProject("hs4-pro", sent.projectId);
       ok(project !== null, "sendScriptToEditor created a real EditorProject owned by the caller");
+      const storedProject = await prisma.editorProject.findUniqueOrThrow({
+        where: { id: sent.projectId },
+      });
+      ok(storedProject.brandProfileRevisionId === handoffBrand.revision.id,
+        "Hero Script handoff pins the exact active immutable Brand Revision");
       const draft = (project?.draft ?? {}) as Record<string, unknown>;
       ok(draft.mode === "script", "handoff draftJson has mode: 'script'");
       ok(draft.narrativeSourceKind === "ai-script",
@@ -1840,12 +1930,16 @@ async function main() {
         JSON.stringify(draft.logoOverlay) === JSON.stringify({
           enabled: true,
           assetId: defaultLogo.id,
-          position: "top-left",
-          sizePct: 26,
-          opacity: 0.9,
+          position: "bottom-right",
+          sizePct: 17,
+          opacity: 0.75,
         }),
-        "handoff draft inherits the account default logo exactly like a new editor project",
+        "the pinned Revision's mark default wins over the mutable account default",
       );
+      ok(draft.voiceEngine === "elevenlabs" && draft.voiceId === "brand-revision-voice",
+        "the pinned Revision's immutable voice default is materialized atomically");
+      ok((draft.brandSubtitleDefault as { fontFamily?: string })?.fontFamily === "Kanit",
+        "the pinned Revision's subtitle default is materialized atomically");
       // The editor's bootstrap rejects a project whose stored draft doesn't
       // materialize (→ "ข้อมูลโปรเจกต์ไม่สมบูรณ์"), so the handoff draft must
       // pass the editor's own validator, not just be valid JSON.

@@ -11,6 +11,7 @@ import { isHeroAiBetaUser, isHeroAiImageEligible, isInternalAiTester } from "@/l
 import { resolveHeroScriptAccess } from "@/lib/hero-script-rollout.server";
 import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
+import { shouldDefaultToRecommendedAutoMix } from "@/lib/automix-plan";
 
 export async function GET() {
   try {
@@ -45,6 +46,7 @@ export async function GET() {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
+    const entitlement = classifyEntitlement(authUser);
     const limits = limitsForPlan((user as any).plan ?? "FREE");
     const usage = await syncUsageWindow(authUser.id);
     let minuteFields: { minuteQuota: true; minutesUsed: number; minutesLimit: number } | Record<string, never> = {};
@@ -68,24 +70,31 @@ export async function GET() {
     const heroAiImageEligible = isHeroAiImageEligible(authUser);
     const heroScriptAccess = await resolveHeroScriptAccess(authUser);
     const brandVisualAccess = decideBrandVisualAccess(authUser);
-    const starterAllowance = brandVisualAccess.canUse
-      ? await getStarterAiImageAllowanceStatus(authUser.id)
-      : null;
+    // Recovery and exact rerender remain available for already-pinned projects
+    // when new Brand Visual admission is rolled back. Funding disclosure must
+    // therefore be independent from the live cohort flag.
+    const starterAllowance = await getStarterAiImageAllowanceStatus(authUser.id);
     // Managed-kie: is AI image generation un-gated for THIS user? True for paid
     // (PRO/BUSINESS) plans only when both flags are on. Admins always have access
     // (client mirrors already OR this with an isAdmin check), so this is the
     // paid-user signal specifically. Mirrors the server gate in fetch-stock.
     const kiePaidUnlocked = internalAiTester &&
       managedKieOn && ((user as any).plan === "PRO" || (user as any).plan === "BUSINESS");
+    const recommendedAutoMixDefault = shouldDefaultToRecommendedAutoMix({
+      effectivePlan: entitlement.effectivePlan,
+      heroAiImageEligible,
+      brandVisualAllowed: brandVisualAccess.canUse,
+    });
 
     return NextResponse.json({
       ...user,
-      effectivePlan: classifyEntitlement(authUser).effectivePlan,
+      effectivePlan: entitlement.effectivePlan,
       usageCount: usage?.usageCount ?? user.usageCount,
       usageLimit: usage?.usageLimit ?? limits.clips,
       usagePeriodStartedAt: usage?.usagePeriodStartedAt ?? (user as any).usagePeriodStartedAt,
       usageResetAt: usage?.resetAt ?? null,
       kiePaidUnlocked,
+      recommendedAutoMixDefault,
       // Public users keep seeing the existing "เร็ว ๆ นี้" state even while the
       // managed provider is enabled for the internal beta.
       managedKieOn: internalAiTester && managedKieOn,

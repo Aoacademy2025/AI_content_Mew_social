@@ -178,5 +178,72 @@ check(
   text(qReserved, "credits"),
 );
 
+const rReusable = R({
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 5,
+  reusableAiSceneIndices: [0, 1, 2, 3],
+  creditBalance: 2,
+});
+check("R1: receipt quotes only the one affected scene", rReusable.estCredits === 2 && rReusable.billableAiImages === 1);
+check("R1: four current images are disclosed as zero-cost reuse", rReusable.reusableAiImages === 4 && text(rReusable, "ai").includes("ใช้ภาพเดิม 4 ภาพโดยไม่คิดซ้ำ"));
+check("R1: reusable scenes do not falsely block a sufficient two-credit balance", !has(rReusable, "insufficient"));
+
+const rAllowanceReuse = R({
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  targetClipCount: 3,
+  starterImageAllowance: { remaining: 0, limit: 8 },
+  reusableAiSceneIndices: [0, 1, 2],
+  creditBalance: 0,
+});
+check("R2: exhausted allowance does not block a zero-generation rerender", !has(rAllowanceReuse, "allowance-insufficient"));
+check("R2: zero-generation rerender says no entitlement is spent", text(rAllowanceReuse, "ai").includes("ไม่คิดสิทธิ์หรือเครดิตซ้ำ"));
+
+const rWrongSlots = R({
+  usesAi: true,
+  presetWeights: { video: 3, photo: 2, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 6,
+  reusableAiSceneIndices: [0, 1, 2, 4, 5],
+  creditBalance: 2,
+});
+check("R3: assets outside the planned AI slot do not reduce the quote", rWrongSlots.billableAiImages === 1 && rWrongSlots.estCredits === 2);
+
+const rMatchingSlot = R({
+  usesAi: true,
+  presetWeights: { video: 3, photo: 2, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 6,
+  reusableAiSceneIndices: [3],
+  creditBalance: 0,
+});
+check("R4: only the matching planned AI slot is zero-cost reuse", rMatchingSlot.billableAiImages === 0 && rMatchingSlot.reusableAiImages === 1);
+
+const rEstablishedDensity = R({
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  targetClipCount: 10,
+  starterImageAllowance: { remaining: 0, limit: 8 },
+  reusableAiSceneIndices: [0, 1, 2, 3, 4, 5, 6, 7],
+  preserveEstablishedAiDensity: true,
+  creditBalance: 0,
+});
+check("R5: exhausted Starter rerender preserves its established eight-image density", rEstablishedDensity.billableAiImages === 0);
+check("R5: established-density rerender remains enabled", !has(rEstablishedDensity, "allowance-insufficient"));
+check("R5: receipt explains that the existing density is preserved", text(rEstablishedDensity, "ai").includes("ความถี่ภาพเดิม"));
+
+const rNewClipExhausted = R({
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  targetClipCount: 10,
+  starterImageAllowance: { remaining: 0, limit: 8 },
+  reusableAiSceneIndices: [],
+  preserveEstablishedAiDensity: false,
+  creditBalance: 0,
+});
+check("R6: a new clip still stops when Starter allowance is exhausted", has(rNewClipExhausted, "allowance-insufficient"));
+
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll render-receipt checks passed.");

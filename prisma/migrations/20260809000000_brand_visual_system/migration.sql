@@ -27,6 +27,8 @@ CREATE UNIQUE INDEX "BrandProfileDraft_brandProfileId_key"
 CREATE TABLE "BrandProfileRevision" (
   "id" TEXT NOT NULL PRIMARY KEY,
   "brandProfileId" TEXT NOT NULL,
+  "sourceVideoJobId" TEXT,
+  "sourcePreflightId" TEXT,
   "version" INTEGER NOT NULL,
   "payloadJson" TEXT NOT NULL,
   "visualRecipeJson" TEXT NOT NULL,
@@ -40,6 +42,10 @@ CREATE INDEX "BrandProfileRevision_brandProfileId_createdAt_idx"
   ON "BrandProfileRevision"("brandProfileId", "createdAt");
 CREATE UNIQUE INDEX "BrandProfileRevision_brandProfileId_version_key"
   ON "BrandProfileRevision"("brandProfileId", "version");
+CREATE UNIQUE INDEX "BrandProfileRevision_sourceVideoJobId_key"
+  ON "BrandProfileRevision"("sourceVideoJobId");
+CREATE UNIQUE INDEX "BrandProfileRevision_sourcePreflightId_key"
+  ON "BrandProfileRevision"("sourcePreflightId");
 
 ALTER TABLE "EditorProject" ADD COLUMN "brandProfileRevisionId" TEXT
   REFERENCES "BrandProfileRevision"("id") ON DELETE SET NULL ON UPDATE CASCADE;
@@ -47,6 +53,12 @@ ALTER TABLE "EditorProject" ADD COLUMN "projectLookJson" TEXT;
 ALTER TABLE "EditorProject" ADD COLUMN "projectLookUpdatedAt" DATETIME;
 CREATE INDEX "EditorProject_brandProfileRevisionId_idx"
   ON "EditorProject"("brandProfileRevisionId");
+
+ALTER TABLE "VideoJob" ADD COLUMN "contentPreflightId" TEXT;
+ALTER TABLE "VideoJob" ADD COLUMN "projectVisualContextJson" TEXT;
+ALTER TABLE "VideoJob" ADD COLUMN "brandVisualAcceptanceJson" TEXT;
+CREATE INDEX "VideoJob_contentPreflightId_idx"
+  ON "VideoJob"("contentPreflightId");
 
 CREATE TABLE "ContentPreflight" (
   "id" TEXT NOT NULL PRIMARY KEY,
@@ -86,6 +98,7 @@ CREATE TABLE "ProjectVisualBeat" (
   "status" TEXT NOT NULL DEFAULT 'current',
   "existingAssetUrl" TEXT,
   "existingImageJobId" TEXT,
+  "generationIdentityKey" TEXT,
   "outdatedAt" DATETIME,
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
@@ -105,10 +118,12 @@ CREATE UNIQUE INDEX "ProjectVisualBeat_preflightId_beatKey_key"
 
 ALTER TABLE "AiGenerationJob" ADD COLUMN "fundingSource" TEXT NOT NULL DEFAULT 'credits';
 ALTER TABLE "AiGenerationJob" ADD COLUMN "allowanceUnits" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "AiGenerationJob" ADD COLUMN "allowanceWindowStartedAt" DATETIME;
 
 CREATE TABLE "BrandLookPreviewBatch" (
   "id" TEXT NOT NULL PRIMARY KEY,
   "userId" TEXT NOT NULL,
+  "requestId" TEXT NOT NULL,
   "projectId" TEXT,
   "brandProfileId" TEXT,
   "brandProfileDraftId" TEXT,
@@ -131,6 +146,8 @@ CREATE TABLE "BrandLookPreviewBatch" (
 );
 CREATE INDEX "BrandLookPreviewBatch_userId_createdAt_idx"
   ON "BrandLookPreviewBatch"("userId", "createdAt");
+CREATE UNIQUE INDEX "BrandLookPreviewBatch_userId_requestId_key"
+  ON "BrandLookPreviewBatch"("userId", "requestId");
 CREATE INDEX "BrandLookPreviewBatch_projectId_createdAt_idx"
   ON "BrandLookPreviewBatch"("projectId", "createdAt");
 CREATE INDEX "BrandLookPreviewBatch_brandProfileId_createdAt_idx"
@@ -158,11 +175,14 @@ CREATE UNIQUE INDEX "BrandLookPreviewItem_aiGenerationJobId_key"
   ON "BrandLookPreviewItem"("aiGenerationJobId");
 CREATE INDEX "BrandLookPreviewItem_batchId_status_idx"
   ON "BrandLookPreviewItem"("batchId", "status");
+CREATE INDEX "BrandLookPreviewItem_status_updatedAt_idx"
+  ON "BrandLookPreviewItem"("status", "updatedAt");
 CREATE UNIQUE INDEX "BrandLookPreviewItem_batchId_phase_key"
   ON "BrandLookPreviewItem"("batchId", "phase");
 
 CREATE TABLE "StarterAiImageAllowance" (
-  "userId" TEXT NOT NULL PRIMARY KEY,
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "userId" TEXT NOT NULL,
   "windowStartedAt" DATETIME NOT NULL,
   "limitImages" INTEGER NOT NULL DEFAULT 8,
   "reservedImages" INTEGER NOT NULL DEFAULT 0,
@@ -171,7 +191,9 @@ CREATE TABLE "StarterAiImageAllowance" (
   CONSTRAINT "StarterAiImageAllowance_userId_fkey"
     FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE
 );
-CREATE INDEX "StarterAiImageAllowance_windowStartedAt_idx"
-  ON "StarterAiImageAllowance"("windowStartedAt");
+CREATE UNIQUE INDEX "StarterAiImageAllowance_userId_windowStartedAt_key"
+  ON "StarterAiImageAllowance"("userId", "windowStartedAt");
+CREATE INDEX "StarterAiImageAllowance_userId_windowStartedAt_idx"
+  ON "StarterAiImageAllowance"("userId", "windowStartedAt");
 
 COMMIT;

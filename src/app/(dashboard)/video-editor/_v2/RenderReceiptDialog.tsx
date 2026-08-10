@@ -26,6 +26,10 @@ import type { V2Project } from "./useV2Project";
 import { fetchClientJson } from "@/lib/client-request-cache";
 
 type CreditBalanceResponse = { total?: number; reserved?: number };
+type VisualContextResponse = {
+  reusableAiSceneIndices?: number[];
+  preserveEstablishedAiDensity?: boolean;
+};
 
 export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }: {
   p: V2Project;
@@ -36,6 +40,8 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
   onCancel: () => void;
 }) {
   const [credits, setCredits] = useState<{ available: number; reserved: number } | null>(null);
+  const [reusableAiSceneIndices, setReusableAiSceneIndices] = useState<number[]>([]);
+  const [preserveEstablishedAiDensity, setPreserveEstablishedAiDensity] = useState(false);
 
   // Fresh credit balance each time the dialog opens (best-effort — same endpoint the
   // post-render receipt uses). null while loading → insufficient-credit warning stays
@@ -58,6 +64,27 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       .catch(() => {});
     return () => { alive = false; };
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !(p.brandVisualAllowed || p.hasPersistedVisualPin) || !p.projectId || !p.brandContentPreflightId) {
+      setReusableAiSceneIndices([]);
+      setPreserveEstablishedAiDensity(false);
+      return;
+    }
+    let alive = true;
+    setReusableAiSceneIndices([]);
+    setPreserveEstablishedAiDensity(false);
+    fetchClientJson<VisualContextResponse>(
+      `/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context?preflightId=${encodeURIComponent(p.brandContentPreflightId)}`,
+    ).then((result) => {
+      if (!alive || !result.ok) return;
+      setReusableAiSceneIndices(Array.isArray(result.data?.reusableAiSceneIndices)
+        ? result.data.reusableAiSceneIndices.filter((value) => Number.isSafeInteger(value) && value >= 0)
+        : []);
+      setPreserveEstablishedAiDensity(result.data?.preserveEstablishedAiDensity === true);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [open, p.brandVisualAllowed, p.hasPersistedVisualPin, p.projectId, p.brandContentPreflightId]);
 
   // Esc = กลับไปแก้ไข (blocked while submitting so we can't dismiss mid-submit).
   useEffect(() => {
@@ -113,8 +140,10 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
         remaining: p.starterAiImageAllowance.remainingImages,
         limit: p.starterAiImageAllowance.limitImages,
       } : null,
+      reusableAiSceneIndices,
+      preserveEstablishedAiDensity,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, p.starterAiImageAllowance, exactDuration],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, p.starterAiImageAllowance, reusableAiSceneIndices, preserveEstablishedAiDensity, exactDuration],
   );
 
   // Deficit disables the render CTA (Task 5 item B) — buildReceipt already computed
