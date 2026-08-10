@@ -283,4 +283,4 @@ sharing one palette/lighting/lens signature. Mew's eye is the gate.
 
 ## Status
 
-interviewed 2026-08-10 | approved: 2026-08-10 | executed: in progress | delivered: -
+interviewed 2026-08-10 | approved: 2026-08-10 | executed: 2026-08-10 | delivered: PR #212 (awaiting Mew merge)
