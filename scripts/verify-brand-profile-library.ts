@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,6 +13,7 @@ async function main() {
   const {
     applyProjectBrandRevision,
     applyBrandRevisionDefaultsToProjectDraft,
+    brandProfilePayloadSchema,
     createBrandProfileFromPayload,
     getBrandProfileAvailabilityState,
     legacyBrandProfileMutableWhere,
@@ -767,7 +768,106 @@ async function main() {
       && libraryRouteSource.includes('code: "RESULT_REQUIRED"'),
     "Starter users cannot deep-create a Brand Profile before seeing a completed video result",
   );
-  const brandLibraryPageSource = readFileSync("src/app/(dashboard)/brands/page.tsx", "utf8");
+  // ── Relaxed publish gate: a name is the only answer a creator must give ──
+  const minimalUser = await prisma.user.create({
+    data: { name: "Minimal brand owner", email: "brand-minimal@example.test", plan: "PRO" },
+  });
+  // Every optional field the /brands form exposes cleared to empty: niche,
+  // audience, script.tone AND the two ตั้งค่าเพิ่มเติม > โทนภาพของแบรนด์ text
+  // fields (visual.personality, visual.defaultTreatment) that carried the
+  // same server-required-but-not-gated trap as niche/audience/tone.
+  const minimalPayload = {
+    ...basePayload,
+    name: "ชื่อเดียวก็พอ",
+    niche: "",
+    audience: "",
+    script: { ...basePayload.script, tone: "", analysisNotes: null, sampleText: null },
+    voice: { ...basePayload.voice, voiceId: null },
+    visual: { ...basePayload.visual, personality: "", defaultTreatment: "", visualNotes: "" },
+  };
+  const minimalProfile = await createBrandProfileFromPayload({
+    userId: minimalUser.id,
+    payload: minimalPayload,
+  });
+  assert.equal(
+    minimalProfile.profile.activeRevisionNumber,
+    1,
+    "a Brand Profile with only a name publishes its first immutable Revision, "
+      + "even with every optional field (including visual.personality and "
+      + "visual.defaultTreatment) cleared",
+  );
+  const storedMinimal = await prisma.brandProfile.findUniqueOrThrow({
+    where: { id: minimalProfile.profile.id },
+  });
+  assert.equal(storedMinimal.niche, "", "an unanswered niche is stored empty, not rejected");
+  assert.equal(storedMinimal.audience, "", "an unanswered audience is stored empty, not rejected");
+  assert.equal(storedMinimal.tone, "", "an unanswered tone is stored empty, not rejected");
+  const storedMinimalRevision = await prisma.brandProfileRevision.findUniqueOrThrow({
+    where: { brandProfileId_version: { brandProfileId: minimalProfile.profile.id, version: 1 } },
+  });
+  const storedMinimalPayload = JSON.parse(storedMinimalRevision.payloadJson) as { visual: { personality: string; defaultTreatment: string } };
+  assert.equal(
+    storedMinimalPayload.visual.personality,
+    "",
+    "an unanswered visual.personality is stored empty, not rejected — dropped `.min(1)` fixes the "
+      + "generic 'ข้อมูลแบรนด์ไม่ครบ' 400 a creator hit when clearing this field",
+  );
+  assert.equal(
+    storedMinimalPayload.visual.defaultTreatment,
+    "",
+    "an unanswered visual.defaultTreatment is stored empty, not rejected — same trap as personality, found in the sweep",
+  );
+  assert.equal(
+    brandProfilePayloadSchema.safeParse({ ...minimalPayload, name: "   " }).success,
+    false,
+    "the name is still the one required field",
+  );
+
+  // ── The two retired scene fields stay deserializable with empty defaults ──
+  const retiredFieldsOmitted = brandProfilePayloadSchema.parse({
+    ...minimalPayload,
+    visual: {
+      primaryVisualFormatId: "clear-infographic",
+      languageMode: "defined",
+      palette: ["#2B2926", "#F5F1E8", "#A8A29E"],
+      personality: "สมดุล ชัดเจน และปรับให้เข้ากับแบรนด์ได้",
+      visualNotes: "",
+      defaultTreatment: "ชัดเจน สมดุล และอ่านเรื่องได้ทันที",
+    },
+  });
+  assert.equal(
+    retiredFieldsOmitted.visual.peopleAndSetting,
+    "",
+    "a payload authored after ADR 0006 still yields the retired scene field as an empty default",
+  );
+  assert.deepEqual(
+    retiredFieldsOmitted.visual.memorableCues,
+    [],
+    "a payload authored after ADR 0006 still yields the retired cue field as an empty default",
+  );
+  const pinnedLegacyRevision = brandProfilePayloadSchema.parse(
+    JSON.parse(JSON.stringify(basePayload)),
+  );
+  assert.equal(
+    pinnedLegacyRevision.visual.peopleAndSetting,
+    "Thai creator contexts",
+    "a pinned pre-ADR-0006 revision keeps deserializing with its stored scene field intact",
+  );
+  assert.deepEqual(
+    pinnedLegacyRevision.visual.memorableCues,
+    ["blue marker circle", "blue marker arrow"],
+    "a pinned pre-ADR-0006 revision keeps deserializing with its stored cues intact",
+  );
+
+  // The /brands route is a server shell plus client islands; every source-level
+  // contract below holds across the whole route, not one file.
+  const brandsComponentsDirectory = "src/app/(dashboard)/brands/_components";
+  const brandLibraryPageSource = [
+    readFileSync("src/app/(dashboard)/brands/page.tsx", "utf8"),
+    ...readdirSync(brandsComponentsDirectory)
+      .sort()
+      .map((file) => readFileSync(join(brandsComponentsDirectory, file), "utf8")),
+  ].join("\n");
   const savePromptSource = readFileSync(
     "src/app/(dashboard)/video-editor/_v2/SaveProjectLookPrompt.tsx",
     "utf8",

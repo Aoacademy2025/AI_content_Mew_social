@@ -8,7 +8,13 @@ import {
 
 export const brandLanguageSchema = z.object({
   palette: z.array(z.string().trim().min(1).max(64)).min(1).max(6),
-  personality: z.string().trim().min(1).max(500),
+  // No `.min(1)`: brand-profile-library.server.ts's brandProfilePayloadSchema
+  // allows an empty personality (the only required Brand field is the name —
+  // decision 4). Keeping `.min(1)` here would not surface as a 400: parseRevision
+  // below fail-opens on a schema mismatch and silently drops the whole Brand's
+  // visual identity (falls back to source: "suggested"), which is worse than
+  // the original defect. Must stay in sync with that schema's `personality`.
+  personality: z.string().trim().max(500),
   peopleAndSetting: z.string().trim().max(500).nullable().optional(),
   memorableCues: z.array(z.string().trim().min(1).max(160)).max(6),
   visualNotes: z.string().trim().max(800).nullable().optional(),
@@ -32,7 +38,9 @@ export const revisionRecipeSchema = z.object({
   visualFormatId: z.enum(VISUAL_FORMAT_IDS),
   recipeVersion: z.string().min(1),
   brandVisualLanguage: brandLanguageSchema.nullable().optional(),
-  defaultTreatment: z.string().min(1),
+  // No `.min(1)`: same reason as brandLanguageSchema.personality above — the
+  // payload schema allows an empty visual.defaultTreatment.
+  defaultTreatment: z.string(),
 });
 
 export const projectVisualContextSchema = z.object({

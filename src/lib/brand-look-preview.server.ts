@@ -176,42 +176,48 @@ function previewIdentityKey(
   });
 }
 
-/** Product previews represent the creator's niche. The fixed history/health/
- * commerce matrix belongs exclusively to the 21-image Quality Gate. */
+/** Product previews exercise three structurally distinct archetype scenes —
+ * wide environmental establishing shot, hands-and-objects mid-shot, human
+ * close-up — so a creator can judge whether a Visual Format holds across
+ * different kinds of framing. Scenes never depend on `niche`/`audience`
+ * (both are optional refinements, see brand-profile-library.server.ts); a
+ * non-empty `niche` may still colour `contentDomain`, but it must never
+ * become the `setting` string. The fixed history/health/commerce matrix
+ * belongs exclusively to the 21-image Quality Gate. */
 function standardPreviewScenes(payload: BrandProfilePayload): PreviewScene[] {
-  const contentDomain = `${payload.niche} for ${payload.audience}`;
+  const contentDomain = payload.niche.trim() || "a story worth telling";
   return [
     {
       phase: "hook",
       contentDomain,
       visualBeat: {
-        subject: `one member of ${payload.audience} facing a recognizable ${payload.niche} turning point`,
-        action: "pauses as one concrete problem becomes impossible to ignore",
-        setting: `an authentic everyday environment connected to ${payload.niche}`,
-        emotion: "immediate curiosity and useful tension",
-        emphasis: "the single problem this story will resolve",
+        subject: "a towering weather front rolling across an open horizon",
+        action: "gathers force as the sky darkens and the treeline visibly bends under the wind",
+        setting: "a wide open outdoor landscape with no structures in the foreground",
+        emotion: "immediate tension and scale",
+        emphasis: "the sheer size of the force dominating the frame",
       },
     },
     {
       phase: "explain",
       contentDomain,
       visualBeat: {
-        subject: `a trusted ${payload.niche} guide and three concrete cause-and-effect objects for ${payload.audience}`,
-        action: "demonstrates one clear relationship between the objects",
-        setting: `a practical working environment connected to ${payload.niche}`,
-        emotion: "calm confidence and clarity",
-        emphasis: "the one relationship that makes the lesson understandable",
+        subject: "a pair of hands arranging three small concrete objects in a deliberate row",
+        action: "moves one object so its direct effect on the other two becomes visible",
+        setting: "a close tabletop workspace with nothing else in frame",
+        emotion: "calm concentration and clarity",
+        emphasis: "the one cause-and-effect relationship that makes the lesson understandable",
       },
     },
     {
       phase: "close",
       contentDomain,
       visualBeat: {
-        subject: `the same member of ${payload.audience} with one useful ${payload.niche} outcome`,
-        action: "takes one confident next action toward the outcome",
-        setting: `the same authentic ${payload.niche} world now opened toward forward motion`,
+        subject: "one person's face and shoulders leaning toward the camera in close-up",
+        action: "steps forward with confident, deliberate forward motion",
+        setting: "a shallow close-up frame with open, uncluttered space across the lower third",
         emotion: "earned optimism and momentum",
-        emphasis: "the concrete next action the audience can picture taking",
+        emphasis: "the forward motion carrying the story toward its next concrete action",
       },
     },
   ];

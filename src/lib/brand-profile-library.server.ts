@@ -24,11 +24,13 @@ const safeConfigValue = z.union([z.string(), z.number(), z.boolean(), z.null()])
 export const brandProfilePayloadSchema = z.object({
   schemaVersion: z.literal(1),
   name: z.string().trim().min(1).max(80),
-  niche: z.string().trim().min(1).max(300),
-  audience: z.string().trim().min(1).max(500),
+  // The /brands surface asks for a name and a Visual Format only; niche,
+  // audience and tone are optional refinements that may legitimately be empty.
+  niche: z.string().trim().max(300),
+  audience: z.string().trim().max(500),
   script: z.object({
     styleId: shortNullable,
-    tone: z.string().trim().min(1).max(500),
+    tone: z.string().trim().max(500),
     bannedWords: z.array(z.string().trim().min(1).max(80)).max(100),
     ctaStyle: z.string().trim().min(1).max(40),
     language: z.string().trim().min(1).max(20),
@@ -57,11 +59,18 @@ export const brandProfilePayloadSchema = z.object({
     primaryVisualFormatId: z.enum(VISUAL_FORMAT_IDS),
     languageMode: z.enum(["defined", "none"]).optional(),
     palette: z.array(z.string().trim().min(1).max(64)).min(1).max(6),
-    personality: z.string().trim().min(1).max(500),
-    peopleAndSetting: z.string().trim().max(500),
-    memorableCues: z.array(z.string().trim().min(1).max(160)).max(6),
+    // No `.min(1)`: personality is editable inside ตั้งค่าเพิ่มเติม and a
+    // creator may clear it. The only required field is the brand name
+    // (decision 4) — the form's withSeedFallbacks() supplies a non-empty
+    // default before submit, so the server only needs to bound the length.
+    personality: z.string().trim().max(500),
+    // Retired from the form (ADR 0006) but kept in the persisted payload with
+    // defaults so pinned v1/v2 revisions still deserialize byte-for-byte.
+    peopleAndSetting: z.string().trim().max(500).default(""),
+    memorableCues: z.array(z.string().trim().min(1).max(160)).max(6).default([]),
     visualNotes: z.string().trim().max(800),
-    defaultTreatment: z.string().trim().min(1).max(300),
+    // Same trap, same fix as personality: editable, clearable, not required.
+    defaultTreatment: z.string().trim().max(300),
   }),
 });
 
