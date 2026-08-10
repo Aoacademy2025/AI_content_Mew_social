@@ -282,7 +282,7 @@ export function BrandVisualSelector({
     && selectedLibraryProfile?.activeRevisionId
     && selectedLibraryProfile.activeRevisionNumber > selectedBrandProfile.revisionNumber,
   );
-  return <section style={{ border: `1px solid ${color.cardBorder}`, borderRadius: radius.card, background: color.cardBg, overflow: "hidden" }}>
+  return <section className="shrink-0" style={{ border: `1px solid ${color.cardBorder}`, borderRadius: radius.card, background: color.cardBg, overflow: "hidden" }}>
     <button type="button" onClick={() => { if (visualSelectionEnabled) setExpanded((value) => !value); }} className="flex min-h-12 w-full items-center gap-3 px-4 py-3 text-left" aria-expanded={visualSelectionEnabled && expanded} aria-disabled={!visualSelectionEnabled}>
       <span className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: "rgba(56,189,248,.12)", color: color.info }}><SwatchBook size={16} /></span>
       <span className="min-w-0 flex-1"><span className="block" style={{ font: `600 13px ${font.heading}`, color: color.text }}>แบรนด์และแนวภาพของคลิปนี้</span><span className="block truncate" style={{ fontSize: 10.5, color: color.textFaint }}>{loading ? "กำลังอ่านเนื้อหา…" : selectedBrandProfile ? `ใช้แนวภาพจาก ${selectedBrandProfile.name} · รุ่น ${selectedBrandProfile.revisionNumber}${context?.source === "project-look" ? " · ปรับเฉพาะคลิปนี้" : ""}` : visualSelectionEnabled ? context?.source === "project-look" ? "ใช้แนวภาพที่เลือกให้คลิปนี้" : "AI เลือกแนวภาพจากเนื้อหาไว้แล้ว" : "เลือกแบรนด์แบบรวดเร็ว แล้วเลือกระดับ B-roll ด้านล่าง"}</span></span>

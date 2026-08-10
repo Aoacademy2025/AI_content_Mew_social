@@ -61,6 +61,8 @@ assert.match(brandVisualSelectorSource, /status\s*===\s*401\s*\|\|\s*result\.res
   "the direct Brand Library probe still fails closed when server admission is unavailable");
 assert.match(brandVisualSelectorSource, /setLibraryAuthorized\(true\)[\s\S]*setProfiles/,
   "a successful authoritative probe unlocks the selector and its profiles");
+assert.match(brandVisualSelectorSource, /return\s*<section\s+className="shrink-0"/,
+  "the Brand selector must not collapse to its border inside the scrollable Step 2 flex column");
 assert.match(stepTwoSource, /ref=\{stepTwoContentRef\}[\s\S]*overflowAnchor:\s*"none"/,
   "the Step 2 scroller must not anchor B-roll over an asynchronously revealed Brand selector");
 assert.match(stepTwoSource, /content\.scrollTop\s*=\s*0[\s\S]*requestAnimationFrame[\s\S]*content\.scrollTop\s*=\s*0/,
