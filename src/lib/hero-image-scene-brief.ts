@@ -1,4 +1,5 @@
 import type { AiImageStyle } from "@/lib/ai-image-policy";
+import { latinLetteringOnly } from "@/lib/image-prompt-script";
 import {
   normalizeBrollRegionPreference,
   normalizeBrollVisualStyle,
@@ -116,8 +117,16 @@ function fallbackBrief(
   scene: HeroImagePlanInput["scenes"][number],
   visualDirection?: string | null,
 ): HeroImageSceneBrief {
-  const beat = cleanText(scene.text, 360) || cleanText(scene.fallbackSubject) || "the current story beat";
-  const fallbackSubject = cleanText(scene.fallbackSubject) || beat;
+  // The narration itself seeds the brief when the planner is unavailable, and
+  // the narration is usually Thai — which would put Thai straight into the image
+  // prompt, the one thing ADR 0007 forbids. Only its Latin part is usable here;
+  // when there is none, an English placeholder carries the scene instead. The
+  // planner keeps receiving the untouched script (it needs the Thai to
+  // understand the story) — this guard sits only on the diffusion path.
+  const beat = latinLetteringOnly(cleanText(scene.text, 360))
+    || latinLetteringOnly(cleanText(scene.fallbackSubject))
+    || "the current story beat";
+  const fallbackSubject = latinLetteringOnly(cleanText(scene.fallbackSubject)) || beat;
   const mode = inferFallbackMode(`${scene.text} ${scene.fallbackSubject}`);
   return {
     sceneIndex: scene.sceneIndex,
@@ -128,7 +137,8 @@ function fallbackBrief(
     visualMode: mode,
     camera: MODE_CAMERA_FALLBACK[mode],
     lighting: "believable light motivated by the setting",
-    palette: cleanText(visualDirection, 100) || "natural colors appropriate to the subject",
+    palette: latinLetteringOnly(cleanText(visualDirection, 100))
+      || "natural colors appropriate to the subject",
     includesInterface: mode === "interface",
   };
 }
@@ -225,7 +235,9 @@ For every target scene:
 - includesInterface may be true only when seeing a screen or interface is necessary to communicate this exact beat.
 - Keep continuity where the same subject/place continues, while varying camera and palette only when the story motivates it.
 - Use believable, context-specific colors. Do not default every scene to bright colorful gradients, teal-orange, or mockup styling.
-- English only. Be concise and visually concrete. No brands, logos, legible copy, captions, or watermarks.
+- Write every field in English, whatever language the script is in. Be concise and visually concrete.
+- Lettering that genuinely belongs to the scene may appear; give its wording in English using the Latin alphabet, and describe lettering in no other writing system.
+- Do not invent brand names, logos or watermarks, and never describe a caption or subtitle laid over the image.
 
 Return ONLY valid JSON:
 {"scenes":[{"sceneIndex":0,"narrativeBeat":"8-18 words","subject":"concrete main subject","setting":"specific real setting","action":"one visible action or decisive moment","visualMode":"documentary|human-moment|macro-process|environmental|symbolic-metaphor|product|interface","camera":"shot and viewpoint","lighting":"motivated light","palette":"3-5 context-specific colors/materials","includesInterface":false}]}
@@ -329,22 +341,46 @@ export function buildHeroImagePrompt(
 ): string {
   const explicitStyle = normalizeBrollVisualStyle(opts?.style);
   const region = normalizeBrollRegionPreference(opts?.region);
+  // This is the diffusion boundary, so it is where ADR 0007's writing-system
+  // rule is enforced rather than requested. The planner is asked for English
+  // fields; a brief that comes back in Thai anyway must not reach a model that
+  // would echo it as glyphs and has no negative channel to stop it. Each clause
+  // keeps an English default so a stripped field never leaves a dangling
+  // connector for the encoder to interpret.
+  const promptText = (value: string, fallback: string): string =>
+    latinLetteringOnly(cleanText(value)) || fallback;
   const clauses = [
-    `${MODE_PROMPT[brief.visualMode]} of ${cleanText(brief.subject)}`,
-    `in ${cleanText(brief.setting)}`,
-    cleanText(brief.action),
-    `story purpose: ${cleanText(brief.narrativeBeat)}`,
-    `${cleanText(brief.camera)}, vertical 9:16 single-camera composition filling the entire canvas`,
-    cleanText(brief.lighting),
-    `context-specific palette and materials: ${cleanText(brief.palette)}`,
+    `${MODE_PROMPT[brief.visualMode]} of ${promptText(brief.subject, "the subject the story is about")}`,
+    `in ${promptText(brief.setting, "a real setting directly implied by the narration")}`,
+    promptText(brief.action, "one specific, decisive moment"),
+    `story purpose: ${promptText(brief.narrativeBeat, "the current story beat")}`,
+    `${promptText(brief.camera, "a natural eye-level view")}, vertical 9:16 single-camera composition filling the entire canvas`,
+    promptText(brief.lighting, "believable light motivated by the setting"),
+    `context-specific palette and materials: ${promptText(brief.palette, "natural colors appropriate to the subject")}`,
     explicitStyle ? EXPLICIT_STYLE_LOOK[explicitStyle] : "",
     region === "no-people"
       ? "no visible people; communicate the story through objects, environment, or hands only when essential"
       : region
         ? `when people or place are visible, depict an authentic ${region} context without introducing extra people`
         : "",
+    // Scene guidance, and this is the layer that owns scene content (ADR 0006):
+    // it fires only when the planner already chose `visualMode: "interface"`, so
+    // it introduces no object of its own — it constrains how prominent the
+    // screen the brief already asked for may become, which is what keeps a UI
+    // mockup from eating the frame.
+    //
+    // What used to follow it — "using simple abstract unlabeled states" — was
+    // not scene guidance but art direction, and it is removed on two counts.
+    // `unlabeled` contradicts ADR 0007, under which English is permitted and a
+    // control's own label is a character intrinsic to the depicted object; and
+    // "simple abstract … states" is a positive instruction to draw
+    // non-representational shapes, which flattens the screen and contradicts
+    // this very mode's own direction ("A believable in-context technology
+    // photograph"). It is the same clause `video-hero-image.server.ts` already
+    // dropped from the wrapper. Nothing replaces it: what the screen shows is
+    // scene content the brief's own subject and action already state.
     brief.includesInterface
-      ? "a single believable interface may appear only as an in-context story element, using simple abstract unlabeled states"
+      ? "a single believable interface may appear only as an in-context story element"
       : "",
     "specific lived-in detail and believable materials captured with natural observational timing",
     "one uninterrupted edge-to-edge camera view with one primary framing and one consistent perspective",

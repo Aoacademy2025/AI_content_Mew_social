@@ -1,3 +1,5 @@
+import { latinLetteringOnly } from "@/lib/image-prompt-script";
+
 /** Provider-neutral visual identity vocabulary for Brand Visual System V1. */
 export const VISUAL_FORMAT_IDS = [
   "cinematic-realism",
@@ -278,8 +280,15 @@ type V3Recipe = {
  * this is art direction: "solid undecorated color" is exactly what a flat
  * illustrated format wants and exactly what `cinematic-realism` must never hear,
  * since its own direction asks for photorealism and tactile natural materials.
- * v3 therefore carries it only on the flat formats; its anti-text job belongs to
- * `TEXT_FREE_NEGATIVE_PROMPT_TERMS`, which already covers every legible mark. */
+ * v3 therefore carries it only on the flat formats.
+ *
+ * Its anti-text job is NOT picked up by `V3_NEGATIVE_PROMPT_TERMS`: the only
+ * model this system renders on is positive-only (see that list's own note), so
+ * no negative term reaches it. Removing this line from the photoreal path was
+ * still correct — it caused the storytelling bug ADR 0006 fixed — but it left no
+ * enforcement behind it. What keeps readable marks out of a frame is the Visual
+ * Beat never making a surface that must be read the focal subject
+ * (`content-preflight.server.ts`). */
 const FLAT_SURFACE_DIRECTION =
   "every visible surface uses solid undecorated color and simple abstract marks";
 
@@ -338,8 +347,30 @@ const V3_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
   ] },
 };
 
-/** Shared text-free provider contract for the v2 and v3 compilers. These
- * entries are load-bearing for the no-legible-marks guarantee: extend only. */
+/* ── Negative prompt, one list per recipe generation ───────────────────────
+ * Applies to both lists below. It is NOT enforcement.
+ * `CompiledBrandVisualPrompt.negative` is delivered only by a provider route
+ * with a negative-prompt channel, and the one this system renders on has none:
+ * every Brand Visual frame goes through `generateHeroImageForVideo`, which is
+ * pinned to `z-image-turbo`, and that model is `negativePromptDelivery:
+ * "ignored"` (`ai-image-policy.ts`) on both its public endpoint — which accepts
+ * the field and returns byte-identical images
+ * (`artifacts/runpod-negative-prompt-probe-2026-08-10/`) — and its custom
+ * workflow, which zeroes the negative conditioning. So these terms are computed
+ * on every call and, today, reach nothing.
+ *
+ * They are kept rather than deleted because the list is the honest statement of
+ * what a Brand Visual frame must not contain, and it becomes live the moment a
+ * revision compiles for an engine that consumes a negative prompt. Extend only —
+ * but never cite it as the reason something cannot appear in an image. */
+
+/** Frozen negative prompt for the `-v2` compiler. Duplicated from what v3 now
+ * uses rather than shared with it, because ADR 0005 pins a recipe version per
+ * Brand Profile Revision and a `-v2` pin must keep compiling to the exact
+ * provider input it was published with. It is the pre-ADR-0007 list, and it
+ * contradicts ADR 0007 on purpose: it records the absolute "text-free" contract
+ * that v2 was published under, not the policy in force. Never edit it — a change
+ * here is a silent look change on every pinned `-v2` revision. */
 const TEXT_FREE_NEGATIVE_PROMPT_TERMS: readonly string[] = [
   "text", "letters", "words", "numbers", "typography", "caption", "subtitle",
   "headline", "logo", "watermark", "signature", "brand name", "label", "signage",
@@ -347,6 +378,40 @@ const TEXT_FREE_NEGATIVE_PROMPT_TERMS: readonly string[] = [
   "currency glyph", "monetary icon", "symbol inside circle", "pseudo-text", "gibberish text",
   "framed notice", "wall chart", "written interface", "screen text", "document", "certificate",
   "legible writing", "comic panels", "panel borders", "collage", "split screen",
+  "triptych", "storyboard", "contact sheet", "multiple camera views",
+];
+
+/** Current negative prompt, aligned with ADR 0007. Three families earn a place,
+ * and nothing else does:
+ *
+ *  1. a mark that impersonates a layer that is deterministically ours — caption,
+ *     subtitle, headline, logo, watermark, signature, brand name — plus the
+ *     overlay artifacts of the same shape (artist initials, corner mark, date
+ *     stamp), none of which is ever part of a depicted object;
+ *  2. a frame that is not one frame;
+ *  3. script the model cannot spell. ADR 0007 decided Thai: the model renders
+ *     authentic-looking Thai that spells nothing, which a Thai viewer reads as
+ *     broken. `Chinese writing` and `Japanese writing` follow the same failure
+ *     mode and match `ai-image-policy.ts`, but ADR 0007 speaks only about Thai
+ *     and English, so that pair is a conservative default, not a decided policy.
+ *     `pseudo-text` and `gibberish text` name the failure itself and stay.
+ *
+ * Dropped against the frozen v2 list, each because ADR 0007 now says the
+ * opposite: `text`, `letters`, `words`, `numbers`, `typography`, `label`,
+ * `signage`, `legible writing`, `screen text` and `written interface` — English
+ * is allowed, including full sentences, and a screen may show plausible English
+ * UI; every currency term (`currency symbol`, `dollar sign`, `baht sign`,
+ * `currency glyph`, `monetary icon`, `symbol inside circle`) — a denomination on
+ * a banknote, a coin face and a price tag are part of the object; and
+ * `framed notice`, `wall chart`, `document`, `certificate` — those name objects,
+ * and once the text on them is permitted the only thing left in the term is a
+ * ban on scene content, which per ADR 0006 the Visual Beat owns and a rendering
+ * recipe does not. */
+const V3_NEGATIVE_PROMPT_TERMS: readonly string[] = [
+  "caption", "subtitle", "headline", "logo", "watermark", "signature", "brand name",
+  "artist initials", "corner mark", "date stamp", "pseudo-text", "gibberish text",
+  "Thai writing", "Chinese writing", "Japanese writing",
+  "comic panels", "panel borders", "collage", "split screen",
   "triptych", "storyboard", "contact sheet", "multiple camera views",
 ];
 
@@ -630,6 +695,11 @@ const COLOR_CODE_TOKEN =
  * encoding. Values without one stay byte-identical to the shared cleaner. */
 const COLOR_CODE_MARKER = /[#＃]|%23|0x[0-9a-fA-F]{3}|(?:rgba?|hsla?)\s*\(/i;
 
+/** A field left with no letter after cleaning contributes nothing rather than a
+ * fragment of stray punctuation, which a diffusion encoder would still try to
+ * render. Its clause then falls back to the compiler's own English default. */
+const LATIN_LETTER_MARKER = /\p{Script=Latin}/u;
+
 function hexRgb(token: string): readonly [number, number, number] | null {
   const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(token);
   if (!match) return null;
@@ -704,13 +774,42 @@ function paletteColorWords(entry: string): string {
   return named[0] ?? "";
 }
 
-/** v3-only sanitizing layer over the shared art-direction cleaner. A `-v2` pin
- * must keep compiling byte-identically (ADR 0005), so hex stripping is layered
- * on top instead of edited into `positiveArtDirectionValue`. Creator-typed
- * `treatment` and Gemini-extracted Visual Beat fields can carry a raw code just
- * like a palette entry, and Z-Image paints one as a colored object. */
+/** Terms v3 removes from every field before it becomes a prompt. Each one names
+ * a layer the renderer owns deterministically — the subtitle track, the headline
+ * hook, the brand mark — so a diffusion model synthesizing its own version of it
+ * is always a defect, whatever the beat says (ADR 0007).
+ *
+ * Words that merely describe writing a scene genuinely contains — `sign`,
+ * `words`, `letters`, `numbers`, `label` — are deliberately absent. The shared
+ * `positiveArtDirectionValue` still strips those, along with any run of capitals,
+ * which is why the beat `the words "OPEN LATE" against the closing street`
+ * compiled to `the " " against the closing street`. That was correct while a
+ * surface which must be read could never be a beat's focal subject; under
+ * ADR 0007 and analyzer `-v5` it can, so v3 stops scrubbing what the story asked
+ * for and scrubs only what the story may never own. */
+const V3_RESERVED_LAYER_TERMS =
+  /\b(?:captions?|subtitles?|headlines?|watermarks?|logos?|signatures?|typography|brand\s*names?)\b/giu;
+
+/** v3-only cleaner. A `-v1`/`-v2` pin must keep compiling byte-identically
+ * (ADR 0005), so this is a separate path rather than an edit to the shared
+ * cleaner. It does three things the shared one does not:
+ *
+ * 1. Drops non-Latin writing. Every field reaching here is contracted to be
+ *    English — the content-preflight prompt asks for it explicitly — so Thai in
+ *    a beat is a defect, and a Thai `treatment` is text a Latin-trained encoder
+ *    cannot act on but can still echo back as glyphs. A positive-only route has
+ *    no other enforcement channel.
+ * 2. Strips color codes. Creator-typed `treatment` and Gemini-extracted beat
+ *    fields can carry a raw code just like a palette entry, and Z-Image paints
+ *    one as a colored object rather than applying it as a grade.
+ * 3. Keeps the scene's own lettering instead of scrubbing it (see above). */
 function v3PositiveArtDirectionValue(value: string | null | undefined, limit = 260): string {
-  const sanitized = positiveArtDirectionValue(value, limit);
+  const cleaned = latinLetteringOnly(artDirectionValue(value, limit))
+    .replace(V3_RESERVED_LAYER_TERMS, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .trim();
+  const sanitized = LATIN_LETTER_MARKER.test(cleaned) ? cleaned : "";
   if (!COLOR_CODE_MARKER.test(sanitized)) return sanitized;
   return sanitized
     // Longest first: `%2338BDF8` must be removed whole, not reduced to `38BDF8`.
@@ -905,8 +1004,16 @@ function compileBrandVisualPromptV3(input: {
     visualFormatId: input.visualFormatId,
     recipeVersion: input.recipeVersion,
     positive,
+    // No `-v4` for this change. A recipe version pins what a pinned revision
+    // re-renders, and this edit touches only the negative string — which reaches
+    // nothing on the single engine those revisions actually run on (every Brand
+    // Visual render goes through `generateHeroImageForVideo`, pinned to
+    // `z-image-turbo`, `negativePromptDelivery: "ignored"` on both routes). A
+    // pinned `-v3` revision therefore re-renders byte-identically, which is the
+    // guarantee ADR 0005 makes; freezing a `-v4` would instead leave every
+    // already-pinned revision compiling a list that contradicts ADR 0007.
     negative: [
-      ...TEXT_FREE_NEGATIVE_PROMPT_TERMS,
+      ...V3_NEGATIVE_PROMPT_TERMS,
       ...(recipe.extraNegative ?? []),
     ].join(", "),
   };

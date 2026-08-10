@@ -31,14 +31,38 @@ export type RunpodJobResponse = {
   };
 };
 
+/** The scalar request shared by every RunPod image protocol. A negative prompt
+ * is deliberately not part of it: only one protocol can carry one. */
 export type RunpodImageInput = {
   prompt: string;
-  negativePrompt: string;
   width: number;
   height: number;
   seed: number;
 };
 
+/** The `comfy-workflow` protocol's input. It is the only protocol with a channel
+ * for a negative prompt — `buildComfyWorkflow` substitutes `{{NEGATIVE_PROMPT}}`
+ * into a server-owned workflow — so whether the value reaches the model is a
+ * property of that workflow file. It does for `flux2-klein-4b` and `hidream-o1`;
+ * it does not for `config/ai-workflows/z-image-turbo.json`, which zeroes the
+ * negative conditioning (`ConditioningZeroOut`, `cfg: 1`) and carries no such
+ * token by design — see the check in `scripts/verify-ai-studio.ts`. */
+export type RunpodComfyImageInput = RunpodImageInput & {
+  negativePrompt: string;
+};
+
+/**
+ * The official public Z-Image endpoint's complete request.
+ *
+ * It has no negative-prompt channel. On 2026-08-10 the live endpoint was sent
+ * the same seed and positive prompt three ways — no field, `negative_prompt`,
+ * `negativePrompt` — and accepted all three without a rejection or a warning,
+ * returning byte-identical images with the subjects the negative text asked to
+ * remove still in frame (`artifacts/runpod-negative-prompt-probe-2026-08-10/`).
+ * The parameter type therefore carries no negative prompt at all: there is
+ * nothing here to deliver it to, and a field accepted and silently dropped
+ * reads as a guarantee.
+ */
 export function publicZImageProviderInput(input: RunpodImageInput): Record<string, unknown> {
   const size = input.width === input.height
     ? "1024*1024"

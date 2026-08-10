@@ -10,6 +10,7 @@ import {
 } from "../src/lib/brand-visual-system";
 import { shouldDefaultToRecommendedAutoMix } from "../src/lib/automix-plan";
 import { resolveBrandVisualClientAccess } from "../src/lib/use-me";
+import { AI_IMAGE_MODELS } from "../src/lib/ai-image-policy";
 
 assert.equal(resolveBrandVisualClientAccess({ brandVisualAllowed: true, brandVisualCohort: "off" }), true,
   "the explicit Brand Visual admission field enables the client");
@@ -149,11 +150,45 @@ assert.doesNotMatch(
   "the anti-text guardrails that painted walls and discs are negative-prompt work only",
 );
 assert.match(mewsocialPrompt.positive, /solid undecorated color/i);
-assert.match(mewsocialPrompt.negative, /text.*logo.*watermark/i);
-assert.match(mewsocialPrompt.negative, /currency symbol.*dollar sign.*artist initials.*corner mark/i);
-assert.match(mewsocialPrompt.negative, /currency glyph.*pseudo-text.*framed notice.*screen text/i);
 
-console.log("verify-brand-visual-system: PASS text-free branded compilation");
+/** ADR 0007 rewrote what the v3 negative may say. It no longer bans text as
+ * such — English is permitted, including full sentences, and characters
+ * intrinsic to a depicted object (a banknote denomination, a coin face, a price
+ * tag, a control's own label) belong to the object. Three families remain: a
+ * mark that impersonates a deterministically-ours layer, a frame that is not one
+ * frame, and script the model cannot spell. */
+assert.match(
+  mewsocialPrompt.negative,
+  /caption, subtitle, headline, logo, watermark, signature, brand name/,
+  "the v3 negative still refuses every mark that impersonates a deterministic overlay layer",
+);
+assert.match(
+  mewsocialPrompt.negative,
+  /pseudo-text, gibberish text, Thai writing, Chinese writing, Japanese writing/,
+  "ADR 0007: Thai script stays out, and the garbling it produces is still named",
+);
+assert.match(
+  mewsocialPrompt.negative,
+  /comic panels, panel borders, collage, split screen, triptych, storyboard, contact sheet, multiple camera views/,
+  "the v3 negative still refuses a frame that is not one frame",
+);
+assert.doesNotMatch(
+  mewsocialPrompt.negative,
+  /(?:^|, )(?:text|letters|words|numbers|typography|label|signage|legible writing|screen text|written interface)(?:,|$)/,
+  "ADR 0007: English and object-intrinsic characters are permitted, so none of these may be banned",
+);
+assert.doesNotMatch(
+  mewsocialPrompt.negative,
+  /currency symbol|dollar sign|baht sign|currency glyph|monetary icon|symbol inside circle/,
+  "ADR 0007 decision 1: a denomination, a coin face and a price tag are part of the object",
+);
+assert.doesNotMatch(
+  mewsocialPrompt.negative,
+  /framed notice|wall chart|\bdocument\b|certificate/,
+  "banning an object is scene control, which ADR 0006 gives to the Visual Beat, not to a rendering recipe",
+);
+
+console.log("verify-brand-visual-system: PASS ADR 0007 branded compilation");
 
 /** Every encoding a color code can arrive in, restated here on purpose: the
  * library's own token list must not be able to narrow what this suite accepts. */
@@ -226,7 +261,12 @@ assert.match(stormInfographic.positive, /grouping, scale and alignment carry the
  * became art direction. It is honest direction for a flat drawn format and a
  * direct contradiction of `cinematic-realism`'s own photorealism and tactile
  * natural materials, so v3 judges it per format instead of appending it to
- * everything. Its anti-text job belongs to the negative prompt. */
+ * everything.
+ *
+ * Removing it from the photoreal path left nothing behind it: the negative
+ * prompt does NOT pick up its anti-text job, because the only model this system
+ * renders on has no negative-prompt channel. See the negative-prompt reality
+ * block further down. */
 const FLAT_SURFACE_CLAUSE = /every visible surface uses solid undecorated color and simple abstract marks/i;
 for (const format of VISUAL_FORMATS) {
   const compiled = compileBrandVisualPrompt({
@@ -252,8 +292,10 @@ for (const format of VISUAL_FORMATS) {
     );
   }
 }
-assert.match(stormCinematic.negative, /pseudo-text.*gibberish text.*screen text.*legible writing/,
-  "the anti-text job the flat-surface line was written for stays covered by the negative prompt");
+assert.match(stormCinematic.negative, /pseudo-text, gibberish text, Thai writing/,
+  "the compiled negative keeps naming the marks a frame must never invent, so it is ready for an engine that reads one");
+assert.doesNotMatch(stormCinematic.negative, /screen text|legible writing|written interface/,
+  "ADR 0007: readable English is permitted, including on a screen, so the negative no longer bans it");
 
 const retroHouse = compileBrandVisualPrompt({
   visualFormatId: "retro-story",
@@ -839,8 +881,12 @@ assert.doesNotMatch(
   "copy safety must never erase a full semantic field or emit empty prompt grammar",
 );
 assert.match(semanticSanitizerPrompt.positive, /professional, calm and immediately readable feeling/i);
-assert.match(semanticSanitizerPrompt.positive, /story about a designer explains the conversion lessons/i);
-assert.doesNotMatch(semanticSanitizerPrompt.positive, /Top 10|logo/i);
+/** `logo` names a layer the renderer owns, so v3 still removes it. `Top 10` is
+ * not a layer — it is what the story is about, and under ADR 0007 a number the
+ * scene genuinely contains may render. Removing it was `-v4` behaviour, kept
+ * only while lettering was banned outright. */
+assert.match(semanticSanitizerPrompt.positive, /story about a designer explains the Top 10 conversion lessons/i);
+assert.doesNotMatch(semanticSanitizerPrompt.positive, /logo/i);
 
 assert.ok(
   VISUAL_FORMATS.every((format) => format.recipeVersion.endsWith("-v3")),
@@ -848,6 +894,164 @@ assert.ok(
 );
 
 console.log("verify-brand-visual-system: PASS semantic sanitizer + recipe versioning");
+
+/** ── Negative-prompt reality ───────────────────────────────────────────────
+ * `CompiledBrandVisualPrompt.negative` is not enforcement and never has been.
+ * The only model this system renders on is `z-image-turbo`, which is
+ * positive-only on both of its routes: its public endpoint accepts a
+ * negative-prompt field under either candidate name and returns byte-identical
+ * images (`artifacts/runpod-negative-prompt-probe-2026-08-10/`), and its custom
+ * workflow zeroes the negative conditioning. The terms are kept — they are the
+ * honest statement of what a Brand Visual frame must not contain, and they go
+ * live the moment a revision compiles for an engine that reads one — but no
+ * comment, doc or feature may claim they keep marks out of an image today. */
+assert.equal(
+  AI_IMAGE_MODELS.find((model) => model.id === "z-image-turbo")!.negativePromptDelivery,
+  "ignored",
+  "the model behind every Brand Visual render has no negative-prompt channel",
+);
+const brandVisualSource = readFileSync("src/lib/brand-visual-system.ts", "utf8");
+assert.match(brandVisualSource, /It is NOT enforcement/,
+  "the negative-prompt block states plainly that it reaches nothing today");
+assert.doesNotMatch(brandVisualSource, /load-bearing for the no-legible-marks guarantee/,
+  "the superseded claim that these terms enforce the text-free contract must not return");
+assert.doesNotMatch(brandVisualSource, /which already covers every legible mark/,
+  "nor the weaker version of the same claim on the flat-surface guardrail");
+
+/** ADR 0005 turned the shared negative list into two. `-v2` keeps the frozen
+ * pre-ADR-0007 array so a pinned revision compiles to the exact provider input
+ * it was published with; `-v3` gets its own. Duplication is the point, so the
+ * v3 compiler must never be able to reach the frozen one again. */
+const v3CompilerSource = brandVisualSource.slice(
+  brandVisualSource.indexOf("function compileBrandVisualPromptV3"),
+  brandVisualSource.indexOf("export function compileBrandVisualPrompt("),
+);
+assert.ok(v3CompilerSource.length > 0, "the v3 compiler must be locatable in source");
+assert.ok(
+  v3CompilerSource.includes("V3_NEGATIVE_PROMPT_TERMS"),
+  "the v3 compiler must build its negative from the ADR 0007 list",
+);
+assert.ok(
+  !v3CompilerSource.includes("TEXT_FREE_NEGATIVE_PROMPT_TERMS"),
+  "the v3 compiler must never read the frozen v2 negative list again",
+);
+const v2CompilerSource = brandVisualSource.slice(
+  brandVisualSource.indexOf("function compileBrandVisualPromptV2"),
+  brandVisualSource.indexOf("/** Compact named-color table"),
+);
+assert.ok(
+  v2CompilerSource.includes("TEXT_FREE_NEGATIVE_PROMPT_TERMS")
+    && !v2CompilerSource.includes("V3_NEGATIVE_PROMPT_TERMS"),
+  "the frozen v2 compiler must keep reading only the frozen v2 negative list",
+);
+
+console.log("verify-brand-visual-system: PASS negative prompt is recorded as inert, not enforcing");
+
+/** ── Locale neutrality ─────────────────────────────────────────────────────
+ * A generated image must follow the story's own context — an American script
+ * gets an American frame. The frozen `-v1`/`-v2` recipes hardcode "believable
+ * Thai environments"; v3 dropped it and must never regain a locale word through
+ * any path, so the only locale in a compiled frame is the one the Visual Beat
+ * asked for. */
+const LOCALE_WORD =
+  /\b(?:thai|thailand|bangkok|asian|asia|southeast|oriental|western|american|america|european|europe|japanese|chinese|korean|indian|african|latin)\b|ไทย/i;
+const LOCALE_FREE_BEAT = {
+  phase: "hook" as const,
+  subject: "a towering cyclone wall",
+  action: "the cyclone advances over the water toward the shore",
+  setting: "an open coastal town",
+  emotion: "awe mixed with dread",
+  emphasis: "the scale of the approaching storm",
+};
+for (const format of VISUAL_FORMATS) {
+  for (const brandVisualLanguage of [null, STORM_BRAND, {
+    palette: ["deep charcoal", "warm off-white"],
+    personality: "bold, cinematic, premium and handmade",
+    peopleAndSetting: "ทีมงานในออฟฟิศที่กรุงเทพ",
+    memorableCues: ["Thai street signage"],
+    visualNotes: "thick imperfect marker lines, high contrast, tilt the composition",
+  }]) {
+    const compiled = compileBrandVisualPrompt({
+      visualFormatId: format.id,
+      contentDomain: "extreme weather",
+      treatment: "urgent and cinematic",
+      visualBeat: LOCALE_FREE_BEAT,
+      brandVisualLanguage,
+    });
+    assert.doesNotMatch(compiled.positive, LOCALE_WORD,
+      `${format.id}-v3 must add no locale of its own; the story owns where a scene is set`);
+  }
+}
+// The other half of the rule: when the story is about a place, that place must
+// survive intact. Locale is the Visual Beat's to give, not the compiler's.
+const americanBeat = compileBrandVisualPrompt({
+  visualFormatId: "cinematic-realism",
+  contentDomain: "American small-business lending",
+  treatment: "warm and direct",
+  visualBeat: {
+    phase: "explain",
+    subject: "a hardware store owner and a stack of unopened envelopes",
+    action: "the owner sorts the envelopes across the counter",
+    setting: "a small-town American main-street hardware store",
+    emotion: "quiet determination",
+    emphasis: "the weight of the backlog",
+  },
+  brandVisualLanguage: null,
+});
+assert.match(americanBeat.positive, /set in a small-town American main-street hardware store/,
+  "a story set in America compiles to an American frame");
+assert.match(americanBeat.positive, /story about American small-business lending/);
+// v1/v2 are frozen with their locale clause (ADR 0005) and must keep it.
+for (const pinned of ["cinematic-realism-v1", "cinematic-realism-v2"] as const) {
+  const frozen = compileBrandVisualPrompt({
+    visualFormatId: "cinematic-realism",
+    recipeVersion: pinned,
+    contentDomain: "extreme weather",
+    treatment: "urgent and cinematic",
+    visualBeat: LOCALE_FREE_BEAT,
+    brandVisualLanguage: null,
+  });
+  assert.match(frozen.positive, /real human anatomy and believable Thai environments/,
+    `${pinned} keeps the locale clause it was published with`);
+}
+
+console.log("verify-brand-visual-system: PASS locale follows the story, never the recipe");
+
+/** ── v3 positive prompt is unchanged ───────────────────────────────────────
+ * The image text policy is expressed at the Visual Beat layer, not here: a
+ * positive-prompt clause written to suppress lettering is the exact class of
+ * change that produced the storytelling bug ADR 0006 fixed. These goldens pin
+ * the v3 output byte for byte, so any future anti-text clause has to be a
+ * deliberate `-v4` rather than a quiet edit to a shipped recipe. */
+assert.equal(
+  compileBrandVisualPrompt({
+    visualFormatId: "cinematic-realism",
+    contentDomain: "extreme weather",
+    treatment: "urgent and cinematic",
+    visualBeat: LOCALE_FREE_BEAT,
+    brandVisualLanguage: null,
+  }).positive,
+  "A vertical edge-to-edge composition from a single viewpoint fills the frame. All people and objects share the same ground plane in one frozen moment. photorealistic cinematic film still, correct anatomy and physically plausible surroundings wherever they appear, tactile natural materials, layered foreground, midground and background, 35mm documentary lens language, controlled filmic contrast and motivated practical lighting, the entire canvas uses photographic rendering. For a story about extreme weather, show a towering cyclone wall, the cyclone advances over the water toward the shore, set in an open coastal town, the mood feels awe mixed with dread, visual attention rests on the scale of the approaching storm. Shape the scene with a urgent and cinematic feeling. Use the selected format's neutral house palette and balanced composition. Preserve the selected visual format exactly while keeping the described subject, action and setting. The lower third stays calm and uncluttered with open background texture.",
+  "cinematic-realism-v3 must stay byte-identical: the text policy did not touch the compiler",
+);
+assert.equal(
+  compileBrandVisualPrompt({
+    visualFormatId: "clear-infographic",
+    contentDomain: "extreme weather",
+    treatment: "urgent and cinematic",
+    visualBeat: LOCALE_FREE_BEAT,
+    brandVisualLanguage: null,
+  }).positive,
+  "A vertical edge-to-edge composition from a single viewpoint fills the frame. All people and objects share the same ground plane in one frozen moment. diagrammatic editorial illustration on one continuous vertical canvas, clear top-to-bottom visual hierarchy, whatever appears is simplified to its clearest recognizable form, grouping, scale and alignment carry the explanation, generous negative space and a restrained palette, the idea is expressed entirely through visual relationships, every visible surface uses solid undecorated color and simple abstract marks. For a story about extreme weather, show a towering cyclone wall, the cyclone advances over the water toward the shore, set in an open coastal town, the mood feels awe mixed with dread, visual attention rests on the scale of the approaching storm. Shape the scene with a urgent and cinematic feeling. Use the selected format's neutral house palette and balanced composition. Preserve the selected visual format exactly while keeping the described subject, action and setting. The lower third stays calm and uncluttered with open background texture.",
+  "clear-infographic-v3 must stay byte-identical for the same reason",
+);
+// No `-v4` was needed, so none may exist: a recipe generation is a migration.
+assert.ok(
+  VISUAL_FORMATS.every((format) => format.recipeVersion === `${format.id}-v3`),
+  "the published recipe generation is still v3",
+);
+
+console.log("verify-brand-visual-system: PASS v3 positive prompt unchanged by the text policy");
 
 /** ADR 0005: a published revision keeps compiling to the exact provider input
  * it was published with. These goldens are the pre-v3 output, captured byte for
@@ -1032,3 +1236,71 @@ assert.ok(
 );
 
 console.log("verify-brand-visual-system: PASS 21-image benchmark matrix");
+
+/** ── ADR 0007 writing-system backstop ──────────────────────────────────────
+ * The rule that keeps Thai out of a frame lives in the content-preflight
+ * instruction, which asks Gemini for English beat fields. That is a request,
+ * and `z-image-turbo` is positive-only, so nothing downstream can veto a beat
+ * that comes back in Thai anyway. `v3PositiveArtDirectionValue` is the veto:
+ * it strips non-Latin writing at the last point before the provider.
+ *
+ * English is deliberately NOT stripped — ADR 0007 permits it, and the whole
+ * point of relaxing the `-v4` signage ban was that a story genuinely about a
+ * sign should get one. */
+const THAI_CHARACTER = /[฀-๿]/;
+const signageBeat = {
+  phase: "hook" as const,
+  subject: 'a hand-lettered wooden shop sign reading "OPEN LATE"',
+  action: "the owner hangs the sign as the last daylight goes",
+  setting: "a narrow street of small shopfronts",
+  emotion: "stubborn hope",
+  emphasis: 'the words "OPEN LATE" against the closing street',
+};
+const signageCompiled = compileBrandVisualPrompt({
+  visualFormatId: "cinematic-realism",
+  contentDomain: "small shops trading after hours",
+  treatment: "warm and direct",
+  visualBeat: signageBeat,
+  brandVisualLanguage: null,
+});
+assert.match(signageCompiled.positive, /a hand-lettered wooden shop sign reading "OPEN LATE"/,
+  "ADR 0007: a sign the story is about survives into the prompt, wording and all");
+assert.match(signageCompiled.positive, /visual attention rests on the words "OPEN LATE"/,
+  "English lettering may even be the emphasis of a beat");
+
+const thaiBeat = compileBrandVisualPrompt({
+  visualFormatId: "cinematic-realism",
+  contentDomain: "การตลาดออนไลน์",
+  treatment: "สดใส สนุก และเป็นกันเอง",
+  visualBeat: {
+    phase: "hook",
+    subject: 'ป้ายร้านเขียนว่า "ลดราคา" a hand-painted shop sign',
+    action: "the owner ties the sign to the shutter",
+    setting: "ตลาดเช้า a covered morning market",
+    emotion: "ความหวัง quiet hope",
+    emphasis: "the sign above the shutter",
+  },
+  brandVisualLanguage: {
+    palette: ["deep charcoal"],
+    personality: "โทนอบอุ่น",
+    peopleAndSetting: null,
+    memorableCues: [],
+    visualNotes: "สีสด",
+  },
+});
+assert.doesNotMatch(thaiBeat.positive, THAI_CHARACTER,
+  "no Thai character may reach a positive-only provider through any compiled field");
+assert.match(thaiBeat.positive, /a hand-painted shop sign/,
+  "stripping a writing system must keep the English the beat also carried");
+assert.match(thaiBeat.positive, /set in a covered morning market/,
+  "a mixed-script setting keeps its Latin half rather than being dropped whole");
+assert.doesNotMatch(thaiBeat.positive, /story about\s*,|inside\s*,|set in\s*,|feels\s*,|rests on\s*,|favors\s*\./,
+  "a field emptied by stripping must not leave a dangling connector for the encoder to render");
+/** A field with nothing Latin left contributes nothing rather than a fragment of
+ * stray punctuation, and the compiler's own English default carries the clause. */
+assert.match(thaiBeat.positive, /For a story about a visually led subject/,
+  "an all-Thai contentDomain falls back to the compiler default, not to empty text");
+assert.doesNotMatch(thaiBeat.positive, /Shape the scene with a\s+feeling/,
+  "an all-Thai treatment is dropped as a whole clause, not left half-written");
+
+console.log("verify-brand-visual-system: PASS ADR 0007 writing-system backstop");

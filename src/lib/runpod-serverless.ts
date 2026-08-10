@@ -5,13 +5,18 @@ import path from "node:path";
 import type { AiImageModelDefinition } from "@/lib/ai-image-policy";
 import {
   publicZImageProviderInput,
-  type RunpodImageInput,
+  type RunpodComfyImageInput,
   type RunpodImageOutput,
   type RunpodJobResponse,
 } from "@/lib/runpod-image-contract";
 
 export { firstRunpodImage } from "@/lib/runpod-image-contract";
-export type { RunpodImageInput, RunpodImageOutput, RunpodJobResponse } from "@/lib/runpod-image-contract";
+export type {
+  RunpodComfyImageInput,
+  RunpodImageInput,
+  RunpodImageOutput,
+  RunpodJobResponse,
+} from "@/lib/runpod-image-contract";
 
 const RUNPOD_API_BASE = "https://api.runpod.ai/v2";
 
@@ -95,7 +100,7 @@ function replaceWorkflowTokens(value: unknown, replacements: Record<string, stri
  * scalar tokens. Customers can never submit nodes, filenames or custom code. */
 export function buildComfyWorkflow(
   workflowPath: string,
-  input: { prompt: string; negativePrompt: string; width: number; height: number; seed: number },
+  input: RunpodComfyImageInput,
 ): Record<string, unknown> {
   const resolved = path.isAbsolute(workflowPath) ? workflowPath : path.resolve(process.cwd(), workflowPath);
   let parsed: unknown;
@@ -154,11 +159,20 @@ export type PreparedRunpodImageJob = {
  * fixed scalar-only request and keeps its safety checker enabled. */
 export function prepareRunpodImageJob(
   config: RunpodImageModelConfig,
-  input: RunpodImageInput,
+  input: RunpodComfyImageInput,
 ): PreparedRunpodImageJob {
   const providerInput = config.protocol === "comfy-workflow"
     ? { workflow: buildComfyWorkflow(config.workflowPath, input) }
-    : publicZImageProviderInput(input);
+    // The public endpoint has no negative-prompt channel (proven 2026-08-10, see
+    // `publicZImageProviderInput`), so the request is narrowed here, in the open,
+    // to the fields it actually delivers. The caller's negative prompt is not
+    // passed to a function that appears to accept it and then discards it.
+    : publicZImageProviderInput({
+      prompt: input.prompt,
+      width: input.width,
+      height: input.height,
+      seed: input.seed,
+    });
   return { endpointId: config.endpointId, payload: { input: providerInput } };
 }
 

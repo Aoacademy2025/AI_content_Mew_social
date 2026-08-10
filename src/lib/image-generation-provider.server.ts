@@ -21,7 +21,7 @@ import {
   runpodImageModelConfig,
   submitRunpodImageJob,
   type PreparedRunpodImageJob,
-  type RunpodImageInput,
+  type RunpodComfyImageInput,
   type RunpodImageOutput,
 } from "@/lib/runpod-serverless";
 
@@ -111,11 +111,14 @@ function customRouteEstimate(model: AiImageModelDefinition): number {
 
 function buildKieInput(
   model: AiImageModelDefinition,
-  input: RunpodImageInput & { aspectRatio: AiImageAspectRatio },
+  input: RunpodComfyImageInput & { aspectRatio: AiImageAspectRatio },
 ): PreparedKieImageJob {
   return {
     model: model.providerModel,
     input: {
+      // Positive prompt only: the kie.ai text-to-image task has no
+      // negative-prompt parameter, which is why every `kie` model is declared
+      // `negativePromptDelivery: "ignored"` in `ai-image-policy.ts`.
       prompt: input.prompt,
       aspect_ratio: input.aspectRatio,
       // The retail offer is specifically priced as the 1K product. Never let a
@@ -189,7 +192,7 @@ export function describeImageOffer(model: AiImageModelDefinition): ImageOfferAva
 
 export function prepareImageGeneration(
   model: AiImageModelDefinition,
-  input: RunpodImageInput & { aspectRatio: AiImageAspectRatio },
+  input: RunpodComfyImageInput & { aspectRatio: AiImageAspectRatio },
 ): PreparedImageGeneration {
   const offer = describeImageOffer(model);
   if (!offer.available) {

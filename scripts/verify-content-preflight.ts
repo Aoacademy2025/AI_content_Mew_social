@@ -13,6 +13,7 @@ async function main() {
   const { buildNarrativeAlignedBrollWindows } = await import("../src/lib/broll-windows");
   const { tokenizeWords } = await import("../src/lib/tts-timing");
   const {
+    CONTENT_PREFLIGHT_ANALYZER_VERSION,
     ContentPreflightError,
     createGeminiContentPreflightAnalyzer,
     planNarrativeVisualWindows,
@@ -107,9 +108,11 @@ async function main() {
     })),
   };
   let structuredOutputRequested = false;
+  let capturedPreflightPrompt = "";
   const structuredAnalyzer = createGeminiContentPreflightAnalyzer(
     user.id,
-    async (_key, _prompt, _maxTokens, _temperature, rawOptions) => {
+    async (_key, promptText, _maxTokens, _temperature, rawOptions) => {
+      capturedPreflightPrompt = promptText;
       const options = (rawOptions ?? {}) as typeof rawOptions & {
         responseMimeType?: string;
         responseJsonSchema?: { properties?: { beats?: { minItems?: number; maxItems?: number } } };
@@ -142,6 +145,68 @@ async function main() {
     structuredOutputRequested,
     true,
     "upload Brand Visual analysis must constrain Gemini to JSON with the exact accepted scene count",
+  );
+
+  /** ── Image text policy lives here, not in the prompt compiler ─────────────
+   * The image model has no negative-prompt channel (`z-image-turbo` is
+   * `negativePromptDelivery: "ignored"`), so the positive prompt is the only
+   * thing that reaches it — and the positive prompt is built from these beats.
+   * Shaping WHAT is requested is safe; a compiler clause shaping HOW every frame
+   * renders is the exact change that produced the storytelling bug ADR 0006
+   * fixed. So the whole intervention is a writing-system rule at this layer. */
+  assert.match(
+    capturedPreflightPrompt,
+    /may be what a beat is about when the source is genuinely about what it displays/,
+    "ADR 0007: a surface that has to be read may be a beat's focal subject when the story is about it",
+  );
+  assert.match(
+    capturedPreflightPrompt,
+    /give its wording in English using the Latin alphabet/,
+    "the rule names the writing system to use rather than a vague 'text-free' instruction",
+  );
+  assert.match(
+    capturedPreflightPrompt,
+    /Describe lettering in no other writing system/,
+    "everything outside the Latin alphabet is excluded by naming what to write, not by listing scripts",
+  );
+  assert.match(
+    capturedPreflightPrompt,
+    /Write every field in English, whatever language the Narrative Source is written in/,
+    "beat fields are contracted to English, which is what makes the compiler-side strip a backstop and not a scalpel",
+  );
+  /** Without this, "avoid signage" comes back as `setting: "a street with no
+   * signs"`, and a diffusion text encoder reads a negated concept as a positive
+   * cue — the beat would then draw the very thing it excluded. */
+  assert.match(
+    capturedPreflightPrompt,
+    /Never phrase a field as an absence, and never name something in order to exclude it/,
+    "beats must describe presence only, because every field is concatenated into a positive prompt",
+  );
+  /** Generated images follow the story's own context, so the instruction may
+   * name a writing system but never a place or a nationality: `-v2`'s
+   * "believable Thai environments" is exactly the lock Mew rejected on
+   * 2026-08-10. "English" and "Latin" are permitted here and only here, as the
+   * alphabet lettering is written in — not as a country. */
+  assert.doesNotMatch(
+    capturedPreflightPrompt,
+    /\b(?:thai|thailand|bangkok|asian|southeast|chinese|japanese|korean|arabic|cyrillic)\b|ไทย/i,
+    "the beat instruction must name no locale and no other writing system",
+  );
+  assert.match(capturedPreflightPrompt, /not a montage and not typography/,
+    "the single-frozen-moment requirement survives the rewrite");
+  /** The preflight cache is keyed on the analyzer version, so an instruction
+   * change that is not accompanied by a bump would keep serving pre-policy beats
+   * from cache — the policy would silently apply to new sources only. */
+  assert.equal(
+    CONTENT_PREFLIGHT_ANALYZER_VERSION,
+    "brand-content-preflight-v5-latin-lettering",
+    "changing what a beat contains must publish a new analyzer version",
+  );
+  const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");
+  assert.match(
+    preflightSource,
+    /COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = \[[\s\S]*?"brand-content-preflight-v4-focal-subject"[\s\S]*?"brand-content-preflight-v3-stable-windows"/,
+    "the superseded version stays readable as lineage, so a bump costs a re-analysis and never a generated image",
   );
   const project = await prisma.editorProject.create({
     data: { userId: user.id, title: "Creator script" },

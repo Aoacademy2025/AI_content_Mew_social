@@ -24,15 +24,66 @@ const guarded = buildArtworkOnlyPrompt("เจ้าของร้านกา�
 check("image prompt keeps the customer's subject", guarded.positive.includes("เจ้าของร้านกาแฟ"));
 check("image prompt leads with the single-frame invariant", guarded.positive.startsWith("ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE"));
 check("positive prompt avoids unwanted layout nouns", !/collage|storyboard|split screen|triptych|contact sheet/i.test(guarded.positive));
-check("image prompt requires language-free artwork", /language-free visual artwork/i.test(guarded.positive));
-check("image prompt keeps signs and labels blank", /signage, labels.*blank and unmarked/i.test(guarded.positive));
-check("ordinary image prompts do not manufacture a screen or interface", !/screens display abstract|unlabeled controls/i.test(guarded.positive));
-const interfaceGuarded = buildArtworkOnlyPrompt("เจ้าของร้านกำลังตรวจ dashboard ยอดขาย", "editorial", { interfaceExpected: true });
+
+// ── ADR 0007 · generated-image text policy ─────────────────────────────────────
+// The positive prompt is the only channel that reaches z-image-turbo, so every
+// clause in it is something the model will try to render. It may carry the
+// output-shape contract, the caller's subject and the rendering style — nothing
+// else. Anti-text guardrails written as positive art direction ("blank and
+// unmarked", "unlabeled controls") flatten clothes, packaging and screens; that
+// is the defect ADR 0006 fixed in the Brand Visual compiler and ADR 0007 removed
+// from this builder.
 check(
-  "explicit interface scenes keep the interface language-free",
-  /single in-context screen or interface.*unlabeled controls/i.test(interfaceGuarded.positive),
+  "ADR 0007: positive prompt carries no blanket text ban",
+  !/language-free|text-free|\bno text\b|without (?:any )?text|\bunlettered\b|free of (?:text|writing|lettering)/i.test(guarded.positive),
 );
-check("negative prompt bans Thai and English writing", guarded.negative.includes("Thai writing") && guarded.negative.includes("English writing"));
+check(
+  "ADR 0007: positive prompt flattens no surface and blanks no object",
+  !/\b(?:unmarked|unlabell?ed|undecorated|blank(?: and)?)\b|blank surfaces|plain empty/i.test(guarded.positive),
+);
+// Structural, so a legitimate STYLE_PROMPT tweak stays green while a fourth
+// clause — the way the removed guardrails originally arrived — turns it red.
+const guardedClauses = guarded.positive.replace(/\.$/, "").split(". ");
+check(
+  "ADR 0007: positive prompt is exactly shape guard, subject and style — nothing else",
+  guardedClauses.length === 3
+    && guardedClauses[0].startsWith("ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE")
+    && guardedClauses[1] === "เจ้าของร้านกาแฟในแสงเช้า"
+    && /editorial/i.test(guardedClauses[2]),
+);
+check(
+  "ADR 0007: the single-frame output-shape guard survives in full",
+  ["ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE",
+    "depict exactly one moment from exactly one camera view",
+    "use one spatially continuous scene across the entire canvas",
+    "keep a consistent subject, setting, lighting and perspective throughout the canvas",
+  ].every((clause) => guarded.positive.includes(clause)),
+);
+// `interfaceExpected` is gone rather than left accepted-and-ignored: an inert
+// option reads as a guarantee. A screen is scene content (ADR 0006) and may show
+// plausible English UI (ADR 0007), so this wrapper says nothing about screens.
+const interfaceSubject = buildArtworkOnlyPrompt("เจ้าของร้านกำลังตรวจ dashboard ยอดขาย", "editorial");
+check("ADR 0007: the interfaceExpected knob is removed, not left inert", buildArtworkOnlyPrompt.length === 2);
+check(
+  "ADR 0007: an interface subject receives no screen art direction from the wrapper",
+  !/in-context screen or interface|abstract visual states|unlabell?ed controls/i.test(interfaceSubject.positive)
+    && interfaceSubject.positive.includes("dashboard ยอดขาย"),
+);
+check(
+  "ADR 0007: negative keeps the Thai and CJK script bans",
+  ["Thai writing", "Chinese writing", "Japanese writing"].every((term) => guarded.negative.includes(term)),
+);
+check(
+  "ADR 0007: negative no longer bans text, numbers, signage or English",
+  !/\b(?:text|letters|words|typography|numbers|symbols|signage|label)\b|English writing/i.test(guarded.negative),
+);
+check(
+  "ADR 0007: negative still protects the deterministic overlay layers",
+  ["logo", "watermark", "signature", "brand name", "caption", "subtitle", "headline"]
+    .every((term) => guarded.negative.includes(term)),
+);
+// ── end ADR 0007 ──────────────────────────────────────────────────────────────
+
 check("negative prompt bans logos and watermarks", guarded.negative.includes("logo") && guarded.negative.includes("watermark"));
 check("negative prompt bans multi-panel compositions", guarded.negative.includes("triptych") && guarded.negative.includes("panel borders"));
 check("model registry exposes exactly the allowlisted models", AI_IMAGE_MODELS.length === 4 && AI_IMAGE_MODELS.every((model) => isAiImageModelId(model.id)));
