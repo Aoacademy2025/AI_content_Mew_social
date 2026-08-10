@@ -92,6 +92,22 @@ assert.doesNotMatch(documentaryPrompt, /\b(?:collage|grid|panel|contact sheet|mo
 assert.match(documentaryPrompt, /one uninterrupted edge-to-edge camera view/i);
 assert.match(interfacePrompt, /checkout flow/i);
 assert.match(interfacePrompt, /single.*interface|interface.*single/i);
+// The prominence constraint is genuine scene guidance at the layer that owns
+// scene content (ADR 0006), and it fires only when the planner already chose
+// `visualMode: "interface"`, so it introduces no object of its own. The art
+// direction that used to trail it — "using simple abstract unlabeled states" —
+// flattened the screen and contradicted ADR 0007's English permission, and must
+// not come back in any wording.
+assert.match(
+  interfacePrompt,
+  /a single believable interface may appear only as an in-context story element,/,
+  "the in-context prominence constraint stays; it is what stops a UI mockup becoming the frame",
+);
+assert.doesNotMatch(
+  interfacePrompt,
+  /unlabeled|unmarked|abstract (?:visual )?states|\bblank\b/i,
+  "no anti-text art direction may flatten the screen the brief asked for",
+);
 
 assert.equal(resolveHeroImageProviderStyle(planned.briefs[0], "auto"), "photoreal");
 assert.equal(resolveHeroImageProviderStyle(planned.briefs[1], "auto"), "editorial");
@@ -101,9 +117,17 @@ assert.equal(resolveHeroImageProviderStyle(planned.briefs[0], "lifestyle"), "pho
 const noUiGuard = buildArtworkOnlyPrompt(documentaryPrompt, "photoreal");
 assert.doesNotMatch(noUiGuard.positive, /screens display abstract visual states/i);
 assert.doesNotMatch(noUiGuard.positive, /\b(?:collage|grid|panel|contact sheet|mockup|layout)\b/i);
-const uiGuard = buildArtworkOnlyPrompt(interfacePrompt, "editorial", { interfaceExpected: true });
+// ADR 0007: the wrapper no longer restates interface art direction. Whether a
+// screen appears, and what it shows, is scene content owned by the Visual Beat —
+// `buildHeroImagePrompt` states it there when the brief asks for one — and under
+// ADR 0007 a screen may legitimately show plausible English UI.
+const uiGuard = buildArtworkOnlyPrompt(interfacePrompt, "editorial");
 assert.match(uiGuard.positive, /interface|screen/i);
-assert.match(uiGuard.positive, /unlabeled/i);
+assert.doesNotMatch(
+  uiGuard.positive,
+  /the single in-context screen or interface/i,
+  "the artwork wrapper must not re-state screen art direction the Visual Beat already owns",
+);
 
 const fallback = await planHeroImageScenes(
   { fullScript, scenes, visualDirection: "grounded", region: "thai", style: "documentary" },

@@ -17,9 +17,10 @@ const videoPrompt = buildKieImagePrompt(
   { region: "thai", style: "cinematic" },
 );
 const prompt = buildArtworkOnlyPrompt(videoPrompt, "cinematic");
+// `prompt.negative` is deliberately not passed: the public Z-Image endpoint has
+// no negative-prompt channel, so the contract type does not carry one.
 const providerInput = publicZImageProviderInput({
   prompt: prompt.positive,
-  negativePrompt: prompt.negative,
   width: 768,
   height: 1344,
   seed: 20260721,

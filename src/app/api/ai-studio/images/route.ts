@@ -82,6 +82,9 @@ export async function POST(request: Request) {
     try {
       preparedProviderJob = prepareImageGeneration(model, {
         prompt: artworkPrompt.positive,
+        // Delivered only on a model whose `negativePromptDelivery` is
+        // `workflow-defined`; on an `ignored` model (z-image-turbo, gpt-image-2)
+        // the artwork-only invariant rests entirely on the positive prompt.
         negativePrompt: artworkPrompt.negative,
         width,
         height,

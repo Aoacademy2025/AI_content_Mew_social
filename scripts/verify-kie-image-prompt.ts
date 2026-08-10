@@ -26,14 +26,22 @@ check("includes the subject", p1.toLowerCase().includes("bitcoin price surge"));
 check("includes the domain", p1.toLowerCase().includes("cryptocurrency finance"));
 check("includes concrete concepts", p1.toLowerCase().includes("bitcoin coin"));
 check("includes visual direction", p1.toLowerCase().includes("newsroom"));
-check("has language-free guard", /language-free surfaces/i.test(p1));
+// ADR 0007 + ADR 0006. The look line is lighting and finish only. Its old tail
+// ("purely visual language-free surfaces, blank unmarked signs and labels") was
+// an anti-text guardrail written as positive art direction, which a model obeys
+// as a composition instruction — the defect that produced flat walls and blank
+// signs. Neither engine this prompt reaches has a negative channel, so nothing
+// may replace it: any clause here is something the model tries to draw.
+check("look line is lighting and finish only", /natural lighting, realistic detail, sharp focus\.$/.test(p1));
+check("no blanking art direction", !/language-free|unmarked|unlabeled|\bblank\b/i.test(p1));
 check("ends as one sentence", p1.trim().endsWith("."));
 check("limits concepts to <=2", (p1.match(/bitcoin coin|trading chart|candlestick/gi) ?? []).length <= 2);
 
 // degrades gracefully with no spec/direction
 const p2 = buildKieImagePrompt("a quiet morning coffee", { terms: null });
 check("no-spec: still has subject", p2.toLowerCase().includes("quiet morning coffee"));
-check("no-spec: still has language-free guard", /language-free surfaces/i.test(p2));
+check("no-spec: still ends on the look line", /natural lighting, realistic detail, sharp focus\.$/.test(p2));
+check("no-spec: no blanking art direction", !/language-free|unmarked|unlabeled|\bblank\b/i.test(p2));
 check("no-spec: no 'general' domain leaks in", !/in a general setting/i.test(p2));
 
 // empty subject must not crash and must still produce a usable prompt
@@ -115,6 +123,18 @@ check(
   "creative B-roll prompt batch stays visually diverse",
   averageJaccard < 0.62,
   `average token similarity=${averageJaccard.toFixed(3)}`,
+);
+// The creative branch carried the same defect in a worse form: it appended
+// "interfaces expressed through abstract unlabeled color shapes and visual
+// states, blank unmarked text areas" to EVERY creative window, pushing an
+// interface into scenes whose subject had none and asking for empty rectangles.
+check(
+  "creative B-roll no longer injects an interface into every scene",
+  creativePrompts.every((prompt) => !/interfaces expressed through abstract/i.test(prompt)),
+);
+check(
+  "creative B-roll carries no blanking art direction",
+  creativePrompts.every((prompt) => !/language-free|unmarked|unlabeled|\bblank\b/i.test(prompt)),
 );
 
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }

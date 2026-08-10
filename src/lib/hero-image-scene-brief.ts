@@ -343,8 +343,24 @@ export function buildHeroImagePrompt(
       : region
         ? `when people or place are visible, depict an authentic ${region} context without introducing extra people`
         : "",
+    // Scene guidance, and this is the layer that owns scene content (ADR 0006):
+    // it fires only when the planner already chose `visualMode: "interface"`, so
+    // it introduces no object of its own — it constrains how prominent the
+    // screen the brief already asked for may become, which is what keeps a UI
+    // mockup from eating the frame.
+    //
+    // What used to follow it — "using simple abstract unlabeled states" — was
+    // not scene guidance but art direction, and it is removed on two counts.
+    // `unlabeled` contradicts ADR 0007, under which English is permitted and a
+    // control's own label is a character intrinsic to the depicted object; and
+    // "simple abstract … states" is a positive instruction to draw
+    // non-representational shapes, which flattens the screen and contradicts
+    // this very mode's own direction ("A believable in-context technology
+    // photograph"). It is the same clause `video-hero-image.server.ts` already
+    // dropped from the wrapper. Nothing replaces it: what the screen shows is
+    // scene content the brief's own subject and action already state.
     brief.includesInterface
-      ? "a single believable interface may appear only as an in-context story element, using simple abstract unlabeled states"
+      ? "a single believable interface may appear only as an in-context story element"
       : "",
     "specific lived-in detail and believable materials captured with natural observational timing",
     "one uninterrupted edge-to-edge camera view with one primary framing and one consistent perspective",

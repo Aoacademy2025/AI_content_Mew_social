@@ -177,9 +177,11 @@ async function generate(entry: QualityGateEntry) {
       snapshot = await runpod("run", {
         method: "POST",
         body: JSON.stringify({
+          // `entry.negativePrompt` stays in the manifest and in the case hash —
+          // it is the record of what the compiler produced — but it is not sent:
+          // this endpoint has no negative-prompt channel.
           input: publicZImageProviderInput({
             prompt: entry.prompt,
-            negativePrompt: entry.negativePrompt,
             width: 720,
             height: 1280,
             seed: entry.seed,

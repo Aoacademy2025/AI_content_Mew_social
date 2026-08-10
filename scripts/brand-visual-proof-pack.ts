@@ -579,9 +579,10 @@ async function generateOne(apiKey: string, item: ProofPackCase): Promise<string>
   const submitted = await runpod(apiKey, "run", {
     method: "POST",
     body: JSON.stringify({
+      // Positive prompt only — `item.compiled.negative` has no channel on this
+      // endpoint, so the proof pack renders exactly what production renders.
       input: publicZImageProviderInput({
         prompt: item.compiled.positive,
-        negativePrompt: item.compiled.negative,
         width: 720,
         height: 1280,
         seed: item.seed,

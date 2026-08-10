@@ -26,6 +26,19 @@ export type AiImageModelDefinition = {
   provider: AiImageProvider;
   providerModel: string;
   estimatedCostUsdMicros: number;
+  /**
+   * Whether a negative prompt reaches the model on any route this model can be
+   * configured onto. A provider fact, not a policy — it exists so no feature
+   * rests a guarantee on a channel that is not there.
+   *
+   * - `ignored` — no configured route for this model reads a negative prompt.
+   *   A caller may still compute one (it stays meaningful for engines that do
+   *   consume it), but nothing on this route delivers it.
+   * - `workflow-defined` — the `comfy-workflow` protocol substitutes
+   *   `{{NEGATIVE_PROMPT}}`, so delivery is a property of the server-owned
+   *   workflow file named by `workflowEnv`.
+   */
+  negativePromptDelivery: "ignored" | "workflow-defined";
   runpodProtocol?: "comfy-workflow" | "public-z-image";
   endpointEnv?: string;
   endpointDefault?: string;
@@ -43,6 +56,18 @@ export const AI_IMAGE_MODELS: readonly AiImageModelDefinition[] = [
     provider: "runpod",
     providerModel: "z-image-turbo",
     estimatedCostUsdMicros: 5_000,
+    // Positive-only on BOTH of its routes, verified separately for each:
+    //   · public endpoint — the same seed and prompt submitted with no field,
+    //     with `negative_prompt` and with `negativePrompt` returned byte-identical
+    //     images and no rejection or warning, with the subjects the negative text
+    //     asked to remove still in frame
+    //     (`artifacts/runpod-negative-prompt-probe-2026-08-10/report.md`);
+    //   · custom endpoint — `config/ai-workflows/z-image-turbo.json` runs at
+    //     `cfg: 1` and feeds `ConditioningZeroOut` into the sampler's negative
+    //     input, so it carries no `{{NEGATIVE_PROMPT}}` token by design.
+    // This is the model behind Hero AI Image and the Brand Visual System, so no
+    // text-free claim anywhere in the product may rest on a negative prompt.
+    negativePromptDelivery: "ignored",
     runpodProtocol: "public-z-image",
     endpointEnv: "RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID",
     endpointDefault: "z-image-turbo",
@@ -57,6 +82,10 @@ export const AI_IMAGE_MODELS: readonly AiImageModelDefinition[] = [
     provider: "kie",
     providerModel: "gpt-image-2-text-to-image",
     estimatedCostUsdMicros: 30_000,
+    // The kie.ai text-to-image task takes a positive prompt, an aspect ratio and
+    // a resolution tier; there is no negative-prompt parameter to send one to
+    // (`buildKieInput` in image-generation-provider.server.ts).
+    negativePromptDelivery: "ignored",
   },
   {
     id: "flux2-klein-4b",
@@ -68,6 +97,7 @@ export const AI_IMAGE_MODELS: readonly AiImageModelDefinition[] = [
     providerModel: "flux2-klein-4b",
     // Conservative until this custom worker has real billing samples.
     estimatedCostUsdMicros: 50_000,
+    negativePromptDelivery: "workflow-defined",
     runpodProtocol: "comfy-workflow",
     endpointEnv: "RUNPOD_IMAGE_FLUX2_ENDPOINT_ID",
     workflowEnv: "RUNPOD_IMAGE_FLUX2_WORKFLOW_PATH",
@@ -82,6 +112,7 @@ export const AI_IMAGE_MODELS: readonly AiImageModelDefinition[] = [
     providerModel: "hidream-o1",
     // Conservative until this custom worker has real billing samples.
     estimatedCostUsdMicros: 80_000,
+    negativePromptDelivery: "workflow-defined",
     runpodProtocol: "comfy-workflow",
     endpointEnv: "RUNPOD_IMAGE_HIDREAM_ENDPOINT_ID",
     workflowEnv: "RUNPOD_IMAGE_HIDREAM_WORKFLOW_PATH",
@@ -124,22 +155,49 @@ export function dimensionsForAspectRatio(aspectRatio: AiImageAspectRatio) {
 }
 
 /**
- * Customer prompts never reach a provider verbatim. Every request receives the
- * same artwork-only invariant so neither Thai nor English copy is intentionally
- * painted into the result. This is a generation guard, not an OCR guarantee.
+ * Customer prompts never reach a provider verbatim. Every request is wrapped in
+ * the same output-shape contract — one frame, one moment, one camera view — so a
+ * freeform prompt cannot come back as a collage, a storyboard sheet or a grid of
+ * variations.
+ *
+ * It is NOT a text guard, and must never be described as one. Per ADR 0007
+ * English text is permitted, as are characters intrinsic to a depicted object (a
+ * banknote denomination, a coin face, a price tag). The clauses that used to sit
+ * here — "standalone language-free visual artwork" and "all signage, labels,
+ * packaging, clothing and background surfaces are blank and unmarked" — were
+ * written as anti-text guardrails but read to a diffusion model as art
+ * direction: blank clothing flattens the clothes, blank packaging flattens the
+ * products, unlabeled controls flatten the screens. That is the same defect
+ * ADR 0006 fixed in the Brand Visual compiler, and it was live here on the same
+ * day. Nothing may be added back to `positive` that names a thing a model could
+ * draw; the only channel that legitimately narrows scene content is the Visual
+ * Beat request layer that asks for the scene in the first place.
+ *
+ * The returned `negative` reaches the model only on a model whose
+ * `negativePromptDelivery` is `workflow-defined` and whose server-owned workflow
+ * substitutes `{{NEGATIVE_PROMPT}}`. On every `ignored` model — which includes
+ * `z-image-turbo`, the model behind Hero AI Image — it is computed and never
+ * delivered. It is kept, not deleted, because it is real for the engines that do
+ * consume it; nothing may treat it as enforcement.
  */
 export function buildArtworkOnlyPrompt(
   prompt: string,
   style: AiImageStyle,
-  opts?: { interfaceExpected?: boolean },
 ): {
   positive: string;
   negative: string;
 } {
   const subject = prompt.replace(/\s+/g, " ").trim().slice(0, 1_500);
-  // RunPod Public Z-Image currently accepts only a positive prompt. Describe
-  // the wanted composition first without naming unwanted layouts: diffusion
-  // text encoders may otherwise treat a negated concept as a positive cue.
+  // Z-Image is positive-only on both of its routes — the public endpoint accepts
+  // a negative-prompt field and ignores it (proven byte-for-byte on 2026-08-10,
+  // `artifacts/runpod-negative-prompt-probe-2026-08-10/`), and the custom
+  // workflow zeroes its negative conditioning. So the positive prompt is the
+  // only channel that reaches this model at all, and every clause in it is
+  // something the model will try to render. Only three things earn a place:
+  // the output-shape contract, the caller's own subject, and the rendering
+  // style. Describe the wanted composition without naming unwanted layouts:
+  // diffusion text encoders may otherwise treat a negated concept as a positive
+  // cue.
   const singleFrameGuard = [
     "ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE",
     "depict exactly one moment from exactly one camera view",
@@ -150,19 +208,27 @@ export function buildArtworkOnlyPrompt(
     singleFrameGuard,
     subject,
     STYLE_PROMPT[style],
-    "standalone language-free visual artwork",
-    opts?.interfaceExpected
-      ? "the single in-context screen or interface displays simple abstract visual states and unlabeled controls"
-      : "",
-    "all signage, labels, packaging, clothing and background surfaces are blank and unmarked",
   ].filter(Boolean).join(". ") + ".";
 
+  // Aligned with ADR 0007. This list no longer bans text as such: `text`,
+  // `letters`, `words`, `typography`, `numbers`, `symbols`, `signage`, `label`
+  // and `English writing` are gone, because English is allowed and
+  // object-intrinsic characters are part of the object. What remains is the two
+  // things a generated frame must still never invent — a mark that impersonates
+  // the deterministic overlay layers (subtitle, headline, logo, brand mark), and
+  // a multi-frame layout.
+  //
+  // `Thai writing` stays per ADR 0007: the model renders authentic-looking Thai
+  // that spells nothing, which a Thai viewer reads as broken. `Chinese writing`
+  // and `Japanese writing` stay on the same reasoning — the non-Latin garbling
+  // is the same failure mode — but ADR 0007 speaks only about Thai and English,
+  // so that pair is a conservative default awaiting confirmation, not a decided
+  // policy.
   const negative = [
     "collage", "triptych", "diptych", "contact sheet", "storyboard", "split screen",
     "grid", "sequence", "repeated scene", "multiple views", "panels", "panel borders",
-    "text", "letters", "words", "typography", "caption", "subtitle", "headline",
-    "logo", "watermark", "signature", "numbers", "symbols", "signage", "label",
-    "Thai writing", "English writing", "Chinese writing", "Japanese writing",
+    "caption", "subtitle", "headline", "logo", "watermark", "signature", "brand name",
+    "Thai writing", "Chinese writing", "Japanese writing",
   ].join(", ");
 
   return { positive, negative };

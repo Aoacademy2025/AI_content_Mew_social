@@ -13,6 +13,7 @@ async function main() {
   const { buildNarrativeAlignedBrollWindows } = await import("../src/lib/broll-windows");
   const { tokenizeWords } = await import("../src/lib/tts-timing");
   const {
+    CONTENT_PREFLIGHT_ANALYZER_VERSION,
     ContentPreflightError,
     createGeminiContentPreflightAnalyzer,
     planNarrativeVisualWindows,
@@ -107,9 +108,11 @@ async function main() {
     })),
   };
   let structuredOutputRequested = false;
+  let capturedPreflightPrompt = "";
   const structuredAnalyzer = createGeminiContentPreflightAnalyzer(
     user.id,
-    async (_key, _prompt, _maxTokens, _temperature, rawOptions) => {
+    async (_key, promptText, _maxTokens, _temperature, rawOptions) => {
+      capturedPreflightPrompt = promptText;
       const options = (rawOptions ?? {}) as typeof rawOptions & {
         responseMimeType?: string;
         responseJsonSchema?: { properties?: { beats?: { minItems?: number; maxItems?: number } } };
@@ -142,6 +145,60 @@ async function main() {
     structuredOutputRequested,
     true,
     "upload Brand Visual analysis must constrain Gemini to JSON with the exact accepted scene count",
+  );
+
+  /** ── Image text policy lives here, not in the prompt compiler ─────────────
+   * The image model has no negative-prompt channel (`z-image-turbo` is
+   * `negativePromptDelivery: "ignored"`), so the positive prompt is the only
+   * thing that reaches it — and the positive prompt is built from these beats.
+   * Shaping WHAT is requested is safe; a compiler clause shaping HOW every frame
+   * renders is the exact change that produced the storytelling bug ADR 0006
+   * fixed. So the whole intervention is one focal-subject rule at this layer. */
+  assert.match(
+    capturedPreflightPrompt,
+    /must never be what a beat is about, in any language/,
+    "a surface that has to be read may not be a beat's focal subject",
+  );
+  assert.match(
+    capturedPreflightPrompt,
+    /a sign, banner, poster, screen, page or any other surface whose meaning depends on being read/,
+    "the rule names the concrete failure mode rather than a vague 'text-free' instruction",
+  );
+  assert.match(
+    capturedPreflightPrompt,
+    /build the beat from the physical situation or the human consequence behind it/,
+    "the rule redirects to a substitute subject instead of asking for an absence",
+  );
+  /** Without this, "avoid signage" comes back as `setting: "a street with no
+   * signs"`, and a diffusion text encoder reads a negated concept as a positive
+   * cue — the beat would then draw the very thing it excluded. */
+  assert.match(
+    capturedPreflightPrompt,
+    /Never phrase a field as an absence, and never name something in order to exclude it/,
+    "beats must describe presence only, because every field is concatenated into a positive prompt",
+  );
+  /** Generated images follow the story's own context. Naming a language or a
+   * place here would both bias Gemini's settings and imply a default locale. */
+  assert.doesNotMatch(
+    capturedPreflightPrompt,
+    /\b(?:thai|thailand|bangkok|asian|southeast|english|latin|chinese|japanese|korean|arabic|cyrillic)\b|ไทย/i,
+    "the beat instruction must name no language and no locale",
+  );
+  assert.match(capturedPreflightPrompt, /not a montage and not typography/,
+    "the single-frozen-moment requirement survives the rewrite");
+  /** The preflight cache is keyed on the analyzer version, so an instruction
+   * change that is not accompanied by a bump would keep serving pre-policy beats
+   * from cache — the policy would silently apply to new sources only. */
+  assert.equal(
+    CONTENT_PREFLIGHT_ANALYZER_VERSION,
+    "brand-content-preflight-v4-focal-subject",
+    "changing what a beat contains must publish a new analyzer version",
+  );
+  const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");
+  assert.match(
+    preflightSource,
+    /COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = \[[\s\S]*?"brand-content-preflight-v3-stable-windows"/,
+    "the superseded version stays readable as lineage, so a bump costs a re-analysis and never a generated image",
   );
   const project = await prisma.editorProject.create({
     data: { userId: user.id, title: "Creator script" },

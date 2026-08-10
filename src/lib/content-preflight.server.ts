@@ -11,9 +11,17 @@ import { geminiGenerateText } from "@/lib/gemini";
 import { KeyRequiredError, resolveGeminiKey } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 
-export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v3-stable-windows";
+/** Bumped whenever the extraction prompt changes what a beat contains, so a
+ * project cannot keep serving beats produced by a superseded analyzer: the
+ * preflight cache is keyed on this string. `-v4` is the focal-subject rule that
+ * keeps a surface which must be read from being what a beat is about. */
+export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v4-focal-subject";
+/** Read-only lineage. A superseded row is still a valid source of a previous
+ * beat's generated asset, so a bump costs one re-analysis and never an image:
+ * beats whose `sourceExcerptHash` is unchanged carry their asset forward. */
 const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
   CONTENT_PREFLIGHT_ANALYZER_VERSION,
+  "brand-content-preflight-v3-stable-windows",
   "brand-content-preflight-v2-windowed",
 ] as const;
 export type NarrativeSourceKind = "ai-script" | "creator-script" | "upload-transcript";
@@ -217,7 +225,22 @@ export function createGeminiContentPreflightAnalyzer(
         `sourceKind: ${input.kind}`,
         "Choose suggestedVisualFormatId from: cinematic-realism, stick-figure-story, dramatic-comic, clear-infographic, retro-story.",
         `Return exactly ${input.windows.length} beats, one for each supplied B-roll window, in the same order. Use beatKey window-0, window-1, and so on.`,
-        "Each beat must describe one text-free frozen visual moment, not a montage and not typography.",
+        // The image model renders lettering as authentic-looking nonsense in some
+        // writing systems, and it has no negative-prompt channel to suppress that
+        // with (z-image-turbo is `negativePromptDelivery: "ignored"`). The only
+        // channel that reaches it is the positive prompt, and the positive prompt
+        // is built from these beats — so the one safe place to intervene is what
+        // is requested, never how it is rendered. Empirically the failure mode is
+        // narrow: a beat that puts a sign, banner, poster or screen at the centre
+        // of the frame. Stated as a focal-subject rule, with no locale and no
+        // language named, so it can neither bias the setting nor suppress writing
+        // that merely happens to sit in a scene the story called for.
+        "Each beat must describe one frozen visual moment — people, objects, places, light and physical action — not a montage and not typography.",
+        "The subject, action and emphasis of a beat are a person, an object, a place or a physical action. When the source is about something written, posted or displayed, build the beat from the physical situation or the human consequence behind it instead: a sign, banner, poster, screen, page or any other surface whose meaning depends on being read must never be what a beat is about, in any language.",
+        // Without this, "avoid signage" comes back as `setting: "a street with no
+        // signs"` — and a diffusion text encoder reads a negated concept as a
+        // positive cue, so the beat would draw the very thing it excluded.
+        "Write only what is present in the frame. Never phrase a field as an absence, and never name something in order to exclude it.",
         "Schema: {contentDomain:string,suggestedVisualFormatId:string,suggestedTreatment:{label:string,mood:string},beats:[{beatKey:string,sourceExcerpt:string,startMs?:integer,endMs?:integer,subject:string,action:string,setting:string,emotion:string,emphasis:string}]}",
         "B-roll windows (authoritative; copy each text into the matching sourceExcerpt):",
         JSON.stringify(input.windows),

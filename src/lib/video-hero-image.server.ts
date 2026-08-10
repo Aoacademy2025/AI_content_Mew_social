@@ -141,6 +141,12 @@ export type HeroImageGenerationInput = {
   sceneIndex: number;
   sceneTitle?: string;
   style?: AiImageStyle;
+  /** Recorded on the job for observability only. It no longer shapes the prompt:
+   * per ADR 0007 a screen may legitimately show plausible English UI, and the
+   * clause it used to switch on ("simple abstract visual states and unlabeled
+   * controls") was art direction that flattened screens. Whether an interface
+   * appears, and what it shows, is scene content and belongs to the Visual Beat
+   * — `buildHeroImagePrompt` already states it there when the brief asks for one. */
   interfaceExpected?: boolean;
   timeoutMs?: number;
   brandVisualPrompt?: {
@@ -202,13 +208,15 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
         positive: projectVisual.compiled.positive,
         negative: projectVisual.compiled.negative,
       }
-    : buildArtworkOnlyPrompt(input.prompt, style, {
-        interfaceExpected: input.interfaceExpected,
-      });
+    : buildArtworkOnlyPrompt(input.prompt, style);
   let prepared;
   try {
     prepared = prepareImageGeneration(MODEL, {
       prompt: artworkPrompt.positive,
+      // `MODEL` is `z-image-turbo`, whose `negativePromptDelivery` is `ignored`:
+      // this value is carried as the protocol field and never reaches the model
+      // on either of its routes. Nothing about this frame's content may be
+      // assumed from it — the positive prompt is the only channel in play.
       negativePrompt: artworkPrompt.negative,
       width,
       height,
