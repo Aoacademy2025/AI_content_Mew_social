@@ -157,6 +157,41 @@ plus `:root[data-theme="dark"]`, responsive, under 12 MB). Thai copy must be pro
 - Model-rendered Thai via a different engine (GPT Image via KIE) — still future work.
 - Anything in `/brands` UI.
 
+## แก้ไขภายหลัง (2026-08-10) — the signage rule, relaxed
+
+Mew's answer to the open decision: relax it, by whatever means keeps Thai out of a frame.
+
+The first implementation expressed the Thai ban as **"a surface that must be read may never be a
+beat's focal subject, in any language"**. That is language-blind, so it also suppressed the English
+signage a story may genuinely be about — which contradicts decision 3 in the same document. Two
+things changed:
+
+1. **The request is now a writing system, not a subject.** Analyzer version
+   `brand-content-preflight-v5-latin-lettering` lets a sign, banner, poster, screen or page be what
+   a beat is about when the source is about what it displays, and asks for its wording in English
+   using the Latin alphabet. `hero-image-scene-brief.ts` carries the matching instruction. Neither
+   names a locale — Mew's 2026-08-10 correction stands: a story about America gets an American
+   frame.
+2. **A deterministic backstop was added, because a request is not enforcement.**
+   `latinLetteringOnly()` strips non-Latin writing at the two prompt boundaries. This closed a live
+   leak nobody had noticed: `fallbackBrief` in `hero-image-scene-brief.ts` seeds a brief's subject,
+   action and narrative beat from the **raw Thai narration** whenever the Gemini planner fails, and
+   those fields go straight into the image prompt. Every planner outage was putting Thai in front of
+   a model with no way to refuse it.
+
+Relaxing the request alone would have half-worked: the shared `positiveArtDirectionValue` scrubber
+also deletes writing-related nouns and any run of capitals, so the beat `the words "OPEN LATE"
+against the closing street` compiled to `the " " against the closing street`. That scrubbing was
+correct while lettering was banned outright and is wrong now, so v3 stops running it and removes
+only the terms naming a layer the renderer owns deterministically — caption, subtitle, headline,
+logo, watermark, signature, brand name, typography. `-v1`/`-v2` keep the old scrubber untouched:
+proven byte-identical across 60,000 randomized compiles (Thai, CJK, hex in five encodings,
+capital runs, quote-heavy input) against the pre-change tree, and v3 itself is byte-identical across
+another 60,000 compiles of input carrying none of those triggers.
+
+**Known limit, deliberate:** a Thai prompt typed by a person into AI Studio is left untouched. That
+is intent, not a leak; stripping it would leave no subject. Serving it properly needs translation.
+
 ## Status
 
-interviewed 2026-08-10 | approved: 2026-08-10 | executed: 2026-08-10 | delivered: PR #213 (stacked on #212; one open decision on the signage rule)
+interviewed 2026-08-10 | approved: 2026-08-10 | executed: 2026-08-10 | delivered: PR #213 (stacked on #212; signage rule relaxed per Mew 2026-08-10)

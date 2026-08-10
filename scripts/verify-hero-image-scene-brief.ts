@@ -140,6 +140,40 @@ assert.deepEqual(fallback.briefs.map((brief) => brief.sceneIndex), [3, 4]);
 assert.ok(fallback.briefs.every((brief) => brief.narrativeBeat.length > 0));
 assert.ok(fallback.briefs.every((brief) => !brief.includesInterface));
 
+/** ── ADR 0007: the fallback path must not put Thai in front of the model ────
+ * A fallback brief is seeded from the narration, and the narration is Thai. It
+ * then goes straight into a positive-only prompt with no negative channel to
+ * refuse it, so every planner outage was a Thai-glyph render. The planner itself
+ * still receives the untouched Thai script — it needs it to understand the
+ * story; the strip sits only on the diffusion path. */
+const THAI_CHARACTER = /[฀-๿]/;
+assert.ok(
+  fallback.briefs.every((brief) => !THAI_CHARACTER.test(buildHeroImagePrompt(brief))),
+  "a fallback brief built from Thai narration must compile to a Thai-free prompt",
+);
+assert.ok(
+  fallback.briefs.every((brief) => /small business product quality|customer purchase decision|the current story beat/.test(buildHeroImagePrompt(brief))),
+  "the English the scene already carried must survive, or an English default must replace it",
+);
+assert.ok(
+  fallback.briefs.every((brief) => !/\bof\s*,|\bin\s*,|purpose:\s*,|materials:\s*,/.test(buildHeroImagePrompt(brief))),
+  "a stripped field must never leave a dangling connector for the text encoder to render",
+);
+/** The planner is asked for English fields, so a Thai brief is a defect — but a
+ * request is not enforcement, and this is the layer that enforces it. */
+const thaiPlannedPrompt = buildHeroImagePrompt({
+  ...fallback.briefs[0],
+  subject: 'ป้ายหน้าร้าน a hand-painted shop sign reading "OPEN LATE"',
+  setting: "ตลาดเช้า a covered morning market",
+  narrativeBeat: "ร้านเล็กสู้ต่อ",
+});
+assert.doesNotMatch(thaiPlannedPrompt, THAI_CHARACTER,
+  "a planner that ignores the English instruction is still vetoed at the prompt boundary");
+assert.match(thaiPlannedPrompt, /a hand-painted shop sign reading "OPEN LATE"/,
+  "ADR 0007: English lettering the story asked for survives the strip intact");
+assert.match(thaiPlannedPrompt, /story purpose: the current story beat/,
+  "a field with nothing Latin left falls back to an English default, not to empty text");
+
 console.log("ALL PASS");
 }
 

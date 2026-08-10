@@ -13,14 +13,17 @@ import { reserveAiTextCall } from "@/lib/ai-text-limits";
 
 /** Bumped whenever the extraction prompt changes what a beat contains, so a
  * project cannot keep serving beats produced by a superseded analyzer: the
- * preflight cache is keyed on this string. `-v4` is the focal-subject rule that
- * keeps a surface which must be read from being what a beat is about. */
-export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v4-focal-subject";
+ * preflight cache is keyed on this string. `-v5` replaces `-v4`'s
+ * language-blind focal-subject ban with a writing-system rule: a surface that
+ * must be read may be what a beat is about, and its wording is written in
+ * English (ADR 0007). */
+export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v5-latin-lettering";
 /** Read-only lineage. A superseded row is still a valid source of a previous
  * beat's generated asset, so a bump costs one re-analysis and never an image:
  * beats whose `sourceExcerptHash` is unchanged carry their asset forward. */
 const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
   CONTENT_PREFLIGHT_ANALYZER_VERSION,
+  "brand-content-preflight-v4-focal-subject",
   "brand-content-preflight-v3-stable-windows",
   "brand-content-preflight-v2-windowed",
 ] as const;
@@ -230,13 +233,20 @@ export function createGeminiContentPreflightAnalyzer(
         // with (z-image-turbo is `negativePromptDelivery: "ignored"`). The only
         // channel that reaches it is the positive prompt, and the positive prompt
         // is built from these beats — so the one safe place to intervene is what
-        // is requested, never how it is rendered. Empirically the failure mode is
-        // narrow: a beat that puts a sign, banner, poster or screen at the centre
-        // of the frame. Stated as a focal-subject rule, with no locale and no
-        // language named, so it can neither bias the setting nor suppress writing
-        // that merely happens to sit in a scene the story called for.
+        // is requested, never how it is rendered.
+        //
+        // The failure mode is a writing system, not a subject: the 8-image probe
+        // of 2026-08-10 rendered English correctly up to a nine-word sentence and
+        // rendered Thai as authentic-looking glyphs that spell nothing. `-v4`
+        // stated this as a language-blind ban on signage being focal, which also
+        // cost the English signage a story may genuinely be about. `-v5` names
+        // the writing system instead: the beat may centre on a surface that must
+        // be read, and its wording is requested in English whatever language the
+        // source is in. `v3PositiveArtDirectionValue` in `brand-visual-system.ts`
+        // is the deterministic backstop if a beat comes back in Thai anyway.
         "Each beat must describe one frozen visual moment — people, objects, places, light and physical action — not a montage and not typography.",
-        "The subject, action and emphasis of a beat are a person, an object, a place or a physical action. When the source is about something written, posted or displayed, build the beat from the physical situation or the human consequence behind it instead: a sign, banner, poster, screen, page or any other surface whose meaning depends on being read must never be what a beat is about, in any language.",
+        "Write every field in English, whatever language the Narrative Source is written in.",
+        "A sign, banner, poster, screen or page may be what a beat is about when the source is genuinely about what it displays. Whenever a beat describes something that is read, give its wording in English using the Latin alphabet and quote the exact English words. Describe lettering in no other writing system.",
         // Without this, "avoid signage" comes back as `setting: "a street with no
         // signs"` — and a diffusion text encoder reads a negated concept as a
         // positive cue, so the beat would draw the very thing it excluded.

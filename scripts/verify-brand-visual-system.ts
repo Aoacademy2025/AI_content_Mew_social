@@ -881,8 +881,12 @@ assert.doesNotMatch(
   "copy safety must never erase a full semantic field or emit empty prompt grammar",
 );
 assert.match(semanticSanitizerPrompt.positive, /professional, calm and immediately readable feeling/i);
-assert.match(semanticSanitizerPrompt.positive, /story about a designer explains the conversion lessons/i);
-assert.doesNotMatch(semanticSanitizerPrompt.positive, /Top 10|logo/i);
+/** `logo` names a layer the renderer owns, so v3 still removes it. `Top 10` is
+ * not a layer — it is what the story is about, and under ADR 0007 a number the
+ * scene genuinely contains may render. Removing it was `-v4` behaviour, kept
+ * only while lettering was banned outright. */
+assert.match(semanticSanitizerPrompt.positive, /story about a designer explains the Top 10 conversion lessons/i);
+assert.doesNotMatch(semanticSanitizerPrompt.positive, /logo/i);
 
 assert.ok(
   VISUAL_FORMATS.every((format) => format.recipeVersion.endsWith("-v3")),
@@ -1232,3 +1236,71 @@ assert.ok(
 );
 
 console.log("verify-brand-visual-system: PASS 21-image benchmark matrix");
+
+/** ── ADR 0007 writing-system backstop ──────────────────────────────────────
+ * The rule that keeps Thai out of a frame lives in the content-preflight
+ * instruction, which asks Gemini for English beat fields. That is a request,
+ * and `z-image-turbo` is positive-only, so nothing downstream can veto a beat
+ * that comes back in Thai anyway. `v3PositiveArtDirectionValue` is the veto:
+ * it strips non-Latin writing at the last point before the provider.
+ *
+ * English is deliberately NOT stripped — ADR 0007 permits it, and the whole
+ * point of relaxing the `-v4` signage ban was that a story genuinely about a
+ * sign should get one. */
+const THAI_CHARACTER = /[฀-๿]/;
+const signageBeat = {
+  phase: "hook" as const,
+  subject: 'a hand-lettered wooden shop sign reading "OPEN LATE"',
+  action: "the owner hangs the sign as the last daylight goes",
+  setting: "a narrow street of small shopfronts",
+  emotion: "stubborn hope",
+  emphasis: 'the words "OPEN LATE" against the closing street',
+};
+const signageCompiled = compileBrandVisualPrompt({
+  visualFormatId: "cinematic-realism",
+  contentDomain: "small shops trading after hours",
+  treatment: "warm and direct",
+  visualBeat: signageBeat,
+  brandVisualLanguage: null,
+});
+assert.match(signageCompiled.positive, /a hand-lettered wooden shop sign reading "OPEN LATE"/,
+  "ADR 0007: a sign the story is about survives into the prompt, wording and all");
+assert.match(signageCompiled.positive, /visual attention rests on the words "OPEN LATE"/,
+  "English lettering may even be the emphasis of a beat");
+
+const thaiBeat = compileBrandVisualPrompt({
+  visualFormatId: "cinematic-realism",
+  contentDomain: "การตลาดออนไลน์",
+  treatment: "สดใส สนุก และเป็นกันเอง",
+  visualBeat: {
+    phase: "hook",
+    subject: 'ป้ายร้านเขียนว่า "ลดราคา" a hand-painted shop sign',
+    action: "the owner ties the sign to the shutter",
+    setting: "ตลาดเช้า a covered morning market",
+    emotion: "ความหวัง quiet hope",
+    emphasis: "the sign above the shutter",
+  },
+  brandVisualLanguage: {
+    palette: ["deep charcoal"],
+    personality: "โทนอบอุ่น",
+    peopleAndSetting: null,
+    memorableCues: [],
+    visualNotes: "สีสด",
+  },
+});
+assert.doesNotMatch(thaiBeat.positive, THAI_CHARACTER,
+  "no Thai character may reach a positive-only provider through any compiled field");
+assert.match(thaiBeat.positive, /a hand-painted shop sign/,
+  "stripping a writing system must keep the English the beat also carried");
+assert.match(thaiBeat.positive, /set in a covered morning market/,
+  "a mixed-script setting keeps its Latin half rather than being dropped whole");
+assert.doesNotMatch(thaiBeat.positive, /story about\s*,|inside\s*,|set in\s*,|feels\s*,|rests on\s*,|favors\s*\./,
+  "a field emptied by stripping must not leave a dangling connector for the encoder to render");
+/** A field with nothing Latin left contributes nothing rather than a fragment of
+ * stray punctuation, and the compiler's own English default carries the clause. */
+assert.match(thaiBeat.positive, /For a story about a visually led subject/,
+  "an all-Thai contentDomain falls back to the compiler default, not to empty text");
+assert.doesNotMatch(thaiBeat.positive, /Shape the scene with a\s+feeling/,
+  "an all-Thai treatment is dropped as a whole clause, not left half-written");
+
+console.log("verify-brand-visual-system: PASS ADR 0007 writing-system backstop");

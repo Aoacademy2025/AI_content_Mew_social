@@ -1,3 +1,5 @@
+import { latinLetteringOnly } from "@/lib/image-prompt-script";
+
 /** Provider-neutral visual identity vocabulary for Brand Visual System V1. */
 export const VISUAL_FORMAT_IDS = [
   "cinematic-realism",
@@ -693,6 +695,11 @@ const COLOR_CODE_TOKEN =
  * encoding. Values without one stay byte-identical to the shared cleaner. */
 const COLOR_CODE_MARKER = /[#＃]|%23|0x[0-9a-fA-F]{3}|(?:rgba?|hsla?)\s*\(/i;
 
+/** A field left with no letter after cleaning contributes nothing rather than a
+ * fragment of stray punctuation, which a diffusion encoder would still try to
+ * render. Its clause then falls back to the compiler's own English default. */
+const LATIN_LETTER_MARKER = /\p{Script=Latin}/u;
+
 function hexRgb(token: string): readonly [number, number, number] | null {
   const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(token);
   if (!match) return null;
@@ -767,13 +774,42 @@ function paletteColorWords(entry: string): string {
   return named[0] ?? "";
 }
 
-/** v3-only sanitizing layer over the shared art-direction cleaner. A `-v2` pin
- * must keep compiling byte-identically (ADR 0005), so hex stripping is layered
- * on top instead of edited into `positiveArtDirectionValue`. Creator-typed
- * `treatment` and Gemini-extracted Visual Beat fields can carry a raw code just
- * like a palette entry, and Z-Image paints one as a colored object. */
+/** Terms v3 removes from every field before it becomes a prompt. Each one names
+ * a layer the renderer owns deterministically — the subtitle track, the headline
+ * hook, the brand mark — so a diffusion model synthesizing its own version of it
+ * is always a defect, whatever the beat says (ADR 0007).
+ *
+ * Words that merely describe writing a scene genuinely contains — `sign`,
+ * `words`, `letters`, `numbers`, `label` — are deliberately absent. The shared
+ * `positiveArtDirectionValue` still strips those, along with any run of capitals,
+ * which is why the beat `the words "OPEN LATE" against the closing street`
+ * compiled to `the " " against the closing street`. That was correct while a
+ * surface which must be read could never be a beat's focal subject; under
+ * ADR 0007 and analyzer `-v5` it can, so v3 stops scrubbing what the story asked
+ * for and scrubs only what the story may never own. */
+const V3_RESERVED_LAYER_TERMS =
+  /\b(?:captions?|subtitles?|headlines?|watermarks?|logos?|signatures?|typography|brand\s*names?)\b/giu;
+
+/** v3-only cleaner. A `-v1`/`-v2` pin must keep compiling byte-identically
+ * (ADR 0005), so this is a separate path rather than an edit to the shared
+ * cleaner. It does three things the shared one does not:
+ *
+ * 1. Drops non-Latin writing. Every field reaching here is contracted to be
+ *    English — the content-preflight prompt asks for it explicitly — so Thai in
+ *    a beat is a defect, and a Thai `treatment` is text a Latin-trained encoder
+ *    cannot act on but can still echo back as glyphs. A positive-only route has
+ *    no other enforcement channel.
+ * 2. Strips color codes. Creator-typed `treatment` and Gemini-extracted beat
+ *    fields can carry a raw code just like a palette entry, and Z-Image paints
+ *    one as a colored object rather than applying it as a grade.
+ * 3. Keeps the scene's own lettering instead of scrubbing it (see above). */
 function v3PositiveArtDirectionValue(value: string | null | undefined, limit = 260): string {
-  const sanitized = positiveArtDirectionValue(value, limit);
+  const cleaned = latinLetteringOnly(artDirectionValue(value, limit))
+    .replace(V3_RESERVED_LAYER_TERMS, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\s+([,.;:])/g, "$1")
+    .trim();
+  const sanitized = LATIN_LETTER_MARKER.test(cleaned) ? cleaned : "";
   if (!COLOR_CODE_MARKER.test(sanitized)) return sanitized;
   return sanitized
     // Longest first: `%2338BDF8` must be removed whole, not reduced to `38BDF8`.
