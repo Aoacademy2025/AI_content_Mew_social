@@ -98,6 +98,22 @@ function imageFundingLine(p: V2Project, requested: number, approximate = false):
 }
 
 export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => Promise<void> }) {
+  const stepTwoContentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const content = stepTwoContentRef.current;
+    if (!content) return;
+
+    // Brand access and the library load asynchronously. Without this reset and
+    // `overflow-anchor: none` below, Chromium preserves the B-roll card as its
+    // scroll anchor when BrandVisualSelector is inserted above it. The selector
+    // then exists and completes its preflight, but is silently pushed just above
+    // the viewport on every reload. Keep Step 2 at its actual beginning instead.
+    content.scrollTop = 0;
+    const frame = window.requestAnimationFrame(() => {
+      content.scrollTop = 0;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
   const bgm = useBgm();
   const scriptEstSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
   const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
@@ -241,7 +257,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     <>
     <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:overflow-y-auto">
       {/* ── เนื้อหาซ้าย: 4 กลุ่ม ── */}
-      <div className="flex min-w-0 flex-1 flex-col gap-6 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6">
+      <div
+        ref={stepTwoContentRef}
+        className="flex min-w-0 flex-1 flex-col gap-6 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6"
+        style={{ overflowAnchor: "none" }}
+      >
         {/* ย้อนกลับ = คลิก step pill บน topbar (ตัดปุ่มเล็กซ้ำซ้อนออก 07-03) */}
 
         <BrandVisualSelector p={p} onPreflightStatusChange={setBrandPreflightStatus} />
