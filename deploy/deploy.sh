@@ -109,6 +109,7 @@ export NEXT_DIST_DIR=".next-staging"
 run_next_build() {
   local media_root
   local media_shadow
+  local cache_entry
   rm -rf "$STAGING_DIR"
   mkdir -p "$STAGING_DIR"
   # Preserve the webpack/SWC build cache from the LIVE .next so the compile is
@@ -117,8 +118,28 @@ run_next_build() {
   # full ~40min compile every time. Reusing the prior cache cuts unchanged-code
   # deploys from ~40min to a few minutes. Safe: Next re-validates the cache and
   # rebuilds anything stale; a bad cache only costs a slower build, never wrong output.
+  #
+  # Carry ONLY the compile caches. `cache/images` is the Next image optimizer's
+  # output cache, and it is keyed on the SOURCE PATH — not on the file's
+  # contents. Replacing an image under public/ in place (same path, new picture)
+  # therefore leaves every optimized variant looking valid, and the site keeps
+  # serving the old picture indefinitely: `X-Nextjs-Cache: STALE`, with a
+  # background revalidation that never notices the source changed. That is
+  # exactly what happened on 2026-08-10 — the five /brands format cards were
+  # replaced, the deploy carried the cache over, and the site served the pre-fix
+  # pictures afterwards. Only the webp/avif variants a browser negotiates were
+  # affected, so a plain curl (which gets JPEG, an uncached variant) looked
+  # correct and hid it. Dropping this costs one re-encode per image on first
+  # request; the compile cache is the one worth tens of minutes.
   if [ -d "$APP_DIR/.next/cache" ]; then
-    cp -a "$APP_DIR/.next/cache" "$STAGING_DIR/cache" 2>/dev/null || true
+    mkdir -p "$STAGING_DIR/cache"
+    for cache_entry in "$APP_DIR"/.next/cache/*; do
+      [ -e "$cache_entry" ] || continue
+      case "$(basename "$cache_entry")" in
+        images) continue ;;
+      esac
+      cp -a "$cache_entry" "$STAGING_DIR/cache/" 2>/dev/null || true
+    done
   fi
 
   # Next traces dynamic filesystem reads before applying NFT exclusions. On a
