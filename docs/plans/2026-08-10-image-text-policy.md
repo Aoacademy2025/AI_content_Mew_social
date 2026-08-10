@@ -150,4 +150,4 @@ plus `:root[data-theme="dark"]`, responsive, under 12 MB). Thai copy must be pro
 
 ## Status
 
-interviewed 2026-08-10 | approved: 2026-08-10 | executed: in progress | delivered: -
+interviewed 2026-08-10 | approved: 2026-08-10 | executed: 2026-08-10 | delivered: PR #213 (stacked on #212; one open decision on the signage rule)
