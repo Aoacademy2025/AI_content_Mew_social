@@ -353,9 +353,21 @@ export async function generateHeroImageForVideo(
     );
   }
 
+  const existingAttempt = reserved.created
+    ? null
+    : await latestImageGenerationAttempt(input.userId, job.id);
+  // Brand Preview deliberately creates and links every durable reservation
+  // before it starts provider work. Re-entering generation therefore sees an
+  // existing `planned` attempt even though nobody has submitted it yet. Let
+  // every replay try the same CAS claim; exactly one caller moves it to
+  // `submitting`, while concurrent losers fall through to polling that job.
   let sequenceToSubmit = reserved.created
     ? 1
-    : (await latestImageGenerationAttempt(input.userId, job.id)) ? null : 1;
+    : existingAttempt?.status === "planned"
+      ? existingAttempt.sequence
+      : existingAttempt
+        ? null
+        : 1;
 
   // At most two durable submissions of the exact same prepared request. Credits
   // stay reserved across the retry and are settled/refunded exactly once.

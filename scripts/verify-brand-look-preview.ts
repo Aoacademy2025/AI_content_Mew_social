@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -1236,6 +1236,141 @@ async function main() {
       && imageReconcileRoute.includes("previewSummary"),
     "the existing image reconciliation schedule must redispatch interrupted durable Preview children",
   );
+
+  // Production Preview reserves and links all three jobs before it submits the
+  // first provider request. The generation replay must claim that pre-created
+  // `planned` attempt; treating any existing attempt as a concurrent submitter
+  // leaves the reservation waiting forever without a providerJobId.
+  const runtimeWorkflowDir = mkdtempSync(join(tmpdir(), "brand-preview-runtime-workflow-"));
+  const runtimeWorkflowPath = join(runtimeWorkflowDir, "z-image-turbo.json");
+  writeFileSync(runtimeWorkflowPath, JSON.stringify({
+    input: {
+      prompt: "{{PROMPT}}",
+      negative_prompt: "{{NEGATIVE_PROMPT}}",
+      width: "{{WIDTH}}",
+      height: "{{HEIGHT}}",
+      seed: "{{SEED}}",
+    },
+  }));
+  process.env.AI_STUDIO_IMAGE_ENABLED = "1";
+  process.env.CREDITS_LIVE = "1";
+  process.env.RUNPOD_API_KEY = "verify-brand-preview-runtime-key";
+  process.env.AI_STUDIO_Z_IMAGE_ROUTE = "custom";
+  process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID = "verify-brand-preview-runtime-endpoint";
+  process.env.RUNPOD_IMAGE_Z_IMAGE_WORKFLOW_PATH = runtimeWorkflowPath;
+  process.env.BRAND_VISUAL_SYSTEM_ENABLED = "1";
+  process.env.BRAND_VISUAL_ROLLOUT_PERCENT = "0";
+
+  const runtimeUser = await prisma.user.create({
+    data: {
+      name: "Brand Preview Runtime",
+      email: "duckyhero@gmail.com",
+      role: "ADMIN",
+      plan: "PRO",
+      subStatus: "active",
+    },
+  });
+  await prisma.creditBalance.create({
+    data: { userId: runtimeUser.id, granted: 10, purchased: 0 },
+  });
+  const runtimeBatch = await prisma.brandLookPreviewBatch.create({
+    data: {
+      userId: runtimeUser.id,
+      requestId: "runtime-pre-reservation-request",
+      status: "in_progress",
+      sourceSnapshotJson: "{}",
+    },
+  });
+  const runtimeItem = await prisma.brandLookPreviewItem.create({
+    data: {
+      batchId: runtimeBatch.id,
+      phase: "hook",
+      sourceType: "generated",
+      status: "queued",
+    },
+  });
+  const runtimeInput = {
+    userId: runtimeUser.id,
+    plan: "PRO",
+    prompt: "Thai creator explains one useful AI lesson",
+    idempotencyKey: `brand-preview:${runtimeBatch.id}:hook`,
+    videoJobId: `brand-preview-${runtimeBatch.id}`,
+    sceneIndex: 0,
+    sceneTitle: "Preview brand · hook",
+    timeoutMs: 30_000,
+    brandVisualPrompt: {
+      source: "brand-revision" as const,
+      compiled: {
+        visualFormatId: "stick-figure-story" as const,
+        recipeVersion: "stick-figure-story-v2",
+        positive: "A text-free energetic stick-figure scene",
+        negative: "text, logo, watermark",
+      },
+      identityKey: "verify-runtime-identity",
+    },
+    brandLookPreviewReservation: {
+      itemId: runtimeItem.id,
+      expectedImageJobId: null,
+    },
+  };
+  const {
+    generateHeroImageForVideo,
+    HeroImageGenerationError,
+    reserveHeroImageForVideo,
+  } = await import("../src/lib/video-hero-image.server");
+  const runtimeReservation = await reserveHeroImageForVideo(runtimeInput);
+  const plannedAttempt = await prisma.aiGenerationAttempt.findFirstOrThrow({
+    where: { jobId: runtimeReservation.id, sequence: 1 },
+  });
+  assert.equal(plannedAttempt.status, "planned");
+
+  const realFetch = globalThis.fetch;
+  let runtimeSubmissions = 0;
+  globalThis.fetch = (async (request: RequestInfo | URL) => {
+    const url = typeof request === "string"
+      ? request
+      : request instanceof URL
+        ? request.toString()
+        : request.url;
+    const json = (body: unknown) => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    if (url.endsWith("/run")) {
+      runtimeSubmissions += 1;
+      return json({ id: "runtime-provider-job", status: "IN_QUEUE" });
+    }
+    if (url.includes("/status/runtime-provider-job")) {
+      return json({ status: "FAILED", error: "injected terminal failure after successful submit" });
+    }
+    throw new Error(`unexpected outbound request in Preview runtime regression: ${url}`);
+  }) as typeof fetch;
+  let runtimeGenerationError: unknown = null;
+  const runtimeGeneration = generateHeroImageForVideo(runtimeInput).catch((error) => {
+    runtimeGenerationError = error;
+  });
+  await Promise.race([
+    (async () => {
+      while (runtimeSubmissions === 0) await new Promise((resolve) => setTimeout(resolve, 10));
+    })(),
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error("a pre-reserved Preview attempt never reached provider submission")),
+      1_000,
+    )),
+  ]);
+  await runtimeGeneration;
+  globalThis.fetch = realFetch;
+  assert.equal(runtimeSubmissions, 1, "the exact pre-reserved attempt submits once");
+  assert.ok(
+    runtimeGenerationError instanceof HeroImageGenerationError
+      && runtimeGenerationError.code === "PROVIDER_FAILED",
+    "the injected provider failure proves submission occurred and retains normal compensation",
+  );
+  const runtimeJob = await prisma.aiGenerationJob.findUniqueOrThrow({
+    where: { id: runtimeReservation.id },
+  });
+  assert.equal(runtimeJob.chargeState, "refunded");
+  assert.equal(runtimeJob.providerJobId, "runtime-provider-job");
 
   await prisma.$disconnect();
   console.log("verify-brand-look-preview: PASS real-scene reuse + generation + durable partial batch");
