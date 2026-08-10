@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { fetchMe, type MeData } from "@/lib/use-me";
+import { fetchMe, resolveBrandVisualClientAccess, type MeData } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
@@ -1835,7 +1835,7 @@ export function useV2Project() {
       setInternalAiTester(internalTester);
       setHeroAiBeta(heroBeta);
       setHeroAiImageEligible(heroImageEligible);
-      setBrandVisualAllowed(m?.brandVisualAllowed === true);
+      setBrandVisualAllowed(resolveBrandVisualClientAccess(m));
       setBrandVisualCohort(m?.brandVisualCohort ?? "off");
       setBrandVisualRolloutBucket(typeof m?.brandVisualRolloutBucket === "number" ? m.brandVisualRolloutBucket : null);
       setStarterAiImageAllowance(m?.starterAiImageAllowance ?? null);

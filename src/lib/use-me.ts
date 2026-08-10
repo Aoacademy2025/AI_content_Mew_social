@@ -54,6 +54,21 @@ let cachedAt = 0;
 let inFlight: Promise<MeData | null> | null = null;
 
 /**
+ * The API returns both a boolean convenience field and the durable rollout
+ * cohort. Treat an admitted cohort as authoritative too: this keeps a client
+ * that crossed a rolling deploy from hiding Brand Visual when an older cached
+ * response omitted only the newly-added boolean. `off` and `control` remain
+ * fail-closed, so the master rollback still closes new admission.
+ */
+export function resolveBrandVisualClientAccess(me: MeData | null | undefined): boolean {
+  if (me?.brandVisualAllowed === true) return true;
+  return me?.brandVisualCohort === "internal"
+    || me?.brandVisualCohort === "treatment-10"
+    || me?.brandVisualCohort === "treatment-50"
+    || me?.brandVisualCohort === "treatment-100";
+}
+
+/**
  * Fetch /api/user/me แบบ dedup + cache. หลาย caller ที่เรียกพร้อมกันใน TTL
  * เดียวกันจะได้ผลจาก network call เดียว.
  * @param force ข้าม cache (เช่น หลังจ่ายเงิน/อัปเกรดเสร็จ ต้องการค่าล่าสุด)
@@ -65,7 +80,11 @@ export async function fetchMe(force = false): Promise<MeData | null> {
 
   inFlight = (async () => {
     try {
-      const res = await fetch("/api/user/me");
+      // Entitlements and rollout cohorts can change while a long-lived Editor
+      // tab is open. Never let the browser HTTP cache preserve an older shape
+      // across a production rollout; the short in-module TTL above is the only
+      // intended deduplication layer.
+      const res = await fetch("/api/user/me", { cache: "no-store" });
       if (!res.ok) return cached; // คง cache เดิมไว้ถ้า fail
       const data = (await res.json()) as MeData;
       cached = data;

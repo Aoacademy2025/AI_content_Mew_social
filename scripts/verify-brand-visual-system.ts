@@ -9,6 +9,18 @@ import {
   VISUAL_FORMATS,
 } from "../src/lib/brand-visual-system";
 import { shouldDefaultToRecommendedAutoMix } from "../src/lib/automix-plan";
+import { resolveBrandVisualClientAccess } from "../src/lib/use-me";
+
+assert.equal(resolveBrandVisualClientAccess({ brandVisualAllowed: true, brandVisualCohort: "off" }), true,
+  "the explicit Brand Visual admission field enables the client");
+for (const brandVisualCohort of ["internal", "treatment-10", "treatment-50", "treatment-100"] as const) {
+  assert.equal(resolveBrandVisualClientAccess({ brandVisualAllowed: false, brandVisualCohort }), true,
+    `an admitted ${brandVisualCohort} cohort survives a rolling-deploy response shape`);
+}
+for (const brandVisualCohort of ["off", "control"] as const) {
+  assert.equal(resolveBrandVisualClientAccess({ brandVisualAllowed: false, brandVisualCohort }), false,
+    `${brandVisualCohort} remains fail-closed`);
+}
 
 assert.equal(shouldDefaultToRecommendedAutoMix({
   effectivePlan: "PRO",
@@ -38,6 +50,10 @@ const videoJobsRouteSource = readFileSync("src/app/api/videos/jobs/route.ts", "u
 const stepTwoSource = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
 assert.match(meRouteSource, /recommendedAutoMixDefault/,
   "the user capability response exposes the public paid-plan default separately from kiePaidUnlocked");
+assert.match(meRouteSource, /private, no-store, max-age=0/,
+  "the entitlement response cannot be retained across a rolling deploy");
+assert.match(editorHookSource, /resolveBrandVisualClientAccess\(m\)/,
+  "the Editor resolves admission from the boolean and durable rollout cohort");
 assert.match(editorHookSource, /fetchMe\(\)[\s\S]*initialPreset[\s\S]*createServerProject/,
   "the paid Mix Preset is resolved before a new project's durable POST");
 assert.doesNotMatch(stepTwoSource, /ฟรี · แนะนำ/,

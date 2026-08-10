@@ -113,6 +113,13 @@ export async function GET() {
         windowEndsAt: starterAllowance.windowEndsAt.toISOString(),
       } : null,
       ...minuteFields,
+    }, {
+      headers: {
+        // This response carries plan, credits and rollout admission. A browser
+        // must revalidate it after a deploy instead of retaining an older JSON
+        // shape that can hide newly-enabled Editor capabilities.
+        "Cache-Control": "private, no-store, max-age=0",
+      },
     });
   } catch (error) {
     return apiError({ route: "user/me", error });
