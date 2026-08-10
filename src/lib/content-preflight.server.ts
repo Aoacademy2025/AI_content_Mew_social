@@ -130,7 +130,63 @@ export class ContentPreflightError extends Error {
 /** Production adapter for the external text-model seam. It reserves one call
  * only when resolveContentPreflight has a cache miss; analysis itself never
  * consumes image allowance or credits. */
-export function createGeminiContentPreflightAnalyzer(userId: string): ContentPreflightAnalyzer {
+type ContentPreflightTextGenerator = typeof geminiGenerateText;
+
+function contentPreflightResponseJsonSchema(beatCount: number): Record<string, unknown> {
+  const beat = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      beatKey: { type: "string" },
+      sourceExcerpt: { type: "string" },
+      startMs: { type: "integer", minimum: 0 },
+      endMs: { type: "integer", minimum: 1 },
+      subject: { type: "string" },
+      action: { type: "string" },
+      setting: { type: "string" },
+      emotion: { type: "string" },
+      emphasis: { type: "string" },
+    },
+    required: [
+      "beatKey",
+      "sourceExcerpt",
+      "subject",
+      "action",
+      "setting",
+      "emotion",
+      "emphasis",
+    ],
+  };
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      contentDomain: { type: "string" },
+      suggestedVisualFormatId: { type: "string", enum: [...VISUAL_FORMAT_IDS] },
+      suggestedTreatment: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          label: { type: "string" },
+          mood: { type: "string" },
+        },
+        required: ["label", "mood"],
+      },
+      beats: {
+        type: "array",
+        items: beat,
+        minItems: beatCount,
+        maxItems: beatCount,
+      },
+    },
+    required: ["contentDomain", "suggestedVisualFormatId", "suggestedTreatment", "beats"],
+  };
+}
+
+export function createGeminiContentPreflightAnalyzer(
+  userId: string,
+  generateText: ContentPreflightTextGenerator = geminiGenerateText,
+): ContentPreflightAnalyzer {
   return {
     async analyze(input) {
       const user = await prisma.user.findUnique({
@@ -155,7 +211,7 @@ export function createGeminiContentPreflightAnalyzer(userId: string): ContentPre
         throw new ContentPreflightError("TEXT_QUOTA", reservation.message || "ใช้สิทธิ์วิเคราะห์ข้อความครบแล้ว");
       }
 
-      const raw = await geminiGenerateText(key, [
+      const raw = await generateText(key, [
         "Analyze this Narrative Source for a vertical short-form video.",
         "Return one JSON object only. Do not wrap it in markdown.",
         `sourceKind: ${input.kind}`,
@@ -167,7 +223,10 @@ export function createGeminiContentPreflightAnalyzer(userId: string): ContentPre
         JSON.stringify(input.windows),
         "Narrative Source:",
         input.text,
-      ].join("\n"), 8_192, 0.2);
+      ].join("\n"), Math.min(65_536, Math.max(8_192, input.windows.length * 512)), 0.2, {
+        responseMimeType: "application/json",
+        responseJsonSchema: contentPreflightResponseJsonSchema(input.windows.length),
+      });
       try {
         return JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim()) as ContentPreflightAnalysis;
       } catch {

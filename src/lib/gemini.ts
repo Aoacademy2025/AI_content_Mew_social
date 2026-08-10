@@ -40,6 +40,10 @@ export interface GeminiTextOptions {
    * included in `response.text`, but they DO count against maxOutputTokens).
    */
   thinkingBudget?: number;
+  /** Request provider-enforced JSON output. Pair with responseJsonSchema. */
+  responseMimeType?: "application/json";
+  /** JSON Schema passed to Gemini when structured output is required. */
+  responseJsonSchema?: unknown;
 }
 
 export async function geminiGenerateText(
@@ -49,7 +53,12 @@ export async function geminiGenerateText(
   temperature = 0,
   options: GeminiTextOptions = {},
 ): Promise<string> {
-  const { model = GEMINI_MODEL, thinkingBudget = 0 } = options;
+  const {
+    model = GEMINI_MODEL,
+    thinkingBudget = 0,
+    responseMimeType,
+    responseJsonSchema,
+  } = options;
   const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: GEMINI_TEXT_TIMEOUT_MS } });
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
@@ -60,6 +69,8 @@ export async function geminiGenerateText(
           maxOutputTokens,
           temperature,
           thinkingConfig: { thinkingBudget },  // 0 = disable thinking — JSON output must not be prefixed with thought text
+          ...(responseMimeType ? { responseMimeType } : {}),
+          ...(responseJsonSchema ? { responseJsonSchema } : {}),
           abortSignal: AbortSignal.timeout(GEMINI_TEXT_TIMEOUT_MS),
         },
       });

@@ -13,6 +13,8 @@ async function main() {
   const { buildNarrativeAlignedBrollWindows } = await import("../src/lib/broll-windows");
   const { tokenizeWords } = await import("../src/lib/tts-timing");
   const {
+    ContentPreflightError,
+    createGeminiContentPreflightAnalyzer,
     planNarrativeVisualWindows,
     recordVisualBeatAsset,
     resolveContentPreflight,
@@ -80,8 +82,67 @@ async function main() {
   );
 
   const user = await prisma.user.create({
-    data: { name: "Preflight owner", email: "preflight@example.test" },
+    data: { name: "Preflight owner", email: "preflight@example.test", geminiKey: "test-gemini-key" },
   });
+
+  const eightWindows = Array.from({ length: 8 }, (_, index) => ({
+    text: `ฉากทดสอบ ${index + 1}`,
+    startMs: index * 4_000,
+    endMs: (index + 1) * 4_000,
+  }));
+  const validEightBeatAnalysis = {
+    contentDomain: "education",
+    suggestedVisualFormatId: "clear-infographic",
+    suggestedTreatment: { label: "ชัดเจน", mood: "focused" },
+    beats: eightWindows.map((window, index) => ({
+      beatKey: `window-${index}`,
+      sourceExcerpt: window.text,
+      startMs: window.startMs,
+      endMs: window.endMs,
+      subject: `subject ${index}`,
+      action: `action ${index}`,
+      setting: `setting ${index}`,
+      emotion: "focused",
+      emphasis: `point ${index}`,
+    })),
+  };
+  let structuredOutputRequested = false;
+  const structuredAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async (_key, _prompt, _maxTokens, _temperature, rawOptions) => {
+      const options = (rawOptions ?? {}) as typeof rawOptions & {
+        responseMimeType?: string;
+        responseJsonSchema?: { properties?: { beats?: { minItems?: number; maxItems?: number } } };
+      };
+      structuredOutputRequested = options.responseMimeType === "application/json"
+        && options.responseJsonSchema?.properties?.beats?.minItems === eightWindows.length
+        && options.responseJsonSchema?.properties?.beats?.maxItems === eightWindows.length;
+      return structuredOutputRequested
+        ? JSON.stringify(validEightBeatAnalysis)
+        : `ผลวิเคราะห์:\n${JSON.stringify(validEightBeatAnalysis)}`;
+    },
+  );
+  try {
+    const structured = await structuredAnalyzer.analyze({
+      kind: "upload-transcript",
+      text: eightWindows.map((window) => window.text).join("\n"),
+      windows: eightWindows,
+    });
+    assert.equal(structured.beats.length, eightWindows.length);
+  } catch (error) {
+    assert.ok(
+      error instanceof ContentPreflightError
+        && error.code === "INVALID_ANALYSIS"
+        && error.message === "AI ส่งผลวิเคราะห์ที่อ่านไม่ได้ กรุณาลองใหม่",
+      "the upload Brand Visual replay must reproduce the production failure before structured output is enabled",
+    );
+    throw error;
+  }
+  assert.equal(
+    structuredOutputRequested,
+    true,
+    "upload Brand Visual analysis must constrain Gemini to JSON with the exact accepted scene count",
+  );
   const project = await prisma.editorProject.create({
     data: { userId: user.id, title: "Creator script" },
   });
