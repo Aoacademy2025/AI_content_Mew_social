@@ -298,8 +298,12 @@ module.exports = {
     {
       name: "mcp-video-worker",
       cwd: "/var/www/ai-content",
-      script: "node_modules/.bin/tsx",
-      args: "scripts/mcp-video-worker.ts",
+      // The orchestrator imports modules tagged with the `server-only` package.
+      // Standalone Node processes must opt into that package's no-op server export;
+      // invoking the tsx binary directly resolves its default (intentional throw)
+      // and crash-loops before the worker can claim a job.
+      script: "node",
+      args: "--conditions=react-server --import tsx scripts/mcp-video-worker.ts",
       autorestart: true, // long-running worker (not a cron) — claims queued VideoJobs
       watch: false,
       env: {

@@ -5,7 +5,12 @@ import { shouldCheckTtsMinuteQuota } from "../src/lib/tts-minute-admission";
 
 const require = createRequire(import.meta.url);
 const ecosystem = require("../ecosystem.config.js") as {
-  apps?: Array<{ name?: string; env?: Record<string, unknown> }>;
+  apps?: Array<{
+    name?: string;
+    script?: string;
+    args?: string;
+    env?: Record<string, unknown>;
+  }>;
 };
 
 assert.equal(
@@ -32,6 +37,16 @@ assert.match(
 );
 
 const mcpWorker = ecosystem.apps?.find((app) => app.name === "mcp-video-worker");
+assert.equal(
+  mcpWorker?.script,
+  "node",
+  "mcp-video-worker must launch through Node so server-only module conditions reach the runtime",
+);
+assert.equal(
+  mcpWorker?.args,
+  "--conditions=react-server --import tsx scripts/mcp-video-worker.ts",
+  "mcp-video-worker must resolve server-only modules through the react-server export condition",
+);
 assert.equal(
   mcpWorker?.env?.RENDER_VIA_QUEUE,
   "1",
