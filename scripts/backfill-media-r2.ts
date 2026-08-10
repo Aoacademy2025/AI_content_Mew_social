@@ -76,7 +76,12 @@ async function localIdentities(
     }
     const entries = await readdir(root, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      if (entry.isFile()) identities.push({ area, filename: entry.name });
+      const transient =
+        /^\.tmp-\d+-\d+-/.test(entry.name) ||
+        /\.tmp-\d+-\d+\.[a-z0-9]+$/i.test(entry.name);
+      if (entry.isFile() && !transient) {
+        identities.push({ area, filename: entry.name });
+      }
     }
   }
   return identities;

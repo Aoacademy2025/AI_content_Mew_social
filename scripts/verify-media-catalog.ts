@@ -249,6 +249,148 @@ async function main() {
     "the alias switches only after the replacement blob is verified",
   );
 
+  const gcIdentity = { area: "renders" as const, filename: "remote-gc.mp4" };
+  await prisma.mediaObject.create({
+    data: {
+      area: gcIdentity.area,
+      filename: gcIdentity.filename,
+      objectKey: mediaObjectKey(gcIdentity),
+      contentType: "video/mp4",
+      sizeBytes: 30n,
+      sha256: "e".repeat(64),
+      remoteFilename: contentAddressedMediaIdentity(
+        gcIdentity,
+        "e".repeat(64),
+      ).filename,
+      remoteState: "verified",
+      localState: "evicted",
+      localMtimeMs: 5000n,
+      lastVerifiedAt: now,
+    },
+  });
+  const gcRow = (await catalog.remoteGcInventory()).find(
+    (candidate) => candidate.objectKey === mediaObjectKey(gcIdentity),
+  );
+  assert(gcRow, "verified remote-only row participates in GC inventory");
+  const pendingAt = new Date(now.getTime() + 60_000);
+  const pending = await catalog.stageRemoteDelete(
+    [{ id: gcRow.id, version: gcRow.version }],
+    pendingAt,
+  );
+  assert(pending);
+  assert.equal((await catalog.inspect(gcIdentity))?.remoteState, "delete_pending");
+  assert.equal(
+    await catalog.claimRemoteDelete(
+      pending,
+      now,
+      new Date(now.getTime() + 120_000),
+    ),
+    null,
+    "delete lease cannot be claimed before the grace deadline",
+  );
+  const deleteClaim = await catalog.claimRemoteDelete(
+    pending,
+    pendingAt,
+    new Date(pendingAt.getTime() + 120_000),
+  );
+  assert(deleteClaim);
+  assert.equal(await catalog.markRemoteDeleted(deleteClaim, pendingAt), true);
+  assert.equal((await catalog.inspect(gcIdentity))?.remoteState, "deleted");
+
+  const restoreIdentity = { area: "renders" as const, filename: "remote-restore.mp4" };
+  await prisma.mediaObject.create({
+    data: {
+      area: restoreIdentity.area,
+      filename: restoreIdentity.filename,
+      objectKey: mediaObjectKey(restoreIdentity),
+      contentType: "video/mp4",
+      sizeBytes: 31n,
+      sha256: "f".repeat(64),
+      remoteFilename: contentAddressedMediaIdentity(
+        restoreIdentity,
+        "f".repeat(64),
+      ).filename,
+      remoteState: "verified",
+      localState: "evicted",
+      localMtimeMs: 6000n,
+      lastVerifiedAt: now,
+    },
+  });
+  const restoreRow = (await catalog.remoteGcInventory()).find(
+    (candidate) => candidate.objectKey === mediaObjectKey(restoreIdentity),
+  );
+  assert(restoreRow);
+  const restorePending = await catalog.stageRemoteDelete(
+    [{ id: restoreRow.id, version: restoreRow.version }],
+    pendingAt,
+  );
+  assert(restorePending);
+  assert.equal(await catalog.restoreRemoteDeletePending(restorePending), true);
+  assert.equal((await catalog.inspect(restoreIdentity))?.remoteState, "verified");
+
+  const missingIdentity = { area: "renders" as const, filename: "missing-local.mp4" };
+  const missingDescriptor = {
+    ...descriptor,
+    identity: missingIdentity,
+    objectKey: mediaObjectKey(missingIdentity),
+    canonicalUrl: "/api/renders/missing-local.mp4",
+  };
+  const missingClaim = await catalog.claim(
+    { descriptor: missingDescriptor, localMtimeMs: 7000 },
+    { now },
+  );
+  assert.equal(missingClaim.status, "claimed");
+  if (missingClaim.status !== "claimed") throw new Error("expected missing-local claim");
+  assert.equal(
+    await catalog.markFailed(
+      missingClaim.claim,
+      new (await import("../src/lib/media-storage")).UnsafeMediaFileError(),
+      now,
+    ),
+    true,
+  );
+  const missingRow = (await catalog.failedLocalInventory()).find(
+    (candidate) => candidate.objectKey === mediaObjectKey(missingIdentity),
+  );
+  assert(missingRow, "failed local observation participates in reconciliation inventory");
+  assert.equal(
+    await catalog.abandonMissingFailed([
+      { id: missingRow.id, version: missingRow.version },
+    ]),
+    true,
+  );
+  assert.deepEqual(
+    await catalog.inspect(missingIdentity),
+    {
+      remoteState: "abandoned",
+      localState: "missing",
+      sizeBytes: 10n,
+      sha256: null,
+      remoteFilename: null,
+      localMtimeMs: 7000n,
+      lastVerifiedAt: null,
+      nextRetryAt: null,
+      lastErrorCode: "LocalMediaMissingUnreferenced",
+    },
+    "an abandoned observation keeps its audit row",
+  );
+  assert.equal(
+    await catalog.abandonMissingFailed([
+      { id: missingRow.id, version: missingRow.version },
+    ]),
+    false,
+    "the abandoned observation cannot be changed twice",
+  );
+  const rediscovered = await catalog.claim(
+    { descriptor: missingDescriptor, localMtimeMs: 7000 },
+    { now },
+  );
+  assert.equal(
+    rediscovered.status,
+    "claimed",
+    "a file that reappears after abandonment can re-enter backfill",
+  );
+
   await prisma.$disconnect();
   console.log("PASS media catalog");
 }

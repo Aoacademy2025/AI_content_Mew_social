@@ -1,7 +1,9 @@
 # Cloudflare R2 media rollout
 
 Status: production reads R2 first with local fallback; copy reconciliation is
-continuous. R2 deletion remains disabled.
+continuous. The 10-object physical-deletion canary passed, and bounded
+reference-aware R2 GC is enabled with a 24-hour catalog grace. Blanket
+age-based bucket lifecycle deletion remains prohibited.
 
 This migration keeps `/api/renders/*` and `/api/stocks/*` stable. The application
 proxies private R2 objects, so the bucket does not need public access or a custom
@@ -211,6 +213,121 @@ The reconciliation and eviction services share an exclusive lock, so upload
 catalog transitions cannot overlap eviction. The daily job is capped at 250
 objects and 20 GiB per run. Keep `MEDIA_R2_DELETE=0`; lifecycle deletion from R2
 is a separate future policy and is not required to protect VPS disk capacity.
+
+## Stage 6: reference-aware R2 garbage collection
+
+Do not add an age-only lifecycle rule to `media/v1/` or `media/v2/`. Object age
+does not encode the complete 3/7/14-day reference policy, and one immutable v2
+blob may be shared by several logical media aliases.
+
+Remote GC is catalog-led and fail-closed. A physical R2 object is eligible only
+when:
+
+- every catalog alias that points at it is locally evicted;
+- every alias has only expired references, or has no references and is at least
+  14 days old;
+- every alias is in the verified catalog state;
+- the full media reference graph has zero errors; and
+- R2 HEAD metadata still matches catalog size and SHA-256.
+
+The first apply changes the aliases to `delete_pending` for 24 hours. A later run
+rebuilds the reference graph before deleting. If a live reference appears during
+the grace period, the catalog alias is restored to `verified`. Physical deletion
+is SHA-gated and idempotent; an already-missing object is finalized as deleted
+so a crash between the R2 delete and catalog update can recover safely.
+
+Run a bounded dry-run:
+
+```sh
+DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/gc-r2-media.ts \
+  --maxObjects=10 --maxBytesMb=1024 --graceHours=24
+```
+
+Review the records and copy the exact `manifestSha256` from that run. Stage only
+that reviewed manifest:
+
+```sh
+MEDIA_LOCAL_EVICTION=1 MEDIA_R2_DELETE=1 R2_REMOTE_GC_ENABLED=1 \
+DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/gc-r2-media.ts \
+  --apply --manifestSha256=<REVIEWED_SHA256> \
+  --maxObjects=10 --maxBytesMb=1024 --graceHours=24
+```
+
+After the grace deadline, repeat dry-run and hash-gated apply to delete the
+canary. Require zero errors, the expected `deleted`/`missingFinalized` count,
+healthy Range playback, and no new media graph errors before automation.
+
+The pending-only canary timer may be installed after a reviewed stage. It can
+delete at most 10 already-pending objects and cannot stage a new object:
+
+```sh
+install -m 0644 \
+  deploy/systemd/heroai-r2-remote-gc-canary.service \
+  /etc/systemd/system/heroai-r2-remote-gc-canary.service
+install -m 0644 \
+  deploy/systemd/heroai-r2-remote-gc-canary.timer \
+  /etc/systemd/system/heroai-r2-remote-gc-canary.timer
+systemctl daemon-reload
+systemctl enable --now heroai-r2-remote-gc-canary.timer
+```
+
+The automated unit has two additional gates (`--automated` and
+`R2_REMOTE_GC_AUTOMATED=1`) and shares the same exclusive media-storage lock:
+
+```sh
+install -m 0644 \
+  deploy/systemd/heroai-r2-remote-gc.service \
+  /etc/systemd/system/heroai-r2-remote-gc.service
+install -m 0644 \
+  deploy/systemd/heroai-r2-remote-gc.timer \
+  /etc/systemd/system/heroai-r2-remote-gc.timer
+systemctl daemon-reload
+systemctl enable --now heroai-r2-remote-gc.timer
+```
+
+After the full timer is verified active, disable the pending-only canary timer
+so two automated GC schedules do not compete for the same pending backlog:
+
+```sh
+systemctl disable --now heroai-r2-remote-gc-canary.timer
+```
+
+If backfill leaves a failed catalog observation after its source path has
+disappeared, do not delete it with ad-hoc SQL. Use the bounded catalog
+reconciler in dry-run mode, review its exact manifest, back up SQLite, and apply
+only while holding the shared media-storage lock:
+
+```sh
+/usr/bin/flock --exclusive --wait 3600 \
+  /run/lock/heroai-media-storage.lock \
+  env DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/reconcile-media-catalog.ts \
+  --maxObjects=25 --olderThanMinutes=30
+
+/usr/bin/flock --exclusive --wait 3600 \
+  /run/lock/heroai-media-storage.lock \
+  env MEDIA_CATALOG_RECONCILE=1 DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/reconcile-media-catalog.ts \
+  --apply --manifestSha256=<REVIEWED_SHA256> \
+  --maxObjects=25 --olderThanMinutes=30
+```
+
+The reconciler fails closed on graph errors, references, present local paths,
+remote receipt fields, unsupported error codes, retry grace, manifest drift,
+and catalog compare-and-set drift. It preserves eligible audit rows as
+`abandoned/missing`; a file that later reappears can re-enter backfill.
+
+The catalog retains the object key, SHA-256, size, `remoteState=deleted`, and
+timestamp as the deletion audit record; it does not retain the media bytes.
+Legacy R2 objects that have no catalog row are inventory-only until the
+copy-reconciliation backlog is zero. Never bulk-delete those orphan candidates
+during migration.
+
+The bucket is private and the application proxies R2 reads. If a future custom
+R2 domain or Cloudflare Cache Rule caches media directly, add a cache purge for
+each deleted URL before treating physical deletion as complete.
 
 Cloudflare references:
 
