@@ -63,6 +63,18 @@ const heroImageRuntimeEnv = Object.freeze({
   HERO_RUNPOD_COST_STALE_MS: "10800000",
 });
 
+// Brand Visual rollout is runtime-authoritative: the web process admits new
+// work and the MCP worker finishes accepted jobs. PM2 only forwards keys named
+// in an app's env block, so keep the complete flag set in one shared object;
+// merely loading .env above is not enough to survive --update-env deploys.
+const brandVisualRuntimeEnv = Object.freeze({
+  BRAND_VISUAL_SYSTEM_ENABLED: process.env.BRAND_VISUAL_SYSTEM_ENABLED || "0",
+  BRAND_VISUAL_ROLLOUT_PERCENT: process.env.BRAND_VISUAL_ROLLOUT_PERCENT || "0",
+  BRAND_VISUAL_ROLLOUT_STARTED_AT: process.env.BRAND_VISUAL_ROLLOUT_STARTED_AT || "",
+  BRAND_VISUAL_50_PERCENT_STARTED_AT: process.env.BRAND_VISUAL_50_PERCENT_STARTED_AT || "",
+  BRAND_VISUAL_TEST_EMAILS: process.env.BRAND_VISUAL_TEST_EMAILS || "",
+});
+
 // The long-avatar adjustment canary must be part of the checked-in PM2 contract.
 // Keeping it only in a one-off shell/PM2 environment made a later --update-env deploy
 // silently remove the approved remediation. Preserve any additional reviewed canaries
@@ -118,6 +130,7 @@ module.exports = {
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
         ...heroImageRuntimeEnv,
+        ...brandVisualRuntimeEnv,
         ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
         // PR-7 durable render queue: "1" = the thin render route enqueues a
@@ -143,6 +156,7 @@ module.exports = {
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
         ...heroImageRuntimeEnv,
+        ...brandVisualRuntimeEnv,
         ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
       },
@@ -325,6 +339,7 @@ module.exports = {
         // Rollback = set back to "1" and restart the same way. Single worker only (NOT
         // instances:2 — boot-recovery has no per-worker heartbeat guard; see the worker script).
         MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "2",
+        ...brandVisualRuntimeEnv,
       },
     },
     {

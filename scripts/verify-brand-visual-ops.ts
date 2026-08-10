@@ -2,6 +2,47 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+
+const rolloutEnv = {
+  BRAND_VISUAL_SYSTEM_ENABLED: "1",
+  BRAND_VISUAL_ROLLOUT_PERCENT: "0",
+  BRAND_VISUAL_ROLLOUT_STARTED_AT: "2026-08-10T00:00:00.000Z",
+  BRAND_VISUAL_50_PERCENT_STARTED_AT: "",
+  BRAND_VISUAL_TEST_EMAILS: "canary@example.com",
+};
+const priorRolloutEnv = Object.fromEntries(
+  Object.keys(rolloutEnv).map((key) => [key, process.env[key]]),
+);
+Object.assign(process.env, rolloutEnv);
+const ecosystem = require("../ecosystem.config.js") as {
+  apps?: Array<{ name?: string; env?: Record<string, unknown>; env_production?: Record<string, unknown> }>;
+};
+for (const [key, value] of Object.entries(priorRolloutEnv)) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
+for (const processName of ["ai-content", "mcp-video-worker"]) {
+  const processConfig = ecosystem.apps?.find((entry) => entry.name === processName);
+  assert.ok(processConfig, `${processName} must exist in the PM2 ecosystem`);
+  for (const [key, value] of Object.entries(rolloutEnv)) {
+    assert.equal(
+      processConfig.env?.[key],
+      value,
+      `${processName} must receive ${key} from the reviewed rollout environment`,
+    );
+    if (processName === "ai-content") {
+      assert.equal(
+        processConfig.env_production?.[key],
+        value,
+        `${processName} production overrides must preserve ${key}`,
+      );
+    }
+  }
+}
 
 const watchdog = readFileSync("scripts/ops-watchdog.sh", "utf8");
 const localMonitor = readFileSync("scripts/local-prod-monitor.sh", "utf8");
