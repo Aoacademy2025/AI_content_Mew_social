@@ -128,17 +128,592 @@ const mewsocialPrompt = compileBrandVisualPrompt({
 });
 
 assert.equal(mewsocialPrompt.visualFormatId, "stick-figure-story");
+assert.equal(mewsocialPrompt.recipeVersion, "stick-figure-story-v3",
+  "an unpinned compile publishes on the current story-first recipe");
 assert.match(mewsocialPrompt.positive, /ancient Ayutthaya temple chamber/i);
-assert.match(mewsocialPrompt.positive, /#38BDF8/);
-assert.match(mewsocialPrompt.positive, /marker rings/);
-assert.match(mewsocialPrompt.positive, /empty unmarked marker rings/i);
-assert.match(mewsocialPrompt.positive, /plain empty solid color fields/i);
+assert.doesNotMatch(mewsocialPrompt.positive, /#/,
+  "Z-Image renders a raw hex code as a colored object, so a palette must reach it as words");
+assert.match(
+  mewsocialPrompt.positive,
+  /The overall color grade favors high-contrast black, warm white and sky blue/,
+  "a palette entry that is already words passes through, minus the code, as a color grade",
+);
+assert.doesNotMatch(
+  mewsocialPrompt.positive,
+  /marker rings|Repeat the visual cues|People and places follow/i,
+  "v3 drops the memorable-cue and people/setting clauses that outranked the Visual Beat",
+);
+assert.doesNotMatch(
+  mewsocialPrompt.positive,
+  /plain empty solid color fields|circular motif|solid unmarked disc/i,
+  "the anti-text guardrails that painted walls and discs are negative-prompt work only",
+);
 assert.match(mewsocialPrompt.positive, /solid undecorated color/i);
 assert.match(mewsocialPrompt.negative, /text.*logo.*watermark/i);
 assert.match(mewsocialPrompt.negative, /currency symbol.*dollar sign.*artist initials.*corner mark/i);
 assert.match(mewsocialPrompt.negative, /currency glyph.*pseudo-text.*framed notice.*screen text/i);
 
 console.log("verify-brand-visual-system: PASS text-free branded compilation");
+
+/** Every encoding a color code can arrive in, restated here on purpose: the
+ * library's own token list must not be able to narrow what this suite accepts. */
+const ANY_COLOR_CODE = /[#＃]|%23|0x[0-9a-fA-F]{3}|(?:rgba?|hsla?)\s*\(/i;
+
+/** ADR 0006: a Brand Profile controls how the frame is rendered, never what is
+ * in it. The storm beat is the exact production failure Mew reported. */
+const STORM_BEAT = {
+  phase: "hook" as const,
+  subject: "a towering cyclone wall",
+  action: "the cyclone advances over the water toward the shore",
+  setting: "an open coastal town",
+  emotion: "awe mixed with dread",
+  emphasis: "the scale of the approaching storm",
+};
+const STORM_BRAND = {
+  palette: ["#111111", "#F8F5EE", "#38BDF8"],
+  personality: "bold, raw, energetic and direct",
+  peopleAndSetting: "ทีมงานในออฟฟิศ",
+  memorableCues: ["วงกลมฟ้า", "ลูกศร marker"],
+  visualNotes: "Use thick imperfect marker lines and tilt the composition slightly.",
+};
+for (const format of VISUAL_FORMATS) {
+  const storm = compileBrandVisualPrompt({
+    visualFormatId: format.id,
+    contentDomain: "extreme weather",
+    treatment: "urgent and cinematic",
+    visualBeat: STORM_BEAT,
+    brandVisualLanguage: STORM_BRAND,
+  });
+  assert.equal(storm.recipeVersion, `${format.id}-v3`, `${format.id} must compile on its v3 recipe`);
+  assert.match(storm.positive, /a towering cyclone wall/, "the beat's subject survives the brand");
+  assert.match(storm.positive, /set in an open coastal town/, "the beat's setting survives the brand");
+  assert.doesNotMatch(storm.positive, /ออฟฟิศ|office|ทีมงาน/i,
+    "a brand's habitual people and place can never replace the beat's own setting");
+  assert.doesNotMatch(storm.positive, /วงกลม|circular motif|unmarked ring|unmarked disc|visual cues/i,
+    "no brand cue may re-introduce a circle prop");
+  assert.doesNotMatch(storm.positive, ANY_COLOR_CODE, "no color code may reach the provider on any format");
+  assert.doesNotMatch(storm.positive, /plain empty solid color fields/i);
+  assert.match(storm.positive, /The overall color grade favors black, warm off-white and cool sky blue/,
+    "every format grades from the same brand palette words");
+}
+
+const stormCinematic = compileBrandVisualPrompt({
+  visualFormatId: "cinematic-realism",
+  contentDomain: "extreme weather",
+  treatment: "urgent and cinematic",
+  visualBeat: STORM_BEAT,
+  brandVisualLanguage: null,
+});
+assert.doesNotMatch(stormCinematic.positive, /one nuanced human moment/i,
+  "cinematic realism must not force a human into a weather beat");
+assert.match(stormCinematic.positive, /35mm documentary lens language/,
+  "the brand-safe lens, contrast and lighting language stays");
+
+const stormInfographic = compileBrandVisualPrompt({
+  visualFormatId: "clear-infographic",
+  contentDomain: "extreme weather",
+  treatment: "urgent and cinematic",
+  visualBeat: STORM_BEAT,
+  brandVisualLanguage: null,
+});
+assert.doesNotMatch(stormInfographic.positive, /circles, arrows and recognizable pictograms/i,
+  "the default format must not name shapes that the model then draws as props");
+assert.match(stormInfographic.positive, /grouping, scale and alignment carry the explanation/,
+  "the infographic format is expressed as hierarchy, grouping and negative space");
+
+/** The flat-surface guardrail is the third sibling of the two clauses ADR 0006
+ * removed: all three were written to suppress gibberish text and all three
+ * became art direction. It is honest direction for a flat drawn format and a
+ * direct contradiction of `cinematic-realism`'s own photorealism and tactile
+ * natural materials, so v3 judges it per format instead of appending it to
+ * everything. Its anti-text job belongs to the negative prompt. */
+const FLAT_SURFACE_CLAUSE = /every visible surface uses solid undecorated color and simple abstract marks/i;
+for (const format of VISUAL_FORMATS) {
+  const compiled = compileBrandVisualPrompt({
+    visualFormatId: format.id,
+    contentDomain: "extreme weather",
+    treatment: "urgent and cinematic",
+    visualBeat: STORM_BEAT,
+    brandVisualLanguage: null,
+  });
+  if (format.id === "cinematic-realism") {
+    assert.doesNotMatch(compiled.positive, FLAT_SURFACE_CLAUSE,
+      "a photoreal format must never be told that every surface is solid undecorated color");
+    assert.doesNotMatch(compiled.positive, /undecorated|abstract marks/i,
+      "no rephrasing of the flat-surface guardrail may survive on the photoreal path");
+    assert.match(compiled.positive, /tactile natural materials/,
+      "the photoreal path keeps the material language that guardrail contradicted");
+  } else {
+    assert.match(compiled.positive, FLAT_SURFACE_CLAUSE,
+      `${format.id} is a flat illustrated format, where the surface direction is honest art direction`);
+    assert.ok(
+      compiled.positive.indexOf("every visible surface uses solid undecorated") < compiled.positive.indexOf("For a story about"),
+      `${format.id} must carry the surface direction inside its format recipe, not as a universal trailing line`,
+    );
+  }
+}
+assert.match(stormCinematic.negative, /pseudo-text.*gibberish text.*screen text.*legible writing/,
+  "the anti-text job the flat-surface line was written for stays covered by the negative prompt");
+
+const retroHouse = compileBrandVisualPrompt({
+  visualFormatId: "retro-story",
+  contentDomain: "extreme weather",
+  treatment: "urgent and cinematic",
+  visualBeat: STORM_BEAT,
+  brandVisualLanguage: null,
+});
+assert.match(retroHouse.positive, /limited sepia, mustard, teal and burgundy palette/,
+  "the retro house palette still applies when the brand supplies none");
+const retroBranded = compileBrandVisualPrompt({
+  visualFormatId: "retro-story",
+  contentDomain: "extreme weather",
+  treatment: "urgent and cinematic",
+  visualBeat: STORM_BEAT,
+  brandVisualLanguage: STORM_BRAND,
+});
+assert.doesNotMatch(retroBranded.positive, /limited sepia, mustard, teal and burgundy palette/,
+  "a brand palette always wins over a format's hardcoded palette");
+
+const boundedBrandInput = compileBrandVisualPrompt({
+  visualFormatId: "stick-figure-story",
+  contentDomain: "creator education",
+  treatment: "clear and direct",
+  visualBeat: STORM_BEAT,
+  brandVisualLanguage: {
+    palette: ["#111111"],
+    personality: "ทีมงานนั่งประชุมในออฟฟิศ ถ่ายที่โต๊ะทำงาน",
+    peopleAndSetting: "",
+    memorableCues: [],
+    visualNotes: "ตัดปะกระดาษฉีก thick imperfect marker lines. PRIVATE RAW NOTE 12345",
+  },
+});
+assert.doesNotMatch(boundedBrandInput.positive, /ออฟฟิศ|ประชุม|โต๊ะทำงาน/,
+  "brand personality is matched against a bounded rendering vocabulary, never interpolated",
+);
+assert.doesNotMatch(boundedBrandInput.positive, /PRIVATE RAW NOTE 12345/);
+assert.doesNotMatch(boundedBrandInput.positive, /cut-paper shapes/i,
+  "the audited v3 Visual Notes allowlist drops the rule that introduced objects into the frame");
+assert.match(boundedBrandInput.positive, /Surfaces and framing carry .*thick confident strokes/);
+assert.match(boundedBrandInput.positive, /The overall color grade favors black/);
+
+console.log("verify-brand-visual-system: PASS story-first v3 brand rendering direction");
+
+/** The palette is free creator text, so it is the same injection surface as
+ * personality and Visual Notes. An entry contributes a color or nothing. */
+const paletteOnly = (palette: string[]) => compileBrandVisualPrompt({
+  visualFormatId: "cinematic-realism",
+  contentDomain: "extreme weather",
+  treatment: "urgent and cinematic",
+  visualBeat: STORM_BEAT,
+  brandVisualLanguage: {
+    palette,
+    personality: "",
+    peopleAndSetting: "",
+    memorableCues: [],
+    visualNotes: "",
+  },
+});
+
+const SCENE_PALETTE_ENTRIES: ReadonlyArray<{ entry: string; leaks: RegExp }> = [
+  {
+    entry: "a small golden retriever sitting on a wooden dock at sunset",
+    leaks: /retriever|wooden dock|sunset|sitting/i,
+  },
+  {
+    entry: "a large blue circular motif mounted on the office wall",
+    leaks: /circular motif|office wall|mounted/i,
+  },
+  {
+    entry: "an unmarked ring floating beside the presenter",
+    leaks: /unmarked ring|floating|presenter/i,
+  },
+  {
+    entry: "ทีมงานนั่งประชุมในออฟฟิศ สีฟ้า",
+    leaks: /ทีมงาน|ประชุม|ออฟฟิศ/,
+  },
+];
+for (const { entry, leaks } of SCENE_PALETTE_ENTRIES) {
+  const injected = paletteOnly([entry]);
+  assert.doesNotMatch(injected.positive, leaks,
+    `a palette entry that is not color vocabulary must contribute nothing: ${entry}`);
+  assert.doesNotMatch(injected.positive, /circular motif|solid unmarked disc|plain empty solid color fields|Repeat the visual cues|People and places follow|#/i,
+    "an unrecognized palette entry must not reintroduce any forbidden clause");
+  assert.doesNotMatch(injected.positive, /The overall color grade favors/,
+    "a palette that resolves to zero colors omits the color-grade clause entirely");
+  assert.doesNotMatch(injected.positive, /favors\s*\.|favors\s+and|carry\s*\.|is\s*\./i,
+    "an omitted brand clause must never leave an empty or dangling sentence");
+  assert.match(injected.positive, /set in an open coastal town/,
+    "the Visual Beat still owns the frame when the brand contributes nothing");
+}
+
+const retroSceneryPalette = compileBrandVisualPrompt({
+  visualFormatId: "retro-story",
+  contentDomain: "extreme weather",
+  treatment: "urgent and cinematic",
+  visualBeat: STORM_BEAT,
+  brandVisualLanguage: {
+    palette: ["a large blue circular motif mounted on the office wall"],
+    personality: "",
+    peopleAndSetting: "",
+    memorableCues: [],
+    visualNotes: "",
+  },
+});
+assert.match(retroSceneryPalette.positive, /limited sepia, mustard, teal and burgundy palette/,
+  "a palette that resolves to zero colors leaves the format's own direction standing");
+assert.doesNotMatch(retroSceneryPalette.positive, /circular motif|office wall/i);
+
+const mixedPalette = paletteOnly([
+  "a large blue circular motif mounted on the office wall",
+  "deep charcoal",
+  "#38BDF8",
+]);
+assert.match(mixedPalette.positive, /The overall color grade favors deep charcoal and cool sky blue\./,
+  "recognized entries still grade the frame while the unrecognized one is dropped whole");
+assert.doesNotMatch(mixedPalette.positive, /circular motif|office wall/i);
+
+const glued = paletteOnly(["brand#38BDF8"]);
+assert.match(glued.positive, /The overall color grade favors cool sky blue\./,
+  "a hex code glued to a word is still a hex code and still resolves to a color word");
+assert.doesNotMatch(glued.positive, /#|brand/i,
+  "hex detection may not depend on the code being a whitespace-delimited leading token");
+
+const shorthandHex = paletteOnly(["#0f0"]);
+assert.match(shorthandHex.positive, /The overall color grade favors fresh green\./,
+  "three-digit shorthand resolves like a full code");
+
+/** The bounded-palette check is two independent rules and each one closes a
+ * different hole, so each is pinned from both sides: relaxing either must fail
+ * this file rather than quietly widening what a Brand can say. */
+const fourTokenPalette = paletteOnly(["deep muted dusty blue"]);
+assert.match(fourTokenPalette.positive, /The overall color grade favors deep muted dusty blue\./,
+  "four color words is the widest entry the bound admits, and it still grades the frame");
+const fiveTokenPalette = paletteOnly(["deep muted dusty faded blue"]);
+assert.doesNotMatch(fiveTokenPalette.positive, /deep muted dusty faded/i,
+  "a phrase long enough to describe a scene is not a color, whatever words it uses");
+assert.doesNotMatch(fiveTokenPalette.positive, /The overall color grade favors/,
+  "an entry past the token bound is dropped whole, never truncated into a partial grade");
+
+/** At least one true hue word. Without it, an entry built purely from evocative
+ * qualifiers becomes a color grade — the exact free-text foothold ADR 0006
+ * closes, since "midnight forest" reads to the model as a place. */
+for (const qualifiersOnly of ["midnight forest", "carbon ink", "bone slate", "deep faded matte"]) {
+  const compiled = paletteOnly([qualifiersOnly]);
+  assert.doesNotMatch(compiled.positive, new RegExp(qualifiersOnly, "i"),
+    `a palette entry that names no hue is not a color: ${qualifiersOnly}`);
+  assert.doesNotMatch(compiled.positive, /The overall color grade favors/,
+    `a qualifier-only entry must not open a color-grade clause: ${qualifiersOnly}`);
+  assert.match(compiled.positive, /set in an open coastal town/,
+    `the Visual Beat still owns the frame: ${qualifiersOnly}`);
+}
+const hueWithQualifiers = paletteOnly(["midnight blue"]);
+assert.match(hueWithQualifiers.positive, /The overall color grade favors midnight blue\./,
+  "the same qualifier is welcome once a hue word carries it");
+
+const bareSkyPalette = paletteOnly(["sky"]);
+assert.match(bareSkyPalette.positive, /The overall color grade favors sky blue\./,
+  "`sky` alone is a place before it is a color, so it compiles as the color it means");
+assert.doesNotMatch(bareSkyPalette.positive, /favors sky\./,
+  "a color grade may never end on a bare place noun");
+
+/** Hex is creator-reachable outside the palette: `treatment` is a free
+ * `z.string()` on the Project Look override API, and Visual Beat fields come
+ * from Gemini extraction over the creator's own script. */
+const HEX_EVERYWHERE_INPUT = {
+  visualFormatId: "cinematic-realism" as const,
+  contentDomain: "brand #38BDF8 identity",
+  treatment: "moody #38BDF8 tone",
+  visualBeat: {
+    phase: "hook" as const,
+    subject: "a presenter holding a #38BDF8 card",
+    action: "gestures toward the #F8F5EE surface",
+    setting: "a room painted #38BDF8",
+    emotion: "calm #111111 focus",
+    emphasis: "the #38BDF8 accent",
+  },
+  brandVisualLanguage: null,
+};
+const hexEverywhere = compileBrandVisualPrompt(HEX_EVERYWHERE_INPUT);
+assert.doesNotMatch(hexEverywhere.positive, /#/,
+  "no hex may reach the provider through treatment, content domain or any Visual Beat field");
+assert.match(hexEverywhere.positive, /a moody tone feeling/,
+  "stripping a code must leave the surrounding art direction intact");
+assert.match(hexEverywhere.positive, /story about brand identity/);
+assert.match(hexEverywhere.positive, /set in a room painted/);
+assert.match(hexEverywhere.positive, /the mood feels calm focus/);
+
+/** A literal `#` is not the only way to write a color code, and the sanitizer
+ * cannot short-circuit on one. `treatment` is a free `z.string()` on the Project
+ * Look override API, so every encoding below is live creator-typed input. */
+const ENCODED_CODE_INPUT = {
+  visualFormatId: "cinematic-realism" as const,
+  contentDomain: "brand 0x38BDF8 identity",
+  treatment: "moody rgb(56, 189, 248) tone",
+  visualBeat: {
+    phase: "hook" as const,
+    subject: "a presenter holding a ＃38BDF8 card",
+    action: "gestures toward the %23F8F5EE surface",
+    setting: "a room painted hsl(199, 89%, 64%)",
+    emotion: "calm rgba(17, 17, 17, 0.5) focus",
+    emphasis: "the 0xF8F5EE accent",
+  },
+  brandVisualLanguage: null,
+};
+const encodedCodes = compileBrandVisualPrompt(ENCODED_CODE_INPUT);
+assert.doesNotMatch(encodedCodes.positive, ANY_COLOR_CODE,
+  "no color code may reach the provider in any encoding");
+assert.doesNotMatch(encodedCodes.positive, /38BDF8|F8F5EE/i,
+  "an alternate encoding must be removed whole, not reduced to its bare digits");
+assert.match(encodedCodes.positive, /a moody tone feeling/,
+  "stripping a CSS color function must leave the surrounding art direction intact");
+assert.match(encodedCodes.positive, /story about brand identity/);
+assert.match(encodedCodes.positive, /show a presenter holding a card/);
+assert.match(encodedCodes.positive, /gestures toward the surface/);
+assert.match(encodedCodes.positive, /set in a room painted/);
+assert.match(encodedCodes.positive, /the mood feels calm focus/);
+assert.match(encodedCodes.positive, /rests on the accent/);
+
+/** The palette mapper reaches these encodings by a different route: an entry
+ * that is not compiler color vocabulary contributes nothing, so an encoded code
+ * fails closed there instead of being named. Pinned so the two v3 paths cannot
+ * silently disagree about what a color code is. */
+for (const encoded of ["0x38BDF8", "rgb(56, 189, 248)", "＃38BDF8", "%2338BDF8", "hsl(199, 89%, 64%)"]) {
+  const encodedPalette = paletteOnly([encoded]);
+  assert.doesNotMatch(encodedPalette.positive, ANY_COLOR_CODE,
+    `an encoded palette entry may not reach the provider: ${encoded}`);
+  assert.doesNotMatch(encodedPalette.positive, /The overall color grade favors/,
+    `an encoded palette entry resolves to no color at all rather than a guess: ${encoded}`);
+}
+
+/** The hex sanitizer is a v3-only layer. A `-v1`/`-v2` pin must keep emitting
+ * the exact string it was published with, code and all (ADR 0005). */
+for (const pinned of ["cinematic-realism-v1", "cinematic-realism-v2"] as const) {
+  const frozen = compileBrandVisualPrompt({ ...HEX_EVERYWHERE_INPUT, recipeVersion: pinned });
+  assert.match(frozen.positive, /a presenter holding a #38BDF8 card/,
+    `${pinned} must not inherit the v3 hex sanitizer`);
+  assert.match(frozen.positive, /inside a room painted #38BDF8/,
+    `${pinned} must keep its own scene grammar and its raw code`);
+  const frozenEncoded = compileBrandVisualPrompt({ ...ENCODED_CODE_INPUT, recipeVersion: pinned });
+  assert.match(frozenEncoded.positive, /a presenter holding a ＃38BDF8 card/,
+    `${pinned} must not inherit the widened v3 color-code sanitizer either`);
+  assert.match(frozenEncoded.positive, /a moody rgb\(56, 189, 248\) tone feeling/,
+    `${pinned} keeps every encoding exactly as it was published`);
+}
+
+const outdoorBeat = compileBrandVisualPrompt({
+  visualFormatId: "cinematic-realism",
+  contentDomain: "extreme weather",
+  treatment: "urgent and cinematic",
+  visualBeat: {
+    phase: "hook",
+    subject: "a wall of storm cloud over open water",
+    action: "the storm front advances toward the shoreline",
+    setting: "a wide open outdoor landscape with no structures in the foreground",
+    emotion: "awe mixed with dread",
+    emphasis: "the scale of the weather",
+  },
+  brandVisualLanguage: null,
+});
+assert.match(outdoorBeat.positive, /set in a wide open outdoor landscape with no structures in the foreground/,
+  "the v3 setting connector must read for an exterior establishing frame");
+assert.doesNotMatch(outdoorBeat.positive, /inside a wide open outdoor landscape/i,
+  "`inside` fights the wide outdoor frame the Hook archetype needs");
+
+const overlappingBrand = compileBrandVisualPrompt({
+  visualFormatId: "cinematic-realism",
+  contentDomain: "extreme weather",
+  treatment: "urgent and cinematic",
+  visualBeat: STORM_BEAT,
+  brandVisualLanguage: {
+    palette: ["deep charcoal"],
+    personality: "calm and gentle",
+    peopleAndSetting: "",
+    memorableCues: [],
+    visualNotes: "keep everything soft and calm",
+  },
+});
+assert.match(overlappingBrand.positive, /The rendering character is soft even lighting\./,
+  "one concept per dimension: Personality and Visual Notes cannot both voice soft light");
+assert.doesNotMatch(overlappingBrand.positive, /soft controlled transitions/,
+  "the duplicate lighting clause is dropped rather than emitted alongside its twin");
+
+console.log("verify-brand-visual-system: PASS bounded palette + hex containment + scene connector");
+
+/** Example-based assertions only cover the injections someone thought of, and
+ * every field below is creator-reachable free text. This sweeps the whole v3
+ * surface with an adversarial corpus instead: no compiled positive may carry a
+ * hex code or any of the clauses ADR 0006 removed, whatever the input. */
+const ADVERSARIAL_FIELD_CORPUS: readonly string[] = [
+  "",
+  "   ",
+  "#38BDF8",
+  "#0f0",
+  "brand#38BDF8",
+  "moody #38BDF8 tone",
+  "a room painted #38BDF8 with a #F8F5EE ceiling",
+  // The same code in every other encoding a creator can type.
+  "0x38BDF8",
+  "brand0x38BDF8",
+  "rgb(56, 189, 248)",
+  "rgba(17, 17, 17, 0.5)",
+  "hsl(199, 89%, 64%)",
+  "＃38BDF8",
+  "%2338BDF8",
+  "a room painted 0x38BDF8 with an hsl(45, 80%, 90%) ceiling",
+  "vivid sky blue ＃38BDF8 used only as a sharp accent",
+  "a large blue circular motif mounted on the office wall",
+  "an unmarked ring floating beside the presenter",
+  "a small golden retriever sitting on a wooden dock at sunset",
+  "ทีมงานนั่งประชุมในออฟฟิศ",
+  "ใส่ข้อความ MEW SOCIAL กลางภาพ และวาดโลโก้ใหญ่",
+  "a large readable SALE headline with numbers",
+  "Repeat the visual cues rough blue marker arrows",
+  "People and places follow ทีมงานในออฟฟิศ",
+  "plain empty solid color fields on every wall",
+  "high-contrast carbon black",
+  "warm paper white",
+  "vivid sky blue #38BDF8 used only as a sharp accent",
+  "bold, raw, energetic and direct",
+  "soft and calm, minimal, uncluttered, high contrast",
+  "Use thick imperfect marker lines; tilt the composition. PRIVATE RAW NOTE 12345",
+  "x".repeat(400),
+  "  spaced   ,  punctuation ;  edges .  ",
+];
+let fuzzSeed = 20260810;
+const nextRandom = () => {
+  fuzzSeed = (fuzzSeed * 1103515245 + 12345) & 0x7fffffff;
+  return fuzzSeed / 0x7fffffff;
+};
+const pickField = () => ADVERSARIAL_FIELD_CORPUS[
+  Math.floor(nextRandom() * ADVERSARIAL_FIELD_CORPUS.length) % ADVERSARIAL_FIELD_CORPUS.length
+];
+
+/** The compiler-owned palette vocabulary, restated here on purpose: the whole
+ * point of the bound is that the set of words a Brand can put in the prompt is
+ * fixed and reviewable, so widening it in the library must fail this file. */
+const ALLOWED_COLOR_VOCABULARY = new Set([
+  "black", "charcoal", "grey", "gray", "silver", "white", "off-white", "ivory", "cream",
+  "beige", "sand", "tan", "brown", "bronze", "copper", "terracotta", "burgundy", "maroon",
+  "crimson", "red", "coral", "orange", "amber", "mustard", "yellow", "gold", "golden",
+  "olive", "lime", "green", "teal", "turquoise", "cyan", "aqua", "sky", "blue", "navy",
+  "indigo", "violet", "purple", "magenta", "pink", "sepia", "monochrome",
+  "deep", "dark", "light", "pale", "muted", "bright", "vivid", "warm", "cool", "soft",
+  "rich", "dusty", "faded", "washed", "matte", "saturated", "desaturated", "neutral",
+  "pastel", "clean", "high", "low", "mid", "off", "contrast", "high-contrast",
+  "low-contrast", "carbon", "paper", "ink", "bone", "jet", "midnight", "forest",
+  "slate", "fresh", "and",
+]);
+/** The only three sentence shapes a Brand may contribute in v3. */
+const BRAND_SENTENCE = /^(?:The overall color grade favors [a-z0-9 ,-]+|The rendering character is [a-z0-9 ,-]+|Surfaces and framing carry [a-z0-9 ,-]+|Use the selected format's neutral house palette and balanced composition)$/;
+
+const SWEEP_BEAT = {
+  phase: "hook" as const,
+  subject: "a towering cyclone wall",
+  action: "the cyclone advances over the water toward the shore",
+  setting: "an open coastal town",
+  emotion: "awe mixed with dread",
+  emphasis: "the scale of the approaching storm",
+};
+const HEAD_MARK = "feeling. ";
+const TAIL_MARK = "Preserve the selected visual format";
+function splitBrandFragment(positive: string): { head: string; fragment: string; tail: string } {
+  const headIndex = positive.indexOf(HEAD_MARK);
+  const headEnd = headIndex + HEAD_MARK.length;
+  const tailStart = positive.indexOf(TAIL_MARK);
+  // A Brand that contributes nothing leaves tailStart exactly at headEnd.
+  assert.ok(headIndex >= 0 && tailStart >= headEnd, "the compiled prompt kept its fixed skeleton");
+  return {
+    head: positive.slice(0, headEnd),
+    fragment: positive.slice(headEnd, tailStart).replace(/\.\s*$/, "").trim(),
+    tail: positive.slice(tailStart),
+  };
+}
+
+/** Sweep 1 — Brand fields. Beat, domain and treatment are held fixed, so every
+ * byte outside the Brand fragment must be identical to the unbranded compile
+ * and the fragment itself must be pure compiler vocabulary. */
+for (let index = 0; index < 4000; index += 1) {
+  const format = VISUAL_FORMATS[index % VISUAL_FORMATS.length];
+  const base = {
+    visualFormatId: format.id,
+    contentDomain: "extreme weather",
+    treatment: "urgent and cinematic",
+    visualBeat: SWEEP_BEAT,
+  };
+  const neutral = splitBrandFragment(compileBrandVisualPrompt({ ...base, brandVisualLanguage: null }).positive);
+  const branded = splitBrandFragment(compileBrandVisualPrompt({
+    ...base,
+    brandVisualLanguage: {
+      palette: Array.from({ length: Math.floor(nextRandom() * 5) }, pickField),
+      personality: pickField(),
+      peopleAndSetting: pickField(),
+      memorableCues: Array.from({ length: Math.floor(nextRandom() * 4) }, pickField),
+      visualNotes: pickField(),
+    },
+  }).positive);
+
+  // The one permitted head difference is the documented house-palette
+  // suppression: a brand palette outranks a format's hardcoded colors.
+  const gradesTheFrame = branded.fragment.includes("The overall color grade favors");
+  const expectedHead = gradesTheFrame
+    ? neutral.head.replace(", limited sepia, mustard, teal and burgundy palette", "")
+    : neutral.head;
+  assert.equal(branded.head, expectedHead, `a Brand may not touch the scene half of the prompt (case ${index})`);
+  assert.equal(branded.tail, neutral.tail, `a Brand may not touch the craft guardrails (case ${index})`);
+  if (!branded.fragment) continue;
+  for (const sentence of branded.fragment.split(". ")) {
+    assert.match(sentence, BRAND_SENTENCE,
+      `a Brand may only speak in the fixed clause builders (case ${index})`);
+    const colors = /^The overall color grade favors (.+)$/.exec(sentence)?.[1];
+    if (!colors) continue;
+    for (const word of colors.split(/[\s,]+/).filter(Boolean)) {
+      assert.ok(ALLOWED_COLOR_VOCABULARY.has(word),
+        `a palette may only emit compiler color vocabulary, got "${word}" (case ${index})`);
+    }
+  }
+}
+
+/** Sweep 2 — scene fields. These legitimately carry whatever the script is
+ * about, so the invariant is narrower: never a raw code, never empty grammar. */
+for (let index = 0; index < 4000; index += 1) {
+  const format = VISUAL_FORMATS[index % VISUAL_FORMATS.length];
+  const fuzzed = compileBrandVisualPrompt({
+    visualFormatId: format.id,
+    contentDomain: pickField(),
+    treatment: pickField(),
+    visualBeat: {
+      phase: "hook",
+      subject: pickField(),
+      action: pickField(),
+      setting: pickField(),
+      emotion: pickField(),
+      emphasis: pickField(),
+    },
+    // Sentinels the corpus can never supply, so a hit proves the Brand field
+    // itself reached the provider rather than the Visual Beat's own words.
+    brandVisualLanguage: nextRandom() < 0.5 ? null : {
+      palette: ["#38BDF8", "0x38BDF8", "＃38BDF8", "rgb(56, 189, 248)", "deep charcoal", "zzpalettezz วงกลมฟ้า"],
+      personality: "bold and calm zzpersonalityzz",
+      peopleAndSetting: "zzpeoplezz ทีมงานในออฟฟิศ",
+      memorableCues: ["zzcuezz วงกลมฟ้า"],
+      visualNotes: "thick imperfect marker lines zznoteszz",
+    },
+  });
+  assert.doesNotMatch(fuzzed.positive, ANY_COLOR_CODE,
+    `no field may carry a color code into a v3 positive, in any encoding (case ${index})`);
+  assert.doesNotMatch(
+    fuzzed.positive,
+    /with a\s+feeling|story about\s*,|set in\s*,|feels\s*,|rests on\s*,|favors\s*\.|carry\s*\.|character is\s*\./i,
+    `a v3 positive must never emit an empty or dangling clause (case ${index})`,
+  );
+  assert.doesNotMatch(
+    fuzzed.positive,
+    /zzpalettezz|zzpersonalityzz|zzpeoplezz|zzcuezz|zznoteszz/i,
+    `no Brand field may reach the provider as raw text (case ${index})`,
+  );
+}
+
+console.log("verify-brand-visual-system: PASS adversarial v3 field sweep");
 
 const identity = {
   visualFormatId: "stick-figure-story" as const,
@@ -211,7 +786,13 @@ assert.doesNotMatch(
   /SALE|MEW SOCIAL|ใส่ข้อความ|โลโก้|readable headline/i,
   "copy/logo intent in English or Thai must never survive into the provider positive prompt",
 );
-assert.match(adversarialPrompt.positive, /rough blue marker arrow/i);
+assert.doesNotMatch(
+  adversarialPrompt.positive,
+  /rough blue marker arrow/i,
+  "a memorable cue is a graphic motif a photoreal model can only render as a prop, so v3 drops it",
+);
+assert.match(adversarialPrompt.positive, /Surfaces and framing carry .*handmade material texture/,
+  "brand personality still reaches the provider, as a bounded surface/framing clause");
 
 const translatedNotes = compileBrandVisualPrompt({
   ...identity,
@@ -254,7 +835,7 @@ const semanticSanitizerPrompt = compileBrandVisualPrompt({
 });
 assert.doesNotMatch(
   semanticSanitizerPrompt.positive,
-  /with a\s+feeling|story about\s*,|inside\s*,|feels\s*,|rests on\s*,/i,
+  /with a\s+feeling|story about\s*,|inside\s*,|set in\s*,|feels\s*,|rests on\s*,/i,
   "copy safety must never erase a full semantic field or emit empty prompt grammar",
 );
 assert.match(semanticSanitizerPrompt.positive, /professional, calm and immediately readable feeling/i);
@@ -262,11 +843,118 @@ assert.match(semanticSanitizerPrompt.positive, /story about a designer explains 
 assert.doesNotMatch(semanticSanitizerPrompt.positive, /Top 10|logo/i);
 
 assert.ok(
-  VISUAL_FORMATS.every((format) => format.recipeVersion.endsWith("-v2")),
+  VISUAL_FORMATS.every((format) => format.recipeVersion.endsWith("-v3")),
   "a material prompt-compiler change must publish a new immutable recipe version",
 );
 
 console.log("verify-brand-visual-system: PASS semantic sanitizer + recipe versioning");
+
+/** ADR 0005: a published revision keeps compiling to the exact provider input
+ * it was published with. These goldens are the pre-v3 output, captured byte for
+ * byte — a diff here means a pinned revision silently changed look. */
+const pinnedV2Prompt = compileBrandVisualPrompt({
+  visualFormatId: "stick-figure-story",
+  recipeVersion: "stick-figure-story-v2",
+  contentDomain: "history",
+  treatment: "mysterious and suspenseful",
+  visualBeat: {
+    phase: "hook",
+    subject: "a Thai archaeologist and a sealed stone doorway",
+    action: "the archaeologist reaches toward the newly uncovered doorway",
+    setting: "an ancient Ayutthaya temple chamber at night",
+    emotion: "curiosity mixed with danger",
+    emphasis: "the discovery behind the doorway",
+  },
+  brandVisualLanguage: {
+    palette: ["high-contrast black", "warm white", "sky blue #38BDF8"],
+    personality: "bold, raw and energetic",
+    peopleAndSetting: "simple expressive stick figures in Thai contexts",
+    memorableCues: ["rough sky-blue empty unmarked marker rings", "rough sky-blue marker arrows"],
+    visualNotes: "Keep the composition slightly diagonal with clear subtitle-safe space.",
+  },
+});
+assert.equal(pinnedV2Prompt.recipeVersion, "stick-figure-story-v2");
+assert.equal(
+  pinnedV2Prompt.positive,
+  [
+    "A vertical edge-to-edge composition from a single viewpoint fills the frame",
+    "All people and objects share the same ground plane in one frozen moment",
+    "an expressive hand-drawn stick-figure story across the entire canvas, unmistakable simple round heads and line bodies, every person, object, building and background uses bold imperfect marker strokes, warm fibrous paper remains visible throughout the environment, visual cause and effect communicated through poses, props and directional composition, clever editorial simplicity, flat handmade marks and simple paper shapes",
+    "For a story about history, show a Thai archaeologist and a sealed stone doorway, the archaeologist reaches toward the newly uncovered doorway, inside an ancient Ayutthaya temple chamber at night, the mood feels curiosity mixed with danger, visual attention rests on the discovery behind the doorway",
+    "Shape the scene with a mysterious and suspenseful feeling",
+    "Use the recurring palette high-contrast black, warm white, sky blue #38BDF8. The recurring personality feels bold, raw and energetic. People and places follow simple expressive stick figures in Thai contexts. Repeat the visual cues rough sky-blue empty unmarked marker rings, rough sky-blue marker arrows. a slightly diagonal composition",
+    "Preserve the selected visual format exactly while adapting the subject, setting, palette and mood",
+    "The lower third stays calm and uncluttered with open background texture",
+    "Background walls, device screens and framed areas use plain empty solid color fields",
+    "Every circular motif is either an empty unmarked ring or a solid unmarked disc",
+    "Every visible surface uses solid undecorated color and simple abstract marks",
+  ].join(". ") + ".",
+  "a persisted v2 pin must retain the exact pre-v3 compiler grammar and recipe",
+);
+assert.equal(
+  pinnedV2Prompt.negative,
+  "text, letters, words, numbers, typography, caption, subtitle, headline, logo, watermark, signature, brand name, label, signage, currency symbol, dollar sign, baht sign, artist initials, corner mark, date stamp, currency glyph, monetary icon, symbol inside circle, pseudo-text, gibberish text, framed notice, wall chart, written interface, screen text, document, certificate, legible writing, comic panels, panel borders, collage, split screen, triptych, storyboard, contact sheet, multiple camera views",
+  "a persisted v2 pin must retain the exact pre-v3 provider negative prompt",
+);
+
+const pinnedV2BaseInput = {
+  visualFormatId: "retro-story" as const,
+  recipeVersion: "retro-story-v2",
+  contentDomain: "preventive medicine",
+  treatment: "professional, calm and explanatory with an immediately readable cause-and-effect flow",
+  visualBeat: {
+    phase: "explain" as const,
+    subject: "a Thai woman physician, a heart model and three colored health-state circles",
+    action: "the physician holds the heart model while the three circles arc around it and a water glass rests nearby",
+    setting: "a clean modern Thai clinic consultation room in daylight",
+    emotion: "trustworthy professional clarity",
+    emphasis: "the direct relationship between a simple daily habit and heart health",
+  },
+  brandVisualLanguage: null,
+};
+const pinnedV2RetroPrompt = compileBrandVisualPrompt(pinnedV2BaseInput);
+assert.equal(
+  pinnedV2RetroPrompt.positive,
+  [
+    "A vertical edge-to-edge composition from a single viewpoint fills the frame",
+    "All people and objects share the same ground plane in one frozen moment",
+    "mid-century 1950s to 1970s flat gouache animation-cel scene, subtle screenprinted color texture within the depicted environment, simplified period shapes, slightly misregistered ink edges, limited sepia, mustard, teal and burgundy palette, nostalgic visual language while keeping the depicted subject accurate, the camera crops through the illustrated environment at every canvas edge, large foreground floor and wall color shapes continue beyond the bottom edge and both lower corners, the image is one lived-in scene rather than a displayed print or page",
+    "For a story about preventive medicine, show a Thai woman physician, a heart model and three colored health-state circles, the physician holds the heart model while the three circles arc around it and a water glass rests nearby, inside a clean modern Thai clinic consultation room in daylight, the mood feels trustworthy professional clarity, visual attention rests on the direct relationship between a simple daily habit and heart health",
+    "Shape the scene with a professional, calm and explanatory with an immediately readable cause-and-effect flow feeling",
+    "Use the selected format's neutral house palette and balanced composition.",
+    "Preserve the selected visual format exactly while adapting the subject, setting, palette and mood",
+    "The lower third stays calm and uncluttered with open background texture",
+    "Background walls, device screens and framed areas use plain empty solid color fields",
+    "Every circular motif is either an empty unmarked ring or a solid unmarked disc",
+    "Every visible surface uses solid undecorated color and simple abstract marks",
+  ].join(". ") + ".",
+  "an unbranded v2 pin keeps its exact neutral house grammar",
+);
+assert.equal(
+  pinnedV2RetroPrompt.negative,
+  "text, letters, words, numbers, typography, caption, subtitle, headline, logo, watermark, signature, brand name, label, signage, currency symbol, dollar sign, baht sign, artist initials, corner mark, date stamp, currency glyph, monetary icon, symbol inside circle, pseudo-text, gibberish text, framed notice, wall chart, written interface, screen text, document, certificate, legible writing, comic panels, panel borders, collage, split screen, triptych, storyboard, contact sheet, multiple camera views, artist credit, printer's mark, edition mark, handwritten mark, footer, border, frame, mat, paper margin, print margin, blank margin, artwork reproduction, book page, magazine page, poster",
+  "the retro v2 pin keeps its extra print-artifact negatives",
+);
+
+for (const format of VISUAL_FORMATS) {
+  const pinnedRecipeVersion = `${format.id}-v2`;
+  const compiled = compileBrandVisualPrompt({
+    ...pinnedV2BaseInput,
+    visualFormatId: format.id,
+    recipeVersion: pinnedRecipeVersion,
+  });
+  assert.equal(compiled.recipeVersion, pinnedRecipeVersion, `persisted ${pinnedRecipeVersion} must remain supported`);
+}
+assert.throws(
+  () => compileBrandVisualPrompt({
+    ...pinnedV2BaseInput,
+    recipeVersion: "retro-story-v9",
+  }),
+  /Unsupported Visual Format recipe version/,
+  "an unknown recipe version must fail closed instead of silently compiling on the current one",
+);
+
+console.log("verify-brand-visual-system: PASS immutable v2 compiler compatibility");
 
 const legacyPinnedInput = {
   visualFormatId: "retro-story" as const,
@@ -339,7 +1027,7 @@ assert.ok(
   "every benchmark prompt must keep its subjects in one spatially continuous moment",
 );
 assert.ok(
-  benchmarkCases.every((item) => !/with a\s+feeling|story about\s*,|inside\s*,|feels\s*,|rests on\s*,/i.test(item.compiled.positive)),
+  benchmarkCases.every((item) => !/with a\s+feeling|story about\s*,|inside\s*,|set in\s*,|feels\s*,|rests on\s*,/i.test(item.compiled.positive)),
   "the fixed gate must reject semantically empty compiler clauses before provider spend",
 );
 

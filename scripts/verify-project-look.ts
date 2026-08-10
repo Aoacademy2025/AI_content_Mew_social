@@ -95,7 +95,7 @@ async function main() {
   });
   const oldSuggestedIdentity = brandVisualIdentityKey({
     visualFormatId: "clear-infographic",
-    recipeVersion: "clear-infographic-v2",
+    recipeVersion: "clear-infographic-v3",
     treatment: "calm",
     brandVisualLanguage: null,
   });
@@ -160,7 +160,7 @@ async function main() {
     look: { visualFormatId: "dramatic-comic", treatment: "urgent but trustworthy" },
   });
   assert.equal(saved.visualFormatId, "dramatic-comic");
-  assert.equal(saved.recipeVersion, "dramatic-comic-v2", "project stores a resolved recipe snapshot");
+  assert.equal(saved.recipeVersion, "dramatic-comic-v3", "project stores a resolved recipe snapshot");
   const overridden = await resolveProjectVisualContext({
     userId: user.id,
     projectId: project.id,
@@ -301,7 +301,7 @@ async function main() {
     sceneIndex: 1,
   });
   assert.ok(pinnedPrompt, "a pinned branded job never falls back to the legacy prompt");
-  assert.equal(pinnedPrompt?.compiled.recipeVersion, "dramatic-comic-v2");
+  assert.equal(pinnedPrompt?.compiled.recipeVersion, "dramatic-comic-v3");
   assert.match(pinnedPrompt?.compiled.positive ?? "", /thick varied ink contours/);
   assert.match(pinnedPrompt?.compiled.positive ?? "", /old closing subject/,
     "each rendered B-roll window resolves its exact pinned Visual Beat");
@@ -540,7 +540,7 @@ async function main() {
       projectVisualContextJson: JSON.stringify({
         source: "project-look",
         visualFormatId: "dramatic-comic",
-        recipeVersion: "dramatic-comic-v2",
+        recipeVersion: "dramatic-comic-v3",
         treatment: "new identity",
         brandVisualLanguage: null,
       }),
@@ -606,7 +606,7 @@ async function main() {
     imageJobId: lateOldJob.id,
     identityKey: brandVisualIdentityKey({
       visualFormatId: "dramatic-comic",
-      recipeVersion: "dramatic-comic-v2",
+      recipeVersion: "dramatic-comic-v3",
       treatment: "new identity",
       brandVisualLanguage: null,
     }),
@@ -619,7 +619,7 @@ async function main() {
   );
   const currentIdentity = brandVisualIdentityKey({
     visualFormatId: "retro-story",
-    recipeVersion: "retro-story-v2",
+    recipeVersion: "retro-story-v3",
     treatment: "replace every image",
     brandVisualLanguage: null,
   });

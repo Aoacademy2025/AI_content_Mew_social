@@ -22,10 +22,14 @@ export type BrandProfileSeed = {
     languageMode: "defined" | "none";
     palette: string[];
     personality: string;
-    peopleAndSetting: string;
-    memorableCues: string[];
     visualNotes: string;
     defaultTreatment: string;
+    /** Retired scene inputs (ADR 0006 — a Brand controls rendering, never the
+     * scene). Neither field is authored or seeded any more; they stay on the
+     * type purely so a payload restored from a pinned revision, or carried over
+     * from a completed clip's visual context, round-trips unchanged. */
+    peopleAndSetting?: string;
+    memorableCues?: string[];
   };
 };
 
@@ -84,8 +88,6 @@ export function createBlankBrandProfileSeed(): BrandProfileSeed {
       languageMode: "defined",
       palette: ["#2B2926", "#F5F1E8", "#A8A29E"],
       personality: "สมดุล ชัดเจน และปรับให้เข้ากับแบรนด์ได้",
-      peopleAndSetting: "",
-      memorableCues: [],
       visualNotes: "",
       defaultTreatment: "ชัดเจน สมดุล และอ่านเรื่องได้ทันที",
     },

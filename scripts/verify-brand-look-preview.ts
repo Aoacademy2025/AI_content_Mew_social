@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -132,7 +132,7 @@ async function main() {
       brandProfileId: profile.id,
       version: 1,
       payloadJson: JSON.stringify(payload),
-      visualRecipeJson: JSON.stringify({ visualFormatId: "stick-figure-story", recipeVersion: "stick-figure-story-v2" }),
+      visualRecipeJson: JSON.stringify({ visualFormatId: "stick-figure-story", recipeVersion: "stick-figure-story-v3" }),
     },
   });
   const previewIdentityKey = brandVisualIdentityKey({
@@ -507,7 +507,7 @@ async function main() {
   });
   assert.equal((await prisma.brandLookPreviewBatch.findUniqueOrThrow({ where: { id: partial.id } })).status, "completed");
 
-  const standardCompiled: string[] = [];
+  const standardCompiled = new Map<string, string>();
   const durableReservations: string[] = [];
   const unsaved = await createUnsavedBrandLookPreview({
     userId: user.id,
@@ -522,7 +522,7 @@ async function main() {
         3,
         "all three durable image reservations exist before the first provider generator starts",
       );
-      standardCompiled.push(compiled.positive);
+      standardCompiled.set(phase, compiled.positive);
       const job = await prisma.aiGenerationJob.create({
         data: {
           userId: user.id,
@@ -542,11 +542,90 @@ async function main() {
   assert.equal(unsaved.status, "completed");
   assert.deepEqual(durableReservations.sort(), ["close", "explain", "hook"]);
   assert.equal(await prisma.brandProfile.count({ where: { userId: user.id } }), profileCountBefore, "previewing an unsaved Project Look cannot consume a Brand Profile slot");
-  assert.ok(standardCompiled.every((prompt) => prompt.includes(payload.niche) && prompt.includes(payload.audience)));
   assert.ok(
-    standardCompiled.every((prompt) => !/archaeologist|physician|kraft parcel/i.test(prompt)),
-    "pre-save previews must represent this brand niche rather than the fixed Quality Gate subjects",
+    [...standardCompiled.values()].every((prompt) => !/archaeologist|physician|kraft parcel/i.test(prompt)),
+    "standard preview scenes must never leak the fixed Quality Gate benchmark subjects",
   );
+
+  // Defect A9 regression: Hook/Explain/Close must no longer be three photos of
+  // the same room templated from niche/audience. Extract the Visual Beat scene
+  // clause each compiled prompt embeds (`For a story about X, show <scene>.
+  // Shape the scene ...`) so the check targets the scene itself, not the fixed
+  // "All people and objects share the same ground plane" boilerplate every v3
+  // prompt carries regardless of scene.
+  const sceneClause = (prompt: string): string => {
+    const match = prompt.match(/show (.+?)\. Shape the scene/i);
+    assert.ok(match, `compiled prompt must contain an extractable scene clause: ${prompt}`);
+    return match![1];
+  };
+  const hookScene = sceneClause(standardCompiled.get("hook")!);
+  const explainScene = sceneClause(standardCompiled.get("explain")!);
+  const closeScene = sceneClause(standardCompiled.get("close")!);
+  assert.notEqual(hookScene, explainScene, "hook and explain scenes must differ");
+  assert.notEqual(explainScene, closeScene, "explain and close scenes must differ");
+  assert.notEqual(hookScene, closeScene, "hook and close scenes must differ");
+  assert.equal(
+    new Set(standardCompiled.values()).size,
+    3,
+    "the three standard preview prompts must be pairwise distinct",
+  );
+  const personNounPattern = /\b(person|people|human|man|men|woman|women|boy|girl|child|children|figure|face|hand|hands|shoulder|shoulders|crowd|guide|worker)\b/iu;
+  assert.ok(
+    !personNounPattern.test(hookScene),
+    `hook scene must require no human presence: ${hookScene}`,
+  );
+  assert.ok(
+    personNounPattern.test(explainScene),
+    "explain scene must depict a person's hands and objects in cause-and-effect",
+  );
+  assert.ok(
+    personNounPattern.test(closeScene),
+    "close scene must be a human close-up",
+  );
+
+  // Task 2 makes niche/audience optional; standard preview scenes must not
+  // depend on them being filled, and an empty niche must still produce a
+  // non-empty contentDomain rather than a blank "For a story about , show" gap.
+  const noNicheCompiled = new Map<string, string>();
+  const noNichePayload = { ...payload, niche: "", audience: "" };
+  const noNichePreview = await createUnsavedBrandLookPreview({
+    userId: user.id,
+    requestId: "no-niche-scenes-request",
+    payload: noNichePayload,
+    generator: async ({ phase, compiled }) => {
+      noNicheCompiled.set(phase, compiled.positive);
+      const job = await prisma.aiGenerationJob.create({
+        data: {
+          userId: user.id,
+          kind: "image",
+          provider: "runpod",
+          model: "z-image-turbo",
+          status: "completed",
+          outputUrl: `/generated/no-niche-${phase}.webp`,
+          fundingSource: "starter_allowance",
+          allowanceUnits: 1,
+          chargeState: "settled",
+        },
+      });
+      return { jobId: job.id, outputUrl: job.outputUrl! };
+    },
+  });
+  assert.equal(noNichePreview.status, "completed", "an empty niche/audience must not block preview generation");
+  assert.equal(
+    new Set(noNicheCompiled.values()).size,
+    3,
+    "standard preview scenes stay pairwise distinct even with no niche/audience",
+  );
+  assert.ok(
+    [...noNicheCompiled.values()].every((prompt) => /For a story about [^,]+, show/i.test(prompt)),
+    "an empty niche must still resolve to a non-empty contentDomain fallback",
+  );
+  const noNicheHookScene = sceneClause(noNicheCompiled.get("hook")!);
+  assert.ok(
+    !personNounPattern.test(noNicheHookScene),
+    "hook scene stays human-free regardless of niche/audience",
+  );
+
   const commitCrashBatch = await prisma.brandLookPreviewBatch.create({
     data: {
       userId: user.id,
@@ -811,9 +890,9 @@ async function main() {
       },
     });
     assert.deepEqual(pinnedRecipeVersions, [
-      "stick-figure-story-v2",
-      "stick-figure-story-v2",
-      "stick-figure-story-v2",
+      "stick-figure-story-v3",
+      "stick-figure-story-v3",
+      "stick-figure-story-v3",
     ]);
     await rerollBrandLookPreviewItem({
       userId: user.id,
@@ -835,7 +914,7 @@ async function main() {
         return { jobId: job.id, outputUrl: job.outputUrl! };
       },
     });
-    assert.equal(pinnedRecipeVersions.at(-1), "stick-figure-story-v2");
+    assert.equal(pinnedRecipeVersions.at(-1), "stick-figure-story-v3");
   } finally {
     mutableFormat.recipeVersion = currentRecipeVersion;
   }
@@ -1210,7 +1289,15 @@ async function main() {
       `${previewRoutePath} must admit and materialize one prepared preview snapshot`,
     );
   }
-  const brandsPage = readFileSync("src/app/(dashboard)/brands/page.tsx", "utf8");
+  // /brands is a server shell plus client islands under ./_components; the
+  // preview request-identity contract holds across the whole route.
+  const brandsComponentsDirectory = "src/app/(dashboard)/brands/_components";
+  const brandsPage = [
+    readFileSync("src/app/(dashboard)/brands/page.tsx", "utf8"),
+    ...readdirSync(brandsComponentsDirectory)
+      .sort()
+      .map((file) => readFileSync(join(brandsComponentsDirectory, file), "utf8")),
+  ].join("\n");
   assert.ok(
     brandsPage.includes("readPendingBrandPreviewOperation")
       && brandsPage.includes("writePendingBrandPreviewOperation")
