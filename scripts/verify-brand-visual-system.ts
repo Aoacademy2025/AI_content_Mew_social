@@ -48,12 +48,19 @@ const editorHookSource = readFileSync("src/app/(dashboard)/video-editor/_v2/useV
 const editorJobSource = readFileSync("src/app/(dashboard)/video-editor/_v2/useV2Job.ts", "utf8");
 const videoJobsRouteSource = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
 const stepTwoSource = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
+const brandVisualSelectorSource = readFileSync("src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx", "utf8");
 assert.match(meRouteSource, /recommendedAutoMixDefault/,
   "the user capability response exposes the public paid-plan default separately from kiePaidUnlocked");
 assert.match(meRouteSource, /private, no-store, max-age=0/,
   "the entitlement response cannot be retained across a rolling deploy");
 assert.match(editorHookSource, /resolveBrandVisualClientAccess\(m\)/,
   "the Editor resolves admission from the boolean and durable rollout cohort");
+assert.match(brandVisualSelectorSource, /canProbeBrandLibrary\s*=\s*p\.brandVisualAllowed\s*\|\|\s*p\.isAdmin\s*\|\|\s*p\.heroAiBeta/,
+  "an internal Editor probes the authoritative Brand Library when its capability snapshot is stale");
+assert.match(brandVisualSelectorSource, /status\s*===\s*401\s*\|\|\s*result\.response\.status\s*===\s*403[\s\S]*setLibraryAuthorized\(false\)/,
+  "the direct Brand Library probe still fails closed when server admission is unavailable");
+assert.match(brandVisualSelectorSource, /setLibraryAuthorized\(true\)[\s\S]*setProfiles/,
+  "a successful authoritative probe unlocks the selector and its profiles");
 assert.match(editorHookSource, /fetchMe\(\)[\s\S]*initialPreset[\s\S]*createServerProject/,
   "the paid Mix Preset is resolved before a new project's durable POST");
 assert.doesNotMatch(stepTwoSource, /ฟรี · แนะนำ/,
