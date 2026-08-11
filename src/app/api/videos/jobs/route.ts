@@ -52,6 +52,7 @@ import {
 } from "@/lib/internal-ai-access";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
+import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import { normalizeHeadlineHook } from "@/lib/headline-hook";
 import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
@@ -575,23 +576,25 @@ export async function POST(req: Request) {
       }
       const model = AI_IMAGE_MODELS.find((item) => item.id === "z-image-turbo")!;
       const offer = describeImageOffer(model);
-      if (!offer.available || offer.providerRoute !== "runpod-custom") {
+      if (!offer.available || !isHeroRunpodRoute(offer.providerRoute)) {
         return NextResponse.json({
           error: "hero_image_unavailable",
           message: "Hero AI Image ยังไม่พร้อมใช้งานในขณะนี้",
         }, { status: 503 });
       }
-      const runpodCost = await getRunpodImageCostSnapshot({
-        endpointId: offer.providerEndpoint,
-      });
-      if (!runpodCost.admitted) {
-        return NextResponse.json({
-          error: "hero_image_cost_guard",
-          message: runpodCost.status === "stale"
-            ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงยังไม่รับงานใหม่"
-            : "ต้นทุน Hero AI Image สูงกว่าเพดาน ฿1.08/รูป จึงยังไม่รับงานใหม่",
-          retryable: true,
-        }, { status: 503 });
+      if (usesCustomRunpodEndpoint(offer.providerRoute)) {
+        const runpodCost = await getRunpodImageCostSnapshot({
+          endpointId: offer.providerEndpoint,
+        });
+        if (!runpodCost.admitted) {
+          return NextResponse.json({
+            error: "hero_image_cost_guard",
+            message: runpodCost.status === "stale"
+              ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงยังไม่รับงานใหม่"
+              : "ต้นทุน Hero AI Image สูงกว่าเพดาน ฿1.08/รูป จึงยังไม่รับงานใหม่",
+            retryable: true,
+          }, { status: 503 });
+        }
       }
     } else if (requestedSource === "auto-mix") {
       // AutoMix "ai" slots now generate on the Hero RunPod seam (fetch-stock), so the

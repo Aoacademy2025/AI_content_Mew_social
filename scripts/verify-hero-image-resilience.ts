@@ -221,7 +221,8 @@ async function main() {
     "the video pipeline must keep provider retries bounded by the shared decision contract",
   );
   assert.match(heroImage, /classifyRunpodTerminalFailure/, "provider terminal errors must retain systemic classification");
-  assert.match(heroImage, /prepared\.providerRoute !== "runpod-custom"/, "Hero video must stay pinned to the verified custom endpoint");
+  assert.match(heroImage, /!isHeroRunpodRoute\(prepared\.providerRoute\)/, "Hero video must admit only approved routes inside the RunPod engine");
+  assert.match(heroImage, /usesCustomRunpodEndpoint\(attempt\.providerRoute\)/, "custom orphan recovery must not call the unsupported public health route");
   assert.match(heroImage, /cancelRunpodImageJob/, "a bounded custom-worker timeout must cancel the exact durable provider job");
   assert.match(heroImage, /replaceCanceledImageAttempt/, "a confirmed orphan cancellation must create one durable same-engine retry");
   assert.match(heroImage, /getRunpodEndpointHealth/, "orphan detection must consult live endpoint capacity");
@@ -234,7 +235,8 @@ async function main() {
   assert.match(capacity, /workersMin: 0/, "capacity must preserve scale-to-zero");
   assert.match(capacity, /idleTimeout: desiredIdleTimeout/, "capacity must preserve the five-second idle timeout");
   assert.match(provider, /model\.customCreditCostKey/, "the custom endpoint must receive its route-specific quote");
-  assert.match(videoJobs, /offer\.providerRoute !== "runpod-custom"/, "job creation must reject an accidental public-route rollback");
+  assert.match(videoJobs, /!isHeroRunpodRoute\(offer\.providerRoute\)/, "job creation must admit public incident routing without admitting another engine");
+  assert.match(videoJobs, /usesCustomRunpodEndpoint\(offer\.providerRoute\)/, "the live GPU-ledger guard must remain custom-route only");
   assert.match(editor, /HERO_AI_IMAGE_CREDITS/, "the editor must disclose the custom-route price from the shared table");
   assert.match(receipt, /return HERO_AI_IMAGE_CREDITS/, "the render receipt must use the same custom-route price");
   assert.match(media, /fetchImageResponseWithRetry/, "the real persistence path must use bounded retry");

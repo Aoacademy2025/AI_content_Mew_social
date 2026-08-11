@@ -16,6 +16,7 @@ import { parseHeroBrollWindowRequest } from "@/lib/broll-window-hero";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { getBalance } from "@/lib/credits";
 import { checkHeroImageRate, heroImageRateLimitMessage } from "@/lib/hero-image-rate-limit";
+import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
@@ -167,7 +168,7 @@ export async function POST(req: Request) {
     }
 
     const offer = describeHeroImageOffer();
-    if (!offer.available || offer.providerRoute !== "runpod-custom") {
+    if (!offer.available || !isHeroRunpodRoute(offer.providerRoute)) {
       return NextResponse.json(
         {
           error: "hero_image_unavailable",
@@ -176,18 +177,20 @@ export async function POST(req: Request) {
         { status: 503 },
       );
     }
-    const costSnapshot = await getRunpodImageCostSnapshot({ endpointId: offer.providerEndpoint });
-    if (!costSnapshot.admitted) {
-      return NextResponse.json(
-        {
-          error: "hero_image_cost_guard",
-          retryable: true,
-          message: costSnapshot.status === "stale"
-            ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงยังไม่รับงานใหม่"
-            : "ต้นทุน Hero AI Image สูงกว่าเพดาน จึงยังไม่รับงานใหม่",
-        },
-        { status: 503 },
-      );
+    if (usesCustomRunpodEndpoint(offer.providerRoute)) {
+      const costSnapshot = await getRunpodImageCostSnapshot({ endpointId: offer.providerEndpoint });
+      if (!costSnapshot.admitted) {
+        return NextResponse.json(
+          {
+            error: "hero_image_cost_guard",
+            retryable: true,
+            message: costSnapshot.status === "stale"
+              ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงยังไม่รับงานใหม่"
+              : "ต้นทุน Hero AI Image สูงกว่าเพดาน จึงยังไม่รับงานใหม่",
+          },
+          { status: 503 },
+        );
+      }
     }
     acceptance = parseBrandVisualJobAcceptance(await prepareBrandVisualJobAcceptance({
       userId: user.id,
