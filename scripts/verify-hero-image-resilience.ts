@@ -4,6 +4,7 @@ import fs from "node:fs";
 import {
   classifyRunpodTerminalFailure,
   closeHeroRunpodCircuit,
+  assessRunpodImageAdmission,
   forEachInFailFastBatches,
   heroRunpodCircuitState,
   openHeroRunpodCircuit,
@@ -11,6 +12,9 @@ import {
   recordHeroRunpodSuccess,
   shouldRetryQueuedRunpodJob,
 } from "../src/lib/hero-image-resilience";
+import {
+  heroImageProviderRetryDirective,
+} from "../src/lib/mcp/hero-image-pipeline-retry";
 import { fetchImageResponseWithRetry } from "../src/lib/ai-generation-image-download";
 import { HERO_AI_IMAGE_CREDITS } from "../src/lib/credit-costs";
 
@@ -105,6 +109,55 @@ async function main() {
   }), false, "a busy worker is normal capacity pressure, not an orphan");
   assert.equal(HERO_AI_IMAGE_CREDITS, 2, "the custom Hero route needs the approved 2-credit cost envelope");
 
+  assert.deepEqual(assessRunpodImageAdmission({
+    jobs: { completed: 0, failed: 0, inProgress: 0, inQueue: 0, retried: 0 },
+    workers: { idle: 0, initializing: 0, ready: 0, running: 0, throttled: 0, unhealthy: 0 },
+  }), { admitted: true }, "a healthy scale-to-zero endpoint remains admissible");
+  assert.deepEqual(assessRunpodImageAdmission({
+    jobs: { completed: 0, failed: 0, inProgress: 0, inQueue: 0, retried: 0 },
+    workers: { idle: 1, initializing: 0, ready: 0, running: 0, throttled: 1, unhealthy: 0 },
+  }), { admitted: false, reason: "workers_throttled" }, "throttled capacity is rejected before image credits are reserved");
+  assert.deepEqual(assessRunpodImageAdmission({
+    jobs: { completed: 0, failed: 0, inProgress: 0, inQueue: 2, retried: 0 },
+    workers: { idle: 0, initializing: 0, ready: 0, running: 0, throttled: 0, unhealthy: 1 },
+  }), { admitted: false, reason: "workers_unhealthy" }, "an unhealthy endpoint with no usable worker is rejected before spend");
+
+  const providerTimeout = Object.assign(new Error("provider queue timed out"), {
+    name: "PipelineHttpError",
+    path: "/api/videos/fetch-stock",
+    status: 503,
+    body: {
+      error: "provider queue timed out",
+      code: "HERO_IMAGE_UNAVAILABLE",
+      retryable: true,
+      retryAfterSec: 60,
+    },
+  });
+  assert.deepEqual(heroImageProviderRetryDirective(providerTimeout, 0), {
+    nextAttempt: 1,
+    delayMs: 60_000,
+    code: "HERO_IMAGE_UNAVAILABLE",
+  }, "a refunded provider outage receives one bounded stock-only retry");
+  assert.equal(
+    heroImageProviderRetryDirective(providerTimeout, 1),
+    null,
+    "a second provider outage becomes terminal instead of looping or spending indefinitely",
+  );
+  assert.equal(
+    heroImageProviderRetryDirective(Object.assign(new Error("credits"), {
+      name: "PipelineHttpError",
+      path: "/api/videos/fetch-stock",
+      status: 402,
+      body: {
+        error: "credits",
+        code: "INSUFFICIENT_CREDITS",
+        retryable: false,
+      },
+    }), 0),
+    null,
+    "financial failures are never auto-retried",
+  );
+
   let imageHits = 0;
   const server = http.createServer((req, res) => {
     if (req.url !== "/image.png") {
@@ -140,6 +193,7 @@ async function main() {
   const heroImage = fs.readFileSync("src/lib/video-hero-image.server.ts", "utf8");
   const media = fs.readFileSync("src/lib/ai-generation-media.server.ts", "utf8");
   const runpod = fs.readFileSync("src/lib/runpod-serverless.ts", "utf8");
+  const orchestrator = fs.readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
   const capacity = fs.readFileSync("scripts/configure-runpod-image-capacity.ts", "utf8");
   const provider = fs.readFileSync("src/lib/image-generation-provider.server.ts", "utf8");
   const videoJobs = fs.readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
@@ -154,6 +208,18 @@ async function main() {
   );
   assert.match(fetchStock, /refundSettledVideoImageBatch/, "the real Hero video route must compensate settled scene credits");
   assert.match(fetchStock, /heroRunpodCircuitState/, "the route must reject requests while the Hero provider circuit is open");
+  assert.match(fetchStock, /assessRunpodImageAdmission/, "the route must inspect live endpoint health before image reservations");
+  assert.match(fetchStock, /heroProviderAttempt/, "provider retries must use a fresh idempotency namespace");
+  assert.match(
+    orchestrator,
+    /fetchStockWithHeroProviderRetry/,
+    "the video pipeline must retry only the stock seam instead of replaying voice and captions",
+  );
+  assert.match(
+    orchestrator,
+    /heroImageProviderRetryDirective/,
+    "the video pipeline must keep provider retries bounded by the shared decision contract",
+  );
   assert.match(heroImage, /classifyRunpodTerminalFailure/, "provider terminal errors must retain systemic classification");
   assert.match(heroImage, /prepared\.providerRoute !== "runpod-custom"/, "Hero video must stay pinned to the verified custom endpoint");
   assert.match(heroImage, /cancelRunpodImageJob/, "a bounded custom-worker timeout must cancel the exact durable provider job");

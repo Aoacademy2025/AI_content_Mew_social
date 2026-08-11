@@ -112,9 +112,11 @@ import {
   type HeroImageGenerationResult,
 } from "@/lib/video-hero-image.server";
 import {
+  assessRunpodImageAdmission,
   forEachInFailFastBatches,
   heroRunpodCircuitState,
 } from "@/lib/hero-image-resilience";
+import { getRunpodEndpointHealth } from "@/lib/runpod-serverless";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import {
   getStarterAiImageAllowanceWindowStatus,
@@ -1000,6 +1002,7 @@ export async function POST(req: Request) {
     imageEngine,
     imageModel,
     videoJobId,
+    heroProviderAttempt: heroProviderAttemptRaw,
     autoMixProviders,
     stockProviders,
     autoMixWeights,
@@ -1027,6 +1030,7 @@ export async function POST(req: Request) {
     imageEngine?: string;
     imageModel?: string;
     videoJobId?: string;
+    heroProviderAttempt?: number;
     autoMixProviders?: string[];
     stockProviders?: Array<"pexels" | "pixabay">;
     autoMixWeights?: unknown;
@@ -1150,6 +1154,11 @@ export async function POST(req: Request) {
     );
   };
   const heroAiEligible = liveHeroAiEligible || Boolean(brandVisualAcceptance);
+  const heroProviderAttempt = Number.isInteger(heroProviderAttemptRaw)
+    && Number(heroProviderAttemptRaw) >= 0
+    && Number(heroProviderAttemptRaw) <= 1
+    ? Number(heroProviderAttemptRaw)
+    : 0;
 
   // AI Image-to-Video (kie.ai) — private team beta only.
   if (useHeroRunpodImage && imageModel !== "z-image-turbo") {
@@ -1157,6 +1166,11 @@ export async function POST(req: Request) {
   }
   if (useHeroRunpodImage && !heroVideoJobIdOk) {
     return NextResponse.json({ error: "Hero AI Image ต้องมีรหัส VideoJob ที่ถูกต้อง" }, { status: 400 });
+  }
+  if (useHeroRunpodImage
+    && heroProviderAttemptRaw !== undefined
+    && heroProviderAttempt !== heroProviderAttemptRaw) {
+    return NextResponse.json({ error: "Hero AI Image provider attempt ไม่ถูกต้อง" }, { status: 400 });
   }
   // Refundable-namespace guard: hero-only mode reserves `video:<videoJobId>:scene:<i>`,
   // so it is pipeline-only and the VideoJob must be the caller's own and still running.
@@ -2048,6 +2062,58 @@ export async function POST(req: Request) {
         headers: { "Retry-After": String(Math.max(1, Math.ceil(circuit.retryAfterMs / 1000))) },
       });
     }
+    if (clipsToGenerate > 0) {
+      let providerHealth;
+      try {
+        providerHealth = await getRunpodEndpointHealth(heroOffer.providerEndpoint);
+      } catch (error) {
+        console.warn("[fetch-stock] Hero RunPod health preflight failed:", error);
+        await recordFetchStockTelemetry("error", {
+          ...heroAiTelemetry,
+          providerErrorCode: "runpod_health_unavailable",
+          errorProvider: "runpod",
+          failedSceneCount: directJobs.length,
+          completedSceneCount: 0,
+          providerHealthPreflight: "unavailable",
+        });
+        return NextResponse.json({
+          error: "ระบบตรวจสอบสถานะ Hero AI Image ไม่สำเร็จ จึงพักงานก่อนหักเครดิต",
+          code: "HERO_IMAGE_UNAVAILABLE",
+          retryable: true,
+          retryAfterSec: 15,
+          failedScenes: directJobs.map((item) => item.sourceIndex),
+        }, {
+          status: 503,
+          headers: { "Retry-After": "15" },
+        });
+      }
+      const admission = assessRunpodImageAdmission(providerHealth);
+      if (!admission.admitted) {
+        await recordFetchStockTelemetry("error", {
+          ...heroAiTelemetry,
+          providerErrorCode: admission.reason,
+          errorProvider: "runpod",
+          failedSceneCount: directJobs.length,
+          completedSceneCount: 0,
+          providerHealthPreflight: "rejected",
+          providerHealthReason: admission.reason,
+          providerQueuedJobs: providerHealth.jobs.inQueue,
+          providerReadyWorkers: providerHealth.workers.ready,
+          providerThrottledWorkers: providerHealth.workers.throttled,
+          providerUnhealthyWorkers: providerHealth.workers.unhealthy,
+        });
+        return NextResponse.json({
+          error: "ผู้ให้บริการ Hero AI Image ยังไม่มี worker ที่พร้อม ระบบพักงานก่อนหักเครดิต",
+          code: "HERO_IMAGE_UNAVAILABLE",
+          retryable: true,
+          retryAfterSec: 60,
+          failedScenes: directJobs.map((item) => item.sourceIndex),
+        }, {
+          status: 503,
+          headers: { "Retry-After": "60" },
+        });
+      }
+    }
     // Rate cap (public-launch abuse guard) — runs before any credit work. Admins
     // are exempt (team ops; see hero-image-rate-limit.ts).
     if (!isAdmin) {
@@ -2256,7 +2322,7 @@ export async function POST(req: Request) {
             userId,
             plan: user?.plan ?? "FREE",
             prompt,
-            idempotencyKey: `video:${videoJobId}:scene:${sourceIndex}`,
+            idempotencyKey: `video:${videoJobId}:scene:${sourceIndex}:provider-attempt:${heroProviderAttempt}`,
             videoJobId: videoJobId!,
             sceneIndex: sourceIndex,
             sceneTitle: subtitleTexts?.[sourceIndex] || keyword,
@@ -2478,6 +2544,12 @@ export async function POST(req: Request) {
               : firstFailure.code === "OUTPUT_INVALID"
                 ? "HERO_IMAGE_OUTPUT_FAILED"
                 : "HERO_IMAGE_FAILED";
+      const retryCircuit = heroRunpodCircuitState();
+      const retryAfterSec = retryCircuit.open
+        ? Math.max(1, Math.ceil(retryCircuit.retryAfterMs / 1000))
+        : stoppingFailure
+          ? 30
+          : 60;
       await recordFetchStockTelemetry("error", {
         ...heroAiTelemetry,
         providerErrorCode: systemicFailure?.providerCode
@@ -2502,6 +2574,7 @@ export async function POST(req: Request) {
           : `Hero AI Image สร้างไม่ครบ ${failures.length} ฉาก ระบบคืนเครดิตภาพของงานนี้แล้ว`,
         code: publicFailureCode,
         retryable: systemicFailure?.retryable ?? stoppingFailure?.retryable ?? true,
+        retryAfterSec,
         failedScenes: failures.map((item) => item.sourceIndex).sort((a, b) => a - b),
         refundedCredits: compensation.refundedCredits,
       }, {

@@ -27,6 +27,7 @@ import {
   pollRender,
   type PipelineCaller,
 } from "@/lib/mcp/pipeline-client";
+import { heroImageProviderRetryDirective } from "@/lib/mcp/hero-image-pipeline-retry";
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
   buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
@@ -355,7 +356,7 @@ function alignBrollWindowsToKeywords(
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
   const caller = deps.caller ?? pipelineCaller(userId);
-  const sleep = deps.sleep;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const recordTelemetryEvent = deps.recordTelemetryEvent ?? recordServerTelemetryEvent;
   let baseReservationSettledThisRun = false;
 
@@ -469,6 +470,62 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       durationMs: durationMs != null && durationMs >= 0 ? Math.round(durationMs) : null,
       properties: { pipelineRunId, jobId, via: "mcp", ...extra },
     });
+  }
+
+  /**
+   * Retry only the refunded Hero image batch. Keeping this loop at the stock
+   * seam preserves the already-created TTS, captions and keyword plan; replaying
+   * the whole VideoJob would repeat external voice work. A fresh provider-attempt
+   * namespace prevents a failed/refunded AiGenerationJob from poisoning retry.
+   */
+  async function fetchStockWithHeroProviderRetry<T>(
+    body: Record<string, unknown>,
+    heroProviderMode: boolean,
+    aiGenerationMode: boolean,
+  ): Promise<T> {
+    let completedRetries = 0;
+    while (true) {
+      try {
+        return await caller.post<T>(
+          "/api/videos/fetch-stock",
+          {
+            ...body,
+            ...(heroProviderMode ? { heroProviderAttempt: completedRetries } : {}),
+          },
+          aiGenerationMode ? { retries: 0 } : undefined,
+        );
+      } catch (error) {
+        const retry = heroProviderMode
+          ? heroImageProviderRetryDirective(error, completedRetries)
+          : null;
+        if (!retry) throw error;
+
+        emitTelemetry({
+          name: "hero_ai_image_provider_retry_scheduled",
+          category: "performance",
+          source: "server",
+          step: "fetchStock.heroAiImage",
+          status: "waiting_provider",
+          properties: {
+            pipelineRunId,
+            jobId,
+            via: "mcp",
+            provider: "runpod",
+            code: retry.code,
+            nextAttempt: retry.nextAttempt,
+            retryAfterMs: retry.delayMs,
+          },
+        });
+        await sleep(retry.delayMs);
+        const current = await prisma.videoJob.findUnique({
+          where: { id: jobId },
+          select: { status: true },
+        });
+        if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+        if (current?.status !== "processing") throw new Error("video_job_not_processing");
+        completedRetries = retry.nextAttempt;
+      }
+    }
   }
   // step() logs the phase that just ended (worker log, for audits) + emits its `done`
   // telemetry, then advances and emits the new phase's `started`. Render/burn progress
@@ -1128,8 +1185,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ? Math.round(upDurMs / 1000)
         : (upKw.sceneDurations ?? []).reduce((a, b) => a + b, 0) || Math.round(upDurMs / 1000);
       const upStock = upAligned.windows.length > 0
-        ? await caller.post<{ results: unknown[] }>(
-            "/api/videos/fetch-stock",
+        ? await fetchStockWithHeroProviderRetry<{ results: unknown[] }>(
             {
               ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
                 brollRegionPreference: input.brollRegionPreference,
@@ -1146,7 +1202,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               ...(typeof input.maxAiImages === "number" ? { maxAiImages: input.maxAiImages } : {}),
               ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
             },
-            upAiGen ? { retries: 0 } : undefined,
+            input.stockSource === "kie-image" && input.imageEngine === "runpod",
+            upAiGen,
           )
         : {
             // With fewer than two windows the presenter covers the whole clip. Reuse
@@ -1471,8 +1528,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // AI-gen sources (kie-image / auto-mix) SPEND kie credits per image — a transport
     // retry re-generates the entire batch (incident 07-03: 20+ images × 2). retries: 0.
     const aiGenSource = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
-    const stock = await caller.post<{ results: unknown[] }>(
-      "/api/videos/fetch-stock",
+    const stock = await fetchStockWithHeroProviderRetry<{ results: unknown[] }>(
       {
         ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
@@ -1490,7 +1546,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...(typeof input.maxAiImages === "number" ? { maxAiImages: input.maxAiImages } : {}),
         ...(input.stockProviders?.length ? { stockProviders: input.stockProviders } : {}),
       },
-      aiGenSource ? { retries: 0 } : undefined,
+      input.stockSource === "kie-image" && input.imageEngine === "runpod",
+      aiGenSource,
     );
     emitBrollStockInventory(aligned.windows.length, stock.results ?? []);
 

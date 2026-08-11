@@ -144,6 +144,37 @@ export function shouldRetryQueuedRunpodJob(input: {
     && input.health.workers.idle > 0;
 }
 
+type RunpodImageAdmissionHealth = {
+  jobs: { inQueue: number; inProgress: number };
+  workers: {
+    idle: number;
+    initializing: number;
+    ready: number;
+    running: number;
+    throttled: number;
+    unhealthy: number;
+  };
+};
+
+/**
+ * Fail closed only for provider states that prove there is queued work but no
+ * usable capacity, or that RunPod has explicitly throttled/marked every worker
+ * unhealthy. An empty scale-to-zero endpoint is still healthy: the first `/run`
+ * request is what asks RunPod to provision it.
+ */
+export function assessRunpodImageAdmission(
+  health: RunpodImageAdmissionHealth,
+): { admitted: true } | { admitted: false; reason: "workers_throttled" | "workers_unhealthy" | "queue_without_capacity" } {
+  const usableWorkers = health.workers.ready
+    + health.workers.running
+    + health.workers.initializing;
+  if (usableWorkers > 0) return { admitted: true };
+  if (health.workers.throttled > 0) return { admitted: false, reason: "workers_throttled" };
+  if (health.workers.unhealthy > 0) return { admitted: false, reason: "workers_unhealthy" };
+  if (health.jobs.inQueue > 0) return { admitted: false, reason: "queue_without_capacity" };
+  return { admitted: true };
+}
+
 export async function forEachInFailFastBatches<T, R>(
   items: readonly T[],
   batchSize: number,
