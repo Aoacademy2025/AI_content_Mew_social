@@ -47,6 +47,7 @@ import {
   cancelRunpodImageJob,
   getRunpodEndpointHealth,
 } from "@/lib/runpod-serverless";
+import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
 import { recordVisualBeatAsset } from "@/lib/content-preflight.server";
 import type { CompiledBrandVisualPrompt } from "@/lib/brand-visual-system";
@@ -229,7 +230,7 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
       "NOT_CONFIGURED",
     );
   }
-  if (prepared.provider !== "runpod" || prepared.providerRoute !== "runpod-custom") {
+  if (prepared.provider !== "runpod" || !isHeroRunpodRoute(prepared.providerRoute)) {
     throw new HeroImageGenerationError(
       "Hero AI Image ยังไม่พร้อมใช้งาน จึงหยุดงานก่อนหักเครดิต",
       "NOT_CONFIGURED",
@@ -520,6 +521,7 @@ export async function generateHeroImageForVideo(
           && durableAttempt.sequence < 2
           && queuedMs >= orphanQueueMs
           && Date.now() - lastHealthCheckAt >= 15_000
+          && usesCustomRunpodEndpoint(attempt.providerRoute)
         ) {
           lastHealthCheckAt = Date.now();
           const health = await getRunpodEndpointHealth(providerEndpoint).catch(() => null);

@@ -246,8 +246,9 @@ check(
     && heroVideoImage.includes("latestImageGenerationAttempt"),
 );
 check(
-  "Hero video image path is pinned to the isolated RunPod custom endpoint without KIE fallback",
-  heroVideoImage.includes('prepared.providerRoute !== "runpod-custom"')
+  "Hero video image path stays inside RunPod while allowing the approved public incident route without KIE fallback",
+  heroVideoImage.includes("!isHeroRunpodRoute(prepared.providerRoute)")
+    && heroVideoImage.includes("usesCustomRunpodEndpoint(attempt.providerRoute)")
     && !heroVideoImage.includes("kieCreateTask")
     && fetchStockRoute.includes("intentionally separate from KIE/AutoMix"),
 );

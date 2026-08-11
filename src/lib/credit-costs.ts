@@ -35,8 +35,9 @@ export function creditCostFor(action: string): number {
   return CREDIT_COST[action] ?? 0;
 }
 
-/** Hero Video is pinned to the isolated custom Z-Image endpoint. Keep its UI
- * disclosure and server-side route quote on the same cost key. */
+/** Hero Video normally uses the isolated custom Z-Image endpoint. Its approved
+ * public incident route is deliberately price-matched; the route-policy test
+ * fails if these two RunPod offers drift apart. */
 export const HERO_AI_IMAGE_CREDIT_COST_KEY = "image-open-custom-1k";
 export const HERO_AI_IMAGE_CREDITS = CREDIT_COST[HERO_AI_IMAGE_CREDIT_COST_KEY];
 

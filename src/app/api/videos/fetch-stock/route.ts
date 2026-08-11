@@ -117,6 +117,7 @@ import {
   heroRunpodCircuitState,
 } from "@/lib/hero-image-resilience";
 import { getRunpodEndpointHealth } from "@/lib/runpod-serverless";
+import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import {
   getStarterAiImageAllowanceWindowStatus,
@@ -1265,13 +1266,13 @@ export async function POST(req: Request) {
   // video/photo b-roll and simply plans zero paid AI slots (exactly what it already did
   // before any videoJobId was supplied), while the pipeline path is unchanged.
   const heroAutoMixMint = autoMixAiRequested && !autoMixKieAdminOnly ? heroVideoMint : null;
-  /** AutoMix AI slots may run on the Hero seam: offer live on the verified custom
+  /** AutoMix AI slots may run on the Hero seam: offer live on an approved RunPod
    *  route, caller inside the Hero rollout, a durable VideoJob id to key reservations
    *  on, and authorization to mint in the refundable `video:` namespace. Anything
    *  missing → no AI slots (weights force ai=0). */
   const canUseHeroAutoMixAi = Boolean(
     heroAutoMixOffer?.available
-    && heroAutoMixOffer.providerRoute === "runpod-custom"
+    && isHeroRunpodRoute(heroAutoMixOffer.providerRoute)
     && heroAiEligible
     && heroVideoJobIdOk
     && heroAutoMixMint?.ok,
@@ -1635,18 +1636,23 @@ export async function POST(req: Request) {
           // The cost guard reads the billing ledger. A transient DB/provider hiccup must
           // NOT throw out of this route: AutoMix would lose its free video/photo slots
           // too. Treat any failure as "cannot admit AI spend" and continue without AI.
+          const customRunpodRoute = usesCustomRunpodEndpoint(heroAutoMixOffer?.providerRoute);
           let runpodCost: Awaited<ReturnType<typeof getRunpodImageCostSnapshot>> | null = null;
-          try {
-            runpodCost = await getRunpodImageCostSnapshot({
-              endpointId: heroAutoMixOffer!.providerEndpoint,
-            });
-          } catch (error) {
-            heroAutoMixTelemetry.heroAutoMixCostGuardError =
-              error instanceof Error ? error.message.slice(0, 200) : "cost guard failed";
-            console.error("[fetch-stock] Auto Mix hero cost guard failed — continuing without AI slots:", error);
+          if (customRunpodRoute) {
+            try {
+              runpodCost = await getRunpodImageCostSnapshot({
+                endpointId: heroAutoMixOffer!.providerEndpoint,
+              });
+            } catch (error) {
+              heroAutoMixTelemetry.heroAutoMixCostGuardError =
+                error instanceof Error ? error.message.slice(0, 200) : "cost guard failed";
+              console.error("[fetch-stock] Auto Mix hero cost guard failed — continuing without AI slots:", error);
+            }
           }
-          heroAutoMixTelemetry.heroAutoMixCostStatus = runpodCost?.status ?? "unavailable";
-          if (!runpodCost?.admitted) {
+          heroAutoMixTelemetry.heroAutoMixCostStatus = customRunpodRoute
+            ? runpodCost?.status ?? "unavailable"
+            : "fixed-public-price";
+          if (customRunpodRoute && !runpodCost?.admitted) {
             degradeReason = "provider_cost_guard";
             affordableAiSlots = 0;
           } else {
@@ -1974,7 +1980,7 @@ export async function POST(req: Request) {
     let directJobs = requestedDirectJobs.filter((job) => !reusableByScene.has(job.sourceIndex));
     let clipsNeedingGeneration = directJobs.length;
     const heroOffer = describeHeroImageOffer();
-    if (directJobs.length > 0 && (!heroOffer.available || heroOffer.providerRoute !== "runpod-custom")) {
+    if (directJobs.length > 0 && (!heroOffer.available || !isHeroRunpodRoute(heroOffer.providerRoute))) {
       return NextResponse.json({
         error: "Hero AI Image ยังไม่พร้อมใช้งานในขณะนี้",
         code: heroOffer.unavailableCode ?? "NOT_CONFIGURED",
@@ -2004,7 +2010,9 @@ export async function POST(req: Request) {
     }
     clipsNeedingGeneration = directJobs.length;
     const clipsToGenerate = directJobs.length;
-    const heroCreditCostKey = "image-open-custom-1k";
+    const heroCreditCostKey = usesCustomRunpodEndpoint(heroOffer.providerRoute)
+      ? "image-open-custom-1k"
+      : "image-open-fast-1k";
     const heroAiTelemetry = {
       aiModel: "z-image-turbo",
       aiCreditCostKey: heroCreditCostKey,
@@ -2016,7 +2024,7 @@ export async function POST(req: Request) {
       heroImageModel: "z-image-turbo",
       heroImageRoute: heroOffer.providerRoute,
     } as const;
-    const runpodCost = clipsToGenerate > 0
+    const runpodCost = clipsToGenerate > 0 && usesCustomRunpodEndpoint(heroOffer.providerRoute)
       ? await getRunpodImageCostSnapshot({ endpointId: heroOffer.providerEndpoint })
       : null;
     if (runpodCost && !runpodCost.admitted) {
@@ -2062,7 +2070,7 @@ export async function POST(req: Request) {
         headers: { "Retry-After": String(Math.max(1, Math.ceil(circuit.retryAfterMs / 1000))) },
       });
     }
-    if (clipsToGenerate > 0) {
+    if (clipsToGenerate > 0 && usesCustomRunpodEndpoint(heroOffer.providerRoute)) {
       let providerHealth;
       try {
         providerHealth = await getRunpodEndpointHealth(heroOffer.providerEndpoint);
