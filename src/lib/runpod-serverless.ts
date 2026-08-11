@@ -199,7 +199,11 @@ export type RunpodEndpointHealth = {
   };
   workers: {
     idle: number;
+    initializing: number;
+    ready: number;
     running: number;
+    throttled: number;
+    unhealthy: number;
   };
 };
 
@@ -223,7 +227,11 @@ export async function getRunpodEndpointHealth(
     },
     workers: {
       idle: number(result.workers?.idle),
+      initializing: number(result.workers?.initializing),
+      ready: number(result.workers?.ready),
       running: number(result.workers?.running),
+      throttled: number(result.workers?.throttled),
+      unhealthy: number(result.workers?.unhealthy),
     },
   };
 }

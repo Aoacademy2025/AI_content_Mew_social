@@ -55,6 +55,89 @@ async function main() {
   const done = await prisma.videoJob.findUnique({ where: { id: job.id } });
   assert(done?.status === "done" && done?.videoId === "vid_1", "job → done with videoId");
 
+  // Refunded RunPod outage: retry only fetch-stock with a fresh child-job
+  // namespace. TTS/captions/keywords must not be replayed.
+  const heroRetryJob = await prisma.videoJob.create({
+    data: {
+      userId: u.id,
+      status: "processing",
+      inputJson: JSON.stringify({
+        script: "สวัสดีโลก",
+        voiceProvider: "gemini",
+        stockSource: "kie-image",
+        imageEngine: "runpod",
+        imageModel: "z-image-turbo",
+      }),
+    },
+  });
+  const heroRetryCalls: { path: string; body?: unknown }[] = [];
+  const heroRetrySleeps: number[] = [];
+  let heroStockCalls = 0;
+  let heroRenderCalls = 0;
+  const heroRetryCaller = {
+    post: async (path: string, body?: unknown) => {
+      const key = path.split("?")[0];
+      heroRetryCalls.push({ path: key, body });
+      if (key === "/api/videos/fetch-stock") {
+        heroStockCalls += 1;
+        if (heroStockCalls === 1) {
+          throw Object.assign(new Error("provider queue timed out"), {
+            name: "PipelineHttpError",
+            path: key,
+            status: 503,
+            body: {
+              error: "provider queue timed out",
+              code: "HERO_IMAGE_UNAVAILABLE",
+              retryable: true,
+              retryAfterSec: 60,
+            },
+          });
+        }
+        return { results: [{ src: "hero.mp4" }] } as never;
+      }
+      if (key === "/api/videos/render") {
+        heroRenderCalls += 1;
+        return { jobId: `hero-retry-render-${heroRenderCalls}` } as never;
+      }
+      const responses: Record<string, unknown> = {
+        "/api/videos/tts-gemini": { voiceUrl: "/api/renders/hero.wav", audioDurationMs: 2000, timing: { provider: "gemini", segments: [{ text: "สวัสดีโลก", startMs: 0, durationMs: 2000 }], chars: null } },
+        "/api/videos/extract-keywords": { keywords: ["hero"], keywordsPerScene: 5, sceneClipCounts: [1], sceneDurations: [2] },
+        "/api/videos/generate-config": { config: { durationInFrames: 60, voiceFile: "/api/renders/hero.wav", bgVideos: [] } },
+        "/api/videos": { id: "vid_hero_retry" },
+      };
+      return (responses[key] ?? {}) as never;
+    },
+    patch: async () => ({} as never),
+    get: async (path: string) => {
+      const key = path.split("?")[0];
+      heroRetryCalls.push({ path: key });
+      if (key === "/api/videos/render-progress") {
+        return { progress: 100, stage: "done", videoUrl: "/api/renders/hero-retry-out.mp4", error: null } as never;
+      }
+      return {} as never;
+    },
+  };
+  await runOrchestrator(heroRetryJob.id, u.id, {
+    caller: heroRetryCaller as never,
+    refundOneClip: async () => {},
+    sleep: async (ms) => { heroRetrySleeps.push(ms); },
+  });
+  const heroStockBodies = heroRetryCalls
+    .filter((call) => call.path === "/api/videos/fetch-stock")
+    .map((call) => call.body as Record<string, unknown>);
+  assert(heroStockBodies.length === 2, "Hero provider outage retries fetch-stock exactly once");
+  assert(
+    heroStockBodies[0]?.heroProviderAttempt === 0 && heroStockBodies[1]?.heroProviderAttempt === 1,
+    "Hero provider retry advances to a fresh idempotency namespace",
+  );
+  assert(
+    heroRetryCalls.filter((call) => call.path === "/api/videos/tts-gemini").length === 1
+      && heroRetryCalls.filter((call) => call.path === "/api/videos/extract-keywords").length === 1,
+    "Hero provider retry preserves TTS and keyword work",
+  );
+  assert(heroRetrySleeps.length === 1 && heroRetrySleeps[0] === 60_000, "Hero provider retry honors the bounded Retry-After delay");
+  assert((await prisma.videoJob.findUniqueOrThrow({ where: { id: heroRetryJob.id } })).status === "done", "Hero provider retry continues the same video to completion");
+
   // failure path: render returns error stage
   const job2 = await prisma.videoJob.create({ data: { userId: u.id, status: "processing", inputJson: JSON.stringify({ script: "x", voiceProvider: "gemini" }) } });
   const m2 = mockCaller({
