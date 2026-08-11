@@ -1,10 +1,11 @@
 const { join } = require("node:path");
 const dotenv = require("dotenv");
+const { resolveHeroImageRouteRuntimeEnv } = require("./deploy/pm2-runtime-env");
 
 // PM2 evaluates this file in the deploy shell, which does not automatically load
 // the application's .env. Load it before resolving process-backed secrets; otherwise
 // --update-env can replace a valid saved secret with an empty fallback.
-dotenv.config({ path: join(__dirname, ".env"), quiet: true });
+const applicationEnv = dotenv.config({ path: join(__dirname, ".env"), quiet: true }).parsed ?? {};
 
 // R2 credentials and rollout switches live in a separate root-only file so they
 // do not need to be duplicated into the application's general .env. Keep the
@@ -51,10 +52,19 @@ const stockRuntimeEnv = Object.freeze({
   STOCK_NORMALIZE_PRESET: "ultrafast",
 });
 
+// Route switches are loaded from the persisted application env, not from the
+// PM2 daemon's inherited environment. PM2 forwards only reviewed keys in an
+// app's env block, and stale inherited values previously kept the custom route
+// after a successful public-route deploy.
+const heroImageRouteRuntimeEnv = Object.freeze(
+  resolveHeroImageRouteRuntimeEnv(applicationEnv, process.env),
+);
+
 // Two provider submissions match the guarded RunPod workersMax=2 contract.
 // Scale-to-zero and the five-second idle timeout keep the second worker free
 // when traffic is sparse; the fully-loaded invoice guard remains authoritative.
 const heroImageRuntimeEnv = Object.freeze({
+  ...heroImageRouteRuntimeEnv,
   HERO_RUNPOD_CONCURRENCY: "2",
   HERO_RUNPOD_ORPHAN_QUEUE_MS: "120000",
   HERO_RUNPOD_COST_TARGET_BAHT: "0.90",
@@ -339,6 +349,7 @@ module.exports = {
         // Rollback = set back to "1" and restart the same way. Single worker only (NOT
         // instances:2 — boot-recovery has no per-worker heartbeat guard; see the worker script).
         MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "2",
+        ...heroImageRouteRuntimeEnv,
         ...brandVisualRuntimeEnv,
       },
     },
