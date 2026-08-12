@@ -30,6 +30,10 @@ After tier retention ends:
 Shared immutable R2 blobs are deleted only after every logical alias is
 eligible. Media with an unknown expiry, malformed ownership data, a live
 reference, an unverified remote replica, or a graph error fails closed.
+The recovery deadline is the latest applicable tier expiry plus seven days; it
+is never reset to seven days from the time a GC process first discovers the
+object. For unreferenced media, the equivalent deadline is its 14-day
+eligibility cutoff plus seven days.
 
 ## Operational policy
 

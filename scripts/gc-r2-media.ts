@@ -52,6 +52,7 @@ async function main(): Promise<void> {
     eligibleMb: Math.round(report.eligible.sizeBytes / 1024 / 1024),
     selectedMb: Math.round(report.selected.sizeBytes / 1024 / 1024),
     stagedMb: Math.round(report.staged.sizeBytes / 1024 / 1024),
+    rebasedMb: Math.round(report.rebased.sizeBytes / 1024 / 1024),
     deletedMb: Math.round(report.deleted.sizeBytes / 1024 / 1024),
     missingFinalizedMb: Math.round(
       report.missingFinalized.sizeBytes / 1024 / 1024,

@@ -33,6 +33,7 @@ type RemoteGcCatalog = Pick<
   MediaCatalog,
   | "remoteGcInventory"
   | "stageRemoteDelete"
+  | "rebaseRemoteDeletePending"
   | "claimRemoteDelete"
   | "markRemoteDeleted"
   | "deferRemoteDelete"
@@ -40,6 +41,7 @@ type RemoteGcCatalog = Pick<
 >;
 
 type RemoteGcStorage = RemoteMediaReplicaVerifier & Pick<MediaStorage, "remove">;
+type RemoteGcCatalogTransition = "stage" | "rebase" | null;
 
 export type RemoteGcSkipReason =
   | "catalog_busy"
@@ -58,6 +60,7 @@ export type RemoteGcSkipReason =
 
 export type RemoteGcManifestRecord = {
   action: RemoteGcAction;
+  catalogTransition: RemoteGcCatalogTransition;
   physicalKey: string;
   sizeBytes: number;
   sha256: string;
@@ -85,6 +88,7 @@ export type RemoteMediaGcReport = {
   eligible: { count: number; sizeBytes: number };
   selected: { count: number; sizeBytes: number };
   staged: { count: number; sizeBytes: number };
+  rebased: { count: number; sizeBytes: number };
   deleted: { count: number; sizeBytes: number };
   missingFinalized: { count: number; sizeBytes: number };
   restored: { count: number; sizeBytes: number };
@@ -258,6 +262,7 @@ function physicalGroups(
 function recordSha256(records: RemoteGcManifestRecord[]): string {
   const stable = records.map((record) => ({
     action: record.action,
+    catalogTransition: record.catalogTransition,
     physicalKey: record.physicalKey,
     sizeBytes: record.sizeBytes,
     sha256: record.sha256,
@@ -279,17 +284,24 @@ function logicalKeys(rows: MediaCatalogRemoteGcRow[]): string[] {
   return [...new Set(rows.map((row) => `${row.area}/${row.filename}`))].sort();
 }
 
-function unreferencedOldEnough(row: MediaCatalogRemoteGcRow, now: Date): boolean {
+function unreferencedRetentionEndsAtMs(row: MediaCatalogRemoteGcRow): number | null {
   const localMtimeMs = safeNumber(row.localMtimeMs);
   const producedAtMs = row.producedAt.getTime();
   const observedAt = localMtimeMs ?? producedAtMs;
-  return Number.isFinite(observedAt) && observedAt < now.getTime() - 14 * DAY_MS;
+  return Number.isFinite(observedAt) ? observedAt + 14 * DAY_MS : null;
+}
+
+function isPolicyPending(row: MediaCatalogRemoteGcRow): boolean {
+  return row.lastErrorCode === null ||
+    row.lastErrorCode === "RemoteGcPending" ||
+    row.lastErrorCode === "RemoteGcPending7d";
 }
 
 function candidateForGroup(
   group: PhysicalGroup,
   graph: MediaGraph,
   now: Date,
+  graceHours: number,
   skipped: Record<RemoteGcSkipReason, number>,
 ): RemoteGcManifestRecord | null {
   const active = group.rows.filter((row) => row.remoteState !== "deleted");
@@ -306,13 +318,30 @@ function candidateForGroup(
   let hasReferences = false;
   let becameLive = false;
   let hasIneligibleUnreferenced = false;
+  let retentionEndedAtMs = Number.NEGATIVE_INFINITY;
   for (const row of active) {
     const refs = graph.refs.get(`${row.area}/${row.filename}`) ?? [];
     if (refs.length > 0) {
       hasReferences = true;
-      if (refs.some((ref) => mediaReferenceIsLive(ref, now))) becameLive = true;
-    } else if (!unreferencedOldEnough(row, now)) {
-      hasIneligibleUnreferenced = true;
+      if (refs.some((ref) => mediaReferenceIsLive(ref, now))) {
+        becameLive = true;
+      } else {
+        for (const ref of refs) {
+          const expiryMs = ref.expiresAt?.getTime() ?? Number.NaN;
+          if (!Number.isFinite(expiryMs)) {
+            becameLive = true;
+            break;
+          }
+          retentionEndedAtMs = Math.max(retentionEndedAtMs, expiryMs);
+        }
+      }
+    } else {
+      const retentionEndsAtMs = unreferencedRetentionEndsAtMs(row);
+      if (retentionEndsAtMs === null || retentionEndsAtMs >= now.getTime()) {
+        hasIneligibleUnreferenced = true;
+      } else {
+        retentionEndedAtMs = Math.max(retentionEndedAtMs, retentionEndsAtMs);
+      }
     }
   }
 
@@ -326,6 +355,7 @@ function candidateForGroup(
       }
       return {
         action: "restore",
+        catalogTransition: null,
         physicalKey: group.physicalKey,
         sizeBytes: group.sizeBytes,
         sha256: group.sha256,
@@ -343,18 +373,44 @@ function candidateForGroup(
     skipped.catalog_busy++;
     return null;
   }
+  if (!Number.isFinite(retentionEndedAtMs)) {
+    skipped.catalog_inconsistent++;
+    return null;
+  }
 
   const reason = hasReferences ? "all_references_expired" : "unreferenced_14d";
+  const recoveryDeadlineMs = retentionEndedAtMs + graceHours * 60 * 60 * 1000;
   if (pending.length === active.length) {
-    const eligibleAtMs = Math.max(...pending.map((row) =>
+    const storedEligibleAtMs = Math.max(...pending.map((row) =>
       row.nextRetryAt?.getTime() ?? Number.POSITIVE_INFINITY
     ));
-    if (!Number.isFinite(eligibleAtMs) || eligibleAtMs > now.getTime()) {
+    const policyPending = pending.every(isPolicyPending);
+    const eligibleAtMs = policyPending ? recoveryDeadlineMs : storedEligibleAtMs;
+    const needsRebase = policyPending && storedEligibleAtMs !== recoveryDeadlineMs;
+    if (eligibleAtMs > now.getTime()) {
+      if (needsRebase) {
+        return {
+          action: "stage",
+          catalogTransition: "rebase",
+          physicalKey: group.physicalKey,
+          sizeBytes: group.sizeBytes,
+          sha256: group.sha256,
+          logicalKeys: logicalKeys(active),
+          reason,
+          eligibleAt: new Date(eligibleAtMs).toISOString(),
+          aliases: claims(active),
+        };
+      }
+      skipped.pending_grace++;
+      return null;
+    }
+    if (!Number.isFinite(eligibleAtMs)) {
       skipped.pending_grace++;
       return null;
     }
     return {
       action: "delete",
+      catalogTransition: needsRebase ? "rebase" : null,
       physicalKey: group.physicalKey,
       sizeBytes: group.sizeBytes,
       sha256: group.sha256,
@@ -366,13 +422,14 @@ function candidateForGroup(
   }
 
   return {
-    action: "stage",
+    action: recoveryDeadlineMs <= now.getTime() ? "delete" : "stage",
+    catalogTransition: "stage",
     physicalKey: group.physicalKey,
     sizeBytes: group.sizeBytes,
     sha256: group.sha256,
     logicalKeys: logicalKeys(active),
     reason,
-    eligibleAt: null,
+    eligibleAt: new Date(recoveryDeadlineMs).toISOString(),
     aliases: claims(active),
   };
 }
@@ -444,9 +501,9 @@ export async function runRemoteMediaGc(
   let eligibleBytes = 0;
   let selectedBytes = 0;
   for (const group of groups) {
-    const candidate = candidateForGroup(group, graph, now, skipped);
+    const candidate = candidateForGroup(group, graph, now, graceHours, skipped);
     if (!candidate) continue;
-    if (options.pendingOnly === true && candidate.action === "stage") {
+    if (options.pendingOnly === true && candidate.catalogTransition === "stage") {
       skipped.stage_disabled++;
       continue;
     }
@@ -471,6 +528,7 @@ export async function runRemoteMediaGc(
     eligible: { count: eligibleCount, sizeBytes: eligibleBytes },
     selected: { count: records.length, sizeBytes: selectedBytes },
     staged: { count: 0, sizeBytes: 0 },
+    rebased: { count: 0, sizeBytes: 0 },
     deleted: { count: 0, sizeBytes: 0 },
     missingFinalized: { count: 0, sizeBytes: 0 },
     restored: { count: 0, sizeBytes: 0 },
@@ -495,7 +553,7 @@ export async function runRemoteMediaGc(
   // any catalog mutation. Due deletes use remove(), which safely reconciles a
   // missing object after a prior process crashed between R2 and catalog writes.
   for (const record of records) {
-    if (record.action === "delete") continue;
+    if (record.action === "delete" && record.catalogTransition === null) continue;
     try {
       const verified = await remote.verifyReplica({
         identity: remoteIdentityForRecord(record),
@@ -524,22 +582,49 @@ export async function runRemoteMediaGc(
       }
       continue;
     }
-    if (record.action === "stage") {
+    let preparedClaims = record.aliases;
+    if (record.catalogTransition === "stage") {
       const staged = await catalog.stageRemoteDelete(
         record.aliases,
-        new Date(now.getTime() + graceHours * 60 * 60 * 1000),
+        new Date(record.eligibleAt!),
       );
-      if (staged) {
-        report.staged.count++;
-        report.staged.sizeBytes += record.sizeBytes;
-      } else {
+      if (!staged) {
         report.skipped.catalog_changed++;
+        continue;
+      }
+      preparedClaims = staged;
+      report.staged.count++;
+      report.staged.sizeBytes += record.sizeBytes;
+    } else if (record.catalogTransition === "rebase") {
+      const rebased = await catalog.rebaseRemoteDeletePending(
+        record.aliases,
+        new Date(record.eligibleAt!),
+      );
+      if (!rebased) {
+        report.skipped.catalog_changed++;
+        continue;
+      }
+      preparedClaims = rebased;
+      report.rebased.count++;
+      report.rebased.sizeBytes += record.sizeBytes;
+    }
+
+    if (record.action === "stage") {
+      if (record.catalogTransition === null) {
+        report.skipped.catalog_changed++;
+        report.errors++;
       }
       continue;
     }
 
+    if (record.action !== "delete") {
+      report.skipped.catalog_changed++;
+      report.errors++;
+      continue;
+    }
+
     const claimed = await catalog.claimRemoteDelete(
-      record.aliases,
+      preparedClaims,
       now,
       new Date(now.getTime() + DELETE_LEASE_MS),
     );

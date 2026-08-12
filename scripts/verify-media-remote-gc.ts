@@ -54,6 +54,8 @@ function row(input: {
   remoteState?: string;
   mtime?: Date;
   sizeBytes?: number;
+  nextRetryAt?: Date | null;
+  lastErrorCode?: string | null;
 }): MediaCatalogRemoteGcRow {
   const area = input.area ?? "renders";
   const identity = { area, filename: input.filename };
@@ -72,8 +74,8 @@ function row(input: {
     localState: input.localState ?? "evicted",
     localMtimeMs: BigInt(mtime.getTime()),
     producedAt: mtime,
-    nextRetryAt: null,
-    lastErrorCode: null,
+    nextRetryAt: input.nextRetryAt ?? null,
+    lastErrorCode: input.lastErrorCode ?? null,
     version: 0,
   };
 }
@@ -133,6 +135,27 @@ class FakeCatalog {
     return rows.map((item) => {
       item!.nextRetryAt = leaseUntil;
       item!.lastErrorCode = "RemoteGcDeleting";
+      item!.version++;
+      return { id: item!.id, version: item!.version };
+    });
+  }
+
+  async rebaseRemoteDeletePending(
+    claims: readonly MediaCatalogRemoteGcClaim[],
+    eligibleAt: Date,
+  ): Promise<MediaCatalogRemoteGcClaim[] | null> {
+    const rows = claims.map((claim) => this.matching(claim));
+    if (rows.some((item) =>
+      !item ||
+      item.remoteState !== "delete_pending" ||
+      item.localState !== "evicted" ||
+      ![null, "RemoteGcPending", "RemoteGcPending7d"].includes(item.lastErrorCode)
+    )) {
+      return null;
+    }
+    return rows.map((item) => {
+      item!.nextRetryAt = eligibleAt;
+      item!.lastErrorCode = "RemoteGcPending";
       item!.version++;
       return { id: item!.id, version: item!.version };
     });
@@ -340,15 +363,20 @@ async function stageAndDelete(): Promise<void> {
   assert.equal(staged.staged.count, 2);
   assert.equal(expired.remoteState, "delete_pending");
   assert.equal(orphan.remoteState, "delete_pending");
-  const recoveryDeadline = new Date(NOW.getTime() + 7 * DAY_MS);
+  const recoveryDeadline = new Date(NOW.getTime() + 6 * DAY_MS);
   assert.equal(
     expired.nextRetryAt?.toISOString(),
     recoveryDeadline.toISOString(),
-    "expired media remains recoverable in R2 for seven days before physical deletion",
+    "expired media remains recoverable for seven days measured from tier expiry",
+  );
+  assert.equal(
+    orphan.nextRetryAt?.toISOString(),
+    new Date(NOW.getTime() + DAY_MS).toISOString(),
+    "unreferenced recovery starts after its fourteen-day retention cutoff",
   );
 
   const beforeRecoveryDeadline = await runRemoteMediaGc({
-    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
+    now: new Date(NOW.getTime() + 23 * 60 * 60 * 1000),
     graph: graph(refs),
     catalog,
     remote,
@@ -444,6 +472,136 @@ async function restoreWhenReferenceBecomesLive(): Promise<void> {
   assert.equal(candidate.remoteState, "verified");
 }
 
+async function deleteWhenRecoveryWindowAlreadyElapsed(): Promise<void> {
+  const candidate = row({ filename: "old-expired.mp4", sha256: "8".repeat(64) });
+  const catalog = new FakeCatalog([candidate]);
+  const remote = new FakeRemote();
+  remote.add(candidate);
+  const expiredAt = new Date(NOW.getTime() - 10 * DAY_MS);
+  const refs: MediaGraph["refs"] = new Map([
+    ["renders/old-expired.mp4", [reference(expiredAt)]],
+  ]);
+
+  const pendingOnly = await runRemoteMediaGc({
+    now: NOW,
+    graph: graph(refs),
+    catalog,
+    remote,
+    pendingOnly: true,
+  });
+  assert.equal(pendingOnly.selected.count, 0);
+  assert.equal(pendingOnly.skipped.stage_disabled, 1);
+
+  const dry = await runRemoteMediaGc({
+    now: NOW,
+    graph: graph(refs),
+    catalog,
+    remote,
+  });
+  assert.equal(
+    dry.records[0]?.action,
+    "delete",
+    "media whose tier expiry plus recovery window elapsed is immediately deletable",
+  );
+  assert.equal(
+    dry.records[0]?.eligibleAt,
+    new Date(expiredAt.getTime() + 7 * DAY_MS).toISOString(),
+    "recovery deadline is anchored to tier expiry rather than GC discovery",
+  );
+  assert.equal(dry.records[0]?.catalogTransition, "stage");
+
+  const deleted = await runRemoteMediaGc({
+    mode: "apply",
+    now: NOW,
+    graph: graph(refs),
+    catalog,
+    remote,
+    manifestSha256: dry.manifestSha256,
+    env: APPLY_ENV,
+  });
+  assert.equal(deleted.deleted.count, 1);
+  assert.equal(candidate.remoteState, "deleted");
+}
+
+async function correctPreviouslyStagedDeadlines(): Promise<void> {
+  const oldPending = row({
+    filename: "old-pending.mp4",
+    sha256: "7".repeat(64),
+    remoteState: "delete_pending",
+    nextRetryAt: new Date(NOW.getTime() + 7 * DAY_MS),
+    lastErrorCode: "RemoteGcPending7d",
+  });
+  const recentPending = row({
+    filename: "recent-pending.mp4",
+    sha256: "6".repeat(64),
+    remoteState: "delete_pending",
+    nextRetryAt: new Date(NOW.getTime() + 7 * DAY_MS),
+    lastErrorCode: "RemoteGcPending",
+  });
+  const retryPending = row({
+    filename: "retry-pending.mp4",
+    sha256: "5".repeat(64),
+    remoteState: "delete_pending",
+    nextRetryAt: new Date(NOW.getTime() + DAY_MS),
+    lastErrorCode: "RemoteGcChecksumMismatch",
+  });
+  const catalog = new FakeCatalog([oldPending, recentPending, retryPending]);
+  const remote = new FakeRemote();
+  remote.add(oldPending);
+  remote.add(recentPending);
+  remote.add(retryPending);
+  const refs: MediaGraph["refs"] = new Map([
+    ["renders/old-pending.mp4", [reference(new Date(NOW.getTime() - 10 * DAY_MS))]],
+    ["renders/recent-pending.mp4", [reference(new Date(NOW.getTime() - DAY_MS))]],
+    ["renders/retry-pending.mp4", [reference(new Date(NOW.getTime() - 10 * DAY_MS))]],
+  ]);
+
+  const dry = await runRemoteMediaGc({
+    now: NOW,
+    graph: graph(refs),
+    catalog,
+    remote,
+    maxObjects: 10,
+    maxBytes: 10_000,
+  });
+  const oldRecord = dry.records.find((record) =>
+    record.logicalKeys.includes("renders/old-pending.mp4")
+  );
+  const recentRecord = dry.records.find((record) =>
+    record.logicalKeys.includes("renders/recent-pending.mp4")
+  );
+  assert.equal(oldRecord?.action, "delete");
+  assert.equal(oldRecord?.catalogTransition, "rebase");
+  assert.equal(recentRecord?.action, "stage");
+  assert.equal(recentRecord?.catalogTransition, "rebase");
+
+  const applied = await runRemoteMediaGc({
+    mode: "apply",
+    now: NOW,
+    graph: graph(refs),
+    catalog,
+    remote,
+    maxObjects: 10,
+    maxBytes: 10_000,
+    manifestSha256: dry.manifestSha256,
+    env: APPLY_ENV,
+  });
+  assert.equal(applied.rebased.count, 2);
+  assert.equal(applied.deleted.count, 1);
+  assert.equal(oldPending.remoteState, "deleted");
+  assert.equal(recentPending.remoteState, "delete_pending");
+  assert.equal(
+    recentPending.nextRetryAt?.toISOString(),
+    new Date(NOW.getTime() + 6 * DAY_MS).toISOString(),
+  );
+  assert.equal(
+    retryPending.nextRetryAt?.toISOString(),
+    new Date(NOW.getTime() + DAY_MS).toISOString(),
+    "operational retry backoff is not replaced by the retention deadline",
+  );
+  assert.equal(retryPending.lastErrorCode, "RemoteGcChecksumMismatch");
+}
+
 async function main(): Promise<void> {
   process.env.DATABASE_URL = "file::memory:";
   ({ runRemoteMediaGc } = await import("../src/lib/media-remote-gc"));
@@ -460,8 +618,10 @@ async function main(): Promise<void> {
     /blocked by rollout gates/,
   );
   await stageAndDelete();
+  await deleteWhenRecoveryWindowAlreadyElapsed();
+  await correctPreviouslyStagedDeadlines();
   await restoreWhenReferenceBecomesLive();
-  console.log("PASS R2 remote GC dry-run, manifest gate, grace, delete, and restore");
+  console.log("PASS R2 remote GC expiry-anchored grace, rebase, delete, and restore");
 }
 
 main().catch((error) => {
