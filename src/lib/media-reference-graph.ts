@@ -436,7 +436,7 @@ export async function buildMediaReferenceGraph(
     const collected = collectCanonicalMediaRefs(draft, roots);
     for (const code of collected.errors) addError(owner, "draftJson", code);
 
-    const activeOwnerKeys = new Map<MediaKey, boolean>();
+    const activeOwnerKeys = new Set<MediaKey>();
     const inFlightExpiries: Array<{ expiresAt: Date | null }> = [];
     const exactProjectOwnerMatches = (candidate: ProjectScopedOwner): boolean =>
       candidate.userId === project.userId && candidate.projectId === project.id;
@@ -445,15 +445,8 @@ export async function buildMediaReferenceGraph(
       (candidate.projectId !== null && candidate.projectId !== project.id);
     const addExactOwnerKeys = (
       keys: Iterable<MediaKey>,
-      ownerKind: "video" | "video-job",
-      ownerId: string,
     ): void => {
-      for (const key of keys) {
-        const exactOwnerIsCritical = refs.get(key)?.some((ref) =>
-          ref.ownerKind === ownerKind && ref.ownerId === ownerId && ref.critical === true
-        ) ?? false;
-        activeOwnerKeys.set(key, activeOwnerKeys.get(key) === true || exactOwnerIsCritical);
-      }
+      for (const key of keys) activeOwnerKeys.add(key);
     };
     for (const [field, jobId] of [
       ["activeJobId", project.activeJobId],
@@ -464,7 +457,7 @@ export async function buildMediaReferenceGraph(
       const inFlightOwner = inFlightJobById.get(jobId);
       if (doneOwner) {
         if (exactProjectOwnerMatches(doneOwner)) {
-          addExactOwnerKeys(videoJobKeysById.get(jobId) ?? [], "video-job", jobId);
+          addExactOwnerKeys(videoJobKeysById.get(jobId) ?? []);
         } else if (ownerConflictsWithProject(doneOwner)) {
           addError(owner, field, "owner_mismatch");
         }
@@ -482,22 +475,11 @@ export async function buildMediaReferenceGraph(
     if (project.latestVideoId) {
       const latestVideoOwner = videoOwnerById.get(project.latestVideoId);
       if (latestVideoOwner && exactProjectOwnerMatches(latestVideoOwner)) {
-        addExactOwnerKeys(videoKeysById.get(project.latestVideoId) ?? [], "video", project.latestVideoId);
+        addExactOwnerKeys(videoKeysById.get(project.latestVideoId) ?? []);
       } else if (latestVideoOwner && ownerConflictsWithProject(latestVideoOwner)) {
         addError(owner, "latestVideoId", "owner_mismatch");
       }
     }
-    if (project.status !== "archived") {
-      for (const [key, critical] of activeOwnerKeys) {
-        addKey(key, {
-          ...owner,
-          expiresAt: null,
-          alwaysProtect: true,
-          critical: critical || undefined,
-        });
-      }
-    }
-
     const uniqueDirectRefs = new Map<MediaKey, CanonicalMediaRef>();
     for (const canonicalRef of collected.refs) uniqueDirectRefs.set(canonicalRef.key, canonicalRef);
     for (const canonicalRef of uniqueDirectRefs.values()) {

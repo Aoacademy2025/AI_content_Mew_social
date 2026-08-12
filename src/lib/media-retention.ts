@@ -4,6 +4,32 @@ import { storageDaysForPlan, videoExpiryFor } from "@/lib/plan-limits";
 import type { MediaStorage } from "@/lib/media-storage";
 import { runtimeMediaStorage } from "@/lib/media-storage-rollout";
 
+/**
+ * Internal recovery window after customer-visible 3/7/14-day retention ends.
+ * Gallery/API visibility still follows the tier expiry; only the verified R2
+ * replica remains recoverable during this grace period.
+ */
+export const MEDIA_RECOVERY_GRACE_DAYS = 7;
+export const MEDIA_RECOVERY_GRACE_HOURS = MEDIA_RECOVERY_GRACE_DAYS * 24;
+export const LEGACY_MEDIA_RECOVERY_GRACE_HOURS = 24;
+
+export function extendLegacyRecoveryDeadline(
+  currentDeadline: Date | null,
+  now = new Date(),
+): Date {
+  if (!Number.isFinite(now.getTime())) throw new Error("invalid recovery policy clock");
+  if (currentDeadline && !Number.isFinite(currentDeadline.getTime())) {
+    throw new Error("invalid current recovery deadline");
+  }
+  if (!currentDeadline) {
+    return new Date(now.getTime() + MEDIA_RECOVERY_GRACE_HOURS * 3_600_000);
+  }
+  return new Date(
+    currentDeadline.getTime() +
+    (MEDIA_RECOVERY_GRACE_HOURS - LEGACY_MEDIA_RECOVERY_GRACE_HOURS) * 3_600_000,
+  );
+}
+
 export type ProjectMediaState =
   | { status: "available"; expiresAt: string }
   | { status: "expired"; expiredAt: string; canRerender: true }

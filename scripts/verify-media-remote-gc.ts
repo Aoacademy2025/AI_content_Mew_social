@@ -340,8 +340,26 @@ async function stageAndDelete(): Promise<void> {
   assert.equal(staged.staged.count, 2);
   assert.equal(expired.remoteState, "delete_pending");
   assert.equal(orphan.remoteState, "delete_pending");
+  const recoveryDeadline = new Date(NOW.getTime() + 7 * DAY_MS);
+  assert.equal(
+    expired.nextRetryAt?.toISOString(),
+    recoveryDeadline.toISOString(),
+    "expired media remains recoverable in R2 for seven days before physical deletion",
+  );
 
-  const dueAt = new Date(NOW.getTime() + 25 * 60 * 60 * 1000);
+  const beforeRecoveryDeadline = await runRemoteMediaGc({
+    now: new Date(NOW.getTime() + 25 * 60 * 60 * 1000),
+    graph: graph(refs),
+    catalog,
+    remote,
+    pendingOnly: true,
+    maxObjects: 20,
+    maxBytes: 10_000,
+  });
+  assert.equal(beforeRecoveryDeadline.selected.count, 0);
+  assert.equal(beforeRecoveryDeadline.skipped.pending_grace, 2);
+
+  const dueAt = new Date(recoveryDeadline.getTime() + 60 * 60 * 1000);
   const due = await runRemoteMediaGc({
     now: dueAt,
     graph: graph(refs),

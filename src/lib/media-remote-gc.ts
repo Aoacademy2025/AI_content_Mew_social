@@ -16,7 +16,10 @@ import {
   createR2MediaStorageFromEnv,
   type RemoteMediaReplicaVerifier,
 } from "@/lib/media-storage-r2";
-import { mediaReferenceIsLive } from "@/lib/media-retention";
+import {
+  MEDIA_RECOVERY_GRACE_HOURS,
+  mediaReferenceIsLive,
+} from "@/lib/media-retention";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const DAY_MS = 86_400_000;
@@ -417,7 +420,12 @@ export async function runRemoteMediaGc(
     1,
     50 * 1024 * 1024 * 1024,
   );
-  const graceHours = boundedInteger(options.graceHours, 24, 1, 72);
+  const graceHours = boundedInteger(
+    options.graceHours,
+    MEDIA_RECOVERY_GRACE_HOURS,
+    1,
+    30 * 24,
+  );
   const catalog = options.catalog ?? new MediaCatalog();
   const remote = options.remote ?? createR2MediaStorageFromEnv(env, "write");
   const graph = options.graph ?? await buildMediaReferenceGraph(now, {
