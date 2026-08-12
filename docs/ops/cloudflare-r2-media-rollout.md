@@ -238,13 +238,17 @@ when:
 - the full media reference graph has zero errors; and
 - R2 HEAD metadata still matches catalog size and SHA-256.
 
-The first apply changes the aliases to `delete_pending` for seven days. Gallery
-visibility has already ended at the tier expiry; this R2-only interval is an
-internal recovery window. A later run rebuilds the reference graph before
-deleting. If a live reference appears during
-the grace period, the catalog alias is restored to `verified`. Physical deletion
-is SHA-gated and idempotent; an already-missing object is finalized as deleted
-so a crash between the R2 delete and catalog update can recover safely.
+The recovery deadline is the latest tier expiry plus seven days (or the
+unreferenced 14-day cutoff plus seven days), never seven fresh days from GC
+discovery. The first apply records that absolute deadline. If it has already
+elapsed, the same bounded apply may stage and physically delete the object. GC
+also rebases legacy `delete_pending` rows that were previously given a deadline
+relative to discovery; operational retry deadlines and delete leases are never
+rebased. Gallery visibility has already ended at tier expiry. Every delete run
+rebuilds the reference graph; if a live reference appears during recovery, the
+catalog alias is restored to `verified`. Physical deletion is SHA-gated and
+idempotent; an already-missing object is finalized as deleted so a crash between
+the R2 delete and catalog update can recover safely.
 
 Run a bounded dry-run:
 

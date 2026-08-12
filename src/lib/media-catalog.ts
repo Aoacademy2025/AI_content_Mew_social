@@ -220,6 +220,47 @@ export class MediaCatalog {
     }
   }
 
+  /**
+   * Corrects a policy-derived recovery deadline without bypassing an
+   * operational retry or an in-progress delete lease.
+   */
+  async rebaseRemoteDeletePending(
+    rows: readonly MediaCatalogRemoteGcClaim[],
+    eligibleAt: Date,
+  ): Promise<MediaCatalogRemoteGcClaim[] | null> {
+    if (rows.length === 0 || !Number.isFinite(eligibleAt.getTime())) return null;
+    try {
+      return await this.db.$transaction(async (tx) => {
+        const claims: MediaCatalogRemoteGcClaim[] = [];
+        for (const row of rows) {
+          const updated = await tx.mediaObject.updateMany({
+            where: {
+              id: row.id,
+              version: row.version,
+              remoteState: "delete_pending",
+              localState: "evicted",
+              OR: [
+                { lastErrorCode: null },
+                { lastErrorCode: { in: ["RemoteGcPending", "RemoteGcPending7d"] } },
+              ],
+            },
+            data: {
+              nextRetryAt: eligibleAt,
+              lastErrorCode: "RemoteGcPending",
+              version: { increment: 1 },
+            },
+          });
+          if (updated.count !== 1) throw new MediaCatalogCompareAndSetError();
+          claims.push({ id: row.id, version: row.version + 1 });
+        }
+        return claims;
+      });
+    } catch (error) {
+      if (error instanceof MediaCatalogCompareAndSetError) return null;
+      throw error;
+    }
+  }
+
   async claimRemoteDelete(
     rows: readonly MediaCatalogRemoteGcClaim[],
     now: Date,
