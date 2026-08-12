@@ -34,6 +34,12 @@ The recovery deadline is the latest applicable tier expiry plus seven days; it
 is never reset to seven days from the time a GC process first discovers the
 object. For unreferenced media, the equivalent deadline is its 14-day
 eligibility cutoff plus seven days.
+An R2 object with no active catalog identity is treated as an orphan, not as an
+immediately deletable object. It remains untouched until its R2 observation is
+21 days old (14-day unreferenced retention plus seven recovery days). Before
+deletion, legacy v1 identities must also have no live or recovery-window
+reference-graph owner, while all identities require stable size, last-modified
+time, and SHA-256 metadata.
 
 ## Operational policy
 

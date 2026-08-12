@@ -339,6 +339,27 @@ Legacy R2 objects that have no catalog row are inventory-only until the
 copy-reconciliation backlog is zero. Never bulk-delete those orphan candidates
 during migration.
 
+After reconciliation is complete, orphan cleanup is a separate fail-closed
+workflow. It considers only objects absent from every active catalog identity
+and at least 21 days old, preserving the 14-day unreferenced interval plus the
+seven-day recovery interval. Legacy v1 objects with a live reference or a tier
+expiry still inside its seven-day recovery window are retained. Every selected
+object requires unchanged LIST/HEAD size and last-modified metadata plus valid
+SHA-256 metadata, and apply requires either an exact reviewed manifest or the
+dedicated automated gate.
+
+Install the daily bounded orphan timer only after a dry-run reports zero graph,
+identity, and remote-verification errors:
+
+```sh
+install -m 0644 deploy/systemd/heroai-r2-orphan-gc.service \
+  /etc/systemd/system/heroai-r2-orphan-gc.service
+install -m 0644 deploy/systemd/heroai-r2-orphan-gc.timer \
+  /etc/systemd/system/heroai-r2-orphan-gc.timer
+systemctl daemon-reload
+systemctl enable --now heroai-r2-orphan-gc.timer
+```
+
 The bucket is private and the application proxies R2 reads. If a future custom
 R2 domain or Cloudflare Cache Rule caches media directly, add a cache purge for
 each deleted URL before treating physical deletion as complete.
