@@ -846,6 +846,8 @@ export async function GET(req: Request) {
           id: true, email: true, plan: true, role: true, geminiKey: true, pexelsKey: true, pixabayKey: true, createdAt: true,
           subStatus: true, billingPeriod: true, planExpiresAt: true,
           trialStartedAt: true, trialEndsAt: true, stripeSubscriptionId: true,
+          bundleAccessExpiresAt: true, bundleStatus: true, bundlePrimary: true,
+          bundleBillingPeriod: true, bundleAmountThb: true,
         },
       }),
       prisma.telemetryEvent.findMany({ where: { name: "editor_opened", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),

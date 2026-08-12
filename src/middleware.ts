@@ -12,6 +12,7 @@ const isPublicRoute = createRouteMatcher([
   "/pricing(.*)",
   "/api/clerk-webhook(.*)",
   "/api/payments/webhook(.*)",
+  "/api/internal/bundle-entitlement", // BUNDLE_SYNC_SECRET-authenticated inside route
   "/api/plans(.*)",
   "/api/health(.*)",   // public up/down probe for the OS watchdog (no auth, SELECT 1)
   "/api/founding/status(.*)",

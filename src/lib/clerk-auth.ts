@@ -179,6 +179,9 @@ export async function getCurrentUser(): Promise<User | null> {
     throw e;
   }
   await grantTrial(created.id, TRIAL_DAYS_PUBLIC); // idempotent if the webhook already granted
+  // A Bundle may have been bought before this Clerk account existed. The
+  // email-backed grant is claimed here so the first dashboard response is PRO.
+  await syncUserEntitlement(created.id);
   return prisma.user.findUnique({ where: { id: created.id } }) as Promise<typeof created>;
 }
 
