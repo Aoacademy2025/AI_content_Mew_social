@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { planAndRunLocalMediaEviction } from "../src/lib/media-local-eviction";
+import { reconcileMissingVerifiedLocalMedia } from "../src/lib/media-local-missing-reconcile";
 import { prisma } from "../src/lib/prisma";
 
 function hasFlag(name: string): boolean {
@@ -28,21 +29,28 @@ async function main(): Promise<void> {
 
   const mode = hasFlag("apply") ? "apply" : "dry-run";
   const maxBytesMb = numberArg("maxBytesMb", 1024);
+  const maxObjects = numberArg("maxObjects", 10);
+  const reconciliation = await reconcileMissingVerifiedLocalMedia({
+    mode,
+    maxObjects,
+    maxBytes: maxBytesMb * 1024 * 1024,
+  });
   const report = await planAndRunLocalMediaEviction({
     olderThanDays: numberArg("olderThanDays", 3),
     includeStocks: hasFlag("includeStocks"),
     options: {
       mode,
-      maxObjects: numberArg("maxObjects", 10),
+      maxObjects,
       maxBytes: maxBytesMb * 1024 * 1024,
     },
   });
   console.log(JSON.stringify({
     ...report,
+    missingLocalReconciliation: reconciliation,
     eligibleMb: Math.round(report.eligible.sizeBytes / 1024 / 1024),
     evictedMb: Math.round(report.evicted.sizeBytes / 1024 / 1024),
   }));
-  if (report.errors > 0) process.exitCode = 1;
+  if (report.errors + reconciliation.errors > 0) process.exitCode = 1;
 }
 
 main()

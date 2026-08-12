@@ -176,6 +176,13 @@ matching size/mtime/SHA-256, and a second R2 HEAD verification after the local f
 has been atomically quarantined. The catalog state changes with a compare-and-set.
 Any pre-delete failure restores the local path. R2 deletion is explicitly rejected.
 
+Before each filesystem eviction pass, the same command also reconciles stale
+catalog rows that still say `localState=present` when the canonical file is
+already missing. It changes such a row to `evicted` only when no usable
+quarantine copy exists and R2 independently matches the recorded size and
+SHA-256. This state repair deletes no bytes and prevents stale local metadata
+from blocking remote retention forever.
+
 Run a read-only bounded inventory:
 
 ```sh
@@ -193,7 +200,7 @@ MEDIA_LOCAL_EVICTION=1 DOTENV_CONFIG_PATH=.env.r2.production \
 ```
 
 Verify health, Range playback for an evicted identity, queue state, disk free
-space, and logs before installing the daily timer:
+space, and logs before installing the four-hour timer:
 
 ```sh
 install -m 0644 \
@@ -211,9 +218,9 @@ systemctl enable --now heroai-media-local-eviction.timer
 
 The reconciliation and eviction services share an exclusive lock, so upload
 catalog transitions cannot overlap eviction. The catch-up timer runs every four
-hours and is capped at 500 objects and 50 GiB per run. Keep
-`MEDIA_R2_DELETE=0`; lifecycle deletion from R2
-is a separate future policy and is not required to protect VPS disk capacity.
+hours and is capped at 500 state repairs plus 500 physical evictions and 50 GiB
+per category per run. The local eviction service keeps `MEDIA_R2_DELETE=0`;
+reference-aware R2 deletion runs separately in Stage 6.
 
 ## Stage 6: reference-aware R2 garbage collection
 
