@@ -49,6 +49,13 @@ export type MediaCatalogRemoteGcClaim = {
   version: number;
 };
 
+export type MediaCatalogRemoteIdentityRow = {
+  area: string;
+  filename: string;
+  remoteFilename: string | null;
+  remoteState: string;
+};
+
 export type MediaCatalogFailedLocalRow = {
   id: string;
   area: string;
@@ -181,6 +188,30 @@ export class MediaCatalog {
         nextRetryAt: true,
         lastErrorCode: true,
         version: true,
+      },
+      orderBy: { objectKey: "asc" },
+    });
+  }
+
+  /**
+   * Broader than remoteGcInventory by design: orphan protection must retain
+   * every published remote identity even when its checksum catalog fields are
+   * incomplete. A malformed active identity makes orphan GC fail closed.
+   */
+  async r2OrphanProtectionInventory(): Promise<MediaCatalogRemoteIdentityRow[]> {
+    return this.db.mediaObject.findMany({
+      where: {
+        remoteState: { not: "deleted" },
+        OR: [
+          { remoteFilename: { not: null } },
+          { remoteState: { in: ["verified", "delete_pending"] } },
+        ],
+      },
+      select: {
+        area: true,
+        filename: true,
+        remoteFilename: true,
+        remoteState: true,
       },
       orderBy: { objectKey: "asc" },
     });
