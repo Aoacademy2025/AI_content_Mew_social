@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   effectiveMediaExpiry,
+  extendLegacyRecoveryDeadline,
   expiryForMedia,
   mediaReferenceIsLive,
   storageDaysForPlan,
@@ -44,6 +45,21 @@ assert.equal(mediaReferenceIsLive({ expiresAt: null }, from), true, "null expiry
 assert.equal(
   mediaReferenceIsLive({ expiresAt: new Date(from.getTime() - 1), alwaysProtect: true }, from),
   true,
+);
+
+assert.equal(
+  extendLegacyRecoveryDeadline(new Date("2026-07-02T00:00:00.000Z"), from).toISOString(),
+  "2026-07-08T00:00:00.000Z",
+  "a legacy one-day deadline is extended to seven days from its original stage time",
+);
+assert.equal(
+  extendLegacyRecoveryDeadline(null, from).toISOString(),
+  "2026-07-08T00:00:00.000Z",
+  "an unknown legacy deadline fails safe with seven days from migration",
+);
+assert.throws(
+  () => extendLegacyRecoveryDeadline(from, new Date(Number.NaN)),
+  /invalid recovery policy clock/,
 );
 
 console.log("PASS media retention resolver");

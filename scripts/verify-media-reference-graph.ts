@@ -629,12 +629,15 @@ async function main(): Promise<void> {
   assert.equal(
     galleryRefs.some((ref) =>
       ref.ownerKind === "project-draft" &&
-      ref.ownerId === "graph-project-latest-gallery" &&
-      ref.alwaysProtect === true &&
-      ref.critical === true
+      ref.ownerId === "graph-project-latest-gallery"
     ),
-    true,
-    "a non-archived latestVideo pointer fail-closes and preserves final-media criticality",
+    false,
+    "a non-archived latestVideo pointer must not extend frozen Gallery retention",
+  );
+  assert.equal(
+    galleryRefs.some((ref) => retentionModule.mediaReferenceIsLive(ref, NOW)),
+    false,
+    "expired Gallery media stays expired even while its project remains active",
   );
   assert.equal(
     graph.errors.some((error) => error.ownerId === "graph-project-latest-gallery"),
@@ -652,12 +655,10 @@ async function main(): Promise<void> {
     assert.equal(
       refs.some((ref) =>
         ref.ownerKind === "project-draft" &&
-        ref.ownerId === projectId &&
-        ref.alwaysProtect === true &&
-        ref.critical === true
+        ref.ownerId === projectId
       ),
-      true,
-      "a non-archived active job/export pointer fail-closes and preserves final-media criticality",
+      false,
+      "active project pointers must inherit the owner's frozen expiry instead of protecting forever",
     );
     assert.equal(
       graph.errors.some((error) => error.ownerId === projectId),
@@ -688,11 +689,10 @@ async function main(): Promise<void> {
   assert.equal(
     refsFor(graph, "renders/preview-active-job-720p.mp4").some((ref) =>
       ref.ownerKind === "project-draft" &&
-      ref.ownerId === "graph-project-active-job" &&
-      ref.alwaysProtect === true
+      ref.ownerId === "graph-project-active-job"
     ),
-    true,
-    "active project containment covers derived preview keys",
+    false,
+    "derived preview keys expire with their VideoJob even while the project remains active",
   );
   assert.equal(
     refsFor(graph, "renders/archived-video.mp4").some((ref) => ref.ownerKind === "project-draft"),
@@ -711,11 +711,10 @@ async function main(): Promise<void> {
   const sharedCriticalityProjectRef = refsFor(graph, "renders/shared-criticality.mp4").find(
     (ref) => ref.ownerKind === "project-draft" && ref.ownerId === "graph-project-active-job",
   );
-  assert.equal(sharedCriticalityProjectRef?.alwaysProtect, true);
-  assert.notEqual(
-    sharedCriticalityProjectRef?.critical,
-    true,
-    "critical lineage comes from the exact pointer owner, not an unrelated owner sharing the key",
+  assert.equal(
+    sharedCriticalityProjectRef,
+    undefined,
+    "an active pointer must not add indefinite project ownership to nested expired media",
   );
 
   const processingActiveRef = refsFor(graph, "renders/processing-active-input.mp4").find(

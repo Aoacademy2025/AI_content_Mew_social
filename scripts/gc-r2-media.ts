@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { runRemoteMediaGc } from "../src/lib/media-remote-gc";
+import { MEDIA_RECOVERY_GRACE_HOURS } from "../src/lib/media-retention";
 import { prisma } from "../src/lib/prisma";
 
 function hasFlag(name: string): boolean {
@@ -42,7 +43,7 @@ async function main(): Promise<void> {
     manifestSha256: stringArg("manifestSha256"),
     maxObjects: numberArg("maxObjects", 10),
     maxBytes: numberArg("maxBytesMb", 1024) * 1024 * 1024,
-    graceHours: numberArg("graceHours", 24),
+    graceHours: numberArg("graceHours", MEDIA_RECOVERY_GRACE_HOURS),
   });
   const { records: _records, ...summary } = report;
   const output = hasFlag("summary") ? summary : report;

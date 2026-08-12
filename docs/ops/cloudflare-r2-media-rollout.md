@@ -2,7 +2,7 @@
 
 Status: production reads R2 first with local fallback; copy reconciliation is
 continuous. The 10-object physical-deletion canary passed, and bounded
-reference-aware R2 GC is enabled with a 24-hour catalog grace. Blanket
+reference-aware R2 GC is enabled with a seven-day recovery grace. Blanket
 age-based bucket lifecycle deletion remains prohibited.
 
 This migration keeps `/api/renders/*` and `/api/stocks/*` stable. The application
@@ -210,8 +210,9 @@ systemctl enable --now heroai-media-local-eviction.timer
 ```
 
 The reconciliation and eviction services share an exclusive lock, so upload
-catalog transitions cannot overlap eviction. The daily job is capped at 250
-objects and 20 GiB per run. Keep `MEDIA_R2_DELETE=0`; lifecycle deletion from R2
+catalog transitions cannot overlap eviction. The catch-up timer runs every four
+hours and is capped at 500 objects and 50 GiB per run. Keep
+`MEDIA_R2_DELETE=0`; lifecycle deletion from R2
 is a separate future policy and is not required to protect VPS disk capacity.
 
 ## Stage 6: reference-aware R2 garbage collection
@@ -230,8 +231,10 @@ when:
 - the full media reference graph has zero errors; and
 - R2 HEAD metadata still matches catalog size and SHA-256.
 
-The first apply changes the aliases to `delete_pending` for 24 hours. A later run
-rebuilds the reference graph before deleting. If a live reference appears during
+The first apply changes the aliases to `delete_pending` for seven days. Gallery
+visibility has already ended at the tier expiry; this R2-only interval is an
+internal recovery window. A later run rebuilds the reference graph before
+deleting. If a live reference appears during
 the grace period, the catalog alias is restored to `verified`. Physical deletion
 is SHA-gated and idempotent; an already-missing object is finalized as deleted
 so a crash between the R2 delete and catalog update can recover safely.
@@ -241,7 +244,7 @@ Run a bounded dry-run:
 ```sh
 DOTENV_CONFIG_PATH=.env.r2.production \
   npx tsx scripts/gc-r2-media.ts \
-  --maxObjects=10 --maxBytesMb=1024 --graceHours=24
+  --maxObjects=10 --maxBytesMb=1024 --graceHours=168
 ```
 
 Review the records and copy the exact `manifestSha256` from that run. Stage only
@@ -252,7 +255,7 @@ MEDIA_LOCAL_EVICTION=1 MEDIA_R2_DELETE=1 R2_REMOTE_GC_ENABLED=1 \
 DOTENV_CONFIG_PATH=.env.r2.production \
   npx tsx scripts/gc-r2-media.ts \
   --apply --manifestSha256=<REVIEWED_SHA256> \
-  --maxObjects=10 --maxBytesMb=1024 --graceHours=24
+  --maxObjects=10 --maxBytesMb=1024 --graceHours=168
 ```
 
 After the grace deadline, repeat dry-run and hash-gated apply to delete the
