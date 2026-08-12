@@ -49,6 +49,19 @@ model User {
   // Free trial (public 7-day PRO trial, no card)
   trialStartedAt        DateTime? // set once; never cleared (one-trial-per-user guard)
   trialEndsAt           DateTime? // end of the active unconverted trial; cleared on conversion/revert
+  // Hero AI Bundle is an overlay, independent from Studio's own Stripe/trial/
+  // admin-paid entitlement. Never reuse planExpiresAt for this source: revoke
+  // must remove only Bundle access and preserve every other valid source.
+  bundleGrantId         String?
+  bundleSubscriptionId  String?
+  bundleAccessExpiresAt DateTime?
+  bundleStatus          String? // ACTIVE | REVOKED
+  bundleBillingPeriod   String? // monthly | annual, sourced from Bundle checkout
+  bundleAmountThb       Int? // actual paid amount for the current Bundle term/invoice
+  bundleLastEventId     String?
+  bundleQuotaGrantId    String?
+  bundleCreditsGrantId  String?
+  bundlePrimary         Boolean   @default(false)
   minutesUsed           Float     @default(0)
   minutesLimit          Int       @default(0)
   aiAudioMinutesUsed    Float     @default(0) // managed Gemini/OmniVoice audio-minutes (TTS+transcribe) per usage window; ceiling = minutesLimit × AI_AUDIO_CEILING_MULT
@@ -86,6 +99,25 @@ model User {
   projectVisualBeats       ProjectVisualBeat[]
   brandLookPreviewBatches  BrandLookPreviewBatch[]
   starterAiImageAllowances StarterAiImageAllowance[]
+}
+
+/// Email-backed Bundle entitlement. The purchase may arrive before a Clerk
+/// account exists; the next entitlement sync materializes it onto User.
+model BundleEntitlement {
+  email           String   @id
+  grantId         String
+  subscriptionId  String?
+  status          String
+  accessEndsAt    DateTime
+  billingPeriod   String?
+  amountThb       Int?
+  lastEventId     String   @unique
+  eventOccurredAt DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([subscriptionId])
+  @@index([status, accessEndsAt])
 }
 
 model Style {

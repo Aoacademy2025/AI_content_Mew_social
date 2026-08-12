@@ -38,9 +38,13 @@ interface Breakdown {
 
 interface Customers {
   payingTotal: number;
-  paying: { subMonthly: number; subAnnual: number; oneTimeMonthly: number; oneTimeAnnual: number };
+  directPayingTotal: number;
+  bundleActive: number;
+  paying: { subMonthly: number; subAnnual: number; oneTimeMonthly: number; oneTimeAnnual: number; bundleMonthly: number; bundleAnnual: number };
   payingByTier: { pro: number; business: number };
   mrr: number;
+  directMrr: number;
+  bundleMrr: number;
   mrrByTier: { pro: number; business: number };
   lapsedPayers: number;
   trialActive: number;
@@ -50,6 +54,7 @@ interface Customers {
   internalTeam: number;
   expiredTrial: number;
   expiredPlan: number;
+  expiredBundle: number;
   free: number;
   breakEvenSubs: number;
 }
@@ -207,11 +212,11 @@ export default function CostMarginPanel({ days }: { days: number }) {
   const bdMax = Math.max(1, ...providerBars.map((b) => b.value));
   const costTotalWindow = bd ? bd.tts + bd.image + bd.video + bd.infraProrated : 0;
 
-  const subCount = cu ? cu.paying.subMonthly + cu.paying.subAnnual : 0;
+  const subCount = cu ? cu.paying.subMonthly + cu.paying.subAnnual + cu.paying.bundleMonthly : 0;
   const oneTimeCount = cu ? cu.paying.oneTimeMonthly + cu.paying.oneTimeAnnual : 0;
-  const annualCount = cu ? cu.paying.subAnnual + cu.paying.oneTimeAnnual : 0;
-  const monthlyCount = cu ? cu.paying.subMonthly + cu.paying.oneTimeMonthly : 0;
-  const driftTotal = cu ? cu.lapsedPayers + cu.expiredTrial + cu.expiredPlan : 0;
+  const annualCount = cu ? cu.paying.subAnnual + cu.paying.oneTimeAnnual + cu.paying.bundleAnnual : 0;
+  const monthlyCount = cu ? cu.paying.subMonthly + cu.paying.oneTimeMonthly + cu.paying.bundleMonthly : 0;
+  const driftTotal = cu ? cu.lapsedPayers + cu.expiredTrial + cu.expiredPlan + cu.expiredBundle : 0;
 
   return (
     <section className="rounded-xl border border-violet-500/25 bg-white/[0.02] overflow-hidden">
@@ -259,6 +264,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
                     <div className="mt-2 flex flex-wrap gap-2 text-xs">
                       <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-slate-200"><Repeat className="h-3 w-3" /> Subscription {fmtNum(subCount)}</span>
                       <span className="inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-1 text-slate-200"><CreditCard className="h-3 w-3" /> จ่ายครั้งเดียว {fmtNum(oneTimeCount)}</span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2.5 py-1 text-emerald-200">Bundle {fmtNum(cu.bundleActive)}</span>
                       <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2.5 py-1 text-violet-200">รายเดือน {fmtNum(monthlyCount)}</span>
                       <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2.5 py-1 text-violet-200">รายปี {fmtNum(annualCount)}</span>
                     </div>
@@ -274,7 +280,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
                     </div>
                     <div className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-2">
                       <div className="text-lg font-bold text-violet-200">{fmtBaht(h.mrr)}</div>
-                      <div className="text-[11px] text-violet-300/80">MRR run-rate</div>
+                      <div className="text-[11px] text-violet-300/80">Studio {fmtBaht(cu.directMrr)} · Bundle {fmtBaht(cu.bundleMrr)}</div>
                     </div>
                   </div>
                 </div>
@@ -291,6 +297,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
                       {cu.lapsedPayers > 0 && <span>เคยจ่ายแล้วหลุด <b className="text-rose-300">{fmtNum(cu.lapsedPayers)}</b></span>}
                       {cu.expiredTrial > 0 && <span>· Trial หมดยังไม่ตัด <b className="text-amber-300">{fmtNum(cu.expiredTrial)}</b></span>}
                       {cu.expiredPlan > 0 && <span>· แพ็กหมดยังไม่ตัด <b className="text-amber-300">{fmtNum(cu.expiredPlan)}</b></span>}
+                      {cu.expiredBundle > 0 && <span>· Bundle หมด/ยกเลิก <b className="text-amber-300">{fmtNum(cu.expiredBundle)}</b></span>}
                     </div>
                   )}
                 </div>

@@ -43,19 +43,27 @@ const users: CohortUser[] = [
   u("u11", { plan: "PRO", planExpiresAt: future }), // coupon comp (no cash) — in couponUserIds
   u("u12", { plan: "FREE" }), // paid before, now FREE → lapsed payer (cash)
   u("u13", { plan: "PRO", email: "founder@aoacademy.com", billingPeriod: "annual", planExpiresAt: future }), // team member who ALSO paid cash
+  u("u14", { plan: "PRO", bundleStatus: "ACTIVE", bundlePrimary: true, bundleAccessExpiresAt: future, bundleBillingPeriod: "monthly", bundleAmountThb: 899 }), // paid monthly Bundle; no Studio Payment row
+  u("u15", { plan: "PRO", bundleStatus: "ACTIVE", bundlePrimary: true, bundleAccessExpiresAt: future, bundleBillingPeriod: "annual", bundleAmountThb: 8990 }), // paid annual Bundle
+  u("u16", { plan: "FREE", bundleStatus: "REVOKED", bundlePrimary: false, bundleAccessExpiresAt: past, bundleBillingPeriod: "monthly", bundleAmountThb: 899 }), // former Bundle payer
+  u("u17", { plan: "PRO", subStatus: "active", billingPeriod: "monthly", planExpiresAt: future, stripeSubscriptionId: "s17", bundleStatus: "ACTIVE", bundlePrimary: false, bundleAccessExpiresAt: future, bundleBillingPeriod: "monthly", bundleAmountThb: 899 }), // pays Studio + Bundle; one customer, two cash streams
 ];
 
-const paidUserIds = new Set(["u1", "u2", "u3", "u4", "u12", "u13"]);
+const paidUserIds = new Set(["u1", "u2", "u3", "u4", "u12", "u13", "u17"]);
 const couponUserIds = new Set(["u11"]);
 const c = computeRevenueCohorts(users, paidUserIds, PRICES, now, { couponUserIds });
 
 // ── Paying = cash-backed + currently entitled ────────────────────────────────
-ok(c.payingTotal === 5, `payingTotal = 5 (cash + entitled) → ${c.payingTotal}`);
-ok(c.paying.subMonthly === 1, `subMonthly = 1 → ${c.paying.subMonthly}`);
+ok(c.payingTotal === 8, `payingTotal = 8 unique people (one pays both sources) → ${c.payingTotal}`);
+ok(c.directPayingTotal === 6, `directPayingTotal = 6 → ${c.directPayingTotal}`);
+ok(c.bundleActive === 3, `bundleActive = 3 → ${c.bundleActive}`);
+ok(c.paying.subMonthly === 2, `subMonthly = 2 → ${c.paying.subMonthly}`);
 ok(c.paying.subAnnual === 1, `subAnnual = 1 → ${c.paying.subAnnual}`);
 ok(c.paying.oneTimeMonthly === 1, `oneTimeMonthly = 1 → ${c.paying.oneTimeMonthly}`);
 ok(c.paying.oneTimeAnnual === 2, `oneTimeAnnual = 2 (PromptPay annual + paying team member) → ${c.paying.oneTimeAnnual}`);
-ok(c.payingByTier.pro === 4, `payingByTier.pro = 4 → ${c.payingByTier.pro}`);
+ok(c.paying.bundleMonthly === 2, `bundleMonthly = 2 → ${c.paying.bundleMonthly}`);
+ok(c.paying.bundleAnnual === 1, `bundleAnnual = 1 → ${c.paying.bundleAnnual}`);
+ok(c.payingByTier.pro === 7, `payingByTier.pro = 7 unique people → ${c.payingByTier.pro}`);
 ok(c.payingByTier.business === 1, `payingByTier.business = 1 → ${c.payingByTier.business}`);
 
 // ── Not-revenue buckets ──────────────────────────────────────────────────────
@@ -65,21 +73,26 @@ ok(c.comped.team === 1, `comped.team = 1 → ${c.comped.team}`);
 ok(c.comped.coupon === 1, `comped.coupon = 1 → ${c.comped.coupon}`);
 ok(c.comped.other === 1, `comped.other = 1 → ${c.comped.other}`);
 ok(c.internalTeam === 2, `internalTeam = 2 (@aoacademy, incl. the one who paid) → ${c.internalTeam}`);
-ok(c.lapsedPayers === 1, `lapsedPayers = 1 (paid then reverted to FREE) → ${c.lapsedPayers}`);
+ok(c.lapsedPayers === 2, `lapsedPayers = 2 (Studio + Bundle, then reverted to FREE) → ${c.lapsedPayers}`);
 ok(c.expiredTrial === 1, `expiredTrial = 1 → ${c.expiredTrial}`);
 ok(c.expiredPlan === 1, `expiredPlan = 1 → ${c.expiredPlan}`);
+ok(c.expiredBundle === 0, `expiredBundle = 0 after already reverting to FREE → ${c.expiredBundle}`);
 ok(c.free === 1, `free = 1 → ${c.free}`);
-ok(c.breakEvenSubs === 5, `breakEvenSubs = payingTotal = 5 → ${c.breakEvenSubs}`);
+ok(c.breakEvenSubs === 8, `breakEvenSubs = payingTotal = 8 → ${c.breakEvenSubs}`);
 
 // ── MRR (annual normalized to 10/12 of monthly, active cash payers only) ──────
 const annualPro = (599 * ANNUAL_PRICE_MONTHS) / 12; // 499.1667
 const annualBiz = (990 * ANNUAL_PRICE_MONTHS) / 12; // 825
-const expectedMrr = 599 /*u1*/ + annualBiz /*u2*/ + annualPro /*u3*/ + 599 /*u4*/ + annualPro /*u13*/;
+const expectedDirectMrr = 599 /*u1*/ + annualBiz /*u2*/ + annualPro /*u3*/ + 599 /*u4*/ + annualPro /*u13*/ + 599 /*u17*/;
+const expectedBundleMrr = 899 /*u14*/ + 8990 / 12 /*u15*/ + 899 /*u17*/;
+const expectedMrr = expectedDirectMrr + expectedBundleMrr;
 ok(approx(c.mrr, expectedMrr), `mrr = ${expectedMrr.toFixed(2)} (annual normalized) → got ${c.mrr.toFixed(2)}`);
+ok(approx(c.directMrr, expectedDirectMrr), `directMrr = ${expectedDirectMrr.toFixed(2)} → ${c.directMrr.toFixed(2)}`);
+ok(approx(c.bundleMrr, expectedBundleMrr), `bundleMrr = ${expectedBundleMrr.toFixed(2)} → ${c.bundleMrr.toFixed(2)}`);
 ok(approx(c.mrrByTier.business, annualBiz), `mrrByTier.business = ${annualBiz} → ${c.mrrByTier.business.toFixed(2)}`);
 
 // ── Regression guards ────────────────────────────────────────────────────────
-ok(c.payingTotal !== 8, "comped (team/coupon/other) are NOT counted as paying");
+ok(c.payingTotal !== 11, "comped (team/coupon/other) are NOT counted as paying");
 ok(c.trialActive !== 0 && c.compedPaid !== 0, "trials and comps exist and are kept out of revenue");
 
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"} — ${passed} ok, ${failures} failures`);

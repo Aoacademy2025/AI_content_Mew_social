@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { resetMonthlyGranted } from "@/lib/credits";
+import { syncStoredBundleEntitlementForUser } from "@/lib/bundle-entitlement";
 
 const PAID_PLANS = ["PRO", "BUSINESS"] as const;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -21,6 +22,9 @@ type EntitlementUser = {
   trialEndsAt: Date | null;
   subStatus: string | null;
   stripeSubscriptionId: string | null;
+  bundleAccessExpiresAt?: Date | null;
+  bundleStatus?: string | null;
+  bundlePrimary?: boolean;
 };
 
 export type EntitlementDecision = {
@@ -29,10 +33,12 @@ export type EntitlementDecision = {
     | "FREE"
     | "TRIAL"
     | "SUBSCRIPTION"
+    | "BUNDLE"
     | "TIMED_PLAN"
     | "PERMANENT_OR_MANUAL"
     | "EXPIRED_TRIAL"
-    | "EXPIRED_PLAN";
+    | "EXPIRED_PLAN"
+    | "EXPIRED_BUNDLE";
   action: "KEEP" | "DOWNGRADE" | "REVIEW";
   reason: string;
   expiresAt: Date | null;
@@ -81,6 +87,20 @@ export async function grantOnPaidActivation(userId: string, plan: string): Promi
 }
 
 export function classifyEntitlement(user: EntitlementUser, now: Date = new Date()): EntitlementDecision {
+  if (
+    user.bundleStatus === "ACTIVE" &&
+    user.bundleAccessExpiresAt &&
+    user.bundleAccessExpiresAt > now
+  ) {
+    return {
+      effectivePlan: user.plan === "BUSINESS" ? "BUSINESS" : "PRO",
+      source: "BUNDLE",
+      action: "KEEP",
+      reason: "active_bundle",
+      expiresAt: user.bundleAccessExpiresAt,
+    };
+  }
+
   if (!isPaidPlan(user.plan)) {
     return { effectivePlan: "FREE", source: "FREE", action: "KEEP", reason: "free_plan", expiresAt: null };
   }
@@ -133,6 +153,16 @@ export function classifyEntitlement(user: EntitlementUser, now: Date = new Date(
     };
   }
 
+  if (user.bundlePrimary && user.bundleAccessExpiresAt && user.bundleAccessExpiresAt <= now) {
+    return {
+      effectivePlan: "FREE",
+      source: "EXPIRED_BUNDLE",
+      action: "DOWNGRADE",
+      reason: user.bundleStatus === "REVOKED" ? "bundle_revoked" : "bundle_expired",
+      expiresAt: user.bundleAccessExpiresAt,
+    };
+  }
+
   return {
     effectivePlan: user.plan,
     source: "PERMANENT_OR_MANUAL",
@@ -143,7 +173,7 @@ export function classifyEntitlement(user: EntitlementUser, now: Date = new Date(
 }
 
 export async function syncUserEntitlement(userId: string, now: Date = new Date()) {
-  const user = await prisma.user.findUnique({
+  let user = await prisma.user.findUnique({
     where: { id: userId },
     select: {
       id: true,
@@ -158,9 +188,37 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
       trialEndsAt: true,
       subStatus: true,
       stripeSubscriptionId: true,
+      bundleAccessExpiresAt: true,
+      bundleStatus: true,
+      bundlePrimary: true,
     },
   });
   if (!user) return null;
+
+  const bundleSync = await syncStoredBundleEntitlementForUser(userId, now);
+  if (bundleSync.changed) {
+    user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        plan: true,
+        usageCount: true,
+        usageLimit: true,
+        usagePeriodStartedAt: true,
+        planExpiresAt: true,
+        trialStartedAt: true,
+        trialEndsAt: true,
+        subStatus: true,
+        stripeSubscriptionId: true,
+        bundleAccessExpiresAt: true,
+        bundleStatus: true,
+        bundlePrimary: true,
+      },
+    });
+    if (!user) return null;
+  }
 
   const decision = classifyEntitlement(user, now);
   if (decision.action !== "DOWNGRADE") return { user, decision, changed: false };
@@ -168,7 +226,9 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
   const expiryGuard =
     decision.reason === "trial_expired"
       ? { trialEndsAt: { not: null, lte: now } }
-      : { planExpiresAt: { not: null, lte: now } };
+      : decision.source === "EXPIRED_BUNDLE"
+        ? { bundlePrimary: true, bundleAccessExpiresAt: { not: null, lte: now } }
+        : { planExpiresAt: { not: null, lte: now } };
 
   const res = await prisma.user.updateMany({
     where: {
@@ -181,6 +241,7 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
       plan: "FREE",
       planExpiresAt: null,
       trialEndsAt: null,
+      bundlePrimary: false,
       ...usageWindowForPlanValue("FREE", now),
     },
   });
@@ -220,6 +281,9 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
       trialEndsAt: true,
       subStatus: true,
       stripeSubscriptionId: true,
+      bundleAccessExpiresAt: true,
+      bundleStatus: true,
+      bundlePrimary: true,
     },
   });
   return { user: updated ?? user, decision, changed: res.count === 1 };
@@ -235,6 +299,10 @@ export async function revertExpiredEntitlements(now: Date = new Date()) {
           OR: [
             { trialEndsAt: { not: null, lte: now } },
             { planExpiresAt: { not: null, lte: now } },
+            {
+              bundlePrimary: true,
+              bundleAccessExpiresAt: { not: null, lte: now },
+            },
           ],
         },
       ],
@@ -257,6 +325,10 @@ export async function getEntitlementAuditReport(now: Date = new Date()) {
       plan: { in: [...PAID_PLANS] },
       planExpiresAt: null,
       OR: [{ subStatus: null }, { subStatus: { not: "active" } }],
+      NOT: {
+        bundleStatus: "ACTIVE",
+        bundleAccessExpiresAt: { gt: now },
+      },
     },
     orderBy: { createdAt: "desc" },
     select: {
