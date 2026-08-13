@@ -89,6 +89,9 @@ interface RunpodImageCost {
   billedUsd: number;
   billedTimeMs: number;
   deliveredImages: number;
+  providerRoute: "runpod-public" | "runpod-custom";
+  costSource: "provider_reported_attempts" | "runpod_billing";
+  pricedAttempts: number | null;
   costBahtPerImage: number | null;
   targetBahtPerImage: number;
   hardLimitBahtPerImage: number;
@@ -384,10 +387,17 @@ export default function CostMarginPanel({ days }: { days: number }) {
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <div className="text-xs font-semibold uppercase tracking-wide text-slate-300">
-                        RunPod Image · Fully-loaded COGS
+                        <span className="inline-flex items-center gap-1">
+                          RunPod Image · ต้นทุนเส้นทางที่ใช้งานจริง
+                          <MetricHelp label="ต้นทุนเส้นทางที่ใช้งานจริง">
+                            ต้นทุนเฉลี่ยของเส้นทางที่ระบบส่งงานจริงในช่วง {windowLabel} ตัวตั้งรวมต้นทุนที่ RunPod รายงานของทุกครั้งที่ส่งงานให้ผู้ให้บริการ (attempt) รวมการลองใหม่ (retry) และงานที่ระบบคืนเครดิตภายหลัง ตัวหารนับเฉพาะรูปที่ส่งมอบสำเร็จและ settle แล้ว โดย settle หมายถึงระบบยืนยันการหักสิทธิ์หรือเครดิตเสร็จและไม่ได้คืนเครดิต หากเป็น custom endpoint จะใช้ยอดเรียกเก็บที่รวมค่าเริ่มเครื่องและช่วงเครื่องว่างแทน
+                          </MetricHelp>
+                        </span>
                       </div>
                       <div className="mt-1 text-xs text-slate-500">
-                        รวม cold start, idle, fail/retry และ smoke · {fmtNum(runpodCost.deliveredImages)} รูปส่งมอบ
+                        {runpodCost.costSource === "provider_reported_attempts"
+                          ? `Public Z-Image · ส่งผู้ให้บริการ ${fmtNum(runpodCost.pricedAttempts ?? 0)} ครั้งที่มีต้นทุน · ${fmtNum(runpodCost.deliveredImages)} รูปส่งมอบและยืนยันการหักสิทธิ์`
+                          : `Custom endpoint · รวมค่าเริ่มเครื่อง งานที่ไม่สำเร็จ การลองใหม่ และงานทดสอบระบบ · ${fmtNum(runpodCost.deliveredImages)} รูปส่งมอบ`}
                       </div>
                     </div>
                     <div className="flex items-end gap-3">
@@ -398,18 +408,28 @@ export default function CostMarginPanel({ days }: { days: number }) {
                       </span>
                       <span className={cn(
                         "rounded-full px-2.5 py-1 text-[11px] font-semibold",
-                        runpodCost.admitted
+                        runpodCost.status === "healthy"
                           ? "bg-emerald-500/15 text-emerald-200"
-                          : "bg-rose-500/15 text-rose-200",
+                          : runpodCost.status === "warning" || runpodCost.status === "insufficient_data"
+                            ? "bg-amber-500/15 text-amber-200"
+                            : "bg-rose-500/15 text-rose-200",
                       )}>
-                        {runpodCost.admitted ? "รับงานได้" : "หยุดรับงาน"}
+                        {runpodCost.status === "healthy"
+                          ? "ข้อมูลเพียงพอ"
+                          : runpodCost.status === "insufficient_data"
+                            ? "กำลังเก็บข้อมูล"
+                            : runpodCost.status === "warning"
+                              ? "ต้นทุนสูง"
+                              : runpodCost.status === "stale"
+                                ? "ข้อมูลล้าสมัย"
+                                : "หยุดรับงาน"}
                       </span>
                     </div>
                   </div>
                   <div className="mt-3 grid gap-2 border-t border-white/10 pt-3 text-xs text-slate-400 sm:grid-cols-3">
                     <span>เป้าหมาย ≤ ฿{fmtNum(runpodCost.targetBahtPerImage, 2)}</span>
-                    <span>Hard stop &gt; ฿{fmtNum(runpodCost.hardLimitBahtPerImage, 2)}</span>
-                    <span>Sample ขั้นต่ำ {fmtNum(runpodCost.minimumSample)} รูป</span>
+                    <span>หยุดรับงานเมื่อ &gt; ฿{fmtNum(runpodCost.hardLimitBahtPerImage, 2)}</span>
+                    <span>ต้องมีข้อมูลอย่างน้อย {fmtNum(runpodCost.minimumSample)} รูป</span>
                   </div>
                 </div>
               )}
