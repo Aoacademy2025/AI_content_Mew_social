@@ -189,6 +189,36 @@ async function main() {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 
+  let bodyHits = 0;
+  const bodyServer = http.createServer((_req, res) => {
+    bodyHits += 1;
+    res.writeHead(200, {
+      "Content-Type": "image/png",
+      "Content-Length": "8",
+    });
+    res.flushHeaders();
+    const body = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+    if (bodyHits === 1) {
+      setTimeout(() => res.end(body), 250);
+      return;
+    }
+    res.end(body);
+  });
+  await new Promise<void>((resolve) => bodyServer.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = bodyServer.address();
+    if (!address || typeof address === "string") throw new Error("body test server did not bind");
+    const response = await fetchImageResponseWithRetry(
+      `http://127.0.0.1:${address.port}/image.png`,
+      { timeoutMs: 50, retries: 1, wallClockMs: 2_000 },
+    );
+    assert.equal(bodyHits, 2, "a response-body timeout must retry the complete image download");
+    assert.equal((await response.arrayBuffer()).byteLength, 8);
+  } finally {
+    bodyServer.closeAllConnections?.();
+    await new Promise<void>((resolve) => bodyServer.close(() => resolve()));
+  }
+
   const fetchStock = fs.readFileSync("src/app/api/videos/fetch-stock/route.ts", "utf8");
   const heroImage = fs.readFileSync("src/lib/video-hero-image.server.ts", "utf8");
   const media = fs.readFileSync("src/lib/ai-generation-media.server.ts", "utf8");
