@@ -70,6 +70,18 @@ cd "$APP_DIR"
 # a dirty tracked tree would block the next deploy even though dependencies are
 # otherwise correct.
 npm install --no-audit --no-fund --package-lock=false
+# The VPS npm version still normalizes optional libc metadata even with
+# package-lock disabled. The tree was proven clean immediately before install,
+# so any lock-only drift here is tool-generated and safe to restore exactly.
+if ! git diff --quiet -- package-lock.json; then
+  echo "Restoring npm-normalized package-lock.json to the reviewed release copy"
+  git restore --source=HEAD -- package-lock.json
+fi
+if ! git diff --quiet --ignore-submodules --; then
+  echo "ERROR: dependency installation changed an unexpected tracked file"
+  git status --short --untracked-files=no
+  exit 1
+fi
 
 echo "=== [3/6] Prepare .env ==="
 if [ ! -f "$APP_DIR/.env" ]; then

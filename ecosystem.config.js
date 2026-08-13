@@ -412,7 +412,9 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         // Worker heap for in-process renderMedia (long videos accumulate frame buffers).
-        NODE_OPTIONS: "--max-old-space-size=4096",
+        // Direct tsx runtimes do not have Next's loader for the `server-only`
+        // marker. Preload the server-runtime compatibility shim before imports.
+        NODE_OPTIONS: "--max-old-space-size=4096 --import=./scripts/register-server-only-node.mjs",
         // The worker reads the queue directly — flag is informational here (it does not
         // gate the worker) but keeps the render path consistent across processes.
         RENDER_VIA_QUEUE: "1",
