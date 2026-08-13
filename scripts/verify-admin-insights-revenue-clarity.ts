@@ -17,6 +17,11 @@ assert.ok(
 );
 assert.match(
   insights,
+  /<section className="[^"]*overflow-visible[^"]*px-1[^"]*sm:px-2[^"]*" aria-labelledby="mapc-heading">/,
+  "the MAPC section needs visible overflow and inline breathing room so Thai glyph edges are not clipped",
+);
+assert.match(
+  insights,
   /สมาชิกที่ต่ออายุอยู่ตอนนี้[\s\S]*northStar\.activeRecurringPayers/,
   "the MAPC denominator must be labelled as the recurring subset, not all cash payers",
 );
