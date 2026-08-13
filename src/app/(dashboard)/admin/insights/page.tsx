@@ -279,7 +279,7 @@ export default function AdminInsightsPage() {
         {/* Subscription North Star is intentionally independent from the 1/7/30-day
             system-health switch: its contract is always a trailing 30-day window. */}
         {northStar && (
-          <section className="overflow-hidden border-y border-emerald-300/20 bg-[linear-gradient(110deg,rgba(6,78,59,.3),rgba(8,11,18,0)_70%)] py-6 sm:py-8" aria-labelledby="mapc-heading">
+          <section className="overflow-visible border-y border-emerald-300/20 bg-[linear-gradient(110deg,rgba(6,78,59,.3),rgba(8,11,18,0)_70%)] px-1 py-6 sm:px-2 sm:py-8" aria-labelledby="mapc-heading">
             <div className="grid gap-7 lg:grid-cols-[1.25fr_.75fr] lg:items-end">
               <div>
                 <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-300">
