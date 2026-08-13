@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import * as bgmSelectionModule from "../src/lib/bgm-selection";
+import * as brollPreferencesModule from "../src/lib/broll-preferences";
+import * as cutawayPlanModule from "../src/lib/cutaway-plan";
 import * as headlineHookModule from "../src/lib/headline-hook";
 import {
   canonicalVideoJobRequest,
@@ -529,6 +531,9 @@ function mountEditorShell(input: {
     if (specifier === "@/lib/video-export-name") {
       return { resolveVideoDownloadFilename: () => "project.mp4" };
     }
+    if (specifier === "@/lib/customer-api-error") {
+      return { customerApiErrorMessage: (_payload: unknown, fallback: string) => fallback };
+    }
     throw new Error(`unhandled editor shell import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -648,6 +653,8 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
       return { createClientPoller: createImmediateClientPoller };
     }
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
+    if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
+    if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -824,6 +831,8 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
       return { createClientPoller: createImmediateClientPoller };
     }
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
+    if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
+    if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -991,6 +1000,8 @@ function mountAttemptJobHook(
       return { createClientPoller: createImmediateClientPoller };
     }
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
+    if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
+    if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     throw new Error(`unhandled attempt job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -1929,8 +1940,9 @@ async function runExactReplayRouteScenario(input: {
     }
     if (specifier === "@/lib/internal-ai-access") {
       return {
-        isHeroAiBetaUser: () => false,
-        isHeroAiImageEligible: () => true,
+        HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE: { status: 403, body: { error: "payment_required" } },
+        HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE: { status: 403, body: { error: "allowance_exhausted" } },
+        resolveHeroAiImageAccess: async () => ({ canUse: true, reason: "eligible" }),
         isInternalAiBetaEnabledFor: () => false,
         isInternalAiTester: () => false,
       };
@@ -1939,12 +1951,15 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/image-generation-provider.server") {
       return { describeImageOffer: () => null };
     }
+    if (specifier === "@/lib/hero-image-route-policy") {
+      return { isHeroRunpodRoute: () => false, usesCustomRunpodEndpoint: () => false };
+    }
     if (specifier === "@/lib/runpod-image-cost.server") {
       return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
     if (specifier === "@/lib/headline-hook") return headlineHookModule;
     if (specifier === "@/lib/brand-visual-rollout.server") {
-      return { decideBrandVisualAccess: async () => ({ allowed: false, reason: "disabled" }) };
+      return { resolveBrandVisualAccess: async () => ({ canUse: false, reason: "disabled" }) };
     }
     if (specifier === "@/lib/brand-visual-job-acceptance.server") {
       return {
