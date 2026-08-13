@@ -58,7 +58,11 @@ import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { tokenizeWords } from "@/lib/tts-timing";
-import { isValidHookFormulaKey, isValidStoryStructureKey } from "@/lib/viral-frameworks";
+import {
+  HOOK_FORMULAS,
+  isValidHookFormulaKey,
+  isValidStoryStructureKey,
+} from "@/lib/viral-frameworks";
 import { TTS_WORDS_PER_SECOND } from "@/lib/prompts/content-generator";
 import {
   buildBannedWordRetryNote,
@@ -779,6 +783,71 @@ export function validateHooksResponse(data: unknown): HooksResult | null {
     hooks.push({ formula, text });
   }
   return { hooks };
+}
+
+function normalizedHookFormulaKey(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const raw = value.trim();
+  if (!raw) return null;
+  const slug = raw.toLowerCase().replace(/[_\s]+/g, "-");
+  if (isValidHookFormulaKey(slug)) return slug;
+  const byName = HOOK_FORMULAS.find((formula) => formula.name === raw);
+  return byName?.key ?? null;
+}
+
+function truncateHookToWordLimit(value: string): string {
+  const text = value.trim();
+  const words = tokenizeWords(text);
+  if (words.length <= HOOK_MAX_WORDS) return text;
+  const last = words[HOOK_MAX_WORDS - 1];
+  return last ? text.slice(0, last.endChar).trimEnd() : "";
+}
+
+/** Repair common provider near-misses without weakening the strict API shape.
+ * OpenRouter models occasionally return six candidates, Thai formula labels,
+ * underscore keys, duplicate metadata, or a hook a few words over the cap.
+ * The old route discarded the whole response twice and returned 502 even when
+ * five usable hook texts were present. This helper deterministically keeps five
+ * unique texts, normalizes/truncates them, and assigns unused curated formula
+ * keys only when provider metadata is missing or duplicated. */
+export function repairHooksResponse(data: unknown): HooksResult | null {
+  const strict = validateHooksResponse(data);
+  if (strict) return strict;
+  if (!data || typeof data !== "object") return null;
+  const rawHooks = (data as { hooks?: unknown }).hooks;
+  if (!Array.isArray(rawHooks)) return null;
+
+  const candidates: Array<{ formula: string | null; text: string }> = [];
+  const seenText = new Set<string>();
+  for (const raw of rawHooks) {
+    if (!raw || typeof raw !== "object") continue;
+    const item = raw as Record<string, unknown>;
+    const text = typeof item.text === "string" ? truncateHookToWordLimit(item.text) : "";
+    const textKey = text.toLocaleLowerCase("th").replace(/\s+/g, " ");
+    if (!text || seenText.has(textKey)) continue;
+    seenText.add(textKey);
+    candidates.push({ formula: normalizedHookFormulaKey(item.formula), text });
+  }
+  if (candidates.length < 5) return null;
+
+  const selected: HookChoice[] = [];
+  const selectedCandidates = new Set<number>();
+  const usedFormulas = new Set<string>();
+  for (let index = 0; index < candidates.length && selected.length < 5; index++) {
+    const candidate = candidates[index];
+    if (!candidate.formula || usedFormulas.has(candidate.formula)) continue;
+    selected.push({ formula: candidate.formula, text: candidate.text });
+    selectedCandidates.add(index);
+    usedFormulas.add(candidate.formula);
+  }
+  for (let index = 0; index < candidates.length && selected.length < 5; index++) {
+    if (selectedCandidates.has(index)) continue;
+    const formula = HOOK_FORMULAS.find((item) => !usedFormulas.has(item.key))?.key;
+    if (!formula) break;
+    selected.push({ formula, text: candidates[index].text });
+    usedFormulas.add(formula);
+  }
+  return selected.length === 5 ? { hooks: selected } : null;
 }
 
 // ══════════════════════════════════════════════════════════════════════════

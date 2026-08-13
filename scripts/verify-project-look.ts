@@ -28,6 +28,14 @@ async function main() {
   );
   const { brandVisualIdentityKey } = await import("../src/lib/brand-visual-system");
   const { shouldLoadBrandVisualContext } = await import("../src/lib/automix-plan");
+  const { shouldSendLegacyBrollVisualStyle } = await import("../src/lib/broll-preferences");
+  assert.equal(shouldSendLegacyBrollVisualStyle("stock"), true);
+  assert.equal(shouldSendLegacyBrollVisualStyle("auto-mix"), true);
+  assert.equal(
+    shouldSendLegacyBrollVisualStyle("kie-image"),
+    false,
+    "Hero-only generation must not submit a legacy visual style that conflicts with Project Visual Context",
+  );
   assert.equal(shouldLoadBrandVisualContext({
     brollSource: "stock",
     mixPreset: "free",
@@ -679,6 +687,21 @@ async function main() {
       < selectorSource.indexOf("{visualSelectionEnabled && expanded &&"),
     "quick Brand selection stays visible before the optional detailed Look controls",
   );
+  const jobSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/useV2Job.ts",
+    "utf8",
+  );
+  assert.equal(
+    (jobSource.match(/shouldSendLegacyBrollVisualStyle\(p\.brollSource\)/g) ?? []).length,
+    2,
+    "both upload and script submissions suppress legacy style for Hero-only images",
+  );
+  const step2Source = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx",
+    "utf8",
+  );
+  assert.match(step2Source, /ใช้แนวภาพที่เลือกใน “แบรนด์และแนวภาพของคลิปนี้”/,
+    "Hero-only UI points to the one authoritative Brand/Project Look control");
 
   await prisma.$disconnect();
   console.log("verify-project-look: PASS snapshot + creator precedence + clear");

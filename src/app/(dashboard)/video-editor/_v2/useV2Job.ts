@@ -19,6 +19,7 @@ import {
 } from "@/lib/video-job-idempotency";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import { buildBgmSelectionInput } from "@/lib/bgm-selection";
+import { shouldSendLegacyBrollVisualStyle } from "@/lib/broll-preferences";
 import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
 
 /**
@@ -369,7 +370,9 @@ export function useV2Job(p: V2Project) {
       stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
       ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
-      ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
+      ...(p.brollVisualStyle !== "auto" && shouldSendLegacyBrollVisualStyle(p.brollSource)
+        ? { brollVisualStyle: p.brollVisualStyle }
+        : {}),
       ...(p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
       ...(p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
       ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
@@ -402,7 +405,9 @@ export function useV2Job(p: V2Project) {
         : {}),
       ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
-      ...(p.brollVisualStyle !== "auto" ? { brollVisualStyle: p.brollVisualStyle } : {}),
+      ...(p.brollVisualStyle !== "auto" && shouldSendLegacyBrollVisualStyle(p.brollSource)
+        ? { brollVisualStyle: p.brollVisualStyle }
+        : {}),
       ...(p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
       ...(p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
       ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),

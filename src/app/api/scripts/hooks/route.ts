@@ -6,9 +6,9 @@ import {
   heroScriptLlmErrorResponse,
   isValidDurationSec,
   requireHeroScriptUser,
+  repairHooksResponse,
   resolveHeroScriptBrandProfile,
   resolveLlmTriad,
-  validateHooksResponse,
   validateTopic,
 } from "@/lib/hero-script.server";
 
@@ -55,7 +55,7 @@ export async function POST(req: Request) {
       apiKey,
       prompt,
       maxOutputTokens: 2000,
-      validate: validateHooksResponse,
+      validate: repairHooksResponse,
     });
     if (!result) {
       return NextResponse.json({ error: "AI ตอบผิดรูปแบบ ลองใหม่อีกครั้ง" }, { status: 502 });

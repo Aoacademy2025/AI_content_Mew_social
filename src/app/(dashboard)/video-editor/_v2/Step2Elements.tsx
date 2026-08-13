@@ -386,15 +386,26 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
                 />
               </label>
-              <label className="flex flex-col gap-1.5">
-                <span style={{ fontSize: 11, color: color.textFaint }}>สไตล์ภาพ</span>
-                <Segmented
-                  value={p.brollVisualStyle}
-                  onChange={(v) => p.setBrollVisualStyle(v as BrollVisualStyle)}
-                  options={BROLL_STYLE_OPTIONS}
-                  style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
-                />
-              </label>
+              {p.brollSource === "kie-image" ? (
+                <div className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>สไตล์ภาพ Hero AI</span>
+                  <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                    ใช้แนวภาพที่เลือกใน “แบรนด์และแนวภาพของคลิปนี้” ด้านบน
+                  </span>
+                </div>
+              ) : (
+                <label className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>
+                    {p.brollSource === "automix" ? "สไตล์วิดีโอ / ภาพสต็อก" : "สไตล์ภาพสต็อก"}
+                  </span>
+                  <Segmented
+                    value={p.brollVisualStyle}
+                    onChange={(v) => p.setBrollVisualStyle(v as BrollVisualStyle)}
+                    options={BROLL_STYLE_OPTIONS}
+                    style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
+                  />
+                </label>
+              )}
               {p.heroAiImageEligible && p.brollSource === "kie-image" && (
                 <div className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>โมเดล Hero AI Image</span>

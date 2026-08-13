@@ -40,6 +40,7 @@ async function main() {
     getRecentScriptTopics,
     validateIdeasResponse,
     validateHooksResponse,
+    repairHooksResponse,
     countWords,
     validateTopic,
     TOPIC_MAX_CHARS,
@@ -912,6 +913,24 @@ async function main() {
 
     const good = validateHooksResponse({ hooks: goodHooks });
     ok(good?.hooks.length === 5, "validateHooksResponse(5 valid distinct-formula items) → accepted");
+
+    const providerNearMiss = {
+      hooks: [
+        { formula: "เปิดช่องว่างความอยากรู้", text: Array.from({ length: 24 }, (_, index) => `คำ${index + 1}`).join(" ") },
+        { formula: "contrarian", text: "เลิกเชื่อเรื่องเดิม ถ้าอยากได้ผลลัพธ์ใหม่" },
+        { formula: "contrarian", text: "สิ่งที่คนส่วนใหญ่ทำ อาจกำลังพาคุณผิดทาง" },
+        { formula: "unknown-formula", text: "ความลับที่ไม่มีใครบอกคุณจนถึงวันนี้" },
+        { formula: "shock_number", text: "ตัวเลขนี้เปลี่ยนวิธีคิดของคุณได้ทันที" },
+        { formula: "direct-callout", text: "ถ้าคุณกำลังเจอปัญหานี้ ฟังให้จบ" },
+      ],
+    };
+    const repairedHooks = repairHooksResponse(providerNearMiss);
+    ok(repairedHooks?.hooks.length === 5,
+      "repairHooksResponse salvages a provider near-miss instead of making /hooks return 502");
+    ok(new Set(repairedHooks?.hooks.map((hook: { formula: string }) => hook.formula)).size === 5,
+      "repairHooksResponse returns five distinct formula keys");
+    ok(repairedHooks?.hooks.every((hook: { text: string }) => countWords(hook.text) <= 20) === true,
+      "repairHooksResponse bounds every repaired hook to 20 Thai-aware words");
   }
 
   // ── getRecentScriptTopics: last 20 Script topics, newest first ──────────

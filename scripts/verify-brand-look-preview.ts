@@ -35,6 +35,8 @@ async function main() {
   const {
     brandPreviewSurfaceKey,
     clearPendingBrandPreviewOperation,
+    markPendingBrandPreviewAutoResumeAttempt,
+    pendingBrandPreviewCanAutoResume,
     readPendingBrandPreviewOperation,
     writePendingBrandPreviewOperation,
   } = await import("../src/lib/brand-preview-client-state");
@@ -84,6 +86,19 @@ async function main() {
   assert.deepEqual(
     readPendingBrandPreviewOperation(storage, pendingPreview.userId, pendingRecoveryAt),
     pendingPreview,
+  );
+  assert.equal(pendingBrandPreviewCanAutoResume(pendingPreview), true);
+  const attemptedPreview = markPendingBrandPreviewAutoResumeAttempt(
+    pendingPreview,
+    new Date(pendingCreatedAt.getTime() + 1_000),
+  );
+  assert.equal(pendingBrandPreviewCanAutoResume(attemptedPreview), false,
+    "an ambiguous preview request is auto-resumed at most once across reloads");
+  writePendingBrandPreviewOperation(storage, attemptedPreview);
+  assert.deepEqual(
+    readPendingBrandPreviewOperation(storage, pendingPreview.userId, pendingRecoveryAt),
+    attemptedPreview,
+    "the one-shot auto-resume marker survives reload so a failed request does not start itself again",
   );
   assert.notEqual(
     brandPreviewSurfaceKey(previewSurface),
@@ -1301,7 +1316,9 @@ async function main() {
   assert.ok(
     brandsPage.includes("readPendingBrandPreviewOperation")
       && brandsPage.includes("writePendingBrandPreviewOperation")
-      && brandsPage.includes("postRerollWithRecovery"),
+      && brandsPage.includes("postRerollWithRecovery")
+      && brandsPage.includes("markPendingBrandPreviewAutoResumeAttempt")
+      && brandsPage.includes("ติดตามคำขอเดิม"),
     "preview and reroll request identities must survive reload and ambiguous responses",
   );
   const previewQuoteRoute = readFileSync(

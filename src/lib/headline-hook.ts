@@ -75,6 +75,24 @@ export function sanitizeHeadlineHookText(
   return truncateCodePoints(lines.join("\n"), opts.maxChars);
 }
 
+/** Keep a controlled text field editable while still enforcing its structural
+ * limits. Persist/render boundaries use `sanitizeHeadlineHookText`; the draft
+ * variant deliberately keeps a final space/newline so typing the next word
+ * does not cause React to replace the value and move the caret backward. */
+function sanitizeHeadlineHookDraftText(
+  value: unknown,
+  opts: { maxChars: number; maxLines: number },
+): string {
+  if (typeof value !== "string") return "";
+  const draft = value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .slice(0, opts.maxLines)
+    .map((line) => line.replace(/[^\S\n]+/g, " "))
+    .join("\n");
+  return Array.from(draft).slice(0, opts.maxChars).join("");
+}
+
 function isHeadlineHookPreset(value: unknown): value is HeadlineHookPreset {
   return typeof value === "string"
     && HEADLINE_HOOK_PRESETS.some((preset) => preset === value);
@@ -181,6 +199,33 @@ export function normalizeHeadlineHook(
     ...(typeof input.subheadlineFontSize === "number" && Number.isFinite(input.subheadlineFontSize)
       ? { subheadlineFontSize: clampHeadlineHookSubheadFontSize(input.subheadlineFontSize) }
       : {}),
+  };
+}
+
+/** Normalize non-text settings for live editor state without trimming the
+ * whitespace the creator just typed. Render/API boundaries and draft reloads
+ * still call `normalizeHeadlineHook`, so durable output remains canonical. */
+export function normalizeHeadlineHookDraft(
+  value: unknown,
+  totalDurationMs = 60_000,
+): HeadlineHookConfig | null {
+  const normalized = normalizeHeadlineHook(value, totalDurationMs);
+  if (!normalized || !value || typeof value !== "object" || Array.isArray(value)) return normalized;
+  const input = value as Record<string, unknown>;
+  const headline = sanitizeHeadlineHookDraftText(input.headline, {
+    maxChars: MAX_HEADLINE_HOOK_CHARS,
+    maxLines: 2,
+  });
+  const subheadline = sanitizeHeadlineHookDraftText(input.subheadline, {
+    maxChars: MAX_HEADLINE_HOOK_SUBHEAD_CHARS,
+    maxLines: 1,
+  });
+  const { subheadline: _normalizedSubheadline, ...withoutSubheadline } = normalized;
+  return {
+    ...withoutSubheadline,
+    enabled: input.enabled === true && headline.trim().length > 0,
+    headline,
+    ...(subheadline.length > 0 ? { subheadline } : {}),
   };
 }
 

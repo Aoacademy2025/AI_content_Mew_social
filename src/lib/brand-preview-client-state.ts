@@ -6,6 +6,7 @@ export type PendingBrandPreviewOperation =
       requestId: string;
       surface: PendingBrandPreviewSurface;
       createdAt: string;
+      autoResumeAttemptedAt?: string;
     }
   | {
       version: 1;
@@ -15,6 +16,7 @@ export type PendingBrandPreviewOperation =
       batchId: string;
       itemId: string;
       createdAt: string;
+      autoResumeAttemptedAt?: string;
     };
 
 export type PendingBrandPreviewSurface = {
@@ -87,7 +89,16 @@ export function readPendingBrandPreviewOperation(
       && Number.isFinite(createdAt)
       && createdAt <= now.getTime() + 60_000
       && now.getTime() - createdAt <= MAX_AGE_MS;
-    const valid = common && (
+    const autoResumeAttemptedAt = typeof value.autoResumeAttemptedAt === "string"
+      ? Date.parse(value.autoResumeAttemptedAt)
+      : null;
+    const validAutoResumeMarker = value.autoResumeAttemptedAt === undefined || (
+      autoResumeAttemptedAt !== null
+      && Number.isFinite(autoResumeAttemptedAt)
+      && autoResumeAttemptedAt >= createdAt
+      && autoResumeAttemptedAt <= now.getTime() + 60_000
+    );
+    const valid = common && validAutoResumeMarker && (
       (value.kind === "preview" && value.version === 2 && validPreviewSurface(value.surface))
       || (
         value.kind === "reroll"
@@ -106,6 +117,21 @@ export function readPendingBrandPreviewOperation(
   } catch {
     return null;
   }
+}
+
+/** A reload may resume an ambiguous paid request once using its durable request
+ * id. A persisted marker prevents every later mount from starting it again. */
+export function pendingBrandPreviewCanAutoResume(
+  operation: PendingBrandPreviewOperation,
+): boolean {
+  return operation.autoResumeAttemptedAt === undefined;
+}
+
+export function markPendingBrandPreviewAutoResumeAttempt(
+  operation: PendingBrandPreviewOperation,
+  attemptedAt = new Date(),
+): PendingBrandPreviewOperation {
+  return { ...operation, autoResumeAttemptedAt: attemptedAt.toISOString() };
 }
 
 export function writePendingBrandPreviewOperation(

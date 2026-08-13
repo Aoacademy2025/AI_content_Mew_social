@@ -10,6 +10,7 @@ import {
   headlineHookFontSizes,
   headlineHookFontWeights,
   normalizeHeadlineHook,
+  normalizeHeadlineHookDraft,
   normalizeHeadlineHookSuggestions,
   visibleCaptionRangeAfterHeadline,
 } from "@/lib/headline-hook";
@@ -54,6 +55,16 @@ assert.deepEqual(normalized, {
 
 assert.equal(normalizeHeadlineHook({ enabled: true, headline: "" }, 60_000)?.enabled, false);
 assert.equal(normalizeHeadlineHook(null), null);
+assert.equal(
+  normalizeHeadlineHookDraft({ enabled: true, headline: "พิมพ์คำถัดไป " }, 60_000)?.headline,
+  "พิมพ์คำถัดไป ",
+  "controlled headline draft preserves the trailing space needed to type the next word",
+);
+assert.equal(
+  normalizeHeadlineHook({ enabled: true, headline: "พิมพ์คำถัดไป " }, 60_000)?.headline,
+  "พิมพ์คำถัดไป",
+  "persisted/rendered headline remains normalized",
+);
 assert.equal(headlineHookFontCssFamily("Prompt"), "'Prompt', 'Noto Sans Thai', sans-serif");
 assert.deepEqual(headlineHookFontSizes("หัวข้อ", 84), { headline: 84, subheadline: 52 });
 assert.deepEqual(headlineHookFontSizes("หัวข้อ", 84, 64), { headline: 84, subheadline: 64 });
@@ -181,5 +192,14 @@ assert.match(controlsSource, /aria-label="ฟอนต์พาดหัว"/);
 assert.match(controlsSource, /aria-label="ขนาดพาดหัว"/);
 assert.match(controlsSource, /aria-label="น้ำหนักตัวอักษรพาดหัว"/);
 assert.match(controlsSource, /aria-label="ขนาดบรรทัดเสริม"/);
+const postPhaseEditorSource = readFileSync(
+  "src/app/(dashboard)/video-editor/_v2/usePostPhaseEditor.ts",
+  "utf8",
+);
+assert.match(
+  postPhaseEditorSource,
+  /const next = normalizeHeadlineHookDraft\(/,
+  "the controlled input path must use the whitespace-preserving draft normalizer",
+);
 
 console.log("headline-hook: all checks passed");

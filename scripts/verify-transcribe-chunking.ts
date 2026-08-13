@@ -36,7 +36,8 @@ check("371s → every chunk ≤ 110s", mew.every(c => c <= TRANSCRIBE_CHUNK_MAX_
 // ── no detectable silence → balanced hard-cuts, still all ≤ MAX ──
 const noSil = chunks(360_000, []);
 check("360s no-silence → hard-cut chunks all ≤ 110s", noSil.every(c => c <= TRANSCRIBE_CHUNK_MAX_MS));
-check("360s no-silence → four balanced 90s chunks", noSil.length === 4 && noSil.every(c => c === 90_000));
+check("360s no-silence → five balanced 72s chunks near the 75s anchor target",
+  noSil.length === 5 && noSil.every(c => c === 72_000));
 
 // ── every clip above the 110s safe single-call ceiling must split ──
 check("245s → ≥2 chunks all ≤ 110s",

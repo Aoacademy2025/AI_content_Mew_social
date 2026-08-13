@@ -42,6 +42,75 @@ export type SanitizedChunk = ChunkResult & {
 // route and its regression harness exercise the same seam.
 export const TRANSCRIBE_CHUNK_MAX_MS = 110_000;
 export const TRANSCRIBE_CHUNK_MIN_MS = 30_000;
+export const TRANSCRIBE_CHUNK_TARGET_MS = 75_000;
+export const TRANSCRIBE_TRAILING_SILENCE_MIN_MS = 3_000;
+
+export type TranscriptionSilenceAnalysis = {
+  cutPointsMs: number[];
+  trailingSilenceStartMs: number | null;
+};
+
+/** Parse ffmpeg silencedetect output once for both chunk boundaries and
+ * trailing silence at EOF. ffmpeg may report that tail as open-ended or emit a
+ * `silence_end` a codec frame before total duration; both prove that media
+ * duration extends beyond the last spoken word. */
+export function parseTranscriptionSilenceAnalysis(
+  stderr: string,
+  totalDurationMs: number,
+): TranscriptionSilenceAnalysis {
+  const cutPointsMs: number[] = [];
+  let openSilenceStartMs: number | null = null;
+  let lastSilence: { startMs: number; endMs: number } | null = null;
+  const event = /silence_(start|end):\s*([\d.]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = event.exec(stderr || "")) !== null) {
+    const ms = Math.round(Number.parseFloat(match[2]) * 1000);
+    if (!Number.isFinite(ms) || ms < 0) continue;
+    if (match[1] === "start") {
+      openSilenceStartMs = ms;
+    } else {
+      cutPointsMs.push(ms);
+      if (openSilenceStartMs !== null) {
+        lastSilence = { startMs: openSilenceStartMs, endMs: ms };
+      }
+      openSilenceStartMs = null;
+    }
+  }
+  const closedAtEofStartMs = lastSilence
+    && Math.abs(totalDurationMs - lastSilence.endMs) <= 1_000
+    && lastSilence.endMs - lastSilence.startMs >= TRANSCRIBE_TRAILING_SILENCE_MIN_MS
+    ? lastSilence.startMs
+    : null;
+  const trailingSilenceStartMs = openSilenceStartMs !== null
+      && totalDurationMs - openSilenceStartMs >= TRANSCRIBE_TRAILING_SILENCE_MIN_MS
+    ? openSilenceStartMs
+    : closedAtEofStartMs;
+  return {
+    cutPointsMs: [...new Set(cutPointsMs)].sort((a, b) => a - b),
+    trailingSilenceStartMs,
+  };
+}
+
+/** Duration the final chunk's transcript is expected to cover. Only a proven
+ * trailing silence at EOF can shorten it; internal chunks and ordinary
+ * tails still use their full slice duration so real missing speech stays red. */
+export function chunkTranscriptionReferenceDurationMs(input: {
+  chunkStartMs: number;
+  chunkDurationMs: number;
+  totalDurationMs: number;
+  trailingSilenceStartMs: number | null;
+}): number {
+  const chunkEndMs = input.chunkStartMs + input.chunkDurationMs;
+  const isFinalChunk = Math.abs(chunkEndMs - input.totalDurationMs) <= 1_000;
+  const silenceStart = input.trailingSilenceStartMs;
+  if (
+    !isFinalChunk
+    || silenceStart === null
+    || silenceStart <= input.chunkStartMs
+    || silenceStart >= chunkEndMs
+  ) return input.chunkDurationMs;
+  return Math.max(1_000, silenceStart - input.chunkStartMs);
+}
 
 /**
  * Return balanced internal cut points (milliseconds), preferring detected
@@ -51,7 +120,11 @@ export const TRANSCRIBE_CHUNK_MIN_MS = 30_000;
  */
 export function planTranscriptionChunkBoundaries(totalMs: number, silences: number[]): number[] {
   if (!(totalMs > TRANSCRIBE_CHUNK_MAX_MS)) return [];
-  const chunkCount = Math.ceil(totalMs / TRANSCRIBE_CHUNK_MAX_MS);
+  // Keep exact audio anchors around the original proven 75s target. The prior
+  // balanced-by-110s planner turned a 180.11s production upload into two 90s
+  // calls; Gemini repeatedly truncated the second call. Three balanced ~60s
+  // windows stay well inside the timestamp-reliable zone without a tiny tail.
+  const chunkCount = Math.max(2, Math.ceil(totalMs / TRANSCRIBE_CHUNK_TARGET_MS));
   const cuts: number[] = [];
   let lastCut = 0;
   for (let index = 1; index < chunkCount; index++) {

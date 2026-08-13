@@ -41,7 +41,7 @@ import {
 import {
   createDefaultHeadlineHook,
   headlineHookEndMs,
-  normalizeHeadlineHook,
+  normalizeHeadlineHookDraft,
   normalizeHeadlineHookSuggestions,
   type HeadlineHookConfig,
   type HeadlineHookSuggestion,
@@ -240,7 +240,7 @@ export function usePostPhaseEditor(
     || captions.map((caption) => caption.text).join(" ").trim()
   ), [captions, preview?.fullText, script]);
   const resolvedHeadlineHook = useMemo(() => (
-    normalizeHeadlineHook(headlineHook, totalDurationMs)
+    normalizeHeadlineHookDraft(headlineHook, totalDurationMs)
     ?? createDefaultHeadlineHook(headlineSourceText, totalDurationMs)
   ), [headlineHook, headlineSourceText, totalDurationMs]);
   const [headlineSuggestions, setHeadlineSuggestions] = useState<HeadlineHookSuggestion[]>([]);
@@ -249,7 +249,7 @@ export function usePostPhaseEditor(
   const headlineSuggestionAbortRef = useRef<AbortController | null>(null);
 
   function setHeadlineHook(patch: Partial<HeadlineHookConfig>) {
-    const next = normalizeHeadlineHook(
+    const next = normalizeHeadlineHookDraft(
       { ...resolvedHeadlineHook, ...patch },
       totalDurationMs,
     );

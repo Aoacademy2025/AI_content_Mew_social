@@ -10,8 +10,10 @@ import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import {
   TRANSCRIBE_CHUNK_MAX_MS,
+  chunkTranscriptionReferenceDurationMs,
   chunkTailGapMs,
   normalizeGeminiWords,
+  parseTranscriptionSilenceAnalysis,
   planTranscriptionChunkBoundaries,
   runTranscriptionQualityRetries,
   sanitizeChunkTimeline,
@@ -454,24 +456,19 @@ function getAudioDurationMs(audioPath: string): Promise<number> {
 // (ffmpeg slicing). Smaller chunks = exact anchors twice as often = drift can
 // never accumulate far. Costs ~2× Gemini calls per long clip (sequential,
 // well inside flash free-tier RPM).
-// Run silencedetect over the mp3 and return silence-end timestamps (ms), sorted.
-// These are used as candidate cut points (cut at the end of each silence).
-function detectSilences(ffmpegPath: string, mp3Path: string): Promise<number[]> {
+// Run silencedetect once for internal cut points and proven trailing silence at EOF.
+function detectSilenceAnalysis(
+  ffmpegPath: string,
+  mp3Path: string,
+  totalDurationMs: number,
+): Promise<ReturnType<typeof parseTranscriptionSilenceAnalysis>> {
   return new Promise((resolve) => {
     execFile(ffmpegPath, [
       "-i", mp3Path,
       "-af", "silencedetect=noise=-30dB:d=0.3",
       "-f", "null", "-",
     ], { maxBuffer: 20 * 1024 * 1024 }, (_err, _stdout, stderr) => {
-      const out: number[] = [];
-      const re = /silence_end:\s*([\d.]+)/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(stderr || "")) !== null) {
-        const sec = parseFloat(m[1]);
-        if (Number.isFinite(sec)) out.push(Math.round(sec * 1000));
-      }
-      out.sort((a, b) => a - b);
-      resolve(out);
+      resolve(parseTranscriptionSilenceAnalysis(stderr || "", totalDurationMs));
     });
   });
 }
@@ -960,9 +957,15 @@ export async function POST(req: Request) {
         const audioBuffer = fs.readFileSync(mp3Path);
         const ffmpeg = getFfmpegPath();
         let chunkPlan: { buffer: Buffer; startMs: number; durationMs: number }[] = [];
+        let trailingSilenceStartMs: number | null = null;
         if (sourceAudioDurationMs > TRANSCRIBE_CHUNK_MAX_MS) {
-          const silences = await detectSilences(ffmpeg, mp3Path).catch(() => []);
-          const cuts = planTranscriptionChunkBoundaries(sourceAudioDurationMs, silences);
+          const silenceAnalysis = await detectSilenceAnalysis(
+            ffmpeg,
+            mp3Path,
+            sourceAudioDurationMs,
+          ).catch(() => ({ cutPointsMs: [], trailingSilenceStartMs: null }));
+          trailingSilenceStartMs = silenceAnalysis.trailingSilenceStartMs;
+          const cuts = planTranscriptionChunkBoundaries(sourceAudioDurationMs, silenceAnalysis.cutPointsMs);
           if (cuts.length >= 1) {
             const bounds = [0, ...cuts, sourceAudioDurationMs];
             for (let i = 0; i < bounds.length - 1; i++) {
@@ -993,12 +996,18 @@ export async function POST(req: Request) {
               ? fullScript.slice(Math.floor(fullScript.length * lo), Math.ceil(fullScript.length * hi))
               : "";
             chunkIdx++;
+            const referenceDurationMs = chunkTranscriptionReferenceDurationMs({
+              chunkStartMs: ch.startMs,
+              chunkDurationMs: ch.durationMs,
+              totalDurationMs: sourceAudioDurationMs,
+              trailingSilenceStartMs,
+            });
             // Retry semantic timeline failures in-process. Returning retryable:422
             // cannot recover a background VideoJob because its HTTP client correctly
             // treats all 4xx as terminal (auth/quota must never be blindly retried).
             const quality = await runTranscriptionQualityRetries(
               () => geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs),
-              ch.durationMs,
+              referenceDurationMs,
               3,
               ({ nextAttempt, tailGapMs }) => {
                 const gapSec = tailGapMs / 1000;
@@ -1011,7 +1020,7 @@ export async function POST(req: Request) {
             );
             const rawChunk = quality.result;
             if (!quality.accepted) {
-              const tailGapMs = chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs);
+              const tailGapMs = chunkTailGapMs(rawChunk.geminiDirectCaptions, referenceDurationMs);
               return NextResponse.json({
                 error: "ถอดซับช่วงหนึ่งไม่ครบหรือไม่ตรงจังหวะหลังลองใหม่ 3 ครั้ง — กรุณาลองสร้างอีกครั้ง",
                 provider: "gemini",

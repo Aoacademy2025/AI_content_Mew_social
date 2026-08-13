@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Loader2, Save, SwatchBook } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -9,6 +9,8 @@ import { fetchMe, type MeData } from "@/lib/use-me";
 import {
   brandPreviewSurfaceKey,
   clearPendingBrandPreviewOperation,
+  markPendingBrandPreviewAutoResumeAttempt,
+  pendingBrandPreviewCanAutoResume,
   readPendingBrandPreviewOperation,
   writePendingBrandPreviewOperation,
   type PendingBrandPreviewOperation,
@@ -93,6 +95,7 @@ export function BrandLibraryClient() {
   const [sourceVideoJobId, setSourceVideoJobId] = useState<string | null>(null);
   const [, setSourceVisualContext] = useState<ProjectVisualSeed["context"] | null>(null);
   const [previewGenerationCount, setPreviewGenerationCount] = useState<number | null>(null);
+  const [pendingRecoveryOperation, setPendingRecoveryOperation] = useState<PendingBrandPreviewOperation | null>(null);
   const resumedOperationForUserRef = useRef<string | null>(null);
 
   const activeProfile = useMemo(
@@ -259,6 +262,36 @@ export function BrandLibraryClient() {
 
   useEffect(() => { load().catch((error) => { setNotice({ tone: "error", text: error.message }); setLoading(false); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const resumePendingBrandPreviewOperation = useCallback(async (
+    operation: PendingBrandPreviewOperation,
+  ) => {
+    const userId = me?.id;
+    const storage = browserStorage();
+    if (!userId || operation.userId !== userId || !storage) return;
+    setPendingRecoveryOperation(operation);
+    setBusy(operation.kind === "preview" ? "preview" : `reroll:${operation.itemId}`);
+    try {
+      const value = operation.kind === "preview"
+        ? await recoverPreviewByRequestId(operation.requestId, setPreview)
+        : await postRerollWithRecovery(operation.itemId, operation.batchId, operation.requestId, setPreview);
+      setPreview(value.batch);
+      clearPendingBrandPreviewOperation(storage, userId, operation.requestId);
+      setPendingRecoveryOperation(null);
+      await fetchMe(true).then(setMe);
+    } catch (error) {
+      if (error instanceof DefinitivePreviewRequestError) {
+        clearPendingBrandPreviewOperation(storage, userId, operation.requestId);
+        setPendingRecoveryOperation(null);
+      }
+      setNotice({
+        tone: "error",
+        text: error instanceof Error ? error.message : "กู้คืนคำขอทดลองภาพไม่สำเร็จ",
+      });
+    } finally {
+      setBusy(null);
+    }
+  }, [me?.id]);
+
   useEffect(() => {
     const userId = me?.id;
     const storage = browserStorage();
@@ -266,6 +299,7 @@ export function BrandLibraryClient() {
     resumedOperationForUserRef.current = userId;
     const operation = readPendingBrandPreviewOperation(storage, userId);
     if (!operation) return;
+    setPendingRecoveryOperation(operation);
     if (operation.kind === "preview") {
       try {
         const restoredDraft = JSON.parse(operation.surface.payloadJson) as BrandPayload;
@@ -282,21 +316,20 @@ export function BrandLibraryClient() {
         return;
       }
     }
-    setBusy(operation.kind === "preview" ? "preview" : `reroll:${operation.itemId}`);
-    const resume = operation.kind === "preview"
-      ? recoverPreviewByRequestId(operation.requestId, setPreview)
-      : postRerollWithRecovery(operation.itemId, operation.batchId, operation.requestId, setPreview);
-    void resume.then((value) => {
-      setPreview(value.batch);
-      clearPendingBrandPreviewOperation(storage, userId, operation.requestId);
-      return fetchMe(true).then(setMe);
-    }).catch((error) => {
+    if (!pendingBrandPreviewCanAutoResume(operation)) {
       setNotice({
         tone: "error",
-        text: error instanceof Error ? error.message : "กู้คืนคำขอทดลองภาพไม่สำเร็จ",
+        text: "พบคำขอทดลองภาพเดิมที่ยังยืนยันผลไม่ได้ ระบบจะไม่เริ่มซ้ำอัตโนมัติ กดติดตามคำขอเดิมเมื่อต้องการตรวจอีกครั้ง",
       });
-    }).finally(() => setBusy(null));
-  }, [loading, me?.id]);
+      return;
+    }
+    // Persist before the network call: a crash or reload during an ambiguous
+    // response must not auto-start the same paid request on every mount.
+    const attempted = markPendingBrandPreviewAutoResumeAttempt(operation);
+    writePendingBrandPreviewOperation(storage, attempted);
+    setPendingRecoveryOperation(attempted);
+    void resumePendingBrandPreviewOperation(attempted);
+  }, [loading, me?.id, resumePendingBrandPreviewOperation]);
 
   function openProfile(profile: BrandProfile) {
     setSourceProjectId(null);
@@ -535,11 +568,13 @@ export function BrandLibraryClient() {
       const value = await postPreviewWithRecovery(endpoint, body, requestId, setPreview);
       setPreview(value.batch);
       if (userId && storage) clearPendingBrandPreviewOperation(storage, userId, requestId);
+      setPendingRecoveryOperation(null);
       await fetchMe(true).then(setMe);
       trackEvent("brand_look_preview_viewed", { path: "/brands", properties: { status: value.batch.status } });
     } catch (error) {
       if (error instanceof DefinitivePreviewRequestError && userId && storage) {
         clearPendingBrandPreviewOperation(storage, userId, requestId);
+        setPendingRecoveryOperation(null);
       }
       setNotice({ tone: "error", text: error instanceof Error ? error.message : "ทดลองภาพไม่สำเร็จ" });
     }
@@ -573,10 +608,12 @@ export function BrandLibraryClient() {
       const value = await postRerollWithRecovery(itemId, batchId, requestId, setPreview);
       setPreview(value.batch);
       if (userId && storage) clearPendingBrandPreviewOperation(storage, userId, requestId);
+      setPendingRecoveryOperation(null);
       await fetchMe(true).then(setMe);
     } catch (error) {
       if (error instanceof DefinitivePreviewRequestError && userId && storage) {
         clearPendingBrandPreviewOperation(storage, userId, requestId);
+        setPendingRecoveryOperation(null);
       }
       setNotice({
         tone: "error",
@@ -773,7 +810,20 @@ export function BrandLibraryClient() {
                     : "border-destructive bg-destructive/10 text-foreground"
                 }`}
               >
-                {notice.text}
+                <div>{notice.text}</div>
+                {pendingRecoveryOperation && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={busy !== null}
+                    onClick={() => void resumePendingBrandPreviewOperation(pendingRecoveryOperation)}
+                    className="mt-3"
+                  >
+                    {busy !== null && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    ติดตามคำขอเดิม
+                  </Button>
+                )}
               </div>
             )}
 

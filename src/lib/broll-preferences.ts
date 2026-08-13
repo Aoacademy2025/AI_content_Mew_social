@@ -160,6 +160,14 @@ export function normalizeBrollVisualStyle(raw: unknown): Exclude<BrollVisualStyl
   return isVisualStyle(value) && value !== "auto" ? value : undefined;
 }
 
+/** Legacy stock-search styles are meaningful for stock and AutoMix footage.
+ * Hero-only images get their identity from the pinned Brand/Project Visual
+ * Context; sending both vocabularies lets the legacy style fight the selected
+ * visual format in downstream prompts. */
+export function shouldSendLegacyBrollVisualStyle(source: unknown): boolean {
+  return source !== "kie-image";
+}
+
 export function hasBrollPreference(input: BrollPreferenceInput): boolean {
   return Boolean(normalizeBrollRegionPreference(input.brollRegionPreference) || normalizeBrollVisualStyle(input.brollVisualStyle));
 }
