@@ -4,6 +4,7 @@ import React, { memo, useEffect, useRef, useState } from "react";
 import { renderSubEl } from "../_components/subtitle-renderer";
 import type { SubPreset, SubTextEffect } from "../_components/types";
 import { resolveV2FontWeight, type V2Caption, type V2CardOverrides, type V2SubConfig } from "./subtitle-style";
+import { subtitlePreviewEffectFrame } from "./subtitle-preview-frame";
 
 /**
  * ซับสดบน preview ของ v2 — ใช้ `renderSubEl` ตัวเดียวกับ Remotion render
@@ -82,8 +83,9 @@ export const V2CaptionOverlay = memo(function V2CaptionOverlay({
   const capDurMs = Math.max(1, cap.endMs - visibleStartMs);
   const capDurFrames = Math.max(1, Math.round((capDurMs / 1000) * PREVIEW_FPS));
   const elapsedMs = Math.max(0, Math.min(capDurMs, videoMs - visibleStartMs));
-  // frame ของเอฟเฟกต์ใน text (glow-pulse/highlight/karaoke/typewriter); -1 ตอน pause = โชว์เต็ม
-  const frame = playing ? Math.round((elapsedMs / 1000) * PREVIEW_FPS) : -1;
+  // Keep frame-based text effects frozen at the playhead while paused so the
+  // preview stays pixel-consistent with the frame that will be burned.
+  const frame = subtitlePreviewEffectFrame({ elapsedMs, fps: PREVIEW_FPS });
 
   // ── ENTRANCE — คัดลอก 1:1 จาก ActiveCaptionOverlay.tsx:73-84 ──
   const f = playing ? Math.max(0, Math.round((elapsedMs / 1000) * PREVIEW_FPS)) : 9999;

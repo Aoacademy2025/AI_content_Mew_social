@@ -90,36 +90,19 @@ async function verifyPausedEditorPreview(): Promise<void> {
     await page.$eval("#edit-caption", (button) => (button as HTMLButtonElement).click());
     await page.waitForFunction(() => document.querySelector("#playback-state")?.textContent === "paused");
     await page.waitForFunction(() => (
-      [...document.querySelectorAll("span")].some((node) => (
-        node.childElementCount === 0 && node.textContent === "ประมาณ 170 , 000"
-      ))
+      [...document.querySelectorAll("span")].some((node) => node.textContent === "170")
     ));
     const pausedNumeric = await page.evaluate(() => {
-      const container = [...document.querySelectorAll("span")]
-        .find((node) => node.childElementCount === 0 && node.textContent === "ประมาณ 170 , 000");
-      if (!container) return null;
-      const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-      let textNode: Text | null = null;
-      while (walker.nextNode()) {
-        const candidate = walker.currentNode as Text;
-        if (candidate.data.includes("170 , 000")) {
-          textNode = candidate;
-          break;
-        }
-      }
-      if (!textNode) return null;
-      const start = textNode.data.indexOf("170 , 000");
-      const range = document.createRange();
-      range.setStart(textNode, start);
-      range.setEnd(textNode, start + "170 , 000".length);
-      const rect = range.getBoundingClientRect();
-      const style = getComputedStyle(container);
+      const token = [...document.querySelectorAll("span")].find((node) => node.textContent === "170");
+      if (!token) return null;
+      const rect = token.getBoundingClientRect();
+      const style = getComputedStyle(token);
       return { color: style.color, opacity: style.opacity, width: rect.width, height: rect.height };
     });
-    assert.ok(pausedNumeric, "paused edit preview retains the numeric substring");
-    assert.equal(pausedNumeric.color, "rgb(255, 229, 0)", "paused edit preview renders the source text at full color");
-    assert.equal(pausedNumeric.opacity, "1", "paused edit preview keeps the source text opaque");
-    assert.ok(pausedNumeric.width > 0 && pausedNumeric.height > 0, "paused edit preview lays out numeric glyphs");
+    assert.ok(pausedNumeric, "paused edit preview retains the numeric token at the playhead");
+    assert.equal(pausedNumeric.color, "rgb(255, 229, 0)", "paused edit preview keeps inactive numbers fully opaque");
+    assert.equal(pausedNumeric.opacity, "1", "paused edit preview does not hide inactive numbers");
+    assert.ok(pausedNumeric.width > 0 && pausedNumeric.height > 0, "paused edit preview lays out visible numeric glyphs");
 
     await page.close();
   } finally {

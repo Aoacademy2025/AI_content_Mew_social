@@ -30,6 +30,11 @@ const nextConfig: NextConfig = {
     // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
     workerThreads: false,
     cpus: 1,
+    // src/proxy.ts runs for authenticated API routes. Next.js buffers/clones
+    // proxied request bodies and otherwise truncates them at its 10 MB default,
+    // leaving upload-avatar with an invalid multipart body. Match the route's
+    // 500 MB file limit plus its documented 10 MB form overhead allowance.
+    proxyClientMaxBodySize: "510mb",
   },
   async rewrites() {
     return [
