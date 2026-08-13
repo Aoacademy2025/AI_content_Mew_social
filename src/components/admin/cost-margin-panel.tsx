@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronUp,
   CreditCard,
+  HelpCircle,
   Loader2,
   Repeat,
   Server,
@@ -64,6 +65,11 @@ interface CashByType {
   planMonthly: number;
   planAnnual: number;
   packs: number;
+  allTimeTotal: number | null;
+  allTimeStripeNet: number | null;
+  allTimeManual: number | null;
+  allTimeRefunds: number | null;
+  allTimeAsOf: string;
 }
 
 interface UsageMetrics {
@@ -106,8 +112,8 @@ interface CostsResponse {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-function fmtBaht(n: number) {
-  if (!Number.isFinite(n)) return "฿-";
+function fmtBaht(n: number | null | undefined) {
+  if (n === null || n === undefined || !Number.isFinite(n)) return "฿-";
   return "฿" + new Intl.NumberFormat("th-TH", { maximumFractionDigits: 0 }).format(n);
 }
 function fmtPct(n: number) {
@@ -127,6 +133,23 @@ function profitTone(n: number) {
   if (n > 0) return "text-emerald-300 bg-emerald-500/12 border-emerald-400/20";
   if (n === 0) return "text-amber-300 bg-amber-500/12 border-amber-400/20";
   return "text-rose-300 bg-rose-500/12 border-rose-400/20";
+}
+
+function MetricHelp({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <span className="group relative inline-flex align-middle">
+      <span
+        tabIndex={0}
+        aria-label={`คำอธิบาย ${label}`}
+        className="inline-flex cursor-help rounded-full text-slate-500 outline-none transition hover:text-slate-300 focus-visible:text-slate-200 focus-visible:ring-2 focus-visible:ring-sky-400/60"
+      >
+        <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />
+      </span>
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 hidden w-72 -translate-x-1/2 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-left text-xs font-normal leading-relaxed text-slate-300 shadow-2xl group-hover:block group-focus-within:block">
+        {children}
+      </span>
+    </span>
+  );
 }
 
 // ── Sub-components ───────────────────────────────────────────────────────────
@@ -231,8 +254,8 @@ export default function CostMarginPanel({ days }: { days: number }) {
         <div>
           <div className="text-sm font-semibold text-white">รายได้ &amp; ลูกค้า (Revenue &amp; Customers)</div>
           <div className="text-xs text-slate-500">
-            {cu && h
-              ? `ลูกค้าจ่ายจริง ${fmtNum(cu.payingTotal)} · Trial ${fmtNum(cu.trialActive)} · MRR ${fmtBaht(h.mrr)}`
+            {cu && h && cash
+              ? `ลูกค้าจ่ายเงินจริงทั้งหมดตอนนี้ ${fmtNum(cu.payingTotal)} · MRR ${fmtBaht(h.mrr)} · รายได้สะสม ${fmtBaht(cash.allTimeTotal)}`
               : "กำลังโหลด..."}
           </div>
         </div>
@@ -254,7 +277,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
               <div className="rounded-lg border border-violet-400/20 bg-violet-500/[0.06] p-4 sm:p-5">
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                   <div>
-                    <div className="text-xs font-semibold uppercase tracking-wide text-violet-200">ลูกค้าจ่ายเงินจริง · ณ ปัจจุบัน</div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-violet-200">ลูกค้าจ่ายเงินจริงทั้งหมดตอนนี้</div>
                     <div className="mt-2 flex items-end gap-3">
                       <span className="text-4xl font-bold text-white">{fmtNum(cu.payingTotal)}</span>
                       <span className="pb-1 text-sm text-slate-400">
@@ -269,7 +292,26 @@ export default function CostMarginPanel({ days }: { days: number }) {
                       <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2.5 py-1 text-violet-200">รายปี {fmtNum(annualCount)}</span>
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-3 text-center">
+                  <div className="grid grid-cols-2 gap-3 text-center">
+                    <div className="rounded-md border border-emerald-400/25 bg-emerald-500/10 px-3 py-2">
+                      <div className="flex items-center justify-center gap-1 text-[11px] text-emerald-300/80">
+                        รายได้รวมสะสม
+                        <MetricHelp label="รายได้รวมสะสม">
+                          เงินที่รับจริงทั้งหมดจาก Studio และ Hero AI Bundle รวมสมาชิกรายเดือน รายปี การจ่ายครั้งเดียว และเครดิตแพ็ก หักเงินคืนแล้ว และรวมรายการรับเงินนอก Stripe ที่แอดมินบันทึกไว้ ไม่ใช่ตัวเลขคาดการณ์จาก MRR
+                        </MetricHelp>
+                      </div>
+                      <div className="mt-1 text-lg font-bold text-emerald-200">{fmtBaht(cash.allTimeTotal)}</div>
+                    </div>
+                    <div className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-2">
+                      <div className="flex items-center justify-center gap-1 text-[11px] text-violet-300/80">
+                        MRR ต่อเดือน
+                        <MetricHelp label="MRR">
+                          Monthly Recurring Revenue (MRR) คือรายได้ประจำต่อเดือน ณ ตอนนี้ โดยนำรายปีมาเฉลี่ยเป็นรายเดือน ใช้ดูความเร็วของธุรกิจ ไม่ใช่ยอดเงินสดสะสม
+                        </MetricHelp>
+                      </div>
+                      <div className="mt-1 text-lg font-bold text-violet-200">{fmtBaht(h.mrr)}</div>
+                      <div className="text-[10px] text-violet-300/70">Studio {fmtBaht(cu.directMrr)} · Bundle {fmtBaht(cu.bundleMrr)}</div>
+                    </div>
                     <div className="rounded-md border border-amber-400/25 bg-amber-500/10 px-3 py-2">
                       <div className="text-lg font-bold text-amber-200">{fmtNum(cu.trialActive)}</div>
                       <div className="text-[11px] text-amber-300/80">Trial (ยังไม่จ่าย)</div>
@@ -277,10 +319,6 @@ export default function CostMarginPanel({ days }: { days: number }) {
                     <div className="rounded-md border border-white/10 bg-black/20 px-3 py-2">
                       <div className="text-lg font-bold text-white">{fmtNum(cu.free)}</div>
                       <div className="text-[11px] text-slate-500">Free</div>
-                    </div>
-                    <div className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-2">
-                      <div className="text-lg font-bold text-violet-200">{fmtBaht(h.mrr)}</div>
-                      <div className="text-[11px] text-violet-300/80">Studio {fmtBaht(cu.directMrr)} · Bundle {fmtBaht(cu.bundleMrr)}</div>
                     </div>
                   </div>
                 </div>
@@ -311,7 +349,7 @@ export default function CostMarginPanel({ days }: { days: number }) {
               {/* ── CASH collected in window, by type ─────────────────────────────── */}
               <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
                 <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">เงินสดเข้าจริง · ช่วง {windowLabel}</h3>
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">รายการรับเงินใน Studio · ช่วง {windowLabel}</h3>
                   <span className="text-lg font-bold text-emerald-300">{fmtBaht(cash.total)}</span>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-3">
@@ -328,6 +366,9 @@ export default function CostMarginPanel({ days }: { days: number }) {
                     <div className="mt-1 text-lg font-semibold text-white">{fmtBaht(cash.packs)}</div>
                   </div>
                 </div>
+                <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
+                  ใช้ดูรายการตามช่วงเวลาที่เลือก ส่วน “รายได้รวมสะสม” ด้านบนดึงเงินรับจริงตลอดอายุธุรกิจจาก Stripe ทั้ง Studio และ Bundle รวมรายการนอก Stripe ที่บันทึกไว้ และหักเงินคืนแล้ว
+                </p>
               </div>
 
               {/* ── Margin KPIs ───────────────────────────────────────────────────── */}

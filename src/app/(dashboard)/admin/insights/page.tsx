@@ -101,11 +101,11 @@ type InsightsResponse = {
 type ReconcileApplyResponse = { error?: string; applied?: { completed?: number; failed?: number; skipped?: number } | null };
 
 const metricHelp: Record<string, string> = {
-  "MAPC": "Monthly Active Paying Creators — จำนวนสมาชิกที่จ่ายแบบรายเดือนหรือรายปีและยัง active ซึ่งสร้างผลลัพธ์สำเร็จอย่างน้อย 1 อย่างใน 30 วันที่ผ่านมา แหล่งข้อมูล: Payment + Subscription/Bundle + Video/Script/AiGenerationJob",
-  "Recurring payer": "สมาชิกที่มีรอบชำระรายเดือนหรือรายปีซึ่งยัง active และมีหลักฐานเงินเข้า ไม่รวม FREE, Trial, คูปอง หรือสิทธิ์ที่แอดมินให้เพียงอย่างเดียว",
+  "MAPC": "Monthly Active Paying Creators (MAPC) คือจำนวนสมาชิกที่ต่ออายุแบบรายเดือนหรือรายปี และกลับมาสร้างผลงานสำเร็จอย่างน้อย 1 อย่างใน 30 วันที่ผ่านมา",
+  "Recurring payer": "สมาชิกที่ต่ออายุอยู่ คือผู้ที่มีรอบชำระรายเดือนหรือรายปีและมีหลักฐานเงินเข้า ไม่รวม Free, Trial, คูปอง หรือสิทธิ์ที่แอดมินให้เพียงอย่างเดียว ตัวเลขนี้จึงเป็นส่วนหนึ่งของลูกค้าจ่ายเงินจริงทั้งหมด",
   "Durable outcome": "ผลงานที่ระบบบันทึกและส่งมอบสำเร็จ: วิดีโอเสร็จพร้อมไฟล์, สคริปต์ที่บันทึก, หรือ Hero AI Image ที่ settled พร้อม URL ไม่รวม preview, งานล้มเหลว, ยกเลิก และ retry",
-  "Creator rate": "MAPC ÷ ผู้จ่ายแบบ recurring ที่ยัง active × 100 ใช้ดูว่าลูกค้าที่จ่ายเงินกลับมาสร้างคุณค่าจริงกี่เปอร์เซ็นต์ใน 30 วัน",
-  "Monthly / Annual": "แบ่ง MAPC ตามรอบชำระที่ยัง active หากบัญชีมีทั้งรายเดือนและรายปีพร้อมกัน จะจัดอยู่ฝั่งรายเดือนเพื่อไม่ให้นับคนซ้ำ",
+  "Creator rate": "อัตรากลับมาสร้าง = คนที่กลับมาสร้างผลงานสำเร็จ ÷ สมาชิกที่ต่ออายุอยู่ × 100 ใช้ดูว่าลูกค้าประจำกลับมาได้รับคุณค่าจริงกี่เปอร์เซ็นต์ใน 30 วัน",
+  "Monthly / Annual": "แบ่งเฉพาะคนที่กลับมาสร้างผลงานตามรอบชำระ หากบัญชีมีทั้งรายเดือนและรายปีพร้อมกัน จะจัดอยู่ฝั่งรายเดือนเพื่อไม่ให้นับคนซ้ำ",
   "Health Score": "คะแนนสุขภาพระบบ 0–100 — คิดเฉพาะ error ของระบบเรา (ไม่รวมคีย์ลูกค้า/noise) + render p95 + video completion + งานค้าง ยิ่งใกล้ 100 ยิ่งดี",
   "Error telemetry": "เหตุการณ์ error จาก telemetry ฝั่ง client+server (ตัด noise/คีย์ลูกค้า/quota ออกแล้ว) — เป็น 'สัญญาณ' ไม่ใช่จำนวนบั๊กชี้ขาด เพราะ editor v2 แทบไม่ยิง telemetry. จำนวนบั๊กระบบที่เชื่อถือได้ (authoritative) ดูที่แผง 'งานจริง (server)' ซึ่งนับจาก VideoJob",
   "Job outcomes": "ผลงานจริงจาก VideoJob ฝั่ง server (status เซิร์ฟเวอร์เขียน ไม่หายตอนปิดแท็บ) — บอกว่างานที่ล้มเหลวพังที่ขั้นไหน และเป็นบั๊กเราหรือคีย์ลูกค้า",
@@ -252,7 +252,10 @@ export default function AdminInsightsPage() {
   }
 
   return (
-    <main className="min-h-screen bg-[#080b12] px-4 py-5 text-slate-100 sm:px-6 lg:px-8">
+    <main
+      className="min-h-screen bg-[#080b12] px-4 py-5 text-slate-100 sm:px-6 lg:px-8"
+      style={{ fontFamily: "'Noto Sans Thai', sans-serif" }}
+    >
       <div className="mx-auto max-w-7xl space-y-5">
         {/* ── Header + single global time control ─────────────────────────────── */}
         <header className="flex flex-col gap-4 border-b border-white/10 pb-5 lg:flex-row lg:items-end lg:justify-between">
@@ -260,7 +263,7 @@ export default function AdminInsightsPage() {
             <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1 text-xs font-semibold text-sky-200">
               <Activity className="h-3.5 w-3.5" /> Real Usage Insights
             </div>
-            <h1 className="text-2xl font-semibold tracking-normal text-white sm:text-3xl">ระบบใช้งานจริงบอกอะไรเรา</h1>
+            <h1 className="text-2xl font-semibold leading-[1.35] tracking-normal text-white sm:text-3xl">ระบบใช้งานจริงบอกอะไรเรา</h1>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-400">รายได้ &amp; ลูกค้าจ่ายจริง → คนหลุดตรงไหน → สุขภาพระบบ → รายละเอียด dev (กดเปิด). ตัวเลขทั้งหมดมาจากระบบจริง</p>
           </div>
           <div className="inline-flex w-full rounded-lg border border-white/10 bg-white/[0.035] p-1 sm:w-auto">
@@ -282,17 +285,19 @@ export default function AdminInsightsPage() {
                 <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-300">
                   North Star · MAPC <InfoTip label="MAPC" />
                 </div>
-                <h2 id="mapc-heading" className="mt-3 max-w-3xl text-2xl font-semibold leading-tight text-white sm:text-4xl">
+                <h2 id="mapc-heading" className="mt-3 max-w-3xl text-2xl font-semibold leading-[1.35] text-white sm:text-4xl">
                   คนจ่ายที่กลับมาสร้างจริง <span className="whitespace-nowrap text-emerald-300">{formatNumber(northStar.activeCreators)} คน</span>
                 </h2>
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
-                  จากผู้จ่ายรายเดือน/รายปีที่ยัง active {formatNumber(northStar.activeRecurringPayers)} คน · สร้างผลงานสำเร็จใน 30 วัน {formatNumber(northStar.creatorRatePct)}%
+                  สมาชิกที่ต่ออายุอยู่ตอนนี้ {formatNumber(northStar.activeRecurringPayers)} คน
+                  {activation && <> · เป็นส่วนหนึ่งของลูกค้าจ่ายเงินจริงทั้งหมดตอนนี้ {formatNumber(activation.paidTotal)} คน</>}
+                  {' '}· สร้างผลงานสำเร็จใน 30 วัน {formatNumber(northStar.creatorRatePct)}%
                   <span className="ml-1 inline-flex align-middle"><InfoTip label="Creator rate" /></span>
                 </p>
                 <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-400">
-                  <span className="inline-flex items-center gap-1">รายเดือน <strong className="text-white">{formatNumber(northStar.monthlyCreators)}</strong></span>
-                  <span className="inline-flex items-center gap-1">รายปี <strong className="text-white">{formatNumber(northStar.annualCreators)}</strong> <InfoTip label="Monthly / Annual" /></span>
-                  <span className="inline-flex items-center gap-1">ฐานผู้จ่าย recurring <InfoTip label="Recurring payer" /></span>
+                  <span className="inline-flex items-center gap-1">MAPC รายเดือน <strong className="text-white">{formatNumber(northStar.monthlyCreators)}</strong></span>
+                  <span className="inline-flex items-center gap-1">MAPC รายปี <strong className="text-white">{formatNumber(northStar.annualCreators)}</strong> <InfoTip label="Monthly / Annual" /></span>
+                  <span className="inline-flex items-center gap-1">ฐานสมาชิกต่ออายุ {formatNumber(northStar.activeRecurringPayers)} คน <InfoTip label="Recurring payer" /></span>
                 </div>
               </div>
 
