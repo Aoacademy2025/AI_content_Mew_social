@@ -30,6 +30,16 @@ assert.match(deploy, /MAINTENANCE_PAGE_DIR="\/var\/www\/heroai-maintenance"[\s\S
 assert.match(deploy, /if ! npx tsx scripts\/check-empty-render-queues\.ts; then[\s\S]*rm -rf "\$STAGING_DIR"[\s\S]*exit 1[\s\S]*fi/);
 assert.ok(deploy.indexOf('rm -rf "$APP_DIR/.next.old"') > queueCheck, "gate failure leaves live .next and .next.old untouched");
 assert.ok(!deploy.includes("render-cancel") && !deploy.includes("ops:cancel") && !/status\s*=\s*['\"]CANCEL/i.test(deploy), "deploy never cancels user work");
+assert.match(
+  deploy,
+  /PUPPETEER_SKIP_DOWNLOAD=1 npm ci --no-audit --no-fund --legacy-peer-deps/,
+  "production install reproduces the reviewed lock graph without downloading another browser",
+);
+assert.doesNotMatch(
+  deploy,
+  /npm install --no-audit --no-fund --package-lock=false/,
+  "production deploy cannot re-resolve semver ranges outside the lockfile",
+);
 
 assert.ok(nginx.includes("if (-f /var/www/ai-content/.deploy-maintenance)"), "nginx template honors the first-rollout marker");
 assert.ok(nginx.includes("return 503;"), "maintenance marker returns 503");
