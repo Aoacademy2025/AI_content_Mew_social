@@ -2,7 +2,10 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { getCostRates } from "@/lib/cost-rates";
+import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
+import { runpodImageModelConfig } from "@/lib/runpod-serverless";
 import {
+  assessReportedRunpodImageCost,
   assessRunpodImageCost,
   DEFAULT_RUNPOD_IMAGE_COST_HARD_LIMIT_BAHT,
   DEFAULT_RUNPOD_IMAGE_COST_MIN_SAMPLE,
@@ -43,6 +46,13 @@ export type RunpodImageCostSnapshot = {
   admitted: boolean;
   reason: string;
   lastSuccessfulSyncAt: string | null;
+};
+
+export type ActiveRunpodImageCostSnapshot = RunpodImageCostSnapshot & {
+  providerRoute: "runpod-public" | "runpod-custom";
+  costSource: "provider_reported_attempts" | "runpod_billing";
+  pricedAttempts: number | null;
+  lastCostReportedAt: string | null;
 };
 
 export class RunpodImageCostGuardError extends Error {
@@ -326,6 +336,111 @@ export async function getRunpodImageCostSnapshot(input: {
     admitted: assessment.admitted,
     reason: assessment.reason,
     lastSuccessfulSyncAt: checkpoint?.lastSuccessAt?.toISOString() ?? null,
+  };
+}
+
+/**
+ * Reporting-only COGS for the Z-Image route that new production work is using.
+ *
+ * The public endpoint reports its price per provider attempt, so the numerator
+ * sums every priced attempt (including retries and attempts whose customer
+ * charge was later refunded). The denominator intentionally counts only
+ * completed, settled image jobs. The custom route retains its invoice-backed
+ * billing snapshot and its independent stale-telemetry admission semantics.
+ */
+export async function getActiveRunpodImageCostSnapshot(input: {
+  now?: Date;
+  windowDays?: number;
+} = {}): Promise<ActiveRunpodImageCostSnapshot> {
+  const zImageModel = AI_IMAGE_MODELS.find((model) => model.id === "z-image-turbo");
+  if (!zImageModel) throw new Error("Z-Image model configuration is missing");
+  const config = runpodImageModelConfig(zImageModel);
+  if (!config) throw new Error("The active Z-Image RunPod route is not configured");
+
+  const now = input.now ?? new Date();
+  const windowDays = Math.max(
+    1,
+    Math.min(30, Math.floor(input.windowDays ?? DEFAULT_COST_WINDOW_DAYS)),
+  );
+
+  if (config.route === "runpod-custom") {
+    const snapshot = await getRunpodImageCostSnapshot({
+      endpointId: config.endpointId,
+      now,
+      windowDays,
+    });
+    return {
+      ...snapshot,
+      providerRoute: "runpod-custom",
+      costSource: "runpod_billing",
+      pricedAttempts: null,
+      lastCostReportedAt: snapshot.lastSuccessfulSyncAt,
+    };
+  }
+
+  const windowStart = new Date(now.getTime() - windowDays * 24 * HOUR_MS);
+  const attemptWhere = {
+    provider: "runpod",
+    providerRoute: "runpod-public",
+    providerEndpoint: config.endpointId,
+    providerReportedCostUsdMicros: { not: null },
+    finishedAt: { gte: windowStart, lt: now },
+  } as const;
+  const [reported, deliveredImages, latestReport, rates] = await Promise.all([
+    prisma.aiGenerationAttempt.aggregate({
+      where: attemptWhere,
+      _sum: { providerReportedCostUsdMicros: true },
+      _count: { _all: true },
+    }),
+    prisma.aiGenerationJob.count({
+      where: {
+        kind: "image",
+        provider: "runpod",
+        providerRoute: "runpod-public",
+        providerEndpoint: config.endpointId,
+        status: "completed",
+        chargeState: "settled",
+        finishedAt: { gte: windowStart, lt: now },
+      },
+    }),
+    prisma.aiGenerationAttempt.findFirst({
+      where: attemptWhere,
+      orderBy: { finishedAt: "desc" },
+      select: { finishedAt: true },
+    }),
+    getCostRates(),
+  ]);
+  const billedUsdMicros = reported._sum.providerReportedCostUsdMicros ?? 0;
+  const policy = costPolicy();
+  const assessment = assessReportedRunpodImageCost({
+    billedUsdMicros,
+    deliveredImages,
+    usdThbRate: rates.fxBahtPerUsd,
+    policy,
+  });
+
+  return {
+    endpointId: config.endpointId,
+    providerRoute: "runpod-public",
+    costSource: "provider_reported_attempts",
+    windowStart: windowStart.toISOString(),
+    windowEnd: now.toISOString(),
+    billedUsd: billedUsdMicros / 1_000_000,
+    billedUsdMicros,
+    billedTimeMs: 0,
+    deliveredImages,
+    bucketCount: 0,
+    pricedAttempts: reported._count._all,
+    usdThbRate: rates.fxBahtPerUsd,
+    targetBahtPerImage: policy.targetBaht,
+    hardLimitBahtPerImage: policy.hardLimitBaht,
+    minimumSample: policy.minSample,
+    costBahtPerImage: assessment.costBahtPerImage,
+    status: assessment.status,
+    admitted: assessment.admitted,
+    reason: assessment.reason,
+    lastSuccessfulSyncAt: null,
+    lastCostReportedAt: latestReport?.finishedAt?.toISOString() ?? null,
   };
 }
 

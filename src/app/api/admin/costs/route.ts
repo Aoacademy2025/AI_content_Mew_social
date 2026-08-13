@@ -10,7 +10,7 @@ import {
 } from "@/lib/cost-rates";
 import { getRevenueCohorts } from "@/lib/revenue-cohorts";
 import { getLifetimeCashCollected } from "@/lib/revenue-cash.server";
-import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
+import { getActiveRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import {
   aiImageCostBucket,
   aiImageJobIdFromAction,
@@ -167,7 +167,7 @@ export async function GET(req: Request) {
         where: { kind: "refund", ...aiImageLedgerActionWhere("refund"), createdAt: { gte: monthFrom } },
         select: { delta: true },
       }),
-      getRunpodImageCostSnapshot({ windowDays: Math.min(days, 30) }).catch(() => null),
+      getActiveRunpodImageCostSnapshot({ windowDays: Math.min(days, 30) }).catch(() => null),
       getLifetimeCashCollected().catch(() => null),
     ]);
 

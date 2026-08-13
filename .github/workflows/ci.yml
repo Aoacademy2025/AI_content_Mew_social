@@ -47,5 +47,8 @@ jobs:
       - name: Verify Admin Insights revenue clarity
         run: npm run verify:admin-insights-revenue
 
+      - name: Verify RunPod image active-route COGS
+        run: npm run verify:runpod-image-cost
+
       - name: Build
         run: npm run build

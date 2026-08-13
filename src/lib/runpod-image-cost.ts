@@ -131,3 +131,60 @@ export function assessRunpodImageCost(input: {
     reason: "Fully-loaded RunPod image COGS is within target",
   };
 }
+
+/**
+ * Assess a pay-per-attempt RunPod route whose cost is reported on each provider
+ * attempt. Unlike a private endpoint billing ledger, these rows do not depend
+ * on a separate billing sync and therefore must not become "stale" merely
+ * because the private-endpoint sync is idle.
+ */
+export function assessReportedRunpodImageCost(input: {
+  billedUsdMicros: number;
+  deliveredImages: number;
+  usdThbRate: number;
+  policy?: Partial<RunpodImageCostPolicy>;
+}): RunpodImageCostAssessment {
+  const policy = normalizeRunpodImageCostPolicy(input.policy);
+  const deliveredImages = Math.max(0, Math.floor(input.deliveredImages));
+  const billedUsdMicros = Math.max(0, Math.round(input.billedUsdMicros));
+  const usdThbRate = validPositive(input.usdThbRate, 36);
+  const sampleEnough = deliveredImages >= policy.minSample;
+  const costBahtPerImage = deliveredImages > 0
+    ? (billedUsdMicros / 1_000_000) * usdThbRate / deliveredImages
+    : null;
+
+  if (!sampleEnough || billedUsdMicros === 0 || costBahtPerImage === null) {
+    return {
+      status: "insufficient_data",
+      admitted: true,
+      costBahtPerImage,
+      sampleEnough,
+      reason: "Collecting a minimum active-route provider cost sample",
+    };
+  }
+  if (costBahtPerImage > policy.hardLimitBaht) {
+    return {
+      status: "hard_stop",
+      admitted: false,
+      costBahtPerImage,
+      sampleEnough,
+      reason: "Fully-loaded RunPod image COGS exceeds the Kie GPT Image 2 ceiling",
+    };
+  }
+  if (costBahtPerImage > policy.targetBaht) {
+    return {
+      status: "warning",
+      admitted: true,
+      costBahtPerImage,
+      sampleEnough,
+      reason: "Fully-loaded RunPod image COGS is above the operating target",
+    };
+  }
+  return {
+    status: "healthy",
+    admitted: true,
+    costBahtPerImage,
+    sampleEnough,
+    reason: "Fully-loaded RunPod image COGS is within target",
+  };
+}

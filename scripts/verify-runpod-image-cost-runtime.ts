@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { prisma } from "../src/lib/prisma";
 import {
+  getActiveRunpodImageCostSnapshot,
   getRunpodImageCostSnapshot,
   syncRunpodImageBilling,
 } from "../src/lib/runpod-image-cost.server";
@@ -14,6 +15,10 @@ async function main() {
   process.env.HERO_RUNPOD_COST_MIN_SAMPLE = "20";
   process.env.HERO_RUNPOD_COST_TARGET_BAHT = "0.90";
   process.env.HERO_RUNPOD_COST_HARD_LIMIT_BAHT = "1.08";
+  process.env.AI_STUDIO_IMAGE_ENABLED = "1";
+  process.env.CREDITS_LIVE = "1";
+  process.env.AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED = "1";
+  process.env.AI_STUDIO_Z_IMAGE_ROUTE = "public";
 
   const user = await prisma.user.create({
     data: {
@@ -79,6 +84,64 @@ async function main() {
   const stale = await getRunpodImageCostSnapshot({ endpointId, now, windowDays: 7 });
   assert.equal(stale.status, "stale");
   assert.equal(stale.admitted, false);
+
+  const publicEndpointId = "z-image-turbo";
+  const publicJobIds = Array.from({ length: 20 }, (_, index) => `runpod-public-cost-${index}`);
+  await prisma.aiGenerationJob.createMany({
+    data: publicJobIds.map((id, index) => ({
+      id,
+      userId: user.id,
+      kind: "image",
+      provider: "runpod",
+      model: "z-image-turbo",
+      providerRoute: "runpod-public",
+      providerEndpoint: publicEndpointId,
+      status: "completed",
+      chargeState: "settled",
+      outputUrl: `/test/runpod-public-cost-${index}.png`,
+      idempotencyKey: `runpod-public-cost-${index}`,
+      finishedAt: new Date(now.getTime() - 30_000),
+    })),
+  });
+  await prisma.aiGenerationAttempt.createMany({
+    data: [
+      ...publicJobIds.map((jobId) => ({
+        jobId,
+        sequence: 1,
+        provider: "runpod",
+        providerModel: "z-image-turbo",
+        providerRoute: "runpod-public",
+        providerEndpoint: publicEndpointId,
+        status: "completed",
+        estimatedCostUsdMicros: 5_000,
+        providerReportedCostUsdMicros: 5_000,
+        finishedAt: new Date(now.getTime() - 30_000),
+      })),
+      ...publicJobIds.slice(0, 2).map((jobId) => ({
+        jobId,
+        sequence: 2,
+        provider: "runpod",
+        providerModel: "z-image-turbo",
+        providerRoute: "runpod-public",
+        providerEndpoint: publicEndpointId,
+        status: "completed",
+        estimatedCostUsdMicros: 5_000,
+        providerReportedCostUsdMicros: 5_000,
+        finishedAt: new Date(now.getTime() - 20_000),
+      })),
+    ],
+  });
+
+  const active = await getActiveRunpodImageCostSnapshot({ now, windowDays: 1 });
+  assert.equal(active.endpointId, publicEndpointId);
+  assert.equal(active.providerRoute, "runpod-public");
+  assert.equal(active.costSource, "provider_reported_attempts");
+  assert.equal(active.pricedAttempts, 22);
+  assert.equal(active.deliveredImages, 20);
+  assert.equal(active.billedUsdMicros, 110_000);
+  assert.equal(active.costBahtPerImage, 0.1925);
+  assert.equal(active.status, "healthy");
+  assert.equal(active.admitted, true);
 
   console.log("verify-runpod-image-cost-runtime: ALL PASS");
 }
