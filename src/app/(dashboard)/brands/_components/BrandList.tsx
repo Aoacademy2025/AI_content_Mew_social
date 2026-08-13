@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { LockKeyhole, Plus, WandSparkles } from "lucide-react";
+import { LockKeyhole, Plus, Trash2, WandSparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -15,6 +16,7 @@ export function BrandList({
   activeId,
   busy,
   onOpen,
+  onArchive,
   onStartNew,
   onStartFromCurrentDefaults,
 }: {
@@ -25,9 +27,12 @@ export function BrandList({
   activeId: string | null;
   busy: boolean;
   onOpen: (profile: BrandProfile) => void;
+  onArchive: (profile: BrandProfile) => void;
   onStartNew: () => void;
   onStartFromCurrentDefaults: () => void;
 }) {
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+
   return (
     <Card className="h-fit p-3 lg:sticky lg:top-5">
       <div className="flex items-center justify-between px-1 pb-2.5">
@@ -73,38 +78,87 @@ export function BrandList({
       <div className="space-y-1">
         {profiles.map((profile) => {
           const active = activeId === profile.id;
+          const confirming = confirmingId === profile.id;
           return (
-            <button
+            <div
               key={profile.id}
-              type="button"
-              onClick={() => onOpen(profile)}
-              aria-current={active ? "true" : undefined}
               className={cn(
-                "w-full rounded-lg border px-3 py-2.5 text-left transition-colors",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/50",
+                "overflow-hidden rounded-lg border transition-colors",
                 active
                   ? "border-violet-500/50 bg-violet-500/10"
                   : "border-transparent hover:bg-accent",
               )}
             >
-              <span className="flex items-start justify-between gap-2">
-                <span
-                  className={cn(
-                    "text-sm font-semibold leading-5",
-                    active ? "text-violet-500" : "text-foreground",
-                  )}
+              <div className="flex items-stretch">
+                <button
+                  type="button"
+                  onClick={() => onOpen(profile)}
+                  aria-current={active ? "true" : undefined}
+                  disabled={busy}
+                  className="min-w-0 flex-1 px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-violet-500/60 disabled:opacity-50"
                 >
-                  {profile.name}
-                </span>
-                {profile.frozen && (
-                  <LockKeyhole className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                )}
-              </span>
-              <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                รุ่น {profile.activeRevisionNumber || "—"}
-                {profile.niche ? ` · ${profile.niche}` : ""}
-              </span>
-            </button>
+                  <span className="flex items-start justify-between gap-2">
+                    <span
+                      className={cn(
+                        "truncate text-sm font-semibold leading-5",
+                        active ? "text-violet-500" : "text-foreground",
+                      )}
+                    >
+                      {profile.name}
+                    </span>
+                    {profile.frozen && (
+                      <LockKeyhole className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                  </span>
+                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                    รุ่น {profile.activeRevisionNumber || "—"}
+                    {profile.niche ? ` · ${profile.niche}` : ""}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`ลบแนวภาพ ${profile.name}`}
+                  title="ลบออกจากคลังแบรนด์"
+                  disabled={busy}
+                  onClick={() => setConfirmingId(confirming ? null : profile.id)}
+                  className="flex min-h-11 min-w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-destructive/60 disabled:opacity-40"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+              {confirming && (
+                <div className="border-t border-border px-3 py-2.5" role="alert">
+                  <p className="text-[11px] leading-4 text-muted-foreground">
+                    ลบออกจากคลังสำหรับงานใหม่ คลิปเดิมและแนวภาพรุ่นเก่ายังอยู่
+                  </p>
+                  <div className="mt-2 flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => setConfirmingId(null)}
+                      className="h-8 flex-1 text-xs"
+                    >
+                      ยกเลิก
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      disabled={busy}
+                      onClick={() => {
+                        setConfirmingId(null);
+                        onArchive(profile);
+                      }}
+                      className="h-8 flex-1 text-xs"
+                    >
+                      ยืนยันลบ
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
           );
         })}
         {!profiles.length && (

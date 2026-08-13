@@ -229,9 +229,15 @@ export function BrandLibraryClient() {
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
     setSourceVisualContext(null);
-    const nextId = preferredId ?? activeId ?? libraryData.profiles[0]?.id ?? null;
-    if (nextId) openProfile(libraryData.profiles.find((profile) => profile.id === nextId)!);
-    else setDraft(createBlankBrandProfileSeed());
+    const requestedNextId = preferredId ?? activeId;
+    const nextProfile = libraryData.profiles.find((profile) => profile.id === requestedNextId)
+      ?? libraryData.profiles[0]
+      ?? null;
+    if (nextProfile) openProfile(nextProfile);
+    else {
+      setActiveId(null);
+      setDraft(createBlankBrandProfileSeed());
+    }
     setLoading(false);
   }
 
@@ -512,6 +518,27 @@ export function BrandLibraryClient() {
     finally { setBusy(null); }
   }
 
+  async function archiveProfile(profile: BrandProfile) {
+    if (busy !== null) return;
+    setBusy(`archive:${profile.id}`);
+    setNotice(null);
+    try {
+      await responseJson(await fetch(`/api/brand-library/${encodeURIComponent(profile.id)}`, {
+        method: "DELETE",
+      }));
+      const nextId = library?.profiles.find((item) => item.id !== profile.id)?.id;
+      await load(nextId);
+      setNotice({
+        tone: "ok",
+        text: `ลบ ${profile.name} ออกจากคลังแล้ว คลิปเดิมยังใช้แนวภาพรุ่นเดิมได้`,
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "ลบแนวภาพไม่สำเร็จ" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function askVisualHelper() {
     setBusy("helper"); setProposal(null); setNotice(null);
     try {
@@ -721,6 +748,7 @@ export function BrandLibraryClient() {
             activeId={activeId}
             busy={busy !== null}
             onOpen={openProfile}
+            onArchive={(profile) => void archiveProfile(profile)}
             onStartNew={startNew}
             onStartFromCurrentDefaults={startFromCurrentDefaults}
           />

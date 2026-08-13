@@ -11,7 +11,7 @@ import {
 
 async function legacyMutationTarget(userId: string, id: string) {
   return prisma.brandProfile.findFirst({
-    where: { id, userId },
+    where: { id, userId, archivedAt: null },
     select: {
       id: true,
       activeRevisionNumber: true,

@@ -422,19 +422,25 @@ export function PostPhase({
 
         {/* ── ขวา 330px: พาดหัว / ซับ / โลโก้ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
-          <Segmented
-            id={rightTabsId}
-            semantics="tabs"
-            ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
-            value={rightTab}
-            onChange={handleRightTabChange}
-            options={[
-              { value: "hook", label: "พาดหัว" },
-              { value: "subtitle", label: "ซับ" },
-              { value: "logo", label: "โลโก้" },
-            ]}
-            style={{ width: "100%", justifyContent: "center" }}
-          />
+          <div
+            data-editor-function-tabs="true"
+            className="sticky top-0 z-20 -mx-4 -mt-4 px-4 pb-2 pt-4"
+            style={{ background: color.bg1, borderBottom: `1px solid ${color.cardBorder}` }}
+          >
+            <Segmented
+              id={rightTabsId}
+              semantics="tabs"
+              ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
+              value={rightTab}
+              onChange={handleRightTabChange}
+              options={[
+                { value: "hook", label: "พาดหัว" },
+                { value: "subtitle", label: "ซับ" },
+                { value: "logo", label: "โลโก้" },
+              ]}
+              style={{ width: "100%", justifyContent: "center" }}
+            />
+          </div>
 
           {rightTab === "hook" && (
             <div

@@ -24,6 +24,7 @@ import { creditCostFor, HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { CREDITS_LIVE_CLIENT } from "../_hooks/useCreditsQuota";
 import type { V2Project } from "./useV2Project";
 import { fetchClientJson } from "@/lib/client-request-cache";
+import { estimatedCutawayPieceCount } from "@/lib/cutaway-plan";
 
 type CreditBalanceResponse = { total?: number; reserved?: number };
 type VisualContextResponse = {
@@ -101,11 +102,15 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
     [p.mode, p.script, p.clipDurationSec],
   );
   const exactDuration = p.mode === "upload" && p.clipDurationSec > 0;
+  const quotedTargetClipCount = exactDuration
+    ? estimatedCutawayPieceCount(p.targetClipCount, estSec * 1_000)
+    : p.targetClipCount;
 
   // AI usage: non-admins go by preset (ฟรีล้วน = none); admins by the raw b-roll source.
-  const usesAi = p.brollSource === "kie-image" || (p.isAdmin
+  const selectedAiSource = p.brollSource === "kie-image" || (p.isAdmin
     ? p.brollSource === "automix"
     : presetUsesAi(p.mixPreset));
+  const usesAi = selectedAiSource && !(exactDuration && quotedTargetClipCount === 0);
 
   const presetWeights = useMemo(() => {
     if (p.brollSource === "kie-image") return { video: 0, photo: 0, ai: 1 };
@@ -135,7 +140,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       hasAvatar: p.mode !== "upload" && p.useAvatar && !!p.avatarId,
       exactDuration,
       insufficientCreditBehavior: p.brollSource === "kie-image" ? "block" : "stock-fallback",
-      targetClipCount: p.targetClipCount,
+      targetClipCount: quotedTargetClipCount,
       starterImageAllowance: p.starterAiImageAllowance?.eligible ? {
         remaining: p.starterAiImageAllowance.remainingImages,
         limit: p.starterAiImageAllowance.limitImages,
@@ -143,7 +148,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       reusableAiSceneIndices,
       preserveEstablishedAiDensity,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, p.targetClipCount, p.starterAiImageAllowance, reusableAiSceneIndices, preserveEstablishedAiDensity, exactDuration],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, quotedTargetClipCount, p.starterAiImageAllowance, reusableAiSceneIndices, preserveEstablishedAiDensity, exactDuration],
   );
 
   // Deficit disables the render CTA (Task 5 item B) — buildReceipt already computed

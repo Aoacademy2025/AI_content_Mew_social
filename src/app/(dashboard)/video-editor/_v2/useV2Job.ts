@@ -21,6 +21,10 @@ import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import { buildBgmSelectionInput } from "@/lib/bgm-selection";
 import { shouldSendLegacyBrollVisualStyle } from "@/lib/broll-preferences";
 import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
+import {
+  effectiveManualCutawayPieceCount,
+  estimatedCutawayPieceCount,
+} from "@/lib/cutaway-plan";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -327,8 +331,14 @@ export function useV2Job(p: V2Project) {
     const receiptEstSec = p.mode === "upload" && p.clipDurationSec > 0
       ? p.clipDurationSec
       : estimateClipSecV2(p.mode === "upload" ? "" : p.script);
+    const quotedTargetClipCount = p.mode === "upload" && p.clipDurationSec > 0
+      ? estimatedCutawayPieceCount(p.targetClipCount, p.clipDurationSec * 1_000)
+      : p.targetClipCount;
+    const submittedTargetClipCount = p.mode === "upload" && p.clipDurationSec > 0 && p.targetClipCount > 0
+      ? effectiveManualCutawayPieceCount(p.targetClipCount, p.clipDurationSec * 1_000)
+      : p.targetClipCount;
     const disclosedAiSlots = p.brollSource === "automix"
-      ? disclosedAutoMixAiSlotIndices(receiptEstSec, receiptWeights, p.targetClipCount)
+      ? disclosedAutoMixAiSlotIndices(receiptEstSec, receiptWeights, quotedTargetClipCount)
       : null;
     let reusableAiImages = 0;
     if (
@@ -368,7 +378,7 @@ export function useV2Job(p: V2Project) {
       mode: "upload",
       clipUrl: p.clipUrl,
       stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
-      ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
+      ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
       ...(p.brollVisualStyle !== "auto" && shouldSendLegacyBrollVisualStyle(p.brollSource)
         ? { brollVisualStyle: p.brollVisualStyle }
@@ -403,7 +413,7 @@ export function useV2Job(p: V2Project) {
       ...(p.useAvatar && p.avatarId
         ? { avatarMode: p.avatarMode, avatarId: p.avatarId, avatarIntroSecs: p.avatarIntroSecs, avatarTailSecs: p.avatarTailSecs }
         : {}),
-      ...(p.targetClipCount > 0 ? { targetClipCount: p.targetClipCount } : {}),
+      ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
       ...(p.brollVisualStyle !== "auto" && shouldSendLegacyBrollVisualStyle(p.brollSource)
         ? { brollVisualStyle: p.brollVisualStyle }

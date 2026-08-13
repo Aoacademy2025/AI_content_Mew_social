@@ -1,6 +1,6 @@
 "use client";
 
-import type { Dispatch, SetStateAction } from "react";
+import { useEffect, useId, useState, type Dispatch, type SetStateAction } from "react";
 import { ChevronDown, Loader2, Sparkles, Upload, WandSparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { normalizeHexColor } from "@/lib/hex-color";
 import type { BrandPayload, LibraryResponse, VisualProposal } from "./types";
 
 const NO_SUBTITLE_PRESET = "__clip-default__";
@@ -212,6 +213,146 @@ function RangeField({
   );
 }
 
+function HexColorField({
+  value,
+  index,
+  disabled,
+  onApply,
+}: {
+  value: string;
+  index: number;
+  disabled?: boolean;
+  onApply: (value: string) => void;
+}) {
+  const id = useId();
+  const errorId = `${id}-error`;
+  const [draft, setDraft] = useState(value);
+  const [showError, setShowError] = useState(false);
+  const normalized = normalizeHexColor(draft);
+
+  useEffect(() => {
+    setDraft(value);
+    setShowError(false);
+  }, [value]);
+
+  function apply() {
+    if (!normalized) {
+      setShowError(true);
+      return;
+    }
+    onApply(normalized);
+    setDraft(normalized);
+    setShowError(false);
+  }
+
+  return (
+    <div className="min-w-[210px] flex-1">
+      <Label htmlFor={id} className="mb-1.5 block text-[11px] font-medium text-muted-foreground">
+        สีที่ {index + 1} · HEX
+      </Label>
+      <div className="flex items-center gap-2">
+        <span
+          aria-hidden="true"
+          className="h-9 w-9 shrink-0 rounded-lg border border-border"
+          style={{ background: normalizeHexColor(value) ?? "#151515" }}
+        />
+        <Input
+          id={id}
+          value={draft}
+          inputMode="text"
+          autoCapitalize="characters"
+          spellCheck={false}
+          disabled={disabled}
+          aria-invalid={showError && !normalized}
+          aria-describedby={showError && !normalized ? errorId : undefined}
+          onChange={(event) => {
+            setDraft(event.target.value.toUpperCase());
+            if (showError) setShowError(false);
+          }}
+          onBlur={() => setShowError(Boolean(draft.trim()) && !normalizeHexColor(draft))}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              apply();
+            }
+          }}
+          placeholder="#D29D00"
+          className="h-9 min-w-0 uppercase tracking-[0.08em]"
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={disabled || normalized === normalizeHexColor(value)}
+          onClick={apply}
+          className="h-9 shrink-0 px-3 text-xs focus-visible:ring-violet-500/60"
+        >
+          ตกลง
+        </Button>
+      </div>
+      {showError && !normalized && (
+        <p id={errorId} role="alert" className="mt-1.5 text-[11px] text-destructive">
+          ใช้รูปแบบ HEX เช่น #D29D00
+        </p>
+      )}
+    </div>
+  );
+}
+
+function BrandMarkPreview({
+  draft,
+  library,
+}: {
+  draft: BrandPayload;
+  library: LibraryResponse;
+}) {
+  const asset = library.brandAssets.find((item) => item.id === draft.brandMark.assetId);
+  const positionClass = {
+    "top-left": "left-[7%] top-[5%]",
+    "top-right": "right-[7%] top-[5%]",
+    "bottom-left": "bottom-[5%] left-[7%]",
+    "bottom-right": "bottom-[5%] right-[7%]",
+  }[draft.brandMark.position] ?? "right-[7%] top-[5%]";
+
+  return (
+    <div className="grid items-start gap-4 sm:grid-cols-[160px_minmax(0,1fr)]">
+      <div
+        data-brand-mark-preview="true"
+        className="relative aspect-[9/16] w-[160px] max-w-full overflow-hidden rounded-xl border border-border bg-[#14131b]"
+        aria-label="ตัวอย่างขนาดและตำแหน่งโลโก้บนวิดีโอแนวตั้ง"
+      >
+        <div className="absolute inset-[6%] rounded-lg border border-dashed border-white/15" />
+        <div className="absolute left-[12%] right-[12%] top-[43%] space-y-2" aria-hidden="true">
+          <div className="h-2 rounded bg-white/10" />
+          <div className="mx-auto h-2 w-3/4 rounded bg-white/10" />
+        </div>
+        <div className="absolute bottom-[16%] left-[14%] right-[14%] h-3 rounded bg-white/15" aria-hidden="true" />
+        {draft.brandMark.enabled && asset ? (
+          <img
+            src={`/api/user/brand-assets/${asset.id}/image`}
+            alt={`ตัวอย่างโลโก้ ${asset.name}`}
+            className={cn("absolute max-h-[40%] object-contain", positionClass)}
+            style={{ width: `${draft.brandMark.sizePct}%`, opacity: draft.brandMark.opacity }}
+          />
+        ) : (
+          <span className="absolute inset-x-3 top-1/2 -translate-y-1/2 text-center text-[10px] leading-4 text-white/45">
+            {draft.brandMark.enabled ? "เลือกไฟล์โลโก้เพื่อดูตัวอย่าง" : "เปิดลายน้ำเพื่อดูตัวอย่าง"}
+          </span>
+        )}
+      </div>
+      <div className="pt-1">
+        <p className="text-[13px] font-semibold text-foreground">ตัวอย่างบนวิดีโอ 9:16</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">
+          ขนาด ตำแหน่ง และความทึบจะเปลี่ยนทันทีขณะลาก ค่าจริงตอนส่งออกใช้สัดส่วนเดียวกัน
+        </p>
+        {asset && (
+          <p className="mt-2 truncate text-[11px] text-muted-foreground">{asset.name}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function AdvancedSettings({
   open,
   onOpenChange,
@@ -369,29 +510,22 @@ export function AdvancedSettings({
               <p className="mt-1 text-xs text-muted-foreground">
                 ระบบจะใช้สีเหล่านี้เป็นโทนของภาพ ไม่ใช่วาดเป็นวัตถุในภาพ
               </p>
-              <div className="mt-2 flex flex-wrap gap-2">
+              <div className="mt-3 grid gap-3 lg:grid-cols-3">
                 {draft.visual.palette.map((color, index) => (
-                  <label
-                    key={`${index}-${color}`}
-                    className="flex h-10 items-center gap-2 rounded-lg border border-input bg-background/60 px-2.5"
-                  >
-                    <input
-                      type="color"
-                      aria-label={`สีประจำแบรนด์ลำดับ ${index + 1}`}
-                      value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#151515"}
-                      disabled={disabled}
-                      onChange={(event) =>
-                        updateVisual(
-                          "palette",
-                          draft.visual.palette.map((item, itemIndex) =>
-                            itemIndex === index ? event.target.value.toUpperCase() : item,
-                          ),
-                        )
-                      }
-                      className="h-6 w-6 cursor-pointer rounded border-0 bg-transparent p-0 disabled:cursor-not-allowed"
-                    />
-                    <span className="font-mono text-[11px] text-muted-foreground">{color}</span>
-                  </label>
+                  <HexColorField
+                    key={index}
+                    value={color}
+                    index={index}
+                    disabled={disabled}
+                    onApply={(value) =>
+                      updateVisual(
+                        "palette",
+                        draft.visual.palette.map((item, itemIndex) =>
+                          itemIndex === index ? value : item,
+                        ),
+                      )
+                    }
+                  />
                 ))}
               </div>
             </div>
@@ -623,6 +757,7 @@ export function AdvancedSettings({
                 }
               />
             </div>
+            <BrandMarkPreview draft={draft} library={library} />
           </Group>
         </div>
       )}

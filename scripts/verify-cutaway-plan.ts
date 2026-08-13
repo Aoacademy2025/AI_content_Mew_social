@@ -3,6 +3,7 @@ import {
   planCutaway,
   planCutawayRecomposite,
   buildEnableExpr,
+  estimatedCutawayPieceCount,
   manualCutawayWindowCount,
   reconstructCutawayPersonRanges,
   resolveCutawayPersonRanges,
@@ -62,6 +63,44 @@ assert(buildEnableExpr([]) === "", "empty ranges => empty expr");
 assert(manualCutawayWindowCount(3) === 6, "manual upload target 3 => 6 alternating internal windows");
 assert(manualCutawayWindowCount(60) === 120, "manual upload target caps at 60 visible pieces => 120 windows");
 assert(manualCutawayWindowCount(0) === 0, "manual upload target 0 keeps automatic cadence");
+assert(manualCutawayWindowCount(8, 9_999) === 0, "upload shorter than 10s skips cutaway");
+assert(manualCutawayWindowCount(8, 10_000) === 2, "10s upload allows one 5s visible cutaway");
+assert(manualCutawayWindowCount(8, 60_000) === 16, "60s upload keeps eight 3.75s visible cutaways");
+assert(estimatedCutawayPieceCount(0, 15_190) === 2, "15.19s auto upload quotes two visible cutaways");
+assert(estimatedCutawayPieceCount(8, 15_190) === 2, "15.19s manual target8 quotes the duration-clamped two");
+assert(estimatedCutawayPieceCount(0, 9_999) === 0, "sub-10s auto upload quotes zero B-roll generation");
+// Support regression #odqpq2 — the retained production job was a 15.19s upload
+// with targetClipCount=8. The old formula produced 16 alternating windows, so
+// each paid Hero B-roll was visible for only ~0.95s despite the 3–5s promise.
+// Duration-aware planning must cap it at two visible pieces / four windows.
+{
+  const productionDurationMs = 15_190;
+  const durationAwareWindowCount = (
+    manualCutawayWindowCount as (target: unknown, durationMs?: unknown) => number
+  )(8, productionDurationMs);
+  assert(
+    durationAwareWindowCount === 4,
+    `#odqpq2 15.19s/target8 => 4 internal windows, got ${durationAwareWindowCount}`,
+  );
+  const productionCaptions = [
+    { startMs: 0, endMs: 1700, text: "บางคนไม่ได้ผิดที่เขาไม่รัก" },
+    { startMs: 2300, endMs: 6300, text: "แต่ผิดที่เขาปล่อยให้เราหวังเขาไม่เคยพูดว่าใช่" },
+    { startMs: 6800, endMs: 11000, text: "แต่ก็ไม่เคยพูดว่าไม่แล้วเราก็รอ" },
+    { startMs: 11600, endMs: 15190, text: "จนลืมไปว่าเราเองก็มีค่า" },
+  ];
+  const productionWindows = buildFixedCountBrollWindows(
+    productionCaptions,
+    durationAwareWindowCount,
+    productionDurationMs,
+    120,
+  );
+  const visibleRanges = planCutaway(productionWindows).broll;
+  assert(visibleRanges.length === 2, `#odqpq2 renders 2 visible B-roll pieces, got ${visibleRanges.length}`);
+  assert(
+    visibleRanges.every((range) => range.endMs - range.startMs >= 3_000),
+    "#odqpq2 keeps every visible B-roll on screen for at least 3s",
+  );
+}
 {
   const captions = Array.from({ length: 12 }, (_, i) => ({
     startMs: i * 1000,
@@ -73,9 +112,15 @@ assert(manualCutawayWindowCount(0) === 0, "manual upload target 0 keeps automati
 }
 const orchestratorSource = readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
 assert(
-  orchestratorSource.includes("manualCutawayWindowCount(input.targetClipCount)"),
-  "upload orchestrator converts the visible target through the shared helper",
+  orchestratorSource.includes("manualCutawayWindowCount(input.targetClipCount, upDurMs)"),
+  "upload orchestrator duration-clamps the visible target through the shared helper",
 );
+const step2Source = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
+const receiptSource = readFileSync("src/app/(dashboard)/video-editor/_v2/RenderReceiptDialog.tsx", "utf8");
+const useV2JobSource = readFileSync("src/app/(dashboard)/video-editor/_v2/useV2Job.ts", "utf8");
+assert(step2Source.includes("effectiveManualCutawayPieceCount"), "Step 2 duration-clamps the visible custom count");
+assert(receiptSource.includes("estimatedCutawayPieceCount"), "receipt quotes only visible upload cutaways");
+assert(useV2JobSource.includes("estimatedCutawayPieceCount"), "submission ceiling matches visible upload cutaways");
 
 // 7) small-window behavior is intentional (product ruling): short clips get fewer cutaways
 {

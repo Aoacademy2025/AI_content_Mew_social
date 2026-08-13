@@ -151,7 +151,7 @@ export async function resolveHeroScriptBrandProfile(
   try {
     return await prisma.$transaction(async (tx) => {
       const row = await tx.brandProfile.findFirst({
-        where: { id: brandProfileId, userId },
+        where: { id: brandProfileId, userId, archivedAt: null },
       });
       if (!row) {
         return { ok: false as const, code: "NOT_FOUND" as const, message: "ไม่พบโปรไฟล์แบรนด์" };

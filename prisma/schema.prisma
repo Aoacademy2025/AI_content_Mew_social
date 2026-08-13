@@ -312,6 +312,7 @@ model BrandProfile {
   analysisNotes        String? // โน้ตสไตล์การเขียนที่ LLM สกัดได้
   activeRevisionNumber Int                     @default(0) // 0 = legacy profile not published into Brand Visual System yet
   frozenAt             DateTime? // downgrade overflow: readable/pinned, unavailable for new projects
+  archivedAt           DateTime? // hidden from new work; immutable revisions stay pinned to historical projects
   lastUsedAt           DateTime?
   createdAt            DateTime                @default(now())
   updatedAt            DateTime                @updatedAt
@@ -323,6 +324,7 @@ model BrandProfile {
 
   @@index([userId])
   @@index([userId, frozenAt, updatedAt])
+  @@index([userId, archivedAt, updatedAt])
 }
 
 // One mutable working copy per Brand Profile. The typed payload is validated by

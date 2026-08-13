@@ -133,8 +133,11 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
         paddingBottom: "calc(8px + env(safe-area-inset-bottom))",
       }}
     >
-      <span className="mr-auto hidden sm:inline" style={{ fontSize: 11.5, color: color.textFaint }}>
-        แก้บีโรลไว้ {ed.windowEdits.size} จุด
+      <span className="mr-auto hidden sm:flex sm:flex-col" style={{ lineHeight: 1.35 }}>
+        <span style={{ fontSize: 11.5, color: color.warning }}>ตัวอย่างยังเป็นวิดีโอเดิม</span>
+        <span style={{ fontSize: 10.5, color: color.textFaint }}>
+          แก้ B-roll ไว้ {ed.windowEdits.size} จุด · กดอัปเดตเพื่อดูผลจริง
+        </span>
       </span>
       <button
         type="button"
@@ -581,6 +584,7 @@ export function BrollWindowInspector({
   }
 
   const currentAssetPreview = effectiveAsset(index);
+  const hasPendingWindowEdit = index !== null && ed.windowEdits.has(index);
 
   const header = (
     <div className="flex flex-col gap-2.5">
@@ -656,10 +660,33 @@ export function BrollWindowInspector({
             on={enabled}
             onChange={(next) => {
               ed.setWindowEdit(index!, { enabled: next });
-              toast.success(next ? "เปิด B-roll ช่วงนี้แล้ว" : "ปิด B-roll ช่วงนี้แล้ว");
+              toast.success(next
+                ? "เปิด B-roll ไว้แล้ว — กดอัปเดตวิดีโอเพื่อใช้"
+                : "ปิด B-roll ไว้แล้ว — กดอัปเดตวิดีโอเพื่อใช้");
             }}
             ariaLabel={enabled ? "ปิด B-roll ช่วงนี้" : "เปิด B-roll ช่วงนี้"}
           />
+        </div>
+      )}
+      {hasPendingWindowEdit && fullBrollEditEnabled && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-start gap-2"
+          style={{
+            padding: "10px 12px",
+            borderRadius: radius.card,
+            background: "rgba(139,92,246,.09)",
+            border: "1px solid rgba(167,139,250,.30)",
+          }}
+        >
+          <Undo2 size={15} color={color.primary300} style={{ flex: "none", marginTop: 1 }} />
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span style={{ fontSize: 12, color: color.primary300 }}>ยังไม่ได้อัปเดตวิดีโอ</span>
+            <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>
+              ตัวอย่างยังเป็นวิดีโอเดิม · กด “อัปเดตวิดีโอ” ด้านล่างเพื่อสร้างตัวอย่างใหม่ฟรี
+            </span>
+          </div>
         </div>
       )}
       {!enabled && fullBrollEditEnabled && (

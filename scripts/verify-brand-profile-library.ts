@@ -11,6 +11,7 @@ execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.e
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const {
+    archiveBrandProfile,
     applyProjectBrandRevision,
     applyBrandRevisionDefaultsToProjectDraft,
     brandProfilePayloadSchema,
@@ -857,6 +858,54 @@ async function main() {
     pinnedLegacyRevision.visual.memorableCues,
     ["blue marker circle", "blue marker arrow"],
     "a pinned pre-ADR-0006 revision keeps deserializing with its stored cues intact",
+  );
+
+  // Support feature #47l593 — archive removes a Brand from new work without
+  // cascading into immutable revisions already pinned by historical projects.
+  const archiveUser = await prisma.user.create({
+    data: { name: "Archive owner", email: "brand-archive@example.test", plan: "BUSINESS" },
+  });
+  const archiveCreated = await createBrandProfileFromPayload({
+    userId: archiveUser.id,
+    payload: { ...basePayload, name: "Archive without history loss" },
+  });
+  const archiveProject = await prisma.editorProject.create({
+    data: { userId: archiveUser.id, title: "Pinned before archive" },
+  });
+  const pinnedBeforeArchive = await pinProjectBrandRevision({
+    userId: archiveUser.id,
+    projectId: archiveProject.id,
+    profileId: archiveCreated.profile.id,
+  });
+  const archived = await archiveBrandProfile({
+    userId: archiveUser.id,
+    profileId: archiveCreated.profile.id,
+  });
+  assert.equal(archived.replayed, false);
+  assert.ok(archived.archivedAt instanceof Date);
+  assert.equal(
+    (await prisma.editorProject.findUniqueOrThrow({ where: { id: archiveProject.id } })).brandProfileRevisionId,
+    pinnedBeforeArchive.revision.id,
+    "archiving preserves the immutable Revision pinned by an existing project",
+  );
+  assert.deepEqual(
+    (await getBrandProfileAvailabilityState({ userId: archiveUser.id })).activeProfileIds,
+    [],
+    "archived Brands no longer consume an active Brand Library slot",
+  );
+  await assert.rejects(
+    saveBrandProfileDraft({
+      userId: archiveUser.id,
+      profileId: archiveCreated.profile.id,
+      payload: basePayload,
+    }),
+    (error: unknown) => Boolean(error && typeof error === "object" && "code" in error && error.code === "NOT_FOUND"),
+    "an archived Brand cannot be edited through a stale tab",
+  );
+  assert.equal(
+    (await archiveBrandProfile({ userId: archiveUser.id, profileId: archiveCreated.profile.id })).replayed,
+    true,
+    "an ambiguous archive response is safe to retry",
   );
 
   // The /brands route is a server shell plus client islands; every source-level

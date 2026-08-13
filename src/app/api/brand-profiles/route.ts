@@ -18,7 +18,7 @@ export async function GET() {
     const authUser = access.user;
 
     const profiles = await prisma.brandProfile.findMany({
-      where: { userId: authUser.id },
+      where: { userId: authUser.id, archivedAt: null },
       orderBy: { createdAt: "desc" },
     });
 
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
     const user = await prisma.user.findUnique({ where: { id: authUser.id }, select: { plan: true } });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
-    const count = await prisma.brandProfile.count({ where: { userId: authUser.id } });
+    const count = await prisma.brandProfile.count({ where: { userId: authUser.id, archivedAt: null } });
     const capCheck = canCreateBrandProfile(user.plan, count);
     if (!capCheck.allowed) {
       return NextResponse.json({ code: "PROFILE_LIMIT", error: capCheck.message }, { status: 403 });

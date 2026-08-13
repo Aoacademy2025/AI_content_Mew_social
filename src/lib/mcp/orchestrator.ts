@@ -61,6 +61,8 @@ import {
 } from "@/lib/broll-windows";
 import {
   buildCutawayBackgroundTimeline,
+  cutawayPieceLimit,
+  effectiveManualCutawayPieceCount,
   manualCutawayWindowCount,
   planCutaway,
   planCutawayRecomposite,
@@ -1089,8 +1091,16 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         : Math.max(...upCaps.map((c) => c.endMs));
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-      const upManualWindowCount = manualCutawayWindowCount(input.targetClipCount);
-      const upWindows = upManualWindowCount > 0
+      const upManualWindowCount = manualCutawayWindowCount(input.targetClipCount, upDurMs);
+      const upVisibleTargetCount = effectiveManualCutawayPieceCount(input.targetClipCount, upDurMs);
+      const upWindows = cutawayPieceLimit(upDurMs) === 0
+        ? buildFixedCountBrollWindows(
+            upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
+            1,
+            upDurMs,
+            120,
+          )
+        : upManualWindowCount > 0
         ? buildFixedCountBrollWindows(
             upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
             upManualWindowCount,
@@ -1165,7 +1175,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
                 brollRegionPreference: input.brollRegionPreference,
                 brollVisualStyle: input.brollVisualStyle,
               }),
-              ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
+              ...(upVisibleTargetCount > 0 ? { targetClipCount: upVisibleTargetCount } : {}),
             },
           )
         : {

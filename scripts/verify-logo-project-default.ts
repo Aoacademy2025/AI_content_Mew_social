@@ -593,7 +593,7 @@ assert.match(
   "legacy recovery remains associated with the requested project id",
 );
 const idleWaitIndex = serverLoadSource.indexOf("await editorProjectSaveQueue.whenIdle(existingProjectId)");
-const getIndex = serverLoadSource.indexOf("await fetch(", idleWaitIndex);
+const getIndex = serverLoadSource.indexOf("await authenticatedFetch(", idleWaitIndex);
 const journalIndex = serverLoadSource.indexOf("readEditorProjectRecoveryJournal", getIndex);
 const decisionIndex = serverLoadSource.indexOf("decideEditorProjectBootstrap", journalIndex);
 assert.ok(
@@ -831,7 +831,7 @@ assert.doesNotMatch(retrySource, /setSaveRevision|setItem|writeEditorProjectReco
   "bootstrap Retry cannot turn defaults into recovery data");
 assert.match(
   autosaveSource,
-  /logoOverlay, projectId, projectReady,[\s\S]{0,220}setRecoveryState, saveRevision\]\);/,
+  /\[[^\]]*\blogoOverlay\b[^\]]*\bprojectId\b[^\]]*\bprojectReady\b[^\]]*\bsaveRevision\s*\]\);/,
   "save revision participates in the autosave effect dependencies",
 );
 assert.match(

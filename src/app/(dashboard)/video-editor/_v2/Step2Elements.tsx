@@ -43,6 +43,11 @@ import { HeroVoicePicker } from "./HeroVoicePicker";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { BrandVisualSelector, type BrandVisualPreflightStatus } from "./BrandVisualSelector";
 import { trackEvent } from "@/lib/client-telemetry";
+import {
+  cutawayPieceLimit,
+  effectiveManualCutawayPieceCount,
+  estimatedCutawayPieceCount,
+} from "@/lib/cutaway-plan";
 
 /** Hero AI Image locked-state copy (Task 5 D8) — one string pair for every locked
  *  surface (customer cards, AutoMix preset picker) so eligibility copy never drifts. */
@@ -83,8 +88,17 @@ function starterRemaining(p: V2Project): number | null {
     : null;
 }
 
-function heroDefaultImageCount(p: V2Project): number {
-  return heroDefaultTargetClipCount(0, starterRemaining(p));
+function heroDefaultImageCount(p: V2Project, durationSec = 0): number {
+  const defaultCount = heroDefaultTargetClipCount(0, starterRemaining(p));
+  return p.mode === "upload" && durationSec > 0
+    ? estimatedCutawayPieceCount(defaultCount, durationSec * 1_000)
+    : defaultCount;
+}
+
+function durationSafeTargetClipCount(p: V2Project, durationSec: number, requested: number): number {
+  return p.mode === "upload" && durationSec > 0
+    ? effectiveManualCutawayPieceCount(requested, durationSec * 1_000)
+    : requested;
 }
 
 function imageFundingLine(p: V2Project, requested: number, approximate = false): string {
@@ -124,14 +138,17 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   // "อัตโนมัติ" projected count — the SAME window-based estimate buildReceipt uses (an
   // all-AI preset over the same estimated duration), so this screen's numbers never
   // drift from what the Render Receipt discloses right before render.
-  const heroDefaultN = heroDefaultImageCount(p);
+  const heroDefaultN = heroDefaultImageCount(p, displaySec);
+  const uploadCutawayLimit = p.mode === "upload" && hasUploadDuration
+    ? cutawayPieceLimit(displaySec * 1_000)
+    : 60;
   const heroAutoProjectedCount = useMemo(
     () => estimateAutoMixAiImageCount(displaySec, { video: 0, photo: 0, ai: 1 }),
     [displaySec],
   );
   const heroHoldSec = useMemo(
-    () => heroHoldLengthSec(displaySec, p.targetClipCount),
-    [displaySec, p.targetClipCount],
+    () => heroHoldLengthSec(p.mode === "upload" ? displaySec / 2 : displaySec, p.targetClipCount),
+    [displaySec, p.mode, p.targetClipCount],
   );
   const brollCountLabel = p.brollSource === "kie-image"
     ? "จำนวนภาพ AI:"
@@ -166,6 +183,14 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const avatarLib = useHeygenAvatars();
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const step2TelemetryKeyRef = useRef("");
+  useEffect(() => {
+    if (p.mode !== "upload" || !hasUploadDuration || p.targetClipCount <= 0) return;
+    const durationSafeCount = effectiveManualCutawayPieceCount(
+      p.targetClipCount,
+      displaySec * 1_000,
+    );
+    if (durationSafeCount !== p.targetClipCount) p.setTargetClipCount(durationSafeCount);
+  }, [displaySec, hasUploadDuration, p.mode, p.setTargetClipCount, p.targetClipCount]);
   useEffect(() => {
     const measurableCohort = p.brandVisualCohort === "control"
       || p.brandVisualCohort === "treatment-10"
@@ -291,7 +316,8 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     // control themselves — otherwise re-selecting Hero AI Image after
                     // switching away would clobber an explicit "อัตโนมัติ" (0) choice.
                     if (o.value === "kie-image" && !p.heroCountTouched) {
-                      p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount, starterRemaining(p)));
+                      const requested = heroDefaultTargetClipCount(p.targetClipCount, starterRemaining(p));
+                      p.setTargetClipCount(durationSafeTargetClipCount(p, displaySec, requested));
                     }
                   }}
                   className="relative flex flex-col items-start gap-2 text-left"
@@ -333,6 +359,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     // (including picking "อัตโนมัติ") — stop the Hero default-8 from ever
                     // overriding it again this session (fast-follow fix, see p.heroCountTouched).
                     p.setHeroCountTouched(true);
+                    if (v === "custom" && p.mode === "upload" && hasUploadDuration && uploadCutawayLimit === 0) {
+                      p.setTargetClipCount(0);
+                      toast("คลิปสั้นกว่า 10 วินาที ระบบจะใช้คลิปต้นฉบับโดยไม่แทรก B-roll");
+                      return;
+                    }
                     p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || heroDefaultN));
                   }}
                   options={p.brollSource === "kie-image"
@@ -344,10 +375,13 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 />
                 {p.targetClipCount > 0 && (
                   <input
-                    type="number" min={1} max={60} value={p.targetClipCount}
+                    type="number" min={1} max={Math.max(1, uploadCutawayLimit)} value={p.targetClipCount}
                     onChange={(e) => {
                       p.setHeroCountTouched(true);
-                      p.setTargetClipCount(Math.max(1, Math.min(60, Number(e.target.value) || 1)));
+                      p.setTargetClipCount(Math.max(
+                        1,
+                        Math.min(Math.max(1, uploadCutawayLimit), Number(e.target.value) || 1),
+                      ));
                     }}
                     className="w-[64px]"
                     style={{ padding: "6px 8px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
@@ -370,6 +404,13 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   {/* Hold-length hint (Task 5 item 6) — warn when few images must cover a
                       long clip, so a budget-safe default doesn't quietly look static. */}
                   รูปละ ~{heroHoldSec} วิ{heroHoldSec > 12 ? " (ภาพค้างนาน — เพิ่มจำนวนรูปช่วยให้คลิปดูมีชีวิตขึ้น)" : ""}
+                </span>
+              )}
+              {p.mode === "upload" && hasUploadDuration && (
+                <span style={{ fontSize: 10.5, color: uploadCutawayLimit === 0 ? color.warning : color.textFaint, lineHeight: 1.6 }}>
+                  {uploadCutawayLimit === 0
+                    ? "คลิปสั้นกว่า 10 วินาที — ใช้คลิปต้นฉบับโดยไม่แทรก B-roll"
+                    : `คลิปนี้รองรับสูงสุด ${uploadCutawayLimit} ช่วง เพื่อให้ B-roll แต่ละช่วงยาวอย่างน้อย 3 วิ`}
                 </span>
               )}
               {p.targetClipCount === 0 && p.brollSource === "kie-image" && (
@@ -920,7 +961,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
   const hasAiRenderAccess = p.heroAiImageEligible || p.hasPersistedVisualPin;
   const heroImageUnlocked = hasAiRenderAccess && hasFunding;
   const autoMixUnlocked = hasAiRenderAccess && hasFunding;
-  const heroDefaultN = heroDefaultImageCount(p);
+  const heroDefaultN = heroDefaultImageCount(p, durationSec);
   const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
     { value: "stock", title: "สต็อกฟรี", desc: "0 เครดิต AI · Pexels/Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
     {
@@ -947,7 +988,8 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
       // control directly (incl. explicitly picking "อัตโนมัติ"), leave it alone — don't
       // clobber an explicit choice when they switch away and back (fast-follow fix).
       if (!p.heroCountTouched) {
-        p.setTargetClipCount(heroDefaultTargetClipCount(p.targetClipCount, starterRemaining(p)));
+        const requested = heroDefaultTargetClipCount(p.targetClipCount, starterRemaining(p));
+        p.setTargetClipCount(durationSafeTargetClipCount(p, durationSec, requested));
       }
       return;
     }

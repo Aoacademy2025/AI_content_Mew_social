@@ -364,7 +364,7 @@ export async function brandLookPreviewGenerationCount(input: {
   let sourceRevision: SavedPreviewLineage | null = null;
   if (input.profileId) {
     const profile = await prisma.brandProfile.findFirst({
-      where: { id: input.profileId, userId: input.userId },
+      where: { id: input.profileId, userId: input.userId, archivedAt: null },
       include: { draft: true, revisions: { orderBy: { version: "desc" }, take: 1 } },
     });
     const revision = profile?.revisions[0];
@@ -783,7 +783,7 @@ export async function prepareBrandLookPreview(input: {
   });
 
   const profile = await prisma.brandProfile.findFirst({
-    where: { id: input.profileId, userId: input.userId },
+    where: { id: input.profileId, userId: input.userId, archivedAt: null },
     include: {
       draft: true,
       revisions: { orderBy: { version: "desc" }, take: 1 },

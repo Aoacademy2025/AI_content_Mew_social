@@ -27,17 +27,73 @@ export type CutawayBackgroundAsset = {
 
 const rangeKey = (range: CutawayRange) => `${range.startMs}:${range.endMs}`;
 
+const MIN_VISIBLE_CUTAWAY_MS = 3_000;
+const MIN_CUTAWAY_CLIP_MS = 10_000;
+
+function normalizeVisibleCutawayCount(targetClipCount: unknown): number {
+  const raw = Number(targetClipCount);
+  return Number.isFinite(raw) && raw > 0
+    ? Math.min(60, Math.floor(raw))
+    : 0;
+}
+
+/**
+ * Maximum visible B-roll pieces that can fit while preserving the advertised
+ * 3-second minimum hold. Cutaway alternates presenter and B-roll, so each
+ * visible piece consumes two equal timeline windows. Clips below 10 seconds
+ * intentionally remain presenter-only (the original product design's short-
+ * clip fail-open rule).
+ */
+export function cutawayPieceLimit(durationMs: unknown): number {
+  const duration = Number(durationMs);
+  if (!Number.isFinite(duration) || duration < MIN_CUTAWAY_CLIP_MS) return 0;
+  return Math.min(60, Math.floor(duration / (MIN_VISIBLE_CUTAWAY_MS * 2)));
+}
+
+/** Customer-facing visible count after applying the duration safety limit. */
+export function effectiveManualCutawayPieceCount(
+  targetClipCount: unknown,
+  durationMs?: unknown,
+): number {
+  const requested = normalizeVisibleCutawayCount(targetClipCount);
+  if (durationMs === undefined) return requested;
+  return Math.min(requested, cutawayPieceLimit(durationMs));
+}
+
+/**
+ * Quote the number of B-roll pieces that can actually be visible in upload
+ * cutaway mode. Manual requests are duration-clamped; Auto estimates the same
+ * alternating 4-second timeline used by the worker, then counts only odd
+ * (visible B-roll) windows. This keeps setup, receipt, and provider ceilings
+ * aligned before transcription supplies exact semantic window boundaries.
+ */
+export function estimatedCutawayPieceCount(
+  targetClipCount: unknown,
+  durationMs: unknown,
+  windowMs: unknown = 4_000,
+): number {
+  const limit = cutawayPieceLimit(durationMs);
+  if (limit === 0) return 0;
+  const manual = normalizeVisibleCutawayCount(targetClipCount);
+  if (manual > 0) return Math.min(manual, limit);
+
+  const duration = Number(durationMs);
+  const requestedWindowMs = Number(windowMs);
+  const cadenceMs = Number.isFinite(requestedWindowMs) && requestedWindowMs > 0
+    ? requestedWindowMs
+    : 4_000;
+  const internalWindows = Math.max(1, Math.ceil(duration / cadenceMs));
+  return Math.min(limit, Math.floor(internalWindows / 2));
+}
+
 /**
  * `targetClipCount` in upload mode is a count of visible B-roll pieces, not a
  * count of the alternating presenter+B-roll timeline windows. The cutaway plan
  * starts on the presenter and uses every odd window for B-roll, so each visible
  * piece needs two internal windows. Public input remains capped at 60 pieces.
  */
-export function manualCutawayWindowCount(targetClipCount: unknown): number {
-  const raw = Number(targetClipCount);
-  const visibleCount = Number.isFinite(raw) && raw > 0
-    ? Math.min(60, Math.floor(raw))
-    : 0;
+export function manualCutawayWindowCount(targetClipCount: unknown, durationMs?: unknown): number {
+  const visibleCount = effectiveManualCutawayPieceCount(targetClipCount, durationMs);
   return visibleCount * 2;
 }
 

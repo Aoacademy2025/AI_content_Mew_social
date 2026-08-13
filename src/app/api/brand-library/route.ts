@@ -44,7 +44,7 @@ export async function GET() {
     const availability = await getBrandProfileAvailabilityState({ userId: auth.user.id });
     const [profiles, brandPreference, subtitlePresets, writingStyle, brandAssets, starterAllowance] = await Promise.all([
       prisma.brandProfile.findMany({
-        where: { userId: auth.user.id, activeRevisionNumber: { gt: 0 } },
+        where: { userId: auth.user.id, activeRevisionNumber: { gt: 0 }, archivedAt: null },
         orderBy: [{ frozenAt: "asc" }, { lastUsedAt: "desc" }, { updatedAt: "desc" }],
         include: {
           draft: true,

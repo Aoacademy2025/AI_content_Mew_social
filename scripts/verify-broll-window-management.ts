@@ -47,7 +47,7 @@ assert.doesNotMatch(compositeRoute, /no ranges => behave like full \(fail-open\)
 
 // M3 — a disabled window can never spend credits on an AI image.
 assert.match(inspector, /ปิด B-roll ช่วงนี้อยู่/u);
-assert.match(inspector, /disabled=\{aiBusy \|\| !finalPrompt \|\| !enabled\}/u);
+assert.match(inspector, /disabled=\{aiBusy \|\|[^\n]*!enabled/u);
 assert.match(inspector, /เปิด B-roll ช่วงนี้ก่อน/u);
 
 // P1 — uploaded/staged B-roll must never be silently dropped by Export or "Render new".
@@ -67,6 +67,12 @@ assert.match(mobile, /PendingBrollChangesDialog/u);
 assert.doesNotMatch(desktop, /onClick=\{onNewProject\}/u);
 assert.doesNotMatch(mobile, /onClick=\{onNewProject\}/u);
 assert.match(inspector, /อัปเดต B-roll แล้วส่งออก/u);
+
+// Support regression #odqpq2 — toggling a baked B-roll window stages a free
+// re-render; the current video preview cannot change until the batch is applied.
+// The UI must say that explicitly both in the inspector and the sticky action bar.
+assert.match(inspector, /ตัวอย่างยังเป็นวิดีโอเดิม/u);
+assert.match(inspector, /กด “อัปเดตวิดีโอ” ด้านล่าง/u);
 
 // Support regression cms4jnk0o02mhlcpiz462hd65 — a "new project" confirmation
 // must never promise only a re-render when both successful actions actually call

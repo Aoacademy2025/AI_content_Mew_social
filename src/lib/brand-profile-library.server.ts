@@ -101,6 +101,7 @@ export function legacyBrandProfileMutableWhere(
     userId,
     activeRevisionNumber: 0,
     frozenAt: null,
+    archivedAt: null,
     revisions: { none: {} },
   };
 }
@@ -253,13 +254,13 @@ async function reconcileBrandProfileAvailabilityForPlanInTransaction(
   const user = await tx.user.findUnique({ where: { id: userId }, select: { plan: true } });
   if (!user) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบบัญชีนี้");
   const profiles = await tx.brandProfile.findMany({
-    where: { userId, activeRevisionNumber: { gt: 0 } },
+    where: { userId, activeRevisionNumber: { gt: 0 }, archivedAt: null },
     orderBy: [{ lastUsedAt: "desc" }, { updatedAt: "desc" }, { createdAt: "asc" }],
   });
   const cap = limitsForPlan(user.plan).brandProfiles;
   if (!Number.isFinite(cap) || profiles.length <= cap) {
     await tx.brandProfile.updateMany({
-      where: { userId, activeRevisionNumber: { gt: 0 }, frozenAt: { not: null } },
+      where: { userId, activeRevisionNumber: { gt: 0 }, archivedAt: null, frozenAt: { not: null } },
       data: { frozenAt: null },
     });
     return {
@@ -289,6 +290,7 @@ async function reconcileBrandProfileAvailabilityForPlanInTransaction(
         where: {
           userId,
           activeRevisionNumber: { gt: 0 },
+          archivedAt: null,
           id: { in: keep },
           frozenAt: { not: null },
         },
@@ -300,6 +302,7 @@ async function reconcileBrandProfileAvailabilityForPlanInTransaction(
         where: {
           userId,
           activeRevisionNumber: { gt: 0 },
+          archivedAt: null,
           id: { in: frozen },
           frozenAt: null,
         },
@@ -332,13 +335,13 @@ async function reconcileBrandProfileAvailabilityForPlanInTransaction(
   const frozen = profiles.filter((profile) => !keepSet.has(profile.id)).map((profile) => profile.id);
   if (keep.length) {
     await tx.brandProfile.updateMany({
-      where: { userId, id: { in: keep }, frozenAt: { not: null } },
+      where: { userId, id: { in: keep }, archivedAt: null, frozenAt: { not: null } },
       data: { frozenAt: null },
     });
   }
   if (frozen.length) {
     await tx.brandProfile.updateMany({
-      where: { userId, id: { in: frozen }, frozenAt: null },
+      where: { userId, id: { in: frozen }, archivedAt: null, frozenAt: null },
       data: { frozenAt: new Date() },
     });
   }
@@ -357,6 +360,29 @@ export async function getBrandProfileAvailabilityState(input: {
     reconcileBrandProfileAvailabilityForPlanInTransaction(tx, input.userId));
 }
 
+/**
+ * Remove a Brand from every new-selection surface without deleting immutable
+ * revisions. Historical EditorProjects keep their revision foreign key and
+ * therefore continue to reproduce the exact look they were created with.
+ * Repeated calls are idempotent so an ambiguous DELETE response is safe to retry.
+ */
+export async function archiveBrandProfile(input: { userId: string; profileId: string }) {
+  return prisma.$transaction(async (tx) => {
+    const profile = await tx.brandProfile.findFirst({
+      where: { id: input.profileId, userId: input.userId },
+      select: { id: true, archivedAt: true },
+    });
+    if (!profile) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบแบรนด์นี้");
+    if (profile.archivedAt) return { profileId: profile.id, archivedAt: profile.archivedAt, replayed: true };
+    const archivedAt = new Date();
+    await tx.brandProfile.update({
+      where: { id: profile.id },
+      data: { archivedAt, frozenAt: null },
+    });
+    return { profileId: profile.id, archivedAt, replayed: false };
+  });
+}
+
 /** Resolve the one immutable Revision a newly-created project may pin.
  * Legacy Hero Script rows (revision 0) intentionally return null: adopting
  * them into Brand Library requires the creator's explicit import/publish
@@ -368,7 +394,7 @@ export async function resolveBrandProfileRevisionForNewProjectInTransaction(
   input: { userId: string; profileId: string },
 ): Promise<{ revisionId: string; payload: BrandProfilePayload } | null> {
   const profile = await tx.brandProfile.findFirst({
-    where: { id: input.profileId, userId: input.userId },
+    where: { id: input.profileId, userId: input.userId, archivedAt: null },
     select: { id: true, activeRevisionNumber: true },
   });
   if (!profile) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบแบรนด์นี้");
@@ -445,7 +471,7 @@ async function createBrandProfileFromPayloadInTransaction(
     if (!user) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบบัญชีนี้");
     const cap = limitsForPlan(user.plan).brandProfiles;
     const count = await tx.brandProfile.count({
-      where: { userId: input.userId, activeRevisionNumber: { gt: 0 } },
+      where: { userId: input.userId, activeRevisionNumber: { gt: 0 }, archivedAt: null },
     });
     if (Number.isFinite(cap) && count >= cap) {
       throw new BrandProfileLibraryError("PREFERRED_REQUIRED", `แผนนี้บันทึกแบรนด์ได้ ${cap} แบรนด์`);
@@ -707,7 +733,7 @@ export async function saveBrandProfileDraft(input: {
   const payload = parsedPayload(input.payload);
   return prisma.$transaction(async (tx) => {
     const profile = await tx.brandProfile.findFirst({
-      where: { id: input.profileId, userId: input.userId },
+      where: { id: input.profileId, userId: input.userId, archivedAt: null },
     });
     if (!profile) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบแบรนด์นี้");
     await assertBrandProfileWritableInTransaction(tx, input);
@@ -730,7 +756,7 @@ export async function publishBrandProfileDraft(input: {
 }) {
   return prisma.$transaction(async (tx) => {
     const profile = await tx.brandProfile.findFirst({
-      where: { id: input.profileId, userId: input.userId },
+      where: { id: input.profileId, userId: input.userId, archivedAt: null },
       include: { draft: true },
     });
     if (!profile) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบแบรนด์นี้");
@@ -793,7 +819,7 @@ async function pinProjectBrandRevisionInTransaction(
         where: { id: input.projectId, userId: input.userId },
         include: { brandProfileRevision: { select: { brandProfileId: true } } },
       }),
-      tx.brandProfile.findFirst({ where: { id: input.profileId, userId: input.userId } }),
+      tx.brandProfile.findFirst({ where: { id: input.profileId, userId: input.userId, archivedAt: null } }),
   ]);
   if (!project || !profile) {
     throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบโปรเจกต์หรือแบรนด์นี้");
