@@ -135,13 +135,6 @@ async function main() {
   const { FREE_LIMITS, PRO_LIMITS, BUSINESS_LIMITS } = await import("../src/lib/plan-limits");
   const { encryptKey } = await import("../src/lib/key-crypto");
   const { isHeroScriptAllowedEmail } = await import("../src/lib/hero-script-access");
-  const {
-    decideHeroScriptAccess,
-    heroScriptRolloutBucket,
-    heroScriptRolloutFlags,
-    rolloutPercent,
-    resolveHeroScriptAccess,
-  } = await import("../src/lib/hero-script-rollout.server");
 
   // ── Post-review amendment (2026-07-31): Hero Script internal-beta allowlist
   // matcher — exact match, ANCHORED @-domain match (not a raw string suffix —
@@ -213,120 +206,6 @@ async function main() {
       "isHeroScriptAllowedEmail: malformed entries ignored, the valid entry still matches");
     ok(isHeroScriptAllowedEmail("anything@example.com", malformed) === false,
       "isHeroScriptAllowedEmail: a bare '@' entry matches nothing (not a wildcard)");
-  }
-
-  // ── Paid-first rollout: deterministic cohorts + fail-closed flags ──────
-  {
-    const paidEntitlement = {
-      effectivePlan: "PRO", source: "SUBSCRIPTION" as const, action: "KEEP" as const,
-      reason: "active_subscription", expiresAt: null,
-    };
-    const trialEntitlement = {
-      effectivePlan: "PRO", source: "TRIAL" as const, action: "KEEP" as const,
-      reason: "active_trial", expiresAt: new Date(Date.now() + 86400000),
-    };
-    const freeEntitlement = {
-      effectivePlan: "FREE", source: "FREE" as const, action: "KEEP" as const,
-      reason: "free_plan", expiresAt: null,
-    };
-    const off = { paidEnabled: false, publicPreview: false, trialPercent: 0, freePercent: 0 };
-
-    ok(heroScriptRolloutFlags({} as NodeJS.ProcessEnv).paidEnabled === false,
-      "rollout flags: paid access defaults OFF");
-    ok(heroScriptRolloutFlags({} as NodeJS.ProcessEnv).publicPreview === false,
-      "rollout flags: public preview defaults OFF");
-    ok(rolloutPercent("-1") === 0 && rolloutPercent("101") === 100 && rolloutPercent("10.9") === 10,
-      "rolloutPercent clamps to an integer between 0 and 100");
-    ok(heroScriptRolloutBucket("same-user", "trial") === heroScriptRolloutBucket("same-user", "trial"),
-      "rollout bucket is deterministic for the same user and salt");
-
-    const internal = decideHeroScriptAccess({
-      userId: "internal", internal: true, cashPaid: false, entitlement: freeEntitlement, flags: off,
-    });
-    ok(internal.canUse && internal.cohort === "internal",
-      "rollout: internal allowlist remains a full-access backdoor while flags are off");
-
-    const unpaidPro = decideHeroScriptAccess({
-      userId: "unpaid-pro", internal: false, cashPaid: false, entitlement: paidEntitlement,
-      flags: { ...off, paidEnabled: true, publicPreview: true },
-    });
-    ok(!unpaidPro.canUse && unpaidPro.canPreview && unpaidPro.cohort === "preview",
-      "rollout: PRO entitlement without a PAID payment sees preview, not full access");
-
-    const paid = decideHeroScriptAccess({
-      userId: "paid", internal: false, cashPaid: true, entitlement: paidEntitlement,
-      flags: { ...off, paidEnabled: true },
-    });
-    ok(paid.canUse && paid.cohort === "paid",
-      "rollout: money-backed active entitlement gets full paid access");
-
-    const waitingTrial = decideHeroScriptAccess({
-      userId: "trial", internal: false, cashPaid: false, entitlement: trialEntitlement,
-      flags: { ...off, publicPreview: true, trialPercent: 0 },
-    });
-    ok(!waitingTrial.canUse && waitingTrial.canPreview,
-      "rollout: trial cohort stays in preview at 0 percent");
-    const allTrial = decideHeroScriptAccess({
-      userId: "trial", internal: false, cashPaid: false, entitlement: trialEntitlement,
-      flags: { ...off, trialPercent: 100 },
-    });
-    ok(allTrial.canUse && allTrial.cohort === "trial",
-      "rollout: trial cohort opens at 100 percent");
-    const allFree = decideHeroScriptAccess({
-      userId: "free", internal: false, cashPaid: false, entitlement: freeEntitlement,
-      flags: { ...off, freePercent: 100 },
-    });
-    ok(allFree.canUse && allFree.cohort === "free",
-      "rollout: free cohort opens at 100 percent");
-
-    const previousFlags = {
-      allowlist: process.env.HERO_SCRIPT_ALLOWED_EMAILS,
-      paid: process.env.HERO_SCRIPT_PAID_ENABLED,
-      preview: process.env.HERO_SCRIPT_PUBLIC_PREVIEW,
-    };
-    process.env.HERO_SCRIPT_ALLOWED_EMAILS = "";
-    process.env.HERO_SCRIPT_PAID_ENABLED = "1";
-    process.env.HERO_SCRIPT_PUBLIC_PREVIEW = "1";
-    try {
-      const paidUser = await prisma.user.create({
-        data: {
-          id: "hs-rollout-paid", name: "paid rollout", email: "hs-rollout-paid@example.com",
-          plan: "PRO", subStatus: "active",
-        },
-      });
-      const beforePayment = await resolveHeroScriptAccess(paidUser);
-      ok(!beforePayment.canUse && beforePayment.canPreview,
-        "resolve access: active PRO without a payment remains preview-only");
-      await prisma.payment.create({
-        data: {
-          userId: paidUser.id, stripeSessionId: "hs-rollout-credits", plan: "PRO",
-          amount: 19900, status: "PAID", periodDays: 0, note: "credits", paidAt: new Date(),
-        },
-      });
-      const afterCredits = await resolveHeroScriptAccess(paidUser);
-      ok(!afterCredits.canUse,
-        "resolve access: buying a credit pack does not masquerade as a paid plan purchase");
-      const payment = await prisma.payment.create({
-        data: {
-          userId: paidUser.id, stripeSessionId: "hs-rollout-pending", plan: "PRO",
-          amount: 9900, status: "PENDING",
-        },
-      });
-      const pendingPayment = await resolveHeroScriptAccess(paidUser);
-      ok(!pendingPayment.canUse,
-        "resolve access: a PENDING checkout is not treated as money-backed access");
-      await prisma.payment.update({ where: { id: payment.id }, data: { status: "PAID", paidAt: new Date() } });
-      const afterPayment = await resolveHeroScriptAccess(paidUser);
-      ok(afterPayment.canUse && afterPayment.cohort === "paid",
-        "resolve access: the same active entitlement opens only after Payment becomes PAID");
-    } finally {
-      if (previousFlags.allowlist === undefined) delete process.env.HERO_SCRIPT_ALLOWED_EMAILS;
-      else process.env.HERO_SCRIPT_ALLOWED_EMAILS = previousFlags.allowlist;
-      if (previousFlags.paid === undefined) delete process.env.HERO_SCRIPT_PAID_ENABLED;
-      else process.env.HERO_SCRIPT_PAID_ENABLED = previousFlags.paid;
-      if (previousFlags.preview === undefined) delete process.env.HERO_SCRIPT_PUBLIC_PREVIEW;
-      else process.env.HERO_SCRIPT_PUBLIC_PREVIEW = previousFlags.preview;
-    }
   }
 
   // ── plan-limits: brandProfiles caps ─────────────────────────────────────

@@ -73,32 +73,57 @@ model User {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
-  styles                   Style[]
-  contents                 Content[]
-  videos                   Video[]
-  mcpTokens                McpToken[]
-  videoJobs                VideoJob[]
-  images                   GeneratedImage[]
-  notifications            Notification[]
-  supportTickets           SupportTicket[]
-  couponRedemptions        CouponRedemption[]
-  payments                 Payment[]
-  telemetryEvents          TelemetryEvent[]
-  productUpdateReads       ProductUpdateRead[]
-  userMusic                UserMusic[]
-  avatarPresets            AvatarPreset[]
-  editorProjects           EditorProject[]
-  brandAssets              BrandAsset[]
-  brandPreference          BrandPreference?
-  editorStylePresets       EditorStylePreset[]
-  aiGenerationJobs         AiGenerationJob[]
-  brandProfiles            BrandProfile[]
-  scripts                  Script[]
-  scriptGenerationUsages   ScriptGenerationUsage[]
-  contentPreflights        ContentPreflight[]
-  projectVisualBeats       ProjectVisualBeat[]
-  brandLookPreviewBatches  BrandLookPreviewBatch[]
-  starterAiImageAllowances StarterAiImageAllowance[]
+  styles                          Style[]
+  contents                        Content[]
+  videos                          Video[]
+  mcpTokens                       McpToken[]
+  videoJobs                       VideoJob[]
+  images                          GeneratedImage[]
+  notifications                   Notification[]
+  supportTickets                  SupportTicket[]
+  couponRedemptions               CouponRedemption[]
+  payments                        Payment[]
+  telemetryEvents                 TelemetryEvent[]
+  productUpdateReads              ProductUpdateRead[]
+  userMusic                       UserMusic[]
+  avatarPresets                   AvatarPreset[]
+  editorProjects                  EditorProject[]
+  brandAssets                     BrandAsset[]
+  brandPreference                 BrandPreference?
+  editorStylePresets              EditorStylePreset[]
+  aiGenerationJobs                AiGenerationJob[]
+  brandProfiles                   BrandProfile[]
+  scripts                         Script[]
+  scriptGenerationUsages          ScriptGenerationUsage[]
+  contentPreflights               ContentPreflight[]
+  projectVisualBeats              ProjectVisualBeat[]
+  brandLookPreviewBatches         BrandLookPreviewBatch[]
+  starterAiImageAllowances        StarterAiImageAllowance[]
+  administratorGrants             AdministratorGrant[]
+  conversionTrialAiImageAllowance ConversionTrialAiImageAllowance?
+}
+
+/// Explicit non-cash access granted by an administrator. A paid-looking value
+/// in User.plan is presentation state only; this append-only record is the
+/// evidence used by paid-feature authorization and audit reporting.
+model AdministratorGrant {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan         Plan
+  reason       String
+  startsAt     DateTime  @default(now())
+  expiresAt    DateTime?
+  permanent    Boolean   @default(false)
+  grantedById  String
+  revokedAt    DateTime?
+  revokedById  String?
+  revokeReason String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId, revokedAt, expiresAt])
+  @@index([startsAt, expiresAt])
 }
 
 /// Email-backed Bundle entitlement. The purchase may arrive before a Clerk
@@ -914,6 +939,9 @@ model AiGenerationJob {
   startedAt                     DateTime?
   finishedAt                    DateTime?
   mediaExpiresAt                DateTime?
+  /// Stable, non-PII product origin used for authorization analytics and MAPC.
+  /// Examples: hero_video, automix, scene_reroll, brand_visual_preview, ai_studio.
+  productSurface                String?
   attempts                      AiGenerationAttempt[]
   brandLookPreviewItem          BrandLookPreviewItem?
 
@@ -925,10 +953,10 @@ model AiGenerationJob {
   // Covers the stale-reserved credit sweep (src/lib/ai-image-reconcile.ts), which
   // scans kind + chargeState against an updatedAt cutoff every 15 minutes.
   @@index([kind, chargeState, updatedAt])
+  @@index([productSurface, status, finishedAt])
 }
 
-// Activation entitlement for an account that has not yet paid. It follows the
-// signup/trial-origin 30-day window and therefore does not reset at trial expiry.
+// Legacy activation windows retained for audit and settlement compatibility.
 model StarterAiImageAllowance {
   id              String   @id @default(cuid())
   userId          String
@@ -941,6 +969,41 @@ model StarterAiImageAllowance {
 
   @@unique([userId, windowStartedAt])
   @@index([userId, windowStartedAt])
+}
+
+/// One-time Hero AI Image taste for the seven-day Conversion Trial. Legacy
+/// rolling windows remain in StarterAiImageAllowance as read-only audit rows.
+model ConversionTrialAiImageAllowance {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trialStartedAt DateTime
+  expiresAt      DateTime
+  limitImages    Int      @default(8)
+  reservedImages Int      @default(0)
+  usedImages     Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([trialStartedAt, expiresAt])
+}
+
+/// Counts-only daily history for the subscription North Star. No user IDs,
+/// emails, prompts, or other customer data are stored in snapshots.
+model NorthStarDailySnapshot {
+  id                    String   @id @default(cuid())
+  snapshotDate          String   @unique // YYYY-MM-DD in Asia/Bangkok
+  asOf                  DateTime
+  activeRecurringPayers Int
+  activeCreators        Int
+  monthlyCreators       Int
+  annualCreators        Int
+  videoCreators         Int
+  scriptCreators        Int
+  imageCreators         Int
+  createdAt             DateTime @default(now())
+
+  @@index([asOf])
 }
 
 // Every external provider submission is durable and auditable. Image jobs may

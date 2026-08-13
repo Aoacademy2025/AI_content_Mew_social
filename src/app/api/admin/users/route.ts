@@ -26,9 +26,13 @@ export async function GET() {
           select: { styles: true, contents: true, videos: true, images: true, supportTickets: true },
         },
         couponRedemptions: {
-          select: { coupon: { select: { code: true, durationDays: true, plan: true } }, redeemedAt: true },
+          select: { coupon: { select: { code: true, durationDays: true, plan: true, type: true } }, redeemedAt: true },
           orderBy: { redeemedAt: "desc" },
           take: 3,
+        },
+        administratorGrants: {
+          orderBy: { createdAt: "desc" },
+          take: 10,
         },
       },
     });

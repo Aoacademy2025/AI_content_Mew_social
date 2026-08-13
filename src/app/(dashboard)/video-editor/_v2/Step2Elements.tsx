@@ -43,6 +43,7 @@ import { HeroVoicePicker } from "./HeroVoicePicker";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { BrandVisualSelector, type BrandVisualPreflightStatus } from "./BrandVisualSelector";
 import { trackEvent } from "@/lib/client-telemetry";
+import { UpgradeModal } from "@/components/ui/upgrade-modal";
 import {
   cutawayPieceLimit,
   effectiveManualCutawayPieceCount,
@@ -192,7 +193,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     if (durationSafeCount !== p.targetClipCount) p.setTargetClipCount(durationSafeCount);
   }, [displaySec, hasUploadDuration, p.mode, p.setTargetClipCount, p.targetClipCount]);
   useEffect(() => {
-    const measurableCohort = p.brandVisualCohort === "control"
+    const measurableCohort = p.brandVisualCohort === "rollout-wait"
       || p.brandVisualCohort === "treatment-10"
       || p.brandVisualCohort === "treatment-50"
       || p.brandVisualCohort === "treatment-100";
@@ -957,6 +958,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
  * locked with an upgrade badge until `p.heroAiImageEligible` (Task 4's plan gate —
  * beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS/active-trial) turns true. */
 function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; durationSec: number }) {
+  const [lockedFeature, setLockedFeature] = useState<"hero_ai_image" | "automix" | null>(null);
   const hasFunding = p.hasPersistedVisualPin || starterRemaining(p) === null || (starterRemaining(p) ?? 0) > 0;
   const hasAiRenderAccess = p.heroAiImageEligible || p.hasPersistedVisualPin;
   const heroImageUnlocked = hasAiRenderAccess && hasFunding;
@@ -975,13 +977,28 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
     { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} /> },
   ];
 
+  function showLockedPreview(feature: "hero_ai_image" | "automix") {
+    const accessMode = p.heroAiImageAccess?.mode ?? "preview";
+    const source = p.heroAiImageAccess?.source ?? "none";
+    trackEvent("feature_card_clicked", {
+      step: "editor.step2",
+      status: "locked",
+      properties: { feature, accessMode, source, surface: "broll_source_card" },
+    });
+    trackEvent("locked_preview_viewed", {
+      step: "editor.step2",
+      properties: { feature, accessMode, source, surface: "upgrade_modal" },
+    });
+    setLockedFeature(feature);
+  }
+
   function selectSource(value: "stock" | "kie-image" | "automix") {
     if (value === "stock") {
       p.setMixPreset("free");
       return;
     }
     if (value === "kie-image") {
-      if (!heroImageUnlocked) return;
+      if (!heroImageUnlocked) return showLockedPreview("hero_ai_image");
       p.setBrollSource("kie-image");
       // Hero defaults to 8 and clamps to remaining starter allowance — a fresh
       // selection lands on a concrete, budget-safe quote. Once the user has touched the count
@@ -993,7 +1010,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
       }
       return;
     }
-    if (!autoMixUnlocked) return;
+    if (!autoMixUnlocked) return showLockedPreview("automix");
     p.setMixPreset(p.mixPreset === "full" ? "full" : "recommended");
   }
 
@@ -1018,7 +1035,6 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
             <button
               key={option.value}
               type="button"
-              disabled={locked}
               title={locked ? HERO_UPGRADE_TITLE : undefined}
               onClick={() => selectSource(option.value)}
               className="relative flex min-h-11 flex-col items-start gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2"
@@ -1027,7 +1043,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
                 padding: "12px 14px",
                 background: selected ? color.selectedBg : color.cardBg,
                 border: `1px solid ${selected ? color.selectedBorder : color.cardBorder}`,
-                cursor: locked ? "not-allowed" : "pointer",
+                cursor: "pointer",
                 opacity: locked ? 0.58 : 1,
                 outlineColor: color.primary300,
                 transition: "background 150ms ease, border-color 150ms ease, opacity 150ms ease",
@@ -1077,6 +1093,35 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
           <MixPresetButtons p={p} durationSec={durationSec} />
         </div>
       )}
+      <UpgradeModal
+        open={lockedFeature !== null}
+        onClose={() => setLockedFeature(null)}
+        title={p.heroAiImageAccess?.reason === "allowance_exhausted"
+          ? "ใช้สิทธิ์ทดลอง Hero AI Image ครบแล้ว"
+          : `${lockedFeature === "automix" ? "AutoMix" : "Hero AI Image"} สำหรับสมาชิก PRO/BUSINESS`}
+        message={p.heroAiImageAccess?.reason === "allowance_exhausted"
+          ? "คุณทดลองสร้างครบ 8 ภาพแล้ว ผลงานเดิมยังอยู่ครบ อัปเกรดเพื่อสร้างภาพใหม่ต่อได้ทันที"
+          : p.heroAiImageAccess?.reason === "trial_expired"
+            ? "ช่วงทดลอง 7 วันสิ้นสุดแล้ว สมัครสมาชิกรายเดือนหรือรายปีเพื่อสร้างภาพต่อ"
+            : "สร้างภาพที่เข้ากับแต่ละฉาก ลดเวลาหาภาพ และส่งต่อเข้า Video Editor ในขั้นตอนเดียว"}
+        benefits={[
+          "สร้างภาพ Hero AI ตามบริบทของแต่ละฉาก",
+          "ใช้ AutoMix ผสมสต็อกและภาพ AI อัตโนมัติ",
+          "คิดเครดิตตามจำนวนภาพจริง พร้อมคืนเมื่อสร้างไม่สำเร็จ",
+        ]}
+        ctaLabel="ดูแผนรายเดือน / รายปี"
+        pricingHref={`/pricing?source=${lockedFeature ?? "hero_ai_image"}_preview`}
+        hideCta={p.heroAiImageAccess?.reason === "feature_off" || p.heroAiImageAccess?.reason === "suspended"}
+        onCtaClick={() => trackEvent("pricing_cta_clicked", {
+          step: "editor.step2",
+          properties: {
+            feature: lockedFeature ?? "hero_ai_image",
+            accessMode: p.heroAiImageAccess?.mode ?? "preview",
+            source: p.heroAiImageAccess?.source ?? "none",
+            surface: "upgrade_modal",
+          },
+        })}
+      />
     </div>
   );
 }

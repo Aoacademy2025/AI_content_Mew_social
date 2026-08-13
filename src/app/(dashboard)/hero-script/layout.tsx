@@ -12,7 +12,10 @@ export default async function HeroScriptLayout({ children }: { children: React.R
   const access = await resolveHeroScriptAccess(user);
   if (!access.canUse) {
     if (access.canPreview) {
-      return <HeroScriptLockedPreview entitlementSource={access.entitlementSource} />;
+      return <HeroScriptLockedPreview
+        entitlementSource={access.entitlementSource}
+        isTrial={Boolean(user.trialEndsAt && user.trialEndsAt > new Date())}
+      />;
     }
     redirect("/dashboard");
   }

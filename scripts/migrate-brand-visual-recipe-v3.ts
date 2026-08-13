@@ -52,7 +52,11 @@ function readArgs(argv: string[]): { apply: boolean } {
 /** Internal admission, evaluated with the kill switch neutralized: the question
  * here is "who owns this row", not "who may use the feature right now". */
 function isInternalOwner(owner: { id: string; email: string; role: string; createdAt: Date }): boolean {
-  return decideBrandVisualAccess(owner, { ...brandVisualRolloutFlags(), enabled: true }).cohort === "internal";
+  return decideBrandVisualAccess(
+    owner,
+    { canUsePaidFeatures: false, source: "none" },
+    { ...brandVisualRolloutFlags(), enabled: true },
+  ).cohort === "internal";
 }
 
 function storedRecipeVersion(visualRecipeJson: string): string | null {

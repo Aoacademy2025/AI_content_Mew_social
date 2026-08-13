@@ -37,7 +37,7 @@ export async function POST(req: Request) {
       const reusedCount = batch.items.filter((item) => item.sourceType === "reused").length;
       return NextResponse.json({ batch, profileCreated: false, generatedCount, reusedCount, replayed: true });
     }
-    if (!auth.access.canUse) return brandVisualLockedResponse();
+    if (!auth.access.canUse) return brandVisualLockedResponse(auth.access);
     const parsed = brandProfilePayloadSchema.safeParse(body?.payload ?? body);
     if (!parsed.success) {
       return NextResponse.json({ code: "INVALID_DRAFT", error: parsed.error.issues[0]?.message }, { status: 400 });

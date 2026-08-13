@@ -78,6 +78,19 @@ type JobOutcomes = {
 
 type InsightsResponse = {
   range: { days: number; since: string; until: string };
+  northStar: {
+    metric: "MAPC"; label: string; asOf: string;
+    window: { days: 30; since: string; until: string };
+    activeRecurringPayers: number; activeCreators: number; creatorRatePct: number;
+    monthlyCreators: number; annualCreators: number;
+    outcomes: { videoCreators: number; scriptCreators: number; imageCreators: number };
+    formula: string; exclusions: string[];
+    history: Array<{
+      snapshotDate: string; asOf: string; activeRecurringPayers: number; activeCreators: number;
+      monthlyCreators: number; annualCreators: number; videoCreators: number;
+      scriptCreators: number; imageCreators: number;
+    }>;
+  };
   activation: ActivationData;
   renderStats: RenderStats;
   jobOutcomes: JobOutcomes;
@@ -88,6 +101,11 @@ type InsightsResponse = {
 type ReconcileApplyResponse = { error?: string; applied?: { completed?: number; failed?: number; skipped?: number } | null };
 
 const metricHelp: Record<string, string> = {
+  "MAPC": "Monthly Active Paying Creators — จำนวนสมาชิกที่จ่ายแบบรายเดือนหรือรายปีและยัง active ซึ่งสร้างผลลัพธ์สำเร็จอย่างน้อย 1 อย่างใน 30 วันที่ผ่านมา แหล่งข้อมูล: Payment + Subscription/Bundle + Video/Script/AiGenerationJob",
+  "Recurring payer": "สมาชิกที่มีรอบชำระรายเดือนหรือรายปีซึ่งยัง active และมีหลักฐานเงินเข้า ไม่รวม FREE, Trial, คูปอง หรือสิทธิ์ที่แอดมินให้เพียงอย่างเดียว",
+  "Durable outcome": "ผลงานที่ระบบบันทึกและส่งมอบสำเร็จ: วิดีโอเสร็จพร้อมไฟล์, สคริปต์ที่บันทึก, หรือ Hero AI Image ที่ settled พร้อม URL ไม่รวม preview, งานล้มเหลว, ยกเลิก และ retry",
+  "Creator rate": "MAPC ÷ ผู้จ่ายแบบ recurring ที่ยัง active × 100 ใช้ดูว่าลูกค้าที่จ่ายเงินกลับมาสร้างคุณค่าจริงกี่เปอร์เซ็นต์ใน 30 วัน",
+  "Monthly / Annual": "แบ่ง MAPC ตามรอบชำระที่ยัง active หากบัญชีมีทั้งรายเดือนและรายปีพร้อมกัน จะจัดอยู่ฝั่งรายเดือนเพื่อไม่ให้นับคนซ้ำ",
   "Health Score": "คะแนนสุขภาพระบบ 0–100 — คิดเฉพาะ error ของระบบเรา (ไม่รวมคีย์ลูกค้า/noise) + render p95 + video completion + งานค้าง ยิ่งใกล้ 100 ยิ่งดี",
   "Error telemetry": "เหตุการณ์ error จาก telemetry ฝั่ง client+server (ตัด noise/คีย์ลูกค้า/quota ออกแล้ว) — เป็น 'สัญญาณ' ไม่ใช่จำนวนบั๊กชี้ขาด เพราะ editor v2 แทบไม่ยิง telemetry. จำนวนบั๊กระบบที่เชื่อถือได้ (authoritative) ดูที่แผง 'งานจริง (server)' ซึ่งนับจาก VideoJob",
   "Job outcomes": "ผลงานจริงจาก VideoJob ฝั่ง server (status เซิร์ฟเวอร์เขียน ไม่หายตอนปิดแท็บ) — บอกว่างานที่ล้มเหลวพังที่ขั้นไหน และเป็นบั๊กเราหรือคีย์ลูกค้า",
@@ -178,6 +196,7 @@ export default function AdminInsightsPage() {
   const [reconcileBusy, setReconcileBusy] = useState(false);
   const [reconcileMessage, setReconcileMessage] = useState<string | null>(null);
   const [devOpen, setDevOpen] = useState(false);
+  const northStar = data?.northStar;
 
   useEffect(() => {
     let cancelled = false;
@@ -253,6 +272,42 @@ export default function AdminInsightsPage() {
             ))}
           </div>
         </header>
+
+        {/* Subscription North Star is intentionally independent from the 1/7/30-day
+            system-health switch: its contract is always a trailing 30-day window. */}
+        {northStar && (
+          <section className="overflow-hidden border-y border-emerald-300/20 bg-[linear-gradient(110deg,rgba(6,78,59,.3),rgba(8,11,18,0)_70%)] py-6 sm:py-8" aria-labelledby="mapc-heading">
+            <div className="grid gap-7 lg:grid-cols-[1.25fr_.75fr] lg:items-end">
+              <div>
+                <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-emerald-300">
+                  North Star · MAPC <InfoTip label="MAPC" />
+                </div>
+                <h2 id="mapc-heading" className="mt-3 max-w-3xl text-2xl font-semibold leading-tight text-white sm:text-4xl">
+                  คนจ่ายที่กลับมาสร้างจริง <span className="whitespace-nowrap text-emerald-300">{formatNumber(northStar.activeCreators)} คน</span>
+                </h2>
+                <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
+                  จากผู้จ่ายรายเดือน/รายปีที่ยัง active {formatNumber(northStar.activeRecurringPayers)} คน · สร้างผลงานสำเร็จใน 30 วัน {formatNumber(northStar.creatorRatePct)}%
+                  <span className="ml-1 inline-flex align-middle"><InfoTip label="Creator rate" /></span>
+                </p>
+                <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-400">
+                  <span className="inline-flex items-center gap-1">รายเดือน <strong className="text-white">{formatNumber(northStar.monthlyCreators)}</strong></span>
+                  <span className="inline-flex items-center gap-1">รายปี <strong className="text-white">{formatNumber(northStar.annualCreators)}</strong> <InfoTip label="Monthly / Annual" /></span>
+                  <span className="inline-flex items-center gap-1">ฐานผู้จ่าย recurring <InfoTip label="Recurring payer" /></span>
+                </div>
+              </div>
+
+              <div className="border-l border-white/10 pl-0 lg:pl-7">
+                <div className="mb-3 flex items-center gap-1.5 text-xs font-semibold text-slate-300">ผลลัพธ์ที่นับ <InfoTip label="Durable outcome" /></div>
+                <dl className="grid grid-cols-3 gap-3">
+                  <div><dt className="text-[11px] text-slate-500">วิดีโอ</dt><dd className="mt-1 text-xl font-semibold text-white">{formatNumber(northStar.outcomes.videoCreators)}</dd></div>
+                  <div><dt className="text-[11px] text-slate-500">สคริปต์</dt><dd className="mt-1 text-xl font-semibold text-white">{formatNumber(northStar.outcomes.scriptCreators)}</dd></div>
+                  <div><dt className="text-[11px] text-slate-500">Hero Image</dt><dd className="mt-1 text-xl font-semibold text-white">{formatNumber(northStar.outcomes.imageCreators)}</dd></div>
+                </dl>
+                <p className="mt-4 text-[11px] leading-5 text-slate-500">แต่ละคนอาจสร้างหลายประเภท จึงไม่ควรบวกสามช่องเข้าด้วยกัน · อัปเดต {new Date(northStar.asOf).toLocaleString("th-TH")}</p>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* ── 1. Revenue & Customers (driven by the same global `days`) ────────── */}
         <CostMarginPanel days={days} />

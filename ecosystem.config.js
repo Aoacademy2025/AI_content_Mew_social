@@ -6,6 +6,9 @@ const { resolveHeroImageRouteRuntimeEnv } = require("./deploy/pm2-runtime-env");
 // the application's .env. Load it before resolving process-backed secrets; otherwise
 // --update-env can replace a valid saved secret with an empty fallback.
 const applicationEnv = dotenv.config({ path: join(__dirname, ".env"), quiet: true }).parsed ?? {};
+const reviewedRuntimeValue = (key, fallback = "") => (
+  applicationEnv[key] ?? process.env[key] ?? fallback
+);
 
 // R2 credentials and rollout switches live in a separate root-only file so they
 // do not need to be duplicated into the application's general .env. Keep the
@@ -73,16 +76,28 @@ const heroImageRuntimeEnv = Object.freeze({
   HERO_RUNPOD_COST_STALE_MS: "10800000",
 });
 
+// Subscription-first AI access switches must survive every PM2 --update-env
+// restart. Load only the reviewed values from the persisted application env;
+// Trial/Free Hero Script generation stays fail-closed even if an old shell
+// happens to export a stale percentage.
+const subscriptionFirstAiRuntimeEnv = Object.freeze({
+  HERO_AI_IMAGE_PUBLIC: reviewedRuntimeValue("HERO_AI_IMAGE_PUBLIC", "0"),
+  HERO_SCRIPT_PAID_ENABLED: reviewedRuntimeValue("HERO_SCRIPT_PAID_ENABLED", "0"),
+  HERO_SCRIPT_PUBLIC_PREVIEW: reviewedRuntimeValue("HERO_SCRIPT_PUBLIC_PREVIEW", "0"),
+  HERO_SCRIPT_TRIAL_PERCENT: "0",
+  HERO_SCRIPT_FREE_PERCENT: "0",
+});
+
 // Brand Visual rollout is runtime-authoritative: the web process admits new
 // work and the MCP worker finishes accepted jobs. PM2 only forwards keys named
 // in an app's env block, so keep the complete flag set in one shared object;
 // merely loading .env above is not enough to survive --update-env deploys.
 const brandVisualRuntimeEnv = Object.freeze({
-  BRAND_VISUAL_SYSTEM_ENABLED: process.env.BRAND_VISUAL_SYSTEM_ENABLED || "0",
-  BRAND_VISUAL_ROLLOUT_PERCENT: process.env.BRAND_VISUAL_ROLLOUT_PERCENT || "0",
-  BRAND_VISUAL_ROLLOUT_STARTED_AT: process.env.BRAND_VISUAL_ROLLOUT_STARTED_AT || "",
-  BRAND_VISUAL_50_PERCENT_STARTED_AT: process.env.BRAND_VISUAL_50_PERCENT_STARTED_AT || "",
-  BRAND_VISUAL_TEST_EMAILS: process.env.BRAND_VISUAL_TEST_EMAILS || "",
+  BRAND_VISUAL_SYSTEM_ENABLED: reviewedRuntimeValue("BRAND_VISUAL_SYSTEM_ENABLED", "0"),
+  BRAND_VISUAL_ROLLOUT_PERCENT: reviewedRuntimeValue("BRAND_VISUAL_ROLLOUT_PERCENT", "0"),
+  BRAND_VISUAL_ROLLOUT_STARTED_AT: reviewedRuntimeValue("BRAND_VISUAL_ROLLOUT_STARTED_AT"),
+  BRAND_VISUAL_50_PERCENT_STARTED_AT: reviewedRuntimeValue("BRAND_VISUAL_50_PERCENT_STARTED_AT"),
+  BRAND_VISUAL_TEST_EMAILS: reviewedRuntimeValue("BRAND_VISUAL_TEST_EMAILS"),
 });
 
 // The long-avatar adjustment canary must be part of the checked-in PM2 contract.
@@ -140,6 +155,7 @@ module.exports = {
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
         ...heroImageRuntimeEnv,
+        ...subscriptionFirstAiRuntimeEnv,
         ...brandVisualRuntimeEnv,
         ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
@@ -166,6 +182,7 @@ module.exports = {
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
         ...heroImageRuntimeEnv,
+        ...subscriptionFirstAiRuntimeEnv,
         ...brandVisualRuntimeEnv,
         ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
@@ -230,6 +247,19 @@ module.exports = {
       cwd: "/var/www/ai-content",
       script: "scripts/renewal-reminders.js",
       cron_restart: "0 9 * * *", // every day at 9:00 AM — remind PromptPay/one-time users before plan expiry
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+        CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
+    {
+      name: "north-star-snapshot",
+      cwd: "/var/www/ai-content",
+      script: "scripts/north-star-snapshot.js",
+      cron_restart: "15 0 * * *", // daily 00:15 Asia/Bangkok — counts-only MAPC history
       autorestart: false,
       watch: false,
       env: {

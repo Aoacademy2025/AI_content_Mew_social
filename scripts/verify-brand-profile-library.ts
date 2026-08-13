@@ -277,7 +277,10 @@ async function main() {
     "an invalid source job cannot leave a quota-consuming profile behind",
   );
   const starterPromotionUser = await prisma.user.create({
-    data: { name: "Starter promotion", email: "starter-promotion@example.test", plan: "FREE" },
+    data: {
+      name: "Starter promotion", email: "starter-promotion@example.test", plan: "FREE",
+      trialStartedAt: new Date(), trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    },
   });
   const starterPromotionProject = await prisma.editorProject.create({
     data: { userId: starterPromotionUser.id, title: "Starter must see a real AI result" },

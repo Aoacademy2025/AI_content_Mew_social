@@ -122,7 +122,7 @@ Brand Look Preview ใช้ภาพ 3 ภาพ ได้แก่ Hook, Expla
 
 - Free ยังมี 5 Render Minutes ต่อ 30 วันตามเดิม
 - Free สร้าง Brand Profile ได้ 1 โปรไฟล์
-- สิทธิ์ทดลองภาพ AI 8 ภาพเริ่มตั้งแต่วันสมัครและใช้ได้ระหว่าง PRO Trial 7 วัน ผู้ที่ยังไม่ชำระเงินนำสิทธิ์คงเหลือต่อไปสู่ Free จนครบ usage window 30 วันเดิม การหมด Trial ไม่แจกอีก 8 ภาพรอบสอง หลังจากนั้นบัญชี Free จึงรีเซ็ตตามรอบ 30 วัน
+- ข้อตกลงเดิมส่วนนี้ถูกแทนที่โดย ADR 0008: สิทธิ์ทดลองภาพ AI 8 ภาพใช้ได้เฉพาะ Conversion Trial 7 วันแบบครั้งเดียวต่อ identity เท่านั้น ไม่ต่ออายุทุก 30 วัน ภาพที่ส่งมอบไม่สำเร็จคืนสิทธิ์ และ FREE นอก Trial เห็น locked preview
 - Free แก้รายละเอียด Brand Profile ได้ครบทั้งแนวภาพ สี บุคลิก จุดจำ เสียง และลายน้ำ แต่ค่าเหล่านี้อยู่ใน “ตั้งค่าเพิ่มเติม” เพื่อให้ flow แรกยังง่าย การอัปเกรดขายกำลังการผลิตและจำนวนแบรนด์ ไม่ใช่สิทธิ์กรอกข้อมูลแบรนด์
 - ผู้ใช้สามารถใช้ 8 ภาพกับคลิปสั้นประมาณ 30 วินาที หรือกระจายใช้ใน AutoMix
 - นาทีที่เหลือยังสร้างด้วย Stock B-roll ได้
@@ -156,7 +156,7 @@ Brand Look Preview ใช้ภาพ 3 ภาพ ได้แก่ Hook, Expla
 - Brand Library, Brand Profile, Draft และ immutable Revision
 - ค่าเริ่มต้นสคริปต์ เสียง Subtitle โลโก้/ลายน้ำ และ Brand Visual Language ที่ override รายคลิปได้
 - ภาพไม่มีตัวอักษร, Z-Image เส้นทางเดียว, 2 เครดิตต่อภาพ
-- Starter AI Image Allowance 8 ภาพต่อ usage window และ Free Brand Profile 1 โปรไฟล์
+- Conversion Trial Hero AI Image Allowance 8 ภาพภายใน Trial 7 วันแบบครั้งเดียว และ Free Brand Profile 1 โปรไฟล์
 - กติกาแก้สคริปต์ เปลี่ยนแนวภาพ reroll และ downgrade ที่เคาะในเอกสารนี้
 
 ### Fast-follow

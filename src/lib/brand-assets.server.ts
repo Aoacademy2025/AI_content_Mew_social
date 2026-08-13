@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import sharp from "sharp";
+import sharp, { type Metadata, type OutputInfo } from "sharp";
 import {
   normalizeLogoOverlayConfig,
   type BrandAssetView,
@@ -199,7 +199,7 @@ export async function saveBrandAsset(input: {
   }
   if (bytes.length === 0) throw new BrandAssetError("empty_file", 400);
 
-  let metadata: sharp.Metadata;
+  let metadata: Metadata;
   try {
     metadata = await sharp(bytes, { failOn: "error" }).metadata();
   } catch {
@@ -215,7 +215,7 @@ export async function saveBrandAsset(input: {
     throw new BrandAssetError("dimensions_too_large", 400);
   }
 
-  let normalized: { data: Buffer; info: sharp.OutputInfo };
+  let normalized: { data: Buffer; info: OutputInfo };
   try {
     normalized = await sharp(bytes, { failOn: "error" })
       .rotate()

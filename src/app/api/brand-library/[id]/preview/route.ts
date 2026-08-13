@@ -36,7 +36,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       const reusedCount = batch.items.filter((item) => item.sourceType === "reused").length;
       return NextResponse.json({ batch, generatedCount, reusedCount, replayed: true });
     }
-    if (!auth.access.canUse) return brandVisualLockedResponse();
+    if (!auth.access.canUse) return brandVisualLockedResponse(auth.access);
     const projectId = typeof body?.projectId === "string" ? body.projectId : undefined;
     const preflightId = typeof body?.preflightId === "string" && body.preflightId.trim()
       ? body.preflightId.trim()

@@ -17,19 +17,26 @@ import {
   HardDrive,
   MessageSquareWarning,
   Ticket,
-  ChevronDown,
-  Check,
   BadgeDollarSign,
+  KeyRound,
 } from "lucide-react";
 import { toast } from "sonner";
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 
 // Violet single-accent house tokens (from video-editor/_v2/tokens.ts) — see admin/page.tsx
 const VIOLET = "#8B5CF6";
 const VIOLET_LIGHT = "#B9A6FF";
 // Flat v2 card surface — inline var(--ui-*), matches settings/admin (no .ve-card helper)
 const cardStyle: React.CSSProperties = { background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" };
-const dropdownStyle: React.CSSProperties = { background: "var(--ui-card-bg-3)", borderColor: "var(--ui-card-border)", backdropFilter: "blur(8px)" };
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 
@@ -43,7 +50,20 @@ interface AdminUser {
   suspended: boolean;
   createdAt: string;
   _count: { styles: number; contents: number; videos: number; images: number; supportTickets: number };
-  couponRedemptions: { coupon: { code: string; durationDays: number; plan: PlanKey }; redeemedAt: string }[];
+  couponRedemptions: { coupon: { code: string; durationDays: number; plan: PlanKey; type?: string }; redeemedAt: string }[];
+  administratorGrants: {
+    id: string;
+    plan: "PRO" | "BUSINESS";
+    reason: string;
+    startsAt: string;
+    expiresAt: string | null;
+    permanent: boolean;
+    grantedById: string;
+    revokedAt: string | null;
+    revokedById: string | null;
+    revokeReason: string | null;
+    createdAt: string;
+  }[];
 }
 
 const PLAN_STYLES: Record<PlanKey, { bg: string; text: string; icon: React.ElementType | null; label: string }> = {
@@ -79,6 +99,11 @@ export default function AdminUsersPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [cacheInfo, setCacheInfo] = useState<Record<string, CacheInfo>>({});
   const [cacheLoading, setCacheLoading] = useState<string | null>(null);
+  const [grantTarget, setGrantTarget] = useState<AdminUser | null>(null);
+  const [grantPlan, setGrantPlan] = useState<"PRO" | "BUSINESS">("PRO");
+  const [grantReason, setGrantReason] = useState("");
+  const [grantExpiresAt, setGrantExpiresAt] = useState("");
+  const [grantPermanent, setGrantPermanent] = useState(false);
 
   const fetchUsers = useCallback(() => {
     setLoading(true);
@@ -98,7 +123,13 @@ export default function AdminUsersPage() {
       plan?: PlanKey;
       role?: "ADMIN" | "USER";
       suspended?: boolean;
-      markPaid?: { plan: "PRO" | "BUSINESS"; periodDays: number };
+      administratorGrant?: {
+        plan: "PRO" | "BUSINESS";
+        reason: string;
+        expiresAt: string | null;
+        permanent: boolean;
+      };
+      revokeAdministratorGrant?: { reason: string };
     }
   ) {
     setActionLoading(id);
@@ -108,22 +139,47 @@ export default function AdminUsersPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       });
-      if (!res.ok) throw new Error("Failed");
-      const updated: AdminUser = await res.json();
+      const responseBody = await res.json();
+      if (!res.ok) throw new Error(responseBody?.message || responseBody?.error || "Failed");
+      const updated: AdminUser = responseBody;
       setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...updated } : u)));
       toast.success("อัปเดตข้อมูลสำเร็จ");
-    } catch {
-      toast.error("เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง");
     } finally {
       setActionLoading(null);
     }
   }
 
-  // Convert a trial / bank-transfer customer to a real paid term (sets expiry + clears the
-  // trial flag so they don't auto-revert to FREE). Use this for off-Stripe payments.
-  function markPaid(user: AdminUser, plan: "PRO" | "BUSINESS", periodDays: number, label: string) {
-    if (!confirm(`ยืนยัน: บันทึก ${user.email} เป็น ${plan} แบบ${label} (${periodDays} วัน)?\nระบบจะตั้งวันหมดอายุและล้างสถานะทดลองให้ — ใช้สำหรับลูกค้าที่โอนเงิน/จ่ายนอก Stripe`)) return;
-    patchUser(user.id, { markPaid: { plan, periodDays } });
+  function openGrantDialog(user: AdminUser) {
+    setGrantTarget(user);
+    setGrantPlan("PRO");
+    setGrantReason("");
+    setGrantExpiresAt("");
+    setGrantPermanent(false);
+  }
+
+  async function submitGrant() {
+    if (!grantTarget) return;
+    if (grantReason.trim().length < 3 || (!grantPermanent && !grantExpiresAt)) {
+      toast.error("กรุณาระบุเหตุผลและวันหมดอายุ หรือเลือกสิทธิ์ถาวร");
+      return;
+    }
+    await patchUser(grantTarget.id, {
+      administratorGrant: {
+        plan: grantPlan,
+        reason: grantReason.trim(),
+        expiresAt: grantPermanent ? null : new Date(`${grantExpiresAt}T23:59:59+07:00`).toISOString(),
+        permanent: grantPermanent,
+      },
+    });
+    setGrantTarget(null);
+  }
+
+  async function revokeGrant(user: AdminUser) {
+    const reason = window.prompt("เหตุผลที่ยกเลิกสิทธิ์ (อย่างน้อย 3 ตัวอักษร)");
+    if (!reason) return;
+    await patchUser(user.id, { revokeAdministratorGrant: { reason } });
   }
 
   async function deleteUser(id: string) {
@@ -306,6 +362,19 @@ export default function AdminUsersPage() {
                             ))}
                           </div>
                         )}
+                        {user.administratorGrants?.filter((grant) => !grant.revokedAt).map((grant) => (
+                          <div key={grant.id} className="mt-1.5 rounded-lg border border-violet-500/20 bg-violet-500/5 px-2.5 py-2 text-xs text-violet-200">
+                            <div className="flex flex-wrap items-center gap-2 font-medium">
+                              <KeyRound className="h-3 w-3" />
+                              Administrator Grant · {grant.plan}
+                              <span className="text-violet-300/70">
+                                {grant.permanent ? "ถาวร" : `ถึง ${new Date(grant.expiresAt!).toLocaleDateString("th-TH")}`}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-violet-100/70">เหตุผล: {grant.reason}</p>
+                            <p className="mt-0.5 text-[10px] text-violet-100/45">ผู้ให้สิทธิ์: {grant.grantedById}</p>
+                          </div>
+                        ))}
 
                         {/* Cache info row */}
                         {cacheInfo[user.id] && (
@@ -328,82 +397,34 @@ export default function AdminUsersPage() {
                           <Loader2 className="h-4 w-4 animate-spin text-zinc-400" />
                         ) : (
                           <>
-                            {/* Plan selector */}
-                            {(() => {
-                              const ps = PLAN_STYLES[user.plan] ?? PLAN_STYLES.FREE;
-                              const Icon = ps.icon;
-                              return (
-                                <DropdownMenu>
-                                  <DropdownMenuTrigger asChild>
-                                    <button
-                                      className={`h-7 inline-flex items-center gap-1.5 rounded-md border-[var(--ui-btn-border)] bg-[var(--ui-btn-bg)] px-2 text-xs font-medium outline-none focus:border-violet-500/50 hover:bg-[var(--ui-btn-bg-hover)] transition-colors cursor-pointer ${ps.text}`}
-                                      title="เปลี่ยนแพ็กเกจ"
-                                    >
-                                      {Icon && <Icon className="h-3 w-3" />}
-                                      {ps.label}
-                                      <ChevronDown className="h-3 w-3 opacity-60" />
-                                    </button>
-                                  </DropdownMenuTrigger>
-                                  <DropdownMenuContent
-                                    align="end"
-                                    className="min-w-35 border"
-                                    style={dropdownStyle}
-                                  >
-                                    {(["FREE", "PRO", "BUSINESS"] as PlanKey[]).map(opt => {
-                                      const ops = PLAN_STYLES[opt];
-                                      const Icon = ops.icon;
-                                      const isSelected = opt === user.plan;
-                                      return (
-                                        <DropdownMenuItem
-                                          key={opt}
-                                          onClick={() => { if (!isSelected) patchUser(user.id, { plan: opt }); }}
-                                          className={`gap-2 text-xs cursor-pointer ${ops.text} ${isSelected ? "bg-white/5" : ""} focus:bg-white/10`}
-                                        >
-                                          {Icon ? <Icon className="h-3 w-3" /> : <span className="h-3 w-3" />}
-                                          <span className="flex-1">{ops.label}</span>
-                                          {isSelected && <Check className="h-3 w-3 text-emerald-400" />}
-                                        </DropdownMenuItem>
-                                      );
-                                    })}
-                                  </DropdownMenuContent>
-                                </DropdownMenu>
-                              );
-                            })()}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => openGrantDialog(user)}
+                              className="h-7 gap-1 text-xs text-violet-300 hover:text-violet-200"
+                              title="ให้สิทธิ์แบบมีเหตุผลและวันหมดอายุที่ตรวจสอบย้อนหลังได้"
+                            >
+                              <KeyRound className="h-3 w-3" />
+                              ให้สิทธิ์
+                            </Button>
 
-                            {/* Mark as paid (off-Stripe / bank transfer) — sets a real term + clears trial */}
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <button
-                                  className="h-7 inline-flex items-center gap-1.5 rounded-md border-[var(--ui-btn-border)] bg-[var(--ui-btn-bg)] px-2 text-xs font-medium text-violet-300 outline-none hover:bg-[var(--ui-btn-bg-hover)] transition-colors cursor-pointer"
-                                  title="บันทึกการชำระเงิน (สำหรับลูกค้าโอนเงิน/นอก Stripe) — ตั้งวันหมดอายุและล้างสถานะทดลอง"
-                                >
-                                  <BadgeDollarSign className="h-3 w-3" style={{ color: VIOLET }} />
-                                  บันทึกชำระ
-                                  <ChevronDown className="h-3 w-3 opacity-60" />
-                                </button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent
-                                align="end"
-                                className="min-w-44 border"
-                                style={dropdownStyle}
+                            {user.administratorGrants?.some((grant) => !grant.revokedAt) && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => revokeGrant(user)}
+                                className="h-7 gap-1 text-xs text-amber-400 hover:text-amber-300"
                               >
-                                {([
-                                  { plan: "PRO", days: 365, label: "รายปี" },
-                                  { plan: "PRO", days: 30, label: "รายเดือน" },
-                                  { plan: "BUSINESS", days: 365, label: "รายปี" },
-                                  { plan: "BUSINESS", days: 30, label: "รายเดือน" },
-                                ] as const).map((o) => (
-                                  <DropdownMenuItem
-                                    key={`${o.plan}-${o.days}`}
-                                    onClick={() => markPaid(user, o.plan, o.days, o.label)}
-                                    className="gap-2 text-xs cursor-pointer text-white/80 focus:bg-white/10"
-                                  >
-                                    <BadgeDollarSign className="h-3 w-3" style={{ color: VIOLET }} />
-                                    <span className="flex-1">{o.plan} · {o.label}</span>
-                                  </DropdownMenuItem>
-                                ))}
-                              </DropdownMenuContent>
-                            </DropdownMenu>
+                                ยกเลิกสิทธิ์
+                              </Button>
+                            )}
+
+                            <Button asChild size="sm" variant="ghost" className="h-7 gap-1 text-xs text-violet-300 hover:text-violet-200">
+                              <a href="/admin#manual-payment" title="ยอดโอนเงินจริงต้องบันทึกเป็น Payment เพื่อให้รายได้และสิทธิ์ตรงกัน">
+                                <BadgeDollarSign className="h-3 w-3" style={{ color: VIOLET }} />
+                                บันทึกยอดเงินจริง
+                              </a>
+                            </Button>
 
                             {/* Toggle Admin */}
                             <Button
@@ -496,6 +517,46 @@ export default function AdminUsersPage() {
           </div>
         )}
       </div>
+      <Dialog open={Boolean(grantTarget)} onOpenChange={(open) => { if (!open) setGrantTarget(null); }}>
+        <DialogContent className="border-violet-500/20 bg-zinc-950 text-white">
+          <DialogHeader>
+            <DialogTitle>ให้สิทธิ์ใช้งานแบบ Administrator Grant</DialogTitle>
+            <DialogDescription>
+              ผู้ใช้นี้จะใช้ Hero AI Image, Hero AI Script และฟีเจอร์ในระดับแผนที่เลือกได้ โดยไม่นับเป็นรายได้หรือ MAPC
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-2">
+              {(["PRO", "BUSINESS"] as const).map((plan) => (
+                <Button key={plan} type="button" variant={grantPlan === plan ? "default" : "outline"} onClick={() => setGrantPlan(plan)}>
+                  {plan}
+                </Button>
+              ))}
+            </div>
+            <label className="block space-y-1.5 text-sm">
+              <span>เหตุผล <span className="text-red-400">*</span></span>
+              <Textarea value={grantReason} onChange={(event) => setGrantReason(event.target.value)} maxLength={500} placeholder="เช่น นักเรียนคอร์ส Hero รุ่น 12 / บัญชีพาร์ตเนอร์" />
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={grantPermanent} onChange={(event) => setGrantPermanent(event.target.checked)} />
+              ให้สิทธิ์ถาวร (เลือกอย่างชัดเจน)
+            </label>
+            {!grantPermanent && (
+              <label className="block space-y-1.5 text-sm">
+                <span>วันหมดอายุ <span className="text-red-400">*</span></span>
+                <Input type="date" value={grantExpiresAt} min={new Date().toISOString().slice(0, 10)} onChange={(event) => setGrantExpiresAt(event.target.value)} />
+              </label>
+            )}
+            <div className="rounded-lg border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-100">
+              ยืนยันแล้ว บัญชี {grantTarget?.email} จะได้รับสิทธิ์ {grantPlan} {grantPermanent ? "แบบถาวร" : grantExpiresAt ? `ถึง ${grantExpiresAt}` : "ตามวันหมดอายุที่ระบุ"} และอาจเกิดต้นทุน AI ตามการใช้งาน
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setGrantTarget(null)}>ยกเลิก</Button>
+            <Button onClick={submitGrant} disabled={Boolean(grantTarget && actionLoading === grantTarget.id)}>ยืนยันให้สิทธิ์</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

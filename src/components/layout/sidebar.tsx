@@ -144,6 +144,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [heroScriptAllowed, setHeroScriptAllowed] = useState(false);
   const [heroScriptPreview, setHeroScriptPreview] = useState(false);
   const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
+  const [brandVisualCohort, setBrandVisualCohort] = useState<string>("off");
 
   useEffect(() => {
     fetchMe()
@@ -163,6 +164,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         setHeroScriptAllowed(data.heroScriptAllowed === true);
         setHeroScriptPreview(data.heroScriptPreview === true);
         setBrandVisualAllowed(data.brandVisualAllowed === true);
+        setBrandVisualCohort(data.brandVisualCohort ?? "off");
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -213,10 +215,11 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
     items
       .filter((item) => item.href !== "/ai-studio" || internalAiTester)
       .filter((item) => item.href !== "/hero-script" || heroScriptAllowed || heroScriptPreview)
-      .filter((item) => item.href !== "/brands" || brandVisualAllowed)
       .map((item) => item.href === "/hero-script" && !heroScriptAllowed
         ? { ...item, badgeText: "PRO" }
-        : item);
+        : item.href === "/brands" && !brandVisualAllowed
+          ? { ...item, badgeText: brandVisualCohort === "rollout-wait" ? "รอเปิด" : "PRO" }
+          : item);
   const userItems = internalItemsOnly(withUpdatesBadge(userNavItems));
   const adminItems = internalItemsOnly(adminStudioItems);
 
@@ -259,7 +262,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
             });
           }
           if (item.href === "/brands") {
-            trackEvent("brand_library_menu_clicked", { properties: { access: "full" } });
+            trackEvent("brand_library_menu_clicked", { properties: { access: brandVisualAllowed ? "full" : brandVisualCohort === "rollout-wait" ? "rollout_wait" : "preview" } });
           }
         }}
         className={cn(

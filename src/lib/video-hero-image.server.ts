@@ -51,8 +51,9 @@ import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-ro
 import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
 import { recordVisualBeatAsset } from "@/lib/content-preflight.server";
 import type { CompiledBrandVisualPrompt } from "@/lib/brand-visual-system";
-import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { resolveBrandVisualAccessByUserId } from "@/lib/brand-visual-rollout.server";
 import { HERO_IMAGE_DAILY_CAP } from "@/lib/hero-image-rate-limit";
+import { resolveHeroAiImageAccess } from "@/lib/internal-ai-access";
 
 const MODEL = AI_IMAGE_MODELS.find((item) => item.id === "z-image-turbo")!;
 const TERMINAL_PROVIDER = new Set(["FAILED", "TIMED_OUT", "CANCELLED"]);
@@ -63,6 +64,7 @@ export class HeroImageGenerationError extends Error {
     readonly code:
       | "INSUFFICIENT_CREDITS"
       | "ALLOWANCE_EXHAUSTED"
+      | "FEATURE_LOCKED"
       | "RATE_LIMITED"
       | "PARENT_VIDEO_TERMINAL"
       | "NOT_CONFIGURED"
@@ -168,6 +170,7 @@ export type HeroImageGenerationInput = {
     itemId: string;
     expectedImageJobId: string | null;
   };
+  productSurface?: "hero_video" | "automix" | "scene_reroll" | "brand_visual_preview";
 };
 
 async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
@@ -190,8 +193,10 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
   });
   const actor = await prisma.user.findUnique({
     where: { id: input.userId },
-    select: { id: true, email: true, role: true, createdAt: true },
+    select: { id: true, email: true, role: true, plan: true, suspended: true, trialStartedAt: true },
   });
+  if (!actor) throw new HeroImageGenerationError("ไม่พบบัญชีผู้ใช้", "FEATURE_LOCKED", 403);
+  const heroImageAccess = await resolveHeroAiImageAccess(actor);
   const brandVisualAccess = projectVisual
     ? input.brandVisualAcceptance
       ? {
@@ -199,8 +204,22 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
           cohort: input.brandVisualAcceptance.cohort,
           bucket: input.brandVisualAcceptance.rolloutBucket,
         }
-      : actor ? decideBrandVisualAccess(actor) : null
+      : await resolveBrandVisualAccessByUserId(actor)
     : null;
+  if (!heroImageAccess.canUse && !brandVisualAccess?.canUse && !input.brandVisualAcceptance) {
+    if (heroImageAccess.reason === "allowance_exhausted") {
+      throw new HeroImageGenerationError(
+        "ใช้สิทธิ์ทดลอง Hero AI Image ครบ 8 ภาพแล้ว อัปเกรดเพื่อสร้างต่อ",
+        "ALLOWANCE_EXHAUSTED",
+        403,
+      );
+    }
+    throw new HeroImageGenerationError(
+      "Hero AI Image ใช้ได้กับสมาชิก PRO/BUSINESS — อัปเกรดเพื่อปลดล็อก",
+      "FEATURE_LOCKED",
+      403,
+    );
+  }
   // This is the exact provider-neutral prompt contract that passed the
   // 21-image gate. Appending the legacy photoreal preset would overwrite a
   // creator-selected comic, marker or retro format.
@@ -271,9 +290,9 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
     estimatedCostUsdMicros: prepared.quote.estimatedProviderCostUsdMicros,
     idempotencyKey: input.idempotencyKey,
     mediaExpiresAt: videoExpiryFor(input.plan),
-    fundingPolicy: projectVisual && brandVisualAccess?.canUse
-      ? "brand-visual-activation"
-      : "credits-only",
+    productSurface: input.productSurface
+      ?? (input.brandLookPreviewReservation ? "brand_visual_preview" : input.deferVisualBeatLink ? "scene_reroll" : "hero_video"),
+    fundingPolicy: heroImageAccess.mode === "trial" ? "conversion-trial" : "credits-only",
     fundingSnapshot: input.brandVisualAcceptance
       ? imageFundingSnapshotFromBrandVisualAcceptance(input.brandVisualAcceptance)
       : undefined,
@@ -300,7 +319,7 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
     }
     if (reserved.reason === "allowance_exhausted") {
       throw new HeroImageGenerationError(
-        "ใช้สิทธิ์ทดลองภาพ AI ครบ 8 ภาพในรอบนี้แล้ว อัปเกรดเพื่อสร้างต่อหรือเปลี่ยนไปใช้ Stock ฟรี",
+        "ใช้สิทธิ์ทดลอง Hero AI Image ครบ 8 ภาพแล้ว อัปเกรดเพื่อสร้างต่อหรือเปลี่ยนไปใช้ Stock ฟรี",
         "ALLOWANCE_EXHAUSTED",
         402,
       );

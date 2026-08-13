@@ -13,7 +13,7 @@ export async function GET(): Promise<NextResponse> {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    return getBrandAssetCollection(brandAssetActorForUser(user));
+    return getBrandAssetCollection(await brandAssetActorForUser(user));
   } catch {
     return apiError({
       route: "user/brand-assets",
@@ -28,7 +28,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    return await postBrandAsset(brandAssetActorForUser(user), request);
+    return await postBrandAsset(await brandAssetActorForUser(user), request);
   } catch {
     return apiError({
       route: "user/brand-assets",

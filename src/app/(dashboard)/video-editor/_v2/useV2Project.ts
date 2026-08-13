@@ -526,11 +526,13 @@ export function useV2Project() {
   );
   const [internalAiTester, setInternalAiTester] = useState(false);
   const [heroAiBeta, setHeroAiBeta] = useState(false);
-  // Public-launch eligibility for Hero AI Image (Task 4's plan gate — beta cohort
-  // OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS/active-trial). Distinct from
-  // `heroAiBeta` above, which stays beta-only forever; Task 5's disclosure UX
-  // reads this one.
+  // Server-authoritative Hero AI Image admission. The API resolves internal,
+  // Paid-Equivalent, and bounded Conversion Trial sources; the browser only
+  // uses this projection for disclosure UX.
   const [heroAiImageEligible, setHeroAiImageEligible] = useState(false);
+  const [heroAiImageAccess, setHeroAiImageAccess] = useState<
+    NonNullable<NonNullable<MeData["featureAccess"]>["heroAiImage"]> | null
+  >(null);
   const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
   const [brandVisualCohort, setBrandVisualCohort] = useState<NonNullable<MeData["brandVisualCohort"]>>("off");
   const [brandVisualRolloutBucket, setBrandVisualRolloutBucket] = useState<number | null>(null);
@@ -1835,6 +1837,7 @@ export function useV2Project() {
       setInternalAiTester(internalTester);
       setHeroAiBeta(heroBeta);
       setHeroAiImageEligible(heroImageEligible);
+      setHeroAiImageAccess(m?.featureAccess?.heroAiImage ?? null);
       setBrandVisualAllowed(resolveBrandVisualClientAccess(m));
       setBrandVisualCohort(m?.brandVisualCohort ?? "off");
       setBrandVisualRolloutBucket(typeof m?.brandVisualRolloutBucket === "number" ? m.brandVisualRolloutBucket : null);
@@ -2167,7 +2170,7 @@ export function useV2Project() {
     layerVisibility, setLayerVisibility,
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, brandVisualAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     brandContentPreflightId, setBrandContentPreflightId,
     saveStatus, retryProjectSave,

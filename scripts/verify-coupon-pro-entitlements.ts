@@ -39,6 +39,8 @@ async function main() {
   const { resolveHeroScriptAccess } =
     await import("../src/lib/hero-script-rollout.server");
   const { isHeroAiImageEligible } = await import("../src/lib/internal-ai-access");
+  const { resolvePaidEquivalentEntitlement } = await import("../src/lib/paid-equivalent-entitlement.server");
+  const { getStarterAiImageAllowanceStatus } = await import("../src/lib/starter-ai-image-allowance.server");
 
   const now = new Date();
   const dayMs = 24 * 60 * 60 * 1000;
@@ -104,7 +106,10 @@ async function main() {
   const couponAccess = await resolveHeroScriptAccess(activated!);
   check(couponAccess.canUse && couponAccess.cohort === "coupon",
     "active GRANT coupon unlocks Hero Script without a cash Payment row");
-  check(isHeroAiImageEligible(activated),
+  check(isHeroAiImageEligible(activated, {
+    paidEquivalent: await resolvePaidEquivalentEntitlement(student.id),
+    trialAllowance: await getStarterAiImageAllowanceStatus(student.id),
+  }),
     "active GRANT coupon PRO remains eligible for public Hero AI Image");
 
   process.env.HERO_SCRIPT_PAID_ENABLED = "0";

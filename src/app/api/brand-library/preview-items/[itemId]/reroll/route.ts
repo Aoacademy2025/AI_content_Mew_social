@@ -45,7 +45,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ itemId:
     if (replay) {
       return NextResponse.json({ item: replay, replayed: true });
     }
-    if (!auth.access.canUse) return brandVisualLockedResponse();
+    if (!auth.access.canUse) return brandVisualLockedResponse(auth.access);
     const admission = await admitBrandLookGeneration({
       userId: auth.user.id,
       role: auth.user.role,

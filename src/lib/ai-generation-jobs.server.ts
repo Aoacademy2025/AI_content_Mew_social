@@ -149,9 +149,10 @@ export async function createReservedImageJob(input: {
   estimatedCostUsdMicros: number;
   idempotencyKey: string;
   mediaExpiresAt: Date;
+  productSurface: "hero_video" | "automix" | "scene_reroll" | "brand_visual_preview" | "ai_studio";
   /** Starter allowance belongs only to the Brand Visual activation surface.
    * Every generic/legacy image caller defaults to the shared credit wallet. */
-  fundingPolicy?: "credits-only" | "brand-visual-activation";
+  fundingPolicy?: "credits-only" | "brand-visual-activation" | "conversion-trial";
   /** Durable VideoJob acceptance may pin both funding source and allowance
    * window. This bypasses later plan/rollout re-evaluation, not reservation
    * capacity or the exact-window settlement invariants. */
@@ -276,7 +277,7 @@ export async function createReservedImageJob(input: {
         )
       : input.fundingSnapshot?.fundingSource === "credits"
         ? { kind: "credits" as const }
-        : input.fundingPolicy === "brand-visual-activation"
+        : input.fundingPolicy === "brand-visual-activation" || input.fundingPolicy === "conversion-trial"
           ? await reserveStarterAiImageAllowance(tx, input.userId)
           : { kind: "credits" as const };
     if (allowance.kind === "allowance_exhausted") {
@@ -348,6 +349,7 @@ export async function createReservedImageJob(input: {
         chargeState: "reserved",
         idempotencyKey: input.idempotencyKey,
         mediaExpiresAt: input.mediaExpiresAt,
+        productSurface: input.productSurface,
         attempts: {
           create: {
             sequence: 1,

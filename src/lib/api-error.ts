@@ -11,8 +11,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { notifyAdmins, createNotification } from "@/lib/notifications";
 
 interface ErrorContext {
@@ -133,8 +132,8 @@ export function apiError({
     let uid = userId;
     if (!uid && notifyUser) {
       try {
-        const session = await getServerSession(authOptions);
-        uid = session?.user?.id;
+        const actor = await getCurrentUser();
+        uid = actor?.id;
       } catch { /* ignore */ }
     }
 

@@ -1,14 +1,16 @@
 # Brand Visual System V1 rollout and rollback
 
-Date: 2026-08-09
-Status: release candidate under verification; production deployment is not authorized
+Date: 2026-08-13
+Status: Paid Soft Launch deployment authorized; stage changes remain gate-controlled
 
 ## Safety contract
 
 - Keep the shared Credit wallet unchanged. Paid and ever-paid accounts use 2
   credits for each newly generated image.
-- Never-paid Trial/Free accounts use one shared Starter AI Image Allowance of 8
-  images per 30-day window. Trial expiry does not reset it.
+- Conversion Trial accounts receive one shared Hero AI Image allowance of eight
+  successfully delivered images during their seven-day Trial, once per protected
+  identity. It never renews every 30 days and failed delivery restores allowance.
+  FREE accounts outside an active Conversion Trial see the locked preview.
 - Reused current Visual Beats cost 0. A script or look edit never starts a job;
   new/outdated beats are charged only after an explicit render or reroll.
 - RunPod Z-Image is the only V1 image route. Do not cross-fallback to another AI
@@ -63,7 +65,9 @@ raw 21-image gate artifacts remain ignored and local.
 
 ## Authorized rollout sequence
 
-Do not perform these steps without separate production/deploy authorization.
+Initial Paid Soft Launch deployment was authorized on 2026-08-13. Every
+subsequent 10→50→100 expansion still requires the health gates below and an
+explicit production stage approval.
 
 1. Deploy code and migration with the master switch off.
 2. Confirm the existing `/api/cron/reconcile-ai-images` schedule and heartbeat.

@@ -2,16 +2,28 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
-import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { usageWindowForPlan } from "@/lib/usage-limits";
-import { markUserPaid, type PaidPlan } from "@/lib/paid-term";
 import { grantOnPaidActivation } from "@/lib/entitlements";
 import { hardDeleteUserWithBrandAssets } from "@/lib/account-hard-delete.server";
+import {
+  AdministratorGrantInputError,
+  createAdministratorGrant,
+  revokeAdministratorGrants,
+} from "@/lib/administrator-grant.server";
+import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
+import { resetMonthlyGranted } from "@/lib/credits";
 
-const VALID_PLANS = new Set(["FREE", "PRO", "BUSINESS"]);
 const VALID_ROLES = new Set(["ADMIN", "USER"]);
-const VALID_PAID_PLANS = new Set(["PRO", "BUSINESS"]);
-const USER_SELECT = { id: true, name: true, email: true, role: true, plan: true, planExpiresAt: true, suspended: true } as const;
+const USER_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  plan: true,
+  planExpiresAt: true,
+  suspended: true,
+  administratorGrants: { orderBy: { createdAt: "desc" as const }, take: 10 },
+} as const;
 
 export async function PATCH(
   req: Request,
@@ -24,59 +36,78 @@ export async function PATCH(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    const { plan, role, suspended, markPaid } = await req.json();
+    const { plan, role, suspended, markPaid, administratorGrant, revokeAdministratorGrant } = await req.json();
     const { id } = await params;
 
-    // "Mark as paid" — convert a trial / bank-transfer customer to a real paid TIMED plan.
-    // Distinct from the plan dropdown (which nulls the expiry → permanent, and is a no-op when
-    // re-selecting a trial user's current PRO). This sets a term + clears the trial flag so the
-    // entitlement classifier won't auto-revert the paying customer to FREE. See markUserPaid.
     if (markPaid !== undefined) {
-      const { plan: paidPlan, periodDays, from } = markPaid ?? {};
-      if (!VALID_PAID_PLANS.has(paidPlan)) {
-        return NextResponse.json({ error: `Invalid markPaid.plan: ${paidPlan} (PRO|BUSINESS)` }, { status: 400 });
-      }
-      const days = Number(periodDays);
-      if (!Number.isFinite(days) || days <= 0 || days > 3660) {
-        return NextResponse.json({ error: `Invalid markPaid.periodDays: ${periodDays}` }, { status: 400 });
-      }
-      const fromDate = from ? new Date(from) : undefined;
-      if (fromDate && isNaN(fromDate.getTime())) {
-        return NextResponse.json({ error: `Invalid markPaid.from: ${from}` }, { status: 400 });
-      }
-      await markUserPaid(id, {
-        plan: paidPlan as PaidPlan,
-        periodDays: days,
-        from: fromDate,
-        billingPeriod: days >= 365 ? "annual" : "monthly",
-      });
-      // Force a fresh monthly credit grant on this manual paid activation, ignoring the
-      // 30-day window (same as the Stripe webhook): a prior trial-expiry downgrade may have
-      // stamped grantedResetAt=now with FREE allowance 0, which would otherwise block the
-      // grant (H4). CREDITS_LIVE-gated inside the helper → no-op when off (byte-identical).
-      await grantOnPaidActivation(id, paidPlan).catch((e) =>
-        console.error("[admin/users/PATCH] grantOnPaidActivation (markPaid) failed:", e)
-      );
-      const updated = await prisma.user.findUnique({ where: { id }, select: USER_SELECT });
-      return NextResponse.json(updated);
+      return NextResponse.json({
+        error: "payment_evidence_required",
+        message: "กรุณาบันทึกยอดเงินจริงผ่านเมนู Manual Payment เพื่อให้สิทธิ์และรายได้ใช้หลักฐานเดียวกัน",
+        manualPaymentUrl: "/admin#manual-payment",
+      }, { status: 409 });
     }
 
-    if (plan !== undefined && !VALID_PLANS.has(plan)) {
-      return NextResponse.json({ error: `Invalid plan: ${plan}` }, { status: 400 });
+    if (plan !== undefined) {
+      return NextResponse.json({
+        error: "entitlement_evidence_required",
+        message: "ไม่สามารถเปลี่ยนแผนโดยตรงได้ กรุณาใช้ Administrator Grant หรือบันทึกการชำระเงินจริง",
+      }, { status: 409 });
     }
     if (role !== undefined && !VALID_ROLES.has(role)) {
       return NextResponse.json({ error: `Invalid role: ${role}` }, { status: 400 });
     }
 
-    const data: Record<string, unknown> = {};
-    if (plan !== undefined) {
-      Object.assign(data, {
-        plan,
-        planExpiresAt: null,
-        trialEndsAt: null,
-        ...usageWindowForPlan(plan),
+    if (administratorGrant !== undefined) {
+      const permanent = administratorGrant?.permanent === true;
+      const expiresAt = permanent ? null : new Date(String(administratorGrant?.expiresAt ?? ""));
+      if (!permanent && (!expiresAt || Number.isNaN(expiresAt.getTime()))) {
+        return NextResponse.json({ error: "กรุณาระบุวันหมดอายุที่ถูกต้อง" }, { status: 400 });
+      }
+      await createAdministratorGrant({
+        userId: id,
+        plan: administratorGrant?.plan,
+        reason: String(administratorGrant?.reason ?? ""),
+        expiresAt,
+        permanent,
+        grantedById: authUser.id,
       });
+      await grantOnPaidActivation(id, administratorGrant?.plan).catch((error) => {
+        console.error("[admin/users/PATCH] Administrator Grant credit reset failed:", error);
+      });
+      const updated = await prisma.user.findUnique({ where: { id }, select: USER_SELECT });
+      return NextResponse.json(updated);
     }
+
+    if (revokeAdministratorGrant !== undefined) {
+      await revokeAdministratorGrants({
+        userId: id,
+        revokedById: authUser.id,
+        reason: String(revokeAdministratorGrant?.reason ?? ""),
+      });
+      const paidEquivalent = await resolvePaidEquivalentEntitlement(id);
+      const target = await prisma.user.findUnique({
+        where: { id }, select: { trialEndsAt: true },
+      });
+      const activeTrial = Boolean(target?.trialEndsAt && target.trialEndsAt > new Date());
+      const effectivePlan = paidEquivalent.canUsePaidFeatures
+        ? paidEquivalent.effectivePlan
+        : activeTrial ? "PRO" : "FREE";
+      await prisma.user.update({
+        where: { id },
+        data: {
+          plan: effectivePlan,
+          ...usageWindowForPlan(effectivePlan),
+          ...(!paidEquivalent.canUsePaidFeatures && !activeTrial ? { planExpiresAt: null } : {}),
+        },
+      });
+      if (effectivePlan === "FREE") {
+        if (process.env.CREDITS_LIVE === "1") await resetMonthlyGranted(id, "FREE").catch(() => {});
+      }
+      const updated = await prisma.user.findUnique({ where: { id }, select: USER_SELECT });
+      return NextResponse.json(updated);
+    }
+
+    const data: Record<string, unknown> = {};
     if (role !== undefined) data.role = role;
     if (suspended !== undefined) data.suspended = suspended;
 
@@ -90,21 +121,11 @@ export async function PATCH(
       select: USER_SELECT,
     });
 
-    // If plan changed, extend retention of existing videos to match new plan
-    if (plan !== undefined) {
-      await extendVideoExpiryForPlan(id, plan).catch(err => {
-        console.error("[admin/users/PATCH] extendVideoExpiryForPlan failed:", err);
-      });
-      // A manual plan-change to PRO/BUSINESS grants the monthly credit allowance too (helper
-      // no-ops for FREE and when CREDITS_LIVE is off → byte-identical). Forces past the
-      // 30-day window so a trial-expired user promoted within the month still gets credits (H4).
-      await grantOnPaidActivation(id, plan).catch(err => {
-        console.error("[admin/users/PATCH] grantOnPaidActivation failed:", err);
-      });
-    }
-
     return NextResponse.json(user);
   } catch (error) {
+    if (error instanceof AdministratorGrantInputError) {
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
     return apiError({ route: "admin/users/[id]", error });
   }
 }
