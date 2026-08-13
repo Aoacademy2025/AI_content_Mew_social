@@ -28,6 +28,12 @@ async function previewRequestError(response: Response): Promise<never> {
   throw new DefinitivePreviewRequestError(value.message || value.error || "ดำเนินการไม่สำเร็จ");
 }
 
+async function responseIsDefinitiveFailure(response: Response): Promise<boolean> {
+  if (response.status < 500) return true;
+  const value = await response.clone().json().catch(() => null) as { definitive?: unknown } | null;
+  return value?.definitive === true;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -47,7 +53,11 @@ export async function recoverPreviewByRequestId(
     else if (response.status !== 404) await responseJson(response);
     if (!batch) await delay(750);
   }
-  if (!batch) throw new Error("เริ่มงานทดลองภาพไม่สำเร็จ กรุณาลองอีกครั้ง");
+  if (!batch) {
+    throw new DefinitivePreviewRequestError(
+      "ไม่พบงานทดลองภาพจากคำขอเดิม ระบบไม่ได้หักเครดิต กรุณากดทดลอง 3 ภาพอีกครั้ง",
+    );
+  }
   onProgress(batch);
 
   if (!TERMINAL_PREVIEW_STATUSES.has(batch.status)) {
@@ -105,10 +115,12 @@ export async function postPreviewWithRecovery(
       signal: controller.signal,
     });
     if (!response.ok) {
+      if (await responseIsDefinitiveFailure(response)) {
+        return await previewRequestError(response);
+      }
       if (response.status >= 500) {
         return recoverPreviewByRequestId(requestId, onProgress);
       }
-      return await previewRequestError(response);
     }
     const value = await responseJson(response) as { batch: PreviewBatch };
     if (TERMINAL_PREVIEW_STATUSES.has(value.batch.status)) return value;
@@ -138,7 +150,11 @@ async function recoverRerollByRequestId(
     else if (response.status !== 404) await responseJson(response);
     if (!item) await delay(750);
   }
-  if (!item) throw new Error("คำขอลองภาพใหม่ยังยืนยันผลไม่ได้ ระบบจะใช้ request เดิมเมื่อกลับมาหน้านี้");
+  if (!item) {
+    throw new DefinitivePreviewRequestError(
+      "ไม่พบงานลองภาพใหม่จากคำขอเดิม ระบบไม่ได้หักเครดิตและภาพเดิมยังอยู่ กรุณากดลองใหม่",
+    );
+  }
 
   const completionDeadline = Date.now() + 15 * 60_000;
   let batch = (await responseJson(await fetch(
@@ -177,8 +193,10 @@ export async function postRerollWithRecovery(
       signal: controller.signal,
     });
     if (!response.ok) {
+      if (await responseIsDefinitiveFailure(response)) {
+        return await previewRequestError(response);
+      }
       if (response.status >= 500) return recoverRerollByRequestId(itemId, batchId, requestId, onProgress);
-      return await previewRequestError(response);
     }
     const value = await responseJson(response) as { item: PreviewItem };
     const batch = (await responseJson(await fetch(

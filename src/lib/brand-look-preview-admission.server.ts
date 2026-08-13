@@ -8,6 +8,7 @@ import {
 } from "@/lib/hero-image-rate-limit";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import { describeHeroImageOffer } from "@/lib/video-hero-image.server";
+import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 
 export type BrandLookGenerationAdmission =
   | { ok: true }
@@ -106,24 +107,34 @@ export async function admitBrandLookGeneration(
   }
 
   const offer = dependencies.describeOffer();
-  if (!offer.available || offer.providerRoute !== "runpod-custom") {
-    return {
-      ok: false,
-      status: 503,
-      body: { error: "hero_image_unavailable", message: "ระบบทดลองแนวภาพยังไม่พร้อม" },
-    };
-  }
-  const cost = await dependencies.getCost({ endpointId: offer.providerEndpoint });
-  if (!cost.admitted) {
+  if (!offer.available || !isHeroRunpodRoute(offer.providerRoute)) {
     return {
       ok: false,
       status: 503,
       body: {
-        error: "hero_image_cost_guard",
-        retryable: true,
-        message: "ระบบพักงานใหม่เพื่อควบคุมต้นทุนภาพ",
+        error: "hero_image_unavailable",
+        definitive: true,
+        message: "ระบบทดลองแนวภาพยังไม่พร้อม",
       },
     };
+  }
+  // The private endpoint needs its live, fully-loaded billing snapshot before
+  // admission. RunPod Public is fixed-price and remains protected by the
+  // immutable offer quote + per-job COGS budget before credits are reserved.
+  if (usesCustomRunpodEndpoint(offer.providerRoute)) {
+    const cost = await dependencies.getCost({ endpointId: offer.providerEndpoint });
+    if (!cost.admitted) {
+      return {
+        ok: false,
+        status: 503,
+        body: {
+          error: "hero_image_cost_guard",
+          definitive: true,
+          retryable: true,
+          message: "ระบบพักงานใหม่เพื่อควบคุมต้นทุนภาพ",
+        },
+      };
+    }
   }
   return { ok: true };
 }
