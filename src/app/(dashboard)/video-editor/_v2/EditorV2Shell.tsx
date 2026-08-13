@@ -57,6 +57,7 @@ import {
   type ProjectStatusFilter,
 } from "./project-menu";
 import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
+import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import { classifyFailure, failureViewCopy } from "./failure-view";
 
 export function EditorV2Shell() {
@@ -258,7 +259,7 @@ export function EditorV2Shell() {
       if (!ownsAttempt()) return;
       const data = await res.json().catch(() => null);
       if (!ownsAttempt()) return;
-      if (!res.ok) throw new Error(data?.message ?? data?.error ?? `ลบไม่สำเร็จ (${res.status})`);
+      if (!res.ok) throw new Error(customerApiErrorMessage(data, "นำโปรเจกต์ออกไม่สำเร็จ กรุณาลองใหม่"));
       const fallbackProjects = projects.filter((item) => item.id !== project.id);
       let remainingProjects = fallbackProjects;
       let remainingTotal = Math.max(0, projectTotal - 1);
@@ -803,6 +804,9 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
   // not just a regex over this component's source.
   const kind = classifyFailure(job);
   const isHeygenQuota = kind === "heygen-quota";
+  const isProviderKey = kind === "provider-key";
+  const isProviderQuota = kind === "provider-quota";
+  const isHeygenKey = isProviderKey && job.errorProvider === "heygen";
   const isInsufficientCredits = kind === "insufficient-credits";
   const { heading, body } = failureViewCopy(kind, job, exportMode);
   return (
@@ -821,6 +825,15 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
               <BtnSecondary>เติมเครดิต HeyGen</BtnSecondary>
             </a>
             <BtnPrimary onClick={onSwitchFaceless}>เปลี่ยนเป็น Faceless แล้วลองใหม่</BtnPrimary>
+          </div>
+        ) : isProviderKey || isProviderQuota ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Link href="/settings">
+              <BtnSecondary>{isProviderKey ? "ตรวจสอบ API Key" : "ตรวจสอบบัญชีที่เชื่อม"}</BtnSecondary>
+            </Link>
+            {isHeygenKey
+              ? <BtnPrimary onClick={onSwitchFaceless}>ปิด Avatar แล้วลองใหม่</BtnPrimary>
+              : <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปลองส่งออกใหม่" : "กลับไปตั้งค่า"}</BtnPrimary>}
           </div>
         ) : isInsufficientCredits ? (
           <div className="flex flex-wrap items-center justify-center gap-3">

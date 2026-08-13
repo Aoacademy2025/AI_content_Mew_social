@@ -17,6 +17,7 @@ import {
 } from "./subtitle-style";
 import { loanwordSpans } from "@/lib/thai-loanwords";
 import { trackEvent } from "@/lib/client-telemetry";
+import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import {
   commitCaptionHistory,
   deleteCaptionCard,
@@ -457,7 +458,9 @@ export function usePostPhaseEditor(
         }),
       });
       const d = await res.json().catch(() => null);
-      if (!res.ok || !d?.jobId) throw new Error(d?.message ?? d?.error ?? `อัปเดตวิดีโอไม่สำเร็จ (${res.status})`);
+      if (!res.ok || !d?.jobId) {
+        throw new Error(customerApiErrorMessage(d, "อัปเดต B-roll ไม่สำเร็จ — โปรเจกต์เดิมยังอยู่ กรุณาลองใหม่"));
+      }
       const newJobId = d.jobId as string;
 
       let applied: BrollExportSource | null = null;
@@ -516,7 +519,10 @@ export function usePostPhaseEditor(
           break;
         }
         if (p.status === "failed" || p.status === "canceled") {
-          throw new Error(p.errorMessage ?? "อัปเดตวิดีโอไม่สำเร็จ");
+          throw new Error(customerApiErrorMessage(
+            { message: p.errorMessage },
+            "อัปเดต B-roll ไม่สำเร็จ — โปรเจกต์เดิมยังอยู่ กรุณาลองใหม่",
+          ));
         }
       }
       if (!applied && !windowPollStop.current) throw new Error("อัปเดตวิดีโอไม่เสร็จในเวลาที่กำหนด — เช็คสถานะภายหลัง");

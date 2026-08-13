@@ -1,4 +1,5 @@
 import type { PreviewBatch, PreviewItem } from "./types";
+import { customerApiErrorMessage } from "@/lib/customer-api-error";
 
 /** Shared request/recovery seam for Brand Look Preview.
  * Lifted verbatim out of the old single-file /brands page: a preview or reroll
@@ -7,7 +8,7 @@ import type { PreviewBatch, PreviewItem } from "./types";
 
 export async function responseJson(response: Response) {
   const value = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(value.message || value.error || "ดำเนินการไม่สำเร็จ");
+  if (!response.ok) throw new Error(customerApiErrorMessage(value, "ดำเนินการไม่สำเร็จ กรุณาลองใหม่"));
   return value;
 }
 
@@ -25,7 +26,10 @@ export function browserStorage(): Storage | null {
 
 async function previewRequestError(response: Response): Promise<never> {
   const value = await response.json().catch(() => ({}));
-  throw new DefinitivePreviewRequestError(value.message || value.error || "ดำเนินการไม่สำเร็จ");
+  throw new DefinitivePreviewRequestError(customerApiErrorMessage(
+    value,
+    "เริ่มงานทดลองภาพไม่สำเร็จ ระบบยังไม่หักเครดิต กรุณาลองใหม่",
+  ));
 }
 
 async function responseIsDefinitiveFailure(response: Response): Promise<boolean> {

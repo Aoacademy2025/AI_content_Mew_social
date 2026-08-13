@@ -76,14 +76,14 @@ check("insufficient-credits wins over rate-limited when (hypothetically) both ma
 check("message-only เครดิตไม่พอ fallback still classifies as insufficient-credits when code is missing",
   classifyFailure(job({ errorCode: null, errorMessage: "เครดิตไม่พอสำหรับ Hero AI Image 5 ฉาก" })) === "insufficient-credits");
 check("an unrelated generic failure keeps the plain render/export heading",
-  failureViewCopy(classifyFailure(job({ errorMessage: "some other failure" })), job({ errorMessage: "some other failure" }), false).heading === "เรนเดอร์ไม่สำเร็จ");
+  failureViewCopy(classifyFailure(job({ errorMessage: "some other failure" })), job({ errorMessage: "some other failure" }), false).heading === "สร้างวิดีโอไม่สำเร็จ");
 check("insufficient-credits heading + body are pinned",
-  failureViewCopy("insufficient-credits", job({}), false).heading === "เครดิต AI ไม่พอ"
+  failureViewCopy("insufficient-credits", job({}), false).heading === "เครดิต Hero ไม่พอสำหรับภาพ AI"
     && failureViewCopy("insufficient-credits", job({}), false).body
-      === "งานนี้ต้องใช้เครดิตมากกว่าที่มีอยู่ ระบบไม่หักเครดิตส่วนที่ไม่สำเร็จ — เติมเครดิตหรือลดจำนวนรูปแล้วลองใหม่");
-check("rate-limited body falls back to the server's own (dynamic retry-after) message",
+      === "งานนี้ต้องใช้เครดิตมากกว่าที่มี ระบบยังไม่เริ่มสร้างภาพ — เติมเครดิตหรือลดจำนวนภาพแล้วลองใหม่");
+check("rate-limited body stays customer-owned instead of echoing provider diagnostics",
   failureViewCopy("rate-limited", job({ errorMessage: "Hero AI Image ใช้ครบโควต้าต่อชั่วโมงแล้ว ลองใหม่ได้ในอีก ~120 วินาที" }), false).body
-    === "Hero AI Image ใช้ครบโควต้าต่อชั่วโมงแล้ว ลองใหม่ได้ในอีก ~120 วินาที");
+    === "ระบบพักการสร้างภาพชั่วคราวและยังไม่หักเครดิต — รอสักครู่แล้วลองใหม่");
 
 // ── 4. Static checks — Step2Elements.tsx ────────────────────────────────────
 const step2Path = "src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx";
@@ -168,18 +168,19 @@ check("FailedView delegates classification to the pure, unit-tested failure-view
   shell.includes('import { classifyFailure, failureViewCopy } from "./failure-view"')
     && shell.includes("const kind = classifyFailure(job)")
     && shell.includes("failureViewCopy(kind, job, exportMode)"));
-check("classifyFailure matches error CODE exactly (never a substring over combined code+message text)",
-  failureView.includes('job.errorCode === INSUFFICIENT_CREDITS_CODE')
-    && failureView.includes('job.errorCode === RATE_LIMITED_CODE')
+check("image caps still match exact error codes (never a substring over combined code+message text)",
+  failureView.includes('job.errorCode === "INSUFFICIENT_CREDITS"')
+    && failureView.includes('job.errorCode === "RATE_LIMITED"')
     && !/failureText/.test(failureView)); // the old combined-text variable must be gone
 check("insufficient-credits view shows the pinned heading + explanation copy",
-  failureView.includes('"เครดิต AI ไม่พอ"')
-    && failureView.includes("งานนี้ต้องใช้เครดิตมากกว่าที่มีอยู่ ระบบไม่หักเครดิตส่วนที่ไม่สำเร็จ — เติมเครดิตหรือลดจำนวนรูปแล้วลองใหม่"));
+  failureView.includes('"เครดิต Hero ไม่พอสำหรับภาพ AI"')
+    && failureView.includes("งานนี้ต้องใช้เครดิตมากกว่าที่มี ระบบยังไม่เริ่มสร้างภาพ — เติมเครดิตหรือลดจำนวนภาพแล้วลองใหม่"));
 check("insufficient-credits view offers เติมเครดิต (/pricing?from=editor) plus the existing back CTA",
   /isInsufficientCredits \? \([\s\S]{0,300}href="\/pricing\?from=editor"[\s\S]{0,200}เติมเครดิต[\s\S]{0,300}onClick=\{onBack\}/.test(shell));
-check("rate-limited view's pinned heading falls back to the server's own dynamic message",
-  failureView.includes('"ถึงเพดานการเจนรูปชั่วคราว"')
-    && /kind === "rate-limited"[\s\S]{0,200}body: job\.errorMessage/.test(failureView));
+check("rate-limited view uses reviewed product copy and never echoes the provider message",
+  failureView.includes('"สร้างภาพ AI ถี่เกินไปชั่วคราว"')
+    && failureView.includes("ระบบพักการสร้างภาพชั่วคราวและยังไม่หักเครดิต — รอสักครู่แล้วลองใหม่")
+    && !/kind === "rate-limited"[\s\S]{0,240}body: job\.errorMessage/.test(failureView));
 check("rate-limited failures keep only the existing back button (no extra CTA branch — same JSX arm as generic failures)",
   !shell.includes('kind === "rate-limited" ? ('));
 
