@@ -9,6 +9,7 @@ import {
   computeBreakEvenTarget,
 } from "@/lib/cost-rates";
 import { getRevenueCohorts } from "@/lib/revenue-cohorts";
+import { getLifetimeCashCollected } from "@/lib/revenue-cash.server";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import {
   aiImageCostBucket,
@@ -19,13 +20,6 @@ import {
 } from "@/lib/ai-image-ledger-report";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-
-// Credit-pack delta → Thai baht price mapping
-const PACK_CREDIT_TO_BAHT: Record<number, number> = {
-  200: 199,
-  540: 499,
-  1150: 999,
-};
 
 type CogsRates = Awaited<ReturnType<typeof getCostRates>>;
 
@@ -89,7 +83,6 @@ export async function GET(req: Request) {
       cohorts,
       chargedClips,
       imageSpendRows,
-      creditPurchaseRows,
       paidPayments,
       rendersWeb,
       rendersMcp,
@@ -100,6 +93,7 @@ export async function GET(req: Request) {
       imageSpendMonth,
       imageRefundMonth,
       runpodImageCost,
+      lifetimeCash,
     ] = await Promise.all([
       getCostRates(),
 
@@ -122,16 +116,12 @@ export async function GET(req: Request) {
         select: { userId: true, delta: true, action: true, createdAt: true },
       }),
 
-      // Credit-pack purchases in window (kind="purchase")
-      prisma.creditLedger.findMany({
-        where: { kind: "purchase", createdAt: { gte: from } },
-        select: { delta: true },
-      }),
-
-      // Plan cash in window (only PAID payments) — periodDays splits monthly (30) vs annual (365)
+      // Cash in the Studio payment ledger. Credit packs also create Payment rows, so this is
+      // the authoritative source; CreditLedger purchase rows can be admin grants and must not
+      // be treated as cash or counted a second time.
       prisma.payment.findMany({
         where: { status: "PAID", paidAt: { gte: from } },
-        select: { amount: true, periodDays: true },
+        select: { amount: true, periodDays: true, note: true },
       }),
 
       // Web renders (parentJobId IS null)
@@ -178,6 +168,7 @@ export async function GET(req: Request) {
         select: { delta: true },
       }),
       getRunpodImageCostSnapshot({ windowDays: Math.min(days, 30) }).catch(() => null),
+      getLifetimeCashCollected().catch(() => null),
     ]);
 
     // Durable ledger actions carry the AiGenerationJob id. Join once so two-credit
@@ -239,16 +230,15 @@ export async function GET(req: Request) {
     // row does not record which model bucket was originally charged).
     const refundCredits = imageRefundRows.reduce((sum, r) => sum + Math.abs(r.delta), 0);
     const creditsSpent = Math.max(0, grossImageSpend - refundCredits);
-    for (const row of creditPurchaseRows) {
-      const baht = PACK_CREDIT_TO_BAHT[row.delta];
-      if (baht !== undefined) packCash += baht;
-    }
-
     // ── Plan cash — split by term (periodDays >= 365 = annual, else monthly) ──
     let planCashMonthly = 0;
     let planCashAnnual = 0;
     for (const p of paidPayments) {
       const baht = p.amount / 100;
+      if (p.note === "credits") {
+        packCash += baht;
+        continue;
+      }
       if ((p.periodDays ?? 30) >= 365) planCashAnnual += baht;
       else planCashMonthly += baht;
     }
@@ -348,6 +338,11 @@ export async function GET(req: Request) {
         planMonthly: planCashMonthly,
         planAnnual: planCashAnnual,
         packs: packCash,
+        allTimeTotal: lifetimeCash?.total ?? null,
+        allTimeStripeNet: lifetimeCash?.stripeNet ?? null,
+        allTimeManual: lifetimeCash?.manual ?? null,
+        allTimeRefunds: lifetimeCash?.refunds ?? null,
+        allTimeAsOf: now.toISOString(),
       },
       breakdown: {
         tts: cogs.tts,
