@@ -106,9 +106,12 @@ check(webhook.includes("stripe.subscriptions.retrieve(subscriptionId)") && webho
   "initial subscription checkout resolves its authoritative Stripe period end");
 
 const rollout = source("src/lib/hero-script-rollout.server.ts");
-check(rollout.includes("periodDays: { gt: 0 }") && rollout.includes('status: "PAID"')
-    && rollout.includes('type: "GRANT"') && rollout.includes("hasActiveGrantCoupon"),
-  "paid rollout accepts a real plan payment or an active GRANT coupon, never a credit purchase alone");
+const paidEquivalent = source("src/lib/paid-equivalent-entitlement.server.ts");
+check(rollout.includes("resolvePaidEquivalentEntitlement")
+    && rollout.includes("paidEquivalent.canUsePaidFeatures")
+    && paidEquivalent.includes('payment.status === "PAID" && payment.periodDays > 0')
+    && paidEquivalent.includes('redemption.coupon.type !== "GRANT"'),
+  "paid rollout delegates to the canonical resolver for paid evidence and active GRANT coupons");
 
 const page = source("src/app/(dashboard)/hero-script/page.tsx");
 const quickStart = source("src/app/(dashboard)/hero-script/_components/HeroScriptQuickStart.tsx");

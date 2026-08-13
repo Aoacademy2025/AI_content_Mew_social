@@ -5,6 +5,7 @@ import { apiError } from "@/lib/api-error";
 import { getProcessingReconcilePlan, type ProcessingReconcileSummary } from "@/lib/video-reconcile";
 import { computeRevenueCohorts } from "@/lib/revenue-cohorts";
 import { getPlanConfig } from "@/lib/plan-config";
+import { getSubscriptionNorthStar } from "@/lib/subscription-north-star.server";
 
 type RenderJobRow = {
   type: string;
@@ -826,6 +827,7 @@ export async function GET(req: Request) {
       currentRows, previousRows, currentVideos, previousVideos, processingPlan,
       allUsers, openedUserRows, completedByUser, currentJobs,
       planConfig, renderJobRows, paidRows, previousJobs, jobUserRows,
+      northStar, northStarHistory,
     ] = await Promise.all([
       prisma.telemetryEvent.findMany({
         where: { createdAt: { gte: since } },
@@ -892,6 +894,16 @@ export async function GET(req: Request) {
       // Server-truth "started pipeline": distinct users who ever created a VideoJob (any time).
       // Replaces the v1-only editor_script_ready telemetry, which editor v2 never emits.
       prisma.videoJob.findMany({ select: { userId: true }, distinct: ["userId"] }),
+      getSubscriptionNorthStar(now),
+      prisma.northStarDailySnapshot.findMany({
+        orderBy: { snapshotDate: "desc" },
+        take: 31,
+        select: {
+          snapshotDate: true, asOf: true, activeRecurringPayers: true, activeCreators: true,
+          monthlyCreators: true, annualCreators: true, videoCreators: true,
+          scriptCreators: true, imageCreators: true,
+        },
+      }),
     ]);
 
     const nonEmpty = (value: string | null) => typeof value === "string" && value.trim().length > 0;
@@ -990,6 +1002,13 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       range: { days, since: since.toISOString(), until: now.toISOString() },
+      northStar: {
+        ...northStar,
+        history: northStarHistory.reverse().map((snapshot) => ({
+          ...snapshot,
+          asOf: snapshot.asOf.toISOString(),
+        })),
+      },
       activation,
       renderStats,
       jobOutcomes,

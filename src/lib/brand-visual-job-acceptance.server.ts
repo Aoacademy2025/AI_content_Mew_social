@@ -206,7 +206,7 @@ export async function prepareBrandVisualJobAcceptance(input: {
   access: BrandVisualRenderAccess;
   now?: Date;
 }): Promise<string> {
-  if (!input.access.canUse || input.access.cohort === "off" || input.access.cohort === "control") {
+  if (!input.access.canUse) {
     throw new Error("Brand Visual acceptance requires treatment access");
   }
   const now = input.now ?? new Date();

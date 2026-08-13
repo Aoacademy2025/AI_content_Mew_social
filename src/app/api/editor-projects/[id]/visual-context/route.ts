@@ -61,7 +61,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       userId: auth.user.id,
       projectId: id,
     });
-    if (!auth.access.canUse && !hasPersistedVisualPin) return brandVisualLockedResponse();
+    if (!auth.access.canUse && !hasPersistedVisualPin) return brandVisualLockedResponse(auth.access);
     const requestedPreflightId = new URL(req.url).searchParams.get("preflightId")?.trim() || undefined;
     const state = await currentVisualState(auth.user.id, id, requestedPreflightId);
     const context = await resolveProjectVisualContext({ userId: auth.user.id, projectId: id, suggested: state.suggested });

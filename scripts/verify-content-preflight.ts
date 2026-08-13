@@ -83,8 +83,16 @@ async function main() {
   );
 
   const user = await prisma.user.create({
-    data: { name: "Preflight owner", email: "preflight@example.test", geminiKey: "test-gemini-key" },
+    data: {
+      name: "Preflight owner", email: "preflight@example.test", geminiKey: "test-gemini-key",
+      plan: "PRO", subStatus: "active", stripeSubscriptionId: "sub_preflight",
+      planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    },
   });
+  await prisma.payment.create({ data: {
+    userId: user.id, stripeSessionId: "cs_preflight", plan: "PRO", amount: 9900,
+    status: "PAID", periodDays: 30, paidAt: new Date(),
+  } });
 
   const eightWindows = Array.from({ length: 8 }, (_, index) => ({
     text: `ฉากทดสอบ ${index + 1}`,

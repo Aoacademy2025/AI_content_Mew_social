@@ -1,4 +1,6 @@
-import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import type { User } from "@prisma/client";
+import { resolvePaidEquivalentEntitlement, type PaidEquivalentDecision } from "@/lib/paid-equivalent-entitlement.server";
+import { getStarterAiImageAllowanceStatus, type StarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 
 /**
  * Private beta access for GPU-backed features that are not ready for customers.
@@ -85,38 +87,99 @@ export function isInternalAiBetaEnabledFor(
  * Public-launch eligibility for Hero AI Image — the ONE gate shared by all three
  * entry points (Hero-only b-roll mode, AutoMix "ai" slots, per-window regen).
  * The internal beta cohort (`isHeroAiBetaUser`) always passes, same as today.
- * Brand Visual treatment accounts are admitted as an activation cohort even
- * when they are Free; their eight-image Starter Allowance is the hard spend
- * boundary. Outside that experiment, `HERO_AI_IMAGE_PUBLIC=1` retains the
- * existing PRO/BUSINESS launch behavior.
+ * `HERO_AI_IMAGE_PUBLIC=1` opens only server-proven Paid-Equivalent access and
+ * the active seven-day Conversion Trial allowance. Raw plan labels and Brand
+ * Visual rollout membership do not manufacture Hero Image entitlement.
  *
- * Active-trial accounts are intentionally included here: `grantTrial` (trial.ts)
- * sets `plan: "PRO"` for the trial period. Starter settlement separately checks
- * payment evidence, so an unconverted trial continues to consume the same
- * signup-anchored allowance after reverting to Free and is never issued credits.
- *
- * Both public paths fail closed: the legacy public flag must equal "1", while
- * the Brand Visual path must pass its own master flag and stable cohort policy.
+ * Trial is deliberately separate from paid: it has at most eight delivered
+ * images, uses no recurring grant, and becomes preview-only on expiry or
+ * exhaustion. Omitting the server decisions fails closed.
  */
+export type HeroAiImageAccessDecision = {
+  canUse: boolean;
+  canPreview: boolean;
+  mode: "internal" | "paid" | "trial" | "preview";
+  source: PaidEquivalentDecision["source"] | "conversion_trial" | "internal";
+  effectivePlan: PaidEquivalentDecision["effectivePlan"];
+  reason: "eligible" | "feature_off" | "payment_required" | "allowance_exhausted" | "trial_expired" | "suspended";
+  remainingTrialImages: number;
+};
+
+/** Pure helper retained for route-policy tests. Callers must pass the server
+ * decisions; omitting them fails closed for non-internal accounts. */
 export function isHeroAiImageEligible(
   actor: {
     id?: string;
     email?: string | null;
     role?: string | null;
     plan?: string | null;
+    suspended?: boolean | null;
     trialEndsAt?: Date | null;
     createdAt?: Date;
   } | null | undefined,
+  context?: {
+    paidEquivalent?: PaidEquivalentDecision;
+    trialAllowance?: StarterAiImageAllowanceStatus;
+  },
 ): boolean {
+  if (actor?.suspended) return false;
   if (isHeroAiBetaUser(actor)) return true;
-  if (actor?.id && actor.createdAt && decideBrandVisualAccess({
-    id: actor.id,
-    email: actor.email,
-    role: actor.role,
-    createdAt: actor.createdAt,
-  }).canUse) return true;
   if (process.env.HERO_AI_IMAGE_PUBLIC !== "1") return false;
-  return actor?.plan === "PRO" || actor?.plan === "BUSINESS";
+  return Boolean(
+    context?.paidEquivalent?.canUsePaidFeatures
+    || (context?.trialAllowance?.eligible && context.trialAllowance.remainingImages > 0)
+  );
+}
+
+export async function resolveHeroAiImageAccess(
+  user: Pick<User, "id" | "email" | "role" | "plan" | "suspended" | "trialStartedAt">,
+): Promise<HeroAiImageAccessDecision> {
+  if (user.suspended) {
+    return {
+      canUse: false, canPreview: true, mode: "preview", source: "internal",
+      effectivePlan: "FREE", reason: "suspended", remainingTrialImages: 0,
+    };
+  }
+  if (isHeroAiBetaUser(user)) {
+    return {
+      canUse: true, canPreview: true, mode: "internal", source: "internal",
+      effectivePlan: user.plan === "BUSINESS" ? "BUSINESS" : "PRO", reason: "eligible", remainingTrialImages: 0,
+    };
+  }
+  const paidEquivalent = await resolvePaidEquivalentEntitlement(user.id);
+  const allowance = await getStarterAiImageAllowanceStatus(user.id);
+  if (process.env.HERO_AI_IMAGE_PUBLIC !== "1") {
+    return {
+      canUse: false, canPreview: true, mode: "preview", source: paidEquivalent.source,
+      effectivePlan: paidEquivalent.effectivePlan, reason: "feature_off", remainingTrialImages: allowance.remainingImages,
+    };
+  }
+  if (paidEquivalent.canUsePaidFeatures) {
+    return {
+      canUse: true, canPreview: true, mode: "paid", source: paidEquivalent.source,
+      effectivePlan: paidEquivalent.effectivePlan, reason: "eligible", remainingTrialImages: allowance.remainingImages,
+    };
+  }
+  if (allowance.eligible) {
+    return {
+      canUse: allowance.remainingImages > 0,
+      canPreview: true,
+      mode: "trial",
+      source: "conversion_trial",
+      effectivePlan: "FREE",
+      reason: allowance.remainingImages > 0 ? "eligible" : "allowance_exhausted",
+      remainingTrialImages: allowance.remainingImages,
+    };
+  }
+  return {
+    canUse: false,
+    canPreview: true,
+    mode: "preview",
+    source: "none",
+    effectivePlan: "FREE",
+    reason: user.trialStartedAt ? "trial_expired" : "payment_required",
+    remainingTrialImages: allowance.remainingImages,
+  };
 }
 
 /** Shared 403 payload for a plan-gated Hero AI Image request once the public
@@ -126,7 +189,17 @@ export const HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE = {
   status: 403 as const,
   body: {
     error: "plan_required" as const,
-    message: "Hero AI Image ใช้ได้กับแผน PRO/BUSINESS — อัปเกรดเพื่อใช้งาน",
+    message: "Hero AI Image ใช้ได้กับสมาชิก PRO/BUSINESS — อัปเกรดเพื่อปลดล็อกทันที",
     upgradeUrl: "/pricing" as const,
+  },
+};
+
+export const HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE = {
+  status: 403 as const,
+  body: {
+    error: "trial_allowance_exhausted" as const,
+    message: "คุณใช้สิทธิ์ทดลอง Hero AI Image ครบ 8 ภาพแล้ว — อัปเกรดเพื่อสร้างต่อ",
+    upgradeUrl: "/pricing" as const,
+    remainingImages: 0 as const,
   },
 };

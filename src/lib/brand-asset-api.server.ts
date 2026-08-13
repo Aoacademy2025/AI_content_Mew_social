@@ -12,7 +12,7 @@ import {
   setDefaultBrandPreference,
 } from "@/lib/brand-assets.server";
 import type { User } from "@prisma/client";
-import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
   normalizeLogoOverlayConfig,
   type BrandAssetView,
@@ -24,11 +24,11 @@ export type BrandAssetActor = {
   brandVisualAllowed?: boolean;
 };
 
-export function brandAssetActorForUser(user: User): BrandAssetActor {
+export async function brandAssetActorForUser(user: User): Promise<BrandAssetActor> {
   return {
     id: user.id,
     plan: user.plan,
-    brandVisualAllowed: decideBrandVisualAccess(user).canUse,
+    brandVisualAllowed: (await resolveBrandVisualAccess(user)).canUse,
   };
 }
 

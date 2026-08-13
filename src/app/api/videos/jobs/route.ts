@@ -46,7 +46,8 @@ import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
 import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
 import {
   HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
-  isHeroAiImageEligible,
+  HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE,
+  resolveHeroAiImageAccess,
   isInternalAiBetaEnabledFor,
   isInternalAiTester,
 } from "@/lib/internal-ai-access";
@@ -55,7 +56,7 @@ import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import { normalizeHeadlineHook } from "@/lib/headline-hook";
-import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
   prepareProjectVisualPin,
   prepareUploadProjectVisualSnapshot,
@@ -165,6 +166,10 @@ export async function POST(req: Request) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const [heroAiImageAccess, brandVisualAccess] = await Promise.all([
+      resolveHeroAiImageAccess(user),
+      resolveBrandVisualAccess(user),
+    ]);
 
     const body = (await req.json().catch(() => null)) as Body | null;
     if (!body) return NextResponse.json({ error: "invalid_body" }, { status: 400 });
@@ -339,7 +344,7 @@ export async function POST(req: Request) {
           staging: {
             userId: user.id,
             plan: user.plan,
-            brandVisualAllowed: decideBrandVisualAccess(user).canUse
+            brandVisualAllowed: brandVisualAccess.canUse
               || await projectHasPersistedVisualPin({ userId: user.id, projectId: sourceProjectId }),
             projectId: sourceProjectId,
             rawLogoOverlay: rawLogoOverlay,
@@ -549,7 +554,6 @@ export async function POST(req: Request) {
     const autoMixRequestsAi = requestedSource === "auto-mix"
       && (autoMixProviders === undefined || autoMixProviders.includes("kie-ai"))
       && (autoMixWeights?.ai ?? 1) > 0;
-    const brandVisualAccess = decideBrandVisualAccess(user);
     const requestsBrandVisualImage = Boolean(
       projectId && (useHeroRunpodImage || autoMixRequestsAi),
     );
@@ -565,7 +569,10 @@ export async function POST(req: Request) {
       liveAccess: brandVisualAccess,
     });
     if (useHeroRunpodImage) {
-      if (!isHeroAiImageEligible(user) && !brandVisualRenderAccess) {
+      if (!heroAiImageAccess.canUse && !brandVisualRenderAccess) {
+        if (heroAiImageAccess.reason === "allowance_exhausted") {
+          return NextResponse.json(HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body, { status: HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.status });
+        }
         if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
           return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
         }
@@ -600,7 +607,10 @@ export async function POST(req: Request) {
       // AutoMix "ai" slots now generate on the Hero RunPod seam (fetch-stock), so the
       // mode follows the SAME Hero rollout gate as Hero-only mode; the legacy
       // managed-kie beta cohort keeps its existing access. fetch-stock re-checks both.
-      if (!isHeroAiImageEligible(user) && !canUseKieImages && !brandVisualRenderAccess) {
+      if (!heroAiImageAccess.canUse && !canUseKieImages && !brandVisualRenderAccess) {
+        if (heroAiImageAccess.reason === "allowance_exhausted") {
+          return NextResponse.json(HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body, { status: HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.status });
+        }
         if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
           return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
         }

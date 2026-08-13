@@ -35,7 +35,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       userId: auth.user.id,
       projectId: id,
     });
-    if (!auth.access.canUse && !hasPersistedVisualPin) return brandVisualLockedResponse();
+    if (!auth.access.canUse && !hasPersistedVisualPin) return brandVisualLockedResponse(auth.access);
     const rawWindowCount = body?.narrativeSource?.windowCount;
     const windowCount = Number.isFinite(rawWindowCount) && rawWindowCount > 0
       ? Math.min(60, Math.floor(rawWindowCount))

@@ -18,7 +18,7 @@ import { getBalance } from "@/lib/credits";
 import { checkHeroImageRate, heroImageRateLimitMessage } from "@/lib/hero-image-rate-limit";
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
-import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
   parseBrandVisualJobAcceptance,
   prepareBrandVisualJobAcceptance,
@@ -141,7 +141,7 @@ export async function POST(req: Request) {
     const access = resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: true,
       hasPersistedProjectPin: true,
-      liveAccess: decideBrandVisualAccess(user),
+      liveAccess: await resolveBrandVisualAccess(user),
     });
     if (!access) {
       return NextResponse.json(
@@ -236,6 +236,7 @@ export async function POST(req: Request) {
           brandVisualPrompt,
           deferVisualBeatLink: true,
           ...(acceptance ? { brandVisualAcceptance: acceptance } : {}),
+          productSurface: "scene_reroll",
         });
     await copyOwnedHeroImage(generated.outputUrl, tmpImagePath);
     await applyKenBurns(tmpImagePath, outPath, input.kenBurnsDurationSec);

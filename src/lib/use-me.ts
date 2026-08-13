@@ -30,9 +30,9 @@ export interface MeData {
   recommendedAutoMixDefault?: boolean;
   heroScriptAllowed?: boolean;
   heroScriptPreview?: boolean;
-  heroScriptCohort?: "internal" | "paid" | "coupon" | "trial" | "free" | "preview";
+  heroScriptCohort?: "internal" | "paid" | "coupon" | "bundle" | "grant" | "trial" | "free" | "preview";
   brandVisualAllowed?: boolean;
-  brandVisualCohort?: "off" | "internal" | "control" | "treatment-10" | "treatment-50" | "treatment-100";
+  brandVisualCohort?: "off" | "internal" | "not-entitled" | "rollout-wait" | "treatment-10" | "treatment-50" | "treatment-100";
   brandVisualRolloutBucket?: number | null;
   starterAiImageAllowance?: {
     eligible: boolean;
@@ -43,7 +43,13 @@ export interface MeData {
     reservedImages: number;
     usedImages: number;
     remainingImages: number;
+    accessMode: "trial" | "paid" | "locked" | "legacy";
   } | null;
+  featureAccess?: {
+    heroAiImage?: { canUse: boolean; canPreview: boolean; mode: string; source: string; reason: string; remainingTrialImages: number };
+    heroAiScript?: { canUse: boolean; canPreview: boolean; mode: string; source: string; reason: string };
+    brandVisual?: { canUse: boolean; mode: string; source: string; reason: string; rolloutBucket: number | null };
+  };
   [key: string]: unknown;
 }
 

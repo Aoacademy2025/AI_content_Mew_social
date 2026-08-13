@@ -17,6 +17,8 @@ interface UpgradeModalProps {
   hideCta?: boolean;
   /** When true, show minutes-quota copy instead of clips. Sourced from /api/user/me minuteQuota. */
   minuteQuota?: boolean;
+  pricingHref?: string;
+  onCtaClick?: () => void;
 }
 
 // from minutesPerMonthForPlan("PRO") = 80
@@ -29,7 +31,7 @@ function getDefaultBenefits(minuteQuota?: boolean): string[] {
   ];
 }
 
-export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel, hideCta, minuteQuota }: UpgradeModalProps) {
+export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel, hideCta, minuteQuota, pricingHref = "/pricing", onCtaClick }: UpgradeModalProps) {
   const router = useRouter();
   if (!open) return null;
 
@@ -76,7 +78,7 @@ export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel
         {/* Buttons */}
         {!hideCta && (
           <button
-            onClick={() => { onClose(); router.push("/pricing"); }}
+            onClick={() => { onCtaClick?.(); onClose(); router.push(pricingHref); }}
             className="w-full rounded-xl py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
             style={{ background: "linear-gradient(135deg, #7c3aed, #2563eb)" }}
           >

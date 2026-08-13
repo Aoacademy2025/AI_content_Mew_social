@@ -5,7 +5,7 @@ import {
   type NarrativeVisualWindow,
   type ResolvedContentPreflight,
 } from "@/lib/content-preflight.server";
-import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { resolveBrandVisualAccessByUserId } from "@/lib/brand-visual-rollout.server";
 
 type UploadPreflightActor = {
   id: string;
@@ -45,7 +45,7 @@ export async function ensureUploadContentPreflight(
   },
 ): Promise<UploadContentPreflightResult> {
   if (!input.projectId) return { kind: "skipped", reason: "no-project" };
-  const canUse = input.brandVisualAccepted ?? decideBrandVisualAccess(input.actor).canUse;
+  const canUse = input.brandVisualAccepted ?? (await resolveBrandVisualAccessByUserId(input.actor)).canUse;
   if (!canUse) {
     return { kind: "skipped", reason: "not-in-treatment" };
   }

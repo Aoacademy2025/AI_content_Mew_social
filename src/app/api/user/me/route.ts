@@ -7,11 +7,12 @@ import { syncUsageWindow } from "@/lib/usage-limits";
 import { classifyEntitlement } from "@/lib/entitlements";
 import { checkMinuteQuota } from "@/lib/minute-limits";
 import { managedKieLaunchOn } from "@/lib/kie-image-guards";
-import { isHeroAiBetaUser, isHeroAiImageEligible, isInternalAiTester } from "@/lib/internal-ai-access";
+import { isHeroAiBetaUser, isInternalAiTester, resolveHeroAiImageAccess } from "@/lib/internal-ai-access";
 import { resolveHeroScriptAccess } from "@/lib/hero-script-rollout.server";
-import { decideBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { shouldDefaultToRecommendedAutoMix } from "@/lib/automix-plan";
+import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
 
 export async function GET() {
   try {
@@ -67,13 +68,17 @@ export async function GET() {
     // Public-launch eligibility (Task 5 consumes this for the editor's Hero AI
     // Image UI): beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS (active
     // trial included — see isHeroAiImageEligible's doc comment for why).
-    const heroAiImageEligible = isHeroAiImageEligible(authUser);
-    const heroScriptAccess = await resolveHeroScriptAccess(authUser);
-    const brandVisualAccess = decideBrandVisualAccess(authUser);
+    const [paidEquivalent, heroAiImageAccess, heroScriptAccess, brandVisualAccess, starterAllowance] = await Promise.all([
+      resolvePaidEquivalentEntitlement(authUser.id),
+      resolveHeroAiImageAccess(authUser),
+      resolveHeroScriptAccess(authUser),
+      resolveBrandVisualAccess(authUser),
+      getStarterAiImageAllowanceStatus(authUser.id),
+    ]);
+    const heroAiImageEligible = heroAiImageAccess.canUse;
     // Recovery and exact rerender remain available for already-pinned projects
     // when new Brand Visual admission is rolled back. Funding disclosure must
     // therefore be independent from the live cohort flag.
-    const starterAllowance = await getStarterAiImageAllowanceStatus(authUser.id);
     // Managed-kie: is AI image generation un-gated for THIS user? True for paid
     // (PRO/BUSINESS) plans only when both flags are on. Admins always have access
     // (client mirrors already OR this with an isAdmin check), so this is the
@@ -81,14 +86,16 @@ export async function GET() {
     const kiePaidUnlocked = internalAiTester &&
       managedKieOn && ((user as any).plan === "PRO" || (user as any).plan === "BUSINESS");
     const recommendedAutoMixDefault = shouldDefaultToRecommendedAutoMix({
-      effectivePlan: entitlement.effectivePlan,
+      effectivePlan: paidEquivalent.canUsePaidFeatures
+        ? paidEquivalent.effectivePlan
+        : entitlement.effectivePlan,
       heroAiImageEligible,
       brandVisualAllowed: brandVisualAccess.canUse,
     });
 
     return NextResponse.json({
       ...user,
-      effectivePlan: entitlement.effectivePlan,
+      effectivePlan: paidEquivalent.canUsePaidFeatures ? paidEquivalent.effectivePlan : entitlement.effectivePlan,
       usageCount: usage?.usageCount ?? user.usageCount,
       usageLimit: usage?.usageLimit ?? limits.clips,
       usagePeriodStartedAt: usage?.usagePeriodStartedAt ?? (user as any).usagePeriodStartedAt,
@@ -107,6 +114,28 @@ export async function GET() {
       brandVisualAllowed: brandVisualAccess.canUse,
       brandVisualCohort: brandVisualAccess.cohort,
       brandVisualRolloutBucket: brandVisualAccess.bucket,
+      paidEquivalent: {
+        ...paidEquivalent,
+        expiresAt: paidEquivalent.expiresAt?.toISOString() ?? null,
+      },
+      featureAccess: {
+        heroAiImage: heroAiImageAccess,
+        heroAiScript: {
+          mode: heroScriptAccess.mode,
+          source: heroScriptAccess.entitlementSource,
+          effectivePlan: heroScriptAccess.effectivePlan,
+          reason: heroScriptAccess.reason,
+          canUse: heroScriptAccess.canUse,
+          canPreview: heroScriptAccess.canPreview,
+        },
+        brandVisual: {
+          mode: brandVisualAccess.mode,
+          source: brandVisualAccess.entitlementSource,
+          reason: brandVisualAccess.reason,
+          canUse: brandVisualAccess.canUse,
+          rolloutBucket: brandVisualAccess.bucket,
+        },
+      },
       starterAiImageAllowance: starterAllowance ? {
         ...starterAllowance,
         windowStartedAt: starterAllowance.windowStartedAt.toISOString(),

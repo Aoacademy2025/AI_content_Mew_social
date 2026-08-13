@@ -33,7 +33,7 @@ const isAdminRoute = createRouteMatcher([
 
 const isAuthRoute = createRouteMatcher(["/login(.*)", "/register(.*)"]);
 
-export default clerkMiddleware(async (auth, req) => {
+export const proxy = clerkMiddleware(async (auth, req) => {
   const { userId, sessionClaims } = await auth();
 
   // Redirect logged-in users away from auth pages and homepage → dashboard

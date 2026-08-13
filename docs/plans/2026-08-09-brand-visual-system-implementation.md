@@ -11,8 +11,9 @@ Architecture source: `docs/adr/0005-video-projects-pin-brand-profile-revisions.m
   customer generation route is used during implementation.
 - The existing shared Credit wallet remains the only paid currency. Hero AI
   Image remains 2 credits per generated image.
-- Starter AI Image Allowance is an activation allowance of 8 images per shared
-  30-day usage window, not a credit grant or a second paid wallet.
+- Superseded by ADR 0008: the Conversion Trial allowance is eight successfully
+  delivered images during the seven-day Trial, once per protected identity. It
+  never renews every 30 days and is not a credit grant or second paid wallet.
 - V1 is text-free Z-Image only. Trend Packs, trend administration, reference
   images, LoRA/character conditioning, and model-rendered text are fast-follow.
 - Existing dirty work is preserved by implementing in an isolated worktree

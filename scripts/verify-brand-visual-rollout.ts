@@ -7,10 +7,11 @@ async function main() {
     decideBrandVisualAccess,
   } = await import("../src/lib/brand-visual-rollout.server");
 
-  const createdAt = new Date("2026-08-10T00:00:00.000Z");
-  const owner = { id: "owner", email: "duckyhero@gmail.com", role: "USER", createdAt };
-  const admin = { id: "admin", email: "admin@example.test", role: "ADMIN", createdAt };
-  const newcomer = { id: "new-user", email: "new@example.test", role: "USER", createdAt };
+  const owner = { id: "owner", email: "duckyhero@gmail.com", role: "USER" };
+  const admin = { id: "admin", email: "admin@example.test", role: "ADMIN" };
+  const newcomer = { id: "new-user", email: "new@example.test", role: "USER" };
+  const paid = { canUsePaidFeatures: true, source: "subscription" as const };
+  const unpaid = { canUsePaidFeatures: false, source: "none" as const };
   const flags = {
     enabled: true,
     percent: 10 as const,
@@ -18,22 +19,24 @@ async function main() {
     testEmails: new Set<string>(),
   };
 
-  assert.equal(decideBrandVisualAccess(owner, { ...flags, enabled: false }).canUse, false, "master kill switch is fail-closed");
-  assert.equal(decideBrandVisualAccess(owner, flags).cohort, "internal");
-  assert.equal(decideBrandVisualAccess(admin, flags).cohort, "internal");
+  assert.equal(decideBrandVisualAccess(owner, paid, { ...flags, enabled: false }).canUse, false, "master kill switch is fail-closed");
+  assert.equal(decideBrandVisualAccess(owner, unpaid, flags).cohort, "internal");
+  assert.equal(decideBrandVisualAccess(admin, unpaid, flags).cohort, "internal");
   assert.equal(
     decideBrandVisualAccess(
       { ...newcomer, email: "free-test@example.test" },
+      unpaid,
       { ...flags, testEmails: new Set(["free-test@example.test"]) },
     ).cohort,
     "internal",
   );
 
   const bucket = brandVisualRolloutBucket(newcomer.id);
-  const access = decideBrandVisualAccess(newcomer, flags);
+  const access = decideBrandVisualAccess(newcomer, paid, flags);
   assert.equal(access.canUse, bucket < 10);
   assert.equal(access.bucket, bucket);
-  assert.equal(decideBrandVisualAccess({ ...newcomer, createdAt: new Date("2026-08-08T00:00:00Z") }, flags).canUse, false);
+  assert.equal(decideBrandVisualAccess(newcomer, unpaid, { ...flags, percent: 100 }).reason, "payment_required");
+  assert.equal(decideBrandVisualAccess(newcomer, paid, { ...flags, percent: 0 }).reason, "rollout_wait");
   assert.equal(brandVisualRolloutBucket(newcomer.id), bucket, "cohort bucket is stable");
 
   assert.deepEqual(

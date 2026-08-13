@@ -60,6 +60,8 @@ async function main() {
       email: "accepted-starter@example.test",
       plan: "FREE",
       createdAt: new Date("2026-08-01T00:00:00.000Z"),
+      trialStartedAt: new Date("2026-08-08T00:00:00.000Z"),
+      trialEndsAt: new Date("2026-08-15T00:00:00.000Z"),
     },
   });
   await prisma.creditBalance.create({ data: { userId: user.id, granted: 0, purchased: 0 } });
@@ -221,8 +223,8 @@ async function main() {
     ? new Date(acceptance.funding.windowStartedAt)
     : null;
   assert.ok(allowanceWindow);
-  await prisma.starterAiImageAllowance.update({
-    where: { userId_windowStartedAt: { userId: user.id, windowStartedAt: allowanceWindow } },
+  await prisma.conversionTrialAiImageAllowance.update({
+    where: { userId: user.id },
     data: { usedImages: 8 },
   });
   const exhaustedAcceptance = parseBrandVisualJobAcceptance(await prepareBrandVisualJobAcceptance({
@@ -240,8 +242,8 @@ async function main() {
     true,
     "an unchanged clip at zero remaining allowance preserves its established reduced density",
   );
-  await prisma.starterAiImageAllowance.update({
-    where: { userId_windowStartedAt: { userId: user.id, windowStartedAt: allowanceWindow } },
+  await prisma.conversionTrialAiImageAllowance.update({
+    where: { userId: user.id },
     data: { usedImages: 0 },
   });
 
@@ -384,8 +386,8 @@ async function main() {
   assert.ok(
     jobsRoute.indexOf("const hasPersistedProjectPin")
       < jobsRoute.indexOf("if (useHeroRunpodImage)")
-      && jobsRoute.includes("!isHeroAiImageEligible(user) && !brandVisualRenderAccess")
-      && jobsRoute.includes("!canUseKieImages && !brandVisualRenderAccess"),
+      && jobsRoute.includes("!heroAiImageAccess.canUse && !brandVisualRenderAccess")
+      && jobsRoute.includes("!heroAiImageAccess.canUse && !canUseKieImages && !brandVisualRenderAccess"),
     "an established pin must be resolved before live Hero eligibility so rollback cannot reject its exact rerender",
   );
 

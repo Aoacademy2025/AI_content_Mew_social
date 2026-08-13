@@ -3,6 +3,7 @@ import { createNotification } from "@/lib/notifications";
 import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { resetMonthlyGranted } from "@/lib/credits";
 import { syncStoredBundleEntitlementForUser } from "@/lib/bundle-entitlement";
+import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
 
 const PAID_PLANS = ["PRO", "BUSINESS"] as const;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -220,11 +221,55 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
     if (!user) return null;
   }
 
-  const decision = classifyEntitlement(user, now);
-  if (decision.action !== "DOWNGRADE") return { user, decision, changed: false };
+  const paidEquivalent = await resolvePaidEquivalentEntitlement(userId, now);
+  if (paidEquivalent.canUsePaidFeatures) {
+    let materialized = user;
+    let changed = false;
+    if (user.plan !== paidEquivalent.effectivePlan) {
+      materialized = await prisma.user.update({
+        where: { id: userId },
+        data: { plan: paidEquivalent.effectivePlan },
+        select: {
+          id: true, email: true, role: true, plan: true, usageCount: true, usageLimit: true,
+          usagePeriodStartedAt: true, planExpiresAt: true, trialStartedAt: true, trialEndsAt: true,
+          subStatus: true, stripeSubscriptionId: true, bundleAccessExpiresAt: true,
+          bundleStatus: true, bundlePrimary: true,
+        },
+      });
+      changed = true;
+    }
+    const source: EntitlementDecision["source"] = paidEquivalent.source === "subscription"
+      ? "SUBSCRIPTION"
+      : paidEquivalent.source === "bundle"
+        ? "BUNDLE"
+        : paidEquivalent.source === "paid_term"
+          ? "TIMED_PLAN"
+          : "PERMANENT_OR_MANUAL";
+    return {
+      user: materialized,
+      decision: {
+        effectivePlan: paidEquivalent.effectivePlan,
+        source,
+        action: "KEEP" as const,
+        reason: `paid_equivalent:${paidEquivalent.source}`,
+        expiresAt: paidEquivalent.expiresAt,
+      },
+      changed,
+    };
+  }
 
-  const expiryGuard =
-    decision.reason === "trial_expired"
+  const decision = classifyEntitlement(user, now);
+  const activeTrial = Boolean(user.trialEndsAt && user.trialEndsAt > now);
+  // Once the migration is applied, a paid-looking label without source
+  // evidence is drift, not a permanent entitlement. Active Conversion Trial
+  // remains the only label-backed exception.
+  if (decision.action !== "DOWNGRADE" && (!isPaidPlan(user.plan) || activeTrial)) {
+    return { user, decision, changed: false };
+  }
+
+  const expiryGuard = decision.action !== "DOWNGRADE"
+    ? {}
+    : decision.reason === "trial_expired"
       ? { trialEndsAt: { not: null, lte: now } }
       : decision.source === "EXPIRED_BUNDLE"
         ? { bundlePrimary: true, bundleAccessExpiresAt: { not: null, lte: now } }

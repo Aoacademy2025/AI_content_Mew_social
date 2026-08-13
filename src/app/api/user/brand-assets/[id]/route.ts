@@ -18,7 +18,7 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const { id } = await params;
-    return await getBrandAssetItem(brandAssetActorForUser(user), id);
+    return await getBrandAssetItem(await brandAssetActorForUser(user), id);
   } catch {
     return apiError({
       route: "user/brand-assets/[id]",
@@ -37,7 +37,7 @@ export async function PATCH(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const { id } = await params;
-    return await patchBrandAssetItem(brandAssetActorForUser(user), id, request);
+    return await patchBrandAssetItem(await brandAssetActorForUser(user), id, request);
   } catch {
     return apiError({
       route: "user/brand-assets/[id]",
@@ -56,7 +56,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const { id } = await params;
-    return await deleteBrandAssetItem(brandAssetActorForUser(user), id);
+    return await deleteBrandAssetItem(await brandAssetActorForUser(user), id);
   } catch {
     return apiError({
       route: "user/brand-assets/[id]",

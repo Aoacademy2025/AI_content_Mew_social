@@ -89,7 +89,12 @@ export async function requireHeroScriptUser(): Promise<HeroScriptAuthResult> {
     return {
       ok: false,
       response: NextResponse.json(
-        { code: HERO_SCRIPT_LOCKED_CODE, error: HERO_SCRIPT_LOCKED_MESSAGE },
+        {
+          code: HERO_SCRIPT_LOCKED_CODE,
+          error: HERO_SCRIPT_LOCKED_MESSAGE,
+          reason: access.reason,
+          upgradeUrl: "/pricing",
+        },
         { status: 403 }
       ),
     };

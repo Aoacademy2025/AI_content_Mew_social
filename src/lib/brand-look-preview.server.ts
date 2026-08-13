@@ -752,6 +752,7 @@ function previewGenerationDriver(input: {
     sceneTitle: `${input.payload.name} · ${phase}`,
     brandVisualPrompt: { source: input.source, compiled, identityKey: input.identityKey },
     brandLookPreviewReservation: { itemId, expectedImageJobId: null },
+    productSurface: "brand_visual_preview",
   });
   return {
     reservation: async (request) => {
@@ -917,6 +918,7 @@ export async function rerollBrandLookPreviewItem(input: {
         itemId,
         expectedImageJobId,
       },
+      productSurface: "brand_visual_preview",
     });
     return { jobId: result.jobId, outputUrl: result.outputUrl };
   });

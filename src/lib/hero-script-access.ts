@@ -73,4 +73,4 @@ export function isHeroScriptAllowedUser(
 // Shared 403 payload for the 11 hero-script API routes (see requireHeroScriptUser
 // in hero-script.server.ts) — one definition instead of 11 copy-pasted literals.
 export const HERO_SCRIPT_LOCKED_CODE = "FEATURE_LOCKED";
-export const HERO_SCRIPT_LOCKED_MESSAGE = "ฟีเจอร์นี้ยังอยู่ในช่วงทดสอบภายใน";
+export const HERO_SCRIPT_LOCKED_MESSAGE = "Hero Script เป็นฟีเจอร์พรีเมียมสำหรับสมาชิก PRO/BUSINESS — อัปเกรดเพื่อปลดล็อกทันที";

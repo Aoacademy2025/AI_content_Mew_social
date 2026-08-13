@@ -5,11 +5,11 @@ import { useEffect } from "react";
 import { ArrowRight, BookOpen, Check, LockKeyhole, NotebookPen, Sparkles, Video } from "lucide-react";
 import { trackEvent } from "@/lib/client-telemetry";
 
-export function HeroScriptLockedPreview({ entitlementSource }: { entitlementSource: string }) {
+export function HeroScriptLockedPreview({ entitlementSource, isTrial }: { entitlementSource: string; isTrial: boolean }) {
   useEffect(() => {
     trackEvent("hero_script_preview_viewed", {
       path: "/hero-script",
-      properties: { entitlementSource },
+      properties: { feature: "hero_script", accessMode: "preview", source: entitlementSource, surface: "locked_preview" },
     });
   }, [entitlementSource]);
 
@@ -17,11 +17,9 @@ export function HeroScriptLockedPreview({ entitlementSource }: { entitlementSour
     trackEvent("hero_script_upgrade_clicked", {
       path: "/hero-script",
       step: "locked_preview",
-      properties: { entitlementSource },
+      properties: { feature: "hero_script", accessMode: "preview", source: entitlementSource, surface: "locked_preview" },
     });
   }
-
-  const trialWaiting = entitlementSource === "TRIAL";
 
   return (
     <div className="relative flex-1 overflow-y-auto px-4 py-8 md:px-8 md:py-12">
@@ -29,7 +27,7 @@ export function HeroScriptLockedPreview({ entitlementSource }: { entitlementSour
         <div className="grid gap-9 lg:grid-cols-[1.08fr_.92fr] lg:items-center">
           <div>
             <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-violet-400/25 bg-violet-500/10 px-3 py-1.5 text-xs font-semibold text-violet-300">
-              <Sparkles className="h-3.5 w-3.5" /> เปิดให้สมาชิกแบบทยอยเปิดใช้งาน
+              <Sparkles className="h-3.5 w-3.5" /> ฟีเจอร์พรีเมียมสำหรับสมาชิก
             </div>
             <h1 className="max-w-xl text-3xl font-bold leading-tight tracking-tight text-[var(--ui-text-primary)] md:text-5xl">
               เปลี่ยนไอเดียให้เป็นสคริปต์ที่พร้อมถ่ายและพร้อมตัดต่อ
@@ -44,7 +42,7 @@ export function HeroScriptLockedPreview({ entitlementSource }: { entitlementSour
                 onClick={trackUpgrade}
                 className="inline-flex min-h-12 items-center justify-center gap-2 rounded-xl bg-violet-600 px-5 text-sm font-semibold text-white transition hover:bg-violet-500"
               >
-                {trialWaiting ? "ดูแผนหลังช่วงทดลอง" : "ดูแผนสมาชิก"}
+                ดูแผนรายเดือน / รายปี
                 <ArrowRight className="h-4 w-4" />
               </Link>
               <Link
@@ -57,7 +55,9 @@ export function HeroScriptLockedPreview({ entitlementSource }: { entitlementSour
             </div>
             <p className="mt-3 flex items-center gap-2 text-xs text-[var(--ui-text-muted)]">
               <LockKeyhole className="h-3.5 w-3.5" />
-              {trialWaiting ? "Trial กำลังทยอยเปิดเป็นกลุ่ม" : "เปิดเต็มรูปแบบให้สมาชิกก่อน"}
+              {isTrial
+                ? "ฟีเจอร์พรีเมียมนี้ไม่รวมในช่วงทดลอง — อัปเกรดเพื่อปลดล็อกทันที"
+                : "สมัคร PRO/BUSINESS เพื่อเขียนและส่งสคริปต์เข้า Editor"}
             </p>
           </div>
 

@@ -90,7 +90,8 @@ import {
 } from "@/lib/broll-asset-lib";
 import {
   HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
-  isHeroAiImageEligible,
+  HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE,
+  resolveHeroAiImageAccess,
   isInternalAiTester,
 } from "@/lib/internal-ai-access";
 import {
@@ -1095,8 +1096,9 @@ export async function POST(req: Request) {
 
   const user = await prisma.user.findUnique({
     where: { id: authUser.id },
-    select: { id: true, createdAt: true, email: true, pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true, trialEndsAt: true },
+    select: { id: true, createdAt: true, email: true, pixabayKey: true, pexelsKey: true, kieKey: true, unsplashKey: true, flickrKey: true, geminiKey: true, ttsProvider: true, role: true, plan: true, suspended: true, trialStartedAt: true, trialEndsAt: true },
   });
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   // ── Managed-kie gate + key resolution (flag MANAGED_KIE) ──────────────────
   // Flag OFF → byte-identical to before: kie sources are ADMIN-only and use the
@@ -1121,7 +1123,8 @@ export async function POST(req: Request) {
   // Hero AI Image rollout gate — ONE policy for every Hero seam entry point
   // (Hero-only mode below and the AutoMix "ai" slots). Widening this helper opens
   // both paths at once, so the two can never drift apart.
-  const liveHeroAiEligible = isHeroAiImageEligible(user);
+  const heroAiImageAccess = await resolveHeroAiImageAccess(user);
+  const liveHeroAiEligible = heroAiImageAccess.canUse;
   const heroVideoJobIdOk = typeof videoJobId === "string" && /^[A-Za-z0-9_-]{8,120}$/.test(videoJobId);
   const heroVideoMint = (useHeroRunpodImage || useAutoMix) && heroVideoJobIdOk
     ? await authorizeHeroVideoMint({ fromRenderPipeline, userId, videoJobId: videoJobId! })
@@ -1184,6 +1187,9 @@ export async function POST(req: Request) {
       return NextResponse.json(denial.body, { status: denial.status });
     }
     if (!heroAiEligible) {
+      if (heroAiImageAccess.reason === "allowance_exhausted") {
+        return NextResponse.json(HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body, { status: HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.status });
+      }
       if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
         return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
       }
@@ -1200,6 +1206,9 @@ export async function POST(req: Request) {
   // the Hero RunPod seam, so Hero eligibility alone unlocks the mode; the legacy
   // managed-kie beta cohort keeps its existing access.
   if (useAutoMix && !canUseKieImages && !heroAiEligible) {
+    if (heroAiImageAccess.reason === "allowance_exhausted") {
+      return NextResponse.json(HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body, { status: HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.status });
+    }
     if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
       return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
     }
@@ -2337,6 +2346,7 @@ export async function POST(req: Request) {
             style: providerStyle,
             interfaceExpected: brief.includesInterface,
             brandVisualAcceptance: brandVisualAcceptance ?? undefined,
+            productSurface: "hero_video",
           });
           generatedScenes.push({
             keyword,
@@ -3429,6 +3439,7 @@ export async function POST(req: Request) {
               sceneTitle: subtitleTexts?.[ki] || kw,
               style: heroImageStyleForBrollWindow(brollPreference.brollVisualStyle),
               brandVisualAcceptance: brandVisualAcceptance ?? undefined,
+              productSurface: "automix",
             });
             aiTelemetry.aiChargedCount++;
             aiTelemetry.aiCreditsSpent += generated.fundingSource === "credits" ? generated.creditCost : 0;

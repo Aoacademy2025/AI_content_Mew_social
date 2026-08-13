@@ -487,7 +487,16 @@ function createHarness(options: HarnessOptions = {}) {
   const fakeReact: Record<string, unknown> = {};
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
-    if (specifier === "@/lib/use-me") return { fetchMe: () => options.fetchMe ?? Promise.resolve({ role: "ADMIN" }) };
+    if (specifier === "@/lib/use-me") {
+      return {
+        fetchMe: () => options.fetchMe ?? Promise.resolve({ role: "ADMIN" }),
+        resolveBrandVisualClientAccess: (account: JsonRecord | null | undefined) => {
+          const featureAccess = account?.featureAccess as JsonRecord | undefined;
+          const brandVisual = featureAccess?.brandVisual as JsonRecord | undefined;
+          return brandVisual?.canUse === true || account?.brandVisualAllowed === true;
+        },
+      };
+    }
     if (specifier === "../_components/types") {
       return { DEFAULT_AUTO_MIX_PROVIDERS: ["video", "pexels-photo", "pixabay-photo"] };
     }

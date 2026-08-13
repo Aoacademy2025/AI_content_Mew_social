@@ -95,8 +95,9 @@ check("imports the shared credit-costs constant instead of a literal",
   /import\s*\{\s*HERO_AI_IMAGE_CREDITS\s*\}\s*from\s*["']@\/lib\/credit-costs["']/.test(step2));
 
 check("Hero AI Image + AutoMix cards unlock via the public-launch eligibility helper",
-  step2.includes("const heroImageUnlocked = p.heroAiImageEligible")
-    && step2.includes("const autoMixUnlocked = p.heroAiImageEligible"));
+  step2.includes("const hasAiRenderAccess = p.heroAiImageEligible || p.hasPersistedVisualPin")
+    && step2.includes("const heroImageUnlocked = hasAiRenderAccess && hasFunding")
+    && step2.includes("const autoMixUnlocked = hasAiRenderAccess && hasFunding"));
 check("locked cards use the pinned อัปเกรด badge + PRO/BUSINESS tooltip copy",
   step2.includes('const HERO_UPGRADE_BADGE = "อัปเกรด"')
     && step2.includes('const HERO_UPGRADE_TITLE = "Hero AI Image ใช้ได้กับแผน PRO/BUSINESS"'));
@@ -115,9 +116,10 @@ check("admin card onClick guards the trial-aware default with !p.heroCountTouche
 check("programmatic default calls never mark heroCountTouched themselves (must stay idempotent on re-selection)",
   !/heroDefaultTargetClipCount\(p\.targetClipCount, starterRemaining\(p\)\)\)[\s\S]{0,40}p\.setHeroCountTouched/.test(step2));
 check("the count Segmented control marks heroCountTouched on any direct user interaction (incl. picking อัตโนมัติ)",
-  /onChange=\{\(v\) => \{[\s\S]{0,400}p\.setHeroCountTouched\(true\)[\s\S]{0,150}p\.setTargetClipCount\(v === "auto"/.test(step2));
+  step2.includes("p.setHeroCountTouched(true);")
+    && step2.includes('p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || heroDefaultN));'));
 check("the custom-count number input marks heroCountTouched on direct user input",
-  /onChange=\{\(e\) => \{[\s\S]{0,50}p\.setHeroCountTouched\(true\)[\s\S]{0,150}p\.setTargetClipCount\(Math\.max\(1, Math\.min\(60/.test(step2));
+  /onChange=\{\(e\) => \{[\s\S]{0,100}p\.setHeroCountTouched\(true\);[\s\S]{0,100}p\.setTargetClipCount\(Math\.max\(/.test(step2));
 check("the custom-count option is labeled กำหนดจำนวนรูป (แนะนำ) in Hero AI Image mode",
   step2.includes('{ value: "custom", label: "กำหนดจำนวนรูป (แนะนำ)" }'));
 check("the auto option discloses its projected count using the shared window estimate",
@@ -133,7 +135,7 @@ check("starter disclosure clamps to remaining allowance and never labels it cred
   step2.includes("const admitted = Math.min(requested, remaining)")
     && step2.includes("ภาพจากสิทธิ์ทดลอง"));
 check("hold-length hint uses the shared pure helper and the >12s follow-up copy",
-  step2.includes("heroHoldLengthSec(displaySec, p.targetClipCount)")
+  step2.includes('heroHoldLengthSec(p.mode === "upload" ? displaySec / 2 : displaySec, p.targetClipCount)')
     && step2.includes("รูปละ ~{heroHoldSec} วิ")
     && step2.includes("ภาพค้างนาน — เพิ่มจำนวนรูปช่วยให้คลิปดูมีชีวิตขึ้น"));
 

@@ -13,7 +13,7 @@ export async function GET(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
     const { id } = await params;
-    return await getBrandAssetImage(brandAssetActorForUser(user), id);
+    return await getBrandAssetImage(await brandAssetActorForUser(user), id);
   } catch {
     return apiError({
       route: "user/brand-assets/[id]/image",
