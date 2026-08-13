@@ -65,7 +65,11 @@ mv "$MAINTENANCE_PAGE_DIR/maintenance.html.next" "$MAINTENANCE_PAGE_DIR/maintena
 
 echo "=== [2/6] Install dependencies ==="
 cd "$APP_DIR"
-npm install --no-audit --no-fund
+# Production npm versions may normalize platform-only lock metadata differently
+# from CI. Install the reviewed lock graph without rewriting package-lock.json;
+# a dirty tracked tree would block the next deploy even though dependencies are
+# otherwise correct.
+npm install --no-audit --no-fund --package-lock=false
 
 echo "=== [3/6] Prepare .env ==="
 if [ ! -f "$APP_DIR/.env" ]; then
