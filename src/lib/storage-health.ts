@@ -5,6 +5,13 @@ import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
 
+type DuResult = { stdout: string; stderr?: string };
+type DuRunner = (
+  file: string,
+  args: string[],
+  options: { timeout: number; maxBuffer: number },
+) => Promise<DuResult>;
+
 export type StoragePressure = "ok" | "warning" | "high" | "critical";
 
 export type StorageHealth = {
@@ -54,6 +61,13 @@ function pressureFor(usedPercent: number): StoragePressure {
   return "ok";
 }
 
+function parseDuMb(stdout: string): number | null {
+  const normalized = stdout.trim();
+  if (!normalized) return null;
+  const kb = Number(normalized.split(/\s+/)[0]);
+  return Number.isFinite(kb) ? Math.round(kb / 1024) : null;
+}
+
 async function readDisk(mount: string) {
   const { stdout } = await execFileAsync("df", ["-kP", mount], { timeout: 5000 });
   const lines = stdout.trim().split("\n");
@@ -82,14 +96,32 @@ async function readDisk(mount: string) {
   };
 }
 
-async function duMb(targetPath: string): Promise<number> {
+export async function readDirectorySizeMb(
+  targetPath: string,
+  runDu: DuRunner = execFileAsync as unknown as DuRunner,
+): Promise<number> {
   if (!fs.existsSync(targetPath)) return 0;
-  const { stdout } = await execFileAsync("du", ["-sk", targetPath], {
-    timeout: 15000,
-    maxBuffer: 1024 * 1024,
-  });
-  const kb = Number(stdout.trim().split(/\s+/)[0]);
-  return Number.isFinite(kb) ? Math.round(kb / 1024) : 0;
+  try {
+    const { stdout } = await runDu("du", ["-sk", targetPath], {
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
+    });
+    return parseDuMb(stdout) ?? 0;
+  } catch (error) {
+    const duError = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+    const isDisappearingEntryRace =
+      duError.code === 1 &&
+      typeof duError.stderr === "string" &&
+      /cannot access[\s\S]*No such file or directory/i.test(duError.stderr);
+    const partialSize =
+      typeof duError.stdout === "string" ? parseDuMb(duError.stdout) : null;
+
+    // GNU du still emits the directory total when a cache entry disappears
+    // during traversal. That total is useful for health telemetry; other du
+    // failures remain fatal so permission and timeout problems stay visible.
+    if (isDisappearingEntryRace && partialSize !== null) return partialSize;
+    throw error;
+  }
 }
 
 export async function getStorageHealth(cwd = process.cwd()): Promise<StorageHealth> {
@@ -105,7 +137,7 @@ export async function getStorageHealth(cwd = process.cwd()): Promise<StorageHeal
   const directories = await Promise.all(
     directoriesToCheck.map(async (dir) => {
       const exists = fs.existsSync(dir.path);
-      const sizeMb = exists ? await duMb(dir.path) : 0;
+      const sizeMb = exists ? await readDirectorySizeMb(dir.path) : 0;
       return {
         ...dir,
         exists,
