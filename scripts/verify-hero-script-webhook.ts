@@ -148,6 +148,61 @@ async function main() {
       && couponUser?.plan === "PRO",
     "a Stripe-confirmed 100% discount activates its zero-total plan without payment/access mismatch");
 
+  // Studio and Hero AI Bundle subscriptions may share one Stripe Customer.
+  // A Bundle update must stay on the Bundle entitlement path instead of
+  // mutating the user's separate Studio subscription through customer-id
+  // fallback.
+  await prisma.user.create({
+    data: {
+      id: "bundle-update-route-user",
+      name: "Bundle Update Route",
+      email: "bundle-update-route@example.com",
+      plan: "PRO",
+      stripeCustomerId: "cus_shared_studio_bundle",
+      stripeSubscriptionId: "sub_studio_owned",
+      subStatus: "active",
+    },
+  });
+  await prisma.bundleEntitlement.create({
+    data: {
+      email: "bundle-update-route@example.com",
+      grantId: "in_bundle_update_route",
+      subscriptionId: "sub_bundle_owned",
+      status: "ACTIVE",
+      accessEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      billingPeriod: "monthly",
+      amountThb: 899,
+      lastEventId: "bundle-grant:in_bundle_update_route",
+      eventOccurredAt: new Date(),
+    },
+  });
+  const bundleUpdateResponse = await postEvent({
+    id: "evt_bundle_subscription_updated",
+    object: "event",
+    api_version: "2026-04-22.dahlia",
+    created: Math.floor(Date.now() / 1000),
+    livemode: false,
+    pending_webhooks: 1,
+    request: null,
+    type: "customer.subscription.updated",
+    data: {
+      object: {
+        id: "sub_bundle_owned",
+        object: "subscription",
+        customer: "cus_shared_studio_bundle",
+        status: "past_due",
+        cancel_at_period_end: true,
+        cancel_at: Math.floor(Date.now() / 1000),
+      },
+    },
+  });
+  const afterBundleUpdate = await prisma.user.findUnique({ where: { id: "bundle-update-route-user" } });
+  check(bundleUpdateResponse.status === 200
+      && afterBundleUpdate?.subStatus === "active"
+      && afterBundleUpdate.cancelAtPeriodEnd === false
+      && afterBundleUpdate.stripeSubscriptionId === "sub_studio_owned",
+    "Bundle subscription updates cannot overwrite a Studio subscription sharing the same Stripe customer");
+
   await new Promise(resolve => setTimeout(resolve, 25));
   await prisma.$disconnect();
   console.log(`\n✅ ${passed} signed-webhook checks passed`);
