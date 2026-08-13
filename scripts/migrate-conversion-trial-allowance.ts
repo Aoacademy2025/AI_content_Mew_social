@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../src/lib/prisma";
 import { STARTER_AI_IMAGE_ALLOWANCE_LIMIT } from "../src/lib/starter-ai-image-allowance.server";
 
@@ -68,17 +69,24 @@ async function main() {
 
   let created = 0;
   for (const item of prepared) {
-    const result = await prisma.conversionTrialAiImageAllowance.createMany({
-      data: [{
-        userId: item.userId,
-        trialStartedAt: item.startedAt,
-        expiresAt: item.expiresAt,
-        limitImages: STARTER_AI_IMAGE_ALLOWANCE_LIMIT,
-        usedImages: item.usedImages,
-      }],
-      skipDuplicates: true,
-    });
-    created += result.count;
+    try {
+      await prisma.conversionTrialAiImageAllowance.create({
+        data: {
+          userId: item.userId,
+          trialStartedAt: item.startedAt,
+          expiresAt: item.expiresAt,
+          limitImages: STARTER_AI_IMAGE_ALLOWANCE_LIMIT,
+          usedImages: item.usedImages,
+        },
+      });
+      created += 1;
+    } catch (error) {
+      // A newly active Trial can materialize its allowance between the scan and
+      // this one-time backfill. Treat the unique userId race as already migrated;
+      // every other database error remains fatal.
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") continue;
+      throw error;
+    }
   }
   console.log(JSON.stringify({ applied: true, created }, null, 2));
 }
