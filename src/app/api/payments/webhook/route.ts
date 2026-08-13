@@ -347,11 +347,24 @@ export async function POST(req: Request) {
     // ── Subscription updated → sync scheduled-cancel state (covers cancel AND resume) ──
     if (event.type === "customer.subscription.updated") {
       const sub = event.data.object as any;
-      const user = await prisma.user.findFirst({
-        where: { OR: [{ stripeSubscriptionId: sub.id }, { stripeCustomerId: sub.customer }] },
-        select: { id: true },
+      // The Stripe account also carries Hero AI Bundle subscriptions. Those
+      // are synchronized through BundleEntitlement and must not overwrite a
+      // Studio subscription merely because both products share a Customer.
+      const bundleEntitlement = await prisma.bundleEntitlement.findFirst({
+        where: { subscriptionId: sub.id },
+        select: { email: true },
       });
-      if (user) {
+      if (bundleEntitlement) {
+        console.log(`[stripe-webhook] subscription.updated: Bundle subscription ${sub.id} is managed by Bundle entitlement sync`);
+      } else {
+        const user = await prisma.user.findFirst({
+          where: { OR: [{ stripeSubscriptionId: sub.id }, { stripeCustomerId: sub.customer }] },
+          select: { id: true },
+        });
+        if (!user) {
+          console.warn(`[stripe-webhook] subscription.updated: no Studio user for sub ${sub.id}`);
+          return NextResponse.json({ ok: true });
+        }
         await prisma.user.update({
           where: { id: user.id },
           data: {
@@ -361,8 +374,6 @@ export async function POST(req: Request) {
           },
         });
         console.log(`[stripe-webhook] subscription.updated ${user.id} cancelAtPeriodEnd=${!!sub.cancel_at_period_end}`);
-      } else {
-        console.warn(`[stripe-webhook] subscription.updated: no user for sub ${sub.id}`);
       }
     }
 
