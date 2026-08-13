@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { X, HelpCircle, Loader2, ImagePlus, CheckCircle2, Trash2, Sparkles, Crown, Building2 } from "lucide-react";
+import { X, HelpCircle, Loader2, ImagePlus, CheckCircle2, Trash2, Sparkles, Crown, Building2, ExternalLink } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { fetchMe } from "@/lib/use-me";
@@ -152,6 +152,19 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
                 <X className="h-4 w-4 text-zinc-400 hover:text-white transition-colors" />
               </button>
             </div>
+          </div>
+
+          {/* Support ticket portal link */}
+          <div className="mx-5 mb-4">
+            <a
+              href="https://support.mewsocial.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 text-[11px] font-medium text-violet-300 transition-colors hover:text-violet-200"
+            >
+              <ExternalLink className="h-3 w-3" />
+              แจ้งปัญหาการใช้งาน
+            </a>
           </div>
 
           {/* User info strip */}
