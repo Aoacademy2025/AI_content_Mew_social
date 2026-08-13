@@ -65,18 +65,14 @@ mv "$MAINTENANCE_PAGE_DIR/maintenance.html.next" "$MAINTENANCE_PAGE_DIR/maintena
 
 echo "=== [2/6] Install dependencies ==="
 cd "$APP_DIR"
-# Production npm versions may normalize platform-only lock metadata differently
-# from CI. Install the reviewed lock graph without rewriting package-lock.json;
-# a dirty tracked tree would block the next deploy even though dependencies are
-# otherwise correct.
-npm install --no-audit --no-fund --package-lock=false
-# The VPS npm version still normalizes optional libc metadata even with
-# package-lock disabled. The tree was proven clean immediately before install,
-# so any lock-only drift here is tool-generated and safe to restore exactly.
-if ! git diff --quiet -- package-lock.json; then
-  echo "Restoring npm-normalized package-lock.json to the reviewed release copy"
-  git restore --source=HEAD -- package-lock.json
-fi
+# Reproduce the exact CI-reviewed lock graph. `npm install --package-lock=false`
+# resolves semver ranges again and can silently pick a newer provider SDK whose
+# pinned API types no longer match the reviewed source. The legacy peer flag is
+# required by mcp-handler@1.1.0's exact MCP SDK peer while the root app and Clerk
+# accept the same lockfile-resolved SDK. Production already supplies the Chrome
+# runtime used by render workers, so downloading a second Puppeteer browser is
+# unnecessary and makes deploy depend on an unrelated CDN/cache state.
+PUPPETEER_SKIP_DOWNLOAD=1 npm ci --no-audit --no-fund --legacy-peer-deps
 if ! git diff --quiet --ignore-submodules --; then
   echo "ERROR: dependency installation changed an unexpected tracked file"
   git status --short --untracked-files=no
