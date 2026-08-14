@@ -164,34 +164,35 @@ export function HookStep({
         <div className="grid gap-3 sm:grid-cols-2">
           {hooks.map((hook, i) => {
             const isSelected = selectedIndex === i;
-            return (
+            const cardStyle = {
+              borderColor: isSelected ? VIOLET : "var(--ui-card-border)",
+              background: isSelected ? "rgba(139,92,246,.08)" : "transparent",
+            };
+            return isSelected && selectedHook ? (
               <div
                 key={i}
                 className="rounded-lg border p-3 text-xs transition-colors"
-                style={{
-                  borderColor: isSelected ? VIOLET : "var(--ui-card-border)",
-                  background: isSelected ? "rgba(139,92,246,.08)" : "transparent",
-                }}
+                style={cardStyle}
               >
                 <p className="mb-1.5 font-semibold" style={{ color: VIOLET }}>{hookFormulaName(hook.formula)}</p>
-                {isSelected && selectedHook ? (
-                  <Textarea
-                    value={selectedHook.text}
-                    onChange={(e) => editSelectedText(e.target.value)}
-                    rows={2}
-                    className="text-xs"
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => selectHook(i, hook)}
-                    className="w-full text-left"
-                    style={{ color: "var(--ui-text-secondary)" }}
-                  >
-                    {hook.text}
-                  </button>
-                )}
+                <Textarea
+                  value={selectedHook.text}
+                  onChange={(e) => editSelectedText(e.target.value)}
+                  rows={2}
+                  className="text-xs"
+                />
               </div>
+            ) : (
+              <button
+                key={i}
+                type="button"
+                onClick={() => selectHook(i, hook)}
+                className="rounded-lg border p-3 text-left text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-2"
+                style={{ ...cardStyle, outlineColor: VIOLET }}
+              >
+                <span className="mb-1.5 block font-semibold" style={{ color: VIOLET }}>{hookFormulaName(hook.formula)}</span>
+                <span className="block" style={{ color: "var(--ui-text-secondary)" }}>{hook.text}</span>
+              </button>
             );
           })}
         </div>

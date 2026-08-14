@@ -11,6 +11,10 @@ import {
   type NarrativeSourceKind,
 } from "@/lib/content-preflight.server";
 import { projectHasPersistedVisualPin } from "@/lib/project-look.server";
+import {
+  sceneContentPolicyFromPreference,
+  sceneContentPolicyIdentity,
+} from "@/lib/scene-content-policy";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
 const SOURCE_KINDS = new Set<NarrativeSourceKind>([
@@ -44,11 +48,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       && body.previousPreflightId.trim()
       ? body.previousPreflightId.trim()
       : undefined;
+    const sceneContentPolicy = sceneContentPolicyFromPreference(
+      body?.narrativeSource?.sceneContentPolicy ?? body?.brollRegionPreference,
+    );
     const preflight = await resolveContentPreflight({
       userId: auth.user.id,
       projectId: id,
       previousPreflightId,
-      narrativeSource: { kind, text, ...(windowCount ? { windowCount } : {}) },
+      narrativeSource: {
+        kind,
+        text,
+        ...(windowCount ? { windowCount } : {}),
+        sceneContentPolicy,
+      },
       // Rollback keeps exact cached analyses readable for already-pinned
       // projects but never launches new Gemini work after admission closes.
       analyzer: auth.access.canUse
@@ -68,6 +80,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         sourceKind: kind,
         visualFormatId: preflight.suggestedVisualFormatId,
         beatCount: preflight.visualBeats.length,
+        sceneContentPolicy: sceneContentPolicyIdentity(sceneContentPolicy),
+        policyWarningCount: preflight.policyWarnings.length,
         cohort: auth.access.cohort,
       },
     }).catch(() => {});

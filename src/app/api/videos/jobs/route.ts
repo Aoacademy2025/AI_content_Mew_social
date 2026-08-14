@@ -65,6 +65,9 @@ import {
 } from "@/lib/project-look.server";
 import { contentPreflightSourceHash, type NarrativeSourceKind } from "@/lib/content-preflight.server";
 import {
+  sceneContentPolicyFromPreference,
+} from "@/lib/scene-content-policy";
+import {
   prepareBrandVisualJobAcceptance,
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
@@ -90,7 +93,7 @@ type Body = {
   maxAiImages?: unknown;
   contentPreflightId?: unknown; narrativeSourceKind?: unknown;
   imageEngine?: unknown; imageModel?: unknown;
-  brollRegionPreference?: unknown; brollVisualStyle?: unknown;
+  brollRegionPreference?: unknown; brollVisualStyle?: unknown; sceneContentPolicy?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
   // Phase 2 free per-window re-render (mode: "broll-rerender")
   sourceJobId?: unknown; windowEdits?: unknown;
@@ -627,6 +630,9 @@ export async function POST(req: Request) {
     const targetClipCount = num(body.targetClipCount, 1, 60);
     const brollRegionPreference = normalizeBrollRegionPreference(body.brollRegionPreference);
     const brollVisualStyle = normalizeBrollVisualStyle(body.brollVisualStyle);
+    const sceneContentPolicy = sceneContentPolicyFromPreference(
+      body.sceneContentPolicy ?? brollRegionPreference,
+    );
     const kieModel = stockSource && !useHeroRunpodImage ? str(body.kieModel, 60) : undefined;
     // Mix-preset weights (D5.1): only well-formed {video,photo,ai} ints 0–9 are stored;
     // fetch-stock re-validates + gates them behind MANAGED_KIE authoritatively.
@@ -671,6 +677,7 @@ export async function POST(req: Request) {
               : (["ai-script", "creator-script"] as const))
               .map((kind) => contentPreflightSourceHash(kind, script, {
                 ...(targetClipCount ? { windowCount: targetClipCount } : {}),
+                sceneContentPolicy,
               })),
           })
       : null;
@@ -744,6 +751,7 @@ export async function POST(req: Request) {
           ...(targetClipCount ? { targetClipCount: Math.round(targetClipCount) } : {}),
           ...(brollRegionPreference ? { brollRegionPreference } : {}),
           ...(brollVisualStyle ? { brollVisualStyle } : {}),
+          sceneContentPolicy,
           ...(kieModel ? { kieModel } : {}),
           ...(useHeroRunpodImage ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),

@@ -9,12 +9,12 @@ export type BrollPreferenceInput = {
 };
 
 export const BROLL_REGION_OPTIONS: { value: BrollRegionPreference; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "asian", label: "เอเชีย" },
-  { value: "thai", label: "ไทย" },
-  { value: "european", label: "ยุโรป" },
-  { value: "global", label: "Global" },
-  { value: "no-people", label: "ไม่มีคน" },
+  { value: "auto", label: "ตามเนื้อหา" },
+  { value: "asian", label: "เน้นเอเชีย" },
+  { value: "thai", label: "เน้นไทย" },
+  { value: "european", label: "เน้นยุโรป" },
+  { value: "global", label: "นานาชาติ" },
+  { value: "no-people", label: "หลีกเลี่ยงคน" },
 ];
 
 export const BROLL_STYLE_OPTIONS: { value: BrollVisualStyle; label: string }[] = [

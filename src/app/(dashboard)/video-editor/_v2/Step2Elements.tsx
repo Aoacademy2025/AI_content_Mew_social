@@ -41,6 +41,7 @@ import type { V2Project, V2BrollSource, V2VoiceEngine } from "./useV2Project";
 import { PRESET_WEIGHTS, type MixPreset } from "./mix-presets";
 import { HeroVoicePicker } from "./HeroVoicePicker";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
+import type { SceneContentPolicyWarning } from "@/lib/scene-content-policy";
 import { BrandVisualSelector, type BrandVisualPreflightStatus } from "./BrandVisualSelector";
 import { trackEvent } from "@/lib/client-telemetry";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
@@ -172,6 +173,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const heroVoiceVisible = HERO_VOICE_TEASER_VISIBLE || OMNIVOICE_UI_ENABLED || p.voiceEngine === "omnivoice";
   const [submitting, setSubmitting] = useState(false);
   const [brandPreflightStatus, setBrandPreflightStatus] = useState<BrandVisualPreflightStatus>("idle");
+  const [brandPolicyWarnings, setBrandPolicyWarnings] = useState<SceneContentPolicyWarning[]>([]);
   const requiresBrandPreflight = (p.brandVisualAllowed || p.hasPersistedVisualPin)
     && p.mode !== "upload"
     && (
@@ -290,7 +292,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
       >
         {/* ย้อนกลับ = คลิก step pill บน topbar (ตัดปุ่มเล็กซ้ำซ้อนออก 07-03) */}
 
-        <BrandVisualSelector p={p} onPreflightStatusChange={setBrandPreflightStatus} />
+        <BrandVisualSelector
+          p={p}
+          onPreflightStatusChange={setBrandPreflightStatus}
+          onPolicyWarningsChange={setBrandPolicyWarnings}
+        />
 
         {/* 1 · บีโรล */}
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
@@ -351,10 +357,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           )}
           <Advanced note="สลับคลิป/แก้จังหวะรายช่วง (มากับ timeline)">
             <div className="flex flex-col gap-3">
-              <label className="flex items-center gap-2" style={{ fontSize: 11.5, color: color.textSecondary }}>
-                {brollCountLabel}
+              <div className="flex items-center gap-2" style={{ fontSize: 11.5, color: color.textSecondary }}>
+                <span>{brollCountLabel}</span>
                 <Segmented
                   value={p.targetClipCount > 0 ? "custom" : "auto"}
+                  ariaLabel={brollCountLabel}
                   onChange={(v) => {
                     // Any direct interaction with this control is an explicit user choice
                     // (including picking "อัตโนมัติ") — stop the Hero default-8 from ever
@@ -377,6 +384,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 {p.targetClipCount > 0 && (
                   <input
                     type="number" min={1} max={Math.max(1, uploadCutawayLimit)} value={p.targetClipCount}
+                    aria-label={brollCountLabel}
                     onChange={(e) => {
                       p.setHeroCountTouched(true);
                       p.setTargetClipCount(Math.max(
@@ -388,7 +396,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     style={{ padding: "6px 8px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
                   />
                 )}
-              </label>
+              </div>
               {p.targetClipCount > 0 && (
                 <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
                   {p.brollSource === "kie-image"
@@ -419,34 +427,53 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   {imageFundingLine(p, heroAutoProjectedCount, true)}
                 </span>
               )}
-              <label className="flex flex-col gap-1.5">
-                <span style={{ fontSize: 11, color: color.textFaint }}>แนวภาพ / โซนภาพ</span>
+              <div className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>คนและสถานที่</span>
                 <Segmented
                   value={p.brollRegionPreference}
+                  ariaLabel="คนและสถานที่"
                   onChange={(v) => p.setBrollRegionPreference(v as BrollRegionPreference)}
                   options={BROLL_REGION_OPTIONS}
                   style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
                 />
-              </label>
+                <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                  {p.brollSource === "kie-image"
+                    ? "กำหนดบริบทของคนและสถานที่ โดยไม่เปลี่ยนสไตล์ Brand Visual"
+                    : p.brollSource === "automix"
+                      ? "ใช้บริบทเดียวกันกับทั้งภาพ AI และฟุตเทจสต็อก"
+                      : "ช่วยค้นหาฟุตเทจที่ตรงกับบริบทของเนื้อหา"}
+                </span>
+                {brandPolicyWarnings.length > 0 && (
+                  <span
+                    role="status"
+                    style={{ fontSize: 10.5, color: color.warning, lineHeight: 1.6 }}
+                  >
+                    {brandPolicyWarnings.length === 1
+                      ? brandPolicyWarnings[0].message
+                      : `เนื้อหาระบุสถานที่หรือวัฒนธรรมชัดเจน ${brandPolicyWarnings.length} ฉาก ระบบจะคงตามเนื้อหาเดิม`}
+                  </span>
+                )}
+              </div>
               {p.brollSource === "kie-image" ? (
                 <div className="flex flex-col gap-1.5">
-                  <span style={{ fontSize: 11, color: color.textFaint }}>สไตล์ภาพ Hero AI</span>
+                  <span style={{ fontSize: 11, color: color.textFaint }}>สไตล์ภาพ</span>
                   <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
-                    ใช้แนวภาพที่เลือกใน “แบรนด์และแนวภาพของคลิปนี้” ด้านบน
+                    ใช้ Brand Visual ที่เลือกด้านบนเพียงจุดเดียว
                   </span>
                 </div>
               ) : (
-                <label className="flex flex-col gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>
-                    {p.brollSource === "automix" ? "สไตล์วิดีโอ / ภาพสต็อก" : "สไตล์ภาพสต็อก"}
+                    {p.brollSource === "automix" ? "สไตล์ฟุตเทจสต็อก (เฉพาะส่วนสต็อก)" : "สไตล์ฟุตเทจสต็อก"}
                   </span>
                   <Segmented
                     value={p.brollVisualStyle}
+                    ariaLabel={p.brollSource === "automix" ? "สไตล์ฟุตเทจสต็อกเฉพาะส่วนสต็อก" : "สไตล์ฟุตเทจสต็อก"}
                     onChange={(v) => p.setBrollVisualStyle(v as BrollVisualStyle)}
                     options={BROLL_STYLE_OPTIONS}
                     style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
                   />
-                </label>
+                </div>
               )}
               {p.heroAiImageEligible && p.brollSource === "kie-image" && (
                 <div className="flex flex-col gap-1.5">
@@ -801,10 +828,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           <Advanced>
             {p.useAvatar && (
               <div className="flex flex-col gap-3">
-                <label className="flex flex-col gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>โหมดพิธีกร (HeyGen คิดเงินตามวินาทีที่เจน)</span>
                   <Segmented
                     value={p.avatarMode}
+                    ariaLabel="โหมดพิธีกร"
                     onChange={p.setAvatarMode}
                     options={[
                       { value: "bookend", label: "เปิดคลิป" },
@@ -812,7 +840,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                       { value: "full", label: "ทั้งคลิป" },
                     ]}
                   />
-                </label>
+                </div>
                 {p.avatarMode !== "full" && (
                   <div className="flex items-center gap-3" style={{ fontSize: 11.5, color: color.textSecondary }}>
                     <label className="flex items-center gap-1.5">
