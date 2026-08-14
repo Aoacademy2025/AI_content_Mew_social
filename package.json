@@ -42,6 +42,7 @@
     "verify:kie-prompt": "tsx scripts/verify-kie-image-prompt.ts",
     "verify:hero-image-scene-brief": "tsx scripts/verify-hero-image-scene-brief.ts",
     "verify:hero-script": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script.ts && node --conditions=react-server --import tsx scripts/verify-hero-script-access.ts",
+    "verify:support-ticket-ui-regressions": "tsx scripts/verify-support-ticket-ui-regressions.ts",
     "verify:hero-script-payment": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script-payment-flow.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script-webhook.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-plan-change.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-stripe-subscription-entitlement.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-manual-payment.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-revenue-cohorts.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-coupon-pro-entitlements.ts",
     "verify:coupon-pro-entitlements": "tsx scripts/verify-coupon-pro-entitlements.ts",
     "verify:hero-script-launch": "npm run verify:hero-script && npm run verify:hero-script-payment && tsx scripts/verify-hero-script-launch-assets.ts && tsx scripts/verify-hero-script-announcement.ts",

@@ -6,6 +6,7 @@ import * as bgmSelectionModule from "../src/lib/bgm-selection";
 import * as brollPreferencesModule from "../src/lib/broll-preferences";
 import * as cutawayPlanModule from "../src/lib/cutaway-plan";
 import * as headlineHookModule from "../src/lib/headline-hook";
+import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
 import {
   canonicalVideoJobRequest,
   fingerprintVideoJobRequest,
@@ -1995,6 +1996,7 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/content-preflight.server") {
       return { contentPreflightSourceHash: (kind: string, script: string) => `${kind}:${script}` };
     }
+    if (specifier === "@/lib/scene-content-policy") return sceneContentPolicyModule;
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));
