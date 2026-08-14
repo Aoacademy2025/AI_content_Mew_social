@@ -10,6 +10,16 @@ import {
 import { geminiGenerateText } from "@/lib/gemini";
 import { KeyRequiredError, resolveGeminiKey } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
+import {
+  applySceneContentPolicy,
+  isDefaultSceneContentPolicy,
+  sceneContentPolicyFromPreference,
+  sceneContentPolicyIdentity,
+  sceneContentPolicyPromptBlock,
+  sceneContentPolicyWarnings,
+  type SceneContentPolicy,
+  type SceneContentPolicyWarning,
+} from "@/lib/scene-content-policy";
 
 /** Bumped whenever the extraction prompt changes what a beat contains, so a
  * project cannot keep serving beats produced by a superseded analyzer: the
@@ -47,6 +57,13 @@ const analysisSchema = z.object({
     setting: z.string().trim().min(1).max(500),
     emotion: z.string().trim().min(1).max(300),
     emphasis: z.string().trim().min(1).max(500),
+    policyApplicability: z.enum(["applied", "not-applicable", "story-conflict"]).optional(),
+    policyConflict: z.string().trim().max(300).optional(),
+    sceneContentPolicy: z.object({
+      locale: z.enum(["narrative", "thai", "asian", "european", "global"]),
+      people: z.enum(["narrative", "avoid-visible-people"]),
+    }).optional(),
+    policyFallbackApplied: z.boolean().optional(),
   })).min(1).max(120).superRefine((beats, context) => {
     const keys = new Set<string>();
     beats.forEach((beat, index) => {
@@ -65,6 +82,7 @@ export type ContentPreflightAnalyzer = {
     kind: NarrativeSourceKind;
     text: string;
     windows: NarrativeVisualWindow[];
+    sceneContentPolicy?: SceneContentPolicy;
   }): Promise<ContentPreflightAnalysis>;
 };
 
@@ -81,6 +99,8 @@ export type ResolvedContentPreflight = {
   suggestedVisualFormatId: VisualFormatId;
   suggestedTreatment: ContentPreflightAnalysis["suggestedTreatment"];
   visualBeats: ResolvedVisualBeat[];
+  sceneContentPolicy: SceneContentPolicy;
+  policyWarnings: SceneContentPolicyWarning[];
   cached: boolean;
 };
 
@@ -157,6 +177,11 @@ function contentPreflightResponseJsonSchema(beatCount: number): Record<string, u
       setting: { type: "string" },
       emotion: { type: "string" },
       emphasis: { type: "string" },
+      policyApplicability: {
+        type: "string",
+        enum: ["applied", "not-applicable", "story-conflict"],
+      },
+      policyConflict: { type: "string" },
     },
     required: [
       "beatKey",
@@ -222,6 +247,9 @@ export function createGeminiContentPreflightAnalyzer(
         throw new ContentPreflightError("TEXT_QUOTA", reservation.message || "ใช้สิทธิ์วิเคราะห์ข้อความครบแล้ว");
       }
 
+      const policyPrompt = sceneContentPolicyPromptBlock(
+        sceneContentPolicyFromPreference(input.sceneContentPolicy),
+      );
       const raw = await generateText(key, [
         "Analyze this Narrative Source for a vertical short-form video.",
         "Return one JSON object only. Do not wrap it in markdown.",
@@ -251,7 +279,8 @@ export function createGeminiContentPreflightAnalyzer(
         // signs"` — and a diffusion text encoder reads a negated concept as a
         // positive cue, so the beat would draw the very thing it excluded.
         "Write only what is present in the frame. Never phrase a field as an absence, and never name something in order to exclude it.",
-        "Schema: {contentDomain:string,suggestedVisualFormatId:string,suggestedTreatment:{label:string,mood:string},beats:[{beatKey:string,sourceExcerpt:string,startMs?:integer,endMs?:integer,subject:string,action:string,setting:string,emotion:string,emphasis:string}]}",
+        policyPrompt,
+        "Schema: {contentDomain:string,suggestedVisualFormatId:string,suggestedTreatment:{label:string,mood:string},beats:[{beatKey:string,sourceExcerpt:string,startMs?:integer,endMs?:integer,subject:string,action:string,setting:string,emotion:string,emphasis:string,policyApplicability?:'applied'|'not-applicable'|'story-conflict',policyConflict?:string}]}",
         "B-roll windows (authoritative; copy each text into the matching sourceExcerpt):",
         JSON.stringify(input.windows),
         "Narrative Source:",
@@ -362,28 +391,44 @@ function normalizedWindows(windows: readonly NarrativeVisualWindow[]): Narrative
 export function contentPreflightSourceHash(
   kind: NarrativeSourceKind,
   text: string,
-  options: { windowCount?: number; windows?: readonly NarrativeVisualWindow[] } = {},
+  options: {
+    windowCount?: number;
+    windows?: readonly NarrativeVisualWindow[];
+    sceneContentPolicy?: unknown;
+  } = {},
 ): string {
   const normalized = normalizedNarrative(text);
   const windows = normalizedWindows(
     options.windows ?? planNarrativeVisualWindows(normalized, options.windowCount),
   );
+  const sceneContentPolicy = sceneContentPolicyFromPreference(options.sceneContentPolicy);
   return createHash("sha256")
-    .update(JSON.stringify({ kind, text: normalized, windows }))
+    .update(JSON.stringify({
+      kind,
+      text: normalized,
+      windows,
+      ...(!isDefaultSceneContentPolicy(sceneContentPolicy)
+        ? { sceneContentPolicy: sceneContentPolicyIdentity(sceneContentPolicy) }
+        : {}),
+    }))
     .digest("hex");
 }
 
-function sourceWindowHash(sourceExcerpt: string): string {
+function sourceWindowHash(sourceExcerpt: string, rawPolicy?: unknown): string {
+  const sceneContentPolicy = sceneContentPolicyFromPreference(rawPolicy);
+  const normalized = normalizedNarrative(sourceExcerpt).normalize("NFKC").toLocaleLowerCase();
   return createHash("sha256")
-    .update(normalizedNarrative(sourceExcerpt).normalize("NFKC").toLocaleLowerCase())
+    .update(isDefaultSceneContentPolicy(sceneContentPolicy)
+      ? normalized
+      : JSON.stringify({ sourceExcerpt: normalized, sceneContentPolicy: sceneContentPolicyIdentity(sceneContentPolicy) }))
     .digest("hex");
 }
 
 function storedSourceWindowHash(beat: ProjectVisualBeat): string {
   try {
-    const parsed = JSON.parse(beat.beatJson) as { sourceExcerpt?: unknown };
+    const parsed = JSON.parse(beat.beatJson) as { sourceExcerpt?: unknown; sceneContentPolicy?: unknown };
     if (typeof parsed.sourceExcerpt === "string" && parsed.sourceExcerpt.trim()) {
-      return sourceWindowHash(parsed.sourceExcerpt);
+      return sourceWindowHash(parsed.sourceExcerpt, parsed.sceneContentPolicy);
     }
   } catch {}
   return beat.sourceExcerptHash;
@@ -393,21 +438,25 @@ type StoredPreflight = ContentPreflight & { visualBeats: ProjectVisualBeat[] };
 
 function resolved(row: StoredPreflight, cached: boolean): ResolvedContentPreflight {
   const treatment = JSON.parse(row.suggestedTreatmentJson) as ContentPreflightAnalysis["suggestedTreatment"];
+  const visualBeats = row.visualBeats
+    .slice()
+    .sort((a, b) => a.sequence - b.sequence)
+    .map((beat) => ({
+      ...(JSON.parse(beat.beatJson) as ContentPreflightAnalysis["beats"][number]),
+      id: beat.id,
+      status: beat.status,
+      existingAssetUrl: beat.existingAssetUrl,
+    }));
+  const sceneContentPolicy = sceneContentPolicyFromPreference(visualBeats[0]?.sceneContentPolicy);
   return {
     id: row.id,
     sourceHash: row.sourceHash,
     contentDomain: row.contentDomain,
     suggestedVisualFormatId: row.suggestedVisualFormatId as VisualFormatId,
     suggestedTreatment: treatment,
-    visualBeats: row.visualBeats
-      .slice()
-      .sort((a, b) => a.sequence - b.sequence)
-      .map((beat) => ({
-        ...(JSON.parse(beat.beatJson) as ContentPreflightAnalysis["beats"][number]),
-        id: beat.id,
-        status: beat.status,
-        existingAssetUrl: beat.existingAssetUrl,
-      })),
+    visualBeats,
+    sceneContentPolicy,
+    policyWarnings: sceneContentPolicyWarnings(visualBeats),
     cached,
   };
 }
@@ -505,6 +554,7 @@ export async function resolveContentPreflight(input: {
     text: string;
     windowCount?: number;
     windows?: NarrativeVisualWindow[];
+    sceneContentPolicy?: unknown;
   };
   analyzer?: ContentPreflightAnalyzer;
 }): Promise<ResolvedContentPreflight> {
@@ -537,7 +587,11 @@ export async function resolveContentPreflight(input: {
   if (windows.length === 0 || windows.length > 120) {
     throw new ContentPreflightError("INVALID_SOURCE", "Narrative Source ไม่มี B-roll window ที่ใช้วิเคราะห์ได้");
   }
-  const sourceHash = contentPreflightSourceHash(input.narrativeSource.kind, text, { windows });
+  const sceneContentPolicy = sceneContentPolicyFromPreference(input.narrativeSource.sceneContentPolicy);
+  const sourceHash = contentPreflightSourceHash(input.narrativeSource.kind, text, {
+    windows,
+    sceneContentPolicy,
+  });
   const cached = await prisma.contentPreflight.findUnique({
     where: {
       projectId_sourceHash_analyzerVersion: {
@@ -567,6 +621,7 @@ export async function resolveContentPreflight(input: {
     kind: input.narrativeSource.kind,
     text,
     windows,
+    sceneContentPolicy,
   }));
   if (!analyzed.success) {
     throw new ContentPreflightError(
@@ -580,9 +635,10 @@ export async function resolveContentPreflight(input: {
       `ผลวิเคราะห์ต้องมีข้อมูลครบทั้ง ${windows.length} ฉาก`,
     );
   }
+  const policyApplied = applySceneContentPolicy(analyzed.data.beats, sceneContentPolicy);
   const analysis: ContentPreflightAnalysis = {
     ...analyzed.data,
-    beats: analyzed.data.beats.map((beat, index) => ({
+    beats: policyApplied.beats.map((beat, index) => ({
       ...beat,
       beatKey: `window-${index}`,
       sourceExcerpt: windows[index].text,
@@ -619,7 +675,7 @@ export async function resolveContentPreflight(input: {
     });
     const preparedBeats = analysis.beats.map((beat) => ({
       beat,
-      sourceExcerptHash: sourceWindowHash(beat.sourceExcerpt),
+      sourceExcerptHash: sourceWindowHash(beat.sourceExcerpt, sceneContentPolicy),
     }));
     const priorBeats = previous?.visualBeats.slice().sort((a, b) => a.sequence - b.sequence) ?? [];
     const usedPriorBeatIds = new Set<string>();

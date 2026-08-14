@@ -97,6 +97,7 @@ import {
 } from "@/lib/mcp/subtitle-quality";
 import { getVideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
+import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
 import { narrativeVisualWindowsForPreflight } from "@/lib/content-preflight.server";
 
@@ -153,6 +154,7 @@ interface CreateInput {
   /** Visual preference hints for B-roll keyword/search/ranking (Editor v2 Advanced) */
   brollRegionPreference?: string;
   brollVisualStyle?: string;
+  sceneContentPolicy?: SceneContentPolicy;
   /** โมเดลภาพ AI (Beta, admin-gated at the web route) */
   kieModel?: string;
   /** Hero AI Image is a separate RunPod-only product seam, not a KIE model. */
@@ -1139,6 +1141,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             startMs: window.startMs,
             endMs: window.endMs,
           })),
+          sceneContentPolicy: input.sceneContentPolicy
+            ?? sceneContentPolicyFromPreference(input.brollRegionPreference),
           brandVisualAccepted: Boolean(job.projectVisualContextJson),
         });
         if (uploadPreflight.kind === "resolved") {

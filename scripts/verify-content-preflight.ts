@@ -279,6 +279,120 @@ async function main() {
   assert.equal(analyzedWindowCount, 2, "the analyzer receives the authoritative B-roll window plan");
   assert.equal(await prisma.contentPreflight.count(), 1);
 
+  // Scene content policy is part of immutable preflight/asset identity. The
+  // same story with a new people/location choice must be re-analyzed, compiled
+  // into the beat, and must never reuse the old image as current.
+  const policyProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Scene content policy" },
+  });
+  let policyAnalysisCalls = 0;
+  const policyAnalyzer = {
+    async analyze() {
+      policyAnalysisCalls += 1;
+      return {
+        contentDomain: "creator workflow",
+        suggestedVisualFormatId: "stick-figure-story" as const,
+        suggestedTreatment: { label: "clear", mood: "encouraging" },
+        beats: [{
+          beatKey: "window-0",
+          sourceExcerpt: "A founder explains one useful workflow in a coffee shop.",
+          subject: "a founder and a laptop",
+          action: "the founder points to one useful workflow",
+          setting: "a neighborhood coffee shop",
+          emotion: "focused optimism",
+          emphasis: "the practical workflow",
+        }],
+      };
+    },
+  };
+  const policyNarrative = "A founder explains one useful workflow in a coffee shop.";
+  const defaultPolicyPreflight = await resolveContentPreflight({
+    userId: user.id,
+    projectId: policyProject.id,
+    narrativeSource: { kind: "creator-script", text: policyNarrative, windowCount: 1 },
+    analyzer: policyAnalyzer,
+  });
+  const policyImageJob = await prisma.aiGenerationJob.create({
+    data: {
+      userId: user.id,
+      kind: "image",
+      provider: "runpod",
+      model: "z-image",
+      status: "completed",
+      outputUrl: "/api/generated/default-policy.webp",
+      fundingSource: "credits",
+      chargeState: "settled",
+      creditCost: 2,
+    },
+  });
+  await recordVisualBeatAsset({
+    userId: user.id,
+    beatId: defaultPolicyPreflight.visualBeats[0].id,
+    outputUrl: "/api/generated/default-policy.webp",
+    imageJobId: policyImageJob.id,
+    identityKey: "default-scene-policy-v1",
+  });
+  const thaiPolicyPreflight = await resolveContentPreflight({
+    userId: user.id,
+    projectId: policyProject.id,
+    previousPreflightId: defaultPolicyPreflight.id,
+    narrativeSource: {
+      kind: "creator-script",
+      text: policyNarrative,
+      windowCount: 1,
+      sceneContentPolicy: "thai",
+    },
+    analyzer: policyAnalyzer,
+  });
+  assert.notEqual(thaiPolicyPreflight.id, defaultPolicyPreflight.id);
+  assert.equal(thaiPolicyPreflight.sceneContentPolicy.locale, "thai");
+  assert.match(thaiPolicyPreflight.visualBeats[0].subject, /Thai or Southeast Asian/);
+  assert.match(thaiPolicyPreflight.visualBeats[0].setting, /Thai local context/);
+  assert.equal(thaiPolicyPreflight.visualBeats[0].existingAssetUrl, "/api/generated/default-policy.webp");
+  assert.equal(
+    thaiPolicyPreflight.visualBeats[0].status,
+    "outdated",
+    "a locale change may preserve lineage but can never serve the previous image as current",
+  );
+  const cachedThaiPolicy = await resolveContentPreflight({
+    userId: user.id,
+    projectId: policyProject.id,
+    previousPreflightId: defaultPolicyPreflight.id,
+    narrativeSource: {
+      kind: "creator-script",
+      text: policyNarrative,
+      windowCount: 1,
+      sceneContentPolicy: "thai",
+    },
+    analyzer: policyAnalyzer,
+  });
+  assert.equal(cachedThaiPolicy.id, thaiPolicyPreflight.id);
+  assert.equal(policyAnalysisCalls, 2, "the exact same policy reuses its immutable analysis");
+
+  const noPeoplePreflight = await resolveContentPreflight({
+    userId: user.id,
+    projectId: policyProject.id,
+    previousPreflightId: thaiPolicyPreflight.id,
+    narrativeSource: {
+      kind: "creator-script",
+      text: policyNarrative,
+      windowCount: 1,
+      sceneContentPolicy: "no-people",
+    },
+    analyzer: policyAnalyzer,
+  });
+  assert.equal(noPeoplePreflight.sceneContentPolicy.people, "avoid-visible-people");
+  assert.equal(noPeoplePreflight.visualBeats[0].policyFallbackApplied, true);
+  assert.doesNotMatch(
+    [
+      noPeoplePreflight.visualBeats[0].subject,
+      noPeoplePreflight.visualBeats[0].action,
+      noPeoplePreflight.visualBeats[0].setting,
+      noPeoplePreflight.visualBeats[0].emphasis,
+    ].join(" "),
+    /\b(?:founder|person|people|man|woman|crowd|team)\b/i,
+  );
+
   const settledHookJob = await prisma.aiGenerationJob.create({
     data: {
       userId: user.id,

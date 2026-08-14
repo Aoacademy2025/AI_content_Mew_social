@@ -700,7 +700,7 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx",
     "utf8",
   );
-  assert.match(step2Source, /ใช้แนวภาพที่เลือกใน “แบรนด์และแนวภาพของคลิปนี้”/,
+  assert.match(step2Source, /ใช้ Brand Visual ที่เลือกด้านบนเพียงจุดเดียว/,
     "Hero-only UI points to the one authoritative Brand/Project Look control");
 
   await prisma.$disconnect();

@@ -35,6 +35,7 @@ export async function ensureUploadContentPreflight(
     projectId?: string | null;
     transcriptText: string;
     windows?: NarrativeVisualWindow[];
+    sceneContentPolicy?: unknown;
     /** Acceptance-time treatment decision persisted on the VideoJob. When set,
      * rollout changes while the job waits cannot add or remove Brand Visual. */
     brandVisualAccepted?: boolean;
@@ -57,6 +58,7 @@ export async function ensureUploadContentPreflight(
       kind: "upload-transcript",
       text: input.transcriptText,
       ...(input.windows ? { windows: input.windows } : {}),
+      sceneContentPolicy: input.sceneContentPolicy,
     },
     analyzer: dependencies.createAnalyzer(input.actor.id),
   });

@@ -8,6 +8,10 @@ import { trackEvent } from "@/lib/client-telemetry";
 import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
 import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { shouldLoadBrandVisualContext } from "@/lib/automix-plan";
+import {
+  sceneContentPolicyFromPreference,
+  type SceneContentPolicyWarning,
+} from "@/lib/scene-content-policy";
 import type { V2Project } from "./useV2Project";
 import { color, font, radius } from "./tokens";
 
@@ -25,6 +29,7 @@ type Preflight = {
   suggestedVisualFormatId: VisualFormatId;
   suggestedTreatment: { label: string; mood: string };
   visualBeats: Array<{ id: string; status: string; existingAssetUrl: string | null }>;
+  policyWarnings?: SceneContentPolicyWarning[];
 };
 type Context = { source: "project-look" | "brand-revision" | "suggested"; visualFormatId: VisualFormatId; treatment: string };
 type SelectedBrandProfile = { profileId: string; name: string; revisionId: string; revisionNumber: number };
@@ -54,9 +59,11 @@ function starterFundingInsufficient(p: V2Project, imageCount: number): boolean {
 export function BrandVisualSelector({
   p,
   onPreflightStatusChange,
+  onPolicyWarningsChange,
 }: {
   p: V2Project;
   onPreflightStatusChange?: (status: BrandVisualPreflightStatus) => void;
+  onPolicyWarningsChange?: (warnings: SceneContentPolicyWarning[]) => void;
 }) {
   const [formats, setFormats] = useState<VisualFormat[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -127,6 +134,7 @@ export function BrandVisualSelector({
                 kind: p.mode === "upload" ? "upload-transcript" : p.narrativeSourceKind,
                 text: narrative,
                 ...(p.targetClipCount > 0 ? { windowCount: p.targetClipCount } : {}),
+                sceneContentPolicy: sceneContentPolicyFromPreference(p.brollRegionPreference),
               },
             }),
             signal,
@@ -146,6 +154,7 @@ export function BrandVisualSelector({
       }).then(payload);
       if (!visualResult.response.ok) throw new Error(visualResult.body.error || "โหลดแนวภาพไม่สำเร็จ");
       setPreflight(resolvedPreflight);
+      onPolicyWarningsChange?.(resolvedPreflight?.policyWarnings ?? []);
       setContext(visualResult.body.context);
       setSelectedBrandProfile(visualResult.body.selectedBrandProfile ?? null);
       p.setBrandContentPreflightId(resolvedPreflight?.id ?? null);
@@ -162,6 +171,7 @@ export function BrandVisualSelector({
     } catch (caught) {
       if ((caught as Error).name !== "AbortError") {
         p.setBrandContentPreflightId(null);
+        onPolicyWarningsChange?.([]);
         setError(caught instanceof Error ? caught.message : "โหลดแนวภาพไม่สำเร็จ");
         onPreflightStatusChange?.("error");
       }
@@ -185,6 +195,7 @@ export function BrandVisualSelector({
   useEffect(() => {
     if (!canRenderPersistedVisual || !shouldLoadVisualContext || !p.projectId || (!narrative && !canLoadWithoutNarrative)) {
       p.setBrandContentPreflightId(null);
+      onPolicyWarningsChange?.([]);
       onPreflightStatusChange?.("idle");
       setLoading(false);
       return;
@@ -192,7 +203,7 @@ export function BrandVisualSelector({
     const controller = new AbortController();
     void loadContext(controller.signal);
     return () => controller.abort();
-  }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, p.mode, p.targetClipCount, onPreflightStatusChange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, p.mode, p.targetClipCount, p.brollRegionPreference, onPreflightStatusChange, onPolicyWarningsChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setTreatmentDraft(treatment);
