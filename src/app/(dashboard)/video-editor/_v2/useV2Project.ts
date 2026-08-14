@@ -146,6 +146,27 @@ function withUserDraftField<T>(
   return next;
 }
 
+function rebasePendingUserDraft(
+  base: V2Draft,
+  pending: V2Draft,
+  authoritative: V2Draft,
+): V2Draft {
+  const rebased = { ...authoritative } as Record<string, unknown>;
+  const baseRecord = base as Record<string, unknown>;
+  const pendingRecord = pending as Record<string, unknown>;
+  const keys = new Set([...Object.keys(baseRecord), ...Object.keys(pendingRecord)]);
+  for (const key of keys) {
+    const baseHasKey = Object.hasOwn(baseRecord, key);
+    const pendingHasKey = Object.hasOwn(pendingRecord, key);
+    const changedByUser = baseHasKey !== pendingHasKey
+      || JSON.stringify(baseRecord[key]) !== JSON.stringify(pendingRecord[key]);
+    if (!changedByUser) continue;
+    if (pendingHasKey) rebased[key] = pendingRecord[key];
+    else delete rebased[key];
+  }
+  return rebased as V2Draft;
+}
+
 function useUserDraftState<T>(
   initial: T,
   field: keyof V2Draft,
@@ -726,11 +747,57 @@ export function useV2Project() {
   const mountedRef = useRef(false);
   const currentProjectIdRef = useRef<string | null>(projectId);
   currentProjectIdRef.current = projectId;
+  const projectDraftFlushWaitersRef = useRef<Array<{
+    projectId: string;
+    resolve: (saved: boolean) => void;
+  }>>([]);
+
+  function projectDraftIsDurable(expectedProjectId: string): boolean {
+    const tracker = autosaveLineageRef.current;
+    return currentProjectIdRef.current === expectedProjectId
+      && projectReadyRef.current
+      && recoveryRef.current.status === "none"
+      && tracker?.projectId === expectedProjectId
+      && !tracker.blocked
+      && (
+        !tracker.latestLocal
+        || tracker.latestLocal.fingerprint === tracker.confirmed.fingerprint
+      );
+  }
+
+  function settleProjectDraftFlushWaiters(projectId: string | null, saved: boolean): void {
+    const pending = projectDraftFlushWaitersRef.current;
+    projectDraftFlushWaitersRef.current = [];
+    for (const waiter of pending) {
+      if (projectId !== null && waiter.projectId !== projectId) {
+        projectDraftFlushWaitersRef.current.push(waiter);
+      } else {
+        waiter.resolve(saved);
+      }
+    }
+  }
+
+  const flushPendingProjectDraft = useCallback(async (): Promise<boolean> => {
+    const flushProjectId = currentProjectIdRef.current;
+    if (!flushProjectId || !canRunProjectOperation()) return false;
+    await editorProjectSaveQueue.whenIdle(flushProjectId);
+    if (
+      currentProjectIdRef.current !== flushProjectId
+      || !canRunProjectOperation()
+    ) return false;
+    if (projectDraftIsDurable(flushProjectId)) return true;
+    return new Promise<boolean>((resolve) => {
+      projectDraftFlushWaitersRef.current.push({ projectId: flushProjectId, resolve });
+      setSaveStatus("saving");
+      setSaveRevision((revision) => revision + 1);
+    });
+  }, [canRunProjectOperation]);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      settleProjectDraftFlushWaiters(null, false);
       autosaveLineageRef.current?.issued.clear();
       autosaveGenerationRef.current += 1;
       autosaveLineageRef.current = null;
@@ -802,6 +869,7 @@ export function useV2Project() {
   }
 
   const invalidateAutosaveLineage = useCallback(() => {
+    settleProjectDraftFlushWaiters(null, false);
     autosaveLineageRef.current?.issued.clear();
     autosaveGenerationRef.current += 1;
     autosaveLineageRef.current = null;
@@ -876,18 +944,53 @@ export function useV2Project() {
     if (!currentId || project.id !== currentId) return false;
     const candidate = serverCandidateForProject(currentId, project);
     if (!candidate || candidate.revision === null) return false;
+    const previousTracker = autosaveLineageRef.current;
+    const pendingLocal = previousTracker
+      && previousTracker.projectId === currentId
+      && !previousTracker.blocked
+      && previousTracker.latestLocal
+      && previousTracker.latestLocal.fingerprint !== previousTracker.confirmed.fingerprint
+      ? previousTracker.latestLocal
+      : null;
+    const rebasedLocal = pendingLocal && previousTracker
+      ? createEditorProjectAutosaveCandidate({
+          projectId: currentId,
+          revision: candidate.revision,
+          draft: rebasePendingUserDraft(
+            previousTracker.confirmed.draft as V2Draft,
+            pendingLocal.draft as V2Draft,
+            candidate.draft as V2Draft,
+          ),
+        })
+      : null;
+    if (pendingLocal && !rebasedLocal) return false;
     invalidateLocalChoiceRequest();
     trustedResumeDraftRef.current = null;
-    applyDraft(candidate.draft as V2Draft);
-    if (!initializeAutosaveLineage(currentId, candidate)) return false;
-    lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+    applyDraft((rebasedLocal?.draft ?? candidate.draft) as V2Draft);
+    const tracker = initializeAutosaveLineage(currentId, candidate);
+    if (!tracker) return false;
+    if (rebasedLocal) {
+      tracker.latestLocal = rebasedLocal;
+      latestDraftRef.current = rebasedLocal;
+      stagedUserDraftMutationTokenRef.current = userDraftMutationTokenRef.current;
+      writeEditorProjectRecoveryJournal(browserStorage(), {
+        version: 1,
+        projectId: currentId,
+        baseRevision: candidate.revision,
+        editedAt: new Date().toISOString(),
+        draft: rebasedLocal.draft,
+      });
+    } else {
+      lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+    }
     latestQueuedSaveRef.current = { projectId: null, revision: null };
     applyServerProjectMetadata(project);
-    clearProjectRecoveryData(currentId);
+    if (!rebasedLocal) clearProjectRecoveryData(currentId);
     setProjectReady(true);
     setProjectInitialization("ready");
-    setSaveStatus("saved");
+    setSaveStatus(rebasedLocal ? "saving" : "saved");
     setRecoveryState({ status: "none" });
+    if (rebasedLocal) setSaveRevision((revision) => revision + 1);
     return true;
   }
 
@@ -2085,6 +2188,17 @@ export function useV2Project() {
         onStatus: (event) => {
           const { status } = event;
           setSaveStatus(status);
+          const isLatestQueuedRevision = event.projectId === latestQueuedSaveRef.current.projectId
+            && event.revision === latestQueuedSaveRef.current.revision;
+          if (
+            status === "saved"
+            && isLatestQueuedRevision
+            && projectDraftIsDurable(event.projectId)
+          ) {
+            settleProjectDraftFlushWaiters(event.projectId, true);
+          } else if (status === "error" && isLatestQueuedRevision) {
+            settleProjectDraftFlushWaiters(event.projectId, false);
+          }
           if (
             isLatestSavedProjectRevision(event, latestQueuedSaveRef.current)
             && userDraftMutationTokenRef.current === lastPersistedUserMutationTokenRef.current
@@ -2174,6 +2288,7 @@ export function useV2Project() {
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     brandContentPreflightId, setBrandContentPreflightId,
     saveStatus, retryProjectSave,
+    flushPendingProjectDraft,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,
     canRunProjectOperation, saveAccountVideoDefaults,
     acceptAuthoritativeProjectSnapshot,

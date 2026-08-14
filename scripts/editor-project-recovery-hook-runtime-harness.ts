@@ -416,6 +416,7 @@ type ProjectHook = {
   } | undefined): void;
   saveStatus: "idle" | "saving" | "saved" | "error";
   retryProjectSave(): void;
+  flushPendingProjectDraft(): Promise<boolean>;
   resetProject(): Promise<string | null>;
   recovery: {
     status: string;
@@ -1861,6 +1862,80 @@ async function publicSetterRuntimeContract(): Promise<void> {
   assert.deepEqual(harness.runner.current.autoMixProviders, ["video", "pexels-photo", "pixabay-photo", "kie-ai"]);
 }
 
+async function pendingUploadFlushesBeforeAuthoritativeBrandPin(): Promise<void> {
+  const projectId = "upload-brand-pin";
+  const server = new SharedEditorServer();
+  server.setProject(projectId, 2, {
+    mode: "upload",
+    clipUrl: "",
+    clipDurationSec: 0,
+    mixPreset: "free",
+    brollSource: "stock",
+  });
+  const harness = createHarness({ search: `?projectId=${projectId}`, server });
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const uploadedClip = "/api/renders/avatar-upload-ticket.mp4";
+  harness.runner.current.setClipUrl(uploadedClip);
+  harness.runner.current.setClipDurationSec(90.818);
+  harness.runner.flush();
+
+  const flush = harness.runner.current.flushPendingProjectDraft();
+  await settle(harness.runner);
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  assert.equal(await flush, true, "the pending upload is durably saved before a Brand mutation");
+
+  const persistedDraft = server.read(projectId)?.draft as JsonRecord;
+  assert.deepEqual({
+    clipUrl: persistedDraft.clipUrl,
+    clipDurationSec: persistedDraft.clipDurationSec,
+  }, {
+    clipUrl: uploadedClip,
+    clipDurationSec: 90.818,
+  }, "the flush persists the exact uploaded clip through the editor project interface");
+
+  const brandSnapshot = project(projectId, 4, {
+    ...persistedDraft,
+    mixPreset: "recommended",
+    brollSource: "automix",
+  });
+  server.setProject(projectId, 4, brandSnapshot.draft as JsonRecord);
+  const replacementClip = "/api/renders/avatar-upload-newer-ticket.mp4";
+  harness.runner.current.setClipUrl(replacementClip);
+  harness.runner.current.setClipDurationSec(91.5);
+  harness.runner.flush();
+  const accepted = harness.runner.current.acceptAuthoritativeProjectSnapshot(brandSnapshot);
+  harness.runner.flush();
+
+  assert.deepEqual({
+    accepted,
+    clipUrl: harness.runner.current.clipUrl,
+    clipDurationSec: harness.runner.current.clipDurationSec,
+    mixPreset: harness.runner.current.mixPreset,
+    brollSource: harness.runner.current.brollSource,
+  }, {
+    accepted: true,
+    clipUrl: replacementClip,
+    clipDurationSec: 91.5,
+    mixPreset: "recommended",
+    brollSource: "automix",
+  }, "Brand Visual defaults apply without discarding a newer edit made while its request was in flight");
+
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  assert.deepEqual({
+    clipUrl: (server.read(projectId)?.draft as JsonRecord).clipUrl,
+    clipDurationSec: (server.read(projectId)?.draft as JsonRecord).clipDurationSec,
+    mixPreset: (server.read(projectId)?.draft as JsonRecord).mixPreset,
+  }, {
+    clipUrl: replacementClip,
+    clipDurationSec: 91.5,
+    mixPreset: "recommended",
+  }, "the rebased newer upload is durably autosaved above the Brand Revision snapshot");
+}
+
 async function failedJournalWriteStillAutosaves(): Promise<void> {
   const harness = createHarness({ search: "?projectId=journal-a" });
   harness.fetchMock.enqueue("GET", editorUrl("journal-a"), response(200, {
@@ -2746,6 +2821,7 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["reset-unmount-during-brand", unmountWhileResetAwaitsBrandAssets],
     ["reset-unmount-during-POST", unmountWhileResetPostIsPending],
     ["functional-public-setters", publicSetterRuntimeContract],
+    ["pending-upload-before-brand-pin", pendingUploadFlushesBeforeAuthoritativeBrandPin],
     ["journal-write-failure", failedJournalWriteStillAutosaves],
     ["project-switching", projectScopedSwitching],
     ["StrictMode-setup-cleanup", strictModeDoesNotDuplicateWrites],
@@ -2857,6 +2933,7 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
 
   const missingUnmountOwnership = hookSource.replace(
     `mountedRef.current = false;
+      settleProjectDraftFlushWaiters(null, false);
       autosaveLineageRef.current?.issued.clear();
       autosaveGenerationRef.current += 1;
       autosaveLineageRef.current = null;

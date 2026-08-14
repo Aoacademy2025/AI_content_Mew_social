@@ -959,6 +959,18 @@ async function main() {
     "Brand Revision pin returns the authoritative draft revision committed with its defaults");
   assert.match(brandSelectorSource, /acceptAuthoritativeProjectSnapshot/,
     "the Editor rebases autosave lineage onto the atomic Brand Revision draft response");
+  const pinProfileSource = brandSelectorSource.slice(
+    brandSelectorSource.indexOf("async function pinProfile"),
+    brandSelectorSource.indexOf("if (!canRenderPersistedVisual)"),
+  );
+  assert.ok(
+    pinProfileSource.indexOf("await p.flushPendingProjectDraft()") >= 0
+      && pinProfileSource.indexOf("await p.flushPendingProjectDraft()")
+        < pinProfileSource.indexOf("/brand-revision")
+      && pinProfileSource.indexOf("/brand-revision")
+        < pinProfileSource.indexOf("acceptAuthoritativeProjectSnapshot"),
+    "Brand Revision pin durably flushes the latest Editor draft before accepting its authoritative snapshot",
+  );
   assert.match(
     libraryRouteSource,
     /activeRevisionId:\s*profile\.revisions\[0\]\?\.id\s*\?\?\s*null/,

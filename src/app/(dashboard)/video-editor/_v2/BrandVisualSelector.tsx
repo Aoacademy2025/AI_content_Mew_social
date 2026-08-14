@@ -242,6 +242,11 @@ export function BrandVisualSelector({
   ) {
     if (!p.projectId) return;
     setChanging(true); setPending(null);
+    if (!await p.flushPendingProjectDraft()) {
+      toast.error("บันทึกข้อมูลโปรเจกต์ล่าสุดไม่สำเร็จ กรุณาลองใหม่ก่อนเลือกแบรนด์");
+      setChanging(false);
+      return;
+    }
     const result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/brand-revision`, {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ profileId, revisionId, applyMode, preflightId: preflight?.id }),
     }));
