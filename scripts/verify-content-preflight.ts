@@ -802,8 +802,9 @@ async function main() {
       && step2Source.includes('p.brollSource === "kie-image"')
       && step2Source.includes('p.brollSource === "automix" && p.mixPreset !== "free"')
       && step2Source.includes("brandPreflightStatus !== \"ready\"")
-      && step2Source.includes("disabled={submitting || brandPreflightBlocked}"),
-    "non-upload AI-image renders must stay disabled until Content Preflight is ready",
+      && step2Source.includes("const brandRenderBlocked = brandPreflightBlocked || brandSelectionBlocked;")
+      && step2Source.includes("disabled={submitting || brandRenderBlocked}"),
+    "non-upload AI-image renders must stay disabled until Content Preflight and Brand selection are ready",
   );
 
   await prisma.$disconnect();

@@ -62,4 +62,40 @@ assert.deepEqual(
   `Segmented button groups must not be wrapped by <label>; clicking blank label space activates the first button (${invalidSegmentedLabels.join(", ")})`,
 );
 
-console.log("verify-support-ticket-ui-regressions: PASS full-card Hook selection and inert Step 2 blank space");
+const brandVisualPath = "src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx";
+const brandVisualSource = readFileSync(brandVisualPath, "utf8");
+const brandProfileSelectStart = brandVisualSource.indexOf("<select value={");
+const brandProfileSelectEnd = brandVisualSource.indexOf("</select>", brandProfileSelectStart);
+assert.ok(
+  brandProfileSelectStart >= 0 && brandProfileSelectEnd > brandProfileSelectStart,
+  "Brand profile selector exists",
+);
+const brandProfileSelect = brandVisualSource.slice(brandProfileSelectStart, brandProfileSelectEnd);
+assert.match(
+  brandProfileSelect,
+  /value=\{pendingBrandProfileId \?\? selectedBrandProfile\?\.profileId \?\? ""\}/,
+  "a Brand awaiting image-change confirmation remains selected instead of reverting to the project look",
+);
+
+const inlineProfileConfirmation = brandVisualSource.indexOf('{pending?.kind === "profile" &&');
+const expandedVisualControls = brandVisualSource.indexOf("{visualSelectionEnabled && expanded &&");
+assert.ok(
+  inlineProfileConfirmation > brandProfileSelectEnd
+    && expandedVisualControls > inlineProfileConfirmation,
+  "Brand image-change confirmation is shown immediately after the Brand selector",
+);
+
+assert.match(
+  stepTwoSource,
+  /const brandRenderBlocked = brandPreflightBlocked \|\| brandSelectionBlocked;/,
+  "an unresolved Brand selection blocks rendering",
+);
+assert.match(
+  stepTwoSource,
+  /onSelectionBlockedChange=\{setBrandSelectionBlocked\}/,
+  "Step 2 receives pending and in-flight Brand selection state",
+);
+
+console.log(
+  "verify-support-ticket-ui-regressions: PASS full-card Hook selection, inert Step 2 blank space, and Brand confirmation render gate",
+);
