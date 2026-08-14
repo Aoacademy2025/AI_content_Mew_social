@@ -174,6 +174,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const [submitting, setSubmitting] = useState(false);
   const [brandPreflightStatus, setBrandPreflightStatus] = useState<BrandVisualPreflightStatus>("idle");
   const [brandPolicyWarnings, setBrandPolicyWarnings] = useState<SceneContentPolicyWarning[]>([]);
+  const [brandSelectionBlocked, setBrandSelectionBlocked] = useState(false);
   const requiresBrandPreflight = (p.brandVisualAllowed || p.hasPersistedVisualPin)
     && p.mode !== "upload"
     && (
@@ -181,6 +182,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
       || (p.brollSource === "automix" && p.mixPreset !== "free")
     );
   const brandPreflightBlocked = requiresBrandPreflight && brandPreflightStatus !== "ready";
+  const brandRenderBlocked = brandPreflightBlocked || brandSelectionBlocked;
   const [savingDefault, setSavingDefault] = useState<"voice" | "avatar" | null>(null);
   const [musicLibOpen, setMusicLibOpen] = useState(false);
   const avatarLib = useHeygenAvatars();
@@ -230,7 +232,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     : baseChips;
 
   async function handleRender() {
-    if (submitting || brandPreflightBlocked) return;
+    if (submitting || brandRenderBlocked) return;
     setSubmitting(true);
     try { await onRender(); } finally { setSubmitting(false); }
   }
@@ -270,12 +272,14 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     <BtnPrimary
       className="w-full"
       onClick={() => void handleRender()}
-      disabled={submitting || brandPreflightBlocked}
-      style={submitting || brandPreflightBlocked ? { opacity: 0.6, cursor: submitting ? "wait" : "not-allowed" } : undefined}
+      disabled={submitting || brandRenderBlocked}
+      style={submitting || brandRenderBlocked ? { opacity: 0.6, cursor: submitting ? "wait" : "not-allowed" } : undefined}
     >
       {submitting
         ? "กำลังส่งงาน…"
-        : brandPreflightBlocked
+        : brandSelectionBlocked
+          ? "ตั้งค่า Brand ให้เสร็จก่อน"
+          : brandPreflightBlocked
           ? brandPreflightStatus === "error" ? "รอวิเคราะห์แนวภาพ" : "กำลังวิเคราะห์แนวภาพ…"
           : "เรนเดอร์วิดีโอ"}
     </BtnPrimary>
@@ -296,6 +300,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           p={p}
           onPreflightStatusChange={setBrandPreflightStatus}
           onPolicyWarningsChange={setBrandPolicyWarnings}
+          onSelectionBlockedChange={setBrandSelectionBlocked}
         />
 
         {/* 1 · บีโรล */}
@@ -955,7 +960,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         {/* CTA เดียว — ปุ่มซ่อนบนมือถือ (ย้ายไป sticky footer), แต่ caption ยังโชว์เหนือ footer */}
         <div className="flex flex-col gap-2">
           <div className="max-lg:hidden">{primaryCta}</div>
-          {brandPreflightBlocked && <span role="status" style={{ fontSize: 10.5, color: brandPreflightStatus === "error" ? color.dangerText : color.infoText, textAlign: "center", lineHeight: 1.6 }}>{brandPreflightStatus === "error" ? "การวิเคราะห์ฉากยังไม่พร้อม — กดลองอีกครั้งในการ์ดแนวภาพ" : "กำลังวิเคราะห์ฉากและบันทึกแนวภาพสำหรับคลิปนี้"}</span>}
+          {brandSelectionBlocked
+            ? <span role="status" style={{ fontSize: 10.5, color: color.warningText, textAlign: "center", lineHeight: 1.6 }}>เลือกวิธีใช้ Brand กับภาพเดิม หรือรอให้ระบบบันทึกให้เสร็จก่อนเริ่มเรนเดอร์</span>
+            : brandPreflightBlocked && <span role="status" style={{ fontSize: 10.5, color: brandPreflightStatus === "error" ? color.dangerText : color.infoText, textAlign: "center", lineHeight: 1.6 }}>{brandPreflightStatus === "error" ? "การวิเคราะห์ฉากยังไม่พร้อม — กดลองอีกครั้งในการ์ดแนวภาพ" : "กำลังวิเคราะห์ฉากและบันทึกแนวภาพสำหรับคลิปนี้"}</span>}
           <span style={{ fontSize: 10.5, color: color.textFaint, textAlign: "center", lineHeight: 1.6 }}>
             {p.mode === "upload" && !hasUploadDuration ? "กำลังอ่านความยาวคลิป" : `คลิปยาว ${hasUploadDuration ? "" : "~"}${fmtTime(displaySec)}`}
             {p.usage?.minutes && displayMin > 0 ? ` · ใช้ ${hasUploadDuration ? "" : "~"}${displayMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}

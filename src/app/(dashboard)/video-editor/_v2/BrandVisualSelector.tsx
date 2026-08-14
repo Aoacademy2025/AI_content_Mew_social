@@ -38,6 +38,37 @@ type PendingChange =
   | { kind: "look"; formatId: VisualFormatId; treatment: string; label: string; existingImageCount: number; quotedCredits: number }
   | { kind: "profile"; profileId: string; revisionId?: string; label: string; existingImageCount: number; quotedCredits: number };
 
+function PendingChangeConfirmation({
+  p,
+  pending,
+  changing,
+  onConfirm,
+  onCancel,
+}: {
+  p: V2Project;
+  pending: PendingChange;
+  changing: boolean;
+  onConfirm: (applyMode: "new-only" | "regenerate-all") => void;
+  onCancel: () => void;
+}) {
+  return <div aria-live="polite" className="mt-3 rounded-xl p-3" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.28)" }}>
+    <div className="flex gap-2">
+      <ImageIcon size={15} color={color.warning} className="mt-0.5 shrink-0" />
+      <div>
+        <p style={{ color: color.text, font: `600 11.5px ${font.heading}` }}>ยังไม่ได้เปลี่ยนเป็น “{pending.label}”</p>
+        <p className="mt-1" style={{ color: color.textSecondary, fontSize: 10.5, lineHeight: 1.55 }}>คลิปนี้มีภาพเดิม {pending.existingImageCount} ภาพ ระบบจะไม่สร้างใหม่เอง เลือกว่าจะเตรียมสร้างทั้งหมดใหม่ ({imageFundingText(p, pending.existingImageCount)}) หรือใช้แนวนี้เฉพาะภาพต่อจากนี้</p>
+        {starterFundingInsufficient(p, pending.existingImageCount) && <p className="mt-1" style={{ color: color.dangerText, fontSize: 10.5 }}>สิทธิ์ทดลองไม่พอสำหรับสร้างทั้งหมด เลือกใช้แนวใหม่กับภาพต่อไป หรืออัปเกรดก่อน</p>}
+      </div>
+    </div>
+    <div className="mt-3 flex flex-wrap gap-2">
+      <button type="button" disabled={changing || starterFundingInsufficient(p, pending.existingImageCount)} onClick={() => onConfirm("regenerate-all")} className="min-h-9 rounded-lg px-3 disabled:opacity-40" style={{ background: color.warning, color: color.bg0, fontSize: 10.5, fontWeight: 700 }}>สร้างทุกภาพใหม่ให้เป็นแนวเดียวกัน</button>
+      <button type="button" disabled={changing} onClick={() => onConfirm("new-only")} className="min-h-9 rounded-lg px-3" style={{ border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 10.5 }}>ใช้แนวใหม่เฉพาะภาพต่อจากนี้</button>
+      <button type="button" disabled={changing} onClick={onCancel} className="min-h-9 rounded-lg px-3" style={{ color: color.textFaint, fontSize: 10.5 }}>ยกเลิก</button>
+    </div>
+    <p className="mt-2" style={{ color: color.warningText, fontSize: 10 }}>ตัวเลือกหลังทำให้คลิปมีมากกว่าหนึ่งแนวภาพ</p>
+  </div>;
+}
+
 async function payload(response: Response) {
   const body = await response.json().catch(() => ({}));
   return { response, body };
@@ -60,10 +91,12 @@ export function BrandVisualSelector({
   p,
   onPreflightStatusChange,
   onPolicyWarningsChange,
+  onSelectionBlockedChange,
 }: {
   p: V2Project;
   onPreflightStatusChange?: (status: BrandVisualPreflightStatus) => void;
   onPolicyWarningsChange?: (warnings: SceneContentPolicyWarning[]) => void;
+  onSelectionBlockedChange?: (blocked: boolean) => void;
 }) {
   const [formats, setFormats] = useState<VisualFormat[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -209,6 +242,14 @@ export function BrandVisualSelector({
     setTreatmentDraft(treatment);
   }, [treatment]);
 
+  useEffect(() => {
+    onSelectionBlockedChange?.(changing || pending !== null);
+  }, [changing, onSelectionBlockedChange, pending]);
+
+  useEffect(() => () => {
+    onSelectionBlockedChange?.(false);
+  }, [onSelectionBlockedChange]);
+
   async function applyLook(
     formatId: VisualFormatId,
     applyMode?: "new-only" | "regenerate-all",
@@ -290,6 +331,7 @@ export function BrandVisualSelector({
 
   const selected = context?.visualFormatId ?? preflight?.suggestedVisualFormatId;
   const selectedFormatLabel = formats.find((item) => item.id === selected)?.label ?? selected;
+  const pendingBrandProfileId = pending?.kind === "profile" ? pending.profileId : null;
   const selectedLibraryProfile = selectedBrandProfile
     ? profiles.find((profile) => profile.id === selectedBrandProfile.profileId) ?? null
     : null;
@@ -299,6 +341,22 @@ export function BrandVisualSelector({
     && selectedLibraryProfile?.activeRevisionId
     && selectedLibraryProfile.activeRevisionNumber > selectedBrandProfile.revisionNumber,
   );
+  const confirmPendingChange = (applyMode: "new-only" | "regenerate-all") => {
+    if (!pending) return;
+    if (pending.kind === "look") {
+      if (applyMode === "regenerate-all") {
+        void applyLook(pending.formatId, "regenerate-all", pending.treatment);
+      } else {
+        void applyLook(pending.formatId, "new-only", pending.treatment);
+      }
+    } else {
+      if (applyMode === "regenerate-all") {
+        void pinProfile(pending.profileId, "regenerate-all", pending.revisionId);
+      } else {
+        void pinProfile(pending.profileId, "new-only", pending.revisionId);
+      }
+    }
+  };
   return <section className="shrink-0" style={{ border: `1px solid ${color.cardBorder}`, borderRadius: radius.card, background: color.cardBg, overflow: "hidden" }}>
     <button type="button" onClick={() => { if (visualSelectionEnabled) setExpanded((value) => !value); }} className="flex min-h-12 w-full items-center gap-3 px-4 py-3 text-left" aria-expanded={visualSelectionEnabled && expanded} aria-disabled={!visualSelectionEnabled}>
       <span className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: "rgba(56,189,248,.12)", color: color.info }}><SwatchBook size={16} /></span>
@@ -306,7 +364,14 @@ export function BrandVisualSelector({
       {p.starterAiImageAllowance?.eligible && <span className="rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: color.infoText, fontSize: 10, fontWeight: 600 }}>เหลือ {p.starterAiImageAllowance.remainingImages}/8 ภาพ</span>}
       {visualSelectionEnabled && <><span style={{ color: color.infoText, fontSize: 10.5, fontWeight: 700 }}>{expanded ? "ซ่อน" : "เปลี่ยนแนวภาพ"}</span><ChevronDown size={15} style={{ color: color.textFaint, transform: expanded ? "rotate(180deg)" : undefined, transition: "transform 150ms" }} /></>}
     </button>
-    {canManageBrandVisual && profiles.length > 0 && <div className="border-t px-4 py-3" style={{ borderColor: color.cardBorder }}><label className="flex max-w-sm flex-col gap-1.5"><span style={{ color: color.textFaint, fontSize: 10.5 }}>แบรนด์ที่ใช้ (ถ้ามี)</span><select value={selectedBrandProfile?.profileId ?? ""} disabled={changing} onChange={(event) => { if (event.target.value) void pinProfile(event.target.value); }} className="min-h-10 w-full rounded-lg px-3" style={{ background: "rgba(255,255,255,.05)", border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 12 }}><option value="" style={{ background: color.bg1 }}>ใช้แนวภาพของคลิปนี้</option>{profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={profile.frozen || profile.activeRevisionNumber <= 0} style={{ background: color.bg1 }}>{profile.name} · รุ่น {profile.activeRevisionNumber}{profile.frozen ? " (อ่านอย่างเดียว)" : profile.activeRevisionNumber <= 0 ? " (ต้องนำเข้าก่อน)" : ""}</option>)}</select></label>{canAdoptLatestRevision && selectedLibraryProfile?.activeRevisionId && <button type="button" disabled={changing} onClick={() => void pinProfile(selectedLibraryProfile.id, undefined, selectedLibraryProfile.activeRevisionId ?? undefined)} className="mt-2 min-h-9 rounded-lg px-3 text-left" style={{ border: `1px solid ${color.info}`, color: color.infoText, fontSize: 10.5, fontWeight: 700 }}>ใช้รุ่นล่าสุดกับคลิปนี้ · รุ่น {selectedLibraryProfile.activeRevisionNumber}</button>}</div>}
+    {canManageBrandVisual && profiles.length > 0 && <div className="border-t px-4 py-3" style={{ borderColor: color.cardBorder }}>
+      <label className="flex max-w-sm flex-col gap-1.5">
+        <span style={{ color: color.textFaint, fontSize: 10.5 }}>แบรนด์ที่ใช้ (ถ้ามี)</span>
+        <select value={pendingBrandProfileId ?? selectedBrandProfile?.profileId ?? ""} disabled={changing} onChange={(event) => { if (event.target.value) void pinProfile(event.target.value); else if (pending?.kind === "profile") setPending(null); }} className="min-h-10 w-full rounded-lg px-3" style={{ background: "rgba(255,255,255,.05)", border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 12 }}><option value="" style={{ background: color.bg1 }}>ใช้แนวภาพของคลิปนี้</option>{profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={profile.frozen || profile.activeRevisionNumber <= 0} style={{ background: color.bg1 }}>{profile.name} · รุ่น {profile.activeRevisionNumber}{profile.frozen ? " (อ่านอย่างเดียว)" : profile.activeRevisionNumber <= 0 ? " (ต้องนำเข้าก่อน)" : ""}</option>)}</select>
+      </label>
+      {pending?.kind === "profile" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
+      {canAdoptLatestRevision && selectedLibraryProfile?.activeRevisionId && <button type="button" disabled={changing} onClick={() => void pinProfile(selectedLibraryProfile.id, undefined, selectedLibraryProfile.activeRevisionId ?? undefined)} className="mt-2 min-h-9 rounded-lg px-3 text-left" style={{ border: `1px solid ${color.info}`, color: color.infoText, fontSize: 10.5, fontWeight: 700 }}>ใช้รุ่นล่าสุดกับคลิปนี้ · รุ่น {selectedLibraryProfile.activeRevisionNumber}</button>}
+    </div>}
     {visualSelectionEnabled && expanded && <div className="border-t px-4 py-4" style={{ borderColor: color.cardBorder }}>
       {!canManageBrandVisual && p.hasPersistedVisualPin && <div className="mb-3 rounded-lg px-3 py-2" style={{ background: "rgba(56,189,248,.08)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>แนวภาพเดิมของโปรเจกต์นี้ยังใช้สร้างซ้ำได้ตามเดิม ขณะนี้ปิดการเลือกหรือสร้างแนวภาพใหม่ชั่วคราว</div>}
       {error && <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2" style={{ background: "rgba(248,113,113,.09)", color: color.dangerText, fontSize: 11 }}><span>{error}</span><button type="button" onClick={() => void loadContext()} className="min-h-8 rounded-md px-2.5" style={{ border: "1px solid rgba(248,113,113,.28)", color: color.dangerText, fontWeight: 600 }}>ลองวิเคราะห์อีกครั้ง</button></div>}
@@ -318,7 +383,7 @@ export function BrandVisualSelector({
         {canManageBrandVisual && preflight && selected && <div className="mt-3 rounded-xl p-3" style={{ border: `1px solid ${color.cardBorder}`, background: "rgba(255,255,255,.025)" }}><label htmlFor="brand-visual-treatment" className="block" style={{ color: color.textSecondary, font: `500 11px ${font.heading}` }}>อารมณ์และวิธีเล่าของคลิปนี้</label><p className="mt-1" style={{ color: color.textFaint, fontSize: 10, lineHeight: 1.45 }}>AI เติมให้จากเนื้อหา คุณแก้เป็นทิศทางสั้น ๆ ของคลิปนี้ได้ โดยไม่เปลี่ยนลายเซ็นประจำแบรนด์</p><div className="mt-2 flex flex-col gap-2 sm:flex-row"><input id="brand-visual-treatment" value={treatmentDraft} maxLength={300} onChange={(event) => setTreatmentDraft(event.target.value)} disabled={changing} className="min-h-10 min-w-0 flex-1 rounded-lg px-3" style={{ background: "rgba(255,255,255,.05)", border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 11.5 }} /><button type="button" disabled={changing || !treatmentDraft.trim() || treatmentDraft.trim() === treatment} onClick={() => void applyLook(selected, undefined, treatmentDraft)} className="min-h-10 rounded-lg px-3 disabled:opacity-40" style={{ background: color.info, color: color.bg0, fontSize: 10.5, fontWeight: 700 }}>ใช้กับคลิปนี้</button>{treatmentDraft.trim() !== suggestedTreatment && <button type="button" disabled={changing} onClick={() => setTreatmentDraft(suggestedTreatment)} className="min-h-10 rounded-lg px-3" style={{ border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 10.5 }}>กลับไปใช้คำแนะนำ AI</button>}</div></div>}
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight?.visualBeats.length ?? 0} ฉาก · การวิเคราะห์ไม่ใช้สิทธิ์หรือเครดิต</span><span className="flex flex-wrap gap-3">{canManageBrandVisual && !p.starterAiImageAllowance?.eligible && <Link href={p.projectId ? `/brands?new=1&projectId=${encodeURIComponent(p.projectId)}${preflight?.id ? `&preflightId=${encodeURIComponent(preflight.id)}` : ""}` : "/brands?new=1"} className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.infoText, fontWeight: 600 }}>+ สร้างแบรนด์จากคลิปนี้</Link>}<Link href="/brands" className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.textFaint, fontWeight: 600 }}>จัดการแบรนด์ของฉัน</Link></span></div>
       </>}
-      {pending && <div className="mt-4 rounded-xl p-3" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.28)" }}><div className="flex gap-2"><ImageIcon size={15} color={color.warning} className="mt-0.5 shrink-0" /><div><p style={{ color: color.text, font: `600 11.5px ${font.heading}` }}>มีภาพเดิม {pending.existingImageCount} ภาพ</p><p className="mt-1" style={{ color: color.textSecondary, fontSize: 10.5, lineHeight: 1.55 }}>ระบบจะไม่สร้างใหม่เอง เลือกว่าจะเตรียมสร้างทั้งหมดใหม่ ({imageFundingText(p, pending.existingImageCount)}) หรือใช้ “{pending.label}” เฉพาะภาพต่อจากนี้</p>{starterFundingInsufficient(p, pending.existingImageCount) && <p className="mt-1" style={{ color: color.dangerText, fontSize: 10.5 }}>สิทธิ์ทดลองไม่พอสำหรับสร้างทั้งหมด เลือกใช้แนวใหม่กับภาพต่อไป หรืออัปเกรดก่อน</p>}</div></div><div className="mt-3 flex flex-wrap gap-2"><button disabled={changing || starterFundingInsufficient(p, pending.existingImageCount)} onClick={() => pending.kind === "look" ? void applyLook(pending.formatId, "regenerate-all", pending.treatment) : void pinProfile(pending.profileId, "regenerate-all", pending.revisionId)} className="min-h-9 rounded-lg px-3 disabled:opacity-40" style={{ background: color.warning, color: color.bg0, fontSize: 10.5, fontWeight: 700 }}>สร้างทุกภาพใหม่ให้เป็นแนวเดียวกัน</button><button disabled={changing} onClick={() => pending.kind === "look" ? void applyLook(pending.formatId, "new-only", pending.treatment) : void pinProfile(pending.profileId, "new-only", pending.revisionId)} className="min-h-9 rounded-lg px-3" style={{ border: `1px solid ${color.cardBorder}`, color: color.textSecondary, fontSize: 10.5 }}>ใช้แนวใหม่เฉพาะภาพต่อจากนี้</button></div><p className="mt-2" style={{ color: color.warningText, fontSize: 10 }}>ตัวเลือกหลังทำให้คลิปมีมากกว่าหนึ่งแนวภาพ</p></div>}
+      {pending?.kind === "look" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
       {p.starterAiImageAllowance?.eligible && p.starterAiImageAllowance.remainingImages === 0 && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl p-3" style={{ background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.25)" }}><span className="flex items-center gap-2" style={{ fontSize: 11, color: color.dangerText }}><LockKeyhole size={14} /> ใช้สิทธิ์ทดลองภาพครบแล้ว ระบบจะไม่เปลี่ยนเป็น Stock เอง</span><span className="flex gap-2"><Link href="/pricing" className="rounded-lg bg-white px-3 py-2 text-[10.5px] font-bold text-black">อัปเกรดรายเดือน</Link><button onClick={() => p.setMixPreset("free")} className="rounded-lg px-3 py-2" style={{ border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 10.5 }}>ใช้ Stock ฟรี</button></span></div>}
     </div>}
   </section>;
