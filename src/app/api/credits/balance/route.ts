@@ -11,7 +11,7 @@ export async function GET() {
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     if (process.env.CREDITS_LIVE !== "1") {
-      return NextResponse.json({ granted: 0, purchased: 0, total: 0, reserved: 0, live: false, plan: authUser.plan });
+      return NextResponse.json({ granted: 0, promotional: 0, purchased: 0, total: 0, reserved: 0, live: false, plan: authUser.plan });
     }
 
     await ensureMonthlyGrant(authUser.id);

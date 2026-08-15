@@ -113,7 +113,7 @@ async function main() {
     funding: "credits",
     amount: 6,
   });
-  assert.deepEqual(await getBalance(creditUser.id), { granted: 5, purchased: 10, total: 15 });
+  assert.deepEqual(await getBalance(creditUser.id), { granted: 5, promotional: 0, purchased: 10, total: 15 });
   assert.equal(await isBurnAlreadyPaid(creditUser.id, creditUrl), false);
 
   const missing = await refundVideoJobBaseReservation({

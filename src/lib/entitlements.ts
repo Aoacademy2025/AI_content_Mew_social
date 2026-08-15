@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
-import { resetMonthlyGranted } from "@/lib/credits";
+import { MONTHLY_GRANT, resetMonthlyGranted } from "@/lib/credits";
 import { syncStoredBundleEntitlementForUser } from "@/lib/bundle-entitlement";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
 
@@ -227,7 +227,59 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
   if (paidEquivalent.canUsePaidFeatures) {
     let materialized = user;
     let changed = false;
-    if (user.plan !== paidEquivalent.effectivePlan) {
+    const couponTermTransition = paidEquivalent.source === "grant_coupon"
+      && !user.stripeSubscriptionId
+      && (
+        user.plan !== paidEquivalent.effectivePlan
+        || user.planExpiresAt?.getTime() !== paidEquivalent.expiresAt?.getTime()
+      );
+    if (couponTermTransition) {
+      materialized = await prisma.$transaction(async (tx) => {
+        const updated = await tx.user.update({
+          where: { id: userId },
+          data: {
+            plan: paidEquivalent.effectivePlan,
+            planExpiresAt: paidEquivalent.expiresAt,
+            trialEndsAt: null,
+            ...usageWindowForPlanValue(paidEquivalent.effectivePlan, now),
+          },
+          select: {
+            id: true, email: true, role: true, plan: true, usageCount: true, usageLimit: true,
+            usagePeriodStartedAt: true, planExpiresAt: true, trialStartedAt: true, trialEndsAt: true,
+            subStatus: true, stripeSubscriptionId: true, bundleAccessExpiresAt: true,
+            bundleStatus: true, bundlePrimary: true,
+          },
+        });
+        if (process.env.CREDITS_LIVE === "1") {
+          const prior = await tx.creditBalance.upsert({
+            where: { userId },
+            create: { userId },
+            update: {},
+          });
+          const granted = MONTHLY_GRANT[paidEquivalent.effectivePlan] ?? 0;
+          const balance = await tx.creditBalance.update({
+            where: { userId },
+            data: { granted, grantedResetAt: now },
+          });
+          const promo = await tx.promotionalCreditGrant.aggregate({
+            where: { userId, expiresAt: { gt: now }, remainingAmount: { gt: 0 } },
+            _sum: { remainingAmount: true },
+          });
+          await tx.creditLedger.create({
+            data: {
+              userId,
+              delta: granted - prior.granted,
+              kind: "monthly-reset",
+              action: `coupon-term-activation:${now.toISOString()}`,
+              balanceAfter: balance.granted + (promo._sum.remainingAmount ?? 0) + balance.purchased,
+              createdAt: now,
+            },
+          });
+        }
+        return updated;
+      });
+      changed = true;
+    } else if (user.plan !== paidEquivalent.effectivePlan) {
       materialized = await prisma.user.update({
         where: { id: userId },
         data: { plan: paidEquivalent.effectivePlan },

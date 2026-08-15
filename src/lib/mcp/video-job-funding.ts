@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/prisma";
-import { creditCostFor } from "@/lib/credits";
+import {
+  creditCostFor,
+  parseCreditFunding,
+  serializeCreditFunding,
+  type CreditDebit,
+  type CreditFunding,
+} from "@/lib/credits";
 import { refundReservationInTransaction } from "@/lib/minute-credits";
 import { resolveServiceVideoJobId } from "@/lib/mcp/service-actor";
 
@@ -73,7 +79,41 @@ type FundingRow = {
   fundedMeteredMinutes: number | null;
   fundedCreditsSpent: number | null;
   fundedCreditsFromGranted: number | null;
+  fundedCreditsFromPromotional: number | null;
+  fundedCreditFundingJson: string | null;
 };
+
+function fundingFromDebits(debits: CreditDebit[]): CreditFunding {
+  const fromGranted = debits
+    .filter((debit) => debit.bucket === "granted")
+    .reduce((sum, debit) => sum + debit.amount, 0);
+  const promotionalDebits = debits
+    .filter((debit): debit is CreditDebit & { bucket: "promotional"; grantId: string } =>
+      debit.bucket === "promotional" && Boolean(debit.grantId),
+    )
+    .map((debit) => ({ grantId: debit.grantId, amount: debit.amount }));
+  const fromPromotional = promotionalDebits.reduce((sum, debit) => sum + debit.amount, 0);
+  const fromPurchased = debits
+    .filter((debit) => debit.bucket === "purchased")
+    .reduce((sum, debit) => sum + debit.amount, 0);
+  return { fromGranted, fromPromotional, promotionalDebits, fromPurchased, debits };
+}
+
+function splitFundingTail(funding: CreditFunding, refundAmount: number) {
+  const retained = funding.debits.map((debit) => ({ ...debit }));
+  const refunded: CreditDebit[] = [];
+  let remaining = refundAmount;
+  for (let index = retained.length - 1; index >= 0 && remaining > 0; index--) {
+    const debit = retained[index];
+    const amount = Math.min(debit.amount, remaining);
+    remaining -= amount;
+    debit.amount -= amount;
+    refunded.unshift({ ...debit, amount });
+    if (debit.amount === 0) retained.splice(index, 1);
+  }
+  if (remaining !== 0) throw new Error("video job funding snapshot is smaller than its credit total");
+  return { retained: fundingFromDebits(retained), refunded: fundingFromDebits(refunded) };
+}
 
 function trimRefund(old: FundingRow, actualMinutes: number) {
   const rate = creditCostFor("minute");
@@ -90,18 +130,19 @@ function trimRefund(old: FundingRow, actualMinutes: number) {
 
   const refundCredits = oldCredits - newCredits;
   const oldGranted = Math.max(0, Math.min(old.fundedCreditsFromGranted ?? 0, oldCredits));
-  const oldPurchased = oldCredits - oldGranted;
-  // Spend order is granted first, then purchased. Trimming the tail therefore
-  // restores purchased first and only then granted.
-  const refundPurchased = Math.min(refundCredits, oldPurchased);
-  const refundGranted = refundCredits - refundPurchased;
+  const funding = parseCreditFunding(old.fundedCreditFundingJson, {
+    fromGranted: oldGranted,
+    fromPromotional: old.fundedCreditsFromPromotional ?? 0,
+    fromPurchased: oldCredits - oldGranted - (old.fundedCreditsFromPromotional ?? 0),
+  }, oldCredits);
+  const split = splitFundingTail(funding, refundCredits);
   const refundIncludedMinutes = oldIncludedMinutes - newIncludedMinutes;
 
   return {
     newCredits,
-    newGranted: oldGranted - refundGranted,
+    retainedFunding: split.retained,
+    refundFunding: split.refunded,
     refundCredits,
-    refundGranted,
     refundMinutes: refundIncludedMinutes + (rate > 0 ? refundCredits / rate : 0),
   };
 }
@@ -127,6 +168,8 @@ export async function reconcileVideoJobFunding(
         fundedMeteredMinutes: true,
         fundedCreditsSpent: true,
         fundedCreditsFromGranted: true,
+        fundedCreditsFromPromotional: true,
+        fundedCreditFundingJson: true,
       },
     });
     if (!job || job.fundingState !== "reserved" || !job.fundedMeteredMinutes) {
@@ -145,6 +188,8 @@ export async function reconcileVideoJobFunding(
           reservedMinutes: job.fundedMeteredMinutes,
           creditsSpent: job.fundedCreditsSpent,
           creditsFromGranted: job.fundedCreditsFromGranted,
+          creditsFromPromotional: job.fundedCreditsFromPromotional,
+          creditFundingJson: job.fundedCreditFundingJson,
         },
         `video-job-refund:${videoJobId}:duration-increase`,
       );
@@ -163,19 +208,37 @@ export async function reconcileVideoJobFunding(
         {
           reservedMinutes: refund.refundMinutes,
           creditsSpent: refund.refundCredits,
-          creditsFromGranted: refund.refundGranted,
+          creditsFromGranted: refund.refundFunding.fromGranted,
+          creditsFromPromotional: refund.refundFunding.fromPromotional,
+          creditFundingJson: serializeCreditFunding(refund.refundFunding),
         },
         `video-job-trim:${videoJobId}`,
       );
     }
-    const balance = await tx.creditBalance.findUnique({ where: { userId } });
+    const [balance, promotional] = await Promise.all([
+      tx.creditBalance.findUnique({ where: { userId } }),
+      tx.promotionalCreditGrant.aggregate({
+        where: {
+          userId,
+          expiresAt: { gt: new Date() },
+          remainingAmount: { gt: 0 },
+        },
+        _sum: { remainingAmount: true },
+      }),
+    ]);
     await tx.videoJob.update({
       where: { id: videoJobId },
       data: {
         fundedMeteredMinutes: actualMeteredMinutes,
         fundedCreditsSpent: refund.newCredits,
-        fundedCreditsFromGranted: refund.newGranted,
-        fundedCreditBalanceAfter: balance ? balance.granted + balance.purchased : null,
+        fundedCreditsFromGranted: refund.retainedFunding.fromGranted,
+        fundedCreditsFromPromotional: refund.retainedFunding.fromPromotional,
+        fundedCreditFundingJson: refund.newCredits > 0
+          ? serializeCreditFunding(refund.retainedFunding)
+          : null,
+        fundedCreditBalanceAfter: balance
+          ? balance.granted + (promotional._sum.remainingAmount ?? 0) + balance.purchased
+          : null,
       },
     });
     return { kind: "trimmed" as const };
@@ -195,6 +258,8 @@ export type TransferredVideoJobFunding =
       reservedMinutes: number;
       creditsSpent: number;
       creditsFromGranted: number;
+      creditsFromPromotional: number;
+      creditFundingJson: string | null;
       creditBalanceAfter: number | null;
     }
   | { transferred: false };
@@ -214,6 +279,8 @@ export async function transferVideoJobFundingToRender(
         fundedMeteredMinutes: true,
         fundedCreditsSpent: true,
         fundedCreditsFromGranted: true,
+        fundedCreditsFromPromotional: true,
+        fundedCreditFundingJson: true,
         fundedCreditBalanceAfter: true,
       },
     });
@@ -230,6 +297,8 @@ export async function transferVideoJobFundingToRender(
       reservedMinutes: job.fundedMeteredMinutes,
       creditsSpent: job.fundedCreditsSpent ?? 0,
       creditsFromGranted: job.fundedCreditsFromGranted ?? 0,
+      creditsFromPromotional: job.fundedCreditsFromPromotional ?? 0,
+      creditFundingJson: job.fundedCreditFundingJson,
       creditBalanceAfter: job.fundedCreditBalanceAfter,
     };
   });
@@ -250,6 +319,8 @@ export async function refundVideoJobFunding(
         fundedMeteredMinutes: true,
         fundedCreditsSpent: true,
         fundedCreditsFromGranted: true,
+        fundedCreditsFromPromotional: true,
+        fundedCreditFundingJson: true,
       },
     });
     if (!job || job.fundingState !== "reserved") return { refunded: false };
@@ -267,6 +338,8 @@ export async function refundVideoJobFunding(
         reservedMinutes: job.fundedMeteredMinutes,
         creditsSpent: job.fundedCreditsSpent,
         creditsFromGranted: job.fundedCreditsFromGranted,
+        creditsFromPromotional: job.fundedCreditsFromPromotional,
+        creditFundingJson: job.fundedCreditFundingJson,
       },
       `video-job-refund:${videoJobId}:${reason}`.slice(0, 240),
     );

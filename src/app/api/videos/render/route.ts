@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { checkClipQuota, reserveClipUsage } from "@/lib/usage-limits";
 import { checkMinuteQuota, minutesFromSeconds } from "@/lib/minute-limits";
 import { reserveMinutesOrCredits, refundReservation } from "@/lib/minute-credits";
+import { serializeCreditFunding } from "@/lib/credits";
 import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
 import { rerenderSkipEligible } from "@/lib/broll-rerender";
 import { parseVideoJobOutput } from "@/lib/mcp/video-job";
@@ -293,16 +294,18 @@ export async function POST(req: Request) {
   // the credit branch and these stay null).
   let creditsSpent: number | null = null;
   let creditBalanceAfter: number | null = null;
-  // Granted-bucket portion of an overflow credit spend (rest came from purchased). Threaded
+  // Legacy monthly-bucket portion plus exact promo/purchased funding snapshot. Threaded
   // into every refund path + persisted on the queued RenderJob so a refund restores the SAME
   // buckets the spend drained (H3). Stays null on the minute/clip path (CREDITS_LIVE off too).
   let creditsFromGranted: number | null = null;
+  let creditsFromPromotional: number | null = null;
+  let creditFundingJson: string | null = null;
   let transferredVideoJobId: string | null = null;
   // Minute-quota flag (default OFF → byte-identical clip-cap behavior). When ON, the
   // unit reserved/refunded/recorded is whole minutes-by-output-duration instead of clips.
   const useMinuteQuota = process.env.MINUTE_QUOTA === "1";
   // Credit-overflow flag (default OFF → byte-identical). When ON, an out-of-minutes
-  // reserve silently spends purchased credits instead of walling.
+  // reserve spends available wallet credits in expiry order instead of walling.
   const creditsLive = process.env.CREDITS_LIVE === "1";
   // Minutes to reserve, computed once the output duration is known (after
   // requestedDurationSec below, before the reserve). Initialized to 0 only to keep it
@@ -586,6 +589,8 @@ export async function POST(req: Request) {
         reservedUserId = userId;
         creditsSpent = transfer.creditsSpent || null;
         creditsFromGranted = transfer.creditsFromGranted || null;
+        creditsFromPromotional = transfer.creditsFromPromotional || null;
+        creditFundingJson = transfer.creditFundingJson;
         creditBalanceAfter = transfer.creditBalanceAfter;
       }
     }
@@ -612,6 +617,8 @@ export async function POST(req: Request) {
         // minutes and this spend, so a failed mixed job restores BOTH meters exactly.
         creditsSpent = result.creditsSpent;
         creditsFromGranted = result.fromGranted;
+        creditsFromPromotional = result.fromPromotional;
+        creditFundingJson = serializeCreditFunding(result);
         creditBalanceAfter = result.balanceAfter;
       }
     } else {
@@ -1089,6 +1096,8 @@ export async function POST(req: Request) {
         // Granted-bucket portion of that spend → RenderJob.creditsFromGranted, so a queue-side
         // refund (failRenderJob/supersedeScope) restores the SAME buckets (H3). Null → undefined.
         creditsFromGranted: creditsFromGranted ?? undefined,
+        creditsFromPromotional: creditsFromPromotional ?? undefined,
+        creditFundingJson: creditFundingJson ?? undefined,
         // Scope identity for cross-process supersession (null when no jobScopeId).
         // Applied to both RENDER and BURN: supersede only targets QUEUED/RUNNING of the
         // same scope, so a sequential RENDER→BURN is unaffected (prior step is DONE).
@@ -1139,7 +1148,13 @@ export async function POST(req: Request) {
         try {
           await refundReservation(
             userId,
-            { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent, creditsFromGranted },
+            {
+              reservedMinutes: useMinuteQuota ? reservedMinutes : null,
+              creditsSpent,
+              creditsFromGranted,
+              creditsFromPromotional,
+              creditFundingJson,
+            },
             `render-refund:${jobId}`,
           );
           if (transferredVideoJobId) {
@@ -1383,7 +1398,13 @@ export async function POST(req: Request) {
       // creditsSpent null → identical to the prior refundMinutes/refundClipUsage branch.
       const refund = () => refundReservation(
         reservedUserId!,
-        { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent, creditsFromGranted },
+        {
+          reservedMinutes: useMinuteQuota ? reservedMinutes : null,
+          creditsSpent,
+          creditsFromGranted,
+          creditsFromPromotional,
+          creditFundingJson,
+        },
         "render-setup-refund",
       );
       let refunded = false;

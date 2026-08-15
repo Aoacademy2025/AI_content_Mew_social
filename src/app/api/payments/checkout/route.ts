@@ -115,7 +115,7 @@ export async function POST(req: Request) {
         where: { code: couponCode.trim().toUpperCase() },
         include: { redemptions: { where: { userId } } },
       });
-      const usable = c && c.type === "DISCOUNT" && c.stripePromotionCodeId
+      const usable = c && c.isActive && c.type === "DISCOUNT" && c.stripePromotionCodeId
         && (!c.expiresAt || c.expiresAt >= new Date())
         && (c.maxUses <= 0 || c.usedCount < c.maxUses)
         && c.redemptions.length === 0;

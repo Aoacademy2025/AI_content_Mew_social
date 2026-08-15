@@ -4,7 +4,9 @@ import { syncMinuteWindow } from "@/lib/minute-limits";
 import {
   spendCreditsInTransaction,
   refundCreditsInTransaction,
+  parseCreditFunding,
   creditCostFor,
+  type CreditSpendResult,
 } from "@/lib/credits";
 import { refundClipUsage } from "@/lib/usage-limits";
 
@@ -22,12 +24,15 @@ export type ReserveResult =
       reservedMinutes: number;
       minutesReserved: 0;
       creditsSpent: number;
-      // The bucket split spendCredits actually drained (granted-first, then purchased).
+      // The exact split spendCredits drained across monthly, promo, and purchased.
       // MUST be threaded to refundReservation so a refund restores the EXACT buckets —
-      // refunding the lump to `purchased` permanently inflates it (granted is hard-reset
-      // monthly, purchased persists). fromGranted + fromPurchased === creditsSpent.
+      // refunding the lump to `purchased` permanently inflates it (monthly/promo expire,
+      // purchased persists). All three funding parts sum to creditsSpent.
       fromGranted: number;
+      fromPromotional: number;
+      promotionalDebits: { grantId: string; amount: number }[];
       fromPurchased: number;
+      debits: Extract<CreditSpendResult, { ok: true }>["debits"];
       balanceAfter: number;
     }
   | {
@@ -37,7 +42,10 @@ export type ReserveResult =
       minutesReserved: number;
       creditsSpent: number;
       fromGranted: number;
+      fromPromotional: number;
+      promotionalDebits: { grantId: string; amount: number }[];
       fromPurchased: number;
+      debits: Extract<CreditSpendResult, { ok: true }>["debits"];
       balanceAfter: number;
       remaining: number;
     }
@@ -88,9 +96,7 @@ export async function reserveMinutesOrCreditsInTransaction(
     };
   }
 
-  let spend:
-    | { ok: true; balanceAfter: number; fromGranted: number; fromPurchased: number }
-    | null = null;
+  let spend: Extract<CreditSpendResult, { ok: true }> | null = null;
   const creditsSpent = creditMinutes * creditCostFor("minute");
   if (creditsSpent > 0) {
     const action = opts.ref ? `render-overflow:${opts.ref}` : "render-overflow";
@@ -136,7 +142,10 @@ export async function reserveMinutesOrCreditsInTransaction(
       minutesReserved: 0,
       creditsSpent,
       fromGranted: spend.fromGranted,
+      fromPromotional: spend.fromPromotional,
+      promotionalDebits: spend.promotionalDebits,
       fromPurchased: spend.fromPurchased,
+      debits: spend.debits,
       balanceAfter: spend.balanceAfter,
     };
   }
@@ -147,7 +156,10 @@ export async function reserveMinutesOrCreditsInTransaction(
     minutesReserved,
     creditsSpent,
     fromGranted: spend.fromGranted,
+    fromPromotional: spend.fromPromotional,
+    promotionalDebits: spend.promotionalDebits,
     fromPurchased: spend.fromPurchased,
+    debits: spend.debits,
     balanceAfter: spend.balanceAfter,
     remaining,
   };
@@ -199,11 +211,12 @@ export async function refundReservation(
   res: {
     reservedMinutes: number | null;
     creditsSpent: number | null;
-    // The granted-bucket portion of creditsSpent (the rest came from purchased). Threaded
-    // from reserveMinutesOrCredits → persisted on RenderJob.creditsFromGranted. Optional/
-    // nullable for backward-compat: an in-flight job enqueued BEFORE this field existed has
-    // no split, so we fall back to all-purchased (the pre-fix behavior) instead of crashing.
+    // Legacy scalar funding fields plus the durable ordered snapshot. Optional/
+    // nullable for backward compatibility: an in-flight pre-migration job has
+    // no promo provenance, so it falls back to the old monthly/purchased split.
     creditsFromGranted?: number | null;
+    creditsFromPromotional?: number | null;
+    creditFundingJson?: string | null;
   },
   action: string
 ): Promise<void> {
@@ -227,6 +240,8 @@ export async function refundReservationInTransaction(
     reservedMinutes: number | null;
     creditsSpent: number | null;
     creditsFromGranted?: number | null;
+    creditsFromPromotional?: number | null;
+    creditFundingJson?: string | null;
   },
   action: string,
 ): Promise<void> {
@@ -239,8 +254,12 @@ export async function refundReservationInTransaction(
   const creditMinutes = rate > 0 ? creditsSpent / rate : 0;
   const totalReservedMinutes = Math.max(0, res.reservedMinutes ?? creditMinutes);
   const includedMinutes = Math.max(0, totalReservedMinutes - creditMinutes);
-  const fromGranted = Math.max(0, Math.min(res.creditsFromGranted ?? 0, creditsSpent));
-  const fromPurchased = creditsSpent - fromGranted;
+  const legacyGranted = Math.max(0, Math.min(res.creditsFromGranted ?? 0, creditsSpent));
+  const funding = parseCreditFunding(res.creditFundingJson, {
+    fromGranted: legacyGranted,
+    fromPromotional: res.creditsFromPromotional ?? 0,
+    fromPurchased: creditsSpent - legacyGranted - (res.creditsFromPromotional ?? 0),
+  }, creditsSpent);
 
   if (includedMinutes > 0) {
     await tx.$executeRaw`UPDATE "User" SET "minutesUsed" = MAX(0, "minutesUsed" - ${includedMinutes}) WHERE "id" = ${userId}`;
@@ -249,9 +268,10 @@ export async function refundReservationInTransaction(
     await refundCreditsInTransaction(
       tx,
       userId,
-      fromGranted,
-      fromPurchased,
+      funding.fromGranted,
+      funding.fromPurchased,
       action,
+      funding.promotionalDebits,
     );
   }
 }
