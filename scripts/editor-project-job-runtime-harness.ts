@@ -1755,6 +1755,9 @@ async function runExactReplayRouteScenario(input: {
     status = 400;
   }
   class RenderDeployDrainError extends Error {}
+  class VideoJobFundingError extends Error {
+    remainingMinutes = 0;
+  }
   const touchMutable = (name: string) => {
     mutableTouches.push(name);
     if (input.failOnMutableGate) throw new Error(`mutable gate touched before replay: ${name}`);
@@ -1863,8 +1866,15 @@ async function runExactReplayRouteScenario(input: {
           return { id: "new-route-job", status: "queued" };
         },
         parseVideoJobOutput: () => null,
+        VideoJobFundingError,
         VIDEO_JOB_INFLIGHT_STATUSES: ["queued", "processing", "waiting_provider"],
       };
+    }
+    if (specifier === "@/lib/minute-limits") {
+      return { minutesFromSeconds: () => 1 };
+    }
+    if (specifier === "@/app/(dashboard)/video-editor/_v2/estimate") {
+      return { estimateClipSecV2: () => 60 };
     }
     if (specifier === "@/lib/usage-limits") {
       return {
