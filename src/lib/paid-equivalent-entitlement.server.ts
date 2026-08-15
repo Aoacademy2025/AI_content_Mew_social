@@ -48,6 +48,10 @@ export type PaidEquivalentEvidence = {
   }[];
   couponRedemptions: readonly {
     redeemedAt: Date;
+    outcome?: string;
+    entitlementPlan?: string | null;
+    entitlementStartsAt?: Date | null;
+    entitlementExpiresAt?: Date | null;
     coupon: {
       type: string;
       plan: string;
@@ -185,13 +189,20 @@ export function decidePaidEquivalentEntitlement(
   }
 
   for (const redemption of evidence.couponRedemptions) {
-    if (redemption.coupon.type !== "GRANT" || !isPaidEquivalentPlan(redemption.coupon.plan)) continue;
-    const expiresAt = redemption.coupon.durationDays > 0
-      ? new Date(redemption.redeemedAt.getTime() + redemption.coupon.durationDays * DAY_MS)
-      : null;
+    if (redemption.coupon.type !== "GRANT") continue;
+    const durable = redemption.outcome && redemption.outcome !== "LEGACY";
+    const plan = durable ? redemption.entitlementPlan : redemption.coupon.plan;
+    if (!plan || !isPaidEquivalentPlan(plan)) continue;
+    const startsAt = durable ? redemption.entitlementStartsAt : redemption.redeemedAt;
+    if (!startsAt || startsAt > now) continue;
+    const expiresAt = durable
+      ? redemption.entitlementExpiresAt ?? null
+      : redemption.coupon.durationDays > 0
+        ? new Date(redemption.redeemedAt.getTime() + redemption.coupon.durationDays * DAY_MS)
+        : null;
     if (expiresAt && expiresAt <= now) continue;
     candidates.push({
-      plan: redemption.coupon.plan,
+      plan,
       source: "grant_coupon",
       expiresAt,
       cashBacked: false,
@@ -257,6 +268,10 @@ export async function resolvePaidEquivalentEntitlement(
         where: { coupon: { type: "GRANT" } },
         select: {
           redeemedAt: true,
+          outcome: true,
+          entitlementPlan: true,
+          entitlementStartsAt: true,
+          entitlementExpiresAt: true,
           coupon: { select: { type: true, plan: true, durationDays: true } },
         },
       },

@@ -21,6 +21,7 @@ interface QuotaData {
 
 interface CreditBalance {
   granted: number;
+  promotional: number;
   purchased: number;
   total: number;
   live: boolean;

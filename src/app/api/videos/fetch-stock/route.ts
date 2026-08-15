@@ -31,6 +31,7 @@ import {
   costKeyForKieModel,
   ensureMonthlyGrant,
   getBalance,
+  type PromotionalCreditDebit,
 } from "@/lib/credits";
 import {
   kieMaxImagesPerJob,
@@ -1399,7 +1400,16 @@ export async function POST(req: Request) {
 
   type ImageSpendGate =
     | { proceed: true; charged: false }
-    | { proceed: true; charged: true; creditsSpent: number; balanceAfter: number; fromGranted: number; fromPurchased: number }
+    | {
+        proceed: true;
+        charged: true;
+        creditsSpent: number;
+        balanceAfter: number;
+        fromGranted: number;
+        fromPromotional: number;
+        promotionalDebits: PromotionalCreditDebit[];
+        fromPurchased: number;
+      }
     | { proceed: false; reason: AiSkipReason };
 
   // Gate before each managed-key generation. Guardrails (per-job cap + hourly rate)
@@ -1434,10 +1444,19 @@ export async function POST(req: Request) {
       }
       aiTelemetry.aiChargedCount++;
       aiTelemetry.aiCreditsSpent += imageCost;
-      aiTelemetry.aiCreditsSpentGranted += spend.fromGranted;
+      aiTelemetry.aiCreditsSpentGranted += spend.fromGranted + spend.fromPromotional;
       aiTelemetry.aiCreditsSpentPurchased += spend.fromPurchased;
       aiTelemetry.aiLastCreditBalanceAfterSpend = spend.balanceAfter;
-      return { proceed: true, charged: true, creditsSpent: imageCost, balanceAfter: spend.balanceAfter, fromGranted: spend.fromGranted, fromPurchased: spend.fromPurchased };
+      return {
+        proceed: true,
+        charged: true,
+        creditsSpent: imageCost,
+        balanceAfter: spend.balanceAfter,
+        fromGranted: spend.fromGranted,
+        fromPromotional: spend.fromPromotional,
+        promotionalDebits: spend.promotionalDebits,
+        fromPurchased: spend.fromPurchased,
+      };
     }
     // Admin on the managed key: guarded above (cap/rate consumed) but never charged.
     if (guardImages) aiGenCount++;
@@ -1446,11 +1465,23 @@ export async function POST(req: Request) {
 
   // Refund the exact buckets a prior spend drained (kie generation failed AFTER
   // the charge). The createTask attempt still counted toward the per-job cap.
-  async function refundImageSpend(g: { creditsSpent: number; fromGranted: number; fromPurchased: number }): Promise<void> {
-    await refundCredits(spenderUserId, g.fromGranted, g.fromPurchased, imageRefundAction);
+  async function refundImageSpend(g: {
+    creditsSpent: number;
+    fromGranted: number;
+    fromPromotional: number;
+    promotionalDebits: PromotionalCreditDebit[];
+    fromPurchased: number;
+  }): Promise<void> {
+    await refundCredits(
+      spenderUserId,
+      g.fromGranted,
+      g.fromPurchased,
+      imageRefundAction,
+      g.promotionalDebits,
+    );
     aiTelemetry.aiRefundedCount++;
     aiTelemetry.aiCreditsRefunded += g.creditsSpent;
-    aiTelemetry.aiCreditsRefundedGranted += g.fromGranted;
+    aiTelemetry.aiCreditsRefundedGranted += g.fromGranted + g.fromPromotional;
     aiTelemetry.aiCreditsRefundedPurchased += g.fromPurchased;
   }
 
@@ -2360,7 +2391,7 @@ export async function POST(req: Request) {
           });
           aiTelemetry.aiChargedCount++;
           aiTelemetry.aiCreditsSpent += generated.fundingSource === "credits" ? generated.creditCost : 0;
-          aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted;
+          aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted + generated.creditsFromPromotional;
           aiTelemetry.aiCreditsSpentPurchased += generated.creditsFromPurchased;
           return { stopBatch: false };
         } catch (error) {
@@ -2539,7 +2570,9 @@ export async function POST(req: Request) {
       aiTelemetry.aiCreditsSpent = Math.max(0, aiTelemetry.aiCreditsSpent - compensation.refundedCredits);
       aiTelemetry.aiCreditsSpentGranted = Math.max(
         0,
-        aiTelemetry.aiCreditsSpentGranted - compensation.creditsFromGranted,
+        aiTelemetry.aiCreditsSpentGranted
+          - compensation.creditsFromGranted
+          - compensation.creditsFromPromotional,
       );
       aiTelemetry.aiCreditsSpentPurchased = Math.max(
         0,
@@ -3448,7 +3481,7 @@ export async function POST(req: Request) {
             });
             aiTelemetry.aiChargedCount++;
             aiTelemetry.aiCreditsSpent += generated.fundingSource === "credits" ? generated.creditCost : 0;
-            aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted;
+            aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted + generated.creditsFromPromotional;
             aiTelemetry.aiCreditsSpentPurchased += generated.creditsFromPurchased;
             if (generated.outputUrl.startsWith("/api/renders/")) {
               const filename = decodeURIComponent(generated.outputUrl.slice("/api/renders/".length));
@@ -3512,7 +3545,7 @@ export async function POST(req: Request) {
                   creditsRefunded = compensation.refundedCredits;
                   aiTelemetry.aiRefundedCount++;
                   aiTelemetry.aiCreditsRefunded += compensation.refundedCredits;
-                  aiTelemetry.aiCreditsRefundedGranted += generated.creditsFromGranted;
+                  aiTelemetry.aiCreditsRefundedGranted += generated.creditsFromGranted + generated.creditsFromPromotional;
                   aiTelemetry.aiCreditsRefundedPurchased += generated.creditsFromPurchased;
                 }
               } catch (refundError) {
@@ -3538,7 +3571,7 @@ export async function POST(req: Request) {
               charged: Boolean(generated) && creditsRefunded === 0,
               creditsSpent: generated?.fundingSource === "credits" ? generated.creditCost : 0,
               creditsRefunded,
-              fromGranted: generated?.creditsFromGranted ?? 0,
+              fromGranted: (generated?.creditsFromGranted ?? 0) + (generated?.creditsFromPromotional ?? 0),
               fromPurchased: generated?.creditsFromPurchased ?? 0,
               balanceAfterSpend: null,
               failureReason,

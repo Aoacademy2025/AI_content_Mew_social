@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 
 interface CreditBalance {
   granted: number;
+  promotional: number;
   purchased: number;
   total: number;
   live: boolean;
@@ -189,6 +190,18 @@ export function CreditsBillingSection() {
           />
           <div className="flex flex-col gap-0.5">
             <span className="text-[11px] font-medium tracking-wide uppercase" style={{ color: "var(--ui-text-muted)" }}>
+              เครดิตโปรโมชัน
+            </span>
+            <span className="text-2xl font-black tracking-tight" style={{ color: "var(--ui-text-primary)" }}>
+              {(balance.promotional ?? 0).toLocaleString()}
+            </span>
+          </div>
+          <div
+            className="w-px self-stretch"
+            style={{ background: "hsl(0 0% 100% / 0.06)" }}
+          />
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium tracking-wide uppercase" style={{ color: "var(--ui-text-muted)" }}>
               เครดิตที่ซื้อ
             </span>
             <span className="text-2xl font-black tracking-tight" style={{ color: "var(--ui-text-primary)" }}>
@@ -215,7 +228,7 @@ export function CreditsBillingSection() {
 
       {/* Pack cards */}
       <p className="text-xs mt-2" style={{ color: "var(--ui-text-muted)" }}>
-        เติมเครดิตเพื่อเติมนาทีเมื่อใช้เกินโควต้าแพ็ก (2 เครดิต = 1 นาที) · <span style={{ color: "hsl(var(--accent-primary) / 0.8)" }}>เครดิตที่ซื้อไม่หมดอายุและไม่หายเมื่อเปลี่ยนแผน</span>
+        ระบบใช้เครดิตที่ใกล้หมดอายุก่อน และใช้เครดิตที่ซื้อเป็นลำดับสุดท้าย · เติมนาทีเมื่อเกินโควต้าแพ็กได้ในอัตรา 2 เครดิต = 1 นาที · <span style={{ color: "hsl(var(--accent-primary) / 0.8)" }}>เครดิตที่ซื้อไม่หมดอายุและไม่หายเมื่อเปลี่ยนแผน</span>
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {PACKS.map((pack) => {

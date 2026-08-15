@@ -91,6 +91,7 @@ export type HeroImageGenerationResult = {
   fundingSource: string;
   allowanceUnits: number;
   creditsFromGranted: number;
+  creditsFromPromotional: number;
   creditsFromPurchased: number;
   provider: "runpod";
   providerModel: "z-image-turbo";
@@ -115,6 +116,7 @@ function completedResult(job: AiGenerationJob): HeroImageGenerationResult {
     fundingSource: job.fundingSource,
     allowanceUnits: job.allowanceUnits,
     creditsFromGranted: job.creditsFromGranted,
+    creditsFromPromotional: job.creditsFromPromotional,
     creditsFromPurchased: job.creditsFromPurchased,
     provider: "runpod",
     providerModel: "z-image-turbo",

@@ -2,6 +2,13 @@ import "server-only";
 
 import type { AiGenerationAttempt, AiGenerationJob, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import {
+  parseCreditFunding,
+  refundCreditsInTransaction,
+  serializeCreditFunding,
+  spendCreditsInTransaction,
+  type CreditFunding,
+} from "@/lib/credits";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   reserveStarterAiImageAllowance,
@@ -235,12 +242,17 @@ export async function createReservedImageJob(input: {
       };
     }
 
+    const walletNow = new Date();
     const balance = await tx.creditBalance.upsert({
       where: { userId: input.userId },
       create: { userId: input.userId, granted: 0, purchased: 0 },
       update: {},
     });
-    const total = balance.granted + balance.purchased;
+    const promotionalBalance = await tx.promotionalCreditGrant.aggregate({
+      where: { userId: input.userId, expiresAt: { gt: walletNow }, remainingAmount: { gt: 0 } },
+      _sum: { remainingAmount: true },
+    });
+    const total = balance.granted + (promotionalBalance._sum.remainingAmount ?? 0) + balance.purchased;
     if (input.dailyRateLimit) {
       // SQLite serializes this no-op wallet write; databases with row-level
       // locking serialize only this user's reservations. Count and job insert
@@ -289,38 +301,32 @@ export async function createReservedImageJob(input: {
       };
     }
     const fundingSource = allowance.kind === "reserved" ? "starter_allowance" as const : "credits" as const;
-    let fromGranted = 0;
-    let fromPurchased = 0;
+    let funding: CreditFunding = {
+      fromGranted: 0,
+      fromPromotional: 0,
+      promotionalDebits: [],
+      fromPurchased: 0,
+      debits: [],
+    };
+    let balanceAfter = total;
     if (fundingSource === "credits") {
-      if (total < input.creditCost) {
+      const spend = await spendCreditsInTransaction(
+        tx,
+        input.userId,
+        input.creditCost,
+        `ai-image-reservation:${input.idempotencyKey}`,
+        walletNow,
+      );
+      if (!spend.ok) {
         return {
           ok: false as const,
           reason: "insufficient" as const,
-          balanceAfter: total,
+          balanceAfter: spend.balanceAfter,
           allowanceRemaining: null,
         };
       }
-      fromGranted = Math.min(balance.granted, input.creditCost);
-      fromPurchased = input.creditCost - fromGranted;
-      const debited = await tx.creditBalance.updateMany({
-        where: {
-          userId: input.userId,
-          granted: { gte: fromGranted },
-          purchased: { gte: fromPurchased },
-        },
-        data: {
-          granted: { decrement: fromGranted },
-          purchased: { decrement: fromPurchased },
-        },
-      });
-      if (debited.count !== 1) {
-        return {
-          ok: false as const,
-          reason: "insufficient" as const,
-          balanceAfter: total,
-          allowanceRemaining: null,
-        };
-      }
+      funding = spend;
+      balanceAfter = spend.balanceAfter;
     }
 
     const job = await tx.aiGenerationJob.create({
@@ -339,8 +345,10 @@ export async function createReservedImageJob(input: {
         inputPreview: input.inputPreview,
         inputJson: input.inputJson,
         creditCost: input.creditCost,
-        creditsFromGranted: fromGranted,
-        creditsFromPurchased: fromPurchased,
+        creditsFromGranted: funding.fromGranted,
+        creditsFromPromotional: funding.fromPromotional,
+        creditsFromPurchased: funding.fromPurchased,
+        creditFundingJson: fundingSource === "credits" ? serializeCreditFunding(funding) : null,
         fundingSource,
         allowanceUnits: fundingSource === "starter_allowance" ? 1 : 0,
         allowanceWindowStartedAt: allowance.kind === "reserved"
@@ -362,18 +370,6 @@ export async function createReservedImageJob(input: {
         },
       },
     });
-    const balanceAfter = fundingSource === "credits" ? total - input.creditCost : total;
-    if (fundingSource === "credits") {
-      await tx.creditLedger.create({
-        data: {
-          userId: input.userId,
-          delta: -input.creditCost,
-          kind: "spend",
-          action: `ai-image:${job.id}`,
-          balanceAfter,
-        },
-      });
-    }
     if (input.reservationLink) {
       await linkBrandLookPreviewJobInTransaction(tx, {
         userId: input.userId,
@@ -646,27 +642,19 @@ export async function failAndRefundAiJob(
           outcome: "refunded",
         });
       } else {
-        const restored = await tx.creditBalance.upsert({
-          where: { userId },
-          create: {
-            userId,
-            granted: job.creditsFromGranted,
-            purchased: job.creditsFromPurchased,
-          },
-          update: {
-            granted: { increment: job.creditsFromGranted },
-            purchased: { increment: job.creditsFromPurchased },
-          },
-        });
-        await tx.creditLedger.create({
-          data: {
-            userId,
-            delta: job.creditCost,
-            kind: "refund",
-            action: `ai-image-refund:${job.id}`,
-            balanceAfter: restored.granted + restored.purchased,
-          },
-        });
+        const funding = parseCreditFunding(job.creditFundingJson, {
+          fromGranted: job.creditsFromGranted,
+          fromPromotional: job.creditsFromPromotional,
+          fromPurchased: job.creditsFromPurchased,
+        }, job.creditCost);
+        await refundCreditsInTransaction(
+          tx,
+          userId,
+          funding.fromGranted,
+          funding.fromPurchased,
+          `ai-image-refund:${job.id}`,
+          funding.promotionalDebits,
+        );
       }
       chargeState = "refunded";
     }
@@ -724,27 +712,19 @@ export async function completeImageJob(input: {
             outcome: "refunded",
           });
         } else {
-          const restored = await tx.creditBalance.upsert({
-            where: { userId: input.userId },
-            create: {
-              userId: input.userId,
-              granted: job.creditsFromGranted,
-              purchased: job.creditsFromPurchased,
-            },
-            update: {
-              granted: { increment: job.creditsFromGranted },
-              purchased: { increment: job.creditsFromPurchased },
-            },
-          });
-          await tx.creditLedger.create({
-            data: {
-              userId: input.userId,
-              delta: job.creditCost,
-              kind: "refund",
-              action: `ai-image-refund:${job.id}`,
-              balanceAfter: restored.granted + restored.purchased,
-            },
-          });
+          const funding = parseCreditFunding(job.creditFundingJson, {
+            fromGranted: job.creditsFromGranted,
+            fromPromotional: job.creditsFromPromotional,
+            fromPurchased: job.creditsFromPurchased,
+          }, job.creditCost);
+          await refundCreditsInTransaction(
+            tx,
+            input.userId,
+            funding.fromGranted,
+            funding.fromPurchased,
+            `ai-image-refund:${job.id}`,
+            funding.promotionalDebits,
+          );
         }
       }
       return tx.aiGenerationJob.update({

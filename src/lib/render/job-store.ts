@@ -19,13 +19,21 @@ async function refundJobReservation(
     reservedMinutes: number | null;
     creditsSpent: number | null;
     creditsFromGranted: number | null;
+    creditsFromPromotional: number | null;
+    creditFundingJson: string | null;
   },
   context: string,
 ): Promise<void> {
   try {
     await refundReservation(
       job.userId,
-      { reservedMinutes: job.reservedMinutes, creditsSpent: job.creditsSpent, creditsFromGranted: job.creditsFromGranted },
+      {
+        reservedMinutes: job.reservedMinutes,
+        creditsSpent: job.creditsSpent,
+        creditsFromGranted: job.creditsFromGranted,
+        creditsFromPromotional: job.creditsFromPromotional,
+        creditFundingJson: job.creditFundingJson,
+      },
       `queue-${context}`,
     );
     if (job.parentJobId) {
@@ -70,12 +78,13 @@ export async function enqueueRenderJob(input: {
    */
   creditsSpent?: number;
   /**
-   * Granted-bucket portion of creditsSpent (the rest came from purchased). Persisted on
-   * RenderJob.creditsFromGranted so failRenderJob/supersedeScope refund the EXACT buckets
-   * the spend drained — refunding the lump to purchased permanently inflates it (H3).
-   * Undefined → null (legacy/lump refund falls back to all-purchased).
+   * Legacy monthly-bucket scalar. The ordered creditFundingJson snapshot carries
+   * exact monthly/promo/purchased provenance for failure and supersession refunds.
+   * Undefined → null (pre-migration funding falls back to the legacy split).
    */
   creditsFromGranted?: number;
+  creditsFromPromotional?: number;
+  creditFundingJson?: string;
   /**
    * Render-scope identity (= the legacy route's `renderOwnerKey`, `${userId}:${renderScopeId}`).
    * Stored on the row so the queue path can supersede a prior in-flight job for the
@@ -117,6 +126,8 @@ export async function enqueueRenderJob(input: {
           reservedMinutes: input.reservedMinutes ?? null,
           creditsSpent: input.creditsSpent ?? null,
           creditsFromGranted: input.creditsFromGranted ?? null,
+          creditsFromPromotional: input.creditsFromPromotional ?? null,
+          creditFundingJson: input.creditFundingJson ?? null,
           status: "QUEUED",
         },
       });
@@ -130,6 +141,8 @@ export async function enqueueRenderJob(input: {
           reservedMinutes: input.reservedMinutes ?? null,
           creditsSpent: input.creditsSpent ?? null,
           creditsFromGranted: input.creditsFromGranted ?? null,
+          creditsFromPromotional: input.creditsFromPromotional ?? null,
+          creditFundingJson: input.creditFundingJson ?? null,
         },
         "render-drain-race",
       ));
@@ -174,7 +187,16 @@ export async function supersedeScope(scopeKey: string, userId: string): Promise<
     // refund below uses the pre-read job fields (captured by findMany before this update).
     const res = await prisma.renderJob.updateMany({
       where: { id: job.id, status: "QUEUED" },
-      data: { status: "CANCELLED", finishedAt: new Date(), reservedQuota: false, reservedMinutes: null, creditsSpent: null, creditsFromGranted: null },
+      data: {
+        status: "CANCELLED",
+        finishedAt: new Date(),
+        reservedQuota: false,
+        reservedMinutes: null,
+        creditsSpent: null,
+        creditsFromGranted: null,
+        creditsFromPromotional: null,
+        creditFundingJson: null,
+      },
     });
     if (res.count !== 1) continue; // lost the race — it's RUNNING now, skip
     superseded++;
@@ -327,7 +349,17 @@ export async function failRenderJob(
     // never block the terminal transition — logged, continue.
     await refundJobReservation(job, `for job ${id}`);
     // Clear all reservation flags regardless — prevent double-refund on any retry of this path.
-    await prisma.renderJob.update({ where: { id }, data: { reservedQuota: false, reservedMinutes: null, creditsSpent: null, creditsFromGranted: null } });
+    await prisma.renderJob.update({
+      where: { id },
+      data: {
+        reservedQuota: false,
+        reservedMinutes: null,
+        creditsSpent: null,
+        creditsFromGranted: null,
+        creditsFromPromotional: null,
+        creditFundingJson: null,
+      },
+    });
   }
 }
 

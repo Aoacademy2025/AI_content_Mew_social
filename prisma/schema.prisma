@@ -82,6 +82,7 @@ model User {
   notifications                   Notification[]
   supportTickets                  SupportTicket[]
   couponRedemptions               CouponRedemption[]
+  promotionalCreditGrants         PromotionalCreditGrant[]
   payments                        Payment[]
   telemetryEvents                 TelemetryEvent[]
   productUpdateReads              ProductUpdateRead[]
@@ -529,42 +530,44 @@ model ScriptGenerationUsage {
 }
 
 model VideoJob {
-  id                        String         @id @default(cuid())
-  userId                    String
-  user                      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  projectId                 String?
-  project                   EditorProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  contentPreflightId        String?
-  projectVisualContextJson  String?
-  brandVisualAcceptanceJson String?
-  videoId                   String?
-  type                      String         @default("create")
-  status                    String         @default("queued") // queued|processing|waiting_provider|done|failed|canceled
-  currentStep               String?
-  progress                  Int            @default(0)
-  inputJson                 String
-  outputJson                String?
-  errorMessage              String?
-  errorCode                 String?
-  errorProvider             String?
-  reservationRefundPending  Boolean        @default(false)
-  reservationRefundReason   String?
-  reservationRefundAttempts Int            @default(0)
-  idempotencyKey            String?
-  idempotencyFingerprint    String?
-  createdAt                 DateTime       @default(now())
-  updatedAt                 DateTime       @updatedAt
-  startedAt                 DateTime?
-  finishedAt                DateTime?
-  mediaExpiresAt            DateTime?
-  providerCheckpointJson    String?
-  providerNextPollAt        DateTime?
-  fundingState              String         @default("none") // none|reserved|transferred|settled|refunded
-  fundedMeteredMinutes      Int?
-  fundedCreditsSpent        Int?
-  fundedCreditsFromGranted  Int?
-  fundedCreditBalanceAfter  Int?
-  walletFundingAuthorized   Boolean        @default(false)
+  id                           String         @id @default(cuid())
+  userId                       String
+  user                         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId                    String?
+  project                      EditorProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  contentPreflightId           String?
+  projectVisualContextJson     String?
+  brandVisualAcceptanceJson    String?
+  videoId                      String?
+  type                         String         @default("create")
+  status                       String         @default("queued") // queued|processing|waiting_provider|done|failed|canceled
+  currentStep                  String?
+  progress                     Int            @default(0)
+  inputJson                    String
+  outputJson                   String?
+  errorMessage                 String?
+  errorCode                    String?
+  errorProvider                String?
+  reservationRefundPending     Boolean        @default(false)
+  reservationRefundReason      String?
+  reservationRefundAttempts    Int            @default(0)
+  idempotencyKey               String?
+  idempotencyFingerprint       String?
+  createdAt                    DateTime       @default(now())
+  updatedAt                    DateTime       @updatedAt
+  startedAt                    DateTime?
+  finishedAt                   DateTime?
+  mediaExpiresAt               DateTime?
+  providerCheckpointJson       String?
+  providerNextPollAt           DateTime?
+  fundingState                 String         @default("none") // none|reserved|transferred|settled|refunded
+  fundedMeteredMinutes         Int?
+  fundedCreditsSpent           Int?
+  fundedCreditsFromGranted     Int?
+  fundedCreditsFromPromotional Int?
+  fundedCreditFundingJson      String?
+  fundedCreditBalanceAfter     Int?
+  walletFundingAuthorized      Boolean        @default(false)
 
   @@unique([userId, idempotencyKey])
   @@index([status])
@@ -732,19 +735,65 @@ model Coupon {
   discountDuration      String? // "once" | "forever", DISCOUNT only
   stripeCouponId        String? // Stripe Coupon id (DISCOUNT)
   stripePromotionCodeId String? // Stripe Promotion Code id (DISCOUNT)
+  isActive              Boolean            @default(true)
+  stackingPolicy        String             @default("SAFE_APPEND") // SAFE_APPEND | REJECT_EXISTING
+  promoCredits          Int                @default(0)
+  promoCreditTtlDays    Int                @default(30)
   createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @default(now()) @updatedAt
   redemptions           CouponRedemption[]
+  auditLogs             CouponAuditLog[]
 }
 
 model CouponRedemption {
-  id         String   @id @default(cuid())
-  couponId   String
-  coupon     Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  redeemedAt DateTime @default(now())
+  id                   String                  @id @default(cuid())
+  couponId             String
+  coupon               Coupon                  @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  userId               String
+  user                 User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  redeemedAt           DateTime                @default(now())
+  outcome              String                  @default("LEGACY") // LEGACY | ACTIVATED | SCHEDULED | PROMO_ONLY
+  entitlementPlan      Plan?
+  entitlementStartsAt  DateTime?
+  entitlementExpiresAt DateTime?
+  promotionalGrant     PromotionalCreditGrant?
 
   @@unique([couponId, userId])
+  @@index([userId, entitlementStartsAt, entitlementExpiresAt])
+}
+
+/// Expiring campaign credits are independent from the monthly and purchased
+/// wallet buckets. Individual rows preserve earliest-expiry spending and exact
+/// refund provenance when multiple campaigns overlap.
+model PromotionalCreditGrant {
+  id                 String           @id @default(cuid())
+  userId             String
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  couponRedemptionId String           @unique
+  couponRedemption   CouponRedemption @relation(fields: [couponRedemptionId], references: [id], onDelete: Restrict)
+  initialAmount      Int
+  remainingAmount    Int
+  expiresAt          DateTime
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@index([userId, expiresAt])
+}
+
+/// Append-only history for coupon administration. Used coupons are disabled,
+/// never hard-deleted, so their commercial evidence remains auditable.
+model CouponAuditLog {
+  id          String   @id @default(cuid())
+  couponId    String
+  coupon      Coupon   @relation(fields: [couponId], references: [id], onDelete: Restrict)
+  actorUserId String
+  action      String // CREATE | UPDATE | DISABLE | ENABLE
+  beforeJson  String?
+  afterJson   String?
+  createdAt   DateTime @default(now())
+
+  @@index([couponId, createdAt])
+  @@index([actorUserId, createdAt])
 }
 
 // MON-10 (audited 2026-07-07): a user can legitimately churn through RESERVED → RELEASED →
@@ -904,8 +953,8 @@ model GeneratedImage {
 // Shared durable job record for customer-facing AI Studio generations. Provider
 // credentials/workflows stay server-side; the browser only receives this safe
 // projection. Image credit reservations record the exact source buckets so a
-// failed provider job can refund granted/purchased credits without changing
-// their expiry semantics. Voice jobs use plan audio-minutes and therefore keep
+// failed provider job can refund monthly/promotional/purchased credits without
+// changing their expiry semantics. Voice jobs use plan audio-minutes and therefore keep
 // creditCost=0.
 model AiGenerationJob {
   id                            String                @id @default(cuid())
@@ -930,7 +979,9 @@ model AiGenerationJob {
   generatedImageId              String?
   creditCost                    Int                   @default(0)
   creditsFromGranted            Int                   @default(0)
+  creditsFromPromotional        Int                   @default(0)
   creditsFromPurchased          Int                   @default(0)
+  creditFundingJson             String?
   fundingSource                 String                @default("credits") // credits | starter_allowance | none
   allowanceUnits                Int                   @default(0)
   allowanceWindowStartedAt      DateTime?
@@ -1119,30 +1170,32 @@ model CreditLedger {
 }
 
 model RenderJob {
-  id                 String    @id @default(cuid())
-  userId             String
-  videoId            String? // gallery Video row, set when known
-  parentJobId        String? // VideoJob.id when created by the MCP orchestrator; null for web jobs
-  type               String // RENDER | BURN
-  status             String    @default("QUEUED") // QUEUED|RUNNING|DONE|FAILED|CANCELLED
-  attempts           Int       @default(0)
-  maxAttempts        Int       @default(2)
-  payload            String // JSON: full render config — no in-memory dependence
-  progress           Float     @default(0)
-  phase              String? // bundling | rendering | encoding
-  heartbeatAt        DateTime?
-  cancelRequested    Boolean   @default(false)
-  reservedQuota      Boolean   @default(false) // true iff THIS job reserved a clip for its video
-  reservedMinutes    Int? // minutes reserved for a queued job; for exact refund
-  creditsSpent       Int? // credits spent to fund this render via overflow (null = minute/clip-funded); for bucket-aware refund
-  creditsFromGranted Int? // of creditsSpent, the portion drained from the granted (monthly) bucket; the rest came from purchased — for an EXACT per-bucket refund (granted-back-to-granted, not inflated into purchased)
-  error              String? // JSON, PR-5 error taxonomy
-  idempotencyKey     String?   @unique
-  scopeKey           String? // queue-path supersession scope = `${userId}:${renderScopeId}`; null when no jobScopeId (e.g. some MCP jobs)
-  videoUrl           String?
-  createdAt          DateTime  @default(now())
-  startedAt          DateTime?
-  finishedAt         DateTime?
+  id                     String    @id @default(cuid())
+  userId                 String
+  videoId                String? // gallery Video row, set when known
+  parentJobId            String? // VideoJob.id when created by the MCP orchestrator; null for web jobs
+  type                   String // RENDER | BURN
+  status                 String    @default("QUEUED") // QUEUED|RUNNING|DONE|FAILED|CANCELLED
+  attempts               Int       @default(0)
+  maxAttempts            Int       @default(2)
+  payload                String // JSON: full render config — no in-memory dependence
+  progress               Float     @default(0)
+  phase                  String? // bundling | rendering | encoding
+  heartbeatAt            DateTime?
+  cancelRequested        Boolean   @default(false)
+  reservedQuota          Boolean   @default(false) // true iff THIS job reserved a clip for its video
+  reservedMinutes        Int? // minutes reserved for a queued job; for exact refund
+  creditsSpent           Int? // credits spent to fund this render via overflow (null = minute/clip-funded); for bucket-aware refund
+  creditsFromGranted     Int? // of creditsSpent, the portion drained from the granted (monthly) bucket; the rest came from purchased — for an EXACT per-bucket refund (granted-back-to-granted, not inflated into purchased)
+  creditsFromPromotional Int?
+  creditFundingJson      String?
+  error                  String? // JSON, PR-5 error taxonomy
+  idempotencyKey         String?   @unique
+  scopeKey               String? // queue-path supersession scope = `${userId}:${renderScopeId}`; null when no jobScopeId (e.g. some MCP jobs)
+  videoUrl               String?
+  createdAt              DateTime  @default(now())
+  startedAt              DateTime?
+  finishedAt             DateTime?
 
   @@index([status, type])
   @@index([userId, createdAt])

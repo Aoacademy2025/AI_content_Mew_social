@@ -3,6 +3,7 @@ import { videoExpiryFor } from "@/lib/plan-limits";
 import { assertRenderEnqueueOpen } from "@/lib/render-deploy-drain";
 import { syncMinuteWindow } from "@/lib/minute-limits";
 import { reserveMinutesOrCreditsInTransaction } from "@/lib/minute-credits";
+import { serializeCreditFunding } from "@/lib/credits";
 import {
   parseAvatarProviderCheckpoint,
   serializeAvatarProviderCheckpoint,
@@ -100,6 +101,8 @@ export async function createVideoJob(
               fundedMeteredMinutes: funding.reservedMinutes,
               fundedCreditsSpent: funding.via === "minutes" ? 0 : funding.creditsSpent,
               fundedCreditsFromGranted: funding.via === "minutes" ? 0 : funding.fromGranted,
+              fundedCreditsFromPromotional: funding.via === "minutes" ? 0 : funding.fromPromotional,
+              fundedCreditFundingJson: funding.via === "minutes" ? null : serializeCreditFunding(funding),
               fundedCreditBalanceAfter: funding.via === "minutes" ? null : funding.balanceAfter,
               walletFundingAuthorized: funding.via === "credits" || funding.via === "mixed",
             }
