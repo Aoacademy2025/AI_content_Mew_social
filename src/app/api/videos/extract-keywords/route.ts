@@ -7,6 +7,7 @@ import { recordTelemetryEvent } from "@/lib/telemetry";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { checkAiInputCaps } from "@/lib/ai-input-caps";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
+import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
 import {
   contentProfilePromptBlock,
   detectContentProfile,
@@ -291,7 +292,11 @@ export async function POST(req: Request) {
   // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
   // One reserve per request — this route fans out to N batched Gemini calls, but
   // that per-request fan-out is the separate L4 blast-radius guard (ai-input-caps).
-  const textReserve = await reserveAiTextCall(userId, { enforce: geminiMode === "managed" });
+  const walletFunding = await walletFundingForCurrentRequest(userId);
+  const textReserve = await reserveAiTextCall(userId, {
+    enforce: geminiMode === "managed",
+    allowOverCeiling: walletFunding.allowed,
+  });
   if (!textReserve.allowed) {
     return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
   }

@@ -4,8 +4,11 @@ import { prisma } from "@/lib/prisma";
 import {
   createVideoJob,
   parseVideoJobOutput,
+  VideoJobFundingError,
   VIDEO_JOB_INFLIGHT_STATUSES,
 } from "@/lib/mcp/video-job";
+import { minutesFromSeconds } from "@/lib/minute-limits";
+import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
@@ -95,6 +98,7 @@ type Body = {
   imageEngine?: unknown; imageModel?: unknown;
   brollRegionPreference?: unknown; brollVisualStyle?: unknown; sceneContentPolicy?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
+  confirmedMeteredMinutes?: unknown;
   // Phase 2 free per-window re-render (mode: "broll-rerender")
   sourceJobId?: unknown; windowEdits?: unknown;
   // Editor v2 durable export (mode: "export")
@@ -420,6 +424,24 @@ export async function POST(req: Request) {
     if (!uploadMode && (!script || script.length > 20000)) {
       return NextResponse.json({ error: "invalid_script", message: "สคริปต์ว่างหรือยาวเกิน 20,000 ตัวอักษร" }, { status: 400 });
     }
+    const receiptMinutes = Number(body.confirmedMeteredMinutes);
+    const hasConfirmedReceipt = Number.isInteger(receiptMinutes) && receiptMinutes > 0;
+    if (process.env.CREDITS_LIVE === "1" && !hasConfirmedReceipt) {
+      return NextResponse.json(
+        { error: "render_receipt_required", message: "กรุณายืนยันสรุปนาทีและเครดิตก่อนเรนเดอร์" },
+        { status: 400 },
+      );
+    }
+    const serverEstimatedMinutes = uploadMode
+      ? (hasConfirmedReceipt ? receiptMinutes : 1)
+      : minutesFromSeconds(estimateClipSecV2(script));
+    if (!uploadMode && hasConfirmedReceipt && receiptMinutes !== serverEstimatedMinutes) {
+      return NextResponse.json(
+        { error: "render_receipt_changed", message: "ประมาณการคลิปเปลี่ยนแล้ว กรุณาตรวจและยืนยันอีกครั้ง" },
+        { status: 409 },
+      );
+    }
+    const meteredMinutes = hasConfirmedReceipt ? serverEstimatedMinutes : Math.max(1, serverEstimatedMinutes);
 
     const voiceProvider = body.voiceProvider === "elevenlabs"
       ? "elevenlabs"
@@ -531,9 +553,13 @@ export async function POST(req: Request) {
     }
     const heygenWarning = heygenReadiness?.kind === "unknown" ? heygenReadiness.message : undefined;
 
-    // Quota + in-flight cap (shared worker, no global render queue)
-    const q = await checkClipQuota(user.id);
-    if (q && !q.allowed) return NextResponse.json({ error: "quota_exceeded", message: q.message }, { status: 403 });
+    // Minute metering replaces the legacy clip-count cap. Keeping both would strand
+    // Purchased Credits after FREE's old two-clip limit even though the wallet can
+    // fund more <=2-minute renders.
+    if (process.env.MINUTE_QUOTA !== "1") {
+      const q = await checkClipQuota(user.id);
+      if (q && !q.allowed) return NextResponse.json({ error: "quota_exceeded", message: q.message }, { status: 403 });
+    }
     const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
     if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
 
@@ -767,6 +793,14 @@ export async function POST(req: Request) {
           idempotencyFingerprint,
           projectVisualPin,
           brandVisualAcceptanceJson,
+          ...(process.env.MINUTE_QUOTA === "1" && process.env.CREDITS_LIVE === "1"
+            ? {
+                funding: {
+                  meteredMinutes,
+                  creditsLive: process.env.CREDITS_LIVE === "1",
+                },
+              }
+            : {}),
         },
       );
       if (projectId) {
@@ -814,6 +848,17 @@ export async function POST(req: Request) {
     }
     if (err instanceof RenderDeployDrainError) {
       return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });
+    }
+    if (err instanceof VideoJobFundingError) {
+      return NextResponse.json(
+        {
+          error: "quota_exceeded",
+          message: err.message,
+          remainingMinutes: err.remainingMinutes,
+          canBuyCredits: process.env.CREDITS_LIVE === "1",
+        },
+        { status: 403 },
+      );
     }
     if ((err as { code?: string })?.code === "project_not_found") {
       return NextResponse.json({ error: "project_not_found" }, { status: 404 });

@@ -55,7 +55,7 @@ function ceilingMessage(plan: string, ceiling: number): string {
  *  byte-identical). */
 export async function reserveAiTextCall(
   userId: string,
-  opts: { enforce: boolean; count?: number }
+  opts: { enforce: boolean; count?: number; allowOverCeiling?: boolean }
 ): Promise<AiTextReserveResult> {
   const count = opts.count != null && opts.count > 0 ? opts.count : 1;
 
@@ -68,6 +68,14 @@ export async function reserveAiTextCall(
 
   const ceiling = aiTextCallCeilingFor(s.minutesLimit);
   const used = s.aiTextCallsUsed;
+  if (opts.allowOverCeiling) {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { aiTextCallsUsed: { increment: count } },
+    });
+    const newUsed = used + count;
+    return { allowed: true, used: newUsed, ceiling, remaining: Math.max(0, ceiling - newUsed) };
+  }
   if (used + count > ceiling) {
     return { allowed: false, used, ceiling, remaining: Math.max(0, ceiling - used), message: ceilingMessage(s.plan, ceiling) };
   }

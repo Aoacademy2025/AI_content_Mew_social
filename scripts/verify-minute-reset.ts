@@ -30,6 +30,7 @@ async function main() {
       planExpiresAt: new Date(now.getTime() - 1000), trialEndsAt: new Date(now.getTime() - 1000),
       trialStartedAt: new Date(now.getTime() - 8 * DAY_MS), subStatus: null,
       minutesUsed: 15, minutesLimit: 15, usagePeriodStartedAt: new Date(now.getTime() - 8 * DAY_MS),
+      aiAudioMinutesUsed: 12, aiTextCallsUsed: 4,
     },
   });
 
@@ -39,6 +40,8 @@ async function main() {
   assert(after!.plan === "FREE", "expired trial downgraded to FREE");
   assert(after!.minutesUsed === 0, "downgrade RESET minutesUsed → 0 (was 15) — FREE user is NOT locked out");
   assert(after!.minutesLimit === minutesPerMonthForPlan("FREE"), "downgrade set minutesLimit to FREE allowance (5)");
+  assert(after!.aiAudioMinutesUsed === 0, "downgrade resets managed AI-audio usage");
+  assert(after!.aiTextCallsUsed === 0, "downgrade resets managed AI-text usage");
   // The decisive outcome: a freshly-downgraded FREE user actually has render minutes available.
   assert(after!.minutesLimit - after!.minutesUsed === 5, "FREE user has 5 render minutes available after downgrade (bug would give 0)");
 

@@ -163,13 +163,13 @@ export function EditorV2Shell() {
 
   // Confirm from the receipt → the ONE real submit. Ref-guarded so a rapid double-click
   // can't fire submit twice before React re-renders the disabled button.
-  async function handleConfirmRender() {
+  async function handleConfirmRender(confirmedMeteredMinutes: number) {
     if (!p.canRunProjectOperation()) return;
     if (confirmingRef.current) return;
     confirmingRef.current = true;
     setConfirmSubmitting(true);
     try {
-      const r = await submit();
+      const r = await submit(confirmedMeteredMinutes);
       handleSubmitResult(r);
     } finally {
       confirmingRef.current = false;
@@ -645,7 +645,7 @@ export function EditorV2Shell() {
           p={p}
           open={receiptOpen && !editorBlocked}
           submitting={confirmSubmitting}
-          onConfirm={() => void handleConfirmRender()}
+          onConfirm={(confirmedMeteredMinutes) => void handleConfirmRender(confirmedMeteredMinutes)}
           onCancel={() => { if (!confirmSubmitting) setReceiptOpen(false); }}
         />
       )}

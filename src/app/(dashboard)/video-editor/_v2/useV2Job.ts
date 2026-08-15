@@ -311,7 +311,7 @@ export function useV2Job(p: V2Project) {
   }, [p.projectReady, p.projectId, p.projectStatus, p.activeJobId, p.activeExportJobId, startPolling, stopPolling]);
 
   /** ยิงงานจริง (previewMode ฝั่ง server) จาก project state ปัจจุบัน */
-  const submit = useCallback(async (): Promise<SubmitResult> => {
+  const submit = useCallback(async (confirmedMeteredMinutes?: number): Promise<SubmitResult> => {
     const existingAttempt = submitAttemptRef.current;
     if (existingAttempt?.kind !== undefined && existingAttempt.kind !== "create") {
       return { ok: false, message: "มีคำขอส่งออกก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณาลองส่งออกซ้ำ" };
@@ -377,6 +377,7 @@ export function useV2Job(p: V2Project) {
       ...(p.projectId ? { projectId: p.projectId } : {}),
       mode: "upload",
       clipUrl: p.clipUrl,
+      ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
       stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
       ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
@@ -402,6 +403,7 @@ export function useV2Job(p: V2Project) {
         narrativeSourceKind: p.narrativeSourceKind,
       } : {}),
       script: p.script,
+      ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
       voiceProvider: p.voiceEngine,
       ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
       ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),

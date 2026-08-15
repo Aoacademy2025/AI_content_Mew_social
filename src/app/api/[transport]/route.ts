@@ -177,8 +177,10 @@ const handler = createMcpHandler(
                   await getAvatarPreset(p.userId, avatar.avatarId),
                 )
               : null;
-          const q = await checkClipQuota(p.userId);
-          if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
+          if (process.env.MINUTE_QUOTA !== "1") {
+            const q = await checkClipQuota(p.userId);
+            if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
+          }
           // Throttle: cap in-flight jobs per user so a member can't flood the shared worker
           // queue (there is no global render queue). Adjustable.
           const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });

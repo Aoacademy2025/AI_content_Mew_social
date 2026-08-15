@@ -6,6 +6,7 @@ import { geminiGenerateText } from "@/lib/gemini";
 import { mapCardTextsToRangesTolerant, type CardPiece } from "@/lib/tts-timing";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
+import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
 
 export const maxDuration = 60;
 export const runtime = "nodejs";
@@ -52,7 +53,11 @@ export async function POST(req: Request) {
     }
 
     // H1: bound managed-key text-LLM call frequency (BYOK → no-op, byte-identical).
-    const textReserve = await reserveAiTextCall(authUser.id, { enforce: geminiMode === "managed" });
+    const walletFunding = await walletFundingForCurrentRequest(authUser.id);
+    const textReserve = await reserveAiTextCall(authUser.id, {
+      enforce: geminiMode === "managed",
+      allowOverCeiling: walletFunding.allowed,
+    });
     if (!textReserve.allowed) {
       return NextResponse.json({ code: "QUOTA_AI_TEXT", message: textReserve.message }, { status: 429 });
     }

@@ -10,6 +10,7 @@ interface CreditBalance {
   purchased: number;
   total: number;
   live: boolean;
+  plan: "FREE" | "PRO" | "BUSINESS";
 }
 
 const PACKS = [
@@ -143,8 +144,26 @@ export function CreditsBillingSection() {
           style={{ color: "hsl(var(--accent-primary))" }}
           strokeWidth={2.25}
         />
-        <p className="eyebrow">เครดิต AI</p>
+        <p className="eyebrow">{balance.plan === "FREE" ? "เครดิตเติมนาที" : "Hero credits"}</p>
       </div>
+
+      {balance.plan === "FREE" && (
+        <div
+          className="rounded-xl px-4 py-3 text-xs leading-relaxed"
+          style={{
+            color: "var(--ui-text-secondary)",
+            background: "hsl(var(--accent-primary) / 0.055)",
+            border: "1px solid hsl(var(--accent-primary) / 0.14)",
+          }}
+        >
+          <strong style={{ color: "var(--ui-text-primary)" }}>สำหรับบัญชี FREE</strong>
+          {" "}200 เครดิตใช้เรนเดอร์ส่วนเกินได้ประมาณ 100 นาที โดยแต่ละคลิปยาวไม่เกิน 2 นาที
+          และยังมีลายน้ำ เก็บไฟล์ 3 วัน ใช้เสียง Gemini พื้นฐานได้ในงานเรนเดอร์ ส่วนสต็อกต้องใช้ Pexels/Pixabay key ของคุณเอง
+          <div className="mt-1" style={{ color: "var(--ui-text-muted)" }}>
+            เครดิตไม่ปลดล็อก Hero AI Image, AutoMix, Avatar หรือเสียงพรีเมียม — ฟีเจอร์เหล่านี้ต้องใช้ PRO ขึ้นไป
+          </div>
+        </div>
+      )}
 
       {/* Balance card */}
       <div
@@ -196,7 +215,7 @@ export function CreditsBillingSection() {
 
       {/* Pack cards */}
       <p className="text-xs mt-2" style={{ color: "var(--ui-text-muted)" }}>
-        เติมเครดิตเพื่อเติมนาทีเมื่อใช้เกินโควต้าแพ็ก (2 เครดิต = 1 นาที) · <span style={{ color: "hsl(var(--accent-primary) / 0.8)" }}>เครดิตที่ซื้ออยู่ถาวร ไม่หายแม้เปลี่ยนแผน</span>
+        เติมเครดิตเพื่อเติมนาทีเมื่อใช้เกินโควต้าแพ็ก (2 เครดิต = 1 นาที) · <span style={{ color: "hsl(var(--accent-primary) / 0.8)" }}>เครดิตที่ซื้อไม่หมดอายุและไม่หายเมื่อเปลี่ยนแผน</span>
       </p>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {PACKS.map((pack) => {

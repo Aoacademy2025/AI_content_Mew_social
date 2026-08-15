@@ -63,6 +63,8 @@ function usageWindowForPlanValue(plan: string, from: Date) {
     usagePeriodStartedAt: from,
     minutesUsed: 0,
     minutesLimit: minutesPerMonthForPlan(plan),
+    aiAudioMinutesUsed: 0,
+    aiTextCallsUsed: 0,
   };
 }
 

@@ -54,8 +54,8 @@ const c = R({ estSec: 480, remainingMinutes: 3, totalMinutes: 10, usesAi: false 
 check("C: estMinutes = 8 (480s)", c.estMinutes === 8, `X=${c.estMinutes}`);
 check("C: overflowMinutes M = 5", c.overflowMinutes === 5, `M=${c.overflowMinutes}`);
 check("C: overflow line shown", has(c, "overflow"));
-check("C: an under-quota render is wholly credit-funded, matching reserveMinutesOrCredits", c.overflowCredits === 16, `credits=${c.overflowCredits}`);
-check("C: overflow copy explains all-or-nothing minute funding", text(c, "overflow") === "นาทีในแพ็กเกจเหลือ 3 นาที ไม่พอสำหรับงาน ~8 นาที — งานนี้จึงใช้ Hero credits ทั้งหมด 16 เครดิต (2 เครดิต/นาที) และจะไม่หักนาทีแพ็กเกจ", text(c, "overflow"));
+check("C: only the five overflow minutes are credit-funded", c.overflowCredits === 10, `credits=${c.overflowCredits}`);
+check("C: overflow copy explains split minute + credit funding", text(c, "overflow") === "งาน ~8 นาทีจะใช้นาทีในแพ็กเกจ 3 นาที และส่วนเกิน 5 นาทีจะหัก 10 Hero credits (2 เครดิต/นาที)", text(c, "overflow"));
 check("C: minute fallback is informational when Hero credits can fund it", c.lines.find((l) => l.key === "overflow")?.kind === "info");
 
 // ── D. boundary: minutes EXACTLY equal → no overflow (strict >) ──
@@ -99,7 +99,7 @@ const k = R({ estSec: 60, usesAi: true, presetWeights: { video: 0, photo: 0, ai:
 check("K: full preset 60s @ 4cr/img → N = 60 (15 windows × 4)", k.estCredits === 60, `N=${k.estCredits}`);
 
 // ── L. disclaimer copy exact ──
-check("L: disclaimer copy exact", text(a, "disclaimer") === "ตัวเลขเป็นประมาณการ — จำนวนภาพและยอดเรนเดอร์จริงคำนวณหลังสร้างเสียง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ", text(a, "disclaimer"));
+check("L: disclaimer copy exact", text(a, "disclaimer") === "ตัวเลขเป็นประมาณการ · หักตามความยาวเสียงจริงไม่เกินยอดที่แสดง; ถ้าเกินจะให้ยืนยันใหม่", text(a, "disclaimer"));
 
 // ── M. upload duration exact: no "(ประมาณ)" on minutes, upload-specific disclaimer ──
 const m = R({ estSec: 184.128, exactDuration: true });

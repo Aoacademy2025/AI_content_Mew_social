@@ -1117,7 +1117,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
             เส้นทางใช้ฟรีพร้อมแล้ว
           </span>
           <span style={{ fontSize: 11, lineHeight: 1.55, color: color.textSecondary }}>
-            ต่อไปเลือกเสียงและกดเรนเดอร์ — สต็อกใช้ 0 เครดิต AI และใช้เฉพาะนาทีในแพ็กเกจ
+            ต่อไปเลือกเสียงและกดเรนเดอร์ — สต็อกใช้ 0 เครดิตภาพ AI ระบบใช้นาทีในแพ็กเกจก่อน แล้วหักส่วนเกิน 2 เครดิต/นาที
           </span>
         </div>
       )}

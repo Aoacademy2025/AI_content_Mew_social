@@ -536,7 +536,10 @@ function PricingContent() {
               );
             })}
           </div>
-          <p className="mt-3 text-center text-[11px]" style={{ color: "var(--ui-text-muted)" }}>1 เครดิต = ฿1 · ใช้เติมนาทีเมื่อใช้เกินโควต้าแพ็ก</p>
+          <p className="mt-3 text-center text-[11px] leading-relaxed" style={{ color: "var(--ui-text-muted)" }}>
+            1 เครดิต = ฿1 · 2 เครดิต = นาทีเรนเดอร์ส่วนเกิน 1 นาที · เครดิตที่ซื้อไม่หมดอายุ<br />
+            เครดิตไม่ปลดล็อก Hero AI Image, Avatar หรือเสียงพรีเมียม; ฟีเจอร์เป็นไปตามแพ็กเกจ
+          </p>
         </div>
       )}
 

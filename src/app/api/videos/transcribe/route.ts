@@ -21,6 +21,7 @@ import {
 import { isSafeFetchUrl, assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { refundAiAudioMinutes, reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
+import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
@@ -944,7 +945,11 @@ export async function POST(req: Request) {
       // before the spend — bounds the loopable transcribe endpoint. The outer
       // finally refunds this reservation unless a complete transcript is returned.
       const aiMinutes = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 60_000 : 1;
-      const ai = await reserveAiAudioMinutes(authUser.id, aiMinutes, { enforce: geminiMode === "managed" });
+      const walletFunding = await walletFundingForCurrentRequest(authUser.id);
+      const ai = await reserveAiAudioMinutes(authUser.id, aiMinutes, {
+        enforce: geminiMode === "managed",
+        allowOverCeiling: walletFunding.allowed,
+      });
       if (!ai.allowed) {
         try { fs.unlinkSync(mp3Path); } catch {} // don't orphan the extracted mp3 on the ceiling-block path
         return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: ai.message }, { status: 429 });

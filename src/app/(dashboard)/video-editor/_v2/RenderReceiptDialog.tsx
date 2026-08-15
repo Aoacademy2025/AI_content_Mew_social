@@ -37,7 +37,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
   open: boolean;
   /** True while the confirmed submit is in flight — locks both buttons. */
   submitting: boolean;
-  onConfirm: () => void;
+  onConfirm: (confirmedMeteredMinutes: number) => void;
   onCancel: () => void;
 }) {
   const [credits, setCredits] = useState<{ available: number; reserved: number } | null>(null);
@@ -227,7 +227,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
             </BtnSecondary>
             <BtnPrimary
               className="flex-1"
-              onClick={onConfirm}
+              onClick={() => onConfirm(model.estMinutes)}
               disabled={submitting || insufficientCredits}
               title={insufficientCredits ? "เครดิตไม่พอ — เติมเครดิตก่อนเริ่มเรนเดอร์" : undefined}
               style={submitting

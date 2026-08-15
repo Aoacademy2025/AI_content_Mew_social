@@ -73,6 +73,8 @@ import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { avatarBookendDurationViolation } from "@/lib/avatar-duration";
+import { minutesFromSeconds } from "@/lib/minute-limits";
+import { reconcileVideoJobFunding } from "@/lib/mcp/video-job-funding";
 import { resolveJobTtsProvider } from "@/lib/tts-providers";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
 import {
@@ -359,7 +361,7 @@ function alignBrollWindowsToKeywords(
 }
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
-  const caller = deps.caller ?? pipelineCaller(userId);
+  const caller = deps.caller ?? pipelineCaller(userId, jobId);
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const recordTelemetryEvent = deps.recordTelemetryEvent ?? recordServerTelemetryEvent;
   let baseReservationSettledThisRun = false;
@@ -1091,6 +1093,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upDurMs = (tx.audioDurationMs && tx.audioDurationMs > 0)
         ? Math.round(tx.audioDurationMs)
         : Math.max(...upCaps.map((c) => c.endMs));
+      await reconcileVideoJobFunding(jobId, userId, minutesFromSeconds(upDurMs / 1_000));
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
       const upManualWindowCount = manualCutawayWindowCount(input.targetClipCount, upDurMs);
@@ -1361,6 +1364,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (audioDurationMs <= 0) {
       throw new Error("ตรวจสอบความยาวเสียงไม่ได้ — กรุณาลองสร้างใหม่");
     }
+
+    await reconcileVideoJobFunding(jobId, userId, minutesFromSeconds(audioDurationMs / 1_000));
 
     // Exact duration is known now. Stop before captions, keyword LLM, stock downloads,
     // rendering, or HeyGen can spend more time/quota; /api/videos/render keeps its own
