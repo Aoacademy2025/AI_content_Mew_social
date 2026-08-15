@@ -126,3 +126,10 @@ artifacts/brand-visual-quality-gate/
 
 # Custom Hero Voice reference uploads (user audio - never commit)
 /uploads/user-voices/
+
+# Python bytecode (omnivoice-runpod worker)
+__pycache__/
+
+# Local ops metrics + stray TTS test outputs at repo root
+/.ops-metrics/
+/tts-*.wav
