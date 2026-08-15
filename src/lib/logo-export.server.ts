@@ -5,7 +5,7 @@ import path from "node:path";
 import sharp from "sharp";
 import {
   BrandAssetError,
-  canUseLogoOverlay,
+  canManageBrandMark,
   getBrandAssetPath,
 } from "@/lib/brand-assets.server";
 import { assertEditorProjectOwner } from "@/lib/editor-projects";
@@ -82,6 +82,7 @@ export function normalizeTrustedLogoRenderInput(
 type LogoExportStagingInput = {
   userId: string;
   plan: string;
+  brandVisualAllowed?: boolean;
   projectId: string;
   rawLogoOverlay: unknown;
   rendersRoot?: string;
@@ -130,11 +131,11 @@ export async function stageLogoForExport(
   const parsedLogo = parseClientLogoExportInput(input.rawLogoOverlay);
   if (parsedLogo.kind === "absent") return null;
 
-  if (!canUseLogoOverlay(input.plan)) {
+  if (!canManageBrandMark(input.plan, input.brandVisualAllowed)) {
     throw exportError(
       "plan_required",
       403,
-      "ฟีเจอร์โลโก้แบรนด์ใช้ได้เฉพาะแผน Pro หรือ Business",
+      "บัญชีนี้ยังไม่สามารถใช้โลโก้หรือลายน้ำของแบรนด์ได้",
     );
   }
   if (parsedLogo.kind === "invalid-enabled") {

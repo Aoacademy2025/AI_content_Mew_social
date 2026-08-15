@@ -109,6 +109,8 @@ export function editorProjectResponse(project: NonNullable<ProjectRow>) {
     activeJobId: project.activeJobId,
     activeExportJobId: project.activeExportJobId,
     latestVideoId: project.latestVideoId,
+    brandProfileRevisionId: project.brandProfileRevisionId,
+    hasPersistedVisualPin: Boolean(project.projectLookJson || project.brandProfileRevisionId),
     lastOpenedAt: project.lastOpenedAt?.toISOString() ?? null,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
@@ -165,26 +167,55 @@ export async function getEditorProjectWithMediaState(
   return { ...editorProjectResponse(project), previewMediaState };
 }
 
+/** Create a project.
+ *
+ *  `tx` lets a caller enlist this create in an OUTER interactive transaction:
+ *  Hero Script's send-to-editor creates the project and marks the Script "sent"
+ *  as one unit, so a Script that disappears mid-handoff rolls the project back
+ *  instead of orphaning it. Callers that omit `tx` keep the previous behavior
+ *  byte-for-byte — this function opens its own transaction, as before. */
 export async function createEditorProject(
   userId: string,
-  input: { title?: unknown; draft?: unknown; status?: unknown } = {},
+  input: {
+    title?: unknown;
+    draft?: unknown;
+    status?: unknown;
+    brandProfileRevisionId?: unknown;
+  } = {},
+  tx?: Prisma.TransactionClient,
 ) {
   const draftJson = encodeEditorProjectDraft(input.draft);
   const assetFence = await prepareEditorProjectBrandAsset(userId, draftJson);
   const status = normalizeEditorProjectStatus(input.status) ?? "draft";
-  const project = await prisma.$transaction(async (tx) => {
-    const created = await tx.editorProject.create({
+  const requestedRevisionId = typeof input.brandProfileRevisionId === "string"
+    ? input.brandProfileRevisionId.trim()
+    : "";
+  const create = async (client: Prisma.TransactionClient) => {
+    if (requestedRevisionId) {
+      const ownedRevision = await client.brandProfileRevision.findFirst({
+        where: { id: requestedRevisionId, brandProfile: { userId } },
+        select: { id: true },
+      });
+      if (!ownedRevision) {
+        const error = new Error("invalid_brand_profile_revision");
+        (error as { code?: string }).code = "invalid_brand_profile_revision";
+        throw error;
+      }
+    }
+    const created = await client.editorProject.create({
       data: {
         userId,
         title: sanitizeEditorProjectTitle(input.title),
         status,
         draftJson: draftJson ?? null,
+        brandProfileRevisionId: requestedRevisionId || null,
         lastOpenedAt: new Date(),
       },
     });
-    await advanceEditorProjectBrandAsset(tx, userId, assetFence);
+    await advanceEditorProjectBrandAsset(client, userId, assetFence);
     return created;
-  });
+  };
+  const project = tx ? await create(tx) : await prisma.$transaction(create);
   return editorProjectResponse(project);
 }
 

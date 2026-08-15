@@ -10,12 +10,21 @@ import {
   type LogoOverlayConfig,
 } from "@/lib/logo-overlay";
 import type { SubPreset, SubTextEffect } from "../_components/types";
+import type { SubtitleCardLen } from "@/lib/editor-style-preset-contract";
+import {
+  resolveSubtitleFontWeight,
+  type SubtitleFontWeight,
+} from "@/lib/subtitle-font-weight";
 import { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST } from "../_components/constants";
 import {
   DEFAULT_EDITOR_LAYER_VISIBILITY,
   normalizeEditorLayerVisibility,
   type EditorLayerVisibility,
 } from "@/lib/editor-layer-visibility";
+import {
+  normalizeHeadlineHook,
+  type HeadlineHookConfig,
+} from "@/lib/headline-hook";
 
 export { PRESETS_DATA, EFFECTS_DATA, FONTS_LIST };
 
@@ -45,6 +54,8 @@ export interface V2SubConfig {
   effect: SubTextEffect;
   fontFamily: string;
   bold: boolean;
+  /** Explicit 400/600/900. Optional only for drafts saved before medium weight existed. */
+  fontWeight?: SubtitleFontWeight;
   /** px บนเฟรม 1080×1920 (เท่ากับ subFontSize ของ v1: 30–160) */
   fontSize: number;
   textColor: string;
@@ -61,6 +72,7 @@ export const DEFAULT_V2_SUB: V2SubConfig = {
   effect: "pop",
   fontFamily: "Kanit",
   bold: true,
+  fontWeight: 900,
   fontSize: 80,
   textColor: "#FFFFFF",
   accentColor: "#FFE500",
@@ -69,6 +81,9 @@ export const DEFAULT_V2_SUB: V2SubConfig = {
   outlineSize: 2,
   verticalPos: 82,
 };
+
+export type V2FontWeight = SubtitleFontWeight;
+export const resolveV2FontWeight = resolveSubtitleFontWeight;
 
 export type V2Caption = VideoJobPreviewData["captions"][number];
 
@@ -134,7 +149,7 @@ export function splitCaption(caps: V2Caption[], i: number, loanSpans: { start: n
 }
 
 /** ความยาวการ์ดแบบเดียวกับ v1 (page.tsx splitMode): 1 ประโยค หรือซับสั้นแบบ TikTok ≤N คำ */
-export type V2CardLen = "sentence" | "4" | "3" | "2" | "1";
+export type V2CardLen = SubtitleCardLen;
 
 export const V2_CARD_LEN_OPTIONS: { value: V2CardLen; label: string }[] = [
   { value: "sentence", label: "1 ประโยค" },
@@ -150,7 +165,24 @@ type V2TimedWord = { word: string; startMs: number; endMs: number; startChar: nu
 // sentence-final punctuation mark is a HARD card boundary — never pair words across it.
 // LOCKSTEP with the server copy in src/lib/mcp/orchestrator-steps.ts
 // (SENTENCE_BOUNDARY_RE / cardsByWordCount) — แก้ที่นึงต้องแก้อีกที่.
-const SENTENCE_BOUNDARY_RE = /[\n.!?…ฯ]/;
+const SENTENCE_BOUNDARY_RE = /[\n,.!?…ฯ;:，；：]/;
+
+// LOCKSTEP with src/lib/mcp/orchestrator-steps.ts. Thai word segmentation is
+// much finer than what a viewer perceives as a phrase, so permit a bounded
+// N+1 (or mode-2 N+2 closing auxiliary) rather than stranding a function word.
+const THAI_BINDS_NEXT = new Set([
+  "ไม่", "ได้", "จะ", "กำลัง", "ต้อง", "ควร", "อยาก", "ให้", "ใน", "จาก",
+  "ของ", "กับ", "เพื่อ", "โดย", "เพราะ", "ถ้า", "เมื่อ", "คือ", "เป็น", "อย่าง", "ทุก",
+  "ช่วง", "ซับ", "นำ", "งาน",
+]);
+const THAI_BINDS_PREVIOUS = new Set([
+  "เดียว", "แล้ว", "อยู่", "ไว้", "มาก", "ขึ้น", "ลง", "ก่อน", "หลัง", "ทันที", "เสมอ", "จริง", "ได้",
+]);
+const THAI_FINAL_CLOSING_TOKENS = new Set(["ได้"]);
+
+function completesNaturalThaiPhrase(previous: string, current: string): boolean {
+  return THAI_BINDS_NEXT.has(previous) || THAI_BINDS_PREVIOUS.has(current);
+}
 
 function tagCards(cards: V2Caption[]): V2Caption[] {
   return cards.map((c, i) => ({ ...c, tag: i === 0 ? "hook" : i === cards.length - 1 ? "cta" : "body" }));
@@ -194,10 +226,20 @@ export function regroupCaptions(
       grp = [];
     };
     for (let i = 0; i < words.length; i++) {
-      if (grp.length >= n) flush();
-      // FIX B: never cross a sentence/line boundary (gap between words in fullText).
-      if (grp.length > 0 && SENTENCE_BOUNDARY_RE.test(ft.slice(grp[grp.length - 1].endChar, words[i].startChar))) {
-        flush();
+      if (grp.length > 0) {
+        // FIX B: never cross a sentence/line boundary (gap between words in fullText).
+        const hardBoundary = SENTENCE_BOUNDARY_RE.test(
+          ft.slice(grp[grp.length - 1].endChar, words[i].startChar),
+        );
+        if (hardBoundary) {
+          flush();
+        } else if (grp.length >= n) {
+          const allowOneNaturalToken = n <= 3 && grp.length === n
+            && completesNaturalThaiPhrase(grp[grp.length - 1].word, words[i].word);
+          const allowFinalClosingToken = n <= 2 && grp.length === n + 1
+            && THAI_FINAL_CLOSING_TOKENS.has(words[i].word);
+          if (!allowOneNaturalToken && !allowFinalClosingToken) flush();
+        }
       }
       grp.push(words[i]);
     }
@@ -241,11 +283,12 @@ export function buildV2BurnConfig(
   overrides: V2CardOverrides = {},
   logoOverlay?: LogoOverlayConfig,
   layerVisibility: EditorLayerVisibility = DEFAULT_EDITOR_LAYER_VISIBILITY,
+  headlineHook?: HeadlineHookConfig,
 ) {
   const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
   const durMs = Math.max(audioDurationMs, lastEnd, 1000);
   const durationInFrames = Math.max(Math.round((durMs / 1000) * fps), fps);
-  const fontWeight = cfg.bold ? 900 : 400;
+  const fontWeight = resolveV2FontWeight(cfg);
   let frameCursor = 0;
   const layers = normalizeEditorLayerVisibility(layerVisibility);
   const keywordPopups = layers.subtitles ? captions.flatMap((c, idx) => {
@@ -272,6 +315,7 @@ export function buildV2BurnConfig(
     return [{ ...popup, start, end }];
   }) : [];
   const normalizedLogo = normalizeLogoOverlayConfig(logoOverlay);
+  const normalizedHeadlineHook = normalizeHeadlineHook(headlineHook, durMs);
   return {
     videoUrl: baseVideoUrl,
     keywordPopups,
@@ -283,6 +327,7 @@ export function buildV2BurnConfig(
     subtitleShadow: cfg.shadow,
     subtitleOutline: cfg.outline,
     subtitleOutlineSize: cfg.outlineSize,
+    ...(normalizedHeadlineHook?.enabled ? { headlineHook: normalizedHeadlineHook } : {}),
     ...(normalizedLogo?.enabled ? { logoOverlay: normalizedLogo } : {}),
   };
 }

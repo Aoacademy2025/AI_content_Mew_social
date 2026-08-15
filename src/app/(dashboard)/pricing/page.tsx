@@ -12,7 +12,12 @@ import { cn } from "@/lib/utils";
 import { CouponBox } from "@/components/settings/coupon-box";
 import { computeDisplayPrice } from "@/lib/pricing-display";
 import { minutesPerMonthForPlan } from "@/lib/plan-limits";
-import { paidPlanCardMode } from "@/lib/plan-change";
+import {
+  isFoundingAnnualConversionEligible,
+  paidPlanCardMode,
+  PLAN_RANK,
+} from "@/lib/plan-change";
+import { trackEvent } from "@/lib/client-telemetry";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
 // Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
@@ -39,7 +44,18 @@ const GLOW = "0 8px 26px rgba(108,76,244,.35)";
 
 type TierData = { price: number; name: string; badge: string | null; tagline: string; features: string[] };
 type PlanConfig = { free: TierData; pro: TierData; business: TierData };
-type Me = { plan: PlanKey; usageCount?: number; usageLimit?: number; trialEndsAt?: string | null; subStatus?: string | null; minuteQuota?: boolean; minutesUsed?: number; minutesLimit?: number } | null;
+type Me = {
+  plan: PlanKey;
+  usageCount?: number;
+  usageLimit?: number;
+  trialEndsAt?: string | null;
+  subStatus?: string | null;
+  billingPeriod?: BillingPeriod | null;
+  planExpiresAt?: string | null;
+  minuteQuota?: boolean;
+  minutesUsed?: number;
+  minutesLimit?: number;
+} | null;
 
 const TIER_META: { key: PlanKey; cfgKey: keyof PlanConfig; icon: React.ElementType; highlight?: boolean }[] = [
   { key: "FREE", cfgKey: "free", icon: Zap },
@@ -67,6 +83,7 @@ function PricingContent() {
   const [planConfig, setPlanConfig] = useState<PlanConfig | null>(null);
 
   const paymentResult = searchParams.get("payment");
+  const acquisitionSource = searchParams.get("source");
   const yearly = period === "annual";
 
   useEffect(() => {
@@ -79,10 +96,24 @@ function PricingContent() {
         if (r.status === 401) return null;
         throw new Error(`me ${r.status}`);
       })
-      .then((d) => { setMe(d); setUserChecked(true); })
+      .then((d) => {
+        setMe(d);
+        // An existing card subscription can only be converted in place by card.
+        // Default to that valid path instead of presenting an overlapping
+        // PromptPay one-time purchase that the server correctly blocks.
+        if (d?.subStatus === "active" && d?.billingPeriod === "monthly") setMethod("card");
+        setUserChecked(true);
+      })
       .catch(() => { /* leave userChecked false → CTAs stay in loading state, no wrong redirect */ });
     fetch("/api/founding/status").then((r) => r.json()).then(setFounding).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!acquisitionSource?.startsWith("hero_script")) return;
+    trackEvent("hero_script_pricing_viewed", {
+      properties: { source: acquisitionSource },
+    });
+  }, [acquisitionSource]);
 
   const currentPlan = me?.plan ?? null;
   const daysLeft = me?.trialEndsAt ? Math.max(0, Math.ceil((new Date(me.trialEndsAt).getTime() - Date.now()) / 86400000)) : 0;
@@ -98,6 +129,17 @@ function PricingContent() {
       window.location.href = "/register";
       return;
     }
+    if (acquisitionSource?.startsWith("hero_script")) {
+      trackEvent("hero_script_checkout_requested", {
+        status: "started",
+        properties: {
+          source: acquisitionSource,
+          plan: planKey,
+          period,
+          method: period === "monthly" ? "card" : method,
+        },
+      });
+    }
     setLoading(planKey);
     try {
       const res = await fetch("/api/payments/checkout", {
@@ -110,6 +152,27 @@ function PricingContent() {
       const data = await res.json();
       if (!res.ok) {
         toast.error(data.error ?? "เกิดข้อผิดพลาด");
+        return;
+      }
+      window.location.href = data.url;
+    } catch {
+      toast.error("ไม่สามารถเชื่อมต่อ payment ได้");
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function handleFoundingAnnual(planKey: "PRO" | "BUSINESS") {
+    setLoading(planKey);
+    try {
+      const res = await fetch("/api/payments/founding-annual", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan: planKey }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error ?? "ไม่สามารถเปลี่ยนเป็น Founding รายปีได้");
         return;
       }
       window.location.href = data.url;
@@ -282,7 +345,16 @@ function PricingContent() {
           const isPaid = key !== "FREE";
           const isTrialPlan = onTrial && key === "PRO";
           const cardMode = currentPlan && isPaid
-            ? paidPlanCardMode({ currentPlan, subStatus: me?.subStatus ?? null, isTrialPlan }, key)
+              ? paidPlanCardMode({
+                currentPlan,
+                subStatus: me?.subStatus ?? null,
+                // Trial state belongs to the account, not only the PRO card:
+                // an active PRO trial must also be able to convert to BUSINESS.
+                isTrialPlan: onTrial,
+                billingPeriod: me?.billingPeriod ?? null,
+                planExpiresAt: me?.planExpiresAt ? new Date(me.planExpiresAt) : null,
+                paymentMethod: period === "monthly" ? "card" : method,
+              }, key, period)
             : null;
           const isCurrentTier = !!currentPlan && currentPlan === key && !isTrialPlan;
           const isCurrent = cardMode === "current";
@@ -292,7 +364,24 @@ function PricingContent() {
           const pb = isPaid ? priceBlock(price) : null;
 
           const hasActiveSub = me?.subStatus === "active";
+          const isFoundingConversion = !!currentPlan && isPaid && isFoundingAnnualConversionEligible({
+            currentPlan,
+            targetPlan: key,
+            subStatus: me?.subStatus ?? null,
+            billingPeriod: me?.billingPeriod ?? null,
+            selectedPeriod: period,
+            paymentMethod: method,
+            foundingActive: !!founding?.active && !appliedCoupon,
+          });
+          const isPromptPayOverlap = !!currentPlan
+            && isPaid
+            && hasActiveSub
+            && me?.billingPeriod === "monthly"
+            && period === "annual"
+            && method === "promptpay"
+            && (PLAN_RANK[key] ?? 0) >= (PLAN_RANK[currentPlan] ?? 0);
           const isManageViaPortal = cardMode === "manage";
+          const isTimedPlanCardWait = cardMode === "wait";
           const isDowngradeLocked = cardMode === "downgrade";
 
           const card = (
@@ -354,7 +443,24 @@ function PricingContent() {
                   <Loader2 className="h-4 w-4 animate-spin" />
                 </div>
               ) : isPaid ? (
-                isCurrent ? (
+                isFoundingConversion ? (
+                  <button
+                    onClick={() => handleFoundingAnnual(key as "PRO" | "BUSINESS")}
+                    disabled={isLoading}
+                    className={cn("inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-semibold transition disabled:cursor-not-allowed", !highlight && "ve-card ve-card-hover")}
+                    style={highlight ? { background: VIOLET_GRAD, color: "#fff", boxShadow: GLOW } : { color: "var(--ui-text-primary)" }}
+                  >
+                    {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <>เปลี่ยนเป็น Founding รายปี <ArrowRight className="h-4 w-4" strokeWidth={2.5} /></>}
+                  </button>
+                ) : isPromptPayOverlap ? (
+                  <div className="ve-card inline-flex w-full items-center justify-center rounded-full px-4 py-3 text-center text-sm font-semibold" style={{ color: "var(--ui-text-muted)" }}>
+                    PromptPay รายปีเริ่มได้หลังสมาชิกรายเดือนสิ้นสุด
+                  </div>
+                ) : isTimedPlanCardWait ? (
+                  <div className="ve-card inline-flex w-full items-center justify-center rounded-full px-4 py-3 text-center text-sm font-semibold" style={{ color: "var(--ui-text-muted)" }}>
+                    เริ่มบัตรได้หลังแพ็กเกจเดิมสิ้นสุด เพื่อรักษาวันคงเหลือ
+                  </div>
+                ) : isCurrent ? (
                   <div className="ve-card inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-semibold" style={{ color: "var(--ui-text-secondary)" }}><ShieldCheck className="h-4 w-4" strokeWidth={2.5} /> แผนปัจจุบัน</div>
                 ) : isManageViaPortal ? (
                   <Link href="/settings?tab=billing" className="ve-card ve-card-hover inline-flex w-full items-center justify-center gap-2 rounded-full px-4 py-3 text-sm font-semibold transition-colors" style={{ color: "var(--ui-text-primary)" }}>

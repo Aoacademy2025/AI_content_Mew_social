@@ -21,7 +21,7 @@ import {
   runpodImageModelConfig,
   submitRunpodImageJob,
   type PreparedRunpodImageJob,
-  type RunpodImageInput,
+  type RunpodComfyImageInput,
   type RunpodImageOutput,
 } from "@/lib/runpod-serverless";
 
@@ -102,16 +102,23 @@ function kieToken(): string {
 
 function customRouteEstimate(model: AiImageModelDefinition): number {
   const envName = `AI_IMAGE_${model.id.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_ESTIMATED_COST_USD_MICROS`;
-  return nonNegativeInteger(process.env[envName], model.id === "z-image-turbo" ? 50_000 : model.estimatedCostUsdMicros);
+  // Measured real COGS on the RunPod custom route is ~5,200 µUSD/image (≈฿0.19/รูป,
+  // see docs/research/2026-08-07-runpod-custom-billing.md). 10,000 gives ~2x headroom
+  // while staying inside the 2cr cost-safety budget (38,888 µUSD, see
+  // src/lib/ai-image-cost-policy.ts). Override per-model via AI_IMAGE_<MODEL>_ESTIMATED_COST_USD_MICROS.
+  return nonNegativeInteger(process.env[envName], model.id === "z-image-turbo" ? 10_000 : model.estimatedCostUsdMicros);
 }
 
 function buildKieInput(
   model: AiImageModelDefinition,
-  input: RunpodImageInput & { aspectRatio: AiImageAspectRatio },
+  input: RunpodComfyImageInput & { aspectRatio: AiImageAspectRatio },
 ): PreparedKieImageJob {
   return {
     model: model.providerModel,
     input: {
+      // Positive prompt only: the kie.ai text-to-image task has no
+      // negative-prompt parameter, which is why every `kie` model is declared
+      // `negativePromptDelivery: "ignored"` in `ai-image-policy.ts`.
       prompt: input.prompt,
       aspect_ratio: input.aspectRatio,
       // The retail offer is specifically priced as the 1K product. Never let a
@@ -185,7 +192,7 @@ export function describeImageOffer(model: AiImageModelDefinition): ImageOfferAva
 
 export function prepareImageGeneration(
   model: AiImageModelDefinition,
-  input: RunpodImageInput & { aspectRatio: AiImageAspectRatio },
+  input: RunpodComfyImageInput & { aspectRatio: AiImageAspectRatio },
 ): PreparedImageGeneration {
   const offer = describeImageOffer(model);
   if (!offer.available) {

@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { FOUNDING_CODE } from "@/lib/founding";
-import { usageWindowForPlan } from "@/lib/usage-limits";
+import { activateGrantCouponEntitlement } from "@/lib/grant-coupon-entitlement";
 
 export const runtime = "nodejs";
 
@@ -60,20 +60,13 @@ export async function POST(req: Request) {
     // Record the redemption (unique-guarded on [couponId,userId]) + grant the plan. If a
     // concurrent same-user request already inserted the redemption, roll back the seat we claimed.
     try {
-      await prisma.$transaction([
-        prisma.couponRedemption.create({
-          data: { couponId: coupon.id, userId: authUser.id },
-        }),
-        prisma.user.update({
-          where: { id: authUser.id },
-          data: {
-            plan: coupon.plan,
-            planExpiresAt,
-            trialEndsAt: null, // redeeming supersedes any running trial
-            ...usageWindowForPlan(coupon.plan, now),
-          },
-        }),
-      ]);
+      await activateGrantCouponEntitlement({
+        userId: authUser.id,
+        couponId: coupon.id,
+        plan: coupon.plan,
+        planExpiresAt,
+        activatedAt: now,
+      });
     } catch {
       await prisma.coupon.update({ where: { id: coupon.id }, data: { usedCount: { decrement: 1 } } }).catch(() => {});
       return NextResponse.json({ error: "คุณเคยใช้คูปองนี้แล้ว" }, { status: 400 });

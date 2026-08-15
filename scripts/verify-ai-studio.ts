@@ -24,15 +24,66 @@ const guarded = buildArtworkOnlyPrompt("เจ้าของร้านกา�
 check("image prompt keeps the customer's subject", guarded.positive.includes("เจ้าของร้านกาแฟ"));
 check("image prompt leads with the single-frame invariant", guarded.positive.startsWith("ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE"));
 check("positive prompt avoids unwanted layout nouns", !/collage|storyboard|split screen|triptych|contact sheet/i.test(guarded.positive));
-check("image prompt requires language-free artwork", /language-free visual artwork/i.test(guarded.positive));
-check("image prompt keeps signs and labels blank", /signage, labels.*blank and unmarked/i.test(guarded.positive));
-check("ordinary image prompts do not manufacture a screen or interface", !/screens display abstract|unlabeled controls/i.test(guarded.positive));
-const interfaceGuarded = buildArtworkOnlyPrompt("เจ้าของร้านกำลังตรวจ dashboard ยอดขาย", "editorial", { interfaceExpected: true });
+
+// ── ADR 0007 · generated-image text policy ─────────────────────────────────────
+// The positive prompt is the only channel that reaches z-image-turbo, so every
+// clause in it is something the model will try to render. It may carry the
+// output-shape contract, the caller's subject and the rendering style — nothing
+// else. Anti-text guardrails written as positive art direction ("blank and
+// unmarked", "unlabeled controls") flatten clothes, packaging and screens; that
+// is the defect ADR 0006 fixed in the Brand Visual compiler and ADR 0007 removed
+// from this builder.
 check(
-  "explicit interface scenes keep the interface language-free",
-  /single in-context screen or interface.*unlabeled controls/i.test(interfaceGuarded.positive),
+  "ADR 0007: positive prompt carries no blanket text ban",
+  !/language-free|text-free|\bno text\b|without (?:any )?text|\bunlettered\b|free of (?:text|writing|lettering)/i.test(guarded.positive),
 );
-check("negative prompt bans Thai and English writing", guarded.negative.includes("Thai writing") && guarded.negative.includes("English writing"));
+check(
+  "ADR 0007: positive prompt flattens no surface and blanks no object",
+  !/\b(?:unmarked|unlabell?ed|undecorated|blank(?: and)?)\b|blank surfaces|plain empty/i.test(guarded.positive),
+);
+// Structural, so a legitimate STYLE_PROMPT tweak stays green while a fourth
+// clause — the way the removed guardrails originally arrived — turns it red.
+const guardedClauses = guarded.positive.replace(/\.$/, "").split(". ");
+check(
+  "ADR 0007: positive prompt is exactly shape guard, subject and style — nothing else",
+  guardedClauses.length === 3
+    && guardedClauses[0].startsWith("ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE")
+    && guardedClauses[1] === "เจ้าของร้านกาแฟในแสงเช้า"
+    && /editorial/i.test(guardedClauses[2]),
+);
+check(
+  "ADR 0007: the single-frame output-shape guard survives in full",
+  ["ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE",
+    "depict exactly one moment from exactly one camera view",
+    "use one spatially continuous scene across the entire canvas",
+    "keep a consistent subject, setting, lighting and perspective throughout the canvas",
+  ].every((clause) => guarded.positive.includes(clause)),
+);
+// `interfaceExpected` is gone rather than left accepted-and-ignored: an inert
+// option reads as a guarantee. A screen is scene content (ADR 0006) and may show
+// plausible English UI (ADR 0007), so this wrapper says nothing about screens.
+const interfaceSubject = buildArtworkOnlyPrompt("เจ้าของร้านกำลังตรวจ dashboard ยอดขาย", "editorial");
+check("ADR 0007: the interfaceExpected knob is removed, not left inert", buildArtworkOnlyPrompt.length === 2);
+check(
+  "ADR 0007: an interface subject receives no screen art direction from the wrapper",
+  !/in-context screen or interface|abstract visual states|unlabell?ed controls/i.test(interfaceSubject.positive)
+    && interfaceSubject.positive.includes("dashboard ยอดขาย"),
+);
+check(
+  "ADR 0007: negative keeps the Thai and CJK script bans",
+  ["Thai writing", "Chinese writing", "Japanese writing"].every((term) => guarded.negative.includes(term)),
+);
+check(
+  "ADR 0007: negative no longer bans text, numbers, signage or English",
+  !/\b(?:text|letters|words|typography|numbers|symbols|signage|label)\b|English writing/i.test(guarded.negative),
+);
+check(
+  "ADR 0007: negative still protects the deterministic overlay layers",
+  ["logo", "watermark", "signature", "brand name", "caption", "subtitle", "headline"]
+    .every((term) => guarded.negative.includes(term)),
+);
+// ── end ADR 0007 ──────────────────────────────────────────────────────────────
+
 check("negative prompt bans logos and watermarks", guarded.negative.includes("logo") && guarded.negative.includes("watermark"));
 check("negative prompt bans multi-panel compositions", guarded.negative.includes("triptych") && guarded.negative.includes("panel borders"));
 check("model registry exposes exactly the allowlisted models", AI_IMAGE_MODELS.length === 4 && AI_IMAGE_MODELS.every((model) => isAiImageModelId(model.id)));
@@ -54,9 +105,9 @@ check(
   isAiImageQuoteCostSafe(quoteAiImageModel(zImage, 5_000)),
 );
 check(
-  "custom Z-Image receives a 3-credit quote that covers the conservative worker estimate",
-  quoteAiImageModel(customZImage, 50_000).credits === 3
-    && isAiImageQuoteCostSafe(quoteAiImageModel(customZImage, 50_000)),
+  "custom Z-Image receives a 2-credit quote that covers the measured worker cost",
+  quoteAiImageModel(customZImage, 10_000).credits === 2
+    && isAiImageQuoteCostSafe(quoteAiImageModel(customZImage, 10_000)),
 );
 check(
   "GPT Image 2 has a separate 3-credit quote that fits its provider cost",
@@ -85,11 +136,21 @@ check("allowlist matching is case-insensitive and trims whitespace", isInternalA
 check("subdomains do not inherit private-beta access", !isInternalAiTesterEmail("tester@sub.aoacademy.co"));
 
 const previousAdditionalEmails = process.env.INTERNAL_AI_ALLOWED_EMAILS;
+const previousAdditionalDomains = process.env.INTERNAL_AI_ALLOWED_DOMAINS;
 process.env.INTERNAL_AI_ALLOWED_EMAILS = "beta.user@example.com";
+process.env.INTERNAL_AI_ALLOWED_DOMAINS = "example.net";
 check("environment allowlist adds an exact beta account", isInternalAiTesterEmail("BETA.USER@example.com"));
 check("environment allowlist does not admit neighboring accounts", !isInternalAiTesterEmail("other.user@example.com"));
+check("environment domain allowlist adds internal AI testers", isInternalAiTesterEmail("tester@example.net"));
+check(
+  "environment allowlists cannot expand Hero editor access",
+  !isHeroAiBetaUser({ email: "beta.user@example.com", role: "USER" })
+    && !isHeroAiBetaUser({ email: "tester@example.net", role: "USER" }),
+);
 if (previousAdditionalEmails === undefined) delete process.env.INTERNAL_AI_ALLOWED_EMAILS;
 else process.env.INTERNAL_AI_ALLOWED_EMAILS = previousAdditionalEmails;
+if (previousAdditionalDomains === undefined) delete process.env.INTERNAL_AI_ALLOWED_DOMAINS;
+else process.env.INTERNAL_AI_ALLOWED_DOMAINS = previousAdditionalDomains;
 check("private feature opens for an internal tester before the public flag", isInternalAiBetaEnabledFor({ email: "tester@aoacademy.co" }, false));
 check("private feature stays closed for a public admin-like account", !isInternalAiBetaEnabledFor({ email: "admin@gmail.com" }, false));
 check("public rollout flag opens the coarse feature gate", isInternalAiBetaEnabledFor({ email: "customer@gmail.com" }, true));
@@ -97,6 +158,9 @@ check("Hero editor beta admits every administrator", isHeroAiBetaUser({ email: "
 check("Hero editor beta admits AO Academy without an admin role", isHeroAiBetaUser({ email: "tester@aoacademy.co", role: "USER" }));
 check("Hero editor beta admits DuckyHero without an admin role", isHeroAiBetaUser({ email: "duckyhero@gmail.com", role: "USER" }));
 check("Hero editor beta rejects an ordinary customer", !isHeroAiBetaUser({ email: "customer@gmail.com", role: "USER" }));
+check("Hero editor beta rejects AO Academy lookalike and subdomains",
+  !isHeroAiBetaUser({ email: "tester@evil-aoacademy.co", role: "USER" })
+  && !isHeroAiBetaUser({ email: "tester@sub.aoacademy.co", role: "USER" }));
 
 const publicAdminImages = resolveKieImageAccess({
   managedKieOn: true,
@@ -163,11 +227,11 @@ check(
     dashboard.includes("internalAiTester &&"),
 );
 check(
-  "public editor keeps AI Image and AutoMix visible with coming-soon locks",
+  "public editor keeps AI Image and AutoMix visible, gated by the public-launch eligibility helper",
   editorStep2.includes('title: "Hero AI Image"') &&
     editorStep2.includes('title: "AutoMix"') &&
-    editorStep2.includes("const heroImageUnlocked = p.heroAiBeta") &&
-    editorStep2.includes("const autoMixUnlocked = p.internalAiTester && p.isPaidManagedKie") &&
+    editorStep2.includes("const heroImageUnlocked = p.heroAiImageEligible") &&
+    editorStep2.includes("const autoMixUnlocked = p.heroAiImageEligible") &&
     editorStep2.includes("disabled={locked}"),
 );
 check(
@@ -182,8 +246,9 @@ check(
     && heroVideoImage.includes("latestImageGenerationAttempt"),
 );
 check(
-  "Hero video image path is pinned to the isolated RunPod custom endpoint without KIE fallback",
-  heroVideoImage.includes('prepared.providerRoute !== "runpod-custom"')
+  "Hero video image path stays inside RunPod while allowing the approved public incident route without KIE fallback",
+  heroVideoImage.includes("!isHeroRunpodRoute(prepared.providerRoute)")
+    && heroVideoImage.includes("usesCustomRunpodEndpoint(attempt.providerRoute)")
     && !heroVideoImage.includes("kieCreateTask")
     && fetchStockRoute.includes("intentionally separate from KIE/AutoMix"),
 );
@@ -208,9 +273,14 @@ check(
     editorInspector.includes("disabled: !aiImageEnabled"),
 );
 check(
-  "internal testers can edit individual scenes before the public flag opens",
+  "individual Hero scenes use the same product-owner-or-public plan gate as new-video generation",
+  // Task 4 widened this route from the beta-only isHeroAiBetaUser to
+  // isHeroAiImageEligible (beta cohort still admitted unconditionally; PRO/
+  // BUSINESS/trial admitted once HERO_AI_IMAGE_PUBLIC=1) — see internal-ai-access.ts.
   editorPostPhase.includes("BROLL_WINDOW_EDIT || internalAiTester") &&
-    brollGenerateRoute.includes("isInternalAiBetaEnabledFor(user, publicEnabled)"),
+    brollGenerateRoute.includes("isHeroAiImageEligible(user)") &&
+    brollGenerateRoute.includes("generateHeroImageForVideo") &&
+    !brollGenerateRoute.includes("generateKieImageKenBurns"),
 );
 const ttsStepIndex = editorOrchestrator.indexOf('await step("tts", 10)');
 const sceneSplitIndex = editorOrchestrator.indexOf("const brollWindows = brollWindowMode");
@@ -257,6 +327,19 @@ check(
     && runpod.includes("explicitEndpointId === model.endpointDefault")
     && runpod.includes('route: "runpod-custom"'),
 );
+const zImageWorkflow = fs.readFileSync("config/ai-workflows/z-image-turbo.json", "utf8");
+check(
+  "custom Z-Image never injects negative concept nouns into its positive-only conditioning",
+  zImageWorkflow.includes('"text": "{{PROMPT}}"')
+    && !zImageWorkflow.includes("{{NEGATIVE_PROMPT}}"),
+);
+const routeConfigurator = fs.readFileSync("scripts/configure-hero-image-custom-route.ts", "utf8");
+check(
+  "production route configuration can atomically refresh and verify PM2 environment state",
+  routeConfigurator.includes("--restart-pm2")
+    && routeConfigurator.includes('["restart", ...desiredProcessNames, "--update-env"]')
+    && routeConfigurator.includes("did not load ${key}"),
+);
 check(
   "the broken public Z-Image route remains quarantined without an explicit recovery flag",
   runpod.includes("AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED")
@@ -276,7 +359,7 @@ check(
     && imageDownload.includes('redirect: "error"'),
 );
 check(
-  "provider attempts are durable and limited to one sequence per job",
+  "provider attempts are durable and uniquely sequenced per job",
   prismaSchema.includes("model AiGenerationAttempt")
     && prismaSchema.includes("@@unique([jobId, sequence])")
     && prismaSchema.includes("providerReportedCredits")

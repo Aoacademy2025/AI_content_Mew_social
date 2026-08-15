@@ -11,8 +11,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/clerk-auth";
 import { notifyAdmins, createNotification } from "@/lib/notifications";
 
 interface ErrorContext {
@@ -39,7 +38,7 @@ interface ErrorContext {
  * before anything is written to PM2 console logs or the DB-backed admin
  * notification, so secrets never land in either place.
  */
-function scrubSecrets(input: string): string {
+export function scrubSecrets(input: string): string {
   if (!input) return input;
   return input
     // query-string style: key=, api_key=, apikey=, access_key=, token=
@@ -49,7 +48,10 @@ function scrubSecrets(input: string): string {
     // x-goog-api-key header value if serialized into a message/stack
     .replace(/(x-goog-api-key["'\s:=]+)[A-Za-z0-9_-]{10,}/gi, "$1<redacted>")
     // Authorization: Bearer <token>
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{10,}=*/gi, "$1<redacted>");
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{10,}=*/gi, "$1<redacted>")
+    // OpenRouter style API keys (sk-or-...) appearing anywhere — a bare key
+    // without the "Bearer " prefix would slip past the rule above.
+    .replace(/sk-or-[A-Za-z0-9_-]{8,}/g, "<redacted>");
 }
 
 /** Scrub the message/stack of a caught error, preserving shape for logging. */
@@ -130,8 +132,8 @@ export function apiError({
     let uid = userId;
     if (!uid && notifyUser) {
       try {
-        const session = await getServerSession(authOptions);
-        uid = session?.user?.id;
+        const actor = await getCurrentUser();
+        uid = actor?.id;
       } catch { /* ignore */ }
     }
 

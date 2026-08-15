@@ -32,6 +32,17 @@ export async function POST(request: Request) {
     if (!isValidOmniVoiceId(voiceId)) {
       return NextResponse.json({ error: "voiceId ไม่ถูกต้อง" }, { status: 400 });
     }
+    if (!/^[A-Za-z0-9:_-]{8,107}$/.test(idempotencyKey)) {
+      return NextResponse.json({ error: "idempotencyKey ไม่ถูกต้อง" }, { status: 400 });
+    }
+    // Namespace the caller-minted key server-side — the same rule AI Studio images
+    // already apply (`studio:`). Without it a caller could mint `video:<jobId>:scene:0`
+    // here, and the image reservation's existing-row short-circuit
+    // (createReservedImageJob) would adopt this voice row as that image's reservation —
+    // generating an image with NO credit debit. 107 + "studio-voice:" keeps the stored
+    // key inside the 120-character contract the other namespaces observe.
+    const storedIdempotencyKey = `studio-voice:${idempotencyKey}`;
+
     // Custom clone voices (user_*) — admin-only v1; verify ownership up front
     // so we fail BEFORE reserving quota (the durable submit re-resolves later).
     if (isUserVoiceId(voiceId)) {
@@ -58,7 +69,7 @@ export async function POST(request: Request) {
       voiceId,
       speed,
       studio: true,
-      idempotencyKey,
+      idempotencyKey: storedIdempotencyKey,
     });
     return NextResponse.json(
       { job: publicAiGenerationJob(result.job) },

@@ -86,7 +86,9 @@ function userStateDeclaration(
     if (
       ts.isVariableDeclaration(node)
       && ts.isArrayBindingPattern(node.name)
-      && node.name.elements.map((element) => element.name.getText(root)).join(",")
+      && node.name.elements.map((element) => (
+        ts.isOmittedExpression(element) ? "" : element.name.getText(root)
+      )).join(",")
         === expectedNames.join(",")
       && node.initializer
       && ts.isCallExpression(node.initializer)
@@ -262,7 +264,7 @@ function verifyHookSource(value: string): void {
   assert.match(existing, /setRecoveryState\(\{\s*status:\s*"loading"\s*\}\)/);
   assert.match(existing, /setProjectReady\(false\)/);
   const idleIndex = existing.indexOf("await editorProjectSaveQueue.whenIdle(existingProjectId)");
-  const getIndex = existing.indexOf("await fetch(", idleIndex);
+  const getIndex = existing.indexOf("await authenticatedFetch(", idleIndex);
   const journalIndex = existing.indexOf("readEditorProjectRecoveryJournal", getIndex);
   const decisionIndex = existing.indexOf("decideEditorProjectBootstrap", journalIndex);
   assert.ok(idleIndex >= 0 && getIndex > idleIndex && journalIndex > getIndex && decisionIndex > journalIndex,

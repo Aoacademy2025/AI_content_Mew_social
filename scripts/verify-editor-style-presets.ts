@@ -26,8 +26,10 @@ function ok(condition: boolean, message: string) {
 const SUBTITLE_CONFIG = {
   preset: "stroke",
   effect: "pop",
+  cardLen: "3",
   fontFamily: "'Kanit', sans-serif",
-  bold: true,
+  bold: false,
+  fontWeight: 600,
   fontSize: 80,
   textColor: "#FFFFFF",
   accentColor: "#FFE500",
@@ -67,6 +69,14 @@ async function main() {
   });
   ok(subtitle.name === "คลิปความรู้", "subtitle preset trims and normalizes its display name");
   ok(subtitle.kind === "subtitle" && subtitle.config.fontSize === 80, "subtitle preset round-trips its complete style");
+  ok(
+    subtitle.kind === "subtitle" && subtitle.config.fontWeight === 600,
+    "subtitle preset round-trips the medium font weight",
+  );
+  ok(
+    subtitle.kind === "subtitle" && subtitle.config.cardLen === "3",
+    "subtitle preset round-trips the selected ≤3-word card length",
+  );
 
   const updatedSubtitle = await saveEditorStylePreset({
     userId: owner.id,
@@ -247,8 +257,8 @@ async function main() {
   ok(!!stylePresetsCallMatch, "usePostPhaseEditor wires useEditorStylePresets (M1/M2 source contract present)");
   const stylePresetsCall = stylePresetsCallMatch![0];
   ok(
-    /onApplySubtitle:\s*\(config\)\s*=>\s*\{\s*setCfg\(config\);\s*setOverrides\(\{\}\);\s*\}/.test(stylePresetsCall),
-    "M1: apply(subtitle preset) clears per-card overrides (setOverrides({})) alongside setCfg — a saved preset can no longer lose to a stale per-card color override",
+    /onApplySubtitle:\s*\(config,\s*presetCardLen\)\s*=>\s*\{\s*setCfg\(config\);\s*applyCardLen\(presetCardLen\);\s*\}/.test(stylePresetsCall),
+    "M1: apply(subtitle preset) restores card length through applyCardLen, which also clears stale per-card overrides",
   );
   ok(
     /canApplyLogo:\s*canRunProjectOperation/.test(stylePresetsCall),
@@ -276,6 +286,31 @@ async function main() {
     blockedGuardReturnIndex !== -1 && blockedGuardReturnIndex < successToastIndex,
     "M2: the not-ready guard runs strictly before the shared success toast, so a blocked apply cannot also report success",
   );
+
+  // Medium weight must use one shared resolver in preview and burn, while legacy drafts that
+  // only stored `bold` keep their historical 900/400 behavior.
+  const { DEFAULT_V2_SUB, buildV2BurnConfig, resolveV2FontWeight } = await import(
+    "../src/app/(dashboard)/video-editor/_v2/subtitle-style"
+  );
+  ok(resolveV2FontWeight({ ...DEFAULT_V2_SUB, bold: false, fontWeight: 600 }) === 600,
+    "medium font weight resolves to 600");
+  ok(resolveV2FontWeight({ ...DEFAULT_V2_SUB, bold: true, fontWeight: undefined }) === 900,
+    "legacy bold-only subtitle config still resolves to 900");
+  const burn = buildV2BurnConfig(
+    "/preview.mp4",
+    [{ text: "ระดับกลาง", startMs: 0, endMs: 1_000, tag: "body" }],
+    1_000,
+    { ...DEFAULT_V2_SUB, bold: false, fontWeight: 600 },
+  );
+  ok(burn.keywordPopups[0]?.fontWeight === 600,
+    "burn payload uses the same 600 medium weight as the editor config");
+
+  const desktopSource = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhase.tsx", "utf8");
+  const mobileSource = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx", "utf8");
+  const previewSource = readFileSync("src/app/(dashboard)/video-editor/_v2/V2CaptionOverlay.tsx", "utf8");
+  ok(desktopSource.includes('value: "medium", label: "กลาง"'), "desktop exposes the medium weight control");
+  ok(mobileSource.includes('value: "medium", label: "กลาง"'), "mobile exposes the medium weight control");
+  ok(previewSource.includes("resolveV2FontWeight(cfg)"), "live subtitle preview uses the shared weight resolver");
 
   console.log(`\n✅ ALL ${passed} EDITOR STYLE PRESET CHECKS PASSED`);
   await prisma.$disconnect();

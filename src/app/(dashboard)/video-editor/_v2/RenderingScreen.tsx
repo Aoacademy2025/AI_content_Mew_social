@@ -9,6 +9,7 @@ import { Check, Loader2 } from "lucide-react";
 import { color, font } from "./tokens";
 import { GlassPanel, BtnGhost } from "./ui";
 import type { V2JobState } from "./useV2Job";
+import { videoJobProgressPresentation } from "@/lib/video-job-progress";
 
 // map currentStep (tts|captions|keywords|stock|config|render|avatar|burn|composite labels)
 // → เช็กลิสต์ภาษาคน 4-5 ข้อตามดีไซน์
@@ -25,7 +26,7 @@ function creationChecklist(visualMode: VisualMode) {
     { key: "subs", label: "แบ่งฉากตามจังหวะเสียงจริง", steps: ["captions"] },
     { key: "broll", label: visualLabel, steps: ["keywords", "stock"] },
     { key: "assemble", label: "ประกอบวิดีโอ + เพลง + ซับ", steps: ["config", "render"] },
-    { key: "avatar", label: "สร้างพิธีกร AI + วางบนวิดีโอ", steps: ["avatar"], optional: true },
+    { key: "avatar", label: "สร้างพิธีกร AI + วางบนวิดีโอ", steps: ["avatar", "composite_queue", "composite"], optional: true },
   ];
 }
 
@@ -41,7 +42,7 @@ const UPLOAD_CHECKLIST: { key: string; label: string; steps: string[]; optional?
   { key: "subs", label: "ถอดซับไทยจากเสียงในคลิป", steps: ["captions"] },
   { key: "broll", label: "กำลังหาบีโรลให้เข้ากับเนื้อหา", steps: ["keywords", "stock"] },
   { key: "assemble", label: "ประกอบม้วนบีโรล", steps: ["config", "render"] },
-  { key: "cutaway", label: "วางคลิปของคุณสลับกับบีโรล", steps: ["composite"] },
+  { key: "cutaway", label: "วางคลิปของคุณสลับกับบีโรล", steps: ["composite_queue", "composite"] },
 ];
 
 const EXPORT_CHECKLIST: { key: string; label: string; steps: string[]; optional?: boolean }[] = [
@@ -60,7 +61,8 @@ export function RenderingScreen({ job, hasAvatar, uploadMode = false, exportMode
   const baseList = exportMode ? EXPORT_CHECKLIST : uploadMode ? UPLOAD_CHECKLIST : creationChecklist(visualMode);
   const items = baseList.filter((c) => !c.optional || hasAvatar);
   const activeIdx = checklistIndex(items, job.currentStep);
-  const pct = Math.max(0, Math.min(100, job.progress));
+  const progressPresentation = videoJobProgressPresentation(job.currentStep, job.progress);
+  const pct = progressPresentation.percent;
   const queued = job.currentStep === null && pct === 0;
   const queueLabel = job.queuePosition
     ? `อยู่ในคิว #${job.queuePosition} — เริ่มอัตโนมัติเมื่อถึงลำดับ`
@@ -76,13 +78,19 @@ export function RenderingScreen({ job, hasAvatar, uploadMode = false, exportMode
         {/* Progress ring (conic 54px) */}
         <div
           className="flex h-[54px] w-[54px] items-center justify-center rounded-full"
-          style={{ background: `conic-gradient(${color.primary500} ${pct * 3.6}deg, rgba(255,255,255,.08) 0deg)` }}
+          style={{
+            background: progressPresentation.indeterminate
+              ? "rgba(139,92,246,.18)"
+              : `conic-gradient(${color.primary500} ${pct * 3.6}deg, rgba(255,255,255,.08) 0deg)`,
+          }}
         >
           <div
             className="flex h-[44px] w-[44px] items-center justify-center rounded-full"
             style={{ background: "#161624", font: `600 12px ${font.heading}` }}
           >
-            {pct}%
+            {progressPresentation.indeterminate
+              ? <Loader2 size={18} strokeWidth={2.2} color={color.primary300} className="animate-spin" />
+              : progressPresentation.ringText}
           </div>
         </div>
 
@@ -93,7 +101,9 @@ export function RenderingScreen({ job, hasAvatar, uploadMode = false, exportMode
             aria-live="polite"
             style={{ fontSize: 11.5, color: color.textSecondary, marginTop: 4 }}
           >
-            {queued ? queueLabel : `เวลาโดยประมาณ ${etaLabel}`}
+            {queued
+              ? queueLabel
+              : progressPresentation.statusText ?? `เวลาโดยประมาณ ${etaLabel}`}
           </div>
         </div>
 

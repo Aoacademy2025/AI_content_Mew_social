@@ -13,6 +13,7 @@ import {
 } from "@/lib/ai-image-policy";
 import { ensureMonthlyGrant } from "@/lib/credits";
 import {
+  claimPlannedImageAttemptSubmission,
   createReservedImageJob,
   failAndRefundAiJob,
   markImageAttemptSubmitted,
@@ -27,6 +28,7 @@ import {
 import { apiError } from "@/lib/api-error";
 import { videoExpiryFor } from "@/lib/plan-limits";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
+import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 
 export const runtime = "nodejs";
 
@@ -55,9 +57,14 @@ export async function POST(request: Request) {
       || !isAiImageStyle(style)) {
       return NextResponse.json({ error: "รูปแบบการสร้างภาพไม่ถูกต้อง" }, { status: 400 });
     }
-    if (!/^[A-Za-z0-9:_-]{8,120}$/.test(idempotencyKey)) {
+    if (!/^[A-Za-z0-9:_-]{8,113}$/.test(idempotencyKey)) {
       return NextResponse.json({ error: "idempotencyKey ไม่ถูกต้อง" }, { status: 400 });
     }
+    // Namespace the caller-minted key server-side. Without this a Studio caller could
+    // mint a `video:<jobId>:…` key and have their image swept by a video-failure
+    // compensation sweep (refundSettledVideoImageBatch matches on that prefix).
+    // 113 + "studio:" keeps the stored key inside the 120-char contract.
+    const storedIdempotencyKey = `studio:${idempotencyKey}`;
 
     const model = AI_IMAGE_MODELS.find((item) => item.id === modelId)!;
     if (model.engine !== engine) {
@@ -75,6 +82,9 @@ export async function POST(request: Request) {
     try {
       preparedProviderJob = prepareImageGeneration(model, {
         prompt: artworkPrompt.positive,
+        // Delivered only on a model whose `negativePromptDelivery` is
+        // `workflow-defined`; on an `ignored` model (z-image-turbo, gpt-image-2)
+        // the artwork-only invariant rests entirely on the positive prompt.
         negativePrompt: artworkPrompt.negative,
         width,
         height,
@@ -86,6 +96,24 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: error.message, code: error.code }, { status: 503 });
       }
       throw error;
+    }
+
+    if (
+      preparedProviderJob.provider === "runpod"
+      && preparedProviderJob.providerRoute === "runpod-custom"
+    ) {
+      const runpodCost = await getRunpodImageCostSnapshot({
+        endpointId: preparedProviderJob.providerEndpoint,
+      });
+      if (!runpodCost.admitted) {
+        return NextResponse.json({
+          error: runpodCost.status === "stale"
+            ? "ระบบตรวจสอบต้นทุน RunPod ขาดข้อมูลล่าสุด จึงหยุดงานก่อนหักเครดิต"
+            : "ต้นทุน RunPod สูงกว่าเพดานที่กำหนด จึงหยุดงานก่อนหักเครดิต",
+          code: "RUNPOD_COST_GUARD",
+          retryable: true,
+        }, { status: 503 });
+      }
     }
 
     await ensureMonthlyGrant(user.id);
@@ -103,8 +131,10 @@ export async function POST(request: Request) {
       providerRoute: preparedProviderJob.providerRoute,
       providerEndpoint: preparedProviderJob.providerEndpoint,
       estimatedCostUsdMicros: preparedProviderJob.quote.estimatedProviderCostUsdMicros,
-      idempotencyKey,
+      idempotencyKey: storedIdempotencyKey,
       mediaExpiresAt: videoExpiryFor(user.plan),
+      productSurface: "ai_studio",
+      fundingPolicy: "credits-only",
     });
     if (!reserved.ok) {
       return NextResponse.json({
@@ -119,10 +149,22 @@ export async function POST(request: Request) {
     }
 
     try {
+      const claimed = await claimPlannedImageAttemptSubmission({
+        userId: user.id,
+        jobId: reserved.job.id,
+        sequence: 1,
+      });
+      if (!claimed) {
+        return NextResponse.json({
+          job: publicAiGenerationJob(reserved.job),
+          balance: reserved.balanceAfter,
+        }, { status: 202 });
+      }
       const submitted = await submitPreparedImageGeneration(preparedProviderJob, user.id);
       const job = await markImageAttemptSubmitted({
         userId: user.id,
         jobId: reserved.job.id,
+        sequence: 1,
         providerJobId: submitted.providerJobId,
         inProgress: submitted.status === "IN_PROGRESS",
       });

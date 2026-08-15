@@ -7,9 +7,11 @@
  * ไม่มีงาน (หรือ v2 ยังไม่เคยใช้) = ไม่ render อะไรเลย — ผู้ใช้ UI เก่าไม่เห็นการเปลี่ยนแปลง
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Loader2, CheckCircle2 } from "lucide-react";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
+import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
 import {
   editorDashboardJobHref,
   resolveDashboardEditorJobPointer,
@@ -29,24 +31,40 @@ export function V2JobBadge() {
     progress: number;
     queuePosition: number | null;
   } | null>(null);
+  const pollerRef = useRef<ClientPoller | null>(null);
 
   useEffect(() => {
     let alive = true;
-    const poll = async () => {
-      try {
+    let hasRunningJob = true;
+    const poller = createClientPoller({
+      task: async (signal) => {
         const pointer = await resolveDashboardEditorJobPointer({
-          fetchProjects: () => fetch("/api/editor-projects", { cache: "no-store" }),
+          fetchProjects: () => authenticatedFetch("/api/editor-projects", {
+            cache: "no-store",
+            signal,
+          }),
           storage: browserStorage(),
         });
-        if (!alive) return;
-        if (!pointer) { setState(null); return; }
-        const res = await fetch(`/api/videos/jobs/${encodeURIComponent(pointer.jobId)}`, {
+        if (!alive || signal.aborted) return;
+        if (!pointer) {
+          hasRunningJob = false;
+          setState(null);
+          return;
+        }
+        const res = await authenticatedFetch(`/api/videos/jobs/${encodeURIComponent(pointer.jobId)}`, {
           cache: "no-store",
+          signal,
         });
-        if (!alive) return;
-        if (!res.ok) { if (res.status === 404) setState(null); return; }
+        if (!alive || signal.aborted) return;
+        if (res.status === 404) {
+          hasRunningJob = false;
+          setState(null);
+          return;
+        }
+        if (!res.ok) throw new Error(`dashboard_job_poll_${res.status}`);
         const d = await res.json();
         if (d.status === "queued" || d.status === "processing" || d.status === "done") {
+          hasRunningJob = d.status !== "done";
           setState({
             pointer,
             status: d.status,
@@ -54,13 +72,31 @@ export function V2JobBadge() {
             queuePosition: d.queuePosition ?? null,
           });
         } else {
+          hasRunningJob = false;
           setState(null);
         }
-      } catch { /* เงียบ — badge เป็นของเสริม */ }
+      },
+      isActive: () => alive,
+      isVisible: () => document.visibilityState === "visible",
+      nextDelayMs: ({ isVisible, failures }) => {
+        if (!isVisible) return null;
+        return failures >= 3 ? 60_000 : hasRunningJob ? 15_000 : 60_000;
+      },
+    });
+    pollerRef.current = poller;
+    const wake = () => {
+      if (document.visibilityState === "visible") poller.wake();
     };
-    void poll();
-    const t = setInterval(poll, 15000);
-    return () => { alive = false; clearInterval(t); };
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    poller.start();
+    return () => {
+      alive = false;
+      poller.stop();
+      if (pollerRef.current === poller) pollerRef.current = null;
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
   }, []);
 
   if (!state) return null;

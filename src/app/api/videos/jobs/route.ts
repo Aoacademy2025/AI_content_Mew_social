@@ -21,6 +21,7 @@ import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { resolveKieImageAccess } from "@/lib/kie-image-guards";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
+import { parseAutoMixReceiptImageCeiling } from "@/lib/automix-plan";
 import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib/broll-preferences";
 import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { validateWindowEdits } from "@/lib/broll-rerender";
@@ -43,9 +44,33 @@ import {
 } from "@/lib/omnivoice";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
 import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
-import { isHeroAiBetaUser, isInternalAiBetaEnabledFor, isInternalAiTester } from "@/lib/internal-ai-access";
+import {
+  HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
+  HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE,
+  resolveHeroAiImageAccess,
+  isInternalAiBetaEnabledFor,
+  isInternalAiTester,
+} from "@/lib/internal-ai-access";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
+import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
+import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
+import { normalizeHeadlineHook } from "@/lib/headline-hook";
+import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import {
+  prepareProjectVisualPin,
+  prepareUploadProjectVisualSnapshot,
+  projectHasPersistedVisualPin,
+  ProjectLookError,
+} from "@/lib/project-look.server";
+import { contentPreflightSourceHash, type NarrativeSourceKind } from "@/lib/content-preflight.server";
+import {
+  sceneContentPolicyFromPreference,
+} from "@/lib/scene-content-policy";
+import {
+  prepareBrandVisualJobAcceptance,
+  resolveBrandVisualRenderAccess,
+} from "@/lib/brand-visual-job-acceptance.server";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -65,8 +90,10 @@ type Body = {
   avatarMode?: unknown; avatarId?: unknown; avatarIntroSecs?: unknown; avatarTailSecs?: unknown;
   bgmFile?: unknown; bgmVolume?: unknown; stockSource?: unknown;
   targetClipCount?: unknown; kieModel?: unknown; autoMixProviders?: unknown; autoMixWeights?: unknown;
+  maxAiImages?: unknown;
+  contentPreflightId?: unknown; narrativeSourceKind?: unknown;
   imageEngine?: unknown; imageModel?: unknown;
-  brollRegionPreference?: unknown; brollVisualStyle?: unknown;
+  brollRegionPreference?: unknown; brollVisualStyle?: unknown; sceneContentPolicy?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
   // Phase 2 free per-window re-render (mode: "broll-rerender")
   sourceJobId?: unknown; windowEdits?: unknown;
@@ -142,6 +169,10 @@ export async function POST(req: Request) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const [heroAiImageAccess, brandVisualAccess] = await Promise.all([
+      resolveHeroAiImageAccess(user),
+      resolveBrandVisualAccess(user),
+    ]);
 
     const body = (await req.json().catch(() => null)) as Body | null;
     if (!body) return NextResponse.json({ error: "invalid_body" }, { status: 400 });
@@ -191,17 +222,33 @@ export async function POST(req: Request) {
     // `rerenderOf` skip (not any client flag) is what makes the render itself free; here we only
     // validate shape + ownership up-front and enqueue. The orchestrator re-checks authoritatively.
     if (body.mode === "broll-rerender") {
-      if (!isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1")) {
-        return NextResponse.json({ error: "not_enabled" }, { status: 404 });
-      }
       const sourceJobId = str(body.sourceJobId, 120);
       if (!sourceJobId) return NextResponse.json({ error: "invalid_source", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 400 });
       const editsRes = validateWindowEdits(body.windowEdits);
       if ("error" in editsRes) return NextResponse.json({ error: "invalid_edits", message: editsRes.error }, { status: 400 });
 
-      const srcJob = await prisma.videoJob.findUnique({ where: { id: sourceJobId }, select: { userId: true, status: true, projectId: true } });
+      const srcJob = await prisma.videoJob.findUnique({
+        where: { id: sourceJobId },
+        select: {
+          userId: true,
+          status: true,
+          projectId: true,
+          contentPreflightId: true,
+          projectVisualContextJson: true,
+          brandVisualAcceptanceJson: true,
+        },
+      });
       if (!srcJob || srcJob.userId !== user.id) return NextResponse.json({ error: "source_not_found", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 404 });
       if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม (ยังเรนเดอร์ไม่เสร็จ)" }, { status: 400 });
+      const brandVisualSceneEdit = Boolean(
+        srcJob.projectId && srcJob.contentPreflightId && srcJob.projectVisualContextJson,
+      );
+      if (
+        !brandVisualSceneEdit
+        && !isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_EDIT === "1")
+      ) {
+        return NextResponse.json({ error: "not_enabled" }, { status: 404 });
+      }
 
       const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
       if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
@@ -215,7 +262,15 @@ export async function POST(req: Request) {
           user.id,
           { mode: "broll-rerender", previewMode: true, sourceJobId, windowEdits: editsRes },
           idempotencyKey,
-          { projectId: srcJob.projectId, idempotencyFingerprint },
+          {
+            projectId: srcJob.projectId,
+            idempotencyFingerprint,
+            projectVisualPin: srcJob.projectVisualContextJson ? {
+              contentPreflightId: srcJob.contentPreflightId,
+              projectVisualContextJson: srcJob.projectVisualContextJson,
+            } : null,
+            brandVisualAcceptanceJson: srcJob.brandVisualAcceptanceJson,
+          },
         );
         return NextResponse.json({
           jobId: job.id,
@@ -267,6 +322,23 @@ export async function POST(req: Request) {
       const parsed = parseVideoJobOutput(srcJob.outputJson);
       if (!parsed?.preview) return NextResponse.json({ error: "source_not_exportable", message: "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับแก้ซับ/ส่งออก" }, { status: 400 });
 
+      const rawHeadlineHook = subtitleOverlayConfig.headlineHook;
+      if (rawHeadlineHook !== undefined) {
+        const overlayDurationFrames = Number(subtitleOverlayConfig.durationInFrames);
+        const overlayDurationMs = Number.isFinite(overlayDurationFrames) && overlayDurationFrames > 0
+          ? (overlayDurationFrames / 30) * 1_000
+          : 0;
+        const headlineHook = normalizeHeadlineHook(
+          rawHeadlineHook,
+          Math.max(parsed.preview.audioDurationMs, overlayDurationMs),
+        );
+        if (!headlineHook) {
+          return NextResponse.json({ error: "invalid_headline_hook", message: "ข้อมูลพาดหัวเปิดคลิปไม่ถูกต้อง" }, { status: 400 });
+        }
+        if (headlineHook.enabled) subtitleOverlayConfig.headlineHook = headlineHook;
+        else delete subtitleOverlayConfig.headlineHook;
+      }
+
       const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
       if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
 
@@ -275,6 +347,8 @@ export async function POST(req: Request) {
           staging: {
             userId: user.id,
             plan: user.plan,
+            brandVisualAllowed: brandVisualAccess.canUse
+              || await projectHasPersistedVisualPin({ userId: user.id, projectId: sourceProjectId }),
             projectId: sourceProjectId,
             rawLogoOverlay: rawLogoOverlay,
           },
@@ -474,22 +548,79 @@ export async function POST(req: Request) {
       isPaidPlan: user.plan === "PRO" || user.plan === "BUSINESS",
       isInternalTester: isInternalAiTester(user),
     });
+    const autoMixProviders = requestedSource === "auto-mix" && Array.isArray(body.autoMixProviders)
+      ? (body.autoMixProviders.filter((x) => typeof x === "string" && x.length <= 40).slice(0, 12) as string[])
+      : undefined;
+    const autoMixWeights = requestedSource === "auto-mix"
+      ? parseAutoMixWeights(body.autoMixWeights) ?? undefined
+      : undefined;
+    const autoMixRequestsAi = requestedSource === "auto-mix"
+      && (autoMixProviders === undefined || autoMixProviders.includes("kie-ai"))
+      && (autoMixWeights?.ai ?? 1) > 0;
+    const requestsBrandVisualImage = Boolean(
+      projectId && (useHeroRunpodImage || autoMixRequestsAi),
+    );
+    // Resolve an established immutable pin BEFORE the live Hero rollout gate.
+    // Rollback closes new adoption, but must not reject a FREE/Trial project
+    // whose exact Project Look/Revision already exists (ADR-0005).
+    const hasPersistedProjectPin = requestsBrandVisualImage && projectId
+      ? await projectHasPersistedVisualPin({ userId: user.id, projectId })
+      : false;
+    const brandVisualRenderAccess = resolveBrandVisualRenderAccess({
+      requestsBrandVisualImage,
+      hasPersistedProjectPin,
+      liveAccess: brandVisualAccess,
+    });
     if (useHeroRunpodImage) {
-      if (!isHeroAiBetaUser(user)) {
+      if (!heroAiImageAccess.canUse && !brandVisualRenderAccess) {
+        if (heroAiImageAccess.reason === "allowance_exhausted") {
+          return NextResponse.json(HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body, { status: HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.status });
+        }
+        if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+          return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+        }
         return NextResponse.json({ error: "beta_only", message: "Hero AI Image ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
       }
       if (requestedImageModel !== "z-image-turbo") {
-        return NextResponse.json({ error: "invalid_image_model", message: "Hero AI Image ต้องใช้โมเดล Z-Image Turbo" }, { status: 400 });
+        return NextResponse.json({ error: "invalid_image_model", message: "Hero AI Image ต้องใช้โมเดลภาพที่ระบบรองรับ" }, { status: 400 });
       }
       const model = AI_IMAGE_MODELS.find((item) => item.id === "z-image-turbo")!;
       const offer = describeImageOffer(model);
-      if (!offer.available || offer.providerRoute !== "runpod-custom") {
+      if (!offer.available || !isHeroRunpodRoute(offer.providerRoute)) {
         return NextResponse.json({
           error: "hero_image_unavailable",
-          message: "Hero AI Image ยังไม่พร้อมบน RunPod custom endpoint ที่ผ่านการตรวจสอบ",
+          message: "Hero AI Image ยังไม่พร้อมใช้งานในขณะนี้",
         }, { status: 503 });
       }
-    } else if (requestedSource !== "stock" && !canUseKieImages) {
+      if (usesCustomRunpodEndpoint(offer.providerRoute)) {
+        const runpodCost = await getRunpodImageCostSnapshot({
+          endpointId: offer.providerEndpoint,
+        });
+        if (!runpodCost.admitted) {
+          return NextResponse.json({
+            error: "hero_image_cost_guard",
+            message: runpodCost.status === "stale"
+              ? "ระบบตรวจสอบต้นทุน Hero AI Image ขาดข้อมูลล่าสุด จึงยังไม่รับงานใหม่"
+              : "ต้นทุน Hero AI Image สูงกว่าเพดาน ฿1.08/รูป จึงยังไม่รับงานใหม่",
+            retryable: true,
+          }, { status: 503 });
+        }
+      }
+    } else if (requestedSource === "auto-mix") {
+      // AutoMix "ai" slots now generate on the Hero RunPod seam (fetch-stock), so the
+      // mode follows the SAME Hero rollout gate as Hero-only mode; the legacy
+      // managed-kie beta cohort keeps its existing access. fetch-stock re-checks both.
+      if (!heroAiImageAccess.canUse && !canUseKieImages && !brandVisualRenderAccess) {
+        if (heroAiImageAccess.reason === "allowance_exhausted") {
+          return NextResponse.json(HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body, { status: HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.status });
+        }
+        if (process.env.HERO_AI_IMAGE_PUBLIC === "1") {
+          return NextResponse.json(HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.body, { status: HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE.status });
+        }
+        return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
+      }
+    } else if (requestedSource !== "stock" && (!canUseKieImages || !isAdmin)) {
+      // Legacy kie image mode: paused for customers, admin-only (ADR 0004).
       return NextResponse.json({ error: "beta_only", message: "ภาพ AI / AutoMix ยังเปิดเฉพาะทีมงาน (Beta)" }, { status: 403 });
     }
     const stockSource = requestedSource === "stock" ? undefined : requestedSource;
@@ -499,15 +630,65 @@ export async function POST(req: Request) {
     const targetClipCount = num(body.targetClipCount, 1, 60);
     const brollRegionPreference = normalizeBrollRegionPreference(body.brollRegionPreference);
     const brollVisualStyle = normalizeBrollVisualStyle(body.brollVisualStyle);
+    const sceneContentPolicy = sceneContentPolicyFromPreference(
+      body.sceneContentPolicy ?? brollRegionPreference,
+    );
     const kieModel = stockSource && !useHeroRunpodImage ? str(body.kieModel, 60) : undefined;
-    const autoMixProviders = requestedSource === "auto-mix" && Array.isArray(body.autoMixProviders)
-      ? (body.autoMixProviders.filter((x) => typeof x === "string" && x.length <= 40).slice(0, 12) as string[])
-      : undefined;
     // Mix-preset weights (D5.1): only well-formed {video,photo,ai} ints 0–9 are stored;
     // fetch-stock re-validates + gates them behind MANAGED_KIE authoritatively.
-    const autoMixWeights = requestedSource === "auto-mix"
-      ? parseAutoMixWeights(body.autoMixWeights) ?? undefined
+    // Disclosure ceiling: the exact NEW/affected AI-image count in the Render Receipt.
+    // Current retained assets are reused without consuming this ceiling.
+    const maxAiImages = requestedSource === "auto-mix"
+      ? parseAutoMixReceiptImageCeiling(body.maxAiImages)
+      : null;
+    if (requestedSource === "auto-mix" && autoMixRequestsAi && !isAdmin && maxAiImages === null) {
+      return NextResponse.json({
+        error: "render_receipt_required",
+        message: "กรุณาตรวจและยืนยันใบรับงานก่อนเริ่มสร้างภาพ AutoMix",
+      }, { status: 400 });
+    }
+    const requestedContentPreflightId = str(body.contentPreflightId, 120);
+    const requestedNarrativeSourceKind: NarrativeSourceKind | undefined = body.narrativeSourceKind === "ai-script"
+      || body.narrativeSourceKind === "creator-script"
+      ? body.narrativeSourceKind
       : undefined;
+    if (
+      !uploadMode
+      && Boolean(requestedContentPreflightId) !== Boolean(requestedNarrativeSourceKind)
+    ) {
+      return NextResponse.json({
+        error: "invalid_content_preflight",
+        message: "ข้อมูลฉากไม่ตรงกับเนื้อหาที่ใช้สร้างคลิป กรุณาลองเตรียมแนวภาพอีกครั้ง",
+      }, { status: 400 });
+    }
+    const projectVisualPin = brandVisualRenderAccess
+      ? uploadMode
+        ? await prepareUploadProjectVisualSnapshot({ userId: user.id, projectId: projectId! })
+        : await prepareProjectVisualPin({
+            userId: user.id,
+            projectId: projectId!,
+            ...(requestedContentPreflightId ? { preflightId: requestedContentPreflightId } : {}),
+            // Script-mode callers may originate from either authored or AI-assisted
+            // input. Both kinds hash the same normalized text independently; accept
+            // only an analysis of this request's narrative, never merely the newest
+            // analysis another tab happened to create.
+            sourceHashes: (requestedNarrativeSourceKind
+              ? [requestedNarrativeSourceKind]
+              : (["ai-script", "creator-script"] as const))
+              .map((kind) => contentPreflightSourceHash(kind, script, {
+                ...(targetClipCount ? { windowCount: targetClipCount } : {}),
+                sceneContentPolicy,
+              })),
+          })
+      : null;
+    const brandVisualAcceptanceJson = projectVisualPin && projectId && brandVisualRenderAccess
+      ? await prepareBrandVisualJobAcceptance({
+          userId: user.id,
+          projectId,
+          projectVisualPin,
+          access: brandVisualRenderAccess,
+        })
+      : null;
 
     // Pexels VALIDITY preflight (Task 7, 2026-07-16 stability audit): 20/59 weekly
     // VideoJob failures were BYOK keys that exist but don't work (ElevenLabs missing
@@ -565,21 +746,28 @@ export async function POST(req: Request) {
             ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                 avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }
             : {}),
-          ...(!uploadMode && bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
+          ...(bgmFile ? { bgmFile, bgmVolume: num(body.bgmVolume, 0, 1) } : {}),
           ...(stockSource ? { stockSource } : {}),
           ...(targetClipCount ? { targetClipCount: Math.round(targetClipCount) } : {}),
           ...(brollRegionPreference ? { brollRegionPreference } : {}),
           ...(brollVisualStyle ? { brollVisualStyle } : {}),
+          sceneContentPolicy,
           ...(kieModel ? { kieModel } : {}),
           ...(useHeroRunpodImage ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),
           ...(autoMixWeights ? { autoMixWeights } : {}),
+          ...(maxAiImages !== null ? { maxAiImages } : {}),
           ...(stockProviders?.length ? { stockProviders } : {}),
           ...(subtitleMode ? { subtitleMode } : {}),
           ...(subtitlePosition ? { subtitlePosition } : {}),
         },
         idempotencyKey,
-        { projectId, idempotencyFingerprint },
+        {
+          projectId,
+          idempotencyFingerprint,
+          projectVisualPin,
+          brandVisualAcceptanceJson,
+        },
       );
       if (projectId) {
         await prisma.editorProject.updateMany({
@@ -617,6 +805,12 @@ export async function POST(req: Request) {
         { error: err.code, message: err.message },
         { status: err.status },
       );
+    }
+    if (err instanceof ProjectLookError) {
+      const status = err.code === "NOT_FOUND" ? 404
+        : err.code === "PREFLIGHT_REQUIRED" ? 409
+          : 422;
+      return NextResponse.json({ error: err.code, message: err.message }, { status });
     }
     if (err instanceof RenderDeployDrainError) {
       return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });

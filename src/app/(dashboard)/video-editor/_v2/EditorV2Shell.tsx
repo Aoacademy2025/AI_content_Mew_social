@@ -57,6 +57,8 @@ import {
   type ProjectStatusFilter,
 } from "./project-menu";
 import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
+import { customerApiErrorMessage } from "@/lib/customer-api-error";
+import { classifyFailure, failureViewCopy } from "./failure-view";
 
 export function EditorV2Shell() {
   const p = useV2Project();
@@ -257,7 +259,7 @@ export function EditorV2Shell() {
       if (!ownsAttempt()) return;
       const data = await res.json().catch(() => null);
       if (!ownsAttempt()) return;
-      if (!res.ok) throw new Error(data?.message ?? data?.error ?? `ลบไม่สำเร็จ (${res.status})`);
+      if (!res.ok) throw new Error(customerApiErrorMessage(data, "นำโปรเจกต์ออกไม่สำเร็จ กรุณาลองใหม่"));
       const fallbackProjects = projects.filter((item) => item.id !== project.id);
       let remainingProjects = fallbackProjects;
       let remainingTotal = Math.max(0, projectTotal - 1);
@@ -303,8 +305,12 @@ export function EditorV2Shell() {
     projectId: p.projectId,
     logoOverlay: p.logoOverlay,
     onLogoOverlayChange: p.setLogoOverlay,
+    initialSubtitleConfig: p.brandSubtitleDefault,
+    brandVisualAllowed: p.brandVisualAllowed,
     layerVisibility: p.layerVisibility,
     onLayerVisibilityChange: p.setLayerVisibility,
+    headlineHook: p.headlineHook,
+    onHeadlineHookChange: p.setHeadlineHook,
     logoEligible: p.canUseLogoOverlay,
     projectSaveStatus: p.saveStatus,
     onRetryProjectSave: p.retryProjectSave,
@@ -597,9 +603,9 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.internalAiTester && (p.isAdmin || p.isPaidManagedKie)} downloadFilename={downloadFilename} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={p.heroAiImageEligible || Boolean(job.contentPreflightId)} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
           ) : (
-            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} brollRegionPreference={p.brollRegionPreference} brollVisualStyle={p.brollVisualStyle} internalAiTester={p.internalAiTester} aiImageEnabled={p.internalAiTester && (p.isAdmin || p.isPaidManagedKie)} downloadFilename={downloadFilename} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={p.heroAiImageEligible || Boolean(job.contentPreflightId)} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
           )
         ) : (
           <ExportedView
@@ -792,16 +798,26 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
   onBack: () => void;
   onSwitchFaceless: () => void;
 }) {
-  const isHeygenQuota = job.errorProvider === "heygen" && job.errorCode === "quota";
+  // Classification + copy live in failure-view.ts (pure, unit-tested in
+  // scripts/verify-hero-image-disclosure.ts) so the exact-code matching that fixed the
+  // OMNIVOICE_PROVIDER_RATE_LIMITED false-positive stays covered by real fixtures,
+  // not just a regex over this component's source.
+  const kind = classifyFailure(job);
+  const isHeygenQuota = kind === "heygen-quota";
+  const isProviderKey = kind === "provider-key";
+  const isProviderQuota = kind === "provider-quota";
+  const isHeygenKey = isProviderKey && job.errorProvider === "heygen";
+  const isInsufficientCredits = kind === "insufficient-credits";
+  const { heading, body } = failureViewCopy(kind, job, exportMode);
   return (
     <main className="flex flex-1 items-center justify-center p-6">
       <div className="flex max-w-[560px] flex-col items-center gap-4 text-center">
         <div className="flex items-center gap-2">
           <XCircle size={18} color={color.danger} />
-          <span style={{ font: `600 16px ${font.heading}`, color: color.danger }}>{exportMode ? "ส่งออกไม่สำเร็จ" : "เรนเดอร์ไม่สำเร็จ"}</span>
+          <span style={{ font: `600 16px ${font.heading}`, color: color.danger }}>{heading}</span>
         </div>
         <div style={{ fontSize: 12, color: color.textSecondary, lineHeight: 1.7 }}>
-          {job.errorMessage ?? "เกิดข้อผิดพลาด — ลองใหม่อีกครั้ง"}
+          {body}
         </div>
         {isHeygenQuota ? (
           <div className="flex flex-wrap items-center justify-center gap-3">
@@ -809,6 +825,22 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
               <BtnSecondary>เติมเครดิต HeyGen</BtnSecondary>
             </a>
             <BtnPrimary onClick={onSwitchFaceless}>เปลี่ยนเป็น Faceless แล้วลองใหม่</BtnPrimary>
+          </div>
+        ) : isProviderKey || isProviderQuota ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Link href="/settings">
+              <BtnSecondary>{isProviderKey ? "ตรวจสอบ API Key" : "ตรวจสอบบัญชีที่เชื่อม"}</BtnSecondary>
+            </Link>
+            {isHeygenKey
+              ? <BtnPrimary onClick={onSwitchFaceless}>ปิด Avatar แล้วลองใหม่</BtnPrimary>
+              : <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปลองส่งออกใหม่" : "กลับไปตั้งค่า"}</BtnPrimary>}
+          </div>
+        ) : isInsufficientCredits ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Link href="/pricing?from=editor">
+              <BtnSecondary>เติมเครดิต</BtnSecondary>
+            </Link>
+            <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>
           </div>
         ) : (
           <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>

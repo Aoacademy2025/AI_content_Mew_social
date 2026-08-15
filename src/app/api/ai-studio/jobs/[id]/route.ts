@@ -94,6 +94,7 @@ export async function GET(
       job = await markImageAttemptProgress({
         userId: user.id,
         jobId: job.id,
+        sequence: durableAttempt?.sequence ?? 1,
         inProgress: provider.status === "IN_PROGRESS",
         delayTimeMs: provider.delayTimeMs,
       }) ?? job;

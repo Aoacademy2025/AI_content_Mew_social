@@ -6,6 +6,8 @@ export const FREE_LIMITS = {
   styles: 2,
   contents: 5,
   images: Infinity,
+  brandProfiles: 1,   // Hero Script — จำนวนโปรไฟล์แบรนด์/นิชที่เซฟได้
+  scripts: 3,         // Hero Script — จำนวนสคริปต์ที่เขียนได้/30 วัน
   // ฟีเจอร์ที่ไม่รองรับ
   allowHeyGen: false,
   allowElevenLabs: false,
@@ -15,6 +17,9 @@ export const FREE_LIMITS = {
   allowVideoEditor: false,
 } as const;
 
+/** Render-minute allowance while a user is in the time-limited PRO trial. */
+export const TRIAL_MINUTES = 15;
+
 export const PRO_LIMITS = {
   clips: 100,          // คลิป/เดือน
   durationSec: 360,    // สูงสุด 6 นาที/คลิป
@@ -23,6 +28,8 @@ export const PRO_LIMITS = {
   styles: Infinity,
   contents: Infinity,
   images: Infinity,
+  brandProfiles: 5,   // Hero Script — จำนวนโปรไฟล์แบรนด์/นิชที่เซฟได้
+  scripts: Infinity,  // Hero Script — เขียนสคริปต์ได้ไม่จำกัด
   allowHeyGen: true,
   allowElevenLabs: true,
   allowBackgroundRemoval: true,
@@ -39,6 +46,8 @@ export const BUSINESS_LIMITS = {
   styles: Infinity,
   contents: Infinity,
   images: Infinity,
+  brandProfiles: Infinity, // Hero Script — จำนวนโปรไฟล์แบรนด์/นิชที่เซฟได้
+  scripts: Infinity,       // Hero Script — เขียนสคริปต์ได้ไม่จำกัด
   allowHeyGen: true,
   allowElevenLabs: true,
   allowBackgroundRemoval: true,

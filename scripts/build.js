@@ -15,19 +15,15 @@ const env = {
   NEXT_PRIVATE_WORKER_OPTIONS: workerMemFlag,
   NEXT_CPU_PROF: "0",
 };
-if (process.env.BUILD_NO_LINT === "1") {
-  env.NEXT_DISABLE_ESLINT = "1";
-}
+// Next 16 defaults to Turbopack, but this app deliberately externalizes native
+// Remotion/ffmpeg modules through next.config.ts's webpack hook. Keep production
+// builds on webpack until that native-module contract is migrated explicitly.
+const buildArgs = ["next", "build", "--webpack"];
 
-const buildArgs = ["next", "build"];
-if (process.env.BUILD_NO_LINT === "1") {
-  buildArgs.push("--no-lint");
-}
-
-const child = spawn("npx", buildArgs, {
+const child = spawn(process.platform === "win32" ? "npx.cmd" : "npx", buildArgs, {
   stdio: "inherit",
   env,
-  shell: true,
+  shell: false,
 });
 
 child.on("exit", (code, signal) => {

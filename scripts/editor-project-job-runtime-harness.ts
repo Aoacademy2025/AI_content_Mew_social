@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
+import * as bgmSelectionModule from "../src/lib/bgm-selection";
+import * as brollPreferencesModule from "../src/lib/broll-preferences";
+import * as cutawayPlanModule from "../src/lib/cutaway-plan";
+import * as headlineHookModule from "../src/lib/headline-hook";
+import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
 import {
   canonicalVideoJobRequest,
   fingerprintVideoJobRequest,
@@ -196,6 +201,67 @@ const shellSource = readFileSync(shellPath, "utf8");
 const jobsRoutePath = "src/app/api/videos/jobs/route.ts";
 const jobsRouteSource = readFileSync(jobsRoutePath, "utf8");
 
+// useV2Job computes its `maxAiImages` disclose-then-charge ceiling from the REAL
+// ./estimate module rather than a stub — the number it sends the server must match
+// the number the Render Receipt already showed the user (see useV2Job.ts comment on
+// `submit`). estimate.ts and its two dependencies are pure (no DOM/network/React), so
+// they're loaded and transpiled the same way jobSource/shellSource are above, instead
+// of hand-rolling a mock that could drift from the real disclose math.
+function compilePlainModule(source: string, fileName: string): string {
+  return ts.transpileModule(source, {
+    compilerOptions: {
+      module: ts.ModuleKind.CommonJS,
+      target: ts.ScriptTarget.ES2022,
+      esModuleInterop: true,
+    },
+    fileName,
+  }).outputText;
+}
+
+function loadPlainModule(
+  source: string,
+  fileName: string,
+  requireMock: (specifier: string) => unknown,
+): Record<string, unknown> {
+  const module = { exports: {} as Record<string, unknown> };
+  const factory = new Function("require", "module", "exports", compilePlainModule(source, fileName));
+  factory(requireMock, module, module.exports);
+  return module.exports;
+}
+
+const preprocessScriptPath = "src/app/(dashboard)/video-editor/_lib/preprocess-script.ts";
+const preprocessScriptModule = loadPlainModule(
+  readFileSync(preprocessScriptPath, "utf8"),
+  preprocessScriptPath,
+  (specifier) => { throw new Error(`unhandled preprocess-script import: ${specifier}`); },
+);
+const automixPlanPath = "src/lib/automix-plan.ts";
+const automixPlanModule = loadPlainModule(
+  readFileSync(automixPlanPath, "utf8"),
+  automixPlanPath,
+  (specifier) => { throw new Error(`unhandled automix-plan import: ${specifier}`); },
+);
+const estimatePath = "src/app/(dashboard)/video-editor/_v2/estimate.ts";
+const estimateModule = loadPlainModule(
+  readFileSync(estimatePath, "utf8"),
+  estimatePath,
+  (specifier) => {
+    if (specifier === "../_lib/preprocess-script") return preprocessScriptModule;
+    if (specifier === "@/lib/automix-plan") return automixPlanModule;
+    throw new Error(`unhandled estimate module import: ${specifier}`);
+  },
+);
+
+// EditorV2Shell's FailedView delegates classification/copy to failure-view.ts (pure,
+// no imports) so the exact-code matching stays covered by the real fixtures instead of
+// a mock that could silently drift — same rationale as ./estimate above.
+const failureViewPath = "src/app/(dashboard)/video-editor/_v2/failure-view.ts";
+const failureViewModule = loadPlainModule(
+  readFileSync(failureViewPath, "utf8"),
+  failureViewPath,
+  (specifier) => { throw new Error(`unhandled failure-view module import: ${specifier}`); },
+);
+
 function compileJobHook(source: string): string {
   return ts.transpileModule(source, {
     compilerOptions: {
@@ -205,6 +271,35 @@ function compileJobHook(source: string): string {
     },
     fileName: jobPath,
   }).outputText;
+}
+
+function createImmediateClientPoller(options: {
+  task(signal: AbortSignal): Promise<void>;
+}) {
+  let running = false;
+  let controller: AbortController | null = null;
+  const run = () => {
+    if (!running || controller) return;
+    const current = new AbortController();
+    controller = current;
+    void options.task(current.signal).catch(() => {}).finally(() => {
+      if (controller === current) controller = null;
+    });
+  };
+  return {
+    start() { if (!running) { running = true; run(); } },
+    stop() { running = false; controller?.abort(); controller = null; },
+    wake() { run(); },
+    isRunning() { return running; },
+  };
+}
+
+function browserDocumentMock() {
+  return {
+    visibilityState: "visible",
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+  };
 }
 
 function compileEditorShell(source: string): string {
@@ -360,6 +455,7 @@ function mountEditorShell(input: {
     if (specifier === "next/navigation") {
       return { useRouter: () => ({ push: () => undefined }) };
     }
+    if (specifier === "./failure-view") return failureViewModule;
     if (specifier === "sonner") {
       return { toast: { error: () => undefined, success: () => undefined } };
     }
@@ -383,6 +479,7 @@ function mountEditorShell(input: {
     }
     if (specifier === "@/components/layout/account-menu") return { AccountMenu: marker("AccountMenu") };
     if (specifier === "@/components/layout/notification-bell") return { NotificationBell: marker("NotificationBell") };
+    if (specifier === "@/components/quota-status") return { QuotaStatus: marker("QuotaStatus") };
     if (specifier === "@/components/ui/dropdown-menu") {
       return Object.fromEntries([
         "DropdownMenu", "DropdownMenuContent", "DropdownMenuItem", "DropdownMenuLabel",
@@ -434,6 +531,9 @@ function mountEditorShell(input: {
     }
     if (specifier === "@/lib/video-export-name") {
       return { resolveVideoDownloadFilename: () => "project.mp4" };
+    }
+    if (specifier === "@/lib/customer-api-error") {
+      return { customerApiErrorMessage: (_payload: unknown, fallback: string) => fallback };
     }
     throw new Error(`unhandled editor shell import: ${specifier}`);
   };
@@ -509,13 +609,23 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     "exports",
     "fetch",
     "window",
+    "document",
     "setInterval",
     "clearInterval",
     compileJobHook(source),
   );
+  const fetchRuntime = async (url: string, init: Record<string, unknown> = {}) => {
+    fetchCalls.push({ url, init });
+    return {
+      ok: true,
+      status: 200,
+      async json() { return { jobId: "unexpected-job" }; },
+    };
+  };
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
     if (specifier === "./mix-presets") return { PRESET_WEIGHTS: { free: {} } };
+    if (specifier === "./estimate") return estimateModule;
     if (specifier === "./ExpiredPreviewView") {
       return {
         mediaStateFromJobPoll: (state: unknown, fallback: unknown) => state ?? fallback,
@@ -537,6 +647,15 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
         ].includes(String(value)),
       };
     }
+    if (specifier === "@/lib/authenticated-fetch") {
+      return { authenticatedFetch: fetchRuntime };
+    }
+    if (specifier === "@/lib/client-polling") {
+      return { createClientPoller: createImmediateClientPoller };
+    }
+    if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
+    if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
+    if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -555,21 +674,17 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     requireMock,
     module,
     module.exports,
-    async (url: string, init: Record<string, unknown> = {}) => {
-      fetchCalls.push({ url, init });
-      return {
-        ok: true,
-        status: 200,
-        async json() { return { jobId: "unexpected-job" }; },
-      };
-    },
+    fetchRuntime,
     {
       localStorage: {
         getItem: () => null,
         setItem: (key: string) => storageOperations.push(`set:${key}`),
         removeItem: (key: string) => storageOperations.push(`remove:${key}`),
       },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
     },
+    browserDocumentMock(),
     () => ({}) as unknown,
     () => undefined,
   );
@@ -659,13 +774,40 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     "exports",
     "fetch",
     "window",
+    "document",
     "setInterval",
     "clearInterval",
     compileJobHook(source),
   );
+  const fetchRuntime = async (url: string, init: Record<string, unknown> = {}) => {
+    if (url !== "/api/videos/jobs" || init.method !== "POST") {
+      throw new Error(`unexpected fetch while submit is pending: ${url}`);
+    }
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    postBodies.push(body);
+    const key = typeof body.idempotencyKey === "string" ? body.idempotencyKey : null;
+    if (!committedIdempotencyKey) {
+      committedIdempotencyKey = key;
+      committedJobCount += 1;
+      return postResponse.promise;
+    }
+    assert.equal(key, committedIdempotencyKey, "an ambiguous retry reuses the committed attempt key");
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          jobId: "owned-job",
+          idempotencyKey: key,
+          idempotencyFingerprint: runtimeRequestFingerprint("preview", body),
+        };
+      },
+    };
+  };
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
     if (specifier === "./mix-presets") return { PRESET_WEIGHTS: { free: {} } };
+    if (specifier === "./estimate") return estimateModule;
     if (specifier === "./ExpiredPreviewView") {
       return {
         mediaStateFromJobPoll: (state: unknown, fallback: unknown) => state ?? fallback,
@@ -683,6 +825,15 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     if (specifier === "@/lib/provider-errors") {
       return { isProviderErrorCode: (value: unknown) => ["invalid_key", "quota", "rate_limit", "transient", "fatal"].includes(String(value)) };
     }
+    if (specifier === "@/lib/authenticated-fetch") {
+      return { authenticatedFetch: fetchRuntime };
+    }
+    if (specifier === "@/lib/client-polling") {
+      return { createClientPoller: createImmediateClientPoller };
+    }
+    if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
+    if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
+    if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     throw new Error(`unhandled job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -701,38 +852,17 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     requireMock,
     module,
     module.exports,
-    async (url: string, init: Record<string, unknown> = {}) => {
-      if (url !== "/api/videos/jobs" || init.method !== "POST") {
-        throw new Error(`unexpected fetch while submit is pending: ${url}`);
-      }
-      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-      postBodies.push(body);
-      const key = typeof body.idempotencyKey === "string" ? body.idempotencyKey : null;
-      if (!committedIdempotencyKey) {
-        committedIdempotencyKey = key;
-        committedJobCount += 1;
-        return postResponse.promise;
-      }
-      assert.equal(key, committedIdempotencyKey, "an ambiguous retry reuses the committed attempt key");
-      return {
-        ok: true,
-        status: 200,
-        async json() {
-          return {
-            jobId: "owned-job",
-            idempotencyKey: key,
-            idempotencyFingerprint: runtimeRequestFingerprint("preview", body),
-          };
-        },
-      };
-    },
+    fetchRuntime,
     {
       localStorage: {
         getItem: () => null,
         setItem: () => undefined,
         removeItem: () => undefined,
       },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
     },
+    browserDocumentMock(),
     () => ({}) as unknown,
     () => undefined,
   );
@@ -838,6 +968,7 @@ function mountAttemptJobHook(
     "exports",
     "fetch",
     "window",
+    "document",
     "setInterval",
     "clearInterval",
     compileJobHook(source),
@@ -845,6 +976,7 @@ function mountAttemptJobHook(
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
     if (specifier === "./mix-presets") return { PRESET_WEIGHTS: { free: {} } };
+    if (specifier === "./estimate") return estimateModule;
     if (specifier === "./ExpiredPreviewView") {
       return {
         mediaStateFromJobPoll: (state: unknown, fallback: unknown) => state ?? fallback,
@@ -862,6 +994,15 @@ function mountAttemptJobHook(
     if (specifier === "@/lib/provider-errors") {
       return { isProviderErrorCode: (value: unknown) => ["invalid_key", "quota", "rate_limit", "transient", "fatal"].includes(String(value)) };
     }
+    if (specifier === "@/lib/authenticated-fetch") {
+      return { authenticatedFetch: fetchImpl };
+    }
+    if (specifier === "@/lib/client-polling") {
+      return { createClientPoller: createImmediateClientPoller };
+    }
+    if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
+    if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
+    if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     throw new Error(`unhandled attempt job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -887,7 +1028,10 @@ function mountAttemptJobHook(
         setItem: () => undefined,
         removeItem: () => undefined,
       },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
     },
+    browserDocumentMock(),
     () => ({}) as unknown,
     () => undefined,
   );
@@ -1539,6 +1683,7 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/avatar-preset") return { getAvatarPreset: async () => null, resolveAvatarLayout: () => null };
     if (specifier === "@/lib/kie-image-guards") return { resolveKieImageAccess: () => ({ kiePaidUnlocked: false }) };
     if (specifier === "@/lib/automix-weights") return { parseAutoMixWeights: () => null };
+    if (specifier === "@/lib/automix-plan") return automixPlanModule;
     if (specifier === "@/lib/broll-preferences") {
       return { normalizeBrollRegionPreference: () => null, normalizeBrollVisualStyle: () => null };
     }
@@ -1547,6 +1692,9 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/brand-assets.server") return { BrandAssetError };
     if (specifier === "@/lib/logo-export.server") {
       return { createDurableExportWithStagedLogo: async () => { throw new Error("unused"); } };
+    }
+    if (specifier === "@/lib/runpod-image-cost.server") {
+      return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
     throw new Error(`unhandled jobs route import: ${specifier}`);
   };
@@ -1750,6 +1898,7 @@ async function runExactReplayRouteScenario(input: {
     }
     if (specifier === "@/lib/kie-image-guards") return { resolveKieImageAccess: () => ({ kiePaidUnlocked: false }) };
     if (specifier === "@/lib/automix-weights") return { parseAutoMixWeights: () => null };
+    if (specifier === "@/lib/automix-plan") return automixPlanModule;
     if (specifier === "@/lib/broll-preferences") {
       return { normalizeBrollRegionPreference: () => null, normalizeBrollVisualStyle: () => null };
     }
@@ -1792,7 +1941,9 @@ async function runExactReplayRouteScenario(input: {
     }
     if (specifier === "@/lib/internal-ai-access") {
       return {
-        isHeroAiBetaUser: () => false,
+        HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE: { status: 403, body: { error: "payment_required" } },
+        HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE: { status: 403, body: { error: "allowance_exhausted" } },
+        resolveHeroAiImageAccess: async () => ({ canUse: true, reason: "eligible" }),
         isInternalAiBetaEnabledFor: () => false,
         isInternalAiTester: () => false,
       };
@@ -1801,6 +1952,51 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/image-generation-provider.server") {
       return { describeImageOffer: () => null };
     }
+    if (specifier === "@/lib/hero-image-route-policy") {
+      return { isHeroRunpodRoute: () => false, usesCustomRunpodEndpoint: () => false };
+    }
+    if (specifier === "@/lib/runpod-image-cost.server") {
+      return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
+    }
+    if (specifier === "@/lib/headline-hook") return headlineHookModule;
+    if (specifier === "@/lib/brand-visual-rollout.server") {
+      return { resolveBrandVisualAccess: async () => ({ canUse: false, reason: "disabled" }) };
+    }
+    if (specifier === "@/lib/brand-visual-job-acceptance.server") {
+      return {
+        resolveBrandVisualRenderAccess: ({
+          requestsBrandVisualImage,
+          hasPersistedProjectPin,
+          liveAccess,
+        }: {
+          requestsBrandVisualImage: boolean;
+          hasPersistedProjectPin: boolean;
+          liveAccess: { canUse?: boolean };
+        }) => requestsBrandVisualImage && (liveAccess.canUse || hasPersistedProjectPin)
+          ? liveAccess.canUse
+            ? liveAccess
+            : { canUse: true, cohort: "existing-pin", bucket: null }
+          : null,
+        prepareBrandVisualJobAcceptance: async () => {
+          touchMutable("brand-visual-job-acceptance");
+          return null;
+        },
+      };
+    }
+    if (specifier === "@/lib/project-look.server") {
+      return {
+        projectHasPersistedVisualPin: async () => false,
+        prepareProjectVisualPin: async () => {
+          touchMutable("project-visual-pin");
+          return null;
+        },
+        ProjectLookError: class ProjectLookError extends Error {},
+      };
+    }
+    if (specifier === "@/lib/content-preflight.server") {
+      return { contentPreflightSourceHash: (kind: string, script: string) => `${kind}:${script}` };
+    }
+    if (specifier === "@/lib/scene-content-policy") return sceneContentPolicyModule;
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));
@@ -2000,6 +2196,45 @@ export async function exactReplayIdentityPrecedesMutableGates(): Promise<void> {
     userId: "route-user",
     idempotencyKey: { startsWith: legacyVideoJobKeyPrefix(legacyFingerprint) },
   }], "the attempt scan is scoped to the authenticated user and this fingerprint only");
+
+  const missingAutoMixReceipt = await runExactReplayRouteScenario({
+    body: {
+      script: "public AutoMix must approve a receipt",
+      voiceProvider: "gemini",
+      stockSource: "auto-mix",
+      autoMixWeights: { video: 3, photo: 2, ai: 1 },
+    },
+  });
+  assert.equal(missingAutoMixReceipt.response.status, 400,
+    "public AutoMix cannot mint an unlimited AI-image budget by omitting Render Receipt");
+  assert.equal(missingAutoMixReceipt.responseBody.error, "render_receipt_required");
+  assert.equal(missingAutoMixReceipt.createCalls.length, 0);
+
+  const fractionalAutoMixReceipt = await runExactReplayRouteScenario({
+    body: {
+      script: "fractional ceiling is not an approved receipt",
+      voiceProvider: "gemini",
+      stockSource: "auto-mix",
+      autoMixWeights: { video: 3, photo: 2, ai: 1 },
+      maxAiImages: 1.5,
+    },
+  });
+  assert.equal(fractionalAutoMixReceipt.response.status, 400,
+    "a malformed public AutoMix ceiling fails closed instead of being rounded or ignored");
+  assert.equal(fractionalAutoMixReceipt.createCalls.length, 0);
+
+  const zeroAutoMixReceipt = await runExactReplayRouteScenario({
+    body: {
+      script: "zero new images is a valid receipt",
+      voiceProvider: "gemini",
+      stockSource: "auto-mix",
+      autoMixWeights: { video: 3, photo: 2, ai: 1 },
+      maxAiImages: 0,
+    },
+  });
+  assert.equal(zeroAutoMixReceipt.response.status, 200,
+    "an explicit zero-image receipt remains valid for retained/reduced-density AutoMix");
+  assert.equal(zeroAutoMixReceipt.createCalls.length, 1);
 
   const otherLegacyBody = { ...legacyBody, script: "a different stale request" };
   const otherLegacyCreate = await runExactReplayRouteScenario({ body: otherLegacyBody });

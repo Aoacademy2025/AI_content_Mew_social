@@ -16,6 +16,8 @@ import {
   WandSparkles,
 } from "lucide-react";
 import { toast } from "sonner";
+import { customerGenerationErrorCopy } from "@/lib/customer-generation-error";
+import { customerApiErrorMessage } from "@/lib/customer-api-error";
 
 type StudioMode = "image" | "voice" | "cloning";
 type ImageEngine = "runpod" | "cloud";
@@ -88,8 +90,7 @@ const IMAGE_ENGINES: ReadonlyArray<{
 ];
 
 function apiMessage(data: unknown, fallback: string): string {
-  if (data && typeof data === "object" && "error" in data && typeof data.error === "string") return data.error;
-  return fallback;
+  return customerApiErrorMessage(data, fallback);
 }
 
 function formatJobTime(iso: string) {
@@ -102,7 +103,9 @@ function JobState({ job }: { job: StudioJob }) {
   }
   if (job.status === "failed") {
     return <span className="text-[11px] font-medium text-red-400">
-      {job.kind === "voice" ? "สร้างเสียงไม่สำเร็จ" : "ไม่สำเร็จ · คืนเครดิตแล้ว"}
+      {job.kind === "voice"
+        ? "สร้างเสียงไม่สำเร็จ"
+        : job.chargeState === "refunded" ? "สร้างภาพไม่สำเร็จ · คืนเครดิตแล้ว" : "สร้างภาพไม่สำเร็จ"}
     </span>;
   }
   return (
@@ -198,8 +201,8 @@ function ResultItem({ job }: { job: StudioJob }) {
         </div>
         <JobState job={job} />
       </div>
-      {job.status === "failed" && job.errorMessage && (
-        <p className="mt-2 text-xs leading-relaxed text-red-300/80">{job.errorMessage}</p>
+      {job.status === "failed" && (
+        <p className="mt-2 text-xs leading-relaxed text-red-300/80">{customerGenerationErrorCopy(job)}</p>
       )}
     </article>
   );

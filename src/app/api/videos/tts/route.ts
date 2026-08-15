@@ -7,7 +7,13 @@ import fs from "fs";
 import os from "os";
 import { execFileSync } from "child_process";
 import { fetchWithBudget } from "@/lib/fetch-budget";
-import { classifyHttpStatus, isProviderError, providerError, toErrorResponse } from "@/lib/provider-errors";
+import {
+  classifyHttpResponse,
+  isProviderError,
+  providerError,
+  shouldStopProviderFallback,
+  toErrorResponse,
+} from "@/lib/provider-errors";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import {
   cachedVoicePreview,
@@ -95,9 +101,9 @@ async function callElevenLabs(
 
     // Auth/quota/voice-not-found errors won't be fixed by switching endpoint
     // or dropping language_code — stop walking the chain and surface the real
-    // error. (400 keeps walking: it can be language_code-related, which the
-    // next variants address.)
-    if (res.status === 401 || res.status === 404 || res.status === 429 || lastErrBody.includes("quota_exceeded")) break;
+    // error. An ordinary 400 keeps walking because it can be language_code-
+    // related; a 400 carrying an invalid-key/quota marker is definitive.
+    if (shouldStopProviderFallback(res.status, lastErrBody)) break;
   }
 
   return { ok: false, status: lastStatus, errBody: lastErrBody };
@@ -175,7 +181,7 @@ async function handleTts(req: Request) {
 
     const r = await callElevenLabs(apiKey, selectedVoiceId, previewText, languageCode, "preview");
     if (!r.ok) {
-      const code = r.errBody.includes("quota_exceeded") ? ("quota" as const) : classifyHttpStatus(r.status);
+      const code = classifyHttpResponse(r.status, r.errBody);
       const pErr = providerError(code, "elevenlabs", `ElevenLabs preview failed (${r.status}): ${r.errBody.slice(0, 200)}`, { status: r.status });
       const { body: errBody, status } = toErrorResponse(pErr);
       return NextResponse.json(errBody, { status });
@@ -204,7 +210,7 @@ async function handleTts(req: Request) {
       // Same failure surface as the old single-call route. No automatic
       // full-script re-run: chunks already generated were paid for — burning
       // the full script again on top would double the user's credit spend.
-      const code = r.errBody.includes("quota_exceeded") ? ("quota" as const) : classifyHttpStatus(r.status);
+      const code = classifyHttpResponse(r.status, r.errBody);
       const pErr = providerError(code, "elevenlabs", `ElevenLabs failed (${r.status}): ${r.errBody.slice(0, 200)}`, { status: r.status });
       const { body: errBody, status } = toErrorResponse(pErr);
       return NextResponse.json(errBody, { status });

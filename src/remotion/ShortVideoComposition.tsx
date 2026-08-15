@@ -4,6 +4,7 @@ import {
   Audio,
   Easing,
   Img,
+  Loop,
   OffthreadVideo,
   Sequence,
   interpolate,
@@ -15,6 +16,9 @@ import {
 import type { ShortVideoConfig, SubtitleStylePreset, SubtitleTextEffect } from "./types";
 import { renderSubtitle } from "./renderSubtitle";
 import { BROLL_SEQUENCE_GUARD_FRAMES } from "../lib/broll-coverage";
+import { resolveBrollPlaybackPlan } from "../lib/broll-playback";
+import { headlineHookEndFrame } from "../lib/headline-hook";
+import { HeadlineHookOverlay } from "./HeadlineHookOverlay";
 
 // Re-export for backwards compatibility with any other importers
 export { renderSubtitle };
@@ -67,14 +71,7 @@ function VideoClip({
       ? interpolate(frame, [0, totalFrames], [1.0, 1.08], { extrapolateRight: "clamp" })
       : interpolate(frame, [0, totalFrames], [1.08, 1.0], { extrapolateRight: "clamp" })
     : 1;
-  // Clamp startFrom and endAt so we never request frames past the clip's
-  // actual duration — prevents "No frame found at position X" errors.
-  // If startFrom is already near the end, loop back to frame 0.
-  const safeStart = clipDurFrames && startFrom >= clipDurFrames
-    ? 0
-    : startFrom;
-  const rawEndAt = safeStart + totalFrames;
-  const endAt = clipDurFrames ? Math.min(rawEndAt, Math.max(0, clipDurFrames - 2)) : rawEndAt;
+  const playback = resolveBrollPlaybackPlan({ startFrom, totalFrames, clipDurFrames });
 
   // Opacity: fade-in (entry) × fade-out (tail for next clip). Eased (smoothstep-ish)
   // so the dissolve looks intentional instead of a linear ramp.
@@ -85,12 +82,11 @@ function VideoClip({
     : 1;
   const opacity = Math.min(fadeIn, fadeOut);
 
-  return (
-    <AbsoluteFill style={{ opacity }}>
+  const video = (
       <OffthreadVideo
         src={src}
-        startFrom={safeStart}
-        endAt={endAt}
+        startFrom={playback.safeStart}
+        endAt={playback.endAt}
         style={{
           position: "absolute",
           top: 0,
@@ -103,6 +99,15 @@ function VideoClip({
         }}
         muted
       />
+  );
+
+  return (
+    <AbsoluteFill style={{ opacity }}>
+      {playback.loopDurationInFrames ? (
+        <Loop durationInFrames={playback.loopDurationInFrames} layout="none">
+          {video}
+        </Loop>
+      ) : video}
     </AbsoluteFill>
   );
 }
@@ -546,6 +551,7 @@ function EndFade({ totalFrames }: { totalFrames: number }) {
 export function ShortVideoComposition({
   bgVideos,
   keywordPopups,
+  headlineHook,
   voiceFile,
   voiceVolume = 1,
   bgmFile,
@@ -566,6 +572,7 @@ export function ShortVideoComposition({
   const preset = subtitleStylePreset ?? "stroke";
   const textEffect: SubtitleTextEffect = subtitleTextEffect ?? "pop";
   const accentColor = subtitleAccentColor ?? "#FFE500";
+  const hookEndFrame = headlineHookEndFrame(headlineHook, fps, durationInFrames);
 
   return (
     <AbsoluteFill style={{ backgroundColor: "#000", fontFamily: resolvedFont, overflow: "hidden" }}>
@@ -660,13 +667,20 @@ export function ShortVideoComposition({
       {/* Background music */}
       {bgmFile && <Audio src={bgmFile} volume={bgmVolume ?? 0.12} loop />}
 
+      {headlineHook?.enabled && hookEndFrame > 0 && (
+        <Sequence from={0} durationInFrames={hookEndFrame} layout="none">
+          <HeadlineHookOverlay hook={headlineHook} durationInFrames={hookEndFrame} />
+        </Sequence>
+      )}
+
       {/* Subtitles */}
       {keywordPopups.map((p) => {
-        const dur = p.end - p.start;
+        const visibleStart = Math.max(p.start, hookEndFrame);
+        const dur = p.end - visibleStart;
         if (dur <= 0) return null;
         const capPreset = p.stylePreset ?? preset;
         return (
-          <Sequence key={`sub-${p.start}-${p.end}`} from={p.start} durationInFrames={dur} layout="none">
+          <Sequence key={`sub-${p.start}-${p.end}`} from={visibleStart} durationInFrames={dur} layout="none">
             <AnimatedSubtitle
               popup={p}
               preset={capPreset}

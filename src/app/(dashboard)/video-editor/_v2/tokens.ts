@@ -33,12 +33,16 @@ export const color = {
   // Status
   success: "#34D399",
   warning: "#FBBF24",
+  warningText: "#FCD34D",
   danger: "#F87171",
+  dangerText: "#FCA5A5",
   info: "#38BDF8",
+  infoText: "#7DD3FC",
 
   // Track colors (คงที่ทั้งระบบ)
   trackAvatar: "#8B5CF6",
   trackBroll: "#38BDF8",
+  trackHook: "#F97316",
   trackSub: "#FBBF24",
   trackVoice: "#34D399",
   trackMusic: "#F472B6",

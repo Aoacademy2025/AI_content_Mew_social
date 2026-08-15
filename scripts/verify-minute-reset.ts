@@ -5,7 +5,8 @@
 //   DATABASE_URL="file:$ROOT/prisma/test-min-reset.db" npx prisma db push --skip-generate --accept-data-loss
 //   DATABASE_URL="file:$ROOT/prisma/test-min-reset.db?connection_limit=1" npx tsx scripts/verify-minute-reset.ts
 import { prisma } from "../src/lib/prisma";
-import { usageWindowForPlan } from "../src/lib/usage-limits";
+import { syncUsageWindow, usageWindowForPlan } from "../src/lib/usage-limits";
+import { syncMinuteWindow } from "../src/lib/minute-limits";
 import { syncUserEntitlement } from "../src/lib/entitlements";
 import { minutesPerMonthForPlan } from "../src/lib/plan-limits";
 
@@ -40,6 +41,42 @@ async function main() {
   assert(after!.minutesLimit === minutesPerMonthForPlan("FREE"), "downgrade set minutesLimit to FREE allowance (5)");
   // The decisive outcome: a freshly-downgraded FREE user actually has render minutes available.
   assert(after!.minutesLimit - after!.minutesUsed === 5, "FREE user has 5 render minutes available after downgrade (bug would give 0)");
+
+  // 3) A normal 30-day rollover has one shared anchor. Whichever quota sync runs first
+  // must reset every counter in the cycle; otherwise that first sync advances the anchor
+  // and strands the other meter in the previous window.
+  await prisma.user.deleteMany();
+  const expiredAt = new Date(now.getTime() - 31 * DAY_MS);
+  const clipsFirst = await prisma.user.create({
+    data: {
+      name: "clips-first", email: "clips-first@t.test", plan: "PRO",
+      usageCount: 7, usageLimit: 100,
+      minutesUsed: 21, minutesLimit: 80,
+      aiAudioMinutesUsed: 12, aiTextCallsUsed: 4,
+      usagePeriodStartedAt: expiredAt,
+    },
+  });
+  await syncUsageWindow(clipsFirst.id);
+  const afterClipsFirst = await prisma.user.findUnique({ where: { id: clipsFirst.id } });
+  assert(afterClipsFirst!.usageCount === 0, "expired shared window resets clip count when clip sync runs first");
+  assert(afterClipsFirst!.minutesUsed === 0, "expired shared window resets minutes when clip sync runs first");
+  assert(afterClipsFirst!.aiAudioMinutesUsed === 0, "expired shared window resets AI-audio usage when clip sync runs first");
+  assert(afterClipsFirst!.aiTextCallsUsed === 0, "expired shared window resets AI-text usage when clip sync runs first");
+
+  await prisma.user.deleteMany();
+  const minutesFirst = await prisma.user.create({
+    data: {
+      name: "minutes-first", email: "minutes-first@t.test", plan: "PRO",
+      usageCount: 7, usageLimit: 100,
+      minutesUsed: 21, minutesLimit: 80,
+      aiAudioMinutesUsed: 12, aiTextCallsUsed: 4,
+      usagePeriodStartedAt: expiredAt,
+    },
+  });
+  await syncMinuteWindow(minutesFirst.id);
+  const afterMinutesFirst = await prisma.user.findUnique({ where: { id: minutesFirst.id } });
+  assert(afterMinutesFirst!.minutesUsed === 0, "expired shared window resets minutes when minute sync runs first");
+  assert(afterMinutesFirst!.usageCount === 0, "expired shared window resets clip count when minute sync runs first");
 
   await prisma.user.deleteMany();
   await prisma.$disconnect();

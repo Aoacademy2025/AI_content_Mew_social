@@ -8,10 +8,20 @@ import { execFile } from "child_process";
 import { apiError } from "@/lib/api-error";
 import { geminiGenerateText } from "@/lib/gemini";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
-import { sanitizeChunkTimeline, chunkTailGapMs, chunkNeedsRetry } from "@/lib/transcribe-timeline";
+import {
+  TRANSCRIBE_CHUNK_MAX_MS,
+  chunkTranscriptionReferenceDurationMs,
+  chunkTailGapMs,
+  normalizeGeminiWords,
+  parseTranscriptionSilenceAnalysis,
+  planTranscriptionChunkBoundaries,
+  runTranscriptionQualityRetries,
+  sanitizeChunkTimeline,
+} from "@/lib/transcribe-timeline";
 import { isSafeFetchUrl, assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
-import { reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
+import { refundAiAudioMinutes, reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
+import { audioDurationLimitViolation } from "@/lib/plan-limits";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -446,54 +456,21 @@ function getAudioDurationMs(audioPath: string): Promise<number> {
 // (ffmpeg slicing). Smaller chunks = exact anchors twice as often = drift can
 // never accumulate far. Costs ~2× Gemini calls per long clip (sequential,
 // well inside flash free-tier RPM).
-const CHUNK_THRESHOLD_MS = 240_000; // >4 min ⇒ chunk
-const CHUNK_TARGET_MS = 75_000;     // ~75s target chunk
-const CHUNK_MAX_MS = 110_000;       // 110s hard cap per chunk
-
-// Run silencedetect over the mp3 and return silence-end timestamps (ms), sorted.
-// These are used as candidate cut points (cut at the end of each silence).
-function detectSilences(ffmpegPath: string, mp3Path: string): Promise<number[]> {
+// Run silencedetect once for internal cut points and proven trailing silence at EOF.
+function detectSilenceAnalysis(
+  ffmpegPath: string,
+  mp3Path: string,
+  totalDurationMs: number,
+): Promise<ReturnType<typeof parseTranscriptionSilenceAnalysis>> {
   return new Promise((resolve) => {
     execFile(ffmpegPath, [
       "-i", mp3Path,
       "-af", "silencedetect=noise=-30dB:d=0.3",
       "-f", "null", "-",
     ], { maxBuffer: 20 * 1024 * 1024 }, (_err, _stdout, stderr) => {
-      const out: number[] = [];
-      const re = /silence_end:\s*([\d.]+)/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(stderr || "")) !== null) {
-        const sec = parseFloat(m[1]);
-        if (Number.isFinite(sec)) out.push(Math.round(sec * 1000));
-      }
-      out.sort((a, b) => a - b);
-      resolve(out);
+      resolve(parseTranscriptionSilenceAnalysis(stderr || "", totalDurationMs));
     });
   });
-}
-
-// Pick internal cut points so each chunk lands near CHUNK_TARGET_MS, preferring a
-// real silence within [lastCut+60s, lastCut+CHUNK_MAX_MS]; hard-cut if none in range.
-// Returns the internal cut points only (excludes 0 and totalMs).
-function planChunkBoundaries(totalMs: number, silences: number[]): number[] {
-  const cuts: number[] = [];
-  let lastCut = 0;
-  while (totalMs - lastCut > CHUNK_MAX_MS) {
-    const target = lastCut + CHUNK_TARGET_MS;
-    const lo = lastCut + 60_000;
-    const hi = lastCut + CHUNK_MAX_MS;
-    let best = -1;
-    let bestDist = Infinity;
-    for (const s of silences) {
-      if (s < lo || s > hi) continue;
-      const dist = Math.abs(s - target);
-      if (dist < bestDist) { bestDist = dist; best = s; }
-    }
-    const cut = best >= 0 ? best : hi; // hard-cut when no silence in range
-    cuts.push(cut);
-    lastCut = cut;
-  }
-  return cuts;
 }
 
 // Slice [startMs,endMs) out of the mp3 (stream copy), return its bytes, unlink the slice.
@@ -632,7 +609,7 @@ endMs ของซับ[i] ต้องน้อยกว่า startMs ขอ�
 ${script.trim().slice(0, 2000)}` : ""}
 
 ━━━ OUTPUT — JSON เท่านั้น ไม่มี markdown ━━━
-{"captions":[{"text":"...","startMs":0,"endMs":2300,"tag":"hook"},...],"words":[{"word":"...","start":0.0,"end":0.35},...], "fullText":"..."}
+{"captions":[{"text":"...","startMs":0,"endMs":2300,"tag":"hook"},...],"words":[{"word":"...","startMs":0,"endMs":350},...], "fullText":"..."}
 
 ใส่ words array ด้วยเพื่อให้ระบบ verify timestamps`;
 
@@ -756,7 +733,7 @@ ${script.trim().slice(0, 2000)}` : ""}
     const match = stripped.match(/\{[\s\S]*\}/) ?? (allMatches.length > 0 ? allMatches[allMatches.length - 1] : null);
 
     if (match) {
-      type GeminiWord = { word?: string; start?: number; end?: number };
+      type GeminiWord = { word?: string; start?: number; end?: number; startMs?: number; endMs?: number };
       type GeminiCap = { text?: string; startMs?: number; endMs?: number; tag?: string };
       type GeminiSeg = { text?: string; start?: number; end?: number; words?: GeminiWord[] };
       let parsed: { fullText?: string; captions?: GeminiCap[]; segments?: GeminiSeg[]; words?: GeminiWord[] } | null = null;
@@ -779,22 +756,28 @@ ${script.trim().slice(0, 2000)}` : ""}
 
       if (parsed) {
         // Extract word timestamps (top-level or nested in segments)
-        const geminiWords: typeof words = [];
+        const rawGeminiWords: GeminiWord[] = [];
         if (Array.isArray(parsed.words)) {
           for (const w of parsed.words) {
-            if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number")
-              geminiWords.push({ word: w.word, start: w.start, end: w.end });
+            if (typeof w.word === "string") rawGeminiWords.push(w);
           }
         }
-        if (geminiWords.length === 0 && Array.isArray(parsed.segments)) {
+        if (rawGeminiWords.length === 0 && Array.isArray(parsed.segments)) {
           for (const s of parsed.segments) {
             for (const w of (s.words ?? [])) {
-              if (typeof w.word === "string" && typeof w.start === "number" && typeof w.end === "number")
-                geminiWords.push({ word: w.word, start: w.start, end: w.end });
+              if (typeof w.word === "string") rawGeminiWords.push(w);
             }
           }
         }
-        if (geminiWords.length > 0) words = geminiWords;
+        if (rawGeminiWords.length > 0) {
+          const normalized = normalizeGeminiWords(rawGeminiWords, chunkDurationMs);
+          words = normalized.words;
+          if (normalized.detectedUnit === "milliseconds" && rawGeminiWords.some((word) => word.startMs == null)) {
+            console.warn("[transcribe] normalized legacy Gemini word timestamps from milliseconds");
+          } else if (normalized.detectedUnit === "invalid") {
+            console.warn("[transcribe] dropped Gemini words with unrecoverable timestamp units");
+          }
+        }
 
         // Try new combined captions format first
         if (Array.isArray(parsed.captions) && parsed.captions.length > 0) {
@@ -848,11 +831,15 @@ ${script.trim().slice(0, 2000)}` : ""}
 }
 
 export async function POST(req: Request) {
+  let reservationUserId: string | null = null;
+  let managedAiAudioReservedMinutes = 0;
+  let transcriptionCompleted = false;
   try {
     const authUser = await getCurrentUser();
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
+    reservationUserId = authUser.id;
 
     const { audioUrl, scriptPrompt, script } = await req.json();
     if (!audioUrl) {
@@ -936,6 +923,12 @@ export async function POST(req: Request) {
     }
     if (needsCleanup) try { fs.unlinkSync(inputPath); } catch {}
 
+    const durationViolation = audioDurationLimitViolation(sourceAudioDurationMs, user?.plan ?? "FREE");
+    if (durationViolation) {
+      try { fs.unlinkSync(mp3Path); } catch {}
+      return NextResponse.json({ error: durationViolation }, { status: 403 });
+    }
+
     type WhisperWord = { word: string; start: number; end: number };
     type WhisperSegment = { text: string; start: number; end: number };
     type CaptionItem = { text: string; startMs: number; endMs: number; timestampMs: number; confidence: number; tag?: "hook" | "body" | "cta" };
@@ -948,14 +941,15 @@ export async function POST(req: Request) {
     if (useGeminiTranscribe) {
       // AI-audio ceiling (managed): transcribe spends server Gemini on the input
       // audio duration. Reserve up front (atomic) so an at-ceiling user is blocked
-      // before the spend — bounds the loopable transcribe endpoint. (refund-on-failure
-      // is a fast-follow; transcribe is avatar/upload-only and rarely fails.)
+      // before the spend — bounds the loopable transcribe endpoint. The outer
+      // finally refunds this reservation unless a complete transcript is returned.
       const aiMinutes = sourceAudioDurationMs > 0 ? sourceAudioDurationMs / 60_000 : 1;
       const ai = await reserveAiAudioMinutes(authUser.id, aiMinutes, { enforce: geminiMode === "managed" });
       if (!ai.allowed) {
         try { fs.unlinkSync(mp3Path); } catch {} // don't orphan the extracted mp3 on the ceiling-block path
         return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: ai.message }, { status: 429 });
       }
+      if (geminiMode === "managed") managedAiAudioReservedMinutes = aiMinutes;
       // ── Gemini Audio Transcribe with timestamps ──
       console.log("[transcribe] using Gemini transcribe with timestamps...");
       try {
@@ -963,9 +957,15 @@ export async function POST(req: Request) {
         const audioBuffer = fs.readFileSync(mp3Path);
         const ffmpeg = getFfmpegPath();
         let chunkPlan: { buffer: Buffer; startMs: number; durationMs: number }[] = [];
-        if (sourceAudioDurationMs > CHUNK_THRESHOLD_MS) {
-          const silences = await detectSilences(ffmpeg, mp3Path).catch(() => []);
-          const cuts = planChunkBoundaries(sourceAudioDurationMs, silences);
+        let trailingSilenceStartMs: number | null = null;
+        if (sourceAudioDurationMs > TRANSCRIBE_CHUNK_MAX_MS) {
+          const silenceAnalysis = await detectSilenceAnalysis(
+            ffmpeg,
+            mp3Path,
+            sourceAudioDurationMs,
+          ).catch(() => ({ cutPointsMs: [], trailingSilenceStartMs: null }));
+          trailingSilenceStartMs = silenceAnalysis.trailingSilenceStartMs;
+          const cuts = planTranscriptionChunkBoundaries(sourceAudioDurationMs, silenceAnalysis.cutPointsMs);
           if (cuts.length >= 1) {
             const bounds = [0, ...cuts, sourceAudioDurationMs];
             for (let i = 0; i < bounds.length - 1; i++) {
@@ -996,25 +996,45 @@ export async function POST(req: Request) {
               ? fullScript.slice(Math.floor(fullScript.length * lo), Math.ceil(fullScript.length * hi))
               : "";
             chunkIdx++;
-            let rawChunk = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
-            // Desynced chunk → RE-TRANSCRIBE it: flash is non-deterministic and a
-            // re-roll usually re-syncs. Blanket-rescaling a badly drifted chunk
-            // drags its correct early captions out of sync (prod 06-12 #2: chunk 1
-            // ×1.264 → first 2:30 desynced). Desync is judged in BOTH directions —
-            // an undershooting transcript compresses captions ahead of the voice
-            // (prod 06-12 #3: subs ran early after 2:20) — and attempts are
-            // compared by |tail gap|, so a 0.7× roll never beats a 1.1× one.
-            const CHUNK_MAX_ATTEMPTS = 3;
-            for (let attempt = 2; attempt <= CHUNK_MAX_ATTEMPTS && chunkNeedsRetry(rawChunk.geminiDirectCaptions, ch.durationMs); attempt++) {
-              const gapSec = chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs) / 1000;
-              console.warn(`[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: tail ${gapSec >= 0 ? "+" : ""}${gapSec.toFixed(1)}s vs slice — re-transcribing (attempt ${attempt}/${CHUNK_MAX_ATTEMPTS})`);
-              const retry = await geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs);
-              const retryBetter =
-                retry.geminiDirectCaptions.length > 0 &&
-                (rawChunk.geminiDirectCaptions.length === 0 ||
-                  Math.abs(chunkTailGapMs(retry.geminiDirectCaptions, ch.durationMs)) <
-                  Math.abs(chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs)));
-              if (retryBetter) rawChunk = retry;
+            const referenceDurationMs = chunkTranscriptionReferenceDurationMs({
+              chunkStartMs: ch.startMs,
+              chunkDurationMs: ch.durationMs,
+              totalDurationMs: sourceAudioDurationMs,
+              trailingSilenceStartMs,
+            });
+            // Retry semantic timeline failures in-process. Returning retryable:422
+            // cannot recover a background VideoJob because its HTTP client correctly
+            // treats all 4xx as terminal (auth/quota must never be blindly retried).
+            const quality = await runTranscriptionQualityRetries(
+              () => geminiTranscribeChunk(ch.buffer, geminiKey, chunkScript, ch.durationMs),
+              referenceDurationMs,
+              3,
+              ({ nextAttempt, tailGapMs }) => {
+                const gapSec = tailGapMs / 1000;
+                console.warn(
+                  `[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: tail `
+                  + `${gapSec >= 0 ? "+" : ""}${gapSec.toFixed(1)}s vs slice — `
+                  + `re-transcribing (attempt ${nextAttempt}/3)`,
+                );
+              },
+            );
+            const rawChunk = quality.result;
+            if (!quality.accepted) {
+              const tailGapMs = chunkTailGapMs(rawChunk.geminiDirectCaptions, referenceDurationMs);
+              return NextResponse.json({
+                error: "ถอดซับช่วงหนึ่งไม่ครบหรือไม่ตรงจังหวะหลังลองใหม่ 3 ครั้ง — กรุณาลองสร้างอีกครั้ง",
+                provider: "gemini",
+                reason: rawChunk.geminiDirectCaptions.length === 0
+                  ? "empty_captions"
+                  : tailGapMs < 0
+                    ? "transcribe_incomplete"
+                    : "transcribe_desynced",
+                retryable: true,
+                sourceAudioDurationMs,
+                chunkIndex: chunkIdx,
+                chunkDurationMs: ch.durationMs,
+                captionDurationMs: rawChunk.geminiDirectCaptions.at(-1)?.endMs ?? 0,
+              }, { status: 422 });
             }
             // Per-chunk timestamp guard: rescale residual tail drift onto the real
             // slice duration, drop word timestamps hallucinated past the slice
@@ -1047,8 +1067,21 @@ export async function POST(req: Request) {
           }
           console.log(`[transcribe] merged ${chunkPlan.length} chunks → ${geminiDirectCaptions.length} captions, ${words.length} words`);
         } else {
-          // short audio (or no usable silence split): single call = unchanged behavior
-          const r = await geminiTranscribeChunk(audioBuffer, geminiKey, script, sourceAudioDurationMs);
+          // ≤110s audio still gets the same bounded semantic recovery: production
+          // also saw incomplete/desynced responses at 103-105s.
+          const quality = await runTranscriptionQualityRetries(
+            () => geminiTranscribeChunk(audioBuffer, geminiKey, script, sourceAudioDurationMs),
+            sourceAudioDurationMs,
+            3,
+            ({ nextAttempt, tailGapMs }) => {
+              const gapSec = tailGapMs / 1000;
+              console.warn(
+                `[transcribe] single-call tail ${gapSec >= 0 ? "+" : ""}${gapSec.toFixed(1)}s `
+                + `vs audio — re-transcribing (attempt ${nextAttempt}/3)`,
+              );
+            },
+          );
+          const r = quality.result;
           words = r.words; segments = r.segments; geminiDirectCaptions = r.geminiDirectCaptions; fullText = r.fullText;
         }
       } catch (e: unknown) {
@@ -1641,6 +1674,7 @@ Total audio: ${audioDur.toFixed(2)}s`;
       sourceAudioDurationMs,
     );
 
+    transcriptionCompleted = true;
     return NextResponse.json({
       captions: timelineFixedCaptions,
       segments: safeSegments,
@@ -1650,5 +1684,11 @@ Total audio: ${audioDur.toFixed(2)}s`;
     });
   } catch (error) {
     return apiError({ route: "videos/transcribe", error, notifyUser: true });
+  } finally {
+    if (reservationUserId && managedAiAudioReservedMinutes > 0 && !transcriptionCompleted) {
+      await refundAiAudioMinutes(reservationUserId, managedAiAudioReservedMinutes).catch((error) => {
+        console.error("[transcribe] failed to refund managed AI-audio reservation:", error);
+      });
+    }
   }
 }

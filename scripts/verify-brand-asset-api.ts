@@ -83,7 +83,7 @@ const MAX_RECEIPT_BYTES = 1024;
 const CLERK_SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
 
 const errorCases = [
-  ["plan_required", 403, "ฟีเจอร์โลโก้แบรนด์ใช้ได้เฉพาะแผน Pro หรือ Business"],
+  ["plan_required", 403, "บัญชีนี้ยังไม่สามารถจัดการโลโก้หรือลายน้ำของแบรนด์ได้"],
   ["project_not_found", 404, "ไม่พบโปรเจกต์"],
   ["unsupported_type", 415, "รองรับเฉพาะไฟล์ JPG, PNG หรือ WebP"],
   ["payload_too_large", 413, "ไฟล์ใหญ่เกิน 5 MB"],
@@ -3220,6 +3220,11 @@ async function main(): Promise<void> {
   assert.equal(ownImageResponse.headers.get("x-content-type-options"), "nosniff");
   assert.equal(await ownImageResponse.text(), "owner-image");
   assertNoStorageData(Object.fromEntries(ownImageResponse.headers));
+
+  const brandVisualFreeActor = { ...freeActor, brandVisualAllowed: true };
+  const brandVisualFreeCollection = await getBrandAssetCollection(brandVisualFreeActor);
+  assert.equal((await json(brandVisualFreeCollection)).eligible, true,
+    "a treatment Free account can manage the Brand Profile watermark without buying capacity");
 
   const freeUploadResponse = await postBrandAsset(
     freeActor,

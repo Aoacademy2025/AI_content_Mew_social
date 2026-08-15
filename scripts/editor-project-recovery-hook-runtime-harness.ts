@@ -4,9 +4,12 @@ import ts from "typescript";
 import * as bootstrapModule from "../src/lib/editor-project-bootstrap";
 import * as journalModule from "../src/lib/editor-project-recovery-journal";
 import * as logoOverlayModule from "../src/lib/logo-overlay";
+import * as headlineHookModule from "../src/lib/headline-hook";
 import * as lineageModule from "../src/lib/editor-project-autosave-lineage";
 import * as ttsProvidersModule from "../src/lib/tts-providers";
 import * as editorLayerVisibilityModule from "../src/lib/editor-layer-visibility";
+import * as editorDefaultDraftModule from "../src/lib/editor-default-draft";
+import * as editorStylePresetModule from "../src/lib/editor-style-preset-contract";
 import {
   createEditorProjectSaveQueue,
   type EditorProjectSaveInput,
@@ -413,6 +416,7 @@ type ProjectHook = {
   } | undefined): void;
   saveStatus: "idle" | "saving" | "saved" | "error";
   retryProjectSave(): void;
+  flushPendingProjectDraft(): Promise<boolean>;
   resetProject(): Promise<string | null>;
   recovery: {
     status: string;
@@ -484,7 +488,16 @@ function createHarness(options: HarnessOptions = {}) {
   const fakeReact: Record<string, unknown> = {};
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
-    if (specifier === "@/lib/use-me") return { fetchMe: () => options.fetchMe ?? Promise.resolve({ role: "ADMIN" }) };
+    if (specifier === "@/lib/use-me") {
+      return {
+        fetchMe: () => options.fetchMe ?? Promise.resolve({ role: "ADMIN" }),
+        resolveBrandVisualClientAccess: (account: JsonRecord | null | undefined) => {
+          const featureAccess = account?.featureAccess as JsonRecord | undefined;
+          const brandVisual = featureAccess?.brandVisual as JsonRecord | undefined;
+          return brandVisual?.canUse === true || account?.brandVisualAllowed === true;
+        },
+      };
+    }
     if (specifier === "../_components/types") {
       return { DEFAULT_AUTO_MIX_PROVIDERS: ["video", "pexels-photo", "pixabay-photo"] };
     }
@@ -498,16 +511,31 @@ function createHarness(options: HarnessOptions = {}) {
         presetBrollSource: (preset: string) => preset === "free" ? "stock" : "automix",
       };
     }
+    if (specifier === "@/lib/editor-default-draft") return editorDefaultDraftModule;
     if (specifier === "@/lib/editor-project-save-queue") return { editorProjectSaveQueue: queue };
     if (specifier === "@/lib/editor-project-bootstrap") return bootstrapModule;
     if (specifier === "@/lib/editor-project-recovery-journal") return journalModule;
     if (specifier === "@/lib/editor-project-autosave-lineage") return lineageModule;
     if (specifier === "@/lib/logo-overlay") return logoOverlayModule;
+    if (specifier === "@/lib/headline-hook") return headlineHookModule;
     // Pure module (normalize/derive only, no I/O) — same class as logo-overlay above, so run
     // the real one and let the harness exercise production layer-visibility normalization.
     if (specifier === "@/lib/editor-layer-visibility") return editorLayerVisibilityModule;
+    // Pure module — keep project-bootstrap tests on the same subtitle-default coercion as runtime.
+    if (specifier === "@/lib/editor-style-preset-contract") return editorStylePresetModule;
     // Pure module — run the real parser so the harness sees production voice-engine coercion.
     if (specifier === "@/lib/tts-providers") return ttsProvidersModule;
+    if (specifier === "@/lib/video-account-defaults") {
+      return { saveVideoAccountDefaults: async () => ({ ok: true }) };
+    }
+    if (specifier === "@/lib/client-request-cache") {
+      return {
+        fetchClientJson: async () => ({ ok: true, status: 200, data: null }),
+      };
+    }
+    if (specifier === "@/lib/authenticated-fetch") {
+      return { authenticatedFetch: fetchMock.fetch };
+    }
     // The canary hook is a network gate, not project lifecycle: stub it to the value the real
     // hook returns when NEXT_PUBLIC_OMNIVOICE_ENABLED is unset (the CI/build default).
     if (specifier === "../_hooks/useOmniVoiceAvailability") {
@@ -1205,7 +1233,16 @@ async function settingsAfterServerHydration(): Promise<void> {
     ttsProvider: "elevenlabs",
     geminiVoiceName: "Late Voice",
   }));
-  me.resolve({ role: "USER", plan: "FREE", kiePaidUnlocked: false, managedKieOn: true });
+  me.resolve({
+    role: "USER",
+    plan: "PRO",
+    effectivePlan: "PRO",
+    kiePaidUnlocked: false,
+    heroAiImageEligible: true,
+    brandVisualAllowed: true,
+    recommendedAutoMixDefault: true,
+    managedKieOn: true,
+  });
   await settle(harness.runner);
   assert.deepEqual({
     avatarId: harness.runner.current.avatarId,
@@ -1224,6 +1261,76 @@ async function settingsAfterServerHydration(): Promise<void> {
     brollSource: "automix",
     providers: ["kie-ai"],
   }, "late account initialization cannot overwrite the chosen server draft");
+}
+
+async function paidBrandVisualDefaultsNewProjectToRecommendedAutoMix(): Promise<void> {
+  const harness = createHarness({
+    fetchMe: Promise.resolve({
+      role: "USER",
+      plan: "PRO",
+      effectivePlan: "PRO",
+      kiePaidUnlocked: false,
+      heroAiImageEligible: true,
+      brandVisualAllowed: true,
+      recommendedAutoMixDefault: true,
+    }),
+  });
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const created = postBodies(harness.fetchMock)[0];
+  assert.ok(created, "a fresh paid Brand Visual account creates one durable project");
+  assert.deepEqual({
+    persistedPreset: (created.draft as JsonRecord).mixPreset,
+    persistedSource: (created.draft as JsonRecord).brollSource,
+    persistedProviders: (created.draft as JsonRecord).autoMixProviders,
+    visiblePreset: harness.runner.current.mixPreset,
+    visibleSource: harness.runner.current.brollSource,
+    visibleProviders: harness.runner.current.autoMixProviders,
+  }, {
+    persistedPreset: "recommended",
+    persistedSource: "automix",
+    persistedProviders: ["video", "pexels-photo", "pixabay-photo", "kie-ai"],
+    visiblePreset: "recommended",
+    visibleSource: "automix",
+    visibleProviders: ["video", "pexels-photo", "pixabay-photo", "kie-ai"],
+  }, "a paid Brand Visual user's first durable draft defaults to recommended AutoMix without the internal KIE gate");
+}
+
+async function paidBrandVisualHydrationPreservesExistingMixChoice(): Promise<void> {
+  const harness = createHarness({
+    search: "?projectId=paid-existing-choice",
+    fetchMe: Promise.resolve({
+      role: "USER",
+      plan: "PRO",
+      effectivePlan: "PRO",
+      kiePaidUnlocked: false,
+      heroAiImageEligible: true,
+      brandVisualAllowed: true,
+      recommendedAutoMixDefault: true,
+    }),
+  });
+  harness.fetchMock.enqueue("GET", editorUrl("paid-existing-choice"), response(200, {
+    project: project("paid-existing-choice", 4, {
+      mixPreset: "free",
+      brollSource: "stock",
+      autoMixProviders: ["video", "pexels-photo", "pixabay-photo"],
+    }),
+  }));
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  assert.deepEqual({
+    preset: harness.runner.current.mixPreset,
+    source: harness.runner.current.brollSource,
+    providers: harness.runner.current.autoMixProviders,
+    patches: patchBodies(harness.fetchMock).length,
+  }, {
+    preset: "free",
+    source: "stock",
+    providers: ["video", "pexels-photo", "pixabay-photo"],
+    patches: 0,
+  }, "paid-plan defaults never overwrite an existing project's explicit Stock choice");
 }
 
 async function exactEqualRevisionResume(): Promise<void> {
@@ -1733,6 +1840,15 @@ async function publicSetterRuntimeContract(): Promise<void> {
   await settle(harness.runner);
   const scriptSetter = harness.runner.current.setScript;
   scriptSetter((value) => `${value}-functional`);
+  assert.equal(harness.runner.current.recovery.status, "none",
+    "editing script without a configured headline keeps the draft JSON-safe");
+  const stagedJournal = journalModule.readEditorProjectRecoveryJournal(
+    harness.storage,
+    "setters-a",
+  );
+  assert.ok(stagedJournal, "editing script stages a recovery journal synchronously");
+  assert.equal(Object.hasOwn(stagedJournal.draft, "headlineHook"), false,
+    "an absent optional headline is omitted from the staged draft");
   harness.runner.flush();
   assert.equal(harness.runner.current.script, "base-functional");
   assert.equal(harness.runner.current.setScript, scriptSetter, "public functional setter identity is stable");
@@ -1744,6 +1860,80 @@ async function publicSetterRuntimeContract(): Promise<void> {
   assert.equal(harness.runner.current.mixPreset, "recommended");
   assert.equal(harness.runner.current.brollSource, "automix");
   assert.deepEqual(harness.runner.current.autoMixProviders, ["video", "pexels-photo", "pixabay-photo", "kie-ai"]);
+}
+
+async function pendingUploadFlushesBeforeAuthoritativeBrandPin(): Promise<void> {
+  const projectId = "upload-brand-pin";
+  const server = new SharedEditorServer();
+  server.setProject(projectId, 2, {
+    mode: "upload",
+    clipUrl: "",
+    clipDurationSec: 0,
+    mixPreset: "free",
+    brollSource: "stock",
+  });
+  const harness = createHarness({ search: `?projectId=${projectId}`, server });
+  harness.runner.mount();
+  await settle(harness.runner);
+
+  const uploadedClip = "/api/renders/avatar-upload-ticket.mp4";
+  harness.runner.current.setClipUrl(uploadedClip);
+  harness.runner.current.setClipDurationSec(90.818);
+  harness.runner.flush();
+
+  const flush = harness.runner.current.flushPendingProjectDraft();
+  await settle(harness.runner);
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  assert.equal(await flush, true, "the pending upload is durably saved before a Brand mutation");
+
+  const persistedDraft = server.read(projectId)?.draft as JsonRecord;
+  assert.deepEqual({
+    clipUrl: persistedDraft.clipUrl,
+    clipDurationSec: persistedDraft.clipDurationSec,
+  }, {
+    clipUrl: uploadedClip,
+    clipDurationSec: 90.818,
+  }, "the flush persists the exact uploaded clip through the editor project interface");
+
+  const brandSnapshot = project(projectId, 4, {
+    ...persistedDraft,
+    mixPreset: "recommended",
+    brollSource: "automix",
+  });
+  server.setProject(projectId, 4, brandSnapshot.draft as JsonRecord);
+  const replacementClip = "/api/renders/avatar-upload-newer-ticket.mp4";
+  harness.runner.current.setClipUrl(replacementClip);
+  harness.runner.current.setClipDurationSec(91.5);
+  harness.runner.flush();
+  const accepted = harness.runner.current.acceptAuthoritativeProjectSnapshot(brandSnapshot);
+  harness.runner.flush();
+
+  assert.deepEqual({
+    accepted,
+    clipUrl: harness.runner.current.clipUrl,
+    clipDurationSec: harness.runner.current.clipDurationSec,
+    mixPreset: harness.runner.current.mixPreset,
+    brollSource: harness.runner.current.brollSource,
+  }, {
+    accepted: true,
+    clipUrl: replacementClip,
+    clipDurationSec: 91.5,
+    mixPreset: "recommended",
+    brollSource: "automix",
+  }, "Brand Visual defaults apply without discarding a newer edit made while its request was in flight");
+
+  harness.clock.advance(1_000);
+  await settle(harness.runner);
+  assert.deepEqual({
+    clipUrl: (server.read(projectId)?.draft as JsonRecord).clipUrl,
+    clipDurationSec: (server.read(projectId)?.draft as JsonRecord).clipDurationSec,
+    mixPreset: (server.read(projectId)?.draft as JsonRecord).mixPreset,
+  }, {
+    clipUrl: replacementClip,
+    clipDurationSec: 91.5,
+    mixPreset: "recommended",
+  }, "the rebased newer upload is durably autosaved above the Brand Revision snapshot");
 }
 
 async function failedJournalWriteStillAutosaves(): Promise<void> {
@@ -2609,6 +2799,8 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["late-patch-callbacks", resetAndUnmountIgnoreLatePatchResponse],
     ["second-ambiguity-refresh", secondAmbiguityLocksUntilGetOnlyRefresh],
     ["settings-after-GET", settingsAfterServerHydration],
+    ["paid-brand-visual-default", paidBrandVisualDefaultsNewProjectToRecommendedAutoMix],
+    ["paid-brand-visual-existing-choice", paidBrandVisualHydrationPreservesExistingMixChoice],
     ["equal-revision-resume", exactEqualRevisionResume],
     ["blank-bootstrap-initialization", blankBootstrapBlocksUserMutationDuringInitialization],
     ["explicit-empty-bootstrap", explicitEmptyBootstrapStaysUnpersisted],
@@ -2629,6 +2821,7 @@ export async function verifyRuntimeHookContract(): Promise<void> {
     ["reset-unmount-during-brand", unmountWhileResetAwaitsBrandAssets],
     ["reset-unmount-during-POST", unmountWhileResetPostIsPending],
     ["functional-public-setters", publicSetterRuntimeContract],
+    ["pending-upload-before-brand-pin", pendingUploadFlushesBeforeAuthoritativeBrandPin],
     ["journal-write-failure", failedJournalWriteStillAutosaves],
     ["project-switching", projectScopedSwitching],
     ["StrictMode-setup-cleanup", strictModeDoesNotDuplicateWrites],
@@ -2740,6 +2933,7 @@ export async function verifyRuntimeHookMutationSensitivity(): Promise<void> {
 
   const missingUnmountOwnership = hookSource.replace(
     `mountedRef.current = false;
+      settleProjectDraftFlushWaiters(null, false);
       autosaveLineageRef.current?.issued.clear();
       autosaveGenerationRef.current += 1;
       autosaveLineageRef.current = null;

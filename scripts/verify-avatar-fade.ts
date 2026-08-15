@@ -309,7 +309,7 @@ try {
   assert.match(routeSource, /singleAvatarFadeWindow/);
   assert.match(
     routeSource,
-    /directComposite\(bgTmp,\s*avatarTmp,\s*outPath,\s*sourceFadeWindows\)/,
+    /directComposite\(bgTmp,\s*avatarTmp,\s*outPath,\s*sourceFadeWindows,\s*ffmpegTimeoutMs\)/,
   );
   assert.match(
     routeSource,

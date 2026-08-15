@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   advanceAvatarProvider,
+  type AvatarCompositeAttemptResult,
   type AvatarProviderAdvanceDeps,
   type AvatarProviderGenerateResult,
 } from "../src/lib/mcp/avatar-provider-resume";
@@ -50,7 +51,10 @@ async function main() {
     now: () => new Date("2026-07-13T09:20:00.000Z"),
     generate: async () => { generateCalls++; return accepted("unexpected"); },
     poll: async () => ({ status: "processing", videoUrl: null, errorMsg: null }),
-    composite: async () => { compositeCalls++; return "/api/renders/composite.mp4"; },
+    composite: async () => {
+      compositeCalls++;
+      return { kind: "completed", videoUrl: "/api/renders/composite.mp4" };
+    },
     persist: async (value) => { persisted.push(value); return true; },
   };
   const pending = await advanceAvatarProvider(checkpoint(), pendingDeps);
@@ -177,7 +181,10 @@ async function main() {
       errorMsg: null,
     }),
     persist: async () => false,
-    composite: async () => { compositeCalls++; return "/must-not-exist.mp4"; },
+    composite: async () => {
+      compositeCalls++;
+      return { kind: "completed", videoUrl: "/must-not-exist.mp4" };
+    },
   });
   assert.equal(canceled.kind, "failed");
   assert.equal(compositeCalls, 0);
@@ -188,6 +195,62 @@ async function main() {
   });
   assert.equal(expired.kind, "failed");
   assert.match(expired.kind === "failed" ? expired.message : "", /deadline/);
+  assert.equal(expired.kind === "failed" ? expired.provider : null, "heygen");
+  assert.equal(expired.kind === "failed" ? expired.code : null, "transient");
+  assert.equal(expired.kind === "failed" ? expired.outcome : null, "definitive");
+
+  // Composite is local work, so an expired HeyGen-provider deadline must not reject a
+  // healthy composite that already has the persisted provider output.
+  const expiredComposite = checkpoint("composite");
+  expiredComposite.avatar.introVideoUrl = "https://files2.heygen.ai/intro.mp4";
+  const completedAfterProviderDeadline = await advanceAvatarProvider(expiredComposite, {
+    ...pendingDeps,
+    now: () => new Date("2026-07-13T10:00:00.001Z"),
+  });
+  assert.equal(completedAfterProviderDeadline.kind, "ready");
+
+  // A deterministic FFmpeg timeout must be terminal immediately. Retrying the same
+  // input/geometry cannot change the outcome and previously caused the 84↔86 loop.
+  const timedOut: AvatarCompositeAttemptResult = {
+    kind: "failed",
+    code: "COMPOSITE_TIMEOUT",
+    message: "ประกอบวิดีโอใช้เวลานานเกินกำหนด",
+    retryable: false,
+  };
+  const timeoutResult = await advanceAvatarProvider(expiredComposite, {
+    ...pendingDeps,
+    composite: async () => timedOut,
+  });
+  assert.equal(timeoutResult.kind, "failed");
+  assert.equal(timeoutResult.kind === "failed" ? timeoutResult.code : null, "COMPOSITE_TIMEOUT");
+  assert.equal(timeoutResult.kind === "failed" ? timeoutResult.provider : null, "composite");
+  assert.equal(timeoutResult.kind === "failed" ? timeoutResult.outcome : null, "definitive");
+
+  // A genuinely transient composite failure gets one parked retry, persisted in the
+  // checkpoint. The second identical failure is terminal instead of retrying forever.
+  const transientFailure: AvatarCompositeAttemptResult = {
+    kind: "failed",
+    code: "COMPOSITE_TRANSIENT",
+    message: "composite worker temporarily unavailable",
+    retryable: true,
+  };
+  const firstTransient = await advanceAvatarProvider(expiredComposite, {
+    ...pendingDeps,
+    composite: async () => transientFailure,
+  });
+  assert.equal(firstTransient.kind, "waiting");
+  assert.equal(firstTransient.kind === "waiting" ? firstTransient.checkpoint.compositeAttempts : null, 1);
+  assert.equal(firstTransient.kind === "waiting" ? firstTransient.retryAfterSec : null, 60);
+
+  assert.equal(firstTransient.kind, "waiting");
+  const exhausted = await advanceAvatarProvider(firstTransient.checkpoint, {
+    ...pendingDeps,
+    composite: async () => transientFailure,
+  });
+  assert.equal(exhausted.kind, "failed");
+  assert.equal(exhausted.kind === "failed" ? exhausted.code : null, "COMPOSITE_RETRY_EXHAUSTED");
+  assert.equal(exhausted.kind === "failed" ? exhausted.provider : null, "composite");
+  assert.equal(exhausted.kind === "failed" ? exhausted.outcome : null, "definitive");
 
   console.log("ALL PASS");
 }

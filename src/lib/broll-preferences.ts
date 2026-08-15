@@ -9,12 +9,12 @@ export type BrollPreferenceInput = {
 };
 
 export const BROLL_REGION_OPTIONS: { value: BrollRegionPreference; label: string }[] = [
-  { value: "auto", label: "Auto" },
-  { value: "asian", label: "เอเชีย" },
-  { value: "thai", label: "ไทย" },
-  { value: "european", label: "ยุโรป" },
-  { value: "global", label: "Global" },
-  { value: "no-people", label: "ไม่มีคน" },
+  { value: "auto", label: "ตามเนื้อหา" },
+  { value: "asian", label: "เน้นเอเชีย" },
+  { value: "thai", label: "เน้นไทย" },
+  { value: "european", label: "เน้นยุโรป" },
+  { value: "global", label: "นานาชาติ" },
+  { value: "no-people", label: "หลีกเลี่ยงคน" },
 ];
 
 export const BROLL_STYLE_OPTIONS: { value: BrollVisualStyle; label: string }[] = [
@@ -158,6 +158,14 @@ export function normalizeBrollVisualStyle(raw: unknown): Exclude<BrollVisualStyl
   if (typeof raw !== "string") return undefined;
   const value = raw.trim().toLowerCase();
   return isVisualStyle(value) && value !== "auto" ? value : undefined;
+}
+
+/** Legacy stock-search styles are meaningful for stock and AutoMix footage.
+ * Hero-only images get their identity from the pinned Brand/Project Visual
+ * Context; sending both vocabularies lets the legacy style fight the selected
+ * visual format in downstream prompts. */
+export function shouldSendLegacyBrollVisualStyle(source: unknown): boolean {
+  return source !== "kie-image";
 }
 
 export function hasBrollPreference(input: BrollPreferenceInput): boolean {

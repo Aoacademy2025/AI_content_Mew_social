@@ -11,6 +11,8 @@ import {
   serializeHeroVoiceProviderCheckpoint,
   type HeroVoiceProviderCheckpointV1,
 } from "@/lib/mcp/hero-voice-provider-checkpoint";
+import type { SubtitleQualityReport } from "@/lib/mcp/subtitle-quality";
+import type { VideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -39,6 +41,11 @@ export async function createVideoJob(
     projectId?: string | null;
     type?: string | null;
     idempotencyFingerprint?: string | null;
+    projectVisualPin?: {
+      contentPreflightId: string | null;
+      projectVisualContextJson: string;
+    } | null;
+    brandVisualAcceptanceJson?: string | null;
   } = {},
 ) {
   return prisma.$transaction(async (tx) => {
@@ -47,6 +54,9 @@ export async function createVideoJob(
       data: {
         userId,
         projectId: opts.projectId ?? null,
+        contentPreflightId: opts.projectVisualPin?.contentPreflightId ?? null,
+        projectVisualContextJson: opts.projectVisualPin?.projectVisualContextJson ?? null,
+        brandVisualAcceptanceJson: opts.brandVisualAcceptanceJson ?? null,
         ...(opts.type ? { type: opts.type } : {}),
         inputJson: JSON.stringify(input),
         idempotencyKey: idempotencyKey ?? null,
@@ -110,12 +120,13 @@ export async function parkProviderJob(
   checkpoint: AvatarProviderCheckpointV1,
   nextPollAt: Date,
 ) {
+  const composite = checkpoint.phase === "composite";
   return prisma.videoJob.updateMany({
     where: { id, status: "processing" },
     data: {
       status: "waiting_provider",
-      currentStep: "avatar",
-      progress: 84,
+      currentStep: composite ? "composite" : "avatar",
+      progress: composite ? 86 : 84,
       providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint),
       providerNextPollAt: nextPollAt,
     },
@@ -284,6 +295,8 @@ export interface ParsedVideoJobOutput {
   videoUrl?: string;
   videoId?: string;
   sourceJobId?: string;
+  subtitleQa?: SubtitleQualityReport;
+  billingReceipt?: VideoJobBillingReceipt;
   /** present only on v2 preview jobs */
   preview?: VideoJobPreviewData | null;
 }
@@ -298,11 +311,19 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
     const preview = version === 2 && typeof raw.preview === "object" && raw.preview !== null
       ? (raw.preview as unknown as VideoJobPreviewData)
       : null;
+    const subtitleQa = typeof raw.subtitleQa === "object" && raw.subtitleQa !== null
+      ? raw.subtitleQa as unknown as SubtitleQualityReport
+      : null;
+    const billingReceipt = typeof raw.billingReceipt === "object" && raw.billingReceipt !== null
+      ? raw.billingReceipt as unknown as VideoJobBillingReceipt
+      : null;
     return {
       version,
       videoUrl: typeof raw.videoUrl === "string" ? raw.videoUrl : undefined,
       videoId: typeof raw.videoId === "string" ? raw.videoId : undefined,
       sourceJobId: typeof raw.sourceJobId === "string" ? raw.sourceJobId : undefined,
+      ...(subtitleQa ? { subtitleQa } : {}),
+      ...(billingReceipt ? { billingReceipt } : {}),
       ...(preview ? { preview } : {}),
     };
   } catch {
@@ -406,7 +427,9 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
     }
 
     const checkpoint = parseAvatarProviderCheckpoint(job.providerCheckpointJson);
-    const isProviderStage = job.currentStep === "avatar" || job.currentStep === "composite";
+    const isProviderStage = job.currentStep === "avatar"
+      || job.currentStep === "composite_queue"
+      || job.currentStep === "composite";
     if (checkpoint && isProviderStage) {
       let resumable = checkpoint;
       if (checkpoint.phase === "intro_generate") {
@@ -468,6 +491,8 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
         data: {
           status: "failed",
           errorMessage: reason,
+          reservationRefundPending: true,
+          reservationRefundReason: `worker_restart_${job.currentStep ?? "unknown"}_failed`,
           finishedAt: now,
           providerNextPollAt: null,
         },

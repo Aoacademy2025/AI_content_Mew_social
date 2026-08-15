@@ -103,6 +103,40 @@ export function classifyHttpStatus(status: number): ProviderErrorCode {
   return "fatal";
 }
 
+/**
+ * Some providers encode the real failure class in the response body instead of
+ * the HTTP status. ElevenLabs in particular returns `invalid_api_key` and
+ * `api_key_id_used_as_api_key` as HTTP 400 for some key formats. Keep those
+ * definitive signals in the shared taxonomy so preflight and runtime cannot
+ * disagree about the same response.
+ */
+export function responseHasInvalidKeyMarker(responseBody = ""): boolean {
+  const body = responseBody.toLowerCase();
+  return (
+    body.includes("invalid_api_key")
+    || body.includes("api_key_id_used_as_api_key")
+    || body.includes("invalid_api_key_prefix")
+  );
+}
+
+export function classifyHttpResponse(status: number, responseBody = ""): ProviderErrorCode {
+  const body = responseBody.toLowerCase();
+  if (responseHasInvalidKeyMarker(body)) return "invalid_key";
+  if (body.includes("quota_exceeded")) return "quota";
+  return classifyHttpStatus(status);
+}
+
+/**
+ * Whether switching request variants can still plausibly help. A normal 400 may
+ * be caused by an optional language/model field and should keep walking the
+ * fallback chain; authentication, quota, rate-limit, and missing-resource
+ * failures are definitive and must stop after the first provider request.
+ */
+export function shouldStopProviderFallback(status: number, responseBody = ""): boolean {
+  const code = classifyHttpResponse(status, responseBody);
+  return code === "invalid_key" || code === "quota" || code === "rate_limit" || status === 404;
+}
+
 /** HTTP status OUR routes return for each code (§8): 401 / 402 / 429 / 503 / 500. */
 export function httpStatusForCode(code: ProviderErrorCode): number {
   switch (code) {

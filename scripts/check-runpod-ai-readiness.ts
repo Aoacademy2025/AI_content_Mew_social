@@ -110,11 +110,20 @@ for (const model of AI_IMAGE_MODELS) {
         try {
           const source = fs.readFileSync(workflowPath, "utf8");
           const parsed = JSON.parse(source);
-          const requiredTokens = ["{{PROMPT}}", "{{NEGATIVE_PROMPT}}", "{{WIDTH}}", "{{HEIGHT}}", "{{SEED}}"];
+          const requiredTokens = ["{{PROMPT}}", "{{WIDTH}}", "{{HEIGHT}}", "{{SEED}}"];
           const hasAllTokens = requiredTokens.every((token) => source.includes(token));
+          const hasUnsafeNegativePromptInjection = model.id === "z-image-turbo"
+            && source.includes("{{NEGATIVE_PROMPT}}");
           const hasImageOutput = source.includes('"class_type"')
             && (source.includes('"SaveImage"') || source.includes('"PreviewImage"'));
-          workflowOk = Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed) && hasAllTokens && hasImageOutput);
+          workflowOk = Boolean(
+            parsed
+            && typeof parsed === "object"
+            && !Array.isArray(parsed)
+            && hasAllTokens
+            && !hasUnsafeNegativePromptInjection
+            && hasImageOutput
+          );
           details.push(`workflow=${workflowOk ? "VALID" : "INVALID_CONTRACT"}`);
         } catch {
           details.push("workflow=INVALID_JSON");
@@ -125,7 +134,9 @@ for (const model of AI_IMAGE_MODELS) {
       configured = configured && workflowOk;
       estimatedCostUsdMicros = nonNegativeInteger(
         process.env[estimateEnvName(model)],
-        model.id === "z-image-turbo" ? 50_000 : model.estimatedCostUsdMicros,
+        // Keep in sync with customRouteEstimate() in image-generation-provider.server.ts —
+        // measured real COGS ≈5,200 µUSD (docs/research/2026-08-07-runpod-custom-billing.md).
+        model.id === "z-image-turbo" ? 10_000 : model.estimatedCostUsdMicros,
       );
     } else {
       if (model.id === "z-image-turbo") {

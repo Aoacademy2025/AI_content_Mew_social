@@ -2,9 +2,9 @@
 
 /**
  * Timeline หลายแทร็ก + waveform เสียงพูดสำหรับอ้างอิง (จอ 4b ล่าง, P6b) — decision #5:
- *   ซับ = แก้ได้จริง (ลากขอบ + snap + undo ผ่าน onCaptionsChange) ·
- *   อวตาร/ซับ/โลโก้ = เปิด–ปิดโดยไม่ลบการตั้งค่า · บีโรล/เพลง = คลิก jump
- * สีแทร็กคงที่ตาม Design System: อวตารม่วง · บีโรลฟ้า · ซับเหลือง · เพลงชมพู
+ *   พาดหัว/ซับ = ลากขอบเวลาได้ · อวตาร/ซับ/โลโก้ = เปิด–ปิดโดยไม่ลบการตั้งค่า ·
+ *   บีโรล/เพลง = คลิก jump
+ * สีแทร็กคงที่ตาม Design System: อวตารม่วง · บีโรลฟ้า · พาดหัวส้ม · ซับเหลือง · เพลงชมพู
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -18,6 +18,11 @@ import { brollWindowSpans, type BrollWindowSpan } from "@/lib/broll-spans";
 import { AVATAR_FADE_DURATION_SEC } from "@/lib/avatar-fade";
 import { nextTimelineScrollLeft } from "./timeline-wheel-scroll";
 import type { EditableEditorLayer } from "@/lib/editor-layer-visibility";
+import {
+  MAX_HEADLINE_HOOK_DURATION_MS,
+  MIN_HEADLINE_HOOK_DURATION_MS,
+  type HeadlineHookConfig,
+} from "@/lib/headline-hook";
 
 const TRACK_H = 26;
 const LABEL_W = 112;
@@ -45,6 +50,7 @@ export function TimelinePanel({
   voiceUrl, onSelectBrollWindow, editedWindowIndices, disabledWindowIndices,
   hasLogo, layerVisibility, layerAvailability, onLayerVisibilityChange,
   layerControlsDisabled = false,
+  headlineHook, onHeadlineHookDurationChange,
 }: {
   captions: V2Caption[];
   onCaptionsChange: (next: V2Caption[], commit: boolean) => void;
@@ -80,12 +86,15 @@ export function TimelinePanel({
   layerAvailability: Record<EditableEditorLayer, boolean>;
   onLayerVisibilityChange: (layer: EditableEditorLayer, enabled: boolean) => void;
   layerControlsDisabled?: boolean;
+  headlineHook?: HeadlineHookConfig;
+  onHeadlineHookDurationChange?: (durationMs: number) => void;
 }) {
   const [pxPerSec, setPxPerSec] = useState(24);
   const [snap, setSnap] = useState(true);
   const [playing, setPlaying] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ idx: number; edge: "l" | "r"; startX: number; origStart: number; origEnd: number } | null>(null);
+  const headlineDragRef = useRef<{ startX: number; originalDurationMs: number } | null>(null);
   const scrubbingRef = useRef(false);
 
   useEffect(() => {
@@ -203,6 +212,27 @@ export function TimelinePanel({
     onCaptionsChange(captions.map((c) => ({ ...c })), true); // commit → push history
   }
 
+  function onHeadlineEdgeDown(e: React.PointerEvent) {
+    if (!headlineHook?.enabled || !onHeadlineHookDurationChange) return;
+    e.preventDefault();
+    e.stopPropagation();
+    headlineDragRef.current = { startX: e.clientX, originalDurationMs: headlineHook.durationMs };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function onHeadlineEdgeMove(e: React.PointerEvent) {
+    const drag = headlineDragRef.current;
+    if (!drag || !onHeadlineHookDurationChange) return;
+    const deltaMs = ((e.clientX - drag.startX) / pxPerSec) * 1_000;
+    const maxMs = Math.min(MAX_HEADLINE_HOOK_DURATION_MS, durMs);
+    const minMs = Math.min(MIN_HEADLINE_HOOK_DURATION_MS, maxMs);
+    onHeadlineHookDurationChange(Math.round(Math.min(maxMs, Math.max(minMs, drag.originalDurationMs + deltaMs)) / 100) * 100);
+  }
+
+  function onHeadlineEdgeUp() {
+    headlineDragRef.current = null;
+  }
+
   const trackLabel = (label: string, c: string, layer?: EditableEditorLayer) => {
     const enabled = layer ? layerVisibility[layer] : true;
     const available = layer ? layerAvailability[layer] : false;
@@ -278,7 +308,7 @@ export function TimelinePanel({
   ) : null;
 
   return (
-    <div className="flex shrink-0 flex-col" style={{ height: (peaks && peaks.length > 0 ? 226 : 192) + (hasLogo ? TRACK_H : 0), background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
+    <div className="flex shrink-0 flex-col" style={{ height: (peaks && peaks.length > 0 ? 226 : 192) + (hasLogo ? TRACK_H : 0) + (headlineHook?.enabled ? TRACK_H : 0), background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
       {/* Transport 38px */}
       <div className="flex h-[38px] shrink-0 items-center gap-3 px-3" style={{ borderBottom: `1px solid ${color.cardBorder}` }}>
         <button onClick={togglePlay} className="flex h-[24px] w-[24px] items-center justify-center rounded-full" style={{ background: "rgba(255,255,255,.07)", border: `1px solid ${color.cardBorder}`, color: color.text, cursor: "pointer" }} aria-label="เล่น/หยุด">
@@ -420,10 +450,58 @@ export function TimelinePanel({
             </div>
           )}
 
+          {/* พาดหัวเปิด — ขอบขวาลากเพื่อกำหนดจุดที่พาดหัวจบ/ซับเริ่มแสดง */}
+          {headlineHook?.enabled && (
+            <div className="relative flex items-center" style={{ height: TRACK_H }}>
+              {trackLabel("พาดหัว", color.trackHook)}
+              <div
+                className="relative flex-1"
+                style={{ height: TRACK_H }}
+                onPointerMove={onHeadlineEdgeMove}
+                onPointerUp={onHeadlineEdgeUp}
+                onPointerCancel={onHeadlineEdgeUp}
+              >
+                <div
+                  data-clip
+                  style={{
+                    ...clipStyle(color.trackHook),
+                    left: 0,
+                    width: Math.max(24, toPx(headlineHook.durationMs) - 2),
+                    paddingRight: 13,
+                  }}
+                  onClick={() => seekTo(0)}
+                  title={`พาดหัว ${Math.round(headlineHook.durationMs / 100) / 10} วินาที`}
+                >
+                  {headlineHook.headline}
+                  <span
+                    data-edge
+                    onPointerDown={onHeadlineEdgeDown}
+                    className="absolute bottom-0 right-0 top-0 w-[9px] cursor-ew-resize"
+                    style={{ borderRight: `2px solid ${color.trackHook}` }}
+                    aria-label="ลากเพื่อปรับระยะเวลาพาดหัว"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ซับไทย — แก้ได้ */}
           <div className="relative flex items-center" style={{ height: TRACK_H }}>
             {trackLabel("ซับไทย", color.trackSub, "subtitles")}
             <div className="relative flex-1" style={{ height: TRACK_H, opacity: layerVisibility.subtitles ? 1 : 0.35 }} onPointerMove={onEdgeMove} onPointerUp={onEdgeUp}>
+              {headlineHook?.enabled && (
+                <div
+                  className="pointer-events-none absolute bottom-[3px] top-[3px] z-10"
+                  style={{
+                    left: 0,
+                    width: Math.max(0, toPx(headlineHook.durationMs)),
+                    borderRadius: 5,
+                    borderRight: `1px dashed ${color.trackHook}99`,
+                    background: "repeating-linear-gradient(135deg,rgba(249,115,22,.08) 0 4px,rgba(249,115,22,.02) 4px 8px)",
+                  }}
+                  title="ช่วงนี้ซับถูกซ่อนใต้พาดหัว"
+                />
+              )}
               {captions.map((c, i) => (
                 <div
                   key={i}

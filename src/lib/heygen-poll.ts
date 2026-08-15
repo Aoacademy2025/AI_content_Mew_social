@@ -53,6 +53,20 @@ function terminalPayload(error: AvatarPollError): AvatarPollPayload {
   };
 }
 
+function insufficientCreditPayload(): AvatarPollPayload {
+  return terminalPayload({
+    code: "insufficient_credit",
+    provider: "heygen",
+    message: "เครดิต HeyGen ไม่เพียงพอ",
+    userAction: "เติมเครดิตในบัญชี HeyGen หรือปิด Avatar แล้วลองใหม่",
+    retryable: false,
+  });
+}
+
+function isInsufficientCreditDetail(detail: string | null): boolean {
+  return Boolean(detail && /MOVIO_PAYMENT_INSUFFICIENT_CREDIT|INSUFFICIENT_CREDIT|Insufficient credit[^.]*api[^.]*credit/i.test(detail));
+}
+
 export function mapHeygenPollResponse(input: {
   /** HTTP status of the HeyGen response; 0 = fetch threw (network error / timeout) */
   httpStatus: number;
@@ -87,13 +101,7 @@ export function mapHeygenPollResponse(input: {
   }
 
   if (httpStatus === 402) {
-    return terminalPayload({
-      code: "insufficient_credit",
-      provider: "heygen",
-      message: "เครดิต HeyGen ไม่เพียงพอ",
-      userAction: "เติมเครดิตในบัญชี HeyGen แล้วลองใหม่",
-      retryable: false,
-    });
+    return insufficientCreditPayload();
   }
 
   // Rate limited — poll ต่อได้ แต่ให้ client หน่วงตาม Retry-After
@@ -124,6 +132,10 @@ export function mapHeygenPollResponse(input: {
 
   if (status === "failed") {
     const detail = heygenErrorText(data?.error);
+    // HeyGen can report account-credit refusal inside a successful HTTP 200
+    // status envelope. Preserve the actionable quota class instead of reducing
+    // it to provider_failed and leaking MOVIO_* diagnostics into customer UI.
+    if (isInsufficientCreditDetail(detail)) return insufficientCreditPayload();
     return {
       status: "failed",
       videoUrl: null,

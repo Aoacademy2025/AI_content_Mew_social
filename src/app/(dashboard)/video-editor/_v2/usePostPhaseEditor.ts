@@ -17,6 +17,7 @@ import {
 } from "./subtitle-style";
 import { loanwordSpans } from "@/lib/thai-loanwords";
 import { trackEvent } from "@/lib/client-telemetry";
+import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import {
   commitCaptionHistory,
   deleteCaptionCard,
@@ -38,6 +39,14 @@ import {
   type EditableEditorLayer,
   type EditorLayerVisibility,
 } from "@/lib/editor-layer-visibility";
+import {
+  createDefaultHeadlineHook,
+  headlineHookEndMs,
+  normalizeHeadlineHookDraft,
+  normalizeHeadlineHookSuggestions,
+  type HeadlineHookConfig,
+  type HeadlineHookSuggestion,
+} from "@/lib/headline-hook";
 import type { V2JobState } from "./useV2Job";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
@@ -56,6 +65,7 @@ import {
   type BrollExportSource,
 } from "@/lib/broll-rerender";
 import { useEditorStylePresets } from "./useEditorStylePresets";
+import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 
 export type ExportState =
   | { phase: "idle" }
@@ -71,6 +81,7 @@ export type WindowEditKind = "stock" | "upload" | "ai";
 export type WindowEdit = {
   src?: string;
   keyword?: string;
+  clipDuration?: number;
   kind?: WindowEditKind;
   label?: string;
   enabled?: boolean;
@@ -109,6 +120,9 @@ function captionsMatch(left: readonly V2Caption[], right: readonly V2Caption[]):
 const ignoreLogoChange = (_next: LogoOverlayConfig | undefined) => {
   void _next;
 };
+const ignoreHeadlineHookChange = (_next: HeadlineHookConfig | undefined) => {
+  void _next;
+};
 const ignoreProjectSaveRetry = () => undefined;
 const alwaysReadyForProjectOperation = () => true;
 type LayerVisibilityChange = EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility);
@@ -121,13 +135,15 @@ export type UsePostPhaseEditorOptions = {
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
   /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
    *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
-  onAdoptJob: (next: { id: string; projectId?: string | null }) => void;
+  onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void;
   onNewProject: () => void;
   projectId?: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange?: (next: LogoOverlayConfig | undefined) => void;
   layerVisibility?: EditorLayerVisibility;
   onLayerVisibilityChange?: (next: LayerVisibilityChange) => void;
+  headlineHook?: HeadlineHookConfig;
+  onHeadlineHookChange?: (next: HeadlineHookConfig | undefined) => void;
   logoEligible?: boolean;
   projectSaveStatus?: LogoProjectSaveStatus;
   onRetryProjectSave?: () => void;
@@ -136,7 +152,16 @@ export type UsePostPhaseEditorOptions = {
    *  project mutation in the shell already gates on. Wired through so the style-preset
    *  "apply" toast never lies about a logo change that got silently dropped (M2). */
   canRunProjectOperation?: () => boolean;
+  initialSubtitleConfig?: SubtitleStylePresetConfig;
 };
+
+function subtitleConfigFromBrandDefault(
+  value: SubtitleStylePresetConfig | undefined,
+): V2SubConfig {
+  if (!value) return DEFAULT_V2_SUB;
+  const { cardLen: _cardLen, ...config } = value;
+  return config;
+}
 
 export function usePostPhaseEditor(
   job: V2JobState,
@@ -152,18 +177,21 @@ export function usePostPhaseEditor(
     onLogoOverlayChange = ignoreLogoChange,
     layerVisibility,
     onLayerVisibilityChange = ignoreLayerVisibilityChange,
+    headlineHook,
+    onHeadlineHookChange = ignoreHeadlineHookChange,
     logoEligible = false,
     projectSaveStatus = "idle",
     onRetryProjectSave = ignoreProjectSaveRetry,
     surface = "desktop",
     canRunProjectOperation = alwaysReadyForProjectOperation,
+    initialSubtitleConfig,
   } = options;
   const preview = job.output?.preview ?? null;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
   const [captions, setCaptions] = useState<V2Caption[]>(() => preview?.captions ?? []);
   const [selected, setSelected] = useState(0);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
-  const [cfg, setCfg] = useState<V2SubConfig>(DEFAULT_V2_SUB);
+  const [cfg, setCfg] = useState<V2SubConfig>(() => subtitleConfigFromBrandDefault(initialSubtitleConfig));
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
   const logo = useLogoOverlayEditor({
     projectId,
@@ -177,7 +205,7 @@ export function usePostPhaseEditor(
   // ความยาวการ์ด (1 ประโยค / ≤4 / ≤3 / ≤2 / 1 คำ — semantics เดียวกับ v1) —
   // จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
   const originalCapsRef = useRef<V2Caption[]>(preview?.captions ?? []);
-  const [cardLen, setCardLen] = useState<V2CardLen>("sentence");
+  const [cardLen, setCardLen] = useState<V2CardLen>(initialSubtitleConfig?.cardLen ?? "sentence");
   // ปรับสี scope รายการ์ด
   const [scope, setScope] = useState<"all" | "card">("all");
   const [overrides, setOverrides] = useState<V2CardOverrides>({});
@@ -185,10 +213,11 @@ export function usePostPhaseEditor(
   // ที่ตั้งไว้รายใบ (ชนะ cfg เสมอ) จะทำให้พรีเซ็ต "ไม่ติด" เงียบ ๆ บนการ์ดที่เคยแก้สีเอง
   const stylePresets = useEditorStylePresets({
     subtitleConfig: cfg,
+    subtitleCardLen: cardLen,
     logoConfig: logoOverlay,
-    onApplySubtitle: (config) => {
+    onApplySubtitle: (config, presetCardLen) => {
       setCfg(config);
-      setOverrides({});
+      applyCardLen(presetCardLen);
     },
     onApplyLogo: onLogoOverlayChange,
     canApplyLogo: canRunProjectOperation,
@@ -201,6 +230,84 @@ export function usePostPhaseEditor(
   const pollStop = useRef(false);
   const windowPollStop = useRef(false);
   const [adjustingAvatar, setAdjustingAvatar] = useState(false);
+  const totalDurationMs = useMemo(() => Math.max(
+    1_000,
+    preview?.audioDurationMs ?? 0,
+    captions[captions.length - 1]?.endMs ?? 0,
+  ), [captions, preview?.audioDurationMs]);
+  const headlineSourceText = useMemo(() => (
+    script.trim()
+    || preview?.fullText?.trim()
+    || captions.map((caption) => caption.text).join(" ").trim()
+  ), [captions, preview?.fullText, script]);
+  const resolvedHeadlineHook = useMemo(() => (
+    normalizeHeadlineHookDraft(headlineHook, totalDurationMs)
+    ?? createDefaultHeadlineHook(headlineSourceText, totalDurationMs)
+  ), [headlineHook, headlineSourceText, totalDurationMs]);
+  const [headlineSuggestions, setHeadlineSuggestions] = useState<HeadlineHookSuggestion[]>([]);
+  const [headlineSuggestionState, setHeadlineSuggestionState] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [headlineSuggestionError, setHeadlineSuggestionError] = useState("");
+  const headlineSuggestionAbortRef = useRef<AbortController | null>(null);
+
+  function setHeadlineHook(patch: Partial<HeadlineHookConfig>) {
+    const next = normalizeHeadlineHookDraft(
+      { ...resolvedHeadlineHook, ...patch },
+      totalDurationMs,
+    );
+    onHeadlineHookChange(next ?? undefined);
+  }
+
+  function selectHeadlineSuggestion(suggestion: HeadlineHookSuggestion) {
+    setHeadlineHook({
+      enabled: true,
+      headline: suggestion.headline,
+      subheadline: suggestion.subheadline,
+    });
+    trackEvent("headline_hook_suggestion_selected", {
+      properties: { surface },
+    });
+  }
+
+  async function generateHeadlineSuggestions() {
+    if (!headlineSourceText || headlineSuggestionState === "loading") return;
+    headlineSuggestionAbortRef.current?.abort();
+    const controller = new AbortController();
+    headlineSuggestionAbortRef.current = controller;
+    setHeadlineSuggestionState("loading");
+    setHeadlineSuggestionError("");
+    try {
+      const response = await fetch("/api/videos/headline-hook-suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: headlineSourceText.slice(0, 12_000) }),
+        signal: controller.signal,
+      });
+      const body = await response.json().catch(() => null) as {
+        suggestions?: unknown;
+        message?: string;
+        error?: string;
+      } | null;
+      if (!response.ok) {
+        throw new Error(body?.message ?? body?.error ?? "AI เขียนพาดหัวไม่สำเร็จ");
+      }
+      const suggestions = normalizeHeadlineHookSuggestions(body);
+      if (suggestions.length === 0) throw new Error("AI ยังส่งพาดหัวที่ใช้ได้ไม่สำเร็จ");
+      setHeadlineSuggestions(suggestions);
+      setHeadlineSuggestionState("success");
+      trackEvent("headline_hook_suggestions_generated", {
+        properties: { surface, count: suggestions.length },
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      const message = error instanceof Error ? error.message : "AI เขียนพาดหัวไม่สำเร็จ";
+      setHeadlineSuggestionError(message);
+      setHeadlineSuggestionState("error");
+    } finally {
+      if (headlineSuggestionAbortRef.current === controller) {
+        headlineSuggestionAbortRef.current = null;
+      }
+    }
+  }
 
   // ── Phase 2: per-window b-roll editing (Task 11) ──────────────────────────
   // windowEdits ล้วนอยู่ฝั่ง client จนกว่าจะกด "อัปเดตวิดีโอ" (batched, ไม่เรนเดอร์ทีละจุด).
@@ -336,6 +443,7 @@ export function usePostPhaseEditor(
       index,
       ...(e.src ? { src: e.src } : {}),
       ...(e.keyword ? { keyword: e.keyword } : {}),
+      ...(typeof e.clipDuration === "number" ? { clipDuration: e.clipDuration } : {}),
       ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
     }));
     try {
@@ -350,14 +458,16 @@ export function usePostPhaseEditor(
         }),
       });
       const d = await res.json().catch(() => null);
-      if (!res.ok || !d?.jobId) throw new Error(d?.message ?? d?.error ?? `อัปเดตวิดีโอไม่สำเร็จ (${res.status})`);
+      if (!res.ok || !d?.jobId) {
+        throw new Error(customerApiErrorMessage(d, "อัปเดต B-roll ไม่สำเร็จ — โปรเจกต์เดิมยังอยู่ กรุณาลองใหม่"));
+      }
       const newJobId = d.jobId as string;
 
       let applied: BrollExportSource | null = null;
       for (let i = 0; i < 450 && !windowPollStop.current; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         let p: {
-          status?: string; progress?: number; errorMessage?: string; projectId?: string | null;
+          status?: string; progress?: number; errorMessage?: string; projectId?: string | null; contentPreflightId?: string | null;
           output?: {
             videoUrl?: string;
             preview?: {
@@ -395,7 +505,11 @@ export function usePostPhaseEditor(
           // Adopt the NEW job: repoint jobId + localStorage resume key so a refresh resumes
           // this result and the NEXT apply chains onto it (sourceJobId = job.jobId). Caption/
           // style state is untouched — only the source job identity moves forward.
-          onAdoptJob({ id: newJobId, projectId: p.projectId ?? job.projectId ?? null });
+          onAdoptJob({
+            id: newJobId,
+            projectId: p.projectId ?? job.projectId ?? null,
+            contentPreflightId: p.contentPreflightId ?? job.contentPreflightId ?? null,
+          });
           toast.success("อัปเดตวิดีโอแล้ว");
           applied = {
             jobId: newJobId,
@@ -405,7 +519,10 @@ export function usePostPhaseEditor(
           break;
         }
         if (p.status === "failed" || p.status === "canceled") {
-          throw new Error(p.errorMessage ?? "อัปเดตวิดีโอไม่สำเร็จ");
+          throw new Error(customerApiErrorMessage(
+            { message: p.errorMessage },
+            "อัปเดต B-roll ไม่สำเร็จ — โปรเจกต์เดิมยังอยู่ กรุณาลองใหม่",
+          ));
         }
       }
       if (!applied && !windowPollStop.current) throw new Error("อัปเดตวิดีโอไม่เสร็จในเวลาที่กำหนด — เช็คสถานะภายหลัง");
@@ -659,7 +776,11 @@ export function usePostPhaseEditor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => () => { pollStop.current = true; windowPollStop.current = true; }, []);
+  useEffect(() => () => {
+    pollStop.current = true;
+    windowPollStop.current = true;
+    headlineSuggestionAbortRef.current?.abort();
+  }, []);
 
   function set<K extends keyof V2SubConfig>(k: K, v: V2SubConfig[K]) {
     setCfg((c) => ({ ...c, [k]: v }));
@@ -860,6 +981,7 @@ export function usePostPhaseEditor(
         overrides,
         logoOverlay,
         effectiveLayerVisibility,
+        resolvedHeadlineHook,
       );
       const result = await onExportJob({
         sourceJobId: exportSource.jobId,
@@ -875,6 +997,15 @@ export function usePostPhaseEditor(
             surface,
             position: submittedLogo.position,
           }),
+        });
+      }
+      if (resolvedHeadlineHook.enabled) {
+        trackEvent("headline_hook_export_submitted", {
+          properties: {
+            surface,
+            preset: resolvedHeadlineHook.preset,
+            durationMs: resolvedHeadlineHook.durationMs,
+          },
         });
       }
     } catch (e) {
@@ -961,6 +1092,16 @@ export function usePostPhaseEditor(
     layerAvailability,
     setLayerEnabled,
     previewVideoUrl,
+    headlineHook: resolvedHeadlineHook,
+    totalDurationMs,
+    headlineSourceText,
+    subtitleSuppressionEndMs: headlineHookEndMs(resolvedHeadlineHook, totalDurationMs),
+    headlineSuggestions,
+    headlineSuggestionState,
+    headlineSuggestionError,
+    setHeadlineHook,
+    selectHeadlineSuggestion,
+    generateHeadlineSuggestions,
     previewConfig,
     compositeBaseUrl,
     windowEdits, setWindowEdit, setWindowEdits, clearWindowEdit,

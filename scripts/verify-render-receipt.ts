@@ -43,7 +43,7 @@ check("A: minutes first, disclaimer last", a.lines[0].key === "minutes" && a.lin
 const b = R({ usesAi: true, perImageCredits: 3, creditBalance: 100 });
 check("B: AI line shown when usesAi", has(b, "ai"));
 check("B: estCredits = 9 (60s @ 3:2:1, 3cr/img, 4s window)", b.estCredits === 9, `N=${b.estCredits}`);
-check("B: AI copy interpolates N", text(b, "ai") === "ภาพ AI (ประมาณ): ~9 เครดิต · หักตามจำนวนที่เจนสำเร็จจริง", text(b, "ai"));
+check("B: AI copy explains reservation and failed-generation refund", text(b, "ai") === "ภาพ AI (ประมาณ): ~9 เครดิต · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ", text(b, "ai"));
 check("B: estMinutes = 1 (60s → nearest)", b.estMinutes === 1, `X=${b.estMinutes}`);
 check("B: minutes copy interpolates X/Y/Z", text(b, "minutes") === "นาทีที่จะใช้ (ประมาณ): 1 นาที — รวมในแพ็กเกจ (เหลือ 10 จาก 10 นาที)", text(b, "minutes"));
 check("B: no overflow (1 ≤ 10)", !has(b, "overflow"));
@@ -67,7 +67,7 @@ check("D: overflowMinutes = 0 at equality", d.overflowMinutes === 0);
 // ── E. zero balance + AI → insufficient ──
 const e = R({ usesAi: true, perImageCredits: 3, creditBalance: 0 });
 check("E: estCredits = 9 > balance 0 → insufficient shown", has(e, "insufficient"));
-check("E: insufficient copy explains balance, deficit, and recovery", text(e, "insufficient") === "Hero credits ไม่พอ · มี 0 · งานนี้ใช้ประมาณ 9 · ขาดประมาณ 9 — เติมเครดิต หรือลดจำนวนภาพ/เลือกฟรีล้วนก่อนเริ่มงาน", text(e, "insufficient"));
+check("E: insufficient copy explains available balance, estimate, deficit, and recovery", text(e, "insufficient") === "Hero credits ไม่พอ · พร้อมใช้ 0 · วงเงินประเมินสำหรับงานนี้ 9 · ขาดประมาณ 9 — เติมเครดิต หรือลดจำนวนภาพ/เลือกฟรีล้วนก่อนเริ่มงาน", text(e, "insufficient"));
 
 // ── F. boundary: estCredits EXACTLY equal balance → no insufficient (strict >) ──
 const f = R({ usesAi: true, perImageCredits: 3, creditBalance: 9 });
@@ -99,17 +99,17 @@ const k = R({ estSec: 60, usesAi: true, presetWeights: { video: 0, photo: 0, ai:
 check("K: full preset 60s @ 4cr/img → N = 60 (15 windows × 4)", k.estCredits === 60, `N=${k.estCredits}`);
 
 // ── L. disclaimer copy exact ──
-check("L: disclaimer copy exact", text(a, "disclaimer") === "ตัวเลขเป็นประมาณการ — ยอดจริงคำนวณจากความยาวเสียงจริงหลังสร้างเสียง", text(a, "disclaimer"));
+check("L: disclaimer copy exact", text(a, "disclaimer") === "ตัวเลขเป็นประมาณการ — จำนวนภาพและยอดเรนเดอร์จริงคำนวณหลังสร้างเสียง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ", text(a, "disclaimer"));
 
 // ── M. upload duration exact: no "(ประมาณ)" on minutes, upload-specific disclaimer ──
 const m = R({ estSec: 184.128, exactDuration: true });
 check("M: exact upload 184s → 3 minutes", m.estMinutes === 3, `X=${m.estMinutes}`);
 check("M: exact minutes copy omits ประมาณ", text(m, "minutes") === "นาทีที่จะใช้: 3 นาที — รวมในแพ็กเกจ (เหลือ 10 จาก 10 นาที)", text(m, "minutes"));
-check("M: exact disclaimer copy", text(m, "disclaimer") === "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง", text(m, "disclaimer"));
+check("M: exact disclaimer copy", text(m, "disclaimer") === "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ", text(m, "disclaimer"));
 
 // ── N. Hero AI Image never promises a hidden stock fallback ──
 const n = R({ usesAi: true, creditBalance: 0, insufficientCreditBehavior: "block" });
-check("N: Hero image insufficient balance gives a concrete recovery", text(n, "insufficient") === "Hero credits ไม่พอ · มี 0 · งานนี้ใช้ประมาณ 9 · ขาดประมาณ 9 — เติมเครดิตหรือลดจำนวนภาพก่อนเริ่มงาน", text(n, "insufficient"));
+check("N: Hero image insufficient balance gives a concrete recovery", text(n, "insufficient") === "Hero credits ไม่พอ · พร้อมใช้ 0 · วงเงินประเมินสำหรับงานนี้ 9 · ขาดประมาณ 9 — เติมเครดิตหรือลดจำนวนภาพก่อนเริ่มงาน", text(n, "insufficient"));
 
 // ── O. Explicit B-roll count uses the same source planner as the render ──
 const oHero = R({
@@ -120,7 +120,7 @@ const oHero = R({
   targetClipCount: 5,
 });
 check("O1: Hero manual 5 reports exactly 5 × 2 = 10 credits", oHero.estCredits === 10, `N=${oHero.estCredits}`);
-check("O1: exact manual Hero copy does not use an approximate amount", text(oHero, "ai") === "ภาพ AI: 10 เครดิต (5 ภาพ × 2 เครดิต) · หักเมื่อเจนสำเร็จ", text(oHero, "ai"));
+check("O1: exact manual Hero copy explains reservation and refund", text(oHero, "ai") === "ภาพ AI: 10 เครดิต (5 ภาพ × 2 เครดิต) · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ", text(oHero, "ai"));
 
 const oMix = R({
   estSec: 600,
@@ -147,7 +147,7 @@ const pEnough = R({
   creditBalance: 1_024,
 });
 check("P1: total includes AI images + overflow minute", pEnough.totalEstimatedCredits === 16, `total=${pEnough.totalEstimatedCredits}`);
-check("P1: ample balance gets a ready state with before/use/after totals", text(pEnough, "credits") === "พร้อมสร้าง · Hero credits มี 1,024 · งานนี้ใช้ประมาณ 16 · คาดว่าเหลือ 1,008", text(pEnough, "credits"));
+check("P1: ample balance gets a ready state with available/estimate/after totals", text(pEnough, "credits") === "พร้อมสร้าง · Hero credits พร้อมใช้ 1,024 · วงเงินประเมินสำหรับงานนี้ 16 · หากใช้ตามประมาณการจะเหลือ 1,008", text(pEnough, "credits"));
 check("P1: ample Hero balance is a success state", pEnough.lines.find((l) => l.key === "credits")?.kind === "success");
 check("P1: minute overflow with ample Hero balance is not insufficient", !has(pEnough, "insufficient"), JSON.stringify(keys(pEnough)));
 check("P1: no warning styling when minutes are empty but Hero credits are ample", !pEnough.lines.some((l) => l.kind === "warn"), JSON.stringify(pEnough.lines));
@@ -164,7 +164,86 @@ const pShort = R({
   insufficientCreditBehavior: "block",
 });
 check("P2: combined 16-credit cost catches a 15-credit balance", has(pShort, "insufficient"), JSON.stringify(keys(pShort)));
-check("P2: combined shortage copy shows required, balance, deficit, and recovery", text(pShort, "insufficient") === "Hero credits ไม่พอ · มี 15 · งานนี้ใช้ประมาณ 16 · ขาดประมาณ 1 — เติมเครดิตหรือลดจำนวนภาพก่อนเริ่มงาน", text(pShort, "insufficient"));
+check("P2: combined shortage copy shows required, balance, deficit, and recovery", text(pShort, "insufficient") === "Hero credits ไม่พอ · พร้อมใช้ 15 · วงเงินประเมินสำหรับงานนี้ 16 · ขาดประมาณ 1 — เติมเครดิตหรือลดจำนวนภาพก่อนเริ่มงาน", text(pShort, "insufficient"));
+
+const qReserved = R({
+  usesAi: true,
+  perImageCredits: 3,
+  creditBalance: 100,
+  reservedCredits: 6,
+});
+check(
+  "Q: in-flight reservations are disclosed separately from available credits",
+  text(qReserved, "credits") === "พร้อมสร้าง · Hero credits พร้อมใช้ 100 · มี 6 เครดิตกำลังกันไว้กับงานอื่น · วงเงินประเมินสำหรับงานนี้ 9 · หากใช้ตามประมาณการจะเหลือ 91",
+  text(qReserved, "credits"),
+);
+
+const rReusable = R({
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 5,
+  reusableAiSceneIndices: [0, 1, 2, 3],
+  creditBalance: 2,
+});
+check("R1: receipt quotes only the one affected scene", rReusable.estCredits === 2 && rReusable.billableAiImages === 1);
+check("R1: four current images are disclosed as zero-cost reuse", rReusable.reusableAiImages === 4 && text(rReusable, "ai").includes("ใช้ภาพเดิม 4 ภาพโดยไม่คิดซ้ำ"));
+check("R1: reusable scenes do not falsely block a sufficient two-credit balance", !has(rReusable, "insufficient"));
+
+const rAllowanceReuse = R({
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  targetClipCount: 3,
+  starterImageAllowance: { remaining: 0, limit: 8 },
+  reusableAiSceneIndices: [0, 1, 2],
+  creditBalance: 0,
+});
+check("R2: exhausted allowance does not block a zero-generation rerender", !has(rAllowanceReuse, "allowance-insufficient"));
+check("R2: zero-generation rerender says no entitlement is spent", text(rAllowanceReuse, "ai").includes("ไม่คิดสิทธิ์หรือเครดิตซ้ำ"));
+
+const rWrongSlots = R({
+  usesAi: true,
+  presetWeights: { video: 3, photo: 2, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 6,
+  reusableAiSceneIndices: [0, 1, 2, 4, 5],
+  creditBalance: 2,
+});
+check("R3: assets outside the planned AI slot do not reduce the quote", rWrongSlots.billableAiImages === 1 && rWrongSlots.estCredits === 2);
+
+const rMatchingSlot = R({
+  usesAi: true,
+  presetWeights: { video: 3, photo: 2, ai: 1 },
+  perImageCredits: 2,
+  targetClipCount: 6,
+  reusableAiSceneIndices: [3],
+  creditBalance: 0,
+});
+check("R4: only the matching planned AI slot is zero-cost reuse", rMatchingSlot.billableAiImages === 0 && rMatchingSlot.reusableAiImages === 1);
+
+const rEstablishedDensity = R({
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  targetClipCount: 10,
+  starterImageAllowance: { remaining: 0, limit: 8 },
+  reusableAiSceneIndices: [0, 1, 2, 3, 4, 5, 6, 7],
+  preserveEstablishedAiDensity: true,
+  creditBalance: 0,
+});
+check("R5: exhausted Starter rerender preserves its established eight-image density", rEstablishedDensity.billableAiImages === 0);
+check("R5: established-density rerender remains enabled", !has(rEstablishedDensity, "allowance-insufficient"));
+check("R5: receipt explains that the existing density is preserved", text(rEstablishedDensity, "ai").includes("ความถี่ภาพเดิม"));
+
+const rNewClipExhausted = R({
+  usesAi: true,
+  presetWeights: { video: 0, photo: 0, ai: 1 },
+  targetClipCount: 10,
+  starterImageAllowance: { remaining: 0, limit: 8 },
+  reusableAiSceneIndices: [],
+  preserveEstablishedAiDensity: false,
+  creditBalance: 0,
+});
+check("R6: a new clip still stops when Starter allowance is exhausted", has(rNewClipExhausted, "allowance-insufficient"));
 
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll render-receipt checks passed.");

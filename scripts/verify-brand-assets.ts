@@ -274,6 +274,13 @@ async function main() {
     assert.equal(service.canUseLogoOverlay("PRO"), true, "PRO can use logo overlays");
     assert.equal(service.canUseLogoOverlay("BUSINESS"), true, "BUSINESS can use logo overlays");
     assert.equal(service.canUseLogoOverlay("FREE"), false, "FREE cannot use logo overlays");
+    assert.equal(
+      service.canManageBrandMark("FREE", true),
+      true,
+      "a Brand Visual Free user can fully manage the Brand Profile watermark",
+    );
+    assert.equal(service.canManageBrandMark("FREE", false), false,
+      "the Brand Profile exception does not unlock unrelated control users");
 
     const transparentPng = await sharp({
       create: {
@@ -492,6 +499,30 @@ async function main() {
       { width: 2048, height: 1024 },
       "normalization reduces the longest edge to 2048 without changing aspect ratio",
     );
+
+    const revisionLogoProfile = await prisma.brandProfile.create({
+      data: {
+        userId: USER_A,
+        name: "Immutable logo owner",
+        niche: "education",
+        audience: "creators",
+        tone: "clear",
+        activeRevisionNumber: 1,
+        revisions: {
+          create: {
+            version: 1,
+            payloadJson: JSON.stringify({ brandMark: { assetId: resizedAsset.id, enabled: true } }),
+            visualRecipeJson: "{}",
+          },
+        },
+      },
+    });
+    await expectBrandError(
+      () => service.deleteBrandAssetIfUnreferenced(USER_A, resizedAsset.id),
+      "asset_in_use",
+      409,
+    );
+    await prisma.brandProfile.delete({ where: { id: revisionLogoProfile.id } });
 
     assert.equal(await service.getOwnedBrandAsset(USER_A, businessAsset.id), null, "asset metadata is owner-scoped");
     assert.equal(await service.getBrandAssetPath(USER_A, businessAsset.id), null, "asset paths are owner-scoped");

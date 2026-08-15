@@ -11,13 +11,12 @@ import { decryptKey } from "@/lib/key-crypto";
 import { preflightElevenLabs, preflightStockProviders } from "@/lib/key-preflight";
 import { checkHeygenReadiness, toHeygenBlockedResponse } from "@/lib/heygen-readiness";
 import {
-  getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoTool, downloadVideoTool,
+  getCurrentUserTool, listMyVideosTool, getVideoStatusTool, getVideoJobStatusTool, getVideoTool, downloadVideoTool,
 } from "@/lib/mcp/tools";
 import type { User, VideoStatus } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   createVideoJob,
-  toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
 } from "@/lib/mcp/video-job";
 import { checkClipQuota } from "@/lib/usage-limits";
@@ -26,6 +25,7 @@ import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
 import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
+import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
 
 export const runtime = "nodejs";
 
@@ -92,11 +92,8 @@ const handler = createMcpHandler(
       { title: "Get video/job status", description: "สถานะของ video job หรือ video 1 รายการ (รับ id ของ job หรือ video)", inputSchema: { id: z.string().min(1) } },
       async (args, extra) =>
         runTool("get_video_status", extra, async (p) => {
-          const job = await prisma.videoJob.findFirst({ where: { id: args.id, userId: p.userId } });
-          if (job) {
-            const out = job.outputJson ? (JSON.parse(job.outputJson) as { videoUrl?: string }) : null;
-            return { kind: "job" as const, jobId: job.id, status: toPublicVideoJobStatus(job.status), currentStep: job.currentStep, progress: job.progress, videoUrl: out?.videoUrl ?? null, error: job.errorMessage ?? null };
-          }
+          const job = await getVideoJobStatusTool(p.userId, args.id);
+          if (job) return job;
           const v = await getVideoStatusTool(p.userId, args.id);
           if (!v.found) return { kind: "none" as const, found: false as const, id: args.id };
           return { kind: "video" as const, ...v };
@@ -126,24 +123,7 @@ const handler = createMcpHandler(
       {
         title: "Create video job",
         description: "สร้างวิดีโอ auto (เสียง + b-roll + ซับไทย) จากสคริปต์ แบบ async — คืน jobId แล้ว poll ด้วย get_video_status. ใส่ avatarMode (full/bookend/bookend-both) เพื่อเพิ่มพิธีกร AI (ต้องมี HeyGen key + avatarId)",
-        inputSchema: {
-          script: z.string().min(1).max(20000),
-          title: z.string().max(200).optional(),
-          voiceProvider: z.enum(["gemini", "elevenlabs"]).optional(),
-          voiceId: z.string().optional(),
-          avatarMode: z.enum(["none", "full", "bookend", "bookend-both"]).optional(),
-          avatarId: z.string().optional(),
-          avatarIntroSecs: z.number().int().min(1).max(30).optional(),
-          avatarTailSecs: z.number().int().min(1).max(30).optional(),
-          avatarScale: z.number().min(0.1).max(2.5).optional(),
-          avatarOffsetX: z.number().min(-2).max(2).optional(),
-          avatarOffsetY: z.number().min(-2).max(2).optional(),
-          bgmFile: z.string().optional(),
-          bgmVolume: z.number().min(0).max(1).optional(),
-          subtitleMode: z.enum(["sentence","1","2","3","4"]).optional(),
-          subtitlePosition: z.enum(["top","middle","bottom"]).optional(),
-          idempotencyKey: z.string().max(120).optional(),
-        },
+        inputSchema: createVideoJobInputShape,
       },
       async (args, extra) =>
         runTool("create_video_job", extra, async (p) => {
@@ -208,6 +188,7 @@ const handler = createMcpHandler(
               p.userId,
               {
                 script: args.script, title: args.title, voiceProvider: args.voiceProvider, voiceId: args.voiceId,
+                ...(args.geminiVoiceName ? { geminiVoiceName: args.geminiVoiceName } : {}),
                 ...(avatar.kind === "ok" && avatarLayout
                   ? { avatarMode: avatar.avatarMode, avatarId: avatar.avatarId, avatarIntroSecs: avatar.introSecs, avatarTailSecs: avatar.tailSecs,
                       avatarScale: avatarLayout.scale, avatarOffsetX: avatarLayout.offsetX, avatarOffsetY: avatarLayout.offsetY }

@@ -35,7 +35,15 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { email: true, name: true, stripeCustomerId: true, plan: true, subStatus: true, trialEndsAt: true },
+      select: {
+        email: true,
+        name: true,
+        stripeCustomerId: true,
+        plan: true,
+        subStatus: true,
+        trialEndsAt: true,
+        planExpiresAt: true,
+      },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
@@ -58,14 +66,23 @@ export async function POST(req: Request) {
     //  2. a paid user paying to "upgrade" to a LOWER tier (downgrade-by-pay).
     // FREE users and trial users (no active sub) are unaffected — they upgrade normally.
     const decision = checkoutAllowed(
-      { plan: user.plan, subStatus: user.subStatus, trialEndsAt: user.trialEndsAt },
+      {
+        plan: user.plan,
+        subStatus: user.subStatus,
+        trialEndsAt: user.trialEndsAt,
+        planExpiresAt: user.planExpiresAt,
+      },
       plan,
+      new Date(),
+      { recurring: isSub },
     );
     if (!decision.allowed) {
       const error = decision.reason === "active_sub"
         ? "คุณมีสมาชิกแบบต่ออัตโนมัติอยู่แล้ว — เปลี่ยนหรืออัปเกรดแผนได้ที่ การตั้งค่า → การเงิน"
+        : decision.reason === "active_timed_plan"
+          ? `แพ็กเกจปัจจุบันยังใช้ได้ถึง ${user.planExpiresAt?.toLocaleDateString("th-TH")} — เพื่อไม่ให้วันคงเหลือหาย กรุณาเริ่มสมาชิกแบบบัตรหลังวันดังกล่าว หรือต่ออายุแบบ PromptPay`
         : "ไม่สามารถปรับลดแผนทางนี้ได้ — จัดการแผนที่ การตั้งค่า → การเงิน";
-      return NextResponse.json({ error }, { status: 400 });
+      return NextResponse.json({ error, code: decision.reason.toUpperCase() }, { status: 400 });
     }
 
     // ── Ensure a Stripe Customer (needed for subscriptions + billing portal) ──
@@ -116,7 +133,9 @@ export async function POST(req: Request) {
     const appliedCouponId = discountCoupon?.id ?? foundingClaim?.couponId ?? null;
     const isFounding = !!foundingClaim;
 
-    const origin = req.headers.get("origin") ?? process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+    // Never trust the caller-controlled Origin header for Stripe redirects.
+    // Prefer the configured canonical app URL, then the server request URL.
+    const origin = process.env.NEXTAUTH_URL?.replace(/\/$/, "") || new URL(req.url).origin;
 
     let checkoutSession;
     try {
@@ -139,7 +158,9 @@ export async function POST(req: Request) {
               ...(isFounding ? { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 } : {}),
             }
           : { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 }), // one-time session expires in 30 min
-        success_url: `${origin}/settings?tab=billing&payment=success`,
+        // The result page confirms this exact, authenticated checkout against
+        // our webhook-backed Payment row before it claims that access is ready.
+        success_url: `${origin}/settings?tab=billing&payment=success&session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${origin}/pricing?payment=cancelled`,
       });
     } catch (e) {

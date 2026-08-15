@@ -118,8 +118,30 @@ export function buildKieImagePrompt(
   if (!creativeBroll) {
     parts.push("one unified edge-to-edge composition, one spatially continuous camera view captured at one decisive moment");
   }
-  parts.push(creativeBroll
-    ? `${looks.look}, interfaces expressed through abstract unlabeled color shapes and visual states, blank unmarked text areas`
-    : `${looks.look}, purely visual language-free surfaces, blank unmarked signs and labels`);
+  // The look line is lighting and finish, nothing else. It used to carry an
+  // anti-text tail — "purely visual language-free surfaces, blank unmarked signs
+  // and labels", and on the creative path "interfaces expressed through abstract
+  // unlabeled color shapes and visual states, blank unmarked text areas". Both
+  // were written as guardrails and read to the model as art direction: blank
+  // signs and labels flatten a street, blank text areas draw empty rectangles,
+  // and the creative variant pushed an *interface* into every scene whether or
+  // not the subject had one. That is the defect ADR 0006 removed from the Brand
+  // Visual compiler, and `language-free`/`unlabeled` additionally contradict
+  // ADR 0007, under which English is permitted and characters intrinsic to a
+  // depicted object belong to the object.
+  //
+  // Nothing replaces the tail. Neither engine this prompt reaches has a live
+  // negative channel — the kie.ai text-to-image tasks take a positive prompt
+  // only (`buildKieImageInput` in kie-client.ts, `buildKieInput` in
+  // image-generation-provider.server.ts), and the RunPod AutoMix path renders on
+  // `z-image-turbo`, whose `negativePromptDelivery` is `ignored` — so any clause
+  // added here would be something the model tries to draw. Per ADR 0007 the
+  // policy is applied where the scene is requested, not by naming what must not
+  // appear.
+  parts.push(looks.look);
   return `${parts.join(", ")}.`;
 }
+
+/** Provider-neutral name for Hero/Video Editor call sites. The legacy export
+ * remains for Cloud API and AutoMix compatibility. */
+export const buildBrollImagePrompt = buildKieImagePrompt;

@@ -25,30 +25,54 @@ import { BtnPrimary, Card, IconTile, Segmented, GroupLabel } from "./ui";
 import { VoicePreviewButton } from "../_components/VoicePreviewButton";
 import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME, HERO_VOICE_TEASER_VISIBLE } from "@/lib/hero-voice-brand";
 import { OMNIVOICE_UI_ENABLED } from "@/lib/tts-providers";
-import { estimateClipSecV2 } from "./estimate";
+import {
+  estimateClipSecV2,
+  estimateAutoMixAiImageCount,
+  disclosedAutoMixAiImageCount,
+  heroDefaultTargetClipCount,
+  heroHoldLengthSec,
+} from "./estimate";
 import { minutesFromSeconds } from "@/lib/minute-round";
 import { useBgm } from "../_hooks/useBgm";
 import { useHeygenAvatars } from "../_hooks/useHeygenAvatars";
 import { MusicLibraryModal } from "./MusicLibraryModal";
 import { AvatarPickerModal } from "./AvatarPickerModal";
 import type { V2Project, V2BrollSource, V2VoiceEngine } from "./useV2Project";
-import type { MixPreset } from "./mix-presets";
+import { PRESET_WEIGHTS, type MixPreset } from "./mix-presets";
 import { HeroVoicePicker } from "./HeroVoicePicker";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
+import type { SceneContentPolicyWarning } from "@/lib/scene-content-policy";
+import { BrandVisualSelector, type BrandVisualPreflightStatus } from "./BrandVisualSelector";
+import { trackEvent } from "@/lib/client-telemetry";
+import { UpgradeModal } from "@/components/ui/upgrade-modal";
+import {
+  cutawayPieceLimit,
+  effectiveManualCutawayPieceCount,
+  estimatedCutawayPieceCount,
+} from "@/lib/cutaway-plan";
+
+/** Hero AI Image locked-state copy (Task 5 D8) — one string pair for every locked
+ *  surface (customer cards, AutoMix preset picker) so eligibility copy never drifts. */
+const HERO_UPGRADE_BADGE = "อัปเกรด";
+const HERO_UPGRADE_TITLE = "Hero AI Image ใช้ได้กับแผน PRO/BUSINESS";
 
 // AutoMix intensity (D5.1) — shown after an eligible customer selects AutoMix.
+// `sub` is the price-free base copy; MixPresetButtons appends the live
+// `~{total} เครดิต/คลิป` line (Task 5 item 4) computed from HERO_AI_IMAGE_CREDITS —
+// no credit numbers are hardcoded here.
 const MIX_PRESETS: { key: MixPreset; label: string; sub: string; badge?: string }[] = [
   { key: "free", label: "ฟรีล้วน", sub: "สต็อกฟรีทั้งหมด · 0 เครดิต" },
-  { key: "recommended", label: "AutoMix แนะนำ", sub: "สต็อก + ภาพ AI แทรก · ~6–9 เครดิต/คลิป", badge: "แนะนำ" },
+  { key: "recommended", label: "AutoMix แนะนำ", sub: "สต็อก + ภาพ AI แทรก", badge: "แนะนำ" },
   { key: "full", label: "AutoMix · AI เด่น", sub: "วิดีโอสต็อก + ภาพสต็อก + AI สัดส่วนสูง" },
 ];
 const MIX_PRESET_LABEL: Record<MixPreset, string> = {
   free: "ฟรีล้วน", recommended: "AutoMix แนะนำ", full: "AI เด่น",
 };
 
-// ลำดับตามความสำคัญจริง (review 07-03): สต็อกฟรี = default · ที่เหลือ Beta (admin) · วิดีโอ AI ยังไม่เปิด
+// ลำดับตามความสำคัญจริง: สต็อกฟรีเสมอ แต่ไม่ติดป้าย "แนะนำ" แบบ global;
+// สำหรับลูกค้าที่จ่ายเงิน AutoMix เป็นคำแนะนำตาม product default.
 const BROLL_OPTIONS: { value: V2BrollSource; title: string; desc: string; icon: React.ReactNode; badge?: string; beta?: boolean; comingSoon?: boolean }[] = [
-  { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} />, badge: "ฟรี · แนะนำ" },
+  { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} />, badge: "ฟรี" },
   { value: "kie-image", title: "Hero AI Image", desc: "ภาพ AI ทุกช่วง · ไม่ใช้สต็อก", icon: <ImagePlus size={16} strokeWidth={1.6} />, beta: true },
   { value: "kie-video", title: "วิดีโอ AI", desc: "เร็ว ๆ นี้", icon: <Sparkles size={16} strokeWidth={1.6} />, beta: true, comingSoon: true },
   { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} />, beta: true },
@@ -60,12 +84,74 @@ function fmtTime(sec: number) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function starterRemaining(p: V2Project): number | null {
+  return p.starterAiImageAllowance?.eligible
+    ? p.starterAiImageAllowance.remainingImages
+    : null;
+}
+
+function heroDefaultImageCount(p: V2Project, durationSec = 0): number {
+  const defaultCount = heroDefaultTargetClipCount(0, starterRemaining(p));
+  return p.mode === "upload" && durationSec > 0
+    ? estimatedCutawayPieceCount(defaultCount, durationSec * 1_000)
+    : defaultCount;
+}
+
+function durationSafeTargetClipCount(p: V2Project, durationSec: number, requested: number): number {
+  return p.mode === "upload" && durationSec > 0
+    ? effectiveManualCutawayPieceCount(requested, durationSec * 1_000)
+    : requested;
+}
+
+function imageFundingLine(p: V2Project, requested: number, approximate = false): string {
+  const remaining = starterRemaining(p);
+  if (remaining === null) {
+    return `${approximate ? "~" : ""}${requested} รูป × ${HERO_AI_IMAGE_CREDITS} เครดิต = ${approximate ? "~" : ""}${requested * HERO_AI_IMAGE_CREDITS} เครดิต`;
+  }
+  const admitted = Math.min(requested, remaining);
+  const density = admitted < requested ? ` · ลดความถี่จากแผน ${requested} รูป` : "";
+  return `${approximate ? "~" : ""}${admitted} ภาพจากสิทธิ์ทดลอง · เหลือ ${remaining}/${p.starterAiImageAllowance?.limitImages ?? 8}${density}`;
+}
+
 export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => Promise<void> }) {
+  const stepTwoContentRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const content = stepTwoContentRef.current;
+    if (!content) return;
+
+    // Brand access and the library load asynchronously. Without this reset and
+    // `overflow-anchor: none` below, Chromium preserves the B-roll card as its
+    // scroll anchor when BrandVisualSelector is inserted above it. The selector
+    // then exists and completes its preflight, but is silently pushed just above
+    // the viewport on every reload. Keep Step 2 at its actual beginning instead.
+    content.scrollTop = 0;
+    const frame = window.requestAnimationFrame(() => {
+      content.scrollTop = 0;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
   const bgm = useBgm();
   const scriptEstSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
   const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
   const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
   const displayMin = displaySec > 0 ? minutesFromSeconds(displaySec) : 0;
+  // Hero AI Image: fresh selection defaults to 8 images and clamps to the
+  // remaining Starter AI Image Allowance for never-paid accounts, plus the
+  // "อัตโนมัติ" projected count — the SAME window-based estimate buildReceipt uses (an
+  // all-AI preset over the same estimated duration), so this screen's numbers never
+  // drift from what the Render Receipt discloses right before render.
+  const heroDefaultN = heroDefaultImageCount(p, displaySec);
+  const uploadCutawayLimit = p.mode === "upload" && hasUploadDuration
+    ? cutawayPieceLimit(displaySec * 1_000)
+    : 60;
+  const heroAutoProjectedCount = useMemo(
+    () => estimateAutoMixAiImageCount(displaySec, { video: 0, photo: 0, ai: 1 }),
+    [displaySec],
+  );
+  const heroHoldSec = useMemo(
+    () => heroHoldLengthSec(p.mode === "upload" ? displaySec / 2 : displaySec, p.targetClipCount),
+    [displaySec, p.mode, p.targetClipCount],
+  );
   const brollCountLabel = p.brollSource === "kie-image"
     ? "จำนวนภาพ AI:"
     : p.brollSource === "automix"
@@ -75,7 +161,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     ? "Hero AI Image"
     : p.brollSource === "automix"
       ? `AutoMix · ${MIX_PRESET_LABEL[p.mixPreset]}`
-      : "วิดีโอสต็อก";
+      : "สต็อกฟรี";
   const geminiVoice = GEMINI_VOICES.find(v => v.id === p.geminiVoiceName) ?? GEMINI_VOICES[0];
   // ชื่อเสียง ElevenLabs ที่ตรงกับ voiceId ปัจจุบัน (โชว์ชื่อแทน ID เมื่อ resolve ได้)
   const elevenVoice = p.voiceEngine === "elevenlabs"
@@ -86,9 +172,49 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     : undefined;
   const heroVoiceVisible = HERO_VOICE_TEASER_VISIBLE || OMNIVOICE_UI_ENABLED || p.voiceEngine === "omnivoice";
   const [submitting, setSubmitting] = useState(false);
+  const [brandPreflightStatus, setBrandPreflightStatus] = useState<BrandVisualPreflightStatus>("idle");
+  const [brandPolicyWarnings, setBrandPolicyWarnings] = useState<SceneContentPolicyWarning[]>([]);
+  const [brandSelectionBlocked, setBrandSelectionBlocked] = useState(false);
+  const requiresBrandPreflight = (p.brandVisualAllowed || p.hasPersistedVisualPin)
+    && p.mode !== "upload"
+    && (
+      p.brollSource === "kie-image"
+      || (p.brollSource === "automix" && p.mixPreset !== "free")
+    );
+  const brandPreflightBlocked = requiresBrandPreflight && brandPreflightStatus !== "ready";
+  const brandRenderBlocked = brandPreflightBlocked || brandSelectionBlocked;
+  const [savingDefault, setSavingDefault] = useState<"voice" | "avatar" | null>(null);
   const [musicLibOpen, setMusicLibOpen] = useState(false);
   const avatarLib = useHeygenAvatars();
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const step2TelemetryKeyRef = useRef("");
+  useEffect(() => {
+    if (p.mode !== "upload" || !hasUploadDuration || p.targetClipCount <= 0) return;
+    const durationSafeCount = effectiveManualCutawayPieceCount(
+      p.targetClipCount,
+      displaySec * 1_000,
+    );
+    if (durationSafeCount !== p.targetClipCount) p.setTargetClipCount(durationSafeCount);
+  }, [displaySec, hasUploadDuration, p.mode, p.setTargetClipCount, p.targetClipCount]);
+  useEffect(() => {
+    const measurableCohort = p.brandVisualCohort === "rollout-wait"
+      || p.brandVisualCohort === "treatment-10"
+      || p.brandVisualCohort === "treatment-50"
+      || p.brandVisualCohort === "treatment-100";
+    if (!p.projectReady || !p.projectId || !measurableCohort) return;
+    const key = `${p.projectId}:${p.brandVisualCohort}`;
+    if (step2TelemetryKeyRef.current === key) return;
+    step2TelemetryKeyRef.current = key;
+    trackEvent("editor_step2_reached", {
+      step: "editor.step2",
+      status: "viewed",
+      properties: {
+        projectId: p.projectId,
+        cohort: p.brandVisualCohort,
+        bucket: p.brandVisualRolloutBucket,
+      },
+    });
+  }, [p.brandVisualCohort, p.brandVisualRolloutBucket, p.projectId, p.projectReady]);
   const openAvatarPicker = () => { setAvatarPickerOpen(true); avatarLib.load(); };
   // Prime the avatar list as soon as avatar mode is on, so it's ready by the time the user
   // opens the picker. load() is idempotent (no-op once loaded/loading) → never double-fetches.
@@ -106,9 +232,39 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     : baseChips;
 
   async function handleRender() {
-    if (submitting) return;
+    if (submitting || brandRenderBlocked) return;
     setSubmitting(true);
     try { await onRender(); } finally { setSubmitting(false); }
+  }
+
+  async function saveVoiceDefault() {
+    if (!p.voiceId.trim() || savingDefault) return;
+    setSavingDefault("voice");
+    try {
+      await p.saveAccountVideoDefaults({
+        elevenlabsVoiceId: p.voiceId,
+        ttsProvider: p.voiceEngine,
+        geminiVoiceName: p.geminiVoiceName,
+      });
+      toast.success("บันทึกเสียงเริ่มต้นแล้ว — โปรเจกต์ใหม่จะใช้เสียงนี้");
+    } catch {
+      toast.error("บันทึกเสียงเริ่มต้นไม่สำเร็จ กรุณาลองอีกครั้ง");
+    } finally {
+      setSavingDefault(null);
+    }
+  }
+
+  async function saveAvatarDefault() {
+    if (!p.avatarId.trim() || savingDefault) return;
+    setSavingDefault("avatar");
+    try {
+      await p.saveAccountVideoDefaults({ heygenAvatarId: p.avatarId });
+      toast.success("บันทึกอวตารเริ่มต้นแล้ว — โปรเจกต์ใหม่จะใช้อวตารนี้");
+    } catch {
+      toast.error("บันทึกอวตารเริ่มต้นไม่สำเร็จ กรุณาลองอีกครั้ง");
+    } finally {
+      setSavingDefault(null);
+    }
   }
 
   // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
@@ -116,10 +272,16 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     <BtnPrimary
       className="w-full"
       onClick={() => void handleRender()}
-      disabled={submitting}
-      style={submitting ? { opacity: 0.6, cursor: "wait" } : undefined}
+      disabled={submitting || brandRenderBlocked}
+      style={submitting || brandRenderBlocked ? { opacity: 0.6, cursor: submitting ? "wait" : "not-allowed" } : undefined}
     >
-      {submitting ? "กำลังส่งงาน…" : "เรนเดอร์วิดีโอ"}
+      {submitting
+        ? "กำลังส่งงาน…"
+        : brandSelectionBlocked
+          ? "ตั้งค่า Brand ให้เสร็จก่อน"
+          : brandPreflightBlocked
+          ? brandPreflightStatus === "error" ? "รอวิเคราะห์แนวภาพ" : "กำลังวิเคราะห์แนวภาพ…"
+          : "เรนเดอร์วิดีโอ"}
     </BtnPrimary>
   );
 
@@ -127,8 +289,19 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     <>
     <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:overflow-y-auto">
       {/* ── เนื้อหาซ้าย: 4 กลุ่ม ── */}
-      <div className="flex min-w-0 flex-1 flex-col gap-6 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6">
+      <div
+        ref={stepTwoContentRef}
+        className="flex min-w-0 flex-1 flex-col gap-6 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6"
+        style={{ overflowAnchor: "none" }}
+      >
         {/* ย้อนกลับ = คลิก step pill บน topbar (ตัดปุ่มเล็กซ้ำซ้อนออก 07-03) */}
+
+        <BrandVisualSelector
+          p={p}
+          onPreflightStatusChange={setBrandPreflightStatus}
+          onPolicyWarningsChange={setBrandPolicyWarnings}
+          onSelectionBlockedChange={setBrandSelectionBlocked}
+        />
 
         {/* 1 · บีโรล */}
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
@@ -139,11 +312,26 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             {BROLL_OPTIONS.map((o) => {
               // Beta = admin เสมอ · paid (managed-kie) ปลดล็อกภาพ AI/AutoMix · วิดีโอ AI (comingSoon) ยังไม่เปิดให้ใคร
               const locked = o.comingSoon || (o.beta && !p.isAdmin && !p.isPaidManagedKie);
+              // Admin card parity (Task 5 item 5): same total-price info as the customer
+              // card, using the same fresh-selection default (8 รูป) the click below applies.
+              const desc = o.value === "kie-image"
+                ? `${o.desc} · ${imageFundingLine(p, heroDefaultN)}`
+                : o.desc;
               return (
                 <button
                   key={o.value}
                   disabled={locked}
-                  onClick={() => !locked && p.setBrollSource(o.value)}
+                  onClick={() => {
+                    if (locked) return;
+                    p.setBrollSource(o.value);
+                    // The funding-aware default only applies while the user hasn't touched the count
+                    // control themselves — otherwise re-selecting Hero AI Image after
+                    // switching away would clobber an explicit "อัตโนมัติ" (0) choice.
+                    if (o.value === "kie-image" && !p.heroCountTouched) {
+                      const requested = heroDefaultTargetClipCount(p.targetClipCount, starterRemaining(p));
+                      p.setTargetClipCount(durationSafeTargetClipCount(p, displaySec, requested));
+                    }
+                  }}
                   className="relative flex flex-col items-start gap-2 text-left"
                   style={{
                     borderRadius: radius.card, padding: "12px 14px",
@@ -163,68 +351,145 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   <IconTile size={32}>{o.icon}</IconTile>
                   <span className="flex flex-col">
                     <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{o.title}</span>
-                    <span style={{ fontSize: 10.5, color: color.textFaint }}>{o.desc}</span>
+                    <span style={{ fontSize: 10.5, color: color.textFaint }}>{desc}</span>
                   </span>
                 </button>
               );
             })}
           </div>
           ) : (
-            <CustomerBrollSourceButtons p={p} />
+            <CustomerBrollSourceButtons p={p} durationSec={displaySec} />
           )}
           <Advanced note="สลับคลิป/แก้จังหวะรายช่วง (มากับ timeline)">
             <div className="flex flex-col gap-3">
-              <label className="flex items-center gap-2" style={{ fontSize: 11.5, color: color.textSecondary }}>
-                {brollCountLabel}
+              <div className="flex items-center gap-2" style={{ fontSize: 11.5, color: color.textSecondary }}>
+                <span>{brollCountLabel}</span>
                 <Segmented
                   value={p.targetClipCount > 0 ? "custom" : "auto"}
-                  onChange={(v) => p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || 8))}
-                  options={[{ value: "auto", label: "Auto" }, { value: "custom", label: "กำหนดเอง" }]}
+                  ariaLabel={brollCountLabel}
+                  onChange={(v) => {
+                    // Any direct interaction with this control is an explicit user choice
+                    // (including picking "อัตโนมัติ") — stop the Hero default-8 from ever
+                    // overriding it again this session (fast-follow fix, see p.heroCountTouched).
+                    p.setHeroCountTouched(true);
+                    if (v === "custom" && p.mode === "upload" && hasUploadDuration && uploadCutawayLimit === 0) {
+                      p.setTargetClipCount(0);
+                      toast("คลิปสั้นกว่า 10 วินาที ระบบจะใช้คลิปต้นฉบับโดยไม่แทรก B-roll");
+                      return;
+                    }
+                    p.setTargetClipCount(v === "auto" ? 0 : Math.max(1, p.targetClipCount || heroDefaultN));
+                  }}
+                  options={p.brollSource === "kie-image"
+                    ? [
+                        { value: "auto", label: `อัตโนมัติ (1 รูป/ช่วง ≈ ${heroAutoProjectedCount} รูป)` },
+                        { value: "custom", label: "กำหนดจำนวนรูป (แนะนำ)" },
+                      ]
+                    : [{ value: "auto", label: "Auto" }, { value: "custom", label: "กำหนดเอง" }]}
                 />
                 {p.targetClipCount > 0 && (
                   <input
-                    type="number" min={1} max={60} value={p.targetClipCount}
-                    onChange={(e) => p.setTargetClipCount(Math.max(1, Math.min(60, Number(e.target.value) || 1)))}
+                    type="number" min={1} max={Math.max(1, uploadCutawayLimit)} value={p.targetClipCount}
+                    aria-label={brollCountLabel}
+                    onChange={(e) => {
+                      p.setHeroCountTouched(true);
+                      p.setTargetClipCount(Math.max(
+                        1,
+                        Math.min(Math.max(1, uploadCutawayLimit), Number(e.target.value) || 1),
+                      ));
+                    }}
                     className="w-[64px]"
                     style={{ padding: "6px 8px", borderRadius: radius.control, fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
                   />
                 )}
-              </label>
+              </div>
               {p.targetClipCount > 0 && (
                 <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
                   {p.brollSource === "kie-image"
-                    ? `สร้างภาพ AI ${p.targetClipCount} ภาพพอดี และไม่ใช้วิดีโอหรือภาพสต็อก`
+                    // Total-price disclosure (Task 5 item 3) — every hero count/price hint
+                    // shows the TOTAL (n × HERO_AI_IMAGE_CREDITS), never a bare count.
+                    ? `${imageFundingLine(p, p.targetClipCount)} · ไม่ใช้วิดีโอหรือภาพสต็อก`
                     : p.brollSource === "automix"
                       ? `สร้าง B-roll รวม ${p.targetClipCount} ชิ้น โดยผสมวิดีโอสต็อก ภาพสต็อก และภาพ AI`
                       : `ใช้ B-roll สต็อกรวม ${p.targetClipCount} ชิ้น`}
                 </span>
               )}
-              <label className="flex flex-col gap-1.5">
-                <span style={{ fontSize: 11, color: color.textFaint }}>แนวภาพ / โซนภาพ</span>
+              {p.targetClipCount > 0 && p.brollSource === "kie-image" && (
+                <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                  {/* Hold-length hint (Task 5 item 6) — warn when few images must cover a
+                      long clip, so a budget-safe default doesn't quietly look static. */}
+                  รูปละ ~{heroHoldSec} วิ{heroHoldSec > 12 ? " (ภาพค้างนาน — เพิ่มจำนวนรูปช่วยให้คลิปดูมีชีวิตขึ้น)" : ""}
+                </span>
+              )}
+              {p.mode === "upload" && hasUploadDuration && (
+                <span style={{ fontSize: 10.5, color: uploadCutawayLimit === 0 ? color.warning : color.textFaint, lineHeight: 1.6 }}>
+                  {uploadCutawayLimit === 0
+                    ? "คลิปสั้นกว่า 10 วินาที — ใช้คลิปต้นฉบับโดยไม่แทรก B-roll"
+                    : `คลิปนี้รองรับสูงสุด ${uploadCutawayLimit} ช่วง เพื่อให้ B-roll แต่ละช่วงยาวอย่างน้อย 3 วิ`}
+                </span>
+              )}
+              {p.targetClipCount === 0 && p.brollSource === "kie-image" && (
+                <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                  {imageFundingLine(p, heroAutoProjectedCount, true)}
+                </span>
+              )}
+              <div className="flex flex-col gap-1.5">
+                <span style={{ fontSize: 11, color: color.textFaint }}>คนและสถานที่</span>
                 <Segmented
                   value={p.brollRegionPreference}
+                  ariaLabel="คนและสถานที่"
                   onChange={(v) => p.setBrollRegionPreference(v as BrollRegionPreference)}
                   options={BROLL_REGION_OPTIONS}
                   style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
                 />
-              </label>
-              <label className="flex flex-col gap-1.5">
-                <span style={{ fontSize: 11, color: color.textFaint }}>สไตล์ภาพ</span>
-                <Segmented
-                  value={p.brollVisualStyle}
-                  onChange={(v) => p.setBrollVisualStyle(v as BrollVisualStyle)}
-                  options={BROLL_STYLE_OPTIONS}
-                  style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
-                />
-              </label>
-              {p.heroAiBeta && p.brollSource === "kie-image" && (
+                <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                  {p.brollSource === "kie-image"
+                    ? "กำหนดบริบทของคนและสถานที่ โดยไม่เปลี่ยนสไตล์ Brand Visual"
+                    : p.brollSource === "automix"
+                      ? "ใช้บริบทเดียวกันกับทั้งภาพ AI และฟุตเทจสต็อก"
+                      : "ช่วยค้นหาฟุตเทจที่ตรงกับบริบทของเนื้อหา"}
+                </span>
+                {brandPolicyWarnings.length > 0 && (
+                  <span
+                    role="status"
+                    style={{ fontSize: 10.5, color: color.warning, lineHeight: 1.6 }}
+                  >
+                    {brandPolicyWarnings.length === 1
+                      ? brandPolicyWarnings[0].message
+                      : `เนื้อหาระบุสถานที่หรือวัฒนธรรมชัดเจน ${brandPolicyWarnings.length} ฉาก ระบบจะคงตามเนื้อหาเดิม`}
+                  </span>
+                )}
+              </div>
+              {p.brollSource === "kie-image" ? (
+                <div className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>สไตล์ภาพ</span>
+                  <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                    ใช้ Brand Visual ที่เลือกด้านบนเพียงจุดเดียว
+                  </span>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <span style={{ fontSize: 11, color: color.textFaint }}>
+                    {p.brollSource === "automix" ? "สไตล์ฟุตเทจสต็อก (เฉพาะส่วนสต็อก)" : "สไตล์ฟุตเทจสต็อก"}
+                  </span>
+                  <Segmented
+                    value={p.brollVisualStyle}
+                    ariaLabel={p.brollSource === "automix" ? "สไตล์ฟุตเทจสต็อกเฉพาะส่วนสต็อก" : "สไตล์ฟุตเทจสต็อก"}
+                    onChange={(v) => p.setBrollVisualStyle(v as BrollVisualStyle)}
+                    options={BROLL_STYLE_OPTIONS}
+                    style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
+                  />
+                </div>
+              )}
+              {p.heroAiImageEligible && p.brollSource === "kie-image" && (
                 <div className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>โมเดล Hero AI Image</span>
                   <div
                     className="w-full max-w-[320px] rounded-md px-3 py-2"
                     style={{ fontSize: 12, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.10)", color: color.text }}
                   >
-                    Realistic · Z-Image Turbo · RunPod · {HERO_AI_IMAGE_CREDITS} เครดิต/ภาพ
+                    {/* Total-price disclosure (item 3) — same n × HERO_AI_IMAGE_CREDITS total
+                        as the hint above, so this box never shows a bare per-image price. */}
+                    ภาพ AI คุณภาพสูง · {imageFundingLine(p, p.targetClipCount > 0 ? p.targetClipCount : heroAutoProjectedCount)}
                   </div>
                 </div>
               )}
@@ -276,10 +541,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           </Advanced>
         </Group>
 
-        {/* โหมดอัปคลิปเอง: เสียง/เพลง/อวตาร ไม่เกี่ยว (เสียงมาจากคลิป) */}
+        {/* โหมดอัปคลิปเอง: เสียงพูดมาจากคลิป แต่ยังเลือกเพลงประกอบได้ */}
         {p.mode === "upload" && (
           <div className="px-3 py-2.5" style={{ borderRadius: radius.card, border: `1px dashed rgba(255,255,255,.14)`, fontSize: 11.5, color: color.textFaint, lineHeight: 1.7 }}>
-            โหมดใช้คลิปของคุณ: เสียงพูดมาจากคลิปโดยตรง — ระบบข้ามเสียงพากย์ / เพลง / อวตารให้อัตโนมัติ
+            โหมดใช้คลิปของคุณ: เสียงพูดมาจากคลิปโดยตรง — เลือกเพลงประกอบด้านล่างได้ ระบบจะข้ามเฉพาะเสียงพากย์และอวตาร
           </div>
         )}
 
@@ -423,6 +688,19 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                     </span>
                   )}
                 </label>
+                <button
+                  type="button"
+                  onClick={() => void saveVoiceDefault()}
+                  disabled={!p.voiceId.trim() || savingDefault !== null}
+                  className="min-h-11 self-start rounded-lg px-3 text-[11.5px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{
+                    color: color.primary300,
+                    background: color.selectedBg,
+                    border: `1px solid ${color.selectedBorder}`,
+                  }}
+                >
+                  {savingDefault === "voice" ? "กำลังบันทึก…" : "บันทึกเสียงนี้เป็นค่าเริ่มต้น"}
+                </button>
               </div>
             )}
           </Advanced>
@@ -430,7 +708,6 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         )}
 
         {/* 3 · เพลงประกอบ */}
-        {p.mode !== "upload" && (
         <Group title="เพลงประกอบ" desc="เพลงเบา ๆ ใต้เสียงพูด (ลดเสียงอัตโนมัติ) · กดไอคอนเพื่อฟังตัวอย่าง">
           <MusicChips p={p} tracks={chipTracks} />
           <button
@@ -474,7 +751,6 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             </label>
           </Advanced>
         </Group>
-        )}
 
         {/* 4 · อวตารพิธีกร */}
         {p.mode !== "upload" && (
@@ -534,6 +810,19 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   }}
                 />
               </label>
+              <button
+                type="button"
+                onClick={() => void saveAvatarDefault()}
+                disabled={!p.avatarId.trim() || savingDefault !== null}
+                className="min-h-11 self-start rounded-lg px-3 text-[11.5px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                style={{
+                  color: color.primary300,
+                  background: color.selectedBg,
+                  border: `1px solid ${color.selectedBorder}`,
+                }}
+              >
+                {savingDefault === "avatar" ? "กำลังบันทึก…" : "บันทึกอวตารนี้เป็นค่าเริ่มต้น"}
+              </button>
             </div>
           )}
           {!p.useAvatar && (
@@ -544,10 +833,11 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           <Advanced>
             {p.useAvatar && (
               <div className="flex flex-col gap-3">
-                <label className="flex flex-col gap-1.5">
+                <div className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 11, color: color.textFaint }}>โหมดพิธีกร (HeyGen คิดเงินตามวินาทีที่เจน)</span>
                   <Segmented
                     value={p.avatarMode}
+                    ariaLabel="โหมดพิธีกร"
                     onChange={p.setAvatarMode}
                     options={[
                       { value: "bookend", label: "เปิดคลิป" },
@@ -555,7 +845,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                       { value: "full", label: "ทั้งคลิป" },
                     ]}
                   />
-                </label>
+                </div>
                 {p.avatarMode !== "full" && (
                   <div className="flex items-center gap-3" style={{ fontSize: 11.5, color: color.textSecondary }}>
                     <label className="flex items-center gap-1.5">
@@ -649,6 +939,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
               <SummaryRow label="ความยาว" value={hasUploadDuration ? fmtTime(p.clipDurationSec) : "กำลังอ่านความยาวคลิป"} />
               <SummaryRow label="บีโรล" value={`${p.isAdmin ? (BROLL_OPTIONS.find(o => o.value === p.brollSource)?.title ?? "-") : customerBrollLabel} · แทรก cutaway`} />
               <SummaryRow label="เสียง" value="จากคลิปของคุณ (ต่อเนื่อง)" />
+              <SummaryRow label="เพลง" value={p.musicTrack === null ? "ไม่ใส่" : (selectedTrack?.title ?? "ยังไม่เลือก")} />
               <SummaryRow label="ซับไทย" value="ถอดจากเสียงอัตโนมัติ" last />
             </>
           ) : (
@@ -669,6 +960,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         {/* CTA เดียว — ปุ่มซ่อนบนมือถือ (ย้ายไป sticky footer), แต่ caption ยังโชว์เหนือ footer */}
         <div className="flex flex-col gap-2">
           <div className="max-lg:hidden">{primaryCta}</div>
+          {brandSelectionBlocked
+            ? <span role="status" style={{ fontSize: 10.5, color: color.warningText, textAlign: "center", lineHeight: 1.6 }}>เลือกวิธีใช้ Brand กับภาพเดิม หรือรอให้ระบบบันทึกให้เสร็จก่อนเริ่มเรนเดอร์</span>
+            : brandPreflightBlocked && <span role="status" style={{ fontSize: 10.5, color: brandPreflightStatus === "error" ? color.dangerText : color.infoText, textAlign: "center", lineHeight: 1.6 }}>{brandPreflightStatus === "error" ? "การวิเคราะห์ฉากยังไม่พร้อม — กดลองอีกครั้งในการ์ดแนวภาพ" : "กำลังวิเคราะห์ฉากและบันทึกแนวภาพสำหรับคลิปนี้"}</span>}
           <span style={{ fontSize: 10.5, color: color.textFaint, textAlign: "center", lineHeight: 1.6 }}>
             {p.mode === "upload" && !hasUploadDuration ? "กำลังอ่านความยาวคลิป" : `คลิปยาว ${hasUploadDuration ? "" : "~"}${fmtTime(displaySec)}`}
             {p.usage?.minutes && displayMin > 0 ? ` · ใช้ ${hasUploadDuration ? "" : "~"}${displayMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
@@ -696,15 +990,42 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 }
 
 /** Public product choices. Ordinary customers see AI Image and AutoMix but they stay
- * disabled with a coming-soon badge; eligible internal beta users can select them. */
-function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
-  const heroImageUnlocked = p.heroAiBeta;
-  const autoMixUnlocked = p.internalAiTester && p.isPaidManagedKie;
+ * locked with an upgrade badge until `p.heroAiImageEligible` (Task 4's plan gate —
+ * beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS/active-trial) turns true. */
+function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; durationSec: number }) {
+  const [lockedFeature, setLockedFeature] = useState<"hero_ai_image" | "automix" | null>(null);
+  const hasFunding = p.hasPersistedVisualPin || starterRemaining(p) === null || (starterRemaining(p) ?? 0) > 0;
+  const hasAiRenderAccess = p.heroAiImageEligible || p.hasPersistedVisualPin;
+  const heroImageUnlocked = hasAiRenderAccess && hasFunding;
+  const autoMixUnlocked = hasAiRenderAccess && hasFunding;
+  const heroDefaultN = heroDefaultImageCount(p, durationSec);
   const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
-    { value: "stock", title: "วิดีโอสต็อก", desc: "Pexels · Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
-    { value: "kie-image", title: "Hero AI Image", desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · ${HERO_AI_IMAGE_CREDITS} เครดิต/ภาพ`, icon: <ImagePlus size={16} strokeWidth={1.6} /> },
+    { value: "stock", title: "สต็อกฟรี", desc: "0 เครดิต AI · Pexels/Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
+    {
+      value: "kie-image",
+      title: "Hero AI Image",
+      // Total-price disclosure (Task 5 item 3): the fresh-selection default (8 รูป)
+      // this card applies on click, priced out — never a bare per-image number.
+      desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · ${imageFundingLine(p, heroDefaultN)}`,
+      icon: <ImagePlus size={16} strokeWidth={1.6} />,
+    },
     { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} /> },
   ];
+
+  function showLockedPreview(feature: "hero_ai_image" | "automix") {
+    const accessMode = p.heroAiImageAccess?.mode ?? "preview";
+    const source = p.heroAiImageAccess?.source ?? "none";
+    trackEvent("feature_card_clicked", {
+      step: "editor.step2",
+      status: "locked",
+      properties: { feature, accessMode, source, surface: "broll_source_card" },
+    });
+    trackEvent("locked_preview_viewed", {
+      step: "editor.step2",
+      properties: { feature, accessMode, source, surface: "upgrade_modal" },
+    });
+    setLockedFeature(feature);
+  }
 
   function selectSource(value: "stock" | "kie-image" | "automix") {
     if (value === "stock") {
@@ -712,11 +1033,19 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
       return;
     }
     if (value === "kie-image") {
-      if (!heroImageUnlocked) return;
+      if (!heroImageUnlocked) return showLockedPreview("hero_ai_image");
       p.setBrollSource("kie-image");
+      // Hero defaults to 8 and clamps to remaining starter allowance — a fresh
+      // selection lands on a concrete, budget-safe quote. Once the user has touched the count
+      // control directly (incl. explicitly picking "อัตโนมัติ"), leave it alone — don't
+      // clobber an explicit choice when they switch away and back (fast-follow fix).
+      if (!p.heroCountTouched) {
+        const requested = heroDefaultTargetClipCount(p.targetClipCount, starterRemaining(p));
+        p.setTargetClipCount(durationSafeTargetClipCount(p, durationSec, requested));
+      }
       return;
     }
-    if (!autoMixUnlocked) return;
+    if (!autoMixUnlocked) return showLockedPreview("automix");
     p.setMixPreset(p.mixPreset === "full" ? "full" : "recommended");
   }
 
@@ -729,16 +1058,19 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
             : option.value === "automix"
               ? !autoMixUnlocked
               : false;
-          const lockedBadge = option.value === "automix" && p.internalAiTester && p.managedKieOn
-            ? "อัปเกรด"
-            : "เร็ว ๆ นี้";
           const selected = p.brollSource === option.value;
+          const badge = option.value === "stock"
+            ? "ฟรี"
+            : option.value === "automix" && p.recommendedAutoMixDefault
+              ? "แนะนำ"
+              : locked
+                ? HERO_UPGRADE_BADGE
+                : "Beta";
           return (
             <button
               key={option.value}
               type="button"
-              disabled={locked}
-              title={locked ? (lockedBadge === "เร็ว ๆ นี้" ? `${option.title} เร็ว ๆ นี้` : `อัปเกรดเพื่อใช้ ${option.title}`) : undefined}
+              title={locked ? HERO_UPGRADE_TITLE : undefined}
               onClick={() => selectSource(option.value)}
               className="relative flex min-h-11 flex-col items-start gap-2 text-left focus-visible:outline-2 focus-visible:outline-offset-2"
               style={{
@@ -746,7 +1078,7 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
                 padding: "12px 14px",
                 background: selected ? color.selectedBg : color.cardBg,
                 border: `1px solid ${selected ? color.selectedBorder : color.cardBorder}`,
-                cursor: locked ? "not-allowed" : "pointer",
+                cursor: "pointer",
                 opacity: locked ? 0.58 : 1,
                 outlineColor: color.primary300,
                 transition: "background 150ms ease, border-color 150ms ease, opacity 150ms ease",
@@ -760,7 +1092,7 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
                   border: `1px solid ${option.value === "stock" ? color.selectedBorder : "rgba(251,191,36,.35)"}`,
                 }}
               >
-                {option.value === "stock" ? "ฟรี · แนะนำ" : locked ? lockedBadge : "Beta"}
+                {badge}
               </span>
               <IconTile size={32}>{option.icon}</IconTile>
               <span className="flex flex-col pr-10">
@@ -772,33 +1104,83 @@ function CustomerBrollSourceButtons({ p }: { p: V2Project }) {
         })}
       </div>
 
+      {p.brollSource === "stock" && (
+        <div
+          role="status"
+          className="flex flex-col gap-1 rounded-xl px-3.5 py-3 sm:flex-row sm:items-center sm:gap-3"
+          style={{
+            background: "rgba(52,211,153,.07)",
+            border: "1px solid rgba(52,211,153,.24)",
+          }}
+        >
+          <span className="shrink-0" style={{ font: `600 11.5px ${font.heading}`, color: "#6ee7b7" }}>
+            เส้นทางใช้ฟรีพร้อมแล้ว
+          </span>
+          <span style={{ fontSize: 11, lineHeight: 1.55, color: color.textSecondary }}>
+            ต่อไปเลือกเสียงและกดเรนเดอร์ — สต็อกใช้ 0 เครดิต AI และใช้เฉพาะนาทีในแพ็กเกจ
+          </span>
+        </div>
+      )}
+
       {autoMixUnlocked && p.brollSource === "automix" && (
         <div className="flex flex-col gap-2">
           <GroupLabel>สัดส่วน AutoMix</GroupLabel>
-          <MixPresetButtons p={p} />
+          <MixPresetButtons p={p} durationSec={durationSec} />
         </div>
       )}
+      <UpgradeModal
+        open={lockedFeature !== null}
+        onClose={() => setLockedFeature(null)}
+        title={p.heroAiImageAccess?.reason === "allowance_exhausted"
+          ? "ใช้สิทธิ์ทดลอง Hero AI Image ครบแล้ว"
+          : `${lockedFeature === "automix" ? "AutoMix" : "Hero AI Image"} สำหรับสมาชิก PRO/BUSINESS`}
+        message={p.heroAiImageAccess?.reason === "allowance_exhausted"
+          ? "คุณทดลองสร้างครบ 8 ภาพแล้ว ผลงานเดิมยังอยู่ครบ อัปเกรดเพื่อสร้างภาพใหม่ต่อได้ทันที"
+          : p.heroAiImageAccess?.reason === "trial_expired"
+            ? "ช่วงทดลอง 7 วันสิ้นสุดแล้ว สมัครสมาชิกรายเดือนหรือรายปีเพื่อสร้างภาพต่อ"
+            : "สร้างภาพที่เข้ากับแต่ละฉาก ลดเวลาหาภาพ และส่งต่อเข้า Video Editor ในขั้นตอนเดียว"}
+        benefits={[
+          "สร้างภาพ Hero AI ตามบริบทของแต่ละฉาก",
+          "ใช้ AutoMix ผสมสต็อกและภาพ AI อัตโนมัติ",
+          "คิดเครดิตตามจำนวนภาพจริง พร้อมคืนเมื่อสร้างไม่สำเร็จ",
+        ]}
+        ctaLabel="ดูแผนรายเดือน / รายปี"
+        pricingHref={`/pricing?source=${lockedFeature ?? "hero_ai_image"}_preview`}
+        hideCta={p.heroAiImageAccess?.reason === "feature_off" || p.heroAiImageAccess?.reason === "suspended"}
+        onCtaClick={() => trackEvent("pricing_cta_clicked", {
+          step: "editor.step2",
+          properties: {
+            feature: lockedFeature ?? "hero_ai_image",
+            accessMode: p.heroAiImageAccess?.mode ?? "preview",
+            source: p.heroAiImageAccess?.source ?? "none",
+            surface: "upgrade_modal",
+          },
+        })}
+      />
     </div>
   );
 }
 
 /** AutoMix intensity (D5.1). The top-level customer source cards own Free/AI Image/
  * AutoMix selection; this nested control only chooses the two AutoMix weight profiles. */
-function MixPresetButtons({ p }: { p: V2Project }) {
+function MixPresetButtons({ p, durationSec }: { p: V2Project; durationSec: number }) {
   return (
     <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
       {MIX_PRESETS.filter((preset) => preset.key !== "free").map((pr) => {
-        // FREE/feature-off users: only "ฟรีล้วน" is selectable (AI presets locked).
-        // Formula unchanged from pre-Task-7 — only the LOCKED-STATE COPY branches below.
-        const locked = pr.key !== "free" && !p.isPaidManagedKie;
-        // Sub-reason for the lock, copy-only: not launched yet vs. launched-but-not-paid.
-        const comingSoon = locked && !p.managedKieOn;
+        // Same gate as the AutoMix card itself (Task 5 item 1) — a customer who can open
+        // AutoMix can pick either intensity; only ineligible users see the lock.
+        const locked = !(p.heroAiImageEligible || p.hasPersistedVisualPin);
         const selected = p.mixPreset === pr.key;
+        // AutoMix "AI เด่น"/"แนะนำ" preset price (Task 5 item 4) — the SAME disclosed
+        // count buildReceipt uses (manual targetClipCount when set, else the window
+        // estimate), so this label can never drift from the Render Receipt's number.
+        const aiCount = disclosedAutoMixAiImageCount(durationSec, PRESET_WEIGHTS[pr.key], p.targetClipCount);
+        const priceLine = `${pr.sub} · ${imageFundingLine(p, aiCount, true)}`;
         return (
           <button
             key={pr.key}
             disabled={locked}
-            title={locked ? (comingSoon ? "เร็ว ๆ นี้ — กำลังเตรียมเปิดให้ใช้งาน" : "อัปเกรดเพื่อใช้ภาพ AI") : undefined}
+            title={locked ? HERO_UPGRADE_TITLE : undefined}
             onClick={() => { if (!locked) p.setMixPreset(pr.key); }}
             className="relative flex flex-col items-start gap-1.5 text-left"
             style={{
@@ -810,13 +1192,13 @@ function MixPresetButtons({ p }: { p: V2Project }) {
               transition: "all 150ms ease",
             }}
           >
-            {comingSoon ? (
-              <span className="absolute right-2.5 top-2 rounded-full px-1.5" style={{ fontSize: 9.5, color: color.warning, border: "1px solid rgba(251,191,36,.35)" }}>เร็ว ๆ นี้</span>
+            {locked ? (
+              <span className="absolute right-2.5 top-2 rounded-full px-1.5" style={{ fontSize: 9.5, color: color.warning, border: "1px solid rgba(251,191,36,.35)" }}>{HERO_UPGRADE_BADGE}</span>
             ) : pr.badge && (
               <span className="absolute right-2.5 top-2" style={{ fontSize: 10, color: color.primary300, fontWeight: 500 }}>{pr.badge}</span>
             )}
             <span style={{ font: `500 12.5px ${font.heading}`, color: color.text }}>{pr.label}</span>
-            <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>{pr.sub}</span>
+            <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.5 }}>{priceLine}</span>
           </button>
         );
       })}

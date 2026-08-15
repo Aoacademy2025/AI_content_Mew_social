@@ -1,3 +1,5 @@
+import type { TimedWord } from "@/lib/tts-timing";
+
 export type BrollWindowCaption = { startMs: number; endMs: number; text: string };
 export type BrollWindow = {
   startMs: number;
@@ -71,6 +73,7 @@ export function buildFixedCountBrollWindows(
   captions: BrollWindowCaption[],
   requestedCount: number,
   audioEndMs?: number,
+  maxCount = 60,
 ): BrollWindow[] {
   const caps = (captions ?? [])
     .filter((caption) => (
@@ -80,8 +83,9 @@ export function buildFixedCountBrollWindows(
       && caption.endMs > caption.startMs
     ))
     .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+  const countCap = Number.isFinite(maxCount) ? Math.max(0, Math.floor(maxCount)) : 60;
   const count = Number.isFinite(requestedCount)
-    ? Math.max(0, Math.min(60, Math.floor(requestedCount)))
+    ? Math.max(0, Math.min(countCap, Math.floor(requestedCount)))
     : 0;
   if (caps.length === 0 || count === 0) return [];
 
@@ -162,6 +166,137 @@ export function buildFixedCountBrollWindows(
       captionStartIdx: nearest[0].captionIndex,
       captionEndIdx: nearest[nearest.length - 1].captionIndex,
       text: nearest.map(({ caption }) => caption.text.trim()).filter(Boolean).join(" "),
+    };
+  });
+}
+
+type NarrativeAlignedBrollInput = {
+  captions: BrollWindowCaption[];
+  words: TimedWord[];
+  spokenText: string;
+  narrativeWindows: string[];
+  audioEndMs?: number;
+};
+
+function visibleCharacters(text: string): Array<{ value: string; startChar: number; endChar: number }> {
+  const characters: Array<{ value: string; startChar: number; endChar: number }> = [];
+  let offset = 0;
+  for (const value of text) {
+    const startChar = offset;
+    offset += value.length;
+    if (!/\s/u.test(value)) characters.push({ value, startChar, endChar: offset });
+  }
+  return characters;
+}
+
+function boundaryTimeFromWords(words: TimedWord[], boundaryChar: number): number | null {
+  const ordered = words
+    .filter((word) => (
+      Number.isFinite(word.startMs)
+      && Number.isFinite(word.endMs)
+      && word.endMs > word.startMs
+      && Number.isSafeInteger(word.startChar)
+      && Number.isSafeInteger(word.endChar)
+      && word.endChar > word.startChar
+    ))
+    .sort((left, right) => left.startChar - right.startChar || left.endChar - right.endChar);
+  if (ordered.length === 0) return null;
+  for (const word of ordered) {
+    if (boundaryChar <= word.startChar) return Math.round(word.startMs);
+    if (boundaryChar < word.endChar) {
+      const ratio = (boundaryChar - word.startChar) / (word.endChar - word.startChar);
+      return Math.round(word.startMs + ratio * (word.endMs - word.startMs));
+    }
+  }
+  return Math.round(ordered[ordered.length - 1].endMs);
+}
+
+/**
+ * Put the exact Narrative windows accepted by Content Preflight onto the TTS
+ * timeline. Scene N therefore speaks the same source excerpt Visual Beat N was
+ * analyzed from; an unrelated fixed-count timing planner can never silently
+ * pair a Beat with different words.
+ *
+ * Whitespace is presentation-only for this alignment. Every other visible
+ * character must match exactly and in order. A mismatch returns null so Brand
+ * Visual callers can fail closed before image/provider spend.
+ */
+export function buildNarrativeAlignedBrollWindows(
+  input: NarrativeAlignedBrollInput,
+): BrollWindow[] | null {
+  const narrativeWindows = input.narrativeWindows.map((window) => window.trim());
+  if (narrativeWindows.length === 0 || narrativeWindows.some((window) => !window)) return null;
+  const spokenVisible = visibleCharacters(input.spokenText);
+  const windowVisible = narrativeWindows.map(visibleCharacters);
+  const narrativeVisibleText = windowVisible.flat().map((character) => character.value).join("");
+  if (
+    spokenVisible.length === 0
+    || narrativeVisibleText !== spokenVisible.map((character) => character.value).join("")
+  ) return null;
+
+  const captions = input.captions
+    .filter((caption) => (
+      Number.isFinite(caption.startMs)
+      && Number.isFinite(caption.endMs)
+      && caption.endMs > caption.startMs
+    ))
+    .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+  const lastTimedEnd = Math.max(
+    0,
+    ...captions.map((caption) => caption.endMs),
+    ...input.words.map((word) => Number.isFinite(word.endMs) ? word.endMs : 0),
+  );
+  const audioEndMs = Math.max(
+    1,
+    lastTimedEnd,
+    Number.isFinite(input.audioEndMs) && (input.audioEndMs ?? 0) > 0
+      ? Math.round(input.audioEndMs as number)
+      : 0,
+  );
+  if (audioEndMs < narrativeWindows.length) return null;
+
+  const boundaryTimes = [0];
+  let visibleOffset = 0;
+  for (let index = 0; index < windowVisible.length - 1; index += 1) {
+    visibleOffset += windowVisible[index].length;
+    const boundaryChar = spokenVisible[visibleOffset]?.startChar;
+    if (boundaryChar === undefined) return null;
+    const boundaryTime = boundaryTimeFromWords(input.words, boundaryChar);
+    if (boundaryTime === null) return null;
+    const minimum = boundaryTimes[boundaryTimes.length - 1] + 1;
+    const remainingWindows = narrativeWindows.length - index - 1;
+    const maximum = audioEndMs - remainingWindows;
+    if (minimum > maximum) return null;
+    boundaryTimes.push(Math.max(minimum, Math.min(maximum, boundaryTime)));
+  }
+  boundaryTimes.push(audioEndMs);
+
+  return narrativeWindows.map((text, index) => {
+    const startMs = boundaryTimes[index];
+    const endMs = boundaryTimes[index + 1];
+    const overlapping = captions
+      .map((caption, captionIndex) => ({ caption, captionIndex }))
+      .filter(({ caption }) => caption.endMs > startMs && caption.startMs < endMs);
+    const midpoint = (startMs + endMs) / 2;
+    const nearest = overlapping.length > 0
+      ? overlapping
+      : captions.length > 0
+        ? [captions
+            .map((caption, captionIndex) => ({ caption, captionIndex }))
+            .reduce((best, candidate) => {
+              const bestMidpoint = (best.caption.startMs + best.caption.endMs) / 2;
+              const candidateMidpoint = (candidate.caption.startMs + candidate.caption.endMs) / 2;
+              return Math.abs(candidateMidpoint - midpoint) < Math.abs(bestMidpoint - midpoint)
+                ? candidate
+                : best;
+            })]
+        : [];
+    return {
+      startMs,
+      endMs,
+      captionStartIdx: nearest[0]?.captionIndex ?? 0,
+      captionEndIdx: nearest[nearest.length - 1]?.captionIndex ?? 0,
+      text,
     };
   });
 }

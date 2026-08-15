@@ -13,8 +13,12 @@
  */
 
 import { minutesFromSeconds } from "@/lib/minute-round";
-import { planAutoMixSources } from "@/lib/automix-plan";
-import { estimatePresetCredits } from "./estimate";
+import {
+  disclosedAutoMixAiImageCount,
+  disclosedAutoMixAiSlotIndices,
+  estimatePresetCredits,
+  reusableAutoMixAiSlotCount,
+} from "./estimate";
 
 export interface ReceiptInput {
   /** Estimated clip length in seconds (estimateClipSecV2(script)). */
@@ -30,6 +34,8 @@ export interface ReceiptInput {
   perImageCredits: number;
   /** Credit balance from /api/credits/balance → total. null when unknown (still loading). */
   creditBalance: number | null;
+  /** Credits already removed from the available balance for provider/render work in flight. */
+  reservedCredits?: number;
   /** Credits charged per render minute when the package cannot fund the whole job. */
   minuteCreditRate: number;
   /** True when a HeyGen avatar is on (avatar mode ≠ none). */
@@ -40,6 +46,16 @@ export interface ReceiptInput {
   insufficientCreditBehavior?: "stock-fallback" | "block";
   /** Explicit B-roll count. When set, the backend plans exactly this many source slots. */
   targetClipCount?: number;
+  /** Activation-only image entitlement. When present, image generation spends
+   * these units instead of Hero credits; render-overflow credits stay separate. */
+  starterImageAllowance?: { remaining: number; limit: number } | null;
+  /** Identity-validated delivered Visual Beats for the exact current
+   * Content Preflight. Only indices intersecting planned AI slots are free. */
+  reusableAiSceneIndices?: readonly number[];
+  /** The exact preflight already delivered a reduced-density Starter clip.
+   * At zero remaining allowance, missing slots are intentional and must not
+   * be quoted as new work on an unchanged rerender. */
+  preserveEstablishedAiDensity?: boolean;
 }
 
 export type ReceiptLineKind = "info" | "success" | "warn";
@@ -60,6 +76,9 @@ export interface ReceiptModel {
   overflowCredits: number;
   /** Hero credits estimated for this job: AI images + a credit-funded render. */
   totalEstimatedCredits: number;
+  estimatedAiImages: number;
+  billableAiImages: number;
+  reusableAiImages: number;
   lines: ReceiptLine[];
 }
 
@@ -71,22 +90,44 @@ function formatCredits(value: number): string {
 export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const {
     estSec, remainingMinutes, totalMinutes, usesAi, presetWeights,
-    perImageCredits, creditBalance, minuteCreditRate, hasAvatar, exactDuration = false,
-    insufficientCreditBehavior = "stock-fallback", targetClipCount = 0,
+    perImageCredits, creditBalance, reservedCredits = 0, minuteCreditRate, hasAvatar, exactDuration = false,
+    insufficientCreditBehavior = "stock-fallback", targetClipCount = 0, starterImageAllowance = null,
+    reusableAiSceneIndices = [], preserveEstablishedAiDensity = false,
   } = input;
 
   const estMinutes = minutesFromSeconds(estSec);
   const manualPieceCount = Number.isFinite(targetClipCount) && targetClipCount > 0
     ? Math.min(60, Math.floor(targetClipCount))
     : 0;
+  // Shared with useV2Job, which sends this exact number to the server as the
+  // `maxAiImages` ceiling — the disclosed count and the charged ceiling are one value.
   const manualAiImageCount = manualPieceCount > 0
-    ? planAutoMixSources(manualPieceCount, presetWeights).filter((source) => source === "ai").length
+    ? disclosedAutoMixAiImageCount(estSec, presetWeights, manualPieceCount)
     : null;
-  const estCredits = usesAi
+  const estimatedAiImages = usesAi
     ? manualAiImageCount != null
-      ? manualAiImageCount * perImageCredits
-      : estimatePresetCredits(estSec, presetWeights, perImageCredits)
+      ? manualAiImageCount
+      : Math.round(estimatePresetCredits(estSec, presetWeights, perImageCredits) / perImageCredits)
     : 0;
+  const plannedAiSlotIndices = usesAi
+    ? disclosedAutoMixAiSlotIndices(estSec, presetWeights, targetClipCount)
+    : [];
+  const reusableAiImages = usesAi
+    ? reusableAutoMixAiSlotCount(plannedAiSlotIndices, reusableAiSceneIndices)
+    : 0;
+  const preservesStarterDensity = Boolean(
+    starterImageAllowance
+    && starterImageAllowance.remaining === 0
+    && preserveEstablishedAiDensity
+    && reusableAiImages > 0,
+  );
+  const billableAiImages = preservesStarterDensity
+    ? 0
+    : Math.max(0, estimatedAiImages - reusableAiImages);
+  const admittedStarterImages = starterImageAllowance
+    ? Math.min(billableAiImages, Math.max(0, starterImageAllowance.remaining))
+    : 0;
+  const estCredits = usesAi && !starterImageAllowance ? billableAiImages * perImageCredits : 0;
 
   const haveMinuteQuota = remainingMinutes != null && totalMinutes != null;
   // M — only meaningful when we know the remaining package minutes.
@@ -119,10 +160,27 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     lines.push({
       key: "ai",
       kind: "info",
-      text: manualAiImageCount != null
-        ? `ภาพ AI: ${estCredits} เครดิต (${manualAiImageCount} ภาพ × ${perImageCredits} เครดิต) · หักเมื่อเจนสำเร็จ`
-        : `ภาพ AI (ประมาณ): ~${estCredits} เครดิต · หักตามจำนวนที่เจนสำเร็จจริง`,
+      text: starterImageAllowance
+        ? billableAiImages === 0
+          ? preservesStarterDensity
+            ? `ภาพ AI: ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ และรักษาความถี่ภาพเดิมของคลิปนี้`
+            : `ภาพ AI: ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดสิทธิ์หรือเครดิตซ้ำ`
+          : starterImageAllowance.remaining === 0
+          ? "สิทธิ์ทดลองภาพ AI เหลือ 0 ภาพ — ระบบจะไม่เริ่มเจนและจะไม่เปลี่ยนเป็น Stock เอง"
+          : billableAiImages > admittedStarterImages
+            ? `ภาพ AI: ใช้สิทธิ์ทดลอง ${admittedStarterImages} ภาพจาก ${billableAiImages} ฉากที่ต้องสร้าง${reusableAiImages ? ` · ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ` : ""} · ระบบกระจายภาพให้ครอบคลุมคลิปและลดความถี่การเปลี่ยนภาพ`
+            : `ภาพ AI: ใช้สิทธิ์ทดลอง ${admittedStarterImages} ภาพ${reusableAiImages ? ` · ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ` : ""} · หลังเริ่มงานจะเหลือ ${starterImageAllowance.remaining - admittedStarterImages} จาก ${starterImageAllowance.limit} ภาพ`
+        : manualAiImageCount != null
+        ? `ภาพ AI: ${estCredits} เครดิต (${billableAiImages} ภาพ × ${perImageCredits} เครดิต)${reusableAiImages ? ` · ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ` : ""} · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`
+        : `ภาพ AI (ประมาณ): ~${estCredits} เครดิต${reusableAiImages ? ` · ใช้ภาพเดิม ${reusableAiImages} ภาพโดยไม่คิดซ้ำ` : ""} · ระบบกันเครดิตก่อนส่งแต่ละภาพ และคืนอัตโนมัติหากเจนไม่สำเร็จ`,
     });
+    if (starterImageAllowance?.remaining === 0 && billableAiImages > 0) {
+      lines.push({
+        key: "allowance-insufficient",
+        kind: "warn",
+        text: "ใช้สิทธิ์ทดลองภาพ AI ครบแล้ว — อัปเกรดเป็นแผนรายเดือน หรือกลับไปเลือก Stock ฟรี",
+      });
+    }
   }
 
   // 3) Overflow warning — package minutes not enough (X > Y).
@@ -140,10 +198,13 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   //    package minutes above, Hero credits here, and HeyGen's own key below.
   //    The combined check includes BOTH AI-image and credit-funded render spend.
   if (creditBalance != null && totalEstimatedCredits > 0 && totalEstimatedCredits <= creditBalance) {
+    const reserved = reservedCredits > 0
+      ? ` · มี ${formatCredits(reservedCredits)} เครดิตกำลังกันไว้กับงานอื่น`
+      : "";
     lines.push({
       key: "credits",
       kind: "success",
-      text: `พร้อมสร้าง · Hero credits มี ${formatCredits(creditBalance)} · งานนี้ใช้ประมาณ ${formatCredits(totalEstimatedCredits)} · คาดว่าเหลือ ${formatCredits(creditBalance - totalEstimatedCredits)}`,
+      text: `พร้อมสร้าง · Hero credits พร้อมใช้ ${formatCredits(creditBalance)}${reserved} · วงเงินประเมินสำหรับงานนี้ ${formatCredits(totalEstimatedCredits)} · หากใช้ตามประมาณการจะเหลือ ${formatCredits(creditBalance - totalEstimatedCredits)}`,
     });
   } else if (creditBalance != null && totalEstimatedCredits > creditBalance) {
     const deficit = totalEstimatedCredits - creditBalance;
@@ -155,7 +216,7 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     lines.push({
       key: "insufficient",
       kind: "warn",
-      text: `Hero credits ไม่พอ · มี ${formatCredits(creditBalance)} · งานนี้ใช้ประมาณ ${formatCredits(totalEstimatedCredits)} · ขาดประมาณ ${formatCredits(deficit)} — ${recovery}`,
+      text: `Hero credits ไม่พอ · พร้อมใช้ ${formatCredits(creditBalance)} · วงเงินประเมินสำหรับงานนี้ ${formatCredits(totalEstimatedCredits)} · ขาดประมาณ ${formatCredits(deficit)} — ${recovery}`,
     });
   }
 
@@ -173,9 +234,19 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     key: "disclaimer",
     kind: "info",
     text: exactDuration
-      ? "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง"
-      : "ตัวเลขเป็นประมาณการ — ยอดจริงคำนวณจากความยาวเสียงจริงหลังสร้างเสียง",
+      ? "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ"
+      : "ตัวเลขเป็นประมาณการ — จำนวนภาพและยอดเรนเดอร์จริงคำนวณหลังสร้างเสียง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ",
   });
 
-  return { estMinutes, estCredits, overflowMinutes, overflowCredits, totalEstimatedCredits, lines };
+  return {
+    estMinutes,
+    estCredits,
+    overflowMinutes,
+    overflowCredits,
+    totalEstimatedCredits,
+    estimatedAiImages,
+    billableAiImages,
+    reusableAiImages,
+    lines,
+  };
 }

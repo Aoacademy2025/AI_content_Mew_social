@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import {
   BrandAssetError,
-  canUseLogoOverlay,
+  canManageBrandMark,
   deleteBrandAssetIfUnreferenced,
   getDefaultBrandPreference,
   getOwnedRecoverableBrandAsset,
@@ -11,6 +11,8 @@ import {
   saveBrandAsset,
   setDefaultBrandPreference,
 } from "@/lib/brand-assets.server";
+import type { User } from "@prisma/client";
+import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
   normalizeLogoOverlayConfig,
   type BrandAssetView,
@@ -19,7 +21,20 @@ import {
 export type BrandAssetActor = {
   id: string;
   plan: string;
+  brandVisualAllowed?: boolean;
 };
+
+export async function brandAssetActorForUser(user: User): Promise<BrandAssetActor> {
+  return {
+    id: user.id,
+    plan: user.plan,
+    brandVisualAllowed: (await resolveBrandVisualAccess(user)).canUse,
+  };
+}
+
+function actorCanManageBrandMark(user: BrandAssetActor): boolean {
+  return canManageBrandMark(user.plan, user.brandVisualAllowed === true);
+}
 
 type BrandAssetErrorBody = {
   error: BrandAssetError["code"];
@@ -44,7 +59,7 @@ const PATCH_KEYS = new Set([
 const BRAND_ASSET_ERRORS: Record<BrandAssetError["code"], Omit<BrandAssetErrorMapping, "body"> & { message: string }> = {
   plan_required: {
     status: 403,
-    message: "ฟีเจอร์โลโก้แบรนด์ใช้ได้เฉพาะแผน Pro หรือ Business",
+    message: "บัญชีนี้ยังไม่สามารถจัดการโลโก้หรือลายน้ำของแบรนด์ได้",
   },
   project_not_found: { status: 404, message: "ไม่พบโปรเจกต์" },
   unsupported_type: {
@@ -111,7 +126,7 @@ export async function getBrandAssetCollection(
 ): Promise<NextResponse> {
   const defaultLogo = await getDefaultBrandPreference(user.id);
   return NextResponse.json({
-    eligible: canUseLogoOverlay(user.plan),
+    eligible: actorCanManageBrandMark(user),
     defaultLogo: defaultLogo
       ? { ...defaultLogo, asset: publicAsset(defaultLogo.asset) }
       : null,
@@ -122,7 +137,7 @@ export async function postBrandAsset(
   user: BrandAssetActor,
   request: Request,
 ): Promise<NextResponse> {
-  if (!canUseLogoOverlay(user.plan)) {
+  if (!actorCanManageBrandMark(user)) {
     return mappedErrorResponse(new BrandAssetError("plan_required", 403))!;
   }
 
@@ -141,13 +156,14 @@ export async function postBrandAsset(
   const file = form.get("file");
   const projectIdValue = form.get("projectId");
   const projectId = typeof projectIdValue === "string" ? projectIdValue.trim() : "";
-  if (!(file instanceof File) || !projectId) return invalidBodyResponse();
+  if (!(file instanceof File)) return invalidBodyResponse();
 
   try {
     const asset = await saveBrandAsset({
       userId: user.id,
       plan: user.plan,
-      projectId,
+      brandVisualAllowed: user.brandVisualAllowed,
+      projectId: projectId || null,
       file,
     });
     return NextResponse.json({ asset: publicAsset(asset) }, { status: 201 });
@@ -173,7 +189,7 @@ export async function patchBrandAssetItem(
   assetId: string,
   request: Request,
 ): Promise<NextResponse> {
-  if (!canUseLogoOverlay(user.plan)) {
+  if (!actorCanManageBrandMark(user)) {
     return mappedErrorResponse(new BrandAssetError("plan_required", 403))!;
   }
   const normalizedAssetId = assetId.trim();
@@ -210,6 +226,7 @@ export async function patchBrandAssetItem(
     await setDefaultBrandPreference({
       userId: user.id,
       plan: user.plan,
+      brandVisualAllowed: user.brandVisualAllowed,
       assetId: normalizedAssetId,
       config,
     });
@@ -231,7 +248,7 @@ export async function deleteBrandAssetItem(
   user: BrandAssetActor,
   assetId: string,
 ): Promise<NextResponse> {
-  if (!canUseLogoOverlay(user.plan)) {
+  if (!actorCanManageBrandMark(user)) {
     return mappedErrorResponse(new BrandAssetError("plan_required", 403))!;
   }
   const normalizedAssetId = assetId.trim();

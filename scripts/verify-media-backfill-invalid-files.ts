@@ -16,6 +16,11 @@ try {
   const stocksRoot = path.join(fixtureRoot, "stocks");
   mkdirSync(stocksRoot, { recursive: true });
   writeFileSync(path.join(stocksRoot, "legacy-empty.mp4"), "");
+  writeFileSync(path.join(stocksRoot, ".tmp-123-1-preview.mp4"), "temporary");
+  writeFileSync(
+    path.join(stocksRoot, "preview.mp4.tmp-123-1785460777118.mp4"),
+    "temporary",
+  );
 
   const result = spawnSync(
     path.join(repositoryRoot, "node_modules", ".bin", "tsx"),

@@ -68,7 +68,13 @@ export function shouldGuardKieImages(opts: { usesManagedKey: boolean; chargeImag
   return opts.usesManagedKey || opts.chargeImages;
 }
 
-export type AiSkipReason = "credits" | "rate" | "cap" | null;
+/** Why AI images were skipped mid-job, surfaced to the client so the UI can explain
+ *  the missing images. "provider" = the image provider was unavailable (open circuit,
+ *  cost guard, or a systemic failure that stopped the batch) — nothing was charged.
+ *  "unauthorized" = this request may not mint paid images against the video at all (not
+ *  from the render pipeline, or a foreign/terminal videoJobId — see
+ *  hero-image-namespace.ts); nothing was charged and an identical retry won't help. */
+export type AiSkipReason = "credits" | "rate" | "cap" | "provider" | "unauthorized" | null;
 
 /**
  * Merge the direct kie-image path's PRE-LOOP cap-clamp signal with any reason a

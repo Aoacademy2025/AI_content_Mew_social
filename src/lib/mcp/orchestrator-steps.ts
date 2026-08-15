@@ -2,41 +2,8 @@
 // chain (verified against page.tsx 2026-06-13). No I/O — unit-testable.
 
 import type { BrollPreferenceInput } from "@/lib/broll-preferences";
-import type { TelemetryInput } from "@/lib/telemetry";
-import type { TtsProvider } from "@/lib/tts-providers";
 
 export interface OrchCaption { text: string; startMs: number; endMs: number; tag: "hook" | "body" | "cta" }
-
-// Durable, queryable marker for the degraded-timing recovery path (stab-task-2).
-// Emitted (fire-and-forget) ONLY when the orchestrator had to rebuild subtitle
-// timing from the raw audio duration because the TTS route produced audio but no
-// instrumented `timing` (Gemini's segmented pass fell open to a single call). It
-// lands in TelemetryEvent alongside pipeline_step_*, so (1) degraded videos are
-// identifiable later and (2) a systemic timing regression shows up as a spike in
-// this event name instead of being silently papered over by the recovery.
-export function buildDegradedTimingTelemetry(args: {
-  pipelineRunId: string;
-  jobId: string;
-  provider: TtsProvider;
-  scriptCharCount: number;
-  audioDurationMs: number;
-}): TelemetryInput {
-  return {
-    name: "tts_timing_degraded",
-    category: "pipeline",
-    source: "server",
-    step: "captions",
-    status: "recovered",
-    properties: {
-      pipelineRunId: args.pipelineRunId,
-      jobId: args.jobId,
-      via: "mcp",
-      provider: args.provider,
-      scriptCharCount: args.scriptCharCount,
-      audioDurationMs: args.audioDurationMs,
-    },
-  };
-}
 
 export const DEFAULT_STYLE = {
   fontFamily: "'Kanit', sans-serif",
@@ -155,11 +122,30 @@ type CharWord = { word: string; startMs: number; endMs: number; startChar: numbe
 // flushes so a card never spans across a sentence end or an authored line break.
 // Kept in LOCKSTEP with the v2 copy in video-editor/_v2/subtitle-style.ts
 // (SENTENCE_BOUNDARY_RE / regroupCaptions) — แก้ที่นึงต้องแก้อีกที่.
-const SENTENCE_BOUNDARY_RE = /[\n.!?…ฯ]/;
+const SENTENCE_BOUNDARY_RE = /[\n,.!?…ฯ;:，；：]/;
+
+// A strict N-token flush can strand Thai function words/modifiers at a card
+// edge (production examples: "เริ่มต้นให้|ชัดเจน", "วัน|เดียว"). Permit one
+// extra timed token only when it completes that local phrase. The overrun is
+// capped at N+1, so the requested density still governs every card.
+const THAI_BINDS_NEXT = new Set([
+  "ไม่", "ได้", "จะ", "กำลัง", "ต้อง", "ควร", "อยาก", "ให้", "ใน", "จาก",
+  "ของ", "กับ", "เพื่อ", "โดย", "เพราะ", "ถ้า", "เมื่อ", "คือ", "เป็น", "อย่าง", "ทุก",
+  "ช่วง", "ซับ", "นำ", "งาน",
+]);
+const THAI_BINDS_PREVIOUS = new Set([
+  "เดียว", "แล้ว", "อยู่", "ไว้", "มาก", "ขึ้น", "ลง", "ก่อน", "หลัง", "ทันที", "เสมอ", "จริง", "ได้",
+]);
+const THAI_FINAL_CLOSING_TOKENS = new Set(["ได้"]);
+
+function completesNaturalThaiPhrase(previous: string, current: string): boolean {
+  return THAI_BINDS_NEXT.has(previous) || THAI_BINDS_PREVIOUS.has(current);
+}
 
 /**
- * Regroup word-timed tokens into cards of ≤N words that never cross a sentence/line
- * boundary ("≤N คำ", matching the v2 UI label). Card text is SLICED from the original
+ * Regroup word-timed tokens into cards targeting N words that never cross a sentence/line
+ * boundary. A Thai phrase may use one extra token to avoid a dangling function word;
+ * otherwise the v2 "≤N คำ" density is preserved. Card text is SLICED from the original
  * `fullText` (preserving exact spacing — Thai has no inter-word spaces, "ๆ"/script spaces
  * stay as written) instead of re-joining tokens, which would either lose or fabricate
  * spaces. Timing (startMs/endMs) is untouched, so subtitle↔audio sync is unchanged.
@@ -180,11 +166,23 @@ export function cardsByWordCount(words: CharWord[], n: number, fullText: string)
     grp = [];
   };
   for (let i = 0; i < words.length; i++) {
-    if (grp.length >= n) flush();
-    // Before appending word i to a non-empty group, check the gap in fullText between
-    // the previous word and this one for a sentence/line boundary.
-    if (grp.length > 0 && SENTENCE_BOUNDARY_RE.test(fullText.slice(grp[grp.length - 1].endChar, words[i].startChar))) {
-      flush();
+    if (grp.length > 0) {
+      // Authored sentence/line boundaries always win over natural-phrase grouping.
+      const hardBoundary = SENTENCE_BOUNDARY_RE.test(
+        fullText.slice(grp[grp.length - 1].endChar, words[i].startChar),
+      );
+      if (hardBoundary) {
+        flush();
+      } else if (grp.length >= n) {
+        const allowOneNaturalToken = n <= 3 && grp.length === n
+          && completesNaturalThaiPhrase(grp[grp.length - 1].word, words[i].word);
+        // Mode 2 may need one final closing auxiliary after the N+1 phrase
+        // (e.g. ใช้+งาน+จริง+ได้). This is still bounded at N+2 and keeps the
+        // exact provider timing for every token.
+        const allowFinalClosingToken = n <= 2 && grp.length === n + 1
+          && THAI_FINAL_CLOSING_TOKENS.has(words[i].word);
+        if (!allowOneNaturalToken && !allowFinalClosingToken) flush();
+      }
     }
     grp.push(words[i]);
   }

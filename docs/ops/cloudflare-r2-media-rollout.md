@@ -1,7 +1,9 @@
 # Cloudflare R2 media rollout
 
 Status: production reads R2 first with local fallback; copy reconciliation is
-continuous. R2 deletion remains disabled.
+continuous. The 10-object physical-deletion canary passed, and bounded
+reference-aware R2 GC is enabled with a seven-day recovery grace. Blanket
+age-based bucket lifecycle deletion remains prohibited.
 
 This migration keeps `/api/renders/*` and `/api/stocks/*` stable. The application
 proxies private R2 objects, so the bucket does not need public access or a custom
@@ -148,6 +150,18 @@ not delete or mutate local media. Roll back immediately by returning
 `local-r2` is available for local-first fallback testing, but it does not exercise
 R2 while the local copy exists.
 
+The edge must not terminate a missing local `/renders`, `/stocks`,
+`/api/renders`, or `/api/stocks` request with an alias-only 404. Keep the static
+Nginx fast path, but configure `try_files` to fall through to the
+`@media_storage_fallback` named location in `deploy/nginx.conf`. That location
+normalizes legacy media URLs to their `/api/...` route and proxies only the local
+miss to the application's R2-aware reader. After every Nginx change, require
+`nginx -t`, a zero-downtime reload, and successful 1 KiB Range canaries for:
+
+- a local render and stock file;
+- an evicted render and stock file; and
+- both the `/api/...` and legacy non-API URL forms.
+
 ## Stage 5: verified local eviction
 
 Local eviction is allowed only while reads use `r2-local` or `r2`. The workflow
@@ -161,6 +175,13 @@ Before removing each local copy it requires an unchanged catalog observation,
 matching size/mtime/SHA-256, and a second R2 HEAD verification after the local file
 has been atomically quarantined. The catalog state changes with a compare-and-set.
 Any pre-delete failure restores the local path. R2 deletion is explicitly rejected.
+
+Before each filesystem eviction pass, the same command also reconciles stale
+catalog rows that still say `localState=present` when the canonical file is
+already missing. It changes such a row to `evicted` only when no usable
+quarantine copy exists and R2 independently matches the recorded size and
+SHA-256. This state repair deletes no bytes and prevents stale local metadata
+from blocking remote retention forever.
 
 Run a read-only bounded inventory:
 
@@ -179,7 +200,7 @@ MEDIA_LOCAL_EVICTION=1 DOTENV_CONFIG_PATH=.env.r2.production \
 ```
 
 Verify health, Range playback for an evicted identity, queue state, disk free
-space, and logs before installing the daily timer:
+space, and logs before installing the four-hour timer:
 
 ```sh
 install -m 0644 \
@@ -196,9 +217,152 @@ systemctl enable --now heroai-media-local-eviction.timer
 ```
 
 The reconciliation and eviction services share an exclusive lock, so upload
-catalog transitions cannot overlap eviction. The daily job is capped at 250
-objects and 20 GiB per run. Keep `MEDIA_R2_DELETE=0`; lifecycle deletion from R2
-is a separate future policy and is not required to protect VPS disk capacity.
+catalog transitions cannot overlap eviction. The catch-up timer runs every four
+hours and is capped at 500 state repairs plus 500 physical evictions and 50 GiB
+per category per run. The local eviction service keeps `MEDIA_R2_DELETE=0`;
+reference-aware R2 deletion runs separately in Stage 6.
+
+## Stage 6: reference-aware R2 garbage collection
+
+Do not add an age-only lifecycle rule to `media/v1/` or `media/v2/`. Object age
+does not encode the complete 3/7/14-day reference policy, and one immutable v2
+blob may be shared by several logical media aliases.
+
+Remote GC is catalog-led and fail-closed. A physical R2 object is eligible only
+when:
+
+- every catalog alias that points at it is locally evicted;
+- every alias has only expired references, or has no references and is at least
+  14 days old;
+- every alias is in the verified catalog state;
+- the full media reference graph has zero errors; and
+- R2 HEAD metadata still matches catalog size and SHA-256.
+
+The recovery deadline is the latest tier expiry plus seven days (or the
+unreferenced 14-day cutoff plus seven days), never seven fresh days from GC
+discovery. The first apply records that absolute deadline. If it has already
+elapsed, the same bounded apply may stage and physically delete the object. GC
+also rebases legacy `delete_pending` rows that were previously given a deadline
+relative to discovery; operational retry deadlines and delete leases are never
+rebased. Gallery visibility has already ended at tier expiry. Every delete run
+rebuilds the reference graph; if a live reference appears during recovery, the
+catalog alias is restored to `verified`. Physical deletion is SHA-gated and
+idempotent; an already-missing object is finalized as deleted so a crash between
+the R2 delete and catalog update can recover safely.
+
+Run a bounded dry-run:
+
+```sh
+DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/gc-r2-media.ts \
+  --maxObjects=10 --maxBytesMb=1024 --graceHours=168
+```
+
+Review the records and copy the exact `manifestSha256` from that run. Stage only
+that reviewed manifest:
+
+```sh
+MEDIA_LOCAL_EVICTION=1 MEDIA_R2_DELETE=1 R2_REMOTE_GC_ENABLED=1 \
+DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/gc-r2-media.ts \
+  --apply --manifestSha256=<REVIEWED_SHA256> \
+  --maxObjects=10 --maxBytesMb=1024 --graceHours=168
+```
+
+After the grace deadline, repeat dry-run and hash-gated apply to delete the
+canary. Require zero errors, the expected `deleted`/`missingFinalized` count,
+healthy Range playback, and no new media graph errors before automation.
+
+The pending-only canary timer may be installed after a reviewed stage. It can
+delete at most 10 already-pending objects and cannot stage a new object:
+
+```sh
+install -m 0644 \
+  deploy/systemd/heroai-r2-remote-gc-canary.service \
+  /etc/systemd/system/heroai-r2-remote-gc-canary.service
+install -m 0644 \
+  deploy/systemd/heroai-r2-remote-gc-canary.timer \
+  /etc/systemd/system/heroai-r2-remote-gc-canary.timer
+systemctl daemon-reload
+systemctl enable --now heroai-r2-remote-gc-canary.timer
+```
+
+The automated unit has two additional gates (`--automated` and
+`R2_REMOTE_GC_AUTOMATED=1`) and shares the same exclusive media-storage lock:
+
+```sh
+install -m 0644 \
+  deploy/systemd/heroai-r2-remote-gc.service \
+  /etc/systemd/system/heroai-r2-remote-gc.service
+install -m 0644 \
+  deploy/systemd/heroai-r2-remote-gc.timer \
+  /etc/systemd/system/heroai-r2-remote-gc.timer
+systemctl daemon-reload
+systemctl enable --now heroai-r2-remote-gc.timer
+```
+
+After the full timer is verified active, disable the pending-only canary timer
+so two automated GC schedules do not compete for the same pending backlog:
+
+```sh
+systemctl disable --now heroai-r2-remote-gc-canary.timer
+```
+
+If backfill leaves a failed catalog observation after its source path has
+disappeared, do not delete it with ad-hoc SQL. Use the bounded catalog
+reconciler in dry-run mode, review its exact manifest, back up SQLite, and apply
+only while holding the shared media-storage lock:
+
+```sh
+/usr/bin/flock --exclusive --wait 3600 \
+  /run/lock/heroai-media-storage.lock \
+  env DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/reconcile-media-catalog.ts \
+  --maxObjects=25 --olderThanMinutes=30
+
+/usr/bin/flock --exclusive --wait 3600 \
+  /run/lock/heroai-media-storage.lock \
+  env MEDIA_CATALOG_RECONCILE=1 DOTENV_CONFIG_PATH=.env.r2.production \
+  npx tsx scripts/reconcile-media-catalog.ts \
+  --apply --manifestSha256=<REVIEWED_SHA256> \
+  --maxObjects=25 --olderThanMinutes=30
+```
+
+The reconciler fails closed on graph errors, references, present local paths,
+remote receipt fields, unsupported error codes, retry grace, manifest drift,
+and catalog compare-and-set drift. It preserves eligible audit rows as
+`abandoned/missing`; a file that later reappears can re-enter backfill.
+
+The catalog retains the object key, SHA-256, size, `remoteState=deleted`, and
+timestamp as the deletion audit record; it does not retain the media bytes.
+Legacy R2 objects that have no catalog row are inventory-only until the
+copy-reconciliation backlog is zero. Never bulk-delete those orphan candidates
+during migration.
+
+After reconciliation is complete, orphan cleanup is a separate fail-closed
+workflow. It considers only objects absent from every active catalog identity
+and at least 21 days old, preserving the 14-day unreferenced interval plus the
+seven-day recovery interval. Legacy v1 objects with a live reference or a tier
+expiry still inside its seven-day recovery window are retained. Every selected
+object requires unchanged LIST/HEAD size and last-modified metadata plus valid
+SHA-256 metadata, and apply requires either an exact reviewed manifest or the
+dedicated automated gate.
+
+Install the daily bounded orphan timer only after a dry-run reports zero graph,
+identity, and remote-verification errors:
+
+```sh
+install -m 0644 deploy/systemd/heroai-r2-orphan-gc.service \
+  /etc/systemd/system/heroai-r2-orphan-gc.service
+install -m 0644 deploy/systemd/heroai-r2-orphan-gc.timer \
+  /etc/systemd/system/heroai-r2-orphan-gc.timer
+systemctl daemon-reload
+systemctl enable --now heroai-r2-orphan-gc.timer
+```
+
+The bucket is private and the application proxies R2 reads. If a future custom
+R2 domain or Cloudflare Cache Rule caches media directly, add a cache purge for
+each deleted URL before treating physical deletion as complete.
 
 Cloudflare references:
 

@@ -7,7 +7,7 @@ type EvenSplitStock = {
   keyword?: string;
   title?: string;
   query?: string;
-  provider?: "pexels" | "pixabay";
+  provider?: BrollVideo["provider"];
   contentProfile?: string;
   selectionReason?: string;
   relevanceScore?: number;

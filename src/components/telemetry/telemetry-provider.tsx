@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { trackEvent } from "@/lib/client-telemetry";
+import { createWebVitalsAccumulator } from "@/lib/web-vitals-telemetry";
 
 type PerformanceEntryWithValue = PerformanceEntry & {
   value?: number;
@@ -34,6 +35,8 @@ function stackSnippet(error: unknown) {
 export function TelemetryProvider() {
   const pathname = usePathname();
   const lastPathRef = useRef<string | null>(null);
+  const vitalsPathRef = useRef<string | null>(pathname);
+  const navigationIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!pathname || lastPathRef.current === pathname) return;
@@ -109,14 +112,28 @@ export function TelemetryProvider() {
     if (typeof PerformanceObserver === "undefined") return;
 
     const observers: PerformanceObserver[] = [];
-    let lcp = 0;
-    let cls = 0;
-    let inp = 0;
+    const vitals = createWebVitalsAccumulator();
+    const vitalsPath = vitalsPathRef.current ?? window.location.pathname;
+    const navigationId = navigationIdRef.current ?? (
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `nav_${Math.round(performance.timeOrigin)}_${Math.random().toString(36).slice(2)}`
+    );
+    navigationIdRef.current = navigationId;
 
     const flushVitals = () => {
-      if (lcp > 0) trackEvent("web_vital", { category: "performance", value: Math.round(lcp), properties: { metric: "LCP" } });
-      if (cls > 0) trackEvent("web_vital", { category: "performance", value: Number(cls.toFixed(4)), properties: { metric: "CLS" } });
-      if (inp > 0) trackEvent("web_vital", { category: "performance", value: Math.round(inp), properties: { metric: "INP" } });
+      for (const emission of vitals.flush()) {
+        trackEvent("web_vital", {
+          category: "performance",
+          path: vitalsPath,
+          value: emission.value,
+          properties: {
+            metric: emission.metric,
+            navigationId,
+            scope: "document",
+          },
+        });
+      }
     };
 
     try {
@@ -124,7 +141,7 @@ export function TelemetryProvider() {
         const lcpObserver = new PerformanceObserver((list) => {
           const entries = list.getEntries();
           const latest = entries[entries.length - 1];
-          if (latest) lcp = latest.startTime;
+          if (latest) vitals.recordLcp(latest.startTime);
         });
         lcpObserver.observe({ type: "largest-contentful-paint", buffered: true });
         observers.push(lcpObserver);
@@ -133,7 +150,7 @@ export function TelemetryProvider() {
       if (supportedEntry("layout-shift")) {
         const clsObserver = new PerformanceObserver((list) => {
           for (const entry of list.getEntries() as PerformanceEntryWithValue[]) {
-            if (!entry.hadRecentInput) cls += Number(entry.value ?? 0);
+            if (!entry.hadRecentInput) vitals.recordCls(Number(entry.value ?? 0));
           }
         });
         clsObserver.observe({ type: "layout-shift", buffered: true });
@@ -143,7 +160,7 @@ export function TelemetryProvider() {
       if (supportedEntry("event")) {
         const inpObserver = new PerformanceObserver((list) => {
           for (const entry of list.getEntries() as PerformanceEntryWithValue[]) {
-            if (entry.duration > inp) inp = entry.duration;
+            vitals.recordInp(entry.duration);
           }
         });
         inpObserver.observe({ type: "event", buffered: true, durationThreshold: 40 } as PerformanceObserverInit);

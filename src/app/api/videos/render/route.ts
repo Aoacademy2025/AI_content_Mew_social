@@ -27,6 +27,7 @@ import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir
 import { resolveMediaBaseUrl } from "@/lib/render/media-base-url";
 import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
+import { normalizeHeadlineHook } from "@/lib/headline-hook";
 import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 import {
   activeRenderCancel,
@@ -348,6 +349,24 @@ export async function POST(req: Request) {
       && !Array.isArray(subtitleOverlayConfig)
         ? subtitleOverlayConfig.logoOverlay
         : undefined;
+    const headlineSourceConfig = isSubtitleOverlay ? subtitleOverlayConfig : isShortVideo ? shortVideoConfig : undefined;
+    const rawHeadlineHook =
+      headlineSourceConfig
+      && typeof headlineSourceConfig === "object"
+      && !Array.isArray(headlineSourceConfig)
+        ? headlineSourceConfig.headlineHook
+        : undefined;
+    const headlineFps = [24, 30, 50, 60].includes(Number(requestedFps)) ? Number(requestedFps) : 30;
+    const headlineDurationFrames = Number(headlineSourceConfig?.durationInFrames);
+    const headlineDurationMs = Number.isFinite(headlineDurationFrames) && headlineDurationFrames > 0
+      ? (headlineDurationFrames / headlineFps) * 1_000
+      : 60_000;
+    const normalizedHeadlineHook = rawHeadlineHook === undefined
+      ? null
+      : normalizeHeadlineHook(rawHeadlineHook, headlineDurationMs);
+    if (rawHeadlineHook !== undefined && !normalizedHeadlineHook) {
+      return NextResponse.json({ error: "invalid_headline_hook" }, { status: 400 });
+    }
     const normalizedLogoOverlay = normalizeTrustedLogoRenderInput(rawLogoOverlay);
     if (rawLogoOverlay !== undefined && !normalizedLogoOverlay) {
       return NextResponse.json({ error: "invalid_logo_overlay" }, { status: 400 });
@@ -905,6 +924,7 @@ export async function POST(req: Request) {
         voiceFile: toAbsolute(resolveStockUrl(shortVideoConfig.voiceFile)),
         bgmFile: safeBgmOrDrop(toAbsolute(resolveStockUrl(shortVideoConfig.bgmFile))),
         bgVideos: coverage.segments,
+        headlineHook: normalizedHeadlineHook?.enabled ? normalizedHeadlineHook : undefined,
       };
       if (resolvedShortConfig.voiceFile) assertExistingAsset(resolvedShortConfig.voiceFile, "voice");
       // bgm: safeBgmOrDrop already removed any unplayable value — never throws on music
@@ -930,6 +950,7 @@ export async function POST(req: Request) {
         ...subtitleOverlayConfig,
         videoUrl: resolvedUrl,
         bgmFile: resolvedBgm,
+        headlineHook: normalizedHeadlineHook?.enabled ? normalizedHeadlineHook : undefined,
         ...(normalizedLogoOverlay
           ? {
               logoOverlay: {

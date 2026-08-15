@@ -5,6 +5,7 @@ import { apiError } from "@/lib/api-error";
 import { getProcessingReconcilePlan, type ProcessingReconcileSummary } from "@/lib/video-reconcile";
 import { computeRevenueCohorts } from "@/lib/revenue-cohorts";
 import { getPlanConfig } from "@/lib/plan-config";
+import { getSubscriptionNorthStar } from "@/lib/subscription-north-star.server";
 
 type RenderJobRow = {
   type: string;
@@ -149,6 +150,24 @@ function uniqueCount(
 
 function eventCount(rows: TelemetryRow[], predicate: (row: TelemetryRow) => boolean) {
   return rows.filter(predicate).length;
+}
+
+function dedupePipelineLifecycleRows(rows: TelemetryRow[]) {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (!row.name.startsWith("pipeline_step_")) return true;
+    const props = parseProps(row);
+    const runId = typeof props.pipelineRunId === "string"
+      ? props.pipelineRunId
+      : typeof props.jobId === "string"
+        ? props.jobId
+        : null;
+    if (!runId) return true;
+    const key = `${runId}:${row.step ?? ""}:${row.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function uniqueNonNullCount(values: Array<string | null>) {
@@ -607,7 +626,7 @@ function summarize(
   const { funnel, funnelMode, funnelRuns } = jobFunnel ?? summarizeEditorFunnel(rows);
 
   const stepMap = new Map<string, { durations: number[]; started: number; done: number; error: number; skipped: number }>();
-  for (const row of rows) {
+  for (const row of dedupePipelineLifecycleRows(rows)) {
     if (!row.step) continue;
     const entry = stepMap.get(row.step) ?? { durations: [], started: 0, done: 0, error: 0, skipped: 0 };
     if (row.name === "pipeline_step_started") entry.started++;
@@ -808,6 +827,7 @@ export async function GET(req: Request) {
       currentRows, previousRows, currentVideos, previousVideos, processingPlan,
       allUsers, openedUserRows, completedByUser, currentJobs,
       planConfig, renderJobRows, paidRows, previousJobs, jobUserRows,
+      northStar, northStarHistory,
     ] = await Promise.all([
       prisma.telemetryEvent.findMany({
         where: { createdAt: { gte: since } },
@@ -846,6 +866,8 @@ export async function GET(req: Request) {
           id: true, email: true, plan: true, role: true, geminiKey: true, pexelsKey: true, pixabayKey: true, createdAt: true,
           subStatus: true, billingPeriod: true, planExpiresAt: true,
           trialStartedAt: true, trialEndsAt: true, stripeSubscriptionId: true,
+          bundleAccessExpiresAt: true, bundleStatus: true, bundlePrimary: true,
+          bundleBillingPeriod: true, bundleAmountThb: true,
         },
       }),
       prisma.telemetryEvent.findMany({ where: { name: "editor_opened", userId: { not: null } }, select: { userId: true }, distinct: ["userId"] }),
@@ -872,6 +894,16 @@ export async function GET(req: Request) {
       // Server-truth "started pipeline": distinct users who ever created a VideoJob (any time).
       // Replaces the v1-only editor_script_ready telemetry, which editor v2 never emits.
       prisma.videoJob.findMany({ select: { userId: true }, distinct: ["userId"] }),
+      getSubscriptionNorthStar(now),
+      prisma.northStarDailySnapshot.findMany({
+        orderBy: { snapshotDate: "desc" },
+        take: 31,
+        select: {
+          snapshotDate: true, asOf: true, activeRecurringPayers: true, activeCreators: true,
+          monthlyCreators: true, annualCreators: true, videoCreators: true,
+          scriptCreators: true, imageCreators: true,
+        },
+      }),
     ]);
 
     const nonEmpty = (value: string | null) => typeof value === "string" && value.trim().length > 0;
@@ -894,6 +926,11 @@ export async function GET(req: Request) {
     const internalUserIds = new Set(
       allUsers.filter((u) => (u.email ?? "").toLowerCase().includes("@aoacademy")).map((u) => u.id),
     );
+    const customerCurrentRows = currentRows.filter((row) => !row.userId || !internalUserIds.has(row.userId));
+    const customerPreviousRows = previousRows.filter((row) => !row.userId || !internalUserIds.has(row.userId));
+    const customerCurrentVideos = currentVideos.filter((video) => !internalUserIds.has(video.userId));
+    const customerPreviousVideos = previousVideos.filter((video) => !internalUserIds.has(video.userId));
+    const customerCurrentJobs = currentJobs.filter((job) => !internalUserIds.has(job.userId));
 
     // Creation funnel input — VideoJob rows (server truth), internal team excluded.
     const currentJobsForFunnel = currentJobs
@@ -932,14 +969,14 @@ export async function GET(req: Request) {
       completedFirstVideo: activationFunnel.completedFirstVideo,
       repeatCreators: activationFunnel.repeatCreators,
       windowSignups: activationFunnel.windowSignups,
-      windowCompletedUsers: completedUsersIn(currentVideos),
-      prevWindowCompletedUsers: completedUsersIn(previousVideos),
+      windowCompletedUsers: completedUsersIn(customerCurrentVideos),
+      prevWindowCompletedUsers: completedUsersIn(customerPreviousVideos),
     };
     const renderStats = summarizeRenderJobs(renderJobRows);
 
     // Under managed Gemini a 429/RESOURCE_EXHAUSTED is OUR key (capacity), not a customer key.
     const managedGemini = process.env.MANAGED_GEMINI === "1";
-    const failedJobs = currentJobs.filter((j) => j.status === "failed");
+    const failedJobs = customerCurrentJobs.filter((j) => j.status === "failed");
     const failedByStageMap = new Map<string, { stage: string; stageLabel: string; kind: "system" | "byok" | "quota" | "noise"; count: number; sample: string }>();
     for (const job of failedJobs) {
       const kind = classifyJobError(job.errorMessage, managedGemini);
@@ -950,12 +987,12 @@ export async function GET(req: Request) {
       failedByStageMap.set(key, entry);
     }
     const jobOutcomes = {
-      total: currentJobs.length,
-      done: currentJobs.filter((j) => j.status === "done").length,
+      total: customerCurrentJobs.length,
+      done: customerCurrentJobs.filter((j) => j.status === "done").length,
       failed: failedJobs.length,
-      processing: currentJobs.filter((j) => j.status === "processing" || j.status === "waiting_provider").length,
-      waitingProvider: currentJobs.filter((j) => j.status === "waiting_provider").length,
-      queued: currentJobs.filter((j) => j.status === "queued").length,
+      processing: customerCurrentJobs.filter((j) => j.status === "processing" || j.status === "waiting_provider").length,
+      waitingProvider: customerCurrentJobs.filter((j) => j.status === "waiting_provider").length,
+      queued: customerCurrentJobs.filter((j) => j.status === "queued").length,
       systemFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "system").length,
       byokFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "byok").length,
       quotaFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "quota").length,
@@ -965,11 +1002,18 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       range: { days, since: since.toISOString(), until: now.toISOString() },
+      northStar: {
+        ...northStar,
+        history: northStarHistory.reverse().map((snapshot) => ({
+          ...snapshot,
+          asOf: snapshot.asOf.toISOString(),
+        })),
+      },
       activation,
       renderStats,
       jobOutcomes,
-      current: summarize(currentRows, currentVideos, processingPlan.summary, summarizeJobFunnel(currentJobsForFunnel)),
-      previous: summarize(previousRows, previousVideos, undefined, summarizeJobFunnel(previousJobsForFunnel)),
+      current: summarize(customerCurrentRows, customerCurrentVideos, processingPlan.summary, summarizeJobFunnel(currentJobsForFunnel)),
+      previous: summarize(customerPreviousRows, customerPreviousVideos, undefined, summarizeJobFunnel(previousJobsForFunnel)),
       processingReconcile: { dryRun: true, ...processingPlan },
     });
   } catch (error) {

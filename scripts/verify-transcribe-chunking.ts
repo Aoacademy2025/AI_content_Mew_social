@@ -6,33 +6,13 @@
 // often = bounded drift. Pure logic — run:
 //   npx tsx scripts/verify-transcribe-chunking.ts
 import assert from "node:assert/strict";
-
-const CHUNK_THRESHOLD_MS = 240_000;
-const CHUNK_TARGET_MS = 75_000;
-const CHUNK_MAX_MS = 110_000;
-
-// Replicates planChunkBoundaries() in transcribe/route.ts.
-function planChunkBoundaries(totalMs: number, silences: number[]): number[] {
-  const cuts: number[] = [];
-  let lastCut = 0;
-  while (totalMs - lastCut > CHUNK_MAX_MS) {
-    const target = lastCut + CHUNK_TARGET_MS;
-    const lo = lastCut + 60_000;
-    const hi = lastCut + CHUNK_MAX_MS;
-    let best = -1, bestDist = Infinity;
-    for (const s of silences) {
-      if (s < lo || s > hi) continue;
-      const dist = Math.abs(s - target);
-      if (dist < bestDist) { bestDist = dist; best = s; }
-    }
-    cuts.push(best >= 0 ? best : hi);
-    lastCut = cuts[cuts.length - 1];
-  }
-  return cuts;
-}
+import {
+  TRANSCRIBE_CHUNK_MAX_MS,
+  planTranscriptionChunkBoundaries,
+} from "../src/lib/transcribe-timeline";
 
 function chunks(totalMs: number, silences: number[]): number[] {
-  const cuts = planChunkBoundaries(totalMs, silences);
+  const cuts = planTranscriptionChunkBoundaries(totalMs, silences);
   const bounds = [0, ...cuts, totalMs];
   return bounds.slice(1).map((b, i) => b - bounds[i]);
 }
@@ -45,25 +25,34 @@ const everyN = (step: number, total: number) => Array.from({ length: Math.floor(
 // ── invariant: every chunk ≤ CHUNK_MAX (the whole point — stay in-sync zone) ──
 for (const total of [371_000, 357_000, 329_000, 500_000, 600_000]) {
   const cs = chunks(total, everyN(30_000, total)); // silence every 30s
-  check(`${(total/1000).toFixed(0)}s w/silence → all chunks ≤ 110s (${cs.map(c=>(c/1000).toFixed(0)).join("/")})`, cs.every(c => c <= CHUNK_MAX_MS));
+  check(`${(total/1000).toFixed(0)}s w/silence → all chunks ≤ 110s (${cs.map(c=>(c/1000).toFixed(0)).join("/")})`, cs.every(c => c <= TRANSCRIBE_CHUNK_MAX_MS));
 }
 
 // ── 6.18-min clip (Mew's) with silences → many short chunks, each in safe zone ──
 const mew = chunks(371_000, everyN(20_000, 371_000));
 check("371s (6.18min) → ≥4 chunks", mew.length >= 4);
-check("371s → every chunk ≤ 110s", mew.every(c => c <= CHUNK_MAX_MS));
+check("371s → every chunk ≤ 110s", mew.every(c => c <= TRANSCRIBE_CHUNK_MAX_MS));
 
-// ── no detectable silence → hard-cuts, still all ≤ MAX ──
+// ── no detectable silence → balanced hard-cuts, still all ≤ MAX ──
 const noSil = chunks(360_000, []);
-check("360s no-silence → hard-cut chunks all ≤ 110s", noSil.every(c => c <= CHUNK_MAX_MS));
-check("360s no-silence → [110s,110s,110s,30s]", noSil.length === 4 && noSil[0] === 110_000 && noSil[3] === 30_000);
+check("360s no-silence → hard-cut chunks all ≤ 110s", noSil.every(c => c <= TRANSCRIBE_CHUNK_MAX_MS));
+check("360s no-silence → five balanced 72s chunks near the 75s anchor target",
+  noSil.length === 5 && noSil.every(c => c === 72_000));
 
-// ── chunking is gated by the caller at CHUNK_THRESHOLD (>4 min) — clips just
-//    above it must split into in-zone chunks ──
-check("245s (just over threshold) → ≥2 chunks all ≤ 110s",
-  chunks(245_000, everyN(25_000, 245_000)).every(c => c <= CHUNK_MAX_MS) &&
+// ── every clip above the 110s safe single-call ceiling must split ──
+check("245s → ≥2 chunks all ≤ 110s",
+  chunks(245_000, everyN(25_000, 245_000)).every(c => c <= TRANSCRIBE_CHUNK_MAX_MS) &&
   chunks(245_000, everyN(25_000, 245_000)).length >= 2);
-check("threshold const unchanged (caller gates at 240s)", CHUNK_THRESHOLD_MS === 240_000);
+
+// ── Production regression (Kapokja, 2026-08-03..05) ─────────────────────
+// These uploads were sent as one Gemini request under the old 240s gate. The
+// 180.11s clip repeatedly stopped its transcript at 158.5s; the byte-identical
+// 200.12s clip failed twice before a later reroll happened to succeed.
+for (const total of [180_110, 200_120]) {
+  const cs = chunks(total, []);
+  check(`${(total / 1000).toFixed(2)}s production clip → split into ≥2 chunks`, cs.length >= 2);
+  check(`${(total / 1000).toFixed(2)}s production clip → every chunk ≤ 110s`, cs.every(c => c <= TRANSCRIBE_CHUNK_MAX_MS));
+}
 
 // ── non-final chunks respect the 60s minimum (no silence picked closer than +60s) ──
 const dense = chunks(400_000, everyN(5_000, 400_000)); // silence every 5s

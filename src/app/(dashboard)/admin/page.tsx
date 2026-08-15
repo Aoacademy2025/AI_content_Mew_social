@@ -33,7 +33,8 @@ interface AdminStats {
   totalUsers: number; freeUsers: number; paidUsers: number; suspendedUsers: number;
   totalContents: number; totalVideos: number; totalImages: number; newToday: number; newThisWeek: number;
   // Honest revenue split (see /api/admin/stats + src/lib/revenue-cohorts.ts)
-  payingTotal: number; trialActive: number; compedPaid: number; mrr: number; lapsedPayers: number;
+  payingTotal: number; directPayingTotal: number; bundleActive: number;
+  trialActive: number; compedPaid: number; mrr: number; directMrr: number; bundleMrr: number; lapsedPayers: number;
   payingCanceling?: number; mrrAtRisk?: number;
 }
 
@@ -449,6 +450,7 @@ export default function AdminDashboardPage() {
 
   // Cost-rate editor state
   const [costRenderPerMinute, setCostRenderPerMinute] = useState("");
+  const [costImageHero1k, setCostImageHero1k] = useState("");
   const [costImageFlux1k, setCostImageFlux1k] = useState("");
   const [costImageGpt1k, setCostImageGpt1k] = useState("");
   const [costImageNano1k, setCostImageNano1k] = useState("");
@@ -491,6 +493,7 @@ export default function AdminDashboardPage() {
       if (d.server_gemini_key && typeof d.server_gemini_key === "object") setServerGeminiKeyStatus(d.server_gemini_key);
       // Cost rates
       if (d.cost_render_per_minute) setCostRenderPerMinute(d.cost_render_per_minute);
+      if (d.cost_image_hero_1k) setCostImageHero1k(d.cost_image_hero_1k);
       if (d.cost_image_flux_1k) setCostImageFlux1k(d.cost_image_flux_1k);
       if (d.cost_image_gpt_1k) setCostImageGpt1k(d.cost_image_gpt_1k);
       if (d.cost_image_nano_1k) setCostImageNano1k(d.cost_image_nano_1k);
@@ -510,6 +513,7 @@ export default function AdminDashboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           cost_render_per_minute: costRenderPerMinute,
+          cost_image_hero_1k: costImageHero1k,
           cost_image_flux_1k: costImageFlux1k,
           cost_image_gpt_1k: costImageGpt1k,
           cost_image_nano_1k: costImageNano1k,
@@ -1030,10 +1034,10 @@ export default function AdminDashboardPage() {
             <div>
               <p className="mb-3 text-[11px] font-semibold uppercase tracking-[0.14em]" style={{ color: VIOLET_LIGHT }}>รายได้จริง</p>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                <StatCard hero title="จ่ายจริง (จ่ายเงินสด)" value={stats?.payingTotal ?? 0} sub={stats?.payingCanceling ? `ใช้งานอยู่ + จ่ายเงินจริง · ${stats.payingCanceling} รอหมดรอบ` : "ใช้งานอยู่ + จ่ายเงินจริง"} icon={Crown} loading={loading} />
+                <StatCard hero title="จ่ายจริง (จ่ายเงินสด)" value={stats?.payingTotal ?? 0} sub={`Studio ${stats?.directPayingTotal ?? 0} · Bundle ${stats?.bundleActive ?? 0}${stats?.payingCanceling ? ` · ${stats.payingCanceling} รอหมดรอบ` : ""}`} icon={Crown} loading={loading} />
                 <StatCard title="Trial (ทดลอง)" value={stats?.trialActive ?? 0} sub="ทดลอง PRO ฟรี ยังไม่จ่ายเงิน" icon={Clock} loading={loading} />
                 <StatCard title="Comped (แจกสิทธิ์)" value={stats?.compedPaid ?? 0} sub="admin/coupon — เป็นต้นทุน ไม่ใช่รายได้" icon={Tag} loading={loading} />
-                <StatCard title="MRR (รายได้/เดือน)" value={`฿${Math.round(stats?.mrr ?? 0).toLocaleString()}`} sub="รายได้ต่อเดือน (annual เฉลี่ยแล้ว)" icon={BarChart3} loading={loading} />
+                <StatCard title="MRR (รายได้/เดือน)" value={`฿${Math.round(stats?.mrr ?? 0).toLocaleString()}`} sub={`Studio ฿${Math.round(stats?.directMrr ?? 0).toLocaleString()} · Bundle ฿${Math.round(stats?.bundleMrr ?? 0).toLocaleString()}`} icon={BarChart3} loading={loading} />
               </div>
               <p className="mt-3 text-xs" style={{ color: "var(--ui-text-muted)" }}>
                 หมายเหตุ: ยอด &quot;บนแผน PRO/BUSINESS&quot; ทั้งหมด {stats?.paidUsers ?? 0} ราย ≈ จ่ายจริง {stats?.payingTotal ?? 0} + Trial {stats?.trialActive ?? 0} + Comped {stats?.compedPaid ?? 0} (ที่เหลือ = รอ cron ปรับสถานะ)
@@ -1877,6 +1881,19 @@ export default function AdminDashboardPage() {
                 value={costRenderPerMinute}
                 onChange={e => setCostRenderPerMinute(e.target.value)}
                 placeholder="0.014"
+                className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">
+                Hero AI Image · Z-Image RunPod — ฿/รูป
+              </label>
+              <input
+                type="number"
+                step="0.0001"
+                value={costImageHero1k}
+                onChange={e => setCostImageHero1k(e.target.value)}
+                placeholder="0.20"
                 className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-3 py-2 text-sm text-white font-mono placeholder-zinc-600 outline-none focus:border-violet-500/50"
               />
             </div>

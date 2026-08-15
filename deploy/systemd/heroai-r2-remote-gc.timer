@@ -1,0 +1,13 @@
+[Unit]
+Description=Run reference-aware Cloudflare R2 media garbage collection every four hours
+Documentation=file:/var/www/ai-content/docs/ops/cloudflare-r2-media-rollout.md
+
+[Timer]
+Unit=heroai-r2-remote-gc.service
+OnCalendar=*-*-* 01,05,09,13,17,21:30:00 Asia/Bangkok
+RandomizedDelaySec=10min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
 
-dotenv.config({ path: ".env", override: false, quiet: true });
+dotenv.config({ path: process.env.RUNPOD_ENV_FILE || ".env", override: false, quiet: true });
 
 type Mode = "omnivoice" | "z-image";
 type RunpodJob = {
@@ -18,12 +18,17 @@ type RunpodJob = {
 
 const mode = process.argv[2] as Mode | undefined;
 const resumeJobId = process.argv.find((value) => value.startsWith("--job-id="))?.slice(9).trim();
+const requestedSeedRaw = process.argv.find((value) => value.startsWith("--seed="))?.slice(7).trim();
+const requestedSeed = requestedSeedRaw ? Number(requestedSeedRaw) : 20260721;
 const apiKey = process.env.RUNPOD_API_KEY?.trim();
 const startedAt = Date.now();
 if (mode !== "omnivoice" && mode !== "z-image") {
-  throw new Error("Usage: smoke:runpod-custom-staging -- <omnivoice|z-image> [--job-id=...]");
+  throw new Error("Usage: smoke:runpod-custom-staging -- <omnivoice|z-image> [--job-id=...] [--seed=<integer>]");
 }
 if (!apiKey) throw new Error("RUNPOD_API_KEY is missing");
+if (!Number.isSafeInteger(requestedSeed) || requestedSeed < 0) {
+  throw new Error("--seed must be a non-negative safe integer");
+}
 
 const endpointId = (mode === "omnivoice"
   ? process.env.RUNPOD_OMNIVOICE_ENDPOINT_ID
@@ -80,7 +85,7 @@ function buildPayload(): Record<string, unknown> {
         op: "tts",
         text: "สวัสดีค่ะ นี่คือการทดสอบเสียงจากระบบฮีโร่เอไอ",
         voice_id: "voice_01",
-        num_step: 4,
+        num_step: 32,
         speed: 1,
       },
     };
@@ -91,11 +96,10 @@ function buildPayload(): Record<string, unknown> {
   );
   const source = JSON.parse(fs.readFileSync(workflowPath, "utf8")) as unknown;
   const workflow = replaceTokens(source, {
-    "{{PROMPT}}": "A Thai specialty coffee shop owner preparing hand-poured coffee in soft morning window light, cinematic vertical editorial photograph, natural skin texture, realistic hands, no text, no logo",
-    "{{NEGATIVE_PROMPT}}": "letters, words, typography, watermark, logo, malformed hands, extra fingers, low quality",
+    "{{PROMPT}}": "ONE UNIFIED EDGE-TO-EDGE FULL-CANVAS IMAGE. Depict exactly one moment from exactly one camera view: a Thai specialty coffee shop owner preparing hand-poured coffee in soft morning window light, cinematic vertical editorial photograph, natural skin texture, realistic hands, blank unmarked surfaces",
     "{{WIDTH}}": 720,
     "{{HEIGHT}}": 1280,
-    "{{SEED}}": 20260721,
+    "{{SEED}}": requestedSeed,
   });
   if (JSON.stringify(workflow).includes("{{")) throw new Error("Workflow contains unresolved tokens");
   return { input: { workflow } };
@@ -113,7 +117,7 @@ async function waitForCompletion(jobId: string, initial: RunpodJob): Promise<Run
     if (["FAILED", "TIMED_OUT", "CANCELLED"].includes(result.status ?? "")) {
       throw new Error(result.error || `Runpod job ${result.status}`);
     }
-    if (Date.now() >= deadline) throw new Error("Runpod custom smoke job exceeded 45 minutes");
+    if (Date.now() >= deadline) throw new Error("Runpod custom smoke job exceeded 75 minutes");
     if (result.status !== lastStatus || Date.now() - lastUpdate >= 30_000) {
       console.log(`status=${result.status ?? "UNKNOWN"} elapsed_s=${Math.round((Date.now() - startedAt) / 1000)}`);
       lastStatus = result.status ?? "";

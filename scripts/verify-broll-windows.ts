@@ -70,6 +70,13 @@ check("time-split manual windows still tile the timeline",
   manualFourFromTwo.every((win, i) => i === 0 || win.startMs === manualFourFromTwo[i - 1].endMs)
   && manualFourFromTwo[3]?.endMs === 20_000);
 
+// Upload cutaway alternation may need two internal windows per visible piece.
+// The ordinary public builder remains capped at 60 unless that internal cap is
+// explicitly widened by the upload planner.
+check("default fixed-count cap stays 60", buildFixedCountBrollWindows(caps(2, 60), 120, 120_000).length === 60);
+check("upload planner can explicitly widen the internal cap to 120",
+  buildFixedCountBrollWindows(caps(2, 60), 120, 120_000, 120).length === 120);
+
 // empty / invalid input
 check("empty → []", buildBrollWindows([], 4).length === 0);
 check("invalid caption filtered", buildBrollWindows([{ startMs: 5, endMs: 5, text: "bad" }], 4).length === 0);

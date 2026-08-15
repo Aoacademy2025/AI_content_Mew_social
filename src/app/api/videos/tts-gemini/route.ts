@@ -5,6 +5,7 @@ import { apiError } from "@/lib/api-error";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { checkMinuteQuota, reserveMinutes } from "@/lib/minute-limits";
+import { shouldCheckTtsMinuteQuota } from "@/lib/tts-minute-admission";
 import {
   reserveAiAudioMinutes,
   refundAiAudioMinutes,
@@ -410,8 +411,10 @@ export async function POST(req: Request) {
       });
     }
 
-    // Fail-fast minute quota check — only for managed-key users on the real-render path
-    if (geminiMode === "managed") {
+    // Legacy-only fail-fast check. With MINUTE_QUOTA=1 the queued base render owns
+    // the atomic minutes-or-credits settlement; blocking here would reject users
+    // who intentionally bought overflow credits before that settlement can run.
+    if (shouldCheckTtsMinuteQuota(geminiMode, process.env.MINUTE_QUOTA === "1")) {
       const quota = await checkMinuteQuota(authUser.id);
       if (!quota.allowed) {
         return NextResponse.json({ code: "QUOTA_MINUTES", message: quota.message }, { status: 409 });

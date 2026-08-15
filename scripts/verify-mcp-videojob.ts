@@ -12,6 +12,7 @@ import {
   saveProviderCheckpoint,
   parkHeroVoiceProviderJob,
   parkProviderJob,
+  parseVideoJobOutput,
   setJobStep,
   finishJob,
   failJob,
@@ -45,9 +46,33 @@ async function main() {
   const mid = await prisma.videoJob.findUnique({ where: { id: job.id } });
   assert(mid?.currentStep === "tts" && mid?.progress === 20, "setJobStep updates step+progress");
 
-  await finishJob(job.id, { videoUrl: "/v.mp4", videoId: "vid_1" });
+  await finishJob(job.id, {
+    videoUrl: "/v.mp4",
+    videoId: "vid_1",
+    subtitleQa: {
+      status: "passed",
+      timingSource: "provider_alignment",
+      textExact: true,
+      captionCount: 3,
+      audioDurationMs: 5000,
+    },
+    billingReceipt: {
+      status: "settled",
+      funding: "minutes",
+      renderMinutes: 1,
+      chargedMinutes: 1,
+      chargedCredits: 0,
+    },
+  });
   const done = await prisma.videoJob.findUnique({ where: { id: job.id } });
   assert(done?.status === "done" && done?.videoId === "vid_1" && !!done?.outputJson, "finishJob → done + output");
+  const parsedDone = parseVideoJobOutput(done?.outputJson ?? null);
+  assert(
+    parsedDone?.subtitleQa?.status === "passed"
+      && parsedDone.billingReceipt?.status === "settled"
+      && parsedDone.billingReceipt.funding === "minutes",
+    "job output exposes subtitle QA and the settled billing receipt",
+  );
 
   const job2 = await createVideoJob(u.id, { script: "x" });
   await claimNextQueuedJob();
@@ -147,6 +172,25 @@ async function main() {
   const finishedWait = await prisma.videoJob.findUniqueOrThrow({ where: { id: waiting.id } });
   assert(finishedWait.providerCheckpointJson === null && finishedWait.providerNextPollAt === null, "finish clears provider checkpoint and next poll");
 
+  const compositeWaiting = await createVideoJob(u.id, { script: "composite retry" });
+  assert((await claimNextRunnableJob())?.id === compositeWaiting.id, "composite retry job is claimed before parking");
+  const compositeCheckpoint: AvatarProviderCheckpointV1 = {
+    ...checkpoint,
+    phase: "composite",
+    compositeAttempts: 1,
+    avatar: { ...checkpoint.avatar, introVideoUrl: "https://files2.heygen.ai/intro.mp4" },
+  };
+  assert(
+    (await parkProviderJob(compositeWaiting.id, compositeCheckpoint, dueAt)).count === 1,
+    "transient composite retry parks atomically",
+  );
+  const parkedComposite = await prisma.videoJob.findUniqueOrThrow({ where: { id: compositeWaiting.id } });
+  assert(
+    parkedComposite.currentStep === "composite" && parkedComposite.progress === 86,
+    "parked composite stays on the indeterminate composite status instead of jumping back to avatar 84%",
+  );
+  await prisma.videoJob.update({ where: { id: compositeWaiting.id }, data: { status: "canceled" } });
+
   const heroCheckpoint: HeroVoiceProviderCheckpointV1 = {
     version: 1,
     provider: "omnivoice",
@@ -226,7 +270,7 @@ async function main() {
   assert(waitRecovery.parked === 1 && recoveredWait.status === "waiting_provider" && !!recoveredWait.providerNextPollAt, "restart recovery parks a valid provider wait");
 
   await prisma.videoJob.deleteMany();
-  const compositeCheckpoint: AvatarProviderCheckpointV1 = {
+  const restartCompositeCheckpoint: AvatarProviderCheckpointV1 = {
     ...checkpoint,
     phase: "composite",
     avatar: { ...checkpoint.avatar, introVideoUrl: "https://files2.heygen.ai/intro.mp4" },
@@ -235,14 +279,14 @@ async function main() {
     data: {
       userId: u.id,
       status: "processing",
-      currentStep: "composite",
+      currentStep: "composite_queue",
       progress: 86,
       inputJson: JSON.stringify({ script: "composite" }),
-      providerCheckpointJson: serializeAvatarProviderCheckpoint(compositeCheckpoint),
+      providerCheckpointJson: serializeAvatarProviderCheckpoint(restartCompositeCheckpoint),
     },
   });
   const compositeRecovery = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });
-  assert(compositeRecovery.parked === 1 && (await prisma.videoJob.findUniqueOrThrow({ where: { id: orphanComposite.id } })).status === "waiting_provider", "restart recovery parks a valid composite checkpoint");
+  assert(compositeRecovery.parked === 1 && (await prisma.videoJob.findUniqueOrThrow({ where: { id: orphanComposite.id } })).status === "waiting_provider", "restart recovery parks a valid queued composite checkpoint");
 
   await prisma.videoJob.deleteMany();
   const generateCheckpoint: AvatarProviderCheckpointV1 = {
@@ -295,6 +339,7 @@ async function main() {
     const res = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });
     const row = await prisma.videoJob.findUnique({ where: { id: billable.id } });
     assert(res.failed === 1 && res.requeued === 0 && row?.status === "failed" && (row.errorMessage ?? "").includes("billable"), `recovery fails (not requeues) billable step "${stepName}"`);
+    assert(row?.reservationRefundPending === true, `recovery marks billable step "${stepName}" for financial settlement`);
   }
 
   // (d) retry cap on a safe step → failed
@@ -311,6 +356,7 @@ async function main() {
   const exhaustedResult = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });
   const exhaustedFailed = await prisma.videoJob.findUnique({ where: { id: exhausted.id } });
   assert(exhaustedResult.failed === 1 && exhaustedFailed?.status === "failed", "recovery fails a safe step after retry cap");
+  assert(exhaustedFailed?.reservationRefundPending === true, "retry-cap failure marks completed scene credits for settlement");
 
   // (e) burn → failed with the gallery-row reason
   await prisma.videoJob.deleteMany();
@@ -320,6 +366,7 @@ async function main() {
   const burnResult = await recoverProcessingJobsAfterWorkerRestart({ maxRequeues: 2 });
   const burnFailed = await prisma.videoJob.findUnique({ where: { id: burn.id } });
   assert(burnResult.failed === 1 && burnFailed?.status === "failed" && (burnFailed.errorMessage ?? "").includes("during burn"), "recovery does not replay burn stage");
+  assert(burnFailed?.reservationRefundPending === true, "burn restart failure is durably marked for financial settlement");
 
   await prisma.videoJob.deleteMany();
   await prisma.user.deleteMany();

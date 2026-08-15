@@ -1,10 +1,15 @@
 import {
+  buildCutawayBackgroundTimeline,
   planCutaway,
   planCutawayRecomposite,
   buildEnableExpr,
+  estimatedCutawayPieceCount,
+  manualCutawayWindowCount,
   reconstructCutawayPersonRanges,
   resolveCutawayPersonRanges,
 } from "../src/lib/cutaway-plan";
+import { readFileSync } from "node:fs";
+import { assignBrollWindows } from "../src/lib/broll-coverage";
 import { buildBrollWindows, buildFixedCountBrollWindows } from "../src/lib/broll-windows";
 
 let failed = 0;
@@ -51,6 +56,71 @@ assert(
   "enable expr joins ranges with +",
 );
 assert(buildEnableExpr([]) === "", "empty ranges => empty expr");
+
+// A manual upload count is a customer-facing count of VISIBLE B-roll pieces.
+// planCutaway reserves every even window for the uploaded presenter, so the
+// fixed-count builder needs two internal windows per requested B-roll piece.
+assert(manualCutawayWindowCount(3) === 6, "manual upload target 3 => 6 alternating internal windows");
+assert(manualCutawayWindowCount(60) === 120, "manual upload target caps at 60 visible pieces => 120 windows");
+assert(manualCutawayWindowCount(0) === 0, "manual upload target 0 keeps automatic cadence");
+assert(manualCutawayWindowCount(8, 9_999) === 0, "upload shorter than 10s skips cutaway");
+assert(manualCutawayWindowCount(8, 10_000) === 2, "10s upload allows one 5s visible cutaway");
+assert(manualCutawayWindowCount(8, 60_000) === 16, "60s upload keeps eight 3.75s visible cutaways");
+assert(estimatedCutawayPieceCount(0, 15_190) === 2, "15.19s auto upload quotes two visible cutaways");
+assert(estimatedCutawayPieceCount(8, 15_190) === 2, "15.19s manual target8 quotes the duration-clamped two");
+assert(estimatedCutawayPieceCount(0, 9_999) === 0, "sub-10s auto upload quotes zero B-roll generation");
+// Support regression #odqpq2 — the retained production job was a 15.19s upload
+// with targetClipCount=8. The old formula produced 16 alternating windows, so
+// each paid Hero B-roll was visible for only ~0.95s despite the 3–5s promise.
+// Duration-aware planning must cap it at two visible pieces / four windows.
+{
+  const productionDurationMs = 15_190;
+  const durationAwareWindowCount = (
+    manualCutawayWindowCount as (target: unknown, durationMs?: unknown) => number
+  )(8, productionDurationMs);
+  assert(
+    durationAwareWindowCount === 4,
+    `#odqpq2 15.19s/target8 => 4 internal windows, got ${durationAwareWindowCount}`,
+  );
+  const productionCaptions = [
+    { startMs: 0, endMs: 1700, text: "บางคนไม่ได้ผิดที่เขาไม่รัก" },
+    { startMs: 2300, endMs: 6300, text: "แต่ผิดที่เขาปล่อยให้เราหวังเขาไม่เคยพูดว่าใช่" },
+    { startMs: 6800, endMs: 11000, text: "แต่ก็ไม่เคยพูดว่าไม่แล้วเราก็รอ" },
+    { startMs: 11600, endMs: 15190, text: "จนลืมไปว่าเราเองก็มีค่า" },
+  ];
+  const productionWindows = buildFixedCountBrollWindows(
+    productionCaptions,
+    durationAwareWindowCount,
+    productionDurationMs,
+    120,
+  );
+  const visibleRanges = planCutaway(productionWindows).broll;
+  assert(visibleRanges.length === 2, `#odqpq2 renders 2 visible B-roll pieces, got ${visibleRanges.length}`);
+  assert(
+    visibleRanges.every((range) => range.endMs - range.startMs >= 3_000),
+    "#odqpq2 keeps every visible B-roll on screen for at least 3s",
+  );
+}
+{
+  const captions = Array.from({ length: 12 }, (_, i) => ({
+    startMs: i * 1000,
+    endMs: (i + 1) * 1000,
+    text: `ช่วง ${i + 1}`,
+  }));
+  const windows = buildFixedCountBrollWindows(captions, manualCutawayWindowCount(3), 12000, 120);
+  assert(planCutaway(windows).broll.length === 3, "manual upload target 3 produces exactly 3 visible B-roll pieces");
+}
+const orchestratorSource = readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
+assert(
+  orchestratorSource.includes("manualCutawayWindowCount(input.targetClipCount, upDurMs)"),
+  "upload orchestrator duration-clamps the visible target through the shared helper",
+);
+const step2Source = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
+const receiptSource = readFileSync("src/app/(dashboard)/video-editor/_v2/RenderReceiptDialog.tsx", "utf8");
+const useV2JobSource = readFileSync("src/app/(dashboard)/video-editor/_v2/useV2Job.ts", "utf8");
+assert(step2Source.includes("effectiveManualCutawayPieceCount"), "Step 2 duration-clamps the visible custom count");
+assert(receiptSource.includes("estimatedCutawayPieceCount"), "receipt quotes only visible upload cutaways");
+assert(useV2JobSource.includes("estimatedCutawayPieceCount"), "submission ceiling matches visible upload cutaways");
 
 // 7) small-window behavior is intentional (product ruling): short clips get fewer cutaways
 {
@@ -196,7 +266,7 @@ const legacyBase = reconstructCutawayPersonRanges({
   if (expectedFixed.length > 0) expectedFixed[0] = { ...expectedFixed[0], start: 0 };
   assert(
     JSON.stringify(fixed) === JSON.stringify(expectedFixed) && fixed.length > 0,
-    "legacy reconstruct === creation formula (buildFixedCountBrollWindows path)",
+    "legacy reconstruct preserves the pre-fix creation formula (buildFixedCountBrollWindows path)",
   );
   assert(
     JSON.stringify(fixed) !== JSON.stringify(legacyBase),
@@ -269,6 +339,53 @@ const legacyBase = reconstructCutawayPersonRanges({
     [],
   );
   assert(JSON.stringify(resolved) === JSON.stringify([{ start: 0, end: 8 }]), "adjacent person ranges are merged");
+}
+
+// 13) Sparse billable cutaways are expanded before coverage assignment. Without
+// this mapping, person windows consume the next AI asset under the presenter and
+// create a one-frame flash/reused image at the visible cutaway boundary.
+{
+  const windows = mk(4);
+  const plan = planCutaway(windows);
+  const timeline = buildCutawayBackgroundTimeline({
+    windows,
+    brollRanges: plan.broll,
+    brollAssets: [
+      { videoUrl: "/ai-0.png", duration: 8, sourceIndex: 0 },
+      { videoUrl: "/ai-1.png", duration: 8, sourceIndex: 1 },
+    ],
+    presenterAsset: { videoUrl: "/uploaded-presenter.mp4", duration: 16 },
+  });
+  assert(timeline.windows.length === 4, "render timeline keeps all person + cutaway windows");
+  assert(timeline.assets.length === 4, "render timeline has one preferred asset per full window");
+  assert(timeline.assets[0]?.videoUrl === "/uploaded-presenter.mp4", "person window uses uploaded clip filler");
+  assert(timeline.assets[0]?.clipOffset === 0, "first presenter filler starts at matching media offset");
+  assert(timeline.assets[1]?.videoUrl === "/ai-0.png", "first visible cutaway keeps its first AI image");
+  assert(timeline.assets[2]?.clipOffset === 8, "later presenter filler stays aligned to source time");
+  assert(timeline.assets[3]?.videoUrl === "/ai-1.png", "second visible cutaway keeps its second AI image");
+
+  const coverage = assignBrollWindows(
+    timeline.windows,
+    timeline.assets.map((asset) => ({
+      src: String(asset.videoUrl),
+      start: 0,
+      end: 0,
+      sourceIndex: asset.sourceIndex,
+      clipOffset: Number(asset.clipOffset ?? 0),
+      clipDuration: Number(asset.duration ?? 8),
+    })),
+    16,
+    30,
+  );
+  const visible = plan.broll.map((range) => coverage.segments.filter((segment) =>
+    segment.end > range.startMs / 1_000 && segment.start < range.endMs / 1_000,
+  ));
+  assert(coverage.complete, "expanded upload timeline has complete frame coverage");
+  assert(visible.every((segments) => segments.length === 1), "each visible cutaway has no short flash segment");
+  assert(
+    visible[0]?.[0]?.src === "/ai-0.png" && visible[1]?.[0]?.src === "/ai-1.png",
+    "visible cutaways use distinct AI images in order",
+  );
 }
 
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);

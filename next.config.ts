@@ -18,12 +18,6 @@ const nextConfig: NextConfig = {
   // loop). Runtime (pm2 `next start`) never sets NEXT_DIST_DIR, so it always
   // reads the default .next.
   distDir: process.env.NEXT_DIST_DIR || ".next",
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   // Runtime renders and stock cache entries are mutable media (hundreds of GB in
   // production), served through API storage adapters and never required inside
   // a Next server bundle. Without both exclusions, dynamic filesystem access
@@ -36,6 +30,11 @@ const nextConfig: NextConfig = {
     // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
     workerThreads: false,
     cpus: 1,
+    // src/proxy.ts runs for authenticated API routes. Next.js buffers/clones
+    // proxied request bodies and otherwise truncates them at its 10 MB default,
+    // leaving upload-avatar with an invalid multipart body. Match the route's
+    // 500 MB file limit plus its documented 10 MB form overhead allowance.
+    proxyClientMaxBodySize: "510mb",
   },
   async rewrites() {
     return [
@@ -77,25 +76,6 @@ const nextConfig: NextConfig = {
     "@esbuild/darwin-arm64",
   ],
   webpack: (config) => {
-    const prevExternals = config.externals ?? [];
-    config.externals = [
-      ...(Array.isArray(prevExternals) ? prevExternals : [prevExternals]),
-      ({ request }: { request?: string }, callback: (err?: Error | null, result?: string) => void) => {
-        if (!request) return callback();
-        // Never bundle native addons or heavy server-only packages
-        if (request.endsWith(".node")) return callback(null, `commonjs ${request}`);
-        if (
-          request === "fluent-ffmpeg" ||
-          request.startsWith("fluent-ffmpeg/") ||
-          request === "@ffmpeg-installer/ffmpeg" ||
-          request.startsWith("@ffmpeg-installer/")
-        ) {
-          return callback(null, `commonjs ${request}`);
-        }
-        callback();
-      },
-    ];
-
     // Treat .wasm files as asset/resource so webpack emits them as separate files
     // instead of inlining — inlining large WASM through WasmHash causes OOM/crash.
     config.module.rules.push({

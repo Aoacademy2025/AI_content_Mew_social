@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { fetchMe } from "@/lib/use-me";
+import { fetchMe, resolveBrandVisualClientAccess, type MeData } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
+import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
@@ -41,6 +42,21 @@ import {
   type TtsProvider,
 } from "@/lib/tts-providers";
 import { useOmniVoiceAvailability } from "../_hooks/useOmniVoiceAvailability";
+import {
+  saveVideoAccountDefaults,
+  type VideoAccountDefaultsPatch,
+} from "@/lib/video-account-defaults";
+import { fetchClientJson } from "@/lib/client-request-cache";
+import { authenticatedFetch } from "@/lib/authenticated-fetch";
+import {
+  normalizeSubtitleStylePresetConfig,
+  type SubtitleStylePresetConfig,
+} from "@/lib/editor-style-preset-contract";
+import {
+  headlineHookDraftFragment,
+  normalizeHeadlineHook,
+  type HeadlineHookConfig,
+} from "@/lib/headline-hook";
 
 const DRAFT_KEY = "editor-v2-project";
 const PROJECT_ID_KEY = "editor-v2-project-id";
@@ -51,7 +67,7 @@ function scopedProjectIdKey(accountId: string | null): string {
 }
 
 interface V2Draft {
-  projectTitle?: string;
+  projectTitle?: string; narrativeSourceKind?: V2NarrativeSourceKind;
   mode?: V2Mode; script?: string; clipUrl?: string; clipDurationSec?: number; brollSource?: V2BrollSource;
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string; omniVoiceId?: string;
   musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string;
@@ -59,7 +75,9 @@ interface V2Draft {
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   logoOverlay?: LogoOverlayConfig;
+  brandSubtitleDefault?: SubtitleStylePresetConfig;
   layerVisibility?: EditorLayerVisibility;
+  headlineHook?: HeadlineHookConfig;
 }
 
 type ProjectStatus = "draft" | "rendering" | "post" | "exporting" | "exported" | "archived";
@@ -117,6 +135,38 @@ type EditorProjectDraftAttemptResult =
 
 type SetState<T> = Dispatch<SetStateAction<T>>;
 
+function withUserDraftField<T>(
+  draft: V2Draft,
+  field: keyof V2Draft,
+  value: T,
+): V2Draft {
+  if (value !== undefined) return { ...draft, [field]: value };
+  const next = { ...draft };
+  delete next[field];
+  return next;
+}
+
+function rebasePendingUserDraft(
+  base: V2Draft,
+  pending: V2Draft,
+  authoritative: V2Draft,
+): V2Draft {
+  const rebased = { ...authoritative } as Record<string, unknown>;
+  const baseRecord = base as Record<string, unknown>;
+  const pendingRecord = pending as Record<string, unknown>;
+  const keys = new Set([...Object.keys(baseRecord), ...Object.keys(pendingRecord)]);
+  for (const key of keys) {
+    const baseHasKey = Object.hasOwn(baseRecord, key);
+    const pendingHasKey = Object.hasOwn(pendingRecord, key);
+    const changedByUser = baseHasKey !== pendingHasKey
+      || JSON.stringify(baseRecord[key]) !== JSON.stringify(pendingRecord[key]);
+    if (!changedByUser) continue;
+    if (pendingHasKey) rebased[key] = pendingRecord[key];
+    else delete rebased[key];
+  }
+  return rebased as V2Draft;
+}
+
 function useUserDraftState<T>(
   initial: T,
   field: keyof V2Draft,
@@ -129,14 +179,14 @@ function useUserDraftState<T>(
   const initializedFieldRef = useRef(false);
   if (!initializedFieldRef.current) {
     initializedFieldRef.current = true;
-    effectiveDraftRef.current = { ...effectiveDraftRef.current, [field]: value };
+    effectiveDraftRef.current = withUserDraftField(effectiveDraftRef.current, field, value);
   }
   const setSynchronized = useCallback<SetState<T>>((next) => {
     const resolved = typeof next === "function"
       ? (next as (current: T) => T)(valueRef.current)
       : next;
     valueRef.current = resolved;
-    effectiveDraftRef.current = { ...effectiveDraftRef.current, [field]: resolved };
+    effectiveDraftRef.current = withUserDraftField(effectiveDraftRef.current, field, resolved);
     setRaw(resolved);
   }, [effectiveDraftRef, field]);
   const setFromUser = useCallback<SetState<T>>((next) => {
@@ -224,7 +274,7 @@ function loadDraft(): V2Draft | null {
 }
 
 async function loadAccountLogoDefault(): Promise<LogoOverlayConfig | null> {
-  const res = await fetch("/api/user/brand-assets", { cache: "no-store" });
+  const res = await authenticatedFetch("/api/user/brand-assets", { cache: "no-store" });
   if (!res.ok) throw new Error("account defaults unavailable");
   const data = await res.json();
   return normalizeLogoOverlayConfig(data?.defaultLogo?.config);
@@ -238,7 +288,7 @@ type AccountVideoDefaults = {
 };
 
 async function loadAccountVideoDefaults(): Promise<AccountVideoDefaults> {
-  const res = await fetch("/api/user/video-settings", { cache: "no-store" });
+  const res = await authenticatedFetch("/api/user/video-settings", { cache: "no-store" });
   if (!res.ok) throw new Error("account video defaults unavailable");
   const data = await res.json();
   return {
@@ -281,7 +331,7 @@ async function saveEditorProjectDraft(
   signal: AbortSignal,
 ): Promise<EditorProjectDraftAttemptResult> {
   try {
-    const res = await fetch(`/api/editor-projects/${encodeURIComponent(snapshot.projectId)}`, {
+    const res = await authenticatedFetch(`/api/editor-projects/${encodeURIComponent(snapshot.projectId)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -325,7 +375,7 @@ async function loadAuthoritativeEditorProjectDraft(
   project: Record<string, unknown>;
 } | null> {
   try {
-    const response = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+    const response = await authenticatedFetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
       cache: "no-store",
       signal,
     });
@@ -350,6 +400,7 @@ async function loadAuthoritativeEditorProjectDraft(
  */
 
 export type V2Mode = "script" | "upload";
+export type V2NarrativeSourceKind = "ai-script" | "creator-script" | "upload-transcript";
 export type V2BrollSource = "automix" | "stock" | "kie-image" | "kie-video";
 export type V2VoiceEngine = TtsProvider;
 export type V2AvatarMode = "bookend" | "bookend-both" | "full";
@@ -379,31 +430,10 @@ export interface V2ElevenVoice {
 
 export type V2OmniVoice = OmniVoiceInfo;
 
-const DEFAULT_PROJECT = {
-  projectTitle: "New Project",
-  mode: "script" as V2Mode,
-  script: "",
-  clipUrl: "",
-  clipDurationSec: 0,
-  voiceEngine: "gemini" as V2VoiceEngine,
-  geminiVoiceName: "Aoede",
-  voiceId: "",
-  omniVoiceId: "voice_01",
-  musicTrack: "" as string | null,
-  musicTrackKind: "system" as const,
-  bgmVolume: 0.12,
-  useAvatar: false,
-  avatarId: "",
-  targetClipCount: 0,
-  avatarMode: "bookend" as V2AvatarMode,
-  avatarIntroSecs: 5,
-  avatarTailSecs: 5,
-  kieModel: "" as KieImageModel | "",
-  autoMixProviders: DEFAULT_AUTO_MIX_PROVIDERS,
-  mixPreset: "free" as MixPreset,
-  brollRegionPreference: "auto" as BrollRegionPreference,
-  brollVisualStyle: "auto" as BrollVisualStyle,
-};
+/** The new-project defaults. Lives in @/lib/editor-default-draft so the Hero
+ *  Script "ส่งไปตัดต่อ" handoff (which creates EditorProjects on the server)
+ *  seeds the exact same draft this hook does — same object, no second copy. */
+const DEFAULT_PROJECT = EDITOR_DEFAULT_DRAFT;
 
 export function useV2Project() {
   // Keep the first client render byte-compatible with SSR. Local/server drafts are
@@ -427,6 +457,8 @@ export function useV2Project() {
     stageExplicitUserDraftMutationRef.current();
   }, []);
   const [projectId, setProjectId] = useState<string | null>(null);
+  const [brandContentPreflightId, setBrandContentPreflightId] = useState<string | null>(null);
+  const [hasPersistedVisualPin, setHasPersistedVisualPin] = useState(false);
   const [projectReady, setProjectReadyRaw] = useState(false);
   const projectReadyRef = useRef(false);
   const setProjectReady = useCallback((next: boolean) => {
@@ -459,6 +491,11 @@ export function useV2Project() {
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>("draft");
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [activeExportJobId, setActiveExportJobId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setBrandContentPreflightId(null);
+    setHasPersistedVisualPin(false);
+  }, [projectId]);
   const [latestVideoId, setLatestVideoId] = useState<string | null>(null);
   const [previewMediaState, setPreviewMediaState] = useState<ProjectMediaState | null>(null);
 
@@ -468,6 +505,13 @@ export function useV2Project() {
   );
   const [mode, setMode, setModeRaw] = useUserDraftState<V2Mode>(
     d.mode ?? "script", "mode", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
+  );
+  const [narrativeSourceKind, , setNarrativeSourceKindRaw] = useUserDraftState<V2NarrativeSourceKind>(
+    d.narrativeSourceKind ?? (d.mode === "upload" ? "upload-transcript" : "creator-script"),
+    "narrativeSourceKind",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
   );
   const [script, setScript, setScriptRaw] = useUserDraftState(
     d.script ?? "", "script", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
@@ -503,8 +547,21 @@ export function useV2Project() {
   );
   const [internalAiTester, setInternalAiTester] = useState(false);
   const [heroAiBeta, setHeroAiBeta] = useState(false);
+  // Server-authoritative Hero AI Image admission. The API resolves internal,
+  // Paid-Equivalent, and bounded Conversion Trial sources; the browser only
+  // uses this projection for disclosure UX.
+  const [heroAiImageEligible, setHeroAiImageEligible] = useState(false);
+  const [heroAiImageAccess, setHeroAiImageAccess] = useState<
+    NonNullable<NonNullable<MeData["featureAccess"]>["heroAiImage"]> | null
+  >(null);
+  const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
+  const [brandVisualCohort, setBrandVisualCohort] = useState<NonNullable<MeData["brandVisualCohort"]>>("off");
+  const [brandVisualRolloutBucket, setBrandVisualRolloutBucket] = useState<number | null>(null);
+  const [starterAiImageAllowance, setStarterAiImageAllowance] = useState<MeData["starterAiImageAllowance"]>(null);
+  const [isActiveTrial, setIsActiveTrial] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
+  const [recommendedAutoMixDefault, setRecommendedAutoMixDefault] = useState(false);
   const [plan, setPlan] = useState<string | null>(null);
   /** Task 7 badge: server launch-state signal (MANAGED_KIE && CREDITS_LIVE), independent
    *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
@@ -545,6 +602,13 @@ export function useV2Project() {
   const [targetClipCount, setTargetClipCount, setTargetClipCountRaw] = useUserDraftState(
     d.targetClipCount ?? 0, "targetClipCount", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   ); // 0 = auto
+  // Hero AI Image default-8 guard (Task 5 fast-follow): plain session-only state (NOT
+  // useUserDraftState — no server persistence needed) so a fresh page load always starts
+  // untouched. Set true only by the count Segmented/number input itself; the Hero
+  // AI Image selection handlers that apply the default-8 count must NEVER set this,
+  // otherwise the programmatic default would look like a user edit and stop being
+  // idempotent on repeated re-selection (see Step2Elements.tsx callers).
+  const [heroCountTouched, setHeroCountTouched] = useState(false);
   const [avatarMode, setAvatarMode, setAvatarModeRaw] = useUserDraftState<V2AvatarMode>(
     d.avatarMode ?? "bookend", "avatarMode", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -569,6 +633,13 @@ export function useV2Project() {
   const [logoOverlay, setLogoOverlay, setLogoOverlayRaw] = useUserDraftState<LogoOverlayConfig | undefined>(
     d.logoOverlay, "logoOverlay", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
+  const [brandSubtitleDefault, setBrandSubtitleDefault, setBrandSubtitleDefaultRaw] = useUserDraftState<SubtitleStylePresetConfig | undefined>(
+    normalizeSubtitleStylePresetConfig(d.brandSubtitleDefault) ?? undefined,
+    "brandSubtitleDefault",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
   const [layerVisibility, setLayerVisibility, setLayerVisibilityRaw] = useUserDraftState<EditorLayerVisibility>(
     normalizeEditorLayerVisibility(d.layerVisibility),
     "layerVisibility",
@@ -576,9 +647,16 @@ export function useV2Project() {
     canAcceptUserMutation,
     markUserDraftMutation,
   );
-  // ── Mix preset (D5.1) — non-admin b-roll AI mix. FREE users are forced to "free";
-  // paid (isPaidManagedKie) default to "recommended" (applied in the fetchMe effect
-  // once plan is known). Draft value wins if the user already chose one. ──
+  const [headlineHook, setHeadlineHook, setHeadlineHookRaw] = useUserDraftState<HeadlineHookConfig | undefined>(
+    normalizeHeadlineHook(d.headlineHook) ?? undefined,
+    "headlineHook",
+    effectiveDraftRef,
+    canAcceptUserMutation,
+    markUserDraftMutation,
+  );
+  // ── Mix preset (D5.1) — persisted project choices remain authoritative. A brand-new
+  // paid project is seeded as "recommended" before its POST (see bootstrap below),
+  // independently from the legacy internal managed-KIE gate. ──
   const [mixPreset, setMixPresetFromUser, setMixPresetRaw] = useUserDraftState<MixPreset>(
     d.mixPreset ?? "free", "mixPreset", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -595,11 +673,13 @@ export function useV2Project() {
 
   function buildDraft(): V2Draft {
     return {
-      mode, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
+      mode, narrativeSourceKind, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
       projectTitle,
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
-      kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, layerVisibility,
+      kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
+      logoOverlay, brandSubtitleDefault, layerVisibility,
+      ...headlineHookDraftFragment(headlineHook),
     };
   }
 
@@ -607,6 +687,7 @@ export function useV2Project() {
     draftRef.current = next;
     if (next.projectTitle !== undefined) setProjectTitleRaw(next.projectTitle || DEFAULT_PROJECT.projectTitle);
     if (next.mode) setModeRaw(next.mode);
+    if (next.narrativeSourceKind) setNarrativeSourceKindRaw(next.narrativeSourceKind);
     if (next.script !== undefined) setScriptRaw(next.script);
     if (next.clipUrl !== undefined) setClipUrlStateRaw(next.clipUrl);
     if (next.clipDurationSec !== undefined) {
@@ -634,7 +715,9 @@ export function useV2Project() {
     if (next.brollRegionPreference) setBrollRegionPreferenceRaw(next.brollRegionPreference);
     if (next.brollVisualStyle) setBrollVisualStyleRaw(next.brollVisualStyle);
     setLogoOverlayRaw(normalizeLogoOverlayConfig(next.logoOverlay) ?? undefined);
+    setBrandSubtitleDefaultRaw(normalizeSubtitleStylePresetConfig(next.brandSubtitleDefault) ?? undefined);
     setLayerVisibilityRaw(normalizeEditorLayerVisibility(next.layerVisibility));
+    setHeadlineHookRaw(normalizeHeadlineHook(next.headlineHook) ?? undefined);
   }
 
   // ── Autosave status (topbar hint) — observes the debounced persist effect below;
@@ -664,11 +747,57 @@ export function useV2Project() {
   const mountedRef = useRef(false);
   const currentProjectIdRef = useRef<string | null>(projectId);
   currentProjectIdRef.current = projectId;
+  const projectDraftFlushWaitersRef = useRef<Array<{
+    projectId: string;
+    resolve: (saved: boolean) => void;
+  }>>([]);
+
+  function projectDraftIsDurable(expectedProjectId: string): boolean {
+    const tracker = autosaveLineageRef.current;
+    return currentProjectIdRef.current === expectedProjectId
+      && projectReadyRef.current
+      && recoveryRef.current.status === "none"
+      && tracker?.projectId === expectedProjectId
+      && !tracker.blocked
+      && (
+        !tracker.latestLocal
+        || tracker.latestLocal.fingerprint === tracker.confirmed.fingerprint
+      );
+  }
+
+  function settleProjectDraftFlushWaiters(projectId: string | null, saved: boolean): void {
+    const pending = projectDraftFlushWaitersRef.current;
+    projectDraftFlushWaitersRef.current = [];
+    for (const waiter of pending) {
+      if (projectId !== null && waiter.projectId !== projectId) {
+        projectDraftFlushWaitersRef.current.push(waiter);
+      } else {
+        waiter.resolve(saved);
+      }
+    }
+  }
+
+  const flushPendingProjectDraft = useCallback(async (): Promise<boolean> => {
+    const flushProjectId = currentProjectIdRef.current;
+    if (!flushProjectId || !canRunProjectOperation()) return false;
+    await editorProjectSaveQueue.whenIdle(flushProjectId);
+    if (
+      currentProjectIdRef.current !== flushProjectId
+      || !canRunProjectOperation()
+    ) return false;
+    if (projectDraftIsDurable(flushProjectId)) return true;
+    return new Promise<boolean>((resolve) => {
+      projectDraftFlushWaitersRef.current.push({ projectId: flushProjectId, resolve });
+      setSaveStatus("saving");
+      setSaveRevision((revision) => revision + 1);
+    });
+  }, [canRunProjectOperation]);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      settleProjectDraftFlushWaiters(null, false);
       autosaveLineageRef.current?.issued.clear();
       autosaveGenerationRef.current += 1;
       autosaveLineageRef.current = null;
@@ -693,7 +822,10 @@ export function useV2Project() {
   const omniVoiceAvailability = useOmniVoiceAvailability();
   const omniVoiceEnabled = omniVoiceAvailability === true;
   const canUploadOwnMedia = plan === "PRO" || plan === "BUSINESS";
-  const logoEligible = plan === "PRO" || plan === "BUSINESS";
+  // Brand Visual sells production capacity and profile count, not the ability
+  // to express the profile. Treatment Free accounts may therefore inherit and
+  // override their Brand Mark just like paid accounts.
+  const logoEligible = brandVisualAllowed || hasPersistedVisualPin || plan === "PRO" || plan === "BUSINESS";
 
   function clearProjectRecoveryData(clearProjectId: string): void {
     const storage = browserStorage();
@@ -712,6 +844,7 @@ export function useV2Project() {
     setActiveExportJobId(typeof project.activeExportJobId === "string" ? project.activeExportJobId : null);
     setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
     setPreviewMediaState((project.previewMediaState as ProjectMediaState | null | undefined) ?? null);
+    setHasPersistedVisualPin(project.hasPersistedVisualPin === true);
   }
 
   function serverCandidateForProject(
@@ -736,6 +869,7 @@ export function useV2Project() {
   }
 
   const invalidateAutosaveLineage = useCallback(() => {
+    settleProjectDraftFlushWaiters(null, false);
     autosaveLineageRef.current?.issued.clear();
     autosaveGenerationRef.current += 1;
     autosaveLineageRef.current = null;
@@ -800,6 +934,65 @@ export function useV2Project() {
     editorProjectSaveQueue.seedRevision(nextProjectId, confirmed.revision);
     return tracker;
   }, []);
+
+  /** Adopt a server mutation that atomically changed both project semantics
+   * and draft defaults (for example a Brand Revision pin). Rebase the local
+   * autosave lineage before another debounced write can replay the stale draft
+   * over that transaction. */
+  function acceptAuthoritativeProjectSnapshot(project: Record<string, unknown>): boolean {
+    const currentId = currentProjectIdRef.current;
+    if (!currentId || project.id !== currentId) return false;
+    const candidate = serverCandidateForProject(currentId, project);
+    if (!candidate || candidate.revision === null) return false;
+    const previousTracker = autosaveLineageRef.current;
+    const pendingLocal = previousTracker
+      && previousTracker.projectId === currentId
+      && !previousTracker.blocked
+      && previousTracker.latestLocal
+      && previousTracker.latestLocal.fingerprint !== previousTracker.confirmed.fingerprint
+      ? previousTracker.latestLocal
+      : null;
+    const rebasedLocal = pendingLocal && previousTracker
+      ? createEditorProjectAutosaveCandidate({
+          projectId: currentId,
+          revision: candidate.revision,
+          draft: rebasePendingUserDraft(
+            previousTracker.confirmed.draft as V2Draft,
+            pendingLocal.draft as V2Draft,
+            candidate.draft as V2Draft,
+          ),
+        })
+      : null;
+    if (pendingLocal && !rebasedLocal) return false;
+    invalidateLocalChoiceRequest();
+    trustedResumeDraftRef.current = null;
+    applyDraft((rebasedLocal?.draft ?? candidate.draft) as V2Draft);
+    const tracker = initializeAutosaveLineage(currentId, candidate);
+    if (!tracker) return false;
+    if (rebasedLocal) {
+      tracker.latestLocal = rebasedLocal;
+      latestDraftRef.current = rebasedLocal;
+      stagedUserDraftMutationTokenRef.current = userDraftMutationTokenRef.current;
+      writeEditorProjectRecoveryJournal(browserStorage(), {
+        version: 1,
+        projectId: currentId,
+        baseRevision: candidate.revision,
+        editedAt: new Date().toISOString(),
+        draft: rebasedLocal.draft,
+      });
+    } else {
+      lastPersistedUserMutationTokenRef.current = userDraftMutationTokenRef.current;
+    }
+    latestQueuedSaveRef.current = { projectId: null, revision: null };
+    applyServerProjectMetadata(project);
+    if (!rebasedLocal) clearProjectRecoveryData(currentId);
+    setProjectReady(true);
+    setProjectInitialization("ready");
+    setSaveStatus(rebasedLocal ? "saving" : "saved");
+    setRecoveryState({ status: "none" });
+    if (rebasedLocal) setSaveRevision((revision) => revision + 1);
+    return true;
+  }
 
   const ownsAutosaveLineage = useCallback((
     tracker: AutosaveLineageTracker,
@@ -931,7 +1124,7 @@ export function useV2Project() {
       setRecoveryState({ status: "load-error", message: "สร้างโปรเจกต์ไม่สำเร็จ กรุณาลองใหม่" });
     };
     try {
-      const res = await fetch("/api/editor-projects", {
+      const res = await authenticatedFetch("/api/editor-projects", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: draft.projectTitle ?? DEFAULT_PROJECT.projectTitle, draft }),
@@ -1009,14 +1202,15 @@ export function useV2Project() {
     }
     if (!isCurrentReset()) return null;
     setProjectInitialization("creating-project");
-    const nextPreset = isPaidManagedKie ? "recommended" : DEFAULT_PROJECT.mixPreset;
+    const nextPreset = recommendedAutoMixDefault ? "recommended" : DEFAULT_PROJECT.mixPreset;
     const inherited = logoOverlayForNewProject({
       hasExistingDraft: false,
       accountDefault,
     });
     const nextDraft: V2Draft = {
       ...DEFAULT_PROJECT,
-      autoMixProviders: [...DEFAULT_PROJECT.autoMixProviders],
+      autoMixProviders: [...(PRESET_PROVIDERS[nextPreset] ?? DEFAULT_PROJECT.autoMixProviders)],
+      brollSource: presetBrollSource(nextPreset),
       mixPreset: nextPreset,
       voiceEngine: accountVideoDefaults.voiceEngine,
       geminiVoiceName: accountVideoDefaults.geminiVoiceName,
@@ -1070,12 +1264,14 @@ export function useV2Project() {
     setBrollVisualStyleRaw(DEFAULT_PROJECT.brollVisualStyle);
     setMixPresetRaw(nextPreset);
     setLogoOverlayRaw(inherited);
+    setBrandSubtitleDefaultRaw(undefined);
+    setHeadlineHookRaw(undefined);
     setSaveStatus("idle");
     return await createServerProject(nextDraft, {
       isCurrent: isCurrentReset,
       signal: resetController.signal,
     });
-  }, [createServerProject, invalidateAutosaveLineage, invalidateLocalChoiceRequest, isPaidManagedKie, projectId, saveRevision, setProjectInitialization, setRecoveryState]);
+  }, [createServerProject, invalidateAutosaveLineage, invalidateLocalChoiceRequest, projectId, recommendedAutoMixDefault, saveRevision, setProjectInitialization, setRecoveryState]);
 
   useEffect(() => {
     let alive = true;
@@ -1141,7 +1337,7 @@ export function useV2Project() {
         if (!isCurrentBootstrap()) return;
         let response: Response | null = null;
         try {
-          response = await fetch(
+          response = await authenticatedFetch(
             `/api/editor-projects/${encodeURIComponent(existingProjectId)}`,
             { cache: "no-store", signal: controller.signal },
           );
@@ -1155,7 +1351,7 @@ export function useV2Project() {
           const staleProjectId = existingProjectId;
           let listResponse: Response | null = null;
           try {
-            listResponse = await fetch("/api/editor-projects", {
+            listResponse = await authenticatedFetch("/api/editor-projects", {
               cache: "no-store",
               signal: controller.signal,
             });
@@ -1189,7 +1385,7 @@ export function useV2Project() {
             for (const fallbackId of fallbackIds) {
               let candidateResponse: Response | null = null;
               try {
-                candidateResponse = await fetch(
+                candidateResponse = await authenticatedFetch(
                   `/api/editor-projects/${encodeURIComponent(fallbackId)}`,
                   { cache: "no-store", signal: controller.signal },
                 );
@@ -1382,14 +1578,17 @@ export function useV2Project() {
         ? null
         : storedLocalDraft;
       const hasLocalDraft = localDraft !== null;
+      if (hasLocalDraft) accountDraftDefaultsAllowedRef.current = false;
       const seedDraft = hasLocalDraft ? localDraft : buildDraft();
       if (!hasLocalDraft) {
         let accountDefault: LogoOverlayConfig | null;
         let accountVideoDefaults: AccountVideoDefaults;
+        let account: MeData | null;
         try {
-          [accountDefault, accountVideoDefaults] = await Promise.all([
+          [accountDefault, accountVideoDefaults, account] = await Promise.all([
             loadAccountLogoDefault(),
             loadAccountVideoDefaults(),
+            fetchMe(),
           ]);
         } catch {
           if (!isCurrentBootstrap()) return;
@@ -1404,6 +1603,14 @@ export function useV2Project() {
         seedDraft.geminiVoiceName = accountVideoDefaults.geminiVoiceName;
         seedDraft.voiceId = accountVideoDefaults.voiceId;
         seedDraft.avatarId = accountVideoDefaults.avatarId;
+        const initialPreset = account?.recommendedAutoMixDefault === true
+          ? "recommended"
+          : DEFAULT_PROJECT.mixPreset;
+        seedDraft.mixPreset = initialPreset;
+        seedDraft.brollSource = presetBrollSource(initialPreset);
+        seedDraft.autoMixProviders = [
+          ...(PRESET_PROVIDERS[initialPreset] ?? DEFAULT_PROJECT.autoMixProviders),
+        ];
         const inherited = logoOverlayForNewProject({ hasExistingDraft: false, accountDefault });
         if (inherited) seedDraft.logoOverlay = inherited;
       }
@@ -1443,7 +1650,7 @@ export function useV2Project() {
       && recoveryRef.current.status === "conflict"
       && recoveryRef.current.local === conflict.local);
     try {
-      const response = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+      const response = await authenticatedFetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
         cache: "no-store",
         signal: ownership.signal,
       });
@@ -1544,7 +1751,7 @@ export function useV2Project() {
       && recoveryRef.current.server === conflict.server
       && recoveryRef.current.resolving === "local";
     try {
-      const res = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+      const res = await authenticatedFetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1694,7 +1901,7 @@ export function useV2Project() {
 
   // ค่า default จริงของผู้ใช้ (เหมือน init ของ legacy editor) — ไม่ทับค่าที่ draft จำไว้
   useEffect(() => {
-    fetch("/api/user/video-settings").then(r => r.json()).then(s => {
+    authenticatedFetch("/api/user/video-settings").then(r => r.json()).then(s => {
       if (!accountDraftDefaultsAllowedRef.current) return;
       const hadDraft = Object.keys(draftRef.current).length > 0;
       if (!hadDraft) {
@@ -1708,7 +1915,7 @@ export function useV2Project() {
         if (s.elevenlabsVoiceId && !draftRef.current.voiceId) setVoiceIdRaw(s.elevenlabsVoiceId);
       }
     }).catch(() => {});
-    fetch("/api/videos/usage").then(r => (r.ok ? r.json() : null)).then(u => {
+    fetchClientJson<V2Usage>("/api/videos/usage").then(r => r.ok ? r.data : null).then(u => {
       if (u) setUsage(u);
     }).catch(() => {});
     fetchMe().then(m => {
@@ -1727,24 +1934,34 @@ export function useV2Project() {
       const admin = m?.role === "ADMIN";
       const internalTester = m?.internalAiTester === true;
       const heroBeta = m?.heroAiBeta === true;
+      const heroImageEligible = m?.heroAiImageEligible === true;
+      const trialEndMs = typeof m?.trialEndsAt === "string" ? Date.parse(m.trialEndsAt) : Number.NaN;
       const internalAdmin = admin && internalTester;
       setInternalAiTester(internalTester);
       setHeroAiBeta(heroBeta);
+      setHeroAiImageEligible(heroImageEligible);
+      setHeroAiImageAccess(m?.featureAccess?.heroAiImage ?? null);
+      setBrandVisualAllowed(resolveBrandVisualClientAccess(m));
+      setBrandVisualCohort(m?.brandVisualCohort ?? "off");
+      setBrandVisualRolloutBucket(typeof m?.brandVisualRolloutBucket === "number" ? m.brandVisualRolloutBucket : null);
+      setStarterAiImageAllowance(m?.starterAiImageAllowance ?? null);
+      setIsActiveTrial(Number.isFinite(trialEndMs) && trialEndMs > Date.now());
       setPlan(typeof m?.plan === "string" ? m.plan : "FREE");
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
       // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
       const paid = !!m?.kiePaidUnlocked;
+      const recommendedDefault = m?.recommendedAutoMixDefault === true;
       // `isAdmin` in the v2 editor controls private AI/AutoMix options, so an
       // administrator outside the internal tester group must remain locked too.
       setIsAdmin(internalAdmin);
       setIsPaidManagedKie(paid);
+      setRecommendedAutoMixDefault(recommendedDefault);
       setManagedKieOn(!!m?.managedKieOn);
-      // Preset default/enforcement (non-admins only — admins use the raw controls):
-      //   FREE / feature-off → forced "ฟรีล้วน" (the AI presets are disabled in the UI);
-      //   paid → default "ผสม AI แนะนำ" unless the user already picked a preset (draft).
-      // setMixPreset also re-drives brollSource/autoMixProviders so submit stays consistent.
+      // Defensive fallback for a legacy blank draft. Fresh projects already receive
+      // this product default before their POST in ensureServerProject; existing
+      // project choices are protected by accountDraftDefaultsAllowedRef.
       if (!internalAdmin && accountDraftDefaultsAllowedRef.current) {
-        const defaultPreset = !paid ? "free" : !draftRef.current.mixPreset ? "recommended" : null;
+        const defaultPreset = recommendedDefault ? "recommended" : null;
         if (defaultPreset) {
           setMixPresetRaw(defaultPreset);
           setBrollSourceRaw(presetBrollSource(defaultPreset));
@@ -1971,6 +2188,17 @@ export function useV2Project() {
         onStatus: (event) => {
           const { status } = event;
           setSaveStatus(status);
+          const isLatestQueuedRevision = event.projectId === latestQueuedSaveRef.current.projectId
+            && event.revision === latestQueuedSaveRef.current.revision;
+          if (
+            status === "saved"
+            && isLatestQueuedRevision
+            && projectDraftIsDurable(event.projectId)
+          ) {
+            settleProjectDraftFlushWaiters(event.projectId, true);
+          } else if (status === "error" && isLatestQueuedRevision) {
+            settleProjectDraftFlushWaiters(event.projectId, false);
+          }
           if (
             isLatestSavedProjectRevision(event, latestQueuedSaveRef.current)
             && userDraftMutationTokenRef.current === lastPersistedUserMutationTokenRef.current
@@ -1984,7 +2212,7 @@ export function useV2Project() {
     }, 1000);
     return () => { clearTimeout(t); };
   }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
-      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, layerVisibility, projectId, projectReady,
+      targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
   // ข้อมูลอวตาร (ชื่อ + thumbnail) เมื่อมี avatarId — debounce กันยิง HeyGen ทุก keystroke
@@ -1992,7 +2220,7 @@ export function useV2Project() {
     if (!avatarId.trim()) { setAvatarInfo(null); return; }
     let alive = true;
     const t = setTimeout(() => {
-      fetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(avatarId.trim())}`)
+      authenticatedFetch(`/api/heygen/avatar-info?avatarId=${encodeURIComponent(avatarId.trim())}`)
         .then(r => (r.ok ? r.json() : null))
         .then(d => { if (alive && d) setAvatarInfo({ name: d.name, previewUrl: d.previewImageUrl || d.previewUrl }); })
         .catch(() => { if (alive) setAvatarInfo(null); });
@@ -2004,7 +2232,7 @@ export function useV2Project() {
   useEffect(() => {
     if (voiceEngine !== "elevenlabs" || elevenVoices !== null) return;
     let alive = true;
-    fetch("/api/elevenlabs/voices")
+    authenticatedFetch("/api/elevenlabs/voices")
       .then(r => (r.ok ? r.json() : null))
       .then(d => { if (alive && Array.isArray(d?.voices)) setElevenVoices(d.voices); })
       .catch(() => {});
@@ -2014,7 +2242,7 @@ export function useV2Project() {
   useEffect(() => {
     if (!omniVoiceEnabled || voiceEngine !== "omnivoice" || omniVoices !== null) return;
     let alive = true;
-    fetch("/api/omnivoice/voices")
+    authenticatedFetch("/api/omnivoice/voices")
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
       .then((data) => { if (alive) setOmniVoices(Array.isArray(data) ? data : []); })
       .catch(() => { if (alive) setOmniVoices([]); });
@@ -2022,10 +2250,14 @@ export function useV2Project() {
   }, [omniVoiceEnabled, voiceEngine, omniVoices]);
 
   const retryOmniVoices = useCallback(() => setOmniVoices(null), []);
+  const saveAccountVideoDefaults = useCallback(
+    (patch: VideoAccountDefaultsPatch) => saveVideoAccountDefaults(patch),
+    [],
+  );
 
   return {
     projectTitle, setProjectTitle,
-    mode, setMode,
+    mode, setMode, narrativeSourceKind,
     script, setScript,
     clipUrl, setClipUrl, clipDurationSec, setClipDurationSec,
     brollSource, setBrollSource,
@@ -2039,6 +2271,7 @@ export function useV2Project() {
     useAvatar, setUseAvatar,
     avatarId, setAvatarId,
     targetClipCount, setTargetClipCount,
+    heroCountTouched, setHeroCountTouched,
     avatarMode, setAvatarMode,
     avatarIntroSecs, setAvatarIntroSecs,
     avatarTailSecs, setAvatarTailSecs,
@@ -2047,13 +2280,18 @@ export function useV2Project() {
     brollRegionPreference, setBrollRegionPreference,
     brollVisualStyle, setBrollVisualStyle,
     logoOverlay, setLogoOverlay,
+    brandSubtitleDefault, setBrandSubtitleDefault,
     layerVisibility, setLayerVisibility,
+    headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, isAdmin, isPaidManagedKie, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
+    brandContentPreflightId, setBrandContentPreflightId,
     saveStatus, retryProjectSave,
+    flushPendingProjectDraft,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,
-    canRunProjectOperation,
+    canRunProjectOperation, saveAccountVideoDefaults,
+    acceptAuthoritativeProjectSnapshot,
   };
 }
 

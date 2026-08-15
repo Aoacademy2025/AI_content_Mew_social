@@ -6,9 +6,10 @@ import { useEffect, useRef, useState } from "react";
 import { useClerk } from "@clerk/nextjs";
 import { cn } from "@/lib/utils";
 import { fetchMe } from "@/lib/use-me";
+import { trackEvent } from "@/lib/client-telemetry";
 import {
   Settings, Users, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen, SwatchBook,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -42,6 +43,8 @@ type SidebarNavItem = {
    *  also light up on every /admin/* sub-route (e.g. /admin/users). */
   exact?: boolean;
   badge?: number;
+  /** Small text pill (e.g. "ใหม่") instead of the numeric unread-count badge. */
+  badgeText?: string;
 };
 
 // USER (non-admin) — one lean list, no section labels.
@@ -49,6 +52,9 @@ type SidebarNavItem = {
 // are intentionally removed from nav; their routes/pages still work if visited directly.
 const userNavItems: SidebarNavItem[] = [
   { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
+  // Writing comes before editing in the user flow — kept directly above Video Editor.
+  { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
+  { title: "แบรนด์ของฉัน", href: "/brands", icon: SwatchBook, badgeText: "ใหม่" },
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
   { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
   { title: "Gallery",      href: "/videos",        icon: Video },
@@ -62,6 +68,10 @@ const userNavItems: SidebarNavItem[] = [
 // directly, so those are omitted here (matches the approved mockup).
 const adminStudioItems: SidebarNavItem[] = [
   { title: "Dashboard",    href: "/dashboard",     icon: LayoutDashboard },
+  // Writing comes before editing in the user flow — kept directly above Video Editor
+  // (same placement as userNavItems; admins are allowlist-gated too, see internalItemsOnly).
+  { title: "เขียนสคริปต์ AI", href: "/hero-script", icon: NotebookPen, badgeText: "ใหม่" },
+  { title: "แบรนด์ของฉัน", href: "/brands", icon: SwatchBook, badgeText: "ใหม่" },
   { title: "Video Editor", href: "/video-editor",  icon: Clapperboard },
   { title: "AI Studio",    href: "/ai-studio",     icon: WandSparkles },
   { title: "Gallery",      href: "/videos",        icon: Video },
@@ -131,6 +141,10 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [updatesUnread, setUpdatesUnread] = useState(0);
   const [currentVersion, setCurrentVersion] = useState("v0.1.0");
   const [internalAiTester, setInternalAiTester] = useState(false);
+  const [heroScriptAllowed, setHeroScriptAllowed] = useState(false);
+  const [heroScriptPreview, setHeroScriptPreview] = useState(false);
+  const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
+  const [brandVisualCohort, setBrandVisualCohort] = useState<string>("off");
 
   useEffect(() => {
     fetchMe()
@@ -147,6 +161,10 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         if (typeof data.minutesUsed === "number") setMinutesUsed(data.minutesUsed);
         if (typeof data.minutesLimit === "number") setMinutesLimit(data.minutesLimit);
         setInternalAiTester(data.internalAiTester === true);
+        setHeroScriptAllowed(data.heroScriptAllowed === true);
+        setHeroScriptPreview(data.heroScriptPreview === true);
+        setBrandVisualAllowed(data.brandVisualAllowed === true);
+        setBrandVisualCohort(data.brandVisualCohort ?? "off");
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -194,7 +212,14 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
       : item);
 
   const internalItemsOnly = (items: SidebarNavItem[]) =>
-    items.filter((item) => item.href !== "/ai-studio" || internalAiTester);
+    items
+      .filter((item) => item.href !== "/ai-studio" || internalAiTester)
+      .filter((item) => item.href !== "/hero-script" || heroScriptAllowed || heroScriptPreview)
+      .map((item) => item.href === "/hero-script" && !heroScriptAllowed
+        ? { ...item, badgeText: "PRO" }
+        : item.href === "/brands" && !brandVisualAllowed
+          ? { ...item, badgeText: brandVisualCohort === "rollout-wait" ? "รอเปิด" : "PRO" }
+          : item);
   const userItems = internalItemsOnly(withUpdatesBadge(userNavItems));
   const adminItems = internalItemsOnly(adminStudioItems);
 
@@ -230,6 +255,16 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
       <Link key={item.href} href={item.href} title={collapsed ? item.title : undefined}
         prefetch={true}
         onMouseEnter={() => prefetchOnce(item.href)}
+        onClick={() => {
+          if (item.href === "/hero-script") {
+            trackEvent("hero_script_menu_clicked", {
+              properties: { access: heroScriptAllowed ? "full" : "preview" },
+            });
+          }
+          if (item.href === "/brands") {
+            trackEvent("brand_library_menu_clicked", { properties: { access: brandVisualAllowed ? "full" : brandVisualCohort === "rollout-wait" ? "rollout_wait" : "preview" } });
+          }
+        }}
         className={cn(
           "relative flex items-center rounded-lg border-0 outline-none transition-colors duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#8B5CF6]/60",
@@ -257,9 +292,14 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
                 {(item.badge ?? 0) > 9 ? "9+" : item.badge}
               </span>
             )}
+            {item.badgeText && (
+              <span className="flex h-5 items-center justify-center rounded-full bg-violet-500 px-1.5 text-[10px] font-bold leading-none text-white">
+                {item.badgeText}
+              </span>
+            )}
           </>
         )}
-        {collapsed && (item.badge ?? 0) > 0 && (
+        {collapsed && ((item.badge ?? 0) > 0 || item.badgeText) && (
           <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-violet-400" />
         )}
       </Link>

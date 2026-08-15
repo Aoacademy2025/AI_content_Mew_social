@@ -27,6 +27,8 @@ const finalBuildGate = deployScript.lastIndexOf(
 );
 const normalizeAt = deployScript.indexOf(normalizeCommand);
 const swapAt = deployScript.indexOf('mv "$STAGING_DIR" "$APP_DIR/.next"');
+const retainAt = deployScript.indexOf("Retain prior immutable Next.js assets");
+const manifestAt = deployScript.indexOf('CURRENT_STATIC_MANIFEST="$APP_DIR/.next-static-manifest-staging"');
 
 assert.ok(finalBuildGate >= 0, "final BUILD_ID gate is missing");
 assert.ok(swapAt >= 0, "atomic staging swap is missing");
@@ -37,6 +39,13 @@ assert.ok(
 assert.ok(
   normalizeAt < swapAt,
   "staging permissions must be normalized before the atomic swap",
+);
+assert.ok(retainAt >= 0, "deploy must retain the prior release's immutable static assets");
+assert.ok(manifestAt >= 0 && manifestAt < retainAt, "the current-build static manifest must be captured before prior assets are merged");
+assert.ok(retainAt < normalizeAt, "prior static assets must be merged before permissions are normalized");
+assert.ok(
+  deployScript.includes('mv "$CURRENT_STATIC_MANIFEST" "$APP_DIR/.next-static-manifest"'),
+  "the current-build manifest must move outside .next so Next runtime cannot remove it",
 );
 
 const root = mkdtempSync(join(tmpdir(), "heroai-next-permissions-"));

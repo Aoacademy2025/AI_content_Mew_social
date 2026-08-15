@@ -19,7 +19,7 @@ import {
   EDITABLE_EFFECT_PRESETS_DATA, BUILT_IN_EFFECT_PRESETS_DATA,
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
-  V2_CARD_LEN_OPTIONS, type V2CardLen,
+  V2_CARD_LEN_OPTIONS, resolveV2FontWeight, type V2CardLen, type V2FontWeight,
 } from "./subtitle-style";
 import { useId, useMemo, useRef, useState } from "react";
 import type { V2JobState } from "./useV2Job";
@@ -36,10 +36,15 @@ import {
   PendingBrollChangesDialog,
   WindowEditsBottomBar,
 } from "./BrollWindowInspector";
-import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { MeData } from "@/lib/use-me";
 import { trackEvent } from "@/lib/client-telemetry";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
+import { HeadlineHookControls } from "./HeadlineHookControls";
+import { HeadlineHookPreview } from "./HeadlineHookPreview";
+import type { HeadlineHookConfig } from "@/lib/headline-hook";
+import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -58,39 +63,46 @@ export function PostPhase({
   projectId,
   logoOverlay,
   onLogoOverlayChange,
+  initialSubtitleConfig,
+  brandVisualAllowed,
   layerVisibility,
   onLayerVisibilityChange,
+  headlineHook,
+  onHeadlineHookChange,
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
   canRunProjectOperation,
-  brollRegionPreference = "auto",
-  brollVisualStyle = "auto",
   internalAiTester,
-  aiImageEnabled,
+  sceneRerollEnabled,
+  starterImageAllowance,
   downloadFilename,
 }: {
   job: V2JobState; script: string;
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
-  onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  initialSubtitleConfig?: SubtitleStylePresetConfig;
+  brandVisualAllowed: boolean;
   layerVisibility: EditorLayerVisibility;
   onLayerVisibilityChange: (
     next: EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility)
   ) => void;
+  headlineHook?: HeadlineHookConfig;
+  onHeadlineHookChange: (next: HeadlineHookConfig | undefined) => void;
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   canRunProjectOperation?: () => boolean;
-  brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   internalAiTester: boolean;
-  aiImageEnabled: boolean;
+  sceneRerollEnabled: boolean;
+  starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
 }) {
-  const [rightTab, setRightTab] = useState<"subtitle" | "logo">("subtitle");
+  const [rightTab, setRightTab] = useState<"hook" | "subtitle" | "logo">("hook");
   const rightTabsId = useId();
   const logoPanelOpenedRef = useRef(false);
   const ed = usePostPhaseEditor(job, script, {
@@ -100,23 +112,28 @@ export function PostPhase({
     projectId,
     logoOverlay,
     onLogoOverlayChange,
+    initialSubtitleConfig,
     layerVisibility,
     onLayerVisibilityChange,
+    headlineHook,
+    onHeadlineHookChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
     canRunProjectOperation,
     surface: "desktop",
   });
-  const handleRightTabChange = (next: "subtitle" | "logo") => {
+  const handleRightTabChange = (next: "hook" | "subtitle" | "logo") => {
     setRightTab(next);
     if (next === "logo" && !logoPanelOpenedRef.current) {
       logoPanelOpenedRef.current = true;
       trackEvent("logo_overlay_panel_opened", { properties: { surface: "desktop" } });
     }
   };
-  // Public flag/internal beta gate only. Upload Avatar now has its own cutaway re-composite path.
-  const brollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  // The full editor remains behind its legacy gate. Brand Visual V1 exposes
+  // only Scene Reroll, without enabling Stock-to-AI or raw-prompt controls.
+  const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
   const editedWindowIndices = useMemo(() => new Set(ed.windowEdits.keys()), [ed.windowEdits]);
   const disabledWindowIndices = new Set<number>();
   const brollEntries = (ed.previewConfig as { bgVideos?: unknown } | null)?.bgVideos;
@@ -148,6 +165,7 @@ export function PostPhase({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandVisualAllowed={brandVisualAllowed} />
       {ed.exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
@@ -212,11 +230,11 @@ export function PostPhase({
                 style={{ cursor: "pointer" }}
               >
                 <Card
-                  selected={i === ed.selected}
+                  selected={i === ed.selected || i === ed.activeIdx}
                   style={i === ed.activeIdx ? { boxShadow: `inset 2.5px 0 0 ${color.primary300}` } : undefined}
                 >
                   <div className="flex items-center justify-between" style={{ fontSize: 10.5 }}>
-                    <span style={{ color: i === ed.selected ? color.primary300 : color.textFaint }}>
+                    <span style={{ color: i === ed.selected || i === ed.activeIdx ? color.primary300 : color.textFaint }}>
                       {fmtMs(c.startMs)}–{fmtMs(c.endMs)}{c.tag === "hook" ? " · HOOK" : c.tag === "cta" ? " · CTA" : ""}
                     </span>
                     <button
@@ -351,6 +369,13 @@ export function PostPhase({
               asset={ed.logo.asset}
               visible={ed.layerVisibility.logo}
             />
+            <HeadlineHookPreview
+              hook={ed.headlineHook}
+              totalDurationMs={ed.totalDurationMs}
+              videoRef={ed.videoRef}
+              playing={ed.playing}
+              onTopPercent={(topPercent) => ed.setHeadlineHook({ topPercent })}
+            />
             {ed.layerVisibility.subtitles && (
               /* เส้นไกด์ตำแหน่งซับ */
               <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
@@ -363,6 +388,7 @@ export function PostPhase({
               videoRef={ed.videoRef}
               playing={ed.playing}
               onVerticalPos={(p) => ed.set("verticalPos", p)}
+              suppressUntilMs={ed.subtitleSuppressionEndMs}
             />
             {ed.adjustingAvatar && ed.canAdjustAvatar && ed.preview && (
               <AvatarAdjustOverlay
@@ -394,20 +420,37 @@ export function PostPhase({
           </div>
         </main>
 
-        {/* ── ขวา 330px: คุมซับ / โลโก้ ── */}
+        {/* ── ขวา 330px: พาดหัว / ซับ / โลโก้ ── */}
         <aside className="flex w-[330px] shrink-0 flex-col gap-5 overflow-y-auto p-4" style={{ borderLeft: `1px solid ${color.cardBorder}`, background: color.bg1 }}>
-          <Segmented
-            id={rightTabsId}
-            semantics="tabs"
-            ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
-            value={rightTab}
-            onChange={handleRightTabChange}
-            options={[
-              { value: "subtitle", label: "ซับ" },
-              { value: "logo", label: "โลโก้" },
-            ]}
-            style={{ width: "100%", justifyContent: "center" }}
-          />
+          <div
+            data-editor-function-tabs="true"
+            className="sticky top-0 z-20 -mx-4 -mt-4 px-4 pb-2 pt-4"
+            style={{ background: color.bg1, borderBottom: `1px solid ${color.cardBorder}` }}
+          >
+            <Segmented
+              id={rightTabsId}
+              semantics="tabs"
+              ariaLabel="ตั้งค่าองค์ประกอบวิดีโอ"
+              value={rightTab}
+              onChange={handleRightTabChange}
+              options={[
+                { value: "hook", label: "พาดหัว" },
+                { value: "subtitle", label: "ซับ" },
+                { value: "logo", label: "โลโก้" },
+              ]}
+              style={{ width: "100%", justifyContent: "center" }}
+            />
+          </div>
+
+          {rightTab === "hook" && (
+            <div
+              id={`${rightTabsId}-hook-panel`}
+              role="tabpanel"
+              aria-labelledby={`${rightTabsId}-hook-tab`}
+            >
+              <HeadlineHookControls editor={ed} logoOverlay={logoOverlay} />
+            </div>
+          )}
 
           {rightTab === "subtitle" && (
             <div
@@ -577,9 +620,12 @@ export function PostPhase({
                 {FONTS_LIST.map((f) => <option key={f.value} value={f.value} style={{ background: color.bg1 }}>{f.label}</option>)}
               </select>
               <Segmented
-                value={ed.cfg.bold ? "bold" : "regular"}
-                onChange={(v) => ed.set("bold", v === "bold")}
-                options={[{ value: "bold", label: "หนา" }, { value: "regular", label: "บาง" }]}
+                value={resolveV2FontWeight(ed.cfg) === 900 ? "bold" : resolveV2FontWeight(ed.cfg) === 600 ? "medium" : "regular"}
+                onChange={(v) => {
+                  const fontWeight: V2FontWeight = v === "bold" ? 900 : v === "medium" ? 600 : 400;
+                  ed.setCfg((current) => ({ ...current, fontWeight, bold: fontWeight === 900 }));
+                }}
+                options={[{ value: "bold", label: "หนา" }, { value: "medium", label: "กลาง" }, { value: "regular", label: "บาง" }]}
               />
             </div>
             <input
@@ -722,7 +768,13 @@ export function PostPhase({
         </aside>
 
         {brollEditEnabled && ed.selectedWindow != null && (
-          <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
+          <BrollWindowInspector
+            ed={ed}
+            videoJobId={job.jobId}
+            fullBrollEditEnabled={fullBrollEditEnabled}
+            sceneRerollEnabled={sceneRerollEnabled}
+            starterImageAllowance={starterImageAllowance}
+          />
         )}
       </div>
 
@@ -759,7 +811,7 @@ export function PostPhase({
         )}
       </div>
 
-      {/* Timeline หลายแทร็ก (P6b) — ซับลากขอบแก้เวลาได้ และเลเยอร์ที่แยกได้เปิด–ปิดได้ */}
+      {/* Timeline หลายแทร็ก (P6b) — พาดหัว/ซับลากเวลาได้ และเลเยอร์ที่แยกได้เปิด–ปิดได้ */}
       <TimelinePanel
         captions={ed.captions}
         onCaptionsChange={ed.handleCaptionsChange}
@@ -788,6 +840,8 @@ export function PostPhase({
         layerAvailability={ed.layerAvailability}
         onLayerVisibilityChange={ed.setLayerEnabled}
         layerControlsDisabled={ed.exp.phase === "burning" || ed.exp.phase === "saving" || ed.logo.saving}
+        headlineHook={ed.headlineHook}
+        onHeadlineHookDurationChange={(durationMs) => ed.setHeadlineHook({ durationMs })}
       />
       {brollEditEnabled && <WindowEditsBottomBar ed={ed} />}
       {brollEditEnabled && <PendingBrollChangesDialog ed={ed} />}

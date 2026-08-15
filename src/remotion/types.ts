@@ -1,4 +1,5 @@
 import type { LogoPosition } from "../lib/logo-overlay";
+import type { HeadlineHookConfig } from "../lib/headline-hook";
 
 export type SceneEffect =
   | "zoom-in" | "zoom-out"
@@ -48,7 +49,10 @@ export interface BrollVideo {
   keyword?: string;
   title?: string;
   query?: string;
-  provider?: "pexels" | "pixabay";
+  /** Asset provenance survives into the post-render editor. Scene Reroll uses
+   *  this server-authored value to distinguish an existing AI Visual Beat from
+   *  Stock/Upload without inspecting filenames or accepting browser claims. */
+  provider?: "pexels" | "pixabay" | "unsplash" | "kie-ai" | "runpod" | "wikimedia" | "flickr" | "nasa" | "met";
   contentProfile?: string;
   selectionReason?: string;
   relevanceScore?: number;
@@ -110,6 +114,7 @@ export interface SubtitleOverlayConfig {
   videoUrl: string;
   keywordPopups: KeywordPopupItem[];
   durationInFrames: number;
+  headlineHook?: HeadlineHookConfig;
   fontFamily?: string;
   subtitleStylePreset?: SubtitleStylePreset;
   subtitleTextEffect?: SubtitleTextEffect;
@@ -134,6 +139,7 @@ export interface ShortVideoConfig {
   /** Number of semantic B-roll windows requested before asset-pool reuse/splitting. */
   requestedBrollWindowCount?: number;
   keywordPopups: KeywordPopupItem[];
+  headlineHook?: HeadlineHookConfig;
   voiceFile: string;
   voiceVolume: number;
   bgmFile?: string;

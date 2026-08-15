@@ -41,5 +41,14 @@ jobs:
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 
+      - name: Verify Hero Script launch, payment, rollout, and guidance
+        run: npm run verify:hero-script-launch
+
+      - name: Verify Admin Insights revenue clarity
+        run: npm run verify:admin-insights-revenue
+
+      - name: Verify RunPod image active-route COGS
+        run: npm run verify:runpod-image-cost
+
       - name: Build
         run: npm run build

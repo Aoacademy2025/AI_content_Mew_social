@@ -3,7 +3,7 @@
 //   DATABASE_URL="file:$ROOT/prisma/test-mcp.db?connection_limit=1" npx tsx scripts/verify-mcp-orchestrator.ts
 import { prisma } from "../src/lib/prisma";
 import { runOrchestrator } from "../src/lib/mcp/orchestrator";
-import { claimNextRunnableJob } from "../src/lib/mcp/video-job";
+import { claimNextRunnableJob, parseVideoJobOutput } from "../src/lib/mcp/video-job";
 
 let passed = 0;
 function assert(c: boolean, m: string) { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); passed++; }
@@ -55,6 +55,89 @@ async function main() {
   const done = await prisma.videoJob.findUnique({ where: { id: job.id } });
   assert(done?.status === "done" && done?.videoId === "vid_1", "job → done with videoId");
 
+  // Refunded RunPod outage: retry only fetch-stock with a fresh child-job
+  // namespace. TTS/captions/keywords must not be replayed.
+  const heroRetryJob = await prisma.videoJob.create({
+    data: {
+      userId: u.id,
+      status: "processing",
+      inputJson: JSON.stringify({
+        script: "สวัสดีโลก",
+        voiceProvider: "gemini",
+        stockSource: "kie-image",
+        imageEngine: "runpod",
+        imageModel: "z-image-turbo",
+      }),
+    },
+  });
+  const heroRetryCalls: { path: string; body?: unknown }[] = [];
+  const heroRetrySleeps: number[] = [];
+  let heroStockCalls = 0;
+  let heroRenderCalls = 0;
+  const heroRetryCaller = {
+    post: async (path: string, body?: unknown) => {
+      const key = path.split("?")[0];
+      heroRetryCalls.push({ path: key, body });
+      if (key === "/api/videos/fetch-stock") {
+        heroStockCalls += 1;
+        if (heroStockCalls === 1) {
+          throw Object.assign(new Error("provider queue timed out"), {
+            name: "PipelineHttpError",
+            path: key,
+            status: 503,
+            body: {
+              error: "provider queue timed out",
+              code: "HERO_IMAGE_UNAVAILABLE",
+              retryable: true,
+              retryAfterSec: 60,
+            },
+          });
+        }
+        return { results: [{ src: "hero.mp4" }] } as never;
+      }
+      if (key === "/api/videos/render") {
+        heroRenderCalls += 1;
+        return { jobId: `hero-retry-render-${heroRenderCalls}` } as never;
+      }
+      const responses: Record<string, unknown> = {
+        "/api/videos/tts-gemini": { voiceUrl: "/api/renders/hero.wav", audioDurationMs: 2000, timing: { provider: "gemini", segments: [{ text: "สวัสดีโลก", startMs: 0, durationMs: 2000 }], chars: null } },
+        "/api/videos/extract-keywords": { keywords: ["hero"], keywordsPerScene: 5, sceneClipCounts: [1], sceneDurations: [2] },
+        "/api/videos/generate-config": { config: { durationInFrames: 60, voiceFile: "/api/renders/hero.wav", bgVideos: [] } },
+        "/api/videos": { id: "vid_hero_retry" },
+      };
+      return (responses[key] ?? {}) as never;
+    },
+    patch: async () => ({} as never),
+    get: async (path: string) => {
+      const key = path.split("?")[0];
+      heroRetryCalls.push({ path: key });
+      if (key === "/api/videos/render-progress") {
+        return { progress: 100, stage: "done", videoUrl: "/api/renders/hero-retry-out.mp4", error: null } as never;
+      }
+      return {} as never;
+    },
+  };
+  await runOrchestrator(heroRetryJob.id, u.id, {
+    caller: heroRetryCaller as never,
+    refundOneClip: async () => {},
+    sleep: async (ms) => { heroRetrySleeps.push(ms); },
+  });
+  const heroStockBodies = heroRetryCalls
+    .filter((call) => call.path === "/api/videos/fetch-stock")
+    .map((call) => call.body as Record<string, unknown>);
+  assert(heroStockBodies.length === 2, "Hero provider outage retries fetch-stock exactly once");
+  assert(
+    heroStockBodies[0]?.heroProviderAttempt === 0 && heroStockBodies[1]?.heroProviderAttempt === 1,
+    "Hero provider retry advances to a fresh idempotency namespace",
+  );
+  assert(
+    heroRetryCalls.filter((call) => call.path === "/api/videos/tts-gemini").length === 1
+      && heroRetryCalls.filter((call) => call.path === "/api/videos/extract-keywords").length === 1,
+    "Hero provider retry preserves TTS and keyword work",
+  );
+  assert(heroRetrySleeps.length === 1 && heroRetrySleeps[0] === 60_000, "Hero provider retry honors the bounded Retry-After delay");
+  assert((await prisma.videoJob.findUniqueOrThrow({ where: { id: heroRetryJob.id } })).status === "done", "Hero provider retry continues the same video to completion");
+
   // failure path: render returns error stage
   const job2 = await prisma.videoJob.create({ data: { userId: u.id, status: "processing", inputJson: JSON.stringify({ script: "x", voiceProvider: "gemini" }) } });
   const m2 = mockCaller({
@@ -68,6 +151,119 @@ async function main() {
   await runOrchestrator(job2.id, u.id, { caller: m2.caller as never, refundOneClip: async () => {}, sleep: async () => {} });
   const failed = await prisma.videoJob.findUnique({ where: { id: job2.id } });
   assert(failed?.status === "failed" && (failed?.errorMessage ?? "").includes("render"), "render error → job failed");
+
+  // Missing provider timing must recover through audio transcription/forced alignment.
+  // A single-segment character clock can preserve text, but cannot prove that captions
+  // appear with the spoken words, so it is not an acceptable final-output fallback.
+  const fallbackScript = "ประหยัดเงิน 500 บาท";
+  const jobTimingFallback = await prisma.videoJob.create({
+    data: {
+      userId: u.id,
+      status: "processing",
+      inputJson: JSON.stringify({ script: fallbackScript, voiceProvider: "gemini" }),
+    },
+  });
+  const timingFallback = mockCaller({
+    "/api/videos/tts-gemini": { voiceUrl: "/api/renders/fallback.wav", audioDurationMs: 2000 },
+    "/api/videos/transcribe": {
+      captions: [{ text: fallbackScript, startMs: 120, endMs: 1900, tag: "hook" }],
+      words: [
+        { word: "ประหยัดเงิน", startMs: 120, endMs: 900 },
+        { word: "500", startMs: 920, endMs: 1300 },
+        { word: "บาท", startMs: 1320, endMs: 1900 },
+      ],
+      audioDurationMs: 2000,
+    },
+    "/api/videos/extract-keywords": { keywords: ["saving"], keywordsPerScene: 5, sceneClipCounts: [1], sceneDurations: [2] },
+    "/api/videos/fetch-stock": { results: [{ src: "clip.mp4" }] },
+    "/api/videos/generate-config": { config: { durationInFrames: 60, voiceFile: "/api/renders/fallback.wav", bgVideos: [] } },
+    "/api/videos/render": { jobId: "fallback-render" },
+    "/api/videos/render-progress": { progress: 100, stage: "done", videoUrl: "/api/renders/fallback-out.mp4", error: null },
+    "/api/videos": { id: "vid_fallback" },
+    "/api/videos/vid_fallback": { ok: true },
+  });
+  await runOrchestrator(jobTimingFallback.id, u.id, {
+    caller: timingFallback.caller as never,
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  assert(
+    timingFallback.calls.some((call) => call.path === "/api/videos/transcribe"),
+    "missing TTS timing: recovers through audio transcription instead of a degraded character clock",
+  );
+
+  const jobBadAlignment = await prisma.videoJob.create({
+    data: {
+      userId: u.id,
+      status: "processing",
+      inputJson: JSON.stringify({ script: fallbackScript, voiceProvider: "gemini" }),
+    },
+  });
+  const badAlignment = mockCaller({
+    "/api/videos/tts-gemini": { voiceUrl: "/api/renders/bad-alignment.wav", audioDurationMs: 2000 },
+    "/api/videos/transcribe": {
+      captions: [{ text: "ประหยัดเงิน 5,000 บาท", startMs: 100, endMs: 1900, tag: "hook" }],
+      words: [],
+      audioDurationMs: 2000,
+    },
+    "/api/videos/extract-keywords": { keywords: ["saving"], keywordsPerScene: 5, sceneClipCounts: [1], sceneDurations: [2] },
+    "/api/videos/fetch-stock": { results: [{ src: "clip.mp4" }] },
+    "/api/videos/generate-config": { config: { durationInFrames: 60, voiceFile: "/api/renders/bad-alignment.wav", bgVideos: [] } },
+    "/api/videos/render": { jobId: "bad-alignment-render" },
+    "/api/videos/render-progress": { progress: 100, stage: "done", videoUrl: "/api/renders/bad-alignment-out.mp4", error: null },
+    "/api/videos": { id: "vid_bad_alignment" },
+    "/api/videos/vid_bad_alignment": { ok: true },
+  });
+  await runOrchestrator(jobBadAlignment.id, u.id, {
+    caller: badAlignment.caller as never,
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const rejectedAlignment = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobBadAlignment.id } });
+  assert(
+    rejectedAlignment.status === "failed"
+      && !badAlignment.calls.some((call) => call.path === "/api/videos/render"),
+    "subtitle quality gate: rejects changed words/numbers before rendering",
+  );
+
+  const wordModeScript = "เก็บเงิน 500 บาท ทุกเดือน";
+  const jobForcedWordMode = await prisma.videoJob.create({
+    data: {
+      userId: u.id,
+      status: "processing",
+      inputJson: JSON.stringify({ script: wordModeScript, voiceProvider: "gemini", subtitleMode: "2" }),
+    },
+  });
+  const forcedWordMode = mockCaller({
+    "/api/videos/tts-gemini": { voiceUrl: "/api/renders/word-mode.wav", audioDurationMs: 2400 },
+    "/api/videos/transcribe": {
+      captions: [{ text: wordModeScript, startMs: 100, endMs: 2300, tag: "hook" }],
+      words: [
+        { word: "เก็บเงิน", startMs: 100, endMs: 650 },
+        { word: "500", startMs: 700, endMs: 1050 },
+        { word: "บาท", startMs: 1100, endMs: 1500 },
+        { word: "ทุกเดือน", startMs: 1550, endMs: 2300 },
+      ],
+      audioDurationMs: 2400,
+    },
+    "/api/videos/extract-keywords": { keywords: ["saving", "monthly"], keywordsPerScene: 5, sceneClipCounts: [1, 1], sceneDurations: [1.2, 1.2] },
+    "/api/videos/fetch-stock": { results: [{ src: "clip.mp4" }] },
+    "/api/videos/generate-config": { config: { durationInFrames: 72, voiceFile: "/api/renders/word-mode.wav", bgVideos: [] } },
+    "/api/videos/render": { jobId: "word-mode-render" },
+    "/api/videos/render-progress": { progress: 100, stage: "done", videoUrl: "/api/renders/word-mode-out.mp4", error: null },
+    "/api/videos": { id: "vid_word_mode" },
+    "/api/videos/vid_word_mode": { ok: true },
+  });
+  await runOrchestrator(jobForcedWordMode.id, u.id, {
+    caller: forcedWordMode.caller as never,
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const forcedWordModeResult = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobForcedWordMode.id } });
+  assert(
+    forcedWordModeResult.status === "done",
+    "forced alignment: word-count subtitle modes retain exact text and complete",
+  );
 
   // -------------------------------------------------------------------------
   // Avatar case: avatarMode:"full" + avatarId:"av1"
@@ -139,10 +335,10 @@ async function main() {
   assert((avPostBodies["/api/heygen/generate-with-bg"] ?? []).length === 1, "avatar case: resume never generates again");
   assert((avPostBodies["/api/videos/tts-gemini"] ?? []).length === 1, "avatar case: resume skips TTS");
 
-  // AVATAR (MON-2): the composite makes finalBase a NEW url ("COMPOSITE") the burn does NOT
-  // recognize as paid, so the burn re-reserves a clip. The orchestrator therefore refunds the
-  // base exactly once → net 1 (base +1, refund −1, burn +1).
-  assert(avRefunded === 1, "avatar: refunds exactly one clip (base +1, refund −1, burn +1 = net 1)");
+  // AVATAR: the base's single reservation remains the charge for the delivered video.
+  // Composite publishes a paid marker for its derived output, so the burn stays free.
+  // Refunding the base here would make the successful avatar video net-zero billed.
+  assert(avRefunded === 0, "avatar success: keeps the base reservation as the single net charge");
 
   // Assert POST /api/videos body has avatarModel === "av1" (not "none")
   const createVideoBody = (avPostBodies["/api/videos"] ?? [])[0] as Record<string, unknown> | undefined;
@@ -163,6 +359,11 @@ async function main() {
 
   const jobAvDone = await prisma.videoJob.findUnique({ where: { id: jobAv.id } });
   assert(jobAvDone?.status === "done" && jobAvDone?.videoId === "vid_av", "avatar case: job → done with videoId vid_av");
+  const avatarOutput = parseVideoJobOutput(jobAvDone?.outputJson);
+  assert(
+    avatarOutput.subtitleQa?.status === "passed" && avatarOutput.subtitleQa.timingSource === "tts_segment_timing",
+    "avatar case: resumed output carries the passed subtitle QA receipt",
+  );
 
   // -------------------------------------------------------------------------
   // Avatar + previewMode (MON-2 4th combination): composite runs, NO burn, NO refund.

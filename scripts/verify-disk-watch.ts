@@ -4,7 +4,13 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import assert from "assert";
-import { sweepOrphans, entrySizeMb, TMP_ORPHAN_PREFIXES } from "../src/lib/disk-watch";
+import { readFileSync } from "fs";
+import {
+  sweepOrphans,
+  entrySizeMb,
+  normalizeDiskThreshold,
+  TMP_ORPHAN_PREFIXES,
+} from "../src/lib/disk-watch";
 
 let pass = 0;
 const checks: Array<[string, () => void]> = [];
@@ -58,6 +64,20 @@ check("empty/unreadable dir = no-op", () => {
   const r = sweepOrphans(path.join(root, "does-not-exist"), TMP_ORPHAN_PREFIXES, MAX_AGE, now);
   assert.strictEqual(r.freedMb, 0);
   assert.strictEqual(r.items.length, 0);
+});
+check("invalid disk thresholds fail safe to 80%", () => {
+  assert.strictEqual(normalizeDiskThreshold(undefined), 80);
+  assert.strictEqual(normalizeDiskThreshold("not-a-number"), 80);
+  assert.strictEqual(normalizeDiskThreshold(0), 80);
+  assert.strictEqual(normalizeDiskThreshold(101), 80);
+  assert.strictEqual(normalizeDiskThreshold("75"), 75);
+});
+check("cron launcher retries non-2xx responses and exits nonzero", () => {
+  const launcher = readFileSync(path.join(process.cwd(), "scripts/disk-watch.js"), "utf8");
+  assert.match(launcher, /statusCode\s*>=\s*200/);
+  assert.match(launcher, /statusCode\s*<\s*300/);
+  assert.match(launcher, /HTTP \$\{statusCode\}/);
+  assert.match(launcher, /process\.exit\(1\)/);
 });
 
 for (const [name, fn] of checks) {

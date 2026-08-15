@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
-  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Undo2,
+  Check, CheckCircle2, ChevronDown, Download, Image as ImageIcon, Layers3, Loader2, Move, Pause, Pencil, Play, Plus, Redo2, SlidersHorizontal, Trash2, Type, Undo2,
 } from "lucide-react";
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, BtnGhost, Chip, GroupLabel, Segmented } from "./ui";
@@ -21,7 +21,7 @@ import {
   EDITABLE_EFFECT_PRESETS_DATA, BUILT_IN_EFFECT_PRESETS_DATA,
   V2_TEXT_COLORS, V2_ACCENT_COLORS,
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
-  V2_CARD_LEN_OPTIONS, type V2CardLen,
+  V2_CARD_LEN_OPTIONS, resolveV2FontWeight, type V2CardLen, type V2FontWeight,
 } from "./subtitle-style";
 import type { V2JobState } from "./useV2Job";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
@@ -31,6 +31,8 @@ import { LogoOverlayControls } from "./LogoOverlayControls";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
 import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
 import { LayerVisibilityControls } from "./LayerVisibilityControls";
+import { HeadlineHookControls } from "./HeadlineHookControls";
+import { HeadlineHookPreview } from "./HeadlineHookPreview";
 import { MobileSheet } from "./MobileSheet";
 import {
   BrollWindowInspector,
@@ -38,11 +40,14 @@ import {
   WindowEditsBottomBar,
 } from "./BrollWindowInspector";
 import { brollWindowSpans } from "@/lib/broll-spans";
-import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { MeData } from "@/lib/use-me";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
 import { trackEvent } from "@/lib/client-telemetry";
 import { avatarFadeApplies } from "@/lib/avatar-fade";
+import type { HeadlineHookConfig } from "@/lib/headline-hook";
+import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -64,36 +69,43 @@ export function PostPhaseMobile({
   projectId,
   logoOverlay,
   onLogoOverlayChange,
+  initialSubtitleConfig,
+  brandVisualAllowed,
   layerVisibility,
   onLayerVisibilityChange,
+  headlineHook,
+  onHeadlineHookChange,
   logoEligible,
   projectSaveStatus,
   onRetryProjectSave,
   canRunProjectOperation,
-  brollRegionPreference = "auto",
-  brollVisualStyle = "auto",
   internalAiTester,
-  aiImageEnabled,
+  sceneRerollEnabled,
+  starterImageAllowance,
   downloadFilename,
 }: {
   job: V2JobState; script: string;
   onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
-  onAdoptJob: (next: { id: string; projectId?: string | null }) => void; onNewProject: () => void;
+  onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
+  initialSubtitleConfig?: SubtitleStylePresetConfig;
+  brandVisualAllowed: boolean;
   layerVisibility: EditorLayerVisibility;
   onLayerVisibilityChange: (
     next: EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility)
   ) => void;
+  headlineHook?: HeadlineHookConfig;
+  onHeadlineHookChange: (next: HeadlineHookConfig | undefined) => void;
   logoEligible: boolean;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   canRunProjectOperation?: () => boolean;
-  brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
   internalAiTester: boolean;
-  aiImageEnabled: boolean;
+  sceneRerollEnabled: boolean;
+  starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
 }) {
   const ed = usePostPhaseEditor(job, script, {
@@ -103,8 +115,11 @@ export function PostPhaseMobile({
     projectId,
     logoOverlay,
     onLogoOverlayChange,
+    initialSubtitleConfig,
     layerVisibility,
     onLayerVisibilityChange,
+    headlineHook,
+    onHeadlineHookChange,
     logoEligible,
     projectSaveStatus,
     onRetryProjectSave,
@@ -113,14 +128,16 @@ export function PostPhaseMobile({
   });
   const [styleOpen, setStyleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [headlineOpen, setHeadlineOpen] = useState(false);
   const [logoOpen, setLogoOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const logoTriggerRef = useRef<HTMLButtonElement | null>(null);
   const layersTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const headlineTriggerRef = useRef<HTMLButtonElement | null>(null);
   const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
-  // Public flag/internal beta gate only. Upload Avatar now has its own cutaway re-composite path.
-  const brollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
 
   const selectedCap = ed.captions[ed.selected];
   const durationMs = Math.max(
@@ -162,6 +179,7 @@ export function PostPhaseMobile({
     if (v && cap) v.currentTime = cap.startMs / 1000 + 0.01;
     v?.pause(); // กันเสียงเล่นค้างหลัง sheet ที่บัง preview
     setStyleOpen(false);
+    setHeadlineOpen(false);
     setLogoOpen(false);
     setLayersOpen(false);
     setEditOpen(true);
@@ -189,6 +207,7 @@ export function PostPhaseMobile({
 
   function openStyle() {
     setEditOpen(false);
+    setHeadlineOpen(false);
     setLogoOpen(false);
     setLayersOpen(false);
     setStyleOpen(true);
@@ -198,6 +217,7 @@ export function PostPhaseMobile({
     ed.videoRef.current?.pause();
     setEditOpen(false);
     setStyleOpen(false);
+    setHeadlineOpen(false);
     setLayersOpen(false);
     setLogoOpen(true);
   }
@@ -207,7 +227,17 @@ export function PostPhaseMobile({
     setEditOpen(false);
     setStyleOpen(false);
     setLogoOpen(false);
+    setHeadlineOpen(false);
     setLayersOpen(true);
+  }
+
+  function openHeadline() {
+    ed.videoRef.current?.pause();
+    setEditOpen(false);
+    setStyleOpen(false);
+    setLogoOpen(false);
+    setLayersOpen(false);
+    setHeadlineOpen(true);
   }
 
   // timing edits ทั้งหมดเข้าทาง handleCaptionsChange(next, true) เดียวกับ timeline drag commit
@@ -236,6 +266,7 @@ export function PostPhaseMobile({
     const v = ed.videoRef.current;
     if (v) { v.pause(); v.currentTime = 0; }
     setStyleOpen(false);
+    setHeadlineOpen(false);
     ed.setAdjustingAvatar(true);
   }
 
@@ -261,6 +292,7 @@ export function PostPhaseMobile({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandVisualAllowed={brandVisualAllowed} />
       {/* ── preview ติดบน + สครับ ── */}
       <div data-mobile-preview="true" className="shrink-0" style={{ background: "#000", borderBottom: `1px solid ${color.cardBorder}` }}>
         <div data-mobile-video-preview-frame="true" style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>
@@ -279,6 +311,13 @@ export function PostPhaseMobile({
             asset={ed.logo.asset}
             visible={ed.layerVisibility.logo}
           />
+          <HeadlineHookPreview
+            hook={ed.headlineHook}
+            totalDurationMs={ed.totalDurationMs}
+            videoRef={ed.videoRef}
+            playing={ed.playing}
+            onTopPercent={(topPercent) => ed.setHeadlineHook({ topPercent })}
+          />
           {ed.layerVisibility.subtitles && (
             /* เส้นไกด์ตำแหน่งซับ */
             <div className="pointer-events-none absolute left-2 right-2" style={{ top: `${ed.cfg.verticalPos}%`, borderTop: "1px dashed rgba(255,255,255,.25)" }} />
@@ -291,6 +330,7 @@ export function PostPhaseMobile({
             videoRef={ed.videoRef}
             playing={ed.playing}
             onVerticalPos={(p) => ed.set("verticalPos", p)}
+            suppressUntilMs={ed.subtitleSuppressionEndMs}
           />
           {!ed.playing && !ed.adjustingAvatar && !busy && (
             <button
@@ -359,6 +399,21 @@ export function PostPhaseMobile({
         style={{ background: color.bgTimeline, borderBottom: `1px solid ${color.cardBorder}` }}
       >
         <button
+          ref={headlineTriggerRef}
+          type="button"
+          data-mobile-editor-action="headline"
+          aria-haspopup="dialog"
+          aria-expanded={headlineOpen}
+          onClick={openHeadline}
+          style={mobileEditorActionStyle}
+        >
+          <Type size={16} aria-hidden="true" />
+          <span>พาดหัว</span>
+          {ed.headlineHook.enabled && (
+            <span aria-label="เปิดอยู่" style={{ width: 7, height: 7, borderRadius: "50%", background: color.trackHook, boxShadow: "0 0 0 3px rgba(249,115,22,.12)" }} />
+          )}
+        </button>
+        <button
           type="button"
           data-mobile-editor-action="subtitle"
           onClick={() => openEdit(ed.activeIdx >= 0 ? ed.activeIdx : ed.selected)}
@@ -382,9 +437,9 @@ export function PostPhaseMobile({
             <span
               data-logo-enabled-indicator="true"
               className="inline-flex items-center gap-1"
-              style={{ padding: "2px 6px", borderRadius: radius.pill, background: "rgba(52,211,153,.13)", color: color.success, fontSize: 10, fontWeight: 600 }}
+              style={{ padding: "1px 4px", borderRadius: radius.pill, background: "rgba(52,211,153,.13)", color: color.success, fontSize: 8.5, fontWeight: 600, gap: 2 }}
             >
-              <Check size={11} strokeWidth={3} aria-hidden="true" />
+              <Check size={9} strokeWidth={3} aria-hidden="true" />
               เปิดอยู่
             </span>
           )}
@@ -648,6 +703,18 @@ export function PostPhaseMobile({
         )}
       </MobileSheet>
 
+      <MobileSheet
+        open={headlineOpen}
+        onClose={() => setHeadlineOpen(false)}
+        title="พาดหัวเปิดคลิป"
+        size="large"
+        triggerRef={headlineTriggerRef}
+      >
+        <div className="pt-2">
+          <HeadlineHookControls editor={ed} logoOverlay={logoOverlay} />
+        </div>
+      </MobileSheet>
+
       {/* ── style full-screen sheet ── */}
       <MobileSheet open={styleOpen} onClose={() => setStyleOpen(false)} title="สไตล์ซับ (ทั้งคลิป)" size="large">
         <div className="flex flex-col gap-5 pt-2">
@@ -771,9 +838,12 @@ export function PostPhaseMobile({
                 {FONTS_LIST.map((f) => <option key={f.value} value={f.value} style={{ background: color.bg1 }}>{f.label}</option>)}
               </select>
               <Segmented
-                value={ed.cfg.bold ? "bold" : "regular"}
-                onChange={(v) => ed.set("bold", v === "bold")}
-                options={[{ value: "bold", label: "หนา" }, { value: "regular", label: "บาง" }]}
+                value={resolveV2FontWeight(ed.cfg) === 900 ? "bold" : resolveV2FontWeight(ed.cfg) === 600 ? "medium" : "regular"}
+                onChange={(v) => {
+                  const fontWeight: V2FontWeight = v === "bold" ? 900 : v === "medium" ? 600 : 400;
+                  ed.setCfg((current) => ({ ...current, fontWeight, bold: fontWeight === 900 }));
+                }}
+                options={[{ value: "bold", label: "หนา" }, { value: "medium", label: "กลาง" }, { value: "regular", label: "บาง" }]}
               />
             </div>
             <input type="range" min={30} max={160} value={ed.cfg.fontSize} onChange={(e) => ed.set("fontSize", Number(e.target.value))} style={{ accentColor: color.primary500, height: 28 }} />
@@ -913,7 +983,13 @@ export function PostPhaseMobile({
       {brollEditEnabled && <PendingBrollChangesDialog ed={ed} />}
 
       {brollEditEnabled && ed.selectedWindow != null && (
-        <BrollWindowInspector ed={ed} brollRegionPreference={brollRegionPreference} brollVisualStyle={brollVisualStyle} aiImageEnabled={aiImageEnabled} />
+        <BrollWindowInspector
+          ed={ed}
+          videoJobId={job.jobId}
+          fullBrollEditEnabled={fullBrollEditEnabled}
+          sceneRerollEnabled={sceneRerollEnabled}
+          starterImageAllowance={starterImageAllowance}
+        />
       )}
     </div>
   );
@@ -1002,12 +1078,12 @@ const mobileEditorActionStyle: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  gap: 7,
-  padding: "7px 9px",
+  gap: 5,
+  padding: "7px 5px",
   borderRadius: radius.control,
   border: `1px solid ${color.cardBorder}`,
   background: "rgba(255,255,255,.045)",
   color: color.textSecondary,
-  font: `500 12.5px ${font.body}`,
+  font: `500 12px ${font.body}`,
   cursor: "pointer",
 };

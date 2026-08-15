@@ -1,21 +1,13 @@
 import { prisma } from "@/lib/prisma";
-import { USAGE_PERIOD_DAYS } from "@/lib/usage-limits";
-import { syncUserEntitlement } from "@/lib/entitlements";
+import { syncSharedUsageCycle } from "@/lib/usage-limits";
 import { minutesPerMonthForPlan } from "@/lib/plan-limits";
-import { TRIAL_MINUTES } from "@/lib/trial";
 
 // minutesFromSeconds lives in a prisma-free module so the client (Editor v2 Render
 // Receipt) can import it too; re-exported here for the existing server call sites.
 export { minutesFromSeconds } from "@/lib/minute-round";
 
-const USAGE_PERIOD_MS = USAGE_PERIOD_DAYS * 24 * 60 * 60 * 1000;
-
 export function minutesLimitForPlan(plan: string): number {
   return minutesPerMonthForPlan(plan);
-}
-
-function isWindowExpired(startedAt: Date | null, now: Date): boolean {
-  return !startedAt || startedAt.getTime() + USAGE_PERIOD_MS <= now.getTime();
 }
 
 function minuteQuotaMessage(plan: string, limit: number): string {
@@ -37,32 +29,16 @@ export async function syncMinuteWindow(userId: string): Promise<{
   aiTextCallsUsed: number;
   usagePeriodStartedAt: Date;
 } | null> {
-  const now = new Date();
-  await syncUserEntitlement(userId, now);
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { plan: true, minutesUsed: true, minutesLimit: true, aiAudioMinutesUsed: true, aiTextCallsUsed: true, usagePeriodStartedAt: true, trialEndsAt: true },
-  });
+  const user = await syncSharedUsageCycle(userId);
   if (!user) return null;
-
-  const isActiveTrial = !!user.trialEndsAt && user.trialEndsAt > now;
-  const minutesLimit = isActiveTrial
-    ? Math.min(minutesLimitForPlan(user.plan), TRIAL_MINUTES)
-    : minutesLimitForPlan(user.plan);
-  const shouldReset = isWindowExpired(user.usagePeriodStartedAt, now);
-  const usagePeriodStartedAt = shouldReset ? now : user.usagePeriodStartedAt!;
-  const minutesUsed = shouldReset ? 0 : user.minutesUsed;
-  const aiAudioMinutesUsed = shouldReset ? 0 : user.aiAudioMinutesUsed;
-  const aiTextCallsUsed = shouldReset ? 0 : user.aiTextCallsUsed;
-
-  if (shouldReset || user.minutesLimit !== minutesLimit) {
-    await prisma.user.update({
-      where: { id: userId },
-      data: { minutesUsed, minutesLimit, usagePeriodStartedAt, aiAudioMinutesUsed, aiTextCallsUsed },
-    });
-  }
-
-  return { plan: user.plan, minutesUsed, minutesLimit, aiAudioMinutesUsed, aiTextCallsUsed, usagePeriodStartedAt };
+  return {
+    plan: user.plan,
+    minutesUsed: user.minutesUsed,
+    minutesLimit: user.minutesLimit,
+    aiAudioMinutesUsed: user.aiAudioMinutesUsed,
+    aiTextCallsUsed: user.aiTextCallsUsed,
+    usagePeriodStartedAt: user.usagePeriodStartedAt,
+  };
 }
 
 export async function checkMinuteQuota(

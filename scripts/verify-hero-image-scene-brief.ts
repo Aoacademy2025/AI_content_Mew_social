@@ -88,8 +88,26 @@ assert.match(documentaryPrompt, /pottery studio/i);
 assert.match(documentaryPrompt, /documentary/i);
 assert.doesNotMatch(documentaryPrompt, /art-directed cinematic vertical 9:16 visual story/i);
 assert.doesNotMatch(documentaryPrompt, /interfaces expressed through abstract/i);
+assert.doesNotMatch(documentaryPrompt, /\b(?:collage|grid|panel|contact sheet|mockup|layout)\b/i);
+assert.match(documentaryPrompt, /one uninterrupted edge-to-edge camera view/i);
 assert.match(interfacePrompt, /checkout flow/i);
 assert.match(interfacePrompt, /single.*interface|interface.*single/i);
+// The prominence constraint is genuine scene guidance at the layer that owns
+// scene content (ADR 0006), and it fires only when the planner already chose
+// `visualMode: "interface"`, so it introduces no object of its own. The art
+// direction that used to trail it — "using simple abstract unlabeled states" —
+// flattened the screen and contradicted ADR 0007's English permission, and must
+// not come back in any wording.
+assert.match(
+  interfacePrompt,
+  /a single believable interface may appear only as an in-context story element,/,
+  "the in-context prominence constraint stays; it is what stops a UI mockup becoming the frame",
+);
+assert.doesNotMatch(
+  interfacePrompt,
+  /unlabeled|unmarked|abstract (?:visual )?states|\bblank\b/i,
+  "no anti-text art direction may flatten the screen the brief asked for",
+);
 
 assert.equal(resolveHeroImageProviderStyle(planned.briefs[0], "auto"), "photoreal");
 assert.equal(resolveHeroImageProviderStyle(planned.briefs[1], "auto"), "editorial");
@@ -98,9 +116,18 @@ assert.equal(resolveHeroImageProviderStyle(planned.briefs[0], "lifestyle"), "pho
 
 const noUiGuard = buildArtworkOnlyPrompt(documentaryPrompt, "photoreal");
 assert.doesNotMatch(noUiGuard.positive, /screens display abstract visual states/i);
-const uiGuard = buildArtworkOnlyPrompt(interfacePrompt, "editorial", { interfaceExpected: true });
+assert.doesNotMatch(noUiGuard.positive, /\b(?:collage|grid|panel|contact sheet|mockup|layout)\b/i);
+// ADR 0007: the wrapper no longer restates interface art direction. Whether a
+// screen appears, and what it shows, is scene content owned by the Visual Beat —
+// `buildHeroImagePrompt` states it there when the brief asks for one — and under
+// ADR 0007 a screen may legitimately show plausible English UI.
+const uiGuard = buildArtworkOnlyPrompt(interfacePrompt, "editorial");
 assert.match(uiGuard.positive, /interface|screen/i);
-assert.match(uiGuard.positive, /unlabeled/i);
+assert.doesNotMatch(
+  uiGuard.positive,
+  /the single in-context screen or interface/i,
+  "the artwork wrapper must not re-state screen art direction the Visual Beat already owns",
+);
 
 const fallback = await planHeroImageScenes(
   { fullScript, scenes, visualDirection: "grounded", region: "thai", style: "documentary" },
@@ -112,6 +139,40 @@ assert.equal(fallback.source, "fallback");
 assert.deepEqual(fallback.briefs.map((brief) => brief.sceneIndex), [3, 4]);
 assert.ok(fallback.briefs.every((brief) => brief.narrativeBeat.length > 0));
 assert.ok(fallback.briefs.every((brief) => !brief.includesInterface));
+
+/** ── ADR 0007: the fallback path must not put Thai in front of the model ────
+ * A fallback brief is seeded from the narration, and the narration is Thai. It
+ * then goes straight into a positive-only prompt with no negative channel to
+ * refuse it, so every planner outage was a Thai-glyph render. The planner itself
+ * still receives the untouched Thai script — it needs it to understand the
+ * story; the strip sits only on the diffusion path. */
+const THAI_CHARACTER = /[฀-๿]/;
+assert.ok(
+  fallback.briefs.every((brief) => !THAI_CHARACTER.test(buildHeroImagePrompt(brief))),
+  "a fallback brief built from Thai narration must compile to a Thai-free prompt",
+);
+assert.ok(
+  fallback.briefs.every((brief) => /small business product quality|customer purchase decision|the current story beat/.test(buildHeroImagePrompt(brief))),
+  "the English the scene already carried must survive, or an English default must replace it",
+);
+assert.ok(
+  fallback.briefs.every((brief) => !/\bof\s*,|\bin\s*,|purpose:\s*,|materials:\s*,/.test(buildHeroImagePrompt(brief))),
+  "a stripped field must never leave a dangling connector for the text encoder to render",
+);
+/** The planner is asked for English fields, so a Thai brief is a defect — but a
+ * request is not enforcement, and this is the layer that enforces it. */
+const thaiPlannedPrompt = buildHeroImagePrompt({
+  ...fallback.briefs[0],
+  subject: 'ป้ายหน้าร้าน a hand-painted shop sign reading "OPEN LATE"',
+  setting: "ตลาดเช้า a covered morning market",
+  narrativeBeat: "ร้านเล็กสู้ต่อ",
+});
+assert.doesNotMatch(thaiPlannedPrompt, THAI_CHARACTER,
+  "a planner that ignores the English instruction is still vetoed at the prompt boundary");
+assert.match(thaiPlannedPrompt, /a hand-painted shop sign reading "OPEN LATE"/,
+  "ADR 0007: English lettering the story asked for survives the strip intact");
+assert.match(thaiPlannedPrompt, /story purpose: the current story beat/,
+  "a field with nothing Latin left falls back to an English default, not to empty text");
 
 console.log("ALL PASS");
 }

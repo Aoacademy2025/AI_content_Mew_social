@@ -1,10 +1,14 @@
 const { join } = require("node:path");
 const dotenv = require("dotenv");
+const { resolveHeroImageRouteRuntimeEnv } = require("./deploy/pm2-runtime-env");
 
 // PM2 evaluates this file in the deploy shell, which does not automatically load
 // the application's .env. Load it before resolving process-backed secrets; otherwise
 // --update-env can replace a valid saved secret with an empty fallback.
-dotenv.config({ path: join(__dirname, ".env"), quiet: true });
+const applicationEnv = dotenv.config({ path: join(__dirname, ".env"), quiet: true }).parsed ?? {};
+const reviewedRuntimeValue = (key, fallback = "") => (
+  applicationEnv[key] ?? process.env[key] ?? fallback
+);
 
 // R2 credentials and rollout switches live in a separate root-only file so they
 // do not need to be duplicated into the application's general .env. Keep the
@@ -51,6 +55,70 @@ const stockRuntimeEnv = Object.freeze({
   STOCK_NORMALIZE_PRESET: "ultrafast",
 });
 
+// Route switches are loaded from the persisted application env, not from the
+// PM2 daemon's inherited environment. PM2 forwards only reviewed keys in an
+// app's env block, and stale inherited values previously kept the custom route
+// after a successful public-route deploy.
+const heroImageRouteRuntimeEnv = Object.freeze(
+  resolveHeroImageRouteRuntimeEnv(applicationEnv, process.env),
+);
+
+// Two provider submissions match the guarded RunPod workersMax=2 contract.
+// Scale-to-zero and the five-second idle timeout keep the second worker free
+// when traffic is sparse; the fully-loaded invoice guard remains authoritative.
+const heroImageRuntimeEnv = Object.freeze({
+  ...heroImageRouteRuntimeEnv,
+  HERO_RUNPOD_CONCURRENCY: "2",
+  HERO_RUNPOD_ORPHAN_QUEUE_MS: "120000",
+  HERO_RUNPOD_COST_TARGET_BAHT: "0.90",
+  HERO_RUNPOD_COST_HARD_LIMIT_BAHT: "1.08",
+  HERO_RUNPOD_COST_MIN_SAMPLE: "20",
+  HERO_RUNPOD_COST_STALE_MS: "10800000",
+});
+
+// Subscription-first AI access switches must survive every PM2 --update-env
+// restart. Load only the reviewed values from the persisted application env;
+// Trial/Free Hero Script generation stays fail-closed even if an old shell
+// happens to export a stale percentage.
+const subscriptionFirstAiRuntimeEnv = Object.freeze({
+  HERO_AI_IMAGE_PUBLIC: reviewedRuntimeValue("HERO_AI_IMAGE_PUBLIC", "0"),
+  HERO_SCRIPT_PAID_ENABLED: reviewedRuntimeValue("HERO_SCRIPT_PAID_ENABLED", "0"),
+  HERO_SCRIPT_PUBLIC_PREVIEW: reviewedRuntimeValue("HERO_SCRIPT_PUBLIC_PREVIEW", "0"),
+  HERO_SCRIPT_TRIAL_PERCENT: "0",
+  HERO_SCRIPT_FREE_PERCENT: "0",
+});
+
+// Brand Visual rollout is runtime-authoritative: the web process admits new
+// work and the MCP worker finishes accepted jobs. PM2 only forwards keys named
+// in an app's env block, so keep the complete flag set in one shared object;
+// merely loading .env above is not enough to survive --update-env deploys.
+const brandVisualRuntimeEnv = Object.freeze({
+  BRAND_VISUAL_SYSTEM_ENABLED: reviewedRuntimeValue("BRAND_VISUAL_SYSTEM_ENABLED", "0"),
+  BRAND_VISUAL_ROLLOUT_PERCENT: reviewedRuntimeValue("BRAND_VISUAL_ROLLOUT_PERCENT", "0"),
+  BRAND_VISUAL_ROLLOUT_STARTED_AT: reviewedRuntimeValue("BRAND_VISUAL_ROLLOUT_STARTED_AT"),
+  BRAND_VISUAL_50_PERCENT_STARTED_AT: reviewedRuntimeValue("BRAND_VISUAL_50_PERCENT_STARTED_AT"),
+  BRAND_VISUAL_TEST_EMAILS: reviewedRuntimeValue("BRAND_VISUAL_TEST_EMAILS"),
+});
+
+// The long-avatar adjustment canary must be part of the checked-in PM2 contract.
+// Keeping it only in a one-off shell/PM2 environment made a later --update-env deploy
+// silently remove the approved remediation. Preserve any additional reviewed canaries
+// from .env while always retaining the production incident cohort below.
+const approvedCompositeCanaryUserIds = ["cmpz3vpis002clce2ygzhty3m"];
+const compositeStabilityRuntimeEnv = Object.freeze({
+  COMPOSITE_STABILITY_CANARY_USER_IDS: [...new Set([
+    ...(process.env.COMPOSITE_STABILITY_CANARY_USER_IDS || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    ...approvedCompositeCanaryUserIds,
+  ])].join(","),
+  COMPOSITE_CANARY_TIMEOUT_MS: process.env.COMPOSITE_CANARY_TIMEOUT_MS || "3300000",
+  // Explicit "0" remains an emergency rollback; normal deploys default to the reviewed
+  // admission guard so a long composite cannot contend with render workers for the host.
+  COMPOSITE_ADMISSION_ENABLED: process.env.COMPOSITE_ADMISSION_ENABLED === "0" ? "0" : "1",
+});
+
 module.exports = {
   apps: [
   {
@@ -86,6 +154,10 @@ module.exports = {
         // inflates heap usage during long renders, which contributed to the OOM.
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
+        ...heroImageRuntimeEnv,
+        ...subscriptionFirstAiRuntimeEnv,
+        ...brandVisualRuntimeEnv,
+        ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
         // PR-7 durable render queue: "1" = the thin render route enqueues a
         // RenderJob (returns jobId) instead of rendering in-process; the
@@ -109,6 +181,10 @@ module.exports = {
         RENDER_VIA_QUEUE: "1",
         ...renderRuntimeEnv,
         ...stockRuntimeEnv,
+        ...heroImageRuntimeEnv,
+        ...subscriptionFirstAiRuntimeEnv,
+        ...brandVisualRuntimeEnv,
+        ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
       },
     },
@@ -180,6 +256,19 @@ module.exports = {
       },
     },
     {
+      name: "north-star-snapshot",
+      cwd: "/var/www/ai-content",
+      script: "scripts/north-star-snapshot.js",
+      cron_restart: "15 0 * * *", // daily 00:15 Asia/Bangkok — counts-only MAPC history
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+        CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
+    {
       name: "founding-sweep",
       cwd: "/var/www/ai-content",
       script: "scripts/founding-sweep.js",
@@ -197,6 +286,19 @@ module.exports = {
       cwd: "/var/www/ai-content",
       script: "scripts/reconcile-processing.js",
       cron_restart: "*/15 * * * *", // every 15 min — complete stale PROCESSING videos that already have output files
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+        CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
+    {
+      name: "reconcile-ai-images",
+      cwd: "/var/www/ai-content",
+      script: "scripts/reconcile-ai-images.js",
+      cron_restart: "*/15 * * * *", // every 15 min — settle-or-refund AI image credit reservations stuck at chargeState="reserved"
       autorestart: false,
       watch: false,
       env: {
@@ -232,16 +334,40 @@ module.exports = {
       },
     },
     {
+      name: "runpod-image-cost-sync",
+      cwd: "/var/www/ai-content",
+      script: "node",
+      args: "--conditions=react-server --import tsx scripts/sync-runpod-image-cost.ts",
+      cron_restart: "7 * * * *", // hourly actual invoice sync; hard cost guard reads these durable buckets
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
+        RUNPOD_API_KEY: process.env.RUNPOD_API_KEY || "",
+        RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID: process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID || "",
+        ...heroImageRuntimeEnv,
+      },
+    },
+    {
       name: "mcp-video-worker",
       cwd: "/var/www/ai-content",
-      script: "node_modules/.bin/tsx",
-      args: "scripts/mcp-video-worker.ts",
+      // The orchestrator imports modules tagged with the `server-only` package.
+      // Standalone Node processes must opt into that package's no-op server export;
+      // invoking the tsx binary directly resolves its default (intentional throw)
+      // and crash-loops before the worker can claim a job.
+      script: "node",
+      args: "--conditions=react-server --import tsx scripts/mcp-video-worker.ts",
       autorestart: true, // long-running worker (not a cron) — claims queued VideoJobs
       watch: false,
       env: {
         NODE_ENV: "production",
         MCP_INTERNAL_BASE_URL: process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000",
         MCP_SERVICE_SECRET: process.env.MCP_SERVICE_SECRET || "",
+        // The orchestrator reads the settled base RenderJob only when the durable
+        // queue is active. Keep this explicit in the MCP worker environment so a
+        // successful tool call can never silently omit billingReceipt.
+        RENDER_VIA_QUEUE: "1",
         // CAP-1 launch-capacity knob: how many videos this single worker orchestrates at
         // once (docs/audits/2026-07-07-system-optimization-audit.md). Set to 2 after the
         // KVM8 (8 vCPU/32GB) upgrade and validated by 7 days of live prod operation
@@ -253,6 +379,8 @@ module.exports = {
         // Rollback = set back to "1" and restart the same way. Single worker only (NOT
         // instances:2 — boot-recovery has no per-worker heartbeat guard; see the worker script).
         MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "2",
+        ...heroImageRouteRuntimeEnv,
+        ...brandVisualRuntimeEnv,
       },
     },
     {
@@ -284,7 +412,9 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         // Worker heap for in-process renderMedia (long videos accumulate frame buffers).
-        NODE_OPTIONS: "--max-old-space-size=4096",
+        // Direct tsx runtimes do not have Next's loader for the `server-only`
+        // marker. Preload the server-runtime compatibility shim before imports.
+        NODE_OPTIONS: "--max-old-space-size=4096 --import=./scripts/register-server-only-node.mjs",
         // The worker reads the queue directly — flag is informational here (it does not
         // gate the worker) but keeps the render path consistent across processes.
         RENDER_VIA_QUEUE: "1",
@@ -294,6 +424,7 @@ module.exports = {
         // Same authoritative profile used by the web fallback. 2 instances x 3 = 6
         // frame threads <= 8 cores on KVM8; Batch B owns any future tuning experiment.
         ...renderRuntimeEnv,
+        ...compositeStabilityRuntimeEnv,
       },
     },
   ],

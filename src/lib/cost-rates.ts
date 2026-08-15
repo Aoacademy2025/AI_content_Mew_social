@@ -8,6 +8,8 @@ import { prisma } from "@/lib/prisma";
 export interface CostRates {
   /** ฿ per managed minute of TTS render */
   renderPerMinute: number;
+  /** ฿ per Hero Z-Image generation on the isolated RunPod endpoint */
+  imageHero1k: number;
   /** ฿ per flux-2/pro-text-to-image generation (managed-kie "ประหยัด" tier, image-flux-1k) */
   imageFlux1k: number;
   /** ฿ per gpt-image-2-text-to-image generation (managed-kie "มาตรฐาน" tier, image-gpt-1k) */
@@ -33,6 +35,7 @@ export interface CostRates {
 /** Default cost rates — used when the SiteConfig key is absent or unparseable. */
 export const COST_DEFAULTS: CostRates = {
   renderPerMinute: 0.7,
+  imageHero1k: 0.2,
   imageFlux1k: 0.9,
   imageGpt1k: 1.08,
   imageNano1k: 1.44,
@@ -58,6 +61,7 @@ async function getCfg(key: string, fallback: number): Promise<number> {
 export async function getCostRates(): Promise<CostRates> {
   const [
     renderPerMinute,
+    imageHero1k,
     imageFlux1k,
     imageGpt1k,
     imageNano1k,
@@ -68,6 +72,7 @@ export async function getCostRates(): Promise<CostRates> {
     fxBahtPerUsd,
   ] = await Promise.all([
     getCfg("cost_render_per_minute", COST_DEFAULTS.renderPerMinute),
+    getCfg("cost_image_hero_1k", COST_DEFAULTS.imageHero1k),
     getCfg("cost_image_flux_1k", COST_DEFAULTS.imageFlux1k),
     getCfg("cost_image_gpt_1k", COST_DEFAULTS.imageGpt1k),
     getCfg("cost_image_nano_1k", COST_DEFAULTS.imageNano1k),
@@ -80,6 +85,7 @@ export async function getCostRates(): Promise<CostRates> {
 
   return {
     renderPerMinute,
+    imageHero1k,
     imageFlux1k,
     imageGpt1k,
     imageNano1k,
@@ -139,6 +145,7 @@ export interface CogsInput {
   managedMinutes: number;
   /** AI image generation counts by model tier. */
   imageCounts: {
+    hero1k: number;
     flux1k: number;
     gpt1k: number;
     nano1k: number;
@@ -170,6 +177,7 @@ export function computeCogs(input: CogsInput): CogsResult {
   const tts = managedMinutes * rates.renderPerMinute;
 
   const image =
+    imageCounts.hero1k * rates.imageHero1k +
     imageCounts.flux1k * rates.imageFlux1k +
     imageCounts.gpt1k * rates.imageGpt1k +
     imageCounts.nano1k * rates.imageNano1k +

@@ -29,7 +29,7 @@ type EndpointSpec = {
   flashboot: true;
   gpuCount: 1;
   gpuTypeIds: string[];
-  idleTimeout: 5;
+  idleTimeout: 5 | 60;
   minCudaVersion: "12.1" | "12.6";
   scalerType: "QUEUE_DELAY";
   scalerValue: 4;
@@ -57,22 +57,22 @@ function workerSpecs(): WorkerSpec[] {
       key: "omnivoice",
       template: {
         imageName: requiredEnv("RUNPOD_OMNIVOICE_IMAGE"),
-        name: "heroai-omnivoice-staging-v1",
+        name: "heroai-omnivoice-production-v12-authfix",
         category: "NVIDIA",
         containerDiskInGb: 20,
         ...registry,
         dockerEntrypoint: [],
         dockerStartCmd: [],
-        env: {},
+        env: { RUNPOD_INIT_TIMEOUT: "800" },
         isPublic: false,
         isServerless: true,
         ports: [],
-        readme: "Internal HERO AI OmniVoice staging worker. Scale-to-zero only.",
+        readme: "Internal HERO AI OmniVoice production worker. Scale-to-zero only.",
         volumeInGb: 0,
         volumeMountPath: "/workspace",
       },
       endpoint: {
-        name: "heroai-omnivoice-staging-v1",
+        name: "heroai-omnivoice-production-v12-authfix",
         computeType: "GPU",
         executionTimeoutMs: 600_000,
         flashboot: true,
@@ -81,8 +81,14 @@ function workerSpecs(): WorkerSpec[] {
           "NVIDIA RTX A4000",
           "NVIDIA RTX A4500",
           "NVIDIA RTX 4000 Ada Generation",
+          "NVIDIA RTX 2000 Ada Generation",
+          "NVIDIA L4",
+          "NVIDIA GeForce RTX 3090",
+          "NVIDIA A40",
+          "NVIDIA RTX A6000",
+          "NVIDIA GeForce RTX 4090",
         ],
-        idleTimeout: 5,
+        idleTimeout: 60,
         minCudaVersion: "12.1",
         scalerType: "QUEUE_DELAY",
         scalerValue: 4,
@@ -94,7 +100,7 @@ function workerSpecs(): WorkerSpec[] {
       key: "z-image",
       template: {
         imageName: requiredEnv("RUNPOD_Z_IMAGE_IMAGE"),
-        name: "heroai-z-image-turbo-staging-v1",
+        name: "heroai-z-image-turbo-production-v2",
         category: "NVIDIA",
         // The verified private image is 28.17 GB compressed. Reserve enough
         // space for layer extraction plus ComfyUI's runtime files.
@@ -102,25 +108,39 @@ function workerSpecs(): WorkerSpec[] {
         ...registry,
         dockerEntrypoint: [],
         dockerStartCmd: [],
-        env: {},
+        // The private BF16 image is ~28 GB compressed and a fresh host needs
+        // longer than RunPod's default seven-minute initialization window.
+        env: { RUNPOD_INIT_TIMEOUT: "800" },
         isPublic: false,
         isServerless: true,
         ports: [],
-        readme: "Internal HERO AI Z-Image Turbo BF16 quality-baseline worker. Scale-to-zero only.",
+        readme: "Internal HERO AI Z-Image Turbo BF16 production worker. Scale-to-zero only.",
         volumeInGb: 0,
         volumeMountPath: "/workspace",
       },
       endpoint: {
-        name: "heroai-z-image-turbo-staging-v1",
+        name: "heroai-z-image-turbo-production-v3",
         computeType: "GPU",
         executionTimeoutMs: 600_000,
         flashboot: true,
         gpuCount: 1,
         // Use the cost-effective 48 GB class for the BF16 baseline so the first
         // benchmark is deterministic. Test 24 GB/quantized variants later.
-        // Keep a cost-effective Ampere option first, then use Ada Pro 48 GB
-        // fallbacks so production does not depend on one scarce GPU pool.
-        gpuTypeIds: ["NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA L40S"],
+        // Keep a cost-effective 48 GB option first, then span newer inference
+        // and 80 GB datacenter pools so production does not depend on one
+        // scarce hardware generation.
+        gpuTypeIds: [
+          "NVIDIA A40",
+          "NVIDIA RTX A6000",
+          "NVIDIA L40",
+          "NVIDIA RTX 6000 Ada Generation",
+          "NVIDIA L40S",
+          "NVIDIA A100 80GB PCIe",
+          "NVIDIA A100-SXM4-80GB",
+          "NVIDIA H100 PCIe",
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 NVL",
+        ],
         idleTimeout: 5,
         minCudaVersion: "12.6",
         scalerType: "QUEUE_DELAY",

@@ -49,37 +49,59 @@ model User {
   // Free trial (public 7-day PRO trial, no card)
   trialStartedAt        DateTime? // set once; never cleared (one-trial-per-user guard)
   trialEndsAt           DateTime? // end of the active unconverted trial; cleared on conversion/revert
+  // Hero AI Bundle is an overlay, independent from Studio's own Stripe/trial/
+  // admin-paid entitlement. Never reuse planExpiresAt for this source: revoke
+  // must remove only Bundle access and preserve every other valid source.
+  bundleGrantId         String?
+  bundleSubscriptionId  String?
+  bundleAccessExpiresAt DateTime?
+  bundleStatus          String? // ACTIVE | REVOKED
+  bundleBillingPeriod   String? // monthly | annual, sourced from Bundle checkout
+  bundleAmountThb       Int? // actual paid amount for the current Bundle term/invoice
+  bundleLastEventId     String?
+  bundleQuotaGrantId    String?
+  bundleCreditsGrantId  String?
+  bundlePrimary         Boolean   @default(false)
   minutesUsed           Float     @default(0)
   minutesLimit          Int       @default(0)
   aiAudioMinutesUsed    Float     @default(0) // managed Gemini/OmniVoice audio-minutes (TTS+transcribe) per usage window; ceiling = minutesLimit × AI_AUDIO_CEILING_MULT
   aiTextCallsUsed       Float     @default(0) // managed-Gemini text-LLM call count (keywords/ranker/content/analyze/split) per usage window; ceiling = minutesLimit × AI_TEXT_CALLS_MULT
   geminiKeyMode         String    @default("byok")
-  affiliateRefCode      String?   // hero-affiliate refCode stamped once at first sign-in; never updated after
+  affiliateRefCode      String? // hero-affiliate refCode stamped once at first sign-in; never updated after
   resetToken            String?
   resetExpires          DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
-  styles             Style[]
-  contents           Content[]
-  videos             Video[]
-  mcpTokens          McpToken[]
-  videoJobs          VideoJob[]
-  images             GeneratedImage[]
-  notifications      Notification[]
-  supportTickets     SupportTicket[]
-  couponRedemptions  CouponRedemption[]
-  payments           Payment[]
-  telemetryEvents    TelemetryEvent[]
-  productUpdateReads ProductUpdateRead[]
-  userMusic          UserMusic[]
-  avatarPresets      AvatarPreset[]
-  editorProjects     EditorProject[]
-  brandAssets        BrandAsset[]
-  brandPreference    BrandPreference?
-  editorStylePresets EditorStylePreset[]
-  aiGenerationJobs   AiGenerationJob[]
-  userVoices         UserVoice[]
+  styles                          Style[]
+  contents                        Content[]
+  videos                          Video[]
+  mcpTokens                       McpToken[]
+  videoJobs                       VideoJob[]
+  images                          GeneratedImage[]
+  notifications                   Notification[]
+  supportTickets                  SupportTicket[]
+  couponRedemptions               CouponRedemption[]
+  payments                        Payment[]
+  telemetryEvents                 TelemetryEvent[]
+  productUpdateReads              ProductUpdateRead[]
+  userMusic                       UserMusic[]
+  avatarPresets                   AvatarPreset[]
+  editorProjects                  EditorProject[]
+  brandAssets                     BrandAsset[]
+  brandPreference                 BrandPreference?
+  editorStylePresets              EditorStylePreset[]
+  aiGenerationJobs                AiGenerationJob[]
+  brandProfiles                   BrandProfile[]
+  scripts                         Script[]
+  scriptGenerationUsages          ScriptGenerationUsage[]
+  contentPreflights               ContentPreflight[]
+  projectVisualBeats              ProjectVisualBeat[]
+  brandLookPreviewBatches         BrandLookPreviewBatch[]
+  starterAiImageAllowances        StarterAiImageAllowance[]
+  administratorGrants             AdministratorGrant[]
+  conversionTrialAiImageAllowance ConversionTrialAiImageAllowance?
+  userVoices                      UserVoice[]
 }
 
 // Custom Hero Voice clones: a user-supplied reference recording + its transcript.
@@ -96,6 +118,48 @@ model UserVoice {
   createdAt  DateTime @default(now())
 
   @@index([userId])
+}
+
+/// Explicit non-cash access granted by an administrator. A paid-looking value
+/// in User.plan is presentation state only; this append-only record is the
+/// evidence used by paid-feature authorization and audit reporting.
+model AdministratorGrant {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan         Plan
+  reason       String
+  startsAt     DateTime  @default(now())
+  expiresAt    DateTime?
+  permanent    Boolean   @default(false)
+  grantedById  String
+  revokedAt    DateTime?
+  revokedById  String?
+  revokeReason String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId, revokedAt, expiresAt])
+  @@index([startsAt, expiresAt])
+}
+
+/// Email-backed Bundle entitlement. The purchase may arrive before a Clerk
+/// account exists; the next entitlement sync materializes it onto User.
+model BundleEntitlement {
+  email           String   @id
+  grantId         String
+  subscriptionId  String?
+  status          String
+  accessEndsAt    DateTime
+  billingPeriod   String?
+  amountThb       Int?
+  lastEventId     String   @unique
+  eventOccurredAt DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([subscriptionId])
+  @@index([status, accessEndsAt])
 }
 
 model Style {
@@ -190,48 +254,56 @@ model AvatarPreset {
 }
 
 model EditorProject {
-  id            String     @id @default(cuid())
-  userId        String
-  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title         String     @default("New Project")
-  status        String     @default("draft") // draft|rendering|post|exporting|exported|archived
-  draftJson     String?
-  draftRevision Int        @default(0)
-  activeJobId   String?
-  activeExportJobId String?
-  latestVideoId String?
-  lastOpenedAt  DateTime?
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
-  jobs          VideoJob[]
-  videos        Video[]
-  brandAssets   BrandAsset[]
+  id                      String                  @id @default(cuid())
+  userId                  String
+  user                    User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title                   String                  @default("New Project")
+  status                  String                  @default("draft") // draft|rendering|post|exporting|exported|archived
+  draftJson               String?
+  draftRevision           Int                     @default(0)
+  activeJobId             String?
+  activeExportJobId       String?
+  latestVideoId           String?
+  brandProfileRevisionId  String?
+  projectLookJson         String?
+  projectLookUpdatedAt    DateTime?
+  lastOpenedAt            DateTime?
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
+  jobs                    VideoJob[]
+  videos                  Video[]
+  brandAssets             BrandAsset[]
+  brandProfileRevision    BrandProfileRevision?   @relation(fields: [brandProfileRevisionId], references: [id], onDelete: SetNull)
+  contentPreflights       ContentPreflight[]
+  visualBeats             ProjectVisualBeat[]
+  brandLookPreviewBatches BrandLookPreviewBatch[]
 
   @@index([userId, updatedAt])
   @@index([userId, status, updatedAt])
   @@index([activeJobId])
   @@index([activeExportJobId])
   @@index([latestVideoId])
+  @@index([brandProfileRevisionId])
 }
 
 model BrandAsset {
-  id              String           @id @default(cuid())
-  userId          String
-  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  projectId       String?
-  project         EditorProject?   @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  storageKey      String           @unique
-  originalName    String
-  mimeType        String
-  sizeBytes       Int
-  width           Int
-  height          Int
-  retiredAt          DateTime?
-  lifecycleRevision Int       @default(0)
-  createdAt       DateTime         @default(now())
-  updatedAt       DateTime         @updatedAt
-  defaultFor      BrandPreference? @relation("DefaultBrandAsset")
-  stylePresets    EditorStylePreset[]
+  id                String              @id @default(cuid())
+  userId            String
+  user              User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId         String?
+  project           EditorProject?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  storageKey        String              @unique
+  originalName      String
+  mimeType          String
+  sizeBytes         Int
+  width             Int
+  height            Int
+  retiredAt         DateTime?
+  lifecycleRevision Int                 @default(0)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  defaultFor        BrandPreference?    @relation("DefaultBrandAsset")
+  stylePresets      EditorStylePreset[]
 
   @@index([userId, createdAt])
   @@index([projectId])
@@ -267,39 +339,249 @@ model EditorStylePreset {
   @@index([brandAssetId])
 }
 
+model BrandProfile {
+  id                   String                  @id @default(cuid())
+  userId               String
+  name                 String // ชื่อแบรนด์/โปรไฟล์
+  niche                String // นิช เช่น "การเงินส่วนบุคคล"
+  audience             String // กลุ่มเป้าหมาย เช่น "มนุษย์เงินเดือน 25-35"
+  tone                 String // โทนเสียง เช่น "เป็นกันเอง ขี้เล่น มีสาระ"
+  bannedWords          String                  @default("[]") // JSON string array
+  ctaStyle             String                  @default("follow") // follow | comment | share | sell
+  language             String                  @default("th")
+  sampleText           String? // แหล่งที่ใช้ตอน analyze (ถ้ามี)
+  sampleUrl            String?
+  analysisNotes        String? // โน้ตสไตล์การเขียนที่ LLM สกัดได้
+  activeRevisionNumber Int                     @default(0) // 0 = legacy profile not published into Brand Visual System yet
+  frozenAt             DateTime? // downgrade overflow: readable/pinned, unavailable for new projects
+  archivedAt           DateTime? // hidden from new work; immutable revisions stay pinned to historical projects
+  lastUsedAt           DateTime?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  user                 User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scripts              Script[]
+  draft                BrandProfileDraft?
+  revisions            BrandProfileRevision[]
+  previewBatches       BrandLookPreviewBatch[]
+
+  @@index([userId])
+  @@index([userId, frozenAt, updatedAt])
+  @@index([userId, archivedAt, updatedAt])
+}
+
+// One mutable working copy per Brand Profile. The typed payload is validated by
+// the Brand Profile Library module; edits and previews never affect active work.
+model BrandProfileDraft {
+  id                 String                  @id @default(cuid())
+  brandProfileId     String                  @unique
+  baseRevisionNumber Int                     @default(0)
+  payloadJson        String
+  createdAt          DateTime                @default(now())
+  updatedAt          DateTime                @updatedAt
+  brandProfile       BrandProfile            @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  previewBatches     BrandLookPreviewBatch[]
+}
+
+// Immutable snapshot. A project pins this row, not BrandProfile's mutable head.
+// visualRecipeJson stores the resolved format/recipe so future catalog changes
+// cannot silently alter an old render (ADR-0005).
+model BrandProfileRevision {
+  id                String                  @id @default(cuid())
+  brandProfileId    String
+  sourceVideoJobId  String?                 @unique // durable idempotency for completed-clip promotion; intentionally no FK so history survives job retention
+  sourcePreflightId String?                 @unique // durable idempotency for Project Look promotion before or after render
+  version           Int
+  payloadJson       String
+  visualRecipeJson  String
+  source            String                  @default("manual") // manual | project-look
+  createdAt         DateTime                @default(now())
+  brandProfile      BrandProfile            @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  projects          EditorProject[]
+  previewBatches    BrandLookPreviewBatch[]
+
+  @@unique([brandProfileId, version])
+  @@index([brandProfileId, createdAt])
+}
+
+// Cached lazy analysis of one Narrative Source version. A changed source gets a
+// new hash/row; the original remains auditable and reusable for exact rerenders.
+model ContentPreflight {
+  id                      String              @id @default(cuid())
+  userId                  String
+  projectId               String
+  narrativeSourceKind     String // ai-script | creator-script | upload-transcript
+  sourceHash              String
+  analyzerVersion         String
+  contentDomain           String
+  suggestedVisualFormatId String
+  suggestedTreatmentJson  String
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  user                    User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project                 EditorProject       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  visualBeats             ProjectVisualBeat[]
+
+  @@unique([projectId, sourceHash, analyzerVersion])
+  @@index([userId, createdAt])
+  @@index([projectId, updatedAt])
+}
+
+// Structured story intent for one B-roll window. The asset is deliberately not
+// overwritten when status becomes outdated; regeneration is a separate action.
+model ProjectVisualBeat {
+  id                    String           @id @default(cuid())
+  userId                String
+  projectId             String
+  preflightId           String
+  beatKey               String
+  sequence              Int
+  startMs               Int?
+  endMs                 Int?
+  sourceExcerptHash     String
+  beatJson              String
+  status                String           @default("current") // current | outdated
+  existingAssetUrl      String?
+  existingImageJobId    String?
+  generationIdentityKey String?
+  outdatedAt            DateTime?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project               EditorProject    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  preflight             ContentPreflight @relation(fields: [preflightId], references: [id], onDelete: Cascade)
+
+  @@unique([preflightId, beatKey])
+  @@index([projectId, status, sequence])
+  @@index([existingImageJobId])
+}
+
+// One logical Brand Look Preview, backed by three independently durable image
+// jobs (or three reused project assets). Partial failures can be retried per item.
+model BrandLookPreviewBatch {
+  id                     String                 @id @default(cuid())
+  userId                 String
+  requestId              String
+  projectId              String?
+  brandProfileId         String?
+  brandProfileDraftId    String?
+  brandProfileRevisionId String?
+  status                 String                 @default("queued") // queued | in_progress | completed | partial | failed
+  sourceSnapshotJson     String
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+  finishedAt             DateTime?
+  user                   User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project                EditorProject?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  brandProfile           BrandProfile?          @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+  brandProfileDraft      BrandProfileDraft?     @relation(fields: [brandProfileDraftId], references: [id], onDelete: SetNull)
+  brandProfileRevision   BrandProfileRevision?  @relation(fields: [brandProfileRevisionId], references: [id], onDelete: SetNull)
+  items                  BrandLookPreviewItem[]
+
+  @@unique([userId, requestId])
+  @@index([userId, createdAt])
+  @@index([projectId, createdAt])
+  @@index([brandProfileId, createdAt])
+  @@index([status, updatedAt])
+}
+
+model BrandLookPreviewItem {
+  id                String                @id @default(cuid())
+  batchId           String
+  phase             String // hook | explain | close
+  sourceType        String // generated | reused
+  aiGenerationJobId String?               @unique
+  outputUrl         String?
+  status            String                @default("queued") // queued | in_progress | completed | failed
+  errorCode         String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  batch             BrandLookPreviewBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  aiGenerationJob   AiGenerationJob?      @relation(fields: [aiGenerationJobId], references: [id], onDelete: SetNull)
+
+  @@unique([batchId, phase])
+  @@index([batchId, status])
+  @@index([status, updatedAt])
+}
+
+model Script {
+  id              String        @id @default(cuid())
+  userId          String
+  brandProfileId  String?
+  topic           String
+  durationSec     Int           @default(60) // 30 | 60 | 90
+  hookFormula     String? // key จาก HOOK_FORMULAS
+  structure       String? // key จาก STORY_STRUCTURES
+  hookText        String
+  bodyText        String // หลายบรรทัด: 1 บรรทัด = 1 ประโยค
+  ctaText         String
+  status          String        @default("draft") // draft | sent
+  editorProjectId String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brandProfile    BrandProfile? @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+}
+
+// Durable product-quota ledger for Hero Script full generations. This is
+// intentionally separate from Script rows: deleting a saved script must not
+// restore a consumed FREE/TRIAL generation, and a generation is reserved
+// before the server-paid provider call begins.
+model ScriptGenerationUsage {
+  id          String    @id @default(cuid())
+  userId      String
+  bucket      String // free | trial
+  slot        Int // 1..cohort limit; unique slot makes concurrent admission atomic
+  status      String    @default("reserved") // reserved | succeeded | failed
+  expiresAt   DateTime // stale-reservation recovery; ignored after this time
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, bucket, slot])
+  @@index([userId, bucket, createdAt])
+  @@index([status, expiresAt])
+}
+
 model VideoJob {
-  id             String         @id @default(cuid())
-  userId         String
-  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  projectId      String?
-  project        EditorProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  videoId        String?
-  type           String         @default("create")
-  status         String         @default("queued") // queued|processing|waiting_provider|done|failed|canceled
-  currentStep    String?
-  progress       Int            @default(0)
-  inputJson      String
-  outputJson     String?
-  errorMessage   String?
-  errorCode      String?
-  errorProvider  String?
-  reservationRefundPending  Boolean  @default(false)
+  id                        String         @id @default(cuid())
+  userId                    String
+  user                      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId                 String?
+  project                   EditorProject? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  contentPreflightId        String?
+  projectVisualContextJson  String?
+  brandVisualAcceptanceJson String?
+  videoId                   String?
+  type                      String         @default("create")
+  status                    String         @default("queued") // queued|processing|waiting_provider|done|failed|canceled
+  currentStep               String?
+  progress                  Int            @default(0)
+  inputJson                 String
+  outputJson                String?
+  errorMessage              String?
+  errorCode                 String?
+  errorProvider             String?
+  reservationRefundPending  Boolean        @default(false)
   reservationRefundReason   String?
-  reservationRefundAttempts Int      @default(0)
-  idempotencyKey         String?
-  idempotencyFingerprint String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
-  startedAt      DateTime?
-  finishedAt     DateTime?
-  mediaExpiresAt DateTime?
-  providerCheckpointJson String?
-  providerNextPollAt     DateTime?
+  reservationRefundAttempts Int            @default(0)
+  idempotencyKey            String?
+  idempotencyFingerprint    String?
+  createdAt                 DateTime       @default(now())
+  updatedAt                 DateTime       @updatedAt
+  startedAt                 DateTime?
+  finishedAt                DateTime?
+  mediaExpiresAt            DateTime?
+  providerCheckpointJson    String?
+  providerNextPollAt        DateTime?
 
   @@unique([userId, idempotencyKey])
   @@index([status])
   @@index([userId])
   @@index([projectId])
+  @@index([contentPreflightId])
   @@index([createdAt]) // DB-1: admin/insights does createdAt-range scans across ALL users
   @@index([mediaExpiresAt])
 }
@@ -569,26 +851,26 @@ model SiteConfig {
 // URLs remain authoritative ownership references; this row records where the
 // immutable bytes are stored and whether the remote copy has been verified.
 model MediaObject {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   area           String
   filename       String
-  objectKey      String   @unique
+  objectKey      String    @unique
   contentType    String
   sizeBytes      BigInt
   sha256         String?
   remoteFilename String?
   r2Etag         String?
-  remoteState    String   @default("none")
-  localState     String   @default("present")
+  remoteState    String    @default("none")
+  localState     String    @default("present")
   localMtimeMs   BigInt?
-  producedAt     DateTime @default(now())
+  producedAt     DateTime  @default(now())
   lastVerifiedAt DateTime?
   nextRetryAt    DateTime?
   lastErrorCode  String?
-  attempts       Int      @default(0)
-  version        Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  attempts       Int       @default(0)
+  version        Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@unique([area, filename])
   @@index([remoteState, nextRetryAt])
@@ -660,6 +942,9 @@ model AiGenerationJob {
   creditCost                    Int                   @default(0)
   creditsFromGranted            Int                   @default(0)
   creditsFromPurchased          Int                   @default(0)
+  fundingSource                 String                @default("credits") // credits | starter_allowance | none
+  allowanceUnits                Int                   @default(0)
+  allowanceWindowStartedAt      DateTime?
   chargeState                   String                @default("pending") // pending | reserved | settled | refunded | none
   errorCode                     String?
   errorMessage                  String?
@@ -671,18 +956,77 @@ model AiGenerationJob {
   startedAt                     DateTime?
   finishedAt                    DateTime?
   mediaExpiresAt                DateTime?
+  /// Stable, non-PII product origin used for authorization analytics and MAPC.
+  /// Examples: hero_video, automix, scene_reroll, brand_visual_preview, ai_studio.
+  productSurface                String?
   attempts                      AiGenerationAttempt[]
+  brandLookPreviewItem          BrandLookPreviewItem?
 
   @@unique([userId, idempotencyKey])
   @@index([userId, createdAt])
   @@index([providerJobId])
   @@index([status, kind])
   @@index([mediaExpiresAt])
+  // Covers the stale-reserved credit sweep (src/lib/ai-image-reconcile.ts), which
+  // scans kind + chargeState against an updatedAt cutoff every 15 minutes.
+  @@index([kind, chargeState, updatedAt])
+  @@index([productSurface, status, finishedAt])
 }
 
-// Every external provider submission is durable and auditable. Image jobs
-// currently permit exactly one attempt; a different-model retry is a new quoted
-// job so it cannot silently inherit the first job's lower credit price.
+// Legacy activation windows retained for audit and settlement compatibility.
+model StarterAiImageAllowance {
+  id              String   @id @default(cuid())
+  userId          String
+  windowStartedAt DateTime
+  limitImages     Int      @default(8)
+  reservedImages  Int      @default(0)
+  usedImages      Int      @default(0)
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, windowStartedAt])
+  @@index([userId, windowStartedAt])
+}
+
+/// One-time Hero AI Image taste for the seven-day Conversion Trial. Legacy
+/// rolling windows remain in StarterAiImageAllowance as read-only audit rows.
+model ConversionTrialAiImageAllowance {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  trialStartedAt DateTime
+  expiresAt      DateTime
+  limitImages    Int      @default(8)
+  reservedImages Int      @default(0)
+  usedImages     Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([trialStartedAt, expiresAt])
+}
+
+/// Counts-only daily history for the subscription North Star. No user IDs,
+/// emails, prompts, or other customer data are stored in snapshots.
+model NorthStarDailySnapshot {
+  id                    String   @id @default(cuid())
+  snapshotDate          String   @unique // YYYY-MM-DD in Asia/Bangkok
+  asOf                  DateTime
+  activeRecurringPayers Int
+  activeCreators        Int
+  monthlyCreators       Int
+  annualCreators        Int
+  videoCreators         Int
+  scriptCreators        Int
+  imageCreators         Int
+  createdAt             DateTime @default(now())
+
+  @@index([asOf])
+}
+
+// Every external provider submission is durable and auditable. Image jobs may
+// retry the exact same provider/model once after a confirmed cancellation. A
+// different-model retry remains a new quoted job so it cannot silently inherit
+// the first job's lower credit price.
 model AiGenerationAttempt {
   id                            String          @id @default(cuid())
   jobId                         String
@@ -693,7 +1037,7 @@ model AiGenerationAttempt {
   providerRoute                 String
   providerEndpoint              String?
   providerJobId                 String?
-  status                        String          @default("planned") // planned | submitted | queued | in_progress | completed | failed
+  status                        String          @default("planned") // planned | submitting | submitted | queued | in_progress | completed | failed | canceled
   estimatedCostUsdMicros        Int
   providerReportedCostUsdMicros Int?
   providerReportedCredits       Float?
@@ -706,6 +1050,36 @@ model AiGenerationAttempt {
   @@unique([jobId, sequence])
   @@index([provider, providerJobId])
   @@index([status, createdAt])
+}
+
+// Hourly provider invoices for the private RunPod image endpoint. The numerator
+// deliberately includes worker initialization, execution, idle time, failed
+// attempts, retries, and operational smokes. Product COGS can therefore be
+// compared against a managed per-image API without hiding infrastructure waste.
+model RunpodBillingBucket {
+  id              String   @id @default(cuid())
+  endpointId      String
+  bucketStart     DateTime
+  gpuTypeId       String
+  amountUsdMicros Int
+  timeBilledMs    Int
+  syncedAt        DateTime @updatedAt
+
+  @@unique([endpointId, bucketStart, gpuTypeId])
+  @@index([endpointId, bucketStart])
+}
+
+// A separate checkpoint makes an empty-but-successful billing response
+// distinguishable from a broken sync. Admission can fail closed when telemetry
+// becomes stale without inventing a cost for a brand-new endpoint.
+model RunpodBillingSync {
+  endpointId      String    @id
+  lastWindowStart DateTime
+  lastWindowEnd   DateTime
+  lastSuccessAt   DateTime?
+  rowsSeen        Int       @default(0)
+  lastError       String?
+  updatedAt       DateTime  @updatedAt
 }
 
 // Records which base-render outputs a user has been CHARGED a clip for, so a

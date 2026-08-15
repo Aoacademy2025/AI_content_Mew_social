@@ -1,4 +1,5 @@
 import { cleanScriptLine } from "../_lib/preprocess-script";
+import { planAutoMixSources } from "@/lib/automix-plan";
 
 /** b-roll window length (วิ/ช่วง) — SAME knob the real window planner reads
  *  (video-editor/page.tsx:56, mcp/orchestrator.ts). Default 4. Keeping the estimator on
@@ -35,17 +36,36 @@ export function countWordsV2(text: string): number {
 }
 
 /**
- * ประมาณเครดิตที่ preset "ผสม AI" จะใช้ต่อ 1 คลิป — PURE (ไม่มี side effect, ไม่มี hook).
- * ใช้โดยจอ Render Receipt (Task 5) และ label ปุ่ม preset.
+ * จำนวนภาพ AI ที่ AutoMix จะสร้างจริงต่อ 1 คลิป — PURE (ไม่มี side effect, ไม่มี hook).
  *
  * b-roll แบ่งเป็น "windows" ตาม NEXT_PUBLIC_BROLL_WINDOW_SEC (default 4 — ตรงกับ window
- * planner จริง); สัดส่วนที่เป็นภาพ AI = ai / (video+photo+ai) (กัน div-by-zero: ถ้าน้ำหนัก
- * รวมเป็น 0 → share = 0); เครดิต = ceil(windows × share) × เครดิตต่อภาพ.
+ * planner จริง) แล้ว **เรียก planAutoMixSources ตัวเดียวกับที่ server ใช้วางแผน slot**
+ * (reserve 1 slot/แหล่ง แล้วค่อยกระจายที่เหลือตามน้ำหนัก) จึงนับ slot "ai" ได้ตรงกับที่
+ * fetch-stock จะหักเครดิตจริง — สูตรเดิม (ceil(windows × ai/total)) เพี้ยนจากแผนจริงได้
+ * เช่น 60 วิ preset "AI เด่น" (1:1:2) เดิมได้ 8 ภาพ แต่ planner สร้างจริง 7 ภาพ.
  *
- * @param estSec           ความยาวคลิปโดยประมาณ (วินาที) — จาก estimateClipSecV2
- * @param preset           น้ำหนัก {video,photo,ai} ของ preset ที่เลือก
- * @param perImageCredits  เครดิตต่อภาพ AI 1 รูป (ตามโมเดล kie ที่ใช้)
- * @param windowSec        ความยาว window (วิ) — default = NEXT_PUBLIC_BROLL_WINDOW_SEC (ทดสอบ override ได้)
+ * @param estSec    ความยาวคลิปโดยประมาณ (วินาที) — จาก estimateClipSecV2
+ * @param preset    น้ำหนัก {video,photo,ai} ของ preset ที่เลือก
+ * @param windowSec ความยาว window (วิ) — default = NEXT_PUBLIC_BROLL_WINDOW_SEC (ทดสอบ override ได้)
+ */
+export function estimateAutoMixAiImageCount(
+  estSec: number,
+  preset: { video: number; photo: number; ai: number },
+  windowSec: number = BROLL_WINDOW_SEC,
+): number {
+  const secPerWindow = windowSec > 0 ? windowSec : 4;
+  const windows = Math.max(0, Math.ceil(estSec / secPerWindow));
+  if (windows === 0 || preset.ai <= 0) return 0;
+  return planAutoMixSources(windows, preset).filter((source) => source === "ai").length;
+}
+
+/**
+ * ประมาณเครดิตที่ preset "ผสม AI" จะใช้ต่อ 1 คลิป — PURE.
+ * ใช้โดยจอ Render Receipt (Task 5) และ label ปุ่ม preset.
+ *
+ * เครดิต = จำนวนภาพ AI ตามแผนจริง × เครดิตต่อภาพ (Hero AI Image — HERO_AI_IMAGE_CREDITS).
+ *
+ * @param perImageCredits  เครดิตต่อภาพ AI 1 รูป
  */
 export function estimatePresetCredits(
   estSec: number,
@@ -53,9 +73,78 @@ export function estimatePresetCredits(
   perImageCredits: number,
   windowSec: number = BROLL_WINDOW_SEC,
 ): number {
-  const secPerWindow = windowSec > 0 ? windowSec : 4;
-  const windows = Math.ceil(estSec / secPerWindow);
-  const totalWeight = preset.video + preset.photo + preset.ai;
-  const aiShare = totalWeight === 0 ? 0 : preset.ai / totalWeight;
-  return Math.ceil(windows * aiShare) * perImageCredits;
+  return estimateAutoMixAiImageCount(estSec, preset, windowSec) * perImageCredits;
+}
+
+/**
+ * จำนวนภาพ AI ที่ "แจ้งผู้ใช้ไปแล้ว" ใน Render Receipt — SINGLE SOURCE ของตัวเลขที่
+ * disclose. ใช้ทั้งใน receipt (แสดงผล) และ useV2Job (ส่งเป็นเพดาน `maxAiImages` ให้ server)
+ * เพื่อไม่ให้ตัวเลขที่ผู้ใช้เห็นกับเพดานที่หักเงินจริงหลุดจากกัน:
+ * - กำหนดจำนวนคลิปเอง (targetClipCount > 0) → วางแผนจากจำนวนชิ้นนั้นตรง ๆ
+ * - อัตโนมัติ → ประมาณจากความยาวคลิป (window cadence)
+ */
+export function disclosedAutoMixAiImageCount(
+  estSec: number,
+  preset: { video: number; photo: number; ai: number },
+  targetClipCount = 0,
+  windowSec: number = BROLL_WINDOW_SEC,
+): number {
+  return disclosedAutoMixAiSlotIndices(estSec, preset, targetClipCount, windowSec).length;
+}
+
+/**
+ * Scene indices that the shared AutoMix planner assigns to AI. Reuse is safe
+ * only when a delivered Visual Beat has the same scene index; subtracting an
+ * aggregate asset count can underquote after the script/window plan changes.
+ */
+export function disclosedAutoMixAiSlotIndices(
+  estSec: number,
+  preset: { video: number; photo: number; ai: number },
+  targetClipCount = 0,
+  windowSec: number = BROLL_WINDOW_SEC,
+): number[] {
+  const manualPieceCount = Number.isFinite(targetClipCount) && targetClipCount > 0
+    ? Math.min(60, Math.floor(targetClipCount))
+    : 0;
+  const pieceCount = manualPieceCount > 0
+    ? manualPieceCount
+    : Math.max(0, Math.ceil(estSec / (windowSec > 0 ? windowSec : 4)));
+  if (pieceCount === 0 || preset.ai <= 0) return [];
+  return planAutoMixSources(pieceCount, preset).flatMap((source, index) => (
+    source === "ai" ? [index] : []
+  ));
+}
+
+export function reusableAutoMixAiSlotCount(
+  aiSlotIndices: readonly number[],
+  reusableSceneIndices: readonly number[],
+): number {
+  const reusable = new Set(
+    reusableSceneIndices.filter((value) => Number.isSafeInteger(value) && value >= 0),
+  );
+  return new Set(aiSlotIndices).size === 0
+    ? 0
+    : [...new Set(aiSlotIndices)].filter((index) => reusable.has(index)).length;
+}
+
+/**
+ * Hero AI Image default count — PURE. Preserve an explicit positive choice;
+ * otherwise start at eight and clamp to the remaining never-paid allowance.
+ * Paid accounts pass null and continue to use the shared Credit wallet.
+ */
+export function heroDefaultTargetClipCount(current: number, starterRemaining: number | null = null): number {
+  if (Number.isFinite(current) && current > 0) return Math.floor(current);
+  if (starterRemaining === null) return 8;
+  if (!Number.isFinite(starterRemaining)) return 0;
+  return Math.min(8, Math.max(0, Math.floor(starterRemaining)));
+}
+
+/**
+ * เวลาที่แต่ละภาพค้างจอโดยประมาณ (วิ) = ความยาวคลิป / จำนวนภาพ — PURE.
+ * ใช้เตือนผู้ใช้เมื่อเลือกจำนวนภาพน้อยเกินไปเทียบกับความยาวคลิป (Task 5 ข้อ 6).
+ * n<=0 หรือ durationSec ติดลบ → 0 (กัน divide-by-zero / ผลลัพธ์ไม่มีความหมาย).
+ */
+export function heroHoldLengthSec(durationSec: number, n: number): number {
+  if (!(n > 0) || !(durationSec >= 0)) return 0;
+  return Math.round(durationSec / n);
 }

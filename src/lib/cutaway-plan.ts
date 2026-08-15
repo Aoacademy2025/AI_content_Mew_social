@@ -19,6 +19,83 @@ export type CutawayBrollSegment = {
   sourceIndex?: unknown;
   brollEnabled?: unknown;
 };
+export type CutawayBackgroundAsset = {
+  sourceIndex?: number;
+  clipOffset?: number;
+  [key: string]: unknown;
+};
+
+const rangeKey = (range: CutawayRange) => `${range.startMs}:${range.endMs}`;
+
+const MIN_VISIBLE_CUTAWAY_MS = 3_000;
+const MIN_CUTAWAY_CLIP_MS = 10_000;
+
+function normalizeVisibleCutawayCount(targetClipCount: unknown): number {
+  const raw = Number(targetClipCount);
+  return Number.isFinite(raw) && raw > 0
+    ? Math.min(60, Math.floor(raw))
+    : 0;
+}
+
+/**
+ * Maximum visible B-roll pieces that can fit while preserving the advertised
+ * 3-second minimum hold. Cutaway alternates presenter and B-roll, so each
+ * visible piece consumes two equal timeline windows. Clips below 10 seconds
+ * intentionally remain presenter-only (the original product design's short-
+ * clip fail-open rule).
+ */
+export function cutawayPieceLimit(durationMs: unknown): number {
+  const duration = Number(durationMs);
+  if (!Number.isFinite(duration) || duration < MIN_CUTAWAY_CLIP_MS) return 0;
+  return Math.min(60, Math.floor(duration / (MIN_VISIBLE_CUTAWAY_MS * 2)));
+}
+
+/** Customer-facing visible count after applying the duration safety limit. */
+export function effectiveManualCutawayPieceCount(
+  targetClipCount: unknown,
+  durationMs?: unknown,
+): number {
+  const requested = normalizeVisibleCutawayCount(targetClipCount);
+  if (durationMs === undefined) return requested;
+  return Math.min(requested, cutawayPieceLimit(durationMs));
+}
+
+/**
+ * Quote the number of B-roll pieces that can actually be visible in upload
+ * cutaway mode. Manual requests are duration-clamped; Auto estimates the same
+ * alternating 4-second timeline used by the worker, then counts only odd
+ * (visible B-roll) windows. This keeps setup, receipt, and provider ceilings
+ * aligned before transcription supplies exact semantic window boundaries.
+ */
+export function estimatedCutawayPieceCount(
+  targetClipCount: unknown,
+  durationMs: unknown,
+  windowMs: unknown = 4_000,
+): number {
+  const limit = cutawayPieceLimit(durationMs);
+  if (limit === 0) return 0;
+  const manual = normalizeVisibleCutawayCount(targetClipCount);
+  if (manual > 0) return Math.min(manual, limit);
+
+  const duration = Number(durationMs);
+  const requestedWindowMs = Number(windowMs);
+  const cadenceMs = Number.isFinite(requestedWindowMs) && requestedWindowMs > 0
+    ? requestedWindowMs
+    : 4_000;
+  const internalWindows = Math.max(1, Math.ceil(duration / cadenceMs));
+  return Math.min(limit, Math.floor(internalWindows / 2));
+}
+
+/**
+ * `targetClipCount` in upload mode is a count of visible B-roll pieces, not a
+ * count of the alternating presenter+B-roll timeline windows. The cutaway plan
+ * starts on the presenter and uses every odd window for B-roll, so each visible
+ * piece needs two internal windows. Public input remains capped at 60 pieces.
+ */
+export function manualCutawayWindowCount(targetClipCount: unknown, durationMs?: unknown): number {
+  const visibleCount = effectiveManualCutawayPieceCount(targetClipCount, durationMs);
+  return visibleCount * 2;
+}
 
 /**
  * window 0 (hook) = person; then every odd-index window is b-roll. Guarantees:
@@ -40,6 +117,66 @@ export function planCutaway(windows: { startMs: number; endMs: number }[]): Cuta
     (i % 2 === 1 ? broll : person).push({ startMs: w.startMs, endMs: w.endMs });
   });
   return { person, broll };
+}
+
+/**
+ * Re-expands the intentionally sparse, billable B-roll result into the complete
+ * upload timeline expected by generate-config.
+ *
+ * AI/stock media is requested only for visible cutaway ranges. Person ranges get
+ * the uploaded clip as a hidden background filler, with its media offset aligned
+ * to the timeline. This prevents assignBrollWindows from consuming the next AI
+ * asset under a presenter range and then flashing/reusing another asset when the
+ * cutaway becomes visible.
+ */
+export function buildCutawayBackgroundTimeline({
+  windows,
+  brollRanges,
+  brollAssets,
+  presenterAsset,
+}: {
+  windows: CutawayRange[];
+  brollRanges: CutawayRange[];
+  brollAssets: CutawayBackgroundAsset[];
+  presenterAsset: CutawayBackgroundAsset;
+}): { windows: CutawayRange[]; assets: CutawayBackgroundAsset[] } {
+  const validWindows = (windows ?? []).filter(
+    (window) => window
+      && Number.isFinite(window.startMs)
+      && Number.isFinite(window.endMs)
+      && window.endMs > window.startMs,
+  );
+  const visibleRanges = new Set(
+    (brollRanges ?? [])
+      .filter((range) => range && Number.isFinite(range.startMs) && Number.isFinite(range.endMs))
+      .map(rangeKey),
+  );
+  const visibleAssets = Array.isArray(brollAssets) ? brollAssets.filter(Boolean) : [];
+  const indexedVisibleAssets = new Map<number, CutawayBackgroundAsset>();
+  visibleAssets.forEach((asset, index) => {
+    const sourceIndex = Number.isFinite(asset.sourceIndex) ? Number(asset.sourceIndex) : index;
+    if (!indexedVisibleAssets.has(sourceIndex)) indexedVisibleAssets.set(sourceIndex, asset);
+  });
+
+  let visibleIndex = 0;
+  const assets = validWindows.map((window, windowIndex) => {
+    if (!visibleRanges.has(rangeKey(window))) {
+      return {
+        ...presenterAsset,
+        sourceIndex: windowIndex,
+        clipOffset: window.startMs / 1_000,
+      };
+    }
+
+    const selected = indexedVisibleAssets.get(visibleIndex)
+      ?? visibleAssets[visibleIndex]
+      ?? visibleAssets[visibleIndex % Math.max(1, visibleAssets.length)]
+      ?? presenterAsset;
+    visibleIndex += 1;
+    return { ...selected, sourceIndex: windowIndex };
+  });
+
+  return { windows: validWindows, assets };
 }
 
 function normalizeRanges(ranges: CutawayRangeSec[]): CutawayRangeSec[] {
@@ -117,7 +254,10 @@ export function reconstructCutawayPersonRanges(input: CutawayReconstructInput): 
     ? Math.round(rawDurationMs)
     : undefined;
 
-  // Mirrors `upManualBrollCount` in the orchestrator's upload path.
+  // Legacy previews reached this fallback before the visible-count fix and used
+  // targetClipCount directly as the TOTAL window count. Preserve that old formula
+  // here so re-rendering an existing project does not change its layout. New jobs
+  // persist `cutawayPersonRanges` and never need this reconstruction path.
   const rawCount = Number(input?.targetClipCount);
   const manualCount = Number.isFinite(rawCount) && rawCount > 0
     ? Math.min(60, Math.floor(rawCount))

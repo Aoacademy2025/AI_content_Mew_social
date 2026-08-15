@@ -55,9 +55,13 @@ export async function GET() {
       newThisWeek,
       // Honest revenue cohorts — added alongside (not replacing) the legacy fields above.
       payingTotal: cohorts.payingTotal,
+      directPayingTotal: cohorts.directPayingTotal,
+      bundleActive: cohorts.bundleActive,
       trialActive: cohorts.trialActive,
       compedPaid: cohorts.compedPaid,
       mrr: cohorts.mrr,
+      directMrr: cohorts.directMrr,
+      bundleMrr: cohorts.bundleMrr,
       lapsedPayers: cohorts.lapsedPayers,
       payingCanceling: cohorts.payingCanceling,
       mrrAtRisk: cohorts.mrrAtRisk,

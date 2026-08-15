@@ -2,6 +2,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -63,6 +64,17 @@ export type R2ObjectHead = {
 
 export type R2PutResult = "created" | "precondition_failed";
 
+export type R2ListedObject = {
+  key: string;
+  sizeBytes: number;
+  lastModified: Date;
+};
+
+export type R2ObjectPage = {
+  objects: R2ListedObject[];
+  continuationToken: string | null;
+};
+
 export interface RemoteMediaReplicaVerifier {
   verifyReplica(input: {
     identity: MediaIdentity;
@@ -91,6 +103,10 @@ export interface R2ObjectClientPort {
     end: number;
   }): Promise<{ body: ReadableStream<Uint8Array>; contentLength: number }>;
   delete(key: string): Promise<void>;
+}
+
+export interface R2ObjectInventoryPort {
+  list(prefix: string, continuationToken?: string): Promise<R2ObjectPage>;
 }
 
 export class R2ConfigurationError extends Error {
@@ -279,6 +295,40 @@ export class AwsR2ObjectClient implements R2ObjectClientPort {
       if (isMissing(error)) return null;
       throw error;
     }
+  }
+
+  async list(prefix: string, continuationToken?: string): Promise<R2ObjectPage> {
+    const result = await this.client.send(new ListObjectsV2Command({
+      Bucket: this.bucket,
+      Prefix: prefix,
+      ContinuationToken: continuationToken,
+    }));
+    const objects: R2ListedObject[] = [];
+    for (const item of result.Contents ?? []) {
+      if (
+        !item.Key ||
+        !Number.isSafeInteger(item.Size) ||
+        item.Size === undefined ||
+        item.Size < 0 ||
+        !item.LastModified
+      ) {
+        throw new R2VerificationError();
+      }
+      objects.push({
+        key: item.Key,
+        sizeBytes: item.Size,
+        lastModified: item.LastModified,
+      });
+    }
+    if (result.IsTruncated && !result.NextContinuationToken) {
+      throw new R2VerificationError();
+    }
+    return {
+      objects,
+      continuationToken: result.IsTruncated
+        ? result.NextContinuationToken!
+        : null,
+    };
   }
 
   async put(input: {

@@ -149,7 +149,13 @@ function wordBoundaries(fullText: string): number[] {
   for (const tok of seg.segment(fullText)) {
     if (tok.index > 0 && isValidThaiWordStart(fullText, tok.index) && !insideLoanword(tok.index)) set.add(tok.index);
   }
-  for (const s of spans) { if (s.start > 0) set.add(s.start); if (s.end < fullText.length) set.add(s.end); }
+  // Defense in depth: loanwordSpans already rejects unsafe substring
+  // occurrences, but no catalog entry may force a token edge before a Thai
+  // combining/garan cluster even if a future span source bypasses that guard.
+  for (const s of spans) {
+    if (s.start > 0 && isValidThaiWordStart(fullText, s.start)) set.add(s.start);
+    if (s.end < fullText.length && isValidThaiWordStart(fullText, s.end)) set.add(s.end);
+  }
   return [...set].sort((a, b) => a - b);
 }
 
@@ -214,27 +220,6 @@ export function mergeSegmentTiming(parts: { text: string; durationMs: number }[]
     offset += p.durationMs;
     return seg;
   });
-}
-
-// Degraded single-segment fallback timing. When a TTS route produced AUDIO but
-// no instrumented `timing` (Gemini's segmented pass fell open to a single
-// uninstrumented call, or a rare timing/text mismatch), a headless caller with
-// no transcribe fallback can still build a valid clock from the one fact it has:
-// the exact audio duration, spread over the exact spoken text as ONE segment.
-// This is still 100% TTS-derived (the duration is byte-exact from the route) and
-// runs the SAME char clock as any 1-segment clip — it merely lacks per-chunk
-// re-anchoring and silence snapping, so long pause-heavy scripts drift more.
-// `spokenText` must be exactly what TTS voiced; the routes only .trim() their
-// input, so the caller's trimmed script satisfies the iron rule. Returns null
-// when there is nothing to time (empty text or a non-positive duration).
-export function buildDegradedTtsTiming(
-  provider: "gemini" | "elevenlabs" | "omnivoice",
-  spokenText: string,
-  audioDurationMs: number,
-): TtsTiming | null {
-  const text = spokenText.trim();
-  if (!text || !Number.isFinite(audioDurationMs) || audioDurationMs <= 0) return null;
-  return { provider, segments: [{ text, startMs: 0, durationMs: Math.round(audioDurationMs) }], chars: null };
 }
 
 // ElevenLabs path: offset chunk i by the REAL audio duration (ffprobe) of

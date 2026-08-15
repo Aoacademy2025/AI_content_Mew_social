@@ -11,6 +11,17 @@ REPO_URL="https://github.com/Aoacademy2025/AI_content_Mew_social.git"
 APP_NAME="ai-content"
 DEFAULT_BRANCH="${DEPLOY_BRANCH:-main}"
 MIGRATE="${SKIP_DB_MIGRATE:-0}"
+DEPLOY_HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:3000/api/health}"
+DEPLOY_HEALTH_TIMEOUT_SEC="${DEPLOY_HEALTH_TIMEOUT_SEC:-90}"
+DEPLOY_HEALTH_INTERVAL_SEC="${DEPLOY_HEALTH_INTERVAL_SEC:-3}"
+
+for numeric_setting in DEPLOY_HEALTH_TIMEOUT_SEC DEPLOY_HEALTH_INTERVAL_SEC; do
+  numeric_value="${!numeric_setting}"
+  if [[ ! "$numeric_value" =~ ^[0-9]+$ ]] || [ "$numeric_value" -lt 1 ]; then
+    echo "ERROR: ${numeric_setting} must be a positive integer"
+    exit 1
+  fi
+done
 
 # Build tuning for low-memory VPS
 BUILD_HEAP_MB="${BUILD_HEAP_MB:-12000}"
@@ -29,6 +40,13 @@ fi
 echo "=== [1/6] Pull latest code ==="
 if [ -d "$APP_DIR/.git" ]; then
   cd "$APP_DIR"
+  if ! git diff --quiet --ignore-submodules -- \
+    || ! git diff --cached --quiet --ignore-submodules --; then
+    echo "ERROR: tracked production files have staged or unstaged changes."
+    echo "Deploy stopped before fetch/checkout/pull so local production work is preserved."
+    git status --short --untracked-files=no
+    exit 1
+  fi
   git fetch --all --prune
   git checkout "$DEFAULT_BRANCH"
   git pull origin "$DEFAULT_BRANCH"
@@ -47,7 +65,19 @@ mv "$MAINTENANCE_PAGE_DIR/maintenance.html.next" "$MAINTENANCE_PAGE_DIR/maintena
 
 echo "=== [2/6] Install dependencies ==="
 cd "$APP_DIR"
-npm install --no-audit --no-fund
+# Reproduce the exact CI-reviewed lock graph. `npm install --package-lock=false`
+# resolves semver ranges again and can silently pick a newer provider SDK whose
+# pinned API types no longer match the reviewed source. The legacy peer flag is
+# required by mcp-handler@1.1.0's exact MCP SDK peer while the root app and Clerk
+# accept the same lockfile-resolved SDK. Production already supplies the Chrome
+# runtime used by render workers, so downloading a second Puppeteer browser is
+# unnecessary and makes deploy depend on an unrelated CDN/cache state.
+PUPPETEER_SKIP_DOWNLOAD=1 npm ci --no-audit --no-fund --legacy-peer-deps
+if ! git diff --quiet --ignore-submodules --; then
+  echo "ERROR: dependency installation changed an unexpected tracked file"
+  git status --short --untracked-files=no
+  exit 1
+fi
 
 echo "=== [3/6] Prepare .env ==="
 if [ ! -f "$APP_DIR/.env" ]; then
@@ -59,8 +89,9 @@ if [ ! -f "$APP_DIR/.env" ]; then
 fi
 
 echo "=== [4/6] Prisma sync schema + generate ==="
-# SQLite project uses db push (no migrations dir). Sync new columns into the
-# live DB so queries referencing new fields (e.g. cancelAtPeriodEnd) don't 500.
+# Existing production SQLite databases predate the checked-in migration
+# baseline, so deploy uses drift-aware db push for live upgrades. The migration
+# chain remains authoritative for clean databases and CI migration rehearsals.
 # No --accept-data-loss: additive changes (new nullable/defaulted columns) apply
 # safely; a destructive change will fail loudly instead of dropping data.
 # P3.3: db push runs FIRST (before build/restart). If it fails, abort with a LOUD
@@ -90,6 +121,7 @@ export NEXT_DIST_DIR=".next-staging"
 run_next_build() {
   local media_root
   local media_shadow
+  local cache_entry
   rm -rf "$STAGING_DIR"
   mkdir -p "$STAGING_DIR"
   # Preserve the webpack/SWC build cache from the LIVE .next so the compile is
@@ -98,8 +130,28 @@ run_next_build() {
   # full ~40min compile every time. Reusing the prior cache cuts unchanged-code
   # deploys from ~40min to a few minutes. Safe: Next re-validates the cache and
   # rebuilds anything stale; a bad cache only costs a slower build, never wrong output.
+  #
+  # Carry ONLY the compile caches. `cache/images` is the Next image optimizer's
+  # output cache, and it is keyed on the SOURCE PATH — not on the file's
+  # contents. Replacing an image under public/ in place (same path, new picture)
+  # therefore leaves every optimized variant looking valid, and the site keeps
+  # serving the old picture indefinitely: `X-Nextjs-Cache: STALE`, with a
+  # background revalidation that never notices the source changed. That is
+  # exactly what happened on 2026-08-10 — the five /brands format cards were
+  # replaced, the deploy carried the cache over, and the site served the pre-fix
+  # pictures afterwards. Only the webp/avif variants a browser negotiates were
+  # affected, so a plain curl (which gets JPEG, an uncached variant) looked
+  # correct and hid it. Dropping this costs one re-encode per image on first
+  # request; the compile cache is the one worth tens of minutes.
   if [ -d "$APP_DIR/.next/cache" ]; then
-    cp -a "$APP_DIR/.next/cache" "$STAGING_DIR/cache" 2>/dev/null || true
+    mkdir -p "$STAGING_DIR/cache"
+    for cache_entry in "$APP_DIR"/.next/cache/*; do
+      [ -e "$cache_entry" ] || continue
+      case "$(basename "$cache_entry")" in
+        images) continue ;;
+      esac
+      cp -a "$cache_entry" "$STAGING_DIR/cache/" 2>/dev/null || true
+    done
   fi
 
   # Next traces dynamic filesystem reads before applying NFT exclusions. On a
@@ -148,6 +200,30 @@ if [ ! -f "$STAGING_DIR/BUILD_ID" ]; then
   exit 1
 fi
 
+CURRENT_STATIC_MANIFEST="$APP_DIR/.next-static-manifest-staging"
+if [ -d "$STAGING_DIR/static" ]; then
+  (
+    cd "$STAGING_DIR/static"
+    find . -type f -print | LC_ALL=C sort
+  ) > "$CURRENT_STATIC_MANIFEST"
+fi
+
+# Retain prior immutable Next.js assets for one release. Browsers with an open tab
+# can request the previous build's content-hashed chunks after a deploy; deleting
+# them immediately produced noisy 404s and broken tabs. The manifest is captured
+# before this merge, so the next deploy copies only this build (bounded to N-1,
+# rather than accumulating every historical chunk forever).
+if [ -d "$APP_DIR/.next/static" ] && [ -d "$STAGING_DIR/static" ]; then
+  PRIOR_STATIC_MANIFEST="$APP_DIR/.next-static-manifest"
+  if [ -s "$PRIOR_STATIC_MANIFEST" ]; then
+    tar -C "$APP_DIR/.next/static" -cf - -T "$PRIOR_STATIC_MANIFEST" \
+      | tar --skip-old-files -C "$STAGING_DIR/static" -xf -
+  else
+    # First deploy with retention enabled: the live tree contains one release.
+    cp -an "$APP_DIR/.next/static/." "$STAGING_DIR/static/"
+  fi
+fi
+
 echo "=== [5a/6] Normalize staged build permissions ==="
 # Build output inherits the caller's umask. Nginx runs as a different user and
 # must be able to traverse directories and read static assets before the swap.
@@ -168,11 +244,17 @@ fi
 echo "=== [5c/6] Atomic swap .next-staging -> .next ==="
 # .next.old is kept until the next deploy as a manual rollback
 # (mv .next.old .next && pm2 restart ai-content); costs a few hundred MB.
+ROLLBACK_STATIC_MANIFEST="$APP_DIR/.next-static-manifest.rollback"
+rm -f "$ROLLBACK_STATIC_MANIFEST"
+if [ -f "$APP_DIR/.next-static-manifest" ]; then
+  cp -p "$APP_DIR/.next-static-manifest" "$ROLLBACK_STATIC_MANIFEST"
+fi
 rm -rf "$APP_DIR/.next.old"
 if [ -d "$APP_DIR/.next" ]; then
   mv "$APP_DIR/.next" "$APP_DIR/.next.old"
 fi
 mv "$STAGING_DIR" "$APP_DIR/.next"
+mv "$CURRENT_STATIC_MANIFEST" "$APP_DIR/.next-static-manifest"
 unset NEXT_DIST_DIR
 
 echo "=== [6/6] Restart PM2 ==="
@@ -188,7 +270,65 @@ restart_from_ecosystem() {
   fi
 }
 
-restart_from_ecosystem "$APP_NAME"
+wait_for_web_health() {
+  local deadline=$((SECONDS + DEPLOY_HEALTH_TIMEOUT_SEC))
+  echo "Waiting up to ${DEPLOY_HEALTH_TIMEOUT_SEC}s for ${DEPLOY_HEALTH_URL}"
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if curl --fail --silent --show-error --max-time 5 "$DEPLOY_HEALTH_URL" > /dev/null; then
+      echo "OK: web health check passed"
+      return 0
+    fi
+    sleep "$DEPLOY_HEALTH_INTERVAL_SEC"
+  done
+  echo "ERROR: web health check did not recover before timeout"
+  return 1
+}
+
+rollback_web_build() {
+  if [ ! -d "$APP_DIR/.next.old" ]; then
+    echo "ERROR: no prior .next build is available for automatic rollback"
+    return 1
+  fi
+
+  local failed_build_dir
+  failed_build_dir="$APP_DIR/.next.failed-$(date -u +%Y%m%dT%H%M%SZ)"
+  if [ -e "$failed_build_dir" ]; then
+    failed_build_dir="${failed_build_dir}-$$"
+  fi
+  echo "Rolling web build back; failed release retained at ${failed_build_dir}"
+  mv "$APP_DIR/.next" "$failed_build_dir"
+  mv "$APP_DIR/.next.old" "$APP_DIR/.next"
+  if [ -f "$ROLLBACK_STATIC_MANIFEST" ]; then
+    mv "$ROLLBACK_STATIC_MANIFEST" "$APP_DIR/.next-static-manifest"
+  else
+    rm -f "$APP_DIR/.next-static-manifest"
+  fi
+  restart_from_ecosystem "$APP_NAME"
+}
+
+# Gate worker restarts on web+DB health. If the new build cannot start, restore
+# the previous .next while the existing workers are still running their prior
+# in-memory code, then verify that rollback before returning a failed deploy.
+release_failed=0
+if ! restart_from_ecosystem "$APP_NAME"; then
+  echo "ERROR: PM2 could not start the new web build"
+  release_failed=1
+elif ! wait_for_web_health; then
+  release_failed=1
+fi
+if [ "$release_failed" = "1" ]; then
+  if ! rollback_web_build; then
+    echo "ERROR: new web build failed health and automatic rollback was unavailable"
+    exit 1
+  fi
+  if ! wait_for_web_health; then
+    echo "ERROR: the prior web build also failed health after rollback"
+    exit 1
+  fi
+  echo "ERROR: release failed health; prior web build was restored successfully"
+  exit 1
+fi
+rm -f "$ROLLBACK_STATIC_MANIFEST"
 
 # The MCP async video worker runs the pipeline (orchestrator/pipeline-client) in
 # a SEPARATE process. A deploy that ships new pipeline code to ai-content would
@@ -205,8 +345,13 @@ restart_from_ecosystem "$WORKER_NAME"
 RENDER_WORKER_NAME="render-worker"
 restart_from_ecosystem "$RENDER_WORKER_NAME"
 
+# Hourly RunPod invoice sync. Starting/restarting the cron app also performs one
+# immediate sync after schema deployment, so the new web process does not wait
+# up to an hour before its fully-loaded COGS guard has fresh data.
+RUNPOD_IMAGE_COST_SYNC_NAME="runpod-image-cost-sync"
+restart_from_ecosystem "$RUNPOD_IMAGE_COST_SYNC_NAME"
+
 pm2 save
-pm2 startup
 
 # STAB-1 self-check: verify PM2 reboot-resurrection is actually armed. `pm2 save` above
 # only persists the process list; the systemd UNIT that replays it on boot is registered

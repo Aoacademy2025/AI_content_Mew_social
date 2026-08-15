@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
+import { validateVideoSettingsPatch } from "@/lib/video-settings";
 
 // GET /api/user/video-settings — get saved avatar & voice IDs for current user
 export async function GET() {
@@ -33,22 +34,15 @@ export async function PATCH(req: Request) {
     const authUser = await getCurrentUser();
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const body = await req.json();
-    const data: {
-      heygenAvatarId?: string;
-      elevenlabsVoiceId?: string;
-      ttsProvider?: string;
-      geminiVoiceName?: string;
-    } = {};
-
-    if (typeof body.heygenAvatarId === "string") data.heygenAvatarId = body.heygenAvatarId.trim();
-    if (typeof body.elevenlabsVoiceId === "string") data.elevenlabsVoiceId = body.elevenlabsVoiceId.trim();
-    if (typeof body.ttsProvider === "string") data.ttsProvider = body.ttsProvider.trim();
-    if (typeof body.geminiVoiceName === "string") data.geminiVoiceName = body.geminiVoiceName.trim();
+    const body = await req.json().catch(() => null);
+    const validated = validateVideoSettingsPatch(body);
+    if (!validated.ok) {
+      return NextResponse.json({ error: validated.message }, { status: 400 });
+    }
 
     const user = await prisma.user.update({
       where: { id: authUser.id },
-      data,
+      data: validated.data,
       select: { heygenAvatarId: true, elevenlabsVoiceId: true, ttsProvider: true, geminiVoiceName: true },
     });
 

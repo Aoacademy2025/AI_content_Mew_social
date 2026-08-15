@@ -5,6 +5,7 @@ import { apiError } from "@/lib/api-error";
 import { getGeminiErrorInfo } from "@/lib/gemini-errors";
 import { decryptKey } from "@/lib/key-crypto";
 import { testElevenLabsKey, testPexelsKey, testPixabayKey } from "@/lib/key-preflight";
+import { interpretKieCreditResponse } from "@/lib/kie-client";
 
 type KeyType = "gemini" | "heygen" | "elevenlabs" | "pexels" | "pixabay" | "kie" | "unsplash" | "flickr";
 
@@ -124,13 +125,14 @@ async function testKie(key: string): Promise<{ ok: boolean; message: string }> {
     const res = await fetch("https://api.kie.ai/api/v1/chat/credit", {
       headers: { Authorization: `Bearer ${key}` },
     });
-    if (res.ok) {
-      const data = await res.json().catch(() => null);
-      const credits = typeof data?.data === "number" ? ` (เครดิตเหลือ ${data.data})` : "";
+    const data = await res.json().catch(() => null);
+    const interpreted = interpretKieCreditResponse(res.status, data);
+    if (interpreted.ok) {
+      const credits = interpreted.credits !== undefined ? ` (เครดิตเหลือ ${interpreted.credits})` : "";
       return { ok: true, message: `kie.ai key ใช้งานได้${credits}` };
     }
-    if (res.status === 401 || res.status === 403) return { ok: false, message: "Key ไม่ถูกต้องหรือหมดอายุ — สร้างใหม่ที่ kie.ai" };
-    return { ok: false, message: `Error ${res.status}` };
+    if (interpreted.reason === "auth") return { ok: false, message: "Key ไม่ถูกต้องหรือหมดอายุ — สร้างใหม่ที่ kie.ai" };
+    return { ok: false, message: `Error ${interpreted.providerCode ?? res.status}` };
   } catch { return { ok: false, message: "ไม่สามารถเชื่อมต่อ kie.ai ได้" }; }
 }
 

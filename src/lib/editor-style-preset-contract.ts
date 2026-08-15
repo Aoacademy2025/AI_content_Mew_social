@@ -3,6 +3,10 @@ import {
   normalizeLogoOverlayConfig,
   type LogoOverlayConfig,
 } from "@/lib/logo-overlay";
+import {
+  normalizeSubtitleFontWeight,
+  type SubtitleFontWeight,
+} from "@/lib/subtitle-font-weight";
 
 export const EDITOR_STYLE_PRESET_KINDS = ["subtitle", "logo"] as const;
 export type EditorStylePresetKind = (typeof EDITOR_STYLE_PRESET_KINDS)[number];
@@ -10,11 +14,15 @@ export type EditorStylePresetKind = (typeof EDITOR_STYLE_PRESET_KINDS)[number];
 export const MAX_EDITOR_STYLE_PRESET_NAME_LENGTH = 40;
 export const MAX_EDITOR_STYLE_PRESETS_PER_KIND = 20;
 
+export type SubtitleCardLen = "sentence" | "4" | "3" | "2" | "1";
+
 export type SubtitleStylePresetConfig = {
   preset: SubPreset;
   effect: SubTextEffect;
+  cardLen: SubtitleCardLen;
   fontFamily: string;
   bold: boolean;
+  fontWeight: SubtitleFontWeight;
   fontSize: number;
   textColor: string;
   accentColor: string;
@@ -85,6 +93,7 @@ const SUBTITLE_EFFECTS = new Set<SubTextEffect>([
   "karaoke",
   "typewriter",
 ]);
+const SUBTITLE_CARD_LENGTHS = new Set<SubtitleCardLen>(["sentence", "4", "3", "2", "1"]);
 
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/iu;
 
@@ -122,15 +131,25 @@ export function normalizeSubtitleStylePresetConfig(
   value: unknown,
 ): SubtitleStylePresetConfig | null {
   if (!isRecord(value)) return null;
+  // Rows saved before card length became part of the preset contract never carried
+  // enough information to reconstruct the user's old grouping. Keep them usable with
+  // the editor's historical default; re-saving upgrades the row to the full contract.
+  const cardLen = value.cardLen === undefined ? "sentence" : value.cardLen;
+  const fontWeight = value.fontWeight === undefined
+    ? (value.bold === true ? 900 : 400)
+    : normalizeSubtitleFontWeight(value.fontWeight);
   if (
     typeof value.preset !== "string"
     || !SUBTITLE_PRESETS.has(value.preset as SubPreset)
     || typeof value.effect !== "string"
     || !SUBTITLE_EFFECTS.has(value.effect as SubTextEffect)
+    || typeof cardLen !== "string"
+    || !SUBTITLE_CARD_LENGTHS.has(cardLen as SubtitleCardLen)
     || typeof value.fontFamily !== "string"
     || !value.fontFamily.trim()
     || value.fontFamily.length > 120
     || typeof value.bold !== "boolean"
+    || fontWeight === null
     || !isFiniteNumberInRange(value.fontSize, 30, 160)
     || typeof value.textColor !== "string"
     || !COLOR_PATTERN.test(value.textColor)
@@ -147,8 +166,10 @@ export function normalizeSubtitleStylePresetConfig(
   return {
     preset: value.preset as SubPreset,
     effect: value.effect as SubTextEffect,
+    cardLen: cardLen as SubtitleCardLen,
     fontFamily: value.fontFamily.trim(),
     bold: value.bold,
+    fontWeight,
     fontSize: value.fontSize,
     textColor: value.textColor.toUpperCase(),
     accentColor: value.accentColor.toUpperCase(),
