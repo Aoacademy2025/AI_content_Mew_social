@@ -12,6 +12,7 @@ import {
   reconcileAiAudioMinutes,
   estimateTtsAudioMinutes,
 } from "@/lib/ai-spend-limits";
+import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
 import { getGeminiErrorInfo, parseRetryDelayMs } from "@/lib/gemini-errors";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
@@ -433,7 +434,13 @@ export async function POST(req: Request) {
     // to the real audio length after generation; refunded in full on any failure.
     // enforceAi=false (BYOK) → no DB touch (byte-identical).
     const estMin = estimateTtsAudioMinutes(fullText);
-    const aiReserve = await reserveAiAudioMinutes(authUser.id, estMin, { enforce: enforceAi });
+    const walletFunding = enforceAi
+      ? await walletFundingForCurrentRequest(authUser.id)
+      : { allowed: false as const };
+    const aiReserve = await reserveAiAudioMinutes(authUser.id, estMin, {
+      enforce: enforceAi,
+      allowOverCeiling: walletFunding.allowed,
+    });
     if (!aiReserve.allowed) return NextResponse.json({ code: "QUOTA_AI_AUDIO", message: aiReserve.message }, { status: 429 });
     markReserved(estMin);
 

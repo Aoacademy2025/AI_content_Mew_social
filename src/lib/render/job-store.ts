@@ -3,6 +3,7 @@ import { reserveClipUsage } from "@/lib/usage-limits";
 import { refundReservation } from "@/lib/minute-credits";
 import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
 import type { RenderJobType, RenderPayload } from "@/lib/render/types";
+import { markTransferredVideoJobFundingRefunded } from "@/lib/mcp/video-job-funding";
 
 // Refund a job's reserved quota in the SAME bucket it was reserved. Credit-funded
 // (creditsSpent>0, set when CREDITS_LIVE overflowed at enqueue) refunds credits;
@@ -12,7 +13,13 @@ import type { RenderJobType, RenderPayload } from "@/lib/render/types";
 // as before. Fail-open: a refund error must never block the caller's terminal/cancel
 // transition.
 async function refundJobReservation(
-  job: { userId: string; reservedMinutes: number | null; creditsSpent: number | null; creditsFromGranted: number | null },
+  job: {
+    userId: string;
+    parentJobId?: string | null;
+    reservedMinutes: number | null;
+    creditsSpent: number | null;
+    creditsFromGranted: number | null;
+  },
   context: string,
 ): Promise<void> {
   try {
@@ -21,6 +28,9 @@ async function refundJobReservation(
       { reservedMinutes: job.reservedMinutes, creditsSpent: job.creditsSpent, creditsFromGranted: job.creditsFromGranted },
       `queue-${context}`,
     );
+    if (job.parentJobId) {
+      await markTransferredVideoJobFundingRefunded(job.parentJobId, job.userId);
+    }
   } catch (refundErr) {
     console.error(`[job-store] refund failed ${context} user ${job.userId}:`, refundErr);
   }
@@ -123,6 +133,9 @@ export async function enqueueRenderJob(input: {
         },
         "render-drain-race",
       ));
+      if (input.parentJobId) {
+        await markTransferredVideoJobFundingRefunded(input.parentJobId, input.userId);
+      }
     }
     throw error;
   }

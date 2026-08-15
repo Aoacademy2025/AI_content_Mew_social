@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { videoExpiryFor } from "@/lib/plan-limits";
 import { assertRenderEnqueueOpen } from "@/lib/render-deploy-drain";
+import { syncMinuteWindow } from "@/lib/minute-limits";
+import { reserveMinutesOrCreditsInTransaction } from "@/lib/minute-credits";
 import {
   parseAvatarProviderCheckpoint,
   serializeAvatarProviderCheckpoint,
@@ -33,6 +35,18 @@ function restartRequeueCount(errorMessage: string | null): number {
 // can never double-charge clip quota or HeyGen.
 const SAFE_TO_REQUEUE_STEPS = new Set(["tts", "captions", "keywords", "stock", "config"]);
 
+export class VideoJobFundingError extends Error {
+  readonly code = "insufficient_render_funding";
+
+  constructor(
+    message: string,
+    public readonly remainingMinutes: number,
+  ) {
+    super(message);
+    this.name = "VideoJobFundingError";
+  }
+}
+
 export async function createVideoJob(
   userId: string,
   input: unknown,
@@ -46,10 +60,28 @@ export async function createVideoJob(
       projectVisualContextJson: string;
     } | null;
     brandVisualAcceptanceJson?: string | null;
+    funding?: { meteredMinutes: number; creditsLive: boolean };
   } = {},
 ) {
+  if (opts.funding) {
+    await syncMinuteWindow(userId);
+  }
   return prisma.$transaction(async (tx) => {
     await assertRenderEnqueueOpen(tx);
+    const funding = opts.funding
+      ? await reserveMinutesOrCreditsInTransaction(
+          tx,
+          userId,
+          opts.funding.meteredMinutes,
+          { creditsLive: opts.funding.creditsLive, ref: idempotencyKey },
+        )
+      : null;
+    if (funding && !funding.allowed) {
+      throw new VideoJobFundingError(
+        funding.message ?? "เครดิตหรือนาทีคงเหลือไม่เพียงพอ",
+        funding.remaining,
+      );
+    }
     return tx.videoJob.create({
       data: {
         userId,
@@ -62,6 +94,16 @@ export async function createVideoJob(
         idempotencyKey: idempotencyKey ?? null,
         idempotencyFingerprint: opts.idempotencyFingerprint ?? null,
         status: "queued",
+        ...(funding?.allowed
+          ? {
+              fundingState: "reserved",
+              fundedMeteredMinutes: funding.reservedMinutes,
+              fundedCreditsSpent: funding.via === "minutes" ? 0 : funding.creditsSpent,
+              fundedCreditsFromGranted: funding.via === "minutes" ? 0 : funding.fromGranted,
+              fundedCreditBalanceAfter: funding.via === "minutes" ? null : funding.balanceAfter,
+              walletFundingAuthorized: funding.via === "credits" || funding.via === "mixed",
+            }
+          : {}),
       },
     });
   });
@@ -179,7 +221,7 @@ export async function finishJobWithTransition(
   const now = opts.now ?? new Date();
   const owner = await prisma.videoJob.findUnique({
     where: { id },
-    select: { status: true, user: { select: { plan: true } } },
+    select: { status: true, fundingState: true, user: { select: { plan: true } } },
   });
   if (!owner) throw new Error("video_job_not_found");
   if (owner.status === "done") {
@@ -203,6 +245,7 @@ export async function finishJobWithTransition(
         mediaExpiresAt,
         providerCheckpointJson: null,
         providerNextPollAt: null,
+        ...(owner.fundingState === "transferred" ? { fundingState: "settled" } : {}),
       },
     });
 
@@ -341,7 +384,7 @@ export type VideoJobFailure = {
 
 export async function failJob(id: string, failure: string | VideoJobFailure) {
   const normalized = typeof failure === "string" ? { message: failure } : failure;
-  return prisma.$transaction(async (tx) => {
+  const job = await prisma.$transaction(async (tx) => {
     const transitioned = await tx.videoJob.updateMany({
       where: { id, status: "processing" },
       data: {
@@ -379,6 +422,11 @@ export async function failJob(id: string, failure: string | VideoJobFailure) {
     }
     return job;
   });
+  // Pre-render wallet funding is still owned by VideoJob. Once transferred,
+  // RenderJob/render-route owns any refund and this is an idempotent no-op.
+  const { refundVideoJobFunding } = await import("@/lib/mcp/video-job-funding");
+  await refundVideoJobFunding(id, job.userId, "job-failed");
+  return job;
 }
 
 /**

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { decryptKey } from "@/lib/key-crypto";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
+import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
 import { geminiGenerateText, geminiGenerateVision } from "@/lib/gemini";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { isProviderError, toErrorResponse, type ProviderError } from "@/lib/provider-errors";
@@ -3009,13 +3010,17 @@ export async function POST(req: Request) {
   let bestIdxByKeyword: number[] = keywords.map(() => -1);
 
   if (isPerSubtitleMode && llmKey && subtitleTexts?.length === keywords.length) {
+    const walletFunding = await walletFundingForCurrentRequest(userId);
     const candidateTitles = candidatesByKeyword.map(cs => cs.map(c => c.title));
     const hasAnyCandidates = candidateTitles.some(t => t.length > 0);
     // H1: bound managed-key text-LLM call frequency. At cap → skip the LLM ranker
     // and use deterministic relevance ranking (graceful — never blocks the fetch).
     // BYOK (enforce:false) → no-op, byte-identical to before.
     const rankReserve = hasAnyCandidates
-      ? await reserveAiTextCall(userId, { enforce: llmMode === "managed" })
+      ? await reserveAiTextCall(userId, {
+          enforce: llmMode === "managed",
+          allowOverCeiling: walletFunding.allowed,
+        })
       : { allowed: true };
     if (hasAnyCandidates && !rankReserve.allowed) {
       console.warn(`[fetch-stock] AI text-call ceiling reached — using deterministic relevance ranking instead of LLM`);

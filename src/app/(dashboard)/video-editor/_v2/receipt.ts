@@ -36,7 +36,7 @@ export interface ReceiptInput {
   creditBalance: number | null;
   /** Credits already removed from the available balance for provider/render work in flight. */
   reservedCredits?: number;
-  /** Credits charged per render minute when the package cannot fund the whole job. */
+  /** Credits charged per render minute beyond the remaining package allowance. */
   minuteCreditRate: number;
   /** True when a HeyGen avatar is on (avatar mode ≠ none). */
   hasAvatar: boolean;
@@ -72,7 +72,7 @@ export interface ReceiptModel {
   estCredits: number;
   /** M — minutes over the package (0 when within package or quota unknown). */
   overflowMinutes: number;
-  /** Credits charged when the whole render falls back from minutes to credits. */
+  /** Credits charged for only the minutes beyond the remaining package allowance. */
   overflowCredits: number;
   /** Hero credits estimated for this job: AI images + a credit-funded render. */
   totalEstimatedCredits: number;
@@ -134,10 +134,7 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
   const overflowMinutes = haveMinuteQuota
     ? Math.max(0, estMinutes - remainingMinutes!)
     : 0;
-  // reserveMinutesOrCredits is deliberately all-or-nothing: when the remaining
-  // package minutes cannot cover the whole render, it leaves those minutes
-  // untouched and funds the whole render with credits.
-  const overflowCredits = overflowMinutes > 0 ? estMinutes * minuteCreditRate : 0;
+  const overflowCredits = overflowMinutes * minuteCreditRate;
   // Support-ticket invariant: sufficiency must cover the whole job estimate, not
   // only AI images. Otherwise a user can have enough for every image but fail at
   // the later render-overflow reservation.
@@ -190,7 +187,7 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
       // Running out of package minutes is not an error when Hero credits cover
       // the job. The combined balance status below owns success/error styling.
       kind: "info",
-      text: `นาทีในแพ็กเกจเหลือ ${remainingMinutes} นาที ไม่พอสำหรับงาน ~${estMinutes} นาที — งานนี้จึงใช้ Hero credits ทั้งหมด ${overflowCredits} เครดิต (${minuteCreditRate} เครดิต/นาที) และจะไม่หักนาทีแพ็กเกจ`,
+      text: `งาน ~${estMinutes} นาทีจะใช้นาทีในแพ็กเกจ ${remainingMinutes} นาที และส่วนเกิน ${overflowMinutes} นาทีจะหัก ${overflowCredits} Hero credits (${minuteCreditRate} เครดิต/นาที)`,
     });
   }
 
@@ -235,7 +232,7 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     kind: "info",
     text: exactDuration
       ? "ความยาวคลิปคำนวณจากไฟล์ที่อัปโหลดจริง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ"
-      : "ตัวเลขเป็นประมาณการ — จำนวนภาพและยอดเรนเดอร์จริงคำนวณหลังสร้างเสียง · เมื่อระบบยืนยันว่าเจนภาพหรือคลิปล้มเหลว จะคืนเครดิตอัตโนมัติ",
+      : "ตัวเลขเป็นประมาณการ · หักตามความยาวเสียงจริงไม่เกินยอดที่แสดง; ถ้าเกินจะให้ยืนยันใหม่",
   });
 
   return {

@@ -12,6 +12,7 @@ import { parseHeroVoiceProviderCheckpoint } from "@/lib/mcp/hero-voice-provider-
 import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
 import { refundVideoJobTerminalRenderReservations } from "@/lib/render/reservation-settlement";
 import { parseProjectVisualContext } from "@/lib/project-look.server";
+import { refundVideoJobFunding } from "@/lib/mcp/video-job-funding";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
 // Output is included only when done, parsed through the versioned reader (v1 + v2).
@@ -136,6 +137,15 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
       });
     }
     let settlementPending = false;
+    try {
+      await refundVideoJobFunding(job.id, user.id, "user-canceled");
+    } catch (error) {
+      settlementPending = true;
+      console.error(
+        `[api/videos/jobs/:id] pre-render funding settlement failed job=${job.id}`,
+        error instanceof Error ? error.message : "unknown error",
+      );
+    }
     try {
       await refundSettledVideoImageBatch({
         userId: user.id,

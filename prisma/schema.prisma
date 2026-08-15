@@ -559,6 +559,12 @@ model VideoJob {
   mediaExpiresAt            DateTime?
   providerCheckpointJson    String?
   providerNextPollAt        DateTime?
+  fundingState              String         @default("none") // none|reserved|transferred|settled|refunded
+  fundedMeteredMinutes      Int?
+  fundedCreditsSpent        Int?
+  fundedCreditsFromGranted  Int?
+  fundedCreditBalanceAfter  Int?
+  walletFundingAuthorized   Boolean        @default(false)
 
   @@unique([userId, idempotencyKey])
   @@index([status])

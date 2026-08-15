@@ -1,4 +1,4 @@
-// ตัวเลขจาก src/lib/plan-limits.ts + src/lib/credits.ts (ณ 2026-07-01) — keep in sync with src/lib/plan-limits.ts / src/lib/credits.ts
+// ตัวเลขจาก src/lib/plan-limits.ts + src/lib/credits.ts (ณ 2026-08-15) — keep in sync with src/lib/plan-limits.ts / src/lib/credits.ts
 import { Clock, Coins, Wallet } from "lucide-react";
 import type { DocMeta } from "./types";
 import { Section, Callout } from "../_components/ui";
@@ -9,7 +9,7 @@ export const meta: DocMeta = {
   category: "แผน & การใช้งาน",
   order: 60,
   keywords: ["นาที", "เครดิต", "credit", "minute", "plan", "แผน", "pro", "business", "free", "pricing", "โควตา", "overflow"],
-  summary: "โควตานาทีต่อแผน, เครดิตสำหรับ AI-gen และนาที overflow",
+  summary: "โควตานาทีต่อแผน, เครดิตเติมนาที และขอบเขตฟีเจอร์ของแต่ละแพ็กเกจ",
 };
 
 export default function MinutesCreditsDoc() {
@@ -48,15 +48,19 @@ export default function MinutesCreditsDoc() {
 
       <Section title="เครดิตใช้กับอะไร" icon={<Wallet className="h-4 w-4 text-violet-300" strokeWidth={2.25} />}>
         <p>
-          <strong>นาที overflow</strong> — เมื่อใช้โควตานาทีของแผนหมดแล้ว แต่ยังต้องการเรนเดอร์ต่อ ระบบจะหักเครดิตอัตโนมัติในอัตรา <strong>2 เครดิต/นาที</strong>
+          <strong>นาที overflow</strong> — ระบบใช้นาทีที่เหลือในแพ็กเกจก่อน แล้วหักเฉพาะส่วนเกินอัตโนมัติในอัตรา <strong>2 เครดิต/นาที</strong>
         </p>
         <p>
-          <strong>AI image/video generation</strong> — คิดเครดิตต่อการกระทำ ประมาณ <strong>3–25 เครดิต</strong> ต่อครั้ง ขึ้นอยู่กับประเภทและความยาวของงานที่สร้าง (ไม่ใช่อัตราตายตัวเดียวสำหรับทุกงาน)
+          เครดิตเป็นหน่วยชำระค่าใช้งาน ไม่ใช่สิทธิ์ปลดล็อกฟีเจอร์ เช่น Hero AI Image, AutoMix, Avatar และเสียงพรีเมียมยังต้องมีแพ็กเกจที่รองรับก่อน แล้วจึงคิดเครดิตตามงานเมื่อมีค่าใช้จ่ายเพิ่มเติม
         </p>
         <p>
           การหักเครดิต ระบบจะหักจากเครดิต<strong>แจกฟรีรายเดือน (granted)</strong> ก่อนเสมอ แล้วจึงหักจากเครดิต<strong>ที่ซื้อเพิ่ม (purchased)</strong> เมื่อส่วนแจกฟรีหมด
         </p>
       </Section>
+
+      <Callout kind="info">
+        บัญชี FREE ใช้เครดิตเรนเดอร์คลิปต่อได้ โดยคลิปละไม่เกิน 2 นาที ใช้เสียง Gemini พื้นฐานได้ในงานนั้น และยังคงลายน้ำกับอายุไฟล์ 3 วัน เครดิตที่ซื้อไม่หมดอายุแม้เปลี่ยนแพ็กเกจ
+      </Callout>
 
       <Callout kind="info">
         ดูยอดเครดิตคงเหลือและประวัติการใช้งานได้ที่ Settings → Billing

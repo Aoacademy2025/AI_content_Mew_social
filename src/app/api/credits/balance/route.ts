@@ -11,7 +11,7 @@ export async function GET() {
     if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     if (process.env.CREDITS_LIVE !== "1") {
-      return NextResponse.json({ granted: 0, purchased: 0, total: 0, reserved: 0, live: false });
+      return NextResponse.json({ granted: 0, purchased: 0, total: 0, reserved: 0, live: false, plan: authUser.plan });
     }
 
     await ensureMonthlyGrant(authUser.id);
@@ -20,7 +20,7 @@ export async function GET() {
       getReservedCredits(authUser.id),
     ]);
 
-    return NextResponse.json({ ...balance, reserved, live: true });
+    return NextResponse.json({ ...balance, reserved, live: true, plan: authUser.plan });
   } catch (error) {
     return apiError({ route: "GET /api/credits/balance", error });
   }

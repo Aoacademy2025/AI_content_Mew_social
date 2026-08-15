@@ -50,7 +50,7 @@ function ceilingMessage(plan: string, ceiling: number): string {
 export async function reserveAiAudioMinutes(
   userId: string,
   minutes: number,
-  opts: { enforce: boolean }
+  opts: { enforce: boolean; allowOverCeiling?: boolean }
 ): Promise<AiAudioReserveResult> {
   if (!opts.enforce) {
     return { allowed: true, used: 0, ceiling: Number.POSITIVE_INFINITY, remaining: Number.POSITIVE_INFINITY };
@@ -61,6 +61,14 @@ export async function reserveAiAudioMinutes(
 
   const ceiling = aiAudioCeilingFor(s.minutesLimit);
   const used = s.aiAudioMinutesUsed;
+  if (opts.allowOverCeiling) {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { aiAudioMinutesUsed: { increment: minutes } },
+    });
+    const newUsed = used + minutes;
+    return { allowed: true, used: newUsed, ceiling, remaining: Math.max(0, ceiling - newUsed) };
+  }
   if (used + minutes > ceiling) {
     return { allowed: false, used, ceiling, remaining: Math.max(0, ceiling - used), message: ceilingMessage(s.plan, ceiling) };
   }

@@ -22,6 +22,8 @@ export function usageWindowForPlan(plan: string, from: Date = new Date()) {
     usagePeriodStartedAt: from,
     minutesUsed: 0,
     minutesLimit: minutesPerMonthForPlan(plan),
+    aiAudioMinutesUsed: 0,
+    aiTextCallsUsed: 0,
   };
 }
 
