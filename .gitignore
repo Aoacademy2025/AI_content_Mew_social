@@ -123,3 +123,9 @@ artifacts/brand-visual-quality-gate/
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# agent/tool scratch (ไม่ควรเข้า git)
+.orca/
+.playwright-mcp/
+__pycache__/
+artifacts/
