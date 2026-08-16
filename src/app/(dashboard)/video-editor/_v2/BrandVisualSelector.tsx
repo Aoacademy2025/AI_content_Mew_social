@@ -38,6 +38,17 @@ type PendingChange =
   | { kind: "look"; formatId: VisualFormatId; treatment: string; label: string; existingImageCount: number; quotedCredits: number }
   | { kind: "profile"; profileId: string; revisionId?: string; label: string; existingImageCount: number; quotedCredits: number };
 
+const TARGET_CLIP_COUNT_SETTLE_MS = 300;
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => setDebouncedValue(value), delayMs);
+    return () => window.clearTimeout(timeout);
+  }, [delayMs, value]);
+  return debouncedValue;
+}
+
 function PendingChangeConfirmation({
   p,
   pending,
@@ -113,6 +124,10 @@ export function BrandVisualSelector({
 
   const narrative = p.script.trim();
   const canLoadWithoutNarrative = p.mode === "upload";
+  const settledTargetClipCount = useDebouncedValue(
+    p.targetClipCount,
+    TARGET_CLIP_COUNT_SETTLE_MS,
+  );
   const suggestedTreatment = useMemo(() => preflight
     ? `${preflight.suggestedTreatment.label}, ${preflight.suggestedTreatment.mood}`
     : "ชัดเจนและเหมาะกับเนื้อหา", [preflight]);
@@ -155,7 +170,10 @@ export function BrandVisualSelector({
 
   async function loadContext(signal?: AbortSignal) {
     if (!p.projectId || (!narrative && !canLoadWithoutNarrative)) return;
-    setLoading(true); setError(null); p.setBrandContentPreflightId(null); onPreflightStatusChange?.("loading");
+    // A valid preflight remains visible and render-authoritative until its
+    // replacement succeeds. Step 2's status still blocks rendering while this
+    // refresh runs, so preserving the panel cannot submit stale scene windows.
+    setLoading(true); setError(null); onPreflightStatusChange?.("loading");
     try {
       const preflightResult = narrative
         ? await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/content-preflight`, {
@@ -166,7 +184,7 @@ export function BrandVisualSelector({
               narrativeSource: {
                 kind: p.mode === "upload" ? "upload-transcript" : p.narrativeSourceKind,
                 text: narrative,
-                ...(p.targetClipCount > 0 ? { windowCount: p.targetClipCount } : {}),
+                ...(settledTargetClipCount > 0 ? { windowCount: settledTargetClipCount } : {}),
                 sceneContentPolicy: sceneContentPolicyFromPreference(p.brollRegionPreference),
               },
             }),
@@ -226,6 +244,23 @@ export function BrandVisualSelector({
   }, [canProbeBrandLibrary]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (
+      !preflight
+      || !canRenderPersistedVisual
+      || !shouldLoadVisualContext
+      || !p.projectId
+      || (!narrative && !canLoadWithoutNarrative)
+    ) return;
+    // Block the render CTA as soon as the creator touches the count, but keep
+    // the current panel mounted while the spinner value settles. Returning to
+    // the already-analyzed count before the debounce expires cancels the
+    // refresh and immediately restores readiness.
+    onPreflightStatusChange?.(
+      p.targetClipCount === settledTargetClipCount ? "ready" : "loading",
+    );
+  }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, canLoadWithoutNarrative, p.targetClipCount, settledTargetClipCount, preflight, onPreflightStatusChange]);
+
+  useEffect(() => {
     if (!canRenderPersistedVisual || !shouldLoadVisualContext || !p.projectId || (!narrative && !canLoadWithoutNarrative)) {
       p.setBrandContentPreflightId(null);
       onPolicyWarningsChange?.([]);
@@ -236,7 +271,7 @@ export function BrandVisualSelector({
     const controller = new AbortController();
     void loadContext(controller.signal);
     return () => controller.abort();
-  }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, p.mode, p.targetClipCount, p.brollRegionPreference, onPreflightStatusChange, onPolicyWarningsChange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, p.mode, settledTargetClipCount, p.brollRegionPreference, onPreflightStatusChange, onPolicyWarningsChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setTreatmentDraft(treatment);
@@ -357,10 +392,11 @@ export function BrandVisualSelector({
       }
     }
   };
+  const showInitialLoading = loading && preflight === null;
   return <section className="shrink-0" style={{ border: `1px solid ${color.cardBorder}`, borderRadius: radius.card, background: color.cardBg, overflow: "hidden" }}>
     <button type="button" onClick={() => { if (visualSelectionEnabled) setExpanded((value) => !value); }} className="flex min-h-12 w-full items-center gap-3 px-4 py-3 text-left" aria-expanded={visualSelectionEnabled && expanded} aria-disabled={!visualSelectionEnabled}>
       <span className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: "rgba(56,189,248,.12)", color: color.info }}><SwatchBook size={16} /></span>
-      <span className="min-w-0 flex-1"><span className="block" style={{ font: `600 13px ${font.heading}`, color: color.text }}>แบรนด์และแนวภาพของคลิปนี้</span><span className="block truncate" style={{ fontSize: 10.5, color: color.textFaint }}>{loading ? "กำลังอ่านเนื้อหา…" : selectedBrandProfile ? `ใช้แนวภาพจาก ${selectedBrandProfile.name} · ${selectedFormatLabel ?? "กำลังเลือกแนวภาพ"} · รุ่น ${selectedBrandProfile.revisionNumber}${context?.source === "project-look" ? " · ปรับเฉพาะคลิปนี้" : ""}` : visualSelectionEnabled ? context?.source === "project-look" ? `ใช้ ${selectedFormatLabel ?? "แนวภาพที่เลือก"} ให้คลิปนี้` : `AI เลือก ${selectedFormatLabel ?? "แนวภาพ"} จากเนื้อหาไว้แล้ว` : "เลือกแบรนด์แบบรวดเร็ว แล้วเลือกระดับ B-roll ด้านล่าง"}</span></span>
+      <span className="min-w-0 flex-1"><span className="block" style={{ font: `600 13px ${font.heading}`, color: color.text }}>แบรนด์และแนวภาพของคลิปนี้</span><span className="block truncate" style={{ fontSize: 10.5, color: color.textFaint }}>{showInitialLoading ? "กำลังอ่านเนื้อหา…" : selectedBrandProfile ? `ใช้แนวภาพจาก ${selectedBrandProfile.name} · ${selectedFormatLabel ?? "กำลังเลือกแนวภาพ"} · รุ่น ${selectedBrandProfile.revisionNumber}${context?.source === "project-look" ? " · ปรับเฉพาะคลิปนี้" : ""}` : visualSelectionEnabled ? context?.source === "project-look" ? `ใช้ ${selectedFormatLabel ?? "แนวภาพที่เลือก"} ให้คลิปนี้` : `AI เลือก ${selectedFormatLabel ?? "แนวภาพ"} จากเนื้อหาไว้แล้ว` : "เลือกแบรนด์แบบรวดเร็ว แล้วเลือกระดับ B-roll ด้านล่าง"}</span></span>
       {p.starterAiImageAllowance?.eligible && <span className="rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: color.infoText, fontSize: 10, fontWeight: 600 }}>เหลือ {p.starterAiImageAllowance.remainingImages}/8 ภาพ</span>}
       {visualSelectionEnabled && <><span style={{ color: color.infoText, fontSize: 10.5, fontWeight: 700 }}>{expanded ? "ซ่อน" : "เปลี่ยนแนวภาพ"}</span><ChevronDown size={15} style={{ color: color.textFaint, transform: expanded ? "rotate(180deg)" : undefined, transition: "transform 150ms" }} /></>}
     </button>
@@ -376,7 +412,7 @@ export function BrandVisualSelector({
       {!canManageBrandVisual && p.hasPersistedVisualPin && <div className="mb-3 rounded-lg px-3 py-2" style={{ background: "rgba(56,189,248,.08)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>แนวภาพเดิมของโปรเจกต์นี้ยังใช้สร้างซ้ำได้ตามเดิม ขณะนี้ปิดการเลือกหรือสร้างแนวภาพใหม่ชั่วคราว</div>}
       {error && <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2" style={{ background: "rgba(248,113,113,.09)", color: color.dangerText, fontSize: 11 }}><span>{error}</span><button type="button" onClick={() => void loadContext()} className="min-h-8 rounded-md px-2.5" style={{ border: "1px solid rgba(248,113,113,.28)", color: color.dangerText, fontWeight: 600 }}>ลองวิเคราะห์อีกครั้ง</button></div>}
       {!narrative && canLoadWithoutNarrative && <div className="mb-3 rounded-lg px-3 py-2" style={{ background: "rgba(56,189,248,.08)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>เลือกแบรนด์หรือแนวภาพล่วงหน้าได้ ระบบจะอ่านคำพูดจากเสียงหลังเริ่มสร้าง แล้วใช้ผลนั้นกับภาพของคลิปนี้</div>}
-      {loading ? <div className="flex items-center gap-2 py-5" style={{ color: color.textFaint, fontSize: 11 }}><Loader2 size={14} className="animate-spin" /> กำลังวิเคราะห์แนวภาพและฉากของคลิปครั้งแรก…</div> : <>
+      {showInitialLoading ? <div className="flex items-center gap-2 py-5" style={{ color: color.textFaint, fontSize: 11 }}><Loader2 size={14} className="animate-spin" /> กำลังวิเคราะห์แนวภาพและฉากของคลิปครั้งแรก…</div> : <>
         {preflight && <div className="mb-3 flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1 rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: color.infoText, fontSize: 10 }}><Sparkles size={11} /> AI แนะนำ {formats.find((item) => item.id === preflight.suggestedVisualFormatId)?.label}</span><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight.suggestedTreatment.label}</span></div>}
         {outdatedBeatCount > 0 && <div className="mb-3 rounded-xl px-3 py-2.5" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.25)" }}><p style={{ color: color.warningText, font: `600 11px ${font.heading}` }}>ฉากที่เนื้อหาเปลี่ยน {outdatedBeatCount} ฉาก · {imageFundingText(p, outdatedBeatCount)}</p><p className="mt-1" style={{ color: color.textSecondary, fontSize: 10.5, lineHeight: 1.55 }}>ภาพเดิมยังอยู่และยังไม่ถูกคิดซ้ำ เมื่อคุณยืนยันสร้างครั้งถัดไป ระบบจะใช้ภาพที่ยังตรงกับสคริปต์ซ้ำ และสร้างใหม่เฉพาะ {outdatedBeatCount} ภาพนี้</p></div>}
         {canManageBrandVisual && <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{formats.map((format) => { const isSelected = selected === format.id; return <button key={format.id} type="button" disabled={changing} onClick={() => void applyLook(format.id)} className="relative overflow-hidden text-left" style={{ border: `1px solid ${isSelected ? color.info : color.cardBorder}`, borderRadius: 8, background: isSelected ? "rgba(56,189,248,.09)" : "rgba(255,255,255,.025)", opacity: changing ? .65 : 1 }}><div className="relative aspect-[16/9] overflow-hidden"><img src={format.previewUrl} alt="" className="h-full w-full object-cover object-[center_30%]" /></div><div className="flex min-h-10 items-center justify-between gap-1 px-2 py-1.5"><span style={{ color: isSelected ? color.infoText : color.textSecondary, font: `500 10.5px ${font.heading}`, lineHeight: 1.25 }}>{format.label}</span>{isSelected && <Check size={12} color={color.info} />}</div></button>; })}</div>}
