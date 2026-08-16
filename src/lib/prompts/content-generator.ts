@@ -14,6 +14,7 @@ export interface ContentGenerationParams {
   aspectRatio?: string;
   selectedStyle?: string;
   inputText: string;
+  inputMode?: "topic" | "source";
 }
 
 export function buildContentGenerationPrompt(params: ContentGenerationParams): string {
@@ -25,6 +26,7 @@ export function buildContentGenerationPrompt(params: ContentGenerationParams): s
     aspectRatio = "9:16",
     selectedStyle = "Not specified",
     inputText,
+    inputMode = "source",
   } = params;
 
   // AI Model specifications
@@ -84,7 +86,7 @@ Apply these technical parameters in the image prompt generation to achieve optim
 INPUT DATA
 ====================
 Style Reference: ${selectedStyle}
-Content Knowledge Base:
+${inputMode === "topic" ? "Topic / Creative Brief" : "Source Material"}:
 """
 ${inputText}
 """
@@ -94,7 +96,9 @@ CONTENT CREATION PROCESS
 ====================
 
 STEP 1: ANALYZE INPUT
-- Carefully read and understand the knowledge base content
+- ${inputMode === "topic"
+    ? "Treat the supplied topic/brief as the exact central subject. Expand it with useful supporting context, but never switch to a different subject."
+    : "Carefully read the source material and keep every factual claim grounded in it."}
 - Identify key themes, emotions, and visual storytelling opportunities
 - Consider how ${imageModel} model strengths align with the content
 - Note the style reference and plan to incorporate its aesthetic
@@ -180,7 +184,9 @@ QUALITY GUIDELINES
 ====================
 ✓ CRITICAL: Content must be PLAIN TEXT - NO asterisks, NO markdown, NO special formatting
 ✓ CRITICAL: Content word count must match ${pacing.wordCount} for ${videoDuration}s video
-✓ Use ONLY information from the knowledge base - no fabrication
+✓ ${inputMode === "topic"
+    ? "Keep the supplied topic as the explicit subject of the headline, opening, main points, and CTA"
+    : "Use ONLY information from the supplied source material - no fabrication"}
 ✓ Strictly follow the provided writing style throughout all content
 ✓ Optimize for mobile viewing (90% of viewers)
 ✓ Ensure cultural appropriateness for ${language === "TH" ? "Thai" : "English"} audience
@@ -211,7 +217,7 @@ CRITICAL REQUIREMENTS:
 - Ensure all fields are present and properly filled
 - Return immediately with the JSON - no preamble or explanation
 
-Generate the content now based on the knowledge base provided above.`;
+Generate the content now based on the ${inputMode === "topic" ? "topic/brief" : "source material"} provided above.`;
 
   return prompt;
 }

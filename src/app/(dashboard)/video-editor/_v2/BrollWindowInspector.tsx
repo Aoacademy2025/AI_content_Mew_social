@@ -258,12 +258,14 @@ export function BrollWindowInspector({
   videoJobId,
   fullBrollEditEnabled,
   sceneRerollEnabled,
+  sceneRerollUnavailableReason,
   starterImageAllowance,
 }: {
   ed: PostPhaseEditor;
   videoJobId: string | null;
   fullBrollEditEnabled: boolean;
   sceneRerollEnabled: boolean;
+  sceneRerollUnavailableReason?: string;
   starterImageAllowance?: StarterImageAllowance;
 }) {
   const isMobile = useIsMobile();
@@ -767,7 +769,7 @@ export function BrollWindowInspector({
                 label: "ลองภาพใหม่",
                 disabled: !sceneRerollEnabled || !currentSourceIsAi,
                 title: currentSourceIsAi
-                  ? "ลองภาพใหม่โดยคงแนวภาพเดิม"
+                  ? sceneRerollUnavailableReason ?? "ลองภาพใหม่โดยคงแนวภาพเดิม"
                   : "V1 ลองใหม่ได้เฉพาะฉากที่เป็นภาพ AI อยู่แล้ว",
               },
             ]}

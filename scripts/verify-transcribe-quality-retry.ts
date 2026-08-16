@@ -7,6 +7,7 @@ import {
   normalizeGeminiWords,
   parseTranscriptionSilenceAnalysis,
   planTranscriptionChunkBoundaries,
+  planTranscriptionRecoveryBoundaries,
   runTranscriptionQualityRetries,
   type ChunkResult,
 } from "../src/lib/transcribe-timeline";
@@ -50,6 +51,16 @@ async function main() {
   );
   assert.equal(calls, 3, "persistently incomplete transcript gets three bounded attempts");
   assert.equal(exhausted.accepted, false, "bad result stays rejected after retry exhaustion");
+  assert.deepEqual(
+    planTranscriptionRecoveryBoundaries(60_037),
+    [30_019],
+    "a persistently failing 60s primary chunk is recovered as two ~30s slices",
+  );
+  assert.deepEqual(
+    planTranscriptionRecoveryBoundaries(90_000),
+    [45_000],
+    "recovery slices never exceed the 45s reliability ceiling",
+  );
 
   // Exact production failure on 2026-08-09: the balanced planner regressed the
   // old ~75s anchor target into two 90.055s calls. All three Gemini attempts for

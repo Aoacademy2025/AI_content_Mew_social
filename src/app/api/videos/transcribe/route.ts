@@ -15,8 +15,10 @@ import {
   normalizeGeminiWords,
   parseTranscriptionSilenceAnalysis,
   planTranscriptionChunkBoundaries,
+  planTranscriptionRecoveryBoundaries,
   runTranscriptionQualityRetries,
   sanitizeChunkTimeline,
+  type ChunkResult,
 } from "@/lib/transcribe-timeline";
 import { isSafeFetchUrl, assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
@@ -990,6 +992,37 @@ export async function POST(req: Request) {
           const totalMsForScript = sourceAudioDurationMs || chunkPlan.reduce((a, c) => a + c.durationMs, 0) || 1;
           let anyDegenerateWords = false;
           let chunkIdx = 0;
+          const appendChunkResult = (
+            rawChunk: ChunkResult,
+            chunkDurationMs: number,
+            offsetMs: number,
+            label: string,
+          ) => {
+            // Rescale residual drift, discard impossible word timestamps, then
+            // merge the slice onto the authoritative ffmpeg offset.
+            const sanitized = sanitizeChunkTimeline(rawChunk, chunkDurationMs);
+            anyDegenerateWords ||= sanitized.stats.wordsDegenerate;
+            const keptGapSec = chunkTailGapMs(rawChunk.geminiDirectCaptions, chunkDurationMs) / 1000;
+            console.log(
+              `[transcribe] ${label}: ${sanitized.geminiDirectCaptions.length} captions, `
+              + `${sanitized.words.length}/${rawChunk.words.length} words`
+              + (Math.abs(keptGapSec) > 2 ? `, tail ${keptGapSec >= 0 ? "+" : ""}${keptGapSec.toFixed(1)}s` : "")
+              + (sanitized.stats.rescaleK !== 1 ? `, tail-rescale ×${sanitized.stats.rescaleK.toFixed(3)}` : "")
+              + (sanitized.stats.wordsDegenerate ? " (degenerate words → dropped)" : ""),
+            );
+            const offsetSec = offsetMs / 1000;
+            for (const word of sanitized.words) words.push({ word: word.word, start: word.start + offsetSec, end: word.end + offsetSec });
+            for (const segment of sanitized.segments) segments.push({ text: segment.text, start: segment.start + offsetSec, end: segment.end + offsetSec });
+            for (const caption of sanitized.geminiDirectCaptions) {
+              geminiDirectCaptions.push({
+                ...caption,
+                startMs: caption.startMs + offsetMs,
+                endMs: caption.endMs + offsetMs,
+                timestampMs: caption.timestampMs + offsetMs,
+              });
+            }
+            fullText += (fullText ? " " : "") + sanitized.fullText;
+          };
           for (const ch of chunkPlan) {
             // Give each chunk only its proportional slice of the script (±12% margin)
             // as the spelling reference. Passing the FULL script made Gemini anchor to
@@ -1025,6 +1058,86 @@ export async function POST(req: Request) {
             );
             const rawChunk = quality.result;
             if (!quality.accepted) {
+              const recoveryCuts = planTranscriptionRecoveryBoundaries(ch.durationMs);
+              if (recoveryCuts.length > 0) {
+                const recoverySourcePath = `${mp3Path}.chunk${chunkIdx}.recovery-source.mp3`;
+                fs.writeFileSync(recoverySourcePath, ch.buffer);
+                try {
+                  const recoveryBounds = [0, ...recoveryCuts, ch.durationMs];
+                  for (let recoveryIndex = 0; recoveryIndex < recoveryBounds.length - 1; recoveryIndex++) {
+                    const recoveryStartMs = recoveryBounds[recoveryIndex];
+                    const recoveryEndMs = recoveryBounds[recoveryIndex + 1];
+                    const recoveryDurationMs = recoveryEndMs - recoveryStartMs;
+                    const recoveryBuffer = await sliceAudio(
+                      ffmpeg,
+                      recoverySourcePath,
+                      recoveryStartMs,
+                      recoveryEndMs,
+                      `${mp3Path}.chunk${chunkIdx}.recovery${recoveryIndex + 1}.mp3`,
+                    );
+                    const scriptStart = Math.max(0, recoveryStartMs / ch.durationMs - 0.12);
+                    const scriptEnd = Math.min(1, recoveryEndMs / ch.durationMs + 0.12);
+                    const recoveryScript = chunkScript
+                      ? chunkScript.slice(
+                          Math.floor(chunkScript.length * scriptStart),
+                          Math.ceil(chunkScript.length * scriptEnd),
+                        )
+                      : "";
+                    const globalStartMs = ch.startMs + recoveryStartMs;
+                    const recoveryReferenceMs = chunkTranscriptionReferenceDurationMs({
+                      chunkStartMs: globalStartMs,
+                      chunkDurationMs: recoveryDurationMs,
+                      totalDurationMs: sourceAudioDurationMs,
+                      trailingSilenceStartMs,
+                    });
+                    const recoveryQuality = await runTranscriptionQualityRetries(
+                      () => geminiTranscribeChunk(recoveryBuffer, geminiKey, recoveryScript, recoveryDurationMs),
+                      recoveryReferenceMs,
+                      3,
+                      ({ nextAttempt, tailGapMs }) => {
+                        console.warn(
+                          `[transcribe] recovery ${recoveryIndex + 1}/${recoveryBounds.length - 1} `
+                          + `for chunk ${chunkIdx}: tail ${(tailGapMs / 1000).toFixed(1)}s — `
+                          + `re-transcribing (attempt ${nextAttempt}/3)`,
+                        );
+                      },
+                    );
+                    if (!recoveryQuality.accepted) {
+                      const recoveryTailGapMs = chunkTailGapMs(
+                        recoveryQuality.result.geminiDirectCaptions,
+                        recoveryReferenceMs,
+                      );
+                      return NextResponse.json({
+                        error: "ถอดซับช่วงหนึ่งไม่ครบหลังแบ่งช่วงที่มีปัญหาแล้ว — กรุณาลองใหม่หรือส่งคลิปให้ทีมงานตรวจ",
+                        provider: "gemini",
+                        reason: recoveryQuality.result.geminiDirectCaptions.length === 0
+                          ? "empty_captions"
+                          : recoveryTailGapMs < 0
+                            ? "transcribe_incomplete"
+                            : "transcribe_desynced",
+                        retryable: true,
+                        recoveryAttempted: true,
+                        sourceAudioDurationMs,
+                        chunkIndex: chunkIdx,
+                        chunkDurationMs: ch.durationMs,
+                        recoveryChunkIndex: recoveryIndex + 1,
+                        recoveryChunkDurationMs: recoveryDurationMs,
+                        captionDurationMs: recoveryQuality.result.geminiDirectCaptions.at(-1)?.endMs ?? 0,
+                      }, { status: 422 });
+                    }
+                    appendChunkResult(
+                      recoveryQuality.result,
+                      recoveryDurationMs,
+                      globalStartMs,
+                      `chunk ${chunkIdx}/${chunkPlan.length} recovery ${recoveryIndex + 1}/${recoveryBounds.length - 1}`,
+                    );
+                  }
+                } finally {
+                  try { fs.unlinkSync(recoverySourcePath); } catch {}
+                }
+                console.warn(`[transcribe] chunk ${chunkIdx}/${chunkPlan.length} recovered with ${recoveryCuts.length + 1} shorter slices`);
+                continue;
+              }
               const tailGapMs = chunkTailGapMs(rawChunk.geminiDirectCaptions, referenceDurationMs);
               return NextResponse.json({
                 error: "ถอดซับช่วงหนึ่งไม่ครบหรือไม่ตรงจังหวะหลังลองใหม่ 3 ครั้ง — กรุณาลองสร้างอีกครั้ง",
@@ -1035,33 +1148,14 @@ export async function POST(req: Request) {
                     ? "transcribe_incomplete"
                     : "transcribe_desynced",
                 retryable: true,
+                recoveryAttempted: false,
                 sourceAudioDurationMs,
                 chunkIndex: chunkIdx,
                 chunkDurationMs: ch.durationMs,
                 captionDurationMs: rawChunk.geminiDirectCaptions.at(-1)?.endMs ?? 0,
               }, { status: 422 });
             }
-            // Per-chunk timestamp guard: rescale residual tail drift onto the real
-            // slice duration, drop word timestamps hallucinated past the slice
-            // length, and zero out degenerate words arrays (truncated responses —
-            // prod saw 108 words for 105 captions). Raw words otherwise reach the
-            // editor and break the word-based "แบ่งซับ N คำ" rebuild (411s timeline
-            // on a 285s clip).
-            const r = sanitizeChunkTimeline(rawChunk, ch.durationMs);
-            anyDegenerateWords ||= r.stats.wordsDegenerate;
-            const keptGapSec = chunkTailGapMs(rawChunk.geminiDirectCaptions, ch.durationMs) / 1000;
-            console.log(
-              `[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: ${r.geminiDirectCaptions.length} captions, ` +
-              `${r.words.length}/${rawChunk.words.length} words` +
-              (Math.abs(keptGapSec) > 2 ? `, tail ${keptGapSec >= 0 ? "+" : ""}${keptGapSec.toFixed(1)}s` : "") +
-              (r.stats.rescaleK !== 1 ? `, tail-rescale ×${r.stats.rescaleK.toFixed(3)}` : "") +
-              (r.stats.wordsDegenerate ? " (degenerate words → dropped)" : ""),
-            );
-            const offSec = ch.startMs / 1000;
-            for (const w of r.words) words.push({ word: w.word, start: w.start + offSec, end: w.end + offSec });
-            for (const s of r.segments) segments.push({ text: s.text, start: s.start + offSec, end: s.end + offSec });
-            for (const c of r.geminiDirectCaptions) geminiDirectCaptions.push({ ...c, startMs: c.startMs + ch.startMs, endMs: c.endMs + ch.startMs, timestampMs: c.timestampMs + ch.startMs });
-            fullText += (fullText ? " " : "") + r.fullText;
+            appendChunkResult(rawChunk, ch.durationMs, ch.startMs, `chunk ${chunkIdx}/${chunkPlan.length}`);
           }
           if (anyDegenerateWords && words.length > 0) {
             // Partial word coverage is worse than none: the editor's word-based

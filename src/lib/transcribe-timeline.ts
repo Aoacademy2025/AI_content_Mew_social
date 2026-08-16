@@ -43,6 +43,7 @@ export type SanitizedChunk = ChunkResult & {
 export const TRANSCRIBE_CHUNK_MAX_MS = 110_000;
 export const TRANSCRIBE_CHUNK_MIN_MS = 30_000;
 export const TRANSCRIBE_CHUNK_TARGET_MS = 75_000;
+export const TRANSCRIBE_RECOVERY_MAX_MS = 45_000;
 export const TRANSCRIBE_TRAILING_SILENCE_MIN_MS = 3_000;
 
 export type TranscriptionSilenceAnalysis = {
@@ -154,6 +155,18 @@ export function planTranscriptionChunkBoundaries(totalMs: number, silences: numb
     lastCut = cut;
   }
   return cuts;
+}
+
+/**
+ * After three model attempts fail on one otherwise valid primary chunk, split
+ * only that failed region into balanced 30–45s recovery calls. Healthy chunks
+ * are left untouched, so reliability improves without doubling normal cost.
+ */
+export function planTranscriptionRecoveryBoundaries(totalMs: number): number[] {
+  if (!(totalMs > TRANSCRIBE_RECOVERY_MAX_MS)) return [];
+  const chunkCount = Math.ceil(totalMs / TRANSCRIBE_RECOVERY_MAX_MS);
+  return Array.from({ length: chunkCount - 1 }, (_, index) =>
+    Math.round((totalMs * (index + 1)) / chunkCount));
 }
 
 export type RawGeminiWord = {

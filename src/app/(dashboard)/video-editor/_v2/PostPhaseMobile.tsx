@@ -81,6 +81,7 @@ export function PostPhaseMobile({
   canRunProjectOperation,
   internalAiTester,
   sceneRerollEnabled,
+  sceneRerollUnavailableReason,
   starterImageAllowance,
   downloadFilename,
 }: {
@@ -105,6 +106,7 @@ export function PostPhaseMobile({
   canRunProjectOperation?: () => boolean;
   internalAiTester: boolean;
   sceneRerollEnabled: boolean;
+  sceneRerollUnavailableReason?: string;
   starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
 }) {
@@ -988,6 +990,7 @@ export function PostPhaseMobile({
           videoJobId={job.jobId}
           fullBrollEditEnabled={fullBrollEditEnabled}
           sceneRerollEnabled={sceneRerollEnabled}
+          sceneRerollUnavailableReason={sceneRerollUnavailableReason}
           starterImageAllowance={starterImageAllowance}
         />
       )}

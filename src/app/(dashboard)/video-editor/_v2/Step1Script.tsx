@@ -13,6 +13,7 @@ import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile } from "./ui";
 import { estimateClipSecV2, countWordsV2 } from "./estimate";
 import type { V2Project } from "./useV2Project";
+import { audioDurationLimitViolation } from "@/lib/plan-limits";
 
 const CLIP_CUTAWAY_ON = process.env.NEXT_PUBLIC_CLIP_CUTAWAY === "1";
 
@@ -36,6 +37,9 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
   const [selectedSeg, setSelectedSeg] = useState(0);
   const dragIdx = useRef<number | null>(null);
   const uploadDurationLabel = p.clipDurationSec > 0 ? fmtTime(p.clipDurationSec) : null;
+  const clipDurationViolation = p.mode === "upload" && p.clipDurationSec > 0
+    ? audioDurationLimitViolation(p.clipDurationSec * 1000, p.plan ?? "FREE")
+    : null;
   const showScriptSegments = p.mode !== "upload";
 
   // เวลาโดยประมาณต่อเซ็กเมนต์ — แบ่งตามสัดส่วนความยาวตัวอักษรของแต่ละบรรทัด
@@ -60,7 +64,9 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
   }
 
   // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
-  const ctaDisabled = p.mode === "upload" ? (!p.canUploadOwnMedia || !p.clipUrl) : !lines.length;
+  const ctaDisabled = p.mode === "upload"
+    ? (!p.canUploadOwnMedia || !p.clipUrl || Boolean(clipDurationViolation))
+    : !lines.length;
   const primaryCta = (
     <BtnPrimary
       className="w-full"
@@ -126,7 +132,16 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
                     คลิปยาว {uploadDurationLabel} นาที
                   </span>
                 )}
-                <button onClick={() => p.setClipUrl("")} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
+                {clipDurationViolation && (
+                  <div
+                    role="alert"
+                    className="max-w-[440px] rounded-lg px-3 py-2 text-center"
+                    style={{ fontSize: 11.5, lineHeight: 1.65, color: color.danger, background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.22)" }}
+                  >
+                    {clipDurationViolation.message}<br />{clipDurationViolation.userAction}
+                  </div>
+                )}
+                <button onClick={() => { p.setClipUrl(""); p.setClipDurationSec(0); }} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
                   เปลี่ยนคลิป
                 </button>
               </>
@@ -135,7 +150,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
                 <DirectAvatarUpload
                   onUrl={(u, meta) => {
                     p.setClipUrl(u);
-                    if (meta?.durationSec) p.setClipDurationSec(meta.durationSec);
+                    p.setClipDurationSec(meta?.durationSec ?? 0);
                   }}
                   requirePortrait
                   label="อัปโหลดคลิปแนวตั้งของคุณ"

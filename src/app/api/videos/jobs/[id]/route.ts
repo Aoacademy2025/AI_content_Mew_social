@@ -13,6 +13,7 @@ import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement
 import { refundVideoJobTerminalRenderReservations } from "@/lib/render/reservation-settlement";
 import { parseProjectVisualContext } from "@/lib/project-look.server";
 import { refundVideoJobFunding } from "@/lib/mcp/video-job-funding";
+import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
 // Output is included only when done, parsed through the versioned reader (v1 + v2).
@@ -61,6 +62,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
         : null;
 
     const output = job.status === "done" ? parseVideoJobOutput(job.outputJson) : null;
+    const projectVisualContext = parseProjectVisualContext(job.projectVisualContextJson);
     const mediaState = job.status === "done"
       ? await resolveProjectMediaState({
           videoUrl: output?.videoUrl,
@@ -72,7 +74,12 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       id: job.id,
       projectId: job.projectId,
       contentPreflightId: job.contentPreflightId,
-      projectVisualContext: parseProjectVisualContext(job.projectVisualContextJson),
+      projectVisualContext,
+      sceneRerollCapability: resolveSceneRerollCapability({
+        projectId: job.projectId,
+        contentPreflightId: job.contentPreflightId,
+        hasProjectVisualContext: projectVisualContext !== null,
+      }),
       type: job.type,
       status: toPublicVideoJobStatus(job.status), // queued | processing | done | failed | canceled
       currentStep: job.currentStep,

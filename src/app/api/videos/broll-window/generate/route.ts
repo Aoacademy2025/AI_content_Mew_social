@@ -24,7 +24,8 @@ import {
   prepareBrandVisualJobAcceptance,
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
-import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
+import { parseProjectVisualContext, resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
+import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
 import { recordVisualBeatAsset } from "@/lib/content-preflight.server";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
@@ -92,15 +93,30 @@ export async function POST(req: Request) {
       { status: 409 },
     );
   }
-  if (!sourceJob.projectId || !sourceJob.contentPreflightId || !sourceJob.projectVisualContextJson) {
+  const sceneRerollCapability = resolveSceneRerollCapability({
+    projectId: sourceJob.projectId,
+    contentPreflightId: sourceJob.contentPreflightId,
+    hasProjectVisualContext: parseProjectVisualContext(sourceJob.projectVisualContextJson) !== null,
+  });
+  if (
+    !sceneRerollCapability.available
+    || !sourceJob.projectId
+    || !sourceJob.contentPreflightId
+    || !sourceJob.projectVisualContextJson
+  ) {
     return NextResponse.json(
       {
         error: "scene_reroll_unavailable",
-        message: "คลิปนี้ยังไม่มีแนวภาพและฉากที่ยืนยันไว้สำหรับลองภาพใหม่",
+        message: sceneRerollCapability.available
+          ? "คลิปนี้ยังไม่มีข้อมูลฉากที่สมบูรณ์สำหรับลองภาพใหม่"
+          : sceneRerollCapability.message,
       },
       { status: 409 },
     );
   }
+  const projectId = sourceJob.projectId;
+  const contentPreflightId = sourceJob.contentPreflightId;
+  const projectVisualContextJson = sourceJob.projectVisualContextJson;
   const brandVisualPrompt = await resolveProjectVisualPromptForVideoScene({
     userId: user.id,
     videoJobId: input.videoJobId,
@@ -126,8 +142,8 @@ export async function POST(req: Request) {
   if (!existingImageJob) {
     const sourceAssets = await reusableProjectVisualAssets({
       userId: user.id,
-      projectId: sourceJob.projectId,
-      preflightId: sourceJob.contentPreflightId,
+      projectId,
+      preflightId: contentPreflightId,
     });
     if (!sourceAssets.some((asset) => asset.beatId === brandVisualPrompt.visualBeatId)) {
       return NextResponse.json(
@@ -194,10 +210,10 @@ export async function POST(req: Request) {
     }
     acceptance = parseBrandVisualJobAcceptance(await prepareBrandVisualJobAcceptance({
       userId: user.id,
-      projectId: sourceJob.projectId,
+      projectId,
       projectVisualPin: {
-        contentPreflightId: sourceJob.contentPreflightId,
-        projectVisualContextJson: sourceJob.projectVisualContextJson,
+        contentPreflightId,
+        projectVisualContextJson,
       },
       access,
     }));

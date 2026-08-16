@@ -105,8 +105,13 @@ assert.match(
 );
 assert.match(
   shell,
-  /sceneRerollEnabled=\{p\.heroAiImageEligible\s*\|\|\s*Boolean\(job\.contentPreflightId\)\}/,
-  "the per-window V1 gate must admit Brand Visual cohorts and already-pinned rollback jobs",
+  /sceneRerollEnabled=\{job\.sceneRerollCapability\?\.available === true\}/,
+  "the per-window gate must use the source job's authoritative visual-pin capability",
+);
+assert.doesNotMatch(
+  shell,
+  /sceneRerollEnabled=\{p\.heroAiImageEligible\s*\|\|/,
+  "account eligibility alone must not expose Scene Reroll on legacy jobs",
 );
 assert.ok(
   route.indexOf("const existingImageJob") < route.indexOf("await checkHeroImageRate")

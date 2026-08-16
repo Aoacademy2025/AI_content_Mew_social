@@ -668,9 +668,9 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={p.heroAiImageEligible || Boolean(job.contentPreflightId)} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={job.sceneRerollCapability?.available === true} sceneRerollUnavailableReason={job.sceneRerollCapability?.message ?? undefined} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
           ) : (
-            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={p.heroAiImageEligible || Boolean(job.contentPreflightId)} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={job.sceneRerollCapability?.available === true} sceneRerollUnavailableReason={job.sceneRerollCapability?.message ?? undefined} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
           )
         ) : (
           <ExportedView
