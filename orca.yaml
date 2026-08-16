@@ -1,0 +1,11 @@
+# Orca workspace config
+# docs: https://www.onorca.dev/docs/model/worktrees
+#
+# sharedDirectories: worktree ใหม่จะ "share" โฟลเดอร์นี้กับ repo หลัก
+# แทนที่จะก็อปใหม่ทุกครั้ง (node_modules = 1.8 GB ต่อ worktree)
+#
+# หมายเหตุ: ไม่ share .next เพราะ build output ผูกกับ branch
+# ถ้า share จะได้ build ของ branch อื่นปนกัน
+worktree:
+  sharedDirectories:
+    - node_modules

@@ -50,3 +50,50 @@
 ## Working conventions
 - Work on feature branches (`mew/...`), open a PR into `main` — avoid committing straight to main. **Mew rebases + merges + deploys** (including wao's branches).
 - Follow existing code style. Build-verify render-backend changes before merging.
+
+## Workspace rules — READ BEFORE TOUCHING ANY FILE
+
+This is a **live production SaaS with paying customers**. `origin/main` deploys to the
+Hostinger VPS via `deploy/deploy.sh`. Anything that reaches `main` reaches customers.
+
+### 1. The repo root is a read-only baseline
+`/Users/mewsocialmacmini/projects/AI_content_Mew_social` stays checked out on `main`
+and is **never edited**. It exists so agents can read current-truth code.
+
+- Do NOT edit, commit, or switch branches in the root checkout.
+- If you were started in the root and have work to do, create a worktree first.
+
+### 2. One task = one worktree = one branch = one PR
+Create worktrees **only** through Orca:
+
+```bash
+orca worktree create --repo name:AI_content_Mew_social --name <slug> --agent <claude|codex>
+orca worktree create --repo name:AI_content_Mew_social --issue <n>   # when a GitHub issue exists
+```
+
+Hard rules:
+- **NEVER** run `git worktree add` yourself.
+- **NEVER** create a worktree under `/private/tmp` — macOS deletes it and the work is gone.
+- **NEVER** create a worktree under `.worktrees/`, `.claude/worktrees/`, or as a sibling
+  folder in `~/projects/`. Orca owns `AI_content_Mew_social.worktrees/`.
+- Always branch from the latest `origin/main` (`git fetch origin main` first).
+- Branch naming: `mew/<slug>` (Mew), `codex/<slug>` (Codex), `agent/<slug>` (other agents).
+
+### 3. Never share a working directory with another agent
+Before starting, confirm no other agent session is running in the same directory.
+Two agents in one checkout will overwrite each other's half-finished edits. If a
+directory is already occupied, create your own worktree instead.
+
+### 4. Shipping to production
+- Land via PR into `main`. CI (`.github/workflows/ci.yml`) must be **green** — a red
+  CI run is a stop sign, not a warning.
+- Never push directly to `main`. Never force-push `main`.
+- Schema changes: deploy runs `prisma db push` (additive). Column *removals* and
+  renames are NOT safe through that path — flag them to Mew instead of shipping.
+- After merging, prod deploy is a **human decision**. Do not run `deploy/deploy.sh`
+  or SSH to the VPS unless Mew explicitly asks in that message.
+
+### 5. Housekeeping
+- A worktree older than 7 days must be rebased onto `origin/main` or deleted.
+- Delete the worktree when its PR merges (`orca worktree rm`).
+- Never commit `.orca/`, `.playwright-mcp/`, `__pycache__/`, `artifacts/`, or `*.cpuprofile`.

@@ -1,0 +1,9 @@
+# ไฟล์ gitignored ที่ต้องก็อปเข้าไปในทุก worktree ที่ Orca สร้าง
+# docs: https://www.onorca.dev/docs/model/worktrees
+#
+# ไม่มีไฟล์พวกนี้ = worktree รันแอปไม่ได้ ต่อ DB ไม่ได้ เรียก API ไม่ได้
+# ซึ่งเป็นสาเหตุที่ผ่านมาต้องกลับไปทำงานบน main ตลอด
+
+.env
+.env.r2.production
+.claude/settings.local.json
