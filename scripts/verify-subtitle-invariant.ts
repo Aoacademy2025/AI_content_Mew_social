@@ -7,6 +7,8 @@ import {
   regroupCaptions,
   type V2Caption,
 } from "../src/app/(dashboard)/video-editor/_v2/subtitle-style";
+import { captionsFromTtsTiming } from "../src/app/(dashboard)/video-editor/_components/tts-timing-captions";
+import { validateSubtitleQuality } from "../src/lib/mcp/subtitle-quality";
 
 let failures = 0;
 const check = (name: string, cond: boolean, detail = "") => {
@@ -96,6 +98,53 @@ check(
   "merged card spans from the first start to the last end",
   chained[0].startMs === 0 && chained[0].endMs === 2600,
   `${chained[0].startMs}→${chained[0].endMs}`,
+);
+
+// Production regression: sentence-mode Gemini timing can merge a sub-600ms Thai
+// card into its predecessor. The merged text must remain a literal source span;
+// timing is already aligned to the voice and must remain byte-identical.
+const shortMergeSource = "ปลูกไผ่โตเร็วป่า";
+const secondCardStart = shortMergeSource.indexOf("โตเร็ว");
+const thirdCardStart = shortMergeSource.indexOf("ป่า");
+const shortMergeResult = captionsFromTtsTiming(
+  {
+    provider: "gemini",
+    segments: [{ text: shortMergeSource, startMs: 0, durationMs: 2500 }],
+    chars: null,
+    silenceIntervals: [{ startMs: 200, endMs: 300 }],
+  },
+  2500,
+  60,
+  [
+    { startChar: 0, endChar: secondCardStart },
+    { startChar: secondCardStart, endChar: thirdCardStart },
+    { startChar: thirdCardStart, endChar: shortMergeSource.length },
+  ],
+);
+check(
+  "sentence-mode short-card merge preserves the exact Thai source text",
+  shortMergeResult?.captions.map((caption) => caption.text).join("") === shortMergeSource,
+  JSON.stringify(shortMergeResult?.captions.map((caption) => caption.text)),
+);
+check(
+  "sentence-mode short-card merge keeps the voice-aligned timing span",
+  shortMergeResult?.captions.length === 2
+    && shortMergeResult.captions[1].startMs === 300
+    && shortMergeResult.captions[1].endMs === 2500,
+  JSON.stringify(shortMergeResult?.captions),
+);
+const shortMergeQuality = shortMergeResult
+  ? validateSubtitleQuality({
+      script: shortMergeResult.fullText,
+      captions: shortMergeResult.captions,
+      audioDurationMs: shortMergeResult.audioDurationMs,
+      timingSource: "tts_segment_timing",
+    })
+  : null;
+check(
+  "sentence-mode short-card merge passes the production subtitle release gate",
+  shortMergeQuality?.status === "passed",
+  JSON.stringify(shortMergeQuality),
 );
 
 // รวม "ใบสุดท้าย" (ไม่มีใบถัดไป) = ไม่มีอะไรเปลี่ยน

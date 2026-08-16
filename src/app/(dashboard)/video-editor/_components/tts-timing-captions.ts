@@ -113,7 +113,7 @@ export function captionsFromTtsTiming(
     // card too short to read — pause-aware so split runs aren't re-joined.
     if ((timing.provider === "gemini" || timing.provider === "omnivoice") && intervals.length > 0) {
       snapCaptionsToSilences(caps, intervals, { target: SNAP_TARGET });
-      caps = mergeShortCaptions(caps, MIN_CARD_MS, intervals);
+      caps = mergeShortCaptions(caps, MIN_CARD_MS, intervals, fullText);
     }
 
     const last = timing.segments[timing.segments.length - 1];
