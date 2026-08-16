@@ -480,6 +480,7 @@ function mountEditorShell(input: {
     if (specifier === "@/components/layout/account-menu") return { AccountMenu: marker("AccountMenu") };
     if (specifier === "@/components/layout/notification-bell") return { NotificationBell: marker("NotificationBell") };
     if (specifier === "@/components/quota-status") return { QuotaStatus: marker("QuotaStatus") };
+    if (specifier === "@/components/ui/api-key-modal") return { ApiKeyModal: marker("ApiKeyModal") };
     if (specifier === "@/components/ui/dropdown-menu") {
       return Object.fromEntries([
         "DropdownMenu", "DropdownMenuContent", "DropdownMenuItem", "DropdownMenuLabel",
