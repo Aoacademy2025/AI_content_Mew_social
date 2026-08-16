@@ -5,6 +5,7 @@ import type { V2Project } from "./useV2Project";
 import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
 import { isProviderErrorCode, type ProviderErrorCode } from "@/lib/provider-errors";
 import type { HeygenProviderAction } from "@/lib/heygen-readiness";
+import type { RequiredKeyType } from "@/components/ui/api-key-modal";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { PRESET_WEIGHTS } from "./mix-presets";
 import {
@@ -104,10 +105,27 @@ export type SubmitResult = {
   code?: ProviderErrorCode;
   provider?: string;
   actions?: HeygenProviderAction[];
+  missingKey?: RequiredKeyType;
+  // jobs/route.ts's ElevenLabs guard is two checks deep: missing key (→ missingKey
+  // above) THEN missing voice ID — the second returns { error: "missing_voice_id" }
+  // with no missingKey field. Kept separate from missingKey (not overloaded onto it)
+  // because the user already has a key here — ApiKeyModal is the wrong surface for it.
+  missingVoiceId?: boolean;
 };
 
 function isHeygenProviderAction(value: unknown): value is HeygenProviderAction {
   return value === "open_heygen" || value === "switch_faceless";
+}
+
+// Maps the server's missing_key vocabulary (jobs/route.ts:511/518/522) onto the
+// ApiKeyModal's RequiredKeyType. "broll" is the Pexels-OR-Pixabay case → "pexels"
+// (its ApiKeyModal copy already reads "ใช้สำหรับดาวน์โหลด Stock video", which fits
+// either provider). Unrecognized values are ignored rather than surfaced.
+function mapMissingKey(value: unknown): RequiredKeyType | undefined {
+  if (value === "elevenlabs") return "elevenlabs";
+  if (value === "gemini") return "gemini";
+  if (value === "broll") return "pexels";
+  return undefined;
 }
 type OwnedSubmitAttempt = {
   kind: "create" | "export";
@@ -465,6 +483,8 @@ export function useV2Job(p: V2Project) {
             code: isProviderErrorCode(d?.code) ? d.code : undefined,
             provider: typeof d?.provider === "string" ? d.provider : undefined,
             actions: Array.isArray(d?.actions) ? d.actions.filter(isHeygenProviderAction) : undefined,
+            missingKey: mapMissingKey(d?.missingKey),
+            missingVoiceId: d?.error === "missing_voice_id",
           };
         }
         if (!responseMatchesAttempt(d, attempt, false)) {

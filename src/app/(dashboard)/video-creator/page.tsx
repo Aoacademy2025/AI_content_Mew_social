@@ -368,7 +368,7 @@ export default function ShortVideoPage() {
 
   const cleanScript = preprocessScript(script);
   const [voiceId, setVoiceId] = useState("");
-  const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("elevenlabs");
+  const [ttsProvider, setTtsProvider] = useState<"elevenlabs" | "gemini">("gemini");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
   const [running, setRunning] = useState(false);
   // Bumped after a render or burn completes so QuotaStatus re-fetches the updated balance

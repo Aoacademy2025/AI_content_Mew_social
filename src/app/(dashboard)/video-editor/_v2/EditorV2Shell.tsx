@@ -34,8 +34,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { useV2Project } from "./useV2Project";
+import { useV2Project, type V2VoiceEngine } from "./useV2Project";
 import { useV2Job, type SubmitResult, type V2JobState } from "./useV2Job";
+import { ApiKeyModal, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { Step1Script } from "./Step1Script";
 import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
@@ -59,6 +60,11 @@ import {
 import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import { classifyFailure, failureViewCopy } from "./failure-view";
+
+// Which submit path a missing-key error interrupted, so the retry (after saving a key,
+// or after switching to Gemini) re-runs exactly that path — mirrors v1's
+// `retryStep: keyof StepState | "runAll"` at video-editor/page.tsx:480.
+type RetryAction = { kind: "render" } | { kind: "confirm"; minutes: number };
 
 export function EditorV2Shell() {
   const p = useV2Project();
@@ -88,6 +94,23 @@ export function EditorV2Shell() {
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [heygenQuotaAlert, setHeygenQuotaAlert] = useState<string | null>(null);
+  // Missing-key preflight (Task 2): jobs/route.ts answers a Render/Confirm submit with
+  // { error: "missing_key", missingKey } BEFORE creating any VideoJob — no client-side
+  // key rules here, just open the modal from the response and retry the same submit path.
+  const [missingKeyModal, setMissingKeyModal] = useState<{ type: RequiredKeyType; retry: RetryAction } | null>(null);
+  // One step behind missingKey: the user HAS a key/engine picked but no Voice ID set —
+  // jobs/route.ts returns this same { error: "missing_voice_id" } shape for BOTH
+  // ElevenLabs (no voiceId) and OmniVoice/Hero Voice (no omniVoiceId), with no
+  // discriminating field. `engine` is captured off p.voiceEngine at failure time (inside
+  // handleSubmitResult, not read live at render) so the dialog can't drift if the user
+  // later switches engines — ApiKeyModal is the wrong surface either way (nothing to
+  // paste a key into), so this reuses the heygenQuotaAlert AlertDialog shape instead.
+  const [missingVoiceIdAlert, setMissingVoiceIdAlert] = useState<{ message: string; retry: RetryAction; engine: V2VoiceEngine } | null>(null);
+  // "ใช้เสียง Gemini แทน" switches voiceEngine (React state, applies next render) then
+  // must resubmit — this ref+effect defers the resubmit until p.voiceEngine actually
+  // reflects "gemini", since calling submit() synchronously would still close over the
+  // pre-switch value.
+  const pendingGeminiRetryRef = useRef<RetryAction | null>(null);
   const confirmingRef = useRef(false); // hard guard vs. double-click before re-render
   const activeProjectIdRef = useRef(p.projectId);
   const mountedRef = useRef(false);
@@ -139,13 +162,23 @@ export function EditorV2Shell() {
     setReceiptOpen(false);
   }, [editorBlocked]);
 
-  function handleSubmitResult(result: SubmitResult) {
+  function handleSubmitResult(result: SubmitResult, retry: RetryAction) {
     if (result.ok) {
       if (result.warning) toast.warning(result.warning);
       return;
     }
     if (result.code === "quota" && result.provider === "heygen") {
       setHeygenQuotaAlert(result.message ?? "เครดิต HeyGen ไม่เพียงพอสำหรับสร้าง Avatar");
+      return;
+    }
+    if (result.missingKey) {
+      setMissingKeyModal({ type: result.missingKey, retry });
+      return;
+    }
+    if (result.missingVoiceId) {
+      // Capture the engine NOW, off the request that just failed — not later via
+      // p.voiceEngine at render time, which the Gemini-switch escape hatch mutates.
+      setMissingVoiceIdAlert({ message: result.message ?? "ต้องระบุ Voice ID", retry, engine: p.voiceEngine });
       return;
     }
     toast.error(result.message ?? "ส่งงานไม่สำเร็จ");
@@ -155,7 +188,7 @@ export function EditorV2Shell() {
     if (!p.canRunProjectOperation()) return;
     if (!CREDITS_LIVE_CLIENT) {
       const r = await submit();
-      handleSubmitResult(r);
+      handleSubmitResult(r, { kind: "render" });
       return;
     }
     setReceiptOpen(true);
@@ -170,13 +203,30 @@ export function EditorV2Shell() {
     setConfirmSubmitting(true);
     try {
       const r = await submit(confirmedMeteredMinutes);
-      handleSubmitResult(r);
+      handleSubmitResult(r, { kind: "confirm", minutes: confirmedMeteredMinutes });
     } finally {
       confirmingRef.current = false;
       setConfirmSubmitting(false);
       setReceiptOpen(false); // ok → shell already swapped to RenderingScreen; fail → back to Step2
     }
   }
+
+  function runRetryAction(retry: RetryAction) {
+    if (retry.kind === "confirm") void handleConfirmRender(retry.minutes);
+    else void handleRender();
+  }
+
+  // Fires once p.voiceEngine actually reads back "gemini" after the modal's
+  // "ใช้เสียง Gemini แทน" click called p.setVoiceEngine("gemini") — state updates are
+  // async, so resubmitting synchronously in the click handler would still submit with
+  // the pre-switch (ElevenLabs) engine.
+  useEffect(() => {
+    if (p.voiceEngine !== "gemini") return;
+    const retry = pendingGeminiRetryRef.current;
+    if (!retry) return;
+    pendingGeminiRetryRef.current = null;
+    runRetryAction(retry);
+  }, [p.voiceEngine]);
 
   async function handleCancel() {
     const r = await cancel();
@@ -318,6 +368,21 @@ export function EditorV2Shell() {
     // for a logo change that p.setLogoOverlay would otherwise drop silently.
     canRunProjectOperation: p.canRunProjectOperation,
   };
+  // jobs/route.ts sends the identical { error: "missing_voice_id" } shape for
+  // ElevenLabs (no voiceId, :514) and OmniVoice/Hero Voice (no omniVoiceId, :493) —
+  // discriminate on the engine captured at failure time so the title/copy never
+  // names a provider the user didn't actually pick, and only the ElevenLabs cost
+  // pitch gets appended for the ElevenLabs case.
+  const missingVoiceIdCopy = missingVoiceIdAlert ? {
+    title: missingVoiceIdAlert.engine === "elevenlabs"
+      ? "ต้องระบุ ElevenLabs Voice ID"
+      : missingVoiceIdAlert.engine === "omnivoice"
+        ? "ต้องเลือกเสียง Hero Voice"
+        : "ต้องระบุ Voice ID",
+    description: missingVoiceIdAlert.engine === "elevenlabs"
+      ? `${missingVoiceIdAlert.message} — เสียง ElevenLabs ต้องใช้คีย์ของคุณเองและมีค่าใช้จ่าย — เสียง Gemini ใช้ได้ทันที ไม่ต้องตั้งค่า`
+      : missingVoiceIdAlert.message,
+  } : null;
   return (
     <div
       className={`${v2FontClass} flex h-screen flex-col`}
@@ -675,6 +740,57 @@ export function EditorV2Shell() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog open={!!missingVoiceIdAlert} onOpenChange={(open) => { if (!open) setMissingVoiceIdAlert(null); }}>
+        <AlertDialogContent className="border" style={{ background: color.bg1, borderColor: color.cardBorder, color: color.text }}>
+          <AlertDialogHeader>
+            <AlertDialogTitle style={{ color: color.text }}>{missingVoiceIdCopy?.title}</AlertDialogTitle>
+            <AlertDialogDescription style={{ color: color.textSecondary }}>
+              {missingVoiceIdCopy?.description}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            {/* Dismiss = go pick a Voice ID in Step2's own picker (ElevenLabs or Hero
+                Voice, whichever engine failed). No retry is pending (only the
+                Gemini-switch action below arms pendingGeminiRetryRef),
+                so closing here leaves the editor idle on Step2 with nothing queued. */}
+            <AlertDialogCancel onClick={() => setMissingVoiceIdAlert(null)}>ยกเลิก</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!missingVoiceIdAlert) return;
+                pendingGeminiRetryRef.current = missingVoiceIdAlert.retry;
+                setMissingVoiceIdAlert(null);
+                p.setVoiceEngine("gemini");
+              }}
+            >
+              ใช้เสียง Gemini แทน (ฟรี)
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {missingKeyModal && (
+        <ApiKeyModal
+          keyType={missingKeyModal.type}
+          onClose={() => setMissingKeyModal(null)}
+          onSaved={() => {
+            const retry = missingKeyModal.retry;
+            setMissingKeyModal(null);
+            runRetryAction(retry);
+          }}
+          {...(missingKeyModal.type === "elevenlabs" ? {
+            secondaryAction: {
+              label: "ใช้เสียง Gemini แทน (ฟรี)",
+              description: "เสียง ElevenLabs ต้องใช้คีย์ของคุณเองและมีค่าใช้จ่าย — เสียง Gemini ใช้ได้ทันที ไม่ต้องตั้งค่า",
+              onClick: () => {
+                pendingGeminiRetryRef.current = missingKeyModal.retry;
+                p.setVoiceEngine("gemini");
+                setMissingKeyModal(null);
+              },
+            },
+          } : {})}
+        />
+      )}
 
       <AlertDialog
         open={!!deleteProject && !editorBlocked}
