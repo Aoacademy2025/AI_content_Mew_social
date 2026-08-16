@@ -56,6 +56,58 @@ else
   git checkout "$DEFAULT_BRANCH"
 fi
 
+echo "=== [1b/6] CI gate — refuse to ship a commit whose checks are not green ==="
+# The repo is public, so GitHub's check-runs API is readable without a token.
+# This is the gate that actually protects production: even if a red commit lands
+# on main, it cannot reach paying customers through this script.
+# Emergency override: DEPLOY_SKIP_CI_CHECK=1 bash deploy/deploy.sh
+DEPLOY_SKIP_CI_CHECK="${DEPLOY_SKIP_CI_CHECK:-0}"
+if [ "$DEPLOY_SKIP_CI_CHECK" = "1" ]; then
+  echo "WARNING: DEPLOY_SKIP_CI_CHECK=1 — CI gate skipped by operator."
+else
+  DEPLOY_SHA="$(git rev-parse HEAD)"
+  echo "Checking GitHub checks for ${DEPLOY_SHA}"
+  CI_JSON="$(curl -sS -m 30 -H 'Accept: application/vnd.github+json' \
+    "https://api.github.com/repos/Aoacademy2025/AI_content_Mew_social/commits/${DEPLOY_SHA}/check-runs" 2>/dev/null || true)"
+  CI_VERDICT="$(printf '%s' "$CI_JSON" | python3 -c '
+import json, sys
+try:
+    runs = json.load(sys.stdin).get("check_runs")
+except Exception:
+    print("unreadable"); raise SystemExit
+if runs is None:
+    print("unreadable"); raise SystemExit
+if not runs:
+    print("none"); raise SystemExit
+busy = [r["name"] for r in runs if r.get("status") != "completed"]
+if busy:
+    print("pending " + ",".join(busy)); raise SystemExit
+bad = [r["name"] + "=" + str(r.get("conclusion")) for r in runs
+       if r.get("conclusion") not in ("success", "neutral", "skipped")]
+print("failed " + ",".join(bad) if bad else "green")
+' 2>/dev/null || echo unreadable)"
+
+  case "$CI_VERDICT" in
+    green)
+      echo "OK: all GitHub checks green for this commit." ;;
+    none)
+      echo "ERROR: no CI checks found for ${DEPLOY_SHA} — refusing to deploy an unverified commit."
+      echo "Push the commit and let CI run, or override with DEPLOY_SKIP_CI_CHECK=1."
+      exit 1 ;;
+    pending*)
+      echo "ERROR: CI is still running (${CI_VERDICT#pending }). Wait for it to finish, then re-run."
+      exit 1 ;;
+    failed*)
+      echo "ERROR: CI is RED for ${DEPLOY_SHA} (${CI_VERDICT#failed })."
+      echo "Fix main before deploying. Override only for a real emergency: DEPLOY_SKIP_CI_CHECK=1."
+      exit 1 ;;
+    *)
+      echo "ERROR: could not read CI status from GitHub (network or API problem)."
+      echo "Re-run when GitHub is reachable, or override with DEPLOY_SKIP_CI_CHECK=1."
+      exit 1 ;;
+  esac
+fi
+
 # Keep the maintenance document outside the working tree that this deploy
 # updates. Nginx can continue serving it while git and .next are changing.
 MAINTENANCE_PAGE_DIR="/var/www/heroai-maintenance"

@@ -22,6 +22,12 @@
 - Dev: `npm run dev` · Build: `npm run build`
 - DB: `npm run db:migrate` · seed: `npm run db:seed`
 - Deploy (on the VPS): `bash deploy/deploy.sh` → `git pull main` + **`prisma db push`** (additive — syncs new columns/tables BEFORE restart, so column-adding features don't 500) + build (OOM-retry) + `pm2 restart ai-content`. Current safe low-heap deploy env used on prod: `BUILD_HEAP_MB=4096 BUILD_WORKER_HEAP_MB=512 BUILD_HEAP_MB_LOW=3072 BUILD_WORKER_HEAP_MB_LOW=512 BUILD_NO_LINT=1`.
+- **Deploy has a CI gate (step `[1b/6]`).** After pulling, `deploy.sh` reads the HEAD commit's
+  GitHub check-runs (public repo → no token needed) and **aborts unless every check is green**.
+  It also aborts when CI is still running, when the commit has no checks at all, or when GitHub
+  is unreachable — fail-closed in every case. This is what actually protects paying customers:
+  a red commit can land on `main` and still never reach production. Emergency override:
+  `DEPLOY_SKIP_CI_CHECK=1 bash deploy/deploy.sh` — use it only for a real incident, and say so.
 - **Crons** are separate PM2 apps in `ecosystem.config.js` (`trial-expiry`, `founding-sweep`, `renewal-reminders`, `cleanup-videos`). deploy.sh does NOT start them. Start: `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` then `pm2 start ecosystem.config.js --only <name> --update-env && pm2 save` (the cron 401s without CRON_SECRET in its env). **`pm2 status` showing a cron app as `stopped` between scheduled runs is BY DESIGN** (`autorestart: false` + `cron_restart` — it runs once then exits until the next cron fire), not a crash — check `pm2 logs <name>` for actual health, don't judge by process status alone.
 - VPS prod `.env` `DATABASE_URL` is **absolute** (`file:/var/www/ai-content/prisma/dev.db`); `prisma/*.db` is gitignored (prod data safe from `git pull`).
 
