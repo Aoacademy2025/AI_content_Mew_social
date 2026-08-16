@@ -750,9 +750,10 @@ async function main() {
   const legacyRouteSource = readFileSync("src/app/api/brand-profiles/[id]/route.ts", "utf8");
   assert.ok(
     legacyRouteSource.match(/export async function PUT[\s\S]*isVersionedBrandProfile/)
-      && legacyRouteSource.match(/export async function DELETE[\s\S]*isVersionedBrandProfile/)
+      && legacyRouteSource.match(/export async function DELETE[\s\S]*archiveBrandProfile/)
+      && !legacyRouteSource.match(/export async function DELETE[\s\S]*prisma\.brandProfile\.deleteMany/)
       && legacyRouteSource.includes("VERSIONED_PROFILE_READ_ONLY"),
-    "legacy edit/delete surfaces must preserve immutable Revision history and project pins",
+    "legacy edits stay read-only while deletes archive without destroying Revision history or project pins",
   );
   const libraryRouteSource = readFileSync("src/app/api/brand-library/route.ts", "utf8");
   assert.ok(
@@ -941,8 +942,10 @@ async function main() {
     "the post-result save prompt carries the completed VideoJob identity");
   assert.match(videoJobRouteSource, /contentPreflightId:\s*true/,
     "the owner-only job poll exposes exact completed Content Preflight lineage");
-  assert.match(videoJobRouteSource, /projectVisualContextJson:\s*true[\s\S]+projectVisualContext:/,
+  assert.match(videoJobRouteSource, /projectVisualContextJson:\s*true[\s\S]+projectVisualContext(?:,|:)/,
     "the owner-only job poll exposes the completed clip's immutable visual snapshot");
+  assert.match(videoJobRouteSource, /sceneRerollCapability:\s*resolveSceneRerollCapability/,
+    "the same immutable snapshot drives the job-specific Scene Reroll capability");
   assert.match(brandLibraryPageSource, /sourceJob\.projectVisualContext/,
     "post-result Brand promotion seeds from the completed job snapshot, not mutable project state");
   assert.ok(

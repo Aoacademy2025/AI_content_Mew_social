@@ -75,6 +75,7 @@ export function PostPhase({
   canRunProjectOperation,
   internalAiTester,
   sceneRerollEnabled,
+  sceneRerollUnavailableReason,
   starterImageAllowance,
   downloadFilename,
 }: {
@@ -99,6 +100,7 @@ export function PostPhase({
   canRunProjectOperation?: () => boolean;
   internalAiTester: boolean;
   sceneRerollEnabled: boolean;
+  sceneRerollUnavailableReason?: string;
   starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
 }) {
@@ -773,6 +775,7 @@ export function PostPhase({
             videoJobId={job.jobId}
             fullBrollEditEnabled={fullBrollEditEnabled}
             sceneRerollEnabled={sceneRerollEnabled}
+            sceneRerollUnavailableReason={sceneRerollUnavailableReason}
             starterImageAllowance={starterImageAllowance}
           />
         )}

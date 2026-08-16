@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { V2Project } from "./useV2Project";
 import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
+import type { SceneRerollCapability } from "@/lib/scene-reroll-capability";
 import { isProviderErrorCode, type ProviderErrorCode } from "@/lib/provider-errors";
 import type { HeygenProviderAction } from "@/lib/heygen-readiness";
 import type { RequiredKeyType } from "@/components/ui/api-key-modal";
@@ -79,6 +80,7 @@ export interface V2JobState {
   jobType: string | null;
   projectId: string | null;
   contentPreflightId?: string | null;
+  sceneRerollCapability?: SceneRerollCapability | null;
   currentStep: string | null;
   progress: number;
   queuePosition: number | null;
@@ -197,7 +199,7 @@ export function useV2Job(p: V2Project) {
   }, []);
 
   const applyStatus = useCallback((d: {
-    id: string; projectId?: string | null; contentPreflightId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
+    id: string; projectId?: string | null; contentPreflightId?: string | null; sceneRerollCapability?: SceneRerollCapability | null; type?: string | null; status: string; currentStep: string | null; progress: number;
     queuePosition?: number | null;
     errorMessage: string | null; errorCode?: string | null; errorProvider?: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
     idempotencyKey?: string | null; idempotencyFingerprint?: string | null;
@@ -215,7 +217,7 @@ export function useV2Job(p: V2Project) {
     if (d.status === "done") {
       stopPolling();
       setJob({
-        phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null,
+        phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null,
         currentStep: d.currentStep, progress: 100, queuePosition: null, errorMessage: null, errorCode: null, errorProvider: null, output: d.output ?? null,
         // A fresh job poll is authoritative. Project detail is only a compatibility
         // fallback for a rolling deploy where the poll response lacks mediaState.
@@ -223,9 +225,9 @@ export function useV2Job(p: V2Project) {
       });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: null, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
+      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: null, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
     } else {
-      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
+      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
     }
   }, [stopPolling]);
 

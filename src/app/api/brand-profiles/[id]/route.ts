@@ -5,9 +5,12 @@ import { requireHeroScriptUser, serializeBannedWords, toBrandProfileDTO } from "
 import { checkBrandProfileFieldLimits } from "@/lib/brand-profile-limits";
 import { isValidCtaStyleKey } from "@/lib/viral-frameworks";
 import {
+  archiveBrandProfile,
+  BrandProfileLibraryError,
   isVersionedBrandProfile,
   legacyBrandProfileMutableWhere,
 } from "@/lib/brand-profile-library.server";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 
 async function legacyMutationTarget(userId: string, id: string) {
   return prisma.brandProfile.findFirst({
@@ -120,26 +123,25 @@ export async function DELETE(
     if (!access.ok) return access.response;
     const authUser = access.user;
     const { id } = await params;
-    const target = await legacyMutationTarget(authUser.id, id);
-    if (!target) return NextResponse.json({ error: "ไม่พบโปรไฟล์" }, { status: 404 });
-    if (isVersionedBrandProfile({
-      activeRevisionNumber: target.activeRevisionNumber,
-      frozenAt: target.frozenAt,
-      revisionCount: target._count.revisions,
-    })) return versionedReadOnlyResponse();
-
-    const deleted = await prisma.brandProfile.deleteMany({
-      where: legacyBrandProfileMutableWhere(authUser.id, id),
+    const archived = await archiveBrandProfile({ userId: authUser.id, profileId: id });
+    await recordTelemetryEvent(authUser.id, {
+      name: "brand_profile_archived",
+      source: "server",
+      status: archived.replayed ? "replayed" : "archived",
+      properties: { profileId: id, surface: "hero-script" },
+    }).catch(() => {});
+    return NextResponse.json({
+      message: "นำโปรไฟล์ออกจากรายการแล้ว",
+      profileId: archived.profileId,
+      archivedAt: archived.archivedAt,
+      replayed: archived.replayed,
     });
-    if (deleted.count === 0) {
-      const current = await legacyMutationTarget(authUser.id, id);
-      return current
-        ? versionedReadOnlyResponse()
-        : NextResponse.json({ error: "ไม่พบโปรไฟล์" }, { status: 404 });
-    }
-
-    return NextResponse.json({ message: "ลบโปรไฟล์แล้ว" });
   } catch (error) {
+    if (error instanceof BrandProfileLibraryError) {
+      return NextResponse.json({ code: error.code, error: error.message }, {
+        status: error.code === "NOT_FOUND" ? 404 : 409,
+      });
+    }
     return apiError({ route: "DELETE /api/brand-profiles/[id]", error });
   }
 }
