@@ -8,6 +8,14 @@ import {
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { prisma } from "@/lib/prisma";
 import {
+  TREATMENT_PRESETS,
+  TREATMENT_PRESET_IDS,
+  createCatalogTreatmentPin,
+  treatmentPresetThaiLabel,
+  type TreatmentPresetId,
+} from "@/lib/brand-treatment-catalog";
+import { lookChangeConfirmation } from "@/lib/brand-treatment-presentation";
+import {
   ProjectLookError,
   applyProjectLook,
   projectHasPersistedVisualPin,
@@ -18,6 +26,15 @@ import {
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { brandLookIdentityKey, brandVisualIdentityKey, type VisualFormatId } from "@/lib/brand-visual-system";
 
+function parseOptionalJson(value: string | null | undefined): unknown | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 async function currentVisualState(userId: string, projectId: string, preflightId?: string) {
   const preflight = await prisma.contentPreflight.findFirst({
     where: { userId, projectId, ...(preflightId ? { id: preflightId } : {}) },
@@ -27,29 +44,44 @@ async function currentVisualState(userId: string, projectId: string, preflightId
   if (preflightId && !preflight) {
     throw new ProjectLookError("NOT_FOUND", "ไม่พบข้อมูลฉากชุดนี้");
   }
-  const treatment = preflight
-    ? JSON.parse(preflight.suggestedTreatmentJson) as { label?: string; mood?: string }
+  const suggestedPresetId = preflight?.suggestedTreatmentPresetId as TreatmentPresetId | null;
+  const suggestedPin = suggestedPresetId && TREATMENT_PRESET_IDS.includes(suggestedPresetId)
+    ? createCatalogTreatmentPin(suggestedPresetId, "adaptive")
     : null;
+  const rankedTreatmentPresetIds = (() => {
+    try {
+      const parsed = JSON.parse(preflight?.rankedTreatmentPresetIdsJson ?? "[]") as unknown;
+      return Array.isArray(parsed)
+        ? parsed.filter((id): id is TreatmentPresetId => typeof id === "string" && TREATMENT_PRESET_IDS.includes(id as TreatmentPresetId))
+        : [];
+    } catch {
+      return [];
+    }
+  })();
+  const legacyTreatment = parseOptionalJson(preflight?.suggestedTreatmentJson) as { label?: string; mood?: string } | null;
   return {
     preflight,
     suggested: {
       visualFormatId: (preflight?.suggestedVisualFormatId ?? "clear-infographic") as VisualFormatId,
-      treatment: [treatment?.label, treatment?.mood].filter(Boolean).join(", ") || "clear",
+      treatment: suggestedPin
+        ? treatmentPresetThaiLabel(suggestedPin)
+        : [legacyTreatment?.label, legacyTreatment?.mood].filter(Boolean).join(", ") || "clear",
+      ...(suggestedPin && suggestedPin.version === preflight?.suggestedTreatmentPresetVersion
+        ? { treatmentPin: suggestedPin }
+        : {}),
     },
+    suggestedTreatment: suggestedPin ? {
+      ...suggestedPin,
+      label: treatmentPresetThaiLabel(suggestedPin),
+      rationale: preflight?.treatmentRecommendationRationale ?? "",
+    } : null,
+    rankedTreatmentPresetIds,
     existingImageCount: preflight?.visualBeats.filter((beat) => Boolean(beat.existingAssetUrl)).length ?? 0,
   };
 }
 
 function confirmation(existingImageCount: number) {
-  return {
-    code: "LOOK_CHANGE_CONFIRMATION_REQUIRED",
-    existingImageCount,
-    quotedCredits: existingImageCount * HERO_AI_IMAGE_CREDITS,
-    options: [
-      { id: "regenerate-all", label: "สร้างทุกภาพใหม่ให้เป็นแนวเดียวกัน" },
-      { id: "new-only", label: "ใช้แนวใหม่เฉพาะภาพที่สร้างต่อจากนี้", warning: "คลิปจะมีมากกว่าหนึ่งแนวภาพ" },
-    ],
-  };
+  return lookChangeConfirmation(existingImageCount, HERO_AI_IMAGE_CREDITS);
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -90,6 +122,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     return NextResponse.json({
       context,
       suggested: state.preflight ? state.suggested : null,
+      suggestedTreatment: state.suggestedTreatment,
+      rankedTreatmentPresetIds: state.rankedTreatmentPresetIds,
+      treatmentPresets: TREATMENT_PRESETS.map((preset) => ({ id: preset.id, label: preset.thaiLabel })),
+      formatRecommendation: parseOptionalJson(state.preflight?.formatRecommendationJson),
       contentDomain: state.preflight?.contentDomain ?? null,
       preflightId: state.preflight?.id ?? null,
       sourceHash: state.preflight?.sourceHash ?? null,
@@ -145,7 +181,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
     const state = await currentVisualState(auth.user.id, id, requestedPreflightId);
     const applyMode = body?.applyMode;
-    if (state.existingImageCount > 0 && applyMode !== "new-only" && applyMode !== "regenerate-all") {
+    if (state.existingImageCount > 0 && applyMode !== "regenerate-all") {
       return NextResponse.json(confirmation(state.existingImageCount), { status: 409 });
     }
     const applied = await applyProjectLook({
@@ -180,7 +216,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         quotedCredits: state.existingImageCount * HERO_AI_IMAGE_CREDITS,
         automatic: false,
       } : null,
-      mixedLookWarning: applyMode === "new-only" && state.existingImageCount > 0,
     });
   } catch (error) {
     if (error instanceof ProjectLookError) {

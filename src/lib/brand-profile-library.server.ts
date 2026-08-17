@@ -1,9 +1,18 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import {
+  TREATMENT_PRESET_IDS,
+  createCatalogTreatmentPin,
+  treatmentPresetThaiLabel,
+  type TreatmentPresetId,
+} from "@/lib/brand-treatment-catalog";
+import {
+  SUPPORTED_VISUAL_FORMAT_IDS,
   VISUAL_FORMATS,
   VISUAL_FORMAT_IDS,
+  brandLookIdentityKey,
   brandVisualIdentityKey,
+  isActiveVisualFormatId,
   type BrandVisualLanguage,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
@@ -13,6 +22,7 @@ import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
 import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import {
   parseProjectVisualContext,
+  parseRevision,
   resolveProjectVisualContextFromSnapshots,
   treatmentFromPreflight,
   type ProjectVisualContext,
@@ -21,7 +31,7 @@ import {
 const shortNullable = z.string().trim().max(180).nullable();
 const safeConfigValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
-export const brandProfilePayloadSchema = z.object({
+const brandProfilePayloadBaseSchema = z.object({
   schemaVersion: z.literal(1),
   name: z.string().trim().min(1).max(80),
   // The /brands surface asks for a name and a Visual Format only; niche,
@@ -55,8 +65,13 @@ export const brandProfilePayloadSchema = z.object({
     sizePct: z.number().min(1).max(100),
     opacity: z.number().min(0).max(1),
   }),
-  visual: z.object({
-    primaryVisualFormatId: z.enum(VISUAL_FORMAT_IDS),
+});
+
+function brandProfileVisualSchema<T extends z.ZodTypeAny>(formatIdSchema: T) {
+  return z.object({
+    primaryVisualFormatId: formatIdSchema,
+    treatmentPolicy: z.enum(["adaptive", "locked"]).default("adaptive"),
+    lockedTreatmentPresetId: z.enum(TREATMENT_PRESET_IDS).nullable().default(null),
     languageMode: z.enum(["defined", "none"]).optional(),
     palette: z.array(z.string().trim().min(1).max(64)).min(1).max(6),
     // No `.min(1)`: personality is editable inside ตั้งค่าเพิ่มเติม and a
@@ -69,12 +84,45 @@ export const brandProfilePayloadSchema = z.object({
     peopleAndSetting: z.string().trim().max(500).default(""),
     memorableCues: z.array(z.string().trim().min(1).max(160)).max(6).default([]),
     visualNotes: z.string().trim().max(800),
-    // Same trap, same fix as personality: editable, clearable, not required.
+    // Read-only compatibility field for legacy Revisions. New treatment
+    // choices come only from treatmentPolicy + the closed catalog.
     defaultTreatment: z.string().trim().max(300),
-  }),
+  }).superRefine((visual, context) => {
+    if (visual.treatmentPolicy === "locked" && !visual.lockedTreatmentPresetId) {
+      context.addIssue({
+        code: "custom",
+        path: ["lockedTreatmentPresetId"],
+        message: "กรุณาเลือกแนวเล่าเรื่องสำหรับใช้ทุกคลิป",
+      });
+    }
+  });
+}
+
+/** Creator write boundary: retired formats cannot be selected for a new Draft,
+ * Project Look or published Revision. */
+export const brandProfilePayloadSchema = brandProfilePayloadBaseSchema.extend({
+  visual: brandProfileVisualSchema(z.enum(VISUAL_FORMAT_IDS)),
 });
 
-export type BrandProfilePayload = z.infer<typeof brandProfilePayloadSchema>;
+/** Persisted read boundary: historical revisions keep their exact format ID so
+ * existing previews, projects and Scene Rerolls remain reproducible. */
+export const storedBrandProfilePayloadSchema = brandProfilePayloadBaseSchema.extend({
+  visual: brandProfileVisualSchema(z.enum(SUPPORTED_VISUAL_FORMAT_IDS)),
+});
+
+export type BrandProfilePayload = z.infer<typeof storedBrandProfilePayloadSchema>;
+
+export function resolveBrandProfileTreatmentPolicy(payload: BrandProfilePayload):
+  | { policy: "adaptive" }
+  | { policy: "locked"; treatmentPresetId: TreatmentPresetId } {
+  if (payload.visual.treatmentPolicy === "locked" && payload.visual.lockedTreatmentPresetId) {
+    return {
+      policy: "locked",
+      treatmentPresetId: payload.visual.lockedTreatmentPresetId,
+    };
+  }
+  return { policy: "adaptive" };
+}
 
 /** Legacy Hero Script may edit/delete only pre-V1 rows. Once immutable
  * revisions exist, every mutation must go through Draft → Publish so pinned
@@ -130,7 +178,14 @@ function parsedPayload(input: unknown): BrandProfilePayload {
 
 function parsedStoredPayload(value: string): BrandProfilePayload {
   try {
-    return parsedPayload(JSON.parse(value));
+    const result = storedBrandProfilePayloadSchema.safeParse(JSON.parse(value));
+    if (!result.success) {
+      throw new BrandProfileLibraryError(
+        "INVALID_DRAFT",
+        result.error.issues[0]?.message || "ข้อมูลแบรนด์ไม่ครบ",
+      );
+    }
+    return result.data;
   } catch (error) {
     if (error instanceof BrandProfileLibraryError) throw error;
     throw new BrandProfileLibraryError("INVALID_DRAFT", "ข้อมูลร่างแบรนด์เสียหาย");
@@ -155,7 +210,9 @@ export function applyBrandRevisionDefaultsToProjectDraft(input: {
   draft: Record<string, unknown>;
   payload: BrandProfilePayload;
 }): Record<string, unknown> {
-  const payload = parsedPayload(input.payload);
+  // This seam applies an already-persisted immutable Revision. Historical
+  // formats remain readable here even though creator write schemas reject them.
+  const payload = storedBrandProfilePayloadSchema.parse(input.payload);
   const next = { ...input.draft };
   const provider = payload.voice.provider;
   if (provider === "gemini" || provider === "elevenlabs" || provider === "omnivoice") {
@@ -185,6 +242,7 @@ export function applyBrandRevisionDefaultsToProjectDraft(input: {
 function revisionRecipe(payload: BrandProfilePayload) {
   const format = VISUAL_FORMATS.find((item) => item.id === payload.visual.primaryVisualFormatId);
   if (!format) throw new BrandProfileLibraryError("INVALID_DRAFT", "แนวภาพนี้ไม่อยู่ใน V1");
+  const treatmentPolicy = resolveBrandProfileTreatmentPolicy(payload);
   return {
     schemaVersion: 1,
     visualFormatId: format.id,
@@ -197,6 +255,10 @@ function revisionRecipe(payload: BrandProfilePayload) {
         visualNotes: payload.visual.visualNotes,
       },
     defaultTreatment: payload.visual.defaultTreatment,
+    treatmentPolicy: treatmentPolicy.policy,
+    lockedTreatmentPin: treatmentPolicy.policy === "locked"
+      ? createCatalogTreatmentPin(treatmentPolicy.treatmentPresetId, "locked")
+      : null,
   };
 }
 
@@ -213,17 +275,34 @@ function completedJobPromotionRecipe(
         memorableCues: payload.visual.memorableCues,
         visualNotes: payload.visual.visualNotes,
       };
-  const payloadIdentity = brandVisualIdentityKey({
+  const payloadIdentity = brandLookIdentityKey({
     visualFormatId: payload.visual.primaryVisualFormatId,
     recipeVersion: context.recipeVersion,
     treatment: payload.visual.defaultTreatment,
     brandVisualLanguage: payloadLanguage,
   });
-  const completedIdentity = brandVisualIdentityKey(context);
+  const completedIdentity = brandLookIdentityKey(context);
   if (payloadIdentity !== completedIdentity) {
     throw new BrandProfileLibraryError(
       "REVISION_CONFLICT",
       "แนวภาพที่กรอกไม่ตรงกับคลิปที่เลือก กรุณาบันทึกแนวภาพจากคลิปเดิมโดยไม่เปลี่ยนค่าด้านภาพ",
+    );
+  }
+  const treatmentPolicy = resolveBrandProfileTreatmentPolicy(payload);
+  const lockedTreatmentPin = treatmentPolicy.policy === "locked"
+    ? createCatalogTreatmentPin(treatmentPolicy.treatmentPresetId, "locked")
+    : null;
+  if (
+    lockedTreatmentPin
+    && (
+      !context.treatmentPin
+      || context.treatmentPin.presetId !== lockedTreatmentPin.presetId
+      || context.treatmentPin.version !== lockedTreatmentPin.version
+    )
+  ) {
+    throw new BrandProfileLibraryError(
+      "REVISION_CONFLICT",
+      "แนวเล่าเรื่องที่ตั้งให้ใช้ทุกคลิปไม่ตรงกับคลิปที่เลือก",
     );
   }
   return {
@@ -232,6 +311,8 @@ function completedJobPromotionRecipe(
     recipeVersion: context.recipeVersion,
     brandVisualLanguage: context.brandVisualLanguage,
     defaultTreatment: context.treatment,
+    treatmentPolicy: treatmentPolicy.policy,
+    lockedTreatmentPin,
   };
 }
 
@@ -417,9 +498,19 @@ export async function resolveBrandProfileRevisionForNewProjectInTransaction(
         version: profile.activeRevisionNumber,
       },
     },
-    select: { id: true, payloadJson: true },
+    select: { id: true, payloadJson: true, visualRecipeJson: true },
   });
   if (!revision) throw new BrandProfileLibraryError("NO_REVISION", "แบรนด์นี้ยังไม่มีเวอร์ชันที่ใช้งานได้");
+  const visualRecipe = parseRevision(revision.visualRecipeJson);
+  if (!visualRecipe) {
+    throw new BrandProfileLibraryError("NO_REVISION", "ข้อมูลแนวภาพของแบรนด์นี้อ่านไม่ได้");
+  }
+  if (!isActiveVisualFormatId(visualRecipe.visualFormatId)) {
+    throw new BrandProfileLibraryError(
+      "FROZEN",
+      "แบรนด์นี้ใช้รูปแบบภาพรุ่นเดิมและใช้ได้เฉพาะโปรเจกต์ที่ยึดไว้แล้ว",
+    );
+  }
   return { revisionId: revision.id, payload: parsedStoredPayload(revision.payloadJson) };
 }
 
@@ -624,7 +715,7 @@ async function promoteProjectLookInOneTransaction(input: {
       if (job && !completedContext) {
         throw new BrandProfileLibraryError(
           "REVISION_CONFLICT",
-          "snapshot แนวภาพของคลิปนี้ไม่สมบูรณ์ จึงไม่สามารถบันทึกเป็นแบรนด์ได้",
+          "ข้อมูลแนวภาพของคลิปนี้ไม่สมบูรณ์ จึงไม่สามารถบันทึกเป็นแบรนด์ได้",
         );
       }
       const resolvedPreflightId = job?.contentPreflightId ?? input.preflightId;
@@ -769,7 +860,7 @@ export async function publishBrandProfileDraft(input: {
       );
     }
 
-    const payload = parsedStoredPayload(profile.draft.payloadJson);
+    const payload = parsedPayload(JSON.parse(profile.draft.payloadJson));
     const version = profile.activeRevisionNumber + 1;
     const revision = await tx.brandProfileRevision.create({
       data: {
@@ -854,6 +945,22 @@ async function pinProjectBrandRevisionInTransaction(
     return { project, revision };
   }
   const revisionPayload = parsedStoredPayload(revision.payloadJson);
+  const visualRecipe = parseRevision(revision.visualRecipeJson);
+  if (!visualRecipe) {
+    throw new BrandProfileLibraryError("NO_REVISION", "ข้อมูลแนวภาพของแบรนด์นี้อ่านไม่ได้");
+  }
+  if (!isActiveVisualFormatId(visualRecipe.visualFormatId)) {
+    if (project.brandProfileRevisionId !== revision.id) {
+      throw new BrandProfileLibraryError(
+        "FROZEN",
+        "แบรนด์นี้ใช้รูปแบบภาพรุ่นเดิมและใช้ได้เฉพาะโปรเจกต์ที่ยึดไว้แล้ว",
+      );
+    }
+    return { project, revision };
+  }
+  const lockedTreatmentPin = visualRecipe.treatmentPolicy === "locked"
+    ? visualRecipe.lockedTreatmentPin
+    : null;
   const projectDraft = applyBrandRevisionDefaultsToProjectDraft({
     draft: projectDraftRecord(project.draftJson),
     payload: revisionPayload,
@@ -864,6 +971,10 @@ async function pinProjectBrandRevisionInTransaction(
       brandProfileRevisionId: revision.id,
       projectLookJson: null,
       projectLookUpdatedAt: new Date(),
+      treatmentPresetId: lockedTreatmentPin?.presetId ?? null,
+      treatmentPresetVersion: lockedTreatmentPin?.version ?? null,
+      treatmentPinSource: lockedTreatmentPin?.source ?? null,
+      treatmentPinnedAt: lockedTreatmentPin ? new Date() : null,
       draftJson: JSON.stringify(projectDraft),
       draftRevision: { increment: 1 },
     },
@@ -883,7 +994,7 @@ export async function pinProjectBrandRevision(input: ProjectBrandRevisionInput) 
  * committing without its regenerate-all invalidation (or vice versa). */
 export async function applyProjectBrandRevision(input: ProjectBrandRevisionInput & {
   preflightId?: string;
-  applyMode?: "new-only" | "regenerate-all";
+  applyMode?: "regenerate-all";
 }) {
   return prisma.$transaction(async (tx) => {
     const preflight = await tx.contentPreflight.findFirst({
@@ -907,38 +1018,53 @@ export async function applyProjectBrandRevision(input: ProjectBrandRevisionInput
     }
     const existingImageCount = preflight?.visualBeats
       .filter((beat) => Boolean(beat.existingAssetUrl)).length ?? 0;
-    if (
-      existingImageCount > 0
-      && input.applyMode !== "new-only"
-      && input.applyMode !== "regenerate-all"
-    ) {
+    if (existingImageCount > 0 && input.applyMode !== "regenerate-all") {
       throw new BrandProfileLibraryError(
         "LOOK_CHANGE_CONFIRMATION_REQUIRED",
-        "กรุณาเลือกว่าจะเก็บภาพเดิมหรือสร้างใหม่ทั้งหมด",
+        "การเปลี่ยนแนวภาพต้องสร้างภาพ AI เดิมใหม่ทั้งหมดหรือยกเลิก",
         { existingImageCount },
       );
     }
     const pinned = await pinProjectBrandRevisionInTransaction(tx, input);
     let acceptedGenerationIdentityKey: string | null = null;
     if (preflight) {
-      const visualRecipe = JSON.parse(pinned.revision.visualRecipeJson) as {
-        visualFormatId: VisualFormatId;
-        recipeVersion: string;
-        defaultTreatment: string;
-        brandVisualLanguage?: BrandVisualLanguage | null;
-      };
+      const visualRecipe = parseRevision(pinned.revision.visualRecipeJson);
+      if (!visualRecipe) {
+        throw new BrandProfileLibraryError("NO_REVISION", "ข้อมูลแนวภาพของแบรนด์นี้อ่านไม่ได้");
+      }
+      let treatmentPin = visualRecipe.treatmentPolicy === "locked"
+        ? visualRecipe.lockedTreatmentPin
+        : null;
+      if (!treatmentPin) {
+        const suggestedPresetId = preflight.suggestedTreatmentPresetId as TreatmentPresetId | null;
+        if (!suggestedPresetId || !TREATMENT_PRESET_IDS.includes(suggestedPresetId)) {
+          throw new BrandProfileLibraryError("PREFLIGHT_REQUIRED", "ผลวิเคราะห์ยังไม่มีแนวเล่าเรื่องที่ใช้ได้");
+        }
+        treatmentPin = createCatalogTreatmentPin(suggestedPresetId, "adaptive");
+        if (treatmentPin.version !== preflight.suggestedTreatmentPresetVersion) {
+          throw new BrandProfileLibraryError("PREFLIGHT_REQUIRED", "ข้อมูลแนวเล่าเรื่องไม่ตรงกับผลวิเคราะห์ชุดนี้");
+        }
+      }
       const generationIdentityKey = brandVisualIdentityKey({
         visualFormatId: visualRecipe.visualFormatId,
         recipeVersion: visualRecipe.recipeVersion,
-        treatment: treatmentFromPreflight(preflight.suggestedTreatmentJson),
+        treatment: treatmentPresetThaiLabel(treatmentPin),
+        treatmentPin,
         brandVisualLanguage: visualRecipe.brandVisualLanguage ?? null,
       });
       acceptedGenerationIdentityKey = generationIdentityKey;
       await tx.projectVisualBeat.updateMany({
         where: { preflightId: preflight.id },
-        data: input.applyMode === "regenerate-all"
-          ? { generationIdentityKey, status: "outdated", outdatedAt: new Date() }
-          : { generationIdentityKey },
+        data: { generationIdentityKey, status: "outdated", outdatedAt: new Date() },
+      });
+      await tx.editorProject.update({
+        where: { id: pinned.project.id },
+        data: {
+          treatmentPresetId: treatmentPin.presetId,
+          treatmentPresetVersion: treatmentPin.version,
+          treatmentPinSource: treatmentPin.source,
+          treatmentPinnedAt: new Date(),
+        },
       });
     }
     return {

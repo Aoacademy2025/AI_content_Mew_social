@@ -537,14 +537,56 @@ export function AdvancedSettings({
               disabled={disabled}
               maxLength={500}
             />
-            <TextField
-              id="brand-default-treatment"
-              label="อารมณ์สำรองเมื่อยังไม่มีเนื้อหาให้วิเคราะห์"
-              value={draft.visual.defaultTreatment}
-              onChange={(value) => updateVisual("defaultTreatment", value)}
-              disabled={disabled}
-              maxLength={300}
-            />
+            <FieldShell
+              id="brand-treatment-policy"
+              label="แนวเล่าเรื่องของแต่ละคลิป"
+              helper="ค่าเริ่มต้นให้ AI อ่านทั้งเนื้อหาและเลือกจากแนวที่ตรวจแล้ว โดยไม่เพิ่มขั้นตอนก่อนสร้างคลิป"
+            >
+              <Select
+                value={draft.visual.treatmentPolicy}
+                disabled={disabled}
+                onValueChange={(value) => {
+                  if (value === "adaptive") {
+                    updateVisual("treatmentPolicy", "adaptive");
+                    updateVisual("lockedTreatmentPresetId", null);
+                  } else {
+                    updateVisual("treatmentPolicy", "locked");
+                    if (!draft.visual.lockedTreatmentPresetId) {
+                      updateVisual("lockedTreatmentPresetId", library.treatmentPresets[0]?.id ?? null);
+                    }
+                  }
+                }}
+              >
+                <SelectTrigger id="brand-treatment-policy" className="h-10">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="adaptive">AI เลือกแนวเล่าเรื่องตามเนื้อหา</SelectItem>
+                  <SelectItem value="locked">ใช้แนวเล่าเรื่องเดิมทุกคลิป</SelectItem>
+                </SelectContent>
+              </Select>
+            </FieldShell>
+            {draft.visual.treatmentPolicy === "locked" && (
+              <FieldShell id="brand-locked-treatment" label="แนวเล่าเรื่องที่ใช้ทุกคลิป">
+                <Select
+                  value={draft.visual.lockedTreatmentPresetId ?? undefined}
+                  disabled={disabled}
+                  onValueChange={(value) => updateVisual(
+                    "lockedTreatmentPresetId",
+                    value as BrandPayload["visual"]["lockedTreatmentPresetId"],
+                  )}
+                >
+                  <SelectTrigger id="brand-locked-treatment" className="h-10">
+                    <SelectValue placeholder="เลือกแนวเล่าเรื่อง" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {library.treatmentPresets.map((preset) => (
+                      <SelectItem key={preset.id} value={preset.id}>{preset.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </FieldShell>
+            )}
             <NotesField
               id="brand-visual-notes"
               label="โน้ตทิศทางภาพ"

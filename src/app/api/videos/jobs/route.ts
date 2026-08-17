@@ -62,6 +62,7 @@ import { normalizeHeadlineHook } from "@/lib/headline-hook";
 import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
   prepareProjectVisualPin,
+  prepareProjectVisualSnapshotAwaitingPreflight,
   prepareUploadProjectVisualSnapshot,
   projectHasPersistedVisualPin,
   ProjectLookError,
@@ -678,34 +679,31 @@ export async function POST(req: Request) {
       || body.narrativeSourceKind === "creator-script"
       ? body.narrativeSourceKind
       : undefined;
-    if (
-      !uploadMode
-      && Boolean(requestedContentPreflightId) !== Boolean(requestedNarrativeSourceKind)
-    ) {
-      return NextResponse.json({
-        error: "invalid_content_preflight",
-        message: "ข้อมูลฉากไม่ตรงกับเนื้อหาที่ใช้สร้างคลิป กรุณาลองเตรียมแนวภาพอีกครั้ง",
-      }, { status: 400 });
-    }
     const projectVisualPin = brandVisualRenderAccess
       ? uploadMode
         ? await prepareUploadProjectVisualSnapshot({ userId: user.id, projectId: projectId! })
-        : await prepareProjectVisualPin({
-            userId: user.id,
-            projectId: projectId!,
-            ...(requestedContentPreflightId ? { preflightId: requestedContentPreflightId } : {}),
-            // Script-mode callers may originate from either authored or AI-assisted
-            // input. Both kinds hash the same normalized text independently; accept
-            // only an analysis of this request's narrative, never merely the newest
-            // analysis another tab happened to create.
-            sourceHashes: (requestedNarrativeSourceKind
-              ? [requestedNarrativeSourceKind]
-              : (["ai-script", "creator-script"] as const))
-              .map((kind) => contentPreflightSourceHash(kind, script, {
-                ...(targetClipCount ? { windowCount: targetClipCount } : {}),
-                sceneContentPolicy,
-              })),
-          })
+        : requestedContentPreflightId
+          ? await prepareProjectVisualPin({
+              userId: user.id,
+              projectId: projectId!,
+              preflightId: requestedContentPreflightId,
+              // Script-mode callers may originate from either authored or AI-assisted
+              // input. Both kinds hash the same normalized text independently; accept
+              // only an analysis of this request's narrative, never merely the newest
+              // analysis another tab happened to create.
+              sourceHashes: (requestedNarrativeSourceKind
+                ? [requestedNarrativeSourceKind]
+                : (["ai-script", "creator-script"] as const))
+                .map((kind) => contentPreflightSourceHash(kind, script, {
+                  ...(targetClipCount ? { windowCount: targetClipCount } : {}),
+                  sceneContentPolicy,
+                })),
+            })
+          : await prepareProjectVisualSnapshotAwaitingPreflight({
+              userId: user.id,
+              projectId: projectId!,
+              narrativeSourceKind: requestedNarrativeSourceKind ?? "creator-script",
+            })
       : null;
     const brandVisualAcceptanceJson = projectVisualPin && projectId && brandVisualRenderAccess
       ? await prepareBrandVisualJobAcceptance({
@@ -778,6 +776,7 @@ export async function POST(req: Request) {
           ...(brollRegionPreference ? { brollRegionPreference } : {}),
           ...(brollVisualStyle ? { brollVisualStyle } : {}),
           sceneContentPolicy,
+          ...(requestedNarrativeSourceKind ? { narrativeSourceKind: requestedNarrativeSourceKind } : {}),
           ...(kieModel ? { kieModel } : {}),
           ...(useHeroRunpodImage ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),

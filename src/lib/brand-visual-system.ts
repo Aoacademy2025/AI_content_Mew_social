@@ -1,15 +1,30 @@
 import { latinLetteringOnly } from "@/lib/image-prompt-script";
+import {
+  treatmentPromptDirection,
+  type TreatmentPin,
+} from "@/lib/brand-treatment-catalog";
 
 /** Provider-neutral visual identity vocabulary for Brand Visual System V1. */
 export const VISUAL_FORMAT_IDS = [
   "cinematic-realism",
-  "stick-figure-story",
+  "simple-editorial-story",
   "dramatic-comic",
   "clear-infographic",
   "retro-story",
 ] as const;
 
-export type VisualFormatId = (typeof VISUAL_FORMAT_IDS)[number];
+export const LEGACY_VISUAL_FORMAT_IDS = ["stick-figure-story"] as const;
+export const SUPPORTED_VISUAL_FORMAT_IDS = [
+  ...VISUAL_FORMAT_IDS,
+  ...LEGACY_VISUAL_FORMAT_IDS,
+] as const;
+
+export type ActiveVisualFormatId = (typeof VISUAL_FORMAT_IDS)[number];
+export type VisualFormatId = (typeof SUPPORTED_VISUAL_FORMAT_IDS)[number];
+
+export function isActiveVisualFormatId(value: string): value is ActiveVisualFormatId {
+  return (VISUAL_FORMAT_IDS as readonly string[]).includes(value);
+}
 
 export type VisualFormat = {
   id: VisualFormatId;
@@ -22,34 +37,57 @@ export const VISUAL_FORMATS: readonly VisualFormat[] = [
   {
     id: "cinematic-realism",
     label: "ภาพสมจริงแบบหนัง",
-    recipeVersion: "cinematic-realism-v3",
+    recipeVersion: "cinematic-realism-v9",
     description: "ภาพเหมือนฉากหนัง แสงมีมิติและวัสดุสมจริง",
   },
   {
-    id: "stick-figure-story",
-    label: "ก้างปลาเล่าเรื่อง",
-    recipeVersion: "stick-figure-story-v3",
-    description: "ลายเส้นคนก้างปลา เล่าเหตุและผลด้วยท่าทางชัดเจน",
+    id: "simple-editorial-story",
+    label: "ภาพวาดเล่าเรื่องเรียบง่าย",
+    recipeVersion: "simple-editorial-story-v11",
+    description: "ภาพวาดสีเรียบเต็มฉาก เล่าเหตุและผลผ่านคน สิ่งของ และการกระทำ",
   },
   {
     id: "dramatic-comic",
     label: "คอมิกเข้มข้น",
-    recipeVersion: "dramatic-comic-v3",
+    recipeVersion: "dramatic-comic-v9",
     description: "คอมิกเฟรมเดียว เส้นหนัก มุมกล้องและอารมณ์เข้ม",
   },
   {
     id: "clear-infographic",
     label: "อินโฟกราฟิกเข้าใจง่าย",
-    recipeVersion: "clear-infographic-v3",
+    recipeVersion: "clear-infographic-v9",
     description: "อธิบายด้วยรูปทรง ไอคอน และลำดับภาพโดยไม่ใช้ข้อความ",
   },
   {
     id: "retro-story",
     label: "เล่าเรื่องย้อนยุค",
-    recipeVersion: "retro-story-v3",
+    recipeVersion: "retro-story-v9",
     description: "ภาพพิมพ์บรรณาธิการกลิ่นอายยุคเก่า สีจำกัดและพื้นผิวกระดาษ",
   },
 ] as const;
+
+/** Historical formats remain executable only for immutable Brand/Profile and
+ * project pins. They are deliberately absent from creator-facing catalogs and
+ * all new-selection schemas. */
+export const LEGACY_VISUAL_FORMATS: readonly VisualFormat[] = [
+  {
+    id: "stick-figure-story",
+    label: "ก้างปลาเล่าเรื่อง",
+    recipeVersion: "stick-figure-story-v6",
+    description: "ลายเส้นคนก้างปลา เล่าเหตุและผลด้วยท่าทางชัดเจน",
+  },
+] as const;
+
+export const SUPPORTED_VISUAL_FORMATS: readonly VisualFormat[] = [
+  ...VISUAL_FORMATS,
+  ...LEGACY_VISUAL_FORMATS,
+] as const;
+
+export function visualFormatThaiLabel(id: VisualFormatId): string {
+  const format = SUPPORTED_VISUAL_FORMATS.find((candidate) => candidate.id === id);
+  if (!format) throw new Error("Unsupported Visual Format");
+  return format.label;
+}
 
 export type VisualIdentitySnapshot = {
   visualFormatId: VisualFormatId;
@@ -71,6 +109,20 @@ export function resolveProjectVisualIdentity(input: {
 
 export type VisualBeatPhase = "hook" | "explain" | "close";
 
+export type HardSceneFacts = {
+  entityTypes: string[];
+  ages: string[];
+  genders: string[];
+  actions: string[];
+  locationTypes: string[];
+  timeOfDay: string | null;
+  historicalPeriod: string | null;
+  count: number | null;
+  essentialObjects: string[];
+};
+
+export type SceneSafetyBoundary = "none" | "medical-illustration" | "real-person-context-only";
+
 export type VisualBeat = {
   phase: VisualBeatPhase;
   subject: string;
@@ -78,6 +130,10 @@ export type VisualBeat = {
   setting: string;
   emotion: string;
   emphasis: string;
+  hardSceneFacts?: HardSceneFacts;
+  entityRenderingDescriptions?: string[];
+  sceneIntensity?: string;
+  safetyBoundary?: SceneSafetyBoundary;
 };
 
 export type BrandVisualLanguage = {
@@ -92,6 +148,7 @@ export type BrandVisualIdentityInput = {
   visualFormatId: VisualFormatId;
   recipeVersion: string;
   treatment: string;
+  treatmentPin?: TreatmentPin;
   brandVisualLanguage: BrandVisualLanguage | null;
 };
 
@@ -112,7 +169,12 @@ export function brandVisualIdentityKey(input: BrandVisualIdentityInput): string 
   const canonical = JSON.stringify({
     visualFormatId: input.visualFormatId,
     recipeVersion: input.recipeVersion.trim(),
-    treatment: input.treatment.trim(),
+    treatment: input.treatmentPin
+      ? {
+          presetId: input.treatmentPin.presetId,
+          version: input.treatmentPin.version,
+        }
+      : input.treatment.trim(),
     brandVisualLanguage: language ? {
       palette: language.palette,
       personality: language.personality,
@@ -148,6 +210,7 @@ export type CompiledBrandVisualPrompt = {
   recipeVersion: string;
   positive: string;
   negative: string;
+  treatmentPin?: TreatmentPin;
 };
 
 type VersionedRecipe = {
@@ -160,7 +223,7 @@ type VersionedRecipe = {
  * safety boundary. Never route these versions through the v2 sanitizer: the
  * recipe version is the complete provider contract, not only an art-style
  * label. */
-const V1_FORMAT_DIRECTION: Readonly<Record<VisualFormatId, string>> = {
+const V1_FORMAT_DIRECTION: Readonly<Partial<Record<VisualFormatId, string>>> = {
   "cinematic-realism": [
     "photorealistic cinematic film still",
     "real human anatomy and believable Thai environments",
@@ -347,6 +410,167 @@ const V3_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
   ] },
 };
 
+/** V4 keeps V3's rendering grammar byte-for-byte and changes only the prompt
+ * layer ordering required by ADR 0014. V3 remains frozen for pinned revisions. */
+const V4_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
+  "cinematic-realism-v4": V3_FORMAT_RECIPE_DIRECTION["cinematic-realism-v3"],
+  "stick-figure-story-v4": V3_FORMAT_RECIPE_DIRECTION["stick-figure-story-v3"],
+  "dramatic-comic-v4": V3_FORMAT_RECIPE_DIRECTION["dramatic-comic-v3"],
+  "clear-infographic-v4": V3_FORMAT_RECIPE_DIRECTION["clear-infographic-v3"],
+  "retro-story-v4": V3_FORMAT_RECIPE_DIRECTION["retro-story-v3"],
+};
+
+/** Qualification benchmark fixes publish as v5 instead of mutating the frozen
+ * v4 recipes. Public Z-Image showed that short medium names alone were not
+ * enough to keep stick figures visually uniform or invented lettering out of
+ * flat explanatory frames. */
+const V5_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
+  "cinematic-realism-v5": V4_FORMAT_RECIPE_DIRECTION["cinematic-realism-v4"],
+  "stick-figure-story-v5": { formatId: "stick-figure-story", direction: [
+    "the entire frame uses only hand-drawn stick-figure marker rendering",
+    "every person is a bare round head with a single-line torso and single-line limbs",
+    "hands, faces and bodies remain simple marker symbols rather than realistic anatomy",
+    "every prop, building, surface and background is drawn with bold imperfect marker strokes",
+    "warm fibrous paper remains visible throughout",
+    "cause and effect is communicated through pose, scale and directional composition",
+    "clever editorial simplicity with flat handmade marks and simple paper shapes",
+    "no photographic or realistically rendered elements appear anywhere in the frame",
+    "all communication uses unlettered marker shapes unless a hard scene fact explicitly requires writing",
+    FLAT_SURFACE_DIRECTION,
+  ] },
+  "dramatic-comic-v5": { formatId: "dramatic-comic", direction: [
+    ...V3_FORMAT_RECIPE_DIRECTION["dramatic-comic-v3"].direction,
+    "the single scene omits invented title blocks, captions and labels unless a hard scene fact explicitly requires writing",
+  ] },
+  "clear-infographic-v5": { formatId: "clear-infographic", direction: [
+    "diagrammatic editorial illustration on one continuous vertical canvas",
+    "clear top-to-bottom visual hierarchy",
+    "whatever appears is simplified to its clearest recognizable form",
+    "grouping, scale and alignment carry the explanation",
+    "generous negative space and a restrained palette",
+    "the idea is expressed entirely through unlettered pictograms and visual relationships unless a hard scene fact explicitly requires writing",
+    FLAT_SURFACE_DIRECTION,
+  ] },
+  "retro-story-v5": V4_FORMAT_RECIPE_DIRECTION["retro-story-v4"],
+};
+
+/** V6 is the first recipe written from public-endpoint qualification output.
+ * It uses concise affirmative descriptions: naming photography in a sentence
+ * that tried to exclude it caused the positive-only model to render photos. */
+const V6_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
+  "cinematic-realism-v6": V5_FORMAT_RECIPE_DIRECTION["cinematic-realism-v5"],
+  /** Approved after the public-endpoint v5/v6 smoke reviews. This is a new
+   * active format rather than a mutation of the frozen Stick Figure recipes. */
+  "simple-editorial-story-v7": { formatId: "simple-editorial-story", direction: [
+    "full-frame flat editorial story illustration",
+    "one continuous illustrated narrative scene fills the canvas",
+    "people, hands and objects use filled simplified shapes with clean drawn contours",
+    "faces, clothing and props use a small number of expressive readable details",
+    "foreground, subject and background share the same matte flat-color rendering",
+    "depth is shown through overlap, scale and broad value shapes",
+    "scene action and object relationships carry the meaning",
+    "background surfaces use calm unlettered shapes",
+    "restrained paper grain unifies the complete frame",
+    FLAT_SURFACE_DIRECTION,
+  ] },
+  "stick-figure-story-v6": { formatId: "stick-figure-story", direction: [
+    "full-frame stick-figure marker doodle on warm fibrous paper",
+    "every story entity appears as a circular head joined to one straight-line torso and single-line limbs",
+    "age, role and emotion are conveyed through scale, posture and simple props",
+    "hands are short line ends that clearly perform the required action",
+    "all objects, buildings, surfaces and backgrounds are flat marker outlines and simple paper shapes",
+    "foreground, subject and background share the same sparse black-marker abstraction",
+    "cause and effect is communicated through pose, scale and directional composition",
+    "every informational mark is a blank doodle shape",
+    FLAT_SURFACE_DIRECTION,
+  ] },
+  "dramatic-comic-v6": { formatId: "dramatic-comic", direction: [
+    ...V3_FORMAT_RECIPE_DIRECTION["dramatic-comic-v3"].direction,
+    "the top of the frame continues the illustrated environment, light, architecture and ink texture",
+    "scene action and object relationships carry the full meaning",
+  ] },
+  "clear-infographic-v6": { formatId: "clear-infographic", direction: [
+    "full-frame flat pictogram composition on one continuous vertical canvas",
+    "clear top-to-bottom visual hierarchy",
+    "every subject and object is simplified to a recognizable blank icon",
+    "blank geometric pictograms, object silhouettes, arrows, color and spacing carry all information",
+    "large calm background color fields surround the focal icons",
+    "grouping, scale and alignment carry the explanation",
+    "exact quantities remain visually distinct",
+    "generous negative space and a restrained palette",
+    FLAT_SURFACE_DIRECTION,
+  ] },
+  "retro-story-v6": V5_FORMAT_RECIPE_DIRECTION["retro-story-v5"],
+};
+
+/** V8 keeps the accepted editorial medium byte-for-byte while hardening the
+ * semantic compiler. The paid v7 recipe remains frozen and reproducible. */
+const V8_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
+  "cinematic-realism-v7": V6_FORMAT_RECIPE_DIRECTION["cinematic-realism-v6"],
+  "simple-editorial-story-v8": V6_FORMAT_RECIPE_DIRECTION["simple-editorial-story-v7"],
+  "dramatic-comic-v7": V6_FORMAT_RECIPE_DIRECTION["dramatic-comic-v6"],
+  "clear-infographic-v7": V6_FORMAT_RECIPE_DIRECTION["clear-infographic-v6"],
+  "retro-story-v7": V6_FORMAT_RECIPE_DIRECTION["retro-story-v6"],
+};
+
+/** V9 removes positive-only failure-state triggers and gives infographic
+ * scenes an object-only composition that does not create caption positions.
+ * V7/v8 recipes remain frozen for existing project pins and paid evidence. */
+const V9_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
+  "cinematic-realism-v8": V8_FORMAT_RECIPE_DIRECTION["cinematic-realism-v7"],
+  "simple-editorial-story-v9": V8_FORMAT_RECIPE_DIRECTION["simple-editorial-story-v8"],
+  "dramatic-comic-v8": V8_FORMAT_RECIPE_DIRECTION["dramatic-comic-v7"],
+  "clear-infographic-v8": { formatId: "clear-infographic", direction: [
+    "full-frame flat pictogram composition on one continuous vertical canvas",
+    "only the essential subject and objects form one compact cluster in the central visual area",
+    "each pictogram stands alone as one solid recognizable object shape with open space on every side",
+    "wide uninterrupted background color surrounds every pictogram",
+    "physical placement, object scale and restrained color show the relationships",
+    "the upper third remains one uninterrupted calm background field",
+    "exact quantities remain visually distinct",
+    "generous negative space and a restrained palette",
+    FLAT_SURFACE_DIRECTION,
+  ] },
+  "retro-story-v8": V8_FORMAT_RECIPE_DIRECTION["retro-story-v7"],
+};
+
+const V10_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
+  "simple-editorial-story-v10": V9_FORMAT_RECIPE_DIRECTION["simple-editorial-story-v9"],
+};
+
+/** Additive recipe pins for the relational Hard Scene Fact revision. The
+ * rendering media remain unchanged; the provider prompt compiler is versioned
+ * because its composition and enforcement contract changes. */
+const V11_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
+  "cinematic-realism-v9": V9_FORMAT_RECIPE_DIRECTION["cinematic-realism-v8"],
+  "simple-editorial-story-v11": V10_FORMAT_RECIPE_DIRECTION["simple-editorial-story-v10"],
+  "dramatic-comic-v9": V9_FORMAT_RECIPE_DIRECTION["dramatic-comic-v8"],
+  "clear-infographic-v9": V9_FORMAT_RECIPE_DIRECTION["clear-infographic-v8"],
+  "retro-story-v9": V9_FORMAT_RECIPE_DIRECTION["retro-story-v8"],
+};
+
+/** Format-specific translation for the replacement style. The public
+ * positive-only model treated words such as documentary and tactile product
+ * advertising as rendering-medium instructions. Pin both preset identity and
+ * version here so a later Treatment recipe cannot change an existing visual
+ * result silently. */
+const SIMPLE_EDITORIAL_TREATMENT_DIRECTION_V7: Readonly<Record<string, string>> = {
+  "expert-clarity@v1.0.0": "calm authority and ordered visual hierarchy",
+  "practical-documentary@v1.0.0": "grounded everyday action and direct visual sequence",
+  "thai-human-drama@v1.0.0": "intimate human emotion and warm relational spacing",
+  "modern-business-technology@v1.0.0": "confident momentum and clean organized composition",
+  "premium-product-lifestyle@v1.0.0": "refined restraint, selective highlights and generous negative space",
+  "investigative-news-crime@v1.0.0": "sober tension and evidence-led visual focus",
+  "thai-history-period-storytelling@v1.0.0": "dignified period atmosphere and clearly staged historical detail",
+  "thai-supernatural-horror@v1.0.0": "nocturnal dread and escalating shadow shapes",
+};
+
+function simpleEditorialTreatmentDirectionV7(pin: TreatmentPin): string {
+  const direction = SIMPLE_EDITORIAL_TREATMENT_DIRECTION_V7[`${pin.presetId}@${pin.version}`];
+  if (!direction) throw new Error("Unsupported Treatment Preset version for Simple Editorial Story");
+  return direction;
+}
+
 /* ── Negative prompt, one list per recipe generation ───────────────────────
  * Applies to both lists below. It is NOT enforcement.
  * `CompiledBrandVisualPrompt.negative` is delivered only by a provider route
@@ -470,7 +694,8 @@ function compileBrandVisualPromptV1(input: {
   visualBeat: VisualBeat;
   brandVisualLanguage?: BrandVisualLanguage | null;
 }): CompiledBrandVisualPrompt {
-  if (input.recipeVersion !== `${input.visualFormatId}-v1`) {
+  const formatDirection = V1_FORMAT_DIRECTION[input.visualFormatId];
+  if (input.recipeVersion !== `${input.visualFormatId}-v1` || !formatDirection) {
     throw new Error("Unsupported Visual Format recipe version");
   }
   const beat = input.visualBeat;
@@ -500,7 +725,7 @@ function compileBrandVisualPromptV1(input: {
   const positive = [
     "A vertical edge-to-edge composition from a single viewpoint fills the frame",
     "All people and objects share the same ground plane in one frozen moment",
-    V1_FORMAT_DIRECTION[input.visualFormatId],
+    formatDirection,
     `For a ${v1PositiveArtDirectionValue(input.contentDomain)} story, show ${scene}`,
     `Shape the scene with a ${v1PositiveArtDirectionValue(input.treatment)} feeling`,
     brandDirection,
@@ -1019,6 +1244,815 @@ function compileBrandVisualPromptV3(input: {
   };
 }
 
+function v4FactList(label: string, values: readonly string[] | undefined): string {
+  const safeValues = (values ?? [])
+    .map((value) => v3PositiveArtDirectionValue(value, 180))
+    .filter(Boolean);
+  return safeValues.length ? `${label} ${joinWithAnd(safeValues)}` : "";
+}
+
+function hardSceneFactsDirection(facts: HardSceneFacts | undefined): string {
+  if (!facts) return "the explicitly described subject, action, setting and time";
+  return [
+    v4FactList("entity type", facts.entityTypes),
+    v4FactList("age", facts.ages),
+    v4FactList("gender", facts.genders),
+    v4FactList("required action", facts.actions),
+    v4FactList("location type", facts.locationTypes),
+    facts.timeOfDay ? `time of day ${v3PositiveArtDirectionValue(facts.timeOfDay, 80)}` : "",
+    facts.historicalPeriod
+      ? `historical period ${v3PositiveArtDirectionValue(facts.historicalPeriod, 160)}`
+      : "",
+    facts.count !== null && facts.count !== undefined ? `exact count ${facts.count}` : "",
+    v4FactList("essential object", facts.essentialObjects),
+  ].filter(Boolean).join("; ");
+}
+
+function hardSceneFactsEnforcementDirection(facts: HardSceneFacts | undefined): string {
+  if (!facts) return "render the explicitly described subject, action, setting and time literally";
+  const entityTypes = facts.entityTypes
+    .map((value) => v3PositiveArtDirectionValue(value, 180))
+    .filter(Boolean);
+  const essentialObjects = facts.essentialObjects
+    .map((value) => v3PositiveArtDirectionValue(value, 180))
+    .filter(Boolean);
+  return [
+    "render every listed entity, action, location, time and historical period literally and visibly",
+    facts.count !== null && facts.count !== undefined
+      ? `the complete frame contains exactly ${facts.count} ${facts.count === 1 ? "instance" : "instances"} of the listed counted story entity type, including foreground and background appearances`
+      : "",
+    essentialObjects.length
+      ? `each stated essential object and quantity is clearly visible: ${joinWithAnd(essentialObjects)}`
+      : "",
+    entityTypes.some((value) => /\b(?:empty|unoccupied)\b/i.test(value))
+      ? "every entity described as empty remains visibly unoccupied"
+      : "",
+    "flexible art direction and supporting scenery preserve these constraints without substitution or duplication",
+  ].filter(Boolean).join("; ");
+}
+
+function hardSceneFactsEnforcementDirectionV6(facts: HardSceneFacts | undefined): string {
+  if (!facts) return "render the explicitly described subject, action, setting and time literally";
+  const entityTypes = facts.entityTypes
+    .map((value) => v3PositiveArtDirectionValue(value, 180))
+    .filter(Boolean);
+  const essentialObjects = facts.essentialObjects
+    .map((value) => v3PositiveArtDirectionValue(value, 180))
+    .filter(Boolean);
+  const countedEntity = entityTypes.length === 1 ? entityTypes[0] : "primary story entities";
+  return [
+    "render every listed entity, action, location, time and historical period literally and visibly",
+    facts.count !== null && facts.count !== undefined
+      ? `exactly ${facts.count} ${countedEntity} ${facts.count === 1 ? "appears" : "appear"} in the complete frame, counting foreground and background`
+      : "",
+    essentialObjects.length
+      ? `each stated essential object and quantity is clearly visible: ${joinWithAnd(essentialObjects)}`
+      : "",
+    entityTypes.some((value) => /\b(?:empty|unoccupied)\b/i.test(value))
+      ? "the empty chair is visibly unoccupied and the investigative room is carried by objects"
+      : "",
+    "supporting scenery preserves these exact facts",
+  ].filter(Boolean).join("; ");
+}
+
+function safetyBoundaryDirection(boundary: SceneSafetyBoundary | undefined): string {
+  if (boundary === "medical-illustration") {
+    return [
+      "This frame is an illustrative editorial concept for general understanding",
+      "clinically exact dosage, test readings, treatment sequences and authoritative anatomy remain in verified deterministic copy outside the generated pixels",
+    ].join("; ");
+  }
+  if (boundary === "real-person-context-only") {
+    return [
+      "Use non-identifying contextual imagery such as an unoccupied location, evidence motifs and unidentifiable fictional silhouettes",
+      "the frame establishes investigative context without presenting an identifiable person's conduct as visual evidence",
+    ].join("; ");
+  }
+  return "ordinary narrative illustration";
+}
+
+function safetyBoundaryDirectionV6(
+  boundary: SceneSafetyBoundary | undefined,
+  facts: HardSceneFacts | undefined,
+): string {
+  if (
+    boundary === "real-person-context-only"
+    && (facts?.entityTypes ?? []).some((value) => /\b(?:empty|unoccupied)\b/i.test(value))
+  ) {
+    return [
+      "Use non-identifying contextual imagery",
+      "the investigative context is carried entirely by the unoccupied room and evidence objects",
+      "the frame establishes context without presenting an identifiable person's conduct as visual evidence",
+    ].join("; ");
+  }
+  return safetyBoundaryDirection(boundary);
+}
+
+function entityRenderingDescriptionsV6(beat: VisualBeat, visualFormatId: VisualFormatId): string {
+  const descriptions = (beat.entityRenderingDescriptions ?? [])
+    .map((description) => v3PositiveArtDirectionValue(description, 500))
+    .filter(Boolean);
+  if (!descriptions.length) return "none required for this scene";
+  if (visualFormatId === "stick-figure-story") {
+    return descriptions
+      .map((description) => `a circular-head line-body figure representing ${description}`)
+      .join("; ");
+  }
+  return descriptions.join("; ");
+}
+
+function letteringSafeVisualValueV8(value: string | null | undefined, limit = 260): string {
+  return v3PositiveArtDirectionValue(value, limit)
+    .replace(
+      /\bthree unlabeled workflow cards\b/giu,
+      "exactly three blank solid-color workflow tiles distinguished by color and simple object silhouettes",
+    )
+    .replace(
+      /\b(?:a |the )?timeline\b/giu,
+      "an unlettered horizontal sequence of solid circular markers",
+    )
+    .replace(
+      /\bpublic[- ]record shapes\b/giu,
+      "blank evidence tiles using simple object silhouettes",
+    )
+    .replace(
+      /\bpublic records?\b/giu,
+      "blank evidence tiles using simple object silhouettes",
+    )
+    .replace(
+      /\brecords?\b/giu,
+      "blank evidence tiles using simple object silhouettes",
+    )
+    .replace(
+      /\b(?:a |an |the )?abstract inventory dashboard\b/giu,
+      "exactly three blank solid-color workflow tiles arranged left to right",
+    )
+    .replace(
+      /\b(?:a |the )?simple habit checklist shape\b/giu,
+      "a row of blank solid-color habit tokens with one token selected by hand",
+    );
+}
+
+function v8FactList(label: string, values: readonly string[] | undefined): string {
+  const safeValues = (values ?? [])
+    .map((value) => letteringSafeVisualValueV8(value, 180))
+    .filter(Boolean);
+  return safeValues.length ? `${label} ${joinWithAnd(safeValues)}` : "";
+}
+
+function hardSceneFactsDirectionV8(facts: HardSceneFacts | undefined): string {
+  if (!facts) return "the explicitly described subject, action, setting and time";
+  return [
+    v8FactList("entity type", facts.entityTypes),
+    v8FactList("age", facts.ages),
+    v8FactList("gender", facts.genders),
+    v8FactList("required action", facts.actions),
+    v8FactList("location type", facts.locationTypes),
+    facts.timeOfDay ? `time of day ${letteringSafeVisualValueV8(facts.timeOfDay, 80)}` : "",
+    facts.historicalPeriod
+      ? `historical period ${letteringSafeVisualValueV8(facts.historicalPeriod, 160)}`
+      : "",
+    facts.count !== null && facts.count !== undefined ? `exact count ${facts.count}` : "",
+    v8FactList("essential object", facts.essentialObjects),
+  ].filter(Boolean).join("; ");
+}
+
+function hardSceneFactsEnforcementDirectionV8(facts: HardSceneFacts | undefined): string {
+  if (!facts) return "render the explicitly described subject, action, setting and time literally";
+  const entityTypes = facts.entityTypes
+    .map((value) => letteringSafeVisualValueV8(value, 180))
+    .filter(Boolean);
+  const essentialObjects = facts.essentialObjects
+    .map((value) => letteringSafeVisualValueV8(value, 180))
+    .filter(Boolean);
+  const countedEntity = entityTypes.length === 1 ? entityTypes[0] : "primary story entities";
+  return [
+    "render every listed entity, action, location, time and historical period literally and visibly",
+    facts.count !== null && facts.count !== undefined
+      ? `exactly ${facts.count} ${countedEntity} ${facts.count === 1 ? "appears" : "appear"} in the complete frame, counting foreground and background`
+      : "",
+    essentialObjects.length
+      ? `each stated essential object and quantity is clearly visible: ${joinWithAnd(essentialObjects)}`
+      : "",
+    entityTypes.some((value) => /\b(?:empty|unoccupied)\b/i.test(value))
+      ? "the empty chair is visibly unoccupied and the investigative room is carried by objects"
+      : "",
+    "supporting scenery preserves these exact facts",
+  ].filter(Boolean).join("; ");
+}
+
+function countSafeFlexibleSceneDirectionV8(beat: VisualBeat): string {
+  const facts = beat.hardSceneFacts;
+  if (facts?.count !== null && facts?.count !== undefined && facts.entityTypes.length > 0) {
+    const entityTypes = facts.entityTypes
+      .map((value) => letteringSafeVisualValueV8(value, 180))
+      .filter(Boolean);
+    const actions = facts.actions
+      .map((value) => letteringSafeVisualValueV8(value, 180))
+      .filter(Boolean);
+    const locations = facts.locationTypes
+      .map((value) => letteringSafeVisualValueV8(value, 180))
+      .filter(Boolean);
+    const essentialObjects = facts.essentialObjects
+      .map((value) => letteringSafeVisualValueV8(value, 180))
+      .filter(Boolean);
+    return [
+      `the complete visible counted set is exactly ${facts.count} ${joinWithAnd(entityTypes)}`,
+      actions.length ? `performing ${joinWithAnd(actions)}` : "",
+      locations.length ? `at ${joinWithAnd(locations)}` : "",
+      facts.timeOfDay ? `during ${letteringSafeVisualValueV8(facts.timeOfDay, 80)}` : "",
+      facts.historicalPeriod
+        ? `in the ${letteringSafeVisualValueV8(facts.historicalPeriod, 160)}`
+        : "",
+      essentialObjects.length ? `with ${joinWithAnd(essentialObjects)}` : "",
+      beat.emotion ? `expressing ${letteringSafeVisualValueV8(beat.emotion)}` : "",
+      "a sparse composition centers this complete counted set through architecture, landscape, light and ordinary inanimate setting details",
+    ].filter(Boolean).join(", ");
+  }
+  return [
+    letteringSafeVisualValueV8(beat.subject),
+    letteringSafeVisualValueV8(beat.action),
+    beat.setting ? `set in ${letteringSafeVisualValueV8(beat.setting)}` : "",
+    beat.emotion ? `the mood feels ${letteringSafeVisualValueV8(beat.emotion)}` : "",
+    beat.emphasis ? `visual attention rests on ${letteringSafeVisualValueV8(beat.emphasis)}` : "",
+  ].filter(Boolean).join(", ") || "one coherent subject acting in a clear setting";
+}
+
+function countSafeFlexibleSceneDirectionV11(beat: VisualBeat): string {
+  const facts = beat.hardSceneFacts;
+  if (facts?.count !== null && facts?.count !== undefined && facts.entityTypes.length > 0) {
+    const entityTypes = facts.entityTypes
+      .map((value) => letteringSafeVisualValueV8(value, 180))
+      .filter(Boolean);
+    const actions = facts.actions
+      .map((value) => letteringSafeVisualValueV8(value, 240))
+      .filter(Boolean);
+    const locations = facts.locationTypes
+      .map((value) => letteringSafeVisualValueV8(value, 180))
+      .filter(Boolean);
+    const essentialObjects = facts.essentialObjects
+      .map((value) => letteringSafeVisualValueV8(value, 180))
+      .filter(Boolean);
+    const countedEntity = joinWithAnd(entityTypes);
+    return [
+      `one compact story group contains the complete visible counted set of exactly ${facts.count} ${countedEntity}`,
+      `all foreground, midground and background appearances of ${countedEntity} belong to this same closed counted set`,
+      actions.length ? `performing ${joinWithAnd(actions)}` : "",
+      locations.length ? `at ${joinWithAnd(locations)}` : "",
+      facts.timeOfDay ? `during ${letteringSafeVisualValueV8(facts.timeOfDay, 80)}` : "",
+      facts.historicalPeriod
+        ? `in the ${letteringSafeVisualValueV8(facts.historicalPeriod, 160)}`
+        : "",
+      essentialObjects.length ? `with ${joinWithAnd(essentialObjects)}` : "",
+      beat.emotion ? `expressing ${letteringSafeVisualValueV8(beat.emotion)}` : "",
+      "all remaining image areas continue the stated location through open negative space, broad material surfaces and light with silhouettes clearly different from the counted entities and essential objects",
+    ].filter(Boolean).join(", ");
+  }
+  return countSafeFlexibleSceneDirectionV8(beat);
+}
+
+function hardSceneFactsEnforcementDirectionV11(facts: HardSceneFacts | undefined): string {
+  if (!facts) return hardSceneFactsEnforcementDirectionV8(facts);
+  const entityTypes = facts.entityTypes
+    .map((value) => letteringSafeVisualValueV8(value, 180))
+    .filter(Boolean);
+  const essentialObjects = facts.essentialObjects
+    .map((value) => letteringSafeVisualValueV8(value, 180))
+    .filter(Boolean);
+  const countedEntity = entityTypes.length === 1 ? entityTypes[0] : "primary story entities";
+  return [
+    "render every listed entity, action, location, time and historical period literally and visibly",
+    facts.count !== null && facts.count !== undefined
+      ? `exactly ${facts.count} ${countedEntity} ${facts.count === 1 ? "appears" : "appear"} in the complete frame, counting foreground and background`
+      : "",
+    facts.count !== null && facts.count !== undefined
+      ? `all visible instances of ${countedEntity} form one closed set of exactly ${facts.count} across foreground, midground and background`
+      : "",
+    essentialObjects.length
+      ? `each stated essential object and quantity is clearly visible: ${joinWithAnd(essentialObjects)}`
+      : "",
+    essentialObjects.length
+      ? `the complete visible essential-object arrangement matches these stated quantities and relationships: ${joinWithAnd(essentialObjects)}`
+      : "",
+    facts.actions.length
+      ? "the visible action connects every stated actor, source object, target object, contact point and destination in one frozen moment"
+      : "",
+    entityTypes.some((value) => /\b(?:empty|unoccupied)\b/i.test(value))
+      ? "the empty chair is visibly unoccupied and the investigative room is carried by objects; the visibly empty chair remains a fully shown inanimate object with its seat and surrounding opening unobstructed"
+      : "",
+    "supporting scenery consists of open setting surfaces and preserves this closed cast and object arrangement",
+  ].filter(Boolean).join("; ");
+}
+
+function positiveOnlyVisualValueV9(value: string | null | undefined, limit = 260): string {
+  return letteringSafeVisualValueV8(value, limit)
+    .replace(
+      /\bchecks? that the repaired tap has stopped dripping\b/giu,
+      "checks the dry and motionless repaired tap above a dry sink basin",
+    )
+    .replace(
+      /\bthe repaired tap has stopped dripping\b/giu,
+      "the repaired tap is dry and motionless above a dry sink basin",
+    )
+    .replace(
+      /(?<!matte )\bdry repaired tap\b/giu,
+      "dry and motionless repaired tap above a dry sink basin",
+    );
+}
+
+function positiveOnlyVisualBeatV9(beat: VisualBeat): VisualBeat {
+  const facts = beat.hardSceneFacts;
+  return {
+    ...beat,
+    subject: positiveOnlyVisualValueV9(beat.subject),
+    action: positiveOnlyVisualValueV9(beat.action),
+    setting: positiveOnlyVisualValueV9(beat.setting),
+    emotion: positiveOnlyVisualValueV9(beat.emotion),
+    emphasis: positiveOnlyVisualValueV9(beat.emphasis),
+    hardSceneFacts: facts ? {
+      ...facts,
+      entityTypes: facts.entityTypes.map((value) => positiveOnlyVisualValueV9(value, 180)),
+      ages: facts.ages.map((value) => positiveOnlyVisualValueV9(value, 80)),
+      genders: facts.genders.map((value) => positiveOnlyVisualValueV9(value, 80)),
+      actions: facts.actions.map((value) => positiveOnlyVisualValueV9(value, 180)),
+      locationTypes: facts.locationTypes.map((value) => positiveOnlyVisualValueV9(value, 180)),
+      timeOfDay: facts.timeOfDay ? positiveOnlyVisualValueV9(facts.timeOfDay, 80) : null,
+      historicalPeriod: facts.historicalPeriod
+        ? positiveOnlyVisualValueV9(facts.historicalPeriod, 160)
+        : null,
+      essentialObjects: facts.essentialObjects.map((value) => positiveOnlyVisualValueV9(value, 180)),
+    } : undefined,
+  };
+}
+
+function completedResultVisualValueV10(value: string | null | undefined, limit = 260): string {
+  return positiveOnlyVisualValueV9(value, limit)
+    .replace(
+      /\bchecks the dry and motionless repaired tap above a dry sink basin\b/giu,
+      "stands upright beside the completed kitchen sink with both hands relaxed at their sides",
+    )
+    .replace(
+      /\bdry and motionless repaired tap above a dry sink basin\b/giu,
+      "matte dry repaired tap above a matte dry sink basin",
+    );
+}
+
+function completedResultVisualBeatV10(beat: VisualBeat): VisualBeat {
+  const facts = beat.hardSceneFacts;
+  return {
+    ...beat,
+    subject: completedResultVisualValueV10(beat.subject),
+    action: completedResultVisualValueV10(beat.action),
+    setting: completedResultVisualValueV10(beat.setting),
+    emotion: completedResultVisualValueV10(beat.emotion),
+    emphasis: completedResultVisualValueV10(beat.emphasis),
+    hardSceneFacts: facts ? {
+      ...facts,
+      entityTypes: facts.entityTypes.map((value) => completedResultVisualValueV10(value, 180)),
+      ages: facts.ages.map((value) => completedResultVisualValueV10(value, 80)),
+      genders: facts.genders.map((value) => completedResultVisualValueV10(value, 80)),
+      actions: facts.actions.map((value) => completedResultVisualValueV10(value, 180)),
+      locationTypes: facts.locationTypes.map((value) => completedResultVisualValueV10(value, 180)),
+      timeOfDay: facts.timeOfDay ? completedResultVisualValueV10(facts.timeOfDay, 80) : null,
+      historicalPeriod: facts.historicalPeriod
+        ? completedResultVisualValueV10(facts.historicalPeriod, 160)
+        : null,
+      essentialObjects: facts.essentialObjects
+        .map((value) => completedResultVisualValueV10(value, 180)),
+    } : undefined,
+  };
+}
+
+/** Current video compiler. Hard Scene Facts and unambiguous entity rendering
+ * descriptions lead the positive-only prompt. Treatment, format and Brand
+ * grammar may enrich only the flexible layers that follow. */
+function compileBrandVisualPromptV4(input: {
+  visualFormatId: VisualFormatId;
+  recipeVersion: string;
+  contentDomain: string;
+  treatment?: string;
+  treatmentPin?: TreatmentPin;
+  visualBeat: VisualBeat;
+  brandVisualLanguage?: BrandVisualLanguage | null;
+}): CompiledBrandVisualPrompt {
+  const recipe = V4_FORMAT_RECIPE_DIRECTION[input.recipeVersion];
+  if (!recipe || recipe.formatId !== input.visualFormatId) {
+    throw new Error("Unsupported Visual Format recipe version");
+  }
+
+  const beat = input.visualBeat;
+  const scene = [
+    v3PositiveArtDirectionValue(beat.subject),
+    v3PositiveArtDirectionValue(beat.action),
+    beat.setting ? `set in ${v3PositiveArtDirectionValue(beat.setting)}` : "",
+    beat.emotion ? `the mood feels ${v3PositiveArtDirectionValue(beat.emotion)}` : "",
+    beat.emphasis ? `visual attention rests on ${v3PositiveArtDirectionValue(beat.emphasis)}` : "",
+  ].filter(Boolean).join(", ") || "one coherent subject acting in a clear setting";
+  const entityDescriptions = (beat.entityRenderingDescriptions ?? [])
+    .map((description) => v3PositiveArtDirectionValue(description, 500))
+    .filter(Boolean)
+    .join("; ") || "none required for this scene";
+  const brand = brandRenderingDirectionV3(input.brandVisualLanguage);
+  const formatDirection = [
+    ...recipe.direction,
+    ...(recipe.fallbackPalette && !brand.hasPalette ? [recipe.fallbackPalette] : []),
+  ].join(", ");
+  const pinnedTreatmentDirection = input.treatmentPin
+    ? treatmentPromptDirection(input.treatmentPin)
+    : v3PositiveArtDirectionValue(input.treatment) || "neutral editorial storytelling";
+  const sceneIntensity = v3PositiveArtDirectionValue(beat.sceneIntensity) || "balanced";
+  const safeDomain = v3PositiveArtDirectionValue(input.contentDomain) || "a visually led subject";
+
+  const positive = [
+    `Hard scene facts: ${hardSceneFactsDirection(beat.hardSceneFacts)}`,
+    `Entity rendering descriptions: ${entityDescriptions}`,
+    `Safety boundary: ${safetyBoundaryDirection(beat.safetyBoundary)}`,
+    `Flexible scene direction: for a story about ${safeDomain}, show ${scene}`,
+    `Treatment direction: ${pinnedTreatmentDirection}; scene intensity ${sceneIntensity}`,
+    `Visual format direction: ${formatDirection}`,
+    `Brand rendering direction: ${brand.direction}`,
+    "A vertical edge-to-edge composition from a single viewpoint fills the frame",
+    "All people and objects share the same ground plane in one frozen moment",
+    "Preserve every hard scene fact while adapting only camera, composition, lighting, color, texture and non-essential supporting detail",
+    "The lower third stays calm and uncluttered with open background texture",
+  ].join(". ") + ".";
+
+  return {
+    visualFormatId: input.visualFormatId,
+    recipeVersion: input.recipeVersion,
+    positive,
+    negative: [
+      ...V3_NEGATIVE_PROMPT_TERMS,
+      ...(recipe.extraNegative ?? []),
+    ].join(", "),
+    ...(input.treatmentPin ? { treatmentPin: input.treatmentPin } : {}),
+  };
+}
+
+/** Current qualification-hardened compiler. V4 remains byte-stable for
+ * already-pinned projects; V5 repeats the immutable facts after art direction
+ * because the positive-only public model sometimes lost counts and essential
+ * objects over a long prompt. */
+function compileBrandVisualPromptV5(input: {
+  visualFormatId: VisualFormatId;
+  recipeVersion: string;
+  contentDomain: string;
+  treatment?: string;
+  treatmentPin?: TreatmentPin;
+  visualBeat: VisualBeat;
+  brandVisualLanguage?: BrandVisualLanguage | null;
+}): CompiledBrandVisualPrompt {
+  const recipe = V5_FORMAT_RECIPE_DIRECTION[input.recipeVersion];
+  if (!recipe || recipe.formatId !== input.visualFormatId) {
+    throw new Error("Unsupported Visual Format recipe version");
+  }
+
+  const beat = input.visualBeat;
+  const scene = [
+    v3PositiveArtDirectionValue(beat.subject),
+    v3PositiveArtDirectionValue(beat.action),
+    beat.setting ? `set in ${v3PositiveArtDirectionValue(beat.setting)}` : "",
+    beat.emotion ? `the mood feels ${v3PositiveArtDirectionValue(beat.emotion)}` : "",
+    beat.emphasis ? `visual attention rests on ${v3PositiveArtDirectionValue(beat.emphasis)}` : "",
+  ].filter(Boolean).join(", ") || "one coherent subject acting in a clear setting";
+  const entityDescriptions = (beat.entityRenderingDescriptions ?? [])
+    .map((description) => v3PositiveArtDirectionValue(description, 500))
+    .filter(Boolean)
+    .join("; ") || "none required for this scene";
+  const brand = brandRenderingDirectionV3(input.brandVisualLanguage);
+  const formatDirection = [
+    ...recipe.direction,
+    ...(recipe.fallbackPalette && !brand.hasPalette ? [recipe.fallbackPalette] : []),
+  ].join(", ");
+  const pinnedTreatmentDirection = input.treatmentPin
+    ? treatmentPromptDirection(input.treatmentPin)
+    : v3PositiveArtDirectionValue(input.treatment) || "neutral editorial storytelling";
+  const sceneIntensity = v3PositiveArtDirectionValue(beat.sceneIntensity) || "balanced";
+  const safeDomain = v3PositiveArtDirectionValue(input.contentDomain) || "a visually led subject";
+
+  const positive = [
+    `Hard scene facts: ${hardSceneFactsDirection(beat.hardSceneFacts)}`,
+    `Entity rendering descriptions: ${entityDescriptions}`,
+    `Safety boundary: ${safetyBoundaryDirection(beat.safetyBoundary)}`,
+    `Flexible scene direction: for a story about ${safeDomain}, show ${scene}`,
+    `Treatment direction: ${pinnedTreatmentDirection}; scene intensity ${sceneIntensity}`,
+    `Visual format direction: ${formatDirection}`,
+    `Brand rendering direction: ${brand.direction}`,
+    "A vertical edge-to-edge composition from a single viewpoint fills the frame",
+    "All people and objects share the same ground plane in one frozen moment",
+    "Preserve every hard scene fact while adapting only camera, composition, lighting, color, texture and non-essential supporting detail",
+    "The lower third stays calm and uncluttered with open background texture",
+    `Final hard-fact check: ${hardSceneFactsEnforcementDirection(beat.hardSceneFacts)}`,
+  ].join(". ") + ".";
+
+  return {
+    visualFormatId: input.visualFormatId,
+    recipeVersion: input.recipeVersion,
+    positive,
+    negative: [
+      ...V3_NEGATIVE_PROMPT_TERMS,
+      ...(recipe.extraNegative ?? []),
+    ].join(", "),
+    ...(input.treatmentPin ? { treatmentPin: input.treatmentPin } : {}),
+  };
+}
+
+/** Public-model-hardened compiler produced from the failed v5 smoke review.
+ * It places the medium contract before flexible direction, translates human
+ * entity descriptions into the selected abstract medium and names an
+ * unambiguous counted entity whenever the Hard Scene Facts provide one type. */
+function compileBrandVisualPromptV6(input: {
+  visualFormatId: VisualFormatId;
+  recipeVersion: string;
+  contentDomain: string;
+  treatment?: string;
+  treatmentPin?: TreatmentPin;
+  visualBeat: VisualBeat;
+  brandVisualLanguage?: BrandVisualLanguage | null;
+}): CompiledBrandVisualPrompt {
+  const recipe = V6_FORMAT_RECIPE_DIRECTION[input.recipeVersion];
+  if (!recipe || recipe.formatId !== input.visualFormatId) {
+    throw new Error("Unsupported Visual Format recipe version");
+  }
+
+  const beat = input.visualBeat;
+  const scene = [
+    v3PositiveArtDirectionValue(beat.subject),
+    v3PositiveArtDirectionValue(beat.action),
+    beat.setting ? `set in ${v3PositiveArtDirectionValue(beat.setting)}` : "",
+    beat.emotion ? `the mood feels ${v3PositiveArtDirectionValue(beat.emotion)}` : "",
+    beat.emphasis ? `visual attention rests on ${v3PositiveArtDirectionValue(beat.emphasis)}` : "",
+  ].filter(Boolean).join(", ") || "one coherent subject acting in a clear setting";
+  const entityDescriptions = entityRenderingDescriptionsV6(beat, input.visualFormatId);
+  const brand = brandRenderingDirectionV3(input.brandVisualLanguage);
+  const formatDirection = [
+    ...recipe.direction,
+    ...(recipe.fallbackPalette && !brand.hasPalette ? [recipe.fallbackPalette] : []),
+  ].join(", ");
+  const pinnedTreatmentDirection = input.treatmentPin
+    ? input.visualFormatId === "simple-editorial-story"
+      ? simpleEditorialTreatmentDirectionV7(input.treatmentPin)
+      : treatmentPromptDirection(input.treatmentPin)
+    : input.visualFormatId === "simple-editorial-story"
+      ? "clear narrative emphasis and balanced visual pacing"
+      : v3PositiveArtDirectionValue(input.treatment) || "neutral editorial storytelling";
+  const sceneIntensity = v3PositiveArtDirectionValue(beat.sceneIntensity) || "balanced";
+  const safeDomain = v3PositiveArtDirectionValue(input.contentDomain) || "a visually led subject";
+
+  const positive = [
+    `Hard scene facts: ${hardSceneFactsDirection(beat.hardSceneFacts)}`,
+    `Entity rendering descriptions: ${entityDescriptions}`,
+    `Visual format direction: ${formatDirection}`,
+    `Safety boundary: ${safetyBoundaryDirectionV6(beat.safetyBoundary, beat.hardSceneFacts)}`,
+    `Flexible scene direction: for a story about ${safeDomain}, show ${scene}`,
+    `Treatment direction: ${pinnedTreatmentDirection}; scene intensity ${sceneIntensity}`,
+    `Brand rendering direction: ${brand.direction}`,
+    "A vertical edge-to-edge composition from a single viewpoint fills the frame",
+    "All people and objects share the same ground plane in one frozen moment",
+    "Preserve every hard scene fact while adapting only camera, composition, lighting, color, texture and non-essential supporting detail",
+    "The lower third stays calm and uncluttered with open background texture",
+    `Final hard-fact check: ${hardSceneFactsEnforcementDirectionV6(beat.hardSceneFacts)}`,
+    `Final visual-format check: ${formatDirection}`,
+  ].join(". ") + ".";
+
+  return {
+    visualFormatId: input.visualFormatId,
+    recipeVersion: input.recipeVersion,
+    positive,
+    negative: [
+      ...V3_NEGATIVE_PROMPT_TERMS,
+      ...(recipe.extraNegative ?? []),
+    ].join(", "),
+    ...(input.treatmentPin ? { treatmentPin: input.treatmentPin } : {}),
+  };
+}
+
+/** Current compiler. It derives exact-count compositions from Hard Scene Facts
+ * alone, so later flexible language cannot imply duplicates. */
+function compileBrandVisualPromptV8(input: {
+  visualFormatId: VisualFormatId;
+  recipeVersion: string;
+  contentDomain: string;
+  treatment?: string;
+  treatmentPin?: TreatmentPin;
+  visualBeat: VisualBeat;
+  brandVisualLanguage?: BrandVisualLanguage | null;
+}): CompiledBrandVisualPrompt {
+  const recipe = V8_FORMAT_RECIPE_DIRECTION[input.recipeVersion];
+  if (!recipe || recipe.formatId !== input.visualFormatId) {
+    throw new Error("Unsupported Visual Format recipe version");
+  }
+
+  const beat = input.visualBeat;
+  const scene = countSafeFlexibleSceneDirectionV8(beat);
+  const entityDescriptions = entityRenderingDescriptionsV6(beat, input.visualFormatId);
+  const brand = brandRenderingDirectionV3(input.brandVisualLanguage);
+  const formatDirection = [
+    ...recipe.direction,
+    ...(recipe.fallbackPalette && !brand.hasPalette ? [recipe.fallbackPalette] : []),
+  ].join(", ");
+  const pinnedTreatmentDirection = input.treatmentPin
+    ? input.visualFormatId === "simple-editorial-story"
+      ? simpleEditorialTreatmentDirectionV7(input.treatmentPin)
+      : treatmentPromptDirection(input.treatmentPin)
+    : input.visualFormatId === "simple-editorial-story"
+      ? "clear narrative emphasis and balanced visual pacing"
+      : v3PositiveArtDirectionValue(input.treatment) || "neutral editorial storytelling";
+  const sceneIntensity = v3PositiveArtDirectionValue(beat.sceneIntensity) || "balanced";
+  const hasExactCount = beat.hardSceneFacts?.count !== null
+    && beat.hardSceneFacts?.count !== undefined;
+  const safeDomain = letteringSafeVisualValueV8(input.contentDomain) || "a visually led subject";
+
+  const positive = [
+    `Hard scene facts: ${hardSceneFactsDirectionV8(beat.hardSceneFacts)}`,
+    `Entity rendering descriptions: ${entityDescriptions}`,
+    `Visual format direction: ${formatDirection}`,
+    `Safety boundary: ${safetyBoundaryDirectionV6(beat.safetyBoundary, beat.hardSceneFacts)}`,
+    hasExactCount
+      ? `Count-safe flexible scene direction: ${scene}`
+      : `Flexible scene direction: for a story about ${safeDomain}, show ${scene}`,
+    "Lettering-safe visual plan: blank solid-color shapes, simple object silhouettes, spacing and physical action carry all information throughout the frame",
+    `Treatment direction: ${pinnedTreatmentDirection}; scene intensity ${sceneIntensity}`,
+    `Brand rendering direction: ${brand.direction}`,
+    "A vertical edge-to-edge composition from a single viewpoint fills the frame",
+    "All people and objects share the same ground plane in one frozen moment",
+    "Preserve every hard scene fact while adapting only camera, composition, lighting, color, texture and non-essential supporting detail",
+    "The lower third stays calm and uncluttered with open background texture",
+    `Final hard-fact check: ${hardSceneFactsEnforcementDirectionV8(beat.hardSceneFacts)}`,
+    `Final visual-format check: ${formatDirection}`,
+  ].join(". ") + ".";
+
+  return {
+    visualFormatId: input.visualFormatId,
+    recipeVersion: input.recipeVersion,
+    positive,
+    negative: [
+      ...V3_NEGATIVE_PROMPT_TERMS,
+      ...(recipe.extraNegative ?? []),
+    ].join(", "),
+    ...(input.treatmentPin ? { treatmentPin: input.treatmentPin } : {}),
+  };
+}
+
+/** Current positive-only compiler. It keeps V8's count and lettering rules,
+ * translates completed failure states into affirmative visible outcomes, and
+ * uses the caption-free Clear Infographic composition published in V9. */
+function compileBrandVisualPromptV9(input: {
+  visualFormatId: VisualFormatId;
+  recipeVersion: string;
+  contentDomain: string;
+  treatment?: string;
+  treatmentPin?: TreatmentPin;
+  visualBeat: VisualBeat;
+  brandVisualLanguage?: BrandVisualLanguage | null;
+}): CompiledBrandVisualPrompt {
+  const recipe = V9_FORMAT_RECIPE_DIRECTION[input.recipeVersion];
+  if (!recipe || recipe.formatId !== input.visualFormatId) {
+    throw new Error("Unsupported Visual Format recipe version");
+  }
+
+  const beat = positiveOnlyVisualBeatV9(input.visualBeat);
+  const scene = countSafeFlexibleSceneDirectionV8(beat);
+  const entityDescriptions = entityRenderingDescriptionsV6(beat, input.visualFormatId);
+  const brand = brandRenderingDirectionV3(input.brandVisualLanguage);
+  const formatDirection = [
+    ...recipe.direction,
+    ...(recipe.fallbackPalette && !brand.hasPalette ? [recipe.fallbackPalette] : []),
+  ].join(", ");
+  const pinnedTreatmentDirection = input.treatmentPin
+    ? input.visualFormatId === "simple-editorial-story"
+      ? simpleEditorialTreatmentDirectionV7(input.treatmentPin)
+      : treatmentPromptDirection(input.treatmentPin)
+    : input.visualFormatId === "simple-editorial-story"
+      ? "clear narrative emphasis and balanced visual pacing"
+      : v3PositiveArtDirectionValue(input.treatment) || "neutral editorial storytelling";
+  const sceneIntensity = v3PositiveArtDirectionValue(beat.sceneIntensity) || "balanced";
+  const hasExactCount = beat.hardSceneFacts?.count !== null
+    && beat.hardSceneFacts?.count !== undefined;
+  const safeDomain = positiveOnlyVisualValueV9(input.contentDomain) || "a visually led subject";
+
+  const positive = [
+    `Hard scene facts: ${hardSceneFactsDirectionV8(beat.hardSceneFacts)}`,
+    `Entity rendering descriptions: ${entityDescriptions}`,
+    `Visual format direction: ${formatDirection}`,
+    `Safety boundary: ${safetyBoundaryDirectionV6(beat.safetyBoundary, beat.hardSceneFacts)}`,
+    hasExactCount
+      ? `Count-safe flexible scene direction: ${scene}`
+      : `Flexible scene direction: for a story about ${safeDomain}, show ${scene}`,
+    "Lettering-safe visual plan: blank solid-color shapes, simple object silhouettes, spacing and physical action carry all information throughout the frame",
+    `Treatment direction: ${pinnedTreatmentDirection}; scene intensity ${sceneIntensity}`,
+    `Brand rendering direction: ${brand.direction}`,
+    "A vertical edge-to-edge composition from a single viewpoint fills the frame",
+    "All people and objects share the same ground plane in one frozen moment",
+    "Preserve every hard scene fact while adapting only camera, composition, lighting, color, texture and non-essential supporting detail",
+    "The lower third stays calm and uncluttered with open background texture",
+    `Final hard-fact check: ${hardSceneFactsEnforcementDirectionV8(beat.hardSceneFacts)}`,
+    `Final visual-format check: ${formatDirection}`,
+  ].join(". ") + ".";
+
+  return {
+    visualFormatId: input.visualFormatId,
+    recipeVersion: input.recipeVersion,
+    positive,
+    negative: [
+      ...V3_NEGATIVE_PROMPT_TERMS,
+      ...(recipe.extraNegative ?? []),
+    ].join(", "),
+    ...(input.treatmentPin ? { treatmentPin: input.treatmentPin } : {}),
+  };
+}
+
+/** Simple Editorial v10 stages a completed result after verification. The
+ * provider sees relaxed hands and matte dry surfaces instead of an interaction
+ * with the faucet, while v9 remains byte-stable for its paid evidence. */
+function compileBrandVisualPromptV10(input: {
+  visualFormatId: VisualFormatId;
+  recipeVersion: string;
+  contentDomain: string;
+  treatment?: string;
+  treatmentPin?: TreatmentPin;
+  visualBeat: VisualBeat;
+  brandVisualLanguage?: BrandVisualLanguage | null;
+}): CompiledBrandVisualPrompt {
+  const recipe = V10_FORMAT_RECIPE_DIRECTION[input.recipeVersion];
+  if (!recipe || recipe.formatId !== input.visualFormatId) {
+    throw new Error("Unsupported Visual Format recipe version");
+  }
+  const compiled = compileBrandVisualPromptV9({
+    ...input,
+    recipeVersion: "simple-editorial-story-v9",
+    visualBeat: completedResultVisualBeatV10(input.visualBeat),
+  });
+  return { ...compiled, recipeVersion: input.recipeVersion };
+}
+
+/** Relational Hard Scene Fact recipe generation. It preserves the accepted
+ * rendering media while closing counted casts across the entire frame. */
+function compileBrandVisualPromptV11(input: {
+  visualFormatId: VisualFormatId;
+  recipeVersion: string;
+  contentDomain: string;
+  treatment?: string;
+  treatmentPin?: TreatmentPin;
+  visualBeat: VisualBeat;
+  brandVisualLanguage?: BrandVisualLanguage | null;
+}): CompiledBrandVisualPrompt {
+  const recipe = V11_FORMAT_RECIPE_DIRECTION[input.recipeVersion];
+  if (!recipe || recipe.formatId !== input.visualFormatId) {
+    throw new Error("Unsupported Visual Format recipe version");
+  }
+
+  const beat = completedResultVisualBeatV10(input.visualBeat);
+  const scene = countSafeFlexibleSceneDirectionV11(beat);
+  const entityDescriptions = entityRenderingDescriptionsV6(beat, input.visualFormatId);
+  const brand = brandRenderingDirectionV3(input.brandVisualLanguage);
+  const formatDirection = [
+    ...recipe.direction,
+    ...(recipe.fallbackPalette && !brand.hasPalette ? [recipe.fallbackPalette] : []),
+  ].join(", ");
+  const pinnedTreatmentDirection = input.treatmentPin
+    ? input.visualFormatId === "simple-editorial-story"
+      ? simpleEditorialTreatmentDirectionV7(input.treatmentPin)
+      : treatmentPromptDirection(input.treatmentPin)
+    : input.visualFormatId === "simple-editorial-story"
+      ? "clear narrative emphasis and balanced visual pacing"
+      : v3PositiveArtDirectionValue(input.treatment) || "neutral editorial storytelling";
+  const sceneIntensity = v3PositiveArtDirectionValue(beat.sceneIntensity) || "balanced";
+  const hasExactCount = beat.hardSceneFacts?.count !== null
+    && beat.hardSceneFacts?.count !== undefined;
+  const safeDomain = positiveOnlyVisualValueV9(input.contentDomain) || "a visually led subject";
+
+  const positive = [
+    `Hard scene facts: ${hardSceneFactsDirectionV8(beat.hardSceneFacts)}`,
+    `Entity rendering descriptions: ${entityDescriptions}`,
+    `Visual format direction: ${formatDirection}`,
+    `Safety boundary: ${safetyBoundaryDirectionV6(beat.safetyBoundary, beat.hardSceneFacts)}`,
+    hasExactCount
+      ? `Count-safe flexible scene direction: ${scene}`
+      : `Flexible scene direction: for a story about ${safeDomain}, show ${scene}`,
+    "Lettering-safe visual plan: every wall, garment, object and background surface presents one continuous visually plain material texture; physical action, simple object silhouettes, spacing and light carry all information throughout the frame",
+    `Treatment direction: ${pinnedTreatmentDirection}; scene intensity ${sceneIntensity}`,
+    `Brand rendering direction: ${brand.direction}`,
+    "A vertical edge-to-edge composition from a single viewpoint fills the frame",
+    "All people and objects share the same ground plane in one frozen moment",
+    "Preserve every hard scene fact while adapting only camera, composition, lighting, color, texture and non-essential supporting detail",
+    "The lower third stays calm and uncluttered with open background texture",
+    `Final hard-fact check: ${hardSceneFactsEnforcementDirectionV11(beat.hardSceneFacts)}`,
+    `Final visual-format check: ${formatDirection}`,
+  ].join(". ") + ".";
+
+  return {
+    visualFormatId: input.visualFormatId,
+    recipeVersion: input.recipeVersion,
+    positive,
+    negative: [
+      ...V3_NEGATIVE_PROMPT_TERMS,
+      ...(recipe.extraNegative ?? []),
+    ].join(", "),
+    ...(input.treatmentPin ? { treatmentPin: input.treatmentPin } : {}),
+  };
+}
+
 /**
  * Compile scene meaning and creator intent into one provider-neutral image
  * instruction. Format selection is an input, never a model decision. The recipe
@@ -1029,20 +2063,42 @@ export function compileBrandVisualPrompt(input: {
   visualFormatId: VisualFormatId;
   recipeVersion?: string;
   contentDomain: string;
-  treatment: string;
+  treatment?: string;
+  treatmentPin?: TreatmentPin;
   visualBeat: VisualBeat;
   brandVisualLanguage?: BrandVisualLanguage | null;
 }): CompiledBrandVisualPrompt {
-  const format = VISUAL_FORMATS.find((candidate) => candidate.id === input.visualFormatId);
+  const format = SUPPORTED_VISUAL_FORMATS.find((candidate) => candidate.id === input.visualFormatId);
   if (!format) throw new Error("Unsupported Visual Format");
   const recipeVersion = input.recipeVersion ?? format.recipeVersion;
+  let compiled: CompiledBrandVisualPrompt;
   if (recipeVersion.endsWith("-v1")) {
-    return compileBrandVisualPromptV1({ ...input, recipeVersion });
+    compiled = compileBrandVisualPromptV1({ ...input, treatment: input.treatment ?? "", recipeVersion });
+  } else if (recipeVersion.endsWith("-v2")) {
+    compiled = compileBrandVisualPromptV2({ ...input, treatment: input.treatment ?? "", recipeVersion });
+  } else if (recipeVersion.endsWith("-v3")) {
+    compiled = compileBrandVisualPromptV3({ ...input, treatment: input.treatment ?? "", recipeVersion });
+  } else if (recipeVersion.endsWith("-v4")) {
+    compiled = compileBrandVisualPromptV4({ ...input, recipeVersion });
+  } else if (recipeVersion.endsWith("-v5")) {
+    compiled = compileBrandVisualPromptV5({ ...input, recipeVersion });
+  } else if (V11_FORMAT_RECIPE_DIRECTION[recipeVersion]) {
+    compiled = compileBrandVisualPromptV11({ ...input, recipeVersion });
+  } else if (V10_FORMAT_RECIPE_DIRECTION[recipeVersion]) {
+    compiled = compileBrandVisualPromptV10({ ...input, recipeVersion });
+  } else if (V9_FORMAT_RECIPE_DIRECTION[recipeVersion]) {
+    compiled = compileBrandVisualPromptV9({ ...input, recipeVersion });
+  } else if (V8_FORMAT_RECIPE_DIRECTION[recipeVersion]) {
+    compiled = compileBrandVisualPromptV8({ ...input, recipeVersion });
+  } else {
+    compiled = compileBrandVisualPromptV6({ ...input, recipeVersion });
   }
-  if (recipeVersion.endsWith("-v2")) {
-    return compileBrandVisualPromptV2({ ...input, recipeVersion });
-  }
-  return compileBrandVisualPromptV3({ ...input, recipeVersion });
+  // A targeted repair may preserve a historical format recipe while replacing
+  // only the proven placeholder. Keep the immutable treatment metadata on the
+  // compiled result without rewriting the frozen recipe implementation.
+  return input.treatmentPin && !compiled.treatmentPin
+    ? { ...compiled, treatmentPin: input.treatmentPin }
+    : compiled;
 }
 
 export const BRAND_VISUAL_BENCHMARK_SCENES: ReadonlyArray<{
@@ -1103,7 +2159,7 @@ export const MEWSOCIAL_BENCHMARK_VISUAL_LANGUAGE: BrandVisualLanguage = {
     "vivid sky blue #38BDF8 used only as a sharp accent",
   ],
   personality: "bold, raw, energetic and direct",
-  peopleAndSetting: "simple expressive stick figures grounded in recognizable Thai contexts",
+  peopleAndSetting: "simple editorial figures grounded in recognizable Thai contexts",
   memorableCues: [
     "rough sky-blue empty unmarked marker rings placed around one existing object",
     "rough sky-blue marker arrows that drive the eye toward the action",
@@ -1151,10 +2207,10 @@ export function buildBrandVisualBenchmarkCases(): BrandVisualBenchmarkCase[] {
       benchmark: "brand-differentiation" as const,
       sceneId: scene.id,
       variant,
-      visualFormatId: "stick-figure-story" as const,
+      visualFormatId: "simple-editorial-story" as const,
       seed: scene.seed,
       compiled: compileBrandVisualPrompt({
-        visualFormatId: "stick-figure-story",
+        visualFormatId: "simple-editorial-story",
         contentDomain: scene.contentDomain,
         treatment: scene.treatment,
         visualBeat: scene.visualBeat,

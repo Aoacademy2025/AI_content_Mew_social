@@ -1,3 +1,4 @@
+import type { Prisma, VideoJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { videoExpiryFor } from "@/lib/plan-limits";
 import { assertRenderEnqueueOpen } from "@/lib/render-deploy-drain";
@@ -219,7 +220,10 @@ export async function setJobStep(id: string, currentStep: string, progress: numb
 export async function finishJobWithTransition(
   id: string,
   output: { videoUrl: string; videoId?: string } & Record<string, unknown>,
-  opts: { now?: Date } = {},
+  opts: {
+    now?: Date;
+    onTransition?: (input: { tx: Prisma.TransactionClient; job: VideoJob }) => Promise<void>;
+  } = {},
 ) {
   const now = opts.now ?? new Date();
   const owner = await prisma.videoJob.findUnique({
@@ -262,6 +266,7 @@ export async function finishJobWithTransition(
     }
 
     const job = await tx.videoJob.findUniqueOrThrow({ where: { id } });
+    await opts.onTransition?.({ tx, job });
     if (job.projectId) {
       if (job.type === "export") {
         await tx.editorProject.updateMany({

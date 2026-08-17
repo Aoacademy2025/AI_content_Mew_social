@@ -381,13 +381,23 @@ export function BrollWindowInspector({
 
   function close() { ed.setSelectedWindow(null); }
 
-  function markEdited(kind: WindowEditKind, src: string, keyword?: string, label?: string, clipDuration?: number) {
+  function markEdited(
+    kind: WindowEditKind,
+    src: string,
+    keyword?: string,
+    label?: string,
+    clipDuration?: number,
+    imageJobId?: string,
+  ) {
     ed.setWindowEdit(index!, {
       src,
       kind,
       ...(keyword ? { keyword } : {}),
       ...(typeof clipDuration === "number" ? { clipDuration } : {}),
       label: label ?? sourceLabel(kind),
+      // Supplying undefined intentionally clears a previously staged AI candidate
+      // when the creator chooses Stock/Upload instead.
+      imageJobId,
     });
     toast.success(kind === "ai" ? "สร้างภาพสำเร็จ — เลือกใช้แล้ว" : "เปลี่ยนคลิปแล้ว");
   }
@@ -397,6 +407,7 @@ export function BrollWindowInspector({
     keyword?: string;
     kind: WindowEditKind;
     label: string;
+    imageJobId?: string;
   } | null {
     const raw = rawBgVideoAt(ed.previewConfig, windowIndex);
     const staged = ed.windowEdits.get(windowIndex);
@@ -408,6 +419,7 @@ export function BrollWindowInspector({
       keyword: staged?.keyword ?? rawKeyword,
       kind: staged?.kind ?? entrySourceKind(raw),
       label: staged?.label ?? entrySourceLabel(raw),
+      ...(staged?.imageJobId ? { imageJobId: staged.imageJobId } : {}),
     };
   }
 
@@ -419,6 +431,10 @@ export function BrollWindowInspector({
       toast.error("ย้ายคลิปนี้ไม่ได้ — ลองเปลี่ยนคลิปก่อนแล้วสลับอีกครั้ง");
       return;
     }
+    if (currentAsset.imageJobId || targetAsset.imageJobId) {
+      toast.error("ภาพ AI ใหม่นี้ต้องกดอัปเดตวิดีโอก่อน จึงจะสลับตำแหน่งได้");
+      return;
+    }
     ed.setWindowEdits([
       {
         index: index!,
@@ -427,6 +443,7 @@ export function BrollWindowInspector({
           keyword: targetAsset.keyword,
           kind: targetAsset.kind,
           label: targetAsset.label,
+          imageJobId: undefined,
         },
       },
       {
@@ -436,6 +453,7 @@ export function BrollWindowInspector({
           keyword: currentAsset.keyword,
           kind: currentAsset.kind,
           label: currentAsset.label,
+          imageJobId: undefined,
         },
       },
     ]);
@@ -577,7 +595,7 @@ export function BrollWindowInspector({
       }
       if (!res.ok || !d?.src) { setAiError(d?.message ?? `สร้างรูปไม่สำเร็จ (${res.status})`); return; }
       if (typeof d.allowanceRemaining === "number") setAllowanceRemaining(d.allowanceRemaining);
-      markEdited("ai", d.src, undefined, "AI", d.clipDuration);
+      markEdited("ai", d.src, undefined, "AI", d.clipDuration, d.imageJobId);
     } catch {
       setAiError("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
     } finally {

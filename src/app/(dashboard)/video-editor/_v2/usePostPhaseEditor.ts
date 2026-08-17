@@ -85,6 +85,7 @@ export type WindowEdit = {
   kind?: WindowEditKind;
   label?: string;
   enabled?: boolean;
+  imageJobId?: string;
 };
 
 export type PendingBrollIntent = "export" | "new-project";
@@ -445,6 +446,8 @@ export function usePostPhaseEditor(
       ...(e.keyword ? { keyword: e.keyword } : {}),
       ...(typeof e.clipDuration === "number" ? { clipDuration: e.clipDuration } : {}),
       ...(typeof e.enabled === "boolean" ? { enabled: e.enabled } : {}),
+      ...(e.kind ? { replacementKind: e.kind } : {}),
+      ...(e.imageJobId ? { imageJobId: e.imageJobId } : {}),
     }));
     try {
       const res = await fetch("/api/videos/jobs", {

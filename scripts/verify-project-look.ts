@@ -26,6 +26,18 @@ async function main() {
   const { recordVisualBeatAsset, reusableVisualBeatAssetsForVideoJob } = await import(
     "../src/lib/content-preflight.server"
   );
+  const { CONTENT_PREFLIGHT_ANALYZER_VERSION } = await import("../src/lib/content-preflight.server");
+  const treatmentPlanFields = {
+    analyzerVersion: CONTENT_PREFLIGHT_ANALYZER_VERSION,
+    dominantNarrativeMode: "continuous practical explanation",
+    suggestedTreatmentPresetId: "expert-clarity",
+    suggestedTreatmentPresetVersion: "v1.0.0",
+    rankedTreatmentPresetIdsJson: JSON.stringify([
+      "expert-clarity", "practical-documentary", "modern-business-technology",
+    ]),
+    treatmentRecommendationRationale: "The whole source is a practical explanation.",
+    storyEntitiesJson: "[]",
+  } as const;
   const { brandVisualIdentityKey } = await import("../src/lib/brand-visual-system");
   const { shouldLoadBrandVisualContext } = await import("../src/lib/automix-plan");
   const { shouldSendLegacyBrollVisualStyle } = await import("../src/lib/broll-preferences");
@@ -126,7 +138,7 @@ async function main() {
       projectId: suggestedIdentityProject.id,
       narrativeSourceKind: "creator-script",
       sourceHash: "suggested-treatment-shift-v2",
-      analyzerVersion: "brand-content-preflight-v2-windowed",
+      ...treatmentPlanFields,
       contentDomain: "creator education",
       suggestedVisualFormatId: "retro-story",
       suggestedTreatmentJson: JSON.stringify({ label: "nostalgic", mood: "warm" }),
@@ -165,10 +177,10 @@ async function main() {
   const saved = await saveProjectLook({
     userId: user.id,
     projectId: project.id,
-    look: { visualFormatId: "dramatic-comic", treatment: "urgent but trustworthy" },
+    look: { visualFormatId: "dramatic-comic", treatmentPresetId: "thai-human-drama" },
   });
   assert.equal(saved.visualFormatId, "dramatic-comic");
-  assert.equal(saved.recipeVersion, "dramatic-comic-v3", "project stores a resolved recipe snapshot");
+  assert.equal(saved.recipeVersion, "dramatic-comic-v9", "project stores a resolved recipe snapshot");
   const overridden = await resolveProjectVisualContext({
     userId: user.id,
     projectId: project.id,
@@ -185,7 +197,7 @@ async function main() {
       projectId: project.id,
       narrativeSourceKind: "creator-script",
       sourceHash: "pinned-source-v1",
-      analyzerVersion: "brand-content-preflight-v1",
+      ...treatmentPlanFields,
       contentDomain: "pinned creator education",
       suggestedVisualFormatId: "retro-story",
       suggestedTreatmentJson: JSON.stringify({ label: "calm", mood: "archival" }),
@@ -218,7 +230,7 @@ async function main() {
       projectId: project.id,
       narrativeSourceKind: "creator-script",
       sourceHash: "unrelated-later-source",
-      analyzerVersion: "brand-content-preflight-v1",
+      ...treatmentPlanFields,
       contentDomain: "another tab's newer script",
       suggestedVisualFormatId: "clear-infographic",
       suggestedTreatmentJson: JSON.stringify({ label: "unrelated", mood: "later" }),
@@ -269,7 +281,7 @@ async function main() {
   await saveProjectLook({
     userId: user.id,
     projectId: project.id,
-    look: { visualFormatId: "clear-infographic", treatment: "new treatment" },
+    look: { visualFormatId: "clear-infographic", treatmentPresetId: "expert-clarity" },
   });
   await prisma.contentPreflight.create({
     data: {
@@ -277,7 +289,7 @@ async function main() {
       projectId: project.id,
       narrativeSourceKind: "creator-script",
       sourceHash: "newer-source-v2",
-      analyzerVersion: "brand-content-preflight-v1",
+      ...treatmentPlanFields,
       contentDomain: "new content that must not leak into the old job",
       suggestedVisualFormatId: "clear-infographic",
       suggestedTreatmentJson: JSON.stringify({ label: "new", mood: "new" }),
@@ -309,7 +321,7 @@ async function main() {
     sceneIndex: 1,
   });
   assert.ok(pinnedPrompt, "a pinned branded job never falls back to the legacy prompt");
-  assert.equal(pinnedPrompt?.compiled.recipeVersion, "dramatic-comic-v3");
+  assert.equal(pinnedPrompt?.compiled.recipeVersion, "dramatic-comic-v9");
   assert.match(pinnedPrompt?.compiled.positive ?? "", /thick varied ink contours/);
   assert.match(pinnedPrompt?.compiled.positive ?? "", /old closing subject/,
     "each rendered B-roll window resolves its exact pinned Visual Beat");
@@ -329,7 +341,7 @@ async function main() {
       projectId: uploadProject.id,
       narrativeSourceKind: "upload-transcript",
       sourceHash: "upload-transcript-v1",
-      analyzerVersion: "brand-content-preflight-v1",
+      ...treatmentPlanFields,
       contentDomain: "upload creator education",
       suggestedVisualFormatId: "retro-story",
       suggestedTreatmentJson: JSON.stringify({ label: "documentary", mood: "warm" }),
@@ -361,7 +373,7 @@ async function main() {
   await saveProjectLook({
     userId: user.id,
     projectId: uploadProject.id,
-    look: { visualFormatId: "clear-infographic", treatment: "changed after acceptance" },
+    look: { visualFormatId: "clear-infographic", treatmentPresetId: "expert-clarity" },
   });
   await pinProjectVisualContextToVideoJob({
     userId: user.id,
@@ -385,7 +397,7 @@ async function main() {
       projectId: uploadProject.id,
       narrativeSourceKind: "upload-transcript",
       sourceHash: "upload-transcript-racing-tab",
-      analyzerVersion: "brand-content-preflight-v2-windowed",
+      ...treatmentPlanFields,
       contentDomain: "different transcript",
       suggestedVisualFormatId: "clear-infographic",
       suggestedTreatmentJson: JSON.stringify({ label: "different", mood: "cool" }),
@@ -425,7 +437,7 @@ async function main() {
       projectId: suggestedUploadProject.id,
       narrativeSourceKind: "upload-transcript",
       sourceHash: "suggested-upload-transcript-v1",
-      analyzerVersion: "brand-content-preflight-v1",
+      ...treatmentPlanFields,
       contentDomain: "suggested upload lesson",
       suggestedVisualFormatId: "retro-story",
       suggestedTreatmentJson: JSON.stringify({ label: "nostalgic", mood: "warm" }),
@@ -453,7 +465,7 @@ async function main() {
   await saveProjectLook({
     userId: user.id,
     projectId: suggestedUploadProject.id,
-    look: { visualFormatId: "dramatic-comic", treatment: "late tab edit" },
+    look: { visualFormatId: "dramatic-comic", treatmentPresetId: "thai-human-drama" },
   });
   await pinProjectVisualContextToVideoJob({
     userId: user.id,
@@ -469,6 +481,78 @@ async function main() {
   assert.equal(suggestedUploadPrompt?.source, "suggested");
   assert.equal(suggestedUploadPrompt?.compiled.visualFormatId, "retro-story",
     "an upload with no explicit Look keeps the transcript suggestion instead of adopting a later edit");
+
+  const rollbackProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Visual pin rollback" },
+  });
+  const rollbackSnapshot = await prepareUploadProjectVisualSnapshot({
+    userId: user.id,
+    projectId: rollbackProject.id,
+  });
+  const rollbackPreflight = await prisma.contentPreflight.create({
+    data: {
+      userId: user.id,
+      projectId: rollbackProject.id,
+      narrativeSourceKind: "upload-transcript",
+      sourceHash: "rollback-upload-transcript-v1",
+      ...treatmentPlanFields,
+      contentDomain: "rollback lesson",
+      suggestedVisualFormatId: "clear-infographic",
+      suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "calm" }),
+      visualBeats: {
+        create: {
+          userId: user.id,
+          projectId: rollbackProject.id,
+          beatKey: "window-0",
+          sequence: 0,
+          sourceExcerptHash: "rollback-0",
+          beatJson: JSON.stringify({ subject: "rollback", action: "waits", setting: "studio", emotion: "calm", emphasis: "atomicity" }),
+          existingAssetUrl: "/api/renders/old-rollback.webp",
+          generationIdentityKey: "old-identity",
+          status: "current",
+        },
+      },
+    },
+    include: { visualBeats: true },
+  });
+  const rollbackJob = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: rollbackProject.id,
+      contentPreflightId: rollbackSnapshot.contentPreflightId,
+      projectVisualContextJson: rollbackSnapshot.projectVisualContextJson,
+      inputJson: "{}",
+    },
+  });
+  await prisma.$executeRawUnsafe(`
+    CREATE TRIGGER fail_visual_pin_for_atomicity
+    BEFORE UPDATE OF contentPreflightId ON VideoJob
+    WHEN NEW.id = '${rollbackJob.id}'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced visual pin failure');
+    END
+  `);
+  await assert.rejects(
+    pinProjectVisualContextToVideoJob({
+      userId: user.id,
+      projectId: rollbackProject.id,
+      videoJobId: rollbackJob.id,
+      preflightId: rollbackPreflight.id,
+    }),
+  );
+  await prisma.$executeRawUnsafe("DROP TRIGGER fail_visual_pin_for_atomicity");
+  const rolledBackBeat = await prisma.projectVisualBeat.findUniqueOrThrow({
+    where: { id: rollbackPreflight.visualBeats[0].id },
+  });
+  assert.equal(rolledBackBeat.generationIdentityKey, "old-identity");
+  assert.equal(rolledBackBeat.status, "current",
+    "a failed VideoJob pin rolls back Visual Beat identity/status mutations");
+  const rolledBackProject = await prisma.editorProject.findUniqueOrThrow({
+    where: { id: rollbackProject.id },
+  });
+  assert.equal(rolledBackProject.treatmentPresetId, null,
+    "a failed VideoJob pin rolls back the project treatment pin");
+  assert.equal((await prisma.videoJob.findUniqueOrThrow({ where: { id: rollbackJob.id } })).contentPreflightId, null);
 
   const applyProject = await prisma.editorProject.create({
     data: { userId: user.id, title: "Atomic apply-mode contract" },
@@ -493,7 +577,7 @@ async function main() {
       projectId: applyProject.id,
       narrativeSourceKind: "creator-script",
       sourceHash: "atomic-apply-v1",
-      analyzerVersion: "brand-content-preflight-v2-windowed",
+      ...treatmentPlanFields,
       contentDomain: "atomic selection",
       suggestedVisualFormatId: "clear-infographic",
       suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "calm" }),
@@ -518,7 +602,7 @@ async function main() {
       userId: user.id,
       projectId: applyProject.id,
       preflightId: applyPreflight.id,
-      look: { visualFormatId: "dramatic-comic", treatment: "new identity" },
+      look: { visualFormatId: "dramatic-comic", treatmentPresetId: "thai-human-drama" },
     }),
     (error: unknown) => Boolean(
       error && typeof error === "object" && "code" in error
@@ -532,24 +616,34 @@ async function main() {
     "a rejected change cannot partially mutate the project selection",
   );
 
-  const mixed = await applyProjectLook({
-    userId: user.id,
-    projectId: applyProject.id,
-    preflightId: applyPreflight.id,
-    applyMode: "new-only",
-    look: { visualFormatId: "dramatic-comic", treatment: "new identity" },
-  });
-  assert.equal(mixed.existingImageCount, 2);
+  await assert.rejects(
+    applyProjectLook({
+      userId: user.id,
+      projectId: applyProject.id,
+      preflightId: applyPreflight.id,
+      applyMode: "new-only" as never,
+      look: { visualFormatId: "dramatic-comic", treatmentPresetId: "thai-human-drama" },
+    }),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "code" in error
+      && error.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED"
+    ),
+    "future-images-only is no longer an accepted partial-change mode",
+  );
   const applyVideoJob = await prisma.videoJob.create({
     data: {
       userId: user.id,
       projectId: applyProject.id,
       contentPreflightId: applyPreflight.id,
       projectVisualContextJson: JSON.stringify({
-        source: "project-look",
-        visualFormatId: "dramatic-comic",
-        recipeVersion: "dramatic-comic-v3",
-        treatment: "new identity",
+        schemaVersion: 2,
+        source: "suggested",
+        visualFormatId: "clear-infographic",
+        recipeVersion: "clear-infographic-v4",
+        treatment: "ผู้เชี่ยวชาญอธิบายชัด",
+        treatmentPin: {
+          kind: "catalog", presetId: "expert-clarity", version: "v1.0.0", source: "adaptive",
+        },
         brandVisualLanguage: null,
       }),
       inputJson: "{}",
@@ -562,7 +656,7 @@ async function main() {
       preflightId: applyPreflight.id,
     }),
     [0, 1],
-    "new-only quotes every retained current asset even when it has the old visual identity",
+    "before a confirmed look change every current settled asset remains reusable",
   );
   assert.deepEqual(
     (await reusableVisualBeatAssetsForVideoJob({ userId: user.id, videoJobId: applyVideoJob.id }))
@@ -576,7 +670,7 @@ async function main() {
     projectId: applyProject.id,
     preflightId: applyPreflight.id,
     applyMode: "regenerate-all",
-    look: { visualFormatId: "retro-story", treatment: "replace every image" },
+    look: { visualFormatId: "retro-story", treatmentPresetId: "thai-history-period-storytelling" },
   });
   assert.deepEqual(
     await reusableProjectVisualBeatSceneIndices({
@@ -627,8 +721,14 @@ async function main() {
   );
   const currentIdentity = brandVisualIdentityKey({
     visualFormatId: "retro-story",
-    recipeVersion: "retro-story-v3",
-    treatment: "replace every image",
+    recipeVersion: "retro-story-v9",
+    treatment: "ประวัติศาสตร์และตำนานไทย",
+    treatmentPin: {
+      kind: "catalog",
+      presetId: "thai-history-period-storytelling",
+      version: "v1.0.0",
+      source: "creator",
+    },
     brandVisualLanguage: null,
   });
   const currentJob = await prisma.aiGenerationJob.create({
@@ -659,6 +759,11 @@ async function main() {
   );
 
   await clearProjectLook({ userId: user.id, projectId: project.id });
+  const clearedProject = await prisma.editorProject.findUniqueOrThrow({ where: { id: project.id } });
+  assert.equal(clearedProject.treatmentPresetId, null,
+    "clearing Project Look also clears its project-scoped treatment decision");
+  assert.equal(clearedProject.treatmentPresetVersion, null);
+  assert.equal(clearedProject.treatmentPinSource, null);
   const restored = await resolveProjectVisualContext({
     userId: user.id,
     projectId: project.id,
@@ -670,17 +775,19 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx",
     "utf8",
   );
-  assert.match(selectorSource, /อารมณ์และวิธีเล่าของคลิปนี้/,
-    "Step 2 exposes the per-video AI suggestion as creator-overridable plain language");
-  assert.match(selectorSource, /requestedTreatment\?: string[\s\S]+treatmentDraft\.trim\(\)[\s\S]+treatment: nextTreatment/,
-    "the treatment override is persisted through the exact Project Look mutation");
-  assert.match(selectorSource, /pending\.formatId, "regenerate-all", pending\.treatment/,
-    "the mandatory existing-image confirmation cannot drop a requested treatment override");
+  assert.match(selectorSource, /แนวเล่าเรื่องของคลิปนี้/,
+    "Step 2 exposes the per-video recommendation in creator-facing language");
+  assert.match(selectorSource, /treatmentPresetId[\s\S]+look: \{ visualFormatId: formatId, treatmentPresetId \}/,
+    "the catalog selection is persisted through the exact Project Look mutation");
+  assert.match(selectorSource, /pending\.formatId, pending\.treatmentPresetId, "regenerate-all"/,
+    "the mandatory existing-image confirmation cannot drop the selected catalog option");
+  assert.doesNotMatch(selectorSource, /brand-visual-treatment|treatmentDraft/,
+    "the retired free-form treatment field is absent");
   assert.match(selectorSource, /const \[expanded, setExpanded\] = useState\(false\)/,
     "Step 2 starts on the low-friction summary instead of opening all five cards");
   assert.match(selectorSource, /!canRenderPersistedVisual \|\| !shouldLoadVisualContext/,
     "Stock + closed settings skips the Content Preflight request, not only the visible cards");
-  assert.match(selectorSource, /เปลี่ยนแนวภาพ/,
+  assert.match(selectorSource, /เปลี่ยนแนวเล่าเรื่อง/,
     "the creator explicitly opens the visual cards after choosing an AI B-roll level");
   assert.ok(
     selectorSource.indexOf("แบรนด์ที่ใช้ (ถ้ามี)")

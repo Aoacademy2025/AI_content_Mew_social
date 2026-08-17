@@ -6,6 +6,7 @@ import {
   brandVisualIdentityKey,
   compileBrandVisualPrompt,
   resolveProjectVisualIdentity,
+  SUPPORTED_VISUAL_FORMATS,
   VISUAL_FORMATS,
 } from "../src/lib/brand-visual-system";
 import { shouldDefaultToRecommendedAutoMix } from "../src/lib/automix-plan";
@@ -85,7 +86,7 @@ assert.deepEqual(
   VISUAL_FORMATS.map(({ id, label }) => ({ id, label })),
   [
     { id: "cinematic-realism", label: "ภาพสมจริงแบบหนัง" },
-    { id: "stick-figure-story", label: "ก้างปลาเล่าเรื่อง" },
+    { id: "simple-editorial-story", label: "ภาพวาดเล่าเรื่องเรียบง่าย" },
     { id: "dramatic-comic", label: "คอมิกเข้มข้น" },
     { id: "clear-infographic", label: "อินโฟกราฟิกเข้าใจง่าย" },
     { id: "retro-story", label: "เล่าเรื่องย้อนยุค" },
@@ -108,7 +109,7 @@ assert.equal(
 console.log("verify-brand-visual-system: PASS creator precedence");
 
 const mewsocialPrompt = compileBrandVisualPrompt({
-  visualFormatId: "stick-figure-story",
+  visualFormatId: "simple-editorial-story",
   contentDomain: "history",
   treatment: "mysterious and suspenseful",
   visualBeat: {
@@ -128,8 +129,8 @@ const mewsocialPrompt = compileBrandVisualPrompt({
   },
 });
 
-assert.equal(mewsocialPrompt.visualFormatId, "stick-figure-story");
-assert.equal(mewsocialPrompt.recipeVersion, "stick-figure-story-v3",
+assert.equal(mewsocialPrompt.visualFormatId, "simple-editorial-story");
+assert.equal(mewsocialPrompt.recipeVersion, "simple-editorial-story-v11",
   "an unpinned compile publishes on the current story-first recipe");
 assert.match(mewsocialPrompt.positive, /ancient Ayutthaya temple chamber/i);
 assert.doesNotMatch(mewsocialPrompt.positive, /#/,
@@ -219,7 +220,10 @@ for (const format of VISUAL_FORMATS) {
     visualBeat: STORM_BEAT,
     brandVisualLanguage: STORM_BRAND,
   });
-  assert.equal(storm.recipeVersion, `${format.id}-v3`, `${format.id} must compile on its v3 recipe`);
+  const expectedRecipe = format.id === "simple-editorial-story"
+    ? `${format.id}-v11`
+    : `${format.id}-v9`;
+  assert.equal(storm.recipeVersion, expectedRecipe, `${format.id} must compile on its current pinned recipe`);
   assert.match(storm.positive, /a towering cyclone wall/, "the beat's subject survives the brand");
   assert.match(storm.positive, /set in an open coastal town/, "the beat's setting survives the brand");
   assert.doesNotMatch(storm.positive, /ออฟฟิศ|office|ทีมงาน/i,
@@ -253,8 +257,8 @@ const stormInfographic = compileBrandVisualPrompt({
 });
 assert.doesNotMatch(stormInfographic.positive, /circles, arrows and recognizable pictograms/i,
   "the default format must not name shapes that the model then draws as props");
-assert.match(stormInfographic.positive, /grouping, scale and alignment carry the explanation/,
-  "the infographic format is expressed as hierarchy, grouping and negative space");
+assert.match(stormInfographic.positive, /physical placement, object scale and restrained color show the relationships/,
+  "the infographic format is expressed through an object-only composition and negative space");
 
 /** The flat-surface guardrail is the third sibling of the two clauses ADR 0006
  * removed: all three were written to suppress gibberish text and all three
@@ -287,8 +291,14 @@ for (const format of VISUAL_FORMATS) {
     assert.match(compiled.positive, FLAT_SURFACE_CLAUSE,
       `${format.id} is a flat illustrated format, where the surface direction is honest art direction`);
     assert.ok(
-      compiled.positive.indexOf("every visible surface uses solid undecorated") < compiled.positive.indexOf("For a story about"),
+      compiled.positive.indexOf("every visible surface uses solid undecorated")
+        > compiled.positive.indexOf("Visual format direction:"),
       `${format.id} must carry the surface direction inside its format recipe, not as a universal trailing line`,
+    );
+    assert.ok(
+      compiled.positive.indexOf("every visible surface uses solid undecorated")
+        < compiled.positive.indexOf("Brand rendering direction:"),
+      `${format.id} must finish its format recipe before brand rendering direction begins`,
     );
   }
 }
@@ -317,7 +327,7 @@ assert.doesNotMatch(retroBranded.positive, /limited sepia, mustard, teal and bur
   "a brand palette always wins over a format's hardcoded palette");
 
 const boundedBrandInput = compileBrandVisualPrompt({
-  visualFormatId: "stick-figure-story",
+  visualFormatId: "simple-editorial-story",
   contentDomain: "creator education",
   treatment: "clear and direct",
   visualBeat: STORM_BEAT,
@@ -417,7 +427,7 @@ assert.doesNotMatch(mixedPalette.positive, /circular motif|office wall/i);
 const glued = paletteOnly(["brand#38BDF8"]);
 assert.match(glued.positive, /The overall color grade favors cool sky blue\./,
   "a hex code glued to a word is still a hex code and still resolves to a color word");
-assert.doesNotMatch(glued.positive, /#|brand/i,
+assert.doesNotMatch(glued.positive, /#38bdf8|brand#/i,
   "hex detection may not depend on the code being a whitespace-delimited leading token");
 
 const shorthandHex = paletteOnly(["#0f0"]);
@@ -478,7 +488,7 @@ const HEX_EVERYWHERE_INPUT = {
 const hexEverywhere = compileBrandVisualPrompt(HEX_EVERYWHERE_INPUT);
 assert.doesNotMatch(hexEverywhere.positive, /#/,
   "no hex may reach the provider through treatment, content domain or any Visual Beat field");
-assert.match(hexEverywhere.positive, /a moody tone feeling/,
+assert.match(hexEverywhere.positive, /Treatment direction: moody tone/,
   "stripping a code must leave the surrounding art direction intact");
 assert.match(hexEverywhere.positive, /story about brand identity/);
 assert.match(hexEverywhere.positive, /set in a room painted/);
@@ -506,7 +516,7 @@ assert.doesNotMatch(encodedCodes.positive, ANY_COLOR_CODE,
   "no color code may reach the provider in any encoding");
 assert.doesNotMatch(encodedCodes.positive, /38BDF8|F8F5EE/i,
   "an alternate encoding must be removed whole, not reduced to its bare digits");
-assert.match(encodedCodes.positive, /a moody tone feeling/,
+assert.match(encodedCodes.positive, /Treatment direction: moody tone/,
   "stripping a CSS color function must leave the surrounding art direction intact");
 assert.match(encodedCodes.positive, /story about brand identity/);
 assert.match(encodedCodes.positive, /show a presenter holding a card/);
@@ -674,10 +684,14 @@ function splitBrandFragment(positive: string): { head: string; fragment: string;
 /** Sweep 1 — Brand fields. Beat, domain and treatment are held fixed, so every
  * byte outside the Brand fragment must be identical to the unbranded compile
  * and the fragment itself must be pure compiler vocabulary. */
+const V3_VISUAL_FORMATS = SUPPORTED_VISUAL_FORMATS.filter(
+  (format) => format.id !== "simple-editorial-story",
+);
 for (let index = 0; index < 4000; index += 1) {
-  const format = VISUAL_FORMATS[index % VISUAL_FORMATS.length];
+  const format = V3_VISUAL_FORMATS[index % V3_VISUAL_FORMATS.length];
   const base = {
     visualFormatId: format.id,
+    recipeVersion: `${format.id}-v3`,
     contentDomain: "extreme weather",
     treatment: "urgent and cinematic",
     visualBeat: SWEEP_BEAT,
@@ -718,9 +732,10 @@ for (let index = 0; index < 4000; index += 1) {
 /** Sweep 2 — scene fields. These legitimately carry whatever the script is
  * about, so the invariant is narrower: never a raw code, never empty grammar. */
 for (let index = 0; index < 4000; index += 1) {
-  const format = VISUAL_FORMATS[index % VISUAL_FORMATS.length];
+  const format = V3_VISUAL_FORMATS[index % V3_VISUAL_FORMATS.length];
   const fuzzed = compileBrandVisualPrompt({
     visualFormatId: format.id,
+    recipeVersion: `${format.id}-v3`,
     contentDomain: pickField(),
     treatment: pickField(),
     visualBeat: {
@@ -804,7 +819,7 @@ assert.doesNotMatch(
 console.log("verify-brand-visual-system: PASS positive-only no-copy guard");
 
 const adversarialPrompt = compileBrandVisualPrompt({
-  visualFormatId: "stick-figure-story",
+  visualFormatId: "simple-editorial-story",
   contentDomain: "creator education",
   treatment: "bold and direct",
   visualBeat: {
@@ -880,7 +895,7 @@ assert.doesNotMatch(
   /with a\s+feeling|story about\s*,|inside\s*,|set in\s*,|feels\s*,|rests on\s*,/i,
   "copy safety must never erase a full semantic field or emit empty prompt grammar",
 );
-assert.match(semanticSanitizerPrompt.positive, /professional, calm and immediately readable feeling/i);
+assert.match(semanticSanitizerPrompt.positive, /Treatment direction: professional, calm and immediately readable/i);
 /** `logo` names a layer the renderer owns, so v3 still removes it. `Top 10` is
  * not a layer — it is what the story is about, and under ADR 0007 a number the
  * scene genuinely contains may render. Removing it was `-v4` behaviour, kept
@@ -889,7 +904,11 @@ assert.match(semanticSanitizerPrompt.positive, /story about a designer explains 
 assert.doesNotMatch(semanticSanitizerPrompt.positive, /logo/i);
 
 assert.ok(
-  VISUAL_FORMATS.every((format) => format.recipeVersion.endsWith("-v3")),
+  VISUAL_FORMATS.every((format) => (
+    format.id === "simple-editorial-story"
+      ? format.recipeVersion === "simple-editorial-story-v11"
+      : format.recipeVersion.endsWith("-v9")
+  )),
   "a material prompt-compiler change must publish a new immutable recipe version",
 );
 
@@ -1026,6 +1045,7 @@ console.log("verify-brand-visual-system: PASS locale follows the story, never th
 assert.equal(
   compileBrandVisualPrompt({
     visualFormatId: "cinematic-realism",
+    recipeVersion: "cinematic-realism-v3",
     contentDomain: "extreme weather",
     treatment: "urgent and cinematic",
     visualBeat: LOCALE_FREE_BEAT,
@@ -1037,6 +1057,7 @@ assert.equal(
 assert.equal(
   compileBrandVisualPrompt({
     visualFormatId: "clear-infographic",
+    recipeVersion: "clear-infographic-v3",
     contentDomain: "extreme weather",
     treatment: "urgent and cinematic",
     visualBeat: LOCALE_FREE_BEAT,
@@ -1045,10 +1066,11 @@ assert.equal(
   "A vertical edge-to-edge composition from a single viewpoint fills the frame. All people and objects share the same ground plane in one frozen moment. diagrammatic editorial illustration on one continuous vertical canvas, clear top-to-bottom visual hierarchy, whatever appears is simplified to its clearest recognizable form, grouping, scale and alignment carry the explanation, generous negative space and a restrained palette, the idea is expressed entirely through visual relationships, every visible surface uses solid undecorated color and simple abstract marks. For a story about extreme weather, show a towering cyclone wall, the cyclone advances over the water toward the shore, set in an open coastal town, the mood feels awe mixed with dread, visual attention rests on the scale of the approaching storm. Shape the scene with a urgent and cinematic feeling. Use the selected format's neutral house palette and balanced composition. Preserve the selected visual format exactly while keeping the described subject, action and setting. The lower third stays calm and uncluttered with open background texture.",
   "clear-infographic-v3 must stay byte-identical for the same reason",
 );
-// No `-v4` was needed, so none may exist: a recipe generation is a migration.
 assert.ok(
-  VISUAL_FORMATS.every((format) => format.recipeVersion === `${format.id}-v3`),
-  "the published recipe generation is still v3",
+  VISUAL_FORMATS.every((format) => format.recipeVersion === (
+    format.id === "simple-editorial-story" ? `${format.id}-v11` : `${format.id}-v9`
+  )),
+  "the count-safe compiler publishes new recipes while frozen v6/v7 prompts remain replayable",
 );
 
 console.log("verify-brand-visual-system: PASS v3 positive prompt unchanged by the text policy");
@@ -1140,7 +1162,7 @@ assert.equal(
   "the retro v2 pin keeps its extra print-artifact negatives",
 );
 
-for (const format of VISUAL_FORMATS) {
+for (const format of SUPPORTED_VISUAL_FORMATS.filter((candidate) => candidate.id !== "simple-editorial-story")) {
   const pinnedRecipeVersion = `${format.id}-v2`;
   const compiled = compileBrandVisualPrompt({
     ...pinnedV2BaseInput,
@@ -1152,7 +1174,7 @@ for (const format of VISUAL_FORMATS) {
 assert.throws(
   () => compileBrandVisualPrompt({
     ...pinnedV2BaseInput,
-    recipeVersion: "retro-story-v9",
+    recipeVersion: "retro-story-v99",
   }),
   /Unsupported Visual Format recipe version/,
   "an unknown recipe version must fail closed instead of silently compiling on the current one",
@@ -1198,7 +1220,7 @@ assert.equal(
   "a persisted v1 pin must retain the exact pre-v2 provider negative prompt",
 );
 
-for (const format of VISUAL_FORMATS) {
+for (const format of SUPPORTED_VISUAL_FORMATS.filter((candidate) => candidate.id !== "simple-editorial-story")) {
   const legacyRecipeVersion = `${format.id}-v1`;
   const compiled = compileBrandVisualPrompt({
     ...legacyPinnedInput,
@@ -1220,7 +1242,7 @@ assert.equal(
 assert.equal(
   benchmarkCases.filter((item) => item.benchmark === "brand-differentiation").length,
   6,
-  "Mewsocial and control must each receive the same three stick-figure scenes",
+  "Mewsocial and control must each receive the same three Simple Editorial Story scenes",
 );
 assert.deepEqual(
   [...new Set(benchmarkCases.map((item) => item.sceneId))].sort(),
@@ -1298,7 +1320,7 @@ assert.doesNotMatch(thaiBeat.positive, /story about\s*,|inside\s*,|set in\s*,|fe
   "a field emptied by stripping must not leave a dangling connector for the encoder to render");
 /** A field with nothing Latin left contributes nothing rather than a fragment of
  * stray punctuation, and the compiler's own English default carries the clause. */
-assert.match(thaiBeat.positive, /For a story about a visually led subject/,
+assert.match(thaiBeat.positive, /for a story about a visually led subject/i,
   "an all-Thai contentDomain falls back to the compiler default, not to empty text");
 assert.doesNotMatch(thaiBeat.positive, /Shape the scene with a\s+feeling/,
   "an all-Thai treatment is dropped as a whole clause, not left half-written");

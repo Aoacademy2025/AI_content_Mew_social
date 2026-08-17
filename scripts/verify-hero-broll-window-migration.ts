@@ -65,8 +65,13 @@ assert.match(
 );
 assert.match(
   route,
-  /deferVisualBeatLink:\s*true[\s\S]+applyKenBurns[\s\S]+recordVisualBeatAsset/,
-  "Scene Reroll must replace the Visual Beat only after its customer-facing derivative succeeds",
+  /deferVisualBeatLink:\s*true[\s\S]+applyKenBurns/,
+  "Scene Reroll must stage its paid image until the customer-facing derivative succeeds",
+);
+assert.doesNotMatch(
+  route,
+  /recordVisualBeatAsset/,
+  "a generated candidate must not replace the Visual Beat before deliberate Apply",
 );
 assert.match(
   route,

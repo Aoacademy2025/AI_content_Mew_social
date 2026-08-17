@@ -8,7 +8,11 @@ import {
   type BrandVisualLanguage,
   type VisualBeat,
 } from "@/lib/brand-visual-system";
-import { brandProfilePayloadSchema, type BrandProfilePayload } from "@/lib/brand-profile-library.server";
+import {
+  brandProfilePayloadSchema,
+  storedBrandProfilePayloadSchema,
+  type BrandProfilePayload,
+} from "@/lib/brand-profile-library.server";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { ensureMonthlyGrant, getBalance } from "@/lib/credits";
 import { prisma } from "@/lib/prisma";
@@ -24,6 +28,13 @@ import {
   syncBrandLookPreviewJobInTransaction,
 } from "@/lib/brand-look-preview-job-link.server";
 import { reusableProjectVisualAssets } from "@/lib/project-visual-assets.server";
+import {
+  createCatalogTreatmentPin,
+  isGenericTreatmentPlaceholder,
+  treatmentPromptDirection,
+  treatmentPinSchema,
+  type TreatmentPin,
+} from "@/lib/brand-treatment-catalog";
 
 export type BrandLookPreviewPhase = "hook" | "explain" | "close";
 type PreviewScene = {
@@ -139,6 +150,72 @@ function currentRecipeVersion(payload: BrandProfilePayload): string {
   return format.recipeVersion;
 }
 
+const ADAPTIVE_PREVIEW_NEUTRAL_TREATMENT = "neutral editorial storytelling for a standard brand identity preview, balanced and genre-agnostic";
+
+type PreviewTreatment = {
+  treatment: string;
+  treatmentPin?: TreatmentPin;
+};
+
+export function brandLookPreviewTreatment(payload: BrandProfilePayload): {
+  treatment: string;
+  treatmentPin?: TreatmentPin;
+} {
+  if (payload.visual.treatmentPolicy === "locked" && payload.visual.lockedTreatmentPresetId) {
+    const treatmentPin = createCatalogTreatmentPin(payload.visual.lockedTreatmentPresetId, "locked");
+    return { treatment: treatmentPromptDirection(treatmentPin), treatmentPin };
+  }
+  return { treatment: ADAPTIVE_PREVIEW_NEUTRAL_TREATMENT };
+}
+
+/** Revisions published before the catalog policy existed keep their saved
+ * custom treatment as a read-only replay contract. New revisions always write
+ * treatmentPolicy explicitly and therefore use the catalog-aware path above. */
+function revisionPreviewTreatment(
+  payload: BrandProfilePayload,
+  visualRecipeJson: string,
+): PreviewTreatment {
+  try {
+    const value = JSON.parse(visualRecipeJson) as unknown;
+    if (
+      value
+      && typeof value === "object"
+      && !Array.isArray(value)
+      && !Object.prototype.hasOwnProperty.call(value, "treatmentPolicy")
+      && payload.visual.defaultTreatment.trim()
+    ) {
+      return { treatment: payload.visual.defaultTreatment.trim() };
+    }
+  } catch {
+    // storedRevisionRecipeVersion owns the authoritative invalid-recipe error.
+  }
+  return brandLookPreviewTreatment(payload);
+}
+
+function snapshotPreviewTreatment(
+  snapshot: Record<string, unknown>,
+  payload: BrandProfilePayload,
+): PreviewTreatment {
+  if (!Object.prototype.hasOwnProperty.call(snapshot, "previewTreatment")) {
+    const legacyTreatment = payload.visual.defaultTreatment.trim();
+    if (!legacyTreatment) throw new Error("Legacy Brand preview treatment is incomplete");
+    return { treatment: legacyTreatment };
+  }
+  const value = snapshot.previewTreatment;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Brand preview treatment snapshot is invalid");
+  }
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.treatment !== "string" || !raw.treatment.trim()) {
+    throw new Error("Brand preview treatment snapshot is invalid");
+  }
+  const treatmentPin = treatmentPinSchema.safeParse(raw.treatmentPin);
+  return {
+    treatment: raw.treatment.trim(),
+    ...(treatmentPin.success ? { treatmentPin: treatmentPin.data } : {}),
+  };
+}
+
 function storedRevisionRecipeVersion(
   payload: BrandProfilePayload,
   visualRecipeJson: string,
@@ -167,11 +244,13 @@ function storedRevisionRecipeVersion(
 function previewIdentityKey(
   payload: BrandProfilePayload,
   recipeVersion = currentRecipeVersion(payload),
+  previewTreatment = brandLookPreviewTreatment(payload),
 ): string {
   return brandVisualIdentityKey({
     visualFormatId: payload.visual.primaryVisualFormatId,
     recipeVersion,
-    treatment: payload.visual.defaultTreatment,
+    treatment: previewTreatment.treatment,
+    ...(previewTreatment.treatmentPin ? { treatmentPin: previewTreatment.treatmentPin } : {}),
     brandVisualLanguage: brandVisualLanguageFor(payload),
   });
 }
@@ -359,9 +438,23 @@ export async function brandLookPreviewGenerationCount(input: {
   profileId?: string;
   useDraft?: boolean;
 }): Promise<number> {
-  let payload = input.payload ? brandProfilePayloadSchema.parse(input.payload) : null;
+  let payload: BrandProfilePayload | null = input.payload
+    ? brandProfilePayloadSchema.parse(input.payload)
+    : null;
   let recipeVersion = payload ? currentRecipeVersion(payload) : null;
+  let previewTreatment = payload ? brandLookPreviewTreatment(payload) : null;
   let sourceRevision: SavedPreviewLineage | null = null;
+  if (payload && input.projectId && !input.profileId) {
+    const legacyContract = await legacyProjectPreviewContract({
+      userId: input.userId,
+      projectId: input.projectId,
+      payload,
+    });
+    if (legacyContract) {
+      recipeVersion = legacyContract.recipeVersion;
+      previewTreatment = legacyContract.previewTreatment;
+    }
+  }
   if (input.profileId) {
     const profile = await prisma.brandProfile.findFirst({
       where: { id: input.profileId, userId: input.userId, archivedAt: null },
@@ -372,15 +465,19 @@ export async function brandLookPreviewGenerationCount(input: {
     if (!payload) {
       const sourceJson = input.useDraft ? profile?.draft?.payloadJson : revision?.payloadJson;
       if (!sourceJson) return 3;
-      payload = brandProfilePayloadSchema.parse(JSON.parse(sourceJson));
+      payload = (input.useDraft ? brandProfilePayloadSchema : storedBrandProfilePayloadSchema)
+        .parse(JSON.parse(sourceJson));
       recipeVersion = input.useDraft
         ? currentRecipeVersion(payload)
         : revision
           ? storedRevisionRecipeVersion(payload, revision.visualRecipeJson)
           : null;
     }
+    if (payload && revision && !input.useDraft) {
+      previewTreatment = revisionPreviewTreatment(payload, revision.visualRecipeJson);
+    }
   }
-  if (!payload || !recipeVersion) return 3;
+  if (!payload || !recipeVersion || !previewTreatment) return 3;
   const source = await resolvePreviewSource({
     userId: input.userId,
     projectId: input.projectId,
@@ -393,7 +490,7 @@ export async function brandLookPreviewGenerationCount(input: {
     userId: input.userId,
     projectId: source.projectId,
     preflightId: source.preflightId,
-    expectedIdentityKey: previewIdentityKey(payload, recipeVersion),
+    expectedIdentityKey: previewIdentityKey(payload, recipeVersion, previewTreatment),
     fallbackScenes,
   });
   return preview.existing.filter((url) => !url).length;
@@ -449,6 +546,7 @@ type BrandLookPreviewMaterialization = {
   refs: PreviewBatchRefs;
   payload: BrandProfilePayload;
   recipeVersion: string;
+  previewTreatment: PreviewTreatment;
   previewScenes: PreviewScene[];
   source: string;
   existing: readonly [string | null, string | null, string | null];
@@ -462,6 +560,7 @@ async function createPreviewBatchOrReplay(input: {
   refs: PreviewBatchRefs;
   payload: BrandProfilePayload;
   recipeVersion: string;
+  previewTreatment: PreviewTreatment;
   previewScenes: PreviewScene[];
   source: string;
   existing: readonly [string | null, string | null, string | null];
@@ -484,6 +583,7 @@ async function createPreviewBatchOrReplay(input: {
         sourceSnapshotJson: JSON.stringify({
           payload: input.payload,
           recipeVersion: input.recipeVersion,
+          previewTreatment: input.previewTreatment,
           previewScenes: input.previewScenes,
           preflightId: input.refs.preflightId ?? null,
           source: fullyReused
@@ -522,6 +622,7 @@ async function materializeBrandLookPreview(
   const generationInput = (item: BrandLookPreviewItem): PreviewGenerationInput => {
     const phase = item.phase as BrandLookPreviewPhase;
     const scene = input.previewScenes.find((candidate) => candidate.phase === phase)!;
+    const previewTreatment = input.previewTreatment;
     return {
       itemId: item.id,
       phase,
@@ -530,7 +631,8 @@ async function materializeBrandLookPreview(
         visualFormatId: input.payload.visual.primaryVisualFormatId,
         recipeVersion: input.recipeVersion,
         contentDomain: scene.contentDomain,
-        treatment: input.payload.visual.defaultTreatment,
+        treatment: previewTreatment.treatment,
+        ...(previewTreatment.treatmentPin ? { treatmentPin: previewTreatment.treatmentPin } : {}),
         visualBeat: { ...scene.visualBeat, phase },
         brandVisualLanguage: brandVisualLanguageFor(input.payload),
       }),
@@ -621,6 +723,7 @@ function preparedReplay(batch: BrandLookPreviewResult): PreparedBrandLookPreview
 function replayMaterializationSnapshot(batch: BrandLookPreviewResult): {
   payload: BrandProfilePayload;
   recipeVersion: string;
+  previewTreatment: PreviewTreatment;
   previewScenes: PreviewScene[];
   preflightId?: string;
   source: string;
@@ -635,7 +738,7 @@ function replayMaterializationSnapshot(batch: BrandLookPreviewResult): {
     throw new Error("Brand preview snapshot is invalid");
   }
   const snapshot = value as Record<string, unknown>;
-  const payload = brandProfilePayloadSchema.parse(snapshot.payload);
+  const payload = storedBrandProfilePayloadSchema.parse(snapshot.payload);
   const recipeVersion = typeof snapshot.recipeVersion === "string" ? snapshot.recipeVersion.trim() : "";
   const previewScenes = Array.isArray(snapshot.previewScenes)
     ? snapshot.previewScenes as PreviewScene[]
@@ -654,6 +757,7 @@ function replayMaterializationSnapshot(batch: BrandLookPreviewResult): {
   return {
     payload,
     recipeVersion,
+    previewTreatment: snapshotPreviewTreatment(snapshot, payload),
     previewScenes,
     preflightId: typeof snapshot.preflightId === "string" ? snapshot.preflightId : undefined,
     source: typeof snapshot.source === "string" ? snapshot.source : "replay",
@@ -671,7 +775,11 @@ async function preparedDurableReplay(
     select: { plan: true },
   });
   if (!user) throw new Error("User not found");
-  const identityKey = previewIdentityKey(snapshot.payload, snapshot.recipeVersion);
+  const identityKey = previewIdentityKey(
+    snapshot.payload,
+    snapshot.recipeVersion,
+    snapshot.previewTreatment,
+  );
   const driver = previewGenerationDriver({
     userId: batch.userId,
     plan: user.plan,
@@ -696,6 +804,7 @@ async function preparedDurableReplay(
     },
     payload: snapshot.payload,
     recipeVersion: snapshot.recipeVersion,
+    previewTreatment: snapshot.previewTreatment,
     previewScenes: snapshot.previewScenes,
     source: snapshot.source,
     existing,
@@ -795,12 +904,16 @@ export async function prepareBrandLookPreview(input: {
   if (profile.frozenAt) throw new Error("Brand Profile is frozen");
   const sourceJson = input.useDraft ? profile.draft?.payloadJson : profile.revisions[0]?.payloadJson;
   if (!sourceJson) throw new Error("Brand Profile has no previewable revision");
-  const payload = brandProfilePayloadSchema.parse(JSON.parse(sourceJson));
+  const payload = (input.useDraft ? brandProfilePayloadSchema : storedBrandProfilePayloadSchema)
+    .parse(JSON.parse(sourceJson));
   const recipeVersion = input.useDraft
     ? currentRecipeVersion(payload)
     : storedRevisionRecipeVersion(payload, profile.revisions[0]!.visualRecipeJson);
+  const previewTreatment = input.useDraft
+    ? brandLookPreviewTreatment(payload)
+    : revisionPreviewTreatment(payload, profile.revisions[0]!.visualRecipeJson);
 
-  const identityKey = previewIdentityKey(payload, recipeVersion);
+  const identityKey = previewIdentityKey(payload, recipeVersion, previewTreatment);
   const fallbackScenes = standardPreviewScenes(payload);
   const source = await resolvePreviewSource({
     userId: input.userId,
@@ -837,6 +950,7 @@ export async function prepareBrandLookPreview(input: {
     },
     payload,
     recipeVersion,
+    previewTreatment,
     previewScenes,
     source: input.useDraft ? "draft" : "revision",
     existing: projectPreview.existing,
@@ -886,20 +1000,23 @@ export async function rerollBrandLookPreviewItem(input: {
   const snapshot = JSON.parse(item.batch.sourceSnapshotJson) as {
     payload?: unknown;
     recipeVersion?: unknown;
+    previewTreatment?: unknown;
     previewScenes?: PreviewScene[];
   };
-  const payload = brandProfilePayloadSchema.parse(snapshot.payload);
+  const payload = storedBrandProfilePayloadSchema.parse(snapshot.payload);
   const recipeVersion = typeof snapshot.recipeVersion === "string" && snapshot.recipeVersion.trim()
     ? snapshot.recipeVersion.trim()
     : currentRecipeVersion(payload);
   const scene = snapshot.previewScenes?.find((candidate) => candidate.phase === phase)
     ?? standardPreviewScenes(payload).find((candidate) => candidate.phase === phase)!;
-  const identityKey = previewIdentityKey(payload, recipeVersion);
+  const previewTreatment = snapshotPreviewTreatment(snapshot, payload);
+  const identityKey = previewIdentityKey(payload, recipeVersion, previewTreatment);
   const compiled = compileBrandVisualPrompt({
     visualFormatId: payload.visual.primaryVisualFormatId,
     recipeVersion,
     contentDomain: scene.contentDomain,
-    treatment: payload.visual.defaultTreatment,
+    treatment: previewTreatment.treatment,
+    ...(previewTreatment.treatmentPin ? { treatmentPin: previewTreatment.treatmentPin } : {}),
     visualBeat: { ...scene.visualBeat, phase },
     brandVisualLanguage: brandVisualLanguageFor(payload),
   });
@@ -993,6 +1110,94 @@ export async function rerollBrandLookPreviewItem(input: {
   }
 }
 
+async function legacyProjectPreviewContract(input: {
+  userId: string;
+  projectId?: string;
+  payload: BrandProfilePayload;
+}): Promise<{ recipeVersion: string; previewTreatment: PreviewTreatment } | null> {
+  if (!input.projectId) return null;
+  const project = await prisma.editorProject.findFirst({
+    where: { id: input.projectId, userId: input.userId },
+    select: {
+      projectLookJson: true,
+      brandProfileRevision: { select: { visualRecipeJson: true } },
+    },
+  });
+  if (!project) throw new Error("Project not found");
+  try {
+    const look = project.projectLookJson ? JSON.parse(project.projectLookJson) as Record<string, unknown> : null;
+    if (
+      look?.schemaVersion === 1
+      && look.visualFormatId === input.payload.visual.primaryVisualFormatId
+      && typeof look.recipeVersion === "string"
+      && look.recipeVersion.trim()
+      && typeof look.treatment === "string"
+      && look.treatment.trim()
+      && !isGenericTreatmentPlaceholder(look.treatment)
+    ) {
+      return {
+        recipeVersion: look.recipeVersion.trim(),
+        previewTreatment: { treatment: look.treatment.trim() },
+      };
+    }
+  } catch {
+    // An invalid project override cannot authorize legacy custom replay.
+  }
+  const visualRecipeJson = project.brandProfileRevision?.visualRecipeJson;
+  if (visualRecipeJson && input.payload.visual.defaultTreatment.trim()) {
+    try {
+      const recipe = JSON.parse(visualRecipeJson) as Record<string, unknown>;
+      if (
+        recipe
+        && typeof recipe === "object"
+        && !Array.isArray(recipe)
+        && !Object.prototype.hasOwnProperty.call(recipe, "treatmentPolicy")
+        && recipe.visualFormatId === input.payload.visual.primaryVisualFormatId
+        && typeof recipe.recipeVersion === "string"
+        && recipe.recipeVersion.trim()
+      ) {
+        return {
+          recipeVersion: recipe.recipeVersion.trim(),
+          previewTreatment: { treatment: input.payload.visual.defaultTreatment.trim() },
+        };
+      }
+    } catch {
+      // Invalid legacy revisions fall back to the old preflight lineage below.
+    }
+  }
+  const legacyPreflight = await prisma.contentPreflight.findFirst({
+    where: { userId: input.userId, projectId: input.projectId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      suggestedVisualFormatId: true,
+      suggestedTreatmentJson: true,
+      suggestedTreatmentPresetId: true,
+    },
+  });
+  if (
+    legacyPreflight
+    && !legacyPreflight.suggestedTreatmentPresetId
+    && legacyPreflight.suggestedVisualFormatId === input.payload.visual.primaryVisualFormatId
+  ) {
+    try {
+      const value = JSON.parse(legacyPreflight.suggestedTreatmentJson) as Record<string, unknown>;
+      const treatment = [value.label, value.mood]
+        .filter((part): part is string => typeof part === "string" && Boolean(part.trim()))
+        .join(", ")
+        .trim();
+      if (treatment && treatment === input.payload.visual.defaultTreatment.trim()) {
+        return {
+          recipeVersion: currentRecipeVersion(input.payload),
+          previewTreatment: { treatment },
+        };
+      }
+    } catch {
+      // An unreadable old suggestion does not authorize custom replay.
+    }
+  }
+  return null;
+}
+
 /** Preview a not-yet-saved Project Look. The batch deliberately has no
  * BrandProfile FK, so closing the wizard cannot leave quota-consuming library
  * debris. Only the three generated image jobs consume entitlement. */
@@ -1016,16 +1221,36 @@ export async function prepareUnsavedBrandLookPreview(input: {
   const payload = brandProfilePayloadSchema.parse(input.payload);
   const user = await prisma.user.findUnique({ where: { id: input.userId }, select: { plan: true } });
   if (!user) throw new Error("User not found");
-  const identityKey = previewIdentityKey(payload);
-  const recipeVersion = currentRecipeVersion(payload);
+  const legacyContract = await legacyProjectPreviewContract({
+    userId: input.userId,
+    projectId: input.projectId,
+    payload,
+  });
+  let previewTreatment = legacyContract?.previewTreatment ?? brandLookPreviewTreatment(payload);
+  let recipeVersion = legacyContract?.recipeVersion ?? currentRecipeVersion(payload);
+  let identityKey = previewIdentityKey(payload, recipeVersion, previewTreatment);
   const fallbackScenes = standardPreviewScenes(payload);
-  const projectPreview = await resolveProjectPreview({
+  let projectPreview = await resolveProjectPreview({
     userId: input.userId,
     projectId: input.projectId,
     preflightId: input.preflightId,
     expectedIdentityKey: identityKey,
     fallbackScenes,
   });
+  if (legacyContract && !projectPreview.existing.some(Boolean)) {
+    // The payload was edited away from the legacy look. Do not let an old
+    // custom treatment become a way to create a new custom treatment.
+    previewTreatment = brandLookPreviewTreatment(payload);
+    recipeVersion = currentRecipeVersion(payload);
+    identityKey = previewIdentityKey(payload, recipeVersion, previewTreatment);
+    projectPreview = await resolveProjectPreview({
+      userId: input.userId,
+      projectId: input.projectId,
+      preflightId: input.preflightId,
+      expectedIdentityKey: identityKey,
+      fallbackScenes,
+    });
+  }
   const previewScenes = projectPreview.scenes ?? fallbackScenes;
   const driver = previewGenerationDriver({
     userId: input.userId,
@@ -1041,6 +1266,7 @@ export async function prepareUnsavedBrandLookPreview(input: {
     refs: { projectId: input.projectId, preflightId: input.preflightId },
     payload,
     recipeVersion,
+    previewTreatment,
     previewScenes,
     source: "unsaved-project-look",
     existing: projectPreview.existing,

@@ -43,8 +43,8 @@ import type {
   VisualProposal,
 } from "./types";
 
-/** `niche`, `audience`, `script.tone`, `visual.personality` and
- * `visual.defaultTreatment` are optional on the surface; an empty value falls
+/** `niche`, `audience`, `script.tone` and `visual.personality` are optional on
+ * the surface; an empty value falls
  * back to the blank-seed default so a name-only brand still produces a
  * complete, publishable payload. Every payload consumer (draft-save, publish,
  * preview, preview-quote) reads the single `payload` memo built from this
@@ -57,15 +57,21 @@ function withSeedFallbacks(draft: BrandPayload): BrandPayload {
   const personality = draft.visual.personality.trim()
     ? draft.visual.personality
     : blank.visual.personality;
-  const defaultTreatment = draft.visual.defaultTreatment.trim()
+  const defaultTreatment = draft.visual.defaultTreatment?.trim()
     ? draft.visual.defaultTreatment
     : blank.visual.defaultTreatment;
+  const treatmentPolicy = draft.visual.treatmentPolicy === "locked" ? "locked" : "adaptive";
+  const lockedTreatmentPresetId = treatmentPolicy === "locked"
+    ? (draft.visual.lockedTreatmentPresetId ?? blank.visual.lockedTreatmentPresetId)
+    : null;
   if (
     niche === draft.niche
     && audience === draft.audience
     && tone === draft.script.tone
     && personality === draft.visual.personality
     && defaultTreatment === draft.visual.defaultTreatment
+    && treatmentPolicy === draft.visual.treatmentPolicy
+    && lockedTreatmentPresetId === draft.visual.lockedTreatmentPresetId
   ) {
     return draft;
   }
@@ -74,7 +80,13 @@ function withSeedFallbacks(draft: BrandPayload): BrandPayload {
     niche,
     audience,
     script: { ...draft.script, tone },
-    visual: { ...draft.visual, personality, defaultTreatment },
+    visual: {
+      ...draft.visual,
+      personality,
+      defaultTreatment,
+      treatmentPolicy,
+      lockedTreatmentPresetId,
+    },
   };
 }
 
@@ -421,7 +433,6 @@ export function BrandLibraryClient() {
         palette: next.palette,
         personality: next.personality,
         visualNotes: next.visualNotes,
-        defaultTreatment: next.defaultTreatment,
         languageMode: "defined",
       },
     }));

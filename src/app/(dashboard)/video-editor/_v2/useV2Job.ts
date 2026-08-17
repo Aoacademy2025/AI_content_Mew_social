@@ -418,9 +418,9 @@ export function useV2Job(p: V2Project) {
     } : {
       idempotencyKey,
       ...(p.projectId ? { projectId: p.projectId } : {}),
-      ...((p.brandVisualAllowed || p.hasPersistedVisualPin) && p.brandContentPreflightId ? {
-        contentPreflightId: p.brandContentPreflightId,
+      ...((p.brandVisualAllowed || p.hasPersistedVisualPin) && p.projectId ? {
         narrativeSourceKind: p.narrativeSourceKind,
+        ...(p.brandContentPreflightId ? { contentPreflightId: p.brandContentPreflightId } : {}),
       } : {}),
       script: p.script,
       ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
