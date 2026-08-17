@@ -79,11 +79,10 @@ const MEWSOCIAL_VISUAL_FORMAT_ID = "cinematic-realism" as const; // ภาพส
 // actual regression case: Mew picked the realistic style ("สไตล์สมจริง") for her
 // video, and every broken frame she sent is a photorealistic image of people in
 // an office with blue discs on the walls. The 2026-08-09 product brief's own
-// Brand Differentiation Benchmark pairs Mewsocial with `stick-figure-story`
-// (docs/plans/2026-08-09-brand-visual-system-product-brief.md line 38;
-// MEWSOCIAL_BENCHMARK_VISUAL_LANGUAGE in src/lib/brand-visual-system.ts), but that
-// is a *different* demonstration (format-differentiation), not Mew's shipped bug —
-// a marker/stick-figure proof pack would not demonstrate her case is fixed.
+// The current Brand Differentiation Benchmark pairs Mewsocial with
+// `simple-editorial-story` (ADR 0017; MEWSOCIAL_BENCHMARK_VISUAL_LANGUAGE in
+// src/lib/brand-visual-system.ts), but that is a *different* demonstration
+// (format differentiation), not Mew's shipped photoreal bug.
 
 const MEWSOCIAL_BRAND: BrandVisualLanguage = {
   palette: ["#000000", "#F8F5EE", "#38BDF8"],

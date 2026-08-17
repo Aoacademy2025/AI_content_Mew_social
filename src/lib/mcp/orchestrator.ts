@@ -19,7 +19,12 @@ import {
   saveProviderCheckpoint,
   VIDEO_JOB_CANCELED_ERROR,
 } from "@/lib/mcp/video-job";
-import { validateWindowEdits, mergeWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
+import {
+  firstPassVisualRejectionReasonForWindow,
+  validateWindowEdits,
+  mergeWindowEdits,
+  type WindowEdit,
+} from "@/lib/broll-rerender";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import {
   pipelineCaller,
@@ -102,6 +107,16 @@ import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.ser
 import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
 import { narrativeVisualWindowsForPreflight } from "@/lib/content-preflight.server";
+import { ensureVideoJobContentPreflight } from "@/lib/video-job-content-preflight.server";
+import {
+  recordFirstPassVisualExport,
+  recordFirstPassVisualRejection,
+  type FirstPassVisualRejectionReason,
+} from "@/lib/first-pass-visual-acceptance.server";
+import {
+  commitAppliedSceneRerollAssetsInTransaction,
+  prepareAppliedSceneRerollAssets,
+} from "@/lib/scene-reroll-apply.server";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -157,6 +172,7 @@ interface CreateInput {
   brollRegionPreference?: string;
   brollVisualStyle?: string;
   sceneContentPolicy?: SceneContentPolicy;
+  narrativeSourceKind?: "ai-script" | "creator-script";
   /** โมเดลภาพ AI (Beta, admin-gated at the web route) */
   kieModel?: string;
   /** Hero AI Image is a separate RunPod-only product seam, not a KIE model. */
@@ -986,7 +1002,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
       // Preview payload = SOURCE preview copied verbatim (captions/voiceUrl/words/audioDurationMs
       // /avatar* unchanged — subtitle invariant) with config + videoUrl + compositeBaseUrl updated.
-      await finishJob(jobId, {
+      const preparedSceneRerollPromotions = await prepareAppliedSceneRerollAssets({
+        userId,
+        sourceVideoJobId: src.id,
+        edits: editsRes,
+      });
+      const rrCompletion = await finishJobWithTransition(jobId, {
         version: 2,
         mode: "preview",
         videoUrl: rrFinalUrl,
@@ -996,7 +1017,35 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           compositeBaseUrl: rrCompositeBaseUrl,
           ...(rrCutawayPersonRanges ? { cutawayPersonRanges: rrCutawayPersonRanges } : {}),
         },
+      }, {
+        onTransition: ({ tx, job: completedJob }) =>
+          commitAppliedSceneRerollAssetsInTransaction(tx, {
+            appliedVideoJobId: completedJob.id,
+            promotions: preparedSceneRerollPromotions,
+          }),
       });
+      if (
+        rrCompletion.transitioned
+        && rrCompletion.job.status === "done"
+        && src.projectId
+        && src.projectVisualContextJson
+      ) {
+        await Promise.all(editsRes.map(async (edit) => {
+          const reason: FirstPassVisualRejectionReason | null =
+            firstPassVisualRejectionReasonForWindow(srcBgVideos[edit.index], edit);
+          if (!reason) return;
+          await recordFirstPassVisualRejection(userId, {
+            actor: user,
+            projectId: src.projectId!,
+            videoJobId: src.id,
+            sceneIndex: edit.index,
+            reason,
+            projectVisualContextJson: src.projectVisualContextJson,
+          });
+        })).catch((error) => {
+          console.error("[mcp-worker] first-pass visual rejection telemetry failed:", error);
+        });
+      }
       return;
     }
 
@@ -1058,6 +1107,31 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         videoUrl: burnedUrl,
         ...(videoId ? { videoId } : {}),
       });
+      if (
+        completion.transitioned
+        && completion.job.status === "done"
+        && src.projectId
+        && src.contentPreflightId
+        && src.projectVisualContextJson
+      ) {
+        const initialAiWindowCount = await prisma.projectVisualBeat.count({
+          where: {
+            userId,
+            projectId: src.projectId,
+            preflightId: src.contentPreflightId,
+            existingImageJobId: { not: null },
+          },
+        });
+        await recordFirstPassVisualExport(userId, {
+          actor: user,
+          projectId: src.projectId,
+          videoJobId: src.id,
+          projectVisualContextJson: src.projectVisualContextJson,
+          initialAiWindowCount,
+        }).catch((error) => {
+          console.error("[mcp-worker] first-pass visual export telemetry failed:", error);
+        });
+      }
       const logoCompletionProperties = buildLogoExportCompletedTelemetryProperties(
         input.subtitleOverlayConfig,
         preview.audioDurationMs,
@@ -1478,13 +1552,59 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // "พื้นหลังไม่เนียน / แล้วตัด"). Gated on the SAME flag as web so both surfaces stay in
     // lockstep. In window mode generate-config places one clip per window (ignoring
     // sceneClipCounts); subtitle timing is untouched.
+    let effectiveContentPreflightId = job.contentPreflightId;
+    const needsAiVisualPlan = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
+    if (
+      needsAiVisualPlan
+      && !effectiveContentPreflightId
+      && job.projectId
+      && job.projectVisualContextJson
+    ) {
+      const visualPlan = await ensureVideoJobContentPreflight({
+        actor: {
+          id: user.id,
+          email: user.email,
+          role: user.role,
+          createdAt: user.createdAt,
+        },
+        projectId: job.projectId,
+        videoJobId: jobId,
+        narrativeSource: {
+          kind: input.narrativeSourceKind ?? "creator-script",
+          text: input.script,
+          ...(input.targetClipCount ? { windowCount: input.targetClipCount } : {}),
+          sceneContentPolicy: input.sceneContentPolicy
+            ?? sceneContentPolicyFromPreference(input.brollRegionPreference),
+        },
+        brandVisualAccepted: true,
+      });
+      if (visualPlan.kind === "resolved") {
+        effectiveContentPreflightId = visualPlan.preflight.id;
+        emitTelemetry({
+          name: "brand_visual_preflight_resolved",
+          category: "performance",
+          source: "server",
+          step: "editor.step2",
+          status: visualPlan.preflight.cached ? "cached" : "analyzed",
+          properties: {
+            projectId: job.projectId,
+            preflightId: visualPlan.preflight.id,
+            sourceKind: input.narrativeSourceKind ?? "creator-script",
+            visualFormatId: visualPlan.preflight.suggestedVisualFormatId,
+            treatmentPresetId: visualPlan.preflight.suggestedTreatment.presetId,
+            beatCount: visualPlan.preflight.visualBeats.length,
+            via: "script-worker",
+          },
+        });
+      }
+    }
     const brollWindowMode = isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1");
     const brollWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-    const pinnedBrandVisualWindows = job.contentPreflightId && job.projectVisualContextJson && job.projectId
+    const pinnedBrandVisualWindows = effectiveContentPreflightId && job.projectVisualContextJson && job.projectId
       ? await narrativeVisualWindowsForPreflight({
           userId,
           projectId: job.projectId,
-          preflightId: job.contentPreflightId,
+          preflightId: effectiveContentPreflightId,
         })
       : [];
     const pinnedBrandVisualWindowCount = pinnedBrandVisualWindows.length;

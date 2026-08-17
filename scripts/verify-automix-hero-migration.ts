@@ -77,6 +77,7 @@ async function main() {
   );
   process.env.AI_STUDIO_IMAGE_ENABLED = "1";
   process.env.CREDITS_LIVE = "1";
+  process.env.HERO_AI_IMAGE_PUBLIC = "1";
   process.env.RUNPOD_API_KEY = "verify-automix-hero-test-key";
   process.env.AI_STUDIO_Z_IMAGE_ROUTE = "custom";
   process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID = "verify-automix-hero-endpoint";
@@ -271,6 +272,18 @@ async function main() {
       email: "automix-hero-verify@example.invalid",
       plan: "PRO",
       subStatus: "active",
+      planExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    },
+  });
+  await prisma.payment.create({
+    data: {
+      userId: user.id,
+      stripeSessionId: "automix-hero-verified-payment",
+      plan: "PRO",
+      amount: 99900,
+      status: "PAID",
+      periodDays: 30,
+      paidAt: new Date(),
     },
   });
   const videoJobId = "video-job-automix-verify";
@@ -609,11 +622,7 @@ async function main() {
   );
   check(
     "AutoMix mode follows the Hero rollout gate in job creation",
-    // Task 4 (public-launch plan gate) widened this call site from the beta-only
-    // isHeroAiBetaUser to isHeroAiImageEligible, which still admits the beta
-    // cohort unconditionally and additionally opens to PRO/BUSINESS/trial once
-    // HERO_AI_IMAGE_PUBLIC=1 — see internal-ai-access.ts.
-    /requestedSource === "auto-mix"[\s\S]{0,400}?isHeroAiImageEligible\(user\)/.test(videoJobs),
+    /requestedSource === "auto-mix"[\s\S]{0,500}?!heroAiImageAccess\.canUse[\s\S]{0,200}?!brandVisualRenderAccess/.test(videoJobs),
   );
 
   // The cost-guard await MUST sit inside a try whose catch continues without AI.

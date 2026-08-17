@@ -130,10 +130,8 @@ assert.match(
 );
 assert.ok(
   pageSource.includes("draft.visual.personality.trim()")
-    && pageSource.includes("draft.visual.defaultTreatment.trim()"),
-  "withSeedFallbacks() falls back visual.personality and visual.defaultTreatment to the blank-seed "
-    + "default too — both are editable inside ตั้งค่าเพิ่มเติม and were still server-required, the same "
-    + "trap niche/audience/tone already had fixed",
+    && pageSource.includes("draft.visual.defaultTreatment?.trim()"),
+  "withSeedFallbacks() keeps a backward-compatible hidden defaultTreatment for old payloads while the catalog policy owns new choices",
 );
 
 // ── The two retired scene inputs are gone from the form ─────────────────────

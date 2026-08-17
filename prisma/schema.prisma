@@ -99,6 +99,7 @@ model User {
   contentPreflights               ContentPreflight[]
   projectVisualBeats              ProjectVisualBeat[]
   brandLookPreviewBatches         BrandLookPreviewBatch[]
+  sceneRerollDerivatives          SceneRerollDerivative[]
   starterAiImageAllowances        StarterAiImageAllowance[]
   administratorGrants             AdministratorGrant[]
   conversionTrialAiImageAllowance ConversionTrialAiImageAllowance?
@@ -251,6 +252,10 @@ model EditorProject {
   brandProfileRevisionId  String?
   projectLookJson         String?
   projectLookUpdatedAt    DateTime?
+  treatmentPresetId       String?
+  treatmentPresetVersion  String?
+  treatmentPinSource      String?
+  treatmentPinnedAt       DateTime?
   lastOpenedAt            DateTime?
   createdAt               DateTime                @default(now())
   updatedAt               DateTime                @updatedAt
@@ -268,6 +273,7 @@ model EditorProject {
   @@index([activeExportJobId])
   @@index([latestVideoId])
   @@index([brandProfileRevisionId])
+  @@index([treatmentPresetId, treatmentPresetVersion])
 }
 
 model BrandAsset {
@@ -397,8 +403,15 @@ model ContentPreflight {
   sourceHash              String
   analyzerVersion         String
   contentDomain           String
+  dominantNarrativeMode   String?
   suggestedVisualFormatId String
   suggestedTreatmentJson  String
+  suggestedTreatmentPresetId      String?
+  suggestedTreatmentPresetVersion String?
+  rankedTreatmentPresetIdsJson    String              @default("[]")
+  treatmentRecommendationRationale String?
+  storyEntitiesJson                String              @default("[]")
+  formatRecommendationJson         String?
   createdAt               DateTime            @default(now())
   updatedAt               DateTime            @updatedAt
   user                    User                @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -437,6 +450,26 @@ model ProjectVisualBeat {
   @@unique([preflightId, beatKey])
   @@index([projectId, status, sequence])
   @@index([existingImageJobId])
+}
+
+// Server-owned binding between a paid Scene Reroll image and the exact MP4
+// derivative offered to Apply. Completion consumes a ready row atomically.
+model SceneRerollDerivative {
+  id                 String    @id @default(cuid())
+  userId             String
+  imageJobId         String
+  sourceVideoJobId   String
+  sceneIndex         Int
+  src                String    @unique
+  status             String    @default("ready") // ready | applied
+  appliedVideoJobId  String?
+  createdAt          DateTime  @default(now())
+  appliedAt          DateTime?
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, imageJobId])
+  @@index([sourceVideoJobId, sceneIndex])
+  @@index([status, createdAt])
 }
 
 // One logical Brand Look Preview, backed by three independently durable image
@@ -849,6 +882,7 @@ model StripeWebhookEvent {
 
 model TelemetryEvent {
   id         String   @id @default(cuid())
+  dedupeKey  String?  @unique
   userId     String?
   user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   sessionId  String?

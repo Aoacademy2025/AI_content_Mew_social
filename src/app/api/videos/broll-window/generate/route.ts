@@ -26,7 +26,6 @@ import {
 } from "@/lib/brand-visual-job-acceptance.server";
 import { parseProjectVisualContext, resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
 import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
-import { recordVisualBeatAsset } from "@/lib/content-preflight.server";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { reusableProjectVisualAssets } from "@/lib/project-visual-assets.server";
@@ -37,6 +36,7 @@ import {
   type HeroImageGenerationResult,
 } from "@/lib/video-hero-image.server";
 import { refundSettledVideoImageJob } from "@/lib/video-image-batch-settlement";
+import { recordFirstPassVisualRejection } from "@/lib/first-pass-visual-acceptance.server";
 
 // POST /api/videos/broll-window/generate — regenerate one existing B-roll
 // window through the same RunPod-only Hero AI Image product used by new videos.
@@ -229,6 +229,7 @@ export async function POST(req: Request) {
     HeroImageGenerationResult,
     "jobId" | "outputUrl" | "creditCost" | "fundingSource" | "allowanceUnits"
   > | null = null;
+  let registeredDerivativeSrc: string | null = null;
 
   try {
     generated = existingImageJob?.status === "completed"
@@ -258,19 +259,36 @@ export async function POST(req: Request) {
     await applyKenBurns(tmpImagePath, outPath, input.kenBurnsDurationSec);
     if (!isValidMp4Path(outPath)) throw new Error("Hero Ken Burns produced no usable output");
     try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
-    await recordVisualBeatAsset({
-      userId: user.id,
-      beatId: brandVisualPrompt.visualBeatId,
-      outputUrl: generated.outputUrl,
-      imageJobId: generated.jobId,
-      identityKey: brandVisualPrompt.identityKey,
+    const derivativeSrc = `/api/stocks/${outFile}`;
+    await prisma.sceneRerollDerivative.create({
+      data: {
+        userId: user.id,
+        imageJobId: generated.jobId,
+        sourceVideoJobId: input.videoJobId,
+        sceneIndex: input.sceneIndex,
+        src: derivativeSrc,
+      },
     });
-
+    registeredDerivativeSrc = derivativeSrc;
     const [balance, allowanceStatus] = await Promise.all([
       getBalance(user.id),
       getStarterAiImageAllowanceStatus(user.id),
     ]);
     if (!existingImageJob) {
+      const measuredContext = await prisma.videoJob.findUnique({
+        where: { id: input.videoJobId },
+        select: { projectVisualContextJson: true },
+      });
+      await recordFirstPassVisualRejection(user.id, {
+        actor: user,
+        projectId,
+        videoJobId: input.videoJobId,
+        sceneIndex: input.sceneIndex,
+        reason: "scene_reroll",
+        projectVisualContextJson: measuredContext?.projectVisualContextJson,
+      }).catch((error) => {
+        console.error("[broll-window/generate] first-pass telemetry failed:", error);
+      });
       await recordTelemetryEvent(user.id, {
         name: "brand_look_scene_rerolled",
         category: "product",
@@ -294,7 +312,7 @@ export async function POST(req: Request) {
       });
     }
     return NextResponse.json({
-      src: `/api/stocks/${outFile}`,
+      src: derivativeSrc,
       clipDuration: input.kenBurnsDurationSec,
       imageJobId: generated.jobId,
       imageOutputUrl: generated.outputUrl,
@@ -310,6 +328,13 @@ export async function POST(req: Request) {
   } catch (error) {
     safeUnlink(outPath);
     safeUnlink(normalizedMarkerPath(outPath));
+    if (registeredDerivativeSrc) {
+      await prisma.sceneRerollDerivative.deleteMany({
+        where: { userId: user.id, src: registeredDerivativeSrc, status: "ready" },
+      }).catch((cleanupError) => {
+        console.error("[broll-window/generate] derivative binding cleanup failed:", cleanupError);
+      });
+    }
     let refundPending = false;
 
     // The durable Hero service refunds provider failures itself. If RunPod

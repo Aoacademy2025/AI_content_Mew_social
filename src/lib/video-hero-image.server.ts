@@ -162,8 +162,8 @@ export type HeroImageGenerationInput = {
     lookIdentityKey?: string;
   };
   /** Scene Reroll must not replace the reusable Visual Beat until its Ken
-   * Burns derivative is actually deliverable. The caller links explicitly
-   * after post-processing succeeds. */
+   * Burns derivative is deliverable and the creator deliberately applies it.
+   * The broll-rerender worker links the candidate after successful Apply. */
   deferVisualBeatLink?: boolean;
   /** Immutable policy captured when the parent VideoJob was accepted. Preview,
    * Studio and post-phase reroll surfaces omit it and use live admission. */

@@ -1747,7 +1747,7 @@ async function main() {
           opacity: 0.75,
         },
         visual: {
-          primaryVisualFormatId: "stick-figure-story",
+          primaryVisualFormatId: "simple-editorial-story",
           languageMode: "defined",
           palette: ["#111111", "#F8F5EE", "#38BDF8"],
           personality: "bold raw energetic",
@@ -1801,7 +1801,7 @@ async function main() {
         "handoff exposes the exact pinned Revision for retention telemetry");
       ok(typeof sent.brandLookIdentityKey === "string" && sent.brandLookIdentityKey.startsWith("bl1-"),
         "handoff exposes the treatment-independent Brand Look identity");
-      ok(sent.visualFormatId === "stick-figure-story",
+      ok(sent.visualFormatId === "simple-editorial-story",
         "handoff telemetry identifies the selected visual format");
 
       const project = await getEditorProject("hs4-pro", sent.projectId);

@@ -152,6 +152,75 @@ async function main() {
   check("balance.granted === 1 after refund (restored to the granted bucket)", afterRefund.granted === 1);
   check("balance.purchased === 5 after refund (restored to the purchased bucket)", afterRefund.purchased === 5);
 
+  // ── 6b. Creator-paid Scene Reroll contract. One durable request may be
+  //      replayed after a lost response without creating or charging another
+  //      image. A deliberately new request is a new two-credit generation,
+  //      and failure refunds only that request's exact reservation. ──
+  const rerollUser = await prisma.user.create({
+    data: {
+      name: "Scene Reroll Billing Verify",
+      email: "scene-reroll-billing-verify@example.invalid",
+      plan: "PRO",
+      subStatus: "active",
+    },
+  });
+  await prisma.creditBalance.create({ data: { userId: rerollUser.id, granted: 6, purchased: 0 } });
+  const reserveSceneReroll = (requestId: string) => createReservedImageJob({
+    userId: rerollUser.id,
+    model: "z-image-turbo",
+    inputPreview: "Scene reroll billing contract",
+    inputJson: JSON.stringify({ videoJobId: "video-job-reroll", sceneIndex: 2 }),
+    creditCost: offer.quote.credits,
+    quoteVersion: offer.quote.version,
+    costBudgetUsdMicros: offer.quote.costBudgetUsdMicros,
+    provider: offer.provider,
+    providerModel: offer.providerModel,
+    providerRoute: offer.providerRoute,
+    providerEndpoint: offer.providerEndpoint,
+    estimatedCostUsdMicros: offer.quote.estimatedProviderCostUsdMicros,
+    idempotencyKey: `broll-window:video-job-reroll:scene:2:request:${requestId}`,
+    mediaExpiresAt: new Date(Date.now() + 60_000),
+    productSurface: "scene_reroll",
+  });
+  const firstReroll = await reserveSceneReroll("11111111-1111-4111-8111-111111111111");
+  if (!firstReroll.ok) throw new Error(`expected first Scene Reroll reservation: ${firstReroll.reason}`);
+  const replayedReroll = await reserveSceneReroll("11111111-1111-4111-8111-111111111111");
+  if (!replayedReroll.ok) throw new Error(`expected Scene Reroll replay: ${replayedReroll.reason}`);
+  check(
+    "same Scene Reroll request replays one job and one 2-credit charge",
+    firstReroll.created
+      && !replayedReroll.created
+      && replayedReroll.job.id === firstReroll.job.id
+      && replayedReroll.balanceAfter === 4
+      && await prisma.aiGenerationJob.count({ where: { userId: rerollUser.id } }) === 1
+      && await prisma.creditLedger.count({ where: { userId: rerollUser.id, kind: "spend" } }) === 1,
+  );
+
+  const secondReroll = await reserveSceneReroll("22222222-2222-4222-8222-222222222222");
+  if (!secondReroll.ok) throw new Error(`expected second Scene Reroll reservation: ${secondReroll.reason}`);
+  check(
+    "new Scene Reroll request creates one new job and one new 2-credit charge",
+    secondReroll.created
+      && secondReroll.job.id !== firstReroll.job.id
+      && secondReroll.balanceAfter === 2
+      && await prisma.aiGenerationJob.count({ where: { userId: rerollUser.id } }) === 2
+      && await prisma.creditLedger.count({ where: { userId: rerollUser.id, kind: "spend" } }) === 2,
+  );
+
+  const failedReroll = await failAndRefundAiJob(
+    rerollUser.id,
+    secondReroll.job.id,
+    "VERIFY_SCENE_REROLL_FAILURE",
+    "synthetic Scene Reroll delivery failure",
+  );
+  check(
+    "failed Scene Reroll refunds only its exact two-credit reservation",
+    failedReroll?.chargeState === "refunded"
+      && (await prisma.creditBalance.findUniqueOrThrow({ where: { userId: rerollUser.id } })).granted === 4
+      && (await prisma.aiGenerationJob.findUniqueOrThrow({ where: { id: firstReroll.job.id } })).chargeState === "reserved"
+      && await prisma.creditLedger.count({ where: { userId: rerollUser.id, kind: "refund" } }) === 1,
+  );
+
   // ── 7. A pre-job credit rejection must be observable even though no durable
   //      AiGenerationJob is created. This is the gap that made launch-day 402s
   //      invisible in the job/error audit.

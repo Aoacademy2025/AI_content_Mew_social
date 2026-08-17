@@ -15,7 +15,6 @@ const suggestionSchema = z.object({
   peopleAndSetting: z.string().trim().max(500),
   memorableCues: z.array(z.string().trim().min(1).max(160)).max(6),
   visualNotes: z.string().trim().max(800),
-  defaultTreatment: z.string().trim().min(1).max(300),
   rationale: z.string().trim().min(1).max(600),
 });
 
@@ -47,8 +46,8 @@ export async function POST(req: Request) {
     const raw = await geminiGenerateText(key, [
       "Propose one Brand Visual Language for a Thai short-video creator.",
       "Return JSON only. This is a proposal: never claim it has been applied and never include an image prompt.",
-      "primaryVisualFormatId must be one of cinematic-realism, stick-figure-story, dramatic-comic, clear-infographic, retro-story.",
-      "Schema: {primaryVisualFormatId,palette:string[1..6],personality,peopleAndSetting,memorableCues:string[0..6],visualNotes,defaultTreatment,rationale}",
+      `primaryVisualFormatId must be one of ${VISUAL_FORMAT_IDS.join(", ")}.`,
+      "Schema: {primaryVisualFormatId,palette:string[1..6],personality,peopleAndSetting,memorableCues:string[0..6],visualNotes,rationale}",
       `Niche: ${niche}`,
       `Audience: ${audience}`,
       sample ? `Creator sample: ${sample}` : "",

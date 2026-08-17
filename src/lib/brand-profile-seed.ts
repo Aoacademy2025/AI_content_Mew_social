@@ -1,3 +1,4 @@
+import type { TreatmentPresetId } from "@/lib/brand-treatment-catalog";
 import type { VisualFormatId } from "@/lib/brand-visual-system";
 import { parseTtsProvider, type TtsProvider } from "@/lib/tts-providers";
 
@@ -20,6 +21,8 @@ export type BrandProfileSeed = {
   brandMark: { assetId: string | null; enabled: boolean; position: string; sizePct: number; opacity: number };
   visual: {
     primaryVisualFormatId: VisualFormatId;
+    treatmentPolicy: "adaptive" | "locked";
+    lockedTreatmentPresetId: TreatmentPresetId | null;
     languageMode: "defined" | "none";
     palette: string[];
     personality: string;
@@ -88,6 +91,8 @@ export function createBlankBrandProfileSeed(): BrandProfileSeed {
     brandMark: { assetId: null, enabled: false, position: "top-right", sizePct: 18, opacity: 0.9 },
     visual: {
       primaryVisualFormatId: "clear-infographic",
+      treatmentPolicy: "adaptive",
+      lockedTreatmentPresetId: null,
       languageMode: "defined",
       palette: ["#2B2926", "#F5F1E8", "#A8A29E"],
       personality: "สมดุล ชัดเจน และปรับให้เข้ากับแบรนด์ได้",

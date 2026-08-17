@@ -3,6 +3,7 @@ import type {
   BrandProfileSeed,
   CurrentBrandDefaults,
 } from "@/lib/brand-profile-seed";
+import type { TreatmentPresetId } from "@/lib/brand-treatment-catalog";
 
 export type { VisualFormatId };
 export type BrandPayload = BrandProfileSeed;
@@ -36,6 +37,7 @@ export type BrandProfile = {
   sampleText: string | null;
   activeRevisionNumber: number;
   frozen: boolean;
+  legacyVisualFormat: boolean;
   updatedAt: string;
   draft: { baseRevisionNumber: number; payload: BrandPayload | null } | null;
   revisions: Revision[];
@@ -55,6 +57,7 @@ export type LibraryResponse = {
   availabilitySelectionRequired: boolean;
   canRestoreAll: boolean;
   visualFormats: VisualFormat[];
+  treatmentPresets: Array<{ id: TreatmentPresetId; label: string }>;
   subtitlePresets: SubtitlePresetOption[];
   brandAssets: Array<{ id: string; name: string }>;
   defaults: BrandDefaults;
@@ -86,7 +89,10 @@ export type ProjectVisualSeed = {
   };
 };
 
-/** The visual helper returns a proposal only; the creator applies it by hand. */
-export type VisualProposal = BrandPayload["visual"] & { rationale?: string };
+/** The helper shapes stable brand rendering only; per-video storytelling is
+ * selected from the reviewed catalog separately. */
+export type VisualProposal = Pick<BrandPayload["visual"],
+  "primaryVisualFormatId" | "palette" | "personality" | "peopleAndSetting" | "memorableCues" | "visualNotes"
+> & { rationale?: string };
 
 export type Notice = { tone: "ok" | "error"; text: string };

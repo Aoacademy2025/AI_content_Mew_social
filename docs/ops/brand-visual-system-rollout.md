@@ -1,7 +1,7 @@
 # Brand Visual System V1 rollout and rollback
 
-Date: 2026-08-13
-Status: Paid Soft Launch deployment authorized; stage changes remain gate-controlled
+Date: 2026-08-18
+Status: Release hardening verified locally; preserve current paid-public access during deploy
 
 ## Safety contract
 
@@ -13,15 +13,36 @@ Status: Paid Soft Launch deployment authorized; stage changes remain gate-contro
   FREE accounts outside an active Conversion Trial see the locked preview.
 - Reused current Visual Beats cost 0. A script or look edit never starts a job;
   new/outdated beats are charged only after an explicit render or reroll.
+- Each initial AI B-roll window receives one generated candidate. There is no
+  hidden quality retry, generic-treatment fallback, or engine switch. A creator
+  who wants another image explicitly starts Scene Reroll and pays the displayed
+  two-credit cost (or uses one eligible allowance unit) for that new request.
+- A completed Scene Reroll remains a browser-staged candidate until the creator
+  presses **Update video** and the replacement derivative finishes. Closing,
+  undoing, or replacing that candidate must not overwrite the reusable Visual
+  Beat. A staged paid candidate must be applied before it can be moved to
+  another window. Apply discovers the candidate from its server-owned asset
+  binding and fails closed if client metadata is absent or mismatched. Replaying
+  the same request is free; a distinct request is charged once.
+- Scene Reroll is available immediately to every capable project already in the
+  Paid Public Launch; it has no separate internal-only percentage rollout.
+- A successful discounted annual or Founding Price purchase is cash-backed paid
+  access. A `DISCOUNT` coupon changes checkout price but never removes capability;
+  without a completed payment it grants no capability by itself.
 - RunPod Z-Image is the only V1 image route. Do not cross-fallback to another AI
   Engine. Keep generated imagery text-free; subtitles and brand marks stay in
   deterministic layers.
 - Trend Packs, reference images, character/LoRA conditioning, and rendered text
   are outside V1 and must not be enabled as part of this rollout.
 
-## Flags (fail closed)
+## Flags (fail closed; preserve the live baseline)
 
-Missing or malformed values resolve to off/control.
+Missing or malformed values resolve to off/control. These are rollback controls,
+not instructions to reduce a cohort that is already live. Record and preserve
+the current production values before deployment.
+
+Fail-safe defaults are shown below for reference; they are not the deployment
+target when production already has a larger live cohort.
 
 ```text
 BRAND_VISUAL_SYSTEM_ENABLED=0
@@ -49,42 +70,65 @@ BRAND_VISUAL_TEST_EMAILS=
 Run locally or in an authorized staging environment:
 
 ```bash
+npm run verify:brand-treatment-v1
 npm run verify:brand-visual-system
+npm run verify:broll-rerender
+npm run verify:broll-window-gen
 npm run verify:hero-image-price
 npm run verify:hero-image-resilience
 npm run verify:ai-image-reconcile
-npx tsc --noEmit
+npx prisma validate
+npx tsc --noEmit --pretty false --incremental false
 npm run lint
 npm run build
+git diff --check
 ```
 
-Also verify the additive migration on a disposable copy, confirm all flags are
-off in the release configuration, and inspect the diff for secrets, generated
-quality-gate PNGs, or production data. The reviewed picker WebPs are expected;
-raw 21-image gate artifacts remain ignored and local.
+Also verify the additive migration on a disposable copy, record the current
+production flags and confirm the release will not reduce them, then inspect the
+diff for secrets, generated quality-gate PNGs, or production data. The reviewed
+picker WebPs are expected; raw 21-image gate artifacts remain ignored and local.
 
-## Authorized rollout sequence
+As of 2026-08-18, `npm run lint` exits zero but the flat config supplies only
+global ignores; representative source files report “File ignored because no
+matching configuration was supplied.” Treat lint as **not executed**, not as a
+green gate. Do not hide this by deleting generated directories or changing
+unrelated rules during this release; TypeScript, focused contracts and the
+production build remain mandatory while lint coverage is repaired separately.
 
-Initial Paid Soft Launch deployment was authorized on 2026-08-13. Every
-subsequent 10→50→100 expansion still requires the health gates below and an
-explicit production stage approval.
+`npm audit --omit=dev` currently reports the `deepmerge-ts` recursive-object
+stack-exhaustion advisory through the Prisma CLI/config package. The application
+source does not import that merge library; `prisma.config.ts` is the only
+`prisma/config` import. Do not force a downgrade or an unverified transitive
+override during deployment. Recheck the advisory and Prisma's resolved
+dependency before every release, and stop if the package becomes reachable from
+request-time code or a supported patched Prisma composition becomes available.
 
-1. Deploy code and migration with the master switch off.
+## Authorized deployment sequence
+
+Initial Paid Public Launch deployment was authorized on 2026-08-13. Scene
+Reroll joins that existing eligible population when this release deploys; it
+does not restart the product at an internal-only cohort. Any future expansion
+of the broader Brand Visual population still requires the health gates below
+and an explicit production stage approval.
+
+1. Capture the current production flag values and deploy code/migration without
+   reducing existing Paid Public Launch access.
 2. Confirm the existing `/api/cron/reconcile-ai-images` schedule and heartbeat.
    The same pass must settle durable image reservations and fail preview items
    that were queued for more than 30 minutes without a linked image job, so a
    crashed request cannot leave its batch permanently pending.
-3. Set the master switch to 1 with rollout 0; smoke test `duckyhero`, one Admin,
-   and explicit test Free/Trial/Paid accounts.
+3. Smoke test `duckyhero`, one Admin, and explicit Free/Trial/Paid accounts while
+   leaving the live paid cohort unchanged.
 4. Verify create draft → preview → publish revision → pin project → render →
    reopen; then script edit → unchanged reuse + outdated-only generation; then
    single-scene reroll and downgrade/profile-freeze behavior on desktop/mobile.
-5. Keep the internal canary until settlement and provider evidence is clean.
-6. Set `BRAND_VISUAL_ROLLOUT_STARTED_AT` once, then expand to 10%. Do not reset
-   that timestamp or the salt between stages. When expanding to 50%, also set
-   `BRAND_VISUAL_50_PERCENT_STARTED_AT` to that stage's start time.
-7. At each stage, wait for at least 100 terminal branded image jobs and require
-   every safety check below before expansion.
+5. Monitor Scene Reroll settlement, refunds and provider evidence across the
+   existing eligible population; do not introduce a new Scene Reroll percentage.
+6. If the broader Brand Visual rollout is not already at 100%, preserve its
+   existing timestamp/salt and use the health gates before any future expansion.
+7. At each future broader rollout stage, wait for at least 100 terminal branded
+   image jobs and require every safety check below before expansion.
 
 ## Health endpoint and expansion gates
 

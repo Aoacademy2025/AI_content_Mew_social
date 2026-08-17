@@ -22,6 +22,38 @@ async function main() {
     reusableVisualBeatAssetsForVideoJob,
   } = await import("../src/lib/content-preflight.server");
 
+  function completeAnalysis<T extends {
+    contentDomain: string;
+    suggestedVisualFormatId: string;
+    beats: Array<{
+      subject: string; action: string; setting: string; emotion: string; emphasis: string;
+    }>;
+  }>(analysis: T) {
+    return {
+      ...analysis,
+      dominantNarrativeMode: "continuous practical explanation",
+      rankedTreatmentPresetIds: [
+        "expert-clarity",
+        "practical-documentary",
+        "modern-business-technology",
+      ],
+      treatmentRecommendationRationale: "The whole source is a practical explanation.",
+      formatRecommendation: null,
+      storyEntities: [],
+      beats: analysis.beats.map((beat) => ({
+        ...beat,
+        hardSceneFacts: {
+          entityTypes: [beat.subject], ages: [], genders: [], actions: [beat.action],
+          locationTypes: [beat.setting], timeOfDay: null, historicalPeriod: null,
+          count: null, essentialObjects: [],
+        },
+        entityRefs: [],
+        sceneIntensity: "clear",
+        safetyBoundary: "none",
+      })),
+    };
+  }
+
   const spokenText = "Hook short. Explanation sentence one. Explanation sentence two. Close.";
   const spokenDurationMs = 9_000;
   const timedWords = tokenizeWords(spokenText).map((word) => ({
@@ -195,8 +227,12 @@ async function main() {
    * "believable Thai environments" is exactly the lock Mew rejected on
    * 2026-08-10. "English" and "Latin" are permitted here and only here, as the
    * alphabet lettering is written in — not as a country. */
+  const beatInstruction = capturedPreflightPrompt.slice(
+    capturedPreflightPrompt.indexOf("Each beat must describe"),
+    capturedPreflightPrompt.indexOf("Schema:"),
+  );
   assert.doesNotMatch(
-    capturedPreflightPrompt,
+    beatInstruction,
     /\b(?:thai|thailand|bangkok|asian|southeast|chinese|japanese|korean|arabic|cyrillic)\b|ไทย/i,
     "the beat instruction must name no locale and no other writing system",
   );
@@ -207,13 +243,13 @@ async function main() {
    * from cache — the policy would silently apply to new sources only. */
   assert.equal(
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
-    "brand-content-preflight-v5-latin-lettering",
+    "brand-content-preflight-v11-relational-hard-facts",
     "changing what a beat contains must publish a new analyzer version",
   );
   const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");
   assert.match(
     preflightSource,
-    /COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = \[[\s\S]*?"brand-content-preflight-v4-focal-subject"[\s\S]*?"brand-content-preflight-v3-stable-windows"/,
+    /COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = \[[\s\S]*?"brand-content-preflight-v6-treatment-plan"[\s\S]*?"brand-content-preflight-v5-latin-lettering"[\s\S]*?"brand-content-preflight-v4-focal-subject"/,
     "the superseded version stays readable as lineage, so a bump costs a re-analysis and never a generated image",
   );
   const project = await prisma.editorProject.create({
@@ -227,7 +263,7 @@ async function main() {
     async analyze(input: { windows: Array<{ text: string }> }) {
       analysisCalls += 1;
       analyzedWindowCount = input.windows.length;
-      return {
+      return completeAnalysis({
         contentDomain: "personal finance",
         suggestedVisualFormatId: "clear-infographic" as const,
         suggestedTreatment: { label: "ชัด กระชับ น่าเชื่อถือ", mood: "professional" },
@@ -253,7 +289,7 @@ async function main() {
             emphasis: "consistent monthly action",
           },
         ],
-      };
+      });
     },
   };
 
@@ -289,9 +325,9 @@ async function main() {
   const policyAnalyzer = {
     async analyze() {
       policyAnalysisCalls += 1;
-      return {
+      return completeAnalysis({
         contentDomain: "creator workflow",
-        suggestedVisualFormatId: "stick-figure-story" as const,
+        suggestedVisualFormatId: "simple-editorial-story" as const,
         suggestedTreatment: { label: "clear", mood: "encouraging" },
         beats: [{
           beatKey: "window-0",
@@ -302,7 +338,7 @@ async function main() {
           emotion: "focused optimism",
           emphasis: "the practical workflow",
         }],
-      };
+      });
     },
   };
   const policyNarrative = "A founder explains one useful workflow in a coffee shop.";
@@ -501,9 +537,9 @@ async function main() {
   });
   const alignmentAnalyzer = {
     async analyze(input: { windows: Array<{ text: string }> }) {
-      return {
+      return completeAnalysis({
         contentDomain: "creator workflow",
-        suggestedVisualFormatId: "stick-figure-story" as const,
+        suggestedVisualFormatId: "simple-editorial-story" as const,
         suggestedTreatment: { label: "clear", mood: "focused" },
         beats: input.windows.map((window, index) => ({
           beatKey: `window-${index}`,
@@ -514,7 +550,7 @@ async function main() {
           emotion: "focused confidence",
           emphasis: "the current step",
         })),
-      };
+      });
     },
   };
   const alignmentFirst = await resolveContentPreflight({
@@ -580,7 +616,7 @@ async function main() {
   });
   const cacheRebaseAnalyzer = {
     async analyze(input: { windows: Array<{ text: string }> }) {
-      return {
+      return completeAnalysis({
         contentDomain: "creator workflow",
         suggestedVisualFormatId: "clear-infographic" as const,
         suggestedTreatment: { label: "clear", mood: "focused" },
@@ -593,7 +629,7 @@ async function main() {
           emotion: "focused",
           emphasis: "the shared source window",
         })),
-      };
+      });
     },
   };
   const cacheA = await resolveContentPreflight({
@@ -802,9 +838,9 @@ async function main() {
       && step2Source.includes('p.brollSource === "kie-image"')
       && step2Source.includes('p.brollSource === "automix" && p.mixPreset !== "free"')
       && step2Source.includes("brandPreflightStatus !== \"ready\"")
-      && step2Source.includes("const brandRenderBlocked = brandPreflightBlocked || brandSelectionBlocked;")
+      && step2Source.includes("const brandRenderBlocked = brandSelectionBlocked;")
       && step2Source.includes("disabled={submitting || brandRenderBlocked}"),
-    "non-upload AI-image renders must stay disabled until Content Preflight and Brand selection are ready",
+    "render acceptance waits only for an unfinished creator selection; Content Preflight may finish in the worker",
   );
 
   await prisma.$disconnect();

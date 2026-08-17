@@ -144,6 +144,7 @@ const fetchMock = async (input: string | URL | Request, init?: RequestInit): Pro
         description: "",
         previewUrl: "/preview.png",
       }],
+      treatmentPresets: [{ id: "expert-clarity", label: "ชัดเจนแบบผู้เชี่ยวชาญ" }],
       profiles: [],
     });
   }
@@ -173,7 +174,14 @@ function buildPreflight(count: number) {
     id: `preflight-${count}`,
     sourceHash: `source-${count}`,
     suggestedVisualFormatId: "clear-infographic",
-    suggestedTreatment: { label: "ชัดเจน", mood: "focused" },
+    suggestedTreatment: {
+      presetId: "expert-clarity",
+      version: "v1.0.0",
+      label: "ชัดเจน",
+      rationale: "เหมาะกับภาพรวมของเนื้อหา",
+    },
+    rankedTreatmentPresetIds: ["expert-clarity"],
+    formatRecommendation: null,
     visualBeats: Array.from({ length: count }, (_, index) => ({
       id: `beat-${index}`,
       status: "current",
@@ -208,6 +216,15 @@ const requireMock = (id: string): unknown => {
   if (id === "@/lib/logo-overlay") return { normalizeLogoOverlayConfig: (value: unknown) => value };
   if (id === "@/lib/editor-style-preset-contract") return { normalizeSubtitleStylePresetConfig: (value: unknown) => value };
   if (id === "@/lib/automix-plan") return { shouldLoadBrandVisualContext: () => true };
+  if (id === "@/lib/brand-visual-system") {
+    return { visualFormatThaiLabel: (value: string) => value };
+  }
+  if (id === "@/lib/brand-treatment-presentation") {
+    return {
+      buildTreatmentChoiceGroups: () => ({ featured: [], all: [] }),
+      buildVisualSummary: (format: string, treatment: string) => `${format} · ${treatment}`,
+    };
+  }
   if (id === "@/lib/scene-content-policy") return { sceneContentPolicyFromPreference: () => ({}) };
   if (id === "./tokens") return { color, font: { heading: "sans-serif" }, radius: { card: 12 } };
   throw new Error(`Unexpected module import: ${id}`);

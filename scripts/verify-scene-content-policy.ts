@@ -25,14 +25,14 @@ assert.match(thai.beats[0].subject, /Thai or Southeast Asian/);
 assert.match(thai.beats[0].setting, /Thai local context/);
 
 const compiledThai = compileBrandVisualPrompt({
-  visualFormatId: "stick-figure-story",
+  visualFormatId: "simple-editorial-story",
   contentDomain: "creator workflow",
   treatment: "clear and encouraging",
   visualBeat: { ...thai.beats[0], phase: "hook" },
 });
 assert.match(compiledThai.positive, /Thai or Southeast Asian/);
 assert.match(compiledThai.positive, /Thai local context/);
-assert.match(compiledThai.positive, /stick-figure/i);
+assert.match(compiledThai.positive, /full-frame flat editorial story illustration/i);
 
 const objectOnly = applySceneContentPolicy([{
   ...baseBeat,
@@ -99,7 +99,7 @@ async function verifyWiring() {
 
   const jobsRouteSource = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
   assert.match(jobsRouteSource, /contentPreflightSourceHash\(kind, script,[\s\S]*?sceneContentPolicy/);
-  assert.match(jobsRouteSource, /sceneContentPolicy,\s*\n\s*\.\.\.\(kieModel/);
+  assert.match(jobsRouteSource, /sceneContentPolicy,[\s\S]*?\.\.\.\(kieModel/);
 
   const stepTwoSource = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
   assert.match(stepTwoSource, />คนและสถานที่</);
