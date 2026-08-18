@@ -15,6 +15,7 @@ async function main() {
   const {
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
     ContentPreflightError,
+    contentPreflightFailureDetails,
     createGeminiContentPreflightAnalyzer,
     planNarrativeVisualWindows,
     recordVisualBeatAsset,
@@ -1067,6 +1068,53 @@ async function main() {
     overlongEssentialObject,
     "repair preserves every essential-object word instead of truncating a Hard Scene Fact",
   );
+  for (const explicitCount of [101, 500]) {
+    const largeCountCandidate = JSON.parse(
+      JSON.stringify(productionReplayAnalysis),
+    ) as typeof productionReplayAnalysis;
+    largeCountCandidate.beats[0].hardSceneFacts.count = explicitCount;
+    let largeCountCalls = 0;
+    const largeCountAnalyzer = createGeminiContentPreflightAnalyzer(
+      user.id,
+      async () => {
+        largeCountCalls += 1;
+        return JSON.stringify(largeCountCandidate);
+      },
+    );
+    const repairedLargeCount = await largeCountAnalyzer.analyze({
+      kind: "upload-transcript",
+      text: eightWindows.map((window) => window.text).join("\n"),
+      windows: eightWindows,
+    });
+    assert.equal(
+      largeCountCalls,
+      1,
+      "a valid narrative count of " + explicitCount + " must not exhaust provider retries",
+    );
+    assert.equal(
+      repairedLargeCount.beats[0].hardSceneFacts.count,
+      explicitCount,
+      "the explicit Hard Scene Fact count remains exact",
+    );
+  }
+  assert.deepEqual(
+    contentPreflightFailureDetails(
+      new ContentPreflightError(
+        "INVALID_ANALYSIS",
+        "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง",
+      ),
+    ),
+    {
+      message: "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง",
+      code: "CONTENT_PREFLIGHT_INVALID_ANALYSIS",
+    },
+    "worker-side upload preflight failures retain a structured error code",
+  );
+  assert.equal(
+    contentPreflightFailureDetails(new Error("unrelated")),
+    null,
+    "unrelated pipeline failures keep their existing classification path",
+  );
   const unsafeRealPersonCandidate = JSON.parse(
     JSON.stringify(productionReplayAnalysis),
   ) as typeof productionReplayAnalysis;
@@ -1205,6 +1253,11 @@ async function main() {
     uploadBranch.indexOf("await ensureUploadContentPreflight({") >= 0
       && uploadBranch.indexOf("await ensureUploadContentPreflight({") < uploadBranch.indexOf('await step("keywords", 40)'),
     "upload transcript preflight must resolve before keyword/image generation",
+  );
+  assert.ok(
+    orchestratorSource.includes("contentPreflightFailureDetails(e)")
+      && orchestratorSource.includes(": contentPreflightFailure"),
+    "the outer worker catch must persist structured Content Preflight failures on VideoJob",
   );
   const scriptWindowBranch = orchestratorSource.slice(orchestratorSource.indexOf("const pinnedBrandVisualWindows"));
   assert.ok(
