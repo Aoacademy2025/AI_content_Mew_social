@@ -22,9 +22,10 @@ import {
   projectLookInputSchema,
   reusableProjectVisualBeatSceneIndices,
   resolveProjectVisualContext,
+  saveUploadProjectVisualFormatAwaitingPreflight,
 } from "@/lib/project-look.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { brandLookIdentityKey, brandVisualIdentityKey, type VisualFormatId } from "@/lib/brand-visual-system";
+import { VISUAL_FORMAT_IDS, brandLookIdentityKey, brandVisualIdentityKey, type VisualFormatId } from "@/lib/brand-visual-system";
 
 function parseOptionalJson(value: string | null | undefined): unknown | null {
   if (!value) return null;
@@ -161,11 +162,49 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const auth = await requireBrandVisualUser();
     if (!auth.ok) return auth.response;
     const body = await req.json().catch(() => null);
+    const { id } = await params;
+    if (body?.deferTreatmentUntilPreflight === true) {
+      const visualFormatId = VISUAL_FORMAT_IDS.find((candidate) => candidate === body?.look?.visualFormatId);
+      if (!visualFormatId) {
+        return NextResponse.json({ code: "INVALID_LOOK", error: "แนวภาพนี้ไม่อยู่ใน V1" }, { status: 400 });
+      }
+      const latest = await currentVisualState(auth.user.id, id);
+      if (latest.preflight) {
+        return NextResponse.json({
+          code: "PREFLIGHT_ID_REQUIRED",
+          error: "กรุณาโหลดผลวิเคราะห์เนื้อหาเวอร์ชันปัจจุบันก่อนเปลี่ยนแนวภาพ",
+          currentPreflightId: latest.preflight.id,
+        }, { status: 409 });
+      }
+      const look = await saveUploadProjectVisualFormatAwaitingPreflight({
+        userId: auth.user.id,
+        projectId: id,
+        visualFormatId,
+      });
+      await recordTelemetryEvent(auth.user.id, {
+        name: "project_look_changed",
+        source: "server",
+        step: "editor.step2",
+        status: "awaiting-upload-transcript",
+        properties: {
+          projectId: id,
+          preflightId: null,
+          visualFormatId: look.visualFormatId,
+          existingImageCount: 0,
+          cohort: auth.access.cohort,
+        },
+      }).catch(() => {});
+      return NextResponse.json({
+        look,
+        preflightId: null,
+        applyMode: null,
+        regenerationPlan: null,
+      });
+    }
     const parsed = projectLookInputSchema.safeParse(body?.look ?? body);
     if (!parsed.success) {
       return NextResponse.json({ code: "INVALID_LOOK", error: parsed.error.issues[0]?.message }, { status: 400 });
     }
-    const { id } = await params;
     const requestedPreflightId = typeof body?.preflightId === "string" && body.preflightId.trim()
       ? body.preflightId.trim()
       : undefined;

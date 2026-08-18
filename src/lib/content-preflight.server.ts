@@ -318,6 +318,185 @@ function contentPreflightValidationFeedback(error: z.ZodError): string {
     .slice(0, 1_200);
 }
 
+const GENERIC_STORY_ENTITY_NAMES = new Set([
+  "ai agent",
+  "ai assistant",
+  "booking system",
+  "gym booking system",
+  "software company",
+]);
+
+function normalizedStoryEntityName(value: string): string {
+  return value
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/^(?:a|an|the)\s+/u, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function escapedRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Replace a proper name only as a complete token/phrase. A name such as
+ * `Sam` must not mutate ordinary words such as `same`. */
+function replaceProperName(value: string, properName: string, replacement: string): string {
+  const escaped = escapedRegExp(properName.trim());
+  if (!escaped) return value;
+  return value.replace(
+    new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "giu"),
+    (_match, prefix: string) => `${prefix}${replacement}`,
+  );
+}
+
+function tidyRepairedDescription(value: string): string {
+  return value
+    .replace(/^[\s,;:–—-]+/u, "")
+    .replace(/\s+([,.;:])/gu, "$1")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+/** Gemini occasionally promotes generic roles into Story Entities and copies
+ * internal proper-name linkage into provider-facing prose. Retrying the same
+ * prompt is unreliable for that mechanically repairable output. This pass is
+ * deliberately applied only after normal schema validation fails: valid model
+ * output remains byte-for-byte unchanged, while generic linkage is removed and
+ * genuine named entities keep their safe durable descriptions. */
+function repairContentPreflightSemantics(candidate: unknown): unknown {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+  const record = candidate as Record<string, unknown>;
+  if (!Array.isArray(record.storyEntities) || !Array.isArray(record.beats)) return candidate;
+
+  const removedIds = new Set<string>();
+  const retainedEntities = record.storyEntities.filter((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+    const entity = value as Record<string, unknown>;
+    const properName = typeof entity.properName === "string" ? entity.properName : "";
+    if (!GENERIC_STORY_ENTITY_NAMES.has(normalizedStoryEntityName(properName))) return true;
+    if (typeof entity.entityId === "string") removedIds.add(entity.entityId);
+    return false;
+  });
+
+  const properNames = retainedEntities.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const properName = (value as Record<string, unknown>).properName;
+    return typeof properName === "string" && properName.trim() ? [properName.trim()] : [];
+  });
+  const storyEntities = retainedEntities.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const entity = value as Record<string, unknown>;
+    const entityType = typeof entity.entityType === "string" ? entity.entityType : "entity";
+    const durableAttributes = Array.isArray(entity.durableAttributes)
+      ? entity.durableAttributes.filter((attribute): attribute is string => typeof attribute === "string")
+      : [];
+    const fallback = tidyRepairedDescription(
+      `${entityType === "object" ? "an" : "a"} ${entityType} ${durableAttributes.join(", ")}`,
+    );
+    const cleanDescription = (value: unknown): unknown => {
+      if (typeof value !== "string") return value;
+      const cleaned = tidyRepairedDescription(
+        properNames.reduce((result, properName) => (
+          replaceProperName(result, properName, "")
+        ), value),
+      );
+      return cleaned.length >= 3 ? cleaned : fallback;
+    };
+    return {
+      ...entity,
+      renderingDescription: cleanDescription(entity.renderingDescription),
+      recurringCharacterDescription: entity.recurringCharacterDescription === null
+        ? null
+        : cleanDescription(entity.recurringCharacterDescription),
+    };
+  });
+
+  const replacements = storyEntities.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const entity = value as Record<string, unknown>;
+    if (typeof entity.properName !== "string" || typeof entity.renderingDescription !== "string") return [];
+    return [{ properName: entity.properName, description: entity.renderingDescription }];
+  });
+  const cleanProviderText = (value: unknown): unknown => {
+    if (typeof value !== "string") return value;
+    return tidyRepairedDescription(replacements.reduce((result, entity) => (
+      replaceProperName(result, entity.properName, entity.description)
+    ), value));
+  };
+
+  const beats = record.beats.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const beat = value as Record<string, unknown>;
+    const hardSceneFacts = beat.hardSceneFacts && typeof beat.hardSceneFacts === "object"
+      && !Array.isArray(beat.hardSceneFacts)
+      ? beat.hardSceneFacts as Record<string, unknown>
+      : null;
+    const cleanStringArray = (items: unknown): unknown => Array.isArray(items)
+      ? items.map(cleanProviderText)
+      : items;
+    return {
+      ...beat,
+      subject: cleanProviderText(beat.subject),
+      action: cleanProviderText(beat.action),
+      setting: cleanProviderText(beat.setting),
+      emotion: cleanProviderText(beat.emotion),
+      emphasis: cleanProviderText(beat.emphasis),
+      sceneIntensity: cleanProviderText(beat.sceneIntensity),
+      ...(hardSceneFacts ? {
+        hardSceneFacts: {
+          ...hardSceneFacts,
+          entityTypes: cleanStringArray(hardSceneFacts.entityTypes),
+          ages: cleanStringArray(hardSceneFacts.ages),
+          genders: cleanStringArray(hardSceneFacts.genders),
+          actions: cleanStringArray(hardSceneFacts.actions),
+          locationTypes: cleanStringArray(hardSceneFacts.locationTypes),
+          timeOfDay: cleanProviderText(hardSceneFacts.timeOfDay),
+          historicalPeriod: cleanProviderText(hardSceneFacts.historicalPeriod),
+          essentialObjects: cleanStringArray(hardSceneFacts.essentialObjects),
+        },
+      } : {}),
+      entityRefs: Array.isArray(beat.entityRefs)
+        ? beat.entityRefs.filter((entityId) => (
+            typeof entityId !== "string" || !removedIds.has(entityId)
+          ))
+        : beat.entityRefs,
+    };
+  });
+
+  const referenceCounts = new Map<string, number>();
+  beats.forEach((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const entityRefs = (value as Record<string, unknown>).entityRefs;
+    if (!Array.isArray(entityRefs)) return;
+    entityRefs.forEach((entityId) => {
+      if (typeof entityId === "string") {
+        referenceCounts.set(entityId, (referenceCounts.get(entityId) ?? 0) + 1);
+      }
+    });
+  });
+  const recurrenceRepairedEntities = storyEntities.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const entity = value as Record<string, unknown>;
+    if (
+      entity.recurringCharacterDescription
+      && typeof entity.entityId === "string"
+      && (referenceCounts.get(entity.entityId) ?? 0) < 2
+    ) {
+      return { ...entity, recurringCharacterDescription: null };
+    }
+    return entity;
+  });
+
+  return {
+    ...record,
+    contentDomain: cleanProviderText(record.contentDomain),
+    storyEntities: recurrenceRepairedEntities,
+    beats,
+  };
+}
+
 function contentPreflightResponseJsonSchema(): Record<string, unknown> {
   const hardSceneFacts = {
     type: "object",
@@ -546,7 +725,10 @@ export function createGeminiContentPreflightAnalyzer(
           ].join(" ");
           continue;
         }
-        const parsed = analysisSchema.safeParse(candidate);
+        let parsed = analysisSchema.safeParse(candidate);
+        if (!parsed.success) {
+          parsed = analysisSchema.safeParse(repairContentPreflightSemantics(candidate));
+        }
         const wrongBeatCount = parsed.success && parsed.data.beats.length !== input.windows.length;
         if (parsed.success && !wrongBeatCount) return parsed.data;
         const issues = parsed.success
