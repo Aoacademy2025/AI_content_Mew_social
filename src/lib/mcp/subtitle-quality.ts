@@ -1,4 +1,9 @@
-import { tokenizeWords, type TimedWord } from "@/lib/tts-timing";
+import {
+  snapCardsToWordBoundaries,
+  splitSentenceCards,
+  tokenizeWords,
+  type TimedWord,
+} from "@/lib/tts-timing";
 
 export type SubtitleTimingSource =
   | "provider_alignment"
@@ -176,6 +181,108 @@ export function alignTranscriptWordsToSource(
   return sourceIndex === sourceWords.length && transcriptIndex === usableTranscript.length
     ? aligned
     : null;
+}
+
+export interface CanonicalAlignedCaption {
+  text: string;
+  startMs: number;
+  endMs: number;
+  tag: "hook" | "body";
+  startChar: number;
+  endChar: number;
+}
+
+/**
+ * Build sentence captions whose timestamps come from a proven transcript-word
+ * alignment while every displayed character comes from the canonical script.
+ * Forced-alignment providers routinely normalize quotes, ellipses, punctuation
+ * and spacing in their display captions; those captions are useful timing hints,
+ * but must never replace the exact text that was sent to TTS.
+ */
+export function buildCanonicalCaptionsFromAlignedWords(
+  fullText: string,
+  words: TimedWord[],
+  maxCardChars: number,
+): CanonicalAlignedCaption[] | null {
+  if (!fullText.trim() || words.length === 0) return null;
+  if (words.some((word, index) =>
+    !Number.isInteger(word.startChar)
+    || !Number.isInteger(word.endChar)
+    || word.startChar < 0
+    || word.endChar <= word.startChar
+    || word.endChar > fullText.length
+    || !Number.isFinite(word.startMs)
+    || !Number.isFinite(word.endMs)
+    || word.startMs < 0
+    || word.endMs <= word.startMs
+    || (index > 0 && (
+      word.startChar < words[index - 1].endChar
+      || word.startMs < words[index - 1].endMs
+    )),
+  )) return null;
+
+  const cards = snapCardsToWordBoundaries(
+    splitSentenceCards(fullText, Math.max(10, maxCardChars)),
+    fullText,
+  );
+  if (cards.length === 0) return null;
+
+  const captions: CanonicalAlignedCaption[] = [];
+  let pendingStartChar = cards[0].startChar;
+  let wordIndex = 0;
+  for (const card of cards) {
+    while (wordIndex < words.length && words[wordIndex].endChar <= card.startChar) wordIndex += 1;
+    const firstWordIndex = wordIndex;
+    while (wordIndex < words.length && words[wordIndex].startChar < card.endChar) wordIndex += 1;
+    const firstWord = words[firstWordIndex];
+    const lastWord = words[wordIndex - 1];
+    if (!firstWord || !lastWord || firstWordIndex >= wordIndex) continue;
+    const text = fullText.slice(pendingStartChar, card.endChar).replace(/\s+/gu, " ").trim();
+    if (!text) continue;
+    captions.push({
+      text,
+      startMs: firstWord.startMs,
+      endMs: lastWord.endMs,
+      tag: captions.length === 0 ? "hook" : "body",
+      startChar: pendingStartChar,
+      endChar: card.endChar,
+    });
+    pendingStartChar = card.endChar;
+  }
+  if (captions.length === 0) return null;
+
+  // A punctuation-only tail has no timestamp of its own. Attach it to the last
+  // spoken card; its timing remains the timestamp of that card's final word.
+  if (pendingStartChar < fullText.length) {
+    const last = captions[captions.length - 1];
+    last.endChar = fullText.length;
+    last.text = fullText.slice(last.startChar, last.endChar).replace(/\s+/gu, " ").trim();
+  }
+
+  // The release gate requires a readable 240 ms minimum. Merge an exceptionally
+  // short forced-aligned card into a neighbor using one literal source range.
+  if (captions.length > 1 && captions[0].endMs - captions[0].startMs < MIN_CARD_MS) {
+    const first = captions.shift()!;
+    const next = captions[0];
+    next.startChar = first.startChar;
+    next.startMs = first.startMs;
+    next.tag = "hook";
+    next.text = fullText.slice(next.startChar, next.endChar).replace(/\s+/gu, " ").trim();
+  }
+  const readable: CanonicalAlignedCaption[] = [];
+  for (const caption of captions) {
+    const previous = readable[readable.length - 1];
+    if (previous && caption.endMs - caption.startMs < MIN_CARD_MS) {
+      previous.endChar = caption.endChar;
+      previous.endMs = caption.endMs;
+      previous.text = fullText.slice(previous.startChar, previous.endChar).replace(/\s+/gu, " ").trim();
+    } else {
+      readable.push(caption);
+    }
+  }
+
+  const rendered = readable.map((caption) => caption.text).join("");
+  return canonicalVisibleText(rendered) === canonicalVisibleText(fullText) ? readable : null;
 }
 
 /**

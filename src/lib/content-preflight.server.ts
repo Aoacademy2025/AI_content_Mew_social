@@ -27,6 +27,7 @@ import {
   type SceneContentPolicy,
   type SceneContentPolicyWarning,
 } from "@/lib/scene-content-policy";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 
 /** Bumped whenever extraction changes either a beat or a selectable Visual
  * Format, so a cached recommendation cannot keep creating retired formats.
@@ -298,6 +299,7 @@ export class ContentPreflightError extends Error {
       | "KEY_REQUIRED"
       | "TEXT_QUOTA",
     message: string,
+    readonly diagnostic?: string,
   ) {
     super(message);
     this.name = "ContentPreflightError";
@@ -370,14 +372,21 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
   const record = candidate as Record<string, unknown>;
   if (!Array.isArray(record.storyEntities) || !Array.isArray(record.beats)) return candidate;
 
-  const removedIds = new Set<string>();
+  const retainedIds = new Set<string>();
   const retainedEntities = record.storyEntities.filter((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return true;
     const entity = value as Record<string, unknown>;
     const properName = typeof entity.properName === "string" ? entity.properName : "";
-    if (!GENERIC_STORY_ENTITY_NAMES.has(normalizedStoryEntityName(properName))) return true;
-    if (typeof entity.entityId === "string") removedIds.add(entity.entityId);
-    return false;
+    const entityId = typeof entity.entityId === "string" ? entity.entityId : "";
+    if (GENERIC_STORY_ENTITY_NAMES.has(normalizedStoryEntityName(properName))) {
+      return false;
+    }
+    // Structured JSON enforces the field shape but cannot express unique IDs.
+    // Keep the first definition deterministically so every retained reference
+    // resolves to one stable Story Entity instead of exhausting model retries.
+    if (entityId && retainedIds.has(entityId)) return false;
+    if (entityId) retainedIds.add(entityId);
+    return true;
   });
 
   const properNames = retainedEntities.flatMap((value) => {
@@ -426,7 +435,7 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
     ), value));
   };
 
-  const beats = record.beats.map((value) => {
+  const beats = record.beats.map((value, beatIndex) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) return value;
     const beat = value as Record<string, unknown>;
     const hardSceneFacts = beat.hardSceneFacts && typeof beat.hardSceneFacts === "object"
@@ -438,6 +447,11 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
       : items;
     return {
       ...beat,
+      // The provider's key is never authoritative: resolveContentPreflight
+      // binds each response Beat to the ordered input window immediately after
+      // analysis. Re-index here so duplicate model keys cannot reject an
+      // otherwise complete upload analysis.
+      beatKey: `window-${beatIndex}`,
       subject: cleanProviderText(beat.subject),
       action: cleanProviderText(beat.action),
       setting: cleanProviderText(beat.setting),
@@ -459,7 +473,8 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
       } : {}),
       entityRefs: Array.isArray(beat.entityRefs)
         ? beat.entityRefs.filter((entityId) => (
-            typeof entityId !== "string" || !removedIds.has(entityId)
+          typeof entityId === "string"
+            && retainedIds.has(entityId)
           ))
         : beat.entityRefs,
     };
@@ -489,11 +504,31 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
     return entity;
   });
 
+  const rankedTreatmentPresetIds = (() => {
+    if (!Array.isArray(record.rankedTreatmentPresetIds)) return record.rankedTreatmentPresetIds;
+    const supported = new Set<string>(TREATMENT_PRESET_IDS);
+    const ranked = record.rankedTreatmentPresetIds.filter((value): value is string => (
+      typeof value === "string" && supported.has(value)
+    ));
+    const unique = [...new Set(ranked)];
+    for (const fallback of TREATMENT_PRESET_IDS) {
+      if (unique.length >= 3) break;
+      if (!unique.includes(fallback)) unique.push(fallback);
+    }
+    return unique.slice(0, 3);
+  })();
+  const formatRecommendation = formatRecommendationSchema.safeParse(record.formatRecommendation);
+
   return {
     ...record,
     contentDomain: cleanProviderText(record.contentDomain),
     storyEntities: recurrenceRepairedEntities,
     beats,
+    rankedTreatmentPresetIds,
+    // Recommendation is optional guidance. If the provider phrases it as a
+    // blocking incompatibility, omit it rather than rejecting the authoritative
+    // Beat plan or weakening the format-selection contract.
+    formatRecommendation: formatRecommendation.success ? formatRecommendation.data : null,
   };
 }
 
@@ -704,6 +739,7 @@ export function createGeminiContentPreflightAnalyzer(
       ].join("\n");
 
       let correction = "";
+      const attemptDiagnostics: string[] = [];
       for (let attempt = 1; attempt <= MAX_CONTENT_PREFLIGHT_SEMANTIC_ATTEMPTS; attempt += 1) {
         const raw = await generateText(
           key,
@@ -719,6 +755,9 @@ export function createGeminiContentPreflightAnalyzer(
         try {
           candidate = JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim());
         } catch {
+          attemptDiagnostics.push(
+            `a${attempt}:json_parse:len=${raw.length}:sha=${createHash("sha256").update(raw).digest("hex").slice(0, 12)}`,
+          );
           correction = [
             "Your previous JSON was rejected because it could not be parsed.",
             "Return one complete replacement JSON object matching the schema exactly.",
@@ -731,6 +770,15 @@ export function createGeminiContentPreflightAnalyzer(
         }
         const wrongBeatCount = parsed.success && parsed.data.beats.length !== input.windows.length;
         if (parsed.success && !wrongBeatCount) return parsed.data;
+        const diagnostic = parsed.success
+          ? `beat_count:${parsed.data.beats.length}/${input.windows.length}`
+          : parsed.error.issues
+            .slice(0, 4)
+            .map((issue) => `${issue.path.join(".") || "root"}:${issue.code}`)
+            .join(",");
+        attemptDiagnostics.push(
+          `a${attempt}:${diagnostic}:len=${raw.length}:sha=${createHash("sha256").update(raw).digest("hex").slice(0, 12)}`,
+        );
         const issues = parsed.success
           ? `beats: expected exactly ${input.windows.length}, received ${parsed.data.beats.length}`
           : contentPreflightValidationFeedback(parsed.error);
@@ -741,9 +789,25 @@ export function createGeminiContentPreflightAnalyzer(
           "Never copy a proper name into renderingDescription, recurringCharacterDescription or any provider-facing beat field.",
         ].join(" ");
       }
+      const diagnostic = attemptDiagnostics.join("|").slice(0, 1_200);
+      await recordTelemetryEvent(userId, {
+        name: "brand_visual_preflight_invalid",
+        category: "error",
+        source: "server",
+        step: "content_preflight",
+        status: "failed",
+        properties: {
+          analyzerVersion: CONTENT_PREFLIGHT_ANALYZER_VERSION,
+          sourceKind: input.kind,
+          windowCount: input.windows.length,
+          attemptCount: attemptDiagnostics.length,
+          diagnostic,
+        },
+      }).catch(() => null);
       throw new ContentPreflightError(
         "INVALID_ANALYSIS",
         "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง",
+        diagnostic,
       );
     },
   };

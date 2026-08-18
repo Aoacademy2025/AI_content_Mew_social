@@ -954,6 +954,119 @@ async function main() {
     )),
     "retained entity descriptions are provider-safe",
   );
+  const semanticReplayCases: Array<{
+    label: string;
+    mutate: (candidate: typeof productionReplayAnalysis) => void;
+  }> = [
+    {
+      label: "duplicate beat keys",
+      mutate: (candidate) => {
+        candidate.beats.forEach((beat) => { beat.beatKey = "duplicate-window"; });
+      },
+    },
+    {
+      label: "unknown entity reference",
+      mutate: (candidate) => {
+        candidate.beats[0].entityRefs.push("provider-invented-entity");
+      },
+    },
+    {
+      label: "duplicate entity id",
+      mutate: (candidate) => {
+        candidate.storyEntities.push({
+          ...candidate.storyEntities[0],
+          properName: "Alex",
+          renderingDescription: "an adult Australian man in casual sportswear",
+          recurringCharacterDescription: null,
+        });
+      },
+    },
+    {
+      label: "duplicate treatment ranking",
+      mutate: (candidate) => {
+        candidate.rankedTreatmentPresetIds = [
+          "expert-clarity",
+          "expert-clarity",
+          "modern-business-technology",
+        ];
+      },
+    },
+    {
+      label: "blocking format recommendation",
+      mutate: (candidate) => {
+        candidate.formatRecommendation = {
+          visualFormatId: "clear-infographic",
+          reason: "This format conflicts with the narrative.",
+        };
+      },
+    },
+  ];
+  for (const replayCase of semanticReplayCases) {
+    const candidate = JSON.parse(
+      JSON.stringify(productionReplayAnalysis),
+    ) as typeof productionReplayAnalysis;
+    replayCase.mutate(candidate);
+    let providerCalls = 0;
+    const analyzer = createGeminiContentPreflightAnalyzer(
+      user.id,
+      async () => {
+        providerCalls += 1;
+        return JSON.stringify(candidate);
+      },
+    );
+    const repaired = await analyzer.analyze({
+      kind: "upload-transcript",
+      text: eightWindows.map((window) => window.text).join("\n"),
+      windows: eightWindows,
+    });
+    assert.equal(
+      repaired.beats.length,
+      eightWindows.length,
+      `${replayCase.label} keeps every requested upload window`,
+    );
+    assert.equal(
+      providerCalls,
+      1,
+      `${replayCase.label} is repaired deterministically instead of exhausting Gemini retries`,
+    );
+  }
+  const unsafeRealPersonCandidate = JSON.parse(
+    JSON.stringify(productionReplayAnalysis),
+  ) as typeof productionReplayAnalysis;
+  unsafeRealPersonCandidate.storyEntities[0].isRealPerson = true;
+  unsafeRealPersonCandidate.beats[0].safetyBoundary = "real-person-context-only";
+  let unsafeRealPersonCalls = 0;
+  const unsafeRealPersonAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      unsafeRealPersonCalls += 1;
+      return JSON.stringify(unsafeRealPersonCandidate);
+    },
+  );
+  await assert.rejects(
+    () => unsafeRealPersonAnalyzer.analyze({
+      kind: "upload-transcript",
+      text: eightWindows.map((window) => window.text).join("\n"),
+      windows: eightWindows,
+    }),
+    (error: unknown) => error instanceof ContentPreflightError
+      && error.code === "INVALID_ANALYSIS"
+      && typeof error.diagnostic === "string"
+      && error.diagnostic.includes("entityRefs"),
+    "an unresolved real-person safety conflict still fails closed with a structural diagnostic",
+  );
+  assert.equal(unsafeRealPersonCalls, 3);
+  const invalidTelemetry = await prisma.telemetryEvent.findFirst({
+    where: { userId: user.id, name: "brand_visual_preflight_invalid" },
+    orderBy: { createdAt: "desc" },
+  });
+  assert.ok(invalidTelemetry, "semantic exhaustion leaves a durable server diagnostic");
+  assert.match(invalidTelemetry.properties ?? "", /entityRefs/);
+  assert.doesNotMatch(
+    invalidTelemetry.properties ?? "",
+    /Andrew|OpenClaw|ABCN News/,
+    "preflight diagnostics contain only paths, sizes, and hashes — never narrative content",
+  );
   const priorRollout = {
     BRAND_VISUAL_SYSTEM_ENABLED: process.env.BRAND_VISUAL_SYSTEM_ENABLED,
     BRAND_VISUAL_ROLLOUT_PERCENT: process.env.BRAND_VISUAL_ROLLOUT_PERCENT,

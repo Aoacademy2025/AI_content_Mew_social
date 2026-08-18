@@ -99,6 +99,7 @@ import {
 import { shouldEmitPipelineStepStarted } from "@/lib/pipeline-telemetry";
 import {
   alignTranscriptWordsToSource,
+  buildCanonicalCaptionsFromAlignedWords,
   validateSubtitleQuality,
   type SubtitleTimingSource,
 } from "@/lib/mcp/subtitle-quality";
@@ -1513,9 +1514,18 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       if (recoveredCaptions.length > 0) {
         subtitleTimingSource = "forced_alignment";
         const recoveredFullText = input.script.trim();
+        const recoveredWords = alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []);
+        const canonicalCaptions = recoveredWords
+          ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
+          : null;
         capRes = {
-          captions: recoveredCaptions,
-          words: alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []) ?? [],
+          // The transcribe route intentionally sanitizes punctuation and quotes
+          // in its display captions. Reuse only its proven word timestamps and
+          // take every visible character from the literal TTS source. If exact
+          // word alignment cannot be proven, the raw captions flow to the gate
+          // and fail closed as before.
+          captions: canonicalCaptions ?? recoveredCaptions,
+          words: recoveredWords ?? [],
           audioDurationMs: Number(aligned.audioDurationMs) > 0
             ? Math.round(Number(aligned.audioDurationMs))
             : audioDurationMs,

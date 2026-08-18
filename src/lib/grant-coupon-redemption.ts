@@ -1,7 +1,7 @@
 import { Prisma, type Plan } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { MONTHLY_GRANT } from "@/lib/credits";
-import { minutesPerMonthForPlan } from "@/lib/plan-limits";
+import { minutesPerMonthForPlan, videoExpiryFor } from "@/lib/plan-limits";
 import { usageWindowForPlan } from "@/lib/usage-limits";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -25,6 +25,7 @@ export type GrantCouponRedemptionResult =
       minutesLimit: number;
       monthlyCredits: number;
       promoCredits: number;
+      videosExtended: number;
       message: string;
     }
   | { ok: false; code: GrantCouponFailureCode; message: string };
@@ -41,6 +42,43 @@ class RedemptionAbort extends Error {
     message: string,
   ) {
     super(message);
+  }
+}
+
+type GrantCouponWriteQueue = { tail: Promise<void> };
+
+const globalForGrantCouponQueue = globalThis as typeof globalThis & {
+  __grantCouponWriteQueue?: GrantCouponWriteQueue;
+};
+const grantCouponWriteQueue = globalForGrantCouponQueue.__grantCouponWriteQueue ?? {
+  tail: Promise.resolve(),
+};
+globalForGrantCouponQueue.__grantCouponWriteQueue = grantCouponWriteQueue;
+
+/** SQLite has one writer. Queue the rare coupon write path in this app process
+ * instead of letting hundreds of interactive transactions spend their whole
+ * timeout fighting for the same lock. Database constraints and the atomic seat
+ * update remain the cross-process correctness boundary. */
+async function serializeGrantCouponWrite<T>(operation: () => Promise<T>): Promise<T> {
+  const result = grantCouponWriteQueue.tail.then(operation, operation);
+  grantCouponWriteQueue.tail = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+function isTransientSqliteTransactionError(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError
+    && (error.code === "P1008" || error.code === "P2028");
+}
+
+async function retryTransientSqliteTransaction<T>(operation: () => Promise<T>): Promise<T> {
+  const maxAttempts = 4;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isTransientSqliteTransactionError(error) || attempt >= maxAttempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25 * (2 ** (attempt - 1))));
+    }
   }
 }
 
@@ -160,7 +198,7 @@ export async function redeemGrantCoupon(
   const now = input.now ?? new Date();
   const code = input.code.trim().toUpperCase();
   try {
-    return await prisma.$transaction(async (tx) => {
+    const transaction = () => prisma.$transaction(async (tx) => {
       const coupon = await tx.coupon.findUnique({ where: { code } });
       if (!coupon) throw new RedemptionAbort("NOT_FOUND", failureMessage("NOT_FOUND"));
       if (coupon.type !== "GRANT") throw new RedemptionAbort("NOT_GRANT", failureMessage("NOT_GRANT"));
@@ -258,6 +296,7 @@ export async function redeemGrantCoupon(
 
       const minutesLimit = minutesPerMonthForPlan(coupon.plan);
       const monthlyCredits = MONTHLY_GRANT[coupon.plan] ?? 0;
+      let videosExtended = 0;
       const success: Extract<GrantCouponRedemptionResult, { ok: true }> = {
         ok: true,
         outcome,
@@ -267,6 +306,7 @@ export async function redeemGrantCoupon(
         minutesLimit,
         monthlyCredits,
         promoCredits,
+        videosExtended,
         message: outcome === "PROMO_ONLY"
           ? `รับ ${promoCredits} เครดิตโปรโมชันสำเร็จ โดยแพ็กเกจและการเรียกเก็บเงินไม่เปลี่ยนแปลง`
           : outcome === "SCHEDULED"
@@ -307,6 +347,16 @@ export async function redeemGrantCoupon(
           expiresAt: entitlementExpiresAt,
           now,
         });
+        const newExpiry = videoExpiryFor(coupon.plan, now);
+        const extended = await tx.video.updateMany({
+          where: {
+            userId: input.userId,
+            expiresAt: { gt: now, lt: newExpiry },
+          },
+          data: { expiresAt: newExpiry },
+        });
+        videosExtended = extended.count;
+        success.videosExtended = videosExtended;
       }
       if (promoCredits > 0) {
         await grantPromotionalCredits(tx, {
@@ -320,6 +370,8 @@ export async function redeemGrantCoupon(
 
       return success;
     });
+    if (options.preview) return await transaction();
+    return await serializeGrantCouponWrite(() => retryTransientSqliteTransaction(transaction));
   } catch (error) {
     if (error instanceof RedemptionAbort) {
       return { ok: false, code: error.code, message: error.message };

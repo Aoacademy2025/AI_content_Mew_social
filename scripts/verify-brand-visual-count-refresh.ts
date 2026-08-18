@@ -122,6 +122,29 @@ const jsx = (type: unknown, props: Record<string, unknown> | null, key?: unknown
   key,
 });
 
+function findTreeNode(
+  value: unknown,
+  predicate: (node: { type: unknown; props: Record<string, unknown> }) => boolean,
+): { type: unknown; props: Record<string, unknown> } | null {
+  if (!value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findTreeNode(item, predicate);
+      if (found) return found;
+    }
+    return null;
+  }
+  const node = value as { type?: unknown; props?: Record<string, unknown> };
+  if (node.type !== undefined && node.props && predicate({ type: node.type, props: node.props })) {
+    return { type: node.type, props: node.props };
+  }
+  for (const nested of Object.values(value as Record<string, unknown>)) {
+    const found = findTreeNode(nested, predicate);
+    if (found) return found;
+  }
+  return null;
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -133,6 +156,12 @@ function jsonResponse(body: unknown, status = 200): Response {
 const contentPreflightPosts: number[] = [];
 const pendingRefreshes: Array<{ count: number; resolve: (response: Response) => void }> = [];
 let holdContentPreflightRefresh = false;
+let libraryProfiles: Array<Record<string, unknown>> = [];
+let brandRevisionResponse: Record<string, unknown> | null = null;
+let reloadCalls = 0;
+let fallbackDraftWrites = 0;
+let acceptSnapshot = true;
+const trackedEvents: string[] = [];
 
 const fetchMock = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
   const url = String(input);
@@ -145,7 +174,7 @@ const fetchMock = async (input: string | URL | Request, init?: RequestInit): Pro
         previewUrl: "/preview.png",
       }],
       treatmentPresets: [{ id: "expert-clarity", label: "ชัดเจนแบบผู้เชี่ยวชาญ" }],
-      profiles: [],
+      profiles: libraryProfiles,
     });
   }
   if (url.endsWith("/content-preflight")) {
@@ -165,6 +194,10 @@ const fetchMock = async (input: string | URL | Request, init?: RequestInit): Pro
       },
       selectedBrandProfile: null,
     });
+  }
+  if (url.endsWith("/brand-revision")) {
+    assert.ok(brandRevisionResponse, "the Brand Revision response is configured");
+    return jsonResponse(brandRevisionResponse);
   }
   throw new Error(`Unexpected fetch: ${url}`);
 };
@@ -212,7 +245,9 @@ const requireMock = (id: string): unknown => {
     return new Proxy({}, { get: () => noopComponent });
   }
   if (id === "sonner") return { toast: { error() {}, success() {} } };
-  if (id === "@/lib/client-telemetry") return { trackEvent() {} };
+  if (id === "@/lib/client-telemetry") return {
+    trackEvent(name: string) { trackedEvents.push(name); },
+  };
   if (id === "@/lib/logo-overlay") return { normalizeLogoOverlayConfig: (value: unknown) => value };
   if (id === "@/lib/editor-style-preset-contract") return { normalizeSubtitleStylePresetConfig: (value: unknown) => value };
   if (id === "@/lib/automix-plan") return { shouldLoadBrandVisualContext: () => true };
@@ -239,7 +274,11 @@ vm.runInNewContext(compiled, {
   console,
   setTimeout,
   clearTimeout,
-  window: { setTimeout, clearTimeout },
+  window: {
+    setTimeout,
+    clearTimeout,
+    location: { reload() { reloadCalls += 1; } },
+  },
   URL,
 });
 
@@ -268,13 +307,13 @@ const project = {
   setHasPersistedVisualPin() {},
   setMixPreset() {},
   flushPendingProjectDraft: async () => true,
-  acceptAuthoritativeProjectSnapshot: () => true,
-  setVoiceEngine() {},
-  setGeminiVoiceName() {},
-  setVoiceId() {},
-  setOmniVoiceId() {},
-  setBrandSubtitleDefault() {},
-  setLogoOverlay() {},
+  acceptAuthoritativeProjectSnapshot: () => acceptSnapshot,
+  setVoiceEngine() { fallbackDraftWrites += 1; },
+  setGeminiVoiceName() { fallbackDraftWrites += 1; },
+  setVoiceId() { fallbackDraftWrites += 1; },
+  setOmniVoiceId() { fallbackDraftWrites += 1; },
+  setBrandSubtitleDefault() { fallbackDraftWrites += 1; },
+  setLogoOverlay() { fallbackDraftWrites += 1; },
 };
 
 const runtime = new HookRuntime(BrandVisualSelector, {
@@ -336,6 +375,58 @@ async function main(): Promise<void> {
   await runtime.settle();
   assert.equal(preflightIdWrites.at(-1), "preflight-10", "the settled count atomically replaces the preflight");
   assert.equal(statuses.at(-1), "ready", "rendering is unblocked only after the replacement is ready");
+
+  libraryProfiles = [{
+    id: "profile-1",
+    name: "HERO",
+    frozen: false,
+    legacyVisualFormat: false,
+    activeRevisionNumber: 1,
+    activeRevisionId: "revision-1",
+  }];
+  brandRevisionResponse = {
+    revisionDefaults: {
+      voice: { provider: "gemini", voiceId: "Charon" },
+      subtitle: { config: {} },
+      brandMark: { assetId: "logo-1", enabled: true },
+    },
+  };
+  holdContentPreflightRefresh = false;
+  acceptSnapshot = false;
+  reloadCalls = 0;
+  fallbackDraftWrites = 0;
+  trackedEvents.length = 0;
+  const pinRuntime = new HookRuntime(BrandVisualSelector, {
+    p: project,
+    onPreflightStatusChange: () => {},
+    onPolicyWarningsChange: () => {},
+    onSelectionBlockedChange: () => {},
+  });
+  pinRuntime.render();
+  await pinRuntime.settle();
+  const profileSelect = findTreeNode(
+    pinRuntime.tree,
+    (node) => node.type === "select" && typeof node.props.onChange === "function",
+  );
+  assert.ok(profileSelect, "the Brand Profile selector is interactive in the runtime harness");
+  (profileSelect.props.onChange as (event: { target: { value: string } }) => void)({
+    target: { value: "profile-1" },
+  });
+  await pinRuntime.settle();
+  assert.equal(
+    fallbackDraftWrites,
+    0,
+    "a rejected authoritative Brand snapshot cannot replay defaults through public autosave setters",
+  );
+  assert.equal(
+    reloadCalls,
+    1,
+    "a flushed and durably pinned Brand snapshot recovers from the server with one reload",
+  );
+  assert.ok(
+    trackedEvents.includes("brand_profile_snapshot_recovery"),
+    "the fallback is observable without recording draft content",
+  );
 
   console.log("verify-brand-visual-count-refresh: PASS debounced count refresh preserves the existing UI and swaps preflight atomically");
 }

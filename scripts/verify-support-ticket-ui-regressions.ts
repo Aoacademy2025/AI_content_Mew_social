@@ -64,10 +64,15 @@ assert.deepEqual(
 
 const brandVisualPath = "src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx";
 const brandVisualSource = readFileSync(brandVisualPath, "utf8");
-const brandProfileSelectStart = brandVisualSource.indexOf("<select value={");
+const brandProfileSelectValue = brandVisualSource.indexOf(
+  'value={pendingBrandProfileId ?? selectedBrandProfile?.profileId ?? ""}',
+);
+const brandProfileSelectStart = brandVisualSource.lastIndexOf("<select", brandProfileSelectValue);
 const brandProfileSelectEnd = brandVisualSource.indexOf("</select>", brandProfileSelectStart);
 assert.ok(
-  brandProfileSelectStart >= 0 && brandProfileSelectEnd > brandProfileSelectStart,
+  brandProfileSelectValue >= 0
+    && brandProfileSelectStart >= 0
+    && brandProfileSelectEnd > brandProfileSelectStart,
   "Brand profile selector exists",
 );
 const brandProfileSelect = brandVisualSource.slice(brandProfileSelectStart, brandProfileSelectEnd);
@@ -87,13 +92,26 @@ assert.ok(
 
 assert.match(
   stepTwoSource,
-  /const brandRenderBlocked = brandPreflightBlocked \|\| brandSelectionBlocked;/,
-  "an unresolved Brand selection blocks rendering",
+  /const brandRenderBlocked = brandSelectionBlocked;/,
+  "only an in-flight or unconfirmed Brand selection blocks render acceptance",
 );
 assert.match(
   stepTwoSource,
   /onSelectionBlockedChange=\{setBrandSelectionBlocked\}/,
   "Step 2 receives pending and in-flight Brand selection state",
+);
+assert.match(
+  brandVisualSource,
+  /trackEvent\("brand_profile_snapshot_recovery"[\s\S]*?window\.location\.reload\(\);/,
+  "a rejected authoritative Brand snapshot reloads the already-flushed server project",
+);
+assert.doesNotMatch(
+  brandVisualSource.slice(
+    brandVisualSource.indexOf("async function pinProfile"),
+    brandVisualSource.indexOf("if (!canRenderPersistedVisual)"),
+  ),
+  /const defaults = result\.body\.revisionDefaults/,
+  "Brand snapshot recovery cannot replay defaults through public autosave setters",
 );
 
 console.log(

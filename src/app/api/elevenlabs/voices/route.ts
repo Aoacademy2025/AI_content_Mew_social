@@ -63,8 +63,16 @@ export async function GET() {
 
     return NextResponse.json({ voices }, { status: 200 });
   } catch (error: any) {
-    if (error.response?.status === 401) {
-      return NextResponse.json({ error: "API Key ElevenLabs ไม่ถูกต้อง กรุณาตรวจสอบใน Settings" }, { status: 401 });
+    if (error.response?.status === 401 || error.response?.status === 403) {
+      // HTTP 401 is reserved for this application's Clerk session. Exposing an
+      // upstream provider 401 here makes authenticatedFetch refresh and replay
+      // a healthy session, producing duplicate auth_request_recovery alerts.
+      return NextResponse.json({
+        error: "API Key ElevenLabs ไม่ถูกต้อง กรุณาตรวจสอบใน Settings",
+        code: "ELEVENLABS_KEY_INVALID",
+        missingKey: "elevenlabs",
+        action: "/settings?tab=api-keys",
+      }, { status: 422 });
     }
     return apiError({ route: "GET /api/elevenlabs/voices", error });
   }

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { apiError } from "@/lib/api-error";
-import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { FOUNDING_CODE } from "@/lib/founding";
 import { redeemGrantCoupon } from "@/lib/grant-coupon-redemption";
 
@@ -25,9 +24,6 @@ export async function POST(req: Request) {
       );
     }
 
-    const extended = result.outcome === "ACTIVATED"
-      ? await extendVideoExpiryForPlan(authUser.id, result.effectivePlan)
-      : 0;
     return NextResponse.json({
       ok: true,
       plan: result.effectivePlan,
@@ -39,7 +35,7 @@ export async function POST(req: Request) {
       promoCredits: result.promoCredits,
       billingChanged: false,
       message: result.message,
-      videosExtended: extended,
+      videosExtended: result.videosExtended,
     });
   } catch (error) {
     return apiError({ route: "POST /api/coupons/redeem", error });

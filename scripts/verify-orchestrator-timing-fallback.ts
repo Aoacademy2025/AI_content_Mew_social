@@ -8,6 +8,7 @@
 import { captionsFromTtsTiming } from "../src/app/(dashboard)/video-editor/_components/tts-timing-captions";
 import {
   alignTranscriptWordsToSource,
+  buildCanonicalCaptionsFromAlignedWords,
   validateSubtitleQuality,
 } from "../src/lib/mcp/subtitle-quality";
 
@@ -85,6 +86,39 @@ const outOfBounds = validateSubtitleQuality({
 check(
   "captions outside the audio timeline fail closed",
   outOfBounds.status === "failed" && outOfBounds.code === "timing_out_of_bounds",
+);
+
+// Production regression (2026-08-13..18): all five text_mismatch jobs used
+// forced_alignment. The transcribe route intentionally sanitizes punctuation
+// from its display captions, while the generated audio was spoken from this
+// exact script. Reuse only the transcript timestamps; subtitle text must come
+// back from canonical source ranges so quotes, ellipses, numbers and question
+// marks cannot disappear.
+const punctuatedScript = "ก่อนเริ่ม... พูดว่า “Hero AI” ช่วยได้ 10 เท่า จริงไหม?";
+const punctuatedSourceWords = ["ก่อน", "เริ่ม", "พูด", "ว่า", "Hero", "AI", "ช่วย", "ได้", "10", "เท่า", "จริง", "ไหม"];
+const punctuatedTranscriptWords = punctuatedSourceWords.map((word, index) => ({
+  word,
+  startMs: index * 400,
+  endMs: index * 400 + 360,
+}));
+const punctuatedAligned = alignTranscriptWordsToSource(punctuatedScript, punctuatedTranscriptWords);
+check("punctuation-sanitized transcript words align to the exact source", !!punctuatedAligned);
+const canonicalCaptions = punctuatedAligned
+  ? buildCanonicalCaptionsFromAlignedWords(punctuatedScript, punctuatedAligned, 28)
+  : null;
+check("forced alignment rebuilds captions from canonical source ranges", !!canonicalCaptions);
+const canonicalQuality = canonicalCaptions
+  ? validateSubtitleQuality({
+      script: punctuatedScript,
+      captions: canonicalCaptions,
+      audioDurationMs: 5_000,
+      timingSource: "forced_alignment",
+    })
+  : null;
+check(
+  "forced-alignment fallback preserves punctuation and passes the release gate",
+  canonicalQuality?.status === "passed",
+  JSON.stringify(canonicalQuality),
 );
 
 if (failures > 0) {

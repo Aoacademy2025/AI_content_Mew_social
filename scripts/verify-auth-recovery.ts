@@ -72,6 +72,20 @@ async function main() {
   assert.equal(refreshFailure.status, 401, "a refresh failure preserves the original response");
   assert.equal(failedRefreshCalls, 1, "a failed refresh does not issue a blind mutation retry");
 
+  let providerTokenReads = 0;
+  const providerAuthFailure = await fetchWithAuthRecovery("/api/elevenlabs/voices", undefined, {
+    fetcher: async () => new Response(JSON.stringify({
+      code: "ELEVENLABS_KEY_INVALID",
+      missingKey: "elevenlabs",
+    }), { status: 422, headers: { "Content-Type": "application/json" } }),
+    getFreshToken: async () => {
+      providerTokenReads += 1;
+      return "must-not-be-read";
+    },
+  });
+  assert.equal(providerAuthFailure.status, 422, "provider-key auth failure is not exposed as application 401");
+  assert.equal(providerTokenReads, 0, "provider-key auth failure never triggers a Clerk refresh");
+
   const editorSource = readFileSync(join(process.cwd(), "src/app/(dashboard)/hero-script/_components/ScriptEditorStep.tsx"), "utf8");
   assert.match(editorSource, /import \{ authenticatedFetch \} from "@\/lib\/authenticated-fetch";/);
   assert.match(editorSource, /authenticatedFetch\("\/api\/scripts\/generate"/);
@@ -88,6 +102,14 @@ async function main() {
   assert.match(v2ProjectSource, /authenticatedFetch\("\/api\/elevenlabs\/voices"/);
   assert.match(v2ProjectSource, /authenticatedFetch\(`\/api\/editor-projects/);
   assert.doesNotMatch(v2ProjectSource, /\bfetch\(/, "Editor V2 authenticated APIs use the recovery wrapper consistently");
+
+  const elevenLabsVoicesRoute = readFileSync(
+    join(process.cwd(), "src/app/api/elevenlabs/voices/route.ts"),
+    "utf8",
+  );
+  assert.match(elevenLabsVoicesRoute, /code: "ELEVENLABS_KEY_INVALID"/);
+  assert.match(elevenLabsVoicesRoute, /missingKey: "elevenlabs"/);
+  assert.match(elevenLabsVoicesRoute, /\{ status: 422 \}/);
 
   const creditsSource = readFileSync(join(process.cwd(), "src/app/(dashboard)/video-editor/_hooks/useCreditsQuota.ts"), "utf8");
   assert.match(creditsSource, /authenticatedFetch\("\/api\/payments\/credits"/);

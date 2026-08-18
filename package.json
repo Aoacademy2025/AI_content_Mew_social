@@ -49,6 +49,7 @@
     "verify:coupon-pro-entitlements": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-coupon-pro-entitlements.ts",
     "verify:grant-coupon-redemption": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-grant-coupon-redemption.ts",
     "verify:grant-coupon-matrix": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-grant-coupon-matrix.ts",
+    "verify:grant-coupon-concurrency": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-grant-coupon-concurrency.ts",
     "ops:configure-live0819-coupon": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/configure-live0819-coupon.ts",
     "verify:promotional-credits": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-promotional-credits.ts",
     "verify:hero-script-launch": "npm run verify:hero-script && npm run verify:hero-script-payment && tsx scripts/verify-hero-script-launch-assets.ts && tsx scripts/verify-hero-script-announcement.ts",

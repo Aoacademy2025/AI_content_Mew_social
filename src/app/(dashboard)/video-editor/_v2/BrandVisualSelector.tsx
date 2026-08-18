@@ -5,8 +5,6 @@ import Link from "next/link";
 import { Check, ChevronDown, ImageIcon, Loader2, LockKeyhole, RefreshCcw, Sparkles, SwatchBook } from "lucide-react";
 import { toast } from "sonner";
 import { trackEvent } from "@/lib/client-telemetry";
-import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
-import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { shouldLoadBrandVisualContext } from "@/lib/automix-plan";
 import type { TreatmentPresetId } from "@/lib/brand-treatment-catalog";
 import {
@@ -28,11 +26,6 @@ import { color, font, radius } from "./tokens";
 type VisualFormat = { id: ActiveVisualFormatId; label: string; description: string; previewUrl: string };
 type TreatmentOption = { id: TreatmentPresetId; label: string };
 type Profile = { id: string; name: string; frozen: boolean; legacyVisualFormat: boolean; activeRevisionNumber: number; activeRevisionId: string | null };
-type RevisionDefaults = {
-  voice?: { provider?: unknown; voiceId?: unknown };
-  subtitle?: { config?: unknown };
-  brandMark?: { assetId?: unknown; enabled?: unknown; position?: unknown; sizePct?: unknown; opacity?: unknown };
-};
 type Preflight = {
   id: string;
   sourceHash: string;
@@ -376,23 +369,25 @@ export function BrandVisualSelector({
         && typeof result.body.project === "object"
         && p.acceptAuthoritativeProjectSnapshot(result.body.project as Record<string, unknown>);
       if (!accepted) {
-        // Rolling-deploy fallback for an older API response. New servers always
-        // return the authoritative draft snapshot committed with the pin.
-        const defaults = result.body.revisionDefaults as RevisionDefaults | undefined;
-        const provider = defaults?.voice?.provider;
-        const voiceId = defaults?.voice?.voiceId;
-        if (provider === "gemini" || provider === "elevenlabs" || provider === "omnivoice") {
-          p.setVoiceEngine(provider);
-          if (typeof voiceId === "string" && voiceId.trim()) {
-            if (provider === "gemini") p.setGeminiVoiceName(voiceId.trim());
-            if (provider === "elevenlabs") p.setVoiceId(voiceId.trim());
-            if (provider === "omnivoice") p.setOmniVoiceId(voiceId.trim());
-          }
-        }
-        p.setBrandSubtitleDefault(
-          normalizeSubtitleStylePresetConfig(defaults?.subtitle?.config) ?? undefined,
-        );
-        p.setLogoOverlay(normalizeLogoOverlayConfig(defaults?.brandMark) ?? undefined);
+        // The draft was flushed before the atomic Brand pin, so the server is
+        // authoritative and already durable. Replaying Revision defaults through
+        // public setters here creates a second autosave lineage and can turn one
+        // rolling-deploy mismatch into an invalid local draft. Reload the exact
+        // saved project instead; this preserves both the upload and the Brand pin.
+        trackEvent("brand_profile_snapshot_recovery", {
+          category: "error",
+          step: "editor.step2",
+          status: "error",
+          properties: {
+            projectId: p.projectId,
+            profileId,
+            responseHadProject: Boolean(result.body.project),
+          },
+        });
+        toast.error("บันทึกแบรนด์แล้ว กำลังโหลดข้อมูลโปรเจกต์ล่าสุด");
+        setChanging(false);
+        window.location.reload();
+        return;
       }
       toast.success("คลิปนี้ใช้แนวภาพของแบรนด์ที่เลือกแล้ว");
       await loadContext();
