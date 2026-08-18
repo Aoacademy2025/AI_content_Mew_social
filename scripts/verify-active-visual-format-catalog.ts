@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import sharp from "sharp";
 import {
   SUPPORTED_VISUAL_FORMAT_IDS,
   VISUAL_FORMAT_IDS,
@@ -8,6 +11,7 @@ import {
   visualFormatThaiLabel,
 } from "../src/lib/brand-visual-system";
 
+async function main() {
 assert.deepEqual(
   VISUAL_FORMATS.map(({ id, label }) => ({ id, label })),
   [
@@ -30,6 +34,55 @@ assert.equal(visualFormatThaiLabel("stick-figure-story"), "ก้างปลา
 assert.equal(existsSync("public/brand-visual-formats/simple-editorial-story.webp"), true,
   "the active format card has a local preview asset before it can be exposed by the API");
 
+type VisualFormatSampleManifest = {
+  batchId: string;
+  sceneId: string;
+  seed: number;
+  renderer: string;
+  width: number;
+  height: number;
+  formats: Array<{
+    id: string;
+    recipeVersion: string;
+    file: string;
+    sha256: string;
+  }>;
+};
+
+const sampleRoot = path.resolve("public/brand-visual-formats");
+const sampleManifestPath = path.join(sampleRoot, "manifest.json");
+assert.equal(
+  existsSync(sampleManifestPath),
+  true,
+  "the five creator-facing format cards must carry one shared-batch provenance manifest",
+);
+const sampleManifest = JSON.parse(readFileSync(sampleManifestPath, "utf8")) as VisualFormatSampleManifest;
+assert.match(sampleManifest.batchId, /^visual-format-cards-/);
+assert.equal(sampleManifest.sceneId, "hook", "every card must depict the same benchmark scene");
+assert.equal(sampleManifest.seed, 202608091, "every card must use the benchmark scene's shared seed");
+assert.ok(sampleManifest.renderer.trim(), "the sample renderer must be explicit");
+assert.equal(sampleManifest.width, 720);
+assert.equal(sampleManifest.height, 1280);
+assert.deepEqual(
+  sampleManifest.formats.map((item) => item.id),
+  VISUAL_FORMATS.map((format) => format.id),
+  "the manifest must cover exactly the active formats in creator-facing order",
+);
+for (const format of VISUAL_FORMATS) {
+  const item = sampleManifest.formats.find((candidate) => candidate.id === format.id);
+  assert.ok(item, `${format.id} must belong to the shared sample batch`);
+  assert.equal(item.recipeVersion, format.recipeVersion,
+    `${format.id} must preview the recipe currently offered to creators`);
+  assert.equal(item.file, `${format.id}.webp`);
+  const assetPath = path.join(sampleRoot, item.file);
+  const bytes = readFileSync(assetPath);
+  assert.equal(createHash("sha256").update(bytes).digest("hex"), item.sha256,
+    `${format.id} must match the reviewed shared-batch asset`);
+  const metadata = await sharp(bytes).metadata();
+  assert.deepEqual([metadata.width, metadata.height], [sampleManifest.width, sampleManifest.height],
+    `${format.id} must use the same card framing as the rest of the set`);
+}
+
 const legacyPinned = compileBrandVisualPrompt({
   visualFormatId: "stick-figure-story",
   recipeVersion: "stick-figure-story-v6",
@@ -48,4 +101,10 @@ assert.equal(legacyPinned.recipeVersion, "stick-figure-story-v6");
 assert.match(legacyPinned.positive, /stick-figure marker doodle/i,
   "legacy Scene Reroll compiles the exact historical recipe instead of adopting the replacement style");
 
-console.log("verify-active-visual-format-catalog: PASS active replacement and legacy read compatibility");
+console.log("verify-active-visual-format-catalog: PASS one coherent five-card sample batch, active replacement, and legacy read compatibility");
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 async function main() {
   const {
@@ -34,7 +35,27 @@ async function main() {
   assert.deepEqual(confirmation.options.map((option) => option.id), ["regenerate-all"]);
   assert.doesNotMatch(JSON.stringify(confirmation), /new-only|เฉพาะภาพที่สร้างต่อจากนี้/);
 
-  console.log("verify-brand-treatment-ui-v1: PASS Thai catalog, recommendation surface, all-or-cancel");
+  const selectorSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx",
+    "utf8",
+  );
+  assert.match(
+    selectorSource,
+    /aria-controls="brand-visual-options"[\s\S]*เปลี่ยนแนวเล่าเรื่อง/,
+    "the narrative-style action must be a dedicated, labelled disclosure button",
+  );
+  assert.match(
+    selectorSource,
+    /disabled=\{brandSelectionDisabled\}[\s\S]*brand-profile-analysis-help/,
+    "brand selection must stay disabled until the current content analysis is ready",
+  );
+  assert.match(
+    selectorSource,
+    /ยังไม่มีการเปลี่ยนแบรนด์หรือคิดเครดิตภาพ/,
+    "analysis failures must reassure customers that the failed attempt changed nothing and spent no image credit",
+  );
+
+  console.log("verify-brand-treatment-ui-v1: PASS Thai catalog, clear narrative action, guarded brand selection, all-or-cancel");
 }
 
 main().catch((error) => {

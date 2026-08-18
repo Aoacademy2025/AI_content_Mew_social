@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Check, ChevronDown, ImageIcon, Loader2, LockKeyhole, Sparkles, SwatchBook } from "lucide-react";
+import { Check, ChevronDown, ImageIcon, Loader2, LockKeyhole, RefreshCcw, Sparkles, SwatchBook } from "lucide-react";
 import { toast } from "sonner";
 import { trackEvent } from "@/lib/client-telemetry";
 import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
@@ -413,6 +413,10 @@ export function BrandVisualSelector({
     && !selectedLibraryProfile.legacyVisualFormat
     && selectedLibraryProfile.activeRevisionNumber > selectedBrandProfile.revisionNumber,
   );
+  const needsCurrentPreflight = Boolean(narrative);
+  const preflightReadyForSelection = !needsCurrentPreflight
+    || (preflight !== null && !loading && !error);
+  const brandSelectionDisabled = changing || !preflightReadyForSelection;
   const confirmPendingChange = () => {
     if (!pending) return;
     if (pending.kind === "look") {
@@ -422,24 +426,69 @@ export function BrandVisualSelector({
     }
   };
   const showInitialLoading = loading && preflight === null;
+  const headerActionLabel = loading
+    ? "กำลังวิเคราะห์…"
+    : error
+      ? "ลองวิเคราะห์อีกครั้ง"
+      : expanded
+        ? "ปิดตัวเลือก"
+        : "เปลี่ยนแนวเล่าเรื่อง";
+  const handleHeaderAction = () => {
+    if (!visualSelectionEnabled || loading) return;
+    if (error) {
+      setExpanded(true);
+      void loadContext();
+      return;
+    }
+    setExpanded((value) => !value);
+  };
   return <section className="shrink-0" style={{ border: `1px solid ${color.cardBorder}`, borderRadius: radius.card, background: color.cardBg, overflow: "hidden" }}>
-    <button type="button" onClick={() => { if (visualSelectionEnabled) setExpanded((value) => !value); }} className="flex min-h-12 w-full items-center gap-3 px-4 py-3 text-left" aria-expanded={visualSelectionEnabled && expanded} aria-disabled={!visualSelectionEnabled}>
+    <div className="flex min-h-14 w-full flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
       <span className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: "rgba(56,189,248,.12)", color: color.info }}><SwatchBook size={16} /></span>
       <span className="min-w-0 flex-1"><span className="block" style={{ font: `600 13px ${font.heading}`, color: color.text }}>แบรนด์และแนวภาพของคลิปนี้</span><span className="block truncate" style={{ fontSize: 10.5, color: color.textFaint }}>{showInitialLoading ? "กำลังอ่านเนื้อหา…" : selectedBrandProfile ? `${selectedBrandProfile.name} · ${visualSummary} · รุ่น ${selectedBrandProfile.revisionNumber}${context?.source === "project-look" ? " · ปรับเฉพาะคลิปนี้" : ""}` : visualSelectionEnabled ? visualSummary : "เลือกแบรนด์แบบรวดเร็ว แล้วเลือกระดับ B-roll ด้านล่าง"}</span></span>
       {p.starterAiImageAllowance?.eligible && <span className="rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: color.infoText, fontSize: 10, fontWeight: 600 }}>เหลือ {p.starterAiImageAllowance.remainingImages}/8 ภาพ</span>}
-      {visualSelectionEnabled && <><span style={{ color: color.infoText, fontSize: 10.5, fontWeight: 700 }}>{expanded ? "ซ่อน" : "เปลี่ยนแนวเล่าเรื่อง"}</span><ChevronDown size={15} style={{ color: color.textFaint, transform: expanded ? "rotate(180deg)" : undefined, transition: "transform 150ms" }} /></>}
-    </button>
+      {visualSelectionEnabled && <button
+        type="button"
+        onClick={handleHeaderAction}
+        disabled={loading}
+        aria-expanded={expanded}
+        aria-controls="brand-visual-options"
+        className="inline-flex min-h-10 w-full shrink-0 items-center justify-center gap-2 rounded-lg px-3.5 text-center transition-[background-color,border-color,transform] duration-150 active:translate-y-px disabled:cursor-wait disabled:opacity-60 sm:w-auto focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0F0F17]"
+        style={{
+          border: `1px solid ${error ? "rgba(248,113,113,.42)" : "rgba(56,189,248,.42)"}`,
+          background: error ? "rgba(248,113,113,.10)" : expanded ? "rgba(56,189,248,.16)" : "rgba(56,189,248,.09)",
+          color: error ? color.dangerText : color.infoText,
+          font: `600 11px ${font.heading}`,
+        }}
+      >
+        {loading ? <Loader2 size={14} className="animate-spin" /> : error ? <RefreshCcw size={14} /> : null}
+        <span>{headerActionLabel}</span>
+        {!loading && !error && <ChevronDown size={15} aria-hidden="true" style={{ transform: expanded ? "rotate(180deg)" : undefined, transition: "transform 150ms" }} />}
+      </button>}
+    </div>
     {canManageBrandVisual && profiles.length > 0 && <div className="border-t px-4 py-3" style={{ borderColor: color.cardBorder }}>
       <label className="flex max-w-sm flex-col gap-1.5">
         <span style={{ color: color.textFaint, fontSize: 10.5 }}>แบรนด์ที่ใช้ (ถ้ามี)</span>
-        <select value={pendingBrandProfileId ?? selectedBrandProfile?.profileId ?? ""} disabled={changing} onChange={(event) => { if (event.target.value) void pinProfile(event.target.value); else if (pending?.kind === "profile") setPending(null); }} className="min-h-10 w-full rounded-lg px-3" style={{ background: "rgba(255,255,255,.05)", border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 12 }}><option value="" style={{ background: color.bg1 }}>ใช้แนวภาพของคลิปนี้</option>{profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={profile.frozen || profile.legacyVisualFormat || profile.activeRevisionNumber <= 0} style={{ background: color.bg1 }}>{profile.name} · รุ่น {profile.activeRevisionNumber}{profile.legacyVisualFormat ? " (รุ่นเดิม · เลือกใช้กับงานใหม่ไม่ได้)" : profile.frozen ? " (อ่านอย่างเดียว)" : profile.activeRevisionNumber <= 0 ? " (ต้องนำเข้าก่อน)" : ""}</option>)}</select>
+        <select
+          value={pendingBrandProfileId ?? selectedBrandProfile?.profileId ?? ""}
+          disabled={brandSelectionDisabled}
+          aria-describedby={!preflightReadyForSelection ? "brand-profile-analysis-help" : undefined}
+          onChange={(event) => {
+            if (brandSelectionDisabled) return;
+            if (event.target.value) void pinProfile(event.target.value);
+            else if (pending?.kind === "profile") setPending(null);
+          }}
+          className="min-h-10 w-full rounded-lg px-3 disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+          style={{ background: "rgba(255,255,255,.05)", border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 12 }}
+        ><option value="" style={{ background: color.bg1 }}>ใช้แนวภาพของคลิปนี้</option>{profiles.map((profile) => <option key={profile.id} value={profile.id} disabled={profile.frozen || profile.legacyVisualFormat || profile.activeRevisionNumber <= 0} style={{ background: color.bg1 }}>{profile.name} · รุ่น {profile.activeRevisionNumber}{profile.legacyVisualFormat ? " (รุ่นเดิม · เลือกใช้กับงานใหม่ไม่ได้)" : profile.frozen ? " (อ่านอย่างเดียว)" : profile.activeRevisionNumber <= 0 ? " (ต้องนำเข้าก่อน)" : ""}</option>)}</select>
+        {!preflightReadyForSelection && <span id="brand-profile-analysis-help" style={{ color: error ? color.dangerText : color.textFaint, fontSize: 10, lineHeight: 1.45 }}>{error ? "ยังเลือกแบรนด์ไม่ได้ เพราะผลวิเคราะห์ของเนื้อหาปัจจุบันยังไม่พร้อม กดลองวิเคราะห์อีกครั้งด้านบน" : "กำลังวิเคราะห์เนื้อหาปัจจุบันก่อนเปิดให้เลือกแบรนด์"}</span>}
       </label>
       {pending?.kind === "profile" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
       {canAdoptLatestRevision && selectedLibraryProfile?.activeRevisionId && <button type="button" disabled={changing} onClick={() => void pinProfile(selectedLibraryProfile.id, undefined, selectedLibraryProfile.activeRevisionId ?? undefined)} className="mt-2 min-h-9 rounded-lg px-3 text-left" style={{ border: `1px solid ${color.info}`, color: color.infoText, fontSize: 10.5, fontWeight: 700 }}>ใช้รุ่นล่าสุดกับคลิปนี้ · รุ่น {selectedLibraryProfile.activeRevisionNumber}</button>}
     </div>}
-    {visualSelectionEnabled && expanded && <div className="border-t px-4 py-4" style={{ borderColor: color.cardBorder }}>
+    {visualSelectionEnabled && expanded && <div id="brand-visual-options" className="border-t px-4 py-4" style={{ borderColor: color.cardBorder }}>
       {!canManageBrandVisual && p.hasPersistedVisualPin && <div className="mb-3 rounded-lg px-3 py-2" style={{ background: "rgba(56,189,248,.08)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>แนวภาพเดิมของโปรเจกต์นี้ยังใช้สร้างซ้ำได้ตามเดิม ขณะนี้ปิดการเลือกหรือสร้างแนวภาพใหม่ชั่วคราว</div>}
-      {error && <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2" style={{ background: "rgba(248,113,113,.09)", color: color.dangerText, fontSize: 11 }}><span>{error}</span><button type="button" onClick={() => void loadContext()} className="min-h-8 rounded-md px-2.5" style={{ border: "1px solid rgba(248,113,113,.28)", color: color.dangerText, fontWeight: 600 }}>ลองวิเคราะห์อีกครั้ง</button></div>}
+      {error && <div role="alert" className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg px-3 py-2.5" style={{ background: "rgba(248,113,113,.09)", color: color.dangerText, fontSize: 11 }}><span className="min-w-0 flex-1"><span className="block">{error}</span><span className="mt-0.5 block" style={{ color: color.textSecondary, fontSize: 10 }}>ยังไม่มีการเปลี่ยนแบรนด์หรือคิดเครดิตภาพ</span></span><button type="button" onClick={() => void loadContext()} className="min-h-9 rounded-md px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300/70" style={{ border: "1px solid rgba(248,113,113,.32)", color: color.dangerText, fontWeight: 600 }}>ลองวิเคราะห์อีกครั้ง</button></div>}
       {!narrative && canLoadWithoutNarrative && <div className="mb-3 rounded-lg px-3 py-2" style={{ background: "rgba(56,189,248,.08)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>เลือกแบรนด์หรือแนวภาพล่วงหน้าได้ ระบบจะอ่านคำพูดจากเสียงหลังเริ่มสร้าง แล้วใช้ผลนั้นกับภาพของคลิปนี้</div>}
       {showInitialLoading ? <div className="flex items-center gap-2 py-5" style={{ color: color.textFaint, fontSize: 11 }}><Loader2 size={14} className="animate-spin" /> กำลังวิเคราะห์แนวภาพและฉากของคลิปครั้งแรก…</div> : <>
         {preflight && <div className="mb-3 flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1 rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: color.infoText, fontSize: 10 }}><Sparkles size={11} /> แนะนำหลัก · {preflight.suggestedTreatment.label}</span><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight.suggestedTreatment.rationale}</span></div>}
