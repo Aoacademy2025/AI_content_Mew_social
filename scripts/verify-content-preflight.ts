@@ -147,7 +147,7 @@ async function main() {
       emphasis: `point ${index}`,
     })),
   };
-  let structuredOutputRequested = false;
+  let providerSafeStructuredOutputRequested = false;
   let capturedPreflightPrompt = "";
   const structuredAnalyzer = createGeminiContentPreflightAnalyzer(
     user.id,
@@ -155,12 +155,19 @@ async function main() {
       capturedPreflightPrompt = promptText;
       const options = (rawOptions ?? {}) as typeof rawOptions & {
         responseMimeType?: string;
-        responseJsonSchema?: { properties?: { beats?: { minItems?: number; maxItems?: number } } };
+        responseJsonSchema?: {
+          properties?: {
+            beats?: { type?: string; items?: unknown; minItems?: number; maxItems?: number };
+          };
+        };
       };
-      structuredOutputRequested = options.responseMimeType === "application/json"
-        && options.responseJsonSchema?.properties?.beats?.minItems === eightWindows.length
-        && options.responseJsonSchema?.properties?.beats?.maxItems === eightWindows.length;
-      return structuredOutputRequested
+      const providerBeatsSchema = options.responseJsonSchema?.properties?.beats;
+      providerSafeStructuredOutputRequested = options.responseMimeType === "application/json"
+        && providerBeatsSchema?.type === "array"
+        && Boolean(providerBeatsSchema.items)
+        && providerBeatsSchema.minItems === undefined
+        && providerBeatsSchema.maxItems === undefined;
+      return providerSafeStructuredOutputRequested
         ? JSON.stringify(validEightBeatAnalysis)
         : `ผลวิเคราะห์:\n${JSON.stringify(validEightBeatAnalysis)}`;
     },
@@ -182,9 +189,9 @@ async function main() {
     throw error;
   }
   assert.equal(
-    structuredOutputRequested,
+    providerSafeStructuredOutputRequested,
     true,
-    "upload Brand Visual analysis must constrain Gemini to JSON with the exact accepted scene count",
+    "upload Brand Visual must request structured JSON without a nested array-length constraint that Gemini rejects at 5+ beats",
   );
 
   /** ── Image text policy lives here, not in the prompt compiler ─────────────
@@ -255,6 +262,39 @@ async function main() {
   const project = await prisma.editorProject.create({
     data: { userId: user.id, title: "Creator script" },
   });
+  const countGuardProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Exact beat count guard" },
+  });
+  await assert.rejects(
+    () => resolveContentPreflight({
+      userId: user.id,
+      projectId: countGuardProject.id,
+      narrativeSource: {
+        kind: "creator-script",
+        text: "ฉากแรก\nฉากที่สอง",
+        windows: [{ text: "ฉากแรก" }, { text: "ฉากที่สอง" }],
+      },
+      analyzer: {
+        analyze: async () => completeAnalysis({
+          contentDomain: "education",
+          suggestedVisualFormatId: "clear-infographic",
+          beats: [{
+            beatKey: "window-0",
+            sourceExcerpt: "ฉากแรก",
+            subject: "one learner",
+            action: "reviews the first lesson",
+            setting: "a study desk",
+            emotion: "focused",
+            emphasis: "the first lesson",
+          }],
+        }) as never,
+      },
+    }),
+    (error: unknown) => error instanceof ContentPreflightError
+      && error.code === "INVALID_ANALYSIS"
+      && error.message === "ผลวิเคราะห์ต้องมีข้อมูลครบทั้ง 2 ฉาก",
+    "the server must keep exact beat-count enforcement after the provider schema drops minItems/maxItems",
+  );
   let analysisCalls = 0;
   let edited = false;
   let meaningShift = false;

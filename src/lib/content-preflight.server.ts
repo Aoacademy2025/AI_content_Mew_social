@@ -308,7 +308,7 @@ export class ContentPreflightError extends Error {
  * consumes image allowance or credits. */
 type ContentPreflightTextGenerator = typeof geminiGenerateText;
 
-function contentPreflightResponseJsonSchema(beatCount: number): Record<string, unknown> {
+function contentPreflightResponseJsonSchema(): Record<string, unknown> {
   const hardSceneFacts = {
     type: "object",
     additionalProperties: false,
@@ -416,8 +416,10 @@ function contentPreflightResponseJsonSchema(beatCount: number): Record<string, u
       beats: {
         type: "array",
         items: beat,
-        minItems: beatCount,
-        maxItems: beatCount,
+        // Do not add minItems/maxItems here. Gemini expands constraints for
+        // this deeply nested item schema and rejects requests at five or more
+        // beats as "too many states for serving". The prompt requests the
+        // exact count and resolveContentPreflight enforces it before storage.
       },
     },
     required: [
@@ -511,7 +513,7 @@ export function createGeminiContentPreflightAnalyzer(
         input.text,
       ].join("\n"), Math.min(65_536, Math.max(8_192, input.windows.length * 512)), 0.2, {
         responseMimeType: "application/json",
-        responseJsonSchema: contentPreflightResponseJsonSchema(input.windows.length),
+        responseJsonSchema: contentPreflightResponseJsonSchema(),
       });
       try {
         return JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim()) as ContentPreflightAnalysis;

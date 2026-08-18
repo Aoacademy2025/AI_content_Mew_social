@@ -21,6 +21,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import dotenv from "dotenv";
@@ -43,7 +44,8 @@ const args = process.argv.slice(2);
 const GENERATE = args.includes("--generate") || args.includes("--install");
 const INSTALL = args.includes("--install");
 
-const OUTPUT_ROOT = path.resolve("artifacts/visual-format-samples-2026-08-10");
+const BATCH_ID = "visual-format-cards-2026-08-18-set-v1";
+const OUTPUT_ROOT = path.resolve(`artifacts/${BATCH_ID}`);
 const PUBLIC_ROOT = path.resolve("public/brand-visual-formats");
 
 /** The card is a 9:16 crop at the size the picker requests, matching the
@@ -61,6 +63,7 @@ if (!SCENE) throw new Error("benchmark scene 'hook' is gone — pick a replaceme
 type SampleCase = {
   formatId: VisualFormatId;
   label: string;
+  recipeVersion: string;
   compiled: CompiledBrandVisualPrompt;
 };
 
@@ -69,6 +72,7 @@ type SampleCase = {
 const CASES: SampleCase[] = VISUAL_FORMATS.map((format) => ({
   formatId: format.id,
   label: format.label,
+  recipeVersion: format.recipeVersion,
   compiled: compileBrandVisualPrompt({
     visualFormatId: format.id,
     contentDomain: SCENE.contentDomain,
@@ -87,7 +91,10 @@ function selfCheck(): boolean {
       console.log(`${ok ? "PASS" : "FAIL"} ${item.formatId}: ${message}`);
       if (!ok) pass = false;
     };
-    check(item.compiled.recipeVersion === `${item.formatId}-v3`, `compiles on ${item.formatId}-v3`);
+    check(
+      item.compiled.recipeVersion === item.recipeVersion,
+      `compiles on current recipe ${item.recipeVersion}`,
+    );
     check(!THAI_CHARACTER.test(positive), "no Thai character in the prompt");
     check(!positive.includes("#"), "no color code");
     check(
@@ -99,7 +106,8 @@ function selfCheck(): boolean {
   return pass;
 }
 
-const RUNPOD_ENDPOINT_ID = process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID?.trim() || "z-image-turbo";
+const MODEL_ID = "z-image-turbo";
+const RUNPOD_ENDPOINT_ID = process.env.RUNPOD_IMAGE_Z_IMAGE_ENDPOINT_ID?.trim() || MODEL_ID;
 
 async function runpod(apiKey: string, operation: string, init?: RequestInit): Promise<RunpodJobResponse> {
   let lastError: Error | null = null;
@@ -187,11 +195,50 @@ async function generateOne(apiKey: string, item: SampleCase): Promise<string> {
 /** cwebp keeps the assets in the same format and rough weight as the shipped
  * set. Quality 82 lands each card near the originals without visible banding on
  * the flat formats, which compress worst. */
-function installWebp(pngPath: string, formatId: VisualFormatId): void {
-  const target = path.join(PUBLIC_ROOT, `${formatId}.webp`);
-  execFileSync("cwebp", ["-quiet", "-q", "82", "-resize", String(WIDTH), String(HEIGHT), pngPath, "-o", target]);
-  const bytes = fs.statSync(target).size;
-  console.log(`INSTALL ${formatId}.webp (${Math.round(bytes / 1024)} KB)`);
+function stageWebp(pngPath: string, formatId: VisualFormatId): { stagedPath: string; sha256: string } {
+  const stagedRoot = path.join(OUTPUT_ROOT, "install");
+  fs.mkdirSync(stagedRoot, { recursive: true });
+  const stagedPath = path.join(stagedRoot, `${formatId}.webp`);
+  execFileSync("cwebp", ["-quiet", "-q", "82", "-resize", String(WIDTH), String(HEIGHT), pngPath, "-o", stagedPath]);
+  const bytes = fs.readFileSync(stagedPath);
+  console.log(`STAGE ${formatId}.webp (${Math.round(bytes.length / 1024)} KB)`);
+  return { stagedPath, sha256: createHash("sha256").update(bytes).digest("hex") };
+}
+
+function installSet(rendered: Array<{ item: SampleCase; pngPath: string }>): void {
+  const staged = rendered.map(({ item, pngPath }) => ({
+    item,
+    ...stageWebp(pngPath, item.formatId),
+  }));
+  const manifest = {
+    batchId: BATCH_ID,
+    sceneId: SCENE!.id,
+    seed: SCENE!.seed,
+    // Record the customer-facing model, never a private custom endpoint ID.
+    renderer: `runpod:${MODEL_ID}`,
+    width: WIDTH,
+    height: HEIGHT,
+    formats: staged.map(({ item, sha256 }) => ({
+      id: item.formatId,
+      recipeVersion: item.recipeVersion,
+      file: `${item.formatId}.webp`,
+      sha256,
+    })),
+  };
+
+  fs.mkdirSync(PUBLIC_ROOT, { recursive: true });
+  for (const entry of staged) {
+    const target = path.join(PUBLIC_ROOT, `${entry.item.formatId}.webp`);
+    const temporary = `${target}.${BATCH_ID}.tmp`;
+    fs.copyFileSync(entry.stagedPath, temporary);
+    fs.renameSync(temporary, target);
+    console.log(`INSTALL ${entry.item.formatId}.webp`);
+  }
+  const manifestTarget = path.join(PUBLIC_ROOT, "manifest.json");
+  const manifestTemporary = `${manifestTarget}.${BATCH_ID}.tmp`;
+  fs.writeFileSync(manifestTemporary, `${JSON.stringify(manifest, null, 2)}\n`);
+  fs.renameSync(manifestTemporary, manifestTarget);
+  console.log("INSTALL manifest.json");
 }
 
 async function main() {
@@ -227,7 +274,7 @@ async function main() {
     return;
   }
   fs.mkdirSync(PUBLIC_ROOT, { recursive: true });
-  for (const entry of rendered) installWebp(entry.pngPath, entry.item.formatId);
+  installSet(rendered);
   console.log(`\nInstalled ${rendered.length} cards into ${PUBLIC_ROOT}.`);
 }
 

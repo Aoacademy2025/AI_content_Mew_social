@@ -1,0 +1,40 @@
+{
+  "batchId": "visual-format-cards-2026-08-18-set-v1",
+  "sceneId": "hook",
+  "seed": 202608091,
+  "renderer": "runpod:z-image-turbo",
+  "width": 720,
+  "height": 1280,
+  "formats": [
+    {
+      "id": "cinematic-realism",
+      "recipeVersion": "cinematic-realism-v9",
+      "file": "cinematic-realism.webp",
+      "sha256": "af54cfcec740ab91c5db15e6212e601e45d0717ac5b618c7a54d6527ed9c0ab4"
+    },
+    {
+      "id": "simple-editorial-story",
+      "recipeVersion": "simple-editorial-story-v11",
+      "file": "simple-editorial-story.webp",
+      "sha256": "0f3a2af410a0056285a6ef2f2bb7cb57c4c496373d38f93fff5bbd93f2719443"
+    },
+    {
+      "id": "dramatic-comic",
+      "recipeVersion": "dramatic-comic-v9",
+      "file": "dramatic-comic.webp",
+      "sha256": "bbc97318c775ec3e307930896767a4f843ada458a5c39343c0e6d39f0cfcccb5"
+    },
+    {
+      "id": "clear-infographic",
+      "recipeVersion": "clear-infographic-v9",
+      "file": "clear-infographic.webp",
+      "sha256": "864b60db796814648bb4afc6ce20a87613d1ce204475a59d9d17e1f63ac9c732"
+    },
+    {
+      "id": "retro-story",
+      "recipeVersion": "retro-story-v9",
+      "file": "retro-story.webp",
+      "sha256": "393e7199bec2aad2de8c733712504afbb51c191e69316863176c259e91f87c11"
+    }
+  ]
+}
