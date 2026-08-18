@@ -3,6 +3,9 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
+import { PHASE_PRODUCTION_BUILD } from "next/constants";
+import loadConfig from "next/dist/server/config";
+import { hasLocalMatch } from "next/dist/shared/lib/match-local-pattern";
 import {
   SUPPORTED_VISUAL_FORMAT_IDS,
   VISUAL_FORMAT_IDS,
@@ -13,6 +16,20 @@ import {
 import { visualFormatPreviewUrl } from "../src/lib/brand-visual-format-preview";
 
 async function main() {
+const resolvedNextConfig = await loadConfig(PHASE_PRODUCTION_BUILD, process.cwd(), { silent: true });
+assert.equal(
+  hasLocalMatch(
+    resolvedNextConfig.images.localPatterns,
+    "/brand-visual-formats/cinematic-realism.webp?v=reviewed-content-hash",
+  ),
+  true,
+  "Next Image must accept content-versioned Brand Visual previews instead of returning HTTP 400",
+);
+assert.equal(
+  hasLocalMatch(resolvedNextConfig.images.localPatterns, "/icon.svg?unreviewed=query"),
+  false,
+  "the preview cache-bust exception must not permit arbitrary query-bearing local images",
+);
 assert.deepEqual(
   VISUAL_FORMATS.map(({ id, label }) => ({ id, label })),
   [
