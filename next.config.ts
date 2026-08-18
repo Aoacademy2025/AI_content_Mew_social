@@ -26,6 +26,16 @@ const nextConfig: NextConfig = {
   outputFileTracingExcludes: {
     "/**": ["./public/renders/**/*", "./stocks/**/*"],
   },
+  images: {
+    localPatterns: [
+      // Preserve Next's secure default: ordinary local images cannot add an
+      // arbitrary query string.
+      { pathname: "/**", search: "" },
+      // The five reviewed Brand Visual cards use their manifest content hash
+      // as a query so a replaced file cannot retain a stale optimized image.
+      { pathname: "/brand-visual-formats/**" },
+    ],
+  },
   experimental: {
     // Limit parallel workers to 1 to prevent OOM on low-RAM VPS during build
     workerThreads: false,
