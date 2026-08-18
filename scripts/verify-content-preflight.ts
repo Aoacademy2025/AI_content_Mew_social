@@ -243,15 +243,10 @@ async function main() {
   });
   assert.equal(
     semanticCorrectionCalls,
-    2,
-    "one click automatically asks Gemini to repair a structurally valid but semantically unsafe analysis",
+    1,
+    "a generic AI role is repaired deterministically without paying for another provider attempt",
   );
   assert.deepEqual(correctedAiAgent.storyEntities, []);
-  assert.match(
-    semanticCorrectionPrompts[1] ?? "",
-    /previous JSON was rejected[\s\S]*proper name/i,
-    "the correction attempt includes the exact semantic failure without requiring another user click",
-  );
   assert.match(
     semanticCorrectionPrompts[0] ?? "",
     /generic (?:roles|types)[\s\S]*AI Agent/i,
@@ -266,19 +261,17 @@ async function main() {
       return JSON.stringify(invalidAiAgentAnalysis);
     },
   );
-  await assert.rejects(
-    () => exhaustedSemanticAnalyzer.analyze({
-      kind: "upload-transcript",
-      text: aiAgentWindows[0].text,
-      windows: aiAgentWindows,
-    }),
-    (error: unknown) => error instanceof ContentPreflightError
-      && error.code === "INVALID_ANALYSIS"
-      && /ผลวิเคราะห์แนวภาพ/.test(error.message)
-      && !/proper name/i.test(error.message),
-    "three unsafe semantic responses fail closed with creator-facing Thai instead of leaking validator jargon",
+  const deterministicAiAgent = await exhaustedSemanticAnalyzer.analyze({
+    kind: "upload-transcript",
+    text: aiAgentWindows[0].text,
+    windows: aiAgentWindows,
+  });
+  assert.deepEqual(deterministicAiAgent.storyEntities, []);
+  assert.equal(
+    exhaustedSemanticCalls,
+    1,
+    "the same unsafe response cannot exhaust all semantic attempts after deterministic repair",
   );
-  assert.equal(exhaustedSemanticCalls, 3);
 
   /** ── Image text policy lives here, not in the prompt compiler ─────────────
    * The image model has no negative-prompt channel (`z-image-turbo` is
@@ -823,6 +816,144 @@ async function main() {
   );
 
   const { ensureUploadContentPreflight } = await import("../src/lib/upload-content-preflight.server");
+  const productionReplayProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Upload semantic repair replay" },
+  });
+  const productionReplayEntities = [
+    {
+      entityId: "andrew",
+      properName: "Andrew",
+      entityType: "person",
+      durableAttributes: ["adult Australian man"],
+      renderingDescription: "Andrew, an adult Australian man in casual sportswear",
+      recurringCharacterDescription: "Andrew, the same adult Australian man in casual sportswear",
+      isRealPerson: false,
+    },
+    {
+      entityId: "openclaw",
+      properName: "OpenClaw",
+      entityType: "object",
+      durableAttributes: ["local AI automation tool"],
+      renderingDescription: "OpenClaw, a local AI automation tool on a computer",
+      recurringCharacterDescription: "OpenClaw, the same local AI automation tool",
+      isRealPerson: false,
+    },
+    {
+      entityId: "ai-assistant",
+      properName: "AI Assistant",
+      entityType: "object",
+      durableAttributes: ["autonomous browser software"],
+      renderingDescription: "AI Assistant with autonomous browser access",
+      recurringCharacterDescription: "AI Assistant controlling the same browser workflow",
+      isRealPerson: false,
+    },
+    {
+      entityId: "booking-system",
+      properName: "Gym Booking System",
+      entityType: "object",
+      durableAttributes: ["class reservation software"],
+      renderingDescription: "Gym Booking System showing a class queue",
+      recurringCharacterDescription: null,
+      isRealPerson: false,
+    },
+    {
+      entityId: "software-company",
+      properName: "Software Company",
+      entityType: "object",
+      durableAttributes: ["booking platform vendor"],
+      renderingDescription: "Software Company receiving a vulnerability report",
+      recurringCharacterDescription: "Software Company reviewing the report",
+      isRealPerson: false,
+    },
+    {
+      entityId: "abcn-news",
+      properName: "ABCN News",
+      entityType: "object",
+      durableAttributes: ["Australian news organization"],
+      renderingDescription: "ABCN News reporting the automated cyber incident",
+      recurringCharacterDescription: "ABCN News newsroom covering the incident",
+      isRealPerson: false,
+    },
+  ];
+  const productionReplayAnalysis = {
+    ...validEightBeatAnalysis,
+    contentDomain: "AI assistant security and booking-system governance",
+    storyEntities: productionReplayEntities,
+    beats: validEightBeatAnalysis.beats.map((beat, index) => {
+      const refs = index === 0
+        ? ["andrew", "openclaw", "abcn-news"]
+        : index <= 3
+          ? ["andrew", "openclaw", "ai-assistant", "booking-system"]
+          : index === 4
+            ? ["andrew", "ai-assistant", "software-company"]
+            : ["ai-assistant", "booking-system"];
+      return {
+        ...beat,
+        subject: index === 0
+          ? "Andrew asks OpenClaw to reserve a gym class while ABCN News frames the incident"
+          : "Andrew watches the AI Assistant interact with the Gym Booking System",
+        action: index === 4
+          ? "Andrew asks the AI Assistant to notify the Software Company"
+          : "the AI Assistant changes a queue position in the Gym Booking System",
+        emphasis: "OpenClaw and the AI Assistant expose the one-way booking flaw",
+        hardSceneFacts: {
+          ...beat.hardSceneFacts,
+          entityTypes: ["Andrew", "AI Assistant", "Gym Booking System"],
+          actions: ["the AI Assistant changes the Gym Booking System queue"],
+          essentialObjects: ["OpenClaw interface"],
+        },
+        entityRefs: refs,
+      };
+    }),
+  };
+  let productionReplayProviderCalls = 0;
+  const productionReplayAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      productionReplayProviderCalls += 1;
+      return JSON.stringify(productionReplayAnalysis);
+    },
+  );
+  const productionReplay = await ensureUploadContentPreflight({
+    actor: user,
+    projectId: productionReplayProject.id,
+    transcriptText: eightWindows.map((window) => window.text).join("\n"),
+    windows: eightWindows,
+    brandVisualAccepted: true,
+  }, {
+    resolve: resolveContentPreflight,
+    createAnalyzer: () => productionReplayAnalyzer,
+  });
+  assert.equal(productionReplay.kind, "resolved");
+  if (productionReplay.kind !== "resolved") throw new Error("upload preflight did not resolve");
+  assert.equal(productionReplayProviderCalls, 1,
+    "the production-shaped upload analysis resolves without exhausting provider retries");
+  assert.equal(productionReplay.preflight.visualBeats.length, 8);
+  assert.deepEqual(
+    productionReplay.preflight.storyEntities.map((entity) => entity.properName),
+    ["Andrew", "OpenClaw", "ABCN News"],
+    "generic roles are removed while genuine named story entities remain linked",
+  );
+  const providerFacingReplay = productionReplay.preflight.visualBeats.map((beat) => ({
+    subject: beat.subject,
+    action: beat.action,
+    setting: beat.setting,
+    emotion: beat.emotion,
+    emphasis: beat.emphasis,
+    hardSceneFacts: beat.hardSceneFacts,
+  }));
+  assert.doesNotMatch(
+    JSON.stringify(providerFacingReplay),
+    /Andrew|OpenClaw|ABCN News/i,
+    "proper names stay internal and cannot leak into the image provider fields",
+  );
+  assert.ok(
+    productionReplay.preflight.storyEntities.every((entity) => (
+      !entity.renderingDescription.toLocaleLowerCase().includes(entity.properName.toLocaleLowerCase())
+      && !entity.recurringCharacterDescription?.toLocaleLowerCase().includes(entity.properName.toLocaleLowerCase())
+    )),
+    "retained entity descriptions are provider-safe",
+  );
   const priorRollout = {
     BRAND_VISUAL_SYSTEM_ENABLED: process.env.BRAND_VISUAL_SYSTEM_ENABLED,
     BRAND_VISUAL_ROLLOUT_PERCENT: process.env.BRAND_VISUAL_ROLLOUT_PERCENT,

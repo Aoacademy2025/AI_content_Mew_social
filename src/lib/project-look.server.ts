@@ -3,6 +3,7 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import {
+  GENERIC_TREATMENT_PLACEHOLDER,
   TREATMENT_PRESET_IDS,
   catalogTreatmentPinForVersion,
   createCatalogTreatmentPin,
@@ -61,6 +62,15 @@ const pendingUploadVisualContextSchema = z.discriminatedUnion("selection", [
     recipeVersion: z.string().min(1),
     brandVisualLanguage: brandLanguageSchema.nullable(),
     treatmentPin: treatmentPinSchema.nullable().optional(),
+  }),
+  z.object({
+    schemaVersion: z.literal(1),
+    state: z.enum(["awaiting-upload-preflight", "awaiting-content-preflight"]),
+    selection: z.literal("project-look"),
+    narrativeSourceKind: z.enum(["ai-script", "creator-script", "upload-transcript"]).optional(),
+    visualFormatId: z.enum(VISUAL_FORMAT_IDS),
+    recipeVersion: z.string().min(1),
+    brandVisualLanguage: brandLanguageSchema.nullable(),
   }),
 ]);
 
@@ -127,6 +137,47 @@ export async function saveProjectLook(input: {
   look: ProjectLookInput;
 }): Promise<ProjectLookSnapshot> {
   return prisma.$transaction((tx) => saveProjectLookInTransaction(tx, input));
+}
+
+/** Upload Step 2 runs before speech transcription, so the creator can choose
+ * the image format but there is no content-grounded Treatment yet. Persist the
+ * format as an explicit temporary Project Look; the upload worker replaces
+ * only its placeholder Treatment after Content Preflight succeeds. */
+export async function saveUploadProjectVisualFormatAwaitingPreflight(input: {
+  userId: string;
+  projectId: string;
+  visualFormatId: ActiveVisualFormatId;
+}): Promise<ProjectLookSnapshot> {
+  return prisma.$transaction(async (tx) => {
+    const project = await tx.editorProject.findFirst({
+      where: { id: input.projectId, userId: input.userId },
+      include: { brandProfileRevision: { select: { visualRecipeJson: true } } },
+    });
+    if (!project) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
+    if (!VISUAL_FORMAT_IDS.includes(input.visualFormatId)) {
+      throw new ProjectLookError("INVALID_LOOK", "แนวภาพนี้ไม่อยู่ใน V1");
+    }
+    const brandRecipe = parseRevision(project.brandProfileRevision?.visualRecipeJson);
+    const snapshot: ProjectLookSnapshot = {
+      schemaVersion: 1,
+      visualFormatId: input.visualFormatId,
+      recipeVersion: recipeFor(input.visualFormatId),
+      treatment: GENERIC_TREATMENT_PLACEHOLDER,
+      brandVisualLanguage: brandRecipe?.brandVisualLanguage ?? null,
+    };
+    await tx.editorProject.update({
+      where: { id: project.id },
+      data: {
+        projectLookJson: JSON.stringify(snapshot),
+        projectLookUpdatedAt: new Date(),
+        treatmentPresetId: null,
+        treatmentPresetVersion: null,
+        treatmentPinSource: null,
+        treatmentPinnedAt: null,
+      },
+    });
+    return snapshot;
+  });
 }
 
 /** Creator-facing Project Look mutation. Exact-preflight selection, selection
@@ -552,7 +603,7 @@ export async function prepareProjectVisualSnapshotAwaitingPreflight(input: {
         selection: "suggested" as const,
         narrativeSourceKind: input.narrativeSourceKind,
       }
-    : context.source === "brand-revision"
+      : context.source === "brand-revision"
       ? {
           schemaVersion: 1 as const,
           state: "awaiting-content-preflight" as const,
@@ -563,6 +614,18 @@ export async function prepareProjectVisualSnapshotAwaitingPreflight(input: {
           brandVisualLanguage: context.brandVisualLanguage,
           treatmentPin: context.treatmentPin ?? null,
         }
+      : context.source === "project-look"
+        && context.legacyCustomTreatment
+        && isGenericTreatmentPlaceholder(context.treatment)
+        ? {
+            schemaVersion: 1 as const,
+            state: "awaiting-content-preflight" as const,
+            selection: "project-look" as const,
+            narrativeSourceKind: input.narrativeSourceKind,
+            visualFormatId: context.visualFormatId as ActiveVisualFormatId,
+            recipeVersion: context.recipeVersion,
+            brandVisualLanguage: context.brandVisualLanguage,
+          }
       : context;
   return {
     contentPreflightId: null,
@@ -634,6 +697,7 @@ export async function pinProjectVisualContextToVideoJob(input: {
   }
 
   let context = alreadyPinned;
+  let materializePendingProjectLook = false;
   if (!context) {
     let pendingValue: unknown = null;
     try {
@@ -651,35 +715,39 @@ export async function pinProjectVisualContextToVideoJob(input: {
     if (suggestedPin.version !== preflight.suggestedTreatmentPresetVersion) {
       throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ข้อมูลแนวเล่าเรื่องในผลวิเคราะห์ไม่ตรงกับงานนี้");
     }
-    context = pending.data.selection === "brand-revision"
-      ? pending.data.treatmentPin
-        ? {
-            schemaVersion: 2,
-            source: "brand-revision",
-            visualFormatId: pending.data.visualFormatId,
-            recipeVersion: pending.data.recipeVersion,
-            treatment: treatmentPresetThaiLabel(pending.data.treatmentPin),
-            treatmentPin: pending.data.treatmentPin,
-            brandVisualLanguage: pending.data.brandVisualLanguage,
-          }
-        : {
-            schemaVersion: 2,
-            source: "brand-revision",
-            visualFormatId: pending.data.visualFormatId,
-            recipeVersion: pending.data.recipeVersion,
-            treatment: treatmentPresetThaiLabel(suggestedPin),
-            treatmentPin: suggestedPin,
-            brandVisualLanguage: pending.data.brandVisualLanguage,
-          }
-      : {
-          schemaVersion: 2,
-          source: "suggested",
-          visualFormatId: preflight.suggestedVisualFormatId as VisualFormatId,
-          recipeVersion: recipeFor(preflight.suggestedVisualFormatId as VisualFormatId),
-          treatment: treatmentPresetThaiLabel(suggestedPin),
-          treatmentPin: suggestedPin,
-          brandVisualLanguage: null,
-        };
+    if (pending.data.selection === "brand-revision") {
+      const treatmentPin = pending.data.treatmentPin ?? suggestedPin;
+      context = {
+        schemaVersion: 2,
+        source: "brand-revision",
+        visualFormatId: pending.data.visualFormatId,
+        recipeVersion: pending.data.recipeVersion,
+        treatment: treatmentPresetThaiLabel(treatmentPin),
+        treatmentPin,
+        brandVisualLanguage: pending.data.brandVisualLanguage,
+      };
+    } else if (pending.data.selection === "project-look") {
+      materializePendingProjectLook = true;
+      context = {
+        schemaVersion: 2,
+        source: "project-look",
+        visualFormatId: pending.data.visualFormatId,
+        recipeVersion: pending.data.recipeVersion,
+        treatment: treatmentPresetThaiLabel(suggestedPin),
+        treatmentPin: suggestedPin,
+        brandVisualLanguage: pending.data.brandVisualLanguage,
+      };
+    } else {
+      context = {
+        schemaVersion: 2,
+        source: "suggested",
+        visualFormatId: preflight.suggestedVisualFormatId as VisualFormatId,
+        recipeVersion: recipeFor(preflight.suggestedVisualFormatId as VisualFormatId),
+        treatment: treatmentPresetThaiLabel(suggestedPin),
+        treatmentPin: suggestedPin,
+        brandVisualLanguage: null,
+      };
+    }
   }
   const pin = {
     contentPreflightId: preflight.id,
@@ -692,9 +760,23 @@ export async function pinProjectVisualContextToVideoJob(input: {
       context,
     });
     if (context.treatmentPin) {
+      const materializedLook: ProjectLookSnapshot | null = materializePendingProjectLook
+        ? {
+            schemaVersion: 2,
+            visualFormatId: context.visualFormatId,
+            recipeVersion: context.recipeVersion,
+            treatment: context.treatment,
+            treatmentPin: context.treatmentPin,
+            brandVisualLanguage: context.brandVisualLanguage,
+          }
+        : null;
       await tx.editorProject.updateMany({
         where: { id: input.projectId, userId: input.userId },
         data: {
+          ...(materializedLook ? {
+            projectLookJson: JSON.stringify(materializedLook),
+            projectLookUpdatedAt: new Date(),
+          } : {}),
           treatmentPresetId: context.treatmentPin.presetId,
           treatmentPresetVersion: context.treatmentPin.version,
           treatmentPinSource: context.treatmentPin.source,

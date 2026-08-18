@@ -13,7 +13,10 @@ async function main() {
   const { CONTENT_PREFLIGHT_ANALYZER_VERSION } = await import("../src/lib/content-preflight.server");
   const {
     parseProjectVisualContext,
+    pinProjectVisualContextToVideoJob,
+    prepareUploadProjectVisualSnapshot,
     prepareProjectVisualSnapshotAwaitingPreflight,
+    saveUploadProjectVisualFormatAwaitingPreflight,
   } = await import("../src/lib/project-look.server");
   const { ensureVideoJobContentPreflight } = await import("../src/lib/video-job-content-preflight.server");
 
@@ -126,6 +129,93 @@ async function main() {
     parseProjectVisualContext(pinnedJob.projectVisualContextJson)?.treatmentPin?.presetId,
     "thai-supernatural-horror",
   );
+
+  const uploadProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Upload chooses format before transcript" },
+  });
+  await saveUploadProjectVisualFormatAwaitingPreflight({
+    userId: user.id,
+    projectId: uploadProject.id,
+    visualFormatId: "dramatic-comic",
+  });
+  const uploadPending = await prepareUploadProjectVisualSnapshot({
+    userId: user.id,
+    projectId: uploadProject.id,
+  });
+  assert.deepEqual(JSON.parse(uploadPending.projectVisualContextJson), {
+    schemaVersion: 1,
+    state: "awaiting-content-preflight",
+    selection: "project-look",
+    narrativeSourceKind: "upload-transcript",
+    visualFormatId: "dramatic-comic",
+    recipeVersion: "dramatic-comic-v9",
+    brandVisualLanguage: null,
+  }, "an upload can freeze the creator's Step 2 image format before a transcript exists");
+  const uploadJob = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: uploadProject.id,
+      projectVisualContextJson: uploadPending.projectVisualContextJson,
+      inputJson: "{}",
+    },
+  });
+  const uploadPreflight = await prisma.contentPreflight.create({
+    data: {
+      userId: user.id,
+      projectId: uploadProject.id,
+      narrativeSourceKind: "upload-transcript",
+      sourceHash: "upload-format-before-transcript-hash",
+      analyzerVersion: CONTENT_PREFLIGHT_ANALYZER_VERSION,
+      contentDomain: "technology explainer",
+      dominantNarrativeMode: "modern business technology explanation",
+      suggestedVisualFormatId: "clear-infographic",
+      suggestedTreatmentJson: JSON.stringify({ label: "ธุรกิจและเทคทันสมัย" }),
+      suggestedTreatmentPresetId: "modern-business-technology",
+      suggestedTreatmentPresetVersion: "v1.0.0",
+      rankedTreatmentPresetIdsJson: JSON.stringify([
+        "modern-business-technology", "expert-clarity", "premium-product-lifestyle",
+      ]),
+      treatmentRecommendationRationale: "The transcript is a technology explainer.",
+      storyEntitiesJson: "[]",
+      visualBeats: {
+        create: {
+          userId: user.id,
+          projectId: uploadProject.id,
+          beatKey: "window-0",
+          sequence: 0,
+          sourceExcerptHash: "upload-format-window-hash",
+          beatJson: JSON.stringify({
+            beatKey: "window-0", sourceExcerpt: "technology explainer", subject: "an interface",
+            action: "shows an automated workflow", setting: "a modern workspace", emotion: "focused",
+            emphasis: "clear automation", hardSceneFacts: {
+              entityTypes: ["interface"], ages: [], genders: [], actions: ["shows a workflow"],
+              locationTypes: ["workspace"], timeOfDay: null, historicalPeriod: null,
+              count: 1, essentialObjects: ["computer"],
+            }, entityRefs: [], sceneIntensity: "steady", safetyBoundary: "none",
+          }),
+        },
+      },
+    },
+  });
+  const uploadPinned = await pinProjectVisualContextToVideoJob({
+    userId: user.id,
+    projectId: uploadProject.id,
+    videoJobId: uploadJob.id,
+    preflightId: uploadPreflight.id,
+  });
+  const uploadContext = parseProjectVisualContext(uploadPinned.projectVisualContextJson);
+  assert.equal(uploadContext?.source, "project-look");
+  assert.equal(uploadContext?.visualFormatId, "dramatic-comic",
+    "the VideoJob keeps the image format selected in upload Step 2");
+  assert.equal(uploadContext?.treatmentPin?.presetId, "modern-business-technology",
+    "the transcript analysis supplies treatment without replacing the creator's image format");
+  const materializedUploadLook = JSON.parse((await prisma.editorProject.findUniqueOrThrow({
+    where: { id: uploadProject.id },
+  })).projectLookJson!);
+  assert.equal(materializedUploadLook.schemaVersion, 2);
+  assert.equal(materializedUploadLook.visualFormatId, "dramatic-comic");
+  assert.equal(materializedUploadLook.treatmentPin.presetId, "modern-business-technology",
+    "the temporary Step 2 choice becomes a complete reusable Project Look after analysis");
 
   const failedProject = await prisma.editorProject.create({
     data: { userId: user.id, title: "Failed planning" },

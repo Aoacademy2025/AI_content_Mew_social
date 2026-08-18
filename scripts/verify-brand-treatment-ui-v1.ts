@@ -54,8 +54,32 @@ async function main() {
     /ยังไม่มีการเปลี่ยนแบรนด์หรือคิดเครดิตภาพ/,
     "analysis failures must reassure customers that the failed attempt changed nothing and spent no image credit",
   );
+  assert.match(
+    selectorSource,
+    /const canChooseFormatBeforeTranscript = p\.mode === "upload" && !narrative;/,
+    "upload Step 2 must expose image-format selection before transcription",
+  );
+  assert.match(
+    selectorSource,
+    /deferTreatmentUntilPreflight: !treatmentPresetId/,
+    "a pre-transcript format choice must defer content treatment to the upload analysis",
+  );
+  assert.match(
+    selectorSource,
+    /canManageBrandVisual && \(selectedTreatmentPresetId \|\| canChooseFormatBeforeTranscript\)[\s\S]*formats\.map/,
+    "fresh uploads must render the image-format choices even without an analyzed treatment",
+  );
+  const visualContextRouteSource = readFileSync(
+    "src/app/api/editor-projects/[id]/visual-context/route.ts",
+    "utf8",
+  );
+  assert.match(
+    visualContextRouteSource,
+    /deferTreatmentUntilPreflight === true[\s\S]*saveUploadProjectVisualFormatAwaitingPreflight/,
+    "the Step 2 API must persist a pre-transcript image-format choice at the deferred server seam",
+  );
 
-  console.log("verify-brand-treatment-ui-v1: PASS Thai catalog, clear narrative action, guarded brand selection, all-or-cancel");
+  console.log("verify-brand-treatment-ui-v1: PASS Thai catalog, upload pre-transcript format choice, guarded brand selection, all-or-cancel");
 }
 
 main().catch((error) => {
