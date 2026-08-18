@@ -53,6 +53,8 @@ const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
 export type NarrativeSourceKind = "ai-script" | "creator-script" | "upload-transcript";
 export type NarrativeVisualWindow = { text: string; startMs?: number; endMs?: number };
 
+const MAX_ESSENTIAL_OBJECT_LENGTH = 160;
+
 const hardSceneFactsSchema = z.object({
   entityTypes: z.array(z.string().trim().min(1).max(120)).max(12),
   ages: z.array(z.string().trim().min(1).max(80)).max(12),
@@ -62,7 +64,9 @@ const hardSceneFactsSchema = z.object({
   timeOfDay: z.string().trim().min(1).max(80).nullable(),
   historicalPeriod: z.string().trim().min(1).max(160).nullable(),
   count: z.number().int().positive().max(100).nullable(),
-  essentialObjects: z.array(z.string().trim().min(1).max(160)).max(20),
+  essentialObjects: z.array(
+    z.string().trim().min(1).max(MAX_ESSENTIAL_OBJECT_LENGTH),
+  ).max(20),
 });
 
 const storyEntitySchema = z.object({
@@ -361,6 +365,34 @@ function tidyRepairedDescription(value: string): string {
     .trim();
 }
 
+/** Preserve an explicit Hard Scene Fact while fitting the bounded provider
+ * schema. Truncating here could silently remove a quantity or relationship,
+ * so an overlong fact becomes adjacent word-boundary chunks instead. The
+ * schema still fails closed when the resulting array exceeds its item limit. */
+function splitBoundedProviderFact(value: string, maxLength: number): string[] {
+  const chunks: string[] = [];
+  let remaining = value;
+  while (remaining.length > maxLength) {
+    let splitAt = remaining.lastIndexOf(" ", maxLength);
+    if (splitAt <= 0) splitAt = maxLength;
+    // Avoid separating a UTF-16 surrogate pair when a provider emits an emoji
+    // or another non-BMP code point inside otherwise English provider prose.
+    if (
+      splitAt > 0
+      && splitAt < remaining.length
+      && /[\uD800-\uDBFF]/u.test(remaining[splitAt - 1])
+      && /[\uDC00-\uDFFF]/u.test(remaining[splitAt])
+    ) {
+      splitAt -= 1;
+    }
+    const chunk = remaining.slice(0, splitAt).trim();
+    if (chunk) chunks.push(chunk);
+    remaining = remaining.slice(splitAt).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
 /** Gemini occasionally promotes generic roles into Story Entities and copies
  * internal proper-name linkage into provider-facing prose. Retrying the same
  * prompt is unreliable for that mechanically repairable output. This pass is
@@ -445,6 +477,14 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
     const cleanStringArray = (items: unknown): unknown => Array.isArray(items)
       ? items.map(cleanProviderText)
       : items;
+    const cleanEssentialObjects = (items: unknown): unknown => Array.isArray(items)
+      ? items.flatMap((item) => {
+        const cleaned = cleanProviderText(item);
+        return typeof cleaned === "string"
+          ? splitBoundedProviderFact(cleaned, MAX_ESSENTIAL_OBJECT_LENGTH)
+          : [cleaned];
+      })
+      : items;
     return {
       ...beat,
       // The provider's key is never authoritative: resolveContentPreflight
@@ -468,7 +508,7 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
           locationTypes: cleanStringArray(hardSceneFacts.locationTypes),
           timeOfDay: cleanProviderText(hardSceneFacts.timeOfDay),
           historicalPeriod: cleanProviderText(hardSceneFacts.historicalPeriod),
-          essentialObjects: cleanStringArray(hardSceneFacts.essentialObjects),
+          essentialObjects: cleanEssentialObjects(hardSceneFacts.essentialObjects),
         },
       } : {}),
       entityRefs: Array.isArray(beat.entityRefs)

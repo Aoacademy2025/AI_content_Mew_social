@@ -1030,6 +1030,43 @@ async function main() {
       `${replayCase.label} is repaired deterministically instead of exhausting Gemini retries`,
     );
   }
+  const overlongEssentialObject = "object ".repeat(22) + "object!";
+  assert.equal(overlongEssentialObject.length, 161);
+  const overlongEssentialObjectCandidate = JSON.parse(
+    JSON.stringify(productionReplayAnalysis),
+  ) as typeof productionReplayAnalysis;
+  overlongEssentialObjectCandidate.beats[0].hardSceneFacts.essentialObjects = [
+    overlongEssentialObject,
+  ];
+  let overlongEssentialObjectCalls = 0;
+  const overlongEssentialObjectAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      overlongEssentialObjectCalls += 1;
+      return JSON.stringify(overlongEssentialObjectCandidate);
+    },
+  );
+  const repairedOverlongEssentialObject = await overlongEssentialObjectAnalyzer.analyze({
+    kind: "upload-transcript",
+    text: eightWindows.map((window) => window.text).join("\n"),
+    windows: eightWindows,
+  });
+  const repairedEssentialObjects =
+    repairedOverlongEssentialObject.beats[0].hardSceneFacts.essentialObjects;
+  assert.equal(
+    overlongEssentialObjectCalls,
+    1,
+    "an overlong essential object is repaired deterministically instead of exhausting provider retries",
+  );
+  assert.ok(
+    repairedEssentialObjects.every((fact) => fact.length <= 160),
+    "every repaired essential-object fact respects the provider-facing schema boundary",
+  );
+  assert.equal(
+    repairedEssentialObjects.join(" "),
+    overlongEssentialObject,
+    "repair preserves every essential-object word instead of truncating a Hard Scene Fact",
+  );
   const unsafeRealPersonCandidate = JSON.parse(
     JSON.stringify(productionReplayAnalysis),
   ) as typeof productionReplayAnalysis;
