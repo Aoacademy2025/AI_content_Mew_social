@@ -11,6 +11,7 @@ export type FailureKind =
   | "heygen-quota"
   | "provider-key"
   | "provider-quota"
+  | "content-preflight"
   | "hero-image-transient"
   | "insufficient-credits"
   | "rate-limited"
@@ -40,6 +41,7 @@ export function classifyFailure(job: FailureJobLike): FailureKind {
   ) return "heygen-quota";
   if (job.errorCode === "invalid_key") return "provider-key";
   if (job.errorCode === "quota") return "provider-quota";
+  if (job.errorCode?.startsWith("CONTENT_PREFLIGHT_")) return "content-preflight";
   if (HERO_IMAGE_TRANSIENT_CODES.has(job.errorCode ?? "")) return "hero-image-transient";
   if (
     job.errorCode === "INSUFFICIENT_CREDITS"
@@ -131,6 +133,12 @@ export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMo
     return {
       heading: job.currentStep === "tts" ? "โควต้าเสียงพากย์ไม่เพียงพอ" : `โควต้าของ ${provider} ไม่เพียงพอ`,
       body: `เติมโควต้าในบัญชี ${provider} แล้วลองใหม่ หรือเลือกตัวเลือกอื่นในหน้าตั้งค่า`,
+    };
+  }
+  if (kind === "content-preflight") {
+    return {
+      heading: "วิเคราะห์แนวภาพไม่สำเร็จ",
+      body: "ระบบยังวิเคราะห์แนวภาพจากเนื้อหาของคลิปรอบนี้ไม่สำเร็จ โปรเจกต์และคลิปที่อัปโหลดยังอยู่ — กลับไปลองเรนเดอร์ใหม่ได้",
     };
   }
   if (kind === "hero-image-transient") {

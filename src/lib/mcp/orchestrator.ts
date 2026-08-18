@@ -107,7 +107,10 @@ import { getVideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
 import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
-import { narrativeVisualWindowsForPreflight } from "@/lib/content-preflight.server";
+import {
+  contentPreflightFailureDetails,
+  narrativeVisualWindowsForPreflight,
+} from "@/lib/content-preflight.server";
 import { ensureVideoJobContentPreflight } from "@/lib/video-job-content-preflight.server";
 import {
   recordFirstPassVisualExport,
@@ -1866,6 +1869,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   } catch (e) {
     const message = e instanceof Error ? e.message : "internal error";
     const pipelineFailure = pipelineFailureDetails(e);
+    const contentPreflightFailure = contentPreflightFailureDetails(e);
     if (message === VIDEO_JOB_CANCELED_ERROR) {
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
       const reason = `video_${phaseName || "unknown"}_canceled`;
@@ -1944,6 +1948,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             message: e.message,
             code: e.code,
             provider: "omnivoice",
+            ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
+          }
+      : contentPreflightFailure
+        ? {
+            ...contentPreflightFailure,
             ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
           }
       : financialSettlementPending

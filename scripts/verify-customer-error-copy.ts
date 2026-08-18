@@ -69,6 +69,24 @@ assert.match(heroOutputCopy.heading, /ภาพ AI/);
 assert.match(heroOutputCopy.body, /ไม่ถูกคิด|ถูกคืน/);
 assert.match(heroOutputCopy.body, /ลองเรนเดอร์ใหม่/);
 
+const contentPreflightMessage =
+  "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง";
+const contentPreflightJob = videoJob({
+  currentStep: "captions",
+  errorCode: "CONTENT_PREFLIGHT_INVALID_ANALYSIS",
+  errorMessage: contentPreflightMessage,
+});
+assert.equal(classifyFailure(contentPreflightJob), "content-preflight");
+const contentPreflightCopy = failureViewCopy(
+  classifyFailure(contentPreflightJob),
+  contentPreflightJob,
+  false,
+);
+assertCustomerSafe(contentPreflightCopy, contentPreflightMessage);
+assert.equal(contentPreflightCopy.heading, "วิเคราะห์แนวภาพไม่สำเร็จ");
+assert.match(contentPreflightCopy.body, /แนวภาพ/);
+assert.doesNotMatch(contentPreflightCopy.body, /คำบรรยาย|ซับ/);
+
 for (const [currentStep, expectedHeading] of [
   ["tts", "สร้างเสียงพากย์ไม่สำเร็จ"],
   ["captions", "สร้างคำบรรยายไม่สำเร็จ"],

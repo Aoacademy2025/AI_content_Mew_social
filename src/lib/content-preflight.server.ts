@@ -63,7 +63,7 @@ const hardSceneFactsSchema = z.object({
   locationTypes: z.array(z.string().trim().min(1).max(160)).max(12),
   timeOfDay: z.string().trim().min(1).max(80).nullable(),
   historicalPeriod: z.string().trim().min(1).max(160).nullable(),
-  count: z.number().int().positive().max(100).nullable(),
+  count: z.number().int().positive().nullable(),
   essentialObjects: z.array(
     z.string().trim().min(1).max(MAX_ESSENTIAL_OBJECT_LENGTH),
   ).max(20),
@@ -308,6 +308,16 @@ export class ContentPreflightError extends Error {
     super(message);
     this.name = "ContentPreflightError";
   }
+}
+
+export function contentPreflightFailureDetails(
+  error: unknown,
+): { message: string; code: string } | null {
+  if (!(error instanceof ContentPreflightError)) return null;
+  return {
+    message: error.message,
+    code: "CONTENT_PREFLIGHT_" + error.code,
+  };
 }
 
 /** Production adapter for the external text-model seam. It reserves one call
