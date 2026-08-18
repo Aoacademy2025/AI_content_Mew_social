@@ -18,6 +18,7 @@ function equal<T>(actual: T, expected: T, message: string) {
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { redeemGrantCoupon } = await import("../src/lib/grant-coupon-redemption");
+  const { videoExpiryFor } = await import("../src/lib/plan-limits");
   const now = new Date("2026-08-16T03:00:00.000Z");
 
   await prisma.coupon.create({
@@ -45,6 +46,16 @@ async function main() {
       minutesLimit: 5,
     },
   });
+  await prisma.video.create({
+    data: {
+      id: "fresh-user-existing-video",
+      userId: "fresh-user",
+      avatarModel: "none",
+      voiceModel: "gemini",
+      sceneCount: 1,
+      expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
+    },
+  });
 
   const result = await redeemGrantCoupon({ userId: "fresh-user", code: "clip0819", now });
   equal(result.ok, true, "fresh account redemption succeeds");
@@ -59,6 +70,7 @@ async function main() {
   );
   equal(result.minutesLimit, 80, "PRO includes 80 render minutes");
   equal(result.monthlyCredits, 50, "PRO includes 50 monthly credits");
+  equal(result.videosExtended, 1, "activation extends existing video retention atomically");
 
   const [user, coupon, redemption, balance] = await Promise.all([
     prisma.user.findUniqueOrThrow({ where: { id: "fresh-user" } }),
@@ -72,6 +84,11 @@ async function main() {
   equal(user.minutesUsed, 0, "fresh activation resets used minutes");
   equal(user.minutesLimit, 80, "fresh activation stores 80-minute limit");
   equal(balance.granted, 50, "fresh activation stores monthly 50-credit grant");
+  equal(
+    (await prisma.video.findUniqueOrThrow({ where: { id: "fresh-user-existing-video" } })).expiresAt?.toISOString(),
+    videoExpiryFor("PRO", now).toISOString(),
+    "existing video receives PRO retention inside the redemption transaction",
+  );
   equal(
     await prisma.promotionalCreditGrant.count({ where: { userId: "fresh-user" } }),
     0,
