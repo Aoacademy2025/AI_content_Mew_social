@@ -20,6 +20,7 @@ import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { TREATMENT_PRESETS } from "@/lib/brand-treatment-catalog";
+import { visualFormatPreviewUrl } from "@/lib/brand-visual-format-preview";
 
 function json(value: string | null | undefined) {
   if (!value) return null;
@@ -122,7 +123,7 @@ export async function GET() {
       canRestoreAll: false,
       visualFormats: VISUAL_FORMATS.map((format) => ({
         ...format,
-        previewUrl: `/brand-visual-formats/${format.id}.webp`,
+        previewUrl: visualFormatPreviewUrl(format.id),
       })),
       treatmentPresets: TREATMENT_PRESETS.map((preset) => ({
         id: preset.id,

@@ -20,6 +20,7 @@ import { limitsForPlan } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
 import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
 import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import { normalizeHexColor } from "@/lib/hex-color";
 import {
   parseProjectVisualContext,
   parseRevision,
@@ -30,6 +31,18 @@ import {
 
 const shortNullable = z.string().trim().max(180).nullable();
 const safeConfigValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+const storedPaletteColorSchema = z.string().trim().min(1).max(64);
+const creatorPaletteColorSchema = storedPaletteColorSchema.transform((value, context) => {
+  const normalized = normalizeHexColor(value);
+  if (!normalized) {
+    context.addIssue({
+      code: "custom",
+      message: "สีประจำแบรนด์ต้องเป็น HEX เช่น #38BDF8",
+    });
+    return z.NEVER;
+  }
+  return normalized;
+});
 
 const brandProfilePayloadBaseSchema = z.object({
   schemaVersion: z.literal(1),
@@ -67,13 +80,16 @@ const brandProfilePayloadBaseSchema = z.object({
   }),
 });
 
-function brandProfileVisualSchema<T extends z.ZodTypeAny>(formatIdSchema: T) {
+function brandProfileVisualSchema<T extends z.ZodTypeAny, P extends z.ZodTypeAny>(
+  formatIdSchema: T,
+  paletteColorSchema: P,
+) {
   return z.object({
     primaryVisualFormatId: formatIdSchema,
     treatmentPolicy: z.enum(["adaptive", "locked"]).default("adaptive"),
     lockedTreatmentPresetId: z.enum(TREATMENT_PRESET_IDS).nullable().default(null),
     languageMode: z.enum(["defined", "none"]).optional(),
-    palette: z.array(z.string().trim().min(1).max(64)).min(1).max(6),
+    palette: z.array(paletteColorSchema).min(1).max(6),
     // No `.min(1)`: personality is editable inside ตั้งค่าเพิ่มเติม and a
     // creator may clear it. The only required field is the brand name
     // (decision 4) — the form's withSeedFallbacks() supplies a non-empty
@@ -101,13 +117,13 @@ function brandProfileVisualSchema<T extends z.ZodTypeAny>(formatIdSchema: T) {
 /** Creator write boundary: retired formats cannot be selected for a new Draft,
  * Project Look or published Revision. */
 export const brandProfilePayloadSchema = brandProfilePayloadBaseSchema.extend({
-  visual: brandProfileVisualSchema(z.enum(VISUAL_FORMAT_IDS)),
+  visual: brandProfileVisualSchema(z.enum(VISUAL_FORMAT_IDS), creatorPaletteColorSchema),
 });
 
 /** Persisted read boundary: historical revisions keep their exact format ID so
  * existing previews, projects and Scene Rerolls remain reproducible. */
 export const storedBrandProfilePayloadSchema = brandProfilePayloadBaseSchema.extend({
-  visual: brandProfileVisualSchema(z.enum(SUPPORTED_VISUAL_FORMAT_IDS)),
+  visual: brandProfileVisualSchema(z.enum(SUPPORTED_VISUAL_FORMAT_IDS), storedPaletteColorSchema),
 });
 
 export type BrandProfilePayload = z.infer<typeof storedBrandProfilePayloadSchema>;

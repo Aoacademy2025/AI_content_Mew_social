@@ -32,12 +32,13 @@ import {
  * Format, so a cached recommendation cannot keep creating retired formats.
  * Later versions keep the active format while tightening hard-fact extraction;
  * older rows remain only as asset-carry-forward lineage (ADR 0017/0018). */
-export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v11-relational-hard-facts";
+export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v12-semantic-self-correction";
 /** Read-only lineage. A superseded row is still a valid source of a previous
  * beat's generated asset, so a bump costs one re-analysis and never an image:
  * beats whose `sourceExcerptHash` is unchanged carry their asset forward. */
 const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
   CONTENT_PREFLIGHT_ANALYZER_VERSION,
+  "brand-content-preflight-v11-relational-hard-facts",
   "brand-content-preflight-v10-completed-result-tableau",
   "brand-content-preflight-v9-positive-only-scene-states",
   "brand-content-preflight-v8-hard-fact-consistency",
@@ -307,6 +308,15 @@ export class ContentPreflightError extends Error {
  * only when resolveContentPreflight has a cache miss; analysis itself never
  * consumes image allowance or credits. */
 type ContentPreflightTextGenerator = typeof geminiGenerateText;
+const MAX_CONTENT_PREFLIGHT_SEMANTIC_ATTEMPTS = 3;
+
+function contentPreflightValidationFeedback(error: z.ZodError): string {
+  return error.issues
+    .slice(0, 8)
+    .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+    .join("; ")
+    .slice(0, 1_200);
+}
 
 function contentPreflightResponseJsonSchema(): Record<string, unknown> {
   const hardSceneFacts = {
@@ -461,7 +471,7 @@ export function createGeminiContentPreflightAnalyzer(
       const policyPrompt = sceneContentPolicyPromptBlock(
         sceneContentPolicyFromPreference(input.sceneContentPolicy),
       );
-      const raw = await generateText(key, [
+      const basePrompt = [
         "Analyze this Narrative Source for a vertical short-form video.",
         "Return one JSON object only. Do not wrap it in markdown.",
         `sourceKind: ${input.kind}`,
@@ -471,6 +481,7 @@ export function createGeminiContentPreflightAnalyzer(
         "The server owns treatment versions. Return IDs only and never invent a treatment label, prompt or version.",
         "A Format Recommendation is optional guidance only. Return null when the inherited format is already strong. Never describe another qualified format as a conflict, warning or generation requirement.",
         "Resolve recurring named people, animals, objects and places as Story Entities. properName is an internal linkage key only. renderingDescription must lead with an unambiguous positive entity type and durable attributes; never use a bare proper name as the rendering description and never rely on negation such as 'not a gorilla'.",
+        "Do not create Story Entities for generic roles or types such as AI Agent, company, customer, employee, software or a job title unless the Narrative Source explicitly gives that one entity a unique proper name.",
         "Create recurringCharacterDescription only when the same entity appears in at least two beats. It preserves semantic type and durable attributes, not face identity.",
         "For every beat, separate explicit Hard Scene Facts from flexible art direction. Preserve entity type, stated age/gender, action, location type, time of day, historical period, count and essential objects exactly when the source states them.",
         "Use hardSceneFacts.count only for one homogeneous counted entity set, such as two hands or three boats. Keep bottles, drops, lamps, bags and other objects with different quantities in essentialObjects with each quantity written explicitly.",
@@ -511,15 +522,47 @@ export function createGeminiContentPreflightAnalyzer(
         JSON.stringify(input.windows),
         "Narrative Source:",
         input.text,
-      ].join("\n"), Math.min(65_536, Math.max(8_192, input.windows.length * 512)), 0.2, {
-        responseMimeType: "application/json",
-        responseJsonSchema: contentPreflightResponseJsonSchema(),
-      });
-      try {
-        return JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim()) as ContentPreflightAnalysis;
-      } catch {
-        throw new ContentPreflightError("INVALID_ANALYSIS", "AI ส่งผลวิเคราะห์ที่อ่านไม่ได้ กรุณาลองใหม่");
+      ].join("\n");
+
+      let correction = "";
+      for (let attempt = 1; attempt <= MAX_CONTENT_PREFLIGHT_SEMANTIC_ATTEMPTS; attempt += 1) {
+        const raw = await generateText(
+          key,
+          correction ? `${basePrompt}\n\n${correction}` : basePrompt,
+          Math.min(65_536, Math.max(8_192, input.windows.length * 512)),
+          0.2,
+          {
+            responseMimeType: "application/json",
+            responseJsonSchema: contentPreflightResponseJsonSchema(),
+          },
+        );
+        let candidate: unknown;
+        try {
+          candidate = JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim());
+        } catch {
+          correction = [
+            "Your previous JSON was rejected because it could not be parsed.",
+            "Return one complete replacement JSON object matching the schema exactly.",
+          ].join(" ");
+          continue;
+        }
+        const parsed = analysisSchema.safeParse(candidate);
+        const wrongBeatCount = parsed.success && parsed.data.beats.length !== input.windows.length;
+        if (parsed.success && !wrongBeatCount) return parsed.data;
+        const issues = parsed.success
+          ? `beats: expected exactly ${input.windows.length}, received ${parsed.data.beats.length}`
+          : contentPreflightValidationFeedback(parsed.error);
+        correction = [
+          "Your previous JSON was rejected by semantic validation.",
+          `Validation issues: ${issues}`,
+          "Return one complete replacement JSON object. Correct the issues while preserving the Narrative Source and every B-roll window.",
+          "Never copy a proper name into renderingDescription, recurringCharacterDescription or any provider-facing beat field.",
+        ].join(" ");
       }
+      throw new ContentPreflightError(
+        "INVALID_ANALYSIS",
+        "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง",
+      );
     },
   };
 }
@@ -886,7 +929,7 @@ export async function resolveContentPreflight(input: {
   if (!analyzed.success) {
     throw new ContentPreflightError(
       "INVALID_ANALYSIS",
-      analyzed.error.issues[0]?.message || "ผลวิเคราะห์เนื้อหาไม่ครบ",
+      "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์ กรุณาลองใหม่อีกครั้ง",
     );
   }
   if (analyzed.data.beats.length !== windows.length) {

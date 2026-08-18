@@ -131,7 +131,7 @@ async function main() {
     startMs: index * 4_000,
     endMs: (index + 1) * 4_000,
   }));
-  const validEightBeatAnalysis = {
+  const validEightBeatAnalysis = completeAnalysis({
     contentDomain: "education",
     suggestedVisualFormatId: "clear-infographic",
     suggestedTreatment: { label: "ชัดเจน", mood: "focused" },
@@ -146,7 +146,7 @@ async function main() {
       emotion: "focused",
       emphasis: `point ${index}`,
     })),
-  };
+  });
   let providerSafeStructuredOutputRequested = false;
   let capturedPreflightPrompt = "";
   const structuredAnalyzer = createGeminiContentPreflightAnalyzer(
@@ -193,6 +193,92 @@ async function main() {
     true,
     "upload Brand Visual must request structured JSON without a nested array-length constraint that Gemini rejects at 5+ beats",
   );
+
+  const aiAgentWindows = [{ text: "AI Agent ตัดสินใจเรื่องราคาแทนพนักงาน" }];
+  const validAiAgentAnalysis = completeAnalysis({
+    contentDomain: "business automation governance",
+    suggestedVisualFormatId: "clear-infographic",
+    beats: [{
+      beatKey: "window-0",
+      sourceExcerpt: aiAgentWindows[0].text,
+      subject: "an automated decision system and a human approval checkpoint",
+      action: "routes a price change to a human reviewer",
+      setting: "a business operations room",
+      emotion: "careful oversight",
+      emphasis: "human approval before an automated pricing decision",
+    }],
+  });
+  const invalidAiAgentAnalysis = {
+    ...validAiAgentAnalysis,
+    storyEntities: [{
+      entityId: "entity-ai-agent",
+      properName: "AI Agent",
+      entityType: "object",
+      durableAttributes: ["autonomous business software"],
+      renderingDescription: "an AI Agent that changes product prices",
+      recurringCharacterDescription: null,
+      isRealPerson: false,
+    }],
+    beats: validAiAgentAnalysis.beats.map((beat) => ({
+      ...beat,
+      entityRefs: ["entity-ai-agent"],
+    })),
+  };
+  let semanticCorrectionCalls = 0;
+  const semanticCorrectionPrompts: string[] = [];
+  const semanticCorrectionAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async (_key, prompt) => {
+      semanticCorrectionCalls += 1;
+      semanticCorrectionPrompts.push(prompt);
+      return JSON.stringify(
+        semanticCorrectionCalls === 1 ? invalidAiAgentAnalysis : validAiAgentAnalysis,
+      );
+    },
+  );
+  const correctedAiAgent = await semanticCorrectionAnalyzer.analyze({
+    kind: "upload-transcript",
+    text: aiAgentWindows[0].text,
+    windows: aiAgentWindows,
+  });
+  assert.equal(
+    semanticCorrectionCalls,
+    2,
+    "one click automatically asks Gemini to repair a structurally valid but semantically unsafe analysis",
+  );
+  assert.deepEqual(correctedAiAgent.storyEntities, []);
+  assert.match(
+    semanticCorrectionPrompts[1] ?? "",
+    /previous JSON was rejected[\s\S]*proper name/i,
+    "the correction attempt includes the exact semantic failure without requiring another user click",
+  );
+  assert.match(
+    semanticCorrectionPrompts[0] ?? "",
+    /generic (?:roles|types)[\s\S]*AI Agent/i,
+    "the first attempt tells the model not to misclassify a generic AI Agent role as a proper name",
+  );
+
+  let exhaustedSemanticCalls = 0;
+  const exhaustedSemanticAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      exhaustedSemanticCalls += 1;
+      return JSON.stringify(invalidAiAgentAnalysis);
+    },
+  );
+  await assert.rejects(
+    () => exhaustedSemanticAnalyzer.analyze({
+      kind: "upload-transcript",
+      text: aiAgentWindows[0].text,
+      windows: aiAgentWindows,
+    }),
+    (error: unknown) => error instanceof ContentPreflightError
+      && error.code === "INVALID_ANALYSIS"
+      && /ผลวิเคราะห์แนวภาพ/.test(error.message)
+      && !/proper name/i.test(error.message),
+    "three unsafe semantic responses fail closed with creator-facing Thai instead of leaking validator jargon",
+  );
+  assert.equal(exhaustedSemanticCalls, 3);
 
   /** ── Image text policy lives here, not in the prompt compiler ─────────────
    * The image model has no negative-prompt channel (`z-image-turbo` is
@@ -250,7 +336,7 @@ async function main() {
    * from cache — the policy would silently apply to new sources only. */
   assert.equal(
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
-    "brand-content-preflight-v11-relational-hard-facts",
+    "brand-content-preflight-v12-semantic-self-correction",
     "changing what a beat contains must publish a new analyzer version",
   );
   const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");

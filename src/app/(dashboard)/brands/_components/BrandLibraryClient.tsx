@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { trackEvent } from "@/lib/client-telemetry";
 import { fetchMe, type MeData } from "@/lib/use-me";
+import { normalizeHexPalette } from "@/lib/hex-color";
 import {
   brandPreviewSurfaceKey,
   clearPendingBrandPreviewOperation,
@@ -425,12 +426,17 @@ export function BrandLibraryClient() {
   }
 
   function applyProposal(next: VisualProposal) {
+    const palette = normalizeHexPalette(next.palette);
+    if (!palette) {
+      setNotice({ tone: "error", text: "AI ส่งสีมาไม่ใช่รูปแบบ HEX กรุณาขอคำแนะนำใหม่อีกครั้ง" });
+      return;
+    }
     setDraft((current) => ({
       ...current,
       visual: {
         ...current.visual,
         primaryVisualFormatId: next.primaryVisualFormatId,
-        palette: next.palette,
+        palette,
         personality: next.personality,
         visualNotes: next.visualNotes,
         languageMode: "defined",

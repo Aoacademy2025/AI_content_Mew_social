@@ -6,6 +6,7 @@ import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
 import { VISUAL_FORMAT_IDS } from "@/lib/brand-visual-system";
 import { geminiGenerateText } from "@/lib/gemini";
 import { KeyRequiredError, resolveGeminiKey } from "@/lib/gemini-key";
+import { normalizeHexPalette } from "@/lib/hex-color";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 
 const suggestionSchema = z.object({
@@ -17,6 +18,7 @@ const suggestionSchema = z.object({
   visualNotes: z.string().trim().max(800),
   rationale: z.string().trim().min(1).max(600),
 });
+const MAX_SEMANTIC_ATTEMPTS = 3;
 
 export async function POST(req: Request) {
   try {
@@ -43,19 +45,42 @@ export async function POST(req: Request) {
     if (!quota.allowed) {
       return NextResponse.json({ code: "QUOTA_AI_TEXT", message: quota.message }, { status: 429 });
     }
-    const raw = await geminiGenerateText(key, [
+    const basePrompt = [
       "Propose one Brand Visual Language for a Thai short-video creator.",
       "Return JSON only. This is a proposal: never claim it has been applied and never include an image prompt.",
       `primaryVisualFormatId must be one of ${VISUAL_FORMAT_IDS.join(", ")}.`,
+      "Every palette item must be exactly one six-digit HEX color such as #38BDF8. Return no color names, prose, usage notes or gradients inside palette.",
       "Schema: {primaryVisualFormatId,palette:string[1..6],personality,peopleAndSetting,memorableCues:string[0..6],visualNotes,rationale}",
       `Niche: ${niche}`,
       `Audience: ${audience}`,
       sample ? `Creator sample: ${sample}` : "",
-    ].filter(Boolean).join("\n"), 2_500, 0.4);
-    let proposal: z.infer<typeof suggestionSchema>;
-    try {
-      proposal = suggestionSchema.parse(JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim()));
-    } catch {
+    ].filter(Boolean).join("\n");
+    let proposal: z.infer<typeof suggestionSchema> | null = null;
+    let correction = "";
+    for (let attempt = 1; attempt <= MAX_SEMANTIC_ATTEMPTS; attempt += 1) {
+      const raw = await geminiGenerateText(
+        key,
+        correction ? `${basePrompt}\n\n${correction}` : basePrompt,
+        2_500,
+        0.4,
+      );
+      try {
+        const parsed = suggestionSchema.parse(
+          JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim()),
+        );
+        const palette = normalizeHexPalette(parsed.palette);
+        if (!palette) throw new Error("palette_not_hex");
+        proposal = { ...parsed, palette };
+        break;
+      } catch {
+        correction = [
+          "Your previous JSON was rejected. Return a complete replacement JSON object.",
+          "Every palette item must be exactly one six-digit HEX value beginning with #.",
+          "Move color names, mood and usage guidance into personality or visualNotes instead.",
+        ].join(" ");
+      }
+    }
+    if (!proposal) {
       return NextResponse.json({ code: "INVALID_AI_PROPOSAL", error: "AI ส่งคำแนะนำไม่ครบ กรุณาลองใหม่" }, { status: 502 });
     }
     await recordTelemetryEvent(auth.user.id, {

@@ -33,7 +33,7 @@ async function main() {
       primaryVisualFormatId: "simple-editorial-story",
       treatmentPolicy: "adaptive" as const,
       lockedTreatmentPresetId: null,
-      palette: ["warm white", "black"],
+      palette: ["#F8F5EE", "#111111"],
       personality: "clear",
       peopleAndSetting: "",
       memorableCues: [],

@@ -27,6 +27,7 @@ async function main() {
     publishBrandProfileDraft,
     reconcileBrandProfileAvailability,
     saveBrandProfileDraft,
+    storedBrandProfilePayloadSchema,
   } = await import("../src/lib/brand-profile-library.server");
   const user = await prisma.user.create({
     data: { name: "Brand owner", email: "brand-owner@example.test", plan: "PRO" },
@@ -74,6 +75,37 @@ async function main() {
       defaultTreatment: "clear and energetic",
     },
   };
+
+  const descriptivePalettePayload = {
+    ...basePayload,
+    visual: {
+      ...basePayload.visual,
+      palette: [
+        "high-contrast carbon black",
+        "warm paper white",
+        "vivid sky blue #38BDF8 used only as a sharp accent",
+      ],
+    },
+  };
+  assert.equal(
+    brandProfilePayloadSchema.safeParse(descriptivePalettePayload).success,
+    false,
+    "creator writes must reject descriptive palette prose before it reaches a Draft or Revision",
+  );
+  const canonicalPalettePayload = brandProfilePayloadSchema.parse({
+    ...basePayload,
+    visual: { ...basePayload.visual, palette: ["#abc", "38bdf8"] },
+  });
+  assert.deepEqual(
+    canonicalPalettePayload.visual.palette,
+    ["#AABBCC", "#38BDF8"],
+    "creator writes canonicalize accepted short/lowercase HEX values",
+  );
+  assert.deepEqual(
+    storedBrandProfilePayloadSchema.parse(descriptivePalettePayload).visual.palette,
+    descriptivePalettePayload.visual.palette,
+    "immutable historical Revisions with descriptive palettes remain readable byte-for-byte",
+  );
 
   const legacyFormatUser = await prisma.user.create({
     data: { name: "Legacy format owner", email: "legacy-format@example.test", plan: "BUSINESS" },

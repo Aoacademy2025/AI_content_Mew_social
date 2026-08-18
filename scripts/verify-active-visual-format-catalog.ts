@@ -10,6 +10,7 @@ import {
   compileBrandVisualPrompt,
   visualFormatThaiLabel,
 } from "../src/lib/brand-visual-system";
+import { visualFormatPreviewUrl } from "../src/lib/brand-visual-format-preview";
 
 async function main() {
 assert.deepEqual(
@@ -74,6 +75,11 @@ for (const format of VISUAL_FORMATS) {
   assert.equal(item.recipeVersion, format.recipeVersion,
     `${format.id} must preview the recipe currently offered to creators`);
   assert.equal(item.file, `${format.id}.webp`);
+  assert.equal(
+    visualFormatPreviewUrl(format.id),
+    `/brand-visual-formats/${format.id}.webp?v=${item.sha256.slice(0, 16)}`,
+    `${format.id} preview URL must change whenever the reviewed bytes change`,
+  );
   const assetPath = path.join(sampleRoot, item.file);
   const bytes = readFileSync(assetPath);
   assert.equal(createHash("sha256").update(bytes).digest("hex"), item.sha256,
