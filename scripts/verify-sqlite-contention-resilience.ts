@@ -74,6 +74,9 @@ async function main() {
     const { getBalance } = await import("../src/lib/credits");
     const balance = await getBalance(user.id, new Date(now.getTime() + 1_000));
     assert.equal(balance.total, 0, "an existing balance with no expiry work must remain read-only");
+    const { getStarterAiImageAllowanceStatus } = await import("../src/lib/starter-ai-image-allowance.server");
+    const allowance = await getStarterAiImageAllowanceStatus(user.id, new Date(now.getTime() + 1_000));
+    assert.equal(allowance.accessMode, "locked", "an existing non-trial allowance status must remain read-only");
   } finally {
     lock.stdin.end("ROLLBACK;\n.quit\n");
     await prisma.$disconnect();

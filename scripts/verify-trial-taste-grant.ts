@@ -20,7 +20,7 @@ async function main() {
     data: { name: "Conversion Trial", email: "conversion-trial@example.invalid" },
   });
   assert.equal(await grantTrial(trialUser.id, TRIAL_DAYS_PUBLIC), true);
-  assert.deepEqual(await getBalance(trialUser.id), { granted: 0, purchased: 0, total: 0 });
+  assert.deepEqual(await getBalance(trialUser.id), { granted: 0, promotional: 0, purchased: 0, total: 0 });
 
   const initial = await getStarterAiImageAllowanceStatus(trialUser.id);
   assert.equal(initial.eligible, true);
