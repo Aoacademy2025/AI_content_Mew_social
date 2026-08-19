@@ -13,7 +13,12 @@ import {
   estimateTtsAudioMinutes,
 } from "@/lib/ai-spend-limits";
 import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
-import { getGeminiErrorInfo, parseRetryDelayMs } from "@/lib/gemini-errors";
+import { getGeminiErrorInfo } from "@/lib/gemini-errors";
+import {
+  callGeminiTts,
+  geminiNoAudioFailure,
+  GEMINI_TTS_NO_AUDIO,
+} from "@/lib/gemini-tts-provider.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import {
   splitScriptForTts,
@@ -24,7 +29,6 @@ import {
 import path from "path";
 import fs from "fs";
 import { execFile } from "child_process";
-import { Agent, fetch as undiciFetch } from "undici";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
 import {
   cachedVoicePreview,
@@ -32,145 +36,22 @@ import {
   normalizeVoicePreviewText,
 } from "@/lib/voice-preview-cache";
 
-// Long scripts (5-6 min) produce large base64 audio responses — extend timeouts
-// for the Gemini TTS call ONLY, via a per-request dispatcher. (Previously this
-// was setGlobalDispatcher, which silently let EVERY fetch in the whole Node
-// process hang up to 10 minutes per phase — design doc §1 root cause 5.)
-const geminiTtsDispatcher = new Agent({ headersTimeout: 600_000, bodyTimeout: 600_000 });
-
 export const maxDuration = 300;
 export const runtime = "nodejs";
-
-// Gemini TTS — prefer 2.5 Flash TTS first because it is the expected low-cost path.
-// Newer preview models can have stricter access/quota, so keep them as fallbacks only.
-const MODEL_CHAIN = [
-  "gemini-2.5-flash-preview-tts",   // widely available preview
-  "gemini-3.1-flash-tts-preview",   // newer preview, may be restricted
-  "gemini-2.5-pro-preview-tts",     // last resort
-];
-const MAX_ATTEMPTS = 3;
 
 // Time budget for the segmented pass. It must leave room for the single-call
 // fail-open below to still complete inside the proxy window when segments
 // keep hitting free-tier RPM waits.
 const SEGMENTED_BUDGET_MS = 240_000;
 
-// Sentinel for "HTTP 200 but no audio in the response" so the error mapping
-// can keep returning the exact same message as before.
-const NO_AUDIO = "__NO_AUDIO__";
-
-type TtsCallResult =
-  | { ok: true; pcm: Buffer; sampleRate: number; model: string }
-  | { ok: false; status: number; errBody: string };
-
-// One Gemini TTS call with the original model-chain + retry/backoff semantics.
-// modelLock pins all segments of a clip to the model that served segment 0 —
-// mixing models mid-clip would change the voice at a chunk seam.
-async function callGeminiTts(
-  apiKey: string,
-  text: string,
-  voiceName: string,
-  modelLock?: string,
-  deadline?: number,
-): Promise<TtsCallResult> {
-  const requestBody = JSON.stringify({
-    contents: [{ parts: [{ text }] }],
-    generationConfig: {
-      responseModalities: ["AUDIO"],
-      speechConfig: {
-        voiceConfig: {
-          prebuiltVoiceConfig: { voiceName },
-        },
-      },
-    },
-  });
-
-  const models = modelLock ? [modelLock] : MODEL_CHAIN;
-  let lastErrBody = "";
-  let lastStatus = 500;
-
-  for (const model of models) {
-    // Send key as both ?key= query param AND x-goog-api-key header to support
-    // both classic AIza* keys and newer AQ.* keys.
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-      if (deadline && Date.now() >= deadline) {
-        return { ok: false, status: 408, errBody: "segmented time budget exhausted" };
-      }
-      // Agent + fetch come from the SAME undici import so the dispatcher is actually honored.
-      // Handing a node_modules Agent to Node's built-in global fetch is NOT reliable — it
-      // silently fell back to undici's ~300s default, so the 600s above never took effect and
-      // long (5-6 min) TTS calls died with HeadersTimeoutError. (Same fix as pipeline-client.ts.)
-      const res = await undiciFetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-        body: requestBody,
-        dispatcher: geminiTtsDispatcher,
-      });
-
-      if (res.ok) {
-        const data = (await res.json()) as {
-          candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string } }> } }>;
-        };
-        const part = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-        const audioB64: string | undefined = part?.data;
-        if (!audioB64) return { ok: false, status: 500, errBody: NO_AUDIO };
-        const mimeType: string = part?.mimeType ?? "audio/L16;rate=24000";
-        const rateMatch = mimeType.match(/rate=(\d+)/);
-        console.log(`[tts-gemini] ok with ${model} (attempt ${attempt})`);
-        return {
-          ok: true,
-          pcm: Buffer.from(audioB64, "base64"),
-          sampleRate: rateMatch ? parseInt(rateMatch[1]) : 24000,
-          model,
-        };
-      }
-
-      lastErrBody = await res.text();
-      lastStatus = res.status;
-
-      // Auth / model-access errors → try next model (don't retry same one)
-      if (res.status === 401 || res.status === 403 || res.status === 404) {
-        console.warn(`[tts-gemini] ${model} returned ${res.status} — trying next model`);
-        break;  // exit inner retry loop, move to next model
-      }
-
-      // 400 = bad request, won't get better by retrying or switching model
-      if (res.status === 400) {
-        console.error(`[tts-gemini] bad request (400) for ${model}:`, lastErrBody.slice(0, 200));
-        return { ok: false, status: 400, errBody: lastErrBody };
-      }
-
-      // Retryable transient (429, 500, 502, 503, 504) — backoff and retry SAME
-      // model. 429 bodies often carry Google's own retryDelay hint; honor it,
-      // it is far more accurate than exponential guessing on free-tier RPM.
-      if (attempt < MAX_ATTEMPTS) {
-        const hinted = res.status === 429 ? parseRetryDelayMs(lastErrBody) : null;
-        const delayMs = hinted ?? 1500 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 500);
-        if (deadline && Date.now() + delayMs >= deadline) {
-          return { ok: false, status: 408, errBody: "segmented time budget exhausted" };
-        }
-        console.warn(`[tts-gemini] ${model} transient ${res.status} (attempt ${attempt}/${MAX_ATTEMPTS}), retry in ${delayMs}ms${hinted ? " (server hint)" : ""}`);
-        await new Promise(r => setTimeout(r, delayMs));
-      } else {
-        console.warn(`[tts-gemini] ${model} exhausted retries — trying next model`);
-      }
-    }
-  }
-
-  return { ok: false, status: lastStatus, errBody: lastErrBody };
-}
-
 // Map a failed call to the exact user-facing responses this route has always
 // returned (text unchanged — the editor surfaces these verbatim).
 // `managed` = true when Gemini runs on the platform key (MANAGED_GEMINI=1).
 // In that case a failure is a platform issue — don't tell the user to fix their key.
 function geminiErrorResponse(status: number, errBody: string, managed = false) {
-  if (errBody === NO_AUDIO) {
-    return NextResponse.json({ error: "Gemini ไม่ส่งข้อมูลเสียงกลับมา" }, { status: 500 });
+  if (errBody === GEMINI_TTS_NO_AUDIO) {
+    const failure = geminiNoAudioFailure(managed);
+    return NextResponse.json(failure.body, { status: failure.status });
   }
   if (status === 401) {
     if (managed) {
