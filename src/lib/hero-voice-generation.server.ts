@@ -748,6 +748,22 @@ export async function advanceHeroVoiceGeneration(userId: string, jobId: string):
   fs.writeFileSync(path.join(ensureRendersDir(), filename), audio);
   const chunk = state.chunks[sequence - 1];
   if (!chunk) return failAndRefundVoiceJob(job, state, "OMNIVOICE_CHUNK_MISSING", "ไม่พบ Hero Voice chunk");
+  // Provider ตอบ COMPLETED แต่เสียงว่าง/สั้นผิดธรรมชาติ = การสังเคราะห์ล้มเหลวเงียบ
+  // (พบจริง 2026-08-20: worker image เสีย ทำให้ข้อความไทยทุกคำได้ WAV 0 วินาที
+  // แต่ status COMPLETED) — ต้อง fail+refund ไม่ใช่ส่งไฟล์เงียบให้ผู้ใช้/ตัดคลิปต่อ
+  const chunkDurationMs = pcmDurationMs(parsed.pcm.length, parsed.sampleRate);
+  if (chunkDurationMs < 250 && chunk.speechText.trim().length >= 10) {
+    console.error(
+      `[hero-voice] empty audio from provider job=${job.id} seq=${sequence} `
+      + `chars=${chunk.speechText.length} durationMs=${Math.round(chunkDurationMs)} worker=${snapshot.response.worker_version ?? "?"}`,
+    );
+    return failAndRefundVoiceJob(
+      job,
+      state,
+      "OMNIVOICE_EMPTY_AUDIO",
+      "Hero Voice ตอบกลับด้วยเสียงว่างเปล่า — ระบบเสียงขัดข้อง กรุณาลองใหม่หรือสลับเป็น Gemini/ElevenLabs",
+    );
+  }
   const nextState: HeroVoiceGenerationStateV1 = {
     ...state,
     chunks: state.chunks.map((item, index) => index === sequence - 1
