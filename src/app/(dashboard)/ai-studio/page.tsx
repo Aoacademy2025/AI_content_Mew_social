@@ -417,8 +417,14 @@ export default function AiStudioPage() {
     if (!script.trim() || !voiceId) return;
     setSubmitting(true);
     try {
-      // เสียงโคลน (user_*) พูดผ่านเอนจิน Hero Cloning (JaiTTS) โดยอัตโนมัติ
-      if (voiceId.startsWith("user_") && catalog?.voice.cloning) {
+      // hostinger/local backend ไม่มี durable queue — ใช้ route synchronous ที่
+      // บันทึกประวัติเข้า AI Studio ให้อยู่แล้ว (studio: true)
+      const durable = (catalog?.voice.backend ?? "runpod") === "runpod";
+      // เสียงโคลน (user_*): บน backend ที่ไม่ durable (hostinger/local) ตัว OmniVoice
+      // เปิด /clone ไว้แล้ว → ส่งผ่าน route synchronous เดียวกับเสียง stock
+      // (route โหลด ref audio ของเสียงโคลนให้เอง). ส่วน RunPod image ปัจจุบัน
+      // ยังไม่มี /clone → ตกไปใช้เอนจิน Hero Cloning (JaiTTS) ตามเดิม
+      if (voiceId.startsWith("user_") && catalog?.voice.cloning && durable) {
         const response = await fetch("/api/ai-studio/hero-cloning", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -432,9 +438,6 @@ export default function AiStudioPage() {
         setScript("");
         return;
       }
-      // hostinger/local backend ไม่มี durable queue — ใช้ route synchronous ที่
-      // บันทึกประวัติเข้า AI Studio ให้อยู่แล้ว (studio: true)
-      const durable = (catalog?.voice.backend ?? "runpod") === "runpod";
       if (durable) {
         const response = await fetch("/api/ai-studio/voices", {
           method: "POST",
