@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { resolveGeminiKey } from "@/lib/gemini-key";
 import {
+  checkRefTextMatch,
   createUserVoice,
   listUserVoices,
+  readUserVoiceWav,
   userVoiceIdFor,
   UserVoiceError,
 } from "@/lib/user-voices.server";
@@ -55,7 +58,20 @@ export async function POST(request: Request) {
       refText: String(form.get("refText") ?? ""),
       audio: Buffer.from(await audio.arrayBuffer()),
     });
-    return NextResponse.json(publicUserVoice(voice), { status: 201 });
+
+    // ตรวจว่า refText ตรงกับเสียงจริงมั้ย (ตัวการหลักของ "โคลนไม่เหมือน") —
+    // fail-open: ไม่มี key/transcribe ล่ม ก็สร้างสำเร็จตามปกติ แค่ไม่มีคำเตือน
+    let refCheck: { similarity: number; heard: string; warning: boolean } | null = null;
+    try {
+      const { key } = resolveGeminiKey(gate.user);
+      const stored = await readUserVoiceWav(gate.user.id, voice.id);
+      if (stored) {
+        const result = await checkRefTextMatch(key, stored.wav, voice.refText);
+        if (result) refCheck = { ...result, warning: result.similarity < 0.85 };
+      }
+    } catch { /* no key configured — skip the check */ }
+
+    return NextResponse.json({ ...publicUserVoice(voice), refCheck }, { status: 201 });
   } catch (error) {
     if (error instanceof UserVoiceError) {
       return NextResponse.json({ error: error.message }, { status: error.status });

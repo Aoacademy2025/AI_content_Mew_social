@@ -21,7 +21,8 @@ const execFileAsync = promisify(execFile);
 // route and sent to the worker per-request as base64 (never stored provider-side).
 export const USER_VOICE_PREFIX = "user_";
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
-const MIN_REF_MS = 2_000;
+// อย่างน้อย 5 วิ — ref สั้นกว่านี้ให้ "ตัวตนเสียง" ไม่พอ โคลนออกมาไม่เหมือนเจ้าของเสียง
+const MIN_REF_MS = 5_000;
 const MAX_REF_MS = 30_000;
 const TARGET_SAMPLE_RATE = 24_000;
 
@@ -63,7 +64,9 @@ async function toReferenceWav(sourceBuffer: Buffer): Promise<Buffer> {
       // Trim leading + trailing silence (front pass, reverse, front pass,
       // reverse back). Dead air in the reference skews F5-style duration
       // estimation (seconds-per-char) and produces garbled speech.
-      "-af", "silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.15,areverse,silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.15,areverse",
+      // Then loudness-normalize (EBU R128): the model clones the reference's
+      // energy verbatim — a too-quiet/too-hot ref degrades timbre similarity.
+      "-af", "silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.15,areverse,silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.15,areverse,loudnorm=I=-18:TP=-2:LRA=7",
       targetPath,
     ], { timeout: 60_000 });
     return fs.readFileSync(targetPath);
@@ -102,7 +105,7 @@ export async function createUserVoice(input: {
   } catch {
     throw new UserVoiceError("ไฟล์เสียงไม่ถูกต้อง", 422);
   }
-  if (durationMs < MIN_REF_MS) throw new UserVoiceError("เสียงตัวอย่างสั้นเกินไป — ต้องยาวอย่างน้อย 2 วินาที", 422);
+  if (durationMs < MIN_REF_MS) throw new UserVoiceError("เสียงตัวอย่างสั้นเกินไป — ต้องพูดต่อเนื่องอย่างน้อย 5 วินาที (แนะนำ 10-20 วิ)", 422);
   if (durationMs > MAX_REF_MS) {
     throw new UserVoiceError("เสียงตัวอย่างยาวเกิน 30 วินาที — ตัดช่วงที่พูดชัด ๆ มา 10-20 วินาทีพอ", 422);
   }
@@ -135,6 +138,52 @@ export async function readUserVoiceWav(userId: string, id: string): Promise<{ wa
   } catch {
     return null;
   }
+}
+
+/**
+ * เทียบ ref_text ที่ผู้ใช้พิมพ์กับเสียงจริง (ผ่าน Gemini transcribe) — จุดพลาดหลัก
+ * ของโคลนไม่เหมือน: ข้อความกำกับไม่ตรงกับเสียงทำให้ mapping เสียง↔อักษรเพี้ยนทั้งโคลน
+ * fail-open: transcribe ล่มก็สร้างเสียงโคลนได้ปกติ (คืน null = ข้ามการตรวจ)
+ */
+export async function checkRefTextMatch(
+  geminiKey: string,
+  wav: Buffer,
+  refText: string,
+): Promise<{ similarity: number; heard: string } | null> {
+  try {
+    const { geminiTranscribeShortAudio } = await import("@/lib/gemini");
+    const heard = (await geminiTranscribeShortAudio(geminiKey, {
+      mimeType: "audio/wav",
+      dataBase64: wav.toString("base64"),
+    })).trim();
+    if (!heard) return null;
+    const normalize = (text: string) => text.replace(/[\s​]+/g, "").replace(/[.,!?;:'"“”‘’\-—…()]/g, "");
+    const a = normalize(refText);
+    const b = normalize(heard);
+    if (!a || !b) return null;
+    return { similarity: 1 - levenshtein(a, b) / Math.max(a.length, b.length), heard };
+  } catch (error) {
+    console.warn("[user-voices] refText check skipped:", error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+function levenshtein(a: string, b: string): number {
+  const previous = new Array<number>(b.length + 1);
+  const current = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) previous[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    for (let j = 0; j <= b.length; j++) previous[j] = current[j];
+  }
+  return previous[b.length];
 }
 
 export type UserVoiceRef = { audioBase64: string; refText: string; name: string; durationMs: number };

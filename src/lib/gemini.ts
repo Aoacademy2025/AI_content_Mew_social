@@ -142,3 +142,50 @@ export async function geminiGenerateVision(
   }
   throw providerError("transient", "gemini", "gemini vision retries exhausted");
 }
+
+/**
+ * Short-audio transcription via inline audio bytes — no Files API round trip.
+ * For clips ≤ ~60s (voice-clone references); longer audio must keep using the
+ * transcribe route's resumable-upload path.
+ */
+export async function geminiTranscribeShortAudio(
+  apiKey: string,
+  audio: { mimeType: string; dataBase64: string },
+  maxOutputTokens = 1024,
+): Promise<string> {
+  const ai = new GoogleGenAI({ apiKey, httpOptions: { timeout: GEMINI_TEXT_TIMEOUT_MS } });
+  const parts = [
+    { text: "ถอดเสียงพูดในไฟล์นี้เป็นข้อความตรงตามที่พูดทุกคำ ตอบเฉพาะข้อความที่ถอดได้เท่านั้น ห้ามใส่คำอธิบาย เครื่องหมายคำพูด หรือ timestamp" },
+    { inlineData: { mimeType: audio.mimeType, data: audio.dataBase64 } },
+  ];
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: [{ role: "user", parts }],
+        config: {
+          maxOutputTokens,
+          temperature: 0,
+          thinkingConfig: { thinkingBudget: 0 },
+          abortSignal: AbortSignal.timeout(GEMINI_TEXT_TIMEOUT_MS),
+        },
+      });
+      return response.text ?? "";
+    } catch (e) {
+      const info = getGeminiErrorInfo(e, { managed: process.env.MANAGED_GEMINI === "1" });
+      if (info.retryable && attempt < MAX_ATTEMPTS) {
+        const delayMs = 1000 * 2 ** (attempt - 1) + Math.floor(Math.random() * 500);
+        console.warn(`[gemini] audio ${info.kind} (attempt ${attempt}/${MAX_ATTEMPTS}) — retry in ${delayMs}ms`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+      throw providerError(
+        codeFromGeminiInfo(info.kind, info.status, info.retryable),
+        "gemini",
+        info.technicalMessage || (e instanceof Error ? e.message : String(e)),
+        { status: info.status, userAction: info.userMessage },
+      );
+    }
+  }
+  throw providerError("transient", "gemini", "gemini audio retries exhausted");
+}
