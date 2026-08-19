@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { isOmniVoiceServerEnabled } from "@/lib/omnivoice-policy";
 
 export type { OmniVoiceInfo } from "@/lib/tts-providers";
@@ -523,18 +524,30 @@ async function callHostingerOmniVoice(
     // (เคยทำให้เสียงโคลนล้มด้วย VOICE_NOT_SERVED โดยไม่มีสาเหตุชัด)
     const response = voiceRef
       ? await (async () => {
-          const form = new FormData();
-          const refBytes = Buffer.from(voiceRef.audioBase64, "base64");
-          form.append("ref_audio", new Blob([new Uint8Array(refBytes)], { type: "audio/wav" }), "ref.wav");
-          form.append("ref_text", voiceRef.refText);
-          form.append("text", text);
-          form.append("num_step", String(config.numStep));
-          form.append("speed", String(speed));
-          // ห้ามตั้ง Content-Type เอง — ต้องให้ fetch ใส่ multipart boundary
+          // ประกอบ multipart เองเป็น Buffer แทน FormData/Blob — ควบคุมไบต์ที่ส่ง
+          // ได้แน่นอน (ref_audio เป็น WAV ดิบหลักแสนไบต์) และไม่ต้องพึ่งพฤติกรรม
+          // ของ FormData ใน runtime ที่ต่างกัน
+          const boundary = `----heroai${randomUUID().replace(/-/g, "")}`;
+          const enc = (s: string) => Buffer.from(s, "utf8");
+          const field = (name: string, value: string) =>
+            enc(`--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`);
+          const body = Buffer.concat([
+            field("ref_text", voiceRef.refText),
+            field("text", text),
+            field("num_step", String(config.numStep)),
+            field("speed", String(speed)),
+            enc(`--${boundary}\r\nContent-Disposition: form-data; name="ref_audio"; filename="ref.wav"\r\nContent-Type: audio/wav\r\n\r\n`),
+            Buffer.from(voiceRef.audioBase64, "base64"),
+            enc("\r\n"),
+            enc(`--${boundary}--\r\n`),
+          ]);
           return fetch(`${config.baseUrl}/clone`, {
             method: "POST",
-            headers: { ...omnivoiceAuthHeaders(config.apiKey) },
-            body: form,
+            headers: {
+              "Content-Type": `multipart/form-data; boundary=${boundary}`,
+              ...omnivoiceAuthHeaders(config.apiKey),
+            },
+            body: new Uint8Array(body),
             cache: "no-store",
             signal: AbortSignal.timeout(remainingMs),
           });
