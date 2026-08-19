@@ -518,13 +518,34 @@ async function callHostingerOmniVoice(
   const remainingMs = deadline - Date.now();
   if (remainingMs < 1_000) return { ok: false, status: 504, reason: "request budget exhausted" };
   try {
-    const response = await fetch(`${config.baseUrl}/tts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...omnivoiceAuthHeaders(config.apiKey) },
-      body: JSON.stringify(omniVoiceTtsInput(config, voiceId, text, speed, voiceRef)),
-      cache: "no-store",
-      signal: AbortSignal.timeout(remainingMs),
-    });
+    // เสียงโคลนของผู้ใช้: backend นี้เปิด voice cloning ที่ /clone (multipart) —
+    // /tts รับเฉพาะ stock voice ตาม voice_id และเมิน ref_audio_base64 เงียบ ๆ
+    // (เคยทำให้เสียงโคลนล้มด้วย VOICE_NOT_SERVED โดยไม่มีสาเหตุชัด)
+    const response = voiceRef
+      ? await (async () => {
+          const form = new FormData();
+          const refBytes = Buffer.from(voiceRef.audioBase64, "base64");
+          form.append("ref_audio", new Blob([new Uint8Array(refBytes)], { type: "audio/wav" }), "ref.wav");
+          form.append("ref_text", voiceRef.refText);
+          form.append("text", text);
+          form.append("num_step", String(config.numStep));
+          form.append("speed", String(speed));
+          // ห้ามตั้ง Content-Type เอง — ต้องให้ fetch ใส่ multipart boundary
+          return fetch(`${config.baseUrl}/clone`, {
+            method: "POST",
+            headers: { ...omnivoiceAuthHeaders(config.apiKey) },
+            body: form,
+            cache: "no-store",
+            signal: AbortSignal.timeout(remainingMs),
+          });
+        })()
+      : await fetch(`${config.baseUrl}/tts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...omnivoiceAuthHeaders(config.apiKey) },
+          body: JSON.stringify(omniVoiceTtsInput(config, voiceId, text, speed)),
+          cache: "no-store",
+          signal: AbortSignal.timeout(remainingMs),
+        });
     if (!response.ok) {
       return {
         ok: false,
@@ -533,7 +554,12 @@ async function callHostingerOmniVoice(
         retryAfter: response.headers.get("retry-after") ?? undefined,
       };
     }
-    const data = await response.json() as unknown;
+    const raw = await response.json() as unknown;
+    // /clone ไม่ส่ง voice_id กลับมา (มันไม่รู้จัก id ฝั่งเรา) — เติมจาก request
+    // ให้ payload ผ่าน validTtsPayload เหมือน /tts
+    const data = voiceRef && raw && typeof raw === "object" && !Array.isArray(raw)
+      ? { voice_id: voiceId, ...(raw as Record<string, unknown>) }
+      : raw;
     if (!validTtsPayload(data)) return { ok: false, status: 502, reason: "invalid audio payload" };
     return {
       ok: true,
