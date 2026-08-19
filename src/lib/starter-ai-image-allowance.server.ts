@@ -1,8 +1,9 @@
 import "server-only";
 
-import type { Prisma } from "@prisma/client";
+import type { ConversionTrialAiImageAllowance, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { decidePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 
 export const STARTER_AI_IMAGE_ALLOWANCE_LIMIT = 8;
 export const STARTER_AI_IMAGE_WINDOW_DAYS = 7;
@@ -58,6 +59,42 @@ const evidenceSelect = {
     },
   },
 } satisfies Prisma.UserSelect;
+
+type AllowanceEvidenceUser = Prisma.UserGetPayload<{ select: typeof evidenceSelect }>;
+
+function allowanceAccessState(user: AllowanceEvidenceUser, now: Date) {
+  const paidEquivalent = decidePaidEquivalentEntitlement({
+    user,
+    payments: user.payments,
+    couponRedemptions: user.couponRedemptions,
+    administratorGrants: user.administratorGrants,
+  }, now);
+  const activeTrial = !user.suspended
+    && Boolean(user.trialStartedAt && user.trialStartedAt <= now && user.trialEndsAt && user.trialEndsAt > now);
+  return { paidEquivalent, activeTrial };
+}
+
+function statusFromEvidence(
+  user: AllowanceEvidenceUser,
+  row: ConversionTrialAiImageAllowance | null,
+  now: Date,
+): StarterAiImageAllowanceStatus {
+  const { paidEquivalent, activeTrial } = allowanceAccessState(user, now);
+  if (row) {
+    const mode = paidEquivalent.canUsePaidFeatures
+      ? "paid"
+      : activeTrial && row.expiresAt > now ? "trial" : "locked";
+    return toStatus(row, mode);
+  }
+  const origin = user.trialStartedAt ?? user.createdAt;
+  return toStatus({
+    trialStartedAt: origin,
+    expiresAt: user.trialEndsAt ?? origin,
+    limitImages: 0,
+    reservedImages: 0,
+    usedImages: 0,
+  }, paidEquivalent.canUsePaidFeatures ? "paid" : "locked");
+}
 
 function toStatus(
   row: {
@@ -117,14 +154,7 @@ export async function starterAllowanceStatusInTransaction(
 ): Promise<StarterAiImageAllowanceStatus> {
   const user = await tx.user.findUnique({ where: { id: userId }, select: evidenceSelect });
   if (!user) throw new Error("Conversion Trial allowance user not found");
-  const paidEquivalent = decidePaidEquivalentEntitlement({
-    user,
-    payments: user.payments,
-    couponRedemptions: user.couponRedemptions,
-    administratorGrants: user.administratorGrants,
-  }, now);
-  const activeTrial = !user.suspended
-    && Boolean(user.trialStartedAt && user.trialStartedAt <= now && user.trialEndsAt && user.trialEndsAt > now);
+  const { paidEquivalent, activeTrial } = allowanceAccessState(user, now);
   let row = await tx.conversionTrialAiImageAllowance.findUnique({ where: { userId } });
   if (activeTrial && !paidEquivalent.canUsePaidFeatures && user.trialStartedAt && user.trialEndsAt && !row) {
     row = await tx.conversionTrialAiImageAllowance.create({
@@ -137,20 +167,7 @@ export async function starterAllowanceStatusInTransaction(
       },
     });
   }
-  if (row) {
-    const mode = paidEquivalent.canUsePaidFeatures
-      ? "paid"
-      : activeTrial && row.expiresAt > now ? "trial" : "locked";
-    return toStatus(row, mode);
-  }
-  const origin = user.trialStartedAt ?? user.createdAt;
-  return toStatus({
-    trialStartedAt: origin,
-    expiresAt: user.trialEndsAt ?? origin,
-    limitImages: 0,
-    reservedImages: 0,
-    usedImages: 0,
-  }, paidEquivalent.canUsePaidFeatures ? "paid" : "locked");
+  return statusFromEvidence(user, row, now);
 }
 
 export async function starterAllowanceStatusForWindowInTransaction(
@@ -181,7 +198,25 @@ export async function starterAllowanceStatusForWindowInTransaction(
 }
 
 export async function getStarterAiImageAllowanceStatus(userId: string, now = new Date()) {
-  return prisma.$transaction((tx) => starterAllowanceStatusInTransaction(tx, userId, now));
+  // This status is included in /api/user/me and normally requires reads only.
+  // An interactive Prisma transaction asks SQLite for its single writer lock,
+  // so the old implementation could return P1008 while two renders saturated
+  // the disk even for paid/free users whose allowance state could not change.
+  const [user, row] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: evidenceSelect }),
+    prisma.conversionTrialAiImageAllowance.findUnique({ where: { userId } }),
+  ]);
+  if (!user) throw new Error("Conversion Trial allowance user not found");
+  const { paidEquivalent, activeTrial } = allowanceAccessState(user, now);
+  const needsMaterialization = activeTrial && !paidEquivalent.canUsePaidFeatures && !row;
+  if (!needsMaterialization) return statusFromEvidence(user, row, now);
+
+  // Only the first read of an eligible Conversion Trial needs a write. Recheck
+  // all evidence inside the transaction so a concurrent activation or first
+  // materializer cannot create a stale/duplicate allowance.
+  return withTransientSqliteRetry(
+    () => prisma.$transaction((tx) => starterAllowanceStatusInTransaction(tx, userId, now)),
+  );
 }
 
 export async function getStarterAiImageAllowanceWindowStatus(userId: string, windowStartedAt: Date) {
