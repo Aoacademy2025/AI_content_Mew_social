@@ -26,7 +26,10 @@ async function main() {
   const { refundReservation, reserveMinutesOrCredits } = await import("../src/lib/minute-credits");
   const { createReservedImageJob, failAndRefundAiJob } =
     await import("../src/lib/ai-generation-jobs.server");
-  const now = new Date("2026-08-16T03:00:00.000Z");
+  // Keep the test clock aligned with production paths that intentionally use
+  // wall time internally (for example AI image wallet reservation). A fixed
+  // 2026-08-16 clock silently expired these fixtures once that date passed.
+  const now = new Date();
   const day = 24 * 60 * 60 * 1_000;
 
   const user = await prisma.user.create({

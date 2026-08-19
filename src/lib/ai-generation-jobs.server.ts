@@ -476,6 +476,9 @@ export async function markImageAttemptSubmitted(input: {
   return prisma.$transaction(async (tx) => {
     const job = await tx.aiGenerationJob.findFirst({ where: { id: input.jobId, userId: input.userId } });
     if (!job) return null;
+    if (!(["queued", "in_progress"].includes(job.status)) || job.chargeState !== "reserved") {
+      return job;
+    }
     const now = new Date();
     await tx.aiGenerationAttempt.updateMany({
       where: {
@@ -489,14 +492,19 @@ export async function markImageAttemptSubmitted(input: {
         submittedAt: now,
       },
     });
-    return tx.aiGenerationJob.update({
-      where: { id: job.id },
+    await tx.aiGenerationJob.updateMany({
+      where: {
+        id: job.id,
+        status: { in: ["queued", "in_progress"] },
+        chargeState: "reserved",
+      },
       data: {
         providerJobId: input.providerJobId,
         status: input.inProgress ? "in_progress" : "queued",
         startedAt: input.inProgress ? (job.startedAt ?? now) : job.startedAt,
       },
     });
+    return tx.aiGenerationJob.findUnique({ where: { id: job.id } });
   });
 }
 
@@ -510,6 +518,9 @@ export async function markImageAttemptProgress(input: {
   return prisma.$transaction(async (tx) => {
     const job = await tx.aiGenerationJob.findFirst({ where: { id: input.jobId, userId: input.userId } });
     if (!job) return null;
+    if (!(["queued", "in_progress"].includes(job.status)) || job.chargeState !== "reserved") {
+      return job;
+    }
     const now = new Date();
     await tx.aiGenerationAttempt.updateMany({
       where: {
@@ -519,14 +530,19 @@ export async function markImageAttemptProgress(input: {
       },
       data: { status: input.inProgress ? "in_progress" : "queued" },
     });
-    return tx.aiGenerationJob.update({
-      where: { id: job.id },
+    await tx.aiGenerationJob.updateMany({
+      where: {
+        id: job.id,
+        status: { in: ["queued", "in_progress"] },
+        chargeState: "reserved",
+      },
       data: {
         status: input.inProgress ? "in_progress" : "queued",
         startedAt: input.inProgress ? (job.startedAt ?? now) : job.startedAt,
         delayTimeMs: input.delayTimeMs ?? job.delayTimeMs,
       },
     });
+    return tx.aiGenerationJob.findUnique({ where: { id: job.id } });
   });
 }
 

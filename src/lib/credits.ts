@@ -12,8 +12,9 @@
  * - if `count !== 1` → lost race / insufficient → re-read and return error
  */
 
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import { USAGE_PERIOD_DAYS } from "@/lib/usage-limits";
 
 // ── Cost table + pure price helpers ───────────────────────────────────────────
@@ -216,7 +217,50 @@ export async function getBalance(
   userId: string,
   now: Date = new Date(),
 ): Promise<{ granted: number; promotional: number; purchased: number; total: number }> {
-  return prisma.$transaction(async (tx) => {
+  // The normal balance path is read-only. Previously the unconditional upsert
+  // below made every balance poll compete for SQLite's single writer lock even
+  // when the wallet already existed and no promotional grant had expired.
+  type BalanceSnapshot = {
+    granted: number | bigint;
+    purchased: number | bigint;
+    promotional: number | bigint;
+    hasExpired: number | bigint | boolean;
+  };
+  const [snapshot] = await withTransientSqliteRetry(() => prisma.$queryRaw<BalanceSnapshot[]>(Prisma.sql`
+    SELECT
+      cb."granted" AS "granted",
+      cb."purchased" AS "purchased",
+      COALESCE((
+        SELECT SUM(pg."remainingAmount")
+        FROM "PromotionalCreditGrant" pg
+        WHERE pg."userId" = ${userId}
+          AND pg."expiresAt" > ${now}
+          AND pg."remainingAmount" > 0
+      ), 0) AS "promotional",
+      EXISTS(
+        SELECT 1
+        FROM "PromotionalCreditGrant" expired
+        WHERE expired."userId" = ${userId}
+          AND expired."expiresAt" <= ${now}
+          AND expired."remainingAmount" > 0
+      ) AS "hasExpired"
+    FROM "CreditBalance" cb
+    WHERE cb."userId" = ${userId}
+    LIMIT 1
+  `));
+  if (snapshot && Number(snapshot.hasExpired) === 0) {
+    const granted = Number(snapshot.granted);
+    const promotional = Number(snapshot.promotional);
+    const purchased = Number(snapshot.purchased);
+    return {
+      granted,
+      promotional,
+      purchased,
+      total: granted + promotional + purchased,
+    };
+  }
+
+  return withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
     await materializeExpiredPromotionalCredits(tx, userId, now);
     const row = await tx.creditBalance.upsert({
       where: { userId },
@@ -230,7 +274,7 @@ export async function getBalance(
       purchased: row.purchased,
       total: row.granted + promotional + row.purchased,
     };
-  });
+  }));
 }
 
 /**

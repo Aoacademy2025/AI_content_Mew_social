@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { MONTHLY_GRANT } from "@/lib/credits";
 import { minutesPerMonthForPlan, videoExpiryFor } from "@/lib/plan-limits";
 import { usageWindowForPlan } from "@/lib/usage-limits";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 
@@ -63,23 +64,6 @@ async function serializeGrantCouponWrite<T>(operation: () => Promise<T>): Promis
   const result = grantCouponWriteQueue.tail.then(operation, operation);
   grantCouponWriteQueue.tail = result.then(() => undefined, () => undefined);
   return result;
-}
-
-function isTransientSqliteTransactionError(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError
-    && (error.code === "P1008" || error.code === "P2028");
-}
-
-async function retryTransientSqliteTransaction<T>(operation: () => Promise<T>): Promise<T> {
-  const maxAttempts = 4;
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      if (!isTransientSqliteTransactionError(error) || attempt >= maxAttempts) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 25 * (2 ** (attempt - 1))));
-    }
-  }
 }
 
 function failureMessage(code: GrantCouponFailureCode): string {
@@ -371,7 +355,10 @@ export async function redeemGrantCoupon(
       return success;
     });
     if (options.preview) return await transaction();
-    return await serializeGrantCouponWrite(() => retryTransientSqliteTransaction(transaction));
+    return await serializeGrantCouponWrite(() => withTransientSqliteRetry(transaction, {
+      maxAttempts: 4,
+      baseDelayMs: 25,
+    }));
   } catch (error) {
     if (error instanceof RedemptionAbort) {
       return { ok: false, code: error.code, message: error.message };
