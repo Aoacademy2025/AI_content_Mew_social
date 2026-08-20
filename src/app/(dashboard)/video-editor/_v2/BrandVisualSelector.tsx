@@ -139,6 +139,15 @@ export function BrandVisualSelector({
     p.targetClipCount,
     TARGET_CLIP_COUNT_SETTLE_MS,
   );
+  // People/location is part of Content Preflight, not the persisted Visual
+  // Context. Before an Upload has a transcript it has no semantic work to
+  // refresh; once a Narrative Source exists, rapid changes settle into one
+  // replacement preflight instead of flashing the panel per click.
+  const sceneContentPreference = narrative ? p.brollRegionPreference : null;
+  const settledSceneContentPreference = useDebouncedValue(
+    sceneContentPreference,
+    TARGET_CLIP_COUNT_SETTLE_MS,
+  );
   const treatment = context?.legacyCustomTreatment
     ? "ใช้แนวที่ตั้งไว้เดิม"
     : context?.treatment?.trim() || preflight?.suggestedTreatment.label || "กำลังเลือกจากเนื้อหา";
@@ -196,7 +205,9 @@ export function BrandVisualSelector({
                 kind: p.mode === "upload" ? "upload-transcript" : p.narrativeSourceKind,
                 text: narrative,
                 ...(settledTargetClipCount > 0 ? { windowCount: settledTargetClipCount } : {}),
-                sceneContentPolicy: sceneContentPolicyFromPreference(p.brollRegionPreference),
+                sceneContentPolicy: sceneContentPolicyFromPreference(
+                  settledSceneContentPreference ?? p.brollRegionPreference,
+                ),
               },
             }),
             signal,
@@ -270,9 +281,12 @@ export function BrandVisualSelector({
     // the already-analyzed count before the debounce expires cancels the
     // refresh and immediately restores readiness.
     onPreflightStatusChange?.(
-      p.targetClipCount === settledTargetClipCount ? "ready" : "loading",
+      p.targetClipCount === settledTargetClipCount
+        && sceneContentPreference === settledSceneContentPreference
+        ? "ready"
+        : "loading",
     );
-  }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, canLoadWithoutNarrative, p.targetClipCount, settledTargetClipCount, preflight, onPreflightStatusChange]);
+  }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, canLoadWithoutNarrative, p.targetClipCount, settledTargetClipCount, sceneContentPreference, settledSceneContentPreference, preflight, onPreflightStatusChange]);
 
   useEffect(() => {
     if (!canRenderPersistedVisual || !shouldLoadVisualContext || !p.projectId || (!narrative && !canLoadWithoutNarrative)) {
@@ -285,7 +299,7 @@ export function BrandVisualSelector({
     const controller = new AbortController();
     void loadContext(controller.signal);
     return () => controller.abort();
-  }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, p.mode, settledTargetClipCount, p.brollRegionPreference, onPreflightStatusChange, onPolicyWarningsChange]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canRenderPersistedVisual, shouldLoadVisualContext, p.projectId, narrative, p.mode, settledTargetClipCount, settledSceneContentPreference, onPreflightStatusChange, onPolicyWarningsChange]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     onSelectionBlockedChange?.(changing || pending !== null);

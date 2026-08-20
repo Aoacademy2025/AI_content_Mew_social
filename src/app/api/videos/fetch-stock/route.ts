@@ -2377,6 +2377,12 @@ export async function POST(req: Request) {
             sceneTitle: subtitleTexts?.[sourceIndex] || keyword,
             style: providerStyle,
             interfaceExpected: brief.includesInterface,
+            sceneRenderingDirection: {
+              storytellingMode: brief.visualMode,
+              camera: brief.camera,
+              lighting: brief.lighting,
+              palette: brief.palette,
+            },
             brandVisualAcceptance: brandVisualAcceptance ?? undefined,
             productSurface: "hero_video",
           });

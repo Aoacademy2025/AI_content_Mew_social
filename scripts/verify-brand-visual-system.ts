@@ -222,7 +222,9 @@ for (const format of VISUAL_FORMATS) {
   });
   const expectedRecipe = format.id === "simple-editorial-story"
     ? `${format.id}-v11`
-    : `${format.id}-v9`;
+    : format.id === "cinematic-realism"
+      ? `${format.id}-v10`
+      : `${format.id}-v9`;
   assert.equal(storm.recipeVersion, expectedRecipe, `${format.id} must compile on its current pinned recipe`);
   assert.match(storm.positive, /a towering cyclone wall/, "the beat's subject survives the brand");
   assert.match(storm.positive, /set in an open coastal town/, "the beat's setting survives the brand");
@@ -247,6 +249,80 @@ assert.doesNotMatch(stormCinematic.positive, /one nuanced human moment/i,
   "cinematic realism must not force a human into a weather beat");
 assert.match(stormCinematic.positive, /35mm documentary lens language/,
   "the brand-safe lens, contrast and lighting language stays");
+
+/** A Hero scene plan may vary only Flexible Scene Direction. The project-bound
+ * Visual Beat remains authoritative for subject/action/setting, while the
+ * camera, light, palette and storytelling mode must still reach the actual
+ * provider-positive prompt. Otherwise ten distinct scenes collapse into the
+ * same Brand/Project composition even though their planner briefs differ. */
+type SceneDirectedCompileInput = Parameters<typeof compileBrandVisualPrompt>[0] & {
+  sceneRenderingDirection: {
+    storytellingMode: string;
+    camera: string;
+    lighting: string;
+    palette: string;
+  };
+};
+const sceneDirectedCinematic = (sceneRenderingDirection: SceneDirectedCompileInput["sceneRenderingDirection"]) =>
+  compileBrandVisualPrompt({
+    visualFormatId: "cinematic-realism",
+    contentDomain: "creator education",
+    treatment: "authoritative editorial clarity",
+    visualBeat: {
+      phase: "explain",
+      subject: "a Thai creator comparing two content plans",
+      action: "the creator moves one physical planning card beside another",
+      setting: "a lived-in home studio",
+      emotion: "focused confidence",
+      emphasis: "the visible contrast between the two plans",
+    },
+    brandVisualLanguage: null,
+    sceneRenderingDirection,
+  } as SceneDirectedCompileInput);
+
+const sceneDirectedWide = sceneDirectedCinematic({
+  storytellingMode: "environmental",
+  camera: "wide eye-level view with the creator small in the room",
+  lighting: "soft morning window light",
+  palette: "warm wood, cream paper and muted green",
+});
+const sceneDirectedClose = sceneDirectedCinematic({
+  storytellingMode: "macro-process",
+  camera: "tight overhead close-up of hands and two physical cards",
+  lighting: "focused neutral task light",
+  palette: "charcoal, off-white and restrained amber",
+});
+assert.notEqual(
+  sceneDirectedWide.positive,
+  sceneDirectedClose.positive,
+  "distinct Hero scene directions must not collapse into one provider prompt",
+);
+assert.equal(sceneDirectedWide.recipeVersion, "cinematic-realism-v10",
+  "new cinematic selections use the additive scene-diversity recipe without rewriting v9 pins");
+assert.match(sceneDirectedWide.positive, /wide eye-level view with the creator small in the room/);
+assert.match(sceneDirectedWide.positive, /soft morning window light/);
+assert.match(sceneDirectedWide.positive, /warm wood, cream paper and muted green/);
+assert.match(sceneDirectedWide.positive, /storytelling mode environmental/);
+assert.doesNotMatch(
+  sceneDirectedWide.positive,
+  /Lettering-safe visual plan: blank solid-color shapes|All people and objects share the same ground plane|The lower third stays calm and uncluttered/,
+  "the cinematic diversity recipe must not force every scene into the same presentation-wall tableau",
+);
+assert.match(
+  sceneDirectedWide.positive,
+  /every visible surface is filled edge-to-edge by its native photographic material, color, light and texture/i,
+  "cinematic scenes reserve every surface for the depicted environment instead of an added overlay",
+);
+assert.match(
+  sceneDirectedWide.positive,
+  /at every canvas edge, whatever photographed environment naturally occupies that area continues without interruption/i,
+  "cinematic scenes continue the real environment through every edge without forcing one generic lower-third layout",
+);
+assert.doesNotMatch(
+  sceneDirectedWide.positive,
+  /lettering|glyph|typography|caption|subtitle|\btext\b|\bwords?\b|\bblank\b/i,
+  "the positive-only cinematic prompt does not prime the renderer with copy-related tokens",
+);
 
 const stormInfographic = compileBrandVisualPrompt({
   visualFormatId: "clear-infographic",
@@ -907,7 +983,9 @@ assert.ok(
   VISUAL_FORMATS.every((format) => (
     format.id === "simple-editorial-story"
       ? format.recipeVersion === "simple-editorial-story-v11"
-      : format.recipeVersion.endsWith("-v9")
+      : format.id === "cinematic-realism"
+        ? format.recipeVersion === "cinematic-realism-v10"
+        : format.recipeVersion.endsWith("-v9")
   )),
   "a material prompt-compiler change must publish a new immutable recipe version",
 );
@@ -1068,7 +1146,11 @@ assert.equal(
 );
 assert.ok(
   VISUAL_FORMATS.every((format) => format.recipeVersion === (
-    format.id === "simple-editorial-story" ? `${format.id}-v11` : `${format.id}-v9`
+    format.id === "simple-editorial-story"
+      ? `${format.id}-v11`
+      : format.id === "cinematic-realism"
+        ? `${format.id}-v10`
+        : `${format.id}-v9`
   )),
   "the count-safe compiler publishes new recipes while frozen v6/v7 prompts remain replayable",
 );
@@ -1249,7 +1331,13 @@ assert.deepEqual(
   ["close", "explain", "hook"],
 );
 assert.ok(
-  benchmarkCases.every((item) => /same ground plane in one frozen moment/i.test(item.compiled.positive)),
+  benchmarkCases.every((item) => (
+    /same ground plane in one frozen moment/i.test(item.compiled.positive)
+    || (
+      item.visualFormatId === "cinematic-realism"
+      && /physically coherent in one scene without duplicating them across depth/i.test(item.compiled.positive)
+    )
+  )),
   "every benchmark prompt must keep its subjects in one spatially continuous moment",
 );
 assert.ok(

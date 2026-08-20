@@ -1,5 +1,5 @@
 {
-  "batchId": "visual-format-cards-2026-08-18-set-v1",
+  "batchId": "visual-format-cards-2026-08-20-set-v2",
   "sceneId": "hook",
   "seed": 202608091,
   "renderer": "runpod:z-image-turbo",
@@ -8,33 +8,33 @@
   "formats": [
     {
       "id": "cinematic-realism",
-      "recipeVersion": "cinematic-realism-v9",
+      "recipeVersion": "cinematic-realism-v10",
       "file": "cinematic-realism.webp",
-      "sha256": "af54cfcec740ab91c5db15e6212e601e45d0717ac5b618c7a54d6527ed9c0ab4"
+      "sha256": "dcec2120fdd18db668d6ba572e5c07f5c8febabcf774ad14321521685d3d060c"
     },
     {
       "id": "simple-editorial-story",
       "recipeVersion": "simple-editorial-story-v11",
       "file": "simple-editorial-story.webp",
-      "sha256": "0f3a2af410a0056285a6ef2f2bb7cb57c4c496373d38f93fff5bbd93f2719443"
+      "sha256": "189b6d3d12c556fec6b18cbb516dd1fb6436074c5830500ba07ad1f91977ac34"
     },
     {
       "id": "dramatic-comic",
       "recipeVersion": "dramatic-comic-v9",
       "file": "dramatic-comic.webp",
-      "sha256": "bbc97318c775ec3e307930896767a4f843ada458a5c39343c0e6d39f0cfcccb5"
+      "sha256": "7a07bdb9a9a3163bbb148ea51c53adf1b13a65daa2b6cc908c259a011cfebafc"
     },
     {
       "id": "clear-infographic",
       "recipeVersion": "clear-infographic-v9",
       "file": "clear-infographic.webp",
-      "sha256": "864b60db796814648bb4afc6ce20a87613d1ce204475a59d9d17e1f63ac9c732"
+      "sha256": "c51b8ccc1b0aaeeec919070bae9a48ca9678125431c535a284dcfc25a1d5b2fd"
     },
     {
       "id": "retro-story",
       "recipeVersion": "retro-story-v9",
       "file": "retro-story.webp",
-      "sha256": "393e7199bec2aad2de8c733712504afbb51c191e69316863176c259e91f87c11"
+      "sha256": "44f535bebecb6220f857012d904321b3a61a73241ae8f2b418716727ea34db1e"
     }
   ]
 }

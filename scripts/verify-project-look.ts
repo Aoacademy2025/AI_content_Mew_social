@@ -328,6 +328,82 @@ async function main() {
   assert.doesNotMatch(pinnedPrompt?.compiled.positive ?? "", /new leaked subject|diagrammatic editorial/,
     "later Project Look and Content Preflight edits cannot alter an existing VideoJob");
 
+  type ResolveWithSceneDirection = (input: {
+    userId: string;
+    videoJobId: string;
+    sceneIndex: number;
+    sceneRenderingDirection?: {
+      storytellingMode: string;
+      camera: string;
+      lighting: string;
+      palette: string;
+    };
+  }) => ReturnType<typeof resolveProjectVisualPromptForVideoScene>;
+  const resolveWithSceneDirection = resolveProjectVisualPromptForVideoScene as ResolveWithSceneDirection;
+  const cinematicV10Job = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: project.id,
+      contentPreflightId: pinnedPreflight.id,
+      projectVisualContextJson: JSON.stringify({
+        schemaVersion: 2,
+        source: "project-look",
+        visualFormatId: "cinematic-realism",
+        recipeVersion: "cinematic-realism-v10",
+        treatment: "ผู้เชี่ยวชาญอธิบายชัด",
+        treatmentPin: {
+          kind: "catalog", presetId: "expert-clarity", version: "v1.0.0", source: "creator",
+        },
+        brandVisualLanguage: null,
+      }),
+      inputJson: "{}",
+    },
+  });
+  const wideDirection = {
+    storytellingMode: "environmental",
+    camera: "wide eye-level view across the lived-in room",
+    lighting: "soft morning window light",
+    palette: "warm wood, cream paper and muted green",
+  };
+  const closeDirection = {
+    storytellingMode: "macro-process",
+    camera: "tight overhead close-up of hands and physical cards",
+    lighting: "focused neutral task light",
+    palette: "charcoal, off-white and restrained amber",
+  };
+  const v10WidePrompt = await resolveWithSceneDirection({
+    userId: user.id,
+    videoJobId: cinematicV10Job.id,
+    sceneIndex: 0,
+    sceneRenderingDirection: wideDirection,
+  });
+  const v10ClosePrompt = await resolveWithSceneDirection({
+    userId: user.id,
+    videoJobId: cinematicV10Job.id,
+    sceneIndex: 0,
+    sceneRenderingDirection: closeDirection,
+  });
+  assert.notEqual(
+    v10WidePrompt?.compiled.positive,
+    v10ClosePrompt?.compiled.positive,
+    "the durable Project Visual resolver carries each Hero scene's flexible direction into the provider prompt",
+  );
+  assert.match(v10WidePrompt?.compiled.positive ?? "", /wide eye-level view across the lived-in room/);
+  assert.match(v10WidePrompt?.compiled.positive ?? "", /soft morning window light/);
+  assert.match(v10WidePrompt?.compiled.positive ?? "", /warm wood, cream paper and muted green/);
+
+  const frozenV9WithDirection = await resolveWithSceneDirection({
+    userId: user.id,
+    videoJobId: videoJob.id,
+    sceneIndex: 0,
+    sceneRenderingDirection: wideDirection,
+  });
+  assert.doesNotMatch(
+    frozenV9WithDirection?.compiled.positive ?? "",
+    /wide eye-level view across the lived-in room/,
+    "a scene-diversity fix must not rewrite an existing v9 Project Visual pin",
+  );
+
   const uploadProject = await prisma.editorProject.create({
     data: {
       userId: user.id,

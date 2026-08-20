@@ -37,7 +37,7 @@ export const VISUAL_FORMATS: readonly VisualFormat[] = [
   {
     id: "cinematic-realism",
     label: "ภาพสมจริงแบบหนัง",
-    recipeVersion: "cinematic-realism-v9",
+    recipeVersion: "cinematic-realism-v10",
     description: "ภาพเหมือนฉากหนัง แสงมีมิติและวัสดุสมจริง",
   },
   {
@@ -134,6 +134,16 @@ export type VisualBeat = {
   entityRenderingDescriptions?: string[];
   sceneIntensity?: string;
   safetyBoundary?: SceneSafetyBoundary;
+};
+
+/** Per-scene flexible direction prepared by the video visual planner. It may
+ * vary rendering and framing, but it never owns the Visual Beat's subject,
+ * action, setting, entities, counts or selected Visual Format. */
+export type SceneRenderingDirection = {
+  storytellingMode: string;
+  camera: string;
+  lighting: string;
+  palette: string;
 };
 
 export type BrandVisualLanguage = {
@@ -547,6 +557,14 @@ const V11_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
   "dramatic-comic-v9": V9_FORMAT_RECIPE_DIRECTION["dramatic-comic-v8"],
   "clear-infographic-v9": V9_FORMAT_RECIPE_DIRECTION["clear-infographic-v8"],
   "retro-story-v9": V9_FORMAT_RECIPE_DIRECTION["retro-story-v8"],
+};
+
+/** Cinematic v10 is intentionally narrow: the rendering medium stays byte-for-
+ * byte inherited from v9, while its compiler stops imposing one universal
+ * presentation-wall tableau and accepts scene-specific Flexible Direction.
+ * Existing v9 pins remain routed through the frozen V11 compiler below. */
+const CINEMATIC_V10_FORMAT_RECIPE_DIRECTION: Readonly<Record<string, V3Recipe>> = {
+  "cinematic-realism-v10": V11_FORMAT_RECIPE_DIRECTION["cinematic-realism-v9"],
 };
 
 /** Format-specific translation for the replacement style. The public
@@ -2053,6 +2071,95 @@ function compileBrandVisualPromptV11(input: {
   };
 }
 
+function cinematicSceneRenderingDirectionV10(
+  direction: SceneRenderingDirection | undefined,
+): string {
+  if (!direction) return "";
+  const storytellingMode = positiveOnlyVisualValueV9(direction.storytellingMode, 80);
+  const camera = positiveOnlyVisualValueV9(direction.camera, 220);
+  const lighting = positiveOnlyVisualValueV9(direction.lighting, 180);
+  const palette = positiveOnlyVisualValueV9(direction.palette, 180);
+  const details = [
+    storytellingMode ? `storytelling mode ${storytellingMode}` : "",
+    camera ? `camera ${camera}` : "",
+    lighting ? `lighting ${lighting}` : "",
+    palette ? `context-specific palette and materials ${palette}` : "",
+  ].filter(Boolean);
+  return details.length
+    ? `${details.join("; ")}; vary only framing, light, color and non-essential material detail without adding or replacing story content`
+    : "";
+}
+
+/** Cinematic v10 keeps the accepted relational Hard Scene Fact compiler but
+ * removes the repeated flat-tableau art direction that made unrelated scenes
+ * converge on walls, boards and screens. Scene Rendering Direction is appended
+ * inside the flexible layer, before the final hard-fact and format checks. */
+function compileBrandVisualPromptCinematicV10(input: {
+  visualFormatId: VisualFormatId;
+  recipeVersion: string;
+  contentDomain: string;
+  treatment?: string;
+  treatmentPin?: TreatmentPin;
+  visualBeat: VisualBeat;
+  brandVisualLanguage?: BrandVisualLanguage | null;
+  sceneRenderingDirection?: SceneRenderingDirection;
+}): CompiledBrandVisualPrompt {
+  const recipe = CINEMATIC_V10_FORMAT_RECIPE_DIRECTION[input.recipeVersion];
+  if (!recipe || recipe.formatId !== input.visualFormatId || input.visualFormatId !== "cinematic-realism") {
+    throw new Error("Unsupported Visual Format recipe version");
+  }
+
+  const beat = completedResultVisualBeatV10(input.visualBeat);
+  const scene = countSafeFlexibleSceneDirectionV11(beat);
+  const sceneRenderingDirection = cinematicSceneRenderingDirectionV10(input.sceneRenderingDirection);
+  const entityDescriptions = entityRenderingDescriptionsV6(beat, input.visualFormatId);
+  const brand = brandRenderingDirectionV3(input.brandVisualLanguage);
+  const formatDirection = [
+    ...recipe.direction,
+    ...(recipe.fallbackPalette && !brand.hasPalette ? [recipe.fallbackPalette] : []),
+  ].join(", ");
+  const pinnedTreatmentDirection = input.treatmentPin
+    ? treatmentPromptDirection(input.treatmentPin)
+    : v3PositiveArtDirectionValue(input.treatment) || "neutral editorial storytelling";
+  const sceneIntensity = v3PositiveArtDirectionValue(beat.sceneIntensity) || "balanced";
+  const hasExactCount = beat.hardSceneFacts?.count !== null
+    && beat.hardSceneFacts?.count !== undefined;
+  const safeDomain = positiveOnlyVisualValueV9(input.contentDomain) || "a visually led subject";
+
+  const positive = [
+    `Hard scene facts: ${hardSceneFactsDirectionV8(beat.hardSceneFacts)}`,
+    `Entity rendering descriptions: ${entityDescriptions}`,
+    `Visual format direction: ${formatDirection}`,
+    `Safety boundary: ${safetyBoundaryDirectionV6(beat.safetyBoundary, beat.hardSceneFacts)}`,
+    hasExactCount
+      ? `Count-safe flexible scene direction: ${scene}`
+      : `Flexible scene direction: for a story about ${safeDomain}, show ${scene}`,
+    sceneRenderingDirection
+      ? `Scene-specific flexible rendering direction: ${sceneRenderingDirection}`
+      : "",
+    "Natural photographic surface plan: every visible surface is filled edge-to-edge by its native photographic material, color, light and texture; physical action, silhouette, spacing and light carry the scene's meaning",
+    `Treatment direction: ${pinnedTreatmentDirection}; scene intensity ${sceneIntensity}`,
+    `Brand rendering direction: ${brand.direction}`,
+    "A vertical edge-to-edge composition from one motivated camera viewpoint fills the frame",
+    "Keep the required cast and objects physically coherent in one scene without duplicating them across depth",
+    "At every canvas edge, whatever photographed environment naturally occupies that area continues without interruption",
+    "Preserve every hard scene fact while adapting only camera, composition, lighting, color, texture and non-essential supporting detail",
+    `Final hard-fact check: ${hardSceneFactsEnforcementDirectionV11(beat.hardSceneFacts)}`,
+    `Final visual-format check: ${formatDirection}`,
+  ].filter(Boolean).join(". ") + ".";
+
+  return {
+    visualFormatId: input.visualFormatId,
+    recipeVersion: input.recipeVersion,
+    positive,
+    negative: [
+      ...V3_NEGATIVE_PROMPT_TERMS,
+      ...(recipe.extraNegative ?? []),
+    ].join(", "),
+    ...(input.treatmentPin ? { treatmentPin: input.treatmentPin } : {}),
+  };
+}
+
 /**
  * Compile scene meaning and creator intent into one provider-neutral image
  * instruction. Format selection is an input, never a model decision. The recipe
@@ -2067,6 +2174,7 @@ export function compileBrandVisualPrompt(input: {
   treatmentPin?: TreatmentPin;
   visualBeat: VisualBeat;
   brandVisualLanguage?: BrandVisualLanguage | null;
+  sceneRenderingDirection?: SceneRenderingDirection;
 }): CompiledBrandVisualPrompt {
   const format = SUPPORTED_VISUAL_FORMATS.find((candidate) => candidate.id === input.visualFormatId);
   if (!format) throw new Error("Unsupported Visual Format");
@@ -2082,6 +2190,8 @@ export function compileBrandVisualPrompt(input: {
     compiled = compileBrandVisualPromptV4({ ...input, recipeVersion });
   } else if (recipeVersion.endsWith("-v5")) {
     compiled = compileBrandVisualPromptV5({ ...input, recipeVersion });
+  } else if (CINEMATIC_V10_FORMAT_RECIPE_DIRECTION[recipeVersion]) {
+    compiled = compileBrandVisualPromptCinematicV10({ ...input, recipeVersion });
   } else if (V11_FORMAT_RECIPE_DIRECTION[recipeVersion]) {
     compiled = compileBrandVisualPromptV11({ ...input, recipeVersion });
   } else if (V10_FORMAT_RECIPE_DIRECTION[recipeVersion]) {
