@@ -166,6 +166,14 @@ function verifiedShaForKey(key: string, sha256: string | null): string | null {
   return encoded && encoded !== sha256 ? null : sha256;
 }
 
+function sameR2LastModifiedSecond(leftMs: number, rightMs: number): boolean {
+  // R2 LIST may retain fractional milliseconds while HEAD uses the HTTP-date
+  // second precision. Compare only the precision both observations share.
+  return Number.isFinite(leftMs) &&
+    Number.isFinite(rightMs) &&
+    Math.floor(leftMs / 1000) === Math.floor(rightMs / 1000);
+}
+
 function legacyReferencesProtect(
   refs: MediaReference[],
   now: Date,
@@ -274,7 +282,10 @@ export async function runR2OrphanGc(
         !head ||
         !sha256 ||
         head.sizeBytes !== candidate.sizeBytes ||
-        head.lastModified.getTime() !== candidate.lastModified.getTime()
+        !sameR2LastModifiedSecond(
+          head.lastModified.getTime(),
+          candidate.lastModified.getTime(),
+        )
       ) {
         skipped.remote_unverified++;
         continue;
@@ -324,7 +335,10 @@ export async function runR2OrphanGc(
         !head ||
         sha256 !== record.sha256 ||
         head.sizeBytes !== record.sizeBytes ||
-        head.lastModified.toISOString() !== record.lastModified
+        !sameR2LastModifiedSecond(
+          head.lastModified.getTime(),
+          Date.parse(record.lastModified),
+        )
       ) {
         report.skipped.remote_changed++;
         report.errors++;
