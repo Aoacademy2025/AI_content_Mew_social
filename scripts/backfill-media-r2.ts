@@ -14,12 +14,16 @@ import {
 } from "../src/lib/media-storage";
 import { sha256MediaFile } from "../src/lib/media-storage-support";
 import { createR2MediaStorageFromEnv } from "../src/lib/media-storage-r2";
+import {
+  activeCustomerMediaJobs,
+  hasActiveCustomerMediaJobs,
+} from "../src/lib/customer-media-activity";
 import { prisma } from "../src/lib/prisma";
 
 type BackfillMode = "dry-run" | "apply";
 
 function modeFromArgs(args: string[]): BackfillMode {
-  const known = new Set(["--apply", "--dry-run"]);
+  const known = new Set(["--apply", "--dry-run", "--deferWhenBusy"]);
   if (args.some((arg) => !known.has(arg))) throw new Error("unknown backfill argument");
   if (args.includes("--apply") && args.includes("--dry-run")) {
     throw new Error("choose either --apply or --dry-run");
@@ -33,6 +37,7 @@ function boundedMax(raw: string | undefined): number {
 }
 
 type CatalogInspection = Awaited<ReturnType<MediaCatalog["inspect"]>>;
+const CUSTOMER_WORK_RECHECK_MS = 5_000;
 
 function localObservationMatches(
   row: CatalogInspection,
@@ -113,7 +118,33 @@ async function main() {
   };
 
   try {
+    const deferWhenBusy = process.argv.includes("--deferWhenBusy");
+    let lastCustomerWorkCheckAt = 0;
+    const shouldDefer = async (force = false): Promise<boolean> => {
+      const now = Date.now();
+      if (!deferWhenBusy || (!force && now - lastCustomerWorkCheckAt < CUSTOMER_WORK_RECHECK_MS)) {
+        return false;
+      }
+      lastCustomerWorkCheckAt = now;
+      const { activeRenderJobs, activeVideoJobs } = await activeCustomerMediaJobs();
+      if (hasActiveCustomerMediaJobs({ activeRenderJobs, activeVideoJobs })) {
+        console.log(JSON.stringify({
+          mode,
+          maxUploads,
+          deferredReason: "customer_media_active",
+          activeRenderJobs,
+          activeVideoJobs,
+          ...totals,
+        }));
+        return true;
+      }
+      return false;
+    };
+
+    if (await shouldDefer(true)) return;
+
     for (const identity of await localIdentities(roots)) {
+      if (await shouldDefer()) return;
       totals.scanned += 1;
       let descriptor;
       try {

@@ -196,7 +196,7 @@ export async function parkHeroVoiceProviderJob(
   checkpoint: HeroVoiceProviderCheckpointV1,
   nextPollAt: Date,
 ) {
-  return prisma.videoJob.updateMany({
+  return withVideoJobSqliteRetry("park hero voice provider job", () => prisma.videoJob.updateMany({
     where: { id, status: "processing" },
     data: {
       status: "waiting_provider",
@@ -205,14 +205,14 @@ export async function parkHeroVoiceProviderJob(
       providerCheckpointJson: serializeHeroVoiceProviderCheckpoint(checkpoint),
       providerNextPollAt: nextPollAt,
     },
-  });
+  }));
 }
 
 export async function clearProviderCheckpoint(
   id: string,
   expectedCheckpointJson: string,
 ) {
-  return prisma.videoJob.updateMany({
+  return withVideoJobSqliteRetry("clear provider checkpoint", () => prisma.videoJob.updateMany({
     where: {
       id,
       status: "processing",
@@ -222,11 +222,14 @@ export async function clearProviderCheckpoint(
       providerCheckpointJson: null,
       providerNextPollAt: null,
     },
-  });
+  }));
 }
 
 export async function setJobStep(id: string, currentStep: string, progress: number) {
-  await prisma.videoJob.update({ where: { id }, data: { currentStep, progress } });
+  await withVideoJobSqliteRetry("set pipeline step", () => prisma.videoJob.update({
+    where: { id },
+    data: { currentStep, progress },
+  }));
 }
 
 export async function finishJobWithTransition(

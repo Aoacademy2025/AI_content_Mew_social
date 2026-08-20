@@ -21,13 +21,14 @@ const fixtureRoot = mkdtempSync(path.join(tmpdir(), "media-backfill-versioning-"
 const databaseUrl = `file:${path.join(fixtureRoot, "fixture.db")}`;
 process.env.DATABASE_URL = databaseUrl;
 
-function backfillSummary() {
+function maintenanceSummary(script: string, args: string[] = []) {
   const result = spawnSync(
     path.join(repositoryRoot, "node_modules", ".bin", "tsx"),
     [
       "--tsconfig",
       path.join(repositoryRoot, "tsconfig.json"),
-      path.join(repositoryRoot, "scripts", "backfill-media-r2.ts"),
+      path.join(repositoryRoot, "scripts", script),
+      ...args,
     ],
     {
       cwd: fixtureRoot,
@@ -46,6 +47,10 @@ function backfillSummary() {
     .findLast((line) => line.startsWith("{"));
   assert(summaryLine, "backfill must print a machine-readable summary");
   return JSON.parse(summaryLine);
+}
+
+function backfillSummary(args: string[] = []) {
+  return maintenanceSummary("backfill-media-r2.ts", args);
 }
 
 async function main() {
@@ -158,7 +163,29 @@ async function main() {
   assert.equal(recovered.candidates, 0, JSON.stringify(recovered));
   assert.equal(recovered.alreadyVerified, 2, JSON.stringify(recovered));
 
-  console.log("PASS media backfill versioning compatibility");
+  const { prisma: busyPrisma } = await import("../src/lib/prisma");
+  await busyPrisma.renderJob.create({
+    data: {
+      id: "active-customer-render",
+      userId: "active-customer",
+      type: "RENDER",
+      status: "RUNNING",
+      payload: "{}",
+    },
+  });
+  await busyPrisma.$disconnect();
+
+  const deferred = backfillSummary(["--deferWhenBusy"]);
+  assert.equal(deferred.deferredReason, "customer_media_active");
+  assert.equal(deferred.activeRenderJobs, 1);
+  assert.equal(deferred.scanned, 0, "backfill must not scan local media while a customer render is active");
+
+  const evictionDeferred = maintenanceSummary("evict-local-media.ts", ["--deferWhenBusy"]);
+  assert.equal(evictionDeferred.deferredReason, "customer_media_active");
+  assert.equal(evictionDeferred.activeRenderJobs, 1);
+  assert.equal(evictionDeferred.scanned, 0, "local eviction must not scan or delete while a customer render is active");
+
+  console.log("PASS media maintenance versioning and customer-work admission");
 }
 
 main()
