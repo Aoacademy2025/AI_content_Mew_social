@@ -23,6 +23,7 @@ import {
   compileBrandVisualPrompt,
   type ActiveVisualFormatId,
   type CompiledBrandVisualPrompt,
+  type SceneRenderingDirection,
   type VisualBeat,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
@@ -847,6 +848,7 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
   userId: string;
   videoJobId: string;
   sceneIndex: number;
+  sceneRenderingDirection?: SceneRenderingDirection;
 }): Promise<ResolvedProjectVisualPrompt | null> {
   const job = await prisma.videoJob.findFirst({
     where: { id: input.videoJobId, userId: input.userId },
@@ -1012,6 +1014,7 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
       ...(context.treatmentPin ? { treatmentPin: context.treatmentPin } : {}),
       brandVisualLanguage: context.brandVisualLanguage,
       visualBeat: { ...beatValue, entityRenderingDescriptions, phase },
+      sceneRenderingDirection: input.sceneRenderingDirection,
     }),
   };
 }

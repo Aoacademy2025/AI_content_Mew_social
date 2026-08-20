@@ -30,6 +30,7 @@ async function main() {
   assert.equal(cases.filter((entry) => entry.visualFormatId === "stick-figure-story").length, 0);
   assert.ok(cases.every((entry) => (
     entry.compiled.recipeVersion.endsWith("-v9")
+    || entry.compiled.recipeVersion === "cinematic-realism-v10"
     || entry.compiled.recipeVersion === "simple-editorial-story-v11"
   )));
   assert.ok(cases.every((entry) => entry.compiled.treatmentPin?.version === "v1.0.0"));
@@ -92,8 +93,13 @@ async function main() {
   ));
   assert.match(
     currentExpertClose?.compiled.positive ?? "",
+    /every visible surface is filled edge-to-edge by its native photographic material, color, light and texture/i,
+    "the cinematic recipe reserves every surface for the depicted environment instead of a generic lettering surface",
+  );
+  assert.doesNotMatch(
+    currentExpertClose?.compiled.positive ?? "",
     /every wall, garment, object and background surface presents one continuous visually plain material texture/i,
-    "the lettering regression uses an affirmative plain-surface composition",
+    "the cinematic recipe does not force unrelated scenes onto the same plain-wall tableau",
   );
   assert.doesNotMatch(currentExpertClose?.compiled.positive ?? "", /checklist|dashboard|timeline|records page/i);
 
@@ -115,6 +121,7 @@ async function main() {
   assert.deepEqual(relationalV11Probe.map((entry) => entry.id).sort(), expectedRelationalV11ProbeIds);
   assert.ok(relationalV11Probe.every((entry) => (
     entry.compiled.recipeVersion.endsWith("-v9")
+    || entry.compiled.recipeVersion === "cinematic-realism-v10"
     || entry.compiled.recipeVersion === "simple-editorial-story-v11"
   )));
 

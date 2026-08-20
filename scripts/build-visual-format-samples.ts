@@ -44,7 +44,9 @@ const args = process.argv.slice(2);
 const GENERATE = args.includes("--generate") || args.includes("--install");
 const INSTALL = args.includes("--install");
 
-const BATCH_ID = "visual-format-cards-2026-08-18-set-v1";
+// A batch directory is immutable provenance. Reusing the previous directory
+// would make generateOne skip v9 PNGs and then mislabel those bytes as v10.
+const BATCH_ID = "visual-format-cards-2026-08-20-set-v2";
 const OUTPUT_ROOT = path.resolve(`artifacts/${BATCH_ID}`);
 const PUBLIC_ROOT = path.resolve("public/brand-visual-formats");
 

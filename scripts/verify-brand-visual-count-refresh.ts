@@ -154,6 +154,8 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 const contentPreflightPosts: number[] = [];
+const contentPreflightPreferences: string[] = [];
+let visualContextGets = 0;
 const pendingRefreshes: Array<{ count: number; resolve: (response: Response) => void }> = [];
 let holdContentPreflightRefresh = false;
 let libraryProfiles: Array<Record<string, unknown>> = [];
@@ -178,14 +180,17 @@ const fetchMock = async (input: string | URL | Request, init?: RequestInit): Pro
     });
   }
   if (url.endsWith("/content-preflight")) {
-    const count = Number(JSON.parse(String(init?.body)).narrativeSource.windowCount);
+    const request = JSON.parse(String(init?.body));
+    const count = Number(request.narrativeSource.windowCount);
     contentPreflightPosts.push(count);
+    contentPreflightPreferences.push(request.narrativeSource.sceneContentPolicy?.preference ?? "missing");
     if (holdContentPreflightRefresh) {
       return new Promise((resolve) => pendingRefreshes.push({ count, resolve }));
     }
     return jsonResponse({ preflight: buildPreflight(count) });
   }
   if (url.includes("/visual-context")) {
+    visualContextGets += 1;
     return jsonResponse({
       context: {
         source: "suggested",
@@ -260,7 +265,9 @@ const requireMock = (id: string): unknown => {
       buildVisualSummary: (format: string, treatment: string) => `${format} · ${treatment}`,
     };
   }
-  if (id === "@/lib/scene-content-policy") return { sceneContentPolicyFromPreference: () => ({}) };
+  if (id === "@/lib/scene-content-policy") {
+    return { sceneContentPolicyFromPreference: (preference: string) => ({ preference }) };
+  }
   if (id === "./tokens") return { color, font: { heading: "sans-serif" }, radius: { card: 12 } };
   throw new Error(`Unexpected module import: ${id}`);
 };
@@ -375,6 +382,82 @@ async function main(): Promise<void> {
   await runtime.settle();
   assert.equal(preflightIdWrites.at(-1), "preflight-10", "the settled count atomically replaces the preflight");
   assert.equal(statuses.at(-1), "ready", "rendering is unblocked only after the replacement is ready");
+
+  holdContentPreflightRefresh = false;
+  contentPreflightPosts.length = 0;
+  contentPreflightPreferences.length = 0;
+  const visualContextGetsBeforeNarrativePreferenceChange = visualContextGets;
+  for (const preference of ["thai", "asian", "western", "international", "no-people", "thai"]) {
+    project.brollRegionPreference = preference;
+    runtime.render();
+    await runtime.settle();
+  }
+  assert.deepEqual(
+    contentPreflightPosts,
+    [],
+    "rapid people/location changes do not launch Content Preflight before the choice settles",
+  );
+  await runtime.settle(400);
+  assert.deepEqual(
+    contentPreflightPosts,
+    [10],
+    "rapid people/location changes with a narrative launch one replacement preflight",
+  );
+  assert.deepEqual(
+    contentPreflightPreferences,
+    ["thai"],
+    "the replacement preflight receives only the final settled people/location choice",
+  );
+  assert.equal(
+    visualContextGets,
+    visualContextGetsBeforeNarrativePreferenceChange + 1,
+    "the settled people/location choice swaps Visual Context exactly once",
+  );
+
+  const uploadStatuses: string[] = [];
+  const uploadProject = {
+    ...project,
+    projectId: "upload-project-1",
+    script: "",
+    mode: "upload",
+    narrativeSourceKind: "upload-transcript",
+    targetClipCount: 10,
+    brollRegionPreference: "auto",
+  };
+  const uploadRuntime = new HookRuntime(BrandVisualSelector, {
+    p: uploadProject,
+    onPreflightStatusChange: (status: string) => uploadStatuses.push(status),
+    onPolicyWarningsChange: () => {},
+    onSelectionBlockedChange: () => {},
+  });
+  visualContextGets = 0;
+  contentPreflightPosts.length = 0;
+  uploadRuntime.render();
+  await uploadRuntime.settle();
+  assert.equal(visualContextGets, 1, "Upload Step 2 loads its selectable Visual Context once before transcription");
+  uploadStatuses.length = 0;
+
+  for (const preference of ["thai", "asian", "western", "international", "no-people", "thai"]) {
+    uploadProject.brollRegionPreference = preference;
+    uploadRuntime.render();
+    await uploadRuntime.settle();
+  }
+  await uploadRuntime.settle(400);
+  assert.equal(
+    visualContextGets,
+    1,
+    "people/location changes cannot refetch Visual Context before an Upload narrative exists",
+  );
+  assert.deepEqual(
+    contentPreflightPosts,
+    [],
+    "people/location changes cannot invent Content Preflight work before transcription",
+  );
+  assert.equal(
+    uploadStatuses.includes("loading"),
+    false,
+    "a local region choice before transcription cannot flash the existing Brand Visual panel",
+  );
 
   libraryProfiles = [{
     id: "profile-1",

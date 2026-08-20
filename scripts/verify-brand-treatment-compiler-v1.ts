@@ -9,7 +9,7 @@ const realism = VISUAL_FORMATS.find((format) => format.id === "cinematic-realism
 assert.deepEqual(
   Object.fromEntries(VISUAL_FORMATS.map((format) => [format.id, format.recipeVersion])),
   {
-    "cinematic-realism": "cinematic-realism-v9",
+    "cinematic-realism": "cinematic-realism-v10",
     "simple-editorial-story": "simple-editorial-story-v11",
     "dramatic-comic": "dramatic-comic-v9",
     "clear-infographic": "clear-infographic-v9",
@@ -222,7 +222,7 @@ for (const format of VISUAL_FORMATS.filter((candidate) => candidate.id !== "simp
       entityRenderingDescriptions: [], sceneIntensity: "grand reveal", safetyBoundary: "none",
     },
   });
-  assert.match(currentCountSafe.recipeVersion, /-v9$/,
+  assert.equal(currentCountSafe.recipeVersion, format.recipeVersion,
     `${format.id} must pin the count-safe compiler for new projects`);
   assert.match(currentCountSafe.positive, /Count-safe flexible scene direction:/i);
   assert.match(

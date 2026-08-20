@@ -50,7 +50,10 @@ import {
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
 import { recordVisualBeatAsset } from "@/lib/content-preflight.server";
-import type { CompiledBrandVisualPrompt } from "@/lib/brand-visual-system";
+import type {
+  CompiledBrandVisualPrompt,
+  SceneRenderingDirection,
+} from "@/lib/brand-visual-system";
 import { resolveBrandVisualAccessByUserId } from "@/lib/brand-visual-rollout.server";
 import { HERO_IMAGE_DAILY_CAP } from "@/lib/hero-image-rate-limit";
 import { resolveHeroAiImageAccess } from "@/lib/internal-ai-access";
@@ -146,6 +149,7 @@ export type HeroImageGenerationInput = {
   sceneIndex: number;
   sceneTitle?: string;
   style?: AiImageStyle;
+  sceneRenderingDirection?: SceneRenderingDirection;
   /** Recorded on the job for observability only. It no longer shapes the prompt:
    * per ADR 0007 a screen may legitimately show plausible English UI, and the
    * clause it used to switch on ("simple abstract visual states and unlabeled
@@ -192,6 +196,7 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
     userId: input.userId,
     videoJobId: input.videoJobId,
     sceneIndex: input.sceneIndex,
+    sceneRenderingDirection: input.sceneRenderingDirection,
   });
   const actor = await prisma.user.findUnique({
     where: { id: input.userId },
@@ -231,6 +236,8 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
         negative: projectVisual.compiled.negative,
       }
     : buildArtworkOnlyPrompt(input.prompt, style);
+  const providerSeed = deterministicSeed(input.idempotencyKey);
+  const providerPromptHash = createHash("sha256").update(artworkPrompt.positive).digest("hex");
   let prepared;
   try {
     prepared = prepareImageGeneration(MODEL, {
@@ -242,7 +249,7 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
       negativePrompt: artworkPrompt.negative,
       width,
       height,
-      seed: deterministicSeed(input.idempotencyKey),
+      seed: providerSeed,
       aspectRatio,
     });
   } catch {
@@ -262,7 +269,7 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
   const reserved = await createReservedImageJob({
     userId: input.userId,
     model: MODEL.id,
-    inputPreview: previewGenerationInput(input.prompt),
+    inputPreview: previewGenerationInput(artworkPrompt.positive),
     inputJson: JSON.stringify({
       engine: "runpod",
       aspectRatio,
@@ -272,6 +279,8 @@ async function prepareHeroImageReservation(input: HeroImageGenerationInput) {
       artworkOnly: true,
       videoJobId: input.videoJobId,
       sceneIndex: input.sceneIndex,
+      providerPromptHash,
+      providerSeed,
       interfaceExpected: input.interfaceExpected === true,
       brandVisualSource: projectVisual?.source ?? null,
       visualFormatId: projectVisual?.compiled.visualFormatId ?? null,

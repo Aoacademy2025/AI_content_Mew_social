@@ -451,6 +451,7 @@ export function buildBrandTreatmentRelationalV11ProbeCases(
     selected.length !== RELATIONAL_V11_PROBE_CASE_IDS.size
     || selected.some((entry) => !(
       entry.compiled.recipeVersion.endsWith("-v9")
+      || entry.compiled.recipeVersion === "cinematic-realism-v10"
       || entry.compiled.recipeVersion === "simple-editorial-story-v11"
     ))
   ) {
