@@ -62,6 +62,25 @@ async function main() {
   await prisma.creditBalance.create({
     data: { userId: user.id, granted: 0, purchased: 0, grantedResetAt: now },
   });
+  const project = await prisma.editorProject.create({
+    data: {
+      id: "contention-editor-project",
+      userId: user.id,
+      title: "Before retry",
+      status: "draft",
+    },
+  });
+  const videoJob = await prisma.videoJob.create({
+    data: {
+      id: "contention-video-job",
+      userId: user.id,
+      projectId: project.id,
+      status: "processing",
+      currentStep: "captions",
+      progress: 20,
+      inputJson: "{}",
+    },
+  });
   await prisma.$queryRawUnsafe("PRAGMA journal_mode=WAL");
   await prisma.$queryRawUnsafe("PRAGMA busy_timeout=50");
 
@@ -79,10 +98,50 @@ async function main() {
     assert.equal(allowance.accessMode, "locked", "an existing non-trial allowance status must remain read-only");
   } finally {
     lock.stdin.end("ROLLBACK;\n.quit\n");
-    await prisma.$disconnect();
   }
 
-  console.log("PASS SQLite transient retries are bounded and active usage reads stay read-only");
+  const { setJobStep } = await import("../src/lib/mcp/video-job");
+  const originalVideoJobUpdate = prisma.videoJob.update.bind(prisma.videoJob);
+  let stepAttempts = 0;
+  prisma.videoJob.update = (async (...args: Parameters<typeof originalVideoJobUpdate>) => {
+    stepAttempts += 1;
+    if (stepAttempts === 1) {
+      throw Object.assign(new Error("database failed to respond while changing pipeline step"), { code: "P1008" });
+    }
+    return originalVideoJobUpdate(...args);
+  }) as typeof prisma.videoJob.update;
+  try {
+    await setJobStep(videoJob.id, "keywords", 30);
+  } finally {
+    prisma.videoJob.update = originalVideoJobUpdate as typeof prisma.videoJob.update;
+  }
+  assert.equal(stepAttempts, 2, "pipeline step transition retries a transient SQLite timeout exactly once");
+  const transitioned = await prisma.videoJob.findUniqueOrThrow({ where: { id: videoJob.id } });
+  assert.equal(transitioned.currentStep, "keywords", "pipeline step transition survives transient writer contention");
+  assert.equal(transitioned.progress, 30);
+
+  const { updateEditorProject } = await import("../src/lib/editor-projects");
+  const originalTransaction = prisma.$transaction.bind(prisma);
+  let editorAttempts = 0;
+  prisma.$transaction = (async (...args: Parameters<typeof originalTransaction>) => {
+    editorAttempts += 1;
+    if (editorAttempts === 1) {
+      throw Object.assign(new Error("database failed to respond while saving editor project"), { code: "P1008" });
+    }
+    return originalTransaction(...args);
+  }) as typeof prisma.$transaction;
+  try {
+    await updateEditorProject(user.id, project.id, { title: "After retry" });
+  } finally {
+    prisma.$transaction = originalTransaction as typeof prisma.$transaction;
+  }
+  assert.equal(editorAttempts, 2, "editor PATCH retries a transient SQLite timeout exactly once");
+  const updatedProject = await prisma.editorProject.findUniqueOrThrow({ where: { id: project.id } });
+  assert.equal(updatedProject.title, "After retry", "editor PATCH survives transient writer contention");
+
+  await prisma.$disconnect();
+
+  console.log("PASS SQLite retries cover active reads, pipeline transitions, and editor PATCH writes");
 }
 
 main().catch((error) => {

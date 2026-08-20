@@ -52,7 +52,7 @@
     "verify:grant-coupon-concurrency": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-grant-coupon-concurrency.ts",
     "ops:configure-live0819-coupon": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/configure-live0819-coupon.ts",
     "verify:promotional-credits": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-promotional-credits.ts",
-    "verify:launch-stability-hotfix": "tsx scripts/verify-gemini-tts-no-audio.ts && node --conditions=react-server --import tsx scripts/verify-ai-image-terminal-race.ts && node --conditions=react-server --import tsx scripts/verify-sqlite-contention-resilience.ts && npm run verify:promotional-credits",
+    "verify:launch-stability-hotfix": "tsx scripts/verify-gemini-tts-no-audio.ts && node --conditions=react-server --import tsx scripts/verify-ai-image-terminal-race.ts && node --conditions=react-server --import tsx scripts/verify-sqlite-contention-resilience.ts && tsx scripts/verify-media-backfill-versioning.ts && npm run verify:promotional-credits",
     "verify:hero-script-launch": "npm run verify:hero-script && npm run verify:hero-script-payment && tsx scripts/verify-hero-script-launch-assets.ts && tsx scripts/verify-hero-script-announcement.ts",
     "verify:broll-cadence": "tsx scripts/verify-broll-cadence.ts",
     "verify:broll-coverage": "tsx scripts/verify-broll-coverage.ts && tsx scripts/verify-broll-render-route.ts",

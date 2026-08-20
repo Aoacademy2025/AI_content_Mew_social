@@ -14,12 +14,14 @@ Environment=NODE_ENV=production
 Environment=DOTENV_CONFIG_PATH=/var/www/ai-content/.env.r2.production
 Environment=R2_BACKFILL_ENABLED=1
 Environment=R2_BACKFILL_MAX_OBJECTS=100
-ExecStart=/usr/bin/flock --exclusive --wait 3600 /run/lock/heroai-media-storage.lock /var/www/ai-content/node_modules/.bin/tsx scripts/backfill-media-r2.ts --apply
+ExecStart=/usr/bin/flock --exclusive --wait 3600 /run/lock/heroai-media-storage.lock /var/www/ai-content/node_modules/.bin/tsx scripts/backfill-media-r2.ts --apply --deferWhenBusy
 
 # Keep reconciliation behind customer-facing web and render work.
 Nice=10
 CPUWeight=20
 IOWeight=20
+IOSchedulingClass=idle
+IOSchedulingPriority=7
 MemoryMax=4G
 TimeoutStartSec=infinity
 UMask=0077
