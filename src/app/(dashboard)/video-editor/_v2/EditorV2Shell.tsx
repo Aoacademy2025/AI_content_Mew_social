@@ -621,6 +621,8 @@ export function EditorV2Shell() {
             <NotificationBell />
             <Link
               href="/docs"
+              target="_blank"
+              rel="noopener noreferrer"
               className="text-[13px] transition-opacity hover:opacity-80"
               style={{ color: color.textSecondary, fontFamily: font.body }}
             >
@@ -631,7 +633,7 @@ export function EditorV2Shell() {
             extraItems={
               <>
                 <DropdownMenuItem asChild className="cursor-pointer lg:hidden">
-                  <Link href="/docs">
+                  <Link href="/docs" target="_blank" rel="noopener noreferrer">
                     <BookOpen className="mr-2 h-4 w-4" />
                     วิธีใช้งาน
                   </Link>
