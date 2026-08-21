@@ -205,6 +205,24 @@ assert.match(mobile, /data-caption-action="add"/, "mobile exposes Add caption");
 assert.match(mobile, /data-caption-action="delete"/, "mobile exposes Delete caption");
 assert.match(timeline, /onRedo/, "Timeline exposes Redo beside Undo");
 
+// Clicking a Timeline caption is a text-edit intent: pause playback, select the
+// matching left-panel card, reveal its textarea, scroll it into view, and focus.
+assert.match(
+  desktop,
+  /onEditCaption=\{ed\.editCaptionFromTimeline\}/,
+  "desktop wires Timeline caption clicks to the editor action",
+);
+assert.match(
+  editorHook,
+  /function editCaptionFromTimeline[\s\S]+video\.pause\(\)[\s\S]+setSelected\(index\)[\s\S]+setEditingIdx\(index\)[\s\S]+scrollIntoView[\s\S]+querySelector<HTMLTextAreaElement>\("textarea"\)\?\.focus/,
+  "Timeline caption edit pauses, selects, scrolls, opens, and focuses the matching card",
+);
+assert.match(
+  timeline,
+  /closest\("\[data-edge\]"\)[\s\S]+onEditCaption\(i\)/,
+  "caption timing handles must not trigger text editing after a drag",
+);
+
 // Playback follow must be visually obvious on desktop without mutating `selected` (which owns
 // edit scope). Mobile already gives the active card a full active surface; desktop previously
 // showed only a 2.5px inset bar, which users reasonably read as "highlight does not follow play".

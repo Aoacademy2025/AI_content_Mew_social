@@ -44,7 +44,7 @@ function brollSpansFromConfig(config: Record<string, unknown> | null | undefined
 
 export function TimelinePanel({
   captions, onCaptionsChange, onUndo, onRedo, canUndo, canRedo,
-  selected, onSelect,
+  selected, onSelect, onEditCaption,
   videoRef, timeMs, durationMs, onScrub,
   config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs, avatarFadeApplies,
   voiceUrl, onSelectBrollWindow, editedWindowIndices, disabledWindowIndices,
@@ -60,6 +60,8 @@ export function TimelinePanel({
   canRedo: boolean;
   selected: number;
   onSelect: (i: number) => void;
+  /** Clicking a caption body opens its text editor; timing handles only select. */
+  onEditCaption: (i: number) => void;
   videoRef: React.RefObject<HTMLVideoElement | null>;
   timeMs: number;
   durationMs: number;
@@ -507,7 +509,15 @@ export function TimelinePanel({
                   key={i}
                   data-clip
                   style={{ ...clipStyle(color.trackSub, i === selected), left: toPx(c.startMs), width: Math.max(14, toPx(c.endMs - c.startMs) - 2) }}
-                  onClick={() => { onSelect(i); seekTo(c.startMs + 10); }}
+                  onClick={(event) => {
+                    // A pointer sequence that starts on a timing handle can still
+                    // synthesize a click on the parent clip after release. Keep
+                    // resize selection separate from the text-edit action.
+                    if ((event.target as HTMLElement).closest("[data-edge]")) return;
+                    setPlaying(false);
+                    onEditCaption(i);
+                    seekTo(c.startMs + 10);
+                  }}
                   title={c.text}
                 >
                   {/* ขอบลากซ้าย/ขวา */}

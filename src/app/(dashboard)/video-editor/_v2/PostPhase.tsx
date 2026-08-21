@@ -824,6 +824,7 @@ export function PostPhase({
         canRedo={ed.redoLen > 0}
         selected={ed.selected}
         onSelect={ed.setSelected}
+        onEditCaption={ed.editCaptionFromTimeline}
         videoRef={ed.videoRef}
         timeMs={ed.timeMs}
         onScrub={ed.setTimeMs}

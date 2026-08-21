@@ -643,6 +643,26 @@ export function usePostPhaseEditor(
     if (el) { lastAutoScrollAt.current = Date.now(); el.scrollIntoView({ block: "nearest", behavior: "auto" }); }
   }
 
+  function editCaptionFromTimeline(index: number) {
+    if (index < 0 || index >= captions.length) return;
+    const video = videoRef.current;
+    if (video) video.pause();
+    setPlaying(false);
+    setSelected(index);
+    setFollow(true);
+    setEditingIdx(index);
+
+    // Wait for React to mount the selected card's textarea, then keep the list
+    // and keyboard focus in sync with the Timeline selection.
+    requestAnimationFrame(() => {
+      const card = cardRefs.current[index];
+      if (!card) return;
+      lastAutoScrollAt.current = Date.now();
+      card.scrollIntoView({ block: "nearest", behavior: "auto" });
+      card.querySelector<HTMLTextAreaElement>("textarea")?.focus({ preventScroll: true });
+    });
+  }
+
   // Caption history เก็บทั้งโครงสร้างซับ + override ตาม index เพื่อให้ Undo/Redo หลัง
   // เพิ่ม/ลบ/รวม/แยก ไม่ย้ายสีของการ์ดไปผิดใบ
   const historyRef = useRef<CaptionHistoryState<CaptionEditSnapshot>>({ past: [], future: [] });
@@ -1156,6 +1176,7 @@ export function usePostPhaseEditor(
     redoCaptions,
     onListScroll,
     resumeFollow,
+    editCaptionFromTimeline,
     set,
     setColorScoped,
     applyCardLen,
