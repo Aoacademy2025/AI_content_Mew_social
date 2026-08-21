@@ -74,7 +74,7 @@ export function EditorV2Shell() {
   });
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
-  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, markPreviewMissing } = useV2Job(p);
+  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, resumeExportEditSnapshot, markPreviewMissing } = useV2Job(p);
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
@@ -676,7 +676,11 @@ export function EditorV2Shell() {
           <ExportedView
             job={job}
             onNewProject={handleNewProject}
-            onEditPreview={(job.output?.sourceJobId ?? p.activeJobId) ? () => resumeJob((job.output?.sourceJobId ?? p.activeJobId)!) : undefined}
+            onEditPreview={(job.output?.sourceJobId ?? p.activeJobId)
+              ? job.output?.editSnapshot
+                ? resumeExportEditSnapshot
+                : () => resumeJob((job.output?.sourceJobId ?? p.activeJobId)!)
+              : undefined}
             downloadFilename={downloadFilename}
           />
         )

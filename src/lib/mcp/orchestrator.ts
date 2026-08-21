@@ -19,6 +19,7 @@ import {
   saveProviderCheckpoint,
   VIDEO_JOB_CANCELED_ERROR,
 } from "@/lib/mcp/video-job";
+import type { EditorExportSnapshot } from "@/lib/editor-export-snapshot";
 import {
   firstPassVisualRejectionReasonForWindow,
   validateWindowEdits,
@@ -212,6 +213,7 @@ interface CreateInput {
    * finished video to Gallery from the worker, not from a mounted browser component.
    */
   subtitleOverlayConfig?: Record<string, unknown>;
+  editSnapshot?: EditorExportSnapshot;
   exportScript?: string;
   exportSceneCount?: number;
   /**
@@ -1110,6 +1112,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         sourceJobId: input.sourceJobId,
         videoUrl: burnedUrl,
         ...(videoId ? { videoId } : {}),
+        ...(input.editSnapshot ? { editSnapshot: input.editSnapshot } : {}),
       });
       if (
         completion.transitioned
