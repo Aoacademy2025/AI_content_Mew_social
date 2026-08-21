@@ -62,6 +62,22 @@ assert.deepEqual(
   `Segmented button groups must not be wrapped by <label>; clicking blank label space activates the first button (${invalidSegmentedLabels.join(", ")})`,
 );
 
+const editorShellPath = "src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx";
+const editorShellSource = readFileSync(editorShellPath, "utf8");
+const editorDocsLinks = Array.from(
+  editorShellSource.matchAll(/<Link\b[^>]*href="\/docs"[^>]*>/g),
+  (match) => match[0],
+);
+assert.equal(
+  editorDocsLinks.length,
+  2,
+  "desktop and mobile Editor help links both exist",
+);
+for (const link of editorDocsLinks) {
+  assert.match(link, /target="_blank"/, "Editor help preserves the current project in a new tab");
+  assert.match(link, /rel="noopener noreferrer"/, "new-tab help links isolate window.opener");
+}
+
 const brandVisualPath = "src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx";
 const brandVisualSource = readFileSync(brandVisualPath, "utf8");
 const brandProfileSelectValue = brandVisualSource.indexOf(
@@ -115,5 +131,5 @@ assert.doesNotMatch(
 );
 
 console.log(
-  "verify-support-ticket-ui-regressions: PASS full-card Hook selection, inert Step 2 blank space, and Brand confirmation render gate",
+  "verify-support-ticket-ui-regressions: PASS Hook selection, Step 2 blank space, Editor help tabs, and Brand render gate",
 );
