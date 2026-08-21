@@ -47,7 +47,7 @@ import {
   type HeadlineHookConfig,
   type HeadlineHookSuggestion,
 } from "@/lib/headline-hook";
-import type { V2JobState } from "./useV2Job";
+import type { SubmitExportInput, V2JobState } from "./useV2Job";
 import { findActiveCaptionIdx } from "../_lib/find-active-caption";
 import {
   buildLogoTelemetryProperties,
@@ -133,7 +133,7 @@ const ignoreLayerVisibilityChange = (_next: LayerVisibilityChange) => {
 };
 
 export type UsePostPhaseEditorOptions = {
-  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
+  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string }>;
   /** Adopt the NEW job produced by a broll-rerender apply as the active job (jobId +
    *  localStorage resume key). Wired from useV2Job.adoptJob via PostPhase/PostPhaseMobile. */
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void;
@@ -188,11 +188,14 @@ export function usePostPhaseEditor(
     initialSubtitleConfig,
   } = options;
   const preview = job.output?.preview ?? null;
+  const editSnapshot = job.output?.editSnapshot;
   const [baseUrl, setBaseUrl] = useState(job.output?.videoUrl ?? "");
   const [captions, setCaptions] = useState<V2Caption[]>(() => preview?.captions ?? []);
   const [selected, setSelected] = useState(0);
   const [editingIdx, setEditingIdx] = useState<number | null>(null);
-  const [cfg, setCfg] = useState<V2SubConfig>(() => subtitleConfigFromBrandDefault(initialSubtitleConfig));
+  const [cfg, setCfg] = useState<V2SubConfig>(() => (
+    editSnapshot?.subtitleConfig as V2SubConfig | undefined
+  ) ?? subtitleConfigFromBrandDefault(initialSubtitleConfig));
   const [exp, setExp] = useState<ExportState>({ phase: "idle" });
   const logo = useLogoOverlayEditor({
     projectId,
@@ -205,11 +208,11 @@ export function usePostPhaseEditor(
   });
   // ความยาวการ์ด (1 ประโยค / ≤4 / ≤3 / ≤2 / 1 คำ — semantics เดียวกับ v1) —
   // จัดกลุ่มจากชุดต้นฉบับเสมอ (เปลี่ยนแล้วล้างการแก้รายใบ)
-  const originalCapsRef = useRef<V2Caption[]>(preview?.captions ?? []);
-  const [cardLen, setCardLen] = useState<V2CardLen>(initialSubtitleConfig?.cardLen ?? "sentence");
+  const originalCapsRef = useRef<V2Caption[]>(editSnapshot?.originalCaptions ?? preview?.captions ?? []);
+  const [cardLen, setCardLen] = useState<V2CardLen>(editSnapshot?.cardLen ?? initialSubtitleConfig?.cardLen ?? "sentence");
   // ปรับสี scope รายการ์ด
   const [scope, setScope] = useState<"all" | "card">("all");
-  const [overrides, setOverrides] = useState<V2CardOverrides>({});
+  const [overrides, setOverrides] = useState<V2CardOverrides>(() => editSnapshot?.captionOverrides ?? {});
   // M1: apply พรีเซ็ตซับต้องล้าง per-card overrides เหมือน applyCardLen ด้านล่าง — ไม่งั้นสี
   // ที่ตั้งไว้รายใบ (ชนะ cfg เสมอ) จะทำให้พรีเซ็ต "ไม่ติด" เงียบ ๆ บนการ์ดที่เคยแก้สีเอง
   const stylePresets = useEditorStylePresets({
@@ -989,6 +992,14 @@ export function usePostPhaseEditor(
       const result = await onExportJob({
         sourceJobId: exportSource.jobId,
         subtitleOverlayConfig: overlay,
+        editorSnapshot: {
+          version: 1,
+          captions: cloneCaptions(captions),
+          originalCaptions: cloneCaptions(originalCapsRef.current),
+          subtitleConfig: { ...cfg },
+          cardLen,
+          captionOverrides: cloneOverrides(overrides),
+        },
         script: script.trim() || preview?.fullText || undefined,
         sceneCount: captions.length,
       });

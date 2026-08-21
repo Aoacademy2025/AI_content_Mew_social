@@ -22,7 +22,7 @@ import {
   V2_CARD_LEN_OPTIONS, resolveV2FontWeight, type V2CardLen, type V2FontWeight,
 } from "./subtitle-style";
 import { useId, useMemo, useRef, useState } from "react";
-import type { V2JobState } from "./useV2Job";
+import type { SubmitExportInput, V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 import { avatarFadeApplies } from "@/lib/avatar-fade";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
@@ -80,7 +80,7 @@ export function PostPhase({
   downloadFilename,
 }: {
   job: V2JobState; script: string;
-  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
+  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string }>;
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;

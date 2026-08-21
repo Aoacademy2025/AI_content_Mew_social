@@ -18,6 +18,10 @@ import {
 import type { SubtitleQualityReport } from "@/lib/mcp/subtitle-quality";
 import type { VideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
+import {
+  parseEditorExportSnapshot,
+  type EditorExportSnapshot,
+} from "@/lib/editor-export-snapshot";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -365,6 +369,8 @@ export interface ParsedVideoJobOutput {
   billingReceipt?: VideoJobBillingReceipt;
   /** present only on v2 preview jobs */
   preview?: VideoJobPreviewData | null;
+  /** Latest native editor state submitted with a durable export. */
+  editSnapshot?: EditorExportSnapshot;
 }
 
 /** Tolerant parser for VideoJob.outputJson — handles v1, v2, null, and garbage. */
@@ -383,6 +389,7 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
     const billingReceipt = typeof raw.billingReceipt === "object" && raw.billingReceipt !== null
       ? raw.billingReceipt as unknown as VideoJobBillingReceipt
       : null;
+    const editSnapshot = parseEditorExportSnapshot(raw.editSnapshot);
     return {
       version,
       videoUrl: typeof raw.videoUrl === "string" ? raw.videoUrl : undefined,
@@ -391,6 +398,7 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
       ...(subtitleQa ? { subtitleQa } : {}),
       ...(billingReceipt ? { billingReceipt } : {}),
       ...(preview ? { preview } : {}),
+      ...(editSnapshot ? { editSnapshot } : {}),
     };
   } catch {
     return null;

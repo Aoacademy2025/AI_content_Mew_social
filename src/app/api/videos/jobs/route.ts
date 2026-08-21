@@ -30,6 +30,7 @@ import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { validateWindowEdits } from "@/lib/broll-rerender";
 import { BrandAssetError } from "@/lib/brand-assets.server";
 import { createDurableExportWithStagedLogo } from "@/lib/logo-export.server";
+import { createEditorExportSnapshot } from "@/lib/editor-export-snapshot";
 import {
   fingerprintVideoJobRequest,
   legacyVideoJobKeyPrefix,
@@ -103,7 +104,7 @@ type Body = {
   // Phase 2 free per-window re-render (mode: "broll-rerender")
   sourceJobId?: unknown; windowEdits?: unknown;
   // Editor v2 durable export (mode: "export")
-  subtitleOverlayConfig?: unknown; exportSceneCount?: unknown;
+  subtitleOverlayConfig?: unknown; exportSceneCount?: unknown; editorSnapshot?: unknown;
 };
 
 // b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
@@ -303,9 +304,9 @@ export async function POST(req: Request) {
     }
 
     // ── Durable export (mode: "export") ──────────────────────────────────────
-    // The browser only submits the subtitle overlay config. The worker owns the long
-    // burn + Gallery save + project status transition, so switching projects or closing
-    // the tab cannot lose progress/finalization.
+    // The browser submits the burn config plus a compact native editor snapshot. The route
+    // validates it and joins it to server-owned preview metadata before the worker owns the
+    // long burn + Gallery save + project transition.
     if (body.mode === "export") {
       const sourceJobId = str(body.sourceJobId, 120);
       if (!sourceJobId) return NextResponse.json({ error: "invalid_source", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 400 });
@@ -318,7 +319,14 @@ export async function POST(req: Request) {
 
       const srcJob = await prisma.videoJob.findUnique({
         where: { id: sourceJobId },
-        select: { userId: true, status: true, outputJson: true, projectId: true },
+        select: {
+          userId: true,
+          status: true,
+          outputJson: true,
+          projectId: true,
+          contentPreflightId: true,
+          projectVisualContextJson: true,
+        },
       });
       if (!srcJob || srcJob.userId !== user.id) return NextResponse.json({ error: "source_not_found", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 404 });
       if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม" }, { status: 400 });
@@ -326,6 +334,16 @@ export async function POST(req: Request) {
       const sourceProjectId = srcJob.projectId;
       const parsed = parseVideoJobOutput(srcJob.outputJson);
       if (!parsed?.preview) return NextResponse.json({ error: "source_not_exportable", message: "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับแก้ซับ/ส่งออก" }, { status: 400 });
+      const editSnapshot = body.editorSnapshot === undefined
+        ? undefined
+        : createEditorExportSnapshot({
+            draft: body.editorSnapshot,
+            sourcePreview: parsed.preview,
+            videoUrl: subtitleOverlayConfig.videoUrl,
+          });
+      if (body.editorSnapshot !== undefined && !editSnapshot) {
+        return NextResponse.json({ error: "invalid_editor_snapshot", message: "ข้อมูลสถานะล่าสุดของหน้าตัดต่อไม่ถูกต้อง" }, { status: 400 });
+      }
 
       const rawHeadlineHook = subtitleOverlayConfig.headlineHook;
       if (rawHeadlineHook !== undefined) {
@@ -365,11 +383,22 @@ export async function POST(req: Request) {
                 mode: "export",
                 sourceJobId,
                 subtitleOverlayConfig,
+                ...(editSnapshot ? { editSnapshot } : {}),
                 exportScript: str(body.script, 20000),
                 exportSceneCount: num(body.exportSceneCount, 1, 1000),
               },
               idempotencyKey,
-              { projectId: sourceProjectId, type: "export", idempotencyFingerprint },
+              {
+                projectId: sourceProjectId,
+                type: "export",
+                idempotencyFingerprint,
+                projectVisualPin: srcJob.projectVisualContextJson
+                  ? {
+                      contentPreflightId: srcJob.contentPreflightId,
+                      projectVisualContextJson: srcJob.projectVisualContextJson,
+                    }
+                  : null,
+              },
             );
           },
           afterDurableJobCreated: async (durableJob) => {

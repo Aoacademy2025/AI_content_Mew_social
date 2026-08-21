@@ -8,6 +8,7 @@ import { isProviderErrorCode, type ProviderErrorCode } from "@/lib/provider-erro
 import type { HeygenProviderAction } from "@/lib/heygen-readiness";
 import type { RequiredKeyType } from "@/components/ui/api-key-modal";
 import type { ProjectMediaState } from "@/lib/media-retention";
+import type { EditorExportDraft } from "@/lib/editor-export-snapshot";
 import { PRESET_WEIGHTS } from "./mix-presets";
 import {
   disclosedAutoMixAiSlotIndices,
@@ -27,6 +28,7 @@ import {
   effectiveManualCutawayPieceCount,
   estimatedCutawayPieceCount,
 } from "@/lib/cutaway-plan";
+import { restorePostExportEditorState } from "./export-edit-state";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -96,6 +98,7 @@ const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId:
 export type SubmitExportInput = {
   sourceJobId: string;
   subtitleOverlayConfig: unknown;
+  editorSnapshot?: EditorExportDraft;
   script?: string;
   sceneCount?: number;
 };
@@ -531,6 +534,7 @@ export function useV2Job(p: V2Project) {
       mode: "export",
       sourceJobId: input.sourceJobId,
       subtitleOverlayConfig: input.subtitleOverlayConfig,
+      ...(input.editorSnapshot ? { editorSnapshot: input.editorSnapshot } : {}),
       ...(input.script ? { script: input.script } : {}),
       ...(typeof input.sceneCount === "number" ? { exportSceneCount: input.sceneCount } : {}),
     };
@@ -654,6 +658,18 @@ export function useV2Job(p: V2Project) {
     startPolling(jobId);
   }, [p.projectId, startPolling]);
 
+  /** Restore the exact native editor state captured by a completed export. The active
+   * source id moves back to the preview job for future edits/exports, while localStorage
+   * deliberately keeps the durable export id so a refresh can recover this snapshot again. */
+  const resumeExportEditSnapshot = useCallback(() => {
+    const restored = restorePostExportEditorState(job, p.activeJobId);
+    if (!restored?.jobId) return;
+    stopPolling();
+    jobIdRef.current = restored.jobId;
+    lastPreviewJobIdRef.current = restored.jobId;
+    setJob(restored);
+  }, [job, p.activeJobId, stopPolling]);
+
   const markPreviewMissing = useCallback(() => {
     // Invalidate any response that began before the player reported the incident.
     // Usually done jobs have already stopped polling, but this also closes the
@@ -664,5 +680,5 @@ export function useV2Job(p: V2Project) {
       : current);
   }, [stopPolling]);
 
-  return { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, markPreviewMissing };
+  return { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, resumeExportEditSnapshot, markPreviewMissing };
 }
