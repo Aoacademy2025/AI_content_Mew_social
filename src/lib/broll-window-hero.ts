@@ -20,6 +20,17 @@ export type HeroBrollWindowRequestResult =
   | { ok: true; value: HeroBrollWindowRequest }
   | { ok: false; error: string; message: string };
 
+export type HeroBrollWindowSourceKind = "stock" | "upload" | "ai";
+
+/**
+ * Stock clips may be upgraded with the scene's server-owned Brand Visual prompt.
+ * Creator uploads stay opt-in only: replacing them implicitly could discard an
+ * intentional owned asset and surprise the creator.
+ */
+export function canGenerateHeroBrollFromSource(kind: HeroBrollWindowSourceKind): boolean {
+  return kind === "stock" || kind === "ai";
+}
+
 export function heroImageStyleForBrollWindow(raw: unknown): AiImageStyle {
   switch (normalizeBrollVisualStyle(raw)) {
     case "cinematic": return "cinematic";

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
+  canGenerateHeroBrollFromSource,
   heroImageStyleForBrollWindow,
   parseHeroBrollWindowRequest,
 } from "../src/lib/broll-window-hero";
@@ -42,6 +43,11 @@ assert.match(
   route,
   /resolveProjectVisualPromptForVideoScene/,
   "Scene Reroll must compile the exact pinned Visual Beat instead of trusting a browser prompt",
+);
+assert.doesNotMatch(
+  route,
+  /scene_reroll_requires_ai_asset|reusableProjectVisualAssets/,
+  "a Stock scene must not require a previous AI asset before generating from its durable Visual Beat",
 );
 assert.match(
   route,
@@ -158,6 +164,15 @@ assert.equal(
   "malformed retry identifiers must fail before credit reservation",
 );
 assert.equal(heroImageStyleForBrollWindow("surreal"), "illustration");
+assert.equal(canGenerateHeroBrollFromSource("stock"), true, "Stock can be upgraded to AI");
+assert.equal(canGenerateHeroBrollFromSource("ai"), true, "an AI scene can still be rerolled");
+assert.equal(canGenerateHeroBrollFromSource("upload"), false, "creator uploads stay protected");
+assert.match(
+  inspector,
+  /canGenerateHeroBrollFromSource\(currentSourceKind\)/,
+  "the editor must use the shared Stock/AI source policy",
+);
+assert.match(inspector, /สร้างภาพ AI แทนสต็อก/, "Stock-to-AI must be explicit in the UI");
 
 const values = new Map<string, string>();
 const storage = {
