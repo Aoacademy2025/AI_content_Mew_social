@@ -28,7 +28,6 @@ import { parseProjectVisualContext, resolveProjectVisualPromptForVideoScene } fr
 import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { reusableProjectVisualAssets } from "@/lib/project-visual-assets.server";
 import {
   describeHeroImageOffer,
   generateHeroImageForVideo,
@@ -140,20 +139,11 @@ export async function POST(req: Request) {
 
   let acceptance = null;
   if (!existingImageJob) {
-    const sourceAssets = await reusableProjectVisualAssets({
-      userId: user.id,
-      projectId,
-      preflightId: contentPreflightId,
-    });
-    if (!sourceAssets.some((asset) => asset.beatId === brandVisualPrompt.visualBeatId)) {
-      return NextResponse.json(
-        {
-          error: "scene_reroll_requires_ai_asset",
-          message: "ลองภาพใหม่ได้เฉพาะฉากที่มีภาพ AI เดิมอยู่แล้ว",
-        },
-        { status: 409 },
-      );
-    }
+    // The owned source job and its durable Visual Beat are the authorization
+    // boundary. Requiring a previously generated AI asset here prevented a
+    // Stock scene from using the same server-owned Brand Visual prompt even
+    // though billing, rate limits, idempotency, and Apply verification are
+    // identical for both source types.
     const access = resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: true,
       hasPersistedProjectPin: true,
