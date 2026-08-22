@@ -48,6 +48,7 @@ import { avatarFadeApplies } from "@/lib/avatar-fade";
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
+import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -295,6 +296,7 @@ export function PostPhaseMobile({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandVisualAllowed={brandVisualAllowed} />
+      <SubtitleQaInlineBanner output={job.output} />
       {/* ── preview ติดบน + สครับ ── */}
       <div data-mobile-preview="true" className="shrink-0" style={{ background: "#000", borderBottom: `1px solid ${color.cardBorder}` }}>
         <div data-mobile-video-preview-frame="true" style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>

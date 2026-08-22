@@ -6,7 +6,8 @@ import {
   type CreditDebit,
   type CreditFunding,
 } from "@/lib/credits";
-import { refundReservationInTransaction } from "@/lib/minute-credits";
+import { refundReservationInTransaction, reserveMinutesOrCreditsInTransaction } from "@/lib/minute-credits";
+import { syncMinuteWindow } from "@/lib/minute-limits";
 import { resolveServiceVideoJobId } from "@/lib/mcp/service-actor";
 
 export type WalletFundingAccess =
@@ -148,9 +149,10 @@ function trimRefund(old: FundingRow, actualMinutes: number) {
 }
 
 /** Reconcile the confirmed estimate to exact media duration before expensive
- * downstream work. A shorter output returns the unused tail. A longer output is
- * never silently charged: the whole reservation is restored and a fresh user
- * confirmation is required. */
+ * downstream work. A shorter output returns the unused tail. A longer output
+ * tops up the existing reservation from remaining minutes/credits so the job
+ * can finish; only a true wallet miss still asks for a fresh confirmation
+ * (without throwing away the original reservation). */
 export async function reconcileVideoJobFunding(
   videoJobId: string,
   userId: string,
@@ -159,6 +161,8 @@ export async function reconcileVideoJobFunding(
   if (!Number.isInteger(actualMeteredMinutes) || actualMeteredMinutes <= 0) {
     throw new Error("actual metered minutes must be a positive integer");
   }
+
+  await syncMinuteWindow(userId);
 
   const result = await prisma.$transaction(async (tx) => {
     const job = await tx.videoJob.findFirst({
@@ -176,27 +180,44 @@ export async function reconcileVideoJobFunding(
       return { kind: "noop" as const };
     }
     if (actualMeteredMinutes > job.fundedMeteredMinutes) {
-      const claimed = await tx.videoJob.updateMany({
-        where: { id: videoJobId, userId, fundingState: "reserved" },
-        data: { fundingState: "refunded" },
+      const extra = actualMeteredMinutes - job.fundedMeteredMinutes;
+      const topUp = await reserveMinutesOrCreditsInTransaction(tx, userId, extra, {
+        creditsLive: process.env.CREDITS_LIVE === "1",
+        ref: `duration-extend:${videoJobId}`,
       });
-      if (claimed.count !== 1) return { kind: "noop" as const };
-      await refundReservationInTransaction(
-        tx,
-        userId,
-        {
-          reservedMinutes: job.fundedMeteredMinutes,
-          creditsSpent: job.fundedCreditsSpent,
-          creditsFromGranted: job.fundedCreditsFromGranted,
-          creditsFromPromotional: job.fundedCreditsFromPromotional,
-          creditFundingJson: job.fundedCreditFundingJson,
+      if (!topUp.allowed) {
+        return {
+          kind: "confirmation" as const,
+          confirmed: job.fundedMeteredMinutes,
+        };
+      }
+      const extraCredits = topUp.via === "minutes" ? 0 : topUp.creditsSpent;
+      const extraDebits = topUp.via === "minutes" ? [] : topUp.debits;
+      const oldCredits = job.fundedCreditsSpent ?? 0;
+      const oldFunding = parseCreditFunding(job.fundedCreditFundingJson, {
+        fromGranted: job.fundedCreditsFromGranted ?? 0,
+        fromPromotional: job.fundedCreditsFromPromotional ?? 0,
+        fromPurchased: Math.max(
+          0,
+          oldCredits - (job.fundedCreditsFromGranted ?? 0) - (job.fundedCreditsFromPromotional ?? 0),
+        ),
+      }, oldCredits);
+      const merged = fundingFromDebits([...oldFunding.debits, ...extraDebits]);
+      const newCredits = oldCredits + extraCredits;
+      await tx.videoJob.update({
+        where: { id: videoJobId },
+        data: {
+          fundedMeteredMinutes: actualMeteredMinutes,
+          fundedCreditsSpent: newCredits,
+          fundedCreditsFromGranted: merged.fromGranted,
+          fundedCreditsFromPromotional: merged.fromPromotional,
+          fundedCreditFundingJson: newCredits > 0 ? serializeCreditFunding(merged) : null,
+          ...(extraCredits > 0 && topUp.via !== "minutes"
+            ? { fundedCreditBalanceAfter: topUp.balanceAfter, walletFundingAuthorized: true }
+            : {}),
         },
-        `video-job-refund:${videoJobId}:duration-increase`,
-      );
-      return {
-        kind: "confirmation" as const,
-        confirmed: job.fundedMeteredMinutes,
-      };
+      });
+      return { kind: "extended" as const };
     }
     if (actualMeteredMinutes === job.fundedMeteredMinutes) return { kind: "same" as const };
 

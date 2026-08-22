@@ -9,6 +9,7 @@ import { captionsFromTtsTiming } from "../src/app/(dashboard)/video-editor/_comp
 import {
   alignTranscriptWordsToSource,
   buildCanonicalCaptionsFromAlignedWords,
+  subtitleQualityShouldFailJob,
   validateSubtitleQuality,
 } from "../src/lib/mcp/subtitle-quality";
 
@@ -62,8 +63,12 @@ const changedNumber = validateSubtitleQuality({
   timingSource: "forced_alignment",
 });
 check(
-  "changed numbers fail closed",
+  "changed numbers still flag text_mismatch",
   changedNumber.status === "failed" && changedNumber.code === "text_mismatch",
+);
+check(
+  "text_mismatch does not fail the VideoJob — editor can fix after export",
+  changedNumber.status === "failed" && subtitleQualityShouldFailJob(changedNumber) === false,
 );
 
 const lostInternalSpace = validateSubtitleQuality({
@@ -73,8 +78,12 @@ const lostInternalSpace = validateSubtitleQuality({
   timingSource: "forced_alignment",
 });
 check(
-  "lost spacing inside a displayed card fails closed",
+  "lost spacing inside a displayed card still flags spacing_mismatch",
   lostInternalSpace.status === "failed" && lostInternalSpace.code === "spacing_mismatch",
+);
+check(
+  "spacing_mismatch does not fail the VideoJob",
+  subtitleQualityShouldFailJob(lostInternalSpace) === false,
 );
 
 const outOfBounds = validateSubtitleQuality({
@@ -86,6 +95,49 @@ const outOfBounds = validateSubtitleQuality({
 check(
   "captions outside the audio timeline fail closed",
   outOfBounds.status === "failed" && outOfBounds.code === "timing_out_of_bounds",
+);
+check(
+  "timing_out_of_bounds still fails the VideoJob",
+  subtitleQualityShouldFailJob(outOfBounds) === true,
+);
+const punctOnly = validateSubtitleQuality({
+  script: "ครับ...",
+  captions: [
+    { text: "ครับ", startMs: 0, endMs: 400 },
+    { text: "...", startMs: 400, endMs: 700 },
+  ],
+  audioDurationMs: 800,
+  timingSource: "tts_segment_timing",
+});
+check(
+  "punctuation-only cards do not fail the VideoJob",
+  punctOnly.status === "failed"
+    && punctOnly.code === "punctuation_only_card"
+    && subtitleQualityShouldFailJob(punctOnly) === false,
+);
+const tooShort = validateSubtitleQuality({
+  script: "ครับ",
+  captions: [{ text: "ครับ", startMs: 0, endMs: 100 }],
+  audioDurationMs: 800,
+  timingSource: "tts_segment_timing",
+});
+check(
+  "card_too_short does not fail the VideoJob",
+  tooShort.status === "failed"
+    && tooShort.code === "card_too_short"
+    && subtitleQualityShouldFailJob(tooShort) === false,
+);
+const emptyCaps = validateSubtitleQuality({
+  script: "ครับ",
+  captions: [],
+  audioDurationMs: 800,
+  timingSource: "tts_segment_timing",
+});
+check(
+  "empty_captions still fails the VideoJob",
+  emptyCaps.status === "failed"
+    && emptyCaps.code === "empty_captions"
+    && subtitleQualityShouldFailJob(emptyCaps) === true,
 );
 
 // Production regression (2026-08-13..18): all five text_mismatch jobs used

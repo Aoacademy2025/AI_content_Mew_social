@@ -38,6 +38,9 @@ jobs:
       - name: Verify karaoke subtitle visibility
         run: npm run verify:subtitle-karaoke
 
+      - name: Verify first-export subtitle and duration walls
+        run: npm run verify:first-export-walls
+
       - name: Verify subtitle card invariants
         run: npm run verify:subtitle-invariant
 

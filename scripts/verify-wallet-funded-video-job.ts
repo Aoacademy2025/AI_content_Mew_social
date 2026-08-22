@@ -130,15 +130,38 @@ async function main() {
     "long-wallet-job-key",
     { funding: { meteredMinutes: 2, creditsLive: true } } as never,
   );
-  await assert.rejects(
-    funding.reconcileVideoJobFunding(longerJob.id, longer.id, 3),
-    (error: unknown) => (error as { code?: string }).code === "render_confirmation_required",
-    "longer output requires fresh confirmation instead of silently charging more",
+  await funding.reconcileVideoJobFunding(longerJob.id, longer.id, 3);
+  const extended = await prisma.videoJob.findUniqueOrThrow({ where: { id: longerJob.id } });
+  assert.equal(extended.fundingState, "reserved", "longer output keeps the original reservation");
+  assert.equal(extended.fundedMeteredMinutes, 3, "longer output tops up to the actual minutes");
+  assert.equal((await getBalance(longer.id)).purchased, 194, "extra minute settles from remaining credits instead of restarting");
+
+  const broke = await prisma.user.create({
+    data: {
+      id: "broke-wallet-job-user",
+      name: "Broke Wallet Job",
+      email: "broke-wallet-job@example.test",
+      plan: "FREE",
+      usagePeriodStartedAt: now,
+      minutesLimit: 5,
+      minutesUsed: 4,
+    },
+  });
+  const brokeJob = await videoJobs.createVideoJob(
+    broke.id,
+    { script: "ทดสอบไม่มีเครดิตเหลือ" },
+    "broke-wallet-job-key",
+    { funding: { meteredMinutes: 1, creditsLive: true } } as never,
   );
-  assert.equal((await getBalance(longer.id)).purchased, 200, "duration increase restores the whole reservation");
+  await assert.rejects(
+    funding.reconcileVideoJobFunding(brokeJob.id, broke.id, 2),
+    (error: unknown) => (error as { code?: string }).code === "render_confirmation_required",
+    "longer output without remaining minutes or credits still asks for confirmation",
+  );
   assert.equal(
-    (await prisma.videoJob.findUniqueOrThrow({ where: { id: longerJob.id } })).fundingState,
-    "refunded",
+    (await prisma.videoJob.findUniqueOrThrow({ where: { id: brokeJob.id } })).fundingState,
+    "reserved",
+    "failed top-up does not throw away the original reservation",
   );
 
   await prisma.$disconnect();
