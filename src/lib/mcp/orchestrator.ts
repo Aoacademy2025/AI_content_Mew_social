@@ -6,7 +6,7 @@ import {
   refundVideoJobBaseReservation,
   refundVideoJobTerminalRenderReservations,
 } from "@/lib/render/reservation-settlement";
-import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
+import { captionsFromSpokenScript, captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
 import {
   setJobStep,
   finishJob,
@@ -1510,44 +1510,55 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // Provider timing is missing or unusable. Never ship a final video built from a
       // single-segment character clock: it preserves text but cannot prove caption/audio
       // alignment. Reuse the production transcribe path to recover boundaries from the
-      // generated audio itself. A later quality gate validates this response fail-closed.
-      const aligned = await caller.post<{
-        captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
-        words?: Array<{ word: string; startMs: number; endMs: number }>;
-        audioDurationMs?: number;
-      }>("/api/videos/transcribe", {
-        audioUrl: tts.voiceUrl,
-        scriptPrompt: input.script.trim().slice(0, 800),
-        script: input.script.trim(),
-      });
-      const recoveredCaptions: OrchCaption[] = (aligned.captions ?? [])
-        .filter((caption) => typeof caption?.text === "string" && caption.text.trim())
-        .map((caption, index) => ({
-          text: caption.text!.trim(),
-          startMs: Number(caption.startMs),
-          endMs: Number(caption.endMs),
-          tag: caption.tag ?? (index === 0 ? "hook" : "body"),
-        }));
-      if (recoveredCaptions.length > 0) {
-        subtitleTimingSource = "forced_alignment";
-        const recoveredFullText = input.script.trim();
-        const recoveredWords = alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []);
-        const canonicalCaptions = recoveredWords
-          ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
-          : null;
-        capRes = {
-          // The transcribe route intentionally sanitizes punctuation and quotes
-          // in its display captions. Reuse only its proven word timestamps and
-          // take every visible character from the literal TTS source. If exact
-          // word alignment cannot be proven, the raw captions flow to the gate
-          // and fail closed as before.
-          captions: canonicalCaptions ?? recoveredCaptions,
-          words: recoveredWords ?? [],
-          audioDurationMs: Number(aligned.audioDurationMs) > 0
-            ? Math.round(Number(aligned.audioDurationMs))
-            : audioDurationMs,
-          fullText: recoveredFullText,
-        };
+      // generated audio itself (TTS voice, never the HeyGen mp4).
+      try {
+        const aligned = await caller.post<{
+          captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
+          words?: Array<{ word: string; startMs: number; endMs: number }>;
+          audioDurationMs?: number;
+        }>("/api/videos/transcribe", {
+          audioUrl: tts.voiceUrl,
+          scriptPrompt: input.script.trim().slice(0, 800),
+          script: input.script.trim(),
+        });
+        const recoveredCaptions: OrchCaption[] = (aligned.captions ?? [])
+          .filter((caption) => typeof caption?.text === "string" && caption.text.trim())
+          .map((caption, index) => ({
+            text: caption.text!.trim(),
+            startMs: Number(caption.startMs),
+            endMs: Number(caption.endMs),
+            tag: caption.tag ?? (index === 0 ? "hook" : "body"),
+          }));
+        if (recoveredCaptions.length > 0) {
+          subtitleTimingSource = "forced_alignment";
+          const recoveredFullText = input.script.trim();
+          const recoveredWords = alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []);
+          const canonicalCaptions = recoveredWords
+            ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
+            : null;
+          capRes = {
+            // The transcribe route intentionally sanitizes punctuation and quotes
+            // in its display captions. Reuse only its proven word timestamps and
+            // take every visible character from the literal TTS source. If exact
+            // word alignment cannot be proven, the raw captions flow to the gate
+            // and fail closed as before.
+            captions: canonicalCaptions ?? recoveredCaptions,
+            words: recoveredWords ?? [],
+            audioDurationMs: Number(aligned.audioDurationMs) > 0
+              ? Math.round(Number(aligned.audioDurationMs))
+              : audioDurationMs,
+            fullText: recoveredFullText,
+          };
+        }
+      } catch {
+        /* Avatar: transcribe of spoken audio can 422; fail-open below. Faceless still throws. */
+      }
+    }
+    if ((!capRes || capRes.captions.length === 0) && input.avatarMode && input.script.trim()) {
+      const spoken = captionsFromSpokenScript(input.script.trim(), audioDurationMs, maxCardCharsFor());
+      if (spoken && spoken.captions.length > 0) {
+        subtitleTimingSource = "avatar_script_clock";
+        capRes = spoken;
       }
     }
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
