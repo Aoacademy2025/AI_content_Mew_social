@@ -12,6 +12,7 @@
 
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
+import { decideAdminErrorNotify } from "@/lib/admin-error-notify";
 import { notifyAdmins, createNotification } from "@/lib/notifications";
 
 interface ErrorContext {
@@ -137,12 +138,21 @@ export function apiError({
       } catch { /* ignore */ }
     }
 
-    // Always notify admins
-    await notifyAdmins({
-      type: "ERROR_SYSTEM",
-      title: `⚠️ Error: ${route}`,
-      body: buildAdminBody(route, error, uid, context),
-    });
+    // SQLite timeouts must not persist ERROR_SYSTEM; other routes write once per 5 minutes.
+    const decision = decideAdminErrorNotify({ error, route });
+    if (decision.action === "write") {
+      const suppressedNote = decision.suppressed > 0
+        ? `\n📉 Suppressed ${decision.suppressed} similar ERROR_SYSTEM for this route since last notify`
+        : "";
+      await notifyAdmins({
+        type: "ERROR_SYSTEM",
+        title: `⚠️ Error: ${route}`,
+        body: buildAdminBody(route, error, uid, context) + suppressedNote,
+      });
+    } else {
+      const why = decision.action === "skip_capacity" ? "capacity" : `rate-limit x${decision.suppressed}`;
+      console.error(`[API Error] skip ERROR_SYSTEM (${why}) ${route}`);
+    }
 
     // Only notify user when explicitly opted in (pipeline steps)
     if (notifyUser && uid) {

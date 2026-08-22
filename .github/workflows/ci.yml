@@ -65,6 +65,9 @@ jobs:
       - name: Verify Avatar caption fail-open
         run: npm run verify:avatar-caption-fallback
 
+      - name: Verify ERROR_SYSTEM capacity skip and rate-limit
+        run: npm run verify:admin-error-notify
+
       - name: Verify Hero Script launch, payment, rollout, and guidance
         run: npm run verify:hero-script-launch
 
