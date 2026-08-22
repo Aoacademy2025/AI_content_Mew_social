@@ -59,6 +59,9 @@ jobs:
       - name: Verify /pricing LCP convert page
         run: npm run verify:pricing-lcp
 
+      - name: Verify day-21 GRANT convert reminder
+        run: npm run verify:day21-convert-reminder
+
       - name: Verify Hero Script launch, payment, rollout, and guidance
         run: npm run verify:hero-script-launch
 

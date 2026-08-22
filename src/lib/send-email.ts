@@ -359,6 +359,24 @@ ${ticketLink ? `<div style="margin:24px 0 8px">${premiumButton({ href: ticketLin
   });
 }
 
+export async function sendDay21ConvertEmail(opts: { to: string; pricingUrl: string }): Promise<boolean> {
+  return sendEmail({
+    to: opts.to,
+    subject: `สิทธิ์แคมเปญครบ 21 วัน — สมัครรายเดือนต่อได้เลย — ${BRAND}`,
+    html: emailShell({
+      title: "สมัครรายเดือนต่อ",
+      previewText: "สิทธิ์แคมเปญครบ 21 วันแล้ว — สมัครรายเดือนเพื่อใช้ต่อ ไม่ต้องรอหมดอายุ",
+      body: `
+<h1 style="margin:0 0 8px;color:#fff;font-size:20px;font-weight:700">สิทธิ์แคมเปญครบ 21 วันแล้ว</h1>
+<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">สมัคร <b style="color:#fff">รายเดือนแบบต่ออัตโนมัติ</b> ตอนนี้เพื่อใช้ต่อไม่สะดุด — รายปี Founding ยังมีที่นั่งถ้าต้องการล็อคราคา</p>
+${premiumButton({ href: opts.pricingUrl, label: "สมัครรายเดือน" })}
+<hr style="border:none;border-top:1px solid rgba(255,255,255,0.05);margin:24px 0 16px">
+<p style="margin:0;color:#71717a;font-size:12px">ปุ่มหลักคือรายเดือน · Founding รายปีเป็นตัวเลือกรองบนหน้าเดียวกัน</p>
+`.trim(),
+    }),
+  });
+}
+
 export async function sendRenewalReminderEmail(opts: { to: string; plan: string; daysLeft: number; pricingUrl: string }): Promise<boolean> {
   return sendEmail({
     to: opts.to,
