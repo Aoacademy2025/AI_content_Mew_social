@@ -219,6 +219,9 @@ export function useV2Job(p: V2Project) {
     }
     if (d.status === "done") {
       stopPolling();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("hero-first-clip-completed"));
+      }
       setJob({
         phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null,
         currentStep: d.currentStep, progress: 100, queuePosition: null, errorMessage: null, errorCode: null, errorProvider: null, output: d.output ?? null,

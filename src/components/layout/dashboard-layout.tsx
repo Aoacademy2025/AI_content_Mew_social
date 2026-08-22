@@ -8,6 +8,7 @@ import { BottomTabs } from "./bottom-tabs";
 import { TopNav } from "./top-nav";
 import { TrialBanner } from "./trial-banner";
 import { ProductUpdateBanner } from "./product-update-banner";
+import { FirstClipConvertPrompt } from "@/components/convert/first-clip-convert-prompt";
 
 interface DashboardLayoutProps {
   children: React.ReactNode;
@@ -50,6 +51,7 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
         <div className="absolute inset-x-0 top-0 z-[300]">
           <ProductUpdateBanner />
         </div>
+        <FirstClipConvertPrompt />
         {children}
       </div>
     );
@@ -86,6 +88,7 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
       </div>
 
       {!mobileMenuOpen && <BottomTabs />}
+      <FirstClipConvertPrompt />
     </div>
   );
 }
