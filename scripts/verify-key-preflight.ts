@@ -5,6 +5,10 @@
  * text_to_speech, and the probe only ever costs the user anything when it succeeds).
  * Run: npx tsx scripts/verify-key-preflight.ts
  *
+ * Settings Test and job-submit preflight both probe TTS on `/v1/user`
+ * `missing_permissions` (the old Settings shortcut false-passed keys with no
+ * text_to_speech — support ticket 2026-08-22).
+ *
  * Mocks global.fetch — no real network calls, no DB needed.
  */
 import assert from "node:assert/strict";
@@ -60,11 +64,31 @@ async function main() {
     assert.equal(fetchCallCount, 1);
   });
 
-  await check("scoped TTS-only key (401 + missing_permissions body) -> valid, NO probe (1 fetch) — historical shortcut unchanged", async () => {
-    mockFetch(async () => jsonResponse(401, { detail: { status: "missing_permissions", message: "missing the permission user_read" } }));
+  await check("scoped key missing user_read (401 missing_permissions) + no TTS permission -> invalid, 2 fetches — Settings Test must not false-pass", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { status: "missing_permissions", message: "missing the permission user_read" } });
+      return jsonResponse(401, { detail: { type: "authentication_error", code: "unauthorized", message: "missing the permission text_to_speech" } });
+    });
+    const r = await testElevenLabsKey("k");
+    assert.equal(r.verdict, "invalid");
+    assert.equal(r.ok, false);
+    assert.equal(fetchCallCount, 2, "Settings Test must probe TTS; missing_permissions on /v1/user is not proof of text_to_speech");
+    assert.match(r.message, /text_to_speech/);
+  });
+
+  await check("scoped TTS-only key (missing user_read, TTS probe 200) -> valid, 2 fetches", async () => {
+    let call = 0;
+    mockFetch(async () => {
+      call++;
+      if (call === 1) return jsonResponse(401, { detail: { status: "missing_permissions", message: "missing the permission user_read" } });
+      return jsonResponse(200, {});
+    });
     const r = await testElevenLabsKey("k");
     assert.equal(r.verdict, "valid");
-    assert.equal(fetchCallCount, 1, "Settings mode trusts missing_permissions without probing");
+    assert.equal(r.ok, true);
+    assert.equal(fetchCallCount, 2);
   });
 
   await check("definitive bad key (401 invalid_api_key body) -> invalid WITHOUT the TTS call (1 fetch)", async () => {
@@ -173,7 +197,7 @@ async function main() {
     });
     const r = await testElevenLabsKey("k", { mode: "preflight" });
     assert.equal(r.verdict, "invalid");
-    assert.equal(fetchCallCount, 2, "preflight must probe missing_permissions (unlike Settings) — this is the case Settings alone would miss");
+    assert.equal(fetchCallCount, 2, "preflight must probe missing_permissions — this is the case Settings Test used to miss");
     assert.match(r.message, /text_to_speech/);
   });
 
