@@ -292,6 +292,43 @@ export function buildCanonicalCaptionsFromAlignedWords(
  * reflow is allowed because cards intentionally collapse authored line breaks, but every
  * visible character/number/punctuation mark must survive unchanged.
  */
+/** Presentation issues the creator can fix in the Post-phase editor.
+ *  These must not fail the VideoJob — the clip still exports, with the report
+ *  attached so the editor can surface an inline fix. Timing/empty failures
+ *  still block release (unusable or unsynced captions). */
+export const INLINE_FIXABLE_SUBTITLE_CODES = [
+  "text_mismatch",
+  "spacing_mismatch",
+  "punctuation_only_card",
+  "card_too_short",
+] as const;
+
+export type InlineFixableSubtitleCode = (typeof INLINE_FIXABLE_SUBTITLE_CODES)[number];
+
+const INLINE_FIXABLE_SUBTITLE_CODE_SET = new Set<string>(INLINE_FIXABLE_SUBTITLE_CODES);
+
+export function isInlineFixableSubtitleCode(code: string | undefined): code is InlineFixableSubtitleCode {
+  return Boolean(code && INLINE_FIXABLE_SUBTITLE_CODE_SET.has(code));
+}
+
+export function subtitleQualityShouldFailJob(report: SubtitleQualityReport): boolean {
+  if (report.status === "passed") return false;
+  return !isInlineFixableSubtitleCode(report.code);
+}
+
+export function subtitleQualityInlineCopy(code: InlineFixableSubtitleCode): string {
+  switch (code) {
+    case "text_mismatch":
+      return "ข้อความซับไม่ตรงสคริปต์ — แก้ในการ์ดซับด้านซ้ายแล้วส่งออกใหม่ได้";
+    case "spacing_mismatch":
+      return "ช่องว่างในซับเพี้ยน — แก้ในการ์ดซับด้านซ้ายได้";
+    case "punctuation_only_card":
+      return "มีการ์ดที่เป็นเครื่องหมายอย่างเดียว — ลบหรือรวมการ์ดได้";
+    case "card_too_short":
+      return "มีการ์ดสั้นเกินไป — ยืดเวลาหรือรวมการ์ดได้";
+  }
+}
+
 export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQualityReport {
   const script = input.script.trim();
   if (!script) {

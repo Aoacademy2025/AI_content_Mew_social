@@ -101,6 +101,7 @@ import { shouldEmitPipelineStepStarted } from "@/lib/pipeline-telemetry";
 import {
   alignTranscriptWordsToSource,
   buildCanonicalCaptionsFromAlignedWords,
+  subtitleQualityShouldFailJob,
   validateSubtitleQuality,
   type SubtitleTimingSource,
 } from "@/lib/mcp/subtitle-quality";
@@ -711,7 +712,17 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
       });
       if (subtitleQa.status !== "passed") {
-        throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+        emitTelemetry({
+          name: "subtitle_quality_gate_failed",
+          category: "error",
+          source: "server",
+          step: "captions",
+          status: subtitleQa.code,
+          properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleQa.timingSource, failJob: subtitleQualityShouldFailJob(subtitleQa) },
+        });
+        if (subtitleQualityShouldFailJob(subtitleQa)) {
+          throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+        }
       }
 
       if (input.previewMode) {
@@ -1558,9 +1569,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         source: "server",
         step: "captions",
         status: subtitleQa.code,
-        properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleTimingSource },
+        properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleTimingSource, failJob: subtitleQualityShouldFailJob(subtitleQa) },
       });
-      throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+      if (subtitleQualityShouldFailJob(subtitleQa)) {
+        throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+      }
     }
 
     // B-roll cadence PARITY with the web editor: group captions into ~4s windows so the
