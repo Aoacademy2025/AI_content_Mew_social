@@ -46,6 +46,10 @@ export async function POST(req: Request) {
       },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    const cashPayment = await prisma.payment.findFirst({
+      where: { userId, status: "PAID", amount: { gt: 0 }, periodDays: { gt: 0 } },
+      select: { id: true },
+    });
 
     // ── Affiliate attribution (cookie wins, first-sign-in stamp is fallback) ──
     // Tags the Stripe session + subscription so the hero-affiliate webhook can attribute
@@ -71,6 +75,7 @@ export async function POST(req: Request) {
         subStatus: user.subStatus,
         trialEndsAt: user.trialEndsAt,
         planExpiresAt: user.planExpiresAt,
+        hasQualifyingCashPayment: Boolean(cashPayment),
       },
       plan,
       new Date(),
