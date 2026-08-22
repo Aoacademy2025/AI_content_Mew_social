@@ -9,6 +9,7 @@ import {
   snapCaptionsToSilences,
   mergeShortCaptions,
   snapCardsToWordBoundaries,
+  tokenizeWords,
   TtsTimingMismatchError,
   type TtsTiming,
   type TimedWord,
@@ -135,4 +136,49 @@ export function captionsFromTtsTiming(
     }
     return null;
   }
+}
+
+/** Last-resort Avatar captions when TTS timing and transcribe recovery both miss.
+ * Spreads exact script text across known audio duration. Faceless jobs must not
+ * use this — they stay on forced alignment. */
+export function captionsFromSpokenScript(
+  script: string,
+  audioDurationMs: number,
+  maxCardChars: number,
+): TimingCaptionsResult | null {
+  const fullText = script.normalize("NFC");
+  if (!fullText.trim()) return null;
+  const durationMs = Math.round(audioDurationMs);
+  if (!Number.isFinite(durationMs) || durationMs < 400) return null;
+  const cards = snapCardsToWordBoundaries(
+    splitSentenceCards(fullText, Math.max(10, maxCardChars)),
+    fullText,
+  );
+  if (cards.length === 0) return null;
+  const weights = cards.map((card) => Math.max(1, card.endChar - card.startChar));
+  const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
+  let cursor = 0;
+  const captions = cards.map((card, index) => {
+    const share = Math.max(240, Math.round((weights[index] / weightSum) * durationMs));
+    const startMs = cursor;
+    cursor = index === cards.length - 1 ? durationMs : Math.min(durationMs, cursor + share);
+    return {
+      text: fullText.slice(card.startChar, card.endChar).trim(),
+      startMs,
+      endMs: cursor,
+      tag: (index === 0 ? "hook" : index === cards.length - 1 ? "cta" : "body") as Caption["tag"],
+    };
+  });
+  if (captions.some((caption) => !caption.text)) return null;
+  captions[captions.length - 1].endMs = durationMs;
+  const tokens = tokenizeWords(fullText);
+  const tokenWeight = tokens.reduce((sum, token) => sum + Math.max(1, token.endChar - token.startChar), 0) || 1;
+  let wordCursor = 0;
+  const words: TimedWord[] = tokens.map((token, index) => {
+    const share = Math.max(80, Math.round((Math.max(1, token.endChar - token.startChar) / tokenWeight) * durationMs));
+    const startMs = wordCursor;
+    wordCursor = index === tokens.length - 1 ? durationMs : Math.min(durationMs, wordCursor + share);
+    return { word: token.word, startMs, endMs: wordCursor, startChar: token.startChar, endChar: token.endChar };
+  });
+  return { captions, words, audioDurationMs: durationMs, fullText };
 }

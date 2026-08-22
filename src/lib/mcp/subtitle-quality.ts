@@ -9,7 +9,8 @@ export type SubtitleTimingSource =
   | "provider_alignment"
   | "tts_segment_timing"
   | "forced_alignment"
-  | "upload_transcription";
+  | "upload_transcription"
+  | "avatar_script_clock";
 
 export type SubtitleQualityReport =
   | {
