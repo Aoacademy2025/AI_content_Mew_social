@@ -56,6 +56,9 @@ jobs:
       - name: Verify Conversion Trial first-clip path
         run: npm run verify:trial-first-clip-path
 
+      - name: Verify /pricing LCP convert page
+        run: npm run verify:pricing-lcp
+
       - name: Verify Hero Script launch, payment, rollout, and guidance
         run: npm run verify:hero-script-launch
 
