@@ -5,7 +5,7 @@
  * กติกา: 1 บรรทัด = 1 เซ็กเมนต์ · เลือกคลิปเอง = ข้ามเสียง/อวตาร ไปทำ B-roll + ซับ (cutaway)
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PenLine, Clapperboard, GripVertical, Crown } from "lucide-react";
 import { DirectAvatarUpload } from "../_components/DirectAvatarUpload";
@@ -29,7 +29,10 @@ function segLabel(i: number, total: number) {
   return `เนื้อหา ${i}`;
 }
 
-export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void }) {
+export function Step1Script({ p, onNext, firstClipPath = false }: { p: V2Project; onNext: () => void; firstClipPath?: boolean }) {
+  useEffect(() => {
+    if (firstClipPath && p.mode !== "script") p.setMode("script");
+  }, [firstClipPath, p.mode, p.setMode]);
   const lines = useMemo(() => p.script.split("\n").filter(l => l.trim().length > 0), [p.script]);
   // นับจากข้อความที่ clean แล้ว (ตรงกับที่ TTS จะอ่านจริง) — สูตรความยาว calibrate ใน estimate.ts
   const totalSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
@@ -74,7 +77,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
       style={ctaDisabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
       onClick={onNext}
     >
-      ถัดไป: เลือกองค์ประกอบ →
+      {firstClipPath ? "ถัดไป: เลือกเสียงแล้วสร้างคลิปแรก →" : "ถัดไป: เลือกองค์ประกอบ →"}
     </BtnPrimary>
   );
 
@@ -83,7 +86,8 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
     <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:overflow-y-auto">
       {/* ── เนื้อหาซ้าย ── */}
       <div className="flex min-w-0 flex-1 flex-col gap-4 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6">
-        {/* การ์ดเลือกโหมด 2 ใบ */}
+        {/* การ์ดเลือกโหมด 2 ใบ — First-Clip Path stays on Narrative Source only */}
+        {firstClipPath ? null : (
         <div className="grid grid-cols-2 gap-2.5 max-lg:grid-cols-1">
           <ModeCard
             selected={p.mode === "script"}
@@ -101,9 +105,10 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
             desc={CLIP_CUTAWAY_ON ? "อัปคลิปแนวตั้ง → ซับ + บีโรลอัตโนมัติ" : "เร็ว ๆ นี้"}
           />
         </div>
+        )}
 
         {/* โหมดอัปคลิปเอง (cutaway) */}
-        {p.mode === "upload" ? (
+        {p.mode === "upload" && !firstClipPath ? (
           <div
             className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 p-6"
             style={{ borderRadius: 13, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}

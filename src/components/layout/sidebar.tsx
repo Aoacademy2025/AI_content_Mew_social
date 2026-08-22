@@ -145,6 +145,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [heroScriptPreview, setHeroScriptPreview] = useState(false);
   const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
   const [brandVisualCohort, setBrandVisualCohort] = useState<string>("off");
+  const [firstClipPath, setFirstClipPath] = useState(false);
 
   useEffect(() => {
     fetchMe()
@@ -165,6 +166,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         setHeroScriptPreview(data.heroScriptPreview === true);
         setBrandVisualAllowed(data.brandVisualAllowed === true);
         setBrandVisualCohort(data.brandVisualCohort ?? "off");
+        setFirstClipPath(data.firstClipPath === true);
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -214,7 +216,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const internalItemsOnly = (items: SidebarNavItem[]) =>
     items
       .filter((item) => item.href !== "/ai-studio" || internalAiTester)
-      .filter((item) => item.href !== "/hero-script" || heroScriptAllowed || heroScriptPreview)
+      .filter((item) => item.href !== "/hero-script" || (!firstClipPath && (heroScriptAllowed || heroScriptPreview)))
+      .filter((item) => item.href !== "/brands" || !firstClipPath)
       .map((item) => item.href === "/hero-script" && !heroScriptAllowed
         ? { ...item, badgeText: "PRO" }
         : item.href === "/brands" && !brandVisualAllowed

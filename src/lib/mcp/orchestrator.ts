@@ -1583,46 +1583,70 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // sceneClipCounts); subtitle timing is untouched.
     let effectiveContentPreflightId = job.contentPreflightId;
     const needsAiVisualPlan = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
+    let awaitingContentPreflight = false;
+    if (job.projectVisualContextJson) {
+      try {
+        const parsed = JSON.parse(job.projectVisualContextJson) as { state?: string };
+        awaitingContentPreflight = parsed.state === "awaiting-content-preflight";
+      } catch {
+        awaitingContentPreflight = false;
+      }
+    }
     if (
-      needsAiVisualPlan
+      (needsAiVisualPlan || awaitingContentPreflight)
       && !effectiveContentPreflightId
       && job.projectId
       && job.projectVisualContextJson
     ) {
-      const visualPlan = await ensureVideoJobContentPreflight({
-        actor: {
-          id: user.id,
-          email: user.email,
-          role: user.role,
-          createdAt: user.createdAt,
-        },
-        projectId: job.projectId,
-        videoJobId: jobId,
-        narrativeSource: {
-          kind: input.narrativeSourceKind ?? "creator-script",
-          text: input.script,
-          ...(input.targetClipCount ? { windowCount: input.targetClipCount } : {}),
-          sceneContentPolicy: input.sceneContentPolicy
-            ?? sceneContentPolicyFromPreference(input.brollRegionPreference),
-        },
-        brandVisualAccepted: true,
-      });
-      if (visualPlan.kind === "resolved") {
-        effectiveContentPreflightId = visualPlan.preflight.id;
+      try {
+        const visualPlan = await ensureVideoJobContentPreflight({
+          actor: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            createdAt: user.createdAt,
+          },
+          projectId: job.projectId,
+          videoJobId: jobId,
+          narrativeSource: {
+            kind: input.narrativeSourceKind ?? "creator-script",
+            text: input.script,
+            ...(input.targetClipCount ? { windowCount: input.targetClipCount } : {}),
+            sceneContentPolicy: input.sceneContentPolicy
+              ?? sceneContentPolicyFromPreference(input.brollRegionPreference),
+          },
+          brandVisualAccepted: true,
+        });
+        if (visualPlan.kind === "resolved") {
+          effectiveContentPreflightId = visualPlan.preflight.id;
+          emitTelemetry({
+            name: "brand_visual_preflight_resolved",
+            category: "performance",
+            source: "server",
+            step: "editor.step2",
+            status: visualPlan.preflight.cached ? "cached" : "analyzed",
+            properties: {
+              projectId: job.projectId,
+              preflightId: visualPlan.preflight.id,
+              sourceKind: input.narrativeSourceKind ?? "creator-script",
+              visualFormatId: visualPlan.preflight.suggestedVisualFormatId,
+              treatmentPresetId: visualPlan.preflight.suggestedTreatment.presetId,
+              beatCount: visualPlan.preflight.visualBeats.length,
+              via: "script-worker",
+            },
+          });
+        }
+      } catch (error) {
+        if (needsAiVisualPlan) throw error;
         emitTelemetry({
-          name: "brand_visual_preflight_resolved",
-          category: "performance",
+          name: "first_clip_preflight_fail_open",
+          category: "pipeline",
           source: "server",
           step: "editor.step2",
-          status: visualPlan.preflight.cached ? "cached" : "analyzed",
+          status: "fail_open",
           properties: {
             projectId: job.projectId,
-            preflightId: visualPlan.preflight.id,
-            sourceKind: input.narrativeSourceKind ?? "creator-script",
-            visualFormatId: visualPlan.preflight.suggestedVisualFormatId,
-            treatmentPresetId: visualPlan.preflight.suggestedTreatment.presetId,
-            beatCount: visualPlan.preflight.visualBeats.length,
-            via: "script-worker",
+            message: error instanceof Error ? error.message : "content_preflight_failed",
           },
         });
       }

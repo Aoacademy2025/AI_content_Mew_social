@@ -29,6 +29,7 @@ import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib
 import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { validateWindowEdits } from "@/lib/broll-rerender";
 import { BrandAssetError } from "@/lib/brand-assets.server";
+import { BrandProfileLibraryError } from "@/lib/brand-profile-library.server";
 import { createDurableExportWithStagedLogo } from "@/lib/logo-export.server";
 import { createEditorExportSnapshot } from "@/lib/editor-export-snapshot";
 import {
@@ -76,6 +77,7 @@ import {
   prepareBrandVisualJobAcceptance,
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
+import { ensureFirstClipProjectSpine, resolveFirstClipPath } from "@/lib/first-clip-path.server";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -436,6 +438,14 @@ export async function POST(req: Request) {
     const projectId = typeof body.projectId === "string" && body.projectId.trim()
       ? await assertEditorProjectOwner(user.id, body.projectId.trim())
       : null;
+    const firstClip = await resolveFirstClipPath({ id: user.id, email: user.email, role: user.role });
+    const onFirstClipPath = firstClip.onPath;
+    if (onFirstClipPath && !projectId) {
+      return NextResponse.json(
+        { error: "project_required", message: "คลิปแรกต้องมีโปรเจกต์ก่อนสร้าง" },
+        { status: 400 },
+      );
+    }
 
     // โหมดอัปคลิปเอง (cutaway) — gate ด้วย flag เดียวกับปุ่มใน UI (flip พร้อม EDITOR_V2 วัน launch)
     const uploadMode = body.mode === "upload";
@@ -453,6 +463,22 @@ export async function POST(req: Request) {
     const script = typeof body.script === "string" ? body.script.trim() : "";
     if (!uploadMode && (!script || script.length > 20000)) {
       return NextResponse.json({ error: "invalid_script", message: "สคริปต์ว่างหรือยาวเกิน 20,000 ตัวอักษร" }, { status: 400 });
+    }
+    if (onFirstClipPath && uploadMode) {
+      return NextResponse.json(
+        { error: "first_clip_script_required", message: "คลิปแรกใช้สคริปต์ ไม่ใช่คลิปที่ถ่ายเอง" },
+        { status: 400 },
+      );
+    }
+    if (onFirstClipPath && projectId) {
+      try {
+        await ensureFirstClipProjectSpine({ userId: user.id, projectId });
+      } catch (error) {
+        if (error instanceof BrandProfileLibraryError) {
+          return NextResponse.json({ error: error.code, message: error.message }, { status: 400 });
+        }
+        throw error;
+      }
     }
     const receiptMinutes = Number(body.confirmedMeteredMinutes);
     const hasConfirmedReceipt = Number.isInteger(receiptMinutes) && receiptMinutes > 0;
@@ -733,7 +759,13 @@ export async function POST(req: Request) {
               projectId: projectId!,
               narrativeSourceKind: requestedNarrativeSourceKind ?? "creator-script",
             })
-      : null;
+      : (onFirstClipPath && projectId && !uploadMode)
+        ? await prepareProjectVisualSnapshotAwaitingPreflight({
+            userId: user.id,
+            projectId,
+            narrativeSourceKind: requestedNarrativeSourceKind ?? "creator-script",
+          })
+        : null;
     const brandVisualAcceptanceJson = projectVisualPin && projectId && brandVisualRenderAccess
       ? await prepareBrandVisualJobAcceptance({
           userId: user.id,
@@ -867,6 +899,9 @@ export async function POST(req: Request) {
         { error: err.code, message: err.message },
         { status: err.status },
       );
+    }
+    if (err instanceof BrandProfileLibraryError) {
+      return NextResponse.json({ error: err.code, message: err.message }, { status: 400 });
     }
     if (err instanceof ProjectLookError) {
       const status = err.code === "NOT_FOUND" ? 404
