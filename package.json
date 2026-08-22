@@ -51,6 +51,7 @@
     "verify:pricing-lcp": "tsx scripts/verify-pricing-lcp.ts",
     "verify:day21-convert-reminder": "tsx scripts/verify-day21-convert-reminder.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-day21-convert-reminder-server.ts",
     "verify:avatar-caption-fallback": "tsx scripts/verify-avatar-caption-fallback.ts",
+    "verify:admin-error-notify": "tsx scripts/verify-admin-error-notify.ts",
     "verify:hero-script-payment": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script-payment-flow.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script-webhook.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-plan-change.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-stripe-subscription-entitlement.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-manual-payment.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-revenue-cohorts.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-coupon-pro-entitlements.ts",
     "verify:coupon-pro-entitlements": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-coupon-pro-entitlements.ts",
     "verify:grant-coupon-redemption": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-grant-coupon-redemption.ts",
