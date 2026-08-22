@@ -18,8 +18,26 @@ check(
   decideFirstClipPath({ isInternal: false, paidEquivalent: true, hasCompletedVideo: true }).reason === "has_completed_video",
 );
 check(
-  "Conversion Trial (not paid-equivalent) is not on this path",
+  "Conversion Trial with no completed video is on the path",
+  decideFirstClipPath({
+    isInternal: false,
+    paidEquivalent: false,
+    conversionTrial: true,
+    hasCompletedVideo: false,
+  }).reason === "conversion_trial",
+);
+check(
+  "FREE with no trial stays off the path",
   decideFirstClipPath({ isInternal: false, paidEquivalent: false, hasCompletedVideo: false }).reason === "not_paid_equivalent",
+);
+check(
+  "Conversion Trial leaves the path after the sample clip",
+  decideFirstClipPath({
+    isInternal: false,
+    paidEquivalent: false,
+    conversionTrial: true,
+    hasCompletedVideo: true,
+  }).reason === "has_completed_video",
 );
 check(
   "internal/admin never enter First-Clip Path",

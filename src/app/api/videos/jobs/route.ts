@@ -510,9 +510,16 @@ export async function POST(req: Request) {
     const geminiVoiceName = str(body.geminiVoiceName, 60);
     const omniVoiceId = str(body.omniVoiceId, 64);
     let voiceBackend: OmniVoiceBackend | undefined;
-    const requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
-    const requestedImageEngine = body.imageEngine === "runpod" ? "runpod" : undefined;
-    const requestedImageModel = str(body.imageModel, 60);
+    let requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
+    let requestedImageEngine = body.imageEngine === "runpod" ? "runpod" : undefined;
+    let requestedImageModel = str(body.imageModel, 60);
+    // Conversion Trial sample clip spends the 8-image Hero AI Image allowance.
+    // GRANT/paid First-Clip Path keeps the caller's stock/AI choice (#267).
+    if (firstClip.reason === "conversion_trial" && !uploadMode) {
+      requestedSource = "kie-image";
+      requestedImageEngine = "runpod";
+      requestedImageModel = requestedImageModel || "z-image-turbo";
+    }
 
     if (!uploadMode && voiceProvider === "omnivoice") {
       if (!isOmniVoiceUserAllowed(user)) {
@@ -709,7 +716,16 @@ export async function POST(req: Request) {
 
     // ขั้นสูง (P6c): จำนวนคลิป + ตัวเลือก AI-gen (Beta fields ผ่านได้เฉพาะเมื่อ source เป็น Beta
     // ซึ่งผ่าน admin gate ด้านบนแล้ว)
-    const targetClipCount = num(body.targetClipCount, 1, 60);
+    let targetClipCount = num(body.targetClipCount, 1, 60);
+    if (firstClip.reason === "conversion_trial" && !uploadMode) {
+      const trialImageCap = Math.max(0, heroAiImageAccess.remainingTrialImages);
+      if (trialImageCap < 1) {
+        return NextResponse.json(HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body, {
+          status: HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.status,
+        });
+      }
+      targetClipCount = Math.min(targetClipCount ?? trialImageCap, trialImageCap);
+    }
     const brollRegionPreference = normalizeBrollRegionPreference(body.brollRegionPreference);
     const brollVisualStyle = normalizeBrollVisualStyle(body.brollVisualStyle);
     const sceneContentPolicy = sceneContentPolicyFromPreference(

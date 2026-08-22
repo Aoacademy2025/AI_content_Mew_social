@@ -31,13 +31,28 @@ export async function userHasCompletedVideo(userId: string): Promise<boolean> {
 export async function resolveFirstClipPath(
   user: { id: string; email: string; role: string },
 ): Promise<FirstClipPathDecision> {
-  const [paidEquivalent, hasCompletedVideo] = await Promise.all([
+  const [paidEquivalent, hasCompletedVideo, trialRow] = await Promise.all([
     resolvePaidEquivalentEntitlement(user.id),
     userHasCompletedVideo(user.id),
+    prisma.user.findUnique({
+      where: { id: user.id },
+      select: { trialStartedAt: true, trialEndsAt: true, suspended: true },
+    }),
   ]);
+  const now = new Date();
+  const conversionTrial = Boolean(
+    trialRow
+    && !trialRow.suspended
+    && !paidEquivalent.canUsePaidFeatures
+    && trialRow.trialStartedAt
+    && trialRow.trialStartedAt <= now
+    && trialRow.trialEndsAt
+    && trialRow.trialEndsAt > now,
+  );
   return decideFirstClipPath({
     isInternal: isInternalNorthStarAccount(user),
     paidEquivalent: paidEquivalent.canUsePaidFeatures,
+    conversionTrial,
     hasCompletedVideo,
   });
 }

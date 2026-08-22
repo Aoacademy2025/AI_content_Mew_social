@@ -53,6 +53,9 @@ jobs:
       - name: Verify first-clip path
         run: npm run verify:first-clip-path
 
+      - name: Verify Conversion Trial first-clip path
+        run: npm run verify:trial-first-clip-path
+
       - name: Verify Hero Script launch, payment, rollout, and guidance
         run: npm run verify:hero-script-launch
 
