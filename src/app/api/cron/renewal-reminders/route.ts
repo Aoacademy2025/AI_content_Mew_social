@@ -4,6 +4,7 @@ import { createNotification } from "@/lib/notifications";
 import { sendRenewalReminderEmail } from "@/lib/send-email";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
 import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
+import { sendDueDay21ConvertReminders } from "@/lib/day21-convert-reminder.server";
 
 export const runtime = "nodejs";
 
@@ -53,6 +54,13 @@ export async function GET(req: Request) {
     sent++;
   }
 
+  const day21 = await sendDueDay21ConvertReminders(now);
+
   writeCronHeartbeat("renewal-reminders");
-  return NextResponse.json({ remindersSent: sent, checked: users.length });
+  return NextResponse.json({
+    remindersSent: sent,
+    checked: users.length,
+    day21Checked: day21.checked,
+    day21Sent: day21.sent,
+  });
 }
