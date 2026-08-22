@@ -6,6 +6,7 @@ import { isInternalNorthStarAccount } from "@/lib/subscription-north-star.server
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
 import { createBlankBrandProfileSeed } from "@/lib/brand-profile-seed";
 import {
+  brandProfilePayloadSchema,
   createBrandProfileFromPayload,
   pinProjectBrandRevision,
 } from "@/lib/brand-profile-library.server";
@@ -58,14 +59,15 @@ export async function ensureFirstClipBrandRevision(userId: string) {
     if (revision) return { profile: existing, revision, created: false as const };
   }
   const seed = createBlankBrandProfileSeed();
+  const payload = brandProfilePayloadSchema.parse({
+    ...seed,
+    name: "คลิปแรก",
+    niche: "คลิปสั้น",
+    audience: "",
+  });
   const created = await createBrandProfileFromPayload({
     userId,
-    payload: {
-      ...seed,
-      name: "คลิปแรก",
-      niche: "คลิปสั้น",
-      audience: "",
-    },
+    payload,
     source: "manual",
   });
   return { profile: created.profile, revision: created.revision, created: true as const };
