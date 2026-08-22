@@ -60,6 +60,7 @@ import {
 import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import { classifyFailure, failureViewCopy } from "./failure-view";
+import { fetchMe } from "@/lib/use-me";
 
 // Which submit path a missing-key error interrupted, so the retry (after saving a key,
 // or after switching to Gemini) re-runs exactly that path — mirrors v1's
@@ -74,6 +75,7 @@ export function EditorV2Shell() {
   });
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
+  const [firstClipPath, setFirstClipPath] = useState(false);
   const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, resumeExportEditSnapshot, markPreviewMissing } = useV2Job(p);
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
@@ -130,6 +132,19 @@ export function EditorV2Shell() {
       archiveGenerationRef.current += 1;
       archiveAttemptRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    fetchMe()
+      .then((data) => {
+        if (!alive) return;
+        setFirstClipPath(data?.firstClipPath === true);
+      })
+      .catch(() => {
+        if (alive) setFirstClipPath(false);
+      });
+    return () => { alive = false; };
   }, []);
 
   const isRendering = job.phase === "rendering" || job.phase === "submitting";
@@ -587,8 +602,12 @@ export function EditorV2Shell() {
             )}
             <div className="hidden items-center gap-1.5 lg:flex" style={{ fontSize: 10.5, color: color.textFaint }}>
               {emptyProjectState ? <span>ระบบจะสร้างเมื่อมิวกดเริ่ม</span> : <SaveStatus status={p.saveStatus} onRetry={p.retryProjectSave} />}
-              <span>·</span>
-              <a href="/video-editor?ui=v1" style={{ color: color.link }}>UI เดิม (รุ่นเก่า)</a>
+              {!firstClipPath ? (
+                <>
+                  <span>·</span>
+                  <a href="/video-editor?ui=v1" style={{ color: color.link }}>UI เดิม (รุ่นเก่า)</a>
+                </>
+              ) : null}
             </div>
           </div>
         </div>
@@ -619,18 +638,20 @@ export function EditorV2Shell() {
           </div>
           <div className="hidden items-center gap-3 lg:flex">
             <NotificationBell />
-            <Link
-              href="/docs"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[13px] transition-opacity hover:opacity-80"
-              style={{ color: color.textSecondary, fontFamily: font.body }}
-            >
-              วิธีใช้งาน
-            </Link>
+            {!firstClipPath ? (
+              <Link
+                href="/docs"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[13px] transition-opacity hover:opacity-80"
+                style={{ color: color.textSecondary, fontFamily: font.body }}
+              >
+                วิธีใช้งาน
+              </Link>
+            ) : null}
           </div>
           <AccountMenu
-            extraItems={
+            extraItems={firstClipPath ? undefined : (
               <>
                 <DropdownMenuItem asChild className="cursor-pointer lg:hidden">
                   <Link href="/docs" target="_blank" rel="noopener noreferrer">
@@ -639,7 +660,7 @@ export function EditorV2Shell() {
                   </Link>
                 </DropdownMenuItem>
               </>
-            }
+            )}
           />
         </div>
       </header>
@@ -650,6 +671,20 @@ export function EditorV2Shell() {
       >
         <QuotaStatus variant="chip" refreshKey={job.phase === "done" ? 1 : 0} />
       </div>
+
+      {firstClipPath && !emptyProjectState && !isRendering && job.phase !== "done" && job.phase !== "failed" ? (
+        <div
+          className="shrink-0 px-7 py-2.5 text-[13px]"
+          style={{
+            background: color.selectedBg,
+            borderBottom: `1px solid ${color.selectedBorder}`,
+            color: color.primary300,
+            fontFamily: font.body,
+          }}
+        >
+          คลิปแรก: วางสคริปต์แล้วกดสร้าง — ระบบใช้แบรนด์เดียวกันให้อัตโนมัติ
+        </div>
+      ) : null}
 
       {emptyProjectState ? (
         <EmptyProjectView onCreate={() => void handleNewProject()} />
@@ -706,7 +741,7 @@ export function EditorV2Shell() {
           }}
         />
       ) : step === 0 ? (
-        <Step1Script p={p} onNext={() => setStep(1)} />
+        <Step1Script p={p} onNext={() => setStep(1)} firstClipPath={firstClipPath} />
       ) : (
         <Step2Elements p={p} onRender={handleRender} />
       )}

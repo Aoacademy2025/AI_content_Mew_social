@@ -543,6 +543,9 @@ function mountEditorShell(input: {
     if (specifier === "@/lib/customer-api-error") {
       return { customerApiErrorMessage: (_payload: unknown, fallback: string) => fallback };
     }
+    if (specifier === "@/lib/use-me") {
+      return { fetchMe: async () => ({ firstClipPath: false }) };
+    }
     throw new Error(`unhandled editor shell import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -2119,6 +2122,8 @@ async function runExactReplayRouteScenario(input: {
           touchMutable("project-visual-pin");
           return null;
         },
+        prepareProjectVisualSnapshotAwaitingPreflight: async () => null,
+        prepareUploadProjectVisualSnapshot: async () => null,
         ProjectLookError: class ProjectLookError extends Error {},
       };
     }
@@ -2126,6 +2131,21 @@ async function runExactReplayRouteScenario(input: {
       return { contentPreflightSourceHash: (kind: string, script: string) => `${kind}:${script}` };
     }
     if (specifier === "@/lib/scene-content-policy") return sceneContentPolicyModule;
+    if (specifier === "@/lib/brand-profile-library.server") {
+      return {
+        BrandProfileLibraryError: class BrandProfileLibraryError extends Error {
+          constructor(readonly code: string, message: string) {
+            super(message);
+          }
+        },
+      };
+    }
+    if (specifier === "@/lib/first-clip-path.server") {
+      return {
+        resolveFirstClipPath: async () => ({ onPath: false, reason: "has_completed_video" }),
+        ensureFirstClipProjectSpine: async () => ({ profileId: "p", revisionId: "r" }),
+      };
+    }
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));
