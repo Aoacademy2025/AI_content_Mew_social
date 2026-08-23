@@ -38,7 +38,7 @@ import {
   resolveLegacyVideoJobAttemptKey,
   videoJobOperationKind,
 } from "@/lib/video-job-idempotency";
-import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
+import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import {
   checkOmniVoiceReady,
   isOmniVoiceUserAllowed,
@@ -926,7 +926,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: err.code, message: err.message }, { status });
     }
     if (err instanceof RenderDeployDrainError) {
-      return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });
+      return NextResponse.json(
+        { error: "render_maintenance", retryable: true, message: RENDER_MAINTENANCE_CUSTOMER_MESSAGE },
+        { status: 503 },
+      );
     }
     if (err instanceof VideoJobFundingError) {
       return NextResponse.json(
