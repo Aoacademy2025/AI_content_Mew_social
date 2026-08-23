@@ -30,7 +30,13 @@ export async function POST(req: Request) {
     const method: "card" | "promptpay" = period === "monthly" ? "card" : (rawMethod === "promptpay" ? "promptpay" : "card");
 
     const priceCfg = resolvePrice(plan, period, method);
-    if (!priceCfg.priceId) return NextResponse.json({ error: "Stripe price not configured" }, { status: 500 });
+    if (!process.env.STRIPE_SECRET_KEY || !priceCfg.priceId) {
+      return NextResponse.json({
+        error: "Payment configuration is unavailable",
+        code: "PAYMENT_NOT_CONFIGURED",
+        userAction: "ระบบชำระเงินของหน้านี้ยังไม่พร้อม กรุณาแจ้งทีมงานเพื่อเปิดการชำระเงิน",
+      }, { status: 503 });
+    }
     const isSub = priceCfg.recurring; // card monthly/annual → subscription · PromptPay annual → one-time
 
     const user = await prisma.user.findUnique({

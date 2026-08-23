@@ -17,6 +17,7 @@ import {
   PLAN_RANK,
 } from "@/lib/plan-change";
 import { trackEvent } from "@/lib/client-telemetry";
+import { customerApiErrorMessage } from "@/lib/customer-api-error";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
 // Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
@@ -157,12 +158,12 @@ export function PricingClient({
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error ?? "เกิดข้อผิดพลาด");
+        toast.error(customerApiErrorMessage(data, "ยังเริ่มชำระเงินไม่ได้ กรุณาลองใหม่หรือติดต่อทีมงาน"));
         return;
       }
       window.location.href = data.url;
     } catch {
-      toast.error("ไม่สามารถเชื่อมต่อ payment ได้");
+      toast.error("เชื่อมต่อระบบชำระเงินไม่ได้ กรุณาลองใหม่อีกครั้ง");
     } finally {
       setLoading(null);
     }
@@ -178,12 +179,12 @@ export function PricingClient({
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error ?? "ไม่สามารถเปลี่ยนเป็น Founding รายปีได้");
+        toast.error(customerApiErrorMessage(data, "ยังเปลี่ยนเป็น Founding รายปีไม่ได้ กรุณาลองใหม่อีกครั้ง"));
         return;
       }
       window.location.href = data.url;
     } catch {
-      toast.error("ไม่สามารถเชื่อมต่อ payment ได้");
+      toast.error("เชื่อมต่อระบบชำระเงินไม่ได้ กรุณาลองใหม่อีกครั้ง");
     } finally {
       setLoading(null);
     }
@@ -559,4 +560,3 @@ export function PricingClient({
     </div>
   );
 }
-
