@@ -10,13 +10,14 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { CouponBox } from "@/components/settings/coupon-box";
 import { computeDisplayPrice } from "@/lib/pricing-display";
-import { minutesPerMonthForPlan } from "@/lib/plan-limits";
+import { marketingPlanFeatures, supplementalPlanFeatures } from "@/lib/marketing-plan-facts";
 import {
   isFoundingAnnualConversionEligible,
   paidPlanCardMode,
   PLAN_RANK,
 } from "@/lib/plan-change";
 import { trackEvent } from "@/lib/client-telemetry";
+import { customerApiErrorMessage } from "@/lib/customer-api-error";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
 // Inlined here to avoid importing credits.ts which pulls in prisma (server-only).
@@ -73,11 +74,13 @@ export function PricingClient({
   initialFounding,
   paymentResult,
   acquisitionSource,
+  minuteQuotaEnabled,
 }: {
   initialPlans: PlanConfig;
   initialFounding: { active: boolean; remaining: number; total: number; percentOff: number };
   paymentResult: string | null;
   acquisitionSource: string | null;
+  minuteQuotaEnabled: boolean;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
   const [period, setPeriod] = useState<BillingPeriod>("annual");
@@ -155,12 +158,12 @@ export function PricingClient({
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error ?? "เกิดข้อผิดพลาด");
+        toast.error(customerApiErrorMessage(data, "ยังเริ่มชำระเงินไม่ได้ กรุณาลองใหม่หรือติดต่อทีมงาน"));
         return;
       }
       window.location.href = data.url;
     } catch {
-      toast.error("ไม่สามารถเชื่อมต่อ payment ได้");
+      toast.error("เชื่อมต่อระบบชำระเงินไม่ได้ กรุณาลองใหม่อีกครั้ง");
     } finally {
       setLoading(null);
     }
@@ -176,12 +179,12 @@ export function PricingClient({
       });
       const data = await res.json();
       if (!res.ok) {
-        toast.error(data.error ?? "ไม่สามารถเปลี่ยนเป็น Founding รายปีได้");
+        toast.error(customerApiErrorMessage(data, "ยังเปลี่ยนเป็น Founding รายปีไม่ได้ กรุณาลองใหม่อีกครั้ง"));
         return;
       }
       window.location.href = data.url;
     } catch {
-      toast.error("ไม่สามารถเชื่อมต่อ payment ได้");
+      toast.error("เชื่อมต่อระบบชำระเงินไม่ได้ กรุณาลองใหม่อีกครั้ง");
     } finally {
       setLoading(null);
     }
@@ -333,7 +336,10 @@ export function PricingClient({
         {TIER_META.map(({ key, cfgKey, icon: Icon, highlight }) => {
           const data = planConfig?.[cfgKey];
           const price = data?.price ?? (key === "PRO" ? 599 : key === "BUSINESS" ? 990 : 0);
-          const features = data?.features ?? [];
+          const features = [
+            ...marketingPlanFeatures(cfgKey, minuteQuotaEnabled),
+            ...supplementalPlanFeatures(data?.features ?? []),
+          ];
           const name = data?.name ?? key;
           const tagline = data?.tagline ?? "";
           const badge = key === "PRO" ? (data?.badge ?? "แนะนำ") : data?.badge ?? null;
@@ -416,14 +422,6 @@ export function PricingClient({
                   </>
                 )}
               </div>
-
-              {/* minutes per plan — additive info, only shown when MINUTE_QUOTA is enabled */}
-              {me?.minuteQuota && (
-                <p className="mt-2 text-[12px]" style={{ color: "var(--ui-text-secondary)" }}>
-                  {minutesPerMonthForPlan(key)} นาที/เดือน
-                  <span className="ml-1" style={{ color: "var(--ui-text-muted)" }}>(~{minutesPerMonthForPlan(key)} คลิป @ ~1 นาที)</span>
-                </p>
-              )}
 
               <ul className="my-5 flex-1 space-y-2 text-[14px]">
                 {features.map((f) => (
@@ -562,5 +560,3 @@ export function PricingClient({
     </div>
   );
 }
-
-

@@ -65,13 +65,13 @@ export function decideHeroScriptAccess(input: {
     entitlementSource: paidEquivalent.source,
   };
   if (suspended || paidEquivalent.reason === "suspended") {
-    return { ...base, canUse: false, canPreview: flags.publicPreview, cohort: "preview", mode: "preview", reason: "suspended" };
+    return { ...base, canUse: false, canPreview: true, cohort: "preview", mode: "preview", reason: "suspended" };
   }
   if (internal) {
     return { ...base, canUse: true, canPreview: true, cohort: "internal", mode: "internal", reason: "eligible" };
   }
   if (!flags.paidEnabled) {
-    return { ...base, canUse: false, canPreview: flags.publicPreview, cohort: "preview", mode: "preview", reason: "feature_off" };
+    return { ...base, canUse: false, canPreview: true, cohort: "preview", mode: "preview", reason: "feature_off" };
   }
   if (paidEquivalent.canUsePaidFeatures) {
     const cohort: HeroScriptCohort = paidEquivalent.source === "grant_coupon"
@@ -86,7 +86,9 @@ export function decideHeroScriptAccess(input: {
   return {
     ...base,
     canUse: false,
-    canPreview: flags.publicPreview,
+    // Script is a paid feature, but its locked product preview is part of the
+    // upgrade path for every signed-in customer (including Conversion Trial).
+    canPreview: true,
     cohort: "preview",
     mode: "preview",
     reason: "payment_required",

@@ -602,12 +602,6 @@ export function EditorV2Shell() {
             )}
             <div className="hidden items-center gap-1.5 lg:flex" style={{ fontSize: 10.5, color: color.textFaint }}>
               {emptyProjectState ? <span>ระบบจะสร้างเมื่อมิวกดเริ่ม</span> : <SaveStatus status={p.saveStatus} onRetry={p.retryProjectSave} />}
-              {!firstClipPath ? (
-                <>
-                  <span>·</span>
-                  <a href="/video-editor?ui=v1" style={{ color: color.link }}>UI เดิม (รุ่นเก่า)</a>
-                </>
-              ) : null}
             </div>
           </div>
         </div>

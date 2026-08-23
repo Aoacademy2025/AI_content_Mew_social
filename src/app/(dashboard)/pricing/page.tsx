@@ -41,6 +41,7 @@ export default async function PricingPage({
           initialFounding={founding}
           paymentResult={params.payment ?? null}
           acquisitionSource={params.source ?? null}
+          minuteQuotaEnabled={process.env.MINUTE_QUOTA === "1"}
         />
       </div>
     </div>

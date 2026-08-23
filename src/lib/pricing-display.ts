@@ -23,6 +23,14 @@ export interface DisplayPrice {
   isFounding: boolean;
 }
 
+export interface MarketingPriceBlock {
+  amount: string;
+  unit: string;
+  sub: string;
+  billingNote: string;
+  was?: string;
+}
+
 export function computeDisplayPrice(input: DisplayPriceInput): DisplayPrice {
   const { monthlyPrice, period, coupon, founding } = input;
   // annual = 10 months billed (2 months free)
@@ -33,4 +41,36 @@ export function computeDisplayPrice(input: DisplayPriceInput): DisplayPrice {
   const isFounding = !coupon && foundingPct > 0;
   const final = pct > 0 ? Math.round(base * (1 - pct / 100)) : base;
   return { base, final, pct, isFounding };
+}
+
+/** Human-readable pricing used on the public sales page. */
+export function marketingPriceBlock({
+  monthlyPrice,
+  period,
+  founding,
+}: {
+  monthlyPrice: number;
+  period: "monthly" | "annual";
+  founding: DisplayPriceInput["founding"];
+}): MarketingPriceBlock {
+  const display = computeDisplayPrice({ monthlyPrice, period, coupon: null, founding });
+  if (period === "monthly") {
+    return {
+      amount: `฿${monthlyPrice.toLocaleString("th-TH")}`,
+      unit: "/เดือน",
+      sub: `ชำระ ฿${monthlyPrice.toLocaleString("th-TH")}/เดือน`,
+      billingNote: "ชำระด้วยบัตร · ต่ออัตโนมัติและยกเลิกได้",
+    };
+  }
+
+  const monthlyEquivalent = Math.round(display.final / 12);
+  return {
+    amount: `฿${monthlyEquivalent.toLocaleString("th-TH")}`,
+    unit: "/เดือน",
+    sub: display.isFounding
+      ? `ชำระ ฿${display.final.toLocaleString("th-TH")}/ปี · ราคาพิเศษลด ${display.pct}%`
+      : `ชำระ ฿${display.final.toLocaleString("th-TH")}/ปี · ประหยัด 2 เดือน`,
+    billingNote: "PromptPay จ่ายครั้งเดียว · บัตรต่ออัตโนมัติ",
+    was: `฿${monthlyPrice.toLocaleString("th-TH")}`,
+  };
 }
