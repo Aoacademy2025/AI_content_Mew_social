@@ -18,8 +18,9 @@ import {
 import { PricingToggle } from "@/components/marketing/pricing-toggle";
 import { ShowcaseClip } from "@/components/marketing/showcase-clip";
 import { SaleBackground } from "@/components/marketing/marketing-fx";
-import { Reveal } from "@/components/marketing/motion-fx";
+import { ContainerScroll, Reveal, SpotlightCard } from "@/components/marketing/motion-fx";
 import { StudioWorkbench } from "@/components/marketing/studio-workbench";
+import { ProductFeatureVisual } from "@/components/marketing/product-feature-visual";
 import { getFoundingCoupon } from "@/lib/founding";
 import { minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { getPlanConfig } from "@/lib/plan-config";
@@ -230,14 +231,20 @@ export default async function Home() {
                 </div>
               </div>
             </Reveal>
-            <Reveal delay={0.12} y={24}><StudioWorkbench /></Reveal>
+            <Reveal delay={0.12} y={24}>
+              <ContainerScroll className="sale-v2-workbench-frame">
+                <StudioWorkbench />
+              </ContainerScroll>
+            </Reveal>
           </div>
 
-          <div className="mx-auto mt-20 max-w-[1200px] border-y border-white/[0.075] py-4 sm:mt-24">
-            <div className="grid grid-cols-2 gap-y-4 text-center sm:grid-cols-4">
+          <div className="sale-v2-flowband relative mx-auto mt-20 max-w-[1200px] overflow-hidden border-y border-white/[0.075] py-5 sm:mt-24">
+            <span className="sale-v2-flowpulse absolute inset-y-0 left-0 w-40" aria-hidden />
+            <div className="relative grid grid-cols-2 gap-y-5 text-center sm:grid-cols-4">
               {["Hero Script", "Brand Visual", "Video Editor", "AI Studio"].map((item, index) => (
-                <div key={item} className="flex items-center justify-center gap-2 text-[11px] font-semibold uppercase tracking-[.12em] text-white/44 sm:border-r sm:border-white/[0.07] sm:last:border-r-0">
-                  <span className="font-mono text-violet-300/60">0{index + 1}</span> {item}
+                <div key={item} className="group flex items-center justify-center gap-2.5 text-[11px] font-semibold uppercase tracking-[.12em] text-white/52 sm:border-r sm:border-white/[0.07] sm:last:border-r-0">
+                  <span className="flex h-5 w-5 items-center justify-center rounded-full border border-violet-300/25 bg-violet-400/[0.08] font-mono text-[8px] text-violet-200">0{index + 1}</span>
+                  <span className="transition-colors group-hover:text-white">{item}</span>
                 </div>
               ))}
             </div>
@@ -253,40 +260,47 @@ export default async function Home() {
           </Reveal>
         </section>
 
-        <section id="product" className="scroll-mt-10 px-5 py-24 sm:py-32 lg:px-7">
-          <div className="mx-auto max-w-[1200px]">
+        <section id="product" className="relative scroll-mt-10 overflow-hidden px-5 py-24 sm:py-32 lg:px-7">
+          <div aria-hidden className="absolute left-1/2 top-44 h-[520px] w-[900px] -translate-x-1/2 rounded-full bg-violet-700/[0.07] blur-[130px]" />
+          <div className="relative mx-auto max-w-[1200px]">
             <Reveal>
-              <div className="grid gap-6 border-b border-white/10 pb-10 md:grid-cols-[.65fr_1fr] md:items-end">
+              <div className="grid gap-8 border-b border-white/10 pb-12 md:grid-cols-[.72fr_1fr] md:items-end">
                 <div>
                   <p className="sale-v2-eyebrow">ONE CONNECTED SYSTEM</p>
-                  <h2 className="mt-4 text-3xl font-semibold tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>หนึ่งระบบ<br className="hidden md:block" /> สี่บทบาทสำคัญ</h2>
+                  <h2 className="mt-4 text-3xl font-semibold leading-[1.12] tracking-[-.025em] text-white sm:text-[48px]" style={HEAD}>เห็นงานไหลต่อกัน<br className="hidden md:block" /> ไม่ใช่แค่เห็นรายการฟีเจอร์</h2>
                 </div>
-                <p className="max-w-[590px] text-[16px] leading-7 text-[#aaa3b6] md:justify-self-end">ไม่ต้องคัดลอกข้อความ ดาวน์โหลดไฟล์ หรืออธิบายแบรนด์ใหม่ทุกแอป ทุกขั้นรู้ว่าคุณกำลังเล่าเรื่องอะไร และงานชิ้นนี้ควรหน้าตาแบบไหน</p>
+                <p className="max-w-[560px] text-[16px] leading-8 text-[#b9b1c5] md:justify-self-end">ไอเดีย สคริปต์ ภาพ เสียง และจังหวะตัดต่ออยู่ในบริบทเดียวกัน คุณจึงเห็นทั้งกระบวนการ ไม่ต้องเดาว่าแต่ละระบบเชื่อมกันอย่างไร</p>
               </div>
             </Reveal>
 
-            <div>
+            <div className="mt-16 space-y-24 sm:mt-24 sm:space-y-32">
               {PRODUCT_PILLARS.map(({ id, eyebrow, title, desc, icon: Icon, chips, signal }, index) => (
-                <Reveal key={id} delay={index * 0.04}>
-                  <article className="group grid gap-6 border-b border-white/[0.08] py-10 transition-colors hover:border-violet-300/25 md:grid-cols-[.22fr_.7fr_1fr] md:items-start md:gap-10 lg:py-14">
-                    <div className="flex items-center justify-between md:block">
-                      <div className="flex h-11 w-11 items-center justify-center rounded-[13px] border border-violet-300/15 bg-violet-400/[0.07] text-violet-200 transition-colors group-hover:border-violet-300/30 group-hover:bg-violet-400/[0.11]">
-                        <Icon className="h-5 w-5" strokeWidth={1.8} aria-hidden />
+                <article key={id} className={`grid items-center gap-10 lg:gap-16 ${index % 2 ? "lg:grid-cols-[1.22fr_.78fr]" : "lg:grid-cols-[.78fr_1.22fr]"}`}>
+                  <Reveal y={22} className={index % 2 ? "lg:order-2 lg:pl-4" : undefined}>
+                    <div className="relative max-w-[470px]">
+                      <span aria-hidden className="absolute -top-12 right-0 select-none font-mono text-[84px] font-semibold leading-none text-violet-300/[0.055] sm:text-[112px]">0{index + 1}</span>
+                      <div className="relative flex items-center gap-3">
+                        <span className="flex h-11 w-11 items-center justify-center rounded-[13px] border border-violet-300/20 bg-violet-400/[0.09] text-violet-100 shadow-[0_0_30px_-14px_rgba(139,92,246,.8)]">
+                          <Icon className="h-5 w-5" strokeWidth={1.8} aria-hidden />
+                        </span>
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[.14em] text-violet-200/80">{eyebrow}</p>
+                          <p className="mt-1 font-mono text-[9px] tracking-[.1em] text-white/28">{signal}</p>
+                        </div>
                       </div>
-                      <span className="font-mono text-[9px] tracking-[.12em] text-white/22 md:mt-8 md:block">{signal}</span>
-                    </div>
-                    <div>
-                      <p className="text-[10px] font-semibold uppercase tracking-[.14em] text-violet-300/75">{eyebrow}</p>
-                      <h3 className="mt-3 max-w-[420px] text-[25px] font-semibold leading-[1.3] tracking-[-.02em] text-white sm:text-[29px]" style={HEAD}>{title}</h3>
-                    </div>
-                    <div className="md:pt-5">
-                      <p className="max-w-[590px] text-[15px] leading-7 text-[#aaa3b6]">{desc}</p>
-                      <div className="mt-5 flex flex-wrap gap-2">
-                        {chips.map((chip) => <span key={chip} className="rounded-full border border-white/[0.09] bg-white/[0.025] px-3 py-1.5 text-[11px] text-white/56">{chip}</span>)}
+                      <h3 className="relative mt-7 text-[29px] font-semibold leading-[1.24] tracking-[-.025em] text-white sm:text-[37px]" style={HEAD}>{title}</h3>
+                      <p className="mt-5 text-[16px] leading-8 text-[#b9b1c5]">{desc}</p>
+                      <div className="mt-7 flex flex-wrap gap-2">
+                        {chips.map((chip) => <span key={chip} className="rounded-full border border-white/10 bg-white/[0.035] px-3.5 py-2 text-[12px] text-white/66 transition-colors hover:border-violet-300/25 hover:text-white">{chip}</span>)}
                       </div>
                     </div>
-                  </article>
-                </Reveal>
+                  </Reveal>
+                  <Reveal delay={0.08} y={28} className={index % 2 ? "lg:order-1" : undefined}>
+                    <SpotlightCard className="sale-v2-scene-shell rounded-[26px] border border-white/10 bg-[#0e0c14] p-2 shadow-[0_34px_90px_-44px_rgba(139,92,246,.72)]">
+                      <ProductFeatureVisual id={id} />
+                    </SpotlightCard>
+                  </Reveal>
+                </article>
               ))}
             </div>
           </div>

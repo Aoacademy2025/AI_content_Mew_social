@@ -20,7 +20,7 @@ const NAV = [
 
 export function StudioWorkbench() {
   return (
-    <div className="relative mx-auto w-full max-w-[760px]">
+    <div data-hero-workbench className="relative isolate mx-auto w-full max-w-[760px]">
       <div
         aria-hidden
         className="absolute -inset-8 -z-10 rounded-[42px] opacity-60 blur-3xl"
@@ -192,12 +192,15 @@ export function StudioWorkbench() {
         </div>
       </div>
 
-      <div className="absolute -bottom-5 -left-2 hidden items-center gap-2 rounded-[13px] border border-violet-300/18 bg-[#181320] px-3 py-2.5 text-[10px] text-violet-100 shadow-xl sm:flex">
-        <Check className="h-3.5 w-3.5 text-emerald-300" /> ส่งบริบทแบรนด์ไปทุกขั้นแล้ว
-      </div>
-      <div className="absolute -right-3 top-16 hidden rounded-[13px] border border-white/10 bg-[#17151e] px-3 py-2.5 shadow-xl md:block">
-        <p className="text-[8px] uppercase tracking-[.14em] text-white/30">VISUAL FORMAT</p>
-        <p className="mt-0.5 text-[10px] font-semibold text-white/80">Cinematic Realism</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <div className="flex min-h-11 items-center gap-2 rounded-[12px] border border-violet-300/12 bg-[#121018] px-3 text-[10px] text-violet-100/80">
+          <Check className="h-3.5 w-3.5 shrink-0 text-emerald-300" aria-hidden />
+          Brand context เชื่อมครบทุกขั้น
+        </div>
+        <div className="flex min-h-11 items-center justify-between gap-3 rounded-[12px] border border-white/[0.07] bg-[#100e15] px-3">
+          <span className="text-[8px] font-semibold uppercase tracking-[.14em] text-white/30">Visual format</span>
+          <span className="text-[10px] font-semibold text-white/75">Cinematic Realism</span>
+        </div>
       </div>
     </div>
   );

@@ -1,15 +1,14 @@
 "use client";
 
 import { useRef, useState, type ReactNode } from "react";
-import { motion, useScroll, useTransform } from "motion/react";
+import { motion, useReducedMotion, useScroll, useTransform } from "motion/react";
 import { cn } from "@/lib/utils";
 
-const EASE: [number, number, number, number] = [0.21, 0.6, 0.35, 1];
+const EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 
 /**
- * Content stays visible in the server-rendered first paint. Motion only settles
- * an element into its natural position when it enters the viewport, so a
- * stalled observer or disabled JavaScript never hides marketing content.
+ * Editorial rise-and-resolve entrance. Reduced-motion visitors get the same
+ * content and hierarchy with no spatial movement.
  */
 export function Reveal({
   children,
@@ -22,14 +21,15 @@ export function Reveal({
   y?: number;
   className?: string;
 }) {
+  const reduceMotion = useReducedMotion();
   return (
     <motion.div
       className={className}
-      initial={false}
-      whileInView={{ opacity: 1, y: 0 }}
+      initial={reduceMotion ? false : { opacity: 0, y, filter: "blur(8px)" }}
+      whileInView={reduceMotion ? undefined : { opacity: 1, y: 0, filter: "blur(0px)" }}
       data-reveal-y={y}
       viewport={{ once: true, margin: "-80px" }}
-      transition={{ duration: 0.65, delay, ease: EASE }}
+      transition={{ duration: 0.72, delay, ease: EASE }}
     >
       {children}
     </motion.div>
@@ -48,12 +48,13 @@ export function ContainerScroll({
   className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const reduceMotion = useReducedMotion();
   const { scrollYProgress } = useScroll({ target: ref, offset: ["start end", "center center"] });
   const rotateX = useTransform(scrollYProgress, [0, 1], [18, 0]);
   const scale = useTransform(scrollYProgress, [0, 1], [0.9, 1]);
   return (
     <div ref={ref} className={cn("[perspective:1400px]", className)}>
-      <motion.div style={{ rotateX, scale, transformOrigin: "center 30%" }} className="will-change-transform">
+      <motion.div style={reduceMotion ? undefined : { rotateX, scale, transformOrigin: "center 30%" }} className="will-change-transform">
         {children}
       </motion.div>
     </div>
