@@ -21,8 +21,8 @@ import { SaleBackground } from "@/components/marketing/marketing-fx";
 import { ContainerScroll, Reveal, SpotlightCard } from "@/components/marketing/motion-fx";
 import { StudioWorkbench } from "@/components/marketing/studio-workbench";
 import { ProductFeatureVisual } from "@/components/marketing/product-feature-visual";
+import { MobileStickyCta } from "@/components/marketing/mobile-sticky-cta";
 import { getFoundingCoupon } from "@/lib/founding";
-import { minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { getPlanConfig } from "@/lib/plan-config";
 
 export const metadata = {
@@ -60,6 +60,7 @@ async function getFounding() {
 }
 
 const MANAGED = process.env.MANAGED_GEMINI === "1";
+const MINUTE_QUOTA = process.env.MINUTE_QUOTA === "1";
 
 const PRODUCT_PILLARS = [
   {
@@ -140,20 +141,19 @@ const FAQS = [
       : "เริ่มด้วย Gemini key ฟรีของคุณได้ ส่วน AI Avatar หรือเสียงโคลนเชื่อมเพิ่มภายหลังได้ มีคู่มือพาตั้งค่าทีละขั้น",
   },
   {
+    q: "ทดลองใช้ฟรี 7 วัน ได้โควต้าเท่าไร?",
+    a: MINUTE_QUOTA
+      ? "ทดลองฟีเจอร์ Pro ได้ 7 วัน โดยมีโควต้าเรนเดอร์รวม 15 นาที ไม่ต้องใช้บัตร หลังหมดทดลองระบบจะกลับเป็นแผน Free โดยอัตโนมัติ"
+      : "ทดลองฟีเจอร์ Pro ได้ 7 วันโดยไม่ต้องใช้บัตร หลังหมดทดลองระบบจะกลับเป็นแผน Free โดยอัตโนมัติ",
+  },
+  {
     q: "แพ็กรายปีตัดเงินอัตโนมัติไหม?",
-    a: "ไม่ตัดอัตโนมัติ ชำระครั้งเดียวและใช้ได้ 1 ปี ครบปีค่อยเลือกต่ออายุเอง รองรับ PromptPay และบัตรเครดิต/เดบิต",
+    a: "ขึ้นอยู่กับวิธีชำระ: PromptPay รายปีเป็นการจ่ายครั้งเดียวและไม่ต่ออัตโนมัติ ส่วนบัตรรายปีเป็นสมาชิกแบบต่ออัตโนมัติและยกเลิกได้จาก Settings → Billing",
   },
 ] as const;
 
 export default async function Home() {
   const [plans, founding] = await Promise.all([getPlanConfig(), getFounding()]);
-  const minutesPerPlan = process.env.MINUTE_QUOTA === "1"
-    ? {
-        free: minutesPerMonthForPlan("FREE"),
-        pro: minutesPerMonthForPlan("PRO"),
-        business: minutesPerMonthForPlan("BUSINESS"),
-      }
-    : undefined;
   const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
 
   return (
@@ -174,7 +174,7 @@ export default async function Home() {
               <span className="founder-bar-shimmer relative block h-full rounded-full bg-violet-400" style={{ width: `${filled}%` }} />
             </span>
             <b className="text-violet-200">เหลือ {founding.remaining}/{founding.total}</b>
-            <Link href="/register" className="ml-1 inline-flex items-center gap-1 font-semibold text-white underline decoration-violet-400 underline-offset-4 focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300">
+            <Link href="/register" className="ml-1 inline-flex min-h-11 items-center gap-1 font-semibold text-white underline decoration-violet-400 underline-offset-4 focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300">
               รับสิทธิ์ <ArrowRight className="h-3 w-3" aria-hidden />
             </Link>
           </div>
@@ -182,27 +182,27 @@ export default async function Home() {
       )}
 
       <nav className="relative z-20 mx-auto flex max-w-[1200px] items-center justify-between px-5 py-5 lg:px-7">
-        <Link href="/" className="flex items-center gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300" aria-label="HERO AI Creator Studio หน้าแรก">
+        <Link href="/" className="flex min-h-11 items-center gap-2.5 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300" aria-label="HERO AI Creator Studio หน้าแรก">
           <Image src="/logo.svg" alt="" width={38} height={38} className="rounded-[11px] shadow-[0_0_28px_-5px_rgba(139,92,246,.8)]" />
           <span className="text-[13px] font-bold tracking-[.04em] text-white" style={HEAD}>
-            HERO AI <span className="font-medium text-white/44">CREATOR STUDIO</span>
+            HERO AI <span className="hidden font-medium text-white/44 sm:inline">CREATOR STUDIO</span>
           </span>
         </Link>
         <div className="hidden items-center gap-7 text-[13px] text-white/56 md:flex">
-          <Link href="#product" className="transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white">ระบบ</Link>
-          <Link href="#outputs" className="transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white">ผลงาน</Link>
-          <Link href="#pricing" className="transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white">ราคา</Link>
+          <Link href="#product" className="inline-flex min-h-11 min-w-11 items-center justify-center px-2 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white">ระบบ</Link>
+          <Link href="#outputs" className="inline-flex min-h-11 min-w-11 items-center justify-center px-2 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white">ผลงาน</Link>
+          <Link href="#pricing" className="inline-flex min-h-11 min-w-11 items-center justify-center px-2 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white">ราคา</Link>
         </div>
         <div className="flex items-center gap-2 sm:gap-3">
-          <Link href="/login" className="hidden text-[13px] font-medium text-white/60 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white sm:block">เข้าสู่ระบบ</Link>
-          <Link href="/register" className="sale-v2-cta inline-flex min-h-10 items-center gap-1.5 rounded-xl px-4 text-[13px] font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200 focus-visible:ring-offset-2 focus-visible:ring-offset-[#08070c]" style={{ background: ACCENT }}>
+          <Link href="/login" className="hidden min-h-11 items-center text-[13px] font-medium text-white/60 transition-colors hover:text-white focus-visible:outline-none focus-visible:text-white sm:inline-flex">เข้าสู่ระบบ</Link>
+          <Link href="/register" className="sale-v2-cta inline-flex min-h-11 items-center gap-1.5 rounded-xl px-3.5 text-[13px] font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200 focus-visible:ring-offset-2 focus-visible:ring-offset-[#08070c] sm:px-4" style={{ background: ACCENT }}>
             สร้างคลิปฟรี <ArrowRight className="h-3.5 w-3.5" aria-hidden />
           </Link>
         </div>
       </nav>
 
       <main className="relative z-10">
-        <header className="px-5 pb-24 pt-12 sm:pt-20 lg:px-7 lg:pb-32 lg:pt-24">
+        <header className="px-5 pb-20 pt-8 sm:pb-24 sm:pt-20 lg:px-7 lg:pb-32 lg:pt-24">
           <div className="mx-auto grid max-w-[1200px] items-center gap-14 lg:grid-cols-[.83fr_1.17fr] lg:gap-12">
             <Reveal y={16}>
               <div className="max-w-[560px]">
@@ -225,7 +225,7 @@ export default async function Home() {
                   </Link>
                 </div>
                 <div className="mt-6 flex flex-wrap gap-x-5 gap-y-2 text-[12.5px] text-white/48">
-                  {["PRO ฟรี 7 วัน", "ไม่ใช้บัตร", MANAGED ? "AI หลักระบบดูแลให้" : "มีคู่มือตั้งค่าทีละขั้น"].map((item) => (
+                  {[MINUTE_QUOTA ? "PRO ฟรี 7 วัน · 15 นาที" : "PRO ฟรี 7 วัน", "ไม่ใช้บัตร", MANAGED ? "AI หลักระบบดูแลให้" : "มีคู่มือตั้งค่าทีละขั้น"].map((item) => (
                     <span key={item} className="inline-flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-emerald-300/80" strokeWidth={2.5} aria-hidden /> {item}</span>
                   ))}
                 </div>
@@ -251,7 +251,7 @@ export default async function Home() {
           </div>
         </header>
 
-        <section className="border-y border-white/[0.06] bg-[#0b0910]/72 px-5 py-24 sm:py-32 lg:px-7">
+        <section className="border-y border-white/[0.06] bg-[#0b0910]/72 px-5 py-20 sm:py-32 lg:px-7">
           <Reveal>
             <div className="mx-auto grid max-w-[1200px] gap-7 lg:grid-cols-[.48fr_1fr] lg:items-end">
               <p className="sale-v2-eyebrow">ไม่ใช่แค่ AI ตัดคลิป</p>
@@ -260,7 +260,7 @@ export default async function Home() {
           </Reveal>
         </section>
 
-        <section id="product" className="relative scroll-mt-10 overflow-hidden px-5 py-24 sm:py-32 lg:px-7">
+        <section id="product" className="relative scroll-mt-10 overflow-hidden px-5 py-20 sm:py-32 lg:px-7">
           <div aria-hidden className="absolute left-1/2 top-44 h-[520px] w-[900px] -translate-x-1/2 rounded-full bg-violet-700/[0.07] blur-[130px]" />
           <div className="relative mx-auto max-w-[1200px]">
             <Reveal>
@@ -273,7 +273,7 @@ export default async function Home() {
               </div>
             </Reveal>
 
-            <div className="mt-16 space-y-24 sm:mt-24 sm:space-y-32">
+            <div className="mt-16 space-y-20 sm:mt-24 sm:space-y-32">
               {PRODUCT_PILLARS.map(({ id, eyebrow, title, desc, icon: Icon, chips, signal }, index) => (
                 <article key={id} className={`grid items-center gap-10 lg:gap-16 ${index % 2 ? "lg:grid-cols-[1.22fr_.78fr]" : "lg:grid-cols-[.78fr_1.22fr]"}`}>
                   <Reveal y={22} className={index % 2 ? "lg:order-2 lg:pl-4" : undefined}>
@@ -306,7 +306,7 @@ export default async function Home() {
           </div>
         </section>
 
-        <section className="overflow-hidden border-y border-white/[0.06] bg-[#0d0b12] px-5 py-24 sm:py-32 lg:px-7">
+        <section className="overflow-hidden border-y border-white/[0.06] bg-[#0d0b12] px-5 py-20 sm:py-32 lg:px-7">
           <div className="mx-auto max-w-[1200px]">
             <Reveal>
               <div className="grid gap-8 md:grid-cols-[.72fr_1fr] md:items-end">
@@ -337,7 +337,7 @@ export default async function Home() {
           </div>
         </section>
 
-        <section id="outputs" className="scroll-mt-10 px-5 py-24 sm:py-32 lg:px-7">
+        <section id="outputs" className="scroll-mt-10 px-5 py-20 sm:py-32 lg:px-7">
           <div className="mx-auto max-w-[1100px]">
             <Reveal>
               <div className="text-center">
@@ -360,7 +360,7 @@ export default async function Home() {
           </div>
         </section>
 
-        <section className="border-y border-white/[0.06] bg-[#0b0910]/75 px-5 py-24 sm:py-32 lg:px-7">
+        <section className="border-y border-white/[0.06] bg-[#0b0910]/75 px-5 py-20 sm:py-32 lg:px-7">
           <div className="mx-auto max-w-[1200px]">
             <Reveal>
               <div className="grid gap-7 md:grid-cols-[.58fr_1fr] md:items-end">
@@ -386,18 +386,18 @@ export default async function Home() {
           </div>
         </section>
 
-        <section id="pricing" className="scroll-mt-8 px-5 py-24 sm:py-32 lg:px-7">
+        <section id="pricing" className="scroll-mt-8 px-5 py-20 sm:py-32 lg:px-7">
           <div className="mx-auto max-w-[1200px] text-center">
             <Reveal>
               <p className="sale-v2-eyebrow justify-center">PRICING</p>
               <h2 className="mt-4 text-3xl font-semibold tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>เริ่มฟรี แล้วค่อยโตตามงาน</h2>
               <p className="mx-auto mt-4 max-w-[590px] text-[15px] leading-7 text-[#aaa3b6]">ทดลอง workflow จริงก่อนตัดสินใจ ทุกแพ็กแสดงข้อมูลล่าสุดจากระบบ</p>
             </Reveal>
-            <PricingToggle plans={plans} founding={founding} minutesPerPlan={minutesPerPlan} />
+            <PricingToggle plans={plans} founding={founding} minuteQuotaEnabled={MINUTE_QUOTA} />
           </div>
         </section>
 
-        <section className="border-t border-white/[0.06] px-5 py-24 sm:py-32 lg:px-7">
+        <section className="border-t border-white/[0.06] px-5 py-20 sm:py-32 lg:px-7">
           <div className="mx-auto grid max-w-[1040px] gap-12 md:grid-cols-[.52fr_1fr]">
             <Reveal>
               <div className="md:sticky md:top-10">
@@ -437,7 +437,7 @@ export default async function Home() {
               สร้างคลิปแรกฟรี <ArrowRight className="h-4 w-4" aria-hidden />
             </Link>
             <p className="mt-4 text-[12.5px] text-white/38">PRO ฟรี 7 วัน · ไม่ใช้บัตร · เริ่มได้ทันที</p>
-            <a href="https://affiliate.heroaiengine.com/affiliate-program" className="mt-8 inline-block text-[12px] text-white/36 underline-offset-4 transition-colors hover:text-white/70 hover:underline focus-visible:outline-none focus-visible:text-white">Affiliate — แนะนำ HERO AI รับค่าคอม 25% ทุกเดือน</a>
+            <a href="https://affiliate.heroaiengine.com/affiliate-program" className="mt-6 inline-flex min-h-11 items-center text-[12px] text-white/36 underline-offset-4 transition-colors hover:text-white/70 hover:underline focus-visible:outline-none focus-visible:text-white sm:mt-8">Affiliate — แนะนำ HERO AI รับค่าคอม 25% ทุกเดือน</a>
           </div>
         </Reveal>
         <div className="mx-auto mt-20 flex max-w-[1200px] flex-col items-center justify-between gap-4 border-t border-white/[0.07] pt-7 text-[11px] text-white/28 sm:flex-row">
@@ -449,11 +449,7 @@ export default async function Home() {
         </div>
       </footer>
 
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-[#0c0912]/92 p-3 backdrop-blur-xl sm:hidden">
-        <Link href="/register" className="sale-v2-cta flex min-h-12 w-full items-center justify-center gap-2 rounded-[13px] text-[14px] font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200" style={{ background: ACCENT }}>
-          สร้างคลิปแรกฟรี <ArrowRight className="h-4 w-4" aria-hidden />
-        </Link>
-      </div>
+      <MobileStickyCta />
       <Script src="https://affiliate.heroaiengine.com/scripts/affiliate-tracking.js" strategy="afterInteractive" />
     </div>
   );

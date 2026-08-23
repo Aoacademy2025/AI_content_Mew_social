@@ -13,20 +13,20 @@ export type TierData = {
 };
 export type PlanConfig = { free: TierData; pro: TierData; business: TierData };
 
-const DEFAULTS: Record<string, string> = {
+export const PLAN_CONFIG_DEFAULTS: Record<string, string> = {
   free_price: "0",
   free_name: "Free",
   free_badge: "",
   free_tagline: "ทดลองฟรี ก่อนตัดสินใจ",
   free_features:
-    "ทดลอง PRO ฟรี 7 วัน|5 นาที/เดือน · ~5 คลิป · ยาวสุด 2 นาที|ซับไทย + B-roll อัตโนมัติ|เก็บวิดีโอ 3 วัน",
+    "ทดลอง PRO ฟรี 7 วัน — ครบทุกฟีเจอร์ · 15 นาทีช่วงทดลอง|หลังทดลอง: 5 นาที/เดือน · คลิปสั้น 2 นาที · เก็บ 3 วัน|ระบบจัดการ AI ให้ — ไม่ต้องใส่ key เอง|ซับไทย + B-roll อัตโนมัติ",
 
   pro_price: "599",
   pro_name: "Pro",
   pro_badge: "แนะนำ",
   pro_tagline: "คุ้มสุดสำหรับครีเอเตอร์ที่โพสต์ประจำ",
   pro_features:
-    "80 นาที/เดือน · ~80 คลิป · ยาวสุด 6 นาที|AI Avatar พิธีกร (HeyGen) — หรือทำ Faceless|เสียง AI ไทย + ใช้เสียงโคลนจาก ElevenLabs|ซับไทยตรงเสียงเป๊ะ (ยาว / keyword ไวรัล)|B-roll เปลี่ยนทุก 3–5 วิ + เพลง + Sound FX|ตัดต่อในเว็บ + ลบพื้นหลัง + ฟอนต์พรีเมียม|สั่งสร้างผ่านแชท Claude (MCP)|เก็บวิดีโอ 7 วัน",
+    "80 นาที/เดือน · ~80 คลิป · ยาวสุด 6 นาที|ระบบจัดการ AI (Gemini) ให้ — ไม่ต้องใส่ key เอง|AI Avatar พิธีกร (HeyGen) — หรือทำ Faceless|เสียง AI ไทย + โคลนเสียงจาก ElevenLabs|ซับไทยตรงเสียงเป๊ะ (ยาว/keyword ไวรัล) + B-roll ทุก 3–5 วิ + เพลง + SFX|อัปโหลดคลิปที่ถ่ายเอง → ใส่ซับ + B-roll cutaway อัตโนมัติ|ตัดต่อบนไทม์ไลน์ + แต่งซับ 17 สไตล์ + ลบพื้นหลัง|สั่งสร้างผ่านแชท AI (MCP) — Claude Cowork · Claude Code · Codex · OpenClaw · Hermes|เติมเครดิตเมื่อใช้เกินโควต้า · เก็บวิดีโอ 7 วัน",
 
   business_price: "990",
   business_name: "Business",
@@ -47,15 +47,15 @@ async function getCfg(key: string, fallback: string): Promise<string> {
 
 async function tier(t: "free" | "pro" | "business"): Promise<TierData> {
   const [price, name, badge, tagline, features] = await Promise.all([
-    getCfg(`plan_${t}_price`, DEFAULTS[`${t}_price`]),
-    getCfg(`plan_${t}_name`, DEFAULTS[`${t}_name`]),
-    getCfg(`plan_${t}_badge`, DEFAULTS[`${t}_badge`]),
-    getCfg(`plan_${t}_tagline`, DEFAULTS[`${t}_tagline`]),
-    getCfg(`plan_${t}_features`, DEFAULTS[`${t}_features`]),
+    getCfg(`plan_${t}_price`, PLAN_CONFIG_DEFAULTS[`${t}_price`]),
+    getCfg(`plan_${t}_name`, PLAN_CONFIG_DEFAULTS[`${t}_name`]),
+    getCfg(`plan_${t}_badge`, PLAN_CONFIG_DEFAULTS[`${t}_badge`]),
+    getCfg(`plan_${t}_tagline`, PLAN_CONFIG_DEFAULTS[`${t}_tagline`]),
+    getCfg(`plan_${t}_features`, PLAN_CONFIG_DEFAULTS[`${t}_features`]),
   ]);
   return {
     price: parseInt(price, 10) || 0,
-    name: name || DEFAULTS[`${t}_name`],
+    name: name || PLAN_CONFIG_DEFAULTS[`${t}_name`],
     badge: badge.trim() || null,
     tagline,
     features: features.split("|").map((f) => f.trim()).filter(Boolean),

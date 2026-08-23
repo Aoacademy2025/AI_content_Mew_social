@@ -206,7 +206,7 @@ function StudioScene() {
           <div className="mt-6 flex h-20 items-center justify-center gap-[3px] overflow-hidden rounded-[12px] border border-white/[0.06] bg-black/20 px-3">
             {wave.map((height, index) => <span key={`${height}-${index}`} className="sale-v2-wavebar w-1 rounded-full bg-violet-300/65" style={{ height: `${height}%`, animationDelay: `${index * -0.07}s` }} />)}
           </div>
-          <button type="button" className="mt-5 flex min-h-10 w-full items-center justify-center gap-2 rounded-[11px] bg-violet-500 text-[10px] font-semibold text-white shadow-[0_12px_30px_-15px_rgba(139,92,246,.9)]"><Play className="h-3 w-3 fill-current" strokeWidth={0} /> ฟังตัวอย่างเสียง</button>
+          <button type="button" className="mt-5 flex min-h-11 w-full items-center justify-center gap-2 rounded-[11px] bg-violet-500 text-[10px] font-semibold text-white shadow-[0_12px_30px_-15px_rgba(139,92,246,.9)]"><Play className="h-3 w-3 fill-current" strokeWidth={0} /> ฟังตัวอย่างเสียง</button>
           <p className="mt-3 text-center text-[8px] text-white/32">ส่งภาพ + เสียงกลับเข้าโปรเจกต์ได้ทันที</p>
         </div>
       </div>

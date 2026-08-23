@@ -59,6 +59,9 @@ jobs:
       - name: Verify /pricing LCP convert page
         run: npm run verify:pricing-lcp
 
+      - name: Verify public pricing matches checkout and entitlements
+        run: npm run verify:marketing-pricing
+
       - name: Verify day-21 GRANT convert reminder
         run: npm run verify:day21-convert-reminder
 

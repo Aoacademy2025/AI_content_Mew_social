@@ -2,14 +2,13 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Check, CreditCard, Flame } from "lucide-react";
-import { computeDisplayPrice } from "@/lib/pricing-display";
+import { ArrowRight, Check, ChevronDown, CreditCard, Flame } from "lucide-react";
+import { computeDisplayPrice, marketingPriceBlock } from "@/lib/pricing-display";
+import { corePlanFacts, supplementalPlanFeatures, type MarketingTierKey } from "@/lib/marketing-plan-facts";
 import type { PlanConfig } from "@/lib/plan-config";
 
 type Period = "monthly" | "yearly";
 type FoundingStatus = { active: boolean; remaining: number; total: number; percentOff: number } | null;
-type MinutesPerPlan = { free: number; pro: number; business: number };
-type PriceBlock = { amount: string; unit?: string; sub: string; was?: string };
 
 const BRAND = "linear-gradient(135deg,#9D7BFF 0%,#7857F6 55%,#6844EF 100%)";
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
@@ -17,11 +16,11 @@ const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
 export function PricingToggle({
   plans,
   founding = null,
-  minutesPerPlan,
+  minuteQuotaEnabled = false,
 }: {
   plans: PlanConfig;
   founding?: FoundingStatus;
-  minutesPerPlan?: MinutesPerPlan;
+  minuteQuotaEnabled?: boolean;
 }) {
   const [period, setPeriod] = useState<Period>("yearly");
   const yearly = period === "yearly";
@@ -30,41 +29,21 @@ export function PricingToggle({
   const bizDisplay = computeDisplayPrice({ monthlyPrice: plans.business.price, period: pricePeriod, coupon: null, founding });
   const hasFounding = Boolean(yearly && founding?.active);
 
-  function priceBlock(display: typeof proDisplay, monthlyPrice: number): PriceBlock {
-    if (!yearly) {
-      return {
-        amount: `฿${monthlyPrice.toLocaleString()}`,
-        unit: "/เดือน",
-        sub: "จ่ายรายเดือน · ยกเลิกได้ทุกเมื่อ",
-      };
-    }
-
-    const monthlyEq = Math.round(display.final / 12);
-    return {
-      amount: `฿${monthlyEq.toLocaleString()}`,
-      unit: "/เดือน",
-      sub: display.isFounding
-        ? `Founding ลด ${display.pct}% · จ่ายปีละครั้ง`
-        : "จ่ายปีละครั้ง · ไม่ตัดอัตโนมัติ",
-      was: `฿${monthlyPrice.toLocaleString()}`,
-    };
-  }
-
-  const proBlock = priceBlock(proDisplay, plans.pro.price);
-  const bizBlock = priceBlock(bizDisplay, plans.business.price);
+  const proBlock = marketingPriceBlock({ monthlyPrice: plans.pro.price, period: pricePeriod, founding });
+  const bizBlock = marketingPriceBlock({ monthlyPrice: plans.business.price, period: pricePeriod, founding });
 
   return (
     <div>
       <div
         role="group"
         aria-label="รูปแบบการชำระเงิน"
-        className="mx-auto my-9 inline-flex rounded-[14px] border border-white/10 bg-[#100e15] p-1"
+        className="mx-auto my-8 flex w-full max-w-[340px] rounded-[14px] border border-white/10 bg-[#100e15] p-1 sm:my-9 sm:inline-flex sm:w-auto sm:max-w-none"
       >
         <button
           type="button"
           aria-pressed={!yearly}
           onClick={() => setPeriod("monthly")}
-          className={`min-h-10 rounded-[10px] px-5 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${!yearly ? "bg-white/[0.09] text-white" : "text-white/45 hover:text-white/75"}`}
+          className={`min-h-11 flex-1 rounded-[10px] px-4 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 sm:flex-none sm:px-5 ${!yearly ? "bg-white/[0.09] text-white" : "text-white/45 hover:text-white/75"}`}
         >
           รายเดือน
         </button>
@@ -72,7 +51,7 @@ export function PricingToggle({
           type="button"
           aria-pressed={yearly}
           onClick={() => setPeriod("yearly")}
-          className={`inline-flex min-h-10 items-center rounded-[10px] px-5 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 ${yearly ? "bg-violet-500/18 text-violet-100" : "text-white/45 hover:text-white/75"}`}
+          className={`inline-flex min-h-11 flex-1 items-center justify-center rounded-[10px] px-3 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 sm:flex-none sm:px-5 ${yearly ? "bg-violet-500/18 text-violet-100" : "text-white/45 hover:text-white/75"}`}
         >
           รายปี
           <span className="ml-2 rounded-full bg-violet-400/14 px-2 py-0.5 text-[10px] text-violet-200">2 เดือนฟรี</span>
@@ -86,8 +65,13 @@ export function PricingToggle({
         </div>
       )}
 
-      <div className="grid items-stretch gap-4 text-left md:grid-cols-3">
+      <p className="mb-5 text-center text-[12px] leading-5 text-white/42 sm:mb-6 sm:text-[13px]">
+        {yearly ? "ราคาใหญ่คือค่าเฉลี่ยต่อเดือน · ยอดที่ชำระจริงแสดงใต้ราคา" : "รายเดือนชำระด้วยบัตรและยกเลิกได้ทุกเมื่อ"}
+      </p>
+
+      <div className="grid items-stretch gap-4 text-left lg:grid-cols-3">
         <Tier
+          tierKey="free"
           name={plans.free.name}
           tagline={plans.free.tagline}
           amount="฿0"
@@ -96,38 +80,45 @@ export function PricingToggle({
           cta="เริ่มใช้ฟรี"
           ghost
           badge={plans.free.badge ?? undefined}
-          minutesPerMonth={minutesPerPlan?.free}
+          coreFacts={corePlanFacts("free", minuteQuotaEnabled)}
+          orderClass="order-2 lg:order-1"
         />
         <Tier
+          tierKey="pro"
           name={plans.pro.name}
           tagline={plans.pro.tagline}
           amount={proBlock.amount}
           unit={proBlock.unit}
           sub={proBlock.sub}
+          billingNote={proBlock.billingNote}
           was={proBlock.was}
           features={plans.pro.features}
           cta={`เริ่มใช้ ${plans.pro.name}`}
           best
           badge={proDisplay.isFounding ? "Founding" : (plans.pro.badge ?? "แนะนำ")}
-          minutesPerMonth={minutesPerPlan?.pro}
+          coreFacts={corePlanFacts("pro", minuteQuotaEnabled)}
+          orderClass="order-1 lg:order-2"
         />
         <Tier
+          tierKey="business"
           name={plans.business.name}
           tagline={plans.business.tagline}
           amount={bizBlock.amount}
           unit={bizBlock.unit}
           sub={bizBlock.sub}
+          billingNote={bizBlock.billingNote}
           was={bizBlock.was}
           features={plans.business.features}
           cta={`เลือก ${plans.business.name}`}
           ghost
           badge={bizDisplay.isFounding ? "Founding" : (plans.business.badge ?? undefined)}
-          minutesPerMonth={minutesPerPlan?.business}
+          coreFacts={corePlanFacts("business", minuteQuotaEnabled)}
+          orderClass="order-3"
         />
       </div>
 
-      <div className="mt-7 flex flex-wrap justify-center gap-x-6 gap-y-2 text-[12px] text-white/43">
-        {["PromptPay หรือบัตร", "ทดลอง PRO ฟรี 7 วัน", "รายปีไม่ตัดเงินอัตโนมัติ"].map((item, index) => (
+      <div className="mx-auto mt-7 grid max-w-[720px] gap-2 text-left text-[12px] leading-5 text-white/48 sm:flex sm:flex-wrap sm:justify-center sm:gap-x-6">
+        {["PromptPay หรือบัตร", "ทดลอง PRO ฟรี 7 วัน", "PromptPay รายปีไม่ตัดอัตโนมัติ"].map((item, index) => (
           <span key={item} className="inline-flex items-center gap-1.5">
             {index === 0 ? <CreditCard className="h-3.5 w-3.5 text-violet-300/75" aria-hidden /> : <Check className="h-3.5 w-3.5 text-emerald-300/75" aria-hidden />}
             {item}
@@ -139,35 +130,55 @@ export function PricingToggle({
 }
 
 function Tier({
+  tierKey,
   name,
   tagline,
   amount,
   unit,
   sub,
+  billingNote,
   was,
   features,
   cta,
   best,
   ghost,
   badge,
-  minutesPerMonth,
+  coreFacts,
+  orderClass,
 }: {
+  tierKey: MarketingTierKey;
   name: string;
   tagline: string;
   amount: string;
   unit?: string;
   sub?: string;
+  billingNote?: string;
   was?: string;
   features: string[];
   cta: string;
   best?: boolean;
   ghost?: boolean;
   badge?: string;
-  minutesPerMonth?: number;
+  coreFacts: string[];
+  orderClass: string;
 }) {
+  const allFeatures = [...coreFacts, ...supplementalPlanFeatures(features)];
+  const mobileVisible = allFeatures.slice(0, 4);
+  const mobileMore = allFeatures.slice(4);
+  const desktopVisible = allFeatures.slice(0, 6);
+  const desktopMore = allFeatures.slice(6);
+
+  const featureItem = (feature: string) => (
+    <li key={feature} className="flex gap-2.5 text-white/70">
+      <Check className={`mt-1 h-3.5 w-3.5 shrink-0 ${best ? "text-violet-300" : "text-white/36"}`} strokeWidth={2.6} aria-hidden />
+      <span>{feature}</span>
+    </li>
+  );
+
   return (
     <article
-      className={`relative flex h-full flex-col overflow-hidden rounded-[22px] border p-7 sm:p-8 ${best ? "border-violet-300/35 bg-[linear-gradient(180deg,rgba(139,92,246,.105),rgba(14,11,20,.96)_32%)] shadow-[0_30px_80px_-42px_rgba(139,92,246,.75)]" : "border-white/[0.09] bg-[#0d0b12]"}`}
+      data-plan-tier={tierKey}
+      className={`relative flex h-full scroll-mt-24 flex-col overflow-hidden rounded-[22px] border p-6 sm:p-8 ${orderClass} ${best ? "border-violet-300/35 bg-[linear-gradient(180deg,rgba(139,92,246,.105),rgba(14,11,20,.96)_32%)] shadow-[0_30px_80px_-42px_rgba(139,92,246,.75)]" : "border-white/[0.09] bg-[#0d0b12]"}`}
     >
       {best && <span className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-violet-300/80 to-transparent" aria-hidden />}
       {badge && (
@@ -178,30 +189,45 @@ function Tier({
 
       <p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/30">PLAN</p>
       <h3 className="mt-2 pr-20 text-[23px] font-semibold text-white" style={HEAD}>{name}</h3>
-      <p className="mt-2 min-h-10 text-[12.5px] leading-5 text-white/45">{tagline}</p>
+      <p className="mt-2 min-h-10 text-[14px] leading-6 text-white/50 lg:text-[12.5px] lg:leading-5">{tagline}</p>
 
-      <div className="mt-7 border-y border-white/[0.07] py-6">
+      <div className="mt-6 border-y border-white/[0.07] py-5 sm:mt-7 sm:py-6">
         <div className="flex flex-wrap items-end gap-x-1.5 gap-y-1">
           <span className="text-[40px] font-semibold leading-none tracking-[-.04em] text-white" style={HEAD}>{amount}</span>
           {unit && <span className="pb-0.5 text-[13px] text-white/42">{unit}</span>}
-          {was && <span className="pb-0.5 text-[12px] text-white/24 line-through">{was}</span>}
+          {was && <span className="pb-0.5 text-[12px] text-white/28">ปกติ <span className="line-through">{was}</span></span>}
         </div>
-        <p className={`mt-2 min-h-5 text-[11.5px] ${best ? "text-violet-200/75" : "text-white/38"}`}>{sub}</p>
-        {minutesPerMonth !== undefined && (
-          <p className="mt-2 text-[11px] text-white/35">
-            {minutesPerMonth} นาที/เดือน <span className="text-white/22">· ประมาณ {minutesPerMonth} คลิป @ 1 นาที</span>
-          </p>
-        )}
+        <p className={`mt-2 min-h-5 text-[13px] font-medium leading-5 sm:text-[11.5px] ${best ? "text-violet-200/80" : "text-white/48"}`}>{sub}</p>
+        {billingNote && <p className="mt-1.5 text-[11px] leading-5 text-white/36">{billingNote}</p>}
       </div>
 
-      <ul className="my-7 flex-1 space-y-3 text-[13px] leading-5">
-        {features.map((feature) => (
-          <li key={feature} className="flex gap-2.5 text-white/68">
-            <Check className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${best ? "text-violet-300" : "text-white/32"}`} strokeWidth={2.6} aria-hidden />
-            <span>{feature}</span>
-          </li>
-        ))}
+      <ul className="my-6 flex-1 space-y-3 text-[14px] leading-6 lg:hidden">
+        {mobileVisible.map(featureItem)}
       </ul>
+
+      {mobileMore.length > 0 && (
+        <details className="group -mt-3 mb-6 lg:hidden">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between rounded-[11px] border border-white/[0.08] px-3 text-[13px] font-medium text-white/62 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 [&::-webkit-details-marker]:hidden">
+            ดูสิทธิ์ทั้งหมดอีก {mobileMore.length} ข้อ
+            <ChevronDown className="h-4 w-4 text-violet-300 transition-transform duration-200 group-open:rotate-180" aria-hidden />
+          </summary>
+          <ul className="mt-4 space-y-3 px-1 text-[14px] leading-6">{mobileMore.map(featureItem)}</ul>
+        </details>
+      )}
+
+      <ul className="my-7 hidden flex-1 space-y-3 text-[13px] leading-5 lg:block">
+        {desktopVisible.map(featureItem)}
+      </ul>
+
+      {desktopMore.length > 0 && (
+        <details className="group -mt-4 mb-6 hidden lg:block">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between rounded-[11px] border border-white/[0.08] px-3 text-[12px] font-medium text-white/58 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-300 [&::-webkit-details-marker]:hidden">
+            ดูสิทธิ์ทั้งหมดอีก {desktopMore.length} ข้อ
+            <ChevronDown className="h-4 w-4 text-violet-300 transition-transform duration-200 group-open:rotate-180" aria-hidden />
+          </summary>
+          <ul className="mt-4 space-y-3 px-1 text-[13px] leading-5">{desktopMore.map(featureItem)}</ul>
+        </details>
+      )}
 
       <Link
         href="/register"

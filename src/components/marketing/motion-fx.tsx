@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { motion, useReducedMotion, useScroll, useTransform } from "motion/react";
 import { cn } from "@/lib/utils";
 
@@ -21,15 +21,45 @@ export function Reveal({
   y?: number;
   className?: string;
 }) {
+  const ref = useRef<HTMLDivElement>(null);
   const reduceMotion = useReducedMotion();
+  const [waiting, setWaiting] = useState(false);
+
+  useEffect(() => {
+    if (reduceMotion || !ref.current) return;
+    const element = ref.current;
+    const rect = element.getBoundingClientRect();
+    const initiallyVisible = rect.bottom >= 80 && rect.top <= window.innerHeight - 80;
+
+    // Keep above-the-fold SSR content visible. Only elements that start outside
+    // the viewport are hidden, then revealed once when they enter.
+    if (initiallyVisible) return;
+    setWaiting(true);
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        setWaiting(false);
+        observer.disconnect();
+      },
+      { rootMargin: "-80px 0px", threshold: 0.08 },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [reduceMotion]);
+
   return (
     <motion.div
+      ref={ref}
       className={className}
-      initial={reduceMotion ? false : { opacity: 0, y, filter: "blur(8px)" }}
-      whileInView={reduceMotion ? undefined : { opacity: 1, y: 0, filter: "blur(0px)" }}
+      initial={false}
+      animate={reduceMotion || !waiting
+        ? { opacity: 1, y: 0, filter: "blur(0px)" }
+        : { opacity: 0, y, filter: "blur(8px)" }}
       data-reveal-y={y}
-      viewport={{ once: true, margin: "-80px" }}
-      transition={{ duration: 0.72, delay, ease: EASE }}
+      data-reveal-state={waiting ? "waiting" : "visible"}
+      transition={waiting
+        ? { duration: 0 }
+        : { duration: 0.72, delay, ease: EASE }}
     >
       {children}
     </motion.div>

@@ -27,7 +27,7 @@ export function StudioWorkbench() {
         style={{ background: "radial-gradient(circle at 50% 35%, oklch(62% .19 292 / .34), transparent 68%)" }}
       />
 
-      <div className="overflow-hidden rounded-[26px] border border-white/12 bg-[#0d0c13] shadow-[0_36px_100px_-36px_rgba(5,3,13,.95)]">
+      <div className="overflow-hidden rounded-[22px] border border-white/12 bg-[#0d0c13] shadow-[0_36px_100px_-36px_rgba(5,3,13,.95)] sm:rounded-[26px]">
         <div className="flex h-11 items-center justify-between border-b border-white/[0.07] px-4 sm:px-5">
           <div className="flex items-center gap-1.5" aria-hidden>
             <span className="h-2 w-2 rounded-full bg-white/15" />
@@ -43,8 +43,8 @@ export function StudioWorkbench() {
           </div>
         </div>
 
-        <div className="grid min-h-[520px] grid-cols-[48px_1fr] sm:grid-cols-[156px_1fr]">
-          <aside className="border-r border-white/[0.07] bg-[#0a0910] px-2 py-4 sm:px-3">
+        <div className="grid min-h-[470px] grid-cols-1 sm:min-h-[520px] sm:grid-cols-[156px_1fr]">
+          <aside className="hidden border-r border-white/[0.07] bg-[#0a0910] px-3 py-4 sm:block">
             <div className="mb-6 flex items-center justify-center gap-2 sm:justify-start sm:px-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-[9px] bg-violet-500 text-[11px] font-black text-white">
                 H
@@ -66,7 +66,7 @@ export function StudioWorkbench() {
             </div>
           </aside>
 
-          <div className="min-w-0 p-3 sm:p-5">
+          <div className="min-w-0 p-3.5 sm:p-5">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
@@ -77,15 +77,15 @@ export function StudioWorkbench() {
               </div>
               <div
                 aria-hidden
-                className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-violet-500 px-3 text-[10.5px] font-semibold text-white"
+                className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-violet-500 px-2.5 text-[9px] font-semibold text-white sm:px-3 sm:text-[10.5px]"
               >
                 ส่งไปตัดต่อ <Play className="h-3 w-3 fill-current" strokeWidth={0} aria-hidden />
               </div>
             </div>
 
-            <div className="grid gap-3 lg:grid-cols-[1.08fr_.72fr]">
+            <div className="grid grid-cols-[minmax(0,1fr)_106px] items-start gap-2.5 sm:grid-cols-[minmax(0,1fr)_156px] sm:gap-3 lg:grid-cols-[1.08fr_.72fr]">
               <div className="space-y-3">
-                <section className="rounded-[16px] border border-white/[0.08] bg-[#121119] p-3.5">
+                <section className="rounded-[14px] border border-white/[0.08] bg-[#121119] p-3 sm:rounded-[16px] sm:p-3.5">
                   <div className="mb-3 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 text-[10.5px] font-semibold text-white/75">
                       <Sparkles className="h-3.5 w-3.5 text-violet-300" aria-hidden />
@@ -93,10 +93,10 @@ export function StudioWorkbench() {
                     </div>
                     <span className="text-[9px] text-white/32">แก้ไขได้</span>
                   </div>
-                  <p className="max-w-[34ch] text-[17px] font-semibold leading-[1.36] text-white sm:text-[20px]">
+                  <p className="max-w-[34ch] text-[13px] font-semibold leading-[1.42] text-white sm:text-[17px] lg:text-[20px]">
                     ถ้าคอนเทนต์คุณมีประโยชน์ แต่ไม่มีใครหยุดดู—ปัญหาอาจไม่ใช่เนื้อหา
                   </p>
-                  <div className="mt-3 flex flex-wrap gap-1.5">
+                  <div className="mt-3 hidden flex-wrap gap-1.5 min-[360px]:flex">
                     {['เปิดด้วย Pain', 'ตรงแบรนด์', 'ภาษาไทยธรรมชาติ'].map((chip) => (
                       <span key={chip} className="rounded-full border border-violet-300/15 bg-violet-400/[0.07] px-2 py-1 text-[8.5px] text-violet-200/75">
                         {chip}
@@ -105,7 +105,7 @@ export function StudioWorkbench() {
                   </div>
                 </section>
 
-                <section className="rounded-[16px] border border-white/[0.08] bg-[#121119] p-3.5">
+                <section className="rounded-[14px] border border-white/[0.08] bg-[#121119] p-3 sm:rounded-[16px] sm:p-3.5">
                   <div className="mb-2.5 flex items-center justify-between">
                     <span className="text-[10.5px] font-semibold text-white/72">โครงสคริปต์</span>
                     <span className="inline-flex items-center gap-1 text-[9px] text-emerald-300/75"><Check className="h-3 w-3" /> ครบ 4 ส่วน</span>
@@ -120,7 +120,7 @@ export function StudioWorkbench() {
                   </div>
                 </section>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="hidden grid-cols-2 gap-2 min-[360px]:grid">
                   <div className="rounded-[13px] border border-white/[0.07] bg-white/[0.025] p-2.5">
                     <div className="flex items-center gap-1.5 text-[9px] text-white/38"><Mic2 className="h-3 w-3" /> เสียง</div>
                     <p className="mt-1 text-[10px] font-medium text-white/75">Hero Voice · Mew 01</p>
@@ -132,14 +132,14 @@ export function StudioWorkbench() {
                 </div>
               </div>
 
-              <div className="relative mx-auto w-full max-w-[210px] lg:max-w-none">
+              <div className="relative mx-auto w-full lg:max-w-none">
                 <div className="relative aspect-[9/16] overflow-hidden rounded-[19px] border border-white/10 bg-black">
                   <Image
                     src="/showcase/showcase-1.jpg"
                     alt="ตัวอย่างคลิปแนวตั้งที่สร้างด้วย HERO AI"
                     fill
                     priority
-                    sizes="(max-width: 1024px) 210px, 220px"
+                    sizes="(max-width: 359px) 106px, (max-width: 639px) 156px, 220px"
                     className="object-cover"
                   />
                   <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-black/55 to-transparent" aria-hidden />
@@ -147,13 +147,13 @@ export function StudioWorkbench() {
                     <span className="h-1.5 w-1.5 rounded-full bg-violet-400" /> PREVIEW
                   </div>
                   <div className="absolute inset-x-3 top-[30%] text-center">
-                    <span className="inline box-decoration-clone bg-white px-1.5 py-0.5 text-[11px] font-black leading-[1.65] text-[#18131f] shadow-[3px_3px_0_#8b5cf6]">
+                    <span className="inline box-decoration-clone bg-white px-1 py-0.5 text-[7px] font-black leading-[1.65] text-[#18131f] shadow-[2px_2px_0_#8b5cf6] sm:text-[9px] lg:px-1.5 lg:text-[11px] lg:shadow-[3px_3px_0_#8b5cf6]">
                       ความรู้แน่นมาก แต่คนไม่หยุดดู
                     </span>
                   </div>
                   <span
                     aria-hidden
-                    className="absolute left-1/2 top-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-violet-500/90 text-white shadow-lg"
+                    className="absolute left-1/2 top-1/2 flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-violet-500/90 text-white shadow-lg sm:h-9 sm:w-9 lg:h-10 lg:w-10"
                   >
                     <Play className="ml-0.5 h-4 w-4 fill-current" strokeWidth={0} />
                   </span>
@@ -192,13 +192,13 @@ export function StudioWorkbench() {
         </div>
       </div>
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+      <div className="mt-3 grid grid-cols-2 gap-2">
         <div className="flex min-h-11 items-center gap-2 rounded-[12px] border border-violet-300/12 bg-[#121018] px-3 text-[10px] text-violet-100/80">
           <Check className="h-3.5 w-3.5 shrink-0 text-emerald-300" aria-hidden />
-          Brand context เชื่อมครบทุกขั้น
+          <span><span className="hidden min-[360px]:inline">Brand context </span>เชื่อมครบทุกขั้น</span>
         </div>
         <div className="flex min-h-11 items-center justify-between gap-3 rounded-[12px] border border-white/[0.07] bg-[#100e15] px-3">
-          <span className="text-[8px] font-semibold uppercase tracking-[.14em] text-white/30">Visual format</span>
+          <span className="hidden text-[8px] font-semibold uppercase tracking-[.14em] text-white/30 min-[360px]:inline">Visual format</span>
           <span className="text-[10px] font-semibold text-white/75">Cinematic Realism</span>
         </div>
       </div>

@@ -49,6 +49,7 @@
     "verify:first-clip-path": "tsx scripts/verify-first-clip-path.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-first-clip-path-server.ts",
     "verify:trial-first-clip-path": "tsx scripts/verify-first-clip-path.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-trial-first-clip-path.ts",
     "verify:pricing-lcp": "tsx scripts/verify-pricing-lcp.ts",
+    "verify:marketing-pricing": "tsx scripts/verify-marketing-pricing-parity.ts",
     "verify:day21-convert-reminder": "tsx scripts/verify-day21-convert-reminder.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-day21-convert-reminder-server.ts",
     "verify:avatar-caption-fallback": "tsx scripts/verify-avatar-caption-fallback.ts",
     "verify:admin-error-notify": "tsx scripts/verify-admin-error-notify.ts",
