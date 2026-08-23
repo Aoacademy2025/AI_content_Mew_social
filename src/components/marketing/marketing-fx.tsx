@@ -1,33 +1,22 @@
-/**
- * Animated page atmosphere: three violet light-beams that visibly drift + pulse,
- * over a faint grid that pans. Pure CSS (keyframes in globals.css) so it stays a
- * server component and auto-respects prefers-reduced-motion.
+/** Editorial backdrop for the public sale page. The product and copy stay in
+ * focus; the backdrop only adds depth and a faint studio-grid reference.
  */
 export function SaleBackground() {
   return (
-    <div aria-hidden className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+    <div aria-hidden className="pointer-events-none fixed inset-0 z-0 overflow-hidden">
       <div
-        className="sp-beam-1 absolute left-1/2 top-[-20vw] h-[60vw] w-[60vw] rounded-full blur-[120px]"
-        style={{ background: "radial-gradient(circle,#7c3aed,transparent 60%)", opacity: 0.4 }}
+        className="sale-v2-orb absolute -top-[28rem] left-[43%] h-[52rem] w-[52rem] rounded-full blur-[100px]"
+        style={{ background: "radial-gradient(circle,rgba(139,92,246,.28),rgba(94,54,160,.1) 42%,transparent 70%)" }}
       />
       <div
-        className="sp-beam-2 absolute left-1/2 top-[22vw] h-[46vw] w-[46vw] rounded-full blur-[120px]"
-        style={{ background: "radial-gradient(circle,#8b5cf6,transparent 60%)", opacity: 0.3 }}
+        className="absolute -left-72 top-[48rem] h-[38rem] w-[38rem] rounded-full opacity-30 blur-[120px]"
+        style={{ background: "radial-gradient(circle,rgba(139,92,246,.32),transparent 68%)" }}
       />
       <div
-        className="sp-beam-3 absolute left-1/2 bottom-[-24vw] h-[52vw] w-[52vw] rounded-full blur-[120px]"
-        style={{ background: "radial-gradient(circle,#a78bfa,transparent 60%)", opacity: 0.24 }}
+        className="sale-v2-grid absolute inset-x-0 top-0 h-[52rem] opacity-35"
       />
-      <div
-        className="sp-grid-anim absolute inset-0 opacity-[0.06]"
-        style={{
-          backgroundImage:
-            "linear-gradient(#ffffff 1px, transparent 1px), linear-gradient(90deg,#ffffff 1px, transparent 1px)",
-          backgroundSize: "68px 68px",
-          maskImage: "radial-gradient(ellipse 80% 55% at 50% 0%, #000 30%, transparent 78%)",
-          WebkitMaskImage: "radial-gradient(ellipse 80% 55% at 50% 0%, #000 30%, transparent 78%)",
-        }}
-      />
+      <span className="absolute left-[8%] top-0 h-[42rem] w-px bg-gradient-to-b from-violet-300/12 via-white/[0.025] to-transparent" />
+      <span className="absolute right-[8%] top-0 h-[42rem] w-px bg-gradient-to-b from-violet-300/10 via-white/[0.02] to-transparent" />
     </div>
   );
 }

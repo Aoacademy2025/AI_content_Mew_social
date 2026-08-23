@@ -7,9 +7,9 @@ import { cn } from "@/lib/utils";
 const EASE: [number, number, number, number] = [0.21, 0.6, 0.35, 1];
 
 /**
- * Scroll-reveal wrapper (blur-fade). Children fade + slide up + un-blur the
- * first time they enter the viewport. Wrap section headers, grids, or each card
- * (pass an incremental `delay` for a stagger). Honors reduced-motion via motion.
+ * Content stays visible in the server-rendered first paint. Motion only settles
+ * an element into its natural position when it enters the viewport, so a
+ * stalled observer or disabled JavaScript never hides marketing content.
  */
 export function Reveal({
   children,
@@ -25,10 +25,11 @@ export function Reveal({
   return (
     <motion.div
       className={className}
-      initial={{ opacity: 0, y, filter: "blur(8px)" }}
-      whileInView={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      initial={false}
+      whileInView={{ opacity: 1, y: 0 }}
+      data-reveal-y={y}
       viewport={{ once: true, margin: "-80px" }}
-      transition={{ duration: 0.6, delay, ease: EASE }}
+      transition={{ duration: 0.65, delay, ease: EASE }}
     >
       {children}
     </motion.div>
