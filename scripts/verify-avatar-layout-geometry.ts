@@ -1,6 +1,13 @@
 // Run: npx tsx scripts/verify-avatar-layout-geometry.ts
 // Locks the avatar-layout geometry that BOTH the ffmpeg composite and the editor preview depend on.
-import { clampAvatarLayout, layoutGeometry, normalizedBox, CANVAS_W, CANVAS_H } from "../src/lib/avatar-layout";
+import {
+  clampAvatarLayout,
+  layoutGeometry,
+  normalizedBox,
+  shouldCropAvatarToVisibleCanvas,
+  CANVAS_W,
+  CANVAS_H,
+} from "../src/lib/avatar-layout";
 
 let p = 0;
 const ok = (c: boolean, m: string) => { if (!c) { console.error("❌ " + m); process.exit(1); } console.log("✓ " + m); p++; };
@@ -29,5 +36,16 @@ const c = clampAvatarLayout({ scale: 99, offsetX: 9999, offsetY: -9999 });
 ok(!!c && c.scale === 4 && c.offsetX === 400 && c.offsetY === -400, "clamp bounds scale≤4, |offset|≤400");
 // clamp: garbage → null
 ok(clampAvatarLayout({ scale: "x" }) === null && clampAvatarLayout(null) === null, "non-finite/garbage → null");
+
+// Crop policy: overflowed layouts must crop for every user, not only the stability canary.
+ok(shouldCropAvatarToVisibleCanvas(null) === false, "full-cover (null layout) does not crop");
+ok(
+  shouldCropAvatarToVisibleCanvas({ scale: 0.5, offsetX: 0, offsetY: 0 }) === false,
+  "fully on-canvas layout does not crop",
+);
+ok(
+  shouldCropAvatarToVisibleCanvas({ scale: 1.75, offsetX: 3, offsetY: 114 }) === true,
+  "prod overflow layout (full Avatar zoom) crops before chromakey",
+);
 
 console.log(`\n✅ ALL ${p} AVATAR-LAYOUT GEOMETRY CHECKS PASSED`);
