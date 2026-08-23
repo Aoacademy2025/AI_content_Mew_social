@@ -110,6 +110,7 @@ import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.ser
 import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
 import {
+  ContentPreflightError,
   contentPreflightFailureDetails,
   narrativeVisualWindowsForPreflight,
 } from "@/lib/content-preflight.server";
@@ -1690,7 +1691,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         })
       : null;
     if (pinnedBrandVisualWindowCount > 0 && !narrativeAlignedWindows) {
-      throw new Error("ข้อมูลฉากไม่ตรงกับเนื้อหาที่เสียงพูดจริง — กรุณาเตรียมแนวภาพใหม่");
+      throw new ContentPreflightError(
+        "NARRATIVE_MISMATCH",
+        "ข้อมูลฉากไม่ตรงกับเนื้อหาที่เสียงพูดจริง — กรุณาเตรียมแนวภาพใหม่",
+      );
     }
     const brollWindows = narrativeAlignedWindows
       ?? (brollWindowMode || manualBrollCount > 0

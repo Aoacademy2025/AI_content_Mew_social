@@ -24,7 +24,7 @@ import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
-import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
+import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
 
 export const runtime = "nodejs";
@@ -132,7 +132,7 @@ const handler = createMcpHandler(
             await assertRenderEnqueueOpen();
           } catch (error) {
             if (error instanceof RenderDeployDrainError) {
-              return { error: "render_maintenance", retryable: true, message: "ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่" };
+              return { error: "render_maintenance", retryable: true, message: RENDER_MAINTENANCE_CUSTOMER_MESSAGE };
             }
             throw error;
           }

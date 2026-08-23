@@ -87,6 +87,43 @@ assert.equal(contentPreflightCopy.heading, "วิเคราะห์แนว
 assert.match(contentPreflightCopy.body, /แนวภาพ/);
 assert.doesNotMatch(contentPreflightCopy.body, /คำบรรยาย|ซับ/);
 
+const narrativeMismatchMessage = "ข้อมูลฉากไม่ตรงกับเนื้อหาที่เสียงพูดจริง — กรุณาเตรียมแนวภาพใหม่";
+const narrativeMismatchJob = videoJob({
+  currentStep: "captions",
+  errorMessage: narrativeMismatchMessage,
+});
+assert.equal(classifyFailure(narrativeMismatchJob), "script-narrative-mismatch");
+const narrativeMismatchCopy = failureViewCopy(
+  classifyFailure(narrativeMismatchJob),
+  narrativeMismatchJob,
+  false,
+);
+assertCustomerSafe(narrativeMismatchCopy, narrativeMismatchMessage);
+assert.match(narrativeMismatchCopy.heading, /สคริปต์|บทพูด|แผนภาพ/);
+assert.match(narrativeMismatchCopy.body, /พากย์|บทพูด/);
+assert.doesNotMatch(narrativeMismatchCopy.body, /คำบรรยาย|ซับ/);
+assert.equal(
+  classifyFailure(videoJob({
+    currentStep: "captions",
+    errorCode: "CONTENT_PREFLIGHT_NARRATIVE_MISMATCH",
+    errorMessage: narrativeMismatchMessage,
+  })),
+  "script-narrative-mismatch",
+);
+
+const jobsRoute = fs.readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
+const renderRoute = fs.readFileSync("src/app/api/videos/render/route.ts", "utf8");
+assert.match(jobsRoute, /RENDER_MAINTENANCE_CUSTOMER_MESSAGE/);
+assert.match(renderRoute, /RENDER_MAINTENANCE_CUSTOMER_MESSAGE/);
+assert.match(
+  fs.readFileSync("src/app/api/[transport]/route.ts", "utf8"),
+  /RENDER_MAINTENANCE_CUSTOMER_MESSAGE/,
+);
+assert.match(
+  fs.readFileSync("src/lib/render-deploy-drain.ts", "utf8"),
+  /ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่/,
+);
+
 for (const [currentStep, expectedHeading] of [
   ["tts", "สร้างเสียงพากย์ไม่สำเร็จ"],
   ["captions", "สร้างคำบรรยายไม่สำเร็จ"],

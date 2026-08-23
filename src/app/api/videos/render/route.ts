@@ -35,7 +35,7 @@ import { resolveMediaBaseUrl } from "@/lib/render/media-base-url";
 import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { normalizeHeadlineHook } from "@/lib/headline-hook";
-import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
+import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import {
   activeRenderCancel,
   cancelByJobId,
@@ -1424,7 +1424,10 @@ export async function POST(req: Request) {
       }
     }
     if (error instanceof RenderDeployDrainError) {
-      return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });
+      return NextResponse.json(
+        { error: "render_maintenance", retryable: true, message: RENDER_MAINTENANCE_CUSTOMER_MESSAGE },
+        { status: 503 },
+      );
     }
     if (error instanceof VideoJobFundingConfirmationRequiredError) {
       return NextResponse.json(

@@ -4,6 +4,7 @@ import { VIDEO_JOB_INFLIGHT_STATUSES } from "@/lib/mcp/video-job-status";
 import { prisma } from "@/lib/prisma";
 
 export const RENDER_DEPLOY_DRAIN_KEY = "render_deploy_drain";
+export const RENDER_MAINTENANCE_CUSTOMER_MESSAGE = "ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่";
 
 type DrainClient = Pick<Prisma.TransactionClient, "siteConfig" | "videoJob" | "renderJob">;
 

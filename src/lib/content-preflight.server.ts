@@ -300,6 +300,7 @@ export class ContentPreflightError extends Error {
       | "INVALID_SOURCE"
       | "ANALYZER_UNAVAILABLE"
       | "INVALID_ANALYSIS"
+      | "NARRATIVE_MISMATCH"
       | "KEY_REQUIRED"
       | "TEXT_QUOTA",
     message: string,
