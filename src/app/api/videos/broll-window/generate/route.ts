@@ -25,6 +25,7 @@ import {
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
 import { parseProjectVisualContext, resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
+import { sceneRerollUnavailablePayload } from "@/lib/project-visual-context";
 import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
@@ -116,11 +117,20 @@ export async function POST(req: Request) {
   const projectId = sourceJob.projectId;
   const contentPreflightId = sourceJob.contentPreflightId;
   const projectVisualContextJson = sourceJob.projectVisualContextJson;
-  const brandVisualPrompt = await resolveProjectVisualPromptForVideoScene({
-    userId: user.id,
-    videoJobId: input.videoJobId,
-    sceneIndex: input.sceneIndex,
-  });
+  let brandVisualPrompt;
+  try {
+    brandVisualPrompt = await resolveProjectVisualPromptForVideoScene({
+      userId: user.id,
+      videoJobId: input.videoJobId,
+      sceneIndex: input.sceneIndex,
+    });
+  } catch (error) {
+    const unavailable = sceneRerollUnavailablePayload(error);
+    if (unavailable) {
+      return NextResponse.json(unavailable, { status: 409 });
+    }
+    throw error;
+  }
   if (!brandVisualPrompt?.visualBeatId || !brandVisualPrompt.identityKey) {
     return NextResponse.json(
       {

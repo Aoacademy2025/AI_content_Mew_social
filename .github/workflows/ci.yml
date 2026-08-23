@@ -68,6 +68,9 @@ jobs:
       - name: Verify Avatar composite overflow crop and timeout classify
         run: npm run verify:composite-stability
 
+      - name: Verify Scene Reroll missing Visual Beat is 409
+        run: npm run verify:hero-broll-window-migration
+
       - name: Verify ERROR_SYSTEM capacity skip and rate-limit
         run: npm run verify:admin-error-notify
 
