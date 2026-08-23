@@ -91,6 +91,13 @@ export class CompositeExecutionError extends Error {
   }
 }
 
+function isForcedCompositeTimeout(error: ExecFailure): boolean {
+  if (error.killed !== true) return false;
+  if (error.signal === "SIGTERM") return true;
+  // Node timeout: parent called kill(); ffmpeg often exits 255 with signal left unset.
+  return (error.signal == null || error.signal === "") && Number(error.code) === 255;
+}
+
 function partialPath(outputPath: string): string {
   const ext = path.extname(outputPath);
   return ext
@@ -133,7 +140,7 @@ export async function executeCompositeFfmpeg(input: {
             resolve(stderrText);
             return;
           }
-          const timedOut = error.killed === true && error.signal === "SIGTERM";
+          const timedOut = isForcedCompositeTimeout(error);
           reject(new CompositeExecutionError(
             timedOut ? "COMPOSITE_TIMEOUT" : "COMPOSITE_FAILED",
             timedOut

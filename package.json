@@ -22,7 +22,7 @@
     "verify:render-poll-timeout": "tsx scripts/verify-render-poll-timeout.ts",
     "verify:avatar-provider-checkpoint": "tsx scripts/verify-avatar-provider-checkpoint.ts",
     "verify:avatar-provider-resume": "tsx scripts/verify-avatar-provider-resume.ts",
-    "verify:composite-stability": "tsx scripts/verify-composite-execution.ts && tsx scripts/verify-heavy-media-admission.ts && tsx scripts/verify-video-job-progress.ts && tsx scripts/verify-avatar-provider-checkpoint.ts && tsx scripts/verify-avatar-provider-resume.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-avatar-steps.ts && tsx scripts/verify-composite-quality.ts && tsx scripts/verify-avatar-composite-performance.ts",
+    "verify:composite-stability": "tsx scripts/verify-composite-execution.ts && tsx scripts/verify-heavy-media-admission.ts && tsx scripts/verify-video-job-progress.ts && tsx scripts/verify-avatar-provider-checkpoint.ts && tsx scripts/verify-avatar-provider-resume.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-avatar-steps.ts && tsx scripts/verify-composite-quality.ts && tsx scripts/verify-avatar-layout-geometry.ts && tsx scripts/verify-avatar-composite-performance.ts",
     "verify:avatar-generate-outcome": "tsx scripts/verify-avatar-generate-outcome.ts",
     "verify:heygen-readiness": "tsx scripts/verify-heygen-readiness.ts",
     "verify:customer-error-copy": "tsx scripts/verify-customer-error-copy.ts",

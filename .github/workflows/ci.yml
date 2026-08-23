@@ -65,6 +65,9 @@ jobs:
       - name: Verify Avatar caption fail-open
         run: npm run verify:avatar-caption-fallback
 
+      - name: Verify Avatar composite overflow crop and timeout classify
+        run: npm run verify:composite-stability
+
       - name: Verify ERROR_SYSTEM capacity skip and rate-limit
         run: npm run verify:admin-error-notify
 

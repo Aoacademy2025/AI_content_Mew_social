@@ -29,6 +29,20 @@ export function layoutGeometry(layout: AvatarLayout): { w: number; h: number; x:
   return { w, h, x, y };
 }
 
+/** True when the scaled avatar extends past the 1080×1920 canvas. */
+export function layoutOverflowsCanvas(layout: AvatarLayout): boolean {
+  const { w, h, x, y } = layoutGeometry(layout);
+  return x < 0 || y < 0 || x + w > CANVAS_W || y + h > CANVAS_H;
+}
+
+/**
+ * Crop source pixels before chromakey when the layout overflows the canvas.
+ * Independent of the stability canary — overflowed full-Avatar jobs time out without this.
+ */
+export function shouldCropAvatarToVisibleCanvas(layout: AvatarLayout | null): boolean {
+  return layout != null && layoutOverflowsCanvas(layout);
+}
+
 /** Center-based percentages for the editor preview box (translate(-50%,-50%) positioning). */
 export function normalizedBox(layout: AvatarLayout): { centerXPct: number; centerYPct: number; widthPct: number; heightPct: number } {
   return {

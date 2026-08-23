@@ -2,21 +2,45 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
+import { shouldCropAvatarToVisibleCanvas } from "../src/lib/avatar-layout";
 import { buildCompositeFilter } from "../src/lib/chroma-key";
 
 const params = { color: "0x12FF05", similarity: 0.28, blend: 0.1 };
 const zoomedLayout = { scale: 2.5, offsetX: 0.8, offsetY: -0.7 };
+const onCanvasLayout = { scale: 0.5, offsetX: 0, offsetY: 0 };
 
 // Large/off-canvas avatars must discard invisible source pixels before the expensive
 // upscale + chromakey/despill/feather chain. Scaling first is functionally correct but
 // makes Full mode process millions of pixels that can never reach the output canvas.
-const cropped = buildCompositeFilter(params, zoomedLayout, true, [], true);
+assert.equal(
+  shouldCropAvatarToVisibleCanvas(zoomedLayout),
+  true,
+  "overflow crop is a layout decision, not a canary-user flag",
+);
+const cropped = buildCompositeFilter(
+  params,
+  zoomedLayout,
+  true,
+  [],
+  shouldCropAvatarToVisibleCanvas(zoomedLayout),
+);
 const foreground = cropped.split(";").find((part) => part.startsWith("[1:v]")) ?? "";
-assert.ok(foreground.includes("crop="), "zoomed canary layout should crop the avatar source");
+assert.ok(foreground.includes("crop="), "zoomed overflow layout should crop the avatar source");
 assert.ok(
   foreground.indexOf("crop=") < foreground.indexOf("scale="),
   `avatar source crop must run before scale/keying: ${foreground}`,
 );
+
+assert.equal(shouldCropAvatarToVisibleCanvas(onCanvasLayout), false, "on-canvas layouts skip crop");
+const onCanvas = buildCompositeFilter(
+  params,
+  onCanvasLayout,
+  true,
+  [],
+  shouldCropAvatarToVisibleCanvas(onCanvasLayout),
+);
+const onCanvasForeground = onCanvas.split(";").find((part) => part.startsWith("[1:v]")) ?? "";
+assert.equal(onCanvasForeground.includes("crop="), false, "on-canvas layout keeps the uncropped scale+key chain");
 
 const routePath = path.join(process.cwd(), "src/app/api/heygen/composite/route.ts");
 const routeSource = fs.readFileSync(routePath, "utf8");
@@ -39,6 +63,21 @@ const segmentedDispatch = routeSource.slice(
 assert.match(segmentedDispatch, /avatarTiming === "bookend"/);
 assert.match(segmentedDispatch, /avatarTiming === "bookend-both"/);
 assert.match(segmentedDispatch, /await applyBookendSegmented\(/);
+assert.match(
+  segmentedDispatch,
+  /shouldCropAvatarToVisibleCanvas\(\s*layout\s*\)/,
+  "bookend chromakey must crop overflow layouts for every user",
+);
+assert.match(
+  routeSource,
+  /await chromakeyComposite\([\s\S]*shouldCropAvatarToVisibleCanvas\(\s*layout\s*\)/,
+  "full chromakey must crop overflow layouts for every user",
+);
+assert.equal(
+  /await chromakeyComposite\([\s\S]*?stabilityCanary\s*,?\s*\)/.test(routeSource),
+  false,
+  "full chromakey crop must not be gated on the stability canary",
+);
 
 const queueMark = routeSource.indexOf('"composite_queue", 86');
 const acquire = routeSource.indexOf("admission.acquireComposite", queueMark);

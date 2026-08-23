@@ -109,6 +109,36 @@ async function main() {
   assert.equal(fs.existsSync(timeoutOutput), false, "timeout never publishes a final output");
   assert.equal(fs.existsSync(path.join(root, "timeout.part.mp4")), false, "timeout removes its partial output");
 
+  // Node's execFile timeout often kills ffmpeg, which then exits 255 with no signal.
+  // Prod 2026-08-23 full-avatar chromakey hit this and was mislabeled COMPOSITE_FAILED.
+  const nodeTimeoutOutput = path.join(root, "node-timeout.mp4");
+  const nodeTimeoutExec: CompositeExecFile = (_file, args, _options, callback) => {
+    fs.writeFileSync(String(args.at(-1)), "partial-video");
+    const error = Object.assign(new Error("Command failed: ffmpeg"), {
+      killed: true,
+      signal: null,
+      code: 255,
+    });
+    callback(error, "", "frame=3948 fps=2.2 time=00:02:11.81 speed=0.0732x");
+    return undefined;
+  };
+  await assert.rejects(
+    executeCompositeFfmpeg({
+      ffmpegPath: "/fake/ffmpeg",
+      args: ["-y", "-i", "input.mp4", nodeTimeoutOutput],
+      outputPath: nodeTimeoutOutput,
+      timeoutMs: 100,
+      execFile: nodeTimeoutExec,
+    }),
+    (error: unknown) => error instanceof CompositeExecutionError
+      && error.code === "COMPOSITE_TIMEOUT"
+      && error.retryable === false
+      && error.message === "ประกอบวิดีโอใช้เวลานานเกินกำหนด",
+    "killed=true with exit 255 and no signal is a composite timeout, not a generic ffmpeg failure",
+  );
+  assert.equal(fs.existsSync(nodeTimeoutOutput), false, "Node timeout never publishes a final output");
+  assert.equal(fs.existsSync(path.join(root, "node-timeout.part.mp4")), false, "Node timeout removes its partial output");
+
   const successOutput = path.join(root, "success.mp4");
   const successExec: CompositeExecFile = (_file, args, _options, callback) => {
     fs.writeFileSync(String(args.at(-1)), "complete-video");

@@ -220,11 +220,11 @@ async function main() {
   ]);
   assert(fs.existsSync(path.join(tmp, "layout.png")), "layout composite renders a frame");
 
-  // Canary optimization: crop source pixels outside the visible canvas before the expensive
+  // Overflow crop: drop source pixels outside the visible canvas before the expensive
   // scale/chromakey/despill/feather chain. Lanczos sees a slightly different edge neighborhood,
   // so allow <0.5% of one 8-bit channel while still enforcing material visual equivalence.
   const zoomedLayout = clampAvatarLayout({ scale: 2.4, offsetX: 42, offsetY: -80 });
-  assert(zoomedLayout !== null, "zoomed canary layout clamps to a non-null geometry");
+  assert(zoomedLayout !== null, "zoomed overflow layout clamps to a non-null geometry");
   const legacyZoomFilter = buildCompositeFilter(
     { color: c12, similarity: 0.28, blend: 0.1 },
     zoomedLayout,
@@ -239,8 +239,8 @@ async function main() {
     [],
     true,
   );
-  assert(/crop=/.test(croppedZoomFilter), "canary layout crops off-canvas pixels before the key chain");
-  assert(!/crop=/.test(legacyZoomFilter), "non-canary layout keeps the legacy filter graph");
+  assert(/crop=/.test(croppedZoomFilter), "overflow layout crops off-canvas pixels before the key chain");
+  assert(!/crop=/.test(legacyZoomFilter), "explicit uncropped overflow layout keeps the legacy filter graph");
   const legacyFrame = runRaw([
     "-hide_banner", "-loglevel", "error", "-y", "-i", bg, "-i", green12,
     "-filter_complex", legacyZoomFilter, "-map", "[out]", "-frames:v", "1",
@@ -251,11 +251,11 @@ async function main() {
     "-filter_complex", croppedZoomFilter, "-map", "[out]", "-frames:v", "1",
     "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
   ]);
-  assert(legacyFrame.length === croppedFrame.length, "canary and legacy frames have identical dimensions");
+  assert(legacyFrame.length === croppedFrame.length, "cropped and uncropped overflow frames have identical dimensions");
   let absoluteError = 0;
   for (let i = 0; i < legacyFrame.length; i++) absoluteError += Math.abs(legacyFrame[i] - croppedFrame[i]);
   const meanAbsoluteError = absoluteError / legacyFrame.length;
-  assert(meanAbsoluteError <= 1.25, `canary crop is visually equivalent (mean absolute RGB error=${meanAbsoluteError.toFixed(4)})`);
+  assert(meanAbsoluteError <= 1.25, `overflow crop is visually equivalent (mean absolute RGB error=${meanAbsoluteError.toFixed(4)})`);
 
   // key chain is self-sanitizing even if handed garbage
   assert(!buildKeyChain({ color: "evil; rm", similarity: 99, blend: -5 }).includes("evil"), "buildKeyChain re-sanitizes an unsafe color");
