@@ -79,12 +79,22 @@ export function ContainerScroll({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const reduceMotion = useReducedMotion();
+  const [isCompactViewport, setIsCompactViewport] = useState(false);
   const { scrollYProgress } = useScroll({ target: ref, offset: ["start end", "center center"] });
   const rotateX = useTransform(scrollYProgress, [0, 1], [18, 0]);
   const scale = useTransform(scrollYProgress, [0, 1], [0.9, 1]);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 639px)");
+    const update = () => setIsCompactViewport(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
   return (
     <div ref={ref} className={cn("[perspective:1400px]", className)}>
-      <motion.div style={reduceMotion ? undefined : { rotateX, scale, transformOrigin: "center 30%" }} className="will-change-transform">
+      <motion.div style={reduceMotion || isCompactViewport ? undefined : { rotateX, scale, transformOrigin: "center 30%" }} className="will-change-transform">
         {children}
       </motion.div>
     </div>

@@ -28,10 +28,10 @@ import { getPlanConfig } from "@/lib/plan-config";
 export const metadata = {
   title: "HERO AI Creator Studio — จากไอเดีย ถึงคลิปพร้อมโพสต์",
   description:
-    "ทีมคอนเทนต์ AI ในระบบเดียว ช่วยคิด Hook เขียนสคริปต์ สร้างภาพแบรนด์ พากย์เสียง ใส่ B-roll ซับไทย และตัดต่อคลิปพร้อมโพสต์",
+    "ทีมคอนเทนต์ AI ในระบบเดียว ช่วยคิดประโยคเปิด เขียนสคริปต์ สร้างภาพให้ตรงแบรนด์ พากย์เสียง ใส่ภาพประกอบ ซับไทย และตัดต่อคลิปพร้อมโพสต์",
   openGraph: {
     title: "HERO AI Creator Studio — จากไอเดีย ถึงคลิปพร้อมโพสต์",
-    description: "Hero Script, Brand Visual, AI Studio และ Video Editor สำหรับครีเอเตอร์ไทย ใน workflow เดียว",
+    description: "คิดสคริปต์ คุมภาพตามแบรนด์ สร้างเสียง และตัดต่อคลิป สำหรับครีเอเตอร์ไทยในระบบเดียว",
     url: "https://studio.heroaiengine.com",
     type: "website",
   },
@@ -65,80 +65,80 @@ const MINUTE_QUOTA = process.env.MINUTE_QUOTA === "1";
 const PRODUCT_PILLARS = [
   {
     id: "script",
-    eyebrow: "01 · HERO SCRIPT",
+    eyebrow: "01 · ช่วยคิดและเขียนสคริปต์",
     title: "เริ่มได้ตั้งแต่ยังมีแค่หัวข้อ",
-    desc: "แตกมุม เลือก Hook และเขียนสคริปต์ภาษาไทยให้ครบใน flow เดียว พร้อมส่งบริบทต่อไปยังหน้าตัดต่อทันที",
+    desc: "แตกไอเดียเป็นหลายมุม เลือกประโยคเปิดที่ดึงความสนใจ และเขียนสคริปต์ภาษาไทยให้ครบ พร้อมส่งต่อไปยังหน้าตัดต่อทันที",
     icon: FileText,
-    chips: ["Hook หลายมุม", "สคริปต์ไทยธรรมชาติ", "จำ Brand Profile"],
-    signal: "TOPIC → HOOK → SCRIPT",
+    chips: ["ประโยคเปิดหลายมุม", "สคริปต์ไทยธรรมชาติ", "จำข้อมูลแบรนด์"],
+    signal: "หัวข้อ → ประโยคเปิด → สคริปต์",
   },
   {
     id: "visual",
-    eyebrow: "02 · BRAND VISUAL",
+    eyebrow: "02 · คุมภาพให้ตรงแบรนด์",
     title: "ทุกซีนพูดภาษาภาพของแบรนด์เดียวกัน",
-    desc: "เลือก Visual Format ครั้งเดียว ระบบคุมทิศทางภาพทั้งคลิป สร้างใหม่เฉพาะซีน หรือเปลี่ยน Stock เป็นภาพ AI ได้โดยไม่ต้องเริ่มงานใหม่",
+    desc: "เลือกแนวภาพครั้งเดียว ระบบจะรักษาสี อารมณ์ และสไตล์ให้ต่อเนื่องทั้งคลิป พร้อมเปลี่ยนหรือสร้างภาพใหม่เฉพาะฉากได้",
     icon: SwatchBook,
-    chips: ["5 Visual Formats", "ภาพต่อเนื่องทั้งเรื่อง", "Reroll รายซีน"],
-    signal: "BRAND → SCENE → CONSISTENCY",
+    chips: ["แนวภาพ 5 รูปแบบ", "ภาพต่อเนื่องทั้งเรื่อง", "สร้างใหม่เฉพาะฉาก"],
+    signal: "แบรนด์ → ฉาก → ภาพที่เป็นชุดเดียวกัน",
   },
   {
     id: "editor",
-    eyebrow: "03 · VIDEO EDITOR",
+    eyebrow: "03 · ตัดต่อครบในที่เดียว",
     title: "ระบบลงแรงให้ก่อน คุณคุมจังหวะสุดท้าย",
-    desc: "ซับไทยตรงเสียง B-roll, AI Avatar, Headline Hook, เพลง และ Timeline อยู่ใน Editor เดียว ปรับต่อได้แม้เรนเดอร์แล้ว",
+    desc: "ระบบใส่ซับไทย ภาพประกอบ พิธีกร AI ข้อความเปิดเรื่อง และเพลงให้ก่อน คุณยังปรับภาพ คำ และจังหวะได้ก่อนส่งออก",
     icon: WandSparkles,
-    chips: ["ซับตรงเสียง", "AutoMix + B-roll", "กลับมาแก้หลัง Export"],
-    signal: "ASSEMBLE → REFINE → EXPORT",
+    chips: ["ซับตรงเสียง", "เลือกภาพประกอบอัตโนมัติ", "กลับมาแก้ได้"],
+    signal: "ประกอบคลิป → ปรับจังหวะ → ส่งออก",
   },
   {
     id: "studio",
-    eyebrow: "04 · AI STUDIO",
+    eyebrow: "04 · สร้างภาพและเสียง",
     title: "ภาพและเสียงพร้อมใช้ ไม่ต้องสลับหลายแอป",
-    desc: "สร้าง Hero AI Image และ Hero Voice จากพื้นที่เดียว แล้วหยิบกลับมาใช้ในโปรเจกต์ได้ทันที ลดงานส่งไฟล์และบริบทที่หล่นหายระหว่างทาง",
+    desc: "สร้างภาพประกอบและเสียงพากย์จากที่เดียว แล้วนำกลับมาใช้ในคลิปได้ทันที ไม่ต้องดาวน์โหลดหรือย้ายไฟล์ไปมาหลายแอป",
     icon: Images,
-    chips: ["Hero AI Image", "Hero Voice", "พร้อมใช้ในโปรเจกต์"],
-    signal: "IMAGE + VOICE → PROJECT",
+    chips: ["สร้างภาพด้วย AI", "สร้างเสียงพากย์", "พร้อมใช้ในคลิป"],
+    signal: "ภาพ + เสียง → คลิปของคุณ",
   },
 ] as const;
 
 const VISUAL_FORMATS = [
-  { src: "/brand-visual-formats/cinematic-realism.webp", name: "Cinematic Realism", note: "สมจริง · มีมิติ" },
-  { src: "/brand-visual-formats/simple-editorial-story.webp", name: "Editorial Story", note: "เรียบ · เล่าเรื่องชัด" },
-  { src: "/brand-visual-formats/dramatic-comic.webp", name: "Dramatic Comic", note: "พลังสูง · สะดุดตา" },
-  { src: "/brand-visual-formats/clear-infographic.webp", name: "Clear Infographic", note: "ความรู้ · เข้าใจง่าย" },
-  { src: "/brand-visual-formats/retro-story.webp", name: "Retro Story", note: "อบอุ่น · มีคาแรกเตอร์" },
+  { src: "/brand-visual-formats/cinematic-realism.webp", name: "สมจริงแบบภาพยนตร์", note: "สมจริง · มีมิติ" },
+  { src: "/brand-visual-formats/simple-editorial-story.webp", name: "เรียบง่ายแบบบทความ", note: "เรียบ · เล่าเรื่องชัด" },
+  { src: "/brand-visual-formats/dramatic-comic.webp", name: "การ์ตูนเข้มข้น", note: "พลังสูง · สะดุดตา" },
+  { src: "/brand-visual-formats/clear-infographic.webp", name: "อินโฟกราฟิกชัดเจน", note: "ความรู้ · เข้าใจง่าย" },
+  { src: "/brand-visual-formats/retro-story.webp", name: "ย้อนยุคอบอุ่น", note: "อบอุ่น · มีคาแรกเตอร์" },
 ] as const;
 
 const SHOWCASE = [
-  { src: "/showcase/showcase-1.mp4", poster: "/showcase/showcase-1.jpg", tag: "เล่าเรื่องสร้างเพจ", detail: "AI Avatar · ซับคำเด้ง" },
-  { src: "/showcase/showcase-3.mp4", poster: "/showcase/showcase-3.jpg", tag: "แรงบันดาลใจ", detail: "Faceless · B-roll ซีเนมาติก" },
-  { src: "/showcase/showcase-2.mp4", poster: "/showcase/showcase-2.jpg", tag: "ไลฟ์สไตล์", detail: "Faceless · ซับตรงเสียง" },
+  { src: "/showcase/showcase-1.mp4", poster: "/showcase/showcase-1.jpg", tag: "เล่าเรื่องสร้างเพจ", detail: "พิธีกร AI · ซับคำเด้ง" },
+  { src: "/showcase/showcase-3.mp4", poster: "/showcase/showcase-3.jpg", tag: "แรงบันดาลใจ", detail: "ไม่ต้องออกกล้อง · ภาพประกอบแบบภาพยนตร์" },
+  { src: "/showcase/showcase-2.mp4", poster: "/showcase/showcase-2.jpg", tag: "ไลฟ์สไตล์", detail: "ไม่ต้องออกกล้อง · ซับตรงเสียง" },
 ] as const;
 
 const STEPS = [
   { n: "01", title: "ใส่หัวข้อหรือสคริปต์", desc: "เริ่มจากประโยคเดียว หรือใช้สคริปต์ที่มีอยู่แล้วก็ได้" },
-  { n: "02", title: "เลือกตัวตนของคลิป", desc: "ตั้งภาพ เสียง Avatar ซับ และจังหวะให้ตรงแบรนด์" },
+  { n: "02", title: "เลือกตัวตนของคลิป", desc: "ตั้งภาพ เสียง พิธีกร AI ซับ และจังหวะให้ตรงแบรนด์" },
   { n: "03", title: "สร้าง ปรับ แล้วโพสต์", desc: "ระบบประกอบให้ก่อน คุณแก้รายซีนและส่งออกเมื่อพร้อม" },
 ] as const;
 
 const FAQS = [
   {
     q: "ต้องมีสคริปต์ก่อนหรือเปล่า?",
-    a: "ไม่ต้อง เริ่มจากหัวข้อหรือไอเดียสั้นๆ ใน Hero Script ได้ ระบบช่วยคิด Hook และร่างสคริปต์ให้ หรือจะนำสคริปต์เดิมมาใช้ก็ได้",
+    a: "ไม่ต้อง เริ่มจากหัวข้อหรือไอเดียสั้นๆ ได้ ระบบจะช่วยคิดประโยคเปิดและร่างสคริปต์ให้ หรือจะนำสคริปต์เดิมมาใช้ก็ได้",
   },
   {
     q: "ทำคลิปโดยไม่ออกกล้องได้ไหม?",
-    a: "ได้ คุณทำแบบ Faceless เต็มรูปแบบ ใช้ AI Avatar เป็นพิธีกร หรือผสมทั้งสองแบบในคลิปเดียวกันได้",
+    a: "ได้ คุณทำคลิปแบบไม่ต้องออกกล้อง ใช้พิธีกร AI หรือผสมภาพของคุณกับพิธีกร AI ในคลิปเดียวกันได้",
   },
   {
     q: "สร้างเสร็จแล้ว ยังกลับมาแก้ได้ไหม?",
-    a: "ได้ คุณกลับเข้า Editor เพื่อแก้ข้อความ ซับ ภาพ B-roll เพลง จังหวะ และสร้างภาพใหม่เฉพาะซีนได้ โดยไม่ต้องเริ่มโปรเจกต์ใหม่",
+    a: "ได้ คุณกลับมาแก้ข้อความ ซับ ภาพประกอบ เพลง จังหวะ และสร้างภาพใหม่เฉพาะฉากได้ โดยไม่ต้องเริ่มคลิปใหม่",
   },
   {
-    q: "ต้องตั้ง API key เองไหม?",
+    q: "ต้องตั้งค่าระบบ AI เองไหม?",
     a: MANAGED
-      ? "AI หลักระบบดูแลให้ ไม่ต้องใส่ Gemini key เอง ส่วนบริการเสริมอย่าง AI Avatar หรือเสียงโคลน สามารถเชื่อมบัญชีของคุณเพิ่มภายหลังได้"
-      : "เริ่มด้วย Gemini key ฟรีของคุณได้ ส่วน AI Avatar หรือเสียงโคลนเชื่อมเพิ่มภายหลังได้ มีคู่มือพาตั้งค่าทีละขั้น",
+      ? "ไม่ต้อง ระบบเตรียม AI หลักให้พร้อมใช้ ไม่ต้องสมัครหรือใส่รหัสเชื่อมต่อเอง ส่วนพิธีกร AI และการสร้างเสียงจากตัวอย่างเสียงของคุณ สามารถเชื่อมบัญชีเพิ่มภายหลังได้"
+      : "ระบบมีคู่มือพาสมัครและเชื่อมบริการ AI ฟรีทีละขั้น ส่วนพิธีกร AI และการสร้างเสียงจากตัวอย่างเสียงของคุณสามารถเชื่อมเพิ่มภายหลังได้",
   },
   {
     q: "ทดลองใช้ฟรี 7 วัน ได้โควต้าเท่าไร?",
@@ -148,7 +148,7 @@ const FAQS = [
   },
   {
     q: "แพ็กรายปีตัดเงินอัตโนมัติไหม?",
-    a: "ขึ้นอยู่กับวิธีชำระ: PromptPay รายปีเป็นการจ่ายครั้งเดียวและไม่ต่ออัตโนมัติ ส่วนบัตรรายปีเป็นสมาชิกแบบต่ออัตโนมัติและยกเลิกได้จาก Settings → Billing",
+    a: "ขึ้นอยู่กับวิธีชำระ: PromptPay รายปีเป็นการจ่ายครั้งเดียวและไม่ต่ออัตโนมัติ ส่วนบัตรรายปีจะต่อสมาชิกอัตโนมัติ และยกเลิกได้จากหน้าตั้งค่าการชำระเงิน",
   },
 ] as const;
 
@@ -167,7 +167,7 @@ export default async function Home() {
         <div className="founder-glow sticky top-0 z-50 border-b border-violet-300/15 bg-[#0d0a14]/92 backdrop-blur-xl">
           <div className="mx-auto flex min-h-10 max-w-[1200px] items-center justify-center gap-2.5 px-4 py-1.5 text-[12px] sm:text-[13px]">
             <Flame className="h-3.5 w-3.5 shrink-0 text-amber-300" strokeWidth={2.4} aria-hidden />
-            <span className="font-semibold text-white">Founding Access</span>
+            <span className="font-semibold text-white">ราคาพิเศษ 100 คนแรก</span>
             <span className="hidden text-white/48 sm:inline">·</span>
             <span className="hidden text-white/62 sm:inline">สิทธิ์ราคาผู้ก่อตั้ง {founding.total} คนแรก</span>
             <span className="hidden h-1.5 w-24 overflow-hidden rounded-full bg-white/10 md:block">
@@ -207,14 +207,14 @@ export default async function Home() {
             <Reveal y={16}>
               <div className="max-w-[560px]">
                 <div className="mb-7 inline-flex items-center gap-2 border-l-2 border-violet-400 pl-3 text-[11px] font-semibold uppercase tracking-[.16em] text-violet-200/80">
-                  <Sparkles className="h-3.5 w-3.5" aria-hidden /> AI Content Workflow · Built for Thai Creators
+                  <Sparkles className="h-3.5 w-3.5" aria-hidden /> ระบบทำคลิปครบทุกขั้น · เพื่อครีเอเตอร์ไทย
                 </div>
                 <h1 className="text-[43px] font-bold leading-[1.04] tracking-[-.035em] text-white sm:text-[58px] lg:text-[64px]" style={HEAD}>
                   จากไอเดีย<br />หนึ่งบรรทัด<br />ถึงคลิป
                   <span className="sale-v2-gradient-text">พร้อมโพสต์</span>
                 </h1>
                 <p className="mt-7 max-w-[52ch] text-[16px] leading-7 text-[#b6afc3] sm:text-[17px]">
-                  ทีมคอนเทนต์ AI ของคุณในระบบเดียว—ช่วยคิด Hook เขียนสคริปต์ สร้างภาพให้ตรงแบรนด์ พากย์เสียง ใส่ B-roll ซับไทย และตัดต่อจนจบ
+                  ทีมคอนเทนต์ AI ของคุณในระบบเดียว—ช่วยคิดประโยคเปิด เขียนสคริปต์ สร้างภาพให้ตรงแบรนด์ พากย์เสียง ใส่ภาพประกอบ ซับไทย และตัดต่อจนจบ
                 </p>
                 <div className="mt-8 flex flex-wrap items-center gap-3">
                   <Link href="/register" className="sale-v2-cta inline-flex min-h-13 items-center gap-2 rounded-[14px] px-6 text-[15px] font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-200 focus-visible:ring-offset-2 focus-visible:ring-offset-[#08070c]" style={{ ...HEAD, background: ACCENT }}>
@@ -241,7 +241,7 @@ export default async function Home() {
           <div className="sale-v2-flowband relative mx-auto mt-20 max-w-[1200px] overflow-hidden border-y border-white/[0.075] py-5 sm:mt-24">
             <span className="sale-v2-flowpulse absolute inset-y-0 left-0 w-40" aria-hidden />
             <div className="relative grid grid-cols-2 gap-y-5 text-center sm:grid-cols-4">
-              {["Hero Script", "Brand Visual", "Video Editor", "AI Studio"].map((item, index) => (
+              {["คิดและเขียนสคริปต์", "คุมภาพตามแบรนด์", "ตัดต่อคลิป", "สร้างภาพและเสียง"].map((item, index) => (
                 <div key={item} className="group flex items-center justify-center gap-2.5 text-[11px] font-semibold uppercase tracking-[.12em] text-white/52 sm:border-r sm:border-white/[0.07] sm:last:border-r-0">
                   <span className="flex h-5 w-5 items-center justify-center rounded-full border border-violet-300/25 bg-violet-400/[0.08] font-mono text-[8px] text-violet-200">0{index + 1}</span>
                   <span className="transition-colors group-hover:text-white">{item}</span>
@@ -255,7 +255,7 @@ export default async function Home() {
           <Reveal>
             <div className="mx-auto grid max-w-[1200px] gap-7 lg:grid-cols-[.48fr_1fr] lg:items-end">
               <p className="sale-v2-eyebrow">ไม่ใช่แค่ AI ตัดคลิป</p>
-              <h2 className="max-w-[820px] text-3xl font-semibold leading-[1.22] tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>แต่คือ workflow ที่ส่งต่อความคิดและตัวตนของแบรนด์ไปถึงทุกซีน</h2>
+              <h2 className="max-w-[820px] text-3xl font-semibold leading-[1.22] tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>แต่คือระบบที่ส่งต่อความคิดและตัวตนของแบรนด์ไปถึงทุกฉาก</h2>
             </div>
           </Reveal>
         </section>
@@ -266,7 +266,7 @@ export default async function Home() {
             <Reveal>
               <div className="grid gap-8 border-b border-white/10 pb-12 md:grid-cols-[.72fr_1fr] md:items-end">
                 <div>
-                  <p className="sale-v2-eyebrow">ONE CONNECTED SYSTEM</p>
+                  <p className="sale-v2-eyebrow">ระบบเดียวจบทุกขั้น</p>
                   <h2 className="mt-4 text-3xl font-semibold leading-[1.12] tracking-[-.025em] text-white sm:text-[48px]" style={HEAD}>เห็นงานไหลต่อกัน<br className="hidden md:block" /> ไม่ใช่แค่เห็นรายการฟีเจอร์</h2>
                 </div>
                 <p className="max-w-[560px] text-[16px] leading-8 text-[#b9b1c5] md:justify-self-end">ไอเดีย สคริปต์ ภาพ เสียง และจังหวะตัดต่ออยู่ในบริบทเดียวกัน คุณจึงเห็นทั้งกระบวนการ ไม่ต้องเดาว่าแต่ละระบบเชื่อมกันอย่างไร</p>
@@ -311,10 +311,10 @@ export default async function Home() {
             <Reveal>
               <div className="grid gap-8 md:grid-cols-[.72fr_1fr] md:items-end">
                 <div>
-                  <p className="sale-v2-eyebrow">BRAND VISUAL</p>
+                  <p className="sale-v2-eyebrow">ภาพที่จำแบรนด์ของคุณได้</p>
                   <h2 className="mt-4 max-w-[620px] text-3xl font-semibold leading-[1.18] tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>เรื่องเดียวกัน<br />เล่าได้ในภาษาภาพของคุณ</h2>
                 </div>
-                <p className="max-w-[560px] text-[15px] leading-7 text-[#aaa3b6] md:justify-self-end">เลือก Visual Format ให้เข้ากับแบรนด์และเนื้อหา ระบบจะรักษาทิศทางภาพตลอดทั้งคลิป พร้อมให้เปลี่ยนหรือสร้างใหม่เป็นรายซีน</p>
+                <p className="max-w-[560px] text-[15px] leading-7 text-[#aaa3b6] md:justify-self-end">เลือกแนวภาพให้เข้ากับแบรนด์และเนื้อหา ระบบจะรักษาสี อารมณ์ และสไตล์ตลอดทั้งคลิป พร้อมให้เปลี่ยนหรือสร้างใหม่เป็นรายฉาก</p>
               </div>
             </Reveal>
             <div className="sale-v2-format-grid mt-12 grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4">
@@ -322,7 +322,7 @@ export default async function Home() {
                 <Reveal key={src} delay={index * 0.06} className={index === 4 ? "col-span-2 sm:col-span-1" : undefined}>
                   <figure className="group">
                     <div className={`relative overflow-hidden rounded-[18px] border border-white/10 bg-[#16131c] ${index === 4 ? "mx-auto aspect-[9/13] max-w-[240px] sm:aspect-[9/16] sm:max-w-none" : "aspect-[9/16]"}`}>
-                      <Image src={src} alt={`ตัวอย่าง Brand Visual รูปแบบ ${name}`} fill sizes="(max-width: 640px) 50vw, 20vw" className="object-cover transition duration-700 group-hover:scale-[1.025]" />
+                      <Image src={src} alt={`ตัวอย่างแนวภาพ ${name}`} fill sizes="(max-width: 640px) 50vw, 20vw" className="object-cover transition duration-700 group-hover:scale-[1.025]" />
                       <span className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/10" aria-hidden />
                       <span className="absolute left-3 top-3 font-mono text-[9px] text-white/52">0{index + 1}</span>
                       <figcaption className="absolute inset-x-3 bottom-3">
@@ -341,7 +341,7 @@ export default async function Home() {
           <div className="mx-auto max-w-[1100px]">
             <Reveal>
               <div className="text-center">
-                <p className="sale-v2-eyebrow justify-center">MADE WITH HERO AI</p>
+                <p className="sale-v2-eyebrow justify-center">คลิปที่สร้างด้วย HERO AI</p>
                 <h2 className="mx-auto mt-4 max-w-[680px] text-3xl font-semibold leading-[1.18] tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>ดูคลิปที่ออกจากระบบจริง</h2>
                 <p className="mx-auto mt-4 max-w-[580px] text-[15px] leading-7 text-[#aaa3b6]">สามแนวคอนเทนต์ สามวิธีเล่าเรื่อง—สร้างและตัดต่อด้วย HERO AI Creator Studio</p>
               </div>
@@ -365,7 +365,7 @@ export default async function Home() {
             <Reveal>
               <div className="grid gap-7 md:grid-cols-[.58fr_1fr] md:items-end">
                 <div>
-                  <p className="sale-v2-eyebrow">FROM IDEA TO OUTPUT</p>
+                  <p className="sale-v2-eyebrow">3 ขั้นตอนสู่คลิปพร้อมโพสต์</p>
                   <h2 className="mt-4 text-3xl font-semibold tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>เริ่มง่าย จบงานได้จริง</h2>
                 </div>
                 <p className="max-w-[550px] text-[15px] leading-7 text-[#aaa3b6] md:justify-self-end">ระบบจัดการงานซ้ำๆ ให้ แต่ยังเปิดพื้นที่ให้คุณตัดสินใจในจุดที่ทำให้คอนเทนต์เป็นของคุณ</p>
@@ -375,7 +375,7 @@ export default async function Home() {
               {STEPS.map(({ n, title, desc }, index) => (
                 <Reveal key={n} delay={index * 0.08} className="h-full">
                   <article className="relative h-full bg-[#0d0b12] p-7 sm:p-8">
-                    <span className="font-mono text-[11px] tracking-[.15em] text-violet-300/70">STEP {n}</span>
+                    <span className="font-mono text-[11px] tracking-[.15em] text-violet-300/70">ขั้นที่ {n}</span>
                     <h3 className="mt-12 text-[21px] font-semibold text-white" style={HEAD}>{title}</h3>
                     <p className="mt-2 text-[14px] leading-6 text-white/50">{desc}</p>
                     {index < STEPS.length - 1 && <ChevronRight className="absolute right-5 top-7 hidden h-4 w-4 text-white/18 md:block" aria-hidden />}
@@ -389,9 +389,9 @@ export default async function Home() {
         <section id="pricing" className="scroll-mt-8 px-5 py-20 sm:py-32 lg:px-7">
           <div className="mx-auto max-w-[1200px] text-center">
             <Reveal>
-              <p className="sale-v2-eyebrow justify-center">PRICING</p>
+              <p className="sale-v2-eyebrow justify-center">แพ็กเกจและราคา</p>
               <h2 className="mt-4 text-3xl font-semibold tracking-[-.025em] text-white sm:text-[46px]" style={HEAD}>เริ่มฟรี แล้วค่อยโตตามงาน</h2>
-              <p className="mx-auto mt-4 max-w-[590px] text-[15px] leading-7 text-[#aaa3b6]">ทดลอง workflow จริงก่อนตัดสินใจ ทุกแพ็กแสดงข้อมูลล่าสุดจากระบบ</p>
+              <p className="mx-auto mt-4 max-w-[590px] text-[15px] leading-7 text-[#aaa3b6]">ลองทำคลิปจริงก่อนตัดสินใจ ทุกแพ็กแสดงสิทธิ์และโควต้าล่าสุดจากระบบ</p>
             </Reveal>
             <PricingToggle plans={plans} founding={founding} minuteQuotaEnabled={MINUTE_QUOTA} />
           </div>
@@ -401,7 +401,7 @@ export default async function Home() {
           <div className="mx-auto grid max-w-[1040px] gap-12 md:grid-cols-[.52fr_1fr]">
             <Reveal>
               <div className="md:sticky md:top-10">
-                <p className="sale-v2-eyebrow">FAQ</p>
+                <p className="sale-v2-eyebrow">คำถามที่พบบ่อย</p>
                 <h2 className="mt-4 text-3xl font-semibold tracking-[-.025em] text-white sm:text-[42px]" style={HEAD}>คำถามก่อนเริ่ม</h2>
                 <p className="mt-4 max-w-[330px] text-[14px] leading-6 text-white/46">สิ่งที่ครีเอเตอร์มักอยากรู้ ก่อนทำคลิปแรกกับ HERO AI</p>
               </div>
@@ -426,7 +426,7 @@ export default async function Home() {
         <Reveal>
           <div className="mx-auto max-w-[860px]">
             <div className="mx-auto mb-7 flex h-12 w-12 items-center justify-center rounded-[15px] border border-violet-300/18 bg-violet-400/[0.08] text-violet-200"><Layers3 className="h-5 w-5" strokeWidth={1.8} aria-hidden /></div>
-            <p className="sale-v2-eyebrow justify-center">YOUR NEXT CONTENT STARTS HERE</p>
+            <p className="sale-v2-eyebrow justify-center">เริ่มคอนเทนต์ชิ้นต่อไปตรงนี้</p>
             <h2 className="mt-5 text-[36px] font-semibold leading-[1.12] tracking-[-.03em] text-white sm:text-[54px]" style={HEAD}>ไอเดียต่อไปของคุณ<br />ไม่ควรจบอยู่ในโน้ต</h2>
             {founding?.active ? (
               <p className="mx-auto mt-5 max-w-[560px] text-[15px] text-[#aaa3b6]">สิทธิ์ราคาผู้ก่อตั้งเหลือ {founding.remaining}/{founding.total} ที่</p>
@@ -437,7 +437,7 @@ export default async function Home() {
               สร้างคลิปแรกฟรี <ArrowRight className="h-4 w-4" aria-hidden />
             </Link>
             <p className="mt-4 text-[12.5px] text-white/38">PRO ฟรี 7 วัน · ไม่ใช้บัตร · เริ่มได้ทันที</p>
-            <a href="https://affiliate.heroaiengine.com/affiliate-program" className="mt-6 inline-flex min-h-11 items-center text-[12px] text-white/36 underline-offset-4 transition-colors hover:text-white/70 hover:underline focus-visible:outline-none focus-visible:text-white sm:mt-8">Affiliate — แนะนำ HERO AI รับค่าคอม 25% ทุกเดือน</a>
+            <a href="https://affiliate.heroaiengine.com/affiliate-program" className="mt-6 inline-flex min-h-11 items-center text-[12px] text-white/36 underline-offset-4 transition-colors hover:text-white/70 hover:underline focus-visible:outline-none focus-visible:text-white sm:mt-8">ร่วมแนะนำ HERO AI — รับค่าตอบแทน 25% ทุกเดือน</a>
           </div>
         </Reveal>
         <div className="mx-auto mt-20 flex max-w-[1200px] flex-col items-center justify-between gap-4 border-t border-white/[0.07] pt-7 text-[11px] text-white/28 sm:flex-row">

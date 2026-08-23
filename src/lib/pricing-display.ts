@@ -68,7 +68,7 @@ export function marketingPriceBlock({
     amount: `฿${monthlyEquivalent.toLocaleString("th-TH")}`,
     unit: "/เดือน",
     sub: display.isFounding
-      ? `ชำระ ฿${display.final.toLocaleString("th-TH")}/ปี · Founding ลด ${display.pct}%`
+      ? `ชำระ ฿${display.final.toLocaleString("th-TH")}/ปี · ราคาพิเศษลด ${display.pct}%`
       : `ชำระ ฿${display.final.toLocaleString("th-TH")}/ปี · ประหยัด 2 เดือน`,
     billingNote: "PromptPay จ่ายครั้งเดียว · บัตรต่ออัตโนมัติ",
     was: `฿${monthlyPrice.toLocaleString("th-TH")}`,

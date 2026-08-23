@@ -16,20 +16,20 @@ for (const [tier, plan] of [["free", "FREE"], ["pro", "PRO"], ["business", "BUSI
 }
 
 const freeCapabilities = canonicalPlanCapabilities("free").join(" | ");
-assert.match(freeCapabilities, /ไม่ต้องใส่ Gemini key/u, "Free states that managed AI needs no Gemini key");
-assert.match(freeCapabilities, /Stock B-roll/u, "Free states the included automatic Stock B-roll path");
+assert.match(freeCapabilities, /ไม่ต้องสมัครหรือใส่รหัสเชื่อมต่อ AI เอง/u, "Free explains managed AI without technical setup jargon");
+assert.match(freeCapabilities, /ภาพประกอบจากคลัง/u, "Free explains the included automatic supporting visuals in plain Thai");
 
 const proCapabilities = canonicalPlanCapabilities("pro").join(" | ");
 assert.match(proCapabilities, /ทุกอย่างใน Free/u, "Pro explicitly inherits Free capabilities");
-assert.match(proCapabilities, /Hero Script AI ไม่จำกัด/u, "Pro includes unlimited Hero Script");
-assert.match(proCapabilities, /Brand Profiles สูงสุด 5 แบรนด์/u, "Pro exposes the enforced five-profile cap");
-assert.match(proCapabilities, /Brand Visual System/u, "Pro includes Brand Visual");
-assert.match(proCapabilities, /Hero AI Image \+ AutoMix B-roll/u, "Pro includes Hero AI Image and AutoMix");
+assert.match(proCapabilities, /ช่วยคิดและเขียนสคริปต์ได้ไม่จำกัด/u, "Pro includes unlimited AI-assisted scripts");
+assert.match(proCapabilities, /บันทึกข้อมูลแบรนด์ได้สูงสุด 5 แบรนด์/u, "Pro exposes the enforced five-profile cap");
+assert.match(proCapabilities, /คุมภาพทุกฉากให้ตรงกับแบรนด์/u, "Pro includes consistent brand visuals");
+assert.match(proCapabilities, /สร้างและเลือกภาพประกอบให้อัตโนมัติ/u, "Pro includes generated and automatically mixed supporting visuals");
 assert.match(proCapabilities, /ภาพ AI 2 เครดิต\/ภาพ/u, "Pro discloses the canonical Hero AI Image credit cost");
 
 const businessCapabilities = canonicalPlanCapabilities("business").join(" | ");
 assert.match(businessCapabilities, /ทุกอย่างใน Pro/u, "Business explicitly inherits Pro capabilities");
-assert.match(businessCapabilities, /Brand Profiles ไม่จำกัด/u, "Business exposes unlimited Brand Profiles");
+assert.match(businessCapabilities, /บันทึกข้อมูลแบรนด์ได้ไม่จำกัด/u, "Business exposes unlimited brand profiles");
 
 const annual = marketingPriceBlock({ monthlyPrice: PLANS.PRO.thb, period: "annual", founding: null });
 assert.equal(annual.amount, "฿499", "Pro annual monthly-equivalent is rounded to ฿499");
@@ -44,11 +44,12 @@ const founding = marketingPriceBlock({
 });
 assert.equal(founding.amount, "฿250", "active founding Pro is ฿250 monthly-equivalent");
 assert.match(founding.sub, /฿2,995\/ปี/u, "active founding Pro states the exact annual charge");
+assert.match(founding.sub, /ราคาพิเศษลด 50%/u, "founding pricing is explained in everyday Thai");
 
 const descriptive = supplementalPlanFeatures([
   "80 นาที/เดือน · ~80 คลิป · ยาวสุด 6 นาที",
   "เติมเครดิตเมื่อใช้เกินโควต้า · เก็บวิดีโอ 7 วัน",
-  "Brand Profiles ไม่จำกัด สำหรับหลายแบรนด์/หลายลูกค้า",
+  "บันทึกข้อมูลแบรนด์ได้ไม่จำกัด สำหรับหลายแบรนด์หรือหลายลูกค้า",
 ]);
 assert.deepEqual(descriptive, ["เติมเครดิตเมื่อใช้เกินโควต้า"], "free-form benefits cannot override canonical limits");
 

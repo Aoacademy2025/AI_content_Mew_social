@@ -61,7 +61,7 @@ export function PricingToggle({
       {hasFounding && founding && (
         <div className="mx-auto mb-7 flex w-fit items-center gap-2 border-l-2 border-amber-300/70 pl-3 text-[12px] font-medium text-amber-100/90">
           <Flame className="h-3.5 w-3.5 text-amber-300" aria-hidden />
-          Founding รายปีลด {founding.percentOff}% · เหลือ {founding.remaining}/{founding.total} ที่
+          ราคาพิเศษรายปีลด {founding.percentOff}% · เหลือ {founding.remaining}/{founding.total} สิทธิ์
         </div>
       )}
 
@@ -95,7 +95,7 @@ export function PricingToggle({
           features={plans.pro.features}
           cta={`เริ่มใช้ ${plans.pro.name}`}
           best
-          badge={proDisplay.isFounding ? "Founding" : (plans.pro.badge ?? "แนะนำ")}
+          badge={proDisplay.isFounding ? "100 คนแรก" : (plans.pro.badge ?? "แนะนำ")}
           planFeatures={marketingPlanFeatures("pro", minuteQuotaEnabled)}
           orderClass="order-1 lg:order-2"
         />
@@ -111,7 +111,7 @@ export function PricingToggle({
           features={plans.business.features}
           cta={`เลือก ${plans.business.name}`}
           ghost
-          badge={bizDisplay.isFounding ? "Founding" : (plans.business.badge ?? undefined)}
+          badge={bizDisplay.isFounding ? "100 คนแรก" : (plans.business.badge ?? undefined)}
           planFeatures={marketingPlanFeatures("business", minuteQuotaEnabled)}
           orderClass="order-3"
         />
@@ -189,7 +189,7 @@ function Tier({
         </span>
       )}
 
-      <p className="text-[10px] font-semibold uppercase tracking-[.15em] text-white/30">PLAN</p>
+      <p className="text-[10px] font-semibold tracking-[.12em] text-white/30">แพ็กเกจ</p>
       <h3 className="mt-2 pr-20 text-[23px] font-semibold text-white" style={HEAD}>{name}</h3>
       <p className="mt-2 min-h-10 text-[14px] leading-6 text-white/50 lg:text-[12.5px] lg:leading-5">{tagline}</p>
 

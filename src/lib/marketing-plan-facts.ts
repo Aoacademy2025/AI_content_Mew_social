@@ -26,23 +26,23 @@ export function canonicalPlanCapabilities(tier: MarketingTierKey): string[] {
 
   if (tier === "free") {
     return [
-      "ระบบจัดการ AI ให้ — ไม่ต้องใส่ Gemini key เอง",
-      "ซับไทย + Stock B-roll อัตโนมัติ",
+      "ระบบเตรียม AI ให้พร้อมใช้ — ไม่ต้องสมัครหรือใส่รหัสเชื่อมต่อ AI เอง",
+      "ใส่ซับไทยและเลือกภาพประกอบจากคลังให้อัตโนมัติ",
     ];
   }
 
   if (tier === "pro") {
     return [
-      "ทุกอย่างใน Free — รวมระบบจัดการ AI, ซับไทย และ Stock B-roll",
-      `Hero Script AI ไม่จำกัด · Brand Profiles สูงสุด ${limits.brandProfiles} แบรนด์`,
-      "Brand Visual System · คุมแนวภาพให้เป็นภาษาของแบรนด์เดียวกัน",
-      `Hero AI Image + AutoMix B-roll · ผสม Stock, ภาพถ่าย และภาพ AI อัตโนมัติ (ภาพ AI ${HERO_AI_IMAGE_CREDITS} เครดิต/ภาพ)`,
+      "ทุกอย่างใน Free — รวม AI พร้อมใช้ ซับไทย และภาพประกอบอัตโนมัติ",
+      `ช่วยคิดและเขียนสคริปต์ได้ไม่จำกัด · บันทึกข้อมูลแบรนด์ได้สูงสุด ${limits.brandProfiles} แบรนด์`,
+      "คุมภาพทุกฉากให้ตรงกับแบรนด์ของคุณ",
+      `สร้างและเลือกภาพประกอบให้อัตโนมัติ · ใช้ภาพจากคลัง ภาพถ่าย หรือภาพที่สร้างด้วย AI (ภาพ AI ${HERO_AI_IMAGE_CREDITS} เครดิต/ภาพ)`,
     ];
   }
 
   return [
-    "ทุกอย่างใน Pro — รวม Hero Script, Brand Visual, Hero AI Image และ AutoMix",
-    "Brand Profiles ไม่จำกัด สำหรับหลายแบรนด์/หลายลูกค้า",
+    "ทุกอย่างใน Pro — รวมการเขียนสคริปต์ คุมภาพตามแบรนด์ สร้างภาพ และเลือกภาพประกอบอัตโนมัติ",
+    "บันทึกข้อมูลแบรนด์ได้ไม่จำกัด สำหรับหลายแบรนด์หรือหลายลูกค้า",
   ];
 }
 
@@ -61,13 +61,13 @@ export function corePlanFacts(
   const retentionDays = storageDaysForPlan(plan);
   const clipLimit = Number(limits.clips);
   const usage = minuteQuotaEnabled
-    ? `${minutesPerMonthForPlan(plan)} นาทีเรนเดอร์ + สูงสุด ${clipLimit} คลิป/30 วัน`
+    ? `${minutesPerMonthForPlan(plan)} นาทีสร้างคลิป + สูงสุด ${clipLimit} คลิป/30 วัน`
     : `สูงสุด ${clipLimit} คลิป/30 วัน`;
 
   if (tier === "free") {
     return [
       minuteQuotaEnabled
-        ? `ทดลอง Pro ฟรี 7 วัน · ${TRIAL_MINUTES} นาทีเรนเดอร์ช่วงทดลอง`
+        ? `ทดลอง Pro ฟรี 7 วัน · สร้างคลิปได้รวม ${TRIAL_MINUTES} นาทีช่วงทดลอง`
         : "ทดลอง Pro ฟรี 7 วัน",
       usage,
       `คลิปละไม่เกิน ${durationMinutes} นาที · เก็บวิดีโอ ${retentionDays} วัน`,
@@ -98,10 +98,33 @@ const CORE_FACT_PATTERNS = [
   /^Brand Profiles\b/iu,
   /^Hero AI Image\b/iu,
   /^ซับไทย\s*\+\s*(?:Stock\s+)?B-roll\b/iu,
+  /^ระบบเตรียม\s+AI\b/iu,
+  /^ใส่ซับไทยและเลือกภาพประกอบ/u,
+  /^ช่วยคิดและเขียนสคริปต์/u,
+  /^คุมภาพทุกฉาก/u,
+  /^สร้างและเลือกภาพประกอบ/u,
+  /^บันทึกข้อมูลแบรนด์/u,
   /\d+\s*นาที\s*\/\s*เดือน/u,
   /~\s*\d+\s*คลิป/u,
   /(?:คลิป)?ยาวสุด\s*\d+\s*นาที/u,
 ];
+
+const PLAIN_LANGUAGE_REWRITES: Array<[RegExp, string]> = [
+  [/^AI Avatar พิธีกร \(HeyGen\) — หรือทำ Faceless$/iu, "ใช้พิธีกร AI หรือทำคลิปแบบไม่ต้องออกกล้อง"],
+  [/^เสียง AI ไทย \+ โคลนเสียงจาก ElevenLabs$/iu, "ใช้เสียงพากย์ AI ภาษาไทย หรือสร้างเสียงพากย์จากตัวอย่างเสียงของคุณ"],
+  [/^ซับไทยตรงเสียงเป๊ะ \(ยาว\/keyword ไวรัล\) \+ B-roll ทุก 3–5 วิ \+ เพลง \+ SFX$/iu, "ใส่ซับไทยตรงเสียง เน้นคำสำคัญ พร้อมภาพและเสียงประกอบตลอดคลิป"],
+  [/^อัปโหลดคลิปที่ถ่ายเอง → ใส่ซับ \+ B-roll cutaway อัตโนมัติ$/iu, "อัปโหลดคลิปที่ถ่ายเอง แล้วให้ระบบใส่ซับและแทรกภาพประกอบให้อัตโนมัติ"],
+  [/^ตัดต่อบนไทม์ไลน์ \+ แต่งซับ 17 สไตล์ \+ ลบพื้นหลัง$/iu, "ปรับจังหวะบนหน้าตัดต่อ เลือกซับ 17 รูปแบบ และลบพื้นหลัง"],
+  [/^สั่งสร้างผ่านแชท AI \(MCP\).*$/iu, "สั่งสร้างงานผ่านผู้ช่วย AI ที่คุณใช้อยู่ เช่น Claude หรือ Codex"],
+  [/^Priority Support ตอบไวกว่า$/iu, "บริการช่วยเหลือแบบเร่งด่วน"],
+];
+
+export function plainLanguagePlanFeature(feature: string): string {
+  for (const [pattern, replacement] of PLAIN_LANGUAGE_REWRITES) {
+    if (pattern.test(feature)) return replacement;
+  }
+  return feature;
+}
 
 /**
  * SiteConfig still owns descriptive benefits. Quotas/duration/retention are
@@ -111,7 +134,7 @@ export function supplementalPlanFeatures(features: string[]): string[] {
   return features.flatMap((feature) => {
     if (CORE_FACT_PATTERNS.some((pattern) => pattern.test(feature))) return [];
 
-    const withoutRetention = feature
+    const withoutRetention = plainLanguagePlanFeature(feature)
       .replace(/(?:\s*[·+]\s*)?เก็บวิดีโอ\s*\d+\s*วัน/gu, "")
       .trim();
     return withoutRetention ? [withoutRetention] : [];
