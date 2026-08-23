@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Prisma } from "@prisma/client";
 import type { WindowEdit } from "@/lib/broll-rerender";
+import { cutawayTimelineSourceFromJob, sceneRerollBeatTarget } from "@/lib/cutaway-plan";
 import { prisma } from "@/lib/prisma";
 import { linkVisualBeatAssetInTransaction } from "@/lib/project-visual-assets.server";
 import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
@@ -108,6 +109,11 @@ export async function prepareAppliedSceneRerollAssets(
     edit,
     derivative: await dependencies.findDerivativeBySrc({ src: edit.src }),
   })));
+  const sourceJob = await prisma.videoJob.findFirst({
+    where: { id: input.sourceVideoJobId, userId: input.userId },
+    select: { inputJson: true, outputJson: true },
+  });
+  const cutawaySource = cutawayTimelineSourceFromJob(sourceJob ?? {});
   for (const { edit, derivative } of inspected) {
     // Discover paid derivatives from the server-owned unique src. Client metadata can be lost
     // or forged, so a ready derivative may never fall through as an ordinary Stock/AI edit.
@@ -162,10 +168,14 @@ export async function prepareAppliedSceneRerollAssets(
     if (source?.videoJobId !== input.sourceVideoJobId || source.sceneIndex !== edit.index) {
       throw new Error("Applied Scene Reroll candidate does not belong to this video scene");
     }
+    const beatTarget = sceneRerollBeatTarget(edit.index, cutawaySource);
+    if (beatTarget.kind === "presenter") {
+      throw new Error("Applied Scene Reroll has no durable Visual Beat");
+    }
     const prompt = await dependencies.resolveVisualPrompt({
       userId: input.userId,
       videoJobId: input.sourceVideoJobId,
-      sceneIndex: edit.index,
+      sceneIndex: beatTarget.visualBeatSequence,
     });
     if (!prompt) throw new Error("Applied Scene Reroll has no durable Visual Beat");
     prepared.push({

@@ -97,6 +97,70 @@ export function manualCutawayWindowCount(targetClipCount: unknown, durationMs?: 
   return visibleCount * 2;
 }
 
+export type CutawayTimelineScene =
+  | { kind: "presenter" }
+  | { kind: "broll"; visualBeatSequence: number };
+
+/**
+ * Cutaway timelines alternate presenter (even) and visible B-roll (odd).
+ * Visual Beats are numbered only for those visible B-roll pieces, so
+ * window `i` maps to beat `floor(i / 2)` when `i` is odd.
+ */
+export function cutawayTimelineScene(windowIndex: number): CutawayTimelineScene {
+  if (windowIndex % 2 === 0) return { kind: "presenter" };
+  return { kind: "broll", visualBeatSequence: Math.floor(windowIndex / 2) };
+}
+
+/** Upload jobs, and any job that persisted person ranges, use the cutaway timeline. */
+export function sourceJobUsesCutawayTimeline(source: {
+  mode?: unknown;
+  cutawayPersonRanges?: unknown;
+}): boolean {
+  if (source?.mode === "upload") return true;
+  return Array.isArray(source?.cutawayPersonRanges) && source.cutawayPersonRanges.length > 0;
+}
+
+export const CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE =
+  "ช่วงนี้เป็นคลิปที่ถ่ายเอง ไม่สามารถลองภาพใหม่ได้";
+
+/**
+ * Scene Reroll's editor index is a timeline window. Faceless jobs keep that
+ * index as the Visual Beat sequence; cutaway jobs remap odd windows and refuse
+ * presenter windows.
+ */
+export function sceneRerollBeatTarget(
+  timelineIndex: number,
+  source: { mode?: unknown; cutawayPersonRanges?: unknown },
+): CutawayTimelineScene {
+  if (!sourceJobUsesCutawayTimeline(source)) {
+    return { kind: "broll", visualBeatSequence: timelineIndex };
+  }
+  return cutawayTimelineScene(timelineIndex);
+}
+
+export function cutawayTimelineSourceFromJob(job: {
+  inputJson?: string | null;
+  outputJson?: string | null;
+}): { mode?: unknown; cutawayPersonRanges?: unknown } {
+  let mode: unknown;
+  try {
+    const parsed = JSON.parse(String(job?.inputJson ?? "")) as { mode?: unknown };
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) mode = parsed.mode;
+  } catch {
+    mode = undefined;
+  }
+  let cutawayPersonRanges: unknown;
+  try {
+    const parsed = JSON.parse(String(job?.outputJson ?? "")) as {
+      preview?: { cutawayPersonRanges?: unknown };
+    };
+    cutawayPersonRanges = parsed?.preview?.cutawayPersonRanges;
+  } catch {
+    cutawayPersonRanges = undefined;
+  }
+  return { mode, cutawayPersonRanges };
+}
+
 /**
  * window 0 (hook) = person; then every odd-index window is b-roll. Guarantees:
  * hook is always the person, no two consecutive b-roll windows. B-roll ratio is
