@@ -25,6 +25,11 @@ import {
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
 import { parseProjectVisualContext, resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
+import {
+  CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE,
+  cutawayTimelineSourceFromJob,
+  sceneRerollBeatTarget,
+} from "@/lib/cutaway-plan";
 import { sceneRerollUnavailablePayload } from "@/lib/project-visual-context";
 import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
@@ -79,6 +84,8 @@ export async function POST(req: Request) {
       projectId: true,
       contentPreflightId: true,
       projectVisualContextJson: true,
+      inputJson: true,
+      outputJson: true,
     },
   });
   if (!sourceJob) {
@@ -117,12 +124,26 @@ export async function POST(req: Request) {
   const projectId = sourceJob.projectId;
   const contentPreflightId = sourceJob.contentPreflightId;
   const projectVisualContextJson = sourceJob.projectVisualContextJson;
+  const beatTarget = sceneRerollBeatTarget(
+    input.sceneIndex,
+    cutawayTimelineSourceFromJob(sourceJob),
+  );
+  if (beatTarget.kind === "presenter") {
+    return NextResponse.json(
+      {
+        error: "scene_reroll_unavailable",
+        message: CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE,
+      },
+      { status: 409 },
+    );
+  }
+  const visualBeatSequence = beatTarget.visualBeatSequence;
   let brandVisualPrompt;
   try {
     brandVisualPrompt = await resolveProjectVisualPromptForVideoScene({
       userId: user.id,
       videoJobId: input.videoJobId,
-      sceneIndex: input.sceneIndex,
+      sceneIndex: visualBeatSequence,
     });
   } catch (error) {
     const unavailable = sceneRerollUnavailablePayload(error);

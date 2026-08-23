@@ -200,6 +200,54 @@ async function main() {
   const owner = await prisma.user.create({
     data: { name: "Scene owner", email: "scene-reroll-apply@example.test" },
   });
+  const cutawaySourceJob = await prisma.videoJob.create({
+    data: {
+      userId: owner.id,
+      status: "done",
+      inputJson: JSON.stringify({ mode: "upload" }),
+    },
+  });
+  const seenCutawaySequences: number[] = [];
+  const cutawayPrepared = await prepareAppliedSceneRerollAssets({
+    userId: owner.id,
+    sourceVideoJobId: cutawaySourceJob.id,
+    edits: [{
+      index: 13,
+      src: "/api/stocks/cutaway-window-13.mp4",
+      replacementKind: "ai",
+      imageJobId: "cmcutaway13imagejobxx",
+    }],
+  }, {
+    findDerivativeBySrc: async (input) => input.src === "/api/stocks/cutaway-window-13.mp4"
+      ? {
+          id: "cutaway-derivative-13",
+          userId: owner.id,
+          imageJobId: "cmcutaway13imagejobxx",
+          sourceVideoJobId: cutawaySourceJob.id,
+          sceneIndex: 13,
+          src: "/api/stocks/cutaway-window-13.mp4",
+          status: "ready",
+          appliedVideoJobId: null,
+        }
+      : null,
+    findCandidate: async () => ({
+      id: "cmcutaway13imagejobxx",
+      userId: owner.id,
+      kind: "image",
+      status: "completed",
+      chargeState: "settled",
+      productSurface: "scene_reroll",
+      outputUrl: "/api/renders/cutaway-13.webp",
+      inputJson: JSON.stringify({ videoJobId: cutawaySourceJob.id, sceneIndex: 13 }),
+    }),
+    resolveVisualPrompt: async (input) => {
+      seenCutawaySequences.push(input.sceneIndex);
+      return { visualBeatId: "beat-6", identityKey: "identity-v1" };
+    },
+  });
+  assert.deepEqual(seenCutawaySequences, [6], "Apply maps cutaway window 13 to Visual Beat 6");
+  assert.equal(cutawayPrepared[0]?.sceneIndex, 13, "Apply keeps the timeline window on the promotion");
+  assert.equal(cutawayPrepared[0]?.beatId, "beat-6", "Apply promotes the remapped Visual Beat");
   const project = await prisma.editorProject.create({ data: { userId: owner.id, title: "Scene apply" } });
   const preflight = await prisma.contentPreflight.create({
     data: {

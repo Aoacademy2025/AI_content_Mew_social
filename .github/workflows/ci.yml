@@ -71,6 +71,9 @@ jobs:
       - name: Verify Scene Reroll missing Visual Beat is 409
         run: npm run verify:hero-broll-window-migration
 
+      - name: Verify cutaway Scene Reroll maps timeline windows to Visual Beats
+        run: npm run verify:broll-window-management && npm run verify:broll-rerender
+
       - name: Verify ERROR_SYSTEM capacity skip and rate-limit
         run: npm run verify:admin-error-notify
 
