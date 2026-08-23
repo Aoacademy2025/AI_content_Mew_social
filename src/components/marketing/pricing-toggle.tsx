@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { ArrowRight, Check, ChevronDown, CreditCard, Flame } from "lucide-react";
 import { computeDisplayPrice, marketingPriceBlock } from "@/lib/pricing-display";
-import { corePlanFacts, supplementalPlanFeatures, type MarketingTierKey } from "@/lib/marketing-plan-facts";
+import { marketingPlanFeatures, supplementalPlanFeatures, type MarketingTierKey } from "@/lib/marketing-plan-facts";
 import type { PlanConfig } from "@/lib/plan-config";
 
 type Period = "monthly" | "yearly";
@@ -80,7 +80,7 @@ export function PricingToggle({
           cta="เริ่มใช้ฟรี"
           ghost
           badge={plans.free.badge ?? undefined}
-          coreFacts={corePlanFacts("free", minuteQuotaEnabled)}
+          planFeatures={marketingPlanFeatures("free", minuteQuotaEnabled)}
           orderClass="order-2 lg:order-1"
         />
         <Tier
@@ -96,7 +96,7 @@ export function PricingToggle({
           cta={`เริ่มใช้ ${plans.pro.name}`}
           best
           badge={proDisplay.isFounding ? "Founding" : (plans.pro.badge ?? "แนะนำ")}
-          coreFacts={corePlanFacts("pro", minuteQuotaEnabled)}
+          planFeatures={marketingPlanFeatures("pro", minuteQuotaEnabled)}
           orderClass="order-1 lg:order-2"
         />
         <Tier
@@ -112,7 +112,7 @@ export function PricingToggle({
           cta={`เลือก ${plans.business.name}`}
           ghost
           badge={bizDisplay.isFounding ? "Founding" : (plans.business.badge ?? undefined)}
-          coreFacts={corePlanFacts("business", minuteQuotaEnabled)}
+          planFeatures={marketingPlanFeatures("business", minuteQuotaEnabled)}
           orderClass="order-3"
         />
       </div>
@@ -143,7 +143,7 @@ function Tier({
   best,
   ghost,
   badge,
-  coreFacts,
+  planFeatures,
   orderClass,
 }: {
   tierKey: MarketingTierKey;
@@ -159,14 +159,16 @@ function Tier({
   best?: boolean;
   ghost?: boolean;
   badge?: string;
-  coreFacts: string[];
+  planFeatures: string[];
   orderClass: string;
 }) {
-  const allFeatures = [...coreFacts, ...supplementalPlanFeatures(features)];
-  const mobileVisible = allFeatures.slice(0, 4);
-  const mobileMore = allFeatures.slice(4);
-  const desktopVisible = allFeatures.slice(0, 6);
-  const desktopMore = allFeatures.slice(6);
+  const allFeatures = [...planFeatures, ...supplementalPlanFeatures(features)];
+  const mobileLimit = tierKey === "pro" ? 6 : 5;
+  const desktopLimit = tierKey === "pro" ? 8 : 6;
+  const mobileVisible = allFeatures.slice(0, mobileLimit);
+  const mobileMore = allFeatures.slice(mobileLimit);
+  const desktopVisible = allFeatures.slice(0, desktopLimit);
+  const desktopMore = allFeatures.slice(desktopLimit);
 
   const featureItem = (feature: string) => (
     <li key={feature} className="flex gap-2.5 text-white/70">

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { corePlanFacts, supplementalPlanFeatures } from "../src/lib/marketing-plan-facts";
+import { canonicalPlanCapabilities, corePlanFacts, supplementalPlanFeatures } from "../src/lib/marketing-plan-facts";
 import { PLAN_CONFIG_DEFAULTS } from "../src/lib/plan-config";
 import { limitsForPlan, minutesPerMonthForPlan } from "../src/lib/plan-limits";
 import { marketingPriceBlock } from "../src/lib/pricing-display";
@@ -14,6 +14,22 @@ for (const [tier, plan] of [["free", "FREE"], ["pro", "PRO"], ["business", "BUSI
   assert.match(facts, new RegExp(String(minutesPerMonthForPlan(plan))), `${tier} exposes the enforced minute cap`);
   assert.doesNotMatch(facts, /~/u, `${tier} uses exact limits, not approximate clip claims`);
 }
+
+const freeCapabilities = canonicalPlanCapabilities("free").join(" | ");
+assert.match(freeCapabilities, /ไม่ต้องใส่ Gemini key/u, "Free states that managed AI needs no Gemini key");
+assert.match(freeCapabilities, /Stock B-roll/u, "Free states the included automatic Stock B-roll path");
+
+const proCapabilities = canonicalPlanCapabilities("pro").join(" | ");
+assert.match(proCapabilities, /ทุกอย่างใน Free/u, "Pro explicitly inherits Free capabilities");
+assert.match(proCapabilities, /Hero Script AI ไม่จำกัด/u, "Pro includes unlimited Hero Script");
+assert.match(proCapabilities, /Brand Profiles สูงสุด 5 แบรนด์/u, "Pro exposes the enforced five-profile cap");
+assert.match(proCapabilities, /Brand Visual System/u, "Pro includes Brand Visual");
+assert.match(proCapabilities, /Hero AI Image \+ AutoMix B-roll/u, "Pro includes Hero AI Image and AutoMix");
+assert.match(proCapabilities, /ภาพ AI 2 เครดิต\/ภาพ/u, "Pro discloses the canonical Hero AI Image credit cost");
+
+const businessCapabilities = canonicalPlanCapabilities("business").join(" | ");
+assert.match(businessCapabilities, /ทุกอย่างใน Pro/u, "Business explicitly inherits Pro capabilities");
+assert.match(businessCapabilities, /Brand Profiles ไม่จำกัด/u, "Business exposes unlimited Brand Profiles");
 
 const annual = marketingPriceBlock({ monthlyPrice: PLANS.PRO.thb, period: "annual", founding: null });
 assert.equal(annual.amount, "฿499", "Pro annual monthly-equivalent is rounded to ฿499");
@@ -32,6 +48,7 @@ assert.match(founding.sub, /฿2,995\/ปี/u, "active founding Pro states the 
 const descriptive = supplementalPlanFeatures([
   "80 นาที/เดือน · ~80 คลิป · ยาวสุด 6 นาที",
   "เติมเครดิตเมื่อใช้เกินโควต้า · เก็บวิดีโอ 7 วัน",
+  "Brand Profiles ไม่จำกัด สำหรับหลายแบรนด์/หลายลูกค้า",
 ]);
 assert.deepEqual(descriptive, ["เติมเครดิตเมื่อใช้เกินโควต้า"], "free-form benefits cannot override canonical limits");
 
