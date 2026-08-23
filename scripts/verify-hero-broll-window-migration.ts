@@ -6,6 +6,10 @@ import {
   parseHeroBrollWindowRequest,
 } from "../src/lib/broll-window-hero";
 import {
+  ProjectLookError,
+  sceneRerollUnavailablePayload,
+} from "../src/lib/project-visual-context";
+import {
   clearPendingBrollSceneReroll,
   readPendingBrollSceneReroll,
   writePendingBrollSceneReroll,
@@ -43,6 +47,28 @@ assert.match(
   route,
   /resolveProjectVisualPromptForVideoScene/,
   "Scene Reroll must compile the exact pinned Visual Beat instead of trusting a browser prompt",
+);
+const missingBeat = new ProjectLookError("PREFLIGHT_INCOMPLETE", "ไม่พบข้อมูลภาพสำหรับฉากที่ 20");
+assert.deepEqual(
+  sceneRerollUnavailablePayload(missingBeat),
+  { error: "scene_reroll_unavailable", message: "ไม่พบข้อมูลภาพสำหรับฉากที่ 20" },
+  "a window without a Visual Beat is an unavailable Scene Reroll, not a 500",
+);
+assert.equal(sceneRerollUnavailablePayload(new Error("boom")), null, "unrelated errors stay unmapped");
+assert.equal(
+  sceneRerollUnavailablePayload(new ProjectLookError("INVALID_LOOK", "แนวภาพนี้ไม่อยู่ใน V1")),
+  null,
+  "look-shape errors are not remapped as a missing scene",
+);
+assert.match(
+  route,
+  /sceneRerollUnavailablePayload/,
+  "the generate route must map ProjectLookError before it becomes an uncaught 500",
+);
+assert.match(
+  route,
+  /sceneRerollUnavailablePayload[\s\S]{0,400}status:\s*409/,
+  "a missing Visual Beat must respond 409 with the Thai ProjectLookError message",
 );
 assert.doesNotMatch(
   route,

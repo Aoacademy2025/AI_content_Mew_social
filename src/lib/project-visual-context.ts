@@ -118,6 +118,16 @@ export class ProjectLookError extends Error {
   }
 }
 
+/** Scene Reroll maps a missing/incomplete Visual Beat to 409, not an uncaught 500. */
+export function sceneRerollUnavailablePayload(error: unknown): {
+  error: "scene_reroll_unavailable";
+  message: string;
+} | null {
+  if (!(error instanceof ProjectLookError)) return null;
+  if (error.code !== "PREFLIGHT_INCOMPLETE" && error.code !== "NOT_FOUND") return null;
+  return { error: "scene_reroll_unavailable", message: error.message };
+}
+
 export function recipeFor(formatId: VisualFormatId): string {
   const format = SUPPORTED_VISUAL_FORMATS.find((item) => item.id === formatId);
   if (!format) throw new ProjectLookError("INVALID_LOOK", "แนวภาพนี้ไม่อยู่ใน V1");
