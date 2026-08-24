@@ -21,8 +21,11 @@ Status: code-ready, admin-only, deploy pending an empty render/voice queue.
    `/var/www/ai-content/uploads/user-voices`, or set an absolute persistent
    `USER_VOICE_STORAGE_DIR` owned by the application user.
 4. Keep `HERO_VOICE_CLONING_ENABLED=0` (or unset) for the code/schema deploy.
-5. Deploy normally. `prisma migrate deploy` applies only the additive
-   `UserVoice` migration.
+5. Deploy normally with `bash deploy/deploy.sh`. Production intentionally uses
+   drift-aware `prisma db push` for its legacy SQLite database; without
+   `--accept-data-loss`, this applies the additive `UserVoice` table or aborts
+   before build/restart. The checked-in migration remains the clean-database
+   and CI baseline.
 
 ## Private canary
 
