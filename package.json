@@ -98,7 +98,7 @@
     "verify:broll-window-management": "tsx scripts/verify-broll-window-management.ts && tsx scripts/verify-broll-pending-actions.ts && tsx scripts/verify-cutaway-plan.ts",
     "verify:ken-burns-aspect": "tsx scripts/verify-ken-burns-aspect.ts",
     "verify:omnivoice": "tsx scripts/verify-omnivoice.ts",
-    "verify:omnivoice-runpod": "python3 -m unittest discover -s services/omnivoice-runpod -p 'test_contract.py' && python3 -m py_compile services/omnivoice-runpod/contract.py services/omnivoice-runpod/handler.py",
+    "verify:omnivoice-runpod": "python3 -m unittest discover -s services/omnivoice-runpod -p 'test_contract.py' && python3 -m py_compile services/omnivoice-runpod/contract.py services/omnivoice-runpod/handler.py services/omnivoice-runpod/server.py services/omnivoice-runpod/text_utils.py services/omnivoice-runpod/voice_similarity.py services/omnivoice-runpod/voice_library.py services/omnivoice-runpod/credits.py services/omnivoice-runpod/engine_indextts.py",
     "verify:comfyui-z-image-runpod": "python3 -m unittest discover -s services/comfyui-z-image-runpod -p 'test_model_manifest.py' && python3 -m py_compile services/comfyui-z-image-runpod/test_model_manifest.py",
     "verify:hero-voice-ui": "tsx scripts/verify-hero-voice-ui.ts",
     "verify:hero-ai-broll": "tsx scripts/verify-hero-ai-broll.ts",

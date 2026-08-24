@@ -61,12 +61,16 @@ globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => 
       delayTime: 185_000,
       executionTime: 1_250,
       output: {
+        contract_version: 2,
+        mode: "tts",
         voice_id: "voice_01",
         audio_base64: wavBase64,
+        format: "wav",
         sample_rate: 24_000,
         generation_time: 1.1,
-        worker_version: "test-v11",
-        language: "th",
+        worker_version: "hero-voice-ai-v2-test",
+        catalog_version: "hero-voice-ai-v2-test-catalog",
+        language: "Thai",
         num_step: 32,
       },
     });
@@ -161,8 +165,11 @@ async function main() {
   );
 
   const runBody = JSON.parse(requests.find(({ url }) => url.endsWith("/run"))?.body ?? "{}");
+  assert.equal(runBody.input.contract_version, 2);
+  assert.equal(runBody.input.mode, "tts");
   assert.equal(runBody.input.voice_id, "voice_01");
   assert.equal(runBody.input.num_step, 32);
+  assert.equal(runBody.input.mixed_language, true);
 
   for (const job of await prisma.aiGenerationJob.findMany({
     where: { userId: user.id },

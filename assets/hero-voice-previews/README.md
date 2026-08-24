@@ -1,31 +1,11 @@
-# Hero AI Voice previews
+# Hero AI Voice v2 previews
 
-Authenticated, static previews for the fixed RunPod OmniVoice catalog. They are
-generated once so the Video Editor can play a sample without cold-starting a GPU,
-spending package minutes, or submitting a paid job on every click.
+Authenticated static previews for the 48 stock voices imported from Hero-Voice-Ai
+commit `565d0e62e1d4269099a4c3fba8a2ecef9167eeea` on 2026-08-24.
 
-Regenerate deliberately with:
-
-```bash
-RUNPOD_OMNIVOICE_ENDPOINT_ID=<endpoint> npm run generate:hero-voice-previews -- --apply --force
-```
-
-Generation settings: `language=th`, `num_step=8`, `speed=1`, 24 kHz mono PCM WAV.
-The audited worker raises `voice_06`, `voice_26`, `voice_32`, and `voice_33` to
-`num_step=16` automatically.
-The canonical 48-voice manifest lives at
-`services/omnivoice-runpod/assets/voices/voices.json`; both the worker image and
-application catalog consume it so their IDs cannot drift.
-
-Release-candidate generation on 2026-07-22 saved valid v2 outputs for 47 IDs.
-The original `voice_44` reference was rejected because a short Thai fixture expanded
-to about 50 seconds and was unintelligible. On 2026-07-23 it was replaced on staging
-with a bounded Voice Design recovery that retained the `male, very high pitch`
-profile. Its final clone preview is 5.84 seconds, 24 kHz mono PCM, and matched the
-canonical Thai fixture exactly in local Whisper screening (CER 0%).
-
-On 2026-07-23, the v8 amd64 staging candidate regenerated the audited catalog.
-Fifteen damaged, duplicate, or profile-mismatched references were replaced, and
-the final 48 references plus 48 previews passed the enforced structural, pitch,
-Thai ASR, clone-consistency, and two-model speaker-consensus gates with zero FAIL
-findings. Human listening remains required before any production cutover.
+The same WAV files are used as the worker's reference voices. They are committed in
+both locations deliberately: this directory is packaged with the Next.js application,
+while `services/omnivoice-runpod/assets/voices/` is the isolated Docker build context.
+Keeping the canonical filenames and transcripts in
+`services/omnivoice-runpod/assets/voices/voices.json` prevents the UI and worker catalogs
+from drifting without cold-starting a GPU for preview playback.
