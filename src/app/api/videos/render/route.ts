@@ -6,9 +6,16 @@ import { prisma } from "@/lib/prisma";
 import { checkClipQuota, reserveClipUsage } from "@/lib/usage-limits";
 import { checkMinuteQuota, minutesFromSeconds } from "@/lib/minute-limits";
 import { reserveMinutesOrCredits, refundReservation } from "@/lib/minute-credits";
+import { serializeCreditFunding } from "@/lib/credits";
 import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
 import { rerenderSkipEligible } from "@/lib/broll-rerender";
 import { parseVideoJobOutput } from "@/lib/mcp/video-job";
+import {
+  markTransferredVideoJobFundingRefunded,
+  transferVideoJobFundingToRender,
+  VideoJobFundingConfirmationRequiredError,
+} from "@/lib/mcp/video-job-funding";
+import { resolveServiceVideoJobId } from "@/lib/mcp/service-actor";
 import path from "path";
 import fs from "fs";
 import { randomBytes } from "crypto";
@@ -28,7 +35,7 @@ import { resolveMediaBaseUrl } from "@/lib/render/media-base-url";
 import { enqueueRenderJob, supersedeScope } from "@/lib/render/job-store";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import { normalizeHeadlineHook } from "@/lib/headline-hook";
-import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
+import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import {
   activeRenderCancel,
   cancelByJobId,
@@ -287,15 +294,18 @@ export async function POST(req: Request) {
   // the credit branch and these stay null).
   let creditsSpent: number | null = null;
   let creditBalanceAfter: number | null = null;
-  // Granted-bucket portion of an overflow credit spend (rest came from purchased). Threaded
+  // Legacy monthly-bucket portion plus exact promo/purchased funding snapshot. Threaded
   // into every refund path + persisted on the queued RenderJob so a refund restores the SAME
   // buckets the spend drained (H3). Stays null on the minute/clip path (CREDITS_LIVE off too).
   let creditsFromGranted: number | null = null;
+  let creditsFromPromotional: number | null = null;
+  let creditFundingJson: string | null = null;
+  let transferredVideoJobId: string | null = null;
   // Minute-quota flag (default OFF → byte-identical clip-cap behavior). When ON, the
   // unit reserved/refunded/recorded is whole minutes-by-output-duration instead of clips.
   const useMinuteQuota = process.env.MINUTE_QUOTA === "1";
   // Credit-overflow flag (default OFF → byte-identical). When ON, an out-of-minutes
-  // reserve silently spends purchased credits instead of walling.
+  // reserve spends available wallet credits in expiry order instead of walling.
   const creditsLive = process.env.CREDITS_LIVE === "1";
   // Minutes to reserve, computed once the output duration is known (after
   // requestedDurationSec below, before the reserve). Initialized to 0 only to keep it
@@ -562,10 +572,36 @@ export async function POST(req: Request) {
     // leak quota permanently). An UNPAID burn (external / foreign / fabricated source)
     // is NOT skipped: it reserves like a normal render — no free-render bypass. Both the
     // legacy and queue paths share this single gate.
+    let transferredFunding = false;
+    if (
+      !burnAlreadyPaid
+      && !rerenderSkipCharge
+      && useMinuteQuota
+      && typeof parentJobId === "string"
+      && parentJobId
+      && (await resolveServiceVideoJobId(userId)) === parentJobId
+    ) {
+      const transfer = await transferVideoJobFundingToRender(parentJobId, userId, reservedMinutes);
+      if (transfer.transferred) {
+        transferredFunding = true;
+        transferredVideoJobId = parentJobId;
+        quotaReserved = true;
+        reservedUserId = userId;
+        creditsSpent = transfer.creditsSpent || null;
+        creditsFromGranted = transfer.creditsFromGranted || null;
+        creditsFromPromotional = transfer.creditsFromPromotional || null;
+        creditFundingJson = transfer.creditFundingJson;
+        creditBalanceAfter = transfer.creditBalanceAfter;
+      }
+    }
+
     if (burnAlreadyPaid || rerenderSkipCharge) {
       // FREE: a burn of this user's own paid render, OR a server-trusted b-roll re-render of an
       // already-paid clip (rerenderSkipCharge) — never reserve, never block. quotaReserved stays
       // false, so every refund path below (in-flight + setup-error) also skips (nothing to refund).
+    } else if (transferredFunding) {
+      // createVideoJob already reserved this exact confirmed amount. Ownership
+      // moved to this render; do not reserve it a second time.
     } else if (useMinuteQuota) {
       // Reserve minutes; with CREDITS_LIVE on, silently overflow to credits when the
       // monthly minute quota is exhausted. CREDITS_LIVE off → reserveMinutesOrCredits
@@ -575,12 +611,14 @@ export async function POST(req: Request) {
       if (!result.allowed) return quotaExceededResponse(result.message ?? "โควต้านาทีรอบนี้ใช้ครบแล้ว", { canBuyCredits: creditsLive });
       quotaReserved = true;
       reservedUserId = userId;
-      if (result.via === "credits") {
-        // Funded by credits (minute meter untouched). Carry the spend, the bucket split
-        // (granted-first) for an exact bucket-aware refund, and the post-spend balance for
-        // the receipt surfaced on the job.
+      if (result.via === "credits" || result.via === "mixed") {
+        // Carry the overflow spend for both all-credit and mixed minute+credit jobs.
+        // refundReservation derives the included-minute portion from the total metered
+        // minutes and this spend, so a failed mixed job restores BOTH meters exactly.
         creditsSpent = result.creditsSpent;
         creditsFromGranted = result.fromGranted;
+        creditsFromPromotional = result.fromPromotional;
+        creditFundingJson = serializeCreditFunding(result);
         creditBalanceAfter = result.balanceAfter;
       }
     } else {
@@ -1058,6 +1096,8 @@ export async function POST(req: Request) {
         // Granted-bucket portion of that spend → RenderJob.creditsFromGranted, so a queue-side
         // refund (failRenderJob/supersedeScope) restores the SAME buckets (H3). Null → undefined.
         creditsFromGranted: creditsFromGranted ?? undefined,
+        creditsFromPromotional: creditsFromPromotional ?? undefined,
+        creditFundingJson: creditFundingJson ?? undefined,
         // Scope identity for cross-process supersession (null when no jobScopeId).
         // Applied to both RENDER and BURN: supersede only targets QUEUED/RUNNING of the
         // same scope, so a sequential RENDER→BURN is unaffected (prior step is DONE).
@@ -1105,11 +1145,22 @@ export async function POST(req: Request) {
         // (MINUTE_QUOTA on → reservedMinutes) → refundMinutes; else (clips-mode/flag-off)
         // → refundClipUsage. With CREDITS_LIVE off, creditsSpent stays null, so this is
         // identical to the prior refundMinutes/refundClipUsage branch.
-        await refundReservation(
-          userId,
-          { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent, creditsFromGranted },
-          `render-refund:${jobId}`
-        ).catch(() => {});
+        try {
+          await refundReservation(
+            userId,
+            {
+              reservedMinutes: useMinuteQuota ? reservedMinutes : null,
+              creditsSpent,
+              creditsFromGranted,
+              creditsFromPromotional,
+              creditFundingJson,
+            },
+            `render-refund:${jobId}`,
+          );
+          if (transferredVideoJobId) {
+            await markTransferredVideoJobFundingRefunded(transferredVideoJobId, userId);
+          }
+        } catch {}
       };
       const stopSupersededJob = async (stage: string) => {
         if (latestJobPerRenderScope.get(renderOwnerKey) === jobId) return false;
@@ -1347,17 +1398,47 @@ export async function POST(req: Request) {
       // creditsSpent null → identical to the prior refundMinutes/refundClipUsage branch.
       const refund = () => refundReservation(
         reservedUserId!,
-        { reservedMinutes: useMinuteQuota ? reservedMinutes : null, creditsSpent, creditsFromGranted },
+        {
+          reservedMinutes: useMinuteQuota ? reservedMinutes : null,
+          creditsSpent,
+          creditsFromGranted,
+          creditsFromPromotional,
+          creditFundingJson,
+        },
         "render-setup-refund",
       );
+      let refunded = false;
       if (error instanceof RenderDeployDrainError) {
-        await error.refundOnce(refund).catch(() => {});
+        await error.refundOnce(async () => {
+          await refund();
+          refunded = true;
+        }).catch(() => {});
       } else {
-        await refund().catch(() => {});
+        await refund().then(() => { refunded = true; }).catch(() => {});
+      }
+      if (refunded && transferredVideoJobId) {
+        await markTransferredVideoJobFundingRefunded(
+          transferredVideoJobId,
+          reservedUserId,
+        ).catch(() => {});
       }
     }
     if (error instanceof RenderDeployDrainError) {
-      return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });
+      return NextResponse.json(
+        { error: "render_maintenance", retryable: true, message: RENDER_MAINTENANCE_CUSTOMER_MESSAGE },
+        { status: 503 },
+      );
+    }
+    if (error instanceof VideoJobFundingConfirmationRequiredError) {
+      return NextResponse.json(
+        {
+          error: error.code,
+          message: error.message,
+          confirmedMinutes: error.confirmedMinutes,
+          actualMinutes: error.actualMinutes,
+        },
+        { status: 409 },
+      );
     }
     if (error instanceof BrollCoverageError) {
       return NextResponse.json(

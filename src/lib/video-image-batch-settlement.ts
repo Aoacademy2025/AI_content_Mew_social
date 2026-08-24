@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { parseCreditFunding, refundCreditsInTransaction } from "@/lib/credits";
 import {
   restoreSettledStarterAiImageAllowance,
   settleStarterAiImageAllowance,
@@ -59,27 +60,19 @@ export async function refundSettledVideoImageJob(input: {
       });
       return { refunded: true, refundedCredits: 0 };
     }
-    const restored = await tx.creditBalance.upsert({
-      where: { userId: input.userId },
-      create: {
-        userId: input.userId,
-        granted: job.creditsFromGranted,
-        purchased: job.creditsFromPurchased,
-      },
-      update: {
-        granted: { increment: job.creditsFromGranted },
-        purchased: { increment: job.creditsFromPurchased },
-      },
-    });
-    await tx.creditLedger.create({
-      data: {
-        userId: input.userId,
-        delta: job.creditCost,
-        kind: "refund",
-        action: `ai-image-output-refund:${job.id}:${reason}`,
-        balanceAfter: restored.granted + restored.purchased,
-      },
-    });
+    const funding = parseCreditFunding(job.creditFundingJson, {
+      fromGranted: job.creditsFromGranted,
+      fromPromotional: job.creditsFromPromotional,
+      fromPurchased: job.creditsFromPurchased,
+    }, job.creditCost);
+    await refundCreditsInTransaction(
+      tx,
+      input.userId,
+      funding.fromGranted,
+      funding.fromPurchased,
+      `ai-image-output-refund:${job.id}:${reason}`,
+      funding.promotionalDebits,
+    );
     return { refunded: true, refundedCredits: job.creditCost };
   });
 }
@@ -97,6 +90,7 @@ export async function refundSettledVideoImageBatch(input: {
   refundedJobs: number;
   refundedCredits: number;
   creditsFromGranted: number;
+  creditsFromPromotional: number;
   creditsFromPurchased: number;
 }> {
   // Every image charged to a video shares the `video:<jobId>:` idempotency namespace
@@ -119,6 +113,7 @@ export async function refundSettledVideoImageBatch(input: {
     let refundedJobs = 0;
     let refundedCredits = 0;
     let creditsFromGranted = 0;
+    let creditsFromPromotional = 0;
     let creditsFromPurchased = 0;
 
     for (const job of jobs) {
@@ -175,37 +170,31 @@ export async function refundSettledVideoImageBatch(input: {
         continue;
       }
 
-      const restored = await tx.creditBalance.upsert({
-        where: { userId: input.userId },
-        create: {
-          userId: input.userId,
-          granted: job.creditsFromGranted,
-          purchased: job.creditsFromPurchased,
-        },
-        update: {
-          granted: { increment: job.creditsFromGranted },
-          purchased: { increment: job.creditsFromPurchased },
-        },
-      });
-      await tx.creditLedger.create({
-        data: {
-          userId: input.userId,
-          delta: job.creditCost,
-          kind: "refund",
-          action: `ai-image-batch-refund:${job.id}:${reason}`,
-          balanceAfter: restored.granted + restored.purchased,
-        },
-      });
+      const funding = parseCreditFunding(job.creditFundingJson, {
+        fromGranted: job.creditsFromGranted,
+        fromPromotional: job.creditsFromPromotional,
+        fromPurchased: job.creditsFromPurchased,
+      }, job.creditCost);
+      await refundCreditsInTransaction(
+        tx,
+        input.userId,
+        funding.fromGranted,
+        funding.fromPurchased,
+        `ai-image-batch-refund:${job.id}:${reason}`,
+        funding.promotionalDebits,
+      );
       refundedJobs += 1;
       refundedCredits += job.creditCost;
-      creditsFromGranted += job.creditsFromGranted;
-      creditsFromPurchased += job.creditsFromPurchased;
+      creditsFromGranted += funding.fromGranted;
+      creditsFromPromotional += funding.fromPromotional;
+      creditsFromPurchased += funding.fromPurchased;
     }
 
     return {
       refundedJobs,
       refundedCredits,
       creditsFromGranted,
+      creditsFromPromotional,
       creditsFromPurchased,
     };
   });

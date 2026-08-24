@@ -122,6 +122,34 @@ export async function recordTelemetryEvent(userId: string | null, input: Telemet
   });
 }
 
+/** Record a server-owned event exactly once across concurrent workers. */
+export async function recordTelemetryEventOnce(
+  userId: string | null,
+  dedupeKey: string,
+  input: TelemetryInput,
+) {
+  const key = dedupeKey.trim();
+  if (!key || key.length > 240) throw new Error("Telemetry dedupe key is invalid");
+  return prisma.telemetryEvent.upsert({
+    where: { dedupeKey: key },
+    update: {},
+    create: {
+      dedupeKey: key,
+      userId,
+      sessionId: input.sessionId ?? null,
+      name: input.name,
+      category: input.category ?? "product",
+      source: input.source ?? "client",
+      path: input.path ?? null,
+      step: input.step ?? null,
+      status: input.status ?? null,
+      durationMs: input.durationMs ?? null,
+      value: input.value ?? null,
+      properties: serializeTelemetryProperties(input.properties),
+    },
+  });
+}
+
 export async function recordTelemetryBatch(userId: string | null, events: TelemetryInput[]) {
   if (events.length === 0) return { count: 0 };
   await prisma.telemetryEvent.createMany({

@@ -110,6 +110,7 @@ export default function DashboardPage() {
   const [userName, setUserName] = useState("");
   const [role, setRole] = useState<Role>("USER");
   const [internalAiTester, setInternalAiTester] = useState(false);
+  const [trialEndsAt, setTrialEndsAt] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/user/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
@@ -117,6 +118,7 @@ export default function DashboardPage() {
       if (d?.name) setUserName(d.name);
       if (d?.role === "ADMIN" || d?.role === "USER") setRole(d.role);
       setInternalAiTester(d?.internalAiTester === true);
+      setTrialEndsAt(typeof d?.trialEndsAt === "string" ? d.trialEndsAt : null);
     }).catch(() => {});
   }, []);
 
@@ -124,7 +126,8 @@ export default function DashboardPage() {
   const isBusiness = stats?.plan === "BUSINESS";
   const isPro = stats?.plan === "PRO";
   const isPaid = isPro || isBusiness;
-  const planLabel = isBusiness ? "Business Plan" : isPro ? "Pro Plan" : "Free Plan";
+  const isActiveTrial = Boolean(trialEndsAt && new Date(trialEndsAt).getTime() > Date.now());
+  const planLabel = isActiveTrial ? "ทดลอง PRO" : isBusiness ? "Business Plan" : isPro ? "Pro Plan" : "Free Plan";
 
   const atStyleLimit = !isPaid && stats ? stats.styleCount >= (stats.limits?.styles ?? Infinity) : false;
   const atContentLimit = !isPaid && stats ? stats.contentCount >= (stats.limits?.contents ?? Infinity) : false;

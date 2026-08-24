@@ -99,13 +99,12 @@ async function testHeyGen(key: string): Promise<{ ok: boolean; message: string }
 // job-submit preflight guard (Task 7, 2026-07-16 stability audit) so the ElevenLabs
 // scoped-key logic and Pexels check exist in exactly one place. This "Test key" button
 // is a deliberate user click (not a fast-fail gate), so give it a longer budget than the
-// preflight's 3s — 12s comfortably covers ElevenLabs' occasionally slow /v1/user. Mode
-// defaults to "settings" (unchanged historical behavior: a scoped "missing_permissions"
-// key on /v1/user is trusted as valid without a further call) — see `ElevenLabsCheckMode`
-// in key-preflight.ts for how the job-submit preflight differs (2nd review round, 2026-07-17).
+// preflight's 3s — 12s comfortably covers ElevenLabs' occasionally slow /v1/user.
+// Mode is "preflight": a scoped key missing text_to_speech must fail here the same way
+// job-submit fails, not show a green check (support ticket 2026-08-22).
 const SETTINGS_TEST_TIMEOUT_MS = 12_000;
 async function testElevenLabs(key: string): Promise<{ ok: boolean; message: string }> {
-  const r = await testElevenLabsKey(key, { timeoutMs: SETTINGS_TEST_TIMEOUT_MS });
+  const r = await testElevenLabsKey(key, { timeoutMs: SETTINGS_TEST_TIMEOUT_MS, mode: "preflight" });
   return { ok: r.ok, message: r.message };
 }
 

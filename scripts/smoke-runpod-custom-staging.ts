@@ -82,11 +82,13 @@ function buildPayload(): Record<string, unknown> {
   if (mode === "omnivoice") {
     return {
       input: {
-        op: "tts",
+        contract_version: 2,
+        mode: "tts",
         text: "สวัสดีค่ะ นี่คือการทดสอบเสียงจากระบบฮีโร่เอไอ",
         voice_id: "voice_01",
         num_step: 32,
         speed: 1,
+        mixed_language: true,
       },
     };
   }

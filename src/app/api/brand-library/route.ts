@@ -11,6 +11,7 @@ import {
   VISUAL_FORMATS,
   brandLookIdentityKey,
   brandVisualIdentityKey,
+  isActiveVisualFormatId,
   type BrandVisualLanguage,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
@@ -18,6 +19,8 @@ import { currentBrandVoiceDefaults } from "@/lib/brand-profile-seed";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
+import { TREATMENT_PRESETS } from "@/lib/brand-treatment-catalog";
+import { visualFormatPreviewUrl } from "@/lib/brand-visual-format-preview";
 
 function json(value: string | null | undefined) {
   if (!value) return null;
@@ -27,6 +30,13 @@ function json(value: string | null | undefined) {
 function stringList(value: string | null | undefined): string[] {
   const parsed = json(value);
   return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+}
+
+function revisionHasActiveVisualFormat(value: string | null | undefined): boolean {
+  const parsed = json(value);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  const visualFormatId = (parsed as Record<string, unknown>).visualFormatId;
+  return typeof visualFormatId === "string" && isActiveVisualFormatId(visualFormatId);
 }
 
 function profileError(error: unknown) {
@@ -87,6 +97,7 @@ export async function GET() {
         sampleText: profile.sampleText,
         activeRevisionNumber: profile.activeRevisionNumber,
         activeRevisionId: profile.revisions[0]?.id ?? null,
+        legacyVisualFormat: !revisionHasActiveVisualFormat(profile.revisions[0]?.visualRecipeJson),
         frozen: availabilitySelectionRequired || availability.frozenProfileIds.includes(profile.id),
         frozenAt: profile.frozenAt,
         lastUsedAt: profile.lastUsedAt,
@@ -112,7 +123,11 @@ export async function GET() {
       canRestoreAll: false,
       visualFormats: VISUAL_FORMATS.map((format) => ({
         ...format,
-        previewUrl: `/brand-visual-formats/${format.id}.webp`,
+        previewUrl: visualFormatPreviewUrl(format.id),
+      })),
+      treatmentPresets: TREATMENT_PRESETS.map((preset) => ({
+        id: preset.id,
+        label: preset.thaiLabel,
       })),
       subtitlePresets: subtitlePresets.map((preset) => ({
         id: preset.id,

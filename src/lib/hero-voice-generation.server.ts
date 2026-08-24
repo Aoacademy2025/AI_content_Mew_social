@@ -44,6 +44,7 @@ type HeroVoiceChunkState = {
   delayTimeMs?: number;
   executionTimeMs?: number;
   workerVersion?: string;
+  catalogVersion?: string;
   language?: string;
   numStep?: number;
 };
@@ -638,6 +639,7 @@ async function finalizeVoiceJob(job: AiGenerationJob, state: HeroVoiceGeneration
       backend: state.backend,
       numStep: [...new Set(state.chunks.map((chunk) => chunk.numStep).filter((value) => value !== undefined))].join(","),
       workerVersions: [...new Set(state.chunks.map((chunk) => chunk.workerVersion).filter(Boolean))].join(","),
+      catalogVersions: [...new Set(state.chunks.map((chunk) => chunk.catalogVersion).filter(Boolean))].join(","),
       languageHints: [...new Set(state.chunks.map((chunk) => chunk.language).filter(Boolean))].join(","),
       segments: state.chunks.length,
       speechNormalizerVersion: state.speechNormalizerVersion,
@@ -779,6 +781,7 @@ export async function advanceHeroVoiceGeneration(userId: string, jobId: string):
           delayTimeMs: snapshot.delayTimeMs,
           executionTimeMs: snapshot.executionTimeMs,
           workerVersion: snapshot.response.worker_version,
+          catalogVersion: snapshot.response.catalog_version,
           language: snapshot.response.language,
           numStep: snapshot.response.num_step,
         }

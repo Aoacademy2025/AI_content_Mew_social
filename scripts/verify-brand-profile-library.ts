@@ -10,6 +10,7 @@ execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.e
 
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
+  const { CONTENT_PREFLIGHT_ANALYZER_VERSION } = await import("../src/lib/content-preflight.server");
   const {
     archiveBrandProfile,
     applyProjectBrandRevision,
@@ -21,13 +22,13 @@ async function main() {
     pinProjectBrandRevision,
     promoteCompletedVideoJobToBrandProfile,
     promoteProjectLookToBrandProfile,
+    resolveBrandProfileRevisionForNewProjectInTransaction,
     isVersionedBrandProfile,
     publishBrandProfileDraft,
     reconcileBrandProfileAvailability,
     saveBrandProfileDraft,
+    storedBrandProfilePayloadSchema,
   } = await import("../src/lib/brand-profile-library.server");
-  const { prepareProjectVisualPin } = await import("../src/lib/project-look.server");
-
   const user = await prisma.user.create({
     data: { name: "Brand owner", email: "brand-owner@example.test", plan: "PRO" },
   });
@@ -65,7 +66,7 @@ async function main() {
     },
     brandMark: { assetId: null, enabled: true, position: "top-right", sizePct: 18, opacity: 0.9 },
     visual: {
-      primaryVisualFormatId: "stick-figure-story" as const,
+      primaryVisualFormatId: "simple-editorial-story" as const,
       palette: ["#111111", "#F8F5EE", "#38BDF8"],
       personality: "bold raw energetic",
       peopleAndSetting: "Thai creator contexts",
@@ -74,6 +75,118 @@ async function main() {
       defaultTreatment: "clear and energetic",
     },
   };
+
+  const descriptivePalettePayload = {
+    ...basePayload,
+    visual: {
+      ...basePayload.visual,
+      palette: [
+        "high-contrast carbon black",
+        "warm paper white",
+        "vivid sky blue #38BDF8 used only as a sharp accent",
+      ],
+    },
+  };
+  assert.equal(
+    brandProfilePayloadSchema.safeParse(descriptivePalettePayload).success,
+    false,
+    "creator writes must reject descriptive palette prose before it reaches a Draft or Revision",
+  );
+  const canonicalPalettePayload = brandProfilePayloadSchema.parse({
+    ...basePayload,
+    visual: { ...basePayload.visual, palette: ["#abc", "38bdf8"] },
+  });
+  assert.deepEqual(
+    canonicalPalettePayload.visual.palette,
+    ["#AABBCC", "#38BDF8"],
+    "creator writes canonicalize accepted short/lowercase HEX values",
+  );
+  assert.deepEqual(
+    storedBrandProfilePayloadSchema.parse(descriptivePalettePayload).visual.palette,
+    descriptivePalettePayload.visual.palette,
+    "immutable historical Revisions with descriptive palettes remain readable byte-for-byte",
+  );
+
+  const legacyFormatUser = await prisma.user.create({
+    data: { name: "Legacy format owner", email: "legacy-format@example.test", plan: "BUSINESS" },
+  });
+  const legacyFormatPayload = {
+    ...basePayload,
+    name: "Historical stick format",
+    visual: {
+      ...basePayload.visual,
+      primaryVisualFormatId: "stick-figure-story" as const,
+    },
+  };
+  const legacyFormatProfile = await prisma.brandProfile.create({
+    data: {
+      userId: legacyFormatUser.id,
+      name: legacyFormatPayload.name,
+      niche: legacyFormatPayload.niche,
+      audience: legacyFormatPayload.audience,
+      tone: legacyFormatPayload.script.tone,
+      activeRevisionNumber: 1,
+      revisions: {
+        create: {
+          version: 1,
+          payloadJson: JSON.stringify(legacyFormatPayload),
+          visualRecipeJson: JSON.stringify({
+            visualFormatId: "stick-figure-story",
+            recipeVersion: "stick-figure-story-v6",
+            brandVisualLanguage: legacyFormatPayload.visual,
+            defaultTreatment: legacyFormatPayload.visual.defaultTreatment,
+            treatmentPolicy: "adaptive",
+            lockedTreatmentPin: null,
+          }),
+        },
+      },
+    },
+    include: { revisions: true },
+  });
+  const legacyFormatRevision = legacyFormatProfile.revisions[0]!;
+  const historicallyPinnedProject = await prisma.editorProject.create({
+    data: {
+      userId: legacyFormatUser.id,
+      title: "Historical stick project",
+      brandProfileRevisionId: legacyFormatRevision.id,
+    },
+  });
+  const replayedLegacyPin = await pinProjectBrandRevision({
+    userId: legacyFormatUser.id,
+    projectId: historicallyPinnedProject.id,
+    profileId: legacyFormatProfile.id,
+    revisionId: legacyFormatRevision.id,
+  });
+  assert.equal(
+    replayedLegacyPin.revision.id,
+    legacyFormatRevision.id,
+    "an exact historical stick-format pin remains readable and replayable",
+  );
+  const unpinnedLegacyFormatProject = await prisma.editorProject.create({
+    data: { userId: legacyFormatUser.id, title: "New project cannot adopt retired format" },
+  });
+  await assert.rejects(
+    pinProjectBrandRevision({
+      userId: legacyFormatUser.id,
+      projectId: unpinnedLegacyFormatProject.id,
+      profileId: legacyFormatProfile.id,
+      revisionId: legacyFormatRevision.id,
+    }),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "code" in error && error.code === "FROZEN"
+    ),
+    "a retired stick-format Revision cannot be newly pinned to another project",
+  );
+  await assert.rejects(
+    prisma.$transaction((tx) => resolveBrandProfileRevisionForNewProjectInTransaction(tx, {
+      userId: legacyFormatUser.id,
+      profileId: legacyFormatProfile.id,
+    })),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "code" in error && error.code === "FROZEN"
+    ),
+    "new-project handoff cannot silently adopt a retired format from an old Brand Profile",
+  );
 
   const legacyCapUser = await prisma.user.create({
     data: { name: "Legacy cap owner", email: "legacy-cap@example.test", plan: "FREE" },
@@ -175,7 +288,7 @@ async function main() {
       sourceHash: "promotion-source-v1",
       analyzerVersion: "brand-content-preflight-v2-windowed",
       contentDomain: "creator education",
-      suggestedVisualFormatId: "stick-figure-story",
+      suggestedVisualFormatId: "simple-editorial-story",
       suggestedTreatmentJson: JSON.stringify({ label: "energetic", mood: "direct" }),
       visualBeats: {
         create: {
@@ -196,8 +309,8 @@ async function main() {
       contentPreflightId: promotionPreflight.id,
       projectVisualContextJson: JSON.stringify({
         source: "suggested",
-        visualFormatId: "stick-figure-story",
-        recipeVersion: "stick-figure-story-v2",
+        visualFormatId: "simple-editorial-story",
+        recipeVersion: "simple-editorial-story-v7",
         treatment: "energetic and direct",
         brandVisualLanguage: null,
       }),
@@ -293,7 +406,7 @@ async function main() {
       sourceHash: "starter-promotion-source-v1",
       analyzerVersion: "brand-content-preflight-v3-stable-windows",
       contentDomain: "creator education",
-      suggestedVisualFormatId: "stick-figure-story",
+      suggestedVisualFormatId: "simple-editorial-story",
       suggestedTreatmentJson: JSON.stringify({ label: "energetic", mood: "direct" }),
       visualBeats: {
         create: {
@@ -314,8 +427,8 @@ async function main() {
       contentPreflightId: starterPromotionPreflight.id,
       projectVisualContextJson: JSON.stringify({
         source: "suggested",
-        visualFormatId: "stick-figure-story",
-        recipeVersion: "stick-figure-story-v2",
+        visualFormatId: "simple-editorial-story",
+        recipeVersion: "simple-editorial-story-v7",
         treatment: "energetic and direct",
         brandVisualLanguage: null,
       }),
@@ -376,7 +489,7 @@ async function main() {
       sourceHash: "pre-render-promotion-v1",
       analyzerVersion: "brand-content-preflight-v2-windowed",
       contentDomain: "creator education",
-      suggestedVisualFormatId: "stick-figure-story",
+      suggestedVisualFormatId: "simple-editorial-story",
       suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "direct" }),
       visualBeats: {
         create: {
@@ -497,10 +610,18 @@ async function main() {
       projectId: project.id,
       narrativeSourceKind: "creator-script",
       sourceHash: "brand-revision-apply-v1",
-      analyzerVersion: "brand-content-preflight-v2-windowed",
+      analyzerVersion: CONTENT_PREFLIGHT_ANALYZER_VERSION,
       contentDomain: "creator education",
+      dominantNarrativeMode: "continuous practical explanation",
       suggestedVisualFormatId: "clear-infographic",
       suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "calm" }),
+      suggestedTreatmentPresetId: "expert-clarity",
+      suggestedTreatmentPresetVersion: "v1.0.0",
+      rankedTreatmentPresetIdsJson: JSON.stringify([
+        "expert-clarity", "practical-documentary", "modern-business-technology",
+      ]),
+      treatmentRecommendationRationale: "The whole source is a practical explanation.",
+      storyEntitiesJson: "[]",
       visualBeats: {
         create: {
           userId: user.id,
@@ -534,36 +655,26 @@ async function main() {
     revisionOne.id,
     "a rejected Brand Revision change cannot partially move the immutable project pin",
   );
-  const mixedRevision = await applyProjectBrandRevision({
-    userId: user.id,
-    projectId: project.id,
-    profileId: profile.id,
-    revisionId: revisionTwo.id,
-    preflightId: applyPreflight.id,
-    applyMode: "new-only",
-  });
-  assert.equal(mixedRevision.project.brandProfileRevisionId, revisionTwo.id);
-  assert.equal(
-    (await prisma.projectVisualBeat.findFirstOrThrow({ where: { preflightId: applyPreflight.id } })).status,
-    "current",
-    "new-only keeps the old-style asset explicitly reusable",
-  );
-  await prepareProjectVisualPin({
-    userId: user.id,
-    projectId: project.id,
-    preflightId: applyPreflight.id,
-    sourceHashes: [applyPreflight.sourceHash],
-  });
-  assert.equal(
-    (await prisma.projectVisualBeat.findFirstOrThrow({ where: { preflightId: applyPreflight.id } })).status,
-    "current",
-    "acceptance uses the same per-video Suggested Treatment identity and cannot undo new-only",
+  await assert.rejects(
+    applyProjectBrandRevision({
+      userId: user.id,
+      projectId: project.id,
+      profileId: profile.id,
+      revisionId: revisionTwo.id,
+      preflightId: applyPreflight.id,
+      applyMode: "new-only" as never,
+    }),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "code" in error
+      && error.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED"
+    ),
+    "a Brand revision cannot apply only to future images",
   );
   await applyProjectBrandRevision({
     userId: user.id,
     projectId: project.id,
     profileId: profile.id,
-    revisionId: revisionOne.id,
+    revisionId: revisionTwo.id,
     preflightId: applyPreflight.id,
     applyMode: "regenerate-all",
   });
@@ -750,9 +861,10 @@ async function main() {
   const legacyRouteSource = readFileSync("src/app/api/brand-profiles/[id]/route.ts", "utf8");
   assert.ok(
     legacyRouteSource.match(/export async function PUT[\s\S]*isVersionedBrandProfile/)
-      && legacyRouteSource.match(/export async function DELETE[\s\S]*isVersionedBrandProfile/)
+      && legacyRouteSource.match(/export async function DELETE[\s\S]*archiveBrandProfile/)
+      && !legacyRouteSource.match(/export async function DELETE[\s\S]*prisma\.brandProfile\.deleteMany/)
       && legacyRouteSource.includes("VERSIONED_PROFILE_READ_ONLY"),
-    "legacy edit/delete surfaces must preserve immutable Revision history and project pins",
+    "legacy edits stay read-only while deletes archive without destroying Revision history or project pins",
   );
   const libraryRouteSource = readFileSync("src/app/api/brand-library/route.ts", "utf8");
   assert.ok(
@@ -941,8 +1053,10 @@ async function main() {
     "the post-result save prompt carries the completed VideoJob identity");
   assert.match(videoJobRouteSource, /contentPreflightId:\s*true/,
     "the owner-only job poll exposes exact completed Content Preflight lineage");
-  assert.match(videoJobRouteSource, /projectVisualContextJson:\s*true[\s\S]+projectVisualContext:/,
+  assert.match(videoJobRouteSource, /projectVisualContextJson:\s*true[\s\S]+projectVisualContext(?:,|:)/,
     "the owner-only job poll exposes the completed clip's immutable visual snapshot");
+  assert.match(videoJobRouteSource, /sceneRerollCapability:\s*resolveSceneRerollCapability/,
+    "the same immutable snapshot drives the job-specific Scene Reroll capability");
   assert.match(brandLibraryPageSource, /sourceJob\.projectVisualContext/,
     "post-result Brand promotion seeds from the completed job snapshot, not mutable project state");
   assert.ok(
@@ -975,6 +1089,12 @@ async function main() {
     libraryRouteSource,
     /activeRevisionId:\s*profile\.revisions\[0\]\?\.id\s*\?\?\s*null/,
     "the Editor library response exposes the exact latest immutable Revision id",
+  );
+  assert.ok(
+    libraryRouteSource.includes("legacyVisualFormat")
+      && brandSelectorSource.includes("profile.legacyVisualFormat")
+      && brandSelectorSource.includes("รุ่นเดิม · เลือกใช้กับงานใหม่ไม่ได้"),
+    "the Editor marks retired-format profiles as historical and disables new selection",
   );
   assert.ok(
     brandSelectorSource.includes("ใช้รุ่นล่าสุดกับคลิปนี้")

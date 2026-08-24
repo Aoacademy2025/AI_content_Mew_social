@@ -3,11 +3,27 @@ import "server-only";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import {
+  GENERIC_TREATMENT_PLACEHOLDER,
+  TREATMENT_PRESET_IDS,
+  catalogTreatmentPinForVersion,
+  createCatalogTreatmentPin,
+  isGenericTreatmentPlaceholder,
+  treatmentPinSchema,
+  treatmentPromptDirection,
+  treatmentPresetThaiLabel,
+  type TreatmentPin,
+  type TreatmentPinSource,
+  type TreatmentPresetId,
+} from "@/lib/brand-treatment-catalog";
+import {
+  SUPPORTED_VISUAL_FORMAT_IDS,
   VISUAL_FORMAT_IDS,
   brandLookIdentityKey,
   brandVisualIdentityKey,
   compileBrandVisualPrompt,
+  type ActiveVisualFormatId,
   type CompiledBrandVisualPrompt,
+  type SceneRenderingDirection,
   type VisualBeat,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
@@ -29,24 +45,37 @@ import {
 import { prisma } from "@/lib/prisma";
 import { reusableProjectVisualAssets } from "@/lib/project-visual-assets.server";
 import { hydrateBrandVisualJobAcceptanceReuse } from "@/lib/brand-visual-job-acceptance.server";
+import { CONTENT_PREFLIGHT_ANALYZER_VERSION } from "@/lib/content-preflight.server";
 
 const pendingUploadVisualContextSchema = z.discriminatedUnion("selection", [
   z.object({
     schemaVersion: z.literal(1),
-    state: z.literal("awaiting-upload-preflight"),
+    state: z.enum(["awaiting-upload-preflight", "awaiting-content-preflight"]),
     selection: z.literal("suggested"),
+    narrativeSourceKind: z.enum(["ai-script", "creator-script", "upload-transcript"]).optional(),
   }),
   z.object({
     schemaVersion: z.literal(1),
-    state: z.literal("awaiting-upload-preflight"),
+    state: z.enum(["awaiting-upload-preflight", "awaiting-content-preflight"]),
     selection: z.literal("brand-revision"),
+    narrativeSourceKind: z.enum(["ai-script", "creator-script", "upload-transcript"]).optional(),
+    visualFormatId: z.enum(SUPPORTED_VISUAL_FORMAT_IDS),
+    recipeVersion: z.string().min(1),
+    brandVisualLanguage: brandLanguageSchema.nullable(),
+    treatmentPin: treatmentPinSchema.nullable().optional(),
+  }),
+  z.object({
+    schemaVersion: z.literal(1),
+    state: z.enum(["awaiting-upload-preflight", "awaiting-content-preflight"]),
+    selection: z.literal("project-look"),
+    narrativeSourceKind: z.enum(["ai-script", "creator-script", "upload-transcript"]).optional(),
     visualFormatId: z.enum(VISUAL_FORMAT_IDS),
     recipeVersion: z.string().min(1),
     brandVisualLanguage: brandLanguageSchema.nullable(),
   }),
 ]);
 
-export type ProjectVisualApplyMode = "new-only" | "regenerate-all";
+export type ProjectVisualApplyMode = "regenerate-all";
 
 export {
   parseProjectVisualContext,
@@ -66,11 +95,13 @@ function snapshotForLook(
     throw new ProjectLookError("INVALID_LOOK", parsed.error.issues[0]?.message || "ข้อมูลแนวภาพไม่ครบ");
   }
   const brandRecipe = parseRevision(brandRevisionJson);
+  const treatmentPin = createCatalogTreatmentPin(parsed.data.treatmentPresetId, "creator");
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     visualFormatId: parsed.data.visualFormatId,
     recipeVersion: recipeFor(parsed.data.visualFormatId),
-    treatment: parsed.data.treatment,
+    treatment: treatmentPresetThaiLabel(treatmentPin),
+    treatmentPin,
     brandVisualLanguage: parsed.data.brandVisualLanguage === undefined
       ? (brandRecipe?.brandVisualLanguage ?? null)
       : parsed.data.brandVisualLanguage,
@@ -89,7 +120,14 @@ async function saveProjectLookInTransaction(
   const snapshot = snapshotForLook(input.look, project.brandProfileRevision?.visualRecipeJson);
   await tx.editorProject.update({
     where: { id: project.id },
-    data: { projectLookJson: JSON.stringify(snapshot), projectLookUpdatedAt: new Date() },
+    data: {
+      projectLookJson: JSON.stringify(snapshot),
+      projectLookUpdatedAt: new Date(),
+      treatmentPresetId: snapshot.schemaVersion === 2 ? snapshot.treatmentPin.presetId : null,
+      treatmentPresetVersion: snapshot.schemaVersion === 2 ? snapshot.treatmentPin.version : null,
+      treatmentPinSource: snapshot.schemaVersion === 2 ? snapshot.treatmentPin.source : null,
+      treatmentPinnedAt: snapshot.schemaVersion === 2 ? new Date() : null,
+    },
   });
   return snapshot;
 }
@@ -100,6 +138,47 @@ export async function saveProjectLook(input: {
   look: ProjectLookInput;
 }): Promise<ProjectLookSnapshot> {
   return prisma.$transaction((tx) => saveProjectLookInTransaction(tx, input));
+}
+
+/** Upload Step 2 runs before speech transcription, so the creator can choose
+ * the image format but there is no content-grounded Treatment yet. Persist the
+ * format as an explicit temporary Project Look; the upload worker replaces
+ * only its placeholder Treatment after Content Preflight succeeds. */
+export async function saveUploadProjectVisualFormatAwaitingPreflight(input: {
+  userId: string;
+  projectId: string;
+  visualFormatId: ActiveVisualFormatId;
+}): Promise<ProjectLookSnapshot> {
+  return prisma.$transaction(async (tx) => {
+    const project = await tx.editorProject.findFirst({
+      where: { id: input.projectId, userId: input.userId },
+      include: { brandProfileRevision: { select: { visualRecipeJson: true } } },
+    });
+    if (!project) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
+    if (!VISUAL_FORMAT_IDS.includes(input.visualFormatId)) {
+      throw new ProjectLookError("INVALID_LOOK", "แนวภาพนี้ไม่อยู่ใน V1");
+    }
+    const brandRecipe = parseRevision(project.brandProfileRevision?.visualRecipeJson);
+    const snapshot: ProjectLookSnapshot = {
+      schemaVersion: 1,
+      visualFormatId: input.visualFormatId,
+      recipeVersion: recipeFor(input.visualFormatId),
+      treatment: GENERIC_TREATMENT_PLACEHOLDER,
+      brandVisualLanguage: brandRecipe?.brandVisualLanguage ?? null,
+    };
+    await tx.editorProject.update({
+      where: { id: project.id },
+      data: {
+        projectLookJson: JSON.stringify(snapshot),
+        projectLookUpdatedAt: new Date(),
+        treatmentPresetId: null,
+        treatmentPresetVersion: null,
+        treatmentPinSource: null,
+        treatmentPinnedAt: null,
+      },
+    });
+    return snapshot;
+  });
 }
 
 /** Creator-facing Project Look mutation. Exact-preflight selection, selection
@@ -139,14 +218,10 @@ export async function applyProjectLook(input: {
     }
     const existingImageCount = preflight?.visualBeats
       .filter((beat) => Boolean(beat.existingAssetUrl)).length ?? 0;
-    if (
-      existingImageCount > 0
-      && input.applyMode !== "new-only"
-      && input.applyMode !== "regenerate-all"
-    ) {
+    if (existingImageCount > 0 && input.applyMode !== "regenerate-all") {
       throw new ProjectLookError(
         "LOOK_CHANGE_CONFIRMATION_REQUIRED",
-        "กรุณาเลือกว่าจะเก็บภาพเดิมหรือสร้างใหม่ทั้งหมด",
+        "การเปลี่ยนแนวเล่าเรื่องต้องสร้างภาพ AI เดิมใหม่ทั้งหมดหรือยกเลิก",
         { existingImageCount },
       );
     }
@@ -155,9 +230,7 @@ export async function applyProjectLook(input: {
       const generationIdentityKey = brandVisualIdentityKey(look);
       await tx.projectVisualBeat.updateMany({
         where: { preflightId: preflight.id },
-        data: input.applyMode === "regenerate-all"
-          ? { generationIdentityKey, status: "outdated", outdatedAt: new Date() }
-          : { generationIdentityKey },
+        data: { generationIdentityKey, status: "outdated", outdatedAt: new Date() },
       });
     }
     return {
@@ -172,7 +245,17 @@ export async function applyProjectLook(input: {
 export async function clearProjectLook(input: { userId: string; projectId: string }): Promise<void> {
   const updated = await prisma.editorProject.updateMany({
     where: { id: input.projectId, userId: input.userId },
-    data: { projectLookJson: null, projectLookUpdatedAt: new Date() },
+    // The treatment pin is part of the project-scoped override. Leaving it
+    // behind would make a cleared Project Look silently outrank the selected
+    // Brand Profile or the next adaptive Content Preflight.
+    data: {
+      projectLookJson: null,
+      projectLookUpdatedAt: new Date(),
+      treatmentPresetId: null,
+      treatmentPresetVersion: null,
+      treatmentPinSource: null,
+      treatmentPinnedAt: null,
+    },
   });
   if (updated.count !== 1) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
 }
@@ -186,30 +269,85 @@ export async function projectHasPersistedVisualPin(input: {
 }): Promise<boolean> {
   const project = await prisma.editorProject.findFirst({
     where: { id: input.projectId, userId: input.userId },
-    select: { projectLookJson: true, brandProfileRevisionId: true },
+    select: {
+      projectLookJson: true,
+      brandProfileRevisionId: true,
+      treatmentPresetId: true,
+      treatmentPresetVersion: true,
+    },
   });
   if (!project) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
-  return Boolean(project.projectLookJson || project.brandProfileRevisionId);
+  return Boolean(
+    project.projectLookJson
+    || project.brandProfileRevisionId
+    || (project.treatmentPresetId && project.treatmentPresetVersion),
+  );
 }
 
 export async function resolveProjectVisualContext(input: {
   userId: string;
   projectId: string;
-  suggested: { visualFormatId: VisualFormatId; treatment: string };
+  suggested: {
+    visualFormatId: VisualFormatId;
+    treatment: string;
+    treatmentPin?: TreatmentPin;
+  };
 }): Promise<ProjectVisualContext> {
-  const project = await prisma.editorProject.findFirst({
-    where: { id: input.projectId, userId: input.userId },
-    select: {
-      projectLookJson: true,
-      brandProfileRevision: { select: { visualRecipeJson: true } },
-    },
-  });
+  const [project, generatedAiImageCount] = await Promise.all([
+    prisma.editorProject.findFirst({
+      where: { id: input.projectId, userId: input.userId },
+      select: {
+        projectLookJson: true,
+        treatmentPresetId: true,
+        treatmentPresetVersion: true,
+        treatmentPinSource: true,
+        brandProfileRevision: { select: { visualRecipeJson: true } },
+      },
+    }),
+    prisma.projectVisualBeat.count({
+      where: { userId: input.userId, projectId: input.projectId, existingImageJobId: { not: null } },
+    }),
+  ]);
   if (!project) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
-  return resolveProjectVisualContextFromSnapshots({
+  const resolved = resolveProjectVisualContextFromSnapshots({
     projectLookJson: project.projectLookJson,
     brandProfileRevisionRecipeJson: project.brandProfileRevision?.visualRecipeJson,
     suggested: input.suggested,
   });
+  const storedPin = catalogPinFromStoredProject(project);
+  const adaptiveCanFollowContent = storedPin?.source === "adaptive"
+    && generatedAiImageCount === 0
+    && process.env.TREATMENT_EMERGENCY_STOP !== "1";
+  if (!storedPin || adaptiveCanFollowContent) return resolved;
+  return {
+    ...resolved,
+    schemaVersion: 2,
+    treatment: treatmentPresetThaiLabel(storedPin),
+    treatmentPin: storedPin,
+    legacyCustomTreatment: false,
+  };
+}
+
+function catalogPinFromStoredProject(project: {
+  treatmentPresetId: string | null;
+  treatmentPresetVersion: string | null;
+  treatmentPinSource: string | null;
+}): TreatmentPin | null {
+  const presetId = project.treatmentPresetId as TreatmentPresetId | null;
+  const source = project.treatmentPinSource as TreatmentPinSource | null;
+  if (
+    !presetId
+    || !TREATMENT_PRESET_IDS.includes(presetId)
+    || !source
+    || !["adaptive", "locked", "creator", "repair"].includes(source)
+  ) {
+    return null;
+  }
+  return catalogTreatmentPinForVersion(
+    presetId,
+    project.treatmentPresetVersion ?? "",
+    source,
+  );
 }
 
 export type ProjectVisualPin = {
@@ -221,41 +359,50 @@ export type ProjectVisualPin = {
  * A non-null different identity proves that the image was rendered under an
  * older format/treatment/language, so it must be regenerated. Legacy null
  * identities remain compatible and are claimed by the current context. */
+async function advancePreflightVisualIdentityInTransaction(
+  tx: Prisma.TransactionClient,
+  input: {
+    userId: string;
+    preflightId: string;
+    context: ProjectVisualContext;
+  },
+): Promise<void> {
+  const generationIdentityKey = brandVisualIdentityKey(input.context);
+  await tx.projectVisualBeat.updateMany({
+    where: {
+      preflightId: input.preflightId,
+      userId: input.userId,
+      generationIdentityKey: { not: null, notIn: [generationIdentityKey] },
+      OR: [
+        { existingAssetUrl: { not: null } },
+        { existingImageJobId: { not: null } },
+      ],
+    },
+    data: {
+      generationIdentityKey,
+      status: "outdated",
+      outdatedAt: new Date(),
+    },
+  });
+  await tx.projectVisualBeat.updateMany({
+    where: {
+      preflightId: input.preflightId,
+      userId: input.userId,
+      OR: [
+        { generationIdentityKey: null },
+        { generationIdentityKey: { not: generationIdentityKey } },
+      ],
+    },
+    data: { generationIdentityKey },
+  });
+}
+
 async function advancePreflightVisualIdentity(input: {
   userId: string;
   preflightId: string;
   context: ProjectVisualContext;
 }): Promise<void> {
-  const generationIdentityKey = brandVisualIdentityKey(input.context);
-  await prisma.$transaction([
-    prisma.projectVisualBeat.updateMany({
-      where: {
-        preflightId: input.preflightId,
-        userId: input.userId,
-        generationIdentityKey: { not: null, notIn: [generationIdentityKey] },
-        OR: [
-          { existingAssetUrl: { not: null } },
-          { existingImageJobId: { not: null } },
-        ],
-      },
-      data: {
-        generationIdentityKey,
-        status: "outdated",
-        outdatedAt: new Date(),
-      },
-    }),
-    prisma.projectVisualBeat.updateMany({
-      where: {
-        preflightId: input.preflightId,
-        userId: input.userId,
-        OR: [
-          { generationIdentityKey: null },
-          { generationIdentityKey: { not: generationIdentityKey } },
-        ],
-      },
-      data: { generationIdentityKey },
-    }),
-  ]);
+  await prisma.$transaction((tx) => advancePreflightVisualIdentityInTransaction(tx, input));
 }
 
 /** Freeze both inputs used by scene compilation at the VideoJob boundary.
@@ -293,21 +440,127 @@ export async function prepareProjectVisualPin(input: {
   }
   if (
     preflight.visualBeats.length === 0
-    || !VISUAL_FORMAT_IDS.includes(preflight.suggestedVisualFormatId as VisualFormatId)
+    || !VISUAL_FORMAT_IDS.includes(preflight.suggestedVisualFormatId as ActiveVisualFormatId)
+    || preflight.analyzerVersion !== CONTENT_PREFLIGHT_ANALYZER_VERSION
+    || !preflight.suggestedTreatmentPresetId
+    || !preflight.suggestedTreatmentPresetVersion
   ) {
     throw new ProjectLookError(
       "PREFLIGHT_INCOMPLETE",
       "ผลวิเคราะห์ยังไม่มีฉากที่ใช้สร้างภาพได้",
     );
   }
-  const context = await resolveProjectVisualContext({
-    userId: input.userId,
-    projectId: input.projectId,
-    suggested: {
-      visualFormatId: preflight.suggestedVisualFormatId as VisualFormatId,
-      treatment: treatmentFromPreflight(preflight.suggestedTreatmentJson),
+  const suggestedPresetId = preflight.suggestedTreatmentPresetId as TreatmentPresetId;
+  if (!TREATMENT_PRESET_IDS.includes(suggestedPresetId)) {
+    throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ผลวิเคราะห์เลือกแนวเล่าเรื่องที่ระบบยังไม่รองรับ");
+  }
+  const suggestedPin = createCatalogTreatmentPin(suggestedPresetId, "adaptive");
+  if (suggestedPin.version !== preflight.suggestedTreatmentPresetVersion) {
+    throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ข้อมูลแนวเล่าเรื่องในผลวิเคราะห์ไม่ตรงกับงานนี้");
+  }
+  const project = await prisma.editorProject.findFirst({
+    where: { id: input.projectId, userId: input.userId },
+    select: {
+      projectLookJson: true,
+      projectLookUpdatedAt: true,
+      treatmentPresetId: true,
+      treatmentPresetVersion: true,
+      treatmentPinSource: true,
+      brandProfileRevision: { select: { visualRecipeJson: true } },
     },
   });
+  if (!project) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
+
+  const generatedAiImageCount = await prisma.projectVisualBeat.count({
+    where: { userId: input.userId, projectId: input.projectId, existingImageJobId: { not: null } },
+  });
+  const existingStoredPin = catalogPinFromStoredProject(project);
+  const storedPin = existingStoredPin?.source === "adaptive"
+    && generatedAiImageCount === 0
+    && process.env.TREATMENT_EMERGENCY_STOP !== "1"
+    ? null
+    : existingStoredPin;
+  const projectLook = parseProjectLook(project.projectLookJson);
+  const establishedLegacyCustom = Boolean(
+    projectLook?.schemaVersion === 1
+    && !isGenericTreatmentPlaceholder(projectLook.treatment),
+  );
+  const establishedCatalogLook = projectLook?.schemaVersion === 2;
+  if (
+    process.env.TREATMENT_EMERGENCY_STOP === "1"
+    && !storedPin
+    && !establishedLegacyCustom
+    && !establishedCatalogLook
+  ) {
+    throw new ProjectLookError(
+      "PREFLIGHT_INCOMPLETE",
+      "ระบบแนวเล่าเรื่องหยุดรับงานภาพ AI ใหม่ชั่วคราว กรุณาใช้ Stock หรือลองใหม่ภายหลัง",
+    );
+  }
+
+  let context: ProjectVisualContext;
+  if (projectLook?.schemaVersion === 1 && isGenericTreatmentPlaceholder(projectLook.treatment)) {
+    const provenRace = Boolean(
+      project.projectLookUpdatedAt
+      && project.projectLookUpdatedAt.getTime() < preflight.createdAt.getTime(),
+    );
+    if (!provenRace) {
+      throw new ProjectLookError(
+        "PREFLIGHT_INCOMPLETE",
+        "ค่าแนวเรื่องชั่วคราวนี้ยืนยันที่มาไม่ได้ จึงไม่ใช้สร้างภาพ",
+      );
+    }
+    const repairPin = createCatalogTreatmentPin(suggestedPresetId, "repair");
+    const repairedLook: ProjectLookSnapshot = {
+      schemaVersion: 2,
+      visualFormatId: projectLook.visualFormatId,
+      recipeVersion: projectLook.recipeVersion,
+      treatment: treatmentPresetThaiLabel(repairPin),
+      treatmentPin: repairPin,
+      brandVisualLanguage: projectLook.brandVisualLanguage,
+    };
+    await prisma.editorProject.update({
+      where: { id: input.projectId },
+      data: {
+        projectLookJson: JSON.stringify(repairedLook),
+        projectLookUpdatedAt: new Date(),
+        treatmentPresetId: repairPin.presetId,
+        treatmentPresetVersion: repairPin.version,
+        treatmentPinSource: repairPin.source,
+        treatmentPinnedAt: new Date(),
+      },
+    });
+    context = { source: "project-look", ...repairedLook };
+  } else {
+    context = resolveProjectVisualContextFromSnapshots({
+      projectLookJson: project.projectLookJson,
+      brandProfileRevisionRecipeJson: project.brandProfileRevision?.visualRecipeJson,
+      suggested: {
+        visualFormatId: preflight.suggestedVisualFormatId as VisualFormatId,
+        treatment: treatmentPresetThaiLabel(suggestedPin),
+        treatmentPin: suggestedPin,
+      },
+    });
+    if (storedPin) {
+      context = {
+        ...context,
+        schemaVersion: 2,
+        treatment: treatmentPresetThaiLabel(storedPin),
+        treatmentPin: storedPin,
+        legacyCustomTreatment: false,
+      };
+    } else if (context.treatmentPin) {
+      await prisma.editorProject.update({
+        where: { id: input.projectId },
+        data: {
+          treatmentPresetId: context.treatmentPin.presetId,
+          treatmentPresetVersion: context.treatmentPin.version,
+          treatmentPinSource: context.treatmentPin.source,
+          treatmentPinnedAt: new Date(),
+        },
+      });
+    }
+  }
   await advancePreflightVisualIdentity({
     userId: input.userId,
     preflightId: preflight.id,
@@ -319,39 +572,76 @@ export async function prepareProjectVisualPin(input: {
   };
 }
 
-/** Uploads have no transcript/preflight at acceptance time. Snapshot an
- * explicit Project Look/Brand Revision immediately; if the project still uses
- * AI suggestion, persist only that selection mode so the eventual transcript
- * supplies the suggestion without consulting mutable project state again. */
-export async function prepareUploadProjectVisualSnapshot(input: {
+/** A render may arrive before script analysis or upload transcription is
+ * ready. Snapshot an explicit Project Look/Brand Revision immediately; if the
+ * project still uses AI suggestion, persist only that selection mode so the
+ * eventual Content Preflight supplies the suggestion without consulting
+ * mutable project state again. */
+export async function prepareProjectVisualSnapshotAwaitingPreflight(input: {
   userId: string;
   projectId: string;
+  narrativeSourceKind: "ai-script" | "creator-script" | "upload-transcript";
 }): Promise<ProjectVisualPin> {
   const context = await resolveProjectVisualContext({
     userId: input.userId,
     projectId: input.projectId,
     suggested: { visualFormatId: "clear-infographic", treatment: "pending upload transcript" },
   });
+  if (
+    process.env.TREATMENT_EMERGENCY_STOP === "1"
+    && !context.treatmentPin
+    && !(context.legacyCustomTreatment && !isGenericTreatmentPlaceholder(context.treatment))
+  ) {
+    throw new ProjectLookError(
+      "PREFLIGHT_INCOMPLETE",
+      "ระบบแนวเล่าเรื่องหยุดรับงานภาพ AI ใหม่ชั่วคราว กรุณาใช้ Stock หรือลองใหม่ภายหลัง",
+    );
+  }
   const snapshot = context.source === "suggested"
     ? {
         schemaVersion: 1 as const,
-        state: "awaiting-upload-preflight" as const,
+        state: "awaiting-content-preflight" as const,
         selection: "suggested" as const,
+        narrativeSourceKind: input.narrativeSourceKind,
       }
-    : context.source === "brand-revision"
+      : context.source === "brand-revision"
       ? {
           schemaVersion: 1 as const,
-          state: "awaiting-upload-preflight" as const,
+          state: "awaiting-content-preflight" as const,
           selection: "brand-revision" as const,
+          narrativeSourceKind: input.narrativeSourceKind,
           visualFormatId: context.visualFormatId,
           recipeVersion: context.recipeVersion,
           brandVisualLanguage: context.brandVisualLanguage,
+          treatmentPin: context.treatmentPin ?? null,
         }
+      : context.source === "project-look"
+        && context.legacyCustomTreatment
+        && isGenericTreatmentPlaceholder(context.treatment)
+        ? {
+            schemaVersion: 1 as const,
+            state: "awaiting-content-preflight" as const,
+            selection: "project-look" as const,
+            narrativeSourceKind: input.narrativeSourceKind,
+            visualFormatId: context.visualFormatId as ActiveVisualFormatId,
+            recipeVersion: context.recipeVersion,
+            brandVisualLanguage: context.brandVisualLanguage,
+          }
       : context;
   return {
     contentPreflightId: null,
     projectVisualContextJson: JSON.stringify(snapshot),
   };
+}
+
+export async function prepareUploadProjectVisualSnapshot(input: {
+  userId: string;
+  projectId: string;
+}): Promise<ProjectVisualPin> {
+  return prepareProjectVisualSnapshotAwaitingPreflight({
+    ...input,
+    narrativeSourceKind: "upload-transcript",
+  });
 }
 
 export async function pinProjectVisualContextToVideoJob(input: {
@@ -364,7 +654,7 @@ export async function pinProjectVisualContextToVideoJob(input: {
     where: { id: input.videoJobId, userId: input.userId, projectId: input.projectId },
     select: { contentPreflightId: true, projectVisualContextJson: true },
   });
-  if (!job) throw new ProjectLookError("NOT_FOUND", "ไม่พบ VideoJob ที่ต้องการ pin แนวภาพ");
+  if (!job) throw new ProjectLookError("NOT_FOUND", "ไม่พบงานสร้างคลิปที่ต้องใช้แนวภาพนี้");
   const alreadyPinned = parseProjectVisualContext(job.projectVisualContextJson);
   if (job.contentPreflightId) {
     if (job.contentPreflightId !== input.preflightId) {
@@ -374,7 +664,7 @@ export async function pinProjectVisualContextToVideoJob(input: {
       );
     }
     if (!alreadyPinned) {
-      throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "snapshot แนวภาพที่ pin ไว้อ่านไม่ได้");
+      throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ข้อมูลแนวภาพที่บันทึกไว้อ่านไม่ได้");
     }
     await hydrateBrandVisualJobAcceptanceReuse(input);
     return {
@@ -383,7 +673,7 @@ export async function pinProjectVisualContextToVideoJob(input: {
     };
   }
   if (!job.projectVisualContextJson) {
-    throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "VideoJob ไม่มี snapshot แนวภาพตอนรับงาน");
+    throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "งานสร้างคลิปไม่มีข้อมูลแนวภาพตอนรับงาน");
   }
 
   const preflight = await prisma.contentPreflight.findFirst({
@@ -395,16 +685,20 @@ export async function pinProjectVisualContextToVideoJob(input: {
     include: { visualBeats: { select: { id: true }, take: 1 } },
   });
   if (!preflight) {
-    throw new ProjectLookError("PREFLIGHT_REQUIRED", "ไม่พบผลวิเคราะห์ transcript ที่งานนี้ต้องใช้");
+    throw new ProjectLookError("PREFLIGHT_REQUIRED", "ไม่พบผลวิเคราะห์คำพูดที่งานนี้ต้องใช้");
   }
   if (
     preflight.visualBeats.length === 0
-    || !VISUAL_FORMAT_IDS.includes(preflight.suggestedVisualFormatId as VisualFormatId)
+    || !VISUAL_FORMAT_IDS.includes(preflight.suggestedVisualFormatId as ActiveVisualFormatId)
+    || preflight.analyzerVersion !== CONTENT_PREFLIGHT_ANALYZER_VERSION
+    || !preflight.suggestedTreatmentPresetId
+    || !preflight.suggestedTreatmentPresetVersion
   ) {
     throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ผลวิเคราะห์เสียงพูดยังไม่มีฉากที่ใช้ได้");
   }
 
   let context = alreadyPinned;
+  let materializePendingProjectLook = false;
   if (!context) {
     let pendingValue: unknown = null;
     try {
@@ -412,46 +706,98 @@ export async function pinProjectVisualContextToVideoJob(input: {
     } catch {}
     const pending = pendingUploadVisualContextSchema.safeParse(pendingValue);
     if (!pending.success) {
-      throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "snapshot แนวภาพของ VideoJob อ่านไม่ได้");
+      throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ข้อมูลแนวภาพของงานนี้อ่านไม่ได้");
     }
-    const treatment = treatmentFromPreflight(preflight.suggestedTreatmentJson);
-    context = pending.data.selection === "brand-revision"
-      ? {
-          source: "brand-revision",
-          visualFormatId: pending.data.visualFormatId,
-          recipeVersion: pending.data.recipeVersion,
-          treatment,
-          brandVisualLanguage: pending.data.brandVisualLanguage,
-        }
-      : {
-          source: "suggested",
-          visualFormatId: preflight.suggestedVisualFormatId as VisualFormatId,
-          recipeVersion: recipeFor(preflight.suggestedVisualFormatId as VisualFormatId),
-          treatment,
-          brandVisualLanguage: null,
-        };
+    const suggestedPresetId = preflight.suggestedTreatmentPresetId as TreatmentPresetId;
+    if (!TREATMENT_PRESET_IDS.includes(suggestedPresetId)) {
+      throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ผลวิเคราะห์เลือกแนวเล่าเรื่องที่ระบบยังไม่รองรับ");
+    }
+    const suggestedPin = createCatalogTreatmentPin(suggestedPresetId, "adaptive");
+    if (suggestedPin.version !== preflight.suggestedTreatmentPresetVersion) {
+      throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ข้อมูลแนวเล่าเรื่องในผลวิเคราะห์ไม่ตรงกับงานนี้");
+    }
+    if (pending.data.selection === "brand-revision") {
+      const treatmentPin = pending.data.treatmentPin ?? suggestedPin;
+      context = {
+        schemaVersion: 2,
+        source: "brand-revision",
+        visualFormatId: pending.data.visualFormatId,
+        recipeVersion: pending.data.recipeVersion,
+        treatment: treatmentPresetThaiLabel(treatmentPin),
+        treatmentPin,
+        brandVisualLanguage: pending.data.brandVisualLanguage,
+      };
+    } else if (pending.data.selection === "project-look") {
+      materializePendingProjectLook = true;
+      context = {
+        schemaVersion: 2,
+        source: "project-look",
+        visualFormatId: pending.data.visualFormatId,
+        recipeVersion: pending.data.recipeVersion,
+        treatment: treatmentPresetThaiLabel(suggestedPin),
+        treatmentPin: suggestedPin,
+        brandVisualLanguage: pending.data.brandVisualLanguage,
+      };
+    } else {
+      context = {
+        schemaVersion: 2,
+        source: "suggested",
+        visualFormatId: preflight.suggestedVisualFormatId as VisualFormatId,
+        recipeVersion: recipeFor(preflight.suggestedVisualFormatId as VisualFormatId),
+        treatment: treatmentPresetThaiLabel(suggestedPin),
+        treatmentPin: suggestedPin,
+        brandVisualLanguage: null,
+      };
+    }
   }
   const pin = {
     contentPreflightId: preflight.id,
     projectVisualContextJson: JSON.stringify(projectVisualContextSchema.parse(context)),
   };
-  await advancePreflightVisualIdentity({
-    userId: input.userId,
-    preflightId: preflight.id,
-    context,
-  });
-  const updated = await prisma.videoJob.updateMany({
-    where: {
-      id: input.videoJobId,
+  const committedPin = await prisma.$transaction(async (tx) => {
+    await advancePreflightVisualIdentityInTransaction(tx, {
       userId: input.userId,
-      projectId: input.projectId,
-      contentPreflightId: null,
-      projectVisualContextJson: job.projectVisualContextJson,
-    },
-    data: pin,
-  });
-  if (updated.count !== 1) {
-    const existing = await prisma.videoJob.findFirst({
+      preflightId: preflight.id,
+      context,
+    });
+    if (context.treatmentPin) {
+      const materializedLook: ProjectLookSnapshot | null = materializePendingProjectLook
+        ? {
+            schemaVersion: 2,
+            visualFormatId: context.visualFormatId,
+            recipeVersion: context.recipeVersion,
+            treatment: context.treatment,
+            treatmentPin: context.treatmentPin,
+            brandVisualLanguage: context.brandVisualLanguage,
+          }
+        : null;
+      await tx.editorProject.updateMany({
+        where: { id: input.projectId, userId: input.userId },
+        data: {
+          ...(materializedLook ? {
+            projectLookJson: JSON.stringify(materializedLook),
+            projectLookUpdatedAt: new Date(),
+          } : {}),
+          treatmentPresetId: context.treatmentPin.presetId,
+          treatmentPresetVersion: context.treatmentPin.version,
+          treatmentPinSource: context.treatmentPin.source,
+          treatmentPinnedAt: new Date(),
+        },
+      });
+    }
+    const updated = await tx.videoJob.updateMany({
+      where: {
+        id: input.videoJobId,
+        userId: input.userId,
+        projectId: input.projectId,
+        contentPreflightId: null,
+        projectVisualContextJson: job.projectVisualContextJson,
+      },
+      data: pin,
+    });
+    if (updated.count === 1) return pin;
+
+    const existing = await tx.videoJob.findFirst({
       where: { id: input.videoJobId, userId: input.userId, projectId: input.projectId },
       select: { contentPreflightId: true, projectVisualContextJson: true },
     });
@@ -463,18 +809,17 @@ export async function pinProjectVisualContextToVideoJob(input: {
         );
       }
       if (!parseProjectVisualContext(existing.projectVisualContextJson)) {
-        throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "snapshot แนวภาพที่ pin ไว้อ่านไม่ได้");
+        throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ข้อมูลแนวภาพที่บันทึกไว้อ่านไม่ได้");
       }
-      await hydrateBrandVisualJobAcceptanceReuse(input);
       return {
         contentPreflightId: existing.contentPreflightId,
         projectVisualContextJson: existing.projectVisualContextJson,
       };
     }
-    throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "VideoJob ถูกแก้ไขก่อน pin แนวภาพสำเร็จ");
-  }
+    throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "งานสร้างคลิปถูกแก้ไขก่อนบันทึกแนวภาพสำเร็จ");
+  });
   await hydrateBrandVisualJobAcceptanceReuse(input);
-  return pin;
+  return committedPin;
 }
 
 /** Reuse quote for one exact Content Preflight. ProjectVisualBeat.status is the
@@ -503,6 +848,7 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
   userId: string;
   videoJobId: string;
   sceneIndex: number;
+  sceneRenderingDirection?: SceneRenderingDirection;
 }): Promise<ResolvedProjectVisualPrompt | null> {
   const job = await prisma.videoJob.findFirst({
     where: { id: input.videoJobId, userId: input.userId },
@@ -513,19 +859,87 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
     },
   });
   if (!job?.projectId || !job.projectVisualContextJson) return null;
-  const context = parseProjectVisualContext(job.projectVisualContextJson);
+  let context = parseProjectVisualContext(job.projectVisualContextJson);
   if (!context || !job.contentPreflightId) {
-    throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "VideoJob ไม่มี snapshot แนวภาพที่สมบูรณ์");
+    throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "งานสร้างคลิปไม่มีข้อมูลแนวภาพที่สมบูรณ์");
   }
   const preflight = await prisma.contentPreflight.findFirst({
     where: { id: job.contentPreflightId, projectId: job.projectId, userId: input.userId },
     select: {
       id: true,
       contentDomain: true,
+      storyEntitiesJson: true,
+      createdAt: true,
+      suggestedTreatmentPresetId: true,
+      suggestedTreatmentPresetVersion: true,
     },
   });
   if (!preflight) {
     throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ไม่พบข้อมูลฉากที่ผูกกับงานสร้างคลิปนี้");
+  }
+  if (context.legacyCustomTreatment && isGenericTreatmentPlaceholder(context.treatment)) {
+    const project = await prisma.editorProject.findFirst({
+      where: { id: job.projectId, userId: input.userId },
+      select: {
+        projectLookJson: true,
+        projectLookUpdatedAt: true,
+        treatmentPresetId: true,
+        treatmentPresetVersion: true,
+        treatmentPinSource: true,
+      },
+    });
+    if (!project) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
+    const alreadyRepairedPin = catalogPinFromStoredProject(project);
+    const storedLook = parseProjectLook(project.projectLookJson);
+    let repairPin = alreadyRepairedPin?.source === "repair" ? alreadyRepairedPin : null;
+    const provenRace = Boolean(
+      storedLook?.schemaVersion === 1
+      && isGenericTreatmentPlaceholder(storedLook.treatment)
+      && project.projectLookUpdatedAt
+      && project.projectLookUpdatedAt.getTime() < preflight.createdAt.getTime(),
+    );
+    if (!repairPin && provenRace) {
+      const presetId = preflight.suggestedTreatmentPresetId as TreatmentPresetId | null;
+      if (!presetId || !TREATMENT_PRESET_IDS.includes(presetId)) {
+        throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ผลวิเคราะห์ยังไม่มีแนวเล่าเรื่องสำหรับซ่อมค่าเดิม");
+      }
+      repairPin = createCatalogTreatmentPin(presetId, "repair");
+      if (repairPin.version !== preflight.suggestedTreatmentPresetVersion) {
+        throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ข้อมูลแนวเล่าเรื่องสำหรับซ่อมค่าเดิมไม่ตรงกัน");
+      }
+    }
+    if (!repairPin) {
+      throw new ProjectLookError(
+        "PREFLIGHT_INCOMPLETE",
+        "ค่าแนวเรื่องชั่วคราวนี้ยืนยันที่มาไม่ได้ จึงไม่ใช้สร้างภาพ",
+      );
+    }
+    const repairedLook: ProjectLookSnapshot = {
+      schemaVersion: 2,
+      visualFormatId: context.visualFormatId,
+      recipeVersion: context.recipeVersion,
+      treatment: treatmentPresetThaiLabel(repairPin),
+      treatmentPin: repairPin,
+      brandVisualLanguage: context.brandVisualLanguage,
+    };
+    context = { source: context.source, ...repairedLook };
+    await prisma.$transaction([
+      prisma.editorProject.update({
+        where: { id: job.projectId },
+        data: {
+          projectLookJson: JSON.stringify(repairedLook),
+          projectLookUpdatedAt: new Date(),
+          treatmentPresetId: repairPin.presetId,
+          treatmentPresetVersion: repairPin.version,
+          treatmentPinSource: repairPin.source,
+          treatmentPinnedAt: new Date(),
+        },
+      }),
+      prisma.videoJob.update({
+        where: { id: input.videoJobId },
+        data: { projectVisualContextJson: JSON.stringify(projectVisualContextSchema.parse(context)) },
+      }),
+    ]);
   }
   const beats = await prisma.projectVisualBeat.findMany({
     where: { preflightId: preflight.id, userId: input.userId },
@@ -551,6 +965,36 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
   if (!beatValue.subject || !beatValue.action || !beatValue.setting || !beatValue.emotion || !beatValue.emphasis) {
     throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ข้อมูลภาพของฉากนี้ไม่ครบ");
   }
+  let storyEntities: Array<{
+    entityId: string;
+    properName: string;
+    renderingDescription: string;
+    recurringCharacterDescription?: string | null;
+  }>;
+  try {
+    storyEntities = JSON.parse(preflight.storyEntitiesJson) as typeof storyEntities;
+    if (!Array.isArray(storyEntities)) throw new Error("invalid entities");
+  } catch {
+    throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ข้อมูลตัวละครของฉากนี้อ่านไม่ได้");
+  }
+  const entityById = new Map(storyEntities.map((entity) => [entity.entityId, entity]));
+  const rawEntityRefs = (beatValue as unknown as { entityRefs?: unknown }).entityRefs;
+  const entityRefs = Array.isArray(rawEntityRefs)
+    ? rawEntityRefs.filter((value): value is string => typeof value === "string")
+    : [];
+  const entityRenderingDescriptions = entityRefs.map((entityId) => {
+    const entity = entityById.get(entityId);
+    if (!entity) throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "ฉากอ้างถึงตัวละครที่ไม่อยู่ในแผนภาพ");
+    const description = (entity.recurringCharacterDescription || entity.renderingDescription).trim();
+    const escapedName = entity.properName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const withoutLinkageName = escapedName
+      ? description.replace(new RegExp(`\\b${escapedName}\\b`, "giu"), " ").replace(/\s+/g, " ").trim()
+      : description;
+    if (!withoutLinkageName) {
+      throw new ProjectLookError("PREFLIGHT_INCOMPLETE", "คำบรรยายตัวละครสำหรับสร้างภาพไม่สมบูรณ์");
+    }
+    return withoutLinkageName;
+  });
   const phase: VisualBeat["phase"] = beat.sequence === beats[0].sequence
     ? "hook"
     : beat.sequence === beats[beats.length - 1].sequence ? "close" : "explain";
@@ -564,9 +1008,13 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
       visualFormatId: context.visualFormatId,
       recipeVersion: context.recipeVersion,
       contentDomain: preflight.contentDomain,
-      treatment: context.treatment,
+      treatment: context.treatmentPin
+        ? treatmentPromptDirection(context.treatmentPin)
+        : context.treatment,
+      ...(context.treatmentPin ? { treatmentPin: context.treatmentPin } : {}),
       brandVisualLanguage: context.brandVisualLanguage,
-      visualBeat: { ...beatValue, phase },
+      visualBeat: { ...beatValue, entityRenderingDescriptions, phase },
+      sceneRenderingDirection: input.sceneRenderingDirection,
     }),
   };
 }

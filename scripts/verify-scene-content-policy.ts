@@ -25,14 +25,14 @@ assert.match(thai.beats[0].subject, /Thai or Southeast Asian/);
 assert.match(thai.beats[0].setting, /Thai local context/);
 
 const compiledThai = compileBrandVisualPrompt({
-  visualFormatId: "stick-figure-story",
+  visualFormatId: "simple-editorial-story",
   contentDomain: "creator workflow",
   treatment: "clear and encouraging",
   visualBeat: { ...thai.beats[0], phase: "hook" },
 });
 assert.match(compiledThai.positive, /Thai or Southeast Asian/);
 assert.match(compiledThai.positive, /Thai local context/);
-assert.match(compiledThai.positive, /stick-figure/i);
+assert.match(compiledThai.positive, /full-frame flat editorial story illustration/i);
 
 const objectOnly = applySceneContentPolicy([{
   ...baseBeat,
@@ -94,12 +94,25 @@ async function verifyWiring() {
   assert.notEqual(noPeopleHash, thaiHash, "different scene policies must never share generated assets");
 
   const selectorSource = readFileSync("src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx", "utf8");
-  assert.match(selectorSource, /sceneContentPolicy:\s*sceneContentPolicyFromPreference\(p\.brollRegionPreference\)/);
-  assert.match(selectorSource, /p\.brollRegionPreference, onPreflightStatusChange/);
+  assert.match(
+    selectorSource,
+    /sceneContentPolicy:\s*sceneContentPolicyFromPreference\(\s*settledSceneContentPreference \?\? p\.brollRegionPreference,?\s*\)/,
+    "Content Preflight receives the settled people/location preference",
+  );
+  assert.match(
+    selectorSource,
+    /const sceneContentPreference = narrative \? p\.brollRegionPreference : null/,
+    "an Upload without a transcript has no scene-content work to invalidate",
+  );
+  assert.match(
+    selectorSource,
+    /settledTargetClipCount, settledSceneContentPreference, onPreflightStatusChange/,
+    "Visual Context reloads only after count and people/location intent settle",
+  );
 
   const jobsRouteSource = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
   assert.match(jobsRouteSource, /contentPreflightSourceHash\(kind, script,[\s\S]*?sceneContentPolicy/);
-  assert.match(jobsRouteSource, /sceneContentPolicy,\s*\n\s*\.\.\.\(kieModel/);
+  assert.match(jobsRouteSource, /sceneContentPolicy,[\s\S]*?\.\.\.\(kieModel/);
 
   const stepTwoSource = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", "utf8");
   assert.match(stepTwoSource, />คนและสถานที่</);

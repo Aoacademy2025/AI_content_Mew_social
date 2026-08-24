@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { validateVideoSettingsPatch } from "@/lib/video-settings";
+import { parseTtsProvider } from "@/lib/tts-providers";
 
 // GET /api/user/video-settings — get saved avatar & voice IDs for current user
 export async function GET() {
@@ -20,7 +21,7 @@ export async function GET() {
     return NextResponse.json({
       heygenAvatarId: user.heygenAvatarId ?? "",
       elevenlabsVoiceId: user.elevenlabsVoiceId ?? "",
-      ttsProvider: user.ttsProvider ?? "elevenlabs",
+      ttsProvider: parseTtsProvider(user.ttsProvider),
       geminiVoiceName: user.geminiVoiceName ?? "Aoede",
     });
   } catch (error) {

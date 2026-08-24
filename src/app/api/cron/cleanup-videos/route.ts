@@ -46,7 +46,12 @@ export async function GET(req: Request) {
   }
 
   const now = new Date();
-  const result = { pendingPaymentsCancelled: 0, remotionTmpDeleted: 0, telemetryEventsDeleted: 0 };
+  const result = {
+    pendingPaymentsCancelled: 0,
+    remotionTmpDeleted: 0,
+    telemetryEventsDeleted: 0,
+    telemetryDedupeMarkersScrubbed: 0,
+  };
 
   // ── 1. Expire stale PENDING payments (> 2 hours old) ───────────────────
   try {
@@ -87,10 +92,44 @@ export async function GET(req: Request) {
 
   // ── 3. TelemetryEvent retention: keep last 90 days (DB-1) ─────────────────
   // Additive sweep for the largest, previously-unbounded table (~123k rows in prod,
-  // no prior sweeper). Fail-open — a retention error must not break the cleanup response.
+  // no prior sweeper). Server-owned dedupe rows are durable exactly-once markers,
+  // so retain only a hashed, payload-free marker after its 90-day measurement
+  // window closes. Ordinary event rows keep the original deletion policy.
+  // Fail-open — a retention error must not break the cleanup response.
   try {
+    const cutoff = new Date(now.getTime() - TELEMETRY_RETENTION_MS);
+    const { count: scrubbed } = await prisma.telemetryEvent.updateMany({
+      where: {
+        createdAt: { lt: cutoff },
+        dedupeKey: { not: null },
+        OR: [
+          { userId: { not: null } },
+          { sessionId: { not: null } },
+          { path: { not: null } },
+          { step: { not: null } },
+          { status: { not: null } },
+          { durationMs: { not: null } },
+          { value: { not: null } },
+          { properties: { not: null } },
+        ],
+      },
+      data: {
+        userId: null,
+        sessionId: null,
+        path: null,
+        step: null,
+        status: null,
+        durationMs: null,
+        value: null,
+        properties: null,
+      },
+    });
+    result.telemetryDedupeMarkersScrubbed = scrubbed;
     const { count } = await prisma.telemetryEvent.deleteMany({
-      where: { createdAt: { lt: new Date(now.getTime() - TELEMETRY_RETENTION_MS) } },
+      where: {
+        createdAt: { lt: cutoff },
+        dedupeKey: null,
+      },
     });
     result.telemetryEventsDeleted = count;
     if (count > 0) console.log(`[cron] Deleted ${count} TelemetryEvent rows older than 90 days`);

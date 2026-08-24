@@ -1,6 +1,10 @@
 import "dotenv/config";
 import { planAndRunLocalMediaEviction } from "../src/lib/media-local-eviction";
 import { reconcileMissingVerifiedLocalMedia } from "../src/lib/media-local-missing-reconcile";
+import {
+  activeCustomerMediaJobs,
+  hasActiveCustomerMediaJobs,
+} from "../src/lib/customer-media-activity";
 import { prisma } from "../src/lib/prisma";
 
 function hasFlag(name: string): boolean {
@@ -17,6 +21,7 @@ function numberArg(name: string, fallback: number): number {
 async function main(): Promise<void> {
   const known = [
     "--apply",
+    "--deferWhenBusy",
     "--includeStocks",
     "--olderThanDays=",
     "--maxObjects=",
@@ -30,6 +35,21 @@ async function main(): Promise<void> {
   const mode = hasFlag("apply") ? "apply" : "dry-run";
   const maxBytesMb = numberArg("maxBytesMb", 1024);
   const maxObjects = numberArg("maxObjects", 10);
+  if (hasFlag("deferWhenBusy")) {
+    const activity = await activeCustomerMediaJobs();
+    if (hasActiveCustomerMediaJobs(activity)) {
+      console.log(JSON.stringify({
+        mode,
+        deferredReason: "customer_media_active",
+        ...activity,
+        scanned: 0,
+        eligible: { count: 0, sizeBytes: 0 },
+        evicted: { count: 0, sizeBytes: 0 },
+        errors: 0,
+      }));
+      return;
+    }
+  }
   const reconciliation = await reconcileMissingVerifiedLocalMedia({
     mode,
     maxObjects,

@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
 import type { ContentPreflight, ProjectVisualBeat } from "@prisma/client";
 import { z } from "zod";
+import {
+  TREATMENT_PRESET_IDS,
+  createCatalogTreatmentPin,
+  treatmentPresetThaiLabel,
+  type TreatmentPin,
+  type TreatmentPresetId,
+} from "@/lib/brand-treatment-catalog";
 import { VISUAL_FORMAT_IDS, type VisualFormatId } from "@/lib/brand-visual-system";
 import { prisma } from "@/lib/prisma";
 import {
@@ -20,19 +27,25 @@ import {
   type SceneContentPolicy,
   type SceneContentPolicyWarning,
 } from "@/lib/scene-content-policy";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 
-/** Bumped whenever the extraction prompt changes what a beat contains, so a
- * project cannot keep serving beats produced by a superseded analyzer: the
- * preflight cache is keyed on this string. `-v5` replaces `-v4`'s
- * language-blind focal-subject ban with a writing-system rule: a surface that
- * must be read may be what a beat is about, and its wording is written in
- * English (ADR 0007). */
-export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v5-latin-lettering";
+/** Bumped whenever extraction changes either a beat or a selectable Visual
+ * Format, so a cached recommendation cannot keep creating retired formats.
+ * Later versions keep the active format while tightening hard-fact extraction;
+ * older rows remain only as asset-carry-forward lineage (ADR 0017/0018). */
+export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v12-semantic-self-correction";
 /** Read-only lineage. A superseded row is still a valid source of a previous
  * beat's generated asset, so a bump costs one re-analysis and never an image:
  * beats whose `sourceExcerptHash` is unchanged carry their asset forward. */
 const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
   CONTENT_PREFLIGHT_ANALYZER_VERSION,
+  "brand-content-preflight-v11-relational-hard-facts",
+  "brand-content-preflight-v10-completed-result-tableau",
+  "brand-content-preflight-v9-positive-only-scene-states",
+  "brand-content-preflight-v8-hard-fact-consistency",
+  "brand-content-preflight-v7-active-editorial-format",
+  "brand-content-preflight-v6-treatment-plan",
+  "brand-content-preflight-v5-latin-lettering",
   "brand-content-preflight-v4-focal-subject",
   "brand-content-preflight-v3-stable-windows",
   "brand-content-preflight-v2-windowed",
@@ -40,12 +53,67 @@ const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
 export type NarrativeSourceKind = "ai-script" | "creator-script" | "upload-transcript";
 export type NarrativeVisualWindow = { text: string; startMs?: number; endMs?: number };
 
+const MAX_ESSENTIAL_OBJECT_LENGTH = 160;
+
+const hardSceneFactsSchema = z.object({
+  entityTypes: z.array(z.string().trim().min(1).max(120)).max(12),
+  ages: z.array(z.string().trim().min(1).max(80)).max(12),
+  genders: z.array(z.string().trim().min(1).max(80)).max(12),
+  actions: z.array(z.string().trim().min(1).max(240)).max(12),
+  locationTypes: z.array(z.string().trim().min(1).max(160)).max(12),
+  timeOfDay: z.string().trim().min(1).max(80).nullable(),
+  historicalPeriod: z.string().trim().min(1).max(160).nullable(),
+  count: z.number().int().positive().nullable(),
+  essentialObjects: z.array(
+    z.string().trim().min(1).max(MAX_ESSENTIAL_OBJECT_LENGTH),
+  ).max(20),
+});
+
+const storyEntitySchema = z.object({
+  entityId: z.string().trim().min(1).max(120),
+  properName: z.string().trim().min(1).max(160),
+  entityType: z.enum(["person", "animal", "object", "place"]),
+  durableAttributes: z.array(z.string().trim().min(1).max(160)).min(1).max(16),
+  renderingDescription: z.string().trim().min(3).max(500),
+  recurringCharacterDescription: z.string().trim().min(3).max(700).nullable().optional(),
+  isRealPerson: z.boolean(),
+});
+
+const formatRecommendationSchema = z.object({
+  visualFormatId: z.enum(VISUAL_FORMAT_IDS),
+  reason: z.string().trim().min(1).max(500).refine(
+    (reason) => !/\bconflicts?\b|\bincompatible\b|ขัดแย้ง|ใช้ไม่ได้|ไม่รองรับ/iu.test(reason),
+    "Format Recommendation must remain optional, non-blocking guidance",
+  ),
+}).nullable();
+
 const analysisSchema = z.object({
   contentDomain: z.string().trim().min(1).max(160),
+  dominantNarrativeMode: z.string().trim().min(1).max(500),
   suggestedVisualFormatId: z.enum(VISUAL_FORMAT_IDS),
-  suggestedTreatment: z.object({
-    label: z.string().trim().min(1).max(120),
-    mood: z.string().trim().min(1).max(240),
+  rankedTreatmentPresetIds: z.array(z.enum(TREATMENT_PRESET_IDS)).length(3)
+    .refine((ids) => new Set(ids).size === ids.length, "Treatment ranking must contain three distinct presets"),
+  treatmentRecommendationRationale: z.string().trim().min(1).max(700),
+  formatRecommendation: formatRecommendationSchema,
+  storyEntities: z.array(storyEntitySchema).max(60).superRefine((entities, context) => {
+    const ids = new Set<string>();
+    entities.forEach((entity, index) => {
+      if (ids.has(entity.entityId)) {
+        context.addIssue({ code: "custom", path: [index, "entityId"], message: "Story Entity IDs must be unique" });
+      }
+      ids.add(entity.entityId);
+      const properName = entity.properName.trim().toLocaleLowerCase();
+      if (
+        entity.renderingDescription.toLocaleLowerCase().includes(properName)
+        || entity.recurringCharacterDescription?.toLocaleLowerCase().includes(properName)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: [index, "renderingDescription"],
+          message: "Entity Rendering Description cannot contain a proper name",
+        });
+      }
+    });
   }),
   beats: z.array(z.object({
     beatKey: z.string().trim().min(1).max(120),
@@ -57,6 +125,10 @@ const analysisSchema = z.object({
     setting: z.string().trim().min(1).max(500),
     emotion: z.string().trim().min(1).max(300),
     emphasis: z.string().trim().min(1).max(500),
+    hardSceneFacts: hardSceneFactsSchema,
+    entityRefs: z.array(z.string().trim().min(1).max(120)).max(20),
+    sceneIntensity: z.string().trim().min(1).max(160),
+    safetyBoundary: z.enum(["none", "medical-illustration", "real-person-context-only"]),
     policyApplicability: z.enum(["applied", "not-applicable", "story-conflict"]).optional(),
     policyConflict: z.string().trim().max(300).optional(),
     sceneContentPolicy: z.object({
@@ -73,9 +145,84 @@ const analysisSchema = z.object({
       keys.add(beat.beatKey);
     });
   }),
+}).superRefine((analysis, context) => {
+  const entities = new Map(analysis.storyEntities.map((entity) => [entity.entityId, entity]));
+  const referenceCounts = new Map<string, number>();
+  const contentDomain = analysis.contentDomain.toLocaleLowerCase();
+  analysis.storyEntities.forEach((entity) => {
+    if (contentDomain.includes(entity.properName.toLocaleLowerCase())) {
+      context.addIssue({
+        code: "custom",
+        path: ["contentDomain"],
+        message: "Provider-facing content domain must not contain a proper name",
+      });
+    }
+  });
+  analysis.beats.forEach((beat, beatIndex) => {
+    const renderingFields = [
+      beat.subject,
+      beat.action,
+      beat.setting,
+      beat.emotion,
+      beat.emphasis,
+      beat.sceneIntensity,
+      ...beat.hardSceneFacts.entityTypes,
+      ...beat.hardSceneFacts.ages,
+      ...beat.hardSceneFacts.genders,
+      ...beat.hardSceneFacts.actions,
+      ...beat.hardSceneFacts.locationTypes,
+      beat.hardSceneFacts.timeOfDay ?? "",
+      beat.hardSceneFacts.historicalPeriod ?? "",
+      ...beat.hardSceneFacts.essentialObjects,
+    ]
+      .join(" ")
+      .toLocaleLowerCase();
+    analysis.storyEntities.forEach((entity) => {
+      if (renderingFields.includes(entity.properName.toLocaleLowerCase())) {
+        context.addIssue({
+          code: "custom",
+          path: ["beats", beatIndex, "subject"],
+          message: "Provider-facing beat fields must use the Entity Rendering Description, not a proper name",
+        });
+      }
+    });
+    beat.entityRefs.forEach((entityId, refIndex) => {
+      const entity = entities.get(entityId);
+      if (!entity) {
+        context.addIssue({
+          code: "custom",
+          path: ["beats", beatIndex, "entityRefs", refIndex],
+          message: "Visual Beat references an unknown Story Entity",
+        });
+        return;
+      }
+      referenceCounts.set(entityId, (referenceCounts.get(entityId) ?? 0) + 1);
+      if (beat.safetyBoundary === "real-person-context-only" && entity.isRealPerson) {
+        context.addIssue({
+          code: "custom",
+          path: ["beats", beatIndex, "entityRefs", refIndex],
+          message: "Real-person context-only imagery cannot render the identified real person",
+        });
+      }
+    });
+  });
+  analysis.storyEntities.forEach((entity, entityIndex) => {
+    if (entity.recurringCharacterDescription && (referenceCounts.get(entity.entityId) ?? 0) < 2) {
+      context.addIssue({
+        code: "custom",
+        path: ["storyEntities", entityIndex, "recurringCharacterDescription"],
+        message: "Recurring Character Description requires multiple Visual Beats",
+      });
+    }
+  });
 });
 
 export type ContentPreflightAnalysis = z.infer<typeof analysisSchema>;
+
+export type SuggestedTreatment = TreatmentPin & {
+  label: string;
+  rationale: string;
+};
 
 export type ContentPreflightAnalyzer = {
   analyze(input: {
@@ -96,8 +243,12 @@ export type ResolvedContentPreflight = {
   id: string;
   sourceHash: string;
   contentDomain: string;
+  dominantNarrativeMode: string;
   suggestedVisualFormatId: VisualFormatId;
-  suggestedTreatment: ContentPreflightAnalysis["suggestedTreatment"];
+  suggestedTreatment: SuggestedTreatment;
+  rankedTreatmentPresetIds: TreatmentPresetId[];
+  storyEntities: ContentPreflightAnalysis["storyEntities"];
+  formatRecommendation: ContentPreflightAnalysis["formatRecommendation"];
   visualBeats: ResolvedVisualBeat[];
   sceneContentPolicy: SceneContentPolicy;
   policyWarnings: SceneContentPolicyWarning[];
@@ -149,21 +300,309 @@ export class ContentPreflightError extends Error {
       | "INVALID_SOURCE"
       | "ANALYZER_UNAVAILABLE"
       | "INVALID_ANALYSIS"
+      | "NARRATIVE_MISMATCH"
       | "KEY_REQUIRED"
       | "TEXT_QUOTA",
     message: string,
+    readonly diagnostic?: string,
   ) {
     super(message);
     this.name = "ContentPreflightError";
   }
 }
 
+export function contentPreflightFailureDetails(
+  error: unknown,
+): { message: string; code: string } | null {
+  if (!(error instanceof ContentPreflightError)) return null;
+  return {
+    message: error.message,
+    code: "CONTENT_PREFLIGHT_" + error.code,
+  };
+}
+
 /** Production adapter for the external text-model seam. It reserves one call
  * only when resolveContentPreflight has a cache miss; analysis itself never
  * consumes image allowance or credits. */
 type ContentPreflightTextGenerator = typeof geminiGenerateText;
+const MAX_CONTENT_PREFLIGHT_SEMANTIC_ATTEMPTS = 3;
 
-function contentPreflightResponseJsonSchema(beatCount: number): Record<string, unknown> {
+function contentPreflightValidationFeedback(error: z.ZodError): string {
+  return error.issues
+    .slice(0, 8)
+    .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+    .join("; ")
+    .slice(0, 1_200);
+}
+
+const GENERIC_STORY_ENTITY_NAMES = new Set([
+  "ai agent",
+  "ai assistant",
+  "booking system",
+  "gym booking system",
+  "software company",
+]);
+
+function normalizedStoryEntityName(value: string): string {
+  return value
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/^(?:a|an|the)\s+/u, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function escapedRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Replace a proper name only as a complete token/phrase. A name such as
+ * `Sam` must not mutate ordinary words such as `same`. */
+function replaceProperName(value: string, properName: string, replacement: string): string {
+  const escaped = escapedRegExp(properName.trim());
+  if (!escaped) return value;
+  return value.replace(
+    new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "giu"),
+    (_match, prefix: string) => `${prefix}${replacement}`,
+  );
+}
+
+function tidyRepairedDescription(value: string): string {
+  return value
+    .replace(/^[\s,;:–—-]+/u, "")
+    .replace(/\s+([,.;:])/gu, "$1")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+/** Preserve an explicit Hard Scene Fact while fitting the bounded provider
+ * schema. Truncating here could silently remove a quantity or relationship,
+ * so an overlong fact becomes adjacent word-boundary chunks instead. The
+ * schema still fails closed when the resulting array exceeds its item limit. */
+function splitBoundedProviderFact(value: string, maxLength: number): string[] {
+  const chunks: string[] = [];
+  let remaining = value;
+  while (remaining.length > maxLength) {
+    let splitAt = remaining.lastIndexOf(" ", maxLength);
+    if (splitAt <= 0) splitAt = maxLength;
+    // Avoid separating a UTF-16 surrogate pair when a provider emits an emoji
+    // or another non-BMP code point inside otherwise English provider prose.
+    if (
+      splitAt > 0
+      && splitAt < remaining.length
+      && /[\uD800-\uDBFF]/u.test(remaining[splitAt - 1])
+      && /[\uDC00-\uDFFF]/u.test(remaining[splitAt])
+    ) {
+      splitAt -= 1;
+    }
+    const chunk = remaining.slice(0, splitAt).trim();
+    if (chunk) chunks.push(chunk);
+    remaining = remaining.slice(splitAt).trim();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+/** Gemini occasionally promotes generic roles into Story Entities and copies
+ * internal proper-name linkage into provider-facing prose. Retrying the same
+ * prompt is unreliable for that mechanically repairable output. This pass is
+ * deliberately applied only after normal schema validation fails: valid model
+ * output remains byte-for-byte unchanged, while generic linkage is removed and
+ * genuine named entities keep their safe durable descriptions. */
+function repairContentPreflightSemantics(candidate: unknown): unknown {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+  const record = candidate as Record<string, unknown>;
+  if (!Array.isArray(record.storyEntities) || !Array.isArray(record.beats)) return candidate;
+
+  const retainedIds = new Set<string>();
+  const retainedEntities = record.storyEntities.filter((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return true;
+    const entity = value as Record<string, unknown>;
+    const properName = typeof entity.properName === "string" ? entity.properName : "";
+    const entityId = typeof entity.entityId === "string" ? entity.entityId : "";
+    if (GENERIC_STORY_ENTITY_NAMES.has(normalizedStoryEntityName(properName))) {
+      return false;
+    }
+    // Structured JSON enforces the field shape but cannot express unique IDs.
+    // Keep the first definition deterministically so every retained reference
+    // resolves to one stable Story Entity instead of exhausting model retries.
+    if (entityId && retainedIds.has(entityId)) return false;
+    if (entityId) retainedIds.add(entityId);
+    return true;
+  });
+
+  const properNames = retainedEntities.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const properName = (value as Record<string, unknown>).properName;
+    return typeof properName === "string" && properName.trim() ? [properName.trim()] : [];
+  });
+  const storyEntities = retainedEntities.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const entity = value as Record<string, unknown>;
+    const entityType = typeof entity.entityType === "string" ? entity.entityType : "entity";
+    const durableAttributes = Array.isArray(entity.durableAttributes)
+      ? entity.durableAttributes.filter((attribute): attribute is string => typeof attribute === "string")
+      : [];
+    const fallback = tidyRepairedDescription(
+      `${entityType === "object" ? "an" : "a"} ${entityType} ${durableAttributes.join(", ")}`,
+    );
+    const cleanDescription = (value: unknown): unknown => {
+      if (typeof value !== "string") return value;
+      const cleaned = tidyRepairedDescription(
+        properNames.reduce((result, properName) => (
+          replaceProperName(result, properName, "")
+        ), value),
+      );
+      return cleaned.length >= 3 ? cleaned : fallback;
+    };
+    return {
+      ...entity,
+      renderingDescription: cleanDescription(entity.renderingDescription),
+      recurringCharacterDescription: entity.recurringCharacterDescription === null
+        ? null
+        : cleanDescription(entity.recurringCharacterDescription),
+    };
+  });
+
+  const replacements = storyEntities.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const entity = value as Record<string, unknown>;
+    if (typeof entity.properName !== "string" || typeof entity.renderingDescription !== "string") return [];
+    return [{ properName: entity.properName, description: entity.renderingDescription }];
+  });
+  const cleanProviderText = (value: unknown): unknown => {
+    if (typeof value !== "string") return value;
+    return tidyRepairedDescription(replacements.reduce((result, entity) => (
+      replaceProperName(result, entity.properName, entity.description)
+    ), value));
+  };
+
+  const beats = record.beats.map((value, beatIndex) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const beat = value as Record<string, unknown>;
+    const hardSceneFacts = beat.hardSceneFacts && typeof beat.hardSceneFacts === "object"
+      && !Array.isArray(beat.hardSceneFacts)
+      ? beat.hardSceneFacts as Record<string, unknown>
+      : null;
+    const cleanStringArray = (items: unknown): unknown => Array.isArray(items)
+      ? items.map(cleanProviderText)
+      : items;
+    const cleanEssentialObjects = (items: unknown): unknown => Array.isArray(items)
+      ? items.flatMap((item) => {
+        const cleaned = cleanProviderText(item);
+        return typeof cleaned === "string"
+          ? splitBoundedProviderFact(cleaned, MAX_ESSENTIAL_OBJECT_LENGTH)
+          : [cleaned];
+      })
+      : items;
+    return {
+      ...beat,
+      // The provider's key is never authoritative: resolveContentPreflight
+      // binds each response Beat to the ordered input window immediately after
+      // analysis. Re-index here so duplicate model keys cannot reject an
+      // otherwise complete upload analysis.
+      beatKey: `window-${beatIndex}`,
+      subject: cleanProviderText(beat.subject),
+      action: cleanProviderText(beat.action),
+      setting: cleanProviderText(beat.setting),
+      emotion: cleanProviderText(beat.emotion),
+      emphasis: cleanProviderText(beat.emphasis),
+      sceneIntensity: cleanProviderText(beat.sceneIntensity),
+      ...(hardSceneFacts ? {
+        hardSceneFacts: {
+          ...hardSceneFacts,
+          entityTypes: cleanStringArray(hardSceneFacts.entityTypes),
+          ages: cleanStringArray(hardSceneFacts.ages),
+          genders: cleanStringArray(hardSceneFacts.genders),
+          actions: cleanStringArray(hardSceneFacts.actions),
+          locationTypes: cleanStringArray(hardSceneFacts.locationTypes),
+          timeOfDay: cleanProviderText(hardSceneFacts.timeOfDay),
+          historicalPeriod: cleanProviderText(hardSceneFacts.historicalPeriod),
+          essentialObjects: cleanEssentialObjects(hardSceneFacts.essentialObjects),
+        },
+      } : {}),
+      entityRefs: Array.isArray(beat.entityRefs)
+        ? beat.entityRefs.filter((entityId) => (
+          typeof entityId === "string"
+            && retainedIds.has(entityId)
+          ))
+        : beat.entityRefs,
+    };
+  });
+
+  const referenceCounts = new Map<string, number>();
+  beats.forEach((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const entityRefs = (value as Record<string, unknown>).entityRefs;
+    if (!Array.isArray(entityRefs)) return;
+    entityRefs.forEach((entityId) => {
+      if (typeof entityId === "string") {
+        referenceCounts.set(entityId, (referenceCounts.get(entityId) ?? 0) + 1);
+      }
+    });
+  });
+  const recurrenceRepairedEntities = storyEntities.map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const entity = value as Record<string, unknown>;
+    if (
+      entity.recurringCharacterDescription
+      && typeof entity.entityId === "string"
+      && (referenceCounts.get(entity.entityId) ?? 0) < 2
+    ) {
+      return { ...entity, recurringCharacterDescription: null };
+    }
+    return entity;
+  });
+
+  const rankedTreatmentPresetIds = (() => {
+    if (!Array.isArray(record.rankedTreatmentPresetIds)) return record.rankedTreatmentPresetIds;
+    const supported = new Set<string>(TREATMENT_PRESET_IDS);
+    const ranked = record.rankedTreatmentPresetIds.filter((value): value is string => (
+      typeof value === "string" && supported.has(value)
+    ));
+    const unique = [...new Set(ranked)];
+    for (const fallback of TREATMENT_PRESET_IDS) {
+      if (unique.length >= 3) break;
+      if (!unique.includes(fallback)) unique.push(fallback);
+    }
+    return unique.slice(0, 3);
+  })();
+  const formatRecommendation = formatRecommendationSchema.safeParse(record.formatRecommendation);
+
+  return {
+    ...record,
+    contentDomain: cleanProviderText(record.contentDomain),
+    storyEntities: recurrenceRepairedEntities,
+    beats,
+    rankedTreatmentPresetIds,
+    // Recommendation is optional guidance. If the provider phrases it as a
+    // blocking incompatibility, omit it rather than rejecting the authoritative
+    // Beat plan or weakening the format-selection contract.
+    formatRecommendation: formatRecommendation.success ? formatRecommendation.data : null,
+  };
+}
+
+function contentPreflightResponseJsonSchema(): Record<string, unknown> {
+  const hardSceneFacts = {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      entityTypes: { type: "array", items: { type: "string" } },
+      ages: { type: "array", items: { type: "string" } },
+      genders: { type: "array", items: { type: "string" } },
+      actions: { type: "array", items: { type: "string" } },
+      locationTypes: { type: "array", items: { type: "string" } },
+      timeOfDay: { anyOf: [{ type: "string" }, { type: "null" }] },
+      historicalPeriod: { anyOf: [{ type: "string" }, { type: "null" }] },
+      count: { anyOf: [{ type: "integer", minimum: 1 }, { type: "null" }] },
+      essentialObjects: { type: "array", items: { type: "string" } },
+    },
+    required: [
+      "entityTypes", "ages", "genders", "actions", "locationTypes",
+      "timeOfDay", "historicalPeriod", "count", "essentialObjects",
+    ],
+  };
   const beat = {
     type: "object",
     additionalProperties: false,
@@ -177,6 +616,13 @@ function contentPreflightResponseJsonSchema(beatCount: number): Record<string, u
       setting: { type: "string" },
       emotion: { type: "string" },
       emphasis: { type: "string" },
+      hardSceneFacts,
+      entityRefs: { type: "array", items: { type: "string" } },
+      sceneIntensity: { type: "string" },
+      safetyBoundary: {
+        type: "string",
+        enum: ["none", "medical-illustration", "real-person-context-only"],
+      },
       policyApplicability: {
         type: "string",
         enum: ["applied", "not-applicable", "story-conflict"],
@@ -191,6 +637,10 @@ function contentPreflightResponseJsonSchema(beatCount: number): Record<string, u
       "setting",
       "emotion",
       "emphasis",
+      "hardSceneFacts",
+      "entityRefs",
+      "sceneIntensity",
+      "safetyBoundary",
     ],
   };
   return {
@@ -198,24 +648,60 @@ function contentPreflightResponseJsonSchema(beatCount: number): Record<string, u
     additionalProperties: false,
     properties: {
       contentDomain: { type: "string" },
+      dominantNarrativeMode: { type: "string" },
       suggestedVisualFormatId: { type: "string", enum: [...VISUAL_FORMAT_IDS] },
-      suggestedTreatment: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          label: { type: "string" },
-          mood: { type: "string" },
+      rankedTreatmentPresetIds: {
+        type: "array",
+        items: { type: "string", enum: [...TREATMENT_PRESET_IDS] },
+        minItems: 3,
+        maxItems: 3,
+      },
+      treatmentRecommendationRationale: { type: "string" },
+      formatRecommendation: {
+        anyOf: [{
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            visualFormatId: { type: "string", enum: [...VISUAL_FORMAT_IDS] },
+            reason: { type: "string" },
+          },
+          required: ["visualFormatId", "reason"],
+        }, { type: "null" }],
+      },
+      storyEntities: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            entityId: { type: "string" },
+            properName: { type: "string" },
+            entityType: { type: "string", enum: ["person", "animal", "object", "place"] },
+            durableAttributes: { type: "array", items: { type: "string" } },
+            renderingDescription: { type: "string" },
+            recurringCharacterDescription: { anyOf: [{ type: "string" }, { type: "null" }] },
+            isRealPerson: { type: "boolean" },
+          },
+          required: [
+            "entityId", "properName", "entityType", "durableAttributes",
+            "renderingDescription", "recurringCharacterDescription", "isRealPerson",
+          ],
         },
-        required: ["label", "mood"],
       },
       beats: {
         type: "array",
         items: beat,
-        minItems: beatCount,
-        maxItems: beatCount,
+        // Do not add minItems/maxItems here. Gemini expands constraints for
+        // this deeply nested item schema and rejects requests at five or more
+        // beats as "too many states for serving". The prompt requests the
+        // exact count and resolveContentPreflight enforces it before storage.
       },
     },
-    required: ["contentDomain", "suggestedVisualFormatId", "suggestedTreatment", "beats"],
+    required: [
+      "contentDomain", "dominantNarrativeMode", "suggestedVisualFormatId",
+      "rankedTreatmentPresetIds", "treatmentRecommendationRationale",
+      "formatRecommendation", "storyEntities", "beats",
+    ],
   };
 }
 
@@ -250,11 +736,27 @@ export function createGeminiContentPreflightAnalyzer(
       const policyPrompt = sceneContentPolicyPromptBlock(
         sceneContentPolicyFromPreference(input.sceneContentPolicy),
       );
-      const raw = await generateText(key, [
+      const basePrompt = [
         "Analyze this Narrative Source for a vertical short-form video.",
         "Return one JSON object only. Do not wrap it in markdown.",
         `sourceKind: ${input.kind}`,
-        "Choose suggestedVisualFormatId from: cinematic-realism, stick-figure-story, dramatic-comic, clear-infographic, retro-story.",
+        `Choose suggestedVisualFormatId from: ${VISUAL_FORMAT_IDS.join(", ")}.`,
+        `Rank exactly three distinct treatment IDs from: ${TREATMENT_PRESET_IDS.join(", ")}. The first ID is the single recommendation for the whole video.`,
+        "Choose treatment from the Dominant Narrative Mode governing the whole Narrative Source. Never choose from one keyword, quotation, example or isolated metaphor. A ghost metaphor in a business explainer is not supernatural horror; a continuing supernatural frame may be.",
+        "The server owns treatment versions. Return IDs only and never invent a treatment label, prompt or version.",
+        "A Format Recommendation is optional guidance only. Return null when the inherited format is already strong. Never describe another qualified format as a conflict, warning or generation requirement.",
+        "Resolve recurring named people, animals, objects and places as Story Entities. properName is an internal linkage key only. renderingDescription must lead with an unambiguous positive entity type and durable attributes; never use a bare proper name as the rendering description and never rely on negation such as 'not a gorilla'.",
+        "Do not create Story Entities for generic roles or types such as AI Agent, company, customer, employee, software or a job title unless the Narrative Source explicitly gives that one entity a unique proper name.",
+        "Create recurringCharacterDescription only when the same entity appears in at least two beats. It preserves semantic type and durable attributes, not face identity.",
+        "For every beat, separate explicit Hard Scene Facts from flexible art direction. Preserve entity type, stated age/gender, action, location type, time of day, historical period, count and essential objects exactly when the source states them.",
+        "Use hardSceneFacts.count only for one homogeneous counted entity set, such as two hands or three boats. Keep bottles, drops, lamps, bags and other objects with different quantities in essentialObjects with each quantity written explicitly.",
+        "When Hard Scene Facts specify an exact count, every flexible field must describe that same counted set. Keep supporting scenery sparse and inanimate; words such as busy, crowd, fleet, group or scale must not imply additional instances of the counted entity.",
+        "State visible quantities inside each essentialObjects value when the source establishes them, such as exactly one water glass or exactly three circles.",
+        "Preserve the complete source-to-target action relationship inside Hard Scene Facts. Keep source and target entities, shared ownership, physical contact, direction and destination together in hardSceneFacts.actions and repeat visible object quantities and relationships in essentialObjects; never shorten these to a generic verb or bare object.",
+        "When a source says an unwanted action has stopped after verification, preserve the completed result in Hard Scene Facts and stage the subject after verification with hands resting away from the mechanism.",
+        "When the source does not explicitly require readable wording, express choices, workflow and evidence through blank physical objects and spatial relationships. Use solid-color tiles, object silhouettes and circular markers instead of introducing a checklist, dashboard, timeline, document wall or records page.",
+        "Use safetyBoundary medical-illustration for generated health, medical or child-care explanation. Pixels must not carry actionable dosage, exact test readings, exact treatment steps or clinically authoritative anatomy.",
+        "Use safetyBoundary real-person-context-only for news/legal/crime conduct involving an identifiable real person. Build contextual non-identifying imagery and do not reference that real-person Story Entity in entityRefs. Fictional people may be depicted normally.",
         `Return exactly ${input.windows.length} beats, one for each supplied B-roll window, in the same order. Use beatKey window-0, window-1, and so on.`,
         // The image model renders lettering as authentic-looking nonsense in some
         // writing systems, and it has no negative-prompt channel to suppress that
@@ -280,20 +782,84 @@ export function createGeminiContentPreflightAnalyzer(
         // positive cue, so the beat would draw the very thing it excluded.
         "Write only what is present in the frame. Never phrase a field as an absence, and never name something in order to exclude it.",
         policyPrompt,
-        "Schema: {contentDomain:string,suggestedVisualFormatId:string,suggestedTreatment:{label:string,mood:string},beats:[{beatKey:string,sourceExcerpt:string,startMs?:integer,endMs?:integer,subject:string,action:string,setting:string,emotion:string,emphasis:string,policyApplicability?:'applied'|'not-applicable'|'story-conflict',policyConflict?:string}]}",
+        "Schema: {contentDomain:string,dominantNarrativeMode:string,suggestedVisualFormatId:string,rankedTreatmentPresetIds:[string,string,string],treatmentRecommendationRationale:string,formatRecommendation:{visualFormatId:string,reason:string}|null,storyEntities:[{entityId,properName,entityType,durableAttributes,renderingDescription,recurringCharacterDescription,isRealPerson}],beats:[{beatKey,sourceExcerpt,startMs?,endMs?,subject,action,setting,emotion,emphasis,hardSceneFacts,entityRefs,sceneIntensity,safetyBoundary,policyApplicability?,policyConflict?}]}",
         "B-roll windows (authoritative; copy each text into the matching sourceExcerpt):",
         JSON.stringify(input.windows),
         "Narrative Source:",
         input.text,
-      ].join("\n"), Math.min(65_536, Math.max(8_192, input.windows.length * 512)), 0.2, {
-        responseMimeType: "application/json",
-        responseJsonSchema: contentPreflightResponseJsonSchema(input.windows.length),
-      });
-      try {
-        return JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim()) as ContentPreflightAnalysis;
-      } catch {
-        throw new ContentPreflightError("INVALID_ANALYSIS", "AI ส่งผลวิเคราะห์ที่อ่านไม่ได้ กรุณาลองใหม่");
+      ].join("\n");
+
+      let correction = "";
+      const attemptDiagnostics: string[] = [];
+      for (let attempt = 1; attempt <= MAX_CONTENT_PREFLIGHT_SEMANTIC_ATTEMPTS; attempt += 1) {
+        const raw = await generateText(
+          key,
+          correction ? `${basePrompt}\n\n${correction}` : basePrompt,
+          Math.min(65_536, Math.max(8_192, input.windows.length * 512)),
+          0.2,
+          {
+            responseMimeType: "application/json",
+            responseJsonSchema: contentPreflightResponseJsonSchema(),
+          },
+        );
+        let candidate: unknown;
+        try {
+          candidate = JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim());
+        } catch {
+          attemptDiagnostics.push(
+            `a${attempt}:json_parse:len=${raw.length}:sha=${createHash("sha256").update(raw).digest("hex").slice(0, 12)}`,
+          );
+          correction = [
+            "Your previous JSON was rejected because it could not be parsed.",
+            "Return one complete replacement JSON object matching the schema exactly.",
+          ].join(" ");
+          continue;
+        }
+        let parsed = analysisSchema.safeParse(candidate);
+        if (!parsed.success) {
+          parsed = analysisSchema.safeParse(repairContentPreflightSemantics(candidate));
+        }
+        const wrongBeatCount = parsed.success && parsed.data.beats.length !== input.windows.length;
+        if (parsed.success && !wrongBeatCount) return parsed.data;
+        const diagnostic = parsed.success
+          ? `beat_count:${parsed.data.beats.length}/${input.windows.length}`
+          : parsed.error.issues
+            .slice(0, 4)
+            .map((issue) => `${issue.path.join(".") || "root"}:${issue.code}`)
+            .join(",");
+        attemptDiagnostics.push(
+          `a${attempt}:${diagnostic}:len=${raw.length}:sha=${createHash("sha256").update(raw).digest("hex").slice(0, 12)}`,
+        );
+        const issues = parsed.success
+          ? `beats: expected exactly ${input.windows.length}, received ${parsed.data.beats.length}`
+          : contentPreflightValidationFeedback(parsed.error);
+        correction = [
+          "Your previous JSON was rejected by semantic validation.",
+          `Validation issues: ${issues}`,
+          "Return one complete replacement JSON object. Correct the issues while preserving the Narrative Source and every B-roll window.",
+          "Never copy a proper name into renderingDescription, recurringCharacterDescription or any provider-facing beat field.",
+        ].join(" ");
       }
+      const diagnostic = attemptDiagnostics.join("|").slice(0, 1_200);
+      await recordTelemetryEvent(userId, {
+        name: "brand_visual_preflight_invalid",
+        category: "error",
+        source: "server",
+        step: "content_preflight",
+        status: "failed",
+        properties: {
+          analyzerVersion: CONTENT_PREFLIGHT_ANALYZER_VERSION,
+          sourceKind: input.kind,
+          windowCount: input.windows.length,
+          attemptCount: attemptDiagnostics.length,
+          diagnostic,
+        },
+      }).catch(() => null);
+      throw new ContentPreflightError(
+        "INVALID_ANALYSIS",
+        "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง",
+        diagnostic,
+      );
     },
   };
 }
@@ -437,7 +1003,33 @@ function storedSourceWindowHash(beat: ProjectVisualBeat): string {
 type StoredPreflight = ContentPreflight & { visualBeats: ProjectVisualBeat[] };
 
 function resolved(row: StoredPreflight, cached: boolean): ResolvedContentPreflight {
-  const treatment = JSON.parse(row.suggestedTreatmentJson) as ContentPreflightAnalysis["suggestedTreatment"];
+  const presetId = row.suggestedTreatmentPresetId as TreatmentPresetId | null;
+  if (
+    !row.dominantNarrativeMode
+    || !presetId
+    || !TREATMENT_PRESET_IDS.includes(presetId)
+    || !row.suggestedTreatmentPresetVersion
+    || !row.treatmentRecommendationRationale
+  ) {
+    throw new ContentPreflightError("INVALID_ANALYSIS", "ผลวิเคราะห์แนวเล่าเรื่องยังไม่สมบูรณ์");
+  }
+  const treatmentPin = createCatalogTreatmentPin(presetId, "adaptive");
+  if (treatmentPin.version !== row.suggestedTreatmentPresetVersion) {
+    throw new ContentPreflightError("INVALID_ANALYSIS", "ข้อมูลแนวเล่าเรื่องไม่ตรงกับรายการที่ระบบรองรับ");
+  }
+  let rankedTreatmentPresetIds: TreatmentPresetId[];
+  let storyEntities: ContentPreflightAnalysis["storyEntities"];
+  let formatRecommendation: ContentPreflightAnalysis["formatRecommendation"];
+  try {
+    rankedTreatmentPresetIds = z.array(z.enum(TREATMENT_PRESET_IDS)).length(3)
+      .parse(JSON.parse(row.rankedTreatmentPresetIdsJson));
+    storyEntities = z.array(storyEntitySchema).parse(JSON.parse(row.storyEntitiesJson));
+    formatRecommendation = row.formatRecommendationJson
+      ? formatRecommendationSchema.parse(JSON.parse(row.formatRecommendationJson))
+      : null;
+  } catch {
+    throw new ContentPreflightError("INVALID_ANALYSIS", "ข้อมูลแผนภาพที่บันทึกไว้อ่านไม่ได้");
+  }
   const visualBeats = row.visualBeats
     .slice()
     .sort((a, b) => a.sequence - b.sequence)
@@ -452,8 +1044,16 @@ function resolved(row: StoredPreflight, cached: boolean): ResolvedContentPreflig
     id: row.id,
     sourceHash: row.sourceHash,
     contentDomain: row.contentDomain,
+    dominantNarrativeMode: row.dominantNarrativeMode,
     suggestedVisualFormatId: row.suggestedVisualFormatId as VisualFormatId,
-    suggestedTreatment: treatment,
+    suggestedTreatment: {
+      ...treatmentPin,
+      label: treatmentPresetThaiLabel(treatmentPin),
+      rationale: row.treatmentRecommendationRationale,
+    },
+    rankedTreatmentPresetIds,
+    storyEntities,
+    formatRecommendation,
     visualBeats,
     sceneContentPolicy,
     policyWarnings: sceneContentPolicyWarnings(visualBeats),
@@ -626,7 +1226,7 @@ export async function resolveContentPreflight(input: {
   if (!analyzed.success) {
     throw new ContentPreflightError(
       "INVALID_ANALYSIS",
-      analyzed.error.issues[0]?.message || "ผลวิเคราะห์เนื้อหาไม่ครบ",
+      "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์ กรุณาลองใหม่อีกครั้ง",
     );
   }
   if (analyzed.data.beats.length !== windows.length) {
@@ -712,8 +1312,25 @@ export async function resolveContentPreflight(input: {
         sourceHash,
         analyzerVersion: CONTENT_PREFLIGHT_ANALYZER_VERSION,
         contentDomain: analysis.contentDomain,
+        dominantNarrativeMode: analysis.dominantNarrativeMode,
         suggestedVisualFormatId: analysis.suggestedVisualFormatId,
-        suggestedTreatmentJson: JSON.stringify(analysis.suggestedTreatment),
+        suggestedTreatmentJson: JSON.stringify({
+          presetId: analysis.rankedTreatmentPresetIds[0],
+          version: createCatalogTreatmentPin(analysis.rankedTreatmentPresetIds[0], "adaptive").version,
+          label: treatmentPresetThaiLabel(analysis.rankedTreatmentPresetIds[0]),
+          mood: analysis.treatmentRecommendationRationale,
+        }),
+        suggestedTreatmentPresetId: analysis.rankedTreatmentPresetIds[0],
+        suggestedTreatmentPresetVersion: createCatalogTreatmentPin(
+          analysis.rankedTreatmentPresetIds[0],
+          "adaptive",
+        ).version,
+        rankedTreatmentPresetIdsJson: JSON.stringify(analysis.rankedTreatmentPresetIds),
+        treatmentRecommendationRationale: analysis.treatmentRecommendationRationale,
+        storyEntitiesJson: JSON.stringify(analysis.storyEntities),
+        formatRecommendationJson: analysis.formatRecommendation
+          ? JSON.stringify(analysis.formatRecommendation)
+          : null,
         visualBeats: {
           create: preparedBeats.map(({ beat, sourceExcerptHash }, sequence) => {
             const prior = exactPriorBySequence.get(sequence) ?? fallbackPriorBySequence.get(sequence);

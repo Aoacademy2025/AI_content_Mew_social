@@ -129,6 +129,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [userName, setUserName] = useState<string>("");
   const [userEmail, setUserEmail] = useState<string>("");
   const [avatar, setAvatar] = useState<string | null>(null);
+  const [trialEndsAt, setTrialEndsAt] = useState<string | null>(null);
   const [role, setRole] = useState<"ADMIN" | "USER">(roleProp);
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
@@ -145,15 +146,18 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [heroScriptPreview, setHeroScriptPreview] = useState(false);
   const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
   const [brandVisualCohort, setBrandVisualCohort] = useState<string>("off");
+  const [firstClipPath, setFirstClipPath] = useState(false);
 
   useEffect(() => {
     fetchMe()
       .then(data => {
         if (!data) { setSessionLoaded(true); return; }
-        if (data.plan) setPlan(data.plan);
+        const effectivePlan = data.effectivePlan ?? data.plan;
+        if (effectivePlan) setPlan(effectivePlan);
         if (data.name) setUserName(data.name);
         if (data.email) setUserEmail(data.email);
         setAvatar(data.avatar ?? null);
+        setTrialEndsAt(typeof data.trialEndsAt === "string" ? data.trialEndsAt : null);
         if (data.role) setRole(data.role as "ADMIN" | "USER");
         if (typeof data.usageCount === "number") setUsageCount(data.usageCount);
         if (typeof data.usageLimit === "number") setUsageLimit(data.usageLimit);
@@ -165,6 +169,7 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         setHeroScriptPreview(data.heroScriptPreview === true);
         setBrandVisualAllowed(data.brandVisualAllowed === true);
         setBrandVisualCohort(data.brandVisualCohort ?? "off");
+        setFirstClipPath(data.firstClipPath === true);
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -201,7 +206,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const isBusiness = plan === "BUSINESS";
   const isPro = plan === "PRO";
   const isPaid = isPro || isBusiness;
-  const planLabel = isBusiness ? "Business Plan" : isPro ? "Pro Plan" : "Free Plan";
+  const isActiveTrial = Boolean(trialEndsAt && new Date(trialEndsAt).getTime() > Date.now());
+  const planLabel = isActiveTrial ? "ทดลอง PRO" : isBusiness ? "Business Plan" : isPro ? "Pro Plan" : "Free Plan";
   const planColor = isBusiness ? "hsl(252 83% 65%)" : isPro ? "#8B5CF6" : "var(--ui-text-muted)";
 
   // Attach the unread-updates badge to the user "/updates" item (admins use /admin/updates,
@@ -214,7 +220,10 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const internalItemsOnly = (items: SidebarNavItem[]) =>
     items
       .filter((item) => item.href !== "/ai-studio" || internalAiTester)
+      // First-Clip Path chooses the default onboarding rail; it must not revoke
+      // the paid Hero Script entrypoint or the Trial locked preview.
       .filter((item) => item.href !== "/hero-script" || heroScriptAllowed || heroScriptPreview)
+      .filter((item) => item.href !== "/brands" || !firstClipPath)
       .map((item) => item.href === "/hero-script" && !heroScriptAllowed
         ? { ...item, badgeText: "PRO" }
         : item.href === "/brands" && !brandVisualAllowed

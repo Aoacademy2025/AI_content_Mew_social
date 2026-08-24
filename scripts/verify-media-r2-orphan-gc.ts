@@ -70,6 +70,7 @@ class FakeCatalog {
 
 class FakeRemote {
   readonly objects = new Map<string, R2ObjectHead>();
+  listTimestampOffsetMs = 0;
 
   add(
     identity: MediaIdentity,
@@ -92,7 +93,7 @@ class FakeRemote {
     const objects: R2ListedObject[] = [...this.objects].map(([key, value]) => ({
       key,
       sizeBytes: value.sizeBytes,
-      lastModified: value.lastModified,
+      lastModified: new Date(value.lastModified.getTime() + this.listTimestampOffsetMs),
     }));
     return { objects, continuationToken: null };
   }
@@ -105,6 +106,46 @@ class FakeRemote {
   async delete(key: string): Promise<void> {
     this.objects.delete(key);
   }
+}
+
+async function toleratesR2TimestampPrecision(): Promise<void> {
+  const remote = new FakeRemote();
+  remote.listTimestampOffsetMs = 101;
+  const identity: MediaIdentity = { area: "renders", filename: "timestamp-skew.mp4" };
+  remote.add(identity, "9".repeat(64), 30, 123);
+
+  const dry = await runR2OrphanGc({
+    now: NOW,
+    graph: graph(),
+    catalog: new FakeCatalog([]),
+    remote,
+  });
+  assert.equal(dry.selected.count, 1, "sub-second LIST/HEAD timestamp skew remains verifiable");
+  assert.equal(dry.skipped.remote_unverified, 0);
+  assert.equal(dry.errors, 0);
+
+  const applied = await runR2OrphanGc({
+    mode: "apply",
+    now: NOW,
+    graph: graph(),
+    catalog: new FakeCatalog([]),
+    remote,
+    manifestSha256: dry.manifestSha256,
+    env: APPLY_ENV,
+  });
+  assert.equal(applied.deleted.count, 1, "apply uses the same safe timestamp precision rule");
+
+  const changed = new FakeRemote();
+  changed.listTimestampOffsetMs = 1_100;
+  changed.add({ area: "renders", filename: "timestamp-changed.mp4" }, "8".repeat(64), 30);
+  const rejected = await runR2OrphanGc({
+    now: NOW,
+    graph: graph(),
+    catalog: new FakeCatalog([]),
+    remote: changed,
+  });
+  assert.equal(rejected.selected.count, 0, "cross-second timestamp changes still fail closed");
+  assert.equal(rejected.skipped.remote_unverified, 1);
 }
 
 async function boundedDeletion(): Promise<void> {
@@ -226,6 +267,7 @@ async function main(): Promise<void> {
   ({ runR2OrphanGc } = await import("../src/lib/media-r2-orphan-gc"));
   await boundedDeletion();
   await failClosed();
+  await toleratesR2TimestampPrecision();
   console.log("PASS R2 orphan GC 21-day retention, reference guard, manifest, and SHA gates");
 }
 

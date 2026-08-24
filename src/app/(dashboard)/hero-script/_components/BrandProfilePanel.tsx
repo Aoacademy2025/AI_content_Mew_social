@@ -294,7 +294,7 @@ export function BrandProfilePanel({
     try {
       const res = await fetch(`/api/brand-profiles/${deleteId}`, { method: "DELETE" });
       if (!res.ok) { await toastErrorResponse(res, "ลบโปรไฟล์ไม่สำเร็จ"); return; }
-      toast.success("ลบโปรไฟล์แล้ว");
+      toast.success("นำโปรไฟล์ออกจากรายการแล้ว");
       if (selectedProfileId === deleteId) onSelectedProfileIdChange(null);
       await fetchProfiles();
     } catch {
@@ -577,12 +577,12 @@ export function BrandProfilePanel({
       <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>ลบโปรไฟล์แบรนด์นี้?</AlertDialogTitle>
-            <AlertDialogDescription>การลบไม่สามารถย้อนกลับได้</AlertDialogDescription>
+            <AlertDialogTitle>นำโปรไฟล์แบรนด์ออกจากรายการ?</AlertDialogTitle>
+            <AlertDialogDescription>โปรเจกต์และเวอร์ชันแบรนด์ที่เคยใช้งานจะยังคงอยู่ แต่แบรนด์นี้จะไม่แสดงสำหรับงานใหม่</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="min-h-11">ยกเลิก</AlertDialogCancel>
-            <AlertDialogAction className="min-h-11" onClick={confirmDelete} disabled={deleting}>ลบ</AlertDialogAction>
+            <AlertDialogAction className="min-h-11" onClick={confirmDelete} disabled={deleting}>นำออก</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

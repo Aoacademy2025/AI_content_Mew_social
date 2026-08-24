@@ -28,6 +28,7 @@ export interface MeData {
   heroAiBeta?: boolean;
   heroAiImageEligible?: boolean;
   recommendedAutoMixDefault?: boolean;
+  firstClipPath?: boolean;
   heroScriptAllowed?: boolean;
   heroScriptPreview?: boolean;
   heroScriptCohort?: "internal" | "paid" | "coupon" | "bundle" | "grant" | "trial" | "free" | "preview";

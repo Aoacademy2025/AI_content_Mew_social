@@ -17,7 +17,7 @@ export type FoundingCoupon = {
 /** Load the founding coupon, or null if it isn't configured / is incomplete. */
 export async function getFoundingCoupon(): Promise<FoundingCoupon | null> {
   const c = await prisma.coupon.findUnique({ where: { code: FOUNDING_CODE } });
-  if (!c || c.type !== "DISCOUNT" || c.percentOff == null || !c.stripePromotionCodeId) return null;
+  if (!c || !c.isActive || c.type !== "DISCOUNT" || c.percentOff == null || !c.stripePromotionCodeId) return null;
   return {
     id: c.id,
     percentOff: c.percentOff,

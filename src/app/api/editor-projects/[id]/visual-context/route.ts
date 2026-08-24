@@ -8,15 +8,33 @@ import {
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { prisma } from "@/lib/prisma";
 import {
+  TREATMENT_PRESETS,
+  TREATMENT_PRESET_IDS,
+  createCatalogTreatmentPin,
+  treatmentPresetThaiLabel,
+  type TreatmentPresetId,
+} from "@/lib/brand-treatment-catalog";
+import { lookChangeConfirmation } from "@/lib/brand-treatment-presentation";
+import {
   ProjectLookError,
   applyProjectLook,
   projectHasPersistedVisualPin,
   projectLookInputSchema,
   reusableProjectVisualBeatSceneIndices,
   resolveProjectVisualContext,
+  saveUploadProjectVisualFormatAwaitingPreflight,
 } from "@/lib/project-look.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { brandLookIdentityKey, brandVisualIdentityKey, type VisualFormatId } from "@/lib/brand-visual-system";
+import { VISUAL_FORMAT_IDS, brandLookIdentityKey, brandVisualIdentityKey, type VisualFormatId } from "@/lib/brand-visual-system";
+
+function parseOptionalJson(value: string | null | undefined): unknown | null {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
 
 async function currentVisualState(userId: string, projectId: string, preflightId?: string) {
   const preflight = await prisma.contentPreflight.findFirst({
@@ -27,29 +45,44 @@ async function currentVisualState(userId: string, projectId: string, preflightId
   if (preflightId && !preflight) {
     throw new ProjectLookError("NOT_FOUND", "ไม่พบข้อมูลฉากชุดนี้");
   }
-  const treatment = preflight
-    ? JSON.parse(preflight.suggestedTreatmentJson) as { label?: string; mood?: string }
+  const suggestedPresetId = preflight?.suggestedTreatmentPresetId as TreatmentPresetId | null;
+  const suggestedPin = suggestedPresetId && TREATMENT_PRESET_IDS.includes(suggestedPresetId)
+    ? createCatalogTreatmentPin(suggestedPresetId, "adaptive")
     : null;
+  const rankedTreatmentPresetIds = (() => {
+    try {
+      const parsed = JSON.parse(preflight?.rankedTreatmentPresetIdsJson ?? "[]") as unknown;
+      return Array.isArray(parsed)
+        ? parsed.filter((id): id is TreatmentPresetId => typeof id === "string" && TREATMENT_PRESET_IDS.includes(id as TreatmentPresetId))
+        : [];
+    } catch {
+      return [];
+    }
+  })();
+  const legacyTreatment = parseOptionalJson(preflight?.suggestedTreatmentJson) as { label?: string; mood?: string } | null;
   return {
     preflight,
     suggested: {
       visualFormatId: (preflight?.suggestedVisualFormatId ?? "clear-infographic") as VisualFormatId,
-      treatment: [treatment?.label, treatment?.mood].filter(Boolean).join(", ") || "clear",
+      treatment: suggestedPin
+        ? treatmentPresetThaiLabel(suggestedPin)
+        : [legacyTreatment?.label, legacyTreatment?.mood].filter(Boolean).join(", ") || "clear",
+      ...(suggestedPin && suggestedPin.version === preflight?.suggestedTreatmentPresetVersion
+        ? { treatmentPin: suggestedPin }
+        : {}),
     },
+    suggestedTreatment: suggestedPin ? {
+      ...suggestedPin,
+      label: treatmentPresetThaiLabel(suggestedPin),
+      rationale: preflight?.treatmentRecommendationRationale ?? "",
+    } : null,
+    rankedTreatmentPresetIds,
     existingImageCount: preflight?.visualBeats.filter((beat) => Boolean(beat.existingAssetUrl)).length ?? 0,
   };
 }
 
 function confirmation(existingImageCount: number) {
-  return {
-    code: "LOOK_CHANGE_CONFIRMATION_REQUIRED",
-    existingImageCount,
-    quotedCredits: existingImageCount * HERO_AI_IMAGE_CREDITS,
-    options: [
-      { id: "regenerate-all", label: "สร้างทุกภาพใหม่ให้เป็นแนวเดียวกัน" },
-      { id: "new-only", label: "ใช้แนวใหม่เฉพาะภาพที่สร้างต่อจากนี้", warning: "คลิปจะมีมากกว่าหนึ่งแนวภาพ" },
-    ],
-  };
+  return lookChangeConfirmation(existingImageCount, HERO_AI_IMAGE_CREDITS);
 }
 
 export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -90,6 +123,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     return NextResponse.json({
       context,
       suggested: state.preflight ? state.suggested : null,
+      suggestedTreatment: state.suggestedTreatment,
+      rankedTreatmentPresetIds: state.rankedTreatmentPresetIds,
+      treatmentPresets: TREATMENT_PRESETS.map((preset) => ({ id: preset.id, label: preset.thaiLabel })),
+      formatRecommendation: parseOptionalJson(state.preflight?.formatRecommendationJson),
       contentDomain: state.preflight?.contentDomain ?? null,
       preflightId: state.preflight?.id ?? null,
       sourceHash: state.preflight?.sourceHash ?? null,
@@ -125,11 +162,49 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const auth = await requireBrandVisualUser();
     if (!auth.ok) return auth.response;
     const body = await req.json().catch(() => null);
+    const { id } = await params;
+    if (body?.deferTreatmentUntilPreflight === true) {
+      const visualFormatId = VISUAL_FORMAT_IDS.find((candidate) => candidate === body?.look?.visualFormatId);
+      if (!visualFormatId) {
+        return NextResponse.json({ code: "INVALID_LOOK", error: "แนวภาพนี้ไม่อยู่ใน V1" }, { status: 400 });
+      }
+      const latest = await currentVisualState(auth.user.id, id);
+      if (latest.preflight) {
+        return NextResponse.json({
+          code: "PREFLIGHT_ID_REQUIRED",
+          error: "กรุณาโหลดผลวิเคราะห์เนื้อหาเวอร์ชันปัจจุบันก่อนเปลี่ยนแนวภาพ",
+          currentPreflightId: latest.preflight.id,
+        }, { status: 409 });
+      }
+      const look = await saveUploadProjectVisualFormatAwaitingPreflight({
+        userId: auth.user.id,
+        projectId: id,
+        visualFormatId,
+      });
+      await recordTelemetryEvent(auth.user.id, {
+        name: "project_look_changed",
+        source: "server",
+        step: "editor.step2",
+        status: "awaiting-upload-transcript",
+        properties: {
+          projectId: id,
+          preflightId: null,
+          visualFormatId: look.visualFormatId,
+          existingImageCount: 0,
+          cohort: auth.access.cohort,
+        },
+      }).catch(() => {});
+      return NextResponse.json({
+        look,
+        preflightId: null,
+        applyMode: null,
+        regenerationPlan: null,
+      });
+    }
     const parsed = projectLookInputSchema.safeParse(body?.look ?? body);
     if (!parsed.success) {
       return NextResponse.json({ code: "INVALID_LOOK", error: parsed.error.issues[0]?.message }, { status: 400 });
     }
-    const { id } = await params;
     const requestedPreflightId = typeof body?.preflightId === "string" && body.preflightId.trim()
       ? body.preflightId.trim()
       : undefined;
@@ -145,7 +220,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
     const state = await currentVisualState(auth.user.id, id, requestedPreflightId);
     const applyMode = body?.applyMode;
-    if (state.existingImageCount > 0 && applyMode !== "new-only" && applyMode !== "regenerate-all") {
+    if (state.existingImageCount > 0 && applyMode !== "regenerate-all") {
       return NextResponse.json(confirmation(state.existingImageCount), { status: 409 });
     }
     const applied = await applyProjectLook({
@@ -180,7 +255,6 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         quotedCredits: state.existingImageCount * HERO_AI_IMAGE_CREDITS,
         automatic: false,
       } : null,
-      mixedLookWarning: applyMode === "new-only" && state.existingImageCount > 0,
     });
   } catch (error) {
     if (error instanceof ProjectLookError) {

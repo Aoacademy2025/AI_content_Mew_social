@@ -250,6 +250,7 @@ export async function POST(request: Request) {
     const executionTimes: number[] = [];
     const providerJobIds: string[] = [];
     const workerVersions = new Set<string>();
+    const catalogVersions = new Set<string>();
     const workerLanguages = new Set<string>();
     const workerNumSteps = new Set<number>();
     let sampleRate = 0;
@@ -326,6 +327,7 @@ export async function POST(request: Request) {
         executionTimes.push(result.executionTimeMs);
         if (result.providerJobId) providerJobIds.push(result.providerJobId);
         if (result.response.worker_version) workerVersions.add(result.response.worker_version);
+        if (result.response.catalog_version) catalogVersions.add(result.response.catalog_version);
         if (result.response.language) workerLanguages.add(result.response.language);
         if (typeof result.response.num_step === "number") workerNumSteps.add(result.response.num_step);
       }
@@ -389,6 +391,7 @@ export async function POST(request: Request) {
         backend: config.backend,
         numStep: config.numStep,
         workerVersions: [...workerVersions].join(","),
+        catalogVersions: [...catalogVersions].join(","),
         languageHints: [...workerLanguages].join(","),
         effectiveNumSteps: [...workerNumSteps].sort((a, b) => a - b).join(","),
         segments: chunks.length,
@@ -419,6 +422,7 @@ export async function POST(request: Request) {
             segments: chunks.length,
             providerJobIds,
             workerVersions: [...workerVersions],
+            catalogVersions: [...catalogVersions],
             languageHints: [...workerLanguages],
             effectiveNumSteps: [...workerNumSteps].sort((a, b) => a - b),
             speechNormalizerVersion: HERO_VOICE_SPEECH_NORMALIZER_VERSION,

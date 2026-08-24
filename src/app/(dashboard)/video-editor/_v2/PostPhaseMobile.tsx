@@ -23,7 +23,7 @@ import {
   LOCKED_EFFECT_PRESETS, LOCKED_COLOR_PRESETS, LOCKED_ACCENT_PRESETS,
   V2_CARD_LEN_OPTIONS, resolveV2FontWeight, type V2CardLen, type V2FontWeight,
 } from "./subtitle-style";
-import type { V2JobState } from "./useV2Job";
+import type { SubmitExportInput, V2JobState } from "./useV2Job";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
@@ -48,6 +48,7 @@ import { avatarFadeApplies } from "@/lib/avatar-fade";
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
+import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -81,11 +82,12 @@ export function PostPhaseMobile({
   canRunProjectOperation,
   internalAiTester,
   sceneRerollEnabled,
+  sceneRerollUnavailableReason,
   starterImageAllowance,
   downloadFilename,
 }: {
   job: V2JobState; script: string;
-  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
+  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string }>;
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
@@ -105,6 +107,7 @@ export function PostPhaseMobile({
   canRunProjectOperation?: () => boolean;
   internalAiTester: boolean;
   sceneRerollEnabled: boolean;
+  sceneRerollUnavailableReason?: string;
   starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
 }) {
@@ -293,6 +296,7 @@ export function PostPhaseMobile({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandVisualAllowed={brandVisualAllowed} />
+      <SubtitleQaInlineBanner output={job.output} />
       {/* ── preview ติดบน + สครับ ── */}
       <div data-mobile-preview="true" className="shrink-0" style={{ background: "#000", borderBottom: `1px solid ${color.cardBorder}` }}>
         <div data-mobile-video-preview-frame="true" style={{ position: "relative", height: "40vh", maxHeight: 360, aspectRatio: "9/16", margin: "0 auto", background: "#000", overflow: "hidden" }}>
@@ -988,6 +992,7 @@ export function PostPhaseMobile({
           videoJobId={job.jobId}
           fullBrollEditEnabled={fullBrollEditEnabled}
           sceneRerollEnabled={sceneRerollEnabled}
+          sceneRerollUnavailableReason={sceneRerollUnavailableReason}
           starterImageAllowance={starterImageAllowance}
         />
       )}

@@ -88,6 +88,7 @@ export default function ContentPage() {
   const [viewingContent, setViewingContent] = useState<Content | null>(null);
   const [deletingContentId, setDeletingContentId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
+    inputMode: "topic" as "topic" | "source",
     sourceText: "",
     sourceUrl: "",
     styleId: "",
@@ -193,7 +194,7 @@ export default function ContentPage() {
   }
 
   function resetForm() {
-    setFormData({ sourceText: "", sourceUrl: "", styleId: "", language: "TH", imageModel: "nanobanana", videoDuration: "60" });
+    setFormData({ inputMode: "topic", sourceText: "", sourceUrl: "", styleId: "", language: "TH", imageModel: "nanobanana", videoDuration: "60" });
     setGeneratedContent(null);
     setEditableContent({ headline: "", subheadline: "", body: "", hashtags: "", imagePrompt: "" });
   }
@@ -287,8 +288,30 @@ export default function ContentPage() {
             <div className="w-96 shrink-0 flex flex-col overflow-y-auto border-r p-5 gap-4" style={{ borderColor: "var(--ui-divider)" }}>
               <div>
                 <p className="text-xs font-semibold uppercase tracking-widest mb-3" style={{ color: "var(--ui-text-muted)" }}>Source Content</p>
+                <div className="mb-3 grid grid-cols-2 gap-2" role="group" aria-label="ประเภทข้อมูลต้นทาง">
+                  {([
+                    { value: "topic", label: "หัวข้อ / Brief" },
+                    { value: "source", label: "บทความต้นฉบับ" },
+                  ] as const).map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, inputMode: option.value })}
+                      className="rounded-lg px-3 py-2 text-xs font-semibold transition-colors"
+                      style={{
+                        color: formData.inputMode === option.value ? "var(--ui-text-primary)" : "var(--ui-text-muted)",
+                        background: formData.inputMode === option.value ? "hsl(250 90% 65% / 0.18)" : "var(--ui-input-bg)",
+                        border: formData.inputMode === option.value ? "1px solid hsl(250 90% 65% / 0.45)" : "1px solid var(--ui-card-border)",
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
                 <Textarea
-                  placeholder={"วางข้อความต้นฉบับ บทความ หรือหัวข้อที่ต้องการให้ AI สร้างเป็นเนื้อหา..."}
+                  placeholder={formData.inputMode === "topic"
+                    ? "ระบุหัวข้อ เป้าหมาย หรือ Brief ที่ต้องการให้ AI เขียน..."
+                    : "วางบทความหรือข้อความต้นฉบับที่ต้องการให้นำมาเรียบเรียง..."}
                   value={formData.sourceText}
                   onChange={(e) => setFormData({ ...formData, sourceText: e.target.value })}
                   rows={10}

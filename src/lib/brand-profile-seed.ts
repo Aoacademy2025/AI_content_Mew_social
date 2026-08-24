@@ -1,4 +1,6 @@
+import type { TreatmentPresetId } from "@/lib/brand-treatment-catalog";
 import type { VisualFormatId } from "@/lib/brand-visual-system";
+import { parseTtsProvider, type TtsProvider } from "@/lib/tts-providers";
 
 export type BrandProfileSeed = {
   schemaVersion: 1;
@@ -19,6 +21,8 @@ export type BrandProfileSeed = {
   brandMark: { assetId: string | null; enabled: boolean; position: string; sizePct: number; opacity: number };
   visual: {
     primaryVisualFormatId: VisualFormatId;
+    treatmentPolicy: "adaptive" | "locked";
+    lockedTreatmentPresetId: TreatmentPresetId | null;
     languageMode: "defined" | "none";
     palette: string[];
     personality: string;
@@ -35,7 +39,7 @@ export type BrandProfileSeed = {
 
 export type CurrentBrandDefaults = {
   script: { styleId: string | null; tone: string; analysisNotes: string | null; sampleText: string | null };
-  voice: { provider: string; voiceId: string | null };
+  voice: { provider: TtsProvider; voiceId: string | null };
   subtitle: { presetId: string | null; config: Record<string, string | number | boolean | null> };
   brandMark: {
     assetId: string | null;
@@ -54,7 +58,9 @@ export function currentBrandVoiceDefaults(input: {
   elevenlabsVoiceId: string | null | undefined;
   geminiVoiceName: string | null | undefined;
 }): CurrentBrandDefaults["voice"] {
-  const provider = input.ttsProvider || "elevenlabs";
+  const provider = parseTtsProvider(input.ttsProvider);
+  // omnivoice has no account-level saved voice id (Hero Voice is picked per-project,
+  // no User.omniVoiceId column) — null is correct there, same as before this change.
   const voiceId = provider === "gemini"
     ? input.geminiVoiceName || null
     : provider === "elevenlabs"
@@ -80,11 +86,13 @@ export function createBlankBrandProfileSeed(): BrandProfileSeed {
       analysisNotes: null,
       sampleText: null,
     },
-    voice: { provider: "elevenlabs", voiceId: null },
+    voice: { provider: "gemini", voiceId: null },
     subtitle: { presetId: null, config: {} },
     brandMark: { assetId: null, enabled: false, position: "top-right", sizePct: 18, opacity: 0.9 },
     visual: {
       primaryVisualFormatId: "clear-infographic",
+      treatmentPolicy: "adaptive",
+      lockedTreatmentPresetId: null,
       languageMode: "defined",
       palette: ["#2B2926", "#F5F1E8", "#A8A29E"],
       personality: "สมดุล ชัดเจน และปรับให้เข้ากับแบรนด์ได้",

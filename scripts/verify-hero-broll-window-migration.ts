@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import {
+  canGenerateHeroBrollFromSource,
   heroImageStyleForBrollWindow,
   parseHeroBrollWindowRequest,
 } from "../src/lib/broll-window-hero";
+import {
+  ProjectLookError,
+  sceneRerollUnavailablePayload,
+} from "../src/lib/project-visual-context";
 import {
   clearPendingBrollSceneReroll,
   readPendingBrollSceneReroll,
@@ -43,6 +48,33 @@ assert.match(
   /resolveProjectVisualPromptForVideoScene/,
   "Scene Reroll must compile the exact pinned Visual Beat instead of trusting a browser prompt",
 );
+const missingBeat = new ProjectLookError("PREFLIGHT_INCOMPLETE", "ไม่พบข้อมูลภาพสำหรับฉากที่ 20");
+assert.deepEqual(
+  sceneRerollUnavailablePayload(missingBeat),
+  { error: "scene_reroll_unavailable", message: "ไม่พบข้อมูลภาพสำหรับฉากที่ 20" },
+  "a window without a Visual Beat is an unavailable Scene Reroll, not a 500",
+);
+assert.equal(sceneRerollUnavailablePayload(new Error("boom")), null, "unrelated errors stay unmapped");
+assert.equal(
+  sceneRerollUnavailablePayload(new ProjectLookError("INVALID_LOOK", "แนวภาพนี้ไม่อยู่ใน V1")),
+  null,
+  "look-shape errors are not remapped as a missing scene",
+);
+assert.match(
+  route,
+  /sceneRerollUnavailablePayload/,
+  "the generate route must map ProjectLookError before it becomes an uncaught 500",
+);
+assert.match(
+  route,
+  /sceneRerollUnavailablePayload[\s\S]{0,400}status:\s*409/,
+  "a missing Visual Beat must respond 409 with the Thai ProjectLookError message",
+);
+assert.doesNotMatch(
+  route,
+  /scene_reroll_requires_ai_asset|reusableProjectVisualAssets/,
+  "a Stock scene must not require a previous AI asset before generating from its durable Visual Beat",
+);
 assert.match(
   route,
   /getRunpodImageCostSnapshot/,
@@ -65,8 +97,13 @@ assert.match(
 );
 assert.match(
   route,
-  /deferVisualBeatLink:\s*true[\s\S]+applyKenBurns[\s\S]+recordVisualBeatAsset/,
-  "Scene Reroll must replace the Visual Beat only after its customer-facing derivative succeeds",
+  /deferVisualBeatLink:\s*true[\s\S]+applyKenBurns/,
+  "Scene Reroll must stage its paid image until the customer-facing derivative succeeds",
+);
+assert.doesNotMatch(
+  route,
+  /recordVisualBeatAsset/,
+  "a generated candidate must not replace the Visual Beat before deliberate Apply",
 );
 assert.match(
   route,
@@ -105,8 +142,13 @@ assert.match(
 );
 assert.match(
   shell,
-  /sceneRerollEnabled=\{p\.heroAiImageEligible\s*\|\|\s*Boolean\(job\.contentPreflightId\)\}/,
-  "the per-window V1 gate must admit Brand Visual cohorts and already-pinned rollback jobs",
+  /sceneRerollEnabled=\{job\.sceneRerollCapability\?\.available === true\}/,
+  "the per-window gate must use the source job's authoritative visual-pin capability",
+);
+assert.doesNotMatch(
+  shell,
+  /sceneRerollEnabled=\{p\.heroAiImageEligible\s*\|\|/,
+  "account eligibility alone must not expose Scene Reroll on legacy jobs",
 );
 assert.ok(
   route.indexOf("const existingImageJob") < route.indexOf("await checkHeroImageRate")
@@ -148,6 +190,15 @@ assert.equal(
   "malformed retry identifiers must fail before credit reservation",
 );
 assert.equal(heroImageStyleForBrollWindow("surreal"), "illustration");
+assert.equal(canGenerateHeroBrollFromSource("stock"), true, "Stock can be upgraded to AI");
+assert.equal(canGenerateHeroBrollFromSource("ai"), true, "an AI scene can still be rerolled");
+assert.equal(canGenerateHeroBrollFromSource("upload"), false, "creator uploads stay protected");
+assert.match(
+  inspector,
+  /canGenerateHeroBrollFromSource\(currentSourceKind\)/,
+  "the editor must use the shared Stock/AI source policy",
+);
+assert.match(inspector, /สร้างภาพ AI แทนสต็อก/, "Stock-to-AI must be explicit in the UI");
 
 const values = new Map<string, string>();
 const storage = {

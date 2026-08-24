@@ -25,7 +25,7 @@ export async function POST(req: Request) {
 
     const user = await prisma.user.findUnique({
       where: { id: userId },
-      select: { email: true, name: true, stripeCustomerId: true },
+      select: { email: true, name: true, plan: true, stripeCustomerId: true },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
@@ -56,7 +56,12 @@ export async function POST(req: Request) {
           price_data: {
             currency: "thb",
             unit_amount: p.baht * 100,
-            product_data: { name: `HERO Credits — ${pack}` },
+            product_data: {
+              name: `HERO Credits — ${p.credits} credits`,
+              description: user.plan === "FREE"
+                ? "ใช้เติมนาทีเรนเดอร์ส่วนเกิน (2 credits/นาที); ไม่ปลดล็อก AI Image, Avatar หรือเสียงพรีเมียม"
+                : "เครดิตใช้จ่ายตามงานภายในสิทธิ์ฟีเจอร์ของแพ็กเกจ; เครดิตที่ซื้อไม่หมดอายุ",
+            },
           },
           quantity: 1,
         },

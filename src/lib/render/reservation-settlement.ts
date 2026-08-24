@@ -2,6 +2,7 @@ import type { Prisma, RenderJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { canonicalRenderUrl } from "@/lib/clip-charge";
 import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
+import { parseCreditFunding, refundCreditsInTransaction } from "@/lib/credits";
 
 export type RenderReservationRefundResult =
   | {
@@ -57,6 +58,8 @@ async function settleRenderReservation(
       reservedMinutes: null,
       creditsSpent: null,
       creditsFromGranted: null,
+      creditsFromPromotional: null,
+      creditFundingJson: null,
     },
   });
   if (claimed.count !== 1) {
@@ -66,25 +69,20 @@ async function settleRenderReservation(
   const summary = summarizeRenderReservationFunding(job);
   if (summary.funding === "credits") {
     const amount = summary.amount;
-    const fromGranted = Math.max(0, Math.min(job.creditsFromGranted ?? 0, amount));
-    const fromPurchased = amount - fromGranted;
-    const balance = await tx.creditBalance.upsert({
-      where: { userId: input.userId },
-      create: { userId: input.userId, granted: fromGranted, purchased: fromPurchased },
-      update: {
-        granted: { increment: fromGranted },
-        purchased: { increment: fromPurchased },
-      },
-    });
-    await tx.creditLedger.create({
-      data: {
-        userId: input.userId,
-        delta: amount,
-        kind: "refund",
-        action: `render-refund:${job.id}:${input.reason}`.slice(0, 300),
-        balanceAfter: balance.granted + balance.purchased,
-      },
-    });
+    const legacyGranted = Math.max(0, Math.min(job.creditsFromGranted ?? 0, amount));
+    const funding = parseCreditFunding(job.creditFundingJson, {
+      fromGranted: legacyGranted,
+      fromPromotional: job.creditsFromPromotional ?? 0,
+      fromPurchased: amount - legacyGranted - (job.creditsFromPromotional ?? 0),
+    }, amount);
+    await refundCreditsInTransaction(
+      tx,
+      input.userId,
+      funding.fromGranted,
+      funding.fromPurchased,
+      `render-refund:${job.id}:${input.reason}`.slice(0, 300),
+      funding.promotionalDebits,
+    );
   } else if (summary.funding === "minutes") {
     if (summary.amount > 0) {
       await tx.$executeRaw`UPDATE "User" SET "minutesUsed" = MAX(0, "minutesUsed" - ${summary.amount}) WHERE "id" = ${input.userId}`;

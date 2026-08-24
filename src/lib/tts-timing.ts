@@ -54,6 +54,10 @@ export interface TimedCaption {
   startMs: number;
   endMs: number;
   tag: CaptionTag;
+  // Exact visible span on the TTS source. Internal only: the editor bridge strips
+  // these after source-preserving short-card merges are complete.
+  startChar: number;
+  endChar: number;
 }
 
 export interface ScriptCard {
@@ -690,6 +694,8 @@ export function buildCaptionsFromCards(cards: ScriptCard[], timing: TtsTiming, f
       startMs: clock.startOf(firstChar),
       endMs: clock.endOf(lastChar),
       tag: card.tag ?? (caps.length === 0 ? "hook" : "body"),
+      startChar: firstChar,
+      endChar: lastChar + 1,
     });
   }
   return enforceMonotonic(caps, clock.totalMs);
@@ -963,10 +969,17 @@ export function snapCaptionsToSilences<T extends { startMs: number; endMs: numbe
 // The per-word timeline that feeds word-count modes (cardsByWordCount) is built
 // separately by buildWordsFromTiming and never passes through here, so "1 word /
 // card" modes keep every card.
-export function mergeShortCaptions<T extends { text: string; startMs: number; endMs: number }>(
+export function mergeShortCaptions<T extends {
+  text: string;
+  startMs: number;
+  endMs: number;
+  startChar?: number;
+  endChar?: number;
+}>(
   captions: T[],
   minMs: number,
   silences: SilenceInterval[] = [],
+  fullText?: string,
 ): T[] {
   if (minMs <= 0 || captions.length < 2) return captions;
   const atPause = (t: number) => silences.some((s) => t >= s.startMs - 60 && t <= s.endMs + 60);
@@ -975,7 +988,26 @@ export function mergeShortCaptions<T extends { text: string; startMs: number; en
     const prev = out[out.length - 1];
     if (prev && c.endMs - c.startMs < minMs && !atPause(c.startMs)) {
       prev.endMs = c.endMs;
-      prev.text = `${prev.text} ${c.text}`.trim();
+      const sourceStartChar = prev.startChar;
+      const sourceEndChar = c.endChar;
+      if (
+        typeof fullText === "string"
+        && typeof sourceStartChar === "number"
+        && typeof sourceEndChar === "number"
+        && Number.isInteger(sourceStartChar)
+        && Number.isInteger(sourceEndChar)
+        && sourceStartChar >= 0
+        && sourceEndChar >= sourceStartChar
+        && sourceEndChar <= fullText.length
+      ) {
+        prev.text = fullText
+          .slice(sourceStartChar, sourceEndChar)
+          .replace(/\s+/gu, " ")
+          .trim();
+      } else {
+        prev.text = `${prev.text} ${c.text}`.trim();
+      }
+      if (typeof sourceEndChar === "number") prev.endChar = sourceEndChar;
     } else {
       out.push({ ...c });
     }

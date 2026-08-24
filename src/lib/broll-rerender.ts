@@ -21,6 +21,10 @@ export type WindowEdit = {
   clipDuration?: number;
   /** Explicit per-window visibility. Tri-state in persisted config: undefined = legacy default. */
   enabled?: boolean;
+  /** De-identified rejection class used only by server-owned quality telemetry. */
+  replacementKind?: "stock" | "upload" | "ai";
+  /** Durable paid image candidate. It is promoted to the Visual Beat only after Apply succeeds. */
+  imageJobId?: string;
 };
 
 /** The exact media/job pair an export must bind to after any pending B-roll apply. */
@@ -50,6 +54,7 @@ export async function resolveBrollExportSource(input: {
 // anchored, single-segment shape) any `..` traversal that would still contain a separator;
 // a bare `..secret.mp4` can't traverse without a `/`, and the route serves flat basenames.
 const SRC_RE = /^\/api\/(renders|stocks)\/[\w.-]+\.mp4$/;
+const IMAGE_JOB_ID_RE = /^[a-z0-9_-]{8,120}$/iu;
 const MAX_EDITS = 40;
 const KEYWORD_MAX = 200;
 const MAX_CLIP_DURATION_SECONDS = 24 * 60 * 60;
@@ -70,7 +75,7 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
   const byIndex = new Map<number, WindowEdit>();
   for (const raw of edits) {
     if (typeof raw !== "object" || raw === null) return { error: "รายการแก้ b-roll ไม่ถูกต้อง" };
-    const { index, src, keyword, clipDuration, enabled } = raw as Record<string, unknown>;
+    const { index, src, keyword, clipDuration, enabled, replacementKind, imageJobId } = raw as Record<string, unknown>;
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
       return { error: "ตำแหน่งช่วง b-roll ไม่ถูกต้อง" };
     }
@@ -84,6 +89,26 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
     }
     if (hasEnabled && typeof enabled !== "boolean") {
       return { error: "สถานะเปิดปิด b-roll ไม่ถูกต้อง" };
+    }
+    if (
+      replacementKind !== undefined
+      && (replacementKind !== "stock" && replacementKind !== "upload" && replacementKind !== "ai")
+    ) {
+      return { error: "ประเภทไฟล์ b-roll ที่ใช้แทนไม่ถูกต้อง" };
+    }
+    if (replacementKind !== undefined && !hasSrc) {
+      return { error: "ประเภทไฟล์ b-roll ต้องส่งพร้อมไฟล์ที่ใช้แทน" };
+    }
+    if (
+      imageJobId !== undefined
+      && (
+        typeof imageJobId !== "string"
+        || !IMAGE_JOB_ID_RE.test(imageJobId)
+        || replacementKind !== "ai"
+        || !hasSrc
+      )
+    ) {
+      return { error: "งานภาพ AI ที่รอใช้ไม่ถูกต้อง" };
     }
     if (keyword !== undefined && typeof keyword !== "string") {
       return { error: "คำค้น b-roll ไม่ถูกต้อง" };
@@ -110,10 +135,40 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
       ...(trimmedKeyword ? { keyword: trimmedKeyword } : {}),
       ...(typeof clipDuration === "number" ? { clipDuration } : {}),
       ...(typeof enabled === "boolean" ? { enabled } : {}),
+      ...(replacementKind === "stock" || replacementKind === "upload" || replacementKind === "ai"
+        ? { replacementKind }
+        : {}),
+      ...(typeof imageJobId === "string" ? { imageJobId } : {}),
     };
     byIndex.set(index, edit); // last-wins
   }
   return Array.from(byIndex.values());
+}
+
+export type AppliedFirstPassVisualRejectionReason =
+  | "stock_replacement"
+  | "upload_replacement"
+  | "broll_disabled";
+
+/**
+ * Classify an applied edit only when the SOURCE window was AI. Replacement
+ * metadata describes the new asset and therefore cannot establish the
+ * first-pass denominator by itself (for example Stock -> Stock in AutoMix).
+ */
+export function firstPassVisualRejectionReasonForWindow(
+  sourceWindow: unknown,
+  edit: WindowEdit,
+): AppliedFirstPassVisualRejectionReason | null {
+  if (!sourceWindow || typeof sourceWindow !== "object" || Array.isArray(sourceWindow)) return null;
+  const source = sourceWindow as Record<string, unknown>;
+  const provider = typeof source.provider === "string" ? source.provider : "";
+  const src = typeof source.src === "string" ? source.src : "";
+  const sourceWasAi = provider === "runpod" || provider === "kie-ai" || src.includes("/broll-ai-");
+  if (!sourceWasAi) return null;
+  if (edit.enabled === false) return "broll_disabled";
+  if (edit.replacementKind === "stock") return "stock_replacement";
+  if (edit.replacementKind === "upload") return "upload_replacement";
+  return null;
 }
 
 /**

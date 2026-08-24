@@ -10,10 +10,13 @@ type RunpodJob = {
   id?: string;
   status?: string;
   output?: {
+    contract_version?: number;
+    mode?: string;
     audio_base64?: string;
     sample_rate?: number;
     duration?: number;
     worker_version?: string;
+    catalog_version?: string;
     language?: string;
     num_step?: number;
   };
@@ -92,10 +95,13 @@ async function generate(voice: (typeof RUNPOD_HERO_VOICE_PREVIEWS)[number]) {
     method: "POST",
     body: JSON.stringify({
       input: {
+        contract_version: 2,
+        mode: "tts",
         voice_id: voice.voiceId,
         text: voice.previewText,
         speed: 1,
         num_step: requestedNumStep,
+        mixed_language: true,
       },
     }),
   });
@@ -104,11 +110,16 @@ async function generate(voice: (typeof RUNPOD_HERO_VOICE_PREVIEWS)[number]) {
   const completed = await waitForCompletion(submitted.id, submitted);
   const encoded = completed.output?.audio_base64;
   if (!encoded) throw new Error(`RunPod returned no audio for ${voice.voiceId}`);
-  if (completed.output?.worker_version !== "heroai-omnivoice-runpod-v6-all-voices-32") {
+  if (
+    completed.output?.contract_version !== 2
+    || completed.output?.mode !== "tts"
+    || !completed.output?.worker_version?.startsWith("hero-voice-ai-v2-")
+    || typeof completed.output?.catalog_version !== "string"
+  ) {
     throw new Error(`RunPod returned unexpected worker version for ${voice.voiceId}`);
   }
-  if (completed.output?.language !== "th") {
-    throw new Error(`RunPod did not confirm Thai generation for ${voice.voiceId}`);
+  if (typeof completed.output?.language !== "string" || !completed.output.language) {
+    throw new Error(`RunPod did not report generation language for ${voice.voiceId}`);
   }
   if (completed.output?.num_step !== requestedNumStep) {
     throw new Error(`RunPod did not honor the fixed 32-step contract for ${voice.voiceId}`);

@@ -37,6 +37,10 @@ Editor v2's background pipeline extends **VideoJob/orchestrator** with a **previ
   duration so the web editor can resume into the Post phase.
 - The web editor submits render work as a VideoJob and resumes by jobId; Burn remains a
   separate final step.
+- Durable export jobs carry a versioned native editor snapshot (latest captions, subtitle
+  config, card grouping, and per-card overrides) in their input/output. "Edit subtitles"
+  after export restores that snapshot; export rows created before this field existed fall
+  back to their source preview.
 - Interactive avatar-position adjustment stays a Post-phase action using the existing free
   re-composite (no HeyGen re-generation).
 

@@ -11,6 +11,8 @@ export type FailureKind =
   | "heygen-quota"
   | "provider-key"
   | "provider-quota"
+  | "content-preflight"
+  | "script-narrative-mismatch"
   | "hero-image-transient"
   | "insufficient-credits"
   | "rate-limited"
@@ -25,6 +27,7 @@ export interface FailureJobLike {
 
 const HEYGEN_CREDIT_MARKER = /MOVIO_PAYMENT_INSUFFICIENT_CREDIT|INSUFFICIENT_CREDIT|Insufficient credit[^.]*api[^.]*credit|เครดิต HeyGen ไม่เพียงพอ/i;
 const INSUFFICIENT_CREDITS_TEXT_MARKER = /เครดิตไม่พอสำหรับ Hero AI Image/;
+const NARRATIVE_MISMATCH_MARKER = /ข้อมูลฉากไม่ตรงกับเนื้อหาที่เสียงพูดจริง/;
 const HERO_IMAGE_TRANSIENT_CODES = new Set([
   "HERO_IMAGE_OUTPUT_FAILED",
   "HERO_IMAGE_TIMEOUT",
@@ -40,6 +43,11 @@ export function classifyFailure(job: FailureJobLike): FailureKind {
   ) return "heygen-quota";
   if (job.errorCode === "invalid_key") return "provider-key";
   if (job.errorCode === "quota") return "provider-quota";
+  if (
+    job.errorCode === "CONTENT_PREFLIGHT_NARRATIVE_MISMATCH"
+    || NARRATIVE_MISMATCH_MARKER.test(job.errorMessage ?? "")
+  ) return "script-narrative-mismatch";
+  if (job.errorCode?.startsWith("CONTENT_PREFLIGHT_")) return "content-preflight";
   if (HERO_IMAGE_TRANSIENT_CODES.has(job.errorCode ?? "")) return "hero-image-transient";
   if (
     job.errorCode === "INSUFFICIENT_CREDITS"
@@ -131,6 +139,18 @@ export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMo
     return {
       heading: job.currentStep === "tts" ? "โควต้าเสียงพากย์ไม่เพียงพอ" : `โควต้าของ ${provider} ไม่เพียงพอ`,
       body: `เติมโควต้าในบัญชี ${provider} แล้วลองใหม่ หรือเลือกตัวเลือกอื่นในหน้าตั้งค่า`,
+    };
+  }
+  if (kind === "content-preflight") {
+    return {
+      heading: "วิเคราะห์แนวภาพไม่สำเร็จ",
+      body: "ระบบยังวิเคราะห์แนวภาพจากเนื้อหาของคลิปรอบนี้ไม่สำเร็จ โปรเจกต์และคลิปที่อัปโหลดยังอยู่ — กลับไปลองเรนเดอร์ใหม่ได้",
+    };
+  }
+  if (kind === "script-narrative-mismatch") {
+    return {
+      heading: "สคริปต์ยังใช้เป็นบทพูดไม่ได้",
+      body: "ข้อความที่วางมีตารางหรือรายละเอียดโปรดักชันปนอยู่ ระบบจึงจับคู่ฉากกับเสียงไม่สำเร็จ — วางเฉพาะประโยคที่ให้พากย์ แล้วลองใหม่",
     };
   }
   if (kind === "hero-image-transient") {

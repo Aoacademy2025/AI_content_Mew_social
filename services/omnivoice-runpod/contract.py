@@ -1,11 +1,15 @@
-"""Pure input contract for the HERO AI OmniVoice Runpod worker."""
+"""Validated RunPod contract for Hero AI Voice v2."""
 
 from dataclasses import dataclass
 import re
-from typing import Any
+from typing import Any, Union
 
 
+CONTRACT_VERSION = 2
 VOICE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+MAX_REF_AUDIO_BYTES = 8_000_000
+# Base64 expands bytes by roughly 4/3. Leave a small allowance for padding.
+MAX_REF_AUDIO_BASE64_CHARS = ((MAX_REF_AUDIO_BYTES + 2) // 3) * 4
 
 
 class InputError(ValueError):
@@ -16,149 +20,159 @@ class InputError(ValueError):
 
 @dataclass(frozen=True)
 class TtsInput:
-    voice_id: str
     text: str
+    voice_id: str | None
+    instruct: str | None
     num_step: int
     speed: float
-    # Custom voice cloning: when both are present the worker builds the clone
-    # prompt from this reference instead of the served manifest voice.
-    ref_audio_base64: str | None = None
-    ref_text: str | None = None
+    guidance_scale: float | None
+    language: str | None
+    mixed_language: bool
 
 
 @dataclass(frozen=True)
-class DesignInput:
+class CloneInput:
     text: str
-    instruct: str
+    ref_audio_b64: str
+    ref_text: str
     num_step: int
-    seed: int
+    speed: float
+    guidance_scale: float
+    language: str | None
+    mixed_language: bool
 
 
-_DESIGN_ATTRIBUTE_CATEGORIES = {
-    "male": "gender",
-    "female": "gender",
-    "child": "age",
-    "teenager": "age",
-    "young adult": "age",
-    "middle-aged": "age",
-    "elderly": "age",
-    "very low pitch": "pitch",
-    "low pitch": "pitch",
-    "moderate pitch": "pitch",
-    "high pitch": "pitch",
-    "very high pitch": "pitch",
-    "whisper": "style",
-    "american accent": "accent",
-    "british accent": "accent",
-    "australian accent": "accent",
-    "canadian accent": "accent",
-    "indian accent": "accent",
-    "chinese accent": "accent",
-    "korean accent": "accent",
-    "japanese accent": "accent",
-    "portuguese accent": "accent",
-    "russian accent": "accent",
-}
+WorkerInput = Union[TtsInput, CloneInput]
 
 
-def parse_design_input(payload: Any, max_text_length: int) -> DesignInput:
-    """Validate the tightly bounded, staging-only voice-reference recovery input."""
+def _require_payload(payload: Any, expected_mode: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise InputError("INVALID_INPUT", "input must be an object")
-    if payload.get("operation") != "design":
-        raise InputError("INVALID_OPERATION", "operation must be design")
+    if payload.get("contract_version") != CONTRACT_VERSION:
+        raise InputError("INVALID_CONTRACT_VERSION", f"contract_version must be {CONTRACT_VERSION}")
+    if payload.get("mode") != expected_mode:
+        raise InputError("INVALID_MODE", f"mode must be {expected_mode}")
+    return payload
 
+
+def _parse_text(payload: dict[str, Any], max_text_length: int) -> str:
     text = payload.get("text")
     if not isinstance(text, str) or not text.strip():
         raise InputError("INVALID_TEXT", "text is required")
     text = text.strip()
     if len(text) > max_text_length:
         raise InputError("TEXT_TOO_LONG", f"text exceeds {max_text_length} characters")
+    return text
 
-    raw_instruct = payload.get("instruct")
-    if not isinstance(raw_instruct, str):
-        raise InputError("INVALID_INSTRUCT", "instruct is invalid")
-    attributes = [item.strip().lower() for item in raw_instruct.split(",") if item.strip()]
-    categories = [_DESIGN_ATTRIBUTE_CATEGORIES.get(item) for item in attributes]
-    if (
-        not attributes
-        or len(attributes) > 4
-        or any(category is None for category in categories)
-        or len(set(categories)) != len(categories)
-    ):
-        raise InputError("INVALID_INSTRUCT", "instruct contains unsupported or conflicting attributes")
 
-    raw_num_step = payload.get("num_step", 32)
-    if isinstance(raw_num_step, bool) or not isinstance(raw_num_step, int) or not 16 <= raw_num_step <= 32:
-        raise InputError("INVALID_NUM_STEP", "num_step must be an integer from 16 to 32")
+def _parse_num_step(payload: dict[str, Any], default: int) -> int:
+    raw = payload.get("num_step", default)
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 4 <= raw <= 64:
+        raise InputError("INVALID_NUM_STEP", "num_step must be an integer from 4 to 64")
+    return raw
 
-    raw_seed = payload.get("seed", 0)
-    if isinstance(raw_seed, bool) or not isinstance(raw_seed, int) or not 0 <= raw_seed <= 2_147_483_647:
-        raise InputError("INVALID_SEED", "seed must be an integer from 0 to 2147483647")
 
-    return DesignInput(
-        text=text,
-        instruct=", ".join(attributes),
-        num_step=raw_num_step,
-        seed=raw_seed,
-    )
+def _parse_speed(payload: dict[str, Any]) -> float:
+    raw = payload.get("speed", 1.0)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise InputError("INVALID_SPEED", "speed must be a number from 0.3 to 3.0")
+    value = float(raw)
+    if not 0.3 <= value <= 3.0:
+        raise InputError("INVALID_SPEED", "speed must be a number from 0.3 to 3.0")
+    return value
+
+
+def _parse_guidance(payload: dict[str, Any], default: float | None) -> float | None:
+    raw = payload.get("guidance_scale", default)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise InputError("INVALID_GUIDANCE", "guidance_scale must be a number from 0.1 to 10.0")
+    value = float(raw)
+    if not 0.1 <= value <= 10.0:
+        raise InputError("INVALID_GUIDANCE", "guidance_scale must be a number from 0.1 to 10.0")
+    return value
+
+
+def _parse_language(payload: dict[str, Any]) -> str | None:
+    raw = payload.get("language")
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip() or len(raw.strip()) > 32:
+        raise InputError("INVALID_LANGUAGE", "language must be a non-empty string up to 32 characters")
+    return raw.strip()
+
+
+def _parse_mixed_language(payload: dict[str, Any]) -> bool:
+    raw = payload.get("mixed_language", True)
+    if not isinstance(raw, bool):
+        raise InputError("INVALID_MIXED_LANGUAGE", "mixed_language must be a boolean")
+    return raw
 
 
 def parse_tts_input(payload: Any, max_text_length: int) -> TtsInput:
-    if not isinstance(payload, dict):
-        raise InputError("INVALID_INPUT", "input must be an object")
+    payload = _require_payload(payload, "tts")
+    text = _parse_text(payload, max_text_length)
 
-    operation = payload.get("operation", "tts")
-    if operation != "tts":
-        raise InputError("INVALID_OPERATION", "operation must be tts")
-
-    voice_id = payload.get("voice_id")
-    if not isinstance(voice_id, str) or not VOICE_ID_RE.fullmatch(voice_id):
+    raw_voice_id = payload.get("voice_id")
+    voice_id = raw_voice_id.strip() if isinstance(raw_voice_id, str) else None
+    if voice_id and not VOICE_ID_RE.fullmatch(voice_id):
         raise InputError("INVALID_VOICE_ID", "voice_id is invalid")
 
-    text = payload.get("text")
-    if not isinstance(text, str) or not text.strip():
-        raise InputError("INVALID_TEXT", "text is required")
-    text = text.strip()
-    if len(text) > max_text_length:
-        raise InputError("TEXT_TOO_LONG", f"text exceeds {max_text_length} characters")
-
-    raw_num_step = payload.get("num_step", 32)
-    if isinstance(raw_num_step, bool) or raw_num_step != 32:
-        raise InputError("INVALID_NUM_STEP", "num_step must be 32")
-
-    raw_speed = payload.get("speed", 1.0)
-    if isinstance(raw_speed, bool) or not isinstance(raw_speed, (int, float)):
-        raise InputError("INVALID_SPEED", "speed must be a number from 0.3 to 3.0")
-    speed = float(raw_speed)
-    if not 0.3 <= speed <= 3.0:
-        raise InputError("INVALID_SPEED", "speed must be a number from 0.3 to 3.0")
-
-    raw_ref_audio = payload.get("ref_audio_base64")
-    raw_ref_text = payload.get("ref_text")
-    if raw_ref_audio is None and raw_ref_text is None:
-        return TtsInput(voice_id=voice_id, text=text, num_step=raw_num_step, speed=speed)
-
-    if not isinstance(raw_ref_audio, str) or not raw_ref_audio.strip():
-        raise InputError("INVALID_REF_AUDIO", "ref_audio_base64 is required with ref_text")
-    ref_audio = raw_ref_audio.strip()
-    # ~4.5MB of audio once decoded — enough for a 30s 24kHz WAV reference.
-    if len(ref_audio) > 6_000_000:
-        raise InputError("REF_AUDIO_TOO_LARGE", "ref_audio_base64 exceeds the size limit")
-    if not re.fullmatch(r"[A-Za-z0-9+/=\s]+", ref_audio):
-        raise InputError("INVALID_REF_AUDIO", "ref_audio_base64 is not valid base64")
-
-    if not isinstance(raw_ref_text, str) or not raw_ref_text.strip():
-        raise InputError("INVALID_REF_TEXT", "ref_text is required with ref_audio_base64")
-    ref_text = raw_ref_text.strip()
-    if len(ref_text) > 500:
-        raise InputError("REF_TEXT_TOO_LONG", "ref_text exceeds 500 characters")
+    raw_instruct = payload.get("instruct")
+    instruct = raw_instruct.strip() if isinstance(raw_instruct, str) else None
+    if instruct and len(instruct) > 240:
+        raise InputError("INVALID_INSTRUCT", "instruct is too long")
+    if bool(voice_id) == bool(instruct):
+        raise InputError("INVALID_VOICE_SELECTION", "provide exactly one of voice_id or instruct")
 
     return TtsInput(
-        voice_id=voice_id,
         text=text,
-        num_step=raw_num_step,
-        speed=speed,
-        ref_audio_base64=ref_audio,
-        ref_text=ref_text,
+        voice_id=voice_id,
+        instruct=instruct,
+        num_step=_parse_num_step(payload, 24),
+        speed=_parse_speed(payload),
+        guidance_scale=_parse_guidance(payload, None),
+        language=_parse_language(payload),
+        mixed_language=_parse_mixed_language(payload),
     )
+
+
+def parse_clone_input(payload: Any, max_text_length: int) -> CloneInput:
+    payload = _require_payload(payload, "clone")
+    text = _parse_text(payload, max_text_length)
+
+    ref_audio_b64 = payload.get("ref_audio_b64")
+    if not isinstance(ref_audio_b64, str) or not ref_audio_b64:
+        raise InputError("INVALID_REF_AUDIO", "ref_audio_b64 is required")
+    if len(ref_audio_b64) > MAX_REF_AUDIO_BASE64_CHARS:
+        raise InputError("REF_AUDIO_TOO_LARGE", f"reference audio exceeds {MAX_REF_AUDIO_BYTES} bytes")
+
+    ref_text = payload.get("ref_text")
+    if not isinstance(ref_text, str) or not ref_text.strip():
+        raise InputError("INVALID_REF_TEXT", "ref_text is required")
+    ref_text = ref_text.strip()
+    if len(ref_text) > 2_000:
+        raise InputError("REF_TEXT_TOO_LONG", "ref_text exceeds 2000 characters")
+
+    return CloneInput(
+        text=text,
+        ref_audio_b64=ref_audio_b64,
+        ref_text=ref_text,
+        num_step=_parse_num_step(payload, 32),
+        speed=_parse_speed(payload),
+        guidance_scale=_parse_guidance(payload, 2.5) or 2.5,
+        language=_parse_language(payload),
+        mixed_language=_parse_mixed_language(payload),
+    )
+
+
+def parse_worker_input(payload: Any, max_text_length: int) -> WorkerInput:
+    if not isinstance(payload, dict):
+        raise InputError("INVALID_INPUT", "input must be an object")
+    mode = payload.get("mode")
+    if mode == "tts":
+        return parse_tts_input(payload, max_text_length)
+    if mode == "clone":
+        return parse_clone_input(payload, max_text_length)
+    raise InputError("INVALID_MODE", "mode must be tts or clone")

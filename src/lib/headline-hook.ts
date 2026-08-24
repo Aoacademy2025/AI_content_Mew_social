@@ -77,8 +77,8 @@ export function sanitizeHeadlineHookText(
 
 /** Keep a controlled text field editable while still enforcing its structural
  * limits. Persist/render boundaries use `sanitizeHeadlineHookText`; the draft
- * variant deliberately keeps a final space/newline so typing the next word
- * does not cause React to replace the value and move the caret backward. */
+ * variant deliberately preserves whitespace exactly as the browser produced
+ * it so React never rewrites the value and moves a mid-sentence caret. */
 function sanitizeHeadlineHookDraftText(
   value: unknown,
   opts: { maxChars: number; maxLines: number },
@@ -88,7 +88,6 @@ function sanitizeHeadlineHookDraftText(
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .slice(0, opts.maxLines)
-    .map((line) => line.replace(/[^\S\n]+/g, " "))
     .join("\n");
   return Array.from(draft).slice(0, opts.maxChars).join("");
 }

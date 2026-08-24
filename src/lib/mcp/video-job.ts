@@ -1,6 +1,10 @@
+import type { Prisma, VideoJob } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { videoExpiryFor } from "@/lib/plan-limits";
 import { assertRenderEnqueueOpen } from "@/lib/render-deploy-drain";
+import { syncMinuteWindow } from "@/lib/minute-limits";
+import { reserveMinutesOrCreditsInTransaction } from "@/lib/minute-credits";
+import { serializeCreditFunding } from "@/lib/credits";
 import {
   parseAvatarProviderCheckpoint,
   serializeAvatarProviderCheckpoint,
@@ -13,6 +17,11 @@ import {
 } from "@/lib/mcp/hero-voice-provider-checkpoint";
 import type { SubtitleQualityReport } from "@/lib/mcp/subtitle-quality";
 import type { VideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
+import {
+  parseEditorExportSnapshot,
+  type EditorExportSnapshot,
+} from "@/lib/editor-export-snapshot";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -33,6 +42,29 @@ function restartRequeueCount(errorMessage: string | null): number {
 // can never double-charge clip quota or HeyGen.
 const SAFE_TO_REQUEUE_STEPS = new Set(["tts", "captions", "keywords", "stock", "config"]);
 
+function withVideoJobSqliteRetry<T>(scope: string, operation: () => Promise<T>): Promise<T> {
+  return withTransientSqliteRetry(operation, {
+    onRetry: ({ attempt, delayMs, error }) => {
+      const code = error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "unknown";
+      console.warn(`[video-job] ${scope} transient SQLite ${code}; retry ${attempt} in ${delayMs}ms`);
+    },
+  });
+}
+
+export class VideoJobFundingError extends Error {
+  readonly code = "insufficient_render_funding";
+
+  constructor(
+    message: string,
+    public readonly remainingMinutes: number,
+  ) {
+    super(message);
+    this.name = "VideoJobFundingError";
+  }
+}
+
 export async function createVideoJob(
   userId: string,
   input: unknown,
@@ -46,10 +78,28 @@ export async function createVideoJob(
       projectVisualContextJson: string;
     } | null;
     brandVisualAcceptanceJson?: string | null;
+    funding?: { meteredMinutes: number; creditsLive: boolean };
   } = {},
 ) {
+  if (opts.funding) {
+    await syncMinuteWindow(userId);
+  }
   return prisma.$transaction(async (tx) => {
     await assertRenderEnqueueOpen(tx);
+    const funding = opts.funding
+      ? await reserveMinutesOrCreditsInTransaction(
+          tx,
+          userId,
+          opts.funding.meteredMinutes,
+          { creditsLive: opts.funding.creditsLive, ref: idempotencyKey },
+        )
+      : null;
+    if (funding && !funding.allowed) {
+      throw new VideoJobFundingError(
+        funding.message ?? "เครดิตหรือนาทีคงเหลือไม่เพียงพอ",
+        funding.remaining,
+      );
+    }
     return tx.videoJob.create({
       data: {
         userId,
@@ -62,6 +112,18 @@ export async function createVideoJob(
         idempotencyKey: idempotencyKey ?? null,
         idempotencyFingerprint: opts.idempotencyFingerprint ?? null,
         status: "queued",
+        ...(funding?.allowed
+          ? {
+              fundingState: "reserved",
+              fundedMeteredMinutes: funding.reservedMinutes,
+              fundedCreditsSpent: funding.via === "minutes" ? 0 : funding.creditsSpent,
+              fundedCreditsFromGranted: funding.via === "minutes" ? 0 : funding.fromGranted,
+              fundedCreditsFromPromotional: funding.via === "minutes" ? 0 : funding.fromPromotional,
+              fundedCreditFundingJson: funding.via === "minutes" ? null : serializeCreditFunding(funding),
+              fundedCreditBalanceAfter: funding.via === "minutes" ? null : funding.balanceAfter,
+              walletFundingAuthorized: funding.via === "credits" || funding.via === "mixed",
+            }
+          : {}),
       },
     });
   });
@@ -71,10 +133,10 @@ export async function createVideoJob(
 export async function claimNextQueuedJob() {
   const next = await prisma.videoJob.findFirst({ where: { status: "queued" }, orderBy: { createdAt: "asc" } });
   if (!next) return null;
-  const res = await prisma.videoJob.updateMany({
+  const res = await withVideoJobSqliteRetry("claim queued", () => prisma.videoJob.updateMany({
     where: { id: next.id, status: "queued" },
     data: { status: "processing", startedAt: new Date() },
-  });
+  }));
   if (res.count !== 1) return null; // lost the race
   return prisma.videoJob.findUnique({ where: { id: next.id } });
 }
@@ -89,14 +151,14 @@ export async function claimNextRunnableJob(now: Date = new Date()) {
     orderBy: [{ providerNextPollAt: "asc" }, { createdAt: "asc" }],
   });
   if (due) {
-    const claimed = await prisma.videoJob.updateMany({
+    const claimed = await withVideoJobSqliteRetry("claim provider wait", () => prisma.videoJob.updateMany({
       where: {
         id: due.id,
         status: "waiting_provider",
         providerNextPollAt: { lte: now },
       },
       data: { status: "processing", providerNextPollAt: null },
-    });
+    }));
     if (claimed.count === 1) return prisma.videoJob.findUnique({ where: { id: due.id } });
   }
 
@@ -105,14 +167,14 @@ export async function claimNextRunnableJob(now: Date = new Date()) {
 
 export async function saveProviderCheckpoint(id: string, checkpoint: AvatarProviderCheckpointV1) {
   const composite = checkpoint.phase === "composite";
-  return prisma.videoJob.updateMany({
+  return withVideoJobSqliteRetry("save provider checkpoint", () => prisma.videoJob.updateMany({
     where: { id, status: "processing" },
     data: {
       providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint),
       currentStep: composite ? "composite" : "avatar",
       progress: composite ? 86 : 84,
     },
-  });
+  }));
 }
 
 export async function parkProviderJob(
@@ -121,7 +183,7 @@ export async function parkProviderJob(
   nextPollAt: Date,
 ) {
   const composite = checkpoint.phase === "composite";
-  return prisma.videoJob.updateMany({
+  return withVideoJobSqliteRetry("park provider job", () => prisma.videoJob.updateMany({
     where: { id, status: "processing" },
     data: {
       status: "waiting_provider",
@@ -130,7 +192,7 @@ export async function parkProviderJob(
       providerCheckpointJson: serializeAvatarProviderCheckpoint(checkpoint),
       providerNextPollAt: nextPollAt,
     },
-  });
+  }));
 }
 
 export async function parkHeroVoiceProviderJob(
@@ -138,7 +200,7 @@ export async function parkHeroVoiceProviderJob(
   checkpoint: HeroVoiceProviderCheckpointV1,
   nextPollAt: Date,
 ) {
-  return prisma.videoJob.updateMany({
+  return withVideoJobSqliteRetry("park hero voice provider job", () => prisma.videoJob.updateMany({
     where: { id, status: "processing" },
     data: {
       status: "waiting_provider",
@@ -147,14 +209,14 @@ export async function parkHeroVoiceProviderJob(
       providerCheckpointJson: serializeHeroVoiceProviderCheckpoint(checkpoint),
       providerNextPollAt: nextPollAt,
     },
-  });
+  }));
 }
 
 export async function clearProviderCheckpoint(
   id: string,
   expectedCheckpointJson: string,
 ) {
-  return prisma.videoJob.updateMany({
+  return withVideoJobSqliteRetry("clear provider checkpoint", () => prisma.videoJob.updateMany({
     where: {
       id,
       status: "processing",
@@ -164,22 +226,28 @@ export async function clearProviderCheckpoint(
       providerCheckpointJson: null,
       providerNextPollAt: null,
     },
-  });
+  }));
 }
 
 export async function setJobStep(id: string, currentStep: string, progress: number) {
-  await prisma.videoJob.update({ where: { id }, data: { currentStep, progress } });
+  await withVideoJobSqliteRetry("set pipeline step", () => prisma.videoJob.update({
+    where: { id },
+    data: { currentStep, progress },
+  }));
 }
 
 export async function finishJobWithTransition(
   id: string,
   output: { videoUrl: string; videoId?: string } & Record<string, unknown>,
-  opts: { now?: Date } = {},
+  opts: {
+    now?: Date;
+    onTransition?: (input: { tx: Prisma.TransactionClient; job: VideoJob }) => Promise<void>;
+  } = {},
 ) {
   const now = opts.now ?? new Date();
   const owner = await prisma.videoJob.findUnique({
     where: { id },
-    select: { status: true, user: { select: { plan: true } } },
+    select: { status: true, fundingState: true, user: { select: { plan: true } } },
   });
   if (!owner) throw new Error("video_job_not_found");
   if (owner.status === "done") {
@@ -191,7 +259,7 @@ export async function finishJobWithTransition(
 
   const mediaExpiresAt = videoExpiryFor(owner.user.plan, now);
 
-  return prisma.$transaction(async (tx) => {
+  return withVideoJobSqliteRetry("finish job", () => prisma.$transaction(async (tx) => {
     const transitioned = await tx.videoJob.updateMany({
       where: { id, status: "processing" },
       data: {
@@ -203,6 +271,7 @@ export async function finishJobWithTransition(
         mediaExpiresAt,
         providerCheckpointJson: null,
         providerNextPollAt: null,
+        ...(owner.fundingState === "transferred" ? { fundingState: "settled" } : {}),
       },
     });
 
@@ -216,6 +285,7 @@ export async function finishJobWithTransition(
     }
 
     const job = await tx.videoJob.findUniqueOrThrow({ where: { id } });
+    await opts.onTransition?.({ tx, job });
     if (job.projectId) {
       if (job.type === "export") {
         await tx.editorProject.updateMany({
@@ -241,7 +311,7 @@ export async function finishJobWithTransition(
     }
 
     return { job, transitioned: true };
-  });
+  }));
 }
 
 /**
@@ -299,6 +369,8 @@ export interface ParsedVideoJobOutput {
   billingReceipt?: VideoJobBillingReceipt;
   /** present only on v2 preview jobs */
   preview?: VideoJobPreviewData | null;
+  /** Latest native editor state submitted with a durable export. */
+  editSnapshot?: EditorExportSnapshot;
 }
 
 /** Tolerant parser for VideoJob.outputJson — handles v1, v2, null, and garbage. */
@@ -317,6 +389,7 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
     const billingReceipt = typeof raw.billingReceipt === "object" && raw.billingReceipt !== null
       ? raw.billingReceipt as unknown as VideoJobBillingReceipt
       : null;
+    const editSnapshot = parseEditorExportSnapshot(raw.editSnapshot);
     return {
       version,
       videoUrl: typeof raw.videoUrl === "string" ? raw.videoUrl : undefined,
@@ -325,6 +398,7 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
       ...(subtitleQa ? { subtitleQa } : {}),
       ...(billingReceipt ? { billingReceipt } : {}),
       ...(preview ? { preview } : {}),
+      ...(editSnapshot ? { editSnapshot } : {}),
     };
   } catch {
     return null;
@@ -341,7 +415,7 @@ export type VideoJobFailure = {
 
 export async function failJob(id: string, failure: string | VideoJobFailure) {
   const normalized = typeof failure === "string" ? { message: failure } : failure;
-  return prisma.$transaction(async (tx) => {
+  const job = await withVideoJobSqliteRetry("fail job", () => prisma.$transaction(async (tx) => {
     const transitioned = await tx.videoJob.updateMany({
       where: { id, status: "processing" },
       data: {
@@ -378,7 +452,12 @@ export async function failJob(id: string, failure: string | VideoJobFailure) {
       }
     }
     return job;
-  });
+  }));
+  // Pre-render wallet funding is still owned by VideoJob. Once transferred,
+  // RenderJob/render-route owns any refund and this is an idempotent no-op.
+  const { refundVideoJobFunding } = await import("@/lib/mcp/video-job-funding");
+  await refundVideoJobFunding(id, job.userId, "job-failed");
+  return job;
 }
 
 /**

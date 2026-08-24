@@ -133,3 +133,8 @@ __pycache__/
 # Local ops metrics + stray TTS test outputs at repo root
 /.ops-metrics/
 /tts-*.wav
+
+# agent/tool scratch (ไม่ควรเข้า git)
+.orca/
+.playwright-mcp/
+artifacts/

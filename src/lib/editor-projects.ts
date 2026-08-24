@@ -7,6 +7,7 @@ import {
   prepareEditorProjectBrandAsset,
 } from "@/lib/editor-project-brand-asset.server";
 import { observeEditorProjectBrandAssetVerificationStep } from "@/lib/editor-project-brand-asset-verification.server";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 
 export const DEFAULT_EDITOR_PROJECT_TITLE = "New Project";
 export const MAX_EDITOR_PROJECT_TITLE_LENGTH = 80;
@@ -317,7 +318,7 @@ export async function updateEditorProject(
   const projectWriteMiss = new Error("editor_project_write_miss");
   let project: NonNullable<ProjectRow> | null = null;
   try {
-    project = await prisma.$transaction(async (tx) => {
+    project = await withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
       await assertExactEditorProjectPointers(tx, userId, projectId, data);
       const updated = await tx.editorProject.updateMany({
         where: {
@@ -336,6 +337,10 @@ export async function updateEditorProject(
       await observeEditorProjectBrandAssetVerificationStep("after-project-cas");
       await advanceEditorProjectBrandAsset(tx, userId, assetFence);
       return tx.editorProject.findFirst({ where: { id: projectId, userId } });
+    }), {
+      onRetry: ({ attempt, delayMs }) => {
+        console.warn(`[editor-project] transient SQLite timeout; retry ${attempt} in ${delayMs}ms`);
+      },
     });
   } catch (error) {
     if (error !== projectWriteMiss) throw error;

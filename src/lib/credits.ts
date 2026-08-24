@@ -2,9 +2,9 @@
  * Credit balance + ledger library (Task P3-1).
  *
  * 1 credit = ฿1.
- * Two buckets: `granted` (monthly allowance, non-rollover) and `purchased`
- * (paid credits, permanent until spent). Spend drains `granted` first, then
- * `purchased`.
+ * Three funding classes: `granted` (monthly allowance), individually-expiring
+ * promotional grants, and `purchased` (permanent until spent). Spend drains
+ * whichever expiring grant lapses first and always preserves purchased last.
  *
  * Atomic pattern mirrors `reserveMinutes` in minute-limits.ts:
  * - compute expected debit from each bucket
@@ -12,7 +12,9 @@
  * - if `count !== 1` → lost race / insufficient → re-read and return error
  */
 
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import { USAGE_PERIOD_DAYS } from "@/lib/usage-limits";
 
 // ── Cost table + pure price helpers ───────────────────────────────────────────
@@ -59,19 +61,220 @@ export const MONTHLY_GRANT: Record<string, number> = {
  * Returns the current credit balance for a user, upserting an empty row if one
  * doesn't exist yet (so callers never have to worry about null).
  */
-export async function getBalance(
-  userId: string
-): Promise<{ granted: number; purchased: number; total: number }> {
-  const row = await prisma.creditBalance.upsert({
+export type PromotionalCreditDebit = { grantId: string; amount: number };
+export type CreditDebit = {
+  bucket: "granted" | "promotional" | "purchased";
+  grantId?: string;
+  amount: number;
+};
+
+export type CreditFunding = {
+  fromGranted: number;
+  fromPromotional: number;
+  promotionalDebits: PromotionalCreditDebit[];
+  fromPurchased: number;
+  debits: CreditDebit[];
+};
+
+export function serializeCreditFunding(funding: CreditFunding): string {
+  return JSON.stringify({
+    version: 1,
+    fromGranted: funding.fromGranted,
+    fromPromotional: funding.fromPromotional,
+    promotionalDebits: funding.promotionalDebits,
+    fromPurchased: funding.fromPurchased,
+    debits: funding.debits,
+  });
+}
+
+export function parseCreditFunding(
+  value: string | null | undefined,
+  legacy: { fromGranted: number; fromPromotional?: number; fromPurchased: number },
+  expectedTotal?: number,
+): CreditFunding {
+  if (value) {
+    try {
+      const parsed = JSON.parse(value) as Partial<CreditFunding> & { version?: number };
+      const promotionalDebits = Array.isArray(parsed.promotionalDebits)
+        ? parsed.promotionalDebits.filter((debit): debit is PromotionalCreditDebit =>
+            Boolean(
+              debit
+              && typeof debit.grantId === "string"
+              && Number.isInteger(debit.amount)
+              && debit.amount >= 0,
+            ),
+          )
+        : [];
+      const fromGranted = Number.isInteger(parsed.fromGranted) && Number(parsed.fromGranted) >= 0
+        ? Number(parsed.fromGranted)
+        : legacy.fromGranted;
+      const fromPurchased = Number.isInteger(parsed.fromPurchased) && Number(parsed.fromPurchased) >= 0
+        ? Number(parsed.fromPurchased)
+        : legacy.fromPurchased;
+      const fromPromotional = promotionalDebits.reduce((sum, debit) => sum + debit.amount, 0);
+      const debits = Array.isArray(parsed.debits)
+        ? parsed.debits.filter((debit): debit is CreditDebit => Boolean(
+            debit
+            && ["granted", "promotional", "purchased"].includes(debit.bucket)
+            && Number.isInteger(debit.amount)
+            && debit.amount >= 0
+            && (debit.bucket !== "promotional" || typeof debit.grantId === "string"),
+          ))
+        : [
+            ...(fromGranted > 0 ? [{ bucket: "granted" as const, amount: fromGranted }] : []),
+            ...promotionalDebits.map((debit) => ({ bucket: "promotional" as const, ...debit })),
+            ...(fromPurchased > 0 ? [{ bucket: "purchased" as const, amount: fromPurchased }] : []),
+          ];
+      const debitTotal = debits.reduce((sum, debit) => sum + debit.amount, 0);
+      if (
+        debits.filter((debit) => debit.bucket === "granted").reduce((sum, debit) => sum + debit.amount, 0) !== fromGranted
+        || debits.filter((debit) => debit.bucket === "promotional").reduce((sum, debit) => sum + debit.amount, 0) !== fromPromotional
+        || debits.filter((debit) => debit.bucket === "purchased").reduce((sum, debit) => sum + debit.amount, 0) !== fromPurchased
+        || legacy.fromGranted !== fromGranted
+        || (legacy.fromPromotional !== undefined && legacy.fromPromotional !== fromPromotional)
+        || legacy.fromPurchased !== fromPurchased
+        || (expectedTotal !== undefined && debitTotal !== expectedTotal)
+      ) {
+        throw new Error("invalid credit funding snapshot totals");
+      }
+      return { fromGranted, fromPromotional, promotionalDebits, fromPurchased, debits };
+    } catch {
+      // Pre-migration or malformed rows use the conservative legacy split.
+    }
+  }
+  // A scalar can say promo credits were charged, but only the JSON snapshot
+  // identifies the exact PromotionalCreditGrant row. Never turn missing or
+  // corrupt promo provenance into permanent purchased credits.
+  if ((legacy.fromPromotional ?? 0) > 0) {
+    throw new Error("promotional credit funding provenance is missing or invalid");
+  }
+  const fallbackGranted = Math.max(0, Math.min(legacy.fromGranted, expectedTotal ?? Number.POSITIVE_INFINITY));
+  const fallbackPurchased = expectedTotal === undefined
+    ? Math.max(0, legacy.fromPurchased)
+    : Math.max(0, expectedTotal - fallbackGranted);
+  return {
+    fromGranted: fallbackGranted,
+    fromPromotional: 0,
+    promotionalDebits: [],
+    fromPurchased: fallbackPurchased,
+    debits: [
+      ...(fallbackGranted > 0 ? [{ bucket: "granted" as const, amount: fallbackGranted }] : []),
+      ...(fallbackPurchased > 0 ? [{ bucket: "purchased" as const, amount: fallbackPurchased }] : []),
+    ],
+  };
+}
+
+async function activePromotionalTotal(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  now: Date,
+): Promise<number> {
+  const aggregate = await tx.promotionalCreditGrant.aggregate({
+    where: { userId, expiresAt: { gt: now }, remainingAmount: { gt: 0 } },
+    _sum: { remainingAmount: true },
+  });
+  return aggregate._sum.remainingAmount ?? 0;
+}
+
+async function materializeExpiredPromotionalCredits(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  now: Date,
+): Promise<void> {
+  const expired = await tx.promotionalCreditGrant.findMany({
+    where: { userId, expiresAt: { lte: now }, remainingAmount: { gt: 0 } },
+    select: { id: true, remainingAmount: true },
+  });
+  if (expired.length === 0) return;
+  let expiredAmount = 0;
+  for (const grant of expired) {
+    const cleared = await tx.promotionalCreditGrant.updateMany({
+      where: { id: grant.id, userId, remainingAmount: grant.remainingAmount },
+      data: { remainingAmount: 0 },
+    });
+    if (cleared.count === 1) expiredAmount += grant.remainingAmount;
+  }
+  if (expiredAmount <= 0) return;
+  const balance = await tx.creditBalance.upsert({
     where: { userId },
-    create: { userId, granted: 0, purchased: 0 },
+    create: { userId },
     update: {},
   });
-  return {
-    granted: row.granted,
-    purchased: row.purchased,
-    total: row.granted + row.purchased,
+  const promotional = await activePromotionalTotal(tx, userId, now);
+  await tx.creditLedger.create({
+    data: {
+      userId,
+      delta: -expiredAmount,
+      kind: "expire",
+      action: `promo-expire:${now.toISOString()}`,
+      balanceAfter: balance.granted + promotional + balance.purchased,
+      createdAt: now,
+    },
+  });
+}
+
+export async function getBalance(
+  userId: string,
+  now: Date = new Date(),
+): Promise<{ granted: number; promotional: number; purchased: number; total: number }> {
+  // The normal balance path is read-only. Previously the unconditional upsert
+  // below made every balance poll compete for SQLite's single writer lock even
+  // when the wallet already existed and no promotional grant had expired.
+  type BalanceSnapshot = {
+    granted: number | bigint;
+    purchased: number | bigint;
+    promotional: number | bigint;
+    hasExpired: number | bigint | boolean;
   };
+  const [snapshot] = await withTransientSqliteRetry(() => prisma.$queryRaw<BalanceSnapshot[]>(Prisma.sql`
+    SELECT
+      cb."granted" AS "granted",
+      cb."purchased" AS "purchased",
+      COALESCE((
+        SELECT SUM(pg."remainingAmount")
+        FROM "PromotionalCreditGrant" pg
+        WHERE pg."userId" = ${userId}
+          AND pg."expiresAt" > ${now}
+          AND pg."remainingAmount" > 0
+      ), 0) AS "promotional",
+      EXISTS(
+        SELECT 1
+        FROM "PromotionalCreditGrant" expired
+        WHERE expired."userId" = ${userId}
+          AND expired."expiresAt" <= ${now}
+          AND expired."remainingAmount" > 0
+      ) AS "hasExpired"
+    FROM "CreditBalance" cb
+    WHERE cb."userId" = ${userId}
+    LIMIT 1
+  `));
+  if (snapshot && Number(snapshot.hasExpired) === 0) {
+    const granted = Number(snapshot.granted);
+    const promotional = Number(snapshot.promotional);
+    const purchased = Number(snapshot.purchased);
+    return {
+      granted,
+      promotional,
+      purchased,
+      total: granted + promotional + purchased,
+    };
+  }
+
+  return withTransientSqliteRetry(() => prisma.$transaction(async (tx) => {
+    await materializeExpiredPromotionalCredits(tx, userId, now);
+    const row = await tx.creditBalance.upsert({
+      where: { userId },
+      create: { userId, granted: 0, purchased: 0 },
+      update: {},
+    });
+    const promotional = await activePromotionalTotal(tx, userId, now);
+    return {
+      granted: row.granted,
+      promotional,
+      purchased: row.purchased,
+      total: row.granted + promotional + row.purchased,
+    };
+  }));
 }
 
 /**
@@ -134,7 +337,8 @@ export async function grantCredits(
           : { purchased: { increment: amount } },
     });
 
-    const balanceAfter = updated.granted + updated.purchased;
+    const promotional = await activePromotionalTotal(tx, userId, new Date());
+    const balanceAfter = updated.granted + promotional + updated.purchased;
 
     await tx.creditLedger.create({
       data: {
@@ -172,103 +376,126 @@ export async function grantCreditsOnce(
 // ── Spend credits ─────────────────────────────────────────────────────────────
 
 /**
- * Atomically spend `amount` credits (granted-first, then purchased).
+ * Atomically spend `amount` credits (earliest-expiring monthly/promo first,
+ * purchased last).
  *
- * On success: returns `{ ok: true, balanceAfter, fromGranted, fromPurchased }` and writes one ledger row.
+ * On success: returns the exact ordered funding provenance and writes one ledger row.
  * On failure (insufficient or lost race): returns `{ ok: false, reason: "insufficient", balanceAfter }`.
  * Does NOT write a ledger row on failure.
  *
  * Ledger `delta` sign convention: positive = credit (balance up), negative = debit
  * (balance down). A spend writes a NEGATIVE delta.
  */
+export type CreditSpendResult =
+  | ({ ok: true; balanceAfter: number } & CreditFunding)
+  | { ok: false; reason: "insufficient"; balanceAfter: number };
+
+/** Transaction-aware credit debit used when a larger operation must reserve
+ * plan minutes and credits atomically. The caller owns commit/rollback. */
+export async function spendCreditsInTransaction(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  amount: number,
+  action: string,
+  now: Date = new Date(),
+): Promise<CreditSpendResult> {
+  if (amount <= 0) throw new Error("spendCredits: amount must be positive");
+  await materializeExpiredPromotionalCredits(tx, userId, now);
+  const row = await tx.creditBalance.upsert({
+    where: { userId },
+    create: { userId, granted: 0, purchased: 0 },
+    update: {},
+  });
+  const promoGrants = await tx.promotionalCreditGrant.findMany({
+    where: { userId, expiresAt: { gt: now }, remainingAmount: { gt: 0 } },
+    orderBy: [{ expiresAt: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    select: { id: true, remainingAmount: true, expiresAt: true },
+  });
+  const promotional = promoGrants.reduce((sum, grant) => sum + grant.remainingAmount, 0);
+  const total = row.granted + promotional + row.purchased;
+  if (total < amount) return { ok: false, reason: "insufficient", balanceAfter: total };
+
+  const monthlyExpiry = row.grantedResetAt
+    ? new Date(row.grantedResetAt.getTime() + USAGE_PERIOD_DAYS * 24 * 60 * 60 * 1_000)
+    : now;
+  const expiringBuckets: Array<
+    | { kind: "monthly"; amount: number; expiresAt: Date; id: string }
+    | { kind: "promo"; amount: number; expiresAt: Date; id: string }
+  > = row.granted > 0
+    ? [{ kind: "monthly", amount: row.granted, expiresAt: monthlyExpiry, id: "monthly" }]
+    : [];
+  expiringBuckets.push(...promoGrants.map((grant) => ({
+    kind: "promo" as const,
+    amount: grant.remainingAmount,
+    expiresAt: grant.expiresAt,
+    id: grant.id,
+  })));
+  expiringBuckets.sort((left, right) =>
+    left.expiresAt.getTime() - right.expiresAt.getTime()
+    || (left.kind === right.kind ? 0 : left.kind === "monthly" ? -1 : 1)
+    || left.id.localeCompare(right.id),
+  );
+
+  let remaining = amount;
+  let fromGranted = 0;
+  const promotionalDebits: PromotionalCreditDebit[] = [];
+  const debits: CreditDebit[] = [];
+  for (const bucket of expiringBuckets) {
+    if (remaining <= 0) break;
+    const debit = Math.min(bucket.amount, remaining);
+    remaining -= debit;
+    if (bucket.kind === "monthly") {
+      fromGranted += debit;
+      debits.push({ bucket: "granted", amount: debit });
+    } else {
+      promotionalDebits.push({ grantId: bucket.id, amount: debit });
+      debits.push({ bucket: "promotional", grantId: bucket.id, amount: debit });
+    }
+  }
+  const fromPromotional = promotionalDebits.reduce((sum, debit) => sum + debit.amount, 0);
+  const fromPurchased = remaining;
+  if (fromPurchased > 0) debits.push({ bucket: "purchased", amount: fromPurchased });
+
+  const balanceDebit = await tx.creditBalance.updateMany({
+    where: { userId, granted: { gte: fromGranted }, purchased: { gte: fromPurchased } },
+    data: {
+      granted: { decrement: fromGranted },
+      purchased: { decrement: fromPurchased },
+    },
+  });
+  if (balanceDebit.count !== 1) throw new Error("spendCredits: wallet changed during reservation");
+  for (const debit of promotionalDebits) {
+    const promoDebit = await tx.promotionalCreditGrant.updateMany({
+      where: { id: debit.grantId, userId, remainingAmount: { gte: debit.amount }, expiresAt: { gt: now } },
+      data: { remainingAmount: { decrement: debit.amount } },
+    });
+    if (promoDebit.count !== 1) throw new Error("spendCredits: promo grant changed during reservation");
+  }
+  const balanceAfter = total - amount;
+  await tx.creditLedger.create({
+    data: { userId, delta: -amount, kind: "spend", action, balanceAfter, createdAt: now },
+  });
+  return {
+    ok: true,
+    balanceAfter,
+    fromGranted,
+    fromPromotional,
+    promotionalDebits,
+    fromPurchased,
+    debits,
+  };
+}
+
 export async function spendCredits(
   userId: string,
   amount: number,
-  action: string
-): Promise<
-  | { ok: true; balanceAfter: number; fromGranted: number; fromPurchased: number }
-  | { ok: false; reason: "insufficient"; balanceAfter: number }
-> {
-  if (amount <= 0) throw new Error("spendCredits: amount must be positive");
-
+  action: string,
+  now: Date = new Date(),
+): Promise<CreditSpendResult> {
   // Whole spend runs in ONE transaction so the guarded debit and its ledger row
-  // commit atomically (MON-4). Inside, on a lost split-bucket race (the guarded
-  // updateMany matches 0 rows because a concurrent spend shifted the granted/
-  // purchased split under our read), RE-READ + recompute the split and re-issue
-  // the guarded update ONCE (MON-3). Still fail-closed: a genuinely insufficient
-  // total (granted+purchased < amount) returns insufficient without writing a
-  // ledger row, and the retry is capped at one extra attempt (no loops, never
-  // over-spends). ALL reads/writes use `tx` — never the global client — so the
-  // single SQLite connection isn't dead-locked mid-transaction.
-  return prisma.$transaction(
-    async (
-      tx
-    ): Promise<
-      | { ok: true; balanceAfter: number; fromGranted: number; fromPurchased: number }
-      | { ok: false; reason: "insufficient"; balanceAfter: number }
-    > => {
-      // Up to 2 attempts: initial + one retry after a split-shift race.
-      for (let attempt = 0; attempt < 2; attempt++) {
-        // Read current balance (upserts empty row if missing)
-        const row = await tx.creditBalance.upsert({
-          where: { userId },
-          create: { userId, granted: 0, purchased: 0 },
-          update: {},
-        });
-        const total = row.granted + row.purchased;
-
-        if (total < amount) {
-          // Genuinely insufficient — total can't cover it (fail-closed, no ledger row)
-          return { ok: false, reason: "insufficient", balanceAfter: total };
-        }
-
-        // Compute debit from each bucket (granted first)
-        const fromGranted = Math.min(row.granted, amount);
-        const fromPurchased = amount - fromGranted;
-
-        // Atomic conditional update — guard both fields
-        const result = await tx.creditBalance.updateMany({
-          where: {
-            userId,
-            granted: { gte: fromGranted },
-            purchased: { gte: fromPurchased },
-          },
-          data: {
-            granted: { decrement: fromGranted },
-            purchased: { decrement: fromPurchased },
-          },
-        });
-
-        if (result.count === 1) {
-          const balanceAfter = total - amount;
-          await tx.creditLedger.create({
-            data: {
-              userId,
-              delta: -amount,
-              kind: "spend",
-              action: action ?? null,
-              balanceAfter,
-            },
-          });
-          return { ok: true, balanceAfter, fromGranted, fromPurchased };
-        }
-        // count !== 1 → the split shifted between our read and update; loop once
-        // more to re-read the current buckets and recompute the split.
-      }
-
-      // Both attempts lost the split race — re-read for an authoritative balance
-      const latest = await tx.creditBalance.upsert({
-        where: { userId },
-        create: { userId, granted: 0, purchased: 0 },
-        update: {},
-      });
-      return {
-        ok: false,
-        reason: "insufficient",
-        balanceAfter: latest.granted + latest.purchased,
-      };
-    }
-  );
+  // commit atomically (MON-4). The transaction-aware primitive is also reused by
+  // mixed minute+credit reservations so those two meters cannot split on a crash.
+  return prisma.$transaction((tx) => spendCreditsInTransaction(tx, userId, amount, action, now));
 }
 
 // ── Refund credits ────────────────────────────────────────────────────────────
@@ -276,11 +503,11 @@ export async function spendCredits(
 /**
  * Refund credits back to the exact buckets they were spent from.
  *
- * Increments `granted` by `fromGranted` and `purchased` by `fromPurchased` in
- * one atomic upsert, then writes one `kind:"refund"` ledger row.
+ * Restores monthly, promotional, and purchased funding to the exact original
+ * buckets, then writes one `kind:"refund"` ledger row.
  *
  * Throws if either bucket amount is negative (would silently corrupt the balance).
- * No-op (returns without writing any ledger row) if fromGranted+fromPurchased <= 0.
+ * No-op (returns without writing any ledger row) if the total refund is zero.
  *
  * Ledger `delta` sign convention: positive = credit (balance up), negative = debit
  * (balance down). A refund writes a POSITIVE delta.
@@ -288,47 +515,87 @@ export async function spendCredits(
  * Intended to be called with the fromGranted/fromPurchased values returned by a
  * prior successful spendCredits call, so that balance is restored exactly.
  */
-export async function refundCredits(
+export async function refundCreditsInTransaction(
+  tx: Prisma.TransactionClient,
   userId: string,
   fromGranted: number,
   fromPurchased: number,
-  action: string
+  action: string,
+  promotionalDebits: PromotionalCreditDebit[] = [],
+  now: Date = new Date(),
 ): Promise<void> {
   if (fromGranted < 0 || fromPurchased < 0)
     throw new Error("refundCredits: bucket amounts must be non-negative");
 
-  const total = fromGranted + fromPurchased;
+  const fromPromotional = promotionalDebits.reduce((sum, debit) => sum + debit.amount, 0);
+  if (promotionalDebits.some((debit) => debit.amount < 0)) {
+    throw new Error("refundCredits: promo bucket amounts must be non-negative");
+  }
+  const total = fromGranted + fromPromotional + fromPurchased;
   if (total <= 0) return;
 
+  const updated = await tx.creditBalance.upsert({
+    where: { userId },
+    create: {
+      userId,
+      granted: fromGranted,
+      purchased: fromPurchased,
+    },
+    update: {
+      granted: { increment: fromGranted },
+      purchased: { increment: fromPurchased },
+    },
+  });
+
+  for (const debit of promotionalDebits) {
+    const original = await tx.promotionalCreditGrant.findFirst({
+      where: { id: debit.grantId, userId },
+      select: { initialAmount: true, remainingAmount: true },
+    });
+    if (!original || original.remainingAmount + debit.amount > original.initialAmount) {
+      throw new Error("refundCredits: promo refund exceeds the original grant");
+    }
+    const restored = await tx.promotionalCreditGrant.updateMany({
+      where: { id: debit.grantId, userId, remainingAmount: original.remainingAmount },
+      data: { remainingAmount: { increment: debit.amount } },
+    });
+    if (restored.count !== 1) throw new Error("refundCredits: original promo grant not found");
+  }
+
+  const promotional = await activePromotionalTotal(tx, userId, now);
+  const balanceAfter = updated.granted + promotional + updated.purchased;
+  await tx.creditLedger.create({
+    data: {
+      userId,
+      delta: total,
+      kind: "refund",
+      action: action ?? null,
+      balanceAfter,
+    },
+  });
+}
+
+export async function refundCredits(
+  userId: string,
+  fromGranted: number,
+  fromPurchased: number,
+  action: string,
+  promotionalDebits: PromotionalCreditDebit[] = [],
+  now: Date = new Date(),
+): Promise<void> {
   // Balance restore + ledger row in ONE transaction so a crash between them can
   // never diverge the balance from its audit ledger (MON-4).
-  await prisma.$transaction(async (tx) => {
-    // Atomically restore both buckets (upsert so row is guaranteed to exist)
-    const updated = await tx.creditBalance.upsert({
-      where: { userId },
-      create: {
-        userId,
-        granted: fromGranted,
-        purchased: fromPurchased,
-      },
-      update: {
-        granted: { increment: fromGranted },
-        purchased: { increment: fromPurchased },
-      },
-    });
-
-    const balanceAfter = updated.granted + updated.purchased;
-
-    await tx.creditLedger.create({
-      data: {
-        userId,
-        delta: total,
-        kind: "refund",
-        action: action ?? null,
-        balanceAfter,
-      },
-    });
-  });
+  await prisma.$transaction((tx) =>
+    refundCreditsInTransaction(
+      tx,
+      userId,
+      fromGranted,
+      fromPurchased,
+      action,
+      promotionalDebits,
+      now,
+    ),
+  );
 }
 
 // ── Monthly reset ─────────────────────────────────────────────────────────────
@@ -399,7 +666,8 @@ export async function resetMonthlyGranted(
       updatedPurchased = updated.purchased;
     }
 
-    const balanceAfter = updatedGranted + updatedPurchased;
+    const promotional = await activePromotionalTotal(tx, userId, now);
+    const balanceAfter = updatedGranted + promotional + updatedPurchased;
 
     await tx.creditLedger.create({
       data: {

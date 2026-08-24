@@ -27,9 +27,16 @@ interface ApiKeyModalProps {
   keyType: RequiredKeyType;
   onClose: () => void;
   onSaved: () => void; // callback to retry the action after saving
+  /** Optional secondary path that skips entering a key entirely (e.g. Editor v2's
+   *  "ใช้เสียง Gemini แทน" — switch provider instead of buying/pasting a key). */
+  secondaryAction?: {
+    label: string;
+    description?: string;
+    onClick: () => void;
+  };
 }
 
-export function ApiKeyModal({ keyType, onClose, onSaved }: ApiKeyModalProps) {
+export function ApiKeyModal({ keyType, onClose, onSaved, secondaryAction }: ApiKeyModalProps) {
   const meta = KEY_META[keyType];
   const [value, setValue] = useState("");
   const [show, setShow] = useState(false);
@@ -121,6 +128,20 @@ export function ApiKeyModal({ keyType, onClose, onSaved }: ApiKeyModalProps) {
               บันทึกและลองใหม่
             </button>
           </div>
+
+          {secondaryAction && (
+            <div className="space-y-2 rounded-xl p-3"
+              style={{ background: "hsl(220 30% 11%)", border: "1px solid hsl(220 30% 18%)" }}>
+              {secondaryAction.description && (
+                <p className="text-[11px] leading-relaxed text-white/50">{secondaryAction.description}</p>
+              )}
+              <button type="button" onClick={secondaryAction.onClick}
+                className="w-full rounded-lg py-2 text-xs font-semibold text-violet-300 transition-colors hover:text-violet-200"
+                style={{ background: "hsl(258 90% 66% / 0.1)", border: "1px solid hsl(258 90% 66% / 0.25)" }}>
+                {secondaryAction.label}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

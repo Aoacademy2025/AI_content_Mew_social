@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { V2Project } from "./useV2Project";
 import type { ParsedVideoJobOutput } from "@/lib/mcp/video-job";
+import type { SceneRerollCapability } from "@/lib/scene-reroll-capability";
 import { isProviderErrorCode, type ProviderErrorCode } from "@/lib/provider-errors";
 import type { HeygenProviderAction } from "@/lib/heygen-readiness";
+import type { RequiredKeyType } from "@/components/ui/api-key-modal";
 import type { ProjectMediaState } from "@/lib/media-retention";
+import type { EditorExportDraft } from "@/lib/editor-export-snapshot";
 import { PRESET_WEIGHTS } from "./mix-presets";
 import {
   disclosedAutoMixAiSlotIndices,
@@ -25,6 +28,7 @@ import {
   effectiveManualCutawayPieceCount,
   estimatedCutawayPieceCount,
 } from "@/lib/cutaway-plan";
+import { restorePostExportEditorState } from "./export-edit-state";
 
 /**
  * Editor v2 background-render job (P4b) — submit → poll → done/failed + resume.
@@ -78,6 +82,7 @@ export interface V2JobState {
   jobType: string | null;
   projectId: string | null;
   contentPreflightId?: string | null;
+  sceneRerollCapability?: SceneRerollCapability | null;
   currentStep: string | null;
   progress: number;
   queuePosition: number | null;
@@ -93,6 +98,7 @@ const IDLE: V2JobState = { phase: "idle", jobId: null, jobType: null, projectId:
 export type SubmitExportInput = {
   sourceJobId: string;
   subtitleOverlayConfig: unknown;
+  editorSnapshot?: EditorExportDraft;
   script?: string;
   sceneCount?: number;
 };
@@ -104,10 +110,27 @@ export type SubmitResult = {
   code?: ProviderErrorCode;
   provider?: string;
   actions?: HeygenProviderAction[];
+  missingKey?: RequiredKeyType;
+  // jobs/route.ts's ElevenLabs guard is two checks deep: missing key (→ missingKey
+  // above) THEN missing voice ID — the second returns { error: "missing_voice_id" }
+  // with no missingKey field. Kept separate from missingKey (not overloaded onto it)
+  // because the user already has a key here — ApiKeyModal is the wrong surface for it.
+  missingVoiceId?: boolean;
 };
 
 function isHeygenProviderAction(value: unknown): value is HeygenProviderAction {
   return value === "open_heygen" || value === "switch_faceless";
+}
+
+// Maps the server's missing_key vocabulary (jobs/route.ts:511/518/522) onto the
+// ApiKeyModal's RequiredKeyType. "broll" is the Pexels-OR-Pixabay case → "pexels"
+// (its ApiKeyModal copy already reads "ใช้สำหรับดาวน์โหลด Stock video", which fits
+// either provider). Unrecognized values are ignored rather than surfaced.
+function mapMissingKey(value: unknown): RequiredKeyType | undefined {
+  if (value === "elevenlabs") return "elevenlabs";
+  if (value === "gemini") return "gemini";
+  if (value === "broll") return "pexels";
+  return undefined;
 }
 type OwnedSubmitAttempt = {
   kind: "create" | "export";
@@ -179,7 +202,7 @@ export function useV2Job(p: V2Project) {
   }, []);
 
   const applyStatus = useCallback((d: {
-    id: string; projectId?: string | null; contentPreflightId?: string | null; type?: string | null; status: string; currentStep: string | null; progress: number;
+    id: string; projectId?: string | null; contentPreflightId?: string | null; sceneRerollCapability?: SceneRerollCapability | null; type?: string | null; status: string; currentStep: string | null; progress: number;
     queuePosition?: number | null;
     errorMessage: string | null; errorCode?: string | null; errorProvider?: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
     idempotencyKey?: string | null; idempotencyFingerprint?: string | null;
@@ -196,8 +219,11 @@ export function useV2Job(p: V2Project) {
     }
     if (d.status === "done") {
       stopPolling();
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("hero-first-clip-completed"));
+      }
       setJob({
-        phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null,
+        phase: "done", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null,
         currentStep: d.currentStep, progress: 100, queuePosition: null, errorMessage: null, errorCode: null, errorProvider: null, output: d.output ?? null,
         // A fresh job poll is authoritative. Project detail is only a compatibility
         // fallback for a rolling deploy where the poll response lacks mediaState.
@@ -205,9 +231,9 @@ export function useV2Job(p: V2Project) {
       });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: null, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
+      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: null, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
     } else {
-      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
+      setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
     }
   }, [stopPolling]);
 
@@ -311,7 +337,7 @@ export function useV2Job(p: V2Project) {
   }, [p.projectReady, p.projectId, p.projectStatus, p.activeJobId, p.activeExportJobId, startPolling, stopPolling]);
 
   /** ยิงงานจริง (previewMode ฝั่ง server) จาก project state ปัจจุบัน */
-  const submit = useCallback(async (): Promise<SubmitResult> => {
+  const submit = useCallback(async (confirmedMeteredMinutes?: number): Promise<SubmitResult> => {
     const existingAttempt = submitAttemptRef.current;
     if (existingAttempt?.kind !== undefined && existingAttempt.kind !== "create") {
       return { ok: false, message: "มีคำขอส่งออกก่อนหน้าที่ยังยืนยันผลไม่ได้ กรุณาลองส่งออกซ้ำ" };
@@ -377,6 +403,7 @@ export function useV2Job(p: V2Project) {
       ...(p.projectId ? { projectId: p.projectId } : {}),
       mode: "upload",
       clipUrl: p.clipUrl,
+      ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
       stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
       ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
@@ -397,11 +424,12 @@ export function useV2Job(p: V2Project) {
     } : {
       idempotencyKey,
       ...(p.projectId ? { projectId: p.projectId } : {}),
-      ...((p.brandVisualAllowed || p.hasPersistedVisualPin) && p.brandContentPreflightId ? {
-        contentPreflightId: p.brandContentPreflightId,
+      ...((p.brandVisualAllowed || p.hasPersistedVisualPin) && p.projectId ? {
         narrativeSourceKind: p.narrativeSourceKind,
+        ...(p.brandContentPreflightId ? { contentPreflightId: p.brandContentPreflightId } : {}),
       } : {}),
       script: p.script,
+      ...(confirmedMeteredMinutes ? { confirmedMeteredMinutes } : {}),
       voiceProvider: p.voiceEngine,
       ...(p.voiceEngine === "gemini" ? { geminiVoiceName: p.geminiVoiceName } : {}),
       ...(p.voiceEngine === "elevenlabs" && p.voiceId ? { voiceId: p.voiceId } : {}),
@@ -463,6 +491,8 @@ export function useV2Job(p: V2Project) {
             code: isProviderErrorCode(d?.code) ? d.code : undefined,
             provider: typeof d?.provider === "string" ? d.provider : undefined,
             actions: Array.isArray(d?.actions) ? d.actions.filter(isHeygenProviderAction) : undefined,
+            missingKey: mapMissingKey(d?.missingKey),
+            missingVoiceId: d?.error === "missing_voice_id",
           };
         }
         if (!responseMatchesAttempt(d, attempt, false)) {
@@ -507,6 +537,7 @@ export function useV2Job(p: V2Project) {
       mode: "export",
       sourceJobId: input.sourceJobId,
       subtitleOverlayConfig: input.subtitleOverlayConfig,
+      ...(input.editorSnapshot ? { editorSnapshot: input.editorSnapshot } : {}),
       ...(input.script ? { script: input.script } : {}),
       ...(typeof input.sceneCount === "number" ? { exportSceneCount: input.sceneCount } : {}),
     };
@@ -630,6 +661,18 @@ export function useV2Job(p: V2Project) {
     startPolling(jobId);
   }, [p.projectId, startPolling]);
 
+  /** Restore the exact native editor state captured by a completed export. The active
+   * source id moves back to the preview job for future edits/exports, while localStorage
+   * deliberately keeps the durable export id so a refresh can recover this snapshot again. */
+  const resumeExportEditSnapshot = useCallback(() => {
+    const restored = restorePostExportEditorState(job, p.activeJobId);
+    if (!restored?.jobId) return;
+    stopPolling();
+    jobIdRef.current = restored.jobId;
+    lastPreviewJobIdRef.current = restored.jobId;
+    setJob(restored);
+  }, [job, p.activeJobId, stopPolling]);
+
   const markPreviewMissing = useCallback(() => {
     // Invalidate any response that began before the player reported the incident.
     // Usually done jobs have already stopped polling, but this also closes the
@@ -640,5 +683,5 @@ export function useV2Job(p: V2Project) {
       : current);
   }, [stopPolling]);
 
-  return { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, markPreviewMissing };
+  return { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, resumeExportEditSnapshot, markPreviewMissing };
 }

@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { FOUNDING_CODE } from "@/lib/founding";
+import { previewGrantCoupon } from "@/lib/grant-coupon-redemption";
 
 export const runtime = "nodejs";
 
@@ -19,15 +20,36 @@ export async function POST(req: Request) {
 
     const coupon = await prisma.coupon.findUnique({
       where: { code: code.trim().toUpperCase() },
-      include: { redemptions: { where: { userId: authUser.id } } },
     });
     if (!coupon) return NextResponse.json({ error: "รหัสคูปองไม่ถูกต้อง" }, { status: 404 });
+    if (!coupon.isActive) return NextResponse.json({ error: "คูปองนี้ถูกปิดใช้งานแล้ว" }, { status: 400 });
     if (coupon.expiresAt && coupon.expiresAt < new Date())
       return NextResponse.json({ error: "คูปองหมดอายุแล้ว" }, { status: 400 });
     if (coupon.maxUses > 0 && coupon.usedCount >= coupon.maxUses)
       return NextResponse.json({ error: "คูปองถูกใช้ครบจำนวนแล้ว" }, { status: 400 });
-    if (coupon.redemptions.length > 0)
-      return NextResponse.json({ error: "คุณเคยใช้คูปองนี้แล้ว" }, { status: 400 });
+    if (coupon.type === "GRANT") {
+      const preview = await previewGrantCoupon({ userId: authUser.id, code: coupon.code });
+      if (!preview.ok) {
+        return NextResponse.json(
+          { error: preview.message, code: preview.code },
+          { status: preview.code === "NOT_FOUND" ? 404 : 400 },
+        );
+      }
+      return NextResponse.json({
+        code: coupon.code,
+        type: coupon.type,
+        plan: coupon.plan,
+        durationDays: coupon.durationDays,
+        outcome: preview.outcome,
+        entitlementStartsAt: preview.entitlementStartsAt,
+        entitlementExpiresAt: preview.entitlementExpiresAt,
+        minutesLimit: preview.minutesLimit,
+        monthlyCredits: preview.monthlyCredits,
+        promoCredits: preview.promoCredits,
+        billingChanged: false,
+        message: preview.message,
+      });
+    }
 
     return NextResponse.json({
       code: coupon.code,

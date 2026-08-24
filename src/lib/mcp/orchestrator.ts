@@ -6,7 +6,7 @@ import {
   refundVideoJobBaseReservation,
   refundVideoJobTerminalRenderReservations,
 } from "@/lib/render/reservation-settlement";
-import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
+import { captionsFromSpokenScript, captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
 import {
   setJobStep,
   finishJob,
@@ -19,7 +19,13 @@ import {
   saveProviderCheckpoint,
   VIDEO_JOB_CANCELED_ERROR,
 } from "@/lib/mcp/video-job";
-import { validateWindowEdits, mergeWindowEdits, type WindowEdit } from "@/lib/broll-rerender";
+import type { EditorExportSnapshot } from "@/lib/editor-export-snapshot";
+import {
+  firstPassVisualRejectionReasonForWindow,
+  validateWindowEdits,
+  mergeWindowEdits,
+  type WindowEdit,
+} from "@/lib/broll-rerender";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import {
   pipelineCaller,
@@ -73,6 +79,8 @@ import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { avatarBookendDurationViolation } from "@/lib/avatar-duration";
+import { minutesFromSeconds } from "@/lib/minute-limits";
+import { reconcileVideoJobFunding } from "@/lib/mcp/video-job-funding";
 import { resolveJobTtsProvider } from "@/lib/tts-providers";
 import { expandThaiSpeechAbbreviations } from "@/lib/hero-voice-speech";
 import { polishScriptForTts } from "@/lib/tts-script-polish";
@@ -94,6 +102,8 @@ import {
 import { shouldEmitPipelineStepStarted } from "@/lib/pipeline-telemetry";
 import {
   alignTranscriptWordsToSource,
+  buildCanonicalCaptionsFromAlignedWords,
+  subtitleQualityShouldFailJob,
   validateSubtitleQuality,
   type SubtitleTimingSource,
 } from "@/lib/mcp/subtitle-quality";
@@ -101,7 +111,21 @@ import { getVideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
 import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
-import { narrativeVisualWindowsForPreflight } from "@/lib/content-preflight.server";
+import {
+  ContentPreflightError,
+  contentPreflightFailureDetails,
+  narrativeVisualWindowsForPreflight,
+} from "@/lib/content-preflight.server";
+import { ensureVideoJobContentPreflight } from "@/lib/video-job-content-preflight.server";
+import {
+  recordFirstPassVisualExport,
+  recordFirstPassVisualRejection,
+  type FirstPassVisualRejectionReason,
+} from "@/lib/first-pass-visual-acceptance.server";
+import {
+  commitAppliedSceneRerollAssetsInTransaction,
+  prepareAppliedSceneRerollAssets,
+} from "@/lib/scene-reroll-apply.server";
 
 class AvatarProviderFailureError extends Error {
   constructor(
@@ -163,6 +187,7 @@ interface CreateInput {
   brollRegionPreference?: string;
   brollVisualStyle?: string;
   sceneContentPolicy?: SceneContentPolicy;
+  narrativeSourceKind?: "ai-script" | "creator-script";
   /** โมเดลภาพ AI (Beta, admin-gated at the web route) */
   kieModel?: string;
   /** Hero AI Image is a separate RunPod-only product seam, not a KIE model. */
@@ -198,6 +223,7 @@ interface CreateInput {
    * finished video to Gallery from the worker, not from a mounted browser component.
    */
   subtitleOverlayConfig?: Record<string, unknown>;
+  editSnapshot?: EditorExportSnapshot;
   exportScript?: string;
   exportSceneCount?: number;
   /**
@@ -367,7 +393,7 @@ function alignBrollWindowsToKeywords(
 }
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
-  const caller = deps.caller ?? pipelineCaller(userId);
+  const caller = deps.caller ?? pipelineCaller(userId, jobId);
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const recordTelemetryEvent = deps.recordTelemetryEvent ?? recordServerTelemetryEvent;
   let baseReservationSettledThisRun = false;
@@ -710,7 +736,17 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
       });
       if (subtitleQa.status !== "passed") {
-        throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+        emitTelemetry({
+          name: "subtitle_quality_gate_failed",
+          category: "error",
+          source: "server",
+          step: "captions",
+          status: subtitleQa.code,
+          properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleQa.timingSource, failJob: subtitleQualityShouldFailJob(subtitleQa) },
+        });
+        if (subtitleQualityShouldFailJob(subtitleQa)) {
+          throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+        }
       }
 
       if (input.previewMode) {
@@ -1007,7 +1043,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
 
       // Preview payload = SOURCE preview copied verbatim (captions/voiceUrl/words/audioDurationMs
       // /avatar* unchanged — subtitle invariant) with config + videoUrl + compositeBaseUrl updated.
-      await finishJob(jobId, {
+      const preparedSceneRerollPromotions = await prepareAppliedSceneRerollAssets({
+        userId,
+        sourceVideoJobId: src.id,
+        edits: editsRes,
+      });
+      const rrCompletion = await finishJobWithTransition(jobId, {
         version: 2,
         mode: "preview",
         videoUrl: rrFinalUrl,
@@ -1017,7 +1058,35 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           compositeBaseUrl: rrCompositeBaseUrl,
           ...(rrCutawayPersonRanges ? { cutawayPersonRanges: rrCutawayPersonRanges } : {}),
         },
+      }, {
+        onTransition: ({ tx, job: completedJob }) =>
+          commitAppliedSceneRerollAssetsInTransaction(tx, {
+            appliedVideoJobId: completedJob.id,
+            promotions: preparedSceneRerollPromotions,
+          }),
       });
+      if (
+        rrCompletion.transitioned
+        && rrCompletion.job.status === "done"
+        && src.projectId
+        && src.projectVisualContextJson
+      ) {
+        await Promise.all(editsRes.map(async (edit) => {
+          const reason: FirstPassVisualRejectionReason | null =
+            firstPassVisualRejectionReasonForWindow(srcBgVideos[edit.index], edit);
+          if (!reason) return;
+          await recordFirstPassVisualRejection(userId, {
+            actor: user,
+            projectId: src.projectId!,
+            videoJobId: src.id,
+            sceneIndex: edit.index,
+            reason,
+            projectVisualContextJson: src.projectVisualContextJson,
+          });
+        })).catch((error) => {
+          console.error("[mcp-worker] first-pass visual rejection telemetry failed:", error);
+        });
+      }
       return;
     }
 
@@ -1078,7 +1147,33 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         sourceJobId: input.sourceJobId,
         videoUrl: burnedUrl,
         ...(videoId ? { videoId } : {}),
+        ...(input.editSnapshot ? { editSnapshot: input.editSnapshot } : {}),
       });
+      if (
+        completion.transitioned
+        && completion.job.status === "done"
+        && src.projectId
+        && src.contentPreflightId
+        && src.projectVisualContextJson
+      ) {
+        const initialAiWindowCount = await prisma.projectVisualBeat.count({
+          where: {
+            userId,
+            projectId: src.projectId,
+            preflightId: src.contentPreflightId,
+            existingImageJobId: { not: null },
+          },
+        });
+        await recordFirstPassVisualExport(userId, {
+          actor: user,
+          projectId: src.projectId,
+          videoJobId: src.id,
+          projectVisualContextJson: src.projectVisualContextJson,
+          initialAiWindowCount,
+        }).catch((error) => {
+          console.error("[mcp-worker] first-pass visual export telemetry failed:", error);
+        });
+      }
       const logoCompletionProperties = buildLogoExportCompletedTelemetryProperties(
         input.subtitleOverlayConfig,
         preview.audioDurationMs,
@@ -1114,6 +1209,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upDurMs = (tx.audioDurationMs && tx.audioDurationMs > 0)
         ? Math.round(tx.audioDurationMs)
         : Math.max(...upCaps.map((c) => c.endMs));
+      await reconcileVideoJobFunding(jobId, userId, minutesFromSeconds(upDurMs / 1_000));
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
       const upManualWindowCount = manualCutawayWindowCount(input.targetClipCount, upDurMs);
@@ -1385,6 +1481,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       throw new Error("ตรวจสอบความยาวเสียงไม่ได้ — กรุณาลองสร้างใหม่");
     }
 
+    await reconcileVideoJobFunding(jobId, userId, minutesFromSeconds(audioDurationMs / 1_000));
+
     // Exact duration is known now. Stop before captions, keyword LLM, stock downloads,
     // rendering, or HeyGen can spend more time/quota; /api/videos/render keeps its own
     // authoritative backstop for direct callers.
@@ -1436,35 +1534,55 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // Provider timing is missing or unusable. Never ship a final video built from a
       // single-segment character clock: it preserves text but cannot prove caption/audio
       // alignment. Reuse the production transcribe path to recover boundaries from the
-      // generated audio itself. A later quality gate validates this response fail-closed.
-      const aligned = await caller.post<{
-        captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
-        words?: Array<{ word: string; startMs: number; endMs: number }>;
-        audioDurationMs?: number;
-      }>("/api/videos/transcribe", {
-        audioUrl: tts.voiceUrl,
-        scriptPrompt: input.script.trim().slice(0, 800),
-        script: input.script.trim(),
-      });
-      const recoveredCaptions: OrchCaption[] = (aligned.captions ?? [])
-        .filter((caption) => typeof caption?.text === "string" && caption.text.trim())
-        .map((caption, index) => ({
-          text: caption.text!.trim(),
-          startMs: Number(caption.startMs),
-          endMs: Number(caption.endMs),
-          tag: caption.tag ?? (index === 0 ? "hook" : "body"),
-        }));
-      if (recoveredCaptions.length > 0) {
-        subtitleTimingSource = "forced_alignment";
-        const recoveredFullText = input.script.trim();
-        capRes = {
-          captions: recoveredCaptions,
-          words: alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []) ?? [],
-          audioDurationMs: Number(aligned.audioDurationMs) > 0
-            ? Math.round(Number(aligned.audioDurationMs))
-            : audioDurationMs,
-          fullText: recoveredFullText,
-        };
+      // generated audio itself (TTS voice, never the HeyGen mp4).
+      try {
+        const aligned = await caller.post<{
+          captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
+          words?: Array<{ word: string; startMs: number; endMs: number }>;
+          audioDurationMs?: number;
+        }>("/api/videos/transcribe", {
+          audioUrl: tts.voiceUrl,
+          scriptPrompt: input.script.trim().slice(0, 800),
+          script: input.script.trim(),
+        });
+        const recoveredCaptions: OrchCaption[] = (aligned.captions ?? [])
+          .filter((caption) => typeof caption?.text === "string" && caption.text.trim())
+          .map((caption, index) => ({
+            text: caption.text!.trim(),
+            startMs: Number(caption.startMs),
+            endMs: Number(caption.endMs),
+            tag: caption.tag ?? (index === 0 ? "hook" : "body"),
+          }));
+        if (recoveredCaptions.length > 0) {
+          subtitleTimingSource = "forced_alignment";
+          const recoveredFullText = input.script.trim();
+          const recoveredWords = alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []);
+          const canonicalCaptions = recoveredWords
+            ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
+            : null;
+          capRes = {
+            // The transcribe route intentionally sanitizes punctuation and quotes
+            // in its display captions. Reuse only its proven word timestamps and
+            // take every visible character from the literal TTS source. If exact
+            // word alignment cannot be proven, the raw captions flow to the gate
+            // and fail closed as before.
+            captions: canonicalCaptions ?? recoveredCaptions,
+            words: recoveredWords ?? [],
+            audioDurationMs: Number(aligned.audioDurationMs) > 0
+              ? Math.round(Number(aligned.audioDurationMs))
+              : audioDurationMs,
+            fullText: recoveredFullText,
+          };
+        }
+      } catch {
+        /* Avatar: transcribe of spoken audio can 422; fail-open below. Faceless still throws. */
+      }
+    }
+    if ((!capRes || capRes.captions.length === 0) && input.avatarMode && input.script.trim()) {
+      const spoken = captionsFromSpokenScript(input.script.trim(), audioDurationMs, maxCardCharsFor());
+      if (spoken && spoken.captions.length > 0) {
+        subtitleTimingSource = "avatar_script_clock";
+        capRes = spoken;
       }
     }
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
@@ -1486,9 +1604,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         source: "server",
         step: "captions",
         status: subtitleQa.code,
-        properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleTimingSource },
+        properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleTimingSource, failJob: subtitleQualityShouldFailJob(subtitleQa) },
       });
-      throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+      if (subtitleQualityShouldFailJob(subtitleQa)) {
+        throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+      }
     }
 
     // B-roll cadence PARITY with the web editor: group captions into ~4s windows so the
@@ -1496,13 +1616,83 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // "พื้นหลังไม่เนียน / แล้วตัด"). Gated on the SAME flag as web so both surfaces stay in
     // lockstep. In window mode generate-config places one clip per window (ignoring
     // sceneClipCounts); subtitle timing is untouched.
+    let effectiveContentPreflightId = job.contentPreflightId;
+    const needsAiVisualPlan = input.stockSource === "kie-image" || input.stockSource === "auto-mix";
+    let awaitingContentPreflight = false;
+    if (job.projectVisualContextJson) {
+      try {
+        const parsed = JSON.parse(job.projectVisualContextJson) as { state?: string };
+        awaitingContentPreflight = parsed.state === "awaiting-content-preflight";
+      } catch {
+        awaitingContentPreflight = false;
+      }
+    }
+    if (
+      (needsAiVisualPlan || awaitingContentPreflight)
+      && !effectiveContentPreflightId
+      && job.projectId
+      && job.projectVisualContextJson
+    ) {
+      try {
+        const visualPlan = await ensureVideoJobContentPreflight({
+          actor: {
+            id: user.id,
+            email: user.email,
+            role: user.role,
+            createdAt: user.createdAt,
+          },
+          projectId: job.projectId,
+          videoJobId: jobId,
+          narrativeSource: {
+            kind: input.narrativeSourceKind ?? "creator-script",
+            text: input.script,
+            ...(input.targetClipCount ? { windowCount: input.targetClipCount } : {}),
+            sceneContentPolicy: input.sceneContentPolicy
+              ?? sceneContentPolicyFromPreference(input.brollRegionPreference),
+          },
+          brandVisualAccepted: true,
+        });
+        if (visualPlan.kind === "resolved") {
+          effectiveContentPreflightId = visualPlan.preflight.id;
+          emitTelemetry({
+            name: "brand_visual_preflight_resolved",
+            category: "performance",
+            source: "server",
+            step: "editor.step2",
+            status: visualPlan.preflight.cached ? "cached" : "analyzed",
+            properties: {
+              projectId: job.projectId,
+              preflightId: visualPlan.preflight.id,
+              sourceKind: input.narrativeSourceKind ?? "creator-script",
+              visualFormatId: visualPlan.preflight.suggestedVisualFormatId,
+              treatmentPresetId: visualPlan.preflight.suggestedTreatment.presetId,
+              beatCount: visualPlan.preflight.visualBeats.length,
+              via: "script-worker",
+            },
+          });
+        }
+      } catch (error) {
+        if (needsAiVisualPlan) throw error;
+        emitTelemetry({
+          name: "first_clip_preflight_fail_open",
+          category: "pipeline",
+          source: "server",
+          step: "editor.step2",
+          status: "fail_open",
+          properties: {
+            projectId: job.projectId,
+            message: error instanceof Error ? error.message : "content_preflight_failed",
+          },
+        });
+      }
+    }
     const brollWindowMode = isInternalAiBetaEnabledFor(user, process.env.NEXT_PUBLIC_BROLL_WINDOW_MODE === "1");
     const brollWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
-    const pinnedBrandVisualWindows = job.contentPreflightId && job.projectVisualContextJson && job.projectId
+    const pinnedBrandVisualWindows = effectiveContentPreflightId && job.projectVisualContextJson && job.projectId
       ? await narrativeVisualWindowsForPreflight({
           userId,
           projectId: job.projectId,
-          preflightId: job.contentPreflightId,
+          preflightId: effectiveContentPreflightId,
         })
       : [];
     const pinnedBrandVisualWindowCount = pinnedBrandVisualWindows.length;
@@ -1524,7 +1714,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         })
       : null;
     if (pinnedBrandVisualWindowCount > 0 && !narrativeAlignedWindows) {
-      throw new Error("ข้อมูลฉากไม่ตรงกับเนื้อหาที่เสียงพูดจริง — กรุณาเตรียมแนวภาพใหม่");
+      throw new ContentPreflightError(
+        "NARRATIVE_MISMATCH",
+        "ข้อมูลฉากไม่ตรงกับเนื้อหาที่เสียงพูดจริง — กรุณาเตรียมแนวภาพใหม่",
+      );
     }
     const brollWindows = narrativeAlignedWindows
       ?? (brollWindowMode || manualBrollCount > 0
@@ -1754,6 +1947,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   } catch (e) {
     const message = e instanceof Error ? e.message : "internal error";
     const pipelineFailure = pipelineFailureDetails(e);
+    const contentPreflightFailure = contentPreflightFailureDetails(e);
     if (message === VIDEO_JOB_CANCELED_ERROR) {
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
       const reason = `video_${phaseName || "unknown"}_canceled`;
@@ -1832,6 +2026,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             message: e.message,
             code: e.code,
             provider: "omnivoice",
+            ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
+          }
+      : contentPreflightFailure
+        ? {
+            ...contentPreflightFailure,
             ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
           }
       : financialSettlementPending

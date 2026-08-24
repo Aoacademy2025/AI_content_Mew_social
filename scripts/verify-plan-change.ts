@@ -41,13 +41,19 @@ assert(checkoutAllowed({ plan: "PRO", subStatus: null, trialEndsAt: null }, "PRO
 // An active one-time term can be extended by another one-time payment, but a
 // card subscription would start billing immediately and overlap/erase prepaid time.
 const timedCard = checkoutAllowed(
-  { plan: "PRO", subStatus: null, trialEndsAt: null, planExpiresAt: future },
+  { plan: "PRO", subStatus: null, trialEndsAt: null, planExpiresAt: future, hasQualifyingCashPayment: true },
   "PRO",
   now,
   { recurring: true },
 );
 assert(!timedCard.allowed && timedCard.reason === "active_timed_plan",
   "active PromptPay/timed plan → card subscription BLOCKED until expiry");
+assert(checkoutAllowed(
+  { plan: "PRO", subStatus: null, trialEndsAt: null, planExpiresAt: future, hasQualifyingCashPayment: false },
+  "PRO",
+  now,
+  { recurring: true },
+).allowed === true, "GRANT/promo timed PRO can convert to monthly without waiting for expiry");
 assert(checkoutAllowed(
   { plan: "PRO", subStatus: null, trialEndsAt: null, planExpiresAt: future },
   "PRO",

@@ -123,6 +123,21 @@ const discountCoupon = decidePaidEquivalentEntitlement(evidence({
 }), now);
 check(!discountCoupon.canUsePaidFeatures, "DISCOUNT coupon alone never grants product access");
 
+const discountedAnnualBuyer = decidePaidEquivalentEntitlement(evidence({
+  user: { plan: "PRO", planExpiresAt: inDays(365) } as PaidEquivalentEvidence["user"],
+  payments: [{ plan: "PRO", status: "PAID", periodDays: 365, paidAt: inDays(-1) }],
+  couponRedemptions: [{
+    redeemedAt: inDays(-1),
+    coupon: { type: "DISCOUNT", plan: "PRO", durationDays: 0 },
+  }],
+}), now);
+check(
+  discountedAnnualBuyer.canUsePaidFeatures
+    && discountedAnnualBuyer.source === "paid_term"
+    && discountedAnnualBuyer.cashBacked,
+  "a discounted or Founding annual purchase is full cash-backed paid access",
+);
+
 const expiredCoupon = decidePaidEquivalentEntitlement(evidence({
   couponRedemptions: [{
     redeemedAt: inDays(-31),

@@ -32,14 +32,59 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
+      - name: Verify post-launch stability hotfixes
+        run: npm run verify:launch-stability-hotfix
+
       - name: Verify karaoke subtitle visibility
         run: npm run verify:subtitle-karaoke
+
+      - name: Verify first-export subtitle and duration walls
+        run: npm run verify:first-export-walls
 
       - name: Verify subtitle card invariants
         run: npm run verify:subtitle-invariant
 
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
+
+      - name: Verify first-clip convert prompt
+        run: npm run verify:first-clip-convert
+
+      - name: Verify first-clip path
+        run: npm run verify:first-clip-path
+
+      - name: Verify Conversion Trial first-clip path
+        run: npm run verify:trial-first-clip-path
+
+      - name: Verify /pricing LCP convert page
+        run: npm run verify:pricing-lcp
+
+      - name: Verify public pricing matches checkout and entitlements
+        run: npm run verify:marketing-pricing
+
+      - name: Verify public marketing copy uses plain Thai
+        run: npm run verify:marketing-language
+
+      - name: Verify day-21 GRANT convert reminder
+        run: npm run verify:day21-convert-reminder
+
+      - name: Verify Avatar caption fail-open
+        run: npm run verify:avatar-caption-fallback
+
+      - name: Verify Avatar composite overflow crop and timeout classify
+        run: npm run verify:composite-stability
+
+      - name: Verify Scene Reroll missing Visual Beat is 409
+        run: npm run verify:hero-broll-window-migration
+
+      - name: Verify cutaway Scene Reroll maps timeline windows to Visual Beats
+        run: npm run verify:broll-window-management && npm run verify:broll-rerender
+
+      - name: Verify customer-facing error copy
+        run: npm run verify:customer-error-copy
+
+      - name: Verify ERROR_SYSTEM capacity skip and rate-limit
+        run: npm run verify:admin-error-notify
 
       - name: Verify Hero Script launch, payment, rollout, and guidance
         run: npm run verify:hero-script-launch

@@ -2,14 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { fetchMe } from "@/lib/use-me";
-import { LayoutDashboard, Clapperboard, Video, Settings, WandSparkles } from "lucide-react";
+import { LayoutDashboard, Clapperboard, Video, Settings, NotebookPen } from "lucide-react";
 
 /**
  * Mobile bottom-tab bar (native-app IA). Visible only below `lg`; the desktop
- * sidebar owns navigation at `lg`+. AI Studio is inserted only for members of
- * the internal beta; secondary/admin links live in the hamburger drawer.
+ * sidebar owns navigation at `lg`+. The five tabs follow the core creation
+ * journey; AI Studio and secondary/admin links remain in the drawer.
  *
  * House look: `--ui-nav-*` surface, single violet accent (#8B5CF6) for the active
  * tab + a short top indicator. Each tab ≥44px tall with `safe-area-inset-bottom`
@@ -17,25 +15,16 @@ import { LayoutDashboard, Clapperboard, Video, Settings, WandSparkles } from "lu
  */
 const tabs = [
   { title: "Dashboard", href: "/dashboard",    icon: LayoutDashboard },
-  { title: "Studio",    href: "/ai-studio",    icon: WandSparkles },
+  { title: "สคริปต์",    href: "/hero-script",  icon: NotebookPen },
   { title: "Editor",    href: "/video-editor", icon: Clapperboard },
   { title: "Gallery",   href: "/videos",       icon: Video },
-  { title: "Settings",  href: "/settings",     icon: Settings },
+  { title: "ตั้งค่า",    href: "/settings",     icon: Settings },
 ] as const;
 
 const ACCENT = "#8B5CF6";
 
 export function BottomTabs() {
   const pathname = usePathname();
-  const [internalAiTester, setInternalAiTester] = useState(false);
-
-  useEffect(() => {
-    fetchMe()
-      .then((data) => setInternalAiTester(data?.internalAiTester === true))
-      .catch(() => setInternalAiTester(false));
-  }, []);
-
-  const visibleTabs = tabs.filter((tab) => tab.href !== "/ai-studio" || internalAiTester);
 
   return (
     <nav
@@ -45,10 +34,10 @@ export function BottomTabs() {
         background: "var(--ui-nav-bg)",
         borderTop: "1px solid var(--ui-nav-border)",
         paddingBottom: "env(safe-area-inset-bottom)",
-        gridTemplateColumns: `repeat(${visibleTabs.length}, minmax(0, 1fr))`,
+        gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))`,
       }}
     >
-      {visibleTabs.map(({ title, href, icon: Icon }) => {
+      {tabs.map(({ title, href, icon: Icon }) => {
         const isActive = pathname === href || pathname.startsWith(href + "/");
         return (
           <Link

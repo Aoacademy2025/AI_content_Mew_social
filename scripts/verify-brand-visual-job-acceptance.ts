@@ -25,6 +25,20 @@ async function main() {
     pinProjectVisualContextToVideoJob,
     prepareUploadProjectVisualSnapshot,
   } = await import("../src/lib/project-look.server");
+  const { CONTENT_PREFLIGHT_ANALYZER_VERSION } = await import("../src/lib/content-preflight.server");
+  const currentTreatmentAnalysis = {
+    analyzerVersion: CONTENT_PREFLIGHT_ANALYZER_VERSION,
+    dominantNarrativeMode: "practical creator education",
+    suggestedTreatmentPresetId: "expert-clarity",
+    suggestedTreatmentPresetVersion: "v1.0.0",
+    rankedTreatmentPresetIdsJson: JSON.stringify([
+      "expert-clarity",
+      "practical-documentary",
+      "modern-business-technology",
+    ]),
+    treatmentRecommendationRationale: "The whole clip explains one practical lesson.",
+    storyEntitiesJson: "[]",
+  } as const;
 
   assert.deepEqual(
     resolveBrandVisualRenderAccess({
@@ -85,7 +99,7 @@ async function main() {
       projectId: project.id,
       narrativeSourceKind: "creator-script",
       sourceHash: "accepted-source-v1",
-      analyzerVersion: "brand-content-preflight-v2-windowed",
+      ...currentTreatmentAnalysis,
       contentDomain: "creator education",
       suggestedVisualFormatId: "clear-infographic",
       suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "warm" }),
@@ -96,7 +110,17 @@ async function main() {
           beatKey: "window-0",
           sequence: 0,
           sourceExcerptHash: "accepted-window-0",
-          beatJson: JSON.stringify({ subject: "creator", action: "teaches", setting: "studio", emotion: "warm", emphasis: "lesson" }),
+          beatJson: JSON.stringify({
+            subject: "creator",
+            action: "teaches",
+            setting: "studio",
+            emotion: "warm",
+            emphasis: "lesson",
+            hardSceneFacts: { entityTypes: ["creator"], ages: [], genders: [], actions: ["teaches"], locationTypes: ["studio"], timeOfDay: null, historicalPeriod: null, count: 1, essentialObjects: [] },
+            entityRefs: [],
+            sceneIntensity: "balanced",
+            safetyBoundary: "none",
+          }),
           existingAssetUrl: image.outputUrl,
           existingImageJobId: image.id,
           status: "current",
@@ -244,7 +268,9 @@ async function main() {
   );
   await prisma.conversionTrialAiImageAllowance.update({
     where: { userId: user.id },
-    data: { usedImages: 0 },
+    // This case isolates a later entitlement change, not allowance expiry.
+    // Keep the fixture valid relative to the day the verification is run.
+    data: { usedImages: 0, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) },
   });
 
   const videoJob = await createVideoJob(
@@ -292,10 +318,10 @@ async function main() {
     providerEndpoint: "acceptance-endpoint",
     estimatedCostUsdMicros: 10_000,
     idempotencyKey: `video:${videoJob.id}:scene:1`,
-    mediaExpiresAt: new Date("2026-09-01T00:00:00.000Z"),
+    mediaExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     fundingSnapshot: imageFundingSnapshotFromBrandVisualAcceptance(acceptance),
   });
-  assert.equal(reservation.ok, true);
+  assert.equal(reservation.ok, true, JSON.stringify(reservation));
   if (!reservation.ok) throw new Error("accepted reservation failed");
   assert.equal(reservation.fundingSource, "starter_allowance");
   assert.equal(reservation.job.allowanceWindowStartedAt?.toISOString(), acceptance.funding.windowStartedAt);
@@ -319,7 +345,7 @@ async function main() {
       projectId: uploadProject.id,
       narrativeSourceKind: "upload-transcript",
       sourceHash: "upload-accepted-source",
-      analyzerVersion: "brand-content-preflight-v2-windowed",
+      ...currentTreatmentAnalysis,
       contentDomain: "creator education",
       suggestedVisualFormatId: "clear-infographic",
       suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "warm" }),
@@ -330,7 +356,17 @@ async function main() {
           beatKey: "upload-window-0",
           sequence: 0,
           sourceExcerptHash: "upload-window-0",
-          beatJson: JSON.stringify({ subject: "creator", action: "teaches", setting: "studio", emotion: "warm", emphasis: "lesson" }),
+          beatJson: JSON.stringify({
+            subject: "creator",
+            action: "teaches",
+            setting: "studio",
+            emotion: "warm",
+            emphasis: "lesson",
+            hardSceneFacts: { entityTypes: ["creator"], ages: [], genders: [], actions: ["teaches"], locationTypes: ["studio"], timeOfDay: null, historicalPeriod: null, count: 1, essentialObjects: [] },
+            entityRefs: [],
+            sceneIntensity: "balanced",
+            safetyBoundary: "none",
+          }),
           existingAssetUrl: image.outputUrl,
           existingImageJobId: image.id,
           status: "current",

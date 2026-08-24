@@ -1,4 +1,8 @@
-import { SERVICE_SECRET_HEADER, SERVICE_ACTAS_HEADER } from "@/lib/mcp/service-actor";
+import {
+  SERVICE_SECRET_HEADER,
+  SERVICE_ACTAS_HEADER,
+  SERVICE_VIDEO_JOB_HEADER,
+} from "@/lib/mcp/service-actor";
 import { Agent, fetch as undiciFetch } from "undici";
 
 const BASE = process.env.MCP_INTERNAL_BASE_URL || "http://127.0.0.1:3000";
@@ -146,11 +150,12 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: { retries?: numbe
 }
 
 /** A caller that authenticates every request as `userId` via the service seam. */
-export function pipelineCaller(userId: string): PipelineCaller {
+export function pipelineCaller(userId: string, videoJobId?: string): PipelineCaller {
   const headers = {
     "Content-Type": "application/json",
     [SERVICE_SECRET_HEADER]: process.env.MCP_SERVICE_SECRET ?? "",
     [SERVICE_ACTAS_HEADER]: userId,
+    ...(videoJobId ? { [SERVICE_VIDEO_JOB_HEADER]: videoJobId } : {}),
   };
   async function req<T>(method: "POST" | "GET" | "PATCH", path: string, body?: unknown, opts?: { retries?: number }): Promise<T> {
     return withRetry(async () => {

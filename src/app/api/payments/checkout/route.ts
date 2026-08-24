@@ -30,7 +30,13 @@ export async function POST(req: Request) {
     const method: "card" | "promptpay" = period === "monthly" ? "card" : (rawMethod === "promptpay" ? "promptpay" : "card");
 
     const priceCfg = resolvePrice(plan, period, method);
-    if (!priceCfg.priceId) return NextResponse.json({ error: "Stripe price not configured" }, { status: 500 });
+    if (!process.env.STRIPE_SECRET_KEY || !priceCfg.priceId) {
+      return NextResponse.json({
+        error: "Payment configuration is unavailable",
+        code: "PAYMENT_NOT_CONFIGURED",
+        userAction: "ระบบชำระเงินของหน้านี้ยังไม่พร้อม กรุณาแจ้งทีมงานเพื่อเปิดการชำระเงิน",
+      }, { status: 503 });
+    }
     const isSub = priceCfg.recurring; // card monthly/annual → subscription · PromptPay annual → one-time
 
     const user = await prisma.user.findUnique({
@@ -46,6 +52,10 @@ export async function POST(req: Request) {
       },
     });
     if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
+    const cashPayment = await prisma.payment.findFirst({
+      where: { userId, status: "PAID", amount: { gt: 0 }, periodDays: { gt: 0 } },
+      select: { id: true },
+    });
 
     // ── Affiliate attribution (cookie wins, first-sign-in stamp is fallback) ──
     // Tags the Stripe session + subscription so the hero-affiliate webhook can attribute
@@ -71,6 +81,7 @@ export async function POST(req: Request) {
         subStatus: user.subStatus,
         trialEndsAt: user.trialEndsAt,
         planExpiresAt: user.planExpiresAt,
+        hasQualifyingCashPayment: Boolean(cashPayment),
       },
       plan,
       new Date(),
@@ -115,7 +126,7 @@ export async function POST(req: Request) {
         where: { code: couponCode.trim().toUpperCase() },
         include: { redemptions: { where: { userId } } },
       });
-      const usable = c && c.type === "DISCOUNT" && c.stripePromotionCodeId
+      const usable = c && c.isActive && c.type === "DISCOUNT" && c.stripePromotionCodeId
         && (!c.expiresAt || c.expiresAt >= new Date())
         && (c.maxUses <= 0 || c.usedCount < c.maxUses)
         && c.redemptions.length === 0;

@@ -22,6 +22,12 @@
 - Dev: `npm run dev` · Build: `npm run build`
 - DB: `npm run db:migrate` · seed: `npm run db:seed`
 - Deploy (on the VPS): `bash deploy/deploy.sh` → `git pull main` + **`prisma db push`** (additive — syncs new columns/tables BEFORE restart, so column-adding features don't 500) + build (OOM-retry) + `pm2 restart ai-content`. Current safe low-heap deploy env used on prod: `BUILD_HEAP_MB=4096 BUILD_WORKER_HEAP_MB=512 BUILD_HEAP_MB_LOW=3072 BUILD_WORKER_HEAP_MB_LOW=512 BUILD_NO_LINT=1`.
+- **Deploy has a CI gate (step `[1b/6]`).** After pulling, `deploy.sh` reads the HEAD commit's
+  GitHub check-runs (public repo → no token needed) and **aborts unless every check is green**.
+  It also aborts when CI is still running, when the commit has no checks at all, or when GitHub
+  is unreachable — fail-closed in every case. This is what actually protects paying customers:
+  a red commit can land on `main` and still never reach production. Emergency override:
+  `DEPLOY_SKIP_CI_CHECK=1 bash deploy/deploy.sh` — use it only for a real incident, and say so.
 - **Crons** are separate PM2 apps in `ecosystem.config.js` (`trial-expiry`, `founding-sweep`, `renewal-reminders`, `cleanup-videos`). deploy.sh does NOT start them. Start: `export CRON_SECRET="$(grep ^CRON_SECRET= .env | cut -d= -f2-)"` then `pm2 start ecosystem.config.js --only <name> --update-env && pm2 save` (the cron 401s without CRON_SECRET in its env). **`pm2 status` showing a cron app as `stopped` between scheduled runs is BY DESIGN** (`autorestart: false` + `cron_restart` — it runs once then exits until the next cron fire), not a crash — check `pm2 logs <name>` for actual health, don't judge by process status alone.
 - VPS prod `.env` `DATABASE_URL` is **absolute** (`file:/var/www/ai-content/prisma/dev.db`); `prisma/*.db` is gitignored (prod data safe from `git pull`).
 
@@ -50,3 +56,60 @@
 ## Working conventions
 - Work on feature branches (`mew/...`), open a PR into `main` — avoid committing straight to main. **Mew rebases + merges + deploys** (including wao's branches).
 - Follow existing code style. Build-verify render-backend changes before merging.
+
+## Workspace rules — READ BEFORE TOUCHING ANY FILE
+
+This is a **live production SaaS with paying customers**. `origin/main` deploys to the
+Hostinger VPS via `deploy/deploy.sh`. Anything that reaches `main` reaches customers.
+
+### 1. The repo root is a read-only baseline
+`/Users/mewsocialmacmini/projects/AI_content_Mew_social` stays checked out on `main`
+and is **never edited**. It exists so agents can read current-truth code.
+
+- Do NOT edit, commit, or switch branches in the root checkout.
+- If you were started in the root and have work to do, create a worktree first.
+
+### 2. One task = one worktree = one branch = one PR
+Create worktrees **only** through Orca:
+
+```bash
+orca worktree create --repo name:AI_content_Mew_social --name <slug> --agent <claude|codex>
+orca worktree create --repo name:AI_content_Mew_social --issue <n>   # when a GitHub issue exists
+```
+
+Hard rules:
+- **NEVER** run `git worktree add` yourself.
+- **NEVER** create a worktree under `/private/tmp` — macOS deletes it and the work is gone.
+- **NEVER** create a worktree under `.worktrees/`, `.claude/worktrees/`, or as a sibling
+  folder in `~/projects/`. Orca owns `AI_content_Mew_social.worktrees/`.
+- Always branch from the latest `origin/main` (`git fetch origin main` first).
+- Branch naming: `mew/<slug>` (Mew), `codex/<slug>` (Codex), `agent/<slug>` (other agents).
+
+### 3. Never share a working directory with another agent
+Before starting, confirm no other agent session is running in the same directory.
+Two agents in one checkout will overwrite each other's half-finished edits. If a
+directory is already occupied, create your own worktree instead.
+
+### 4. Shipping to production
+- Land via PR into `main`. CI (`.github/workflows/ci.yml`) must be **green** — a red
+  CI run is a stop sign, not a warning.
+- Never push directly to `main`. Never force-push `main`.
+- Schema changes: deploy runs `prisma db push` (additive). Column *removals* and
+  renames are NOT safe through that path — flag them to Mew instead of shipping.
+- After merging, prod deploy is a **human decision**. Do not run `deploy/deploy.sh`
+  or SSH to the VPS unless Mew explicitly asks in that message.
+
+### 5. Housekeeping
+- A worktree older than 7 days must be rebased onto `origin/main` or deleted.
+- Delete the worktree when its PR merges (`orca worktree rm`).
+- Never commit `.orca/`, `.playwright-mcp/`, `__pycache__/`, `artifacts/`, or `*.cpuprofile`.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

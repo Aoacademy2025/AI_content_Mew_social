@@ -15,12 +15,45 @@ async function main() {
   const {
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
     ContentPreflightError,
+    contentPreflightFailureDetails,
     createGeminiContentPreflightAnalyzer,
     planNarrativeVisualWindows,
     recordVisualBeatAsset,
     resolveContentPreflight,
     reusableVisualBeatAssetsForVideoJob,
   } = await import("../src/lib/content-preflight.server");
+
+  function completeAnalysis<T extends {
+    contentDomain: string;
+    suggestedVisualFormatId: string;
+    beats: Array<{
+      subject: string; action: string; setting: string; emotion: string; emphasis: string;
+    }>;
+  }>(analysis: T) {
+    return {
+      ...analysis,
+      dominantNarrativeMode: "continuous practical explanation",
+      rankedTreatmentPresetIds: [
+        "expert-clarity",
+        "practical-documentary",
+        "modern-business-technology",
+      ],
+      treatmentRecommendationRationale: "The whole source is a practical explanation.",
+      formatRecommendation: null,
+      storyEntities: [],
+      beats: analysis.beats.map((beat) => ({
+        ...beat,
+        hardSceneFacts: {
+          entityTypes: [beat.subject], ages: [], genders: [], actions: [beat.action],
+          locationTypes: [beat.setting], timeOfDay: null, historicalPeriod: null,
+          count: null, essentialObjects: [],
+        },
+        entityRefs: [],
+        sceneIntensity: "clear",
+        safetyBoundary: "none",
+      })),
+    };
+  }
 
   const spokenText = "Hook short. Explanation sentence one. Explanation sentence two. Close.";
   const spokenDurationMs = 9_000;
@@ -99,7 +132,7 @@ async function main() {
     startMs: index * 4_000,
     endMs: (index + 1) * 4_000,
   }));
-  const validEightBeatAnalysis = {
+  const validEightBeatAnalysis = completeAnalysis({
     contentDomain: "education",
     suggestedVisualFormatId: "clear-infographic",
     suggestedTreatment: { label: "ชัดเจน", mood: "focused" },
@@ -114,8 +147,8 @@ async function main() {
       emotion: "focused",
       emphasis: `point ${index}`,
     })),
-  };
-  let structuredOutputRequested = false;
+  });
+  let providerSafeStructuredOutputRequested = false;
   let capturedPreflightPrompt = "";
   const structuredAnalyzer = createGeminiContentPreflightAnalyzer(
     user.id,
@@ -123,12 +156,19 @@ async function main() {
       capturedPreflightPrompt = promptText;
       const options = (rawOptions ?? {}) as typeof rawOptions & {
         responseMimeType?: string;
-        responseJsonSchema?: { properties?: { beats?: { minItems?: number; maxItems?: number } } };
+        responseJsonSchema?: {
+          properties?: {
+            beats?: { type?: string; items?: unknown; minItems?: number; maxItems?: number };
+          };
+        };
       };
-      structuredOutputRequested = options.responseMimeType === "application/json"
-        && options.responseJsonSchema?.properties?.beats?.minItems === eightWindows.length
-        && options.responseJsonSchema?.properties?.beats?.maxItems === eightWindows.length;
-      return structuredOutputRequested
+      const providerBeatsSchema = options.responseJsonSchema?.properties?.beats;
+      providerSafeStructuredOutputRequested = options.responseMimeType === "application/json"
+        && providerBeatsSchema?.type === "array"
+        && Boolean(providerBeatsSchema.items)
+        && providerBeatsSchema.minItems === undefined
+        && providerBeatsSchema.maxItems === undefined;
+      return providerSafeStructuredOutputRequested
         ? JSON.stringify(validEightBeatAnalysis)
         : `ผลวิเคราะห์:\n${JSON.stringify(validEightBeatAnalysis)}`;
     },
@@ -150,9 +190,88 @@ async function main() {
     throw error;
   }
   assert.equal(
-    structuredOutputRequested,
+    providerSafeStructuredOutputRequested,
     true,
-    "upload Brand Visual analysis must constrain Gemini to JSON with the exact accepted scene count",
+    "upload Brand Visual must request structured JSON without a nested array-length constraint that Gemini rejects at 5+ beats",
+  );
+
+  const aiAgentWindows = [{ text: "AI Agent ตัดสินใจเรื่องราคาแทนพนักงาน" }];
+  const validAiAgentAnalysis = completeAnalysis({
+    contentDomain: "business automation governance",
+    suggestedVisualFormatId: "clear-infographic",
+    beats: [{
+      beatKey: "window-0",
+      sourceExcerpt: aiAgentWindows[0].text,
+      subject: "an automated decision system and a human approval checkpoint",
+      action: "routes a price change to a human reviewer",
+      setting: "a business operations room",
+      emotion: "careful oversight",
+      emphasis: "human approval before an automated pricing decision",
+    }],
+  });
+  const invalidAiAgentAnalysis = {
+    ...validAiAgentAnalysis,
+    storyEntities: [{
+      entityId: "entity-ai-agent",
+      properName: "AI Agent",
+      entityType: "object",
+      durableAttributes: ["autonomous business software"],
+      renderingDescription: "an AI Agent that changes product prices",
+      recurringCharacterDescription: null,
+      isRealPerson: false,
+    }],
+    beats: validAiAgentAnalysis.beats.map((beat) => ({
+      ...beat,
+      entityRefs: ["entity-ai-agent"],
+    })),
+  };
+  let semanticCorrectionCalls = 0;
+  const semanticCorrectionPrompts: string[] = [];
+  const semanticCorrectionAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async (_key, prompt) => {
+      semanticCorrectionCalls += 1;
+      semanticCorrectionPrompts.push(prompt);
+      return JSON.stringify(
+        semanticCorrectionCalls === 1 ? invalidAiAgentAnalysis : validAiAgentAnalysis,
+      );
+    },
+  );
+  const correctedAiAgent = await semanticCorrectionAnalyzer.analyze({
+    kind: "upload-transcript",
+    text: aiAgentWindows[0].text,
+    windows: aiAgentWindows,
+  });
+  assert.equal(
+    semanticCorrectionCalls,
+    1,
+    "a generic AI role is repaired deterministically without paying for another provider attempt",
+  );
+  assert.deepEqual(correctedAiAgent.storyEntities, []);
+  assert.match(
+    semanticCorrectionPrompts[0] ?? "",
+    /generic (?:roles|types)[\s\S]*AI Agent/i,
+    "the first attempt tells the model not to misclassify a generic AI Agent role as a proper name",
+  );
+
+  let exhaustedSemanticCalls = 0;
+  const exhaustedSemanticAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      exhaustedSemanticCalls += 1;
+      return JSON.stringify(invalidAiAgentAnalysis);
+    },
+  );
+  const deterministicAiAgent = await exhaustedSemanticAnalyzer.analyze({
+    kind: "upload-transcript",
+    text: aiAgentWindows[0].text,
+    windows: aiAgentWindows,
+  });
+  assert.deepEqual(deterministicAiAgent.storyEntities, []);
+  assert.equal(
+    exhaustedSemanticCalls,
+    1,
+    "the same unsafe response cannot exhaust all semantic attempts after deterministic repair",
   );
 
   /** ── Image text policy lives here, not in the prompt compiler ─────────────
@@ -195,8 +314,12 @@ async function main() {
    * "believable Thai environments" is exactly the lock Mew rejected on
    * 2026-08-10. "English" and "Latin" are permitted here and only here, as the
    * alphabet lettering is written in — not as a country. */
+  const beatInstruction = capturedPreflightPrompt.slice(
+    capturedPreflightPrompt.indexOf("Each beat must describe"),
+    capturedPreflightPrompt.indexOf("Schema:"),
+  );
   assert.doesNotMatch(
-    capturedPreflightPrompt,
+    beatInstruction,
     /\b(?:thai|thailand|bangkok|asian|southeast|chinese|japanese|korean|arabic|cyrillic)\b|ไทย/i,
     "the beat instruction must name no locale and no other writing system",
   );
@@ -207,18 +330,51 @@ async function main() {
    * from cache — the policy would silently apply to new sources only. */
   assert.equal(
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
-    "brand-content-preflight-v5-latin-lettering",
+    "brand-content-preflight-v12-semantic-self-correction",
     "changing what a beat contains must publish a new analyzer version",
   );
   const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");
   assert.match(
     preflightSource,
-    /COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = \[[\s\S]*?"brand-content-preflight-v4-focal-subject"[\s\S]*?"brand-content-preflight-v3-stable-windows"/,
+    /COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = \[[\s\S]*?"brand-content-preflight-v6-treatment-plan"[\s\S]*?"brand-content-preflight-v5-latin-lettering"[\s\S]*?"brand-content-preflight-v4-focal-subject"/,
     "the superseded version stays readable as lineage, so a bump costs a re-analysis and never a generated image",
   );
   const project = await prisma.editorProject.create({
     data: { userId: user.id, title: "Creator script" },
   });
+  const countGuardProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Exact beat count guard" },
+  });
+  await assert.rejects(
+    () => resolveContentPreflight({
+      userId: user.id,
+      projectId: countGuardProject.id,
+      narrativeSource: {
+        kind: "creator-script",
+        text: "ฉากแรก\nฉากที่สอง",
+        windows: [{ text: "ฉากแรก" }, { text: "ฉากที่สอง" }],
+      },
+      analyzer: {
+        analyze: async () => completeAnalysis({
+          contentDomain: "education",
+          suggestedVisualFormatId: "clear-infographic",
+          beats: [{
+            beatKey: "window-0",
+            sourceExcerpt: "ฉากแรก",
+            subject: "one learner",
+            action: "reviews the first lesson",
+            setting: "a study desk",
+            emotion: "focused",
+            emphasis: "the first lesson",
+          }],
+        }) as never,
+      },
+    }),
+    (error: unknown) => error instanceof ContentPreflightError
+      && error.code === "INVALID_ANALYSIS"
+      && error.message === "ผลวิเคราะห์ต้องมีข้อมูลครบทั้ง 2 ฉาก",
+    "the server must keep exact beat-count enforcement after the provider schema drops minItems/maxItems",
+  );
   let analysisCalls = 0;
   let edited = false;
   let meaningShift = false;
@@ -227,7 +383,7 @@ async function main() {
     async analyze(input: { windows: Array<{ text: string }> }) {
       analysisCalls += 1;
       analyzedWindowCount = input.windows.length;
-      return {
+      return completeAnalysis({
         contentDomain: "personal finance",
         suggestedVisualFormatId: "clear-infographic" as const,
         suggestedTreatment: { label: "ชัด กระชับ น่าเชื่อถือ", mood: "professional" },
@@ -253,7 +409,7 @@ async function main() {
             emphasis: "consistent monthly action",
           },
         ],
-      };
+      });
     },
   };
 
@@ -289,9 +445,9 @@ async function main() {
   const policyAnalyzer = {
     async analyze() {
       policyAnalysisCalls += 1;
-      return {
+      return completeAnalysis({
         contentDomain: "creator workflow",
-        suggestedVisualFormatId: "stick-figure-story" as const,
+        suggestedVisualFormatId: "simple-editorial-story" as const,
         suggestedTreatment: { label: "clear", mood: "encouraging" },
         beats: [{
           beatKey: "window-0",
@@ -302,7 +458,7 @@ async function main() {
           emotion: "focused optimism",
           emphasis: "the practical workflow",
         }],
-      };
+      });
     },
   };
   const policyNarrative = "A founder explains one useful workflow in a coffee shop.";
@@ -501,9 +657,9 @@ async function main() {
   });
   const alignmentAnalyzer = {
     async analyze(input: { windows: Array<{ text: string }> }) {
-      return {
+      return completeAnalysis({
         contentDomain: "creator workflow",
-        suggestedVisualFormatId: "stick-figure-story" as const,
+        suggestedVisualFormatId: "simple-editorial-story" as const,
         suggestedTreatment: { label: "clear", mood: "focused" },
         beats: input.windows.map((window, index) => ({
           beatKey: `window-${index}`,
@@ -514,7 +670,7 @@ async function main() {
           emotion: "focused confidence",
           emphasis: "the current step",
         })),
-      };
+      });
     },
   };
   const alignmentFirst = await resolveContentPreflight({
@@ -580,7 +736,7 @@ async function main() {
   });
   const cacheRebaseAnalyzer = {
     async analyze(input: { windows: Array<{ text: string }> }) {
-      return {
+      return completeAnalysis({
         contentDomain: "creator workflow",
         suggestedVisualFormatId: "clear-infographic" as const,
         suggestedTreatment: { label: "clear", mood: "focused" },
@@ -593,7 +749,7 @@ async function main() {
           emotion: "focused",
           emphasis: "the shared source window",
         })),
-      };
+      });
     },
   };
   const cacheA = await resolveContentPreflight({
@@ -661,6 +817,341 @@ async function main() {
   );
 
   const { ensureUploadContentPreflight } = await import("../src/lib/upload-content-preflight.server");
+  const productionReplayProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Upload semantic repair replay" },
+  });
+  const productionReplayEntities = [
+    {
+      entityId: "andrew",
+      properName: "Andrew",
+      entityType: "person",
+      durableAttributes: ["adult Australian man"],
+      renderingDescription: "Andrew, an adult Australian man in casual sportswear",
+      recurringCharacterDescription: "Andrew, the same adult Australian man in casual sportswear",
+      isRealPerson: false,
+    },
+    {
+      entityId: "openclaw",
+      properName: "OpenClaw",
+      entityType: "object",
+      durableAttributes: ["local AI automation tool"],
+      renderingDescription: "OpenClaw, a local AI automation tool on a computer",
+      recurringCharacterDescription: "OpenClaw, the same local AI automation tool",
+      isRealPerson: false,
+    },
+    {
+      entityId: "ai-assistant",
+      properName: "AI Assistant",
+      entityType: "object",
+      durableAttributes: ["autonomous browser software"],
+      renderingDescription: "AI Assistant with autonomous browser access",
+      recurringCharacterDescription: "AI Assistant controlling the same browser workflow",
+      isRealPerson: false,
+    },
+    {
+      entityId: "booking-system",
+      properName: "Gym Booking System",
+      entityType: "object",
+      durableAttributes: ["class reservation software"],
+      renderingDescription: "Gym Booking System showing a class queue",
+      recurringCharacterDescription: null,
+      isRealPerson: false,
+    },
+    {
+      entityId: "software-company",
+      properName: "Software Company",
+      entityType: "object",
+      durableAttributes: ["booking platform vendor"],
+      renderingDescription: "Software Company receiving a vulnerability report",
+      recurringCharacterDescription: "Software Company reviewing the report",
+      isRealPerson: false,
+    },
+    {
+      entityId: "abcn-news",
+      properName: "ABCN News",
+      entityType: "object",
+      durableAttributes: ["Australian news organization"],
+      renderingDescription: "ABCN News reporting the automated cyber incident",
+      recurringCharacterDescription: "ABCN News newsroom covering the incident",
+      isRealPerson: false,
+    },
+  ];
+  const productionReplayAnalysis = {
+    ...validEightBeatAnalysis,
+    contentDomain: "AI assistant security and booking-system governance",
+    storyEntities: productionReplayEntities,
+    beats: validEightBeatAnalysis.beats.map((beat, index) => {
+      const refs = index === 0
+        ? ["andrew", "openclaw", "abcn-news"]
+        : index <= 3
+          ? ["andrew", "openclaw", "ai-assistant", "booking-system"]
+          : index === 4
+            ? ["andrew", "ai-assistant", "software-company"]
+            : ["ai-assistant", "booking-system"];
+      return {
+        ...beat,
+        subject: index === 0
+          ? "Andrew asks OpenClaw to reserve a gym class while ABCN News frames the incident"
+          : "Andrew watches the AI Assistant interact with the Gym Booking System",
+        action: index === 4
+          ? "Andrew asks the AI Assistant to notify the Software Company"
+          : "the AI Assistant changes a queue position in the Gym Booking System",
+        emphasis: "OpenClaw and the AI Assistant expose the one-way booking flaw",
+        hardSceneFacts: {
+          ...beat.hardSceneFacts,
+          entityTypes: ["Andrew", "AI Assistant", "Gym Booking System"],
+          actions: ["the AI Assistant changes the Gym Booking System queue"],
+          essentialObjects: ["OpenClaw interface"],
+        },
+        entityRefs: refs,
+      };
+    }),
+  };
+  let productionReplayProviderCalls = 0;
+  const productionReplayAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      productionReplayProviderCalls += 1;
+      return JSON.stringify(productionReplayAnalysis);
+    },
+  );
+  const productionReplay = await ensureUploadContentPreflight({
+    actor: user,
+    projectId: productionReplayProject.id,
+    transcriptText: eightWindows.map((window) => window.text).join("\n"),
+    windows: eightWindows,
+    brandVisualAccepted: true,
+  }, {
+    resolve: resolveContentPreflight,
+    createAnalyzer: () => productionReplayAnalyzer,
+  });
+  assert.equal(productionReplay.kind, "resolved");
+  if (productionReplay.kind !== "resolved") throw new Error("upload preflight did not resolve");
+  assert.equal(productionReplayProviderCalls, 1,
+    "the production-shaped upload analysis resolves without exhausting provider retries");
+  assert.equal(productionReplay.preflight.visualBeats.length, 8);
+  assert.deepEqual(
+    productionReplay.preflight.storyEntities.map((entity) => entity.properName),
+    ["Andrew", "OpenClaw", "ABCN News"],
+    "generic roles are removed while genuine named story entities remain linked",
+  );
+  const providerFacingReplay = productionReplay.preflight.visualBeats.map((beat) => ({
+    subject: beat.subject,
+    action: beat.action,
+    setting: beat.setting,
+    emotion: beat.emotion,
+    emphasis: beat.emphasis,
+    hardSceneFacts: beat.hardSceneFacts,
+  }));
+  assert.doesNotMatch(
+    JSON.stringify(providerFacingReplay),
+    /Andrew|OpenClaw|ABCN News/i,
+    "proper names stay internal and cannot leak into the image provider fields",
+  );
+  assert.ok(
+    productionReplay.preflight.storyEntities.every((entity) => (
+      !entity.renderingDescription.toLocaleLowerCase().includes(entity.properName.toLocaleLowerCase())
+      && !entity.recurringCharacterDescription?.toLocaleLowerCase().includes(entity.properName.toLocaleLowerCase())
+    )),
+    "retained entity descriptions are provider-safe",
+  );
+  const semanticReplayCases: Array<{
+    label: string;
+    mutate: (candidate: typeof productionReplayAnalysis) => void;
+  }> = [
+    {
+      label: "duplicate beat keys",
+      mutate: (candidate) => {
+        candidate.beats.forEach((beat) => { beat.beatKey = "duplicate-window"; });
+      },
+    },
+    {
+      label: "unknown entity reference",
+      mutate: (candidate) => {
+        candidate.beats[0].entityRefs.push("provider-invented-entity");
+      },
+    },
+    {
+      label: "duplicate entity id",
+      mutate: (candidate) => {
+        candidate.storyEntities.push({
+          ...candidate.storyEntities[0],
+          properName: "Alex",
+          renderingDescription: "an adult Australian man in casual sportswear",
+          recurringCharacterDescription: null,
+        });
+      },
+    },
+    {
+      label: "duplicate treatment ranking",
+      mutate: (candidate) => {
+        candidate.rankedTreatmentPresetIds = [
+          "expert-clarity",
+          "expert-clarity",
+          "modern-business-technology",
+        ];
+      },
+    },
+    {
+      label: "blocking format recommendation",
+      mutate: (candidate) => {
+        candidate.formatRecommendation = {
+          visualFormatId: "clear-infographic",
+          reason: "This format conflicts with the narrative.",
+        };
+      },
+    },
+  ];
+  for (const replayCase of semanticReplayCases) {
+    const candidate = JSON.parse(
+      JSON.stringify(productionReplayAnalysis),
+    ) as typeof productionReplayAnalysis;
+    replayCase.mutate(candidate);
+    let providerCalls = 0;
+    const analyzer = createGeminiContentPreflightAnalyzer(
+      user.id,
+      async () => {
+        providerCalls += 1;
+        return JSON.stringify(candidate);
+      },
+    );
+    const repaired = await analyzer.analyze({
+      kind: "upload-transcript",
+      text: eightWindows.map((window) => window.text).join("\n"),
+      windows: eightWindows,
+    });
+    assert.equal(
+      repaired.beats.length,
+      eightWindows.length,
+      `${replayCase.label} keeps every requested upload window`,
+    );
+    assert.equal(
+      providerCalls,
+      1,
+      `${replayCase.label} is repaired deterministically instead of exhausting Gemini retries`,
+    );
+  }
+  const overlongEssentialObject = "object ".repeat(22) + "object!";
+  assert.equal(overlongEssentialObject.length, 161);
+  const overlongEssentialObjectCandidate = JSON.parse(
+    JSON.stringify(productionReplayAnalysis),
+  ) as typeof productionReplayAnalysis;
+  overlongEssentialObjectCandidate.beats[0].hardSceneFacts.essentialObjects = [
+    overlongEssentialObject,
+  ];
+  let overlongEssentialObjectCalls = 0;
+  const overlongEssentialObjectAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      overlongEssentialObjectCalls += 1;
+      return JSON.stringify(overlongEssentialObjectCandidate);
+    },
+  );
+  const repairedOverlongEssentialObject = await overlongEssentialObjectAnalyzer.analyze({
+    kind: "upload-transcript",
+    text: eightWindows.map((window) => window.text).join("\n"),
+    windows: eightWindows,
+  });
+  const repairedEssentialObjects =
+    repairedOverlongEssentialObject.beats[0].hardSceneFacts.essentialObjects;
+  assert.equal(
+    overlongEssentialObjectCalls,
+    1,
+    "an overlong essential object is repaired deterministically instead of exhausting provider retries",
+  );
+  assert.ok(
+    repairedEssentialObjects.every((fact) => fact.length <= 160),
+    "every repaired essential-object fact respects the provider-facing schema boundary",
+  );
+  assert.equal(
+    repairedEssentialObjects.join(" "),
+    overlongEssentialObject,
+    "repair preserves every essential-object word instead of truncating a Hard Scene Fact",
+  );
+  for (const explicitCount of [101, 500]) {
+    const largeCountCandidate = JSON.parse(
+      JSON.stringify(productionReplayAnalysis),
+    ) as typeof productionReplayAnalysis;
+    largeCountCandidate.beats[0].hardSceneFacts.count = explicitCount;
+    let largeCountCalls = 0;
+    const largeCountAnalyzer = createGeminiContentPreflightAnalyzer(
+      user.id,
+      async () => {
+        largeCountCalls += 1;
+        return JSON.stringify(largeCountCandidate);
+      },
+    );
+    const repairedLargeCount = await largeCountAnalyzer.analyze({
+      kind: "upload-transcript",
+      text: eightWindows.map((window) => window.text).join("\n"),
+      windows: eightWindows,
+    });
+    assert.equal(
+      largeCountCalls,
+      1,
+      "a valid narrative count of " + explicitCount + " must not exhaust provider retries",
+    );
+    assert.equal(
+      repairedLargeCount.beats[0].hardSceneFacts.count,
+      explicitCount,
+      "the explicit Hard Scene Fact count remains exact",
+    );
+  }
+  assert.deepEqual(
+    contentPreflightFailureDetails(
+      new ContentPreflightError(
+        "INVALID_ANALYSIS",
+        "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง",
+      ),
+    ),
+    {
+      message: "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง",
+      code: "CONTENT_PREFLIGHT_INVALID_ANALYSIS",
+    },
+    "worker-side upload preflight failures retain a structured error code",
+  );
+  assert.equal(
+    contentPreflightFailureDetails(new Error("unrelated")),
+    null,
+    "unrelated pipeline failures keep their existing classification path",
+  );
+  const unsafeRealPersonCandidate = JSON.parse(
+    JSON.stringify(productionReplayAnalysis),
+  ) as typeof productionReplayAnalysis;
+  unsafeRealPersonCandidate.storyEntities[0].isRealPerson = true;
+  unsafeRealPersonCandidate.beats[0].safetyBoundary = "real-person-context-only";
+  let unsafeRealPersonCalls = 0;
+  const unsafeRealPersonAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      unsafeRealPersonCalls += 1;
+      return JSON.stringify(unsafeRealPersonCandidate);
+    },
+  );
+  await assert.rejects(
+    () => unsafeRealPersonAnalyzer.analyze({
+      kind: "upload-transcript",
+      text: eightWindows.map((window) => window.text).join("\n"),
+      windows: eightWindows,
+    }),
+    (error: unknown) => error instanceof ContentPreflightError
+      && error.code === "INVALID_ANALYSIS"
+      && typeof error.diagnostic === "string"
+      && error.diagnostic.includes("entityRefs"),
+    "an unresolved real-person safety conflict still fails closed with a structural diagnostic",
+  );
+  assert.equal(unsafeRealPersonCalls, 3);
+  const invalidTelemetry = await prisma.telemetryEvent.findFirst({
+    where: { userId: user.id, name: "brand_visual_preflight_invalid" },
+    orderBy: { createdAt: "desc" },
+  });
+  assert.ok(invalidTelemetry, "semantic exhaustion leaves a durable server diagnostic");
+  assert.match(invalidTelemetry.properties ?? "", /entityRefs/);
+  assert.doesNotMatch(
+    invalidTelemetry.properties ?? "",
+    /Andrew|OpenClaw|ABCN News/,
+    "preflight diagnostics contain only paths, sizes, and hashes — never narrative content",
+  );
   const priorRollout = {
     BRAND_VISUAL_SYSTEM_ENABLED: process.env.BRAND_VISUAL_SYSTEM_ENABLED,
     BRAND_VISUAL_ROLLOUT_PERCENT: process.env.BRAND_VISUAL_ROLLOUT_PERCENT,
@@ -763,6 +1254,11 @@ async function main() {
       && uploadBranch.indexOf("await ensureUploadContentPreflight({") < uploadBranch.indexOf('await step("keywords", 40)'),
     "upload transcript preflight must resolve before keyword/image generation",
   );
+  assert.ok(
+    orchestratorSource.includes("contentPreflightFailureDetails(e)")
+      && orchestratorSource.includes(": contentPreflightFailure"),
+    "the outer worker catch must persist structured Content Preflight failures on VideoJob",
+  );
   const scriptWindowBranch = orchestratorSource.slice(orchestratorSource.indexOf("const pinnedBrandVisualWindows"));
   assert.ok(
     scriptWindowBranch.includes("await narrativeVisualWindowsForPreflight({")
@@ -802,9 +1298,9 @@ async function main() {
       && step2Source.includes('p.brollSource === "kie-image"')
       && step2Source.includes('p.brollSource === "automix" && p.mixPreset !== "free"')
       && step2Source.includes("brandPreflightStatus !== \"ready\"")
-      && step2Source.includes("const brandRenderBlocked = brandPreflightBlocked || brandSelectionBlocked;")
+      && step2Source.includes("const brandRenderBlocked = brandSelectionBlocked;")
       && step2Source.includes("disabled={submitting || brandRenderBlocked}"),
-    "non-upload AI-image renders must stay disabled until Content Preflight and Brand selection are ready",
+    "render acceptance waits only for an unfinished creator selection; Content Preflight may finish in the worker",
   );
 
   await prisma.$disconnect();

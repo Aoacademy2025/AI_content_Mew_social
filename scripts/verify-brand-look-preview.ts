@@ -130,7 +130,7 @@ async function main() {
     subtitle: { presetId: null, config: {} },
     brandMark: { assetId: null, enabled: false, position: "top-right", sizePct: 18, opacity: 0.9 },
     visual: {
-      primaryVisualFormatId: "stick-figure-story" as const,
+      primaryVisualFormatId: "simple-editorial-story" as const,
       palette: ["#111111", "#F8F5EE", "#38BDF8"],
       personality: "bold handmade",
       peopleAndSetting: "Thai creator contexts",
@@ -147,12 +147,12 @@ async function main() {
       brandProfileId: profile.id,
       version: 1,
       payloadJson: JSON.stringify(payload),
-      visualRecipeJson: JSON.stringify({ visualFormatId: "stick-figure-story", recipeVersion: "stick-figure-story-v3" }),
+      visualRecipeJson: JSON.stringify({ visualFormatId: "simple-editorial-story", recipeVersion: "simple-editorial-story-v7" }),
     },
   });
   const previewIdentityKey = brandVisualIdentityKey({
     visualFormatId: payload.visual.primaryVisualFormatId,
-    recipeVersion: VISUAL_FORMATS.find((format) => format.id === payload.visual.primaryVisualFormatId)!.recipeVersion,
+    recipeVersion: "simple-editorial-story-v7",
     treatment: payload.visual.defaultTreatment,
     brandVisualLanguage: {
       palette: payload.visual.palette,
@@ -171,7 +171,7 @@ async function main() {
       sourceHash: "preview-source",
       analyzerVersion: "brand-content-preflight-v1",
       contentDomain: payload.niche,
-      suggestedVisualFormatId: "stick-figure-story",
+      suggestedVisualFormatId: "simple-editorial-story",
       suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "bold" }),
     },
   });
@@ -564,12 +564,12 @@ async function main() {
 
   // Defect A9 regression: Hook/Explain/Close must no longer be three photos of
   // the same room templated from niche/audience. Extract the Visual Beat scene
-  // clause each compiled prompt embeds (`For a story about X, show <scene>.
-  // Shape the scene ...`) so the check targets the scene itself, not the fixed
+  // clause each compiled prompt embeds (`Flexible scene direction: ... show
+  // <scene>. Treatment direction: ...`) so the check targets the scene itself, not the fixed
   // "All people and objects share the same ground plane" boilerplate every v3
   // prompt carries regardless of scene.
   const sceneClause = (prompt: string): string => {
-    const match = prompt.match(/show (.+?)\. Shape the scene/i);
+    const match = prompt.match(/Flexible scene direction: .*?show (.+?)\. Treatment direction:/i);
     assert.ok(match, `compiled prompt must contain an extractable scene clause: ${prompt}`);
     return match![1];
   };
@@ -749,7 +749,7 @@ async function main() {
       sourceHash: "real-preview-source",
       analyzerVersion: "brand-content-preflight-v1",
       contentDomain: "artisan commerce launch",
-      suggestedVisualFormatId: "stick-figure-story",
+      suggestedVisualFormatId: "simple-editorial-story",
       suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "bold" }),
     },
   });
@@ -802,6 +802,16 @@ async function main() {
     assert.match(compiledByPhase.get(phase) ?? "", /artisan commerce launch/);
     assert.match(compiledByPhase.get(phase) ?? "", new RegExp(realSubjects[index]));
   }
+  const legacySnapshot = JSON.parse(realPreview.sourceSnapshotJson) as Record<string, unknown>;
+  const legacyPayload = legacySnapshot.payload as { visual: Record<string, unknown> };
+  legacyPayload.visual.primaryVisualFormatId = "retro-story";
+  legacyPayload.visual.defaultTreatment = "rare copper glow with deep teal shadows";
+  legacySnapshot.recipeVersion = "retro-story-v3";
+  delete legacySnapshot.previewTreatment;
+  await prisma.brandLookPreviewBatch.update({
+    where: { id: realPreview.id },
+    data: { sourceSnapshotJson: JSON.stringify(legacySnapshot) },
+  });
   let rerolledPrompt = "";
   await rerollBrandLookPreviewItem({
     userId: user.id,
@@ -826,6 +836,11 @@ async function main() {
     },
   });
   assert.match(rerolledPrompt, /rare indigo lantern/, "reroll must preserve the snapshotted real Visual Beat");
+  assert.match(
+    rerolledPrompt,
+    /rare copper glow with deep teal shadows/,
+    "a legacy snapshot without previewTreatment must replay its saved defaultTreatment",
+  );
 
   const concurrentItem = realPreview.items.find((item) => item.phase === "explain")!;
   let releaseDelayedClaim!: () => void;
@@ -883,7 +898,7 @@ async function main() {
   const currentRecipeVersion = mutableFormat.recipeVersion;
   const pinnedRecipeVersions: string[] = [];
   try {
-    mutableFormat.recipeVersion = "stick-figure-story-future";
+    mutableFormat.recipeVersion = "simple-editorial-story-future";
     const pinnedPreview = await createBrandLookPreview({
       userId: user.id,
       requestId: "saved-pinned-recipe",
@@ -905,9 +920,9 @@ async function main() {
       },
     });
     assert.deepEqual(pinnedRecipeVersions, [
-      "stick-figure-story-v3",
-      "stick-figure-story-v3",
-      "stick-figure-story-v3",
+      "simple-editorial-story-v7",
+      "simple-editorial-story-v7",
+      "simple-editorial-story-v7",
     ]);
     await rerollBrandLookPreviewItem({
       userId: user.id,
@@ -929,7 +944,7 @@ async function main() {
         return { jobId: job.id, outputUrl: job.outputUrl! };
       },
     });
-    assert.equal(pinnedRecipeVersions.at(-1), "stick-figure-story-v3");
+    assert.equal(pinnedRecipeVersions.at(-1), "simple-editorial-story-v7");
   } finally {
     mutableFormat.recipeVersion = currentRecipeVersion;
   }
@@ -951,7 +966,7 @@ async function main() {
       payloadJson: JSON.stringify(payload),
       visualRecipeJson: JSON.stringify({
         visualFormatId: payload.visual.primaryVisualFormatId,
-        recipeVersion: "stick-figure-story-removed",
+        recipeVersion: "simple-editorial-story-removed",
       }),
     },
   });

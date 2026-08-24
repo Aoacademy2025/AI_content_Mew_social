@@ -24,10 +24,13 @@ type Job = {
   executionTime?: number;
   error?: string;
   output?: {
+    contract_version?: number;
+    mode?: string;
     audio_base64?: string;
     duration?: number;
     generation_time?: number;
     worker_version?: string;
+    catalog_version?: string;
     language?: string;
     voice_id?: string;
     num_step?: number;
@@ -139,10 +142,13 @@ async function runJob(
     method: "POST",
     body: JSON.stringify({
       input: {
+        contract_version: 2,
+        mode: "tts",
         voice_id: voiceId,
         text: "สวัสดีค่ะ นี่คือการทดสอบเสียงภาษาไทยของฮีโร่ เอไอ วอยซ์",
         speed: 1,
         num_step: requestedNumStep,
+        mixed_language: true,
       },
     }),
   });
@@ -171,8 +177,15 @@ async function runJob(
   }
 
   const output = job.output;
-  if (!output?.audio_base64 || !output.worker_version?.startsWith("heroai-omnivoice-runpod-v") || output.language !== "th") {
-    throw new Error(`${label}: output contract or Thai worker identity failed`);
+  if (
+    !output?.audio_base64
+    || output.contract_version !== 2
+    || output.mode !== "tts"
+    || !output.worker_version?.startsWith("hero-voice-ai-v2-")
+    || !output.catalog_version
+    || output.language !== "Thai"
+  ) {
+    throw new Error(`${label}: Hero Voice v2 output contract failed`);
   }
   if (expectedWorkerVersion && output.worker_version !== expectedWorkerVersion) {
     throw new Error(`${label}: expected worker_version=${expectedWorkerVersion}, got ${output.worker_version}`);

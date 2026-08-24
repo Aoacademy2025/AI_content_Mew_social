@@ -182,7 +182,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
       || (p.brollSource === "automix" && p.mixPreset !== "free")
     );
   const brandPreflightBlocked = requiresBrandPreflight && brandPreflightStatus !== "ready";
-  const brandRenderBlocked = brandPreflightBlocked || brandSelectionBlocked;
+  // Render acceptance is not a second setup gate. The durable worker waits for
+  // this plan and fails before image funding if the existing analyzer attempts
+  // are exhausted.
+  const brandRenderBlocked = brandSelectionBlocked;
   const [savingDefault, setSavingDefault] = useState<"voice" | "avatar" | null>(null);
   const [musicLibOpen, setMusicLibOpen] = useState(false);
   const avatarLib = useHeygenAvatars();
@@ -279,8 +282,6 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         ? "กำลังส่งงาน…"
         : brandSelectionBlocked
           ? "ตั้งค่า Brand ให้เสร็จก่อน"
-          : brandPreflightBlocked
-          ? brandPreflightStatus === "error" ? "รอวิเคราะห์แนวภาพ" : "กำลังวิเคราะห์แนวภาพ…"
           : "เรนเดอร์วิดีโอ"}
     </BtnPrimary>
   );
@@ -962,7 +963,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           <div className="max-lg:hidden">{primaryCta}</div>
           {brandSelectionBlocked
             ? <span role="status" style={{ fontSize: 10.5, color: color.warningText, textAlign: "center", lineHeight: 1.6 }}>เลือกวิธีใช้ Brand กับภาพเดิม หรือรอให้ระบบบันทึกให้เสร็จก่อนเริ่มเรนเดอร์</span>
-            : brandPreflightBlocked && <span role="status" style={{ fontSize: 10.5, color: brandPreflightStatus === "error" ? color.dangerText : color.infoText, textAlign: "center", lineHeight: 1.6 }}>{brandPreflightStatus === "error" ? "การวิเคราะห์ฉากยังไม่พร้อม — กดลองอีกครั้งในการ์ดแนวภาพ" : "กำลังวิเคราะห์ฉากและบันทึกแนวภาพสำหรับคลิปนี้"}</span>}
+            : brandPreflightBlocked && <span role="status" style={{ fontSize: 10.5, color: brandPreflightStatus === "error" ? color.dangerText : color.infoText, textAlign: "center", lineHeight: 1.6 }}>{brandPreflightStatus === "error" ? "แนวภาพยังไม่พร้อม — กดลองอีกครั้งในการ์ดแนวภาพ หรือกดเรนเดอร์เพื่อให้ระบบลองเตรียมให้อัตโนมัติ" : "กำลังเตรียมแนวภาพ คุณกดเรนเดอร์ได้เลยและระบบจะรอก่อนสร้างภาพ"}</span>}
           <span style={{ fontSize: 10.5, color: color.textFaint, textAlign: "center", lineHeight: 1.6 }}>
             {p.mode === "upload" && !hasUploadDuration ? "กำลังอ่านความยาวคลิป" : `คลิปยาว ${hasUploadDuration ? "" : "~"}${fmtTime(displaySec)}`}
             {p.usage?.minutes && displayMin > 0 ? ` · ใช้ ${hasUploadDuration ? "" : "~"}${displayMin} จาก ${p.usage.minutes.remaining} นาทีที่เหลือ` : ""}
@@ -1117,7 +1118,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
             เส้นทางใช้ฟรีพร้อมแล้ว
           </span>
           <span style={{ fontSize: 11, lineHeight: 1.55, color: color.textSecondary }}>
-            ต่อไปเลือกเสียงและกดเรนเดอร์ — สต็อกใช้ 0 เครดิต AI และใช้เฉพาะนาทีในแพ็กเกจ
+            ต่อไปเลือกเสียงและกดเรนเดอร์ — สต็อกใช้ 0 เครดิตภาพ AI ระบบใช้นาทีในแพ็กเกจก่อน แล้วหักส่วนเกิน 2 เครดิต/นาที
           </span>
         </div>
       )}

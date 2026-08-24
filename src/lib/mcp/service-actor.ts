@@ -6,6 +6,7 @@ import { syncUserEntitlement } from "@/lib/entitlements";
 
 export const SERVICE_SECRET_HEADER = "x-heroai-service-secret";
 export const SERVICE_ACTAS_HEADER = "x-heroai-act-as";
+export const SERVICE_VIDEO_JOB_HEADER = "x-heroai-video-job-id";
 
 /** Constant-time string equality — never leak the secret via comparison timing. */
 function safeEqual(a: string, b: string): boolean {
@@ -59,4 +60,22 @@ export async function resolveServiceActor(): Promise<User | null> {
   if (!user) return null;
   await syncUserEntitlement(user.id).catch(() => {});
   return prisma.user.findUnique({ where: { id: user.id } });
+}
+
+/** Return the internal pipeline's owning VideoJob id only when the service
+ * credential is valid and acts as the expected user. Browser-supplied job ids
+ * alone never create wallet-funded privileges. */
+export async function resolveServiceVideoJobId(expectedUserId: string): Promise<string | null> {
+  if (!process.env.MCP_SERVICE_SECRET) return null;
+  const h = await headers();
+  const headerSecret = h.get(SERVICE_SECRET_HEADER);
+  const actAs = h.get(SERVICE_ACTAS_HEADER);
+  if (
+    actAs !== expectedUserId
+    || !isValidServiceCredential(process.env.MCP_SERVICE_SECRET, headerSecret, actAs)
+  ) {
+    return null;
+  }
+  const videoJobId = h.get(SERVICE_VIDEO_JOB_HEADER)?.trim();
+  return videoJobId || null;
 }

@@ -7,6 +7,7 @@ import * as brollPreferencesModule from "../src/lib/broll-preferences";
 import * as cutawayPlanModule from "../src/lib/cutaway-plan";
 import * as headlineHookModule from "../src/lib/headline-hook";
 import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
+import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/export-edit-state";
 import {
   canonicalVideoJobRequest,
   fingerprintVideoJobRequest,
@@ -399,6 +400,9 @@ function mountEditorShell(input: {
   submit(): Promise<{ ok: boolean; message?: string }>;
   fetch(url: string, init?: Record<string, unknown>): Promise<unknown>;
   navigations: string[];
+  job?: Record<string, unknown>;
+  resumeJob?: (jobId: string) => void;
+  resumeExportEditSnapshot?: () => void;
 }) {
   const markers = new Map<string, { displayName: string }>();
   const marker = (name: string) => {
@@ -423,13 +427,15 @@ function mountEditorShell(input: {
       errorMessage: null,
       output: null,
       mediaState: null,
+      ...input.job,
     },
     submit: input.submit,
     submitExport: async () => ({ ok: true }),
     cancel: async () => ({ ok: true }),
     reset: () => undefined,
     adoptJob: () => undefined,
-    resumeJob: () => undefined,
+    resumeJob: input.resumeJob ?? (() => undefined),
+    resumeExportEditSnapshot: input.resumeExportEditSnapshot ?? (() => undefined),
     markPreviewMissing: () => undefined,
   };
   const jsx = (type: unknown, props: Record<string, unknown> | null) => ({
@@ -480,6 +486,7 @@ function mountEditorShell(input: {
     if (specifier === "@/components/layout/account-menu") return { AccountMenu: marker("AccountMenu") };
     if (specifier === "@/components/layout/notification-bell") return { NotificationBell: marker("NotificationBell") };
     if (specifier === "@/components/quota-status") return { QuotaStatus: marker("QuotaStatus") };
+    if (specifier === "@/components/ui/api-key-modal") return { ApiKeyModal: marker("ApiKeyModal") };
     if (specifier === "@/components/ui/dropdown-menu") {
       return Object.fromEntries([
         "DropdownMenu", "DropdownMenuContent", "DropdownMenuItem", "DropdownMenuLabel",
@@ -506,6 +513,7 @@ function mountEditorShell(input: {
         shouldShowUnavailablePreview: () => false,
       };
     }
+    if (specifier === "./export-edit-state") return exportEditStateModule;
     if (specifier === "./RenderReceiptDialog") return { RenderReceiptDialog: marker("RenderReceiptDialog") };
     if (specifier === "./EditorProjectRecoveryDialog") return { EditorProjectRecoveryDialog: marker("EditorProjectRecoveryDialog") };
     if (specifier === "./useIsMobile") return { useIsMobile: () => false };
@@ -535,6 +543,9 @@ function mountEditorShell(input: {
     if (specifier === "@/lib/customer-api-error") {
       return { customerApiErrorMessage: (_payload: unknown, fallback: string) => fallback };
     }
+    if (specifier === "@/lib/use-me") {
+      return { fetchMe: async () => ({ firstClipPath: false }) };
+    }
     throw new Error(`unhandled editor shell import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -561,6 +572,111 @@ function mountEditorShell(input: {
   runner = new HookRunner(EditorV2Shell);
   runner.mount();
   return { runner, marker };
+}
+
+export async function verifyPostExportEditStateResume(): Promise<void> {
+  const resumedSourceJobs: string[] = [];
+  let resumedSnapshotCount = 0;
+  const project = makeShellProject("post-export-edit-project", () => true);
+  Object.assign(project, {
+    projectStatus: "exported",
+    activeJobId: "stale-source-preview-job",
+    activeExportJobId: "latest-export-job",
+  });
+  const { runner } = mountEditorShell({
+    getProject: () => project,
+    submit: async () => ({ ok: true }),
+    fetch: async () => ({ ok: true, json: async () => ({ projects: [] }) }),
+    navigations: [],
+    job: {
+      phase: "done",
+      jobId: "latest-export-job",
+      jobType: "export",
+      projectId: project.projectId,
+      progress: 100,
+      output: {
+        version: 2,
+        videoUrl: "/api/videos/exported.mp4",
+        sourceJobId: "stale-source-preview-job",
+        editSnapshot: {
+          version: 1,
+          videoUrl: "/api/videos/latest-preview.mp4",
+          preview: {
+            captions: [{ text: "latest edited caption", startMs: 0, endMs: 1_000 }],
+            config: { bgVideos: [] },
+            voiceUrl: "/api/audio/voice.mp3",
+            audioDurationMs: 1_000,
+          },
+          captions: [{ text: "latest edited caption", startMs: 0, endMs: 1_000 }],
+          originalCaptions: [{ text: "original caption", startMs: 0, endMs: 1_000 }],
+          subtitleConfig: {
+            preset: "plain",
+            effect: "none",
+            fontFamily: "Kanit",
+            bold: true,
+            fontWeight: 900,
+            fontSize: 80,
+            textColor: "#FFFFFF",
+            accentColor: "#FFE500",
+            shadow: false,
+            outline: false,
+            outlineSize: 0,
+            verticalPos: 82,
+          },
+          cardLen: "sentence",
+          captionOverrides: { "0": { textColor: "#FFFFFF" } },
+        },
+      },
+    },
+    resumeJob: (jobId) => resumedSourceJobs.push(jobId),
+    resumeExportEditSnapshot: () => { resumedSnapshotCount += 1; },
+  });
+
+  const exportedView = runtimeNodes(runner.current).find((node) => (
+    typeof node.type === "function" && node.type.name === "ExportedView"
+  ));
+  assert.ok(exportedView, "completed export renders the exported view");
+  const onEditPreview = exportedView.props.onEditPreview;
+  assert.equal(typeof onEditPreview, "function", "completed export offers edit-resume");
+  (onEditPreview as () => void)();
+  assert.deepEqual({ resumedSnapshotCount, resumedSourceJobs }, {
+    resumedSnapshotCount: 1,
+    resumedSourceJobs: [],
+  }, "edit-resume restores the latest exported editor snapshot instead of the stale source preview");
+  runner.unmount();
+
+  const legacyResumedSourceJobs: string[] = [];
+  let legacySnapshotCount = 0;
+  const legacy = mountEditorShell({
+    getProject: () => project,
+    submit: async () => ({ ok: true }),
+    fetch: async () => ({ ok: true, json: async () => ({ projects: [] }) }),
+    navigations: [],
+    job: {
+      phase: "done",
+      jobId: "legacy-export-job",
+      jobType: "export",
+      projectId: project.projectId,
+      progress: 100,
+      output: {
+        version: 2,
+        videoUrl: "/api/videos/legacy-export.mp4",
+        sourceJobId: "legacy-source-preview-job",
+      },
+    },
+    resumeJob: (jobId) => legacyResumedSourceJobs.push(jobId),
+    resumeExportEditSnapshot: () => { legacySnapshotCount += 1; },
+  });
+  const legacyExportedView = runtimeNodes(legacy.runner.current).find((node) => (
+    typeof node.type === "function" && node.type.name === "ExportedView"
+  ));
+  assert.equal(typeof legacyExportedView?.props.onEditPreview, "function");
+  (legacyExportedView?.props.onEditPreview as () => void)();
+  assert.deepEqual({ legacySnapshotCount, legacyResumedSourceJobs }, {
+    legacySnapshotCount: 0,
+    legacyResumedSourceJobs: ["legacy-source-preview-job"],
+  }, "exports created before snapshot support retain the source-preview fallback");
+  legacy.runner.unmount();
 }
 
 async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<void> {
@@ -632,6 +748,7 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
         previewMediaStateAfterVideoError: (state: unknown) => state,
       };
     }
+    if (specifier === "./export-edit-state") return exportEditStateModule;
     if (specifier === "@/lib/video-job-idempotency") {
       return {
         fingerprintVideoJobRequest: async (
@@ -814,6 +931,7 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
         previewMediaStateAfterVideoError: (state: unknown) => state,
       };
     }
+    if (specifier === "./export-edit-state") return exportEditStateModule;
     if (specifier === "@/lib/video-job-idempotency") {
       return {
         fingerprintVideoJobRequest: async (
@@ -1003,6 +1121,7 @@ function mountAttemptJobHook(
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
     if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
+    if (specifier === "./export-edit-state") return exportEditStateModule;
     throw new Error(`unhandled attempt job hook import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -1755,6 +1874,9 @@ async function runExactReplayRouteScenario(input: {
     status = 400;
   }
   class RenderDeployDrainError extends Error {}
+  class VideoJobFundingError extends Error {
+    remainingMinutes = 0;
+  }
   const touchMutable = (name: string) => {
     mutableTouches.push(name);
     if (input.failOnMutableGate) throw new Error(`mutable gate touched before replay: ${name}`);
@@ -1863,8 +1985,15 @@ async function runExactReplayRouteScenario(input: {
           return { id: "new-route-job", status: "queued" };
         },
         parseVideoJobOutput: () => null,
+        VideoJobFundingError,
         VIDEO_JOB_INFLIGHT_STATUSES: ["queued", "processing", "waiting_provider"],
       };
+    }
+    if (specifier === "@/lib/minute-limits") {
+      return { minutesFromSeconds: () => 1 };
+    }
+    if (specifier === "@/app/(dashboard)/video-editor/_v2/estimate") {
+      return { estimateClipSecV2: () => 60 };
     }
     if (specifier === "@/lib/usage-limits") {
       return {
@@ -1959,6 +2088,9 @@ async function runExactReplayRouteScenario(input: {
       return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
     if (specifier === "@/lib/headline-hook") return headlineHookModule;
+    if (specifier === "@/lib/editor-export-snapshot") {
+      return { createEditorExportSnapshot: () => null };
+    }
     if (specifier === "@/lib/brand-visual-rollout.server") {
       return { resolveBrandVisualAccess: async () => ({ canUse: false, reason: "disabled" }) };
     }
@@ -1990,6 +2122,8 @@ async function runExactReplayRouteScenario(input: {
           touchMutable("project-visual-pin");
           return null;
         },
+        prepareProjectVisualSnapshotAwaitingPreflight: async () => null,
+        prepareUploadProjectVisualSnapshot: async () => null,
         ProjectLookError: class ProjectLookError extends Error {},
       };
     }
@@ -1997,6 +2131,21 @@ async function runExactReplayRouteScenario(input: {
       return { contentPreflightSourceHash: (kind: string, script: string) => `${kind}:${script}` };
     }
     if (specifier === "@/lib/scene-content-policy") return sceneContentPolicyModule;
+    if (specifier === "@/lib/brand-profile-library.server") {
+      return {
+        BrandProfileLibraryError: class BrandProfileLibraryError extends Error {
+          constructor(readonly code: string, message: string) {
+            super(message);
+          }
+        },
+      };
+    }
+    if (specifier === "@/lib/first-clip-path.server") {
+      return {
+        resolveFirstClipPath: async () => ({ onPath: false, reason: "has_completed_video" }),
+        ensureFirstClipProjectSpine: async () => ({ profileId: "p", revisionId: "r" }),
+      };
+    }
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
   const factory = new Function("require", "module", "exports", compileJobsRoute(jobsRouteSource));

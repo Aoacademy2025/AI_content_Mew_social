@@ -115,6 +115,7 @@ async function main() {
     refundedJobs: 3,
     refundedCredits: 6,
     creditsFromGranted: 2,
+    creditsFromPromotional: 0,
     creditsFromPurchased: 4,
   });
 
@@ -153,6 +154,7 @@ async function main() {
     refundedJobs: 0,
     refundedCredits: 0,
     creditsFromGranted: 0,
+    creditsFromPromotional: 0,
     creditsFromPurchased: 0,
   });
   assert.equal(

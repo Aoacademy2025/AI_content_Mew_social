@@ -1,6 +1,14 @@
 import { z } from "zod";
 import {
-  VISUAL_FORMATS,
+  TREATMENT_PRESET_IDS,
+  treatmentPinSchema,
+  treatmentPresetThaiLabel,
+  type TreatmentPin,
+  type TreatmentPresetId,
+} from "@/lib/brand-treatment-catalog";
+import {
+  SUPPORTED_VISUAL_FORMATS,
+  SUPPORTED_VISUAL_FORMAT_IDS,
   VISUAL_FORMAT_IDS,
   type BrandVisualLanguage,
   type VisualFormatId,
@@ -22,34 +30,69 @@ export const brandLanguageSchema = z.object({
 
 export const projectLookInputSchema = z.object({
   visualFormatId: z.enum(VISUAL_FORMAT_IDS),
-  treatment: z.string().trim().min(1).max(300),
+  treatmentPresetId: z.enum(TREATMENT_PRESET_IDS),
   brandVisualLanguage: brandLanguageSchema.nullable().optional(),
 });
 
-export const projectLookSnapshotSchema = z.object({
+const legacyProjectLookSnapshotSchema = z.object({
   schemaVersion: z.literal(1),
-  visualFormatId: z.enum(VISUAL_FORMAT_IDS),
+  visualFormatId: z.enum(SUPPORTED_VISUAL_FORMAT_IDS),
   recipeVersion: z.string().min(1),
   treatment: z.string().min(1),
   brandVisualLanguage: brandLanguageSchema.nullable(),
 });
 
+const catalogProjectLookSnapshotSchema = z.object({
+  schemaVersion: z.literal(2),
+  visualFormatId: z.enum(SUPPORTED_VISUAL_FORMAT_IDS),
+  recipeVersion: z.string().min(1),
+  treatment: z.string().min(1),
+  treatmentPin: treatmentPinSchema,
+  brandVisualLanguage: brandLanguageSchema.nullable(),
+});
+
+export const projectLookSnapshotSchema = z.union([
+  catalogProjectLookSnapshotSchema,
+  legacyProjectLookSnapshotSchema,
+]);
+
 export const revisionRecipeSchema = z.object({
-  visualFormatId: z.enum(VISUAL_FORMAT_IDS),
+  visualFormatId: z.enum(SUPPORTED_VISUAL_FORMAT_IDS),
   recipeVersion: z.string().min(1),
   brandVisualLanguage: brandLanguageSchema.nullable().optional(),
   // No `.min(1)`: same reason as brandLanguageSchema.personality above — the
   // payload schema allows an empty visual.defaultTreatment.
   defaultTreatment: z.string(),
+  treatmentPolicy: z.enum(["adaptive", "locked"]).default("adaptive"),
+  lockedTreatmentPin: treatmentPinSchema.nullable().default(null),
+}).superRefine((recipe, context) => {
+  if (recipe.treatmentPolicy === "locked" && !recipe.lockedTreatmentPin) {
+    context.addIssue({ code: "custom", path: ["lockedTreatmentPin"], message: "Locked treatment pin is required" });
+  }
 });
 
-export const projectVisualContextSchema = z.object({
+const legacyProjectVisualContextSchema = z.object({
   source: z.enum(["project-look", "brand-revision", "suggested"]),
-  visualFormatId: z.enum(VISUAL_FORMAT_IDS),
+  visualFormatId: z.enum(SUPPORTED_VISUAL_FORMAT_IDS),
   recipeVersion: z.string().min(1),
   treatment: z.string().min(1),
   brandVisualLanguage: brandLanguageSchema.nullable(),
 });
+
+const catalogProjectVisualContextSchema = z.object({
+  schemaVersion: z.literal(2),
+  source: z.enum(["project-look", "brand-revision", "suggested"]),
+  visualFormatId: z.enum(SUPPORTED_VISUAL_FORMAT_IDS),
+  recipeVersion: z.string().min(1),
+  treatment: z.string().min(1),
+  treatmentPin: treatmentPinSchema,
+  brandVisualLanguage: brandLanguageSchema.nullable(),
+});
+
+export const projectVisualContextSchema = z.union([
+  catalogProjectVisualContextSchema,
+  legacyProjectVisualContextSchema,
+]);
 
 export type ProjectLookInput = z.infer<typeof projectLookInputSchema>;
 export type ProjectLookSnapshot = z.infer<typeof projectLookSnapshotSchema>;
@@ -58,6 +101,9 @@ export type ProjectVisualContext = {
   visualFormatId: VisualFormatId;
   recipeVersion: string;
   treatment: string;
+  treatmentPin?: TreatmentPin;
+  legacyCustomTreatment?: boolean;
+  schemaVersion?: 1 | 2;
   brandVisualLanguage: BrandVisualLanguage | null;
 };
 
@@ -72,8 +118,18 @@ export class ProjectLookError extends Error {
   }
 }
 
+/** Scene Reroll maps a missing/incomplete Visual Beat to 409, not an uncaught 500. */
+export function sceneRerollUnavailablePayload(error: unknown): {
+  error: "scene_reroll_unavailable";
+  message: string;
+} | null {
+  if (!(error instanceof ProjectLookError)) return null;
+  if (error.code !== "PREFLIGHT_INCOMPLETE" && error.code !== "NOT_FOUND") return null;
+  return { error: "scene_reroll_unavailable", message: error.message };
+}
+
 export function recipeFor(formatId: VisualFormatId): string {
-  const format = VISUAL_FORMATS.find((item) => item.id === formatId);
+  const format = SUPPORTED_VISUAL_FORMATS.find((item) => item.id === formatId);
   if (!format) throw new ProjectLookError("INVALID_LOOK", "แนวภาพนี้ไม่อยู่ใน V1");
   return format.recipeVersion;
 }
@@ -99,7 +155,12 @@ export function parseProjectLook(value: string | null | undefined) {
 export function parseProjectVisualContext(value: string | null | undefined): ProjectVisualContext | null {
   if (!value) return null;
   try {
-    return projectVisualContextSchema.parse(JSON.parse(value));
+    const parsed = projectVisualContextSchema.parse(JSON.parse(value));
+    if ("treatmentPin" in parsed) {
+      if (parsed.treatment !== treatmentPresetThaiLabel(parsed.treatmentPin)) return null;
+      return parsed;
+    }
+    return { ...parsed, legacyCustomTreatment: parsed.source === "project-look" };
   } catch {
     return null;
   }
@@ -122,25 +183,49 @@ export function treatmentFromPreflight(value: string): string {
 export function resolveProjectVisualContextFromSnapshots(input: {
   projectLookJson: string | null | undefined;
   brandProfileRevisionRecipeJson: string | null | undefined;
-  suggested: { visualFormatId: VisualFormatId; treatment: string };
+  suggested: {
+    visualFormatId: VisualFormatId;
+    treatment: string;
+    treatmentPin?: TreatmentPin;
+  };
 }): ProjectVisualContext {
   const projectLook = parseProjectLook(input.projectLookJson);
-  if (projectLook) return { source: "project-look", ...projectLook };
+  if (projectLook) {
+    if (projectLook.schemaVersion === 2) {
+      return { source: "project-look", ...projectLook };
+    }
+    return { source: "project-look", ...projectLook, legacyCustomTreatment: true };
+  }
   const brand = parseRevision(input.brandProfileRevisionRecipeJson);
   if (brand) {
+    if (brand.treatmentPolicy === "locked" && brand.lockedTreatmentPin) {
+      return {
+        schemaVersion: 2,
+        source: "brand-revision",
+        visualFormatId: brand.visualFormatId,
+        recipeVersion: brand.recipeVersion,
+        treatment: treatmentPresetThaiLabel(brand.lockedTreatmentPin),
+        treatmentPin: brand.lockedTreatmentPin,
+        brandVisualLanguage: brand.brandVisualLanguage ?? null,
+      };
+    }
     return {
+      ...(input.suggested.treatmentPin ? { schemaVersion: 2 as const } : {}),
       source: "brand-revision",
       visualFormatId: brand.visualFormatId,
       recipeVersion: brand.recipeVersion,
       treatment: input.suggested.treatment.trim() || brand.defaultTreatment,
+      ...(input.suggested.treatmentPin ? { treatmentPin: input.suggested.treatmentPin } : {}),
       brandVisualLanguage: brand.brandVisualLanguage ?? null,
     };
   }
   return {
+    ...(input.suggested.treatmentPin ? { schemaVersion: 2 as const } : {}),
     source: "suggested",
     visualFormatId: input.suggested.visualFormatId,
     recipeVersion: recipeFor(input.suggested.visualFormatId),
     treatment: input.suggested.treatment,
+    ...(input.suggested.treatmentPin ? { treatmentPin: input.suggested.treatmentPin } : {}),
     brandVisualLanguage: null,
   };
 }

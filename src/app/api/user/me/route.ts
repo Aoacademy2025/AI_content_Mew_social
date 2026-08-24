@@ -13,6 +13,7 @@ import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { shouldDefaultToRecommendedAutoMix } from "@/lib/automix-plan";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
+import { resolveFirstClipPath } from "@/lib/first-clip-path.server";
 
 export async function GET() {
   try {
@@ -68,12 +69,13 @@ export async function GET() {
     // Public-launch eligibility (Task 5 consumes this for the editor's Hero AI
     // Image UI): beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS (active
     // trial included — see isHeroAiImageEligible's doc comment for why).
-    const [paidEquivalent, heroAiImageAccess, heroScriptAccess, brandVisualAccess, starterAllowance] = await Promise.all([
+    const [paidEquivalent, heroAiImageAccess, heroScriptAccess, brandVisualAccess, starterAllowance, firstClipPath] = await Promise.all([
       resolvePaidEquivalentEntitlement(authUser.id),
       resolveHeroAiImageAccess(authUser),
       resolveHeroScriptAccess(authUser),
       resolveBrandVisualAccess(authUser),
       getStarterAiImageAllowanceStatus(authUser.id),
+      resolveFirstClipPath({ id: authUser.id, email: authUser.email, role: authUser.role }),
     ]);
     const heroAiImageEligible = heroAiImageAccess.canUse;
     // Recovery and exact rerender remain available for already-pinned projects
@@ -108,6 +110,7 @@ export async function GET() {
       internalAiTester,
       heroAiBeta,
       heroAiImageEligible,
+      firstClipPath: firstClipPath.onPath,
       heroScriptAllowed: heroScriptAccess.canUse,
       heroScriptPreview: heroScriptAccess.canPreview,
       heroScriptCohort: heroScriptAccess.cohort,

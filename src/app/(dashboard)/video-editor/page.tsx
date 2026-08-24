@@ -43,7 +43,7 @@ import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
 import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
-import { captionsFromTtsTiming } from "./_components/tts-timing-captions";
+import { captionsFromSpokenScript, captionsFromTtsTiming } from "./_components/tts-timing-captions";
 import { setDynamicLoanwords } from "@/lib/thai-loanwords";
 import { setDynamicCompounds } from "@/lib/thai-compounds";
 import { targetCadenceSec } from "@/lib/broll-even-split";
@@ -1732,6 +1732,27 @@ function LegacyVideoEditorPage() {
       signal: abortControllerRef.current?.signal,
     });
     const data = await res.json();
+    if (!res.ok && useAvatar) {
+      const AVG_CHAR_WIDTH_RATIO = 0.47;
+      const maxCardChars = Math.max(10, Math.floor((1080 - 160) / (subFontSize * AVG_CHAR_WIDTH_RATIO)));
+      const fallback = captionsFromSpokenScript(
+        cleanScriptForTx,
+        pipe.current.audioDurationMs ?? 0,
+        maxCardChars,
+      );
+      if (fallback) {
+        const sceneCaptions = normalizeCaptionsForTimeline(fallback.captions, fallback.audioDurationMs);
+        pipe.current.captions = sceneCaptions;
+        pipe.current.sceneCaptions = sceneCaptions;
+        pipe.current.audioDurationMs = fallback.audioDurationMs;
+        pipe.current.words = fallback.words;
+        originalCaptionsRef.current = sceneCaptions;
+        setCaptions(sceneCaptions);
+        setSplitMode("sentence");
+        setStep("transcribe", "done", `${sceneCaptions.length} ซับ · Avatar fallback`);
+        return sceneCaptions;
+      }
+    }
     assertOk("Transcribe", res, data);
 
     const whisperWords: { word: string; startMs: number; endMs: number }[] = data.words ?? [];

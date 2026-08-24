@@ -15,7 +15,13 @@
 //   - enabled is persisted as brollEnabled on the server-owned source window.
 //   - bounds-checks index against the source bgVideos length (atomic: any OOB index => error,
 //     no partial merge).
-import { validateWindowEdits, mergeWindowEdits, rerenderSkipEligible, type WindowEdit } from "../src/lib/broll-rerender";
+import {
+  firstPassVisualRejectionReasonForWindow,
+  validateWindowEdits,
+  mergeWindowEdits,
+  rerenderSkipEligible,
+  type WindowEdit,
+} from "../src/lib/broll-rerender";
 import { resolveBrollPlaybackPlan } from "../src/lib/broll-playback";
 import { readFileSync } from "node:fs";
 
@@ -45,6 +51,42 @@ check("accepts /api/renders/*.mp4", !isErr(validateWindowEdits([{ index: 0, src:
 check("accepts /api/stocks/*.mp4", !isErr(validateWindowEdits([{ index: 0, src: "/api/stocks/stock-user-window-pexels-abc123.mp4" }])));
 check("accepts visibility-only disable", !isErr(validateWindowEdits([{ index: 0, enabled: false }])));
 check("accepts visibility-only enable", !isErr(validateWindowEdits([{ index: 0, enabled: true }])));
+{
+  const r = validateWindowEdits([{ index: 0, src: "/api/stocks/new.mp4", replacementKind: "stock" }]);
+  check("accepts and preserves replacement kind for acceptance telemetry", !isErr(r) && r[0].replacementKind === "stock", JSON.stringify(r));
+}
+{
+  const r = validateWindowEdits([{
+    index: 0,
+    src: "/api/stocks/broll-ai-candidate.mp4",
+    replacementKind: "ai",
+    imageJobId: "cm1234567890scenejob",
+  }]);
+  check(
+    "accepts and preserves an AI candidate job until deliberate Apply",
+    !isErr(r) && r[0].imageJobId === "cm1234567890scenejob",
+    JSON.stringify(r),
+  );
+}
+check("rejects image job id on a Stock replacement", isErr(validateWindowEdits([{
+  index: 0,
+  src: "/api/stocks/new.mp4",
+  replacementKind: "stock",
+  imageJobId: "cm1234567890scenejob",
+}])));
+check("rejects image job id without an AI replacement source", isErr(validateWindowEdits([{
+  index: 0,
+  enabled: true,
+  imageJobId: "cm1234567890scenejob",
+}])));
+check("rejects malformed image job id", isErr(validateWindowEdits([{
+  index: 0,
+  src: "/api/stocks/broll-ai-candidate.mp4",
+  replacementKind: "ai",
+  imageJobId: "../../another-job",
+}])));
+check("rejects unknown replacement kind", isErr(validateWindowEdits([{ index: 0, src: "/api/stocks/new.mp4", replacementKind: "other" }])));
+check("rejects replacement kind without source", isErr(validateWindowEdits([{ index: 0, enabled: false, replacementKind: "stock" }])));
 check("rejects edit without replacement or visibility change", isErr(validateWindowEdits([{ index: 0 }])));
 check("rejects non-boolean enabled", isErr(validateWindowEdits([{ index: 0, enabled: "no" as unknown as boolean }])));
 
@@ -223,6 +265,30 @@ const srcBg = [
 // empty / invalid source bgVideos -> error
 check("empty source bgVideos rejected", isErr(mergeWindowEdits([], [{ index: 0, src: "/api/stocks/a.mp4" }])));
 check("non-array source bgVideos rejected", isErr(mergeWindowEdits(null as unknown as unknown[], [{ index: 0, src: "/api/stocks/a.mp4" }])));
+
+// First-pass rejection telemetry is scoped to windows that were AI in the SOURCE preview.
+// An edit's replacement kind alone must never turn a Stock AutoMix window into an AI rejection.
+check(
+  "Stock source replaced with Stock is not an AI first-pass rejection",
+  firstPassVisualRejectionReasonForWindow(
+    { src: "/api/stocks/original.mp4", provider: "pexels" },
+    { index: 0, src: "/api/stocks/replacement.mp4", replacementKind: "stock" },
+  ) === null,
+);
+check(
+  "AI provider source replaced with Stock records a Stock rejection",
+  firstPassVisualRejectionReasonForWindow(
+    { src: "/api/stocks/generated.mp4", provider: "runpod" },
+    { index: 0, src: "/api/stocks/replacement.mp4", replacementKind: "stock" },
+  ) === "stock_replacement",
+);
+check(
+  "applied AI filename source disabled records an AI first-pass rejection",
+  firstPassVisualRejectionReasonForWindow(
+    { src: "/api/stocks/broll-ai-existing.mp4" },
+    { index: 0, enabled: false },
+  ) === "broll_disabled",
+);
 
 // merge does not mutate the caller's input array/objects
 {

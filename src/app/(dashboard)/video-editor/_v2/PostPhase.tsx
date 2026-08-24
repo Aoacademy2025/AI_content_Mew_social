@@ -22,7 +22,7 @@ import {
   V2_CARD_LEN_OPTIONS, resolveV2FontWeight, type V2CardLen, type V2FontWeight,
 } from "./subtitle-style";
 import { useId, useMemo, useRef, useState } from "react";
-import type { V2JobState } from "./useV2Job";
+import type { SubmitExportInput, V2JobState } from "./useV2Job";
 import { TimelinePanel } from "./TimelinePanel";
 import { avatarFadeApplies } from "@/lib/avatar-fade";
 import { V2CaptionOverlay } from "./V2CaptionOverlay";
@@ -45,6 +45,7 @@ import { HeadlineHookPreview } from "./HeadlineHookPreview";
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
+import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -75,11 +76,12 @@ export function PostPhase({
   canRunProjectOperation,
   internalAiTester,
   sceneRerollEnabled,
+  sceneRerollUnavailableReason,
   starterImageAllowance,
   downloadFilename,
 }: {
   job: V2JobState; script: string;
-  onExportJob: (input: { sourceJobId: string; subtitleOverlayConfig: unknown; script?: string; sceneCount?: number }) => Promise<{ ok: boolean; message?: string }>;
+  onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string }>;
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
@@ -99,6 +101,7 @@ export function PostPhase({
   canRunProjectOperation?: () => boolean;
   internalAiTester: boolean;
   sceneRerollEnabled: boolean;
+  sceneRerollUnavailableReason?: string;
   starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
 }) {
@@ -166,6 +169,7 @@ export function PostPhase({
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandVisualAllowed={brandVisualAllowed} />
+      <SubtitleQaInlineBanner output={job.output} />
       {ed.exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>
           {ed.exp.message} — <button onClick={() => ed.setExp({ phase: "idle" })} style={{ color: color.link, background: "none", border: "none", cursor: "pointer", padding: 0 }}>ลองใหม่</button>
@@ -773,6 +777,7 @@ export function PostPhase({
             videoJobId={job.jobId}
             fullBrollEditEnabled={fullBrollEditEnabled}
             sceneRerollEnabled={sceneRerollEnabled}
+            sceneRerollUnavailableReason={sceneRerollUnavailableReason}
             starterImageAllowance={starterImageAllowance}
           />
         )}
@@ -821,6 +826,7 @@ export function PostPhase({
         canRedo={ed.redoLen > 0}
         selected={ed.selected}
         onSelect={ed.setSelected}
+        onEditCaption={ed.editCaptionFromTimeline}
         videoRef={ed.videoRef}
         timeMs={ed.timeMs}
         onScrub={ed.setTimeMs}

@@ -8,6 +8,8 @@ export type PlanChangeState = {
   subStatus: string | null;
   trialEndsAt: Date | null;
   planExpiresAt?: Date | null;
+  /** True when the user has a cash PAID plan payment (PromptPay/card). GRANT/trial without cash may convert to recurring. */
+  hasQualifyingCashPayment?: boolean;
 };
 
 export type CheckoutDecision =
@@ -100,7 +102,13 @@ export function checkoutAllowed(
   // existing one-time term: Stripe's calendar period would either erase the
   // prepaid expiry or charge for months the user already owns. PromptPay
   // one-time renewal remains additive and is intentionally allowed.
-  if (options.recurring && !onActiveTrial && state.planExpiresAt && state.planExpiresAt > now) {
+  if (
+    options.recurring
+    && !onActiveTrial
+    && state.planExpiresAt
+    && state.planExpiresAt > now
+    && state.hasQualifyingCashPayment
+  ) {
     return { allowed: false, reason: "active_timed_plan" };
   }
   return { allowed: true };

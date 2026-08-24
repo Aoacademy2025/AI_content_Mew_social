@@ -8,9 +8,9 @@
  * column, no overlay), mobile renders as a bottom sheet (position:fixed, same
  * pattern as PostPhaseMobile's other sheets) — chosen internally via useIsMobile().
  *
- * V1 Scene Reroll is intentionally narrower than the legacy per-window editor:
- * it rerolls an existing AI Visual Beat with its server-owned Brand Visual
- * Language. There is no editable provider prompt and no Stock-to-AI upgrade.
+ * Scene Reroll uses the server-owned Brand Visual Language for the selected
+ * scene. Existing AI and Stock sources can generate a new AI candidate; creator
+ * uploads remain unchanged unless the creator explicitly chooses another tab.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -30,6 +30,7 @@ import { BtnPrimary, BtnSecondary, Chip, GroupLabel, Segmented, Toggle } from ".
 import { useIsMobile } from "./useIsMobile";
 import { brollWindowSpans } from "@/lib/broll-spans";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
+import { canGenerateHeroBrollFromSource } from "@/lib/broll-window-hero";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
 import {
   clearPendingBrollSceneReroll,
@@ -258,12 +259,14 @@ export function BrollWindowInspector({
   videoJobId,
   fullBrollEditEnabled,
   sceneRerollEnabled,
+  sceneRerollUnavailableReason,
   starterImageAllowance,
 }: {
   ed: PostPhaseEditor;
   videoJobId: string | null;
   fullBrollEditEnabled: boolean;
   sceneRerollEnabled: boolean;
+  sceneRerollUnavailableReason?: string;
   starterImageAllowance?: StarterImageAllowance;
 }) {
   const isMobile = useIsMobile();
@@ -371,7 +374,9 @@ export function BrollWindowInspector({
   const nextSpan = positionLabel < spans.length ? spans[positionLabel] : null;
 
   const genCost = HERO_AI_IMAGE_CREDITS;
-  const currentSourceIsAi = (existingEdit?.kind ?? entrySourceKind(rawEntry)) === "ai";
+  const currentSourceKind = existingEdit?.kind ?? entrySourceKind(rawEntry);
+  const canGenerateAiFromCurrentSource = canGenerateHeroBrollFromSource(currentSourceKind);
+  const isStockToAi = currentSourceKind === "stock";
   const allowanceEligible = starterImageAllowance?.eligible === true;
   const fundingLabel = allowanceEligible
     ? `สิทธิ์ทดลอง 1 ภาพ · เหลือ ${allowanceRemaining ?? starterImageAllowance.remainingImages}/${starterImageAllowance.limitImages}`
@@ -379,13 +384,23 @@ export function BrollWindowInspector({
 
   function close() { ed.setSelectedWindow(null); }
 
-  function markEdited(kind: WindowEditKind, src: string, keyword?: string, label?: string, clipDuration?: number) {
+  function markEdited(
+    kind: WindowEditKind,
+    src: string,
+    keyword?: string,
+    label?: string,
+    clipDuration?: number,
+    imageJobId?: string,
+  ) {
     ed.setWindowEdit(index!, {
       src,
       kind,
       ...(keyword ? { keyword } : {}),
       ...(typeof clipDuration === "number" ? { clipDuration } : {}),
       label: label ?? sourceLabel(kind),
+      // Supplying undefined intentionally clears a previously staged AI candidate
+      // when the creator chooses Stock/Upload instead.
+      imageJobId,
     });
     toast.success(kind === "ai" ? "สร้างภาพสำเร็จ — เลือกใช้แล้ว" : "เปลี่ยนคลิปแล้ว");
   }
@@ -395,6 +410,7 @@ export function BrollWindowInspector({
     keyword?: string;
     kind: WindowEditKind;
     label: string;
+    imageJobId?: string;
   } | null {
     const raw = rawBgVideoAt(ed.previewConfig, windowIndex);
     const staged = ed.windowEdits.get(windowIndex);
@@ -406,6 +422,7 @@ export function BrollWindowInspector({
       keyword: staged?.keyword ?? rawKeyword,
       kind: staged?.kind ?? entrySourceKind(raw),
       label: staged?.label ?? entrySourceLabel(raw),
+      ...(staged?.imageJobId ? { imageJobId: staged.imageJobId } : {}),
     };
   }
 
@@ -417,6 +434,10 @@ export function BrollWindowInspector({
       toast.error("ย้ายคลิปนี้ไม่ได้ — ลองเปลี่ยนคลิปก่อนแล้วสลับอีกครั้ง");
       return;
     }
+    if (currentAsset.imageJobId || targetAsset.imageJobId) {
+      toast.error("ภาพ AI ใหม่นี้ต้องกดอัปเดตวิดีโอก่อน จึงจะสลับตำแหน่งได้");
+      return;
+    }
     ed.setWindowEdits([
       {
         index: index!,
@@ -425,6 +446,7 @@ export function BrollWindowInspector({
           keyword: targetAsset.keyword,
           kind: targetAsset.kind,
           label: targetAsset.label,
+          imageJobId: undefined,
         },
       },
       {
@@ -434,6 +456,7 @@ export function BrollWindowInspector({
           keyword: currentAsset.keyword,
           kind: currentAsset.kind,
           label: currentAsset.label,
+          imageJobId: undefined,
         },
       },
     ]);
@@ -529,7 +552,7 @@ export function BrollWindowInspector({
       // Money guard: a disabled window never renders its asset. Recovery skips
       // fresh admission because the exact request was already reserved.
       if (!enabled) { setAiError("ช่วงนี้ปิด B-roll อยู่ — เปิดก่อนจึงจะสร้างภาพได้ (กันเครดิตหายฟรี)"); return; }
-      if (!currentSourceIsAi) { setAiError("ลองภาพใหม่ได้เฉพาะฉากที่มีภาพ AI เดิมอยู่แล้ว"); return; }
+      if (!canGenerateAiFromCurrentSource) { setAiError("ไฟล์อัปโหลดยังเปลี่ยนเป็นภาพ AI ไม่ได้"); return; }
       if (allowanceEligible && (allowanceRemaining ?? 0) <= 0) {
         setAiInsufficient({ kind: "allowance" });
         return;
@@ -575,7 +598,7 @@ export function BrollWindowInspector({
       }
       if (!res.ok || !d?.src) { setAiError(d?.message ?? `สร้างรูปไม่สำเร็จ (${res.status})`); return; }
       if (typeof d.allowanceRemaining === "number") setAllowanceRemaining(d.allowanceRemaining);
-      markEdited("ai", d.src, undefined, "AI", d.clipDuration);
+      markEdited("ai", d.src, undefined, "AI", d.clipDuration, d.imageJobId);
     } catch {
       setAiError("เครือข่ายมีปัญหา — ลองใหม่อีกครั้ง");
     } finally {
@@ -764,11 +787,13 @@ export function BrollWindowInspector({
               { value: "upload", label: "อัปโหลด" },
               {
                 value: "ai",
-                label: "ลองภาพใหม่",
-                disabled: !sceneRerollEnabled || !currentSourceIsAi,
-                title: currentSourceIsAi
-                  ? "ลองภาพใหม่โดยคงแนวภาพเดิม"
-                  : "V1 ลองใหม่ได้เฉพาะฉากที่เป็นภาพ AI อยู่แล้ว",
+                label: isStockToAi ? "สร้างภาพ AI" : "ลองภาพใหม่",
+                disabled: !sceneRerollEnabled || !canGenerateAiFromCurrentSource,
+                title: canGenerateAiFromCurrentSource
+                  ? sceneRerollUnavailableReason ?? (isStockToAi
+                    ? "สร้างภาพ AI จากเนื้อหาฉากและแนวภาพของแบรนด์"
+                    : "ลองภาพใหม่โดยคงแนวภาพเดิม")
+                  : "ไฟล์อัปโหลดยังเปลี่ยนเป็นภาพ AI ไม่ได้",
               },
             ]}
             style={{ display: "flex" }}
@@ -798,8 +823,8 @@ export function BrollWindowInspector({
           {searchError && <span style={{ fontSize: 11.5, color: color.danger }}>{searchError}</span>}
           {searchCandidates && searchCandidates.length === 0 && !searchError && (
             <span style={{ fontSize: 12, color: color.textFaint }}>
-              {sceneRerollEnabled && currentSourceIsAi
-                ? "ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้น หรือใช้ลองภาพใหม่"
+              {sceneRerollEnabled && canGenerateAiFromCurrentSource
+                ? `ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้น หรือ${isStockToAi ? "สร้างภาพ AI" : "ใช้ลองภาพใหม่"}`
                 : "ไม่พบคลิปที่ตรง ลองเปลี่ยนคำค้นอีกครั้ง"}
             </span>
           )}
@@ -873,7 +898,9 @@ export function BrollWindowInspector({
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 flex-col gap-1">
-                <span style={{ font: `600 14px ${font.heading}`, color: color.text }}>ลองภาพนี้ใหม่</span>
+                <span style={{ font: `600 14px ${font.heading}`, color: color.text }}>
+                  {isStockToAi ? "สร้างภาพ AI แทนสต็อก" : "ลองภาพนี้ใหม่"}
+                </span>
                 <span style={{ fontSize: 11.5, color: color.textSecondary, lineHeight: 1.6 }}>
                   ระบบคงแนวภาพของแบรนด์และเนื้อหาฉากนี้ไว้ แล้วเปลี่ยนเฉพาะภาพ
                 </span>
@@ -882,9 +909,9 @@ export function BrollWindowInspector({
             </div>
             <span style={{ fontSize: 11, color: color.textFaint }}>{fundingLabel}</span>
           </div>
-          {!currentSourceIsAi && (
+          {!canGenerateAiFromCurrentSource && (
             <span style={{ fontSize: 11.5, color: color.warning, lineHeight: 1.55 }}>
-              ฉากนี้ใช้ภาพสต็อกหรือไฟล์อัปโหลด — V1 ลองใหม่ได้เฉพาะฉากที่มีภาพ AI เดิม
+              ฉากนี้ใช้ไฟล์อัปโหลด — ระบบจะไม่เปลี่ยนไฟล์ของคุณเป็นภาพ AI อัตโนมัติ
             </span>
           )}
           {aiError && <span style={{ fontSize: 11.5, color: color.danger }}>{aiError}</span>}
@@ -912,13 +939,13 @@ export function BrollWindowInspector({
           )}
           <BtnPrimary
             onClick={() => void handleGenerate()}
-            disabled={aiBusy || (!pendingRerollRequestId && (!sceneRerollEnabled || !currentSourceIsAi || !enabled || (allowanceEligible && (allowanceRemaining ?? 0) <= 0)))}
+            disabled={aiBusy || (!pendingRerollRequestId && (!sceneRerollEnabled || !canGenerateAiFromCurrentSource || !enabled || (allowanceEligible && (allowanceRemaining ?? 0) <= 0)))}
             title={!enabled
               ? "เปิด B-roll ช่วงนี้ก่อนจึงจะลองภาพใหม่ได้"
-              : !currentSourceIsAi
-                ? "V1 ลองใหม่ได้เฉพาะฉากที่มีภาพ AI เดิม"
+              : !canGenerateAiFromCurrentSource
+                ? "ไฟล์อัปโหลดยังเปลี่ยนเป็นภาพ AI ไม่ได้"
                 : undefined}
-            style={aiBusy || !sceneRerollEnabled || !currentSourceIsAi || !enabled
+            style={aiBusy || !sceneRerollEnabled || !canGenerateAiFromCurrentSource || !enabled
               ? { opacity: 0.7, cursor: aiBusy ? "wait" : "default" }
               : undefined}
           >
@@ -926,7 +953,7 @@ export function BrollWindowInspector({
               ? pendingRerollRequestId ? "กำลังกู้คืนภาพที่สร้างไว้…" : "กำลังลองภาพใหม่…"
               : pendingRerollRequestId
                 ? "กู้คืนภาพที่สร้างไว้"
-                : `ลองภาพนี้ใหม่ · ${allowanceEligible ? "สิทธิ์ทดลอง 1 ภาพ" : `${genCost} เครดิต`}`}
+                : `${isStockToAi ? "สร้างภาพ AI แทนสต็อก" : "ลองภาพนี้ใหม่"} · ${allowanceEligible ? "สิทธิ์ทดลอง 1 ภาพ" : `${genCost} เครดิต`}`}
           </BtnPrimary>
         </div>
       )}

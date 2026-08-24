@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { decryptKey } from "@/lib/key-crypto";
 import { recordChargedClip } from "@/lib/clip-charge";
-import { clampAvatarLayout, type AvatarLayout } from "@/lib/avatar-layout";
+import { clampAvatarLayout, shouldCropAvatarToVisibleCanvas, type AvatarLayout } from "@/lib/avatar-layout";
 import { buildEnableExpr } from "@/lib/cutaway-plan";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import {
@@ -712,7 +712,7 @@ export async function POST(req: Request) {
   let admissionHeartbeat: ReturnType<typeof setInterval> | null = null;
 
   try {
-    console.log(`[composite] mode=${mode} timing=${avatarTiming} splitTail=${!!tailAvatarVideoUrl} timeoutMs=${ffmpegTimeoutMs} visibleCrop=${stabilityCanary}`);
+    console.log(`[composite] mode=${mode} timing=${avatarTiming} splitTail=${!!tailAvatarVideoUrl} timeoutMs=${ffmpegTimeoutMs} visibleCrop=${shouldCropAvatarToVisibleCanvas(layout)} canary=${stabilityCanary}`);
 
     await downloadFile(avatarVideoUrl, avatarTmp, heygenKey);
     if (fs.statSync(avatarTmp).size < 1000) throw new Error("Avatar too small");
@@ -785,7 +785,7 @@ export async function POST(req: Request) {
         avatarTiming === "bookend-both" ? avatarTailSecs : 0,
         chromaParams, mode,
         ffmpegTimeoutMs,
-        stabilityCanary,
+        shouldCropAvatarToVisibleCanvas(layout),
         layout,
         feather,
       );
@@ -844,7 +844,7 @@ export async function POST(req: Request) {
         layout,
         feather,
         sourceFadeWindows,
-        stabilityCanary,
+        shouldCropAvatarToVisibleCanvas(layout),
       );
     }
 

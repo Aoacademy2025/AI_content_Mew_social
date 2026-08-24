@@ -39,7 +39,7 @@ type Catalog = {
   imageModels: ImageModel[];
   voice: { available: boolean; backend?: "runpod" | "hostinger"; cloning?: boolean; maxDurationSec: number; maxScriptChars: number };
   plan: string;
-  balance: { granted: number; purchased: number; total: number };
+  balance: { granted: number; promotional: number; purchased: number; total: number };
 };
 type Voice = { voice_id: string; desc: string; instruct: string; preview_url: string };
 type CloneVoice = { id: string; voiceId: string; name: string; refText: string; durationMs: number; createdAt: string };

@@ -21,9 +21,11 @@ interface QuotaData {
 
 interface CreditBalance {
   granted: number;
+  promotional: number;
   purchased: number;
   total: number;
   live: boolean;
+  plan?: "FREE" | "PRO" | "BUSINESS";
 }
 
 interface QuotaStatusProps {
@@ -98,6 +100,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
     : isLowQuota(quota.remaining, quota.limit);
   const resetStr = formatThaiDate(quota.resetAt);
   const liveCredits = credits?.live ? credits : null;
+  const creditLabel = (liveCredits?.plan ?? quota.plan) === "FREE" ? "เครดิตเติมนาที" : "Hero credits";
 
   if (variant === "chip") {
     // Minutes-based chip (primary) — falls back to clip display if minutes absent
@@ -126,10 +129,10 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
             <a
               href="/settings#credits"
               className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/8 px-2.5 py-1 text-[10px] font-medium text-emerald-200/80 transition-colors hover:border-emerald-400/35 hover:text-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
-              title={`Hero credits คงเหลือ ${liveCredits.total.toLocaleString()} · ดูรายละเอียด`}
-              aria-label={`Hero credits คงเหลือ ${liveCredits.total.toLocaleString()} ดูรายละเอียด`}
+              title={`${creditLabel}คงเหลือ ${liveCredits.total.toLocaleString()} · ดูรายละเอียด`}
+              aria-label={`${creditLabel}คงเหลือ ${liveCredits.total.toLocaleString()} ดูรายละเอียด`}
             >
-              <span>Hero credits</span>
+              <span>{creditLabel}</span>
               <strong className="font-semibold text-emerald-100">{liveCredits.total.toLocaleString()}</strong>
             </a>
           )}
@@ -162,10 +165,10 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
           <a
             href="/settings#credits"
             className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-400/8 px-2.5 py-1 text-[10px] font-medium text-emerald-200/80 transition-colors hover:border-emerald-400/35 hover:text-emerald-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
-            title={`Hero credits คงเหลือ ${liveCredits.total.toLocaleString()} · ดูรายละเอียด`}
-            aria-label={`Hero credits คงเหลือ ${liveCredits.total.toLocaleString()} ดูรายละเอียด`}
+            title={`${creditLabel}คงเหลือ ${liveCredits.total.toLocaleString()} · ดูรายละเอียด`}
+            aria-label={`${creditLabel}คงเหลือ ${liveCredits.total.toLocaleString()} ดูรายละเอียด`}
           >
-            <span>Hero credits</span>
+            <span>{creditLabel}</span>
             <strong className="font-semibold text-emerald-100">{liveCredits.total.toLocaleString()}</strong>
           </a>
         )}
@@ -204,7 +207,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
             : "bg-white/4 border border-white/7",
           className
         )}
-        aria-label={`โควต้านาที: เหลือ ${mins.remaining} จาก ${mins.limit} นาที · รีเซ็ต ${resetStr}${liveCredits ? ` · Hero credits ${liveCredits.total}` : ""}`}
+        aria-label={`โควต้านาที: เหลือ ${mins.remaining} จาก ${mins.limit} นาที · รีเซ็ต ${resetStr}${liveCredits ? ` · ${creditLabel} ${liveCredits.total}` : ""}`}
       >
         {/* Plan badge */}
         <span className="text-[10px] font-bold tracking-widest px-2 py-0.5 rounded-full" style={planBadgeStyle}>
@@ -228,7 +231,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
             href="#credits"
             className="text-xs font-medium text-emerald-300/80 transition-colors hover:text-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
           >
-            Hero credits <strong className="text-emerald-200">{liveCredits.total.toLocaleString()}</strong>
+            {creditLabel} <strong className="text-emerald-200">{liveCredits.total.toLocaleString()}</strong>
           </a>
         )}
 
@@ -291,7 +294,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
           href="#credits"
           className="text-xs font-medium text-emerald-300/80 transition-colors hover:text-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300"
         >
-          Hero credits <strong className="text-emerald-200">{liveCredits.total.toLocaleString()}</strong>
+          {creditLabel} <strong className="text-emerald-200">{liveCredits.total.toLocaleString()}</strong>
         </a>
       )}
 

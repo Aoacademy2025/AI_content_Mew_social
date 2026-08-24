@@ -34,8 +34,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { useV2Project } from "./useV2Project";
+import { useV2Project, type V2VoiceEngine } from "./useV2Project";
 import { useV2Job, type SubmitResult, type V2JobState } from "./useV2Job";
+import { ApiKeyModal, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { Step1Script } from "./Step1Script";
 import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
@@ -59,6 +60,12 @@ import {
 import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import { classifyFailure, failureViewCopy } from "./failure-view";
+import { fetchMe } from "@/lib/use-me";
+
+// Which submit path a missing-key error interrupted, so the retry (after saving a key,
+// or after switching to Gemini) re-runs exactly that path — mirrors v1's
+// `retryStep: keyof StepState | "runAll"` at video-editor/page.tsx:480.
+type RetryAction = { kind: "render" } | { kind: "confirm"; minutes: number };
 
 export function EditorV2Shell() {
   const p = useV2Project();
@@ -68,7 +75,8 @@ export function EditorV2Shell() {
   });
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
-  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, markPreviewMissing } = useV2Job(p);
+  const [firstClipPath, setFirstClipPath] = useState(false);
+  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, resumeExportEditSnapshot, markPreviewMissing } = useV2Job(p);
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
@@ -88,6 +96,23 @@ export function EditorV2Shell() {
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [heygenQuotaAlert, setHeygenQuotaAlert] = useState<string | null>(null);
+  // Missing-key preflight (Task 2): jobs/route.ts answers a Render/Confirm submit with
+  // { error: "missing_key", missingKey } BEFORE creating any VideoJob — no client-side
+  // key rules here, just open the modal from the response and retry the same submit path.
+  const [missingKeyModal, setMissingKeyModal] = useState<{ type: RequiredKeyType; retry: RetryAction } | null>(null);
+  // One step behind missingKey: the user HAS a key/engine picked but no Voice ID set —
+  // jobs/route.ts returns this same { error: "missing_voice_id" } shape for BOTH
+  // ElevenLabs (no voiceId) and OmniVoice/Hero Voice (no omniVoiceId), with no
+  // discriminating field. `engine` is captured off p.voiceEngine at failure time (inside
+  // handleSubmitResult, not read live at render) so the dialog can't drift if the user
+  // later switches engines — ApiKeyModal is the wrong surface either way (nothing to
+  // paste a key into), so this reuses the heygenQuotaAlert AlertDialog shape instead.
+  const [missingVoiceIdAlert, setMissingVoiceIdAlert] = useState<{ message: string; retry: RetryAction; engine: V2VoiceEngine } | null>(null);
+  // "ใช้เสียง Gemini แทน" switches voiceEngine (React state, applies next render) then
+  // must resubmit — this ref+effect defers the resubmit until p.voiceEngine actually
+  // reflects "gemini", since calling submit() synchronously would still close over the
+  // pre-switch value.
+  const pendingGeminiRetryRef = useRef<RetryAction | null>(null);
   const confirmingRef = useRef(false); // hard guard vs. double-click before re-render
   const activeProjectIdRef = useRef(p.projectId);
   const mountedRef = useRef(false);
@@ -107,6 +132,19 @@ export function EditorV2Shell() {
       archiveGenerationRef.current += 1;
       archiveAttemptRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    fetchMe()
+      .then((data) => {
+        if (!alive) return;
+        setFirstClipPath(data?.firstClipPath === true);
+      })
+      .catch(() => {
+        if (alive) setFirstClipPath(false);
+      });
+    return () => { alive = false; };
   }, []);
 
   const isRendering = job.phase === "rendering" || job.phase === "submitting";
@@ -139,13 +177,23 @@ export function EditorV2Shell() {
     setReceiptOpen(false);
   }, [editorBlocked]);
 
-  function handleSubmitResult(result: SubmitResult) {
+  function handleSubmitResult(result: SubmitResult, retry: RetryAction) {
     if (result.ok) {
       if (result.warning) toast.warning(result.warning);
       return;
     }
     if (result.code === "quota" && result.provider === "heygen") {
       setHeygenQuotaAlert(result.message ?? "เครดิต HeyGen ไม่เพียงพอสำหรับสร้าง Avatar");
+      return;
+    }
+    if (result.missingKey) {
+      setMissingKeyModal({ type: result.missingKey, retry });
+      return;
+    }
+    if (result.missingVoiceId) {
+      // Capture the engine NOW, off the request that just failed — not later via
+      // p.voiceEngine at render time, which the Gemini-switch escape hatch mutates.
+      setMissingVoiceIdAlert({ message: result.message ?? "ต้องระบุ Voice ID", retry, engine: p.voiceEngine });
       return;
     }
     toast.error(result.message ?? "ส่งงานไม่สำเร็จ");
@@ -155,7 +203,7 @@ export function EditorV2Shell() {
     if (!p.canRunProjectOperation()) return;
     if (!CREDITS_LIVE_CLIENT) {
       const r = await submit();
-      handleSubmitResult(r);
+      handleSubmitResult(r, { kind: "render" });
       return;
     }
     setReceiptOpen(true);
@@ -163,20 +211,37 @@ export function EditorV2Shell() {
 
   // Confirm from the receipt → the ONE real submit. Ref-guarded so a rapid double-click
   // can't fire submit twice before React re-renders the disabled button.
-  async function handleConfirmRender() {
+  async function handleConfirmRender(confirmedMeteredMinutes: number) {
     if (!p.canRunProjectOperation()) return;
     if (confirmingRef.current) return;
     confirmingRef.current = true;
     setConfirmSubmitting(true);
     try {
-      const r = await submit();
-      handleSubmitResult(r);
+      const r = await submit(confirmedMeteredMinutes);
+      handleSubmitResult(r, { kind: "confirm", minutes: confirmedMeteredMinutes });
     } finally {
       confirmingRef.current = false;
       setConfirmSubmitting(false);
       setReceiptOpen(false); // ok → shell already swapped to RenderingScreen; fail → back to Step2
     }
   }
+
+  function runRetryAction(retry: RetryAction) {
+    if (retry.kind === "confirm") void handleConfirmRender(retry.minutes);
+    else void handleRender();
+  }
+
+  // Fires once p.voiceEngine actually reads back "gemini" after the modal's
+  // "ใช้เสียง Gemini แทน" click called p.setVoiceEngine("gemini") — state updates are
+  // async, so resubmitting synchronously in the click handler would still submit with
+  // the pre-switch (ElevenLabs) engine.
+  useEffect(() => {
+    if (p.voiceEngine !== "gemini") return;
+    const retry = pendingGeminiRetryRef.current;
+    if (!retry) return;
+    pendingGeminiRetryRef.current = null;
+    runRetryAction(retry);
+  }, [p.voiceEngine]);
 
   async function handleCancel() {
     const r = await cancel();
@@ -318,6 +383,21 @@ export function EditorV2Shell() {
     // for a logo change that p.setLogoOverlay would otherwise drop silently.
     canRunProjectOperation: p.canRunProjectOperation,
   };
+  // jobs/route.ts sends the identical { error: "missing_voice_id" } shape for
+  // ElevenLabs (no voiceId, :514) and OmniVoice/Hero Voice (no omniVoiceId, :493) —
+  // discriminate on the engine captured at failure time so the title/copy never
+  // names a provider the user didn't actually pick, and only the ElevenLabs cost
+  // pitch gets appended for the ElevenLabs case.
+  const missingVoiceIdCopy = missingVoiceIdAlert ? {
+    title: missingVoiceIdAlert.engine === "elevenlabs"
+      ? "ต้องระบุ ElevenLabs Voice ID"
+      : missingVoiceIdAlert.engine === "omnivoice"
+        ? "ต้องเลือกเสียง Hero Voice"
+        : "ต้องระบุ Voice ID",
+    description: missingVoiceIdAlert.engine === "elevenlabs"
+      ? `${missingVoiceIdAlert.message} — เสียง ElevenLabs ต้องใช้คีย์ของคุณเองและมีค่าใช้จ่าย — เสียง Gemini ใช้ได้ทันที ไม่ต้องตั้งค่า`
+      : missingVoiceIdAlert.message,
+  } : null;
   return (
     <div
       className={`${v2FontClass} flex h-screen flex-col`}
@@ -522,8 +602,6 @@ export function EditorV2Shell() {
             )}
             <div className="hidden items-center gap-1.5 lg:flex" style={{ fontSize: 10.5, color: color.textFaint }}>
               {emptyProjectState ? <span>ระบบจะสร้างเมื่อมิวกดเริ่ม</span> : <SaveStatus status={p.saveStatus} onRetry={p.retryProjectSave} />}
-              <span>·</span>
-              <a href="/video-editor?ui=v1" style={{ color: color.link }}>UI เดิม (รุ่นเก่า)</a>
             </div>
           </div>
         </div>
@@ -554,25 +632,29 @@ export function EditorV2Shell() {
           </div>
           <div className="hidden items-center gap-3 lg:flex">
             <NotificationBell />
-            <Link
-              href="/docs"
-              className="text-[13px] transition-opacity hover:opacity-80"
-              style={{ color: color.textSecondary, fontFamily: font.body }}
-            >
-              วิธีใช้งาน
-            </Link>
+            {!firstClipPath ? (
+              <Link
+                href="/docs"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[13px] transition-opacity hover:opacity-80"
+                style={{ color: color.textSecondary, fontFamily: font.body }}
+              >
+                วิธีใช้งาน
+              </Link>
+            ) : null}
           </div>
           <AccountMenu
-            extraItems={
+            extraItems={firstClipPath ? undefined : (
               <>
                 <DropdownMenuItem asChild className="cursor-pointer lg:hidden">
-                  <Link href="/docs">
+                  <Link href="/docs" target="_blank" rel="noopener noreferrer">
                     <BookOpen className="mr-2 h-4 w-4" />
                     วิธีใช้งาน
                   </Link>
                 </DropdownMenuItem>
               </>
-            }
+            )}
           />
         </div>
       </header>
@@ -583,6 +665,20 @@ export function EditorV2Shell() {
       >
         <QuotaStatus variant="chip" refreshKey={job.phase === "done" ? 1 : 0} />
       </div>
+
+      {firstClipPath && !emptyProjectState && !isRendering && job.phase !== "done" && job.phase !== "failed" ? (
+        <div
+          className="shrink-0 px-7 py-2.5 text-[13px]"
+          style={{
+            background: color.selectedBg,
+            borderBottom: `1px solid ${color.selectedBorder}`,
+            color: color.primary300,
+            fontFamily: font.body,
+          }}
+        >
+          คลิปแรก: วางสคริปต์แล้วกดสร้าง — ระบบใช้แบรนด์เดียวกันให้อัตโนมัติ
+        </div>
+      ) : null}
 
       {emptyProjectState ? (
         <EmptyProjectView onCreate={() => void handleNewProject()} />
@@ -603,15 +699,19 @@ export function EditorV2Shell() {
       ) : job.phase === "done" ? (
         job.output?.preview ? (
           isMobile ? (
-            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={p.heroAiImageEligible || Boolean(job.contentPreflightId)} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
+            <PostPhaseMobile {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={job.sceneRerollCapability?.available === true} sceneRerollUnavailableReason={job.sceneRerollCapability?.message ?? undefined} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
           ) : (
-            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={p.heroAiImageEligible || Boolean(job.contentPreflightId)} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
+            <PostPhase {...postPhaseProjectProps} job={job} script={p.mode === "script" ? p.script : ""} onExportJob={submitExport} onAdoptJob={adoptJob} onNewProject={handleNewProject} onPreviewError={markPreviewMissing} internalAiTester={p.internalAiTester} sceneRerollEnabled={job.sceneRerollCapability?.available === true} sceneRerollUnavailableReason={job.sceneRerollCapability?.message ?? undefined} starterImageAllowance={p.starterAiImageAllowance} downloadFilename={downloadFilename} />
           )
         ) : (
           <ExportedView
             job={job}
             onNewProject={handleNewProject}
-            onEditPreview={(job.output?.sourceJobId ?? p.activeJobId) ? () => resumeJob((job.output?.sourceJobId ?? p.activeJobId)!) : undefined}
+            onEditPreview={(job.output?.sourceJobId ?? p.activeJobId)
+              ? job.output?.editSnapshot
+                ? resumeExportEditSnapshot
+                : () => resumeJob((job.output?.sourceJobId ?? p.activeJobId)!)
+              : undefined}
             downloadFilename={downloadFilename}
           />
         )
@@ -635,7 +735,7 @@ export function EditorV2Shell() {
           }}
         />
       ) : step === 0 ? (
-        <Step1Script p={p} onNext={() => setStep(1)} />
+        <Step1Script p={p} onNext={() => setStep(1)} firstClipPath={firstClipPath} />
       ) : (
         <Step2Elements p={p} onRender={handleRender} />
       )}
@@ -645,7 +745,7 @@ export function EditorV2Shell() {
           p={p}
           open={receiptOpen && !editorBlocked}
           submitting={confirmSubmitting}
-          onConfirm={() => void handleConfirmRender()}
+          onConfirm={(confirmedMeteredMinutes) => void handleConfirmRender(confirmedMeteredMinutes)}
           onCancel={() => { if (!confirmSubmitting) setReceiptOpen(false); }}
         />
       )}
@@ -675,6 +775,57 @@ export function EditorV2Shell() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <AlertDialog open={!!missingVoiceIdAlert} onOpenChange={(open) => { if (!open) setMissingVoiceIdAlert(null); }}>
+        <AlertDialogContent className="border" style={{ background: color.bg1, borderColor: color.cardBorder, color: color.text }}>
+          <AlertDialogHeader>
+            <AlertDialogTitle style={{ color: color.text }}>{missingVoiceIdCopy?.title}</AlertDialogTitle>
+            <AlertDialogDescription style={{ color: color.textSecondary }}>
+              {missingVoiceIdCopy?.description}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            {/* Dismiss = go pick a Voice ID in Step2's own picker (ElevenLabs or Hero
+                Voice, whichever engine failed). No retry is pending (only the
+                Gemini-switch action below arms pendingGeminiRetryRef),
+                so closing here leaves the editor idle on Step2 with nothing queued. */}
+            <AlertDialogCancel onClick={() => setMissingVoiceIdAlert(null)}>ยกเลิก</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (!missingVoiceIdAlert) return;
+                pendingGeminiRetryRef.current = missingVoiceIdAlert.retry;
+                setMissingVoiceIdAlert(null);
+                p.setVoiceEngine("gemini");
+              }}
+            >
+              ใช้เสียง Gemini แทน (ฟรี)
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {missingKeyModal && (
+        <ApiKeyModal
+          keyType={missingKeyModal.type}
+          onClose={() => setMissingKeyModal(null)}
+          onSaved={() => {
+            const retry = missingKeyModal.retry;
+            setMissingKeyModal(null);
+            runRetryAction(retry);
+          }}
+          {...(missingKeyModal.type === "elevenlabs" ? {
+            secondaryAction: {
+              label: "ใช้เสียง Gemini แทน (ฟรี)",
+              description: "เสียง ElevenLabs ต้องใช้คีย์ของคุณเองและมีค่าใช้จ่าย — เสียง Gemini ใช้ได้ทันที ไม่ต้องตั้งค่า",
+              onClick: () => {
+                pendingGeminiRetryRef.current = missingKeyModal.retry;
+                p.setVoiceEngine("gemini");
+                setMissingKeyModal(null);
+              },
+            },
+          } : {})}
+        />
+      )}
 
       <AlertDialog
         open={!!deleteProject && !editorBlocked}

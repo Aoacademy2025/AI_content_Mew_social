@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { isOmniVoiceServerEnabled } from "@/lib/omnivoice-policy";
+import { isValidOmniVoiceId } from "@/lib/omnivoice-core";
 
 export type { OmniVoiceInfo } from "@/lib/tts-providers";
 export {
@@ -16,6 +17,8 @@ export {
 export type OmniVoiceBackend = "hostinger" | "runpod";
 
 export interface OmniTtsResponse {
+  contract_version?: number;
+  mode?: "tts" | "clone";
   voice_id: string;
   text?: string;
   audio_base64: string;
@@ -24,8 +27,10 @@ export interface OmniTtsResponse {
   duration: number;
   generation_time: number;
   worker_version?: string;
+  catalog_version?: string;
   language?: string;
   num_step?: number;
+  similarity_score?: number;
 }
 
 type OmniVoiceCommonConfig = {
@@ -93,6 +98,9 @@ export type RunpodOmniVoiceSnapshot =
 const RUNPOD_QUEUE_API = "https://api.runpod.ai/v2";
 const RUNPOD_REST_API = "https://rest.runpod.io/v1";
 const OMNIVOICE_QUALITY_NUM_STEP = 32;
+const HERO_VOICE_RUNPOD_CONTRACT_VERSION = 2;
+/** placeholder voice_id สำหรับผลลัพธ์โหมด clone (worker ไม่คืน voice_id มา) */
+const CLONED_VOICE_OUTPUT_ID = "__cloned__";
 
 export class OmniVoiceConfigError extends Error {
   constructor(message: string) {
@@ -236,6 +244,39 @@ function validTtsPayload(value: unknown): value is OmniTtsResponse {
     && output.sample_rate <= 96_000;
 }
 
+/** โหมด clone ของ worker ไม่คืน voice_id (มันไม่รู้จัก id ฝั่งเรา) — เติมให้ก่อน
+ *  validate เพื่อให้ผ่าน validTtsPayload ที่บังคับ voice_id เป็น string */
+function normalizeRunpodOutput(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const output = value as Partial<OmniTtsResponse>;
+  if (output.mode === "clone" && typeof output.voice_id !== "string") {
+    return { ...output, voice_id: CLONED_VOICE_OUTPUT_ID };
+  }
+  return value;
+}
+
+function validRunpodTtsPayload(value: unknown): value is OmniTtsResponse {
+  if (!validTtsPayload(value)) return false;
+  // โหมด clone อ้างอิงเสียงจาก ref audio ที่ส่งไป ไม่ใช่ id ในแคตตาล็อก
+  const voiceIdOk = value.mode === "clone"
+    ? value.voice_id === CLONED_VOICE_OUTPUT_ID
+    : isValidOmniVoiceId(value.voice_id);
+  return value.contract_version === HERO_VOICE_RUNPOD_CONTRACT_VERSION
+    && (value.mode === "tts" || value.mode === "clone")
+    && voiceIdOk
+    && value.format === "wav"
+    && typeof value.duration === "number"
+    && Number.isFinite(value.duration)
+    && value.duration > 0
+    && typeof value.generation_time === "number"
+    && Number.isFinite(value.generation_time)
+    && value.generation_time >= 0
+    && typeof value.worker_version === "string"
+    && value.worker_version.trim().length > 0
+    && typeof value.catalog_version === "string"
+    && value.catalog_version.trim().length > 0;
+}
+
 async function parseRunpodResponse(response: Response): Promise<RunpodTtsJob> {
   const text = await response.text();
   try {
@@ -264,6 +305,33 @@ async function runpodRequest(
   );
   const body = await parseRunpodResponse(response);
   return { response, body };
+}
+
+function runpodTtsInput(
+  config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
+  voiceId: string,
+  text: string,
+  speed: number,
+  voiceRef?: OmniVoiceCustomRef,
+) {
+  const common = {
+    contract_version: HERO_VOICE_RUNPOD_CONTRACT_VERSION,
+    text,
+    speed,
+    num_step: config.numStep,
+    mixed_language: true,
+  };
+  // เสียงโคลนของผู้ใช้ไม่มีอยู่ใน manifest ของ worker — ต้องส่ง reference ไปด้วย
+  // ผ่านโหมด clone (contract v2) ไม่ใช่โหมด tts ที่อ้าง voice_id ของเสียง stock
+  if (voiceRef) {
+    return {
+      ...common,
+      mode: "clone" as const,
+      ref_audio_b64: voiceRef.audioBase64,
+      ref_text: voiceRef.refText,
+    };
+  }
+  return { ...common, mode: "tts" as const, voice_id: voiceId };
 }
 
 function wait(ms: number): Promise<void> {
@@ -332,7 +400,7 @@ export async function submitRunpodOmniVoiceJob(
   const submitted = await runpodRequest(config, "run", {
     method: "POST",
     body: JSON.stringify({
-      input: omniVoiceTtsInput(config, voiceId, text, speed, voiceRef),
+      input: runpodTtsInput(config, voiceId, text, speed, voiceRef),
     }),
   }, Date.now() + 20_000);
   if (!submitted.response.ok || !submitted.body.id) {
@@ -370,13 +438,14 @@ export async function pollRunpodOmniVoiceJob(
   const delayTimeMs = typeof polled.body.delayTime === "number" ? Math.round(polled.body.delayTime) : 0;
   const executionTimeMs = typeof polled.body.executionTime === "number" ? Math.round(polled.body.executionTime) : 0;
   if (polled.body.status === "COMPLETED") {
-    if (!validTtsPayload(polled.body.output)) {
+    const output = normalizeRunpodOutput(polled.body.output);
+    if (!validRunpodTtsPayload(output)) {
       throw new OmniVoiceProviderError("RunPod completed with an invalid audio payload", 502);
     }
     return {
       status: "COMPLETED",
       providerJobId,
-      response: polled.body.output,
+      response: output,
       delayTimeMs,
       executionTimeMs,
     };
@@ -426,7 +495,7 @@ async function callRunpodOmniVoice(
     submitted = await runpodRequest(config, "run", {
       method: "POST",
       body: JSON.stringify({
-        input: omniVoiceTtsInput(config, voiceId, text, speed, voiceRef),
+        input: runpodTtsInput(config, voiceId, text, speed, voiceRef),
       }),
     }, deadline);
   } catch (error) {
@@ -467,12 +536,13 @@ async function callRunpodOmniVoice(
       transientPollFailures = 0;
       const snapshot = polled.body;
       if (snapshot.status === "COMPLETED") {
-        if (!validTtsPayload(snapshot.output)) {
+        const output = normalizeRunpodOutput(snapshot.output);
+        if (!validRunpodTtsPayload(output)) {
           return { ok: false, status: 502, reason: "invalid audio payload" };
         }
         return {
           ok: true,
-          response: snapshot.output,
+          response: output,
           providerJobId,
           delayTimeMs: typeof snapshot.delayTime === "number" ? Math.round(snapshot.delayTime) : 0,
           executionTimeMs: typeof snapshot.executionTime === "number" ? Math.round(snapshot.executionTime) : 0,

@@ -4,8 +4,11 @@ import { prisma } from "@/lib/prisma";
 import {
   createVideoJob,
   parseVideoJobOutput,
+  VideoJobFundingError,
   VIDEO_JOB_INFLIGHT_STATUSES,
 } from "@/lib/mcp/video-job";
+import { minutesFromSeconds } from "@/lib/minute-limits";
+import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
@@ -26,14 +29,16 @@ import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib
 import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { validateWindowEdits } from "@/lib/broll-rerender";
 import { BrandAssetError } from "@/lib/brand-assets.server";
+import { BrandProfileLibraryError } from "@/lib/brand-profile-library.server";
 import { createDurableExportWithStagedLogo } from "@/lib/logo-export.server";
+import { createEditorExportSnapshot } from "@/lib/editor-export-snapshot";
 import {
   fingerprintVideoJobRequest,
   legacyVideoJobKeyPrefix,
   resolveLegacyVideoJobAttemptKey,
   videoJobOperationKind,
 } from "@/lib/video-job-idempotency";
-import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
+import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import {
   checkOmniVoiceReady,
   isOmniVoiceUserAllowed,
@@ -59,6 +64,7 @@ import { normalizeHeadlineHook } from "@/lib/headline-hook";
 import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
   prepareProjectVisualPin,
+  prepareProjectVisualSnapshotAwaitingPreflight,
   prepareUploadProjectVisualSnapshot,
   projectHasPersistedVisualPin,
   ProjectLookError,
@@ -71,6 +77,7 @@ import {
   prepareBrandVisualJobAcceptance,
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
+import { ensureFirstClipProjectSpine, resolveFirstClipPath } from "@/lib/first-clip-path.server";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -95,10 +102,11 @@ type Body = {
   imageEngine?: unknown; imageModel?: unknown;
   brollRegionPreference?: unknown; brollVisualStyle?: unknown; sceneContentPolicy?: unknown;
   subtitleMode?: unknown; subtitlePosition?: unknown; idempotencyKey?: unknown; projectId?: unknown;
+  confirmedMeteredMinutes?: unknown;
   // Phase 2 free per-window re-render (mode: "broll-rerender")
   sourceJobId?: unknown; windowEdits?: unknown;
   // Editor v2 durable export (mode: "export")
-  subtitleOverlayConfig?: unknown; exportSceneCount?: unknown;
+  subtitleOverlayConfig?: unknown; exportSceneCount?: unknown; editorSnapshot?: unknown;
 };
 
 // b-roll sources the v2 UI may request. kie-image / auto-mix = Beta, ADMIN only —
@@ -298,9 +306,9 @@ export async function POST(req: Request) {
     }
 
     // ── Durable export (mode: "export") ──────────────────────────────────────
-    // The browser only submits the subtitle overlay config. The worker owns the long
-    // burn + Gallery save + project status transition, so switching projects or closing
-    // the tab cannot lose progress/finalization.
+    // The browser submits the burn config plus a compact native editor snapshot. The route
+    // validates it and joins it to server-owned preview metadata before the worker owns the
+    // long burn + Gallery save + project transition.
     if (body.mode === "export") {
       const sourceJobId = str(body.sourceJobId, 120);
       if (!sourceJobId) return NextResponse.json({ error: "invalid_source", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 400 });
@@ -313,7 +321,14 @@ export async function POST(req: Request) {
 
       const srcJob = await prisma.videoJob.findUnique({
         where: { id: sourceJobId },
-        select: { userId: true, status: true, outputJson: true, projectId: true },
+        select: {
+          userId: true,
+          status: true,
+          outputJson: true,
+          projectId: true,
+          contentPreflightId: true,
+          projectVisualContextJson: true,
+        },
       });
       if (!srcJob || srcJob.userId !== user.id) return NextResponse.json({ error: "source_not_found", message: "ไม่พบวิดีโอต้นฉบับ" }, { status: 404 });
       if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม" }, { status: 400 });
@@ -321,6 +336,16 @@ export async function POST(req: Request) {
       const sourceProjectId = srcJob.projectId;
       const parsed = parseVideoJobOutput(srcJob.outputJson);
       if (!parsed?.preview) return NextResponse.json({ error: "source_not_exportable", message: "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับแก้ซับ/ส่งออก" }, { status: 400 });
+      const editSnapshot = body.editorSnapshot === undefined
+        ? undefined
+        : createEditorExportSnapshot({
+            draft: body.editorSnapshot,
+            sourcePreview: parsed.preview,
+            videoUrl: subtitleOverlayConfig.videoUrl,
+          });
+      if (body.editorSnapshot !== undefined && !editSnapshot) {
+        return NextResponse.json({ error: "invalid_editor_snapshot", message: "ข้อมูลสถานะล่าสุดของหน้าตัดต่อไม่ถูกต้อง" }, { status: 400 });
+      }
 
       const rawHeadlineHook = subtitleOverlayConfig.headlineHook;
       if (rawHeadlineHook !== undefined) {
@@ -360,11 +385,22 @@ export async function POST(req: Request) {
                 mode: "export",
                 sourceJobId,
                 subtitleOverlayConfig,
+                ...(editSnapshot ? { editSnapshot } : {}),
                 exportScript: str(body.script, 20000),
                 exportSceneCount: num(body.exportSceneCount, 1, 1000),
               },
               idempotencyKey,
-              { projectId: sourceProjectId, type: "export", idempotencyFingerprint },
+              {
+                projectId: sourceProjectId,
+                type: "export",
+                idempotencyFingerprint,
+                projectVisualPin: srcJob.projectVisualContextJson
+                  ? {
+                      contentPreflightId: srcJob.contentPreflightId,
+                      projectVisualContextJson: srcJob.projectVisualContextJson,
+                    }
+                  : null,
+              },
             );
           },
           afterDurableJobCreated: async (durableJob) => {
@@ -402,6 +438,14 @@ export async function POST(req: Request) {
     const projectId = typeof body.projectId === "string" && body.projectId.trim()
       ? await assertEditorProjectOwner(user.id, body.projectId.trim())
       : null;
+    const firstClip = await resolveFirstClipPath({ id: user.id, email: user.email, role: user.role });
+    const onFirstClipPath = firstClip.onPath;
+    if (onFirstClipPath && !projectId) {
+      return NextResponse.json(
+        { error: "project_required", message: "คลิปแรกต้องมีโปรเจกต์ก่อนสร้าง" },
+        { status: 400 },
+      );
+    }
 
     // โหมดอัปคลิปเอง (cutaway) — gate ด้วย flag เดียวกับปุ่มใน UI (flip พร้อม EDITOR_V2 วัน launch)
     const uploadMode = body.mode === "upload";
@@ -420,6 +464,40 @@ export async function POST(req: Request) {
     if (!uploadMode && (!script || script.length > 20000)) {
       return NextResponse.json({ error: "invalid_script", message: "สคริปต์ว่างหรือยาวเกิน 20,000 ตัวอักษร" }, { status: 400 });
     }
+    if (onFirstClipPath && uploadMode) {
+      return NextResponse.json(
+        { error: "first_clip_script_required", message: "คลิปแรกใช้สคริปต์ ไม่ใช่คลิปที่ถ่ายเอง" },
+        { status: 400 },
+      );
+    }
+    if (onFirstClipPath && projectId) {
+      try {
+        await ensureFirstClipProjectSpine({ userId: user.id, projectId });
+      } catch (error) {
+        if (error instanceof BrandProfileLibraryError) {
+          return NextResponse.json({ error: error.code, message: error.message }, { status: 400 });
+        }
+        throw error;
+      }
+    }
+    const receiptMinutes = Number(body.confirmedMeteredMinutes);
+    const hasConfirmedReceipt = Number.isInteger(receiptMinutes) && receiptMinutes > 0;
+    if (process.env.CREDITS_LIVE === "1" && !hasConfirmedReceipt) {
+      return NextResponse.json(
+        { error: "render_receipt_required", message: "กรุณายืนยันสรุปนาทีและเครดิตก่อนเรนเดอร์" },
+        { status: 400 },
+      );
+    }
+    const serverEstimatedMinutes = uploadMode
+      ? (hasConfirmedReceipt ? receiptMinutes : 1)
+      : minutesFromSeconds(estimateClipSecV2(script));
+    if (!uploadMode && hasConfirmedReceipt && receiptMinutes !== serverEstimatedMinutes) {
+      return NextResponse.json(
+        { error: "render_receipt_changed", message: "ประมาณการคลิปเปลี่ยนแล้ว กรุณาตรวจและยืนยันอีกครั้ง" },
+        { status: 409 },
+      );
+    }
+    const meteredMinutes = hasConfirmedReceipt ? serverEstimatedMinutes : Math.max(1, serverEstimatedMinutes);
 
     const voiceProvider = body.voiceProvider === "elevenlabs"
       ? "elevenlabs"
@@ -432,9 +510,16 @@ export async function POST(req: Request) {
     const geminiVoiceName = str(body.geminiVoiceName, 60);
     const omniVoiceId = str(body.omniVoiceId, 64);
     let voiceBackend: OmniVoiceBackend | undefined;
-    const requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
-    const requestedImageEngine = body.imageEngine === "runpod" ? "runpod" : undefined;
-    const requestedImageModel = str(body.imageModel, 60);
+    let requestedSource = typeof body.stockSource === "string" && STOCK_SOURCES.has(body.stockSource) ? body.stockSource : "stock";
+    let requestedImageEngine = body.imageEngine === "runpod" ? "runpod" : undefined;
+    let requestedImageModel = str(body.imageModel, 60);
+    // Conversion Trial sample clip spends the 8-image Hero AI Image allowance.
+    // GRANT/paid First-Clip Path keeps the caller's stock/AI choice (#267).
+    if (firstClip.reason === "conversion_trial" && !uploadMode) {
+      requestedSource = "kie-image";
+      requestedImageEngine = "runpod";
+      requestedImageModel = requestedImageModel || "z-image-turbo";
+    }
 
     if (!uploadMode && voiceProvider === "omnivoice") {
       if (!isOmniVoiceUserAllowed(user)) {
@@ -531,9 +616,13 @@ export async function POST(req: Request) {
     }
     const heygenWarning = heygenReadiness?.kind === "unknown" ? heygenReadiness.message : undefined;
 
-    // Quota + in-flight cap (shared worker, no global render queue)
-    const q = await checkClipQuota(user.id);
-    if (q && !q.allowed) return NextResponse.json({ error: "quota_exceeded", message: q.message }, { status: 403 });
+    // Minute metering replaces the legacy clip-count cap. Keeping both would strand
+    // Purchased Credits after FREE's old two-clip limit even though the wallet can
+    // fund more <=2-minute renders.
+    if (process.env.MINUTE_QUOTA !== "1") {
+      const q = await checkClipQuota(user.id);
+      if (q && !q.allowed) return NextResponse.json({ error: "quota_exceeded", message: q.message }, { status: 403 });
+    }
     const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
     if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
 
@@ -627,7 +716,16 @@ export async function POST(req: Request) {
 
     // ขั้นสูง (P6c): จำนวนคลิป + ตัวเลือก AI-gen (Beta fields ผ่านได้เฉพาะเมื่อ source เป็น Beta
     // ซึ่งผ่าน admin gate ด้านบนแล้ว)
-    const targetClipCount = num(body.targetClipCount, 1, 60);
+    let targetClipCount = num(body.targetClipCount, 1, 60);
+    if (firstClip.reason === "conversion_trial" && !uploadMode) {
+      const trialImageCap = Math.max(0, heroAiImageAccess.remainingTrialImages);
+      if (trialImageCap < 1) {
+        return NextResponse.json(HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.body, {
+          status: HERO_AI_IMAGE_ALLOWANCE_EXHAUSTED_RESPONSE.status,
+        });
+      }
+      targetClipCount = Math.min(targetClipCount ?? trialImageCap, trialImageCap);
+    }
     const brollRegionPreference = normalizeBrollRegionPreference(body.brollRegionPreference);
     const brollVisualStyle = normalizeBrollVisualStyle(body.brollVisualStyle);
     const sceneContentPolicy = sceneContentPolicyFromPreference(
@@ -652,35 +750,38 @@ export async function POST(req: Request) {
       || body.narrativeSourceKind === "creator-script"
       ? body.narrativeSourceKind
       : undefined;
-    if (
-      !uploadMode
-      && Boolean(requestedContentPreflightId) !== Boolean(requestedNarrativeSourceKind)
-    ) {
-      return NextResponse.json({
-        error: "invalid_content_preflight",
-        message: "ข้อมูลฉากไม่ตรงกับเนื้อหาที่ใช้สร้างคลิป กรุณาลองเตรียมแนวภาพอีกครั้ง",
-      }, { status: 400 });
-    }
     const projectVisualPin = brandVisualRenderAccess
       ? uploadMode
         ? await prepareUploadProjectVisualSnapshot({ userId: user.id, projectId: projectId! })
-        : await prepareProjectVisualPin({
+        : requestedContentPreflightId
+          ? await prepareProjectVisualPin({
+              userId: user.id,
+              projectId: projectId!,
+              preflightId: requestedContentPreflightId,
+              // Script-mode callers may originate from either authored or AI-assisted
+              // input. Both kinds hash the same normalized text independently; accept
+              // only an analysis of this request's narrative, never merely the newest
+              // analysis another tab happened to create.
+              sourceHashes: (requestedNarrativeSourceKind
+                ? [requestedNarrativeSourceKind]
+                : (["ai-script", "creator-script"] as const))
+                .map((kind) => contentPreflightSourceHash(kind, script, {
+                  ...(targetClipCount ? { windowCount: targetClipCount } : {}),
+                  sceneContentPolicy,
+                })),
+            })
+          : await prepareProjectVisualSnapshotAwaitingPreflight({
+              userId: user.id,
+              projectId: projectId!,
+              narrativeSourceKind: requestedNarrativeSourceKind ?? "creator-script",
+            })
+      : (onFirstClipPath && projectId && !uploadMode)
+        ? await prepareProjectVisualSnapshotAwaitingPreflight({
             userId: user.id,
-            projectId: projectId!,
-            ...(requestedContentPreflightId ? { preflightId: requestedContentPreflightId } : {}),
-            // Script-mode callers may originate from either authored or AI-assisted
-            // input. Both kinds hash the same normalized text independently; accept
-            // only an analysis of this request's narrative, never merely the newest
-            // analysis another tab happened to create.
-            sourceHashes: (requestedNarrativeSourceKind
-              ? [requestedNarrativeSourceKind]
-              : (["ai-script", "creator-script"] as const))
-              .map((kind) => contentPreflightSourceHash(kind, script, {
-                ...(targetClipCount ? { windowCount: targetClipCount } : {}),
-                sceneContentPolicy,
-              })),
+            projectId,
+            narrativeSourceKind: requestedNarrativeSourceKind ?? "creator-script",
           })
-      : null;
+        : null;
     const brandVisualAcceptanceJson = projectVisualPin && projectId && brandVisualRenderAccess
       ? await prepareBrandVisualJobAcceptance({
           userId: user.id,
@@ -752,6 +853,7 @@ export async function POST(req: Request) {
           ...(brollRegionPreference ? { brollRegionPreference } : {}),
           ...(brollVisualStyle ? { brollVisualStyle } : {}),
           sceneContentPolicy,
+          ...(requestedNarrativeSourceKind ? { narrativeSourceKind: requestedNarrativeSourceKind } : {}),
           ...(kieModel ? { kieModel } : {}),
           ...(useHeroRunpodImage ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
           ...(autoMixProviders?.length ? { autoMixProviders } : {}),
@@ -767,6 +869,14 @@ export async function POST(req: Request) {
           idempotencyFingerprint,
           projectVisualPin,
           brandVisualAcceptanceJson,
+          ...(process.env.MINUTE_QUOTA === "1" && process.env.CREDITS_LIVE === "1"
+            ? {
+                funding: {
+                  meteredMinutes,
+                  creditsLive: process.env.CREDITS_LIVE === "1",
+                },
+              }
+            : {}),
         },
       );
       if (projectId) {
@@ -806,6 +916,9 @@ export async function POST(req: Request) {
         { status: err.status },
       );
     }
+    if (err instanceof BrandProfileLibraryError) {
+      return NextResponse.json({ error: err.code, message: err.message }, { status: 400 });
+    }
     if (err instanceof ProjectLookError) {
       const status = err.code === "NOT_FOUND" ? 404
         : err.code === "PREFLIGHT_REQUIRED" ? 409
@@ -813,7 +926,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: err.code, message: err.message }, { status });
     }
     if (err instanceof RenderDeployDrainError) {
-      return NextResponse.json({ error: "render_maintenance", retryable: true }, { status: 503 });
+      return NextResponse.json(
+        { error: "render_maintenance", retryable: true, message: RENDER_MAINTENANCE_CUSTOMER_MESSAGE },
+        { status: 503 },
+      );
+    }
+    if (err instanceof VideoJobFundingError) {
+      return NextResponse.json(
+        {
+          error: "quota_exceeded",
+          message: err.message,
+          remainingMinutes: err.remainingMinutes,
+          canBuyCredits: process.env.CREDITS_LIVE === "1",
+        },
+        { status: 403 },
+      );
     }
     if ((err as { code?: string })?.code === "project_not_found") {
       return NextResponse.json({ error: "project_not_found" }, { status: 404 });

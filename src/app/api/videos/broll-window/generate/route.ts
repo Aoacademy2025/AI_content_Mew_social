@@ -24,11 +24,16 @@ import {
   prepareBrandVisualJobAcceptance,
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
-import { resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
-import { recordVisualBeatAsset } from "@/lib/content-preflight.server";
+import { parseProjectVisualContext, resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
+import {
+  CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE,
+  cutawayTimelineSourceFromJob,
+  sceneRerollBeatTarget,
+} from "@/lib/cutaway-plan";
+import { sceneRerollUnavailablePayload } from "@/lib/project-visual-context";
+import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { reusableProjectVisualAssets } from "@/lib/project-visual-assets.server";
 import {
   describeHeroImageOffer,
   generateHeroImageForVideo,
@@ -36,6 +41,7 @@ import {
   type HeroImageGenerationResult,
 } from "@/lib/video-hero-image.server";
 import { refundSettledVideoImageJob } from "@/lib/video-image-batch-settlement";
+import { recordFirstPassVisualRejection } from "@/lib/first-pass-visual-acceptance.server";
 
 // POST /api/videos/broll-window/generate — regenerate one existing B-roll
 // window through the same RunPod-only Hero AI Image product used by new videos.
@@ -78,6 +84,8 @@ export async function POST(req: Request) {
       projectId: true,
       contentPreflightId: true,
       projectVisualContextJson: true,
+      inputJson: true,
+      outputJson: true,
     },
   });
   if (!sourceJob) {
@@ -92,20 +100,58 @@ export async function POST(req: Request) {
       { status: 409 },
     );
   }
-  if (!sourceJob.projectId || !sourceJob.contentPreflightId || !sourceJob.projectVisualContextJson) {
+  const sceneRerollCapability = resolveSceneRerollCapability({
+    projectId: sourceJob.projectId,
+    contentPreflightId: sourceJob.contentPreflightId,
+    hasProjectVisualContext: parseProjectVisualContext(sourceJob.projectVisualContextJson) !== null,
+  });
+  if (
+    !sceneRerollCapability.available
+    || !sourceJob.projectId
+    || !sourceJob.contentPreflightId
+    || !sourceJob.projectVisualContextJson
+  ) {
     return NextResponse.json(
       {
         error: "scene_reroll_unavailable",
-        message: "คลิปนี้ยังไม่มีแนวภาพและฉากที่ยืนยันไว้สำหรับลองภาพใหม่",
+        message: sceneRerollCapability.available
+          ? "คลิปนี้ยังไม่มีข้อมูลฉากที่สมบูรณ์สำหรับลองภาพใหม่"
+          : sceneRerollCapability.message,
       },
       { status: 409 },
     );
   }
-  const brandVisualPrompt = await resolveProjectVisualPromptForVideoScene({
-    userId: user.id,
-    videoJobId: input.videoJobId,
-    sceneIndex: input.sceneIndex,
-  });
+  const projectId = sourceJob.projectId;
+  const contentPreflightId = sourceJob.contentPreflightId;
+  const projectVisualContextJson = sourceJob.projectVisualContextJson;
+  const beatTarget = sceneRerollBeatTarget(
+    input.sceneIndex,
+    cutawayTimelineSourceFromJob(sourceJob),
+  );
+  if (beatTarget.kind === "presenter") {
+    return NextResponse.json(
+      {
+        error: "scene_reroll_unavailable",
+        message: CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE,
+      },
+      { status: 409 },
+    );
+  }
+  const visualBeatSequence = beatTarget.visualBeatSequence;
+  let brandVisualPrompt;
+  try {
+    brandVisualPrompt = await resolveProjectVisualPromptForVideoScene({
+      userId: user.id,
+      videoJobId: input.videoJobId,
+      sceneIndex: visualBeatSequence,
+    });
+  } catch (error) {
+    const unavailable = sceneRerollUnavailablePayload(error);
+    if (unavailable) {
+      return NextResponse.json(unavailable, { status: 409 });
+    }
+    throw error;
+  }
   if (!brandVisualPrompt?.visualBeatId || !brandVisualPrompt.identityKey) {
     return NextResponse.json(
       {
@@ -124,20 +170,11 @@ export async function POST(req: Request) {
 
   let acceptance = null;
   if (!existingImageJob) {
-    const sourceAssets = await reusableProjectVisualAssets({
-      userId: user.id,
-      projectId: sourceJob.projectId,
-      preflightId: sourceJob.contentPreflightId,
-    });
-    if (!sourceAssets.some((asset) => asset.beatId === brandVisualPrompt.visualBeatId)) {
-      return NextResponse.json(
-        {
-          error: "scene_reroll_requires_ai_asset",
-          message: "ลองภาพใหม่ได้เฉพาะฉากที่มีภาพ AI เดิมอยู่แล้ว",
-        },
-        { status: 409 },
-      );
-    }
+    // The owned source job and its durable Visual Beat are the authorization
+    // boundary. Requiring a previously generated AI asset here prevented a
+    // Stock scene from using the same server-owned Brand Visual prompt even
+    // though billing, rate limits, idempotency, and Apply verification are
+    // identical for both source types.
     const access = resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: true,
       hasPersistedProjectPin: true,
@@ -194,10 +231,10 @@ export async function POST(req: Request) {
     }
     acceptance = parseBrandVisualJobAcceptance(await prepareBrandVisualJobAcceptance({
       userId: user.id,
-      projectId: sourceJob.projectId,
+      projectId,
       projectVisualPin: {
-        contentPreflightId: sourceJob.contentPreflightId,
-        projectVisualContextJson: sourceJob.projectVisualContextJson,
+        contentPreflightId,
+        projectVisualContextJson,
       },
       access,
     }));
@@ -213,6 +250,7 @@ export async function POST(req: Request) {
     HeroImageGenerationResult,
     "jobId" | "outputUrl" | "creditCost" | "fundingSource" | "allowanceUnits"
   > | null = null;
+  let registeredDerivativeSrc: string | null = null;
 
   try {
     generated = existingImageJob?.status === "completed"
@@ -242,19 +280,36 @@ export async function POST(req: Request) {
     await applyKenBurns(tmpImagePath, outPath, input.kenBurnsDurationSec);
     if (!isValidMp4Path(outPath)) throw new Error("Hero Ken Burns produced no usable output");
     try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
-    await recordVisualBeatAsset({
-      userId: user.id,
-      beatId: brandVisualPrompt.visualBeatId,
-      outputUrl: generated.outputUrl,
-      imageJobId: generated.jobId,
-      identityKey: brandVisualPrompt.identityKey,
+    const derivativeSrc = `/api/stocks/${outFile}`;
+    await prisma.sceneRerollDerivative.create({
+      data: {
+        userId: user.id,
+        imageJobId: generated.jobId,
+        sourceVideoJobId: input.videoJobId,
+        sceneIndex: input.sceneIndex,
+        src: derivativeSrc,
+      },
     });
-
+    registeredDerivativeSrc = derivativeSrc;
     const [balance, allowanceStatus] = await Promise.all([
       getBalance(user.id),
       getStarterAiImageAllowanceStatus(user.id),
     ]);
     if (!existingImageJob) {
+      const measuredContext = await prisma.videoJob.findUnique({
+        where: { id: input.videoJobId },
+        select: { projectVisualContextJson: true },
+      });
+      await recordFirstPassVisualRejection(user.id, {
+        actor: user,
+        projectId,
+        videoJobId: input.videoJobId,
+        sceneIndex: input.sceneIndex,
+        reason: "scene_reroll",
+        projectVisualContextJson: measuredContext?.projectVisualContextJson,
+      }).catch((error) => {
+        console.error("[broll-window/generate] first-pass telemetry failed:", error);
+      });
       await recordTelemetryEvent(user.id, {
         name: "brand_look_scene_rerolled",
         category: "product",
@@ -278,7 +333,7 @@ export async function POST(req: Request) {
       });
     }
     return NextResponse.json({
-      src: `/api/stocks/${outFile}`,
+      src: derivativeSrc,
       clipDuration: input.kenBurnsDurationSec,
       imageJobId: generated.jobId,
       imageOutputUrl: generated.outputUrl,
@@ -294,6 +349,13 @@ export async function POST(req: Request) {
   } catch (error) {
     safeUnlink(outPath);
     safeUnlink(normalizedMarkerPath(outPath));
+    if (registeredDerivativeSrc) {
+      await prisma.sceneRerollDerivative.deleteMany({
+        where: { userId: user.id, src: registeredDerivativeSrc, status: "ready" },
+      }).catch((cleanupError) => {
+        console.error("[broll-window/generate] derivative binding cleanup failed:", cleanupError);
+      });
+    }
     let refundPending = false;
 
     // The durable Hero service refunds provider failures itself. If RunPod

@@ -60,6 +60,17 @@ assert.equal(
   "พิมพ์คำถัดไป ",
   "controlled headline draft preserves the trailing space needed to type the next word",
 );
+const headlineAfterMiddleSpace = "คำแรก  คำสอง";
+assert.equal(
+  normalizeHeadlineHookDraft({ enabled: true, headline: headlineAfterMiddleSpace }, 60_000)?.headline,
+  headlineAfterMiddleSpace,
+  "controlled headline draft must not rewrite a space inserted at the caret and move it to the sentence end",
+);
+assert.equal(
+  normalizeHeadlineHook({ enabled: true, headline: headlineAfterMiddleSpace }, 60_000)?.headline,
+  "คำแรก คำสอง",
+  "persisted/rendered headline still canonicalizes repeated draft whitespace",
+);
 assert.equal(
   normalizeHeadlineHook({ enabled: true, headline: "พิมพ์คำถัดไป " }, 60_000)?.headline,
   "พิมพ์คำถัดไป",

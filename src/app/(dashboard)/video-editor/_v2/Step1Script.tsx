@@ -5,7 +5,7 @@
  * กติกา: 1 บรรทัด = 1 เซ็กเมนต์ · เลือกคลิปเอง = ข้ามเสียง/อวตาร ไปทำ B-roll + ซับ (cutaway)
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { PenLine, Clapperboard, GripVertical, Crown } from "lucide-react";
 import { DirectAvatarUpload } from "../_components/DirectAvatarUpload";
@@ -13,6 +13,7 @@ import { color, font, radius } from "./tokens";
 import { BtnPrimary, Card, IconTile } from "./ui";
 import { estimateClipSecV2, countWordsV2 } from "./estimate";
 import type { V2Project } from "./useV2Project";
+import { audioDurationLimitViolation } from "@/lib/plan-limits";
 
 const CLIP_CUTAWAY_ON = process.env.NEXT_PUBLIC_CLIP_CUTAWAY === "1";
 
@@ -28,7 +29,10 @@ function segLabel(i: number, total: number) {
   return `เนื้อหา ${i}`;
 }
 
-export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void }) {
+export function Step1Script({ p, onNext, firstClipPath = false }: { p: V2Project; onNext: () => void; firstClipPath?: boolean }) {
+  useEffect(() => {
+    if (firstClipPath && p.mode !== "script") p.setMode("script");
+  }, [firstClipPath, p.mode, p.setMode]);
   const lines = useMemo(() => p.script.split("\n").filter(l => l.trim().length > 0), [p.script]);
   // นับจากข้อความที่ clean แล้ว (ตรงกับที่ TTS จะอ่านจริง) — สูตรความยาว calibrate ใน estimate.ts
   const totalSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
@@ -36,6 +40,9 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
   const [selectedSeg, setSelectedSeg] = useState(0);
   const dragIdx = useRef<number | null>(null);
   const uploadDurationLabel = p.clipDurationSec > 0 ? fmtTime(p.clipDurationSec) : null;
+  const clipDurationViolation = p.mode === "upload" && p.clipDurationSec > 0
+    ? audioDurationLimitViolation(p.clipDurationSec * 1000, p.plan ?? "FREE")
+    : null;
   const showScriptSegments = p.mode !== "upload";
 
   // เวลาโดยประมาณต่อเซ็กเมนต์ — แบ่งตามสัดส่วนความยาวตัวอักษรของแต่ละบรรทัด
@@ -60,7 +67,9 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
   }
 
   // CTA เดียว — ใช้ทั้งใน rail (desktop) และ sticky footer (mobile), ไม่ให้ logic แยกกัน
-  const ctaDisabled = p.mode === "upload" ? (!p.canUploadOwnMedia || !p.clipUrl) : !lines.length;
+  const ctaDisabled = p.mode === "upload"
+    ? (!p.canUploadOwnMedia || !p.clipUrl || Boolean(clipDurationViolation))
+    : !lines.length;
   const primaryCta = (
     <BtnPrimary
       className="w-full"
@@ -68,7 +77,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
       style={ctaDisabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
       onClick={onNext}
     >
-      ถัดไป: เลือกองค์ประกอบ →
+      {firstClipPath ? "ถัดไป: เลือกเสียงแล้วสร้างคลิปแรก →" : "ถัดไป: เลือกองค์ประกอบ →"}
     </BtnPrimary>
   );
 
@@ -77,7 +86,8 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
     <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:overflow-y-auto">
       {/* ── เนื้อหาซ้าย ── */}
       <div className="flex min-w-0 flex-1 flex-col gap-4 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6">
-        {/* การ์ดเลือกโหมด 2 ใบ */}
+        {/* การ์ดเลือกโหมด 2 ใบ — First-Clip Path stays on Narrative Source only */}
+        {firstClipPath ? null : (
         <div className="grid grid-cols-2 gap-2.5 max-lg:grid-cols-1">
           <ModeCard
             selected={p.mode === "script"}
@@ -95,9 +105,10 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
             desc={CLIP_CUTAWAY_ON ? "อัปคลิปแนวตั้ง → ซับ + บีโรลอัตโนมัติ" : "เร็ว ๆ นี้"}
           />
         </div>
+        )}
 
         {/* โหมดอัปคลิปเอง (cutaway) */}
-        {p.mode === "upload" ? (
+        {p.mode === "upload" && !firstClipPath ? (
           <div
             className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 p-6"
             style={{ borderRadius: 13, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}
@@ -126,7 +137,16 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
                     คลิปยาว {uploadDurationLabel} นาที
                   </span>
                 )}
-                <button onClick={() => p.setClipUrl("")} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
+                {clipDurationViolation && (
+                  <div
+                    role="alert"
+                    className="max-w-[440px] rounded-lg px-3 py-2 text-center"
+                    style={{ fontSize: 11.5, lineHeight: 1.65, color: color.danger, background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.22)" }}
+                  >
+                    {clipDurationViolation.message}<br />{clipDurationViolation.userAction}
+                  </div>
+                )}
+                <button onClick={() => { p.setClipUrl(""); p.setClipDurationSec(0); }} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
                   เปลี่ยนคลิป
                 </button>
               </>
@@ -135,7 +155,7 @@ export function Step1Script({ p, onNext }: { p: V2Project; onNext: () => void })
                 <DirectAvatarUpload
                   onUrl={(u, meta) => {
                     p.setClipUrl(u);
-                    if (meta?.durationSec) p.setClipDurationSec(meta.durationSec);
+                    p.setClipDurationSec(meta?.durationSec ?? 0);
                   }}
                   requirePortrait
                   label="อัปโหลดคลิปแนวตั้งของคุณ"

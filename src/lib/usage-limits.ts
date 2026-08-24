@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { limitsForPlan, minutesPerMonthForPlan, TRIAL_MINUTES } from "@/lib/plan-limits";
 import { syncUserEntitlement } from "@/lib/entitlements";
+import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 
 export const USAGE_PERIOD_DAYS = 30;
 
@@ -22,6 +23,8 @@ export function usageWindowForPlan(plan: string, from: Date = new Date()) {
     usagePeriodStartedAt: from,
     minutesUsed: 0,
     minutesLimit: minutesPerMonthForPlan(plan),
+    aiAudioMinutesUsed: 0,
+    aiTextCallsUsed: 0,
   };
 }
 
@@ -74,24 +77,27 @@ export async function syncSharedUsageCycle(
     : minutesPerMonthForPlan(user.plan);
   const expiredBefore = new Date(now.getTime() - USAGE_PERIOD_MS);
 
-  await prisma.user.updateMany({
-    where: {
-      id: userId,
-      OR: [
-        { usagePeriodStartedAt: null },
-        { usagePeriodStartedAt: { lte: expiredBefore } },
-      ],
-    },
-    data: {
-      usageCount: 0,
-      usageLimit,
-      minutesUsed: 0,
-      minutesLimit,
-      aiAudioMinutesUsed: 0,
-      aiTextCallsUsed: 0,
-      usagePeriodStartedAt: now,
-    },
-  });
+  const rolloverDue = !user.usagePeriodStartedAt || user.usagePeriodStartedAt <= expiredBefore;
+  if (rolloverDue) {
+    await withTransientSqliteRetry(() => prisma.user.updateMany({
+      where: {
+        id: userId,
+        OR: [
+          { usagePeriodStartedAt: null },
+          { usagePeriodStartedAt: { lte: expiredBefore } },
+        ],
+      },
+      data: {
+        usageCount: 0,
+        usageLimit,
+        minutesUsed: 0,
+        minutesLimit,
+        aiAudioMinutesUsed: 0,
+        aiTextCallsUsed: 0,
+        usagePeriodStartedAt: now,
+      },
+    }));
+  }
 
   // Re-read after the conditional rollover. If another request won the reset race,
   // this preserves any usage it reserved in the new cycle instead of returning stale data.

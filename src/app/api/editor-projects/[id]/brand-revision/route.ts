@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { brandLookIdentityKey, brandVisualIdentityKey, type BrandVisualLanguage, type VisualFormatId } from "@/lib/brand-visual-system";
 import { editorProjectResponse } from "@/lib/editor-projects";
+import { lookChangeConfirmation } from "@/lib/brand-treatment-presentation";
 
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -41,12 +42,11 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     }
     const existingImageCount = preflight?.visualBeats.filter((beat) => Boolean(beat.existingAssetUrl)).length ?? 0;
     const applyMode = body?.applyMode;
-    if (existingImageCount > 0 && applyMode !== "new-only" && applyMode !== "regenerate-all") {
-      return NextResponse.json({
-        code: "LOOK_CHANGE_CONFIRMATION_REQUIRED",
-        existingImageCount,
-        quotedCredits: existingImageCount * HERO_AI_IMAGE_CREDITS,
-      }, { status: 409 });
+    if (existingImageCount > 0 && applyMode !== "regenerate-all") {
+      return NextResponse.json(
+        lookChangeConfirmation(existingImageCount, HERO_AI_IMAGE_CREDITS),
+        { status: 409 },
+      );
     }
     const pinned = await applyProjectBrandRevision({
       userId: auth.user.id,
@@ -100,17 +100,15 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         quotedCredits: existingImageCount * HERO_AI_IMAGE_CREDITS,
         automatic: false,
       } : null,
-      mixedLookWarning: applyMode === "new-only" && existingImageCount > 0,
     });
   } catch (error) {
     if (error instanceof BrandProfileLibraryError) {
       if (error.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
         const existingImageCount = error.details?.existingImageCount ?? 0;
-        return NextResponse.json({
-          code: error.code,
-          existingImageCount,
-          quotedCredits: existingImageCount * HERO_AI_IMAGE_CREDITS,
-        }, { status: 409 });
+        return NextResponse.json(
+          lookChangeConfirmation(existingImageCount, HERO_AI_IMAGE_CREDITS),
+          { status: 409 },
+        );
       }
       const status = error.code === "NOT_FOUND" || error.code === "NO_REVISION"
         ? 404

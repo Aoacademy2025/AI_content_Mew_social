@@ -29,7 +29,7 @@ export function CouponBox({ onDiscountApplied, variant = "card" }: { onDiscountA
         return;
       }
 
-      // GRANT — redeem instantly (unchanged behavior)
+      // GRANT — the server decides activation, append, or promo-only atomically.
       const res = await fetch("/api/coupons/redeem", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code }),
@@ -86,7 +86,7 @@ export function CouponBox({ onDiscountApplied, variant = "card" }: { onDiscountA
               ใช้รหัสคูปอง
             </h2>
             <p className="text-sm mt-1" style={{ color: "var(--ui-text-muted)" }}>
-              มีรหัสคูปองอยู่แล้ว? กรอกที่นี่เพื่ออัปเกรดแผนการใช้งานทันที
+              มีรหัสคูปองอยู่แล้ว? กรอกที่นี่เพื่อรับสิทธิ์ตามเงื่อนไขของคูปอง
             </p>
           </div>
           <div className="flex gap-2">

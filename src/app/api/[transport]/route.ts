@@ -24,7 +24,7 @@ import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
 import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
-import { assertRenderEnqueueOpen, RenderDeployDrainError } from "@/lib/render-deploy-drain";
+import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
 
 export const runtime = "nodejs";
@@ -132,7 +132,7 @@ const handler = createMcpHandler(
             await assertRenderEnqueueOpen();
           } catch (error) {
             if (error instanceof RenderDeployDrainError) {
-              return { error: "render_maintenance", retryable: true, message: "ระบบเรนเดอร์กำลังปรับปรุงชั่วคราว กรุณาลองใหม่" };
+              return { error: "render_maintenance", retryable: true, message: RENDER_MAINTENANCE_CUSTOMER_MESSAGE };
             }
             throw error;
           }
@@ -177,8 +177,10 @@ const handler = createMcpHandler(
                   await getAvatarPreset(p.userId, avatar.avatarId),
                 )
               : null;
-          const q = await checkClipQuota(p.userId);
-          if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
+          if (process.env.MINUTE_QUOTA !== "1") {
+            const q = await checkClipQuota(p.userId);
+            if (q && !q.allowed) return { error: "quota_exceeded", message: q.message };
+          }
           // Throttle: cap in-flight jobs per user so a member can't flood the shared worker
           // queue (there is no global render queue). Adjustable.
           const inflight = await prisma.videoJob.count({ where: { userId: p.userId, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });

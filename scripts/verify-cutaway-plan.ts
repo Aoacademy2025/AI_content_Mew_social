@@ -7,6 +7,11 @@ import {
   manualCutawayWindowCount,
   reconstructCutawayPersonRanges,
   resolveCutawayPersonRanges,
+  cutawayTimelineScene,
+  cutawayTimelineSourceFromJob,
+  sceneRerollBeatTarget,
+  sourceJobUsesCutawayTimeline,
+  CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE,
 } from "../src/lib/cutaway-plan";
 import { readFileSync } from "node:fs";
 import { assignBrollWindows } from "../src/lib/broll-coverage";
@@ -387,6 +392,90 @@ const legacyBase = reconstructCutawayPersonRanges({
     "visible cutaways use distinct AI images in order",
   );
 }
+
+assert(cutawayTimelineScene(0).kind === "presenter", "cutaway window 0 is the presenter hook");
+assert(cutawayTimelineScene(18).kind === "presenter", "cutaway even window is presenter");
+{
+  const one = cutawayTimelineScene(1);
+  const thirteen = cutawayTimelineScene(13);
+  const nineteen = cutawayTimelineScene(19);
+  assert(one.kind === "broll" && one.visualBeatSequence === 0, "cutaway window 1 is Visual Beat 0");
+  assert(thirteen.kind === "broll" && thirteen.visualBeatSequence === 6, "cutaway window 13 is Visual Beat 6");
+  assert(nineteen.kind === "broll" && nineteen.visualBeatSequence === 9, "cutaway window 19 is Visual Beat 9");
+}
+assert(sourceJobUsesCutawayTimeline({ mode: "upload" }) === true, "upload jobs use the cutaway timeline");
+assert(
+  sourceJobUsesCutawayTimeline({ cutawayPersonRanges: [{ start: 0, end: 5 }] }) === true,
+  "persisted person ranges mark a cutaway timeline",
+);
+assert(sourceJobUsesCutawayTimeline({ mode: "broll" }) === false, "faceless jobs keep 1:1 window→beat indexes");
+
+{
+  const cutawayNineteen = sceneRerollBeatTarget(19, { mode: "upload" });
+  const cutawayZero = sceneRerollBeatTarget(0, { mode: "upload" });
+  const facelessNine = sceneRerollBeatTarget(9, { mode: "broll" });
+  assert(
+    cutawayNineteen.kind === "broll" && cutawayNineteen.visualBeatSequence === 9,
+    "Scene Reroll maps cutaway window 19 to Visual Beat 9",
+  );
+  assert(cutawayZero.kind === "presenter", "Scene Reroll refuses cutaway presenter windows");
+  assert(
+    facelessNine.kind === "broll" && facelessNine.visualBeatSequence === 9,
+    "faceless Scene Reroll keeps window 9 as Visual Beat 9",
+  );
+}
+assert(
+  sourceJobUsesCutawayTimeline(cutawayTimelineSourceFromJob({
+    inputJson: JSON.stringify({ mode: "upload" }),
+  })) === true,
+  "upload inputJson is enough to detect a cutaway timeline",
+);
+assert(
+  sourceJobUsesCutawayTimeline(cutawayTimelineSourceFromJob({
+    outputJson: JSON.stringify({ preview: { cutawayPersonRanges: [{ start: 0, end: 5 }] } }),
+  })) === true,
+  "persisted preview person ranges detect a cutaway timeline",
+);
+assert(
+  sourceJobUsesCutawayTimeline(cutawayTimelineSourceFromJob({
+    inputJson: JSON.stringify({ mode: "broll" }),
+    outputJson: "{}",
+  })) === false,
+  "faceless jobs without person ranges stay 1:1",
+);
+assert(
+  CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE.includes("คลิปที่ถ่ายเอง"),
+  "presenter Scene Reroll copy names the uploaded clip in Thai",
+);
+
+const generateRoute = readFileSync("src/app/api/videos/broll-window/generate/route.ts", "utf8");
+const resolveIdx = generateRoute.indexOf("brandVisualPrompt = await resolveProjectVisualPromptForVideoScene");
+const heroIdx = generateRoute.indexOf("await generateHeroImageForVideo");
+const presenterIdx = generateRoute.indexOf('beatTarget.kind === "presenter"');
+assert(generateRoute.includes("sceneRerollBeatTarget"), "generate maps the timeline window through sceneRerollBeatTarget");
+assert(generateRoute.includes("cutawayTimelineSourceFromJob"), "generate reads cutaway detection from the source job JSON");
+assert(generateRoute.includes("CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE"), "generate refuses presenter windows with the shared Thai copy");
+assert(
+  presenterIdx >= 0 && resolveIdx >= 0 && heroIdx >= 0 && presenterIdx < resolveIdx && presenterIdx < heroIdx,
+  "presenter refusal runs before Visual Beat lookup and Hero image admission",
+);
+assert(
+  generateRoute.includes("sceneIndex: visualBeatSequence")
+    || generateRoute.includes("sceneIndex: beatTarget.visualBeatSequence"),
+  "generate looks up the remapped Visual Beat, not the raw timeline index",
+);
+assert(
+  /generateHeroImageForVideo\([\s\S]*sceneIndex:\s*input\.sceneIndex/.test(generateRoute),
+  "Hero idempotency stays keyed by the timeline window",
+);
+assert(
+  /sceneRerollDerivative\.create\([\s\S]*sceneIndex:\s*input\.sceneIndex/.test(generateRoute),
+  "the staged derivative stays bound to the timeline window",
+);
+
+const applySource = readFileSync("src/lib/scene-reroll-apply.server.ts", "utf8");
+assert(applySource.includes("sceneRerollBeatTarget"), "Apply remaps cutaway windows onto the same Visual Beat");
+assert(applySource.includes("cutawayTimelineSourceFromJob"), "Apply detects cutaway from the source job JSON");
 
 console.log(failed === 0 ? "\nALL PASSED" : `\n${failed} FAILED`);
 process.exit(failed === 0 ? 0 : 1);
