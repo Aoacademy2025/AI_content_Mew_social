@@ -16,9 +16,22 @@ async function main() {
   assert.match(jobsRoute, /first_clip_script_required/, "First-Clip Path rejects upload/cutaway");
   assert.match(jobsRoute, /onFirstClipPath && projectId && !uploadMode/, "First-Clip Path snapshots awaiting Content Preflight");
   const sidebar = readFileSync("src/components/layout/sidebar.tsx", "utf8");
-  assert.match(sidebar, /firstClipPath/, "sidebar hides library menus on First-Clip Path");
+  assert.doesNotMatch(
+    sidebar,
+    /item\.href !== "\/hero-script" \|\| \(!firstClipPath/,
+    "First-Clip Path must not hide the paid Hero Script entrypoint",
+  );
+  assert.match(sidebar, /ทดลอง PRO/, "Conversion Trial has an honest plan label");
+  const dashboard = readFileSync("src/app/(dashboard)/dashboard/page.tsx", "utf8");
+  assert.match(dashboard, /ทดลอง PRO/, "Dashboard does not present Conversion Trial as a paid Pro Plan");
+  const supportModal = readFileSync("src/components/ui/support-modal.tsx", "utf8");
+  assert.match(supportModal, /ทดลอง PRO/, "Support context distinguishes Conversion Trial from paid Pro");
   const heroLayout = readFileSync("src/app/(dashboard)/hero-script/layout.tsx", "utf8");
-  assert.match(heroLayout, /redirect\("\/video-editor"\)/, "hero-script redirects while on the path");
+  assert.doesNotMatch(
+    heroLayout,
+    /resolveFirstClipPath|firstClip\.onPath/,
+    "First-Clip Path must not redirect an entitled Hero Script visitor",
+  );
   const brandsLayout = readFileSync("src/app/(dashboard)/brands/layout.tsx", "utf8");
   assert.match(brandsLayout, /redirect\("\/video-editor"\)/, "brands redirects while on the path");
   const editor = readFileSync("src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx", "utf8");

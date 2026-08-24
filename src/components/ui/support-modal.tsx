@@ -21,6 +21,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [plan, setPlan] = useState("FREE");
+  const [trialEndsAt, setTrialEndsAt] = useState<string | null>(null);
   const [userName, setUserName] = useState("");
   const [avatar, setAvatar] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -31,6 +32,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
         if (d?.plan) setPlan(d.plan);
         if (d?.name) setUserName(d.name);
         setAvatar(d?.avatar ?? null);
+        setTrialEndsAt(typeof d?.trialEndsAt === "string" ? d.trialEndsAt : null);
       }).catch(() => {});
     }
   }, [open]);
@@ -38,6 +40,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
   const isBusiness = plan === "BUSINESS";
   const isPro = plan === "PRO";
   const isPaid = isPro || isBusiness;
+  const isActiveTrial = Boolean(trialEndsAt && new Date(trialEndsAt).getTime() > Date.now());
 
   // ESC to close
   useEffect(() => {
@@ -93,7 +96,7 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
   if (!open) return null;
 
   const PlanIcon = isBusiness ? Building2 : isPro ? Crown : null;
-  const planLabel = isBusiness ? "Business" : isPro ? "Pro" : "Free";
+  const planLabel = isActiveTrial ? "ทดลอง PRO" : isBusiness ? "Business" : isPro ? "Pro" : "Free";
   const planColor = isBusiness
     ? "from-violet-500/30 to-fuchsia-500/30 text-violet-200 border-violet-400/40"
     : isPro

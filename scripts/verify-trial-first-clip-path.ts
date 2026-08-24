@@ -44,7 +44,11 @@ async function main() {
   assert.match(jobsRoute, /firstClip\.reason === "conversion_trial"/, "trial first clip is a distinct jobs path");
   assert.match(jobsRoute, /requestedSource = "kie-image"/, "trial first clip spends Hero AI Image allowance");
   const heroLayout = readFileSync("src/app/(dashboard)/hero-script/layout.tsx", "utf8");
-  assert.match(heroLayout, /if \(firstClip\.onPath\) redirect\("\/video-editor"\)/, "trial does not land on locked_preview");
+  assert.doesNotMatch(
+    heroLayout,
+    /resolveFirstClipPath|firstClip\.onPath/,
+    "Conversion Trial can reach the Hero Script locked preview from First-Clip Path",
+  );
 
   const { decideHeroScriptAccess } = await import("../src/lib/hero-script-rollout.server");
   const heroScript = decideHeroScriptAccess({
@@ -61,6 +65,7 @@ async function main() {
     flags: { paidEnabled: true, publicPreview: true, trialPercent: 100, freePercent: 100 },
   });
   assert.equal(heroScript.canUse, false, "Hero Script generate stays denied on Conversion Trial");
+  assert.equal(heroScript.canPreview, true, "Hero Script locked preview stays visible on Conversion Trial");
 
   const { prisma } = await import("../src/lib/prisma");
   const { resolveFirstClipPath } = await import("../src/lib/first-clip-path.server");
