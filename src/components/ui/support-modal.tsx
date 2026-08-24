@@ -29,7 +29,8 @@ export function SupportModal({ open, onClose }: SupportModalProps) {
   useEffect(() => {
     if (open) {
       fetchMe().then(d => {
-        if (d?.plan) setPlan(d.plan);
+        const effectivePlan = d?.effectivePlan ?? d?.plan;
+        if (effectivePlan) setPlan(effectivePlan);
         if (d?.name) setUserName(d.name);
         setAvatar(d?.avatar ?? null);
         setTrialEndsAt(typeof d?.trialEndsAt === "string" ? d.trialEndsAt : null);

@@ -3,6 +3,8 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { FREE_LIMITS, isPaid as isPaidPlan } from "@/lib/plan-limits";
 import { apiError } from "@/lib/api-error";
+import { classifyEntitlement } from "@/lib/entitlements";
+import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
 
 export async function GET() {
   try {
@@ -13,15 +15,9 @@ export async function GET() {
 
     const userId = authUser.id;
 
-    const [user, styleCount, contentCount, videoCount, recentContents, recentVideos] =
+    const [paidEquivalent, styleCount, contentCount, videoCount, recentContents, recentVideos] =
       await Promise.all([
-        prisma.user.findUnique({
-          where: { id: userId },
-          select: {
-            plan: true,
-            planExpiresAt: true,
-          },
-        }),
+        resolvePaidEquivalentEntitlement(userId),
         prisma.style.count({ where: { userId } }),
         prisma.content.count({ where: { userId } }),
         prisma.video.count({ where: { userId } }),
@@ -39,16 +35,16 @@ export async function GET() {
         }),
       ]);
 
-    const plan = user?.plan ?? "FREE";
+    const entitlement = classifyEntitlement(authUser);
+    const plan = paidEquivalent.canUsePaidFeatures
+      ? paidEquivalent.effectivePlan
+      : entitlement.effectivePlan;
     const isPaid = isPaidPlan(plan);
 
-    let proExpiresAt: string | null = null;
-    if (isPaid) {
-      // Prefer authoritative planExpiresAt (set by Stripe webhook or admin)
-      if (user?.planExpiresAt) {
-        proExpiresAt = user.planExpiresAt.toISOString();
-      }
-    }
+    const effectiveExpiry = paidEquivalent.canUsePaidFeatures
+      ? paidEquivalent.expiresAt
+      : entitlement.expiresAt;
+    const proExpiresAt = isPaid ? effectiveExpiry?.toISOString() ?? null : null;
 
     return NextResponse.json({
       plan,
