@@ -172,6 +172,15 @@ class LanguageTest(unittest.TestCase):
 
 
 class ImageTest(unittest.TestCase):
+    def test_runpod_and_fastapi_pins_are_dependency_compatible(self):
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("runpod==1.10.1", requirements)
+        self.assertIn("fastapi==0.138.1", requirements)
+
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("apt-get install -y --no-install-recommends build-essential", dockerfile)
+        self.assertIn("apt-get purge -y --auto-remove build-essential", dockerfile)
+
     def test_release_image_is_pinned_and_runs_v2_handler(self):
         source = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:", source)

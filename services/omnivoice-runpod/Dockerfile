@@ -25,8 +25,12 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt \
-    && pip install --no-cache-dir "huggingface_hub==1.23.0"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && pip install --no-cache-dir -r /app/requirements.txt \
+    && pip install --no-cache-dir "huggingface_hub==1.23.0" \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --filter=blob:none https://github.com/k2-fsa/OmniVoice.git /app/OmniVoice \
     && git -C /app/OmniVoice checkout --detach "${OMNIVOICE_SOURCE_COMMIT}" \
