@@ -306,13 +306,11 @@ export default function AiStudioPage() {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordTimerRef = useRef<number | null>(null);
   const [cloneSubmitting, setCloneSubmitting] = useState(false);
-  // แท็บโคลนเสียงแยกเป็น 2 ช่องเอนจิน (Omni | Jai) — แต่ละช่องยิงแยกหรือยิงคู่
-  // เพื่อเทียบก็ได้ ผลล่าสุดของช่องอยู่ใน state นี้ (ตัว job อัปเดตผ่าน polling ปกติ)
+  // แท็บโคลนเสียงใช้เอนจินเดียว (OmniVoice) — ผลล่าสุดเก็บใน state นี้
+  // (ตัว job อัปเดตผ่าน polling ปกติ)
   type CloneRun = { jobId: string | null; error: string | null };
   const [omniRun, setOmniRun] = useState<CloneRun | null>(null);
-  const [jaiRun, setJaiRun] = useState<CloneRun | null>(null);
   const [omniSubmitting, setOmniSubmitting] = useState(false);
-  const [jaiSubmitting, setJaiSubmitting] = useState(false);
 
   const loadCatalog = useCallback(async () => {
     const response = await fetch("/api/ai-studio/catalog", { cache: "no-store" });
@@ -608,27 +606,20 @@ export default function AiStudioPage() {
     }
   }
 
-  // ยิงเสียงโคลนหนึ่งเอนจิน — ใช้ทั้งปุ่มแยกของแต่ละช่องและปุ่มเทียบคู่
-  async function runCloneEngine(engine: "omni" | "jaitts") {
+  // ยิงเสียงโคลนด้วย OmniVoice (เอนจินเดียว — JaiTTS ถูกถอดออกแล้ว)
+  async function runCloneEngine() {
     if (!cloningScript.trim() || !cloneVoiceId) return;
-    const setRun = engine === "omni" ? setOmniRun : setJaiRun;
-    const setBusy = engine === "omni" ? setOmniSubmitting : setJaiSubmitting;
+    const setRun = setOmniRun;
+    const setBusy = setOmniSubmitting;
     setBusy(true);
     setRun({ jobId: null, error: null });
     try {
-      const response = engine === "omni"
-        // Hero Voice (OmniVoice) — durable route: ได้ job เร็ว แล้ว polling ปกติตามต่อ
-        ? await fetch("/api/ai-studio/voices", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: cloningScript, voiceId: cloneVoiceId, speed, idempotencyKey: crypto.randomUUID() }),
-          })
-        // Hero Cloning (JaiTTS) — synchronous: รอจนเสร็จ (หลายนาทีบน CPU)
-        : await fetch("/api/ai-studio/hero-cloning", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text: cloningScript, voiceId: cloneVoiceId, speed }),
-          });
+      // Hero Voice (OmniVoice) — durable route: ได้ job เร็ว แล้ว polling ปกติตามต่อ
+      const response = await fetch("/api/ai-studio/voices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: cloningScript, voiceId: cloneVoiceId, speed, idempotencyKey: crypto.randomUUID() }),
+      });
       const data = await response.json();
       if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
       const job = data.job as StudioJob;
@@ -639,11 +630,6 @@ export default function AiStudioPage() {
     } finally {
       setBusy(false);
     }
-  }
-
-  async function submitCompare() {
-    if (!cloningScript.trim() || !cloneVoiceId || omniSubmitting || jaiSubmitting) return;
-    await Promise.allSettled([runCloneEngine("omni"), runCloneEngine("jaitts")]);
   }
 
   async function removeCloneVoice(id: string) {
@@ -873,7 +859,7 @@ export default function AiStudioPage() {
             {!loading && mode === "cloning" && (
               <div className="space-y-6">
                 <div className="rounded-2xl p-5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
-                  <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>🎙 เสียงโคลนของฉัน <span className="text-[10px] font-normal" style={{ color: "var(--ui-text-muted)" }}>(Hero Cloning · JaiTTS)</span></p>
+                  <p className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>🎙 เสียงโคลนของฉัน <span className="text-[10px] font-normal" style={{ color: "var(--ui-text-muted)" }}>(OmniVoice)</span></p>
                   <p className="mt-1 text-xs leading-relaxed" style={{ color: "var(--ui-text-muted)" }}>
                     อัปไฟล์เสียงพูดชัด ๆ 5–30 วินาที (mp3/wav/m4a) พร้อมพิมพ์ข้อความที่พูดในไฟล์ให้ตรงเป๊ะ — ระบบจะเลียนเสียงนี้ตอนสร้างเสียงพูด
                   </p>
@@ -978,62 +964,24 @@ export default function AiStudioPage() {
                     <select value={speed} onChange={(event) => setSpeed(Number(event.target.value))} className="h-11 w-full rounded-xl px-3 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }}>
                       <option value={0.7}>ช้ามาก · 0.7×</option><option value={0.75}>ช้าพิเศษ · 0.75×</option><option value={0.8}>ช้ากว่าปกติ · 0.8×</option><option value={0.85}>ช้า · 0.85×</option><option value={0.95}>สบาย ๆ · 0.95×</option><option value={1}>ปกติ · 1×</option><option value={1.15}>เร็ว · 1.15×</option>
                     </select>
-                    {/* แยก 2 ช่องเอนจิน — เสียงโคลน+สคริปต์เดียวกัน กดสร้างแยกฝั่ง หรือยิงคู่เพื่อเทียบ */}
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <div className="grid content-start gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void runCloneEngine("omni")}
-                          disabled={omniSubmitting || !cloningScript.trim() || !cloneVoiceId}
-                          className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-45"
-                          style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}
-                        >
-                          {omniSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}
-                          สร้างด้วย Omni
-                        </button>
-                        <CompareSlot
-                          label="Hero Voice (Omni)"
-                          sublabel="OmniVoice · GPU RunPod"
-                          job={omniRun?.jobId ? jobs.find((job) => job.id === omniRun.jobId) ?? null : null}
-                          error={omniRun?.error ?? null}
-                          waiting={omniSubmitting}
-                          idle={!omniRun}
-                        />
-                      </div>
-                      <div className="grid content-start gap-2">
-                        <button
-                          type="button"
-                          onClick={() => void runCloneEngine("jaitts")}
-                          disabled={jaiSubmitting || !cloningScript.trim() || !cloneVoiceId}
-                          className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-45"
-                          style={{ color: ACCENT, border: `1px solid ${ACCENT}66` }}
-                        >
-                          {jaiSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}
-                          สร้างด้วย Jai
-                        </button>
-                        <CompareSlot
-                          label="Hero Cloning (Jai)"
-                          sublabel="JaiTTS-F5TTS · CPU ทดลอง (2–5 นาที)"
-                          job={jaiRun?.jobId ? jobs.find((job) => job.id === jaiRun.jobId) ?? null : null}
-                          error={jaiRun?.error ?? null}
-                          waiting={jaiSubmitting}
-                          idle={!jaiRun}
-                        />
-                      </div>
-                    </div>
                     <button
                       type="button"
-                      onClick={submitCompare}
-                      disabled={omniSubmitting || jaiSubmitting || !cloningScript.trim() || !cloneVoiceId}
-                      className="flex h-10 w-full items-center justify-center gap-2 rounded-xl px-4 text-xs font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-45"
-                      style={{ color: ACCENT, border: `1px solid ${ACCENT}66` }}
+                      onClick={() => void runCloneEngine()}
+                      disabled={omniSubmitting || !cloningScript.trim() || !cloneVoiceId}
+                      className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-45"
+                      style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}
                     >
-                      <AudioLines className="h-3.5 w-3.5" />
-                      🆚 ยิงทั้งคู่พร้อมกันเพื่อเทียบ
+                      {omniSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}
+                      สร้างเสียงโคลน
                     </button>
-                    <p className="text-[10px] leading-relaxed" style={{ color: "#FBBF24" }}>
-                      ฝั่ง Jai ประมวลผลบน CPU ใช้เวลา 2–5 นาทีต่อข้อความสั้น อย่าปิดหน้าระหว่างรอ — ฝั่ง Omni ได้ผลใน 10–60 วิ
-                    </p>
+                    <CompareSlot
+                      label="Hero Voice (Omni)"
+                      sublabel="OmniVoice"
+                      job={omniRun?.jobId ? jobs.find((job) => job.id === omniRun.jobId) ?? null : null}
+                      error={omniRun?.error ?? null}
+                      waiting={omniSubmitting}
+                      idle={!omniRun}
+                    />
                   </div>
                 </div>
               </div>
