@@ -1,4 +1,5 @@
 import { isOmniVoiceServerEnabled } from "@/lib/omnivoice-policy";
+import { isValidOmniVoiceId } from "@/lib/omnivoice-core";
 
 export type { OmniVoiceInfo } from "@/lib/tts-providers";
 export {
@@ -14,6 +15,8 @@ export {
 export type OmniVoiceBackend = "hostinger" | "runpod";
 
 export interface OmniTtsResponse {
+  contract_version?: number;
+  mode?: "tts" | "clone";
   voice_id: string;
   text?: string;
   audio_base64: string;
@@ -22,8 +25,10 @@ export interface OmniTtsResponse {
   duration: number;
   generation_time: number;
   worker_version?: string;
+  catalog_version?: string;
   language?: string;
   num_step?: number;
+  similarity_score?: number;
 }
 
 type OmniVoiceCommonConfig = {
@@ -91,6 +96,7 @@ export type RunpodOmniVoiceSnapshot =
 const RUNPOD_QUEUE_API = "https://api.runpod.ai/v2";
 const RUNPOD_REST_API = "https://rest.runpod.io/v1";
 const OMNIVOICE_QUALITY_NUM_STEP = 32;
+const HERO_VOICE_RUNPOD_CONTRACT_VERSION = 2;
 
 export class OmniVoiceConfigError extends Error {
   constructor(message: string) {
@@ -219,6 +225,24 @@ function validTtsPayload(value: unknown): value is OmniTtsResponse {
     && output.sample_rate <= 96_000;
 }
 
+function validRunpodTtsPayload(value: unknown): value is OmniTtsResponse {
+  if (!validTtsPayload(value)) return false;
+  return value.contract_version === HERO_VOICE_RUNPOD_CONTRACT_VERSION
+    && value.mode === "tts"
+    && isValidOmniVoiceId(value.voice_id)
+    && value.format === "wav"
+    && typeof value.duration === "number"
+    && Number.isFinite(value.duration)
+    && value.duration > 0
+    && typeof value.generation_time === "number"
+    && Number.isFinite(value.generation_time)
+    && value.generation_time >= 0
+    && typeof value.worker_version === "string"
+    && value.worker_version.trim().length > 0
+    && typeof value.catalog_version === "string"
+    && value.catalog_version.trim().length > 0;
+}
+
 async function parseRunpodResponse(response: Response): Promise<RunpodTtsJob> {
   const text = await response.text();
   try {
@@ -247,6 +271,18 @@ async function runpodRequest(
   );
   const body = await parseRunpodResponse(response);
   return { response, body };
+}
+
+function runpodTtsInput(config: Extract<OmniVoiceConfig, { backend: "runpod" }>, voiceId: string, text: string, speed: number) {
+  return {
+    contract_version: HERO_VOICE_RUNPOD_CONTRACT_VERSION,
+    mode: "tts" as const,
+    voice_id: voiceId,
+    text,
+    speed,
+    num_step: config.numStep,
+    mixed_language: true,
+  };
 }
 
 function wait(ms: number): Promise<void> {
@@ -295,7 +331,7 @@ export async function submitRunpodOmniVoiceJob(
   const submitted = await runpodRequest(config, "run", {
     method: "POST",
     body: JSON.stringify({
-      input: { voice_id: voiceId, text, speed, num_step: config.numStep },
+      input: runpodTtsInput(config, voiceId, text, speed),
     }),
   }, Date.now() + 20_000);
   if (!submitted.response.ok || !submitted.body.id) {
@@ -333,7 +369,7 @@ export async function pollRunpodOmniVoiceJob(
   const delayTimeMs = typeof polled.body.delayTime === "number" ? Math.round(polled.body.delayTime) : 0;
   const executionTimeMs = typeof polled.body.executionTime === "number" ? Math.round(polled.body.executionTime) : 0;
   if (polled.body.status === "COMPLETED") {
-    if (!validTtsPayload(polled.body.output)) {
+    if (!validRunpodTtsPayload(polled.body.output)) {
       throw new OmniVoiceProviderError("RunPod completed with an invalid audio payload", 502);
     }
     return {
@@ -388,7 +424,7 @@ async function callRunpodOmniVoice(
     submitted = await runpodRequest(config, "run", {
       method: "POST",
       body: JSON.stringify({
-        input: { voice_id: voiceId, text, speed, num_step: config.numStep },
+        input: runpodTtsInput(config, voiceId, text, speed),
       }),
     }, deadline);
   } catch (error) {
@@ -429,7 +465,7 @@ async function callRunpodOmniVoice(
       transientPollFailures = 0;
       const snapshot = polled.body;
       if (snapshot.status === "COMPLETED") {
-        if (!validTtsPayload(snapshot.output)) {
+        if (!validRunpodTtsPayload(snapshot.output)) {
           return { ok: false, status: 502, reason: "invalid audio payload" };
         }
         return {
