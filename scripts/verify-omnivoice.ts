@@ -290,7 +290,7 @@ check(
 );
 check(
   "RunPod: completed jobs must identify the v2 worker and catalog",
-  configSource.includes("validRunpodTtsPayload")
+  configSource.includes("validRunpodPayload")
     && configSource.includes("value.catalog_version")
     && configSource.includes("value.worker_version"),
 );

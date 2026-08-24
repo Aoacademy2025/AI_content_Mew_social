@@ -17,7 +17,7 @@ export type OmniVoiceBackend = "hostinger" | "runpod";
 export interface OmniTtsResponse {
   contract_version?: number;
   mode?: "tts" | "clone";
-  voice_id: string;
+  voice_id?: string;
   text?: string;
   audio_base64: string;
   format: string;
@@ -43,6 +43,16 @@ export type OmniVoiceConfig = OmniVoiceCommonConfig & (
   | { backend: "hostinger"; baseUrl: string; apiKey: string }
   | { backend: "runpod"; endpointId: string; apiKey: string }
 );
+
+export type RunpodOmniVoiceRequest =
+  | { mode: "tts"; voiceId: string; text: string; speed: number }
+  | {
+      mode: "clone";
+      text: string;
+      speed: number;
+      refAudioBase64: string;
+      refText: string;
+    };
 
 export type OmniVoiceCallResult =
   | {
@@ -212,11 +222,10 @@ export async function checkOmniVoiceReady(
   }
 }
 
-function validTtsPayload(value: unknown): value is OmniTtsResponse {
+function validAudioPayload(value: unknown): value is OmniTtsResponse {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const output = value as Partial<OmniTtsResponse>;
-  return typeof output.voice_id === "string"
-    && typeof output.audio_base64 === "string"
+  return typeof output.audio_base64 === "string"
     && output.audio_base64.length > 0
     && output.audio_base64.length <= 30_000_000
     && typeof output.sample_rate === "number"
@@ -225,11 +234,24 @@ function validTtsPayload(value: unknown): value is OmniTtsResponse {
     && output.sample_rate <= 96_000;
 }
 
-function validRunpodTtsPayload(value: unknown): value is OmniTtsResponse {
-  if (!validTtsPayload(value)) return false;
+function validTtsPayload(value: unknown): value is OmniTtsResponse {
+  if (!validAudioPayload(value)) return false;
+  return typeof value.voice_id === "string";
+}
+
+function validRunpodPayload(
+  value: unknown,
+  expectedMode: RunpodOmniVoiceRequest["mode"],
+): value is OmniTtsResponse {
+  if (!validAudioPayload(value)) return false;
   return value.contract_version === HERO_VOICE_RUNPOD_CONTRACT_VERSION
-    && value.mode === "tts"
-    && isValidOmniVoiceId(value.voice_id)
+    && value.mode === expectedMode
+    && (expectedMode === "tts"
+      ? typeof value.voice_id === "string" && isValidOmniVoiceId(value.voice_id)
+      : typeof value.similarity_score === "number"
+        && Number.isFinite(value.similarity_score)
+        && value.similarity_score >= -1
+        && value.similarity_score <= 1)
     && value.format === "wav"
     && typeof value.duration === "number"
     && Number.isFinite(value.duration)
@@ -285,6 +307,25 @@ function runpodTtsInput(config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
   };
 }
 
+function runpodSynthesisInput(
+  config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
+  request: RunpodOmniVoiceRequest,
+) {
+  if (request.mode === "tts") {
+    return runpodTtsInput(config, request.voiceId, request.text, request.speed);
+  }
+  return {
+    contract_version: HERO_VOICE_RUNPOD_CONTRACT_VERSION,
+    mode: "clone" as const,
+    text: request.text,
+    speed: request.speed,
+    ref_audio_b64: request.refAudioBase64,
+    ref_text: request.refText,
+    num_step: config.numStep,
+    mixed_language: true,
+  };
+}
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -324,14 +365,12 @@ export async function cancelRunpodOmniVoiceJob(
  */
 export async function submitRunpodOmniVoiceJob(
   config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
-  voiceId: string,
-  text: string,
-  speed: number,
+  request: RunpodOmniVoiceRequest,
 ): Promise<{ providerJobId: string; status: "IN_QUEUE" | "IN_PROGRESS" }> {
   const submitted = await runpodRequest(config, "run", {
     method: "POST",
     body: JSON.stringify({
-      input: runpodTtsInput(config, voiceId, text, speed),
+      input: runpodSynthesisInput(config, request),
     }),
   }, Date.now() + 20_000);
   if (!submitted.response.ok || !submitted.body.id) {
@@ -351,6 +390,7 @@ export async function submitRunpodOmniVoiceJob(
 export async function pollRunpodOmniVoiceJob(
   config: Extract<OmniVoiceConfig, { backend: "runpod" }>,
   providerJobId: string,
+  expectedMode: RunpodOmniVoiceRequest["mode"] = "tts",
 ): Promise<RunpodOmniVoiceSnapshot> {
   const polled = await runpodRequest(
     config,
@@ -369,7 +409,7 @@ export async function pollRunpodOmniVoiceJob(
   const delayTimeMs = typeof polled.body.delayTime === "number" ? Math.round(polled.body.delayTime) : 0;
   const executionTimeMs = typeof polled.body.executionTime === "number" ? Math.round(polled.body.executionTime) : 0;
   if (polled.body.status === "COMPLETED") {
-    if (!validRunpodTtsPayload(polled.body.output)) {
+    if (!validRunpodPayload(polled.body.output, expectedMode)) {
       throw new OmniVoiceProviderError("RunPod completed with an invalid audio payload", 502);
     }
     return {
@@ -465,7 +505,7 @@ async function callRunpodOmniVoice(
       transientPollFailures = 0;
       const snapshot = polled.body;
       if (snapshot.status === "COMPLETED") {
-        if (!validRunpodTtsPayload(snapshot.output)) {
+        if (!validRunpodPayload(snapshot.output, "tts")) {
           return { ok: false, status: 502, reason: "invalid audio payload" };
         }
         return {

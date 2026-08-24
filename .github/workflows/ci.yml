@@ -95,5 +95,8 @@ jobs:
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
 
+      - name: Verify Hero Voice stock and clone contracts
+        run: npm run verify:omnivoice && npm run verify:hero-voice-clone
+
       - name: Build
         run: npm run build

@@ -11,6 +11,8 @@ import {
   isValidOmniVoiceId,
   OmniVoiceConfigError,
 } from "@/lib/omnivoice";
+import { isUserVoiceId } from "@/lib/user-voices.server";
+import { isHeroVoiceCloningEnabled } from "@/lib/omnivoice-policy";
 
 export const runtime = "nodejs";
 
@@ -28,6 +30,9 @@ export async function POST(request: Request) {
     const speed = Number.isFinite(parsedSpeed) ? Math.min(3, Math.max(0.3, parsedSpeed)) : 1;
     if (!isValidOmniVoiceId(voiceId)) {
       return NextResponse.json({ error: "voiceId ไม่ถูกต้อง" }, { status: 400 });
+    }
+    if (isUserVoiceId(voiceId) && (!isHeroVoiceCloningEnabled() || user.role !== "ADMIN")) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
     if (!/^[A-Za-z0-9:_-]{8,107}$/.test(idempotencyKey)) {
       return NextResponse.json({ error: "idempotencyKey ไม่ถูกต้อง" }, { status: 400 });

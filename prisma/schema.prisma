@@ -103,6 +103,24 @@ model User {
   starterAiImageAllowances        StarterAiImageAllowance[]
   administratorGrants             AdministratorGrant[]
   conversionTrialAiImageAllowance ConversionTrialAiImageAllowance?
+  userVoices                      UserVoice[]
+}
+
+// Private voice-clone references. The normalized WAV bytes live outside
+// public/ and are exposed only through owner-authenticated routes.
+model UserVoice {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  refText        String
+  filename       String   @unique
+  durationMs     Int
+  consentAt      DateTime @default(now())
+  consentVersion String   @default("voice-clone-v1")
+  createdAt      DateTime @default(now())
+
+  @@index([userId, createdAt])
 }
 
 /// Explicit non-cash access granted by an administrator. A paid-looking value
