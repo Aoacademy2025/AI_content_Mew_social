@@ -152,7 +152,8 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
     fetchMe()
       .then(data => {
         if (!data) { setSessionLoaded(true); return; }
-        if (data.plan) setPlan(data.plan);
+        const effectivePlan = data.effectivePlan ?? data.plan;
+        if (effectivePlan) setPlan(effectivePlan);
         if (data.name) setUserName(data.name);
         if (data.email) setUserEmail(data.email);
         setAvatar(data.avatar ?? null);

@@ -22,10 +22,24 @@ async function main() {
     "First-Clip Path must not hide the paid Hero Script entrypoint",
   );
   assert.match(sidebar, /ทดลอง PRO/, "Conversion Trial has an honest plan label");
+  assert.match(
+    sidebar,
+    /data\.effectivePlan \?\? data\.plan/,
+    "Sidebar plan label uses entitlement-backed effectivePlan",
+  );
   const dashboard = readFileSync("src/app/(dashboard)/dashboard/page.tsx", "utf8");
   assert.match(dashboard, /ทดลอง PRO/, "Dashboard does not present Conversion Trial as a paid Pro Plan");
+  const userStatsRoute = readFileSync("src/app/api/user/stats/route.ts", "utf8");
+  assert.match(userStatsRoute, /resolvePaidEquivalentEntitlement/, "Dashboard stats resolve durable paid evidence");
+  assert.match(userStatsRoute, /classifyEntitlement/, "Dashboard stats downgrade expired Trial labels");
+  assert.doesNotMatch(userStatsRoute, /const plan = user\?\.plan/, "Dashboard stats do not trust the raw plan label");
   const supportModal = readFileSync("src/components/ui/support-modal.tsx", "utf8");
   assert.match(supportModal, /ทดลอง PRO/, "Support context distinguishes Conversion Trial from paid Pro");
+  assert.match(
+    supportModal,
+    /d\?\.effectivePlan \?\? d\?\.plan/,
+    "Support context uses entitlement-backed effectivePlan",
+  );
   const heroLayout = readFileSync("src/app/(dashboard)/hero-script/layout.tsx", "utf8");
   assert.doesNotMatch(
     heroLayout,
