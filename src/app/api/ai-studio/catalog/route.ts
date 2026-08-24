@@ -4,7 +4,7 @@ import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { ensureMonthlyGrant, getBalance } from "@/lib/credits";
 import { durationCapSecFor } from "@/lib/plan-limits";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
-import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
+import { isHeroVoiceCloningEnabled, isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { apiError } from "@/lib/api-error";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
@@ -34,6 +34,7 @@ export async function GET() {
       }),
       voice: {
         available: isOmniVoiceUserAllowed(user),
+        cloning: isHeroVoiceCloningEnabled() && user.role === "ADMIN" && isOmniVoiceUserAllowed(user),
         maxDurationSec: durationCapSecFor(user.plan),
         maxScriptChars: omnivoiceScriptCharCapForPlan(user.plan),
       },
