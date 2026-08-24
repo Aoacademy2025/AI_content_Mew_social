@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { callJaiTtsClone, jaittsConfig, JaiTtsConfigError } from "@/lib/jaitts";
+import { thaiifyCloneScript } from "@/lib/clone-thai-script";
 import { prepareHeroVoiceSpeechText } from "@/lib/hero-voice-speech";
 import { isUserVoiceId, loadUserVoiceRef } from "@/lib/user-voices.server";
 import { publicAiGenerationJob } from "@/lib/ai-generation-jobs.server";
@@ -54,8 +55,11 @@ export async function POST(request: Request) {
   const ref = await loadUserVoiceRef(user.id, voiceId);
   if (!ref) return NextResponse.json({ error: "ไม่พบเสียงโคลนนี้" }, { status: 404 });
 
+  // Clone-only pre-pass: Gemini แปลงสคริปต์เป็นไทยล้วนก่อน (ทับศัพท์คำต่างชาติ)
+  // เพราะเสียงโคลนอ่านตัวอักษรละตินไม่ได้ — fail-open คืนข้อความเดิมเมื่อไม่มี key/ล่ม
+  const thaiText = await thaiifyCloneScript(user, text);
   // Same deterministic speech pass as Hero Voice (numbers, abbreviations, dates).
-  const speechText = prepareHeroVoiceSpeechText(text);
+  const speechText = prepareHeroVoiceSpeechText(thaiText);
 
   // F5-style models size the output from the reference's seconds-per-char
   // ratio: estimated total = ref + ref * (target chars / ref chars). Beyond

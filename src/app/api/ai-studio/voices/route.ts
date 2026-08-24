@@ -12,6 +12,7 @@ import {
   OmniVoiceConfigError,
 } from "@/lib/omnivoice";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
+import { thaiifyCloneScript } from "@/lib/clone-thai-script";
 import { polishScriptForTts } from "@/lib/tts-script-polish";
 import { isUserVoiceId, loadUserVoiceRef } from "@/lib/user-voices.server";
 
@@ -51,16 +52,22 @@ export async function POST(request: Request) {
       if (!ref) return NextResponse.json({ error: "ไม่พบเสียงโคลนนี้" }, { status: 404 });
     }
 
+    // Clone-only pre-pass: เสียงโคลนอ่านตัวอักษรละติน/เลขไม่ได้ → ให้ Gemini
+    // แปลงสคริปต์เป็นไทยล้วนก่อน (fail-open) — เสียง preset ปกติไม่แตะ
+    const cloneReadyText = text && isUserVoiceId(voiceId)
+      ? await thaiifyCloneScript(user, text)
+      : text;
+
     // Silent pre-TTS polish (fail-open) — same rule as the video-editor route:
     // the polished text is what gets chunked, spoken, and timed, so subtitles
     // always match the audio.
-    const polishedText = text
+    const polishedText = cloneReadyText
       ? (await polishScriptForTts(
           { id: user.id, geminiKey: user.geminiKey, plan: user.plan },
-          text,
+          cloneReadyText,
           omnivoiceScriptCharCapForPlan(user.plan),
         )).text
-      : text;
+      : cloneReadyText;
 
     const result = await startHeroVoiceGeneration({
       userId: user.id,
