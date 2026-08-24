@@ -146,7 +146,7 @@ function JobState({ job }: { job: StudioJob }) {
 function ResultItem({ job }: { job: StudioJob }) {
   const [expanded, setExpanded] = useState(false);
   const engineLabel = job.kind === "voice"
-    ? (job.provider === "jaitts" ? "Hero Cloning" : "Hero Voice")
+    ? "Hero Voice"
     : job.provider === "runpod" ? "RunPod AI" : "Cloud API";
   const inputText = job.inputText || job.inputPreview || "";
   const expandable = inputText.length > 80;
@@ -350,7 +350,7 @@ export default function AiStudioPage() {
     if (catalog?.voice.available) {
       loadVoices().catch((error) => toast.error(error instanceof Error ? error.message : "โหลดรายการเสียงไม่สำเร็จ"));
     }
-    // เสียงโคลน (Hero Cloning) แยกจาก Hero Voice — โหลดเมื่อแท็บโคลนเปิดให้บัญชีนี้
+    // เสียงโคลนของผู้ใช้ — โหลดเมื่อแท็บโคลนเปิดให้บัญชีนี้
     if (!catalog?.voice.cloning) return;
     fetch("/api/omnivoice/user-voices", { cache: "no-store" })
       .then(async (response) => {
@@ -450,24 +450,8 @@ export default function AiStudioPage() {
       // hostinger/local backend ไม่มี durable queue — ใช้ route synchronous ที่
       // บันทึกประวัติเข้า AI Studio ให้อยู่แล้ว (studio: true)
       const durable = (catalog?.voice.backend ?? "runpod") === "runpod";
-      // เสียงโคลน (user_*): บน backend ที่ไม่ durable (hostinger/local) ตัว OmniVoice
-      // เปิด /clone ไว้แล้ว → ส่งผ่าน route synchronous เดียวกับเสียง stock
-      // (route โหลด ref audio ของเสียงโคลนให้เอง). ส่วน RunPod image ปัจจุบัน
-      // ยังไม่มี /clone → ตกไปใช้เอนจิน Hero Cloning (JaiTTS) ตามเดิม
-      if (voiceId.startsWith("user_") && catalog?.voice.cloning && durable) {
-        const response = await fetch("/api/ai-studio/hero-cloning", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: script, voiceId, speed }),
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
-        const job = data.job as StudioJob;
-        setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-        toast.success("Hero Cloning สร้างเสียงสำเร็จ");
-        setScript("");
-        return;
-      }
+      // เสียงโคลน (user_*) วิ่งผ่าน route เดียวกับเสียง stock — ฝั่ง server
+      // โหลด ref audio ของเสียงนั้นแล้วยิง OmniVoice /clone ให้เอง
       if (durable) {
         const response = await fetch("/api/ai-studio/voices", {
           method: "POST",
@@ -606,7 +590,7 @@ export default function AiStudioPage() {
     }
   }
 
-  // ยิงเสียงโคลนด้วย OmniVoice (เอนจินเดียว — JaiTTS ถูกถอดออกแล้ว)
+  // ยิงเสียงโคลนด้วย OmniVoice
   async function runCloneEngine() {
     if (!cloningScript.trim() || !cloneVoiceId) return;
     const setRun = setOmniRun;

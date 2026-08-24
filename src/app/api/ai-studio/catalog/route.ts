@@ -6,7 +6,6 @@ import { durationCapSecFor } from "@/lib/plan-limits";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
 import { omnivoiceBackendName } from "@/lib/omnivoice";
-import { isJaiTtsEnabled } from "@/lib/jaitts";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { apiError } from "@/lib/api-error";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
@@ -39,8 +38,8 @@ export async function GET() {
         // hostinger/local backend has no durable queue — the studio client
         // must call the synchronous tts-omnivoice route instead.
         backend: omnivoiceBackendName(),
-        // Hero Cloning (JaiTTS) — experimental second clone engine, admin-only.
-        cloning: user.role === "ADMIN" && isJaiTtsEnabled(),
+        // Custom voice cloning (OmniVoice /clone) — admin-only while in beta.
+        cloning: user.role === "ADMIN" && isOmniVoiceUserAllowed(user),
         maxDurationSec: durationCapSecFor(user.plan),
         maxScriptChars: omnivoiceScriptCharCapForPlan(user.plan),
       },
