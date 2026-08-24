@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AudioLines,
   Check,
@@ -10,9 +10,11 @@ import {
   Download,
   ImageIcon,
   Loader2,
+  Mic,
   RefreshCw,
   Server,
   Sparkles,
+  Square,
   WandSparkles,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -91,6 +93,31 @@ const IMAGE_ENGINES: ReadonlyArray<{
 
 function apiMessage(data: unknown, fallback: string): string {
   return customerApiErrorMessage(data, fallback);
+}
+
+// ขอบเขตความยาวเสียงอ้างอิงสำหรับโคลน — ต้องตรงกับ MIN_REF_MS/MAX_REF_MS ฝั่ง server
+const REF_MIN_SEC = 5;
+const REF_MAX_SEC = 30;
+
+/** วัดความยาวไฟล์เสียงฝั่ง browser (คืน null ถ้าวัดไม่ได้ — ให้ server ตัดสินแทน) */
+function readAudioDuration(file: File): Promise<number | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = document.createElement("audio");
+    audio.preload = "metadata";
+    const done = (value: number | null) => { URL.revokeObjectURL(url); resolve(value); };
+    audio.onloadedmetadata = () => {
+      if (Number.isFinite(audio.duration)) return done(audio.duration);
+      // webm ที่อัดจากไมค์มักรายงาน Infinity — seek ไกลๆ ให้ browser คำนวณของจริง
+      audio.currentTime = 1e7;
+      audio.ontimeupdate = () => {
+        audio.ontimeupdate = null;
+        done(Number.isFinite(audio.duration) ? audio.duration : null);
+      };
+    };
+    audio.onerror = () => done(null);
+    audio.src = url;
+  });
 }
 
 function formatJobTime(iso: string) {
@@ -273,6 +300,11 @@ export default function AiStudioPage() {
   const [cloneName, setCloneName] = useState("");
   const [cloneRefText, setCloneRefText] = useState("");
   const [cloneFile, setCloneFile] = useState<File | null>(null);
+  const [cloneFileDurationSec, setCloneFileDurationSec] = useState<number | null>(null);
+  const [recording, setRecording] = useState(false);
+  const [recordSec, setRecordSec] = useState(0);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordTimerRef = useRef<number | null>(null);
   const [cloneSubmitting, setCloneSubmitting] = useState(false);
   // แท็บโคลนเสียงแยกเป็น 2 ช่องเอนจิน (Omni | Jai) — แต่ละช่องยิงแยกหรือยิงคู่
   // เพื่อเทียบก็ได้ ผลล่าสุดของช่องอยู่ใน state นี้ (ตัว job อัปเดตผ่าน polling ปกติ)
@@ -473,6 +505,72 @@ export default function AiStudioPage() {
     }
   }
 
+  async function selectCloneFile(file: File | null) {
+    setCloneFile(file);
+    setCloneFileDurationSec(null);
+    if (!file) return;
+    const duration = await readAudioDuration(file);
+    setCloneFileDurationSec(duration);
+    if (duration !== null && duration < REF_MIN_SEC) {
+      toast.error(`ไฟล์เสียงยาว ${duration.toFixed(1)} วิ — ต้องพูดต่อเนื่องอย่างน้อย ${REF_MIN_SEC} วินาที`);
+    } else if (duration !== null && duration > REF_MAX_SEC) {
+      toast.error(`ไฟล์เสียงยาว ${duration.toFixed(0)} วิ — ยาวเกิน ${REF_MAX_SEC} วินาที ตัดช่วงที่พูดชัด ๆ มา 10-20 วิพอ`);
+    }
+  }
+
+  function stopRecording() {
+    recorderRef.current?.stop();
+  }
+
+  async function startRecording() {
+    if (recording) return;
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      toast.error("เข้าถึงไมโครโฟนไม่ได้ — อนุญาตการใช้ไมค์ในเบราว์เซอร์ก่อน");
+      return;
+    }
+    const recorder = new MediaRecorder(stream);
+    const chunks: Blob[] = [];
+    const startedAt = Date.now();
+    recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+    recorder.onstop = () => {
+      if (recordTimerRef.current !== null) { window.clearInterval(recordTimerRef.current); recordTimerRef.current = null; }
+      stream.getTracks().forEach((track) => track.stop());
+      setRecording(false);
+      const elapsedSec = (Date.now() - startedAt) / 1000;
+      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      if (!blob.size) { toast.error("อัดเสียงไม่สำเร็จ ลองใหม่อีกครั้ง"); return; }
+      const file = new File([blob], `mic-recording-${Date.now()}.webm`, { type: blob.type });
+      setCloneFile(file);
+      // ใช้เวลาที่จับเองเป็นความยาว (webm จากไมค์วัดจาก metadata ไม่ค่อยได้)
+      setCloneFileDurationSec(elapsedSec);
+      if (elapsedSec < REF_MIN_SEC) {
+        toast.error(`อัดได้ ${elapsedSec.toFixed(1)} วิ — สั้นเกินไป ต้องพูดต่อเนื่องอย่างน้อย ${REF_MIN_SEC} วินาที`);
+      }
+    };
+    recorderRef.current = recorder;
+    setRecordSec(0);
+    setRecording(true);
+    recorder.start();
+    recordTimerRef.current = window.setInterval(() => {
+      const elapsed = (Date.now() - startedAt) / 1000;
+      setRecordSec(elapsed);
+      if (elapsed >= REF_MAX_SEC) stopRecording(); // ครบเพดาน 30 วิ หยุดให้อัตโนมัติ
+    }, 200);
+  }
+
+  // เก็บกวาดตอนออกจากหน้า — ไมค์ต้องไม่ค้างเปิด
+  useEffect(() => () => {
+    if (recordTimerRef.current !== null) window.clearInterval(recordTimerRef.current);
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.stream.getTracks().forEach((track) => track.stop());
+      try { recorder.stop(); } catch {}
+    }
+  }, []);
+
   async function submitCloneVoice(event: FormEvent) {
     event.preventDefault();
     if (!cloneFile || cloneSubmitting) return;
@@ -489,6 +587,7 @@ export default function AiStudioPage() {
       setCloneName("");
       setCloneRefText("");
       setCloneFile(null);
+      setCloneFileDurationSec(null);
       setCloneVoiceId((data as CloneVoice).voiceId);
       // ให้เสียงโคลนใหม่โผล่ใน dropdown ของแท็บ "สร้างเสียง" ทันทีด้วย
       await loadVoices().catch(() => {});
@@ -797,26 +896,62 @@ export default function AiStudioPage() {
                   <div className="mt-4 grid gap-3">
                     <input value={cloneName} onChange={(event) => setCloneName(event.target.value.slice(0, 60))} placeholder="ชื่อเสียง เช่น เสียงพากย์ของฉัน" className="h-10 w-full rounded-xl px-3 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
                     <textarea value={cloneRefText} onChange={(event) => setCloneRefText(event.target.value.slice(0, 500))} rows={2} placeholder="พิมพ์ข้อความที่พูดในไฟล์เสียง (ต้องตรงคำต่อคำ)" className="w-full resize-none rounded-xl px-3 py-2 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
-                    <label
-                      className="flex min-h-[72px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl px-4 py-3 text-center transition-colors"
-                      style={{
-                        border: `1.5px dashed ${cloneFile ? ACCENT : "var(--ui-card-border)"}`,
-                        background: cloneFile ? `${ACCENT}12` : "transparent",
-                      }}
-                    >
-                      <input type="file" accept="audio/*,.m4a" className="hidden" onChange={(event) => setCloneFile(event.target.files?.[0] ?? null)} />
-                      <span className="flex items-center gap-2 text-xs font-semibold" style={{ color: cloneFile ? ACCENT : "var(--ui-text-primary)" }}>
-                        <AudioLines className="h-4 w-4" />
-                        {cloneFile ? cloneFile.name : "แตะเพื่อเลือกไฟล์เสียง"}
-                      </span>
-                      <span className="text-[10px]" style={{ color: "var(--ui-text-muted)" }}>
-                        {cloneFile ? `${(cloneFile.size / (1024 * 1024)).toFixed(2)} MB · แตะเพื่อเปลี่ยนไฟล์` : "mp3 / wav / m4a · เสียงพูดชัด ๆ 5–30 วินาที"}
-                      </span>
-                    </label>
+                    <div className="grid gap-2 md:grid-cols-2">
+                      {/* อัดเสียงสดจากไมค์ — จับเวลา + หยุดเองที่เพดาน 30 วิ */}
+                      <button
+                        type="button"
+                        onClick={() => (recording ? stopRecording() : void startRecording())}
+                        className="flex min-h-[72px] flex-col items-center justify-center gap-1 rounded-xl px-4 py-3 text-center transition-colors"
+                        style={{
+                          border: `1.5px ${recording ? "solid #EF4444" : "dashed var(--ui-card-border)"}`,
+                          background: recording ? "#EF444414" : "transparent",
+                        }}
+                      >
+                        <span className="flex items-center gap-2 text-xs font-semibold" style={{ color: recording ? "#EF4444" : "var(--ui-text-primary)" }}>
+                          {recording ? <Square className="h-4 w-4 animate-pulse" /> : <Mic className="h-4 w-4" />}
+                          {recording ? `กำลังอัด ${recordSec.toFixed(0)} / ${REF_MAX_SEC} วิ — แตะเพื่อหยุด` : "อัดเสียงจากไมค์"}
+                        </span>
+                        <span className="text-[10px]" style={{ color: recording ? "#EF4444" : "var(--ui-text-muted)" }}>
+                          {recording ? "พูดข้อความที่พิมพ์ไว้ด้านบนให้ครบ" : `พูดต่อเนื่อง ${REF_MIN_SEC}–${REF_MAX_SEC} วิ (แนะนำ 10–20 วิ)`}
+                        </span>
+                      </button>
+                      <label
+                        className="flex min-h-[72px] cursor-pointer flex-col items-center justify-center gap-1 rounded-xl px-4 py-3 text-center transition-colors"
+                        style={{
+                          border: `1.5px dashed ${cloneFile ? ACCENT : "var(--ui-card-border)"}`,
+                          background: cloneFile ? `${ACCENT}12` : "transparent",
+                        }}
+                      >
+                        <input type="file" accept="audio/*,.m4a" className="hidden" onChange={(event) => void selectCloneFile(event.target.files?.[0] ?? null)} />
+                        <span className="flex items-center gap-2 text-xs font-semibold" style={{ color: cloneFile ? ACCENT : "var(--ui-text-primary)" }}>
+                          <AudioLines className="h-4 w-4" />
+                          {cloneFile ? cloneFile.name : "หรือเลือกไฟล์เสียง"}
+                        </span>
+                        <span className="text-[10px]" style={{ color: "var(--ui-text-muted)" }}>
+                          {cloneFile ? `${(cloneFile.size / (1024 * 1024)).toFixed(2)} MB · แตะเพื่อเปลี่ยนไฟล์` : `mp3 / wav / m4a / webm · ${REF_MIN_SEC}–${REF_MAX_SEC} วินาที`}
+                        </span>
+                      </label>
+                    </div>
+                    {cloneFile && cloneFileDurationSec !== null && (
+                      <p
+                        className="text-[11px] font-medium tabular-nums"
+                        style={{ color: cloneFileDurationSec < REF_MIN_SEC || cloneFileDurationSec > REF_MAX_SEC ? "#EF4444" : "#34D399" }}
+                      >
+                        ความยาวเสียง {cloneFileDurationSec.toFixed(1)} วินาที
+                        {cloneFileDurationSec < REF_MIN_SEC
+                          ? ` — สั้นเกินไป (ขั้นต่ำ ${REF_MIN_SEC} วิ)`
+                          : cloneFileDurationSec > REF_MAX_SEC
+                            ? ` — ยาวเกิน ${REF_MAX_SEC} วิ ตัดช่วงพูดชัด ๆ มา 10–20 วิ`
+                            : " ✓ ใช้ได้"}
+                      </p>
+                    )}
                     <button
                       type="button"
                       onClick={submitCloneVoice}
-                      disabled={cloneSubmitting || !cloneFile || !cloneName.trim() || cloneRefText.trim().length < 8}
+                      disabled={
+                        cloneSubmitting || recording || !cloneFile || !cloneName.trim() || cloneRefText.trim().length < 8
+                        || (cloneFileDurationSec !== null && (cloneFileDurationSec < REF_MIN_SEC || cloneFileDurationSec > REF_MAX_SEC))
+                      }
                       className="flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-xs font-semibold transition-opacity disabled:cursor-not-allowed disabled:opacity-45"
                       style={{ color: ACCENT, border: `1px solid ${ACCENT}66` }}
                     >
