@@ -45,7 +45,9 @@ export default function RootLayout({
 }>) {
   return (
     <ClerkProvider>
-    <html lang="th" suppressHydrationWarning>
+    {/* ธีมมืดอย่างเดียวทั้งแอป (ไม่มีตัวสลับธีม) — แปะ class แบบ static แทน next-themes
+        เพื่อเลี่ยง <script> รันไทม์ที่ React 19 เตือน */}
+    <html lang="th" className="dark" style={{ colorScheme: "dark" }}>
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
