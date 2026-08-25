@@ -83,6 +83,9 @@ jobs:
       - name: Verify customer-facing error copy
         run: npm run verify:customer-error-copy
 
+      - name: Verify quota_exceeded surfaces an upgrade path
+        run: npm run verify:quota-error-shape
+
       - name: Verify ERROR_SYSTEM capacity skip and rate-limit
         run: npm run verify:admin-error-notify
 
