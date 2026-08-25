@@ -255,3 +255,19 @@ Impact = ผลต่อ trial→recurring; Effort S (<1 วัน) / M (1–3 �
 ## Erratum (2026-08-25, หลังส่งมอบ)
 
 "เรนเดอร์ได้โดยไม่มี key" เป็นจริง **เฉพาะคลิปแรกของ trial**: `src/app/api/videos/jobs/route.ts:513-586` บังคับ `stockSource="kie-image"` (Hero AI Image, สิทธิ์ทดลอง 8 ภาพ) เมื่อ `firstClip.reason === "conversion_trial"`; คลิปที่ 2, ผู้ใช้คูปอง/จ่ายแล้ว และโหมดอัปโหลด ต้องมี Pexels/Pixabay key ไม่งั้น 400 `missing_key: broll`. คลิปทดสอบของ audit ใช้ภาพ AI 8/8 ทั้งที่ UI โชว์ AutoMix และ receipt บอก "เหลือ 7/8" → UI/receipt ไม่ตรง server. ผลต่อ P0-1 (#297): ต้องเลือก (a) managed stock key สำหรับ trial/FREE (rate-limit + fail-closed แบบ ADR 0003) / (b) ขยายสิทธิ์ AI / (c) ขอ key หลังคลิปแรกพร้อมเหตุผล — แนะนำ (a)+(c). ยังไม่มี Pexels key กลางบน prod; provider ไม่ใช้ key ที่มีอยู่ (Wikimedia/NASA/Met) เป็นภาพนิ่ง fallback เท่านั้น.
+
+## 12. §7.4 decisions (Mew, 2026-08-25) + issue batch 2
+
+| §7.4 item | decision | issue |
+|---|---|---|
+| 1 key modal day-one | approve → managed stock key (a)+(c) | #297 (spec in comments) |
+| 2 Hero AI Voice "เร็วๆ นี้" tab | **keep** (signals upcoming feature) | — |
+| 3 credit packs off /pricing | approve | #320 |
+| 4 legacy Styles/Contents/Videos tiles | approve, remove | #321 |
+| 5 update banner in editor / first 7 days | approve | #322 |
+| 6 Founding banner for trial | approve | #323 |
+| 7 per-window B-roll | **fix + verify, don't hide** | #324 |
+| 8 /register copy | approve, reorder (zero-setup first, avatar as "ต่อยอดได้") | #325 |
+| 9 Editor v1 | approve, instrument 30 days then cut | #326 |
+| 10 cut Content/Style modules | approve (check payer usage first; no schema drops) | #327 |
+| 11 affiliate | keep as is, no further investment | — |
