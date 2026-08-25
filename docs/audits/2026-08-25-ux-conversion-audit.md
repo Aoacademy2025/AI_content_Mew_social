@@ -278,7 +278,7 @@ Impact = ผลต่อ trial→recurring; Effort S (<1 วัน) / M (1–3 �
 
 | # | ปัญหา | issue |
 |---|---|---|
-| M1 | Gallery ปุ่ม hover-only แตะไม่ได้บนมือถือ | #328 |
+| M1 | **P0** Gallery: แตะการ์ดบน iPhone = ดาวน์โหลด 100MB ทันที ไม่ได้ดูคลิป (ยืนยันจริง) | #328 |
 | M2 | Gallery preview modal กว้างเกินจอ, ปุ่มปิดหลุด, ไม่มี playsInline | #329 |
 | M3 | Brand look preview grid-cols-3 ปุ่มทับกัน | #330 |
 | M4 | UpgradeModal + ConvertPrompt ไม่มี scroll/ปุ่มปิด 16px | #331 |
