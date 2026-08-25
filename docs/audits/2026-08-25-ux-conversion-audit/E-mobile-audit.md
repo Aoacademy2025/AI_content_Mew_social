@@ -47,7 +47,9 @@
 | /pricing toggles | ✅ ยืนยัน #334: รายเดือน/รายปี สูง 38px; PromptPay/บัตร **สูง 26px ตัวอักษร 12px** |
 | **/brands** | 🔴 **ใหม่ #338**: การ์ดคลังแบรนด์กว้าง **1,199px** บน viewport 500px → ทั้งหน้าเลื่อนแนวนอน, ภาพตัวอย่างสูงเต็มจอ — หน้านี้ใช้บนมือถือไม่ได้เลย |
 
-ยังไม่ได้ทดสอบ: พฤติกรรม toolbar iOS จริง (#333), touch gesture ใน Post phase, convert prompt (บัญชีแอดมินไม่เห็น)
+| iPhone Safari จริง (screenshot จาก Mew) | ✅ Editor step 1: sticky CTA อยู่เหนือ toolbar Safari ไม่ถูกบัง → #333 ลดเป็น hygiene (`100vh`→`dvh`) |
+
+ยังไม่ได้ทดสอบ: touch gesture ใน Post phase, convert prompt บนมือถือ (บัญชีแอดมินไม่เห็น)
 
 ## สิ่งที่เหลือให้ทดสอบบนเครื่องจริง
 เดิน dashboard → editor → render → export → convert prompt → /pricing บน iPhone Safari + Android Chrome ด้วยบัญชี `duckyhero+uxaudit@gmail.com` เพื่อยืนยันข้อ 2, 5, 6, 7 (ขึ้นกับ toolbar/dvh จริง) และวัดความลื่นของ Post phase บนมือถือ
