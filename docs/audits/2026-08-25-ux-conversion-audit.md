@@ -5,7 +5,7 @@
 > **North Star (ตกลงกันในเซสชัน):** trial → paid เป็น **Stripe recurring subscription** (รายเดือน/รายปี) · **Activation** = Burn/Export สำเร็จครั้งแรก · optimize เพื่อ "กลุ่มที่จ่ายอยู่แล้ว + คนที่เหมือนพวกเขา" ก่อน
 > **Constraints ที่ล็อก:** ราคา tier, BYOK policy, managed exceptions (ADR 0002/0003/0008) — ไม่แตะ. "ลดฟีเจอร์" = ซ่อน/ย้าย Advanced/เปลี่ยน default ได้; "ตัดทิ้ง" เฉพาะที่ไม่มีคนจ่ายใช้ใน 30 วัน + มี maintenance cost ชัด
 
-ภาคผนวก (รายละเอียดเต็ม): [A prod funnel data](./2026-08-25-ux-conversion-audit/A-prod-funnel-data.md) · [B ticket themes](./2026-08-25-ux-conversion-audit/B-ticket-themes.md) · [C numbers review (customer + admin)](./2026-08-25-ux-conversion-audit/C-numbers-review.md) · [D walkthrough friction log](./2026-08-25-ux-conversion-audit/D-walkthrough-friction-log.md)
+ภาคผนวก (รายละเอียดเต็ม): [A prod funnel data](./2026-08-25-ux-conversion-audit/A-prod-funnel-data.md) · [B ticket themes](./2026-08-25-ux-conversion-audit/B-ticket-themes.md) · [C numbers review (customer + admin)](./2026-08-25-ux-conversion-audit/C-numbers-review.md) · [D walkthrough friction log](./2026-08-25-ux-conversion-audit/D-walkthrough-friction-log.md) · [E mobile audit](./2026-08-25-ux-conversion-audit/E-mobile-audit.md)
 
 ---
 
@@ -271,3 +271,22 @@ Impact = ผลต่อ trial→recurring; Effort S (<1 วัน) / M (1–3 �
 | 9 Editor v1 | approve, instrument 30 days then cut | #326 |
 | 10 cut Content/Style modules | approve (check payer usage first; no schema drops) | #327 |
 | 11 affiliate | keep as is, no further investment | — |
+
+## 13. Mobile (เพิ่ม 2026-08-25 ตามคำขอ Mew) — issue batch 3
+
+มือถือ ≈ 13.5% ของการใช้งานหลัง login (nginx วันนี้); telemetry ไม่เก็บ device เลย. Landing/auth/editor v2/dashboard shell มี mobile pass จริง; จุดพังกระจุกที่ Gallery, Brands, modals ขายของ, Pricing toggles, และ `100vh`. รายละเอียด + หลักฐาน file:line ใน appendix E.
+
+| # | ปัญหา | issue |
+|---|---|---|
+| M1 | Gallery ปุ่ม hover-only แตะไม่ได้บนมือถือ | #328 |
+| M2 | Gallery preview modal กว้างเกินจอ, ปุ่มปิดหลุด, ไม่มี playsInline | #329 |
+| M3 | Brand look preview grid-cols-3 ปุ่มทับกัน | #330 |
+| M4 | UpgradeModal + ConvertPrompt ไม่มี scroll/ปุ่มปิด 16px | #331 |
+| M5 | RenderReceiptDialog ปุ่มเรนเดอร์ตกใต้ toolbar | #332 |
+| M6 | h-screen/100vh → dvh ทั้งระบบ | #333 |
+| M7 | Pricing toggles เล็กเกินแตะ | #334 |
+| M8 | Trial banner ล้น + tap targets เล็กใน onboarding/topbar | #335 |
+| M9 | Download บน iOS: Content-Disposition, button-in-anchor | #336 |
+| M10 | Mobile regression gate ใน CI + device telemetry | #337 |
+
+ยังไม่ได้ยืนยันบนอุปกรณ์จริง (ดู appendix E §"ต้องยืนยันบนเครื่องจริง").
