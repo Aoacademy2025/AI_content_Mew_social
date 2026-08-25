@@ -50,6 +50,7 @@
     "verify:first-clip-path": "tsx scripts/verify-first-clip-path.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-first-clip-path-server.ts",
     "verify:trial-first-clip-path": "tsx scripts/verify-first-clip-path.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-trial-first-clip-path.ts",
     "verify:pricing-lcp": "tsx scripts/verify-pricing-lcp.ts",
+    "verify:pricing-defaults": "tsx scripts/verify-pricing-defaults.ts",
     "verify:marketing-pricing": "tsx scripts/verify-marketing-pricing-parity.ts",
     "verify:marketing-language": "tsx scripts/verify-marketing-plain-language.ts",
     "verify:marketing-mobile": "node scripts/verify-marketing-mobile-preview.mjs",

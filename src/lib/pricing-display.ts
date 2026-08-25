@@ -43,6 +43,36 @@ export function computeDisplayPrice(input: DisplayPriceInput): DisplayPrice {
   return { base, final, pct, isFounding };
 }
 
+export interface DefaultPricingSelectionInput {
+  /** `NEXT_PUBLIC_PRICING_DEFAULT_RECURRING === "1"` — flips the in-app /pricing default from
+   *  annual+PromptPay (one-time) to monthly+card (recurring). OFF keeps today's behavior. */
+  recurringDefaultEnabled: boolean;
+  /** Stripe subscription status for the signed-in user, or null (signed-out / no sub / trial-only). */
+  subStatus: string | null;
+  /** Billing period of an existing subscription, or null. */
+  billingPeriod: "monthly" | "annual" | null;
+}
+
+export interface DefaultPricingSelection {
+  period: "monthly" | "annual";
+  method: "card" | "promptpay";
+}
+
+/**
+ * Pure decision for the /pricing page's initial period + payment-method selection.
+ * The flag decides the base default; an existing ACTIVE monthly card subscription always
+ * forces `method: "card"` regardless of the flag, because PromptPay (one-time) cannot be
+ * purchased on top of a live recurring subscription — this mirrors the pre-existing
+ * pricing-client.tsx guard and is unaffected by trial/FREE/paid plan tier.
+ */
+export function getDefaultPricingSelection(input: DefaultPricingSelectionInput): DefaultPricingSelection {
+  const { recurringDefaultEnabled, subStatus, billingPeriod } = input;
+  const period: DefaultPricingSelection["period"] = recurringDefaultEnabled ? "monthly" : "annual";
+  let method: DefaultPricingSelection["method"] = recurringDefaultEnabled ? "card" : "promptpay";
+  if (subStatus === "active" && billingPeriod === "monthly") method = "card";
+  return { period, method };
+}
+
 /** Human-readable pricing used on the public sales page. */
 export function marketingPriceBlock({
   monthlyPrice,
