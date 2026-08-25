@@ -49,6 +49,8 @@ jobs:
 
       - name: Verify first-clip convert prompt
         run: npm run verify:first-clip-convert
+      - name: Verify gallery touch actions (#328)
+        run: npm run verify:gallery-touch
 
       - name: Verify first-clip path
         run: npm run verify:first-clip-path

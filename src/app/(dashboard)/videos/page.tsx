@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 import {
@@ -412,7 +413,9 @@ export default function VideosGalleryPage() {
           >
             <div
               className="relative overflow-hidden rounded-2xl shadow-2xl"
-              style={{ height: "90vh", aspectRatio: "9/16" }}
+              // Width derives from the 9:16 box but is capped to the viewport so a phone never gets a
+              // 427px-wide modal on a 390px screen (#328/#329); dvh keeps it above the iOS toolbar.
+              style={{ width: "min(100vw, calc(90dvh * 9 / 16))", maxHeight: "90dvh", aspectRatio: "9/16" }}
               onClick={e => e.stopPropagation()}
             >
               <video
@@ -420,11 +423,13 @@ export default function VideosGalleryPage() {
                 src={previewUrl}
                 controls
                 autoPlay
+                playsInline
                 className="absolute inset-0 h-full w-full object-contain bg-black"
               />
               <button
                 onClick={closePreview}
-                className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full text-white text-sm"
+                aria-label="ปิด"
+                className="absolute right-3 top-3 flex h-11 w-11 items-center justify-center rounded-full text-white text-sm"
                 style={{ background: "rgba(0,0,0,0.7)", border: "1px solid rgba(255,255,255,0.15)" }}
               >
                 ✕
@@ -449,9 +454,14 @@ function ProjectCard({
 }) {
   const updatedAt = project.lastOpenedAt || project.updatedAt || project.createdAt;
   const editHref = `/video-editor?ui=v2&projectId=${encodeURIComponent(project.id)}`;
+  const router = useRouter();
   return (
     <div
-      className="group relative aspect-3/4 overflow-hidden rounded-2xl transition-all hover:scale-[1.02] hover:shadow-xl"
+      role="button"
+      tabIndex={0}
+      onClick={() => router.push(editHref)}
+      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); router.push(editHref); } }}
+      className="group relative aspect-3/4 cursor-pointer overflow-hidden rounded-2xl transition-all hover:scale-[1.02] hover:shadow-xl"
       style={{ background: "var(--ui-card-bg-2)", border: "1px solid var(--ui-card-border)" }}
     >
       <div className="absolute inset-0 p-4">
@@ -482,8 +492,9 @@ function ProjectCard({
         </div>
       </div>
 
-      <div className="absolute inset-0 flex items-center justify-center gap-2 opacity-0 transition-opacity group-hover:opacity-100"
-        style={{ background: "rgba(0,0,0,0.54)" }}>
+      {/* Desktop: hover overlay (pointer devices only). Touch devices get the always-visible action row below. */}
+      <div className="absolute inset-0 hidden items-center justify-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 md:flex"
+        style={{ background: "rgba(0,0,0,0.54)" }} onClick={e => e.stopPropagation()}>
         <Link href={editHref}
           className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110"
           style={{ background: "rgba(139,92,246,.35)", border: `1px solid ${VIOLET_TILE_BORDER}` }}
@@ -502,6 +513,25 @@ function ProjectCard({
             className="flex h-10 w-10 items-center justify-center rounded-full text-white/70 transition-all hover:scale-110 hover:text-red-400"
             style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)" }}
             title="ลบฉบับร่าง">
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {/* Touch: always-visible action row (tap on the card itself opens the draft). */}
+      <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 px-2 pb-2 md:hidden"
+        onClick={e => e.stopPropagation()}>
+        {deleteConfirm ? (
+          <div className="flex items-center gap-2 rounded-xl px-3 py-2"
+            style={{ background: "rgba(0,0,0,0.85)", border: `1px solid ${STATUS_DANGER}66` }}>
+            <span className="text-xs" style={{ color: STATUS_DANGER }}>ลบฉบับร่าง?</span>
+            <button onClick={onDeleteConfirm} className="min-h-11 px-2 text-xs font-semibold" style={{ color: STATUS_DANGER }}>ลบ</button>
+            <button onClick={onDeleteCancel} className="min-h-11 px-2 text-xs text-white/60">ยกเลิก</button>
+          </div>
+        ) : (
+          <button onClick={onDelete} aria-label="ลบฉบับร่าง"
+            className="flex h-11 w-11 items-center justify-center rounded-full text-white/80"
+            style={{ background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)" }}>
             <Trash2 className="h-4 w-4" />
           </button>
         )}
@@ -540,8 +570,13 @@ function VideoCard({
   const [thumbFailed, setThumbFailed] = useState(false);
   const showThumb = !!video.thumbnail && !thumbFailed;
 
+  const canPreview = isReady && !!previewSrc;
   return (
     <div
+      role={canPreview ? "button" : undefined}
+      tabIndex={canPreview ? 0 : undefined}
+      onClick={canPreview ? onPreview : undefined}
+      onKeyDown={canPreview ? (e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPreview(); } }) : undefined}
       className="group relative aspect-3/4 cursor-pointer overflow-hidden rounded-2xl transition-all hover:scale-[1.02] hover:shadow-xl"
       style={{ background: "var(--ui-card-bg-2)", border: "1px solid var(--ui-card-border)" }}
     >
@@ -633,9 +668,10 @@ function VideoCard({
         </div>
       </div>
 
-      {/* Hover actions */}
-      <div className="absolute inset-0 flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity"
-        style={{ background: "rgba(0,0,0,0.5)" }}>
+      {/* Desktop hover actions (pointer devices only). On touch the centred overlay caught the first tap and
+          fired the Download anchor (#328) — phones get the bottom action row instead. */}
+      <div className="absolute inset-0 hidden items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity md:flex"
+        style={{ background: "rgba(0,0,0,0.5)" }} onClick={e => e.stopPropagation()}>
         {isReady && previewSrc && (
           <>
             <button onClick={onPreview}
@@ -644,7 +680,7 @@ function VideoCard({
               <Play className="h-4 w-4 fill-white ml-0.5" />
             </button>
             {downloadSrc && (
-              <a href={downloadSrc} download={downloadFilename} target="_blank" rel="noreferrer"
+              <a href={downloadSrc} download={downloadFilename} rel="noreferrer" onClick={e => e.stopPropagation()}
                 className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110"
                 style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)" }}>
                 <Download className="h-4 w-4" />
@@ -671,6 +707,39 @@ function VideoCard({
           <button onClick={onDelete}
             className="flex h-10 w-10 items-center justify-center rounded-full text-white/70 transition-all hover:scale-110 hover:text-red-400"
             style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)" }}>
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+
+      {/* Touch: always-visible action row. Tap on the card = preview; download/delete are explicit. */}
+      <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 px-2 pb-2 md:hidden"
+        onClick={e => e.stopPropagation()}>
+        {isRendering && (
+          <Link href={`/video-editor?resume=${video.id}`}
+            className="flex min-h-11 items-center gap-1 rounded-full px-3 text-xs font-semibold text-white"
+            style={{ background: "rgba(251,191,36,.35)", border: `1px solid ${STATUS_WARNING}8c` }}>
+            <RefreshCw className="h-3.5 w-3.5" /> ทำต่อ
+          </Link>
+        )}
+        {isReady && downloadSrc && (
+          <a href={downloadSrc} download={downloadFilename} aria-label="ดาวน์โหลด"
+            className="flex h-11 w-11 items-center justify-center rounded-full text-white"
+            style={{ background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)" }}>
+            <Download className="h-4 w-4" />
+          </a>
+        )}
+        {deleteConfirm ? (
+          <div className="flex items-center gap-2 rounded-xl px-3 py-2"
+            style={{ background: "rgba(0,0,0,0.85)", border: `1px solid ${STATUS_DANGER}66` }}>
+            <span className="text-xs" style={{ color: STATUS_DANGER }}>ลบคลิป?</span>
+            <button onClick={onDeleteConfirm} className="min-h-11 px-2 text-xs font-semibold" style={{ color: STATUS_DANGER }}>ลบ</button>
+            <button onClick={onDeleteCancel} className="min-h-11 px-2 text-xs text-white/60">ยกเลิก</button>
+          </div>
+        ) : (
+          <button onClick={onDelete} aria-label="ลบคลิป"
+            className="flex h-11 w-11 items-center justify-center rounded-full text-white/80"
+            style={{ background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)" }}>
             <Trash2 className="h-4 w-4" />
           </button>
         )}
