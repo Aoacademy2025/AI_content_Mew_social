@@ -288,5 +288,6 @@ Impact = ผลต่อ trial→recurring; Effort S (<1 วัน) / M (1–3 �
 | M8 | Trial banner ล้น + tap targets เล็กใน onboarding/topbar | #335 |
 | M9 | Download บน iOS: Content-Disposition, button-in-anchor | #336 |
 | M10 | Mobile regression gate ใน CI + device telemetry | #337 |
+| M11 | /brands กว้าง 1,199px บนมือถือ — ใช้ไม่ได้ทั้งหน้า (ยืนยันจริง) | #338 |
 
-ยังไม่ได้ยืนยันบนอุปกรณ์จริง (ดู appendix E §"ต้องยืนยันบนเครื่องจริง").
+ยืนยันบน prod ที่ viewport 500px แล้ว (Gallery, preview modal, pricing toggles, /brands = พังจริง; receipt = ความเสี่ยงเฉพาะกรณี) — ดู appendix E.

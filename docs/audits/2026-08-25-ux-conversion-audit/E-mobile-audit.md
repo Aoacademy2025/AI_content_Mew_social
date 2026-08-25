@@ -35,7 +35,21 @@
 ## Surface ที่ไม่มี responsive class เลย
 `upgrade-modal.tsx` · `first-clip-convert-prompt.tsx` · `BrandLookPreviewPanel.tsx` (พังจริง) · `api-key-settings.tsx` · `mcp-access-settings.tsx` · `ScriptHistory.tsx` · (`DashboardOnboarding.tsx` = wrapper ไม่เป็นไร)
 
-## ต้องยืนยันบนเครื่องจริง (ยังไม่ได้ทำ)
+## ผลยืนยันบน prod (Chrome บน PC ของ Mew, viewport 500×749 — ต่ำกว่า breakpoint sm/lg ทุกตัว; Chrome จำกัดความกว้างขั้นต่ำ 500px จึงไม่ได้ 390 เป๊ะ)
+
+| จุด | ผล |
+|---|---|
+| Dashboard / bottom tabs / drawer | ✅ ทำงานดี |
+| Gallery การ์ด | ✅ ยืนยัน #328: ไม่มีปุ่มให้แตะ; ต้องแตะการ์ด 1 ครั้งเพื่อให้ overlay โผล่ (sticky hover) แล้วแตะอีกครั้ง — ไม่มี affordance |
+| Gallery preview modal | ✅ ยืนยัน #329: วิดีโอ = 90vh×9/16 → 379px ที่ 500×749; ที่ 390×844 = 427px (กว้างกว่าจอ); bottom tabs ยังโชว์ทับ modal |
+| Editor step 1 / step 2 | ✅ ดี (sticky CTA, step dots, การ์ดเรียง 2 คอลัมน์) |
+| Render Receipt | ⚠️ แบบ 2 บรรทัดพอดีจอ (ปุ่มสูง 46px อยู่ที่ y=434–480 ของ 749) → #332 เป็นความเสี่ยงเฉพาะกรณีมี warn/insufficient หลายบรรทัด — ลดเป็น Medium |
+| /pricing toggles | ✅ ยืนยัน #334: รายเดือน/รายปี สูง 38px; PromptPay/บัตร **สูง 26px ตัวอักษร 12px** |
+| **/brands** | 🔴 **ใหม่ #338**: การ์ดคลังแบรนด์กว้าง **1,199px** บน viewport 500px → ทั้งหน้าเลื่อนแนวนอน, ภาพตัวอย่างสูงเต็มจอ — หน้านี้ใช้บนมือถือไม่ได้เลย |
+
+ยังไม่ได้ทดสอบ: พฤติกรรม toolbar iOS จริง (#333), touch gesture ใน Post phase, convert prompt (บัญชีแอดมินไม่เห็น)
+
+## สิ่งที่เหลือให้ทดสอบบนเครื่องจริง
 เดิน dashboard → editor → render → export → convert prompt → /pricing บน iPhone Safari + Android Chrome ด้วยบัญชี `duckyhero+uxaudit@gmail.com` เพื่อยืนยันข้อ 2, 5, 6, 7 (ขึ้นกับ toolbar/dvh จริง) และวัดความลื่นของ Post phase บนมือถือ
 
 ## แก้ถูกสุดเรียงลำดับ
