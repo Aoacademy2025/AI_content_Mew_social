@@ -249,3 +249,9 @@ Impact = ผลต่อ trial→recurring; Effort S (<1 วัน) / M (1–3 �
 | P1-3 | #306 | | P2-4 telemetry | #316 |
 | P1-4 | #307 | | P2-5 | #317 |
 | P1-5 | #308 | | §7.4 hide/cut | รอ Mew |
+
+---
+
+## Erratum (2026-08-25, หลังส่งมอบ)
+
+"เรนเดอร์ได้โดยไม่มี key" เป็นจริง **เฉพาะคลิปแรกของ trial**: `src/app/api/videos/jobs/route.ts:513-586` บังคับ `stockSource="kie-image"` (Hero AI Image, สิทธิ์ทดลอง 8 ภาพ) เมื่อ `firstClip.reason === "conversion_trial"`; คลิปที่ 2, ผู้ใช้คูปอง/จ่ายแล้ว และโหมดอัปโหลด ต้องมี Pexels/Pixabay key ไม่งั้น 400 `missing_key: broll`. คลิปทดสอบของ audit ใช้ภาพ AI 8/8 ทั้งที่ UI โชว์ AutoMix และ receipt บอก "เหลือ 7/8" → UI/receipt ไม่ตรง server. ผลต่อ P0-1 (#297): ต้องเลือก (a) managed stock key สำหรับ trial/FREE (rate-limit + fail-closed แบบ ADR 0003) / (b) ขยายสิทธิ์ AI / (c) ขอ key หลังคลิปแรกพร้อมเหตุผล — แนะนำ (a)+(c). ยังไม่มี Pexels key กลางบน prod; provider ไม่ใช้ key ที่มีอยู่ (Wikimedia/NASA/Met) เป็นภาพนิ่ง fallback เท่านั้น.
