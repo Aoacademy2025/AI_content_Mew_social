@@ -17,6 +17,7 @@ import {
   PLAN_RANK,
 } from "@/lib/plan-change";
 import { trackEvent } from "@/lib/client-telemetry";
+import { TRIAL_SOURCE_PREFIX } from "@/lib/trial-reminders";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
@@ -118,6 +119,16 @@ export function PricingClient({
   useEffect(() => {
     if (!acquisitionSource?.startsWith("hero_script")) return;
     trackEvent("hero_script_pricing_viewed", {
+      properties: { source: acquisitionSource },
+    });
+  }, [acquisitionSource]);
+
+  // Trial lifecycle nudges land here as ?source=trial_d5 | trial_expired | trial_d3after
+  // (issue #299). Same shape as the Hero Script attribution above so each moment's
+  // click-through can be counted separately.
+  useEffect(() => {
+    if (!acquisitionSource?.startsWith(TRIAL_SOURCE_PREFIX)) return;
+    trackEvent("trial_pricing_viewed", {
       properties: { source: acquisitionSource },
     });
   }, [acquisitionSource]);

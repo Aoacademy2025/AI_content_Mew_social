@@ -54,6 +54,7 @@
     "verify:marketing-language": "tsx scripts/verify-marketing-plain-language.ts",
     "verify:marketing-mobile": "node scripts/verify-marketing-mobile-preview.mjs",
     "verify:day21-convert-reminder": "tsx scripts/verify-day21-convert-reminder.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-day21-convert-reminder-server.ts",
+    "verify:trial-reminders": "tsx scripts/verify-trial-reminders.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-trial-reminders-server.ts",
     "verify:avatar-caption-fallback": "tsx scripts/verify-avatar-caption-fallback.ts",
     "verify:admin-error-notify": "tsx scripts/verify-admin-error-notify.ts",
     "verify:hero-script-payment": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script-payment-flow.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script-webhook.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-plan-change.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-stripe-subscription-entitlement.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-manual-payment.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-revenue-cohorts.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-coupon-pro-entitlements.ts",
