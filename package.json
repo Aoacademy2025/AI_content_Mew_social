@@ -53,6 +53,7 @@
     "verify:marketing-pricing": "tsx scripts/verify-marketing-pricing-parity.ts",
     "verify:marketing-language": "tsx scripts/verify-marketing-plain-language.ts",
     "verify:marketing-mobile": "node scripts/verify-marketing-mobile-preview.mjs",
+    "verify:brands-mobile": "tsx scripts/verify-brands-mobile.mjs",
     "verify:day21-convert-reminder": "tsx scripts/verify-day21-convert-reminder.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-day21-convert-reminder-server.ts",
     "verify:avatar-caption-fallback": "tsx scripts/verify-avatar-caption-fallback.ts",
     "verify:admin-error-notify": "tsx scripts/verify-admin-error-notify.ts",

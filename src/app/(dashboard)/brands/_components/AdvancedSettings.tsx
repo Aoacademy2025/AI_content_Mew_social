@@ -246,7 +246,7 @@ function HexColorField({
   }
 
   return (
-    <div className="min-w-[210px] flex-1">
+    <div className="min-w-0 flex-1 lg:min-w-[210px]">
       <Label htmlFor={id} className="mb-1.5 block text-[11px] font-medium text-muted-foreground">
         สีที่ {index + 1} · HEX
       </Label>

@@ -34,7 +34,12 @@ export function BrandList({
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
 
   return (
-    <Card className="h-fit p-3 lg:sticky lg:top-5">
+    // `min-w-0` is load-bearing: on phones the page grid collapses to ONE column,
+    // and a grid item defaults to `min-width:auto` — its min-content size. Without
+    // this the column widens to the widest non-wrapping label inside and the whole
+    // /brands page scrolls sideways (#338). Desktop is unaffected: the lg track is a
+    // fixed 248px.
+    <Card className="h-fit min-w-0 p-3 lg:sticky lg:top-5">
       <div className="flex items-center justify-between px-1 pb-2.5">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           คลังแบรนด์
@@ -45,7 +50,7 @@ export function BrandList({
       </div>
 
       {creationRequiresResult ? (
-        <Button asChild variant="outline" className="mb-3 h-auto w-full whitespace-normal py-2.5 text-xs">
+        <Button asChild variant="outline" className="mb-3 h-auto min-h-11 w-full whitespace-normal py-2.5 text-xs lg:min-h-0">
           <Link href="/video-editor">
             <WandSparkles className="h-4 w-4 shrink-0" />
             สร้างคลิปแรก แล้วบันทึกแนวภาพจากผลงานจริง
@@ -57,7 +62,7 @@ export function BrandList({
             type="button"
             onClick={onStartNew}
             disabled={!canCreate || busy}
-            className="h-10 w-full bg-violet-600 text-white hover:bg-violet-600/90"
+            className="h-auto min-h-11 w-full whitespace-normal bg-violet-600 text-white hover:bg-violet-600/90 lg:h-10 lg:min-h-0"
           >
             <Plus className="h-4 w-4" />
             สร้างแบรนด์ใหม่
@@ -67,7 +72,7 @@ export function BrandList({
             variant="outline"
             onClick={onStartFromCurrentDefaults}
             disabled={!canCreate || busy}
-            className="h-10 w-full text-xs"
+            className="h-auto min-h-11 w-full whitespace-normal text-xs lg:h-10 lg:min-h-0"
           >
             <WandSparkles className="h-4 w-4" />
             สร้างแบรนด์จากค่าที่ใช้อยู่
