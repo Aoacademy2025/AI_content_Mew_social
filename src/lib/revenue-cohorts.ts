@@ -69,6 +69,39 @@ export type RevenueCohorts = {
   /** Studio-native MRR and Bundle MRR, both included in `mrr`. */
   directMrr: number;
   bundleMrr: number;
+  /**
+   * Studio MRR that actually recurs — a live Stripe subscription that will bill again on its
+   * own. This is the ONLY part `arr` may be built from.
+   */
+  recurringMrr: number;
+  /**
+   * Studio MRR contributed by customers who paid ONCE for a fixed term. Real revenue, and
+   * real access, but it will not bill again: when the term ends it stops unless somebody
+   * sells them another one. Kept out of `arr` for that reason.
+   */
+  prepaidMrr: number;
+  /** `recurringMrr × 12`. Deliberately excludes prepaid — see `prepaidMrr`. */
+  arr: number;
+  /**
+   * Cash already collected for prepaid time NOT yet delivered (฿). It is an obligation to
+   * serve, not profit — and it is large here because Founding sold annual terms up front.
+   *
+   * Studio only, like `recurringMrr` / `prepaidMrr`. Hero AI Bundle is a separate product
+   * with its own ledger and sells no one-time term today; if it ever does, this figure and
+   * `arr` both under-report the business until Bundle is folded in here.
+   */
+  deferredRevenue: number;
+  /** When the prepaid terms run out. Empty when nobody holds one. */
+  prepaidExpiry: {
+    nextAt: Date | null;
+    /** Prepaid customers whose term ends within 90 days, and the monthly revenue at stake. */
+    within90Days: number;
+    within90DaysMrr: number;
+    /** First and last expiry month (`YYYY-MM`) — how concentrated the cliff is. */
+    firstMonth: string | null;
+    lastMonth: string | null;
+    customers: number;
+  };
   mrrByTier: { pro: number; business: number };
   /** Of payingTotal, subset with subStatus="canceled" — still entitled/paying this cycle, but
    *  will churn at period end (user clicked cancel, access runs out the clock). Already counted
@@ -233,6 +266,14 @@ export function computeRevenueCohorts(
   let mrr = 0;
   let directMrr = 0;
   let bundleMrr = 0;
+  let recurringMrr = 0;
+  let prepaidMrr = 0;
+  let deferredRevenue = 0;
+  let prepaidCustomers = 0;
+  let prepaidWithin90 = 0;
+  let prepaidWithin90Mrr = 0;
+  let nextPrepaidExpiry: Date | null = null;
+  const prepaidExpiryMonths: string[] = [];
   let payingCanceling = 0;
   let mrrAtRisk = 0;
   let lapsedPayers = 0;
@@ -307,6 +348,42 @@ export function computeRevenueCohorts(
           : monthlyEquiv(tierPrice(prices, plan), u.billingPeriod);
         directMrr += add;
         mrr += add;
+
+        // Split the same figure by whether it will bill again on its own. A live Stripe
+        // subscription recurs; a one-time term does not, however long it still has to run.
+        //
+        // Must read `directSource`, never `source`. `source` is the COMBINED entitlement and
+        // classifyEntitlement returns "BUNDLE" the moment an active Bundle exists, even for a
+        // customer who also holds a live Studio subscription. Using it counted that customer
+        // as prepaid: dropped out of ARR, given a fabricated deferred figure, and listed in
+        // the "does not auto-renew" cliff banner — telling us a paying auto-renewing customer
+        // was about to churn. `directSource` is the Studio-only view the rest of this block
+        // already uses for direct-revenue decisions.
+        const recurs = directSource === "SUBSCRIPTION"
+          && !!u.stripeSubscriptionId
+          && u.subStatus === "active";
+        if (recurs) {
+          recurringMrr += add;
+        } else {
+          prepaidMrr += add;
+          prepaidCustomers++;
+          const expiresAt = u.planExpiresAt;
+          if (expiresAt && expiresAt > now) {
+            const termDays = isAnnual(u.billingPeriod) ? 365 : 30;
+            const termValue = isAnnual(u.billingPeriod) ? add * 12 : add;
+            const daysLeft = (expiresAt.getTime() - now.getTime()) / 86_400_000;
+            // Straight-line: the share of the term still owed to the customer.
+            deferredRevenue += termValue * Math.min(1, Math.max(0, daysLeft / termDays));
+            if (daysLeft <= 90) {
+              prepaidWithin90++;
+              prepaidWithin90Mrr += add;
+            }
+            if (!nextPrepaidExpiry || expiresAt < nextPrepaidExpiry) nextPrepaidExpiry = expiresAt;
+            prepaidExpiryMonths.push(
+              `${expiresAt.getUTCFullYear()}-${String(expiresAt.getUTCMonth() + 1).padStart(2, "0")}`,
+            );
+          }
+        }
         if (plan === "BUSINESS") mrrByTier.business += add;
         else if (plan === "PRO") mrrByTier.pro += add;
         if (u.subStatus === "canceled") {
@@ -361,6 +438,20 @@ export function computeRevenueCohorts(
     mrr,
     directMrr,
     bundleMrr,
+    recurringMrr,
+    prepaidMrr,
+    // ARR is recurring revenue annualised. Blending prepaid in would claim a yearly run rate
+    // from customers who already paid once and will simply stop when their term ends.
+    arr: recurringMrr * 12,
+    deferredRevenue,
+    prepaidExpiry: {
+      nextAt: nextPrepaidExpiry,
+      within90Days: prepaidWithin90,
+      within90DaysMrr: prepaidWithin90Mrr,
+      firstMonth: prepaidExpiryMonths.length ? prepaidExpiryMonths.slice().sort()[0] : null,
+      lastMonth: prepaidExpiryMonths.length ? prepaidExpiryMonths.slice().sort().at(-1)! : null,
+      customers: prepaidCustomers,
+    },
     mrrByTier,
     payingCanceling,
     mrrAtRisk,

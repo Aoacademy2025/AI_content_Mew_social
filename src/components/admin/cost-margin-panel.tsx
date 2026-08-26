@@ -42,6 +42,19 @@ interface Customers {
    *  cached payload keeps rendering — the tile falls back to 0. */
   creditRevenue?: number;
   creditBuyers?: number;
+  /** Revenue shape — recurring vs prepaid-once, and the cash still owed as service. */
+  recurringMrr?: number;
+  prepaidMrr?: number;
+  arr?: number;
+  deferredRevenue?: number;
+  prepaidExpiry?: {
+    nextAt: string | null;
+    within90Days: number;
+    within90DaysMrr: number;
+    firstMonth: string | null;
+    lastMonth: string | null;
+    customers: number;
+  };
   payingTotal: number;
   directPayingTotal: number;
   bundleActive: number;
@@ -311,13 +324,27 @@ export default function CostMarginPanel({ days }: { days: number }) {
                     </div>
                     <div className="rounded-md border border-violet-400/25 bg-violet-500/10 px-3 py-2">
                       <div className="flex items-center justify-center gap-1 text-[11px] text-violet-300/80">
-                        MRR ต่อเดือน
-                        <MetricHelp label="MRR">
-                          Monthly Recurring Revenue (MRR) คือรายได้ประจำต่อเดือน ณ ตอนนี้ โดยนำรายปีมาเฉลี่ยเป็นรายเดือน ใช้ดูความเร็วของธุรกิจ ไม่ใช่ยอดเงินสดสะสม
+                        ARR (รายได้ประจำ/ปี)
+                        <MetricHelp label="ARR">
+                          ARR คิดจาก “รายได้ที่ต่ออัตโนมัติจริง” เท่านั้น (สมาชิกที่ผูกบัตรกับ Stripe) คูณ 12 — ไม่รวมคนที่จ่ายครั้งเดียวแบบรายปี เพราะยอดนั้นจะไม่เรียกเก็บซ้ำเมื่อครบเทอม การเอามารวมแล้วคูณ 12 จะทำให้ดูเหมือนมีรายได้ประจำมากกว่าความจริง
                         </MetricHelp>
                       </div>
-                      <div className="mt-1 text-lg font-bold text-violet-200">{fmtBaht(h.mrr)}</div>
-                      <div className="text-[10px] text-violet-300/70">Studio {fmtBaht(cu.directMrr)} · Bundle {fmtBaht(cu.bundleMrr)}</div>
+                      <div className="mt-1 text-lg font-bold text-violet-200">{fmtBaht(cu.arr ?? 0)}</div>
+                      <div className="text-[10px] text-violet-300/70">
+                        ต่ออัตโนมัติ {fmtBaht(cu.recurringMrr ?? 0)}/เดือน · จ่ายครั้งเดียว {fmtBaht(cu.prepaidMrr ?? 0)}/เดือน
+                      </div>
+                    </div>
+                    <div className="rounded-md border border-teal-400/25 bg-teal-500/10 px-3 py-2">
+                      <div className="flex items-center justify-center gap-1 text-[11px] text-teal-300/80">
+                        รอส่งมอบ
+                        <MetricHelp label="รายได้รอส่งมอบ (Deferred revenue)">
+                          เงินที่รับมาแล้วสำหรับเวลาที่ยังไม่ได้ให้บริการ เช่น ลูกค้าจ่ายรายปีล่วงหน้า เดือนที่เหลือยังเป็นภาระที่ต้องส่งมอบ ไม่ใช่กำไร ตัวเลขนี้จะลดลงเองทุกวันตามอายุแพ็กเกจที่เดินไป
+                        </MetricHelp>
+                      </div>
+                      <div className="mt-1 text-lg font-bold text-teal-200">{fmtBaht(cu.deferredRevenue ?? 0)}</div>
+                      <div className="text-[10px] text-teal-300/70">
+                        {cu.prepaidExpiry?.customers ? `จ่ายล่วงหน้า ${fmtNum(cu.prepaidExpiry.customers)} คน` : "ไม่มีคนจ่ายล่วงหน้า"}
+                      </div>
                     </div>
                     <div className="rounded-md border border-sky-400/25 bg-sky-500/10 px-3 py-2">
                       <div className="flex items-center justify-center gap-1 text-[11px] text-sky-300/80">
@@ -339,6 +366,28 @@ export default function CostMarginPanel({ days }: { days: number }) {
                     </div>
                   </div>
                 </div>
+                {cu.prepaidExpiry && cu.prepaidExpiry.customers > 0 && cu.prepaidExpiry.firstMonth && (
+                  // The prepaid cliff. These customers do not renew on their own, so the date
+                  // they lapse is the date the revenue stops unless somebody sells them again.
+                  <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-amber-400/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-200/90">
+                    <span className="font-semibold">เทอมจ่ายครั้งเดียวจะหมดอายุ</span>
+                    <span>
+                      {cu.prepaidExpiry.firstMonth === cu.prepaidExpiry.lastMonth
+                        ? cu.prepaidExpiry.firstMonth
+                        : `${cu.prepaidExpiry.firstMonth} → ${cu.prepaidExpiry.lastMonth}`}
+                      {" · "}{fmtNum(cu.prepaidExpiry.customers)} คน
+                    </span>
+                    {cu.prepaidExpiry.within90Days > 0 && (
+                      <span className="rounded-full bg-amber-500/20 px-2 py-0.5 font-semibold text-amber-100">
+                        ภายใน 90 วัน {fmtNum(cu.prepaidExpiry.within90Days)} คน · {fmtBaht(cu.prepaidExpiry.within90DaysMrr)}/เดือน
+                      </span>
+                    )}
+                    {cu.prepaidExpiry.nextAt && (
+                      <span className="text-amber-300/70">รายแรก {cu.prepaidExpiry.nextAt.slice(0, 10)}</span>
+                    )}
+                    <span className="text-amber-300/60">ลูกค้ากลุ่มนี้ไม่ต่ออายุอัตโนมัติ</span>
+                  </div>
+                )}
                 <div className="mt-3 grid gap-2 border-t border-white/10 pt-3 sm:grid-cols-2 text-xs text-slate-400">
                   {/* Comped access — intentional grants (team + workshop/coupon), NOT revenue. */}
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">

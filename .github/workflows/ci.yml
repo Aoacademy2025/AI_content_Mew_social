@@ -105,6 +105,9 @@ jobs:
       - name: Verify the Founding claim matches what customers are charged
         run: npm run verify:founding-copy-truth
 
+      - name: Verify ARR annualises only recurring revenue
+        run: npm run verify:arr-revenue-shape
+
       - name: Verify MRR prices customers by real cash and excludes credit packs
         run: npm run verify:plan-cash-vs-credits
 
