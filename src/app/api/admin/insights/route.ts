@@ -3,7 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { getProcessingReconcilePlan, type ProcessingReconcileSummary } from "@/lib/video-reconcile";
-import { computeRevenueCohorts } from "@/lib/revenue-cohorts";
+import { computeRevenueCohorts, summarizePlanCash } from "@/lib/revenue-cohorts";
 import { getPlanConfig } from "@/lib/plan-config";
 import { getSubscriptionNorthStar } from "@/lib/subscription-north-star.server";
 import {
@@ -893,8 +893,15 @@ export async function GET(req: Request) {
         where: { createdAt: { gte: since } },
         select: { type: true, status: true, parentJobId: true, startedAt: true, finishedAt: true },
       }),
-      // Cash ground truth — distinct users who ever completed a PAID payment.
-      prisma.payment.findMany({ where: { status: "PAID" }, select: { userId: true }, distinct: ["userId"] }),
+      // Cash ground truth. Rows carry `note: "credits"` for a credit-pack purchase, which is
+      // real revenue but NOT plan revenue — including them here made a credit top-up look like
+      // a subscription (a 199฿ pack priced the buyer into MRR at the full 599฿/month tier).
+      // Amounts come along so MRR can be built from what was actually charged.
+      prisma.payment.findMany({
+        where: { status: "PAID" },
+        select: { userId: true, amount: true, note: true, periodDays: true, createdAt: true },
+        orderBy: { createdAt: "asc" },
+      }),
       // Previous-window VideoJobs — so previous.funnel is also job-derived (apples-to-apples).
       prisma.videoJob.findMany({
         where: { createdAt: { gte: previousSince, lt: since } },
@@ -925,12 +932,16 @@ export async function GET(req: Request) {
 
     // Real revenue cohorts (reuses the users we already fetched — no extra query). "Paying" is
     // anchored on CASH (a PAID payment), so trials and comped/coupon access never count as paying.
-    const paidUserIds = new Set(paidRows.map((r) => r.userId));
+    // One definition of "plan cash vs credit-pack cash", shared with getRevenueCohorts.
+    const planCash = summarizePlanCash(paidRows);
+    const paidUserIds = planCash.paidUserIds;
+    const monthlyRevenueByUser = planCash.monthlyRevenueByUser;
     const cohorts = computeRevenueCohorts(
       allUsers,
       paidUserIds,
       { pro: planConfig.pro.price, business: planConfig.business.price },
       now,
+      { monthlyRevenueByUser },
     );
 
     // Internal team = @aoacademy accounts. Excluded from ALL funnel/activation counts (they inflate
@@ -972,6 +983,10 @@ export async function GET(req: Request) {
       hasStockKey: allUsers.filter((u) => nonEmpty(u.pexelsKey) || nonEmpty(u.pixabayKey)).length,
       // Real paying customers = cash + currently entitled (was: any plan=PRO/BUSINESS, which swept in trials + comps).
       paidTotal: cohorts.payingTotal,
+      // Credit-pack cash, surfaced on its own because it is real revenue that never shows up
+      // in MRR (a pack is a one-off, not a plan term). It was previously invisible.
+      creditRevenue: planCash.creditRevenue,
+      creditBuyers: planCash.creditBuyers,
       payingCanceling: cohorts.payingCanceling,
       mrrAtRisk: cohorts.mrrAtRisk,
       trialActive: cohorts.trialActive,

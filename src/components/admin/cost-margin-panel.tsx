@@ -38,6 +38,10 @@ interface Breakdown {
 }
 
 interface Customers {
+  /** Credit-pack cash (฿) and how many people bought one. Optional so an older
+   *  cached payload keeps rendering — the tile falls back to 0. */
+  creditRevenue?: number;
+  creditBuyers?: number;
   payingTotal: number;
   directPayingTotal: number;
   bundleActive: number;
@@ -314,6 +318,16 @@ export default function CostMarginPanel({ days }: { days: number }) {
                       </div>
                       <div className="mt-1 text-lg font-bold text-violet-200">{fmtBaht(h.mrr)}</div>
                       <div className="text-[10px] text-violet-300/70">Studio {fmtBaht(cu.directMrr)} · Bundle {fmtBaht(cu.bundleMrr)}</div>
+                    </div>
+                    <div className="rounded-md border border-sky-400/25 bg-sky-500/10 px-3 py-2">
+                      <div className="flex items-center justify-center gap-1 text-[11px] text-sky-300/80">
+                        เติมเครดิต
+                        <MetricHelp label="รายได้จากเติมเครดิต">
+                          เงินที่ลูกค้าจ่ายซื้อเครดิตแพ็ก รวมอยู่ใน “รายได้รวมสะสม” แล้ว แต่ไม่นับเป็น MRR เพราะเป็นการจ่ายครั้งเดียว ไม่ใช่ค่าแพ็กเกจรายเดือน
+                        </MetricHelp>
+                      </div>
+                      <div className="mt-1 text-lg font-bold text-sky-200">{fmtBaht(cu.creditRevenue ?? 0)}</div>
+                      <div className="text-[10px] text-sky-300/70">{fmtNum(cu.creditBuyers ?? 0)} คน</div>
                     </div>
                     <div className="rounded-md border border-amber-400/25 bg-amber-500/10 px-3 py-2">
                       <div className="text-lg font-bold text-amber-200">{fmtNum(cu.trialActive)}</div>

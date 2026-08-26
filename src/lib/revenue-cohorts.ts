@@ -114,6 +114,80 @@ function tierPrice(prices: TierPrices, plan: string): number {
   return 0;
 }
 
+/** A PAID Payment row, reduced to what revenue classification needs. */
+export type PlanCashRow = {
+  userId: string;
+  amount: number;      // satang
+  note: string | null; // "credits" marks a credit-pack purchase
+  periodDays: number;
+  createdAt: Date;
+};
+
+/** A credit pack buys credits, not a plan term. */
+export const CREDIT_PACK_NOTE = "credits";
+/** Anything at least this long is a yearly term; used to spread annual cash over 12 months. */
+const ANNUAL_PERIOD_DAYS = 300;
+
+export interface PlanCashSummary {
+  /** Users with real PLAN cash — the ground truth for "is a paying customer". */
+  paidUserIds: Set<string>;
+  /** userId → monthly-equivalent of what they actually paid for their plan (฿). */
+  monthlyRevenueByUser: Map<string, number>;
+  /** Credit-pack revenue (฿). Real money, but never recurring plan revenue. */
+  creditRevenue: number;
+  /** Distinct people who bought a credit pack. */
+  creditBuyers: number;
+}
+
+/**
+ * Split PAID payments into plan cash and credit-pack cash.
+ *
+ * Two bugs this closes, both confirmed on prod 2026-08-27:
+ *  - a 199฿ credit top-up made its buyer a "paying customer" and priced them into MRR at the
+ *    full 599฿/month tier, even though they had never bought a plan; and
+ *  - MRR was priced off the tier LIST price, so a Founding annual buyer paying 2,995฿/year
+ *    (250฿/month) was counted at 599 × 10 / 12 = 499฿. Across thirteen payers that inflated
+ *    Studio MRR by ~3,565฿/month.
+ *
+ * Credit revenue is still cash — the lifetime-revenue card reads Stripe directly and always
+ * included it — it simply is not recurring plan revenue.
+ */
+export function summarizePlanCash(rows: readonly PlanCashRow[]): PlanCashSummary {
+  const paidUserIds = new Set<string>();
+  const monthlyRevenueByUser = new Map<string, number>();
+  const creditBuyerIds = new Set<string>();
+  const newestPlanRowAt = new Map<string, number>();
+  let creditSatang = 0;
+
+  for (const row of rows) {
+    if (row.note === CREDIT_PACK_NOTE) {
+      creditSatang += Math.max(0, row.amount);
+      creditBuyerIds.add(row.userId);
+      continue;
+    }
+    paidUserIds.add(row.userId);
+    if (row.amount <= 0) continue;
+    const baht = row.amount / 100;
+    const monthly = row.periodDays >= ANNUAL_PERIOD_DAYS ? baht / 12 : baht;
+    // A customer can hold several plan rows — a monthly term, then an annual conversion. The
+    // LATEST one is the live term. Picking by size instead would pin a converted customer to
+    // their old 599฿ monthly row, since a discounted annual term is smaller per month.
+    const at = row.createdAt instanceof Date ? row.createdAt.getTime() : 0;
+    const seenAt = newestPlanRowAt.get(row.userId);
+    if (seenAt == null || at >= seenAt) {
+      newestPlanRowAt.set(row.userId, at);
+      monthlyRevenueByUser.set(row.userId, monthly);
+    }
+  }
+
+  return {
+    paidUserIds,
+    monthlyRevenueByUser,
+    creditRevenue: creditSatang / 100,
+    creditBuyers: creditBuyerIds.size,
+  };
+}
+
 /**
  * Pure cohort computation — no DB access, fully testable.
  * @param users        Every user row (minimal fields, incl. id).
@@ -126,9 +200,23 @@ export function computeRevenueCohorts(
   paidUserIds: Set<string>,
   prices: TierPrices,
   now: Date = new Date(),
-  opts: { couponUserIds?: Set<string>; internalEmailPattern?: string } = {},
+  opts: {
+    couponUserIds?: Set<string>;
+    internalEmailPattern?: string;
+    /**
+     * userId → the monthly-equivalent of what this customer ACTUALLY paid for their plan (฿).
+     *
+     * Without it MRR is priced off the tier list price, which overstates every discounted
+     * customer: a Founding annual buyer pays 2,995฿/year (250฿/month) but was counted at
+     * 599 × 10 / 12 = 499฿. On prod that inflated Studio MRR by ~3,565฿/month across
+     * thirteen payers. A user absent from the map falls back to the list price, so callers
+     * that cannot compute it keep the previous behaviour.
+     */
+    monthlyRevenueByUser?: Map<string, number>;
+  } = {},
 ): RevenueCohorts {
   const couponUserIds = opts.couponUserIds ?? new Set<string>();
+  const monthlyRevenueByUser = opts.monthlyRevenueByUser;
   const internalPattern = (opts.internalEmailPattern ?? "@aoacademy").toLowerCase();
   const paying = {
     subMonthly: 0,
@@ -213,7 +301,10 @@ export function computeRevenueCohorts(
           if (isAnnual(u.billingPeriod)) paying.oneTimeAnnual++;
           else paying.oneTimeMonthly++;
         }
-        const add = monthlyEquiv(tierPrice(prices, plan), u.billingPeriod);
+        const actual = monthlyRevenueByUser?.get(u.id);
+        const add = typeof actual === "number" && Number.isFinite(actual) && actual >= 0
+          ? actual
+          : monthlyEquiv(tierPrice(prices, plan), u.billingPeriod);
         directMrr += add;
         mrr += add;
         if (plan === "BUSINESS") mrrByTier.business += add;
@@ -298,20 +389,25 @@ export async function getRevenueCohorts(now: Date = new Date()): Promise<Revenue
         bundleBillingPeriod: true, bundleAmountThb: true,
       },
     }),
-    // Distinct users who have EVER completed a PAID payment — the cash ground truth (all-time).
-    prisma.payment.findMany({ where: { status: "PAID" }, select: { userId: true }, distinct: ["userId"] }),
+    // Every PAID payment — the cash ground truth (all-time). Not `distinct` any more: the
+    // amounts and the credit-pack marker are both needed to price MRR honestly.
+    prisma.payment.findMany({
+      where: { status: "PAID" },
+      select: { userId: true, amount: true, note: true, periodDays: true, createdAt: true },
+      orderBy: { createdAt: "asc" },
+    }),
     // Distinct users who redeemed a coupon — to split comped access (workshop/promo) from admin/other.
     prisma.couponRedemption.findMany({ select: { userId: true }, distinct: ["userId"] }),
     getPlanConfig(),
   ]);
 
-  const paidUserIds = new Set(paidRows.map((r) => r.userId));
+  const planCash = summarizePlanCash(paidRows);
   const couponUserIds = new Set(couponRows.map((r) => r.userId));
   return computeRevenueCohorts(
     users,
-    paidUserIds,
+    planCash.paidUserIds,
     { pro: planConfig.pro.price, business: planConfig.business.price },
     now,
-    { couponUserIds },
+    { couponUserIds, monthlyRevenueByUser: planCash.monthlyRevenueByUser },
   );
 }
