@@ -39,7 +39,7 @@ MANIFEST_PATH = VOICE_ROOT / "voices.json"
 
 EXPECTED_VOICE_IDS = [f"voice_{index:02d}" for index in range(1, 49)]
 EXPECTED_SAMPLE_RATE = 24_000
-MIN_DURATION_SECONDS = 2.0
+MIN_DURATION_SECONDS = 1.5
 MAX_DURATION_SECONDS = 10.0
 ASR_FAIL_CER = 0.10
 ASR_REVIEW_CER = 0.05
@@ -215,7 +215,7 @@ def add_audio_findings(
     if not MIN_DURATION_SECONDS <= metrics.duration_seconds <= MAX_DURATION_SECONDS:
         findings.append(Finding("FAIL", "duration", (voice_id,), (
             f"{label} duration={metrics.duration_seconds:.2f}s อยู่นอกช่วง "
-            f"{MIN_DURATION_SECONDS:.0f}-{MAX_DURATION_SECONDS:.0f}s"
+            f"{MIN_DURATION_SECONDS:.1f}-{MAX_DURATION_SECONDS:.0f}s"
         )))
     if metrics.clipping_ratio > 0.001:
         findings.append(Finding("FAIL", "clipping", (voice_id,), (

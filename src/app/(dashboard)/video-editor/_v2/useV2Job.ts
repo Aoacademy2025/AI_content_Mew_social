@@ -21,6 +21,14 @@ import {
   type VideoJobOperation,
 } from "@/lib/video-job-idempotency";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
+import {
+  apiErrorCode,
+  apiErrorMessage,
+  parseQuotaExceeded,
+  QUOTA_EXCEEDED_CODE,
+  quotaExceededText,
+  type QuotaExceededInfo,
+} from "@/lib/quota-error";
 import { buildBgmSelectionInput } from "@/lib/bgm-selection";
 import { shouldSendLegacyBrollVisualStyle } from "@/lib/broll-preferences";
 import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
@@ -116,6 +124,13 @@ export type SubmitResult = {
   // with no missingKey field. Kept separate from missingKey (not overloaded onto it)
   // because the user already has a key here — ApiKeyModal is the wrong surface for it.
   missingVoiceId?: boolean;
+  /**
+   * Set only for a `quota_exceeded` refusal, parsed out of EITHER response envelope
+   * (`/api/videos/render`'s `{ error: { code, … } }` or `/api/videos/jobs`'s flat
+   * `{ error: "quota_exceeded", … }`). Its presence is the shell's signal to open the
+   * upgrade path instead of a dead-end toast.
+   */
+  quota?: QuotaExceededInfo;
 };
 
 function isHeygenProviderAction(value: unknown): value is HeygenProviderAction {
@@ -479,20 +494,29 @@ export function useV2Job(p: V2Project) {
         });
         const d = await res.json().catch(() => null);
         if (!res.ok || !d?.jobId) {
+          // Read the code through the shared parser: `d.error` is a plain string on this
+          // route today but an envelope object on the render route, and a `===` compare
+          // against the raw value silently misses the envelope (issue #298).
+          const errorCode = apiErrorCode(d);
+          const quota = parseQuotaExceeded(d);
           retryAmbiguous = res.status >= 500
             || res.ok
             || res.status === 429
-            || d?.error === "too_many_jobs"
-            || d?.error === "quota_exceeded";
+            || errorCode === "too_many_jobs"
+            || errorCode === QUOTA_EXCEEDED_CODE;
           setJob((j) => ({ ...j, phase: "idle" }));
+          const fallback = `ส่งงานไม่สำเร็จ (${res.status})`;
           return {
             ok: false,
-            message: d?.message ?? d?.error ?? `ส่งงานไม่สำเร็จ (${res.status})`,
+            message: quota
+              ? quotaExceededText(quota, fallback)
+              : apiErrorMessage(d, fallback),
             code: isProviderErrorCode(d?.code) ? d.code : undefined,
             provider: typeof d?.provider === "string" ? d.provider : undefined,
             actions: Array.isArray(d?.actions) ? d.actions.filter(isHeygenProviderAction) : undefined,
             missingKey: mapMissingKey(d?.missingKey),
-            missingVoiceId: d?.error === "missing_voice_id",
+            missingVoiceId: errorCode === "missing_voice_id",
+            ...(quota ? { quota } : {}),
           };
         }
         if (!responseMatchesAttempt(d, attempt, false)) {
@@ -569,13 +593,20 @@ export function useV2Job(p: V2Project) {
         });
         const d = await res.json().catch(() => null);
         if (!res.ok || !d?.jobId) {
+          const errorCode = apiErrorCode(d);
+          const quota = parseQuotaExceeded(d);
           retryAmbiguous = res.status >= 500
             || res.ok
             || res.status === 429
-            || d?.error === "too_many_jobs"
-            || d?.error === "quota_exceeded";
+            || errorCode === "too_many_jobs"
+            || errorCode === QUOTA_EXCEEDED_CODE;
           setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));
-          return { ok: false, message: d?.message ?? d?.error ?? `ส่งออกไม่สำเร็จ (${res.status})` };
+          const fallback = `ส่งออกไม่สำเร็จ (${res.status})`;
+          return {
+            ok: false,
+            message: quota ? quotaExceededText(quota, fallback) : apiErrorMessage(d, fallback),
+            ...(quota ? { quota } : {}),
+          };
         }
         if (!responseMatchesAttempt(d, attempt, false)) {
           setJob((j) => ({ ...j, phase: jobIdRef.current ? "done" : "idle" }));

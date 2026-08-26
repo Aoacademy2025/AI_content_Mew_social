@@ -7,6 +7,7 @@ import {
   excludeLiveTrialingSubscriptionWhere,
   preserveTrialOnConvertEnabled,
 } from "@/lib/preserve-trial";
+import { recordTrialExpiredTelemetry } from "@/lib/trial-expired-telemetry";
 
 export { TRIAL_MINUTES } from "@/lib/plan-limits";
 
@@ -87,17 +88,27 @@ export async function revertExpiredTrials(): Promise<number> {
       OR: [{ subStatus: null }, { subStatus: { not: "active" } }],
       ...liveSubscriptionGuard,
     },
-    select: { id: true },
+    // minutesUsed is read BEFORE the revert — the FREE usage window below resets it to 0.
+    select: { id: true, trialEndsAt: true, minutesUsed: true },
   });
   let reverted = 0;
   for (const u of due) {
     const res = await prisma.user.updateMany({
       // re-guard mirrors the outer query (idempotent + closes the TOCTOU where a user pays mid-loop)
       where: { id: u.id, trialEndsAt: { not: null, lte: now }, OR: [{ subStatus: null }, { subStatus: { not: "active" } }], ...liveSubscriptionGuard },
-      data: { plan: "FREE", planExpiresAt: null, trialEndsAt: null, ...usageWindowForPlan("FREE", now) },
+      data: {
+        plan: "FREE",
+        planExpiresAt: null,
+        trialEndsAt: null,
+        // Keep the expiry date the clearing above would otherwise destroy — cohort
+        // reporting and the trial reminders both need to know WHEN the trial ended.
+        trialEndedAt: u.trialEndsAt,
+        ...usageWindowForPlan("FREE", now),
+      },
     });
     if (res.count !== 1) continue;
     reverted++;
+    await recordTrialExpiredTelemetry({ userId: u.id, minutesUsed: u.minutesUsed });
     await createNotification({
       userId: u.id,
       type: "LIMIT_REACHED",

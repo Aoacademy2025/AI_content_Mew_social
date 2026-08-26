@@ -17,8 +17,9 @@ import {
 import { toast } from "sonner";
 import { customerGenerationErrorCopy } from "@/lib/customer-generation-error";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
+import HeroVoiceClonePanel from "./HeroVoiceClonePanel";
 
-type StudioMode = "image" | "voice";
+type StudioMode = "image" | "voice" | "cloning";
 type ImageEngine = "runpod" | "cloud";
 type ImageModel = {
   id: string;
@@ -34,7 +35,7 @@ type ImageModel = {
 };
 type Catalog = {
   imageModels: ImageModel[];
-  voice: { available: boolean; maxDurationSec: number; maxScriptChars: number };
+  voice: { available: boolean; cloning: boolean; maxDurationSec: number; maxScriptChars: number };
   plan: string;
   balance: { granted: number; promotional: number; purchased: number; total: number };
 };
@@ -207,17 +208,20 @@ export default function AiStudioPage() {
       .finally(() => setLoading(false));
   }, [loadCatalog, loadJobs]);
 
+  const loadVoices = useCallback(async () => {
+    const response = await fetch("/api/omnivoice/voices", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !Array.isArray(data)) throw new Error(apiMessage(data, "โหลดรายการเสียงไม่สำเร็จ"));
+    setVoices(data as Voice[]);
+    setVoiceId((current) => (data as Voice[]).some((voice) => voice.voice_id === current)
+      ? current
+      : (data[0] as Voice | undefined)?.voice_id ?? "");
+  }, []);
+
   useEffect(() => {
     if (!catalog?.voice.available) return;
-    fetch("/api/omnivoice/voices", { cache: "no-store" })
-      .then(async (response) => {
-        const data = await response.json();
-        if (!response.ok || !Array.isArray(data)) throw new Error(apiMessage(data, "โหลดรายการเสียงไม่สำเร็จ"));
-        setVoices(data as Voice[]);
-        setVoiceId((current) => current || (data[0] as Voice | undefined)?.voice_id || "");
-      })
-      .catch((error) => toast.error(error instanceof Error ? error.message : "โหลดรายการเสียงไม่สำเร็จ"));
-  }, [catalog?.voice.available]);
+    loadVoices().catch((error) => toast.error(error instanceof Error ? error.message : "โหลดรายการเสียงไม่สำเร็จ"));
+  }, [catalog?.voice.available, loadVoices]);
 
   const activeKey = useMemo(
     () => jobs.filter((job) => ACTIVE_JOB_STATUS.has(job.status)).map((job) => job.id).join(","),
@@ -338,7 +342,7 @@ export default function AiStudioPage() {
               AI Studio
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: "var(--ui-text-secondary)" }}>
-              สร้างภาพประกอบแบบไม่มีตัวหนังสือ และสร้างเสียงยาวตามแพ็กเกจจากพื้นที่เดียว
+              สร้างภาพ สร้างเสียง และจัดการเสียงโคลนส่วนตัวจากพื้นที่เดียว
             </p>
           </div>
           <div className="flex items-center gap-3 rounded-full px-4 py-2.5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
@@ -351,11 +355,11 @@ export default function AiStudioPage() {
         </header>
 
         <div className="mb-6 inline-flex rounded-xl p-1" style={{ background: "var(--ui-badge-neutral-bg)", border: "1px solid var(--ui-card-border)" }}>
-          {([[
-            "image", "สร้างภาพ", ImageIcon,
-          ], [
-            "voice", "สร้างเสียง", AudioLines,
-          ]] as const).map(([value, label, Icon]) => (
+          {([
+            ["image", "สร้างภาพ", ImageIcon],
+            ["voice", "สร้างเสียง", AudioLines],
+            ...(catalog?.voice.cloning ? [["cloning", "โคลนเสียง", WandSparkles]] as const : []),
+          ] as ReadonlyArray<readonly [StudioMode, string, typeof ImageIcon]>).map(([value, label, Icon]) => (
             <button
               key={value}
               type="button"
@@ -490,7 +494,7 @@ export default function AiStudioPage() {
                   งานนี้ใช้เฉพาะ {imageEngine === "runpod" ? "RunPod AI" : "Cloud API"} หากไม่สำเร็จระบบจะคืนเครดิตและไม่ส่งต่อไปอีก Engine
                 </p>
               </form>
-            ) : (
+            ) : mode === "voice" ? (
               <form onSubmit={submitVoice} className="space-y-7">
                 <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl px-4 py-3" style={{ background: "rgba(139,92,246,.08)", border: "1px solid rgba(139,92,246,.24)" }}>
                   <p className="text-sm font-medium" style={{ color: "var(--ui-text-primary)" }}>{catalog?.plan} · ยาวสุด {(catalog?.voice.maxDurationSec ?? 0) / 60} นาทีต่อเสียง</p>
@@ -536,6 +540,15 @@ export default function AiStudioPage() {
                   </>
                 )}
               </form>
+            ) : (
+              <HeroVoiceClonePanel
+                maxScriptChars={catalog?.voice.maxScriptChars ?? 500}
+                onVoicesChanged={loadVoices}
+                onJobCreated={(created) => {
+                  const job = created as StudioJob;
+                  setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+                }}
+              />
             )}
           </section>
 

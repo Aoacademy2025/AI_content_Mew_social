@@ -19,12 +19,15 @@ import {
   pollRunpodOmniVoiceJob,
   submitRunpodOmniVoiceJob,
   type OmniVoiceConfig,
+  type RunpodOmniVoiceRequest,
 } from "@/lib/omnivoice";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { mergeSegmentTiming, pcmDurationMs } from "@/lib/tts-timing";
 import { syncMinuteWindow } from "@/lib/minute-limits";
 import { videoExpiryFor } from "@/lib/plan-limits";
+import { isUserVoiceId, loadUserVoiceRef } from "@/lib/user-voices.server";
+import { isHeroVoiceCloningEnabled } from "@/lib/omnivoice-policy";
 
 const execFileAsync = promisify(execFile);
 const STATE_VERSION = 1 as const;
@@ -41,12 +44,16 @@ type HeroVoiceChunkState = {
   delayTimeMs?: number;
   executionTimeMs?: number;
   workerVersion?: string;
+  catalogVersion?: string;
   language?: string;
   numStep?: number;
 };
 
 type HeroVoiceGenerationStateV1 = {
   version: typeof STATE_VERSION;
+  // Optional for backward compatibility with durable TTS jobs accepted before
+  // clone mode shipped. Missing means stock TTS.
+  mode?: "tts" | "clone";
   voiceId: string;
   speed: number;
   backend: "runpod";
@@ -58,6 +65,10 @@ type HeroVoiceGenerationStateV1 = {
   chunks: HeroVoiceChunkState[];
   result?: HeroVoiceGenerationResult;
 };
+
+function generationMode(state: HeroVoiceGenerationStateV1): "tts" | "clone" {
+  return state.mode ?? "tts";
+}
 
 export type HeroVoiceGenerationResult = {
   voiceUrl: string;
@@ -102,6 +113,7 @@ function parseState(value: string | null): HeroVoiceGenerationStateV1 | null {
   if (!isRecord(parsed)
     || parsed.version !== STATE_VERSION
     || parsed.backend !== "runpod"
+    || (parsed.mode !== undefined && parsed.mode !== "tts" && parsed.mode !== "clone")
     || typeof parsed.voiceId !== "string"
     || typeof parsed.speed !== "number"
     || !Number.isFinite(parsed.speed)
@@ -297,7 +309,29 @@ async function submitPendingAttempt(job: AiGenerationJob): Promise<AiGenerationJ
 
   try {
     const config = pinnedRunpodConfig(job, state);
-    const submitted = await submitRunpodOmniVoiceJob(config, state.voiceId, chunk.speechText, state.speed);
+    const mode = generationMode(state);
+    let request: RunpodOmniVoiceRequest;
+    if (mode === "clone") {
+      const ref = await loadUserVoiceRef(job.userId, state.voiceId);
+      if (!ref) {
+        return failAndRefundVoiceJob(
+          job,
+          state,
+          "USER_VOICE_REFERENCE_MISSING",
+          "ไม่พบไฟล์อ้างอิงของเสียงโคลนนี้",
+        );
+      }
+      request = {
+        mode: "clone",
+        text: chunk.speechText,
+        speed: state.speed,
+        refAudioBase64: ref.audioBase64,
+        refText: ref.refText,
+      };
+    } else {
+      request = { mode: "tts", voiceId: state.voiceId, text: chunk.speechText, speed: state.speed };
+    }
+    const submitted = await submitRunpodOmniVoiceJob(config, request);
     const now = new Date();
     const updated = await prisma.$transaction(async (tx) => {
       const recorded = await tx.aiGenerationAttempt.updateMany({
@@ -324,6 +358,7 @@ async function submitPendingAttempt(job: AiGenerationJob): Promise<AiGenerationJ
       endpointId: job.providerEndpoint ?? "",
       sequence: attempt.sequence,
       segments: state.chunks.length,
+      mode,
     });
     return updated;
   } catch (error) {
@@ -443,6 +478,19 @@ export async function startHeroVoiceGeneration(input: {
   });
   if (existing) return { job: existing, created: false };
 
+  const mode = isUserVoiceId(input.voiceId) ? "clone" : "tts";
+  if (mode === "clone") {
+    if (!isHeroVoiceCloningEnabled()) {
+      throw new HeroVoiceGenerationError("ไม่พบเสียงโคลนนี้", "USER_VOICE_NOT_FOUND", 404);
+    }
+    const owner = await prisma.user.findUnique({ where: { id: input.userId }, select: { role: true } });
+    if (owner?.role !== "ADMIN") {
+      throw new HeroVoiceGenerationError("ไม่พบเสียงโคลนนี้", "USER_VOICE_NOT_FOUND", 404);
+    }
+    const ref = await loadUserVoiceRef(input.userId, input.voiceId);
+    if (!ref) throw new HeroVoiceGenerationError("ไม่พบเสียงโคลนนี้", "USER_VOICE_NOT_FOUND", 404);
+  }
+
   const chunks = splitHeroVoiceScriptForTts(fullText, config.maxChunkChars);
   const speechRisks = [...new Map(
     chunks.flatMap((chunk) => chunk.risks).map((risk) => [risk.code, risk]),
@@ -458,6 +506,7 @@ export async function startHeroVoiceGeneration(input: {
 
   const state: HeroVoiceGenerationStateV1 = {
     version: STATE_VERSION,
+    mode,
     voiceId: input.voiceId,
     speed: input.speed,
     backend: "runpod",
@@ -477,7 +526,7 @@ export async function startHeroVoiceGeneration(input: {
         kind: "voice",
         provider: "runpod",
         model: input.voiceId,
-        providerModel: "omnivoice",
+        providerModel: mode === "clone" ? "omnivoice-clone" : "omnivoice",
         providerRoute: "runpod-custom",
         providerEndpoint: config.endpointId,
         status: "queued",
@@ -491,7 +540,7 @@ export async function startHeroVoiceGeneration(input: {
           create: {
             sequence: 1,
             provider: "runpod",
-            providerModel: "omnivoice",
+            providerModel: mode === "clone" ? "omnivoice-clone" : "omnivoice",
             providerRoute: "runpod-custom",
             providerEndpoint: config.endpointId,
             estimatedCostUsdMicros: 0,
@@ -604,7 +653,7 @@ async function finalizeVoiceJob(job: AiGenerationJob, state: HeroVoiceGeneration
 
   if (completed.status === "completed") {
     removeParts(state);
-    await recordVoiceEvent(job.userId, "omnivoice_tts", {
+    await recordVoiceEvent(job.userId, generationMode(state) === "clone" ? "omnivoice_clone" : "omnivoice_tts", {
       aiGenerationJobId: job.id,
       providerJobIds: state.chunks.map((chunk) => chunk.providerJobId).filter(Boolean).join(","),
       endpointId: job.providerEndpoint ?? "",
@@ -613,8 +662,10 @@ async function finalizeVoiceJob(job: AiGenerationJob, state: HeroVoiceGeneration
       providerDelayTimeMs: completed.delayTimeMs ?? 0,
       providerExecutionTimeMs: completed.executionTimeMs ?? 0,
       backend: state.backend,
+      mode: generationMode(state),
       numStep: [...new Set(state.chunks.map((chunk) => chunk.numStep).filter((value) => value !== undefined))].join(","),
       workerVersions: [...new Set(state.chunks.map((chunk) => chunk.workerVersion).filter(Boolean))].join(","),
+      catalogVersions: [...new Set(state.chunks.map((chunk) => chunk.catalogVersion).filter(Boolean))].join(","),
       languageHints: [...new Set(state.chunks.map((chunk) => chunk.language).filter(Boolean))].join(","),
       segments: state.chunks.length,
       speechNormalizerVersion: state.speechNormalizerVersion,
@@ -678,7 +729,7 @@ export async function advanceHeroVoiceGeneration(userId: string, jobId: string):
 
   let snapshot;
   try {
-    snapshot = await pollRunpodOmniVoiceJob(config, providerJobId);
+    snapshot = await pollRunpodOmniVoiceJob(config, providerJobId, generationMode(state));
   } catch (error) {
     await recordVoiceEvent(userId, "omnivoice_provider_poll_error", {
       aiGenerationJobId: job.id,
@@ -740,6 +791,7 @@ export async function advanceHeroVoiceGeneration(userId: string, jobId: string):
           delayTimeMs: snapshot.delayTimeMs,
           executionTimeMs: snapshot.executionTimeMs,
           workerVersion: snapshot.response.worker_version,
+          catalogVersion: snapshot.response.catalog_version,
           language: snapshot.response.language,
           numStep: snapshot.response.num_step,
         }
@@ -758,7 +810,7 @@ export async function advanceHeroVoiceGeneration(userId: string, jobId: string):
           jobId: job!.id,
           sequence: sequence + 1,
           provider: "runpod",
-          providerModel: "omnivoice",
+          providerModel: generationMode(nextState) === "clone" ? "omnivoice-clone" : "omnivoice",
           providerRoute: "runpod-custom",
           providerEndpoint: job!.providerEndpoint,
           estimatedCostUsdMicros: 0,

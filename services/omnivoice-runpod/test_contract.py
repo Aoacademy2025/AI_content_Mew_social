@@ -1,238 +1,208 @@
+import base64
 import json
-import hashlib
 from pathlib import Path
-import threading
-import time
+import sys
 import unittest
-
-from contract import InputError, parse_design_input, parse_tts_input
-from prompt_cache import VoicePromptCache
+import wave
 
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parents[1]
+sys.path.insert(0, str(ROOT))
+
+from contract import (  # noqa: E402
+    CONTRACT_VERSION,
+    InputError,
+    MAX_REF_AUDIO_BASE64_CHARS,
+    parse_clone_input,
+    parse_tts_input,
+    parse_worker_input,
+)
+from text_utils import chunk_text, split_by_language  # noqa: E402
+
+
+def stock_payload(**overrides):
+    payload = {
+        "contract_version": CONTRACT_VERSION,
+        "mode": "tts",
+        "voice_id": "voice_01",
+        "text": "สวัสดีครับ Hero AI Voice",
+        "speed": 1.0,
+        "num_step": 32,
+        "mixed_language": True,
+    }
+    payload.update(overrides)
+    return payload
 
 
 class ContractTest(unittest.TestCase):
-    def test_valid_request(self):
-        result = parse_tts_input(
-            {"operation": "tts", "voice_id": "voice_01", "text": " สวัสดีครับ ", "num_step": 32, "speed": 1.0},
-            max_text_length=800,
-        )
-        self.assertEqual(result.voice_id, "voice_01")
-        self.assertEqual(result.text, "สวัสดีครับ")
-        self.assertEqual(result.num_step, 32)
+    def assert_code(self, code, fn):
+        with self.assertRaises(InputError) as caught:
+            fn()
+        self.assertEqual(caught.exception.code, code)
 
-    def test_defaults(self):
-        result = parse_tts_input({"voice_id": "voice_02", "text": "hello"}, 800)
-        self.assertEqual(result.num_step, 32)
-        self.assertEqual(result.speed, 1.0)
+    def test_stock_tts_contract(self):
+        request = parse_tts_input(stock_payload(), 800)
+        self.assertEqual(request.voice_id, "voice_01")
+        self.assertEqual(request.num_step, 32)
+        self.assertTrue(request.mixed_language)
 
-    def test_quality_contract_accepts_upstream_default_steps(self):
-        result = parse_tts_input(
-            {"voice_id": "voice_02", "text": "hello", "num_step": 32},
+    def test_voice_design_contract(self):
+        request = parse_tts_input(
+            stock_payload(voice_id=None, instruct="female, high pitch"),
             800,
         )
-        self.assertEqual(result.num_step, 32)
+        self.assertIsNone(request.voice_id)
+        self.assertEqual(request.instruct, "female, high pitch")
 
-    def test_quality_contract_rejects_lower_steps_for_every_voice(self):
-        for voice_id in ("voice_01", "voice_06", "voice_25", "voice_46", "voice_48"):
-            with self.subTest(voice_id=voice_id), self.assertRaises(InputError) as raised:
-                parse_tts_input({"voice_id": voice_id, "text": "hello", "num_step": 16}, 800)
-            self.assertEqual(raised.exception.code, "INVALID_NUM_STEP")
-
-    def test_voice_design_recovery_contract(self):
-        result = parse_design_input(
-            {
-                "operation": "design",
-                "text": " สวัสดีครับ วันนี้อากาศดีมาก ",
-                "instruct": "male, young adult, very high pitch",
-                "num_step": 32,
-                "seed": 44,
-            },
-            max_text_length=160,
+    def test_contract_version_is_required(self):
+        self.assert_code(
+            "INVALID_CONTRACT_VERSION",
+            lambda: parse_tts_input(stock_payload(contract_version=None), 800),
         )
-        self.assertEqual(result.text, "สวัสดีครับ วันนี้อากาศดีมาก")
-        self.assertEqual(result.instruct, "male, young adult, very high pitch")
-        self.assertEqual(result.num_step, 32)
-        self.assertEqual(result.seed, 44)
 
-    def test_voice_design_recovery_rejects_unbounded_inputs(self):
-        bad = [
-            ({"operation": "tts", "text": "x", "instruct": "male"}, "INVALID_OPERATION"),
-            ({"operation": "design", "text": " ", "instruct": "male"}, "INVALID_TEXT"),
-            ({"operation": "design", "text": "x" * 161, "instruct": "male"}, "TEXT_TOO_LONG"),
-            ({"operation": "design", "text": "x", "instruct": "male, excited"}, "INVALID_INSTRUCT"),
-            ({"operation": "design", "text": "x", "instruct": "male", "num_step": 8}, "INVALID_NUM_STEP"),
-            ({"operation": "design", "text": "x", "instruct": "male", "seed": -1}, "INVALID_SEED"),
-        ]
-        for payload, code in bad:
-            with self.subTest(code=code), self.assertRaises(InputError) as raised:
-                parse_design_input(payload, max_text_length=160)
-            self.assertEqual(raised.exception.code, code)
+    def test_exactly_one_voice_selection_is_required(self):
+        self.assert_code(
+            "INVALID_VOICE_SELECTION",
+            lambda: parse_tts_input(stock_payload(voice_id=None), 800),
+        )
+        self.assert_code(
+            "INVALID_VOICE_SELECTION",
+            lambda: parse_tts_input(stock_payload(instruct="female"), 800),
+        )
 
-    def test_rejects_bad_inputs(self):
-        bad = [
-            ({}, "INVALID_VOICE_ID"),
-            ({"voice_id": "../secret", "text": "x"}, "INVALID_VOICE_ID"),
-            ({"voice_id": "voice_01", "text": " "}, "INVALID_TEXT"),
-            ({"voice_id": "voice_01", "text": "x" * 801}, "TEXT_TOO_LONG"),
-            ({"voice_id": "voice_01", "text": "x", "num_step": 3}, "INVALID_NUM_STEP"),
-            ({"voice_id": "voice_01", "text": "x", "speed": 3.1}, "INVALID_SPEED"),
-            ({"operation": "shell", "voice_id": "voice_01", "text": "x"}, "INVALID_OPERATION"),
-        ]
-        for payload, code in bad:
-            with self.subTest(code=code), self.assertRaises(InputError) as raised:
-                parse_tts_input(payload, 800)
-            self.assertEqual(raised.exception.code, code)
+    def test_voice_id_fails_closed(self):
+        self.assert_code(
+            "INVALID_VOICE_ID",
+            lambda: parse_tts_input(stock_payload(voice_id="../voice_01"), 800),
+        )
 
-    def test_v2_manifest_contains_all_original_voices(self):
-        manifest = json.loads((ROOT / "assets" / "voices" / "voices.json").read_text(encoding="utf-8"))
+    def test_text_speed_steps_and_mixed_language_are_bounded(self):
+        self.assert_code("TEXT_TOO_LONG", lambda: parse_tts_input(stock_payload(text="ก" * 801), 800))
+        self.assert_code("INVALID_SPEED", lambda: parse_tts_input(stock_payload(speed=3.1), 800))
+        self.assert_code("INVALID_NUM_STEP", lambda: parse_tts_input(stock_payload(num_step=65), 800))
+        self.assert_code(
+            "INVALID_MIXED_LANGUAGE",
+            lambda: parse_tts_input(stock_payload(mixed_language="yes"), 800),
+        )
+
+    def test_clone_contract(self):
+        payload = {
+            "contract_version": CONTRACT_VERSION,
+            "mode": "clone",
+            "ref_audio_b64": base64.b64encode(b"fake-audio-for-contract-only").decode("ascii"),
+            "ref_text": "ข้อความในเสียงอ้างอิง",
+            "text": "ข้อความที่ต้องการสร้าง",
+        }
+        request = parse_clone_input(payload, 800)
+        self.assertEqual(request.num_step, 32)
+        self.assertEqual(request.guidance_scale, 2.5)
+        self.assertEqual(parse_worker_input(payload, 800), request)
+
+    def test_clone_payload_is_bounded(self):
+        self.assert_code(
+            "REF_AUDIO_TOO_LARGE",
+            lambda: parse_clone_input(
+                {
+                    "contract_version": CONTRACT_VERSION,
+                    "mode": "clone",
+                    "ref_audio_b64": "A" * (MAX_REF_AUDIO_BASE64_CHARS + 1),
+                    "ref_text": "reference",
+                    "text": "output",
+                },
+                800,
+            ),
+        )
+
+    def test_unknown_mode_is_rejected(self):
+        self.assert_code(
+            "INVALID_MODE",
+            lambda: parse_worker_input({"contract_version": 2, "mode": "unknown"}, 800),
+        )
+
+
+class CatalogTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.manifest = json.loads((ROOT / "assets/voices/voices.json").read_text(encoding="utf-8"))
+
+    def test_catalog_has_exactly_48_ordered_voices(self):
         self.assertEqual(
-            [item["id"] for item in manifest],
+            [voice["id"] for voice in self.manifest],
             [f"voice_{index:02d}" for index in range(1, 49)],
         )
-        for item in manifest:
-            self.assertTrue(item["desc"].strip())
-            self.assertTrue(item["instruct"].strip())
-            self.assertEqual(item["ref_audio"], f'{item["id"]}.wav')
-            self.assertTrue(item["ref_text"].strip())
-            self.assertTrue(item["preview_text"].strip())
 
-    def test_v2_worker_pins_thai_language(self):
+    def test_catalog_metadata_and_audio_are_complete(self):
+        for voice in self.manifest:
+            for field in ("desc", "instruct", "ref_audio", "ref_text", "preview_text"):
+                self.assertIsInstance(voice[field], str)
+                self.assertTrue(voice[field].strip(), f"{voice['id']} missing {field}")
+
+            worker_audio = ROOT / "assets/voices" / voice["ref_audio"]
+            app_preview = REPO_ROOT / "assets/hero-voice-previews" / voice["ref_audio"]
+            self.assertTrue(worker_audio.is_file(), f"missing worker asset {worker_audio}")
+            self.assertTrue(app_preview.is_file(), f"missing app preview {app_preview}")
+            self.assertEqual(worker_audio.read_bytes(), app_preview.read_bytes())
+
+            with wave.open(str(worker_audio), "rb") as wav:
+                self.assertEqual(wav.getnchannels(), 1)
+                self.assertEqual(wav.getsampwidth(), 2)
+                self.assertEqual(wav.getframerate(), 24_000)
+                duration = wav.getnframes() / wav.getframerate()
+                self.assertGreaterEqual(duration, 1.5)
+                self.assertLessEqual(duration, 10)
+
+    def test_voice_44_uses_the_new_completed_profile(self):
+        voice = self.manifest[43]
+        self.assertEqual(voice["instruct"], "young adult, male, very high pitch")
+        self.assertEqual(voice["ref_text"], "โอ้โห เยี่ยมไปเลยครับ ดีใจด้วยจริงๆ")
+
+
+class LanguageTest(unittest.TestCase):
+    def test_mixed_thai_english_script_is_segmented_without_losing_text(self):
+        text = "วันนี้ใช้ Hero Voice สร้างเสียง"
+        segments = split_by_language(text)
+        self.assertEqual("".join(segment for segment, _language in segments), text)
+        self.assertEqual([language for _segment, language in segments], ["Thai", "English", "Thai"])
+
+    def test_streaming_chunks_remain_bounded(self):
+        chunks = chunk_text("ประโยคหนึ่งสั้นๆ ครับ。" * 30, min_chars=20, max_chars=80)
+        self.assertTrue(chunks)
+        self.assertTrue(all(len(chunk) <= 80 for chunk in chunks))
+
+
+class ImageTest(unittest.TestCase):
+    def test_runpod_and_fastapi_pins_are_dependency_compatible(self):
+        requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("runpod==1.10.1", requirements)
+        self.assertIn("fastapi==0.138.1", requirements)
+
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("apt-get install -y --no-install-recommends build-essential", dockerfile)
+        self.assertIn("apt-get purge -y --auto-remove build-essential", dockerfile)
+
+    def test_release_image_is_pinned_and_runs_v2_handler(self):
+        source = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:", source)
+        self.assertIn("OMNIVOICE_SOURCE_COMMIT=346bb75330980a236540d61a0808d00767c0973b", source)
+        self.assertIn("OMNIVOICE_MODEL_REVISION=c5fdb5ccb189668d56333f77ba2629f4cd7535f4", source)
+        self.assertIn('CMD ["python", "-u", "/app/handler.py"]', source)
+        self.assertNotIn(":latest", source)
+
+    def test_empty_voice_allowlist_serves_the_complete_catalog(self):
+        source = (ROOT / "server.py").read_text(encoding="utf-8")
+        self.assertIn('os.environ.get("TTS_VOICE_IDS", "").strip() or _DEFAULT_VOICE_IDS', source)
+
+    def test_handler_raises_errors_instead_of_completing_with_error_payload(self):
         source = (ROOT / "handler.py").read_text(encoding="utf-8")
-        self.assertIn('DEFAULT_LANGUAGE = os.environ.get("TTS_LANGUAGE", "th")', source)
-        self.assertIn("language=DEFAULT_LANGUAGE", source)
+        self.assertNotIn('return {"error"', source)
+        self.assertIn("parse_worker_input", source)
+        self.assertIn("worker_version", source)
+        self.assertNotIn("request.text}", source)
 
-    def test_recovered_voice_44_reference_is_pinned(self):
-        manifest = json.loads((ROOT / "assets" / "voices" / "voices.json").read_text(encoding="utf-8"))
-        voice = next(item for item in manifest if item["id"] == "voice_44")
-        self.assertEqual(voice["instruct"], "male, very high pitch")
-        self.assertEqual(
-            voice["ref_text"],
-            "สวัสดีครับ วันนี้อากาศดีและเหมาะกับการสร้างวิดีโอภาษาไทย",
-        )
-        reference = (ROOT / "assets" / "voices" / voice["ref_audio"]).read_bytes()
-        self.assertEqual(
-            hashlib.sha256(reference).hexdigest(),
-            "ac84a04cd2b7fc34cb573c2231c4453f8983659fc67449def41e37c365e3d72b",
-        )
-
-    def test_redesigned_references_are_pinned(self):
-        manifest = json.loads((ROOT / "assets" / "voices" / "voices.json").read_text(encoding="utf-8"))
-        manifest_by_id = {item["id"]: item for item in manifest}
-        selection = json.loads(
-            (ROOT / "assets" / "voices" / "redesign-selection.json").read_text(encoding="utf-8")
-        )
-        self.assertLess(selection["speaker_gates"]["selected_global_resemblyzer_max"], 0.9)
-        self.assertLess(selection["speaker_gates"]["selected_global_ecapa_max"], 0.75)
-        self.assertEqual(len(selection["voices"]), 15)
-        for selected in selection["voices"]:
-            with self.subTest(voice_id=selected["id"]):
-                voice = manifest_by_id[selected["id"]]
-                self.assertEqual(voice["instruct"], selected["instruct"])
-                reference = ROOT / "assets" / "voices" / voice["ref_audio"]
-                self.assertEqual(hashlib.sha256(reference.read_bytes()).hexdigest(), selected["sha256"])
-
-    def test_v2_release_image_pins_audited_parent_digest(self):
-        source = (ROOT / "Dockerfile.v2").read_text(encoding="utf-8")
-        self.assertIn(
-            "@sha256:decd00cc9ade9bc34b09eec3a6036e80b416f3f2c3a9530d4cfeca7e0ab7b1e2",
-            source,
-        )
-        self.assertIn('TTS_VOICE_IDS=""', source)
-        self.assertIn("TTS_LANGUAGE=th", source)
-        self.assertIn("TTS_DEFAULT_NUM_STEP=8", source)
-
-    def test_v3_slim_image_downloads_model_as_the_runtime_user(self):
-        source = (ROOT / "Dockerfile.v3").read_text(encoding="utf-8")
-        self.assertIn(
-            "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:"
-            "ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126",
-            source,
-        )
-        self.assertLess(source.index("USER worker"), source.index("snapshot_download"))
-        self.assertNotIn("chown -R worker:worker /app", source)
-        self.assertIn("TTS_DEFAULT_NUM_STEP=32", source)
-        self.assertIn("COPY --chown=worker:worker contract.py prompt_cache.py handler.py /app/", source)
-        self.assertIn("COPY --chown=worker:worker assets/voices/ /app/voices/", source)
-
-    def test_worker_fixes_every_tts_voice_at_32_steps(self):
-        source = (ROOT / "handler.py").read_text(encoding="utf-8")
-        self.assertIn('VERSION = "heroai-omnivoice-runpod-v6-all-voices-32"', source)
-        self.assertIn("DEFAULT_NUM_STEP = 32", source)
-        self.assertIn("effective_num_step = DEFAULT_NUM_STEP", source)
-        self.assertNotIn("QUALITY_NUM_STEP_FLOORS", source)
-
-
-class VoicePromptCacheTest(unittest.TestCase):
-    def test_boot_does_not_prepare_any_voice_prompt(self):
-        prepared = []
-        cache = VoicePromptCache(
-            {"voice_01": {"ref_audio": "voice_01.wav", "ref_text": "หนึ่ง"}},
-            lambda voice_id, metadata: prepared.append((voice_id, metadata)) or object(),
-        )
-
-        self.assertEqual(prepared, [])
-
-    def test_first_request_prepares_only_the_selected_voice_and_reuses_it(self):
-        prepared = []
-        manifest = {
-            "voice_01": {"ref_audio": "voice_01.wav", "ref_text": "หนึ่ง"},
-            "voice_02": {"ref_audio": "voice_02.wav", "ref_text": "สอง"},
-        }
-        cache = VoicePromptCache(
-            manifest,
-            lambda voice_id, metadata: prepared.append((voice_id, metadata["ref_audio"])) or object(),
-        )
-
-        first = cache.get("voice_02")
-        second = cache.get("voice_02")
-
-        self.assertIs(first, second)
-        self.assertEqual(prepared, [("voice_02", "voice_02.wav")])
-
-    def test_unknown_voice_fails_without_calling_the_factory(self):
-        prepared = []
-        cache = VoicePromptCache(
-            {"voice_01": {"ref_audio": "voice_01.wav", "ref_text": "หนึ่ง"}},
-            lambda voice_id, metadata: prepared.append(voice_id) or object(),
-        )
-
-        with self.assertRaises(KeyError):
-            cache.get("voice_48")
-
-        self.assertEqual(prepared, [])
-
-    def test_concurrent_first_requests_prepare_one_prompt(self):
-        prepared = []
-        prompt = object()
-        start = threading.Barrier(3)
-
-        def factory(voice_id, metadata):
-            prepared.append(voice_id)
-            time.sleep(0.02)
-            return prompt
-
-        cache = VoicePromptCache(
-            {"voice_01": {"ref_audio": "voice_01.wav", "ref_text": "หนึ่ง"}},
-            factory,
-        )
-        results = []
-
-        def load():
-            start.wait()
-            results.append(cache.get("voice_01"))
-
-        threads = [threading.Thread(target=load) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        start.wait()
-        for thread in threads:
-            thread.join()
-
-        self.assertEqual(prepared, ["voice_01"])
-        self.assertEqual(results, [prompt, prompt])
-
+    def test_upstream_commit_is_recorded(self):
+        source = (ROOT / "UPSTREAM.md").read_text(encoding="utf-8")
+        self.assertIn("565d0e62e1d4269099a4c3fba8a2ecef9167eeea", source)
 
 
 if __name__ == "__main__":

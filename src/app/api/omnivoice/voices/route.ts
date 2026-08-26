@@ -8,6 +8,8 @@ import {
   omnivoiceAuthHeaders,
   omnivoiceConfig,
 } from "@/lib/omnivoice";
+import { listUserVoices, userVoiceIdFor } from "@/lib/user-voices.server";
+import { isHeroVoiceCloningEnabled } from "@/lib/omnivoice-policy";
 
 export const runtime = "nodejs";
 
@@ -18,11 +20,19 @@ export async function GET() {
 
   try {
     const config = omnivoiceConfig();
+    const customVoices = isHeroVoiceCloningEnabled() && user.role === "ADMIN"
+      ? (await listUserVoices(user.id)).map((voice) => ({
+          voice_id: userVoiceIdFor(voice.id),
+          desc: `${voice.name} · เสียงโคลนของฉัน`,
+          instruct: "เสียงอ้างอิงส่วนตัว",
+          preview_url: `/api/omnivoice/user-voices/${encodeURIComponent(voice.id)}`,
+        }))
+      : [];
     if (config.backend === "runpod") {
       // The queue worker intentionally exposes only TTS jobs. Keep its served
       // catalog server-owned so listing voices never calls the retired KVM2 API.
-      return NextResponse.json(RUNPOD_HERO_VOICES, {
-        headers: { "Cache-Control": "private, max-age=300" },
+      return NextResponse.json([...customVoices, ...RUNPOD_HERO_VOICES], {
+        headers: { "Cache-Control": customVoices.length ? "private, no-store" : "private, max-age=300" },
       });
     }
     const response = await fetch(`${config.baseUrl}/voices`, {
@@ -45,7 +55,9 @@ export async function GET() {
         preview_url: `/api/omnivoice/preview/${encodeURIComponent(voice.voice_id)}`,
       }));
     if (voices.length === 0) throw new Error("no valid voices returned");
-    return NextResponse.json(voices, { headers: { "Cache-Control": "private, max-age=300" } });
+    return NextResponse.json([...customVoices, ...voices], {
+      headers: { "Cache-Control": customVoices.length ? "private, no-store" : "private, max-age=300" },
+    });
   } catch (error) {
     if (!(error instanceof OmniVoiceConfigError)) {
       console.error("[omnivoice/voices] request failed:", error instanceof Error ? error.message : error);

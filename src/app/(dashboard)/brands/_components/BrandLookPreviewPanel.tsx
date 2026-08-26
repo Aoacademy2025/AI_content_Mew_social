@@ -96,31 +96,38 @@ export function BrandLookPreviewPanel({
               {STATUS_LABEL[preview.status] ?? "กำลังสร้าง"}
             </span>
           </div>
-          <div className="grid grid-cols-3 gap-2">
+          {/* Phones get two columns; a third ~100px tile leaves no room for the
+              reroll control, which is why it sits BELOW the tile (full width, 44px
+              tap target) until sm. From sm up the tile grid and the overlaid button
+              are exactly as they were on desktop (#330). */}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {preview.items.map((item) => (
-              <figure
-                key={item.id}
-                className="relative aspect-[9/16] overflow-hidden rounded-lg bg-muted"
-              >
-                {item.outputUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={item.outputUrl}
-                    alt={`ภาพทดลอง ${PHASE_LABEL[item.phase] ?? item.phase}`}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center px-2 text-center text-xs text-destructive">
-                    {item.errorCode || "สร้างไม่สำเร็จ"}
-                  </div>
-                )}
+              <div key={item.id} className="relative min-w-0">
+                <figure className="relative aspect-[9/16] overflow-hidden rounded-lg bg-muted">
+                  {item.outputUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={item.outputUrl}
+                      alt={`ภาพทดลอง ${PHASE_LABEL[item.phase] ?? item.phase}`}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center px-2 text-center text-xs text-destructive">
+                      {item.errorCode || "สร้างไม่สำเร็จ"}
+                    </div>
+                  )}
+                  <figcaption className="absolute inset-x-0 bottom-0 bg-black/75 px-2 py-1.5 text-[10px] font-medium text-white">
+                    {PHASE_LABEL[item.phase] ?? item.phase} ·{" "}
+                    {item.sourceType === "reused" ? "ใช้ภาพเดิม" : "ภาพใหม่"}
+                  </figcaption>
+                </figure>
                 <Button
                   type="button"
                   size="sm"
                   variant="secondary"
                   onClick={() => onReroll(item.id)}
                   disabled={disabled || busy !== null}
-                  className="absolute right-2 top-2 h-8"
+                  className="mt-2 h-11 w-full whitespace-normal sm:absolute sm:right-2 sm:top-2 sm:mt-0 sm:h-8 sm:w-auto sm:whitespace-nowrap"
                 >
                   {busy === `reroll:${item.id}` ? (
                     <Loader2 className="h-3 w-3 animate-spin" />
@@ -129,11 +136,7 @@ export function BrandLookPreviewPanel({
                   )}
                   ลองภาพนี้ใหม่
                 </Button>
-                <figcaption className="absolute inset-x-0 bottom-0 bg-black/75 px-2 py-1.5 text-[10px] font-medium text-white">
-                  {PHASE_LABEL[item.phase] ?? item.phase} ·{" "}
-                  {item.sourceType === "reused" ? "ใช้ภาพเดิม" : "ภาพใหม่"}
-                </figcaption>
-              </figure>
+              </div>
             ))}
           </div>
           <p className="mt-2 text-[11px] text-muted-foreground">

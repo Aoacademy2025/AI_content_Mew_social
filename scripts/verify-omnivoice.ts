@@ -282,10 +282,22 @@ check(
 check("RunPod: provider POST is never automatically retried", configSource.includes("Never automatically retry this POST"));
 check("RunPod: queue jobs are polled by their durable provider id", configSource.includes("status/${encodeURIComponent(providerJobId)}"));
 check("RunPod: readiness does not cold-start a paid worker", configSource.includes("RUNPOD_REST_API"));
+check(
+  "RunPod: every synthesis request uses the Hero Voice v2 contract",
+  configSource.includes("HERO_VOICE_RUNPOD_CONTRACT_VERSION = 2")
+    && configSource.includes('mode: "tts" as const')
+    && configSource.includes("mixed_language: true"),
+);
+check(
+  "RunPod: completed jobs must identify the v2 worker and catalog",
+  configSource.includes("validRunpodPayload")
+    && configSource.includes("value.catalog_version")
+    && configSource.includes("value.worker_version"),
+);
 
 const backgroundRuntimeImport = spawnSync(
   process.execPath,
-  ["--import", "tsx", "-e", 'import("./src/lib/mcp/orchestrator.ts")'],
+  ["--conditions=react-server", "--import", "tsx", "-e", 'import("./src/lib/mcp/orchestrator.ts")'],
   {
     cwd: process.cwd(),
     encoding: "utf8",

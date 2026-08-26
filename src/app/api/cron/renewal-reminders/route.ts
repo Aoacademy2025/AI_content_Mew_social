@@ -5,6 +5,8 @@ import { sendRenewalReminderEmail } from "@/lib/send-email";
 import { timingSafeStrEqual } from "@/lib/timing-safe-equal";
 import { writeCronHeartbeat } from "@/lib/cron-heartbeat";
 import { sendDueDay21ConvertReminders } from "@/lib/day21-convert-reminder.server";
+import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
+import { isTrialSourcedPlan } from "@/lib/trial-reminders";
 
 export const runtime = "nodejs";
 
@@ -30,16 +32,35 @@ export async function GET(req: Request) {
       stripeSubscriptionId: null,            // card subscribers auto-renew — skip them
       planExpiresAt: { gt: now, lte: horizon },
     },
-    select: { id: true, email: true, plan: true, planExpiresAt: true },
+    select: { id: true, email: true, plan: true, planExpiresAt: true, trialStartedAt: true, trialEndsAt: true },
   });
 
   const origin = process.env.NEXTAUTH_URL?.replace(/\/$/, "") ?? "";
   let sent = 0;
+  let trialsSkipped = 0;
 
   for (const u of users) {
     if (!u.planExpiresAt) continue;
     const daysLeft = Math.ceil((u.planExpiresAt.getTime() - now.getTime()) / DAY);
     if (!REMIND_AT.includes(daysLeft)) continue;
+
+    // The free trial writes planExpiresAt = trialEndsAt, which dragged every active
+    // trial into this "แพ็ก PRO หมดอายุ — ต่ออายุ" cohort even though there is nothing
+    // to renew (issue #299). Trials have their own lifecycle nudges
+    // (/api/cron/trial-reminders). A trial user who ALSO holds paid/coupon evidence is
+    // a genuine renewal candidate, so ask the entitlement resolver rather than
+    // hand-rolling the cohort test.
+    if (u.trialStartedAt && u.trialEndsAt) {
+      const entitlement = await resolvePaidEquivalentEntitlement(u.id, now);
+      if (isTrialSourcedPlan({
+        trialStartedAt: u.trialStartedAt,
+        trialEndsAt: u.trialEndsAt,
+        paidEquivalent: entitlement.canUsePaidFeatures,
+      })) {
+        trialsSkipped++;
+        continue;
+      }
+    }
 
     await createNotification({
       userId: u.id,
@@ -60,6 +81,7 @@ export async function GET(req: Request) {
   return NextResponse.json({
     remindersSent: sent,
     checked: users.length,
+    trialsSkipped,
     day21Checked: day21.checked,
     day21Sent: day21.sent,
   });
