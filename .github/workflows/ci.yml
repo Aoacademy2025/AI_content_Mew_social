@@ -61,6 +61,9 @@ jobs:
       - name: Verify /pricing LCP convert page
         run: npm run verify:pricing-lcp
 
+      - name: Verify /pricing default checkout selection (#300)
+        run: npm run verify:pricing-defaults
+
       - name: Verify public pricing matches checkout and entitlements
         run: npm run verify:marketing-pricing
 
