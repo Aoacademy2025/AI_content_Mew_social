@@ -11,6 +11,7 @@
     "db:seed": "npx tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset",
     "verify:gallery-touch": "tsx scripts/verify-gallery-touch-actions.ts",
+    "verify:deploy-maintenance": "tsx scripts/verify-deploy-maintenance-window.ts",
     "verify:disk-watch": "tsx scripts/verify-disk-watch.ts",
     "verify:storage-health": "tsx scripts/verify-storage-health.ts",
     "verify:admin-insights-revenue": "tsx scripts/verify-admin-insights-revenue-clarity.ts",
