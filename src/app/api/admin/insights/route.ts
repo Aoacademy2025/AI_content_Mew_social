@@ -6,6 +6,15 @@ import { getProcessingReconcilePlan, type ProcessingReconcileSummary } from "@/l
 import { computeRevenueCohorts } from "@/lib/revenue-cohorts";
 import { getPlanConfig } from "@/lib/plan-config";
 import { getSubscriptionNorthStar } from "@/lib/subscription-north-star.server";
+import {
+  managedStockPeriodResetAt,
+  summarizeManagedStockTelemetry,
+} from "@/lib/managed-stock";
+import {
+  isManagedStockFlagOn,
+  managedStockPexelsMonthlyCeiling,
+  readManagedStockMonthlyStatus,
+} from "@/lib/managed-stock.server";
 
 type RenderJobRow = {
   type: string;
@@ -827,7 +836,7 @@ export async function GET(req: Request) {
       currentRows, previousRows, currentVideos, previousVideos, processingPlan,
       allUsers, openedUserRows, completedByUser, currentJobs,
       planConfig, renderJobRows, paidRows, previousJobs, jobUserRows,
-      northStar, northStarHistory,
+      northStar, northStarHistory, managedStockMonthly,
     ] = await Promise.all([
       prisma.telemetryEvent.findMany({
         where: { createdAt: { gte: since } },
@@ -904,6 +913,10 @@ export async function GET(req: Request) {
           scriptCreators: true, imageCreators: true,
         },
       }),
+      // Managed stock month-to-date counters (#297 Amendment). Own table, not
+      // telemetry: the Pexels ceiling is a calendar-month budget that has to
+      // survive both the rolling window and a PM2 restart.
+      readManagedStockMonthlyStatus(now),
     ]);
 
     const nonEmpty = (value: string | null) => typeof value === "string" && value.trim().length > 0;
@@ -1000,6 +1013,33 @@ export async function GET(req: Request) {
       failedByStage: Array.from(failedByStageMap.values()).sort((a, b) => b.count - a.count),
     };
 
+    // Managed stock capacity (#297 Amendment 2026-08-26). Deliberately reads the
+    // UNFILTERED telemetry rows: @aoacademy accounts are excluded from activation
+    // funnels because they distort conversion, but their searches spend the same
+    // shared quota, so a capacity panel that hid them would under-report the risk.
+    const managedStockTelemetry = summarizeManagedStockTelemetry(currentRows);
+    const pexelsMonth = managedStockMonthly.find((row) => row.provider === "pexels") ?? null;
+    const managedStock = {
+      flagOn: isManagedStockFlagOn(),
+      searches: managedStockTelemetry.searches,
+      cacheHits: managedStockTelemetry.cacheHits,
+      jobs: managedStockTelemetry.usedEvents,
+      byProvider: managedStockTelemetry.byProvider,
+      throttles: managedStockTelemetry.throttles,
+      throttleTotal: managedStockTelemetry.throttles.reduce((sum, row) => sum + row.count, 0),
+      pexelsMonth: {
+        periodKey: pexelsMonth?.periodKey ?? null,
+        used: pexelsMonth?.used ?? 0,
+        ceiling: pexelsMonth?.ceiling ?? managedStockPexelsMonthlyCeiling(),
+        usedPct: pexelsMonth?.usedPct ?? 0,
+        exhausted: pexelsMonth?.exhausted ?? false,
+        resetAt: pexelsMonth ? managedStockPeriodResetAt(pexelsMonth.periodKey)?.toISOString() ?? null : null,
+      },
+      pixabayMonth: {
+        used: managedStockMonthly.find((row) => row.provider === "pixabay")?.used ?? 0,
+      },
+    };
+
     return NextResponse.json({
       range: { days, since: since.toISOString(), until: now.toISOString() },
       northStar: {
@@ -1012,6 +1052,7 @@ export async function GET(req: Request) {
       activation,
       renderStats,
       jobOutcomes,
+      managedStock,
       current: summarize(customerCurrentRows, customerCurrentVideos, processingPlan.summary, summarizeJobFunnel(currentJobsForFunnel)),
       previous: summarize(customerPreviousRows, customerPreviousVideos, undefined, summarizeJobFunnel(previousJobsForFunnel)),
       processingReconcile: { dryRun: true, ...processingPlan },

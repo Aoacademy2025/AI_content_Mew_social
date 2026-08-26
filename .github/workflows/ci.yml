@@ -115,7 +115,7 @@ jobs:
       - name: Verify Hero Voice stock and clone contracts
         run: npm run verify:omnivoice && npm run verify:hero-voice-clone
 
-      - name: Verify managed stock key eligibility, caps, and throttling
+      - name: Verify managed stock key eligibility, caps, monthly ceiling, and throttling
         run: npm run verify:managed-stock
       - name: Verify /brands fits phones and keeps its desktop layout
         run: npm run verify:brands-mobile

@@ -12,10 +12,13 @@ import {
   ManagedStockJobBudget,
   shouldQueryPexelsAfterPixabay,
   type ManagedStockProvider,
+  type ManagedStockThrottleScope,
 } from "@/lib/managed-stock";
 import {
+  hasManagedStockMonthlyBudget,
   pruneExpiredStockSearchCache,
   readStockSearchCache,
+  recordManagedStockCall,
   recordManagedStockThrottled,
   recordManagedStockUsed,
   resolveManagedStockAccess,
@@ -1238,8 +1241,9 @@ export async function POST(req: Request) {
   // Flag OFF (MANAGED_STOCK unset/0) → resolveManagedStockAccess returns
   // { eligible:false, keys:null } with no DB work, both keys below resolve to the
   // user's own exactly as before, `usesManagedStock` is false, and every managed
-  // branch in this file is dead. Flag ON → a trial/FREE account with NO stock key
-  // of its own searches on the team key. BYOK always wins (`??` order).
+  // branch in this file is dead. Flag ON → ANY account with NO stock key of its
+  // own searches on the team key (Amendment 2026-08-26 — plan is not a factor).
+  // BYOK always wins (`??` order).
   const managedStock = await resolveManagedStockAccess(user, {
     hasOwnPexelsKey: !!ownPexelsKey,
     hasOwnPixabayKey: !!ownPixabayKey,
@@ -1851,9 +1855,14 @@ export async function POST(req: Request) {
   // All null/zero and never read when `usesManagedStock` is false (flag off, or
   // the caller brought their own key), so the BYOK path is untouched.
   const managedBudget = usesManagedStock ? new ManagedStockJobBudget() : null;
-  const managedStats: Record<ManagedStockProvider, { queries: number; cacheHits: number; throttled: boolean }> = {
-    pixabay: { queries: 0, cacheHits: 0, throttled: false },
-    pexels: { queries: 0, cacheHits: 0, throttled: false },
+  // `throttleScope` records WHICH limiter refused (token bucket vs monthly Pexels
+  // ceiling); `/admin/insights` splits on it because they mean different things.
+  const managedStats: Record<
+    ManagedStockProvider,
+    { queries: number; cacheHits: number; throttleScope: ManagedStockThrottleScope | null }
+  > = {
+    pixabay: { queries: 0, cacheHits: 0, throttleScope: null },
+    pexels: { queries: 0, cacheHits: 0, throttleScope: null },
   };
   let managedTelemetryEmitted = false;
 
@@ -1865,9 +1874,11 @@ export async function POST(req: Request) {
     managedTelemetryEmitted = true;
     for (const provider of ["pixabay", "pexels"] as ManagedStockProvider[]) {
       const stat = managedStats[provider];
-      if (stat.queries === 0 && stat.cacheHits === 0 && !stat.throttled) continue;
+      if (stat.queries === 0 && stat.cacheHits === 0 && !stat.throttleScope) continue;
       const payload = { provider, queriesUsed: stat.queries, cacheHits: stat.cacheHits };
-      if (stat.throttled) await recordManagedStockThrottled(userId, payload);
+      if (stat.throttleScope) {
+        await recordManagedStockThrottled(userId, { ...payload, scope: stat.throttleScope });
+      }
       if (stat.queries > 0 || stat.cacheHits > 0) await recordManagedStockUsed(userId, payload);
     }
     // Cheap opportunistic GC of the 24h cache; never blocks the response.
@@ -1875,14 +1886,18 @@ export async function POST(req: Request) {
   }
 
   /**
-   * One managed provider search: 24h cache → per-job cap → token bucket → call.
+   * One managed provider search:
+   *   24h cache → per-job cap → MONTHLY budget → token bucket → call → count.
    *
-   *  - A cache hit costs neither budget nor a token (that is the whole point of
-   *    the Pixabay-ToS-mandated cache).
-   *  - Budget/token exhaustion returns [] — the provider is skipped, never an
-   *    error, so the job degrades to the key-free photo providers + AI images.
-   *  - A throwing call consumes its token (the request WAS made) and writes
-   *    NOTHING to the cache: error responses are never cached.
+   *  - A cache hit costs neither budget, nor a token, nor a month-counter tick
+   *    (that is the whole point of the Pixabay-ToS-mandated cache).
+   *  - The monthly gate is checked BEFORE the token bucket so an exhausted month
+   *    does not also burn an hourly token it can never use.
+   *  - Budget/token/month exhaustion returns [] — the provider is skipped, never
+   *    an error, so the job degrades to Pixabay, then the key-free photo
+   *    providers, then AI images, exactly as a dead provider does today.
+   *  - A throwing call still consumed its token AND its month-counter tick (the
+   *    request WAS made) and writes NOTHING to the cache: errors are never cached.
    */
   async function managedProviderSearch<T>(
     provider: ManagedStockProvider,
@@ -1896,11 +1911,16 @@ export async function POST(req: Request) {
       return cached;
     }
     if (!managedBudget?.take()) return [];
+    if (!(await hasManagedStockMonthlyBudget(provider))) {
+      managedStats[provider].throttleScope = "month";
+      return [];
+    }
     if (!takeManagedStockToken(provider)) {
-      managedStats[provider].throttled = true;
+      managedStats[provider].throttleScope ??= "rate";
       return [];
     }
     managedStats[provider].queries++;
+    await recordManagedStockCall(provider);
     const results = await run();
     await writeStockSearchCache(cacheParams, results);
     return results;
@@ -2022,7 +2042,8 @@ export async function POST(req: Request) {
               managedStockPexelsQueries: managedStats.pexels.queries,
               managedStockCacheHits: managedStats.pixabay.cacheHits + managedStats.pexels.cacheHits,
               managedStockQueryBudgetSpent: managedBudget?.spent ?? 0,
-              managedStockThrottled: managedStats.pixabay.throttled || managedStats.pexels.throttled,
+              managedStockThrottled: Boolean(managedStats.pixabay.throttleScope || managedStats.pexels.throttleScope),
+              managedStockThrottleScope: managedStats.pexels.throttleScope ?? managedStats.pixabay.throttleScope ?? "none",
             }
           : {}),
         searchConcurrency: SEARCH_CONCURRENCY,

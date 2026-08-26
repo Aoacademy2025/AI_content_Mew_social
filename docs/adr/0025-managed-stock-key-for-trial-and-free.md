@@ -1,7 +1,11 @@
-# Managed stock key for trial and FREE
+# Managed stock key for any account without its own stock key
 
 Date: 2026-08-26
-Status: Accepted, behind `MANAGED_STOCK` (off by default)
+Status: Accepted, behind `MANAGED_STOCK` (LIVE on production)
+Amended: 2026-08-26 — see [Amendment](#amendment-2026-08-26-any-account-without-its-own-stock-key)
+at the end of this document. The original title was "Managed stock key for trial
+and FREE"; the Context and Decision below are kept verbatim as the record of what
+was decided first, and the amendment states what supersedes it.
 
 ## Context
 
@@ -62,6 +66,8 @@ BYOK, in the ADR 0003 shape.
 4. No managed key configured on the server → nothing to offer.
 5. Otherwise eligible when the account is on a live Conversion Trial, or is FREE
    and not paid-equivalent.
+   > **SUPERSEDED 2026-08-26** — rule 5 is now "otherwise eligible", full stop.
+   > See the Amendment at the end of this document.
 
 Paid-equivalent accounts (subscription, paid term, bundle, GRANT coupon,
 administrator grant) with no stock key **keep today's `missing_key: broll` 400**.
@@ -71,6 +77,11 @@ serves the trial/FREE slice; and a paying account already has a working path (a
 free key takes about a minute, and Hero AI Image is unlocked for them). Widening
 the exception to every paying account without a key would put the entire customer
 base on one Pexels quota. Revisit only with fresh capacity evidence.
+
+> **SUPERSEDED 2026-08-26** — the fresh capacity evidence arrived (698 accounts
+> already eligible; widening adds ~97, of which 4 are payers, against ~3,289
+> queries/week) and this paragraph no longer describes production. Paid-equivalent
+> keyless accounts are served. See the Amendment at the end of this document.
 
 **Spend rules on the managed key** (BYOK jobs are untouched by all of these):
 
@@ -89,6 +100,10 @@ base on one Pexels quota. Revisit only with fresh capacity evidence.
   below each published ceiling so we throttle ourselves before the provider does.
   Overridable via `MANAGED_STOCK_PEXELS_PER_HOUR` / `MANAGED_STOCK_PIXABAY_PER_MIN`.
   In-process is sufficient: production is a single VPS running one PM2 app.
+  > **AMENDED 2026-08-26** — in-process is sufficient for the *hourly* limit only.
+  > Pexels' 20,000/month ceiling is now counted in the database
+  > (`ManagedStockUsage`, `MANAGED_STOCK_PEXELS_PER_MONTH`, default 18,000).
+  > See the Amendment at the end of this document.
 - **AutoMix photo fallbacks stay BYOK.** `pexels-photo` / `pixabay-photo` require
   the caller's own key. The managed quota is budgeted for video search.
 
@@ -135,3 +150,132 @@ Rollback is `MANAGED_STOCK` off (unset the variable and
 to `flag_off` with no database work, both provider keys resolve to the user's
 own, and every managed branch is dead code. `StockSearchCache` is additive and
 survives a rollback harmlessly.
+
+---
+
+## Amendment (2026-08-26): any account without its own stock key
+
+Status: Accepted. Supersedes rule 5 of the Decision above and the
+"Paid-equivalent accounts … keep today's `missing_key: broll` 400" paragraph.
+Everything else in this ADR — BYOK wins, suspended fails closed, Pixabay-first,
+the 24h cache, the per-job caps, the token buckets, the provider terms — stands
+unchanged.
+
+### What changes
+
+The managed stock library stops being trial/FREE-only. One rule now:
+
+> **Nobody needs their own Pexels/Pixabay key to make a clip.**
+
+`decideManagedStockEligibility` keeps `flag_off`, `own_key`, `suspended` and
+`no_managed_key` as its denial reasons and drops the plan test entirely. Plan is
+no longer an input. FREE, live trial, PRO, BUSINESS, coupon/grant, administrator
+grant and bundle accounts all get the same answer: if you did not bring a stock
+key, the system searches on its own.
+
+`not_trial_or_free` stays in the `ManagedStockEligibilityReason` union, unused
+and never returned, so stored telemetry and any caller that still switches on it
+keep type-checking. It must not be reintroduced.
+
+### Why
+
+The original argument was a cost/capacity argument, and both halves were wrong
+for this particular dependency.
+
+**Cost.** BYOK exists because Gemini, HeyGen and ElevenLabs bill per call — a
+managed key there is a real, uncapped bill (which is why ADR 0003 makes those
+exceptions narrow and product-funded). Pexels and Pixabay are **free**. There is
+no bill to shift onto the team, so BYOK's cost rationale never applied to stock
+search at all. The only constraint is rate limits.
+
+**Capacity.** Measured on 2026-08-26:
+
+| Measure | Value |
+| --- | --- |
+| FREE accounts already eligible before this change | 698 |
+| Accounts the widening adds | ~97 |
+| …of which are real payers | 4 |
+| Whole-system stock volume | ~3,289 search queries/week |
+
+The paid keyless slice is ~14% more accounts and 4 paying customers — noise
+against the existing eligible population, not a second customer base. Against
+~3,289 queries/week system-wide, the Pixabay-first rule, the 24h cache, the
+per-job caps and the token buckets already absorb it.
+
+Against that, the cost of keeping the gate was a customer who **pays us** hitting
+a `missing_key: broll` wall that a FREE account walks straight through. That is
+not defensible, and it is not a trade worth 97 accounts of quota headroom.
+
+### The monthly ceiling
+
+Pexels publishes 200 req/h **and 20,000 req/month**. The hourly limit is held by
+an in-process token bucket, which refills to full on every `pm2 restart` — it
+cannot hold a month-long line. With every keyless account served, the monthly cap
+is the ceiling that actually binds, so it is now counted in the database.
+
+- New additive model `ManagedStockUsage { provider, periodKey, count }`, unique
+  on `[provider, periodKey]`, where `periodKey` is `YYYY-MM` in **Asia/Bangkok**
+  (UTC+7, no DST — the same calendar month the team reads a bill in). Additive
+  only, so `prisma db push` is safe; no column is removed or renamed.
+- Incremented atomically (`count = count + 1`) once per managed provider call —
+  for both providers, because Pixabay's volume is what makes the Pexels number
+  readable in `/admin/insights`. A cache hit increments nothing.
+- New env `MANAGED_STOCK_PEXELS_PER_MONTH`, default **18,000** — deliberately
+  under 20,000 so a restart storm cannot walk us into a hard provider block. The
+  upper bound is generous rather than 20,000 so a quota raise granted by Pexels
+  is a config change, not a deploy.
+
+**Fail-closed order.** When the month's Pexels budget is spent, we stop calling
+Pexels and the job degrades, in this order, to:
+
+1. **Pixabay** (abundant quota, no monthly cap),
+2. the existing **key-free photo providers** (Wikimedia / NASA / Met),
+3. **AI images** under the existing AutoMix logic.
+
+The job never fails. Telemetry: `managed_stock_throttled` now carries
+`{ provider, scope, queriesUsed, cacheHits }` where `scope` is `"rate"` (token
+bucket) or `"month"` (this ceiling); events written before this amendment have no
+`scope` and are read as `"rate"`.
+
+**Fail-open on the counter.** A counter that cannot be read or written is
+*unknown*, not exhausted, and the call is allowed. A database hiccup must never
+be able to switch Pexels off for a month, and a failed counter write must never
+fail a render. Only a count we actually read that has reached the ceiling stops
+the provider.
+
+### BYOK is unchanged for the paid providers
+
+This amendment is about **free** stock APIs only. BYOK stays the product default
+for Gemini, HeyGen and ElevenLabs, and the approved managed exceptions there
+(OmniVoice audio per ADR 0003, Hero AI Image via the qualified RunPod Z-Image
+route) keep their own funding, caps and fail-closed flags. Bringing your own
+stock key still wins over the managed one, still gets wider search coverage
+(more alternates, page 2, Pexels on every query), and is still what the Step-2
+hint asks for after the first completed export — now on every plan, not just
+trial/FREE.
+
+### Consequences
+
+Every account can reach every export with zero setup, and the `missing_key:
+broll` 400 is gone for keyless accounts on every plan. `KeySetupChecklist`
+renders nothing at all for an account that needs no key (managed Gemini plus the
+managed library).
+
+What the team must now watch, in `/admin/insights` → Managed Stock:
+
+- **`scope: "month"` throttles are a real incident**, not a warning. They mean
+  Pexels is off for the rest of the calendar month and every managed job is
+  running on Pixabay plus AI images. React by asking Pexels for a raised quota
+  (they grant increases on a described use case) and raising
+  `MANAGED_STOCK_PEXELS_PER_MONTH` to match — not by rotating keys.
+- **`scope: "rate"` throttles** mean the buckets are too small for current load.
+- **Pexels month-to-date %** is the leading indicator; the panel shows it against
+  the configured ceiling with the reset date.
+
+`resolveManagedStockAccess` also stopped resolving paid-equivalent entitlement,
+which removes a whole entitlement lookup from every `/api/user/me` request — the
+decision is now a pure function of the flag, the server env and two booleans.
+
+Rollback is unchanged: `MANAGED_STOCK` off plus
+`pm2 restart ai-content --update-env`. `ManagedStockUsage` is additive and
+survives a rollback harmlessly, exactly like `StockSearchCache`.

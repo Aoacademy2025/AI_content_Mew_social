@@ -19,8 +19,9 @@ export function KeyOnboardingWizard({
 
   if (!open) return null;
 
-  // MANAGED_STOCK (#297): the system searches its own Pexels/Pixabay for trial/FREE
-  // accounts, so the stock keys move out of the "จำเป็น" block into an optional one.
+  // MANAGED_STOCK (#297): the system searches its own Pexels/Pixabay for any
+  // account with no stock key of its own, so the stock keys move out of the
+  // "จำเป็น" block into an optional one.
   // Flag off → `stockDefs` is empty and `requiredDefs` is the original list unchanged.
   const allRequired = requiredKeysFor(managed);
   const stockDefs = managedStock ? allRequired.filter((def) => def.group === "stock") : [];

@@ -368,8 +368,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           )}
           {/* UX (c) of #297 — asked ONCE the first export exists, never on day one.
               `managedStockKeyHint` is server-computed: MANAGED_STOCK on, this account
-              eligible (trial/FREE, no stock key of its own), and it already has a
-              completed video. Flag off → always false → nothing renders. */}
+              eligible (ANY plan with no stock key of its own since the 2026-08-26
+              amendment), and it already has a completed video. Flag off → always
+              false → nothing renders. */}
           {p.managedStockKeyHint && p.brollSource !== "kie-image" && (
             <p style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
               {MANAGED_STOCK_BROLL_HINT_LEAD} ·{" "}

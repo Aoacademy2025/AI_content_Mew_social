@@ -588,12 +588,13 @@ export async function POST(req: Request) {
       if (e instanceof KeyRequiredError) return NextResponse.json({ error: "missing_key", missingKey: "gemini", message: "ต้องใส่ Gemini API key ก่อน (Settings → API Keys)" }, { status: 400 });
       throw e;
     }
-    // Managed stock key (#297, ADR 0025) — flag-gated exception to the BYOK gate.
-    // MANAGED_STOCK unset/0 → resolveManagedStockAccess short-circuits to
-    // { eligible: false } with ZERO extra DB work, so this block is the pre-#297
-    // 400 exactly. Flag on → a trial/FREE account with no stock key of its own
-    // searches on the team key instead of being stopped here; own key always wins,
-    // and paid-equivalent accounts keep today's 400 (see decideManagedStockEligibility).
+    // Managed stock key (#297, ADR 0025 + Amendment 2026-08-26) — flag-gated
+    // exception to the BYOK gate. MANAGED_STOCK unset/0 → resolveManagedStockAccess
+    // short-circuits to { eligible: false } with ZERO DB work, so this block is the
+    // pre-#297 400 exactly. Flag ON → ANY account with no stock key of its own —
+    // FREE, trial, PRO, BUSINESS, coupon/grant, bundle — searches on the team key
+    // instead of being stopped here, so a PAID keyless account no longer 400s.
+    // Only an own key (BYOK wins), a suspension, or a missing server key still refuses.
     if (requestedSource !== "kie-image" && !user.pexelsKey && !user.pixabayKey) {
       const managedStock = await resolveManagedStockAccess(user, {
         hasOwnPexelsKey: false,
