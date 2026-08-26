@@ -12,6 +12,13 @@ APP_NAME="ai-content"
 DEFAULT_BRANCH="${DEPLOY_BRANCH:-main}"
 MIGRATE="${SKIP_DB_MIGRATE:-0}"
 DEPLOY_HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:3000/api/health}"
+# Ingress barrier nginx already understands: while this file exists every public
+# request short-circuits to 503 -> the styled /maintenance.html. Without it the
+# few seconds where PM2 has the port closed surface to customers as a RAW nginx
+# 502 (measured 2026-08-26: 12 x 502 in ~4s, including a customer mid-save).
+# The health check curls 127.0.0.1:3000 directly, so raising the barrier never
+# blocks the deploy's own probe.
+DEPLOY_MAINTENANCE_FLAG="${DEPLOY_MAINTENANCE_FLAG:-/var/www/ai-content/.deploy-maintenance}"
 DEPLOY_HEALTH_TIMEOUT_SEC="${DEPLOY_HEALTH_TIMEOUT_SEC:-90}"
 DEPLOY_HEALTH_INTERVAL_SEC="${DEPLOY_HEALTH_INTERVAL_SEC:-3}"
 
@@ -293,6 +300,25 @@ if [ "${REQUIRE_EMPTY_RENDER_QUEUES:-0}" = "1" ]; then
   fi
 fi
 
+raise_maintenance_barrier() {
+  # Idempotent. A stale flag from a killed deploy is cleared by the EXIT trap below,
+  # so the site can never be left stuck showing maintenance.
+  : > "$DEPLOY_MAINTENANCE_FLAG" 2>/dev/null || {
+    echo "WARN: could not raise the maintenance barrier ($DEPLOY_MAINTENANCE_FLAG) — continuing without it"
+    return 0
+  }
+  echo "Maintenance barrier raised — public requests get the styled 503 page until health passes"
+}
+
+lower_maintenance_barrier() {
+  rm -f "$DEPLOY_MAINTENANCE_FLAG" 2>/dev/null || true
+}
+
+# Any exit path (success, failure, Ctrl-C, health-check rollback) lowers it.
+trap lower_maintenance_barrier EXIT
+
+raise_maintenance_barrier
+
 echo "=== [5c/6] Atomic swap .next-staging -> .next ==="
 # .next.old is kept until the next deploy as a manual rollback
 # (mv .next.old .next && pm2 restart ai-content); costs a few hundred MB.
@@ -381,6 +407,11 @@ if [ "$release_failed" = "1" ]; then
   exit 1
 fi
 rm -f "$ROLLBACK_STATIC_MANIFEST"
+
+# Web is healthy: let customers back in before the worker restarts (workers talk to
+# localhost:3000 directly, so they are unaffected by the barrier either way).
+lower_maintenance_barrier
+echo "Maintenance barrier lowered — site is serving again"
 
 # The MCP async video worker runs the pipeline (orchestrator/pipeline-client) in
 # a SEPARATE process. A deploy that ships new pipeline code to ai-content would

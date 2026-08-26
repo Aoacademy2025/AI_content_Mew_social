@@ -52,6 +52,8 @@ jobs:
 
       - name: Verify first-clip convert prompt
         run: npm run verify:first-clip-convert
+      - name: Verify deploy maintenance window
+        run: npm run verify:deploy-maintenance
       - name: Verify gallery touch actions (#328)
         run: npm run verify:gallery-touch
 
