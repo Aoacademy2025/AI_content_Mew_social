@@ -108,6 +108,9 @@ jobs:
       - name: Verify MRR prices customers by real cash and excludes credit packs
         run: npm run verify:plan-cash-vs-credits
 
+      - name: Verify a subscription renewal leaves a receipt
+        run: npm run verify:renewal-receipts
+
       - name: Verify the Payment-ledger repair tool cannot write by accident
         run: npm run verify:payment-ledger-repair
 

@@ -28,6 +28,10 @@ import { recordTelemetryEventOnce } from "@/lib/telemetry";
 export const config = { api: { bodyParser: false } };
 
 // Stripe moved invoice.subscription under parent.subscription_details in recent API versions — handle both.
+/** Tags a Payment row created from a renewal invoice, so billing history and reporting can
+ *  tell it apart from the initial checkout row. */
+const RENEWAL_PAYMENT_NOTE = "renewal";
+
 function invoiceSubId(inv: any): string | null {
   return inv.subscription ?? inv.parent?.subscription_details?.subscription ?? null;
 }
@@ -348,6 +352,37 @@ export async function POST(req: Request) {
               === foundingCoupon.stripePromotionCodeId;
           });
           if (hasFoundingPromotion) await confirmLatestSeatForUser(user.id);
+
+          // Record the renewal as a Payment row. Until now only the FIRST charge of a
+          // subscription produced one (it comes through checkout.session.completed), so a
+          // customer's renewals were invisible in Settings → billing history, which reads
+          // this table: seven charges worth 7,041.95฿ had no row on prod. Lifetime revenue
+          // was never affected — revenue-cash.ts reads Stripe's charge ledger directly.
+          //
+          // Keyed on the invoice id, which the unique `stripeSessionId` column turns into
+          // idempotency for free: a webhook retry hits the constraint and is swallowed,
+          // exactly like the credit-pack row above.
+          const renewalSatang = typeof inv.amount_paid === "number" ? inv.amount_paid : 0;
+          if (renewalSatang > 0 && typeof inv.id === "string") {
+            try {
+              await prisma.payment.create({
+                data: {
+                  userId: user.id,
+                  stripeSessionId: inv.id,
+                  stripePaymentIntent: typeof inv.payment_intent === "string" ? inv.payment_intent : undefined,
+                  plan: entitlement.plan,
+                  amount: renewalSatang,
+                  currency: "thb",
+                  status: "PAID",
+                  periodDays: entitlement.billingPeriod === "annual" ? 365 : 30,
+                  paidAt: new Date(),
+                  note: RENEWAL_PAYMENT_NOTE,
+                },
+              });
+            } catch (e) {
+              console.log("[webhook] renewal Payment already recorded (retry), skip", inv.id, (e as any)?.code ?? e);
+            }
+          }
 
           extendVideoExpiryForPlan(user.id, entitlement.plan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
           // A tier/period conversion starts a new billing cycle now, while a
