@@ -97,10 +97,16 @@ check(activation.includes("prisma.$transaction") && activation.includes("tx.paym
   "plan entitlement and PAID evidence commit atomically");
 check(activation.includes("entitlementExpiresAt") && activation.includes("amount: amountTotal as number"),
   "activation persists Stripe's exact subscription period and verified charged amount");
+// checkoutPaymentSettled moved next to activatePaidCheckout in #348 so it can be
+// verified without importing a Next route. Same rule, same file as the activation.
+check(activation.includes('session.payment_status === "paid"')
+    && activation.includes('session.payment_status === "no_payment_required"')
+    && activation.includes("session.amount_total === 0"),
+  "settled-session rule accepts verified zero-total sessions and nothing else");
 
 const webhook = source("src/app/api/payments/webhook/route.ts");
 check(webhook.includes("activatePaidCheckout") && webhook.includes("checkoutPaymentSettled(s)")
-    && webhook.includes('session.payment_status === "no_payment_required"'),
+    && webhook.includes('checkoutPaymentSettled } from "@/lib/checkout-plan-activation"'),
   "webhook rejects unsettled sessions, accepts verified zero-total coupons, and uses the atomic activation path");
 check(webhook.includes("stripe.subscriptions.retrieve(subscriptionId)") && webhook.includes("entitlement.periodEnd"),
   "initial subscription checkout resolves its authoritative Stripe period end");

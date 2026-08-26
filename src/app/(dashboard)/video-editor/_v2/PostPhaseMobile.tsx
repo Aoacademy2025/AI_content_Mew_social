@@ -49,6 +49,8 @@ import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
 import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
+import { FirstClipExportedViewSignal } from "@/components/convert/first-clip-exported-view-signal";
+import { emitFirstClipViewed } from "@/lib/first-clip-convert-events";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -276,16 +278,17 @@ export function PostPhaseMobile({
   if (ed.exp.phase === "done") {
     return (
       <main className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 p-5">
+        <FirstClipExportedViewSignal />
         <div className="flex items-center gap-2">
           <CheckCircle2 size={18} color={color.success} />
           <span style={{ font: `600 15px ${font.heading}`, color: color.success, textAlign: "center" }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>
         </div>
         <video src={ed.exp.url} controls playsInline style={{ maxHeight: "44vh", borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
         <div className="flex w-full max-w-[360px] flex-col gap-2.5" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-          <a href={ed.exp.url} download={downloadFilename} className="block">
+          <a href={ed.exp.url} download={downloadFilename} className="block" onClick={emitFirstClipViewed}>
             <BtnPrimary style={{ width: "100%", minHeight: 46 }}><span className="flex items-center justify-center gap-2"><Download size={15} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
-          <a href="/videos" className="block"><BtnSecondary style={{ width: "100%", minHeight: 46 }}>ดูใน Gallery</BtnSecondary></a>
+          <a href="/videos" className="block" onClick={emitFirstClipViewed}><BtnSecondary style={{ width: "100%", minHeight: 46 }}>ดูใน Gallery</BtnSecondary></a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })} style={{ width: "100%", minHeight: 44 }}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={ed.requestNewProject} style={{ width: "100%", minHeight: 44 }}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>

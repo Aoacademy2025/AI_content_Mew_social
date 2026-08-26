@@ -4,6 +4,11 @@ import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { MONTHLY_GRANT, resetMonthlyGranted } from "@/lib/credits";
 import { syncStoredBundleEntitlementForUser } from "@/lib/bundle-entitlement";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
+import {
+  excludeLiveTrialingSubscriptionWhere,
+  hasLiveStripeSubscription,
+  preserveTrialOnConvertEnabled,
+} from "@/lib/preserve-trial";
 import { recordTrialExpiredTelemetry } from "@/lib/trial-expired-telemetry";
 
 const PAID_PLANS = ["PRO", "BUSINESS"] as const;
@@ -314,6 +319,27 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
   }
 
   const decision = classifyEntitlement(user, now);
+  const preserveTrial = preserveTrialOnConvertEnabled();
+  // #348: a Stripe subscription still reported as `trialing` is a CONVERTED
+  // customer with a card on file — Stripe charges at trial end and the resulting
+  // invoice.paid is what flips subStatus to "active" and extends planExpiresAt.
+  // Between the trial end and that webhook the row looks expired to this
+  // function, so without this guard the revert cron would downgrade a paying
+  // customer to FREE. Requires BOTH pieces of evidence (subscription id + status)
+  // and is inert while the flag is off, since nothing else can write "trialing".
+  if (hasLiveStripeSubscription(user, preserveTrial) && user.subStatus !== "active") {
+    return {
+      user,
+      decision: {
+        effectivePlan: user.plan,
+        source: "SUBSCRIPTION" as const,
+        action: "KEEP" as const,
+        reason: "stripe_trialing_subscription",
+        expiresAt: user.planExpiresAt,
+      },
+      changed: false,
+    };
+  }
   const activeTrial = Boolean(user.trialEndsAt && user.trialEndsAt > now);
   // Once the migration is applied, a paid-looking label without source
   // evidence is drift, not a permanent entitlement. Active Conversion Trial
@@ -341,6 +367,9 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
       id: userId,
       plan: { in: [...PAID_PLANS] },
       OR: [{ subStatus: null }, { subStatus: { not: "active" } }],
+      // TOCTOU belt for the guard above: a checkout that lands between the read
+      // and this write must not be downgraded either. `{}` while the flag is off.
+      ...excludeLiveTrialingSubscriptionWhere(preserveTrial),
       ...expiryGuard,
     },
     data: {

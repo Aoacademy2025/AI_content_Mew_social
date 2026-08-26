@@ -16,6 +16,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import { USAGE_PERIOD_DAYS } from "@/lib/usage-limits";
+import { MONTHLY_GRANT } from "@/lib/credit-costs";
 
 // ── Cost table + pure price helpers ───────────────────────────────────────────
 // Moved to a prisma-free module (credit-costs.ts) so the client (Editor v2 Render
@@ -48,12 +49,11 @@ export function creditPack(
 }
 
 // ── Monthly grant amounts per plan ────────────────────────────────────────────
+// MONTHLY_GRANT lives in the prisma-free credit-costs module (imported at the
+// top of this file) so client surfaces can quote the same number the server
+// grants; re-exported here so every existing server import keeps working.
 
-export const MONTHLY_GRANT: Record<string, number> = {
-  FREE: 0,
-  PRO: 50,
-  BUSINESS: 150,
-};
+export { MONTHLY_GRANT };
 
 // ── Balance helpers ───────────────────────────────────────────────────────────
 

@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { computeKeyStatus } from "@/lib/key-tiers";
+import { isManagedStockFlagOn, managedStockKeys } from "@/lib/managed-stock.server";
 
 export async function GET() {
   try {
@@ -28,6 +29,12 @@ export async function GET() {
       ...status,
       onboardingDismissed: user.onboardingDismissedAt != null,
       ...(isManagedMode ? { managed: true } : {}),
+      // Managed stock B-roll (#297): server truth for the onboarding copy, so a
+      // client that never got a rebuild still stops calling Pexels/Pixabay
+      // "จำเป็น". Absent (not false) when the flag is off — payload unchanged.
+      ...(isManagedStockFlagOn() && (managedStockKeys().pexelsKey || managedStockKeys().pixabayKey)
+        ? { managedStock: true }
+        : {}),
       ...(process.env.MINUTE_QUOTA === "1" ? { minuteQuota: true } : {}),
     });
   } catch (error) {

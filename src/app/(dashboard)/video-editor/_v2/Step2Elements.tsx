@@ -33,6 +33,11 @@ import {
   heroHoldLengthSec,
 } from "./estimate";
 import { minutesFromSeconds } from "@/lib/minute-round";
+import {
+  MANAGED_STOCK_BROLL_HINT_CTA,
+  MANAGED_STOCK_BROLL_HINT_HREF,
+  MANAGED_STOCK_BROLL_HINT_LEAD,
+} from "@/lib/managed-stock";
 import { useBgm } from "../_hooks/useBgm";
 import { useHeygenAvatars } from "../_hooks/useHeygenAvatars";
 import { MusicLibraryModal } from "./MusicLibraryModal";
@@ -360,6 +365,21 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
           </div>
           ) : (
             <CustomerBrollSourceButtons p={p} durationSec={displaySec} />
+          )}
+          {/* UX (c) of #297 — asked ONCE the first export exists, never on day one.
+              `managedStockKeyHint` is server-computed: MANAGED_STOCK on, this account
+              eligible (trial/FREE, no stock key of its own), and it already has a
+              completed video. Flag off → always false → nothing renders. */}
+          {p.managedStockKeyHint && p.brollSource !== "kie-image" && (
+            <p style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+              {MANAGED_STOCK_BROLL_HINT_LEAD} ·{" "}
+              <a
+                href={MANAGED_STOCK_BROLL_HINT_HREF}
+                style={{ color: color.primary300, textDecoration: "underline" }}
+              >
+                {MANAGED_STOCK_BROLL_HINT_CTA}
+              </a>
+            </p>
           )}
           <Advanced note="สลับคลิป/แก้จังหวะรายช่วง (มากับ timeline)">
             <div className="flex flex-col gap-3">

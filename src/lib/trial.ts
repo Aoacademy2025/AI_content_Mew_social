@@ -3,6 +3,10 @@ import { prisma } from "@/lib/prisma";
 import { extendVideoExpiryForPlan } from "@/lib/plan-helpers";
 import { createNotification } from "@/lib/notifications";
 import { usageWindowForPlan } from "@/lib/usage-limits";
+import {
+  excludeLiveTrialingSubscriptionWhere,
+  preserveTrialOnConvertEnabled,
+} from "@/lib/preserve-trial";
 import { recordTrialExpiredTelemetry } from "@/lib/trial-expired-telemetry";
 
 export { TRIAL_MINUTES } from "@/lib/plan-limits";
@@ -74,10 +78,15 @@ export async function grantTrial(userId: string, days: number): Promise<boolean>
  */
 export async function revertExpiredTrials(): Promise<number> {
   const now = new Date();
+  // #348: a converted customer whose Stripe subscription is still `trialing` keeps
+  // their remaining trial days INSIDE Stripe. They must never be swept here — the
+  // trial-end invoice is what moves them to "active". `{}` while the flag is off.
+  const liveSubscriptionGuard = excludeLiveTrialingSubscriptionWhere(preserveTrialOnConvertEnabled());
   const due = await prisma.user.findMany({
     where: {
       trialEndsAt: { not: null, lte: now },
       OR: [{ subStatus: null }, { subStatus: { not: "active" } }],
+      ...liveSubscriptionGuard,
     },
     // minutesUsed is read BEFORE the revert — the FREE usage window below resets it to 0.
     select: { id: true, trialEndsAt: true, minutesUsed: true },
@@ -86,7 +95,7 @@ export async function revertExpiredTrials(): Promise<number> {
   for (const u of due) {
     const res = await prisma.user.updateMany({
       // re-guard mirrors the outer query (idempotent + closes the TOCTOU where a user pays mid-loop)
-      where: { id: u.id, trialEndsAt: { not: null, lte: now }, OR: [{ subStatus: null }, { subStatus: { not: "active" } }] },
+      where: { id: u.id, trialEndsAt: { not: null, lte: now }, OR: [{ subStatus: null }, { subStatus: { not: "active" } }], ...liveSubscriptionGuard },
       data: {
         plan: "FREE",
         planExpiresAt: null,

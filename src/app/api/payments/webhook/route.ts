@@ -18,18 +18,18 @@ import {
   recurringPriceCatalogFromEnv,
   resolveRecurringEntitlement,
 } from "@/lib/stripe-subscription-entitlement";
-import { activatePaidCheckout } from "@/lib/checkout-plan-activation";
+import { activatePaidCheckout, checkoutPaymentSettled } from "@/lib/checkout-plan-activation";
+import {
+  preserveTrialOnConvertEnabled,
+  TRIAL_PRESERVED_PAYMENT_NOTE,
+} from "@/lib/preserve-trial";
+import { recordTelemetryEventOnce } from "@/lib/telemetry";
 
 export const config = { api: { bodyParser: false } };
 
 // Stripe moved invoice.subscription under parent.subscription_details in recent API versions — handle both.
 function invoiceSubId(inv: any): string | null {
   return inv.subscription ?? inv.parent?.subscription_details?.subscription ?? null;
-}
-
-function checkoutPaymentSettled(session: any): boolean {
-  return session.payment_status === "paid"
-    || (session.payment_status === "no_payment_required" && session.amount_total === 0);
 }
 
 /** Process a finished Checkout session — credit pack OR plan. Shared by `checkout.session.completed`
@@ -114,10 +114,19 @@ async function handleCheckoutSession(s: any, eventId: string) {
   let verifiedPlan = plan;
   let verifiedPeriod = period;
   let entitlementExpiresAt: Date | null = null;
+  const preserveTrial = preserveTrialOnConvertEnabled();
+  let subscriptionStatus: string | null = null;
+  let verifiedCurrency: string | null = s.currency ?? null;
 
   if (s.mode === "subscription") {
     if (!subscriptionId) throw new Error(`Paid subscription checkout ${s.id} has no subscription id`);
     const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+    subscriptionStatus = subscription.status ?? null;
+    // A trial-preserving checkout settles as `no_payment_required` with
+    // amount_total 0 (checkoutPaymentSettled already accepts that shape). Stripe
+    // still stamps the session currency, but fall back to the subscription's so a
+    // missing field can never wedge this event into a permanent retry loop.
+    verifiedCurrency = s.currency ?? (subscription as { currency?: string | null }).currency ?? null;
     const entitlement = resolveRecurringEntitlement({
       items: subscription.items.data.map((item) => ({
         priceId: item.price.id,
@@ -142,6 +151,8 @@ async function handleCheckoutSession(s: any, eventId: string) {
     entitlementExpiresAt = entitlement.periodEnd;
   }
 
+  const trialPreserved = preserveTrial && subscriptionStatus === "trialing";
+
   // The money/TIME effect (the planExpiresAt extension) commits in ONE
   // transaction with its own Payment-PAID marker + the billing/subscription write. If any step
   // throws, the WHOLE tx rolls back → MON-1 deletes the idempotency claim → Stripe's retry re-runs
@@ -159,8 +170,14 @@ async function handleCheckoutSession(s: any, eventId: string) {
     subscriptionId,
     paymentIntentId: typeof s.payment_intent === "string" ? s.payment_intent : s.payment_intent?.id ?? null,
     amountTotal: s.amount_total,
-    currency: s.currency,
+    currency: verifiedCurrency,
     entitlementExpiresAt,
+    // Stripe's status is authoritative. `trialing` means "converted, card on
+    // file, first charge at trial end" — NOT unpaid: the plan is granted and
+    // planExpiresAt is Stripe's current_period_end (the trial end) just like any
+    // other subscription period.
+    subscriptionStatus,
+    paymentNote: trialPreserved ? TRIAL_PRESERVED_PAYMENT_NOTE : null,
   });
   if (!activation.activated) {
     console.log("[webhook] session already activated, skip", s.id);
@@ -175,8 +192,14 @@ async function handleCheckoutSession(s: any, eventId: string) {
   extendVideoExpiryForPlan(userId, verifiedPlan).catch(err => console.error("[webhook] extendVideoExpiry:", err));
   await createNotification({
     userId, type: "VIDEO_COMPLETED",
-    title: `ชำระเงินสำเร็จ — ${verifiedPlan} Plan`,
-    body: `แพ็กเกจ ${verifiedPlan} ของคุณใช้งานได้ถึง ${newExpiry.toLocaleDateString("th-TH")}`,
+    // A trial-preserving conversion has NOT charged the card yet — saying
+    // "ชำระเงินสำเร็จ" there would be untrue. Say what actually happened.
+    title: trialPreserved
+      ? `สมัคร ${verifiedPlan} Plan สำเร็จ`
+      : `ชำระเงินสำเร็จ — ${verifiedPlan} Plan`,
+    body: trialPreserved
+      ? `วันทดลองที่เหลือของคุณยังอยู่ครบ — ระบบจะเริ่มเก็บเงินรอบแรกวันที่ ${newExpiry.toLocaleDateString("th-TH")}`
+      : `แพ็กเกจ ${verifiedPlan} ของคุณใช้งานได้ถึง ${newExpiry.toLocaleDateString("th-TH")}`,
   }).catch(() => {});
   const couponId = s.metadata?.couponId;
   if (couponId) {
@@ -199,7 +222,21 @@ async function handleCheckoutSession(s: any, eventId: string) {
   // check and get 0 credits (bug H4). grantOnPaidActivation is CREDITS_LIVE-gated internally
   // (flag-off = no-op → byte-identical). Fire-and-forget.
   grantOnPaidActivation(userId, verifiedPlan).catch(() => {});
-  console.log(`[stripe-webhook] ${userId} → ${verifiedPlan} until ${newExpiry} (mode=${s.mode})`);
+  // Conversion telemetry — deduped on the session id so a Stripe retry (or the
+  // sibling completed/async_payment_succeeded event) records exactly one row.
+  await recordTelemetryEventOnce(userId, `checkout_completed:${s.id}`, {
+    name: "checkout_completed",
+    source: "server",
+    status: "done",
+    properties: {
+      plan: verifiedPlan,
+      period: verifiedPeriod ?? null,
+      method: s.metadata?.method ?? null,
+      recurring: s.mode === "subscription",
+      trialPreserved,
+    },
+  }).catch(() => {});
+  console.log(`[stripe-webhook] ${userId} → ${verifiedPlan} until ${newExpiry} (mode=${s.mode}, sub=${subscriptionStatus ?? "n/a"})`);
 }
 
 export async function POST(req: Request) {

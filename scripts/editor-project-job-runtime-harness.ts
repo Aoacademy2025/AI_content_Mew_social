@@ -550,6 +550,16 @@ function mountEditorShell(input: {
     if (specifier === "@/lib/use-me") {
       return { fetchMe: async () => ({ firstClipPath: false }) };
     }
+    if (specifier === "@/components/convert/first-clip-exported-view-signal") {
+      return { FirstClipExportedViewSignal: marker("FirstClipExportedViewSignal") };
+    }
+    if (specifier === "@/lib/first-clip-convert-events") {
+      return {
+        emitFirstClipExportedView: () => undefined,
+        emitFirstClipViewed: () => undefined,
+        emitFirstClipRenderActive: () => undefined,
+      };
+    }
     throw new Error(`unhandled editor shell import: ${specifier}`);
   };
   Object.assign(fakeReact, {
@@ -2152,6 +2162,18 @@ async function runExactReplayRouteScenario(input: {
       return {
         resolveFirstClipPath: async () => ({ onPath: false, reason: "has_completed_video" }),
         ensureFirstClipProjectSpine: async () => ({ profileId: "p", revisionId: "r" }),
+      };
+    }
+    if (specifier === "@/lib/managed-stock.server") {
+      // MANAGED_STOCK off is the default posture this harness replays: the route
+      // must still answer a keyless caller with `missing_key: broll`.
+      return {
+        resolveManagedStockAccess: async () => ({
+          eligible: false,
+          reason: "flag_off",
+          pexelsKey: null,
+          pixabayKey: null,
+        }),
       };
     }
     if (specifier === "@/lib/quota-error") return quotaErrorModule;

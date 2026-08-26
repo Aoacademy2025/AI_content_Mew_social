@@ -1,5 +1,7 @@
 "use client";
 
+import { isManagedStockClientEnabled } from "@/lib/managed-stock";
+
 // Shared client-side fetcher for /api/user/me.
 //
 // หน้า dashboard เรียก /api/user/me จากหลาย component พร้อมกัน (sidebar,
@@ -34,6 +36,10 @@ export interface MeData {
   minuteQuota?: boolean;
   minutesUsed?: number;
   minutesLimit?: number;
+  /** MANAGED_STOCK (#297): present only while the flag is on AND this account is
+   *  eligible (trial/FREE with no stock key of its own). `brollKeyHint` is true
+   *  once the account has a completed export — UX option (c). */
+  managedStock?: { active: boolean; brollKeyHint: boolean };
   heroScriptAllowed?: boolean;
   heroScriptPreview?: boolean;
   heroScriptCohort?: "internal" | "paid" | "coupon" | "bundle" | "grant" | "trial" | "free" | "preview";
@@ -110,6 +116,24 @@ export async function fetchMe(force = false): Promise<MeData | null> {
   })();
 
   return inFlight;
+}
+
+/**
+ * MANAGED_STOCK (#297): is the team stock key actually serving THIS account?
+ *
+ * Legacy (v1) creator/editor surfaces pre-check stock keys in the browser before
+ * they call the pipeline; without this they would keep showing the key modal to
+ * an account the server is happy to serve. Flag off → false with NO network call,
+ * so those gates behave exactly as they did before.
+ */
+export async function resolveManagedStockActive(): Promise<boolean> {
+  if (!isManagedStockClientEnabled()) return false;
+  try {
+    const me = await fetchMe();
+    return me?.managedStock?.active === true;
+  } catch {
+    return false;
+  }
 }
 
 /** ล้าง cache (เช่น หลัง logout หรือเปลี่ยน account) */

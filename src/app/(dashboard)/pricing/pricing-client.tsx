@@ -17,6 +17,7 @@ import {
   PLAN_RANK,
 } from "@/lib/plan-change";
 import { trackEvent } from "@/lib/client-telemetry";
+import { PRESERVE_TRIAL_CONVERT_LINE } from "@/lib/preserve-trial";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
@@ -54,6 +55,8 @@ type Me = {
   usageLimit?: number;
   trialEndsAt?: string | null;
   subStatus?: string | null;
+  /** Browser-safe evidence of a Stripe subscription (#348) — never the id itself. */
+  hasStripeSubscription?: boolean;
   billingPeriod?: BillingPeriod | null;
   planExpiresAt?: string | null;
   minuteQuota?: boolean;
@@ -79,12 +82,15 @@ export function PricingClient({
   paymentResult,
   acquisitionSource,
   minuteQuotaEnabled,
+  preserveTrialOnConvert = false,
 }: {
   initialPlans: PlanConfig;
   initialFounding: { active: boolean; remaining: number; total: number; percentOff: number };
   paymentResult: string | null;
   acquisitionSource: string | null;
   minuteQuotaEnabled: boolean;
+  /** #348 — PRESERVE_TRIAL_ON_CONVERT, read on the server and passed down. */
+  preserveTrialOnConvert?: boolean;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
   // Base default (no known subscription state yet) — #300, flag-gated.
@@ -303,6 +309,11 @@ export function PricingClient({
                 หลังหมดทดลองจะกลับเป็น Free — เหลือ <b style={{ color: "var(--ui-text-primary)" }}>{me?.minuteQuota ? "5 นาที/เดือน · ~5 คลิป" : "2 คลิป/เดือน"}</b> · เก็บวิดีโอ 3 วัน · ปิด Avatar / โคลนเสียง / ตัดต่อในเว็บ
                 <b style={{ color: VIOLET_LIGHT }}> อัปเกรดเพื่อใช้ต่อไม่สะดุด</b>
               </p>
+              {preserveTrialOnConvert && (
+                <p className="mt-2 text-[13px] font-semibold" style={{ color: "#34D399" }}>
+                  {PRESERVE_TRIAL_CONVERT_LINE}
+                </p>
+              )}
             </>
           ) : currentPlan === "FREE" ? (
             <>
@@ -418,6 +429,10 @@ export function PricingClient({
                 billingPeriod: me?.billingPeriod ?? null,
                 planExpiresAt: me?.planExpiresAt ? new Date(me.planExpiresAt) : null,
                 paymentMethod: period === "monthly" ? "card" : method,
+                // A converted-but-still-trialing subscription must read as
+                // "manage/current", not as a second purchase the API rejects.
+                hasStripeSubscription: me?.hasStripeSubscription ?? false,
+                preserveTrialOnConvert,
               }, key, period)
             : null;
           const isCurrentTier = !!currentPlan && currentPlan === key && !isTrialPlan;

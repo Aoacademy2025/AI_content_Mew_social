@@ -1,5 +1,6 @@
 import { getPlanConfig } from "@/lib/plan-config";
 import { foundingStatus } from "@/lib/founding";
+import { preserveTrialOnConvertEnabled } from "@/lib/preserve-trial";
 import { PricingClient } from "./pricing-client";
 
 /**
@@ -42,6 +43,9 @@ export default async function PricingPage({
           paymentResult={params.payment ?? null}
           acquisitionSource={params.source ?? null}
           minuteQuotaEnabled={process.env.MINUTE_QUOTA === "1"}
+          // #348 — the promise on the trial band is only shown when the billing
+          // code actually keeps the remaining days. Same helper the server uses.
+          preserveTrialOnConvert={preserveTrialOnConvertEnabled()}
         />
       </div>
     </div>
