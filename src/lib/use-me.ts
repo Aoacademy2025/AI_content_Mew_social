@@ -31,6 +31,11 @@ export interface MeData {
   heroAiImageEligible?: boolean;
   recommendedAutoMixDefault?: boolean;
   firstClipPath?: boolean;
+  firstClipPathReason?: "on_path" | "conversion_trial" | "internal" | "not_paid_equivalent" | "has_completed_video";
+  firstClipProgress?: { activeRender: boolean; renderedClip: boolean } | null;
+  minuteQuota?: boolean;
+  minutesUsed?: number;
+  minutesLimit?: number;
   /** MANAGED_STOCK (#297): present only while the flag is on AND this account is
    *  eligible (trial/FREE with no stock key of its own). `brollKeyHint` is true
    *  once the account has a completed export — UX option (c). */

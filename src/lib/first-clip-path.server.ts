@@ -2,6 +2,11 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { decideFirstClipPath, type FirstClipPathDecision } from "@/lib/first-clip-path";
+import {
+  FIRST_CLIP_PROGRESS_STATUSES,
+  summarizeFirstClipProgress,
+  type FirstClipProgress,
+} from "@/lib/first-clip-dashboard";
 import { isInternalNorthStarAccount } from "@/lib/subscription-north-star.server";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
 import { createBlankBrandProfileSeed } from "@/lib/brand-profile-seed";
@@ -55,6 +60,20 @@ export async function resolveFirstClipPath(
     conversionTrial,
     hasCompletedVideo,
   });
+}
+
+/**
+ * Progress of the account's first clip, for the day-one dashboard stepper (#305).
+ * Cheap single query, and only worth running for accounts still on the path —
+ * `/api/user/me` skips it otherwise.
+ */
+export async function resolveFirstClipProgress(userId: string): Promise<FirstClipProgress> {
+  const rows = await prisma.editorProject.findMany({
+    where: { userId, status: { in: [...FIRST_CLIP_PROGRESS_STATUSES] } },
+    select: { status: true },
+    take: 100,
+  });
+  return summarizeFirstClipProgress(rows.map((row) => row.status));
 }
 
 export async function ensureFirstClipBrandRevision(userId: string) {

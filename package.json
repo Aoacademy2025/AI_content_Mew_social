@@ -51,6 +51,7 @@
     "verify:preserve-trial-on-convert": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-preserve-trial-on-convert.ts",
     "verify:first-clip-convert": "tsx scripts/verify-first-clip-convert.ts && tsx scripts/verify-plan-change.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-first-clip-convert-server.ts",
     "verify:first-clip-path": "tsx scripts/verify-first-clip-path.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-first-clip-path-server.ts",
+    "verify:first-clip-dashboard": "tsx scripts/verify-first-clip-dashboard.ts",
     "verify:trial-first-clip-path": "tsx scripts/verify-first-clip-path.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-trial-first-clip-path.ts",
     "verify:pricing-lcp": "tsx scripts/verify-pricing-lcp.ts",
     "verify:pricing-defaults": "tsx scripts/verify-pricing-defaults.ts",

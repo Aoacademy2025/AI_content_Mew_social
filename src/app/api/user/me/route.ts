@@ -13,7 +13,7 @@ import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { shouldDefaultToRecommendedAutoMix } from "@/lib/automix-plan";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
-import { resolveFirstClipPath } from "@/lib/first-clip-path.server";
+import { resolveFirstClipPath, resolveFirstClipProgress } from "@/lib/first-clip-path.server";
 import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
 
 export async function GET() {
@@ -85,6 +85,11 @@ export async function GET() {
         hasOwnPixabayKey: Boolean(authUser.pixabayKey),
       }),
     ]);
+    // Day-one dashboard stepper (#305): only accounts still on the path need the
+    // extra project-status read, so nobody else pays for it on this hot route.
+    const firstClipProgress = firstClipPath.onPath
+      ? await resolveFirstClipProgress(authUser.id)
+      : null;
     const heroAiImageEligible = heroAiImageAccess.canUse;
     // Recovery and exact rerender remain available for already-pinned projects
     // when new Brand Visual admission is rolled back. Funding disclosure must
@@ -124,6 +129,8 @@ export async function GET() {
       heroAiBeta,
       heroAiImageEligible,
       firstClipPath: firstClipPath.onPath,
+      firstClipPathReason: firstClipPath.reason,
+      firstClipProgress,
       // UX (c) — the Step-2 nudge to bring your own key is only shown AFTER the
       // first completed export, which is exactly the First-Clip Path's
       // "has_completed_video" exit reason. Omitted when the flag is off.

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { fetchClientJson } from "@/lib/client-request-cache";
+import { isLowQuota } from "@/lib/first-clip-dashboard";
 
 interface MinutesQuota {
   used: number;
@@ -33,6 +34,11 @@ interface QuotaStatusProps {
   variant?: "chip" | "row";
   /** Bump this to trigger a re-fetch after a render/burn completes */
   refreshKey?: number;
+  /**
+   * One number only (#304): chip variant drops the Hero-credits / top-up pill so
+   * a creator who has not shipped a first clip sees minutes and nothing else.
+   */
+  compact?: boolean;
   className?: string;
 }
 
@@ -49,12 +55,7 @@ function formatThaiDate(iso: string): string {
   }
 }
 
-function isLowQuota(remaining: number, limit: number): boolean {
-  if (limit <= 0) return false;
-  return remaining <= 10 || remaining / limit <= 0.15;
-}
-
-export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaStatusProps) {
+export function QuotaStatus({ variant = "chip", refreshKey, compact = false, className }: QuotaStatusProps) {
   const [quota, setQuota] = useState<QuotaData | null>(null);
   const [credits, setCredits] = useState<CreditBalance | null>(null);
   // null = loading, "error" = failed silently
@@ -66,9 +67,12 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
         fetchClientJson<QuotaData>("/api/videos/usage", { cache: "no-store" })
           .then(r => r.ok ? r.data : null)
           .catch(() => null),
-        fetchClientJson<CreditBalance>("/api/credits/balance", { cache: "no-store" })
-          .then(r => r.ok ? r.data : null)
-          .catch(() => null),
+        // compact hides the credits pill entirely — don't spend a request on it.
+        compact
+          ? Promise.resolve(null)
+          : fetchClientJson<CreditBalance>("/api/credits/balance", { cache: "no-store" })
+            .then(r => r.ok ? r.data : null)
+            .catch(() => null),
       ]).then(([nextQuota, nextCredits]) => {
         if (cancelled) return;
         if (nextQuota) setQuota(nextQuota);
@@ -88,7 +92,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
+  }, [refreshKey, compact]);
 
   // While loading → render nothing (no skeleton flash, no layout shift)
   if (quota === null) return null;
@@ -99,7 +103,7 @@ export function QuotaStatus({ variant = "chip", refreshKey, className }: QuotaSt
     ? isLowQuota(mins.remaining, mins.limit)
     : isLowQuota(quota.remaining, quota.limit);
   const resetStr = formatThaiDate(quota.resetAt);
-  const liveCredits = credits?.live ? credits : null;
+  const liveCredits = credits?.live && !compact ? credits : null;
   const creditLabel = (liveCredits?.plan ?? quota.plan) === "FREE" ? "เครดิตเติมนาที" : "Hero credits";
 
   if (variant === "chip") {

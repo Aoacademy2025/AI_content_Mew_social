@@ -61,6 +61,9 @@ jobs:
       - name: Verify Conversion Trial first-clip path
         run: npm run verify:trial-first-clip-path
 
+      - name: Verify first-clip day-one dashboard
+        run: npm run verify:first-clip-dashboard
+
       - name: Verify /pricing LCP convert page
         run: npm run verify:pricing-lcp
 
