@@ -39,6 +39,9 @@ model User {
   suspended             Boolean   @default(false)
   planExpiresAt         DateTime?
   onboardingDismissedAt DateTime?
+  // "Not now" on the first-clip convert prompt (issue #303). Additive column;
+  // a 30-day cooldown is enforced on read so the ask is never repeated per session.
+  firstClipConvertDismissedAt DateTime?
   // Phase 2 — subscriptions (card auto-renew cohort)
   stripeCustomerId      String?   @unique
   stripeSubscriptionId  String?

@@ -43,21 +43,20 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
   // single topbar (EditorV2Shell / legacy editor both root at h-screen or flex-1).
   // Suppress the shared dashboard chrome — TopNav, Sidebar/MobileSidebar, banners,
   // <main> padding — ONLY on this route. Every other path renders unchanged below.
-  if (pathname === "/video-editor") {
-    return (
-      <div className="relative flex h-screen flex-col overflow-hidden bg-background">
-        {/* Overlay keeps the editor's h-screen geometry unchanged while ensuring
-            users who work only in the editor still receive launch announcements. */}
-        <div className="absolute inset-x-0 top-0 z-[300]">
-          <ProductUpdateBanner />
-        </div>
-        <FirstClipConvertPrompt />
-        {children}
+  //
+  // FirstClipConvertPrompt is deliberately mounted ONCE, after this branch, for
+  // both shells (issue #303: two mounts meant a dismissal on one surface did not
+  // silence the other).
+  const shell = pathname === "/video-editor" ? (
+    <div className="relative flex h-screen flex-col overflow-hidden bg-background">
+      {/* Overlay keeps the editor's h-screen geometry unchanged while ensuring
+          users who work only in the editor still receive launch announcements. */}
+      <div className="absolute inset-x-0 top-0 z-[300]">
+        <ProductUpdateBanner />
       </div>
-    );
-  }
-
-  return (
+      {children}
+    </div>
+  ) : (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
       <TopNav onMenuClick={() => setMobileMenuOpen(true)} />
       <TrialBanner />
@@ -88,7 +87,13 @@ export function DashboardLayout({ children, noPadding }: DashboardLayoutProps) {
       </div>
 
       {!mobileMenuOpen && <BottomTabs />}
-      <FirstClipConvertPrompt />
     </div>
+  );
+
+  return (
+    <>
+      {shell}
+      <FirstClipConvertPrompt />
+    </>
   );
 }

@@ -5,11 +5,13 @@
  * background render ของจริง (P4a) — ปิดหน้าได้ งานทำต่อ กลับมา resume อัตโนมัติ
  */
 
+import { useEffect } from "react";
 import { Check, Loader2 } from "lucide-react";
 import { color, font } from "./tokens";
 import { GlassPanel, BtnGhost } from "./ui";
 import type { V2JobState } from "./useV2Job";
 import { videoJobProgressPresentation } from "@/lib/video-job-progress";
+import { emitFirstClipRenderActive } from "@/lib/first-clip-convert-events";
 
 // map currentStep (tts|captions|keywords|stock|config|render|avatar|burn|composite labels)
 // → เช็กลิสต์ภาษาคน 4-5 ข้อตามดีไซน์
@@ -58,6 +60,13 @@ export function RenderingScreen({ job, hasAvatar, uploadMode = false, exportMode
   visualMode?: VisualMode;
   onCancel: () => void;
 }) {
+  // A render owns the screen — the first-clip convert prompt must never open on
+  // top of it (issue #303).
+  useEffect(() => {
+    emitFirstClipRenderActive(true);
+    return () => emitFirstClipRenderActive(false);
+  }, []);
+
   const baseList = exportMode ? EXPORT_CHECKLIST : uploadMode ? UPLOAD_CHECKLIST : creationChecklist(visualMode);
   const items = baseList.filter((c) => !c.optional || hasAvatar);
   const activeIdx = checklistIndex(items, job.currentStep);

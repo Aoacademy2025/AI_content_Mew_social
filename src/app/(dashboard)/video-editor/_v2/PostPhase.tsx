@@ -46,6 +46,8 @@ import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
 import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
+import { FirstClipExportedViewSignal } from "@/components/convert/first-clip-exported-view-signal";
+import { emitFirstClipViewed } from "@/lib/first-clip-convert-events";
 
 function fmtMs(ms: number) {
   const s = Math.floor(ms / 1000);
@@ -149,16 +151,17 @@ export function PostPhase({
   if (ed.exp.phase === "done") {
     return (
       <main className="flex flex-1 flex-col items-center justify-center gap-4 p-6">
+        <FirstClipExportedViewSignal />
         <div className="flex items-center gap-2">
           <CheckCircle2 size={18} color={color.success} />
           <span style={{ font: `600 16px ${font.heading}`, color: color.success }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>
         </div>
         <video src={ed.exp.url} controls playsInline className="max-h-[52vh]" style={{ borderRadius: radius.cardLg, border: `1px solid ${color.cardBorder}`, aspectRatio: "9/16" }} />
         <div className="flex flex-wrap items-center justify-center gap-3">
-          <a href={ed.exp.url} download={downloadFilename}>
+          <a href={ed.exp.url} download={downloadFilename} onClick={emitFirstClipViewed}>
             <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
           </a>
-          <a href="/videos"><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
+          <a href="/videos" onClick={emitFirstClipViewed}><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
           <BtnGhost onClick={() => ed.setExp({ phase: "idle" })}>แก้ซับต่อ &amp; ส่งออกใหม่</BtnGhost>
           <BtnGhost onClick={ed.requestNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>

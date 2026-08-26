@@ -550,6 +550,16 @@ function mountEditorShell(input: {
     if (specifier === "@/lib/use-me") {
       return { fetchMe: async () => ({ firstClipPath: false }) };
     }
+    if (specifier === "@/components/convert/first-clip-exported-view-signal") {
+      return { FirstClipExportedViewSignal: marker("FirstClipExportedViewSignal") };
+    }
+    if (specifier === "@/lib/first-clip-convert-events") {
+      return {
+        emitFirstClipExportedView: () => undefined,
+        emitFirstClipViewed: () => undefined,
+        emitFirstClipRenderActive: () => undefined,
+      };
+    }
     throw new Error(`unhandled editor shell import: ${specifier}`);
   };
   Object.assign(fakeReact, {

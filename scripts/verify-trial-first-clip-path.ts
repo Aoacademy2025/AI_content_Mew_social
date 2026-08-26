@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decideFirstClipPath } from "../src/lib/first-clip-path";
 import { decideFirstClipConvertPrompt } from "../src/lib/first-clip-convert";
+import { MONTHLY_GRANT } from "../src/lib/credit-costs";
+import { minutesPerMonthForPlan, storageDaysForPlan } from "../src/lib/plan-limits";
 
 const dir = mkdtempSync(join(tmpdir(), "trial-first-clip-path-"));
 process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
@@ -34,9 +36,16 @@ async function main() {
   const paywall = decideFirstClipConvertPrompt({
     isInternal: false,
     isRecurringPayer: false,
+    isPaidEquivalent: false,
     hasCompletedVideo: true,
+    dismissedAt: null,
     monthlyPriceThb: 599,
-    founding: { active: true, remaining: 50, percentOff: 50 },
+    benefits: {
+      storageDays: storageDaysForPlan("PRO"),
+      minutesPerMonth: minutesPerMonthForPlan("PRO"),
+      monthlyCredits: MONTHLY_GRANT.PRO ?? 0,
+    },
+    founding: { active: true, remaining: 50, total: 100, percentOff: 50 },
   });
   assert.equal(paywall.show, true, "sample clip unlocks the same convert prompt as GRANT");
 
