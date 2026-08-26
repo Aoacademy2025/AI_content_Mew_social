@@ -7,6 +7,21 @@ import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
 import { geminiGenerateText, geminiGenerateVision } from "@/lib/gemini";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import {
+  capManagedQueriesForKeyword,
+  ManagedStockJobBudget,
+  shouldQueryPexelsAfterPixabay,
+  type ManagedStockProvider,
+} from "@/lib/managed-stock";
+import {
+  pruneExpiredStockSearchCache,
+  readStockSearchCache,
+  recordManagedStockThrottled,
+  recordManagedStockUsed,
+  resolveManagedStockAccess,
+  takeManagedStockToken,
+  writeStockSearchCache,
+} from "@/lib/managed-stock.server";
 import { isProviderError, toErrorResponse, type ProviderError } from "@/lib/provider-errors";
 import {
   detectContentProfile,
@@ -1217,8 +1232,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Auto Mix ยังไม่เปิดให้ใช้งาน — เร็วๆ นี้" }, { status: 403 });
   }
 
-  const pexelsKey = user?.pexelsKey ? decryptKey(user.pexelsKey) : null;
-  const pixabayKey = user?.pixabayKey ? decryptKey(user.pixabayKey) : null;
+  const ownPexelsKey = user?.pexelsKey ? decryptKey(user.pexelsKey) : null;
+  const ownPixabayKey = user?.pixabayKey ? decryptKey(user.pixabayKey) : null;
+  // ── Managed stock key (#297, ADR 0025) ────────────────────────────────────
+  // Flag OFF (MANAGED_STOCK unset/0) → resolveManagedStockAccess returns
+  // { eligible:false, keys:null } with no DB work, both keys below resolve to the
+  // user's own exactly as before, `usesManagedStock` is false, and every managed
+  // branch in this file is dead. Flag ON → a trial/FREE account with NO stock key
+  // of its own searches on the team key. BYOK always wins (`??` order).
+  const managedStock = await resolveManagedStockAccess(user, {
+    hasOwnPexelsKey: !!ownPexelsKey,
+    hasOwnPixabayKey: !!ownPixabayKey,
+  });
+  const pexelsKey = ownPexelsKey ?? managedStock.pexelsKey;
+  const pixabayKey = ownPixabayKey ?? managedStock.pixabayKey;
+  const usesManagedStock = managedStock.eligible && !ownPexelsKey && !ownPixabayKey && (!!pexelsKey || !!pixabayKey);
   const kieKey = user?.kieKey ? decryptKey(user.kieKey) : null;
   // Token actually sent to kie.ai. Flag off → BYOK key (today). Flag on: admins
   // use the managed key when set (else fall back to their BYOK key); paid users
@@ -1250,8 +1278,11 @@ export async function POST(req: Request) {
   // ผู้ใช้เลือก provider เองได้ผ่าน autoMixProviders (undefined = เปิดทุกตัวตาม default เดิม)
   const isAutoMixProviderAllowed = (p: string) => !allowedAutoMixProviders || allowedAutoMixProviders.has(p);
   const canUseUnsplashFallback = useAutoMix && !!unsplashKey && isAutoMixProviderAllowed("unsplash");
-  const canUsePexelsPhotoFallback = useAutoMix && !!pexelsKey && isAutoMixProviderAllowed("pexels-photo");
-  const canUsePixabayPhotoFallback = useAutoMix && !!pixabayKey && isAutoMixProviderAllowed("pixabay-photo");
+  // Photo fallbacks stay on the user's OWN key. The managed key's quota is
+  // budgeted for video search (ADR 0025 capacity math); AutoMix keeps its
+  // key-free photo providers (Wikimedia/NASA/Met) plus AI images instead.
+  const canUsePexelsPhotoFallback = useAutoMix && !!ownPexelsKey && isAutoMixProviderAllowed("pexels-photo");
+  const canUsePixabayPhotoFallback = useAutoMix && !!ownPixabayKey && isAutoMixProviderAllowed("pixabay-photo");
   const canUseFlickrFallback = useAutoMix && !!flickrKey && isAutoMixProviderAllowed("flickr");
   const canUseWikimediaFallback = useAutoMix && isAutoMixProviderAllowed("wikimedia");
   const canUseNasaFallback = useAutoMix && isAutoMixProviderAllowed("nasa");
@@ -1816,6 +1847,65 @@ export async function POST(req: Request) {
     downloadPhaseMs: 0,
   };
 
+  // ── Managed stock accounting (#297, ADR 0025) ──────────────────────────────
+  // All null/zero and never read when `usesManagedStock` is false (flag off, or
+  // the caller brought their own key), so the BYOK path is untouched.
+  const managedBudget = usesManagedStock ? new ManagedStockJobBudget() : null;
+  const managedStats: Record<ManagedStockProvider, { queries: number; cacheHits: number; throttled: boolean }> = {
+    pixabay: { queries: 0, cacheHits: 0, throttled: false },
+    pexels: { queries: 0, cacheHits: 0, throttled: false },
+  };
+  let managedTelemetryEmitted = false;
+
+  /** One `managed_stock_used` (and, when a bucket ran dry, one
+   *  `managed_stock_throttled`) per provider per job. Emitted from the terminal
+   *  telemetry call so late profile-fallback searches are counted too. */
+  async function emitManagedStockTelemetry() {
+    if (!usesManagedStock || managedTelemetryEmitted) return;
+    managedTelemetryEmitted = true;
+    for (const provider of ["pixabay", "pexels"] as ManagedStockProvider[]) {
+      const stat = managedStats[provider];
+      if (stat.queries === 0 && stat.cacheHits === 0 && !stat.throttled) continue;
+      const payload = { provider, queriesUsed: stat.queries, cacheHits: stat.cacheHits };
+      if (stat.throttled) await recordManagedStockThrottled(userId, payload);
+      if (stat.queries > 0 || stat.cacheHits > 0) await recordManagedStockUsed(userId, payload);
+    }
+    // Cheap opportunistic GC of the 24h cache; never blocks the response.
+    void pruneExpiredStockSearchCache();
+  }
+
+  /**
+   * One managed provider search: 24h cache → per-job cap → token bucket → call.
+   *
+   *  - A cache hit costs neither budget nor a token (that is the whole point of
+   *    the Pixabay-ToS-mandated cache).
+   *  - Budget/token exhaustion returns [] — the provider is skipped, never an
+   *    error, so the job degrades to the key-free photo providers + AI images.
+   *  - A throwing call consumes its token (the request WAS made) and writes
+   *    NOTHING to the cache: error responses are never cached.
+   */
+  async function managedProviderSearch<T>(
+    provider: ManagedStockProvider,
+    params: { query: string; perPage: number; minDuration: number },
+    run: () => Promise<T[]>,
+  ): Promise<T[]> {
+    const cacheParams = { provider, ...params };
+    const cached = await readStockSearchCache<T>(cacheParams);
+    if (cached) {
+      managedStats[provider].cacheHits++;
+      return cached;
+    }
+    if (!managedBudget?.take()) return [];
+    if (!takeManagedStockToken(provider)) {
+      managedStats[provider].throttled = true;
+      return [];
+    }
+    managedStats[provider].queries++;
+    const results = await run();
+    await writeStockSearchCache(cacheParams, results);
+    return results;
+  }
+
   function applyNormalizeTelemetry(result: NormalizeResult) {
     stockTelemetry.normalizeMsTotal += result.durationMs;
     if (result.status === "normalized") stockTelemetry.normalizeRanCount++;
@@ -1893,6 +1983,7 @@ export async function POST(req: Request) {
   }
 
   async function recordFetchStockTelemetry(status: "done" | "error", extra: Record<string, unknown> = {}) {
+    await emitManagedStockTelemetry();
     const normalizeAttempts = stockTelemetry.normalizeRanCount + stockTelemetry.normalizeFailedCount;
     await recordTelemetryEvent(userId, {
       name: status === "done" ? "fetch_stock_server_done" : "fetch_stock_server_error",
@@ -1923,6 +2014,17 @@ export async function POST(req: Request) {
         canUsePexels,
         canUsePixabay,
         canUseKieImage,
+        // Only present on the managed path, so the flag-off payload is unchanged.
+        ...(usesManagedStock
+          ? {
+              managedStock: true,
+              managedStockPixabayQueries: managedStats.pixabay.queries,
+              managedStockPexelsQueries: managedStats.pexels.queries,
+              managedStockCacheHits: managedStats.pixabay.cacheHits + managedStats.pexels.cacheHits,
+              managedStockQueryBudgetSpent: managedBudget?.spent ?? 0,
+              managedStockThrottled: managedStats.pixabay.throttled || managedStats.pexels.throttled,
+            }
+          : {}),
         searchConcurrency: SEARCH_CONCURRENCY,
         downloadConcurrency: DOWNLOAD_CONCURRENCY,
         normalizeConcurrency: NORMALIZE_CONCURRENCY,
@@ -2805,6 +2907,71 @@ export async function POST(req: Request) {
   // eslint-disable-next-line prefer-const
   let stockProviderError = null as ProviderError | null; // จับ invalid_key ไว้รายงานตอนท้าย — เดิมถูกกลืนเงียบ
 
+  function noteStockProviderError(reason: unknown) {
+    if (isProviderError(reason) && !stockProviderError) stockProviderError = reason;
+  }
+
+  /**
+   * ONE seam for every Pexels/Pixabay video search in this route.
+   *
+   * BYOK (`usesManagedStock === false`) — identical to the pre-#297 code: both
+   * providers fired in parallel, provider errors captured, no cache, no caps.
+   *
+   * Managed (#297) — Pixabay FIRST (100 req/min, no monthly cap, 24h-cache
+   * mandated by its ToS); Pexels is only asked when Pixabay came back with fewer
+   * than 3 candidates, because Pexels is the scarce quota (200/h, 20k/month).
+   */
+  async function searchStockProvidersForQuery(
+    query: string,
+    perPage: number,
+  ): Promise<{ pexelsVideos: PexelsVideo[]; pixabayVideos: PixabayVideo[] }> {
+    if (!usesManagedStock) {
+      const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
+        canUsePexels
+          ? searchPexels(query, pexelsKey!, 3, perPage)
+          : Promise.resolve([] as PexelsVideo[]),
+        canUsePixabay
+          ? searchPixabay(query, pixabayKey!, 5, perPage)
+          : Promise.resolve([] as PixabayVideo[]),
+      ]);
+      for (const settled of [pexelsRaw, pixabayRaw]) {
+        if (settled.status === "rejected") noteStockProviderError(settled.reason);
+      }
+      return {
+        pexelsVideos: pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [],
+        pixabayVideos: pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [],
+      };
+    }
+
+    let pixabayVideos: PixabayVideo[] = [];
+    if (canUsePixabay) {
+      try {
+        pixabayVideos = await managedProviderSearch<PixabayVideo>(
+          "pixabay",
+          { query, perPage, minDuration: 5 },
+          () => searchPixabay(query, pixabayKey!, 5, perPage),
+        );
+      } catch (err) {
+        noteStockProviderError(err);
+      }
+    }
+
+    let pexelsVideos: PexelsVideo[] = [];
+    if (canUsePexels && shouldQueryPexelsAfterPixabay(pixabayVideos.length)) {
+      try {
+        pexelsVideos = await managedProviderSearch<PexelsVideo>(
+          "pexels",
+          { query, perPage, minDuration: 3 },
+          () => searchPexels(query, pexelsKey!, 3, perPage),
+        );
+      } catch (err) {
+        noteStockProviderError(err);
+      }
+    }
+
+    return { pexelsVideos, pixabayVideos };
+  }
+
   async function searchCandidatesForQuery(
     query: string,
     keyword: string,
@@ -2812,23 +2979,7 @@ export async function POST(req: Request) {
     sourceIndex?: number,
   ): Promise<CandidateVideo[]> {
     stockTelemetry.searchQueries++;
-    const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
-      canUsePexels
-        ? searchPexels(query, pexelsKey!, 3, perPage)
-        : Promise.resolve([] as PexelsVideo[]),
-      canUsePixabay
-        ? searchPixabay(query, pixabayKey!, 5, perPage)
-        : Promise.resolve([] as PixabayVideo[]),
-    ]);
-
-    for (const settled of [pexelsRaw, pixabayRaw]) {
-      if (settled.status === "rejected" && isProviderError(settled.reason) && !stockProviderError) {
-        stockProviderError = settled.reason;
-      }
-    }
-
-    const pexelsVideos = pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [];
-    const pixabayVideos = pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [];
+    const { pexelsVideos, pixabayVideos } = await searchStockProvidersForQuery(query, perPage);
     stockTelemetry.pexelsCandidates += pexelsVideos.length;
     stockTelemetry.pixabayCandidates += pixabayVideos.length;
 
@@ -2959,34 +3110,22 @@ export async function POST(req: Request) {
     async (keyword, ki): Promise<CandidateVideo[]> => {
       // Build list of queries to try: alternatives first, then broad fallbacks
       const alts = keywordAlternatives?.[ki] ?? [];
-      const queriesToTry = withBrollPreference([
+      const allQueriesToTry = withBrollPreference([
         ...alts.filter(Boolean),
         keyword,
         keyword.split(" ").slice(0, 2).join(" "),
         keyword.split(" ")[0],
       ]).filter((q, idx, arr) => q && arr.indexOf(q) === idx); // deduplicate
+      // Managed key: primary + at most 2 alternates per keyword (ADR 0025 caps).
+      // BYOK keeps the full alternative ladder unchanged.
+      const queriesToTry = usesManagedStock ? capManagedQueriesForKeyword(allQueriesToTry) : allQueriesToTry;
 
       try {
         for (const query of queriesToTry) {
           console.log(`[fetch-stock] searching "${query}" (perPage=${basePerPage}) from ${srcLabel}`);
           stockTelemetry.searchQueries++;
 
-          const [pexelsRaw, pixabayRaw] = await Promise.allSettled([
-            canUsePexels
-              ? searchPexels(query, pexelsKey!, 3, basePerPage)
-              : Promise.resolve([] as PexelsVideo[]),
-            canUsePixabay
-              ? searchPixabay(query, pixabayKey!, 5, basePerPage)
-              : Promise.resolve([] as PixabayVideo[]),
-          ]);
-
-          for (const settled of [pexelsRaw, pixabayRaw]) {
-            if (settled.status === "rejected" && isProviderError(settled.reason) && !stockProviderError) {
-              stockProviderError = settled.reason;
-            }
-          }
-          const pexelsVideos = pexelsRaw.status === "fulfilled" ? pexelsRaw.value : [];
-          const pixabayVideos = pixabayRaw.status === "fulfilled" ? pixabayRaw.value : [];
+          const { pexelsVideos, pixabayVideos } = await searchStockProvidersForQuery(query, basePerPage);
           stockTelemetry.pexelsCandidates += pexelsVideos.length;
           stockTelemetry.pixabayCandidates += pixabayVideos.length;
 
@@ -3011,8 +3150,10 @@ export async function POST(req: Request) {
           }
         }
 
-        // Last resort: try page 2 of the first query for fresh IDs
-        if (canUsePexels && queriesToTry[0]) {
+        // Last resort: try page 2 of the first query for fresh IDs.
+        // Never on the managed key — page 2 is an extra call against the scarcest
+        // quota for the least likely win (ADR 0025 caps).
+        if (!usesManagedStock && canUsePexels && queriesToTry[0]) {
           try {
             const page2 = await searchPexels(queriesToTry[0], pexelsKey!, 3, basePerPage, 2);
             const candidates: CandidateVideo[] = [];
@@ -3360,8 +3501,8 @@ export async function POST(req: Request) {
             let fallback: ImageFallbackResult | null = null;
             switch (provider) {
               case "unsplash":      fallback = await tryUnsplashKenBurns(query, unsplashKey!, imagePath, outPath); break;
-              case "pexels-photo":  fallback = await tryPexelsPhotoKenBurns(query, pexelsKey!, imagePath, outPath); break;
-              case "pixabay-photo": fallback = await tryPixabayPhotoKenBurns(query, pixabayKey!, imagePath, outPath); break;
+              case "pexels-photo":  fallback = await tryPexelsPhotoKenBurns(query, ownPexelsKey!, imagePath, outPath); break;
+              case "pixabay-photo": fallback = await tryPixabayPhotoKenBurns(query, ownPixabayKey!, imagePath, outPath); break;
               case "flickr":        fallback = await tryFlickrKenBurns(query, flickrKey!, imagePath, outPath); break;
               case "wikimedia":     fallback = await tryWikimediaKenBurns(query, imagePath, outPath); break;
               case "nasa":          fallback = await tryNasaKenBurns(query, imagePath, outPath); break;

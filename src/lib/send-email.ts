@@ -395,6 +395,33 @@ ${premiumButton({ href: opts.pricingUrl, label: "ต่ออายุเลย"
   });
 }
 
+/**
+ * Trial lifecycle nudge (issue #299). Title/body come from trialReminderCopy() so the
+ * email and the in-app notification are the same words — there is no second copy here
+ * to drift out of sync with the enforced plan limits.
+ */
+export async function sendTrialReminderEmail(opts: {
+  to: string;
+  subject: string;
+  title: string;
+  body: string;
+  pricingUrl: string;
+}): Promise<boolean> {
+  return sendEmail({
+    to: opts.to,
+    subject: `${opts.subject} — ${BRAND}`,
+    html: emailShell({
+      title: opts.title,
+      previewText: opts.body,
+      body: `
+<h1 style="margin:0 0 8px;color:#fff;font-size:20px;font-weight:700">${escapeHtml(opts.title)}</h1>
+<p style="margin:0 0 18px;color:#a1a1aa;font-size:14px">${escapeHtml(opts.body)}</p>
+${premiumButton({ href: opts.pricingUrl, label: "ดูแผนและราคา" })}
+`.trim(),
+    }),
+  });
+}
+
 /** Admin alert when server disk crosses the configured threshold. */
 export async function sendDiskAlertEmail(opts: {
   to: string | string[];

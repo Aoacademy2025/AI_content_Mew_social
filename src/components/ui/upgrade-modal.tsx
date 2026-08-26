@@ -19,6 +19,11 @@ interface UpgradeModalProps {
   minuteQuota?: boolean;
   pricingHref?: string;
   onCtaClick?: () => void;
+  /**
+   * Optional second route out of the modal — e.g. "เติมเครดิต" → /settings?tab=billing when
+   * the server said credits can still fund a render. Omitted = single-CTA modal, unchanged.
+   */
+  secondaryCta?: { label: string; href: string };
 }
 
 // from minutesPerMonthForPlan("PRO") = 80
@@ -31,7 +36,7 @@ function getDefaultBenefits(minuteQuota?: boolean): string[] {
   ];
 }
 
-export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel, hideCta, minuteQuota, pricingHref = "/pricing", onCtaClick }: UpgradeModalProps) {
+export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel, hideCta, minuteQuota, pricingHref = "/pricing", onCtaClick, secondaryCta }: UpgradeModalProps) {
   const router = useRouter();
   if (!open) return null;
 
@@ -92,6 +97,15 @@ export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel
             style={{ background: "linear-gradient(135deg, #7c3aed, #2563eb)" }}
           >
             {ctaLabel ?? "ดูแผนราคา — อัปเกรดเลย"}
+          </button>
+        )}
+
+        {secondaryCta && (
+          <button
+            onClick={() => { onClose(); router.push(secondaryCta.href); }}
+            className="mt-2 w-full rounded-xl border border-white/15 py-2.5 text-sm font-semibold text-zinc-200 transition-colors hover:bg-white/5 active:scale-[0.98]"
+          >
+            {secondaryCta.label}
           </button>
         )}
 

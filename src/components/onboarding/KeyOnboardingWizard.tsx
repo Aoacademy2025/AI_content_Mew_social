@@ -9,8 +9,8 @@ import { ApiKeyField } from "./ApiKeyField";
 type TestResult = { ok: boolean; message: string } | null;
 
 export function KeyOnboardingWizard({
-  open, onClose, onComplete, startKeyId, managed = false,
-}: { open: boolean; onClose: () => void; onComplete: () => void; startKeyId?: KeyId; managed?: boolean }) {
+  open, onClose, onComplete, startKeyId, managed = false, managedStock = false,
+}: { open: boolean; onClose: () => void; onComplete: () => void; startKeyId?: KeyId; managed?: boolean; managedStock?: boolean }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [results, setResults] = useState<Record<string, TestResult>>({});
   const [testing, setTesting] = useState<string | null>(null);
@@ -18,6 +18,13 @@ export function KeyOnboardingWizard({
   const [showAdvanced, setShowAdvanced] = useState(Boolean(startKeyId && ADVANCED_KEYS.some((k) => k.id === startKeyId)));
 
   if (!open) return null;
+
+  // MANAGED_STOCK (#297): the system searches its own Pexels/Pixabay for trial/FREE
+  // accounts, so the stock keys move out of the "จำเป็น" block into an optional one.
+  // Flag off → `stockDefs` is empty and `requiredDefs` is the original list unchanged.
+  const allRequired = requiredKeysFor(managed);
+  const stockDefs = managedStock ? allRequired.filter((def) => def.group === "stock") : [];
+  const requiredDefs = managedStock ? allRequired.filter((def) => def.group !== "stock") : allRequired;
 
   function setValue(id: string, v: string) {
     setValues((p) => ({ ...p, [id]: v }));
@@ -82,15 +89,35 @@ export function KeyOnboardingWizard({
           </div>
           <button type="button" onClick={skip} className="text-slate-400 hover:text-white"><X className="h-5 w-5" /></button>
         </div>
-        <p className="mt-1 text-sm text-slate-400">ตั้งแค่ 2 อย่างก็เริ่มสร้างวิดีโอได้เลย</p>
+        <p className="mt-1 text-sm text-slate-400">
+          {managedStock && requiredDefs.length === 0
+            ? "เริ่มสร้างวิดีโอได้เลย ไม่ต้องตั้งค่า key"
+            : "ตั้งแค่ 2 อย่างก็เริ่มสร้างวิดีโอได้เลย"}
+        </p>
 
         <div className="mt-5 space-y-5">
-          <div className="text-xs font-semibold uppercase tracking-wide text-violet-200">จำเป็น</div>
-          {requiredKeysFor(managed).map((def) => (
+          {requiredDefs.length > 0 && (
+            <div className="text-xs font-semibold uppercase tracking-wide text-violet-200">จำเป็น</div>
+          )}
+          {requiredDefs.map((def) => (
             <ApiKeyField key={def.id} def={def} value={values[def.id] ?? ""} isSaved={false}
               onChange={(v) => setValue(def.id, v)} onTest={() => test(def.id, def.testKeyType)}
               testResult={results[def.id] ?? null} testing={testing === def.id} />
           ))}
+
+          {stockDefs.length > 0 && (
+            <>
+              <div className="text-xs font-semibold uppercase tracking-wide text-slate-300">ไม่บังคับ</div>
+              <p className="-mt-3 text-[11px] text-slate-500">
+                คลังสต็อก: ใช้ของระบบได้เลย · ใส่ key ของคุณเองเพื่อเลือกภาพได้มากขึ้น (ฟรี, 1 นาที)
+              </p>
+              {stockDefs.map((def) => (
+                <ApiKeyField key={def.id} def={def} value={values[def.id] ?? ""} isSaved={false}
+                  onChange={(v) => setValue(def.id, v)} onTest={() => test(def.id, def.testKeyType)}
+                  testResult={results[def.id] ?? null} testing={testing === def.id} />
+              ))}
+            </>
+          )}
 
           <button type="button" onClick={() => setShowAdvanced((v) => !v)}
             className="flex w-full items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-300 hover:bg-white/5">

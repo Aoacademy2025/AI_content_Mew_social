@@ -4,6 +4,7 @@ import { limitsForPlan, minutesPerMonthForPlan } from "@/lib/plan-limits";
 import { MONTHLY_GRANT, resetMonthlyGranted } from "@/lib/credits";
 import { syncStoredBundleEntitlementForUser } from "@/lib/bundle-entitlement";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
+import { recordTrialExpiredTelemetry } from "@/lib/trial-expired-telemetry";
 
 const PAID_PLANS = ["PRO", "BUSINESS"] as const;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -329,6 +330,12 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
         ? { bundlePrimary: true, bundleAccessExpiresAt: { not: null, lte: now } }
         : { planExpiresAt: { not: null, lte: now } };
 
+  // Read the trial meter BEFORE the downgrade: the FREE usage window below resets
+  // minutesUsed to 0, so `trial_expired` would otherwise always report zero usage.
+  const preRevert = decision.reason === "trial_expired"
+    ? await prisma.user.findUnique({ where: { id: userId }, select: { minutesUsed: true } })
+    : null;
+
   const res = await prisma.user.updateMany({
     where: {
       id: userId,
@@ -340,6 +347,10 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
       plan: "FREE",
       planExpiresAt: null,
       trialEndsAt: null,
+      // Preserve the trial's end date that `trialEndsAt: null` above destroys. Only
+      // written when this downgrade is actually clearing a trial — a plan/bundle
+      // expiry must not stamp a trial date onto a user who never trialed.
+      ...(user.trialEndsAt ? { trialEndedAt: user.trialEndsAt } : {}),
       bundlePrimary: false,
       ...usageWindowForPlanValue("FREE", now),
     },
@@ -355,6 +366,9 @@ export async function syncUserEntitlement(userId: string, now: Date = new Date()
     // steady-state sync (which returns early at `action !== "DOWNGRADE"` above).
     if (process.env.CREDITS_LIVE === "1") {
       await resetMonthlyGranted(userId, "FREE").catch(() => {});
+    }
+    if (decision.reason === "trial_expired") {
+      await recordTrialExpiredTelemetry({ userId, minutesUsed: preRevert?.minutesUsed ?? 0 });
     }
     const minuteImpact = process.env.MINUTE_QUOTA === "1" ? " (เหลือ 5 นาที/เดือน)" : "";
     await createNotification({

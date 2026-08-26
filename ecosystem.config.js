@@ -321,6 +321,23 @@ module.exports = {
       },
     },
     {
+      // Trial lifecycle nudges (issue #299): 2 days left / expiry day / day +3.
+      // Runs AFTER trial-expiry (08:00) so the expiry-day pass sees an already-reverted
+      // user — the trial's end date survives that revert in User.trialEndedAt.
+      // The route is a no-op unless TRIAL_REMINDERS=1 in the app's .env.
+      name: "trial-reminders",
+      cwd: "/var/www/ai-content",
+      script: "scripts/trial-reminders.js",
+      cron_restart: "0 10 * * *", // daily 10:00 Asia/Bangkok
+      autorestart: false,
+      watch: false,
+      env: {
+        NODE_ENV: "production",
+        NEXT_PUBLIC_APP_URL: "http://localhost:3000",
+        CRON_SECRET: process.env.CRON_SECRET || "",
+      },
+    },
+    {
       name: "disk-watch",
       cwd: "/var/www/ai-content",
       script: "scripts/disk-watch.js",

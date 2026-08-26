@@ -52,6 +52,7 @@ model User {
   // Free trial (public 7-day PRO trial, no card)
   trialStartedAt        DateTime? // set once; never cleared (one-trial-per-user guard)
   trialEndsAt           DateTime? // end of the active unconverted trial; cleared on conversion/revert
+  trialEndedAt          DateTime? // preserved copy of trialEndsAt at revert time — the cohort date `trialEndsAt` used to lose
   // Hero AI Bundle is an overlay, independent from Studio's own Stripe/trial/
   // admin-paid entitlement. Never reuse planExpiresAt for this source: revoke
   // must remove only Bundle access and preserve every other valid source.
@@ -107,6 +108,7 @@ model User {
   administratorGrants             AdministratorGrant[]
   conversionTrialAiImageAllowance ConversionTrialAiImageAllowance?
   userVoices                      UserVoice[]
+  trialReminderLogs               TrialReminderLog[]
 }
 
 // Private voice-clone references. The normalized WAV bytes live outside
@@ -678,6 +680,9 @@ model Notification {
   type      NotificationType
   title     String
   body      String
+  /// Optional in-app destination (same-origin path only, e.g. "/pricing?source=trial_d5").
+  /// Rendered as the notification's click target; absent = legacy per-type routing.
+  link      String?
   read      Boolean          @default(false)
   createdAt DateTime         @default(now())
 }
@@ -899,6 +904,20 @@ model StripeWebhookEvent {
   id          String   @id // Stripe event.id (evt_...)
   type        String
   processedAt DateTime @default(now())
+}
+
+/// One row per trial-lifecycle reminder actually delivered. The (userId, kind)
+/// unique is the idempotency primitive: the cron creates the row first and skips
+/// on a unique violation, so a re-run (or two workers) can never double-send.
+model TrialReminderLog {
+  id     String   @id @default(cuid())
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind   String // d5 | expiry | d3after
+  sentAt DateTime @default(now())
+
+  @@unique([userId, kind])
+  @@index([kind, sentAt])
 }
 
 model TelemetryEvent {
@@ -1271,4 +1290,22 @@ model UsedTrialEmail {
   id        String   @id @default(cuid())
   emailHash String   @unique // sha256(lowercase(trim(email)))
   createdAt DateTime @default(now())
+}
+
+// 24h stock-search cache (issue #297, ADR 0025). Required by Pixabay's ToS for the
+// managed team key, and the reason the Pexels hourly/monthly capacity math closes:
+// a repeated query inside the window costs no provider call at all.
+// Only SUCCESSFUL search responses are ever written here — an error response must
+// never be able to poison a whole day of searches for every trial/FREE account.
+// Purely additive, so `prisma db push` on deploy is safe.
+model StockSearchCache {
+  id          String   @id @default(cuid())
+  provider    String // pexels | pixabay
+  queryKey    String // normalized query + perPage + minDuration + page
+  resultsJson String // JSON array of provider hits, exactly as the search helper returns them
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  @@unique([provider, queryKey])
+  @@index([expiresAt])
 }
