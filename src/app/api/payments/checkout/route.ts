@@ -8,6 +8,8 @@ import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { claimSeat, attachReservation, releaseUnattachedSeat } from "@/lib/founding";
 import { checkoutAllowed } from "@/lib/plan-change";
 import { AFF_COOKIE, sanitizeRefCode, studioProductSlug } from "@/lib/affiliate-ref";
+import { preserveTrialOnConvertEnabled, resolveTrialPreservation } from "@/lib/preserve-trial";
+import { recordTelemetryEvent } from "@/lib/telemetry";
 
 export async function POST(req: Request) {
   try {
@@ -45,6 +47,7 @@ export async function POST(req: Request) {
         email: true,
         name: true,
         stripeCustomerId: true,
+        stripeSubscriptionId: true,
         plan: true,
         subStatus: true,
         trialEndsAt: true,
@@ -75,17 +78,33 @@ export async function POST(req: Request) {
     //  1. an active subscriber minting a SECOND Stripe subscription (any tier change → portal);
     //  2. a paid user paying to "upgrade" to a LOWER tier (downgrade-by-pay).
     // FREE users and trial users (no active sub) are unaffected — they upgrade normally.
+    // #348: while PRESERVE_TRIAL_ON_CONVERT is on, a converted customer sits at
+    // subStatus="trialing" until Stripe charges at trial end. That is still a live
+    // subscription, so `active_sub` must block a SECOND one exactly as it does for
+    // "active" — otherwise a mid-trial converter could mint a duplicate and be
+    // double-billed. Flag off → the guard reads subStatus === "active" only.
+    const now = new Date();
+    const preserveTrial = preserveTrialOnConvertEnabled();
+    const preservation = resolveTrialPreservation({
+      trialEndsAt: user.trialEndsAt,
+      subStatus: user.subStatus,
+      recurring: isSub,
+      now,
+      enabled: preserveTrial,
+    });
+
     const decision = checkoutAllowed(
       {
         plan: user.plan,
         subStatus: user.subStatus,
+        stripeSubscriptionId: user.stripeSubscriptionId,
         trialEndsAt: user.trialEndsAt,
         planExpiresAt: user.planExpiresAt,
         hasQualifyingCashPayment: Boolean(cashPayment),
       },
       plan,
-      new Date(),
-      { recurring: isSub },
+      now,
+      { recurring: isSub, preserveTrialOnConvert: preserveTrial },
     );
     if (!decision.allowed) {
       const error = decision.reason === "active_sub"
@@ -164,7 +183,15 @@ export async function POST(req: Request) {
         },
         ...(isSub
           ? {
-              subscription_data: { metadata: { userId, plan, period, ...affiliateMeta } },
+              subscription_data: {
+                metadata: { userId, plan, period, ...affiliateMeta },
+                // #348: carry the unused free-trial days into Stripe. The card is
+                // still collected now (payment_method_collection stays default);
+                // the FIRST charge happens at trial_end. Null whenever the trial
+                // is absent, already converted, the flag is off, or fewer than
+                // 48h remain (Stripe rejects a nearer trial_end).
+                ...(preservation.stripeTrialEnd ? { trial_end: preservation.stripeTrialEnd } : {}),
+              },
               // bound how long a founding seat is held even for subscription sessions
               ...(isFounding ? { expires_at: Math.floor(Date.now() / 1000) + 30 * 60 } : {}),
             }
@@ -203,6 +230,23 @@ export async function POST(req: Request) {
         periodDays: priceCfg.periodDays,
       },
     });
+
+    // Telemetry item 12: the checkout funnel needs to know whether the customer
+    // was mid-trial and whether those days actually survived. Fire-and-forget —
+    // a telemetry failure must never lose a created checkout session.
+    await recordTelemetryEvent(userId, {
+      name: "checkout_started",
+      source: "server",
+      status: "started",
+      properties: {
+        plan,
+        period,
+        method,
+        onTrial: preservation.onTrial,
+        trialDaysLeft: preservation.trialDaysLeft,
+        preserveTrial: preservation.preserved,
+      },
+    }).catch(() => {});
 
     return NextResponse.json({ url: checkoutSession.url });
   } catch (error) {

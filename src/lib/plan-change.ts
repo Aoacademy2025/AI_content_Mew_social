@@ -1,11 +1,15 @@
 // Single source of truth for "can this user self-serve checkout for `requestedPlan`?".
 // Used by the checkout API (enforcement) and mirrored by the pricing page (display gating).
 
+import { hasLiveStripeSubscription } from "@/lib/preserve-trial";
+
 export const PLAN_RANK: Record<string, number> = { FREE: 0, PRO: 1, BUSINESS: 2 };
 
 export type PlanChangeState = {
   plan: string;
   subStatus: string | null;
+  /** Evidence that `subStatus: "trialing"` is a real converted subscription (#348). */
+  stripeSubscriptionId?: string | null;
   trialEndsAt: Date | null;
   planExpiresAt?: Date | null;
   /** True when the user has a cash PAID plan payment (PromptPay/card). GRANT/trial without cash may convert to recurring. */
@@ -57,13 +61,23 @@ export function paidPlanCardMode(
     billingPeriod?: string | null;
     planExpiresAt?: Date | null;
     paymentMethod?: "card" | "promptpay";
+    /** #348 — see PlanChangeState.stripeSubscriptionId. */
+    stripeSubscriptionId?: string | null;
+    /** #348 — browser-safe form of the same evidence. */
+    hasStripeSubscription?: boolean;
+    /** #348 — PRESERVE_TRIAL_ON_CONVERT, passed in because this runs in the browser too. */
+    preserveTrialOnConvert?: boolean;
   },
   cardPlan: string,
   cardPeriod?: "monthly" | "annual",
   now: Date = new Date(),
 ): PaidPlanCardMode {
+  // A subscription Stripe still reports as `trialing` is live: the card is on
+  // file and the first charge lands at trial end. Show "manage/current", never a
+  // second purchase the API would (correctly) reject.
+  const liveSubscription = hasLiveStripeSubscription(state, state.preserveTrialOnConvert === true);
   if (state.isTrialPlan) return "purchase";
-  if (state.subStatus === "active") {
+  if (liveSubscription) {
     if (cardPlan === state.currentPlan) {
       if (state.billingPeriod && cardPeriod && state.billingPeriod !== cardPeriod) return "manage";
       return "current";
@@ -74,7 +88,7 @@ export function paidPlanCardMode(
   const recurring = cardPeriod === "monthly" || state.paymentMethod === "card";
   if (recurring && state.planExpiresAt && state.planExpiresAt > now) return "wait";
   if (cardPlan === state.currentPlan) {
-    if (cardPlan === "PRO" && state.subStatus !== "active") return "renew";
+    if (cardPlan === "PRO" && !liveSubscription) return "renew";
     return "current";
   }
   return "purchase";
@@ -92,9 +106,14 @@ export function checkoutAllowed(
   state: PlanChangeState,
   requestedPlan: string,
   now: Date = new Date(),
-  options: { recurring?: boolean } = {},
+  options: { recurring?: boolean; preserveTrialOnConvert?: boolean } = {},
 ): CheckoutDecision {
-  if (state.subStatus === "active") return { allowed: false, reason: "active_sub" };
+  // `trialing` counts as an active subscription only while PRESERVE_TRIAL_ON_CONVERT
+  // is on — that is the only path that can produce it (#348). Flag off, this is
+  // the original `subStatus === "active"` check, unchanged.
+  if (hasLiveStripeSubscription(state, options.preserveTrialOnConvert === true)) {
+    return { allowed: false, reason: "active_sub" };
+  }
   const onActiveTrial = !!state.trialEndsAt && state.trialEndsAt > now;
   const currentRank = onActiveTrial ? 0 : (PLAN_RANK[state.plan] ?? 0);
   if ((PLAN_RANK[requestedPlan] ?? 0) < currentRank) return { allowed: false, reason: "downgrade" };

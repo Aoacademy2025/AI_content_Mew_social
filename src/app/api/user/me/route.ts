@@ -40,6 +40,7 @@ export async function GET() {
         trialStartedAt: true,
         trialEndsAt: true,
         subStatus: true,
+        stripeSubscriptionId: true,
         billingPeriod: true,
         planExpiresAt: true,
       } as any,
@@ -102,8 +103,13 @@ export async function GET() {
       brandVisualAllowed: brandVisualAccess.canUse,
     });
 
+    const { stripeSubscriptionId, ...safeUser } = user as typeof user & { stripeSubscriptionId: string | null };
     return NextResponse.json({
-      ...user,
+      ...safeUser,
+      // Boolean only — the Stripe subscription id itself never reaches the browser.
+      // Pricing needs it to tell a converted `trialing` subscriber (#348) apart
+      // from a plain unpaid trial.
+      hasStripeSubscription: Boolean(stripeSubscriptionId),
       effectivePlan: paidEquivalent.canUsePaidFeatures ? paidEquivalent.effectivePlan : entitlement.effectivePlan,
       usageCount: usage?.usageCount ?? user.usageCount,
       usageLimit: usage?.usageLimit ?? limits.clips,
