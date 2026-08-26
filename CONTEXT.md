@@ -132,3 +132,20 @@ Glossary of domain terms. Definitions only — no implementation details.
 - **Viral Framework** — the curated library in `src/lib/viral-frameworks.ts`: 10 hook formulas, 5 story structures, retention rules, 4 CTA styles. The flow is hook-first: the user picks/edits a hook before the full script exists; the chosen hook is never rewritten by the model.
 - **Continuity** — idea generation is conditioned on the profile's saved script topics: never repeat, and ≥2 of 8 ideas must continue/serialize past topics.
 - **Script Handoff (ส่งไปตัดต่อ)** — atomic creation of an EditorProject from a saved Script using the editor's own default-draft builder; the assembled script is blank-line-stripped so "1 line = 1 Segment" always holds. FREE plan: locked (editor is PRO+).
+
+## Growth & Conversion
+
+(Added 2026-08-25 during the UX/conversion audit. Vocabulary for funnel analysis — definitions only.)
+
+- **North Star (การแปลงเป็นสมาชิก)** — the share of Trials that become a **Recurring Subscriber**. Traffic and one-time purchases are inputs and outcomes around it, not the metric itself.
+- **Trial** — the 7-day PRO-equivalent access granted automatically at signup (one per protected email identity). It ends by expiry or by conversion; a Trial that expires without payment reverts the account to FREE.
+- **Recurring Subscriber** — a customer whose plan is backed by an active auto-renewing Stripe subscription (monthly or annual). A one-time/PromptPay annual purchase, a bundle, a coupon grant or an admin grant makes someone a **Paid-Equivalent** user, not a Recurring Subscriber.
+- **Paid Conversion** — the moment a user's first successful payment is recorded. Sub-types: recurring (counts toward the North Star), one-time, credit-pack only.
+- **Activation (คลิปแรกออก)** — the first successful **Export/Burn** of a video — the user holds a postable file. A completed Preview Mode render is a precursor step, not Activation.
+- **First-Clip Path** — the guided route from signup to Activation with every setting defaulted and no external API key required. Managed Gemini voice + managed B-roll make this route Zero-Setup; a user-supplied stock key only upgrades the B-roll library.
+- **Zero-Setup** — the property that a brand-new account can reach Activation without leaving the product (no external signup, no key). Anything presented as "จำเป็น" before Activation must actually be required by the pipeline.
+- **Funnel Step** — one of the ordered milestones used for drop-off analysis: Signup → Editor Opened → Job Started → Job Done → Activation → Paid Conversion → Recurring Subscriber. Drop-off at a step is measured against the signup cohort of the same window.
+- **Paywall Surface** — any UI moment that asks for payment (First-Clip Convert Prompt, Upgrade Modal, Render Receipt shortfall, Trial Banner, Pricing page, Locked Preview). Each surface should be measurable as shown → clicked → checkout started → paid.
+- **Trial-Expiry Moment** — the window around the end of a Trial (reminder before, the expiry itself, the days after when rendered clips are deleted) treated as a deliberate Paywall Surface rather than a silent state change.
+- **Checkout Abandonment** — a Stripe checkout session that was opened but not paid (recorded as a Payment that never reached PAID). It is a behavioral signal, not a card decline.
+- **Signup Cohort** — all external users who signed up in a given window (team accounts and audit/test accounts excluded). Rates are always cohort-relative; all-time totals are not rates.

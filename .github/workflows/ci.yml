@@ -49,6 +49,8 @@ jobs:
 
       - name: Verify first-clip convert prompt
         run: npm run verify:first-clip-convert
+      - name: Verify gallery touch actions (#328)
+        run: npm run verify:gallery-touch
 
       - name: Verify first-clip path
         run: npm run verify:first-clip-path
@@ -62,6 +64,9 @@ jobs:
       - name: Verify /pricing LCP convert page
         run: npm run verify:pricing-lcp
 
+      - name: Verify /pricing default checkout selection (#300)
+        run: npm run verify:pricing-defaults
+
       - name: Verify public pricing matches checkout and entitlements
         run: npm run verify:marketing-pricing
 
@@ -70,6 +75,9 @@ jobs:
 
       - name: Verify day-21 GRANT convert reminder
         run: npm run verify:day21-convert-reminder
+
+      - name: Verify trial-expiry reminders and renewal-cron trial exclusion
+        run: npm run verify:trial-reminders
 
       - name: Verify Avatar caption fail-open
         run: npm run verify:avatar-caption-fallback
@@ -86,6 +94,9 @@ jobs:
       - name: Verify customer-facing error copy
         run: npm run verify:customer-error-copy
 
+      - name: Verify quota_exceeded surfaces an upgrade path
+        run: npm run verify:quota-error-shape
+
       - name: Verify ERROR_SYSTEM capacity skip and rate-limit
         run: npm run verify:admin-error-notify
 
@@ -100,6 +111,9 @@ jobs:
 
       - name: Verify Hero Voice stock and clone contracts
         run: npm run verify:omnivoice && npm run verify:hero-voice-clone
+
+      - name: Verify /brands fits phones and keeps its desktop layout
+        run: npm run verify:brands-mobile
 
       - name: Build
         run: npm run build

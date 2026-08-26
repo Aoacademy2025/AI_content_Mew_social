@@ -7,6 +7,7 @@ import { checkClipQuota, reserveClipUsage } from "@/lib/usage-limits";
 import { checkMinuteQuota, minutesFromSeconds } from "@/lib/minute-limits";
 import { reserveMinutesOrCredits, refundReservation } from "@/lib/minute-credits";
 import { serializeCreditFunding } from "@/lib/credits";
+import { QUOTA_EXCEEDED_CODE, quotaUpgradeUserAction } from "@/lib/quota-error";
 import { isBurnAlreadyPaid, recordChargedClip } from "@/lib/clip-charge";
 import { rerenderSkipEligible } from "@/lib/broll-rerender";
 import { parseVideoJobOutput } from "@/lib/mcp/video-job";
@@ -248,12 +249,10 @@ function quotaExceededResponse(message: string, opts?: { canBuyCredits?: boolean
   return NextResponse.json(
     {
       error: {
-        code: "quota_exceeded",
+        code: QUOTA_EXCEEDED_CODE,
         provider: "heroai",
         message,
-        userAction: opts?.canBuyCredits
-          ? "ซื้อเครดิตเพื่อเรนเดอร์ต่อ หรืออัปเกรดแพ็กเกจ"
-          : "อัปเกรดแพ็กเกจที่หน้า Pricing เพื่อสร้างคลิปต่อ",
+        userAction: quotaUpgradeUserAction(opts?.canBuyCredits === true),
         retryable: false,
         ...(opts?.canBuyCredits ? { canBuyCredits: true } : {}),
       },

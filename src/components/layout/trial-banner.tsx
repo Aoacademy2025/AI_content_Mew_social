@@ -7,6 +7,10 @@ import { fetchMe } from "@/lib/use-me";
 
 type Me = { plan: string; trialStartedAt: string | null; trialEndsAt: string | null; minuteQuota?: boolean };
 
+// #300 — flag-gated: stop pushing an annual upgrade on the expired-trial banner once the
+// in-app default checkout is recurring monthly+card. Build-baked, same pattern as pricing-client.tsx.
+const PRICING_DEFAULT_RECURRING = process.env.NEXT_PUBLIC_PRICING_DEFAULT_RECURRING === "1";
+
 export function TrialBanner() {
   const [me, setMe] = useState<Me | null>(null);
 
@@ -24,13 +28,15 @@ export function TrialBanner() {
 
   const daysLeft = trialing ? Math.ceil((endsAt - now) / (24 * 60 * 60 * 1000)) : 0;
   const minuteNote = me.minuteQuota ? " · 15 นาที ใน 7 วัน" : "";
-  const text = trialing
-    ? `ทดลอง PRO เหลืออีก ${daysLeft} วัน${minuteNote}`
+  const expiredText = PRICING_DEFAULT_RECURRING
+    ? "สมัคร PRO เพื่อใช้ต่อไม่สะดุด"
     : "ทดลอง PRO หมดแล้ว — อัปเกรดรายปีรับราคาพิเศษ";
+  const text = trialing ? `ทดลอง PRO เหลืออีก ${daysLeft} วัน${minuteNote}` : expiredText;
+  const href = !trialing && PRICING_DEFAULT_RECURRING ? "/pricing?source=trial_banner" : "/pricing";
 
   return (
     <Link
-      href="/pricing"
+      href={href}
       className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-white transition hover:brightness-110"
       style={{ background: "linear-gradient(90deg,#8B66F8,#6C4CF4)" }}
     >

@@ -49,6 +49,7 @@ model User {
   // Free trial (public 7-day PRO trial, no card)
   trialStartedAt        DateTime? // set once; never cleared (one-trial-per-user guard)
   trialEndsAt           DateTime? // end of the active unconverted trial; cleared on conversion/revert
+  trialEndedAt          DateTime? // preserved copy of trialEndsAt at revert time — the cohort date `trialEndsAt` used to lose
   // Hero AI Bundle is an overlay, independent from Studio's own Stripe/trial/
   // admin-paid entitlement. Never reuse planExpiresAt for this source: revoke
   // must remove only Bundle access and preserve every other valid source.
@@ -104,6 +105,7 @@ model User {
   administratorGrants             AdministratorGrant[]
   conversionTrialAiImageAllowance ConversionTrialAiImageAllowance?
   userVoices                      UserVoice[]
+  trialReminderLogs               TrialReminderLog[]
 }
 
 // Private voice-clone references. The normalized WAV bytes live outside
@@ -675,6 +677,9 @@ model Notification {
   type      NotificationType
   title     String
   body      String
+  /// Optional in-app destination (same-origin path only, e.g. "/pricing?source=trial_d5").
+  /// Rendered as the notification's click target; absent = legacy per-type routing.
+  link      String?
   read      Boolean          @default(false)
   createdAt DateTime         @default(now())
 }
@@ -896,6 +901,20 @@ model StripeWebhookEvent {
   id          String   @id // Stripe event.id (evt_...)
   type        String
   processedAt DateTime @default(now())
+}
+
+/// One row per trial-lifecycle reminder actually delivered. The (userId, kind)
+/// unique is the idempotency primitive: the cron creates the row first and skips
+/// on a unique violation, so a re-run (or two workers) can never double-send.
+model TrialReminderLog {
+  id     String   @id @default(cuid())
+  userId String
+  user   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind   String // d5 | expiry | d3after
+  sentAt DateTime @default(now())
+
+  @@unique([userId, kind])
+  @@index([kind, sentAt])
 }
 
 model TelemetryEvent {

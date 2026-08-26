@@ -16,12 +16,14 @@ import {
 import { cn } from "@/lib/utils";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
+import { isSafeNotificationLink } from "@/lib/notification-link";
 
 interface Notification {
   id: string;
   type: "VIDEO_COMPLETED" | "VIDEO_FAILED" | "LIMIT_WARNING" | "LIMIT_REACHED" | "NEW_USER" | "ERROR_SYSTEM";
   title: string;
   body: string;
+  link?: string | null;
   read: boolean;
   createdAt: string;
 }
@@ -135,9 +137,13 @@ export function NotificationBell() {
 
   async function openNotification(n: Notification) {
     try { await markOneRead(n.id); } catch {}
-    if (n.type !== "VIDEO_COMPLETED") return;
+    // `link` is validated same-origin on write (isSafeNotificationLink); re-check on read
+    // so a hand-edited/legacy row can never navigate the user off-site.
+    const linked = isSafeNotificationLink(n.link) ? n.link : null;
+    const target = linked ?? (n.type === "VIDEO_COMPLETED" ? "/videos" : null);
+    if (!target) return;
     setOpen(false);
-    router.push("/videos");
+    router.push(target);
   }
 
   return (
