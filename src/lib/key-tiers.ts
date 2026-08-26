@@ -100,3 +100,42 @@ export const ADVANCED_KEYS = KEY_TIERS.filter((k) => k.tier === "advanced");
 export function requiredKeysFor(managed: boolean): KeyDef[] {
   return REQUIRED_KEYS.filter((k) => !(managed && k.id === "gemini"));
 }
+
+/**
+ * What the dashboard's key checklist should show — pure, so the "no key needed"
+ * case is a tested invariant rather than a JSX accident.
+ *
+ * With MANAGED_STOCK on (#297 Amendment 2026-08-26) the stock key stops being a
+ * requirement for EVERY plan, and with MANAGED_GEMINI on Gemini is server-side
+ * too. When both hold, an account needs no key at all and `render` is false —
+ * the card must not present a blocker that no longer exists.
+ */
+export type KeySetupChecklistPlan = {
+  /** false → render nothing. */
+  render: boolean;
+  geminiRequired: boolean;
+  stockRequired: boolean;
+  stockDone: boolean;
+  totalRequired: number;
+  doneCount: number;
+};
+
+export function planKeySetupChecklist(input: {
+  status: Pick<KeyStatus, "gemini" | "pexels" | "pixabay" | "tier1Complete">;
+  managedGemini: boolean;
+  managedStock: boolean;
+}): KeySetupChecklistPlan {
+  const stockDone = input.status.pexels || input.status.pixabay;
+  const geminiRequired = !input.managedGemini;
+  const stockRequired = !input.managedStock;
+  const totalRequired = (geminiRequired ? 1 : 0) + (stockRequired ? 1 : 0);
+  const doneCount = (geminiRequired && input.status.gemini ? 1 : 0) + (stockRequired && stockDone ? 1 : 0);
+  return {
+    render: !input.status.tier1Complete && totalRequired > 0 && doneCount < totalRequired,
+    geminiRequired,
+    stockRequired,
+    stockDone,
+    totalRequired,
+    doneCount,
+  };
+}

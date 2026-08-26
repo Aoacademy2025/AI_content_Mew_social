@@ -76,6 +76,21 @@ type JobOutcomes = {
   failedByStage: Array<{ stage: string; stageLabel: string; kind: "system" | "byok" | "quota" | "noise"; count: number; sample: string }>;
 };
 
+type ManagedStockData = {
+  flagOn: boolean;
+  searches: number;
+  cacheHits: number;
+  jobs: number;
+  byProvider: Array<{ provider: string; queries: number; cacheHits: number }>;
+  throttles: Array<{ provider: string; scope: string; count: number }>;
+  throttleTotal: number;
+  pexelsMonth: {
+    periodKey: string | null; used: number; ceiling: number; usedPct: number;
+    exhausted: boolean; resetAt: string | null;
+  };
+  pixabayMonth: { used: number };
+};
+
 type InsightsResponse = {
   range: { days: number; since: string; until: string };
   northStar: {
@@ -94,6 +109,7 @@ type InsightsResponse = {
   activation: ActivationData;
   renderStats: RenderStats;
   jobOutcomes: JobOutcomes;
+  managedStock?: ManagedStockData;
   current: InsightSummary;
   previous: InsightSummary;
 };
@@ -180,6 +196,88 @@ function VitalPill({ vital }: { vital: VitalRow }) {
       <div className="mt-3 text-2xl font-semibold text-white">{value}</div>
       <div className="mt-1 flex items-center gap-1 text-xs text-slate-500">p75 · {formatNumber(vital.count)} ครั้ง</div>
     </div>
+  );
+}
+
+const THROTTLE_SCOPE_LABELS: Record<string, string> = {
+  rate: "rate limit (ชม./นาที)",
+  month: "โควตารายเดือน",
+};
+
+/**
+ * Managed stock capacity (#297 Amendment 2026-08-26). Every keyless account now
+ * searches on the team key, so the two numbers that matter operationally are
+ * (1) how much of Pexels' calendar-month budget is gone and (2) whether anything
+ * is being throttled — a `month` throttle means Pexels is OFF for the rest of the
+ * month and jobs are running on Pixabay + AI images alone.
+ */
+function ManagedStockPanel({ data }: { data: ManagedStockData }) {
+  const { pexelsMonth } = data;
+  const pctTone = pexelsMonth.exhausted
+    ? "text-rose-300"
+    : pexelsMonth.usedPct >= 75
+      ? "text-amber-300"
+      : "text-emerald-300";
+  const resetLabel = pexelsMonth.resetAt
+    ? new Date(pexelsMonth.resetAt).toLocaleDateString("th-TH", { day: "numeric", month: "short" })
+    : "-";
+  return (
+    <Panel>
+      <h3 className="flex items-center gap-2 text-lg font-semibold text-white">
+        <Database className="h-5 w-5 text-violet-300" /> Managed Stock (คลังระบบ)
+      </h3>
+      <p className="mt-1 text-xs text-slate-500">
+        คีย์ Pexels/Pixabay ของทีม — ใช้กับทุกบัญชีที่ไม่ได้ใส่ key ของตัวเอง
+        {data.flagOn ? "" : " · MANAGED_STOCK ปิดอยู่"}
+      </p>
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <div className="text-xs text-slate-500">ค้นหาในช่วงนี้</div>
+          <div className="mt-1 text-2xl font-semibold text-white">{formatNumber(data.searches)}</div>
+          <div className="mt-1 text-xs text-slate-500">cache hit {formatNumber(data.cacheHits)} · {formatNumber(data.jobs)} งาน</div>
+        </div>
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <div className="text-xs text-slate-500">Pexels เดือนนี้</div>
+          <div className={cn("mt-1 text-2xl font-semibold", pctTone)}>{formatNumber(pexelsMonth.usedPct, 1)}%</div>
+          <div className="mt-1 text-xs text-slate-500">
+            {formatNumber(pexelsMonth.used)}/{formatNumber(pexelsMonth.ceiling)} · รีเซ็ต {resetLabel}
+          </div>
+        </div>
+      </div>
+      <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">
+        {data.byProvider.length === 0
+          ? "ยังไม่มีการค้นหาผ่านคีย์ระบบในช่วงนี้"
+          : data.byProvider.map((row) => (
+              <span key={row.provider} className="mr-3 inline-block">
+                <span className="font-semibold text-violet-300">{row.provider}</span> {formatNumber(row.queries)} · cache {formatNumber(row.cacheHits)}
+              </span>
+            ))}
+      </div>
+      <div
+        className={cn(
+          "mt-2 rounded-md border p-3 text-sm",
+          data.throttleTotal > 0
+            ? "border-rose-400/25 bg-rose-500/10 text-rose-200"
+            : "border-white/10 bg-black/20 text-slate-300",
+        )}
+      >
+        {data.throttleTotal === 0
+          ? "Throttle: ไม่มี — โควตายังพอ"
+          : (
+              <>
+                Throttle {formatNumber(data.throttleTotal)} ครั้ง —{" "}
+                {data.throttles.map((row) => (
+                  <span key={`${row.provider}:${row.scope}`} className="mr-2 inline-block">
+                    {row.provider}/{THROTTLE_SCOPE_LABELS[row.scope] ?? row.scope} {formatNumber(row.count)}
+                  </span>
+                ))}
+              </>
+            )}
+      </div>
+      <div className="mt-2 text-[11px] text-slate-500">
+        Pixabay เดือนนี้ {formatNumber(data.pixabayMonth.used)} ครั้ง (ไม่มีเพดานรายเดือน) · ปรับเพดาน Pexels ที่ env MANAGED_STOCK_PEXELS_PER_MONTH
+      </div>
+    </Panel>
   );
 }
 
@@ -606,6 +704,7 @@ export default function AdminInsightsPage() {
                       <div className="mt-2 rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">phase p95 — search {formatMs(current.broll.searchP95Ms)} · rank {formatMs(current.broll.rankingP95Ms)} · download {formatMs(current.broll.downloadP95Ms)} · normalize {formatMs(current.broll.normalizeP95Ms)}</div>
                       <div className="mt-2 rounded-md border border-white/10 bg-black/20 p-3 text-sm text-slate-300">normalize ran/skip/fail {formatNumber(current.broll.normalizeRanCount)}/{formatNumber(current.broll.normalizeSkippedCount)}/{formatNumber(current.broll.normalizeFailedCount)} · no-candidate {formatNumber(current.broll.noCandidateKeywords)}</div>
                     </Panel>
+                    {data?.managedStock && <ManagedStockPanel data={data.managedStock} />}
                   </div>
                 </div>
               )}

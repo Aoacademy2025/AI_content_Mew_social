@@ -1,10 +1,19 @@
 /**
- * Managed stock B-roll key (issue #297, ADR 0025) — PURE policy layer.
+ * Managed stock B-roll key (issue #297, ADR 0025 + Amendment 2026-08-26) —
+ * PURE policy layer.
  *
- * BYOK stays the product default (CLAUDE.md). This is a narrow, flag-gated
- * managed exception in the ADR 0003 shape: trial / FREE accounts with NO stock
- * key of their own may search Pexels/Pixabay on a team-operated key so the
- * second clip (and every later clip) does not hard-stop on `missing_key: broll`.
+ * BYOK stays the product default for the PAID AI providers (Gemini / HeyGen /
+ * ElevenLabs — CLAUDE.md). Stock search is different: Pexels and Pixabay are
+ * free, so BYOK's cost rationale never applied to them. Since the 2026-08-26
+ * amendment the rule is one line:
+ *
+ *     nobody needs their own Pexels/Pixabay key to make a clip.
+ *
+ * ANY account with no stock key of its own — FREE, trial, PRO, BUSINESS,
+ * coupon/grant, bundle — searches on the team-operated key instead of
+ * hard-stopping on `missing_key: broll`. The only real constraint is provider
+ * rate limits, which Pixabay-first + the 24h cache + per-job caps + the token
+ * buckets + the monthly Pexels ceiling below already manage.
  *
  * Everything here is deterministic and dependency-free so it can be unit-tested
  * (`scripts/verify-managed-stock.ts`) and imported from BOTH server routes and
@@ -28,6 +37,22 @@ export const MANAGED_STOCK_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const MANAGED_STOCK_PEXELS_PER_HOUR_DEFAULT = 150;
 export const MANAGED_STOCK_PIXABAY_PER_MIN_DEFAULT = 80;
 
+/** Pexels is the only provider with a MONTHLY ceiling (20,000 req/month).
+ *  The token bucket above cannot hold a month-long line — it lives in process
+ *  memory and refills to full on every deploy/restart — so the monthly budget is
+ *  counted in the database (`ManagedStockUsage`). Default sits well under the
+ *  published 20k so a restart storm can never walk us into a hard provider block.
+ *  Overridable per env via `MANAGED_STOCK_PEXELS_PER_MONTH`. */
+export const MANAGED_STOCK_PEXELS_PER_MONTH_DEFAULT = 18_000;
+
+/** Pixabay publishes no monthly cap, so only Pexels is metered per month.
+ *  Usage is still COUNTED for both providers (admin visibility). */
+export const MANAGED_STOCK_MONTHLY_CAPPED_PROVIDERS: readonly ManagedStockProvider[] = ["pexels"];
+
+export function managedStockHasMonthlyCap(provider: ManagedStockProvider): boolean {
+  return MANAGED_STOCK_MONTHLY_CAPPED_PROVIDERS.includes(provider);
+}
+
 /** Per-job caps on the managed key only (BYOK jobs are unchanged). */
 export const MANAGED_STOCK_MAX_ALT_QUERIES_PER_KEYWORD = 2;
 /** primary keyword + at most 2 alternates */
@@ -44,6 +69,12 @@ export type ManagedStockEligibilityReason =
   | "own_key"
   | "suspended"
   | "no_managed_key"
+  /**
+   * RETIRED by the 2026-08-26 amendment and never returned any more. Kept in the
+   * union (not deleted) so stored telemetry, admin queries and any caller that
+   * still switches on the old reason keep type-checking. Do not reintroduce it:
+   * plan is deliberately not part of the decision.
+   */
   | "not_trial_or_free";
 
 export type ManagedStockEligibility = {
@@ -58,11 +89,12 @@ export type ManagedStockEligibilityInput = {
   hasManagedKey: boolean;
   hasOwnPexelsKey: boolean;
   hasOwnPixabayKey: boolean;
-  /** `resolvePaidEquivalentEntitlement(...).canUsePaidFeatures` */
-  paidEquivalent: boolean;
-  /** Live 7-day Conversion Trial (plan reads PRO while it runs). */
-  conversionTrial: boolean;
-  plan: string;
+  /**
+   * Carried for readability and for the eligibility matrix in
+   * `scripts/verify-managed-stock.ts`, which asserts that FREE / PRO / BUSINESS /
+   * coupon-grant all land on the SAME answer. Deliberately not read below.
+   */
+  plan?: string;
   suspended?: boolean;
 };
 
@@ -76,16 +108,15 @@ export type ManagedStockEligibilityInput = {
  *                 on someone who already brought one.
  *  3. suspended → fail closed.
  *  4. no key configured on the server → nothing to offer.
- *  5. trial or FREE only.
+ *  5. everyone else → eligible.
  *
- * Paid-equivalent accounts (subscription / paid term / bundle / grant coupon /
- * administrator grant) with no stock key deliberately KEEP today's
- * `missing_key: broll` 400. Rationale: #297 is an activation problem — the 2.1%
- * vs 65.5% start-rate gap is at signup, before anyone pays — and the capacity
- * math in ADR 0025 only closes because the managed key serves the trial/FREE
- * slice. Widening it to every paying account without a key would put the whole
- * customer base on one Pexels quota. Paid accounts also have a working paid path
- * today (they can set a free key in ~1 minute, and Hero AI Image is unlocked).
+ * Step 5 is the 2026-08-26 amendment. The original ADR 0025 stopped at
+ * trial/FREE and kept `missing_key: broll` for paid-equivalent accounts, on a
+ * capacity argument. Measured on 2026-08-26: 698 FREE accounts were already
+ * eligible and widening adds ~97 accounts (4 of them real payers) against a
+ * whole-system volume of ~3,289 search queries/week — the paid slice is noise,
+ * not a second customer base. Plan is therefore NOT an input: a paying customer
+ * hitting a wall that a FREE account does not hit was never defensible.
  */
 export function decideManagedStockEligibility(
   input: ManagedStockEligibilityInput,
@@ -94,9 +125,7 @@ export function decideManagedStockEligibility(
   if (input.hasOwnPexelsKey || input.hasOwnPixabayKey) return { eligible: false, reason: "own_key" };
   if (input.suspended) return { eligible: false, reason: "suspended" };
   if (!input.hasManagedKey) return { eligible: false, reason: "no_managed_key" };
-  if (input.conversionTrial) return { eligible: true, reason: "eligible" };
-  if (!input.paidEquivalent && input.plan === "FREE") return { eligible: true, reason: "eligible" };
-  return { eligible: false, reason: "not_trial_or_free" };
+  return { eligible: true, reason: "eligible" };
 }
 
 /** Pixabay-first rule: Pexels is only worth a call when Pixabay came back thin. */
@@ -173,6 +202,150 @@ export class TokenBucket {
     this.tokens -= count;
     return true;
   }
+}
+
+// ── Monthly Pexels budget (Amendment 2026-08-26) ────────────────────────────
+// The token bucket above is an in-PROCESS courtesy limiter: it refills to full
+// on every `pm2 restart`, so it cannot hold a month-long line. Pexels' 20k/month
+// is the ceiling that actually binds now that every keyless account is served,
+// so month-to-date usage is counted in the database (`ManagedStockUsage`) and
+// the helpers below decide against it. Everything here is pure and clock-injected.
+
+/** Asia/Bangkok is UTC+7 all year (no DST), so a fixed offset is exact. */
+export const MANAGED_STOCK_PERIOD_TZ_OFFSET_MINUTES = 7 * 60;
+const PERIOD_OFFSET_MS = MANAGED_STOCK_PERIOD_TZ_OFFSET_MINUTES * 60_000;
+
+/** `YYYY-MM` of the Asia/Bangkok calendar month — the budget's reset boundary. */
+export function managedStockPeriodKey(now: Date | number = Date.now()): string {
+  const ms = typeof now === "number" ? now : now.getTime();
+  const shifted = new Date(ms + PERIOD_OFFSET_MS);
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/** The instant a period's budget resets: 00:00 Bangkok on the 1st of the NEXT
+ *  month, returned as a plain UTC `Date` for display. `null` on a malformed key. */
+export function managedStockPeriodResetAt(periodKey: string): Date | null {
+  const match = /^(\d{4})-(\d{2})$/.exec(periodKey);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (!(month >= 1 && month <= 12)) return null;
+  const rolls = month === 12;
+  return new Date(Date.UTC(rolls ? year + 1 : year, rolls ? 0 : month, 1) - PERIOD_OFFSET_MS);
+}
+
+export type ManagedStockMonthlyDecision = {
+  allowed: boolean;
+  reason: "ok" | "no_monthly_cap" | "usage_unknown" | "month_exhausted";
+};
+
+/**
+ * Fail-CLOSED on a KNOWN-exhausted budget, fail-OPEN on anything unknown.
+ *
+ * `used === null` means the counter could not be read (or written) — a database
+ * hiccup must never be able to switch Pexels off for a whole month, so an
+ * unknown count is allowed through. Only a count we actually read and that has
+ * reached the ceiling stops the provider, and even then the JOB never fails: the
+ * caller skips Pexels and degrades to Pixabay → key-free photo providers → AI
+ * images, exactly as it does for a dead provider today.
+ */
+export function decideManagedStockMonthlyBudget(input: {
+  provider: ManagedStockProvider;
+  used: number | null;
+  ceiling: number;
+}): ManagedStockMonthlyDecision {
+  if (!managedStockHasMonthlyCap(input.provider)) return { allowed: true, reason: "no_monthly_cap" };
+  if (input.used === null || !Number.isFinite(input.used)) return { allowed: true, reason: "usage_unknown" };
+  if (!Number.isFinite(input.ceiling) || input.ceiling <= 0) return { allowed: true, reason: "usage_unknown" };
+  if (input.used >= input.ceiling) return { allowed: false, reason: "month_exhausted" };
+  return { allowed: true, reason: "ok" };
+}
+
+// ── Telemetry contract ──────────────────────────────────────────────────────
+// Names are constants so the emitter (`managed-stock.server.ts`), the admin
+// reader (`/api/admin/insights`) and the verify script can never drift apart.
+
+export const MANAGED_STOCK_USED_EVENT = "managed_stock_used";
+export const MANAGED_STOCK_THROTTLED_EVENT = "managed_stock_throttled";
+
+/** Which limiter refused the call: the per-hour/per-minute token bucket
+ *  (`rate`) or the monthly Pexels ceiling (`month`). */
+export const MANAGED_STOCK_THROTTLE_SCOPES = ["rate", "month"] as const;
+export type ManagedStockThrottleScope = (typeof MANAGED_STOCK_THROTTLE_SCOPES)[number];
+
+export type ManagedStockTelemetryRow = {
+  name: string;
+  properties?: string | null;
+};
+
+export type ManagedStockTelemetrySummary = {
+  usedEvents: number;
+  searches: number;
+  cacheHits: number;
+  byProvider: Array<{ provider: string; queries: number; cacheHits: number }>;
+  throttles: Array<{ provider: string; scope: string; count: number }>;
+};
+
+function readProps(raw: string | null | undefined): Record<string, unknown> | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function countOf(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Roll `managed_stock_used` / `managed_stock_throttled` rows into the numbers the
+ * admin panel shows. Pure (no DB, no clock) so the verify script can pin the
+ * event names and the property shape without a database.
+ *
+ * Events written before the amendment carry no `scope`; they were all token-bucket
+ * throttles, so they are reported as `rate` rather than dropped.
+ */
+export function summarizeManagedStockTelemetry(
+  rows: readonly ManagedStockTelemetryRow[],
+): ManagedStockTelemetrySummary {
+  const byProvider = new Map<string, { provider: string; queries: number; cacheHits: number }>();
+  const throttles = new Map<string, { provider: string; scope: string; count: number }>();
+  let usedEvents = 0;
+
+  for (const row of rows) {
+    if (row.name !== MANAGED_STOCK_USED_EVENT && row.name !== MANAGED_STOCK_THROTTLED_EVENT) continue;
+    const props = readProps(row.properties);
+    const provider = typeof props?.provider === "string" ? props.provider : "unknown";
+
+    if (row.name === MANAGED_STOCK_USED_EVENT) {
+      usedEvents += 1;
+      const entry = byProvider.get(provider) ?? { provider, queries: 0, cacheHits: 0 };
+      entry.queries += countOf(props?.queriesUsed);
+      entry.cacheHits += countOf(props?.cacheHits);
+      byProvider.set(provider, entry);
+      continue;
+    }
+
+    const scope = typeof props?.scope === "string" ? props.scope : "rate";
+    const key = `${provider}:${scope}`;
+    const entry = throttles.get(key) ?? { provider, scope, count: 0 };
+    entry.count += 1;
+    throttles.set(key, entry);
+  }
+
+  const providers = Array.from(byProvider.values()).sort((a, b) => b.queries - a.queries);
+  return {
+    usedEvents,
+    searches: providers.reduce((sum, p) => sum + p.queries, 0),
+    cacheHits: providers.reduce((sum, p) => sum + p.cacheHits, 0),
+    byProvider: providers,
+    throttles: Array.from(throttles.values()).sort((a, b) => b.count - a.count),
+  };
 }
 
 /**

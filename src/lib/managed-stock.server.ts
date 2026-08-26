@@ -2,24 +2,32 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
 import {
   decideManagedStockEligibility,
+  decideManagedStockMonthlyBudget,
   isStockSearchCacheFresh,
+  managedStockHasMonthlyCap,
+  managedStockPeriodKey,
   MANAGED_STOCK_PEXELS_PER_HOUR_DEFAULT,
+  MANAGED_STOCK_PEXELS_PER_MONTH_DEFAULT,
   MANAGED_STOCK_PIXABAY_PER_MIN_DEFAULT,
+  MANAGED_STOCK_PROVIDERS,
+  MANAGED_STOCK_THROTTLED_EVENT,
+  MANAGED_STOCK_USED_EVENT,
   stockSearchCacheExpiry,
   stockSearchCacheKey,
   TokenBucket,
   type ManagedStockEligibility,
   type ManagedStockProvider,
+  type ManagedStockThrottleScope,
 } from "@/lib/managed-stock";
 
 /**
  * Server half of the managed stock key (issue #297, ADR 0025).
  *
- * Holds the three things that must never reach the browser or a log line:
- * the key material, the shared token buckets, and the 24h search cache.
+ * Holds the things that must never reach the browser or a log line: the key
+ * material, the shared token buckets, the 24h search cache, and the persisted
+ * monthly Pexels counter.
  *
  * FLAG-OFF PROOF: `resolveManagedStockAccess` returns a non-eligible decision
  * with null keys and performs ZERO database work when `MANAGED_STOCK !== "1"`.
@@ -62,27 +70,34 @@ export function managedStockKeys(): { pexelsKey: string | null; pixabayKey: stri
   };
 }
 
+/**
+ * Only what the decision actually reads. Trial dates and paid-equivalent
+ * entitlement were inputs before the 2026-08-26 amendment; they are gone rather
+ * than left unused, because resolving them cost `/api/user/me` — a hot route — a
+ * whole extra entitlement lookup on every single request.
+ */
 export type ManagedStockUserFacts = {
   id: string;
-  plan: string;
+  plan?: string | null;
   suspended?: boolean | null;
-  trialStartedAt?: Date | null;
-  trialEndsAt?: Date | null;
 };
 
 /**
  * Decide whether THIS request may search on the team key, and hand back the key
  * material when it may. `hasOwnPexelsKey` / `hasOwnPixabayKey` are passed in by
  * the caller (which already decrypted them) so this never touches ciphertext.
+ *
+ * Since the 2026-08-26 amendment this is a PURE function of the flag, the
+ * server env and two booleans — zero database work on any path, including the
+ * eligible one. It is called from `/api/user/me` on every dashboard poll.
  */
 export async function resolveManagedStockAccess(
   user: ManagedStockUserFacts | null | undefined,
   ownKeys: { hasOwnPexelsKey: boolean; hasOwnPixabayKey: boolean },
-  now: Date = new Date(),
 ): Promise<ManagedStockAccess> {
   if (!isManagedStockFlagOn()) return DENIED("flag_off");
   if (!user) return DENIED("suspended");
-  // Cheapest disqualifiers first — BYOK wins before we spend a DB round-trip.
+  // BYOK wins first — we never spend the shared key on someone who brought one.
   if (ownKeys.hasOwnPexelsKey || ownKeys.hasOwnPixabayKey) return DENIED("own_key");
   if (user.suspended) return DENIED("suspended");
 
@@ -90,25 +105,12 @@ export async function resolveManagedStockAccess(
   const hasManagedKey = Boolean(keys.pexelsKey || keys.pixabayKey);
   if (!hasManagedKey) return DENIED("no_managed_key");
 
-  const paidEquivalent = await resolvePaidEquivalentEntitlement(user.id, now);
-  // Same shape as resolveFirstClipPath's Conversion Trial test: a live trial that
-  // is NOT already covered by a paid-equivalent entitlement.
-  const conversionTrial = Boolean(
-    !paidEquivalent.canUsePaidFeatures
-    && user.trialStartedAt
-    && user.trialStartedAt <= now
-    && user.trialEndsAt
-    && user.trialEndsAt > now,
-  );
-
   const decision = decideManagedStockEligibility({
     flagOn: true,
     hasManagedKey,
     hasOwnPexelsKey: ownKeys.hasOwnPexelsKey,
     hasOwnPixabayKey: ownKeys.hasOwnPixabayKey,
-    paidEquivalent: paidEquivalent.canUsePaidFeatures,
-    conversionTrial,
-    plan: user.plan,
+    plan: user.plan ?? undefined,
     suspended: Boolean(user.suspended),
   });
 
@@ -144,6 +146,155 @@ function managedStockBuckets(): Record<ManagedStockProvider, TokenBucket> {
 /** `false` = provider is throttled right now; skip it, never fail the job. */
 export function takeManagedStockToken(provider: ManagedStockProvider, nowMs = Date.now()): boolean {
   return managedStockBuckets()[provider].tryTake(nowMs);
+}
+
+// ── Monthly Pexels budget (Amendment 2026-08-26) ────────────────────────────
+// The token buckets above live in process memory and refill to full on every
+// deploy, so they cannot enforce Pexels' 20,000-req/MONTH ceiling. Now that every
+// keyless account is served, that ceiling is the one that actually binds, so
+// month-to-date usage is counted in `ManagedStockUsage` (provider + `YYYY-MM` in
+// Asia/Bangkok, atomically incremented).
+//
+// Two rules, both from ADR 0025's fail-closed section:
+//   • a KNOWN-exhausted month stops Pexels (fail closed) — Pixabay, the key-free
+//     photo providers and AI images carry the job, which never fails;
+//   • a counter that cannot be read or written is UNKNOWN, so it allows the call
+//     (fail open). A database hiccup must not switch Pexels off for a month.
+
+export function managedStockPexelsMonthlyCeiling(): number {
+  // Upper bound is generous rather than 20,000: ADR 0025 anticipates asking Pexels
+  // for a raised quota, and that grant must be configurable without a code change.
+  return readIntEnv("MANAGED_STOCK_PEXELS_PER_MONTH", MANAGED_STOCK_PEXELS_PER_MONTH_DEFAULT, 1, 1_000_000);
+}
+
+/** Process-local mirror of the DB counter: one read per provider per minute
+ *  instead of one per search, plus every increment this process made. */
+type MonthlyUsageCache = { periodKey: string; used: number | null; readAtMs: number };
+const MONTHLY_USAGE_REFRESH_MS = 60_000;
+const monthlyUsage = new Map<ManagedStockProvider, MonthlyUsageCache>();
+
+/** Test seam only — reset the in-process mirror between cases. */
+export function __resetManagedStockMonthlyCacheForTests() {
+  monthlyUsage.clear();
+}
+
+async function loadMonthlyUsage(
+  provider: ManagedStockProvider,
+  periodKey: string,
+  nowMs: number,
+): Promise<number | null> {
+  const cached = monthlyUsage.get(provider);
+  if (cached && cached.periodKey === periodKey && nowMs - cached.readAtMs < MONTHLY_USAGE_REFRESH_MS) {
+    return cached.used;
+  }
+  try {
+    const row = await prisma.managedStockUsage.findUnique({
+      where: { provider_periodKey: { provider, periodKey } },
+      select: { count: true },
+    });
+    const used = row?.count ?? 0;
+    monthlyUsage.set(provider, { periodKey, used, readAtMs: nowMs });
+    return used;
+  } catch {
+    // Unknown, not zero and not exhausted — decideManagedStockMonthlyBudget
+    // fails OPEN on null so a broken counter never blocks a render.
+    monthlyUsage.set(provider, { periodKey, used: null, readAtMs: nowMs });
+    return null;
+  }
+}
+
+/**
+ * `false` = this provider's monthly budget is spent; skip it for the rest of the
+ * month. Never throws, never fails a job. Only Pexels is metered.
+ */
+export async function hasManagedStockMonthlyBudget(
+  provider: ManagedStockProvider,
+  now: Date = new Date(),
+): Promise<boolean> {
+  if (!managedStockHasMonthlyCap(provider)) return true;
+  const periodKey = managedStockPeriodKey(now);
+  const used = await loadMonthlyUsage(provider, periodKey, now.getTime());
+  return decideManagedStockMonthlyBudget({
+    provider,
+    used,
+    ceiling: managedStockPexelsMonthlyCeiling(),
+  }).allowed;
+}
+
+/**
+ * Count one managed provider call. Atomic (`count = count + 1`) so concurrent
+ * renders cannot lose increments, and completely swallowed on failure — the
+ * counter is a budget guard, never a reason a customer's render dies.
+ *
+ * Called for BOTH providers: Pixabay has no monthly cap but its volume is what
+ * makes the Pexels number readable in `/admin/insights`.
+ */
+export async function recordManagedStockCall(
+  provider: ManagedStockProvider,
+  now: Date = new Date(),
+): Promise<void> {
+  const periodKey = managedStockPeriodKey(now);
+  const cached = monthlyUsage.get(provider);
+  if (cached && cached.periodKey === periodKey && cached.used !== null) {
+    // Keep the in-process mirror ahead of the next refresh so the ceiling binds
+    // within this minute too, not only after the cache expires.
+    cached.used += 1;
+  }
+  const where = { provider_periodKey: { provider, periodKey } };
+  try {
+    await prisma.managedStockUsage.upsert({
+      where,
+      update: { count: { increment: 1 } },
+      create: { provider, periodKey, count: 1 },
+    });
+  } catch {
+    // Lost the create race with a concurrent request → the row exists now.
+    try {
+      await prisma.managedStockUsage.update({ where, data: { count: { increment: 1 } } });
+    } catch {
+      /* counter is best effort; the render continues either way */
+    }
+  }
+}
+
+export type ManagedStockMonthlyStatus = {
+  provider: ManagedStockProvider;
+  periodKey: string;
+  used: number;
+  /** null for providers with no monthly ceiling (Pixabay). */
+  ceiling: number | null;
+  usedPct: number | null;
+  exhausted: boolean;
+};
+
+/** Admin read (`/api/admin/insights`): month-to-date usage per provider. */
+export async function readManagedStockMonthlyStatus(
+  now: Date = new Date(),
+): Promise<ManagedStockMonthlyStatus[]> {
+  const periodKey = managedStockPeriodKey(now);
+  let counts = new Map<string, number>();
+  try {
+    const rows = await prisma.managedStockUsage.findMany({
+      where: { periodKey },
+      select: { provider: true, count: true },
+    });
+    counts = new Map(rows.map((row) => [row.provider, row.count]));
+  } catch {
+    /* an unreadable counter shows as 0 rather than breaking the admin page */
+  }
+  const ceiling = managedStockPexelsMonthlyCeiling();
+  return MANAGED_STOCK_PROVIDERS.map((provider) => {
+    const used = counts.get(provider) ?? 0;
+    const capped = managedStockHasMonthlyCap(provider);
+    return {
+      provider,
+      periodKey,
+      used,
+      ceiling: capped ? ceiling : null,
+      usedPct: capped && ceiling > 0 ? Math.round((used / ceiling) * 1000) / 10 : null,
+      exhausted: capped && used >= ceiling,
+    };
+  });
 }
 
 // ── 24h search cache ────────────────────────────────────────────────────────
@@ -220,9 +371,16 @@ export type ManagedStockUsageStats = {
   cacheHits: number;
 };
 
+/** A throttle event names WHICH limiter refused: the per-hour/per-minute token
+ *  bucket (`rate`) or the monthly Pexels ceiling (`month`). `/admin/insights`
+ *  splits by it — they mean very different things operationally. */
+export type ManagedStockThrottleStats = ManagedStockUsageStats & {
+  scope: ManagedStockThrottleScope;
+};
+
 export async function recordManagedStockUsed(userId: string | null, stats: ManagedStockUsageStats) {
   await recordTelemetryEvent(userId, {
-    name: "managed_stock_used",
+    name: MANAGED_STOCK_USED_EVENT,
     category: "product",
     source: "server",
     step: "fetchStock",
@@ -236,9 +394,9 @@ export async function recordManagedStockUsed(userId: string | null, stats: Manag
   }).catch(() => {});
 }
 
-export async function recordManagedStockThrottled(userId: string | null, stats: ManagedStockUsageStats) {
+export async function recordManagedStockThrottled(userId: string | null, stats: ManagedStockThrottleStats) {
   await recordTelemetryEvent(userId, {
-    name: "managed_stock_throttled",
+    name: MANAGED_STOCK_THROTTLED_EVENT,
     category: "product",
     source: "server",
     step: "fetchStock",
@@ -246,6 +404,7 @@ export async function recordManagedStockThrottled(userId: string | null, stats: 
     value: stats.queriesUsed,
     properties: {
       provider: stats.provider,
+      scope: stats.scope,
       queriesUsed: stats.queriesUsed,
       cacheHits: stats.cacheHits,
     },

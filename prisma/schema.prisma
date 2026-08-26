@@ -1298,6 +1298,23 @@ model UsedTrialEmail {
 // Only SUCCESSFUL search responses are ever written here — an error response must
 // never be able to poison a whole day of searches for every trial/FREE account.
 // Purely additive, so `prisma db push` on deploy is safe.
+/// Month-to-date managed-stock provider calls (#297 Amendment 2026-08-26).
+/// The in-process token buckets refill on every restart, so Pexels' 20,000
+/// req/MONTH ceiling needs a counter that survives a deploy. One row per
+/// provider per Asia/Bangkok calendar month, incremented atomically.
+/// Additive only — safe through `prisma db push`.
+model ManagedStockUsage {
+  id        String   @id @default(cuid())
+  provider  String // pexels | pixabay
+  periodKey String // YYYY-MM in Asia/Bangkok (the budget's reset boundary)
+  count     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([provider, periodKey])
+  @@index([periodKey])
+}
+
 model StockSearchCache {
   id          String   @id @default(cuid())
   provider    String // pexels | pixabay
