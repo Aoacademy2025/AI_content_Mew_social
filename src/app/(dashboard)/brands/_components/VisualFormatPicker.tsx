@@ -49,7 +49,10 @@ export function VisualFormatPicker({
                   : "border-border hover:border-violet-500/45",
               )}
             >
-              <div className="relative aspect-[9/14] bg-muted">
+              {/* Two 9:14 samples side by side are taller than a phone screen at their
+                  natural ratio, so one card swallows the viewport (#338). Cap the sample
+                  on phones only — from sm up the ratio is untouched. */}
+              <div className="relative aspect-[9/14] max-h-[40dvh] bg-muted sm:max-h-none">
                 <Image
                   src={format.previewUrl}
                   alt={`ตัวอย่างแนวภาพ ${format.label}`}

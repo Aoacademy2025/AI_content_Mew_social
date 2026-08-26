@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   AlertCircle, ArrowRight, Check, ChevronDown, Crown, Loader2,
@@ -9,7 +9,7 @@ import {
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { CouponBox } from "@/components/settings/coupon-box";
-import { computeDisplayPrice } from "@/lib/pricing-display";
+import { computeDisplayPrice, getDefaultPricingSelection } from "@/lib/pricing-display";
 import { marketingPlanFeatures, supplementalPlanFeatures } from "@/lib/marketing-plan-facts";
 import {
   isFoundingAnnualConversionEligible,
@@ -17,7 +17,6 @@ import {
   PLAN_RANK,
 } from "@/lib/plan-change";
 import { trackEvent } from "@/lib/client-telemetry";
-import { TRIAL_SOURCE_PREFIX } from "@/lib/trial-reminders";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 
 // Credit pack display data — mirrors CREDIT_PACKS in src/lib/credits.ts (kept in sync manually).
@@ -42,6 +41,10 @@ const VIOLET_TILE_BORDER = "hsl(258 90% 66% / .45)";
 const GLOW = "0 8px 26px rgba(108,76,244,.35)";
 
 // .ve-card / .ve-card-hover now live in globals.css (Editor v2 house utilities).
+
+// #300 — flag-gated default checkout path (OFF = today's annual+PromptPay default).
+// Build-baked constant, same pattern as NEXT_PUBLIC_CREDITS_LIVE above.
+const PRICING_DEFAULT_RECURRING = process.env.NEXT_PUBLIC_PRICING_DEFAULT_RECURRING === "1";
 
 type TierData = { price: number; name: string; badge: string | null; tagline: string; features: string[] };
 type PlanConfig = { free: TierData; pro: TierData; business: TierData };
@@ -84,8 +87,13 @@ export function PricingClient({
   minuteQuotaEnabled: boolean;
 }) {
   const [loading, setLoading] = useState<string | null>(null);
-  const [period, setPeriod] = useState<BillingPeriod>("annual");
-  const [method, setMethod] = useState<PaymentMethod>("promptpay");
+  // Base default (no known subscription state yet) — #300, flag-gated.
+  const [period, setPeriod] = useState<BillingPeriod>(
+    () => getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).period,
+  );
+  const [method, setMethod] = useState<PaymentMethod>(
+    () => getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).method,
+  );
   const [faqOpen, setFaqOpen] = useState<number>(-1);
   const [showCoupon, setShowCoupon] = useState(false);
   const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; percentOff: number | null } | null>(null);
@@ -109,33 +117,41 @@ export function PricingClient({
         setMe(d);
         // An existing card subscription can only be converted in place by card.
         // Default to that valid path instead of presenting an overlapping
-        // PromptPay one-time purchase that the server correctly blocks.
-        if (d?.subStatus === "active" && d?.billingPeriod === "monthly") setMethod("card");
+        // PromptPay one-time purchase that the server correctly blocks — this override
+        // applies regardless of the flag (see getDefaultPricingSelection).
+        const resolved = getDefaultPricingSelection({
+          recurringDefaultEnabled: PRICING_DEFAULT_RECURRING,
+          subStatus: d?.subStatus ?? null,
+          billingPeriod: d?.billingPeriod ?? null,
+        });
+        setMethod(resolved.method);
         setUserChecked(true);
       })
       .catch(() => { /* leave userChecked false → CTAs stay in loading state, no wrong redirect */ });
   }, []);
 
-  useEffect(() => {
-    if (!acquisitionSource?.startsWith("hero_script")) return;
-    trackEvent("hero_script_pricing_viewed", {
-      properties: { source: acquisitionSource },
-    });
-  }, [acquisitionSource]);
-
-  // Trial lifecycle nudges land here as ?source=trial_d5 | trial_expired | trial_d3after
-  // (issue #299). Same shape as the Hero Script attribution above so each moment's
-  // click-through can be counted separately.
-  useEffect(() => {
-    if (!acquisitionSource?.startsWith(TRIAL_SOURCE_PREFIX)) return;
-    trackEvent("trial_pricing_viewed", {
-      properties: { source: acquisitionSource },
-    });
-  }, [acquisitionSource]);
-
   const currentPlan = me?.plan ?? null;
   const daysLeft = me?.trialEndsAt ? Math.max(0, Math.ceil((new Date(me.trialEndsAt).getTime() - Date.now()) / 86400000)) : 0;
   const onTrial = currentPlan === "PRO" && daysLeft > 0;
+
+  // pricing_viewed — fires once per mount for ALL acquisition sources (previously
+  // hero_script only), so conversion analysis of the new default isn't blind to the
+  // rest of the funnel. Waits for userChecked so plan/onTrial reflect the real user.
+  const trackedPricingViewRef = useRef(false);
+  useEffect(() => {
+    if (!userChecked || trackedPricingViewRef.current) return;
+    trackedPricingViewRef.current = true;
+    trackEvent("pricing_viewed", {
+      properties: {
+        source: acquisitionSource ?? "direct",
+        plan: currentPlan,
+        onTrial,
+        defaultPeriod: period,
+        defaultMethod: method,
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userChecked]);
   const usageLimit = me?.usageLimit ?? 0;
   const usageCount = me?.usageCount ?? 0;
   const usagePct = me?.minuteQuota
@@ -147,6 +163,21 @@ export function PricingClient({
       window.location.href = "/register";
       return;
     }
+    const effectiveMethod = period === "monthly" ? "card" : method;
+    const cfgKey = planKey === "PRO" ? "pro" : "business";
+    const monthlyPrice = planConfig?.[cfgKey]?.price ?? (planKey === "PRO" ? 599 : 990);
+    const isFounding = computeDisplayPrice({ monthlyPrice, period, coupon: appliedCoupon, founding }).isFounding;
+    trackEvent("pricing_cta_clicked", {
+      step: "pricing_page",
+      properties: {
+        plan: planKey,
+        period,
+        method: effectiveMethod,
+        couponCode: appliedCoupon?.code,
+        founding: isFounding,
+        surface: "pricing_tier_card",
+      },
+    });
     if (acquisitionSource?.startsWith("hero_script")) {
       trackEvent("hero_script_checkout_requested", {
         status: "started",
@@ -154,7 +185,7 @@ export function PricingClient({
           source: acquisitionSource,
           plan: planKey,
           period,
-          method: period === "monthly" ? "card" : method,
+          method: effectiveMethod,
         },
       });
     }
@@ -165,7 +196,7 @@ export function PricingClient({
         headers: { "Content-Type": "application/json" },
         // Monthly is card-only (the method toggle is hidden in monthly mode, so the promptpay default
         // would otherwise build an invalid monthly+promptpay session). Server coerces too.
-        body: JSON.stringify({ plan: planKey, period, method: period === "monthly" ? "card" : method, couponCode: appliedCoupon?.code }),
+        body: JSON.stringify({ plan: planKey, period, method: effectiveMethod, couponCode: appliedCoupon?.code }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -181,6 +212,16 @@ export function PricingClient({
   }
 
   async function handleFoundingAnnual(planKey: "PRO" | "BUSINESS") {
+    trackEvent("pricing_cta_clicked", {
+      step: "pricing_page",
+      properties: {
+        plan: planKey,
+        period: "annual",
+        method: "card",
+        founding: true,
+        surface: "founding_annual_conversion",
+      },
+    });
     setLoading(planKey);
     try {
       const res = await fetch("/api/payments/founding-annual", {
@@ -302,23 +343,31 @@ export function PricingClient({
         </p>
       )}
 
-      {/* controls — clean cluster */}
-      <div className="mb-2 flex justify-center">
-        <div className="ve-card inline-flex rounded-full p-1">
-          <button onClick={() => setPeriod("monthly")} className={cn("rounded-full px-5 py-2 text-sm font-semibold transition")} style={!yearly ? { background: VIOLET_GRAD, color: "#fff" } : { color: "var(--ui-text-muted)" }}>รายเดือน</button>
-          <button onClick={() => setPeriod("annual")} className={cn("inline-flex items-center rounded-full px-5 py-2 text-sm font-semibold transition")} style={yearly ? { background: VIOLET_GRAD, color: "#fff" } : { color: "var(--ui-text-muted)" }}>
+      {/* controls — clean cluster. Touch targets ≥44px tall (#334): min-h-11 + flex-wrap so
+          this survives down to a 360px-wide viewport without clipping. */}
+      <div className="mb-2 flex justify-center px-2">
+        <div className="ve-card flex flex-wrap items-center justify-center gap-1 rounded-full p-1">
+          <button onClick={() => setPeriod("monthly")} className={cn("inline-flex min-h-11 items-center justify-center rounded-full px-5 py-2 text-sm font-semibold transition")} style={!yearly ? { background: VIOLET_GRAD, color: "#fff" } : { color: "var(--ui-text-muted)" }}>รายเดือน</button>
+          <button onClick={() => setPeriod("annual")} className={cn("inline-flex min-h-11 items-center justify-center rounded-full px-5 py-2 text-sm font-semibold transition")} style={yearly ? { background: VIOLET_GRAD, color: "#fff" } : { color: "var(--ui-text-muted)" }}>
             รายปี <span className="ml-1.5 rounded-full px-1.5 py-0.5 text-[11px]" style={{ border: `1px solid ${VIOLET_TILE_BORDER}`, background: VIOLET_TILE_BG, color: VIOLET_LIGHT }}>2 เดือนฟรี</span>
           </button>
         </div>
       </div>
 
       {yearly && (
-        <div className="mb-2 flex justify-center">
-          <div className="inline-flex gap-1 text-[12px]">
-            <button onClick={() => setMethod("promptpay")} className="rounded-full px-3 py-1 font-medium transition"
-              style={method === "promptpay" ? { background: VIOLET_TILE_BG, color: VIOLET_LIGHT } : { color: "var(--ui-text-muted)" }}>PromptPay · จ่ายครั้งเดียว</button>
-            <button onClick={() => setMethod("card")} className="rounded-full px-3 py-1 font-medium transition"
-              style={method === "card" ? { background: VIOLET_TILE_BG, color: VIOLET_LIGHT } : { color: "var(--ui-text-muted)" }}>บัตร · ต่ออัตโนมัติ</button>
+        <div className="mb-2 flex justify-center px-2">
+          <div className="flex flex-wrap items-center justify-center gap-1.5 text-[13px]">
+            {/* #300: recurring-first order when the flag is on; today's PromptPay-first order otherwise. */}
+            {(PRICING_DEFAULT_RECURRING ? (["card", "promptpay"] as const) : (["promptpay", "card"] as const)).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMethod(m)}
+                className="inline-flex min-h-11 items-center justify-center rounded-full px-4 py-2 font-medium transition"
+                style={method === m ? { background: VIOLET_TILE_BG, color: VIOLET_LIGHT } : { color: "var(--ui-text-muted)" }}
+              >
+                {m === "promptpay" ? "PromptPay · จ่ายครั้งเดียว" : "บัตร · ต่ออัตโนมัติ"}
+              </button>
+            ))}
           </div>
         </div>
       )}

@@ -281,8 +281,10 @@ check("trial_expired is deduped to one event per user",
   /recordTelemetryEventOnce/.test(telemetry));
 
 const pricingClient = readFileSync(resolve("src/app/(dashboard)/pricing/pricing-client.tsx"), "utf8");
-check("/pricing attributes the trial sources",
-  /trial_pricing_viewed/.test(pricingClient) && /TRIAL_SOURCE_PREFIX/.test(pricingClient));
+// After #343 the page emits one generic `pricing_viewed { source }` for every acquisition
+// source, so the trial_* sources ride that event instead of a dedicated one.
+check("/pricing attributes every source (incl. trial_*) via pricing_viewed",
+  /trackEvent\("pricing_viewed"/.test(pricingClient) && /source/.test(pricingClient));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) FAILED`);
