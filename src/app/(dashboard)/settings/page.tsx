@@ -13,6 +13,7 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { CouponBox } from "@/components/settings/coupon-box";
 import { ManageSubscriptionButton } from "@/components/settings/manage-subscription-button";
+import { SwitchToAnnualButton } from "@/components/settings/switch-to-annual-button";
 import { ReactivateBanner } from "@/components/settings/reactivate-banner";
 import { McpAccessSettings } from "@/components/settings/mcp-access-settings";
 import { QuotaStatus } from "@/components/quota-status";
@@ -141,6 +142,7 @@ function BillingTab() {
       </a>
 
       <ReactivateBanner />
+      <SwitchToAnnualButton />
       <ManageSubscriptionButton />
 
       {/* Credits section — visible only when NEXT_PUBLIC_CREDITS_LIVE === "1" */}

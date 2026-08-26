@@ -79,6 +79,7 @@
     "verify:automix-plan": "tsx scripts/verify-automix-plan.ts",
     "verify:broll-windows": "tsx scripts/verify-broll-windows.ts",
     "verify:render-receipt": "tsx scripts/verify-render-receipt.ts",
+    "verify:standard-annual-switch": "tsx scripts/verify-standard-annual-switch.ts",
     "verify:render-plan-preflight": "tsx scripts/verify-render-plan-preflight.ts",
     "verify:content-preflight-thai-name": "node --conditions=react-server --import tsx scripts/verify-content-preflight-thai-proper-name.ts",
     "verify:subtitle-invariant": "tsx scripts/verify-subtitle-invariant.ts",
