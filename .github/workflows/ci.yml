@@ -73,6 +73,9 @@ jobs:
       - name: Verify day-21 GRANT convert reminder
         run: npm run verify:day21-convert-reminder
 
+      - name: Verify trial-expiry reminders and renewal-cron trial exclusion
+        run: npm run verify:trial-reminders
+
       - name: Verify Avatar caption fail-open
         run: npm run verify:avatar-caption-fallback
 

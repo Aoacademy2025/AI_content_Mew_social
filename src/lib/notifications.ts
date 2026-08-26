@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { isSafeNotificationLink } from "@/lib/notification-link";
 
 type NotificationType =
   | "VIDEO_COMPLETED"
@@ -13,16 +14,21 @@ export async function createNotification({
   type,
   title,
   body,
+  link,
 }: {
   userId: string;
   type: NotificationType;
   title: string;
   body: string;
+  /** Optional in-app destination. Same-origin path only — see isSafeNotificationLink. */
+  link?: string | null;
 }) {
   return prisma.notification.create({
-    data: { userId, type, title, body },
+    data: { userId, type, title, body, link: isSafeNotificationLink(link) ? link : null },
   });
 }
+
+export { isSafeNotificationLink };
 
 // Notify all admins (for NEW_USER type)
 export async function notifyAdmins({
