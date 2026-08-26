@@ -12,12 +12,22 @@ function Row({ done, label }: { done: boolean; label: string }) {
   );
 }
 
-export function KeySetupChecklist({ status, onSetup, managed = false }: { status: KeyStatus; onSetup: () => void; managed?: boolean }) {
+export function KeySetupChecklist({
+  status,
+  onSetup,
+  managed = false,
+  managedStock = false,
+}: { status: KeyStatus; onSetup: () => void; managed?: boolean; managedStock?: boolean }) {
   if (status.tier1Complete) return null;
   const stockDone = status.pexels || status.pixabay;
-  // When managed, Gemini is handled server-side — only count/show the stock key requirement
-  const totalRequired = managed ? 1 : 2;
-  const doneCount = ((!managed && status.gemini) ? 1 : 0) + (stockDone ? 1 : 0);
+  // When managed, Gemini is handled server-side — only count/show the stock key requirement.
+  // With MANAGED_STOCK on (#297) the stock key stops being a requirement too: the system
+  // searches its own Pexels/Pixabay for trial/FREE accounts, so this card must not present
+  // a blocker that no longer exists.
+  const stockRequired = !managedStock;
+  const totalRequired = (managed ? 0 : 1) + (stockRequired ? 1 : 0);
+  const doneCount = ((!managed && status.gemini) ? 1 : 0) + ((stockRequired && stockDone) ? 1 : 0);
+  if (totalRequired === 0 || doneCount >= totalRequired) return null;
 
   return (
     <div className="rounded-xl border border-violet-400/25 bg-gradient-to-r from-violet-500/10 to-transparent p-4 sm:p-5">
@@ -33,7 +43,7 @@ export function KeySetupChecklist({ status, onSetup, managed = false }: { status
       </div>
       <div className="mt-3 space-y-1.5">
         {!managed && <Row done={status.gemini} label="Gemini key (จำเป็น)" />}
-        <Row done={stockDone} label="Pexels หรือ Pixabay — B-roll (จำเป็น)" />
+        <Row done={stockDone} label={stockRequired ? "Pexels หรือ Pixabay — B-roll (จำเป็น)" : "Pexels หรือ Pixabay — B-roll (ไม่บังคับ)"} />
       </div>
       <p className="mt-2 text-[11px] text-slate-500">ขั้นสูง (ไม่บังคับ): ElevenLabs · HeyGen — ไม่ใส่ก็ใช้งานได้</p>
     </div>

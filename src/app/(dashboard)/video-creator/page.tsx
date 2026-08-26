@@ -16,6 +16,8 @@ import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
+import { isManagedStockClientEnabled } from "@/lib/managed-stock";
+import { resolveManagedStockActive } from "@/lib/use-me";
 import { QuotaStatus } from "@/components/quota-status";
 import { BackgroundRemovalPanel } from "./_panels/BackgroundRemovalPanel";
 import { MusicPanel } from "./_panels/MusicPanel";
@@ -1756,7 +1758,10 @@ export default function ShortVideoPage() {
     // Step 2: Check keys for the chosen provider — show key modal if missing
     // (Gemini gate removed: tier1Complete from /api/user/api-keys/status is already managed-aware)
     try {
-      const keysRes = await fetch("/api/user/api-keys");
+      const [keysRes, managedStockActive] = await Promise.all([
+        fetch("/api/user/api-keys"),
+        resolveManagedStockActive(),
+      ]);
       if (keysRes.ok) {
         // GET /api/user/api-keys returns { field: { set, last4 } } (never the raw key).
         // Flatten to booleans so the presence checks below stay unchanged.
@@ -1772,7 +1777,7 @@ export default function ShortVideoPage() {
         const needPixabay = stockSource === "pixabay" || stockSource === "both" || stockSource === "auto-mix";
         const canUsePexels = !needPexels || !!keys.pexelsKey;
         const canUsePixabay = !needPixabay || !!keys.pixabayKey;
-        if (stockSource !== "kie-image" && !canUsePexels && !canUsePixabay) {
+        if (stockSource !== "kie-image" && !canUsePexels && !canUsePixabay && !managedStockActive) {
           setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: "runAll" });
           return;
         }
@@ -2182,7 +2187,10 @@ export default function ShortVideoPage() {
     // Pre-check stock keys if step involves stock fetch
     if (step === "fetchStock" || step === "keywords" || step === "transcribe") {
       try {
-        const keysRes = await fetch("/api/user/api-keys");
+        const [keysRes, managedStockActive] = await Promise.all([
+          fetch("/api/user/api-keys"),
+          resolveManagedStockActive(),
+        ]);
         if (keysRes.ok) {
           // GET /api/user/api-keys returns { field: { set, last4 } } (never the raw key).
           // Flatten to booleans so the presence checks below stay unchanged.
@@ -2197,7 +2205,7 @@ export default function ShortVideoPage() {
           const needPixabay = stockSource === "pixabay" || stockSource === "both" || stockSource === "auto-mix";
           const canUsePexels = !needPexels || !!keys.pexelsKey;
           const canUsePixabay = !needPixabay || !!keys.pixabayKey;
-          if (stockSource !== "kie-image" && !canUsePexels && !canUsePixabay) {
+          if (stockSource !== "kie-image" && !canUsePexels && !canUsePixabay && !managedStockActive) {
             setMissingKey({ type: needPexels ? "pexels" : "pixabay", retryStep: step });
             return;
           }
@@ -2547,6 +2555,7 @@ export default function ShortVideoPage() {
           onClose={() => setKeyWizardOpen(false)}
           onComplete={() => setKeyWizardOpen(false)}
           managed={managed}
+          managedStock={isManagedStockClientEnabled()}
         />
       )}
 

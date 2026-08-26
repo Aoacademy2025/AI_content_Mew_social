@@ -17,10 +17,11 @@ import {
   ZoomIn, User, X, Save, Pencil, KeyRound, ImagePlus,
 } from "lucide-react";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
-import { fetchMe } from "@/lib/use-me";
+import { fetchMe, resolveManagedStockActive } from "@/lib/use-me";
 import { ApiKeySettings } from "@/components/settings/api-key-settings";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
 import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
+import { isManagedStockClientEnabled } from "@/lib/managed-stock";
 import { QuotaStatus } from "@/components/quota-status";
 
 // ─── Refactored sub-components & utilities ────────────────────────────────
@@ -2854,7 +2855,10 @@ function LegacyVideoEditorPage() {
     // Item 1: ตรวจสอบ API keys ที่จำเป็นก่อนเริ่ม pipeline
     // (Gemini gate removed: tier1Complete from /api/user/api-keys/status is already managed-aware)
     try {
-      const keysRes = await fetch("/api/user/api-keys");
+      const [keysRes, managedStockActive] = await Promise.all([
+        fetch("/api/user/api-keys"),
+        resolveManagedStockActive(),
+      ]);
       if (keysRes.ok) {
         // GET /api/user/api-keys returns { field: { set, last4 } } (never the raw key).
         // Flatten to booleans so the presence checks below stay unchanged.
@@ -2874,15 +2878,15 @@ function LegacyVideoEditorPage() {
         }
         // Pexels/Pixabay key check — Free tier (both) ขอแค่ key ใด key หนึ่ง
         // (backend fallback ใช้ source ที่มี key อยู่แล้ว)
-        if (stockSource === "both" && !keysData.pexelsKey && !keysData.pixabayKey) {
+        if (!managedStockActive && stockSource === "both" && !keysData.pexelsKey && !keysData.pixabayKey) {
           setMissingKey({ type: "pexels", retryStep: "runAll" });
           return;
         }
-        if (stockSource === "pexels" && !keysData.pexelsKey) {
+        if (!managedStockActive && stockSource === "pexels" && !keysData.pexelsKey) {
           setMissingKey({ type: "pexels", retryStep: "runAll" });
           return;
         }
-        if (stockSource === "pixabay" && !keysData.pixabayKey) {
+        if (!managedStockActive && stockSource === "pixabay" && !keysData.pixabayKey) {
           setMissingKey({ type: "pixabay", retryStep: "runAll" });
           return;
         }
@@ -2894,7 +2898,7 @@ function LegacyVideoEditorPage() {
         if (stockSource === "auto-mix") {
           if (autoMixProviders.includes("video")) {
             // ใช้วิดีโอจริง → ต้องมี Pexels หรือ Pixabay key (ภาพ fallback เป็นเสริม)
-            if (!keysData.pexelsKey && !keysData.pixabayKey) {
+            if (!managedStockActive && !keysData.pexelsKey && !keysData.pixabayKey) {
               setMissingKey({ type: "pexels", retryStep: "runAll" });
               return;
             }
@@ -5141,6 +5145,7 @@ function LegacyVideoEditorPage() {
           onClose={() => setKeyWizardOpen(false)}
           onComplete={() => setKeyWizardOpen(false)}
           managed={managed}
+          managedStock={isManagedStockClientEnabled()}
         />
       )}
 
