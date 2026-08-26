@@ -50,6 +50,7 @@ import type { SceneContentPolicyWarning } from "@/lib/scene-content-policy";
 import { BrandVisualSelector, type BrandVisualPreflightStatus } from "./BrandVisualSelector";
 import { trackEvent } from "@/lib/client-telemetry";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
+import { voiceProviderPlanViolation } from "@/lib/render-plan-preflight";
 import {
   cutawayPieceLimit,
   effectiveManualCutawayPieceCount,
@@ -136,6 +137,13 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     return () => window.cancelAnimationFrame(frame);
   }, []);
   const bgm = useBgm();
+  // #301 — the deterministic plan × voice-provider rule the create route enforces.
+  // Computed here so the picker, the inline notice, and the server all say the same thing.
+  const [voicePlanUpgradeOpen, setVoicePlanUpgradeOpen] = useState(false);
+  const voicePlanViolation = useMemo(
+    () => voiceProviderPlanViolation("elevenlabs", p.plan ?? "FREE"),
+    [p.plan],
+  );
   const scriptEstSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
   const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
   const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
@@ -575,7 +583,16 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         <Group title="เสียงพากย์" desc="เสียง AI อ่านสคริปต์ของคุณ">
           <Segmented<V2VoiceEngine>
             value={p.voiceEngine}
-            onChange={p.setVoiceEngine}
+            onChange={(engine) => {
+              // #301 — a FREE account picking ElevenLabs used to find out at the TTS step,
+              // minutes already reserved. Say it here, with a way out.
+              if (voiceProviderPlanViolation(engine, p.plan ?? "FREE")) {
+                trackEvent("paywall_shown", { step: "editor.step2", properties: { surface: "editor.voice_provider", feature: "elevenlabs_voice", plan: p.plan ?? "FREE" } });
+                setVoicePlanUpgradeOpen(true);
+                return;
+              }
+              p.setVoiceEngine(engine);
+            }}
             ariaLabel="ผู้ให้บริการเสียงพากย์"
             optionPadding="6px clamp(7px, 2vw, 14px)"
             style={{ display: "grid", gridTemplateColumns: `repeat(${heroVoiceVisible ? 3 : 2},minmax(0,1fr))`, width: "100%" }}
@@ -589,9 +606,41 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 title: p.omniVoiceEnabled ? "เสียงเฉพาะของ Hero AI จำนวน 48 เสียง" : `${HERO_VOICE_NAME} ${HERO_VOICE_COMING_SOON}`,
               }] : []),
               { value: "gemini" as const, label: "Gemini" },
-              { value: "elevenlabs" as const, label: "ElevenLabs" },
+              {
+                value: "elevenlabs" as const,
+                label: "ElevenLabs",
+                ...(voicePlanViolation ? { badge: "Pro", title: voicePlanViolation.message } : {}),
+              },
             ]}
           />
+          {voicePlanViolation && p.voiceEngine === "elevenlabs" && (
+            <Card selected className="flex flex-col gap-2">
+              <span style={{ fontSize: 12.5, color: color.text, fontFamily: font.body }}>
+                {voicePlanViolation.message}
+              </span>
+              <span style={{ fontSize: 11.5, color: color.textSecondary }}>
+                {voicePlanViolation.userAction}
+              </span>
+              <span className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => p.setVoiceEngine("gemini")}
+                  className="min-h-9 rounded-lg px-3"
+                  style={{ fontSize: 12, background: "rgba(255,255,255,.06)", border: "1px solid rgba(255,255,255,.12)", color: color.text }}
+                >
+                  ใช้เสียง Gemini แทน
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setVoicePlanUpgradeOpen(true)}
+                  className="min-h-9 rounded-lg px-3"
+                  style={{ fontSize: 12, background: "linear-gradient(135deg,#8B5CF6,#6D28D9)", color: "#fff" }}
+                >
+                  อัปเกรดเป็น Pro
+                </button>
+              </span>
+            </Card>
+          )}
           <Card
             selected
             className={p.voiceEngine === "omnivoice"
@@ -1007,6 +1056,19 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     >
       {primaryCta}
     </div>
+
+    <UpgradeModal
+      open={voicePlanUpgradeOpen}
+      onClose={() => setVoicePlanUpgradeOpen(false)}
+      title="ElevenLabs สำหรับสมาชิก Pro ขึ้นไป"
+      message={voicePlanViolation?.userAction ?? "อัปเกรดเป็น Pro เพื่อใช้เสียง ElevenLabs"}
+      minuteQuota={Boolean(p.usage?.minutes)}
+      pricingHref="/pricing?source=elevenlabs_voice_preview"
+      onCtaClick={() => trackEvent("pricing_cta_clicked", {
+        step: "editor.step2",
+        properties: { surface: "editor.voice_provider", feature: "elevenlabs_voice", plan: p.plan ?? "FREE" },
+      })}
+    />
     </>
   );
 }

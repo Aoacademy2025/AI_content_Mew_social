@@ -147,8 +147,11 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       } : null,
       reusableAiSceneIndices,
       preserveEstablishedAiDensity,
+      // Advisory only (#301) — an over-cap estimate warns here; the render still runs and
+      // the exact post-TTS gate stays the authority.
+      plan: p.plan,
     }),
-    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, quotedTargetClipCount, p.starterAiImageAllowance, reusableAiSceneIndices, preserveEstablishedAiDensity, exactDuration],
+    [estSec, p.usage, usesAi, presetWeights, perImageCredits, credits, p.mode, p.useAvatar, p.avatarId, p.brollSource, quotedTargetClipCount, p.starterAiImageAllowance, reusableAiSceneIndices, preserveEstablishedAiDensity, exactDuration, p.plan],
   );
 
   // Deficit disables the render CTA (Task 5 item B) — buildReceipt already computed

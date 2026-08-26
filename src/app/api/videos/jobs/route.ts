@@ -48,6 +48,7 @@ import {
   type OmniVoiceBackend,
 } from "@/lib/omnivoice";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
+import { voiceProviderPlanViolation } from "@/lib/render-plan-preflight";
 import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
 import {
   HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
@@ -577,6 +578,23 @@ export async function POST(req: Request) {
     // Key guards — same checks as MCP create_video_job, same wording surface (web shows toasts)
     // upload mode ไม่ใช้ TTS → ข้าม guard ฝั่งเสียง (Gemini ยังจำเป็น: transcribe/keywords)
     const useEleven = !uploadMode && (voiceProvider === "elevenlabs" || (!voiceProvider && user.ttsProvider === "elevenlabs"));
+    // Plan gate BEFORE the job row exists (#301). `/api/videos/tts` already refuses a
+    // FREE account, but only once the pipeline reaches the TTS step — the customer has
+    // waited, minutes are reserved, and the refusal lands in VideoJob.errorMessage with
+    // no CTA. Same rule, applied here, turns that into an actionable 403.
+    const voicePlanViolation = useEleven
+      ? voiceProviderPlanViolation("elevenlabs", user.plan)
+      : null;
+    if (voicePlanViolation) {
+      return NextResponse.json({
+        error: voicePlanViolation.code,
+        // The editor toast renders `message` only (apiErrorMessage in useV2Job), so the
+        // way out has to live in it — `userAction` stays for structured consumers.
+        message: `${voicePlanViolation.message} — ${voicePlanViolation.userAction}`,
+        userAction: voicePlanViolation.userAction,
+        neededPlan: voicePlanViolation.neededPlan,
+      }, { status: 403 });
+    }
     if (useEleven && !user.elevenlabsKey) {
       return NextResponse.json({ error: "missing_key", missingKey: "elevenlabs", message: "ต้องใส่ ElevenLabs API key ก่อน (Settings → API Keys)" }, { status: 400 });
     }
