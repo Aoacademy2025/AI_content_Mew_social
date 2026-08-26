@@ -103,5 +103,8 @@ jobs:
       - name: Verify Hero Voice stock and clone contracts
         run: npm run verify:omnivoice && npm run verify:hero-voice-clone
 
+      - name: Verify /brands fits phones and keeps its desktop layout
+        run: npm run verify:brands-mobile
+
       - name: Build
         run: npm run build
