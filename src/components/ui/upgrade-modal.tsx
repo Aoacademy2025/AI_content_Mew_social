@@ -103,7 +103,7 @@ export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel
         {secondaryCta && (
           <button
             onClick={() => { onClose(); router.push(secondaryCta.href); }}
-            className="mt-2 w-full rounded-xl border border-white/15 py-2.5 text-sm font-semibold text-zinc-200 transition-colors hover:bg-white/5 active:scale-[0.98]"
+            className="mt-2 flex min-h-11 w-full items-center justify-center rounded-xl border border-white/15 py-2.5 text-sm font-semibold text-zinc-200 transition-colors hover:bg-white/5 active:scale-[0.98]"
           >
             {secondaryCta.label}
           </button>
