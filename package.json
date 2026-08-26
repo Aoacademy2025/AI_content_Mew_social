@@ -81,6 +81,7 @@
     "verify:render-receipt": "tsx scripts/verify-render-receipt.ts",
     "verify:founding-copy-truth": "tsx scripts/verify-founding-copy-truth.ts",
     "verify:plan-cash-vs-credits": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-plan-cash-vs-credits.ts",
+    "verify:renewal-receipts": "tsx scripts/verify-renewal-receipts.ts",
     "verify:payment-ledger-repair": "tsx scripts/verify-payment-ledger-repair-guards.ts",
     "verify:standard-annual-switch": "tsx scripts/verify-standard-annual-switch.ts",
     "verify:render-plan-preflight": "tsx scripts/verify-render-plan-preflight.ts",
