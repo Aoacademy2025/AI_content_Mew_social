@@ -11,7 +11,9 @@ import { DashboardOnboarding } from "@/components/onboarding/DashboardOnboarding
 import { QuotaStatus } from "@/components/quota-status";
 import { V2JobBadge } from "@/components/v2-job-badge";
 import { DashboardFounderBanner } from "@/components/marketing/founder-banner";
+import { FirstClipHero } from "@/components/dashboard/first-clip-hero";
 import { fetchMe } from "@/lib/use-me";
+import { deriveFirstClipState, shouldShowFirstClipHero } from "@/lib/first-clip-dashboard";
 
 type PlanKey = "FREE" | "PRO" | "BUSINESS";
 type Role = "ADMIN" | "USER";
@@ -35,6 +37,17 @@ const VIOLET_TILE_BG = "rgba(139,92,246,.10)";
 const VIOLET_TILE_BORDER = "hsl(258 90% 66% / .45)";
 
 // .ve-card / .ve-card-hover / .ve-rise now live in globals.css (Editor v2 house utilities).
+
+/** Used when /api/user/me is unreachable: never claim the First-Clip Path. */
+const ME_FALLBACK = {
+  onPath: false,
+  reason: null,
+  activeRender: false,
+  renderedClip: false,
+  minutesLimit: null,
+  minutesUsed: null,
+  heroScriptAllowed: false,
+} as const;
 
 function daysLeft(isoDate: string): number {
   return Math.ceil((new Date(isoDate).getTime() - Date.now()) / 86400000);
@@ -111,6 +124,17 @@ export default function DashboardPage() {
   const [role, setRole] = useState<Role>("USER");
   const [internalAiTester, setInternalAiTester] = useState(false);
   const [trialEndsAt, setTrialEndsAt] = useState<string | null>(null);
+  // First-Clip Path (#305) — the day-one dashboard replaces the tiles/quick actions
+  // for accounts that have not exported a clip yet.
+  const [me, setMe] = useState<{
+    onPath: boolean;
+    reason: string | null;
+    activeRender: boolean;
+    renderedClip: boolean;
+    minutesLimit: number | null;
+    minutesUsed: number | null;
+    heroScriptAllowed: boolean;
+  } | null>(null);
 
   useEffect(() => {
     fetch("/api/user/stats").then(r => r.json()).then(setStats).finally(() => setLoading(false));
@@ -119,8 +143,31 @@ export default function DashboardPage() {
       if (d?.role === "ADMIN" || d?.role === "USER") setRole(d.role);
       setInternalAiTester(d?.internalAiTester === true);
       setTrialEndsAt(typeof d?.trialEndsAt === "string" ? d.trialEndsAt : null);
-    }).catch(() => {});
+      setMe({
+        onPath: d?.firstClipPath === true,
+        reason: typeof d?.firstClipPathReason === "string" ? d.firstClipPathReason : null,
+        activeRender: d?.firstClipProgress?.activeRender === true,
+        renderedClip: d?.firstClipProgress?.renderedClip === true,
+        minutesLimit: typeof d?.minutesLimit === "number" ? d.minutesLimit : null,
+        minutesUsed: typeof d?.minutesUsed === "number" ? d.minutesUsed : null,
+        heroScriptAllowed: d?.heroScriptAllowed === true,
+      });
+    }).catch(() => setMe(ME_FALLBACK));
   }, []);
+
+  // Until /api/user/me answers we cannot tell the two dashboards apart, so the
+  // blocks that swap stay unmounted rather than flashing the legacy layout.
+  const meLoaded = me !== null;
+  const firstClipState = deriveFirstClipState({
+    hasExport: me?.reason === "has_completed_video",
+    renderedClip: me?.renderedClip === true,
+    activeRender: me?.activeRender === true,
+  });
+  // Admin dashboards are never the First-Clip surface (the server already says so
+  // via `internal`, but this keeps the client honest if that ever loosens).
+  const showFirstClip = role !== "ADMIN"
+    && shouldShowFirstClipHero({ onPath: me?.onPath === true, state: firstClipState });
+  const showLegacyBlocks = meLoaded && !showFirstClip;
 
   const isAdmin = role === "ADMIN";
   const isBusiness = stats?.plan === "BUSINESS";
@@ -166,6 +213,7 @@ export default function DashboardPage() {
             }}>
               {userName || "ผู้ใช้งาน"}
             </span>
+            {showFirstClip && " — คลิปแรกของคุณรออยู่"}
           </h1>
 
           {/* Plan badge */}
@@ -195,6 +243,8 @@ export default function DashboardPage() {
         <p className="ve-rise mb-6 max-w-2xl text-[15px] leading-relaxed" style={{ animationDelay: "80ms", color: "var(--ui-text-secondary)" }}>
           {isAdmin
             ? "ศูนย์ควบคุมผู้ดูแล — เลือกเครื่องมือด้านล่างเพื่อเริ่ม"
+            : showFirstClip
+            ? "วางสคริปต์ 1 ชุด ระบบทำเสียง ภาพประกอบ และซับไทยให้ทั้งหมด ไม่ต้องตั้งค่าอะไรก่อน"
             : "เริ่มสร้างเนื้อหาวิดีโอด้วย AI — เลือก action ด้านล่างเพื่อเริ่ม"}
         </p>
 
@@ -202,12 +252,23 @@ export default function DashboardPage() {
         <DashboardFounderBanner plan={stats?.plan} />
 
         {/* Key setup checklist + first-login wizard (self-gating) */}
-        <DashboardOnboarding />
+        <DashboardOnboarding firstClipPath={showFirstClip} />
 
-        {/* Minute / clip balance chip — self-fetches */}
-        <div className="ve-rise mb-6" style={{ animationDelay: "100ms" }}>
-          <QuotaStatus variant="chip" />
-        </div>
+        {/* Day-one First-Clip surface: stepper + ONE CTA + ONE number (#304, #305).
+            It carries its own minutes line, so the standalone quota chip stays off. */}
+        {showFirstClip ? (
+          <FirstClipHero
+            state={firstClipState}
+            minutesLimit={me?.minutesLimit ?? null}
+            minutesUsed={me?.minutesUsed ?? null}
+            heroScriptAllowed={me?.heroScriptAllowed === true}
+          />
+        ) : (
+          /* Minute / clip balance chip — self-fetches */
+          <div className="ve-rise mb-6" style={{ animationDelay: "100ms" }}>
+            <QuotaStatus variant="chip" />
+          </div>
+        )}
 
         {/* Quick actions */}
         {isAdmin ? (
@@ -233,7 +294,7 @@ export default function DashboardPage() {
               </div>
             </div>
           </div>
-        ) : (
+        ) : !showLegacyBlocks ? null : (
           <div
             className={internalAiTester
               ? "ve-rise mb-8 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
@@ -249,8 +310,8 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* USER-only: limit warning for unpaid users at limit */}
-        {!isAdmin && !isPaid && (atStyleLimit || atContentLimit) && (
+        {/* USER-only: limit warning for unpaid users at limit (never on the First-Clip Path) */}
+        {!isAdmin && !showFirstClip && !isPaid && (atStyleLimit || atContentLimit) && (
           <div className="ve-rise mb-6 flex items-center gap-3 rounded-xl px-4 py-3"
             style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.30)" }}>
             <AlertTriangle className="h-4 w-4 shrink-0" style={{ color: "#FBBF24" }} />
@@ -265,8 +326,8 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* USER-only: stats grid */}
-        {!isAdmin && (
+        {/* USER-only: stats grid (hidden while the First-Clip stepper owns the page) */}
+        {!isAdmin && showLegacyBlocks && (
           <div className="ve-rise mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2" style={{ animationDelay: "160ms" }}>
             {[
               { label: "Styles", count: stats?.styleCount ?? 0, limit: stats?.limits?.styles ?? null, icon: Palette, href: "/style" },
@@ -285,12 +346,7 @@ export default function DashboardPage() {
                     style={{ fontFamily: "var(--font-kanit), Kanit, sans-serif", color: "var(--ui-text-primary)" }}>{count}</p>
                 )}
                 <UsageBar count={count} limit={limit} />
-                {!isPaid && label === "Videos" && (
-                  <div className="mt-3 flex items-center gap-1.5">
-                    <Crown className="h-3 w-3" style={{ color: VIOLET_LIGHT }} />
-                    <p className="text-[11px] font-semibold" style={{ color: VIOLET_LIGHT }}>Pro only feature</p>
-                  </div>
-                )}
+                {/* No "Pro only feature" here: FREE renders too (clip cap in plan-limits.ts). */}
               </Link>
             ))}
           </div>
@@ -353,8 +409,9 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Upgrade CTA — USER only, when not on Business */}
-        {!isAdmin && stats && !isBusiness && (
+        {/* Upgrade CTA — USER only, when not on Business. Suppressed on the
+            First-Clip Path: activation comes before the upgrade ask (#305). */}
+        {!isAdmin && !showFirstClip && stats && !isBusiness && (
           <div className="ve-rise ve-card flex items-center gap-4 rounded-xl p-5" style={{ animationDelay: "260ms" }}>
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[11px]"
               style={{ background: VIOLET_TILE_BG, border: `1px solid ${VIOLET_TILE_BORDER}` }}>

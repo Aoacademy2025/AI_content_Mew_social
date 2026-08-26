@@ -7,6 +7,7 @@ import { useClerk } from "@clerk/nextjs";
 import { cn } from "@/lib/utils";
 import { fetchMe } from "@/lib/use-me";
 import { trackEvent } from "@/lib/client-telemetry";
+import { deriveFirstClipState, shouldShowFirstClipHero } from "@/lib/first-clip-dashboard";
 import {
   Settings, Users, Shield, Lock,
   LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen, SwatchBook,
@@ -147,6 +148,9 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
   const [brandVisualCohort, setBrandVisualCohort] = useState<string>("off");
   const [firstClipPath, setFirstClipPath] = useState(false);
+  const [firstClipReason, setFirstClipReason] = useState<string | null>(null);
+  const [firstClipActiveRender, setFirstClipActiveRender] = useState(false);
+  const [firstClipRenderedClip, setFirstClipRenderedClip] = useState(false);
 
   useEffect(() => {
     fetchMe()
@@ -170,6 +174,9 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
         setBrandVisualAllowed(data.brandVisualAllowed === true);
         setBrandVisualCohort(data.brandVisualCohort ?? "off");
         setFirstClipPath(data.firstClipPath === true);
+        setFirstClipReason(typeof data.firstClipPathReason === "string" ? data.firstClipPathReason : null);
+        setFirstClipActiveRender(data.firstClipProgress?.activeRender === true);
+        setFirstClipRenderedClip(data.firstClipProgress?.renderedClip === true);
         setSessionLoaded(true);
       })
       .catch(() => setSessionLoaded(true));
@@ -209,6 +216,17 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
   const isActiveTrial = Boolean(trialEndsAt && new Date(trialEndsAt).getTime() > Date.now());
   const planLabel = isActiveTrial ? "ทดลอง PRO" : isBusiness ? "Business Plan" : isPro ? "Pro Plan" : "Free Plan";
   const planColor = isBusiness ? "hsl(252 83% 65%)" : isPro ? "#8B5CF6" : "var(--ui-text-muted)";
+
+  // State-aware bottom CTA (#305): before the first export the only ask is
+  // "make the clip"; a trial that already exported is the one worth converting;
+  // a real paying PRO keeps today's Business upsell.
+  const firstClipState = deriveFirstClipState({
+    hasExport: firstClipReason === "has_completed_video",
+    renderedClip: firstClipRenderedClip,
+    activeRender: firstClipActiveRender,
+  });
+  const onFirstClipJourney = role !== "ADMIN"
+    && shouldShowFirstClipHero({ onPath: firstClipPath, state: firstClipState });
 
   // Attach the unread-updates badge to the user "/updates" item (admins use /admin/updates,
   // which has no unread badge — the helper is a no-op there).
@@ -449,7 +467,24 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
             ready={sessionLoaded}
             skeleton={<div className="h-8 w-full rounded-xl skeleton-wave" />}
           >
-            {!isPaid ? (
+            {onFirstClipJourney ? (
+              <Link href="/video-editor" prefetch={true}
+                onClick={() => trackEvent("first_clip_cta_clicked", {
+                  step: firstClipState,
+                  properties: { step: firstClipState, surface: "sidebar" },
+                })}
+                className="flex w-full items-center justify-center gap-1.5 rounded-xl py-2 text-xs font-bold text-white transition-all hover:brightness-110"
+                style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)", boxShadow: "0 2px 12px rgba(109,40,217,0.5)" }}>
+                <span>⚡</span>
+                <span>สร้างคลิปแรก</span>
+              </Link>
+            ) : isActiveTrial ? (
+              <Link href="/pricing?source=sidebar" prefetch={true}
+                className="flex w-full items-center justify-center rounded-xl py-2 text-xs font-semibold text-white transition-all hover:opacity-90"
+                style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
+                สมัคร PRO
+              </Link>
+            ) : !isPaid ? (
               <Link href="/settings?tab=billing" className="block w-full rounded-2xl overflow-hidden relative group"
                 style={{ background: "linear-gradient(145deg, #0f0f18, #16102a)", border: "1px solid rgba(139,92,246,0.25)", boxShadow: "0 0 24px rgba(109,40,217,0.15)" }}>
                 {/* glow top */}

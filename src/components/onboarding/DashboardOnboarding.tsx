@@ -5,8 +5,14 @@ import { KeySetupChecklist } from "./KeySetupChecklist";
 import { KeyOnboardingWizard } from "./KeyOnboardingWizard";
 import { ModelExplainerPanel } from "./ModelExplainerPanel";
 import { computeKeyStatus, type KeyStatus } from "@/lib/key-tiers";
+import { fetchMe } from "@/lib/use-me";
 
-export function DashboardOnboarding() {
+/**
+ * @param firstClipPath One number before the first clip (#304): the day-one
+ * dashboard states the minute allowance in its own hero line, so the model
+ * explainer (minutes + credit top-up) is not mounted for that cohort.
+ */
+export function DashboardOnboarding({ firstClipPath = false }: { firstClipPath?: boolean }) {
   const [status, setStatus] = useState<KeyStatus | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [managed, setManaged] = useState(false);
@@ -27,17 +33,14 @@ export function DashboardOnboarding() {
     } catch { /* fail-open */ }
   }, []);
 
-  // Fetch plan minutes separately from /api/user/me (fail-open — only used for display)
+  // Real per-user allowance straight from /api/user/me (fail-open — display only).
+  // This used to be a hardcoded plan→minutes map, so every trial account was told
+  // "80 นาที/เดือน" while it actually held 15 (#304).
   useEffect(() => {
-    fetch("/api/user/me")
-      .then(r => r.ok ? r.json() : null)
+    fetchMe()
       .then(d => {
         if (!d) return;
-        // map plan → minutes (matches plan-limits.ts)
-        const plan: string = d.plan ?? "FREE";
-        // ⚠️ MUST stay in sync with minutesPerMonthForPlan in src/lib/plan-limits.ts (authoritative source).
-        const planMinutes: Record<string, number> = { FREE: 5, PRO: 80, BUSINESS: 150 };
-        setMinutesForPlan(planMinutes[plan] ?? null);
+        setMinutesForPlan(typeof d.minutesLimit === "number" ? d.minutesLimit : null);
       })
       .catch(() => { /* fail-open */ });
   }, []);
@@ -47,7 +50,9 @@ export function DashboardOnboarding() {
   if (!status) return null;
   return (
     <>
-      <ModelExplainerPanel managed={managed} minuteQuota={minuteQuota} minutesForPlan={minutesForPlan} />
+      {!firstClipPath && (
+        <ModelExplainerPanel managed={managed} minuteQuota={minuteQuota} minutesForPlan={minutesForPlan} />
+      )}
       <KeySetupChecklist status={status} onSetup={() => setWizardOpen(true)} managed={managed} />
       {wizardOpen && (
         <KeyOnboardingWizard

@@ -29,6 +29,11 @@ export interface MeData {
   heroAiImageEligible?: boolean;
   recommendedAutoMixDefault?: boolean;
   firstClipPath?: boolean;
+  firstClipPathReason?: "on_path" | "conversion_trial" | "internal" | "not_paid_equivalent" | "has_completed_video";
+  firstClipProgress?: { activeRender: boolean; renderedClip: boolean } | null;
+  minuteQuota?: boolean;
+  minutesUsed?: number;
+  minutesLimit?: number;
   heroScriptAllowed?: boolean;
   heroScriptPreview?: boolean;
   heroScriptCohort?: "internal" | "paid" | "coupon" | "bundle" | "grant" | "trial" | "free" | "preview";
