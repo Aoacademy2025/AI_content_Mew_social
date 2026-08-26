@@ -13,6 +13,15 @@ const VIOLET_GRAD = "linear-gradient(180deg,#8B66F8,#6C4CF4)";
  * non-paid users (FREE plan) while the founding promo still has seats left.
  * Mirrors the sale-page scarcity bar's copy/effect (house violet + 🔥 + glow),
  * but reads live status from /api/founding/status rather than server props.
+ *
+ * Copy note: this banner used to promise "ลด 50% ตลอดชีพ". It was the only
+ * surface in the product making a lifetime claim — the marketing pricing toggle
+ * and the in-app /pricing page both say "รายปีลด 50%" — and the claim was not
+ * what customers actually get: the founding discount applies to the ANNUAL price
+ * only (see foundingPct in lib/pricing-display.ts, gated on period === "annual"),
+ * and on prod eleven of the thirteen seat holders bought a one-time 365-day term
+ * with no renewing subscription for a "forever" discount to attach to. The wording
+ * now matches the other two surfaces and the billing reality.
  */
 export function DashboardFounderBanner({ plan }: { plan: "FREE" | "PRO" | "BUSINESS" | undefined }) {
   const [status, setStatus] = useState<FoundingStatus | null>(null);
@@ -36,7 +45,7 @@ export function DashboardFounderBanner({ plan }: { plan: "FREE" | "PRO" | "BUSIN
         <Flame className="h-4 w-4 text-white" strokeWidth={2.5} aria-hidden />
       </div>
       <p className="min-w-0 flex-1 text-[13px] font-semibold" style={{ color: "var(--ui-text-primary)" }}>
-        🔥 ราคาผู้ก่อตั้ง — ลด {status.percentOff}% ตลอดชีพ · เหลือ {status.remaining}/{status.total} ที่นั่ง
+        🔥 ราคาผู้ก่อตั้ง — รายปีลด {status.percentOff}% · เหลือ {status.remaining}/{status.total} ที่นั่ง
       </p>
       <Link
         href="/pricing"
