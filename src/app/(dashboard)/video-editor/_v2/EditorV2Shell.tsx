@@ -40,6 +40,8 @@ import { ApiKeyModal, type RequiredKeyType } from "@/components/ui/api-key-modal
 import { Step1Script } from "./Step1Script";
 import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
+import { FirstClipExportedViewSignal } from "@/components/convert/first-clip-exported-view-signal";
+import { emitFirstClipViewed } from "@/lib/first-clip-convert-events";
 import { PostPhase } from "./PostPhase";
 import { PostPhaseMobile } from "./PostPhaseMobile";
 import { ExpiredPreviewView, prepareExpiredPreviewRerender, shouldShowUnavailablePreview } from "./ExpiredPreviewView";
@@ -1012,6 +1014,7 @@ function ExportedView({ job, onNewProject, onEditPreview, downloadFilename }: {
   return (
     <main className="flex flex-1 items-center justify-center p-6">
       <div className="flex w-[520px] max-w-[92vw] flex-col items-center gap-4 text-center">
+        <FirstClipExportedViewSignal />
         <div className="flex items-center gap-2">
           <CheckCircle2 size={18} color={color.success} />
           <span style={{ font: `600 16px ${font.heading}`, color: color.success }}>ส่งออกสำเร็จ — อยู่ใน Gallery แล้ว</span>
@@ -1029,11 +1032,11 @@ function ExportedView({ job, onNewProject, onEditPreview, downloadFilename }: {
         )}
         <div className="flex flex-wrap items-center justify-center gap-3">
           {videoUrl && (
-            <a href={videoUrl} download={downloadFilename}>
+            <a href={videoUrl} download={downloadFilename} onClick={emitFirstClipViewed}>
               <BtnPrimary><span className="flex items-center gap-2"><Download size={14} /> ดาวน์โหลด</span></BtnPrimary>
             </a>
           )}
-          <a href="/videos"><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
+          <a href="/videos" onClick={emitFirstClipViewed}><BtnSecondary>ดูใน Gallery</BtnSecondary></a>
           {onEditPreview && <BtnGhost onClick={onEditPreview}>แก้ซับต่อ</BtnGhost>}
           <BtnGhost onClick={onNewProject}>เริ่มโปรเจกต์ใหม่</BtnGhost>
         </div>

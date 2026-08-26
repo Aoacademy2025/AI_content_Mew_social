@@ -69,3 +69,16 @@ export function costKeyForKieModel(modelId: string): string | null {
       return null;
   }
 }
+
+// ── Monthly grant amounts per plan ────────────────────────────────────────────
+
+/**
+ * Credits granted to the `granted` bucket at the start of each usage window.
+ * Prisma-free on purpose: client surfaces (the first-clip convert prompt) must
+ * quote the SAME number the server grants instead of hardcoding one.
+ */
+export const MONTHLY_GRANT: Record<string, number> = {
+  FREE: 0,
+  PRO: 50,
+  BUSINESS: 150,
+};

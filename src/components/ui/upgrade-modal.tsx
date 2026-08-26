@@ -36,15 +36,24 @@ export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+      style={{
+        paddingTop: "max(1rem, env(safe-area-inset-top))",
+        paddingBottom: "max(1rem, env(safe-area-inset-bottom))",
+        paddingLeft: "max(1rem, env(safe-area-inset-left))",
+        paddingRight: "max(1rem, env(safe-area-inset-right))",
+      }}
+    >
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Modal */}
-      <div className="relative z-10 w-full max-w-sm rounded-2xl border border-white/10 bg-[#111118] p-6 shadow-2xl">
+      {/* Modal — max-h/overflow keep it usable on a 390×844 phone and in 844×390 landscape */}
+      <div className="relative z-10 max-h-[90dvh] w-full max-w-sm overflow-y-auto overscroll-contain rounded-2xl border border-white/10 bg-[#111118] p-6 shadow-2xl">
         <button
           onClick={onClose}
-          className="absolute right-4 top-4 text-zinc-500 hover:text-zinc-300 transition-colors"
+          aria-label="ปิด"
+          className="absolute right-1 top-1 flex h-11 w-11 items-center justify-center rounded-xl text-zinc-500 hover:text-zinc-300 transition-colors"
         >
           <X className="h-4 w-4" />
         </button>
@@ -68,7 +77,7 @@ export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel
         {/* Benefits */}
         <ul className="mb-5 space-y-2">
           {(benefits ?? getDefaultBenefits(minuteQuota)).map((f) => (
-            <li key={f} className="flex items-center gap-2 text-xs text-zinc-300">
+            <li key={f} className="flex items-center gap-2 text-[13px] leading-relaxed text-zinc-300">
               <Zap className="h-3.5 w-3.5 shrink-0 text-violet-400" />
               {f}
             </li>
@@ -79,7 +88,7 @@ export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel
         {!hideCta && (
           <button
             onClick={() => { onCtaClick?.(); onClose(); router.push(pricingHref); }}
-            className="w-full rounded-xl py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
+            className="min-h-11 w-full rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-all hover:opacity-90 active:scale-[0.98]"
             style={{ background: "linear-gradient(135deg, #7c3aed, #2563eb)" }}
           >
             {ctaLabel ?? "ดูแผนราคา — อัปเกรดเลย"}
@@ -88,7 +97,7 @@ export function UpgradeModal({ open, message, onClose, title, benefits, ctaLabel
 
         <button
           onClick={onClose}
-          className="mt-2 w-full rounded-xl py-2 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+          className="mt-2 min-h-11 w-full rounded-xl px-4 py-2 text-[13px] text-zinc-400 hover:text-zinc-200 transition-colors"
         >
           {hideCta ? "ปิด" : "ไว้ทีหลัง"}
         </button>
