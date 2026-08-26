@@ -102,6 +102,9 @@ jobs:
       - name: Verify quota_exceeded surfaces an upgrade path
         run: npm run verify:quota-error-shape
 
+      - name: Verify monthly to annual switch for ordinary subscribers
+        run: npm run verify:standard-annual-switch
+
       - name: Verify plan preflight refuses before a render job exists
         run: npm run verify:render-plan-preflight
 
