@@ -7,6 +7,7 @@ import {
   FoundingAnnualConversionError,
   type FoundingAnnualPlan,
 } from "@/lib/founding-annual-conversion";
+import { foundingStatus } from "@/lib/founding";
 import { ensureStripeConfig } from "@/lib/load-stripe-config";
 import { prisma } from "@/lib/prisma";
 import { resolvePrice, stripe } from "@/lib/stripe";
@@ -55,6 +56,20 @@ export async function POST(req: Request) {
       }, { status: 400 });
     }
     const requestedPlan = user.plan as FoundingAnnualPlan;
+
+    // While Founding seats remain, /pricing offers this exact switch at half the price to
+    // exactly these accounts. Charging one of them full price because they happened to open
+    // Settings instead is an overcharge, so refuse and send them to the cheaper door. The UI
+    // hides the button too; this is the half that a direct POST cannot skip.
+    const founding = await foundingStatus();
+    if (founding.active && founding.remaining > 0) {
+      return NextResponse.json({
+        error: "founding_offer_open",
+        message: `ตอนนี้เปลี่ยนเป็นรายปีได้ในราคาผู้ก่อตั้ง ลด ${founding.percentOff}% (เหลือ ${founding.remaining} สิทธิ์) — เปลี่ยนที่หน้าแพ็กเกจเพื่อรับราคานี้`,
+        userAction: "ไปที่หน้าแพ็กเกจ แล้วเลือก “รายปี”",
+        href: "/pricing",
+      }, { status: 409 });
+    }
 
     const annualPriceId = resolvePrice(requestedPlan, "annual", "card").priceId;
     const currentMonthlyPriceId = resolvePrice(requestedPlan, "monthly", "card").priceId;

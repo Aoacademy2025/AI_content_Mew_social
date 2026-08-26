@@ -10,6 +10,8 @@
 // checks exactly, and shares NONE of its seat lifecycle — switching billing period must never
 // hand out the Founding forever-discount to someone who did not earn it.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import {
   createFoundingAnnualPortalSession,
@@ -24,6 +26,7 @@ const check = (name: string, cond: boolean, detail = "") => {
   console.log(`${cond ? "✓" : "✗"} ${name}${detail ? ` — ${detail}` : ""}`);
   if (!cond) failures++;
 };
+const repoFile = (rel: string) => readFileSync(join(process.cwd(), rel), "utf8");
 
 const activeMonthlyPro: FoundingAnnualConversionUser = {
   id: "user-monthly-pro",
@@ -79,7 +82,7 @@ async function main() {
 
   // ── B. The seat boundary — the whole reason this is a separate function ──
   check("B1: NO promotion code is attached", params?.discounts.length === 0, JSON.stringify(params?.discounts));
-  const source = (await import("node:fs")).readFileSync("src/app/api/payments/switch-annual/route.ts", "utf8");
+  const source = repoFile("src/app/api/payments/switch-annual/route.ts");
   check("B2: the route never claims a Founding seat", !source.includes("claimSeat"));
   check("B3: the route never attaches a Founding reservation", !source.includes("attachReservation"));
 
@@ -143,6 +146,34 @@ async function main() {
   );
 
   assert.ok(true);
+    // ── E. Only ONE annual-switch button may be reachable at a time ──
+  // /pricing offers the same switch at the Founding price. A full-price button standing
+  // beside it overcharges whoever opened the wrong page, so both halves — the Settings
+  // button and this route — must stand down while seats remain, and must come back once
+  // the offer closes, or monthly subscribers are dead-ended again.
+  const routeSource = repoFile("src/app/api/payments/switch-annual/route.ts");
+  check("E1: the route reads the live Founding status", routeSource.includes("foundingStatus("));
+  check(
+    "E2: it refuses while seats remain",
+    /founding\.active\s*&&\s*founding\.remaining\s*>\s*0/.test(routeSource),
+  );
+  check("E3: the refusal points at the cheaper door", routeSource.includes('href: "/pricing"'));
+  check(
+    "E4: the refusal happens BEFORE any Stripe price is resolved",
+    routeSource.indexOf("founding_offer_open") < routeSource.indexOf('resolvePrice(requestedPlan, "annual"'),
+  );
+
+  const buttonSource = repoFile("src/components/settings/switch-to-annual-button.tsx");
+  check("F1: the button reads the Founding status too", buttonSource.includes("/api/founding/status"));
+  check(
+    "F2: it stays hidden while the offer is open",
+    buttonSource.includes("foundingOpen") && buttonSource.includes("!foundingOpen"),
+  );
+  check(
+    "F3: an unreadable status hides the button (fail closed, never overcharge)",
+    buttonSource.includes("founding == null ||"),
+  );
+
   console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
   process.exit(failures === 0 ? 0 : 1);
 }
