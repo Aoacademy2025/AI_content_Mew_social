@@ -19,6 +19,7 @@ import {
   createVideoJob,
   VIDEO_JOB_INFLIGHT_STATUSES,
 } from "@/lib/mcp/video-job";
+import { voiceProviderPlanViolation } from "@/lib/render-plan-preflight";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
@@ -137,6 +138,16 @@ const handler = createMcpHandler(
             throw error;
           }
           const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
+          // Same plan gate the web create path runs (#301) — refuse before the job row
+          // exists instead of letting the pipeline die at the TTS step with no CTA.
+          const voicePlan = useEleven ? voiceProviderPlanViolation("elevenlabs", u.plan) : null;
+          if (voicePlan) {
+            return {
+              error: voicePlan.code,
+              message: `${voicePlan.message} — ${voicePlan.userAction}`,
+              neededPlan: voicePlan.neededPlan,
+            };
+          }
           if (useEleven && !u.elevenlabsKey) return missingKeyError("elevenlabs");
           if (useEleven && !args.voiceId && !u.elevenlabsVoiceId) return missingVoiceIdError();
           try { resolveGeminiKey(u); }

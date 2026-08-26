@@ -13,6 +13,7 @@
  */
 
 import { minutesFromSeconds } from "@/lib/minute-round";
+import { estimatedDurationPlanWarning } from "@/lib/render-plan-preflight";
 import {
   disclosedAutoMixAiImageCount,
   disclosedAutoMixAiSlotIndices,
@@ -52,6 +53,9 @@ export interface ReceiptInput {
   /** Identity-validated delivered Visual Beats for the exact current
    * Content Preflight. Only indices intersecting planned AI slots are free. */
   reusableAiSceneIndices?: readonly number[];
+  /** Customer plan — drives the advisory per-clip duration warning (#301). Omitted
+   *  (or unknown) = no duration line, receipt unchanged. */
+  plan?: string | null;
   /** The exact preflight already delivered a reduced-density Starter clip.
    * At zero remaining allowance, missing slots are intentional and must not
    * be quoted as new work on an unchanged rerender. */
@@ -92,7 +96,7 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     estSec, remainingMinutes, totalMinutes, usesAi, presetWeights,
     perImageCredits, creditBalance, reservedCredits = 0, minuteCreditRate, hasAvatar, exactDuration = false,
     insufficientCreditBehavior = "stock-fallback", targetClipCount = 0, starterImageAllowance = null,
-    reusableAiSceneIndices = [], preserveEstablishedAiDensity = false,
+    reusableAiSceneIndices = [], preserveEstablishedAiDensity = false, plan = null,
   } = input;
 
   const estMinutes = minutesFromSeconds(estSec);
@@ -226,7 +230,22 @@ export function buildReceipt(input: ReceiptInput): ReceiptModel {
     });
   }
 
-  // 6) Disclaimer — ALWAYS.
+  // 6) Per-clip duration over the plan cap (#301) — ADVISORY ONLY. The estimate can be
+  //     off; the authoritative gate is audioDurationLimitViolation on the real post-TTS
+  //     duration. Saying it here is the difference between "อ๋อ ต้องตัดสคริปต์" and
+  //     watching the job die at the TTS step with no explanation.
+  //     Script mode only: an uploaded clip has an EXACT duration, already gated in
+  //     Step 1 by audioDurationLimitViolation, and "สคริปต์นี้ยาวประมาณ" would misdescribe it.
+  const durationWarning = plan && !exactDuration ? estimatedDurationPlanWarning(estSec, plan) : null;
+  if (durationWarning) {
+    lines.push({
+      key: "duration-over-plan",
+      kind: "warn",
+      text: `${durationWarning.message} — ${durationWarning.userAction}`,
+    });
+  }
+
+  // 7) Disclaimer — ALWAYS.
   lines.push({
     key: "disclaimer",
     kind: "info",

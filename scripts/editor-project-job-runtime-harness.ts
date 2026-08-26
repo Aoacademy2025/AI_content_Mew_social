@@ -6,6 +6,7 @@ import * as bgmSelectionModule from "../src/lib/bgm-selection";
 import * as brollPreferencesModule from "../src/lib/broll-preferences";
 import * as cutawayPlanModule from "../src/lib/cutaway-plan";
 import * as quotaErrorModule from "../src/lib/quota-error";
+import * as renderPlanPreflightModule from "../src/lib/render-plan-preflight";
 import * as headlineHookModule from "../src/lib/headline-hook";
 import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
 import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/export-edit-state";
@@ -490,6 +491,7 @@ function mountEditorShell(input: {
     if (specifier === "@/components/ui/api-key-modal") return { ApiKeyModal: marker("ApiKeyModal") };
     if (specifier === "@/components/ui/upgrade-modal") return { UpgradeModal: marker("UpgradeModal") };
     if (specifier === "@/lib/client-telemetry") return { trackEvent: () => undefined };
+    if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/components/ui/dropdown-menu") {
       return Object.fromEntries([
@@ -784,6 +786,7 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
     if (specifier === "@/lib/client-polling") {
       return { createClientPoller: createImmediateClientPoller };
     }
+    if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
@@ -964,6 +967,7 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
     if (specifier === "@/lib/client-polling") {
       return { createClientPoller: createImmediateClientPoller };
     }
+    if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
@@ -1134,6 +1138,7 @@ function mountAttemptJobHook(
     if (specifier === "@/lib/client-polling") {
       return { createClientPoller: createImmediateClientPoller };
     }
+    if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
     if (specifier === "@/lib/broll-preferences") return brollPreferencesModule;
@@ -1832,6 +1837,7 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/runpod-image-cost.server") {
       return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
+    if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     throw new Error(`unhandled jobs route import: ${specifier}`);
   };
@@ -2176,6 +2182,7 @@ async function runExactReplayRouteScenario(input: {
         }),
       };
     }
+    if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
