@@ -46,6 +46,16 @@ check(
   sh.includes("DEPLOY_HEALTH_URL:-http://127.0.0.1:3000/api/health"),
 );
 
+const pullAt = sh.indexOf('echo "=== [1/6] Pull latest code ==="');
+const hashBeforeAt = sh.indexOf("DEPLOY_SELF_HASH_BEFORE=\"$(sha256sum");
+const reexecAt = sh.indexOf("exec bash \"$DEPLOY_SELF_PATH\"");
+const ciGateAt = sh.indexOf('echo "=== [1b/6] CI gate');
+
+check("the script hashes itself BEFORE the pull can replace it", hashBeforeAt > 0 && hashBeforeAt < pullAt);
+check("a self-modifying pull re-execs the new script before the CI gate", reexecAt > pullAt && reexecAt < ciGateAt);
+check("the re-exec is one-shot (no loop)", /DEPLOY_REEXECED:-0.*!=\s*"1"/.test(sh) && /export DEPLOY_REEXECED=1/.test(sh));
+check("re-exec only fires when the hash actually changed", /DEPLOY_SELF_HASH_AFTER"?\s*!=\s*"\$DEPLOY_SELF_HASH_BEFORE"/.test(sh));
+
 if (failures > 0) {
   console.error(`\n${failures} check(s) FAILED`);
   process.exit(1);

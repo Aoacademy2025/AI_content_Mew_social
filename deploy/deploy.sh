@@ -44,6 +44,17 @@ if [ "$BUILD_NO_LINT" = "1" ]; then
   export NEXT_DISABLE_ESLINT="1"
 fi
 
+# Hash of the script AS IT WAS WHEN THIS RUN STARTED. `git pull` below can replace
+# this very file, and bash reads a script lazily by byte offset — so after a
+# self-modifying pull the rest of the run executes whatever bytes now sit at that
+# offset. On 2026-08-26 that silently skipped the freshly shipped maintenance-barrier
+# code and left the site on the maintenance page. See the re-exec guard after the pull.
+DEPLOY_SELF_PATH="$APP_DIR/deploy/deploy.sh"
+DEPLOY_SELF_HASH_BEFORE=""
+if [ -f "$DEPLOY_SELF_PATH" ]; then
+  DEPLOY_SELF_HASH_BEFORE="$(sha256sum "$DEPLOY_SELF_PATH" | cut -d" " -f1)"
+fi
+
 echo "=== [1/6] Pull latest code ==="
 if [ -d "$APP_DIR/.git" ]; then
   cd "$APP_DIR"
@@ -61,6 +72,18 @@ else
   git clone "$REPO_URL" "$APP_DIR"
   cd "$APP_DIR"
   git checkout "$DEFAULT_BRANCH"
+fi
+
+# Re-exec exactly once when the pull changed this script, so the whole deploy runs
+# ONE coherent version instead of a spliced old/new mix. DEPLOY_REEXECED stops any
+# loop; every other env var (BUILD_HEAP_MB, DEPLOY_SKIP_CI_CHECK, ...) is inherited.
+if [ "${DEPLOY_REEXECED:-0}" != "1" ] && [ -n "$DEPLOY_SELF_HASH_BEFORE" ] && [ -f "$DEPLOY_SELF_PATH" ]; then
+  DEPLOY_SELF_HASH_AFTER="$(sha256sum "$DEPLOY_SELF_PATH" | cut -d" " -f1)"
+  if [ "$DEPLOY_SELF_HASH_AFTER" != "$DEPLOY_SELF_HASH_BEFORE" ]; then
+    echo "=== [1a/6] deploy.sh changed in this pull — re-exec the new script once ==="
+    export DEPLOY_REEXECED=1
+    exec bash "$DEPLOY_SELF_PATH" "$@"
+  fi
 fi
 
 echo "=== [1b/6] CI gate — refuse to ship a commit whose checks are not green ==="
