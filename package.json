@@ -27,6 +27,7 @@
     "verify:avatar-generate-outcome": "tsx scripts/verify-avatar-generate-outcome.ts",
     "verify:heygen-readiness": "tsx scripts/verify-heygen-readiness.ts",
     "verify:customer-error-copy": "tsx scripts/verify-customer-error-copy.ts",
+    "verify:quota-error-shape": "tsx scripts/verify-quota-error-shape.ts",
     "verify:reported-account-entrypoints": "node --conditions=react-server --import tsx scripts/verify-reported-account-entrypoints.ts",
     "ops:refund-avatar-quota": "tsx scripts/refund-avatar-quota-job.ts",
     "verify:render-deploy-drain": "tsx scripts/verify-render-deploy-drain.ts",
