@@ -1,6 +1,12 @@
 import type { Plan, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { usageWindowForPlan } from "@/lib/usage-limits";
+import {
+  onUnconvertedTrial,
+  preserveTrialOnConvertEnabled,
+  resolveTrialPreservation,
+  storedSubscriptionStatus,
+} from "@/lib/preserve-trial";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -17,11 +23,39 @@ export type PaidCheckoutActivationInput = {
   currency?: string | null;
   /** Stripe's authoritative current_period_end for subscription checkouts. */
   entitlementExpiresAt?: Date | null;
+  /**
+   * Stripe's reported subscription status (#348). Only "trialing" changes what we
+   * store, and only when PRESERVE_TRIAL_ON_CONVERT=1 — anything else (including
+   * undefined) keeps storing "active" exactly as before.
+   */
+  subscriptionStatus?: string | null;
+  /** Optional `Payment.note` marker — tags the ฿0 row of a preserved trial. */
+  paymentNote?: string | null;
 };
 
 export type PaidCheckoutActivationResult =
   | { activated: true; newExpiry: Date }
   | { activated: false; reason: "already_paid" };
+
+/**
+ * Is this Checkout Session settled enough to activate?
+ *
+ * `paid` is the ordinary card/PromptPay answer. `no_payment_required` with a ฿0
+ * total is the OTHER legitimate settled shape: a 100%-discount session, and —
+ * since #348 — a subscription that starts in Stripe's `trialing` state, where the
+ * card is collected now and the first charge lands at trial end. A trialing
+ * subscription is therefore NOT "unpaid"; it is a committed customer.
+ *
+ * Lives here (not in the webhook route) so it is testable without importing a
+ * Next.js route module.
+ */
+export function checkoutPaymentSettled(session: {
+  payment_status?: string | null;
+  amount_total?: number | null;
+}): boolean {
+  return session.payment_status === "paid"
+    || (session.payment_status === "no_payment_required" && session.amount_total === 0);
+}
 
 function paidPlan(value: string): value is "PRO" | "BUSINESS" {
   return value === "PRO" || value === "BUSINESS";
@@ -80,16 +114,29 @@ export async function activatePaidCheckout(
     // Stripe defines recurring periods (calendar months/years), so subscription
     // access ends at its exact item current_period_end. Only one-time purchases
     // use the later-of-now/current-expiry extension rule.
+    const preserveTrial = preserveTrialOnConvertEnabled();
+    const onTrial = onUnconvertedTrial(user, now);
+    // #348: a one-time / PromptPay term bought DURING an unconverted trial keeps
+    // the unused trial days — the paid term starts where the trial would have
+    // ended instead of overwriting it. `preserved` is false whenever the flag is
+    // off, so the base below is then identical to the previous rule.
+    const preservation = resolveTrialPreservation({
+      trialEndsAt: user.trialEndsAt,
+      subStatus: user.subStatus,
+      recurring: false,
+      now,
+      enabled: preserveTrial,
+    });
+
     let newExpiry: Date;
     if (exactExpiry) {
       newExpiry = new Date(exactExpiry);
     } else {
-      const onUnconvertedTrial = !!user.trialEndsAt
-        && user.trialEndsAt > now
-        && user.subStatus !== "active";
-      const base = !onUnconvertedTrial && user.planExpiresAt && user.planExpiresAt > now
-        ? user.planExpiresAt
-        : now;
+      const base = preservation.preserved
+        ? preservation.termBase
+        : !onTrial && user.planExpiresAt && user.planExpiresAt > now
+          ? user.planExpiresAt
+          : now;
       newExpiry = new Date(base.getTime() + input.periodDays * DAY_MS);
     }
 
@@ -99,10 +146,21 @@ export async function activatePaidCheckout(
         plan: input.plan as Plan,
         planExpiresAt: newExpiry,
         ...usageWindowForPlan(input.plan, now),
+        // The trial is superseded here in BOTH paths: a preserved one-time term
+        // already contains the unused days (base = trialEndsAt above), and a
+        // preserved card subscription hands the remaining days to Stripe as
+        // `trial_end`, which then owns them. Clearing keeps every trial-display
+        // surface (banner, sidebar, /pricing band, plan-change guard) honest for
+        // a customer who has now converted.
+        // TODO(#344): once User.trialEndedAt exists, stamp it here with the
+        // superseded `user.trialEndsAt` so the cohort date is not destroyed.
         trialEndsAt: null,
         billingPeriod,
         ...(input.mode === "subscription" && input.subscriptionId
-          ? { stripeSubscriptionId: input.subscriptionId, subStatus: "active" }
+          ? {
+              stripeSubscriptionId: input.subscriptionId,
+              subStatus: storedSubscriptionStatus(input.subscriptionStatus, preserveTrial),
+            }
           : {}),
       },
     });
@@ -125,6 +183,7 @@ export async function activatePaidCheckout(
       periodDays: input.periodDays,
       stripePaymentIntent: input.paymentIntentId || null,
       paidAt: now,
+      note: input.paymentNote || null,
     } satisfies Omit<Prisma.PaymentUncheckedCreateInput, "id" | "stripeSessionId">;
 
     await tx.payment.upsert({
@@ -138,6 +197,7 @@ export async function activatePaidCheckout(
         periodDays: input.periodDays,
         stripePaymentIntent: input.paymentIntentId || undefined,
         paidAt: now,
+        note: input.paymentNote || undefined,
       },
     });
 

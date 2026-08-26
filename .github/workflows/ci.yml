@@ -47,6 +47,9 @@ jobs:
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 
+      - name: Verify mid-trial conversion keeps the remaining trial days
+        run: npm run verify:preserve-trial-on-convert
+
       - name: Verify first-clip convert prompt
         run: npm run verify:first-clip-convert
 
