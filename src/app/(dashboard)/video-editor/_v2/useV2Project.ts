@@ -567,6 +567,9 @@ export function useV2Project() {
    *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
    *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
   const [managedKieOn, setManagedKieOn] = useState(false);
+  /** MANAGED_STOCK (#297): show the "bring your own stock key" nudge in Step 2.
+   *  Server-computed (flag + eligibility + first export done); false otherwise. */
+  const [managedStockKeyHint, setManagedStockKeyHint] = useState(false);
   const [voiceEngine, setVoiceEngine, setVoiceEngineRaw] = useUserDraftState<V2VoiceEngine>(
     parseTtsProvider(d.voiceEngine), "voiceEngine", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -1957,6 +1960,7 @@ export function useV2Project() {
       setIsPaidManagedKie(paid);
       setRecommendedAutoMixDefault(recommendedDefault);
       setManagedKieOn(!!m?.managedKieOn);
+      setManagedStockKeyHint(m?.managedStock?.brollKeyHint === true);
       // Defensive fallback for a legacy blank draft. Fresh projects already receive
       // this product default before their POST in ensureServerProject; existing
       // project choices are protected by accountDraftDefaultsAllowedRef.
@@ -2284,7 +2288,7 @@ export function useV2Project() {
     layerVisibility, setLayerVisibility,
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     brandContentPreflightId, setBrandContentPreflightId,
     saveStatus, retryProjectSave,

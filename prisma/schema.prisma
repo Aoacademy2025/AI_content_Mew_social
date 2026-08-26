@@ -1269,3 +1269,21 @@ model UsedTrialEmail {
   emailHash String   @unique // sha256(lowercase(trim(email)))
   createdAt DateTime @default(now())
 }
+
+// 24h stock-search cache (issue #297, ADR 0025). Required by Pixabay's ToS for the
+// managed team key, and the reason the Pexels hourly/monthly capacity math closes:
+// a repeated query inside the window costs no provider call at all.
+// Only SUCCESSFUL search responses are ever written here — an error response must
+// never be able to poison a whole day of searches for every trial/FREE account.
+// Purely additive, so `prisma db push` on deploy is safe.
+model StockSearchCache {
+  id          String   @id @default(cuid())
+  provider    String // pexels | pixabay
+  queryKey    String // normalized query + perPage + minDuration + page
+  resultsJson String // JSON array of provider hits, exactly as the search helper returns them
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  @@unique([provider, queryKey])
+  @@index([expiresAt])
+}
