@@ -21,11 +21,40 @@ const check = (name: string, cond: boolean, detail = "") => {
 
 // ── Dry run is the default in every mode ──
 check("A1: writing requires an explicit --apply", body.includes('argv.includes("--apply")'));
+
+// Guard PLACEMENT, not the mere presence of the word `apply`. Proven by injecting an
+// unconditional `prisma.payment.update` followed by `if (apply) console.log(...)`: the old
+// check reported ALL PASS, this one fails A3.1 with "no `if (apply)` before it". The first version of this check
+// looked for `apply` anywhere after the update call, so it passed on code that wrote
+// unconditionally and merely mentioned `apply` on the next line — it would have green-lit a
+// dry run that voided production rows. Each write must be preceded by an `if (apply)` with no
+// other statement in between.
+const writeSites = [...body.matchAll(/prisma\.payment\.update\(/g)].map((m) => m.index ?? 0);
+check("A2: the tool performs at least one write (otherwise this file proves nothing)", writeSites.length > 0);
+for (const [index, at] of writeSites.entries()) {
+  const before = body.slice(0, at);
+  const lastGuard = before.lastIndexOf("if (apply)");
+  const between = lastGuard >= 0 ? before.slice(lastGuard + "if (apply)".length) : "";
+  const guarded = lastGuard >= 0 && !/;/.test(between);
+  check(
+    `A3.${index + 1}: payment.update #${index + 1} is directly guarded by \`if (apply)\``,
+    guarded,
+    // Only explain a failure — a passing check should stay quiet.
+    guarded ? "" : lastGuard < 0 ? "no `if (apply)` before it" : `statements in between: ${between.trim().slice(0, 60)}`,
+  );
+}
+
+// ── Argument parsing must never fall through to the writing default ──
+check("A4: unrecognised arguments stop the run", body.includes("unrecognised argument"));
 check(
-  "A2: no write happens without it",
-  !/prisma\.payment\.update\((?![\s\S]{0,400}?apply)/.test(body) && body.split("prisma.payment.update").length - 1 === body.split("if (apply)").length - 1,
-  "every payment.update must sit behind `if (apply)`",
+  "A5: --flag-manual without a session id stops the run",
+  /flagManualIndex >= 0 && \(!flagManualSession/.test(body),
 );
+check(
+  "A6: a value that looks like a flag is not accepted as a session id",
+  body.includes('flagManualSession.startsWith("--")'),
+);
+check("A7: two modes at once are refused rather than silently half-run", body.includes("run them one at a time"));
 
 // ── Voiding is scoped to test-mode ids only ──
 check("B1: void targets only cs_test_ sessions", body.includes('startsWith: "cs_test_"'));
@@ -34,6 +63,10 @@ check("B3: void soft-voids, never deletes", body.includes('status: "VOIDED"') &&
 
 // ── Off-Stripe cash is flagged one row at a time, never inferred ──
 check("C1: manual flagging takes an explicit session id", body.includes("--flag-manual"));
+check(
+  "C1b: a Stripe-backed row is refused — flagging it would double-count the payment",
+  body.includes('row.stripeSessionId.startsWith("cs_")') && body.includes("row.stripePaymentIntent"),
+);
 check("C2: it refuses a row that is not PAID", body.includes('row.status !== "PAID"'));
 check("C3: it is a no-op on an already-flagged row", body.includes("row.manual"));
 check(

@@ -37,10 +37,39 @@ import { PrismaClient } from "@prisma/client";
 import Stripe from "stripe";
 
 const argv = process.argv.slice(2);
+
+/**
+ * Argument parsing is strict on purpose. The default branch of this tool WRITES — it repairs
+ * `Payment.amount` across every drifting row — so anything it fails to understand must stop
+ * the run rather than fall through to that default. A mistyped `--void-tests`, or a
+ * `--flag-manual` whose session id was forgotten, previously ran the amount backfill instead
+ * of the mode the operator asked for.
+ */
+const KNOWN_FLAGS = new Set(["--apply", "--void-test", "--flag-manual"]);
+
+function die(message: string): never {
+  console.error(`refusing to run: ${message}`);
+  process.exit(2);
+}
+
 const apply = argv.includes("--apply");
 const voidTest = argv.includes("--void-test");
 const flagManualIndex = argv.indexOf("--flag-manual");
 const flagManualSession = flagManualIndex >= 0 ? argv[flagManualIndex + 1] ?? null : null;
+
+for (let i = 0; i < argv.length; i += 1) {
+  const arg = argv[i];
+  // The value that follows --flag-manual is data, not a flag.
+  if (flagManualIndex >= 0 && i === flagManualIndex + 1) continue;
+  if (!KNOWN_FLAGS.has(arg)) die(`unrecognised argument "${arg}"`);
+}
+if (flagManualIndex >= 0 && (!flagManualSession || flagManualSession.startsWith("--"))) {
+  die("--flag-manual needs a Stripe session id (e.g. --flag-manual manual-ext-founder-xxxx)");
+}
+if (voidTest && flagManualIndex >= 0) {
+  die("--void-test and --flag-manual are separate repairs; run them one at a time");
+}
+
 const prisma = new PrismaClient();
 
 /** Soft-void test-mode rows. Scoped to `cs_test_` — a live session id can never match. */
@@ -66,12 +95,26 @@ async function voidTestModeRows() {
 async function flagManual(sessionId: string) {
   const row = await prisma.payment.findUnique({
     where: { stripeSessionId: sessionId },
-    select: { id: true, userId: true, amount: true, status: true, manual: true },
+    select: {
+      id: true, userId: true, amount: true, status: true, manual: true,
+      stripeSessionId: true, stripePaymentIntent: true,
+    },
   });
   if (!row) { console.log(`no Payment row with stripeSessionId=${sessionId}`); return; }
   const user = await prisma.user.findUnique({ where: { id: row.userId }, select: { email: true } });
   if (row.manual) { console.log(`already flagged manual: ${user?.email} ${row.amount / 100}฿`); return; }
   if (row.status !== "PAID") { console.log(`refusing: status is ${row.status}, not PAID`); return; }
+  // `manual: true` means "cash that arrived OUTSIDE Stripe". revenue-cash.server.ts adds the
+  // manual sum to Stripe's own charge ledger, so flagging a Stripe-backed row would count the
+  // same money twice, permanently and invisibly. It would also hide the row from the amount
+  // repair for ever (`if (row.manual) continue`), pinning any pre-2026-08-07 list price in
+  // place. Genuine off-Stripe rows are hand-made and never carry a Stripe id.
+  if (row.stripeSessionId.startsWith("cs_") || row.stripePaymentIntent) {
+    console.log(
+      `refusing: ${sessionId} is backed by Stripe — flagging it manual would double-count that payment`,
+    );
+    return;
+  }
   console.log(`  ${apply ? "→" : "·"} ${user?.email} ${row.amount / 100}฿ → manual: true (counts as off-Stripe cash)`);
   if (apply) await prisma.payment.update({ where: { id: row.id }, data: { manual: true } });
   console.log(apply ? "APPLIED." : "DRY RUN — no writes.");
