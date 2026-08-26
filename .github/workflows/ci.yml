@@ -105,6 +105,9 @@ jobs:
       - name: Verify plan preflight refuses before a render job exists
         run: npm run verify:render-plan-preflight
 
+      - name: Verify Thai proper names do not deadlock the Content Preflight
+        run: npm run verify:content-preflight-thai-name
+
       - name: Verify ERROR_SYSTEM capacity skip and rate-limit
         run: npm run verify:admin-error-notify
 

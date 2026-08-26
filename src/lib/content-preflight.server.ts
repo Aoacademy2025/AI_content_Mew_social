@@ -159,30 +159,54 @@ const analysisSchema = z.object({
     }
   });
   analysis.beats.forEach((beat, beatIndex) => {
-    const renderingFields = [
-      beat.subject,
-      beat.action,
-      beat.setting,
-      beat.emotion,
-      beat.emphasis,
-      beat.sceneIntensity,
-      ...beat.hardSceneFacts.entityTypes,
-      ...beat.hardSceneFacts.ages,
-      ...beat.hardSceneFacts.genders,
-      ...beat.hardSceneFacts.actions,
-      ...beat.hardSceneFacts.locationTypes,
-      beat.hardSceneFacts.timeOfDay ?? "",
-      beat.hardSceneFacts.historicalPeriod ?? "",
-      ...beat.hardSceneFacts.essentialObjects,
-    ]
-      .join(" ")
-      .toLocaleLowerCase();
+    // Checked field by field, not over one joined string (#353). The joined form reported
+    // EVERY hit at `subject`, so a name left in `setting` sent the model back to rewrite
+    // `subject` — it "fixed" a clean field, the real one kept the name, and all three
+    // self-correction attempts failed on the same beat. Per-field paths also stop a
+    // two-word name from matching across a field boundary that the join invented.
+    const renderingFields: Array<{ path: Array<string | number>; text: string }> = [
+      { path: ["subject"], text: beat.subject },
+      { path: ["action"], text: beat.action },
+      { path: ["setting"], text: beat.setting },
+      { path: ["emotion"], text: beat.emotion },
+      { path: ["emphasis"], text: beat.emphasis },
+      { path: ["sceneIntensity"], text: beat.sceneIntensity },
+      ...beat.hardSceneFacts.entityTypes.map((text, index) => ({ path: ["hardSceneFacts", "entityTypes", index], text })),
+      ...beat.hardSceneFacts.ages.map((text, index) => ({ path: ["hardSceneFacts", "ages", index], text })),
+      ...beat.hardSceneFacts.genders.map((text, index) => ({ path: ["hardSceneFacts", "genders", index], text })),
+      ...beat.hardSceneFacts.actions.map((text, index) => ({ path: ["hardSceneFacts", "actions", index], text })),
+      ...beat.hardSceneFacts.locationTypes.map((text, index) => ({ path: ["hardSceneFacts", "locationTypes", index], text })),
+      { path: ["hardSceneFacts", "timeOfDay"], text: beat.hardSceneFacts.timeOfDay ?? "" },
+      { path: ["hardSceneFacts", "historicalPeriod"], text: beat.hardSceneFacts.historicalPeriod ?? "" },
+      ...beat.hardSceneFacts.essentialObjects.map((text, index) => ({ path: ["hardSceneFacts", "essentialObjects", index], text })),
+    ];
+    const joinedRenderingFields = renderingFields.map((field) => field.text).join(" ").toLocaleLowerCase();
     analysis.storyEntities.forEach((entity) => {
-      if (renderingFields.includes(entity.properName.toLocaleLowerCase())) {
+      const properName = entity.properName.toLocaleLowerCase();
+      if (!properName) return;
+      let reportedField = false;
+      renderingFields.forEach((field) => {
+        if (!field.text.toLocaleLowerCase().includes(properName)) return;
+        reportedField = true;
+        context.addIssue({
+          code: "custom",
+          path: ["beats", beatIndex, ...field.path],
+          // Naming the offending value is what makes the correction prompt actionable —
+          // the model cannot remove a name it was never told. Telemetry records only the
+          // path and code, so the script's own text stays out of the diagnostic string.
+          message: `Provider-facing beat field must use the Entity Rendering Description "${entity.renderingDescription}", not the proper name "${entity.properName}"`,
+        });
+      });
+      // Safety net, deliberately kept: a multi-word name can straddle two fields
+      // ("…the founder Sam" + "Lee explains…") so that no single field contains it while
+      // the provider still receives the whole name. Dropping this when the checks moved
+      // per-field would have quietly loosened the policy, so the joined form still
+      // refuses — reported at `subject`, exactly where it was reported before.
+      if (!reportedField && joinedRenderingFields.includes(properName)) {
         context.addIssue({
           code: "custom",
           path: ["beats", beatIndex, "subject"],
-          message: "Provider-facing beat fields must use the Entity Rendering Description, not a proper name",
+          message: `Provider-facing beat fields must not spell out the proper name "${entity.properName}" across adjacent fields`,
         });
       }
     });
@@ -357,14 +381,43 @@ function escapedRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Replace a proper name only as a complete token/phrase. A name such as
- * `Sam` must not mutate ordinary words such as `same`. */
+/** Replace a proper name, preferring a complete token/phrase so a name such as `Sam`
+ * does not mutate ordinary words such as `same`.
+ *
+ * The token pass alone is not enough (#353). Validation rejects a provider-facing field
+ * on a BARE SUBSTRING match (`renderingFields.includes(properName)`), with no
+ * word-boundary requirement — and Thai is written without spaces between words, so a Thai
+ * proper name sitting inside Thai prose never has a non-letter neighbour. The token pass
+ * was therefore a guaranteed no-op on exactly the text validation was about to refuse:
+ * repair changed nothing, all three self-correction attempts failed identically, and the
+ * job died with CONTENT_PREFLIGHT_INVALID_ANALYSIS. That was 46 of 57 analyzer failures in
+ * prod, landing mostly on first-time users writing an ordinary Thai script.
+ *
+ * So the invariant is: whatever validation rejects, repair must be able to clear. The
+ * token pass runs first and, whenever it succeeds, behaviour is byte-for-byte what it was.
+ * Only when the name still survives as a substring — the case validation will refuse —
+ * does this fall through to validation's own definition. That can catch a name embedded in
+ * a longer word, but the alternative for that same input today is a failed job. */
 function replaceProperName(value: string, properName: string, replacement: string): string {
-  const escaped = escapedRegExp(properName.trim());
+  const trimmed = properName.trim();
+  const escaped = escapedRegExp(trimmed);
   if (!escaped) return value;
-  return value.replace(
+  const tokenReplaced = value.replace(
     new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "giu"),
     (_match, prefix: string) => `${prefix}${replacement}`,
+  );
+  if (!tokenReplaced.toLocaleLowerCase().includes(trimmed.toLocaleLowerCase())) return tokenReplaced;
+  // Pad when the name was glued between letters, which is the normal shape in Thai. Without
+  // it the replacement fuses into its neighbours ("…ของa middle-aged manสตูดิโอ") and the
+  // image provider receives one unreadable token instead of a phrase. tidyRepairedDescription
+  // collapses any doubled spacing afterwards.
+  return tokenReplaced.replace(
+    new RegExp(`(.?)${escaped}(.?)`, "giu"),
+    (_match, before: string, after: string) => {
+      const padBefore = before && /[\p{L}\p{N}]/u.test(before) && replacement ? " " : "";
+      const padAfter = after && /[\p{L}\p{N}]/u.test(after) && replacement ? " " : "";
+      return `${before}${padBefore}${replacement}${padAfter}${after}`;
+    },
   );
 }
 
