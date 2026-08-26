@@ -105,6 +105,9 @@ jobs:
       - name: Verify the Founding claim matches what customers are charged
         run: npm run verify:founding-copy-truth
 
+      - name: Verify the Payment-ledger repair tool cannot write by accident
+        run: npm run verify:payment-ledger-repair
+
       - name: Verify monthly to annual switch for ordinary subscribers
         run: npm run verify:standard-annual-switch
 

@@ -11,18 +11,76 @@
  * history — so nothing user-visible moves. What this fixes is the coupon report and any
  * future reader that trusts the column.
  *
- * DRY RUN by default. Pass --apply to write.
+ * Two more repairs live here because they are the same concern — making the Payment ledger
+ * state what actually happened:
+ *
+ *   --void-test    Soft-void PAID rows whose Stripe session id starts with `cs_test_`.
+ *                  Prod carries eight of them on the internal info.aoacademy account from
+ *                  2026-05-26: test-mode money that was never collected, yet counted as a
+ *                  paying customer (revenue-cohorts treats ANY PAID row as "has paid cash",
+ *                  which is why the all-time payer count reads 24 = 23 real + 1 internal).
+ *                  VOIDED keeps the audit row and drops it from the PAID cohorts.
+ *
+ *   --flag-manual <session-id>   Mark ONE hand-made row as an off-Stripe receipt. This is
+ *                  deliberately one id at a time: `manual: true` feeds real cash into
+ *                  revenue-cash.server.ts, so each row has to be a payment someone confirms
+ *                  actually arrived. Never inferred, never bulk-applied.
+ *
+ * DRY RUN by default; every mode needs --apply to write.
  *
  *   npx tsx scripts/backfill-payment-amount-from-stripe.ts
  *   npx tsx scripts/backfill-payment-amount-from-stripe.ts --apply
+ *   npx tsx scripts/backfill-payment-amount-from-stripe.ts --void-test --apply
+ *   npx tsx scripts/backfill-payment-amount-from-stripe.ts --flag-manual manual-ext-fou… --apply
  */
 import { PrismaClient } from "@prisma/client";
 import Stripe from "stripe";
 
-const apply = process.argv.includes("--apply");
+const argv = process.argv.slice(2);
+const apply = argv.includes("--apply");
+const voidTest = argv.includes("--void-test");
+const flagManualIndex = argv.indexOf("--flag-manual");
+const flagManualSession = flagManualIndex >= 0 ? argv[flagManualIndex + 1] ?? null : null;
 const prisma = new PrismaClient();
 
+/** Soft-void test-mode rows. Scoped to `cs_test_` — a live session id can never match. */
+async function voidTestModeRows() {
+  const rows = await prisma.payment.findMany({
+    where: { status: "PAID", stripeSessionId: { startsWith: "cs_test_" } },
+    select: { id: true, userId: true, amount: true, stripeSessionId: true, createdAt: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (rows.length === 0) { console.log("no test-mode PAID rows"); return; }
+  let total = 0;
+  for (const row of rows) {
+    const user = await prisma.user.findUnique({ where: { id: row.userId }, select: { email: true } });
+    total += row.amount;
+    console.log(`  ${apply ? "→" : "·"} ${user?.email} ${row.createdAt.toISOString().slice(0, 10)} ${row.amount / 100}฿ ${row.stripeSessionId.slice(0, 14)}`);
+    if (apply) await prisma.payment.update({ where: { id: row.id }, data: { status: "VOIDED" } });
+  }
+  console.log(`\n${rows.length} test-mode row(s), ${total / 100}฿ of money that never arrived.`);
+  console.log(apply ? "APPLIED: voided." : "DRY RUN — no writes.");
+}
+
+/** Flag ONE hand-made row as off-Stripe cash. */
+async function flagManual(sessionId: string) {
+  const row = await prisma.payment.findUnique({
+    where: { stripeSessionId: sessionId },
+    select: { id: true, userId: true, amount: true, status: true, manual: true },
+  });
+  if (!row) { console.log(`no Payment row with stripeSessionId=${sessionId}`); return; }
+  const user = await prisma.user.findUnique({ where: { id: row.userId }, select: { email: true } });
+  if (row.manual) { console.log(`already flagged manual: ${user?.email} ${row.amount / 100}฿`); return; }
+  if (row.status !== "PAID") { console.log(`refusing: status is ${row.status}, not PAID`); return; }
+  console.log(`  ${apply ? "→" : "·"} ${user?.email} ${row.amount / 100}฿ → manual: true (counts as off-Stripe cash)`);
+  if (apply) await prisma.payment.update({ where: { id: row.id }, data: { manual: true } });
+  console.log(apply ? "APPLIED." : "DRY RUN — no writes.");
+}
+
 async function main() {
+  if (voidTest) return voidTestModeRows();
+  if (flagManualSession) return flagManual(flagManualSession);
+
   const cfg = await prisma.siteConfig.findFirst({ where: { key: "stripe_secret_key" } });
   if (!cfg?.value) throw new Error("stripe_secret_key missing from SiteConfig");
   const stripe = new Stripe(cfg.value);
