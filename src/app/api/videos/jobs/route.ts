@@ -57,6 +57,7 @@ import {
   isInternalAiTester,
 } from "@/lib/internal-ai-access";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
+import { QUOTA_EXCEEDED_CODE, quotaUpgradeUserAction } from "@/lib/quota-error";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
@@ -122,6 +123,11 @@ const AVATAR_MODES = new Set(["none", "full", "bookend", "bookend-both"]);
 // mitigation for stale clients is the legacy attempt-key rotation below (a terminal attempt
 // never pins the tab to a dead job), not this payload.
 const LEGACY_CLIENT_WARNING = "หน้าเว็บนี้เป็นเวอร์ชันเก่า งานถูกส่งแล้ว กรุณารีเฟรชหน้าก่อนสั่งงานครั้งถัดไป";
+
+/** Read at call time, not module load — a pm2 restart with --update-env must take effect. */
+function creditsLiveNow(): boolean {
+  return process.env.CREDITS_LIVE === "1";
+}
 
 function str(v: unknown, max: number): string | undefined {
   return typeof v === "string" && v.trim() && v.length <= max ? v : undefined;
@@ -634,7 +640,19 @@ export async function POST(req: Request) {
     // fund more <=2-minute renders.
     if (process.env.MINUTE_QUOTA !== "1") {
       const q = await checkClipQuota(user.id);
-      if (q && !q.allowed) return NextResponse.json({ error: "quota_exceeded", message: q.message }, { status: 403 });
+      if (q && !q.allowed) {
+        // Same envelope fields the render route sends (message + userAction + canBuyCredits),
+        // so the editor's quota parser shows one upgrade path regardless of which route refused.
+        return NextResponse.json(
+          {
+            error: QUOTA_EXCEEDED_CODE,
+            message: q.message,
+            userAction: quotaUpgradeUserAction(false),
+            canBuyCredits: false,
+          },
+          { status: 403 },
+        );
+      }
     }
     const inflight = await prisma.videoJob.count({ where: { userId: user.id, status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] } } });
     if (inflight >= 3) return NextResponse.json({ error: "too_many_jobs", message: "มีงานค้างอยู่หลายชิ้นแล้ว — รอให้เสร็จก่อนค่อยสั่งใหม่" }, { status: 429 });
@@ -952,10 +970,11 @@ export async function POST(req: Request) {
     if (err instanceof VideoJobFundingError) {
       return NextResponse.json(
         {
-          error: "quota_exceeded",
+          error: QUOTA_EXCEEDED_CODE,
           message: err.message,
+          userAction: quotaUpgradeUserAction(creditsLiveNow()),
           remainingMinutes: err.remainingMinutes,
-          canBuyCredits: process.env.CREDITS_LIVE === "1",
+          canBuyCredits: creditsLiveNow(),
         },
         { status: 403 },
       );

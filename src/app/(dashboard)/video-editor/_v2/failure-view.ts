@@ -11,6 +11,7 @@ export type FailureKind =
   | "heygen-quota"
   | "provider-key"
   | "provider-quota"
+  | "plan-quota"
   | "content-preflight"
   | "script-narrative-mismatch"
   | "hero-image-transient"
@@ -43,6 +44,11 @@ export function classifyFailure(job: FailureJobLike): FailureKind {
   ) return "heygen-quota";
   if (job.errorCode === "invalid_key") return "provider-key";
   if (job.errorCode === "quota") return "provider-quota";
+  // The Hero plan's OWN minute/clip quota, not a third party's. Reaches a failed job when
+  // /api/videos/render refuses mid-pipeline (a concurrent render drained the window after
+  // this job was accepted); pipelineFailureDetails carries the envelope's `code` through
+  // to VideoJob.errorCode verbatim.
+  if (job.errorCode === "quota_exceeded") return "plan-quota";
   if (
     job.errorCode === "CONTENT_PREFLIGHT_NARRATIVE_MISMATCH"
     || NARRATIVE_MISMATCH_MARKER.test(job.errorMessage ?? "")
@@ -139,6 +145,12 @@ export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMo
     return {
       heading: job.currentStep === "tts" ? "โควต้าเสียงพากย์ไม่เพียงพอ" : `โควต้าของ ${provider} ไม่เพียงพอ`,
       body: `เติมโควต้าในบัญชี ${provider} แล้วลองใหม่ หรือเลือกตัวเลือกอื่นในหน้าตั้งค่า`,
+    };
+  }
+  if (kind === "plan-quota") {
+    return {
+      heading: "โควต้าเรนเดอร์ของแพ็กเกจใช้ครบแล้ว",
+      body: "รอบนี้ใช้โควต้าของแพ็กเกจครบแล้ว ระบบจึงหยุดงานไว้ก่อน โปรเจกต์ยังอยู่ครบ — อัปเกรดแพ็กเกจหรือเติมเครดิต แล้วกลับมาเรนเดอร์ใหม่ได้",
     };
   }
   if (kind === "content-preflight") {

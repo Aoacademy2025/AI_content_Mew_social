@@ -37,6 +37,14 @@ import {
 import { useV2Project, type V2VoiceEngine } from "./useV2Project";
 import { useV2Job, type SubmitResult, type V2JobState } from "./useV2Job";
 import { ApiKeyModal, type RequiredKeyType } from "@/components/ui/api-key-modal";
+import { UpgradeModal } from "@/components/ui/upgrade-modal";
+import { trackEvent } from "@/lib/client-telemetry";
+import {
+  QUOTA_BUY_CREDITS_HREF,
+  QUOTA_PRICING_HREF,
+  quotaExceededText,
+  type QuotaExceededInfo,
+} from "@/lib/quota-error";
 import { Step1Script } from "./Step1Script";
 import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
@@ -108,6 +116,10 @@ export function EditorV2Shell() {
   // later switches engines — ApiKeyModal is the wrong surface either way (nothing to
   // paste a key into), so this reuses the heygenQuotaAlert AlertDialog shape instead.
   const [missingVoiceIdAlert, setMissingVoiceIdAlert] = useState<{ message: string; retry: RetryAction; engine: V2VoiceEngine } | null>(null);
+  // Plan quota ran out (issue #298). The submit response used to fall through to a toast
+  // that stringified the error envelope — this holds the parsed facts so the modal can
+  // show the Thai reason plus the route out (upgrade, and top-up when credits are live).
+  const [quotaModal, setQuotaModal] = useState<QuotaExceededInfo | null>(null);
   // "ใช้เสียง Gemini แทน" switches voiceEngine (React state, applies next render) then
   // must resubmit — this ref+effect defers the resubmit until p.voiceEngine actually
   // reflects "gemini", since calling submit() synchronously would still close over the
@@ -194,6 +206,20 @@ export function EditorV2Shell() {
       // Capture the engine NOW, off the request that just failed — not later via
       // p.voiceEngine at render time, which the Gemini-switch escape hatch mutates.
       setMissingVoiceIdAlert({ message: result.message ?? "ต้องระบุ Voice ID", retry, engine: p.voiceEngine });
+      return;
+    }
+    if (result.quota) {
+      trackEvent("quota_hit", {
+        category: "product",
+        status: "info",
+        properties: {
+          kind: "minutes",
+          plan: p.plan ?? null,
+          onTrial: p.isActiveTrial,
+          canBuyCredits: result.quota.canBuyCredits,
+        },
+      });
+      setQuotaModal(result.quota);
       return;
     }
     toast.error(result.message ?? "ส่งงานไม่สำเร็จ");
@@ -719,6 +745,8 @@ export function EditorV2Shell() {
         <FailedView
           job={job}
           exportMode={job.jobType === "export"}
+          plan={p.plan ?? null}
+          onTrial={p.isActiveTrial}
           onSwitchFaceless={() => {
             p.setUseAvatar(false);
             reset();
@@ -826,6 +854,21 @@ export function EditorV2Shell() {
           } : {})}
         />
       )}
+
+      <UpgradeModal
+        open={!!quotaModal}
+        onClose={() => setQuotaModal(null)}
+        title="โควต้าเรนเดอร์รอบนี้ใช้ครบแล้ว"
+        message={quotaModal
+          ? quotaExceededText(quotaModal, "โควต้าเรนเดอร์รอบนี้ใช้ครบแล้ว — อัปเกรดแพ็กเกจเพื่อสร้างคลิปต่อ")
+          : undefined}
+        minuteQuota
+        ctaLabel="ดูแผนราคา — อัปเกรดเลย"
+        pricingHref={QUOTA_PRICING_HREF}
+        secondaryCta={quotaModal?.canBuyCredits
+          ? { label: "เติมเครดิต", href: QUOTA_BUY_CREDITS_HREF }
+          : undefined}
+      />
 
       <AlertDialog
         open={!!deleteProject && !editorBlocked}
@@ -943,9 +986,11 @@ function SaveStatus({ status, onRetry }: {
   return <span>บันทึกอัตโนมัติ</span>;
 }
 
-function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
+function FailedView({ job, exportMode = false, plan, onTrial, onBack, onSwitchFaceless }: {
   job: V2JobState;
   exportMode?: boolean;
+  plan: string | null;
+  onTrial: boolean;
   onBack: () => void;
   onSwitchFaceless: () => void;
 }) {
@@ -959,7 +1004,23 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
   const isProviderQuota = kind === "provider-quota";
   const isHeygenKey = isProviderKey && job.errorProvider === "heygen";
   const isInsufficientCredits = kind === "insufficient-credits";
+  const isPlanQuota = kind === "plan-quota";
   const { heading, body } = failureViewCopy(kind, job, exportMode);
+  // Same funnel event as the submit-time refusal, so both quota dead-ends land in one
+  // series. Keyed on the job id so a re-render of this screen can't inflate the count.
+  const quotaTrackedJobRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isPlanQuota) return;
+    const key = job.jobId ?? "unknown";
+    if (quotaTrackedJobRef.current === key) return;
+    quotaTrackedJobRef.current = key;
+    trackEvent("quota_hit", {
+      category: "product",
+      status: "info",
+      step: "failed-job",
+      properties: { kind: "minutes", plan, onTrial, canBuyCredits: CREDITS_LIVE_CLIENT },
+    });
+  }, [isPlanQuota, job.jobId, plan, onTrial]);
   return (
     <main className="flex flex-1 items-center justify-center p-6">
       <div className="flex max-w-[560px] flex-col items-center gap-4 text-center">
@@ -985,6 +1046,18 @@ function FailedView({ job, exportMode = false, onBack, onSwitchFaceless }: {
             {isHeygenKey
               ? <BtnPrimary onClick={onSwitchFaceless}>ปิด Avatar แล้วลองใหม่</BtnPrimary>
               : <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปลองส่งออกใหม่" : "กลับไปตั้งค่า"}</BtnPrimary>}
+          </div>
+        ) : isPlanQuota ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            {CREDITS_LIVE_CLIENT && (
+              <Link href={QUOTA_BUY_CREDITS_HREF}>
+                <BtnSecondary>เติมเครดิต</BtnSecondary>
+              </Link>
+            )}
+            <Link href={QUOTA_PRICING_HREF}>
+              <BtnSecondary>ดูแผนราคา</BtnSecondary>
+            </Link>
+            <BtnPrimary onClick={onBack}>{exportMode ? "กลับไปแก้ซับ แล้วลองส่งออกใหม่" : "กลับไปตั้งค่า แล้วลองใหม่"}</BtnPrimary>
           </div>
         ) : isInsufficientCredits ? (
           <div className="flex flex-wrap items-center justify-center gap-3">
