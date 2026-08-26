@@ -79,6 +79,7 @@ import {
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
 import { ensureFirstClipProjectSpine, resolveFirstClipPath } from "@/lib/first-clip-path.server";
+import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
 // Creates a VideoJob in PREVIEW MODE: the shared orchestrator runs the full generation
@@ -587,8 +588,20 @@ export async function POST(req: Request) {
       if (e instanceof KeyRequiredError) return NextResponse.json({ error: "missing_key", missingKey: "gemini", message: "ต้องใส่ Gemini API key ก่อน (Settings → API Keys)" }, { status: 400 });
       throw e;
     }
+    // Managed stock key (#297, ADR 0025) — flag-gated exception to the BYOK gate.
+    // MANAGED_STOCK unset/0 → resolveManagedStockAccess short-circuits to
+    // { eligible: false } with ZERO extra DB work, so this block is the pre-#297
+    // 400 exactly. Flag on → a trial/FREE account with no stock key of its own
+    // searches on the team key instead of being stopped here; own key always wins,
+    // and paid-equivalent accounts keep today's 400 (see decideManagedStockEligibility).
     if (requestedSource !== "kie-image" && !user.pexelsKey && !user.pixabayKey) {
-      return NextResponse.json({ error: "missing_key", missingKey: "broll", message: "ต้องใส่ Pexels หรือ Pixabay key อย่างน้อย 1 ตัวสำหรับ B-roll" }, { status: 400 });
+      const managedStock = await resolveManagedStockAccess(user, {
+        hasOwnPexelsKey: false,
+        hasOwnPixabayKey: false,
+      });
+      if (!managedStock.eligible) {
+        return NextResponse.json({ error: "missing_key", missingKey: "broll", message: "ต้องใส่ Pexels หรือ Pixabay key อย่างน้อย 1 ตัวสำหรับ B-roll" }, { status: 400 });
+      }
     }
 
     // ElevenLabs VALIDITY preflight (Task 7, 2026-07-16 stability audit) — see the
@@ -825,7 +838,12 @@ export async function POST(req: Request) {
     // late stock-stage failure, while a valid backup still lets the job proceed.
     const stockVideoMayBeUsed = stockVideoProvidersMayBeUsed({ stockSource: requestedSource, autoMixProviders });
     let stockProviders: StockProvider[] | undefined;
-    const stockPreflightPromise = stockVideoMayBeUsed
+    // Only the caller's OWN keys are preflighted. On the managed path there is
+    // nothing of the user's to validate, and publishing the resulting EMPTY
+    // `stockProviders` allowlist downstream would disable both providers in
+    // fetch-stock. Flag off this condition is unreachable (the 400 above fires
+    // first), so BYOK behaviour is unchanged.
+    const stockPreflightPromise = stockVideoMayBeUsed && (user.pexelsKey || user.pixabayKey)
       ? preflightStockProviders({
           pexelsKey: user.pexelsKey ? decryptKey(user.pexelsKey) : null,
           pixabayKey: user.pixabayKey ? decryptKey(user.pixabayKey) : null,

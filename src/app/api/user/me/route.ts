@@ -14,6 +14,7 @@ import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowan
 import { shouldDefaultToRecommendedAutoMix } from "@/lib/automix-plan";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
 import { resolveFirstClipPath } from "@/lib/first-clip-path.server";
+import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
 
 export async function GET() {
   try {
@@ -70,13 +71,19 @@ export async function GET() {
     // Public-launch eligibility (Task 5 consumes this for the editor's Hero AI
     // Image UI): beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS (active
     // trial included — see isHeroAiImageEligible's doc comment for why).
-    const [paidEquivalent, heroAiImageAccess, heroScriptAccess, brandVisualAccess, starterAllowance, firstClipPath] = await Promise.all([
+    const [paidEquivalent, heroAiImageAccess, heroScriptAccess, brandVisualAccess, starterAllowance, firstClipPath, managedStockAccess] = await Promise.all([
       resolvePaidEquivalentEntitlement(authUser.id),
       resolveHeroAiImageAccess(authUser),
       resolveHeroScriptAccess(authUser),
       resolveBrandVisualAccess(authUser),
       getStarterAiImageAllowanceStatus(authUser.id),
       resolveFirstClipPath({ id: authUser.id, email: authUser.email, role: authUser.role }),
+      // Managed stock B-roll (#297, ADR 0025). Flag off → { eligible: false } with
+      // no extra query, and the `managedStock` field below is omitted entirely.
+      resolveManagedStockAccess(authUser, {
+        hasOwnPexelsKey: Boolean(authUser.pexelsKey),
+        hasOwnPixabayKey: Boolean(authUser.pixabayKey),
+      }),
     ]);
     const heroAiImageEligible = heroAiImageAccess.canUse;
     // Recovery and exact rerender remain available for already-pinned projects
@@ -117,6 +124,17 @@ export async function GET() {
       heroAiBeta,
       heroAiImageEligible,
       firstClipPath: firstClipPath.onPath,
+      // UX (c) — the Step-2 nudge to bring your own key is only shown AFTER the
+      // first completed export, which is exactly the First-Clip Path's
+      // "has_completed_video" exit reason. Omitted when the flag is off.
+      ...(managedStockAccess.eligible
+        ? {
+            managedStock: {
+              active: true,
+              brollKeyHint: firstClipPath.reason === "has_completed_video",
+            },
+          }
+        : {}),
       heroScriptAllowed: heroScriptAccess.canUse,
       heroScriptPreview: heroScriptAccess.canPreview,
       heroScriptCohort: heroScriptAccess.cohort,

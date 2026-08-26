@@ -2154,6 +2154,18 @@ async function runExactReplayRouteScenario(input: {
         ensureFirstClipProjectSpine: async () => ({ profileId: "p", revisionId: "r" }),
       };
     }
+    if (specifier === "@/lib/managed-stock.server") {
+      // MANAGED_STOCK off is the default posture this harness replays: the route
+      // must still answer a keyless caller with `missing_key: broll`.
+      return {
+        resolveManagedStockAccess: async () => ({
+          eligible: false,
+          reason: "flag_off",
+          pexelsKey: null,
+          pixabayKey: null,
+        }),
+      };
+    }
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
   };
