@@ -58,21 +58,17 @@ export async function PUT(request: Request): Promise<NextResponse> {
       return presetErrorResponse(new EditorStylePresetError("invalid_kind", 400));
     }
 
+    const common = {
+      userId: user.id,
+      plan: user.plan,
+      name: body.name,
+      config: body.config,
+    };
     const preset = body.kind === "subtitle"
-      ? await saveEditorStylePreset({
-          userId: user.id,
-          plan: user.plan,
-          kind: "subtitle",
-          name: body.name,
-          config: body.config,
-        })
-      : await saveEditorStylePreset({
-          userId: user.id,
-          plan: user.plan,
-          kind: "logo",
-          name: body.name,
-          config: body.config,
-        });
+      ? await saveEditorStylePreset({ ...common, kind: "subtitle" })
+      : body.kind === "headline"
+        ? await saveEditorStylePreset({ ...common, kind: "headline" })
+        : await saveEditorStylePreset({ ...common, kind: "logo" });
     return NextResponse.json({ preset });
   } catch (error) {
     if (error instanceof EditorStylePresetError) {
