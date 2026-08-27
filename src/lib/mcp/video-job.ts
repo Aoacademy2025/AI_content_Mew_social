@@ -15,7 +15,7 @@ import {
   serializeHeroVoiceProviderCheckpoint,
   type HeroVoiceProviderCheckpointV1,
 } from "@/lib/mcp/hero-voice-provider-checkpoint";
-import type { SubtitleQualityReport } from "@/lib/mcp/subtitle-quality";
+import type { SubtitleQualityReport, SubtitleTimingSource } from "@/lib/mcp/subtitle-quality";
 import type { VideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import {
@@ -360,12 +360,21 @@ export interface VideoJobPreviewData {
   fullText?: string;
 }
 
+export interface SubtitleAuditEvidence {
+  captions: VideoJobPreviewData["captions"];
+  words: NonNullable<VideoJobPreviewData["words"]>;
+  fullText: string;
+  audioDurationMs: number;
+  timingSource: SubtitleTimingSource;
+}
+
 export interface ParsedVideoJobOutput {
   version: 1 | 2;
   videoUrl?: string;
   videoId?: string;
   sourceJobId?: string;
   subtitleQa?: SubtitleQualityReport;
+  subtitleEvidence?: SubtitleAuditEvidence;
   billingReceipt?: VideoJobBillingReceipt;
   /** present only on v2 preview jobs */
   preview?: VideoJobPreviewData | null;
@@ -389,6 +398,9 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
     const billingReceipt = typeof raw.billingReceipt === "object" && raw.billingReceipt !== null
       ? raw.billingReceipt as unknown as VideoJobBillingReceipt
       : null;
+    const subtitleEvidence = typeof raw.subtitleEvidence === "object" && raw.subtitleEvidence !== null
+      ? raw.subtitleEvidence as unknown as SubtitleAuditEvidence
+      : null;
     const editSnapshot = parseEditorExportSnapshot(raw.editSnapshot);
     return {
       version,
@@ -396,6 +408,7 @@ export function parseVideoJobOutput(outputJson: string | null): ParsedVideoJobOu
       videoId: typeof raw.videoId === "string" ? raw.videoId : undefined,
       sourceJobId: typeof raw.sourceJobId === "string" ? raw.sourceJobId : undefined,
       ...(subtitleQa ? { subtitleQa } : {}),
+      ...(subtitleEvidence ? { subtitleEvidence } : {}),
       ...(billingReceipt ? { billingReceipt } : {}),
       ...(preview ? { preview } : {}),
       ...(editSnapshot ? { editSnapshot } : {}),

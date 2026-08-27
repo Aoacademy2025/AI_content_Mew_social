@@ -367,6 +367,7 @@ const legacyBase = reconstructCutawayPersonRanges({
   assert(timeline.assets[0]?.clipOffset === 0, "first presenter filler starts at matching media offset");
   assert(timeline.assets[1]?.videoUrl === "/ai-0.png", "first visible cutaway keeps its first AI image");
   assert(timeline.assets[2]?.clipOffset === 8, "later presenter filler stays aligned to source time");
+  assert(timeline.assets[2]?.timelineAligned === true, "presenter filler carries timeline-alignment semantics into config");
   assert(timeline.assets[3]?.videoUrl === "/ai-1.png", "second visible cutaway keeps its second AI image");
 
   const coverage = assignBrollWindows(
@@ -378,6 +379,7 @@ const legacyBase = reconstructCutawayPersonRanges({
       sourceIndex: asset.sourceIndex,
       clipOffset: Number(asset.clipOffset ?? 0),
       clipDuration: Number(asset.duration ?? 8),
+      timelineAligned: asset.timelineAligned === true,
     })),
     16,
     30,

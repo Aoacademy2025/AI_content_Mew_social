@@ -12,9 +12,13 @@ import {
   type ChunkResult,
 } from "../src/lib/transcribe-timeline";
 
-function result(endMs: number): ChunkResult {
+function result(endMs: number, wordCount = 0): ChunkResult {
   return {
-    words: [],
+    words: Array.from({ length: wordCount }, (_, index) => ({
+      word: `คำ${index + 1}`,
+      start: (index * endMs) / wordCount / 1_000,
+      end: ((index + 1) * endMs) / wordCount / 1_000,
+    })),
     segments: [{ text: "ทดสอบ", start: 0, end: endMs / 1000 }],
     geminiDirectCaptions: [{
       text: "ทดสอบ",
@@ -40,6 +44,19 @@ async function main() {
   assert.equal(calls, 2, "incomplete 180.11s transcript is retried once");
   assert.equal(recovered.accepted, true, "second in-sync response is accepted");
   assert.equal(recovered.result.geminiDirectCaptions.at(-1)?.endMs, 179_900);
+
+  const wordResponses = [result(60_000, 1), result(60_000, 4)];
+  calls = 0;
+  const wordRecovered = await runTranscriptionQualityRetries(
+    async () => wordResponses[calls++],
+    60_000,
+    3,
+    undefined,
+    { requireUsableWords: true },
+  );
+  assert.equal(calls, 2, "a tail-aligned response with degenerate words is retried");
+  assert.equal(wordRecovered.accepted, true, "a later response with acoustic word coverage is accepted");
+  assert.equal(wordRecovered.result.words.length, 4, "the accepted result keeps the complete word timeline");
 
   calls = 0;
   const exhausted = await runTranscriptionQualityRetries(

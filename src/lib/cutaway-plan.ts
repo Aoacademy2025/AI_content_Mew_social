@@ -22,6 +22,7 @@ export type CutawayBrollSegment = {
 export type CutawayBackgroundAsset = {
   sourceIndex?: number;
   clipOffset?: number;
+  timelineAligned?: boolean;
   [key: string]: unknown;
 };
 
@@ -229,13 +230,14 @@ export function buildCutawayBackgroundTimeline({
         ...presenterAsset,
         sourceIndex: windowIndex,
         clipOffset: window.startMs / 1_000,
+        timelineAligned: true,
       };
     }
 
     const selected = indexedVisibleAssets.get(visibleIndex)
       ?? visibleAssets[visibleIndex]
       ?? visibleAssets[visibleIndex % Math.max(1, visibleAssets.length)]
-      ?? presenterAsset;
+      ?? { ...presenterAsset, timelineAligned: true };
     visibleIndex += 1;
     return { ...selected, sourceIndex: windowIndex };
   });

@@ -107,11 +107,19 @@ async function main() {
           version: 2,
           mode: "preview",
           videoUrl: `/renders/source-${index}.mp4`,
+          subtitleQa: {
+            status: "passed",
+            timingSource: testCase.input.voiceProvider === "elevenlabs" ? "provider_alignment" : "forced_alignment",
+            textExact: true,
+            captionCount: 1,
+            audioDurationMs: 1000,
+          },
           preview: {
-            captions: [{ text: "ทดสอบ", startMs: 0, endMs: 1000 }],
+            captions: [{ text: testCase.input.script, startMs: 0, endMs: 1000 }],
             config: { durationInFrames: 30, providerCase: testCase.label },
             voiceUrl: `/api/renders/source-${index}.wav`,
             audioDurationMs: 1000,
+            fullText: testCase.input.script,
             avatarModel: testCase.avatarModel,
             avatarVideoUrl: testCase.avatarVideoUrl,
           },
@@ -128,7 +136,11 @@ async function main() {
         inputJson: JSON.stringify({
           mode: "export",
           sourceJobId: source.id,
-          subtitleOverlayConfig: { videoUrl: `/renders/source-${index}.mp4`, captions: [] },
+          subtitleOverlayConfig: {
+            videoUrl: `/renders/source-${index}.mp4`,
+            durationInFrames: 30,
+            keywordPopups: [{ text: testCase.input.script, start: 0, end: 30 }],
+          },
         }),
       },
     });
@@ -182,6 +194,80 @@ async function main() {
       `${testCase.label}: Gallery preserves source renderConfig`,
     );
   }
+
+  const canonicalScript = "รายได้ 5,000 บาท";
+  const protectedSource = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "done",
+      type: "create",
+      inputJson: JSON.stringify({ script: canonicalScript, previewMode: true, voiceProvider: "gemini" }),
+      outputJson: JSON.stringify({
+        version: 2,
+        mode: "preview",
+        videoUrl: "/renders/protected-source.mp4",
+        subtitleQa: {
+          status: "passed",
+          timingSource: "forced_alignment",
+          textExact: true,
+          captionCount: 1,
+          audioDurationMs: 1_000,
+        },
+        preview: {
+          captions: [{ text: canonicalScript, startMs: 0, endMs: 1_000 }],
+          fullText: canonicalScript,
+          config: { durationInFrames: 30 },
+          voiceUrl: "/api/renders/protected.wav",
+          audioDurationMs: 1_000,
+          avatarModel: "none",
+          avatarVideoUrl: null,
+        },
+      }),
+      progress: 100,
+      finishedAt: new Date(),
+    },
+  });
+  const corruptedExport = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "processing",
+      type: "export",
+      inputJson: JSON.stringify({
+        mode: "export",
+        sourceJobId: protectedSource.id,
+        subtitleOverlayConfig: {
+          videoUrl: "/renders/protected-source.mp4",
+          durationInFrames: 30,
+          keywordPopups: [{ text: "รายได้ 500 บาท", start: 0, end: 30 }],
+        },
+      }),
+    },
+  });
+  let corruptedRenderCalls = 0;
+  await runOrchestrator(corruptedExport.id, user.id, {
+    caller: {
+      post: async <T,>(path: string): Promise<T> => {
+        if (path === "/api/videos/render") {
+          corruptedRenderCalls += 1;
+          return { jobId: "corrupted-burn" } as T;
+        }
+        if (path === "/api/videos") return { id: "must-not-save" } as T;
+        throw new Error(`unexpected POST ${path}`);
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(): Promise<T> => ({
+        progress: 100,
+        stage: "done",
+        videoUrl: "/renders/must-not-export.mp4",
+        error: null,
+      } as T),
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const blocked = await prisma.videoJob.findUniqueOrThrow({ where: { id: corruptedExport.id } });
+  check(blocked.status === "failed", "changed subtitle text is blocked before export");
+  check(corruptedRenderCalls === 0, "failed subtitle release gate spends no burn render");
 
   await prisma.$disconnect();
   console.log(`\n${failed === 0 ? "ALL PASS" : "FAILURES"}: ${passed} passed, ${failed} failed`);

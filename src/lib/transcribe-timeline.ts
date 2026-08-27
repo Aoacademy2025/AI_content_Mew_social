@@ -287,13 +287,18 @@ export async function runTranscriptionQualityRetries<T extends ChunkResult>(
   durationMs: number,
   maxAttempts = 3,
   onRetry?: (input: { nextAttempt: number; tailGapMs: number }) => void,
+  options: { requireUsableWords?: boolean } = {},
 ): Promise<{ result: T; attempts: number; accepted: boolean }> {
   const boundedAttempts = Math.max(1, Math.floor(maxAttempts));
   let attempts = 1;
   let best = await attempt(1);
   let bestDistance = transcriptionQualityDistance(best.geminiDirectCaptions, durationMs);
+  const needsRetry = (result: T) =>
+    transcriptionNeedsRetry(result.geminiDirectCaptions, durationMs)
+    || (options.requireUsableWords === true && sanitizeChunkTimeline(result, durationMs).stats.wordsDegenerate);
+  let bestNeedsRetry = needsRetry(best);
 
-  while (attempts < boundedAttempts && transcriptionNeedsRetry(best.geminiDirectCaptions, durationMs)) {
+  while (attempts < boundedAttempts && bestNeedsRetry) {
     const nextAttempt = attempts + 1;
     onRetry?.({
       nextAttempt,
@@ -302,16 +307,18 @@ export async function runTranscriptionQualityRetries<T extends ChunkResult>(
     const candidate = await attempt(nextAttempt);
     attempts = nextAttempt;
     const candidateDistance = transcriptionQualityDistance(candidate.geminiDirectCaptions, durationMs);
-    if (candidateDistance < bestDistance) {
+    const candidateNeedsRetry = needsRetry(candidate);
+    if ((!candidateNeedsRetry && bestNeedsRetry) || (candidateNeedsRetry === bestNeedsRetry && candidateDistance < bestDistance)) {
       best = candidate;
       bestDistance = candidateDistance;
+      bestNeedsRetry = candidateNeedsRetry;
     }
   }
 
   return {
     result: best,
     attempts,
-    accepted: !transcriptionNeedsRetry(best.geminiDirectCaptions, durationMs),
+    accepted: !bestNeedsRetry,
   };
 }
 
@@ -322,8 +329,8 @@ const BOGUS_MARGIN_MS = 2000;
 // Real speech carries several words per subtitle card (Thai viral cards are
 // 3-8 words; prod healthy chunk: 549 words / 98 captions ≈ 5.6). A words array
 // that is not even 2× the caption count is a truncated/degenerate response —
-// rebuilding captions from it desyncs, so it is safer to drop it entirely and
-// let the segment-based interpolation produce full-coverage word timing.
+// rebuilding captions from it desyncs, so sanitization drops it and the route
+// retries/re-slices that chunk instead of shipping synthetic word timing.
 const MIN_WORDS_PER_CAPTION = 2;
 
 export function sanitizeChunkTimeline(r: ChunkResult, chunkDurationMs: number): SanitizedChunk {
@@ -373,8 +380,8 @@ export function sanitizeChunkTimeline(r: ChunkResult, chunkDurationMs: number): 
   // keptWords are already rescaled+bounded above — no further transform.
   const scaledWords = keptWords;
 
-  // 3) Degenerate words → zero them out so the caller falls back to
-  //    segment-based interpolation (full coverage, bounded timing).
+  // 3) Degenerate words → zero them out and surface wordsDegenerate so the
+  //    route can retry/re-slice this chunk before any merge.
   const wordsDegenerate =
     scaledCaptions.length > 0 && scaledWords.length < scaledCaptions.length * MIN_WORDS_PER_CAPTION;
 

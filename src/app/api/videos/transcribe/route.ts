@@ -990,7 +990,6 @@ export async function POST(req: Request) {
           // long audio: transcribe each chunk SEQUENTIALLY, offset + merge
           const fullScript = (script ?? "").trim();
           const totalMsForScript = sourceAudioDurationMs || chunkPlan.reduce((a, c) => a + c.durationMs, 0) || 1;
-          let anyDegenerateWords = false;
           let chunkIdx = 0;
           const appendChunkResult = (
             rawChunk: ChunkResult,
@@ -1001,7 +1000,6 @@ export async function POST(req: Request) {
             // Rescale residual drift, discard impossible word timestamps, then
             // merge the slice onto the authoritative ffmpeg offset.
             const sanitized = sanitizeChunkTimeline(rawChunk, chunkDurationMs);
-            anyDegenerateWords ||= sanitized.stats.wordsDegenerate;
             const keptGapSec = chunkTailGapMs(rawChunk.geminiDirectCaptions, chunkDurationMs) / 1000;
             console.log(
               `[transcribe] ${label}: ${sanitized.geminiDirectCaptions.length} captions, `
@@ -1055,6 +1053,7 @@ export async function POST(req: Request) {
                   + `re-transcribing (attempt ${nextAttempt}/3)`,
                 );
               },
+              { requireUsableWords: true },
             );
             const rawChunk = quality.result;
             if (!quality.accepted) {
@@ -1101,6 +1100,7 @@ export async function POST(req: Request) {
                           + `re-transcribing (attempt ${nextAttempt}/3)`,
                         );
                       },
+                      { requireUsableWords: true },
                     );
                     if (!recoveryQuality.accepted) {
                       const recoveryTailGapMs = chunkTailGapMs(
@@ -1110,7 +1110,9 @@ export async function POST(req: Request) {
                       return NextResponse.json({
                         error: "ถอดซับช่วงหนึ่งไม่ครบหลังแบ่งช่วงที่มีปัญหาแล้ว — กรุณาลองใหม่หรือส่งคลิปให้ทีมงานตรวจ",
                         provider: "gemini",
-                        reason: recoveryQuality.result.geminiDirectCaptions.length === 0
+                        reason: sanitizeChunkTimeline(recoveryQuality.result, recoveryReferenceMs).stats.wordsDegenerate
+                          ? "word_timing_incomplete"
+                          : recoveryQuality.result.geminiDirectCaptions.length === 0
                           ? "empty_captions"
                           : recoveryTailGapMs < 0
                             ? "transcribe_incomplete"
@@ -1142,7 +1144,9 @@ export async function POST(req: Request) {
               return NextResponse.json({
                 error: "ถอดซับช่วงหนึ่งไม่ครบหรือไม่ตรงจังหวะหลังลองใหม่ 3 ครั้ง — กรุณาลองสร้างอีกครั้ง",
                 provider: "gemini",
-                reason: rawChunk.geminiDirectCaptions.length === 0
+                reason: sanitizeChunkTimeline(rawChunk, referenceDurationMs).stats.wordsDegenerate
+                  ? "word_timing_incomplete"
+                  : rawChunk.geminiDirectCaptions.length === 0
                   ? "empty_captions"
                   : tailGapMs < 0
                     ? "transcribe_incomplete"
@@ -1156,13 +1160,6 @@ export async function POST(req: Request) {
               }, { status: 422 });
             }
             appendChunkResult(rawChunk, ch.durationMs, ch.startMs, `chunk ${chunkIdx}/${chunkPlan.length}`);
-          }
-          if (anyDegenerateWords && words.length > 0) {
-            // Partial word coverage is worse than none: the editor's word-based
-            // split would only rebuild captions where words exist. Drop them all
-            // so the segment-interpolation below regenerates full-coverage timing.
-            console.log(`[transcribe] word timing unusable in ≥1 chunk → dropping all ${words.length} words (segment interpolation rebuilds full coverage)`);
-            words = [];
           }
           console.log(`[transcribe] merged ${chunkPlan.length} chunks → ${geminiDirectCaptions.length} captions, ${words.length} words`);
         } else {
@@ -1179,7 +1176,27 @@ export async function POST(req: Request) {
                 + `vs audio — re-transcribing (attempt ${nextAttempt}/3)`,
               );
             },
+            { requireUsableWords: true },
           );
+          if (!quality.accepted) {
+            const result = quality.result;
+            const tailGapMs = chunkTailGapMs(result.geminiDirectCaptions, sourceAudioDurationMs);
+            return NextResponse.json({
+              error: "ถอดเวลาแต่ละคำให้ตรงเสียงไม่ได้หลังลองใหม่ 3 ครั้ง — กรุณาลองสร้างอีกครั้ง",
+              provider: "gemini",
+              reason: sanitizeChunkTimeline(result, sourceAudioDurationMs).stats.wordsDegenerate
+                ? "word_timing_incomplete"
+                : result.geminiDirectCaptions.length === 0
+                  ? "empty_captions"
+                  : tailGapMs < 0
+                    ? "transcribe_incomplete"
+                    : "transcribe_desynced",
+              retryable: true,
+              recoveryAttempted: false,
+              sourceAudioDurationMs,
+              captionDurationMs: result.geminiDirectCaptions.at(-1)?.endMs ?? 0,
+            }, { status: 422 });
+          }
           const r = quality.result;
           words = r.words; segments = r.segments; geminiDirectCaptions = r.geminiDirectCaptions; fullText = r.fullText;
         }
@@ -1659,6 +1676,15 @@ Total audio: ${audioDur.toFixed(2)}s`;
         }))
         .filter((w) => w.word.length > 0);
     } else {
+      if (useGeminiTranscribe) {
+        return NextResponse.json({
+          error: "ถอดเวลาแต่ละคำให้ตรงเสียงไม่ได้ — กรุณาลอง Transcribe ใหม่",
+          provider: "gemini",
+          reason: "word_timing_incomplete",
+          retryable: true,
+          sourceAudioDurationMs,
+        }, { status: 422 });
+      }
       // Interpolate word timing from segments — much more accurate than interpolating from captions.
       // For Thai (no spaces) use Intl.Segmenter to split into actual words.
       wordTimestamps = [];

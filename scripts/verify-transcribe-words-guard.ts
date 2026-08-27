@@ -75,7 +75,7 @@ function mkChunk(caps: number, words: number, totalMs: number): ChunkResult {
   const r = mkChunk(105, 108, CHUNK_MS);
   const s = sanitizeChunkTimeline(r, CHUNK_MS);
   check("sparse words (≈1/caption) → degenerate", s.stats.wordsDegenerate);
-  check("degenerate → words zeroed (interpolation takes over)", s.words.length === 0);
+  check("degenerate → words zeroed so the route can retry the chunk", s.words.length === 0);
   check("degenerate → captions preserved", s.geminiDirectCaptions.length === 105);
 }
 
