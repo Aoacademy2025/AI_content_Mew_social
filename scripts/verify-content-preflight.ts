@@ -275,12 +275,21 @@ async function main() {
         recurringCharacterDescription: null,
         isRealPerson: false,
       },
+      {
+        entityId: "trusted-person",
+        properName: "Trusted Person",
+        entityType: "person",
+        durableAttributes: ["adult", "supportive"],
+        renderingDescription: "an adult, supportive person",
+        recurringCharacterDescription: "the same adult, supportive person",
+        isRealPerson: false,
+      },
     ],
     beats: validAiAgentAnalysis.beats.map((beat) => ({
       ...beat,
       subject: "a person and his son",
-      action: "look at a tablet together",
-      entityRefs: ["son", "tablet"],
+      action: "look at a tablet together before asking a Trusted Person for help",
+      entityRefs: ["son", "tablet", "trusted-person"],
     })),
   };
   const commonNounEntityAnalyzer = createGeminiContentPreflightAnalyzer(
@@ -295,7 +304,7 @@ async function main() {
   assert.deepEqual(
     commonNounEntityResult.storyEntities,
     [],
-    "lowercase English common nouns are not promoted into durable Story Entities",
+    "English common nouns and generic title-cased roles are not promoted into durable Story Entities",
   );
   assert.equal(
     commonNounEntityResult.beats[0].subject,
@@ -304,8 +313,8 @@ async function main() {
   );
   assert.equal(
     commonNounEntityResult.beats[0].action,
-    "look at a tablet together",
-    "ordinary object nouns remain natural provider-facing prose",
+    "look at a tablet together before asking a Trusted Person for help",
+    "ordinary object nouns and title-cased roles remain natural provider-facing prose",
   );
 
   let exhaustedSemanticCalls = 0;
@@ -384,7 +393,7 @@ async function main() {
    * from cache — the policy would silently apply to new sources only. */
   assert.equal(
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
-    "brand-content-preflight-v13-common-noun-entity-guard",
+    "brand-content-preflight-v14-generic-role-entity-guard",
     "changing what a beat contains must publish a new analyzer version",
   );
   const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");
