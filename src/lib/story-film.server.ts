@@ -490,7 +490,22 @@ function validateDecision(input: {
   }
   if (instruction && instruction.length > 2_000) invalid("คำสั่งแก้ไขยาวเกิน 2,000 ตัวอักษร");
   if (input.idempotencyKey && !IDEMPOTENCY_PATTERN.test(input.idempotencyKey)) invalid("idempotencyKey ไม่ถูกต้อง");
-  return { instruction };
+  const rawVideoSceneKeys = input.target?.videoSceneKeys;
+  let videoSceneKeys: string[] | undefined;
+  if (rawVideoSceneKeys !== undefined) {
+    if (
+      input.expectedStage !== "storyboard"
+      || !["revise", "reroll", "fallback"].includes(input.decision)
+      || !Array.isArray(rawVideoSceneKeys)
+      || rawVideoSceneKeys.length > 60
+      || rawVideoSceneKeys.some((value) => typeof value !== "string" || !/^scene-\d{2}$/u.test(value))
+      || new Set(rawVideoSceneKeys).size !== rawVideoSceneKeys.length
+    ) {
+      invalid("videoSceneKeys ต้องเป็นรายการ scene key ที่ไม่ซ้ำกันสำหรับการแก้ Storyboard");
+    }
+    videoSceneKeys = rawVideoSceneKeys as string[];
+  }
+  return { instruction, videoSceneKeys };
 }
 
 function stageAfterApproval(stage: StoryFilmStage): StoryFilmStage | null {
@@ -511,7 +526,7 @@ export async function decideStoryFilm(
     idempotencyKey?: string | null;
   },
 ): Promise<StoryFilmProjectView> {
-  const { instruction } = validateDecision(input);
+  const { instruction, videoSceneKeys } = validateDecision(input);
   return prisma.$transaction(async (tx) => {
     if (input.idempotencyKey) {
       const prior = await tx.storyFilmDecision.findUnique({
@@ -969,6 +984,7 @@ export async function decideStoryFilm(
             targetSceneDurationSec: 7,
             revisionInstruction: instruction,
             revisionMode: input.decision,
+            ...(videoSceneKeys ? { videoSceneKeys } : {}),
           }),
           idempotencyKey: `revise:storyboard:epoch:${resultGenerationEpoch}`,
         },

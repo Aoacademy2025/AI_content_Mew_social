@@ -81,6 +81,15 @@ async function main() {
       review.stage === "storyboard" && job.providerBackend === "hero_text",
       "Narration approval creates one durable Hero text planner job",
     );
+    await prisma.storyFilmGenerationJob.update({
+      where: { id: job.id },
+      data: {
+        payloadJson: JSON.stringify({
+          ...JSON.parse(job.payloadJson),
+          videoSceneKeys: ["scene-01", "scene-03"],
+        }),
+      },
+    });
 
     const fakeAnalyzer: ContentPreflightAnalyzer = {
       async analyze(input) {
@@ -132,6 +141,11 @@ async function main() {
     );
     ok(document.scenes.some((scene) => scene.mediaPlan === "video"), "meaningful visible movement selects a video scene");
     ok(document.scenes.some((scene) => scene.mediaPlan === "image_with_motion"), "a strong static beat can remain an image with editorial motion");
+    ok(
+      document.scenes.filter((scene) => scene.mediaPlan === "video").map((scene) => scene.sceneKey).join(",")
+        === "scene-01,scene-03",
+      "an explicit reviewed video-scene plan overrides the heuristic without changing scene content",
+    );
     ok(
       document.scenes.every((scene) => !scene.grokPrompt.includes("Mew") && scene.grokPrompt.includes("Vertical 9:16")),
       "provider prompts use rendering descriptions instead of the real person's proper name",
