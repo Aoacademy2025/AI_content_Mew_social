@@ -395,14 +395,64 @@ export type CutawayRecompositeDecision = {
 };
 
 /**
+ * Move the original person/B-roll decision onto edited window timings.
+ *
+ * A timing edit changes the span owned by a logical window, not whether that window shows the
+ * uploaded speaker. Pairing source and edited segments by their stable array position keeps the
+ * overlay and the rendered `bgVideos` boundary in lockstep. Invalid legacy data fails closed to
+ * the persisted ranges instead of inventing a new layout.
+ */
+export function retimeCutawayPersonRanges(
+  rawSourceSegments: CutawayBrollSegment[],
+  rawEditedSegments: CutawayBrollSegment[],
+  basePersonRanges: CutawayRangeSec[],
+): CutawayRangeSec[] {
+  const fallback = normalizeRanges(Array.isArray(basePersonRanges) ? basePersonRanges : []);
+  if (
+    !Array.isArray(rawSourceSegments)
+    || !Array.isArray(rawEditedSegments)
+    || rawSourceSegments.length === 0
+    || rawSourceSegments.length !== rawEditedSegments.length
+  ) return fallback;
+
+  const retimed: CutawayRangeSec[] = [];
+  for (let index = 0; index < rawSourceSegments.length; index++) {
+    const sourceStart = Number(rawSourceSegments[index]?.start);
+    const sourceEnd = Number(rawSourceSegments[index]?.end);
+    const editedStart = Number(rawEditedSegments[index]?.start);
+    const editedEnd = Number(rawEditedSegments[index]?.end);
+    if (
+      !Number.isFinite(sourceStart)
+      || !Number.isFinite(sourceEnd)
+      || sourceStart < 0
+      || sourceEnd <= sourceStart
+      || !Number.isFinite(editedStart)
+      || !Number.isFinite(editedEnd)
+      || editedStart < 0
+      || editedEnd <= editedStart
+    ) return fallback;
+
+    const midpoint = sourceStart + (sourceEnd - sourceStart) / 2;
+    if (fallback.some((range) => midpoint >= range.start && midpoint < range.end)) {
+      retimed.push({ start: editedStart, end: editedEnd });
+    }
+  }
+  return normalizeRanges(retimed);
+}
+
+/**
  * Decide what the free per-window re-render must do for an upload-cutaway preview.
  * Pure: no I/O, so the empty-ranges → skip-composite rule is unit-testable.
  */
 export function planCutawayRecomposite(
   rawSegments: CutawayBrollSegment[],
   basePersonRanges: CutawayRangeSec[],
+  sourceSegments?: CutawayBrollSegment[],
 ): CutawayRecompositeDecision {
-  const personRanges = resolveCutawayPersonRanges(rawSegments, basePersonRanges);
+  const timingAlignedBase = sourceSegments
+    ? retimeCutawayPersonRanges(sourceSegments, rawSegments, basePersonRanges)
+    : basePersonRanges;
+  const personRanges = resolveCutawayPersonRanges(rawSegments, timingAlignedBase);
   const firstSegment = (Array.isArray(rawSegments) ? rawSegments : [])
     .filter((entry) => Number.isFinite(Number(entry?.start)) && Number.isFinite(Number(entry?.end)))
     .sort((left, right) => Number(left.start) - Number(right.start))[0];

@@ -835,7 +835,9 @@ export function PostPhase({
         onScrub={ed.setTimeMs}
         durationMs={Math.max(ed.preview?.audioDurationMs ?? 0, ed.captions.length ? ed.captions[ed.captions.length - 1].endMs : 0)}
         config={ed.previewConfig}
+        brollTimelineSpans={ed.brollTimelineSpans}
         onSelectBrollWindow={brollEditEnabled ? ed.setSelectedWindow : undefined}
+        onBrollBoundaryChange={fullBrollEditEnabled ? ed.moveBrollBoundary : undefined}
         editedWindowIndices={brollEditEnabled ? editedWindowIndices : undefined}
         disabledWindowIndices={brollEditEnabled ? disabledWindowIndices : undefined}
         hasAvatar={!!(ed.preview?.avatarModel && ed.preview.avatarModel !== "none")}

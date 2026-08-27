@@ -13,11 +13,12 @@
  * uploads remain unchanged unless the creator explicitly chooses another tab.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   ArrowLeft,
   ArrowRight,
+  CircleHelp,
   Eye,
   EyeOff,
   Loader2,
@@ -28,8 +29,8 @@ import {
 import { color, font, radius } from "./tokens";
 import { BtnPrimary, BtnSecondary, Chip, GroupLabel, Segmented, Toggle } from "./ui";
 import { useIsMobile } from "./useIsMobile";
-import { brollWindowSpans } from "@/lib/broll-spans";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
+import { canMoveBrollBoundaryExactly } from "@/lib/broll-timeline-boundary";
 import { canGenerateHeroBrollFromSource } from "@/lib/broll-window-hero";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
 import {
@@ -137,7 +138,7 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
       <span className="mr-auto hidden sm:flex sm:flex-col" style={{ lineHeight: 1.35 }}>
         <span style={{ fontSize: 11.5, color: color.warning }}>ตัวอย่างยังเป็นวิดีโอเดิม</span>
         <span style={{ fontSize: 10.5, color: color.textFaint }}>
-          แก้ B-roll ไว้ {ed.windowEdits.size} จุด · กดอัปเดตเพื่อดูผลจริง
+          แก้ B-roll ไว้ {ed.windowEdits.size} ช่วง · กดอัปเดตเพื่อดูผลจริง
         </span>
       </span>
       <button
@@ -177,7 +178,7 @@ export function WindowEditsBottomBar({ ed }: { ed: PostPhaseEditor }) {
         disabled={busy}
         style={{ padding: "7px 16px", fontSize: 12.5, ...(busy ? { opacity: 0.75, cursor: "wait" } : {}) }}
       >
-        {busy ? `กำลังอัปเดต ${ed.applyingWindows!.progress}%` : `อัปเดตวิดีโอ (${ed.windowEdits.size} จุด) — ฟรี ไม่ใช้นาทีเพิ่ม`}
+        {busy ? `กำลังอัปเดต ${ed.applyingWindows!.progress}%` : `อัปเดตวิดีโอ (${ed.windowEdits.size} ช่วง) — ฟรี ไม่ใช้นาทีเพิ่ม`}
       </BtnPrimary>
     </div>
   );
@@ -272,12 +273,7 @@ export function BrollWindowInspector({
   const isMobile = useIsMobile();
   const index = ed.selectedWindow;
 
-  const durationMs = Math.max(
-    ed.preview?.audioDurationMs ?? 0,
-    ed.captions.length ? ed.captions[ed.captions.length - 1].endMs : 0,
-    1,
-  );
-  const spans = useMemo(() => brollWindowSpans(ed.previewConfig, durationMs), [ed.previewConfig, durationMs]);
+  const spans = ed.brollTimelineSpans;
   const span = index != null ? spans.find((s) => s.index === index) ?? null : null;
 
   // ── per-window form state — reset whenever the selected window changes ──────
@@ -372,6 +368,12 @@ export function BrollWindowInspector({
   const windowDurationSec = (span.endMs - span.startMs) / 1_000;
   const previousSpan = positionLabel > 1 ? spans[positionLabel - 2] : null;
   const nextSpan = positionLabel < spans.length ? spans[positionLabel] : null;
+  const canMoveBoundaryEarlier = Boolean(
+    nextSpan && canMoveBrollBoundaryExactly(spans, index, span.endMs - 500),
+  );
+  const canMoveBoundaryLater = Boolean(
+    nextSpan && canMoveBrollBoundaryExactly(spans, index, span.endMs + 500),
+  );
 
   const genCost = HERO_AI_IMAGE_CREDITS;
   const currentSourceKind = existingEdit?.kind ?? entrySourceKind(rawEntry);
@@ -383,6 +385,12 @@ export function BrollWindowInspector({
     : `${genCost} เครดิต`;
 
   function close() { ed.setSelectedWindow(null); }
+
+  function shiftEndBoundary(deltaMs: number) {
+    if (index == null || !span) return;
+    const moved = ed.moveBrollBoundary(index, span.endMs + deltaMs);
+    if (moved == null) toast.error("ช่วง B-roll นี้ยังปรับจังหวะตัดไม่ได้");
+  }
 
   function markEdited(
     kind: WindowEditKind,
@@ -655,6 +663,51 @@ export function BrollWindowInspector({
           )}
         </div>
       </div>
+      {fullBrollEditEnabled && nextSpan && (
+        <div
+          className="flex flex-col gap-2"
+          style={{
+            padding: "10px 12px",
+            borderRadius: radius.card,
+            border: `1px solid ${color.cardBorder}`,
+            background: "rgba(255,255,255,.025)",
+          }}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span
+              className="flex items-center gap-1"
+              title="จุดที่ภาพเปลี่ยนจากฉากนี้ไปฉากถัดไป"
+              style={{ fontSize: 11.5, color: color.textSecondary }}
+            >
+              จังหวะตัด <CircleHelp size={11} aria-hidden="true" />
+            </span>
+            <span style={{ fontSize: 11, color: color.primary300, fontVariantNumeric: "tabular-nums" }}>
+              {(span.endMs / 1_000).toFixed(1)} วิ
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <BtnSecondary
+              onClick={() => shiftEndBoundary(-500)}
+              disabled={!canMoveBoundaryEarlier}
+              title="ให้ฉากถัดไปเริ่มเร็วขึ้น 0.5 วินาที"
+              style={{ minHeight: 40, opacity: canMoveBoundaryEarlier ? 1 : 0.45 }}
+            >
+              <span className="flex items-center justify-center gap-1"><ArrowLeft size={12} /> 0.5 วิ</span>
+            </BtnSecondary>
+            <BtnSecondary
+              onClick={() => shiftEndBoundary(500)}
+              disabled={!canMoveBoundaryLater}
+              title="ให้ฉากนี้อยู่นานขึ้น 0.5 วินาที"
+              style={{ minHeight: 40, opacity: canMoveBoundaryLater ? 1 : 0.45 }}
+            >
+              <span className="flex items-center justify-center gap-1">0.5 วิ <ArrowRight size={12} /></span>
+            </BtnSecondary>
+          </div>
+          <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.45 }}>
+            บนคอมลากเส้นแบ่งใน Timeline ได้ · แต่ละช่วงอย่างน้อย 1 วินาที
+          </span>
+        </div>
+      )}
       {fullBrollEditEnabled && (
         <div
           className="flex items-center gap-3"
@@ -971,6 +1024,7 @@ export function BrollWindowInspector({
               ช่วงที่ {pos}
               {e.src ? ` · ${sourceLabel(e.kind ?? null)}` : ""}
               {typeof e.enabled === "boolean" ? ` · ${e.enabled ? "เปิด" : "ปิด"}` : ""}
+              {typeof e.startSec === "number" || typeof e.endSec === "number" ? " · ปรับเวลา" : ""}
             </span>
             <button
               onClick={() => ed.clearWindowEdit(idx)}

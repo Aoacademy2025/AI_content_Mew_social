@@ -2,8 +2,8 @@
 
 /**
  * Timeline หลายแทร็ก + waveform เสียงพูดสำหรับอ้างอิง (จอ 4b ล่าง, P6b) — decision #5:
- *   พาดหัว/ซับ = ลากขอบเวลาได้ · อวตาร/ซับ/โลโก้ = เปิด–ปิดโดยไม่ลบการตั้งค่า ·
- *   บีโรล/เพลง = คลิก jump
+ *   พาดหัว/ซับ = ลากขอบเวลาได้ · บีโรล = ลากเส้นแบ่งร่วม + คลิก jump ·
+ *   อวตาร/ซับ/โลโก้ = เปิด–ปิดโดยไม่ลบการตั้งค่า · เพลง = คลิก jump
  * สีแทร็กคงที่ตาม Design System: อวตารม่วง · บีโรลฟ้า · พาดหัวส้ม · ซับเหลือง · เพลงชมพู
  */
 
@@ -15,6 +15,11 @@ import { useAudioPeaks } from "../_components/useAudioPeaks";
 import { WaveformCanvas } from "../_components/WaveformCanvas";
 import { snapPointsFromPeaks, snapToNearest } from "../_components/waveform-snap";
 import { brollWindowSpans, type BrollWindowSpan } from "@/lib/broll-spans";
+import {
+  BROLL_TIMELINE_TOLERANCE_MS,
+  moveBrollBoundary,
+  type BrollBoundaryMove,
+} from "@/lib/broll-timeline-boundary";
 import { AVATAR_FADE_DURATION_SEC } from "@/lib/avatar-fade";
 import { nextTimelineScrollLeft } from "./timeline-wheel-scroll";
 import type { EditableEditorLayer } from "@/lib/editor-layer-visibility";
@@ -47,7 +52,8 @@ export function TimelinePanel({
   selected, onSelect, onEditCaption,
   videoRef, timeMs, durationMs, onScrub,
   config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs, avatarFadeApplies,
-  voiceUrl, onSelectBrollWindow, editedWindowIndices, disabledWindowIndices,
+  voiceUrl, brollTimelineSpans, onSelectBrollWindow, onBrollBoundaryChange,
+  editedWindowIndices, disabledWindowIndices,
   hasLogo, layerVisibility, layerAvailability, onLayerVisibilityChange,
   layerControlsDisabled = false,
   headlineHook, onHeadlineHookDurationChange,
@@ -77,8 +83,12 @@ export function TimelinePanel({
    *  (`@/lib/avatar-fade`'s `avatarFadeApplies`) → gradient/tooltip ต้องไม่โผล่ตอนนั้น */
   avatarFadeApplies: boolean;
   voiceUrl: string | null;
+  /** Effective spans including browser-staged timing edits. */
+  brollTimelineSpans?: readonly BrollWindowSpan[];
   /** เลือกหน้าต่างบีโรล (index ใน config.bgVideos[]) — parent เป็นผู้ตัดสิน feature access. */
   onSelectBrollWindow?: (index: number) => void;
+  /** Stage one shared boundary; the free B-roll re-render persists it after Apply. */
+  onBrollBoundaryChange?: (leftIndex: number, targetMs: number) => void;
   /** index (ใน config.bgVideos[]) ของหน้าต่างที่แก้ไว้ในเซสชันนี้แต่ยังไม่ apply — จุดม่วงบนคลิป (Task 11) */
   editedWindowIndices?: ReadonlySet<number>;
   /** B-roll windows that are currently disabled (includes optimistic staged visibility). */
@@ -96,6 +106,14 @@ export function TimelinePanel({
   const [playing, setPlaying] = useState(false);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ idx: number; edge: "l" | "r"; startX: number; origStart: number; origEnd: number } | null>(null);
+  const brollBoundaryDragRef = useRef<{
+    leftIndex: number;
+    startX: number;
+    originalBoundaryMs: number;
+    windows: BrollWindowSpan[];
+  } | null>(null);
+  const brollBoundaryDraftRef = useRef<BrollBoundaryMove | null>(null);
+  const [brollBoundaryDraft, setBrollBoundaryDraftState] = useState<BrollBoundaryMove | null>(null);
   const headlineDragRef = useRef<{ startX: number; originalDurationMs: number } | null>(null);
   const scrubbingRef = useRef(false);
 
@@ -105,7 +123,7 @@ export function TimelinePanel({
     const onTimelineWheel = (event: WheelEvent) => {
       // ระหว่างลากขอบการ์ด/scrub playhead ห้าม scroll — onEdgeMove/scrub คำนวณจาก
       // clientX viewport-space, scroll เปลี่ยนตำแหน่งใต้เมาส์ระหว่างลากทำขอบซับเพี้ยน
-      if (dragRef.current || scrubbingRef.current) return;
+      if (dragRef.current || brollBoundaryDragRef.current || scrubbingRef.current) return;
       const nextScrollLeft = nextTimelineScrollLeft({
         scrollLeft: scroller.scrollLeft,
         scrollWidth: scroller.scrollWidth,
@@ -129,7 +147,23 @@ export function TimelinePanel({
   const widthPx = (durMs / 1000) * pxPerSec;
   const toPx = (ms: number) => (ms / 1000) * pxPerSec;
   const bgmFile = (config as { bgmFile?: string } | null)?.bgmFile;
-  const brollSpans = useMemo(() => brollSpansFromConfig(config, durMs), [config, durMs]);
+  const configuredBrollSpans = useMemo(() => brollSpansFromConfig(config, durMs), [config, durMs]);
+  const baseBrollSpans = useMemo(
+    () => brollTimelineSpans?.length ? [...brollTimelineSpans] : configuredBrollSpans,
+    [brollTimelineSpans, configuredBrollSpans],
+  );
+  const brollSpans = useMemo(() => {
+    if (!brollBoundaryDraft) return baseBrollSpans;
+    return baseBrollSpans.map((span) => {
+      const change = brollBoundaryDraft.changes.find((item) => item.index === span.index);
+      if (!change) return span;
+      return {
+        ...span,
+        ...(change && "startMs" in change ? { startMs: change.startMs } : {}),
+        ...(change && "endMs" in change ? { endMs: change.endMs } : {}),
+      };
+    });
+  }, [baseBrollSpans, brollBoundaryDraft]);
 
   // Waveform เสียงพากย์ (fail-open: โหลด/decode ไม่ได้ = ไม่มีเลน, snap ตกกลับแบบเดิม)
   const { peaks, durationMs: waveDurMs } = useAudioPeaks(voiceUrl);
@@ -212,6 +246,69 @@ export function TimelinePanel({
     if (!dragRef.current) return;
     dragRef.current = null;
     onCaptionsChange(captions.map((c) => ({ ...c })), true); // commit → push history
+  }
+
+  function setBrollBoundaryDraft(move: BrollBoundaryMove | null) {
+    brollBoundaryDraftRef.current = move;
+    setBrollBoundaryDraftState(move);
+  }
+
+  function onBrollBoundaryDown(e: React.PointerEvent, leftIndex: number) {
+    if (!onBrollBoundaryChange) return;
+    const left = baseBrollSpans.find((span) => span.index === leftIndex);
+    if (!left) return;
+    e.preventDefault();
+    e.stopPropagation();
+    brollBoundaryDragRef.current = {
+      leftIndex,
+      startX: e.clientX,
+      originalBoundaryMs: left.endMs,
+      windows: baseBrollSpans.map((span) => ({ ...span })),
+    };
+    setBrollBoundaryDraft(moveBrollBoundary(baseBrollSpans, leftIndex, left.endMs));
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function onBrollBoundaryMove(e: React.PointerEvent) {
+    const drag = brollBoundaryDragRef.current;
+    if (!drag) return;
+    const deltaMs = ((e.clientX - drag.startX) / pxPerSec) * 1_000;
+    const targetMs = snapMs(drag.originalBoundaryMs + deltaMs, -1);
+    setBrollBoundaryDraft(moveBrollBoundary(drag.windows, drag.leftIndex, targetMs));
+  }
+
+  function finishBrollBoundaryDrag(commit: boolean) {
+    const drag = brollBoundaryDragRef.current;
+    const move = brollBoundaryDraftRef.current;
+    brollBoundaryDragRef.current = null;
+    setBrollBoundaryDraft(null);
+    if (
+      commit
+      && drag
+      && move
+      && Math.abs(move.boundaryMs - drag.originalBoundaryMs) > BROLL_TIMELINE_TOLERANCE_MS
+    ) {
+      onBrollBoundaryChange?.(drag.leftIndex, move.boundaryMs);
+      seekTo(move.boundaryMs);
+    }
+  }
+
+  function moveBrollBoundaryFromKeyboard(
+    e: React.KeyboardEvent<HTMLButtonElement>,
+    leftIndex: number,
+    currentBoundaryMs: number,
+  ) {
+    if (!onBrollBoundaryChange || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const direction = e.key === "ArrowLeft" ? -1 : 1;
+    const move = moveBrollBoundary(baseBrollSpans, leftIndex, currentBoundaryMs + direction * 500);
+    if (
+      !move
+      || Math.abs(move.boundaryMs - currentBoundaryMs) <= BROLL_TIMELINE_TOLERANCE_MS
+    ) return;
+    onBrollBoundaryChange(leftIndex, move.boundaryMs);
+    seekTo(move.boundaryMs);
   }
 
   function onHeadlineEdgeDown(e: React.PointerEvent) {
@@ -408,6 +505,12 @@ export function TimelinePanel({
             <div className="relative flex-1" style={{ height: TRACK_H }}>
               {brollSpans.map((s, i) => {
                 const enabled = !disabledWindowIndices?.has(s.index);
+                const next = brollSpans[i + 1];
+                const canResizeBoundary = Boolean(
+                  onBrollBoundaryChange
+                  && next
+                  && Math.abs(s.endMs - next.startMs) <= BROLL_TIMELINE_TOLERANCE_MS,
+                );
                 return (
                   <div
                     key={i}
@@ -432,6 +535,35 @@ export function TimelinePanel({
                         aria-hidden
                         className="absolute"
                         style={{ top: 2, right: 2, width: 6, height: 6, borderRadius: "50%", background: color.primary300 }}
+                      />
+                    )}
+                    {canResizeBoundary && (
+                      <button
+                        type="button"
+                        data-edge
+                        aria-label={`ปรับจังหวะตัดหลัง ${s.label} ตอน ${fmt(s.endMs)}`}
+                        title="ลากเพื่อปรับจังหวะตัด · แต่ละช่วงอย่างน้อย 1 วินาที"
+                        onPointerDown={(event) => onBrollBoundaryDown(event, s.index)}
+                        onPointerMove={onBrollBoundaryMove}
+                        onPointerUp={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          finishBrollBoundaryDrag(true);
+                        }}
+                        onPointerCancel={(event) => {
+                          event.stopPropagation();
+                          finishBrollBoundaryDrag(false);
+                        }}
+                        onKeyDown={(event) => moveBrollBoundaryFromKeyboard(event, s.index, s.endMs)}
+                        onClick={(event) => event.stopPropagation()}
+                        className="absolute bottom-0 right-0 top-0 w-[10px] cursor-col-resize"
+                        style={{
+                          padding: 0,
+                          border: 0,
+                          borderRight: `2px solid ${color.primary300}`,
+                          background: "rgba(167,139,250,.14)",
+                          touchAction: "none",
+                        }}
                       />
                     )}
                   </div>

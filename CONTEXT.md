@@ -25,7 +25,7 @@ Glossary of domain terms. Definitions only — no implementation details.
 - **Outdated Visual Beat / ฉากที่เนื้อหาเปลี่ยน** — a Visual Beat whose meaning no longer matches the current Narrative Source after an edit. Its existing asset remains intact and is regenerated only after the creator reviews and confirms the affected scenes.
 - **Caption / การ์ดซับ** — one on-screen subtitle unit with text, start/end time, and an optional tag (hook / body / cta). Editable in the Post phase.
 - **Advanced Settings (ตั้งค่าขั้นสูง)** — collapsible areas that hold every existing capability the redesign's default surfaces don't show (e.g. avatar position calibration, chroma sliders, split mode, FPS/quality). Policy: features are *relocated* into Advanced, never deleted.
-- **Timeline** — the 4-track visualization in the Post phase (avatar / b-roll / subtitles / music). Only the subtitle track is editable; the other tracks are display + select/jump only.
+- **Timeline** — the multi-track visualization in the Post phase (avatar / B-roll / voice / headline / subtitles / music / logo). Subtitle timing and shared boundaries between adjacent B-roll windows are editable; the other tracks are display, select/jump or layer controls according to their capability.
 
 ## Rendering
 
