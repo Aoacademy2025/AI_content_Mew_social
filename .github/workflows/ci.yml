@@ -44,6 +44,9 @@ jobs:
       - name: Verify subtitle card invariants
         run: npm run verify:subtitle-invariant
 
+      - name: Verify configured subtitle sizing and rollback
+        run: npm run verify:subtitle-fit-v2
+
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 

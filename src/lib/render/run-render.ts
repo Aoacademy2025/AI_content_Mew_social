@@ -319,12 +319,20 @@ export async function runRender(
         fontWeightOverride: fontWeightOverride ?? 0,
       }
     : { scenes: resolvedScenes, audioUrl: audioUrl ?? null, captionSegments: captionsData, watermark: watermark ?? false };
+  // Remotion runs compositions inside its own browser process. Public Next env
+  // values are not present there unless we pass them explicitly; use one object
+  // for metadata selection and every render page so preview/burn rollback cannot
+  // disagree on subtitle sizing.
+  const remotionEnvVariables = {
+    NEXT_PUBLIC_SUBTITLE_FIT_V2: process.env.NEXT_PUBLIC_SUBTITLE_FIT_V2 ?? "1",
+  };
 
   const selectCurrentComposition = () =>
     selectComposition({
       serveUrl: bundleLocation,
       id: compositionId,
       inputProps,
+      envVariables: remotionEnvVariables,
       timeoutInMilliseconds: 120000,
     });
   const applyCompositionOverrides = (
@@ -456,6 +464,7 @@ export async function runRender(
           codec: "h264",
           outputLocation,
           inputProps,
+          envVariables: remotionEnvVariables,
           timeoutInMilliseconds: 7200000,
           concurrency: renderConcurrency,
           cancelSignal,

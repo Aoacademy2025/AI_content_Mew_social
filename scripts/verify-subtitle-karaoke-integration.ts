@@ -58,6 +58,14 @@ async function verifyPausedEditorPreview(): Promise<void> {
     platform: "browser",
     write: false,
     logLevel: "silent",
+    // Next injects NEXT_PUBLIC_* during its browser build. This lightweight
+    // fixture must provide the same contract instead of relying on a Node
+    // `process` global that does not exist in Chromium.
+    define: {
+      "process.env.NEXT_PUBLIC_SUBTITLE_FIT_V2": JSON.stringify(
+        process.env.NEXT_PUBLIC_SUBTITLE_FIT_V2 ?? "1",
+      ),
+    },
   });
 
   const browser = await puppeteer.launch({
