@@ -284,12 +284,21 @@ async function main() {
         recurringCharacterDescription: "the same adult, supportive person",
         isRealPerson: false,
       },
+      {
+        entityId: "pi",
+        properName: "Pi",
+        entityType: "object",
+        durableAttributes: ["mathematical concept"],
+        renderingDescription: "a visual representation of pi",
+        recurringCharacterDescription: null,
+        isRealPerson: false,
+      },
     ],
     beats: validAiAgentAnalysis.beats.map((beat) => ({
       ...beat,
       subject: "a person and his son",
-      action: "look at a tablet together before asking a Trusted Person for help",
-      entityRefs: ["son", "tablet", "trusted-person"],
+      action: "look at a tablet together, typing a question about Pi before asking a Trusted Person for help",
+      entityRefs: ["son", "tablet", "trusted-person", "pi"],
     })),
   };
   const commonNounEntityAnalyzer = createGeminiContentPreflightAnalyzer(
@@ -313,8 +322,8 @@ async function main() {
   );
   assert.equal(
     commonNounEntityResult.beats[0].action,
-    "look at a tablet together before asking a Trusted Person for help",
-    "ordinary object nouns and title-cased roles remain natural provider-facing prose",
+    "look at a tablet together, typing a question about Pi before asking a Trusted Person for help",
+    "ordinary object nouns, concepts, and title-cased roles remain natural provider-facing prose",
   );
 
   let exhaustedSemanticCalls = 0;
@@ -393,7 +402,7 @@ async function main() {
    * from cache — the policy would silently apply to new sources only. */
   assert.equal(
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
-    "brand-content-preflight-v14-generic-role-entity-guard",
+    "brand-content-preflight-v15-generic-concept-entity-guard",
     "changing what a beat contains must publish a new analyzer version",
   );
   const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");
