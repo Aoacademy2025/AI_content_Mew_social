@@ -213,19 +213,6 @@ export function usePostPhaseEditor(
   // ปรับสี scope รายการ์ด
   const [scope, setScope] = useState<"all" | "card">("all");
   const [overrides, setOverrides] = useState<V2CardOverrides>(() => editSnapshot?.captionOverrides ?? {});
-  // M1: apply พรีเซ็ตซับต้องล้าง per-card overrides เหมือน applyCardLen ด้านล่าง — ไม่งั้นสี
-  // ที่ตั้งไว้รายใบ (ชนะ cfg เสมอ) จะทำให้พรีเซ็ต "ไม่ติด" เงียบ ๆ บนการ์ดที่เคยแก้สีเอง
-  const stylePresets = useEditorStylePresets({
-    subtitleConfig: cfg,
-    subtitleCardLen: cardLen,
-    logoConfig: logoOverlay,
-    onApplySubtitle: (config, presetCardLen) => {
-      setCfg(config);
-      applyCardLen(presetCardLen);
-    },
-    onApplyLogo: onLogoOverlayChange,
-    canApplyLogo: canRunProjectOperation,
-  });
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
   const windowApplyInFlightRef = useRef(false);
@@ -260,6 +247,22 @@ export function usePostPhaseEditor(
     );
     onHeadlineHookChange(next ?? undefined);
   }
+
+  // M1: apply พรีเซ็ตซับต้องล้าง per-card overrides เหมือน applyCardLen ด้านล่าง — ไม่งั้นสี
+  // ที่ตั้งไว้รายใบ (ชนะ cfg เสมอ) จะทำให้พรีเซ็ต "ไม่ติด" เงียบ ๆ บนการ์ดที่เคยแก้สีเอง
+  const stylePresets = useEditorStylePresets({
+    subtitleConfig: cfg,
+    subtitleCardLen: cardLen,
+    headlineConfig: resolvedHeadlineHook,
+    logoConfig: logoOverlay,
+    onApplySubtitle: (config, presetCardLen) => {
+      setCfg(config);
+      applyCardLen(presetCardLen);
+    },
+    onApplyHeadline: setHeadlineHook,
+    onApplyLogo: onLogoOverlayChange,
+    canApplyLogo: canRunProjectOperation,
+  });
 
   function selectHeadlineSuggestion(suggestion: HeadlineHookSuggestion) {
     setHeadlineHook({

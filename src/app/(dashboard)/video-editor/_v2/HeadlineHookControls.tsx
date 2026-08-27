@@ -24,6 +24,7 @@ import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-o
 import { color, font, radius } from "./tokens";
 import { GroupLabel } from "./ui";
 import type { PostPhaseEditor } from "./usePostPhaseEditor";
+import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
 
 const PRESET_LABELS: Record<HeadlineHookPreset, { label: string; description: string }> = {
   viral: { label: "Viral", description: "ตัวใหญ่ ตัดขอบชัด" },
@@ -136,6 +137,17 @@ export function HeadlineHookControls({
 
   return (
     <div className="flex flex-col gap-5" aria-label="ตั้งค่าพาดหัวเปิดคลิป">
+      <EditorStylePresetShelf
+        kind="headline"
+        presets={editor.stylePresets.headline}
+        loading={editor.stylePresets.loading}
+        busy={editor.stylePresets.busy}
+        canSave
+        onSave={(name) => editor.stylePresets.save("headline", name)}
+        onApply={editor.stylePresets.apply}
+        onRemove={editor.stylePresets.remove}
+      />
+
       <section
         className="flex items-center justify-between gap-4"
         style={{

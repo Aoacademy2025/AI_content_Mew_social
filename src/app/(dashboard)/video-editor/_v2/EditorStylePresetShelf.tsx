@@ -27,6 +27,12 @@ const COPY: Record<EditorStylePresetKind, {
     inputLabel: "ชื่อพรีเซ็ตซับ",
     placeholder: "เช่น คลิปความรู้",
   },
+  headline: {
+    title: "พรีเซ็ตพาดหัวของฉัน",
+    empty: "บันทึกรูปแบบ ฟอนต์ ตำแหน่ง และเวลาค้างไว้ใช้กับคลิปถัดไป",
+    inputLabel: "ชื่อพรีเซ็ตพาดหัว",
+    placeholder: "เช่น เปิดคลิปข่าว",
+  },
   logo: {
     title: "พรีเซ็ตโลโก้ของฉัน",
     empty: "บันทึกไฟล์ ตำแหน่ง ขนาด และความทึบไว้ใช้ซ้ำ",
@@ -55,6 +61,14 @@ function PresetMark({ preset }: { preset: EditorStylePreset }) {
       <span className="preset-shelf__subtitle-mark" aria-hidden="true">
         <i style={{ background: preset.config.textColor }} />
         <i style={{ background: preset.config.accentColor }} />
+      </span>
+    );
+  }
+  if (preset.kind === "headline") {
+    return (
+      <span className="preset-shelf__headline-mark" aria-hidden="true">
+        <i />
+        <i />
       </span>
     );
   }
@@ -377,6 +391,25 @@ export function EditorStylePresetShelf({
           border-radius: 50%;
         }
         .preset-shelf__subtitle-mark i + i { margin-left: -4px; }
+        .preset-shelf__headline-mark {
+          width: 22px;
+          height: 20px;
+          flex: none;
+          display: grid;
+          align-content: center;
+          gap: 3px;
+          padding: 0 2px;
+        }
+        .preset-shelf__headline-mark i {
+          height: 3px;
+          display: block;
+          border-radius: 999px;
+          background: #FB923C;
+        }
+        .preset-shelf__headline-mark i:last-child {
+          width: 68%;
+          background: #FDBA74;
+        }
         .preset-shelf__logo-mark {
           width: 22px;
           height: 22px;

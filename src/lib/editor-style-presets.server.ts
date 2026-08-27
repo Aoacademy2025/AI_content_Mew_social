@@ -4,6 +4,8 @@ import {
   normalizeEditorStylePresetName,
   type EditorStylePreset,
   type EditorStylePresetKind,
+  type HeadlineEditorStylePreset,
+  type HeadlineStylePresetConfig,
   type LogoEditorStylePreset,
   type SubtitleStylePresetConfig,
   type SubtitleEditorStylePreset,
@@ -91,6 +93,17 @@ function serializePreset(row: PresetRow): EditorStylePreset | null {
       ...timestamps,
     };
   }
+  if (row.kind === "headline") {
+    const config = normalizeEditorStylePresetConfig("headline", parseJson(row.configJson));
+    if (!config || row.brandAssetId) return null;
+    return {
+      id: row.id,
+      kind: "headline",
+      name: row.name,
+      config,
+      ...timestamps,
+    };
+  }
   return null;
 }
 
@@ -115,12 +128,16 @@ type SaveEditorStylePresetInput = {
   name: unknown;
 } & (
   | { kind: "subtitle"; config: unknown }
+  | { kind: "headline"; config: unknown }
   | { kind: "logo"; config: unknown }
 );
 
 export async function saveEditorStylePreset(
   input: SaveEditorStylePresetInput & { kind: "subtitle" },
 ): Promise<SubtitleEditorStylePreset>;
+export async function saveEditorStylePreset(
+  input: SaveEditorStylePresetInput & { kind: "headline" },
+): Promise<HeadlineEditorStylePreset>;
 export async function saveEditorStylePreset(
   input: SaveEditorStylePresetInput & { kind: "logo" },
 ): Promise<LogoEditorStylePreset>;
@@ -133,10 +150,14 @@ export async function saveEditorStylePreset(
   const normalizedName = normalizeEditorStylePresetName(input.name);
   if (!normalizedName) throw new EditorStylePresetError("invalid_name", 400);
 
-  let config: SubtitleStylePresetConfig | LogoOverlayConfig;
+  let config: SubtitleStylePresetConfig | HeadlineStylePresetConfig | LogoOverlayConfig;
   let requestedBrandAssetId: string | null = null;
   if (input.kind === "subtitle") {
     const normalized = normalizeEditorStylePresetConfig("subtitle", input.config);
+    if (!normalized) throw new EditorStylePresetError("invalid_config", 400);
+    config = normalized;
+  } else if (input.kind === "headline") {
+    const normalized = normalizeEditorStylePresetConfig("headline", input.config);
     if (!normalized) throw new EditorStylePresetError("invalid_config", 400);
     config = normalized;
   } else {
@@ -223,5 +244,5 @@ export async function deleteEditorStylePreset(
 }
 
 export function isEditorStylePresetKind(value: unknown): value is EditorStylePresetKind {
-  return value === "subtitle" || value === "logo";
+  return value === "subtitle" || value === "headline" || value === "logo";
 }

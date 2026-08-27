@@ -7,8 +7,24 @@ import {
   normalizeSubtitleFontWeight,
   type SubtitleFontWeight,
 } from "@/lib/subtitle-font-weight";
+import {
+  HEADLINE_HOOK_FONTS,
+  HEADLINE_HOOK_FONT_WEIGHTS,
+  HEADLINE_HOOK_PRESETS,
+  MAX_HEADLINE_HOOK_DURATION_MS,
+  MAX_HEADLINE_HOOK_FONT_SIZE,
+  MAX_HEADLINE_HOOK_SUBHEAD_FONT_SIZE,
+  MAX_HEADLINE_HOOK_TOP_PERCENT,
+  MIN_HEADLINE_HOOK_FONT_SIZE,
+  MIN_HEADLINE_HOOK_SUBHEAD_FONT_SIZE,
+  MIN_HEADLINE_HOOK_TOP_PERCENT,
+  type HeadlineHookConfig,
+  type HeadlineHookFontFamily,
+  type HeadlineHookFontWeight,
+  type HeadlineHookPreset,
+} from "@/lib/headline-hook";
 
-export const EDITOR_STYLE_PRESET_KINDS = ["subtitle", "logo"] as const;
+export const EDITOR_STYLE_PRESET_KINDS = ["subtitle", "headline", "logo"] as const;
 export type EditorStylePresetKind = (typeof EDITOR_STYLE_PRESET_KINDS)[number];
 
 export const MAX_EDITOR_STYLE_PRESET_NAME_LENGTH = 40;
@@ -50,8 +66,28 @@ export type LogoEditorStylePreset = {
   updatedAt: string;
 };
 
+export type HeadlineStylePresetConfig = {
+  preset: HeadlineHookPreset;
+  durationMs: number;
+  topPercent: number;
+  fontFamily?: HeadlineHookFontFamily;
+  fontSize?: number;
+  fontWeight?: HeadlineHookFontWeight;
+  subheadlineFontSize?: number;
+};
+
+export type HeadlineEditorStylePreset = {
+  id: string;
+  kind: "headline";
+  name: string;
+  config: HeadlineStylePresetConfig;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type EditorStylePreset =
   | SubtitleEditorStylePreset
+  | HeadlineEditorStylePreset
   | LogoEditorStylePreset;
 
 const SUBTITLE_PRESETS = new Set<SubPreset>([
@@ -94,6 +130,9 @@ const SUBTITLE_EFFECTS = new Set<SubTextEffect>([
   "typewriter",
 ]);
 const SUBTITLE_CARD_LENGTHS = new Set<SubtitleCardLen>(["sentence", "4", "3", "2", "1"]);
+const HEADLINE_PRESETS = new Set<HeadlineHookPreset>(HEADLINE_HOOK_PRESETS);
+const HEADLINE_FONTS = new Set<HeadlineHookFontFamily>(HEADLINE_HOOK_FONTS.map((font) => font.value));
+const HEADLINE_FONT_WEIGHTS = new Set<HeadlineHookFontWeight>(HEADLINE_HOOK_FONT_WEIGHTS);
 
 const COLOR_PATTERN = /^#[0-9a-f]{6}$/iu;
 
@@ -180,10 +219,69 @@ export function normalizeSubtitleStylePresetConfig(
   };
 }
 
+export function normalizeHeadlineStylePresetConfig(
+  value: unknown,
+): HeadlineStylePresetConfig | null {
+  if (!isRecord(value)) return null;
+  const fontFamily = value.fontFamily;
+  const fontSize = value.fontSize;
+  const fontWeight = value.fontWeight;
+  const subheadlineFontSize = value.subheadlineFontSize;
+  if (
+    typeof value.preset !== "string"
+    || !HEADLINE_PRESETS.has(value.preset as HeadlineHookPreset)
+    || !isFiniteNumberInRange(value.durationMs, 1_000, MAX_HEADLINE_HOOK_DURATION_MS)
+    || !isFiniteNumberInRange(value.topPercent, MIN_HEADLINE_HOOK_TOP_PERCENT, MAX_HEADLINE_HOOK_TOP_PERCENT)
+    || (fontFamily !== undefined && (
+      typeof fontFamily !== "string"
+      || !HEADLINE_FONTS.has(fontFamily as HeadlineHookFontFamily)
+    ))
+    || (fontSize !== undefined && !isFiniteNumberInRange(
+      fontSize,
+      MIN_HEADLINE_HOOK_FONT_SIZE,
+      MAX_HEADLINE_HOOK_FONT_SIZE,
+    ))
+    || (fontWeight !== undefined && (
+      typeof fontWeight !== "number"
+      || !HEADLINE_FONT_WEIGHTS.has(fontWeight as HeadlineHookFontWeight)
+    ))
+    || (subheadlineFontSize !== undefined && !isFiniteNumberInRange(
+      subheadlineFontSize,
+      MIN_HEADLINE_HOOK_SUBHEAD_FONT_SIZE,
+      MAX_HEADLINE_HOOK_SUBHEAD_FONT_SIZE,
+    ))
+  ) {
+    return null;
+  }
+
+  return {
+    preset: value.preset as HeadlineHookPreset,
+    durationMs: Math.round(value.durationMs),
+    topPercent: Math.round(value.topPercent),
+    ...(fontFamily !== undefined ? { fontFamily: fontFamily as HeadlineHookFontFamily } : {}),
+    ...(fontSize !== undefined ? { fontSize: Math.round(fontSize as number) } : {}),
+    ...(fontWeight !== undefined ? { fontWeight: fontWeight as HeadlineHookFontWeight } : {}),
+    ...(subheadlineFontSize !== undefined
+      ? { subheadlineFontSize: Math.round(subheadlineFontSize as number) }
+      : {}),
+  };
+}
+
+/** Deliberately omit per-project copy and enabled state from reusable presets. */
+export function headlineStylePresetConfig(value: HeadlineHookConfig): HeadlineStylePresetConfig {
+  const normalized = normalizeHeadlineStylePresetConfig(value);
+  if (!normalized) throw new Error("invalid normalized headline style");
+  return normalized;
+}
+
 export function normalizeEditorStylePresetConfig(
   kind: "subtitle",
   value: unknown,
 ): SubtitleStylePresetConfig | null;
+export function normalizeEditorStylePresetConfig(
+  kind: "headline",
+  value: unknown,
+): HeadlineStylePresetConfig | null;
 export function normalizeEditorStylePresetConfig(
   kind: "logo",
   value: unknown,
@@ -191,10 +289,10 @@ export function normalizeEditorStylePresetConfig(
 export function normalizeEditorStylePresetConfig(
   kind: EditorStylePresetKind,
   value: unknown,
-): SubtitleStylePresetConfig | LogoOverlayConfig | null {
-  return kind === "subtitle"
-    ? normalizeSubtitleStylePresetConfig(value)
-    : normalizeLogoOverlayConfig(value);
+): SubtitleStylePresetConfig | HeadlineStylePresetConfig | LogoOverlayConfig | null {
+  if (kind === "subtitle") return normalizeSubtitleStylePresetConfig(value);
+  if (kind === "headline") return normalizeHeadlineStylePresetConfig(value);
+  return normalizeLogoOverlayConfig(value);
 }
 
 export function parseEditorStylePreset(value: unknown): EditorStylePreset | null {
@@ -228,6 +326,19 @@ export function parseEditorStylePreset(value: unknown): EditorStylePreset | null
       ? {
           id: value.id,
           kind: "logo",
+          name: value.name,
+          config,
+          createdAt: value.createdAt,
+          updatedAt: value.updatedAt,
+        }
+      : null;
+  }
+  if (value.kind === "headline") {
+    const config = normalizeEditorStylePresetConfig("headline", value.config);
+    return config
+      ? {
+          id: value.id,
+          kind: "headline",
           name: value.name,
           config,
           createdAt: value.createdAt,

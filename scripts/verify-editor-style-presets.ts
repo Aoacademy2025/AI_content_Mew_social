@@ -39,6 +39,16 @@ const SUBTITLE_CONFIG = {
   verticalPos: 82,
 } as const;
 
+const HEADLINE_CONFIG = {
+  preset: "news",
+  durationMs: 6_500,
+  topPercent: 24,
+  fontFamily: "Prompt",
+  fontSize: 88,
+  fontWeight: 600,
+  subheadlineFontSize: 46,
+} as const;
+
 async function main() {
   const {
     EditorStylePresetError,
@@ -88,6 +98,53 @@ async function main() {
   ok(updatedSubtitle.id === subtitle.id, "saving the same normalized name updates instead of duplicating");
   ok((await listEditorStylePresets(owner.id)).length === 1, "same-name update keeps one preset row");
   ok((await listEditorStylePresets(other.id)).length === 0, "preset lists are isolated by account");
+
+  const headline = await saveEditorStylePreset({
+    userId: owner.id,
+    plan: owner.plan,
+    kind: "headline",
+    name: "พาดหัวข่าว",
+    config: {
+      ...HEADLINE_CONFIG,
+      enabled: true,
+      headline: "ข้อความเฉพาะคลิป ห้ามบันทึก",
+      subheadline: "บรรทัดเฉพาะคลิป ห้ามบันทึก",
+    },
+  });
+  ok(
+    headline.kind === "headline"
+      && headline.config.preset === "news"
+      && headline.config.durationMs === 6_500
+      && headline.config.topPercent === 24
+      && headline.config.fontFamily === "Prompt"
+      && headline.config.fontSize === 88
+      && headline.config.fontWeight === 600
+      && headline.config.subheadlineFontSize === 46,
+    "headline preset round-trips style, position, and duration",
+  );
+  ok(
+    headline.kind === "headline"
+      && !("headline" in headline.config)
+      && !("subheadline" in headline.config)
+      && !("enabled" in headline.config),
+    "headline preset never carries project-specific copy or layer state",
+  );
+
+  await prisma.editorStylePreset.create({
+    data: {
+      userId: owner.id,
+      kind: "future-editor-kind",
+      name: "Future",
+      nameKey: "future",
+      configJson: "{}",
+    },
+  });
+  const knownAfterUnknown = await listEditorStylePresets(owner.id);
+  ok(
+    knownAfterUnknown.some((preset) => preset.kind === "headline")
+      && !knownAfterUnknown.some((preset) => (preset as { kind: string }).kind === "future-editor-kind"),
+    "unknown stored preset kinds are skipped without breaking the shelf",
+  );
 
   const asset = await prisma.brandAsset.create({
     data: {
@@ -185,6 +242,20 @@ async function main() {
   }
   ok(invalidSubtitleRejected, "invalid subtitle values are rejected instead of persisted");
 
+  let invalidHeadlineRejected = false;
+  try {
+    await saveEditorStylePreset({
+      userId: owner.id,
+      plan: owner.plan,
+      kind: "headline",
+      name: "พาดหัวค่าพัง",
+      config: { ...HEADLINE_CONFIG, durationMs: 99_999 },
+    });
+  } catch (error) {
+    invalidHeadlineRejected = error instanceof EditorStylePresetError && error.code === "invalid_config";
+  }
+  ok(invalidHeadlineRejected, "invalid headline style values are rejected instead of persisted");
+
   // ── 2026-07-26 audit M9/B-3 note: MAX_EDITOR_STYLE_PRESETS_PER_KIND (the one
   //    anti-DoS guard on this feature) had zero test coverage — cover the cap here. ──
   const limitOwner = await prisma.user.create({
@@ -269,6 +340,14 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/useEditorStylePresets.ts",
     "utf8",
   );
+  ok(
+    stylePresetsHookSource.includes("headlineStylePresetConfig(input.headlineConfig)"),
+    "headline save derives a style-only config instead of serializing headline copy",
+  );
+  ok(
+    stylePresetsHookSource.includes("input.onApplyHeadline(preset.config)"),
+    "headline apply restores the saved style through the editor's headline mutation boundary",
+  );
   const applyFnMatch = stylePresetsHookSource.match(/function apply\(preset: EditorStylePreset\) \{[\s\S]*?\n  \}\n/);
   ok(!!applyFnMatch, "useEditorStylePresets exposes an apply() function to source-check (M2/M9 contract present)");
   const applyFn = applyFnMatch![0];
@@ -308,6 +387,15 @@ async function main() {
   const desktopSource = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhase.tsx", "utf8");
   const mobileSource = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx", "utf8");
   const previewSource = readFileSync("src/app/(dashboard)/video-editor/_v2/V2CaptionOverlay.tsx", "utf8");
+  const headlineControlsSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/HeadlineHookControls.tsx",
+    "utf8",
+  );
+  ok(
+    headlineControlsSource.includes('kind="headline"')
+      && headlineControlsSource.includes("editor.stylePresets.headline"),
+    "the shared headline controls expose the same preset shelf on desktop and mobile",
+  );
   ok(desktopSource.includes('value: "medium", label: "กลาง"'), "desktop exposes the medium weight control");
   ok(mobileSource.includes('value: "medium", label: "กลาง"'), "mobile exposes the medium weight control");
   ok(previewSource.includes("resolveV2FontWeight(cfg)"), "live subtitle preview uses the shared weight resolver");

@@ -3,12 +3,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  headlineStylePresetConfig,
   parseEditorStylePreset,
   type EditorStylePreset,
   type EditorStylePresetKind,
+  type HeadlineEditorStylePreset,
+  type HeadlineStylePresetConfig,
   type LogoEditorStylePreset,
   type SubtitleEditorStylePreset,
 } from "@/lib/editor-style-preset-contract";
+import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
 import { trackEvent } from "@/lib/client-telemetry";
 import type { V2CardLen, V2SubConfig } from "./subtitle-style";
@@ -28,8 +32,10 @@ function apiMessage(data: PresetApiResponse | null, fallback: string): string {
 export function useEditorStylePresets(input: {
   subtitleConfig: V2SubConfig;
   subtitleCardLen: V2CardLen;
+  headlineConfig: HeadlineHookConfig;
   logoConfig?: LogoOverlayConfig;
   onApplySubtitle: (config: V2SubConfig, cardLen: V2CardLen) => void;
+  onApplyHeadline: (config: HeadlineStylePresetConfig) => void;
   onApplyLogo: (config: LogoOverlayConfig) => void;
   /** M2: apply(logo) ต้องรู้ว่า onApplyLogo จะโดนเงียบ (canAcceptUserMutation ของ
    *  useV2Project = false เช่นระหว่าง recovery conflict) ก่อนจะ toast สำเร็จ — ค่าเดียวกับ
@@ -70,11 +76,17 @@ export function useEditorStylePresets(input: {
     () => presets.filter((preset): preset is LogoEditorStylePreset => preset.kind === "logo"),
     [presets],
   );
+  const headline = useMemo(
+    () => presets.filter((preset): preset is HeadlineEditorStylePreset => preset.kind === "headline"),
+    [presets],
+  );
 
   async function save(kind: EditorStylePresetKind, name: string): Promise<boolean> {
     const config = kind === "subtitle"
       ? { ...input.subtitleConfig, cardLen: input.subtitleCardLen }
-      : input.logoConfig;
+      : kind === "headline"
+        ? headlineStylePresetConfig(input.headlineConfig)
+        : input.logoConfig;
     if (!config || busy) return false;
     setBusy(true);
     try {
@@ -109,6 +121,8 @@ export function useEditorStylePresets(input: {
     if (preset.kind === "subtitle") {
       const { cardLen, ...config } = preset.config;
       input.onApplySubtitle(config, cardLen);
+    } else if (preset.kind === "headline") {
+      input.onApplyHeadline(preset.config);
     } else {
       // M2: onApplyLogo (p.setLogoOverlay) no-ops silently while the project can't
       // accept a mutation (e.g. recovery conflict) — check first so we never toast a
@@ -186,6 +200,7 @@ export function useEditorStylePresets(input: {
 
   return {
     subtitle,
+    headline,
     logo,
     loading,
     busy,
