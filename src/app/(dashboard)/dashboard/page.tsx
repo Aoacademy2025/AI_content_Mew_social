@@ -12,6 +12,7 @@ import { QuotaStatus } from "@/components/quota-status";
 import { V2JobBadge } from "@/components/v2-job-badge";
 import { DashboardFounderBanner } from "@/components/marketing/founder-banner";
 import { FirstClipHero } from "@/components/dashboard/first-clip-hero";
+import { ReturnLoopCard } from "@/components/dashboard/return-loop-card";
 import { fetchMe } from "@/lib/use-me";
 import { deriveFirstClipState, shouldShowFirstClipHero } from "@/lib/first-clip-dashboard";
 
@@ -269,6 +270,10 @@ export default function DashboardPage() {
             <QuotaStatus variant="chip" />
           </div>
         )}
+
+        {/* Returning creators get one clear route back into real project state.
+            First-Clip accounts keep their dedicated activation flow above. */}
+        {!isAdmin && showLegacyBlocks && <ReturnLoopCard />}
 
         {/* Quick actions */}
         {isAdmin ? (

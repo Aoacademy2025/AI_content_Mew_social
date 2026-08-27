@@ -72,6 +72,9 @@ jobs:
       - name: Verify first-clip day-one dashboard
         run: npm run verify:first-clip-dashboard
 
+      - name: Verify returning creator loop
+        run: npm run verify:return-loop
+
       - name: Verify /pricing LCP convert page
         run: npm run verify:pricing-lcp
 
