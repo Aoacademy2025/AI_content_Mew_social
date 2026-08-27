@@ -915,7 +915,7 @@ export async function GET(req: Request) {
         orderBy: { snapshotDate: "desc" },
         take: 31,
         select: {
-          snapshotDate: true, asOf: true, activeRecurringPayers: true, activeCreators: true,
+          snapshotDate: true, asOf: true, activeRecurringPayers: true, activePayingCustomers: true, activeCreators: true,
           monthlyCreators: true, annualCreators: true, videoCreators: true,
           scriptCreators: true, imageCreators: true,
         },

@@ -21,7 +21,7 @@ export type NorthStarUserEvidence = {
   bundleBillingPeriod: string | null;
   bundleAccessExpiresAt: Date | null;
   bundleAmountThb: number | null;
-  payments: readonly { plan: string; status: string; amount: number; periodDays: number }[];
+  payments: readonly { plan: string; status: string; amount: number; periodDays: number; note: string | null }[];
 };
 
 export type NorthStarOutcomeEvidence = {
@@ -36,6 +36,7 @@ export type SubscriptionNorthStar = {
   asOf: string;
   window: { days: 30; since: string; until: string };
   activeRecurringPayers: number;
+  activePayingCustomers: number;
   activeCreators: number;
   creatorRatePct: number;
   monthlyCreators: number;
@@ -74,6 +75,7 @@ export function recurringBillingCohort(
     payment.status === "PAID"
       && payment.amount > 0
       && payment.periodDays > 0
+      && payment.note !== "credits"
       && (payment.plan === "PRO" || payment.plan === "BUSINESS"),
   );
   const directRecurring = Boolean(
@@ -101,6 +103,48 @@ export function recurringBillingCohort(
     : "monthly";
 }
 
+/**
+ * MAPC follows customer value, not payment mechanics. A customer who paid for
+ * an annual term up front is still a paying customer for the life of that term,
+ * even though Stripe will not auto-bill them next month.
+ */
+export function activePayingBillingCohort(
+  user: NorthStarUserEvidence,
+  now: Date,
+): BillingCohort | null {
+  if (user.suspended || isInternalNorthStarAccount(user)) return null;
+  const hasPlanCash = user.payments.some((payment) =>
+    payment.status === "PAID"
+      && payment.amount > 0
+      && payment.periodDays > 0
+      && payment.note !== "credits"
+      && (payment.plan === "PRO" || payment.plan === "BUSINESS"),
+  );
+  const hasActiveDirectAccess = Boolean(
+    hasPlanCash
+      && (user.plan === "PRO" || user.plan === "BUSINESS")
+      && (
+        (user.planExpiresAt && user.planExpiresAt > now)
+        || (user.stripeSubscriptionId && user.subStatus === "active")
+        || (!user.planExpiresAt && !user.stripeSubscriptionId)
+      ),
+  );
+  const hasActiveBundleAccess = Boolean(
+    user.bundleSubscriptionId
+      && user.bundleStatus === "ACTIVE"
+      && user.bundleAccessExpiresAt
+      && user.bundleAccessExpiresAt > now
+      && (user.bundleAmountThb ?? 0) > 0,
+  );
+  if (!hasActiveDirectAccess && !hasActiveBundleAccess) return null;
+
+  const periods = [
+    hasActiveDirectAccess ? user.billingPeriod : null,
+    hasActiveBundleAccess ? user.bundleBillingPeriod : null,
+  ].filter((period): period is string => Boolean(period));
+  return periods.length > 0 && periods.every((period) => period === "annual") ? "annual" : "monthly";
+}
+
 export function computeSubscriptionNorthStar(input: {
   users: readonly NorthStarUserEvidence[];
   outcomes: NorthStarOutcomeEvidence;
@@ -110,9 +154,10 @@ export function computeSubscriptionNorthStar(input: {
   const since = new Date(now.getTime() - MAPC_WINDOW_DAYS * DAY_MS);
   const billingByUser = new Map<string, BillingCohort>();
   for (const user of input.users) {
-    const cohort = recurringBillingCohort(user, now);
+    const cohort = activePayingBillingCohort(user, now);
     if (cohort) billingByUser.set(user.id, cohort);
   }
+  const activeRecurringPayers = input.users.filter((user) => recurringBillingCohort(user, now)).length;
 
   const payerIds = new Set(billingByUser.keys());
   const videos = new Set(input.outcomes.videoUserIds.filter((id) => payerIds.has(id)));
@@ -131,16 +176,17 @@ export function computeSubscriptionNorthStar(input: {
     label: "Monthly Active Paying Creators",
     asOf: now.toISOString(),
     window: { days: MAPC_WINDOW_DAYS, since: since.toISOString(), until: now.toISOString() },
-    activeRecurringPayers: payerIds.size,
+    activeRecurringPayers,
+    activePayingCustomers: payerIds.size,
     activeCreators: creators.size,
     creatorRatePct: payerIds.size > 0 ? Math.round((creators.size / payerIds.size) * 100) : 0,
     monthlyCreators,
     annualCreators,
     outcomes: { videoCreators: videos.size, scriptCreators: scripts.size, imageCreators: images.size },
-    formula: "ผู้จ่ายแบบรายเดือน/รายปีที่ยัง active และสร้างผลลัพธ์สำเร็จอย่างน้อย 1 อย่างใน 30 วันที่ผ่านมา",
+    formula: "ลูกค้าจ่ายเงินจริงที่ยังมีสิทธิ์ และสร้างผลลัพธ์สำเร็จอย่างน้อย 1 อย่างใน 30 วันที่ผ่านมา",
     exclusions: [
       "บัญชีทีมงานและ Administrator",
-      "FREE, Trial, คูปอง และสิทธิ์ Administrator Grant ที่ไม่มีการจ่ายแบบ recurring",
+      "FREE, Trial, คูปอง และสิทธิ์ Administrator Grant ที่ไม่มีเงินเข้า",
       "การเปิดดู พรีวิว งานล้มเหลว งานยกเลิก และการ retry",
     ],
   };
@@ -152,7 +198,7 @@ export async function getSubscriptionNorthStar(now: Date = new Date()): Promise<
     where: {
       suspended: false,
       OR: [
-        { stripeSubscriptionId: { not: null }, subStatus: "active", planExpiresAt: { gt: now } },
+        { payments: { some: { status: "PAID", amount: { gt: 0 }, periodDays: { gt: 0 } } } },
         { bundleSubscriptionId: { not: null }, bundleStatus: "ACTIVE", bundleAccessExpiresAt: { gt: now }, bundleAmountThb: { gt: 0 } },
       ],
     },
@@ -163,11 +209,11 @@ export async function getSubscriptionNorthStar(now: Date = new Date()): Promise<
       bundleAccessExpiresAt: true, bundleAmountThb: true,
       payments: {
         where: { status: "PAID", amount: { gt: 0 }, periodDays: { gt: 0 } },
-        select: { plan: true, status: true, amount: true, periodDays: true },
+        select: { plan: true, status: true, amount: true, periodDays: true, note: true },
       },
     },
   });
-  const payerIds = users.filter((user) => recurringBillingCohort(user, now)).map((user) => user.id);
+  const payerIds = users.filter((user) => activePayingBillingCohort(user, now)).map((user) => user.id);
   if (payerIds.length === 0) {
     return computeSubscriptionNorthStar({ users, outcomes: { videoUserIds: [], scriptUserIds: [], imageUserIds: [] }, now });
   }
@@ -222,6 +268,7 @@ export async function writeSubscriptionNorthStarSnapshot(now: Date = new Date())
   const data = {
     asOf: now,
     activeRecurringPayers: northStar.activeRecurringPayers,
+    activePayingCustomers: northStar.activePayingCustomers,
     activeCreators: northStar.activeCreators,
     monthlyCreators: northStar.monthlyCreators,
     annualCreators: northStar.annualCreators,

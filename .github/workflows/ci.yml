@@ -144,6 +144,9 @@ jobs:
       - name: Verify Admin Insights revenue clarity
         run: npm run verify:admin-insights-revenue
 
+      - name: Verify Revenue & Growth cash truth and meeting dashboard
+        run: npm run verify:revenue-growth
+
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
 

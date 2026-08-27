@@ -96,12 +96,12 @@ type InsightsResponse = {
   northStar: {
     metric: "MAPC"; label: string; asOf: string;
     window: { days: 30; since: string; until: string };
-    activeRecurringPayers: number; activeCreators: number; creatorRatePct: number;
+    activeRecurringPayers: number; activePayingCustomers: number; activeCreators: number; creatorRatePct: number;
     monthlyCreators: number; annualCreators: number;
     outcomes: { videoCreators: number; scriptCreators: number; imageCreators: number };
     formula: string; exclusions: string[];
     history: Array<{
-      snapshotDate: string; asOf: string; activeRecurringPayers: number; activeCreators: number;
+      snapshotDate: string; asOf: string; activeRecurringPayers: number; activePayingCustomers: number; activeCreators: number;
       monthlyCreators: number; annualCreators: number; videoCreators: number;
       scriptCreators: number; imageCreators: number;
     }>;
@@ -117,10 +117,10 @@ type InsightsResponse = {
 type ReconcileApplyResponse = { error?: string; applied?: { completed?: number; failed?: number; skipped?: number } | null };
 
 const metricHelp: Record<string, string> = {
-  "MAPC": "Monthly Active Paying Creators (MAPC) คือจำนวนสมาชิกที่ต่ออายุแบบรายเดือนหรือรายปี และกลับมาสร้างผลงานสำเร็จอย่างน้อย 1 อย่างใน 30 วันที่ผ่านมา",
+  "MAPC": "Monthly Active Paying Creators (MAPC) คือลูกค้าจ่ายเงินจริงที่ยังมีสิทธิ์ ทั้ง Subscription, จ่ายล่วงหน้า และ Bundle ซึ่งกลับมาสร้างผลงานสำเร็จอย่างน้อย 1 อย่างใน 30 วันที่ผ่านมา",
   "Recurring payer": "สมาชิกที่ต่ออายุอยู่ คือผู้ที่มีรอบชำระรายเดือนหรือรายปีและมีหลักฐานเงินเข้า ไม่รวม Free, Trial, คูปอง หรือสิทธิ์ที่แอดมินให้เพียงอย่างเดียว ตัวเลขนี้จึงเป็นส่วนหนึ่งของลูกค้าจ่ายเงินจริงทั้งหมด",
   "Durable outcome": "ผลงานที่ระบบบันทึกและส่งมอบสำเร็จ: วิดีโอเสร็จพร้อมไฟล์, สคริปต์ที่บันทึก, หรือ Hero AI Image ที่ settled พร้อม URL ไม่รวม preview, งานล้มเหลว, ยกเลิก และ retry",
-  "Creator rate": "อัตรากลับมาสร้าง = คนที่กลับมาสร้างผลงานสำเร็จ ÷ สมาชิกที่ต่ออายุอยู่ × 100 ใช้ดูว่าลูกค้าประจำกลับมาได้รับคุณค่าจริงกี่เปอร์เซ็นต์ใน 30 วัน",
+  "Creator rate": "อัตรากลับมาสร้าง = คนที่กลับมาสร้างผลงานสำเร็จ ÷ ลูกค้าจ่ายจริงที่ยังมีสิทธิ์ × 100 ใช้ดูว่าลูกค้ากลับมาได้รับคุณค่าจริงกี่เปอร์เซ็นต์ใน 30 วัน",
   "Monthly / Annual": "แบ่งเฉพาะคนที่กลับมาสร้างผลงานตามรอบชำระ หากบัญชีมีทั้งรายเดือนและรายปีพร้อมกัน จะจัดอยู่ฝั่งรายเดือนเพื่อไม่ให้นับคนซ้ำ",
   "Health Score": "คะแนนสุขภาพระบบ 0–100 — คิดเฉพาะ error ของระบบเรา (ไม่รวมคีย์ลูกค้า/noise) + render p95 + video completion + งานค้าง ยิ่งใกล้ 100 ยิ่งดี",
   "Error telemetry": "เหตุการณ์ error จาก telemetry ฝั่ง client+server (ตัด noise/คีย์ลูกค้า/quota ออกแล้ว) — เป็น 'สัญญาณ' ไม่ใช่จำนวนบั๊กชี้ขาด เพราะ editor v2 แทบไม่ยิง telemetry. จำนวนบั๊กระบบที่เชื่อถือได้ (authoritative) ดูที่แผง 'งานจริง (server)' ซึ่งนับจาก VideoJob",
@@ -387,15 +387,14 @@ export default function AdminInsightsPage() {
                   คนจ่ายที่กลับมาสร้างจริง <span className="whitespace-nowrap text-emerald-300">{formatNumber(northStar.activeCreators)} คน</span>
                 </h2>
                 <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-400">
-                  สมาชิกที่ต่ออายุอยู่ตอนนี้ {formatNumber(northStar.activeRecurringPayers)} คน
-                  {activation && <> · เป็นส่วนหนึ่งของลูกค้าจ่ายเงินจริงทั้งหมดตอนนี้ {formatNumber(activation.paidTotal)} คน</>}
-                  {' '}· สร้างผลงานสำเร็จใน 30 วัน {formatNumber(northStar.creatorRatePct)}%
+                  ลูกค้าจ่ายจริงที่ยังมีสิทธิ์ {formatNumber(northStar.activePayingCustomers)} คน
+                  {' '}· กลับมาสร้างผลงานสำเร็จใน 30 วัน {formatNumber(northStar.creatorRatePct)}%
                   <span className="ml-1 inline-flex align-middle"><InfoTip label="Creator rate" /></span>
                 </p>
                 <div className="mt-5 flex flex-wrap gap-x-6 gap-y-2 text-xs text-slate-400">
                   <span className="inline-flex items-center gap-1">MAPC รายเดือน <strong className="text-white">{formatNumber(northStar.monthlyCreators)}</strong></span>
                   <span className="inline-flex items-center gap-1">MAPC รายปี <strong className="text-white">{formatNumber(northStar.annualCreators)}</strong> <InfoTip label="Monthly / Annual" /></span>
-                  <span className="inline-flex items-center gap-1">ฐานสมาชิกต่ออายุ {formatNumber(northStar.activeRecurringPayers)} คน <InfoTip label="Recurring payer" /></span>
+                  <span className="inline-flex items-center gap-1">ต่ออายุอัตโนมัติ {formatNumber(northStar.activeRecurringPayers)} คน <InfoTip label="Recurring payer" /></span>
                 </div>
               </div>
 

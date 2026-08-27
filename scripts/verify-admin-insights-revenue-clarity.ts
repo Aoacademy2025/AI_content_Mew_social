@@ -30,8 +30,8 @@ assert.ok(
 );
 assert.match(
   insights,
-  /สมาชิกที่ต่ออายุอยู่ตอนนี้[\s\S]*northStar\.activeRecurringPayers/,
-  "the MAPC denominator must be labelled as the recurring subset, not all cash payers",
+  /ลูกค้าจ่ายจริงที่ยังมีสิทธิ์[\s\S]*northStar\.activePayingCustomers/,
+  "the MAPC denominator must include every active cash-backed customer, including prepaid terms",
 );
 assert.match(
   revenuePanel,

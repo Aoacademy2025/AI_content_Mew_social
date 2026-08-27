@@ -10,7 +10,7 @@ import { trackEvent } from "@/lib/client-telemetry";
 import { deriveFirstClipState, shouldShowFirstClipHero } from "@/lib/first-clip-dashboard";
 import {
   Settings, Users, Shield, Lock,
-  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen, SwatchBook,
+  LayoutDashboard, Video, HelpCircle, ChevronLeft, ChevronRight, ChevronDown, LogOut, Ticket, Clapperboard, CreditCard, Activity, TrendingUp, Megaphone, BookOpen, Handshake, WandSparkles, NotebookPen, SwatchBook,
 } from "lucide-react";
 import { SupportModal } from "@/components/ui/support-modal";
 import { FadeSwap } from "@/components/ui/fade-swap";
@@ -80,6 +80,7 @@ const adminStudioItems: SidebarNavItem[] = [
 ];
 const adminAdminItems: SidebarNavItem[] = [
   { title: "Admin",        href: "/admin",          icon: Shield, exact: true },
+  { title: "รายได้",        href: "/admin/revenue",  icon: TrendingUp },
   { title: "Insights",     href: "/admin/insights", icon: Activity },
   { title: "จัดการผู้ใช้",  href: "/admin/users",    icon: Users },
   { title: "คูปอง",         href: "/admin/coupons",  icon: Ticket },
