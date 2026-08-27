@@ -113,6 +113,7 @@
     "verify:hero-broll-window-migration": "tsx scripts/verify-hero-broll-window-migration.ts",
     "verify:broll-rerender": "tsx scripts/verify-broll-rerender.ts && node --conditions=react-server --import tsx scripts/verify-scene-reroll-apply.ts",
     "verify:broll-window-management": "tsx scripts/verify-broll-window-management.ts && tsx scripts/verify-broll-pending-actions.ts && tsx scripts/verify-cutaway-plan.ts",
+    "verify:broll-upload-admission": "tsx scripts/verify-broll-upload-admission.ts",
     "verify:ken-burns-aspect": "tsx scripts/verify-ken-burns-aspect.ts",
     "verify:omnivoice": "tsx scripts/verify-omnivoice.ts",
     "verify:omnivoice-runpod": "python3 -m unittest discover -s services/omnivoice-runpod -p 'test_contract.py' && python3 -m py_compile services/omnivoice-runpod/contract.py services/omnivoice-runpod/handler.py services/omnivoice-runpod/server.py services/omnivoice-runpod/text_utils.py services/omnivoice-runpod/voice_similarity.py services/omnivoice-runpod/voice_library.py services/omnivoice-runpod/credits.py services/omnivoice-runpod/engine_indextts.py",

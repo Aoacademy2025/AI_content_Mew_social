@@ -15,6 +15,10 @@ import {
   KEN_BURNS_DURATION_SEC,
 } from "@/lib/broll-asset-lib";
 import { isInternalAiBetaEnabledFor } from "@/lib/internal-ai-access";
+import {
+  brollUploadAdmission,
+  brollUploadAdmissionMessage,
+} from "@/lib/broll-upload-admission";
 
 // POST /api/videos/broll-window/upload — Phase 2 "อัปโหลดเอง" tab (Task 8).
 // User supplies their own media to replace one b-roll window:
@@ -45,26 +49,6 @@ const VIDEO_MIMES = new Set(["video/mp4", "video/quicktime", "video/webm"]);
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // 20 MB
 const MAX_VIDEO_BYTES = 200 * 1024 * 1024; // 200 MB
 const MAX_FORM_OVERHEAD_BYTES = 10 * 1024 * 1024; // multipart headers / form fields
-
-// In-process sliding-window rate limit — same shape as /select's tryConsumeSelectRate.
-// Caps how many uploads one user can trigger per hour regardless of plan, protecting
-// disk/CPU (ffmpeg) from a runaway client loop. In-process only (single Node box);
-// same multi-instance caveat as the sibling routes / kie-image-guards.
-const UPLOAD_WINDOW_MS = 60 * 60 * 1000; // 1 hour
-const UPLOAD_RATE_PER_HOUR = 10;
-const uploadHits = new Map<string, number[]>();
-
-function tryConsumeUploadRate(userId: string, now: number = Date.now()): boolean {
-  const cutoff = now - UPLOAD_WINDOW_MS;
-  const recent = (uploadHits.get(userId) ?? []).filter((t) => t > cutoff);
-  if (recent.length >= UPLOAD_RATE_PER_HOUR) {
-    uploadHits.set(userId, recent);
-    return false;
-  }
-  recent.push(now);
-  uploadHits.set(userId, recent);
-  return true;
-}
 
 function fileExt(name: string): string {
   return name.split(".").pop()?.toLowerCase() ?? "";
@@ -180,13 +164,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "payload_too_large", message: "ไฟล์ใหญ่เกินกำหนด" }, { status: 413 });
   }
 
-  if (!tryConsumeUploadRate(user.id)) {
-    return NextResponse.json(
-      { error: "rate_limited", message: "อัปโหลดมากเกินไปในชั่วโมงนี้ กรุณาลองใหม่ภายหลัง" },
-      { status: 429 },
-    );
-  }
-
   // formData() parses the multipart body and throws on malformed input (bad boundary,
   // truncated stream, etc). Catch it explicitly so a hostile/broken body still gets the
   // route's standard Thai JSON error shape instead of falling through to Next's generic
@@ -231,8 +208,25 @@ export async function POST(req: Request) {
     );
   }
 
+  // Validation failures above do not consume admission or hourly budget. Acquire only
+  // when the request is ready to start disk/ffprobe/ffmpeg work; this also prevents one
+  // user from running two expensive upload conversions at the same time.
+  const admission = brollUploadAdmission.tryAcquire(user.id);
+  if (!admission.ok) {
+    return NextResponse.json(
+      {
+        error: admission.reason === "busy" ? "upload_busy" : "rate_limited",
+        message: brollUploadAdmissionMessage(admission),
+      },
+      {
+        status: 429,
+        headers: { "Retry-After": String(admission.retryAfterSec) },
+      },
+    );
+  }
+  admission.lease.commit();
+
   const stocksDir = path.join(process.cwd(), "stocks");
-  fs.mkdirSync(stocksDir, { recursive: true });
 
   // Output name is 100% server-generated — the client filename never contributes a path
   // component. The `/api/stocks/[filename]` route only serves flat basenames, so this
@@ -245,6 +239,7 @@ export async function POST(req: Request) {
   let tempInput: string | null = null;
 
   try {
+    fs.mkdirSync(stocksDir, { recursive: true });
     if (kind === "image") {
       tempInput = path.join(os.tmpdir(), `broll-upload-input-${Date.now()}-${randomUUID()}.${ext}`);
       await streamToFile(file, tempInput);
@@ -323,5 +318,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "upload_failed", message: "อัปโหลดสื่อไม่สำเร็จ กรุณาลองใหม่อีกครั้ง" }, { status: 500 });
   } finally {
     if (tempInput) safeUnlink(tempInput);
+    admission.lease.release();
   }
 }

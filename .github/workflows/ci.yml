@@ -96,6 +96,9 @@ jobs:
       - name: Verify cutaway Scene Reroll maps timeline windows to Visual Beats
         run: npm run verify:broll-window-management && npm run verify:broll-rerender
 
+      - name: Verify B-roll upload admission
+        run: npm run verify:broll-upload-admission
+
       - name: Verify customer-facing error copy
         run: npm run verify:customer-error-copy
 
