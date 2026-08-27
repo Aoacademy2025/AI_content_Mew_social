@@ -142,20 +142,72 @@ function mediaPlanForBeat(
   };
 }
 
+function escapedProviderAlias(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function realPersonProviderAliases(entity: ContentPreflightAnalysis["storyEntities"][number]) {
+  const aliases = new Set<string>([entity.properName.trim()]);
+  [entity.renderingDescription, entity.recurringCharacterDescription].forEach((description) => {
+    if (!description) return;
+    description.split(",").forEach((part) => {
+      const candidate = part.trim();
+      const words = candidate.split(/\s+/u);
+      if (
+        words.length >= 1
+        && words.length <= 4
+        && !/^(?:a|an|the)$/iu.test(words[0] ?? "")
+        && words.every((word) => /^\p{Lu}[\p{L}\p{M}'’.-]*$/u.test(word))
+      ) {
+        aliases.add(candidate);
+      }
+    });
+  });
+  return [...aliases].filter(Boolean).sort((left, right) => right.length - left.length);
+}
+
+function safeRealPersonDescriptions(entity: ContentPreflightAnalysis["storyEntities"][number]) {
+  const traits = entity.durableAttributes
+    .map((attribute) => attribute.trim())
+    .filter(Boolean)
+    .join("; ");
+  const suffix = traits ? ` with continuity traits: ${traits}` : "";
+  return {
+    renderingDescription: `a real person${suffix}`,
+    recurringCharacterDescription: `the same real person${suffix}`,
+  };
+}
+
+function scrubProviderAliases(value: string, aliases: string[]) {
+  return aliases.reduce((result, alias) => {
+    const escaped = escapedProviderAlias(alias);
+    if (!escaped) return result;
+    return result.replace(
+      new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, "giu"),
+      (_match, prefix: string) => `${prefix}the same real person`,
+    );
+  }, value);
+}
+
 function grokPromptForBeat(
   beat: ContentPreflightAnalysis["beats"][number],
   characterDirectives: StoryFilmStoryboardScene["characterDirectives"],
+  providerAliases: string[],
 ) {
+  const clean = (value: string) => scrubProviderAliases(value, providerAliases);
   const characters = characterDirectives.length > 0
     ? `Character continuity: ${characterDirectives.map((item) => item.recurringCharacterDescription || item.renderingDescription).join("; ")}.`
     : "";
+  const subject = characterDirectives.length > 0
+    ? characterDirectives.map((item) => item.recurringCharacterDescription || item.renderingDescription).join(" and ")
+    : clean(beat.subject);
   return [
     "Vertical 9:16 cinematic short-film frame, one continuous story moment, photorealistic production still.",
-    `Subject: ${beat.subject}.`,
-    `Action: ${beat.action}.`,
-    `Setting: ${beat.setting}.`,
-    `Emotion: ${beat.emotion}.`,
-    `Visual emphasis: ${beat.emphasis}.`,
+    `Subject: ${subject}.`,
+    `Action: ${clean(beat.action)}.`,
+    `Setting: ${clean(beat.setting)}.`,
+    `Emotion: ${clean(beat.emotion)}.`,
+    `Visual emphasis: ${clean(beat.emphasis)}.`,
     characters,
     "Preserve stated counts, relationships, wardrobe and physical details. No montage, split screen, collage, captions, subtitles, logos or watermarks.",
   ].filter(Boolean).join(" ");
@@ -190,12 +242,17 @@ export function buildStoryFilmStoryboardDocument(input: {
     if (!Number.isSafeInteger(window.startMs) || !Number.isSafeInteger(window.endMs)) {
       throw new Error("storyboard_timing_missing");
     }
+    const providerAliases: string[] = [];
     const characterDirectives = beat.entityRefs.flatMap((entityId) => {
       const entity = entities.get(entityId);
+      if (entity?.isRealPerson) providerAliases.push(...realPersonProviderAliases(entity));
+      const safeDescription = entity?.isRealPerson ? safeRealPersonDescriptions(entity) : null;
       return entity ? [{
         entityId,
-        renderingDescription: entity.renderingDescription,
-        recurringCharacterDescription: entity.recurringCharacterDescription ?? null,
+        renderingDescription: safeDescription?.renderingDescription ?? entity.renderingDescription,
+        recurringCharacterDescription: safeDescription?.recurringCharacterDescription
+          ?? entity.recurringCharacterDescription
+          ?? null,
         isRealPerson: entity.isRealPerson,
       }] : [];
     });
@@ -214,7 +271,7 @@ export function buildStoryFilmStoryboardDocument(input: {
       visualOwner: visualOwners[sequence],
       storyEntityIds: [...beat.entityRefs],
       characterDirectives,
-      grokPrompt: grokPromptForBeat(beat, characterDirectives),
+      grokPrompt: grokPromptForBeat(beat, characterDirectives, providerAliases),
     };
   });
   return {

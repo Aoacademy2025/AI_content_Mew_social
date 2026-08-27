@@ -102,11 +102,11 @@ async function main() {
           formatRecommendation: null,
           storyEntities: [{
             entityId: "mew",
-            properName: "Mew",
+            properName: "มิว",
             entityType: "person",
             durableAttributes: ["adult Thai creator", "recognizable face"],
-            renderingDescription: "an adult Thai creator with a recognizable oval face and dark eyes",
-            recurringCharacterDescription: "the same adult Thai creator with a recognizable oval face and dark eyes",
+            renderingDescription: "Mew, an adult Thai creator with a recognizable oval face and dark eyes",
+            recurringCharacterDescription: "Mew, the same adult Thai creator with a recognizable oval face and dark eyes",
             isRealPerson: true,
           }],
           beats: input.windows.map((window, index) => ({
@@ -114,8 +114,8 @@ async function main() {
             sourceExcerpt: window.text,
             startMs: window.startMs,
             endMs: window.endMs,
-            subject: "an adult Thai creator",
-            action: index === 1 ? "walks past rotating machinery" : "studies a mysterious laboratory",
+            subject: "Mew",
+            action: index === 1 ? "Mew walks past rotating machinery" : "Mew studies a mysterious laboratory",
             setting: "a cinematic near-future laboratory",
             emotion: "focused curiosity",
             emphasis: "one readable discovery moment",
@@ -147,8 +147,12 @@ async function main() {
       "an explicit reviewed video-scene plan overrides the heuristic without changing scene content",
     );
     ok(
-      document.scenes.every((scene) => !scene.grokPrompt.includes("Mew") && scene.grokPrompt.includes("Vertical 9:16")),
-      "provider prompts use rendering descriptions instead of the real person's proper name",
+      document.scenes.every((scene) => (
+        !scene.grokPrompt.includes("Mew")
+          && !scene.grokPrompt.includes("มิว")
+          && scene.grokPrompt.includes("Vertical 9:16")
+      )),
+      "provider prompts use a safe actor description even when a real person's name crosses writing systems",
     );
     ok(
       document.scenes.every((scene) => scene.characterDirectives[0]?.entityId === "mew"),
