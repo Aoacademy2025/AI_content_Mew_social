@@ -13,6 +13,8 @@ const isPublicRoute = createRouteMatcher([
   "/api/clerk-webhook(.*)",
   "/api/payments/webhook(.*)",
   "/api/internal/bundle-entitlement", // BUNDLE_SYNC_SECRET-authenticated inside route
+  "/api/internal/story-film-worker(.*)", // STORY_FILM_WORKER_TOKEN-authenticated pull worker
+  "/api/internal/story-film-media(.*)", // owner session or STORY_FILM_WORKER_TOKEN enforced inside route
   "/api/plans(.*)",
   "/api/health(.*)",   // public up/down probe for the OS watchdog (no auth, SELECT 1)
   "/api/founding/status(.*)",
@@ -22,6 +24,7 @@ const isPublicRoute = createRouteMatcher([
   "/api/telemetry(.*)",
   "/api/cron(.*)",  // protected by CRON_SECRET inside each route
   "/api/mcp(.*)",   // MCP server — authed by PAT/OAuth (Bearer) inside the route, no Clerk session
+  "/api/story-film(.*)", // internal Story Film MCP — PAT/OAuth + internal cohort enforced inside the route
   "/.well-known/(.*)", // OAuth discovery metadata for MCP (fetched unauthenticated by clients)
 ]);
 

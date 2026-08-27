@@ -100,6 +100,14 @@ const brandVisualRuntimeEnv = Object.freeze({
   BRAND_VISUAL_TEST_EMAILS: reviewedRuntimeValue("BRAND_VISUAL_TEST_EMAILS"),
 });
 
+// Private Story Film pull/media routes authenticate inside the Next process.
+// PM2 replaces the process environment from this reviewed allowlist on deploy,
+// so merely placing the worker token in .env is not enough.
+const storyFilmRuntimeEnv = Object.freeze({
+  STORY_FILM_WORKER_TOKEN: reviewedRuntimeValue("STORY_FILM_WORKER_TOKEN"),
+  STORY_FILM_CHARACTER_STORAGE_DIR: reviewedRuntimeValue("STORY_FILM_CHARACTER_STORAGE_DIR"),
+});
+
 // The long-avatar adjustment canary must be part of the checked-in PM2 contract.
 // Keeping it only in a one-off shell/PM2 environment made a later --update-env deploy
 // silently remove the approved remediation. Preserve any additional reviewed canaries
@@ -157,6 +165,7 @@ module.exports = {
         ...heroImageRuntimeEnv,
         ...subscriptionFirstAiRuntimeEnv,
         ...brandVisualRuntimeEnv,
+        ...storyFilmRuntimeEnv,
         ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
         // PR-7 durable render queue: "1" = the thin render route enqueues a
@@ -184,6 +193,7 @@ module.exports = {
         ...heroImageRuntimeEnv,
         ...subscriptionFirstAiRuntimeEnv,
         ...brandVisualRuntimeEnv,
+        ...storyFilmRuntimeEnv,
         ...compositeStabilityRuntimeEnv,
         ...r2MediaRuntimeEnv,
       },
@@ -398,6 +408,27 @@ module.exports = {
         MCP_WORKER_CONCURRENCY: process.env.MCP_WORKER_CONCURRENCY || "2",
         ...heroImageRouteRuntimeEnv,
         ...brandVisualRuntimeEnv,
+      },
+    },
+    {
+      // Hero-owned provider adapters for Story Film. This process never calls
+      // Grok: subscription-funded image/video jobs stay on Mew's Mac mini.
+      // Keeping text planning in a separate worker prevents a Gemini response
+      // from holding a Next request open and gives it the same durable lease,
+      // retry and deploy-recovery semantics as the generation queue.
+      name: "story-film-system-worker",
+      cwd: "/var/www/ai-content",
+      script: "node",
+      args: "--conditions=react-server --import tsx scripts/story-film-system-worker.ts",
+      autorestart: true,
+      watch: false,
+      kill_timeout: 120000,
+      max_restarts: 10,
+      min_uptime: "20s",
+      env: {
+        NODE_ENV: "production",
+        DATABASE_URL: process.env.DATABASE_URL || "file:/var/www/ai-content/prisma/dev.db",
+        STORY_FILM_SYSTEM_POLL_MS: process.env.STORY_FILM_SYSTEM_POLL_MS || "4000",
       },
     },
     {

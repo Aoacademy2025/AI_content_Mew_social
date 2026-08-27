@@ -18,7 +18,12 @@ export function isInBandError(result: unknown): boolean {
 function redactRequest(v: unknown): unknown {
   if (v && typeof v === "object" && !Array.isArray(v)) {
     const o = v as Record<string, unknown>;
-    if (typeof o.script === "string") return { ...o, script: `[redacted ${o.script.length} chars]` };
+    const redacted = { ...o };
+    if (typeof o.script === "string") redacted.script = `[redacted ${o.script.length} chars]`;
+    if (typeof o.narrativeSource === "string") {
+      redacted.narrativeSource = `[redacted ${o.narrativeSource.length} chars]`;
+    }
+    return redacted;
   }
   return v;
 }

@@ -443,6 +443,12 @@ echo "Maintenance barrier lowered — site is serving again"
 WORKER_NAME="mcp-video-worker"
 restart_from_ecosystem "$WORKER_NAME"
 
+# Hero Story Film text planning runs outside the web request lifecycle. Reload
+# it only after the new web build and schema are healthy; image/video generation
+# remains on Mew's separately authenticated Mac mini Grok worker.
+STORY_FILM_SYSTEM_WORKER_NAME="story-film-system-worker"
+restart_from_ecosystem "$STORY_FILM_SYSTEM_WORKER_NAME"
+
 # PR-7 durable render queue: the render-worker runs the render core (runRender) in
 # its OWN process, so a deploy must restart it in lockstep with ai-content (else it
 # stays on stale render code → version skew). Reloading the ecosystem file applies the
