@@ -12,6 +12,10 @@ import {
   type RevenueRangeDays,
   type RevenueReceiptEvent,
 } from "@/lib/revenue-growth";
+import {
+  buildRevenueGrowthOpportunityPlan,
+  type RevenueGrowthOpportunityPlan,
+} from "@/lib/revenue-growth-opportunities";
 
 const DAY_MS = 86_400_000;
 const MONTHLY_REVENUE_TARGET = 100_000;
@@ -62,6 +66,7 @@ export type RevenueGrowthDashboardData = {
     lapsed: number;
   };
   insights: Array<{ tone: "positive" | "attention" | "neutral"; title: string; detail: string }>;
+  growthPlan: RevenueGrowthOpportunityPlan;
   teamActions: Array<{
     team: "Content" | "Graphic" | "Editor" | "Media";
     focus: string;
@@ -145,7 +150,7 @@ export async function getRevenueGrowthDashboard(
   await ensureStripeConfig();
   const cashFrom = new Date(now.getTime() - Math.max(days * 2, 60) * DAY_MS);
 
-  const [payments, cohorts, northStar, history, lifetime, bundleReceipts] = await Promise.all([
+  const [payments, cohorts, northStar, history, lifetime, bundleReceipts, featureRequests] = await Promise.all([
     prisma.payment.findMany({
       where: { status: "PAID" },
       select: {
@@ -166,6 +171,17 @@ export async function getRevenueGrowthDashboard(
     }),
     getLifetimeCashCollected(),
     getBundleReceipts(),
+    prisma.supportTicket.findMany({
+      where: {
+        OR: [
+          { category: "FEATURE_REQUEST" },
+          { recommendedAction: "ADD_FEATURE" },
+        ],
+      },
+      select: { message: true, auditNote: true, impactNote: true },
+      orderBy: { updatedAt: "desc" },
+      take: 200,
+    }),
   ]);
 
   const cashEvents: RevenueCashEvent[] = [];
@@ -219,6 +235,13 @@ export async function getRevenueGrowthDashboard(
     ? cash
     : summarizeRevenuePeriod({ now, days: 30, cashEvents, receipts });
   const recurringMonthly = cohorts.recurringMrr + cohorts.bundleMrr;
+  const requestText = featureRequests.map((ticket) => [
+    ticket.message,
+    ticket.auditNote,
+    ticket.impactNote,
+  ].filter(Boolean).join(" ").toLowerCase());
+  const brollFeatureRequests = requestText.filter((text) => /b[\s-]?roll|ฟุตเทจ|ภาพแทรก/u.test(text)).length;
+  const faceConsistencyRequests = requestText.filter((text) => /face[\s-]?lock|same character|character consistency|หน้าเหมือน|ใบหน้า|คนเดิม|ตัวละครเดิม/u.test(text)).length;
   const insights = buildInsights({
     currentGross: cash.currentGross,
     previousGross: cash.previousGross,
@@ -228,6 +251,16 @@ export async function getRevenueGrowthDashboard(
     creatorRatePct: northStar.creatorRatePct,
     recurringMonthly,
     prepaidMonthly: cohorts.prepaidMrr,
+  });
+  const growthPlan = buildRevenueGrowthOpportunityPlan({
+    activeCreators: northStar.activeCreators,
+    activePayingCustomers: northStar.activePayingCustomers,
+    videoCreators: northStar.outcomes.videoCreators,
+    imageCreators: northStar.outcomes.imageCreators,
+    prepaidMonthlyEquivalent: cohorts.prepaidMrr,
+    activeMonthlyValue: cohorts.mrr,
+    brollFeatureRequests,
+    faceConsistencyRequests,
   });
 
   const mapcGap = Math.max(0, northStar.activePayingCustomers - northStar.activeCreators);
@@ -281,6 +314,7 @@ export async function getRevenueGrowthDashboard(
       lapsed: cohorts.lapsedPayers,
     },
     insights,
+    growthPlan,
     teamActions: [
       { team: "Content", focus: "ดึงคนจ่ายกลับมา", action: `ทำชุด Use case สำหรับ ${mapcGap} คนที่ยังไม่สร้างงาน`, measure: "MAPC" },
       { team: "Graphic", focus: "ข้อเสนอเดียว ภาพชัด", action: "แตก 3 มุมภาพจากสารหลักเดียว", measure: "คลิกต่อชิ้น" },
