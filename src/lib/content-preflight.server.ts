@@ -33,12 +33,13 @@ import { recordTelemetryEvent } from "@/lib/telemetry";
  * Format, so a cached recommendation cannot keep creating retired formats.
  * Later versions keep the active format while tightening hard-fact extraction;
  * older rows remain only as asset-carry-forward lineage (ADR 0017/0018). */
-export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v13-common-noun-entity-guard";
+export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v14-generic-role-entity-guard";
 /** Read-only lineage. A superseded row is still a valid source of a previous
  * beat's generated asset, so a bump costs one re-analysis and never an image:
  * beats whose `sourceExcerptHash` is unchanged carry their asset forward. */
 const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
   CONTENT_PREFLIGHT_ANALYZER_VERSION,
+  "brand-content-preflight-v13-common-noun-entity-guard",
   "brand-content-preflight-v12-semantic-self-correction",
   "brand-content-preflight-v11-relational-hard-facts",
   "brand-content-preflight-v10-completed-result-tableau",
@@ -366,6 +367,10 @@ const GENERIC_STORY_ENTITY_NAMES = new Set([
   "booking system",
   "gym booking system",
   "software company",
+  "trusted person",
+  "supportive person",
+  "trusted adult",
+  "supportive adult",
 ]);
 
 /** Story Entities are durable named identities, never ordinary English roles
