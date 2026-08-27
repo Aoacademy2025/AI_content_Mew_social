@@ -64,6 +64,11 @@ import {
   resolveBrollExportSource,
   type BrollExportSource,
 } from "@/lib/broll-rerender";
+import { brollWindowSpans } from "@/lib/broll-spans";
+import {
+  BROLL_TIMELINE_TOLERANCE_MS,
+  moveBrollBoundary as calculateBrollBoundaryMove,
+} from "@/lib/broll-timeline-boundary";
 import { useEditorStylePresets } from "./useEditorStylePresets";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 
@@ -79,6 +84,8 @@ export type ExportState =
 // inspector; `label` is a human-readable title (candidate title / "อัปโหลด" / "AI").
 export type WindowEditKind = "stock" | "upload" | "ai";
 export type WindowEdit = {
+  startSec?: number;
+  endSec?: number;
   src?: string;
   keyword?: string;
   clipDuration?: number;
@@ -330,6 +337,23 @@ export function usePostPhaseEditor(
   const [pendingBrollIntent, setPendingBrollIntent] = useState<PendingBrollIntent | null>(null);
   const [configOverride, setConfigOverride] = useState<Record<string, unknown> | null>(null);
   const previewConfig = configOverride ?? preview?.config ?? null;
+  const baseBrollTimelineSpans = useMemo(
+    () => brollWindowSpans(previewConfig, totalDurationMs),
+    [previewConfig, totalDurationMs],
+  );
+  const brollTimelineSpans = useMemo(
+    () => baseBrollTimelineSpans
+      .map((span) => {
+        const edit = windowEdits.get(span.index);
+        return {
+          ...span,
+          startMs: typeof edit?.startSec === "number" ? edit.startSec * 1_000 : span.startMs,
+          endMs: typeof edit?.endSec === "number" ? edit.endSec * 1_000 : span.endMs,
+        };
+      })
+      .sort((left, right) => left.startMs - right.startMs),
+    [baseBrollTimelineSpans, windowEdits],
+  );
   // compositeBaseUrl แทนที่ preview.compositeBaseUrl หลัง apply สำเร็จ (งาน avatar) —
   // ไม่งั้น AvatarAdjustOverlay จะ re-composite ทับ base เก่า (ก่อนแก้ b-roll) แล้วเขียน
   // ทับผลแก้ b-roll ทิ้งอย่างเงียบๆ ตอนกด save ใน Avatar Adjust (บั๊กที่ fix นี้แก้)
@@ -391,10 +415,67 @@ export function usePostPhaseEditor(
     }
     commitWindowEdits(next);
   }
+
+  /** Stage one shared boundary as two atomic window edits. Returning to the rendered boundary
+   * removes only the timing fields while preserving any staged asset/visibility edit. */
+  function moveBrollBoundary(leftIndex: number, targetMs: number): number | null {
+    const move = calculateBrollBoundaryMove(brollTimelineSpans, leftIndex, targetMs);
+    if (!move) return null;
+    const currentLeft = brollTimelineSpans.find((span) => span.index === leftIndex);
+    if (
+      currentLeft
+      && Math.abs(move.boundaryMs - currentLeft.endMs) <= BROLL_TIMELINE_TOLERANCE_MS
+    ) return move.boundaryMs;
+
+    const next = new Map(windowEdits);
+    for (const change of move.changes) {
+      const base = baseBrollTimelineSpans.find((span) => span.index === change.index);
+      if (!base) return null;
+      const edit = { ...(next.get(change.index) ?? {}) };
+      if ("startMs" in change) {
+        if (Math.abs(change.startMs - base.startMs) <= BROLL_TIMELINE_TOLERANCE_MS) delete edit.startSec;
+        else edit.startSec = change.startMs / 1_000;
+      }
+      if ("endMs" in change) {
+        if (Math.abs(change.endMs - base.endMs) <= BROLL_TIMELINE_TOLERANCE_MS) delete edit.endSec;
+        else edit.endSec = change.endMs / 1_000;
+      }
+      if (Object.values(edit).some((value) => value !== undefined)) next.set(change.index, edit);
+      else next.delete(change.index);
+    }
+    commitWindowEdits(next);
+    trackEvent("editor_broll_boundary_staged", {
+      properties: {
+        surface,
+        leftWindowIndex: leftIndex,
+        fromMs: Math.round(currentLeft?.endMs ?? move.boundaryMs),
+        toMs: move.boundaryMs,
+      },
+    });
+    return move.boundaryMs;
+  }
+
   function clearWindowEdit(index: number) {
     if (!windowEdits.has(index)) return;
+    const current = windowEdits.get(index);
     const next = new Map(windowEdits);
     next.delete(index);
+    const position = baseBrollTimelineSpans.findIndex((span) => span.index === index);
+    const clearCounterpart = (counterpartIndex: number | undefined, field: "startSec" | "endSec") => {
+      if (counterpartIndex === undefined) return;
+      const counterpart = next.get(counterpartIndex);
+      if (!counterpart) return;
+      const cleaned = { ...counterpart };
+      delete cleaned[field];
+      if (Object.values(cleaned).some((value) => value !== undefined)) next.set(counterpartIndex, cleaned);
+      else next.delete(counterpartIndex);
+    };
+    if (position >= 0 && current?.startSec !== undefined) {
+      clearCounterpart(baseBrollTimelineSpans[position - 1]?.index, "endSec");
+    }
+    if (position >= 0 && current?.endSec !== undefined) {
+      clearCounterpart(baseBrollTimelineSpans[position + 1]?.index, "startSec");
+    }
     commitWindowEdits(next);
   }
   function undoWindowEdits() {
@@ -448,6 +529,8 @@ export function usePostPhaseEditor(
     setApplyingWindows({ progress: 0 });
     const edits = Array.from(windowEdits.entries()).map(([index, e]) => ({
       index,
+      ...(typeof e.startSec === "number" ? { start: e.startSec } : {}),
+      ...(typeof e.endSec === "number" ? { end: e.endSec } : {}),
       ...(e.src ? { src: e.src } : {}),
       ...(e.keyword ? { keyword: e.keyword } : {}),
       ...(typeof e.clipDuration === "number" ? { clipDuration: e.clipDuration } : {}),
@@ -1140,6 +1223,8 @@ export function usePostPhaseEditor(
     selectHeadlineSuggestion,
     generateHeadlineSuggestions,
     previewConfig,
+    brollTimelineSpans,
+    moveBrollBoundary,
     compositeBaseUrl,
     windowEdits, setWindowEdit, setWindowEdits, clearWindowEdit,
     undoWindowEdits, redoWindowEdits,

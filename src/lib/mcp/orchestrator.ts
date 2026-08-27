@@ -73,6 +73,7 @@ import {
   planCutaway,
   planCutawayRecomposite,
   reconstructCutawayPersonRanges,
+  type CutawayBrollSegment,
 } from "@/lib/cutaway-plan";
 import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
@@ -964,7 +965,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             }
           }
 
-          const rrDecision = planCutawayRecomposite(mergeRes.bgVideos, rrBasePersonRanges);
+          const rrDecision = planCutawayRecomposite(
+            mergeRes.bgVideos,
+            rrBasePersonRanges,
+            srcBgVideos as CutawayBrollSegment[],
+          );
           rrCutawayPersonRanges = rrDecision.personRanges;
           if (rrDecision.skipComposite) {
             // Every window shows B-roll => there is no speaker overlay left. Compositing would

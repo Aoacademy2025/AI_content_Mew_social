@@ -1,20 +1,29 @@
 // Pure merge/validation helpers for the free per-window b-roll re-render (job mode
 // `broll-rerender`). No DB, no network — unit-tested by scripts/verify-broll-rerender.ts.
 //
-// Flow: after a user swaps, reorders, or changes visibility of b-roll windows in the Editor v2
+// Flow: after a user swaps, adjusts timing, or changes visibility of b-roll windows in Editor v2
 // Post phase, the client batches the edits and the orchestrator merges them onto the SOURCE
 // preview's `bgVideos[]`, then re-renders the base reusing the job's TTS/avatar (no minute
 // charge — see the render route's `rerenderOf` skip).
 //
 // Invariants enforced here (violating any = broken subtitle timing or a charge/SSRF hole):
-//  - window TIMING is locked: start/end are copied through untouched, windows are never
-//    reordered/added/dropped (subtitle overlay is aligned to these exact spans).
+//  - timing edits may move only a shared boundary: the full timeline stays contiguous and keeps
+//    its original outer bounds; windows are never reordered/added/dropped and captions stay fixed.
 //  - optional `src` is the ONLY place a client-named asset path enters the re-render, so it
 //    is whitelisted to a single flat `.mp4` under our own /api/renders or /api/stocks route
 //    (no traversal, no external host, no nested path). Visibility-only edits do not need src.
 
+import {
+  BROLL_TIMELINE_TOLERANCE_SECONDS,
+  MIN_BROLL_TIMELINE_WINDOW_SECONDS,
+} from "./broll-timeline-boundary";
+
 export type WindowEdit = {
   index: number;
+  /** Timeline seconds. Validated as one contiguous shared-boundary move during merge. */
+  start?: number;
+  /** Timeline seconds. Validated as one contiguous shared-boundary move during merge. */
+  end?: number;
   src?: string;
   keyword?: string;
   /** Actual replacement duration from the server-side upload/select/generate response. */
@@ -61,8 +70,8 @@ const MAX_CLIP_DURATION_SECONDS = 24 * 60 * 60;
 
 /**
  * Validate + normalize the client-sent window edits. Returns the deduped edit list (last-wins
- * per index) or `{ error }` with a Thai message. Every item must change at least one of `src` or
- * `enabled`. Rejects: non-array, 0 or >40 edits, non-integer/negative index, a supplied `src`
+ * per index) or `{ error }` with a Thai message. Every item must change `src`, `enabled`, `start`,
+ * or `end`. Rejects: non-array, 0 or >40 edits, non-integer/negative index, a supplied `src`
  * that isn't a single flat `.mp4` under /api/renders or /api/stocks, non-boolean `enabled`, and
  * a keyword without a replacement source.
  */
@@ -75,13 +84,15 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
   const byIndex = new Map<number, WindowEdit>();
   for (const raw of edits) {
     if (typeof raw !== "object" || raw === null) return { error: "รายการแก้ b-roll ไม่ถูกต้อง" };
-    const { index, src, keyword, clipDuration, enabled, replacementKind, imageJobId } = raw as Record<string, unknown>;
+    const { index, src, keyword, clipDuration, enabled, start, end, replacementKind, imageJobId } = raw as Record<string, unknown>;
     if (typeof index !== "number" || !Number.isInteger(index) || index < 0) {
       return { error: "ตำแหน่งช่วง b-roll ไม่ถูกต้อง" };
     }
     const hasSrc = src !== undefined;
     const hasEnabled = enabled !== undefined;
-    if (!hasSrc && !hasEnabled) {
+    const hasStart = start !== undefined;
+    const hasEnd = end !== undefined;
+    if (!hasSrc && !hasEnabled && !hasStart && !hasEnd) {
       return { error: "รายการแก้ b-roll ไม่มีการเปลี่ยนแปลง" };
     }
     if (hasSrc && (typeof src !== "string" || !SRC_RE.test(src))) {
@@ -89,6 +100,16 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
     }
     if (hasEnabled && typeof enabled !== "boolean") {
       return { error: "สถานะเปิดปิด b-roll ไม่ถูกต้อง" };
+    }
+    if (
+      (hasStart && (
+        typeof start !== "number" || !Number.isFinite(start) || start < 0 || start > MAX_CLIP_DURATION_SECONDS
+      ))
+      || (hasEnd && (
+        typeof end !== "number" || !Number.isFinite(end) || end <= 0 || end > MAX_CLIP_DURATION_SECONDS
+      ))
+    ) {
+      return { error: "ช่วงเวลา b-roll ไม่ถูกต้อง" };
     }
     if (
       replacementKind !== undefined
@@ -131,6 +152,8 @@ export function validateWindowEdits(edits: unknown): WindowEdit[] | { error: str
     const trimmedKeyword = typeof keyword === "string" ? keyword.trim().slice(0, KEYWORD_MAX) : "";
     const edit: WindowEdit = {
       index,
+      ...(typeof start === "number" ? { start } : {}),
+      ...(typeof end === "number" ? { end } : {}),
       ...(typeof src === "string" ? { src } : {}),
       ...(trimmedKeyword ? { keyword: trimmedKeyword } : {}),
       ...(typeof clipDuration === "number" ? { clipDuration } : {}),
@@ -176,7 +199,8 @@ export function firstPassVisualRejectionReasonForWindow(
  * mutated) or `{ error }`. Every edit's index is bounds-checked against `bgVideos.length` first —
  * an out-of-range index rejects the WHOLE merge (no partial application). For each edited window:
  * optionally replace `src` (+ `keyword`), optionally persist `brollEnabled`, reset source
- * playback metadata only for replacements, and keep `start`/`end` untouched. Order is preserved.
+ * playback metadata only for replacements, and apply timing only when the resulting windows keep
+ * the original outer bounds and one continuous shared-boundary timeline. Order is preserved.
  */
 export function mergeWindowEdits(
   bgVideos: unknown[],
@@ -206,6 +230,8 @@ export function mergeWindowEdits(
     const base = { ...(v as Record<string, unknown>) };
     const e = byIndex.get(i);
     if (!e) { merged.push(base); continue; }
+    if (typeof e.start === "number") base.start = e.start;
+    if (typeof e.end === "number") base.end = e.end;
     if (e.src) {
       // Replacement: reset clip playback and strip metadata that describes the OLD asset.
       delete base.clipDuration;
@@ -225,6 +251,45 @@ export function mergeWindowEdits(
       base.brollEnabled = e.enabled;
     }
     merged.push(base);
+  }
+
+  const timingEdits = edits.filter((edit) => edit.start !== undefined || edit.end !== undefined);
+  if (timingEdits.length > 0) {
+    const sourceFirst = bgVideos[0] as Record<string, unknown> | null;
+    const sourceLast = bgVideos[bgVideos.length - 1] as Record<string, unknown> | null;
+    const sourceStart = Number(sourceFirst?.start);
+    const sourceEnd = Number(sourceLast?.end);
+    const mergedStart = Number(merged[0]?.start);
+    const mergedEnd = Number(merged[merged.length - 1]?.end);
+    if (
+      !Number.isFinite(sourceStart)
+      || !Number.isFinite(sourceEnd)
+      || Math.abs(mergedStart - sourceStart) > BROLL_TIMELINE_TOLERANCE_SECONDS
+      || Math.abs(mergedEnd - sourceEnd) > BROLL_TIMELINE_TOLERANCE_SECONDS
+    ) {
+      return { error: "ปรับได้เฉพาะเส้นแบ่งด้านในของ B-roll" };
+    }
+
+    for (let index = 0; index < merged.length; index++) {
+      const start = Number(merged[index]?.start);
+      const end = Number(merged[index]?.end);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+        return { error: "ช่วงเวลา B-roll หลังแก้ไขไม่ถูกต้อง" };
+      }
+      if (
+        byIndex.has(index)
+        && (byIndex.get(index)?.start !== undefined || byIndex.get(index)?.end !== undefined)
+        && end - start < MIN_BROLL_TIMELINE_WINDOW_SECONDS
+      ) {
+        return { error: "แต่ละช่วง B-roll ต้องยาวอย่างน้อย 1 วินาที" };
+      }
+      if (index > 0) {
+        const previousEnd = Number(merged[index - 1]?.end);
+        if (Math.abs(previousEnd - start) > BROLL_TIMELINE_TOLERANCE_SECONDS) {
+          return { error: "เส้นแบ่ง B-roll ต้องต่อเนื่องและห้ามซ้อนกัน" };
+        }
+      }
+    }
   }
   return { bgVideos: merged };
 }

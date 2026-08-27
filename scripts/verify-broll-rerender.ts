@@ -8,7 +8,7 @@
 //   - visibility-only edits carry enabled:boolean and never need a client-supplied src.
 //   - index int >= 0; 1..40 edits; dedupe by index (last wins).
 // mergeWindowEdits: apply validated edits onto the SOURCE preview's bgVideos[].
-//   - NEVER touches start/end (window timing is locked — subtitle invariant); never reorders.
+//   - timing changes only as contiguous shared boundaries with the same outer bounds; never reorders.
 //   - per edited window: replace src (+ keyword/duration when given), set clipOffset 0,
 //     and STRIP stale source metadata (provider/title/query/selectionReason/relevanceScore) so
 //     the inspector badge reflects the NEW asset. UNEDITED windows keep all metadata.
@@ -23,6 +23,7 @@ import {
   type WindowEdit,
 } from "../src/lib/broll-rerender";
 import { resolveBrollPlaybackPlan } from "../src/lib/broll-playback";
+import { planCutawayRecomposite } from "../src/lib/cutaway-plan";
 import { readFileSync } from "node:fs";
 
 let failures = 0;
@@ -90,6 +91,22 @@ check("rejects replacement kind without source", isErr(validateWindowEdits([{ in
 check("rejects edit without replacement or visibility change", isErr(validateWindowEdits([{ index: 0 }])));
 check("rejects non-boolean enabled", isErr(validateWindowEdits([{ index: 0, enabled: "no" as unknown as boolean }])));
 
+{
+  const r = validateWindowEdits([
+    { index: 0, end: 5 },
+    { index: 1, start: 5 },
+  ]);
+  check(
+    "accepts a timing-only shared-boundary pair",
+    !isErr(r) && r[0].end === 5 && r[1].start === 5,
+    JSON.stringify(r),
+  );
+}
+check("rejects negative timing start", isErr(validateWindowEdits([{ index: 0, start: -1 }])));
+check("rejects zero timing end", isErr(validateWindowEdits([{ index: 0, end: 0 }])));
+check("rejects non-finite timing", isErr(validateWindowEdits([{ index: 0, end: Number.NaN }])));
+check("rejects string timing", isErr(validateWindowEdits([{ index: 0, start: "4" }])));
+
 // src whitelist — reject hostile / malformed sources
 check("rejects external host url", isErr(validateWindowEdits([{ index: 0, src: "https://evil.example.com/x.mp4" }])));
 check("rejects protocol-relative url", isErr(validateWindowEdits([{ index: 0, src: "//evil.example.com/x.mp4" }])));
@@ -156,6 +173,58 @@ const srcBg = [
   { src: "/api/stocks/orig-1.mp4", start: 4, end: 8, clipOffset: 0, clipDuration: 4, keyword: "dogs" },
   { src: "/api/stocks/orig-2.mp4", start: 8, end: 12, clipDuration: 4, keyword: "birds" },
 ];
+
+{
+  const edits = validateWindowEdits([
+    { index: 0, end: 5 },
+    { index: 1, start: 5 },
+  ]);
+  const m = mergeWindowEdits(structuredClone(srcBg), edits as WindowEdit[]);
+  check("shared-boundary timing merge succeeds", !isErr(m), JSON.stringify(m));
+  if (!isErr(m)) {
+    check("shared boundary moves both adjacent edges", m.bgVideos[0].end === 5 && m.bgVideos[1].start === 5);
+    check("timing merge keeps outer bounds", m.bgVideos[0].start === 0 && m.bgVideos[2].end === 12);
+    const cutaway = planCutawayRecomposite(
+      m.bgVideos,
+      [{ start: 0, end: 4 }, { start: 8, end: 12 }],
+      srcBg,
+    );
+    check(
+      "upload-cutaway speaker overlay follows the edited shared boundary",
+      JSON.stringify(cutaway.personRanges) === JSON.stringify([{ start: 0, end: 5 }, { start: 8, end: 12 }]),
+      JSON.stringify(cutaway),
+    );
+  }
+}
+
+check(
+  "timing merge rejects a one-sided boundary that creates a gap",
+  isErr(mergeWindowEdits(structuredClone(srcBg), [{ index: 0, end: 5 }])),
+);
+check(
+  "timing merge rejects an overlapping boundary pair",
+  isErr(mergeWindowEdits(structuredClone(srcBg), [{ index: 0, end: 5 }, { index: 1, start: 4.9 }])),
+);
+check(
+  "timing merge rejects a sub-millisecond boundary gap",
+  isErr(mergeWindowEdits(structuredClone(srcBg), [{ index: 0, end: 5 }, { index: 1, start: 5.0009 }])),
+);
+check(
+  "timing merge rejects a changed outer bound",
+  isErr(mergeWindowEdits(structuredClone(srcBg), [{ index: 0, start: 1 }])),
+);
+check(
+  "timing merge rejects a sub-millisecond outer-bound change",
+  isErr(mergeWindowEdits(structuredClone(srcBg), [{ index: 0, start: 0.0009 }])),
+);
+check(
+  "timing merge rejects a window shorter than one second",
+  isErr(mergeWindowEdits(structuredClone(srcBg), [{ index: 0, end: 0.5 }, { index: 1, start: 0.5 }])),
+);
+check(
+  "timing merge rejects a hostile 0.999-second window",
+  isErr(mergeWindowEdits(structuredClone(srcBg), [{ index: 0, end: 0.999 }, { index: 1, start: 0.999 }])),
+);
 
 // valid merge: only edited window changes; start/end untouched; clipOffset->0; replacement
 // clipDuration preserved so short assets can loop for the complete locked window.
@@ -443,6 +512,11 @@ check(
 check(
   "b-roll rerender payload carries staged replacement duration",
   /typeof e\.clipDuration === "number" \? \{ clipDuration: e\.clipDuration \} : \{\}/u.test(postPhaseSource),
+);
+check(
+  "b-roll rerender payload carries staged shared-boundary timing",
+  /typeof e\.startSec === "number" \? \{ start: e\.startSec \} : \{\}/u.test(postPhaseSource)
+    && /typeof e\.endSec === "number" \? \{ end: e\.endSec \} : \{\}/u.test(postPhaseSource),
 );
 check(
   "Remotion composition applies the short-source loop plan",

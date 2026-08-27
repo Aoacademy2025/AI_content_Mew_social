@@ -39,7 +39,6 @@ import {
   PendingBrollChangesDialog,
   WindowEditsBottomBar,
 } from "./BrollWindowInspector";
-import { brollWindowSpans } from "@/lib/broll-spans";
 import type { MeData } from "@/lib/use-me";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
@@ -157,7 +156,7 @@ export function PostPhaseMobile({
     .filter((layer) => ed.layerAvailability[layer] && !ed.layerVisibility[layer])
     .length;
   // มือถือไม่มี timeline (ตัดทิ้งตั้งใจ) — แถบชิปนี้คือทางเข้าเลือกหน้าต่างบีโรลแทน
-  const brollSpans = useMemo(() => brollWindowSpans(ed.previewConfig, durationMs), [ed.previewConfig, durationMs]);
+  const brollSpans = ed.brollTimelineSpans;
 
   useEffect(() => {
     if (!logoOpen) return;

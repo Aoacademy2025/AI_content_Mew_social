@@ -44,6 +44,7 @@ async function main(): Promise<void> {
   };
   class UnsafeUrlError extends Error {}
   class SupersededError extends Error {}
+  class VideoJobFundingConfirmationRequiredError extends Error {}
   class RenderDeployDrainError extends Error {
     async refundOnce(refund: () => Promise<unknown>): Promise<void> { await refund(); }
   }
@@ -101,11 +102,25 @@ async function main(): Promise<void> {
         refundReservation: async () => { refundCount += 1; },
       };
     }
+    if (specifier === "@/lib/credits") {
+      return { serializeCreditFunding: () => null };
+    }
+    if (specifier === "@/lib/quota-error") {
+      return { QUOTA_EXCEEDED_CODE: "QUOTA_EXCEEDED", quotaUpgradeUserAction: () => null };
+    }
     if (specifier === "@/lib/clip-charge") {
       return { isBurnAlreadyPaid: async () => false, recordChargedClip: async () => undefined };
     }
     if (specifier === "@/lib/broll-rerender") return { rerenderSkipEligible: () => false };
     if (specifier === "@/lib/mcp/video-job") return { parseVideoJobOutput: () => null };
+    if (specifier === "@/lib/mcp/video-job-funding") {
+      return {
+        markTransferredVideoJobFundingRefunded: async () => undefined,
+        transferVideoJobFundingToRender: async () => ({ transferred: false }),
+        VideoJobFundingConfirmationRequiredError,
+      };
+    }
+    if (specifier === "@/lib/mcp/service-actor") return { resolveServiceVideoJobId: async () => null };
     if (specifier === "path") return nodePath;
     if (specifier === "fs") return fsMock;
     if (specifier === "crypto") return nodeCrypto;
