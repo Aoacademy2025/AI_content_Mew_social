@@ -79,6 +79,7 @@ type StockVideo = {
   keyword: string;
   sourceIndex?: number;
   clipOffset?: number;
+  timelineAligned?: boolean;
   localUrl?: string;
   videoUrl: string;
   duration: number;
@@ -314,6 +315,7 @@ export async function POST(req: Request) {
           ? Number(sv.clipOffset)
           : 0,
         clipDuration: sv.duration > 0 ? sv.duration : 10,
+        timelineAligned: sv.timelineAligned === true,
         keyword: sv.keyword,
         title: sv.title,
         query: sv.query,

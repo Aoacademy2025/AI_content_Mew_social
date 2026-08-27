@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { captionsFromSpokenScript, captionsFromTtsTiming } from "../src/app/(dashboard)/video-editor/_components/tts-timing-captions";
-import { validateSubtitleQuality } from "../src/lib/mcp/subtitle-quality";
+import { subtitleQualityShouldFailJob, validateSubtitleQuality } from "../src/lib/mcp/subtitle-quality";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -28,7 +28,10 @@ const qa = spoken
       timingSource: "avatar_script_clock",
     })
   : null;
-check("exact script clock passes or is inline-fixable, never empty", qa?.status === "passed" || qa?.code === "card_too_short" || qa?.code === "spacing_mismatch");
+check(
+  "estimated Avatar script clock is rejected without acoustic evidence",
+  qa?.status === "failed" && qa.code === "unverified_alignment" && subtitleQualityShouldFailJob(qa),
+);
 
 check(
   "faceless still refuses to invent captions from missing provider timing",
@@ -40,8 +43,7 @@ check(
   "Avatar recovery transcribes TTS voice, not the HeyGen mp4",
   /audioUrl: tts\.voiceUrl/.test(orchestrator) && !/transcribe[\s\S]{0,400}avatarVideoUrl/.test(orchestrator),
 );
-check("Avatar jobs fail-open to captionsFromSpokenScript", /captionsFromSpokenScript/.test(orchestrator));
-check("Avatar fail-open is gated on avatarMode", /input\.avatarMode && input\.script/.test(orchestrator));
+check("Avatar jobs no longer fail-open to a proportional script clock", !/captionsFromSpokenScript/.test(orchestrator));
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) FAILED`);

@@ -29,6 +29,7 @@ export type SubtitleQualityReport =
         | "empty_captions"
         | "text_mismatch"
         | "spacing_mismatch"
+        | "unverified_alignment"
         | "invalid_timing"
         | "overlapping_timing"
         | "timing_out_of_bounds"
@@ -298,7 +299,6 @@ export function buildCanonicalCaptionsFromAlignedWords(
  *  attached so the editor can surface an inline fix. Timing/empty failures
  *  still block release (unusable or unsynced captions). */
 export const INLINE_FIXABLE_SUBTITLE_CODES = [
-  "text_mismatch",
   "spacing_mismatch",
   "punctuation_only_card",
   "card_too_short",
@@ -319,8 +319,6 @@ export function subtitleQualityShouldFailJob(report: SubtitleQualityReport): boo
 
 export function subtitleQualityInlineCopy(code: InlineFixableSubtitleCode): string {
   switch (code) {
-    case "text_mismatch":
-      return "ข้อความซับไม่ตรงสคริปต์ — แก้ในการ์ดซับด้านซ้ายแล้วส่งออกใหม่ได้";
     case "spacing_mismatch":
       return "ช่องว่างในซับเพี้ยน — แก้ในการ์ดซับด้านซ้ายได้";
     case "punctuation_only_card":
@@ -343,6 +341,14 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
   const textExact = canonicalVisibleText(renderedText) === canonicalVisibleText(script);
   if (!textExact) {
     return { status: "failed", timingSource: input.timingSource, textExact, code: "text_mismatch" };
+  }
+  if (input.timingSource === "tts_segment_timing" || input.timingSource === "avatar_script_clock") {
+    return {
+      status: "failed",
+      timingSource: input.timingSource,
+      textExact,
+      code: "unverified_alignment",
+    };
   }
   const spacing = hasExactInternalSpacing(script, input.captions);
   if (!spacing.passed) {

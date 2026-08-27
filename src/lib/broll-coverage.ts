@@ -113,7 +113,10 @@ function playableDuration(
   offset: number,
   guardSec: number,
 ): number {
-  return sourceDuration(asset) - offset - guardSec;
+  // A timeline-aligned presenter is the authoritative source recording, so it
+  // may play through its final frame. The sequence guard exists for reusable
+  // B-roll clips whose probe/loop boundary needs spare frames.
+  return sourceDuration(asset) - offset - (asset.timelineAligned === true ? 0 : guardSec);
 }
 
 function normalizePool(
@@ -361,9 +364,11 @@ export function coverBrollTimeline(
     while (cursor < target.end - EPSILON_SEC) {
       const isPreferredAttempt = preferred !== undefined;
       const asset = preferred ?? fallbackAssets[poolCursor % Math.max(fallbackAssets.length, 1)];
-      let offset = preferred
-        ? Math.max(0, finiteOr(asset?.clipOffset, 0))
-        : 0;
+      let offset = asset?.timelineAligned === true
+        ? cursor
+        : preferred
+          ? Math.max(0, finiteOr(asset?.clipOffset, 0))
+          : 0;
       preferred = undefined;
 
       const previousSegment = segments[segments.length - 1];

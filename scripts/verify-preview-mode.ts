@@ -52,6 +52,7 @@ const LONG_SEGMENTS = LONG_WINDOW_GROUP_SIZES.flatMap((groupSize, groupIndex) =>
   });
 });
 const LONG_TIMING = { provider: "gemini", segments: LONG_SEGMENTS };
+const LONG_SCRIPT = LONG_SEGMENTS.map((segment) => segment.text).join("");
 
 interface CallLog { method: string; path: string; body?: unknown }
 
@@ -73,11 +74,29 @@ function makeStubCaller(log: CallLog[]) {
       if (path.startsWith("/api/videos/render-cancel")) return {} as T;
       if (path === "/api/videos") return { id: "gallery-vid-1" } as T;
       if (path === "/api/videos/transcribe") {
-        return { captions: [
+        const requestedScript = typeof (body as { script?: unknown })?.script === "string"
+          ? String((body as { script?: string }).script).trim()
+          : "";
+        if (requestedScript) {
+          return {
+            captions: [{ text: requestedScript, startMs: 100, endMs: 4_800, tag: "hook" }],
+            words: [{ word: requestedScript, startMs: 100, endMs: 4_800 }],
+            fullText: requestedScript,
+            audioDurationMs: 5_000,
+          } as T;
+        }
+        const uploadCaptions = [
           { text: "สวัสดีค่ะ วันนี้รีวิวครีมกันแดด", startMs: 0, endMs: 2500, tag: "hook" },
           { text: "เนื้อบางเบา ซึมไว", startMs: 2500, endMs: 5000, tag: "body" },
-          { text: "กดติดตามไว้เลย", startMs: 5000, endMs: 7000, tag: "cta" },
-        ], audioDurationMs: 7000 } as T;
+          { text: "กดติดตามไว้เลย", startMs: 5000, endMs: 10000, tag: "cta" },
+        ];
+        const uploadFullText = uploadCaptions.map((caption) => caption.text).join(" ");
+        return {
+          captions: uploadCaptions,
+          words: [{ word: uploadFullText, startMs: 0, endMs: 10_000 }],
+          fullText: uploadFullText,
+          audioDurationMs: 10000,
+        } as T;
       }
       if (path === "/api/heygen/composite") return { videoUrl: "/api/renders/composite-cutaway-1.mp4" } as T;
       throw new Error(`stub caller: unexpected POST ${path}`);
@@ -114,6 +133,20 @@ async function main() {
       plan: "PRO", minutesLimit: 80, minutesUsed: 0,
       usagePeriodStartedAt: now, trialEndsAt: null, usageLimit: 100, usageCount: 0,
       geminiVoiceName: "Aoede",
+      subStatus: "active",
+      stripeSubscriptionId: "sub_preview_fixture",
+      planExpiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60_000),
+    },
+  });
+  await prisma.payment.create({
+    data: {
+      userId: "u-preview",
+      stripeSessionId: "cs_preview_fixture",
+      plan: "PRO",
+      amount: 59_900,
+      status: "PAID",
+      periodDays: 30,
+      paidAt: now,
     },
   });
 
@@ -311,6 +344,23 @@ async function main() {
               timing: LONG_TIMING,
             } as T;
           }
+          if (path === "/api/videos/transcribe") {
+            log.push({ method: "POST", path, body });
+            return {
+              captions: LONG_SEGMENTS.map((segment) => ({
+                text: segment.text.trim(),
+                startMs: segment.startMs,
+                endMs: segment.startMs + segment.durationMs,
+              })),
+              words: LONG_SEGMENTS.map((segment) => ({
+                word: segment.text.trim(),
+                startMs: segment.startMs,
+                endMs: segment.startMs + segment.durationMs,
+              })),
+              fullText: LONG_SCRIPT,
+              audioDurationMs: LONG_DURATION_MS,
+            } as T;
+          }
           if (path === "/api/videos/extract-keywords") {
             log.push({ method: "POST", path, body });
             const scenes = ((body as { scenes?: string[] }).scenes ?? []).filter(Boolean);
@@ -346,7 +396,7 @@ async function main() {
         },
       };
       const job = await createProcessingVideoJob("u-preview", {
-        script: SCRIPT,
+        script: LONG_SCRIPT,
         previewMode: true,
         voiceProvider: "gemini",
         subtitleMode: "1",
@@ -356,6 +406,8 @@ async function main() {
         refundOneClip: async () => {},
         sleep: async () => {},
       });
+      const longDone = await prisma.videoJob.findUnique({ where: { id: job.id } });
+      ok(longDone?.status === "done", `I: long preview completes (got ${longDone?.status}, err=${longDone?.errorMessage ?? "-"})`);
 
       const stockCall = log.find((call) => call.path === "/api/videos/fetch-stock");
       const configCall = log.find((call) => call.path === "/api/videos/generate-config");
@@ -573,6 +625,10 @@ async function main() {
     const out = parseVideoJobOutput(done?.outputJson ?? null);
     ok(out?.version === 2 && out.videoUrl === "/api/renders/composite-cutaway-1.mp4", `E: v2 output = composite url (got ${out?.videoUrl})`);
     ok((out?.preview?.captions?.length ?? 0) === 3, "E: transcribed captions in output");
+    ok(out?.subtitleQa?.status === "passed" && out.subtitleQa.timingSource === "upload_transcription",
+      "E: upload preview persists acoustic subtitle QA evidence");
+    ok((out?.preview?.words?.length ?? 0) > 0 && Boolean(out?.preview?.fullText),
+      "E: upload preview keeps word timing + transcript for replay audits");
   }
 
   // ── E2. one short window is presenter-only: skip stock/AI entirely. ────────
@@ -593,6 +649,8 @@ async function main() {
           log.push({ method: "POST", path, body });
           return {
             captions: [{ text: "คลิปสั้น", startMs: 0, endMs: 2_500, tag: "hook" }],
+            words: [{ word: "คลิปสั้น", startMs: 0, endMs: 2_500 }],
+            fullText: "คลิปสั้น",
             audioDurationMs: 2_500,
           } as T;
         }

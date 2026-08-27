@@ -43,6 +43,34 @@ for (const segment of assigned.segments) {
   );
 }
 
+const timelineAlignedPresenter = coverBrollTimeline(
+  [{
+    src: "/uploaded-presenter.mp4",
+    start: 4,
+    end: 8,
+    clipOffset: 4,
+    clipDuration: 12,
+    timelineAligned: true,
+  }],
+  [{
+    src: "/uploaded-presenter.mp4",
+    start: 0,
+    end: 0,
+    clipOffset: 0,
+    clipDuration: 12,
+    timelineAligned: true,
+  }],
+  12,
+  fps,
+);
+assert.equal(timelineAlignedPresenter.complete, true);
+assert.equal(
+  timelineAlignedPresenter.segments.every((segment) =>
+    segment.timelineAligned !== true || Math.abs((segment.clipOffset ?? -1) - segment.start) <= 1 / fps),
+  true,
+  "uploaded presenter repair segments resume at their timeline time instead of frame zero",
+);
+
 // Minimized from duckyhero's rendered A→B(0.1–0.2s)→A transitions. A preferred
 // source that is only slightly too short must not leave a micro fallback at the end
 // of each semantic window.

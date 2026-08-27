@@ -41,6 +41,12 @@ jobs:
       - name: Verify first-export subtitle and duration walls
         run: npm run verify:first-export-walls
 
+      - name: Verify acoustic subtitle and export release gates
+        run: npm run verify:subtitle-audio-sync
+
+      - name: Verify upload transcription keeps real word timing
+        run: npm run verify:transcribe-alignment
+
       - name: Verify subtitle card invariants
         run: npm run verify:subtitle-invariant
 
@@ -107,6 +113,9 @@ jobs:
 
       - name: Verify cutaway Scene Reroll maps timeline windows to Visual Beats
         run: npm run verify:broll-window-management && npm run verify:broll-rerender
+
+      - name: Verify uploaded presenter resumes at the source timeline
+        run: npm run verify:broll-coverage
 
       - name: Verify B-roll growth funnel telemetry
         run: npm run verify:broll-growth-funnel

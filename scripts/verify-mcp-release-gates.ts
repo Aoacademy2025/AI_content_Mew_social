@@ -37,9 +37,18 @@ async function main() {
   });
 
   let renderCount = 0;
+  let forcedAlignmentCount = 0;
   const caller = {
     post: async (path: string, body?: unknown) => {
       const key = path.split("?")[0];
+      if (key === "/api/videos/transcribe") {
+        forcedAlignmentCount += 1;
+        return {
+          captions: [{ text: "สร้างเงินเก็บทุกเดือน", startMs: 120, endMs: 2_800 }],
+          words: [{ word: "สร้างเงินเก็บทุกเดือน", startMs: 120, endMs: 2_800 }],
+          audioDurationMs: 3_000,
+        } as never;
+      }
       if (key === "/api/videos/render") {
         renderCount += 1;
         const type = renderCount === 1 ? "RENDER" : "BURN";
@@ -93,6 +102,11 @@ async function main() {
   const output = parseVideoJobOutput(completed.outputJson);
   assert.equal(completed.status, "done");
   assert.equal(output?.subtitleQa?.status, "passed");
+  assert.equal(output?.subtitleQa?.timingSource, "forced_alignment");
+  assert.equal(forcedAlignmentCount, 1, "Gemini timing is verified from generated audio even when segment timing exists");
+  assert.equal(output?.subtitleEvidence?.timingSource, "forced_alignment");
+  assert.equal(output?.subtitleEvidence?.fullText, "สร้างเงินเก็บทุกเดือน");
+  assert.ok((output?.subtitleEvidence?.words.length ?? 0) > 0, "completed full renders keep replayable word timing evidence");
   assert.deepEqual(output?.billingReceipt, {
     status: "settled",
     funding: "minutes",
@@ -120,6 +134,13 @@ async function main() {
   const avatarCaller = {
     post: async (path: string, body?: unknown) => {
       const key = path.split("?")[0];
+      if (key === "/api/videos/transcribe") {
+        return {
+          captions: [{ text: "ออมเงินให้เป็นนิสัย", startMs: 100, endMs: 2_800 }],
+          words: [{ word: "ออมเงินให้เป็นนิสัย", startMs: 100, endMs: 2_800 }],
+          audioDurationMs: 3_000,
+        } as never;
+      }
       if (key === "/api/videos/render") {
         avatarRenderCount += 1;
         const type = avatarRenderCount === 1 ? "RENDER" : "BURN";

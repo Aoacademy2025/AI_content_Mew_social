@@ -67,8 +67,34 @@ check(
   changedNumber.status === "failed" && changedNumber.code === "text_mismatch",
 );
 check(
-  "text_mismatch does not fail the VideoJob — editor can fix after export",
-  changedNumber.status === "failed" && subtitleQualityShouldFailJob(changedNumber) === false,
+  "text_mismatch blocks release because the spoken promise cannot be repaired after export",
+  changedNumber.status === "failed" && subtitleQualityShouldFailJob(changedNumber) === true,
+);
+
+const estimatedTiming = validateSubtitleQuality({
+  script,
+  captions,
+  audioDurationMs: 3_000,
+  timingSource: "tts_segment_timing",
+});
+check(
+  "estimated TTS segment timing cannot certify subtitle/audio alignment",
+  estimatedTiming.status === "failed"
+    && estimatedTiming.code === "unverified_alignment"
+    && subtitleQualityShouldFailJob(estimatedTiming) === true,
+);
+
+const estimatedWithSpacingIssue = validateSubtitleQuality({
+  script,
+  captions: captions.map((caption, index) => index === 1 ? { ...caption, text: "5,000บาท" } : caption),
+  audioDurationMs: 3_000,
+  timingSource: "tts_segment_timing",
+});
+check(
+  "presentation issues cannot mask unverified audio timing",
+  estimatedWithSpacingIssue.status === "failed"
+    && estimatedWithSpacingIssue.code === "unverified_alignment"
+    && subtitleQualityShouldFailJob(estimatedWithSpacingIssue) === true,
 );
 
 const lostInternalSpace = validateSubtitleQuality({
@@ -107,7 +133,7 @@ const punctOnly = validateSubtitleQuality({
     { text: "...", startMs: 400, endMs: 700 },
   ],
   audioDurationMs: 800,
-  timingSource: "tts_segment_timing",
+  timingSource: "forced_alignment",
 });
 check(
   "punctuation-only cards do not fail the VideoJob",
@@ -119,7 +145,7 @@ const tooShort = validateSubtitleQuality({
   script: "ครับ",
   captions: [{ text: "ครับ", startMs: 0, endMs: 100 }],
   audioDurationMs: 800,
-  timingSource: "tts_segment_timing",
+  timingSource: "forced_alignment",
 });
 check(
   "card_too_short does not fail the VideoJob",

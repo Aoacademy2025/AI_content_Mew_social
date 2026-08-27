@@ -46,6 +46,8 @@ export interface BrollVideo {
   sourceIndex?: number; // originating semantic window ordinal
   clipOffset?: number; // where inside the source clip to start playing (seconds, default 0)
   clipDuration?: number; // actual source clip duration in seconds (for Loop)
+  /** Continuous uploaded presenter media: source time must equal timeline time. */
+  timelineAligned?: boolean;
   keyword?: string;
   title?: string;
   query?: string;

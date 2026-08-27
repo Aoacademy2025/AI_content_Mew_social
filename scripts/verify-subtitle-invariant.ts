@@ -138,7 +138,7 @@ const shortMergeQuality = shortMergeResult
       script: shortMergeResult.fullText,
       captions: shortMergeResult.captions,
       audioDurationMs: shortMergeResult.audioDurationMs,
-      timingSource: "tts_segment_timing",
+      timingSource: "forced_alignment",
     })
   : null;
 check(

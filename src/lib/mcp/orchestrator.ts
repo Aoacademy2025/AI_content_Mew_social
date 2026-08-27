@@ -6,7 +6,7 @@ import {
   refundVideoJobBaseReservation,
   refundVideoJobTerminalRenderReservations,
 } from "@/lib/render/reservation-settlement";
-import { captionsFromSpokenScript, captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
+import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
 import {
   setJobStep,
   finishJob,
@@ -802,6 +802,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         videoUrl: burnedUrl,
         videoId: created.id,
         subtitleQa,
+        subtitleEvidence: {
+          captions,
+          words: checkpoint.words,
+          fullText: checkpoint.fullText,
+          audioDurationMs: checkpoint.audioDurationMs,
+          timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
+        },
         ...(billingReceipt ? { billingReceipt } : {}),
       });
     };
@@ -1089,6 +1096,45 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const parsed = parseVideoJobOutput(src.outputJson);
       const preview = parsed?.preview;
       if (!preview) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับส่งออก"); return; }
+      const sourceSubtitleQa = parsed?.subtitleQa;
+      if (!sourceSubtitleQa || subtitleQualityShouldFailJob(sourceSubtitleQa)) {
+        throw new Error("ยังไม่มีหลักฐานว่าซับตรงกับเสียง — กรุณาสร้างตัวอย่างใหม่ก่อนส่งออก");
+      }
+      const overlayPopups = Array.isArray(input.subtitleOverlayConfig.keywordPopups)
+        ? input.subtitleOverlayConfig.keywordPopups
+        : [];
+      const finalCaptions: OrchCaption[] = input.editSnapshot?.captions?.length
+        ? input.editSnapshot.captions.map((caption, index) => ({
+            ...caption,
+            tag: caption.tag === "hook" || caption.tag === "cta" ? caption.tag : (index === 0 ? "hook" : "body"),
+          }))
+        : overlayPopups.flatMap((candidate, index) => {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+            const popup = candidate as Record<string, unknown>;
+            const text = typeof popup.text === "string" ? popup.text.trim() : "";
+            const startFrame = Number(popup.start);
+            const endFrame = Number(popup.end);
+            if (!text || !Number.isFinite(startFrame) || !Number.isFinite(endFrame)) return [];
+            return [{
+              text,
+              startMs: Math.round((startFrame / RENDER_FPS) * 1_000),
+              endMs: Math.round((endFrame / RENDER_FPS) * 1_000),
+              tag: index === 0 ? "hook" as const : "body" as const,
+            }];
+          });
+      const sourceInput = parseCreateInput(src.inputJson);
+      const canonicalScript = sourceSubtitleQa.timingSource === "upload_transcription"
+        ? finalCaptions.map((caption) => caption.text).join("")
+        : preview.fullText?.trim() || sourceInput?.script?.trim() || "";
+      const exportSubtitleQa = validateSubtitleQuality({
+        script: canonicalScript,
+        captions: finalCaptions,
+        audioDurationMs: preview.audioDurationMs,
+        timingSource: sourceSubtitleQa.timingSource,
+      });
+      if (subtitleQualityShouldFailJob(exportSubtitleQa)) {
+        throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${exportSubtitleQa.status === "failed" ? exportSubtitleQa.code : "unknown"}) — ระบบหยุดก่อนส่งออก`);
+      }
       const voiceModel = await resolveExportGalleryVoiceModel(src, userId, user);
 
       await step("burn", 20);
@@ -1129,6 +1175,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         mode: "export",
         sourceJobId: input.sourceJobId,
         videoUrl: burnedUrl,
+        subtitleQa: exportSubtitleQa,
+        subtitleEvidence: {
+          captions: finalCaptions,
+          words: preview.words ?? [],
+          fullText: canonicalScript,
+          audioDurationMs: preview.audioDurationMs,
+          timingSource: sourceSubtitleQa.timingSource,
+        },
         ...(videoId ? { videoId } : {}),
         ...(input.editSnapshot ? { editSnapshot: input.editSnapshot } : {}),
       });
@@ -1198,14 +1252,33 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       if (!input.clipUrl) { await failJob(jobId, "upload job missing clipUrl"); return; }
 
       await step("captions", 20);
-      const tx = await caller.post<{ captions?: OrchCaption[]; audioDurationMs?: number }>(
+      const tx = await caller.post<{
+        captions?: OrchCaption[];
+        words?: Array<{ word: string; startMs: number; endMs: number }>;
+        fullText?: string;
+        audioDurationMs?: number;
+      }>(
         "/api/videos/transcribe", { audioUrl: input.clipUrl, script: "" },
       );
       const upCaps = (tx.captions ?? []).filter((c) => typeof c?.text === "string" && c.text.trim());
       if (!upCaps.length) throw new Error("ถอดซับจากคลิปไม่สำเร็จ — เช็คว่าคลิปมีเสียงพูดชัดเจน");
+      const upFullText = tx.fullText?.trim() || upCaps.map((caption) => caption.text).join(" ");
+      const upWords = alignTranscriptWordsToSource(upFullText, tx.words ?? []);
+      if (!upWords) {
+        throw new Error("ถอดเวลาแต่ละคำให้ตรงเสียงไม่ได้ — ระบบหยุดก่อนตัดต่อ กรุณาลองใหม่");
+      }
       const upDurMs = (tx.audioDurationMs && tx.audioDurationMs > 0)
         ? Math.round(tx.audioDurationMs)
         : Math.max(...upCaps.map((c) => c.endMs));
+      const uploadSubtitleQa = validateSubtitleQuality({
+        script: upCaps.map((caption) => caption.text).join(""),
+        captions: upCaps,
+        audioDurationMs: upDurMs,
+        timingSource: "upload_transcription",
+      });
+      if (subtitleQualityShouldFailJob(uploadSubtitleQa)) {
+        throw new Error(`ซับจากคลิปไม่ผ่านการตรวจคุณภาพ (${uploadSubtitleQa.status === "failed" ? uploadSubtitleQa.code : "unknown"}) — กรุณาลองใหม่`);
+      }
       await reconcileVideoJobFunding(jobId, userId, minutesFromSeconds(upDurMs / 1_000));
 
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
@@ -1357,6 +1430,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           videoUrl: input.clipUrl,
           keyword: "uploaded presenter clip",
           duration: Math.max(1, upDurMs / 1_000),
+          timelineAligned: true,
         },
       });
       const upCfg = await caller.post<{ config: Record<string, unknown> }>(
@@ -1408,6 +1482,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         version: 2,
         mode: "preview",
         videoUrl: comp.videoUrl,
+        subtitleQa: uploadSubtitleQa,
         preview: {
           captions: upCaps,
           config: upBaseConfig,
@@ -1417,6 +1492,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           avatarModel: "upload-cutaway",
           avatarVideoUrl: input.clipUrl,
           cutawayPersonRanges: personRanges,
+          words: upWords,
+          fullText: upFullText,
         },
       });
       return;
@@ -1527,11 +1604,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       ? "provider_alignment"
       : "tts_segment_timing";
     let capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
-    if (!capRes || capRes.captions.length === 0) {
-      // Provider timing is missing or unusable. Never ship a final video built from a
-      // single-segment character clock: it preserves text but cannot prove caption/audio
-      // alignment. Reuse the production transcribe path to recover boundaries from the
-      // generated audio itself (TTS voice, never the HeyGen mp4).
+    if (provider !== "elevenlabs" || !capRes || capRes.captions.length === 0) {
+      // Gemini exposes estimated segment clocks, not acoustic word alignment. Verify every
+      // Gemini voice from the generated audio itself even when provider timing is present.
+      // ElevenLabs keeps its provider alignment, but uses this path when that alignment is
+      // missing or unusable. The TTS voice is authoritative (never the HeyGen mp4).
       try {
         const aligned = await caller.post<{
           captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
@@ -1542,29 +1619,19 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           scriptPrompt: input.script.trim().slice(0, 800),
           script: input.script.trim(),
         });
-        const recoveredCaptions: OrchCaption[] = (aligned.captions ?? [])
-          .filter((caption) => typeof caption?.text === "string" && caption.text.trim())
-          .map((caption, index) => ({
-            text: caption.text!.trim(),
-            startMs: Number(caption.startMs),
-            endMs: Number(caption.endMs),
-            tag: caption.tag ?? (index === 0 ? "hook" : "body"),
-          }));
-        if (recoveredCaptions.length > 0) {
+        const recoveredFullText = input.script.trim();
+        const recoveredWords = alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []);
+        const canonicalCaptions = recoveredWords
+          ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
+          : null;
+        if (recoveredWords && canonicalCaptions) {
           subtitleTimingSource = "forced_alignment";
-          const recoveredFullText = input.script.trim();
-          const recoveredWords = alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []);
-          const canonicalCaptions = recoveredWords
-            ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
-            : null;
           capRes = {
-            // The transcribe route intentionally sanitizes punctuation and quotes
-            // in its display captions. Reuse only its proven word timestamps and
-            // take every visible character from the literal TTS source. If exact
-            // word alignment cannot be proven, the raw captions flow to the gate
-            // and fail closed as before.
-            captions: canonicalCaptions ?? recoveredCaptions,
-            words: recoveredWords ?? [],
+            // Reuse only proven word timestamps and take every visible character
+            // from the literal TTS source. An incomplete word alignment is never
+            // promoted to forced_alignment evidence.
+            captions: canonicalCaptions,
+            words: recoveredWords,
             audioDurationMs: Number(aligned.audioDurationMs) > 0
               ? Math.round(Number(aligned.audioDurationMs))
               : audioDurationMs,
@@ -1572,14 +1639,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           };
         }
       } catch {
-        /* Avatar: transcribe of spoken audio can 422; fail-open below. Faceless still throws. */
-      }
-    }
-    if ((!capRes || capRes.captions.length === 0) && input.avatarMode && input.script.trim()) {
-      const spoken = captionsFromSpokenScript(input.script.trim(), audioDurationMs, maxCardCharsFor());
-      if (spoken && spoken.captions.length > 0) {
-        subtitleTimingSource = "avatar_script_clock";
-        capRes = spoken;
+        /* The release gate below rejects estimated timing if acoustic recovery fails. */
       }
     }
     if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
@@ -1939,6 +1999,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       videoUrl: burnedUrl,
       videoId: created.id,
       subtitleQa,
+      subtitleEvidence: {
+        captions,
+        words: capRes.words,
+        fullText: capRes.fullText,
+        audioDurationMs: durMs,
+        timingSource: subtitleTimingSource,
+      },
       ...(billingReceipt ? { billingReceipt } : {}),
     });
   } catch (e) {
