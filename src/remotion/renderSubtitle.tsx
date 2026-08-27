@@ -88,6 +88,34 @@ function splitManualLines(s: string): string[] {
   return s.replace(/\r\n?/g, "\n").split("\n");
 }
 
+/**
+ * Configured subtitle sizing is the approved default for ticket #356: the size
+ * control is authoritative and wrapping handles longer cards. Keep the previous
+ * staircase available only as an emergency presentation rollback.
+ */
+export function subtitleFitV2Enabled(rawValue: string | undefined): boolean {
+  return rawValue !== "0";
+}
+
+export const SUBTITLE_FIT_V2_ENABLED = subtitleFitV2Enabled(
+  process.env.NEXT_PUBLIC_SUBTITLE_FIT_V2,
+);
+
+export function resolveSubtitleFontSize(
+  text: string,
+  configuredSize: number,
+  fitV2Enabled = SUBTITLE_FIT_V2_ENABLED,
+): number {
+  if (fitV2Enabled) return Math.round(configuredSize);
+
+  const charCount = splitManualLines(text).reduce(
+    (longest, line) => Math.max(longest, line.length),
+    0,
+  );
+  const lengthScale = charCount <= 6 ? 1 : charCount <= 12 ? 0.9 : charCount <= 20 ? 0.78 : 0.68;
+  return Math.round(configuredSize * lengthScale);
+}
+
 // Bounded cache: tokenization is frame-invariant, but tokenLines runs once per caption
 // PER FRAME for karaoke/highlight (60×/s in preview; every frame at render). Cache by text
 // so the ICU word-segmentation runs once per distinct caption instead of once per frame.
@@ -204,12 +232,7 @@ export function renderSubtitle(
   // so guarding here — not at the burn call site — keeps preview and export WYSIWYG.
   if (!text.trim()) return null;
 
-  // Size by the LONGEST line, not total length: manual "\n" breaks split the caption across
-  // lines, so counting "\n" + every line's chars would shrink multi-line captions for no
-  // visual reason. Single-line text (no "\n") yields [text], so charCount is unchanged.
-  const charCount = splitManualLines(text).reduce((longest, line) => Math.max(longest, line.length), 0);
-  const lengthScale = charCount <= 6 ? 1 : charCount <= 12 ? 0.9 : charCount <= 20 ? 0.78 : 0.68;
-  const scaledSize = Math.round(size * lengthScale);
+  const scaledSize = resolveSubtitleFontSize(text, size);
   const outlineSize = Math.max(1, Math.min(12, Math.round(decorations.outlineSize ?? 2)));
   const manualShadow = decorations.shadow
     ? "0 5px 14px rgba(0,0,0,0.95), 0 2px 4px rgba(0,0,0,0.9)"

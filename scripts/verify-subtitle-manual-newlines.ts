@@ -1,6 +1,6 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { renderSubtitle } from "../src/remotion/renderSubtitle";
+import { renderSubtitle, resolveSubtitleFontSize } from "../src/remotion/renderSubtitle";
 import type { SubtitleStylePreset, SubtitleTextEffect } from "../src/remotion/types";
 
 function check(name: string, ok: boolean) {
@@ -33,14 +33,24 @@ check("karaoke keeps inline spaces inside each line", karaoke.includes(">hello</
 const typewriter = markup("first line\nsecond line", "box", "typewriter");
 check("typewriter preserves manual newline via CSS", typewriter.includes("white-space:pre-line"));
 
-// Regression guard: a multi-line caption must be sized by its LONGEST line, not total
-// length — splitting short lines with "\n" must not shrink the font (the manual-newline bug).
+// Configured sizing is authoritative: neither adding a manual line nor using a
+// longer card may silently override the size control.
 const fontSize = (m: string) => (m.match(/font-size:(\d+)px/) || [])[1];
 const oneShort = markup("สั้น", "stroke", "pop");
 const twoShort = markup("สั้น\nสั้น", "stroke", "pop");
-check("multi-line caption sized by longest line, not total (no shrink)", !!fontSize(oneShort) && fontSize(oneShort) === fontSize(twoShort));
-// No regression for single-line captions: a genuinely long single line still scales down.
-const longLine = markup("ยาวมากกกกกกกกกกกกกกก", "stroke", "pop");
-check("single long line still scales down (no regression)", Number(fontSize(longLine)) < Number(fontSize(oneShort)));
+check("manual newline keeps the configured size", !!fontSize(oneShort) && fontSize(oneShort) === fontSize(twoShort));
+const longText = "ยาวมากกกกกกกกกกกกกกก";
+check(
+  "configured-size mode keeps a single long line at the selected size",
+  resolveSubtitleFontSize(longText, 80, true) === resolveSubtitleFontSize("สั้น", 80, true),
+);
+check(
+  "emergency rollback still sizes a multi-line caption from its longest line",
+  resolveSubtitleFontSize("สั้น\nสั้น", 80, false) === resolveSubtitleFontSize("สั้น", 80, false),
+);
+check(
+  "emergency rollback still reduces a genuinely long line",
+  resolveSubtitleFontSize(longText, 80, false) < resolveSubtitleFontSize("สั้น", 80, false),
+);
 
 console.log("All subtitle manual newline checks passed.");
