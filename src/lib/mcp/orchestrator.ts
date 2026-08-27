@@ -102,6 +102,7 @@ import { shouldEmitPipelineStepStarted } from "@/lib/pipeline-telemetry";
 import {
   alignTranscriptWordsToSource,
   buildCanonicalCaptionsFromAlignedWords,
+  resolveUploadTranscriptWords,
   subtitleQualityShouldFailJob,
   validateSubtitleQuality,
   type SubtitleTimingSource,
@@ -1263,9 +1264,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upCaps = (tx.captions ?? []).filter((c) => typeof c?.text === "string" && c.text.trim());
       if (!upCaps.length) throw new Error("ถอดซับจากคลิปไม่สำเร็จ — เช็คว่าคลิปมีเสียงพูดชัดเจน");
       const upFullText = tx.fullText?.trim() || upCaps.map((caption) => caption.text).join(" ");
-      const upWords = alignTranscriptWordsToSource(upFullText, tx.words ?? []);
-      if (!upWords) {
-        throw new Error("ถอดเวลาแต่ละคำให้ตรงเสียงไม่ได้ — ระบบหยุดก่อนตัดต่อ กรุณาลองใหม่");
+      const uploadWords = resolveUploadTranscriptWords(upFullText, tx.words ?? []);
+      const upWords = uploadWords.words;
+      if (!uploadWords.regroupingAvailable) {
+        console.warn(
+          `[orchestrator] upload word regrouping disabled job=${jobId} reason=${uploadWords.failureCode}`,
+        );
       }
       const upDurMs = (tx.audioDurationMs && tx.audioDurationMs > 0)
         ? Math.round(tx.audioDurationMs)

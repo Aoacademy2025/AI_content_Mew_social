@@ -8,6 +8,11 @@ export const RENDER_MAINTENANCE_CUSTOMER_MESSAGE = "ระบบเรนเด�
 
 type DrainClient = Pick<Prisma.TransactionClient, "siteConfig" | "videoJob" | "renderJob">;
 
+export type RenderEnqueueDrainContext = {
+  parentVideoJobId?: string;
+  userId?: string;
+};
+
 export class RenderDeployDrainError extends Error {
   readonly code = "render_deploy_drain";
   reservationRefunded = false;
@@ -29,12 +34,33 @@ export class RenderDeployDrainError extends Error {
   }
 }
 
-export async function assertRenderEnqueueOpen(client: DrainClient = prisma): Promise<void> {
+export async function assertRenderEnqueueOpen(
+  client: DrainClient = prisma,
+  context: RenderEnqueueDrainContext = {},
+): Promise<void> {
   const row = await client.siteConfig.findUnique({
     where: { key: RENDER_DEPLOY_DRAIN_KEY },
-    select: { value: true },
+    select: { value: true, updatedAt: true },
   });
-  if (row?.value === "1") throw new RenderDeployDrainError();
+  if (row?.value !== "1") return;
+
+  // Drain blocks NEW parent work while allowing a child RenderJob required to
+  // finish a VideoJob that was already in flight before maintenance began.
+  // Ownership + creation time prevent an arbitrary parent id from bypassing it.
+  if (context.parentVideoJobId && context.userId) {
+    const existingParent = await client.videoJob.findFirst({
+      where: {
+        id: context.parentVideoJobId,
+        userId: context.userId,
+        status: { in: [...VIDEO_JOB_INFLIGHT_STATUSES] },
+        createdAt: { lte: row.updatedAt },
+      },
+      select: { id: true },
+    });
+    if (existingParent) return;
+  }
+
+  throw new RenderDeployDrainError();
 }
 
 export type RenderQueueCounts = {

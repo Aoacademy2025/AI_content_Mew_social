@@ -74,8 +74,26 @@ async function main() {
 
     await prisma.siteConfig.update({ where: { key: RENDER_DEPLOY_DRAIN_KEY }, data: { value: "0" } });
     await assertRenderEnqueueOpen();
-    const videoJob = await createVideoJob(USER_ID, { script: "allowed" });
-    const renderJob = await enqueueRenderJob({ userId: USER_ID, type: "RENDER", payload: { shortVideoConfig: {} } });
+    const videoJob = await createVideoJob(USER_ID, { script: "started-before-drain" });
+    await prisma.videoJob.update({ where: { id: videoJob.id }, data: { status: "processing" } });
+    await prisma.siteConfig.update({ where: { key: RENDER_DEPLOY_DRAIN_KEY }, data: { value: "1" } });
+
+    await assertRenderEnqueueOpen(prisma, { parentVideoJobId: videoJob.id, userId: USER_ID });
+    const renderJob = await enqueueRenderJob({
+      userId: USER_ID,
+      type: "RENDER",
+      payload: { shortVideoConfig: {} },
+      parentJobId: videoJob.id,
+    });
+    await assert.rejects(
+      () => enqueueRenderJob({
+        userId: USER_ID,
+        type: "RENDER",
+        payload: { shortVideoConfig: {} },
+        parentJobId: "unknown-parent",
+      }),
+      (error: unknown) => error instanceof RenderDeployDrainError,
+    );
     const active = await readRenderQueueCounts();
     assert.deepEqual(active, { videoJobs: 1, renderJobs: 1, empty: false });
 

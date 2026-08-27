@@ -101,16 +101,27 @@ function hasExactInternalSpacing(
   return { passed: true };
 }
 
-/**
- * Attach transcript timestamps to the canonical source tokens used by subtitle regrouping.
- * A mismatch fails closed: guessing offsets would re-introduce the word-splitting drift this
- * quality gate exists to prevent.
- */
-export function alignTranscriptWordsToSource(
+export type TranscriptAlignmentFailureCode =
+  | "empty_source"
+  | "empty_transcript"
+  | "no_usable_words"
+  | "overlapping_timing"
+  | "text_mismatch"
+  | "incomplete_alignment";
+
+export type TranscriptAlignmentResult =
+  | { status: "aligned"; words: TimedWord[] }
+  | { status: "failed"; code: TranscriptAlignmentFailureCode };
+
+/** Attach transcript timestamps to canonical source tokens and retain the
+ * exact rejection reason for production diagnosis. */
+export function alignTranscriptWordsToSourceDetailed(
   fullText: string,
   transcriptWords: TranscriptWord[],
-): TimedWord[] | null {
+): TranscriptAlignmentResult {
   const sourceWords = tokenizeWords(fullText);
+  if (sourceWords.length === 0) return { status: "failed", code: "empty_source" };
+  if (transcriptWords.length === 0) return { status: "failed", code: "empty_transcript" };
   const usableTranscript = transcriptWords.filter((word) =>
     typeof word?.word === "string"
     && word.word.trim().length > 0
@@ -119,8 +130,10 @@ export function alignTranscriptWordsToSource(
     && word.startMs >= 0
     && word.endMs > word.startMs,
   );
-  if (sourceWords.length === 0 || usableTranscript.length === 0) return null;
-  if (usableTranscript.some((word, index) => index > 0 && word.startMs < usableTranscript[index - 1].endMs)) return null;
+  if (usableTranscript.length === 0) return { status: "failed", code: "no_usable_words" };
+  if (usableTranscript.some((word, index) => index > 0 && word.startMs < usableTranscript[index - 1].endMs)) {
+    return { status: "failed", code: "overlapping_timing" };
+  }
 
   const tokenText = (value: string) => canonicalVisibleText(value.trim());
   const aligned: TimedWord[] = [];
@@ -134,13 +147,13 @@ export function alignTranscriptWordsToSource(
 
     while (sourceText !== transcriptText) {
       if (sourceText.length < transcriptText.length && transcriptText.startsWith(sourceText)) {
-        if (sourceIndex >= sourceWords.length) return null;
+        if (sourceIndex >= sourceWords.length) return { status: "failed", code: "text_mismatch" };
         sourceText += tokenText(sourceWords[sourceIndex++].word);
       } else if (transcriptText.length < sourceText.length && sourceText.startsWith(transcriptText)) {
-        if (transcriptIndex >= usableTranscript.length) return null;
+        if (transcriptIndex >= usableTranscript.length) return { status: "failed", code: "text_mismatch" };
         transcriptText += tokenText(usableTranscript[transcriptIndex++].word);
       } else {
-        return null;
+        return { status: "failed", code: "text_mismatch" };
       }
     }
 
@@ -148,7 +161,7 @@ export function alignTranscriptWordsToSource(
     const transcriptGroup = usableTranscript.slice(transcriptStart, transcriptIndex);
     const transcriptLengths = transcriptGroup.map((word) => tokenText(word.word).length);
     const totalChars = transcriptLengths.reduce((sum, length) => sum + length, 0);
-    if (totalChars <= 0) return null;
+    if (totalChars <= 0) return { status: "failed", code: "text_mismatch" };
 
     const timeAt = (charOffset: number, edge: "start" | "end"): number => {
       let cursor = 0;
@@ -181,8 +194,42 @@ export function alignTranscriptWordsToSource(
     }
   }
   return sourceIndex === sourceWords.length && transcriptIndex === usableTranscript.length
-    ? aligned
-    : null;
+    ? { status: "aligned", words: aligned }
+    : { status: "failed", code: "incomplete_alignment" };
+}
+
+/**
+ * Compatibility wrapper for authored-script/forced-alignment callers, where a
+ * mismatch must still fail closed.
+ */
+export function alignTranscriptWordsToSource(
+  fullText: string,
+  transcriptWords: TranscriptWord[],
+): TimedWord[] | null {
+  const result = alignTranscriptWordsToSourceDetailed(fullText, transcriptWords);
+  return result.status === "aligned" ? result.words : null;
+}
+
+export type UploadTranscriptWordResolution = {
+  words: TimedWord[];
+  regroupingAvailable: boolean;
+  failureCode: TranscriptAlignmentFailureCode | null;
+};
+
+/**
+ * Upload captions are already timestamped from the clip's own audio. Character
+ * offsets exist only for the optional "split by word count" editor control, so
+ * an ASR text-projection mismatch disables that control without discarding the
+ * acoustically aligned captions or failing the whole VideoJob.
+ */
+export function resolveUploadTranscriptWords(
+  fullText: string,
+  transcriptWords: TranscriptWord[],
+): UploadTranscriptWordResolution {
+  const result = alignTranscriptWordsToSourceDetailed(fullText, transcriptWords);
+  return result.status === "aligned"
+    ? { words: result.words, regroupingAvailable: true, failureCode: null }
+    : { words: [], regroupingAvailable: false, failureCode: result.code };
 }
 
 export interface CanonicalAlignedCaption {

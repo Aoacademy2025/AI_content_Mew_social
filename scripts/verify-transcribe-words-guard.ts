@@ -70,11 +70,13 @@ function mkChunk(caps: number, words: number, totalMs: number): ChunkResult {
   check("dropping one word ≠ degenerate", !s.stats.wordsDegenerate);
 }
 
-// ── 3. degenerate words (prod case: 108 words for 105 captions) → words zeroed ──
+// ── 3. truncated word timeline (prod shape: sparse survivors cover half) → zeroed ──
 {
   const r = mkChunk(105, 108, CHUNK_MS);
+  r.words = mkWords(108, CHUNK_MS / 2 / 1000);
   const s = sanitizeChunkTimeline(r, CHUNK_MS);
-  check("sparse words (≈1/caption) → degenerate", s.stats.wordsDegenerate);
+  check("half-timeline words → degenerate", s.stats.wordsDegenerate);
+  check("degenerate reason is explicit", s.stats.wordEvidenceCode === "insufficient_timeline_coverage");
   check("degenerate → words zeroed so the route can retry the chunk", s.words.length === 0);
   check("degenerate → captions preserved", s.geminiDirectCaptions.length === 105);
 }

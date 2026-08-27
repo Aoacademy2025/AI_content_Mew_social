@@ -94,7 +94,11 @@ export async function enqueueRenderJob(input: {
    */
   scopeKey?: string | null;
 }): Promise<{ id: string }> {
-  await assertRenderEnqueueOpen();
+  const drainContext = {
+    parentVideoJobId: input.parentJobId,
+    userId: input.userId,
+  };
+  await assertRenderEnqueueOpen(prisma, drainContext);
   let reserved = false;
   if (input.reserveQuotaFor) {
     const r = await reserveClipUsage(input.userId);
@@ -112,7 +116,7 @@ export async function enqueueRenderJob(input: {
   }
   try {
     const job = await prisma.$transaction(async (tx) => {
-      await assertRenderEnqueueOpen(tx);
+      await assertRenderEnqueueOpen(tx, drainContext);
       return tx.renderJob.create({
         data: {
           userId: input.userId,

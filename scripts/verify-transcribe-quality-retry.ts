@@ -13,21 +13,56 @@ import {
 } from "../src/lib/transcribe-timeline";
 
 function result(endMs: number, wordCount = 0): ChunkResult {
+  const text = wordCount > 0
+    ? Array.from({ length: wordCount }, (_, index) => `คำ${index + 1}`).join(" ")
+    : "ทดสอบ";
   return {
     words: Array.from({ length: wordCount }, (_, index) => ({
       word: `คำ${index + 1}`,
       start: (index * endMs) / wordCount / 1_000,
       end: ((index + 1) * endMs) / wordCount / 1_000,
     })),
-    segments: [{ text: "ทดสอบ", start: 0, end: endMs / 1000 }],
+    segments: [{ text, start: 0, end: endMs / 1000 }],
     geminiDirectCaptions: [{
-      text: "ทดสอบ",
+      text,
       startMs: 0,
       endMs,
       timestampMs: 0,
       confidence: 1,
     }],
-    fullText: "ทดสอบ",
+    fullText: text,
+  };
+}
+
+function productionGeminiRatioResult(): ChunkResult {
+  const wordCount = 36;
+  const captionCount = 19;
+  const durationMs = 60_000;
+  const words = Array.from({ length: wordCount }, (_, index) => ({
+    word: `คำ${index + 1}`,
+    start: (index * durationMs) / wordCount / 1_000,
+    end: ((index + 1) * durationMs) / wordCount / 1_000,
+  }));
+  const captions = Array.from({ length: captionCount }, (_, index) => {
+    const from = Math.round((index * wordCount) / captionCount);
+    const to = Math.round(((index + 1) * wordCount) / captionCount);
+    return {
+      text: words.slice(from, to).map((word) => word.word).join(" "),
+      startMs: Math.round((from * durationMs) / wordCount),
+      endMs: Math.round((to * durationMs) / wordCount),
+      timestampMs: Math.round((from * durationMs) / wordCount),
+      confidence: 1,
+    };
+  });
+  return {
+    words,
+    segments: captions.map((caption) => ({
+      text: caption.text,
+      start: caption.startMs / 1_000,
+      end: caption.endMs / 1_000,
+    })),
+    geminiDirectCaptions: captions,
+    fullText: words.map((word) => word.word).join(" "),
   };
 }
 
@@ -45,7 +80,9 @@ async function main() {
   assert.equal(recovered.accepted, true, "second in-sync response is accepted");
   assert.equal(recovered.result.geminiDirectCaptions.at(-1)?.endMs, 179_900);
 
-  const wordResponses = [result(60_000, 1), result(60_000, 4)];
+  const truncatedWordResult = result(60_000, 1);
+  truncatedWordResult.words[0].end = 20;
+  const wordResponses = [truncatedWordResult, result(60_000, 4)];
   calls = 0;
   const wordRecovered = await runTranscriptionQualityRetries(
     async () => wordResponses[calls++],
@@ -57,6 +94,38 @@ async function main() {
   assert.equal(calls, 2, "a tail-aligned response with degenerate words is retried");
   assert.equal(wordRecovered.accepted, true, "a later response with acoustic word coverage is accepted");
   assert.equal(wordRecovered.result.words.length, 4, "the accepted result keeps the complete word timeline");
+
+  // Production 2026-08-27: Gemini returned a complete, monotonic 60s timeline
+  // with 19 caption cards / 36 timed word-or-phrase items. Item count is a
+  // provider segmentation choice, not proof of missing acoustic timing.
+  calls = 0;
+  const providerPhraseSegmentation = await runTranscriptionQualityRetries(
+    async () => {
+      calls++;
+      return productionGeminiRatioResult();
+    },
+    60_000,
+    3,
+    undefined,
+    { requireUsableWords: true },
+  );
+  assert.equal(calls, 1, "complete 19-caption/36-word evidence is accepted without retries");
+  assert.equal(providerPhraseSegmentation.accepted, true, "provider phrase segmentation is not a false failure");
+
+  const alternateAsrProjection = productionGeminiRatioResult();
+  alternateAsrProjection.fullText = "อีกการแบ่งประโยคหนึ่งจากผล ASR เดียวกัน";
+  const projectionAccepted = await runTranscriptionQualityRetries(
+    async () => alternateAsrProjection,
+    60_000,
+    1,
+    undefined,
+    { requireUsableWords: true },
+  );
+  assert.equal(
+    projectionAccepted.accepted,
+    true,
+    "ASR text projection differences do not override complete acoustic timing evidence",
+  );
 
   calls = 0;
   const exhausted = await runTranscriptionQualityRetries(

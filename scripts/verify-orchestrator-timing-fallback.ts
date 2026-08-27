@@ -7,8 +7,10 @@
 
 import { captionsFromTtsTiming } from "../src/app/(dashboard)/video-editor/_components/tts-timing-captions";
 import {
+  alignTranscriptWordsToSourceDetailed,
   alignTranscriptWordsToSource,
   buildCanonicalCaptionsFromAlignedWords,
+  resolveUploadTranscriptWords,
   subtitleQualityShouldFailJob,
   validateSubtitleQuality,
 } from "../src/lib/mcp/subtitle-quality";
@@ -42,6 +44,29 @@ check(
   "forced alignment retains exact authored text and numbers",
   aligned?.map((word) => word.word).join("").replace(/\s+/gu, "") === script.replace(/\s+/gu, ""),
 );
+
+const overlapFailure = alignTranscriptWordsToSourceDetailed(script, [
+  { word: "ประหยัด", startMs: 100, endMs: 700 },
+  { word: "เงิน", startMs: 650, endMs: 850 },
+]);
+check(
+  "alignment reports the exact timing failure instead of collapsing to null",
+  overlapFailure.status === "failed" && overlapFailure.code === "overlapping_timing",
+);
+
+// Upload transcription captions are already aligned directly to the uploaded
+// audio. Per-word char offsets are optional editor metadata; disagreement
+// between two ASR projections must disable regrouping, not fail the whole clip.
+const uploadFallback = resolveUploadTranscriptWords(
+  "เสียงจริงจากคลิป",
+  [
+    { word: "ข้อความ", startMs: 0, endMs: 500 },
+    { word: "คนละแบบ", startMs: 500, endMs: 1_000 },
+  ],
+);
+check("upload keeps its acoustic captions when optional word regrouping cannot align", !uploadFallback.regroupingAvailable);
+check("upload fallback exposes why regrouping was disabled", uploadFallback.failureCode === "text_mismatch");
+check("upload fallback does not ship unsafe per-word offsets", uploadFallback.words.length === 0);
 
 const captions = [
   { text: "ประหยัดเงิน", startMs: 100, endMs: 850 },
