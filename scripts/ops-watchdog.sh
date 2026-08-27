@@ -43,7 +43,7 @@ SENTINEL_DIR="${SENTINEL_DIR:-/tmp/ops-watchdog}"
 
 # Long-running pm2 apps that must be "online" (crons are "stopped" between runs BY DESIGN —
 # they are covered by the heartbeat check, NOT here).
-PM2_ONLINE_APPS="ai-content render-worker mcp-video-worker"
+PM2_ONLINE_APPS="ai-content render-worker mcp-video-worker story-film-system-worker"
 
 # Cron heartbeats to check: "<name>:<expected_interval_seconds>". Staleness = interval x2.
 #   founding-sweep / reconcile-processing run every 15 min (900s);

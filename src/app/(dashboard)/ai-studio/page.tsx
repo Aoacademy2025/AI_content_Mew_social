@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   AudioLines,
   Check,
@@ -8,6 +9,7 @@ import {
   Coins,
   Download,
   ImageIcon,
+  Film,
   Loader2,
   RefreshCw,
   Server,
@@ -375,6 +377,14 @@ export default function AiStudioPage() {
               {label}
             </button>
           ))}
+          <Link
+            href="/ai-studio/story-film"
+            className="flex min-h-10 items-center gap-2 rounded-lg px-4 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-violet-400"
+            style={{ color: "#F1C16D" }}
+          >
+            <Film className="h-4 w-4" />
+            Story Film
+          </Link>
         </div>
 
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1.45fr)_360px]">

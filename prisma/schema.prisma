@@ -93,6 +93,9 @@ model User {
   userMusic                       UserMusic[]
   avatarPresets                   AvatarPreset[]
   editorProjects                  EditorProject[]
+  storyFilmProjects               StoryFilmProject[]
+  storyFilmPresenterAssets        StoryFilmPresenterAsset[]
+  storyFilmCharacterProfiles      StoryFilmCharacterProfile[]
   brandAssets                     BrandAsset[]
   brandPreference                 BrandPreference?
   editorStylePresets              EditorStylePreset[]
@@ -298,6 +301,239 @@ model EditorProject {
   @@index([latestVideoId])
   @@index([brandProfileRevisionId])
   @@index([treatmentPresetId, treatmentPresetVersion])
+}
+
+// Provider-neutral control plane for one gated Hero Story Film. Generation
+// providers and render workers consume this state; they never own approvals or
+// stage transitions themselves.
+model StoryFilmProject {
+  id                           String                     @id @default(cuid())
+  userId                       String
+  user                         User                       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title                        String
+  idempotencyKey               String
+  presentationMode             String // presenter_led | faceless
+  sourcePackage                String?
+  narrativeSource              String
+  narrationMasterUrl           String?
+  narrationDurationMs          Int?
+  narrationVoiceId             String?
+  narrationVoiceSpeed          Float?
+  presenterAssetId             String?
+  presenterAsset               StoryFilmPresenterAsset?   @relation(fields: [presenterAssetId], references: [id], onDelete: SetNull)
+  characterProfileId           String?
+  characterProfile             StoryFilmCharacterProfile? @relation(fields: [characterProfileId], references: [id], onDelete: SetNull)
+  characterReferenceSetVersion Int?
+  characterLookBrief           String?
+  musicSource                  String?
+  musicTrackId                 String?
+  musicUrl                     String?
+  finalRenderUrl               String?
+  aspectRatio                  String                     @default("9:16")
+  durationLimitMs              Int                        @default(180000)
+  status                       String                     @default("active") // active | waiting_generation | paused | rendering | completed | needs_attention | archived
+  stage                        String                     @default("setup")
+  revision                     Int                        @default(1)
+  generationEpoch              Int                        @default(1)
+  awaitingApproval             Boolean                    @default(true)
+  stageDataJson                String                     @default("{}")
+  lastOpenedAt                 DateTime                   @default(now())
+  createdAt                    DateTime                   @default(now())
+  updatedAt                    DateTime                   @updatedAt
+  decisions                    StoryFilmDecision[]
+  generationJobs               StoryFilmGenerationJob[]
+  artifacts                    StoryFilmArtifact[]
+  scenes                       StoryFilmScene[]
+  characterLooks               StoryFilmCharacterLook[]
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, updatedAt])
+  @@index([userId, status, updatedAt])
+  @@index([presenterAssetId])
+  @@index([characterProfileId])
+  @@index([stage, status, updatedAt])
+}
+
+// Owner-scoped, server-probed presenter upload. A Story Film references this
+// immutable handle instead of trusting duration/aspect values from a browser or
+// MCP caller.
+model StoryFilmPresenterAsset {
+  id           String             @id @default(cuid())
+  userId       String
+  user         User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storageUrl   String             @unique
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  width        Int
+  height       Int
+  durationMs   Int
+  createdAt    DateTime           @default(now())
+  projects     StoryFilmProject[]
+
+  @@index([userId, createdAt])
+}
+
+// Private reusable identity anchor. References are immutable and grouped into
+// numbered sets; a project pins one set, while its wardrobe/look stays local to
+// that project and can change without changing the person's identity.
+model StoryFilmCharacterProfile {
+  id                        String                        @id @default(cuid())
+  userId                    String
+  user                      User                          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                      String
+  identityNotes             String?
+  activeReferenceSetVersion Int                           @default(1)
+  createdAt                 DateTime                      @default(now())
+  updatedAt                 DateTime                      @updatedAt
+  references                StoryFilmCharacterReference[]
+  projects                  StoryFilmProject[]
+  looks                     StoryFilmCharacterLook[]
+
+  @@index([userId, updatedAt])
+}
+
+model StoryFilmCharacterReference {
+  id           String                    @id @default(cuid())
+  profileId    String
+  profile      StoryFilmCharacterProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  setVersion   Int
+  storageUrl   String                    @unique
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  width        Int
+  height       Int
+  viewLabel    String?
+  createdAt    DateTime                  @default(now())
+
+  @@index([profileId, setVersion, createdAt])
+}
+
+model StoryFilmCharacterLook {
+  id                 String                    @id @default(cuid())
+  projectId          String
+  project            StoryFilmProject          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  characterProfileId String
+  characterProfile   StoryFilmCharacterProfile @relation(fields: [characterProfileId], references: [id], onDelete: Cascade)
+  version            Int
+  brief              String
+  status             String                    @default("draft") // draft | approved | superseded
+  createdAt          DateTime                  @default(now())
+
+  @@unique([projectId, version])
+  @@index([characterProfileId, createdAt])
+}
+
+// Structured storyboard rows make approved narrative timing available to later
+// keyframe/video adapters without parsing a public artifact file inside a DB
+// transaction. A new generation epoch creates a new immutable row set.
+model StoryFilmScene {
+  id                      String           @id @default(cuid())
+  projectId               String
+  project                 StoryFilmProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  generationEpoch         Int
+  sceneKey                String
+  sequence                Int
+  startMs                 Int
+  endMs                   Int
+  sourceExcerpt           String
+  grokPrompt              String
+  mediaPlan               String
+  visualOwner             String           @default("broll") // broll | presenter
+  characterDirectivesJson String           @default("[]")
+  createdAt               DateTime         @default(now())
+
+  @@unique([projectId, generationEpoch, sceneKey])
+  @@unique([projectId, generationEpoch, sequence])
+  @@index([projectId, generationEpoch, sequence])
+}
+
+// Append-only audit of every creator decision. expected stage/revision is kept
+// beside the result so a natural-language approval can never drift to another
+// review while it is in flight.
+model StoryFilmDecision {
+  id             String           @id @default(cuid())
+  projectId      String
+  project        StoryFilmProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  idempotencyKey String?
+  stage          String
+  revision       Int
+  kind           String
+  targetJson     String?
+  instruction    String?
+  resultStage    String
+  resultRevision Int
+  createdAt      DateTime         @default(now())
+
+  @@unique([projectId, revision])
+  @@unique([projectId, idempotencyKey])
+  @@index([projectId, createdAt])
+}
+
+// Provider-neutral unit leased by an internal worker. The worker may execute
+// Grok subscription, Hero voice/text, or a future metered adapter, but it never
+// owns project approvals or stage transitions.
+model StoryFilmGenerationJob {
+  id                    String             @id @default(cuid())
+  projectId             String
+  project               StoryFilmProject   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  stage                 String
+  projectRevision       Int
+  generationEpoch       Int
+  kind                  String // narration_voice | storyboard_plan | look_image | keyframe_image | scene_video | music | final_render
+  providerBackend       String
+  sceneKey              String?
+  payloadJson           String
+  idempotencyKey        String
+  status                String             @default("queued") // queued | leased | running | completed | needs_attention | canceled
+  priority              Int                @default(100)
+  attemptCount          Int                @default(0)
+  technicalFailureCount Int                @default(0)
+  providerJobId         String?
+  leaseOwner            String?
+  leaseTokenHash        String?
+  leaseExpiresAt        DateTime?
+  heartbeatAt           DateTime?
+  availableAt           DateTime           @default(now())
+  submittedAt           DateTime?
+  finishedAt            DateTime?
+  errorCode             String?
+  errorMessage          String?
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  artifact              StoryFilmArtifact?
+
+  @@unique([projectId, idempotencyKey])
+  @@index([status, providerBackend, availableAt, priority, createdAt])
+  @@index([projectId, stage, status])
+  @@index([leaseExpiresAt, status])
+}
+
+// Immutable output reported by a generation job. Activating it as a review
+// revision remains a Hero control-plane transition, never a worker approval.
+model StoryFilmArtifact {
+  id              String                  @id @default(cuid())
+  projectId       String
+  project         StoryFilmProject        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  jobId           String?                 @unique
+  job             StoryFilmGenerationJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  stage           String
+  projectRevision Int
+  generationEpoch Int
+  kind            String
+  sceneKey        String?
+  storageUrl      String
+  mimeType        String
+  sizeBytes       Int?
+  width           Int?
+  height          Int?
+  durationMs      Int?
+  metadataJson    String                  @default("{}")
+  createdAt       DateTime                @default(now())
+
+  @@index([projectId, stage, createdAt])
+  @@index([projectId, sceneKey, createdAt])
 }
 
 model BrandAsset {

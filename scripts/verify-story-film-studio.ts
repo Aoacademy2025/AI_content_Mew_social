@@ -1,0 +1,59 @@
+// Run with: npx tsx scripts/verify-story-film-studio.ts
+// Release guard for the internal Studio entry point and upload preflight.
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const studio = readFileSync("src/app/(dashboard)/ai-studio/page.tsx", "utf8");
+const layout = readFileSync("src/app/(dashboard)/ai-studio/layout.tsx", "utf8");
+const workbench = readFileSync("src/app/(dashboard)/ai-studio/story-film/StoryFilmWorkbench.tsx", "utf8");
+const collectionRoute = readFileSync("src/app/api/ai-studio/story-films/route.ts", "utf8");
+const decisionRoute = readFileSync("src/app/api/ai-studio/story-films/[id]/decisions/route.ts", "utf8");
+const presenterUploadRoute = readFileSync("src/app/api/ai-studio/story-films/upload-presenter/route.ts", "utf8");
+const characterRoute = readFileSync("src/app/api/ai-studio/story-film-characters/route.ts", "utf8");
+const characterReferenceRoute = readFileSync("src/app/api/ai-studio/story-film-characters/[id]/references/route.ts", "utf8");
+const privateCharacterMediaRoute = readFileSync("src/app/api/internal/story-film-media/character-references/[id]/route.ts", "utf8");
+const characterStorage = readFileSync("src/lib/story-film-character-storage.ts", "utf8");
+const proxy = readFileSync("src/proxy.ts", "utf8");
+
+assert.match(studio, /href="\/ai-studio\/story-film"/);
+assert.match(layout, /isInternalAiTester\(user\)/);
+assert.match(layout, /notFound\(\)/);
+assert.match(collectionRoute, /isInternalAiTester\(user\)/);
+assert.match(decisionRoute, /isInternalAiTester\(user\)/);
+assert.match(presenterUploadRoute, /isInternalAiTester\(user\)/);
+assert.match(presenterUploadRoute, /probeVideoMedia\(outputPath\)/);
+assert.match(presenterUploadRoute, /registerStoryFilmPresenterAsset/);
+assert.match(characterRoute, /isInternalAiTester\(user\)/);
+assert.match(characterReferenceRoute, /isInternalAiTester\(user\)/);
+assert.match(characterReferenceRoute, /registerStoryFilmCharacterReference/);
+assert.match(characterReferenceRoute, /sharp\(destination\)\.metadata\(\)/);
+assert.match(characterReferenceRoute, /story-film-private:/);
+assert.match(characterReferenceRoute, /storyFilmCharacterReferencesDir\(\)/);
+assert.match(characterStorage, /must stay outside public/);
+assert.match(privateCharacterMediaRoute, /isStoryFilmWorkerAuthorized\(request\)/);
+assert.match(privateCharacterMediaRoute, /profile: \{ userId: user!\.id \}/);
+assert.match(proxy, /"\/api\/internal\/story-film-media\(\.\*\)"/);
+assert.match(workbench, /characterProfileId: characterProfileId \|\| null/);
+assert.match(workbench, /characterLookBrief: characterProfileId \? characterLookBrief : null/);
+assert.match(workbench, /ไม่ต้องเจน character sheet ใหม่/);
+assert.match(workbench, /<StoryboardReview document=\{storyboardDocument\}/);
+assert.match(workbench, /<ArtifactReview project=\{selected\}/);
+assert.match(workbench, /<CompletedFilm project=\{selected\}/);
+assert.match(workbench, /revisionSceneKey \? \{ sceneKey: revisionSceneKey \}/);
+assert.match(workbench, /อนุมัติ Final Render/);
+assert.match(workbench, /fetch\("\/api\/ai-studio\/story-films\/upload-presenter"/);
+assert.match(workbench, /metadata\.durationMs > 180_000/);
+assert.match(workbench, /metadata\.width \/ metadata\.height - 9 \/ 16/);
+assert.match(workbench, /presenterFile\.size > 500 \* 1024 \* 1024/);
+assert.match(workbench, /expectedStage: selected\.stage/);
+assert.match(workbench, /expectedRevision: selected\.revision/);
+assert.match(workbench, /ยังไม่มีงานให้ตัดสินใจ/);
+assert.doesNotMatch(workbench, /fetch\([^)]*(?:grok|xai|runpod)/i);
+assert.doesNotMatch(workbench, /(?:child_process|execFile|spawn\s*\()/);
+
+console.log("ok: AI Studio links to the internal Story Film production board");
+console.log("ok: layout and write routes fail closed outside the internal cohort");
+console.log("ok: presenter upload preflights in-browser and is authoritatively probed by Hero");
+console.log("ok: Studio decisions bind the exact visible stage and revision");
+console.log("ok: Studio can target one scene and download an approved final master");
+console.log("ok: Studio does not call a generation provider directly");
