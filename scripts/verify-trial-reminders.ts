@@ -162,26 +162,28 @@ check("day 5 does NOT need a completed export", (() => {
   return d.send === true && d.kind === "d5";
 })());
 
-// ── 4. renewal-reminders must not treat a trial as a renewal ─────────────────
-console.log("\nrenewal-reminders exclusion");
+// ── 4. trial-source classifier stays compatible ──────────────────────────────
+console.log("\ntrial-source classification");
 const activeTrial = {
   trialStartedAt: new Date("2026-09-05T09:00:00+07:00"),
   trialEndsAt: new Date("2026-09-12T09:00:00+07:00"),
 };
-check("an active trial is excluded from renewal reminders",
+check("an active trial is recognized as trial-sourced",
   isTrialSourcedPlan({ ...activeTrial, paidEquivalent: false }) === true);
-check("a trial user who also holds paid/coupon evidence still gets renewal reminders",
+check("separate paid-equivalent evidence is not classified as trial-only",
   isTrialSourcedPlan({ ...activeTrial, paidEquivalent: true }) === false);
-check("an ex-trial user who later paid still gets renewal reminders",
+check("an ex-trial account is not classified as an active trial",
   isTrialSourcedPlan({ trialStartedAt: activeTrial.trialStartedAt, trialEndsAt: null, paidEquivalent: false }) === false);
-check("a never-trialed PromptPay customer still gets renewal reminders",
+check("a never-trialed account is not classified as an active trial",
   isTrialSourcedPlan({ trialStartedAt: null, trialEndsAt: null, paidEquivalent: false }) === false);
 
 const renewalRoute = readFileSync(resolve("src/app/api/cron/renewal-reminders/route.ts"), "utf8");
-check("renewal-reminders route applies the trial exclusion",
-  /isTrialSourcedPlan/.test(renewalRoute));
-check("renewal-reminders route resolves entitlement instead of hand-rolling the cohort",
-  /resolvePaidEquivalentEntitlement/.test(renewalRoute));
+const renewalServer = readFileSync(resolve("src/lib/renewal-reminders.server.ts"), "utf8");
+check("renewal-reminders route delegates to the cash-backed delivery seam",
+  /sendDueRenewalReminders/.test(renewalRoute));
+check("renewal delivery requires current-term cash instead of paid-equivalent coupon/grant access",
+  /isCashBackedRenewalTerm/.test(renewalServer)
+  && !/resolvePaidEquivalentEntitlement/.test(renewalServer));
 
 // ── 5. Copy is honest and matches the enforced limits ────────────────────────
 console.log("\ncopy");

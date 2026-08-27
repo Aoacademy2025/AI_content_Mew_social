@@ -109,6 +109,7 @@ model User {
   conversionTrialAiImageAllowance ConversionTrialAiImageAllowance?
   userVoices                      UserVoice[]
   trialReminderLogs               TrialReminderLog[]
+  renewalReminderLogs             RenewalReminderLog[]
 }
 
 // Private voice-clone references. The normalized WAV bytes live outside
@@ -918,6 +919,28 @@ model TrialReminderLog {
 
   @@unique([userId, kind])
   @@index([kind, sentAt])
+}
+
+/// One durable claim per manual-renew term and reminder moment. Delivery fields
+/// separate an attempted email from a confirmed notification/email result so the
+/// cron response never calls a failed provider request "sent".
+model RenewalReminderLog {
+  id                    String    @id @default(cuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  termExpiresAt         DateTime
+  kind                  String // d30 | d14 | d3 | d1
+  status                String    @default("CLAIMED") // CLAIMED | DELIVERED | PARTIAL | FAILED
+  notificationDelivered Boolean   @default(false)
+  emailAttempted        Boolean   @default(false)
+  emailDelivered        Boolean   @default(false)
+  failureCode           String?
+  attemptedAt           DateTime  @default(now())
+  completedAt           DateTime?
+
+  @@unique([userId, termExpiresAt, kind])
+  @@index([status, attemptedAt])
+  @@index([kind, termExpiresAt])
 }
 
 model TelemetryEvent {

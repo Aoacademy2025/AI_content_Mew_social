@@ -93,6 +93,9 @@ jobs:
       - name: Verify trial-expiry reminders and renewal-cron trial exclusion
         run: npm run verify:trial-reminders
 
+      - name: Verify cash-backed renewal reminders and delivery dedupe
+        run: npm run verify:renewal-reminders
+
       - name: Verify Avatar caption fail-open
         run: npm run verify:avatar-caption-fallback
 

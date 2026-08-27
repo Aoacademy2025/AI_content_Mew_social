@@ -81,6 +81,7 @@ export function PricingClient({
   initialFounding,
   paymentResult,
   acquisitionSource,
+  preferredPeriod,
   minuteQuotaEnabled,
   preserveTrialOnConvert = false,
 }: {
@@ -88,6 +89,7 @@ export function PricingClient({
   initialFounding: { active: boolean; remaining: number; total: number; percentOff: number };
   paymentResult: string | null;
   acquisitionSource: string | null;
+  preferredPeriod: BillingPeriod | null;
   minuteQuotaEnabled: boolean;
   /** #348 — PRESERVE_TRIAL_ON_CONVERT, read on the server and passed down. */
   preserveTrialOnConvert?: boolean;
@@ -95,7 +97,8 @@ export function PricingClient({
   const [loading, setLoading] = useState<string | null>(null);
   // Base default (no known subscription state yet) — #300, flag-gated.
   const [period, setPeriod] = useState<BillingPeriod>(
-    () => getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).period,
+    () => preferredPeriod
+      ?? getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).period,
   );
   const [method, setMethod] = useState<PaymentMethod>(
     () => getDefaultPricingSelection({ recurringDefaultEnabled: PRICING_DEFAULT_RECURRING, subStatus: null, billingPeriod: null }).method,
@@ -130,11 +133,12 @@ export function PricingClient({
           subStatus: d?.subStatus ?? null,
           billingPeriod: d?.billingPeriod ?? null,
         });
+        setPeriod(preferredPeriod ?? resolved.period);
         setMethod(resolved.method);
         setUserChecked(true);
       })
       .catch(() => { /* leave userChecked false → CTAs stay in loading state, no wrong redirect */ });
-  }, []);
+  }, [preferredPeriod]);
 
   const currentPlan = me?.plan ?? null;
   const daysLeft = me?.trialEndsAt ? Math.max(0, Math.ceil((new Date(me.trialEndsAt).getTime() - Date.now()) / 86400000)) : 0;
@@ -182,6 +186,7 @@ export function PricingClient({
         couponCode: appliedCoupon?.code,
         founding: isFounding,
         surface: "pricing_tier_card",
+        source: acquisitionSource ?? "direct",
       },
     });
     if (acquisitionSource?.startsWith("hero_script")) {
@@ -226,6 +231,7 @@ export function PricingClient({
         method: "card",
         founding: true,
         surface: "founding_annual_conversion",
+        source: acquisitionSource ?? "direct",
       },
     });
     setLoading(planKey);
@@ -568,7 +574,7 @@ export function PricingClient({
             </div>
           );
 
-          return <div key={key} className="relative">{card}</div>;
+          return <div key={key} id={`plan-${key.toLowerCase()}`} className="relative scroll-mt-6">{card}</div>;
         })}
       </div>
 
