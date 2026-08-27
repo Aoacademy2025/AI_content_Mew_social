@@ -992,6 +992,8 @@ export async function GET(req: Request) {
       recurringMrr: cohorts.recurringMrr,
       prepaidMrr: cohorts.prepaidMrr,
       arr: cohorts.arr,
+      arrStudio: cohorts.arrStudio,
+      arrBundle: cohorts.arrBundle,
       deferredRevenue: cohorts.deferredRevenue,
       prepaidExpiry: cohorts.prepaidExpiry,
       payingCanceling: cohorts.payingCanceling,

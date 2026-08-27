@@ -80,8 +80,20 @@ export type RevenueCohorts = {
    * sells them another one. Kept out of `arr` for that reason.
    */
   prepaidMrr: number;
-  /** `recurringMrr × 12`. Deliberately excludes prepaid — see `prepaidMrr`. */
+  /**
+   * Annual run rate of everything that bills again on its own: Studio subscriptions plus
+   * Hero AI Bundle. Prepaid one-time terms are deliberately excluded — see `prepaidMrr`.
+   */
   arr: number;
+  /** The Studio half of `arr` (`recurringMrr × 12`). */
+  arrStudio: number;
+  /**
+   * The Bundle half of `arr` (`bundleMrr × 12`). Bundle is a subscription product: an ACTIVE
+   * bundle renews rather than lapsing like a prepaid Studio term, which is why it annualises.
+   * If Bundle ever sells a one-time prepaid term, it needs the same recurring/prepaid split
+   * Studio has here.
+   */
+  arrBundle: number;
   /**
    * Cash already collected for prepaid time NOT yet delivered (฿). It is an obligation to
    * serve, not profit — and it is large here because Founding sold annual terms up front.
@@ -440,9 +452,14 @@ export function computeRevenueCohorts(
     bundleMrr,
     recurringMrr,
     prepaidMrr,
-    // ARR is recurring revenue annualised. Blending prepaid in would claim a yearly run rate
-    // from customers who already paid once and will simply stop when their term ends.
-    arr: recurringMrr * 12,
+    // ARR is recurring revenue annualised. Blending PREPAID in would claim a yearly run rate
+    // from customers who already paid once and will simply stop when their term ends — that
+    // is what this split exists to prevent. Bundle is not prepaid: it is a second
+    // subscription product that renews, so leaving it out under-reported the business by its
+    // whole run rate (1,798฿/month on prod, two live customers).
+    arr: (recurringMrr + bundleMrr) * 12,
+    arrStudio: recurringMrr * 12,
+    arrBundle: bundleMrr * 12,
     deferredRevenue,
     prepaidExpiry: {
       nextAt: nextPrepaidExpiry,

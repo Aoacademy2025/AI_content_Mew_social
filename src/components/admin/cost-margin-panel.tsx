@@ -46,6 +46,8 @@ interface Customers {
   recurringMrr?: number;
   prepaidMrr?: number;
   arr?: number;
+  arrStudio?: number;
+  arrBundle?: number;
   deferredRevenue?: number;
   prepaidExpiry?: {
     nextAt: string | null;
@@ -326,12 +328,15 @@ export default function CostMarginPanel({ days }: { days: number }) {
                       <div className="flex items-center justify-center gap-1 text-[11px] text-violet-300/80">
                         ARR (รายได้ประจำ/ปี)
                         <MetricHelp label="ARR">
-                          ARR คิดจาก “รายได้ที่ต่ออัตโนมัติจริง” เท่านั้น (สมาชิกที่ผูกบัตรกับ Stripe) คูณ 12 — ไม่รวมคนที่จ่ายครั้งเดียวแบบรายปี เพราะยอดนั้นจะไม่เรียกเก็บซ้ำเมื่อครบเทอม การเอามารวมแล้วคูณ 12 จะทำให้ดูเหมือนมีรายได้ประจำมากกว่าความจริง
+                          ARR คิดจาก “รายได้ที่ต่ออัตโนมัติจริง” เท่านั้น คูณ 12 — รวมสมาชิก Studio ที่ผูกบัตร และ Hero AI Bundle ที่เป็นสมาชิกรายเดือนเช่นกัน แต่ไม่รวมคนที่จ่ายครั้งเดียวแบบรายปี เพราะยอดนั้นจะไม่เรียกเก็บซ้ำเมื่อครบเทอม การเอามารวมแล้วคูณ 12 จะทำให้ดูเหมือนมีรายได้ประจำมากกว่าความจริง
                         </MetricHelp>
                       </div>
                       <div className="mt-1 text-lg font-bold text-violet-200">{fmtBaht(cu.arr ?? 0)}</div>
                       <div className="text-[10px] text-violet-300/70">
-                        ต่ออัตโนมัติ {fmtBaht(cu.recurringMrr ?? 0)}/เดือน · จ่ายครั้งเดียว {fmtBaht(cu.prepaidMrr ?? 0)}/เดือน
+                        Studio {fmtBaht(cu.arrStudio ?? 0)} · Bundle {fmtBaht(cu.arrBundle ?? 0)}
+                      </div>
+                      <div className="text-[10px] text-violet-300/60">
+                        ต่ออัตโนมัติ {fmtBaht((cu.recurringMrr ?? 0) + (cu.bundleMrr ?? 0))}/เดือน · จ่ายครั้งเดียว {fmtBaht(cu.prepaidMrr ?? 0)}/เดือน
                       </div>
                     </div>
                     <div className="rounded-md border border-teal-400/25 bg-teal-500/10 px-3 py-2">

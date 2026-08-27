@@ -52,6 +52,7 @@ check("A3: the two halves still add up to Studio MRR", near(c.recurringMrr + c.p
 
 // ── B. ARR annualises recurring ONLY ──
 check("B1: ARR is recurring × 12", near(c.arr, 599 * 12), `${c.arr}`);
+check("B1b: with no Bundle, ARR is entirely the Studio half", near(c.arr, c.arrStudio) && c.arrBundle === 0);
 check(
   "B2: ARR is NOT the blended MRR × 12 — that is the number this guards against",
   !near(c.arr, c.directMrr * 12, 10),
@@ -101,9 +102,33 @@ const d = computeRevenueCohorts(dual, new Set(["dual"]), { pro: 599, business: 9
 });
 check("E1: a Bundle+subscription customer counts as recurring", near(d.recurringMrr, 599), `${d.recurringMrr}`);
 check("E2: …and NOT as prepaid", d.prepaidMrr === 0, `${d.prepaidMrr}`);
-check("E3: …so their subscription reaches ARR", near(d.arr, 599 * 12), `${d.arr}`);
+check("E3: …so their subscription reaches Studio ARR", near(d.arrStudio, 599 * 12), `${d.arrStudio}`);
+check("E3b: …and their Bundle is annualised alongside it", near(d.arrBundle, (12_000 / 12) * 12), `${d.arrBundle}`);
+check("E3c: …with ARR the sum of both halves", near(d.arr, d.arrStudio + d.arrBundle), `${d.arr}`);
 check("E4: …and no deferred obligation is invented for them", d.deferredRevenue === 0, `${d.deferredRevenue}`);
 check("E5: …and they never appear in the expiry cliff", d.prepaidExpiry.customers === 0, `${d.prepaidExpiry.customers}`);
+
+// ── E'. A Bundle-only customer is real recurring revenue too ──
+// Bundle is a second subscription product. Leaving it out of ARR under-reported the business
+// by its whole run rate — 1,798฿/month across two live customers on prod.
+// Shaped like the real ones on prod: plan PRO with no expiry, no Studio subscription, and
+// ZERO Studio Payment rows — their money is in the Bundle ledger, so `paidUserIds` (which is
+// built from Studio payments) does not contain them. Bundle cash evidence is bundleAmountThb.
+const bundleOnly = computeRevenueCohorts(
+  [{ ...base, id: "bundle", email: "bundle@x.test", plan: "PRO", subStatus: null,
+     billingPeriod: "monthly", planExpiresAt: null, stripeSubscriptionId: null,
+     bundleStatus: "ACTIVE", bundleAccessExpiresAt: inDays(18),
+     bundleBillingPeriod: "monthly", bundleAmountThb: 899 }],
+  new Set(), { pro: 599, business: 990 }, now, { monthlyRevenueByUser: new Map() },
+);
+check("E6: a Bundle-only customer contributes ARR", near(bundleOnly.arr, 899 * 12), `${bundleOnly.arr}`);
+check("E7: …entirely on the Bundle side", bundleOnly.arrStudio === 0 && near(bundleOnly.arrBundle, 899 * 12));
+check(
+  "E8: …and is never double-counted as Studio revenue",
+  bundleOnly.recurringMrr === 0 && bundleOnly.prepaidMrr === 0 && bundleOnly.deferredRevenue === 0,
+  `recurring=${bundleOnly.recurringMrr} prepaid=${bundleOnly.prepaidMrr} deferred=${bundleOnly.deferredRevenue}`,
+);
+check("E9: …and counts as one paying customer, not two", bundleOnly.payingTotal === 1, `${bundleOnly.payingTotal}`);
 
 // ── F. A prepaid payer with no expiry date must not produce a blank cliff banner ──
 // PERMANENT_OR_MANUAL entitlements have planExpiresAt = null, so they count as prepaid but
