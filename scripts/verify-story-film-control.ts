@@ -252,13 +252,36 @@ async function main() {
     });
     ok(resumed.status === "waiting_generation" && resumed.revision === 5, "resume restores the pending generation state");
 
+    await prisma.storyFilmProject.update({
+      where: { id: started.project.id },
+      data: { status: "active", awaitingApproval: true },
+    });
+    const revisedStoryboard = await storyFilm.decideStoryFilm(alice.id, {
+      projectId: started.project.id,
+      expectedStage: "storyboard",
+      expectedRevision: 5,
+      decision: "revise",
+      instruction: "ใช้วิดีโอเฉพาะฉากที่ผ่านการตรวจแล้ว",
+      target: { videoSceneKeys: ["scene-01", "scene-03"] },
+      idempotencyKey: "decision:revise:storyboard:001",
+    });
+    const revisedStoryboardJob = await prisma.storyFilmGenerationJob.findFirstOrThrow({
+      where: { projectId: started.project.id, generationEpoch: revisedStoryboard.generationEpoch },
+    });
+    const revisedStoryboardPayload = JSON.parse(revisedStoryboardJob.payloadJson) as Record<string, unknown>;
+    ok(
+      revisedStoryboard.revision === 6
+        && JSON.stringify(revisedStoryboardPayload.videoSceneKeys) === JSON.stringify(["scene-01", "scene-03"]),
+      "Storyboard revision preserves the reviewed video-scene plan in the durable planner job",
+    );
+
     const decisions = await prisma.storyFilmDecision.findMany({
       where: { projectId: started.project.id },
       orderBy: { revision: "asc" },
     });
-    ok(decisions.length === 4, "every accepted decision has one append-only audit row");
+    ok(decisions.length === 5, "every accepted decision has one append-only audit row");
     ok(
-      decisions.map((item) => item.revision).join(",") === "1,2,3,4",
+      decisions.map((item) => item.revision).join(",") === "1,2,3,4,5",
       "decision audit preserves exact expected revisions",
     );
 

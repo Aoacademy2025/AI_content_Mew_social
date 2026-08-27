@@ -254,6 +254,60 @@ async function main() {
     "the first attempt tells the model not to misclassify a generic AI Agent role as a proper name",
   );
 
+  const commonNounEntityAnalysis = {
+    ...validAiAgentAnalysis,
+    storyEntities: [
+      {
+        entityId: "son",
+        properName: "son",
+        entityType: "person",
+        durableAttributes: ["young boy"],
+        renderingDescription: "a young son",
+        recurringCharacterDescription: null,
+        isRealPerson: false,
+      },
+      {
+        entityId: "tablet",
+        properName: "tablet",
+        entityType: "object",
+        durableAttributes: ["electronic device", "screen"],
+        renderingDescription: "a tablet with a screen",
+        recurringCharacterDescription: null,
+        isRealPerson: false,
+      },
+    ],
+    beats: validAiAgentAnalysis.beats.map((beat) => ({
+      ...beat,
+      subject: "a person and his son",
+      action: "look at a tablet together",
+      entityRefs: ["son", "tablet"],
+    })),
+  };
+  const commonNounEntityAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => JSON.stringify(commonNounEntityAnalysis),
+  );
+  const commonNounEntityResult = await commonNounEntityAnalyzer.analyze({
+    kind: "upload-transcript",
+    text: aiAgentWindows[0].text,
+    windows: aiAgentWindows,
+  });
+  assert.deepEqual(
+    commonNounEntityResult.storyEntities,
+    [],
+    "lowercase English common nouns are not promoted into durable Story Entities",
+  );
+  assert.equal(
+    commonNounEntityResult.beats[0].subject,
+    "a person and his son",
+    "repair never replaces a common noun inside another word such as son inside person",
+  );
+  assert.equal(
+    commonNounEntityResult.beats[0].action,
+    "look at a tablet together",
+    "ordinary object nouns remain natural provider-facing prose",
+  );
+
   let exhaustedSemanticCalls = 0;
   const exhaustedSemanticAnalyzer = createGeminiContentPreflightAnalyzer(
     user.id,
@@ -330,7 +384,7 @@ async function main() {
    * from cache — the policy would silently apply to new sources only. */
   assert.equal(
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
-    "brand-content-preflight-v12-semantic-self-correction",
+    "brand-content-preflight-v13-common-noun-entity-guard",
     "changing what a beat contains must publish a new analyzer version",
   );
   const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");

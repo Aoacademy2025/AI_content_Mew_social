@@ -33,12 +33,13 @@ import { recordTelemetryEvent } from "@/lib/telemetry";
  * Format, so a cached recommendation cannot keep creating retired formats.
  * Later versions keep the active format while tightening hard-fact extraction;
  * older rows remain only as asset-carry-forward lineage (ADR 0017/0018). */
-export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v12-semantic-self-correction";
+export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v13-common-noun-entity-guard";
 /** Read-only lineage. A superseded row is still a valid source of a previous
  * beat's generated asset, so a bump costs one re-analysis and never an image:
  * beats whose `sourceExcerptHash` is unchanged carry their asset forward. */
 const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
   CONTENT_PREFLIGHT_ANALYZER_VERSION,
+  "brand-content-preflight-v12-semantic-self-correction",
   "brand-content-preflight-v11-relational-hard-facts",
   "brand-content-preflight-v10-completed-result-tableau",
   "brand-content-preflight-v9-positive-only-scene-states",
@@ -367,6 +368,19 @@ const GENERIC_STORY_ENTITY_NAMES = new Set([
   "software company",
 ]);
 
+/** Story Entities are durable named identities, never ordinary English roles
+ * or props. A lowercase Latin phrase such as `son`, `tablet`, or
+ * `another AI system` is therefore a provider classification error. Keep Thai
+ * and other uncased scripts eligible, and keep explicitly styled Latin names
+ * that begin with a capital or digit. This guard must run before proper-name
+ * redaction: otherwise `son` is also found inside `person` and corrupts the
+ * provider-facing sentence while trying to remove a name that was never one. */
+function isGenericStoryEntityName(value: string): boolean {
+  const trimmed = value.trim();
+  return GENERIC_STORY_ENTITY_NAMES.has(normalizedStoryEntityName(trimmed))
+    || /^[a-z]/u.test(trimmed);
+}
+
 function normalizedStoryEntityName(value: string): string {
   return value
     .trim()
@@ -474,7 +488,7 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
     const entity = value as Record<string, unknown>;
     const properName = typeof entity.properName === "string" ? entity.properName : "";
     const entityId = typeof entity.entityId === "string" ? entity.entityId : "";
-    if (GENERIC_STORY_ENTITY_NAMES.has(normalizedStoryEntityName(properName))) {
+    if (isGenericStoryEntityName(properName)) {
       return false;
     }
     // Structured JSON enforces the field shape but cannot express unique IDs.

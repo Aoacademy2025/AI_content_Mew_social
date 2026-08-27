@@ -124,14 +124,21 @@ export function planStoryFilmTimedWindows(input: {
   });
 }
 
-function mediaPlanForBeat(beat: ContentPreflightAnalysis["beats"][number]) {
+function mediaPlanForBeat(
+  beat: ContentPreflightAnalysis["beats"][number],
+  explicitVideo: boolean | undefined,
+) {
   const motionText = `${beat.action} ${beat.sceneIntensity}`;
-  const video = VISIBLE_MOTION.test(motionText);
+  const video = explicitVideo ?? VISIBLE_MOTION.test(motionText);
   return {
     mediaPlan: video ? "video" as const : "image_with_motion" as const,
-    motionReason: video
-      ? "The beat depends on visible subject or environment movement."
-      : "The beat reads as one strong cinematic frame; editorial camera motion is sufficient.",
+    motionReason: explicitVideo === true
+      ? "The reviewed Storyboard explicitly assigns AI video to this scene."
+      : explicitVideo === false
+        ? "The reviewed Storyboard explicitly keeps this scene as an image with editorial motion."
+        : video
+          ? "The beat depends on visible subject or environment movement."
+          : "The beat reads as one strong cinematic frame; editorial camera motion is sufficient.",
   };
 }
 
@@ -161,8 +168,21 @@ export function buildStoryFilmStoryboardDocument(input: {
   narrationDurationMs: number;
   windows: NarrativeVisualWindow[];
   analysis: ContentPreflightAnalysis;
+  videoSceneKeys?: string[];
 }): StoryFilmStoryboard {
   if (input.analysis.beats.length !== input.windows.length) throw new Error("storyboard_beat_count_invalid");
+  const validSceneKeys = new Set(input.analysis.beats.map((_, sequence) => (
+    `scene-${String(sequence + 1).padStart(2, "0")}`
+  )));
+  const explicitVideoSceneKeys = input.videoSceneKeys === undefined
+    ? undefined
+    : new Set(input.videoSceneKeys);
+  if (explicitVideoSceneKeys && (
+    explicitVideoSceneKeys.size !== input.videoSceneKeys?.length
+      || [...explicitVideoSceneKeys].some((sceneKey) => !validSceneKeys.has(sceneKey))
+  )) {
+    throw new Error("storyboard_video_scene_key_invalid");
+  }
   const entities = new Map(input.analysis.storyEntities.map((entity) => [entity.entityId, entity]));
   const visualOwners = planStoryFilmVisualOwners(input.presentationMode, input.analysis.beats.length);
   const scenes = input.analysis.beats.map((beat, sequence) => {
@@ -190,7 +210,7 @@ export function buildStoryFilmStoryboardDocument(input: {
       setting: beat.setting,
       emotion: beat.emotion,
       emphasis: beat.emphasis,
-      ...mediaPlanForBeat(beat),
+      ...mediaPlanForBeat(beat, explicitVideoSceneKeys?.has(`scene-${String(sequence + 1).padStart(2, "0")}`)),
       visualOwner: visualOwners[sequence],
       storyEntityIds: [...beat.entityRefs],
       characterDirectives,
@@ -249,6 +269,12 @@ export async function planStoryFilmStoryboardJob(
   const revisionInstruction = typeof payload.revisionInstruction === "string"
     ? payload.revisionInstruction.trim().slice(0, 2_000)
     : "";
+  const videoSceneKeys = payload.videoSceneKeys === undefined
+    ? undefined
+    : Array.isArray(payload.videoSceneKeys)
+      && payload.videoSceneKeys.every((value): value is string => typeof value === "string")
+      ? payload.videoSceneKeys
+      : (() => { throw new Error("storyboard_video_scene_key_invalid"); })();
   const analysis = await resolvedAnalyzer.analyze({
     kind: "creator-script",
     text: revisionInstruction
@@ -263,6 +289,7 @@ export async function planStoryFilmStoryboardJob(
     narrationDurationMs: job.project.narrationDurationMs,
     windows,
     analysis,
+    videoSceneKeys,
   });
 }
 

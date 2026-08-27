@@ -153,7 +153,12 @@ const handler = createMcpHandler(
           expectedRevision: z.number().int().positive(),
           decision: z.enum(["approve", "revise", "reroll", "fallback", "pause", "resume", "render"]),
           instruction: z.string().max(2_000).optional(),
-          target: z.record(z.string(), z.unknown()).optional(),
+          target: z.object({
+            sceneKey: z.string().optional(),
+            videoSceneKeys: z.array(z.string().regex(/^scene-\d{2}$/u)).max(60).optional(),
+            musicSource: z.enum(["user", "system"]).optional(),
+            musicTrackId: z.string().optional(),
+          }).optional(),
           idempotencyKey: z.string().regex(/^[A-Za-z0-9:_-]{8,120}$/).optional(),
         },
       },
