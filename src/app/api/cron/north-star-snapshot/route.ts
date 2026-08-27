@@ -14,6 +14,6 @@ export async function GET(req: Request) {
   }
   const result = await writeSubscriptionNorthStarSnapshot();
   writeCronHeartbeat("north-star-snapshot");
-  console.log(`[north-star-snapshot] ${result.snapshotDate} mapc=${result.activeCreators} recurring=${result.activeRecurringPayers}`);
+  console.log(`[north-star-snapshot] ${result.snapshotDate} mapc=${result.activeCreators} paying=${result.activePayingCustomers} recurring=${result.activeRecurringPayers}`);
   return NextResponse.json({ ok: true, ...result });
 }

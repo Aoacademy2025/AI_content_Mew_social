@@ -69,6 +69,10 @@ export type RevenueCohorts = {
   /** Studio-native MRR and Bundle MRR, both included in `mrr`. */
   directMrr: number;
   bundleMrr: number;
+  /** Credit-pack cash is real one-time revenue, never recurring plan revenue. */
+  creditRevenue: number;
+  /** Distinct people who have bought at least one credit pack. */
+  creditBuyers: number;
   /**
    * Studio MRR that actually recurs — a live Stripe subscription that will bill again on its
    * own. This is the ONLY part `arr` may be built from.
@@ -258,6 +262,9 @@ export function computeRevenueCohorts(
      * that cannot compute it keep the previous behaviour.
      */
     monthlyRevenueByUser?: Map<string, number>;
+    /** One-time credit-pack cash, kept outside every MRR figure. */
+    creditRevenue?: number;
+    creditBuyers?: number;
   } = {},
 ): RevenueCohorts {
   const couponUserIds = opts.couponUserIds ?? new Set<string>();
@@ -450,6 +457,8 @@ export function computeRevenueCohorts(
     mrr,
     directMrr,
     bundleMrr,
+    creditRevenue: opts.creditRevenue ?? 0,
+    creditBuyers: opts.creditBuyers ?? 0,
     recurringMrr,
     prepaidMrr,
     // ARR is recurring revenue annualised. Blending PREPAID in would claim a yearly run rate
@@ -516,6 +525,11 @@ export async function getRevenueCohorts(now: Date = new Date()): Promise<Revenue
     planCash.paidUserIds,
     { pro: planConfig.pro.price, business: planConfig.business.price },
     now,
-    { couponUserIds, monthlyRevenueByUser: planCash.monthlyRevenueByUser },
+    {
+      couponUserIds,
+      monthlyRevenueByUser: planCash.monthlyRevenueByUser,
+      creditRevenue: planCash.creditRevenue,
+      creditBuyers: planCash.creditBuyers,
+    },
   );
 }

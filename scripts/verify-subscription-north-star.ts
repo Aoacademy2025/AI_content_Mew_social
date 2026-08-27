@@ -60,13 +60,34 @@ async function main() {
     productSurface: "automix", finishedAt: now,
   } });
 
+  const prepaid = await user("prepaid", {
+    plan: "PRO", billingPeriod: "annual", planExpiresAt: future,
+  });
+  await prisma.payment.create({ data: {
+    userId: prepaid.id, stripeSessionId: "cs_prepaid", plan: "PRO", amount: 299500,
+    status: "PAID", periodDays: 365, paidAt: now,
+  } });
+  await prisma.script.create({ data: {
+    userId: prepaid.id, topic: "Prepaid value", hookText: "Hook", bodyText: "Body", ctaText: "CTA",
+  } });
+
+  const creditOnly = await user("credit-only", { plan: "PRO" });
+  await prisma.payment.create({ data: {
+    userId: creditOnly.id, stripeSessionId: "cs_credit_only", plan: "PRO", amount: 19900,
+    status: "PAID", periodDays: 30, paidAt: now, note: "credits",
+  } });
+  await prisma.script.create({ data: {
+    userId: creditOnly.id, topic: "Credit pack", hookText: "Hook", bodyText: "Body", ctaText: "CTA",
+  } });
+
   const metric = await getSubscriptionNorthStar(now);
   assert.equal(metric.activeRecurringPayers, 3, "cash-backed monthly, annual, and recurring Bundle form the denominator");
-  assert.equal(metric.activeCreators, 3, "all three delivered a durable core outcome");
+  assert.equal(metric.activePayingCustomers, 4, "MAPC includes recurring, Bundle, and active prepaid customers");
+  assert.equal(metric.activeCreators, 4, "all four delivered a durable core outcome");
   assert.equal(metric.monthlyCreators, 1);
-  assert.equal(metric.annualCreators, 2);
+  assert.equal(metric.annualCreators, 3);
   assert.equal(metric.outcomes.videoCreators, 1);
-  assert.equal(metric.outcomes.scriptCreators, 1);
+  assert.equal(metric.outcomes.scriptCreators, 2);
   assert.equal(metric.outcomes.imageCreators, 2);
   assert.equal(metric.creatorRatePct, 100);
 
@@ -77,12 +98,12 @@ async function main() {
   assert.equal(await prisma.northStarDailySnapshot.count(), 1, "same Bangkok day updates idempotently");
   const row = await prisma.northStarDailySnapshot.findFirstOrThrow();
   assert.deepEqual(Object.keys(row).sort(), [
-    "activeCreators", "activeRecurringPayers", "annualCreators", "asOf", "createdAt", "id",
+    "activeCreators", "activePayingCustomers", "activeRecurringPayers", "annualCreators", "asOf", "createdAt", "id",
     "imageCreators", "monthlyCreators", "scriptCreators", "snapshotDate", "videoCreators",
   ].sort(), "snapshot is counts-only and contains no customer identifiers or content");
 
   await prisma.$disconnect();
-  console.log("verify-subscription-north-star: PASS recurring cash denominator + durable outcomes + counts-only snapshot");
+  console.log("verify-subscription-north-star: PASS all active cash-backed customers + durable outcomes + counts-only snapshot");
 }
 
 main().catch((error) => { console.error(error); process.exit(1); });

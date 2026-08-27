@@ -1126,6 +1126,7 @@ model NorthStarDailySnapshot {
   snapshotDate          String   @unique // YYYY-MM-DD in Asia/Bangkok
   asOf                  DateTime
   activeRecurringPayers Int
+  activePayingCustomers Int      @default(0)
   activeCreators        Int
   monthlyCreators       Int
   annualCreators        Int

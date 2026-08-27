@@ -39,7 +39,7 @@ export async function getFirstClipConvertPrompt(
       firstClipConvertDismissedAt: true,
       payments: {
         where: { status: "PAID", amount: { gt: 0 }, periodDays: { gt: 0 } },
-        select: { plan: true, status: true, amount: true, periodDays: true },
+        select: { plan: true, status: true, amount: true, periodDays: true, note: true },
       },
     },
   });
