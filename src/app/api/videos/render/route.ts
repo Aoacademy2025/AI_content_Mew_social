@@ -316,7 +316,6 @@ export async function POST(req: Request) {
     if (!authUser) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
-    await assertRenderEnqueueOpen();
 
     const renderTmpDir = getRenderTmpDir();
     // Windows uses TEMP / TMP — TMPDIR is a Unix-only convention and is ignored on Windows.
@@ -341,6 +340,18 @@ export async function POST(req: Request) {
     // This still runs before any heavy work (job cancellation / bundle / render), so the
     // PR-1 fail-fast property is preserved.
     const { scenes, audioUrl, videoDuration, captions, captionSegments, avatarVideoUrl, captionStyleId, positionY, fontSizeOverride, fontWeightOverride, customCaptionStyle, width: customWidth, height: customHeight, shortVideoConfig, subtitleOverlayConfig, fps: requestedFps, jpegQuality: requestedJpegQuality, jobScopeId, videoId, parentJobId, rerenderOf } = await req.json();
+
+    // parentJobId is request data, so only the server-authenticated service
+    // actor may use it to finish work that began before a deploy drain.
+    const verifiedParentJobId = typeof parentJobId === "string"
+      && parentJobId
+      && (await resolveServiceVideoJobId(userId)) === parentJobId
+      ? parentJobId
+      : undefined;
+    await assertRenderEnqueueOpen(prisma, {
+      parentVideoJobId: verifiedParentJobId,
+      userId,
+    });
 
     // Support both old `captionSegments` and new `captions` field names
     const captionsData = captions ?? captionSegments ?? [];
@@ -576,14 +587,12 @@ export async function POST(req: Request) {
       !burnAlreadyPaid
       && !rerenderSkipCharge
       && useMinuteQuota
-      && typeof parentJobId === "string"
-      && parentJobId
-      && (await resolveServiceVideoJobId(userId)) === parentJobId
+      && verifiedParentJobId
     ) {
-      const transfer = await transferVideoJobFundingToRender(parentJobId, userId, reservedMinutes);
+      const transfer = await transferVideoJobFundingToRender(verifiedParentJobId, userId, reservedMinutes);
       if (transfer.transferred) {
         transferredFunding = true;
-        transferredVideoJobId = parentJobId;
+        transferredVideoJobId = verifiedParentJobId;
         quotaReserved = true;
         reservedUserId = userId;
         creditsSpent = transfer.creditsSpent || null;
@@ -1062,7 +1071,10 @@ export async function POST(req: Request) {
     // own bundleCache), renders, and records the ChargedClip on success (RENDER only).
     // Re-check after reservation in the same setup flow. If drain won the race, the outer
     // catch refunds the exact funding bucket once and returns retryable maintenance.
-    await assertRenderEnqueueOpen();
+    await assertRenderEnqueueOpen(prisma, {
+      parentVideoJobId: verifiedParentJobId,
+      userId,
+    });
     if (process.env.RENDER_VIA_QUEUE === "1") {
       const isBurn = isSubtitleOverlay; // !!body.subtitleOverlayConfig
       // The bundleCache reference cannot cross to a separate worker process — strip it.
@@ -1073,7 +1085,7 @@ export async function POST(req: Request) {
         type: isBurn ? "BURN" : "RENDER",
         payload: serializablePayload,
         videoId: typeof videoId === "string" ? videoId : undefined,
-        parentJobId: typeof parentJobId === "string" ? parentJobId : undefined,
+        parentJobId: verifiedParentJobId,
         // Globally-unique key (NOT content-derived). Use the route's own jobId.
         idempotencyKey: jobId,
         // Flag the row so failRenderJob refunds iff THIS job reserved a clip. True for a

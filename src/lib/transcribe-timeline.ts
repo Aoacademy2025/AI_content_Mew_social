@@ -34,6 +34,11 @@ export type SanitizedChunk = ChunkResult & {
   stats: {
     wordsDropped: number;
     wordsDegenerate: boolean;
+    wordEvidenceCode:
+      | "passed"
+      | "empty_words"
+      | "overlapping_timing"
+      | "insufficient_timeline_coverage";
     rescaleK: number;
   };
 };
@@ -326,16 +331,101 @@ export async function runTranscriptionQualityRetries<T extends ChunkResult>(
 // padding, breath tails) — anything beyond this margin is hallucinated.
 const BOGUS_MARGIN_MS = 2000;
 
-// Real speech carries several words per subtitle card (Thai viral cards are
-// 3-8 words; prod healthy chunk: 549 words / 98 captions ≈ 5.6). A words array
-// that is not even 2× the caption count is a truncated/degenerate response —
-// rebuilding captions from it desyncs, so sanitization drops it and the route
-// retries/re-slices that chunk instead of shipping synthetic word timing.
-const MIN_WORDS_PER_CAPTION = 2;
+const MIN_WORD_TIMELINE_COVERAGE = 0.85;
+
+export type ChunkWordEvidence = {
+  usable: boolean;
+  code: SanitizedChunk["stats"]["wordEvidenceCode"];
+  timelineCoverage: number;
+  textSimilarity: number;
+};
+
+function canonicalSpeechText(value: string): string {
+  return value
+    .normalize("NFC")
+    .toLocaleLowerCase("th")
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, "");
+}
+
+function diceTextSimilarity(left: string, right: string): number {
+  if (left === right) return 1;
+  if (left.length < 2 || right.length < 2) return 0;
+  const counts = new Map<string, number>();
+  for (let index = 0; index < left.length - 1; index += 1) {
+    const pair = left.slice(index, index + 2);
+    counts.set(pair, (counts.get(pair) ?? 0) + 1);
+  }
+  let intersection = 0;
+  for (let index = 0; index < right.length - 1; index += 1) {
+    const pair = right.slice(index, index + 2);
+    const available = counts.get(pair) ?? 0;
+    if (available > 0) {
+      intersection += 1;
+      counts.set(pair, available - 1);
+    }
+  }
+  return (2 * intersection) / (left.length + right.length - 2);
+}
+
+/**
+ * Judge acoustic word evidence by what downstream regrouping actually needs.
+ * Gemini may return one item per word or one item per short phrase, so the
+ * item-to-caption ratio is not a quality signal. A usable result must instead
+ * be ordered and span the spoken caption timeline. Text similarity is retained
+ * as diagnostic evidence only: two projections from the same ASR response may
+ * legitimately differ in punctuation or phrase normalization, and exact text
+ * alignment is enforced only where downstream character offsets need it.
+ */
+export function assessChunkWordEvidence(input: {
+  words: ChunkWord[];
+  captions: ChunkCaption[];
+  fullText: string;
+}): ChunkWordEvidence {
+  const { words, captions } = input;
+  if (words.length === 0) {
+    return { usable: false, code: "empty_words", timelineCoverage: 0, textSimilarity: 0 };
+  }
+  if (words.some((word, index) => index > 0 && word.start < words[index - 1].end)) {
+    return { usable: false, code: "overlapping_timing", timelineCoverage: 0, textSimilarity: 0 };
+  }
+
+  const captionStartMs = captions.reduce((min, caption) => Math.min(min, caption.startMs), Number.POSITIVE_INFINITY);
+  const captionEndMs = captions.reduce((max, caption) => Math.max(max, caption.endMs), 0);
+  const wordStartMs = words[0].start * 1_000;
+  const wordEndMs = words[words.length - 1].end * 1_000;
+  const captionSpanMs = captionEndMs - captionStartMs;
+  const overlapMs = captionSpanMs > 0
+    ? Math.max(0, Math.min(captionEndMs, wordEndMs) - Math.max(captionStartMs, wordStartMs))
+    : 0;
+  const timelineCoverage = captionSpanMs > 0 ? overlapMs / captionSpanMs : 0;
+  if (timelineCoverage < MIN_WORD_TIMELINE_COVERAGE) {
+    return {
+      usable: false,
+      code: "insufficient_timeline_coverage",
+      timelineCoverage,
+      textSimilarity: 0,
+    };
+  }
+
+  const referenceText = canonicalSpeechText(input.fullText);
+  const wordText = canonicalSpeechText(words.map((word) => word.word).join(""));
+  const textSimilarity = referenceText.length > 0
+    ? diceTextSimilarity(referenceText, wordText)
+    : 1;
+  return { usable: true, code: "passed", timelineCoverage, textSimilarity };
+}
 
 export function sanitizeChunkTimeline(r: ChunkResult, chunkDurationMs: number): SanitizedChunk {
   if (!(chunkDurationMs > 0)) {
-    return { ...r, stats: { wordsDropped: 0, wordsDegenerate: false, rescaleK: 1 } };
+    return {
+      ...r,
+      stats: {
+        wordsDropped: 0,
+        wordsDegenerate: false,
+        wordEvidenceCode: "passed",
+        rescaleK: 1,
+      },
+    };
   }
   const limitSec = (chunkDurationMs + BOGUS_MARGIN_MS) / 1000;
 
@@ -380,17 +470,26 @@ export function sanitizeChunkTimeline(r: ChunkResult, chunkDurationMs: number): 
   // keptWords are already rescaled+bounded above — no further transform.
   const scaledWords = keptWords;
 
-  // 3) Degenerate words → zero them out and surface wordsDegenerate so the
-  //    route can retry/re-slice this chunk before any merge.
-  const wordsDegenerate =
-    scaledCaptions.length > 0 && scaledWords.length < scaledCaptions.length * MIN_WORDS_PER_CAPTION;
+  // 3) Unusable acoustic evidence → zero it out and surface the reason so
+  //    the route retries/re-slices before any word-based subtitle regrouping.
+  const wordEvidence = assessChunkWordEvidence({
+    words: scaledWords,
+    captions: scaledCaptions,
+    fullText: r.fullText,
+  });
+  const wordsDegenerate = scaledCaptions.length > 0 && !wordEvidence.usable;
 
   return {
     words: wordsDegenerate ? [] : scaledWords,
     segments: scaledSegments,
     geminiDirectCaptions: scaledCaptions,
     fullText: r.fullText,
-    stats: { wordsDropped, wordsDegenerate, rescaleK },
+    stats: {
+      wordsDropped,
+      wordsDegenerate,
+      wordEvidenceCode: wordEvidence.code,
+      rescaleK,
+    },
   };
 }
 
