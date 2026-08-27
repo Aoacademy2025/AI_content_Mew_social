@@ -6,12 +6,10 @@ import path from "path";
 import fs from "fs";
 import os from "os";
 import { execFileSync } from "child_process";
-import { fetchWithBudget } from "@/lib/fetch-budget";
 import {
   classifyHttpResponse,
   isProviderError,
   providerError,
-  shouldStopProviderFallback,
   toErrorResponse,
 } from "@/lib/provider-errors";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
@@ -26,6 +24,10 @@ import {
   mergeCharAlignments,
   type TtsCharAlignment,
 } from "@/lib/tts-timing";
+import {
+  synthesizeElevenLabsV3,
+  type ElevenLabsAlignment,
+} from "@/lib/elevenlabs-v3.server";
 
 export const maxDuration = 300; // TTS budget is 300s/attempt (long scripts)
 export const runtime = "nodejs";
@@ -34,80 +36,6 @@ export const runtime = "nodejs";
 // ElevenLabs). Chunks are exact contiguous slices of the script — the same
 // iron rule as tts-gemini: subtitle text must be the string sent to TTS.
 const ELEVENLABS_CHUNK_CHARS = 1500;
-
-// ElevenLabs /with-timestamps response alignment (their field names)
-interface ElAlignment {
-  characters: string[];
-  character_start_times_seconds: number[];
-  character_end_times_seconds: number[];
-}
-
-type ElCallResult =
-  | { ok: true; mp3: Buffer; alignment: ElAlignment | null }
-  | { ok: false; status: number; errBody: string };
-
-// One ElevenLabs call for one chunk, degrading gracefully:
-//   1. /with-timestamps + language_code
-//   2. /with-timestamps without language_code (some keys/models reject it)
-//   3. plain endpoint + language_code        (audio only, no timing)
-//   4. plain endpoint without language_code
-// retries: 0 at the HTTP layer everywhere — TTS POST spends user character
-// credits; a client-side timeout after server-side success would double-charge
-// on retry (same policy as HeyGen generate). Failed HTTP calls are not charged,
-// so walking down this chain never double-spends.
-async function callElevenLabs(
-  apiKey: string,
-  voiceId: string,
-  text: string,
-  languageCode: string | undefined,
-  label: string,
-): Promise<ElCallResult> {
-  const variants: { withTimestamps: boolean; lang: boolean }[] = [
-    { withTimestamps: true, lang: !!languageCode },
-    ...(languageCode ? [{ withTimestamps: true, lang: false }] : []),
-    { withTimestamps: false, lang: !!languageCode },
-    ...(languageCode ? [{ withTimestamps: false, lang: false }] : []),
-  ];
-
-  let lastStatus = 500;
-  let lastErrBody = "";
-
-  for (const v of variants) {
-    const url = `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}${v.withTimestamps ? "/with-timestamps" : ""}`;
-    const res = await fetchWithBudget(url, {
-      method: "POST",
-      headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text,
-        model_id: "eleven_v3",
-        ...(v.lang ? { language_code: languageCode } : {}),
-        voice_settings: { stability: 0.5, similarity_boost: 0.75, style: 0.5, use_speaker_boost: true },
-      }),
-    }, { provider: "elevenlabs", timeoutMs: 300_000, retries: 0, wallClockMs: 320_000, returnHttpErrors: true });
-
-    if (res.ok) {
-      if (v.withTimestamps) {
-        const data = await res.json() as { audio_base64: string; alignment: ElAlignment | null };
-        if (!v.lang || !languageCode) console.log(`[tts] ${label}: ok via ${v.withTimestamps ? "with-timestamps" : "plain"}${v.lang ? "" : " (no language_code)"}`);
-        return { ok: true, mp3: Buffer.from(data.audio_base64, "base64"), alignment: data.alignment ?? null };
-      }
-      console.warn(`[tts] ${label}: with-timestamps unavailable — fell back to plain endpoint (no char timing)`);
-      return { ok: true, mp3: Buffer.from(await res.arrayBuffer()), alignment: null };
-    }
-
-    lastStatus = res.status;
-    lastErrBody = await res.text();
-    console.error(`[tts] ${label} ${v.withTimestamps ? "with-timestamps" : "plain"}${v.lang ? "+lang" : ""} failed: ${res.status} ${lastErrBody.slice(0, 150)}`);
-
-    // Auth/quota/voice-not-found errors won't be fixed by switching endpoint
-    // or dropping language_code — stop walking the chain and surface the real
-    // error. An ordinary 400 keeps walking because it can be language_code-
-    // related; a 400 carrying an invalid-key/quota marker is definitive.
-    if (shouldStopProviderFallback(res.status, lastErrBody)) break;
-  }
-
-  return { ok: false, status: lastStatus, errBody: lastErrBody };
-}
 
 function ffprobeDurationSec(filePath: string): number {
   const ffprobe = getFfmpegPath().replace(/ffmpeg(\.exe)?$/, (m) => m.replace("ffmpeg", "ffprobe"));
@@ -125,7 +53,7 @@ function concatMp3(ffmpegPath: string, parts: string[], outPath: string, workDir
   execFileSync(ffmpegPath, ["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", outPath], { stdio: "pipe", timeout: 60_000 });
 }
 
-function normalizeAlignment(a: ElAlignment): { characters: string[]; startSec: number[]; endSec: number[] } {
+function normalizeAlignment(a: ElevenLabsAlignment): { characters: string[]; startSec: number[]; endSec: number[] } {
   return { characters: a.characters, startSec: a.character_start_times_seconds, endSec: a.character_end_times_seconds };
 }
 
@@ -155,7 +83,7 @@ async function handleTts(req: Request) {
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json().catch(() => null);
-  const { text, voiceId = "9lvVsLbaxGND6aZnt1W1", languageCode = "th", preview = false } = body ?? {};
+  const { text, voiceId = "9lvVsLbaxGND6aZnt1W1", languageCode = "th", preview = false, speed = 1 } = body ?? {};
   if (!text?.trim()) return NextResponse.json({ error: "text required" }, { status: 400 });
 
   const user = await prisma.user.findUnique({
@@ -179,7 +107,7 @@ async function handleTts(req: Request) {
     const cached = cachedVoicePreview(cache.filePath, cache.voiceUrl);
     if (cached) return NextResponse.json({ ...cached, preview: true });
 
-    const r = await callElevenLabs(apiKey, selectedVoiceId, previewText, languageCode, "preview");
+    const r = await synthesizeElevenLabsV3({ apiKey, voiceId: selectedVoiceId, text: previewText, languageCode, speed, label: "preview" });
     if (!r.ok) {
       const code = classifyHttpResponse(r.status, r.errBody);
       const pErr = providerError(code, "elevenlabs", `ElevenLabs preview failed (${r.status}): ${r.errBody.slice(0, 200)}`, { status: r.status });
@@ -202,10 +130,17 @@ async function handleTts(req: Request) {
   console.log(`[tts] ElevenLabs script ${fullText.length} chars → ${chunks.length} chunk(s)`);
 
   const mp3s: Buffer[] = [];
-  const alignments: (ElAlignment | null)[] = [];
+  const alignments: (ElevenLabsAlignment | null)[] = [];
 
   for (let i = 0; i < chunks.length; i++) {
-    const r = await callElevenLabs(apiKey, selectedVoiceId, chunks[i].text, languageCode, `chunk ${i + 1}/${chunks.length}`);
+    const r = await synthesizeElevenLabsV3({
+      apiKey,
+      voiceId: selectedVoiceId,
+      text: chunks[i].text,
+      languageCode,
+      speed,
+      label: `chunk ${i + 1}/${chunks.length}`,
+    });
     if (!r.ok) {
       // Same failure surface as the old single-call route. No automatic
       // full-script re-run: chunks already generated were paid for — burning
@@ -256,9 +191,10 @@ async function handleTts(req: Request) {
   // interpolates within segments instead of silently mis-timing).
   let chars: TtsCharAlignment | null = null;
   const haveProbes = durationsSec.every((d) => d > 0);
-  if (alignments.every((a): a is ElAlignment => a !== null) && haveProbes) {
+  const completeAlignments = alignments.filter((a): a is ElevenLabsAlignment => a !== null);
+  if (completeAlignments.length === alignments.length && haveProbes) {
     try {
-      const merged = mergeCharAlignments(alignments.map(normalizeAlignment), durationsSec);
+      const merged = mergeCharAlignments(completeAlignments.map(normalizeAlignment), durationsSec);
       if (merged.characters.join("") === fullText) {
         chars = merged;
       } else {

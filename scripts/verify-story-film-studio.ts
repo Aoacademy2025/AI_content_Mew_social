@@ -35,6 +35,8 @@ assert.match(privateCharacterMediaRoute, /profile: \{ userId: user!\.id \}/);
 assert.match(proxy, /"\/api\/internal\/story-film-media\(\.\*\)"/);
 assert.match(workbench, /characterProfileId: characterProfileId \|\| null/);
 assert.match(workbench, /characterLookBrief: characterProfileId \? characterLookBrief : null/);
+assert.match(workbench, /narrationProvider: presentationMode === "faceless" \? narrationProvider : null/);
+assert.match(workbench, /ElevenLabs v3/);
 assert.match(workbench, /ไม่ต้องเจน character sheet ใหม่/);
 assert.match(workbench, /<StoryboardReview document=\{storyboardDocument\}/);
 assert.match(workbench, /<ArtifactReview project=\{selected\}/);

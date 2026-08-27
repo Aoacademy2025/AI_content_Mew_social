@@ -3,8 +3,10 @@
 // Hero text, voice and final-render lanes and never owns creator approvals.
 import "dotenv/config";
 import { hostname } from "node:os";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { prisma } from "../src/lib/prisma";
 import {
   completeStoryFilmGenerationJob,
@@ -26,12 +28,18 @@ import {
 } from "../src/lib/hero-voice-generation.server";
 import { isValidOmniVoiceId } from "../src/lib/omnivoice";
 import { renderStoryFilmFinal } from "../src/lib/story-film-render.server";
+import { decryptKey } from "../src/lib/key-crypto";
+import { getFfmpegPath } from "../src/lib/ffmpeg-path";
+import { synthesizeElevenLabsV3 } from "../src/lib/elevenlabs-v3.server";
 
 const POLL_MS = Math.max(1_000, Number(process.env.STORY_FILM_SYSTEM_POLL_MS) || 4_000);
 const HEARTBEAT_MS = 30_000;
 const WORKER_ID = `hero-story-film-system:${hostname().replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 80)}`;
 const rendersDir = path.join(process.cwd(), "public", "renders");
 let running = true;
+const execFileAsync = promisify(execFile);
+
+class NonRetryableStoryFilmProviderError extends Error {}
 
 process.on("SIGINT", () => { running = false; });
 process.on("SIGTERM", () => { running = false; });
@@ -83,7 +91,7 @@ function payloadText(job: LeasedStoryFilmJob, key: string, max: number) {
   return value.trim();
 }
 
-async function persistNarration(job: LeasedStoryFilmJob) {
+async function persistHeroVoiceNarration(job: LeasedStoryFilmJob) {
   const project = await prisma.storyFilmProject.findUnique({
     where: { id: job.projectId },
     include: { user: { select: { id: true, plan: true } } },
@@ -137,6 +145,116 @@ async function persistNarration(job: LeasedStoryFilmJob) {
     durationMs: result.audioDurationMs,
     metadata: { adapter: "hero_voice", aiGenerationJobId: voiceJob.id, voiceId },
   };
+}
+
+async function probeAudioDurationMs(filePath: string) {
+  const ffprobe = getFfmpegPath().replace(/ffmpeg(\.exe)?$/, (value) => value.replace("ffmpeg", "ffprobe"));
+  const { stdout } = await execFileAsync(ffprobe, [
+    "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", filePath,
+  ], { timeout: 10_000, encoding: "utf8" });
+  const seconds = Number.parseFloat(stdout.trim());
+  if (!(seconds > 0)) throw new Error("ElevenLabs narration duration unavailable");
+  return Math.round(seconds * 1_000);
+}
+
+async function existingElevenLabsArtifact(filePath: string) {
+  try {
+    const stats = await fs.stat(filePath);
+    const durationMs = await probeAudioDurationMs(filePath);
+    return { stats, durationMs };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function persistElevenLabsNarration(job: LeasedStoryFilmJob) {
+  const project = await prisma.storyFilmProject.findUnique({
+    where: { id: job.projectId },
+    include: { user: { select: { id: true, elevenlabsKey: true } } },
+  });
+  if (!project || project.stage !== "narration" || project.generationEpoch !== job.generationEpoch) {
+    throw new Error("narration job is stale");
+  }
+  const text = payloadText(job, "text", 5_000);
+  const voiceId = payloadText(job, "voiceId", 160);
+  const rawSpeed = Number(job.payload.speed);
+  const speed = Number.isFinite(rawSpeed) ? Math.min(1.2, Math.max(0.7, rawSpeed)) : 1;
+  if (!project.user.elevenlabsKey) throw new Error("ElevenLabs API key is not configured");
+
+  const filename = `story-film-narration-${job.id}.mp3`;
+  const finalPath = path.join(rendersDir, filename);
+  const recovered = await existingElevenLabsArtifact(finalPath);
+  if (recovered) {
+    if (!job.resumeProviderJobId) {
+      await markStoryFilmGenerationSubmitted({
+        jobId: job.id,
+        workerId: WORKER_ID,
+        leaseToken: job.leaseToken,
+        providerJobId: `elevenlabs-v3:recovered:${job.id}`,
+      });
+    }
+    return {
+      storageUrl: `/api/renders/${filename}`,
+      mimeType: "audio/mpeg",
+      sizeBytes: recovered.stats.size,
+      durationMs: recovered.durationMs,
+      metadata: { adapter: "elevenlabs", modelId: "eleven_v3", voiceId, recovered: true },
+    };
+  }
+  if (job.resumeProviderJobId) {
+    throw new NonRetryableStoryFilmProviderError(
+      "ElevenLabs request was already submitted but its durable audio is missing; refusing to spend quota twice",
+    );
+  }
+
+  await markStoryFilmGenerationSubmitted({
+    jobId: job.id,
+    workerId: WORKER_ID,
+    leaseToken: job.leaseToken,
+    providerJobId: `elevenlabs-v3:${job.id}`,
+  });
+
+  let result;
+  try {
+    result = await synthesizeElevenLabsV3({
+      apiKey: decryptKey(project.user.elevenlabsKey),
+      voiceId,
+      text,
+      languageCode: "th",
+      speed,
+      label: `story-film:${project.id}`,
+    });
+  } catch (error) {
+    throw new NonRetryableStoryFilmProviderError(
+      `ElevenLabs response was uncertain after submission: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!result.ok) {
+    throw new NonRetryableStoryFilmProviderError(
+      `ElevenLabs v3 failed (${result.status}): ${result.errBody.slice(0, 200)}`,
+    );
+  }
+
+  await fs.mkdir(rendersDir, { recursive: true });
+  const temporaryPath = `${finalPath}.${process.pid}.tmp`;
+  await fs.writeFile(temporaryPath, result.mp3, { flag: "wx" });
+  await fs.rename(temporaryPath, finalPath);
+  const stats = await fs.stat(finalPath);
+  const durationMs = await probeAudioDurationMs(finalPath);
+  return {
+    storageUrl: `/api/renders/${filename}`,
+    mimeType: "audio/mpeg",
+    sizeBytes: stats.size,
+    durationMs,
+    metadata: { adapter: "elevenlabs", modelId: "eleven_v3", voiceId, speed },
+  };
+}
+
+async function persistNarration(job: LeasedStoryFilmJob) {
+  return job.providerBackend === "elevenlabs"
+    ? persistElevenLabsNarration(job)
+    : persistHeroVoiceNarration(job);
 }
 
 async function persistFinalRender(job: LeasedStoryFilmJob) {
@@ -194,6 +312,7 @@ async function processJob(job: LeasedStoryFilmJob) {
       leaseToken: job.leaseToken,
       errorCode: `${job.kind}_failure`,
       errorMessage: error instanceof Error ? error.message : String(error),
+      retryable: !(error instanceof NonRetryableStoryFilmProviderError),
     }).catch((reportError) => console.error(`[story-film-system] ${job.id} failure report rejected:`, reportError));
   } finally {
     clearInterval(heartbeat);
@@ -208,7 +327,7 @@ async function main() {
   while (running) {
     const jobs = await leaseStoryFilmGenerationJobs({
       workerId: WORKER_ID,
-      providerBackends: ["hero_text", "hero_voice", "hero_render"],
+      providerBackends: ["hero_text", "hero_voice", "elevenlabs", "hero_render"],
       maxJobs: 2,
     }).catch((error) => {
       console.error("[story-film-system] lease failed:", error);

@@ -22,6 +22,7 @@ export type StoryFilmJobKind = (typeof STORY_FILM_JOB_KINDS)[number];
 export type StoryFilmProviderBackend =
   | "grok_subscription"
   | "hero_voice"
+  | "elevenlabs"
   | "hero_text"
   | "vidiq"
   | "hero_render";
@@ -29,6 +30,7 @@ export type StoryFilmProviderBackend =
 const BACKENDS = new Set<StoryFilmProviderBackend>([
   "grok_subscription",
   "hero_voice",
+  "elevenlabs",
   "hero_text",
   "vidiq",
   "hero_render",
@@ -43,7 +45,7 @@ const JOB_STAGE: Record<StoryFilmJobKind, StoryFilmStage> = {
   final_render: "final_render",
 };
 const JOB_BACKENDS: Record<StoryFilmJobKind, StoryFilmProviderBackend[]> = {
-  narration_voice: ["hero_voice"],
+  narration_voice: ["hero_voice", "elevenlabs"],
   storyboard_plan: ["hero_text"],
   look_image: ["grok_subscription"],
   keyframe_image: ["grok_subscription"],
@@ -392,6 +394,7 @@ export async function failStoryFilmGenerationJob(input: {
   leaseToken: string;
   errorCode: string;
   errorMessage: string;
+  retryable?: boolean;
   now?: Date;
 }) {
   const now = input.now ?? new Date();
@@ -400,7 +403,7 @@ export async function failStoryFilmGenerationJob(input: {
   return prisma.$transaction(async (tx) => {
     const job = await requireLiveLease(tx, { ...input, now });
     const technicalFailureCount = job.technicalFailureCount + 1;
-    const terminal = technicalFailureCount >= 2;
+    const terminal = input.retryable === false || technicalFailureCount >= 2;
     const updated = await tx.storyFilmGenerationJob.update({
       where: { id: job.id },
       data: {

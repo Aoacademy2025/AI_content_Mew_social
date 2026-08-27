@@ -88,10 +88,12 @@ type ReviewArtifact = {
   durationMs: number | null;
 };
 
-type HeroVoice = {
-  voice_id: string;
-  desc?: string;
-  preview_url?: string;
+type NarrationVoiceOption = {
+  key: string;
+  provider: "hero_voice" | "elevenlabs";
+  voiceId: string;
+  label: string;
+  previewUrl?: string | null;
 };
 
 type MusicCandidate = {
@@ -362,7 +364,8 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
   const [characterIdentityNotes, setCharacterIdentityNotes] = useState("");
   const [characterFiles, setCharacterFiles] = useState<File[]>([]);
   const [characterSaving, setCharacterSaving] = useState(false);
-  const [voices, setVoices] = useState<HeroVoice[]>([]);
+  const [voices, setVoices] = useState<NarrationVoiceOption[]>([]);
+  const [narrationProvider, setNarrationProvider] = useState<"hero_voice" | "elevenlabs">("hero_voice");
   const [narrationVoiceId, setNarrationVoiceId] = useState("");
   const [narrationVoiceSpeed, setNarrationVoiceSpeed] = useState(1);
   const [selectedMusicKey, setSelectedMusicKey] = useState("");
@@ -372,6 +375,9 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
   const storyboardUrl = storyboardArtifactUrl(selected);
   const selectedCharacter = characters.find((character) => character.id === characterProfileId) ?? null;
   const availableMusic = musicCandidates(selected);
+  const selectedNarrationVoice = voices.find(
+    (voice) => voice.provider === narrationProvider && voice.voiceId === narrationVoiceId,
+  ) ?? null;
   const revisionSceneKeys = selected
     ? [...new Set(reviewArtifacts(selected).flatMap((artifact) => artifact.sceneKey ? [artifact.sceneKey] : []))]
     : [];
@@ -398,11 +404,47 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
   }, []);
 
   const loadVoices = useCallback(async () => {
-    const response = await fetch("/api/omnivoice/voices", { cache: "no-store" });
-    const data = await response.json() as HeroVoice[] | ApiError;
-    if (!response.ok || !Array.isArray(data)) throw new Error(apiMessage(data as ApiError, "โหลด Hero Voice ไม่สำเร็จ"));
-    setVoices(data);
-    setNarrationVoiceId((current) => data.some((voice) => voice.voice_id === current) ? current : data[0]?.voice_id ?? "");
+    const [heroResponse, elevenResponse] = await Promise.all([
+      fetch("/api/omnivoice/voices", { cache: "no-store" }),
+      fetch("/api/elevenlabs/voices", { cache: "no-store" }),
+    ]);
+    const heroData = await heroResponse.json() as Array<{ voice_id: string; desc?: string; preview_url?: string }> | ApiError;
+    const elevenData = await elevenResponse.json() as {
+      voices?: Array<{ voice_id: string; name: string; preview_url?: string | null }>;
+      defaultVoiceId?: string | null;
+    } & ApiError;
+    const heroVoices: NarrationVoiceOption[] = heroResponse.ok && Array.isArray(heroData)
+      ? heroData.map((voice) => ({
+          key: `hero_voice:${voice.voice_id}`,
+          provider: "hero_voice",
+          voiceId: voice.voice_id,
+          label: `${voice.desc || voice.voice_id} · Hero Voice`,
+          previewUrl: voice.preview_url,
+        }))
+      : [];
+    const elevenVoices: NarrationVoiceOption[] = elevenResponse.ok && Array.isArray(elevenData.voices)
+      ? elevenData.voices.map((voice) => ({
+          key: `elevenlabs:${voice.voice_id}`,
+          provider: "elevenlabs",
+          voiceId: voice.voice_id,
+          label: `${voice.name || voice.voice_id} · ElevenLabs v3`,
+          previewUrl: voice.preview_url,
+        }))
+      : [];
+    const options = [...elevenVoices, ...heroVoices];
+    if (options.length === 0) {
+      throw new Error(apiMessage(
+        (elevenResponse.ok ? heroData : elevenData) as ApiError,
+        "ยังไม่มีเสียงบรรยายที่พร้อมใช้",
+      ));
+    }
+    const accountDefault = elevenData.defaultVoiceId
+      ? elevenVoices.find((voice) => voice.voiceId === elevenData.defaultVoiceId)
+      : null;
+    const preferred = accountDefault ?? options[0];
+    setVoices(options);
+    setNarrationProvider(preferred.provider);
+    setNarrationVoiceId(preferred.voiceId);
   }, []);
 
   useEffect(() => {
@@ -472,7 +514,11 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
       return;
     }
     if (presentationMode === "faceless" && !narrationVoiceId) {
-      toast.error("แบบ Faceless ต้องเลือก Hero Voice");
+      toast.error("แบบ Faceless ต้องเลือกเสียงบรรยาย");
+      return;
+    }
+    if (presentationMode === "faceless" && narrationProvider === "elevenlabs" && narrativeSource.trim().length > 5_000) {
+      toast.error("ElevenLabs v3 รับสคริปต์ได้ไม่เกิน 5,000 ตัวอักษร");
       return;
     }
     setSaving(true);
@@ -509,6 +555,7 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
           sourcePackage,
           narrativeSource,
           presenterAssetId,
+          narrationProvider: presentationMode === "faceless" ? narrationProvider : null,
           narrationVoiceId: presentationMode === "faceless" ? narrationVoiceId : null,
           narrationVoiceSpeed: presentationMode === "faceless" ? narrationVoiceSpeed : null,
           characterProfileId: characterProfileId || null,
@@ -672,7 +719,7 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
                     <div><label htmlFor="source-package" className="mb-2 block text-sm font-semibold">โฟลเดอร์ต้นทาง <span className="font-normal text-[oklch(65%_0.025_300)]">ไม่บังคับ</span></label><input id="source-package" value={sourcePackage} onChange={(event) => setSourcePackage(event.target.value.slice(0, 500))} className="min-h-12 w-full border border-[oklch(38%_0.035_300)] bg-[oklch(19%_0.02_300)] px-4 text-base outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/30" placeholder="content/2026-08-28-topic" /></div>
                     <div><div className="mb-2 flex items-center justify-between"><label htmlFor="narrative-source" className="text-sm font-semibold">Narrative Source</label><span className="text-xs text-[oklch(65%_0.025_300)]">{narrativeSource.length.toLocaleString("th-TH")}/12,000</span></div><textarea id="narrative-source" value={narrativeSource} onChange={(event) => setNarrativeSource(event.target.value.slice(0, 12_000))} required minLength={10} rows={12} className="w-full resize-y border border-[oklch(38%_0.035_300)] bg-[oklch(19%_0.02_300)] px-4 py-3 text-base leading-7 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-400/30" placeholder="วาง tts.md หรือสคริปต์ที่อนุมัติแล้ว" /></div>
                     {presentationMode === "presenter_led" && <div><label htmlFor="presenter-file" className="mb-2 block text-sm font-semibold">วิดีโอพิธีกร lipsync</label><label htmlFor="presenter-file" className="flex min-h-24 cursor-pointer items-center gap-4 border border-dashed border-[oklch(46%_0.05_300)] px-4 hover:border-violet-400"><span className="flex h-11 w-11 items-center justify-center bg-[oklch(25%_0.05_300)]"><Upload className="h-5 w-5 text-violet-300" /></span><span><span className="block text-sm font-medium">{presenterFile?.name ?? "เลือก mp4, mov หรือ webm"}</span><span className="mt-1 block text-xs text-[oklch(67%_0.025_300)]">9:16 · ไม่เกิน 3 นาที · สูงสุด 500 MB</span></span></label><input id="presenter-file" type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" onChange={(event) => setPresenterFile(event.target.files?.[0] ?? null)} className="sr-only" /></div>}
-                    {presentationMode === "faceless" && <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_150px]"><div><label htmlFor="narration-voice" className="mb-2 block text-sm font-semibold">Hero Voice สำหรับ Narration Master</label><select id="narration-voice" value={narrationVoiceId} onChange={(event) => setNarrationVoiceId(event.target.value)} required className="min-h-12 w-full border border-[oklch(38%_0.035_300)] bg-[oklch(19%_0.02_300)] px-3 text-sm outline-none focus:border-violet-400"><option value="">เลือกเสียง</option>{voices.map((voice) => <option key={voice.voice_id} value={voice.voice_id}>{voice.desc || voice.voice_id}</option>)}</select>{voices.find((voice) => voice.voice_id === narrationVoiceId)?.preview_url && <audio controls preload="none" className="mt-3 h-9 w-full" src={voices.find((voice) => voice.voice_id === narrationVoiceId)!.preview_url} />}</div><div><label htmlFor="narration-speed" className="mb-2 block text-sm font-semibold">ความเร็ว {narrationVoiceSpeed.toFixed(1)}×</label><input id="narration-speed" type="range" min="0.7" max="1.3" step="0.1" value={narrationVoiceSpeed} onChange={(event) => setNarrationVoiceSpeed(Number(event.target.value))} className="mt-3 w-full accent-violet-500" /></div></div>}
+                    {presentationMode === "faceless" && <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_150px]"><div><label htmlFor="narration-voice" className="mb-2 block text-sm font-semibold">เสียงสำหรับ Narration Master</label><select id="narration-voice" value={selectedNarrationVoice?.key ?? ""} onChange={(event) => { const next = voices.find((voice) => voice.key === event.target.value); if (next) { setNarrationProvider(next.provider); setNarrationVoiceId(next.voiceId); if (next.provider === "elevenlabs") setNarrationVoiceSpeed((speed) => Math.min(1.2, speed)); } }} required className="min-h-12 w-full border border-[oklch(38%_0.035_300)] bg-[oklch(19%_0.02_300)] px-3 text-sm outline-none focus:border-violet-400"><option value="">เลือกเสียง</option>{voices.map((voice) => <option key={voice.key} value={voice.key}>{voice.label}</option>)}</select>{selectedNarrationVoice?.previewUrl && <audio controls preload="none" className="mt-3 h-9 w-full" src={selectedNarrationVoice.previewUrl} />}</div><div><label htmlFor="narration-speed" className="mb-2 block text-sm font-semibold">ความเร็ว {narrationVoiceSpeed.toFixed(1)}×</label><input id="narration-speed" type="range" min="0.7" max={narrationProvider === "elevenlabs" ? "1.2" : "1.3"} step="0.1" value={narrationVoiceSpeed} onChange={(event) => setNarrationVoiceSpeed(Number(event.target.value))} className="mt-3 w-full accent-violet-500" /></div></div>}
                     <div className="border-t border-[oklch(31%_0.025_300)] pt-6">
                       <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-semibold">ตัวละครที่ต้องรักษาหน้า <span className="font-normal text-[oklch(65%_0.025_300)]">ไม่บังคับ</span></p><p className="mt-1 text-xs leading-5 text-[oklch(67%_0.025_300)]">Identity Reference ใช้ซ้ำได้ ส่วนเสื้อผ้าและลุคกำหนดใหม่ในแต่ละคลิป</p></div><button type="button" onClick={() => setAddingCharacter((value) => !value)} className="min-h-11 border border-[oklch(40%_0.04_300)] px-3 text-xs hover:border-violet-400"><UserRound className="mr-1.5 inline h-3.5 w-3.5" />{addingCharacter ? "ปิด" : "เพิ่ม Character"}</button></div>
                       {addingCharacter && <div className="mt-4 space-y-4 border border-[oklch(34%_0.035_300)] bg-[oklch(17%_0.018_300)] p-4"><div className="grid gap-3 sm:grid-cols-2"><div><label htmlFor="character-name" className="mb-1.5 block text-xs font-medium">ชื่อภายในระบบ</label><input id="character-name" value={characterName} onChange={(event) => setCharacterName(event.target.value.slice(0, 100))} className="min-h-11 w-full border border-[oklch(38%_0.035_300)] bg-[oklch(20%_0.02_300)] px-3 text-sm outline-none focus:border-violet-400" /></div><div><label htmlFor="character-notes" className="mb-1.5 block text-xs font-medium">จุดที่ต้องคงเดิม</label><input id="character-notes" value={characterIdentityNotes} onChange={(event) => setCharacterIdentityNotes(event.target.value.slice(0, 1_000))} className="min-h-11 w-full border border-[oklch(38%_0.035_300)] bg-[oklch(20%_0.02_300)] px-3 text-sm outline-none focus:border-violet-400" placeholder="เช่น รูปหน้า ทรงผม ไฝ" /></div></div><label htmlFor="character-files" className="flex min-h-20 cursor-pointer items-center gap-3 border border-dashed border-[oklch(43%_0.05_300)] px-4 hover:border-violet-400"><Images className="h-5 w-5 text-violet-300" /><span><span className="block text-sm">{characterFiles.length ? `${characterFiles.length} ภาพ` : "เลือกรูปหน้า/ครึ่งตัว/เต็มตัว 1–8 ภาพ"}</span><span className="mt-1 block text-xs text-[oklch(63%_0.025_300)]">ไม่ต้องเจน character sheet ใหม่ ถ้ามี ref หลายมุมที่ชัดอยู่แล้ว</span></span></label><input id="character-files" type="file" multiple accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" onChange={(event) => setCharacterFiles(Array.from(event.target.files ?? []).slice(0, 8))} className="sr-only" /><button type="button" disabled={characterSaving || !characterName.trim() || characterFiles.length === 0} onClick={() => void saveCharacter()} className="flex min-h-11 items-center justify-center gap-2 bg-[oklch(55%_0.14_300)] px-4 text-sm font-semibold disabled:opacity-40">{characterSaving && <Loader2 className="h-4 w-4 animate-spin" />}บันทึก Reference Set</button></div>}
@@ -699,7 +746,7 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
                   <article className="min-w-0">
                     <p className="text-xs uppercase tracking-[0.18em] text-[oklch(70%_0.11_75)]">Current gate</p>
                     <h3 className="mt-2 text-2xl font-semibold">{selected.stageLabel}</h3>
-                    {selected.stage === "completed" && selected.finalRenderUrl ? <CompletedFilm project={selected} /> : selected.stage === "setup" ? <dl className="mt-7 divide-y divide-[oklch(30%_0.025_300)] border-y border-[oklch(30%_0.025_300)] text-sm"><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">รูปแบบ</dt><dd>{selected.presentationModeLabel}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">ต้นทาง</dt><dd>{selected.sourcePackage || "วางสคริปต์โดยตรง"}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">Narration Master</dt><dd>{selected.narrationMasterUrl ? `${Math.round((selected.narrationDurationMs ?? 0) / 100) / 10} วินาที` : selected.narrationVoiceId ? `Hero Voice · ${selected.narrationVoiceId}` : "จะสร้างเสียงในขั้นถัดไป"}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">Character</dt><dd>{selected.characterProfileId ? `Reference Set v${selected.characterReferenceSetVersion}` : "ไม่ใช้ตัวละครประจำ"}</dd></div></dl> : selected.stage === "narration" ? <div className="mt-7 whitespace-pre-wrap border-y border-[oklch(30%_0.025_300)] py-6 text-base leading-8 text-[oklch(86%_0.02_300)]">{selected.narrativeSource}</div> : selected.stage === "storyboard" && selected.awaitingApproval ? storyboardLoading ? <div className="mt-7 flex min-h-40 items-center justify-center border-y border-[oklch(30%_0.025_300)]"><Loader2 className="h-5 w-5 animate-spin text-violet-300" /></div> : storyboardDocument ? <StoryboardReview document={storyboardDocument} /> : <div className="mt-7 border border-dashed border-amber-500/40 p-6 text-sm text-amber-100">ยังเปิดไฟล์ storyboard ไม่ได้ กดรีเฟรชโปรเจกต์แล้วลองอีกครั้ง</div> : selected.awaitingApproval && ["character_look", "keyframes", "videos", "final_render"].includes(selected.stage) ? <ArtifactReview project={selected} /> : selected.stage === "music" && selected.awaitingApproval && availableMusic.length > 0 ? <MusicReview candidates={availableMusic} selectedKey={selectedMusicKey} onSelect={setSelectedMusicKey} /> : !selected.awaitingApproval ? <div className="mt-7 border border-dashed border-[oklch(42%_0.05_300)] p-7"><Loader2 className="mb-4 h-5 w-5 text-violet-300" /><p className="font-medium">Control Plane พร้อมแล้ว</p><p className="mt-2 max-w-[60ch] text-sm leading-6 text-[oklch(69%_0.025_300)]">ขั้น {selected.stageLabel} กำลังรอ Generation Adapter ส่งงานฉบับตรวจเข้ามา ระบบจะยังไม่ให้ approve จนมี artifact จริง</p></div> : <pre className="mt-7 overflow-auto border-y border-[oklch(30%_0.025_300)] py-6 text-sm leading-6 text-[oklch(80%_0.025_300)]">{JSON.stringify(selected.stageData, null, 2)}</pre>}
+                    {selected.stage === "completed" && selected.finalRenderUrl ? <CompletedFilm project={selected} /> : selected.stage === "setup" ? <dl className="mt-7 divide-y divide-[oklch(30%_0.025_300)] border-y border-[oklch(30%_0.025_300)] text-sm"><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">รูปแบบ</dt><dd>{selected.presentationModeLabel}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">ต้นทาง</dt><dd>{selected.sourcePackage || "วางสคริปต์โดยตรง"}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">Narration Master</dt><dd>{selected.narrationMasterUrl ? `${Math.round((selected.narrationDurationMs ?? 0) / 100) / 10} วินาที` : selected.narrationVoiceId ? `${selected.narrationProvider === "elevenlabs" ? "ElevenLabs v3" : "Hero Voice"} · ${selected.narrationVoiceId}` : "จะสร้างเสียงในขั้นถัดไป"}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">Character</dt><dd>{selected.characterProfileId ? `Reference Set v${selected.characterReferenceSetVersion}` : "ไม่ใช้ตัวละครประจำ"}</dd></div></dl> : selected.stage === "narration" ? <div className="mt-7 whitespace-pre-wrap border-y border-[oklch(30%_0.025_300)] py-6 text-base leading-8 text-[oklch(86%_0.02_300)]">{selected.narrativeSource}</div> : selected.stage === "storyboard" && selected.awaitingApproval ? storyboardLoading ? <div className="mt-7 flex min-h-40 items-center justify-center border-y border-[oklch(30%_0.025_300)]"><Loader2 className="h-5 w-5 text-violet-300" /></div> : storyboardDocument ? <StoryboardReview document={storyboardDocument} /> : <div className="mt-7 border border-dashed border-amber-500/40 p-6 text-sm text-amber-100">ยังเปิดไฟล์ storyboard ไม่ได้ กดรีเฟรชโปรเจกต์แล้วลองอีกครั้ง</div> : selected.awaitingApproval && ["character_look", "keyframes", "videos", "final_render"].includes(selected.stage) ? <ArtifactReview project={selected} /> : selected.stage === "music" && selected.awaitingApproval && availableMusic.length > 0 ? <MusicReview candidates={availableMusic} selectedKey={selectedMusicKey} onSelect={setSelectedMusicKey} /> : !selected.awaitingApproval ? <div className="mt-7 border border-dashed border-[oklch(42%_0.05_300)] p-7"><Loader2 className="mb-4 h-5 w-5 text-violet-300" /><p className="font-medium">Control Plane พร้อมแล้ว</p><p className="mt-2 max-w-[60ch] text-sm leading-6 text-[oklch(69%_0.025_300)]">ขั้น {selected.stageLabel} กำลังรอ Generation Adapter ส่งงานฉบับตรวจเข้ามา ระบบจะยังไม่ให้ approve จนมี artifact จริง</p></div> : <pre className="mt-7 overflow-auto border-y border-[oklch(30%_0.025_300)] py-6 text-sm leading-6 text-[oklch(80%_0.025_300)]">{JSON.stringify(selected.stageData, null, 2)}</pre>}
                   </article>
 
                   <aside className="border-t border-[oklch(31%_0.025_300)] pt-6 xl:border-l xl:border-t-0 xl:pl-7 xl:pt-0">

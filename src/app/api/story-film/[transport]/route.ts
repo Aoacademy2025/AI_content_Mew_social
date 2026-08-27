@@ -110,6 +110,7 @@ const handler = createMcpHandler(
           sourcePackage: z.string().max(500).optional(),
           narrativeSource: z.string().min(10).max(12_000),
           presenterAssetId: z.string().max(120).optional(),
+          narrationProvider: z.enum(["hero_voice", "elevenlabs"]).optional(),
           narrationVoiceId: z.string().max(160).optional(),
           narrationVoiceSpeed: z.number().min(0.3).max(3).optional(),
           characterProfileId: z.string().max(120).optional(),

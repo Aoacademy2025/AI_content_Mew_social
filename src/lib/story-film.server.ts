@@ -15,6 +15,7 @@ export const STORY_FILM_STAGES = [
 
 export type StoryFilmStage = (typeof STORY_FILM_STAGES)[number];
 export type StoryFilmPresentationMode = "presenter_led" | "faceless";
+export type StoryFilmNarrationProvider = "hero_voice" | "elevenlabs";
 export type StoryFilmDecisionKind =
   | "approve"
   | "revise"
@@ -47,6 +48,7 @@ type StoredStoryFilm = {
   narrativeSource: string;
   narrationMasterUrl: string | null;
   narrationDurationMs: number | null;
+  narrationProvider: string;
   narrationVoiceId: string | null;
   narrationVoiceSpeed: number | null;
   presenterAssetId: string | null;
@@ -78,6 +80,7 @@ export type StoryFilmProjectView = {
   narrativeSource: string;
   narrationMasterUrl: string | null;
   narrationDurationMs: number | null;
+  narrationProvider: StoryFilmNarrationProvider;
   narrationVoiceId: string | null;
   narrationVoiceSpeed: number | null;
   presenterAssetId: string | null;
@@ -161,6 +164,7 @@ function toView(project: StoredStoryFilm): StoryFilmProjectView {
     narrativeSource: project.narrativeSource,
     narrationMasterUrl: project.narrationMasterUrl,
     narrationDurationMs: project.narrationDurationMs,
+    narrationProvider: project.narrationProvider === "elevenlabs" ? "elevenlabs" : "hero_voice",
     narrationVoiceId: project.narrationVoiceId,
     narrationVoiceSpeed: project.narrationVoiceSpeed,
     presenterAssetId: project.presenterAssetId,
@@ -194,6 +198,7 @@ function cleanStartInput(input: {
   sourcePackage?: string | null;
   narrativeSource: string;
   presenterAssetId?: string | null;
+  narrationProvider?: StoryFilmNarrationProvider | null;
   narrationVoiceId?: string | null;
   narrationVoiceSpeed?: number | null;
   characterProfileId?: string | null;
@@ -204,6 +209,7 @@ function cleanStartInput(input: {
   const narrativeSource = input.narrativeSource?.trim();
   const sourcePackage = input.sourcePackage?.trim() || null;
   const presenterAssetId = input.presenterAssetId?.trim() || null;
+  const narrationProvider = input.narrationProvider === "elevenlabs" ? "elevenlabs" : "hero_voice";
   const narrationVoiceId = input.narrationVoiceId?.trim() || null;
   const narrationVoiceSpeed = Number.isFinite(input.narrationVoiceSpeed)
     ? Math.min(3, Math.max(0.3, input.narrationVoiceSpeed!))
@@ -225,13 +231,16 @@ function cleanStartInput(input: {
   if (input.presentationMode === "faceless" && presenterAssetId) {
     invalid("Faceless Project ไม่รับ Presenter Asset");
   }
-  if (input.presentationMode === "faceless" && !narrationVoiceId) {
+  if (input.presentationMode === "faceless" && narrationProvider === "hero_voice" && !narrationVoiceId) {
     invalid("Faceless Project ต้องเลือกเสียงบรรยายจาก Hero Voice");
   }
   if (input.presentationMode === "presenter_led" && narrationVoiceId) {
     invalid("Presenter-led ใช้เสียงจากวิดีโอ lipsync จึงไม่รับ Hero Voice เพิ่ม");
   }
-  if (narrationVoiceId && narrationVoiceId.length > 160) invalid("Hero Voice ID ยาวเกินกำหนด");
+  if (narrationVoiceId && narrationVoiceId.length > 160) invalid("Voice ID ยาวเกินกำหนด");
+  if (input.presentationMode === "faceless" && narrationProvider === "elevenlabs" && narrativeSource.length > 5_000) {
+    invalid("ElevenLabs v3 รับ Narrative Source ได้ไม่เกิน 5,000 ตัวอักษร");
+  }
   if (presenterAssetId && presenterAssetId.length > 120) invalid("Presenter Asset ID ยาวเกินกำหนด");
   if (characterProfileId && characterProfileId.length > 120) invalid("Character Profile ID ยาวเกินกำหนด");
   if (characterLookBrief && characterLookBrief.length > 1_000) invalid("Character Look Brief ยาวเกิน 1,000 ตัวอักษร");
@@ -242,6 +251,7 @@ function cleanStartInput(input: {
     narrativeSource,
     sourcePackage,
     presenterAssetId,
+    narrationProvider,
     narrationVoiceId,
     narrationVoiceSpeed,
     characterProfileId,
@@ -312,6 +322,7 @@ export async function startStoryFilm(
     sourcePackage?: string | null;
     narrativeSource: string;
     presenterAssetId?: string | null;
+    narrationProvider?: StoryFilmNarrationProvider | null;
     narrationVoiceId?: string | null;
     narrationVoiceSpeed?: number | null;
     characterProfileId?: string | null;
@@ -324,6 +335,24 @@ export async function startStoryFilm(
     where: { userId_idempotencyKey: { userId, idempotencyKey: input.idempotencyKey } },
   });
   if (existing) return { created: false, project: toView(existing) };
+
+  let narrationVoiceId = cleaned.narrationVoiceId;
+  if (input.presentationMode === "faceless" && cleaned.narrationProvider === "elevenlabs") {
+    const account = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { elevenlabsKey: true, elevenlabsVoiceId: true, plan: true },
+    });
+    if (!account?.elevenlabsKey) {
+      invalid("บัญชีนี้ยังไม่ได้ตั้งค่า ElevenLabs API key");
+    }
+    if (account.plan === "FREE") {
+      invalid("ElevenLabs Narration ใช้ได้เฉพาะแผน Pro ขึ้นไป");
+    }
+    narrationVoiceId = narrationVoiceId || account.elevenlabsVoiceId?.trim() || null;
+    if (!narrationVoiceId) {
+      invalid("ยังไม่ได้เลือกเสียงโคลน ElevenLabs ของบัญชีนี้");
+    }
+  }
 
   const presenterAsset = cleaned.presenterAssetId
     ? await prisma.storyFilmPresenterAsset.findFirst({
@@ -365,8 +394,9 @@ export async function startStoryFilm(
         narrativeSource: cleaned.narrativeSource,
         narrationMasterUrl,
         narrationDurationMs,
-        narrationVoiceId: cleaned.narrationVoiceId,
-        narrationVoiceSpeed: cleaned.narrationVoiceId ? cleaned.narrationVoiceSpeed : null,
+        narrationProvider: cleaned.narrationProvider,
+        narrationVoiceId,
+        narrationVoiceSpeed: narrationVoiceId ? cleaned.narrationVoiceSpeed : null,
         presenterAssetId: presenterAsset?.id ?? null,
         characterProfileId: characterProfile?.id ?? null,
         characterReferenceSetVersion: characterProfile?.activeReferenceSetVersion ?? null,
@@ -386,8 +416,9 @@ export async function startStoryFilm(
           durationLimitMs: 180_000,
           sourcePackage: cleaned.sourcePackage,
           hasNarrationMaster: Boolean(narrationMasterUrl),
-          narrationVoiceId: cleaned.narrationVoiceId,
-          narrationVoiceSpeed: cleaned.narrationVoiceId ? cleaned.narrationVoiceSpeed : null,
+          narrationProvider: cleaned.narrationProvider,
+          narrationVoiceId,
+          narrationVoiceSpeed: narrationVoiceId ? cleaned.narrationVoiceSpeed : null,
           presenterAssetId: presenterAsset?.id ?? null,
           characterProfileId: characterProfile?.id ?? null,
           characterReferenceSetVersion: characterProfile?.activeReferenceSetVersion ?? null,
@@ -698,8 +729,9 @@ export async function decideStoryFilm(
     }
     if (input.decision === "approve" && nextStage === "narration" && !project.narrationMasterUrl) {
       if (!project.narrationVoiceId) {
-        throw new StoryFilmError("decision_not_allowed", "Faceless Project ยังไม่ได้เลือก Hero Voice");
+        throw new StoryFilmError("decision_not_allowed", "Faceless Project ยังไม่ได้เลือกเสียงบรรยาย");
       }
+      const narrationProvider = project.narrationProvider === "elevenlabs" ? "elevenlabs" : "hero_voice";
       await tx.storyFilmGenerationJob.create({
         data: {
           projectId: project.id,
@@ -707,12 +739,13 @@ export async function decideStoryFilm(
           projectRevision: resultRevision,
           generationEpoch: resultGenerationEpoch,
           kind: "narration_voice",
-          providerBackend: "hero_voice",
+          providerBackend: narrationProvider,
           sceneKey: "narration-master",
           payloadJson: JSON.stringify({
             text: project.narrativeSource,
             voiceId: project.narrationVoiceId,
             speed: project.narrationVoiceSpeed ?? 1,
+            ...(narrationProvider === "elevenlabs" ? { modelId: "eleven_v3", languageCode: "th" } : {}),
           }),
           idempotencyKey: `auto:narration:epoch:${resultGenerationEpoch}`,
         },

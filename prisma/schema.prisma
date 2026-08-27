@@ -317,6 +317,7 @@ model StoryFilmProject {
   narrativeSource              String
   narrationMasterUrl           String?
   narrationDurationMs          Int?
+  narrationProvider            String                     @default("hero_voice") // hero_voice | elevenlabs
   narrationVoiceId             String?
   narrationVoiceSpeed          Float?
   presenterAssetId             String?

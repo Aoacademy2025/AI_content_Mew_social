@@ -28,7 +28,14 @@ async function main() {
 
   try {
     const alice = await prisma.user.create({
-      data: { id: "alice", name: "Alice", email: "alice@example.com", plan: "BUSINESS" },
+      data: {
+        id: "alice",
+        name: "Alice",
+        email: "alice@example.com",
+        plan: "BUSINESS",
+        elevenlabsKey: "encrypted-test-key",
+        elevenlabsVoiceId: "mew-elevenlabs-clone",
+      },
     });
     const bob = await prisma.user.create({
       data: { id: "bob", name: "Bob", email: "bob@example.com", plan: "BUSINESS" },
@@ -141,6 +148,40 @@ async function main() {
     passed += 1;
     console.log("ok: Faceless Storyboard cannot begin before voice generation commits timing");
 
+    const elevenLabsFaceless = await storyFilm.startStoryFilm(alice.id, {
+      title: "Faceless เสียงมิว ElevenLabs v3",
+      idempotencyKey: "mewshort:faceless-elevenlabs:001",
+      presentationMode: "faceless",
+      narrationProvider: "elevenlabs",
+      narrationVoiceSpeed: 1,
+      sourcePackage: "content/2026-08-28-elevenlabs",
+      narrativeSource: "สคริปต์นี้ต้องใช้เสียงโคลนมิวจาก ElevenLabs v3 และรอให้มิวฟังเสียงจริงก่อนสร้างสตอรี่บอร์ด",
+      aspectRatio: "9:16",
+    });
+    ok(
+      elevenLabsFaceless.project.narrationProvider === "elevenlabs"
+        && elevenLabsFaceless.project.narrationVoiceId === "mew-elevenlabs-clone",
+      "ElevenLabs Story Film resolves the account's saved clone without requiring a voice id from chat",
+    );
+    const elevenLabsNarration = await storyFilm.decideStoryFilm(alice.id, {
+      projectId: elevenLabsFaceless.project.id,
+      expectedStage: "setup",
+      expectedRevision: 1,
+      decision: "approve",
+      idempotencyKey: "decision:elevenlabs:setup:001",
+    });
+    const elevenLabsJob = await prisma.storyFilmGenerationJob.findFirst({
+      where: { projectId: elevenLabsFaceless.project.id, kind: "narration_voice" },
+    });
+    const elevenLabsPayload = JSON.parse(elevenLabsJob?.payloadJson ?? "{}") as Record<string, unknown>;
+    ok(
+      elevenLabsNarration.stage === "narration"
+        && !elevenLabsNarration.awaitingApproval
+        && elevenLabsJob?.providerBackend === "elevenlabs"
+        && elevenLabsPayload.modelId === "eleven_v3",
+      "setup approval queues ElevenLabs v3 narration and still stops at the Narration review gate",
+    );
+
     const setupDecision = {
       projectId: started.project.id,
       expectedStage: "setup" as const,
@@ -227,7 +268,7 @@ async function main() {
       title: "โปรเจกต์ที่สอง",
     });
     const latest = await storyFilm.readStoryFilm(alice.id, { latestEligible: true });
-    ok(latest.kind === "candidates" && latest.candidates.length === 3, "resume asks Mew when several projects are eligible");
+    ok(latest.kind === "candidates" && latest.candidates.length === 4, "resume asks Mew when several projects are eligible");
   } finally {
     await prisma.$disconnect();
   }
