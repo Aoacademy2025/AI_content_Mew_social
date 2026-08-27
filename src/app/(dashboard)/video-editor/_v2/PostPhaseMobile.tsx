@@ -112,6 +112,8 @@ export function PostPhaseMobile({
   starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
 }) {
+  const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
   const ed = usePostPhaseEditor(job, script, {
     onExportJob,
     onAdoptJob,
@@ -129,6 +131,7 @@ export function PostPhaseMobile({
     onRetryProjectSave,
     canRunProjectOperation,
     surface: "mobile",
+    brollEditAvailable: brollEditEnabled,
   });
   const [styleOpen, setStyleOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -140,8 +143,6 @@ export function PostPhaseMobile({
   const layersTriggerRef = useRef<HTMLButtonElement | null>(null);
   const headlineTriggerRef = useRef<HTMLButtonElement | null>(null);
   const logoEnabled = !!normalizeLogoOverlayConfig(logoOverlay)?.enabled;
-  const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
-  const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
 
   const selectedCap = ed.captions[ed.selected];
   const durationMs = Math.max(
