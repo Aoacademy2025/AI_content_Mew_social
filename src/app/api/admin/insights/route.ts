@@ -987,6 +987,15 @@ export async function GET(req: Request) {
       // in MRR (a pack is a one-off, not a plan term). It was previously invisible.
       creditRevenue: planCash.creditRevenue,
       creditBuyers: planCash.creditBuyers,
+      // Revenue shape: what recurs vs what was prepaid once, and the cash still owed as
+      // service. Blending these into one "MRR" read as a steadier business than this is.
+      recurringMrr: cohorts.recurringMrr,
+      prepaidMrr: cohorts.prepaidMrr,
+      arr: cohorts.arr,
+      arrStudio: cohorts.arrStudio,
+      arrBundle: cohorts.arrBundle,
+      deferredRevenue: cohorts.deferredRevenue,
+      prepaidExpiry: cohorts.prepaidExpiry,
       payingCanceling: cohorts.payingCanceling,
       mrrAtRisk: cohorts.mrrAtRisk,
       trialActive: cohorts.trialActive,

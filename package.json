@@ -80,6 +80,7 @@
     "verify:broll-windows": "tsx scripts/verify-broll-windows.ts",
     "verify:render-receipt": "tsx scripts/verify-render-receipt.ts",
     "verify:founding-copy-truth": "tsx scripts/verify-founding-copy-truth.ts",
+    "verify:arr-revenue-shape": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-arr-revenue-shape.ts",
     "verify:plan-cash-vs-credits": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-plan-cash-vs-credits.ts",
     "verify:renewal-receipts": "tsx scripts/verify-renewal-receipts.ts",
     "verify:payment-ledger-repair": "tsx scripts/verify-payment-ledger-repair-guards.ts",
