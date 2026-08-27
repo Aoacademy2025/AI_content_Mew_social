@@ -18,7 +18,7 @@ export async function GET() {
     // Get user's ElevenLabs API key
     const user = await prisma.user.findUnique({
       where: { id: authUser.id },
-      select: { plan: true, elevenlabsKey: true },
+      select: { plan: true, elevenlabsKey: true, elevenlabsVoiceId: true },
     });
 
     if (!user) {
@@ -61,7 +61,7 @@ export async function GET() {
       labels: voice.labels || {},
     }));
 
-    return NextResponse.json({ voices }, { status: 200 });
+    return NextResponse.json({ voices, defaultVoiceId: user.elevenlabsVoiceId }, { status: 200 });
   } catch (error: any) {
     if (error.response?.status === 401 || error.response?.status === 403) {
       // HTTP 401 is reserved for this application's Clerk session. Exposing an

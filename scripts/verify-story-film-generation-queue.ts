@@ -167,6 +167,56 @@ async function main() {
     const attentionProject = await prisma.storyFilmProject.findUniqueOrThrow({ where: { id: imageProject.project.id } });
     ok(attentionProject.status === "needs_attention", "terminal worker failure surfaces Needs Attention on the active epoch");
 
+    await prisma.storyFilmProject.update({
+      where: { id: imageProject.project.id },
+      data: {
+        stage: "narration",
+        revision: 8,
+        generationEpoch: 5,
+        awaitingApproval: false,
+        status: "waiting_generation",
+      },
+    });
+    const elevenJob = await queue.enqueueStoryFilmGeneration(alice.id, {
+      projectId: imageProject.project.id,
+      expectedStage: "narration",
+      expectedRevision: 8,
+      kind: "narration_voice",
+      providerBackend: "elevenlabs",
+      sceneKey: "narration-master",
+      payload: { text: "ทดสอบการสร้างเสียงแบบจ่ายตามการใช้งาน", voiceId: "mew-clone" },
+      idempotencyKey: "narration:elevenlabs:epoch:005",
+    });
+    const [elevenLease] = await queue.leaseStoryFilmGenerationJobs({
+      workerId: "hero-elevenlabs-worker",
+      providerBackends: ["elevenlabs"],
+      maxJobs: 1,
+      now: new Date(t0.getTime() + 105_000),
+    });
+    assert.equal(elevenLease.id, elevenJob.job.id);
+    await queue.markStoryFilmGenerationSubmitted({
+      jobId: elevenLease.id,
+      workerId: "hero-elevenlabs-worker",
+      leaseToken: elevenLease.leaseToken,
+      providerJobId: "elevenlabs-v3:test",
+      now: new Date(t0.getTime() + 106_000),
+    });
+    const paidCallFailure = await queue.failStoryFilmGenerationJob({
+      jobId: elevenLease.id,
+      workerId: "hero-elevenlabs-worker",
+      leaseToken: elevenLease.leaseToken,
+      errorCode: "narration_voice_failure",
+      errorMessage: "provider outcome is uncertain",
+      retryable: false,
+      now: new Date(t0.getTime() + 107_000),
+    });
+    ok(
+      paidCallFailure.needsAttention
+        && !paidCallFailure.retryQueued
+        && paidCallFailure.job.technicalFailureCount === 1,
+      "an uncertain ElevenLabs POST stops after one submission instead of spending quota twice",
+    );
+
     const storyboardProject = await story.startStoryFilm(alice.id, {
       title: "Paused completion",
       idempotencyKey: "queue:storyboard-project:001",

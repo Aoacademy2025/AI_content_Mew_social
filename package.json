@@ -154,6 +154,7 @@
     "verify:story-film-worker-api": "node --conditions=react-server --import tsx scripts/verify-story-film-worker-api.ts",
     "verify:story-film-storyboard": "node --conditions=react-server --import tsx scripts/verify-story-film-storyboard.ts",
     "verify:story-film-system-worker": "tsx scripts/verify-story-film-system-worker.ts",
+    "verify:story-film-elevenlabs": "node --conditions=react-server --import tsx scripts/verify-story-film-elevenlabs-v3.ts",
     "verify:story-film-character-pipeline": "node --conditions=react-server --import tsx scripts/verify-story-film-character-pipeline.ts",
     "verify:story-film-render": "node --conditions=react-server --import tsx scripts/verify-story-film-render.ts",
     "worker:story-film-system": "node --conditions=react-server --import tsx scripts/story-film-system-worker.ts",

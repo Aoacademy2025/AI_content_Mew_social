@@ -44,6 +44,7 @@ export async function POST(request: Request) {
       sourcePackage: typeof body?.sourcePackage === "string" ? body.sourcePackage : null,
       narrativeSource: typeof body?.narrativeSource === "string" ? body.narrativeSource : "",
       presenterAssetId: typeof body?.presenterAssetId === "string" ? body.presenterAssetId : null,
+      narrationProvider: body?.narrationProvider === "elevenlabs" ? "elevenlabs" : "hero_voice",
       narrationVoiceId: typeof body?.narrationVoiceId === "string" ? body.narrationVoiceId : null,
       narrationVoiceSpeed: typeof body?.narrationVoiceSpeed === "number" ? body.narrationVoiceSpeed : null,
       characterProfileId: typeof body?.characterProfileId === "string" ? body.characterProfileId : null,
