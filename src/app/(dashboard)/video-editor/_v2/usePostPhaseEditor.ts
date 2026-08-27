@@ -69,6 +69,10 @@ import {
   BROLL_TIMELINE_TOLERANCE_MS,
   moveBrollBoundary as calculateBrollBoundaryMove,
 } from "@/lib/broll-timeline-boundary";
+import {
+  summarizeBrollGrowthEdits,
+  type BrollGrowthSummary,
+} from "@/lib/broll-growth-funnel";
 import { useEditorStylePresets } from "./useEditorStylePresets";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 
@@ -161,6 +165,7 @@ export type UsePostPhaseEditorOptions = {
    *  "apply" toast never lies about a logo change that got silently dropped (M2). */
   canRunProjectOperation?: () => boolean;
   initialSubtitleConfig?: SubtitleStylePresetConfig;
+  brollEditAvailable?: boolean;
 };
 
 function subtitleConfigFromBrandDefault(
@@ -193,6 +198,7 @@ export function usePostPhaseEditor(
     surface = "desktop",
     canRunProjectOperation = alwaysReadyForProjectOperation,
     initialSubtitleConfig,
+    brollEditAvailable = false,
   } = options;
   const preview = job.output?.preview ?? null;
   const editSnapshot = job.output?.editSnapshot;
@@ -223,6 +229,8 @@ export function usePostPhaseEditor(
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const pendingVideoSourceSwapRef = useRef<{ time: number; resume: boolean } | null>(null);
   const windowApplyInFlightRef = useRef(false);
+  const brollViewTrackedRef = useRef(false);
+  const brollAppliedSummariesRef = useRef<Map<string, BrollGrowthSummary>>(new Map());
   const [timeMs, setTimeMs] = useState(0);
   const [playing, setPlaying] = useState(false);
   const pollStop = useRef(false);
@@ -354,6 +362,18 @@ export function usePostPhaseEditor(
       .sort((left, right) => left.startMs - right.startMs),
     [baseBrollTimelineSpans, windowEdits],
   );
+  useEffect(() => {
+    if (
+      !brollEditAvailable
+      || brollViewTrackedRef.current
+      || baseBrollTimelineSpans.length === 0
+    ) return;
+    brollViewTrackedRef.current = true;
+    trackEvent("editor_broll_edit_viewed", {
+      status: "info",
+      properties: { surface, windowCount: baseBrollTimelineSpans.length },
+    });
+  }, [brollEditAvailable, baseBrollTimelineSpans.length, surface]);
   // compositeBaseUrl แทนที่ preview.compositeBaseUrl หลัง apply สำเร็จ (งาน avatar) —
   // ไม่งั้น AvatarAdjustOverlay จะ re-composite ทับ base เก่า (ก่อนแก้ b-roll) แล้วเขียน
   // ทับผลแก้ b-roll ทิ้งอย่างเงียบๆ ตอนกด save ใน Avatar Adjust (บั๊กที่ fix นี้แก้)
@@ -407,6 +427,10 @@ export function usePostPhaseEditor(
     const next = new Map(windowEdits);
     next.set(index, { ...(next.get(index) ?? {}), ...edit });
     commitWindowEdits(next);
+    trackEvent("editor_broll_edit_staged", {
+      status: "started",
+      properties: { surface, ...summarizeBrollGrowthEdits(Array.from(next.values())) },
+    });
   }
   function setWindowEdits(edits: { index: number; edit: WindowEdit }[]) {
     const next = new Map(windowEdits);
@@ -414,6 +438,10 @@ export function usePostPhaseEditor(
       next.set(index, { ...(next.get(index) ?? {}), ...edit });
     }
     commitWindowEdits(next);
+    trackEvent("editor_broll_edit_staged", {
+      status: "started",
+      properties: { surface, ...summarizeBrollGrowthEdits(Array.from(next.values())) },
+    });
   }
 
   /** Stage one shared boundary as two atomic window edits. Returning to the rendered boundary
@@ -444,6 +472,10 @@ export function usePostPhaseEditor(
       else next.delete(change.index);
     }
     commitWindowEdits(next);
+    trackEvent("editor_broll_edit_staged", {
+      status: "started",
+      properties: { surface, ...summarizeBrollGrowthEdits(Array.from(next.values())) },
+    });
     trackEvent("editor_broll_boundary_staged", {
       properties: {
         surface,
@@ -538,6 +570,7 @@ export function usePostPhaseEditor(
       ...(e.kind ? { replacementKind: e.kind } : {}),
       ...(e.imageJobId ? { imageJobId: e.imageJobId } : {}),
     }));
+    const growthSummary = summarizeBrollGrowthEdits(edits);
     try {
       const res = await fetch("/api/videos/jobs", {
         method: "POST",
@@ -608,6 +641,11 @@ export function usePostPhaseEditor(
             videoUrl: newVideoUrl,
             compositeBaseUrl: nextCompositeBaseUrl,
           };
+          brollAppliedSummariesRef.current.set(newJobId, growthSummary);
+          trackEvent("editor_broll_edit_applied", {
+            status: "done",
+            properties: { surface, ...growthSummary },
+          });
           break;
         }
         if (p.status === "failed" || p.status === "canceled") {
@@ -620,6 +658,10 @@ export function usePostPhaseEditor(
       if (!applied && !windowPollStop.current) throw new Error("อัปเดตวิดีโอไม่เสร็จในเวลาที่กำหนด — เช็คสถานะภายหลัง");
       return applied;
     } catch (e) {
+      trackEvent("editor_broll_edit_applied", {
+        status: "error",
+        properties: { surface, ...growthSummary },
+      });
       toast.error(e instanceof Error ? e.message : "อัปเดตวิดีโอไม่สำเร็จ");
       return null;
     } finally {
@@ -1110,6 +1152,13 @@ export function usePostPhaseEditor(
         sceneCount: captions.length,
       });
       if (!result.ok) throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");
+      const submittedBrollSummary = brollAppliedSummariesRef.current.get(exportSource.jobId);
+      if (submittedBrollSummary) {
+        trackEvent("editor_broll_export_submitted", {
+          status: "done",
+          properties: { surface, ...submittedBrollSummary },
+        });
+      }
       const submittedLogo = normalizeLogoOverlayConfig(logoOverlay);
       if (submittedLogo?.enabled) {
         trackEvent("logo_overlay_export_submitted", {

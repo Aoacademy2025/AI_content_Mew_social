@@ -110,6 +110,8 @@ export function PostPhase({
   const [rightTab, setRightTab] = useState<"hook" | "subtitle" | "logo">("hook");
   const rightTabsId = useId();
   const logoPanelOpenedRef = useRef(false);
+  const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
+  const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
   const ed = usePostPhaseEditor(job, script, {
     onExportJob,
     onAdoptJob,
@@ -127,6 +129,7 @@ export function PostPhase({
     onRetryProjectSave,
     canRunProjectOperation,
     surface: "desktop",
+    brollEditAvailable: brollEditEnabled,
   });
   const handleRightTabChange = (next: "hook" | "subtitle" | "logo") => {
     setRightTab(next);
@@ -137,8 +140,6 @@ export function PostPhase({
   };
   // The full editor remains behind its legacy gate. Brand Visual V1 exposes
   // only Scene Reroll, without enabling Stock-to-AI or raw-prompt controls.
-  const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
-  const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
   const editedWindowIndices = useMemo(() => new Set(ed.windowEdits.keys()), [ed.windowEdits]);
   const disabledWindowIndices = new Set<number>();
   const brollEntries = (ed.previewConfig as { bgVideos?: unknown } | null)?.bgVideos;

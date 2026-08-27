@@ -121,6 +121,7 @@ import {
   recordFirstPassVisualRejection,
   type FirstPassVisualRejectionReason,
 } from "@/lib/first-pass-visual-acceptance.server";
+import { brollExportCompletionProperties } from "@/lib/broll-growth-funnel";
 import {
   commitAppliedSceneRerollAssetsInTransaction,
   prepareAppliedSceneRerollAssets,
@@ -1171,6 +1172,20 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           source: "server",
           status: "done",
           properties: logoCompletionProperties,
+        });
+      }
+      const brollCompletionProperties = brollExportCompletionProperties(src);
+      if (
+        completion.transitioned
+        && completion.job.status === "done"
+        && brollCompletionProperties
+      ) {
+        emitTelemetry({
+          name: "editor_broll_export_completed",
+          category: "product",
+          source: "server",
+          status: "done",
+          properties: brollCompletionProperties,
         });
       }
       return;
