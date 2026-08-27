@@ -11,7 +11,7 @@ import { PricingClient } from "./pricing-client";
 export default async function PricingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ payment?: string; source?: string }>;
+  searchParams: Promise<{ payment?: string; source?: string; period?: string }>;
 }) {
   const [plans, founding, params] = await Promise.all([
     getPlanConfig(),
@@ -42,6 +42,7 @@ export default async function PricingPage({
           initialFounding={founding}
           paymentResult={params.payment ?? null}
           acquisitionSource={params.source ?? null}
+          preferredPeriod={params.period === "monthly" || params.period === "annual" ? params.period : null}
           minuteQuotaEnabled={process.env.MINUTE_QUOTA === "1"}
           // #348 — the promise on the trial band is only shown when the billing
           // code actually keeps the remaining days. Same helper the server uses.
