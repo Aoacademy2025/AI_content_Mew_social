@@ -60,6 +60,18 @@ const WORD_JOINER = "\u2060";
 // phrases available to ICU wrapping.
 const MAX_PROTECTED_TOKEN_GRAPHEMES = 8;
 
+// ICU/Chromium splits these common Thai compounds into fragments that are not
+// acceptable visual line boundaries (for example ผลก|ระ|ทบ). This list is
+// intentionally render-only: unlike the tokenizer compound list, a false
+// positive here can only move a line break and can never change transcript
+// timing, card text, or word offsets.
+const THAI_DISPLAY_NO_BREAK_TERMS = [
+  "บรูกส์",
+  "ผลกระทบ",
+  "ต่อเนื่อง",
+  "ทุกเรื่อง",
+] as const;
+
 /**
  * Chromium's Thai dictionary may consider a transliterated proper name such as
  * "อัลลัน" to be two valid line-break segments ("อัล" + "ลัน"). Protect
@@ -69,20 +81,70 @@ const MAX_PROTECTED_TOKEN_GRAPHEMES = 8;
 export function protectSubtitleWordBreaks(value: string): string {
   const graphemeSegmenter = getSegmenter("th", "grapheme");
   const wordSegmenter = getSegmenter("th", "word");
-  return value.replace(/[^\s]+/gu, (token) => {
-    const graphemes = graphemeSegmenter
-      ? Array.from(graphemeSegmenter.segment(token), (part) => part.segment)
-      : Array.from(token);
-    if (graphemes.length <= 1 || graphemes.length > MAX_PROTECTED_TOKEN_GRAPHEMES) return token;
-    const wordLikeSegments = wordSegmenter
-      ? Array.from(wordSegmenter.segment(token)).filter((part) => part.isWordLike).length
-      : 0;
-    // Keep ordinary single words byte-for-byte identical. We only need the
-    // joiner when ICU would otherwise introduce an extra break inside one
-    // author-delimited token (for example อัล|ลัน).
-    if (wordLikeSegments !== 2) return token;
-    return graphemes.join(WORD_JOINER);
-  });
+  if (!graphemeSegmenter || !wordSegmenter || !/[\u0E00-\u0E7F]/u.test(value)) return value;
+
+  type ProtectedSpan = { start: number; end: number };
+  const spans: ProtectedSpan[] = [];
+  const addSpan = (start: number, end: number) => {
+    if (end > start) spans.push({ start, end });
+  };
+
+  // Protect every ICU word internally, including proper names embedded inside
+  // a long unspaced Thai phrase. Break opportunities remain BETWEEN words.
+  for (const part of wordSegmenter.segment(value)) {
+    if (part.isWordLike && /[\u0E00-\u0E7F]/u.test(part.segment)) {
+      addSpan(part.index, part.index + part.segment.length);
+    }
+  }
+
+  // ICU can split a short author-delimited name into multiple word-like pieces
+  // (อัล|ลัน). The author token is the stronger boundary signal in this case.
+  for (const match of value.matchAll(/[^\s]+/gu)) {
+    const token = match[0];
+    const start = match.index;
+    if (!/[\u0E00-\u0E7F]/u.test(token)) continue;
+    const graphemeCount = Array.from(graphemeSegmenter.segment(token)).length;
+    const wordLikeCount = Array.from(wordSegmenter.segment(token)).filter((part) => part.isWordLike).length;
+    if (graphemeCount > 1 && graphemeCount <= MAX_PROTECTED_TOKEN_GRAPHEMES && wordLikeCount >= 2) {
+      addSpan(start, start + token.length);
+    }
+  }
+
+  // Merge ICU fragments for common compounds whose internal boundaries are
+  // known to be wrong for subtitle display.
+  for (const term of THAI_DISPLAY_NO_BREAK_TERMS) {
+    let from = 0;
+    let index: number;
+    while ((index = value.indexOf(term, from)) !== -1) {
+      addSpan(index, index + term.length);
+      from = index + term.length;
+    }
+  }
+
+  spans.sort((a, b) => a.start - b.start || b.end - a.end);
+  const merged: ProtectedSpan[] = [];
+  for (const span of spans) {
+    const previous = merged.at(-1);
+    if (previous && span.start < previous.end) {
+      previous.end = Math.max(previous.end, span.end);
+    } else {
+      merged.push({ ...span });
+    }
+  }
+
+  const graphemes = Array.from(graphemeSegmenter.segment(value));
+  let spanIndex = 0;
+  let output = "";
+  for (let index = 0; index < graphemes.length; index++) {
+    const current = graphemes[index];
+    const next = graphemes[index + 1];
+    output += current.segment;
+    if (!next) continue;
+    while (spanIndex < merged.length && current.index >= merged[spanIndex].end) spanIndex++;
+    const span = merged[spanIndex];
+    if (span && current.index >= span.start && next.index < span.end) output += WORD_JOINER;
+  }
+  return output;
 }
 
 // Tokenize for per-word effects (highlight / karaoke) without losing any source
