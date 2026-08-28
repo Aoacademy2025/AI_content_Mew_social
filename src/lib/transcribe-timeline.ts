@@ -43,6 +43,37 @@ export type SanitizedChunk = ChunkResult & {
   };
 };
 
+/**
+ * Project one chunk's provider word clock onto the source-audio timeline.
+ * ffmpeg's slice boundary is authoritative: providers may report a final word
+ * slightly past that boundary, which would otherwise overlap the next chunk.
+ */
+export function offsetChunkWordsToSourceTimeline(input: {
+  words: ChunkWord[];
+  offsetMs: number;
+  chunkDurationMs: number;
+}): ChunkWord[] {
+  const offsetSec = input.offsetMs / 1000;
+  // Add on the integer millisecond clock before converting to seconds. Adding
+  // two floating-point second values can put the boundary a few femtoseconds
+  // beyond the next chunk's exact offset (for example 132.85500000000002).
+  const chunkEndSec = (input.offsetMs + input.chunkDurationMs) / 1000;
+  return input.words.flatMap((word) => {
+    const start = word.start + offsetSec;
+    const end = Math.min(word.end + offsetSec, chunkEndSec);
+    if (
+      !Number.isFinite(start)
+      || !Number.isFinite(end)
+      || start < offsetSec
+      || start >= chunkEndSec
+      || end <= start
+    ) {
+      return [];
+    }
+    return [{ ...word, start, end }];
+  });
+}
+
 // Keep the long-audio planning policy in a Prisma-free module so the production
 // route and its regression harness exercise the same seam.
 export const TRANSCRIBE_CHUNK_MAX_MS = 110_000;

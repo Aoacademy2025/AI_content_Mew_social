@@ -13,6 +13,7 @@ import {
   chunkTranscriptionReferenceDurationMs,
   chunkTailGapMs,
   normalizeGeminiWords,
+  offsetChunkWordsToSourceTimeline,
   parseTranscriptionSilenceAnalysis,
   planTranscriptionChunkBoundaries,
   planTranscriptionRecoveryBoundaries,
@@ -1009,7 +1010,11 @@ export async function POST(req: Request) {
               + (sanitized.stats.wordsDegenerate ? " (degenerate words → dropped)" : ""),
             );
             const offsetSec = offsetMs / 1000;
-            for (const word of sanitized.words) words.push({ word: word.word, start: word.start + offsetSec, end: word.end + offsetSec });
+            words.push(...offsetChunkWordsToSourceTimeline({
+              words: sanitized.words,
+              offsetMs,
+              chunkDurationMs,
+            }));
             for (const segment of sanitized.segments) segments.push({ text: segment.text, start: segment.start + offsetSec, end: segment.end + offsetSec });
             for (const caption of sanitized.geminiDirectCaptions) {
               geminiDirectCaptions.push({
