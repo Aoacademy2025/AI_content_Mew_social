@@ -109,6 +109,8 @@ export type TranscriptAlignmentFailureCode =
   | "overlapping_timing"
   | "implausible_timing_density"
   | "text_mismatch"
+  | "numeric_claim_mismatch"
+  | "numeric_context_mismatch"
   | "incomplete_alignment";
 
 export type TranscriptAlignmentResult =
@@ -143,6 +145,7 @@ const THAI_NUMBER_WORDS = new Set<string>([
   ...THAI_DIGIT_WORDS,
   "เอ็ด", "ยี่", "ยี่สิบ", "สิบ", "ร้อย", "พัน", "หมื่น", "แสน", "ล้าน", "จุด", "ลบ", "บวก",
 ]);
+const THAI_NUMBER_SPEECH_PARTS = [...THAI_NUMBER_WORDS].sort((left, right) => right.length - left.length);
 const THAI_DIGITS = "๐๑๒๓๔๕๖๗๘๙";
 const CONTEXTUAL_DIGIT_SEQUENCE_RE = /(?:เบอร์(?:โทร(?:ศัพท์)?)?|โทรศัพท์|OTP|PIN|รหัส(?:ผ่าน|ยืนยัน|ไปรษณีย์|สินค้า)?|เลขบัญชี|เลขบัตร(?:ประชาชน|เครดิต)?|เลขประจำตัว)(\s*)([\p{N}](?:[\p{N} -]*[\p{N}])?)/giu;
 
@@ -161,6 +164,10 @@ function canonicalSpeechText(value: string): string {
 function sourceWordHasNumericClaim(value: string): boolean {
   const normalized = value.normalize("NFC");
   return /\p{N}/u.test(normalized) || THAI_NUMBER_WORDS.has(canonicalSpeechText(normalized));
+}
+
+function containsThaiNumberSpeech(value: string): boolean {
+  return THAI_NUMBER_SPEECH_PARTS.some((part) => value.includes(part));
 }
 
 function contextualDigitSequenceWordIndexes(
@@ -552,19 +559,62 @@ function alignTranscriptWordsFuzzily(
     for (let sourceCharIndex = 0; sourceCharIndex < sourceWordByChar.length; sourceCharIndex += 1) {
       if (sourceWordByChar[sourceCharIndex] === numericWordIndex) sourceIndexes.push(sourceCharIndex);
     }
-    if (sourceIndexes.length === 0) return { status: "failed", code: "text_mismatch" };
+    if (sourceIndexes.length === 0) return { status: "failed", code: "numeric_claim_mismatch" };
 
-    const mapped = sourceIndexes.map((sourceCharIndex) => transcriptCharBySourceChar[sourceCharIndex]);
-    if (mapped.some((transcriptCharIndex) => transcriptCharIndex < 0)) {
-      return { status: "failed", code: "text_mismatch" };
-    }
-    for (let index = 0; index < sourceIndexes.length; index += 1) {
-      if (
-        transcriptChars[mapped[index]] !== sourceChars[sourceIndexes[index]]
-        || (index > 0 && mapped[index] !== mapped[index - 1] + 1)
-      ) {
-        return { status: "failed", code: "text_mismatch" };
+    let mapped = sourceIndexes.map((sourceCharIndex) => transcriptCharBySourceChar[sourceCharIndex]);
+    const isExactContiguousMapping = () => mapped.every((transcriptCharIndex, index) =>
+      transcriptCharIndex >= 0
+      && transcriptChars[transcriptCharIndex] === sourceChars[sourceIndexes[index]]
+      && (index === 0 || transcriptCharIndex === mapped[index - 1] + 1),
+    );
+    if (!isExactContiguousMapping()) {
+      // Global edit distance can assign one character of a correct numeric word
+      // to a nearby repeated phrase (prod: authored/ASR both said "ตีสาม", but
+      // an inserted sound effect made the final ม map to the following word).
+      // Recover only an exact local occurrence near the partial DP anchor. A
+      // wholly missing/changed value still has no candidate and remains red.
+      const mappedEvidence = mapped.filter((transcriptCharIndex) => transcriptCharIndex >= 0);
+      if (mappedEvidence.length === 0) return { status: "failed", code: "numeric_claim_mismatch" };
+      const target = sourceIndexes.map((sourceCharIndex) => sourceChars[sourceCharIndex]).join("");
+      const anchorStart = Math.min(...mappedEvidence);
+      const previousMapped = sourceIndexes[0] > 0
+        ? transcriptCharBySourceChar[sourceIndexes[0] - 1]
+        : -1;
+      const nextMapped = sourceIndexes[sourceIndexes.length - 1] + 1 < sourceChars.length
+        ? transcriptCharBySourceChar[sourceIndexes[sourceIndexes.length - 1] + 1]
+        : transcriptChars.length;
+      const maxAnchorDistance = Math.max(12, target.length * 2);
+      const candidates: number[] = [];
+      let candidateStart = transcriptComparableText.indexOf(target);
+      while (candidateStart >= 0) {
+        const candidateEnd = candidateStart + target.length;
+        if (
+          Math.abs(candidateStart - anchorStart) <= maxAnchorDistance
+          && (previousMapped < 0 || candidateStart > previousMapped)
+          && (nextMapped < 0 || candidateEnd <= nextMapped)
+        ) {
+          candidates.push(candidateStart);
+        }
+        candidateStart = transcriptComparableText.indexOf(target, candidateStart + 1);
       }
+      if (candidates.length === 0) return { status: "failed", code: "numeric_claim_mismatch" };
+      const recoveredStart = candidates.sort((left, right) =>
+        Math.abs(left - anchorStart) - Math.abs(right - anchorStart),
+      )[0];
+      const recovered = sourceIndexes.map((_, index) => recoveredStart + index);
+      const recoveredSet = new Set(recovered);
+      // Do not let an adjacent omitted source word keep borrowing a character
+      // that is now proven to belong to the numeric claim. It will correctly
+      // surface as incomplete_alignment instead of inventing speech timing.
+      transcriptCharBySourceChar.forEach((transcriptCharIndex, sourceCharIndex) => {
+        if (!sourceIndexes.includes(sourceCharIndex) && recoveredSet.has(transcriptCharIndex)) {
+          transcriptCharBySourceChar[sourceCharIndex] = -1;
+        }
+      });
+      sourceIndexes.forEach((sourceCharIndex, index) => {
+        transcriptCharBySourceChar[sourceCharIndex] = recovered[index];
+      });
+      mapped = recovered;
     }
 
     const firstSourceIndex = sourceIndexes[0];
@@ -575,15 +625,24 @@ function alignTranscriptWordsFuzzily(
     const nextTranscriptIndex = lastSourceIndex + 1 < sourceChars.length
       ? transcriptCharBySourceChar[lastSourceIndex + 1]
       : transcriptChars.length;
+    const leftGap = transcriptChars.slice(
+      firstSourceIndex === 0 ? 0 : Math.max(0, previousTranscriptIndex + 1),
+      mapped[0],
+    ).join("");
+    const rightGap = transcriptChars.slice(
+      mapped[mapped.length - 1] + 1,
+      lastSourceIndex === sourceChars.length - 1 ? transcriptChars.length : nextTranscriptIndex,
+    ).join("");
+    // Benign ASR insertions next to a fully proven number must not invalidate
+    // that number. Numeric continuations remain fail-closed: 20→25 creates a
+    // right gap of "ห้า"; 3→13 creates a left gap of "สิบ".
     if (
-      (firstSourceIndex === 0
-        ? mapped[0] !== 0
-        : previousTranscriptIndex < 0 || mapped[0] !== previousTranscriptIndex + 1)
-      || (lastSourceIndex === sourceChars.length - 1
-        ? mapped[mapped.length - 1] !== transcriptChars.length - 1
-        : nextTranscriptIndex < 0 || nextTranscriptIndex !== mapped[mapped.length - 1] + 1)
+      (firstSourceIndex > 0 && previousTranscriptIndex < 0)
+      || (lastSourceIndex < sourceChars.length - 1 && nextTranscriptIndex < 0)
+      || containsThaiNumberSpeech(leftGap)
+      || containsThaiNumberSpeech(rightGap)
     ) {
-      return { status: "failed", code: "text_mismatch" };
+      return { status: "failed", code: "numeric_context_mismatch" };
     }
   }
 

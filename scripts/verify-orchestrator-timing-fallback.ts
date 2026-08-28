@@ -222,6 +222,43 @@ check(
   alignTranscriptWordsToSource("เวลา 09:30 น. เริ่มงาน", changedStructuredWords) === null,
 );
 
+// Production 2026-08-28: the authored text and ASR both contained "ตีสาม",
+// but Gemini inserted an acoustic sound-effect token beside it. Global edit
+// distance mapped the final ม onto an adjacent source word and the old hard
+// boundary guard rejected a correct numeric claim. Exact local numeric evidence
+// may survive non-numeric insertions; a numeric continuation must still fail.
+const numericAnchorScript =
+  "เขาเดินกลับมาที่ห้องเหมือนเดิมทุกคืนตอนตีสามเสียงเก้าอี้ลากแล้วเขาก็นั่งหันหน้าเข้ากำแพง";
+const numericAnchorSourceWords = tokenizeWords(numericAnchorScript).map((word) => word.word);
+const numericAnchorIndex = numericAnchorSourceWords.indexOf("สาม");
+const numericAnchorWithSound = [...numericAnchorSourceWords];
+numericAnchorWithSound.splice(numericAnchorIndex + 1, 0, "ครืดดดด");
+const anchoredNumericAlignment = alignTranscriptWordsToSource(
+  numericAnchorScript,
+  numericAnchorWithSound.map((word, index) => ({
+    word,
+    startMs: index * 220,
+    endMs: index * 220 + 190,
+  })),
+);
+check(
+  "exact local numeric speech survives a neighboring non-numeric ASR insertion",
+  anchoredNumericAlignment !== null,
+);
+const numericAnchorWithChangedValue = [...numericAnchorSourceWords];
+numericAnchorWithChangedValue.splice(numericAnchorIndex + 1, 0, "สิบ");
+check(
+  "numeric continuation beside a local anchor remains fail-closed",
+  alignTranscriptWordsToSource(
+    numericAnchorScript,
+    numericAnchorWithChangedValue.map((word, index) => ({
+      word,
+      startMs: index * 220,
+      endMs: index * 220 + 190,
+    })),
+  ) === null,
+);
+
 const changedNumericEvidence = alignTranscriptWordsToSource(
   "ประหยัด 5,000 บาท ภายในเดือนนี้",
   [
