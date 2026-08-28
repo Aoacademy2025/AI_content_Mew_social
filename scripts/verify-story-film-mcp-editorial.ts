@@ -237,6 +237,50 @@ try {
   assert.deepEqual(jobPayload.editorial, approvedEditorial);
   assert.match(decisionRow.instruction ?? "", /ห้าม regenerate ภาพหรือวิดีโอ/u);
 
+  await prisma.$transaction([
+    prisma.storyFilmGenerationJob.update({
+      where: { id: finalJobs[0].id },
+      data: {
+        status: "needs_attention",
+        attemptCount: 2,
+        technicalFailureCount: 2,
+        providerJobId: `hero-render:${finalJobs[0].id}`,
+        submittedAt: new Date(),
+        finishedAt: new Date(),
+        errorCode: "final_render_failure",
+        errorMessage: "Remotion runtime failed",
+      },
+    }),
+    prisma.storyFilmProject.update({
+      where: { id: projectId },
+      data: { status: "needs_attention" },
+    }),
+  ]);
+  const attention = await callMcp("hero_story_film_read", { projectId });
+  const attentionProject = attention.project as Record<string, unknown>;
+  assert.equal(attentionProject.nextAction, "resolve_attention");
+  const retry = await callMcp("hero_story_film_decide", {
+    projectId,
+    expectedStage: attentionProject.stage,
+    expectedRevision: attentionProject.revision,
+    decision: "retry",
+    instruction: "Retry the same approved Final Preview after fixing the worker runtime.",
+    idempotencyKey: "mewshort:allan-brooks:retry:r59",
+  });
+  const retryProject = retry.project as Record<string, unknown>;
+  const [retriedJob, retryDecision] = await Promise.all([
+    prisma.storyFilmGenerationJob.findUniqueOrThrow({ where: { id: finalJobs[0].id } }),
+    prisma.storyFilmDecision.findUniqueOrThrow({
+      where: { projectId_revision: { projectId, revision: 59 } },
+    }),
+  ]);
+  assert.equal(retryProject.revision, 60);
+  assert.equal(retryProject.generationEpoch, 31);
+  assert.equal(retryProject.status, "waiting_generation");
+  assert.equal(retriedJob.status, "queued");
+  assert.equal(retriedJob.technicalFailureCount, 0);
+  assert.equal(retryDecision.kind, "retry");
+
   console.log(JSON.stringify({
     ok: true,
     transport: "internal_story_film_mcp",
@@ -246,9 +290,9 @@ try {
     },
     result: {
       stage: afterProject.stage,
-      revision: afterProject.revision,
-      generationEpoch: afterProject.generationEpoch,
-      nextAction: afterProject.nextAction,
+      revision: retryProject.revision,
+      generationEpoch: retryProject.generationEpoch,
+      nextAction: retryProject.nextAction,
     },
     editorial: jobPayload.editorial,
     queuedJobs: {

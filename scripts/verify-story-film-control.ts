@@ -275,6 +275,80 @@ async function main() {
       "Storyboard revision preserves the reviewed video-scene plan in the durable planner job",
     );
 
+    const attentionProject = await prisma.storyFilmProject.create({
+      data: {
+        id: "story-film-needs-attention",
+        userId: alice.id,
+        title: "Final render awaiting an explicit retry",
+        idempotencyKey: "story-film:attention:001",
+        presentationMode: "faceless",
+        narrativeSource: "Retry the same approved final render without regenerating visual assets.",
+        stage: "final_render",
+        status: "needs_attention",
+        revision: 7,
+        generationEpoch: 3,
+        awaitingApproval: false,
+        stageDataJson: JSON.stringify({ gate: "final_render", waitingForGeneration: true }),
+      },
+    });
+    const attentionJob = await prisma.storyFilmGenerationJob.create({
+      data: {
+        projectId: attentionProject.id,
+        stage: "final_render",
+        projectRevision: 7,
+        generationEpoch: 3,
+        kind: "final_render",
+        providerBackend: "hero_render",
+        sceneKey: "master",
+        payloadJson: JSON.stringify({ editorial: { subtitlesEnabled: true } }),
+        idempotencyKey: "auto:final-render:epoch:3",
+        status: "needs_attention",
+        attemptCount: 2,
+        technicalFailureCount: 2,
+        providerJobId: "hero-render:failed",
+        submittedAt: new Date(),
+        finishedAt: new Date(),
+        errorCode: "final_render_failure",
+        errorMessage: "Remotion runtime failed",
+      },
+    });
+    const retriedAttention = await storyFilm.decideStoryFilm(alice.id, {
+      projectId: attentionProject.id,
+      expectedStage: "final_render",
+      expectedRevision: 7,
+      decision: "retry",
+      instruction: "Retry the same approved Final Preview after the worker runtime fix.",
+      idempotencyKey: "decision:retry:final-render:001",
+    });
+    const [requeuedJob, retryDecision] = await Promise.all([
+      prisma.storyFilmGenerationJob.findUniqueOrThrow({ where: { id: attentionJob.id } }),
+      prisma.storyFilmDecision.findUniqueOrThrow({
+        where: { projectId_revision: { projectId: attentionProject.id, revision: 7 } },
+      }),
+    ]);
+    ok(
+      retriedAttention.revision === 8
+        && retriedAttention.generationEpoch === 3
+        && retriedAttention.status === "waiting_generation"
+        && !retriedAttention.awaitingApproval,
+      "an explicit retry resumes the same failed generation epoch",
+    );
+    ok(
+      requeuedJob.status === "queued"
+        && requeuedJob.attemptCount === 2
+        && requeuedJob.technicalFailureCount === 0
+        && requeuedJob.providerJobId === null
+        && requeuedJob.finishedAt === null
+        && requeuedJob.errorCode === null,
+      "retry clears only the failed provider attempt while preserving the job audit count",
+    );
+    ok(
+      retryDecision.kind === "retry"
+        && retryDecision.revision === 7
+        && retryDecision.resultRevision === 8,
+      "retry creates one append-only stage-bound decision row",
+    );
+
     const decisions = await prisma.storyFilmDecision.findMany({
       where: { projectId: started.project.id },
       orderBy: { revision: "asc" },
@@ -291,7 +365,7 @@ async function main() {
       title: "โปรเจกต์ที่สอง",
     });
     const latest = await storyFilm.readStoryFilm(alice.id, { latestEligible: true });
-    ok(latest.kind === "candidates" && latest.candidates.length === 4, "resume asks Mew when several projects are eligible");
+    ok(latest.kind === "candidates" && latest.candidates.length === 5, "resume asks Mew when several projects are eligible");
   } finally {
     await prisma.$disconnect();
   }
