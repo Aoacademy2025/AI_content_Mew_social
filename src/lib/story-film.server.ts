@@ -29,6 +29,7 @@ export type StoryFilmDecisionKind =
   | "fallback"
   | "pause"
   | "resume"
+  | "retry"
   | "render";
 
 const STAGE_LABELS: Record<StoryFilmStage, string> = {
@@ -492,7 +493,7 @@ function validateDecision(input: {
   if (!input.projectId?.trim()) invalid("projectId ห้ามว่าง");
   if (!isStage(input.expectedStage)) invalid("Stage ไม่ถูกต้อง");
   if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1) invalid("Revision ไม่ถูกต้อง");
-  if (!["approve", "revise", "reroll", "fallback", "pause", "resume", "render"].includes(input.decision)) {
+  if (!["approve", "revise", "reroll", "fallback", "pause", "resume", "retry", "render"].includes(input.decision)) {
     invalid("Decision ไม่ถูกต้อง");
   }
   const instruction = input.instruction?.trim() || null;
@@ -672,7 +673,54 @@ export async function decideStoryFilm(
         }
       : null;
 
-    if (input.decision === "pause") {
+    if (input.decision === "retry") {
+      if (project.status !== "needs_attention") {
+        throw new StoryFilmError("decision_not_allowed", "โปรเจกต์นี้ไม่มีงานที่ต้องลองใหม่", currentView);
+      }
+      const attentionJobs = await tx.storyFilmGenerationJob.findMany({
+        where: {
+          projectId: project.id,
+          stage: project.stage,
+          generationEpoch: project.generationEpoch,
+          status: "needs_attention",
+        },
+        select: { id: true },
+      });
+      if (attentionJobs.length === 0) {
+        throw new StoryFilmError("decision_not_allowed", "ไม่พบงานที่ล้มเหลวใน stage ปัจจุบัน", currentView);
+      }
+      const now = new Date();
+      const requeued = await tx.storyFilmGenerationJob.updateMany({
+        where: { id: { in: attentionJobs.map((job) => job.id) }, status: "needs_attention" },
+        data: {
+          status: "queued",
+          technicalFailureCount: 0,
+          providerJobId: null,
+          leaseOwner: null,
+          leaseTokenHash: null,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+          availableAt: now,
+          submittedAt: null,
+          finishedAt: null,
+          errorCode: null,
+          errorMessage: null,
+        },
+      });
+      if (requeued.count !== attentionJobs.length) {
+        throw new StoryFilmError("stale_revision", "สถานะงานเปลี่ยนระหว่างลองใหม่ กรุณาเปิด review ล่าสุด", currentView);
+      }
+      const priorStageData = parseStageData(project.stageDataJson);
+      nextStatus = "waiting_generation";
+      awaitingApproval = false;
+      stageDataJson = JSON.stringify({
+        ...priorStageData,
+        gate: project.stage,
+        waitingForGeneration: true,
+        requestedDecision: "retry",
+        retryJobIds: attentionJobs.map((job) => job.id),
+      });
+    } else if (input.decision === "pause") {
       if (["completed", "archived", "rendering"].includes(project.status)) {
         throw new StoryFilmError("decision_not_allowed", "โปรเจกต์สถานะนี้พักไม่ได้", currentView);
       }

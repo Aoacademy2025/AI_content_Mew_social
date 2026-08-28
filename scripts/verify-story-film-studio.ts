@@ -61,6 +61,8 @@ assert.match(workbench, /metadata\.width \/ metadata\.height - 9 \/ 16/);
 assert.match(workbench, /presenterFile\.size > 500 \* 1024 \* 1024/);
 assert.match(workbench, /expectedStage: selected\.stage/);
 assert.match(workbench, /expectedRevision: selected\.revision/);
+assert.match(workbench, /decide\("retry"/);
+assert.match(workbench, /ลองงานเดิมอีกครั้ง/);
 assert.match(workbench, /ยังไม่มีงานให้ตัดสินใจ/);
 assert.doesNotMatch(workbench, /fetch\([^)]*(?:grok|xai|runpod)/i);
 assert.doesNotMatch(workbench, /(?:child_process|execFile|spawn\s*\()/);

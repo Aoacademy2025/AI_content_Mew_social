@@ -26,6 +26,7 @@ const INTERNAL_INSTRUCTIONS = `Hero Story Film internal control plane for Mew an
 Use hero_story_film_start once, hero_story_film_read before every decision, and hero_story_film_decide with the exact stage and revision just read.
 Never infer an approval, never approve a gate without a Hero review link, and never call the public create_video_job tool as a fallback.
 Final Render has two gates: approve the music/editorial setup to create a preview, then review the actual preview before decision=render.
+When status is needs_attention, use decision=retry only after Mew explicitly approves retrying the same failed jobs.
 Use final_render revise with sceneKeys and repairLayer to repair only selected B-roll scenes; music/editorial-only revisions must leave visual assets intact.`;
 
 function absoluteReviewUrl(value: string): string {
@@ -153,7 +154,7 @@ const handler = createMcpHandler(
           projectId: z.string().min(1),
           expectedStage: z.enum(["setup", "narration", "storyboard", "character_look", "keyframes", "videos", "music", "final_render", "completed"]),
           expectedRevision: z.number().int().positive(),
-          decision: z.enum(["approve", "revise", "reroll", "fallback", "pause", "resume", "render"]),
+          decision: z.enum(["approve", "revise", "reroll", "fallback", "pause", "resume", "retry", "render"]),
           instruction: z.string().max(2_000).optional(),
           target: z.object({
             sceneKey: z.string().regex(/^scene-\d{2}$/u).optional(),
