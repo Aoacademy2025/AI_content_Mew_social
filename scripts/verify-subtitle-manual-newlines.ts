@@ -20,7 +20,10 @@ function markup(text: string, preset: SubtitleStylePreset, effect: SubtitleTextE
 
 const plain = markup("บรรทัดแรก\nบรรทัดสอง", "stroke", "pop");
 check("plain presets preserve manual newline via CSS", plain.includes("white-space:pre-line"));
-check("plain presets keep newline text in markup", plain.includes("บรรทัดแรก\nบรรทัดสอง"));
+check(
+  "plain presets keep newline text in markup",
+  plain.replace(/\u2060/gu, "").includes("บรรทัดแรก\nบรรทัดสอง"),
+);
 
 const highlight = markup("hello world\nnext line", "plain", "highlight");
 check("highlight effect renders an explicit line break", highlight.includes("<br"));
