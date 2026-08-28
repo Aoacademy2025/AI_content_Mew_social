@@ -55,7 +55,10 @@ function getSegmenter(locale: string, granularity: "word" | "grapheme" | "senten
 }
 
 const WORD_JOINER = "\u2060";
-const MAX_PROTECTED_TOKEN_GRAPHEMES = 18;
+// At 80–96px, a longer no-break run can exceed the 92% subtitle frame. Eight
+// graphemes is enough for short names such as อัลลัน while keeping long Thai
+// phrases available to ICU wrapping.
+const MAX_PROTECTED_TOKEN_GRAPHEMES = 8;
 
 /**
  * Chromium's Thai dictionary may consider a transliterated proper name such as
@@ -77,7 +80,7 @@ export function protectSubtitleWordBreaks(value: string): string {
     // Keep ordinary single words byte-for-byte identical. We only need the
     // joiner when ICU would otherwise introduce an extra break inside one
     // author-delimited token (for example อัล|ลัน).
-    if (wordLikeSegments <= 1) return token;
+    if (wordLikeSegments !== 2) return token;
     return graphemes.join(WORD_JOINER);
   });
 }
