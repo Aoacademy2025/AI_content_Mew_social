@@ -53,14 +53,16 @@ async function main() {
     },
   });
   let geminiTranscribeCalls = 0;
+  let geminiTtsCalls = 0;
   const geminiCalls: string[] = [];
   await runOrchestrator(geminiJob.id, user.id, {
     caller: {
       post: async <T,>(path: string): Promise<T> => {
         geminiCalls.push(path);
         if (path === "/api/videos/tts-gemini") {
+          geminiTtsCalls += 1;
           return {
-            voiceUrl: "/api/renders/gemini-narration.wav",
+            voiceUrl: `/api/renders/gemini-narration-${geminiTtsCalls}.wav`,
             audioDurationMs: 4_000,
             timing: {
               provider: "gemini",
@@ -72,7 +74,7 @@ async function main() {
         if (path === "/api/videos/transcribe") {
           geminiTranscribeCalls += 1;
           const spoken = [
-            "ใน", "ปี", "สอง", "พัน", "ยี่สิบ", "หก",
+            "ใน", "ปี", "สอง", "พัน", "ยี่สิบ", geminiTranscribeCalls === 1 ? "ห้า" : "หก",
             "ประหยัด", "เงิน", "ห้า", "พัน", "บาท",
           ];
           return {
@@ -107,12 +109,14 @@ async function main() {
   });
   const completedGemini = await prisma.videoJob.findUniqueOrThrow({ where: { id: geminiJob.id } });
   const geminiOutput = parseVideoJobOutput(completedGemini.outputJson);
-  check(completedGemini.status === "done", "Gemini numeric speech completes the real preview pipeline");
-  check(geminiTranscribeCalls === 1, "Gemini verifies the generated audio exactly once");
+  check(completedGemini.status === "done", "Gemini regenerates mismatched numeric speech and completes the real preview pipeline");
+  check(geminiTtsCalls === 2, "Gemini retries TTS exactly once after a hard numeric mismatch");
+  check(geminiTranscribeCalls === 2, "Gemini acoustically verifies both generated audio attempts");
   check(geminiOutput?.subtitleQa?.status === "passed", "Gemini subtitle QA passes");
   check(geminiOutput?.subtitleQa?.timingSource === "forced_alignment", "Gemini persists forced-alignment evidence");
   check(geminiOutput?.preview?.fullText === geminiScript, "Gemini keeps authored ASCII subtitle text");
-  check(geminiCalls.indexOf("/api/videos/transcribe") < geminiCalls.indexOf("/api/videos/render"), "Gemini verifies subtitles before render spend");
+  check(geminiOutput?.preview?.voiceUrl === "/api/renders/gemini-narration-2.wav", "Gemini renders only the acoustically verified retry audio");
+  check(geminiCalls.lastIndexOf("/api/videos/transcribe") < geminiCalls.indexOf("/api/videos/render"), "Gemini verifies the retry before render spend");
 
   const elevenScript = "เก็บเงิน 5,000 บาท ทุกเดือน";
   const characters = Array.from(elevenScript);
