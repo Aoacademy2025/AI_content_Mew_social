@@ -1620,11 +1620,12 @@ function LegacyVideoEditorPage() {
 
   async function runTts(): Promise<string> {
     ttsTimingRef.current = null; // stale timing must never outlive its audio
+    const narrationText = preprocessScript(scriptOverride || script);
     if (ttsProvider === "gemini") {
       setStep("tts", "running", "Gemini TTS...");
       const res = await fetch("/api/videos/tts-gemini", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: scriptOverride.trim() || preprocessScript(script), voiceName: geminiVoiceName }),
+        body: JSON.stringify({ text: narrationText, voiceName: geminiVoiceName }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -1638,7 +1639,7 @@ function LegacyVideoEditorPage() {
       setStep("tts", "running", "Hero Voice TTS...");
       const res = await fetch("/api/videos/tts-omnivoice", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: scriptOverride.trim() || preprocessScript(script), voiceId: omniVoiceId }),
+        body: JSON.stringify({ text: narrationText, voiceId: omniVoiceId }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -1652,7 +1653,7 @@ function LegacyVideoEditorPage() {
       setStep("tts", "running", "ElevenLabs...");
       const res = await fetch("/api/videos/tts", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: scriptOverride.trim() || preprocessScript(script), voiceId, languageCode: "th" }),
+        body: JSON.stringify({ text: narrationText, voiceId, languageCode: "th" }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -1720,7 +1721,7 @@ function LegacyVideoEditorPage() {
 
   async function runTranscribe(voiceUrl: string): Promise<Caption[]> {
     setStep("transcribe", "running", "กำลังถอดเสียง...");
-    const cleanScriptForTx = scriptOverride.trim() || preprocessScript(script);
+    const cleanScriptForTx = preprocessScript(scriptOverride || script);
     const fullUrl = voiceUrl.startsWith("http") ? voiceUrl : `${window.location.origin}${voiceUrl}`;
     const res = await fetch("/api/videos/transcribe", {
       method: "POST", headers: { "Content-Type": "application/json" },

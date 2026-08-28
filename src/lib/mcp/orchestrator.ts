@@ -100,6 +100,11 @@ import {
 } from "@/lib/mcp/hero-voice-provider-checkpoint";
 import { shouldEmitPipelineStepStarted } from "@/lib/pipeline-telemetry";
 import {
+  compileNarrationPlan,
+  parseNarrationPlan,
+  type NarrationPlanV1,
+} from "@/lib/narration-plan";
+import {
   alignTranscriptWordsToSourceDetailed,
   buildCanonicalCaptionsFromAlignedWords,
   retimeCanonicalCaptionsFromAlignedWords,
@@ -172,6 +177,7 @@ export interface OrchestratorDeps {
 
 interface CreateInput {
   script: string; title?: string; voiceProvider?: "gemini" | "elevenlabs" | "omnivoice"; voiceId?: string;
+  narrationPlan?: NarrationPlanV1;
   /** OmniVoice voice_id — defaults to voice_01 only for legacy saved jobs. */
   omniVoiceId?: string;
   /** Backend pinned by the accepting server; never selected by a browser. */
@@ -658,6 +664,27 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (!job) return;
     if (job.userId !== userId) { await failJob(jobId, "forbidden: job/user mismatch"); return; } // defense-in-depth (IDOR guard)
     const input = JSON.parse(job.inputJson) as CreateInput;
+    const persistedNarrationPlan = typeof input.script === "string"
+      ? parseNarrationPlan(input.narrationPlan, input.script)
+      : null;
+    const narrationPlan = persistedNarrationPlan ?? (
+      typeof input.script === "string" && input.script.trim()
+        ? compileNarrationPlan(input.script)
+        : null
+    );
+    if (narrationPlan && !persistedNarrationPlan) {
+      input.narrationPlan = narrationPlan;
+      const persisted = await prisma.videoJob.updateMany({
+        where: { id: jobId, userId, status: "processing" },
+        data: { inputJson: JSON.stringify(input) },
+      });
+      if (persisted.count !== 1) {
+        const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+        if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+        throw new Error("video_job_not_processing");
+      }
+    }
+    const narrationText = narrationPlan?.speechText ?? (typeof input.script === "string" ? input.script.trim() : "");
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const requestedProvider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider);
     if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(user)) {
@@ -1648,7 +1675,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (provider === "elevenlabs") {
       tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
         "/api/videos/tts",
-        { text: input.script, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" },
+        { text: narrationText, voiceId: input.voiceId ?? user.elevenlabsVoiceId ?? undefined, languageCode: "th" },
       );
     } else if (provider === "omnivoice") {
       if (resumedHeroVoiceTts) {
@@ -1659,7 +1686,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           started = await startHeroVoiceGeneration({
             userId,
             plan: user.plan,
-            text: input.script,
+            text: narrationText,
             voiceId: input.omniVoiceId ?? "voice_01",
             speed: 1,
             studio: false,
@@ -1679,7 +1706,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     } else {
       tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
         "/api/videos/tts-gemini",
-        { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" },
+        { text: narrationText, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" },
       );
     }
     const prepareGeneratedTts = async (
@@ -1780,10 +1807,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             audioDurationMs?: number;
           }>("/api/videos/transcribe", {
             audioUrl: tts.voiceUrl,
-            scriptPrompt: input.script.trim().slice(0, 800),
-            script: input.script.trim(),
+            scriptPrompt: narrationText.slice(0, 800),
+            script: narrationText,
           });
-          const recoveredFullText = input.script.trim();
+          const recoveredFullText = narrationText;
           const recoveredAlignment = alignTranscriptWordsToSourceDetailed(
             recoveredFullText,
             aligned.words ?? [],
@@ -1865,7 +1892,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       );
       tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
         "/api/videos/tts-gemini",
-        { text: input.script, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" },
+        { text: narrationText, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" },
       );
       audioDurationMs = await prepareGeneratedTts(tts);
     }
