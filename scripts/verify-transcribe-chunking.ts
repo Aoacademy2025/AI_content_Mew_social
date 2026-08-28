@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import {
   TRANSCRIBE_CHUNK_MAX_MS,
+  offsetChunkWordsToSourceTimeline,
   planTranscriptionChunkBoundaries,
 } from "../src/lib/transcribe-timeline";
 
@@ -57,5 +58,38 @@ for (const total of [180_110, 200_120]) {
 // ── non-final chunks respect the 60s minimum (no silence picked closer than +60s) ──
 const dense = chunks(400_000, everyN(5_000, 400_000)); // silence every 5s
 check("dense silence → no chunk < 60s except possibly last", dense.slice(0, -1).every(c => c >= 60_000));
+
+// Production 2026-08-28: a 196.88s Gemini transcript was cut at 132.855s.
+// The final word of chunk 2 extended 102ms beyond that exact ffmpeg boundary,
+// while chunk 3's first word began 73ms after it. Both chunks were valid alone,
+// but the unbounded offset merge created one 29ms overlap and made the whole
+// VideoJob fail subtitle_alignment_overlapping_timing.
+const cutMs = 132_855;
+const chunkTwo = offsetChunkWordsToSourceTimeline({
+  words: [
+    { word: "ก่อน", start: 67.598, end: 67.800 },
+    { word: "เกินขอบ", start: 67.700, end: 67.800 },
+  ],
+  offsetMs: 65_157,
+  chunkDurationMs: 67_698,
+});
+const chunkThree = offsetChunkWordsToSourceTimeline({
+  words: [{ word: "หลัง", start: 0.073, end: 0.973 }],
+  offsetMs: cutMs,
+  chunkDurationMs: 64_025,
+});
+const mergedBoundaryWords = [...chunkTwo, ...chunkThree];
+check(
+  "chunk merge clips provider word tails to the exact source-audio boundary",
+  mergedBoundaryWords[0].end <= cutMs / 1000,
+);
+check(
+  "adjacent chunk words remain monotonic after offset merge",
+  mergedBoundaryWords[1].start >= mergedBoundaryWords[0].end,
+);
+check(
+  "provider words wholly beyond the source slice are discarded",
+  chunkTwo.length === 1,
+);
 
 console.log(`\n✅ ALL ${passed} CHUNK-PLANNER CHECKS PASSED`);
