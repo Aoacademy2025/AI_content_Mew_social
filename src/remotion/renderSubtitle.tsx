@@ -89,14 +89,6 @@ export function protectSubtitleWordBreaks(value: string): string {
     if (end > start) spans.push({ start, end });
   };
 
-  // Protect every ICU word internally, including proper names embedded inside
-  // a long unspaced Thai phrase. Break opportunities remain BETWEEN words.
-  for (const part of wordSegmenter.segment(value)) {
-    if (part.isWordLike && /[\u0E00-\u0E7F]/u.test(part.segment)) {
-      addSpan(part.index, part.index + part.segment.length);
-    }
-  }
-
   // ICU can split a short author-delimited name into multiple word-like pieces
   // (อัล|ลัน). The author token is the stronger boundary signal in this case.
   for (const match of value.matchAll(/[^\s]+/gu)) {
