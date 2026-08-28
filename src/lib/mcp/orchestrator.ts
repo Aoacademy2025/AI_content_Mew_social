@@ -102,6 +102,7 @@ import { shouldEmitPipelineStepStarted } from "@/lib/pipeline-telemetry";
 import {
   alignTranscriptWordsToSourceDetailed,
   buildCanonicalCaptionsFromAlignedWords,
+  retimeCanonicalCaptionsFromAlignedWords,
   resolveUploadTranscriptWords,
   subtitleQualityShouldFailJob,
   validateSubtitleQuality,
@@ -145,6 +146,17 @@ class HeroVoiceProviderFailureError extends Error {
   ) {
     super(message);
     this.name = "HeroVoiceProviderFailureError";
+  }
+}
+
+class SubtitleAlignmentFailureError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly provider?: string,
+  ) {
+    super(message);
+    this.name = "SubtitleAlignmentFailureError";
   }
 }
 
@@ -353,6 +365,49 @@ function durationFromTtsTiming(timing: unknown): number {
     const durationMs = typeof segment?.durationMs === "number" && Number.isFinite(segment.durationMs) ? segment.durationMs : 0;
     return Math.max(latest, startMs + durationMs);
   }, 0));
+}
+
+/** Replace only caption text/times in a trusted Editor v2 burn config. Per-card
+ * style and every non-subtitle layer remain unchanged. */
+function retimeSubtitleOverlayConfig(
+  subtitleOverlayConfig: Record<string, unknown>,
+  captions: OrchCaption[],
+  fps = RENDER_FPS,
+): Record<string, unknown> | null {
+  const candidates = subtitleOverlayConfig.keywordPopups;
+  if (!Array.isArray(candidates)) return null;
+  // An empty track means the creator deliberately hid subtitles.
+  if (candidates.length === 0) return { ...subtitleOverlayConfig };
+  if (candidates.length !== captions.length) return null;
+
+  const configuredDuration = Number(subtitleOverlayConfig.durationInFrames);
+  const captionDuration = Math.max(
+    fps,
+    ...captions.map((caption) => Math.ceil((caption.endMs / 1_000) * fps)),
+  );
+  const durationInFrames = Number.isFinite(configuredDuration) && configuredDuration >= captionDuration
+    ? Math.round(configuredDuration)
+    : captionDuration;
+  let frameCursor = 0;
+  const keywordPopups: Record<string, unknown>[] = [];
+  for (let index = 0; index < captions.length; index += 1) {
+    const candidate = candidates[index];
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+    const caption = captions[index];
+    const rawStart = Math.round((caption.startMs / 1_000) * fps);
+    const rawEnd = Math.round((caption.endMs / 1_000) * fps);
+    const start = Math.min(Math.max(frameCursor, rawStart), durationInFrames - 1);
+    const end = Math.min(Math.max(rawEnd, start + 1), durationInFrames);
+    frameCursor = end;
+    keywordPopups.push({
+      ...(candidate as Record<string, unknown>),
+      text: caption.text,
+      start,
+      end,
+      tag: caption.tag ?? (index === 0 ? "hook" : "body"),
+    });
+  }
+  return { ...subtitleOverlayConfig, durationInFrames, keywordPopups };
 }
 
 function alignBrollWindowsToKeywords(
@@ -1098,13 +1153,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const preview = parsed?.preview;
       if (!preview) { await failJob(jobId, "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับส่งออก"); return; }
       const sourceSubtitleQa = parsed?.subtitleQa;
-      if (!sourceSubtitleQa || subtitleQualityShouldFailJob(sourceSubtitleQa)) {
-        throw new Error("ยังไม่มีหลักฐานว่าซับตรงกับเสียง — กรุณาสร้างตัวอย่างใหม่ก่อนส่งออก");
-      }
+      const sourceInput = parseCreateInput(src.inputJson);
       const overlayPopups = Array.isArray(input.subtitleOverlayConfig.keywordPopups)
         ? input.subtitleOverlayConfig.keywordPopups
         : [];
-      const finalCaptions: OrchCaption[] = input.editSnapshot?.captions?.length
+      let finalCaptions: OrchCaption[] = input.editSnapshot?.captions?.length
         ? input.editSnapshot.captions.map((caption, index) => ({
             ...caption,
             tag: caption.tag === "hook" || caption.tag === "cta" ? caption.tag : (index === 0 ? "hook" : "body"),
@@ -1123,24 +1176,110 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               tag: index === 0 ? "hook" as const : "body" as const,
             }];
           });
-      const sourceInput = parseCreateInput(src.inputJson);
-      const canonicalScript = sourceSubtitleQa.timingSource === "upload_transcription"
+      const canonicalScript = sourceInput?.mode === "upload" || sourceSubtitleQa?.timingSource === "upload_transcription"
         ? finalCaptions.map((caption) => caption.text).join("")
         : preview.fullText?.trim() || sourceInput?.script?.trim() || "";
+      let exportTimingSource: SubtitleTimingSource = sourceSubtitleQa?.timingSource
+        ?? (sourceInput?.mode === "upload" ? "upload_transcription" : "tts_segment_timing");
+      let exportWords = preview.words ?? [];
+      let exportAudioDurationMs = preview.audioDurationMs;
+      let exportOverlayConfig = input.subtitleOverlayConfig;
+      const sourceNeedsAlignmentRecovery = !sourceSubtitleQa
+        || subtitleQualityShouldFailJob(sourceSubtitleQa)
+        || exportTimingSource === "tts_segment_timing"
+        || exportTimingSource === "avatar_script_clock";
+
+      if (sourceNeedsAlignmentRecovery) {
+        if (!preview.voiceUrl || !canonicalScript.trim()) {
+          throw new SubtitleAlignmentFailureError(
+            "วิดีโอต้นฉบับไม่มีเสียงหรือข้อความสำหรับตรวจซับ — กรุณาติดต่อทีมงาน",
+            "missing_legacy_replay_evidence",
+            sourceInput?.voiceProvider,
+          );
+        }
+        const aligned = await caller.post<{
+          words?: Array<{ word: string; startMs: number; endMs: number }>;
+          audioDurationMs?: number;
+        }>("/api/videos/transcribe", {
+          audioUrl: preview.voiceUrl,
+          scriptPrompt: canonicalScript.slice(0, 800),
+          script: canonicalScript,
+        });
+        const recoveredAlignment = alignTranscriptWordsToSourceDetailed(
+          canonicalScript,
+          aligned.words ?? [],
+        );
+        if (recoveredAlignment.status === "failed") {
+          throw new SubtitleAlignmentFailureError(
+            "ตรวจเวลา subtitle จากเสียงเดิมไม่สำเร็จ — ระบบยังไม่ส่งออกเพื่อป้องกันซับเหลื่อม",
+            recoveredAlignment.code,
+            sourceInput?.voiceProvider,
+          );
+        }
+        const retimedCaptions = retimeCanonicalCaptionsFromAlignedWords(
+          canonicalScript,
+          finalCaptions,
+          recoveredAlignment.words,
+        );
+        if (!retimedCaptions) {
+          throw new SubtitleAlignmentFailureError(
+            "ซับที่แก้ไว้ไม่ตรงกับข้อความต้นฉบับ — กรุณาตรวจข้อความ subtitle อีกครั้ง",
+            "legacy_caption_projection_failed",
+            sourceInput?.voiceProvider,
+          );
+        }
+        const retimedOverlay = retimeSubtitleOverlayConfig(
+          input.subtitleOverlayConfig,
+          retimedCaptions,
+        );
+        if (!retimedOverlay) {
+          throw new SubtitleAlignmentFailureError(
+            "ข้อมูลรูปแบบ subtitle เดิมไม่ครบสำหรับซ่อมเวลาอัตโนมัติ",
+            "legacy_overlay_projection_failed",
+            sourceInput?.voiceProvider,
+          );
+        }
+        finalCaptions = retimedCaptions;
+        exportWords = recoveredAlignment.words;
+        if (Number(aligned.audioDurationMs) > 0) {
+          exportAudioDurationMs = Math.round(Number(aligned.audioDurationMs));
+        }
+        exportTimingSource = "forced_alignment";
+        exportOverlayConfig = retimedOverlay;
+        emitTelemetry({
+          name: "subtitle_alignment_legacy_export_recovered",
+          category: "pipeline",
+          source: "server",
+          step: "captions",
+          status: "done",
+          properties: {
+            pipelineRunId,
+            jobId,
+            sourceJobId: src.id,
+            provider: sourceInput?.voiceProvider ?? "unknown",
+            method: recoveredAlignment.method,
+            similarityPermille: Math.round(recoveredAlignment.similarity * 1_000),
+          },
+        });
+      }
       const exportSubtitleQa = validateSubtitleQuality({
         script: canonicalScript,
         captions: finalCaptions,
-        audioDurationMs: preview.audioDurationMs,
-        timingSource: sourceSubtitleQa.timingSource,
+        audioDurationMs: exportAudioDurationMs,
+        timingSource: exportTimingSource,
       });
       if (subtitleQualityShouldFailJob(exportSubtitleQa)) {
-        throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${exportSubtitleQa.status === "failed" ? exportSubtitleQa.code : "unknown"}) — ระบบหยุดก่อนส่งออก`);
+        throw new SubtitleAlignmentFailureError(
+          `ซับไม่ผ่านการตรวจคุณภาพ (${exportSubtitleQa.status === "failed" ? exportSubtitleQa.code : "unknown"}) — ระบบหยุดก่อนส่งออก`,
+          exportSubtitleQa.status === "failed" ? exportSubtitleQa.code : "unknown",
+          sourceInput?.voiceProvider,
+        );
       }
       const voiceModel = await resolveExportGalleryVoiceModel(src, userId, user);
 
       await step("burn", 20);
       const burn = await caller.post<{ jobId: string }>("/api/videos/render", {
-        subtitleOverlayConfig: input.subtitleOverlayConfig,
+        subtitleOverlayConfig: exportOverlayConfig,
         parentJobId: jobId,
       });
       const burnedUrl = await pollRender(
@@ -1179,10 +1318,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         subtitleQa: exportSubtitleQa,
         subtitleEvidence: {
           captions: finalCaptions,
-          words: preview.words ?? [],
+          words: exportWords,
           fullText: canonicalScript,
-          audioDurationMs: preview.audioDurationMs,
-          timingSource: sourceSubtitleQa.timingSource,
+          audioDurationMs: exportAudioDurationMs,
+          timingSource: exportTimingSource,
         },
         ...(videoId ? { videoId } : {}),
         ...(input.editSnapshot ? { editSnapshot: input.editSnapshot } : {}),
@@ -1213,8 +1352,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         });
       }
       const logoCompletionProperties = buildLogoExportCompletedTelemetryProperties(
-        input.subtitleOverlayConfig,
-        preview.audioDurationMs,
+        exportOverlayConfig,
+        exportAudioDurationMs,
       );
       if (
         completion.transitioned
@@ -1607,6 +1746,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     let subtitleTimingSource: SubtitleTimingSource = provider === "elevenlabs"
       ? "provider_alignment"
       : "tts_segment_timing";
+    let alignmentRecoveryFailureCode: string | null = null;
     let capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
     if (provider !== "elevenlabs" || !capRes || capRes.captions.length === 0) {
       // Gemini exposes estimated segment clocks, not acoustic word alignment. Verify every
@@ -1628,6 +1768,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           recoveredFullText,
           aligned.words ?? [],
         );
+        if (recoveredAlignment.status === "failed") {
+          alignmentRecoveryFailureCode = recoveredAlignment.code;
+        }
         const recoveredWords = recoveredAlignment.status === "aligned"
           ? recoveredAlignment.words
           : null;
@@ -1635,6 +1778,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
           : null;
         if (recoveredWords && canonicalCaptions) {
+          alignmentRecoveryFailureCode = null;
           subtitleTimingSource = "forced_alignment";
           capRes = {
             // Reuse only proven word timestamps and take every visible character
@@ -1663,12 +1807,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               },
             });
           }
+        } else if (recoveredWords) {
+          alignmentRecoveryFailureCode = "canonical_caption_projection_failed";
         }
-      } catch {
+      } catch (error) {
+        alignmentRecoveryFailureCode = pipelineFailureDetails(error)?.code ?? "transcribe_request_failed";
         /* The release gate below rejects estimated timing if acoustic recovery fails. */
       }
     }
-    if (!capRes || capRes.captions.length === 0) throw new Error("ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง");
+    if (!capRes || capRes.captions.length === 0) {
+      throw new SubtitleAlignmentFailureError(
+        "ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง",
+        alignmentRecoveryFailureCode ?? "missing_timing",
+        provider,
+      );
+    }
     const baseCaptions = capRes.captions as OrchCaption[];
     const captions = (input.subtitleMode && input.subtitleMode !== "sentence")
       ? cardsByWordCount(capRes.words, parseInt(input.subtitleMode), capRes.fullText)
@@ -1687,10 +1840,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         source: "server",
         step: "captions",
         status: subtitleQa.code,
-        properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleTimingSource, failJob: subtitleQualityShouldFailJob(subtitleQa) },
+        properties: {
+          pipelineRunId,
+          jobId,
+          via: "mcp",
+          provider,
+          timingSource: subtitleTimingSource,
+          failJob: subtitleQualityShouldFailJob(subtitleQa),
+          ...(alignmentRecoveryFailureCode ? { alignmentFailureCode: alignmentRecoveryFailureCode } : {}),
+        },
       });
       if (subtitleQualityShouldFailJob(subtitleQa)) {
-        throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+        throw new SubtitleAlignmentFailureError(
+          `ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`,
+          alignmentRecoveryFailureCode ?? subtitleQa.code,
+          provider,
+        );
       }
     }
 
@@ -2116,6 +2281,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             message: e.message,
             code: e.code,
             provider: "omnivoice",
+            ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
+          }
+      : e instanceof SubtitleAlignmentFailureError
+        ? {
+            message: e.message,
+            code: `subtitle_alignment_${e.code}`,
+            ...(e.provider ? { provider: e.provider } : {}),
             ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
           }
       : contentPreflightFailure

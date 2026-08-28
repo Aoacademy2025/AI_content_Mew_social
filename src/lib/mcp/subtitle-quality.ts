@@ -4,6 +4,7 @@ import {
   tokenizeWords,
   type TimedWord,
 } from "@/lib/tts-timing";
+import { prepareHeroVoiceSpeechText } from "@/lib/hero-voice-speech";
 
 export type SubtitleTimingSource =
   | "provider_alignment"
@@ -115,24 +116,224 @@ export type TranscriptAlignmentResult =
 
 const MIN_FUZZY_ALIGNMENT_SIMILARITY = 0.92;
 const MAX_FUZZY_ALIGNMENT_CELLS = 12_000_000;
+const THAI_DIGIT_WORDS = [
+  "ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า",
+] as const;
+const THAI_NUMBER_WORDS = new Set<string>([
+  ...THAI_DIGIT_WORDS,
+  "เอ็ด", "ยี่", "ยี่สิบ", "สิบ", "ร้อย", "พัน", "หมื่น", "แสน", "ล้าน", "จุด", "ลบ", "บวก",
+]);
+const THAI_DIGITS = "๐๑๒๓๔๕๖๗๘๙";
+const CONTEXTUAL_DIGIT_SEQUENCE_RE = /(?:เบอร์(?:โทร(?:ศัพท์)?)?|โทรศัพท์|OTP|PIN|รหัส(?:ผ่าน|ยืนยัน|ไปรษณีย์|สินค้า)?|เลขบัญชี|เลขบัตร(?:ประชาชน|เครดิต)?|เลขประจำตัว)(\s*)([\p{N}](?:[\p{N} -]*[\p{N}])?)/giu;
 
 function canonicalSpeechText(value: string): string {
-  return value
+  // TTS and ASR are allowed to use the spoken Thai form of authored numbers
+  // and reviewed pronunciations (for example `2026` → `สองพันยี่สิบหก`).
+  // Normalize both sides through the same deterministic speech contract before
+  // transferring timestamps; displayed caption text still comes only from the
+  // untouched source ranges below.
+  return prepareHeroVoiceSpeechText(value)
     .normalize("NFC")
     .toLocaleLowerCase("th")
     .replace(/[^\p{L}\p{M}\p{N}]+/gu, "");
 }
 
-function numericClaims(value: string): string[] {
-  return (value.normalize("NFC").match(/[\p{N}][\p{N},.]*/gu) ?? [])
-    .map((claim) => claim.replace(/[^\p{N}]/gu, ""))
-    .filter(Boolean);
+function sourceWordHasNumericClaim(value: string): boolean {
+  const normalized = value.normalize("NFC");
+  return /\p{N}/u.test(normalized) || THAI_NUMBER_WORDS.has(canonicalSpeechText(normalized));
 }
 
-function sameNumericClaims(left: string, right: string): boolean {
-  const a = numericClaims(left);
-  const b = numericClaims(right);
-  return a.length === b.length && a.every((claim, index) => claim === b[index]);
+function contextualDigitSequenceWordIndexes(
+  fullText: string,
+  sourceWords: ReturnType<typeof tokenizeWords>,
+): Set<number> {
+  const indexes = new Set<number>();
+  CONTEXTUAL_DIGIT_SEQUENCE_RE.lastIndex = 0;
+  for (const match of fullText.matchAll(CONTEXTUAL_DIGIT_SEQUENCE_RE)) {
+    const digitSequence = match[2];
+    const matchStart = match.index ?? 0;
+    const sequenceOffset = match[0].lastIndexOf(digitSequence);
+    const sequenceStart = matchStart + Math.max(0, sequenceOffset);
+    const sequenceEnd = sequenceStart + digitSequence.length;
+    sourceWords.forEach((word, wordIndex) => {
+      if (
+        sourceWordHasNumericClaim(word.word)
+        && word.endChar > sequenceStart
+        && word.startChar < sequenceEnd
+      ) {
+        indexes.add(wordIndex);
+      }
+    });
+  }
+  CONTEXTUAL_DIGIT_SEQUENCE_RE.lastIndex = 0;
+  return indexes;
+}
+
+function canonicalDigitSequenceText(value: string): string {
+  return value
+    .normalize("NFC")
+    .replace(/[๐-๙]/gu, (digit) => String(THAI_DIGITS.indexOf(digit)))
+    .replace(/\d/gu, (digit) => THAI_DIGIT_WORDS[Number(digit)])
+    .replace(/[^\p{L}\p{M}]+/gu, "");
+}
+
+type ComparableSourceWords = {
+  words: string[];
+  hardNumericWordIndexes: Set<number>;
+};
+
+function applyPreparedSpeechSpan(
+  fullText: string,
+  sourceWords: ReturnType<typeof tokenizeWords>,
+  comparable: string[],
+  hardNumericWordIndexes: Set<number>,
+  startChar: number,
+  endChar: number,
+): void {
+  const wordIndexes = sourceWords
+    .map((word, wordIndex) => word.endChar > startChar && word.startChar < endChar ? wordIndex : -1)
+    .filter((wordIndex) => wordIndex >= 0);
+  if (wordIndexes.length === 0) return;
+  const speechChars = Array.from(canonicalSpeechText(fullText.slice(startChar, endChar)));
+  if (speechChars.length < wordIndexes.length) return;
+
+  let speechCursor = 0;
+  let remainingWeight = wordIndexes.reduce(
+    (sum, wordIndex) => sum + Math.max(1, Array.from(comparable[wordIndex]).length),
+    0,
+  );
+  wordIndexes.forEach((wordIndex, localIndex) => {
+    const remainingWords = wordIndexes.length - localIndex - 1;
+    const available = speechChars.length - speechCursor;
+    const weight = Math.max(1, Array.from(comparable[wordIndex]).length);
+    const take = localIndex === wordIndexes.length - 1
+      ? available
+      : Math.min(
+          available - remainingWords,
+          Math.max(1, Math.round((available * weight) / Math.max(1, remainingWeight))),
+        );
+    comparable[wordIndex] = speechChars.slice(speechCursor, speechCursor + take).join("");
+    hardNumericWordIndexes.add(wordIndex);
+    speechCursor += take;
+    remainingWeight -= weight;
+  });
+}
+
+function comparableSourceWords(
+  fullText: string,
+  sourceWords: ReturnType<typeof tokenizeWords>,
+  transcriptComparableText: string,
+): ComparableSourceWords {
+  const comparable = sourceWords.map((word) => canonicalSpeechText(word.word));
+  const hardNumericWordIndexes = new Set<number>();
+  const digitSequenceWordIndexes = contextualDigitSequenceWordIndexes(fullText, sourceWords);
+  digitSequenceWordIndexes.forEach((wordIndex) => {
+    comparable[wordIndex] = canonicalDigitSequenceText(sourceWords[wordIndex].word);
+    hardNumericWordIndexes.add(wordIndex);
+  });
+
+  sourceWords.forEach((word, wordIndex) => {
+    if (!/\p{N}/u.test(word.word)) return;
+    const previousEnd = wordIndex > 0 ? sourceWords[wordIndex - 1].endChar : 0;
+    const prefixGap = fullText.slice(previousEnd, word.startChar);
+    const contextualPrefix = prefixGap.match(/([+\-฿$€£])\s*$/u)?.[1];
+    let spokenPrefix = "";
+    if (contextualPrefix) {
+      const signPosition = word.startChar - prefixGap.length + prefixGap.lastIndexOf(contextualPrefix);
+      const beforeSign = signPosition > 0 ? fullText[signPosition - 1] : "";
+      if (
+        "฿$€£".includes(contextualPrefix)
+        || !beforeSign
+        || !/[\p{L}\p{M}\p{N}]/u.test(beforeSign)
+      ) {
+        spokenPrefix = contextualPrefix;
+        comparable[wordIndex] = canonicalSpeechText(`${contextualPrefix}${word.word}`);
+      }
+    }
+
+    const next = sourceWords[wordIndex + 1];
+    const suffixEnd = next?.startChar ?? fullText.length;
+    const suffixGap = fullText.slice(word.endChar, suffixEnd);
+    if (/^\s*%/u.test(suffixGap)) {
+      comparable[wordIndex] = canonicalSpeechText(`${word.word}%`);
+    }
+
+    // Contextual units can change the spoken form of the number itself. Thai
+    // baht decimals are the important case: `1.05 บาท` is spoken as
+    // `หนึ่งบาทห้าสตางค์`, not `หนึ่งจุดศูนย์ห้าบาท`. Keep a monotonic display
+    // projection by assigning the amount prefix to the numeric token and the
+    // remaining currency speech to the authored unit token.
+    if (next?.word === "บาท") {
+      const phrase = fullText.slice(word.startChar, next.endChar);
+      const spokenPhrase = canonicalSpeechText(`${spokenPrefix}${phrase}`);
+      const bahtIndex = spokenPhrase.indexOf("บาท");
+      const satangIndex = spokenPhrase.indexOf("สตางค์");
+      const splitAt = bahtIndex > 0 ? bahtIndex : satangIndex > 0 ? satangIndex : -1;
+      if (splitAt > 0 && transcriptComparableText.includes(spokenPhrase)) {
+        comparable[wordIndex] = spokenPhrase.slice(0, splitAt);
+        comparable[wordIndex + 1] = spokenPhrase.slice(splitAt);
+      }
+    }
+
+    if (next) {
+      const contextualPhrase = canonicalSpeechText(
+        `${spokenPrefix}${fullText.slice(word.startChar, next.endChar)}`,
+      );
+      const numericSpeech = comparable[wordIndex];
+      if (
+        numericSpeech.length > 0
+        && contextualPhrase.startsWith(numericSpeech)
+        && contextualPhrase.length > numericSpeech.length
+        && transcriptComparableText.includes(contextualPhrase)
+      ) {
+        comparable[wordIndex + 1] = contextualPhrase.slice(numericSpeech.length);
+      }
+    }
+  });
+
+  // Structured numeric expressions are rewritten as a phrase by the speech
+  // contract, so no single display token owns all spoken characters. Partition
+  // the prepared phrase monotonically across its authored words. Sentence-card
+  // timing remains acoustic, and the whole phrase is marked hard so a changed
+  // date/time/range can never pass through fuzzy edit distance.
+  const structuredPatterns = [
+    /วันที่\s+[\p{N}]{1,2}[/-][\p{N}]{1,2}[/-][\p{N}]{4}/giu,
+    /(?<![\p{N}])[\p{N}]{4}-[\p{N}]{2}-[\p{N}]{2}(?![\p{N}])/giu,
+    /เวลา\s*[\p{N}]{1,2}[:.][\p{N}]{2}(?:\s*น\.)?/giu,
+    /[\p{N}]{1,2}[:.][\p{N}]{2}\s*น\./giu,
+    /[+-]?[\p{N}][\p{N},]*(?:\.[\p{N}]+)?\s*[–—]\s*[+-]?[\p{N}][\p{N},]*(?:\.[\p{N}]+)?/giu,
+    /[+-]?[\p{N}][\p{N},]*(?:\.[\p{N}]+)?\s+-\s+[+-]?[\p{N}][\p{N},]*(?:\.[\p{N}]+)?/giu,
+  ];
+  const structuredRanges = structuredPatterns.flatMap((pattern) =>
+    [...fullText.matchAll(pattern)].flatMap((match) => {
+      const prepared = canonicalSpeechText(match[0]);
+      return transcriptComparableText.includes(prepared)
+        ? [{
+            startChar: match.index ?? 0,
+            endChar: (match.index ?? 0) + match[0].length,
+          }]
+        : [];
+    }),
+  ).sort((left, right) =>
+    left.startChar - right.startChar
+    || (right.endChar - right.startChar) - (left.endChar - left.startChar),
+  );
+  const appliedRanges: Array<{ startChar: number; endChar: number }> = [];
+  for (const range of structuredRanges) {
+    if (appliedRanges.some((applied) =>
+      range.startChar < applied.endChar && range.endChar > applied.startChar,
+    )) continue;
+    applyPreparedSpeechSpan(
+      fullText,
+      sourceWords,
+      comparable,
+      hardNumericWordIndexes,
+      range.startChar,
+      range.endChar,
+    );
+    appliedRanges.push(range);
+  }
+  return { words: comparable, hardNumericWordIndexes };
 }
 
 function alignTranscriptWordsExactly(
@@ -206,18 +407,24 @@ function alignTranscriptWordsExactly(
  * Recover timestamps from a complete ASR projection that differs from the authored
  * script only by a small spelling/segmentation error. The text that reaches captions
  * still comes exclusively from `sourceWords`; this routine only transfers monotonic
- * acoustic timestamps. Numeric claims must remain byte-equivalent after separator
- * normalization so fuzzy recovery can never turn 5,000 into 500.
+ * acoustic timestamps. Numeric claims are compared through the deterministic
+ * speech contract and remain exact across their aligned acoustic span, so fuzzy
+ * recovery can accept `5,000` ↔ `ห้าพัน` but never turn 5,000 into 500.
  */
 function alignTranscriptWordsFuzzily(
   fullText: string,
   sourceWords: ReturnType<typeof tokenizeWords>,
   usableTranscript: TranscriptWord[],
 ): TranscriptAlignmentResult {
+  const transcriptComparableWords = usableTranscript.map((word) => canonicalSpeechText(word.word));
+  const transcriptComparableText = transcriptComparableWords.join("");
   const sourceChars: string[] = [];
   const sourceWordByChar: number[] = [];
+  const comparableSource = comparableSourceWords(fullText, sourceWords, transcriptComparableText);
+  const sourceComparableWords = comparableSource.words;
   sourceWords.forEach((word, wordIndex) => {
-    for (const char of Array.from(canonicalSpeechText(word.word))) {
+    const comparableWord = sourceComparableWords[wordIndex];
+    for (const char of Array.from(comparableWord)) {
       sourceChars.push(char);
       sourceWordByChar.push(wordIndex);
     }
@@ -225,8 +432,9 @@ function alignTranscriptWordsFuzzily(
 
   const transcriptChars: string[] = [];
   const transcriptCharTimes: Array<{ startMs: number; endMs: number }> = [];
-  for (const word of usableTranscript) {
-    const chars = Array.from(canonicalSpeechText(word.word));
+  for (let wordIndex = 0; wordIndex < usableTranscript.length; wordIndex += 1) {
+    const word = usableTranscript[wordIndex];
+    const chars = Array.from(transcriptComparableWords[wordIndex]);
     chars.forEach((char, index) => {
       const startRatio = index / chars.length;
       const endRatio = (index + 1) / chars.length;
@@ -243,11 +451,6 @@ function alignTranscriptWordsFuzzily(
   if (n === 0 || m === 0 || (n + 1) * (m + 1) > MAX_FUZZY_ALIGNMENT_CELLS) {
     return { status: "failed", code: "text_mismatch" };
   }
-  const transcriptText = usableTranscript.map((word) => word.word).join(" ");
-  if (!sameNumericClaims(fullText, transcriptText)) {
-    return { status: "failed", code: "text_mismatch" };
-  }
-
   // Direction matrix: 1=diagonal, 2=delete source char, 3=insert transcript char.
   // One byte per cell keeps a three-minute Thai script well below worker memory limits.
   const stride = m + 1;
@@ -300,6 +503,66 @@ function alignTranscriptWordsFuzzily(
     } else if (direction === 3) {
       j -= 1;
     } else {
+      return { status: "failed", code: "text_mismatch" };
+    }
+  }
+
+  // A numeric value is a hard content claim. Speech normalization lets an
+  // authored value align to its equivalent spoken form, but fuzzy edit distance
+  // must never turn one value into another inside an otherwise long script.
+  // Require every normalized character of each numeric source token to match a
+  // contiguous transcript range, with no inserted speech at either boundary.
+  // Thus `5,000` ↔ `ห้าพัน` passes while `5,000` ↔ `ห้าร้อย` and
+  // `20` ↔ `ยี่สิบห้า` both fail closed.
+  const numericWordIndexSet = new Set<number>(comparableSource.hardNumericWordIndexes);
+  sourceWords.forEach((word, wordIndex) => {
+    if (!sourceWordHasNumericClaim(word.word)) return;
+    numericWordIndexSet.add(wordIndex);
+    const nextWord = sourceWords[wordIndex + 1];
+    if (
+      nextWord
+      && sourceComparableWords[wordIndex + 1] !== canonicalSpeechText(nextWord.word)
+    ) {
+      numericWordIndexSet.add(wordIndex + 1);
+    }
+  });
+  const numericWordIndexes = [...numericWordIndexSet].sort((left, right) => left - right);
+  for (const numericWordIndex of numericWordIndexes) {
+    const sourceIndexes: number[] = [];
+    for (let sourceCharIndex = 0; sourceCharIndex < sourceWordByChar.length; sourceCharIndex += 1) {
+      if (sourceWordByChar[sourceCharIndex] === numericWordIndex) sourceIndexes.push(sourceCharIndex);
+    }
+    if (sourceIndexes.length === 0) return { status: "failed", code: "text_mismatch" };
+
+    const mapped = sourceIndexes.map((sourceCharIndex) => transcriptCharBySourceChar[sourceCharIndex]);
+    if (mapped.some((transcriptCharIndex) => transcriptCharIndex < 0)) {
+      return { status: "failed", code: "text_mismatch" };
+    }
+    for (let index = 0; index < sourceIndexes.length; index += 1) {
+      if (
+        transcriptChars[mapped[index]] !== sourceChars[sourceIndexes[index]]
+        || (index > 0 && mapped[index] !== mapped[index - 1] + 1)
+      ) {
+        return { status: "failed", code: "text_mismatch" };
+      }
+    }
+
+    const firstSourceIndex = sourceIndexes[0];
+    const lastSourceIndex = sourceIndexes[sourceIndexes.length - 1];
+    const previousTranscriptIndex = firstSourceIndex > 0
+      ? transcriptCharBySourceChar[firstSourceIndex - 1]
+      : -1;
+    const nextTranscriptIndex = lastSourceIndex + 1 < sourceChars.length
+      ? transcriptCharBySourceChar[lastSourceIndex + 1]
+      : transcriptChars.length;
+    if (
+      (firstSourceIndex === 0
+        ? mapped[0] !== 0
+        : previousTranscriptIndex < 0 || mapped[0] !== previousTranscriptIndex + 1)
+      || (lastSourceIndex === sourceChars.length - 1
+        ? mapped[mapped.length - 1] !== transcriptChars.length - 1
+        : nextTranscriptIndex < 0 || nextTranscriptIndex !== mapped[mapped.length - 1] + 1)
+    ) {
       return { status: "failed", code: "text_mismatch" };
     }
   }
@@ -495,6 +758,71 @@ export function buildCanonicalCaptionsFromAlignedWords(
 
   const rendered = readable.map((caption) => caption.text).join("");
   return canonicalVisibleText(rendered) === canonicalVisibleText(fullText) ? readable : null;
+}
+
+/**
+ * Preserve creator-authored caption card boundaries while replacing an
+ * estimated clock with proven acoustic word timestamps. This is used by the
+ * legacy export recovery path: text and card styling stay untouched, only
+ * start/end times are repaired from the Narration Master.
+ */
+export function retimeCanonicalCaptionsFromAlignedWords<
+  T extends { text: string; startMs: number; endMs: number },
+>(
+  fullText: string,
+  captions: T[],
+  words: TimedWord[],
+): T[] | null {
+  if (!fullText.trim() || captions.length === 0 || words.length === 0) return null;
+  if (canonicalVisibleText(captions.map((caption) => caption.text).join("")) !== canonicalVisibleText(fullText)) {
+    return null;
+  }
+
+  // Word char offsets index the literal TTS source, so never normalize this
+  // string before slicing it. Comparison helpers normalize the slices instead.
+  const source = fullText;
+  const visibleSource: Array<{ start: number; end: number }> = [];
+  let sourceOffset = 0;
+  for (const char of source) {
+    const start = sourceOffset;
+    sourceOffset += char.length;
+    if (!/\s/u.test(char)) visibleSource.push({ start, end: sourceOffset });
+  }
+
+  let visibleCursor = 0;
+  const retimed: T[] = [];
+  for (const caption of captions) {
+    const visibleLength = Array.from(caption.text.normalize("NFC"))
+      .filter((char) => !/\s/u.test(char)).length;
+    if (visibleLength === 0) return null;
+    const firstVisible = visibleSource[visibleCursor];
+    const lastVisible = visibleSource[visibleCursor + visibleLength - 1];
+    if (!firstVisible || !lastVisible) return null;
+
+    const sourceText = source.slice(firstVisible.start, lastVisible.end);
+    if (canonicalCardSpacing(caption.text) !== canonicalCardSpacing(sourceText)) return null;
+    const matchingWords = words.filter((word) =>
+      word.endChar > firstVisible.start && word.startChar < lastVisible.end,
+    );
+    const firstWord = matchingWords[0];
+    const lastWord = matchingWords[matchingWords.length - 1];
+    if (!firstWord || !lastWord) return null;
+    retimed.push({
+      ...caption,
+      startMs: firstWord.startMs,
+      endMs: lastWord.endMs,
+    });
+    visibleCursor += visibleLength;
+  }
+
+  if (visibleCursor !== visibleSource.length) return null;
+  return retimed.every((caption, index) =>
+    Number.isFinite(caption.startMs)
+    && Number.isFinite(caption.endMs)
+    && caption.startMs >= 0
+    && caption.endMs > caption.startMs
+    && (index === 0 || caption.startMs >= retimed[index - 1].endMs),
+  ) ? retimed : null;
 }
 
 /**

@@ -195,6 +195,126 @@ async function main() {
     );
   }
 
+  // Pre-release previews can contain exact script text but only an estimated
+  // Gemini segment clock. Export must recover on the already-generated audio,
+  // keep the user's caption cards/styles, and burn the acoustically retimed
+  // overlay instead of asking the customer to recreate the whole video.
+  const legacyScript = "ในปี 2026 ประหยัดเงิน 5,000 บาท";
+  const legacySource = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "done",
+      type: "create",
+      inputJson: JSON.stringify({ script: legacyScript, previewMode: true, voiceProvider: "gemini" }),
+      outputJson: JSON.stringify({
+        version: 2,
+        mode: "preview",
+        videoUrl: "/renders/legacy-source.mp4",
+        subtitleQa: {
+          status: "passed",
+          timingSource: "tts_segment_timing",
+          textExact: true,
+          captionCount: 2,
+          audioDurationMs: 3_500,
+        },
+        preview: {
+          captions: [
+            { text: "ในปี 2026", startMs: 0, endMs: 2_000, tag: "hook" },
+            { text: "ประหยัดเงิน 5,000 บาท", startMs: 2_000, endMs: 4_000, tag: "body" },
+          ],
+          fullText: legacyScript,
+          config: { durationInFrames: 120 },
+          voiceUrl: "/api/renders/legacy-source.wav",
+          audioDurationMs: 3_500,
+          avatarModel: "none",
+          avatarVideoUrl: null,
+        },
+      }),
+      progress: 100,
+      finishedAt: new Date(),
+    },
+  });
+  const legacyExport = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "processing",
+      type: "export",
+      inputJson: JSON.stringify({
+        mode: "export",
+        sourceJobId: legacySource.id,
+        subtitleOverlayConfig: {
+          videoUrl: "/renders/legacy-source.mp4",
+          durationInFrames: 120,
+          keywordPopups: [
+            { text: "ในปี 2026", start: 0, end: 60, tag: "hook", color: "#fff" },
+            { text: "ประหยัดเงิน 5,000 บาท", start: 60, end: 120, tag: "body", color: "#fff" },
+          ],
+        },
+      }),
+    },
+  });
+  let legacyTranscribeCalls = 0;
+  let legacyBurnBody: Record<string, unknown> | null = null;
+  await runOrchestrator(legacyExport.id, user.id, {
+    caller: {
+      post: async <T,>(path: string, body: unknown): Promise<T> => {
+        if (path === "/api/videos/transcribe") {
+          legacyTranscribeCalls += 1;
+          const spoken = [
+            "ใน", "ปี", "สอง", "พัน", "ยี่สิบ", "หก",
+            "ประหยัด", "เงิน", "ห้า", "พัน", "บาท",
+          ];
+          return {
+            words: spoken.map((word, index) => ({
+              word,
+              startMs: 100 + index * 330,
+              endMs: 390 + index * 330,
+            })),
+            audioDurationMs: 4_000,
+          } as T;
+        }
+        if (path === "/api/videos/render") {
+          legacyBurnBody = body as Record<string, unknown>;
+          return { jobId: "legacy-burn" } as T;
+        }
+        if (path === "/api/videos") return { id: "legacy-gallery" } as T;
+        throw new Error(`unexpected POST ${path}`);
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(path: string): Promise<T> => {
+        if (path.startsWith("/api/videos/render-progress")) {
+          return {
+            progress: 100,
+            stage: "done",
+            videoUrl: "/renders/legacy-final.mp4",
+            error: null,
+          } as T;
+        }
+        throw new Error(`unexpected GET ${path}`);
+      },
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const legacyCompleted = await prisma.videoJob.findUniqueOrThrow({ where: { id: legacyExport.id } });
+  const legacyOutput = JSON.parse(legacyCompleted.outputJson ?? "{}") as {
+    subtitleQa?: { timingSource?: string };
+    subtitleEvidence?: { audioDurationMs?: number };
+  };
+  const legacyBurnPopups = ((legacyBurnBody?.subtitleOverlayConfig as Record<string, unknown> | undefined)
+    ?.keywordPopups ?? []) as Array<Record<string, unknown>>;
+  check(legacyCompleted.status === "done", "legacy estimated preview exports without recreating the video");
+  check(legacyTranscribeCalls === 1, "legacy export verifies the existing narration audio exactly once");
+  check(legacyOutput.subtitleQa?.timingSource === "forced_alignment", "legacy export persists recovered acoustic evidence");
+  check(legacyOutput.subtitleEvidence?.audioDurationMs === 4_000, "legacy export trusts the measured replay-audio duration");
+  check(
+    legacyBurnPopups.length === 2
+      && legacyBurnPopups[0]?.start === 3
+      && Number(legacyBurnPopups[0]?.end) > 3
+      && legacyBurnPopups[0]?.color === "#fff",
+    "legacy export retimes the burn overlay while preserving card style",
+  );
+
   const canonicalScript = "รายได้ 5,000 บาท";
   const protectedSource = await prisma.videoJob.create({
     data: {
