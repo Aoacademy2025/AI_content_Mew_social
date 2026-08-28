@@ -9,6 +9,17 @@ Use `hero_story_film_start` once with an idempotency key, approved Thai `narrati
 
 Use `characterProfileId` only when the story needs Mew or another recurring real person. Put wardrobe, era, and styling for this specific film in `characterLookBrief`.
 
+### Presenter upload
+
+When `presenter_led` starts from a local file and has no `presenterAssetId`:
+
+1. Probe the file locally. Require a playable `mp4`, `mov`, or `webm`, 9:16, no longer than 180 seconds, no larger than 500 MB, with a narration audio stream.
+2. Call `hero_story_film_create_presenter_upload` with the exact basename, MIME type, and byte count. The grant expires after ten minutes and is single-use.
+3. Stream the file to the exact returned `uploadUrl` with `scripts/upload-story-film-presenter.mjs`. Supply `uploadToken` through `STORY_FILM_UPLOAD_TOKEN`; never print it or place it in the MCP arguments, URL, or project source.
+4. Copy the returned `asset.id` into `hero_story_film_start.presenterAssetId`.
+
+If the upload fails after the grant is claimed, create a fresh grant. The MCP receives metadata only; local paths and media bytes stay outside MCP calls.
+
 ## Gates
 
 For every gate:

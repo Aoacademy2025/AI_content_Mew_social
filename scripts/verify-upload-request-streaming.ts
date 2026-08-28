@@ -22,12 +22,19 @@ function locationBlock(header: string): string {
 
 const uploadHeader = "location ~ ^/api/(?:videos/(?:upload-avatar|upload|broll-window/upload)|music/upload)$ {";
 const upload = locationBlock(uploadHeader);
+const storyFilmPresenterUpload = locationBlock("location = /api/internal/story-film-media/presenter-upload {");
 
 assert.match(upload, /proxy_request_buffering off;/, "large authenticated uploads must reach Clerk before the request token expires");
 assert.match(upload, /proxy_http_version 1\.1;/, "request streaming requires HTTP\/1.1 upstream support");
 assert.match(upload, /if \(-f \/var\/www\/ai-content\/\.deploy-maintenance\)/, "upload route must honor the deploy barrier");
 assert.match(upload, /proxy_set_header x-heroai-service-secret "";/, "upload route must strip internal service auth");
 assert.match(upload, /proxy_set_header x-heroai-act-as "";/, "upload route must strip account impersonation headers");
+
+assert.match(storyFilmPresenterUpload, /client_max_body_size 510M;/, "Presenter multipart overhead must fit above the 500 MB media ceiling");
+assert.match(storyFilmPresenterUpload, /proxy_request_buffering off;/, "invalid Presenter grants must be rejected before Nginx buffers the full body");
+assert.match(storyFilmPresenterUpload, /proxy_set_header x-heroai-service-secret "";/, "Presenter ingress must strip internal service auth");
+assert.match(storyFilmPresenterUpload, /proxy_set_header x-heroai-act-as "";/, "Presenter ingress must strip account impersonation headers");
+assert.doesNotMatch(storyFilmPresenterUpload, /proxy_set_header Authorization "";/, "Presenter ingress must preserve its one-time bearer grant");
 
 for (const pathFragment of [
   "upload-avatar",

@@ -13,6 +13,7 @@ Read [references/workflow.md](references/workflow.md) before starting, advancing
 
 - One project produces one 9:16 clip no longer than 180 seconds.
 - Use the separate internal Story Film MCP only. Never fall back to the public `create_video_job` tool.
+- Presenter upload uses a one-time grant from `hero_story_film_create_presenter_upload`. Stream bytes to the returned Hero URL with `scripts/upload-story-film-presenter.mjs`; keep the short-lived token out of chat and logs.
 - Grok subscription generation belongs to the internal worker lane; never call Grok directly from Studio or expose the subscription path publicly.
 - Call `hero_story_film_read` before every decision. Copy the exact `projectId`, `stage`, and `revision` from that read.
 - Never infer approval from silence, enthusiasm, or a prior gate. Return the Hero review link and stop for Mew's decision whenever an artifact is reviewable.
