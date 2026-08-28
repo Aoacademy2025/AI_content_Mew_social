@@ -45,6 +45,46 @@ check(
   aligned?.map((word) => word.word).join("").replace(/\s+/gu, "") === script.replace(/\s+/gu, ""),
 );
 
+// Production 2026-08-28: Gemini returned a complete, monotonic word timeline,
+// but one localized ASR spelling variation made the exact projector discard all
+// acoustic evidence and fall back to tts_segment_timing. A small transcription
+// difference must not block the whole video when the surrounding projection is
+// strongly aligned and the canonical subtitle text still comes from the script.
+const minorAsrVariationScript =
+  "เริ่มสร้างวิดีโอคุณภาพสูงด้วยโปรโมชั่น Hero AI วันนี้ และตรวจสอบผลลัพธ์ก่อนเผยแพร่";
+const minorAsrVariationWords = [
+  "เริ่ม", "สร้าง", "วิดีโอ", "คุณภาพ", "สูง", "ด้วย", "โปรโมชัน",
+  "Hero", "AI", "วันนี้", "และ", "ตรวจสอบ", "ผลลัพธ์", "ก่อน", "เผยแพร่",
+].map((word, index) => ({
+  word,
+  startMs: index * 360,
+  endMs: index * 360 + 320,
+}));
+const minorAsrVariationAligned = alignTranscriptWordsToSource(
+  minorAsrVariationScript,
+  minorAsrVariationWords,
+);
+check(
+  "complete acoustic timing survives one minor ASR spelling variation",
+  !!minorAsrVariationAligned && minorAsrVariationAligned.length > 0,
+);
+
+const changedNumericEvidence = alignTranscriptWordsToSource(
+  "ประหยัด 5,000 บาท ภายในเดือนนี้",
+  [
+    { word: "ประหยัด", startMs: 0, endMs: 400 },
+    { word: "500", startMs: 400, endMs: 800 },
+    { word: "บาท", startMs: 800, endMs: 1_100 },
+    { word: "ภายใน", startMs: 1_100, endMs: 1_450 },
+    { word: "เดือน", startMs: 1_450, endMs: 1_750 },
+    { word: "นี้", startMs: 1_750, endMs: 2_000 },
+  ],
+);
+check(
+  "fuzzy acoustic recovery still rejects changed numeric claims",
+  changedNumericEvidence === null,
+);
+
 const overlapFailure = alignTranscriptWordsToSourceDetailed(script, [
   { word: "ประหยัด", startMs: 100, endMs: 700 },
   { word: "เงิน", startMs: 650, endMs: 850 },

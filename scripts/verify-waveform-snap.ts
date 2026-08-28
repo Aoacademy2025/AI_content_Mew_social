@@ -46,22 +46,20 @@ const trackOrder = Array.from(
   timelineSource.matchAll(/trackLabel\("([^"]+)"/g),
   (match) => match[1],
 );
-// The invariant this branch actually owns: nothing may be inserted BETWEEN the waveform and the
-// subtitle track. Asserted directly (not implied by a frozen full list) so a future track added
-// elsewhere in the timeline can't be mistaken for an adjacency regression — and, conversely, so
-// inserting anything between these two still fails even if the full list is updated.
+// The optional headline row sits between waveform and subtitles so its end boundary can be
+// compared against speech. No unrelated visual layer may split this timing group.
 const voiceIdx = trackOrder.indexOf("เสียงพูด");
+const headlineIdx = trackOrder.indexOf("พาดหัว");
 const subIdx = trackOrder.indexOf("ซับไทย");
 check(
-  "timeline: voice waveform sits immediately above subtitles",
-  voiceIdx >= 0 && subIdx === voiceIdx + 1,
+  "timeline: voice, headline, and subtitles stay adjacent",
+  voiceIdx >= 0 && headlineIdx === voiceIdx + 1 && subIdx === headlineIdx + 1,
 );
-// Full order, kept as a change detector. "โลโก้" was added by editor-layer-visibility-toggles
-// and sits BELOW subtitles, matching the real z-order (logo renders above the video and under
-// the captions) — it does not break the adjacency invariant above.
+// Full order, kept as a change detector. Logo is controlled in its dedicated panel and must not
+// consume a duplicate Timeline row.
 check(
-  "timeline: track order stays avatar → b-roll → voice → subtitles → logo → music",
-  arrEq(trackOrder, ["อวตาร", "บีโรล", "เสียงพูด", "ซับไทย", "โลโก้", "เพลง"]),
+  "timeline: track order stays avatar → b-roll → voice → headline → subtitles → music",
+  arrEq(trackOrder, ["อวตาร", "บีโรล", "เสียงพูด", "พาดหัว", "ซับไทย", "เพลง"]),
 );
 check(
   "timeline: Snap tooltip explains the voice-timing behavior",

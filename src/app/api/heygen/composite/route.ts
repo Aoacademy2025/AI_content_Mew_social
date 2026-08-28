@@ -5,6 +5,7 @@ import { decryptKey } from "@/lib/key-crypto";
 import { recordChargedClip } from "@/lib/clip-charge";
 import { clampAvatarLayout, shouldCropAvatarToVisibleCanvas, type AvatarLayout } from "@/lib/avatar-layout";
 import { buildEnableExpr } from "@/lib/cutaway-plan";
+import { buildCutawayCompositeFilter } from "@/lib/cutaway-fade";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import {
   CompositeExecutionError,
@@ -204,8 +205,9 @@ async function directComposite(
 
 // ─────────────────────────────────────────────
 // Mode: cutaway — uploaded clip is the base video; the content-matched b-roll (bg)
-// peeks through during NON-person windows. Overlay the clip only during person ranges
-// (enable=between). Audio normally comes from the clip (input 1). When the base
+// peeks through during NON-person windows. Dissolve the clip at every person-range
+// edge while its source timeline keeps running continuously. Audio normally comes
+// from the clip (input 1). When the base
 // render contains selected BGM, use input 0 so it carries clip voice + music once.
 // ─────────────────────────────────────────────
 async function cutawayComposite(
@@ -217,19 +219,14 @@ async function cutawayComposite(
   audioFromBackground = false,
 ): Promise<void> {
   const ffmpeg = getFfmpegPath();
-  const enableExpr = buildEnableExpr(personRangesSec);
-  if (!enableExpr) {
+  if (!buildEnableExpr(personRangesSec)) {
     // Fail closed. An empty `enable=` used to fall back to a full-clip overlay, which turns
     // "show B-roll in every window" into "uploaded speaker over the whole video". Callers with
     // no person ranges must skip the composite and ship the base render instead.
     throw new Error("cutaway composite requires at least one valid person range");
   }
-  const overlay = `[bg][fg]overlay=0:0:format=auto:enable='${enableExpr}'[out]`;
-  const filter = [
-    `[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg]`,
-    `[1:v]scale=1080:1920:flags=lanczos,setsar=1[fg]`,
-    overlay,
-  ].join(";");
+  const filter = buildCutawayCompositeFilter(personRangesSec);
+  if (!filter) throw new Error("cutaway composite requires at least one valid person range");
   console.log("[cutaway-composite] filter:", filter);
   await runFfmpeg(ffmpeg, [
     "-y", "-i", bgPath, "-i", avatarPath,

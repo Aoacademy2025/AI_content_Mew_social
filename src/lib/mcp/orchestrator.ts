@@ -100,7 +100,7 @@ import {
 } from "@/lib/mcp/hero-voice-provider-checkpoint";
 import { shouldEmitPipelineStepStarted } from "@/lib/pipeline-telemetry";
 import {
-  alignTranscriptWordsToSource,
+  alignTranscriptWordsToSourceDetailed,
   buildCanonicalCaptionsFromAlignedWords,
   resolveUploadTranscriptWords,
   subtitleQualityShouldFailJob,
@@ -1624,7 +1624,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           script: input.script.trim(),
         });
         const recoveredFullText = input.script.trim();
-        const recoveredWords = alignTranscriptWordsToSource(recoveredFullText, aligned.words ?? []);
+        const recoveredAlignment = alignTranscriptWordsToSourceDetailed(
+          recoveredFullText,
+          aligned.words ?? [],
+        );
+        const recoveredWords = recoveredAlignment.status === "aligned"
+          ? recoveredAlignment.words
+          : null;
         const canonicalCaptions = recoveredWords
           ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
           : null;
@@ -1641,6 +1647,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               : audioDurationMs,
             fullText: recoveredFullText,
           };
+          if (recoveredAlignment.status === "aligned" && recoveredAlignment.method === "fuzzy") {
+            emitTelemetry({
+              name: "subtitle_alignment_fuzzy_recovered",
+              category: "pipeline",
+              source: "server",
+              step: "captions",
+              status: "done",
+              properties: {
+                pipelineRunId,
+                jobId,
+                via: "mcp",
+                provider,
+                similarityPermille: Math.round(recoveredAlignment.similarity * 1_000),
+              },
+            });
+          }
         }
       } catch {
         /* The release gate below rejects estimated timing if acoustic recovery fails. */

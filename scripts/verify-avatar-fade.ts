@@ -15,6 +15,7 @@ import {
   singleAvatarFadeWindow,
 } from "../src/lib/avatar-fade";
 import { buildCompositeFilter } from "../src/lib/chroma-key";
+import { buildCutawayCompositeFilter } from "../src/lib/cutaway-fade";
 import { LIVE_PREVIEW_MAX_SEC } from "../src/lib/preview-bg-constants";
 
 function ffmpegPath(): string {
@@ -208,11 +209,11 @@ function livePreviewFadeWindows(
   assert.deepEqual(windows, [{ startSec: 0, endSec: 1.5 }], "full@short render (1.5s) isn't padded out to the excerpt cap");
 }
 
-// avatarFadeApplies (M10/B-13): drives the timeline gradient/tooltip + mobile hint — must be
-// true for every HeyGen avatar id (any timing) and false for "none"/"upload-cutaway"/absent,
-// since cutawayComposite never receives fade windows at all.
+// avatarFadeApplies (M10/B-13): drives the timeline gradient/tooltip + mobile hint. Uploaded
+// cutaway presenter ranges now dissolve over the B-roll base instead of hard-switching at every
+// range edge, so that mode must honestly advertise that fade too.
 assert.equal(avatarFadeApplies("Wayne_20240711"), true, "heygen avatarId → fade applies");
-assert.equal(avatarFadeApplies("upload-cutaway"), false, "cutaway → cutawayComposite never fades");
+assert.equal(avatarFadeApplies("upload-cutaway"), true, "cutaway → presenter range edges dissolve");
 assert.equal(avatarFadeApplies("none"), false, "no avatar → no fade");
 assert.equal(avatarFadeApplies(null), false, "absent avatarModel → no fade");
 assert.equal(avatarFadeApplies(undefined), false, "undefined avatarModel → no fade");
@@ -247,6 +248,12 @@ const filter = buildCompositeFilter(
 );
 assert.match(filter, /split=2\[bg\]\[bg_fade\]/);
 assert.match(filter, /blend=all_expr=/);
+
+const cutawayFilter = buildCutawayCompositeFilter([{ start: 0.5, end: 1.5 }]);
+assert.ok(cutawayFilter, "valid cutaway person ranges produce a composite filter");
+assert.match(cutawayFilter, /blend=all_expr=/);
+assert.doesNotMatch(cutawayFilter, /:enable=/);
+assert.equal(buildCutawayCompositeFilter([]), null, "empty cutaway ranges fail closed");
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "avatar-fade-"));
 const output = path.join(tmp, "fade.mp4");
@@ -322,6 +329,62 @@ try {
   assert.match(
     routeSource,
     /segmentFadeWindow\s*=\s*singleAvatarFadeWindow\(dur\)/,
+  );
+  const cutawayCompositeSource = routeSource.match(
+    /async function cutawayComposite\([\s\S]+?\/\/ Mode: chromakey/,
+  )?.[0] ?? "";
+  assert.match(
+    cutawayCompositeSource,
+    /buildCutawayCompositeFilter/,
+    "cutaway B-roll → presenter boundaries must dissolve instead of hard-cutting",
+  );
+  assert.doesNotMatch(
+    cutawayCompositeSource,
+    /overlay=0:0:format=auto:enable=/,
+    "cutaway composite must not switch the presenter on with a hard enable edge",
+  );
+
+  const cutawayOutput = path.join(tmp, "cutaway-fade.mp4");
+  execFileSync(ffmpeg, [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-y",
+    "-f", "lavfi",
+    "-i", "color=c=0x0000FF:s=1080x1920:d=2:r=20",
+    "-f", "lavfi",
+    "-i", "color=c=0xFF0000:s=1080x1920:d=2:r=20",
+    "-filter_complex", cutawayFilter!,
+    "-map", "[out]",
+    "-t", "2",
+    "-c:v", "libx264",
+    "-preset", "ultrafast",
+    "-crf", "18",
+    "-pix_fmt", "yuv420p",
+    cutawayOutput,
+  ], { stdio: ["ignore", "ignore", "pipe"], maxBuffer: 32 * 1024 * 1024 });
+
+  function cutawayCenterPixel(timeSec: number): [number, number, number] {
+    const pixel = execFileSync(ffmpeg, [
+      "-hide_banner", "-loglevel", "error", "-ss", String(timeSec),
+      "-i", cutawayOutput,
+      "-vf", "crop=2:2:539:959,scale=1:1,format=rgb24",
+      "-frames:v", "1", "-f", "rawvideo", "-",
+    ], { maxBuffer: 1024 * 1024 });
+    return [pixel[0], pixel[1], pixel[2]];
+  }
+
+  const beforeCutaway = cutawayCenterPixel(0.4);
+  const enteringCutaway = cutawayCenterPixel(0.6);
+  const steadyCutaway = cutawayCenterPixel(1.0);
+  const leavingCutaway = cutawayCenterPixel(1.4);
+  const afterCutaway = cutawayCenterPixel(1.6);
+  assert.ok(
+    beforeCutaway[2] > 150 && beforeCutaway[0] < 80
+      && enteringCutaway[0] > 20 && enteringCutaway[2] > 20
+      && steadyCutaway[0] > 150 && steadyCutaway[2] < 80
+      && leavingCutaway[0] > 20 && leavingCutaway[2] > 20
+      && afterCutaway[2] > 150 && afterCutaway[0] < 80,
+    `cutaway must dissolve blue→mixed→red→mixed→blue: ${beforeCutaway} / ${enteringCutaway} / ${steadyCutaway} / ${leavingCutaway} / ${afterCutaway}`,
   );
 
   const timelineSource = fs.readFileSync(

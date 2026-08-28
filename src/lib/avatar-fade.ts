@@ -124,11 +124,11 @@ export function avatarOpacityAtTime(
  * which composite modes actually run the fade blend server-side. Every HeyGen
  * chroma/direct/rembg avatar (any non-empty id, timing full/bookend/bookend-both)
  * goes through `avatarSourceFadeWindows` in the composite route → fades.
- * `upload-cutaway` goes through `cutawayComposite`, which never receives fade
- * windows (H7/M10 audit) — so no indicator/hint should claim it does.
+ * `upload-cutaway` uses the same opacity envelope at every presenter range edge
+ * through `buildCutawayCompositeFilter`, so its timeline/mobile hint is honest too.
  */
 export function avatarFadeApplies(avatarModel: string | null | undefined): boolean {
-  return !!avatarModel && avatarModel !== "none" && avatarModel !== "upload-cutaway";
+  return !!avatarModel && avatarModel !== "none";
 }
 
 function ffmpegNumber(value: number): string {
