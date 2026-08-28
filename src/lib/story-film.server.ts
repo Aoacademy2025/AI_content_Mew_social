@@ -6,6 +6,7 @@ import {
   validateStoryFilmEditorialConfig,
   type StoryFilmEditorialConfig,
 } from "@/lib/story-film-editorial";
+import { sceneUsesProjectCharacter } from "@/lib/story-film-character-placement";
 
 export const STORY_FILM_STAGES = [
   "setup",
@@ -1107,12 +1108,7 @@ export async function decideStoryFilm(
           })
         : null;
       for (const scene of scenes) {
-        let characterDirectives: unknown[] = [];
-        try {
-          const parsed = JSON.parse(scene.characterDirectivesJson) as unknown;
-          if (Array.isArray(parsed)) characterDirectives = parsed;
-        } catch {}
-        const referenceUrls = characterDirectives.length > 0
+        const referenceUrls = sceneUsesProjectCharacter(scene.characterDirectivesJson)
           ? [
               ...(approvedLook ? [approvedLook.storageUrl] : []),
               ...references.map((reference) => `/api/internal/story-film-media/character-references/${encodeURIComponent(reference.id)}`),
@@ -1312,12 +1308,8 @@ export async function decideStoryFilm(
       });
     }
     if (isRevisionDecision && project.stage === "keyframes" && revisionScene) {
-      let characterDirectives: unknown[] = [];
-      try {
-        const parsed = JSON.parse(revisionScene.characterDirectivesJson) as unknown;
-        if (Array.isArray(parsed)) characterDirectives = parsed;
-      } catch {}
-      const references = project.characterProfileId && characterDirectives.length > 0
+      const usesProjectCharacter = sceneUsesProjectCharacter(revisionScene.characterDirectivesJson);
+      const references = project.characterProfileId && usesProjectCharacter
         ? await tx.storyFilmCharacterReference.findMany({
             where: {
               profileId: project.characterProfileId,
@@ -1326,7 +1318,7 @@ export async function decideStoryFilm(
             orderBy: { createdAt: "asc" },
           })
         : [];
-      const approvedLook = project.characterProfileId && characterDirectives.length > 0
+      const approvedLook = project.characterProfileId && usesProjectCharacter
         ? await tx.storyFilmArtifact.findFirst({
             where: { projectId: project.id, stage: "character_look", kind: "look_image" },
             orderBy: { createdAt: "desc" },
@@ -1440,12 +1432,7 @@ export async function decideStoryFilm(
           where: { projectId: project.id, kind: "keyframe_image", sceneKey: scene.sceneKey },
           orderBy: { createdAt: "desc" },
         });
-        let characterDirectives: unknown[] = [];
-        try {
-          const parsed = JSON.parse(scene.characterDirectivesJson) as unknown;
-          if (Array.isArray(parsed)) characterDirectives = parsed;
-        } catch {}
-        const identityUrls = characterDirectives.length > 0
+        const identityUrls = sceneUsesProjectCharacter(scene.characterDirectivesJson)
           ? [
               ...(approvedLook ? [approvedLook.storageUrl] : []),
               ...characterReferences.map((reference) => `/api/internal/story-film-media/character-references/${encodeURIComponent(reference.id)}`),

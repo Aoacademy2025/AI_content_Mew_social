@@ -8,6 +8,11 @@ import {
   type NarrativeVisualWindow,
 } from "@/lib/content-preflight.server";
 import { prisma } from "@/lib/prisma";
+import {
+  STORY_FILM_PROJECT_CHARACTER_ENTITY_ID,
+  placeProjectCharacterInAnalysis,
+  projectCharacterPlanningDirection,
+} from "@/lib/story-film-character-placement";
 
 const STORYBOARD_VERSION = "hero-story-film-storyboard-v1";
 const DEFAULT_SCENE_DURATION_SEC = 7;
@@ -36,6 +41,7 @@ export type StoryFilmStoryboardScene = {
     renderingDescription: string;
     recurringCharacterDescription: string | null;
     isRealPerson: boolean;
+    isProjectCharacter: boolean;
   }>;
   grokPrompt: string;
 };
@@ -195,12 +201,17 @@ function grokPromptForBeat(
   providerAliases: string[],
 ) {
   const clean = (value: string) => scrubProviderAliases(value, providerAliases);
+  const projectCharacters = characterDirectives.filter((item) => item.isProjectCharacter);
+  const focalCharacters = characterDirectives.filter((item) => !item.isProjectCharacter);
   const characters = characterDirectives.length > 0
     ? `Character continuity: ${characterDirectives.map((item) => item.recurringCharacterDescription || item.renderingDescription).join("; ")}.`
     : "";
-  const subject = characterDirectives.length > 0
-    ? characterDirectives.map((item) => item.recurringCharacterDescription || item.renderingDescription).join(" and ")
+  const subject = focalCharacters.length > 0
+    ? focalCharacters.map((item) => item.recurringCharacterDescription || item.renderingDescription).join(" and ")
     : clean(beat.subject);
+  const projectCharacterPresence = projectCharacters.length > 0
+    ? `Supporting creator presence: ${projectCharacters.map((item) => item.recurringCharacterDescription || item.renderingDescription).join(" and ")} is clearly visible in a natural secondary position as an observer or participant, without replacing the focal subject.`
+    : "";
   return [
     "Vertical 9:16 cinematic short-film frame, one continuous story moment, photorealistic production still.",
     `Subject: ${subject}.`,
@@ -209,6 +220,7 @@ function grokPromptForBeat(
     `Emotion: ${clean(beat.emotion)}.`,
     `Visual emphasis: ${clean(beat.emphasis)}.`,
     characters,
+    projectCharacterPresence,
     "Preserve stated counts, relationships, wardrobe and physical details. No montage, split screen, collage, captions, subtitles, logos or watermarks.",
   ].filter(Boolean).join(" ");
 }
@@ -236,13 +248,16 @@ export function buildStoryFilmStoryboardDocument(input: {
     throw new Error("storyboard_video_scene_key_invalid");
   }
   const entities = new Map(input.analysis.storyEntities.map((entity) => [entity.entityId, entity]));
+  const globalRealPersonAliases = input.analysis.storyEntities.flatMap((entity) => (
+    entity.isRealPerson ? realPersonProviderAliases(entity) : []
+  ));
   const visualOwners = planStoryFilmVisualOwners(input.presentationMode, input.analysis.beats.length);
   const scenes = input.analysis.beats.map((beat, sequence) => {
     const window = input.windows[sequence];
     if (!Number.isSafeInteger(window.startMs) || !Number.isSafeInteger(window.endMs)) {
       throw new Error("storyboard_timing_missing");
     }
-    const providerAliases: string[] = [];
+    const providerAliases = [...globalRealPersonAliases];
     const characterDirectives = beat.entityRefs.flatMap((entityId) => {
       const entity = entities.get(entityId);
       if (entity?.isRealPerson) providerAliases.push(...realPersonProviderAliases(entity));
@@ -254,6 +269,7 @@ export function buildStoryFilmStoryboardDocument(input: {
           ?? entity.recurringCharacterDescription
           ?? null,
         isRealPerson: entity.isRealPerson,
+        isProjectCharacter: entity.entityId === STORY_FILM_PROJECT_CHARACTER_ENTITY_ID,
       }] : [];
     });
     return {
@@ -332,13 +348,38 @@ export async function planStoryFilmStoryboardJob(
       && payload.videoSceneKeys.every((value): value is string => typeof value === "string")
       ? payload.videoSceneKeys
       : (() => { throw new Error("storyboard_video_scene_key_invalid"); })();
-  const analysis = await resolvedAnalyzer.analyze({
+  const projectCharacter = job.project.characterProfileId
+    ? await prisma.storyFilmCharacterProfile.findFirst({
+        where: { id: job.project.characterProfileId, userId: job.project.userId },
+        select: { name: true, identityNotes: true },
+      })
+    : null;
+  const eligibleBeatIndexes = planStoryFilmVisualOwners(
+    job.project.presentationMode === "presenter_led" ? "presenter_led" : "faceless",
+    windows.length,
+  ).flatMap((owner, index) => owner === "broll" ? [index] : []);
+  const visualDirections = [
+    revisionInstruction
+      ? `Visual revision direction for this storyboard: ${revisionInstruction}`
+      : "",
+    projectCharacter
+      ? projectCharacterPlanningDirection({ character: projectCharacter, eligibleBeatIndexes })
+      : "",
+  ].filter(Boolean).join("\n\n");
+  const analyzed = await resolvedAnalyzer.analyze({
     kind: "creator-script",
-    text: revisionInstruction
-      ? `${job.project.narrativeSource}\n\nVisual revision direction for this storyboard: ${revisionInstruction}`
+    text: visualDirections
+      ? `${job.project.narrativeSource}\n\n${visualDirections}`
       : job.project.narrativeSource,
     windows,
   });
+  const analysis = projectCharacter
+    ? placeProjectCharacterInAnalysis({
+        analysis: analyzed,
+        character: projectCharacter,
+        eligibleBeatIndexes,
+      })
+    : analyzed;
   return buildStoryFilmStoryboardDocument({
     projectId: job.project.id,
     generationEpoch: job.generationEpoch,
