@@ -95,6 +95,7 @@ model User {
   editorProjects                  EditorProject[]
   storyFilmProjects               StoryFilmProject[]
   storyFilmPresenterAssets        StoryFilmPresenterAsset[]
+  storyFilmPresenterUploadGrants  StoryFilmPresenterUploadGrant[]
   storyFilmCharacterProfiles      StoryFilmCharacterProfile[]
   brandAssets                     BrandAsset[]
   brandPreference                 BrandPreference?
@@ -373,6 +374,26 @@ model StoryFilmPresenterAsset {
   projects     StoryFilmProject[]
 
   @@index([userId, createdAt])
+}
+
+// Short-lived, one-time bearer grant issued only by the Internal Story Film
+// MCP. It lets a conversational client stream Presenter bytes into Hero while
+// the MCP continues to accept neither local file paths nor raw media bytes.
+model StoryFilmPresenterUploadGrant {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash        String   @unique
+  originalName     String
+  mimeType         String
+  sizeBytes        Int
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  presenterAssetId String?
+  createdAt        DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([expiresAt, consumedAt])
 }
 
 // Private reusable identity anchor. References are immutable and grouped into

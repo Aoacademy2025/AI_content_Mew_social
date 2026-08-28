@@ -8,6 +8,7 @@ export type VideoMediaMetadata = {
   durationMs: number;
   width: number;
   height: number;
+  hasAudio: boolean;
 };
 
 type FfprobePayload = {
@@ -48,6 +49,7 @@ export function parseFfprobeVideoMetadata(raw: string): VideoMediaMetadata | nul
     width: Math.round(dimensions.width),
     height: Math.round(dimensions.height),
     durationMs: Math.round(durationSec * 1_000),
+    hasAudio: Boolean(payload.streams?.some((stream) => stream.codec_type === "audio")),
   };
 }
 
@@ -67,7 +69,12 @@ export function parseFfmpegVideoMetadata(stderr: string): VideoMediaMetadata | n
     Number(rotationMatch?.[1] ?? 0),
   );
   if (!(durationMs > 0) || !(rotated.width > 0) || !(rotated.height > 0)) return null;
-  return { durationMs, width: rotated.width, height: rotated.height };
+  return {
+    durationMs,
+    width: rotated.width,
+    height: rotated.height,
+    hasAudio: /Stream\s+#\S+:\s+Audio:/i.test(stderr),
+  };
 }
 
 function durationMsFromFfmpeg(stderr: string): number | null {

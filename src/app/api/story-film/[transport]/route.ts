@@ -11,6 +11,7 @@ import {
 } from "@/lib/mcp/auth";
 import { isInBandError, recordToolCall } from "@/lib/mcp/audit";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
+import { createStoryFilmPresenterUploadGrant } from "@/lib/story-film-presenter-upload-grant.server";
 import {
   decideStoryFilm,
   readStoryFilm,
@@ -23,6 +24,7 @@ export const runtime = "nodejs";
 
 const PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
 const INTERNAL_INSTRUCTIONS = `Hero Story Film internal control plane for Mew and the Mew Social team only.
+For presenter-led work, create one short-lived Presenter upload grant, stream the file to its upload URL, then pass the returned presenterAssetId to hero_story_film_start.
 Use hero_story_film_start once, hero_story_film_read before every decision, and hero_story_film_decide with the exact stage and revision just read.
 Never infer an approval, never approve a gate without a Hero review link, and never call the public create_video_job tool as a fallback.
 Final Render has two gates: approve the music/editorial setup to create a preview, then review the actual preview before decision=render.
@@ -101,6 +103,33 @@ async function runInternalTool(
 
 const handler = createMcpHandler(
   (server) => {
+    server.registerTool(
+      "hero_story_film_create_presenter_upload",
+      {
+        title: "Create Presenter upload grant",
+        description: "ออกสิทธิ์อัปโหลด Presenter แบบใช้ครั้งเดียวสำหรับ client ภายใน แล้วให้ Hero ตรวจไฟล์ก่อนคืน presenterAssetId",
+        inputSchema: {
+          originalName: z.string().min(1).max(255),
+          mimeType: z.enum(["video/mp4", "video/quicktime", "video/webm"]),
+          sizeBytes: z.number().int().positive().max(500 * 1024 * 1024),
+        },
+      },
+      async (args, extra) => runInternalTool(
+        "hero_story_film_create_presenter_upload",
+        extra,
+        args,
+        async (principal) => {
+          const grant = await createStoryFilmPresenterUploadGrant(principal.userId, args);
+          return {
+            grantId: grant.grantId,
+            uploadUrl: absoluteReviewUrl("/api/internal/story-film-media/presenter-upload"),
+            uploadToken: grant.uploadToken,
+            expiresAt: grant.expiresAt.toISOString(),
+          };
+        },
+      ),
+    );
+
     server.registerTool(
       "hero_story_film_start",
       {
