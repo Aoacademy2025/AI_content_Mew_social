@@ -20,6 +20,8 @@ function ok(condition: unknown, message: string) {
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const story = await import("../src/lib/story-film.server");
+  const characters = await import("../src/lib/story-film-character.server");
+  const placement = await import("../src/lib/story-film-character-placement");
   const storyboard = await import("../src/lib/story-film-storyboard.server");
   try {
     const windows = storyboard.planStoryFilmTimedWindows({
@@ -52,11 +54,26 @@ async function main() {
       height: 1920,
       durationMs: 21_000,
     });
+    const profile = await characters.createStoryFilmCharacterProfile(user.id, {
+      name: "Mew",
+      identityNotes: "Adult Thai male creator with a stable face and short dark hair.",
+    });
+    await characters.registerStoryFilmCharacterReference(user.id, profile.id, {
+      url: "/api/renders/storyboard-mew-reference.png",
+      originalName: "mew-reference.png",
+      mimeType: "image/png",
+      sizeBytes: 20_000,
+      width: 1080,
+      height: 1920,
+      viewLabel: "front portrait",
+    });
     const started = await story.startStoryFilm(user.id, {
       title: "Storyboard planner",
       idempotencyKey: "storyboard:planner:project:001",
       presentationMode: "presenter_led",
       presenterAssetId: presenter.id,
+      characterProfileId: profile.id,
+      characterLookBrief: "Modern documentary creator, understated dark sports jacket.",
       narrativeSource: "Mew opens a laboratory door. Machinery rotates inside. Mew walks toward a mysterious light.",
       aspectRatio: "9:16",
     });
@@ -99,8 +116,11 @@ async function main() {
       },
     });
 
+    let receivedProjectCharacterDirection = false;
     const fakeAnalyzer: ContentPreflightAnalyzer = {
       async analyze(input) {
+        receivedProjectCharacterDirection = input.text.includes(placement.STORY_FILM_PROJECT_CHARACTER_ENTITY_ID)
+          && input.text.includes("Eligible zero-based B-roll beat indexes: 0, 2");
         return {
           contentDomain: "cinematic technology mystery",
           dominantNarrativeMode: "a continuous discovery story",
@@ -143,6 +163,10 @@ async function main() {
     await storyboard.persistStoryFilmStoryboardScenes(document);
     ok(document.aspectRatio === "9:16" && document.narrationDurationMs === 21_000, "storyboard document pins the vertical master timeline");
     ok(
+      receivedProjectCharacterDirection,
+      "the planner receives the pinned Story Character identity and exact eligible B-roll beats",
+    );
+    ok(
       document.scenes.filter((scene) => scene.visualOwner === "presenter").length === 1
         && document.scenes.filter((scene) => scene.visualOwner === "broll").length === 2,
       "presenter-led planning reserves about one quarter of the story for the uploaded presenter",
@@ -162,9 +186,23 @@ async function main() {
       )),
       "provider prompts use a safe actor description even when a real person's name crosses writing systems",
     );
+    const projectCharacterScenes = document.scenes.filter((scene) => (
+      scene.characterDirectives.some((directive) => directive.isProjectCharacter)
+    ));
     ok(
-      document.scenes.every((scene) => scene.characterDirectives[0]?.entityId === "mew"),
-      "internal entity links survive for the later character-reference adapter",
+      projectCharacterScenes.length === 1
+        && projectCharacterScenes[0].visualOwner === "broll"
+        && projectCharacterScenes[0].characterDirectives.some((directive) => (
+          directive.entityId === placement.STORY_FILM_PROJECT_CHARACTER_ENTITY_ID
+        ))
+        && projectCharacterScenes[0].grokPrompt.includes("Supporting creator presence"),
+      "Mew is identity-marked as a sparse supporting B-roll presence instead of replacing every subject",
+    );
+    ok(
+      document.scenes
+        .filter((scene) => scene.visualOwner === "presenter")
+        .every((scene) => scene.characterDirectives.every((directive) => !directive.isProjectCharacter)),
+      "Presenter-owned beats never receive the generated Mew Story Character",
     );
     const storedScenes = await prisma.storyFilmScene.findMany({
       where: { projectId: started.project.id, generationEpoch: review.generationEpoch },

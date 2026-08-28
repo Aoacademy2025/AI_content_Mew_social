@@ -37,6 +37,7 @@ async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const story = await import("../src/lib/story-film.server");
   const characters = await import("../src/lib/story-film-character.server");
+  const placement = await import("../src/lib/story-film-character-placement");
   const queue = await import("../src/lib/story-film-generation-queue.server");
   try {
     const mew = await prisma.user.create({
@@ -130,7 +131,11 @@ async function main() {
         sourceExcerpt: "Mew enters a workshop and turns on a machine.",
         grokPrompt: "Vertical 9:16 cinematic frame. An adult Thai creator turns on workshop machinery.",
         mediaPlan: "video",
-        characterDirectivesJson: JSON.stringify([{ entityId: "mew", isRealPerson: true }]),
+        characterDirectivesJson: JSON.stringify([{
+          entityId: placement.STORY_FILM_PROJECT_CHARACTER_ENTITY_ID,
+          isRealPerson: true,
+          isProjectCharacter: true,
+        }]),
       },
       {
         projectId: started.project.id,
@@ -142,7 +147,7 @@ async function main() {
         sourceExcerpt: "The final shot holds on the finished object.",
         grokPrompt: "Vertical 9:16 cinematic product frame. A finished object rests on a workshop table.",
         mediaPlan: "image_with_motion",
-        characterDirectivesJson: "[]",
+        characterDirectivesJson: JSON.stringify([{ entityId: "tiangong-ultra", isRealPerson: false }]),
       },
     ] });
     const textLease = await queue.leaseStoryFilmGenerationJobs({
@@ -211,7 +216,10 @@ async function main() {
         && firstPayload.referenceUrls.includes(reference.url),
       "character scenes receive both approved look and identity anchors",
     );
-    ok(secondPayload.referenceUrls.length === 0, "a faceless object scene does not accidentally inject Mew from a reference image");
+    ok(
+      secondPayload.referenceUrls.length === 0,
+      "a scene assigned to another story entity does not accidentally inject Mew from a reference image",
+    );
 
     const keyframeLease = await queue.leaseStoryFilmGenerationJobs({
       workerId: "mew-grok-keyframes",
@@ -476,7 +484,12 @@ async function main() {
     const repairJobs = await prisma.storyFilmGenerationJob.findMany({
       where: { projectId: started.project.id, generationEpoch: repairPending.generationEpoch },
     });
-    const repairPayload = JSON.parse(repairJobs[0].payloadJson) as { sourceImageUrl?: string; referenceMode?: string; prompt?: string };
+    const repairPayload = JSON.parse(repairJobs[0].payloadJson) as {
+      sourceImageUrl?: string;
+      referenceMode?: string;
+      referenceUrls?: string[];
+      prompt?: string;
+    };
     ok(
       repairPending.stage === "keyframes"
         && repairJobs.length === 1
@@ -484,6 +497,12 @@ async function main() {
         && repairPayload.sourceImageUrl === "/api/renders/scene-02-revised.png"
         && repairPayload.referenceMode === "image_edit",
       "Final Review repairs only the selected keyframe and anchors it to the current approved image",
+    );
+    ok(
+      repairPayload.referenceUrls?.length === 1
+        && !repairPayload.referenceUrls.includes(reference.url)
+        && !repairPayload.referenceUrls.includes("/api/renders/approved-character-look.png"),
+      "Final Review repair keeps Mew identity references out of another entity's scene",
     );
     const repairLease = await queue.leaseStoryFilmGenerationJobs({
       workerId: "mew-grok-final-repair",
