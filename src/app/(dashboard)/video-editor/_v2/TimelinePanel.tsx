@@ -3,7 +3,7 @@
 /**
  * Timeline หลายแทร็ก + waveform เสียงพูดสำหรับอ้างอิง (จอ 4b ล่าง, P6b) — decision #5:
  *   พาดหัว/ซับ = ลากขอบเวลาได้ · บีโรล = ลากเส้นแบ่งร่วม + คลิก jump ·
- *   อวตาร/ซับ/โลโก้ = เปิด–ปิดโดยไม่ลบการตั้งค่า · เพลง = คลิก jump
+ *   อวตาร/ซับ = เปิด–ปิดโดยไม่ลบการตั้งค่า · โลโก้ควบคุมจากพาเนลโลโก้ · เพลง = คลิก jump
  * สีแทร็กคงที่ตาม Design System: อวตารม่วง · บีโรลฟ้า · พาดหัวส้ม · ซับเหลือง · เพลงชมพู
  */
 
@@ -54,7 +54,7 @@ export function TimelinePanel({
   config, hasAvatar, avatarMode, avatarIntroMs, avatarTailMs, avatarFadeApplies,
   voiceUrl, brollTimelineSpans, onSelectBrollWindow, onBrollBoundaryChange,
   editedWindowIndices, disabledWindowIndices,
-  hasLogo, layerVisibility, layerAvailability, onLayerVisibilityChange,
+  layerVisibility, layerAvailability, onLayerVisibilityChange,
   layerControlsDisabled = false,
   headlineHook, onHeadlineHookDurationChange,
 }: {
@@ -78,9 +78,8 @@ export function TimelinePanel({
   avatarMode: string | null;
   avatarIntroMs: number;
   avatarTailMs: number;
-  /** M10: avatar fade เกิดจริงเฉพาะโหมด full/bookend/bookend-both (composite route ผ่าน
-   *  avatarSourceFadeWindows) — upload-cutaway ผ่าน cutawayComposite ที่ไม่รับ fade เลย
-   *  (`@/lib/avatar-fade`'s `avatarFadeApplies`) → gradient/tooltip ต้องไม่โผล่ตอนนั้น */
+  /** Fade indicator follows the shared render truth. HeyGen fades at source edges;
+   *  upload-cutaway fades at every presenter-range edge. */
   avatarFadeApplies: boolean;
   voiceUrl: string | null;
   /** Effective spans including browser-staged timing edits. */
@@ -93,7 +92,6 @@ export function TimelinePanel({
   editedWindowIndices?: ReadonlySet<number>;
   /** B-roll windows that are currently disabled (includes optimistic staged visibility). */
   disabledWindowIndices?: ReadonlySet<number>;
-  hasLogo: boolean;
   layerVisibility: Record<EditableEditorLayer, boolean>;
   layerAvailability: Record<EditableEditorLayer, boolean>;
   onLayerVisibilityChange: (layer: EditableEditorLayer, enabled: boolean) => void;
@@ -376,8 +374,7 @@ export function TimelinePanel({
     cursor: "pointer", userSelect: "none",
   });
   // M10: gradient เป็น "สัญญา" ว่าคลิปนี้จะเฟด — ต้องโผล่เฉพาะโหมดที่ composite route ใส่
-  // fade จริง (avatarFadeApplies เช็คจาก avatarModel ที่ parent ส่งมา). upload-cutaway ไม่มี
-  // fade เลยแม้ hasAvatar=true → ต้องไม่เห็น gradient/tooltip นี้.
+  // fade จริง (avatarFadeApplies เช็คจาก avatarModel ที่ parent ส่งมา).
   // Integration (b): ปิดเลเยอร์อวตารแล้ว export สลับไปใช้ compositeBaseUrl (ไม่มีอวตาร →
   // ไม่มี fade เลย) — ปล่อย gradient ไว้ทั้งที่ track หรี่อยู่ = สัญญาที่ไฟล์จริงไม่ทำตาม
   // เหมือนกรณี cutaway เป๊ะ ๆ จึงใช้เงื่อนไขเดียวกัน: แสดงเฉพาะตอนเฟดเกิดจริง.
@@ -407,7 +404,7 @@ export function TimelinePanel({
   ) : null;
 
   return (
-    <div className="flex shrink-0 flex-col" style={{ height: (peaks && peaks.length > 0 ? 226 : 192) + (hasLogo ? TRACK_H : 0) + (headlineHook?.enabled ? TRACK_H : 0), background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
+    <div className="flex shrink-0 flex-col" style={{ height: (peaks && peaks.length > 0 ? 226 : 192) + (headlineHook?.enabled ? TRACK_H : 0), background: color.bgTimeline, borderTop: `1px solid ${color.cardBorder}` }}>
       {/* Transport 38px */}
       <div className="flex h-[38px] shrink-0 items-center gap-3 px-3" style={{ borderBottom: `1px solid ${color.cardBorder}` }}>
         <button onClick={togglePlay} className="flex h-[24px] w-[24px] items-center justify-center rounded-full" style={{ background: "rgba(255,255,255,.07)", border: `1px solid ${color.cardBorder}`, color: color.text, cursor: "pointer" }} aria-label="เล่น/หยุด">
@@ -660,22 +657,6 @@ export function TimelinePanel({
               ))}
             </div>
           </div>
-
-          {/* โลโก้ — overlay จริงอยู่เหนือวิดีโอและใต้ซับ */}
-          {hasLogo && (
-            <div className="relative flex items-center" style={{ height: TRACK_H }}>
-              {trackLabel("โลโก้", color.primary300, "logo")}
-              <div className="relative flex-1" style={{ height: TRACK_H, opacity: layerVisibility.logo ? 1 : 0.35 }}>
-                <div
-                  data-clip
-                  style={{ ...clipStyle(color.primary300), left: 0, width: Math.max(24, toPx(durMs) - 2) }}
-                  onClick={() => seekTo(0)}
-                >
-                  โลโก้ทั้งคลิป
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* เพลง */}
           {bgmFile && (

@@ -110,7 +110,11 @@ async function main() {
   );
 
   assert.match(timeline, /data-layer-toggle=/, "desktop Timeline exposes real layer toggles");
-  assert.match(timeline, /โลโก้ทั้งคลิป/, "desktop Timeline includes the logo layer");
+  assert.doesNotMatch(
+    timeline,
+    /โลโก้ทั้งคลิป/,
+    "desktop Timeline omits the redundant logo row; the dedicated logo panel owns its toggle",
+  );
   assert.match(desktop, /ed\.previewVideoUrl/, "desktop preview uses the effective avatar-aware source");
   assert.match(desktop, /ed\.layerVisibility\.subtitles/, "desktop subtitle preview honors visibility");
   assert.match(desktop, /visible=\{ed\.layerVisibility\.logo\}/, "desktop logo preview honors visibility");

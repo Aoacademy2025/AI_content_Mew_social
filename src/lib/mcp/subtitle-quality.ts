@@ -110,31 +110,35 @@ export type TranscriptAlignmentFailureCode =
   | "incomplete_alignment";
 
 export type TranscriptAlignmentResult =
-  | { status: "aligned"; words: TimedWord[] }
+  | { status: "aligned"; words: TimedWord[]; method: "exact" | "fuzzy"; similarity: number }
   | { status: "failed"; code: TranscriptAlignmentFailureCode };
 
-/** Attach transcript timestamps to canonical source tokens and retain the
- * exact rejection reason for production diagnosis. */
-export function alignTranscriptWordsToSourceDetailed(
-  fullText: string,
-  transcriptWords: TranscriptWord[],
-): TranscriptAlignmentResult {
-  const sourceWords = tokenizeWords(fullText);
-  if (sourceWords.length === 0) return { status: "failed", code: "empty_source" };
-  if (transcriptWords.length === 0) return { status: "failed", code: "empty_transcript" };
-  const usableTranscript = transcriptWords.filter((word) =>
-    typeof word?.word === "string"
-    && word.word.trim().length > 0
-    && Number.isFinite(word.startMs)
-    && Number.isFinite(word.endMs)
-    && word.startMs >= 0
-    && word.endMs > word.startMs,
-  );
-  if (usableTranscript.length === 0) return { status: "failed", code: "no_usable_words" };
-  if (usableTranscript.some((word, index) => index > 0 && word.startMs < usableTranscript[index - 1].endMs)) {
-    return { status: "failed", code: "overlapping_timing" };
-  }
+const MIN_FUZZY_ALIGNMENT_SIMILARITY = 0.92;
+const MAX_FUZZY_ALIGNMENT_CELLS = 12_000_000;
 
+function canonicalSpeechText(value: string): string {
+  return value
+    .normalize("NFC")
+    .toLocaleLowerCase("th")
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, "");
+}
+
+function numericClaims(value: string): string[] {
+  return (value.normalize("NFC").match(/[\p{N}][\p{N},.]*/gu) ?? [])
+    .map((claim) => claim.replace(/[^\p{N}]/gu, ""))
+    .filter(Boolean);
+}
+
+function sameNumericClaims(left: string, right: string): boolean {
+  const a = numericClaims(left);
+  const b = numericClaims(right);
+  return a.length === b.length && a.every((claim, index) => claim === b[index]);
+}
+
+function alignTranscriptWordsExactly(
+  sourceWords: ReturnType<typeof tokenizeWords>,
+  usableTranscript: TranscriptWord[],
+): TranscriptAlignmentResult {
   const tokenText = (value: string) => canonicalVisibleText(value.trim());
   const aligned: TimedWord[] = [];
   let sourceIndex = 0;
@@ -194,8 +198,167 @@ export function alignTranscriptWordsToSourceDetailed(
     }
   }
   return sourceIndex === sourceWords.length && transcriptIndex === usableTranscript.length
-    ? { status: "aligned", words: aligned }
+    ? { status: "aligned", words: aligned, method: "exact", similarity: 1 }
     : { status: "failed", code: "incomplete_alignment" };
+}
+
+/**
+ * Recover timestamps from a complete ASR projection that differs from the authored
+ * script only by a small spelling/segmentation error. The text that reaches captions
+ * still comes exclusively from `sourceWords`; this routine only transfers monotonic
+ * acoustic timestamps. Numeric claims must remain byte-equivalent after separator
+ * normalization so fuzzy recovery can never turn 5,000 into 500.
+ */
+function alignTranscriptWordsFuzzily(
+  fullText: string,
+  sourceWords: ReturnType<typeof tokenizeWords>,
+  usableTranscript: TranscriptWord[],
+): TranscriptAlignmentResult {
+  const sourceChars: string[] = [];
+  const sourceWordByChar: number[] = [];
+  sourceWords.forEach((word, wordIndex) => {
+    for (const char of Array.from(canonicalSpeechText(word.word))) {
+      sourceChars.push(char);
+      sourceWordByChar.push(wordIndex);
+    }
+  });
+
+  const transcriptChars: string[] = [];
+  const transcriptCharTimes: Array<{ startMs: number; endMs: number }> = [];
+  for (const word of usableTranscript) {
+    const chars = Array.from(canonicalSpeechText(word.word));
+    chars.forEach((char, index) => {
+      const startRatio = index / chars.length;
+      const endRatio = (index + 1) / chars.length;
+      transcriptChars.push(char);
+      transcriptCharTimes.push({
+        startMs: word.startMs + (word.endMs - word.startMs) * startRatio,
+        endMs: word.startMs + (word.endMs - word.startMs) * endRatio,
+      });
+    });
+  }
+
+  const n = sourceChars.length;
+  const m = transcriptChars.length;
+  if (n === 0 || m === 0 || (n + 1) * (m + 1) > MAX_FUZZY_ALIGNMENT_CELLS) {
+    return { status: "failed", code: "text_mismatch" };
+  }
+  const transcriptText = usableTranscript.map((word) => word.word).join(" ");
+  if (!sameNumericClaims(fullText, transcriptText)) {
+    return { status: "failed", code: "text_mismatch" };
+  }
+
+  // Direction matrix: 1=diagonal, 2=delete source char, 3=insert transcript char.
+  // One byte per cell keeps a three-minute Thai script well below worker memory limits.
+  const stride = m + 1;
+  const directions = new Uint8Array((n + 1) * stride);
+  let previous = new Uint32Array(stride);
+  let current = new Uint32Array(stride);
+  for (let j = 1; j <= m; j += 1) {
+    previous[j] = j;
+    directions[j] = 3;
+  }
+  for (let i = 1; i <= n; i += 1) {
+    current[0] = i;
+    directions[i * stride] = 2;
+    for (let j = 1; j <= m; j += 1) {
+      const diagonal = previous[j - 1] + (sourceChars[i - 1] === transcriptChars[j - 1] ? 0 : 1);
+      const deletion = previous[j] + 1;
+      const insertion = current[j - 1] + 1;
+      if (diagonal <= deletion && diagonal <= insertion) {
+        current[j] = diagonal;
+        directions[i * stride + j] = 1;
+      } else if (deletion <= insertion) {
+        current[j] = deletion;
+        directions[i * stride + j] = 2;
+      } else {
+        current[j] = insertion;
+        directions[i * stride + j] = 3;
+      }
+    }
+    [previous, current] = [current, previous];
+  }
+
+  const distance = previous[m];
+  const similarity = 1 - distance / Math.max(n, m);
+  if (similarity < MIN_FUZZY_ALIGNMENT_SIMILARITY) {
+    return { status: "failed", code: "text_mismatch" };
+  }
+
+  const transcriptCharBySourceChar = new Int32Array(n);
+  transcriptCharBySourceChar.fill(-1);
+  let i = n;
+  let j = m;
+  while (i > 0 || j > 0) {
+    const direction = directions[i * stride + j];
+    if (direction === 1) {
+      transcriptCharBySourceChar[i - 1] = j - 1;
+      i -= 1;
+      j -= 1;
+    } else if (direction === 2) {
+      i -= 1;
+    } else if (direction === 3) {
+      j -= 1;
+    } else {
+      return { status: "failed", code: "text_mismatch" };
+    }
+  }
+
+  const mappedCharsByWord = sourceWords.map(() => [] as number[]);
+  transcriptCharBySourceChar.forEach((transcriptCharIndex, sourceCharIndex) => {
+    if (transcriptCharIndex >= 0) {
+      mappedCharsByWord[sourceWordByChar[sourceCharIndex]].push(transcriptCharIndex);
+    }
+  });
+  if (mappedCharsByWord.some((mapped) => mapped.length === 0)) {
+    return { status: "failed", code: "incomplete_alignment" };
+  }
+
+  const words = sourceWords.map((source, wordIndex): TimedWord => {
+    const mapped = mappedCharsByWord[wordIndex];
+    const first = transcriptCharTimes[mapped[0]];
+    const last = transcriptCharTimes[mapped[mapped.length - 1]];
+    const startMs = Math.round(first.startMs);
+    return {
+      word: source.word,
+      startMs,
+      endMs: Math.max(startMs + 1, Math.round(last.endMs)),
+      startChar: source.startChar,
+      endChar: source.endChar,
+    };
+  });
+  if (words.some((word, index) => index > 0 && word.startMs < words[index - 1].endMs)) {
+    return { status: "failed", code: "overlapping_timing" };
+  }
+  return { status: "aligned", words, method: "fuzzy", similarity };
+}
+
+/** Attach transcript timestamps to canonical source tokens and retain the
+ * exact rejection reason for production diagnosis. */
+export function alignTranscriptWordsToSourceDetailed(
+  fullText: string,
+  transcriptWords: TranscriptWord[],
+): TranscriptAlignmentResult {
+  const sourceWords = tokenizeWords(fullText);
+  if (sourceWords.length === 0) return { status: "failed", code: "empty_source" };
+  if (transcriptWords.length === 0) return { status: "failed", code: "empty_transcript" };
+  const usableTranscript = transcriptWords.filter((word) =>
+    typeof word?.word === "string"
+    && word.word.trim().length > 0
+    && Number.isFinite(word.startMs)
+    && Number.isFinite(word.endMs)
+    && word.startMs >= 0
+    && word.endMs > word.startMs,
+  );
+  if (usableTranscript.length === 0) return { status: "failed", code: "no_usable_words" };
+  if (usableTranscript.some((word, index) => index > 0 && word.startMs < usableTranscript[index - 1].endMs)) {
+    return { status: "failed", code: "overlapping_timing" };
+  }
+
+  const exact = alignTranscriptWordsExactly(sourceWords, usableTranscript);
+  if (exact.status === "aligned") return exact;
+  if (exact.code !== "text_mismatch" && exact.code !== "incomplete_alignment") return exact;
+  return alignTranscriptWordsFuzzily(fullText, sourceWords, usableTranscript);
 }
 
 /**

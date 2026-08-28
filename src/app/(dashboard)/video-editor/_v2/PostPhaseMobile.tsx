@@ -1012,8 +1012,8 @@ function ClipSummary({ open, onToggle, preview, captionCount, durationMs }: {
   durationMs: number;
 }) {
   const hasAvatar = !!(preview?.avatarModel && preview.avatarModel !== "none");
-  // B-13: hint เฉพาะโหมดที่ fade จริง (เงื่อนไขเดียวกับ TimelinePanel/M10) — upload-cutaway
-  // มี hasAvatar=true แต่ cutawayComposite ไม่รับ fade เลย ต้องไม่บอกว่าเฟด
+  // B-13: hint เฉพาะโหมดที่ fade จริง (เงื่อนไขเดียวกับ TimelinePanel/M10).
+  // upload-cutaway now dissolves every presenter-range edge in the export path.
   const fadeApplies = avatarFadeApplies(preview?.avatarModel ?? null);
   const bgm = typeof preview?.config?.bgmFile === "string" ? (preview.config.bgmFile as string) : null;
   const bgmName = bgm ? decodeURIComponent(bgm.split("/").pop() ?? bgm).replace(/\.[a-z0-9]+$/i, "") : null;

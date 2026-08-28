@@ -847,7 +847,6 @@ export function PostPhase({
         avatarTailMs={(ed.preview?.avatarTailSecs ?? 5) * 1000}
         avatarFadeApplies={avatarFadeApplies(ed.preview?.avatarModel ?? null)}
         voiceUrl={ed.preview?.voiceUrl ?? null}
-        hasLogo={ed.layerAvailability.logo}
         layerVisibility={ed.layerVisibility}
         layerAvailability={ed.layerAvailability}
         onLayerVisibilityChange={ed.setLayerEnabled}
