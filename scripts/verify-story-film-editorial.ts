@@ -87,10 +87,10 @@ assert.match(
   /\u2060/u,
   "a short Thai proper name must be protected as one author-delimited token",
 );
-const displayRegressionText = "เรื่องนี้มาจากคำฟ้องของบรูกส์ และความสัมพันธ์ก็ได้รับผลกระทบแล้ว เมื่อคุยนานต่อเนื่องเราอาจเห็นด้วยกับเขาทุกเรื่อง";
+const displayRegressionText = "เรื่องนี้มาจากคำฟ้องของบรูกส์ และความสัมพันธ์ก็ได้รับผลกระทบแล้ว เมื่อคุยนานต่อเนื่องเราอาจเห็นด้วยกับเขาทุกเรื่อง คนนอกวงมองไม่เห็นว่าเรากำลังหลงทาง";
 const graphemeSegmenter = new Intl.Segmenter("th", { granularity: "grapheme" });
 const protectedDisplayText = protectSubtitleWordBreaks(displayRegressionText);
-for (const term of ["บรูกส์", "ผลกระทบ", "ต่อเนื่อง", "ทุกเรื่อง"]) {
+for (const term of ["บรูกส์", "ผลกระทบ", "ต่อเนื่อง", "ทุกเรื่อง", "มองไม่เห็น", "หลงทาง"]) {
   const protectedTerm = Array.from(graphemeSegmenter.segment(term), (part) => part.segment).join("\u2060");
   assert.ok(
     protectedDisplayText.includes(protectedTerm),
