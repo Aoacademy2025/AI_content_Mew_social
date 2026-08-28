@@ -2,6 +2,7 @@
 // chain (verified against page.tsx 2026-06-13). No I/O — unit-testable.
 
 import type { BrollPreferenceInput } from "@/lib/broll-preferences";
+import { buildHeroSubtitleOverlayConfig } from "@/lib/hero-editorial";
 
 export interface OrchCaption { text: string; startMs: number; endMs: number; tag: "hook" | "body" | "cta" }
 
@@ -191,29 +192,20 @@ export function cardsByWordCount(words: CharWord[], n: number, fullText: string)
 }
 
 export function buildBurnConfig(baseVideoUrl: string, captions: OrchCaption[], audioDurationMs: number, fps: number = RENDER_FPS, topPercent?: number) {
-  const lastEnd = captions.length ? captions[captions.length - 1].endMs : audioDurationMs;
-  const durMs = Math.max(audioDurationMs, lastEnd);
-  const resolvedTop = topPercent ?? DEFAULT_STYLE.subtitlePosition;
-  const keywordPopups = captions.map((c) => ({
-    text: c.text,
-    start: Math.round((c.startMs / 1000) * fps),
-    end: Math.round((c.endMs / 1000) * fps),
-    tag: c.tag,
-    isHighlight: c.tag === "hook",
-    color: c.tag === "hook" ? DEFAULT_STYLE.subtitleAccentColor : DEFAULT_STYLE.subtitleColor,
-    accentColor: DEFAULT_STYLE.subtitleAccentColor,
-    fontWeight: DEFAULT_STYLE.subtitleFontWeight,
-    topPercent: resolvedTop,
-    size: DEFAULT_STYLE.subtitleSize,
-    stylePreset: DEFAULT_STYLE.subtitleStylePreset,
-  }));
-  return {
-    videoUrl: baseVideoUrl,
-    keywordPopups,
-    durationInFrames: Math.round((durMs / 1000) * fps),
-    fontFamily: DEFAULT_STYLE.fontFamily,
-    subtitleStylePreset: DEFAULT_STYLE.subtitleStylePreset,
-    subtitleTextEffect: DEFAULT_STYLE.subtitleTextEffect,
-    subtitleAccentColor: DEFAULT_STYLE.subtitleAccentColor,
-  };
+  return buildHeroSubtitleOverlayConfig({
+    baseVideoUrl,
+    captions,
+    durationMs: audioDurationMs,
+    fps,
+    design: {
+      fontFamily: DEFAULT_STYLE.fontFamily,
+      positionTopPercent: topPercent ?? DEFAULT_STYLE.subtitlePosition,
+      fontSize: DEFAULT_STYLE.subtitleSize,
+      fontWeight: DEFAULT_STYLE.subtitleFontWeight,
+      color: DEFAULT_STYLE.subtitleColor,
+      accentColor: DEFAULT_STYLE.subtitleAccentColor,
+      stylePreset: DEFAULT_STYLE.subtitleStylePreset,
+      textEffect: DEFAULT_STYLE.subtitleTextEffect,
+    },
+  });
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Check,
@@ -86,6 +86,7 @@ type ReviewArtifact = {
   width: number | null;
   height: number | null;
   durationMs: number | null;
+  metadata: Record<string, unknown>;
 };
 
 type NarrationVoiceOption = {
@@ -102,6 +103,73 @@ type MusicCandidate = {
   title: string;
   url: string;
   durationMs: number | null;
+};
+
+type FinalScene = {
+  sceneKey: string;
+  sequence: number;
+  startMs: number;
+  endMs: number;
+  sourceExcerpt: string;
+  mediaPlan: "video" | "image_with_motion";
+  visualOwner: "broll" | "presenter";
+};
+
+type EditorialDraft = {
+  subtitlesEnabled: boolean;
+  subtitleMode: "sentence" | "1" | "2" | "3" | "4";
+  subtitleStylePreset: "stroke" | "classic-yellow" | "bold-shadow" | "box-rounded" | "news";
+  subtitleTextEffect: "pop" | "fade" | "quick" | "highlight" | "karaoke" | "typewriter";
+  subtitlePosition: "top" | "middle" | "bottom";
+  subtitleFontFamily: "Kanit" | "Prompt" | "Sarabun" | "Mitr" | "Noto Sans Thai";
+  subtitleFontSize: number;
+  subtitleFontWeight: 400 | 500 | 600 | 700 | 800 | 900;
+  headlineHook: {
+    enabled: boolean;
+    headline: string;
+    subheadline?: string;
+    durationMs: number;
+    preset: "viral" | "news" | "clean";
+    topPercent: number;
+    fontFamily?: "Kanit" | "Prompt" | "Sarabun" | "Mitr" | "Noto Sans Thai";
+    fontSize?: number;
+    fontWeight?: 400 | 600 | 900;
+    subheadlineFontSize?: number;
+  };
+};
+
+const DEFAULT_EDITORIAL_DRAFT: EditorialDraft = {
+  subtitlesEnabled: true,
+  subtitleMode: "sentence",
+  subtitleStylePreset: "stroke",
+  subtitleTextEffect: "pop",
+  subtitlePosition: "bottom",
+  subtitleFontFamily: "Kanit",
+  subtitleFontSize: 60,
+  subtitleFontWeight: 600,
+  headlineHook: {
+    enabled: false,
+    headline: "",
+    durationMs: 8_000,
+    preset: "viral",
+    topPercent: 20,
+    fontFamily: "Kanit",
+    fontWeight: 600,
+  },
+};
+
+type VisualQa = {
+  anatomy: boolean;
+  spatialDirection: boolean;
+  continuity: boolean;
+  generatedText: boolean;
+};
+
+const EMPTY_VISUAL_QA: VisualQa = {
+  anatomy: false,
+  spatialDirection: false,
+  continuity: false,
+  generatedText: false,
 };
 
 function apiMessage(data: ApiError, fallback: string) {
@@ -156,6 +224,8 @@ function reviewArtifacts(project: StoryFilmProjectView): ReviewArtifact[] {
       width: typeof value.width === "number" ? value.width : null,
       height: typeof value.height === "number" ? value.height : null,
       durationMs: typeof value.durationMs === "number" ? value.durationMs : null,
+      metadata: value.metadata && typeof value.metadata === "object" && !Array.isArray(value.metadata)
+        ? value.metadata as Record<string, unknown> : {},
     }];
   });
 }
@@ -177,9 +247,9 @@ function ArtifactReview({ project }: { project: StoryFilmProjectView }) {
                 ? <video src={artifact.storageUrl} controls playsInline preload="metadata" className="h-full w-full object-contain" />
                 : <div className="flex h-full items-center justify-center text-xs text-[oklch(65%_0.025_300)]">{artifact.mimeType}</div>}
           </div>
-          <figcaption className="flex items-center justify-between gap-3 border-t border-[oklch(30%_0.025_300)] px-3 py-3 text-xs">
-            <span className="font-medium">{artifact.sceneKey || (project.stage === "character_look" ? "ลุคหลัก" : `Asset ${index + 1}`)}</span>
-            <span className="text-[oklch(62%_0.025_300)]">{artifact.durationMs ? clock(artifact.durationMs) : artifact.width && artifact.height ? `${artifact.width}×${artifact.height}` : artifact.kind}</span>
+          <figcaption className="border-t border-[oklch(30%_0.025_300)] px-3 py-3 text-xs">
+            <div className="flex items-center justify-between gap-3"><span className="font-medium">{artifact.sceneKey || (project.stage === "character_look" ? "ลุคหลัก" : `Asset ${index + 1}`)}</span><span className="text-[oklch(62%_0.025_300)]">{artifact.durationMs ? clock(artifact.durationMs) : artifact.width && artifact.height ? `${artifact.width}×${artifact.height}` : artifact.kind}</span></div>
+            {typeof artifact.metadata.captionTimingSource === "string" && <p className="mt-2 text-[10px] leading-4 text-[oklch(66%_0.05_145)]">Subtitle sync · {artifact.metadata.captionTimingSource === "elevenlabs_alignment" ? "ElevenLabs alignment" : artifact.metadata.captionTimingSource === "hero_voice_timing" ? "Hero Voice timing" : artifact.metadata.captionTimingSource === "forced_alignment" ? "Forced alignment" : "Storyboard timing fallback"}</p>}
           </figcaption>
         </figure>
       ))}
@@ -211,8 +281,10 @@ function CompletedFilm({ project }: { project: StoryFilmProjectView }) {
 }
 
 function musicCandidates(project: StoryFilmProjectView | null): MusicCandidate[] {
-  if (!project || project.stage !== "music" || !Array.isArray(project.stageData.candidates)) return [];
-  return project.stageData.candidates.flatMap((item) => {
+  if (!project) return [];
+  const source = project.stage === "music" ? project.stageData.candidates : project.stageData.musicCandidates;
+  if (!Array.isArray(source)) return [];
+  return source.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const value = item as Record<string, unknown>;
     if ((value.source !== "user" && value.source !== "system")
@@ -229,18 +301,70 @@ function musicCandidates(project: StoryFilmProjectView | null): MusicCandidate[]
   });
 }
 
+function finalScenes(project: StoryFilmProjectView | null): FinalScene[] {
+  if (!project || !Array.isArray(project.stageData.scenes)) return [];
+  return project.stageData.scenes.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const value = item as Record<string, unknown>;
+    if (typeof value.sceneKey !== "string"
+      || typeof value.sequence !== "number"
+      || typeof value.startMs !== "number"
+      || typeof value.endMs !== "number"
+      || typeof value.sourceExcerpt !== "string"
+      || (value.mediaPlan !== "video" && value.mediaPlan !== "image_with_motion")
+      || (value.visualOwner !== "broll" && value.visualOwner !== "presenter")) return [];
+    return [value as FinalScene];
+  });
+}
+
 function MusicReview({
   candidates,
   selectedKey,
   onSelect,
+  narrationUrl,
 }: {
   candidates: MusicCandidate[];
   selectedKey: string;
   onSelect: (key: string) => void;
+  narrationUrl?: string | null;
 }) {
+  const narrationRef = useRef<HTMLAudioElement>(null);
+  const musicRef = useRef<HTMLAudioElement>(null);
+  const [mixPlaying, setMixPlaying] = useState(false);
+  const selectedTrack = candidates.find((track) => `${track.source}:${track.trackId}` === selectedKey) ?? null;
+  useEffect(() => {
+    narrationRef.current?.pause();
+    musicRef.current?.pause();
+    setMixPlaying(false);
+  }, [selectedKey]);
+  const toggleMix = async () => {
+    const voice = narrationRef.current;
+    const music = musicRef.current;
+    if (!voice || !music) return;
+    if (mixPlaying) {
+      voice.pause();
+      music.pause();
+      setMixPlaying(false);
+      return;
+    }
+    voice.currentTime = 0;
+    music.currentTime = 0;
+    music.volume = 0.12;
+    music.loop = true;
+    try {
+      await Promise.all([voice.play(), music.play()]);
+      setMixPlaying(true);
+    } catch {
+      voice.pause();
+      music.pause();
+      setMixPlaying(false);
+      toast.error("เบราว์เซอร์เล่น Mix Preview ไม่ได้ ลองกดอีกครั้ง");
+    }
+  };
   return (
     <div className="mt-7 space-y-3">
       <div className="mb-5 border-y border-[oklch(30%_0.025_300)] py-4"><p className="text-sm font-medium">เลือกเพลงที่มีอยู่ก่อน</p><p className="mt-1 text-xs leading-5 text-[oklch(66%_0.025_300)]">เพลงหนึ่งเพลง reuse ได้หลายคลิป ระบบจะไม่ใช้ vidIQ credit เพิ่มเมื่อเพลงเดิมเหมาะกับเรื่อง</p></div>
+      {narrationUrl && selectedTrack && <div className="flex flex-wrap items-center justify-between gap-3 border border-[oklch(43%_0.07_300)] bg-[oklch(20%_0.035_300)] p-4"><div><p className="text-sm font-semibold">ฟังเสียงมิวพร้อมเพลง</p><p className="mt-1 text-xs text-[oklch(67%_0.025_300)]">Preview ในเบราว์เซอร์ · เพลง 12% · ไม่เสีย credit</p></div><button type="button" onClick={() => void toggleMix()} className="min-h-11 border border-violet-400/60 px-4 text-sm font-semibold hover:bg-violet-400/10">{mixPlaying ? "หยุด Mix Preview" : "เล่น Mix Preview"}</button><audio ref={narrationRef} src={narrationUrl} onEnded={() => { musicRef.current?.pause(); setMixPlaying(false); }} /><audio ref={musicRef} src={selectedTrack.url} /></div>}
       {candidates.map((track) => {
         const key = `${track.source}:${track.trackId}`;
         const selected = key === selectedKey;
@@ -248,6 +372,82 @@ function MusicReview({
       })}
     </div>
   );
+}
+
+function EditorialDesk({
+  scenes,
+  value,
+  overlays,
+  onChange,
+  onOverlay,
+}: {
+  scenes: FinalScene[];
+  value: EditorialDraft;
+  overlays: Record<string, string>;
+  onChange: (value: EditorialDraft) => void;
+  onOverlay: (sceneKey: string, value: string) => void;
+}) {
+  const fieldClass = "min-h-11 w-full border border-[oklch(38%_0.035_300)] bg-[oklch(19%_0.02_300)] px-3 text-sm outline-none focus:border-violet-400";
+  return (
+    <section className="mt-8 border-y border-[oklch(31%_0.025_300)] py-6">
+      <div>
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[oklch(72%_0.11_75)]">Hero editorial engine</p>
+        <h4 className="mt-2 text-xl font-semibold">Headline และซับแบบเดียวกับ Hero Studio</h4>
+        <p className="mt-2 text-xs leading-5 text-[oklch(67%_0.025_300)]">แก้ชั้นนี้แล้วระบบ reuse ภาพ วิดีโอ เสียง และเพลงเดิม ไม่ยิง Grok ซ้ำ</p>
+      </div>
+
+      <div className="mt-6 border border-[oklch(38%_0.045_300)] p-4">
+        <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm font-semibold">
+          <input type="checkbox" checked={value.headlineHook.enabled} onChange={(event) => onChange({ ...value, headlineHook: { ...value.headlineHook, enabled: event.target.checked } })} className="h-4 w-4 accent-violet-500" />
+          ใส่ Headline Hook ช่วงเปิดเรื่อง
+        </label>
+        {value.headlineHook.enabled && (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <label className="sm:col-span-2"><span className="mb-2 block text-xs font-medium">Headline</span><input value={value.headlineHook.headline} maxLength={64} onChange={(event) => onChange({ ...value, headlineHook: { ...value.headlineHook, headline: event.target.value } })} className={fieldClass} placeholder="ประโยคที่ทำให้คนหยุดเลื่อน" /></label>
+            <label className="sm:col-span-2"><span className="mb-2 block text-xs font-medium">คำขยาย (ไม่บังคับ)</span><input value={value.headlineHook.subheadline ?? ""} maxLength={90} onChange={(event) => onChange({ ...value, headlineHook: { ...value.headlineHook, subheadline: event.target.value } })} className={fieldClass} /></label>
+            <label><span className="mb-2 block text-xs font-medium">สไตล์</span><select value={value.headlineHook.preset} onChange={(event) => onChange({ ...value, headlineHook: { ...value.headlineHook, preset: event.target.value as EditorialDraft["headlineHook"]["preset"] } })} className={fieldClass}><option value="viral">Viral</option><option value="news">News</option><option value="clean">Clean</option></select></label>
+            <label><span className="mb-2 block text-xs font-medium">แสดงกี่วินาที</span><input type="number" min={3} max={20} value={Math.round(value.headlineHook.durationMs / 1_000)} onChange={(event) => onChange({ ...value, headlineHook: { ...value.headlineHook, durationMs: Math.min(20, Math.max(3, Number(event.target.value) || 3)) * 1_000 } })} className={fieldClass} /></label>
+            <label><span className="mb-2 block text-xs font-medium">ความหนา Headline</span><select value={value.headlineHook.fontWeight ?? 600} onChange={(event) => onChange({ ...value, headlineHook: { ...value.headlineHook, fontWeight: Number(event.target.value) as 400 | 600 | 900 } })} className={fieldClass}><option value={400}>บาง</option><option value={600}>กึ่งหนา</option><option value={900}>หนาพิเศษ</option></select></label>
+            <label><span className="mb-2 block text-xs font-medium">ขนาด Headline (px)</span><input type="number" min={52} max={120} value={value.headlineHook.fontSize ?? 82} onChange={(event) => onChange({ ...value, headlineHook: { ...value.headlineHook, fontSize: Math.min(120, Math.max(52, Number(event.target.value) || 82)) } })} className={fieldClass} /></label>
+            <label><span className="mb-2 block text-xs font-medium">ขนาดคำขยาย (px)</span><input type="number" min={32} max={88} value={value.headlineHook.subheadlineFontSize ?? 42} onChange={(event) => onChange({ ...value, headlineHook: { ...value.headlineHook, subheadlineFontSize: Math.min(88, Math.max(32, Number(event.target.value) || 42)) } })} className={fieldClass} /></label>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-5 border border-[oklch(38%_0.045_300)] p-4">
+        <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm font-semibold">
+          <input type="checkbox" checked={value.subtitlesEnabled} onChange={(event) => onChange({ ...value, subtitlesEnabled: event.target.checked })} className="h-4 w-4 accent-violet-500" />
+          ใส่ซับที่ sync กับ Narration Master
+        </label>
+        {value.subtitlesEnabled && (
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <label><span className="mb-2 block text-xs font-medium">ความหนาแน่น</span><select value={value.subtitleMode} onChange={(event) => onChange({ ...value, subtitleMode: event.target.value as EditorialDraft["subtitleMode"] })} className={fieldClass}><option value="sentence">เป็นประโยค</option><option value="1">1 คำ</option><option value="2">2 คำ</option><option value="3">3 คำ</option><option value="4">4 คำ</option></select></label>
+            <label><span className="mb-2 block text-xs font-medium">รูปแบบ</span><select value={value.subtitleStylePreset} onChange={(event) => onChange({ ...value, subtitleStylePreset: event.target.value as EditorialDraft["subtitleStylePreset"] })} className={fieldClass}><option value="stroke">Stroke อ่านง่าย</option><option value="classic-yellow">Classic Yellow</option><option value="bold-shadow">Bold Shadow</option><option value="box-rounded">Cinematic Box</option><option value="news">News Banner</option></select></label>
+            <label><span className="mb-2 block text-xs font-medium">เอฟเฟกต์</span><select value={value.subtitleTextEffect} onChange={(event) => onChange({ ...value, subtitleTextEffect: event.target.value as EditorialDraft["subtitleTextEffect"] })} className={fieldClass}><option value="pop">Pop</option><option value="fade">Fade</option><option value="quick">Quick</option><option value="highlight">Highlight</option><option value="karaoke">Karaoke</option><option value="typewriter">Typewriter</option></select></label>
+            <label><span className="mb-2 block text-xs font-medium">ตำแหน่ง</span><select value={value.subtitlePosition} onChange={(event) => onChange({ ...value, subtitlePosition: event.target.value as EditorialDraft["subtitlePosition"] })} className={fieldClass}><option value="top">บน</option><option value="middle">กลาง</option><option value="bottom">ล่าง</option></select></label>
+            <label><span className="mb-2 block text-xs font-medium">ฟอนต์</span><select value={value.subtitleFontFamily} onChange={(event) => onChange({ ...value, subtitleFontFamily: event.target.value as EditorialDraft["subtitleFontFamily"] })} className={fieldClass}><option value="Kanit">Kanit</option><option value="Prompt">Prompt</option><option value="Sarabun">Sarabun</option><option value="Mitr">Mitr</option><option value="Noto Sans Thai">Noto Sans Thai</option></select></label>
+            <label><span className="mb-2 block text-xs font-medium">ขนาดซับ (px)</span><input type="number" min={44} max={96} value={value.subtitleFontSize} onChange={(event) => onChange({ ...value, subtitleFontSize: Math.min(96, Math.max(44, Number(event.target.value) || 60)) })} className={fieldClass} /></label>
+            <label><span className="mb-2 block text-xs font-medium">ความหนาซับ</span><select value={value.subtitleFontWeight} onChange={(event) => onChange({ ...value, subtitleFontWeight: Number(event.target.value) as EditorialDraft["subtitleFontWeight"] })} className={fieldClass}><option value={400}>บาง</option><option value={500}>ปกติ</option><option value={600}>กึ่งหนา</option><option value={700}>หนา</option><option value={800}>หนามาก</option><option value={900}>หนาพิเศษ</option></select></label>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-6 space-y-3">
+        <div><p className="text-xs font-medium text-[oklch(74%_0.03_300)]">แก้ข้อความซับรายฉาก (ไม่บังคับ)</p><p className="mt-1 text-[11px] leading-5 text-[oklch(62%_0.025_300)]">ข้อความที่กรอกจะแทน caption อัตโนมัติเฉพาะช่วงของฉากนั้น</p></div>
+        {scenes.map((scene) => <label key={scene.sceneKey} className="grid gap-2 border-b border-[oklch(27%_0.02_300)] pb-3 sm:grid-cols-[96px_minmax(0,1fr)] sm:items-center"><span className="text-xs tabular-nums text-[oklch(70%_0.08_75)]">{scene.sceneKey}</span><input value={overlays[scene.sceneKey] ?? ""} onChange={(event) => onOverlay(scene.sceneKey, event.target.value.slice(0, 240))} className={fieldClass} placeholder={scene.sourceExcerpt.slice(0, 80)} /></label>)}
+      </div>
+    </section>
+  );
+}
+
+function VisualQaChecklist({ value, onChange }: { value: VisualQa; onChange: (value: VisualQa) => void }) {
+  const items: Array<{ key: keyof VisualQa; label: string }> = [
+    { key: "anatomy", label: "มือ แขน ใบหน้า และจำนวนคนถูกต้อง" },
+    { key: "spatialDirection", label: "ทิศทางจอ สายตา และด้านของวัตถุถูกต้อง" },
+    { key: "continuity", label: "หน้า เสื้อผ้า สถานที่ และแสงต่อเนื่อง" },
+    { key: "generatedText", label: "ตรวจข้อความ หน้าจอ และ UI ที่ AI สร้างแล้ว" },
+  ];
+  return <fieldset className="border border-[oklch(38%_0.045_300)] p-4"><legend className="px-2 text-xs font-semibold uppercase tracking-[0.12em] text-[oklch(75%_0.1_75)]">Visual QA gate</legend><div className="space-y-3">{items.map((item) => <label key={item.key} className="flex min-h-11 cursor-pointer items-start gap-3 text-xs leading-5"><input type="checkbox" checked={value[item.key]} onChange={(event) => onChange({ ...value, [item.key]: event.target.checked })} className="mt-1 h-4 w-4 shrink-0 accent-violet-500" /><span>{item.label}</span></label>)}</div></fieldset>;
 }
 
 function StoryboardReview({ document }: { document: StoryboardDocument }) {
@@ -370,17 +570,43 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
   const [narrationVoiceSpeed, setNarrationVoiceSpeed] = useState(1);
   const [selectedMusicKey, setSelectedMusicKey] = useState("");
   const [revisionSceneKey, setRevisionSceneKey] = useState("");
+  const [editorialDraft, setEditorialDraft] = useState<EditorialDraft>(DEFAULT_EDITORIAL_DRAFT);
+  const [textOverlays, setTextOverlays] = useState<Record<string, string>>({});
+  const [visualQa, setVisualQa] = useState<VisualQa>(EMPTY_VISUAL_QA);
+  const [finalRepairSceneKeys, setFinalRepairSceneKeys] = useState<string[]>([]);
+  const [repairLayer, setRepairLayer] = useState<"keyframe" | "video">("keyframe");
 
   const selected = projects.find((project) => project.id === selectedId) ?? null;
   const storyboardUrl = storyboardArtifactUrl(selected);
   const selectedCharacter = characters.find((character) => character.id === characterProfileId) ?? null;
   const availableMusic = musicCandidates(selected);
+  const availableFinalScenes = finalScenes(selected);
   const selectedNarrationVoice = voices.find(
     (voice) => voice.provider === narrationProvider && voice.voiceId === narrationVoiceId,
   ) ?? null;
   const revisionSceneKeys = selected
     ? [...new Set(reviewArtifacts(selected).flatMap((artifact) => artifact.sceneKey ? [artifact.sceneKey] : []))]
     : [];
+  const editorialTarget = {
+    ...editorialDraft,
+    textOverlays: availableFinalScenes.flatMap((scene) => {
+      const text = textOverlays[scene.sceneKey]?.trim();
+      return text ? [{ sceneKey: scene.sceneKey, text }] : [];
+    }),
+  };
+  const qaComplete = Object.values(visualQa).every(Boolean);
+  const finalRenderSetup = selected?.stage === "final_render" && selected.stageData.renderSetup === true;
+  const storedFinalMusic = selected?.stageData.selectedMusic && typeof selected.stageData.selectedMusic === "object"
+    ? selected.stageData.selectedMusic as Record<string, unknown>
+    : null;
+  const storedFinalMusicKey = (storedFinalMusic?.source === "user" || storedFinalMusic?.source === "system")
+    && typeof storedFinalMusic.trackId === "string"
+    ? `${storedFinalMusic.source}:${storedFinalMusic.trackId}`
+    : "";
+  const finalCutDirty = selected?.stage === "final_render" && !finalRenderSetup && (
+    selectedMusicKey !== storedFinalMusicKey
+    || JSON.stringify(editorialTarget) !== JSON.stringify(selected.stageData.editorial ?? {})
+  );
 
   const loadProjects = useCallback(async (preferredId?: string | null) => {
     const response = await fetch("/api/ai-studio/story-films", { cache: "no-store" });
@@ -489,15 +715,73 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
   }, [selected]);
 
   useEffect(() => {
-    if (selected?.stage !== "music" || !selected.awaitingApproval) {
+    if (!selected || !["music", "final_render"].includes(selected.stage) || !selected.awaitingApproval) {
       setSelectedMusicKey("");
       return;
     }
     const candidates = musicCandidates(selected);
+    const stored = selected.stageData.selectedMusic && typeof selected.stageData.selectedMusic === "object"
+      ? selected.stageData.selectedMusic as Record<string, unknown>
+      : null;
+    const storedKey = (stored?.source === "user" || stored?.source === "system") && typeof stored.trackId === "string"
+      ? `${stored.source}:${stored.trackId}`
+      : "";
     setSelectedMusicKey((current) => candidates.some((track) => `${track.source}:${track.trackId}` === current)
       ? current
-      : candidates[0] ? `${candidates[0].source}:${candidates[0].trackId}` : "");
+      : candidates.some((track) => `${track.source}:${track.trackId}` === storedKey)
+        ? storedKey
+        : candidates[0] ? `${candidates[0].source}:${candidates[0].trackId}` : "");
   }, [selected?.id, selected?.revision, selected?.stage, selected?.awaitingApproval]);
+
+  useEffect(() => {
+    const rawEditorial = selected?.stageData.editorial;
+    const value = rawEditorial && typeof rawEditorial === "object" ? rawEditorial as Record<string, unknown> : {};
+    const headline = value.headlineHook && typeof value.headlineHook === "object"
+      ? value.headlineHook as Record<string, unknown>
+      : {};
+    setEditorialDraft({
+      subtitlesEnabled: value.subtitlesEnabled !== false,
+      subtitleMode: ["sentence", "1", "2", "3", "4"].includes(String(value.subtitleMode))
+        ? value.subtitleMode as EditorialDraft["subtitleMode"] : "sentence",
+      subtitleStylePreset: ["stroke", "classic-yellow", "bold-shadow", "box-rounded", "news"].includes(String(value.subtitleStylePreset))
+        ? value.subtitleStylePreset as EditorialDraft["subtitleStylePreset"] : "stroke",
+      subtitleTextEffect: ["pop", "fade", "quick", "highlight", "karaoke", "typewriter"].includes(String(value.subtitleTextEffect))
+        ? value.subtitleTextEffect as EditorialDraft["subtitleTextEffect"] : "pop",
+      subtitlePosition: ["top", "middle", "bottom"].includes(String(value.subtitlePosition))
+        ? value.subtitlePosition as EditorialDraft["subtitlePosition"] : "bottom",
+      subtitleFontFamily: ["Kanit", "Prompt", "Sarabun", "Mitr", "Noto Sans Thai"].includes(String(value.subtitleFontFamily))
+        ? value.subtitleFontFamily as EditorialDraft["subtitleFontFamily"] : "Kanit",
+      subtitleFontSize: typeof value.subtitleFontSize === "number"
+        ? Math.min(96, Math.max(44, Math.round(value.subtitleFontSize))) : 60,
+      subtitleFontWeight: [400, 500, 600, 700, 800, 900].includes(Number(value.subtitleFontWeight))
+        ? Number(value.subtitleFontWeight) as EditorialDraft["subtitleFontWeight"] : 600,
+      headlineHook: {
+        enabled: headline.enabled === true,
+        headline: typeof headline.headline === "string" ? headline.headline : "",
+        ...(typeof headline.subheadline === "string" ? { subheadline: headline.subheadline } : {}),
+        durationMs: typeof headline.durationMs === "number" ? headline.durationMs : 8_000,
+        preset: headline.preset === "news" || headline.preset === "clean" ? headline.preset : "viral",
+        topPercent: typeof headline.topPercent === "number" ? headline.topPercent : 20,
+        fontFamily: ["Kanit", "Prompt", "Sarabun", "Mitr", "Noto Sans Thai"].includes(String(headline.fontFamily))
+          ? headline.fontFamily as EditorialDraft["subtitleFontFamily"] : "Kanit",
+        ...(typeof headline.fontSize === "number" ? { fontSize: headline.fontSize } : {}),
+        fontWeight: headline.fontWeight === 400 || headline.fontWeight === 900 ? headline.fontWeight : 600,
+        ...(typeof headline.subheadlineFontSize === "number" ? { subheadlineFontSize: headline.subheadlineFontSize } : {}),
+      },
+    });
+    const overlays: Record<string, string> = {};
+    if (Array.isArray(value.textOverlays)) {
+      value.textOverlays.forEach((item) => {
+        if (!item || typeof item !== "object") return;
+        const overlay = item as Record<string, unknown>;
+        if (typeof overlay.sceneKey === "string" && typeof overlay.text === "string") overlays[overlay.sceneKey] = overlay.text;
+      });
+    }
+    setTextOverlays(overlays);
+    setVisualQa(EMPTY_VISUAL_QA);
+    setFinalRepairSceneKeys([]);
+    setRepairLayer("keyframe");
+  }, [selected?.id, selected?.revision]);
 
   const stageIndex = useMemo(
     () => selected?.stage === "completed"
@@ -746,7 +1030,7 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
                   <article className="min-w-0">
                     <p className="text-xs uppercase tracking-[0.18em] text-[oklch(70%_0.11_75)]">Current gate</p>
                     <h3 className="mt-2 text-2xl font-semibold">{selected.stageLabel}</h3>
-                    {selected.stage === "completed" && selected.finalRenderUrl ? <CompletedFilm project={selected} /> : selected.stage === "setup" ? <dl className="mt-7 divide-y divide-[oklch(30%_0.025_300)] border-y border-[oklch(30%_0.025_300)] text-sm"><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">รูปแบบ</dt><dd>{selected.presentationModeLabel}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">ต้นทาง</dt><dd>{selected.sourcePackage || "วางสคริปต์โดยตรง"}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">Narration Master</dt><dd>{selected.narrationMasterUrl ? `${Math.round((selected.narrationDurationMs ?? 0) / 100) / 10} วินาที` : selected.narrationVoiceId ? `${selected.narrationProvider === "elevenlabs" ? "ElevenLabs v3" : "Hero Voice"} · ${selected.narrationVoiceId}` : "จะสร้างเสียงในขั้นถัดไป"}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">Character</dt><dd>{selected.characterProfileId ? `Reference Set v${selected.characterReferenceSetVersion}` : "ไม่ใช้ตัวละครประจำ"}</dd></div></dl> : selected.stage === "narration" ? <div className="mt-7 whitespace-pre-wrap border-y border-[oklch(30%_0.025_300)] py-6 text-base leading-8 text-[oklch(86%_0.02_300)]">{selected.narrativeSource}</div> : selected.stage === "storyboard" && selected.awaitingApproval ? storyboardLoading ? <div className="mt-7 flex min-h-40 items-center justify-center border-y border-[oklch(30%_0.025_300)]"><Loader2 className="h-5 w-5 text-violet-300" /></div> : storyboardDocument ? <StoryboardReview document={storyboardDocument} /> : <div className="mt-7 border border-dashed border-amber-500/40 p-6 text-sm text-amber-100">ยังเปิดไฟล์ storyboard ไม่ได้ กดรีเฟรชโปรเจกต์แล้วลองอีกครั้ง</div> : selected.awaitingApproval && ["character_look", "keyframes", "videos", "final_render"].includes(selected.stage) ? <ArtifactReview project={selected} /> : selected.stage === "music" && selected.awaitingApproval && availableMusic.length > 0 ? <MusicReview candidates={availableMusic} selectedKey={selectedMusicKey} onSelect={setSelectedMusicKey} /> : !selected.awaitingApproval ? <div className="mt-7 border border-dashed border-[oklch(42%_0.05_300)] p-7"><Loader2 className="mb-4 h-5 w-5 text-violet-300" /><p className="font-medium">Control Plane พร้อมแล้ว</p><p className="mt-2 max-w-[60ch] text-sm leading-6 text-[oklch(69%_0.025_300)]">ขั้น {selected.stageLabel} กำลังรอ Generation Adapter ส่งงานฉบับตรวจเข้ามา ระบบจะยังไม่ให้ approve จนมี artifact จริง</p></div> : <pre className="mt-7 overflow-auto border-y border-[oklch(30%_0.025_300)] py-6 text-sm leading-6 text-[oklch(80%_0.025_300)]">{JSON.stringify(selected.stageData, null, 2)}</pre>}
+                    {selected.stage === "completed" && selected.finalRenderUrl ? <CompletedFilm project={selected} /> : selected.stage === "setup" ? <dl className="mt-7 divide-y divide-[oklch(30%_0.025_300)] border-y border-[oklch(30%_0.025_300)] text-sm"><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">รูปแบบ</dt><dd>{selected.presentationModeLabel}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">ต้นทาง</dt><dd>{selected.sourcePackage || "วางสคริปต์โดยตรง"}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">Narration Master</dt><dd>{selected.narrationMasterUrl ? `${Math.round((selected.narrationDurationMs ?? 0) / 100) / 10} วินาที` : selected.narrationVoiceId ? `${selected.narrationProvider === "elevenlabs" ? "ElevenLabs v3" : "Hero Voice"} · ${selected.narrationVoiceId}` : "จะสร้างเสียงในขั้นถัดไป"}</dd></div><div className="grid gap-2 py-4 sm:grid-cols-[180px_1fr]"><dt className="text-[oklch(65%_0.025_300)]">Character</dt><dd>{selected.characterProfileId ? `Reference Set v${selected.characterReferenceSetVersion}` : "ไม่ใช้ตัวละครประจำ"}</dd></div></dl> : selected.stage === "narration" ? <div className="mt-7 whitespace-pre-wrap border-y border-[oklch(30%_0.025_300)] py-6 text-base leading-8 text-[oklch(86%_0.02_300)]">{selected.narrativeSource}</div> : selected.stage === "storyboard" && selected.awaitingApproval ? storyboardLoading ? <div className="mt-7 flex min-h-40 items-center justify-center border-y border-[oklch(30%_0.025_300)]"><Loader2 className="h-5 w-5 text-violet-300" /></div> : storyboardDocument ? <StoryboardReview document={storyboardDocument} /> : <div className="mt-7 border border-dashed border-amber-500/40 p-6 text-sm text-amber-100">ยังเปิดไฟล์ storyboard ไม่ได้ กดรีเฟรชโปรเจกต์แล้วลองอีกครั้ง</div> : selected.stage === "final_render" && selected.awaitingApproval ? <><div className="mt-7 border-y border-[oklch(30%_0.025_300)] py-4"><p className="text-sm font-semibold">{finalRenderSetup ? "ตั้งค่า Final Cut ก่อนสร้าง Preview" : "Final Preview พร้อมตรวจ"}</p><p className="mt-1 text-xs leading-5 text-[oklch(67%_0.025_300)]">เพลง ซับ และ Headline แก้ได้โดยไม่เจน B-roll ซ้ำ</p></div>{!finalRenderSetup && <ArtifactReview project={selected} />}{availableMusic.length > 0 && <MusicReview candidates={availableMusic} selectedKey={selectedMusicKey} onSelect={setSelectedMusicKey} narrationUrl={selected.narrationMasterUrl} />}<EditorialDesk scenes={availableFinalScenes} value={editorialDraft} overlays={textOverlays} onChange={setEditorialDraft} onOverlay={(sceneKey, value) => setTextOverlays((current) => ({ ...current, [sceneKey]: value }))} /></> : selected.awaitingApproval && ["character_look", "keyframes", "videos"].includes(selected.stage) ? <ArtifactReview project={selected} /> : selected.stage === "music" && selected.awaitingApproval && availableMusic.length > 0 ? <MusicReview candidates={availableMusic} selectedKey={selectedMusicKey} onSelect={setSelectedMusicKey} narrationUrl={selected.narrationMasterUrl} /> : !selected.awaitingApproval ? <div className="mt-7 border border-dashed border-[oklch(42%_0.05_300)] p-7"><Loader2 className="mb-4 h-5 w-5 text-violet-300" /><p className="font-medium">Control Plane พร้อมแล้ว</p><p className="mt-2 max-w-[60ch] text-sm leading-6 text-[oklch(69%_0.025_300)]">ขั้น {selected.stageLabel} กำลังรอ Generation Adapter ส่งงานฉบับตรวจเข้ามา ระบบจะยังไม่ให้ approve จนมี artifact จริง</p></div> : <pre className="mt-7 overflow-auto border-y border-[oklch(30%_0.025_300)] py-6 text-sm leading-6 text-[oklch(80%_0.025_300)]">{JSON.stringify(selected.stageData, null, 2)}</pre>}
                   </article>
 
                   <aside className="border-t border-[oklch(31%_0.025_300)] pt-6 xl:border-l xl:border-t-0 xl:pl-7 xl:pt-0">
@@ -758,23 +1042,33 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
                       </div>
                     ) : selected.awaitingApproval ? (
                       <div className="mt-6 space-y-5">
+                        {(["keyframes", "videos"].includes(selected.stage) || (selected.stage === "final_render" && !finalRenderSetup)) && <VisualQaChecklist value={visualQa} onChange={setVisualQa} />}
                         <button
                           type="button"
-                          disabled={saving || (selected.stage === "music" && !selectedMusicKey)}
+                          disabled={saving
+                            || (["music", "final_render"].includes(selected.stage) && !selectedMusicKey)
+                            || ((["keyframes", "videos"].includes(selected.stage) || (selected.stage === "final_render" && !finalRenderSetup && !finalCutDirty)) && !qaComplete)}
                           onClick={() => {
-                            const chosenMusic = selected.stage === "music"
+                            const chosenMusic = ["music", "final_render"].includes(selected.stage)
                               ? availableMusic.find((track) => `${track.source}:${track.trackId}` === selectedMusicKey)
                               : null;
+                            const target = {
+                              ...(chosenMusic ? { musicSource: chosenMusic.source, musicTrackId: chosenMusic.trackId } : {}),
+                              ...(selected.stage === "final_render" ? { editorial: editorialTarget } : {}),
+                              ...((["keyframes", "videos"].includes(selected.stage) || (selected.stage === "final_render" && !finalRenderSetup)) ? { visualQa } : {}),
+                            };
                             void decide(
-                              selected.stage === "final_render" ? "render" : "approve",
+                              selected.stage === "final_render" && !finalRenderSetup && !finalCutDirty ? "render" : "approve",
                               undefined,
-                              chosenMusic ? { musicSource: chosenMusic.source, musicTrackId: chosenMusic.trackId } : undefined,
+                              Object.keys(target).length ? target : undefined,
                             );
                           }}
                           className="flex min-h-12 w-full items-center justify-center gap-2 bg-[oklch(63%_0.2_300)] px-4 text-sm font-semibold hover:bg-[oklch(68%_0.19_300)] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-violet-300 disabled:opacity-40"
                         >
                           {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                          {selected.stage === "final_render" ? "อนุมัติ Final Render" : `อนุมัติ ${selected.stageLabel}`}
+                          {selected.stage === "final_render"
+                            ? finalRenderSetup ? "สร้าง Final Preview" : finalCutDirty ? "สร้าง Final Preview ใหม่" : "อนุมัติ Final Render"
+                            : `อนุมัติ ${selected.stageLabel}`}
                         </button>
                         {["storyboard", "keyframes", "videos"].includes(selected.stage)
                           || (selected.stage === "character_look" && selected.characterProfileId) ? (
@@ -818,6 +1112,7 @@ export default function StoryFilmWorkbench({ initialProjectId }: { initialProjec
                               </div>
                             </div>
                           ) : null}
+                        {selected.stage === "final_render" && !finalRenderSetup ? <div className="border-t border-[oklch(31%_0.025_300)] pt-5"><p className="text-sm font-semibold">สร้าง Revision เฉพาะจุด</p><p className="mt-1 text-xs leading-5 text-[oklch(65%_0.025_300)]">เลือกเฉพาะ B-roll ที่มีปัญหา ระบบจะคงซีนอื่น เพลง และ continuity เดิม</p><div className="mt-4 max-h-56 space-y-2 overflow-y-auto pr-1">{availableFinalScenes.filter((scene) => scene.visualOwner === "broll").map((scene) => { const checked = finalRepairSceneKeys.includes(scene.sceneKey); return <label key={scene.sceneKey} className="flex min-h-11 cursor-pointer items-start gap-3 border-b border-[oklch(28%_0.02_300)] py-2 text-xs"><input type="checkbox" checked={checked} onChange={(event) => setFinalRepairSceneKeys((current) => event.target.checked ? [...current, scene.sceneKey] : current.filter((key) => key !== scene.sceneKey))} className="mt-1 h-4 w-4 accent-violet-500" /><span><span className="font-semibold text-[oklch(84%_0.04_300)]">{scene.sceneKey}</span><span className="mt-1 line-clamp-2 block leading-5 text-[oklch(65%_0.025_300)]">{scene.sourceExcerpt}</span></span></label>; })}</div><label htmlFor="final-repair-layer" className="mb-2 mt-4 block text-xs font-medium">ชั้นที่ต้องซ่อม</label><select id="final-repair-layer" value={repairLayer} onChange={(event) => setRepairLayer(event.target.value as "keyframe" | "video")} className="min-h-11 w-full border border-[oklch(38%_0.035_300)] bg-[oklch(19%_0.02_300)] px-3 text-sm"><option value="keyframe">ภาพตั้งต้น / องค์ประกอบ / มือ</option><option value="video">การเคลื่อนไหว AI Video</option></select><label htmlFor="final-change-brief" className="mb-2 mt-4 block text-xs font-medium">อธิบายจุดที่ผิด</label><textarea id="final-change-brief" value={changeBrief} onChange={(event) => setChangeBrief(event.target.value.slice(0, 2_000))} rows={4} className="w-full resize-y border border-[oklch(38%_0.035_300)] bg-[oklch(19%_0.02_300)] px-3 py-2 text-sm leading-6 outline-none focus:border-violet-400" placeholder="เช่น scene-03 จอหันผิดด้าน ให้หันเข้าหาตัวละครและคงแสงเดิม" /><button type="button" disabled={saving || !changeBrief.trim() || finalRepairSceneKeys.length === 0 || (repairLayer === "video" && finalRepairSceneKeys.some((key) => availableFinalScenes.find((scene) => scene.sceneKey === key)?.mediaPlan !== "video"))} onClick={() => { const chosenMusic = availableMusic.find((track) => `${track.source}:${track.trackId}` === selectedMusicKey); void decide("revise", changeBrief, { sceneKeys: finalRepairSceneKeys, repairLayer, editorial: editorialTarget, ...(chosenMusic ? { musicSource: chosenMusic.source, musicTrackId: chosenMusic.trackId } : {}), visualQa }); }} className="mt-3 min-h-12 w-full border border-amber-400/60 px-4 text-sm font-semibold text-amber-100 hover:bg-amber-400/10 disabled:opacity-40">สร้าง Revision เฉพาะซีน</button></div> : null}
                       </div>
                     ) : <div className="mt-6 flex items-start gap-3 border border-[oklch(35%_0.035_300)] p-4"><Video className="mt-0.5 h-4 w-4 shrink-0 text-violet-300" /><p className="text-xs leading-5 text-[oklch(70%_0.025_300)]">ยังไม่มีงานให้ตัดสินใจ ระบบจะเปิดปุ่มเมื่อ revision ฉบับตรวจมาถึง</p></div>}
                     <div className="mt-7 border-t border-[oklch(31%_0.025_300)] pt-5">{selected.status === "paused" ? <button type="button" disabled={saving} onClick={() => void decide("resume")} className="flex min-h-11 w-full items-center justify-center gap-2 text-sm text-[oklch(79%_0.08_75)] hover:bg-[oklch(22%_0.025_300)]"><CirclePlay className="h-4 w-4" />ทำงานต่อ</button> : !["completed", "rendering"].includes(selected.status) ? <button type="button" disabled={saving} onClick={() => void decide("pause")} className="flex min-h-11 w-full items-center justify-center gap-2 text-sm text-[oklch(67%_0.025_300)] hover:bg-[oklch(22%_0.025_300)]"><CirclePause className="h-4 w-4" />พักโปรเจกต์</button> : null}</div>

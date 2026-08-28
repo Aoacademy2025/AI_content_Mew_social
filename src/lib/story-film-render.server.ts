@@ -1,12 +1,26 @@
 import "server-only";
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { prisma } from "@/lib/prisma";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { buildHeroSubtitleOverlayConfig } from "@/lib/hero-editorial";
+import {
+  captionsForStoryFilmEditorial,
+  fallbackStoryFilmCaptionTrack,
+  parseStoryFilmCaptionTrack,
+  parseStoryFilmEditorialConfig,
+  storyFilmSubtitleDesign,
+  type StoryFilmCaptionTrack,
+  type StoryFilmEditorialConfig,
+} from "@/lib/story-film-editorial";
+import { prepareRemotionBundlePublicDir } from "@/lib/render/remotion-public-dir";
+import { runRender } from "@/lib/render/run-render";
 import { probeVideoMedia } from "@/lib/video-media-probe.server";
+import type { SubtitleOverlayConfig } from "@/remotion/types";
 
 const WIDTH = 1080;
 const HEIGHT = 1920;
@@ -21,6 +35,7 @@ type RenderSegment = {
   visualOwner: "broll" | "presenter";
   sourceKind: "image" | "video" | "presenter";
   sourcePath: string;
+  sourceExcerpt: string;
 };
 
 export type StoryFilmRenderPlan = {
@@ -32,7 +47,32 @@ export type StoryFilmRenderPlan = {
   outputPath: string;
   outputUrl: string;
   segments: RenderSegment[];
+  editorial: StoryFilmEditorialConfig;
+  captionTrack: StoryFilmCaptionTrack;
 };
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __storyFilmEditorialBundleCache: { location: string | null; mtime: string } | undefined;
+}
+
+const editorialBundleCache = {
+  get: () => global.__storyFilmEditorialBundleCache ?? { location: null, mtime: "" },
+  set: (location: string | null, mtime: string) => {
+    global.__storyFilmEditorialBundleCache = { location, mtime };
+  },
+};
+
+function parsePayload(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 function runFfmpeg(args: string[], timeout = 10 * 60_000) {
   return new Promise<void>((resolve, reject) => {
@@ -144,6 +184,14 @@ export async function buildStoryFilmRenderPlan(
     },
     orderBy: { createdAt: "desc" },
   });
+  const narrationArtifact = await prisma.storyFilmArtifact.findFirst({
+    where: { projectId: project.id, kind: "narration_voice" },
+    orderBy: { createdAt: "desc" },
+  });
+  const alignmentArtifact = await prisma.storyFilmArtifact.findFirst({
+    where: { projectId: project.id, kind: "caption_alignment" },
+    orderBy: { createdAt: "desc" },
+  });
   const latest = latestArtifactByScene(artifacts);
   const presenterPath = project.presentationMode === "presenter_led"
     ? await resolveLocalMedia(
@@ -164,6 +212,7 @@ export async function buildStoryFilmRenderPlan(
         visualOwner: "presenter",
         sourceKind: "presenter",
         sourcePath: presenterPath,
+        sourceExcerpt: scene.sourceExcerpt,
       });
       continue;
     }
@@ -179,10 +228,25 @@ export async function buildStoryFilmRenderPlan(
       visualOwner: "broll",
       sourceKind,
       sourcePath: await resolveLocalMedia(source.storageUrl, workspaceRoot, ["renders"]),
+      sourceExcerpt: scene.sourceExcerpt,
     });
   }
 
   const outputName = `story-film-final-${job.id}.mp4`;
+  const payload = parsePayload(job.payloadJson);
+  let alignedCaptionTrack: StoryFilmCaptionTrack | null = null;
+  if (alignmentArtifact) {
+    try {
+      const alignmentPath = await resolveLocalMedia(alignmentArtifact.storageUrl, workspaceRoot, ["renders"]);
+      const alignmentDocument = JSON.parse(await fs.readFile(alignmentPath, "utf8")) as { track?: unknown };
+      alignedCaptionTrack = parseStoryFilmCaptionTrack(alignmentDocument.track);
+    } catch {
+      alignedCaptionTrack = null;
+    }
+  }
+  const storedCaptionTrack = alignedCaptionTrack ?? (narrationArtifact
+    ? parseStoryFilmCaptionTrack(parsePayload(narrationArtifact.metadataJson).captionTrack)
+    : null);
   return {
     projectId: project.id,
     jobId: job.id,
@@ -192,6 +256,8 @@ export async function buildStoryFilmRenderPlan(
     outputPath: path.join(workspaceRoot, "public", "renders", outputName),
     outputUrl: `/api/renders/${outputName}`,
     segments,
+    editorial: parseStoryFilmEditorialConfig(payload.editorial, durationMs),
+    captionTrack: storedCaptionTrack ?? fallbackStoryFilmCaptionTrack(segments),
   };
 }
 
@@ -248,65 +314,73 @@ async function renderSegment(segment: RenderSegment, destination: string) {
   ]);
 }
 
-export async function renderStoryFilmFinal(
-  jobId: string,
-  options: { workspaceRoot?: string } = {},
-) {
-  const plan = await buildStoryFilmRenderPlan(jobId, options);
-  await fs.mkdir(path.dirname(plan.outputPath), { recursive: true });
+async function validMaster(filePath: string, durationMs: number) {
   try {
-    const existing = await probeVideoMedia(plan.outputPath);
-    const stats = await fs.stat(plan.outputPath);
-    if (existing
-      && existing.width === WIDTH
-      && existing.height === HEIGHT
-      && existing.durationMs <= MAX_DURATION_MS
-      && Math.abs(existing.durationMs - plan.durationMs) <= 750
-      && stats.size > 0) {
-      return {
-        storageUrl: plan.outputUrl,
-        mimeType: "video/mp4",
-        sizeBytes: stats.size,
-        width: existing.width,
-        height: existing.height,
-        durationMs: existing.durationMs,
-        metadata: { adapter: "hero_render", segmentCount: plan.segments.length, recovered: true },
-      };
-    }
-  } catch {}
+    const [metadata, stats] = await Promise.all([probeVideoMedia(filePath), fs.stat(filePath)]);
+    return Boolean(metadata
+      && metadata.width === WIDTH
+      && metadata.height === HEIGHT
+      && metadata.durationMs <= MAX_DURATION_MS
+      && Math.abs(metadata.durationMs - durationMs) <= 750
+      && stats.isFile()
+      && stats.size > 0);
+  } catch {
+    return false;
+  }
+}
 
-  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "hero-story-film-render-"));
-  const stagedOutput = path.join(
-    path.dirname(plan.outputPath),
-    `.${path.basename(plan.outputPath)}.${process.pid}.tmp.mp4`,
+function storyFilmBaseFingerprint(plan: StoryFilmRenderPlan) {
+  return createHash("sha256").update(JSON.stringify({
+    projectId: plan.projectId,
+    durationMs: plan.durationMs,
+    narrationPath: plan.narrationPath,
+    musicPath: plan.musicPath,
+    segments: plan.segments.map((segment) => ({
+      sceneKey: segment.sceneKey,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      sourceKind: segment.sourceKind,
+      sourcePath: segment.sourcePath,
+    })),
+  })).digest("hex").slice(0, 24);
+}
+
+async function ensureStoryFilmBaseMaster(plan: StoryFilmRenderPlan, temporaryDirectory: string) {
+  const rendersDirectory = path.dirname(plan.outputPath);
+  const filename = `story-film-base-${plan.projectId}-${storyFilmBaseFingerprint(plan)}.mp4`;
+  const basePath = path.join(rendersDirectory, filename);
+  if (await validMaster(basePath, plan.durationMs)) {
+    return { path: basePath, url: `/api/renders/${filename}`, recovered: true };
+  }
+
+  const segmentPaths: string[] = [];
+  for (let index = 0; index < plan.segments.length; index += 1) {
+    const segmentPath = path.join(temporaryDirectory, `segment-${String(index).padStart(3, "0")}.mp4`);
+    await renderSegment(plan.segments[index], segmentPath);
+    segmentPaths.push(segmentPath);
+  }
+  const concatList = path.join(temporaryDirectory, "segments.txt");
+  await fs.writeFile(
+    concatList,
+    `${segmentPaths.map((item) => `file '${item.replace(/'/gu, "'\\''")}'`).join("\n")}\n`,
+    "utf8",
   );
-  try {
-    const segmentPaths: string[] = [];
-    for (let index = 0; index < plan.segments.length; index += 1) {
-      const segmentPath = path.join(temporaryDirectory, `segment-${String(index).padStart(3, "0")}.mp4`);
-      await renderSegment(plan.segments[index], segmentPath);
-      segmentPaths.push(segmentPath);
-    }
-    const concatList = path.join(temporaryDirectory, "segments.txt");
-    await fs.writeFile(
-      concatList,
-      `${segmentPaths.map((item) => `file '${item.replace(/'/gu, "'\\''")}'`).join("\n")}\n`,
-      "utf8",
-    );
-    const silentMaster = path.join(temporaryDirectory, "silent-master.mp4");
-    await runFfmpeg([
-      "-y",
-      "-f", "concat",
-      "-safe", "0",
-      "-i", concatList,
-      "-c:v", "copy",
-      "-an",
-      silentMaster,
-    ]);
+  const silentMaster = path.join(temporaryDirectory, "silent-master.mp4");
+  await runFfmpeg([
+    "-y",
+    "-f", "concat",
+    "-safe", "0",
+    "-i", concatList,
+    "-c:v", "copy",
+    "-an",
+    silentMaster,
+  ]);
 
-    const durationSec = seconds(plan.durationMs);
-    const fadeDuration = Math.min(2, plan.durationMs / 3_000);
-    const fadeStart = Math.max(0, plan.durationMs / 1_000 - fadeDuration);
+  const durationSec = seconds(plan.durationMs);
+  const fadeDuration = Math.min(2, plan.durationMs / 3_000);
+  const fadeStart = Math.max(0, plan.durationMs / 1_000 - fadeDuration);
+  const stagedBase = path.join(rendersDirectory, `.${filename}.${process.pid}.tmp.mp4`);
+  try {
     await runFfmpeg([
       "-y",
       "-i", silentMaster,
@@ -322,8 +396,130 @@ export async function renderStoryFilmFinal(
       "-b:a", "192k",
       "-t", durationSec,
       "-movflags", "+faststart",
-      stagedOutput,
+      stagedBase,
     ]);
+    if (!await validMaster(stagedBase, plan.durationMs)) throw new Error("story_film_base_output_invalid");
+    await fs.rename(stagedBase, basePath);
+  } finally {
+    await fs.rm(stagedBase, { force: true }).catch(() => {});
+  }
+  return { path: basePath, url: `/api/renders/${filename}`, recovered: false };
+}
+
+function storyFilmMediaOrigin() {
+  const raw = process.env.RENDER_INTERNAL_BASE_URL?.trim()
+    || `http://127.0.0.1:${process.env.PORT?.trim() || "3000"}`;
+  const parsed = new URL(raw);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("story_film_render_media_origin_invalid");
+  return raw.replace(/\/$/u, "");
+}
+
+async function renderWithHeroEditorialEngine(
+  jobId: string,
+  config: SubtitleOverlayConfig,
+  rendersDir: string,
+) {
+  const renderer = await import(/* webpackIgnore: true */ "@remotion/renderer" as string);
+  const { cancel, cancelSignal } = renderer.makeCancelSignal();
+  const result = await runRender({
+    isSubtitleOverlay: true,
+    isShortVideo: false,
+    isAvatarMode: false,
+    resolvedSubtitleConfig: config,
+    resolvedShortConfig: null,
+    resolvedScenes: null,
+    audioUrl: null,
+    captionsData: null,
+    avatarVideoUrl: null,
+    durationInFrames: config.durationInFrames,
+    customWidth: WIDTH,
+    customHeight: HEIGHT,
+    fps: FPS,
+    requestedJpegQuality: 90,
+    entryPoint: path.resolve(process.cwd(), "src", "remotion", "index.tsx"),
+    bundlePublicDir: prepareRemotionBundlePublicDir(process.cwd()),
+    rendersDir,
+    bundleCache: editorialBundleCache,
+  }, {
+    jobId: `story-film-editorial-${jobId}`,
+    cancelSignal,
+    cancel,
+    onProgress: (progress) => {
+      if (Math.round(progress) % 10 === 0) console.log(`[story-film-render] editorial ${Math.round(progress)}% job=${jobId}`);
+    },
+  });
+  const leaf = leafFromMediaUrl(result.videoUrl, "/api/renders/");
+  if (!leaf) throw new Error("story_film_editorial_output_url_invalid");
+  return path.join(rendersDir, leaf);
+}
+
+type StoryFilmRenderOptions = {
+  workspaceRoot?: string;
+  /** Test seam; production always uses the shared Hero Remotion renderer above. */
+  editorialRenderer?: (config: SubtitleOverlayConfig) => Promise<string>;
+};
+
+export async function renderStoryFilmFinal(
+  jobId: string,
+  options: StoryFilmRenderOptions = {},
+) {
+  const plan = await buildStoryFilmRenderPlan(jobId, options);
+  await fs.mkdir(path.dirname(plan.outputPath), { recursive: true });
+  if (await validMaster(plan.outputPath, plan.durationMs)) {
+    const [metadata, stats] = await Promise.all([probeVideoMedia(plan.outputPath), fs.stat(plan.outputPath)]);
+    return {
+      storageUrl: plan.outputUrl,
+      mimeType: "video/mp4",
+      sizeBytes: stats.size,
+      width: metadata!.width,
+      height: metadata!.height,
+      durationMs: metadata!.durationMs,
+      metadata: {
+        adapter: "hero_render",
+        editorialEngine: "hero_remotion_subtitle_overlay",
+        segmentCount: plan.segments.length,
+        recovered: true,
+        subtitlesEnabled: plan.editorial.subtitlesEnabled,
+        subtitleStylePreset: plan.editorial.subtitleStylePreset,
+        headlineEnabled: plan.editorial.headlineHook.enabled,
+        captionTimingSource: plan.captionTrack.source,
+        textOverlayCount: plan.editorial.textOverlays.length,
+      },
+    };
+  }
+
+  const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "hero-story-film-render-"));
+  const stagedOutput = path.join(
+    path.dirname(plan.outputPath),
+    `.${path.basename(plan.outputPath)}.${process.pid}.tmp.mp4`,
+  );
+  let disposableEditorialOutput: string | null = null;
+  try {
+    const baseMaster = await ensureStoryFilmBaseMaster(plan, temporaryDirectory);
+    const captions = captionsForStoryFilmEditorial({
+      editorial: plan.editorial,
+      track: plan.captionTrack,
+      scenes: plan.segments,
+    });
+    const needsEditorialRender = captions.length > 0 || plan.editorial.headlineHook.enabled;
+    if (needsEditorialRender) {
+      const config = buildHeroSubtitleOverlayConfig({
+        baseVideoUrl: new URL(baseMaster.url, storyFilmMediaOrigin()).toString(),
+        captions,
+        durationMs: plan.durationMs,
+        fps: FPS,
+        design: storyFilmSubtitleDesign(plan.editorial),
+        headlineHook: plan.editorial.headlineHook,
+      });
+      const editorialOutput = options.editorialRenderer
+        ? await options.editorialRenderer(config)
+        : await renderWithHeroEditorialEngine(jobId, config, path.dirname(plan.outputPath));
+      if (!options.editorialRenderer) disposableEditorialOutput = editorialOutput;
+      await fs.copyFile(editorialOutput, stagedOutput);
+    } else {
+      await fs.copyFile(baseMaster.path, stagedOutput);
+    }
+
     const metadata = await probeVideoMedia(stagedOutput);
     if (!metadata
       || metadata.width !== WIDTH
@@ -344,13 +540,23 @@ export async function renderStoryFilmFinal(
       durationMs: metadata.durationMs,
       metadata: {
         adapter: "hero_render",
+        editorialEngine: "hero_remotion_subtitle_overlay",
+        baseMasterReused: baseMaster.recovered,
         segmentCount: plan.segments.length,
         presenterSegments: plan.segments.filter((segment) => segment.visualOwner === "presenter").length,
         brollSegments: plan.segments.filter((segment) => segment.visualOwner === "broll").length,
+        subtitlesEnabled: plan.editorial.subtitlesEnabled,
+        subtitleMode: plan.editorial.subtitleMode,
+        subtitleStylePreset: plan.editorial.subtitleStylePreset,
+        headlineEnabled: plan.editorial.headlineHook.enabled,
+        captionTimingSource: plan.captionTrack.source,
+        captionCount: captions.length,
+        textOverlayCount: plan.editorial.textOverlays.length,
       },
     };
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => {});
     await fs.rm(stagedOutput, { force: true }).catch(() => {});
+    if (disposableEditorialOutput) await fs.rm(disposableEditorialOutput, { force: true }).catch(() => {});
   }
 }

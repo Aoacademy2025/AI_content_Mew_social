@@ -18,6 +18,13 @@ assert.match(internalMcp, /basePath: "\/api\/story-film"/);
 assert.match(internalMcp, /patPrincipal && isInternalAiTester\(patPrincipal\.user\)/);
 assert.match(internalMcp, /principal && isInternalAiTester\(principal\.user\)/);
 assert.match(internalMcp, /fail closed before tools\/list/);
+assert.match(internalMcp, /sceneKeys: z\.array/);
+assert.match(internalMcp, /repairLayer: z\.enum\(\["keyframe", "video"\]\)/);
+assert.match(internalMcp, /editorial: z\.object/);
+assert.match(internalMcp, /headlineHook: z\.object/);
+assert.match(internalMcp, /subtitleStylePreset: z\.enum/);
+assert.match(internalMcp, /visualQa: z\.object/);
+assert.match(internalMcp, /Final Render has two gates/);
 assert.match(audit, /redacted\.narrativeSource/);
 assert.match(proxy, /"\/api\/story-film\(\.\*\)"/);
 
@@ -26,3 +33,4 @@ console.log("ok: Internal Story Film MCP exposes exactly start/read/decide");
 console.log("ok: PAT and Clerk OAuth both require an internal tester before tool discovery");
 console.log("ok: Story Film Narrative Source is redacted from MCP audit logs");
 console.log("ok: middleware passes Bearer transport through to the route-owned internal auth gate");
+console.log("ok: Internal MCP exposes typed Hero subtitles/Headline and selective-repair targets");

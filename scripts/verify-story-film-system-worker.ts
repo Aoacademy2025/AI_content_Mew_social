@@ -8,7 +8,7 @@ const ecosystem = readFileSync("ecosystem.config.js", "utf8");
 const deploy = readFileSync("deploy/deploy.sh", "utf8");
 const watchdog = readFileSync("scripts/ops-watchdog.sh", "utf8");
 
-assert.match(worker, /providerBackends: \["hero_text", "hero_voice", "elevenlabs", "hero_render"\]/, "system worker must lease Hero text, configured narration, and render jobs");
+assert.match(worker, /providerBackends: \["hero_text", "hero_alignment", "hero_voice", "elevenlabs", "hero_render"\]/, "system worker must lease Hero text, presenter alignment, configured narration, and render jobs");
 assert.doesNotMatch(worker, /providerBackends:\s*\[[^\]]*"grok_subscription"|spawn\([^\n]*grok/iu, "system worker must never consume the Grok subscription lane");
 assert.match(worker, /heartbeatStoryFilmGenerationJob/, "long Gemini planning must renew its durable lease");
 assert.match(worker, /markStoryFilmGenerationSubmitted/, "a provider attempt must be confirmed before completion");
@@ -16,6 +16,10 @@ assert.match(worker, /planStoryFilmStoryboardJob/, "the worker must delegate to 
 assert.match(worker, /startHeroVoiceGeneration/, "faceless narration must reuse the durable Hero Voice runtime");
 assert.match(worker, /heroVoiceResultFromJob/, "only a completed durable voice result may become Narration Master");
 assert.match(worker, /synthesizeElevenLabsV3/, "faceless narration may use the shared ElevenLabs v3 adapter");
+assert.match(worker, /storyFilmCaptionTrackFromTtsTiming/, "narration provider timing must become a durable caption track");
+assert.match(worker, /elevenlabs_alignment/, "ElevenLabs character alignment must be preserved as caption timing");
+assert.match(worker, /hero_voice_timing/, "Hero Voice timing must be preserved as caption timing");
+assert.match(worker, /persistCaptionAlignment/, "presenter uploads must produce a durable forced-alignment artifact");
 assert.match(worker, /NonRetryableStoryFilmProviderError/, "an uncertain paid ElevenLabs POST must not auto-spend quota twice");
 assert.match(worker, /renderStoryFilmFinal/, "the Hero-owned lane must assemble the approved final film locally");
 assert.match(ecosystem, /name: "story-film-system-worker"[\s\S]*?scripts\/story-film-system-worker\.ts/, "PM2 must own the long-lived system worker");

@@ -24,7 +24,9 @@ export const runtime = "nodejs";
 const PUBLIC_ORIGIN = "https://studio.heroaiengine.com";
 const INTERNAL_INSTRUCTIONS = `Hero Story Film internal control plane for Mew and the Mew Social team only.
 Use hero_story_film_start once, hero_story_film_read before every decision, and hero_story_film_decide with the exact stage and revision just read.
-Never infer an approval, never approve a gate without a Hero review link, and never call the public create_video_job tool as a fallback.`;
+Never infer an approval, never approve a gate without a Hero review link, and never call the public create_video_job tool as a fallback.
+Final Render has two gates: approve the music/editorial setup to create a preview, then review the actual preview before decision=render.
+Use final_render revise with sceneKeys and repairLayer to repair only selected B-roll scenes; music/editorial-only revisions must leave visual assets intact.`;
 
 function absoluteReviewUrl(value: string): string {
   const origin = process.env.MCP_PUBLIC_ORIGIN?.trim()
@@ -154,10 +156,47 @@ const handler = createMcpHandler(
           decision: z.enum(["approve", "revise", "reroll", "fallback", "pause", "resume", "render"]),
           instruction: z.string().max(2_000).optional(),
           target: z.object({
-            sceneKey: z.string().optional(),
+            sceneKey: z.string().regex(/^scene-\d{2}$/u).optional(),
             videoSceneKeys: z.array(z.string().regex(/^scene-\d{2}$/u)).max(60).optional(),
+            sceneKeys: z.array(z.string().regex(/^scene-\d{2}$/u)).max(60).optional(),
+            repairLayer: z.enum(["keyframe", "video"]).optional(),
             musicSource: z.enum(["user", "system"]).optional(),
             musicTrackId: z.string().optional(),
+            editorial: z.object({
+              subtitlesEnabled: z.boolean(),
+              subtitleMode: z.enum(["sentence", "1", "2", "3", "4"]),
+              subtitleStylePreset: z.enum(["stroke", "classic-yellow", "bold-shadow", "box-rounded", "news"]),
+              subtitleTextEffect: z.enum(["pop", "fade", "quick", "highlight", "karaoke", "typewriter"]),
+              subtitlePosition: z.enum(["top", "middle", "bottom"]),
+              subtitleFontFamily: z.enum(["Kanit", "Prompt", "Sarabun", "Mitr", "Noto Sans Thai"]),
+              subtitleFontSize: z.number().int().min(44).max(96).optional(),
+              subtitleFontWeight: z.union([
+                z.literal(400), z.literal(500), z.literal(600),
+                z.literal(700), z.literal(800), z.literal(900),
+              ]).optional(),
+              headlineHook: z.object({
+                enabled: z.boolean(),
+                headline: z.string().max(64),
+                subheadline: z.string().max(90).optional(),
+                durationMs: z.number().int().min(3_000).max(20_000),
+                preset: z.enum(["viral", "news", "clean"]),
+                topPercent: z.number().int().min(10).max(42),
+                fontFamily: z.enum(["Kanit", "Prompt", "Sarabun", "Mitr", "Noto Sans Thai"]).optional(),
+                fontSize: z.number().int().min(52).max(120).optional(),
+                fontWeight: z.union([z.literal(400), z.literal(600), z.literal(900)]).optional(),
+                subheadlineFontSize: z.number().int().min(32).max(88).optional(),
+              }),
+              textOverlays: z.array(z.object({
+                sceneKey: z.string().regex(/^scene-\d{2}$/u),
+                text: z.string().min(1).max(240),
+              })).max(60),
+            }).optional(),
+            visualQa: z.object({
+              anatomy: z.boolean(),
+              spatialDirection: z.boolean(),
+              continuity: z.boolean(),
+              generatedText: z.boolean(),
+            }).optional(),
           }).optional(),
           idempotencyKey: z.string().regex(/^[A-Za-z0-9:_-]{8,120}$/).optional(),
         },

@@ -31,6 +31,12 @@ import { renderStoryFilmFinal } from "../src/lib/story-film-render.server";
 import { decryptKey } from "../src/lib/key-crypto";
 import { getFfmpegPath } from "../src/lib/ffmpeg-path";
 import { synthesizeElevenLabsV3 } from "../src/lib/elevenlabs-v3.server";
+import {
+  storyFilmCaptionTrackFromTtsTiming,
+  type StoryFilmCaptionTrack,
+} from "../src/lib/story-film-editorial";
+import type { TtsTiming } from "../src/lib/tts-timing";
+import { alignStoryFilmPresenterCaptions } from "../src/lib/story-film-caption-alignment.server";
 
 const POLL_MS = Math.max(1_000, Number(process.env.STORY_FILM_SYSTEM_POLL_MS) || 4_000);
 const HEARTBEAT_MS = 30_000;
@@ -40,6 +46,14 @@ let running = true;
 const execFileAsync = promisify(execFile);
 
 class NonRetryableStoryFilmProviderError extends Error {}
+
+function compactCaptionTrack(track: StoryFilmCaptionTrack | null) {
+  if (!track) return undefined;
+  // Artifact metadata is intentionally capped. Sentence captions remain exact;
+  // only the optional word-density modes fall back when an unusually long Thai
+  // word timeline would make metadata too large.
+  return JSON.stringify(track).length <= 75_000 ? track : { ...track, words: [] };
+}
 
 process.on("SIGINT", () => { running = false; });
 process.on("SIGTERM", () => { running = false; });
@@ -83,6 +97,98 @@ async function persistStoryboard(job: LeasedStoryFilmJob) {
   await fs.writeFile(temporaryPath, encoded, { flag: "wx" });
   await fs.rename(temporaryPath, finalPath);
   return { finalPath, sizeBytes: encoded.byteLength };
+}
+
+function localRenderPath(rawUrl: string) {
+  const match = /^\/api\/renders\/([A-Za-z0-9._-]+)$/u.exec(rawUrl);
+  if (!match || match[1] !== path.basename(match[1])) throw new Error("caption alignment requires a local Narration Master");
+  return path.join(rendersDir, match[1]);
+}
+
+async function persistCaptionAlignment(job: LeasedStoryFilmJob) {
+  const finalPath = path.join(rendersDir, `story-film-caption-track-${job.id}.json`);
+  try {
+    const existing = await fs.readFile(finalPath);
+    const parsed = JSON.parse(existing.toString("utf8")) as { track?: StoryFilmCaptionTrack | null; reason?: string | null };
+    if (!job.resumeProviderJobId) {
+      await markStoryFilmGenerationSubmitted({
+        jobId: job.id,
+        workerId: WORKER_ID,
+        leaseToken: job.leaseToken,
+        providerJobId: `gemini-alignment:recovered:${job.id}`,
+      });
+    }
+    return {
+      storageUrl: `/api/renders/${path.basename(finalPath)}`,
+      mimeType: "application/vnd.hero.caption-track+json",
+      sizeBytes: existing.byteLength,
+      durationMs: Number(job.payload.narrationDurationMs) || undefined,
+      metadata: {
+        adapter: "gemini_forced_alignment",
+        captionTimingSource: parsed.track ? "forced_alignment" : "storyboard_fallback",
+        reason: parsed.reason ?? null,
+        recovered: true,
+      },
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  if (job.resumeProviderJobId) {
+    throw new NonRetryableStoryFilmProviderError(
+      "Gemini alignment was already submitted but no durable caption track exists; refusing to spend twice",
+    );
+  }
+  const project = await prisma.storyFilmProject.findUnique({ where: { id: job.projectId } });
+  if (!project) throw new Error("caption alignment project is missing");
+  const apiKey = process.env.GEMINI_SERVER_KEY?.trim();
+  const narrationMasterUrl = payloadText(job, "narrationMasterUrl", 2_000);
+  const script = payloadText(job, "script", 12_000);
+  const durationMs = Number(job.payload.narrationDurationMs);
+  if (!(durationMs > 0) || durationMs > 180_000) throw new Error("invalid caption alignment duration");
+  await markStoryFilmGenerationSubmitted({
+    jobId: job.id,
+    workerId: WORKER_ID,
+    leaseToken: job.leaseToken,
+    providerJobId: `gemini-alignment:${job.id}`,
+  });
+  let aligned: Awaited<ReturnType<typeof alignStoryFilmPresenterCaptions>>;
+  if (!apiKey) {
+    aligned = { track: null, reason: "server_gemini_key_missing" };
+  } else {
+    try {
+      aligned = await alignStoryFilmPresenterCaptions({
+        videoPath: localRenderPath(narrationMasterUrl),
+        script,
+        durationMs,
+        apiKey,
+      });
+    } catch (error) {
+      // Alignment improves editorial timing but must never block the film.
+      // Persist the explicit fallback so Studio and render metadata stay honest.
+      aligned = {
+        track: null,
+        reason: `provider_failure:${error instanceof Error ? error.message : String(error)}`.slice(0, 500),
+      };
+    }
+  }
+  const encoded = Buffer.from(`${JSON.stringify(aligned)}\n`, "utf8");
+  if (encoded.byteLength > 2 * 1024 * 1024) throw new Error("caption track exceeds 2 MB");
+  await fs.mkdir(rendersDir, { recursive: true });
+  const temporaryPath = `${finalPath}.${process.pid}.tmp`;
+  await fs.writeFile(temporaryPath, encoded, { flag: "wx" });
+  await fs.rename(temporaryPath, finalPath);
+  return {
+    storageUrl: `/api/renders/${path.basename(finalPath)}`,
+    mimeType: "application/vnd.hero.caption-track+json",
+    sizeBytes: encoded.byteLength,
+    durationMs,
+    metadata: {
+      adapter: "gemini_forced_alignment",
+      captionTimingSource: aligned.track ? "forced_alignment" : "storyboard_fallback",
+      reason: aligned.reason,
+      captionCount: aligned.track?.captions.length ?? 0,
+    },
+  };
 }
 
 function payloadText(job: LeasedStoryFilmJob, key: string, max: number) {
@@ -138,12 +244,22 @@ async function persistHeroVoiceNarration(job: LeasedStoryFilmJob) {
   if (!match) throw new Error("Hero Voice returned an unsafe result URL");
   const finalPath = path.join(rendersDir, match[1]);
   const stats = await fs.stat(finalPath);
+  const captionTrack = compactCaptionTrack(storyFilmCaptionTrackFromTtsTiming(
+    result.timing,
+    result.audioDurationMs,
+    "hero_voice_timing",
+  ));
   return {
     storageUrl: result.voiceUrl,
     mimeType: "audio/wav",
     sizeBytes: stats.size,
     durationMs: result.audioDurationMs,
-    metadata: { adapter: "hero_voice", aiGenerationJobId: voiceJob.id, voiceId },
+    metadata: {
+      adapter: "hero_voice",
+      aiGenerationJobId: voiceJob.id,
+      voiceId,
+      ...(captionTrack ? { captionTrack } : {}),
+    },
   };
 }
 
@@ -242,12 +358,39 @@ async function persistElevenLabsNarration(job: LeasedStoryFilmJob) {
   await fs.rename(temporaryPath, finalPath);
   const stats = await fs.stat(finalPath);
   const durationMs = await probeAudioDurationMs(finalPath);
+  const alignment = result.alignment;
+  const timing: TtsTiming | null = alignment && alignment.characters.length > 0
+    ? {
+        provider: "elevenlabs",
+        segments: [{
+          text: alignment.characters.join(""),
+          startMs: 0,
+          durationMs,
+        }],
+        chars: {
+          characters: alignment.characters,
+          startSec: alignment.character_start_times_seconds,
+          endSec: alignment.character_end_times_seconds,
+        },
+      }
+    : null;
+  const captionTrack = compactCaptionTrack(storyFilmCaptionTrackFromTtsTiming(
+    timing,
+    durationMs,
+    "elevenlabs_alignment",
+  ));
   return {
     storageUrl: `/api/renders/${filename}`,
     mimeType: "audio/mpeg",
     sizeBytes: stats.size,
     durationMs,
-    metadata: { adapter: "elevenlabs", modelId: "eleven_v3", voiceId, speed },
+    metadata: {
+      adapter: "elevenlabs",
+      modelId: "eleven_v3",
+      voiceId,
+      speed,
+      ...(captionTrack ? { captionTrack } : {}),
+    },
   };
 }
 
@@ -290,6 +433,8 @@ async function processJob(job: LeasedStoryFilmJob) {
           sizeBytes: stored.sizeBytes,
           metadata: { planner: "hero_text", storyboardVersion: "hero-story-film-storyboard-v1" },
         }))
+      : job.kind === "caption_alignment"
+        ? await persistCaptionAlignment(job)
       : job.kind === "narration_voice"
         ? await persistNarration(job)
         : job.kind === "final_render"
@@ -327,7 +472,7 @@ async function main() {
   while (running) {
     const jobs = await leaseStoryFilmGenerationJobs({
       workerId: WORKER_ID,
-      providerBackends: ["hero_text", "hero_voice", "elevenlabs", "hero_render"],
+      providerBackends: ["hero_text", "hero_alignment", "hero_voice", "elevenlabs", "hero_render"],
       maxJobs: 2,
     }).catch((error) => {
       console.error("[story-film-system] lease failed:", error);

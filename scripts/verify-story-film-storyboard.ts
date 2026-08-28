@@ -77,9 +77,17 @@ async function main() {
     const job = await prisma.storyFilmGenerationJob.findFirstOrThrow({
       where: { projectId: started.project.id, kind: "storyboard_plan" },
     });
+    const alignmentJob = await prisma.storyFilmGenerationJob.findFirstOrThrow({
+      where: { projectId: started.project.id, kind: "caption_alignment" },
+    });
     ok(
       review.stage === "storyboard" && job.providerBackend === "hero_text",
       "Narration approval creates one durable Hero text planner job",
+    );
+    ok(
+      alignmentJob.providerBackend === "hero_alignment"
+        && JSON.parse(alignmentJob.payloadJson).narrationMasterUrl === presenter.url,
+      "presenter Narration Master queues durable forced alignment beside Storyboard planning",
     );
     await prisma.storyFilmGenerationJob.update({
       where: { id: job.id },

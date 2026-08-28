@@ -127,7 +127,25 @@ async function main() {
         kind: "final_render",
         providerBackend: "hero_render",
         sceneKey: "master",
-        payloadJson: "{}",
+        payloadJson: JSON.stringify({
+          editorial: {
+            subtitlesEnabled: true,
+            subtitleMode: "sentence",
+            subtitleStylePreset: "box-rounded",
+            subtitleTextEffect: "fade",
+            subtitlePosition: "bottom",
+            subtitleFontFamily: "Kanit",
+            headlineHook: {
+              enabled: true,
+              headline: "A clue appears",
+              durationMs: 3_000,
+              preset: "viral",
+              topPercent: 20,
+              fontFamily: "Kanit",
+            },
+            textOverlays: [{ sceneKey: "scene-01", text: "A clue appears" }],
+          },
+        }),
         idempotencyKey: "render:fixture:job:001",
       },
     });
@@ -136,10 +154,23 @@ async function main() {
     ok(
       plan.segments.length === 2
         && plan.segments[0].sourceKind === "image"
-        && plan.segments[1].sourceKind === "presenter",
+        && plan.segments[1].sourceKind === "presenter"
+        && plan.editorial.subtitlesEnabled
+        && plan.editorial.subtitleStylePreset === "box-rounded"
+        && plan.editorial.headlineHook.enabled
+        && plan.captionTrack.source === "storyboard_fallback"
+        && plan.editorial.textOverlays[0]?.sceneKey === "scene-01",
       "the render plan alternates approved B-roll with exact presenter timeline slices",
     );
-    const output = await renderer.renderStoryFilmFinal(job.id, { workspaceRoot: fixtureRoot });
+    let editorialConfig: { headlineHook?: { headline?: string }; keywordPopups?: unknown[]; subtitleStylePreset?: string } | null = null;
+    const output = await renderer.renderStoryFilmFinal(job.id, {
+      workspaceRoot: fixtureRoot,
+      editorialRenderer: async (config) => {
+        editorialConfig = config;
+        const filename = decodeURIComponent(new URL(config.videoUrl).pathname.split("/").at(-1) ?? "");
+        return join(rendersDir, filename);
+      },
+    });
     ok(
       output.mimeType === "video/mp4"
         && output.width === 1080
@@ -148,8 +179,16 @@ async function main() {
       "Hero render produces one validated 9:16 MP4 on the Narration Master duration",
     );
     ok(
-      output.metadata.presenterSegments === 1 && output.metadata.brollSegments === 1,
-      "final-render metadata preserves presenter and B-roll coverage for QA",
+      output.metadata.presenterSegments === 1
+        && output.metadata.brollSegments === 1
+        && output.metadata.subtitlesEnabled === true
+        && output.metadata.subtitleStylePreset === "box-rounded"
+        && output.metadata.headlineEnabled === true
+        && output.metadata.editorialEngine === "hero_remotion_subtitle_overlay"
+        && editorialConfig?.headlineHook?.headline === "A clue appears"
+        && Array.isArray(editorialConfig?.keywordPopups)
+        && output.metadata.textOverlayCount === 1,
+      "final render routes captions and Headline through the shared Hero Remotion contract",
     );
   } finally {
     await prisma.$disconnect();
