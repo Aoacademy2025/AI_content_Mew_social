@@ -377,16 +377,53 @@ async function main() {
     ok(
       finalRender.stage === "final_render"
         && finalRender.musicTrackId === reusableMusic.id
-        && finalRender.musicUrl === "/api/music/mew-story-pulse.mp3",
-      "the selected reusable soundtrack is pinned into the final-render project state",
+        && finalRender.musicUrl === "/api/music/mew-story-pulse.mp3"
+        && finalRender.stageData.renderSetup === true,
+      "the selected reusable soundtrack is pinned into the editable Final Cut setup",
     );
+    ok(
+      await prisma.storyFilmGenerationJob.count({ where: { projectId: started.project.id, kind: "final_render" } }) === 0,
+      "music approval does not waste a render before editorial setup is approved",
+    );
+    const finalPreviewPending = await story.decideStoryFilm(mew.id, {
+      projectId: started.project.id,
+      expectedStage: "final_render",
+      expectedRevision: finalRender.revision,
+      decision: "approve",
+      target: {
+        musicSource: "user",
+        musicTrackId: reusableMusic.id,
+        editorial: {
+          subtitlesEnabled: true,
+          subtitleMode: "sentence",
+          subtitleStylePreset: "box-rounded",
+          subtitleTextEffect: "fade",
+          subtitlePosition: "bottom",
+          subtitleFontFamily: "Kanit",
+          headlineHook: {
+            enabled: true,
+            headline: "ของจริงต้องมีร่องรอย",
+            durationMs: 5_000,
+            preset: "viral",
+            topPercent: 20,
+            fontFamily: "Kanit",
+          },
+          textOverlays: [{ sceneKey: "scene-02", text: "ของจริงต้องมีร่องรอย" }],
+        },
+      },
+      idempotencyKey: "character:final:setup:001",
+    });
     const renderJob = await prisma.storyFilmGenerationJob.findFirstOrThrow({
       where: { projectId: started.project.id, kind: "final_render" },
     });
+    const renderPayload = JSON.parse(renderJob.payloadJson) as { editorial?: { subtitleStylePreset?: string; headlineHook?: { enabled?: boolean }; textOverlays?: unknown[] } };
     ok(
       renderJob.providerBackend === "hero_render"
-        && renderJob.generationEpoch === finalRender.generationEpoch,
-      "music approval queues one provider-neutral Hero final-render job",
+        && renderJob.generationEpoch === finalPreviewPending.generationEpoch
+        && renderPayload.editorial?.subtitleStylePreset === "box-rounded"
+        && renderPayload.editorial.headlineHook?.enabled === true
+        && renderPayload.editorial.textOverlays?.length === 1,
+      "Final Cut approval queues one Hero render with shared subtitle, Headline, and text inputs",
     );
     const renderLease = await queue.leaseStoryFilmGenerationJobs({
       workerId: "hero-final-render-test",
@@ -416,21 +453,109 @@ async function main() {
     assert.equal(finalReview.kind, "project");
     ok(
       finalReview.project.awaitingApproval
-        && finalReview.project.finalRenderUrl === "/api/renders/story-film-final-test.mp4",
-      "a validated 9:16 final artifact opens the last creator review gate",
+        && finalReview.project.finalRenderUrl === "/api/renders/story-film-final-test.mp4"
+        && Array.isArray(finalReview.project.stageData.scenes)
+        && (finalReview.project.stageData.editorial as { subtitleStylePreset?: string }).subtitleStylePreset === "box-rounded",
+      "a validated 9:16 preview opens Final Review without losing its editable context",
     );
-    const completed = await story.decideStoryFilm(mew.id, {
+    const repairPending = await story.decideStoryFilm(mew.id, {
       projectId: started.project.id,
       expectedStage: "final_render",
       expectedRevision: finalReview.project.revision,
+      decision: "revise",
+      instruction: "Remove the extra hand and preserve the object composition.",
+      target: {
+        sceneKeys: ["scene-02"],
+        repairLayer: "keyframe",
+        musicSource: "user",
+        musicTrackId: reusableMusic.id,
+        editorial: renderPayload.editorial,
+      },
+      idempotencyKey: "character:final:repair:001",
+    });
+    const repairJobs = await prisma.storyFilmGenerationJob.findMany({
+      where: { projectId: started.project.id, generationEpoch: repairPending.generationEpoch },
+    });
+    const repairPayload = JSON.parse(repairJobs[0].payloadJson) as { sourceImageUrl?: string; referenceMode?: string; prompt?: string };
+    ok(
+      repairPending.stage === "keyframes"
+        && repairJobs.length === 1
+        && repairJobs[0].sceneKey === "scene-02"
+        && repairPayload.sourceImageUrl === "/api/renders/scene-02-revised.png"
+        && repairPayload.referenceMode === "image_edit",
+      "Final Review repairs only the selected keyframe and anchors it to the current approved image",
+    );
+    const repairLease = await queue.leaseStoryFilmGenerationJobs({
+      workerId: "mew-grok-final-repair",
+      providerBackends: ["grok_subscription"],
+      maxJobs: 1,
+    });
+    await completeImage(queue, repairLease[0], "mew-grok-final-repair", "/api/renders/scene-02-final-repair.png");
+    const repairedFrameReview = await story.readStoryFilm(mew.id, { projectId: started.project.id });
+    assert.equal(repairedFrameReview.kind, "project");
+    const revisedRenderPending = await story.decideStoryFilm(mew.id, {
+      projectId: started.project.id,
+      expectedStage: "keyframes",
+      expectedRevision: repairedFrameReview.project.revision,
+      decision: "approve",
+      target: { visualQa: { anatomy: true, spatialDirection: true, continuity: true, generatedText: true } },
+      idempotencyKey: "character:final:repair-frame:approve:001",
+    });
+    ok(
+      revisedRenderPending.stage === "final_render" && !revisedRenderPending.awaitingApproval,
+      "an image-only repair bypasses videos and music and queues a new Final Preview",
+    );
+    const revisedRenderLease = await queue.leaseStoryFilmGenerationJobs({
+      workerId: "hero-final-render-revision",
+      providerBackends: ["hero_render"],
+      maxJobs: 1,
+    });
+    await queue.markStoryFilmGenerationSubmitted({
+      jobId: revisedRenderLease[0].id,
+      workerId: "hero-final-render-revision",
+      leaseToken: revisedRenderLease[0].leaseToken,
+      providerJobId: `hero-render:${revisedRenderLease[0].id}`,
+    });
+    await queue.completeStoryFilmGenerationJob({
+      jobId: revisedRenderLease[0].id,
+      workerId: "hero-final-render-revision",
+      leaseToken: revisedRenderLease[0].leaseToken,
+      artifact: {
+        storageUrl: "/api/renders/story-film-final-revised.mp4",
+        mimeType: "video/mp4",
+        sizeBytes: 55_000,
+        width: 1080,
+        height: 1920,
+        durationMs: 20_000,
+      },
+    });
+    const revisedFinalReview = await story.readStoryFilm(mew.id, { projectId: started.project.id });
+    assert.equal(revisedFinalReview.kind, "project");
+    await assert.rejects(
+      story.decideStoryFilm(mew.id, {
+        projectId: started.project.id,
+        expectedStage: "final_render",
+        expectedRevision: revisedFinalReview.project.revision,
+        decision: "render",
+        idempotencyKey: "character:final:qa-missing:001",
+      }),
+      (error: unknown) => (error as { code?: string }).code === "gate_not_ready",
+    );
+    passed += 1;
+    console.log("ok: Final Render cannot be approved until every Visual QA check is explicit");
+    const completed = await story.decideStoryFilm(mew.id, {
+      projectId: started.project.id,
+      expectedStage: "final_render",
+      expectedRevision: revisedFinalReview.project.revision,
       decision: "render",
+      target: { visualQa: { anatomy: true, spatialDirection: true, continuity: true, generatedText: true } },
       idempotencyKey: "character:final:approve:001",
     });
     ok(
       completed.stage === "completed"
         && completed.status === "completed"
-        && completed.finalRenderUrl === "/api/renders/story-film-final-test.mp4",
-      "approving the reviewed final render completes the one-project workflow",
+        && completed.finalRenderUrl === "/api/renders/story-film-final-revised.mp4",
+      "approving the repaired Final Preview completes the one-project workflow",
     );
   } finally {
     await prisma.$disconnect();

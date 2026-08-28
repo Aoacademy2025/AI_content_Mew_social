@@ -86,7 +86,10 @@ async function main() {
     passed += 1;
     console.log("ok: queue idempotency cannot leak another account's job");
 
-    const t0 = new Date("2026-08-28T00:00:00.000Z");
+    // Keep the lease clock after rows created during the test. A fixed date
+    // eventually becomes earlier than availableAt and makes the FIFO check
+    // fail for reasons unrelated to leasing.
+    const t0 = new Date(Date.now() + 1_000);
     const firstLease = await queue.leaseStoryFilmGenerationJobs({
       workerId: "mew-mac-mini",
       providerBackends: ["grok_subscription"],

@@ -105,7 +105,11 @@ Thumbs.db
 
 # Skills / agent state (local-only)
 skills-lock.json
-.claude/
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/mewshort/
+!.claude/skills/mewshort/SKILL.md
 .cursor/
 
 # IDE TS build cache (rebuilds on VPS anyway)

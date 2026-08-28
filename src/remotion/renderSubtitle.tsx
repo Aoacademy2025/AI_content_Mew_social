@@ -54,6 +54,37 @@ function getSegmenter(locale: string, granularity: "word" | "grapheme" | "senten
   }
 }
 
+const WORD_JOINER = "\u2060";
+// At 80–96px, a longer no-break run can exceed the 92% subtitle frame. Eight
+// graphemes is enough for short names such as อัลลัน while keeping long Thai
+// phrases available to ICU wrapping.
+const MAX_PROTECTED_TOKEN_GRAPHEMES = 8;
+
+/**
+ * Chromium's Thai dictionary may consider a transliterated proper name such as
+ * "อัลลัน" to be two valid line-break segments ("อัล" + "ลัน"). Protect
+ * short, author-delimited tokens with WORD JOINER so a name never breaks in the
+ * middle. Longer unspaced Thai phrases remain available to ICU word wrapping.
+ */
+export function protectSubtitleWordBreaks(value: string): string {
+  const graphemeSegmenter = getSegmenter("th", "grapheme");
+  const wordSegmenter = getSegmenter("th", "word");
+  return value.replace(/[^\s]+/gu, (token) => {
+    const graphemes = graphemeSegmenter
+      ? Array.from(graphemeSegmenter.segment(token), (part) => part.segment)
+      : Array.from(token);
+    if (graphemes.length <= 1 || graphemes.length > MAX_PROTECTED_TOKEN_GRAPHEMES) return token;
+    const wordLikeSegments = wordSegmenter
+      ? Array.from(wordSegmenter.segment(token)).filter((part) => part.isWordLike).length
+      : 0;
+    // Keep ordinary single words byte-for-byte identical. We only need the
+    // joiner when ICU would otherwise introduce an extra break inside one
+    // author-delimited token (for example อัล|ลัน).
+    if (wordLikeSegments !== 2) return token;
+    return graphemes.join(WORD_JOINER);
+  });
+}
+
 // Tokenize for per-word effects (highlight / karaoke) without losing any source
 // characters. Separators stay in the output but do not participate in timing.
 // Thai is written WITHOUT spaces between words, so a naive `split(/\s+/)`
@@ -233,6 +264,8 @@ export function renderSubtitle(
   if (!text.trim()) return null;
 
   const scaledSize = resolveSubtitleFontSize(text, size);
+  const sourceText = text;
+  text = protectSubtitleWordBreaks(text);
   const outlineSize = Math.max(1, Math.min(12, Math.round(decorations.outlineSize ?? 2)));
   const manualShadow = decorations.shadow
     ? "0 5px 14px rgba(0,0,0,0.95), 0 2px 4px rgba(0,0,0,0.9)"
@@ -267,10 +300,10 @@ export function renderSubtitle(
     width: "100%",
     letterSpacing: "0.01em",
     whiteSpace: "pre-line",
-    // FIX D: no wordBreak:"break-all" — it let Chromium cut a Thai word mid-syllable.
-    // With it gone, Chromium's ICU Thai dictionary wraps on real word boundaries;
-    // overflowWrap:"anywhere" stays as the emergency valve for an unbreakable run.
-    overflowWrap: "anywhere",
+    // Never use overflow-wrap:anywhere here: it allows Chromium to cut Thai
+    // proper names at an arbitrary character when the line is nearly full.
+    wordBreak: "keep-all",
+    overflowWrap: "normal",
     color,
   };
 
@@ -392,7 +425,7 @@ export function renderSubtitle(
     }
 
     if (textEffect === "typewriter") {
-      const totalChars = text.length;
+      const totalChars = sourceText.length;
       // frame < 0 = resting/static preview → show full text (no reveal animation).
       const charsToShow = frame < 0
         ? totalChars
@@ -400,8 +433,8 @@ export function renderSubtitle(
       const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
       const inner = (
         <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>
-          <span style={{ color }}>{text.slice(0, charsToShow)}</span>
-          <span style={{ color: "transparent" }}>{text.slice(charsToShow)}</span>
+          <span style={{ color }}>{protectSubtitleWordBreaks(sourceText.slice(0, charsToShow))}</span>
+          <span style={{ color: "transparent" }}>{protectSubtitleWordBreaks(sourceText.slice(charsToShow))}</span>
         </span>
       );
       if (preset === "box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.65)", padding: "6px 20px 8px", borderRadius: 4 }}>{inner}</div>;

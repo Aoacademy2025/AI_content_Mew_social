@@ -11,6 +11,7 @@ export const STORY_FILM_LEASE_MS = 90_000;
 export const STORY_FILM_JOB_KINDS = [
   "narration_voice",
   "storyboard_plan",
+  "caption_alignment",
   "look_image",
   "keyframe_image",
   "scene_video",
@@ -24,6 +25,7 @@ export type StoryFilmProviderBackend =
   | "hero_voice"
   | "elevenlabs"
   | "hero_text"
+  | "hero_alignment"
   | "vidiq"
   | "hero_render";
 
@@ -32,12 +34,14 @@ const BACKENDS = new Set<StoryFilmProviderBackend>([
   "hero_voice",
   "elevenlabs",
   "hero_text",
+  "hero_alignment",
   "vidiq",
   "hero_render",
 ]);
 const JOB_STAGE: Record<StoryFilmJobKind, StoryFilmStage> = {
   narration_voice: "narration",
   storyboard_plan: "storyboard",
+  caption_alignment: "storyboard",
   look_image: "character_look",
   keyframe_image: "keyframes",
   scene_video: "videos",
@@ -47,6 +51,7 @@ const JOB_STAGE: Record<StoryFilmJobKind, StoryFilmStage> = {
 const JOB_BACKENDS: Record<StoryFilmJobKind, StoryFilmProviderBackend[]> = {
   narration_voice: ["hero_voice", "elevenlabs"],
   storyboard_plan: ["hero_text"],
+  caption_alignment: ["hero_alignment"],
   look_image: ["grok_subscription"],
   keyframe_image: ["grok_subscription"],
   scene_video: ["grok_subscription"],
@@ -317,6 +322,13 @@ function validateArtifactForJob(
   )) {
     throw new Error("invalid_storyboard_artifact");
   }
+  if (job.kind === "caption_alignment" && (
+    artifact.mimeType !== "application/vnd.hero.caption-track+json"
+    || sizeBytes == null
+    || sizeBytes > 2 * 1024 * 1024
+  )) {
+    throw new Error("invalid_caption_alignment_artifact");
+  }
   if (job.kind === "narration_voice" && (
     !artifact.mimeType.startsWith("audio/")
     || sizeBytes == null
@@ -500,10 +512,13 @@ export async function completeStoryFilmGenerationJob(input: {
         projectId: job.projectId,
         stage: job.stage,
         generationEpoch: job.generationEpoch,
+        kind: { not: "caption_alignment" },
       },
       select: { status: true },
     });
-    const batchComplete = batchJobs.length > 0 && batchJobs.every((item) => item.status === "completed");
+    const batchComplete = job.kind !== "caption_alignment"
+      && batchJobs.length > 0
+      && batchJobs.every((item) => item.status === "completed");
     let activatedReview = false;
     if (batchComplete) {
       const artifacts = await tx.storyFilmArtifact.findMany({
@@ -519,6 +534,7 @@ export async function completeStoryFilmGenerationJob(input: {
         && project.stage === job.stage
         && project.generationEpoch === job.generationEpoch
         && !project.awaitingApproval) {
+        const priorStageData = parsePayload(project.stageDataJson);
         const activated = await tx.storyFilmProject.updateMany({
           where: {
             id: project.id,
@@ -538,7 +554,10 @@ export async function completeStoryFilmGenerationJob(input: {
               finalRenderUrl: artifact.storageUrl,
             } : {}),
             stageDataJson: JSON.stringify({
+              ...priorStageData,
               gate: job.stage,
+              waitingForGeneration: false,
+              renderSetup: false,
               artifactIds: artifacts.map((item) => item.id),
               artifacts: artifacts.map((item) => ({
                 id: item.id,
@@ -549,6 +568,7 @@ export async function completeStoryFilmGenerationJob(input: {
                 width: item.width,
                 height: item.height,
                 durationMs: item.durationMs,
+                metadata: parsePayload(item.metadataJson),
               })),
             }),
             lastOpenedAt: now,

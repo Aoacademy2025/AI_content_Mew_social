@@ -1,5 +1,11 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import {
+  createDefaultStoryFilmEditorialConfig,
+  parseStoryFilmEditorialConfig,
+  validateStoryFilmEditorialConfig,
+  type StoryFilmEditorialConfig,
+} from "@/lib/story-film-editorial";
 
 export const STORY_FILM_STAGES = [
   "setup",
@@ -147,7 +153,12 @@ function nextActionFor(project: StoredStoryFilm): string {
   if (project.status === "completed" || project.stage === "completed") return "complete";
   if (project.status === "needs_attention") return "resolve_attention";
   if (project.awaitingApproval) {
-    return project.stage === "final_render" ? "review_and_render" : "review_and_decide";
+    if (project.stage === "final_render") {
+      return parseStageData(project.stageDataJson).renderSetup === true
+        ? "configure_final_cut"
+        : "review_and_render";
+    }
+    return "review_and_decide";
   }
   return `wait_for_${project.stage}`;
 }
@@ -505,7 +516,34 @@ function validateDecision(input: {
     }
     videoSceneKeys = rawVideoSceneKeys as string[];
   }
-  return { instruction, videoSceneKeys };
+  const rawSceneKeys = input.target?.sceneKeys;
+  let sceneKeys: string[] | undefined;
+  if (rawSceneKeys !== undefined) {
+    if (
+      input.expectedStage !== "final_render"
+      || !["revise", "reroll", "fallback"].includes(input.decision)
+      || !Array.isArray(rawSceneKeys)
+      || rawSceneKeys.length > 60
+      || rawSceneKeys.some((value) => typeof value !== "string" || !/^scene-\d{2}$/u.test(value))
+      || new Set(rawSceneKeys).size !== rawSceneKeys.length
+    ) {
+      invalid("sceneKeys ต้องเป็นรายการ scene key ที่ไม่ซ้ำกันสำหรับ Final Review");
+    }
+    sceneKeys = rawSceneKeys as string[];
+  }
+  const repairLayer = input.target?.repairLayer;
+  if (repairLayer !== undefined && (repairLayer !== "keyframe" && repairLayer !== "video")) {
+    invalid("repairLayer ต้องเป็น keyframe หรือ video");
+  }
+  let editorial: StoryFilmEditorialConfig | undefined;
+  if (input.target?.editorial !== undefined) {
+    try {
+      editorial = validateStoryFilmEditorialConfig(input.target.editorial);
+    } catch (error) {
+      invalid(error instanceof Error ? error.message : "Editorial config ไม่ถูกต้อง");
+    }
+  }
+  return { instruction, videoSceneKeys, sceneKeys, repairLayer, editorial };
 }
 
 function stageAfterApproval(stage: StoryFilmStage): StoryFilmStage | null {
@@ -526,7 +564,7 @@ export async function decideStoryFilm(
     idempotencyKey?: string | null;
   },
 ): Promise<StoryFilmProjectView> {
-  const { instruction, videoSceneKeys } = validateDecision(input);
+  const { instruction, videoSceneKeys, sceneKeys, repairLayer, editorial } = validateDecision(input);
   return prisma.$transaction(async (tx) => {
     if (input.idempotencyKey) {
       const prior = await tx.storyFilmDecision.findUnique({
@@ -547,7 +585,7 @@ export async function decideStoryFilm(
     }
     if (!isStage(project.stage)) throw new StoryFilmError("decision_not_allowed", "Stage ปัจจุบันไม่รองรับ");
     const isRevisionDecision = ["revise", "reroll", "fallback"].includes(input.decision);
-    if (isRevisionDecision && !["storyboard", "character_look", "keyframes", "videos"].includes(project.stage)) {
+    if (isRevisionDecision && !["storyboard", "character_look", "keyframes", "videos", "final_render"].includes(project.stage)) {
       throw new StoryFilmError(
         "decision_not_allowed",
         "ขั้นนี้แก้ด้วยการเลือกตัวเลือกใหม่หรือเริ่มโปรเจกต์ใหม่ แทนการสร้าง asset ซ้ำ",
@@ -576,12 +614,63 @@ export async function decideStoryFilm(
         throw new StoryFilmError("invalid_input", "ฉากนี้ใช้ Image + Motion จึงไม่มี AI Video ให้สร้างใหม่", currentView);
       }
     }
+    let finalRevisionScenes: Awaited<ReturnType<typeof tx.storyFilmScene.findMany>> = [];
+    if (isRevisionDecision && project.stage === "final_render" && sceneKeys?.length) {
+      const latestScene = await tx.storyFilmScene.findFirst({
+        where: { projectId: project.id },
+        orderBy: [{ generationEpoch: "desc" }, { sequence: "asc" }],
+      });
+      if (!latestScene) throw new StoryFilmError("decision_not_allowed", "โปรเจกต์นี้ไม่มี Scene ให้แก้", currentView);
+      finalRevisionScenes = await tx.storyFilmScene.findMany({
+        where: {
+          projectId: project.id,
+          generationEpoch: latestScene.generationEpoch,
+          sceneKey: { in: sceneKeys },
+        },
+        orderBy: { sequence: "asc" },
+      });
+      if (finalRevisionScenes.length !== sceneKeys.length || finalRevisionScenes.some((scene) => scene.visualOwner !== "broll")) {
+        throw new StoryFilmError("invalid_input", "Final Review แก้ได้เฉพาะ B-roll scene ของโปรเจกต์นี้", currentView);
+      }
+      if (repairLayer === "video" && finalRevisionScenes.some((scene) => scene.mediaPlan !== "video")) {
+        throw new StoryFilmError("invalid_input", "ชั้น Video เลือกได้เฉพาะฉากที่ใช้ AI Video", currentView);
+      }
+      if (!repairLayer) {
+        throw new StoryFilmError("invalid_input", "กรุณาเลือกว่าจะซ่อมภาพตั้งต้นหรือวิดีโอ", currentView);
+      }
+    }
 
     let nextStage: StoryFilmStage = project.stage;
     let nextStatus = project.status;
     let awaitingApproval = project.awaitingApproval;
     let stageDataJson = project.stageDataJson;
     let selectedMusic: { source: "user" | "system"; trackId: string; url: string; title: string } | null = null;
+    let shouldQueueFinalRender = false;
+    let finalRenderEditorial = editorial ?? createDefaultStoryFilmEditorialConfig(
+      project.narrativeSource,
+      project.narrationDurationMs ?? project.durationLimitMs,
+    );
+    const resolveMusic = async (source: unknown, trackId: unknown) => {
+      if ((source !== "user" && source !== "system") || typeof trackId !== "string" || !trackId) {
+        throw new StoryFilmError("invalid_input", "กรุณาเลือกเพลงจาก Music Library ก่อนอนุมัติ");
+      }
+      if (source === "user") {
+        const track = await tx.userMusic.findFirst({ where: { id: trackId, userId } });
+        if (!track) throw new StoryFilmError("invalid_input", "ไม่พบเพลงของบัญชีนี้");
+        return { source, trackId: track.id, url: `/api/music/${track.filename}`, title: track.title } as const;
+      }
+      const track = await tx.music.findUnique({ where: { id: trackId } });
+      if (!track) throw new StoryFilmError("invalid_input", "ไม่พบเพลงกลางที่เลือก");
+      return { source, trackId: track.id, url: `/api/music/${track.filename}`, title: track.title } as const;
+    };
+    const currentMusic = () => project.musicSource && project.musicTrackId && project.musicUrl
+      ? {
+          source: project.musicSource === "system" ? "system" as const : "user" as const,
+          trackId: project.musicTrackId,
+          url: project.musicUrl,
+          title: "เพลงที่เลือกไว้",
+        }
+      : null;
 
     if (input.decision === "pause") {
       if (["completed", "archived", "rendering"].includes(project.status)) {
@@ -598,6 +687,14 @@ export async function decideStoryFilm(
       if (!project.finalRenderUrl) {
         throw new StoryFilmError("gate_not_ready", "ยังไม่มีไฟล์ Final Render สำหรับอนุมัติ", currentView);
       }
+      const visualQa = input.target?.visualQa;
+      if (!visualQa || typeof visualQa !== "object" || Array.isArray(visualQa)
+        || (visualQa as Record<string, unknown>).anatomy !== true
+        || (visualQa as Record<string, unknown>).spatialDirection !== true
+        || (visualQa as Record<string, unknown>).continuity !== true
+        || (visualQa as Record<string, unknown>).generatedText !== true) {
+        throw new StoryFilmError("gate_not_ready", "กรุณาตรวจ Visual QA ให้ครบก่อนอนุมัติ Final Render", currentView);
+      }
       nextStage = "completed";
       nextStatus = "completed";
       awaitingApproval = false;
@@ -610,33 +707,86 @@ export async function decideStoryFilm(
         throw new StoryFilmError("gate_not_ready", "ขั้นนี้ยังไม่มีงานรอการตัดสินใจ", currentView);
       }
       if (input.decision === "approve") {
-        if (project.stage === "music") {
-          const source = input.target?.musicSource;
-          const trackId = input.target?.musicTrackId;
-          if ((source !== "user" && source !== "system") || typeof trackId !== "string" || !trackId) {
-            throw new StoryFilmError("invalid_input", "กรุณาเลือกเพลงจาก Music Library ก่อนอนุมัติ");
+        const priorStageData = parseStageData(project.stageDataJson);
+        const repair = priorStageData.repair && typeof priorStageData.repair === "object"
+          ? priorStageData.repair as Record<string, unknown>
+          : null;
+        if (project.stage === "final_render") {
+          selectedMusic = input.target?.musicSource || input.target?.musicTrackId
+            ? await resolveMusic(input.target?.musicSource, input.target?.musicTrackId)
+            : currentMusic();
+          if (!selectedMusic) throw new StoryFilmError("invalid_input", "Final Render ยังไม่ได้เลือกเพลง", currentView);
+          finalRenderEditorial = editorial ?? parseStoryFilmEditorialConfig(
+            priorStageData.editorial,
+            project.narrationDurationMs ?? project.durationLimitMs,
+          );
+          nextStage = "final_render";
+          nextStatus = "waiting_generation";
+          awaitingApproval = false;
+          shouldQueueFinalRender = true;
+          stageDataJson = JSON.stringify({
+            ...priorStageData,
+            gate: "final_render",
+            renderSetup: false,
+            waitingForGeneration: true,
+            selectedMusic,
+            editorial: finalRenderEditorial,
+          });
+        } else if (repair?.origin === "final_render" && ["keyframes", "videos"].includes(project.stage)) {
+          const repairSceneKeys = Array.isArray(repair.sceneKeys)
+            ? repair.sceneKeys.filter((value): value is string => typeof value === "string")
+            : [];
+          selectedMusic = currentMusic();
+          finalRenderEditorial = parseStoryFilmEditorialConfig(
+            repair.editorial,
+            project.narrationDurationMs ?? project.durationLimitMs,
+          );
+          let repairedVideoSceneKeys: string[] = [];
+          if (project.stage === "keyframes" && repairSceneKeys.length > 0) {
+            const latestScene = await tx.storyFilmScene.findFirst({
+              where: { projectId: project.id },
+              orderBy: [{ generationEpoch: "desc" }, { sequence: "asc" }],
+            });
+            if (latestScene) {
+              repairedVideoSceneKeys = (await tx.storyFilmScene.findMany({
+                where: {
+                  projectId: project.id,
+                  generationEpoch: latestScene.generationEpoch,
+                  sceneKey: { in: repairSceneKeys },
+                  visualOwner: "broll",
+                  mediaPlan: "video",
+                },
+                orderBy: { sequence: "asc" },
+              })).map((scene) => scene.sceneKey);
+            }
           }
-          if (source === "user") {
-            const track = await tx.userMusic.findFirst({ where: { id: trackId, userId } });
-            if (!track) throw new StoryFilmError("invalid_input", "ไม่พบเพลงของบัญชีนี้");
-            selectedMusic = { source, trackId: track.id, url: `/api/music/${track.filename}`, title: track.title };
-          } else {
-            const track = await tx.music.findUnique({ where: { id: trackId } });
-            if (!track) throw new StoryFilmError("invalid_input", "ไม่พบเพลงกลางที่เลือก");
-            selectedMusic = { source, trackId: track.id, url: `/api/music/${track.filename}`, title: track.title };
+          nextStage = repairedVideoSceneKeys.length > 0 ? "videos" : "final_render";
+          nextStatus = "waiting_generation";
+          awaitingApproval = false;
+          shouldQueueFinalRender = nextStage === "final_render";
+          stageDataJson = JSON.stringify({
+            ...priorStageData,
+            gate: nextStage,
+            waitingForGeneration: true,
+            repair: { ...repair, sceneKeys: repairedVideoSceneKeys.length ? repairedVideoSceneKeys : repairSceneKeys },
+            selectedMusic,
+            editorial: finalRenderEditorial,
+          });
+        } else {
+          if (project.stage === "music") {
+            selectedMusic = await resolveMusic(input.target?.musicSource, input.target?.musicTrackId);
           }
-        }
-        const advanced = stageAfterApproval(project.stage);
-        if (!advanced) throw new StoryFilmError("decision_not_allowed", "ขั้นนี้ต้องใช้คำสั่งเรนเดอร์", currentView);
-        nextStage = advanced;
+          const advanced = stageAfterApproval(project.stage);
+          if (!advanced) throw new StoryFilmError("decision_not_allowed", "ขั้นนี้ต้องใช้คำสั่งเรนเดอร์", currentView);
+          nextStage = advanced;
         // A script is not a Narration Master. Presenter-led starts with a
         // server-probed master; Faceless waits here until a voice adapter
         // commits real audio and timing.
-        const narrationReady = advanced === "narration"
-          && Boolean(project.narrationMasterUrl && project.narrationDurationMs);
-        const characterLookNotNeeded = advanced === "character_look" && !project.characterProfileId;
-        const musicCandidates = advanced === "music"
-          ? [
+          const narrationReady = advanced === "narration"
+            && Boolean(project.narrationMasterUrl && project.narrationDurationMs);
+          const characterLookNotNeeded = advanced === "character_look" && !project.characterProfileId;
+          const musicCandidates = advanced === "music" || advanced === "final_render"
+            ? [
               ...(await tx.userMusic.findMany({
                 where: { userId },
                 orderBy: { updatedAt: "desc" },
@@ -655,13 +805,42 @@ export async function decideStoryFilm(
                 url: `/api/music/${track.filename}`,
                 durationMs: track.duration ? Math.round(track.duration * 1_000) : null,
               })),
-            ]
-          : [];
-        const musicReady = advanced === "music" && musicCandidates.length > 0;
-        awaitingApproval = narrationReady || characterLookNotNeeded || musicReady;
-        nextStatus = awaitingApproval ? "active" : "waiting_generation";
-        stageDataJson = advanced === "narration"
-          ? JSON.stringify({
+              ]
+            : [];
+          const musicReady = advanced === "music" && musicCandidates.length > 0;
+          awaitingApproval = narrationReady || characterLookNotNeeded || musicReady || advanced === "final_render";
+          nextStatus = awaitingApproval ? "active" : "waiting_generation";
+          if (advanced === "final_render" && selectedMusic) {
+            const latestScene = await tx.storyFilmScene.findFirst({
+              where: { projectId: project.id },
+              orderBy: [{ generationEpoch: "desc" }, { sequence: "asc" }],
+            });
+            const scenes = latestScene ? await tx.storyFilmScene.findMany({
+              where: { projectId: project.id, generationEpoch: latestScene.generationEpoch },
+              orderBy: { sequence: "asc" },
+            }) : [];
+            stageDataJson = JSON.stringify({
+              gate: "final_render",
+              renderSetup: true,
+              waitingForGeneration: false,
+              selectedMusic,
+              musicCandidates,
+              editorial: createDefaultStoryFilmEditorialConfig(
+                project.narrativeSource,
+                project.narrationDurationMs ?? project.durationLimitMs,
+              ),
+              scenes: scenes.map((scene) => ({
+                sceneKey: scene.sceneKey,
+                sequence: scene.sequence,
+                startMs: scene.startMs,
+                endMs: scene.endMs,
+                sourceExcerpt: scene.sourceExcerpt,
+                mediaPlan: scene.mediaPlan,
+                visualOwner: scene.visualOwner,
+              })),
+            });
+          } else stageDataJson = advanced === "narration"
+            ? JSON.stringify({
               gate: "narration",
               narrativeSource: project.narrativeSource,
               narrationMasterUrl: project.narrationMasterUrl,
@@ -675,19 +854,52 @@ export async function decideStoryFilm(
               })
             : musicReady
               ? JSON.stringify({ gate: "music", candidates: musicCandidates, reuseFirst: true })
-              : advanced === "final_render" && selectedMusic
-                ? JSON.stringify({ gate: "final_render", waitingForGeneration: true, selectedMusic })
-                : JSON.stringify({ gate: advanced, waitingForGeneration: true });
+              : JSON.stringify({ gate: advanced, waitingForGeneration: true });
+        }
       } else {
-        nextStatus = "waiting_generation";
-        awaitingApproval = false;
-        stageDataJson = JSON.stringify({
-          gate: project.stage,
-          waitingForGeneration: true,
-          requestedDecision: input.decision,
-          instruction,
-          target: input.target ?? null,
-        });
+        if (project.stage === "final_render") {
+          const priorStageData = parseStageData(project.stageDataJson);
+          selectedMusic = input.target?.musicSource || input.target?.musicTrackId
+            ? await resolveMusic(input.target?.musicSource, input.target?.musicTrackId)
+            : currentMusic();
+          if (!selectedMusic) throw new StoryFilmError("invalid_input", "Final Render ยังไม่ได้เลือกเพลง", currentView);
+          finalRenderEditorial = editorial ?? parseStoryFilmEditorialConfig(
+            priorStageData.editorial,
+            project.narrationDurationMs ?? project.durationLimitMs,
+          );
+          nextStage = sceneKeys?.length ? (repairLayer === "video" ? "videos" : "keyframes") : "final_render";
+          nextStatus = "waiting_generation";
+          awaitingApproval = false;
+          shouldQueueFinalRender = nextStage === "final_render";
+          stageDataJson = JSON.stringify({
+            gate: nextStage,
+            waitingForGeneration: true,
+            requestedDecision: input.decision,
+            instruction,
+            selectedMusic,
+            editorial: finalRenderEditorial,
+            musicCandidates: priorStageData.musicCandidates ?? [],
+            scenes: priorStageData.scenes ?? [],
+            repair: sceneKeys?.length ? {
+              origin: "final_render",
+              sceneKeys,
+              repairLayer,
+              instruction,
+              editorial: finalRenderEditorial,
+              previousFinalRenderUrl: project.finalRenderUrl,
+            } : null,
+          });
+        } else {
+          nextStatus = "waiting_generation";
+          awaitingApproval = false;
+          stageDataJson = JSON.stringify({
+            gate: project.stage,
+            waitingForGeneration: true,
+            requestedDecision: input.decision,
+            instruction,
+            target: input.target ?? null,
+          });
+        }
       }
     }
 
@@ -741,6 +953,26 @@ export async function decideStoryFilm(
           idempotencyKey: `auto:storyboard:epoch:${resultGenerationEpoch}`,
         },
       });
+      if (project.presentationMode === "presenter_led" && project.narrationMasterUrl) {
+        await tx.storyFilmGenerationJob.create({
+          data: {
+            projectId: project.id,
+            stage: "storyboard",
+            projectRevision: resultRevision,
+            generationEpoch: resultGenerationEpoch,
+            kind: "caption_alignment",
+            providerBackend: "hero_alignment",
+            sceneKey: "narration-captions",
+            payloadJson: JSON.stringify({
+              narrationMasterUrl: project.narrationMasterUrl,
+              narrationDurationMs: project.narrationDurationMs,
+              script: project.narrativeSource,
+            }),
+            idempotencyKey: `auto:caption-alignment:epoch:${resultGenerationEpoch}`,
+            priority: 80,
+          },
+        });
+      }
     }
     if (input.decision === "approve" && nextStage === "narration" && !project.narrationMasterUrl) {
       if (!project.narrationVoiceId) {
@@ -859,6 +1091,13 @@ export async function decideStoryFilm(
       }
     }
     if (input.decision === "approve" && nextStage === "videos") {
+      const approvalStageData = parseStageData(project.stageDataJson);
+      const approvalRepair = approvalStageData.repair && typeof approvalStageData.repair === "object"
+        ? approvalStageData.repair as Record<string, unknown>
+        : null;
+      const repairSceneKeys = approvalRepair?.origin === "final_render" && Array.isArray(approvalRepair.sceneKeys)
+        ? approvalRepair.sceneKeys.filter((value): value is string => typeof value === "string")
+        : null;
       const latestScene = await tx.storyFilmScene.findFirst({
         where: { projectId: project.id },
         orderBy: [{ generationEpoch: "desc" }, { sequence: "asc" }],
@@ -870,6 +1109,7 @@ export async function decideStoryFilm(
           generationEpoch: latestScene.generationEpoch,
           mediaPlan: "video",
           visualOwner: "broll",
+          ...(repairSceneKeys ? { sceneKey: { in: repairSceneKeys } } : {}),
         },
         orderBy: { sequence: "asc" },
       });
@@ -942,7 +1182,7 @@ export async function decideStoryFilm(
         },
       });
     }
-    if (input.decision === "approve" && nextStage === "final_render" && selectedMusic) {
+    if (shouldQueueFinalRender && nextStage === "final_render" && selectedMusic) {
       await tx.storyFilmGenerationJob.create({
         data: {
           projectId: project.id,
@@ -961,6 +1201,7 @@ export async function decideStoryFilm(
             musicSource: selectedMusic.source,
             musicTrackId: selectedMusic.trackId,
             musicUrl: selectedMusic.url,
+            editorial: finalRenderEditorial,
           }),
           idempotencyKey: `auto:final-render:epoch:${resultGenerationEpoch}`,
           priority: 50,
@@ -1102,6 +1343,92 @@ export async function decideStoryFilm(
           idempotencyKey: `revise:video:${revisionScene.sceneKey}:epoch:${resultGenerationEpoch}`,
         },
       });
+    }
+    if (isRevisionDecision && project.stage === "final_render" && finalRevisionScenes.length > 0) {
+      const characterReferences = project.characterProfileId
+        ? await tx.storyFilmCharacterReference.findMany({
+            where: {
+              profileId: project.characterProfileId,
+              setVersion: project.characterReferenceSetVersion ?? 1,
+            },
+            orderBy: { createdAt: "asc" },
+          })
+        : [];
+      const approvedLook = project.characterProfileId
+        ? await tx.storyFilmArtifact.findFirst({
+            where: { projectId: project.id, stage: "character_look", kind: "look_image" },
+            orderBy: { createdAt: "desc" },
+          })
+        : null;
+      for (const scene of finalRevisionScenes) {
+        if (repairLayer === "video") {
+          const source = await tx.storyFilmArtifact.findFirst({
+            where: { projectId: project.id, kind: "keyframe_image", sceneKey: scene.sceneKey },
+            orderBy: { createdAt: "desc" },
+          });
+          if (!source) throw new StoryFilmError("decision_not_allowed", `ไม่พบ Keyframe ของ ${scene.sceneKey}`);
+          await tx.storyFilmGenerationJob.create({
+            data: {
+              projectId: project.id,
+              stage: "videos",
+              projectRevision: resultRevision,
+              generationEpoch: resultGenerationEpoch,
+              kind: "scene_video",
+              providerBackend: "grok_subscription",
+              sceneKey: scene.sceneKey,
+              payloadJson: JSON.stringify({
+                prompt: [scene.grokPrompt, `Creator repair: ${instruction}`].join(" "),
+                sourceImageUrl: source.storageUrl,
+                durationSec: Math.max(1, (scene.endMs - scene.startMs) / 1_000),
+                aspectRatio: "9:16",
+                repairOrigin: "final_review",
+              }),
+              idempotencyKey: `final-repair:video:${scene.sceneKey}:epoch:${resultGenerationEpoch}`,
+            },
+          });
+          continue;
+        }
+        const currentFrame = await tx.storyFilmArtifact.findFirst({
+          where: { projectId: project.id, kind: "keyframe_image", sceneKey: scene.sceneKey },
+          orderBy: { createdAt: "desc" },
+        });
+        let characterDirectives: unknown[] = [];
+        try {
+          const parsed = JSON.parse(scene.characterDirectivesJson) as unknown;
+          if (Array.isArray(parsed)) characterDirectives = parsed;
+        } catch {}
+        const identityUrls = characterDirectives.length > 0
+          ? [
+              ...(approvedLook ? [approvedLook.storageUrl] : []),
+              ...characterReferences.map((reference) => `/api/internal/story-film-media/character-references/${encodeURIComponent(reference.id)}`),
+            ]
+          : [];
+        await tx.storyFilmGenerationJob.create({
+          data: {
+            projectId: project.id,
+            stage: "keyframes",
+            projectRevision: resultRevision,
+            generationEpoch: resultGenerationEpoch,
+            kind: "keyframe_image",
+            providerBackend: "grok_subscription",
+            sceneKey: scene.sceneKey,
+            payloadJson: JSON.stringify({
+              prompt: [
+                scene.grokPrompt,
+                `Creator repair: ${instruction}`,
+                "Correct only the reported defect. Preserve composition, camera direction, identity, wardrobe, lighting, and story continuity unless the repair explicitly changes them.",
+              ].join(" "),
+              sourceImageUrl: currentFrame?.storageUrl ?? null,
+              referenceMode: currentFrame ? "image_edit" : "reference_generation",
+              referenceUrls: [...(currentFrame ? [currentFrame.storageUrl] : []), ...identityUrls],
+              aspectRatio: "9:16",
+              storyboardSceneEpoch: scene.generationEpoch,
+              repairOrigin: "final_review",
+            }),
+            idempotencyKey: `final-repair:keyframe:${scene.sceneKey}:epoch:${resultGenerationEpoch}`,
+          },
+        });
+      }
     }
     await tx.storyFilmDecision.create({
       data: {
