@@ -166,8 +166,15 @@ function sourceWordHasNumericClaim(value: string): boolean {
   return /\p{N}/u.test(normalized) || THAI_NUMBER_WORDS.has(canonicalSpeechText(normalized));
 }
 
-function containsThaiNumberSpeech(value: string): boolean {
-  return THAI_NUMBER_SPEECH_PARTS.some((part) => value.includes(part));
+function isEntireThaiNumberSpeech(value: string): boolean {
+  if (!value) return false;
+  let cursor = 0;
+  while (cursor < value.length) {
+    const part = THAI_NUMBER_SPEECH_PARTS.find((candidate) => value.startsWith(candidate, cursor));
+    if (!part) return false;
+    cursor += part.length;
+  }
+  return true;
 }
 
 function contextualDigitSequenceWordIndexes(
@@ -459,18 +466,23 @@ function alignTranscriptWordsFuzzily(
 
   const transcriptChars: string[] = [];
   const transcriptCharTimes: Array<{ startMs: number; endMs: number }> = [];
+  const transcriptWordByChar: number[] = [];
+  const transcriptWordCharRanges: Array<{ start: number; end: number }> = [];
   for (let wordIndex = 0; wordIndex < usableTranscript.length; wordIndex += 1) {
     const word = usableTranscript[wordIndex];
     const chars = Array.from(transcriptComparableWords[wordIndex]);
+    const start = transcriptChars.length;
     chars.forEach((char, index) => {
       const startRatio = index / chars.length;
       const endRatio = (index + 1) / chars.length;
       transcriptChars.push(char);
+      transcriptWordByChar.push(wordIndex);
       transcriptCharTimes.push({
         startMs: word.startMs + (word.endMs - word.startMs) * startRatio,
         endMs: word.startMs + (word.endMs - word.startMs) * endRatio,
       });
     });
+    transcriptWordCharRanges.push({ start, end: transcriptChars.length });
   }
 
   const n = sourceChars.length;
@@ -554,6 +566,17 @@ function alignTranscriptWordsFuzzily(
     }
   });
   const numericWordIndexes = [...numericWordIndexSet].sort((left, right) => left - right);
+  const containsNumericTranscriptSpeech = (start: number, end: number): boolean => {
+    if (end <= start) return false;
+    const wordIndexes = new Set(transcriptWordByChar.slice(start, end));
+    return [...wordIndexes].some((wordIndex) => {
+      const fullWord = transcriptComparableWords[wordIndex];
+      if (!isEntireThaiNumberSpeech(fullWord)) return false;
+      const range = transcriptWordCharRanges[wordIndex];
+      const overlap = transcriptChars.slice(Math.max(start, range.start), Math.min(end, range.end)).join("");
+      return isEntireThaiNumberSpeech(overlap);
+    });
+  };
   const nearestMappedTranscriptBefore = (sourceCharIndex: number): number => {
     for (let index = sourceCharIndex - 1; index >= 0; index -= 1) {
       const mapped = transcriptCharBySourceChar[index];
@@ -635,32 +658,48 @@ function alignTranscriptWordsFuzzily(
     // continuation still remains inside this wider gap and is rejected below.
     const previousTranscriptIndex = nearestMappedTranscriptBefore(firstSourceIndex);
     const nextTranscriptIndex = nearestMappedTranscriptAfter(lastSourceIndex);
-    const leftGap = transcriptChars.slice(
-      firstSourceIndex === 0 ? 0 : Math.max(0, previousTranscriptIndex + 1),
-      mapped[0],
-    ).join("");
-    const rightGap = transcriptChars.slice(
-      mapped[mapped.length - 1] + 1,
-      lastSourceIndex === sourceChars.length - 1 ? transcriptChars.length : nextTranscriptIndex,
-    ).join("");
     const sourcePrefix = sourceChars.slice(0, firstSourceIndex).join("");
     const sourceSuffix = sourceChars.slice(lastSourceIndex + 1).join("");
-    const transcriptPrefix = transcriptChars.slice(0, mapped[0]).join("");
-    const transcriptSuffix = transcriptChars.slice(mapped[mapped.length - 1] + 1).join("");
-    const hasChangedLeftNumericContinuation = THAI_NUMBER_SPEECH_PARTS.some((part) =>
-      transcriptPrefix.endsWith(part) && !sourcePrefix.endsWith(part),
-    );
-    const hasChangedRightNumericContinuation = THAI_NUMBER_SPEECH_PARTS.some((part) =>
-      transcriptSuffix.startsWith(part) && !sourceSuffix.startsWith(part),
-    );
+    const leftAdjacentIndex = mapped[0] - 1;
+    const rightAdjacentIndex = mapped[mapped.length - 1] + 1;
+    const leftAdjacentWordIndex = leftAdjacentIndex >= 0
+      ? transcriptWordByChar[leftAdjacentIndex]
+      : -1;
+    const rightAdjacentWordIndex = rightAdjacentIndex < transcriptChars.length
+      ? transcriptWordByChar[rightAdjacentIndex]
+      : -1;
+    const leftContinuation = leftAdjacentWordIndex >= 0
+      && isEntireThaiNumberSpeech(transcriptComparableWords[leftAdjacentWordIndex])
+      ? transcriptChars.slice(
+          transcriptWordCharRanges[leftAdjacentWordIndex].start,
+          mapped[0],
+        ).join("")
+      : "";
+    const rightContinuation = rightAdjacentWordIndex >= 0
+      && isEntireThaiNumberSpeech(transcriptComparableWords[rightAdjacentWordIndex])
+      ? transcriptChars.slice(
+          rightAdjacentIndex,
+          transcriptWordCharRanges[rightAdjacentWordIndex].end,
+        ).join("")
+      : "";
+    const hasChangedLeftNumericContinuation = isEntireThaiNumberSpeech(leftContinuation)
+      && !sourcePrefix.endsWith(leftContinuation);
+    const hasChangedRightNumericContinuation = isEntireThaiNumberSpeech(rightContinuation)
+      && !sourceSuffix.startsWith(rightContinuation);
     // Benign ASR insertions next to a fully proven number must not invalidate
     // that number. Numeric continuations remain fail-closed: 20→25 creates a
     // right gap of "ห้า"; 3→13 creates a left gap of "สิบ".
     if (
       hasChangedLeftNumericContinuation
       || hasChangedRightNumericContinuation
-      || containsThaiNumberSpeech(leftGap)
-      || containsThaiNumberSpeech(rightGap)
+      || containsNumericTranscriptSpeech(
+        firstSourceIndex === 0 ? 0 : Math.max(0, previousTranscriptIndex + 1),
+        mapped[0],
+      )
+      || containsNumericTranscriptSpeech(
+        mapped[mapped.length - 1] + 1,
+        lastSourceIndex === sourceChars.length - 1 ? transcriptChars.length : nextTranscriptIndex,
+      )
     ) {
       return { status: "failed", code: "numeric_context_mismatch" };
     }
