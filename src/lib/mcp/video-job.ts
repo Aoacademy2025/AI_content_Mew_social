@@ -22,6 +22,7 @@ import {
   parseEditorExportSnapshot,
   type EditorExportSnapshot,
 } from "@/lib/editor-export-snapshot";
+import { compileNarrationPlan } from "@/lib/narration-plan";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -81,6 +82,26 @@ export async function createVideoJob(
     funding?: { meteredMinutes: number; creditsLive: boolean };
   } = {},
 ) {
+  const preparedInput = (() => {
+    if (
+      (opts.type && opts.type !== "create")
+      || !input
+      || typeof input !== "object"
+      || Array.isArray(input)
+    ) return input;
+    const candidate = input as Record<string, unknown>;
+    if (
+      candidate.mode === "upload"
+      || candidate.mode === "broll-rerender"
+      || candidate.mode === "export"
+      || typeof candidate.script !== "string"
+      || !candidate.script.trim()
+    ) return input;
+    return {
+      ...candidate,
+      narrationPlan: compileNarrationPlan(candidate.script),
+    };
+  })();
   if (opts.funding) {
     await syncMinuteWindow(userId);
   }
@@ -108,7 +129,7 @@ export async function createVideoJob(
         projectVisualContextJson: opts.projectVisualPin?.projectVisualContextJson ?? null,
         brandVisualAcceptanceJson: opts.brandVisualAcceptanceJson ?? null,
         ...(opts.type ? { type: opts.type } : {}),
-        inputJson: JSON.stringify(input),
+        inputJson: JSON.stringify(preparedInput),
         idempotencyKey: idempotencyKey ?? null,
         idempotencyFingerprint: opts.idempotencyFingerprint ?? null,
         status: "queued",

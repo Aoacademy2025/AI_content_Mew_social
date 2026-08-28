@@ -225,6 +225,10 @@ check(
     && !orchestratorSource.includes('"/api/videos/tts-omnivoice"'),
 );
 check(
+  "orchestrator: Hero Voice receives the persisted NarrationPlan speech text",
+  orchestratorSource.includes("text: narrationText"),
+);
+check(
   "provider pin: accepted Hero Voice jobs retain endpoint and voice",
   durableVoiceSource.includes("providerEndpoint: config.endpointId")
     && durableVoiceSource.includes("endpointId = job.providerEndpoint")

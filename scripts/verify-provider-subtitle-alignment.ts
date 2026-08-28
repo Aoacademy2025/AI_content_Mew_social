@@ -39,7 +39,8 @@ async function main() {
     },
   });
 
-  const geminiScript = "ในปี 2026 ประหยัดเงิน 5,000 บาท";
+  const geminiScript = "ในปี\n2026\u200Bประหยัดเงิน 5,000 บาท.....";
+  const geminiSpeechScript = "ในปี 2026 ประหยัดเงิน 5,000 บาท...";
   const geminiJob = await prisma.videoJob.create({
     data: {
       userId: user.id,
@@ -54,19 +55,21 @@ async function main() {
   });
   let geminiTranscribeCalls = 0;
   let geminiTtsCalls = 0;
+  const geminiTtsTexts: string[] = [];
   const geminiCalls: string[] = [];
   await runOrchestrator(geminiJob.id, user.id, {
     caller: {
-      post: async <T,>(path: string): Promise<T> => {
+      post: async <T,>(path: string, body?: unknown): Promise<T> => {
         geminiCalls.push(path);
         if (path === "/api/videos/tts-gemini") {
           geminiTtsCalls += 1;
+          geminiTtsTexts.push((body as { text?: string } | undefined)?.text ?? "");
           return {
             voiceUrl: `/api/renders/gemini-narration-${geminiTtsCalls}.wav`,
             audioDurationMs: 4_000,
             timing: {
               provider: "gemini",
-              segments: [{ text: geminiScript, startMs: 0, durationMs: 4_000 }],
+              segments: [{ text: geminiSpeechScript, startMs: 0, durationMs: 4_000 }],
               chars: null,
             },
           } as T;
@@ -112,14 +115,16 @@ async function main() {
   check(completedGemini.status === "done", "Gemini regenerates mismatched numeric speech and completes the real preview pipeline");
   check(geminiTtsCalls === 2, "Gemini retries TTS exactly once after a hard numeric mismatch");
   check(geminiTranscribeCalls === 2, "Gemini acoustically verifies both generated audio attempts");
+  check(geminiTtsTexts.every((text) => text === geminiSpeechScript), "Gemini receives only persisted NarrationPlan speechText");
   check(geminiOutput?.subtitleQa?.status === "passed", "Gemini subtitle QA passes");
   check(geminiOutput?.subtitleQa?.timingSource === "forced_alignment", "Gemini persists forced-alignment evidence");
-  check(geminiOutput?.preview?.fullText === geminiScript, "Gemini keeps authored ASCII subtitle text");
+  check(geminiOutput?.preview?.fullText === geminiSpeechScript, "Gemini captions use deterministic NarrationPlan display text");
   check(geminiOutput?.preview?.voiceUrl === "/api/renders/gemini-narration-2.wav", "Gemini renders only the acoustically verified retry audio");
   check(geminiCalls.lastIndexOf("/api/videos/transcribe") < geminiCalls.indexOf("/api/videos/render"), "Gemini verifies the retry before render spend");
 
-  const elevenScript = "เก็บเงิน 5,000 บาท ทุกเดือน";
-  const characters = Array.from(elevenScript);
+  const elevenScript = "เก็บเงิน\n5,000\u200Bบาท ทุกเดือน.....";
+  const elevenSpeechScript = "เก็บเงิน 5,000 บาท ทุกเดือน...";
+  const characters = Array.from(elevenSpeechScript);
   const elevenDurationMs = characters.length * 120;
   const elevenJob = await prisma.videoJob.create({
     data: {
@@ -135,16 +140,18 @@ async function main() {
     },
   });
   let elevenTranscribeCalls = 0;
+  const elevenTtsTexts: string[] = [];
   await runOrchestrator(elevenJob.id, user.id, {
     caller: {
-      post: async <T,>(path: string): Promise<T> => {
+      post: async <T,>(path: string, body?: unknown): Promise<T> => {
         if (path === "/api/videos/tts") {
+          elevenTtsTexts.push((body as { text?: string } | undefined)?.text ?? "");
           return {
             voiceUrl: "/api/renders/eleven-narration.mp3",
             audioDurationMs: elevenDurationMs,
             timing: {
               provider: "elevenlabs",
-              segments: [{ text: elevenScript, startMs: 0, durationMs: elevenDurationMs }],
+              segments: [{ text: elevenSpeechScript, startMs: 0, durationMs: elevenDurationMs }],
               chars: {
                 characters,
                 startSec: characters.map((_, index) => index * 0.12),
@@ -181,9 +188,13 @@ async function main() {
   const completedEleven = await prisma.videoJob.findUniqueOrThrow({ where: { id: elevenJob.id } });
   const elevenOutput = parseVideoJobOutput(completedEleven.outputJson);
   check(completedEleven.status === "done", "ElevenLabs native timestamps complete the real preview pipeline");
+  check(elevenTtsTexts.every((text) => text === elevenSpeechScript), "ElevenLabs receives only persisted NarrationPlan speechText");
   check(elevenTranscribeCalls === 0, "ElevenLabs native timestamps bypass ASR");
   check(elevenOutput?.subtitleQa?.status === "passed", "ElevenLabs subtitle QA passes");
   check(elevenOutput?.subtitleQa?.timingSource === "provider_alignment", "ElevenLabs persists provider-alignment evidence");
+  const storedElevenInput = JSON.parse(completedEleven.inputJson) as { script?: string; narrationPlan?: { sourceText?: string; speechText?: string } };
+  check(storedElevenInput.script === elevenScript, "legacy/background input keeps the exact authored script");
+  check(storedElevenInput.narrationPlan?.speechText === elevenSpeechScript, "worker persists a missing NarrationPlan before provider spend");
 
   await prisma.$disconnect();
   console.log(`\n${failures === 0 ? "ALL PASS" : "FAILURES"}`);
