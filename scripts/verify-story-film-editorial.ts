@@ -87,6 +87,21 @@ assert.match(
   /\u2060/u,
   "a short Thai proper name must be protected as one author-delimited token",
 );
+const displayRegressionText = "เรื่องนี้มาจากคำฟ้องของบรูกส์ และความสัมพันธ์ก็ได้รับผลกระทบแล้ว เมื่อคุยนานต่อเนื่องเราอาจเห็นด้วยกับเขาทุกเรื่อง";
+const graphemeSegmenter = new Intl.Segmenter("th", { granularity: "grapheme" });
+const protectedDisplayText = protectSubtitleWordBreaks(displayRegressionText);
+for (const term of ["บรูกส์", "ผลกระทบ", "ต่อเนื่อง", "ทุกเรื่อง"]) {
+  const protectedTerm = Array.from(graphemeSegmenter.segment(term), (part) => part.segment).join("\u2060");
+  assert.ok(
+    protectedDisplayText.includes(protectedTerm),
+    `Thai display wrapping must keep ${term} on one side of a line break`,
+  );
+}
+assert.equal(
+  protectedDisplayText.replaceAll("\u2060", ""),
+  displayRegressionText,
+  "display-only Thai break protection must preserve every authored character",
+);
 assert.ok(
   renderedStyles.some((style) => style.wordBreak === "keep-all" && style.overflowWrap === "normal"),
   "Thai subtitles must wrap only at safe word boundaries, never at arbitrary characters",
