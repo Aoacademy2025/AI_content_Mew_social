@@ -65,11 +65,19 @@ const MAX_PROTECTED_TOKEN_GRAPHEMES = 18;
  */
 export function protectSubtitleWordBreaks(value: string): string {
   const graphemeSegmenter = getSegmenter("th", "grapheme");
+  const wordSegmenter = getSegmenter("th", "word");
   return value.replace(/[^\s]+/gu, (token) => {
     const graphemes = graphemeSegmenter
       ? Array.from(graphemeSegmenter.segment(token), (part) => part.segment)
       : Array.from(token);
     if (graphemes.length <= 1 || graphemes.length > MAX_PROTECTED_TOKEN_GRAPHEMES) return token;
+    const wordLikeSegments = wordSegmenter
+      ? Array.from(wordSegmenter.segment(token)).filter((part) => part.isWordLike).length
+      : 0;
+    // Keep ordinary single words byte-for-byte identical. We only need the
+    // joiner when ICU would otherwise introduce an extra break inside one
+    // author-delimited token (for example อัล|ลัน).
+    if (wordLikeSegments <= 1) return token;
     return graphemes.join(WORD_JOINER);
   });
 }

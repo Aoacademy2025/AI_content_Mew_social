@@ -7,7 +7,12 @@ function assert(ok: unknown, message: string): asserts ok {
 }
 
 function textContent(markup: string) {
-  return markup.replace(/<br\s*\/?\s*>/g, "\n").replace(/<[^>]*>/g, "");
+  // WORD JOINER is an invisible layout control used to keep a Thai proper
+  // name on one line. It must not count as authored subtitle content.
+  return markup
+    .replace(/<br\s*\/?\s*>/g, "\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/\u2060/gu, "");
 }
 
 function markup(text: string, effect: "karaoke" | "highlight", frame: number) {
