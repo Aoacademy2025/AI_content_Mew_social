@@ -259,6 +259,35 @@ check(
   ) === null,
 );
 
+const numericAnchorWithNeighborTypo = [...numericAnchorSourceWords];
+numericAnchorWithNeighborTypo[numericAnchorIndex + 1] = numericAnchorWithNeighborTypo[
+  numericAnchorIndex + 1
+].slice(1);
+check(
+  "numeric anchor survives a missing first character in the neighboring ASR word",
+  alignTranscriptWordsToSource(
+    numericAnchorScript,
+    numericAnchorWithNeighborTypo.map((word, index) => ({
+      word,
+      startMs: index * 220,
+      endMs: index * 220 + 190,
+    })),
+  ) !== null,
+);
+const numericAnchorWithContinuationAndNeighborTypo = [...numericAnchorWithNeighborTypo];
+numericAnchorWithContinuationAndNeighborTypo.splice(numericAnchorIndex + 1, 0, "สิบ");
+check(
+  "numeric continuation remains fail-closed when the neighboring ASR word loses a character",
+  alignTranscriptWordsToSource(
+    numericAnchorScript,
+    numericAnchorWithContinuationAndNeighborTypo.map((word, index) => ({
+      word,
+      startMs: index * 220,
+      endMs: index * 220 + 190,
+    })),
+  ) === null,
+);
+
 const changedNumericEvidence = alignTranscriptWordsToSource(
   "ประหยัด 5,000 บาท ภายในเดือนนี้",
   [
