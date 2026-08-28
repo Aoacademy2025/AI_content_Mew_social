@@ -419,7 +419,11 @@ module.exports = {
       name: "story-film-system-worker",
       cwd: "/var/www/ai-content",
       script: "node",
-      args: "--conditions=react-server --import tsx scripts/story-film-system-worker.ts",
+      // This worker imports both server-only modules and Remotion. The RSC
+      // condition selects React's server export, which cannot load Remotion's
+      // createContext-based runtime. Use the same direct-Node compatibility
+      // shim as render-worker so both module families can coexist safely.
+      args: "--import=./scripts/register-server-only-node.mjs --import tsx scripts/story-film-system-worker.ts",
       autorestart: true,
       watch: false,
       kill_timeout: 120000,
