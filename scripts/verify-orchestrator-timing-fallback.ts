@@ -245,6 +245,21 @@ check(
   "exact local numeric speech survives a neighboring non-numeric ASR insertion",
   anchoredNumericAlignment !== null,
 );
+const numericAnchorWithChairEcho = [...numericAnchorSourceWords];
+numericAnchorWithChairEcho.splice(numericAnchorIndex + 1, 0, "เก้าอี้");
+const numericChairEchoAlignment = alignTranscriptWordsToSourceDetailed(
+  numericAnchorScript,
+  numericAnchorWithChairEcho.map((word, index) => ({
+    word,
+    startMs: index * 220,
+    endMs: index * 220 + 190,
+  })),
+);
+check(
+  "number-like syllables inside ordinary ASR words do not become numeric continuations",
+  numericChairEchoAlignment.status === "aligned",
+  numericChairEchoAlignment.status === "failed" ? numericChairEchoAlignment.code : "",
+);
 const numericAnchorWithChangedValue = [...numericAnchorSourceWords];
 numericAnchorWithChangedValue.splice(numericAnchorIndex + 1, 0, "สิบ");
 check(
