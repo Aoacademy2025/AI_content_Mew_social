@@ -11,7 +11,12 @@ import {
   resolveUploadTranscriptWords,
 } from "@/lib/mcp/subtitle-quality";
 import { normalizeGeminiWords } from "@/lib/transcribe-timeline";
-import type { StoryFilmCaptionTrack } from "@/lib/story-film-editorial";
+import {
+  STORY_FILM_SENTENCE_MAX_CARD_CHARS,
+  STORY_FILM_SENTENCE_MIN_CARD_MS,
+  storyFilmSentenceCards,
+  type StoryFilmCaptionTrack,
+} from "@/lib/story-film-editorial";
 
 const execFileAsync = promisify(execFile);
 const MODELS = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"] as const;
@@ -140,7 +145,13 @@ export async function alignStoryFilmPresenterCaptions(input: {
     if (!resolution.regroupingAvailable || resolution.words.length === 0) {
       return { track: null, reason: resolution.failureCode ?? "alignment_text_mismatch" };
     }
-    const cards = buildCanonicalCaptionsFromAlignedWords(script, resolution.words, 27);
+    const cards = buildCanonicalCaptionsFromAlignedWords(
+      script,
+      resolution.words,
+      STORY_FILM_SENTENCE_MAX_CARD_CHARS,
+      storyFilmSentenceCards(script),
+      STORY_FILM_SENTENCE_MIN_CARD_MS,
+    );
     if (!cards || cards.length === 0) return { track: null, reason: "alignment_caption_build_failed" };
     return {
       track: {

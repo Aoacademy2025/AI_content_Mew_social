@@ -4,8 +4,12 @@ import {
   type HeadlineHookConfig,
 } from "@/lib/headline-hook";
 import { cardsByWordCount, maxCardCharsFor } from "@/lib/mcp/orchestrator-steps";
+import {
+  buildCanonicalCaptionsFromAlignedWords,
+  hasPlausibleAlignedWordTiming,
+} from "@/lib/mcp/subtitle-quality";
 import type { HeroEditorialCaption, HeroSubtitleDesign } from "@/lib/hero-editorial";
-import type { TtsTiming, TimedWord } from "@/lib/tts-timing";
+import { splitSentenceCards, type ScriptCard, type TtsTiming, type TimedWord } from "@/lib/tts-timing";
 import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
 import type { SubtitleStylePreset, SubtitleTextEffect } from "@/remotion/types";
 
@@ -30,6 +34,9 @@ export const STORY_FILM_SUBTITLE_FONTS = ["Kanit", "Prompt", "Sarabun", "Mitr", 
 export const STORY_FILM_SUBTITLE_FONT_WEIGHTS = [400, 500, 600, 700, 800, 900] as const;
 export const MIN_STORY_FILM_SUBTITLE_FONT_SIZE = 44;
 export const MAX_STORY_FILM_SUBTITLE_FONT_SIZE = 96;
+export const STORY_FILM_SENTENCE_MAX_CARD_CHARS = 44;
+export const STORY_FILM_SENTENCE_MIN_CARD_MS = 1_000;
+const STORY_FILM_SENTENCE_HARD_MAX_CHARS = 64;
 
 export type StoryFilmSubtitleMode = (typeof STORY_FILM_SUBTITLE_MODES)[number];
 export type StoryFilmSubtitlePreset = (typeof STORY_FILM_SUBTITLE_PRESETS)[number];
@@ -271,6 +278,7 @@ export function parseStoryFilmCaptionTrack(value: unknown): StoryFilmCaptionTrac
       : [];
   });
   if (captions.length !== input.captions.length || words.length !== input.words.length || captions.length === 0) return null;
+  if (words.length > 0 && !hasPlausibleAlignedWordTiming(words)) return null;
   return {
     version: 1,
     source: input.source as StoryFilmCaptionTrack["source"],
@@ -300,6 +308,52 @@ export function fallbackStoryFilmCaptionTrack(scenes: StoryFilmCaptionScene[]): 
   };
 }
 
+/**
+ * Treat authored whitespace and punctuation as semantic phrase boundaries.
+ * The generic Thai segmenter may place a dictionary edge inside an unfamiliar
+ * name or compound; Story Film may extend to the next authored break (within a
+ * two-line hard cap) instead of burning a visibly broken word.
+ */
+export function storyFilmSentenceCards(fullText: string): ScriptCard[] {
+  const base = splitSentenceCards(fullText, STORY_FILM_SENTENCE_MAX_CARD_CHARS);
+  if (base.length < 2) return base;
+  const breakCharacter = /[\s\p{P}\p{S}]/u;
+  const edges: number[] = [];
+  let previous = base[0].startChar;
+  for (let index = 0; index < base.length - 1; index += 1) {
+    let edge = base[index].endChar;
+    if (edge <= previous) continue;
+    const left = fullText[edge - 1] ?? "";
+    const right = fullText[edge] ?? "";
+    if (!breakCharacter.test(left) && !breakCharacter.test(right)) {
+      const hardEnd = Math.min(fullText.length, previous + STORY_FILM_SENTENCE_HARD_MAX_CHARS);
+      let extended = edge;
+      while (extended < hardEnd && !breakCharacter.test(fullText[extended] ?? "")) extended += 1;
+      if (extended < fullText.length && extended <= hardEnd) {
+        if (/\s/u.test(fullText[extended])) {
+          while (extended < fullText.length && /\s/u.test(fullText[extended])) extended += 1;
+        } else {
+          extended += 1;
+        }
+        edge = extended;
+      }
+    }
+    if (edge > previous && edge < fullText.length) {
+      edges.push(edge);
+      previous = edge;
+    }
+  }
+  const finalEnd = base.at(-1)?.endChar ?? fullText.length;
+  const cards: ScriptCard[] = [];
+  let startChar = base[0].startChar;
+  for (const endChar of [...edges, finalEnd]) {
+    if (endChar <= startChar || !fullText.slice(startChar, endChar).trim()) continue;
+    cards.push({ startChar, endChar });
+    startChar = endChar;
+  }
+  return cards.length > 0 ? cards : base;
+}
+
 export function captionsForStoryFilmEditorial(input: {
   editorial: StoryFilmEditorialConfig;
   track: StoryFilmCaptionTrack;
@@ -307,7 +361,15 @@ export function captionsForStoryFilmEditorial(input: {
 }): HeroEditorialCaption[] {
   if (!input.editorial.subtitlesEnabled) return [];
   let captions = input.track.captions;
-  if (input.editorial.subtitleMode !== "sentence" && input.track.words.length > 0) {
+  if (input.editorial.subtitleMode === "sentence" && input.track.words.length > 0) {
+    captions = buildCanonicalCaptionsFromAlignedWords(
+      input.track.fullText,
+      input.track.words,
+      STORY_FILM_SENTENCE_MAX_CARD_CHARS,
+      storyFilmSentenceCards(input.track.fullText),
+      STORY_FILM_SENTENCE_MIN_CARD_MS,
+    ) ?? captions;
+  } else if (input.editorial.subtitleMode !== "sentence" && input.track.words.length > 0) {
     captions = cardsByWordCount(
       input.track.words,
       Number(input.editorial.subtitleMode),

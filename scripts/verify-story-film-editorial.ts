@@ -10,7 +10,8 @@ import {
   storyFilmSubtitleDesign,
   validateStoryFilmEditorialConfig,
 } from "../src/lib/story-film-editorial";
-import type { TtsTiming } from "../src/lib/tts-timing";
+import { buildCanonicalCaptionsFromAlignedWords } from "../src/lib/mcp/subtitle-quality";
+import { tokenizeWords, type TtsTiming } from "../src/lib/tts-timing";
 
 const spoken = "คืนหนึ่ง มิวพบข้อความที่ไม่ควรอยู่บนจอ";
 const characters = Array.from(spoken);
@@ -89,6 +90,76 @@ assert.match(
 assert.ok(
   renderedStyles.some((style) => style.wordBreak === "keep-all" && style.overflowWrap === "normal"),
   "Thai subtitles must wrap only at safe word boundaries, never at arbitrary characters",
+);
+
+const thaiRegressionSource = [
+  "เรื่องนี้มาจากคำฟ้องของบรูกส์ และคดียังไม่ได้ตัดสินนะครับ",
+  "ชื่อเสียง และความสัมพันธ์ก็ได้รับผลกระทบแล้ว",
+  "ต่อมาบริษัทเพิ่มคำเตือนให้พักเมื่อคุยนานต่อเนื่อง ส่วนคดีนี้ยังไม่ตัดสินครับ",
+].join("\n");
+const thaiRegressionWords = tokenizeWords(thaiRegressionSource).map((word, index) => ({
+  ...word,
+  startMs: index * 180,
+  endMs: index * 180 + 160,
+}));
+const narrowThaiCaptions = buildCanonicalCaptionsFromAlignedWords(
+  thaiRegressionSource,
+  thaiRegressionWords,
+  27,
+);
+assert.ok(narrowThaiCaptions, "Thai regression fixture must build canonical captions");
+
+const sentenceTrack = {
+  version: 1 as const,
+  source: "forced_alignment" as const,
+  fullText: thaiRegressionSource,
+  captions: narrowThaiCaptions,
+  words: thaiRegressionWords,
+};
+const sentenceCaptions = captionsForStoryFilmEditorial({
+  editorial: {
+    ...createDefaultStoryFilmEditorialConfig(thaiRegressionSource, 12_000),
+    subtitleMode: "sentence",
+  },
+  track: sentenceTrack,
+  scenes: [{
+    sceneKey: "scene-01",
+    startMs: 0,
+    endMs: 12_000,
+    sourceExcerpt: thaiRegressionSource,
+  }],
+});
+assert.ok(
+  sentenceCaptions.length < narrowThaiCaptions.length,
+  "Story Film sentence mode must regroup a dense alignment into readable phrase cards",
+);
+assert.ok(
+  sentenceCaptions.every((caption) => caption.endMs - caption.startMs >= 1_000),
+  "Story Film sentence cards must remain on screen for at least one second",
+);
+const brokenProtectedTerms = ["บรูกส์", "ผลกระทบ", "ต่อเนื่อง"].filter((term) =>
+  sentenceCaptions.some((caption, index, all) => (
+    index < all.length - 1
+    && `${caption.text}${all[index + 1].text}`.includes(term)
+    && !caption.text.includes(term)
+    && !all[index + 1].text.includes(term)
+  )),
+);
+assert.deepEqual(
+  brokenProtectedTerms,
+  [],
+  "Story Film phrase cards must not split real Thai names or compounds",
+);
+
+const compressedWords = thaiRegressionWords.map((word, index) => ({
+  ...word,
+  startMs: index,
+  endMs: index + 1,
+}));
+assert.equal(
+  parseStoryFilmCaptionTrack({ ...sentenceTrack, words: compressedWords }),
+  null,
+  "a forced alignment that compresses many spoken words into milliseconds must fail closed",
 );
 
 const renderer = readFileSync("src/lib/story-film-render.server.ts", "utf8");

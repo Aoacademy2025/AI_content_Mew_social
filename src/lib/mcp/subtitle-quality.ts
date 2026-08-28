@@ -107,6 +107,7 @@ export type TranscriptAlignmentFailureCode =
   | "empty_transcript"
   | "no_usable_words"
   | "overlapping_timing"
+  | "implausible_timing_density"
   | "text_mismatch"
   | "incomplete_alignment";
 
@@ -116,6 +117,25 @@ export type TranscriptAlignmentResult =
 
 const MIN_FUZZY_ALIGNMENT_SIMILARITY = 0.92;
 const MAX_FUZZY_ALIGNMENT_CELLS = 12_000_000;
+const DENSE_TIMING_WINDOW_WORDS = 5;
+const MIN_DENSE_TIMING_WINDOW_MS = 300;
+
+/**
+ * Reject a transcript projection that is monotonic but acoustically impossible.
+ * Fuzzy text alignment can otherwise map a missing ASR phrase onto a one-digit
+ * millisecond span; the captions remain text-exact while flashing unreadably.
+ */
+export function hasPlausibleAlignedWordTiming(
+  words: Array<{ startMs: number; endMs: number }>,
+): boolean {
+  if (words.length < DENSE_TIMING_WINDOW_WORDS) return true;
+  for (let index = 0; index + DENSE_TIMING_WINDOW_WORDS <= words.length; index += 1) {
+    const first = words[index];
+    const last = words[index + DENSE_TIMING_WINDOW_WORDS - 1];
+    if (last.endMs - first.startMs < MIN_DENSE_TIMING_WINDOW_MS) return false;
+  }
+  return true;
+}
 const THAI_DIGIT_WORDS = [
   "ศูนย์", "หนึ่ง", "สอง", "สาม", "สี่", "ห้า", "หก", "เจ็ด", "แปด", "เก้า",
 ] as const;
@@ -619,9 +639,17 @@ export function alignTranscriptWordsToSourceDetailed(
   }
 
   const exact = alignTranscriptWordsExactly(sourceWords, usableTranscript);
-  if (exact.status === "aligned") return exact;
+  if (exact.status === "aligned") {
+    return hasPlausibleAlignedWordTiming(exact.words)
+      ? exact
+      : { status: "failed", code: "implausible_timing_density" };
+  }
   if (exact.code !== "text_mismatch" && exact.code !== "incomplete_alignment") return exact;
-  return alignTranscriptWordsFuzzily(fullText, sourceWords, usableTranscript);
+  const fuzzy = alignTranscriptWordsFuzzily(fullText, sourceWords, usableTranscript);
+  if (fuzzy.status !== "aligned") return fuzzy;
+  return hasPlausibleAlignedWordTiming(fuzzy.words)
+    ? fuzzy
+    : { status: "failed", code: "implausible_timing_density" };
 }
 
 /**
@@ -678,6 +706,8 @@ export function buildCanonicalCaptionsFromAlignedWords(
   fullText: string,
   words: TimedWord[],
   maxCardChars: number,
+  cardsOverride?: ReturnType<typeof splitSentenceCards>,
+  minCardMs = MIN_CARD_MS,
 ): CanonicalAlignedCaption[] | null {
   if (!fullText.trim() || words.length === 0) return null;
   if (words.some((word, index) =>
@@ -697,7 +727,7 @@ export function buildCanonicalCaptionsFromAlignedWords(
   )) return null;
 
   const cards = snapCardsToWordBoundaries(
-    splitSentenceCards(fullText, Math.max(10, maxCardChars)),
+    cardsOverride ?? splitSentenceCards(fullText, Math.max(10, maxCardChars)),
     fullText,
   );
   if (cards.length === 0) return null;
@@ -734,9 +764,10 @@ export function buildCanonicalCaptionsFromAlignedWords(
     last.text = fullText.slice(last.startChar, last.endChar).replace(/\s+/gu, " ").trim();
   }
 
-  // The release gate requires a readable 240 ms minimum. Merge an exceptionally
-  // short forced-aligned card into a neighbor using one literal source range.
-  if (captions.length > 1 && captions[0].endMs - captions[0].startMs < MIN_CARD_MS) {
+  // Merge a card below the caller's readable minimum into a neighbor using one
+  // literal source range. The shared default stays at the 240 ms release floor;
+  // Story Film opts into a calmer one-second minimum.
+  if (captions.length > 1 && captions[0].endMs - captions[0].startMs < minCardMs) {
     const first = captions.shift()!;
     const next = captions[0];
     next.startChar = first.startChar;
@@ -747,7 +778,7 @@ export function buildCanonicalCaptionsFromAlignedWords(
   const readable: CanonicalAlignedCaption[] = [];
   for (const caption of captions) {
     const previous = readable[readable.length - 1];
-    if (previous && caption.endMs - caption.startMs < MIN_CARD_MS) {
+    if (previous && caption.endMs - caption.startMs < minCardMs) {
       previous.endChar = caption.endChar;
       previous.endMs = caption.endMs;
       previous.text = fullText.slice(previous.startChar, previous.endChar).replace(/\s+/gu, " ").trim();
