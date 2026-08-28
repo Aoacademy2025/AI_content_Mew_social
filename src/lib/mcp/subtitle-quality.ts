@@ -554,6 +554,20 @@ function alignTranscriptWordsFuzzily(
     }
   });
   const numericWordIndexes = [...numericWordIndexSet].sort((left, right) => left - right);
+  const nearestMappedTranscriptBefore = (sourceCharIndex: number): number => {
+    for (let index = sourceCharIndex - 1; index >= 0; index -= 1) {
+      const mapped = transcriptCharBySourceChar[index];
+      if (mapped >= 0) return mapped;
+    }
+    return -1;
+  };
+  const nearestMappedTranscriptAfter = (sourceCharIndex: number): number => {
+    for (let index = sourceCharIndex + 1; index < sourceChars.length; index += 1) {
+      const mapped = transcriptCharBySourceChar[index];
+      if (mapped >= 0) return mapped;
+    }
+    return transcriptChars.length;
+  };
   for (const numericWordIndex of numericWordIndexes) {
     const sourceIndexes: number[] = [];
     for (let sourceCharIndex = 0; sourceCharIndex < sourceWordByChar.length; sourceCharIndex += 1) {
@@ -577,12 +591,8 @@ function alignTranscriptWordsFuzzily(
       if (mappedEvidence.length === 0) return { status: "failed", code: "numeric_claim_mismatch" };
       const target = sourceIndexes.map((sourceCharIndex) => sourceChars[sourceCharIndex]).join("");
       const anchorStart = Math.min(...mappedEvidence);
-      const previousMapped = sourceIndexes[0] > 0
-        ? transcriptCharBySourceChar[sourceIndexes[0] - 1]
-        : -1;
-      const nextMapped = sourceIndexes[sourceIndexes.length - 1] + 1 < sourceChars.length
-        ? transcriptCharBySourceChar[sourceIndexes[sourceIndexes.length - 1] + 1]
-        : transcriptChars.length;
+      const previousMapped = nearestMappedTranscriptBefore(sourceIndexes[0]);
+      const nextMapped = nearestMappedTranscriptAfter(sourceIndexes[sourceIndexes.length - 1]);
       const maxAnchorDistance = Math.max(12, target.length * 2);
       const candidates: number[] = [];
       let candidateStart = transcriptComparableText.indexOf(target);
@@ -619,12 +629,12 @@ function alignTranscriptWordsFuzzily(
 
     const firstSourceIndex = sourceIndexes[0];
     const lastSourceIndex = sourceIndexes[sourceIndexes.length - 1];
-    const previousTranscriptIndex = firstSourceIndex > 0
-      ? transcriptCharBySourceChar[firstSourceIndex - 1]
-      : -1;
-    const nextTranscriptIndex = lastSourceIndex + 1 < sourceChars.length
-      ? transcriptCharBySourceChar[lastSourceIndex + 1]
-      : transcriptChars.length;
+    // ASR may omit or misspell the first character of the neighboring word.
+    // Bound the context by the nearest acoustic evidence instead of treating an
+    // unmapped immediate neighbor as a numeric failure. Any inserted numeric
+    // continuation still remains inside this wider gap and is rejected below.
+    const previousTranscriptIndex = nearestMappedTranscriptBefore(firstSourceIndex);
+    const nextTranscriptIndex = nearestMappedTranscriptAfter(lastSourceIndex);
     const leftGap = transcriptChars.slice(
       firstSourceIndex === 0 ? 0 : Math.max(0, previousTranscriptIndex + 1),
       mapped[0],
@@ -633,12 +643,22 @@ function alignTranscriptWordsFuzzily(
       mapped[mapped.length - 1] + 1,
       lastSourceIndex === sourceChars.length - 1 ? transcriptChars.length : nextTranscriptIndex,
     ).join("");
+    const sourcePrefix = sourceChars.slice(0, firstSourceIndex).join("");
+    const sourceSuffix = sourceChars.slice(lastSourceIndex + 1).join("");
+    const transcriptPrefix = transcriptChars.slice(0, mapped[0]).join("");
+    const transcriptSuffix = transcriptChars.slice(mapped[mapped.length - 1] + 1).join("");
+    const hasChangedLeftNumericContinuation = THAI_NUMBER_SPEECH_PARTS.some((part) =>
+      transcriptPrefix.endsWith(part) && !sourcePrefix.endsWith(part),
+    );
+    const hasChangedRightNumericContinuation = THAI_NUMBER_SPEECH_PARTS.some((part) =>
+      transcriptSuffix.startsWith(part) && !sourceSuffix.startsWith(part),
+    );
     // Benign ASR insertions next to a fully proven number must not invalidate
     // that number. Numeric continuations remain fail-closed: 20→25 creates a
     // right gap of "ห้า"; 3→13 creates a left gap of "สิบ".
     if (
-      (firstSourceIndex > 0 && previousTranscriptIndex < 0)
-      || (lastSourceIndex < sourceChars.length - 1 && nextTranscriptIndex < 0)
+      hasChangedLeftNumericContinuation
+      || hasChangedRightNumericContinuation
       || containsThaiNumberSpeech(leftGap)
       || containsThaiNumberSpeech(rightGap)
     ) {
