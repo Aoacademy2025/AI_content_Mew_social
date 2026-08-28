@@ -232,11 +232,20 @@ function loadPlainModule(
   return module.exports;
 }
 
+const narrationPlanPath = "src/lib/narration-plan.ts";
+const narrationPlanModule = loadPlainModule(
+  readFileSync(narrationPlanPath, "utf8"),
+  narrationPlanPath,
+  (specifier) => { throw new Error(`unhandled narration-plan import: ${specifier}`); },
+);
 const preprocessScriptPath = "src/app/(dashboard)/video-editor/_lib/preprocess-script.ts";
 const preprocessScriptModule = loadPlainModule(
   readFileSync(preprocessScriptPath, "utf8"),
   preprocessScriptPath,
-  (specifier) => { throw new Error(`unhandled preprocess-script import: ${specifier}`); },
+  (specifier) => {
+    if (specifier === "@/lib/narration-plan") return narrationPlanModule;
+    throw new Error(`unhandled preprocess-script import: ${specifier}`);
+  },
 );
 const automixPlanPath = "src/lib/automix-plan.ts";
 const automixPlanModule = loadPlainModule(
