@@ -160,7 +160,7 @@
     "verify:story-film-character-pipeline": "node --conditions=react-server --import tsx scripts/verify-story-film-character-pipeline.ts",
     "verify:story-film-render": "node --conditions=react-server --import tsx scripts/verify-story-film-render.ts",
     "verify:story-film-editorial": "tsx scripts/verify-story-film-editorial.ts",
-    "worker:story-film-system": "node --conditions=react-server --import tsx scripts/story-film-system-worker.ts",
+    "worker:story-film-system": "node --import=./scripts/register-server-only-node.mjs --import tsx scripts/story-film-system-worker.ts",
     "verify:hero-image-disclosure": "tsx scripts/verify-hero-image-disclosure.ts",
     "verify:hero-image-price": "node --conditions=react-server --import tsx scripts/verify-hero-image-price.ts",
     "verify:automix-hero": "node --conditions=react-server --import tsx scripts/verify-automix-hero-migration.ts",
