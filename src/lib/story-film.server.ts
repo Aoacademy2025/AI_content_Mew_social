@@ -562,6 +562,15 @@ function validateDecision(input: {
     invalid("realignCaptions ใช้ได้เฉพาะการแก้ Final Review หรือโปรเจกต์ที่เสร็จแล้ว");
   }
   const realignCaptions = rawRealignCaptions === true;
+  const rawIdentityReferenceOnly = input.target?.identityReferenceOnly;
+  if (rawIdentityReferenceOnly !== undefined && (
+    rawIdentityReferenceOnly !== true
+    || input.expectedStage !== "keyframes"
+    || !["revise", "reroll", "fallback"].includes(input.decision)
+  )) {
+    invalid("identityReferenceOnly ใช้ได้เฉพาะการแก้ Keyframe ด้วย Character Profile");
+  }
+  const identityReferenceOnly = rawIdentityReferenceOnly === true;
   let editorial: StoryFilmEditorialConfig | undefined;
   if (input.target?.editorial !== undefined) {
     try {
@@ -570,7 +579,15 @@ function validateDecision(input: {
       invalid(error instanceof Error ? error.message : "Editorial config ไม่ถูกต้อง");
     }
   }
-  return { instruction, videoSceneKeys, sceneKeys, repairLayer, realignCaptions, editorial };
+  return {
+    instruction,
+    videoSceneKeys,
+    sceneKeys,
+    repairLayer,
+    realignCaptions,
+    identityReferenceOnly,
+    editorial,
+  };
 }
 
 function stageAfterApproval(stage: StoryFilmStage): StoryFilmStage | null {
@@ -591,7 +608,15 @@ export async function decideStoryFilm(
     idempotencyKey?: string | null;
   },
 ): Promise<StoryFilmProjectView> {
-  const { instruction, videoSceneKeys, sceneKeys, repairLayer, realignCaptions, editorial } = validateDecision(input);
+  const {
+    instruction,
+    videoSceneKeys,
+    sceneKeys,
+    repairLayer,
+    realignCaptions,
+    identityReferenceOnly,
+    editorial,
+  } = validateDecision(input);
   return prisma.$transaction(async (tx) => {
     if (input.idempotencyKey) {
       const prior = await tx.storyFilmDecision.findUnique({
@@ -981,9 +1006,11 @@ export async function decideStoryFilm(
             } : null,
           });
         } else {
+          const priorStageData = parseStageData(project.stageDataJson);
           nextStatus = "waiting_generation";
           awaitingApproval = false;
           stageDataJson = JSON.stringify({
+            ...priorStageData,
             gate: project.stage,
             waitingForGeneration: true,
             requestedDecision: input.decision,
@@ -1384,7 +1411,7 @@ export async function decideStoryFilm(
             orderBy: { createdAt: "asc" },
           })
         : [];
-      const approvedLook = project.characterProfileId && usesProjectCharacter
+      const approvedLook = project.characterProfileId && usesProjectCharacter && !identityReferenceOnly
         ? await tx.storyFilmArtifact.findFirst({
             where: { projectId: project.id, stage: "character_look", kind: "look_image" },
             orderBy: { createdAt: "desc" },
@@ -1405,6 +1432,9 @@ export async function decideStoryFilm(
               input.decision === "reroll" ? "Create a distinct alternate cinematic take while preserving story continuity." : null,
               `Creator revision: ${instruction}`,
               usesProjectCharacter ? CHARACTER_IDENTITY_AUTHORITY_INSTRUCTION : null,
+              identityReferenceOnly
+                ? "Use the Character Profile reference as the only facial identity source. Ignore any conflicting face from prior generated looks or frames. Show exactly one instance of this person unless the story explicitly requires more."
+                : null,
             ].filter(Boolean).join(" "),
             referenceUrls: characterIdentityReferenceUrls(references, approvedLook),
             aspectRatio: "9:16",

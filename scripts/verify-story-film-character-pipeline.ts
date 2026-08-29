@@ -610,6 +610,46 @@ async function main() {
         && completedKeyframePayload.prompt.includes("identity authority"),
       "a completed film can selectively repair identity and captions with raw identity first",
     );
+    const completedRepairLease = await queue.leaseStoryFilmGenerationJobs({
+      workerId: "mew-grok-completed-repair",
+      providerBackends: ["grok_subscription"],
+      maxJobs: 1,
+    });
+    await completeImage(
+      queue,
+      completedRepairLease[0],
+      "mew-grok-completed-repair",
+      "/api/renders/scene-01-completed-repair.png",
+    );
+    const completedRepairReview = await story.readStoryFilm(mew.id, { projectId: started.project.id });
+    assert.equal(completedRepairReview.kind, "project");
+    const identityOnlyRepair = await story.decideStoryFilm(mew.id, {
+      projectId: started.project.id,
+      expectedStage: "keyframes",
+      expectedRevision: completedRepairReview.project.revision,
+      decision: "revise",
+      instruction: "The face still failed identity QA. Generate a fresh frame with exactly one Mew and use only the Character Profile for his face.",
+      target: { sceneKey: "scene-01", identityReferenceOnly: true },
+      idempotencyKey: "character:keyframe:identity-only:001",
+    });
+    const identityOnlyJob = await prisma.storyFilmGenerationJob.findFirstOrThrow({
+      where: {
+        projectId: started.project.id,
+        generationEpoch: identityOnlyRepair.generationEpoch,
+        kind: "keyframe_image",
+      },
+    });
+    const identityOnlyPayload = JSON.parse(identityOnlyJob.payloadJson) as {
+      prompt: string;
+      referenceUrls: string[];
+    };
+    ok(
+      (identityOnlyRepair.stageData.repair as { origin?: string } | undefined)?.origin === "final_render"
+        && identityOnlyPayload.referenceUrls.length === 1
+        && identityOnlyPayload.referenceUrls[0] === reference.url
+        && identityOnlyPayload.prompt.includes("only facial identity source"),
+      "identity-only reroll preserves Final Review context and excludes conflicting generated looks",
+    );
   } finally {
     await prisma.$disconnect();
   }
