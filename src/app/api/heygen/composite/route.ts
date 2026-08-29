@@ -5,7 +5,7 @@ import { decryptKey } from "@/lib/key-crypto";
 import { recordChargedClip } from "@/lib/clip-charge";
 import { clampAvatarLayout, shouldCropAvatarToVisibleCanvas, type AvatarLayout } from "@/lib/avatar-layout";
 import { buildEnableExpr } from "@/lib/cutaway-plan";
-import { buildCutawayCompositeFilter } from "@/lib/cutaway-fade";
+import { buildCutawayCompositeFilter } from "@/lib/cutaway-composite";
 import { assertSafeFetchUrl } from "@/lib/safe-fetch";
 import {
   CompositeExecutionError,
@@ -205,9 +205,9 @@ async function directComposite(
 
 // ─────────────────────────────────────────────
 // Mode: cutaway — uploaded clip is the base video; the content-matched b-roll (bg)
-// peeks through during NON-person windows. Dissolve the clip at every person-range
-// edge while its source timeline keeps running continuously. Audio normally comes
-// from the clip (input 1). When the base
+// peeks through during NON-person windows. Time-gate the full-frame presenter overlay
+// while its source timeline keeps running continuously. Audio normally comes from the
+// clip (input 1). When the base
 // render contains selected BGM, use input 0 so it carries clip voice + music once.
 // ─────────────────────────────────────────────
 async function cutawayComposite(

@@ -15,7 +15,7 @@ import {
   singleAvatarFadeWindow,
 } from "../src/lib/avatar-fade";
 import { buildCompositeFilter } from "../src/lib/chroma-key";
-import { buildCutawayCompositeFilter } from "../src/lib/cutaway-fade";
+import { buildCutawayCompositeFilter } from "../src/lib/cutaway-composite";
 import { LIVE_PREVIEW_MAX_SEC } from "../src/lib/preview-bg-constants";
 
 function ffmpegPath(): string {
@@ -210,10 +210,10 @@ function livePreviewFadeWindows(
 }
 
 // avatarFadeApplies (M10/B-13): drives the timeline gradient/tooltip + mobile hint. Uploaded
-// cutaway presenter ranges now dissolve over the B-roll base instead of hard-switching at every
-// range edge, so that mode must honestly advertise that fade too.
+// cutaway uses the cheap time-gated overlay required by the original architecture, so it must
+// never advertise the more expensive avatar dissolve used by the other composite modes.
 assert.equal(avatarFadeApplies("Wayne_20240711"), true, "heygen avatarId → fade applies");
-assert.equal(avatarFadeApplies("upload-cutaway"), true, "cutaway → presenter range edges dissolve");
+assert.equal(avatarFadeApplies("upload-cutaway"), false, "cutaway → hard time-gated presenter ranges");
 assert.equal(avatarFadeApplies("none"), false, "no avatar → no fade");
 assert.equal(avatarFadeApplies(null), false, "absent avatarModel → no fade");
 assert.equal(avatarFadeApplies(undefined), false, "undefined avatarModel → no fade");
@@ -251,9 +251,33 @@ assert.match(filter, /blend=all_expr=/);
 
 const cutawayFilter = buildCutawayCompositeFilter([{ start: 0.5, end: 1.5 }]);
 assert.ok(cutawayFilter, "valid cutaway person ranges produce a composite filter");
-assert.match(cutawayFilter, /blend=all_expr=/);
-assert.doesNotMatch(cutawayFilter, /:enable=/);
+assert.match(cutawayFilter, /overlay=0:0:format=auto:enable=/);
+assert.doesNotMatch(
+  cutawayFilter,
+  /blend=all_expr=/,
+  "upload cutaway must not run the full-frame per-pixel blend that times out in production",
+);
+assert.doesNotMatch(cutawayFilter, /atrim|asetpts|amix/, "cutaway video gating must not retime audio");
 assert.equal(buildCutawayCompositeFilter([]), null, "empty cutaway ranges fail closed");
+
+// Production regression: a normal ~55s upload has about nine presenter ranges. The
+// broken graph duplicated one nested opacity expression inside a per-pixel blend and
+// rendered at ~0.02x. Keep the production-shaped graph to one bounded overlay filter.
+const productionCutawayFilter = buildCutawayCompositeFilter([
+  { start: 0, end: 2.6 },
+  { start: 6.4, end: 9.8 },
+  { start: 12.6, end: 16.2 },
+  { start: 17.1, end: 22.1 },
+  { start: 25.1, end: 28.2 },
+  { start: 30.6, end: 32.8 },
+  { start: 37.6, end: 39.7 },
+  { start: 42.2, end: 47.7 },
+  { start: 50.5, end: 52.3 },
+]);
+assert.ok(productionCutawayFilter, "production-shaped cutaway ranges produce a filter");
+assert.equal(productionCutawayFilter.match(/overlay=/g)?.length, 1);
+assert.doesNotMatch(productionCutawayFilter, /split=|blend=/);
+assert.ok(productionCutawayFilter.length < 800, `cutaway graph remains bounded (${productionCutawayFilter.length} chars)`);
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "avatar-fade-"));
 const output = path.join(tmp, "fade.mp4");
@@ -336,15 +360,14 @@ try {
   assert.match(
     cutawayCompositeSource,
     /buildCutawayCompositeFilter/,
-    "cutaway B-roll → presenter boundaries must dissolve instead of hard-cutting",
+    "cutaway B-roll must use the shared bounded time-gated filter",
   );
-  assert.doesNotMatch(
+  assert.match(
     cutawayCompositeSource,
-    /overlay=0:0:format=auto:enable=/,
-    "cutaway composite must not switch the presenter on with a hard enable edge",
+    /"-map", audioFromBackground \? "0:a\?" : "1:a\?"/,
+    "BGM selects the already-mixed base audio; otherwise narration stays on the uploaded clip",
   );
-
-  const cutawayOutput = path.join(tmp, "cutaway-fade.mp4");
+  const cutawayOutput = path.join(tmp, "cutaway-overlay.mp4");
   execFileSync(ffmpeg, [
     "-hide_banner",
     "-loglevel", "error",
@@ -380,11 +403,11 @@ try {
   const afterCutaway = cutawayCenterPixel(1.6);
   assert.ok(
     beforeCutaway[2] > 150 && beforeCutaway[0] < 80
-      && enteringCutaway[0] > 20 && enteringCutaway[2] > 20
+      && enteringCutaway[0] > 150 && enteringCutaway[2] < 80
       && steadyCutaway[0] > 150 && steadyCutaway[2] < 80
-      && leavingCutaway[0] > 20 && leavingCutaway[2] > 20
+      && leavingCutaway[0] > 150 && leavingCutaway[2] < 80
       && afterCutaway[2] > 150 && afterCutaway[0] < 80,
-    `cutaway must dissolve blue→mixed→red→mixed→blue: ${beforeCutaway} / ${enteringCutaway} / ${steadyCutaway} / ${leavingCutaway} / ${afterCutaway}`,
+    `cutaway must hard-switch blue→red→blue without full-frame blend: ${beforeCutaway} / ${enteringCutaway} / ${steadyCutaway} / ${leavingCutaway} / ${afterCutaway}`,
   );
 
   const timelineSource = fs.readFileSync(

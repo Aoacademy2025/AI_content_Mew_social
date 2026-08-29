@@ -78,8 +78,8 @@ export function TimelinePanel({
   avatarMode: string | null;
   avatarIntroMs: number;
   avatarTailMs: number;
-  /** Fade indicator follows the shared render truth. HeyGen fades at source edges;
-   *  upload-cutaway fades at every presenter-range edge. */
+  /** Fade indicator follows the shared render truth. Upload-cutaway uses hard,
+   *  time-gated presenter ranges and therefore does not advertise a dissolve. */
   avatarFadeApplies: boolean;
   voiceUrl: string | null;
   /** Effective spans including browser-staged timing edits. */
