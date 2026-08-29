@@ -1,3 +1,9 @@
+import {
+  assessSubtitleSpeechCoverage,
+  parseSubtitleSpeechCoverage,
+  subtitleTimingRequiresSpeechCoverage,
+} from "@/lib/subtitle-speech-coverage";
+
 export type SubtitleReleaseAuditSeverity = "p0" | "p1";
 
 export type SubtitleReleaseAuditIssue = {
@@ -9,6 +15,9 @@ export type SubtitleReleaseAuditIssue = {
     | "unverified_alignment"
     | "missing_replay_evidence"
     | "missing_word_timing"
+    | "missing_speech_coverage"
+    | "invalid_speech_coverage"
+    | "speech_coverage_incomplete"
     | "timeline_aligned_offset_mismatch";
   severity: SubtitleReleaseAuditSeverity;
   segmentIndex?: number;
@@ -63,8 +72,46 @@ export function auditSubtitleReleaseRecord(record: SubtitleReleaseAuditRecord): 
     issues.push({ jobId: record.id, code: "missing_replay_evidence", severity: "p1" });
     return issues;
   }
-  if (!Array.isArray(evidence.words) || evidence.words.length === 0 || typeof evidence.fullText !== "string" || !evidence.fullText.trim()) {
+  const timingSource = typeof qa?.timingSource === "string"
+    ? qa.timingSource
+    : typeof evidence.timingSource === "string"
+      ? evidence.timingSource
+      : "";
+  const wordsRequired = timingSource !== "upload_transcription";
+  if (
+    typeof evidence.fullText !== "string"
+    || !evidence.fullText.trim()
+    || (wordsRequired && (!Array.isArray(evidence.words) || evidence.words.length === 0))
+  ) {
     issues.push({ jobId: record.id, code: "missing_word_timing", severity: "p1" });
+  }
+
+  if (subtitleTimingRequiresSpeechCoverage(timingSource)) {
+    const rawSpeechCoverage = evidence.speechCoverage ?? qa?.speechCoverage;
+    const speechCoverage = parseSubtitleSpeechCoverage(rawSpeechCoverage);
+    if (rawSpeechCoverage !== undefined && !speechCoverage) {
+      issues.push({ jobId: record.id, code: "invalid_speech_coverage", severity: "p0" });
+    } else {
+      const rawCaptions = Array.isArray(evidence.captions) ? evidence.captions : [];
+      const captions = rawCaptions.flatMap((candidate) => {
+        const caption = object(candidate);
+        const endMs = Number(caption?.endMs);
+        return Number.isFinite(endMs) ? [{ endMs }] : [];
+      });
+      const audioDurationMs = Number(evidence.audioDurationMs ?? qa?.audioDurationMs);
+      const coverage = assessSubtitleSpeechCoverage({
+        captions,
+        audioDurationMs,
+        speechCoverage,
+      });
+      if (coverage.status === "missing") {
+        issues.push({ jobId: record.id, code: "missing_speech_coverage", severity: "p1" });
+      } else if (coverage.status === "invalid") {
+        issues.push({ jobId: record.id, code: "invalid_speech_coverage", severity: "p0" });
+      } else if (coverage.status === "incomplete") {
+        issues.push({ jobId: record.id, code: "speech_coverage_incomplete", severity: "p0" });
+      }
+    }
   }
 
   const input = json(record.inputJson);

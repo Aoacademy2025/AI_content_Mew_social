@@ -1,5 +1,9 @@
 import type { User } from "@prisma/client";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
+import {
+  subtitleTimingRequiresSpeechCoverage,
+  type SubtitleSpeechCoverage,
+} from "@/lib/subtitle-speech-coverage";
 import { prisma } from "@/lib/prisma";
 import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
 import {
@@ -796,6 +800,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         captions,
         audioDurationMs: checkpoint.audioDurationMs,
         timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
+        speechCoverage: checkpoint.speechCoverage,
       });
       if (subtitleQa.status !== "passed") {
         emitTelemetry({
@@ -828,6 +833,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             voiceUrl: checkpoint.voiceUrl,
             voiceModel: galleryVoiceModelForInput(input, user, provider),
             audioDurationMs: checkpoint.audioDurationMs,
+            speechCoverage: checkpoint.speechCoverage,
             avatarModel: checkpoint.avatar.id,
             avatarVideoUrl,
             avatarMode: checkpoint.avatar.mode,
@@ -891,6 +897,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           fullText: checkpoint.fullText,
           audioDurationMs: checkpoint.audioDurationMs,
           timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
+          speechCoverage: checkpoint.speechCoverage,
         },
         ...(billingReceipt ? { billingReceipt } : {}),
       });
@@ -1210,11 +1217,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ?? (sourceInput?.mode === "upload" ? "upload_transcription" : "tts_segment_timing");
       let exportWords = preview.words ?? [];
       let exportAudioDurationMs = preview.audioDurationMs;
+      let exportSpeechCoverage = preview.speechCoverage ?? sourceSubtitleQa?.speechCoverage;
+      if (!exportSpeechCoverage && exportTimingSource === "upload_transcription") {
+        const spokenEndMs = finalCaptions.reduce((max, caption) => Math.max(max, caption.endMs), 0);
+        if (spokenEndMs > 0) {
+          // Backward compatibility for previews created before silence-analysis
+          // evidence was persisted. Upload captions themselves are acoustic;
+          // word-level regrouping remains optional.
+          exportSpeechCoverage = { source: "upload_transcription", spokenEndMs };
+        }
+      }
       let exportOverlayConfig = input.subtitleOverlayConfig;
       const sourceNeedsAlignmentRecovery = !sourceSubtitleQa
         || subtitleQualityShouldFailJob(sourceSubtitleQa)
         || exportTimingSource === "tts_segment_timing"
-        || exportTimingSource === "avatar_script_clock";
+        || exportTimingSource === "avatar_script_clock"
+        || (subtitleTimingRequiresSpeechCoverage(exportTimingSource) && !exportSpeechCoverage);
 
       if (sourceNeedsAlignmentRecovery) {
         if (!preview.voiceUrl || !canonicalScript.trim()) {
@@ -1227,6 +1245,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         const aligned = await caller.post<{
           words?: Array<{ word: string; startMs: number; endMs: number }>;
           audioDurationMs?: number;
+          speechCoverage?: SubtitleSpeechCoverage;
         }>("/api/videos/transcribe", {
           audioUrl: preview.voiceUrl,
           scriptPrompt: canonicalScript.slice(0, 800),
@@ -1272,6 +1291,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           exportAudioDurationMs = Math.round(Number(aligned.audioDurationMs));
         }
         exportTimingSource = "forced_alignment";
+        exportSpeechCoverage = aligned.speechCoverage;
         exportOverlayConfig = retimedOverlay;
         emitTelemetry({
           name: "subtitle_alignment_legacy_export_recovered",
@@ -1294,6 +1314,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         captions: finalCaptions,
         audioDurationMs: exportAudioDurationMs,
         timingSource: exportTimingSource,
+        speechCoverage: exportSpeechCoverage,
       });
       if (subtitleQualityShouldFailJob(exportSubtitleQa)) {
         throw new SubtitleAlignmentFailureError(
@@ -1349,6 +1370,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           fullText: canonicalScript,
           audioDurationMs: exportAudioDurationMs,
           timingSource: exportTimingSource,
+          speechCoverage: exportSpeechCoverage,
         },
         ...(videoId ? { videoId } : {}),
         ...(input.editSnapshot ? { editSnapshot: input.editSnapshot } : {}),
@@ -1424,6 +1446,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         words?: Array<{ word: string; startMs: number; endMs: number }>;
         fullText?: string;
         audioDurationMs?: number;
+        speechCoverage?: SubtitleSpeechCoverage;
       }>(
         "/api/videos/transcribe", { audioUrl: input.clipUrl, script: "" },
       );
@@ -1445,6 +1468,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         captions: upCaps,
         audioDurationMs: upDurMs,
         timingSource: "upload_transcription",
+        speechCoverage: tx.speechCoverage,
       });
       if (subtitleQualityShouldFailJob(uploadSubtitleQa)) {
         throw new Error(`ซับจากคลิปไม่ผ่านการตรวจคุณภาพ (${uploadSubtitleQa.status === "failed" ? uploadSubtitleQa.code : "unknown"}) — กรุณาลองใหม่`);
@@ -1659,6 +1683,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           voiceUrl: input.clipUrl,
           voiceModel: "original-audio",
           audioDurationMs: upDurMs,
+          speechCoverage: tx.speechCoverage,
           avatarModel: "upload-cutaway",
           avatarVideoUrl: input.clipUrl,
           cutawayPersonRanges: personRanges,
@@ -1766,6 +1791,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     let subtitleTimingSource: SubtitleTimingSource = provider === "elevenlabs"
       ? "provider_alignment"
       : "tts_segment_timing";
+    let subtitleSpeechCoverage: SubtitleSpeechCoverage | undefined;
     let alignmentRecoveryFailureCode: string | null = null;
     let capRes: ReturnType<typeof captionsFromTtsTiming> = null;
     const geminiRegenerationCodes = new Set([
@@ -1780,6 +1806,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const acousticAttempts = provider === "gemini" ? 2 : 1;
     for (let acousticAttempt = 1; acousticAttempt <= acousticAttempts; acousticAttempt += 1) {
       subtitleTimingSource = provider === "elevenlabs" ? "provider_alignment" : "tts_segment_timing";
+      subtitleSpeechCoverage = undefined;
       alignmentRecoveryFailureCode = null;
       const timingForCards = tts.timing as TtsTiming | null;
       const fullTextForCards = (timingForCards?.segments ?? []).map((segment) => segment.text).join("");
@@ -1805,6 +1832,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
             words?: Array<{ word: string; startMs: number; endMs: number }>;
             audioDurationMs?: number;
+            speechCoverage?: SubtitleSpeechCoverage;
           }>("/api/videos/transcribe", {
             audioUrl: tts.voiceUrl,
             scriptPrompt: narrationText.slice(0, 800),
@@ -1827,6 +1855,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           if (recoveredWords && canonicalCaptions) {
             alignmentRecoveryFailureCode = null;
             subtitleTimingSource = "forced_alignment";
+            subtitleSpeechCoverage = aligned.speechCoverage;
             capRes = {
               // Reuse only proven word timestamps and take every visible character
               // from the literal TTS source. An incomplete word alignment is never
@@ -1913,6 +1942,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       captions,
       audioDurationMs: durMs,
       timingSource: subtitleTimingSource,
+      speechCoverage: subtitleSpeechCoverage,
     });
     if (subtitleQa.status !== "passed") {
       emitTelemetry({
@@ -2177,6 +2207,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         words: capRes.words,
         fullText: capRes.fullText,
         subtitleTimingSource,
+        speechCoverage: subtitleSpeechCoverage,
         baseConfig,
         avatar: {
           mode: input.avatarMode,
@@ -2217,6 +2248,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           voiceUrl: tts.voiceUrl,
           voiceModel: galleryVoiceModelForInput(input, user, provider),
           audioDurationMs: durMs,
+          speechCoverage: subtitleSpeechCoverage,
           avatarModel,
           avatarVideoUrl,
           // ข้อมูล re-composite (จอแต่งซับปรับตำแหน่งอวตารได้โดยไม่เรียก HeyGen ใหม่)
@@ -2277,6 +2309,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         fullText: capRes.fullText,
         audioDurationMs: durMs,
         timingSource: subtitleTimingSource,
+        speechCoverage: subtitleSpeechCoverage,
       },
       ...(billingReceipt ? { billingReceipt } : {}),
     });

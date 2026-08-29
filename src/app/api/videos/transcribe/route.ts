@@ -26,6 +26,10 @@ import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { refundAiAudioMinutes, reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
 import { walletFundingForCurrentRequest } from "@/lib/mcp/video-job-funding";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
+import {
+  SUBTITLE_SPEECH_TAIL_TOLERANCE_MS,
+  type SubtitleSpeechCoverage,
+} from "@/lib/subtitle-speech-coverage";
 
 export const maxDuration = 900;  // 15 min — supports 10-min audio + Whisper processing time
 
@@ -33,7 +37,7 @@ const SRT_TIME_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
 const SRT_ARROW_RE = /^\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*-->\s*\d{1,2}:\d{2}(?::\d{2}(?:[.,]\d+)?)?$/;
 const MIN_GAP_MS = 1;
 const MIN_CAPTION_MS = 400;
-const INCOMPLETE_TRANSCRIBE_GAP_MS = 5000;
+const INCOMPLETE_TRANSCRIBE_GAP_MS = SUBTITLE_SPEECH_TAIL_TOLERANCE_MS;
 
 // SSRF-safe fetch of a user-supplied external URL: validate the host, then follow redirects
 // MANUALLY re-validating each hop, so a safe initial URL can't 302 into a private/internal
@@ -941,6 +945,7 @@ export async function POST(req: Request) {
     let fullText = "";
     let geminiDirectCaptions: CaptionItem[] = []; // captions from combined Gemini response
     let wasChunked = false; // long-audio chunked path → skip the desync guard (clamp handles the small tail overshoot)
+    let speechCoverage: SubtitleSpeechCoverage | undefined;
 
     if (useGeminiTranscribe) {
       // AI-audio ceiling (managed): transcribe spends server Gemini on the input
@@ -965,14 +970,18 @@ export async function POST(req: Request) {
         const audioBuffer = fs.readFileSync(mp3Path);
         const ffmpeg = getFfmpegPath();
         let chunkPlan: { buffer: Buffer; startMs: number; durationMs: number }[] = [];
-        let trailingSilenceStartMs: number | null = null;
+        const silenceAnalysis = sourceAudioDurationMs > 0
+          ? await detectSilenceAnalysis(ffmpeg, mp3Path, sourceAudioDurationMs)
+              .catch(() => ({ cutPointsMs: [], trailingSilenceStartMs: null }))
+          : { cutPointsMs: [], trailingSilenceStartMs: null };
+        const trailingSilenceStartMs = silenceAnalysis.trailingSilenceStartMs;
+        if (sourceAudioDurationMs > 0) {
+          speechCoverage = {
+            source: "silence_analysis",
+            spokenEndMs: trailingSilenceStartMs ?? sourceAudioDurationMs,
+          };
+        }
         if (sourceAudioDurationMs > TRANSCRIBE_CHUNK_MAX_MS) {
-          const silenceAnalysis = await detectSilenceAnalysis(
-            ffmpeg,
-            mp3Path,
-            sourceAudioDurationMs,
-          ).catch(() => ({ cutPointsMs: [], trailingSilenceStartMs: null }));
-          trailingSilenceStartMs = silenceAnalysis.trailingSilenceStartMs;
           const cuts = planTranscriptionChunkBoundaries(sourceAudioDurationMs, silenceAnalysis.cutPointsMs);
           if (cuts.length >= 1) {
             const bounds = [0, ...cuts, sourceAudioDurationMs];
@@ -1172,7 +1181,7 @@ export async function POST(req: Request) {
           // also saw incomplete/desynced responses at 103-105s.
           const quality = await runTranscriptionQualityRetries(
             () => geminiTranscribeChunk(audioBuffer, geminiKey, script, sourceAudioDurationMs),
-            sourceAudioDurationMs,
+            speechCoverage?.spokenEndMs ?? sourceAudioDurationMs,
             3,
             ({ nextAttempt, tailGapMs }) => {
               const gapSec = tailGapMs / 1000;
@@ -1770,11 +1779,12 @@ Total audio: ${audioDur.toFixed(2)}s`;
       }
     }
     if (sourceAudioDurationMs > 0) {
-      const missingTailMs = sourceAudioDurationMs - rawMaxMs;
+      const requiredSpokenEndMs = speechCoverage?.spokenEndMs ?? sourceAudioDurationMs;
+      const missingTailMs = requiredSpokenEndMs - rawMaxMs;
       if (missingTailMs > INCOMPLETE_TRANSCRIBE_GAP_MS) {
-        console.warn(`[transcribe] incomplete transcript: captions end at ${rawMaxMs}ms but audio is ${sourceAudioDurationMs}ms`);
+        console.warn(`[transcribe] incomplete transcript: captions end at ${rawMaxMs}ms but speech coverage requires ${requiredSpokenEndMs}ms`);
         return NextResponse.json({
-          error: `ถอดซับไม่ครบ เสียงยาว ${(sourceAudioDurationMs / 1000).toFixed(1)}s แต่ซับจบที่ ${(rawMaxMs / 1000).toFixed(1)}s กรุณากด Transcribe ใหม่`,
+          error: `ถอดซับไม่ครบ เสียงพูดถึง ${(requiredSpokenEndMs / 1000).toFixed(1)}s แต่ซับจบที่ ${(rawMaxMs / 1000).toFixed(1)}s กรุณากด Transcribe ใหม่`,
           provider: "gemini",
           reason: "transcribe_incomplete",
           retryable: true,
@@ -1811,6 +1821,7 @@ Total audio: ${audioDur.toFixed(2)}s`;
       words: safeWords,
       fullText: safeFullText,
       audioDurationMs: resolvedDurationMs,
+      ...(speechCoverage ? { speechCoverage } : {}),
     });
   } catch (error) {
     return apiError({ route: "videos/transcribe", error, notifyUser: true });

@@ -7,6 +7,7 @@ const passedQa = {
   textExact: true,
   captionCount: 1,
   audioDurationMs: 2_000,
+  speechCoverage: { source: "silence_analysis", spokenEndMs: 1_900 },
 };
 
 const healthy = auditSubtitleReleaseRecord({
@@ -23,6 +24,7 @@ const healthy = auditSubtitleReleaseRecord({
       words: [{ word: "สวัสดี", startMs: 100, endMs: 1_900, startChar: 0, endChar: 6 }],
       fullText: "สวัสดี",
       audioDurationMs: 2_000,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 1_900 },
       config: { bgVideos: [] },
     },
   }),
@@ -46,12 +48,18 @@ const cutawayOffset = auditSubtitleReleaseRecord({
   outputJson: JSON.stringify({
     version: 2,
     mode: "preview",
-    subtitleQa: { ...passedQa, timingSource: "upload_transcription" },
+    subtitleQa: {
+      ...passedQa,
+      timingSource: "upload_transcription",
+      audioDurationMs: 12_000,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 2_000 },
+    },
     preview: {
       captions: [{ text: "สวัสดี", startMs: 0, endMs: 2_000 }],
       words: [{ word: "สวัสดี", startMs: 0, endMs: 2_000, startChar: 0, endChar: 6 }],
       fullText: "สวัสดี",
       audioDurationMs: 12_000,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 2_000 },
       avatarModel: "upload-cutaway",
       avatarVideoUrl: "/uploaded.mp4",
       config: {
@@ -61,6 +69,90 @@ const cutawayOffset = auditSubtitleReleaseRecord({
   }),
 });
 assert.ok(cutawayOffset.some((issue) => issue.code === "timeline_aligned_offset_mismatch" && issue.severity === "p0"));
+
+const uploadWithoutOptionalWords = auditSubtitleReleaseRecord({
+  id: "upload-without-optional-words",
+  status: "done",
+  type: "create",
+  inputJson: JSON.stringify({ mode: "upload" }),
+  outputJson: JSON.stringify({
+    version: 2,
+    mode: "preview",
+    subtitleQa: {
+      ...passedQa,
+      timingSource: "upload_transcription",
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 1_900 },
+    },
+    preview: {
+      captions: [{ text: "เสียงจริง", startMs: 100, endMs: 1_900 }],
+      words: [],
+      fullText: "เสียงจริง",
+      audioDurationMs: 2_000,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 1_900 },
+      config: { bgVideos: [] },
+    },
+  }),
+});
+assert.ok(
+  !uploadWithoutOptionalWords.some((issue) => issue.code === "missing_word_timing"),
+  "upload transcription keeps acoustically timed captions when optional regrouping words are unavailable",
+);
+
+const productionSpokenTailGap = auditSubtitleReleaseRecord({
+  id: "production-spoken-tail-gap",
+  status: "done",
+  type: "create",
+  inputJson: JSON.stringify({ voiceProvider: "gemini" }),
+  outputJson: JSON.stringify({
+    version: 2,
+    mode: "preview",
+    subtitleQa: {
+      ...passedQa,
+      audioDurationMs: 71_140,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 70_900 },
+    },
+    preview: {
+      captions: [{ text: "เสียงยังพูดต่อ", startMs: 0, endMs: 61_600 }],
+      words: [{ word: "เสียงยังพูดต่อ", startMs: 0, endMs: 61_600, startChar: 0, endChar: 14 }],
+      fullText: "เสียงยังพูดต่อ",
+      audioDurationMs: 71_140,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 70_900 },
+      config: { bgVideos: [] },
+    },
+  }),
+});
+assert.ok(
+  productionSpokenTailGap.some((issue) => issue.code === "speech_coverage_incomplete" && issue.severity === "p0"),
+  "persisted audit catches the production-shaped spoken-tail gap",
+);
+
+const healthyTrailingSilence = auditSubtitleReleaseRecord({
+  id: "healthy-trailing-silence",
+  status: "done",
+  type: "create",
+  inputJson: JSON.stringify({ voiceProvider: "gemini" }),
+  outputJson: JSON.stringify({
+    version: 2,
+    mode: "preview",
+    subtitleQa: {
+      ...passedQa,
+      audioDurationMs: 71_140,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 61_600 },
+    },
+    preview: {
+      captions: [{ text: "เสียงจบแล้ว", startMs: 0, endMs: 61_600 }],
+      words: [{ word: "เสียงจบแล้ว", startMs: 0, endMs: 61_600, startChar: 0, endChar: 11 }],
+      fullText: "เสียงจบแล้ว",
+      audioDurationMs: 71_140,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 61_600 },
+      config: { bgVideos: [] },
+    },
+  }),
+});
+assert.ok(
+  !healthyTrailingSilence.some((issue) => issue.code === "speech_coverage_incomplete"),
+  "proven trailing silence remains valid",
+);
 
 const directWithoutEvidence = auditSubtitleReleaseRecord({
   id: "missing-evidence",
