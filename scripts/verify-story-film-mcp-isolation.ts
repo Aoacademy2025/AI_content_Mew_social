@@ -26,6 +26,7 @@ assert.match(internalMcp, /fail closed before tools\/list/);
 assert.match(internalMcp, /sceneKeys: z\.array/);
 assert.match(internalMcp, /repairLayer: z\.enum\(\["keyframe", "video"\]\)/);
 assert.match(internalMcp, /realignCaptions: z\.boolean/);
+assert.match(internalMcp, /identityReferenceOnly: z\.boolean/);
 assert.match(internalMcp, /editorial: z\.object/);
 assert.match(internalMcp, /headlineHook: z\.object/);
 assert.match(internalMcp, /subtitleStylePreset: z\.enum/);

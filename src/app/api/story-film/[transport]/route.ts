@@ -191,6 +191,7 @@ const handler = createMcpHandler(
             sceneKeys: z.array(z.string().regex(/^scene-\d{2}$/u)).max(60).optional(),
             repairLayer: z.enum(["keyframe", "video"]).optional(),
             realignCaptions: z.boolean().optional(),
+            identityReferenceOnly: z.boolean().optional(),
             musicSource: z.enum(["user", "system"]).optional(),
             musicTrackId: z.string().optional(),
             editorial: z.object({
