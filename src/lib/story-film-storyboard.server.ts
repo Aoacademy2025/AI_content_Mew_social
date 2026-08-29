@@ -20,6 +20,7 @@ const MIN_SCENE_DURATION_SEC = 4;
 const MAX_SCENE_DURATION_SEC = 10;
 
 const VISIBLE_MOTION = /\b(?:walk|run|turn|open|close|pour|fall|rise|move|enter|exit|reach|lift|drift|flow|drive|ride|fly|dance|fight|rain|splash|wave|push|pull|throw|jump|climb|crawl|swim|sweep|spin|shake|explode|collapse)\w*\b/iu;
+const PERSON_SUBJECT = /\b(?:person|people|creator|presenter|host|observer|participant|man|woman|male|female|boy|girl|adult|teen(?:ager)?|child)\b/iu;
 
 export type StoryFilmStoryboardScene = {
   sceneKey: string;
@@ -203,13 +204,21 @@ function grokPromptForBeat(
   const clean = (value: string) => scrubProviderAliases(value, providerAliases);
   const projectCharacters = characterDirectives.filter((item) => item.isProjectCharacter);
   const focalCharacters = characterDirectives.filter((item) => !item.isProjectCharacter);
+  const projectCharacterIsSubject = projectCharacters.length > 0
+    && focalCharacters.length === 0
+    && (
+      PERSON_SUBJECT.test(beat.subject)
+      || beat.hardSceneFacts.entityTypes.some((entityType) => PERSON_SUBJECT.test(entityType))
+    );
   const characters = characterDirectives.length > 0
     ? `Character continuity: ${characterDirectives.map((item) => item.recurringCharacterDescription || item.renderingDescription).join("; ")}.`
     : "";
-  const subject = focalCharacters.length > 0
-    ? focalCharacters.map((item) => item.recurringCharacterDescription || item.renderingDescription).join(" and ")
-    : clean(beat.subject);
-  const projectCharacterPresence = projectCharacters.length > 0
+  const subject = projectCharacterIsSubject
+    ? projectCharacters.map((item) => item.recurringCharacterDescription || item.renderingDescription).join(" and ")
+    : focalCharacters.length > 0
+      ? focalCharacters.map((item) => item.recurringCharacterDescription || item.renderingDescription).join(" and ")
+      : clean(beat.subject);
+  const projectCharacterPresence = projectCharacters.length > 0 && !projectCharacterIsSubject
     ? `Supporting creator presence: ${projectCharacters.map((item) => item.recurringCharacterDescription || item.renderingDescription).join(" and ")} is clearly visible in a natural secondary position as an observer or participant, without replacing the focal subject.`
     : "";
   return [
