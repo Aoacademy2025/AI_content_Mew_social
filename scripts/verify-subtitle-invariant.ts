@@ -139,6 +139,10 @@ const shortMergeQuality = shortMergeResult
       captions: shortMergeResult.captions,
       audioDurationMs: shortMergeResult.audioDurationMs,
       timingSource: "forced_alignment",
+      speechCoverage: {
+        source: "silence_analysis",
+        spokenEndMs: shortMergeResult.captions.at(-1)?.endMs ?? 0,
+      },
     })
   : null;
 check(
