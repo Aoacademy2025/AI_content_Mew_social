@@ -149,6 +149,22 @@ function parseStageData(value: string): Record<string, unknown> {
   }
 }
 
+const CHARACTER_IDENTITY_AUTHORITY_INSTRUCTION = [
+  "The supplied Character Profile reference images are the identity authority.",
+  "Match the exact same real person's facial geometry, eyes, nose, mouth, jawline, skin tone, apparent age, and hairstyle.",
+  "Do not reinterpret, beautify, age, de-age, or substitute the person; wardrobe and cinematic styling may change, identity may not.",
+].join(" ");
+
+function characterIdentityReferenceUrls(
+  references: Array<{ id: string }>,
+  approvedLook: { storageUrl: string } | null,
+) {
+  return [
+    ...references.map((reference) => `/api/internal/story-film-media/character-references/${encodeURIComponent(reference.id)}`),
+    ...(approvedLook ? [approvedLook.storageUrl] : []),
+  ];
+}
+
 function nextActionFor(project: StoredStoryFilm): string {
   if (project.status === "paused") return "resume";
   if (project.status === "rendering") return "wait_for_render";
@@ -522,7 +538,7 @@ function validateDecision(input: {
   let sceneKeys: string[] | undefined;
   if (rawSceneKeys !== undefined) {
     if (
-      input.expectedStage !== "final_render"
+      !["final_render", "completed"].includes(input.expectedStage)
       || !["revise", "reroll", "fallback"].includes(input.decision)
       || !Array.isArray(rawSceneKeys)
       || rawSceneKeys.length > 60
@@ -537,6 +553,15 @@ function validateDecision(input: {
   if (repairLayer !== undefined && (repairLayer !== "keyframe" && repairLayer !== "video")) {
     invalid("repairLayer ต้องเป็น keyframe หรือ video");
   }
+  const rawRealignCaptions = input.target?.realignCaptions;
+  if (rawRealignCaptions !== undefined && (
+    rawRealignCaptions !== true
+    || !["final_render", "completed"].includes(input.expectedStage)
+    || !["revise", "reroll", "fallback"].includes(input.decision)
+  )) {
+    invalid("realignCaptions ใช้ได้เฉพาะการแก้ Final Review หรือโปรเจกต์ที่เสร็จแล้ว");
+  }
+  const realignCaptions = rawRealignCaptions === true;
   let editorial: StoryFilmEditorialConfig | undefined;
   if (input.target?.editorial !== undefined) {
     try {
@@ -545,7 +570,7 @@ function validateDecision(input: {
       invalid(error instanceof Error ? error.message : "Editorial config ไม่ถูกต้อง");
     }
   }
-  return { instruction, videoSceneKeys, sceneKeys, repairLayer, editorial };
+  return { instruction, videoSceneKeys, sceneKeys, repairLayer, realignCaptions, editorial };
 }
 
 function stageAfterApproval(stage: StoryFilmStage): StoryFilmStage | null {
@@ -566,7 +591,7 @@ export async function decideStoryFilm(
     idempotencyKey?: string | null;
   },
 ): Promise<StoryFilmProjectView> {
-  const { instruction, videoSceneKeys, sceneKeys, repairLayer, editorial } = validateDecision(input);
+  const { instruction, videoSceneKeys, sceneKeys, repairLayer, realignCaptions, editorial } = validateDecision(input);
   return prisma.$transaction(async (tx) => {
     if (input.idempotencyKey) {
       const prior = await tx.storyFilmDecision.findUnique({
@@ -587,7 +612,7 @@ export async function decideStoryFilm(
     }
     if (!isStage(project.stage)) throw new StoryFilmError("decision_not_allowed", "Stage ปัจจุบันไม่รองรับ");
     const isRevisionDecision = ["revise", "reroll", "fallback"].includes(input.decision);
-    if (isRevisionDecision && !["storyboard", "character_look", "keyframes", "videos", "final_render"].includes(project.stage)) {
+    if (isRevisionDecision && !["storyboard", "character_look", "keyframes", "videos", "final_render", "completed"].includes(project.stage)) {
       throw new StoryFilmError(
         "decision_not_allowed",
         "ขั้นนี้แก้ด้วยการเลือกตัวเลือกใหม่หรือเริ่มโปรเจกต์ใหม่ แทนการสร้าง asset ซ้ำ",
@@ -617,7 +642,7 @@ export async function decideStoryFilm(
       }
     }
     let finalRevisionScenes: Awaited<ReturnType<typeof tx.storyFilmScene.findMany>> = [];
-    if (isRevisionDecision && project.stage === "final_render" && sceneKeys?.length) {
+    if (isRevisionDecision && ["final_render", "completed"].includes(project.stage) && sceneKeys?.length) {
       const latestScene = await tx.storyFilmScene.findFirst({
         where: { projectId: project.id },
         orderBy: [{ generationEpoch: "desc" }, { sequence: "asc" }],
@@ -640,6 +665,12 @@ export async function decideStoryFilm(
       if (!repairLayer) {
         throw new StoryFilmError("invalid_input", "กรุณาเลือกว่าจะซ่อมภาพตั้งต้นหรือวิดีโอ", currentView);
       }
+    }
+    if (realignCaptions && project.presentationMode !== "presenter_led") {
+      throw new StoryFilmError("decision_not_allowed", "การ align เสียงจาก Presenter ใช้ได้เฉพาะโปรเจกต์แบบมีพิธีกร", currentView);
+    }
+    if (realignCaptions && (!project.narrationMasterUrl || !project.narrationDurationMs)) {
+      throw new StoryFilmError("decision_not_allowed", "โปรเจกต์นี้ไม่มี Narration Master สำหรับ align ซับใหม่", currentView);
     }
 
     let nextStage: StoryFilmStage = project.stage;
@@ -748,11 +779,12 @@ export async function decideStoryFilm(
       nextStatus = "completed";
       awaitingApproval = false;
       stageDataJson = JSON.stringify({
+        ...parseStageData(project.stageDataJson),
         gate: "completed",
         finalRenderUrl: project.finalRenderUrl,
       });
     } else {
-      if (!project.awaitingApproval) {
+      if (!project.awaitingApproval && !(isRevisionDecision && project.stage === "completed")) {
         throw new StoryFilmError("gate_not_ready", "ขั้นนี้ยังไม่มีงานรอการตัดสินใจ", currentView);
       }
       if (input.decision === "approve") {
@@ -906,14 +938,23 @@ export async function decideStoryFilm(
               : JSON.stringify({ gate: advanced, waitingForGeneration: true });
         }
       } else {
-        if (project.stage === "final_render") {
+        if (["final_render", "completed"].includes(project.stage)) {
           const priorStageData = parseStageData(project.stageDataJson);
+          const priorFinalRenderJob = project.stage === "completed" && priorStageData.editorial === undefined
+            ? await tx.storyFilmGenerationJob.findFirst({
+                where: { projectId: project.id, kind: "final_render", status: "completed" },
+                orderBy: { createdAt: "desc" },
+              })
+            : null;
+          const priorFinalRenderPayload = priorFinalRenderJob
+            ? parseStageData(priorFinalRenderJob.payloadJson)
+            : {};
           selectedMusic = input.target?.musicSource || input.target?.musicTrackId
             ? await resolveMusic(input.target?.musicSource, input.target?.musicTrackId)
             : currentMusic();
           if (!selectedMusic) throw new StoryFilmError("invalid_input", "Final Render ยังไม่ได้เลือกเพลง", currentView);
           finalRenderEditorial = editorial ?? parseStoryFilmEditorialConfig(
-            priorStageData.editorial,
+            priorStageData.editorial ?? priorFinalRenderPayload.editorial,
             project.narrationDurationMs ?? project.durationLimitMs,
           );
           nextStage = sceneKeys?.length ? (repairLayer === "video" ? "videos" : "keyframes") : "final_render";
@@ -929,6 +970,7 @@ export async function decideStoryFilm(
             editorial: finalRenderEditorial,
             musicCandidates: priorStageData.musicCandidates ?? [],
             scenes: priorStageData.scenes ?? [],
+            realignCaptions,
             repair: sceneKeys?.length ? {
               origin: "final_render",
               sceneKeys,
@@ -1023,6 +1065,28 @@ export async function decideStoryFilm(
         });
       }
     }
+    if (isRevisionDecision && realignCaptions && project.narrationMasterUrl && project.narrationDurationMs) {
+      await tx.storyFilmGenerationJob.create({
+        data: {
+          projectId: project.id,
+          // caption_alignment remains an orthogonal Storyboard artifact even
+          // when a completed film requests a fresh acoustic pass.
+          stage: "storyboard",
+          projectRevision: resultRevision,
+          generationEpoch: resultGenerationEpoch,
+          kind: "caption_alignment",
+          providerBackend: "hero_alignment",
+          sceneKey: "narration-captions",
+          payloadJson: JSON.stringify({
+            narrationMasterUrl: project.narrationMasterUrl,
+            narrationDurationMs: project.narrationDurationMs,
+            script: project.narrativeSource,
+          }),
+          idempotencyKey: `repair:caption-alignment:epoch:${resultGenerationEpoch}`,
+          priority: 40,
+        },
+      });
+    }
     if (input.decision === "approve" && nextStage === "narration" && !project.narrationMasterUrl) {
       if (!project.narrationVoiceId) {
         throw new StoryFilmError("decision_not_allowed", "Faceless Project ยังไม่ได้เลือกเสียงบรรยาย");
@@ -1069,7 +1133,8 @@ export async function decideStoryFilm(
             prompt: [
               "Create a vertical 9:16 cinematic full-body character look reference for this short film.",
               project.characterLookBrief,
-              "Preserve the exact facial identity from the supplied references. Show one person, one coherent wardrobe, neutral cinematic environment, no character sheet grid, no collage, no text.",
+              CHARACTER_IDENTITY_AUTHORITY_INSTRUCTION,
+              "Show one person, one coherent wardrobe, neutral cinematic environment, no character sheet grid, no collage, no text.",
             ].filter(Boolean).join(" "),
             referenceUrls: references.map((reference) => `/api/internal/story-film-media/character-references/${encodeURIComponent(reference.id)}`),
             aspectRatio: "9:16",
@@ -1109,10 +1174,7 @@ export async function decideStoryFilm(
         : null;
       for (const scene of scenes) {
         const referenceUrls = sceneUsesProjectCharacter(scene.characterDirectivesJson)
-          ? [
-              ...(approvedLook ? [approvedLook.storageUrl] : []),
-              ...references.map((reference) => `/api/internal/story-film-media/character-references/${encodeURIComponent(reference.id)}`),
-            ]
+          ? characterIdentityReferenceUrls(references, approvedLook)
           : [];
         await tx.storyFilmGenerationJob.create({
           data: {
@@ -1124,7 +1186,10 @@ export async function decideStoryFilm(
             providerBackend: "grok_subscription",
             sceneKey: scene.sceneKey,
             payloadJson: JSON.stringify({
-              prompt: scene.grokPrompt,
+              prompt: [
+                scene.grokPrompt,
+                referenceUrls.length > 0 ? CHARACTER_IDENTITY_AUTHORITY_INSTRUCTION : null,
+              ].filter(Boolean).join(" "),
               referenceUrls,
               aspectRatio: "9:16",
               storyboardSceneEpoch: scene.generationEpoch,
@@ -1298,7 +1363,8 @@ export async function decideStoryFilm(
               "Create a revised vertical 9:16 cinematic full-body character look reference for this short film.",
               project.characterLookBrief,
               `Creator revision: ${instruction}`,
-              "Preserve the exact facial identity from the supplied references. Show one person, one coherent wardrobe, neutral cinematic environment, no character sheet grid, no collage, no text.",
+              CHARACTER_IDENTITY_AUTHORITY_INSTRUCTION,
+              "Show one person, one coherent wardrobe, neutral cinematic environment, no character sheet grid, no collage, no text.",
             ].filter(Boolean).join(" "),
             referenceUrls: references.map((reference) => `/api/internal/story-film-media/character-references/${encodeURIComponent(reference.id)}`),
             aspectRatio: "9:16",
@@ -1338,11 +1404,9 @@ export async function decideStoryFilm(
               revisionScene.grokPrompt,
               input.decision === "reroll" ? "Create a distinct alternate cinematic take while preserving story continuity." : null,
               `Creator revision: ${instruction}`,
+              usesProjectCharacter ? CHARACTER_IDENTITY_AUTHORITY_INSTRUCTION : null,
             ].filter(Boolean).join(" "),
-            referenceUrls: [
-              ...(approvedLook ? [approvedLook.storageUrl] : []),
-              ...references.map((reference) => `/api/internal/story-film-media/character-references/${encodeURIComponent(reference.id)}`),
-            ],
+            referenceUrls: characterIdentityReferenceUrls(references, approvedLook),
             aspectRatio: "9:16",
             storyboardSceneEpoch: revisionScene.generationEpoch,
           }),
@@ -1384,7 +1448,7 @@ export async function decideStoryFilm(
         },
       });
     }
-    if (isRevisionDecision && project.stage === "final_render" && finalRevisionScenes.length > 0) {
+    if (isRevisionDecision && ["final_render", "completed"].includes(project.stage) && finalRevisionScenes.length > 0) {
       const characterReferences = project.characterProfileId
         ? await tx.storyFilmCharacterReference.findMany({
             where: {
@@ -1433,10 +1497,7 @@ export async function decideStoryFilm(
           orderBy: { createdAt: "desc" },
         });
         const identityUrls = sceneUsesProjectCharacter(scene.characterDirectivesJson)
-          ? [
-              ...(approvedLook ? [approvedLook.storageUrl] : []),
-              ...characterReferences.map((reference) => `/api/internal/story-film-media/character-references/${encodeURIComponent(reference.id)}`),
-            ]
+          ? characterIdentityReferenceUrls(characterReferences, approvedLook)
           : [];
         await tx.storyFilmGenerationJob.create({
           data: {
@@ -1451,11 +1512,12 @@ export async function decideStoryFilm(
               prompt: [
                 scene.grokPrompt,
                 `Creator repair: ${instruction}`,
+                identityUrls.length > 0 ? CHARACTER_IDENTITY_AUTHORITY_INSTRUCTION : null,
                 "Correct only the reported defect. Preserve composition, camera direction, identity, wardrobe, lighting, and story continuity unless the repair explicitly changes them.",
-              ].join(" "),
+              ].filter(Boolean).join(" "),
               sourceImageUrl: currentFrame?.storageUrl ?? null,
               referenceMode: currentFrame ? "image_edit" : "reference_generation",
-              referenceUrls: [...(currentFrame ? [currentFrame.storageUrl] : []), ...identityUrls],
+              referenceUrls: [...identityUrls, ...(currentFrame ? [currentFrame.storageUrl] : [])],
               aspectRatio: "9:16",
               storyboardSceneEpoch: scene.generationEpoch,
               repairOrigin: "final_review",

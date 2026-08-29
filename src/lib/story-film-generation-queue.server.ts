@@ -244,6 +244,20 @@ export async function leaseStoryFilmGenerationJobs(input: {
     });
     const leased: LeasedStoryFilmJob[] = [];
     for (const candidate of candidates) {
+      // A repaired Final Preview must consume the fresh forced-alignment
+      // artifact from its own epoch. Even when both jobs fit the worker's
+      // concurrency window, do not lease the render until alignment finishes.
+      if (candidate.kind === "final_render") {
+        const pendingAlignment = await tx.storyFilmGenerationJob.count({
+          where: {
+            projectId: candidate.projectId,
+            generationEpoch: candidate.generationEpoch,
+            kind: "caption_alignment",
+            status: { not: "completed" },
+          },
+        });
+        if (pendingAlignment > 0) continue;
+      }
       const leaseToken = newLeaseToken();
       const nextStatus = candidate.providerJobId ? "running" : "leased";
       const claimed = await tx.storyFilmGenerationJob.updateMany({
