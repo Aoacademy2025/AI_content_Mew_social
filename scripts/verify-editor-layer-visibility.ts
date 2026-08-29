@@ -12,6 +12,7 @@ async function main() {
     normalizeEditorLayerVisibility,
     resolveEditorPreviewVideoUrl,
   } = await import("../src/lib/editor-layer-visibility");
+  const { EDITOR_DEFAULT_DRAFT } = await import("../src/lib/editor-default-draft");
   const { buildV2BurnConfig, DEFAULT_V2_SUB } = await import(
     "../src/app/(dashboard)/video-editor/_v2/subtitle-style"
   );
@@ -20,6 +21,11 @@ async function main() {
     normalizeEditorLayerVisibility(undefined),
     DEFAULT_EDITOR_LAYER_VISIBILITY,
     "legacy projects default every editable layer to visible",
+  );
+  assert.deepEqual(
+    EDITOR_DEFAULT_DRAFT.layerVisibility,
+    DEFAULT_EDITOR_LAYER_VISIBILITY,
+    "brand-new project drafts explicitly seed every editable layer as visible",
   );
   assert.deepEqual(
     normalizeEditorLayerVisibility({ avatar: false, subtitles: false }),
@@ -123,6 +129,14 @@ async function main() {
   assert.match(mobile, /visible=\{ed\.layerVisibility\.logo\}/, "mobile logo preview honors visibility");
   assert.match(mobileControls, /role="switch"/, "mobile layer controls use accessible switch semantics");
   assert.match(project, /layerVisibility,\s*setLayerVisibility/, "layer state is saved with the project draft");
+  const resetStart = project.indexOf("const resetProject = useCallback");
+  const resetEnd = project.indexOf("}, [createServerProject", resetStart);
+  assert.ok(resetStart >= 0 && resetEnd > resetStart, "new-project reset block remains discoverable");
+  assert.match(
+    project.slice(resetStart, resetEnd),
+    /setLayerVisibilityRaw\(/,
+    "creating another project in the same editor session resets hidden layers to the new-project default",
+  );
 
   console.log("editor-layer-visibility: all checks passed");
 }

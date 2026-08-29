@@ -15,6 +15,10 @@ import { DEFAULT_AUTO_MIX_PROVIDERS } from "@/app/(dashboard)/video-editor/_comp
 import type { MixPreset } from "@/app/(dashboard)/video-editor/_v2/mix-presets";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
+import {
+  DEFAULT_EDITOR_LAYER_VISIBILITY,
+  type EditorLayerVisibility,
+} from "@/lib/editor-layer-visibility";
 import type { TtsProvider } from "@/lib/tts-providers";
 
 /** Editor step-1 mode: write a script vs upload your own clip. Mirrors V2Mode. */
@@ -48,6 +52,7 @@ export interface EditorDefaultDraft {
   brollRegionPreference: BrollRegionPreference;
   brollVisualStyle: BrollVisualStyle;
   logoOverlay?: LogoOverlayConfig;
+  layerVisibility: EditorLayerVisibility;
 }
 
 export const EDITOR_DEFAULT_DRAFT: EditorDefaultDraft = {
@@ -75,6 +80,7 @@ export const EDITOR_DEFAULT_DRAFT: EditorDefaultDraft = {
   mixPreset: "free",
   brollRegionPreference: "auto",
   brollVisualStyle: "auto",
+  layerVisibility: { ...DEFAULT_EDITOR_LAYER_VISIBILITY },
 };
 
 /** The account-level voice/avatar defaults the editor applies to a NEW project
