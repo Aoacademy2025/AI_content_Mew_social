@@ -155,6 +155,17 @@ const CHARACTER_IDENTITY_AUTHORITY_INSTRUCTION = [
   "Do not reinterpret, beautify, age, de-age, or substitute the person; wardrobe and cinematic styling may change, identity may not.",
 ].join(" ");
 
+const PERSON_SUBJECT_PROMPT = /\b(?:person|people|creator|presenter|host|observer|participant|man|woman|male|female|boy|girl|adult|teen(?:ager)?|child)\b/iu;
+
+function withoutDuplicateProjectCharacterPresence(prompt: string) {
+  const subject = prompt.match(/\bSubject:\s*(.*?)\.+\s*Action:/iu)?.[1] ?? "";
+  if (!PERSON_SUBJECT_PROMPT.test(subject)) return prompt;
+  return prompt.replace(
+    /\s*Supporting creator presence:.*?without replacing the focal subject\.\s*/iu,
+    " ",
+  ).trim();
+}
+
 function characterIdentityReferenceUrls(
   references: Array<{ id: string }>,
   approvedLook: { storageUrl: string } | null,
@@ -1428,7 +1439,9 @@ export async function decideStoryFilm(
           sceneKey: revisionScene.sceneKey,
           payloadJson: JSON.stringify({
             prompt: [
-              revisionScene.grokPrompt,
+              identityReferenceOnly
+                ? withoutDuplicateProjectCharacterPresence(revisionScene.grokPrompt)
+                : revisionScene.grokPrompt,
               input.decision === "reroll" ? "Create a distinct alternate cinematic take while preserving story continuity." : null,
               `Creator revision: ${instruction}`,
               usesProjectCharacter ? CHARACTER_IDENTITY_AUTHORITY_INSTRUCTION : null,

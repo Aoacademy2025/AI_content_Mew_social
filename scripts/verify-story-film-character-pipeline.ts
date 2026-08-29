@@ -129,7 +129,7 @@ async function main() {
         startMs: 0,
         endMs: 10_000,
         sourceExcerpt: "Mew enters a workshop and turns on a machine.",
-        grokPrompt: "Vertical 9:16 cinematic frame. An adult Thai creator turns on workshop machinery.",
+        grokPrompt: "Vertical 9:16 cinematic frame. Subject: An adult Thai creator. Action: turns on workshop machinery. Supporting creator presence: the same adult Thai creator is clearly visible in a natural secondary position as an observer or participant, without replacing the focal subject. No text.",
         mediaPlan: "video",
         characterDirectivesJson: JSON.stringify([{
           entityId: placement.STORY_FILM_PROJECT_CHARACTER_ENTITY_ID,
@@ -647,8 +647,9 @@ async function main() {
       (identityOnlyRepair.stageData.repair as { origin?: string } | undefined)?.origin === "final_render"
         && identityOnlyPayload.referenceUrls.length === 1
         && identityOnlyPayload.referenceUrls[0] === reference.url
-        && identityOnlyPayload.prompt.includes("only facial identity source"),
-      "identity-only reroll preserves Final Review context and excludes conflicting generated looks",
+        && identityOnlyPayload.prompt.includes("only facial identity source")
+        && !identityOnlyPayload.prompt.includes("Supporting creator presence"),
+      "identity-only reroll preserves Final Review context and strips conflicting looks and duplicate-person prompts",
     );
   } finally {
     await prisma.$disconnect();
