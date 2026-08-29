@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 import { prisma } from "../src/lib/prisma";
 import {
   RENDER_DEPLOY_DRAIN_KEY,

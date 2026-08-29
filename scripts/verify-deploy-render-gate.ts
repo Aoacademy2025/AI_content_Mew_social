@@ -10,6 +10,11 @@ const buildReady = deploy.indexOf('test -f "$STAGING_DIR/BUILD_ID"');
 const isolatedBuild = deploy.indexOf("unshare --mount --propagation private");
 const gateFlag = deploy.indexOf('REQUIRE_EMPTY_RENDER_QUEUES');
 const queueCheck = deploy.indexOf('scripts/check-empty-render-queues.ts');
+const mandatoryGate = deploy.indexOf('Mandatory render drain + empty queue gate');
+const drainOn = deploy.indexOf('ops:render-drain -- on', mandatoryGate);
+const drainOff = deploy.indexOf('ops:render-drain -- off');
+const waitCall = deploy.indexOf('if ! wait_for_empty_render_queues', drainOn);
+const cleanupCall = deploy.lastIndexOf('cleanup_deploy_guards');
 const swap = deploy.indexOf('Atomic swap .next-staging -> .next');
 const restart = deploy.indexOf('Restart PM2');
 
@@ -22,12 +27,19 @@ assert.ok(
   deploy.indexOf('npm run build', isolatedBuild) < buildReady,
   "the Next build runs inside the private media namespace",
 );
-assert.ok(gateFlag > buildReady, "empty-queue gate runs only after a successful staging build");
-assert.ok(queueCheck >= gateFlag && queueCheck < swap, "queue checker runs immediately before swap");
+assert.equal(gateFlag, -1, "empty-queue safety is mandatory rather than opt-in");
+assert.ok(mandatoryGate > buildReady, "mandatory queue safety starts only after the staging build succeeds");
+assert.ok(drainOn > mandatoryGate, "deploy raises the durable render drain after the staging build succeeds");
+assert.ok(queueCheck >= 0, "deploy's wait loop calls the fail-closed queue checker");
+assert.ok(waitCall > drainOn && waitCall < swap, "deploy blocks new parent work before waiting and swapping");
 assert.ok(swap < restart, "swap remains before restart");
-assert.match(deploy, /if \[ "\$\{REQUIRE_EMPTY_RENDER_QUEUES:-0\}" = "1" \]; then/);
+assert.ok(drainOff >= 0, "cleanup owns the matching durable render-drain release");
+assert.ok(cleanupCall > restart, "deploy releases its guards only after process restarts");
+assert.match(deploy, /trap\s+cleanup_deploy_guards\s+EXIT/);
+assert.match(deploy, /wait_for_empty_render_queues/);
+assert.doesNotMatch(deploy, /REQUIRE_EMPTY_RENDER_QUEUES/);
 assert.match(deploy, /MAINTENANCE_PAGE_DIR="\/var\/www\/heroai-maintenance"[\s\S]*maintenance\.html\.next[\s\S]*mv "\$MAINTENANCE_PAGE_DIR\/maintenance\.html\.next"/);
-assert.match(deploy, /if ! npx tsx scripts\/check-empty-render-queues\.ts; then[\s\S]*rm -rf "\$STAGING_DIR"[\s\S]*exit 1[\s\S]*fi/);
+assert.match(deploy, /if ! wait_for_empty_render_queues; then[\s\S]*rm -rf "\$STAGING_DIR"[\s\S]*exit 1[\s\S]*fi/);
 assert.ok(deploy.indexOf('rm -rf "$APP_DIR/.next.old"') > queueCheck, "gate failure leaves live .next and .next.old untouched");
 assert.ok(!deploy.includes("render-cancel") && !deploy.includes("ops:cancel") && !/status\s*=\s*['\"]CANCEL/i.test(deploy), "deploy never cancels user work");
 assert.match(
@@ -57,15 +69,15 @@ assert.doesNotMatch(maintenance, /https?:\/\//i, "maintenance page has no deploy
 
 for (const required of [
   "PRAGMA quick_check",
-  "REQUIRE_EMPTY_RENDER_QUEUES=1",
+  "Mandatory render drain",
   ".deploy-maintenance",
-  "ops:render-drain -- off",
+  "ops:render-drain -- status",
   ".next.old",
   "superseded",
 ]) {
   assert.ok(runbook.includes(required), `runbook contains ${required}`);
 }
 assert.match(runbook, /ห้าม.*cancel|do not cancel/i);
-assert.match(runbook, /trap[\s\S]*\.deploy-maintenance[\s\S]*ops:render-drain -- off/);
+assert.match(runbook, /cleanup trap ภายใน script/);
 
 console.log("ALL PASS");

@@ -36,6 +36,11 @@ type SourceInput = {
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { runOrchestrator } = await import("../src/lib/mcp/orchestrator");
+  const {
+    claimNextQueuedJob,
+    recoverProcessingJobsAfterWorkerRestart,
+  } = await import("../src/lib/mcp/video-job");
+  const { persistExportGalleryVideo } = await import("../src/lib/export-gallery");
 
   const user = await prisma.user.create({
     data: {
@@ -393,6 +398,313 @@ async function main() {
   const blocked = await prisma.videoJob.findUniqueOrThrow({ where: { id: corruptedExport.id } });
   check(blocked.status === "failed", "changed subtitle text is blocked before export");
   check(corruptedRenderCalls === 0, "failed subtitle release gate spends no burn render");
+
+  // Production incident 2026-08-29: deploy restarted both workers while an Editor v2
+  // export was burning subtitles. The RenderJob resumed and finished, but startup
+  // recovery failed its parent VideoJob, leaving a valid file outside Gallery and the
+  // project stuck in Exporting. Recovery must reuse that exact child without another
+  // render, another Gallery row, or another charge.
+  const restartProject = await prisma.editorProject.create({
+    data: {
+      userId: user.id,
+      title: "Burn restart recovery",
+      status: "exporting",
+    },
+  });
+  const restartSource = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: restartProject.id,
+      status: "done",
+      type: "create",
+      inputJson: JSON.stringify({ script: "กู้ไฟล์เดิมหลัง deploy", previewMode: true, voiceProvider: "gemini" }),
+      outputJson: JSON.stringify({
+        version: 2,
+        mode: "preview",
+        videoUrl: "/renders/restart-source.mp4",
+        subtitleQa: {
+          status: "passed",
+          timingSource: "provider_alignment",
+          textExact: true,
+          captionCount: 1,
+          audioDurationMs: 1_000,
+          speechCoverage: { source: "provider_alignment", spokenEndMs: 1_000 },
+        },
+        preview: {
+          captions: [{ text: "กู้ไฟล์เดิมหลัง deploy", startMs: 0, endMs: 1_000 }],
+          fullText: "กู้ไฟล์เดิมหลัง deploy",
+          config: { durationInFrames: 30 },
+          voiceUrl: "/api/renders/restart-source.wav",
+          audioDurationMs: 1_000,
+          speechCoverage: { source: "provider_alignment", spokenEndMs: 1_000 },
+          avatarModel: "none",
+          avatarVideoUrl: null,
+        },
+      }),
+      progress: 100,
+      finishedAt: new Date(),
+    },
+  });
+  const restartExport = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: restartProject.id,
+      status: "processing",
+      type: "export",
+      currentStep: "burn",
+      progress: 42,
+      inputJson: JSON.stringify({
+        mode: "export",
+        sourceJobId: restartSource.id,
+        subtitleOverlayConfig: {
+          videoUrl: "/renders/restart-source.mp4",
+          durationInFrames: 30,
+          keywordPopups: [{ text: "กู้ไฟล์เดิมหลัง deploy", start: 0, end: 30 }],
+        },
+      }),
+      startedAt: new Date(),
+    },
+  });
+  await prisma.editorProject.update({
+    where: { id: restartProject.id },
+    data: { activeJobId: restartSource.id, activeExportJobId: restartExport.id },
+  });
+  const finishedBurn = await prisma.renderJob.create({
+    data: {
+      userId: user.id,
+      parentJobId: restartExport.id,
+      type: "BURN",
+      status: "QUEUED",
+      payload: JSON.stringify({ subtitleOverlayConfig: {} }),
+      progress: 42,
+      attempts: 1,
+      reservedQuota: false,
+      finishedAt: new Date(),
+    },
+  });
+  const balanceBefore = {
+    user: await prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+      select: { usageCount: true, minutesUsed: true },
+    }),
+    credits: await prisma.creditBalance.findUnique({ where: { userId: user.id } }),
+  };
+  const restartRecovery = await recoverProcessingJobsAfterWorkerRestart({ now: new Date("2026-08-29T15:46:35Z") });
+  const recoveredParent = await prisma.videoJob.findUniqueOrThrow({ where: { id: restartExport.id } });
+  check(
+    restartRecovery.requeued === 1 && recoveredParent.status === "queued",
+    "burn restart recovery requeues an export whose durable child can resume",
+  );
+
+  let resumedRenderPosts = 0;
+  let resumedRenderPolls = 0;
+  let resumedGalleryPosts = 0;
+  if (recoveredParent.status === "queued") {
+    const claimed = await claimNextQueuedJob();
+    check(claimed?.id === restartExport.id, "recovered export is claimable by the restarted MCP worker");
+    await runOrchestrator(restartExport.id, user.id, {
+      caller: {
+        post: async <T,>(path: string): Promise<T> => {
+          if (path === "/api/videos/render") {
+            resumedRenderPosts += 1;
+            return { jobId: "duplicate-burn-must-not-run" } as T;
+          }
+          if (path === "/api/videos") {
+            resumedGalleryPosts += 1;
+            return { id: "recovered-gallery" } as T;
+          }
+          throw new Error(`unexpected POST ${path}`);
+        },
+        patch: async <T,>(): Promise<T> => ({} as T),
+        get: async <T,>(): Promise<T> => {
+          resumedRenderPolls += 1;
+          await prisma.renderJob.update({
+            where: { id: finishedBurn.id },
+            data: {
+              status: "DONE",
+              videoUrl: "/api/renders/recovered-final.mp4",
+              progress: 100,
+              finishedAt: new Date(),
+            },
+          });
+          return {
+            progress: 100,
+            stage: "done",
+            videoUrl: "/api/renders/recovered-final.mp4",
+            error: null,
+          } as T;
+        },
+      },
+      refundOneClip: async () => {},
+      sleep: async () => {},
+    });
+  }
+  const restartCompleted = await prisma.videoJob.findUniqueOrThrow({ where: { id: restartExport.id } });
+  const restartProjectAfter = await prisma.editorProject.findUniqueOrThrow({ where: { id: restartProject.id } });
+  const balanceAfter = {
+    user: await prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+      select: { usageCount: true, minutesUsed: true },
+    }),
+    credits: await prisma.creditBalance.findUnique({ where: { userId: user.id } }),
+  };
+  check(restartCompleted.status === "done", "recovered burn finishes the parent export");
+  check(restartCompleted.videoId === "recovered-gallery", "recovered burn links the one Gallery result");
+  check(restartProjectAfter.status === "exported", "recovered burn clears the project's Exporting state");
+  check(resumedRenderPosts === 0, "recovered burn never enqueues a duplicate RenderJob");
+  check(resumedRenderPolls === 1, "recovered export polls the original queued child until it finishes");
+  check(resumedGalleryPosts === 1, "recovered burn creates exactly one Gallery row");
+  check(
+    (await prisma.renderJob.count({ where: { parentJobId: restartExport.id } })) === 1
+      && (await prisma.renderJob.findUnique({ where: { id: finishedBurn.id } }))?.videoUrl === "/api/renders/recovered-final.mp4",
+    "recovered burn preserves the original child RenderJob and output",
+  );
+  check(JSON.stringify(balanceAfter) === JSON.stringify(balanceBefore), "recovered free Burn changes no quota or credit balance");
+
+  const legacyFailedProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Legacy orphaned export", status: "exporting" },
+  });
+  const legacyFailedExport = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: legacyFailedProject.id,
+      status: "failed",
+      type: "export",
+      currentStep: "burn",
+      progress: 42,
+      errorMessage: "worker restarted during burn - not auto-requeued to avoid duplicate gallery rows",
+      inputJson: JSON.stringify({
+        mode: "export",
+        sourceJobId: restartSource.id,
+        subtitleOverlayConfig: {
+          videoUrl: "/renders/restart-source.mp4",
+          durationInFrames: 30,
+          keywordPopups: [{ text: "กู้ไฟล์เดิมหลัง deploy", start: 0, end: 30 }],
+        },
+      }),
+      startedAt: new Date(),
+      finishedAt: new Date(),
+    },
+  });
+  await prisma.editorProject.update({
+    where: { id: legacyFailedProject.id },
+    data: { activeExportJobId: legacyFailedExport.id },
+  });
+  await prisma.renderJob.create({
+    data: {
+      userId: user.id,
+      parentJobId: legacyFailedExport.id,
+      type: "BURN",
+      status: "DONE",
+      payload: JSON.stringify({ subtitleOverlayConfig: {} }),
+      videoUrl: "/api/renders/legacy-orphan-final.mp4",
+      progress: 100,
+      attempts: 2,
+      reservedQuota: false,
+      finishedAt: new Date(),
+    },
+  });
+  const legacyRecovery = await recoverProcessingJobsAfterWorkerRestart({ now: new Date("2026-08-29T16:00:00Z") });
+  const legacyRecoveredParent = await prisma.videoJob.findUniqueOrThrow({ where: { id: legacyFailedExport.id } });
+  check(
+    legacyRecovery.requeued === 1 && legacyRecoveredParent.status === "queued",
+    "the first fixed worker boot automatically recovers the exact legacy failed-burn signature",
+  );
+  await prisma.videoJob.update({ where: { id: legacyFailedExport.id }, data: { status: "canceled" } });
+
+  const checkpointProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Idempotent Gallery checkpoint", status: "exporting" },
+  });
+  const checkpointExport = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: checkpointProject.id,
+      status: "processing",
+      type: "export",
+      currentStep: "save",
+      inputJson: JSON.stringify({
+        mode: "export",
+        sourceJobId: restartSource.id,
+        subtitleOverlayConfig: {
+          videoUrl: "/renders/restart-source.mp4",
+          durationInFrames: 30,
+          keywordPopups: [{ text: "กู้ไฟล์เดิมหลัง deploy", start: 0, end: 30 }],
+        },
+      }),
+    },
+  });
+  const galleryInput = {
+    userId: user.id,
+    parentVideoJobId: checkpointExport.id,
+    projectId: checkpointProject.id,
+    contentId: null,
+    avatarModel: "none",
+    voiceModel: "Puck",
+    imageModel: null,
+    sceneCount: 1,
+    script: "บันทึกครั้งเดียว",
+    sceneMapping: null,
+    videoUrl: "/api/renders/checkpoint-final.mp4",
+    audioUrl: "/api/renders/checkpoint.wav",
+    avatarVideoUrl: null,
+    renderConfig: JSON.stringify({ durationInFrames: 30 }),
+    status: "COMPLETED" as const,
+    expiresAt: new Date("2026-09-05T00:00:00Z"),
+  };
+  const firstGallerySave = await persistExportGalleryVideo(galleryInput);
+  const retriedGallerySave = await persistExportGalleryVideo(galleryInput);
+  let checkpointParent = await prisma.videoJob.findUniqueOrThrow({ where: { id: checkpointExport.id } });
+  check(firstGallerySave.created, "first export Gallery save creates a row");
+  check(!retriedGallerySave.created, "retry after a save-stage restart reuses the checkpoint");
+  check(firstGallerySave.video.id === retriedGallerySave.video.id, "Gallery retry returns the original row id");
+  check(checkpointParent.videoId === firstGallerySave.video.id, "Gallery id is checkpointed atomically on the parent export");
+  check(
+    (await prisma.video.count({ where: { projectId: checkpointProject.id } })) === 1,
+    "save-stage restart leaves exactly one Gallery row",
+  );
+  await prisma.renderJob.create({
+    data: {
+      userId: user.id,
+      parentJobId: checkpointExport.id,
+      type: "BURN",
+      status: "DONE",
+      payload: JSON.stringify({ subtitleOverlayConfig: {} }),
+      videoUrl: galleryInput.videoUrl,
+      progress: 100,
+      reservedQuota: false,
+      finishedAt: new Date(),
+    },
+  });
+  const saveStageRecovery = await recoverProcessingJobsAfterWorkerRestart();
+  checkpointParent = await prisma.videoJob.findUniqueOrThrow({ where: { id: checkpointExport.id } });
+  check(
+    saveStageRecovery.requeued === 1 && checkpointParent.status === "queued",
+    "restart after Gallery commit requeues the checkpointed save stage",
+  );
+  await claimNextQueuedJob();
+  let saveStageDuplicateCalls = 0;
+  await runOrchestrator(checkpointExport.id, user.id, {
+    caller: {
+      post: async <T,>(): Promise<T> => {
+        saveStageDuplicateCalls += 1;
+        throw new Error("checkpointed save must not POST again");
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(): Promise<T> => {
+        saveStageDuplicateCalls += 1;
+        throw new Error("checkpointed save must not poll again");
+      },
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  checkpointParent = await prisma.videoJob.findUniqueOrThrow({ where: { id: checkpointExport.id } });
+  check(checkpointParent.status === "done", "checkpointed save stage finishes its parent after restart");
+  check(saveStageDuplicateCalls === 0, "checkpointed save stage repeats neither Burn nor Gallery side effects");
+  check(
+    (await prisma.video.count({ where: { projectId: checkpointProject.id } })) === 1,
+    "checkpointed save-stage recovery still leaves one Gallery row",
+  );
 
   await prisma.$disconnect();
   console.log(`\n${failed === 0 ? "ALL PASS" : "FAILURES"}: ${passed} passed, ${failed} failed`);

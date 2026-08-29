@@ -503,24 +503,40 @@ export async function failJob(id: string, failure: string | VideoJobFailure) {
  * Requeue jobs that were interrupted in a pre-render (free) stage so a deploy/restart does
  * not turn a recoverable interruption into a user-visible MCP failure.
  *
- * Jobs at or past `render` are NOT auto-requeued — they are failed instead. By then the run
- * has reserved a clip (render), called HeyGen (avatar/composite), or created a gallery Video
- * row (burn); replaying from the top would double-charge clip quota / HeyGen money, or
- * duplicate gallery entries. Resuming those stages idempotently is a larger change — see
- * SAFE_TO_REQUEUE_STEPS.
+ * Jobs at or past `render` are normally NOT auto-requeued — they are failed instead. By then
+ * the run has reserved a clip (render) or called HeyGen (avatar/composite), so replaying from
+ * the top could double-charge. Editor export is the narrow exception: its durable BURN child
+ * is free and linked by parentJobId, so recovery can requeue the parent only when that exact
+ * child is still queued/running or has a durable output to reuse.
  */
 export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeues?: number; now?: Date } = {}) {
   const rawMaxRequeues = Number(opts.maxRequeues ?? 2);
   const maxRequeues = Number.isFinite(rawMaxRequeues) ? Math.max(0, Math.floor(rawMaxRequeues)) : 2;
   const now = opts.now ?? new Date();
   const jobs = await prisma.videoJob.findMany({
-    where: { status: "processing" },
+    where: {
+      OR: [
+        { status: "processing" },
+        {
+          status: "failed",
+          type: "export",
+          currentStep: "burn",
+          errorMessage: { startsWith: "worker restarted during burn - not auto-requeued" },
+        },
+      ],
+    },
     select: {
       id: true,
+      userId: true,
+      type: true,
+      status: true,
+      projectId: true,
+      videoId: true,
       currentStep: true,
       errorMessage: true,
       providerCheckpointJson: true,
       providerNextPollAt: true,
+      project: { select: { activeExportJobId: true } },
     },
   });
 
@@ -529,6 +545,62 @@ export async function recoverProcessingJobsAfterWorkerRestart(opts: { maxRequeue
   let parked = 0;
 
   for (const job of jobs) {
+    const legacyFailedBurnCanRecover = job.status === "failed"
+      && job.currentStep === "burn"
+      && job.project?.activeExportJobId === job.id
+      && !job.videoId;
+    const exportRestartStep = job.type === "export"
+      && (job.currentStep === "burn" || job.currentStep === "save");
+    if (exportRestartStep && (job.status === "processing" || legacyFailedBurnCanRecover)) {
+      const burn = await prisma.renderJob.findFirst({
+        where: {
+          parentJobId: job.id,
+          userId: job.userId,
+          type: "BURN",
+          status: { in: ["QUEUED", "RUNNING", "DONE"] },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { status: true, videoUrl: true },
+      });
+      const childCanResume = burn != null
+        && (burn.status !== "DONE" || !!burn.videoUrl)
+        && (job.currentStep !== "save" || (!!job.videoId && burn.status === "DONE" && !!burn.videoUrl));
+      if (childCanResume) {
+        const res = await prisma.videoJob.updateMany({
+          where: { id: job.id, status: job.status },
+          data: {
+            status: "queued",
+            currentStep: null,
+            progress: 0,
+            startedAt: null,
+            finishedAt: null,
+            providerNextPollAt: null,
+            reservationRefundPending: false,
+            reservationRefundReason: null,
+            // Durable-child recovery is intentionally not bounded by the pre-render
+            // replay counter: every restart polls or reuses the same RenderJob id, so
+            // it cannot repeat a paid or irreversible side effect.
+            errorMessage: "worker restarted during burn - resumed durable child",
+          },
+        });
+        if (res.count === 1) {
+          requeued++;
+          if (legacyFailedBurnCanRecover && job.projectId) {
+            await prisma.editorProject.updateMany({
+              where: { id: job.projectId, userId: job.userId, activeExportJobId: job.id },
+              data: { status: "exporting", lastOpenedAt: now },
+            });
+          }
+        }
+        continue;
+      }
+    }
+
+    // The extra failed rows above exist only for the one-time recovery of the exact
+    // legacy burn-restart signature. Every other recovery policy still applies solely
+    // to work that was processing when this worker booted.
+    if (job.status !== "processing") continue;
+
     const heroVoiceCheckpoint = parseHeroVoiceProviderCheckpoint(job.providerCheckpointJson);
     if (heroVoiceCheckpoint && job.currentStep === "tts") {
       const res = await prisma.videoJob.updateMany({
