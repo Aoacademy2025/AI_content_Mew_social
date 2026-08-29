@@ -92,48 +92,27 @@ systemctl reload nginx
 
 อย่า copy `deploy/nginx.conf` ทับ config จริงทั้งไฟล์ เพราะชื่อโดเมนใน template อาจไม่ตรง production
 
-## 3. ปิด ingress และรอคิวว่าง
+## 3. ตรวจ deploy guards ก่อนเริ่ม
 
-สร้าง cleanup trap ใน shell เดียวกับที่ deploy เพื่อให้ทุก failure path เปิดระบบกลับและปิด DB drain:
-
-```bash
-cleanup_rollout() {
-  rm -f /var/www/ai-content/.deploy-maintenance
-  cd /var/www/ai-content
-  npm run ops:render-drain -- off || true
-  nginx -t && systemctl reload nginx
-}
-trap cleanup_rollout EXIT
-
-touch /var/www/ai-content/.deploy-maintenance
-```
-
-เมื่อ trap ทำงานจะลบ `.deploy-maintenance` ก่อน แล้วสั่ง `npm run ops:render-drain -- off` เพื่อไม่ทิ้งระบบไว้ใน maintenance โดยไม่ตั้งใจ
-
-ตรวจ public response ทันที ต้องยังเป็น HTTP 503 (ไม่ใช่ 200), มี `Retry-After: 120`, `Cache-Control: no-store...` และ body เป็นหน้า “กำลังอัปเดตระบบ”:
-
-```bash
-curl -sS -D /tmp/hero-maintenance.headers \
-  https://YOUR_PRODUCTION_DOMAIN/ \
-  -o /tmp/hero-maintenance.html
-grep -E 'HTTP/.* 503|Retry-After: 120|Cache-Control: no-store' \
-  /tmp/hero-maintenance.headers
-grep 'กำลังอัปเดตระบบ' /tmp/hero-maintenance.html
-```
-
-marker กัน request ใหม่จากภายนอก แต่ worker ภายในที่เรียก `127.0.0.1:3000` ยังทำงานเดิมต่อได้ ให้รัน SQL ในข้อ 1 ซ้ำจนทั้งสอง query ไม่มีแถว **โดยไม่ cancel งาน** แล้วเช็คซ้ำอีกครั้งหลังเว้นระยะหนึ่งเพื่อปิด race
-
-สำหรับ rollout หลังครั้งแรก เมื่อคิวเป็นศูนย์แล้วจึงเปิด DB drain และเช็คผ่าน command ของระบบ:
+`deploy/deploy.sh` เป็นเจ้าของ guard ทั้งหมดแล้ว ห้ามสร้าง `.deploy-maintenance` หรือเปิด
+DB drain ด้วยมือสำหรับ rollout ปกติ ให้ตรวจเพียงว่าไม่มี guard เก่าค้างจากเหตุการณ์ก่อนหน้า:
 
 ```bash
 cd /var/www/ai-content
-npm run ops:render-drain -- on
-npm run ops:check-render-queues
+npm run ops:render-drain -- status
+test ! -e .deploy-maintenance
 ```
 
-ผลที่ยอมรับได้เท่านั้นคือ `videoJobs=0 renderJobs=0 empty=yes` ห้ามเปิด DB drain ขณะที่ยังมี `VideoJob` เพราะงานเดิมอาจต้อง enqueue `RenderJob` ภายในและจะถูกบล็อก
+หลัง staging build สำเร็จ script จะทำ **Mandatory render drain** โดยอัตโนมัติ:
 
-สำหรับ rollout ครั้งแรก ให้คง marker ไว้และใช้ direct SQL จนเป็นศูนย์ ถ้า checkout รุ่นเดิมยังไม่มีคำสั่ง `ops:render-drain`; deploy gate ด้านล่างจะเช็คซ้ำก่อนสลับ build
+1. เปิด DB drain เพื่อปฏิเสธ parent job ใหม่
+2. ปล่อย child `RenderJob` ของ `VideoJob` ที่เริ่มก่อน drain ทำงานต่อ
+3. รอทั้งสองคิวเป็นศูนย์แบบ fail-closed โดยไม่ cancel งาน
+4. เปิด maintenance barrier, สลับ build และ restart ทุก worker
+5. ปิด drain ก่อนเปิด ingress ใน cleanup เดียวกันทุก success/failure path
+
+ค่าเริ่มต้นรอคิวได้สูงสุด 3,600 วินาที หากหมดเวลา script จะลบเฉพาะ staging,
+ไม่แตะ live `.next`, ไม่ restart PM2 และเปิดรับงานกลับเอง
 
 ## 4. สำรองและตรวจฐานข้อมูล
 
@@ -148,18 +127,20 @@ sqlite3 "$BACKUP" 'PRAGMA quick_check;'
 
 หยุด rollout ถ้าผลไม่ใช่ `ok`
 
-## 5. Deploy พร้อม fail-closed queue gate
+## 5. Deploy พร้อม mandatory fail-closed queue gate
 
-marker ต้องยังอยู่และ direct SQL ต้องเป็นศูนย์ก่อนสั่ง:
+ไม่ต้องส่ง flag เพิ่มและไม่มีเส้นทาง deploy ปกติที่ข้าม queue gate:
 
 ```bash
 cd /var/www/ai-content
-REQUIRE_EMPTY_RENDER_QUEUES=1 DEPLOY_BRANCH=main bash deploy/deploy.sh
+DEPLOY_BRANCH=main bash deploy/deploy.sh
 ```
 
-script จะ build ใน `.next-staging` แล้วรัน empty-queue checker ทันทีก่อน atomic swap หากคิวกลับมามีงานหรืออ่าน DB ไม่ได้ script จะลบเฉพาะ staging, ไม่แตะ live `.next`/`.next.old` และไม่ restart PM2
+script จะ build ใน `.next-staging`, เปิด drain, รอคิวว่าง และตรวจซ้ำก่อน atomic swap
+หากคิวไม่ว่างตามเวลา หรืออ่าน DB ไม่ได้ จะลบเฉพาะ staging, ไม่แตะ live
+`.next`/`.next.old` และไม่ restart PM2
 
-## 6. ตรวจหลัง deploy ก่อนเปิด ingress
+## 6. ตรวจหลัง deploy
 
 ```bash
 cd /var/www/ai-content
@@ -171,15 +152,13 @@ npm run ops:check-render-queues
 npm run ops:render-drain -- status
 ```
 
-ต้องเห็น web `ai-content`, `mcp-video-worker`, `render-worker` online, สองคิวเป็นศูนย์ และสองคอลัมน์ใหม่มีอยู่ จากนั้นทดสอบ health/status แบบ read-only ผ่าน localhost และ public endpoint ตาม config จริง
-
-เมื่อทุกอย่างผ่าน ให้เปิดรับงานและยกเลิก trap:
+ต้องเห็น web `ai-content`, `mcp-video-worker`, `render-worker` online, สองคิวเป็นศูนย์,
+drain เป็น `off`, ไม่มี `.deploy-maintenance` และ public health กลับมา 200 หาก deploy ล้มเหลว
+cleanup trap ภายใน script ต้องคืนสถานะสอง guard นี้เอง ห้ามปลดด้วยมือก่อนอ่านสาเหตุจาก log
 
 ```bash
-npm run ops:render-drain -- off
-rm -f /var/www/ai-content/.deploy-maintenance
-nginx -t && systemctl reload nginx
-trap - EXIT
+test ! -e .deploy-maintenance
+curl --fail --silent --show-error https://YOUR_PRODUCTION_DOMAIN/api/health
 ```
 
 ## 7. สังเกต delayed job แรก

@@ -8,7 +8,7 @@
    `mew/stab-1-render-loopback-media` · `mew/stab-task2-mcp-tts-timing-fallback` · `mew/stab-3b-webhook-noop-log` · `mew/stab-6-concurrency-formalize` · `mew/stab-task7-byok-preflight` · `mew/stab-8-stale-bundle`
 2. Deploy แบบมี gate + drain:
    ```
-   REQUIRE_EMPTY_RENDER_QUEUES=1 bash deploy/deploy.sh   # รอคิวว่างเองถ้ามีงานค้าง
+   bash deploy/deploy.sh   # script เปิด drain และรอ VideoJob/RenderJob ว่างเองแบบบังคับ
    ```
 3. คำสั่งครั้งเดียวหลัง deploy (สำคัญ — ไม่ทำ = ค่า concurrency ในไฟล์ไม่มีผล):
    ```

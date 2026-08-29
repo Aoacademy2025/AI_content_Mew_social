@@ -1335,32 +1335,51 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const voiceModel = await resolveExportGalleryVoiceModel(src, userId, user);
 
       await step("burn", 20);
-      const burn = await caller.post<{ jobId: string }>("/api/videos/render", {
-        subtitleOverlayConfig: exportOverlayConfig,
-        parentJobId: jobId,
+      const durableBurn = await prisma.renderJob.findFirst({
+        where: {
+          parentJobId: jobId,
+          userId,
+          type: "BURN",
+          status: { in: ["QUEUED", "RUNNING", "DONE"] },
+        },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, status: true, videoUrl: true },
       });
-      const burnedUrl = await pollRender(
-        caller,
-        burn.jobId,
-        (pct) => { void setJobStep(jobId, "burn", 20 + Math.round(pct * 0.7)).catch(() => {}); },
-        { sleep, checkCanceled: cancelInFlightRender(burn.jobId) },
-      );
+      let burnedUrl: string;
+      if (durableBurn?.status === "DONE" && durableBurn.videoUrl) {
+        burnedUrl = durableBurn.videoUrl;
+      } else {
+        const burnJobId = durableBurn?.id ?? (await caller.post<{ jobId: string }>("/api/videos/render", {
+          subtitleOverlayConfig: exportOverlayConfig,
+          parentJobId: jobId,
+        })).jobId;
+        burnedUrl = await pollRender(
+          caller,
+          burnJobId,
+          (pct) => { void setJobStep(jobId, "burn", 20 + Math.round(pct * 0.7)).catch(() => {}); },
+          { sleep, checkCanceled: cancelInFlightRender(burnJobId) },
+        );
+      }
 
       await step("save", 92);
-      const saved = await caller.post<{ videoId?: string; id?: string }>("/api/videos", {
-        videoUrl: burnedUrl,
-        ...(job.projectId ? { projectId: job.projectId } : {}),
-        audioUrl: preview.voiceUrl ?? null,
-        avatarModel: preview.avatarModel ?? "none",
-        avatarVideoUrl: preview.avatarVideoUrl ?? null,
-        voiceModel,
-        thumbnail: null,
-        script: input.exportScript?.trim() || preview.fullText || null,
-        sceneCount: input.exportSceneCount ?? preview.captions?.length ?? 1,
-        renderConfig: preview.config,
-        status: "COMPLETED",
-      });
-      const videoId = saved.videoId ?? saved.id;
+      let videoId = job.videoId ?? undefined;
+      if (!videoId) {
+        const saved = await caller.post<{ videoId?: string; id?: string }>("/api/videos", {
+          parentJobId: jobId,
+          videoUrl: burnedUrl,
+          ...(job.projectId ? { projectId: job.projectId } : {}),
+          audioUrl: preview.voiceUrl ?? null,
+          avatarModel: preview.avatarModel ?? "none",
+          avatarVideoUrl: preview.avatarVideoUrl ?? null,
+          voiceModel,
+          thumbnail: null,
+          script: input.exportScript?.trim() || preview.fullText || null,
+          sceneCount: input.exportSceneCount ?? preview.captions?.length ?? 1,
+          renderConfig: preview.config,
+          status: "COMPLETED",
+        });
+        videoId = saved.videoId ?? saved.id;
+      }
 
       const exportDuration = Date.now() - phaseStartedAt;
       timings.push([phaseName, exportDuration]);

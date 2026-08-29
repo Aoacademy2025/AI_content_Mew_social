@@ -6,6 +6,8 @@ import { videoExpiryFor } from "@/lib/plan-limits";
 import { assertEditorProjectOwner } from "@/lib/editor-projects";
 import { isGalleryClipFileMissing } from "@/lib/gallery-clip-cleanup";
 import { enqueueLowResPreview } from "@/lib/low-res-preview";
+import { persistExportGalleryVideo } from "@/lib/export-gallery";
+import { resolveServiceVideoJobId } from "@/lib/mcp/service-actor";
 import {
   existingLowResPreviewFallbackUrlForVideoUrl,
   existingLowResPreviewUrlForVideoUrl,
@@ -106,6 +108,7 @@ export async function POST(req: Request) {
       avatarVideoUrl,
       status,
       renderConfig,
+      parentJobId: rawParentJobId,
       projectId: rawProjectId,
     } = await req.json();
     const projectId = typeof rawProjectId === "string" && rawProjectId.trim()
@@ -118,43 +121,41 @@ export async function POST(req: Request) {
       select: { plan: true },
     });
     const userPlan = dbUser?.plan ?? "FREE";
+    const serviceVideoJobId = await resolveServiceVideoJobId(authUser.id);
+    const parentVideoJobId = typeof rawParentJobId === "string"
+      && rawParentJobId
+      && serviceVideoJobId === rawParentJobId
+      ? rawParentJobId
+      : undefined;
 
-    const video = await prisma.video.create({
-      data: {
-        contentId: contentId ?? null,
-        projectId,
-        avatarModel: avatarModel ?? "unknown",
-        voiceModel: voiceModel ?? "unknown",
-        imageModel: imageModel ?? null,
-        sceneCount: sceneCount ?? 1,
-        script: script ?? null,
-        sceneMapping: sceneMapping ?? null,
-        videoUrl: videoUrl ?? null,
-        audioUrl: audioUrl ?? null,
-        avatarVideoUrl: avatarVideoUrl ?? null,
-        renderConfig: renderConfig ? (typeof renderConfig === "string" ? renderConfig : JSON.stringify(renderConfig)) : null,
-        status: status ?? "COMPLETED",
-        userId: authUser.id,
-        expiresAt: videoExpiryFor(userPlan),
-      },
+    const persisted = await persistExportGalleryVideo({
+      userId: authUser.id,
+      parentVideoJobId,
+      projectId,
+      contentId: contentId ?? null,
+      avatarModel: avatarModel ?? "unknown",
+      voiceModel: voiceModel ?? "unknown",
+      imageModel: imageModel ?? null,
+      sceneCount: sceneCount ?? 1,
+      script: script ?? null,
+      sceneMapping: sceneMapping ?? null,
+      videoUrl: videoUrl ?? null,
+      audioUrl: audioUrl ?? null,
+      avatarVideoUrl: avatarVideoUrl ?? null,
+      renderConfig: renderConfig ? (typeof renderConfig === "string" ? renderConfig : JSON.stringify(renderConfig)) : null,
+      status: status ?? "COMPLETED",
+      expiresAt: videoExpiryFor(userPlan),
     });
-    if (projectId) {
-      await prisma.editorProject.updateMany({
-        where: { id: projectId, userId: authUser.id },
-        data: {
-          latestVideoId: video.id,
-          status: video.status === "COMPLETED" ? "exported" : "post",
-          lastOpenedAt: new Date(),
-        },
-      });
-    }
+    const video = persisted.video;
 
     const primaryVideoUrl = video.videoUrl || video.avatarVideoUrl;
-    const previewQueue = enqueueLowResPreview(primaryVideoUrl, {
-      userId: authUser.id,
-      videoId: video.id,
-      reason: "video_created",
-    });
+    const previewQueue = persisted.created
+      ? enqueueLowResPreview(primaryVideoUrl, {
+          userId: authUser.id,
+          videoId: video.id,
+          reason: "video_created",
+        })
+      : { status: "skipped" as const };
 
     const previewVideoUrl = existingLowResPreviewUrlForVideoUrl(primaryVideoUrl);
     const previewFallbackVideoUrl = existingLowResPreviewFallbackUrlForVideoUrl(primaryVideoUrl);
@@ -163,7 +164,7 @@ export async function POST(req: Request) {
       previewVideoUrl,
       previewFallbackVideoUrl,
       previewStatus: previewVideoUrl ? "ready" : previewQueue.status === "queued" ? "queued" : "unavailable",
-    }, { status: 201 });
+    }, { status: persisted.created ? 201 : 200 });
   } catch (error) {
     if ((error as { code?: string })?.code === "project_not_found") {
       return NextResponse.json({ error: "project_not_found" }, { status: 404 });

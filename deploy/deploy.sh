@@ -21,8 +21,10 @@ DEPLOY_HEALTH_URL="${DEPLOY_HEALTH_URL:-http://127.0.0.1:3000/api/health}"
 DEPLOY_MAINTENANCE_FLAG="${DEPLOY_MAINTENANCE_FLAG:-/var/www/ai-content/.deploy-maintenance}"
 DEPLOY_HEALTH_TIMEOUT_SEC="${DEPLOY_HEALTH_TIMEOUT_SEC:-90}"
 DEPLOY_HEALTH_INTERVAL_SEC="${DEPLOY_HEALTH_INTERVAL_SEC:-3}"
+DEPLOY_RENDER_DRAIN_TIMEOUT_SEC="${DEPLOY_RENDER_DRAIN_TIMEOUT_SEC:-3600}"
+DEPLOY_RENDER_DRAIN_INTERVAL_SEC="${DEPLOY_RENDER_DRAIN_INTERVAL_SEC:-5}"
 
-for numeric_setting in DEPLOY_HEALTH_TIMEOUT_SEC DEPLOY_HEALTH_INTERVAL_SEC; do
+for numeric_setting in DEPLOY_HEALTH_TIMEOUT_SEC DEPLOY_HEALTH_INTERVAL_SEC DEPLOY_RENDER_DRAIN_TIMEOUT_SEC DEPLOY_RENDER_DRAIN_INTERVAL_SEC; do
   numeric_value="${!numeric_setting}"
   if [[ ! "$numeric_value" =~ ^[0-9]+$ ]] || [ "$numeric_value" -lt 1 ]; then
     echo "ERROR: ${numeric_setting} must be a positive integer"
@@ -311,18 +313,6 @@ echo "=== [5a/6] Normalize staged build permissions ==="
 # must be able to traverse directories and read static assets before the swap.
 chmod -R a+rX "$STAGING_DIR"
 
-echo "=== [5b/6] Empty render queue gate ==="
-# Production rollouts set REQUIRE_EMPTY_RENDER_QUEUES=1 after external ingress is
-# blocked. The checker is fail-closed: active queues exit 2 and DB/unknown errors exit
-# nonzero. Abort before touching live .next or restarting any PM2 process.
-if [ "${REQUIRE_EMPTY_RENDER_QUEUES:-0}" = "1" ]; then
-  if ! npx tsx scripts/check-empty-render-queues.ts; then
-    rm -rf "$STAGING_DIR"
-    echo "ERROR: render queues are active or unreadable. Old .next untouched; PM2 was not restarted."
-    exit 1
-  fi
-fi
-
 raise_maintenance_barrier() {
   # Idempotent. A stale flag from a killed deploy is cleared by the EXIT trap below,
   # so the site can never be left stuck showing maintenance.
@@ -337,8 +327,54 @@ lower_maintenance_barrier() {
   rm -f "$DEPLOY_MAINTENANCE_FLAG" 2>/dev/null || true
 }
 
-# Any exit path (success, failure, Ctrl-C, health-check rollback) lowers it.
-trap lower_maintenance_barrier EXIT
+DEPLOY_RENDER_DRAIN_OWNED=0
+cleanup_deploy_guards() {
+  # Open render admission before public ingress so the first customer request after
+  # maintenance can never land in a stale deploy-drain window. Both operations are
+  # idempotent and run on success, failure, Ctrl-C and health-check rollback.
+  if [ "$DEPLOY_RENDER_DRAIN_OWNED" = "1" ]; then
+    npm run ops:render-drain -- off >/dev/null 2>&1 || true
+    DEPLOY_RENDER_DRAIN_OWNED=0
+  fi
+  lower_maintenance_barrier
+}
+trap cleanup_deploy_guards EXIT
+
+wait_for_empty_render_queues() {
+  local deadline=$((SECONDS + DEPLOY_RENDER_DRAIN_TIMEOUT_SEC))
+  local queue_status
+  echo "Waiting up to ${DEPLOY_RENDER_DRAIN_TIMEOUT_SEC}s for active VideoJob/RenderJob work to finish"
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if npx tsx scripts/check-empty-render-queues.ts; then
+      return 0
+    else
+      queue_status=$?
+    fi
+    if [ "$queue_status" -ne 2 ]; then
+      echo "ERROR: render queue state is unreadable; refusing to deploy"
+      return 1
+    fi
+    sleep "$DEPLOY_RENDER_DRAIN_INTERVAL_SEC"
+  done
+  echo "ERROR: active render queues did not drain before timeout"
+  return 1
+}
+
+echo "=== [5b/6] Mandatory render drain + empty queue gate ==="
+# This is deliberately not an opt-in flag. Block new parent jobs after the staged build
+# is ready, allow children of already-running VideoJobs to finish, then wait fail-closed
+# before touching live .next or restarting either worker.
+DEPLOY_RENDER_DRAIN_OWNED=1
+if ! npm run ops:render-drain -- on; then
+  rm -rf "$STAGING_DIR"
+  echo "ERROR: could not enable render drain. Old .next untouched; PM2 was not restarted."
+  exit 1
+fi
+if ! wait_for_empty_render_queues; then
+  rm -rf "$STAGING_DIR"
+  echo "ERROR: render queues are active or unreadable. Old .next untouched; PM2 was not restarted."
+  exit 1
+fi
 
 raise_maintenance_barrier
 
@@ -431,11 +467,6 @@ if [ "$release_failed" = "1" ]; then
 fi
 rm -f "$ROLLBACK_STATIC_MANIFEST"
 
-# Web is healthy: let customers back in before the worker restarts (workers talk to
-# localhost:3000 directly, so they are unaffected by the barrier either way).
-lower_maintenance_barrier
-echo "Maintenance barrier lowered — site is serving again"
-
 # The MCP async video worker runs the pipeline (orchestrator/pipeline-client) in
 # a SEPARATE process. A deploy that ships new pipeline code to ai-content would
 # otherwise leave the worker on stale code (version skew → silently-failing MCP
@@ -481,6 +512,10 @@ else
   echo "!! (or re-run deploy/setup.sh — it registers the unit idempotently)."
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
 fi
+
+cleanup_deploy_guards
+trap - EXIT
+echo "Render drain disabled and maintenance barrier lowered — site is serving again"
 
 echo ""
 echo "Deploy finished successfully."

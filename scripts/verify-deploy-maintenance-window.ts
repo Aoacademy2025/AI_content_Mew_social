@@ -24,8 +24,9 @@ const FLAG = "/var/www/ai-content/.deploy-maintenance";
 const raiseAt = sh.indexOf("\nraise_maintenance_barrier\n");
 const swapAt = sh.indexOf('echo "=== [5c/6] Atomic swap');
 const healthAt = sh.indexOf("wait_for_web_health");
-const lowerAt = sh.indexOf('lower_maintenance_barrier\necho "Maintenance barrier lowered');
 const workerAt = sh.indexOf('WORKER_NAME="mcp-video-worker"');
+const renderWorkerRestartAt = sh.indexOf('restart_from_ecosystem "$RENDER_WORKER_NAME"');
+const cleanupAt = sh.lastIndexOf("\ncleanup_deploy_guards\n");
 
 check("nginx maps 503 to the styled maintenance page", /error_page\s+503\s+\/maintenance\.html;/.test(nginx));
 check(
@@ -34,9 +35,12 @@ check(
 );
 check("deploy.sh uses the same flag path nginx watches", sh.includes(FLAG));
 check("the barrier is raised before the build swap", raiseAt > 0 && swapAt > raiseAt);
-check("the barrier is lowered only after the web health check", lowerAt > 0 && lowerAt > healthAt);
-check("the barrier is lowered before the workers restart (site back first)", lowerAt > 0 && workerAt > lowerAt);
-check("an EXIT trap guarantees the barrier is never left up", /trap\s+lower_maintenance_barrier\s+EXIT/.test(sh));
+check("the barrier is lowered only after the web health check", cleanupAt > healthAt);
+check(
+  "the barrier stays raised until both orchestration and render workers restart",
+  workerAt > healthAt && cleanupAt > renderWorkerRestartAt,
+);
+check("an EXIT trap guarantees deploy guards are never left up", /trap\s+cleanup_deploy_guards\s+EXIT/.test(sh));
 check(
   "raising the barrier can never abort the deploy (best effort + warning)",
   /: > "\$DEPLOY_MAINTENANCE_FLAG" 2>\/dev\/null \|\| \{/.test(sh),

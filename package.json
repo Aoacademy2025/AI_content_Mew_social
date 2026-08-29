@@ -32,7 +32,7 @@
     "verify:quota-error-shape": "tsx scripts/verify-quota-error-shape.ts",
     "verify:reported-account-entrypoints": "node --conditions=react-server --import tsx scripts/verify-reported-account-entrypoints.ts",
     "ops:refund-avatar-quota": "tsx scripts/refund-avatar-quota-job.ts",
-    "verify:render-deploy-drain": "tsx scripts/verify-render-deploy-drain.ts",
+    "verify:render-deploy-drain": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-render-deploy-drain.ts",
     "verify:deploy-render-gate": "tsx scripts/verify-deploy-render-gate.ts",
     "verify:upload-proxy-limit": "tsx scripts/verify-upload-proxy-body-limit.ts",
     "verify:upload-streaming": "tsx scripts/verify-upload-request-streaming.ts && tsx scripts/verify-upload-auth-feedback.ts",
