@@ -132,4 +132,26 @@ assert(
 );
 setDynamicCompounds([], []);
 
+// Story Film production regression (Mew, 2026-08-29): mode 3 split
+// "หลายเท่าจริง | ๆ แต่..." and rendered the repetition mark as the first
+// glyph of the next card. Thai ๆ always modifies the preceding token, so a
+// bounded natural-phrase overrun must keep it on the previous card.
+const repetitionText = "AI พาเราไปถึงเส้นชัยได้เร็วกว่าเดิมหลายเท่าจริง ๆ แต่คนที่ต้องรู้";
+const repetitionCards = cardsByWordCount(
+  timedWords(repetitionText, [
+    "AI", "พา", "เรา", "ไป", "ถึง", "เส้นชัย", "ได้", "เร็ว", "กว่า", "เดิม",
+    "หลาย", "เท่า", "จริง", "ๆ", "แต่", "คน", "ที่", "ต้อง", "รู้",
+  ]),
+  3,
+  repetitionText,
+);
+assert(
+  repetitionCards.every((card) => !card.text.startsWith("ๆ")),
+  "mode 3 never starts a subtitle card with the Thai repetition mark",
+);
+assert(
+  repetitionCards.some((card) => card.text.endsWith("จริง ๆ")),
+  "mode 3 keeps จริง ๆ together on the preceding subtitle card",
+);
+
 console.log(`\n${passed} assertions passed ✅`);

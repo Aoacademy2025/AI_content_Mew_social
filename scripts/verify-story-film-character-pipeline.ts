@@ -212,9 +212,9 @@ async function main() {
     ok(
       keyframeStage.stage === "keyframes"
         && keyframeJobs.length === 2
-        && firstPayload.referenceUrls.includes("/api/renders/approved-character-look.png")
-        && firstPayload.referenceUrls.includes(reference.url),
-      "character scenes receive both approved look and identity anchors",
+        && firstPayload.referenceUrls[0] === reference.url
+        && firstPayload.referenceUrls[1] === "/api/renders/approved-character-look.png",
+      "character scenes put the immutable identity anchor before the approved wardrobe look",
     );
     ok(
       secondPayload.referenceUrls.length === 0,
@@ -575,6 +575,40 @@ async function main() {
         && completed.status === "completed"
         && completed.finalRenderUrl === "/api/renders/story-film-final-revised.mp4",
       "approving the repaired Final Preview completes the one-project workflow",
+    );
+    const completedRepair = await story.decideStoryFilm(mew.id, {
+      projectId: started.project.id,
+      expectedStage: "completed",
+      expectedRevision: completed.revision,
+      decision: "revise",
+      instruction: "Restore Mew's exact face from the Character Profile and realign subtitles to the spoken audio.",
+      target: {
+        sceneKeys: ["scene-01"],
+        repairLayer: "keyframe",
+        realignCaptions: true,
+      },
+      idempotencyKey: "character:completed:identity-caption-repair:001",
+    });
+    const completedRepairJobs = await prisma.storyFilmGenerationJob.findMany({
+      where: { projectId: started.project.id, generationEpoch: completedRepair.generationEpoch },
+      orderBy: { kind: "asc" },
+    });
+    const completedKeyframeJob = completedRepairJobs.find((job) => job.kind === "keyframe_image");
+    const completedCaptionJob = completedRepairJobs.find((job) => job.kind === "caption_alignment");
+    assert.ok(completedKeyframeJob);
+    const completedKeyframePayload = JSON.parse(completedKeyframeJob.payloadJson) as {
+      prompt: string;
+      referenceUrls: string[];
+    };
+    ok(
+      completedRepair.stage === "keyframes"
+        && completedRepair.status === "waiting_generation"
+        && Boolean(completedCaptionJob)
+        && completedKeyframePayload.referenceUrls[0] === reference.url
+        && completedKeyframePayload.referenceUrls[1] === "/api/renders/approved-character-look.png"
+        && completedKeyframePayload.referenceUrls[2] === "/api/renders/scene-01.png"
+        && completedKeyframePayload.prompt.includes("identity authority"),
+      "a completed film can selectively repair identity and captions with raw identity first",
     );
   } finally {
     await prisma.$disconnect();

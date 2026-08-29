@@ -10,7 +10,18 @@ import {
   buildCanonicalCaptionsFromAlignedWords,
   resolveUploadTranscriptWords,
 } from "@/lib/mcp/subtitle-quality";
-import { normalizeGeminiWords } from "@/lib/transcribe-timeline";
+import {
+  chunkTranscriptionReferenceDurationMs,
+  normalizeGeminiWords,
+  offsetChunkWordsToSourceTimeline,
+  parseTranscriptionSilenceAnalysis,
+} from "@/lib/transcribe-timeline";
+import {
+  planStoryFilmAlignmentChunks,
+  storyFilmAlignmentHasSpeechTailCoverage,
+  storyFilmAlignmentScriptSlice,
+  type StoryFilmAlignmentWord,
+} from "@/lib/story-film-caption-alignment";
 import {
   STORY_FILM_SENTENCE_MAX_CARD_CHARS,
   STORY_FILM_SENTENCE_MIN_CARD_MS,
@@ -75,6 +86,7 @@ async function transcribeWords(input: {
   apiKey: string;
   script: string;
   durationMs: number;
+  models?: readonly (typeof MODELS)[number][];
 }) {
   const prompt = `ฟังเสียงนี้และคืน word timestamps ตามเสียงจริง เพื่อทำ forced alignment กับสคริปต์ภาษาไทย
 
@@ -89,7 +101,7 @@ async function transcribeWords(input: {
 SCRIPT:
 ${input.script.slice(0, 12_000)}`;
   let lastError = "";
-  for (const model of MODELS) {
+  for (const model of input.models ?? MODELS) {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-goog-api-key": input.apiKey },
@@ -112,6 +124,76 @@ ${input.script.slice(0, 12_000)}`;
   throw new Error(`story_film_alignment_transcribe_failed:${lastError}`);
 }
 
+async function detectPresenterSilence(audioPath: string, durationMs: number) {
+  const { stderr } = await execFileAsync(getFfmpegPath(), [
+    "-hide_banner", "-i", audioPath,
+    "-af", "silencedetect=noise=-30dB:d=0.3",
+    "-f", "null", "-",
+  ], { timeout: 180_000, maxBuffer: 20 * 1024 * 1024 });
+  return parseTranscriptionSilenceAnalysis(stderr || "", durationMs);
+}
+
+async function slicePresenterAudio(input: {
+  sourcePath: string;
+  outputPath: string;
+  startMs: number;
+  durationMs: number;
+}) {
+  await execFileAsync(getFfmpegPath(), [
+    "-hide_banner", "-loglevel", "error", "-y",
+    "-ss", (input.startMs / 1_000).toFixed(3),
+    "-t", (input.durationMs / 1_000).toFixed(3),
+    "-i", input.sourcePath,
+    "-vn", "-ac", "1", "-ar", "16000", "-b:a", "64k",
+    input.outputPath,
+  ], { timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
+}
+
+function millisecondWords(words: ReturnType<typeof normalizeGeminiWords>["words"]): StoryFilmAlignmentWord[] {
+  return words.map((word) => ({
+    word: word.word,
+    startMs: Math.round(word.start * 1_000),
+    endMs: Math.round(word.end * 1_000),
+  }));
+}
+
+async function transcribeAlignedChunk(input: {
+  audio: Buffer;
+  apiKey: string;
+  script: string;
+  durationMs: number;
+  spokenEndMs: number;
+  remoteNames: string[];
+}): Promise<StoryFilmAlignmentWord[] | null> {
+  const uploaded = await uploadGeminiAudio(input.audio, input.apiKey);
+  if (uploaded.name) input.remoteNames.push(uploaded.name);
+  let best: StoryFilmAlignmentWord[] | null = null;
+  let bestTailDistance = Number.POSITIVE_INFINITY;
+  for (const model of MODELS) {
+    try {
+      const rawWords = await transcribeWords({
+        fileUri: uploaded.uri,
+        apiKey: input.apiKey,
+        script: input.script,
+        durationMs: input.durationMs,
+        models: [model],
+      });
+      const candidate = millisecondWords(normalizeGeminiWords(rawWords, input.durationMs).words);
+      const lastEndMs = candidate.reduce((latest, word) => Math.max(latest, word.endMs), 0);
+      const distance = Math.abs(input.spokenEndMs - lastEndMs);
+      if (distance < bestTailDistance) {
+        best = candidate;
+        bestTailDistance = distance;
+      }
+      if (storyFilmAlignmentHasSpeechTailCoverage(candidate, input.spokenEndMs)) return candidate;
+    } catch {
+      // Try the next configured model. JSON validity alone is not sufficient:
+      // the acoustic tail must be present before this chunk can drive captions.
+    }
+  }
+  return best && storyFilmAlignmentHasSpeechTailCoverage(best, input.spokenEndMs) ? best : null;
+}
+
 export async function alignStoryFilmPresenterCaptions(input: {
   videoPath: string;
   script: string;
@@ -124,26 +206,68 @@ export async function alignStoryFilmPresenterCaptions(input: {
   }
   const temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "hero-story-film-align-"));
   const audioPath = path.join(temporaryDirectory, "presenter.mp3");
-  let remoteName: string | null = null;
+  const remoteNames: string[] = [];
   try {
     await extractPresenterAudio(input.videoPath, audioPath);
-    const audio = await fs.readFile(audioPath);
-    const uploaded = await uploadGeminiAudio(audio, input.apiKey);
-    remoteName = uploaded.name;
-    const rawWords = await transcribeWords({
-      fileUri: uploaded.uri,
-      apiKey: input.apiKey,
-      script,
-      durationMs: input.durationMs,
-    });
-    const normalized = normalizeGeminiWords(rawWords, input.durationMs).words.map((word) => ({
-      word: word.word,
-      startMs: Math.round(word.start * 1_000),
-      endMs: Math.round(word.end * 1_000),
-    }));
+    const silence = await detectPresenterSilence(audioPath, input.durationMs)
+      .catch(() => ({ cutPointsMs: [], trailingSilenceStartMs: null }));
+    const chunks = planStoryFilmAlignmentChunks(input.durationMs, silence.cutPointsMs);
+    const normalized: StoryFilmAlignmentWord[] = [];
+    for (const [index, chunk] of chunks.entries()) {
+      const chunkPath = chunks.length === 1
+        ? audioPath
+        : path.join(temporaryDirectory, `presenter-${index + 1}.mp3`);
+      if (chunks.length > 1) {
+        await slicePresenterAudio({
+          sourcePath: audioPath,
+          outputPath: chunkPath,
+          startMs: chunk.startMs,
+          durationMs: chunk.durationMs,
+        });
+      }
+      const referenceDurationMs = chunkTranscriptionReferenceDurationMs({
+        chunkStartMs: chunk.startMs,
+        chunkDurationMs: chunk.durationMs,
+        totalDurationMs: input.durationMs,
+        trailingSilenceStartMs: silence.trailingSilenceStartMs,
+      });
+      const localWords = await transcribeAlignedChunk({
+        audio: await fs.readFile(chunkPath),
+        apiKey: input.apiKey,
+        script: storyFilmAlignmentScriptSlice({
+          script,
+          startMs: chunk.startMs,
+          durationMs: chunk.durationMs,
+          totalDurationMs: input.durationMs,
+        }),
+        durationMs: chunk.durationMs,
+        spokenEndMs: referenceDurationMs,
+        remoteNames,
+      });
+      if (!localWords) {
+        return { track: null, reason: `alignment_speech_tail_incomplete:chunk_${index + 1}` };
+      }
+      normalized.push(...offsetChunkWordsToSourceTimeline({
+        words: localWords.map((word) => ({
+          word: word.word,
+          start: word.startMs / 1_000,
+          end: word.endMs / 1_000,
+        })),
+        offsetMs: chunk.startMs,
+        chunkDurationMs: chunk.durationMs,
+      }).map((word) => ({
+        word: word.word,
+        startMs: Math.round(word.start * 1_000),
+        endMs: Math.round(word.end * 1_000),
+      })));
+    }
     const resolution = resolveUploadTranscriptWords(script, normalized);
     if (!resolution.regroupingAvailable || resolution.words.length === 0) {
       return { track: null, reason: resolution.failureCode ?? "alignment_text_mismatch" };
+    }
+    const spokenEndMs = silence.trailingSilenceStartMs ?? input.durationMs;
+    if (!storyFilmAlignmentHasSpeechTailCoverage(resolution.words, spokenEndMs)) {
+      return { track: null, reason: "alignment_speech_tail_incomplete" };
     }
     const cards = buildCanonicalCaptionsFromAlignedWords(
       script,
@@ -170,7 +294,7 @@ export async function alignStoryFilmPresenterCaptions(input: {
     };
   } finally {
     await fs.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => {});
-    if (remoteName) {
+    for (const remoteName of remoteNames) {
       await fetch(`https://generativelanguage.googleapis.com/v1beta/${remoteName}`, {
         method: "DELETE",
         headers: { "x-goog-api-key": input.apiKey },
