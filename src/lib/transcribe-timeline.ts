@@ -12,6 +12,8 @@
 //   words/segments are in SECONDS, captions in MILLISECONDS.
 // boundWordsForSplit() uses the client shape (startMs/endMs).
 
+import { SUBTITLE_SPEECH_TAIL_TOLERANCE_MS } from "@/lib/subtitle-speech-coverage";
+
 export type ChunkWord = { word: string; start: number; end: number };
 export type ChunkSegment = { text: string; start: number; end: number };
 export type ChunkCaption = {
@@ -288,7 +290,7 @@ export function normalizeGeminiWords(
   return { words: cleaned, detectedUnit };
 }
 
-const TRANSCRIPTION_INCOMPLETE_GAP_MS = 5000;
+const TRANSCRIPTION_INCOMPLETE_GAP_MS = SUBTITLE_SPEECH_TAIL_TOLERANCE_MS;
 const TRANSCRIPTION_OVERSHOOT_RATIO = 1.10;
 const TRANSCRIPTION_OVERSHOOT_TAIL_MS = 2000;
 
@@ -424,6 +426,17 @@ export function assessChunkWordEvidence(input: {
   const captionEndMs = captions.reduce((max, caption) => Math.max(max, caption.endMs), 0);
   const wordStartMs = words[0].start * 1_000;
   const wordEndMs = words[words.length - 1].end * 1_000;
+  // Ratio-only coverage accepted the production 61.60s/71.14s word clock
+  // because 86.6% exceeded the old 85% floor. A bounded absolute spoken-tail
+  // gap prevents a long clip from hiding many seconds of progressive drift.
+  if (captionEndMs - wordEndMs > SUBTITLE_SPEECH_TAIL_TOLERANCE_MS) {
+    return {
+      usable: false,
+      code: "insufficient_timeline_coverage",
+      timelineCoverage: 0,
+      textSimilarity: 0,
+    };
+  }
   const captionSpanMs = captionEndMs - captionStartMs;
   const overlapMs = captionSpanMs > 0
     ? Math.max(0, Math.min(captionEndMs, wordEndMs) - Math.max(captionStartMs, wordStartMs))
@@ -545,7 +558,7 @@ export function chunkOvershootRatio(captions: ChunkCaption[], chunkDurationMs: n
 // with a few seconds of pause; only a shortfall a TTS voice would never produce
 // counts as desync. (Prod 06-12 #3: the kept retry undershot → subs ran early
 // after 2:20 — the one-sided overshoot check let it through.)
-export const CHUNK_UNDERSHOOT_RETRY_MS = 12_000;
+export const CHUNK_UNDERSHOOT_RETRY_MS = SUBTITLE_SPEECH_TAIL_TOLERANCE_MS;
 
 // Signed gap between the transcript's last caption end and the real slice
 // length: positive = overshoot, negative = undershoot, 0 = nothing to measure.

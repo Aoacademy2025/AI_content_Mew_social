@@ -5,6 +5,11 @@ import {
   type TimedWord,
 } from "@/lib/tts-timing";
 import { prepareHeroVoiceSpeechText } from "@/lib/hero-voice-speech";
+import {
+  assessSubtitleSpeechCoverage,
+  subtitleTimingRequiresSpeechCoverage,
+  type SubtitleSpeechCoverage,
+} from "@/lib/subtitle-speech-coverage";
 
 export type SubtitleTimingSource =
   | "provider_alignment"
@@ -20,6 +25,7 @@ export type SubtitleQualityReport =
       textExact: true;
       captionCount: number;
       audioDurationMs: number;
+      speechCoverage?: SubtitleSpeechCoverage;
     }
   | {
       status: "failed";
@@ -34,10 +40,14 @@ export type SubtitleQualityReport =
         | "invalid_timing"
         | "overlapping_timing"
         | "timing_out_of_bounds"
+        | "missing_speech_coverage"
+        | "invalid_speech_coverage"
+        | "speech_coverage_incomplete"
         | "broken_thai_grapheme"
         | "punctuation_only_card"
         | "card_too_short";
       captionIndex?: number;
+      speechCoverage?: SubtitleSpeechCoverage;
     };
 
 export interface SubtitleQualityInput {
@@ -45,6 +55,8 @@ export interface SubtitleQualityInput {
   captions: Array<{ text: string; startMs: number; endMs: number }>;
   audioDurationMs: number;
   timingSource: SubtitleTimingSource;
+  /** Acoustic end-of-speech evidence from the audio that produced these captions. */
+  speechCoverage?: SubtitleSpeechCoverage;
 }
 
 export interface TranscriptWord {
@@ -1037,17 +1049,6 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
       code: "unverified_alignment",
     };
   }
-  const spacing = hasExactInternalSpacing(script, input.captions);
-  if (!spacing.passed) {
-    return {
-      status: "failed",
-      timingSource: input.timingSource,
-      textExact,
-      code: "spacing_mismatch",
-      captionIndex: spacing.captionIndex,
-    };
-  }
-
   let previousEnd = -1;
   for (let index = 0; index < input.captions.length; index += 1) {
     const caption = input.captions[index];
@@ -1063,16 +1064,70 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
     if (endMs > input.audioDurationMs + AUDIO_END_TOLERANCE_MS) {
       return { status: "failed", timingSource: input.timingSource, textExact, code: "timing_out_of_bounds", captionIndex: index };
     }
+    previousEnd = endMs;
+  }
+
+  if (subtitleTimingRequiresSpeechCoverage(input.timingSource) || input.speechCoverage) {
+    const speechCoverage = assessSubtitleSpeechCoverage({
+      captions: input.captions,
+      audioDurationMs: input.audioDurationMs,
+      speechCoverage: input.speechCoverage,
+    });
+    if (speechCoverage.status === "missing") {
+      return {
+        status: "failed",
+        timingSource: input.timingSource,
+        textExact,
+        code: "missing_speech_coverage",
+      };
+    }
+    if (speechCoverage.status === "invalid") {
+      return {
+        status: "failed",
+        timingSource: input.timingSource,
+        textExact,
+        code: "invalid_speech_coverage",
+        speechCoverage: input.speechCoverage,
+      };
+    }
+    if (speechCoverage.status === "incomplete") {
+      return {
+        status: "failed",
+        timingSource: input.timingSource,
+        textExact,
+        code: "speech_coverage_incomplete",
+        captionIndex: input.captions.length - 1,
+        speechCoverage: input.speechCoverage,
+      };
+    }
+  }
+
+  const spacing = hasExactInternalSpacing(script, input.captions);
+  if (!spacing.passed) {
+    return {
+      status: "failed",
+      timingSource: input.timingSource,
+      textExact,
+      code: "spacing_mismatch",
+      captionIndex: spacing.captionIndex,
+      ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}),
+    };
+  }
+
+  for (let index = 0; index < input.captions.length; index += 1) {
+    const caption = input.captions[index];
+    const text = caption.text.trim();
+    const startMs = Number(caption.startMs);
+    const endMs = Number(caption.endMs);
     if (THAI_COMBINING_MARK_AT_START.test(text)) {
-      return { status: "failed", timingSource: input.timingSource, textExact, code: "broken_thai_grapheme", captionIndex: index };
+      return { status: "failed", timingSource: input.timingSource, textExact, code: "broken_thai_grapheme", captionIndex: index, ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}) };
     }
     if (PUNCTUATION_OR_SYMBOLS_ONLY.test(text)) {
-      return { status: "failed", timingSource: input.timingSource, textExact, code: "punctuation_only_card", captionIndex: index };
+      return { status: "failed", timingSource: input.timingSource, textExact, code: "punctuation_only_card", captionIndex: index, ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}) };
     }
     if (endMs - startMs < MIN_CARD_MS) {
-      return { status: "failed", timingSource: input.timingSource, textExact, code: "card_too_short", captionIndex: index };
+      return { status: "failed", timingSource: input.timingSource, textExact, code: "card_too_short", captionIndex: index, ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}) };
     }
-    previousEnd = endMs;
   }
 
   return {
@@ -1081,5 +1136,6 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
     textExact: true,
     captionCount: input.captions.length,
     audioDurationMs: input.audioDurationMs,
+    ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}),
   };
 }

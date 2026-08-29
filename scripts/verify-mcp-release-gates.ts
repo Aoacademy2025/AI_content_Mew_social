@@ -47,6 +47,7 @@ async function main() {
           captions: [{ text: "สร้างเงินเก็บทุกเดือน", startMs: 120, endMs: 2_800 }],
           words: [{ word: "สร้างเงินเก็บทุกเดือน", startMs: 120, endMs: 2_800 }],
           audioDurationMs: 3_000,
+          speechCoverage: { source: "silence_analysis", spokenEndMs: 2_800 },
         } as never;
       }
       if (key === "/api/videos/render") {
@@ -139,6 +140,7 @@ async function main() {
           captions: [{ text: "ออมเงินให้เป็นนิสัย", startMs: 100, endMs: 2_800 }],
           words: [{ word: "ออมเงินให้เป็นนิสัย", startMs: 100, endMs: 2_800 }],
           audioDurationMs: 3_000,
+          speechCoverage: { source: "silence_analysis", spokenEndMs: 2_800 },
         } as never;
       }
       if (key === "/api/videos/render") {

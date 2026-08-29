@@ -23,6 +23,7 @@ import {
   type EditorExportSnapshot,
 } from "@/lib/editor-export-snapshot";
 import { compileNarrationPlan } from "@/lib/narration-plan";
+import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -361,6 +362,8 @@ export interface VideoJobPreviewData {
   /** Exact TTS voice used for Gallery metadata. Optional for pre-field preview rows. */
   voiceModel?: string;
   audioDurationMs: number;
+  /** Acoustic end-of-speech evidence used by the subtitle release gate. */
+  speechCoverage?: SubtitleSpeechCoverage;
   avatarModel?: string;
   avatarVideoUrl?: string | null;
   /** ข้อมูลสำหรับ re-composite อวตารจากจอแต่งซับ (spec 07-03 ข้อ 1) — งานเก่าไม่มี = ซ่อนปุ่มปรับ */
@@ -387,6 +390,7 @@ export interface SubtitleAuditEvidence {
   fullText: string;
   audioDurationMs: number;
   timingSource: SubtitleTimingSource;
+  speechCoverage?: SubtitleSpeechCoverage;
 }
 
 export interface ParsedVideoJobOutput {

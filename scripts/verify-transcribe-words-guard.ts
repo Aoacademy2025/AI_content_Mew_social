@@ -144,8 +144,10 @@ function mkChunk(caps: number, words: number, totalMs: number): ChunkResult {
   const under = mkCaptions(40, dur - 30_000); // transcript covers only 45s of 75s
   check("retry: −30s undershoot → retry", chunkNeedsRetry(under, dur));
   check("retry: undershoot gap is negative", chunkTailGapMs(under, dur) < 0);
-  const tailSilence = mkCaptions(40, dur - 8_000); // chunk ends in real silence
-  check("retry: −8s tail (trailing silence) → no retry", !chunkNeedsRetry(tailSilence, dur));
+  const productionTailGap = mkCaptions(40, 61_600);
+  check("retry: production −9.54s spoken tail → retry", chunkNeedsRetry(productionTailGap, 71_140));
+  const tailSilence = mkCaptions(40, dur - 8_000); // acoustic analysis proves speech ends here
+  check("retry: proven −8s trailing silence → no retry", !chunkNeedsRetry(tailSilence, dur - 8_000));
   check("retry: empty captions → retry", chunkNeedsRetry([], dur));
   check("retry: unknown duration → no retry", !chunkNeedsRetry(ok, 0));
 }

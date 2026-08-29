@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 
 import type { OrchCaption } from "@/lib/mcp/orchestrator-steps";
 import type { SubtitleTimingSource } from "@/lib/mcp/subtitle-quality";
+import {
+  parseSubtitleSpeechCoverage,
+  type SubtitleSpeechCoverage,
+} from "@/lib/subtitle-speech-coverage";
 
 export const AVATAR_PROVIDER_CHECKPOINT_VERSION = 1 as const;
 
@@ -32,6 +36,7 @@ export interface AvatarProviderCheckpointV1 {
   fullText: string;
   /** Origin of the timing that was quality-gated before the provider wait. */
   subtitleTimingSource?: SubtitleTimingSource;
+  speechCoverage?: SubtitleSpeechCoverage;
   baseConfig: Record<string, unknown>;
   avatar: {
     mode: "full" | "bookend" | "bookend-both";
@@ -74,6 +79,10 @@ function isOptionalSubtitleTimingSource(value: unknown): value is SubtitleTiming
     || value === "tts_segment_timing"
     || value === "forced_alignment"
     || value === "upload_transcription";
+}
+
+function isOptionalSubtitleSpeechCoverage(value: unknown): value is SubtitleSpeechCoverage | undefined {
+  return value === undefined || parseSubtitleSpeechCoverage(value) !== null;
 }
 
 function isCaption(value: unknown): value is CheckpointCaption {
@@ -144,6 +153,7 @@ export function parseAvatarProviderCheckpoint(raw: string | null | undefined): A
     || !Array.isArray(value.words)
     || typeof value.fullText !== "string"
     || !isOptionalSubtitleTimingSource(value.subtitleTimingSource)
+    || !isOptionalSubtitleSpeechCoverage(value.speechCoverage)
     || !isRecord(value.baseConfig)
     || !isAvatar(value.avatar)) {
     return null;

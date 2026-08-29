@@ -95,6 +95,27 @@ async function main() {
   assert.equal(wordRecovered.accepted, true, "a later response with acoustic word coverage is accepted");
   assert.equal(wordRecovered.result.words.length, 4, "the accepted result keeps the complete word timeline");
 
+  // Production 2026-08-29: caption evidence covered the 71.14s audio, but the
+  // aligned word clock ended at 61.60s. The old 85% ratio accepted 86.6%
+  // coverage, then canonical caption projection made subtitles progressively
+  // early and left the final 9.54s of speech uncovered.
+  const progressiveUndershoot = result(71_140, 20);
+  progressiveUndershoot.words = progressiveUndershoot.words.map((word) => ({
+    ...word,
+    start: word.start * (61_600 / 71_140),
+    end: word.end * (61_600 / 71_140),
+  }));
+  calls = 0;
+  const progressiveRecovered = await runTranscriptionQualityRetries(
+    async () => calls++ === 0 ? progressiveUndershoot : result(71_140, 20),
+    71_140,
+    3,
+    undefined,
+    { requireUsableWords: true },
+  );
+  assert.equal(calls, 2, "a 9.54s word-tail undershoot is retried despite exceeding 85% ratio coverage");
+  assert.equal(progressiveRecovered.accepted, true, "complete retry evidence replaces the progressive undershoot");
+
   // Production 2026-08-27: Gemini returned a complete, monotonic 60s timeline
   // with 19 caption cards / 36 timed word-or-phrase items. Item count is a
   // provider segmentation choice, not proof of missing acoustic timing.

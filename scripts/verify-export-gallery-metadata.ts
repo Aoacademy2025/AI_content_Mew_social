@@ -113,12 +113,14 @@ async function main() {
             textExact: true,
             captionCount: 1,
             audioDurationMs: 1000,
+            speechCoverage: { source: "silence_analysis", spokenEndMs: 1000 },
           },
           preview: {
             captions: [{ text: testCase.input.script, startMs: 0, endMs: 1000 }],
             config: { durationInFrames: 30, providerCase: testCase.label },
             voiceUrl: `/api/renders/source-${index}.wav`,
             audioDurationMs: 1000,
+            speechCoverage: { source: "silence_analysis", spokenEndMs: 1000 },
             fullText: testCase.input.script,
             avatarModel: testCase.avatarModel,
             avatarVideoUrl: testCase.avatarVideoUrl,
@@ -271,6 +273,7 @@ async function main() {
               endMs: 390 + index * 330,
             })),
             audioDurationMs: 4_000,
+            speechCoverage: { source: "silence_analysis", spokenEndMs: 3_900 },
           } as T;
         }
         if (path === "/api/videos/render") {
@@ -332,6 +335,7 @@ async function main() {
           textExact: true,
           captionCount: 1,
           audioDurationMs: 1_000,
+          speechCoverage: { source: "silence_analysis", spokenEndMs: 1_000 },
         },
         preview: {
           captions: [{ text: canonicalScript, startMs: 0, endMs: 1_000 }],
@@ -339,6 +343,7 @@ async function main() {
           config: { durationInFrames: 30 },
           voiceUrl: "/api/renders/protected.wav",
           audioDurationMs: 1_000,
+          speechCoverage: { source: "silence_analysis", spokenEndMs: 1_000 },
           avatarModel: "none",
           avatarVideoUrl: null,
         },

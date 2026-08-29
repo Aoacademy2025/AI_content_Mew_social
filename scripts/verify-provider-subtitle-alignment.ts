@@ -87,6 +87,7 @@ async function main() {
               endMs: 390 + index * 330,
             })),
             audioDurationMs: 4_000,
+            speechCoverage: { source: "silence_analysis", spokenEndMs: 3_900 },
           } as T;
         }
         if (path === "/api/videos/extract-keywords") {

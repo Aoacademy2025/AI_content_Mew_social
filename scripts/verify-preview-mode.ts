@@ -83,6 +83,7 @@ function makeStubCaller(log: CallLog[]) {
             words: [{ word: requestedScript, startMs: 100, endMs: 4_800 }],
             fullText: requestedScript,
             audioDurationMs: 5_000,
+            speechCoverage: { source: "silence_analysis", spokenEndMs: 4_800 },
           } as T;
         }
         const uploadCaptions = [
@@ -96,6 +97,7 @@ function makeStubCaller(log: CallLog[]) {
           words: [{ word: uploadFullText, startMs: 0, endMs: 10_000 }],
           fullText: uploadFullText,
           audioDurationMs: 10000,
+          speechCoverage: { source: "silence_analysis", spokenEndMs: 10_000 },
         } as T;
       }
       if (path === "/api/heygen/composite") return { videoUrl: "/api/renders/composite-cutaway-1.mp4" } as T;
@@ -359,6 +361,7 @@ async function main() {
               })),
               fullText: LONG_SCRIPT,
               audioDurationMs: LONG_DURATION_MS,
+              speechCoverage: { source: "silence_analysis", spokenEndMs: LONG_DURATION_MS },
             } as T;
           }
           if (path === "/api/videos/extract-keywords") {
@@ -652,6 +655,7 @@ async function main() {
             words: [{ word: "คลิปสั้น", startMs: 0, endMs: 2_500 }],
             fullText: "คลิปสั้น",
             audioDurationMs: 2_500,
+            speechCoverage: { source: "silence_analysis", spokenEndMs: 2_500 },
           } as T;
         }
         return base.post<T>(path, body);

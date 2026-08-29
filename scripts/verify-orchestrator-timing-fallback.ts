@@ -347,19 +347,62 @@ const captions = [
   { text: "5,000 บาท", startMs: 900, endMs: 1_700 },
   { text: "ทุกเดือน", startMs: 1_750, endMs: 2_600 },
 ];
+const forcedAlignmentCoverage = {
+  source: "silence_analysis" as const,
+  spokenEndMs: 2_650,
+};
 const passed = validateSubtitleQuality({
   script,
   captions,
   audioDurationMs: 3_000,
   timingSource: "forced_alignment",
+  speechCoverage: forcedAlignmentCoverage,
 });
 check("exact forced-aligned captions pass the release gate", passed.status === "passed");
+
+const missingCoverage = validateSubtitleQuality({
+  script,
+  captions,
+  audioDurationMs: 3_000,
+  timingSource: "forced_alignment",
+});
+check(
+  "forced alignment cannot certify a clip without persisted acoustic coverage evidence",
+  missingCoverage.status === "failed" && missingCoverage.code === "missing_speech_coverage",
+);
+
+const productionSpokenTailGap = validateSubtitleQuality({
+  script: "เสียงยังพูดต่อจนเกือบจบคลิป",
+  captions: [{ text: "เสียงยังพูดต่อจนเกือบจบคลิป", startMs: 0, endMs: 61_600 }],
+  audioDurationMs: 71_140,
+  timingSource: "forced_alignment",
+  speechCoverage: { source: "silence_analysis", spokenEndMs: 70_900 },
+});
+check(
+  "production-shaped 9.3s spoken tail gap fails closed",
+  productionSpokenTailGap.status === "failed"
+    && productionSpokenTailGap.code === "speech_coverage_incomplete"
+    && subtitleQualityShouldFailJob(productionSpokenTailGap) === true,
+);
+
+const healthyTrailingSilence = validateSubtitleQuality({
+  script: "เสียงจบแล้วเหลือช่วงเงียบ",
+  captions: [{ text: "เสียงจบแล้วเหลือช่วงเงียบ", startMs: 0, endMs: 61_600 }],
+  audioDurationMs: 71_140,
+  timingSource: "forced_alignment",
+  speechCoverage: { source: "silence_analysis", spokenEndMs: 61_600 },
+});
+check(
+  "proven trailing silence does not look like missing speech",
+  healthyTrailingSilence.status === "passed",
+);
 
 const changedNumber = validateSubtitleQuality({
   script,
   captions: captions.map((caption, index) => index === 1 ? { ...caption, text: "500 บาท" } : caption),
   audioDurationMs: 3_000,
   timingSource: "forced_alignment",
+  speechCoverage: forcedAlignmentCoverage,
 });
 check(
   "changed numbers still flag text_mismatch",
@@ -401,6 +444,7 @@ const lostInternalSpace = validateSubtitleQuality({
   captions: captions.map((caption, index) => index === 1 ? { ...caption, text: "5,000บาท" } : caption),
   audioDurationMs: 3_000,
   timingSource: "forced_alignment",
+  speechCoverage: forcedAlignmentCoverage,
 });
 check(
   "lost spacing inside a displayed card still flags spacing_mismatch",
@@ -416,6 +460,7 @@ const outOfBounds = validateSubtitleQuality({
   captions: captions.map((caption, index) => index === 2 ? { ...caption, endMs: 3_500 } : caption),
   audioDurationMs: 3_000,
   timingSource: "forced_alignment",
+  speechCoverage: forcedAlignmentCoverage,
 });
 check(
   "captions outside the audio timeline fail closed",
@@ -433,6 +478,7 @@ const punctOnly = validateSubtitleQuality({
   ],
   audioDurationMs: 800,
   timingSource: "forced_alignment",
+  speechCoverage: { source: "silence_analysis", spokenEndMs: 700 },
 });
 check(
   "punctuation-only cards do not fail the VideoJob",
@@ -445,6 +491,7 @@ const tooShort = validateSubtitleQuality({
   captions: [{ text: "ครับ", startMs: 0, endMs: 100 }],
   audioDurationMs: 800,
   timingSource: "forced_alignment",
+  speechCoverage: { source: "silence_analysis", spokenEndMs: 100 },
 });
 check(
   "card_too_short does not fail the VideoJob",
@@ -490,6 +537,7 @@ const canonicalQuality = canonicalCaptions
       captions: canonicalCaptions,
       audioDurationMs: 5_000,
       timingSource: "forced_alignment",
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 4_760 },
     })
   : null;
 check(
