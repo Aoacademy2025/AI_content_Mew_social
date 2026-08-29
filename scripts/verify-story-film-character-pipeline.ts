@@ -360,10 +360,34 @@ async function main() {
     });
     const revisedVideoReview = await story.readStoryFilm(mew.id, { projectId: started.project.id });
     assert.equal(revisedVideoReview.kind, "project");
-    const musicStage = await story.decideStoryFilm(mew.id, {
+    const imageMotionFallback = await story.decideStoryFilm(mew.id, {
       projectId: started.project.id,
       expectedStage: "videos",
       expectedRevision: revisedVideoReview.project.revision,
+      decision: "fallback",
+      instruction: "The generated face morphs. Preserve the approved frame and use editorial image motion instead.",
+      target: { sceneKey: "scene-01" },
+      idempotencyKey: "character:video:image-motion-fallback:001",
+    });
+    const fallbackScene = await prisma.storyFilmScene.findFirstOrThrow({
+      where: { projectId: started.project.id, sceneKey: "scene-01" },
+      orderBy: { generationEpoch: "desc" },
+    });
+    ok(
+      imageMotionFallback.stage === "videos"
+        && imageMotionFallback.status === "active"
+        && imageMotionFallback.awaitingApproval
+        && fallbackScene.mediaPlan === "image_with_motion"
+        && (imageMotionFallback.stageData.fallback as { visualMode?: string } | undefined)?.visualMode === "image_with_motion"
+        && await prisma.storyFilmGenerationJob.count({
+          where: { projectId: started.project.id, generationEpoch: imageMotionFallback.generationEpoch },
+        }) === 0,
+      "a morphing AI video can fall back to the approved keyframe plus editorial motion without another provider job",
+    );
+    const musicStage = await story.decideStoryFilm(mew.id, {
+      projectId: started.project.id,
+      expectedStage: "videos",
+      expectedRevision: imageMotionFallback.revision,
       decision: "approve",
       idempotencyKey: "character:videos:approve:001",
     });
