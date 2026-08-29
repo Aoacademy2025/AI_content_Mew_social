@@ -1268,6 +1268,7 @@ export function useV2Project() {
     setMixPresetRaw(nextPreset);
     setLogoOverlayRaw(inherited);
     setBrandSubtitleDefaultRaw(undefined);
+    setLayerVisibilityRaw(normalizeEditorLayerVisibility(nextDraft.layerVisibility));
     setHeadlineHookRaw(undefined);
     setSaveStatus("idle");
     return await createServerProject(nextDraft, {
