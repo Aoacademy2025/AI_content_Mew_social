@@ -399,6 +399,111 @@ async function main() {
   check(blocked.status === "failed", "changed subtitle text is blocked before export");
   check(corruptedRenderCalls === 0, "failed subtitle release gate spends no burn render");
 
+  // Production incident 2026-08-29 23:01 BKK: Editor v2 allowed an inserted
+  // caption card to remain blank, submitted an export job, then reported the
+  // misleading code invalid_timing. The server fallback must identify the exact
+  // card and stop before Burn for clients that do not yet have UI preflight.
+  const blankCaptionExport = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "processing",
+      type: "export",
+      inputJson: JSON.stringify({
+        mode: "export",
+        sourceJobId: protectedSource.id,
+        subtitleOverlayConfig: {
+          videoUrl: "/renders/protected-source.mp4",
+          durationInFrames: 36,
+          keywordPopups: [
+            { text: canonicalScript, start: 0, end: 30 },
+            { text: "", start: 30, end: 36 },
+          ],
+        },
+        editSnapshot: {
+          version: 1,
+          captions: [
+            { text: canonicalScript, startMs: 0, endMs: 1_000, tag: "hook" },
+            { text: "   ", startMs: 1_000, endMs: 1_200, tag: "body" },
+          ],
+        },
+      }),
+    },
+  });
+  let blankCaptionSideEffects = 0;
+  await runOrchestrator(blankCaptionExport.id, user.id, {
+    caller: {
+      post: async <T,>(): Promise<T> => {
+        blankCaptionSideEffects += 1;
+        throw new Error("blank caption must fail before every pipeline POST");
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(): Promise<T> => {
+        blankCaptionSideEffects += 1;
+        throw new Error("blank caption must fail before every pipeline GET");
+      },
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const blankCaptionBlocked = await prisma.videoJob.findUniqueOrThrow({ where: { id: blankCaptionExport.id } });
+  check(blankCaptionBlocked.status === "failed", "blank caption is blocked before export");
+  check(
+    blankCaptionBlocked.errorCode === "subtitle_alignment_empty_caption",
+    `blank caption uses the actionable error code (got ${String(blankCaptionBlocked.errorCode)})`,
+  );
+  check(
+    blankCaptionBlocked.errorMessage?.includes("กล่องซับ #2") === true
+      && blankCaptionBlocked.errorMessage?.includes("พิมพ์ข้อความหรือลบ") === true,
+    "blank caption error identifies the exact card and resolution",
+  );
+  check(blankCaptionSideEffects === 0, "blank caption spends no Burn/Gallery side effect");
+
+  const hiddenSubtitleExport = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "processing",
+      type: "export",
+      inputJson: JSON.stringify({
+        mode: "export",
+        sourceJobId: protectedSource.id,
+        subtitleOverlayConfig: {
+          videoUrl: "/renders/protected-source.mp4",
+          durationInFrames: 30,
+          keywordPopups: [],
+        },
+        editSnapshot: {
+          version: 1,
+          captions: [{ text: "", startMs: 0, endMs: 1_000, tag: "body" }],
+        },
+      }),
+    },
+  });
+  let hiddenSubtitleBurnCalls = 0;
+  await runOrchestrator(hiddenSubtitleExport.id, user.id, {
+    caller: {
+      post: async <T,>(path: string): Promise<T> => {
+        if (path === "/api/videos/render") {
+          hiddenSubtitleBurnCalls += 1;
+          return { jobId: "hidden-subtitle-burn" } as T;
+        }
+        if (path === "/api/videos") return { id: "hidden-subtitle-gallery" } as T;
+        throw new Error(`unexpected POST ${path}`);
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(): Promise<T> => ({
+        progress: 100,
+        stage: "done",
+        videoUrl: "/renders/hidden-subtitle-final.mp4",
+        error: null,
+      } as T),
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const hiddenSubtitleCompleted = await prisma.videoJob.findUniqueOrThrow({ where: { id: hiddenSubtitleExport.id } });
+  check(hiddenSubtitleCompleted.status === "done", "a deliberately hidden subtitle layer may export with draft blank cards");
+  check(hiddenSubtitleBurnCalls === 1, "hidden-subtitle export still performs exactly one free Burn");
+
   // Production incident 2026-08-29: deploy restarted both workers while an Editor v2
   // export was burning subtitles. The RenderJob resumed and finished, but startup
   // recovery failed its parent VideoJob, leaving a valid file outside Gallery and the

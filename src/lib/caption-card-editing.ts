@@ -16,6 +16,27 @@ export type DeleteCaptionCardResult =
   | { ok: true; captions: EditableCaptionCard[]; selected: number }
   | { ok: false; reason: "invalid_index" | "last_caption" };
 
+export type CaptionExportPreflightResult =
+  | { ok: true }
+  | { ok: false; reason: "blank_caption"; index: number };
+
+/**
+ * Empty cards are useful while editing, but a visible empty subtitle cannot be
+ * submitted: the durable export would otherwise fail later in the worker after
+ * the UI has already switched into Rendering. A hidden subtitle layer is an
+ * intentional no-subtitle export and must remain allowed.
+ */
+export function captionExportPreflight(
+  captions: readonly Pick<EditableCaptionCard, "text">[],
+  subtitlesVisible: boolean,
+): CaptionExportPreflightResult {
+  if (!subtitlesVisible) return { ok: true };
+  const index = captions.findIndex((caption) => !caption.text.trim());
+  return index >= 0
+    ? { ok: false, reason: "blank_caption", index }
+    : { ok: true };
+}
+
 /**
  * Add an empty caption without moving any later caption:
  * - inside a card: split its time at the playhead and use the right side;

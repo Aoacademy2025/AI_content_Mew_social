@@ -1200,25 +1200,34 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const overlayPopups = Array.isArray(input.subtitleOverlayConfig.keywordPopups)
         ? input.subtitleOverlayConfig.keywordPopups
         : [];
-      let finalCaptions: OrchCaption[] = input.editSnapshot?.captions?.length
-        ? input.editSnapshot.captions.map((caption, index) => ({
-            ...caption,
-            tag: caption.tag === "hook" || caption.tag === "cta" ? caption.tag : (index === 0 ? "hook" : "body"),
-          }))
-        : overlayPopups.flatMap((candidate, index) => {
-            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
-            const popup = candidate as Record<string, unknown>;
-            const text = typeof popup.text === "string" ? popup.text.trim() : "";
-            const startFrame = Number(popup.start);
-            const endFrame = Number(popup.end);
-            if (!text || !Number.isFinite(startFrame) || !Number.isFinite(endFrame)) return [];
-            return [{
-              text,
-              startMs: Math.round((startFrame / RENDER_FPS) * 1_000),
-              endMs: Math.round((endFrame / RENDER_FPS) * 1_000),
-              tag: index === 0 ? "hook" as const : "body" as const,
-            }];
-          });
+      const subtitlesVisible = overlayPopups.length > 0;
+      let finalCaptions: OrchCaption[];
+      if (!subtitlesVisible) {
+        finalCaptions = preview.captions.map((caption, index) => ({
+          ...caption,
+          tag: caption.tag === "hook" || caption.tag === "cta" ? caption.tag : (index === 0 ? "hook" : "body"),
+        }));
+      } else if (input.editSnapshot?.captions?.length) {
+        finalCaptions = input.editSnapshot.captions.map((caption, index) => ({
+          ...caption,
+          tag: caption.tag === "hook" || caption.tag === "cta" ? caption.tag : (index === 0 ? "hook" : "body"),
+        }));
+      } else {
+        finalCaptions = overlayPopups.flatMap((candidate, index) => {
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return [];
+          const popup = candidate as Record<string, unknown>;
+          const text = typeof popup.text === "string" ? popup.text.trim() : "";
+          const startFrame = Number(popup.start);
+          const endFrame = Number(popup.end);
+          if (!text || !Number.isFinite(startFrame) || !Number.isFinite(endFrame)) return [];
+          return [{
+            text,
+            startMs: Math.round((startFrame / RENDER_FPS) * 1_000),
+            endMs: Math.round((endFrame / RENDER_FPS) * 1_000),
+            tag: index === 0 ? "hook" as const : "body" as const,
+          }];
+        });
+      }
       const canonicalScript = sourceInput?.mode === "upload" || sourceSubtitleQa?.timingSource === "upload_transcription"
         ? finalCaptions.map((caption) => caption.text).join("")
         : preview.fullText?.trim() || sourceInput?.script?.trim() || "";
@@ -1326,9 +1335,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         speechCoverage: exportSpeechCoverage,
       });
       if (subtitleQualityShouldFailJob(exportSubtitleQa)) {
+        const code = exportSubtitleQa.status === "failed" ? exportSubtitleQa.code : "unknown";
+        const message = code === "empty_caption" && exportSubtitleQa.status === "failed"
+          ? `กล่องซับ #${(exportSubtitleQa.captionIndex ?? 0) + 1} ยังไม่มีข้อความ — กรุณาพิมพ์ข้อความหรือลบกล่องซับนี้ก่อนส่งออก`
+          : `ซับไม่ผ่านการตรวจคุณภาพ (${code}) — ระบบหยุดก่อนส่งออก`;
         throw new SubtitleAlignmentFailureError(
-          `ซับไม่ผ่านการตรวจคุณภาพ (${exportSubtitleQa.status === "failed" ? exportSubtitleQa.code : "unknown"}) — ระบบหยุดก่อนส่งออก`,
-          exportSubtitleQa.status === "failed" ? exportSubtitleQa.code : "unknown",
+          message,
+          code,
           sourceInput?.voiceProvider,
         );
       }

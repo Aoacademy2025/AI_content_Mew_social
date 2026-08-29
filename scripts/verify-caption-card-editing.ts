@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import {
+  captionExportPreflight,
   commitCaptionHistory,
   deleteCaptionCard,
   insertCaptionCardAtPlayhead,
@@ -17,6 +18,28 @@ const captions = [
   { text: "สอง", startMs: 1200, endMs: 2400, tag: "body" },
   { text: "สาม", startMs: 3000, endMs: 4000, tag: "cta" },
 ];
+
+assert.deepEqual(
+  captionExportPreflight(captions, true),
+  { ok: true },
+  "non-empty captions are ready to export",
+);
+assert.deepEqual(
+  captionExportPreflight([
+    captions[0],
+    { text: "   ", startMs: 1200, endMs: 1800, tag: "body" },
+    captions[2],
+  ], true),
+  { ok: false, reason: "blank_caption", index: 1 },
+  "visible subtitles fail preflight at the first whitespace-only card",
+);
+assert.deepEqual(
+  captionExportPreflight([
+    { text: "", startMs: 0, endMs: 1200, tag: "body" },
+  ], false),
+  { ok: true },
+  "a deliberately hidden subtitle layer does not block export",
+);
 
 function assertNoOverlap(items: typeof captions) {
   items.forEach((caption, index) => {
@@ -204,6 +227,16 @@ assert.match(desktop, /data-caption-action="delete"/, "desktop exposes Delete ca
 assert.match(mobile, /data-caption-action="add"/, "mobile exposes Add caption");
 assert.match(mobile, /data-caption-action="delete"/, "mobile exposes Delete caption");
 assert.match(timeline, /onRedo/, "Timeline exposes Redo beside Undo");
+assert.match(
+  editorHook,
+  /captionExportPreflight\(captions, effectiveLayerVisibility\.subtitles\)[\s\S]+editCaptionFromTimeline\(captionPreflight\.index\)[\s\S]+กล่องซับ #\$\{captionPreflight\.index \+ 1\}[\s\S]+return;/,
+  "export preflight focuses the first blank visible card and returns",
+);
+const exportPreflightAt = editorHook.indexOf("const captionPreflight = captionExportPreflight");
+const exportSubmissionAt = editorHook.indexOf("const result = await onExportJob");
+assert.ok(exportPreflightAt >= 0, "editor hook contains the export preflight");
+assert.ok(exportSubmissionAt >= 0, "editor hook contains the export submission");
+assert.ok(exportPreflightAt < exportSubmissionAt, "blank-card preflight runs before onExportJob");
 
 // Clicking a Timeline caption is a text-edit intent: pause playback, select the
 // matching left-panel card, reveal its textarea, scroll it into view, and focus.

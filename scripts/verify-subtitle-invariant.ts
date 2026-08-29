@@ -151,6 +151,24 @@ check(
   JSON.stringify(shortMergeQuality),
 );
 
+const blankCardQuality = validateSubtitleQuality({
+  script: "ข้อความเดิมครบ",
+  captions: [
+    { text: "ข้อความเดิมครบ", startMs: 0, endMs: 1_000 },
+    { text: "   ", startMs: 1_000, endMs: 1_200 },
+  ],
+  audioDurationMs: 1_200,
+  timingSource: "forced_alignment",
+  speechCoverage: { source: "silence_analysis", spokenEndMs: 1_000 },
+});
+check(
+  "a blank inserted card has a specific actionable QA code",
+  blankCardQuality.status === "failed"
+    && blankCardQuality.code === "empty_caption"
+    && blankCardQuality.captionIndex === 1,
+  JSON.stringify(blankCardQuality),
+);
+
 // รวม "ใบสุดท้าย" (ไม่มีใบถัดไป) = ไม่มีอะไรเปลี่ยน
 check(
   "merging the last card is an identity",
