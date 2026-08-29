@@ -51,6 +51,7 @@ import { BrandVisualSelector, type BrandVisualPreflightStatus } from "./BrandVis
 import { trackEvent } from "@/lib/client-telemetry";
 import { UpgradeModal } from "@/components/ui/upgrade-modal";
 import { voiceProviderPlanViolation } from "@/lib/render-plan-preflight";
+import { avatarFullDurationViolation } from "@/lib/avatar-duration";
 import {
   cutawayPieceLimit,
   effectiveManualCutawayPieceCount,
@@ -145,6 +146,13 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
     [p.plan],
   );
   const scriptEstSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
+  const fullAvatarDurationWarning = useMemo(
+    () => avatarFullDurationViolation({
+      mode: p.mode === "script" && p.useAvatar ? p.avatarMode : null,
+      durationSec: scriptEstSec,
+    }),
+    [p.avatarMode, p.mode, p.useAvatar, scriptEstSec],
+  );
   const hasUploadDuration = p.mode === "upload" && p.clipDurationSec > 0;
   const displaySec = hasUploadDuration ? p.clipDurationSec : scriptEstSec;
   const displayMin = displaySec > 0 ? minutesFromSeconds(displaySec) : 0;
@@ -916,6 +924,21 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                       { value: "full", label: "ทั้งคลิป" },
                     ]}
                   />
+                  {fullAvatarDurationWarning && (
+                    <div
+                      role="alert"
+                      className="rounded-lg px-3 py-2"
+                      style={{
+                        fontSize: 11.5,
+                        lineHeight: 1.6,
+                        color: "#FBBF24",
+                        background: "rgba(251,191,36,.08)",
+                        border: "1px solid rgba(251,191,36,.22)",
+                      }}
+                    >
+                      {fullAvatarDurationWarning.message} — {fullAvatarDurationWarning.userAction}
+                    </div>
+                  )}
                 </div>
                 {p.avatarMode !== "full" && (
                   <div className="flex items-center gap-3" style={{ fontSize: 11.5, color: color.textSecondary }}>

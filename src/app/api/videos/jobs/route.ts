@@ -9,6 +9,7 @@ import {
 } from "@/lib/mcp/video-job";
 import { minutesFromSeconds } from "@/lib/minute-limits";
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
+import { avatarFullDurationViolation } from "@/lib/avatar-duration";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { decryptKey } from "@/lib/key-crypto";
@@ -472,6 +473,23 @@ export async function POST(req: Request) {
     if (!uploadMode && (!script || script.length > 20000)) {
       return NextResponse.json({ error: "invalid_script", message: "สคริปต์ว่างหรือยาวเกิน 20,000 ตัวอักษร" }, { status: 400 });
     }
+    const estimatedScriptDurationSec = uploadMode ? 0 : estimateClipSecV2(script);
+    const avatarModeRaw = !uploadMode && typeof body.avatarMode === "string" && AVATAR_MODES.has(body.avatarMode)
+      ? body.avatarMode
+      : undefined;
+    const fullAvatarDurationViolation = avatarFullDurationViolation({
+      mode: avatarModeRaw,
+      durationSec: estimatedScriptDurationSec,
+    });
+    if (fullAvatarDurationViolation) {
+      return NextResponse.json({
+        error: fullAvatarDurationViolation.code,
+        message: fullAvatarDurationViolation.message,
+        userAction: fullAvatarDurationViolation.userAction,
+        maxDurationSec: fullAvatarDurationViolation.maxDurationSec,
+        estimatedDurationSec: fullAvatarDurationViolation.durationSec,
+      }, { status: 400 });
+    }
     if (onFirstClipPath && uploadMode) {
       return NextResponse.json(
         { error: "first_clip_script_required", message: "คลิปแรกใช้สคริปต์ ไม่ใช่คลิปที่ถ่ายเอง" },
@@ -498,7 +516,7 @@ export async function POST(req: Request) {
     }
     const serverEstimatedMinutes = uploadMode
       ? (hasConfirmedReceipt ? receiptMinutes : 1)
-      : minutesFromSeconds(estimateClipSecV2(script));
+      : minutesFromSeconds(estimatedScriptDurationSec);
     if (!uploadMode && hasConfirmedReceipt && receiptMinutes !== serverEstimatedMinutes) {
       return NextResponse.json(
         { error: "render_receipt_changed", message: "ประมาณการคลิปเปลี่ยนแล้ว กรุณาตรวจและยืนยันอีกครั้ง" },
@@ -631,7 +649,6 @@ export async function POST(req: Request) {
 
     // Avatar (optional) — same resolver as MCP; layout falls back to the saved preset.
     // upload mode = ไม่มีอวตารตามดีไซน์
-    const avatarModeRaw = !uploadMode && typeof body.avatarMode === "string" && AVATAR_MODES.has(body.avatarMode) ? body.avatarMode : undefined;
     const avatar = resolveAvatarRequest(
       {
         avatarMode: avatarModeRaw as "none" | "full" | "bookend" | "bookend-both" | undefined,
