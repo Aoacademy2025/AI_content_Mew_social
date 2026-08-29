@@ -195,8 +195,9 @@ async function main() {
         && projectCharacterScenes[0].characterDirectives.some((directive) => (
           directive.entityId === placement.STORY_FILM_PROJECT_CHARACTER_ENTITY_ID
         ))
-        && projectCharacterScenes[0].grokPrompt.includes("Supporting creator presence"),
-      "Mew is identity-marked as a sparse supporting B-roll presence instead of replacing every subject",
+        && !projectCharacterScenes[0].grokPrompt.includes("Supporting creator presence")
+        && projectCharacterScenes[0].grokPrompt.match(/Subject: the same real person/gu)?.length === 1,
+      "a selected creator who is already the subject is emitted exactly once instead of duplicated as support",
     );
     ok(
       document.scenes
