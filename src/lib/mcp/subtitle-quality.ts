@@ -34,6 +34,7 @@ export type SubtitleQualityReport =
       code:
         | "empty_script"
         | "empty_captions"
+        | "empty_caption"
         | "text_mismatch"
         | "spacing_mismatch"
         | "unverified_alignment"
@@ -1038,6 +1039,16 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
 
   const renderedText = input.captions.map((caption) => caption.text).join("");
   const textExact = canonicalVisibleText(renderedText) === canonicalVisibleText(script);
+  const emptyCaptionIndex = input.captions.findIndex((caption) => !caption.text.trim());
+  if (emptyCaptionIndex >= 0) {
+    return {
+      status: "failed",
+      timingSource: input.timingSource,
+      textExact,
+      code: "empty_caption",
+      captionIndex: emptyCaptionIndex,
+    };
+  }
   if (!textExact) {
     return { status: "failed", timingSource: input.timingSource, textExact, code: "text_mismatch" };
   }
@@ -1052,10 +1063,9 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
   let previousEnd = -1;
   for (let index = 0; index < input.captions.length; index += 1) {
     const caption = input.captions[index];
-    const text = caption.text.trim();
     const startMs = Number(caption.startMs);
     const endMs = Number(caption.endMs);
-    if (!text || !Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs < 0 || endMs <= startMs) {
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || startMs < 0 || endMs <= startMs) {
       return { status: "failed", timingSource: input.timingSource, textExact, code: "invalid_timing", captionIndex: index };
     }
     if (startMs < previousEnd) {

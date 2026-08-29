@@ -19,6 +19,7 @@ import { loanwordSpans } from "@/lib/thai-loanwords";
 import { trackEvent } from "@/lib/client-telemetry";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import {
+  captionExportPreflight,
   commitCaptionHistory,
   deleteCaptionCard,
   insertCaptionCardAtPlayhead,
@@ -1090,6 +1091,13 @@ export function usePostPhaseEditor(
     ) return;
     if (!job.jobId) {
       setExp({ phase: "error", message: "ไม่พบวิดีโอต้นฉบับ" });
+      return;
+    }
+
+    const captionPreflight = captionExportPreflight(captions, effectiveLayerVisibility.subtitles);
+    if (!captionPreflight.ok) {
+      editCaptionFromTimeline(captionPreflight.index);
+      toast.error(`กล่องซับ #${captionPreflight.index + 1} ยังไม่มีข้อความ — กรุณาพิมพ์ข้อความหรือลบกล่องซับนี้ก่อนส่งออก`);
       return;
     }
 
