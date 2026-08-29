@@ -31,6 +31,7 @@ import {
 } from "@/lib/quota-error";
 import { buildBgmSelectionInput } from "@/lib/bgm-selection";
 import { shouldSendLegacyBrollVisualStyle } from "@/lib/broll-preferences";
+import { avatarFullDurationViolation } from "@/lib/avatar-duration";
 import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
 import {
   effectiveManualCutawayPieceCount,
@@ -362,6 +363,16 @@ export function useV2Job(p: V2Project) {
     }
     if (existingAttempt?.promise) return existingAttempt.promise;
     if (!p.canRunProjectOperation()) return { ok: false, message: PROJECT_OPERATION_BLOCKED_MESSAGE };
+    const fullAvatarDurationViolation = avatarFullDurationViolation({
+      mode: p.mode === "script" && p.useAvatar ? p.avatarMode : null,
+      durationSec: estimateClipSecV2(p.mode === "script" ? p.script : ""),
+    });
+    if (fullAvatarDurationViolation) {
+      return {
+        ok: false,
+        message: `${fullAvatarDurationViolation.message} — ${fullAvatarDurationViolation.userAction}`,
+      };
+    }
     const idempotencyKey = existingAttempt?.idempotencyKey ?? createSubmitIdempotencyKey("create");
     // Disclose-then-charge: send the EXACT affected/new AutoMix AI-image count the
     // Render Receipt showed as a hard server-side ceiling. The server plans with the source families

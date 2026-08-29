@@ -26,6 +26,20 @@ async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { runOrchestrator } = await import("../src/lib/mcp/orchestrator");
   const { parseVideoJobOutput } = await import("../src/lib/mcp/video-job");
+  const { subtitleAlignmentTechnicalRetryDirective } = await import("../src/lib/mcp/subtitle-alignment-retry");
+
+  check(
+    subtitleAlignmentTechnicalRetryDirective("incomplete_alignment", 0)?.nextAttempt === 2,
+    "incomplete technical alignment receives one retry",
+  );
+  check(
+    subtitleAlignmentTechnicalRetryDirective("incomplete_alignment", 1) === null,
+    "technical alignment retry budget is exhausted after one retry",
+  );
+  check(
+    subtitleAlignmentTechnicalRetryDirective("text_mismatch", 0) === null,
+    "content mismatch is excluded from the technical retry policy",
+  );
 
   const user = await prisma.user.create({
     data: {
@@ -122,6 +136,148 @@ async function main() {
   check(geminiOutput?.preview?.fullText === geminiSpeechScript, "Gemini captions use deterministic NarrationPlan display text");
   check(geminiOutput?.preview?.voiceUrl === "/api/renders/gemini-narration-2.wav", "Gemini renders only the acoustically verified retry audio");
   check(geminiCalls.lastIndexOf("/api/videos/transcribe") < geminiCalls.indexOf("/api/videos/render"), "Gemini verifies the retry before render spend");
+
+  // Production 2026-08-29: several jobs succeeded only after a user restarted the
+  // whole job following a transient transcription/alignment failure. Retry the
+  // acoustic substep once while keeping the already-generated narration master.
+  const { PipelineHttpError } = await import("../src/lib/mcp/pipeline-client");
+  const transientScript = "ลอง ระบบ ซับ อีก ครั้ง";
+  const transientJob = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "processing",
+      type: "create",
+      inputJson: JSON.stringify({
+        script: transientScript,
+        previewMode: true,
+        voiceProvider: "gemini",
+      }),
+    },
+  });
+  let transientTtsCalls = 0;
+  let transientTranscribeCalls = 0;
+  const transientTransportRetries: Array<number | undefined> = [];
+  await runOrchestrator(transientJob.id, user.id, {
+    caller: {
+      post: async <T,>(path: string, _body?: unknown, opts?: { retries?: number }): Promise<T> => {
+        if (path === "/api/videos/tts-gemini") {
+          transientTtsCalls += 1;
+          return {
+            voiceUrl: "/api/renders/transient-narration.wav",
+            audioDurationMs: 3_000,
+            timing: {
+              provider: "gemini",
+              segments: [{ text: transientScript, startMs: 0, durationMs: 3_000 }],
+              chars: null,
+            },
+          } as T;
+        }
+        if (path === "/api/videos/transcribe") {
+          transientTranscribeCalls += 1;
+          transientTransportRetries.push(opts?.retries);
+          if (transientTranscribeCalls === 1) {
+            throw new PipelineHttpError("POST", path, 503, {
+              error: "บริการถอดซับไม่พร้อมชั่วคราว",
+              reason: "transcribe_request_failed",
+              provider: "gemini",
+            });
+          }
+          const words = transientScript.split(" ");
+          return {
+            words: words.map((word, index) => ({
+              word,
+              startMs: 100 + index * 520,
+              endMs: 520 + index * 520,
+            })),
+            audioDurationMs: 3_000,
+            speechCoverage: { source: "silence_analysis", spokenEndMs: 2_800 },
+          } as T;
+        }
+        if (path === "/api/videos/extract-keywords") {
+          return { keywords: ["subtitle"], keywordsPerScene: 5, sceneClipCounts: [1], sceneDurations: [3] } as T;
+        }
+        if (path === "/api/videos/fetch-stock") return { results: [{ src: "stock.mp4" }] } as T;
+        if (path === "/api/videos/generate-config") {
+          return { config: { durationInFrames: 90, voiceFile: "/api/renders/transient-narration.wav", bgVideos: [] } } as T;
+        }
+        if (path === "/api/videos/render") return { jobId: "transient-base-render" } as T;
+        throw new Error(`unexpected transient POST ${path}`);
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(path: string): Promise<T> => {
+        if (path.startsWith("/api/videos/render-progress")) {
+          return { progress: 100, stage: "done", videoUrl: "/api/renders/transient-base.mp4", error: null } as T;
+        }
+        throw new Error(`unexpected transient GET ${path}`);
+      },
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const completedTransient = await prisma.videoJob.findUniqueOrThrow({ where: { id: transientJob.id } });
+  check(completedTransient.status === "done", "transient transcribe failure recovers inside the same VideoJob");
+  check(transientTranscribeCalls === 2, "transient alignment retries exactly once");
+  check(transientTtsCalls === 1, "technical alignment retry reuses the existing narration master");
+  check(
+    transientTransportRetries.length === 2 && transientTransportRetries.every((retries) => retries === 0),
+    "orchestrator owns the explicit alignment retry budget without hidden HTTP retries",
+  );
+
+  const exhaustedScript = "ระบบ ซับ ยัง ไม่ พร้อม";
+  const exhaustedJob = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "processing",
+      type: "create",
+      inputJson: JSON.stringify({
+        script: exhaustedScript,
+        previewMode: true,
+        voiceProvider: "gemini",
+      }),
+    },
+  });
+  let exhaustedTtsCalls = 0;
+  let exhaustedTranscribeCalls = 0;
+  let exhaustedRenderCalls = 0;
+  await runOrchestrator(exhaustedJob.id, user.id, {
+    caller: {
+      post: async <T,>(path: string): Promise<T> => {
+        if (path === "/api/videos/tts-gemini") {
+          exhaustedTtsCalls += 1;
+          return {
+            voiceUrl: "/api/renders/exhausted-narration.wav",
+            audioDurationMs: 3_000,
+            timing: {
+              provider: "gemini",
+              segments: [{ text: exhaustedScript, startMs: 0, durationMs: 3_000 }],
+              chars: null,
+            },
+          } as T;
+        }
+        if (path === "/api/videos/transcribe") {
+          exhaustedTranscribeCalls += 1;
+          throw new PipelineHttpError("POST", path, 503, {
+            error: "บริการถอดซับไม่พร้อมชั่วคราว",
+            reason: "transcribe_request_failed",
+            provider: "gemini",
+          });
+        }
+        if (path === "/api/videos/render") exhaustedRenderCalls += 1;
+        throw new Error(`unexpected exhausted POST ${path}`);
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(path: string): Promise<T> => {
+        throw new Error(`unexpected exhausted GET ${path}`);
+      },
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const failedExhausted = await prisma.videoJob.findUniqueOrThrow({ where: { id: exhaustedJob.id } });
+  check(failedExhausted.status === "failed", "alignment failure remains fail-closed after retry exhaustion");
+  check(exhaustedTranscribeCalls === 2, "exhausted technical alignment attempts stop at two total calls");
+  check(exhaustedTtsCalls === 1, "retry exhaustion never regenerates narration for a technical failure");
+  check(exhaustedRenderCalls === 0, "retry exhaustion stops before render spend");
 
   const elevenScript = "เก็บเงิน\n5,000\u200Bบาท ทุกเดือน.....";
   const elevenSpeechScript = "เก็บเงิน 5,000 บาท ทุกเดือน...";

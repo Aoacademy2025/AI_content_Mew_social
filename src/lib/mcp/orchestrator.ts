@@ -11,6 +11,7 @@ import {
   refundVideoJobTerminalRenderReservations,
 } from "@/lib/render/reservation-settlement";
 import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
+import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
 import {
   setJobStep,
   finishJob,
@@ -83,7 +84,8 @@ import { normalizeTrustedLogoRenderInput } from "@/lib/logo-export.server";
 import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
-import { avatarBookendDurationViolation } from "@/lib/avatar-duration";
+import { avatarBookendDurationViolation, avatarFullDurationViolation } from "@/lib/avatar-duration";
+import { subtitleAlignmentTechnicalRetryDirective } from "@/lib/mcp/subtitle-alignment-retry";
 import { minutesFromSeconds } from "@/lib/minute-limits";
 import { reconcileVideoJobFunding } from "@/lib/mcp/video-job-funding";
 import { resolveJobTtsProvider } from "@/lib/tts-providers";
@@ -689,6 +691,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       }
     }
     const narrationText = narrationPlan?.speechText ?? (typeof input.script === "string" ? input.script.trim() : "");
+    const estimatedFullAvatarViolation = avatarFullDurationViolation({
+      mode: input.avatarMode,
+      durationSec: estimateClipSecV2(narrationText),
+    });
+    if (estimatedFullAvatarViolation) {
+      throw new Error(`${estimatedFullAvatarViolation.message} — ${estimatedFullAvatarViolation.userAction}`);
+    }
     const user = (await prisma.user.findUnique({ where: { id: userId } })) as User;
     const requestedProvider = resolveJobTtsProvider(input.voiceProvider, user.ttsProvider);
     if (requestedProvider === "omnivoice" && !isOmniVoiceUserAllowed(user)) {
@@ -1763,6 +1772,17 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         throw new Error(`${durationViolation.message} — ${durationViolation.userAction}`);
       }
 
+      // The calibrated script estimate rejects known-unsupported requests before
+      // TTS. This exact post-TTS backstop catches estimator undershoot before any
+      // caption, stock, render, or HeyGen spend begins.
+      const fullAvatarDurationViolation = avatarFullDurationViolation({
+        mode: input.avatarMode,
+        durationSec: candidateDurationMs / 1_000,
+      });
+      if (fullAvatarDurationViolation) {
+        throw new Error(`${fullAvatarDurationViolation.message} — ${fullAvatarDurationViolation.userAction}`);
+      }
+
       // Web parity + provider-spend guard: a split intro/outro must leave a real
       // middle interval. Stop immediately after exact TTS duration, before keyword
       // LLM, stock downloads, base render, or either HeyGen generation.
@@ -1798,7 +1818,6 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       "text_mismatch",
       "numeric_claim_mismatch",
       "numeric_context_mismatch",
-      "incomplete_alignment",
       "implausible_timing_density",
       "overlapping_timing",
       "canonical_caption_projection_failed",
@@ -1827,68 +1846,102 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // Gemini voice from the generated audio itself even when provider timing is present.
         // ElevenLabs keeps its provider alignment, but uses this path when that alignment is
         // missing or unusable. The TTS voice is authoritative (never the HeyGen mp4).
-        try {
-          const aligned = await caller.post<{
-            captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
-            words?: Array<{ word: string; startMs: number; endMs: number }>;
-            audioDurationMs?: number;
-            speechCoverage?: SubtitleSpeechCoverage;
-          }>("/api/videos/transcribe", {
-            audioUrl: tts.voiceUrl,
-            scriptPrompt: narrationText.slice(0, 800),
-            script: narrationText,
-          });
-          const recoveredFullText = narrationText;
-          const recoveredAlignment = alignTranscriptWordsToSourceDetailed(
-            recoveredFullText,
-            aligned.words ?? [],
-          );
-          if (recoveredAlignment.status === "failed") {
-            alignmentRecoveryFailureCode = recoveredAlignment.code;
-          }
-          const recoveredWords = recoveredAlignment.status === "aligned"
-            ? recoveredAlignment.words
-            : null;
-          const canonicalCaptions = recoveredWords
-            ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
-            : null;
-          if (recoveredWords && canonicalCaptions) {
-            alignmentRecoveryFailureCode = null;
-            subtitleTimingSource = "forced_alignment";
-            subtitleSpeechCoverage = aligned.speechCoverage;
-            capRes = {
-              // Reuse only proven word timestamps and take every visible character
-              // from the literal TTS source. An incomplete word alignment is never
-              // promoted to forced_alignment evidence.
-              captions: canonicalCaptions,
-              words: recoveredWords,
-              audioDurationMs: Number(aligned.audioDurationMs) > 0
-                ? Math.round(Number(aligned.audioDurationMs))
-                : audioDurationMs,
-              fullText: recoveredFullText,
-            };
-            if (recoveredAlignment.status === "aligned" && recoveredAlignment.method === "fuzzy") {
-              emitTelemetry({
-                name: "subtitle_alignment_fuzzy_recovered",
-                category: "pipeline",
-                source: "server",
-                step: "captions",
-                status: "done",
-                properties: {
-                  pipelineRunId,
-                  jobId,
-                  via: "mcp",
-                  provider,
-                  similarityPermille: Math.round(recoveredAlignment.similarity * 1_000),
-                },
-              });
+        let completedAlignmentRetries = 0;
+        while (true) {
+          alignmentRecoveryFailureCode = null;
+          try {
+            const aligned = await caller.post<{
+              captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
+              words?: Array<{ word: string; startMs: number; endMs: number }>;
+              audioDurationMs?: number;
+              speechCoverage?: SubtitleSpeechCoverage;
+            }>("/api/videos/transcribe", {
+              audioUrl: tts.voiceUrl,
+              scriptPrompt: narrationText.slice(0, 800),
+              script: narrationText,
+            }, { retries: 0 });
+            const recoveredFullText = narrationText;
+            const recoveredAlignment = alignTranscriptWordsToSourceDetailed(
+              recoveredFullText,
+              aligned.words ?? [],
+            );
+            if (recoveredAlignment.status === "failed") {
+              alignmentRecoveryFailureCode = recoveredAlignment.code;
             }
-          } else if (recoveredWords) {
-            alignmentRecoveryFailureCode = "canonical_caption_projection_failed";
+            const recoveredWords = recoveredAlignment.status === "aligned"
+              ? recoveredAlignment.words
+              : null;
+            const canonicalCaptions = recoveredWords
+              ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
+              : null;
+            if (recoveredWords && canonicalCaptions) {
+              alignmentRecoveryFailureCode = null;
+              subtitleTimingSource = "forced_alignment";
+              subtitleSpeechCoverage = aligned.speechCoverage;
+              capRes = {
+                // Reuse only proven word timestamps and take every visible character
+                // from the literal TTS source. An incomplete word alignment is never
+                // promoted to forced_alignment evidence.
+                captions: canonicalCaptions,
+                words: recoveredWords,
+                audioDurationMs: Number(aligned.audioDurationMs) > 0
+                  ? Math.round(Number(aligned.audioDurationMs))
+                  : audioDurationMs,
+                fullText: recoveredFullText,
+              };
+              if (recoveredAlignment.status === "aligned" && recoveredAlignment.method === "fuzzy") {
+                emitTelemetry({
+                  name: "subtitle_alignment_fuzzy_recovered",
+                  category: "pipeline",
+                  source: "server",
+                  step: "captions",
+                  status: "done",
+                  properties: {
+                    pipelineRunId,
+                    jobId,
+                    via: "mcp",
+                    provider,
+                    similarityPermille: Math.round(recoveredAlignment.similarity * 1_000),
+                  },
+                });
+              }
+            } else if (recoveredWords) {
+              alignmentRecoveryFailureCode = "canonical_caption_projection_failed";
+            }
+          } catch (error) {
+            alignmentRecoveryFailureCode = pipelineFailureDetails(error)?.code ?? "transcribe_request_failed";
+            /* The release gate below rejects estimated timing if acoustic recovery fails. */
           }
-        } catch (error) {
-          alignmentRecoveryFailureCode = pipelineFailureDetails(error)?.code ?? "transcribe_request_failed";
-          /* The release gate below rejects estimated timing if acoustic recovery fails. */
+
+          if (subtitleTimingSource === "forced_alignment") break;
+          const retry = subtitleAlignmentTechnicalRetryDirective(
+            alignmentRecoveryFailureCode,
+            completedAlignmentRetries,
+          );
+          if (!retry) break;
+
+          const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
+          if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
+          if (current?.status !== "processing") throw new Error("video_job_not_processing");
+          emitTelemetry({
+            name: "subtitle_alignment_technical_retry_scheduled",
+            category: "performance",
+            source: "server",
+            step: "captions",
+            status: alignmentRecoveryFailureCode ?? "unknown",
+            properties: {
+              pipelineRunId,
+              jobId,
+              via: "mcp",
+              provider,
+              nextAttempt: retry.nextAttempt,
+            },
+          });
+          console.warn(
+            `[mcp-worker] job ${jobId} subtitle alignment ${alignmentRecoveryFailureCode}; retrying transcription once`,
+          );
+          completedAlignmentRetries += 1;
+          await sleep(retry.delayMs);
         }
       }
 

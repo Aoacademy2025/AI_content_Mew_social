@@ -27,6 +27,8 @@ import { pipelineCaller } from "@/lib/mcp/pipeline-client";
 import { getVideoOptions } from "@/lib/mcp/video-options";
 import { assertRenderEnqueueOpen, RenderDeployDrainError, RENDER_MAINTENANCE_CUSTOMER_MESSAGE } from "@/lib/render-deploy-drain";
 import { createVideoJobInputShape } from "@/lib/mcp/create-video-input";
+import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
+import { avatarFullDurationViolation } from "@/lib/avatar-duration";
 
 export const runtime = "nodejs";
 
@@ -136,6 +138,19 @@ const handler = createMcpHandler(
               return { error: "render_maintenance", retryable: true, message: RENDER_MAINTENANCE_CUSTOMER_MESSAGE };
             }
             throw error;
+          }
+          const fullAvatarDurationViolation = avatarFullDurationViolation({
+            mode: args.avatarMode,
+            durationSec: estimateClipSecV2(args.script),
+          });
+          if (fullAvatarDurationViolation) {
+            return {
+              error: fullAvatarDurationViolation.code,
+              message: fullAvatarDurationViolation.message,
+              userAction: fullAvatarDurationViolation.userAction,
+              maxDurationSec: fullAvatarDurationViolation.maxDurationSec,
+              estimatedDurationSec: fullAvatarDurationViolation.durationSec,
+            };
           }
           const useEleven = args.voiceProvider === "elevenlabs" || (!args.voiceProvider && u.ttsProvider === "elevenlabs");
           // Same plan gate the web create path runs (#301) — refuse before the job row

@@ -88,7 +88,7 @@ export function buildSetupGuide(keys: { gemini: boolean; pexels: boolean; pixaba
 export const SERVER_INSTRUCTIONS = `HERO AI (studio.heroaiengine.com) เปลี่ยน "สคริปต์" เป็นวิดีโอสั้นอัตโนมัติ: เสียงพากย์ + b-roll เปลี่ยนทุก 3–5 วิ + ซับไทยตรงเสียง. ใช้ได้เฉพาะแผน PRO/BUSINESS.
 
 ทำได้ผ่านแชทตอนนี้: สร้างวิดีโอจากสคริปต์ (เสียง + b-roll + ซับไทย + avatar พิธีกร AI ถ้าต้องการ), เช็คสถานะ, ดาวน์โหลด.
-avatar (HeyGen): avatarMode = "bookend" (เปิดอย่างเดียว=หัว) / "bookend-both" (เปิด-ปิด=หัว+ท้าย) / "full" (ทั้งคลิป). ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO) — แนะนำ bookend/bookend-both (ประหยัด), full แพง. ต้องมี HeyGen key + avatarId. bookend/bookend-both ต้องระบุ avatarIntroSecs/avatarTailSecs (default 5 วิ). ไม่ใส่ avatarMode = วิดีโอเสียง+b-roll ปกติ.
+avatar (HeyGen): avatarMode = "bookend" (เปิดอย่างเดียว=หัว) / "bookend-both" (เปิด-ปิด=หัว+ท้าย) / "full" (ทั้งคลิป). ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO) — แนะนำ bookend/bookend-both (ประหยัด); full รองรับคลิปไม่เกิน 5 นาทีและแพงกว่า. คลิปยาวกว่า 5 นาทีให้ใช้ bookend/bookend-both. ต้องมี HeyGen key + avatarId. bookend/bookend-both ต้องระบุ avatarIntroSecs/avatarTailSecs (default 5 วิ). ไม่ใส่ avatarMode = วิดีโอเสียง+b-roll ปกติ.
 
 ${process.env.MANAGED_GEMINI === "1"
   ? `ระบบจัดการ Gemini ให้ — ใส่เฉพาะ Pexels/Pixabay (อย่างน้อย 1 สำหรับ B-roll); ElevenLabs เฉพาะถ้าจะโคลนเสียง. ตั้งที่ ${SETTINGS_URL} แท็บ API Keys.
@@ -116,7 +116,7 @@ ${process.env.MANAGED_GEMINI === "1"
 5) avatar (พิธีกร AI): ⚠️ avatar เจนผ่าน HeyGen API คิดเงินตามจำนวนวินาที (ไม่ฟรีแม้แผน PRO — แพลนครอบแค่ render ปกติ) ต้องอธิบายให้ผู้ใช้เข้าใจก่อนเลือก แล้วเสนอ:
    - "เปิดอย่างเดียว" (avatar โผล่ช่วงต้นคลิป) = avatarMode "bookend" — ✅ แนะนำ ประหยัด
    - "เปิด-ปิด" (avatar ต้น+ท้าย) = avatarMode "bookend-both" — ✅ แนะนำ ประหยัด
-   - "Full" (avatar ทั้งคลิป) = avatarMode "full" — ได้ แต่แพง (จ่ายตามความยาวคลิปเต็ม)
+   - "Full" (avatar ทั้งคลิป) = avatarMode "full" — รองรับไม่เกิน 5 นาทีและแพง (จ่ายตามความยาวคลิปเต็ม); ถ้ายาวกว่านี้ให้เลือก bookend
    - ไม่เอา = ไม่ใส่ avatarMode
    ถ้าเอา avatar เสนอตัว avatar จาก get_video_options. ⚠️ ถ้าเลือก "เปิดอย่างเดียว"/"เปิด-ปิด" ต้องถามเสมอว่า "ใช้ avatar กี่วินาที?" → ใส่ avatarIntroSecs (และ avatarTailSecs ถ้าเปิด-ปิด); ถ้าผู้ใช้ไม่ระบุ ใช้ default 5 วินาที. ("Full" ไม่ต้องถามวินาที — ตามทั้งคลิป). จะปรับขนาดก็ใส่ avatarScale (default 1 = พอดีเฟรม).
 สรุปยืนยัน (บอกชัดว่าจะส่งอะไรจริง: เสียง/เพลง/ซับ/avatar+วินาที) แล้วเรียก create_video_job. จากนั้น poll get_video_status เป็นจังหวะ (ทุก ~60–90 วิ; มี avatar ทุก ~2 นาที; ห้ามถี่ทุกไม่กี่วิ) รายงานความคืบหน้า; ถ้า status=failed อธิบาย errorMessage แล้วเสนอสร้างใหม่; เสร็จแล้ว report ลิงก์ดาวน์โหลด.
