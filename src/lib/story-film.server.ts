@@ -708,6 +708,9 @@ export async function decideStoryFilm(
     if (realignCaptions && (!project.narrationMasterUrl || !project.narrationDurationMs)) {
       throw new StoryFilmError("decision_not_allowed", "โปรเจกต์นี้ไม่มี Narration Master สำหรับ align ซับใหม่", currentView);
     }
+    const videoImageFallback = input.decision === "fallback"
+      && project.stage === "videos"
+      && revisionScene !== null;
 
     let nextStage: StoryFilmStage = project.stage;
     let nextStatus = project.status;
@@ -974,7 +977,24 @@ export async function decideStoryFilm(
               : JSON.stringify({ gate: advanced, waitingForGeneration: true });
         }
       } else {
-        if (["final_render", "completed"].includes(project.stage)) {
+        if (videoImageFallback && revisionScene) {
+          const priorStageData = parseStageData(project.stageDataJson);
+          nextStatus = "active";
+          awaitingApproval = true;
+          stageDataJson = JSON.stringify({
+            ...priorStageData,
+            gate: "videos",
+            waitingForGeneration: false,
+            requestedDecision: "fallback",
+            instruction,
+            fallback: {
+              sceneKey: revisionScene.sceneKey,
+              visualMode: "image_with_motion",
+              reason: instruction,
+            },
+            target: input.target ?? null,
+          });
+        } else if (["final_render", "completed"].includes(project.stage)) {
           const priorStageData = parseStageData(project.stageDataJson);
           const priorFinalRenderJob = project.stage === "completed" && priorStageData.editorial === undefined
             ? await tx.storyFilmGenerationJob.findFirst({
@@ -1062,6 +1082,12 @@ export async function decideStoryFilm(
         "มีการตัดสินใจอื่นบันทึกก่อนแล้ว กรุณาเปิด review ล่าสุด",
         latest ? toView(latest) : undefined,
       );
+    }
+    if (videoImageFallback && revisionScene) {
+      await tx.storyFilmScene.update({
+        where: { id: revisionScene.id },
+        data: { mediaPlan: "image_with_motion" },
+      });
     }
     if (input.decision === "approve" && nextStage === "storyboard") {
       await tx.storyFilmGenerationJob.create({
@@ -1457,7 +1483,7 @@ export async function decideStoryFilm(
         },
       });
     }
-    if (isRevisionDecision && project.stage === "videos" && revisionScene) {
+    if (isRevisionDecision && project.stage === "videos" && revisionScene && !videoImageFallback) {
       const source = await tx.storyFilmArtifact.findFirst({
         where: {
           projectId: project.id,
