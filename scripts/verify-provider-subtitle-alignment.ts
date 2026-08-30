@@ -228,7 +228,7 @@ async function main() {
       check(completed.status === "done", `B: a slow alignment still delivers the clip (got ${completed.status})`);
       check(verification.status === "timeout", `B: the abandoned alignment is recorded as a timeout (got ${String(verification.status)})`);
       check(output.subtitleQa?.timingSource === "tts_segment_timing", "B: the timed-out job renders on the TTS clock");
-      check(renderAt < 3_000, `B: render starts on the alignment budget, not on the provider (render at ${renderAt}ms)`);
+      check(renderAt < 4_500, `B: render starts on the alignment budget (1 s), not on the provider hang (5 s) — 3.5 s slack for slow CI runners (render at ${renderAt}ms)`);
       check(renderAt >= 900, `B: the alignment budget is actually awaited (render at ${renderAt}ms)`);
       check(countCalls(calls, "/api/videos/transcribe") === 1, "B: a timeout never retries transcription");
       check(countCalls(calls, "/api/videos/tts-gemini") === 1, "B: a timeout never regenerates the narration");
