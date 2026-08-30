@@ -44,7 +44,12 @@ function restartRequeueCount(errorMessage: string | null): number {
 // can never double-charge clip quota or HeyGen.
 const SAFE_TO_REQUEUE_STEPS = new Set(["tts", "captions", "keywords", "stock", "config"]);
 
-function withVideoJobSqliteRetry<T>(scope: string, operation: () => Promise<T>): Promise<T> {
+/**
+ * Shared transient-SQLite retry for every VideoJob read/write, exported so sibling modules
+ * (e.g. the stall watchdog) get the same P1008/P2028 handling instead of duplicating it.
+ * `scope` is only the log prefix.
+ */
+export function withVideoJobSqliteRetry<T>(scope: string, operation: () => Promise<T>): Promise<T> {
   return withTransientSqliteRetry(operation, {
     onRetry: ({ attempt, delayMs, error }) => {
       const code = error && typeof error === "object" && "code" in error
@@ -168,15 +173,24 @@ export async function claimNextQueuedJob() {
  * priority so a completed external job does not sit behind newly-created work.
  *
  * A provider wait is runnable when its poll time has come — or when it has NO poll time at
- * all. The latter is a broken row (parked without a next poll): a `lte` filter can never
- * match NULL, so such a job would sit in waiting_provider forever with no worker ever
- * looking at it. Treat it as due now. SQLite orders NULLs first on ASC, so these
- * never-scheduled rows are picked up ahead of scheduled ones.
+ * all AND still carries a provider checkpoint. A `lte` filter can never match NULL, so a
+ * never-scheduled row would otherwise sit in waiting_provider forever with no worker ever
+ * looking at it. SQLite orders NULLs first on ASC, so these rows are picked up ahead of
+ * scheduled ones.
  */
 export async function claimNextRunnableJob(now: Date = new Date()) {
   const runnableWait: Prisma.VideoJobWhereInput = {
     status: "waiting_provider",
-    OR: [{ providerNextPollAt: { lte: now } }, { providerNextPollAt: null }],
+    OR: [
+      { providerNextPollAt: { lte: now } },
+      // NULL poll = never scheduled. Only claim it when a provider checkpoint exists, because
+      // that checkpoint is what lets the orchestrator RESUME the external job. Without one,
+      // runOrchestrator would replay the whole pipeline from the top — re-running TTS, the
+      // render and the HeyGen call, and charging the customer's provider account a second
+      // time. No current writer produces a checkpoint-less waiting_provider row; leaving such
+      // a row inert (status quo) is strictly safer than replaying it.
+      { providerNextPollAt: null, providerCheckpointJson: { not: null } },
+    ],
   };
   const due = await prisma.videoJob.findFirst({
     where: runnableWait,

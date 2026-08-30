@@ -19,6 +19,9 @@ execSync("npx prisma db push --skip-generate", { stdio: "inherit", env: process.
 // message is a deliberate test edit, never an accidental silent rewording.
 const EXPECTED_MESSAGE =
   "งานหยุดตอบสนองนานเกิน 45 นาที (job_stalled) — ระบบยกเลิกและคืนโควต้าให้แล้ว กรุณาลองใหม่";
+// A composite-bound step gets the longer 90-minute deadline, and the copy must say so.
+const EXPECTED_COMPOSITE_MESSAGE =
+  "งานหยุดตอบสนองนานเกิน 90 นาที (job_stalled) — ระบบยกเลิกและคืนโควต้าให้แล้ว กรุณาลองใหม่";
 
 let failures = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -31,6 +34,15 @@ async function main() {
   const { prisma } = await import("../src/lib/prisma");
 
   ok(watchdog.VIDEO_JOB_STALE_MS === 45 * 60_000, "VIDEO_JOB_STALE_MS defaults to 45 minutes");
+  // Per-step deadline. The three non-checkpointed /api/heygen/composite POSTs in
+  // orchestrator.ts park the row at "composite" (:1089, :1700) or "avatar" (:1110); the
+  // composite route writes "composite_queue" for callers that pass videoJobId.
+  ok(watchdog.staleMsForStep("tts") === 45 * 60_000, "ordinary step keeps the 45-minute deadline");
+  ok(watchdog.staleMsForStep(null) === 45 * 60_000, "unknown/null step keeps the 45-minute deadline");
+  ok(watchdog.staleMsForStep("composite") === 90 * 60_000, "composite step gets the 90-minute deadline");
+  ok(watchdog.staleMsForStep("composite_queue") === 90 * 60_000, "composite_queue gets the 90-minute deadline");
+  ok(watchdog.staleMsForStep("avatar") === 90 * 60_000, "avatar composite step gets the 90-minute deadline");
+
 
   const now = new Date("2026-08-30T12:00:00.000Z");
   const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000);
@@ -106,10 +118,47 @@ async function main() {
     },
   });
 
+  // F) waiting_provider, NULL poll, NO checkpoint → nothing to resume from, must stay inert
+  const jobNoCheckpoint = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      inputJson: "{}",
+      status: "waiting_provider",
+      currentStep: "avatar",
+      providerCheckpointJson: null,
+      providerNextPollAt: null,
+      updatedAt: minutesAgo(60),
+    },
+  });
+
+  // G) blocking composite at −50 min → still inside its 90-minute deadline
+  const jobComposite = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      inputJson: "{}",
+      status: "processing",
+      currentStep: "composite",
+      updatedAt: minutesAgo(50),
+    },
+  });
+
+  // H) blocking composite at −100 min → past even the 90-minute deadline
+  const jobCompositeDead = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      inputJson: "{}",
+      status: "processing",
+      currentStep: "composite",
+      updatedAt: minutesAgo(100),
+    },
+  });
+
   const first = await watchdog.sweepStalledVideoJobs(now);
   ok(
-    first.failed.length === 1 && first.failed[0] === jobA.id,
-    `sweep fails exactly the stalled job (got ${JSON.stringify(first.failed)})`,
+    first.failed.length === 2
+      && first.failed.includes(jobA.id)
+      && first.failed.includes(jobCompositeDead.id),
+    `sweep fails exactly the two stalled jobs (got ${JSON.stringify(first.failed)})`,
   );
   ok(
     first.repairedPoll.length === 1 && first.repairedPoll[0] === jobC.id,
@@ -130,11 +179,14 @@ async function main() {
 
   // telemetry
   const events = await prisma.telemetryEvent.findMany({ where: { name: "video_job_stalled" } });
-  ok(events.length === 1, `telemetry: one video_job_stalled event (got ${events.length})`);
-  ok(events[0]?.category === "error", "telemetry: category error");
-  ok(events[0]?.source === "server", "telemetry: source server");
-  ok(events[0]?.step === "tts", `telemetry: step is the stalled step (got ${events[0]?.step})`);
-  ok(events[0]?.userId === user.id, "telemetry: attributed to the job owner");
+  ok(events.length === 2, `telemetry: one video_job_stalled event per failed job (got ${events.length})`);
+  const eventA = events.find((e) => e.step === "tts");
+  ok(eventA != null, "telemetry: event recorded for the stalled tts job");
+  ok(eventA?.category === "error", "telemetry: category error");
+  ok(eventA?.source === "server", "telemetry: source server");
+  ok(eventA?.userId === user.id, "telemetry: attributed to the job owner");
+  const eventComposite = events.find((e) => e.step === "composite");
+  ok(eventComposite != null, "telemetry: event recorded for the stalled composite job");
 
   // B, D, E untouched
   const afterB = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobB.id } });
@@ -146,6 +198,30 @@ async function main() {
   const afterE = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobE.id } });
   ok(afterE.status === "queued", "E) 3h-old queued job stays queued (backlog, not a stall)");
   ok(afterE.updatedAt.getTime() === minutesAgo(180).getTime(), "E) row not rewritten");
+
+  // G) live composite must survive: this is the false-positive kill the deadline exists for
+  const afterComposite = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobComposite.id } });
+  ok(afterComposite.status === "processing", "G) composite at −50 min untouched (inside the 90-min deadline)");
+  ok(afterComposite.updatedAt.getTime() === minutesAgo(50).getTime(), "G) row not rewritten");
+
+  // H) abandoned composite past 90 min, with copy that quotes ITS deadline, not 45
+  const afterCompositeDead = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobCompositeDead.id } });
+  ok(afterCompositeDead.status === "failed", "H) composite at −100 min → failed");
+  ok(afterCompositeDead.errorCode === "job_stalled", "H) errorCode is job_stalled");
+  ok(
+    afterCompositeDead.errorMessage === EXPECTED_COMPOSITE_MESSAGE,
+    `H) copy quotes the 90-minute deadline (got ${afterCompositeDead.errorMessage})`,
+  );
+  ok(afterCompositeDead.reservationRefundPending === true, "H) reservationRefundPending set");
+
+  // F) checkpoint-less provider wait: not repaired, poll time still NULL
+  const afterNoCheckpoint = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobNoCheckpoint.id } });
+  ok(afterNoCheckpoint.providerNextPollAt === null, "F) checkpoint-less provider wait is NOT repaired");
+  ok(afterNoCheckpoint.status === "waiting_provider", "F) checkpoint-less provider wait left inert");
+  ok(
+    !first.repairedPoll.includes(jobNoCheckpoint.id),
+    "F) checkpoint-less row is not reported as repaired",
+  );
 
   // C repaired, status untouched
   const afterC = await prisma.videoJob.findUniqueOrThrow({ where: { id: jobC.id } });
@@ -161,25 +237,50 @@ async function main() {
     `second sweep repairs nothing (got ${JSON.stringify(second.repairedPoll)})`,
   );
   const eventsAfter = await prisma.telemetryEvent.count({ where: { name: "video_job_stalled" } });
-  ok(eventsAfter === 1, "idempotent sweep does not re-emit telemetry");
+  ok(eventsAfter === 2, "idempotent sweep does not re-emit telemetry");
 
-  // claim change: a waiting_provider row with a NULL next poll must be claimable, so a
-  // repaired-or-not row can never sit outside every claim query.
+  // claim change: a NULL-poll provider wait is claimable ONLY with a checkpoint to resume
+  // from. Without one, runOrchestrator would replay TTS/render/HeyGen and bill the provider
+  // twice, so such a row must stay inert. `bare` is created first, so it would win the
+  // createdAt-asc ordering if it were claimable at all.
   await prisma.videoJob.deleteMany({});
-  const jobF = await prisma.videoJob.create({
+  const bare = await prisma.videoJob.create({
     data: {
       userId: user.id,
       inputJson: "{}",
       status: "waiting_provider",
       currentStep: "avatar",
+      providerCheckpointJson: null,
       providerNextPollAt: null,
     },
   });
+  const resumable = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      inputJson: "{}",
+      status: "waiting_provider",
+      currentStep: "avatar",
+      providerCheckpointJson: JSON.stringify({ v: 1, phase: "intro_wait" }),
+      providerNextPollAt: null,
+    },
+  });
+  // Claim BEFORE sweeping, so this exercises the NULL-poll branch itself rather than the
+  // `lte` branch on an already-repaired row.
   const claimed = await claimNextRunnableJob(now);
-  ok(claimed?.id === jobF.id, "claimNextRunnableJob claims a NULL-poll provider wait");
+  ok(claimed?.id === resumable.id, "claimNextRunnableJob claims a NULL-poll wait WITH a checkpoint");
   ok(claimed?.status === "processing", "claimed NULL-poll job moves to processing");
   const claimedTwice = await claimNextRunnableJob(now);
-  ok(claimedTwice === null, "the NULL-poll job cannot be double-claimed");
+  ok(claimedTwice === null, "a checkpoint-less NULL-poll wait is never claimed");
+  const bareAfterClaim = await prisma.videoJob.findUniqueOrThrow({ where: { id: bare.id } });
+  ok(bareAfterClaim.status === "waiting_provider", "checkpoint-less wait stays parked, never replayed");
+
+  const third = await watchdog.sweepStalledVideoJobs(now);
+  ok(
+    third.repairedPoll.length === 0,
+    `sweep never schedules a checkpoint-less provider wait (got ${JSON.stringify(third.repairedPoll)})`,
+  );
+  const bareAfterSweep = await prisma.videoJob.findUniqueOrThrow({ where: { id: bare.id } });
+  ok(bareAfterSweep.providerNextPollAt === null, "checkpoint-less wait keeps a NULL poll time");
 
   // wiring: the sweep only protects customers if the worker actually runs it and CI guards it.
   const workerSrc = readFileSync("scripts/mcp-video-worker.ts", "utf8");
