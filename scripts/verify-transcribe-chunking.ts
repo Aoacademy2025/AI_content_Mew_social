@@ -9,8 +9,15 @@ import assert from "node:assert/strict";
 import {
   TRANSCRIBE_CHUNK_MAX_MS,
   offsetChunkWordsToSourceTimeline,
+  planFineTranscriptionRecoveryBoundaries,
   planTranscriptionChunkBoundaries,
+  planTranscriptionRecoveryBoundaries,
+  runTranscriptionQualityRetries,
+  sanitizeChunkTimeline,
+  type ChunkCaption,
+  type ChunkResult,
 } from "../src/lib/transcribe-timeline";
+import { repairCaptionTiming } from "../src/lib/mcp/subtitle-quality";
 
 function chunks(totalMs: number, silences: number[]): number[] {
   const cuts = planTranscriptionChunkBoundaries(totalMs, silences);
@@ -92,4 +99,142 @@ check(
   chunkTwo.length === 1,
 );
 
-console.log(`\n✅ ALL ${passed} CHUNK-PLANNER CHECKS PASSED`);
+
+// ── ADR 0056: a slice that exhausts its retry budget is a WARNING ────────────
+// Before 2026-08-30 the chunked merge answered 422 the moment one slice failed
+// all its bounded attempts, so an upload whose middle 60s confused Gemini lost
+// the 120s that WERE transcribed ("ถอดซับจากคลิปไม่สำเร็จ"). The route now keeps
+// what every other slice produced, records the unverified span, and answers 200.
+//
+// This mirrors the chunked merge loop of src/app/api/videos/transcribe/route.ts
+// over the REAL planners / retry runner / sanitizer / timing repair. The route's
+// own 422-freedom is asserted from its source in verify-transcribe-quality-retry.
+type TranscribeWarning = { code: string; fromMs?: number; toMs?: number };
+
+function mkChunkResult(startMs: number, durationMs: number, captionCount: number): ChunkResult {
+  const step = durationMs / captionCount;
+  const captions: ChunkCaption[] = Array.from({ length: captionCount }, (_, i) => ({
+    text: `c@${startMs}#${i}`,
+    startMs: Math.round(i * step),
+    endMs: Math.round((i + 1) * step),
+    timestampMs: Math.round(i * step),
+    confidence: 1,
+  }));
+  const wordCount = captionCount * 4;
+  const wordStep = durationMs / 1000 / wordCount;
+  return {
+    words: Array.from({ length: wordCount }, (_, i) => ({
+      word: `w${i}`,
+      start: i * wordStep,
+      end: (i + 1) * wordStep,
+    })),
+    segments: captions.map((c) => ({ text: c.text, start: c.startMs / 1000, end: c.endMs / 1000 })),
+    geminiDirectCaptions: captions,
+    fullText: captions.map((c) => c.text).join(" "),
+  };
+}
+
+const emptyChunkResult = (): ChunkResult =>
+  ({ words: [], segments: [], geminiDirectCaptions: [], fullText: "" });
+
+async function transcribeChunked(
+  totalMs: number,
+  respond: (span: { startMs: number; durationMs: number }) => ChunkResult,
+): Promise<{ status: number; captions: ChunkCaption[]; warnings: TranscribeWarning[] }> {
+  const warnings: TranscribeWarning[] = [];
+  const pushWarning = (code: string, fromMs: number, toMs: number) => {
+    const last = warnings[warnings.length - 1];
+    if (last && last.code === code && last.fromMs !== undefined && last.toMs !== undefined
+      && fromMs <= last.toMs && toMs >= last.fromMs) {
+      last.fromMs = Math.min(last.fromMs, fromMs);
+      last.toMs = Math.max(last.toMs, toMs);
+      return;
+    }
+    warnings.push({ code, fromMs, toMs });
+  };
+  const merged: ChunkCaption[] = [];
+  const append = (result: ChunkResult, durationMs: number, offsetMs: number) => {
+    for (const c of sanitizeChunkTimeline(result, durationMs).geminiDirectCaptions) {
+      merged.push({ ...c, startMs: c.startMs + offsetMs, endMs: c.endMs + offsetMs, timestampMs: c.timestampMs + offsetMs });
+    }
+  };
+  const attempt = (startMs: number, durationMs: number) => runTranscriptionQualityRetries(
+    async () => respond({ startMs, durationMs }),
+    durationMs,
+    3,
+    undefined,
+    { requireUsableWords: true },
+  );
+
+  const bounds = [0, ...planTranscriptionChunkBoundaries(totalMs, []), totalMs];
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const chunkStartMs = bounds[i];
+    const chunkDurationMs = bounds[i + 1] - chunkStartMs;
+    const chunk = await attempt(chunkStartMs, chunkDurationMs);
+    if (chunk.accepted) { append(chunk.result, chunkDurationMs, chunkStartMs); continue; }
+
+    const recoveryCuts = planTranscriptionRecoveryBoundaries(chunkDurationMs);
+    if (recoveryCuts.length === 0) {
+      pushWarning("chunk_recovery_exhausted", chunkStartMs, chunkStartMs + chunkDurationMs);
+      append(chunk.result, chunkDurationMs, chunkStartMs);
+      continue;
+    }
+    const recoveryBounds = [0, ...recoveryCuts, chunkDurationMs];
+    for (let ri = 0; ri < recoveryBounds.length - 1; ri++) {
+      const recoveryStartMs = chunkStartMs + recoveryBounds[ri];
+      const recoveryDurationMs = recoveryBounds[ri + 1] - recoveryBounds[ri];
+      const recovery = await attempt(recoveryStartMs, recoveryDurationMs);
+      if (recovery.accepted) { append(recovery.result, recoveryDurationMs, recoveryStartMs); continue; }
+
+      const fineCuts = planFineTranscriptionRecoveryBoundaries(recoveryDurationMs);
+      if (fineCuts.length === 0) {
+        pushWarning("chunk_recovery_exhausted", recoveryStartMs, recoveryStartMs + recoveryDurationMs);
+        append(recovery.result, recoveryDurationMs, recoveryStartMs);
+        continue;
+      }
+      const fineBounds = [0, ...fineCuts, recoveryDurationMs];
+      for (let fi = 0; fi < fineBounds.length - 1; fi++) {
+        const fineStartMs = recoveryStartMs + fineBounds[fi];
+        const fineDurationMs = fineBounds[fi + 1] - fineBounds[fi];
+        const fine = await attempt(fineStartMs, fineDurationMs);
+        if (!fine.accepted) pushWarning("chunk_recovery_exhausted", fineStartMs, fineStartMs + fineDurationMs);
+        append(fine.result, fineDurationMs, fineStartMs);
+      }
+    }
+  }
+
+  const repaired = repairCaptionTiming(merged, totalMs);
+  return { status: repaired.captions.length > 0 ? 200 : 422, captions: repaired.captions, warnings };
+}
+
+async function adr0056PartialCoverage() {
+  // Production shape: 180.11s upload → three ~60s chunks; the middle one comes
+  // back empty on every primary / recovery / fine-recovery attempt.
+  const TOTAL_MS = 180_110;
+  const [cutA, cutB] = planTranscriptionChunkBoundaries(TOTAL_MS, []);
+  const partial = await transcribeChunked(TOTAL_MS, ({ startMs }) =>
+    startMs >= cutA && startMs < cutB ? emptyChunkResult() : mkChunkResult(startMs, 60_037, 12));
+
+  check("chunk 2/3 exhausted → HTTP 200 (partial coverage ships)", partial.status === 200);
+  check("chunk 2/3 exhausted → one merged warning", partial.warnings.length === 1);
+  check("chunk 2/3 exhausted → code chunk_recovery_exhausted",
+    partial.warnings[0].code === "chunk_recovery_exhausted");
+  check(`chunk 2/3 exhausted → warning span is chunk 2 (${cutA}–${cutB}ms)`,
+    partial.warnings[0].fromMs === cutA && partial.warnings[0].toMs === cutB);
+  check("chunk 2/3 exhausted → captions kept from chunks 1+3",
+    partial.captions.length === 24
+    && partial.captions.every((c) => c.text.startsWith("c@0#") || c.text.startsWith(`c@${cutB}#`)));
+  check("chunk 2/3 exhausted → no caption from the failed chunk",
+    !partial.captions.some((c) => c.text.startsWith(`c@${cutA}#`)));
+  check("chunk 2/3 exhausted → merged timeline stays monotonic and inside the audio",
+    partial.captions.every((c, i, a) => c.startMs >= 0 && c.endMs <= TOTAL_MS && (i === 0 || c.startMs >= a[i - 1].endMs)));
+
+  // Every slice empty = nothing to show → the ONE blocking case survives.
+  const nothing = await transcribeChunked(TOTAL_MS, () => emptyChunkResult());
+  check("every chunk empty → 422 (nothing to show is still blocking)", nothing.status === 422);
+  check("every chunk empty → zero captions", nothing.captions.length === 0);
+}
+
+adr0056PartialCoverage()
+  .then(() => { console.log(`\n✅ ALL ${passed} CHUNK-PLANNER CHECKS PASSED`); })
+  .catch((error) => { console.error(error); process.exit(1); });

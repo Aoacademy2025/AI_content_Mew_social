@@ -1,6 +1,7 @@
 // Regression proof for production long-upload transcription failures.
 // Run: npx tsx scripts/verify-transcribe-quality-retry.ts
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   TRANSCRIBE_CHUNK_TARGET_MS,
   chunkTranscriptionReferenceDurationMs,
@@ -250,6 +251,64 @@ async function main() {
     135_110,
   );
   assert.deepEqual(impossible.words, [], "unrecoverable word units are dropped, not allowed to poison rawMaxMs");
+
+  // ── ADR 0056: an exhausted retry budget is a warning, not a refusal ────────
+  // `accepted: false` means "we could not prove this slice is complete" — it does
+  // NOT mean there is nothing to show. The route must keep what the last attempt
+  // produced and report the span; only zero captions may still answer 422.
+  assert.equal(
+    exhausted.result.geminiDirectCaptions.length,
+    1,
+    "an exhausted slice still carries the captions the route has to keep",
+  );
+
+  // Route contract, read from the source of truth. These are the assertions that
+  // actually guard the 2026-08-27..30 regression (upload jobs died with
+  // "ถอดซับจากคลิปไม่สำเร็จ" while most of the clip HAD been transcribed); the
+  // per-case fixtures in verify-transcribe-{chunking,words-guard,desync-guard}
+  // model the resulting response shape.
+  const routeSource = readFileSync(
+    new URL("../src/app/api/videos/transcribe/route.ts", import.meta.url),
+    "utf8",
+  );
+  const exits422 = routeSource.match(/status:\s*422/g) ?? [];
+  assert.equal(
+    exits422.length,
+    1,
+    `transcribe keeps exactly one 422 exit (nothing to show); found ${exits422.length}`,
+  );
+  const blockingExit = routeSource.slice(
+    Math.max(0, routeSource.indexOf("status: 422") - 900),
+    routeSource.indexOf("status: 422"),
+  );
+  assert.match(
+    blockingExit,
+    /empty_transcript|no_usable_words/,
+    "the surviving 422 is the zero-caption exit",
+  );
+  for (const code of ["transcribe_incomplete", "transcribe_desynced", "word_timing_incomplete", "chunk_recovery_exhausted"]) {
+    assert.ok(
+      !new RegExp(`reason:\\s*\n?\\s*"${code}"`).test(routeSource),
+      `${code} is a warning code, never a 422 reason`,
+    );
+  }
+  assert.ok(
+    !/\?\s*"word_timing_incomplete"/.test(routeSource),
+    "the partial-coverage reason ternaries are gone from the 422 bodies",
+  );
+  assert.ok(
+    routeSource.includes('from "@/lib/mcp/subtitle-quality"')
+    && routeSource.includes("repairCaptionTiming("),
+    "the response builder repairs caption timing deterministically (ADR 0056)",
+  );
+  assert.ok(
+    (routeSource.match(/pushWarning\(/g) ?? []).length >= 7,
+    "every former partial-coverage 422 branch now records a warning and continues",
+  );
+  assert.ok(
+    routeSource.includes("chunk_recovery_exhausted"),
+    "an exhausted chunk/recovery slice reports chunk_recovery_exhausted",
+  );
 
   console.log("✅ TRANSCRIBE QUALITY RETRY + UNIT REGRESSIONS PASSED");
 }

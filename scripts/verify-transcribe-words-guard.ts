@@ -12,7 +12,9 @@ import {
   chunkTailGapMs,
   chunkNeedsRetry,
   type ChunkResult,
+  type SanitizedChunk,
 } from "../src/lib/transcribe-timeline";
+import { repairCaptionTiming } from "../src/lib/mcp/subtitle-quality";
 
 let passed = 0;
 function check(name: string, cond: boolean) { assert.ok(cond, name); console.log("✓ " + name); passed++; }
@@ -184,6 +186,60 @@ function mkClientWords(n: number, untilMs: number) {
 {
   const g = boundWordsForSplit(mkClientWords(100, 60_000), 0);
   check("client: duration unknown → pass-through", g.words.length === 100 && g.coverageOk);
+}
+
+
+// ── ADR 0056: no usable word clock is a warning, not a refusal ───────────────
+// The route used to answer 422 word_timing_incomplete whenever the Gemini path
+// ended up with zero usable words, which threw away a complete set of caption
+// cards. The cards render fine without a word clock — only the editor's
+// "แบ่งซับ N คำ" regrouping falls back — so the response now ships them with an
+// empty `words` array and the finding attached.
+// Mirrors the word-clock branch + response builder of transcribe/route.ts.
+function respondFromChunk(chunk: SanitizedChunk, audioDurationMs: number): {
+  status: number;
+  captions: { text: string; startMs: number; endMs: number }[];
+  words: { word: string; startMs: number; endMs: number }[];
+  warnings: { code: string; fromMs?: number; toMs?: number }[];
+} {
+  const warnings: { code: string; fromMs?: number; toMs?: number }[] = [];
+  const words = chunk.words
+    .map((w) => ({ word: w.word.trim(), startMs: Math.round(w.start * 1000), endMs: Math.round(w.end * 1000) }))
+    .filter((w) => w.word.length > 0);
+  if (words.length === 0) warnings.push({ code: "word_timing_incomplete" });
+  const repaired = repairCaptionTiming(chunk.geminiDirectCaptions, audioDurationMs);
+  return {
+    status: repaired.captions.length > 0 ? 200 : 422,
+    captions: repaired.captions,
+    words,
+    warnings,
+  };
+}
+
+{
+  // Same production shape as case 3 above: 105 caption cards, 108 words whose
+  // timeline covers only half the chunk → the word clock is unusable.
+  const r = mkChunk(105, 108, CHUNK_MS);
+  r.words = mkWords(108, CHUNK_MS / 2 / 1000);
+  const response = respondFromChunk(sanitizeChunkTimeline(r, CHUNK_MS), CHUNK_MS);
+  check("degenerate word clock → HTTP 200 (was 422 word_timing_incomplete)", response.status === 200);
+  check("degenerate word clock → all 105 caption cards kept", response.captions.length === 105);
+  check("degenerate word clock → caption text untouched",
+    response.captions[0].text === r.geminiDirectCaptions[0].text
+    && response.captions[104].text === r.geminiDirectCaptions[104].text);
+  check("degenerate word clock → words: []", response.words.length === 0);
+  check("degenerate word clock → one warning", response.warnings.length === 1);
+  check("degenerate word clock → code word_timing_incomplete",
+    response.warnings[0].code === "word_timing_incomplete");
+  check("degenerate word clock → repaired captions stay inside the audio",
+    response.captions.every((c) => c.startMs >= 0 && c.endMs <= CHUNK_MS));
+}
+
+{
+  // A healthy word clock produces no finding at all.
+  const response = respondFromChunk(sanitizeChunkTimeline(mkChunk(100, 540, CHUNK_MS), CHUNK_MS), CHUNK_MS);
+  check("healthy word clock → HTTP 200 with no warning",
+    response.status === 200 && response.warnings.length === 0 && response.words.length === 540);
 }
 
 console.log(`\n✅ ALL ${passed} WORD-GUARD CHECKS PASSED`);

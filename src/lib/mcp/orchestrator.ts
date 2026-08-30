@@ -1622,11 +1622,21 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         fullText?: string;
         audioDurationMs?: number;
         speechCoverage?: SubtitleSpeechCoverage;
+        /** ADR 0056: spans the transcriber could not prove complete. Never a failure. */
+        warnings?: { code: string; fromMs?: number; toMs?: number }[];
       }>(
         "/api/videos/transcribe", { audioUrl: input.clipUrl, script: "" },
       );
       const upCaps = (tx.captions ?? []).filter((c) => typeof c?.text === "string" && c.text.trim());
       if (!upCaps.length) throw new Error("ถอดซับจากคลิปไม่สำเร็จ — เช็คว่าคลิปมีเสียงพูดชัดเจน");
+      // Partial coverage ships: report it with the job, never fail on it (ADR 0056).
+      const uploadWarnings = Array.isArray(tx.warnings) ? tx.warnings : [];
+      if (uploadWarnings.length > 0) {
+        console.warn(
+          `[mcp-worker] job ${jobId} upload transcription partial: `
+          + uploadWarnings.map((w) => `${w.code}[${w.fromMs ?? "?"}-${w.toMs ?? "?"}]`).join(" "),
+        );
+      }
       const upFullText = tx.fullText?.trim() || upCaps.map((caption) => caption.text).join(" ");
       const uploadWords = resolveUploadTranscriptWords(upFullText, tx.words ?? []);
       const upWords = uploadWords.words;
@@ -1852,6 +1862,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         mode: "preview",
         videoUrl: comp.videoUrl,
         subtitleQa: uploadSubtitleQa,
+        subtitleEvidence: {
+          captions: upCaps,
+          words: upWords,
+          fullText: upFullText,
+          audioDurationMs: upDurMs,
+          timingSource: "upload_transcription" as const,
+          ...(tx.speechCoverage ? { speechCoverage: tx.speechCoverage } : {}),
+          ...(uploadWarnings.length > 0 ? { uploadWarnings } : {}),
+        },
         preview: {
           captions: upCaps,
           config: upBaseConfig,
