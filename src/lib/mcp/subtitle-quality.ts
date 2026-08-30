@@ -20,6 +20,34 @@ export type SubtitleTimingSource =
   | "upload_transcription"
   | "avatar_script_clock";
 
+export type SubtitleQualityStatus = "passed" | "warning" | "failed";
+
+export type SubtitleQualityCode =
+  | "empty_script"
+  | "empty_captions"
+  | "empty_caption"
+  | "text_mismatch"
+  | "spacing_mismatch"
+  | "unverified_alignment"
+  | "invalid_timing"
+  | "overlapping_timing"
+  | "timing_out_of_bounds"
+  | "missing_speech_coverage"
+  | "invalid_speech_coverage"
+  | "speech_coverage_incomplete"
+  | "broken_thai_grapheme"
+  | "punctuation_only_card"
+  | "card_too_short";
+
+/** Everything a finding carries, shared by `failed` and `warning` (ADR 0056). */
+type SubtitleQualityFinding = {
+  timingSource: SubtitleTimingSource;
+  textExact: boolean;
+  code: SubtitleQualityCode;
+  captionIndex?: number;
+  speechCoverage?: SubtitleSpeechCoverage;
+};
+
 export type SubtitleQualityReport =
   | {
       status: "passed";
@@ -29,29 +57,8 @@ export type SubtitleQualityReport =
       audioDurationMs: number;
       speechCoverage?: SubtitleSpeechCoverage;
     }
-  | {
-      status: "failed";
-      timingSource: SubtitleTimingSource;
-      textExact: boolean;
-      code:
-        | "empty_script"
-        | "empty_captions"
-        | "empty_caption"
-        | "text_mismatch"
-        | "spacing_mismatch"
-        | "unverified_alignment"
-        | "invalid_timing"
-        | "overlapping_timing"
-        | "timing_out_of_bounds"
-        | "missing_speech_coverage"
-        | "invalid_speech_coverage"
-        | "speech_coverage_incomplete"
-        | "broken_thai_grapheme"
-        | "punctuation_only_card"
-        | "card_too_short";
-      captionIndex?: number;
-      speechCoverage?: SubtitleSpeechCoverage;
-    };
+  | ({ status: "failed" } & SubtitleQualityFinding)
+  | ({ status: "warning" } & SubtitleQualityFinding);
 
 export interface SubtitleQualityInput {
   script: string;
@@ -1004,34 +1011,41 @@ export function retimeCanonicalCaptionsFromAlignedWords<
   ) ? retimed : null;
 }
 
-/**
- * Final, provider-independent subtitle release gate.
- *
- * This validates the exact captions that will be burned, not an earlier draft. Whitespace
- * reflow and presentation-only punctuation edits are allowed, while every spoken word and
- * numeric claim must still match the immutable Narration Master.
- */
-/** Presentation issues the creator can fix in the Post-phase editor.
- *  These must not fail the VideoJob — the clip still exports, with the report
- *  attached so the editor can surface an inline fix. Timing/empty failures
- *  still block release (unusable or unsynced captions). */
-export const INLINE_FIXABLE_SUBTITLE_CODES = [
-  "spacing_mismatch",
-  "punctuation_only_card",
-  "card_too_short",
-] as const;
+/** The only subtitle findings that make a clip un-renderable. Everything else is a
+ *  report the creator sees in the Post phase (ADR 0056: subtitle QA is a report, not a gate). */
+export const BLOCKING_SUBTITLE_CODES = ["empty_script", "empty_captions"] as const;
+const BLOCKING_SUBTITLE_CODE_SET = new Set<string>(BLOCKING_SUBTITLE_CODES);
 
+export const INLINE_FIXABLE_SUBTITLE_CODES = ["spacing_mismatch", "punctuation_only_card", "card_too_short"] as const;
 export type InlineFixableSubtitleCode = (typeof INLINE_FIXABLE_SUBTITLE_CODES)[number];
-
 const INLINE_FIXABLE_SUBTITLE_CODE_SET = new Set<string>(INLINE_FIXABLE_SUBTITLE_CODES);
-
 export function isInlineFixableSubtitleCode(code: string | undefined): code is InlineFixableSubtitleCode {
   return Boolean(code && INLINE_FIXABLE_SUBTITLE_CODE_SET.has(code));
 }
 
 export function subtitleQualityShouldFailJob(report: SubtitleQualityReport): boolean {
-  if (report.status === "passed") return false;
-  return !isInlineFixableSubtitleCode(report.code);
+  return report.status === "failed";
+}
+
+/** Deterministic, render-safe timing repair. Never changes text; drops blank cards;
+ *  clamps to [0, audioDurationMs]; enforces monotonic non-overlapping cards ≥ 240 ms. */
+export function repairCaptionTiming<T extends { text: string; startMs: number; endMs: number }>(
+  captions: T[], audioDurationMs: number,
+): { captions: T[]; repaired: boolean; dropped: number } {
+  const kept = captions.filter((c) => c.text.trim().length > 0);
+  const dropped = captions.length - kept.length;
+  const out: T[] = [];
+  let cursor = 0;
+  for (const c of kept) {
+    let start = Math.max(cursor, Number.isFinite(c.startMs) ? Math.max(0, Math.round(c.startMs)) : cursor);
+    let end = Number.isFinite(c.endMs) ? Math.round(c.endMs) : start + MIN_CARD_MS;
+    if (end - start < MIN_CARD_MS) end = start + MIN_CARD_MS;
+    if (audioDurationMs > 0 && end > audioDurationMs) { end = audioDurationMs; if (end - start < MIN_CARD_MS) start = Math.max(cursor, end - MIN_CARD_MS); }
+    out.push({ ...c, startMs: start, endMs: end });
+    cursor = end;
+  }
+  const repaired = dropped > 0 || out.some((c, i) => c.startMs !== kept[i].startMs || c.endMs !== kept[i].endMs);
+  return { captions: repaired ? out : captions, repaired, dropped };
 }
 
 export function subtitleQualityInlineCopy(code: InlineFixableSubtitleCode): string {
@@ -1045,7 +1059,15 @@ export function subtitleQualityInlineCopy(code: InlineFixableSubtitleCode): stri
   }
 }
 
-export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQualityReport {
+/**
+ * Final, provider-independent subtitle inspection.
+ *
+ * This inspects the exact captions that will be burned, not an earlier draft. Whitespace
+ * reflow and presentation-only punctuation edits are allowed, while every spoken word and
+ * numeric claim is compared against the immutable Narration Master. It reports the first
+ * finding as `failed`; `validateSubtitleQuality` applies the ADR 0056 blocking policy on top.
+ */
+function classifySubtitleQuality(input: SubtitleQualityInput): SubtitleQualityReport {
   const script = input.script.trim();
   if (!script) {
     return { status: "failed", timingSource: input.timingSource, textExact: false, code: "empty_script" };
@@ -1174,4 +1196,20 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
     audioDurationMs: input.audioDurationMs,
     ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}),
   };
+}
+
+/**
+ * The Subtitle QA Report every render and export persists (ADR 0056).
+ *
+ * A finding only fails the job when it is a Blocking Subtitle Code — there is nothing to
+ * show. Every other finding is downgraded to `warning`: the clip proceeds, timing is
+ * repaired by `repairCaptionTiming` where the caller can, and the Post phase surfaces
+ * the report to the creator.
+ */
+export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQualityReport {
+  const report = classifySubtitleQuality(input);
+  if (report.status === "failed" && !BLOCKING_SUBTITLE_CODE_SET.has(report.code)) {
+    return { ...report, status: "warning" };
+  }
+  return report;
 }

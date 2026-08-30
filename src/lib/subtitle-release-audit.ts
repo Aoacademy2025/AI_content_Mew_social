@@ -12,6 +12,7 @@ export type SubtitleReleaseAuditIssue = {
     | "missing_output"
     | "missing_subtitle_qa"
     | "failed_subtitle_qa"
+    | "subtitle_qa_warning"
     | "unverified_alignment"
     | "missing_replay_evidence"
     | "missing_word_timing"
@@ -56,14 +57,20 @@ export function auditSubtitleReleaseRecord(record: SubtitleReleaseAuditRecord): 
   const qa = object(output.subtitleQa);
   if (!qa) {
     issues.push({ jobId: record.id, code: "missing_subtitle_qa", severity: "p1" });
+  } else if (qa.status === "warning") {
+    // ADR 0056: a warning shipped a clip. It is worth reading, never an incident.
+    issues.push({ jobId: record.id, code: "subtitle_qa_warning", severity: "p1" });
   } else if (qa.status !== "passed") {
+    // Only a Blocking Subtitle Code reaches `failed` now. Records persisted before
+    // ADR 0056 can still carry a presentation-only code here.
     const presentationOnly = qa.code === "spacing_mismatch"
       || qa.code === "punctuation_only_card"
       || qa.code === "card_too_short";
     issues.push({ jobId: record.id, code: "failed_subtitle_qa", severity: presentationOnly ? "p1" : "p0" });
   }
   if (qa?.timingSource === "tts_segment_timing" || qa?.timingSource === "avatar_script_clock") {
-    issues.push({ jobId: record.id, code: "unverified_alignment", severity: "p0" });
+    // A degraded (not word-accurate) clock is a releasable timing source, not a release blocker.
+    issues.push({ jobId: record.id, code: "unverified_alignment", severity: "p1" });
   }
 
   const preview = object(output.preview);
@@ -90,7 +97,8 @@ export function auditSubtitleReleaseRecord(record: SubtitleReleaseAuditRecord): 
     const rawSpeechCoverage = evidence.speechCoverage ?? qa?.speechCoverage;
     const speechCoverage = parseSubtitleSpeechCoverage(rawSpeechCoverage);
     if (rawSpeechCoverage !== undefined && !speechCoverage) {
-      issues.push({ jobId: record.id, code: "invalid_speech_coverage", severity: "p0" });
+      // Unreadable evidence is an evidence bug, not a broken clip.
+      issues.push({ jobId: record.id, code: "invalid_speech_coverage", severity: "p1" });
     } else {
       const rawCaptions = Array.isArray(evidence.captions) ? evidence.captions : [];
       const captions = rawCaptions.flatMap((candidate) => {

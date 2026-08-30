@@ -508,14 +508,18 @@ async function main() {
     refundOneClip: async () => {},
     sleep: async () => {},
   });
-  const blocked = await prisma.videoJob.findUniqueOrThrow({ where: { id: corruptedExport.id } });
-  check(blocked.status === "failed", "changed subtitle text is blocked before export");
+  // ADR 0056: text drift between the caption and the narration is reported, never a
+  // refusal. The creator owns the words on screen; Export burns exactly what they typed.
+  const editedTextCompleted = await prisma.videoJob.findUniqueOrThrow({ where: { id: corruptedExport.id } });
   check(
-    blocked.errorMessage?.includes("กล่องซับ #1") === true
-      && blocked.errorMessage?.includes("สร้างเสียงใหม่") === true,
-    "server backstop identifies the changed card and explains how to recover",
+    editedTextCompleted.status === "done",
+    `changed subtitle text still exports (got ${editedTextCompleted.status})`,
   );
-  check(corruptedRenderCalls === 0, "failed subtitle release gate spends no burn render");
+  check(
+    !editedTextCompleted.errorMessage,
+    `edited caption text produces no refusal message (got ${String(editedTextCompleted.errorMessage)})`,
+  );
+  check(corruptedRenderCalls === 1, "changed subtitle text performs exactly one Burn");
 
   const punctuationOnlyExport = await prisma.videoJob.create({
     data: {
@@ -566,8 +570,8 @@ async function main() {
 
   // Production incident 2026-08-29 23:01 BKK: Editor v2 allowed an inserted
   // caption card to remain blank, submitted an export job, then reported the
-  // misleading code invalid_timing. The server fallback must identify the exact
-  // card and stop before Burn for clients that do not yet have UI preflight.
+  // misleading code invalid_timing. Under ADR 0056 a blank card is dropped, not
+  // refused — subtitle QA must no longer stop this export.
   const blankCaptionExport = await prisma.videoJob.create({
     data: {
       userId: user.id,
@@ -610,18 +614,25 @@ async function main() {
     refundOneClip: async () => {},
     sleep: async () => {},
   });
+  // TODO(task-2): once the export path runs repairCaptionTiming, swap this fixture's
+  // throwing caller for a working one and assert the export COMPLETES with the blank
+  // card dropped. Until then these three checks prove only that subtitle QA stopped
+  // refusing the job — the fixture still fails on its deliberately throwing caller.
   const blankCaptionBlocked = await prisma.videoJob.findUniqueOrThrow({ where: { id: blankCaptionExport.id } });
-  check(blankCaptionBlocked.status === "failed", "blank caption is blocked before export");
+  // TODO(task-2): becomes `=== "done"` once the blank card is dropped instead of burned.
   check(
-    blankCaptionBlocked.errorCode === "subtitle_alignment_empty_caption",
-    `blank caption uses the actionable error code (got ${String(blankCaptionBlocked.errorCode)})`,
+    blankCaptionBlocked.status === "failed",
+    "blank-card export now stops on the fixture's throwing caller, not on subtitle QA",
   );
   check(
-    blankCaptionBlocked.errorMessage?.includes("กล่องซับ #2") === true
-      && blankCaptionBlocked.errorMessage?.includes("พิมพ์ข้อความหรือลบ") === true,
-    "blank caption error identifies the exact card and resolution",
+    blankCaptionBlocked.errorCode !== "subtitle_alignment_empty_caption",
+    `a blank card no longer refuses the export (got ${String(blankCaptionBlocked.errorCode)})`,
   );
-  check(blankCaptionSideEffects === 0, "blank caption spends no Burn/Gallery side effect");
+  check(
+    blankCaptionBlocked.errorMessage?.includes("พิมพ์ข้อความหรือลบ") !== true,
+    "a blank card no longer produces the 'type or delete this card' refusal",
+  );
+  check(blankCaptionSideEffects > 0, "a blank card reaches the render pipeline instead of being refused");
 
   const hiddenSubtitleExport = await prisma.videoJob.create({
     data: {

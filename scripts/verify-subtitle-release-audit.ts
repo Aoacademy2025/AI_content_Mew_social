@@ -38,7 +38,71 @@ const estimated = auditSubtitleReleaseRecord({
   inputJson: "{}",
   outputJson: JSON.stringify({ subtitleQa: { ...passedQa, timingSource: "tts_segment_timing" } }),
 });
-assert.ok(estimated.some((issue) => issue.code === "unverified_alignment" && issue.severity === "p0"));
+assert.ok(
+  estimated.some((issue) => issue.code === "unverified_alignment" && issue.severity === "p1"),
+  "a degraded provider clock is reported, not treated as a release incident (ADR 0056)",
+);
+
+const warningRelease = auditSubtitleReleaseRecord({
+  id: "warning-release",
+  status: "done",
+  type: "create",
+  inputJson: JSON.stringify({ voiceProvider: "gemini" }),
+  outputJson: JSON.stringify({
+    version: 2,
+    mode: "preview",
+    subtitleQa: {
+      status: "warning",
+      timingSource: "tts_segment_timing",
+      textExact: true,
+      code: "unverified_alignment",
+    },
+    preview: {
+      captions: [{ text: "สวัสดี", startMs: 0, endMs: 2_000 }],
+      words: [{ word: "สวัสดี", startMs: 0, endMs: 2_000, startChar: 0, endChar: 6 }],
+      fullText: "สวัสดี",
+      audioDurationMs: 2_000,
+      config: { bgVideos: [] },
+    },
+  }),
+});
+assert.ok(
+  warningRelease.some((issue) => issue.code === "subtitle_qa_warning" && issue.severity === "p1"),
+  "a released warning is reported at p1",
+);
+assert.ok(
+  !warningRelease.some((issue) => issue.code === "failed_subtitle_qa"),
+  "a warning is never counted as a failed release",
+);
+
+const legacyPresentationFailure = auditSubtitleReleaseRecord({
+  id: "legacy-presentation-failure",
+  status: "done",
+  type: "create",
+  inputJson: JSON.stringify({ voiceProvider: "gemini" }),
+  outputJson: JSON.stringify({
+    version: 2,
+    mode: "preview",
+    subtitleQa: {
+      status: "failed",
+      timingSource: "forced_alignment",
+      textExact: true,
+      code: "card_too_short",
+    },
+    preview: {
+      captions: [{ text: "สวัสดี", startMs: 0, endMs: 2_000 }],
+      words: [{ word: "สวัสดี", startMs: 0, endMs: 2_000, startChar: 0, endChar: 6 }],
+      fullText: "สวัสดี",
+      audioDurationMs: 2_000,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 2_000 },
+      config: { bgVideos: [] },
+    },
+  }),
+});
+assert.ok(
+  legacyPresentationFailure.some((issue) => issue.code === "failed_subtitle_qa" && issue.severity === "p1"),
+  "records persisted before ADR 0056 keep their presentation-only downgrade",
+);
 
 const generatedFallback = auditSubtitleReleaseRecord({
   id: "generated-fallback",

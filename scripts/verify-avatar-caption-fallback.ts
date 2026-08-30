@@ -29,8 +29,8 @@ const qa = spoken
     })
   : null;
 check(
-  "estimated Avatar script clock is rejected without acoustic evidence",
-  qa?.status === "failed" && qa.code === "unverified_alignment" && subtitleQualityShouldFailJob(qa),
+  "estimated Avatar script clock is reported as unverified, not rejected (ADR 0056)",
+  qa?.status === "warning" && qa.code === "unverified_alignment" && !subtitleQualityShouldFailJob(qa),
 );
 
 check(
