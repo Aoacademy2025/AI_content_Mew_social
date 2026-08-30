@@ -59,6 +59,62 @@ export class PipelineResponseParseError extends Error {
   }
 }
 
+/**
+ * A pipeline failure that carries a machine-readable `code` straight from the failing
+ * endpoint's own error envelope (`{ error: { code, message, detail? } }` or a top-level
+ * `{ code, message }`), so a caller (the orchestrator's failure mapping) never has to
+ * fall back to a bare generic message with no code attached.
+ *
+ * Deliberately extends `PipelineHttpError` — NOT a plain `Error` — so every existing
+ * `instanceof PipelineHttpError` / `error.name === "PipelineHttpError"` check (avatar-steps.ts,
+ * hero-image-pipeline-retry.ts, pipelineFailureDetails) keeps matching unchanged: `.name`,
+ * `.method`, `.path`, `.status`, `.body` are all inherited via `super()` and never touched here.
+ * Only `.message` is overridden (to the envelope's own human-readable text instead of the
+ * generic `METHOD path → status: ...` formatting) and `.code`/`.detail` are added on top.
+ * `pollRender`'s two logical (non-HTTP) failures reuse the same class with synthetic
+ * method/path/status fields purely for shape consistency — nothing reads them there.
+ */
+export class PipelineApiError extends PipelineHttpError {
+  public readonly code: string;
+  public readonly detail?: string;
+
+  constructor(
+    code: string,
+    message: string,
+    opts: { method?: "POST" | "GET" | "PATCH"; path?: string; status?: number; body?: unknown; detail?: string } = {},
+  ) {
+    super(opts.method ?? "POST", opts.path ?? "", opts.status ?? 0, opts.body ?? null);
+    this.message = message;
+    this.code = code;
+    if (opts.detail !== undefined) this.detail = opts.detail;
+  }
+}
+
+/** Extract `{code, message?, detail?}` from an endpoint's own error envelope shape:
+ *  nested `{ error: { code, message, detail } }` or flat `{ code, message }`. Returns null
+ *  when the body carries no machine code — the caller then falls back to a plain PipelineHttpError,
+ *  exactly as before this change (no behavior change for uncoded bodies). */
+function extractApiErrorEnvelope(body: unknown): { code: string; message?: string; detail?: string } | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const record = body as Record<string, unknown>;
+  const nested = record.error && typeof record.error === "object" && !Array.isArray(record.error)
+    ? (record.error as Record<string, unknown>)
+    : null;
+  const code = typeof nested?.code === "string"
+    ? nested.code
+    : typeof record.code === "string"
+      ? record.code
+      : undefined;
+  if (!code) return null;
+  const message = typeof nested?.message === "string"
+    ? nested.message
+    : typeof record.message === "string"
+      ? record.message
+      : undefined;
+  const detail = typeof nested?.detail === "string" ? nested.detail : undefined;
+  return { code, message, detail };
+}
+
 export type PipelineFailureDetails = {
   message: string;
   code?: string;
@@ -114,7 +170,15 @@ export function decodePipelineResponse<T>(
       parsed = text;
     }
   }
-  if (status < 200 || status >= 300) throw new PipelineHttpError(method, path, status, parsed);
+  if (status < 200 || status >= 300) {
+    const envelope = extractApiErrorEnvelope(parsed);
+    if (envelope) {
+      throw new PipelineApiError(envelope.code, envelope.message ?? `${method} ${path} → ${status}`, {
+        method, path, status, body: parsed, detail: envelope.detail,
+      });
+    }
+    throw new PipelineHttpError(method, path, status, parsed);
+  }
   return parsed as T;
 }
 
@@ -186,18 +250,23 @@ export async function pollRender(
   const sleep = opts.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const start = Date.now();
   let consecutiveErrors = 0;
+  const progressPath = `/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`;
   while (Date.now() - start < timeout) {
     // Cooperative cancel from the owning VideoJob — the hook throws to abort the poll.
     // OUTSIDE the try below so it can never be swallowed as a transient poll error.
     await opts.checkCanceled?.();
     try {
       const p = await caller.get<{ progress: number; videoUrl: string | null; error: string | null; stage: string | null }>(
-        `/api/videos/render-progress?jobId=${encodeURIComponent(jobId)}`,
+        progressPath,
       );
       consecutiveErrors = 0;
       onProgress?.(Number.isFinite(p.progress) ? p.progress : 0, p.stage);
       if (p.stage === "done" && p.videoUrl) return p.videoUrl;
-      if (p.stage === "error" || (p.error && p.progress < 0)) throw new Error(`render failed: ${p.error ?? "unknown"}`);
+      if (p.stage === "error" || (p.error && p.progress < 0)) {
+        throw new PipelineApiError("render_worker_failed", `render failed: ${p.error ?? "unknown"}`, {
+          method: "GET", path: progressPath, status: 200, body: p,
+        });
+      }
     } catch (e) {
       // A genuine "render failed" must propagate; transient poll blips (server restart, one
       // 5xx) are tolerated for a few rounds so a 90%-done render isn't killed by a hiccup.
@@ -206,5 +275,5 @@ export async function pollRender(
     }
     await sleep(interval);
   }
-  throw new Error("render timed out");
+  throw new PipelineApiError("render_timeout", "render timed out", { method: "GET", path: progressPath });
 }

@@ -36,8 +36,10 @@ import {
   pipelineCaller,
   pipelineFailureDetails,
   pollRender,
+  PipelineApiError,
   type PipelineCaller,
 } from "@/lib/mcp/pipeline-client";
+import { scrubSecrets } from "@/lib/scrub-secrets";
 import { heroImageProviderRetryDirective } from "@/lib/mcp/hero-image-pipeline-retry";
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
@@ -496,6 +498,28 @@ function subtitleVerificationEvidence(attempt: SubtitleAlignmentAttempt): Subtit
 const SUBTITLE_VERIFY_BUDGET_DEFAULT_MS = 180_000;
 const SUBTITLE_VERIFY_TIMED_OUT = Symbol("subtitle_verify_timed_out");
 
+/**
+ * Thai step-failure prefixes for the terminal `failJob` message on an *unknown* error —
+ * one not already carrying deliberate, specific copy (AvatarProviderFailureError,
+ * HeroVoiceProviderFailureError, SubtitleAlignmentFailureError, content preflight, the
+ * `failJob(...)` early-return guards). Message form: `<prefix> (<code>): <scrubbed cause>`
+ * — always carries a code, never the bare "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง" fallback.
+ * A phase with no entry here (e.g. "config", "startup") still gets the generic prefix below
+ * — the code alone already tells you which phase failed.
+ */
+const STEP_ERROR_PREFIX: Record<string, string> = {
+  tts: "สร้างเสียงไม่สำเร็จ",
+  captions: "สร้างซับไม่สำเร็จ",
+  keywords: "หา B-roll ไม่สำเร็จ",
+  stock: "หา B-roll ไม่สำเร็จ",
+  render: "เรนเดอร์ไม่สำเร็จ",
+  avatar: "ประกอบ Avatar ไม่สำเร็จ",
+  composite: "ประกอบ Avatar ไม่สำเร็จ",
+  burn: "ส่งออกไม่สำเร็จ",
+  save: "บันทึกวิดีโอไม่สำเร็จ",
+};
+const STEP_ERROR_PREFIX_DEFAULT = "เกิดข้อผิดพลาด";
+
 /** Wall-clock budget for the one alignment call. Read at call time, never cached, so the
  *  knob answers to the current environment. */
 function subtitleVerifyBudgetMs(): number {
@@ -700,7 +724,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   // Fire-and-forget + fail-open: telemetry must NEVER break the pipeline.
   const pipelineRunId = `mcp_${jobId}`;
   const STEP_TELEMETRY_NAME: Record<string, string> = {
-    tts: "tts", keywords: "keywords", stock: "fetchStock",
+    tts: "tts", captions: "captions", keywords: "keywords", stock: "fetchStock",
     config: "config", render: "render", avatar: "avatar", burn: "burnSubtitles",
   };
   const jobStartedAt = Date.now();
@@ -2535,6 +2559,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const message = e instanceof Error ? e.message : "internal error";
     const pipelineFailure = pipelineFailureDetails(e);
     const contentPreflightFailure = contentPreflightFailureDetails(e);
+    // Unknown-error labeling only (P0056 hotfix): never changes WHICH errors are thrown —
+    // AvatarProviderFailureError / HeroVoiceProviderFailureError / SubtitleAlignmentFailureError /
+    // content-preflight below all keep their deliberate, specific copy verbatim. This is only
+    // reached for everything else, so it always attaches a code — never the bare generic fallback.
+    const unknownFailureCode = e instanceof PipelineApiError
+      ? e.code
+      : (pipelineFailure?.code ?? `${phaseName || "unknown"}_unknown`);
+    const unknownFailureCause = e instanceof PipelineApiError ? e.message : (pipelineFailure?.message ?? message);
+    const unknownFailureMessage = `${STEP_ERROR_PREFIX[phaseName] ?? STEP_ERROR_PREFIX_DEFAULT} (${unknownFailureCode}): ${scrubSecrets(unknownFailureCause).slice(0, 160)}`;
     if (message === VIDEO_JOB_CANCELED_ERROR) {
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
       const reason = `video_${phaseName || "unknown"}_canceled`;
@@ -2627,10 +2660,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             ...contentPreflightFailure,
             ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
           }
-      : financialSettlementPending
-        ? { message, reservationRefundReason: settlementReason }
-      : pipelineFailure
-        ? pipelineFailure
-        : message);
+      : {
+          message: unknownFailureMessage,
+          code: unknownFailureCode,
+          ...(pipelineFailure?.provider ? { provider: pipelineFailure.provider } : {}),
+          ...(financialSettlementPending ? { reservationRefundReason: settlementReason } : {}),
+        });
   }
 }

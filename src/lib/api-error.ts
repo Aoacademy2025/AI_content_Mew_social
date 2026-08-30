@@ -14,6 +14,9 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { decideAdminErrorNotify } from "@/lib/admin-error-notify";
 import { notifyAdmins, createNotification } from "@/lib/notifications";
+import { scrubSecrets } from "@/lib/scrub-secrets";
+
+export { scrubSecrets };
 
 interface ErrorContext {
   /** Where the error happened — shown in admin notification title */
@@ -32,29 +35,6 @@ interface ErrorContext {
   status?: number;
 }
 
-/**
- * Redact secrets (API keys/tokens) that may have leaked into an error message or
- * stack trace — e.g. an outbound `fetch` to a third-party API whose URL embeds
- * `?key=<secret>` shows up verbatim in the thrown error's `.message`. This runs
- * before anything is written to PM2 console logs or the DB-backed admin
- * notification, so secrets never land in either place.
- */
-export function scrubSecrets(input: string): string {
-  if (!input) return input;
-  return input
-    // query-string style: key=, api_key=, apikey=, access_key=, token=
-    .replace(/([?&](?:key|api[_-]?key|access[_-]?key|token)=)[^&\s"'<>]+/gi, "$1<redacted>")
-    // Google/Gemini style API keys (AIza...) appearing anywhere, incl. headers
-    .replace(/AIza[0-9A-Za-z_-]{20,}/g, "<redacted>")
-    // x-goog-api-key header value if serialized into a message/stack
-    .replace(/(x-goog-api-key["'\s:=]+)[A-Za-z0-9_-]{10,}/gi, "$1<redacted>")
-    // Authorization: Bearer <token>
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{10,}=*/gi, "$1<redacted>")
-    // OpenRouter style API keys (sk-or-...) appearing anywhere — a bare key
-    // without the "Bearer " prefix would slip past the rule above.
-    .replace(/sk-or-[A-Za-z0-9_-]{8,}/g, "<redacted>");
-}
-
 /** Scrub the message/stack of a caught error, preserving shape for logging. */
 function scrubError(error: unknown): { name: string; message: string; stack?: string } | string {
   if (error instanceof Error) {
@@ -71,23 +51,29 @@ function scrubError(error: unknown): { name: string; message: string; stack?: st
   }
 }
 
-/** User-friendly messages for common error patterns */
-function friendlyMessage(error: unknown): string {
+/**
+ * User-friendly message for common error patterns, paired with `detail` — the scrubbed
+ * original cause (≤300 chars) — so a caller (an admin, a support ticket, a future UI) can
+ * see WHAT actually broke without the bare Thai fallback being the only signal. `detail`
+ * is always derived from the real error, independent of any `userMessage` override.
+ */
+export function friendlyMessage(error: unknown): { message: string; detail: string } {
   const msg = error instanceof Error ? error.message : String(error);
+  const detail = scrubSecrets(msg).slice(0, 300);
 
-  if (/unauthorized|401/i.test(msg)) return "ไม่มีสิทธิ์เข้าถึง กรุณาเข้าสู่ระบบใหม่";
-  if (/rate.?limit|429|quota/i.test(msg)) return "ระบบ AI ถูกใช้งานหนักเกินไป กรุณาลองใหม่ในอีกสักครู่";
-  if (/api.?key|invalid.?key/i.test(msg)) return "API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings";
-  if (/timeout|ETIMEDOUT|ECONNRESET/i.test(msg)) return "การเชื่อมต่อหมดเวลา กรุณาลองใหม่อีกครั้ง";
-  if (/not.?found|ENOENT/i.test(msg)) return "ไม่พบข้อมูลที่ต้องการ";
-  if (/network|ECONNREFUSED|fetch/i.test(msg)) return "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่";
-  if (/render|remotion/i.test(msg)) return "เกิดข้อผิดพลาดในการสร้างวิดีโอ กรุณาลองใหม่";
-  if (/heygen/i.test(msg)) return "เกิดข้อผิดพลาดจากระบบ Avatar กรุณาลองใหม่";
-  if (/elevenlabs/i.test(msg)) return "เกิดข้อผิดพลาดจากระบบเสียง กรุณาลองใหม่";
-  if (/gemini/i.test(msg)) return "เกิดข้อผิดพลาดจากระบบ AI กรุณาลองใหม่";
-  if (/prisma|database|sqlite/i.test(msg)) return "เกิดข้อผิดพลาดในฐานข้อมูล กรุณาลองใหม่";
+  if (/unauthorized|401/i.test(msg)) return { message: "ไม่มีสิทธิ์เข้าถึง กรุณาเข้าสู่ระบบใหม่", detail };
+  if (/rate.?limit|429|quota/i.test(msg)) return { message: "ระบบ AI ถูกใช้งานหนักเกินไป กรุณาลองใหม่ในอีกสักครู่", detail };
+  if (/api.?key|invalid.?key/i.test(msg)) return { message: "API Key ไม่ถูกต้อง กรุณาตรวจสอบใน Settings", detail };
+  if (/timeout|ETIMEDOUT|ECONNRESET/i.test(msg)) return { message: "การเชื่อมต่อหมดเวลา กรุณาลองใหม่อีกครั้ง", detail };
+  if (/not.?found|ENOENT/i.test(msg)) return { message: "ไม่พบข้อมูลที่ต้องการ", detail };
+  if (/network|ECONNREFUSED|fetch/i.test(msg)) return { message: "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่", detail };
+  if (/render|remotion/i.test(msg)) return { message: "เกิดข้อผิดพลาดในการสร้างวิดีโอ กรุณาลองใหม่", detail };
+  if (/heygen/i.test(msg)) return { message: "เกิดข้อผิดพลาดจากระบบ Avatar กรุณาลองใหม่", detail };
+  if (/elevenlabs/i.test(msg)) return { message: "เกิดข้อผิดพลาดจากระบบเสียง กรุณาลองใหม่", detail };
+  if (/gemini/i.test(msg)) return { message: "เกิดข้อผิดพลาดจากระบบ AI กรุณาลองใหม่", detail };
+  if (/prisma|database|sqlite/i.test(msg)) return { message: "เกิดข้อผิดพลาดในฐานข้อมูล กรุณาลองใหม่", detail };
 
-  return "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง";
+  return { message: "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง", detail };
 }
 
 function buildAdminBody(route: string, error: unknown, userId?: string, context?: Record<string, unknown>): string {
@@ -126,7 +112,9 @@ export function apiError({
   // 1. Log to console (scrubbed — never let a leaked ?key=/token= reach PM2 logs)
   console.error(`[API Error] ${route}:`, scrubError(error));
 
-  const message = userMessage ?? friendlyMessage(error);
+  const friendly = friendlyMessage(error);
+  const message = userMessage ?? friendly.message;
+  const detail = friendly.detail;
 
   // 2. Notify admins + optionally the user — fire-and-forget
   const notify = async () => {
@@ -167,7 +155,7 @@ export function apiError({
 
   notify().catch(() => {});
 
-  return NextResponse.json({ error: message }, { status });
+  return NextResponse.json({ error: message, detail }, { status });
 }
 
 /** Shorthand for user-facing validation errors (no admin notify needed) */
