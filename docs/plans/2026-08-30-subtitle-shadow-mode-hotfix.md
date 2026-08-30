@@ -433,4 +433,4 @@ assert.deepEqual(blank, { ok: false, reason: "blank_caption", index: 1 });
 - Removing the 08-27→08-30 fuzzy/numeric alignment code — it stays as the evidence collector.
 
 ## Status
-interviewed 2026-08-30 | approved: 2026-08-30 (Mew: "พักไว้เพื่อ execute session หน้า") | executed: deferred — resume with `/mew-kickoff execute docs/plans/2026-08-30-subtitle-shadow-mode-hotfix.md` in worktree `AI_content_Mew_social-subtitle-render-stability-audit` (branch `subtitle-render-stability-audit`, node_modules + .env ready) | delivered: -
+interviewed 2026-08-30 | approved: 2026-08-30 | executed: 2026-08-31 — Tasks 1–7 via subagent-driven development on branch `subtitle-render-stability-audit` (commits `06a364b1..HEAD` on `3c14d318`; 7 task reviews + 1 security review + 1 whole-branch review; rulings R1–R35 recorded in `docs/audits/2026-08-30-subtitle-render-stability-audit.md` §10) | delivered: PR opened 2026-08-31 (awaiting Mew merge + deploy; 48 h prod acceptance pending)
