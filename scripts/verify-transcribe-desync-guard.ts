@@ -6,6 +6,10 @@
 //   npx tsx scripts/verify-transcribe-desync-guard.ts
 import assert from "node:assert/strict";
 import { repairCaptionTiming } from "../src/lib/mcp/subtitle-quality";
+import {
+  mergeTranscribeWarning,
+  type TranscribeWarning,
+} from "../src/lib/transcribe-partial-coverage";
 
 const TAIL_MS = 2000;
 const BOGUS_DURATION_MAX_RATIO = 1.10;
@@ -21,7 +25,6 @@ function classify(rawMaxMs: number, realMs: number): "ok" | "clamp" | "warn" {
 }
 
 type Caption = { text: string; startMs: number; endMs: number };
-type TranscribeWarning = { code: string; fromMs?: number; toMs?: number };
 
 // Mirrors the tail of transcribe/route.ts: guard → deterministic repair → respond.
 // 422 survives for exactly one reason: nothing to show.
@@ -31,7 +34,7 @@ function respond(captions: Caption[], realMs: number): {
   const warnings: TranscribeWarning[] = [];
   const rawMaxMs = captions[captions.length - 1]?.endMs ?? 0;
   if (classify(rawMaxMs, realMs) === "warn") {
-    warnings.push({ code: "transcribe_desynced", fromMs: realMs, toMs: rawMaxMs });
+    mergeTranscribeWarning(warnings, "transcribe_desynced", realMs, rawMaxMs);
   }
   const repaired = repairCaptionTiming(captions, realMs);
   return {

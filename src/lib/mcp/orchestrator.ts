@@ -469,6 +469,8 @@ type SubtitleVerification = {
   ttsCaptions: Array<{ startMs: number; endMs: number }>;
   maxAbsStartDeltaMs?: number;
   medianAbsStartDeltaMs?: number;
+  /** ADR 0056: the transcribe route's own partial-coverage findings for this call. */
+  routeWarnings?: Array<{ code: string; fromMs?: number; toMs?: number }>;
 };
 
 /** The verification plus the captions it produced; only the evidence half is persisted. */
@@ -487,6 +489,7 @@ function subtitleVerificationEvidence(attempt: SubtitleAlignmentAttempt): Subtit
     ...(attempt.similarityPermille !== undefined ? { similarityPermille: attempt.similarityPermille } : {}),
     ...(attempt.medianAbsStartDeltaMs !== undefined ? { medianAbsStartDeltaMs: attempt.medianAbsStartDeltaMs } : {}),
     ...(attempt.maxAbsStartDeltaMs !== undefined ? { maxAbsStartDeltaMs: attempt.maxAbsStartDeltaMs } : {}),
+    ...(attempt.routeWarnings && attempt.routeWarnings.length > 0 ? { routeWarnings: attempt.routeWarnings } : {}),
   };
 }
 
@@ -542,6 +545,8 @@ async function alignNarrationOnce(args: {
       words?: Array<{ word: string; startMs: number; endMs: number }>;
       audioDurationMs?: number;
       speechCoverage?: SubtitleSpeechCoverage;
+      /** ADR 0056: spans the route could not prove complete. It no longer refuses them. */
+      warnings?: Array<{ code: string; fromMs?: number; toMs?: number }>;
     }>("/api/videos/transcribe", {
       audioUrl: args.audioUrl,
       scriptPrompt: args.narrationText.slice(0, 800),
@@ -562,9 +567,30 @@ async function alignNarrationOnce(args: {
       );
       return { status: "timeout", durationMs: Date.now() - startedAt, ttsCaptions };
     }
-    const alignment = alignTranscriptWordsToSourceDetailed(args.narrationText, response.words ?? []);
+    const routeWarnings = Array.isArray(response.warnings) ? response.warnings : [];
+    const evidence = routeWarnings.length > 0 ? { routeWarnings } : {};
+    // The route ships a partial transcript instead of refusing it (ADR 0056), so THIS caller
+    // now owns the verdict its 422 used to carry: a drifted timeline, or one whose slice
+    // budget was spent, must never become the render clock. Failing here is not a refusal —
+    // the provider's deterministic clock renders, exactly as when alignment throws.
+    const disqualifying = routeWarnings.find(
+      (warning) => warning?.code === "transcribe_desynced" || warning?.code === "chunk_recovery_exhausted",
+    );
+    if (disqualifying) {
+      console.warn(
+        `[mcp-worker] subtitle alignment rejected by the transcribe route (${disqualifying.code}) — rendering on the provider clock`,
+      );
+      return { status: "failed", code: disqualifying.code, durationMs: Date.now() - startedAt, ttsCaptions, ...evidence };
+    }
+    // word_timing_incomplete arrives as words: [] — there is no acoustic clock to promote.
+    // (transcribe_incomplete may proceed: speechCoverage carries the uncovered tail.)
+    const responseWords = response.words ?? [];
+    if (responseWords.length === 0) {
+      return { status: "failed", code: "word_timing_incomplete", durationMs: Date.now() - startedAt, ttsCaptions, ...evidence };
+    }
+    const alignment = alignTranscriptWordsToSourceDetailed(args.narrationText, responseWords);
     if (alignment.status !== "aligned") {
-      return { status: "failed", code: alignment.code, durationMs: Date.now() - startedAt, ttsCaptions };
+      return { status: "failed", code: alignment.code, durationMs: Date.now() - startedAt, ttsCaptions, ...evidence };
     }
     // Reuse only proven word timestamps; every visible character still comes from the
     // canonical narration so ASR normalisation can never rewrite what the viewer reads.
@@ -575,6 +601,7 @@ async function alignNarrationOnce(args: {
         code: "canonical_caption_projection_failed",
         durationMs: Date.now() - startedAt,
         ttsCaptions,
+        ...evidence,
       };
     }
     return {
@@ -593,6 +620,7 @@ async function alignNarrationOnce(args: {
         fullText: args.narrationText,
       },
       speechCoverage: response.speechCoverage,
+      ...evidence,
     };
   } catch (error) {
     return {

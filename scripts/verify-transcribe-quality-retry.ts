@@ -2,6 +2,12 @@
 // Run: npx tsx scripts/verify-transcribe-quality-retry.ts
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { SUBTITLE_SPEECH_TAIL_TOLERANCE_MS } from "../src/lib/subtitle-speech-coverage";
+import {
+  classifyExhaustedSlice,
+  mergeTranscribeWarning,
+  type TranscribeWarning,
+} from "../src/lib/transcribe-partial-coverage";
 import {
   TRANSCRIBE_CHUNK_TARGET_MS,
   chunkTranscriptionReferenceDurationMs,
@@ -261,6 +267,113 @@ async function main() {
     1,
     "an exhausted slice still carries the captions the route has to keep",
   );
+
+  // ── What an exhausted slice REPORTS (the shipped rule, not a replica) ──────
+  // The route measures coverage on the RAW provider timeline, because
+  // sanitizeChunkTimeline() linearly rescales an overshoot back inside the slice —
+  // measuring after it turned every real desync into a bogus "transcribe_incomplete".
+  const GAP_MS = SUBTITLE_SPEECH_TAIL_TOLERANCE_MS;
+
+  {
+    // Production overshoot: 71.14s slice, provider timeline runs to 96.0s.
+    const desynced = classifyExhaustedSlice({
+      preSanitizeCoveredEndMs: 96_000,
+      referenceMs: 71_140,
+      hasUsableWords: true,
+      gapThresholdMs: GAP_MS,
+    });
+    assert.deepEqual(
+      desynced,
+      [{ code: "transcribe_desynced", fromMs: 71_140, toMs: 96_000 }],
+      "a pre-sanitize overshoot is reported as transcribe_desynced, never as incomplete",
+    );
+    // The same result measured AFTER the rescale (what the first cut of this fix did):
+    // sanitizeChunkTimeline pulls the tail back onto the slice end, which would look like
+    // perfect coverage and silently drop the desync finding.
+    assert.deepEqual(
+      classifyExhaustedSlice({
+        preSanitizeCoveredEndMs: 71_140,
+        referenceMs: 71_140,
+        hasUsableWords: true,
+        gapThresholdMs: GAP_MS,
+      }),
+      [],
+      "post-rescale coverage looks perfect — proof the raw timeline is the only usable input",
+    );
+  }
+
+  {
+    // Rejected purely for an unusable word clock: the captions DO cover the slice.
+    const wordsOnly = classifyExhaustedSlice({
+      preSanitizeCoveredEndMs: 60_000,
+      referenceMs: 60_000,
+      hasUsableWords: false,
+      gapThresholdMs: GAP_MS,
+    });
+    assert.deepEqual(
+      wordsOnly,
+      [{ code: "word_timing_incomplete" }],
+      "full coverage + no word clock reports only word_timing_incomplete (no zero-span incomplete)",
+    );
+  }
+
+  {
+    const shortfall = classifyExhaustedSlice({
+      preSanitizeCoveredEndMs: 46_900,
+      referenceMs: 60_000,
+      hasUsableWords: true,
+      gapThresholdMs: GAP_MS,
+    });
+    assert.deepEqual(
+      shortfall,
+      [{ code: "transcribe_incomplete", fromMs: 46_900, toMs: 60_000 }],
+      "a real shortfall past the tolerance is transcribe_incomplete over the uncovered span",
+    );
+    assert.deepEqual(
+      classifyExhaustedSlice({
+        preSanitizeCoveredEndMs: 60_000 - Math.floor(GAP_MS / 2),
+        referenceMs: 60_000,
+        hasUsableWords: true,
+        gapThresholdMs: GAP_MS,
+      }),
+      [],
+      "a shortfall inside the speech-tail tolerance is not a finding at all",
+    );
+    assert.deepEqual(
+      classifyExhaustedSlice({
+        preSanitizeCoveredEndMs: 0,
+        referenceMs: 0,
+        hasUsableWords: true,
+        gapThresholdMs: GAP_MS,
+      }),
+      [],
+      "unknown slice duration disables the coverage comparison",
+    );
+  }
+
+  // ── the span merge that keeps one bad chunk from emitting a dozen entries ──
+  {
+    const merged: TranscribeWarning[] = [];
+    for (const [from, to] of [[60_037, 75_046], [75_046, 90_055], [90_055, 105_064], [105_064, 120_073]]) {
+      mergeTranscribeWarning(merged, "chunk_recovery_exhausted", from, to);
+    }
+    assert.deepEqual(
+      merged,
+      [{ code: "chunk_recovery_exhausted", fromMs: 60_037, toMs: 120_073 }],
+      "adjacent same-code spans merge into the one unverified region",
+    );
+    mergeTranscribeWarning(merged, "chunk_recovery_exhausted", 150_000, 160_000);
+    assert.equal(merged.length, 2, "a detached span stays its own finding");
+
+    const wholeClip: TranscribeWarning[] = [];
+    mergeTranscribeWarning(wholeClip, "word_timing_incomplete");
+    mergeTranscribeWarning(wholeClip, "word_timing_incomplete");
+    assert.deepEqual(
+      wholeClip,
+      [{ code: "word_timing_incomplete" }],
+      "the same whole-clip finding reported by two layers is not duplicated",
+    );
+  }
 
   // Route contract, read from the source of truth. These are the assertions that
   // actually guard the 2026-08-27..30 regression (upload jobs died with

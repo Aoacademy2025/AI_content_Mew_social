@@ -1734,7 +1734,13 @@ function LegacyVideoEditorPage() {
       signal: abortControllerRef.current?.signal,
     });
     const data = await res.json();
-    if (!res.ok && useAvatar) {
+    // ADR 0056: the route no longer refuses a drifted transcript — it ships it with a
+    // `transcribe_desynced` warning. For an avatar clip that verdict must still take the
+    // spoken-script fallback it used to take on the 422, or the burned subtitles run ahead
+    // of the voice. Every other warning ships the transcript as before.
+    const routeWarnings: { code?: unknown }[] = Array.isArray(data?.warnings) ? data.warnings : [];
+    const transcriptDesynced = routeWarnings.some((w) => w?.code === "transcribe_desynced");
+    if ((!res.ok || transcriptDesynced) && useAvatar) {
       const AVG_CHAR_WIDTH_RATIO = 0.47;
       const maxCardChars = Math.max(10, Math.floor((1080 - 160) / (subFontSize * AVG_CHAR_WIDTH_RATIO)));
       const fallback = captionsFromSpokenScript(
@@ -1752,6 +1758,9 @@ function LegacyVideoEditorPage() {
         setCaptions(sceneCaptions);
         setSplitMode("sentence");
         setStep("transcribe", "done", `${sceneCaptions.length} ซับ · Avatar fallback`);
+        console.warn(
+          `[editor] avatar transcribe fallback: ${res.ok ? "transcribe_desynced warning" : `HTTP ${res.status}`}`,
+        );
         return sceneCaptions;
       }
     }

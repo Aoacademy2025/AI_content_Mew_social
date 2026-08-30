@@ -35,6 +35,7 @@ type SubtitleVerificationEvidence = {
   ttsCaptions?: Array<{ startMs: number; endMs: number }>;
   medianAbsStartDeltaMs?: number;
   maxAbsStartDeltaMs?: number;
+  routeWarnings?: Array<{ code?: string; fromMs?: number; toMs?: number }>;
 };
 type JobOutput = {
   subtitleQa?: { status?: string; code?: string; timingSource?: string };
@@ -744,6 +745,105 @@ async function main() {
       countCalls(calls, "/api/videos/transcribe") === transcribeBeforeResume,
       "J: resuming an avatar job never re-runs the acoustic alignment",
     );
+  }
+
+  // ── K. The transcribe route reports a drifted transcript instead of refusing it ──
+  // Since ADR 0056 the route answers 200 with a `transcribe_desynced` warning where it used
+  // to answer 422. The 422 was what kept a drifted ASR clock off the render; that verdict now
+  // lives here. Failing the alignment is NOT a refusal — the provider clock renders — and the
+  // route's own findings are persisted as evidence.
+  {
+    const speech = "ทดสอบซับที่ไม่ตรงจังหวะ";
+    const calls: Call[] = [];
+    const job = await createJob({ script: speech, previewMode: true, voiceProvider: "gemini" });
+    const pipeline = geminiPipeline({
+      calls,
+      speech,
+      durationMs: 3_000,
+      voiceUrl: "/api/renders/desynced-narration.wav",
+      // Text-perfect words that WOULD align — only the route's verdict may stop them.
+      transcribe: async () => ({
+        words: spokenWords(speech, 3_000),
+        audioDurationMs: 3_000,
+        speechCoverage: { source: "silence_analysis", spokenEndMs: 2_800 },
+        warnings: [{ code: "transcribe_desynced", fromMs: 3_000, toMs: 3_900 }],
+      }),
+    });
+    await runOrchestrator(job.id, user.id, { caller: pipeline.caller, refundOneClip: async () => {}, sleep: async () => {} });
+    const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    const output = parseOutput(completed.outputJson);
+    const verification = verificationOf(output);
+    check(completed.status === "done", `K: a desynced-transcript warning still delivers the clip (got ${completed.status})`);
+    check(output.subtitleQa?.timingSource === "tts_segment_timing",
+      `K: the drifted ASR clock never becomes the render clock (got ${output.subtitleQa?.timingSource})`);
+    check(verification.status === "failed", `K: the alignment is recorded as failed (got ${String(verification.status)})`);
+    check(verification.code === "transcribe_desynced",
+      `K: the route's own verdict is the recorded code (got ${String(verification.code)})`);
+    check(verification.routeWarnings?.length === 1 && verification.routeWarnings[0]?.code === "transcribe_desynced",
+      `K: every route warning is persisted as evidence (got ${JSON.stringify(verification.routeWarnings)})`);
+    check(countCalls(calls, "/api/videos/transcribe") === 1, "K: the route verdict never buys a second transcribe call");
+    check(countCalls(calls, "/api/videos/tts-gemini") === 1, "K: the route verdict never regenerates the narration");
+  }
+
+  // ── L. A partial-tail warning is evidence only — it may still promote the clock ──
+  // `transcribe_incomplete` means the tail was not covered; speechCoverage already carries
+  // that, and the words that WERE returned are real. Refusing them would be the gate ADR 0056
+  // removed, so the alignment proceeds and the warning rides along as evidence.
+  {
+    const speech = "ซับส่วนใหญ่ตรงเสียงอยู่แล้ว";
+    const calls: Call[] = [];
+    const job = await createJob({ script: speech, previewMode: true, voiceProvider: "gemini" });
+    const pipeline = geminiPipeline({
+      calls,
+      speech,
+      durationMs: 3_000,
+      voiceUrl: "/api/renders/partial-tail-narration.wav",
+      transcribe: async () => ({
+        words: spokenWords(speech, 3_000),
+        audioDurationMs: 3_000,
+        speechCoverage: { source: "silence_analysis", spokenEndMs: 2_800 },
+        warnings: [{ code: "transcribe_incomplete", fromMs: 2_400, toMs: 2_800 }],
+      }),
+    });
+    await runOrchestrator(job.id, user.id, { caller: pipeline.caller, refundOneClip: async () => {}, sleep: async () => {} });
+    const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    const output = parseOutput(completed.outputJson);
+    const verification = verificationOf(output);
+    check(completed.status === "done", `L: a partial-tail warning still delivers the clip (got ${completed.status})`);
+    check(output.subtitleQa?.timingSource === "forced_alignment",
+      `L: transcribe_incomplete does not disqualify the acoustic clock (got ${output.subtitleQa?.timingSource})`);
+    check(verification.status === "aligned", `L: the alignment is recorded as aligned (got ${String(verification.status)})`);
+    check(verification.routeWarnings?.[0]?.code === "transcribe_incomplete",
+      `L: the warning still rides along as evidence (got ${JSON.stringify(verification.routeWarnings)})`);
+    check(countCalls(calls, "/api/videos/transcribe") === 1, "L: exactly one transcribe call");
+  }
+
+  // ── M. No word clock at all (word_timing_incomplete) fails naturally ──
+  {
+    const speech = "ไม่มีเวลาแต่ละคำให้ใช้";
+    const calls: Call[] = [];
+    const job = await createJob({ script: speech, previewMode: true, voiceProvider: "gemini" });
+    const pipeline = geminiPipeline({
+      calls,
+      speech,
+      durationMs: 3_000,
+      voiceUrl: "/api/renders/no-word-clock.wav",
+      transcribe: async () => ({
+        words: [],
+        audioDurationMs: 3_000,
+        speechCoverage: { source: "silence_analysis", spokenEndMs: 2_800 },
+        warnings: [{ code: "word_timing_incomplete" }],
+      }),
+    });
+    await runOrchestrator(job.id, user.id, { caller: pipeline.caller, refundOneClip: async () => {}, sleep: async () => {} });
+    const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    const output = parseOutput(completed.outputJson);
+    const verification = verificationOf(output);
+    check(completed.status === "done", `M: an empty word clock still delivers the clip (got ${completed.status})`);
+    check(output.subtitleQa?.timingSource === "tts_segment_timing",
+      `M: an empty word clock renders on the provider clock (got ${output.subtitleQa?.timingSource})`);
+    check(verification.status === "failed" && verification.code === "word_timing_incomplete",
+      `M: the empty word clock is recorded by name (got ${String(verification.status)}/${String(verification.code)})`);
   }
 
   await prisma.$disconnect();

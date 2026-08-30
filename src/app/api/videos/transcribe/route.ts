@@ -23,6 +23,12 @@ import {
   type ChunkResult,
 } from "@/lib/transcribe-timeline";
 import { repairCaptionTiming } from "@/lib/mcp/subtitle-quality";
+import {
+  classifyExhaustedSlice,
+  mergeTranscribeWarning,
+  type TranscribeWarning,
+  type TranscribeWarningCode,
+} from "@/lib/transcribe-partial-coverage";
 import { isSafeFetchUrl, assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { refundAiAudioMinutes, reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
@@ -953,34 +959,11 @@ export async function POST(req: Request) {
     // Every span this route could not prove complete is reported here and the
     // caller keeps whatever WAS transcribed. The only remaining blocking case is
     // "nothing to show" (zero captions) — see the response builder below.
-    type TranscribeWarningCode =
-      | "transcribe_incomplete"
-      | "transcribe_desynced"
-      | "word_timing_incomplete"
-      | "chunk_recovery_exhausted";
-    const warnings: { code: TranscribeWarningCode; fromMs?: number; toMs?: number }[] = [];
+    // The merge/classification rules live in @/lib/transcribe-partial-coverage so
+    // the verification fixtures assert the shipped rule, not a copy of it.
+    const warnings: TranscribeWarning[] = [];
     const pushWarning = (code: TranscribeWarningCode, fromMs?: number, toMs?: number) => {
-      const from = Number.isFinite(fromMs) ? Math.max(0, Math.round(fromMs as number)) : undefined;
-      const to = Number.isFinite(toMs) ? Math.max(0, Math.round(toMs as number)) : undefined;
-      // Slices are reported in timeline order, so adjacent failures of the same
-      // kind describe ONE unverified region — merge them instead of emitting a
-      // dozen entries for a single bad chunk.
-      const last = warnings[warnings.length - 1];
-      if (
-        last && last.code === code
-        && from !== undefined && to !== undefined
-        && last.fromMs !== undefined && last.toMs !== undefined
-        && from <= last.toMs && to >= last.fromMs
-      ) {
-        last.fromMs = Math.min(last.fromMs, from);
-        last.toMs = Math.max(last.toMs, to);
-        return;
-      }
-      warnings.push({
-        code,
-        ...(from !== undefined ? { fromMs: from } : {}),
-        ...(to !== undefined ? { toMs: to } : {}),
-      });
+      mergeTranscribeWarning(warnings, code, fromMs, toMs);
     };
 
     if (useGeminiTranscribe) {
@@ -1293,14 +1276,20 @@ export async function POST(req: Request) {
             // deterministically (rescale overshoot, drop degenerate words) and ship it with
             // the finding attached rather than refusing the clip.
             const referenceMs = speechCoverage?.spokenEndMs ?? sourceAudioDurationMs;
+            // Measured BEFORE sanitizeChunkTimeline: it rescales an overshooting timeline
+            // back inside the audio, which would disguise a desync as an "incomplete".
+            const preSanitizeCoveredEndMs = quality.result.geminiDirectCaptions.at(-1)?.endMs ?? 0;
             const sanitized = sanitizeChunkTimeline(quality.result, sourceAudioDurationMs);
-            const coveredMs = sanitized.geminiDirectCaptions.at(-1)?.endMs ?? 0;
             console.warn(
-              `[transcribe] single-call attempts exhausted — keeping ${(coveredMs / 1000).toFixed(1)}s `
-              + `of ${(referenceMs / 1000).toFixed(1)}s speech`,
+              `[transcribe] single-call attempts exhausted — keeping `
+              + `${(preSanitizeCoveredEndMs / 1000).toFixed(1)}s of ${(referenceMs / 1000).toFixed(1)}s speech`,
             );
-            if (referenceMs > 0 && coveredMs > referenceMs) pushWarning("transcribe_desynced", referenceMs, coveredMs);
-            else if (referenceMs > 0) pushWarning("transcribe_incomplete", coveredMs, referenceMs);
+            for (const warning of classifyExhaustedSlice({
+              preSanitizeCoveredEndMs,
+              referenceMs,
+              hasUsableWords: !sanitized.stats.wordsDegenerate,
+              gapThresholdMs: INCOMPLETE_TRANSCRIBE_GAP_MS,
+            })) pushWarning(warning.code, warning.fromMs, warning.toMs);
             words = sanitized.words; segments = sanitized.segments;
             geminiDirectCaptions = sanitized.geminiDirectCaptions; fullText = sanitized.fullText;
           } else {

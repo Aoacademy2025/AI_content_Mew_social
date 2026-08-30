@@ -15,6 +15,10 @@ import {
   type SanitizedChunk,
 } from "../src/lib/transcribe-timeline";
 import { repairCaptionTiming } from "../src/lib/mcp/subtitle-quality";
+import {
+  mergeTranscribeWarning,
+  type TranscribeWarning,
+} from "../src/lib/transcribe-partial-coverage";
 
 let passed = 0;
 function check(name: string, cond: boolean) { assert.ok(cond, name); console.log("✓ " + name); passed++; }
@@ -200,13 +204,13 @@ function respondFromChunk(chunk: SanitizedChunk, audioDurationMs: number): {
   status: number;
   captions: { text: string; startMs: number; endMs: number }[];
   words: { word: string; startMs: number; endMs: number }[];
-  warnings: { code: string; fromMs?: number; toMs?: number }[];
+  warnings: TranscribeWarning[];
 } {
-  const warnings: { code: string; fromMs?: number; toMs?: number }[] = [];
+  const warnings: TranscribeWarning[] = [];
   const words = chunk.words
     .map((w) => ({ word: w.word.trim(), startMs: Math.round(w.start * 1000), endMs: Math.round(w.end * 1000) }))
     .filter((w) => w.word.length > 0);
-  if (words.length === 0) warnings.push({ code: "word_timing_incomplete" });
+  if (words.length === 0) mergeTranscribeWarning(warnings, "word_timing_incomplete");
   const repaired = repairCaptionTiming(chunk.geminiDirectCaptions, audioDurationMs);
   return {
     status: repaired.captions.length > 0 ? 200 : 422,
