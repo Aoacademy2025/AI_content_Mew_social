@@ -323,6 +323,98 @@ async function main() {
     "legacy export retimes the burn overlay while preserving card style",
   );
 
+  // A preview that already exhausted Gemini acoustic retries must remain
+  // exportable. Export preserves the explicit degraded timing source instead
+  // of repeating the same unstable ASR gate and blocking the classroom user.
+  const fallbackExportScript = "คอนเทนต์ช่วยพาเพลงไปหาเพื่อนใหม่";
+  const fallbackSource = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "done",
+      type: "create",
+      inputJson: JSON.stringify({ script: fallbackExportScript, previewMode: true, voiceProvider: "gemini" }),
+      outputJson: JSON.stringify({
+        version: 2,
+        mode: "preview",
+        videoUrl: "/renders/fallback-source.mp4",
+        subtitleQa: {
+          status: "passed",
+          timingSource: "generated_tts_fallback",
+          textExact: true,
+          captionCount: 1,
+          audioDurationMs: 2_000,
+        },
+        preview: {
+          captions: [{ text: fallbackExportScript, startMs: 0, endMs: 2_000 }],
+          words: [{
+            word: fallbackExportScript,
+            startMs: 0,
+            endMs: 2_000,
+            startChar: 0,
+            endChar: fallbackExportScript.length,
+          }],
+          fullText: fallbackExportScript,
+          config: { durationInFrames: 60 },
+          voiceUrl: "/api/renders/fallback-source.wav",
+          audioDurationMs: 2_000,
+          avatarModel: "none",
+          avatarVideoUrl: null,
+        },
+      }),
+      progress: 100,
+      finishedAt: new Date(),
+    },
+  });
+  const fallbackExport = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "processing",
+      type: "export",
+      inputJson: JSON.stringify({
+        mode: "export",
+        sourceJobId: fallbackSource.id,
+        subtitleOverlayConfig: {
+          videoUrl: "/renders/fallback-source.mp4",
+          durationInFrames: 60,
+          keywordPopups: [{ text: fallbackExportScript, start: 0, end: 60 }],
+        },
+      }),
+    },
+  });
+  let fallbackExportTranscribeCalls = 0;
+  await runOrchestrator(fallbackExport.id, user.id, {
+    caller: {
+      post: async <T,>(path: string): Promise<T> => {
+        if (path === "/api/videos/transcribe") {
+          fallbackExportTranscribeCalls += 1;
+          throw new Error("generated fallback export must not repeat exhausted ASR");
+        }
+        if (path === "/api/videos/render") return { jobId: "fallback-export-burn" } as T;
+        if (path === "/api/videos") return { id: "fallback-export-gallery" } as T;
+        throw new Error(`unexpected fallback export POST ${path}`);
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(path: string): Promise<T> => {
+        if (path.startsWith("/api/videos/render-progress")) {
+          return { progress: 100, stage: "done", videoUrl: "/renders/fallback-final.mp4", error: null } as T;
+        }
+        throw new Error(`unexpected fallback export GET ${path}`);
+      },
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const fallbackExportCompleted = await prisma.videoJob.findUniqueOrThrow({ where: { id: fallbackExport.id } });
+  const fallbackExportOutput = JSON.parse(fallbackExportCompleted.outputJson ?? "{}") as {
+    subtitleQa?: { timingSource?: string };
+  };
+  check(fallbackExportCompleted.status === "done", "generated TTS fallback preview exports successfully");
+  check(fallbackExportTranscribeCalls === 0, "fallback export does not repeat exhausted Gemini ASR");
+  check(
+    fallbackExportOutput.subtitleQa?.timingSource === "generated_tts_fallback",
+    "fallback export preserves its explicit degraded timing evidence",
+  );
+
   const canonicalScript = "รายได้ 5,000 บาท!";
   const protectedSource = await prisma.videoJob.create({
     data: {

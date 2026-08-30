@@ -29,10 +29,20 @@ function segLabel(i: number, total: number) {
   return `เนื้อหา ${i}`;
 }
 
-export function Step1Script({ p, onNext, firstClipPath = false }: { p: V2Project; onNext: () => void; firstClipPath?: boolean }) {
+export function Step1Script({
+  p,
+  onNext,
+  firstClipPath = false,
+  firstClipScriptOnly = false,
+}: {
+  p: V2Project;
+  onNext: () => void;
+  firstClipPath?: boolean;
+  firstClipScriptOnly?: boolean;
+}) {
   useEffect(() => {
-    if (firstClipPath && p.mode !== "script") p.setMode("script");
-  }, [firstClipPath, p.mode, p.setMode]);
+    if (firstClipScriptOnly && p.mode !== "script") p.setMode("script");
+  }, [firstClipScriptOnly, p.mode, p.setMode]);
   const lines = useMemo(() => p.script.split("\n").filter(l => l.trim().length > 0), [p.script]);
   // นับจากข้อความที่ clean แล้ว (ตรงกับที่ TTS จะอ่านจริง) — สูตรความยาว calibrate ใน estimate.ts
   const totalSec = useMemo(() => estimateClipSecV2(p.script), [p.script]);
@@ -77,7 +87,9 @@ export function Step1Script({ p, onNext, firstClipPath = false }: { p: V2Project
       style={ctaDisabled ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
       onClick={onNext}
     >
-      {firstClipPath ? "ถัดไป: เลือกเสียงแล้วสร้างคลิปแรก →" : "ถัดไป: เลือกองค์ประกอบ →"}
+      {firstClipPath && p.mode === "script"
+        ? "ถัดไป: เลือกเสียงแล้วสร้างคลิปแรก →"
+        : "ถัดไป: เลือกองค์ประกอบ →"}
     </BtnPrimary>
   );
 
@@ -86,8 +98,8 @@ export function Step1Script({ p, onNext, firstClipPath = false }: { p: V2Project
     <div className="flex min-h-0 flex-1 max-lg:flex-col max-lg:overflow-y-auto">
       {/* ── เนื้อหาซ้าย ── */}
       <div className="flex min-w-0 flex-1 flex-col gap-4 lg:overflow-y-auto max-lg:overflow-visible px-7 py-6">
-        {/* การ์ดเลือกโหมด 2 ใบ — First-Clip Path stays on Narrative Source only */}
-        {firstClipPath ? null : (
+        {/* Conversion Trial stays on Narrative Source; paid-equivalent users retain upload. */}
+        {firstClipScriptOnly ? null : (
         <div className="grid grid-cols-2 gap-2.5 max-lg:grid-cols-1">
           <ModeCard
             selected={p.mode === "script"}
@@ -108,7 +120,7 @@ export function Step1Script({ p, onNext, firstClipPath = false }: { p: V2Project
         )}
 
         {/* โหมดอัปคลิปเอง (cutaway) */}
-        {p.mode === "upload" && !firstClipPath ? (
+        {p.mode === "upload" && !firstClipScriptOnly ? (
           <div
             className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4 p-6"
             style={{ borderRadius: 13, background: color.cardBg, border: `1px solid ${color.cardBorder}` }}

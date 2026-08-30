@@ -1,4 +1,4 @@
-import { decideFirstClipPath } from "../src/lib/first-clip-path";
+import { decideFirstClipPath, requiresFirstClipScript } from "../src/lib/first-clip-path";
 
 let failures = 0;
 function check(name: string, ok: boolean) {
@@ -25,6 +25,14 @@ check(
     conversionTrial: true,
     hasCompletedVideo: false,
   }).reason === "conversion_trial",
+);
+check(
+  "GRANT/paid users can upload their first clip",
+  !requiresFirstClipScript({ onPath: true, reason: "on_path" }),
+);
+check(
+  "Conversion Trial keeps the guided script-only first clip",
+  requiresFirstClipScript({ onPath: true, reason: "conversion_trial" }),
 );
 check(
   "FREE with no trial stays off the path",

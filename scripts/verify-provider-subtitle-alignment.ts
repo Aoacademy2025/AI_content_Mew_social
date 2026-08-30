@@ -279,6 +279,94 @@ async function main() {
   check(exhaustedTtsCalls === 1, "retry exhaustion never regenerates narration for a technical failure");
   check(exhaustedRenderCalls === 0, "retry exhaustion stops before render spend");
 
+  // Production 2026-08-30: Gemini generated the narration successfully, but
+  // repeated ASR projections disagreed with the long authored script. A whole
+  // user retry cannot improve this deterministically. After the existing TTS
+  // regeneration budget is exhausted, continue with canonical source captions
+  // and explicit generated-TTS fallback timing instead of failing pre-render.
+  const fallbackScript = "เพลง ดี ต้อง มี แผน คอนเทนต์ 3 มุม";
+  const fallbackJob = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "processing",
+      type: "create",
+      inputJson: JSON.stringify({
+        script: fallbackScript,
+        previewMode: true,
+        voiceProvider: "gemini",
+      }),
+    },
+  });
+  let fallbackTtsCalls = 0;
+  let fallbackTranscribeCalls = 0;
+  let fallbackRenderCalls = 0;
+  await runOrchestrator(fallbackJob.id, user.id, {
+    caller: {
+      post: async <T,>(path: string): Promise<T> => {
+        if (path === "/api/videos/tts-gemini") {
+          fallbackTtsCalls += 1;
+          return {
+            voiceUrl: `/api/renders/fallback-narration-${fallbackTtsCalls}.wav`,
+            audioDurationMs: 4_000,
+            timing: {
+              provider: "gemini",
+              segments: [{ text: fallbackScript, startMs: 0, durationMs: 4_000 }],
+              chars: null,
+            },
+          } as T;
+        }
+        if (path === "/api/videos/transcribe") {
+          fallbackTranscribeCalls += 1;
+          return {
+            words: [
+              { word: "ข้อความ", startMs: 100, endMs: 900 },
+              { word: "คนละ", startMs: 900, endMs: 1_500 },
+              { word: "ชุด", startMs: 1_500, endMs: 2_000 },
+            ],
+            audioDurationMs: 4_000,
+            speechCoverage: { source: "silence_analysis", spokenEndMs: 2_000 },
+          } as T;
+        }
+        if (path === "/api/videos/extract-keywords") {
+          return { keywords: ["content"], keywordsPerScene: 5, sceneClipCounts: [1], sceneDurations: [4] } as T;
+        }
+        if (path === "/api/videos/fetch-stock") return { results: [{ src: "stock.mp4" }] } as T;
+        if (path === "/api/videos/generate-config") {
+          return { config: { durationInFrames: 120, voiceFile: "/api/renders/fallback-narration-2.wav", bgVideos: [] } } as T;
+        }
+        if (path === "/api/videos/render") {
+          fallbackRenderCalls += 1;
+          return { jobId: "fallback-base-render" } as T;
+        }
+        throw new Error(`unexpected fallback POST ${path}`);
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(path: string): Promise<T> => {
+        if (path.startsWith("/api/videos/render-progress")) {
+          return { progress: 100, stage: "done", videoUrl: "/api/renders/fallback-base.mp4", error: null } as T;
+        }
+        throw new Error(`unexpected fallback GET ${path}`);
+      },
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const completedFallback = await prisma.videoJob.findUniqueOrThrow({ where: { id: fallbackJob.id } });
+  const fallbackOutput = parseVideoJobOutput(completedFallback.outputJson);
+  check(completedFallback.status === "done", "repeated Gemini ASR text drift no longer blocks preview render");
+  check(fallbackTtsCalls === 2, "Gemini keeps exactly one TTS regeneration before degraded fallback");
+  check(fallbackTranscribeCalls === 2, "each generated narration attempt receives one acoustic check");
+  check(fallbackRenderCalls === 1, "degraded fallback reaches render exactly once");
+  check(fallbackOutput?.subtitleQa?.status === "passed", "generated TTS fallback still passes canonical text and timeline QA");
+  check(
+    fallbackOutput?.subtitleQa?.timingSource === "generated_tts_fallback",
+    "generated TTS fallback is persisted without claiming forced alignment",
+  );
+  check(
+    fallbackOutput?.preview?.fullText === fallbackScript,
+    "generated TTS fallback keeps the immutable Narration Master text",
+  );
+
   const elevenScript = "เก็บเงิน\n5,000\u200Bบาท ทุกเดือน.....";
   const elevenSpeechScript = "เก็บเงิน 5,000 บาท ทุกเดือน...";
   const characters = Array.from(elevenSpeechScript);

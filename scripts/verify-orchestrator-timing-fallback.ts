@@ -319,6 +319,39 @@ check(
   changedNumericEvidence === null,
 );
 
+// Production 2026-08-30: list markers such as `1.`, `2.`, `3.` may be omitted
+// entirely by Gemini ASR. Missing evidence is not the same as contradictory
+// evidence: it may use generated-TTS fallback timing, while an observed
+// different number must remain a hard numeric failure.
+const numberedListScript =
+  "เพลง ดี ต้อง มี แผน คอนเทนต์ อย่าง น้อย 3 มุม เพื่อ พา เพลง ไป หา เพื่อน ใหม่";
+const numberedListWithoutMarker = [
+  "เพลง", "ดี", "ต้อง", "มี", "แผน", "คอนเทนต์", "อย่าง", "น้อย",
+  "มุม", "เพื่อ", "พา", "เพลง", "ไป", "หา", "เพื่อน", "ใหม่",
+].map((word, index) => ({ word, startMs: index * 300, endMs: index * 300 + 260 }));
+const missingListMarker = alignTranscriptWordsToSourceDetailed(
+  numberedListScript,
+  numberedListWithoutMarker,
+);
+check(
+  "an omitted list marker is unverified alignment rather than a changed numeric claim",
+  missingListMarker.status === "failed" && missingListMarker.code === "incomplete_alignment",
+  JSON.stringify(missingListMarker),
+);
+const numberedListWithChangedMarker = [
+  "เพลง", "ดี", "ต้อง", "มี", "แผน", "คอนเทนต์", "อย่าง", "น้อย", "สี่",
+  "มุม", "เพื่อ", "พา", "เพลง", "ไป", "หา", "เพื่อน", "ใหม่",
+].map((word, index) => ({ word, startMs: index * 300, endMs: index * 300 + 260 }));
+const changedListMarker = alignTranscriptWordsToSourceDetailed(
+  numberedListScript,
+  numberedListWithChangedMarker,
+);
+check(
+  "an observed different list number remains a hard numeric failure",
+  changedListMarker.status === "failed" && changedListMarker.code === "numeric_claim_mismatch",
+  JSON.stringify(changedListMarker),
+);
+
 const overlapFailure = alignTranscriptWordsToSourceDetailed(script, [
   { word: "ประหยัด", startMs: 100, endMs: 700 },
   { word: "เงิน", startMs: 650, endMs: 850 },
@@ -452,6 +485,52 @@ check(
   estimatedWithSpacingIssue.status === "failed"
     && estimatedWithSpacingIssue.code === "unverified_alignment"
     && subtitleQualityShouldFailJob(estimatedWithSpacingIssue) === true,
+);
+
+// Production 2026-08-30: generated Gemini audio remained authoritative and
+// every displayed character still came from the Narration Master, but repeated
+// ASR projections disagreed enough to block the preview before render. After
+// acoustic retries are exhausted, deterministic provider segment timing is an
+// explicitly degraded (not word-accurate) release source. Text and timeline
+// safety checks remain fail-closed.
+const generatedTtsFallback = validateSubtitleQuality({
+  script,
+  captions,
+  audioDurationMs: 3_000,
+  timingSource: "generated_tts_fallback",
+});
+check(
+  "generated TTS fallback releases canonical captions after acoustic retries are exhausted",
+  generatedTtsFallback.status === "passed"
+    && generatedTtsFallback.textExact === true
+    && subtitleQualityShouldFailJob(generatedTtsFallback) === false,
+  JSON.stringify(generatedTtsFallback),
+);
+const changedGeneratedTtsFallback = validateSubtitleQuality({
+  script,
+  captions: captions.map((caption, index) => index === 1 ? { ...caption, text: "500 บาท" } : caption),
+  audioDurationMs: 3_000,
+  timingSource: "generated_tts_fallback",
+});
+check(
+  "generated TTS fallback still blocks a changed numeric claim",
+  changedGeneratedTtsFallback.status === "failed"
+    && changedGeneratedTtsFallback.code === "text_mismatch"
+    && subtitleQualityShouldFailJob(changedGeneratedTtsFallback) === true,
+  JSON.stringify(changedGeneratedTtsFallback),
+);
+const invalidGeneratedTtsFallback = validateSubtitleQuality({
+  script,
+  captions: captions.map((caption, index) => index === 2 ? { ...caption, endMs: 3_500 } : caption),
+  audioDurationMs: 3_000,
+  timingSource: "generated_tts_fallback",
+});
+check(
+  "generated TTS fallback still blocks timing outside the generated audio",
+  invalidGeneratedTtsFallback.status === "failed"
+    && invalidGeneratedTtsFallback.code === "timing_out_of_bounds"
+    && subtitleQualityShouldFailJob(invalidGeneratedTtsFallback) === true,
+  JSON.stringify(invalidGeneratedTtsFallback),
 );
 
 const lostInternalSpace = validateSubtitleQuality({

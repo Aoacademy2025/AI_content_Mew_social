@@ -13,7 +13,11 @@ async function main() {
   const jobsRoute = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
   assert.match(jobsRoute, /ensureFirstClipProjectSpine/, "job create pins First-Clip Brand Profile Revision");
   assert.match(jobsRoute, /resolveFirstClipPath/, "job create consults First-Clip Path");
-  assert.match(jobsRoute, /first_clip_script_required/, "First-Clip Path rejects upload/cutaway");
+  assert.match(
+    jobsRoute,
+    /requiresFirstClipScript\(firstClip\) && uploadMode/,
+    "only the Conversion Trial First-Clip Path rejects upload/cutaway",
+  );
   assert.match(jobsRoute, /onFirstClipPath && projectId && !uploadMode/, "First-Clip Path snapshots awaiting Content Preflight");
   const sidebar = readFileSync("src/components/layout/sidebar.tsx", "utf8");
   assert.doesNotMatch(
@@ -50,6 +54,8 @@ async function main() {
   assert.match(brandsLayout, /redirect\("\/video-editor"\)/, "brands redirects while on the path");
   const editor = readFileSync("src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx", "utf8");
   assert.match(editor, /firstClipPath=\{firstClipPath\}/, "editor passes First-Clip Path into the script rail");
+  assert.match(editor, /requiresFirstClipScript/, "editor shares the server's first-clip upload policy");
+  assert.match(editor, /firstClipScriptOnly=\{firstClipScriptOnly\}/, "editor passes script-only policy into setup");
   assert.match(editor, /คลิปแรก: วางสคริปต์แล้วกดสร้าง/, "editor shows the First-Clip Path banner");
   const orchestrator = readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
   assert.match(orchestrator, /awaiting-content-preflight/, "worker runs Content Preflight from the awaiting snapshot");

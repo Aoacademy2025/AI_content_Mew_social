@@ -84,6 +84,7 @@ import {
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
 import { ensureFirstClipProjectSpine, resolveFirstClipPath } from "@/lib/first-clip-path.server";
+import { requiresFirstClipScript } from "@/lib/first-clip-path";
 import { resolveManagedStockAccess } from "@/lib/managed-stock.server";
 
 // POST /api/videos/jobs — Editor v2 background render (ADR 0001).
@@ -494,7 +495,7 @@ export async function POST(req: Request) {
         estimatedDurationSec: fullAvatarDurationViolation.durationSec,
       }, { status: 400 });
     }
-    if (onFirstClipPath && uploadMode) {
+    if (requiresFirstClipScript(firstClip) && uploadMode) {
       return NextResponse.json(
         { error: "first_clip_script_required", message: "คลิปแรกใช้สคริปต์ ไม่ใช่คลิปที่ถ่ายเอง" },
         { status: 400 },
