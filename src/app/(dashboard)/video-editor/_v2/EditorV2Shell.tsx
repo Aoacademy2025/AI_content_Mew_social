@@ -86,7 +86,18 @@ export function EditorV2Shell() {
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
   const [firstClipPath, setFirstClipPath] = useState(false);
-  const { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, resumeExportEditSnapshot, markPreviewMissing } = useV2Job(p);
+  const {
+    job,
+    submit,
+    submitExport,
+    cancel,
+    reset,
+    adoptJob,
+    resumeJob,
+    resumeFailedExportPreview,
+    resumeExportEditSnapshot,
+    markPreviewMissing,
+  } = useV2Job(p);
   const isMobile = useIsMobile();
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projects, setProjects] = useState<ProjectMenuItem[]>([]);
@@ -756,8 +767,8 @@ export function EditorV2Shell() {
             toast.success("เปลี่ยนเป็น Faceless แล้ว — พร้อมลองสร้างใหม่");
           }}
           onBack={() => {
-            if (job.jobType === "export" && p.activeJobId) {
-              resumeJob(p.activeJobId);
+            if (job.jobType === "export") {
+              resumeFailedExportPreview();
               return;
             }
             reset();

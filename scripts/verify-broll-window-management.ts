@@ -68,6 +68,21 @@ assert.doesNotMatch(desktop, /onClick=\{onNewProject\}/u);
 assert.doesNotMatch(mobile, /onClick=\{onNewProject\}/u);
 assert.match(inspector, /อัปเดต B-roll แล้วส่งออก/u);
 
+// Support regression 2026-08-30 — after an applied B-roll preview becomes the
+// project's active source, the public Export route must reject every older source.
+const durableExportStart = jobsRoute.indexOf('if (body.mode === "export")');
+const durableExportEnd = jobsRoute.indexOf("\n    const projectId =", durableExportStart);
+assert.ok(durableExportStart >= 0 && durableExportEnd > durableExportStart, "durable Export route source is missing");
+const durableExportRoute = jobsRoute.slice(durableExportStart, durableExportEnd);
+const sourceGuardIndex = durableExportRoute.indexOf("assertCurrentEditorExportSource(");
+const durableCreateIndex = durableExportRoute.indexOf("createVideoJob(");
+assert.ok(sourceGuardIndex >= 0, "durable Export must assert the project's current preview source");
+assert.ok(
+  durableCreateIndex > sourceGuardIndex,
+  "durable Export must reject a stale source before creating a VideoJob",
+);
+assert.match(jobsRoute, /error:\s*"stale_export_source"/u);
+
 // Support regression #odqpq2 — toggling a baked B-roll window stages a free
 // re-render; the current video preview cannot change until the batch is applied.
 // The UI must say that explicitly both in the inspector and the sticky action bar.

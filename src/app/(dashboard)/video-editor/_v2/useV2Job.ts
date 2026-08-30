@@ -703,6 +703,16 @@ export function useV2Job(p: V2Project) {
     startPolling(jobId);
   }, [p.projectId, startPolling]);
 
+  /** Return from a failed Export to the exact preview source that Export attempted.
+   * `p.activeJobId` can still be the pre-edit project value in this mounted client after an
+   * in-place B-roll re-render was adopted, so it is only a legacy fallback. */
+  const resumeFailedExportPreview = useCallback(() => {
+    const previewJobId = lastPreviewJobIdRef.current ?? p.activeJobId;
+    if (!previewJobId) return;
+    try { browserStorage()?.setItem(storageKey(p.projectId), previewJobId); } catch {}
+    startPolling(previewJobId);
+  }, [p.activeJobId, p.projectId, startPolling]);
+
   /** Restore the exact native editor state captured by a completed export. The active
    * source id moves back to the preview job for future edits/exports, while localStorage
    * deliberately keeps the durable export id so a refresh can recover this snapshot again. */
@@ -725,5 +735,16 @@ export function useV2Job(p: V2Project) {
       : current);
   }, [stopPolling]);
 
-  return { job, submit, submitExport, cancel, reset, adoptJob, resumeJob, resumeExportEditSnapshot, markPreviewMissing };
+  return {
+    job,
+    submit,
+    submitExport,
+    cancel,
+    reset,
+    adoptJob,
+    resumeJob,
+    resumeFailedExportPreview,
+    resumeExportEditSnapshot,
+    markPreviewMissing,
+  };
 }

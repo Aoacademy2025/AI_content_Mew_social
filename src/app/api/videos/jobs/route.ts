@@ -27,7 +27,10 @@ import { resolveKieImageAccess } from "@/lib/kie-image-guards";
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import { parseAutoMixReceiptImageCeiling } from "@/lib/automix-plan";
 import { normalizeBrollRegionPreference, normalizeBrollVisualStyle } from "@/lib/broll-preferences";
-import { assertEditorProjectOwner } from "@/lib/editor-projects";
+import {
+  assertCurrentEditorExportSource,
+  assertEditorProjectOwner,
+} from "@/lib/editor-projects";
 import { validateWindowEdits } from "@/lib/broll-rerender";
 import { BrandAssetError } from "@/lib/brand-assets.server";
 import { BrandProfileLibraryError } from "@/lib/brand-profile-library.server";
@@ -343,6 +346,7 @@ export async function POST(req: Request) {
       if (srcJob.status !== "done") return NextResponse.json({ error: "source_not_ready", message: "วิดีโอต้นฉบับยังไม่พร้อม" }, { status: 400 });
       if (!srcJob.projectId) return NextResponse.json({ error: "project_required", message: "โปรเจกต์นี้ยังไม่พร้อมสำหรับส่งออกแบบทำงานเบื้องหลัง" }, { status: 400 });
       const sourceProjectId = srcJob.projectId;
+      await assertCurrentEditorExportSource(user.id, sourceProjectId, sourceJobId);
       const parsed = parseVideoJobOutput(srcJob.outputJson);
       if (!parsed?.preview) return NextResponse.json({ error: "source_not_exportable", message: "วิดีโอต้นฉบับไม่มีข้อมูลสำหรับแก้ซับ/ส่งออก" }, { status: 400 });
       const editSnapshot = body.editorSnapshot === undefined
@@ -1017,6 +1021,15 @@ export async function POST(req: Request) {
     }
     if ((err as { code?: string })?.code === "project_not_found") {
       return NextResponse.json({ error: "project_not_found" }, { status: 404 });
+    }
+    if ((err as { code?: string })?.code === "stale_export_source") {
+      return NextResponse.json(
+        {
+          error: "stale_export_source",
+          message: "โปรเจกต์มีวิดีโอเวอร์ชันใหม่กว่า — กรุณากลับไปใช้เวอร์ชันล่าสุดแล้วส่งออกอีกครั้ง",
+        },
+        { status: 409 },
+      );
     }
     console.error("[api/videos/jobs] error:", err);
     return NextResponse.json({ error: "internal_error" }, { status: 500 });

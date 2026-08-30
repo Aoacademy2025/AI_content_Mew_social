@@ -383,3 +383,27 @@ export async function assertEditorProjectOwner(userId: string, projectId: string
   }
   return project.id;
 }
+
+/** Keep durable Export pinned to the latest preview the project has accepted.
+ * Legacy projects without an active preview remain exportable, but once an
+ * activeJobId exists an older preview must never be allowed to overwrite it. */
+export async function assertCurrentEditorExportSource(
+  userId: string,
+  projectId: string,
+  sourceJobId: string,
+): Promise<void> {
+  const project = await prisma.editorProject.findFirst({
+    where: { id: projectId, userId, status: { not: "archived" } },
+    select: { activeJobId: true },
+  });
+  if (!project) {
+    const error = new Error("project_not_found");
+    (error as { code?: string }).code = "project_not_found";
+    throw error;
+  }
+  if (project.activeJobId && project.activeJobId !== sourceJobId) {
+    const error = new Error("stale_export_source");
+    (error as { code?: string }).code = "stale_export_source";
+    throw error;
+  }
+}
