@@ -12,6 +12,7 @@ import {
   alignTranscriptWordsToSourceDetailed,
   alignTranscriptWordsToSource,
   buildCanonicalCaptionsFromAlignedWords,
+  repairCaptionTiming,
   retimeCanonicalCaptionsFromAlignedWords,
   resolveUploadTranscriptWords,
   subtitleQualityShouldFailJob,
@@ -551,9 +552,10 @@ check(
   subtitleQualityShouldFailJob(lostInternalSpace) === false,
 );
 
+const outOfBoundsCaptions = captions.map((caption, index) => index === 2 ? { ...caption, endMs: 3_500 } : caption);
 const outOfBounds = validateSubtitleQuality({
   script,
-  captions: captions.map((caption, index) => index === 2 ? { ...caption, endMs: 3_500 } : caption),
+  captions: outOfBoundsCaptions,
   audioDurationMs: 3_000,
   timingSource: "forced_alignment",
   speechCoverage: forcedAlignmentCoverage,
@@ -562,9 +564,25 @@ check(
   "captions outside the audio timeline are reported as timing_out_of_bounds",
   outOfBounds.status === "warning" && outOfBounds.code === "timing_out_of_bounds",
 );
+// The orchestrator repairs the timeline before the release inspection, so the same input
+// reaches the renderer inside the audio instead of failing the job.
+const repairedOutOfBounds = repairCaptionTiming(outOfBoundsCaptions, 3_000);
+const repairedOutOfBoundsQa = validateSubtitleQuality({
+  script,
+  captions: repairedOutOfBounds.captions,
+  audioDurationMs: 3_000,
+  timingSource: "forced_alignment",
+  speechCoverage: forcedAlignmentCoverage,
+});
 check(
   "timing_out_of_bounds is repaired by repairCaptionTiming, not failed",
-  subtitleQualityShouldFailJob(outOfBounds) === false,
+  subtitleQualityShouldFailJob(outOfBounds) === false
+    && repairedOutOfBounds.repaired
+    && repairedOutOfBounds.dropped === 0
+    && repairedOutOfBounds.captions.length === outOfBoundsCaptions.length
+    && (repairedOutOfBounds.captions.at(-1)?.endMs ?? 0) <= 3_000
+    && repairedOutOfBoundsQa.code !== "timing_out_of_bounds",
+  JSON.stringify(repairedOutOfBounds.captions),
 );
 const punctOnly = validateSubtitleQuality({
   script: "ครับ...",

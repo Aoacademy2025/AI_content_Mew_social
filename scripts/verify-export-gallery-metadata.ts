@@ -224,9 +224,9 @@ async function main() {
   }
 
   // Pre-release previews can contain exact script text but only an estimated
-  // Gemini segment clock. Export must recover on the already-generated audio,
-  // keep the user's caption cards/styles, and burn the acoustically retimed
-  // overlay instead of asking the customer to recreate the whole video.
+  // Gemini segment clock. ADR 0056: Export never re-aligns — it burns the creator's
+  // cards on the clock the preview already shipped, repairing only what is unrenderable
+  // (here a tail card that ran past the end of the audio).
   const legacyScript = "ในปี 2026 ประหยัดเงิน 5,000 บาท";
   const legacySource = await prisma.videoJob.create({
     data: {
@@ -288,19 +288,7 @@ async function main() {
       post: async <T,>(path: string, body: unknown): Promise<T> => {
         if (path === "/api/videos/transcribe") {
           legacyTranscribeCalls += 1;
-          const spoken = [
-            "ใน", "ปี", "สอง", "พัน", "ยี่สิบ", "หก",
-            "ประหยัด", "เงิน", "ห้า", "พัน", "บาท",
-          ];
-          return {
-            words: spoken.map((word, index) => ({
-              word,
-              startMs: 100 + index * 330,
-              endMs: 390 + index * 330,
-            })),
-            audioDurationMs: 4_000,
-            speechCoverage: { source: "silence_analysis", spokenEndMs: 3_900 },
-          } as T;
+          throw new Error("export must never re-align a legacy preview");
         }
         if (path === "/api/videos/render") {
           legacyBurnBody = body as Record<string, unknown>;
@@ -327,21 +315,25 @@ async function main() {
   });
   const legacyCompleted = await prisma.videoJob.findUniqueOrThrow({ where: { id: legacyExport.id } });
   const legacyOutput = JSON.parse(legacyCompleted.outputJson ?? "{}") as {
-    subtitleQa?: { timingSource?: string };
+    subtitleQa?: { status?: string; timingSource?: string };
     subtitleEvidence?: { audioDurationMs?: number };
   };
   const legacyBurnPopups = ((legacyBurnBody?.subtitleOverlayConfig as Record<string, unknown> | undefined)
     ?.keywordPopups ?? []) as Array<Record<string, unknown>>;
   check(legacyCompleted.status === "done", "legacy estimated preview exports without recreating the video");
-  check(legacyTranscribeCalls === 1, "legacy export verifies the existing narration audio exactly once");
-  check(legacyOutput.subtitleQa?.timingSource === "forced_alignment", "legacy export persists recovered acoustic evidence");
-  check(legacyOutput.subtitleEvidence?.audioDurationMs === 4_000, "legacy export trusts the measured replay-audio duration");
+  check(legacyTranscribeCalls === 0, "legacy export never re-aligns the existing narration audio");
+  check(
+    legacyOutput.subtitleQa?.timingSource === "tts_segment_timing" && legacyOutput.subtitleQa?.status === "warning",
+    `legacy export reports the estimated clock instead of claiming alignment (got ${legacyOutput.subtitleQa?.status}/${legacyOutput.subtitleQa?.timingSource})`,
+  );
+  check(legacyOutput.subtitleEvidence?.audioDurationMs === 3_500, "legacy export keeps the preview's own measured duration");
   check(
     legacyBurnPopups.length === 2
-      && legacyBurnPopups[0]?.start === 3
-      && Number(legacyBurnPopups[0]?.end) > 3
-      && legacyBurnPopups[0]?.color === "#fff",
-    "legacy export retimes the burn overlay while preserving card style",
+      && legacyBurnPopups[0]?.start === 0
+      && legacyBurnPopups[0]?.end === 60
+      && legacyBurnPopups[0]?.color === "#fff"
+      && legacyBurnPopups[1]?.end === 105,
+    "legacy export pulls the out-of-bounds card back inside the audio while preserving card style",
   );
 
   // A preview that already exhausted Gemini acoustic retries must remain
@@ -598,41 +590,54 @@ async function main() {
       }),
     },
   });
-  let blankCaptionSideEffects = 0;
+  let blankCaptionBurnCalls = 0;
+  let blankCaptionBurnBody: Record<string, unknown> | null = null;
   await runOrchestrator(blankCaptionExport.id, user.id, {
     caller: {
-      post: async <T,>(): Promise<T> => {
-        blankCaptionSideEffects += 1;
-        throw new Error("blank caption must fail before every pipeline POST");
+      post: async <T,>(path: string, body: unknown): Promise<T> => {
+        if (path === "/api/videos/render") {
+          blankCaptionBurnCalls += 1;
+          blankCaptionBurnBody = body as Record<string, unknown>;
+          return { jobId: "blank-caption-burn" } as T;
+        }
+        if (path === "/api/videos") return { id: "blank-caption-gallery" } as T;
+        throw new Error(`unexpected blank-caption POST ${path}`);
       },
       patch: async <T,>(): Promise<T> => ({} as T),
-      get: async <T,>(): Promise<T> => {
-        blankCaptionSideEffects += 1;
-        throw new Error("blank caption must fail before every pipeline GET");
-      },
+      get: async <T,>(): Promise<T> => ({
+        progress: 100,
+        stage: "done",
+        videoUrl: "/renders/blank-caption-final.mp4",
+        error: null,
+      } as T),
     },
     refundOneClip: async () => {},
     sleep: async () => {},
   });
-  // TODO(task-2): once the export path runs repairCaptionTiming, swap this fixture's
-  // throwing caller for a working one and assert the export COMPLETES with the blank
-  // card dropped. Until then these three checks prove only that subtitle QA stopped
-  // refusing the job — the fixture still fails on its deliberately throwing caller.
-  const blankCaptionBlocked = await prisma.videoJob.findUniqueOrThrow({ where: { id: blankCaptionExport.id } });
-  // TODO(task-2): becomes `=== "done"` once the blank card is dropped instead of burned.
+  const blankCaptionCompleted = await prisma.videoJob.findUniqueOrThrow({ where: { id: blankCaptionExport.id } });
+  const blankCaptionOutput = JSON.parse(blankCaptionCompleted.outputJson ?? "{}") as {
+    subtitleQa?: { code?: string };
+    subtitleEvidence?: { captions?: Array<{ text: string }> };
+  };
+  const blankCaptionBurnPopups = ((blankCaptionBurnBody?.subtitleOverlayConfig as Record<string, unknown> | undefined)
+    ?.keywordPopups ?? []) as Array<Record<string, unknown>>;
   check(
-    blankCaptionBlocked.status === "failed",
-    "blank-card export now stops on the fixture's throwing caller, not on subtitle QA",
+    blankCaptionCompleted.status === "done",
+    `a blank card is dropped, so the export completes (got ${blankCaptionCompleted.status}: ${blankCaptionCompleted.errorMessage ?? ""})`,
   );
   check(
-    blankCaptionBlocked.errorCode !== "subtitle_alignment_empty_caption",
-    `a blank card no longer refuses the export (got ${String(blankCaptionBlocked.errorCode)})`,
+    blankCaptionOutput.subtitleEvidence?.captions?.length === 1
+      && blankCaptionOutput.subtitleQa?.code !== "empty_caption",
+    `the blank card is dropped from the delivered captions (kept ${blankCaptionOutput.subtitleEvidence?.captions?.length})`,
   );
   check(
-    blankCaptionBlocked.errorMessage?.includes("พิมพ์ข้อความหรือลบ") !== true,
+    blankCaptionCompleted.errorMessage?.includes("พิมพ์ข้อความหรือลบ") !== true,
     "a blank card no longer produces the 'type or delete this card' refusal",
   );
-  check(blankCaptionSideEffects > 0, "a blank card reaches the render pipeline instead of being refused");
+  check(
+    blankCaptionBurnCalls === 1 && blankCaptionBurnPopups.length === 1,
+    `a blank card performs exactly one Burn and is not burned itself (burns=${blankCaptionBurnCalls}, popups=${blankCaptionBurnPopups.length})`,
+  );
 
   const hiddenSubtitleExport = await prisma.videoJob.create({
     data: {

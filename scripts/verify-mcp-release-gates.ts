@@ -132,10 +132,12 @@ async function main() {
   });
   let avatarRenderCount = 0;
   let avatarRefunds = 0;
+  let avatarTranscribeCount = 0;
   const avatarCaller = {
     post: async (path: string, body?: unknown) => {
       const key = path.split("?")[0];
       if (key === "/api/videos/transcribe") {
+        avatarTranscribeCount += 1;
         return {
           captions: [{ text: "ออมเงินให้เป็นนิสัย", startMs: 100, endMs: 2_800 }],
           words: [{ word: "ออมเงินให้เป็นนิสัย", startMs: 100, endMs: 2_800 }],
@@ -216,6 +218,15 @@ async function main() {
   });
   assert.equal(await prisma.renderJob.count({ where: { parentJobId: avatarJob.id, reservedQuota: true } }), 1);
   assert.equal(avatarRefunds, 0);
+  // ADR 0056: alignment runs once, before the provider wait. The resume path replays the
+  // checkpointed evidence instead of paying for another acoustic pass.
+  assert.equal(avatarOutput?.subtitleEvidence?.timingSource, "forced_alignment");
+  assert.equal(
+    (avatarOutput?.subtitleEvidence as { verification?: { status?: string } } | undefined)?.verification?.status,
+    "aligned",
+    "the resumed avatar job persists the verification evidence from its checkpoint",
+  );
+  assert.equal(avatarTranscribeCount, 1, "resuming an avatar job never re-runs the acoustic alignment");
   console.log("✓ resumed avatar job retains exactly one charge and exposes both release receipts");
 
   await prisma.$disconnect();

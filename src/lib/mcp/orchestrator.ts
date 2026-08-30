@@ -1,16 +1,16 @@
 import type { User } from "@prisma/client";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
-import {
-  subtitleTimingRequiresSpeechCoverage,
-  type SubtitleSpeechCoverage,
-} from "@/lib/subtitle-speech-coverage";
+import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
 import { prisma } from "@/lib/prisma";
 import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
 import {
   refundVideoJobBaseReservation,
   refundVideoJobTerminalRenderReservations,
 } from "@/lib/render/reservation-settlement";
-import { captionsFromTtsTiming } from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
+import {
+  captionsFromSpokenScript,
+  captionsFromTtsTiming,
+} from "@/app/(dashboard)/video-editor/_components/tts-timing-captions";
 import { estimateClipSecV2 } from "@/app/(dashboard)/video-editor/_v2/estimate";
 import {
   setJobStep,
@@ -85,7 +85,6 @@ import type { ScriptCard, TtsTiming } from "@/lib/tts-timing";
 import type { StockProvider } from "@/lib/key-preflight";
 import { audioDurationLimitViolation } from "@/lib/plan-limits";
 import { avatarBookendDurationViolation, avatarFullDurationViolation } from "@/lib/avatar-duration";
-import { subtitleAlignmentTechnicalRetryDirective } from "@/lib/mcp/subtitle-alignment-retry";
 import { minutesFromSeconds } from "@/lib/minute-limits";
 import { reconcileVideoJobFunding } from "@/lib/mcp/video-job-funding";
 import { resolveJobTtsProvider } from "@/lib/tts-providers";
@@ -113,7 +112,7 @@ import {
 import {
   alignTranscriptWordsToSourceDetailed,
   buildCanonicalCaptionsFromAlignedWords,
-  retimeCanonicalCaptionsFromAlignedWords,
+  repairCaptionTiming,
   resolveUploadTranscriptWords,
   subtitleQualityShouldFailJob,
   validateSubtitleQuality,
@@ -452,6 +451,159 @@ function alignBrollWindowsToKeywords(
     keywords: alignedKeywords,
     alternatives: alignedAlternatives,
   };
+}
+
+/**
+ * Evidence for the one acoustic alignment attempt a TTS-voice render is allowed to make
+ * (ADR 0056). It records the rung of the timing ladder that was reached and the clock that
+ * was NOT rendered, so subtitle accuracy can be measured later without another render.
+ */
+type SubtitleVerification = {
+  status: "aligned" | "failed" | "skipped" | "timeout";
+  /** Alignment failure code when status === "failed", or "card_count_mismatch" info. */
+  code?: string;
+  method?: "exact" | "fuzzy";
+  similarityPermille?: number;
+  durationMs: number;
+  /** Provider-clock cards — the timing that renders unless the alignment above succeeded. */
+  ttsCaptions: Array<{ startMs: number; endMs: number }>;
+  maxAbsStartDeltaMs?: number;
+  medianAbsStartDeltaMs?: number;
+};
+
+/** The verification plus the captions it produced; only the evidence half is persisted. */
+type SubtitleAlignmentAttempt = SubtitleVerification & {
+  capRes?: NonNullable<ReturnType<typeof captionsFromTtsTiming>>;
+  speechCoverage?: SubtitleSpeechCoverage;
+};
+
+function subtitleVerificationEvidence(attempt: SubtitleAlignmentAttempt): SubtitleVerification {
+  return {
+    status: attempt.status,
+    durationMs: attempt.durationMs,
+    ttsCaptions: attempt.ttsCaptions,
+    ...(attempt.code ? { code: attempt.code } : {}),
+    ...(attempt.method ? { method: attempt.method } : {}),
+    ...(attempt.similarityPermille !== undefined ? { similarityPermille: attempt.similarityPermille } : {}),
+    ...(attempt.medianAbsStartDeltaMs !== undefined ? { medianAbsStartDeltaMs: attempt.medianAbsStartDeltaMs } : {}),
+    ...(attempt.maxAbsStartDeltaMs !== undefined ? { maxAbsStartDeltaMs: attempt.maxAbsStartDeltaMs } : {}),
+  };
+}
+
+const SUBTITLE_VERIFY_BUDGET_DEFAULT_MS = 180_000;
+const SUBTITLE_VERIFY_TIMED_OUT = Symbol("subtitle_verify_timed_out");
+
+/** Wall-clock budget for the one alignment call. Read at call time, never cached, so the
+ *  knob answers to the current environment. */
+function subtitleVerifyBudgetMs(): number {
+  const configured = Number(process.env.SUBTITLE_VERIFY_BUDGET_MS ?? SUBTITLE_VERIFY_BUDGET_DEFAULT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : SUBTITLE_VERIFY_BUDGET_DEFAULT_MS;
+}
+
+/** How far the acoustic clock moved each card off the provider clock (same card count only). */
+function startDeltaStats(
+  captions: Array<{ startMs: number }>,
+  ttsCaptions: Array<{ startMs: number }>,
+): { medianAbsStartDeltaMs: number; maxAbsStartDeltaMs: number } | null {
+  if (captions.length === 0 || captions.length !== ttsCaptions.length) return null;
+  const deltas = captions
+    .map((caption, index) => Math.abs(Math.round(caption.startMs - ttsCaptions[index].startMs)))
+    .sort((a, b) => a - b);
+  const middle = Math.floor(deltas.length / 2);
+  return {
+    medianAbsStartDeltaMs: deltas.length % 2 === 0
+      ? Math.round((deltas[middle - 1] + deltas[middle]) / 2)
+      : deltas[middle],
+    maxAbsStartDeltaMs: deltas[deltas.length - 1],
+  };
+}
+
+/**
+ * ONE bounded acoustic alignment of the known narration against its own generated audio.
+ *
+ * Never throws, never retries, never causes provider spend. When it succeeds the caller
+ * renders from this word timing (`forced_alignment`); on any other outcome the caller keeps
+ * the provider's deterministic clock and this result is persisted as the reason why.
+ */
+async function alignNarrationOnce(args: {
+  caller: PipelineCaller;
+  audioUrl: string;
+  narrationText: string;
+  maxCardChars: number;
+  budgetMs: number;
+  audioDurationMs: number;
+  ttsCaptions: Array<{ startMs: number; endMs: number }>;
+}): Promise<SubtitleAlignmentAttempt> {
+  const startedAt = Date.now();
+  const ttsCaptions = args.ttsCaptions;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const request = args.caller.post<{
+      words?: Array<{ word: string; startMs: number; endMs: number }>;
+      audioDurationMs?: number;
+      speechCoverage?: SubtitleSpeechCoverage;
+    }>("/api/videos/transcribe", {
+      audioUrl: args.audioUrl,
+      scriptPrompt: args.narrationText.slice(0, 800),
+      script: args.narrationText,
+    }, { retries: 0 });
+    // The caller exposes no cancellation seam: an over-budget request is abandoned, not
+    // aborted, so its eventual rejection must be swallowed here or it crashes the worker.
+    request.catch(() => {});
+    const response = await Promise.race([
+      request,
+      new Promise<typeof SUBTITLE_VERIFY_TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => resolve(SUBTITLE_VERIFY_TIMED_OUT), args.budgetMs);
+      }),
+    ]);
+    if (response === SUBTITLE_VERIFY_TIMED_OUT) {
+      console.warn(
+        `[mcp-worker] subtitle alignment exceeded ${args.budgetMs}ms — abandoned, rendering on the provider clock`,
+      );
+      return { status: "timeout", durationMs: Date.now() - startedAt, ttsCaptions };
+    }
+    const alignment = alignTranscriptWordsToSourceDetailed(args.narrationText, response.words ?? []);
+    if (alignment.status !== "aligned") {
+      return { status: "failed", code: alignment.code, durationMs: Date.now() - startedAt, ttsCaptions };
+    }
+    // Reuse only proven word timestamps; every visible character still comes from the
+    // canonical narration so ASR normalisation can never rewrite what the viewer reads.
+    const captions = buildCanonicalCaptionsFromAlignedWords(args.narrationText, alignment.words, args.maxCardChars);
+    if (!captions || captions.length === 0) {
+      return {
+        status: "failed",
+        code: "canonical_caption_projection_failed",
+        durationMs: Date.now() - startedAt,
+        ttsCaptions,
+      };
+    }
+    return {
+      status: "aligned",
+      method: alignment.method,
+      similarityPermille: Math.round(alignment.similarity * 1_000),
+      durationMs: Date.now() - startedAt,
+      ttsCaptions,
+      ...(startDeltaStats(captions, ttsCaptions) ?? { code: "card_count_mismatch" }),
+      capRes: {
+        captions,
+        words: alignment.words,
+        audioDurationMs: Number(response.audioDurationMs) > 0
+          ? Math.round(Number(response.audioDurationMs))
+          : args.audioDurationMs,
+        fullText: args.narrationText,
+      },
+      speechCoverage: response.speechCoverage,
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      code: pipelineFailureDetails(error)?.code ?? "transcribe_request_failed",
+      durationMs: Date.now() - startedAt,
+      ttsCaptions,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function runOrchestrator(jobId: string, userId: string, deps: OrchestratorDeps = {}): Promise<void> {
@@ -811,17 +963,27 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
         speechCoverage: checkpoint.speechCoverage,
       });
+      // The alignment already ran before the provider wait; the resume path only re-reports
+      // it (ADR 0056) and replays the evidence the checkpoint carries.
+      const subtitleVerification = checkpoint.subtitleVerification;
       if (subtitleQa.status !== "passed") {
         emitTelemetry({
-          name: "subtitle_quality_gate_failed",
-          category: "error",
+          name: "subtitle_quality_report",
+          category: subtitleQa.status === "failed" ? "error" : "pipeline",
           source: "server",
           step: "captions",
           status: subtitleQa.code,
-          properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleQa.timingSource, failJob: subtitleQualityShouldFailJob(subtitleQa) },
+          properties: {
+            pipelineRunId,
+            jobId,
+            via: "mcp",
+            provider,
+            timingSource: subtitleQa.timingSource,
+            resumedFrom: "avatar_checkpoint",
+          },
         });
         if (subtitleQualityShouldFailJob(subtitleQa)) {
-          throw new Error(`ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`);
+          throw new Error(`ไม่มีข้อความซับสำหรับคลิปนี้ (${subtitleQa.code}) — กรุณาตรวจสคริปต์แล้วลองใหม่`);
         }
       }
 
@@ -836,6 +998,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           mode: "preview",
           videoUrl: compositeUrl,
           subtitleQa,
+          subtitleEvidence: {
+            captions,
+            words: checkpoint.words,
+            fullText: checkpoint.fullText,
+            audioDurationMs: checkpoint.audioDurationMs,
+            timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
+            speechCoverage: checkpoint.speechCoverage,
+            ...(subtitleVerification ? { verification: subtitleVerification } : {}),
+          },
           preview: {
             captions,
             config: checkpoint.baseConfig,
@@ -907,6 +1078,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           audioDurationMs: checkpoint.audioDurationMs,
           timingSource: checkpoint.subtitleTimingSource ?? "tts_segment_timing",
           speechCoverage: checkpoint.speechCoverage,
+          ...(subtitleVerification ? { verification: subtitleVerification } : {}),
         },
         ...(billingReceipt ? { billingReceipt } : {}),
       });
@@ -1236,10 +1408,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const canonicalScript = sourceInput?.mode === "upload" || sourceSubtitleQa?.timingSource === "upload_transcription"
         ? finalCaptions.map((caption) => caption.text).join("")
         : preview.fullText?.trim() || sourceInput?.script?.trim() || "";
-      let exportTimingSource: SubtitleTimingSource = sourceSubtitleQa?.timingSource
+      const exportTimingSource: SubtitleTimingSource = sourceSubtitleQa?.timingSource
         ?? (sourceInput?.mode === "upload" ? "upload_transcription" : "tts_segment_timing");
-      let exportWords = preview.words ?? [];
-      let exportAudioDurationMs = preview.audioDurationMs;
+      const exportWords = preview.words ?? [];
+      const exportAudioDurationMs = preview.audioDurationMs;
       let exportSpeechCoverage = preview.speechCoverage ?? sourceSubtitleQa?.speechCoverage;
       if (!exportSpeechCoverage && exportTimingSource === "upload_transcription") {
         const spokenEndMs = finalCaptions.reduce((max, caption) => Math.max(max, caption.endMs), 0);
@@ -1251,86 +1423,28 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         }
       }
       let exportOverlayConfig = input.subtitleOverlayConfig;
-      const sourceNeedsAlignmentRecovery = !sourceSubtitleQa
-        || subtitleQualityShouldFailJob(sourceSubtitleQa)
-        || exportTimingSource === "tts_segment_timing"
-        || exportTimingSource === "avatar_script_clock"
-        || (subtitleTimingRequiresSpeechCoverage(exportTimingSource) && !exportSpeechCoverage);
-
-      if (sourceNeedsAlignmentRecovery) {
-        if (!preview.voiceUrl || !canonicalScript.trim()) {
-          throw new SubtitleAlignmentFailureError(
-            "วิดีโอต้นฉบับไม่มีเสียงหรือข้อความสำหรับตรวจซับ — กรุณาติดต่อทีมงาน",
-            "missing_legacy_replay_evidence",
-            sourceInput?.voiceProvider,
-          );
+      // ADR 0056: Export never re-aligns and never refuses a creator's edit. Timing is
+      // repaired deterministically (blank cards dropped, cards clamped inside the audio);
+      // everything else is reported with the job.
+      const repairedExport = repairCaptionTiming(finalCaptions, exportAudioDurationMs ?? 0);
+      finalCaptions = repairedExport.captions;
+      if (repairedExport.dropped > 0 && subtitlesVisible) {
+        // A dropped blank card must not be burned either. Removing exactly the empty popups
+        // (never by index) keeps every remaining card's own style, and the projection below
+        // still refuses to touch a track whose card count no longer matches.
+        const visiblePopups = overlayPopups.filter((candidate) =>
+          !!candidate
+          && typeof candidate === "object"
+          && !Array.isArray(candidate)
+          && typeof (candidate as { text?: unknown }).text === "string"
+          && (candidate as { text: string }).text.trim().length > 0);
+        if (visiblePopups.length === finalCaptions.length) {
+          exportOverlayConfig = { ...exportOverlayConfig, keywordPopups: visiblePopups };
         }
-        const aligned = await caller.post<{
-          words?: Array<{ word: string; startMs: number; endMs: number }>;
-          audioDurationMs?: number;
-          speechCoverage?: SubtitleSpeechCoverage;
-        }>("/api/videos/transcribe", {
-          audioUrl: preview.voiceUrl,
-          scriptPrompt: canonicalScript.slice(0, 800),
-          script: canonicalScript,
-        });
-        const recoveredAlignment = alignTranscriptWordsToSourceDetailed(
-          canonicalScript,
-          aligned.words ?? [],
-        );
-        if (recoveredAlignment.status === "failed") {
-          throw new SubtitleAlignmentFailureError(
-            "ตรวจเวลา subtitle จากเสียงเดิมไม่สำเร็จ — ระบบยังไม่ส่งออกเพื่อป้องกันซับเหลื่อม",
-            recoveredAlignment.code,
-            sourceInput?.voiceProvider,
-          );
-        }
-        const retimedCaptions = retimeCanonicalCaptionsFromAlignedWords(
-          canonicalScript,
-          finalCaptions,
-          recoveredAlignment.words,
-        );
-        if (!retimedCaptions) {
-          throw new SubtitleAlignmentFailureError(
-            "ซับที่แก้ไว้ไม่ตรงกับข้อความต้นฉบับ — กรุณาตรวจข้อความ subtitle อีกครั้ง",
-            "legacy_caption_projection_failed",
-            sourceInput?.voiceProvider,
-          );
-        }
-        const retimedOverlay = retimeSubtitleOverlayConfig(
-          input.subtitleOverlayConfig,
-          retimedCaptions,
-        );
-        if (!retimedOverlay) {
-          throw new SubtitleAlignmentFailureError(
-            "ข้อมูลรูปแบบ subtitle เดิมไม่ครบสำหรับซ่อมเวลาอัตโนมัติ",
-            "legacy_overlay_projection_failed",
-            sourceInput?.voiceProvider,
-          );
-        }
-        finalCaptions = retimedCaptions;
-        exportWords = recoveredAlignment.words;
-        if (Number(aligned.audioDurationMs) > 0) {
-          exportAudioDurationMs = Math.round(Number(aligned.audioDurationMs));
-        }
-        exportTimingSource = "forced_alignment";
-        exportSpeechCoverage = aligned.speechCoverage;
-        exportOverlayConfig = retimedOverlay;
-        emitTelemetry({
-          name: "subtitle_alignment_legacy_export_recovered",
-          category: "pipeline",
-          source: "server",
-          step: "captions",
-          status: "done",
-          properties: {
-            pipelineRunId,
-            jobId,
-            sourceJobId: src.id,
-            provider: sourceInput?.voiceProvider ?? "unknown",
-            method: recoveredAlignment.method,
-            similarityPermille: Math.round(recoveredAlignment.similarity * 1_000),
-          },
-        });
+      }
+      if (repairedExport.repaired) {
+        exportOverlayConfig = retimeSubtitleOverlayConfig(exportOverlayConfig, finalCaptions)
+          ?? exportOverlayConfig;
       }
       const exportSubtitleQa = validateSubtitleQuality({
         script: canonicalScript,
@@ -1339,18 +1453,31 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         timingSource: exportTimingSource,
         speechCoverage: exportSpeechCoverage,
       });
-      if (subtitleQualityShouldFailJob(exportSubtitleQa)) {
-        const code = exportSubtitleQa.status === "failed" ? exportSubtitleQa.code : "unknown";
-        const message = code === "empty_caption" && exportSubtitleQa.status === "failed"
-          ? `กล่องซับ #${(exportSubtitleQa.captionIndex ?? 0) + 1} ยังไม่มีข้อความ — กรุณาพิมพ์ข้อความหรือลบกล่องซับนี้ก่อนส่งออก`
-          : code === "text_mismatch" && exportSubtitleQa.status === "failed"
-          ? `ข้อความกล่องซับ #${(exportSubtitleQa.captionIndex ?? 0) + 1} ไม่ตรงกับเสียงบรรยาย — คืนข้อความให้ตรงกับเสียง หรือกลับไปแก้สคริปต์แล้วสร้างเสียงใหม่ก่อนส่งออก`
-          : `ซับไม่ผ่านการตรวจคุณภาพ (${code}) — ระบบหยุดก่อนส่งออก`;
-        throw new SubtitleAlignmentFailureError(
-          message,
-          code,
-          sourceInput?.voiceProvider,
-        );
+      if (exportSubtitleQa.status !== "passed") {
+        emitTelemetry({
+          name: "subtitle_quality_report",
+          category: exportSubtitleQa.status === "failed" ? "error" : "pipeline",
+          source: "server",
+          step: "burn",
+          status: exportSubtitleQa.code,
+          properties: {
+            pipelineRunId,
+            jobId,
+            via: "mcp",
+            mode: "export",
+            timingSource: exportTimingSource,
+            repaired: repairedExport.repaired,
+            dropped: repairedExport.dropped,
+          },
+        });
+        // Only "nothing to show" stops an export.
+        if (subtitleQualityShouldFailJob(exportSubtitleQa)) {
+          throw new SubtitleAlignmentFailureError(
+            "ไม่มีข้อความซับให้ส่งออก — เปิดชั้นซับหรือเพิ่มข้อความอย่างน้อย 1 กล่องก่อนส่งออก",
+            exportSubtitleQa.code,
+            sourceInput?.voiceProvider,
+          );
+        }
       }
       const voiceModel = await resolveExportGalleryVoiceModel(src, userId, user);
 
@@ -1834,7 +1961,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       if (avatarDurationViolation) throw new Error(avatarDurationViolation.message);
       return candidateDurationMs;
     };
-    let audioDurationMs = await prepareGeneratedTts(tts);
+    const audioDurationMs = await prepareGeneratedTts(tts);
 
     // 2. Captions (in-process, reuse the pure editor helper)
     await step("captions", 25);
@@ -1851,221 +1978,90 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       ? "provider_alignment"
       : "tts_segment_timing";
     let subtitleSpeechCoverage: SubtitleSpeechCoverage | undefined;
-    let alignmentRecoveryFailureCode: string | null = null;
-    let capRes: ReturnType<typeof captionsFromTtsTiming> = null;
-    const geminiRegenerationCodes = new Set([
-      "text_mismatch",
-      "numeric_claim_mismatch",
-      "numeric_context_mismatch",
-      "implausible_timing_density",
-      "overlapping_timing",
-      "canonical_caption_projection_failed",
-    ]);
-    const generatedTtsFallbackCodes = new Set([
-      "text_mismatch",
-      "incomplete_alignment",
-      "implausible_timing_density",
-      "overlapping_timing",
-      "canonical_caption_projection_failed",
-    ]);
-    const acousticAttempts = provider === "gemini" ? 2 : 1;
-    for (let acousticAttempt = 1; acousticAttempt <= acousticAttempts; acousticAttempt += 1) {
-      subtitleTimingSource = provider === "elevenlabs" ? "provider_alignment" : "tts_segment_timing";
-      subtitleSpeechCoverage = undefined;
-      alignmentRecoveryFailureCode = null;
-      const timingForCards = tts.timing as TtsTiming | null;
-      const fullTextForCards = (timingForCards?.segments ?? []).map((segment) => segment.text).join("");
-      let viralCards: ScriptCard[] | null = null;
-      if (wantsSentenceCards && fullTextForCards.length >= 120) {
-        try {
-          const split = await caller.post<{ cards?: ScriptCard[] }>("/api/videos/split-script", {
-            text: fullTextForCards,
-            maxCardChars: maxCardCharsFor(),
-          });
-          viralCards = Array.isArray(split.cards) ? split.cards : null;
-        } catch { /* fail-open → deterministic sentence cards */ }
-      }
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
-      if (provider !== "elevenlabs" || !capRes || capRes.captions.length === 0) {
-        // Gemini exposes estimated segment clocks, not acoustic word alignment. Verify every
-        // Gemini voice from the generated audio itself even when provider timing is present.
-        // ElevenLabs keeps its provider alignment, but uses this path when that alignment is
-        // missing or unusable. The TTS voice is authoritative (never the HeyGen mp4).
-        let completedAlignmentRetries = 0;
-        while (true) {
-          alignmentRecoveryFailureCode = null;
-          try {
-            const aligned = await caller.post<{
-              captions?: Array<{ text?: string; startMs?: number; endMs?: number; tag?: "hook" | "body" | "cta" }>;
-              words?: Array<{ word: string; startMs: number; endMs: number }>;
-              audioDurationMs?: number;
-              speechCoverage?: SubtitleSpeechCoverage;
-            }>("/api/videos/transcribe", {
-              audioUrl: tts.voiceUrl,
-              scriptPrompt: narrationText.slice(0, 800),
-              script: narrationText,
-            }, { retries: 0 });
-            const recoveredFullText = narrationText;
-            const recoveredAlignment = alignTranscriptWordsToSourceDetailed(
-              recoveredFullText,
-              aligned.words ?? [],
-            );
-            if (recoveredAlignment.status === "failed") {
-              alignmentRecoveryFailureCode = recoveredAlignment.code;
-            }
-            const recoveredWords = recoveredAlignment.status === "aligned"
-              ? recoveredAlignment.words
-              : null;
-            const canonicalCaptions = recoveredWords
-              ? buildCanonicalCaptionsFromAlignedWords(recoveredFullText, recoveredWords, maxCardCharsFor())
-              : null;
-            if (recoveredWords && canonicalCaptions) {
-              alignmentRecoveryFailureCode = null;
-              subtitleTimingSource = "forced_alignment";
-              subtitleSpeechCoverage = aligned.speechCoverage;
-              capRes = {
-                // Reuse only proven word timestamps and take every visible character
-                // from the literal TTS source. An incomplete word alignment is never
-                // promoted to forced_alignment evidence.
-                captions: canonicalCaptions,
-                words: recoveredWords,
-                audioDurationMs: Number(aligned.audioDurationMs) > 0
-                  ? Math.round(Number(aligned.audioDurationMs))
-                  : audioDurationMs,
-                fullText: recoveredFullText,
-              };
-              if (recoveredAlignment.status === "aligned" && recoveredAlignment.method === "fuzzy") {
-                emitTelemetry({
-                  name: "subtitle_alignment_fuzzy_recovered",
-                  category: "pipeline",
-                  source: "server",
-                  step: "captions",
-                  status: "done",
-                  properties: {
-                    pipelineRunId,
-                    jobId,
-                    via: "mcp",
-                    provider,
-                    similarityPermille: Math.round(recoveredAlignment.similarity * 1_000),
-                  },
-                });
-              }
-            } else if (recoveredWords) {
-              alignmentRecoveryFailureCode = "canonical_caption_projection_failed";
-            }
-          } catch (error) {
-            alignmentRecoveryFailureCode = pipelineFailureDetails(error)?.code ?? "transcribe_request_failed";
-            /* The release gate below rejects estimated timing if acoustic recovery fails. */
-          }
-
-          if (subtitleTimingSource === "forced_alignment") break;
-          const retry = subtitleAlignmentTechnicalRetryDirective(
-            alignmentRecoveryFailureCode,
-            completedAlignmentRetries,
-          );
-          if (!retry) break;
-
-          const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
-          if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
-          if (current?.status !== "processing") throw new Error("video_job_not_processing");
-          emitTelemetry({
-            name: "subtitle_alignment_technical_retry_scheduled",
-            category: "performance",
-            source: "server",
-            step: "captions",
-            status: alignmentRecoveryFailureCode ?? "unknown",
-            properties: {
-              pipelineRunId,
-              jobId,
-              via: "mcp",
-              provider,
-              nextAttempt: retry.nextAttempt,
-            },
-          });
-          console.warn(
-            `[mcp-worker] job ${jobId} subtitle alignment ${alignmentRecoveryFailureCode}; retrying transcription once`,
-          );
-          completedAlignmentRetries += 1;
-          await sleep(retry.delayMs);
-        }
-      }
-
-      if (subtitleTimingSource === "forced_alignment" || provider === "elevenlabs") break;
-      const shouldRegenerateGemini = provider === "gemini"
-        && acousticAttempt < acousticAttempts
-        && alignmentRecoveryFailureCode !== null
-        && geminiRegenerationCodes.has(alignmentRecoveryFailureCode);
-      if (!shouldRegenerateGemini) break;
-
-      const current = await prisma.videoJob.findUnique({ where: { id: jobId }, select: { status: true } });
-      if (current?.status === "canceled") throw new Error(VIDEO_JOB_CANCELED_ERROR);
-      if (current?.status !== "processing") throw new Error("video_job_not_processing");
-      emitTelemetry({
-        name: "subtitle_alignment_tts_retry_scheduled",
-        category: "performance",
-        source: "server",
-        step: "captions",
-        status: alignmentRecoveryFailureCode,
-        properties: {
-          pipelineRunId,
-          jobId,
-          via: "mcp",
-          provider,
-          nextAttempt: acousticAttempt + 1,
-        },
-      });
-      console.warn(
-        `[mcp-worker] job ${jobId} Gemini subtitle alignment ${alignmentRecoveryFailureCode}; regenerating TTS once`,
-      );
-      tts = await caller.post<{ voiceUrl: string; audioDurationMs?: number; timing?: unknown }>(
-        "/api/videos/tts-gemini",
-        { text: narrationText, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" },
-      );
-      audioDurationMs = await prepareGeneratedTts(tts);
+    const timingForCards = tts.timing as TtsTiming | null;
+    const fullTextForCards = (timingForCards?.segments ?? []).map((segment) => segment.text).join("");
+    let viralCards: ScriptCard[] | null = null;
+    if (wantsSentenceCards && fullTextForCards.length >= 120) {
+      try {
+        const split = await caller.post<{ cards?: ScriptCard[] }>("/api/videos/split-script", {
+          text: fullTextForCards,
+          maxCardChars: maxCardCharsFor(),
+        });
+        viralCards = Array.isArray(split.cards) ? split.cards : null;
+      } catch { /* fail-open → deterministic sentence cards */ }
     }
-    if (
-      provider === "gemini"
-      && subtitleTimingSource !== "forced_alignment"
-      && capRes
-      && alignmentRecoveryFailureCode
-      && generatedTtsFallbackCodes.has(alignmentRecoveryFailureCode)
-    ) {
-      // The narration audio was generated from the immutable Narration Master,
-      // and capRes takes every displayed character from that same source. When
-      // repeated ASR projections drift, retain the provider's deterministic
-      // segment clock as an explicit degraded fallback instead of making the
-      // user restart the whole job. Numeric claim/context failures are
-      // deliberately excluded and remain fail-closed.
-      subtitleTimingSource = "generated_tts_fallback";
-      subtitleSpeechCoverage = undefined;
-      emitTelemetry({
-        name: "subtitle_alignment_generated_tts_fallback",
-        category: "pipeline",
-        source: "server",
-        step: "captions",
-        status: "done",
-        properties: {
-          pipelineRunId,
-          jobId,
-          via: "mcp",
-          provider,
-          alignmentFailureCode: alignmentRecoveryFailureCode,
-        },
-      });
+
+    // ── Timing ladder (ADR 0056) ──────────────────────────────────────────────
+    // 1. The provider clock always renders unless something better is proven. It is exact
+    //    by arithmetic for ElevenLabs and deterministic for Gemini/Hero AI Voice.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capRes = captionsFromTtsTiming(tts.timing as any, audioDurationMs, maxCardCharsFor(), viralCards);
+    if (!capRes || capRes.captions.length === 0) {
+      // The provider returned no usable timing (the tts-gemini single-call fallback):
+      // spread the exact narration over the measured duration instead of refusing the clip.
+      capRes = captionsFromSpokenScript(narrationText, audioDurationMs, maxCardCharsFor());
+      subtitleTimingSource = "avatar_script_clock";
     }
     if (!capRes || capRes.captions.length === 0) {
       throw new SubtitleAlignmentFailureError(
-        "ไม่มี subtitle timing จาก TTS — ลองใหม่อีกครั้ง",
-        alignmentRecoveryFailureCode ?? "missing_timing",
+        "ไม่มีข้อความซับสำหรับคลิปนี้ (empty_captions) — กรุณาตรวจสคริปต์แล้วลองใหม่",
+        "empty_captions",
         provider,
       );
     }
+    const ttsCaptions = capRes.captions.map((caption) => ({ startMs: caption.startMs, endMs: caption.endMs }));
+
+    // 2. ONE bounded acoustic alignment (Gemini / Hero AI Voice — ElevenLabs already ships
+    //    real word timing). Success promotes it to the render clock; anything else keeps the
+    //    provider clock and is recorded. It never retries, never regenerates the narration.
+    let verification: SubtitleAlignmentAttempt = { status: "skipped", durationMs: 0, ttsCaptions };
+    if (provider !== "elevenlabs") {
+      verification = await alignNarrationOnce({
+        caller,
+        audioUrl: tts.voiceUrl,
+        narrationText,
+        maxCardChars: maxCardCharsFor(),
+        budgetMs: subtitleVerifyBudgetMs(),
+        audioDurationMs,
+        ttsCaptions,
+      });
+      emitTelemetry({
+        name: "subtitle_verification_done",
+        category: "pipeline",
+        source: "server",
+        step: "captions",
+        status: verification.status,
+        value: verification.durationMs,
+        properties: {
+          pipelineRunId,
+          jobId,
+          via: "mcp",
+          provider,
+          durationMs: verification.durationMs,
+          ...(verification.method ? { method: verification.method } : {}),
+          ...(verification.similarityPermille !== undefined ? { similarityPermille: verification.similarityPermille } : {}),
+          ...(verification.medianAbsStartDeltaMs !== undefined ? { medianAbsStartDeltaMs: verification.medianAbsStartDeltaMs } : {}),
+          ...(verification.maxAbsStartDeltaMs !== undefined ? { maxAbsStartDeltaMs: verification.maxAbsStartDeltaMs } : {}),
+          ...(verification.code ? { code: verification.code } : {}),
+        },
+      });
+      if (verification.status === "aligned" && verification.capRes) {
+        capRes = verification.capRes;
+        subtitleTimingSource = "forced_alignment";
+        subtitleSpeechCoverage = verification.speechCoverage;
+      }
+    }
+    const subtitleVerification = subtitleVerificationEvidence(verification);
+
     const baseCaptions = capRes.captions as OrchCaption[];
-    const captions = (input.subtitleMode && input.subtitleMode !== "sentence")
+    const wordModeCaptions = (input.subtitleMode && input.subtitleMode !== "sentence")
       ? cardsByWordCount(capRes.words, parseInt(input.subtitleMode), capRes.fullText)
       : baseCaptions;
     const durMs = capRes.audioDurationMs || audioDurationMs;
+    // 3. Deterministic timing repair: blank cards dropped, cards clamped inside the audio,
+    //    monotonic, never shorter than the render floor.
+    const repairedTiming = repairCaptionTiming(wordModeCaptions, durMs);
+    const captions = repairedTiming.captions;
     const subtitleQa = validateSubtitleQuality({
       script: capRes.fullText,
       captions,
@@ -2075,8 +2071,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     });
     if (subtitleQa.status !== "passed") {
       emitTelemetry({
-        name: "subtitle_quality_gate_failed",
-        category: "error",
+        name: "subtitle_quality_report",
+        category: subtitleQa.status === "failed" ? "error" : "pipeline",
         source: "server",
         step: "captions",
         status: subtitleQa.code,
@@ -2086,14 +2082,16 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           via: "mcp",
           provider,
           timingSource: subtitleTimingSource,
-          failJob: subtitleQualityShouldFailJob(subtitleQa),
-          ...(alignmentRecoveryFailureCode ? { alignmentFailureCode: alignmentRecoveryFailureCode } : {}),
+          repaired: repairedTiming.repaired,
+          dropped: repairedTiming.dropped,
+          verification: verification.status,
         },
       });
+      // Only "nothing to show" stops a render (ADR 0056); every other finding is a report.
       if (subtitleQualityShouldFailJob(subtitleQa)) {
         throw new SubtitleAlignmentFailureError(
-          `ซับไม่ผ่านการตรวจคุณภาพ (${subtitleQa.code}) — ระบบหยุดก่อนเรนเดอร์ กรุณาลองใหม่`,
-          alignmentRecoveryFailureCode ?? subtitleQa.code,
+          `ไม่มีข้อความซับสำหรับคลิปนี้ (${subtitleQa.code}) — กรุณาตรวจสคริปต์แล้วลองใหม่`,
+          subtitleQa.code,
           provider,
         );
       }
@@ -2337,6 +2335,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         fullText: capRes.fullText,
         subtitleTimingSource,
         speechCoverage: subtitleSpeechCoverage,
+        // Carried so the resume path delivers the same evidence without re-aligning.
+        subtitleVerification,
         baseConfig,
         avatar: {
           mode: input.avatarMode,
@@ -2371,6 +2371,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         mode: "preview",
         videoUrl: finalBase,
         subtitleQa,
+        subtitleEvidence: {
+          captions,
+          words: capRes.words,
+          fullText: capRes.fullText,
+          audioDurationMs: durMs,
+          timingSource: subtitleTimingSource,
+          speechCoverage: subtitleSpeechCoverage,
+          verification: subtitleVerification,
+        },
         preview: {
           captions,
           config: baseConfig,
@@ -2439,6 +2448,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         audioDurationMs: durMs,
         timingSource: subtitleTimingSource,
         speechCoverage: subtitleSpeechCoverage,
+        verification: subtitleVerification,
       },
       ...(billingReceipt ? { billingReceipt } : {}),
     });
