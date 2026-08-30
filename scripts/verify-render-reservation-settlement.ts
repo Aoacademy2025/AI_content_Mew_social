@@ -291,6 +291,91 @@ async function main() {
   );
   assert.equal((await checkMinuteQuota(minuteUser.id)).used, 0);
 
+  // R32/R34: avatar-steps.ts:147 throws this English cause, and the orchestrator's terminal
+  // catch now labels unknown step failures as "<prefix> (<code>): <cause>". The refund gate
+  // matches by substring so BOTH shapes still open the money path — the wrapped message is
+  // built with the SHIPPED classifier here, never a hand-written replica of it, so a change
+  // to the wrapping form fails this test instead of silently closing the gate.
+  {
+    const { classifyUnknownStepFailure } = await import("../src/lib/mcp/orchestrator");
+    const LEGACY_UNKNOWN_OUTCOME = "avatar generate has unknown provider outcome - manual recovery required";
+    const wrappedLegacyMessage = classifyUnknownStepFailure({
+      phaseName: "avatar",
+      code: "avatar_unknown",
+      cause: LEGACY_UNKNOWN_OUTCOME,
+    }).message;
+    assert.equal(
+      wrappedLegacyMessage,
+      `ประกอบ Avatar ไม่สำเร็จ (avatar_unknown): ${LEGACY_UNKNOWN_OUTCOME}`,
+      "the avatar cause is English/internal, so the classifier must wrap it with the step prefix + code",
+    );
+
+    const wrappedUser = await prisma.user.create({
+      data: {
+        id: "wrapped-legacy-user",
+        name: "Wrapped Legacy User",
+        email: "wrapped-legacy@example.com",
+        plan: "PRO",
+        minutesUsed: 4,
+        minutesLimit: 80,
+        usagePeriodStartedAt: new Date(),
+      },
+    });
+    const wrappedStart = new Date("2026-08-29T08:00:00.000Z");
+    for (const [shape, errorMessage] of [
+      ["wrapped", wrappedLegacyMessage],
+      ["bare", LEGACY_UNKNOWN_OUTCOME],
+    ] as const) {
+      await prisma.videoJob.create({
+        data: {
+          id: `legacy-avatar-${shape}-job`,
+          userId: wrappedUser.id,
+          status: "failed",
+          currentStep: "avatar",
+          inputJson: JSON.stringify({ script: "incident", avatarMode: "bookend", avatarId: "avatar-1" }),
+          errorMessage,
+          errorCode: shape === "wrapped" ? "avatar_unknown" : null,
+          createdAt: wrappedStart,
+          startedAt: wrappedStart,
+          finishedAt: new Date("2026-08-29T08:20:00.000Z"),
+        },
+      });
+      await prisma.renderJob.create({
+        data: {
+          id: `legacy-avatar-${shape}-render`,
+          userId: wrappedUser.id,
+          type: "RENDER",
+          status: "DONE",
+          payload: "{}",
+          reservedQuota: true,
+          reservedMinutes: 2,
+          createdAt: new Date("2026-08-29T08:10:00.000Z"),
+        },
+      });
+      const inspection = await inspectAvatarQuotaRefund({
+        videoJobId: `legacy-avatar-${shape}-job`,
+        renderJobId: `legacy-avatar-${shape}-render`,
+        confirmedLegacyHeygen402: true,
+      });
+      assert.equal(inspection.kind, "ready", `${shape} legacy message must still reach the refund gate: ${JSON.stringify(inspection)}`);
+      assert.equal(inspection.kind === "ready" ? inspection.legacyEvidenceRequired : null, true);
+      assert.equal(inspection.kind === "ready" ? inspection.amount : null, 2);
+      // The reviewed-confirmation guard still applies to both shapes.
+      assert.deepEqual(
+        await inspectAvatarQuotaRefund({
+          videoJobId: `legacy-avatar-${shape}-job`,
+          renderJobId: `legacy-avatar-${shape}-render`,
+        }),
+        {
+          kind: "rejected",
+          videoJobId: `legacy-avatar-${shape}-job`,
+          reason: "legacy_unknown_requires_confirmed_heygen_402",
+        },
+      );
+    }
+    console.log("ok: the avatar refund gate recognises both the bare and the step-prefixed legacy cause");
+  }
+
   await prisma.user.update({ where: { id: minuteUser.id }, data: { minutesUsed: 2 } });
   await prisma.videoJob.create({
     data: {

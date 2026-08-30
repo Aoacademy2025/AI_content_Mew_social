@@ -1,4 +1,3 @@
-import { compareSubtitleContentToNarration } from "@/lib/subtitle-content-contract";
 import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 
 export const MIN_CAPTION_CARD_MS = 300;
@@ -21,39 +20,31 @@ export type DeleteCaptionCardResult =
 
 export type CaptionExportPreflightResult =
   | { ok: true }
-  | { ok: false; reason: "blank_caption" | "spoken_content_changed"; index: number };
+  | { ok: false; reason: "blank_caption"; index: number };
 
 /**
  * Empty cards are useful while editing, but a visible empty subtitle cannot be
  * submitted: the durable export would otherwise fail later in the worker after
  * the UI has already switched into Rendering. A hidden subtitle layer is an
  * intentional no-subtitle export and must remain allowed.
+ *
+ * ADR 0056: export never re-aligns and never rejects a creator's text edit, no
+ * matter how far the caption text has drifted from the narration — only a blank
+ * card is flagged here (a helpful early hint; the server also drops blank cards
+ * independently). `narrationText`/`narrativeSourceKind` are still accepted
+ * because the one caller (usePostPhaseEditor.ts) still passes them, but the
+ * content-mismatch check they used to feed is gone.
  */
 export function captionExportPreflight(
   captions: readonly Pick<EditableCaptionCard, "text">[],
   subtitlesVisible: boolean,
+  // content edits are allowed (ADR 0056)
   narrationText?: string,
   narrativeSourceKind: EditorNarrativeSourceKind = "creator-script",
 ): CaptionExportPreflightResult {
   if (!subtitlesVisible) return { ok: true };
   const index = captions.findIndex((caption) => !caption.text.trim());
   if (index >= 0) return { ok: false, reason: "blank_caption", index };
-
-  // An upload has no immutable authored script: its editable transcript cards are
-  // the approved Narrative Source. Provider fullText may differ from the timed
-  // cards, so comparing against it creates an impossible-to-fix export block.
-  // Script-backed narration remains fail-closed against changed spoken content.
-  if (narrativeSourceKind !== "upload-transcript" && narrationText?.trim()) {
-    const comparison = compareSubtitleContentToNarration(narrationText, captions);
-    if (comparison.status === "content_mismatch") {
-      return {
-        ok: false,
-        reason: "spoken_content_changed",
-        index: comparison.captionIndex,
-      };
-    }
-  }
-
   return { ok: true };
 }
 

@@ -163,7 +163,7 @@ const blankCardQuality = validateSubtitleQuality({
 });
 check(
   "a blank inserted card has a specific actionable QA code",
-  blankCardQuality.status === "failed"
+  blankCardQuality.status === "warning"
     && blankCardQuality.code === "empty_caption"
     && blankCardQuality.captionIndex === 1,
   JSON.stringify(blankCardQuality),

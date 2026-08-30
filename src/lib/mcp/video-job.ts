@@ -24,6 +24,7 @@ import {
 } from "@/lib/editor-export-snapshot";
 import { compileNarrationPlan } from "@/lib/narration-plan";
 import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
+import type { TranscribeWarning } from "@/lib/transcribe-partial-coverage";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -44,7 +45,12 @@ function restartRequeueCount(errorMessage: string | null): number {
 // can never double-charge clip quota or HeyGen.
 const SAFE_TO_REQUEUE_STEPS = new Set(["tts", "captions", "keywords", "stock", "config"]);
 
-function withVideoJobSqliteRetry<T>(scope: string, operation: () => Promise<T>): Promise<T> {
+/**
+ * Shared transient-SQLite retry for every VideoJob read/write, exported so sibling modules
+ * (e.g. the stall watchdog) get the same P1008/P2028 handling instead of duplicating it.
+ * `scope` is only the log prefix.
+ */
+export function withVideoJobSqliteRetry<T>(scope: string, operation: () => Promise<T>): Promise<T> {
   return withTransientSqliteRetry(operation, {
     onRetry: ({ attempt, delayMs, error }) => {
       const code = error && typeof error === "object" && "code" in error
@@ -166,19 +172,34 @@ export async function claimNextQueuedJob() {
 /**
  * Atomically claim either a due provider wait or the oldest queued job. Provider waits have
  * priority so a completed external job does not sit behind newly-created work.
+ *
+ * A provider wait is runnable when its poll time has come — or when it has NO poll time at
+ * all AND still carries a provider checkpoint. A `lte` filter can never match NULL, so a
+ * never-scheduled row would otherwise sit in waiting_provider forever with no worker ever
+ * looking at it. SQLite orders NULLs first on ASC, so these rows are picked up ahead of
+ * scheduled ones.
  */
 export async function claimNextRunnableJob(now: Date = new Date()) {
+  const runnableWait: Prisma.VideoJobWhereInput = {
+    status: "waiting_provider",
+    OR: [
+      { providerNextPollAt: { lte: now } },
+      // NULL poll = never scheduled. Only claim it when a provider checkpoint exists, because
+      // that checkpoint is what lets the orchestrator RESUME the external job. Without one,
+      // runOrchestrator would replay the whole pipeline from the top — re-running TTS, the
+      // render and the HeyGen call, and charging the customer's provider account a second
+      // time. No current writer produces a checkpoint-less waiting_provider row; leaving such
+      // a row inert (status quo) is strictly safer than replaying it.
+      { providerNextPollAt: null, providerCheckpointJson: { not: null } },
+    ],
+  };
   const due = await prisma.videoJob.findFirst({
-    where: { status: "waiting_provider", providerNextPollAt: { lte: now } },
+    where: runnableWait,
     orderBy: [{ providerNextPollAt: "asc" }, { createdAt: "asc" }],
   });
   if (due) {
     const claimed = await withVideoJobSqliteRetry("claim provider wait", () => prisma.videoJob.updateMany({
-      where: {
-        id: due.id,
-        status: "waiting_provider",
-        providerNextPollAt: { lte: now },
-      },
+      where: { id: due.id, ...runnableWait },
       data: { status: "processing", providerNextPollAt: null },
     }));
     if (claimed.count === 1) return prisma.videoJob.findUnique({ where: { id: due.id } });
@@ -384,6 +405,29 @@ export interface VideoJobPreviewData {
   fullText?: string;
 }
 
+/**
+ * Evidence for the one acoustic alignment attempt a TTS-voice render is allowed to make
+ * (ADR 0056). It records the rung of the timing ladder that was reached and the clock that
+ * was NOT rendered, so subtitle accuracy can be measured later without another render.
+ *
+ * Lives here, with the rest of the persisted job output, so readers get the shape typed
+ * instead of casting `subtitleEvidence` to a private copy of it.
+ */
+export type SubtitleVerification = {
+  status: "aligned" | "failed" | "skipped" | "timeout";
+  /** Alignment failure code when status === "failed", or "card_count_mismatch" info. */
+  code?: string;
+  method?: "exact" | "fuzzy";
+  similarityPermille?: number;
+  durationMs: number;
+  /** Provider-clock cards — the timing that renders unless the alignment above succeeded. */
+  ttsCaptions: Array<{ startMs: number; endMs: number }>;
+  maxAbsStartDeltaMs?: number;
+  medianAbsStartDeltaMs?: number;
+  /** ADR 0056: the transcribe route's own partial-coverage findings for this call. */
+  routeWarnings?: Array<{ code: string; fromMs?: number; toMs?: number }>;
+};
+
 export interface SubtitleAuditEvidence {
   captions: VideoJobPreviewData["captions"];
   words: NonNullable<VideoJobPreviewData["words"]>;
@@ -391,6 +435,12 @@ export interface SubtitleAuditEvidence {
   audioDurationMs: number;
   timingSource: SubtitleTimingSource;
   speechCoverage?: SubtitleSpeechCoverage;
+  /** The single alignment attempt's evidence — absent on paths that never attempt one. */
+  verification?: SubtitleVerification;
+  /** Export only: whether the burned overlay was retimed to the delivered captions. */
+  overlayRetimed?: boolean;
+  /** Upload/cutaway only: spans the transcriber could not prove complete (never a failure). */
+  uploadWarnings?: TranscribeWarning[];
 }
 
 export interface ParsedVideoJobOutput {

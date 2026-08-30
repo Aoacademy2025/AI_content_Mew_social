@@ -12,6 +12,7 @@ import {
   alignTranscriptWordsToSourceDetailed,
   alignTranscriptWordsToSource,
   buildCanonicalCaptionsFromAlignedWords,
+  repairCaptionTiming,
   retimeCanonicalCaptionsFromAlignedWords,
   resolveUploadTranscriptWords,
   subtitleQualityShouldFailJob,
@@ -400,8 +401,9 @@ const missingCoverage = validateSubtitleQuality({
   timingSource: "forced_alignment",
 });
 check(
-  "forced alignment cannot certify a clip without persisted acoustic coverage evidence",
-  missingCoverage.status === "failed" && missingCoverage.code === "missing_speech_coverage",
+  "forced alignment without persisted acoustic coverage evidence is reported, not refused",
+  missingCoverage.status === "warning" && missingCoverage.code === "missing_speech_coverage"
+    && subtitleQualityShouldFailJob(missingCoverage) === false,
 );
 
 const productionSpokenTailGap = validateSubtitleQuality({
@@ -412,10 +414,10 @@ const productionSpokenTailGap = validateSubtitleQuality({
   speechCoverage: { source: "silence_analysis", spokenEndMs: 70_900 },
 });
 check(
-  "production-shaped 9.3s spoken tail gap fails closed",
-  productionSpokenTailGap.status === "failed"
+  "production-shaped 9.3s spoken tail gap is reported without blocking the clip",
+  productionSpokenTailGap.status === "warning"
     && productionSpokenTailGap.code === "speech_coverage_incomplete"
-    && subtitleQualityShouldFailJob(productionSpokenTailGap) === true,
+    && subtitleQualityShouldFailJob(productionSpokenTailGap) === false,
 );
 
 const healthyTrailingSilence = validateSubtitleQuality({
@@ -439,11 +441,11 @@ const changedNumber = validateSubtitleQuality({
 });
 check(
   "changed numbers still flag text_mismatch",
-  changedNumber.status === "failed" && changedNumber.code === "text_mismatch",
+  changedNumber.status === "warning" && changedNumber.code === "text_mismatch",
 );
 check(
-  "text_mismatch blocks release because the spoken promise cannot be repaired after export",
-  changedNumber.status === "failed" && subtitleQualityShouldFailJob(changedNumber) === true,
+  "text_mismatch is reported to the creator, never a refusal (ADR 0056)",
+  changedNumber.status === "warning" && subtitleQualityShouldFailJob(changedNumber) === false,
 );
 
 const presentationOnlyTextChange = validateSubtitleQuality({
@@ -468,10 +470,10 @@ const estimatedTiming = validateSubtitleQuality({
   timingSource: "tts_segment_timing",
 });
 check(
-  "estimated TTS segment timing cannot certify subtitle/audio alignment",
-  estimatedTiming.status === "failed"
+  "estimated TTS segment timing is released as unverified, not refused",
+  estimatedTiming.status === "warning"
     && estimatedTiming.code === "unverified_alignment"
-    && subtitleQualityShouldFailJob(estimatedTiming) === true,
+    && subtitleQualityShouldFailJob(estimatedTiming) === false,
 );
 
 const estimatedWithSpacingIssue = validateSubtitleQuality({
@@ -481,10 +483,10 @@ const estimatedWithSpacingIssue = validateSubtitleQuality({
   timingSource: "tts_segment_timing",
 });
 check(
-  "presentation issues cannot mask unverified audio timing",
-  estimatedWithSpacingIssue.status === "failed"
+  "presentation issues cannot mask unverified audio timing in the report",
+  estimatedWithSpacingIssue.status === "warning"
     && estimatedWithSpacingIssue.code === "unverified_alignment"
-    && subtitleQualityShouldFailJob(estimatedWithSpacingIssue) === true,
+    && subtitleQualityShouldFailJob(estimatedWithSpacingIssue) === false,
 );
 
 // Production 2026-08-30: generated Gemini audio remained authoritative and
@@ -492,7 +494,8 @@ check(
 // ASR projections disagreed enough to block the preview before render. After
 // acoustic retries are exhausted, deterministic provider segment timing is an
 // explicitly degraded (not word-accurate) release source. Text and timeline
-// safety checks remain fail-closed.
+// findings are still reported per card — as warnings, never as a refusal
+// (ADR 0056).
 const generatedTtsFallback = validateSubtitleQuality({
   script,
   captions,
@@ -513,10 +516,10 @@ const changedGeneratedTtsFallback = validateSubtitleQuality({
   timingSource: "generated_tts_fallback",
 });
 check(
-  "generated TTS fallback still blocks a changed numeric claim",
-  changedGeneratedTtsFallback.status === "failed"
+  "generated TTS fallback still reports a changed numeric claim",
+  changedGeneratedTtsFallback.status === "warning"
     && changedGeneratedTtsFallback.code === "text_mismatch"
-    && subtitleQualityShouldFailJob(changedGeneratedTtsFallback) === true,
+    && subtitleQualityShouldFailJob(changedGeneratedTtsFallback) === false,
   JSON.stringify(changedGeneratedTtsFallback),
 );
 const invalidGeneratedTtsFallback = validateSubtitleQuality({
@@ -526,10 +529,10 @@ const invalidGeneratedTtsFallback = validateSubtitleQuality({
   timingSource: "generated_tts_fallback",
 });
 check(
-  "generated TTS fallback still blocks timing outside the generated audio",
-  invalidGeneratedTtsFallback.status === "failed"
+  "generated TTS fallback still reports timing outside the generated audio",
+  invalidGeneratedTtsFallback.status === "warning"
     && invalidGeneratedTtsFallback.code === "timing_out_of_bounds"
-    && subtitleQualityShouldFailJob(invalidGeneratedTtsFallback) === true,
+    && subtitleQualityShouldFailJob(invalidGeneratedTtsFallback) === false,
   JSON.stringify(invalidGeneratedTtsFallback),
 );
 
@@ -542,27 +545,44 @@ const lostInternalSpace = validateSubtitleQuality({
 });
 check(
   "lost spacing inside a displayed card still flags spacing_mismatch",
-  lostInternalSpace.status === "failed" && lostInternalSpace.code === "spacing_mismatch",
+  lostInternalSpace.status === "warning" && lostInternalSpace.code === "spacing_mismatch",
 );
 check(
   "spacing_mismatch does not fail the VideoJob",
   subtitleQualityShouldFailJob(lostInternalSpace) === false,
 );
 
+const outOfBoundsCaptions = captions.map((caption, index) => index === 2 ? { ...caption, endMs: 3_500 } : caption);
 const outOfBounds = validateSubtitleQuality({
   script,
-  captions: captions.map((caption, index) => index === 2 ? { ...caption, endMs: 3_500 } : caption),
+  captions: outOfBoundsCaptions,
   audioDurationMs: 3_000,
   timingSource: "forced_alignment",
   speechCoverage: forcedAlignmentCoverage,
 });
 check(
-  "captions outside the audio timeline fail closed",
-  outOfBounds.status === "failed" && outOfBounds.code === "timing_out_of_bounds",
+  "captions outside the audio timeline are reported as timing_out_of_bounds",
+  outOfBounds.status === "warning" && outOfBounds.code === "timing_out_of_bounds",
 );
+// The orchestrator repairs the timeline before the release inspection, so the same input
+// reaches the renderer inside the audio instead of failing the job.
+const repairedOutOfBounds = repairCaptionTiming(outOfBoundsCaptions, 3_000);
+const repairedOutOfBoundsQa = validateSubtitleQuality({
+  script,
+  captions: repairedOutOfBounds.captions,
+  audioDurationMs: 3_000,
+  timingSource: "forced_alignment",
+  speechCoverage: forcedAlignmentCoverage,
+});
 check(
-  "timing_out_of_bounds still fails the VideoJob",
-  subtitleQualityShouldFailJob(outOfBounds) === true,
+  "timing_out_of_bounds is repaired by repairCaptionTiming, not failed",
+  subtitleQualityShouldFailJob(outOfBounds) === false
+    && repairedOutOfBounds.repaired
+    && repairedOutOfBounds.dropped === 0
+    && repairedOutOfBounds.captions.length === outOfBoundsCaptions.length
+    && (repairedOutOfBounds.captions.at(-1)?.endMs ?? 0) <= 3_000
+    && repairedOutOfBoundsQa.code !== "timing_out_of_bounds",
+  JSON.stringify(repairedOutOfBounds.captions),
 );
 const punctOnly = validateSubtitleQuality({
   script: "ครับ...",
@@ -576,7 +596,7 @@ const punctOnly = validateSubtitleQuality({
 });
 check(
   "punctuation-only cards do not fail the VideoJob",
-  punctOnly.status === "failed"
+  punctOnly.status === "warning"
     && punctOnly.code === "punctuation_only_card"
     && subtitleQualityShouldFailJob(punctOnly) === false,
 );
@@ -589,7 +609,7 @@ const tooShort = validateSubtitleQuality({
 });
 check(
   "card_too_short does not fail the VideoJob",
-  tooShort.status === "failed"
+  tooShort.status === "warning"
     && tooShort.code === "card_too_short"
     && subtitleQualityShouldFailJob(tooShort) === false,
 );

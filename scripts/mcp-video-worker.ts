@@ -3,6 +3,7 @@
 import "dotenv/config"; // load .env BEFORE prisma init — tsx (unlike Next) doesn't auto-load it
 import { prisma } from "../src/lib/prisma";
 import { claimNextRunnableJob, recoverProcessingJobsAfterWorkerRestart } from "../src/lib/mcp/video-job";
+import { sweepStalledVideoJobs } from "../src/lib/mcp/video-job-watchdog";
 import { runOrchestrator } from "../src/lib/mcp/orchestrator";
 import { retryPendingVideoJobReservationRefunds } from "../src/lib/render/reservation-settlement";
 import { startLoanwordRefresh } from "../src/lib/thai-loanwords-runtime";
@@ -14,6 +15,10 @@ const REFUND_RETRY_MS = (() => {
   const value = Number(process.env.MCP_REFUND_RETRY_MS ?? 60_000);
   return Number.isFinite(value) ? Math.max(15_000, value) : 60_000;
 })();
+// Server-side stall watchdog cadence. The dispatch loop can spin much faster than POLL_MS
+// while it fills concurrency slots, and the sweep only ever finds work on a 45-minute
+// horizon, so one pass a minute is plenty and keeps the DB cost off the hot path.
+const STALL_SWEEP_MS = 60_000;
 
 // How many videos this ONE worker orchestrates concurrently (CAP-1, docs/audits/
 // 2026-07-07-system-optimization-audit.md). The box has 8 vCPU and 2 render-worker
@@ -49,6 +54,15 @@ async function runJob(job: { id: string; userId: string }): Promise<void> {
     console.error(`[mcp-worker] job ${job.id} orchestrator threw:`, e);
   }
   console.log(`[mcp-worker] finished job ${job.id}`);
+}
+
+async function sweepStalledJobs(): Promise<void> {
+  const result = await sweepStalledVideoJobs();
+  if (result.failed.length > 0 || result.repairedPoll.length > 0) {
+    console.log(
+      `[mcp-worker] stall sweep failed=${result.failed.length} repairedProviderPoll=${result.repairedPoll.length}`,
+    );
+  }
 }
 
 async function retryPendingRefunds(): Promise<void> {
@@ -103,7 +117,15 @@ async function main() {
   // RUN concurrently: their promises live in `active` and are not awaited by this dispatch loop.
   const active = new Set<Promise<void>>();
   let nextRefundRetryAt = Date.now() + REFUND_RETRY_MS;
+  let nextStallSweepAt = 0; // sweep once immediately on boot, then every STALL_SWEEP_MS
   while (running) {
+    if (Date.now() >= nextStallSweepAt) {
+      // Log-only on error: a watchdog problem must never stop the worker from claiming jobs.
+      await sweepStalledJobs().catch((error) => {
+        console.error("[mcp-worker] stall sweep failed:", error);
+      });
+      nextStallSweepAt = Date.now() + STALL_SWEEP_MS;
+    }
     if (Date.now() >= nextRefundRetryAt) {
       await retryPendingRefunds().catch((error) => {
         console.error("[mcp-worker] reservation refund retry failed:", error);

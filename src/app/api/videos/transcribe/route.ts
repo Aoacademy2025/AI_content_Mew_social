@@ -22,6 +22,13 @@ import {
   sanitizeChunkTimeline,
   type ChunkResult,
 } from "@/lib/transcribe-timeline";
+import { repairCaptionTiming } from "@/lib/mcp/subtitle-quality";
+import {
+  classifyExhaustedSlice,
+  mergeTranscribeWarning,
+  type TranscribeWarning,
+  type TranscribeWarningCode,
+} from "@/lib/transcribe-partial-coverage";
 import { isSafeFetchUrl, assertSafeFetchUrl } from "@/lib/safe-fetch";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
 import { refundAiAudioMinutes, reserveAiAudioMinutes } from "@/lib/ai-spend-limits";
@@ -948,6 +955,17 @@ export async function POST(req: Request) {
     let wasChunked = false; // long-audio chunked path → skip the desync guard (clamp handles the small tail overshoot)
     let speechCoverage: SubtitleSpeechCoverage | undefined;
 
+    // ── ADR 0056: partial coverage is a warning, not a refusal ────────────────
+    // Every span this route could not prove complete is reported here and the
+    // caller keeps whatever WAS transcribed. The only remaining blocking case is
+    // "nothing to show" (zero captions) — see the response builder below.
+    // The merge/classification rules live in @/lib/transcribe-partial-coverage so
+    // the verification fixtures assert the shipped rule, not a copy of it.
+    const warnings: TranscribeWarning[] = [];
+    const pushWarning = (code: TranscribeWarningCode, fromMs?: number, toMs?: number) => {
+      mergeTranscribeWarning(warnings, code, fromMs, toMs);
+    };
+
     if (useGeminiTranscribe) {
       // AI-audio ceiling (managed): transcribe spends server Gemini on the input
       // audio duration. Reserve up front (atomic) so an at-ceiling user is blocked
@@ -1169,32 +1187,19 @@ export async function POST(req: Request) {
                               { requireUsableWords: true },
                             );
                             if (!fineQuality.accepted) {
+                              // ADR 0056: the bounded budget for this slice is spent. Keep
+                              // whatever it did transcribe and report the span — the rest of
+                              // the clip must not be thrown away with it.
                               const fineTailGapMs = chunkTailGapMs(
                                 fineQuality.result.geminiDirectCaptions,
                                 fineReferenceMs,
                               );
-                              return NextResponse.json({
-                                error: "ถอดซับช่วงหนึ่งไม่ครบหลังแบ่งช่วงย่อยแล้ว — กรุณาลองใหม่หรือส่งคลิปให้ทีมงานตรวจ",
-                                provider: "gemini",
-                                reason: sanitizeChunkTimeline(fineQuality.result, fineReferenceMs).stats.wordsDegenerate
-                                  ? "word_timing_incomplete"
-                                  : fineQuality.result.geminiDirectCaptions.length === 0
-                                  ? "empty_captions"
-                                  : fineTailGapMs < 0
-                                    ? "transcribe_incomplete"
-                                    : "transcribe_desynced",
-                                retryable: true,
-                                recoveryAttempted: true,
-                                fineRecoveryAttempted: true,
-                                sourceAudioDurationMs,
-                                chunkIndex: chunkIdx,
-                                chunkDurationMs: ch.durationMs,
-                                recoveryChunkIndex: recoveryIndex + 1,
-                                recoveryChunkDurationMs: recoveryDurationMs,
-                                fineRecoveryChunkIndex: fineIndex + 1,
-                                fineRecoveryChunkDurationMs: fineDurationMs,
-                                captionDurationMs: fineQuality.result.geminiDirectCaptions.at(-1)?.endMs ?? 0,
-                              }, { status: 422 });
+                              console.warn(
+                                `[transcribe] fine recovery ${fineIndex + 1}/${fineRecoveryBounds.length - 1} `
+                                + `for recovery ${recoveryIndex + 1}, chunk ${chunkIdx}: attempts exhausted `
+                                + `(tail ${(fineTailGapMs / 1000).toFixed(1)}s) — keeping partial coverage`,
+                              );
+                              pushWarning("chunk_recovery_exhausted", fineGlobalStartMs, fineGlobalStartMs + fineDurationMs);
                             }
                             appendChunkResult(
                               fineQuality.result,
@@ -1212,29 +1217,18 @@ export async function POST(req: Request) {
                         );
                         continue;
                       }
+                      // ADR 0056: this recovery slice cannot be split any further. Keep its
+                      // partial transcript and record the span as unverified.
                       const recoveryTailGapMs = chunkTailGapMs(
                         recoveryQuality.result.geminiDirectCaptions,
                         recoveryReferenceMs,
                       );
-                      return NextResponse.json({
-                        error: "ถอดซับช่วงหนึ่งไม่ครบหลังแบ่งช่วงที่มีปัญหาแล้ว — กรุณาลองใหม่หรือส่งคลิปให้ทีมงานตรวจ",
-                        provider: "gemini",
-                        reason: sanitizeChunkTimeline(recoveryQuality.result, recoveryReferenceMs).stats.wordsDegenerate
-                          ? "word_timing_incomplete"
-                          : recoveryQuality.result.geminiDirectCaptions.length === 0
-                          ? "empty_captions"
-                          : recoveryTailGapMs < 0
-                            ? "transcribe_incomplete"
-                            : "transcribe_desynced",
-                        retryable: true,
-                        recoveryAttempted: true,
-                        sourceAudioDurationMs,
-                        chunkIndex: chunkIdx,
-                        chunkDurationMs: ch.durationMs,
-                        recoveryChunkIndex: recoveryIndex + 1,
-                        recoveryChunkDurationMs: recoveryDurationMs,
-                        captionDurationMs: recoveryQuality.result.geminiDirectCaptions.at(-1)?.endMs ?? 0,
-                      }, { status: 422 });
+                      console.warn(
+                        `[transcribe] recovery ${recoveryIndex + 1}/${recoveryBounds.length - 1} for chunk `
+                        + `${chunkIdx}: attempts exhausted (tail ${(recoveryTailGapMs / 1000).toFixed(1)}s) — `
+                        + `keeping partial coverage`,
+                      );
+                      pushWarning("chunk_recovery_exhausted", globalStartMs, globalStartMs + recoveryDurationMs);
                     }
                     appendChunkResult(
                       recoveryQuality.result,
@@ -1249,24 +1243,14 @@ export async function POST(req: Request) {
                 console.warn(`[transcribe] chunk ${chunkIdx}/${chunkPlan.length} recovered with ${recoveryCuts.length + 1} shorter slices`);
                 continue;
               }
+              // ADR 0056: this chunk is too short to split for recovery. Keep its partial
+              // transcript and record the span as unverified.
               const tailGapMs = chunkTailGapMs(rawChunk.geminiDirectCaptions, referenceDurationMs);
-              return NextResponse.json({
-                error: "ถอดซับช่วงหนึ่งไม่ครบหรือไม่ตรงจังหวะหลังลองใหม่ 3 ครั้ง — กรุณาลองสร้างอีกครั้ง",
-                provider: "gemini",
-                reason: sanitizeChunkTimeline(rawChunk, referenceDurationMs).stats.wordsDegenerate
-                  ? "word_timing_incomplete"
-                  : rawChunk.geminiDirectCaptions.length === 0
-                  ? "empty_captions"
-                  : tailGapMs < 0
-                    ? "transcribe_incomplete"
-                    : "transcribe_desynced",
-                retryable: true,
-                recoveryAttempted: false,
-                sourceAudioDurationMs,
-                chunkIndex: chunkIdx,
-                chunkDurationMs: ch.durationMs,
-                captionDurationMs: rawChunk.geminiDirectCaptions.at(-1)?.endMs ?? 0,
-              }, { status: 422 });
+              console.warn(
+                `[transcribe] chunk ${chunkIdx}/${chunkPlan.length}: attempts exhausted `
+                + `(tail ${(tailGapMs / 1000).toFixed(1)}s) — keeping partial coverage`,
+              );
+              pushWarning("chunk_recovery_exhausted", ch.startMs, ch.startMs + ch.durationMs);
             }
             appendChunkResult(rawChunk, ch.durationMs, ch.startMs, `chunk ${chunkIdx}/${chunkPlan.length}`);
           }
@@ -1288,26 +1272,30 @@ export async function POST(req: Request) {
             { requireUsableWords: true },
           );
           if (!quality.accepted) {
-            const result = quality.result;
-            const tailGapMs = chunkTailGapMs(result.geminiDirectCaptions, sourceAudioDurationMs);
-            return NextResponse.json({
-              error: "ถอดเวลาแต่ละคำให้ตรงเสียงไม่ได้หลังลองใหม่ 3 ครั้ง — กรุณาลองสร้างอีกครั้ง",
-              provider: "gemini",
-              reason: sanitizeChunkTimeline(result, sourceAudioDurationMs).stats.wordsDegenerate
-                ? "word_timing_incomplete"
-                : result.geminiDirectCaptions.length === 0
-                  ? "empty_captions"
-                  : tailGapMs < 0
-                    ? "transcribe_incomplete"
-                    : "transcribe_desynced",
-              retryable: true,
-              recoveryAttempted: false,
-              sourceAudioDurationMs,
-              captionDurationMs: result.geminiDirectCaptions.at(-1)?.endMs ?? 0,
-            }, { status: 422 });
+            // ADR 0056: three attempts could not prove this transcript complete. Repair it
+            // deterministically (rescale overshoot, drop degenerate words) and ship it with
+            // the finding attached rather than refusing the clip.
+            const referenceMs = speechCoverage?.spokenEndMs ?? sourceAudioDurationMs;
+            // Measured BEFORE sanitizeChunkTimeline: it rescales an overshooting timeline
+            // back inside the audio, which would disguise a desync as an "incomplete".
+            const preSanitizeCoveredEndMs = quality.result.geminiDirectCaptions.at(-1)?.endMs ?? 0;
+            const sanitized = sanitizeChunkTimeline(quality.result, sourceAudioDurationMs);
+            console.warn(
+              `[transcribe] single-call attempts exhausted — keeping `
+              + `${(preSanitizeCoveredEndMs / 1000).toFixed(1)}s of ${(referenceMs / 1000).toFixed(1)}s speech`,
+            );
+            for (const warning of classifyExhaustedSlice({
+              preSanitizeCoveredEndMs,
+              referenceMs,
+              hasUsableWords: !sanitized.stats.wordsDegenerate,
+              gapThresholdMs: INCOMPLETE_TRANSCRIBE_GAP_MS,
+            })) pushWarning(warning.code, warning.fromMs, warning.toMs);
+            words = sanitized.words; segments = sanitized.segments;
+            geminiDirectCaptions = sanitized.geminiDirectCaptions; fullText = sanitized.fullText;
+          } else {
+            const r = quality.result;
+            words = r.words; segments = r.segments; geminiDirectCaptions = r.geminiDirectCaptions; fullText = r.fullText;
           }
-          const r = quality.result;
-          words = r.words; segments = r.segments; geminiDirectCaptions = r.geminiDirectCaptions; fullText = r.fullText;
         }
       } catch (e: unknown) {
         console.error("[transcribe] Gemini transcribe error:", e);
@@ -1784,16 +1772,14 @@ Total audio: ${audioDur.toFixed(2)}s`;
           endMs: Math.round(w.end * 1000),
         }))
         .filter((w) => w.word.length > 0);
+    } else if (useGeminiTranscribe) {
+      // ADR 0056: Gemini produced no usable word clock. The caption cards still render —
+      // only the editor's "แบ่งซับ N คำ" regrouping falls back — so ship them with an empty
+      // word list and the finding attached instead of refusing the clip.
+      console.warn("[transcribe] no usable word timestamps — returning captions with words: []");
+      pushWarning("word_timing_incomplete");
+      wordTimestamps = [];
     } else {
-      if (useGeminiTranscribe) {
-        return NextResponse.json({
-          error: "ถอดเวลาแต่ละคำให้ตรงเสียงไม่ได้ — กรุณาลอง Transcribe ใหม่",
-          provider: "gemini",
-          reason: "word_timing_incomplete",
-          retryable: true,
-          sourceAudioDurationMs,
-        }, { status: 422 });
-      }
       // Interpolate word timing from segments — much more accurate than interpolating from captions.
       // For Thai (no spaces) use Intl.Segmenter to split into actual words.
       wordTimestamps = [];
@@ -1862,30 +1848,20 @@ Total audio: ${audioDur.toFixed(2)}s`;
       // it — chunking IS the long-clip fix, and rejecting just left the user stuck.
       if (!wasChunked && rawMaxMs > sourceAudioDurationMs * BOGUS_DURATION_MAX_RATIO) {
         const pct = Math.round((rawMaxMs / sourceAudioDurationMs - 1) * 100);
-        console.warn(`[transcribe] desynced transcript: ${pct}% overshoot > ${Math.round((BOGUS_DURATION_MAX_RATIO - 1) * 100)}% threshold — rejecting (retryable)`);
-        return NextResponse.json({
-          error: `ถอดซับไม่ตรงจังหวะ (ระบบถอดเสียงคลาดเคลื่อน ~${pct}%) — มักเกิดกับคลิปยาว กรุณากด Transcribe อีกครั้ง หรือใช้คลิปสั้นลง`,
-          provider: "gemini",
-          reason: "transcribe_desynced",
-          retryable: true,
-          sourceAudioDurationMs,
-          reportedDurationMs: rawMaxMs,
-        }, { status: 422 });
+        // ADR 0056: refusing the clip never made a single card more accurate. The timeline
+        // is clamped/repaired below and the drift is reported instead.
+        console.warn(`[transcribe] desynced transcript: ${pct}% overshoot > ${Math.round((BOGUS_DURATION_MAX_RATIO - 1) * 100)}% threshold — clamping and reporting`);
+        pushWarning("transcribe_desynced", sourceAudioDurationMs, rawMaxMs);
       }
     }
     if (sourceAudioDurationMs > 0) {
       const requiredSpokenEndMs = speechCoverage?.spokenEndMs ?? sourceAudioDurationMs;
       const missingTailMs = requiredSpokenEndMs - rawMaxMs;
       if (missingTailMs > INCOMPLETE_TRANSCRIBE_GAP_MS) {
-        console.warn(`[transcribe] incomplete transcript: captions end at ${rawMaxMs}ms but speech coverage requires ${requiredSpokenEndMs}ms`);
-        return NextResponse.json({
-          error: `ถอดซับไม่ครบ เสียงพูดถึง ${(requiredSpokenEndMs / 1000).toFixed(1)}s แต่ซับจบที่ ${(rawMaxMs / 1000).toFixed(1)}s กรุณากด Transcribe ใหม่`,
-          provider: "gemini",
-          reason: "transcribe_incomplete",
-          retryable: true,
-          sourceAudioDurationMs,
-          captionDurationMs: rawMaxMs,
-        }, { status: 422 });
+        // ADR 0056: an uncovered tail is a reported gap, not a reason to discard the
+        // rest of the transcript.
+        console.warn(`[transcribe] incomplete transcript: captions end at ${rawMaxMs}ms but speech coverage requires ${requiredSpokenEndMs}ms — reporting the gap`);
+        pushWarning("transcribe_incomplete", rawMaxMs, requiredSpokenEndMs);
       }
     }
     const resolvedDurationMs = sourceAudioDurationMs > 0 ? sourceAudioDurationMs : rawMaxMs;
@@ -1908,15 +1884,29 @@ Total audio: ${audioDur.toFixed(2)}s`;
       sanitizeCaptionsTimeline(captions, resolvedDurationMs, 30, isSegmentDirect),
       sourceAudioDurationMs,
     );
+    // ADR 0056: repair the timeline deterministically, then apply the ONE blocking
+    // check that survives — nothing to show.
+    const responseCaptions = repairCaptionTiming(timelineFixedCaptions, resolvedDurationMs).captions;
+    if (responseCaptions.length === 0) {
+      return NextResponse.json({
+        error: "ถอดซับจากคลิปไม่สำเร็จ — เช็คว่าคลิปมีเสียงพูดชัดเจน",
+        provider: "gemini",
+        reason: safeFullText.trim().length > 0 ? "no_usable_words" : "empty_transcript",
+        retryable: true,
+        sourceAudioDurationMs,
+        ...(warnings.length > 0 ? { warnings } : {}),
+      }, { status: 422 });
+    }
 
     transcriptionCompleted = true;
     return NextResponse.json({
-      captions: timelineFixedCaptions,
+      captions: responseCaptions,
       segments: safeSegments,
       words: safeWords,
       fullText: safeFullText,
       audioDurationMs: resolvedDurationMs,
       ...(speechCoverage ? { speechCoverage } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
     });
   } catch (error) {
     return apiError({ route: "videos/transcribe", error, notifyUser: true });

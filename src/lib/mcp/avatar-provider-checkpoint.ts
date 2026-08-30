@@ -34,9 +34,15 @@ export interface AvatarProviderCheckpointV1 {
   captions: CheckpointCaption[];
   words: unknown[];
   fullText: string;
-  /** Origin of the timing that was quality-gated before the provider wait. */
+  /** Origin of the timing that was inspected before the provider wait. */
   subtitleTimingSource?: SubtitleTimingSource;
   speechCoverage?: SubtitleSpeechCoverage;
+  /**
+   * Evidence from the single acoustic alignment attempt (ADR 0056), carried so the resume
+   * path persists the same report without re-running alignment. Report-only: it is never
+   * validated here because a malformed value must not invalidate a live provider wait.
+   */
+  subtitleVerification?: Record<string, unknown>;
   baseConfig: Record<string, unknown>;
   avatar: {
     mode: "full" | "bookend" | "bookend-both";
@@ -79,7 +85,10 @@ function isOptionalSubtitleTimingSource(value: unknown): value is SubtitleTiming
     || value === "tts_segment_timing"
     || value === "generated_tts_fallback"
     || value === "forced_alignment"
-    || value === "upload_transcription";
+    || value === "upload_transcription"
+    // Rung 3 of the ADR 0056 ladder: an avatar job whose provider returned no timing renders
+    // on the spoken-script clock, and its checkpoint must survive the provider wait.
+    || value === "avatar_script_clock";
 }
 
 function isOptionalSubtitleSpeechCoverage(value: unknown): value is SubtitleSpeechCoverage | undefined {

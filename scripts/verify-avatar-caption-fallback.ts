@@ -29,8 +29,8 @@ const qa = spoken
     })
   : null;
 check(
-  "estimated Avatar script clock is rejected without acoustic evidence",
-  qa?.status === "failed" && qa.code === "unverified_alignment" && subtitleQualityShouldFailJob(qa),
+  "estimated Avatar script clock is reported as unverified, not rejected (ADR 0056)",
+  qa?.status === "warning" && qa.code === "unverified_alignment" && !subtitleQualityShouldFailJob(qa),
 );
 
 check(
@@ -43,7 +43,13 @@ check(
   "Avatar recovery transcribes TTS voice, not the HeyGen mp4",
   /audioUrl: tts\.voiceUrl/.test(orchestrator) && !/transcribe[\s\S]{0,400}avatarVideoUrl/.test(orchestrator),
 );
-check("Avatar jobs no longer fail-open to a proportional script clock", !/captionsFromSpokenScript/.test(orchestrator));
+// ADR 0056: the char-proportional spoken-script clock is the LAST rung of the timing
+// ladder — reached only when the provider returned no usable timing, and always reported
+// as avatar_script_clock so it can never masquerade as measured timing.
+check(
+  "the spoken-script clock is the last rung of the timing ladder (ADR 0056)",
+  /capRes = captionsFromSpokenScript\(narrationText[\s\S]{0,200}subtitleTimingSource = "avatar_script_clock";/.test(orchestrator),
+);
 
 if (failures > 0) {
   console.error(`\n${failures} check(s) FAILED`);

@@ -6,7 +6,9 @@ import { color } from "./tokens";
 
 export function SubtitleQaInlineBanner({ output }: { output: ParsedVideoJobOutput | null }) {
   const report = output?.subtitleQa;
-  if (!report || report.status !== "failed" || !isInlineFixableSubtitleCode(report.code)) return null;
+  // ADR 0056: a finding is a report. `warning` and (legacy) `failed` both render the
+  // same inline hint — neither ever blocks the export.
+  if (!report || report.status === "passed" || !isInlineFixableSubtitleCode(report.code)) return null;
   return (
     <div
       role="status"

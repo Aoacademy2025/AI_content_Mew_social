@@ -247,7 +247,10 @@ export function EditorV2Shell() {
   }
 
   async function handleRender() {
-    if (!p.canRunProjectOperation()) return;
+    if (!p.canRunProjectOperation()) {
+      toast.error("โปรเจกต์กำลังกู้คืน/โหลด — รอสักครู่แล้วกดเรนเดอร์อีกครั้ง");
+      return;
+    }
     if (!CREDITS_LIVE_CLIENT) {
       const r = await submit();
       handleSubmitResult(r, { kind: "render" });

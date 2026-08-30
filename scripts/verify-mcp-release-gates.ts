@@ -108,6 +108,15 @@ async function main() {
   assert.equal(output?.subtitleEvidence?.timingSource, "forced_alignment");
   assert.equal(output?.subtitleEvidence?.fullText, "สร้างเงินเก็บทุกเดือน");
   assert.ok((output?.subtitleEvidence?.words.length ?? 0) > 0, "completed full renders keep replayable word timing evidence");
+  // ADR 0056: the burn row keeps the verification EVIDENCE only — never the captions it
+  // produced, the word timeline it produced, or its coverage (all already persisted above).
+  const burnVerification = output?.subtitleEvidence?.verification;
+  assert.equal(burnVerification?.status, "aligned");
+  assert.deepEqual(
+    ["capRes", "words", "speechCoverage"].filter((key) => burnVerification !== undefined && key in burnVerification),
+    [],
+    "persisted verification carries evidence only",
+  );
   assert.deepEqual(output?.billingReceipt, {
     status: "settled",
     funding: "minutes",
@@ -132,10 +141,12 @@ async function main() {
   });
   let avatarRenderCount = 0;
   let avatarRefunds = 0;
+  let avatarTranscribeCount = 0;
   const avatarCaller = {
     post: async (path: string, body?: unknown) => {
       const key = path.split("?")[0];
       if (key === "/api/videos/transcribe") {
+        avatarTranscribeCount += 1;
         return {
           captions: [{ text: "ออมเงินให้เป็นนิสัย", startMs: 100, endMs: 2_800 }],
           words: [{ word: "ออมเงินให้เป็นนิสัย", startMs: 100, endMs: 2_800 }],
@@ -216,7 +227,75 @@ async function main() {
   });
   assert.equal(await prisma.renderJob.count({ where: { parentJobId: avatarJob.id, reservedQuota: true } }), 1);
   assert.equal(avatarRefunds, 0);
+  // ADR 0056: alignment runs once, before the provider wait. The resume path replays the
+  // checkpointed evidence instead of paying for another acoustic pass.
+  assert.equal(avatarOutput?.subtitleEvidence?.timingSource, "forced_alignment");
+  assert.equal(
+    avatarOutput?.subtitleEvidence?.verification?.status,
+    "aligned",
+    "the resumed avatar job persists the verification evidence from its checkpoint",
+  );
+  assert.equal(avatarTranscribeCount, 1, "resuming an avatar job never re-runs the acoustic alignment");
   console.log("✓ resumed avatar job retains exactly one charge and exposes both release receipts");
+
+  // Finding 5 (review round 2): the avatar-RESUME empty-captions refusal is the same policy
+  // as its two sibling sites, so it must carry the same typed error — a Blocking Subtitle
+  // Code lands as subtitle_alignment_<code>, not as an uncoded step failure. Resumed from a
+  // checkpoint whose caption list is empty (nothing left to show after the provider wait).
+  const emptyCaptionsResume = await prisma.videoJob.create({
+    data: {
+      id: "release-avatar-empty-captions",
+      userId: user.id,
+      status: "processing",
+      currentStep: "avatar",
+      inputJson: JSON.stringify({
+        script: "ออมเงินให้เป็นนิสัย",
+        voiceProvider: "gemini",
+        avatarMode: "bookend",
+        avatarId: "release-avatar",
+      }),
+      providerCheckpointJson: JSON.stringify({
+        version: 1,
+        provider: "heygen",
+        phase: "composite",
+        providerStartedAt: new Date(Date.now() - 60_000).toISOString(),
+        providerDeadlineAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+        baseUrl: "/api/renders/release-avatar-render.mp4",
+        voiceUrl: "/api/renders/release-avatar.wav",
+        audioDurationMs: 3_000,
+        captions: [],
+        words: [],
+        fullText: "ออมเงินให้เป็นนิสัย",
+        subtitleTimingSource: "tts_segment_timing",
+        baseConfig: {},
+        avatar: {
+          mode: "bookend",
+          id: "release-avatar",
+          introSecs: 5,
+          tailSecs: 5,
+          layout: { scale: 1, offsetX: 0, offsetY: 0 },
+          introVideoUrl: "https://avatar.example/video.mp4",
+        },
+      }),
+    },
+  });
+  await runOrchestrator(emptyCaptionsResume.id, user.id, {
+    caller: avatarCaller as never,
+    sleep: async () => {},
+    refundOneClip: async () => { avatarRefunds += 1; },
+  });
+  const refusedResume = await prisma.videoJob.findUniqueOrThrow({ where: { id: emptyCaptionsResume.id } });
+  assert.equal(refusedResume.status, "failed");
+  assert.equal(
+    refusedResume.errorCode,
+    "subtitle_alignment_empty_captions",
+    `the resume refusal must carry the subtitle code, got: ${refusedResume.errorCode}`,
+  );
+  assert.ok(
+    refusedResume.errorMessage?.startsWith("ไม่มีข้อความซับสำหรับคลิปนี้"),
+    `the resume refusal keeps its own customer copy, got: ${refusedResume.errorMessage}`,
+  );
+  console.log("✓ avatar-resume empty-captions refusal carries subtitle_alignment_empty_captions");
 
   await prisma.$disconnect();
   console.log("\n✅ MCP RELEASE GATE CHECK PASSED");

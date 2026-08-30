@@ -138,9 +138,10 @@ export function captionsFromTtsTiming(
   }
 }
 
-/** Last-resort Avatar captions when TTS timing and transcribe recovery both miss.
- * Spreads exact script text across known audio duration. Faceless jobs must not
- * use this — they stay on forced alignment. */
+/** Rung 3 of the subtitle timing ladder (ADR 0056): the fallback clock used when the TTS
+ * provider returned no usable timing at all. Spreads the exact spoken script across the
+ * measured audio duration, char-proportionally. Every caller must report it as
+ * `avatar_script_clock` — it is an estimate, never measured timing. */
 export function captionsFromSpokenScript(
   script: string,
   audioDurationMs: number,
