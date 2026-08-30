@@ -15,6 +15,7 @@ import {
   normalizeGeminiWords,
   offsetChunkWordsToSourceTimeline,
   parseTranscriptionSilenceAnalysis,
+  planFineTranscriptionRecoveryBoundaries,
   planTranscriptionChunkBoundaries,
   planTranscriptionRecoveryBoundaries,
   runTranscriptionQualityRetries,
@@ -1117,6 +1118,100 @@ export async function POST(req: Request) {
                       { requireUsableWords: true },
                     );
                     if (!recoveryQuality.accepted) {
+                      // A valid production upload repeatedly lost the final
+                      // 7–8s even after this first ~33s recovery slice had used
+                      // all three attempts. Split only that failed slice once
+                      // more; never recurse, so provider spend stays bounded.
+                      const fineRecoveryCuts = planFineTranscriptionRecoveryBoundaries(recoveryDurationMs);
+                      if (fineRecoveryCuts.length > 0) {
+                        const fineRecoverySourcePath = `${mp3Path}.chunk${chunkIdx}.recovery${recoveryIndex + 1}.fine-source.mp3`;
+                        fs.writeFileSync(fineRecoverySourcePath, recoveryBuffer);
+                        try {
+                          const fineRecoveryBounds = [0, ...fineRecoveryCuts, recoveryDurationMs];
+                          for (let fineIndex = 0; fineIndex < fineRecoveryBounds.length - 1; fineIndex++) {
+                            const fineStartMs = fineRecoveryBounds[fineIndex];
+                            const fineEndMs = fineRecoveryBounds[fineIndex + 1];
+                            const fineDurationMs = fineEndMs - fineStartMs;
+                            const fineBuffer = await sliceAudio(
+                              ffmpeg,
+                              fineRecoverySourcePath,
+                              fineStartMs,
+                              fineEndMs,
+                              `${mp3Path}.chunk${chunkIdx}.recovery${recoveryIndex + 1}.fine${fineIndex + 1}.mp3`,
+                            );
+                            const fineScriptStart = Math.max(0, fineStartMs / recoveryDurationMs - 0.12);
+                            const fineScriptEnd = Math.min(1, fineEndMs / recoveryDurationMs + 0.12);
+                            const fineScript = recoveryScript
+                              ? recoveryScript.slice(
+                                  Math.floor(recoveryScript.length * fineScriptStart),
+                                  Math.ceil(recoveryScript.length * fineScriptEnd),
+                                )
+                              : "";
+                            const fineGlobalStartMs = globalStartMs + fineStartMs;
+                            const fineReferenceMs = chunkTranscriptionReferenceDurationMs({
+                              chunkStartMs: fineGlobalStartMs,
+                              chunkDurationMs: fineDurationMs,
+                              totalDurationMs: sourceAudioDurationMs,
+                              trailingSilenceStartMs,
+                            });
+                            const fineQuality = await runTranscriptionQualityRetries(
+                              () => geminiTranscribeChunk(fineBuffer, geminiKey, fineScript, fineDurationMs),
+                              fineReferenceMs,
+                              3,
+                              ({ nextAttempt, tailGapMs }) => {
+                                console.warn(
+                                  `[transcribe] fine recovery ${fineIndex + 1}/${fineRecoveryBounds.length - 1} `
+                                  + `for recovery ${recoveryIndex + 1}, chunk ${chunkIdx}: `
+                                  + `tail ${(tailGapMs / 1000).toFixed(1)}s — `
+                                  + `re-transcribing (attempt ${nextAttempt}/3)`,
+                                );
+                              },
+                              { requireUsableWords: true },
+                            );
+                            if (!fineQuality.accepted) {
+                              const fineTailGapMs = chunkTailGapMs(
+                                fineQuality.result.geminiDirectCaptions,
+                                fineReferenceMs,
+                              );
+                              return NextResponse.json({
+                                error: "ถอดซับช่วงหนึ่งไม่ครบหลังแบ่งช่วงย่อยแล้ว — กรุณาลองใหม่หรือส่งคลิปให้ทีมงานตรวจ",
+                                provider: "gemini",
+                                reason: sanitizeChunkTimeline(fineQuality.result, fineReferenceMs).stats.wordsDegenerate
+                                  ? "word_timing_incomplete"
+                                  : fineQuality.result.geminiDirectCaptions.length === 0
+                                  ? "empty_captions"
+                                  : fineTailGapMs < 0
+                                    ? "transcribe_incomplete"
+                                    : "transcribe_desynced",
+                                retryable: true,
+                                recoveryAttempted: true,
+                                fineRecoveryAttempted: true,
+                                sourceAudioDurationMs,
+                                chunkIndex: chunkIdx,
+                                chunkDurationMs: ch.durationMs,
+                                recoveryChunkIndex: recoveryIndex + 1,
+                                recoveryChunkDurationMs: recoveryDurationMs,
+                                fineRecoveryChunkIndex: fineIndex + 1,
+                                fineRecoveryChunkDurationMs: fineDurationMs,
+                                captionDurationMs: fineQuality.result.geminiDirectCaptions.at(-1)?.endMs ?? 0,
+                              }, { status: 422 });
+                            }
+                            appendChunkResult(
+                              fineQuality.result,
+                              fineDurationMs,
+                              fineGlobalStartMs,
+                              `chunk ${chunkIdx}/${chunkPlan.length} recovery ${recoveryIndex + 1}/${recoveryBounds.length - 1} fine ${fineIndex + 1}/${fineRecoveryBounds.length - 1}`,
+                            );
+                          }
+                        } finally {
+                          try { fs.unlinkSync(fineRecoverySourcePath); } catch {}
+                        }
+                        console.warn(
+                          `[transcribe] recovery ${recoveryIndex + 1}/${recoveryBounds.length - 1} `
+                          + `for chunk ${chunkIdx} recovered with ${fineRecoveryCuts.length + 1} fine slices`,
+                        );
+                        continue;
+                      }
                       const recoveryTailGapMs = chunkTailGapMs(
                         recoveryQuality.result.geminiDirectCaptions,
                         recoveryReferenceMs,

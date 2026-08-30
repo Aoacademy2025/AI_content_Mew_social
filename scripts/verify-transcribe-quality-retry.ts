@@ -6,6 +6,7 @@ import {
   chunkTranscriptionReferenceDurationMs,
   normalizeGeminiWords,
   parseTranscriptionSilenceAnalysis,
+  planFineTranscriptionRecoveryBoundaries,
   planTranscriptionChunkBoundaries,
   planTranscriptionRecoveryBoundaries,
   runTranscriptionQualityRetries,
@@ -167,6 +168,21 @@ async function main() {
     planTranscriptionRecoveryBoundaries(90_000),
     [45_000],
     "recovery slices never exceed the 45s reliability ceiling",
+  );
+
+  // Kapokja production 2026-08-30: the final ~33s recovery slice was valid
+  // speech but Gemini stopped 7.6–8.3s early on all three attempts. Only
+  // that failed slice should get one bounded finer split; healthy recovery
+  // slices and normal primary chunks must keep their existing call count.
+  assert.deepEqual(
+    planFineTranscriptionRecoveryBoundaries(33_353),
+    [16_677],
+    "the repeatedly truncated Kapokja recovery slice is retried as two ~17s calls",
+  );
+  assert.deepEqual(
+    planFineTranscriptionRecoveryBoundaries(20_000),
+    [],
+    "fine recovery is bounded to one level and does not split an already-small slice",
   );
 
   // Exact production failure on 2026-08-09: the balanced planner regressed the

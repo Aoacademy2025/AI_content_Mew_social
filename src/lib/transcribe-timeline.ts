@@ -82,6 +82,7 @@ export const TRANSCRIBE_CHUNK_MAX_MS = 110_000;
 export const TRANSCRIBE_CHUNK_MIN_MS = 30_000;
 export const TRANSCRIBE_CHUNK_TARGET_MS = 75_000;
 export const TRANSCRIBE_RECOVERY_MAX_MS = 45_000;
+export const TRANSCRIBE_FINE_RECOVERY_MAX_MS = 20_000;
 export const TRANSCRIBE_TRAILING_SILENCE_MIN_MS = 3_000;
 
 export type TranscriptionSilenceAnalysis = {
@@ -203,6 +204,19 @@ export function planTranscriptionChunkBoundaries(totalMs: number, silences: numb
 export function planTranscriptionRecoveryBoundaries(totalMs: number): number[] {
   if (!(totalMs > TRANSCRIBE_RECOVERY_MAX_MS)) return [];
   const chunkCount = Math.ceil(totalMs / TRANSCRIBE_RECOVERY_MAX_MS);
+  return Array.from({ length: chunkCount - 1 }, (_, index) =>
+    Math.round((totalMs * (index + 1)) / chunkCount));
+}
+
+/**
+ * If one 30–45s recovery slice still truncates after all bounded attempts,
+ * split only that failed slice once more into <=20s calls. Callers must not
+ * recurse beyond this level: it is a targeted provider-boundary fallback,
+ * not an unbounded retry policy.
+ */
+export function planFineTranscriptionRecoveryBoundaries(totalMs: number): number[] {
+  if (!(totalMs > TRANSCRIBE_FINE_RECOVERY_MAX_MS)) return [];
+  const chunkCount = Math.ceil(totalMs / TRANSCRIBE_FINE_RECOVERY_MAX_MS);
   return Array.from({ length: chunkCount - 1 }, (_, index) =>
     Math.round((totalMs * (index + 1)) / chunkCount));
 }
