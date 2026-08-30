@@ -1,4 +1,5 @@
 import { compareSubtitleContentToNarration } from "@/lib/subtitle-content-contract";
+import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 
 export const MIN_CAPTION_CARD_MS = 300;
 export const DEFAULT_NEW_CAPTION_CARD_MS = 1000;
@@ -32,12 +33,17 @@ export function captionExportPreflight(
   captions: readonly Pick<EditableCaptionCard, "text">[],
   subtitlesVisible: boolean,
   narrationText?: string,
+  narrativeSourceKind: EditorNarrativeSourceKind = "creator-script",
 ): CaptionExportPreflightResult {
   if (!subtitlesVisible) return { ok: true };
   const index = captions.findIndex((caption) => !caption.text.trim());
   if (index >= 0) return { ok: false, reason: "blank_caption", index };
 
-  if (narrationText?.trim()) {
+  // An upload has no immutable authored script: its editable transcript cards are
+  // the approved Narrative Source. Provider fullText may differ from the timed
+  // cards, so comparing against it creates an impossible-to-fix export block.
+  // Script-backed narration remains fail-closed against changed spoken content.
+  if (narrativeSourceKind !== "upload-transcript" && narrationText?.trim()) {
     const comparison = compareSubtitleContentToNarration(narrationText, captions);
     if (comparison.status === "content_mismatch") {
       return {

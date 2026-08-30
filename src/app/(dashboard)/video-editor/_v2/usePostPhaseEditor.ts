@@ -76,6 +76,7 @@ import {
 } from "@/lib/broll-growth-funnel";
 import { useEditorStylePresets } from "./useEditorStylePresets";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 
 export type ExportState =
   | { phase: "idle" }
@@ -151,6 +152,7 @@ export type UsePostPhaseEditorOptions = {
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void;
   onNewProject: () => void;
   projectId?: string | null;
+  narrativeSourceKind: EditorNarrativeSourceKind;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange?: (next: LogoOverlayConfig | undefined) => void;
   layerVisibility?: EditorLayerVisibility;
@@ -187,6 +189,7 @@ export function usePostPhaseEditor(
     onAdoptJob,
     onNewProject,
     projectId = job.projectId,
+    narrativeSourceKind,
     logoOverlay,
     onLogoOverlayChange = ignoreLogoChange,
     layerVisibility,
@@ -1099,6 +1102,7 @@ export function usePostPhaseEditor(
       captions,
       effectiveLayerVisibility.subtitles,
       narrationMasterText,
+      narrativeSourceKind,
     );
     if (!captionPreflight.ok) {
       editCaptionFromTimeline(captionPreflight.index);
