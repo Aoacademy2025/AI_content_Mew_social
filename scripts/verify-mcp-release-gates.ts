@@ -108,6 +108,15 @@ async function main() {
   assert.equal(output?.subtitleEvidence?.timingSource, "forced_alignment");
   assert.equal(output?.subtitleEvidence?.fullText, "สร้างเงินเก็บทุกเดือน");
   assert.ok((output?.subtitleEvidence?.words.length ?? 0) > 0, "completed full renders keep replayable word timing evidence");
+  // ADR 0056: the burn row keeps the verification EVIDENCE only — never the captions it
+  // produced, the word timeline it produced, or its coverage (all already persisted above).
+  const burnVerification = (output?.subtitleEvidence as { verification?: Record<string, unknown> } | undefined)?.verification;
+  assert.equal(burnVerification?.status, "aligned");
+  assert.deepEqual(
+    ["capRes", "words", "speechCoverage"].filter((key) => burnVerification !== undefined && key in burnVerification),
+    [],
+    "persisted verification carries evidence only",
+  );
   assert.deepEqual(output?.billingReceipt, {
     status: "settled",
     funding: "minutes",

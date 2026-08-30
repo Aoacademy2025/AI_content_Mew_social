@@ -42,6 +42,7 @@ type JobOutput = {
     timingSource?: string;
     captions?: Array<{ text: string; startMs: number; endMs: number }>;
     verification?: SubtitleVerificationEvidence;
+    overlayRetimed?: boolean;
   };
   preview?: {
     captions?: Array<{ text: string; startMs: number; endMs: number }>;
@@ -139,6 +140,7 @@ function spokenWords(speech: string, durationMs: number): TimedWord[] {
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { runOrchestrator } = await import("../src/lib/mcp/orchestrator");
+  const { claimNextRunnableJob } = await import("../src/lib/mcp/video-job");
   const { PipelineHttpError } = await import("../src/lib/mcp/pipeline-client");
 
   const user = await prisma.user.create({
@@ -277,6 +279,10 @@ async function main() {
     check((verification.ttsCaptions?.length ?? 0) > 0, "C: the clock that was NOT rendered is kept for comparison");
     check(typeof verification.medianAbsStartDeltaMs === "number", "C: per-card start deltas are measured");
     check(typeof verification.durationMs === "number", "C: the verification duration is measured");
+    check(
+      !("capRes" in verification) && !("words" in verification) && !("speechCoverage" in verification),
+      `C: only the evidence half of the attempt is persisted (keys: ${Object.keys(verification).join(",")})`,
+    );
     check(countCalls(calls, "/api/videos/transcribe") === 1, "C: alignment costs exactly one transcribe call");
     check(transcribeRetries.length === 1 && transcribeRetries.every((retries) => retries === 0),
       "C: the alignment call carries no hidden HTTP retries");
@@ -529,6 +535,91 @@ async function main() {
     check(output.subtitleEvidence?.captions?.length === 1, `H: the blank card is dropped (kept ${output.subtitleEvidence?.captions?.length})`);
     check(output.subtitleQa?.code !== "empty_caption", "H: a blank card is never reported as a blocking finding");
     check(countCalls(calls, "/api/videos/render") === 1, "H: a blank card performs exactly one Burn");
+    check(
+      output.subtitleEvidence?.overlayRetimed === true,
+      `H: the burned track and the reported captions agree (overlayRetimed=${String(output.subtitleEvidence?.overlayRetimed)})`,
+    );
+    check(
+      output.subtitleEvidence?.verification?.status === "skipped"
+        && output.subtitleEvidence?.verification?.durationMs === 0,
+      "H: an export row says for itself that no alignment happened",
+    );
+  }
+
+  // H2. The popup-derived route (no editSnapshot) must not burn an empty card either.
+  {
+    const calls: Call[] = [];
+    const job = await prisma.videoJob.create({
+      data: {
+        userId: user.id,
+        status: "processing",
+        type: "export",
+        inputJson: JSON.stringify({
+          mode: "export",
+          sourceJobId: exportSource.id,
+          subtitleOverlayConfig: {
+            videoUrl: "/renders/export-source.mp4",
+            durationInFrames: 108,
+            keywordPopups: [
+              { text: exportScript, start: 0, end: 90, color: "#fff" },
+              { text: "   ", start: 90, end: 108, color: "#fff" },
+            ],
+          },
+        }),
+      },
+    });
+    await runOrchestrator(job.id, user.id, { caller: exportPipeline(calls), refundOneClip: async () => {}, sleep: async () => {} });
+    const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    const burn = calls.find((call) => call.path === "/api/videos/render")?.body as
+      { subtitleOverlayConfig?: { keywordPopups?: Array<{ text?: string }> } } | undefined;
+    const burnedPopups = burn?.subtitleOverlayConfig?.keywordPopups ?? [];
+    check(completed.status === "done", `H2: an empty popup without an edit snapshot still exports (got ${completed.status})`);
+    check(
+      burnedPopups.length === 1 && burnedPopups[0]?.text === exportScript,
+      `H2: the empty popup is never burned (burned ${JSON.stringify(burnedPopups.map((popup) => popup?.text))})`,
+    );
+    check(countCalls(calls, "/api/videos/render") === 1, "H2: an empty popup performs exactly one Burn");
+  }
+
+  // H3. When the overlay cannot be re-projected onto the repaired cards the burn keeps the
+  // submitted card times while the report describes the repaired ones — record the divergence.
+  {
+    const calls: Call[] = [];
+    const job = await prisma.videoJob.create({
+      data: {
+        userId: user.id,
+        status: "processing",
+        type: "export",
+        inputJson: JSON.stringify({
+          mode: "export",
+          sourceJobId: exportSource.id,
+          subtitleOverlayConfig: {
+            videoUrl: "/renders/export-source.mp4",
+            durationInFrames: 120,
+            keywordPopups: [{ text: exportScript, start: 0, end: 120 }],
+          },
+          editSnapshot: {
+            version: 1,
+            captions: [
+              { text: "รายได้", startMs: 0, endMs: 3_000, tag: "hook" },
+              { text: " 5,000 บาท", startMs: 3_000, endMs: 4_000, tag: "body" },
+            ],
+          },
+        }),
+      },
+    });
+    await runOrchestrator(job.id, user.id, { caller: exportPipeline(calls), refundOneClip: async () => {}, sleep: async () => {} });
+    const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    const output = parseOutput(completed.outputJson);
+    check(completed.status === "done", `H3: an unprojectable overlay still exports (got ${completed.status})`);
+    check(
+      output.subtitleEvidence?.overlayRetimed === false,
+      `H3: the burn/report divergence is recorded (overlayRetimed=${String(output.subtitleEvidence?.overlayRetimed)})`,
+    );
+    check(
+      (output.subtitleEvidence?.captions?.at(-1)?.endMs ?? 0) <= 3_000,
+      "H3: the reported captions are the repaired ones",
+    );
   }
 
   // ── I. A numeric ASR disagreement reports, it never buys another narration ──
@@ -572,6 +663,87 @@ async function main() {
     check(countCalls(calls, "/api/videos/transcribe") === 1, "I: an alignment verdict never buys a second transcription");
     check(ttsTexts.every((text) => text === speech), "I: Gemini receives only persisted NarrationPlan speechText");
     check(output.preview?.fullText === speech, "I: captions keep the deterministic NarrationPlan display text");
+  }
+
+  // ── J. An avatar job on the spoken-script clock survives the provider wait ──
+  // Production hazard: the checkpoint is re-parsed on resume, AFTER HeyGen has already been
+  // paid for. A timing source the parser rejects would fail the job with the avatar spend
+  // already made, so rung 3 must round-trip and the resume must not re-align.
+  {
+    const speech = "พรีเซนต์งานให้ปังในสามสิบวินาที";
+    const calls: Call[] = [];
+    const job = await createJob({
+      script: speech,
+      previewMode: true,
+      voiceProvider: "gemini",
+      avatarMode: "full",
+      avatarId: "qa-avatar",
+    });
+    const avatarCaller = {
+      post: async <T,>(path: string, body?: unknown): Promise<T> => {
+        calls.push({ path, body, atMs: 0 });
+        if (path === "/api/videos/tts-gemini") {
+          // tts-gemini fail-open: audio, no timing at all → rung 3.
+          return { voiceUrl: "/api/renders/avatar-no-timing.wav", audioDurationMs: 4_000 } as T;
+        }
+        if (path === "/api/videos/transcribe") {
+          throw new PipelineHttpError("POST", path, 503, {
+            error: "บริการถอดซับไม่พร้อมชั่วคราว",
+            reason: "transcribe_request_failed",
+            provider: "gemini",
+          });
+        }
+        if (path === "/api/videos/extract-keywords") {
+          return { keywords: ["present"], keywordsPerScene: 5, sceneClipCounts: [1], sceneDurations: [4] } as T;
+        }
+        if (path === "/api/videos/fetch-stock") return { results: [{ src: "stock.mp4" }] } as T;
+        if (path === "/api/videos/generate-config") {
+          return { config: { durationInFrames: 120, voiceFile: "/api/renders/avatar-no-timing.wav", bgVideos: [] } } as T;
+        }
+        if (path === "/api/videos/render") return { jobId: "avatar-base-render" } as T;
+        if (path === "/api/videos/trim-audio") return { audioUrl: "/api/renders/avatar-intro.wav" } as T;
+        if (path === "/api/heygen/generate-with-bg") return { videoId: "qa-heygen-video" } as T;
+        if (path === "/api/videos/poll-avatar") {
+          return { status: "completed", videoUrl: "https://avatar.example/qa.mp4", thumbnailUrl: null, errorMsg: null } as T;
+        }
+        if (path === "/api/heygen/composite") {
+          return { videoUrl: "/api/renders/avatar-composite.mp4", usedMode: "chromakey" } as T;
+        }
+        throw new Error(`unexpected avatar POST ${path}`);
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(path: string): Promise<T> => {
+        calls.push({ path, atMs: 0 });
+        if (path.startsWith("/api/videos/render-progress")) {
+          return { progress: 100, stage: "done", videoUrl: "/api/renders/avatar-base.mp4", error: null } as T;
+        }
+        throw new Error(`unexpected avatar GET ${path}`);
+      },
+    };
+    await runOrchestrator(job.id, user.id, { caller: avatarCaller, refundOneClip: async () => {}, sleep: async () => {} });
+    const parked = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    check(parked.status === "waiting_provider", `J: the avatar job parks at its provider checkpoint (got ${parked.status})`);
+    const transcribeBeforeResume = countCalls(calls, "/api/videos/transcribe");
+
+    const claimed = await claimNextRunnableJob(new Date(Date.now() + 3 * 60 * 60_000));
+    check(claimed?.id === job.id, "J: the parked avatar job is claimable again after the provider wait");
+    await runOrchestrator(job.id, user.id, { caller: avatarCaller, refundOneClip: async () => {}, sleep: async () => {} });
+    const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    const output = parseOutput(completed.outputJson);
+    check(
+      completed.status === "done",
+      `J: the resumed script-clock avatar job completes (got ${completed.status}: ${completed.errorMessage ?? ""})`,
+    );
+    check(
+      output.subtitleQa?.timingSource === "avatar_script_clock"
+        && output.subtitleEvidence?.timingSource === "avatar_script_clock",
+      `J: the spoken-script clock round-trips through the avatar checkpoint (got ${output.subtitleQa?.timingSource})`,
+    );
+    check(verificationOf(output).status === "failed", `J: the resumed job replays the checkpointed verification (got ${String(verificationOf(output).status)})`);
+    check(
+      countCalls(calls, "/api/videos/transcribe") === transcribeBeforeResume,
+      "J: resuming an avatar job never re-runs the acoustic alignment",
+    );
   }
 
   await prisma.$disconnect();

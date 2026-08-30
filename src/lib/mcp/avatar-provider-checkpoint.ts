@@ -85,7 +85,10 @@ function isOptionalSubtitleTimingSource(value: unknown): value is SubtitleTiming
     || value === "tts_segment_timing"
     || value === "generated_tts_fallback"
     || value === "forced_alignment"
-    || value === "upload_transcription";
+    || value === "upload_transcription"
+    // Rung 3 of the ADR 0056 ladder: an avatar job whose provider returned no timing renders
+    // on the spoken-script clock, and its checkpoint must survive the provider wait.
+    || value === "avatar_script_clock";
 }
 
 function isOptionalSubtitleSpeechCoverage(value: unknown): value is SubtitleSpeechCoverage | undefined {

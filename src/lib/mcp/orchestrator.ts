@@ -1428,23 +1428,25 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       // everything else is reported with the job.
       const repairedExport = repairCaptionTiming(finalCaptions, exportAudioDurationMs ?? 0);
       finalCaptions = repairedExport.captions;
-      if (repairedExport.dropped > 0 && subtitlesVisible) {
-        // A dropped blank card must not be burned either. Removing exactly the empty popups
-        // (never by index) keeps every remaining card's own style, and the projection below
-        // still refuses to touch a track whose card count no longer matches.
-        const visiblePopups = overlayPopups.filter((candidate) =>
-          !!candidate
-          && typeof candidate === "object"
-          && !Array.isArray(candidate)
-          && typeof (candidate as { text?: unknown }).text === "string"
-          && (candidate as { text: string }).text.trim().length > 0);
-        if (visiblePopups.length === finalCaptions.length) {
-          exportOverlayConfig = { ...exportOverlayConfig, keywordPopups: visiblePopups };
-        }
+      // A card with no text is never burned — on every export, whichever route produced the
+      // caption list. Empty popups are removed by their own emptiness, never by index, so
+      // each surviving card keeps its own per-card style.
+      const visiblePopups = overlayPopups.filter((candidate) =>
+        !!candidate
+        && typeof candidate === "object"
+        && !Array.isArray(candidate)
+        && typeof (candidate as { text?: unknown }).text === "string"
+        && (candidate as { text: string }).text.trim().length > 0);
+      if (visiblePopups.length !== overlayPopups.length) {
+        exportOverlayConfig = { ...exportOverlayConfig, keywordPopups: visiblePopups };
       }
+      // True when the burned track and the reported captions describe the same timeline:
+      // either the projection was applied, or repair changed nothing so none was needed.
+      let overlayRetimed = true;
       if (repairedExport.repaired) {
-        exportOverlayConfig = retimeSubtitleOverlayConfig(exportOverlayConfig, finalCaptions)
-          ?? exportOverlayConfig;
+        const retimedOverlay = retimeSubtitleOverlayConfig(exportOverlayConfig, finalCaptions);
+        overlayRetimed = retimedOverlay !== null;
+        if (retimedOverlay) exportOverlayConfig = retimedOverlay;
       }
       const exportSubtitleQa = validateSubtitleQuality({
         script: canonicalScript,
@@ -1468,6 +1470,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             timingSource: exportTimingSource,
             repaired: repairedExport.repaired,
             dropped: repairedExport.dropped,
+            overlayRetimed,
           },
         });
         // Only "nothing to show" stops an export.
@@ -1546,6 +1549,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           audioDurationMs: exportAudioDurationMs,
           timingSource: exportTimingSource,
           speechCoverage: exportSpeechCoverage,
+          // Export never aligns, so the row says so itself instead of leaving a reader to
+          // infer it from a missing field.
+          verification: { status: "skipped", durationMs: 0, ttsCaptions: [] },
+          // false ⇒ the burned overlay kept its submitted card times while these captions
+          // are the repaired ones (the projection could not map the track).
+          overlayRetimed,
         },
         ...(videoId ? { videoId } : {}),
         ...(input.editSnapshot ? { editSnapshot: input.editSnapshot } : {}),
@@ -2022,11 +2031,34 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       subtitleTimingSource = "avatar_script_clock";
     }
     if (!capRes || capRes.captions.length === 0) {
-      throw new SubtitleAlignmentFailureError(
-        "ไม่มีข้อความซับสำหรับคลิปนี้ (empty_captions) — กรุณาตรวจสคริปต์แล้วลองใหม่",
-        "empty_captions",
-        provider,
-      );
+      // Nothing to show. Route it through the same policy as every other site so a subtitle
+      // finding can only stop a render via subtitleQualityShouldFailJob (ADR 0056).
+      const emptyQa = validateSubtitleQuality({
+        script: narrationText,
+        captions: [],
+        audioDurationMs,
+        timingSource: subtitleTimingSource,
+      });
+      if (emptyQa.status !== "passed") {
+        emitTelemetry({
+          name: "subtitle_quality_report",
+          category: emptyQa.status === "failed" ? "error" : "pipeline",
+          source: "server",
+          step: "captions",
+          status: emptyQa.code,
+          properties: { pipelineRunId, jobId, via: "mcp", provider, timingSource: subtitleTimingSource },
+        });
+        if (subtitleQualityShouldFailJob(emptyQa)) {
+          throw new SubtitleAlignmentFailureError(
+            `ไม่มีข้อความซับสำหรับคลิปนี้ (${emptyQa.code}) — กรุณาตรวจสคริปต์แล้วลองใหม่`,
+            emptyQa.code,
+            provider,
+          );
+        }
+      }
+      // Unreachable: an empty caption list is always a Blocking Subtitle Code. Kept as a
+      // non-subtitle guard so the ladder can never fall through with nothing to render.
+      throw new Error("สร้างซับสำหรับคลิปนี้ไม่สำเร็จ — กรุณาลองใหม่อีกครั้ง");
     }
     const ttsCaptions = capRes.captions.map((caption) => ({ startMs: caption.startMs, endMs: caption.endMs }));
 
