@@ -40,6 +40,30 @@ const estimated = auditSubtitleReleaseRecord({
 });
 assert.ok(estimated.some((issue) => issue.code === "unverified_alignment" && issue.severity === "p0"));
 
+const generatedFallback = auditSubtitleReleaseRecord({
+  id: "generated-fallback",
+  status: "done",
+  type: "create",
+  inputJson: JSON.stringify({ voiceProvider: "gemini" }),
+  outputJson: JSON.stringify({
+    version: 2,
+    mode: "preview",
+    subtitleQa: { ...passedQa, timingSource: "generated_tts_fallback", speechCoverage: undefined },
+    preview: {
+      captions: [{ text: "สวัสดี", startMs: 0, endMs: 2_000 }],
+      words: [{ word: "สวัสดี", startMs: 0, endMs: 2_000, startChar: 0, endChar: 6 }],
+      fullText: "สวัสดี",
+      audioDurationMs: 2_000,
+      config: { bgVideos: [] },
+    },
+  }),
+});
+assert.deepEqual(
+  generatedFallback,
+  [],
+  "explicit generated-TTS fallback remains auditable without being mislabeled as forced alignment",
+);
+
 const cutawayOffset = auditSubtitleReleaseRecord({
   id: "cutaway-offset",
   status: "done",

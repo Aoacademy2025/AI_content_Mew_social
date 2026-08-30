@@ -77,6 +77,7 @@ function isOptionalSubtitleTimingSource(value: unknown): value is SubtitleTiming
   return value === undefined
     || value === "provider_alignment"
     || value === "tts_segment_timing"
+    || value === "generated_tts_fallback"
     || value === "forced_alignment"
     || value === "upload_transcription";
 }

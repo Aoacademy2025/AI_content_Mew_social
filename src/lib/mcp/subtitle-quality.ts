@@ -15,6 +15,7 @@ import {
 export type SubtitleTimingSource =
   | "provider_alignment"
   | "tts_segment_timing"
+  | "generated_tts_fallback"
   | "forced_alignment"
   | "upload_transcription"
   | "avatar_script_clock";
@@ -623,9 +624,24 @@ function alignTranscriptWordsFuzzily(
       // to a nearby repeated phrase (prod: authored/ASR both said "ตีสาม", but
       // an inserted sound effect made the final ม map to the following word).
       // Recover only an exact local occurrence near the partial DP anchor. A
-      // wholly missing/changed value still has no candidate and remains red.
+      // wholly changed value still has numeric speech in the acoustic gap and
+      // remains red. If ASR omitted the source number entirely, report missing
+      // alignment evidence instead so generated TTS can use its explicit
+      // degraded fallback without treating silence as a contradictory claim.
       const mappedEvidence = mapped.filter((transcriptCharIndex) => transcriptCharIndex >= 0);
-      if (mappedEvidence.length === 0) return { status: "failed", code: "numeric_claim_mismatch" };
+      if (mappedEvidence.length === 0) {
+        const previousMapped = nearestMappedTranscriptBefore(sourceIndexes[0]);
+        const nextMapped = nearestMappedTranscriptAfter(sourceIndexes[sourceIndexes.length - 1]);
+        return {
+          status: "failed",
+          code: containsNumericTranscriptSpeech(
+            previousMapped < 0 ? 0 : previousMapped + 1,
+            nextMapped,
+          )
+            ? "numeric_claim_mismatch"
+            : "incomplete_alignment",
+        };
+      }
       const target = sourceIndexes.map((sourceCharIndex) => sourceChars[sourceCharIndex]).join("");
       const anchorStart = Math.min(...mappedEvidence);
       const previousMapped = nearestMappedTranscriptBefore(sourceIndexes[0]);

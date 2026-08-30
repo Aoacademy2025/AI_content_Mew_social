@@ -1861,6 +1861,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       "overlapping_timing",
       "canonical_caption_projection_failed",
     ]);
+    const generatedTtsFallbackCodes = new Set([
+      "text_mismatch",
+      "incomplete_alignment",
+      "implausible_timing_density",
+      "overlapping_timing",
+      "canonical_caption_projection_failed",
+    ]);
     const acousticAttempts = provider === "gemini" ? 2 : 1;
     for (let acousticAttempt = 1; acousticAttempt <= acousticAttempts; acousticAttempt += 1) {
       subtitleTimingSource = provider === "elevenlabs" ? "provider_alignment" : "tts_segment_timing";
@@ -2016,6 +2023,36 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         { text: narrationText, voiceName: input.geminiVoiceName ?? user.geminiVoiceName ?? "Aoede" },
       );
       audioDurationMs = await prepareGeneratedTts(tts);
+    }
+    if (
+      provider === "gemini"
+      && subtitleTimingSource !== "forced_alignment"
+      && capRes
+      && alignmentRecoveryFailureCode
+      && generatedTtsFallbackCodes.has(alignmentRecoveryFailureCode)
+    ) {
+      // The narration audio was generated from the immutable Narration Master,
+      // and capRes takes every displayed character from that same source. When
+      // repeated ASR projections drift, retain the provider's deterministic
+      // segment clock as an explicit degraded fallback instead of making the
+      // user restart the whole job. Numeric claim/context failures are
+      // deliberately excluded and remain fail-closed.
+      subtitleTimingSource = "generated_tts_fallback";
+      subtitleSpeechCoverage = undefined;
+      emitTelemetry({
+        name: "subtitle_alignment_generated_tts_fallback",
+        category: "pipeline",
+        source: "server",
+        step: "captions",
+        status: "done",
+        properties: {
+          pipelineRunId,
+          jobId,
+          via: "mcp",
+          provider,
+          alignmentFailureCode: alignmentRecoveryFailureCode,
+        },
+      });
     }
     if (!capRes || capRes.captions.length === 0) {
       throw new SubtitleAlignmentFailureError(

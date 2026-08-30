@@ -178,13 +178,31 @@ type NarrativeAlignedBrollInput = {
   audioEndMs?: number;
 };
 
+function narrativePresentationCharacters(value: string): string[] {
+  switch (value) {
+    case "…":
+      return [".", ".", "."];
+    case "“":
+    case "”":
+      return ["\""];
+    case "‘":
+    case "’":
+      return ["'"];
+    default:
+      return [value];
+  }
+}
+
 function visibleCharacters(text: string): Array<{ value: string; startChar: number; endChar: number }> {
   const characters: Array<{ value: string; startChar: number; endChar: number }> = [];
   let offset = 0;
   for (const value of text) {
     const startChar = offset;
     offset += value.length;
-    if (!/\s/u.test(value)) characters.push({ value, startChar, endChar: offset });
+    if (/\s/u.test(value)) continue;
+    narrativePresentationCharacters(value).forEach((presentationValue) => {
+      characters.push({ value: presentationValue, startChar, endChar: offset });
+    });
   }
   return characters;
 }
@@ -217,9 +235,10 @@ function boundaryTimeFromWords(words: TimedWord[], boundaryChar: number): number
  * analyzed from; an unrelated fixed-count timing planner can never silently
  * pair a Beat with different words.
  *
- * Whitespace is presentation-only for this alignment. Every other visible
- * character must match exactly and in order. A mismatch returns null so Brand
- * Visual callers can fail closed before image/provider spend.
+ * Whitespace and equivalent typographic punctuation are presentation-only for
+ * this alignment. Every narrative character must otherwise match exactly and
+ * in order. A mismatch returns null so Brand Visual callers can fail closed
+ * before image/provider spend.
  */
 export function buildNarrativeAlignedBrollWindows(
   input: NarrativeAlignedBrollInput,

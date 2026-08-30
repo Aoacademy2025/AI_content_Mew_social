@@ -8,6 +8,15 @@ export type FirstClipPathDecision = {
     | "has_completed_video";
 };
 
+/** Only the no-payment Conversion Trial stays on the guided script sample.
+ * Paid-equivalent users (subscription, paid term, bundle, coupon or admin
+ * grant) keep the First-Clip onboarding but retain their paid upload feature. */
+export function requiresFirstClipScript(
+  decision: Pick<FirstClipPathDecision, "onPath" | "reason">,
+): boolean {
+  return decision.onPath && decision.reason === "conversion_trial";
+}
+
 /** Paid-Equivalent and Conversion Trial accounts with no completed video stay
  * on the First-Clip Path. Trial never inherits Paid-Equivalent image/script access. */
 export function decideFirstClipPath(input: {

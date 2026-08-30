@@ -71,6 +71,7 @@ import { resolveVideoDownloadFilename } from "@/lib/video-export-name";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import { classifyFailure, failureViewCopy } from "./failure-view";
 import { fetchMe } from "@/lib/use-me";
+import { requiresFirstClipScript, type FirstClipPathDecision } from "@/lib/first-clip-path";
 
 // Which submit path a missing-key error interrupted, so the retry (after saving a key,
 // or after switching to Gemini) re-runs exactly that path — mirrors v1's
@@ -86,6 +87,7 @@ export function EditorV2Shell() {
   const router = useRouter();
   const [step, setStep] = useState<0 | 1>(0);
   const [firstClipPath, setFirstClipPath] = useState(false);
+  const [firstClipPathReason, setFirstClipPathReason] = useState<FirstClipPathDecision["reason"]>("not_paid_equivalent");
   const {
     job,
     submit,
@@ -164,15 +166,21 @@ export function EditorV2Shell() {
     fetchMe()
       .then((data) => {
         if (!alive) return;
-        setFirstClipPath(data?.firstClipPath === true);
+        const onPath = data?.firstClipPath === true;
+        setFirstClipPath(onPath);
+        setFirstClipPathReason(data?.firstClipPathReason ?? (onPath ? "on_path" : "not_paid_equivalent"));
       })
       .catch(() => {
-        if (alive) setFirstClipPath(false);
+        if (alive) {
+          setFirstClipPath(false);
+          setFirstClipPathReason("not_paid_equivalent");
+        }
       });
     return () => { alive = false; };
   }, []);
 
   const isRendering = job.phase === "rendering" || job.phase === "submitting";
+  const firstClipScriptOnly = requiresFirstClipScript({ onPath: firstClipPath, reason: firstClipPathReason });
   const indicatorActive = job.phase === "done" ? 2 : isRendering ? 1 : step;
   const indicatorDone = job.phase === "done" ? [0, 1] : (isRendering || step === 1) ? [0] : [];
 
@@ -715,7 +723,9 @@ export function EditorV2Shell() {
             fontFamily: font.body,
           }}
         >
-          คลิปแรก: วางสคริปต์แล้วกดสร้าง — ระบบใช้แบรนด์เดียวกันให้อัตโนมัติ
+          {p.mode === "upload"
+            ? "คลิปแรก: อัปโหลดคลิปแนวตั้ง แล้วระบบจะทำซับและบีโรลให้อัตโนมัติ"
+            : "คลิปแรก: วางสคริปต์แล้วกดสร้าง — ระบบใช้แบรนด์เดียวกันให้อัตโนมัติ"}
         </div>
       ) : null}
 
@@ -776,7 +786,12 @@ export function EditorV2Shell() {
           }}
         />
       ) : step === 0 ? (
-        <Step1Script p={p} onNext={() => setStep(1)} firstClipPath={firstClipPath} />
+        <Step1Script
+          p={p}
+          onNext={() => setStep(1)}
+          firstClipPath={firstClipPath}
+          firstClipScriptOnly={firstClipScriptOnly}
+        />
       ) : (
         <Step2Elements p={p} onRender={handleRender} />
       )}

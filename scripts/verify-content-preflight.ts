@@ -102,6 +102,41 @@ async function main() {
     audioEndMs: spokenDurationMs,
   }), null, "a mismatched accepted Narrative fails closed instead of pairing the wrong Beat by index");
 
+  // Production 2026-08-30: Gemini preserved the complete narration but changed
+  // presentation punctuation in the accepted Visual Beat (`...` -> `…`). The
+  // narrative meaning and every spoken character were unchanged, so this must
+  // align without weakening the fail-closed content comparison above.
+  const punctuationSpokenText = "เปิดเรื่อง... แล้วพูดว่า “เริ่มได้” ปิดท้าย";
+  const punctuationDurationMs = 4_000;
+  const punctuationWords = tokenizeWords(punctuationSpokenText).map((word) => ({
+    ...word,
+    startMs: Math.round((word.startChar / punctuationSpokenText.length) * punctuationDurationMs),
+    endMs: Math.max(
+      Math.round((word.startChar / punctuationSpokenText.length) * punctuationDurationMs) + 1,
+      Math.round((word.endChar / punctuationSpokenText.length) * punctuationDurationMs),
+    ),
+  }));
+  const presentationNormalizedNarrative = buildNarrativeAlignedBrollWindows({
+    captions: [
+      { text: "เปิดเรื่อง...", startMs: 0, endMs: 1_200 },
+      { text: "แล้วพูดว่า “เริ่มได้”", startMs: 1_200, endMs: 3_000 },
+      { text: "ปิดท้าย", startMs: 3_000, endMs: punctuationDurationMs },
+    ],
+    words: punctuationWords,
+    spokenText: punctuationSpokenText,
+    narrativeWindows: ["เปิดเรื่อง…", "แล้วพูดว่า \"เริ่มได้\"", "ปิดท้าย"],
+    audioEndMs: punctuationDurationMs,
+  });
+  assert.ok(
+    presentationNormalizedNarrative,
+    "typographic ellipses and smart quotes do not create a false Narrative mismatch",
+  );
+  assert.equal(
+    presentationNormalizedNarrative?.at(-1)?.endMs,
+    punctuationDurationMs,
+    "presentation-normalized Narrative windows still tile the complete narration",
+  );
+
   const stableWindowSource = [
     "ปัญหาแรกเกิดขึ้นในวันนี้",
     "วิธีแก้ที่สองทำได้ทุกเดือน",
