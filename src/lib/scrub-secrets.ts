@@ -25,5 +25,19 @@ export function scrubSecrets(input: string): string {
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{10,}=*/gi, "$1<redacted>")
     // OpenRouter style API keys (sk-or-...) appearing anywhere — a bare key
     // without the "Bearer " prefix would slip past the rule above.
-    .replace(/sk-or-[A-Za-z0-9_-]{8,}/g, "<redacted>");
+    .replace(/sk-or-[A-Za-z0-9_-]{8,}/g, "<redacted>")
+    // Stripe secret/restricted keys and webhook signing secrets.
+    .replace(/sk_(?:live|test)_[A-Za-z0-9]+/g, "<redacted>")
+    .replace(/rk_(?:live|test)_[A-Za-z0-9]+/g, "<redacted>")
+    .replace(/whsec_[A-Za-z0-9]+/g, "<redacted>")
+    // OpenAI project-scoped keys.
+    .replace(/sk-proj-[A-Za-z0-9_-]+/g, "<redacted>")
+    // RunPod API tokens.
+    .replace(/rpa_[A-Za-z0-9]+/g, "<redacted>")
+    // Header-style secrets serialized into a message/stack: keep the header name, redact
+    // the value only — covers ElevenLabs (xi-api-key), generic (x-api-key), and a raw
+    // (non-"Bearer") Authorization header value that the Bearer-only rule above would miss.
+    .replace(/((?:xi-api-key|x-api-key|authorization)["']?\s*[:=]\s*["']?)[^\n"',}]+/gi, "$1<redacted>")
+    // Absolute server paths — never leak the VPS filesystem layout to a client or log sink.
+    .replace(/\/var\/www\/[^\s"']*/g, "<path>");
 }

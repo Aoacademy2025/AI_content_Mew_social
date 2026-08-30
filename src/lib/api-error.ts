@@ -76,7 +76,13 @@ export function friendlyMessage(error: unknown): { message: string; detail: stri
   return { message: "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง", detail };
 }
 
-function buildAdminBody(route: string, error: unknown, userId?: string, context?: Record<string, unknown>): string {
+function buildAdminBody(
+  route: string,
+  error: unknown,
+  userId?: string,
+  context?: Record<string, unknown>,
+  detail?: string,
+): string {
   const lines: string[] = [];
   lines.push(`🔴 Route: ${route}`);
   lines.push(`🕐 Time: ${new Date().toISOString()}`);
@@ -90,6 +96,11 @@ function buildAdminBody(route: string, error: unknown, userId?: string, context?
   } else {
     lines.push(`❌ Error: ${scrubSecrets(JSON.stringify(error))}`);
   }
+  // `detail` (friendlyMessage's scrubbed original cause, ≤300 chars) is admin/log-only —
+  // NEVER returned on the public JSON envelope (security review R30). This is its one
+  // consumer, so an admin can still see the real cause even when `userMessage` overrides
+  // the customer-facing text above.
+  if (detail) lines.push(`📝 Detail: ${detail}`);
   if (context && Object.keys(context).length > 0) {
     try {
       lines.push(`📦 Context: ${scrubSecrets(JSON.stringify(context, null, 0).slice(0, 500))}`);
@@ -135,7 +146,7 @@ export function apiError({
       await notifyAdmins({
         type: "ERROR_SYSTEM",
         title: `⚠️ Error: ${route}`,
-        body: buildAdminBody(route, error, uid, context) + suppressedNote,
+        body: buildAdminBody(route, error, uid, context, detail) + suppressedNote,
       });
     } else {
       const why = decision.action === "skip_capacity" ? "capacity" : `rate-limit x${decision.suppressed}`;
@@ -155,7 +166,7 @@ export function apiError({
 
   notify().catch(() => {});
 
-  return NextResponse.json({ error: message, detail }, { status });
+  return NextResponse.json({ error: message }, { status });
 }
 
 /** Shorthand for user-facing validation errors (no admin notify needed) */

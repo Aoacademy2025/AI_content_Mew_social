@@ -78,6 +78,7 @@ const STEP_LABELS: Record<string, string> = {
   keywords: "หา keyword",
   fetchStock: "หา B-roll",
   tts: "สร้างเสียง",
+  captions: "สร้างซับ",
   transcribe: "ถอดเสียงเป็นซับ",
   config: "จัดลำดับคลิป",
   render: "เรนเดอร์",

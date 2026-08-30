@@ -50,7 +50,12 @@ export async function inspectAvatarQuotaRefund(input: {
   if (!avatarInput(job.inputJson)) return rejected(job.id, "avatar_input_not_confirmed");
 
   const structuredQuota = job.errorProvider === "heygen" && job.errorCode === "quota";
-  const legacyUnknown = job.errorMessage === LEGACY_UNKNOWN_OUTCOME;
+  // R32: the orchestrator's terminal catch (Task 5 / R31) may now wrap this exact
+  // internal (non-Thai, non-envelope) cause in a "<prefix> (<code>): <cause>" form —
+  // match by substring, not exact equality, so both the verbatim legacy shape (seeded
+  // directly, or produced before this wrapping existed) and the wrapped form still gate
+  // this money-refund path correctly.
+  const legacyUnknown = job.errorMessage?.includes(LEGACY_UNKNOWN_OUTCOME) ?? false;
   if (!structuredQuota && !legacyUnknown) return rejected(job.id, "heygen_quota_error_not_confirmed");
   if (!structuredQuota && legacyUnknown && !input.confirmedLegacyHeygen402) {
     return rejected(job.id, "legacy_unknown_requires_confirmed_heygen_402");

@@ -111,7 +111,13 @@ function extractApiErrorEnvelope(body: unknown): { code: string; message?: strin
     : typeof record.message === "string"
       ? record.message
       : undefined;
-  const detail = typeof nested?.detail === "string" ? nested.detail : undefined;
+  // The render route's quota envelope puts `detail` at the TOP level, sibling to `error`
+  // (src/lib/quota-error.ts:4-7: `{ error: { code, message, ... }, detail }`) — check both.
+  const detail = typeof nested?.detail === "string"
+    ? nested.detail
+    : typeof record.detail === "string"
+      ? record.detail
+      : undefined;
   return { code, message, detail };
 }
 

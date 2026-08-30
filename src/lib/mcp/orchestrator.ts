@@ -520,6 +520,36 @@ const STEP_ERROR_PREFIX: Record<string, string> = {
 };
 const STEP_ERROR_PREFIX_DEFAULT = "เกิดข้อผิดพลาด";
 
+/** Thai script block (U+0E00–U+0E7F) — a rough but sufficient "is this already Thai
+ *  customer copy" signal for R31 (see classifyUnknownStepFailure below). */
+const THAI_CHARS_RE = /[฀-๿]/;
+
+/**
+ * R31 (review round 1): decide how an *unknown* step failure's cause becomes the stored
+ * `VideoJob.errorMessage`. A cause that is ALREADY customer copy — (a) `isEnvelopeCause`
+ * (it came from a route error envelope / PipelineApiError, which authored its own Thai
+ * message on purpose), or (b) any message containing Thai characters (the orchestrator's
+ * own internal Thai throws, e.g. the "unreachable" empty-captions guard) — is stored
+ * VERBATIM (scrubbed only; `failJob` already slices to 1000 chars), with `code` passed
+ * alongside rather than baked into the text. Only a genuinely internal/technical cause (no
+ * Thai, no envelope — e.g. a raw Node/library error message) gets wrapped as
+ * "<step prefix> (<code>): <scrubbed cause, ≤160 chars>". Exported and pure so it can be
+ * unit-tested directly instead of only through a full orchestrator run (some qualifying
+ * causes, like the empty-captions guard, are effectively unreachable through a live pipeline).
+ */
+export function classifyUnknownStepFailure(input: {
+  phaseName: string;
+  code: string;
+  cause: string;
+  isEnvelopeCause: boolean;
+}): { code: string; message: string } {
+  const causeIsCustomerCopy = input.isEnvelopeCause || THAI_CHARS_RE.test(input.cause);
+  const message = causeIsCustomerCopy
+    ? scrubSecrets(input.cause)
+    : `${STEP_ERROR_PREFIX[input.phaseName] ?? STEP_ERROR_PREFIX_DEFAULT} (${input.code}): ${scrubSecrets(input.cause).slice(0, 160)}`;
+  return { code: input.code, message };
+}
+
 /** Wall-clock budget for the one alignment call. Read at call time, never cached, so the
  *  knob answers to the current environment. */
 function subtitleVerifyBudgetMs(): number {
@@ -764,7 +794,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
   }
   function emitStage(phase: string, status: "started" | "done" | "error", durationMs?: number, extra?: Record<string, unknown>) {
     const step = STEP_TELEMETRY_NAME[phase];
-    if (!step) return; // skip startup/captions and other non-pipeline phases
+    if (!step) return; // skip startup and other non-pipeline phases
     emitTelemetry({
       name: status === "started" ? "pipeline_step_started" : status === "done" ? "pipeline_step_done" : "pipeline_step_error",
       category: status === "error" ? "error" : "pipeline",
@@ -2559,15 +2589,22 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const message = e instanceof Error ? e.message : "internal error";
     const pipelineFailure = pipelineFailureDetails(e);
     const contentPreflightFailure = contentPreflightFailureDetails(e);
-    // Unknown-error labeling only (P0056 hotfix): never changes WHICH errors are thrown —
-    // AvatarProviderFailureError / HeroVoiceProviderFailureError / SubtitleAlignmentFailureError /
-    // content-preflight below all keep their deliberate, specific copy verbatim. This is only
-    // reached for everything else, so it always attaches a code — never the bare generic fallback.
-    const unknownFailureCode = e instanceof PipelineApiError
+    // Unknown-error labeling only (P0056 hotfix, review round 1 / R31): never changes WHICH
+    // errors are thrown — AvatarProviderFailureError / HeroVoiceProviderFailureError /
+    // SubtitleAlignmentFailureError / content-preflight below all keep their deliberate,
+    // specific copy verbatim. This is only reached for everything else. See
+    // classifyUnknownStepFailure for the verbatim-vs-prefixed decision.
+    const isPipelineApiCause = e instanceof PipelineApiError;
+    const unknownFailureCause = isPipelineApiCause ? e.message : (pipelineFailure?.message ?? message);
+    const unknownFailureCode = isPipelineApiCause
       ? e.code
       : (pipelineFailure?.code ?? `${phaseName || "unknown"}_unknown`);
-    const unknownFailureCause = e instanceof PipelineApiError ? e.message : (pipelineFailure?.message ?? message);
-    const unknownFailureMessage = `${STEP_ERROR_PREFIX[phaseName] ?? STEP_ERROR_PREFIX_DEFAULT} (${unknownFailureCode}): ${scrubSecrets(unknownFailureCause).slice(0, 160)}`;
+    const { message: unknownFailureMessage } = classifyUnknownStepFailure({
+      phaseName,
+      code: unknownFailureCode,
+      cause: unknownFailureCause,
+      isEnvelopeCause: isPipelineApiCause || Boolean(pipelineFailure),
+    });
     if (message === VIDEO_JOB_CANCELED_ERROR) {
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
       const reason = `video_${phaseName || "unknown"}_canceled`;
@@ -2633,7 +2670,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       : e instanceof AvatarProviderFailureError
         ? e.reservationRefundReason
         : undefined;
-    emitStage(phaseName, "error", Date.now() - phaseStartedAt, { message });
+    emitStage(phaseName, "error", Date.now() - phaseStartedAt, { message: scrubSecrets(message) });
     await failJob(jobId, e instanceof AvatarProviderFailureError
       ? {
           message: e.failure.message,
