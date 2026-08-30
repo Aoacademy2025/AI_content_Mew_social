@@ -59,6 +59,31 @@ assert.deepEqual(fixed.captions.map((c) => c.tag), ["hook", "body", "cta"]);
 const nonFinite = repairCaptionTiming([{ text: "ก", startMs: Number.NaN, endMs: Number.NaN }], 3000);
 assert.equal(nonFinite.repaired, true);
 assert.deepEqual(nonFinite.captions, [{ text: "ก", startMs: 0, endMs: 240 }]);
+// 6d. a tail card that cannot fit keeps the 240 ms floor instead of collapsing.
+// A zero-length or 100 ms card is a Remotion Sequence hazard; overshooting the audio end
+// by < MIN_CARD_MS is the safe trade (text is never dropped for timing).
+for (const tail of [
+  [{ text: "ก", startMs: 0, endMs: 2900, tag: "hook" as const }, { text: "ข", startMs: 2900, endMs: 3000, tag: "body" as const }],
+  [{ text: "ก", startMs: 0, endMs: 3000, tag: "hook" as const }, { text: "ข", startMs: 3000, endMs: 3000, tag: "body" as const }],
+]) {
+  const squeezed = repairCaptionTiming(tail, 3000);
+  assert.equal(squeezed.dropped, 0);
+  assert.equal(squeezed.captions.length, 2);
+  assert.ok(
+    squeezed.captions.every((c, i, a) => c.endMs - c.startMs >= 240 && (i === 0 || c.startMs >= a[i - 1].endMs)),
+    `every card keeps the 240 ms floor and stays monotonic: ${JSON.stringify(squeezed.captions)}`,
+  );
+  assert.ok(
+    squeezed.captions[squeezed.captions.length - 1].endMs <= 3000 + 240,
+    `the tail overshoot stays under one card floor: ${JSON.stringify(squeezed.captions)}`,
+  );
+}
+// 6e. without a usable audio duration there is nothing to clamp against, and `repaired`
+// says only whether this function changed anything — it is not an in-bounds guarantee.
+assert.deepEqual(
+  repairCaptionTiming([{ text: "ก", startMs: 0, endMs: 9000, tag: "hook" as const }], 0),
+  { captions: [{ text: "ก", startMs: 0, endMs: 9000, tag: "hook" }], repaired: false, dropped: 0 },
+);
 // 7. a clean set is untouched
 assert.deepEqual(repairCaptionTiming(caps, 3000), { captions: caps, repaired: false, dropped: 0 });
 console.log("verify-subtitle-quality-policy: ok");

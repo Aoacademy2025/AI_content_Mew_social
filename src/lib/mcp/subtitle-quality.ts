@@ -1027,8 +1027,17 @@ export function subtitleQualityShouldFailJob(report: SubtitleQualityReport): boo
   return report.status === "failed";
 }
 
-/** Deterministic, render-safe timing repair. Never changes text; drops blank cards;
- *  clamps to [0, audioDurationMs]; enforces monotonic non-overlapping cards ≥ 240 ms. */
+/**
+ * Deterministic, render-safe timing repair. Never changes text; drops blank cards;
+ * clamps to [0, audioDurationMs]; enforces monotonic non-overlapping cards ≥ 240 ms.
+ *
+ * A tail card that cannot fit keeps its 240 ms floor and may overshoot the audio end by
+ * < 240 ms — a zero-length card is a Remotion hazard, and text is never dropped for timing.
+ *
+ * When `audioDurationMs` is not a positive finite number no bounds clamp is applied.
+ * `repaired` only reports whether this function changed anything — it is not an
+ * in-bounds guarantee.
+ */
 export function repairCaptionTiming<T extends { text: string; startMs: number; endMs: number }>(
   captions: T[], audioDurationMs: number,
 ): { captions: T[]; repaired: boolean; dropped: number } {
@@ -1040,7 +1049,13 @@ export function repairCaptionTiming<T extends { text: string; startMs: number; e
     let start = Math.max(cursor, Number.isFinite(c.startMs) ? Math.max(0, Math.round(c.startMs)) : cursor);
     let end = Number.isFinite(c.endMs) ? Math.round(c.endMs) : start + MIN_CARD_MS;
     if (end - start < MIN_CARD_MS) end = start + MIN_CARD_MS;
-    if (audioDurationMs > 0 && end > audioDurationMs) { end = audioDurationMs; if (end - start < MIN_CARD_MS) start = Math.max(cursor, end - MIN_CARD_MS); }
+    if (audioDurationMs > 0 && end > audioDurationMs) {
+      end = audioDurationMs;
+      if (end - start < MIN_CARD_MS) start = Math.max(cursor, end - MIN_CARD_MS);
+      // The previous card already consumed the room this one needs: overshoot the audio
+      // end rather than emit a card shorter than the floor.
+      if (end - start < MIN_CARD_MS) end = start + MIN_CARD_MS;
+    }
     out.push({ ...c, startMs: start, endMs: end });
     cursor = end;
   }

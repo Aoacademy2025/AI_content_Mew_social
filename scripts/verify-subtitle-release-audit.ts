@@ -210,8 +210,81 @@ const productionSpokenTailGap = auditSubtitleReleaseRecord({
   }),
 });
 assert.ok(
-  productionSpokenTailGap.some((issue) => issue.code === "speech_coverage_incomplete" && issue.severity === "p0"),
+  productionSpokenTailGap.some((issue) => issue.code === "speech_coverage_incomplete" && issue.severity === "p1"),
   "persisted audit catches the production-shaped spoken-tail gap",
+);
+
+// ADR 0056: this is the shape production now ships — a warning release whose captions do
+// not cover the whole spoken tail. It must be readable in the scanner without paging
+// anyone: every finding p1, none p0.
+const warningReleaseWithTailGap = auditSubtitleReleaseRecord({
+  id: "warning-release-with-tail-gap",
+  status: "done",
+  type: "create",
+  inputJson: JSON.stringify({ voiceProvider: "gemini" }),
+  outputJson: JSON.stringify({
+    version: 2,
+    mode: "preview",
+    subtitleQa: {
+      status: "warning",
+      timingSource: "forced_alignment",
+      textExact: true,
+      code: "speech_coverage_incomplete",
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 70_900 },
+    },
+    preview: {
+      captions: [{ text: "เสียงยังพูดต่อ", startMs: 0, endMs: 61_600 }],
+      words: [{ word: "เสียงยังพูดต่อ", startMs: 0, endMs: 61_600, startChar: 0, endChar: 14 }],
+      fullText: "เสียงยังพูดต่อ",
+      audioDurationMs: 71_140,
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 70_900 },
+      config: { bgVideos: [] },
+    },
+  }),
+});
+assert.ok(
+  warningReleaseWithTailGap.length > 0,
+  "a warning release with a spoken-tail gap is still reported",
+);
+assert.deepEqual(
+  warningReleaseWithTailGap.filter((issue) => issue.severity === "p0"),
+  [],
+  "a warning release never raises an ops p0 (ADR 0056)",
+);
+assert.ok(
+  warningReleaseWithTailGap.some((issue) => issue.code === "subtitle_qa_warning")
+    && warningReleaseWithTailGap.some((issue) => issue.code === "speech_coverage_incomplete"),
+  "both the released warning and the coverage gap are visible to the scanner",
+);
+
+// Unreadable coverage evidence is an evidence bug, not a broken clip.
+const unreadableCoverage = auditSubtitleReleaseRecord({
+  id: "unreadable-coverage",
+  status: "done",
+  type: "create",
+  inputJson: JSON.stringify({ voiceProvider: "gemini" }),
+  outputJson: JSON.stringify({
+    version: 2,
+    mode: "preview",
+    subtitleQa: { ...passedQa, speechCoverage: undefined },
+    preview: {
+      captions: [{ text: "สวัสดี", startMs: 100, endMs: 1_900 }],
+      words: [{ word: "สวัสดี", startMs: 100, endMs: 1_900, startChar: 0, endChar: 6 }],
+      fullText: "สวัสดี",
+      audioDurationMs: 2_000,
+      speechCoverage: { source: "guessed", spokenEndMs: "soon" },
+      config: { bgVideos: [] },
+    },
+  }),
+});
+assert.ok(
+  unreadableCoverage.some((issue) => issue.code === "invalid_speech_coverage" && issue.severity === "p1"),
+  "unreadable coverage evidence is p1, and both invalid_speech_coverage branches agree",
+);
+assert.deepEqual(
+  unreadableCoverage.filter((issue) => issue.severity === "p0"),
+  [],
+  "unreadable coverage evidence never raises an ops p0",
 );
 
 const healthyTrailingSilence = auditSubtitleReleaseRecord({

@@ -112,12 +112,14 @@ export function auditSubtitleReleaseRecord(record: SubtitleReleaseAuditRecord): 
         audioDurationMs,
         speechCoverage,
       });
+      // ADR 0056: coverage findings ship a clip as a warning, so they are worth reading,
+      // never an ops incident. Only "nothing to show" blocks a render.
       if (coverage.status === "missing") {
         issues.push({ jobId: record.id, code: "missing_speech_coverage", severity: "p1" });
       } else if (coverage.status === "invalid") {
-        issues.push({ jobId: record.id, code: "invalid_speech_coverage", severity: "p0" });
+        issues.push({ jobId: record.id, code: "invalid_speech_coverage", severity: "p1" });
       } else if (coverage.status === "incomplete") {
-        issues.push({ jobId: record.id, code: "speech_coverage_incomplete", severity: "p0" });
+        issues.push({ jobId: record.id, code: "speech_coverage_incomplete", severity: "p1" });
       }
     }
   }
