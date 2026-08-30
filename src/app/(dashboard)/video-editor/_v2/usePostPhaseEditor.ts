@@ -1094,10 +1094,17 @@ export function usePostPhaseEditor(
       return;
     }
 
-    const captionPreflight = captionExportPreflight(captions, effectiveLayerVisibility.subtitles);
+    const narrationMasterText = preview?.fullText?.trim() || script.trim();
+    const captionPreflight = captionExportPreflight(
+      captions,
+      effectiveLayerVisibility.subtitles,
+      narrationMasterText,
+    );
     if (!captionPreflight.ok) {
       editCaptionFromTimeline(captionPreflight.index);
-      toast.error(`กล่องซับ #${captionPreflight.index + 1} ยังไม่มีข้อความ — กรุณาพิมพ์ข้อความหรือลบกล่องซับนี้ก่อนส่งออก`);
+      toast.error(captionPreflight.reason === "spoken_content_changed"
+        ? `ข้อความกล่องซับ #${captionPreflight.index + 1} ไม่ตรงกับเสียงบรรยาย — คืนข้อความให้ตรงกับเสียง หรือกลับไปแก้สคริปต์แล้วสร้างเสียงใหม่ก่อนส่งออก`
+        : `กล่องซับ #${captionPreflight.index + 1} ยังไม่มีข้อความ — กรุณาพิมพ์ข้อความหรือลบกล่องซับนี้ก่อนส่งออก`);
       return;
     }
 
@@ -1156,7 +1163,7 @@ export function usePostPhaseEditor(
           cardLen,
           captionOverrides: cloneOverrides(overrides),
         },
-        script: script.trim() || preview?.fullText || undefined,
+        script: narrationMasterText || undefined,
         sceneCount: captions.length,
       });
       if (!result.ok) throw new Error(result.message ?? "ส่งออกไม่สำเร็จ");

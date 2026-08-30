@@ -323,7 +323,7 @@ async function main() {
     "legacy export retimes the burn overlay while preserving card style",
   );
 
-  const canonicalScript = "รายได้ 5,000 บาท";
+  const canonicalScript = "รายได้ 5,000 บาท!";
   const protectedSource = await prisma.videoJob.create({
     data: {
       userId: user.id,
@@ -397,7 +397,59 @@ async function main() {
   });
   const blocked = await prisma.videoJob.findUniqueOrThrow({ where: { id: corruptedExport.id } });
   check(blocked.status === "failed", "changed subtitle text is blocked before export");
+  check(
+    blocked.errorMessage?.includes("กล่องซับ #1") === true
+      && blocked.errorMessage?.includes("สร้างเสียงใหม่") === true,
+    "server backstop identifies the changed card and explains how to recover",
+  );
   check(corruptedRenderCalls === 0, "failed subtitle release gate spends no burn render");
+
+  const punctuationOnlyExport = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      status: "processing",
+      type: "export",
+      inputJson: JSON.stringify({
+        mode: "export",
+        sourceJobId: protectedSource.id,
+        subtitleOverlayConfig: {
+          videoUrl: "/renders/protected-source.mp4",
+          durationInFrames: 30,
+          keywordPopups: [{ text: "รายได้ 5,000 บาท", start: 0, end: 30 }],
+        },
+      }),
+    },
+  });
+  let punctuationBurnCalls = 0;
+  let punctuationGalleryCalls = 0;
+  await runOrchestrator(punctuationOnlyExport.id, user.id, {
+    caller: {
+      post: async <T,>(path: string): Promise<T> => {
+        if (path === "/api/videos/render") {
+          punctuationBurnCalls += 1;
+          return { jobId: "punctuation-burn" } as T;
+        }
+        if (path === "/api/videos") {
+          punctuationGalleryCalls += 1;
+          return { id: "punctuation-gallery" } as T;
+        }
+        throw new Error(`unexpected POST ${path}`);
+      },
+      patch: async <T,>(): Promise<T> => ({} as T),
+      get: async <T,>(): Promise<T> => ({
+        progress: 100,
+        stage: "done",
+        videoUrl: "/renders/punctuation-final.mp4",
+        error: null,
+      } as T),
+    },
+    refundOneClip: async () => {},
+    sleep: async () => {},
+  });
+  const punctuationCompleted = await prisma.videoJob.findUniqueOrThrow({ where: { id: punctuationOnlyExport.id } });
+  check(punctuationCompleted.status === "done", "presentation-only punctuation edits complete export");
+  check(punctuationBurnCalls === 1, "presentation-only punctuation edits perform exactly one Burn");
+  check(punctuationGalleryCalls === 1, "presentation-only punctuation edits save exactly one Gallery row");
 
   // Production incident 2026-08-29 23:01 BKK: Editor v2 allowed an inserted
   // caption card to remain blank, submitted an export job, then reported the

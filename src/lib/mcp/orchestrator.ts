@@ -1338,6 +1338,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         const code = exportSubtitleQa.status === "failed" ? exportSubtitleQa.code : "unknown";
         const message = code === "empty_caption" && exportSubtitleQa.status === "failed"
           ? `กล่องซับ #${(exportSubtitleQa.captionIndex ?? 0) + 1} ยังไม่มีข้อความ — กรุณาพิมพ์ข้อความหรือลบกล่องซับนี้ก่อนส่งออก`
+          : code === "text_mismatch" && exportSubtitleQa.status === "failed"
+          ? `ข้อความกล่องซับ #${(exportSubtitleQa.captionIndex ?? 0) + 1} ไม่ตรงกับเสียงบรรยาย — คืนข้อความให้ตรงกับเสียง หรือกลับไปแก้สคริปต์แล้วสร้างเสียงใหม่ก่อนส่งออก`
           : `ซับไม่ผ่านการตรวจคุณภาพ (${code}) — ระบบหยุดก่อนส่งออก`;
         throw new SubtitleAlignmentFailureError(
           message,
