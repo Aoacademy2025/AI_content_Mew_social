@@ -501,6 +501,10 @@ const inspectorSource = readFileSync(
   "utf8",
 );
 const compositionSource = readFileSync("src/remotion/ShortVideoComposition.tsx", "utf8");
+const orchestratorSource = readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
+const brollBranchStart = orchestratorSource.indexOf('if (input.mode === "broll-rerender")');
+const exportBranchStart = orchestratorSource.indexOf('if (input.mode === "export")', brollBranchStart);
+const brollBranchSource = orchestratorSource.slice(brollBranchStart, exportBranchStart);
 check(
   "b-roll rerender client supplies an explicit operation-scoped idempotency key",
   /idempotencyKey:\s*`editor-v2-broll-rerender-\$\{globalThis\.crypto\.randomUUID\(\)\}`/u.test(postPhaseSource),
@@ -521,6 +525,14 @@ check(
 check(
   "Remotion composition applies the short-source loop plan",
   /<Loop durationInFrames=\{playback\.loopDurationInFrames\}/u.test(compositionSource),
+);
+check(
+  "B-roll derivative preserves the source subtitle QA release decision",
+  /subtitleQa:\s*parsed\.subtitleQa/u.test(brollBranchSource),
+);
+check(
+  "B-roll derivative preserves the source acoustic subtitle evidence",
+  /subtitleEvidence:\s*parsed\.subtitleEvidence/u.test(brollBranchSource),
 );
 
 if (failures) { console.error(`\n${failures} FAILED (${passed} passed)`); process.exit(1); }
