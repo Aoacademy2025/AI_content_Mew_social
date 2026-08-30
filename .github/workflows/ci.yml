@@ -62,6 +62,9 @@ jobs:
       - name: Verify editor style presets
         run: npm run verify:editor-style-presets
 
+      - name: Verify caption card editing
+        run: npm run verify:caption-card-editing
+
       - name: Verify mid-trial conversion keeps the remaining trial days
         run: npm run verify:preserve-trial-on-convert
 

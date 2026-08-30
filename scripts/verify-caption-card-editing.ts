@@ -77,16 +77,13 @@ assert.deepEqual(
   { ok: true },
   "uploaded-video captions are the approved Narrative Source instead of stale provider fullText",
 );
-assert.deepEqual(
-  captionExportPreflight(
-    [{ text: "ยอด 105 บาท", startMs: 0, endMs: 2_000 }],
-    true,
-    "ยอด 1.05 บาท",
-    "creator-script",
-  ),
-  { ok: false, reason: "spoken_content_changed", index: 0 },
-  "script-backed narration remains fail-closed after the upload-specific exception",
-);
+// ADR 0056: export never rejects a creator's subtitle text edit, no matter how far the
+// caption has drifted from the narration — only a blank card is flagged (a helpful early
+// hint; the server also drops blank cards).
+const edited = captionExportPreflight([{ text: "ข้อความที่แก้แล้ว" }], true, "ข้อความเดิม", "creator-script");
+assert.deepEqual(edited, { ok: true }, "a caption edited away from the narration still passes export preflight");
+const blank = captionExportPreflight([{ text: "ก" }, { text: "  " }], true, "กข", "creator-script");
+assert.deepEqual(blank, { ok: false, reason: "blank_caption", index: 1 }, "a blank caption still fails export preflight");
 assert.deepEqual(
   captionExportPreflight(
     [
@@ -98,15 +95,6 @@ assert.deepEqual(
   ),
   { ok: true },
   "whitespace, line breaks, and caption boundaries remain presentation-only",
-);
-assert.deepEqual(
-  captionExportPreflight(
-    [{ text: "ยอด 105 บาท", startMs: 0, endMs: 2_000 }],
-    true,
-    "ยอด 1.05 บาท",
-  ),
-  { ok: false, reason: "spoken_content_changed", index: 0 },
-  "a changed spoken claim is stopped before an export job is created",
 );
 assert.deepEqual(
   captionExportPreflight([
@@ -313,8 +301,13 @@ assert.match(mobile, /data-caption-action="delete"/, "mobile exposes Delete capt
 assert.match(timeline, /onRedo/, "Timeline exposes Redo beside Undo");
 assert.match(
   editorHook,
-  /const narrationMasterText = preview\?\.fullText\?\.trim\(\) \|\| script\.trim\(\);[\s\S]+captionExportPreflight\([\s\S]+narrationMasterText,[\s\S]+editCaptionFromTimeline\(captionPreflight\.index\)[\s\S]+spoken_content_changed[\s\S]+สร้างเสียงใหม่[\s\S]+return;/,
-  "export preflight compares with the Narration Master, focuses a changed card, and explains how to recover",
+  /captionExportPreflight\([\s\S]+editCaptionFromTimeline\(captionPreflight\.index\)[\s\S]+ยังไม่มีข้อความ[\s\S]+return;/,
+  "export preflight focuses a blank card and explains how to recover (ADR 0056: content edits are never rejected)",
+);
+assert.doesNotMatch(
+  editorHook,
+  /spoken_content_changed/,
+  "ADR 0056: export must never gate on spoken-content drift from the narration",
 );
 const exportPreflightAt = editorHook.indexOf("const captionPreflight = captionExportPreflight");
 const exportSubmissionAt = editorHook.indexOf("const result = await onExportJob");

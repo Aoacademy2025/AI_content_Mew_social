@@ -1106,9 +1106,7 @@ export function usePostPhaseEditor(
     );
     if (!captionPreflight.ok) {
       editCaptionFromTimeline(captionPreflight.index);
-      toast.error(captionPreflight.reason === "spoken_content_changed"
-        ? `ข้อความกล่องซับ #${captionPreflight.index + 1} ไม่ตรงกับเสียงบรรยาย — คืนข้อความให้ตรงกับเสียง หรือกลับไปแก้สคริปต์แล้วสร้างเสียงใหม่ก่อนส่งออก`
-        : `กล่องซับ #${captionPreflight.index + 1} ยังไม่มีข้อความ — กรุณาพิมพ์ข้อความหรือลบกล่องซับนี้ก่อนส่งออก`);
+      toast.error(`กล่องซับ #${captionPreflight.index + 1} ยังไม่มีข้อความ — กรุณาพิมพ์ข้อความหรือลบกล่องซับนี้ก่อนส่งออก`);
       return;
     }
 
