@@ -10,6 +10,7 @@ import * as renderPlanPreflightModule from "../src/lib/render-plan-preflight";
 import * as avatarDurationModule from "../src/lib/avatar-duration";
 import * as headlineHookModule from "../src/lib/headline-hook";
 import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
+import * as firstClipPathModule from "../src/lib/first-clip-path";
 import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/export-edit-state";
 import {
   canonicalVideoJobRequest,
@@ -565,6 +566,7 @@ function mountEditorShell(input: {
     if (specifier === "@/lib/use-me") {
       return { fetchMe: async () => ({ firstClipPath: false }) };
     }
+    if (specifier === "@/lib/first-clip-path") return firstClipPathModule;
     if (specifier === "@/components/convert/first-clip-exported-view-signal") {
       return { FirstClipExportedViewSignal: marker("FirstClipExportedViewSignal") };
     }
@@ -2310,6 +2312,7 @@ async function runExactReplayRouteScenario(input: {
         ensureFirstClipProjectSpine: async () => ({ profileId: "p", revisionId: "r" }),
       };
     }
+    if (specifier === "@/lib/first-clip-path") return firstClipPathModule;
     if (specifier === "@/lib/managed-stock.server") {
       // MANAGED_STOCK off is the default posture this harness replays: the route
       // must still answer a keyless caller with `missing_key: broll`.
