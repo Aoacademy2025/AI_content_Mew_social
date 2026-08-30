@@ -17,6 +17,18 @@
  *  2ii. classifyUnknownStepFailure (R31 unit-level): a plain Error whose message already
  *       contains Thai characters — e.g. the orchestrator's own internal captions-phase
  *       throw — is stored VERBATIM with `${phase}_unknown`, never re-wrapped either.
+ *  2iv. R34 (review round 2): the verbatim-vs-prefixed decision reads the CAUSE's CONTENT,
+ *       not its origin. A Thai Prisma invocation that echoes the creator's own script back
+ *       at them is diagnostic text, not customer copy → prefixed + capped at 160.
+ *  7.  R34 end-to-end: a route that answers with the bare `apiError()` generic envelope
+ *      (`{ error: "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง" }`) at the tts step stores
+ *      "สร้างเสียงไม่สำเร็จ (tts_unknown)" — a code and no meaningless cause suffix.
+ *  8.  R34 end-to-end: a PipelineApiError whose message is English (pollRender's
+ *      render_worker_failed) IS prefixed, even though it came from the envelope path.
+ *  9.  R34 end-to-end: a plain Thai Error thrown at the captions step (the upload path's
+ *      "ถอดซับจากคลิปไม่สำเร็จ" guard) is stored VERBATIM with captions_unknown.
+ *  10. R32: the avatar refund gate still recognises the wrapped legacy avatar cause — see
+ *      scripts/verify-render-reservation-settlement.ts (it owns the DB fixtures for it).
  *  3. pollRender with p.stage === "error" throws PipelineApiError { code: "render_worker_failed" }.
  *  3iii. (== case 4 below) a plain, non-Thai Error without a code at step "render" DOES get
  *        the "<prefix> (<code>): <cause>" wrapping — the prefix form is for genuinely
@@ -27,7 +39,9 @@
  *     but (R30) NEVER reaches the public JSON envelope returned by apiError() — it stays
  *     admin/log-only.
  *  6. scrub-secrets: the R30-widened pattern set (Stripe sk_/rk_/whsec_, OpenAI sk-proj-,
- *     RunPod rpa_, header-style xi-api-key/x-api-key/authorization, /var/www/ paths).
+ *     RunPod rpa_, header-style xi-api-key/x-api-key/authorization, /var/www/ paths) — plus
+ *     R33's context guard: the header rule needs a real header/JSON context and a token-ish
+ *     value, so it stops eating Thai prose that merely contains the word "authorization".
  */
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
@@ -44,12 +58,15 @@ const SCRIPT_TEXT = "ทดสอบข้อผิดพลาดเฉพา�
 /** A happy-path fake caller mirroring scripts/verify-mcp-release-gates.ts, driving a full
  *  create job through tts → captions(transcribe) → keywords → stock → config → render(x2) →
  *  save. `failRenderWith`, when set, makes the FIRST /api/videos/render POST throw instead
- *  of succeeding — used by cases 2i/4 to reach the "render" phase with a specific error. */
+ *  of succeeding — used by cases 2i/4 to reach the "render" phase with a specific error.
+ *  `failTtsWith` does the same one step earlier, at /api/videos/tts-gemini (case 7).
+ *  `renderPollError`, when set, makes the render progress poll answer stage:"error" so the
+ *  REAL pollRender builds its own PipelineApiError(render_worker_failed) (case 8). */
 function buildHappyCaller(
   prismaMod: typeof import("../src/lib/prisma"),
   userId: string,
   jobId: string,
-  opts: { failRenderWith?: unknown } = {},
+  opts: { failRenderWith?: unknown; failTtsWith?: unknown; renderPollError?: string } = {},
 ) {
   const { prisma } = prismaMod;
   let renderCount = 0;
@@ -64,6 +81,7 @@ function buildHappyCaller(
           speechCoverage: { source: "silence_analysis", spokenEndMs: 2_800 },
         } as never;
       }
+      if (key === "/api/videos/tts-gemini" && opts.failTtsWith) throw opts.failTtsWith;
       if (key === "/api/videos/render") {
         if (opts.failRenderWith) throw opts.failRenderWith;
         renderCount += 1;
@@ -104,6 +122,9 @@ function buildHappyCaller(
     patch: async () => ({} as never),
     get: async (path: string) => {
       const id = new URL(path, "http://local").searchParams.get("jobId");
+      if (opts.renderPollError) {
+        return { progress: -1, stage: "error", videoUrl: null, error: opts.renderPollError } as never;
+      }
       return { progress: 100, stage: "done", videoUrl: `/api/renders/${id}.mp4`, error: null } as never;
     },
   };
@@ -203,7 +224,14 @@ async function main() {
   // ---- Case 6: R30 widened scrub-secrets patterns (pure, no DB) ----
   {
     const { scrubSecrets } = await import("../src/lib/scrub-secrets");
-    const cases: Array<{ name: string; input: string; mustNotContain: string; mustContain?: string }> = [
+    const cases: Array<{
+      name: string;
+      input: string;
+      mustNotContain?: string;
+      mustContain?: string;
+      /** R33: the scrubber must leave this string byte-identical. */
+      unchanged?: boolean;
+    }> = [
       { name: "Stripe live secret key", input: "key=sk_" + "live_51H8x9ZQ1abcdEFGH", mustNotContain: "sk_" + "live_51H8x9ZQ1abcdEFGH" },
       { name: "Stripe test secret key", input: "using sk_" + "test_4eC39HqLyjWDarjtT1zdp7dc", mustNotContain: "sk_" + "test_4eC39HqLyjWDarjtT1zdp7dc" },
       { name: "Stripe restricted key", input: "rk_" + "live_51H8x9ZQ1abcdEFGH", mustNotContain: "rk_" + "live_51H8x9ZQ1abcdEFGH" },
@@ -214,25 +242,33 @@ async function main() {
       { name: "x-api-key header", input: "x-api-key=abcdef1234567890", mustNotContain: "abcdef1234567890", mustContain: "x-api-key" },
       { name: "raw non-Bearer Authorization", input: "Authorization: Basic dXNlcjpwYXNz1234", mustNotContain: "dXNlcjpwYXNz1234", mustContain: "Authorization" },
       { name: "absolute /var/www path", input: "ENOENT: /var/www/ai-content/prisma/dev.db not found", mustNotContain: "/var/www/ai-content/prisma/dev.db" },
+      // R33: the header rule used to eat everything after the colon, so Thai customer copy
+      // that merely mentions "authorization" was truncated to "การ authorization: <redacted>".
+      { name: "Thai prose containing the word authorization", input: "การ authorization: ล้มเหลว กรุณาลองใหม่", unchanged: true },
+      { name: "English prose + Thai tail after authorization", input: "HeyGen authorization: denied for avatar 123, กรุณาตรวจ key", unchanged: true },
+      { name: "JSON-serialized xi-api-key", input: '{"xi-api-key":"sk_9f8a7b6c5d4e3f2a1b0c"}', mustNotContain: "sk_9f8a7b6c5d4e3f2a1b0c", mustContain: "xi-api-key" },
+      { name: "schemeless Authorization token", input: "Authorization: 5634abcdEF0011223344", mustNotContain: "5634abcdEF0011223344", mustContain: "Authorization" },
+      { name: "Authorization: Bearer JWT", input: "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig", mustNotContain: "eyJhbGciOiJIUzI1NiJ9", mustContain: "Bearer" },
     ];
     for (const c of cases) {
       const out = scrubSecrets(c.input);
-      assert.ok(!out.includes(c.mustNotContain), `${c.name}: secret must be redacted, got: ${out}`);
+      if (c.unchanged) assert.equal(out, c.input, `${c.name}: prose must survive the scrubber untouched, got: ${out}`);
+      if (c.mustNotContain) assert.ok(!out.includes(c.mustNotContain), `${c.name}: secret must be redacted, got: ${out}`);
       if (c.mustContain) assert.ok(out.includes(c.mustContain), `${c.name}: must keep the header/context name, got: ${out}`);
     }
-    console.log("✓ case 6: scrub-secrets covers Stripe/OpenAI/RunPod keys, header-style secrets, and /var/www paths");
+    console.log("✓ case 6: scrub-secrets covers Stripe/OpenAI/RunPod keys, header-style secrets and /var/www paths — without eating Thai prose");
   }
 
-  // ---- Case 2ii: classifyUnknownStepFailure — R31 verbatim-vs-prefixed decision (pure) ----
+  // ---- Case 2ii: classifyUnknownStepFailure — R31/R34 verbatim-vs-prefixed decision (pure) ----
   {
     const { classifyUnknownStepFailure } = await import("../src/lib/mcp/orchestrator");
+    const { GENERIC_ERROR_COPY } = await import("../src/lib/error-copy");
     // (i) an envelope-authored Thai message (e.g. quota_exceeded) is stored verbatim.
     const quotaMessage = "โควต้านาทีของแผน PRO ใช้ครบแล้ว (80 นาที/เดือน)";
     const quotaResult = classifyUnknownStepFailure({
       phaseName: "render",
       code: "quota_exceeded",
       cause: quotaMessage,
-      isEnvelopeCause: true,
     });
     assert.equal(quotaResult.code, "quota_exceeded");
     assert.equal(quotaResult.message, quotaMessage, "an envelope-authored cause must be stored VERBATIM, never re-wrapped");
@@ -250,7 +286,6 @@ async function main() {
       phaseName: "captions",
       code: "captions_unknown",
       cause: captionsThaiCause,
-      isEnvelopeCause: false,
     });
     assert.equal(captionsResult.code, "captions_unknown");
     assert.equal(captionsResult.message, captionsThaiCause, "a Thai internal cause must be stored VERBATIM, never re-wrapped");
@@ -262,10 +297,43 @@ async function main() {
       phaseName: "render",
       code: "render_unknown",
       cause: "Cannot find module '@remotion/bundler'",
-      isEnvelopeCause: false,
     });
     assert.equal(technicalResult.message, "เรนเดอร์ไม่สำเร็จ (render_unknown): Cannot find module '@remotion/bundler'");
     console.log("✓ case 2iii: a non-Thai, non-envelope technical cause still gets the step-prefixed form");
+
+    // (iv) R34: Thai characters alone do not make a cause customer copy. A Prisma invocation
+    // echoes the creator's OWN script back inside a diagnostic dump — it must be prefixed and
+    // capped, never handed to the creator verbatim as if it were an explanation.
+    const prismaThaiCause = "Invalid `prisma.videoJob.update()` invocation:\n\n"
+      + '{"where":{"id":"job-1"},"data":{"script":"สวัสดีทุกคน วันนี้เรามาคุยเรื่องการออมเงินให้เป็นนิสัยกันนะครับ '
+      + 'เริ่มจากการตั้งเป้าหมายเล็ก ๆ ก่อน แล้วค่อยเพิ่มขึ้นทีละนิด"}}';
+    const prismaResult = classifyUnknownStepFailure({
+      phaseName: "save",
+      code: "save_unknown",
+      cause: prismaThaiCause,
+    });
+    const prismaPrefix = "บันทึกวิดีโอไม่สำเร็จ (save_unknown): ";
+    assert.ok(
+      prismaResult.message.startsWith(prismaPrefix),
+      `a Thai diagnostic dump must still be prefixed, got: ${prismaResult.message}`,
+    );
+    assert.notEqual(prismaResult.message, prismaThaiCause, "a Prisma invocation must never be stored verbatim");
+    assert.ok(
+      prismaResult.message.slice(prismaPrefix.length).length <= 160,
+      `the cause suffix must be capped at 160 chars, got ${prismaResult.message.slice(prismaPrefix.length).length}`,
+    );
+    console.log("✓ case 2iv: a Thai Prisma invocation is diagnostic text → prefixed + capped, never verbatim");
+
+    // (v) R34: the generic apiError fallback carries no information — it must not be stored,
+    // and must not be appended as a cause either. Prefix + code, nothing else.
+    const genericResult = classifyUnknownStepFailure({
+      phaseName: "tts",
+      code: "tts_unknown",
+      cause: GENERIC_ERROR_COPY,
+    });
+    assert.equal(genericResult.message, "สร้างเสียงไม่สำเร็จ (tts_unknown)");
+    assert.ok(!genericResult.message.includes(GENERIC_ERROR_COPY), "the generic fallback must never survive");
+    console.log("✓ case 2v: the generic apiError fallback becomes \"<prefix> (<code>)\" with no cause suffix");
   }
 
   // ---- Case 1 + Case 2i + Case 4 need a real orchestrator run ----
@@ -384,6 +452,98 @@ async function main() {
       "must never be the bare generic Thai fallback with no code",
     );
     console.log("✓ case 4: unknown render-step error → errorCode=render_unknown, specific Thai errorMessage");
+  }
+
+  // Case 7 (R34): a route that answered with the bare generic `apiError()` envelope. It IS an
+  // envelope cause, but it carries no information at all — the creator must get the step +
+  // code instead of "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง" echoed back with nothing attached.
+  {
+    const { GENERIC_ERROR_COPY } = await import("../src/lib/error-copy");
+    const user = await makeUser("pes-user-4");
+    const jobId = "pes-job-4";
+    const job = await prisma.videoJob.create({
+      data: { id: jobId, userId: user.id, status: "processing", inputJson: JSON.stringify({ script: SCRIPT_TEXT, voiceProvider: "gemini" }) },
+    });
+    let genericError: unknown;
+    try {
+      decodePipelineResponse("POST", "/api/videos/tts-gemini", 500, JSON.stringify({ error: GENERIC_ERROR_COPY }));
+    } catch (e) {
+      genericError = e;
+    }
+    assert.ok(genericError, "the generic apiError envelope must decode to a thrown error");
+
+    const caller = buildHappyCaller(prismaMod, user.id, jobId, { failTtsWith: genericError });
+    await runOrchestrator(job.id, user.id, { caller: caller as never, sleep: async () => {} });
+
+    const failed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.errorCode, "tts_unknown");
+    assert.equal(failed.errorMessage, "สร้างเสียงไม่สำเร็จ (tts_unknown)");
+    assert.ok(
+      !(failed.errorMessage ?? "").includes(GENERIC_ERROR_COPY),
+      "the generic fallback must never reach VideoJob.errorMessage",
+    );
+    console.log("✓ case 7: an uncoded generic apiError envelope at tts → \"สร้างเสียงไม่สำเร็จ (tts_unknown)\"");
+  }
+
+  // Case 8 (R34): the real pollRender failure — a PipelineApiError with a machine code and an
+  // ENGLISH message. Coming from the envelope path is not proof of customer copy, so it is
+  // still prefixed with the render step + code.
+  {
+    const user = await makeUser("pes-user-5");
+    const jobId = "pes-job-5";
+    const job = await prisma.videoJob.create({
+      data: { id: jobId, userId: user.id, status: "processing", inputJson: JSON.stringify({ script: SCRIPT_TEXT, voiceProvider: "gemini" }) },
+    });
+    const caller = buildHappyCaller(prismaMod, user.id, jobId, {
+      renderPollError: "Cannot find module '@remotion/bundler'",
+    });
+    await runOrchestrator(job.id, user.id, { caller: caller as never, sleep: async () => {} });
+
+    const failed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.errorCode, "render_worker_failed");
+    assert.equal(
+      failed.errorMessage,
+      "เรนเดอร์ไม่สำเร็จ (render_worker_failed): render failed: Cannot find module '@remotion/bundler'",
+    );
+    console.log("✓ case 8: pollRender's English PipelineApiError is prefixed, envelope or not");
+  }
+
+  // Case 9 (R34, end-to-end companion of case 2ii): a plain Thai Error thrown by the
+  // orchestrator itself at the captions step — the upload path's "no speech in this clip"
+  // guard — reaches failJob VERBATIM with captions_unknown, never re-wrapped into
+  // "สร้างซับไม่สำเร็จ (captions_unknown): ถอดซับจากคลิปไม่สำเร็จ …".
+  {
+    const user = await makeUser("pes-user-6");
+    const jobId = "pes-job-6";
+    const job = await prisma.videoJob.create({
+      data: {
+        id: jobId,
+        userId: user.id,
+        status: "processing",
+        inputJson: JSON.stringify({ mode: "upload", clipUrl: "/api/renders/uploaded-clip.mp4", previewMode: true }),
+      },
+    });
+    const uploadCaller = {
+      // A clip with no intelligible speech: the route answers 200 with an empty transcript.
+      post: async (path: string) => {
+        if (path.split("?")[0] === "/api/videos/transcribe") {
+          return { captions: [], words: [], fullText: "", audioDurationMs: 4_000 } as never;
+        }
+        return ({} as never);
+      },
+      patch: async () => ({} as never),
+      get: async () => ({ progress: 100, stage: "done", videoUrl: null, error: null } as never),
+    };
+    await runOrchestrator(job.id, user.id, { caller: uploadCaller as never, sleep: async () => {} });
+
+    const failed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.currentStep, "captions");
+    assert.equal(failed.errorCode, "captions_unknown");
+    assert.equal(failed.errorMessage, "ถอดซับจากคลิปไม่สำเร็จ — เช็คว่าคลิปมีเสียงพูดชัดเจน");
+    console.log("✓ case 9: a plain Thai Error at the captions step is stored VERBATIM + captions_unknown");
   }
 
   await prisma.$disconnect();

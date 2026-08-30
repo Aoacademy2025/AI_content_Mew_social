@@ -6,6 +6,8 @@
 // evidence. No subtitle verdict may fail a job, retry a provider, or spend on a second
 // TTS generation, and Export never re-aligns.
 
+import type { SubtitleVerification } from "../src/lib/mcp/video-job";
+
 import { execSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,17 +28,9 @@ function check(condition: boolean, message: string) {
 
 type Call = { path: string; body?: unknown; atMs: number };
 type TimedWord = { word: string; startMs: number; endMs: number };
-type SubtitleVerificationEvidence = {
-  status?: string;
-  code?: string;
-  method?: string;
-  similarityPermille?: number;
-  durationMs?: number;
-  ttsCaptions?: Array<{ startMs: number; endMs: number }>;
-  medianAbsStartDeltaMs?: number;
-  maxAbsStartDeltaMs?: number;
-  routeWarnings?: Array<{ code?: string; fromMs?: number; toMs?: number }>;
-};
+/** The SHIPPED evidence shape (src/lib/mcp/video-job.ts), read back out of a persisted
+ *  outputJson — every field optional because this is untyped JSON until it is asserted. */
+type SubtitleVerificationEvidence = Partial<SubtitleVerification>;
 type JobOutput = {
   subtitleQa?: { status?: string; code?: string; timingSource?: string };
   subtitleEvidence?: {

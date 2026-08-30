@@ -15,6 +15,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { decideAdminErrorNotify } from "@/lib/admin-error-notify";
 import { notifyAdmins, createNotification } from "@/lib/notifications";
 import { scrubSecrets } from "@/lib/scrub-secrets";
+import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
 
 export { scrubSecrets };
 
@@ -73,7 +74,7 @@ export function friendlyMessage(error: unknown): { message: string; detail: stri
   if (/gemini/i.test(msg)) return { message: "เกิดข้อผิดพลาดจากระบบ AI กรุณาลองใหม่", detail };
   if (/prisma|database|sqlite/i.test(msg)) return { message: "เกิดข้อผิดพลาดในฐานข้อมูล กรุณาลองใหม่", detail };
 
-  return { message: "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง", detail };
+  return { message: GENERIC_ERROR_COPY, detail };
 }
 
 function buildAdminBody(

@@ -21,8 +21,8 @@ export function scrubSecrets(input: string): string {
     .replace(/AIza[0-9A-Za-z_-]{20,}/g, "<redacted>")
     // x-goog-api-key header value if serialized into a message/stack
     .replace(/(x-goog-api-key["'\s:=]+)[A-Za-z0-9_-]{10,}/gi, "$1<redacted>")
-    // Authorization: Bearer <token>
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{10,}=*/gi, "$1<redacted>")
+    // Authorization: Bearer|Basic <token>
+    .replace(/((?:Bearer|Basic)\s+)[A-Za-z0-9._~+/-]{10,}=*/gi, "$1<redacted>")
     // OpenRouter style API keys (sk-or-...) appearing anywhere — a bare key
     // without the "Bearer " prefix would slip past the rule above.
     .replace(/sk-or-[A-Za-z0-9_-]{8,}/g, "<redacted>")
@@ -36,8 +36,16 @@ export function scrubSecrets(input: string): string {
     .replace(/rpa_[A-Za-z0-9]+/g, "<redacted>")
     // Header-style secrets serialized into a message/stack: keep the header name, redact
     // the value only — covers ElevenLabs (xi-api-key), generic (x-api-key), and a raw
-    // (non-"Bearer") Authorization header value that the Bearer-only rule above would miss.
-    .replace(/((?:xi-api-key|x-api-key|authorization)["']?\s*[:=]\s*["']?)[^\n"',}]+/gi, "$1<redacted>")
+    // (schemeless) Authorization header value that the Bearer/Basic rule above would miss.
+    // R33: this rule must only fire in a real header/JSON context, or it eats prose — Thai
+    // customer copy like "การ authorization: ล้มเหลว กรุณาลองใหม่" was being truncated to
+    // "การ authorization: <redacted>". So the header name has to sit at a line start or right
+    // after a quote/brace/comma/paren/space, and the VALUE has to look like a token: at least
+    // 8 characters of key-ish ASCII with no spaces and no Thai.
+    .replace(
+      /(^|[\s"'{,(])((?:xi-api-key|x-api-key|authorization)["']?\s*[:=]\s*["']?)([A-Za-z0-9_\-.=+/]{8,})/gim,
+      "$1$2<redacted>",
+    )
     // Absolute server paths — never leak the VPS filesystem layout to a client or log sink.
     .replace(/\/var\/www\/[^\s"']*/g, "<path>");
 }

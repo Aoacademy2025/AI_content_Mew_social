@@ -24,6 +24,7 @@ import {
 } from "@/lib/editor-export-snapshot";
 import { compileNarrationPlan } from "@/lib/narration-plan";
 import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
+import type { TranscribeWarning } from "@/lib/transcribe-partial-coverage";
 export {
   toPublicVideoJobStatus,
   VIDEO_JOB_INFLIGHT_STATUSES,
@@ -404,6 +405,29 @@ export interface VideoJobPreviewData {
   fullText?: string;
 }
 
+/**
+ * Evidence for the one acoustic alignment attempt a TTS-voice render is allowed to make
+ * (ADR 0056). It records the rung of the timing ladder that was reached and the clock that
+ * was NOT rendered, so subtitle accuracy can be measured later without another render.
+ *
+ * Lives here, with the rest of the persisted job output, so readers get the shape typed
+ * instead of casting `subtitleEvidence` to a private copy of it.
+ */
+export type SubtitleVerification = {
+  status: "aligned" | "failed" | "skipped" | "timeout";
+  /** Alignment failure code when status === "failed", or "card_count_mismatch" info. */
+  code?: string;
+  method?: "exact" | "fuzzy";
+  similarityPermille?: number;
+  durationMs: number;
+  /** Provider-clock cards — the timing that renders unless the alignment above succeeded. */
+  ttsCaptions: Array<{ startMs: number; endMs: number }>;
+  maxAbsStartDeltaMs?: number;
+  medianAbsStartDeltaMs?: number;
+  /** ADR 0056: the transcribe route's own partial-coverage findings for this call. */
+  routeWarnings?: Array<{ code: string; fromMs?: number; toMs?: number }>;
+};
+
 export interface SubtitleAuditEvidence {
   captions: VideoJobPreviewData["captions"];
   words: NonNullable<VideoJobPreviewData["words"]>;
@@ -411,6 +435,12 @@ export interface SubtitleAuditEvidence {
   audioDurationMs: number;
   timingSource: SubtitleTimingSource;
   speechCoverage?: SubtitleSpeechCoverage;
+  /** The single alignment attempt's evidence — absent on paths that never attempt one. */
+  verification?: SubtitleVerification;
+  /** Export only: whether the burned overlay was retimed to the delivered captions. */
+  overlayRetimed?: boolean;
+  /** Upload/cutaway only: spans the transcriber could not prove complete (never a failure). */
+  uploadWarnings?: TranscribeWarning[];
 }
 
 export interface ParsedVideoJobOutput {

@@ -1,6 +1,7 @@
 import type { User } from "@prisma/client";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
 import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
+import type { TranscribeWarning } from "@/lib/transcribe-partial-coverage";
 import { prisma } from "@/lib/prisma";
 import { refundSettledVideoImageBatch } from "@/lib/video-image-batch-settlement";
 import {
@@ -23,6 +24,7 @@ import {
   parkProviderJob,
   saveProviderCheckpoint,
   VIDEO_JOB_CANCELED_ERROR,
+  type SubtitleVerification,
 } from "@/lib/mcp/video-job";
 import type { EditorExportSnapshot } from "@/lib/editor-export-snapshot";
 import {
@@ -40,6 +42,9 @@ import {
   type PipelineCaller,
 } from "@/lib/mcp/pipeline-client";
 import { scrubSecrets } from "@/lib/scrub-secrets";
+// Zero-import leaf on purpose — `@/lib/api-error` (which owns the same constant) pulls the
+// clerk chain that breaks the `--conditions=react-server` verify runner.
+import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
 import { heroImageProviderRetryDirective } from "@/lib/mcp/hero-image-pipeline-retry";
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
@@ -455,27 +460,9 @@ function alignBrollWindowsToKeywords(
   };
 }
 
-/**
- * Evidence for the one acoustic alignment attempt a TTS-voice render is allowed to make
- * (ADR 0056). It records the rung of the timing ladder that was reached and the clock that
- * was NOT rendered, so subtitle accuracy can be measured later without another render.
- */
-type SubtitleVerification = {
-  status: "aligned" | "failed" | "skipped" | "timeout";
-  /** Alignment failure code when status === "failed", or "card_count_mismatch" info. */
-  code?: string;
-  method?: "exact" | "fuzzy";
-  similarityPermille?: number;
-  durationMs: number;
-  /** Provider-clock cards — the timing that renders unless the alignment above succeeded. */
-  ttsCaptions: Array<{ startMs: number; endMs: number }>;
-  maxAbsStartDeltaMs?: number;
-  medianAbsStartDeltaMs?: number;
-  /** ADR 0056: the transcribe route's own partial-coverage findings for this call. */
-  routeWarnings?: Array<{ code: string; fromMs?: number; toMs?: number }>;
-};
-
-/** The verification plus the captions it produced; only the evidence half is persisted. */
+/** The verification plus the captions it produced; only the evidence half is persisted.
+ *  `SubtitleVerification` itself lives in `@/lib/mcp/video-job` next to the rest of the
+ *  persisted job output, so readers get it typed instead of casting. */
 type SubtitleAlignmentAttempt = SubtitleVerification & {
   capRes?: NonNullable<ReturnType<typeof captionsFromTtsTiming>>;
   speechCoverage?: SubtitleSpeechCoverage;
@@ -503,7 +490,7 @@ const SUBTITLE_VERIFY_TIMED_OUT = Symbol("subtitle_verify_timed_out");
  * one not already carrying deliberate, specific copy (AvatarProviderFailureError,
  * HeroVoiceProviderFailureError, SubtitleAlignmentFailureError, content preflight, the
  * `failJob(...)` early-return guards). Message form: `<prefix> (<code>): <scrubbed cause>`
- * — always carries a code, never the bare "เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง" fallback.
+ * — always carries a code, never the bare GENERIC_ERROR_COPY fallback on its own.
  * A phase with no entry here (e.g. "config", "startup") still gets the generic prefix below
  * — the code alone already tells you which phase failed.
  */
@@ -521,33 +508,43 @@ const STEP_ERROR_PREFIX: Record<string, string> = {
 const STEP_ERROR_PREFIX_DEFAULT = "เกิดข้อผิดพลาด";
 
 /** Thai script block (U+0E00–U+0E7F) — a rough but sufficient "is this already Thai
- *  customer copy" signal for R31 (see classifyUnknownStepFailure below). */
+ *  customer copy" signal for R31/R34 (see classifyUnknownStepFailure below). */
 const THAI_CHARS_RE = /[฀-๿]/;
 
+/** Diagnostic/technical shapes that disqualify a cause from being customer copy even when it
+ *  carries Thai characters — a Prisma invocation echoing the user's own script is the case
+ *  that motivated it. Same precedent (and mostly the same pattern) as the denylist
+ *  `src/lib/customer-api-error.ts` applies at browser boundaries. */
+const DIAGNOSTIC_TEXT_RE = /Prisma|ECONN|HTTP \d{3}|stack trace|\bat .+\(.+:\d+:\d+\)|invocation|\{"/i;
+
 /**
- * R31 (review round 1): decide how an *unknown* step failure's cause becomes the stored
- * `VideoJob.errorMessage`. A cause that is ALREADY customer copy — (a) `isEnvelopeCause`
- * (it came from a route error envelope / PipelineApiError, which authored its own Thai
- * message on purpose), or (b) any message containing Thai characters (the orchestrator's
- * own internal Thai throws, e.g. the "unreachable" empty-captions guard) — is stored
+ * R34 (review round 2, supersedes R31's origin-based rule): decide how an *unknown* step
+ * failure's cause becomes the stored `VideoJob.errorMessage`. The decision is made on the
+ * CONTENT of the cause, never on where it came from — a route envelope is no proof of
+ * customer copy (an uncoded `apiError()` envelope carries the generic fallback, and a
+ * Prisma invocation can echo the creator's own Thai script back at them).
+ *
+ * A cause is customer copy when it (a) contains Thai characters, (b) carries no diagnostic
+ * shape, and (c) is not the generic `GENERIC_ERROR_COPY` fallback. Such a cause is stored
  * VERBATIM (scrubbed only; `failJob` already slices to 1000 chars), with `code` passed
- * alongside rather than baked into the text. Only a genuinely internal/technical cause (no
- * Thai, no envelope — e.g. a raw Node/library error message) gets wrapped as
- * "<step prefix> (<code>): <scrubbed cause, ≤160 chars>". Exported and pure so it can be
- * unit-tested directly instead of only through a full orchestrator run (some qualifying
- * causes, like the empty-captions guard, are effectively unreachable through a live pipeline).
+ * alongside rather than baked into the text. Everything else gets
+ * "<step prefix> (<code>): <scrubbed cause, ≤160 chars>" — and when the cause IS the generic
+ * fallback it carries no information at all, so the message is just "<step prefix> (<code>)".
+ * Exported and pure so it can be unit-tested directly as well as end-to-end.
  */
 export function classifyUnknownStepFailure(input: {
   phaseName: string;
   code: string;
   cause: string;
-  isEnvelopeCause: boolean;
 }): { code: string; message: string } {
-  const causeIsCustomerCopy = input.isEnvelopeCause || THAI_CHARS_RE.test(input.cause);
-  const message = causeIsCustomerCopy
-    ? scrubSecrets(input.cause)
-    : `${STEP_ERROR_PREFIX[input.phaseName] ?? STEP_ERROR_PREFIX_DEFAULT} (${input.code}): ${scrubSecrets(input.cause).slice(0, 160)}`;
-  return { code: input.code, message };
+  const causeIsCustomerCopy = THAI_CHARS_RE.test(input.cause)
+    && !DIAGNOSTIC_TEXT_RE.test(input.cause)
+    && input.cause.trim() !== GENERIC_ERROR_COPY;
+  if (causeIsCustomerCopy) return { code: input.code, message: scrubSecrets(input.cause) };
+  const prefix = STEP_ERROR_PREFIX[input.phaseName] ?? STEP_ERROR_PREFIX_DEFAULT;
+  const detail = scrubSecrets(input.cause).trim();
+  const suffix = detail && detail !== GENERIC_ERROR_COPY ? `: ${detail.slice(0, 160)}` : "";
+  return { code: input.code, message: `${prefix} (${input.code})${suffix}` };
 }
 
 /** Wall-clock budget for the one alignment call. Read at call time, never cached, so the
@@ -1064,8 +1061,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             resumedFrom: "avatar_checkpoint",
           },
         });
+        // Same refusal as its two sibling sites, and the same typed error: a Blocking
+        // Subtitle Code must land as `subtitle_alignment_<code>` here too, not as an
+        // uncoded step failure just because this one is on the resume path.
         if (subtitleQualityShouldFailJob(subtitleQa)) {
-          throw new Error(`ไม่มีข้อความซับสำหรับคลิปนี้ (${subtitleQa.code}) — กรุณาตรวจสคริปต์แล้วลองใหม่`);
+          throw new SubtitleAlignmentFailureError(
+            `ไม่มีข้อความซับสำหรับคลิปนี้ (${subtitleQa.code}) — กรุณาตรวจสคริปต์แล้วลองใหม่`,
+            subtitleQa.code,
+            provider,
+          );
         }
       }
 
@@ -1714,7 +1718,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         audioDurationMs?: number;
         speechCoverage?: SubtitleSpeechCoverage;
         /** ADR 0056: spans the transcriber could not prove complete. Never a failure. */
-        warnings?: { code: string; fromMs?: number; toMs?: number }[];
+        warnings?: TranscribeWarning[];
       }>(
         "/api/videos/transcribe", { audioUrl: input.clipUrl, script: "" },
       );
@@ -2589,11 +2593,12 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     const message = e instanceof Error ? e.message : "internal error";
     const pipelineFailure = pipelineFailureDetails(e);
     const contentPreflightFailure = contentPreflightFailureDetails(e);
-    // Unknown-error labeling only (P0056 hotfix, review round 1 / R31): never changes WHICH
-    // errors are thrown — AvatarProviderFailureError / HeroVoiceProviderFailureError /
+    // Unknown-error labeling only (P0056 hotfix, review rounds 1-2 / R31+R34): never changes
+    // WHICH errors are thrown — AvatarProviderFailureError / HeroVoiceProviderFailureError /
     // SubtitleAlignmentFailureError / content-preflight below all keep their deliberate,
     // specific copy verbatim. This is only reached for everything else. See
-    // classifyUnknownStepFailure for the verbatim-vs-prefixed decision.
+    // classifyUnknownStepFailure for the verbatim-vs-prefixed decision, which reads the
+    // CAUSE's content — a route envelope is no proof that a message is customer copy.
     const isPipelineApiCause = e instanceof PipelineApiError;
     const unknownFailureCause = isPipelineApiCause ? e.message : (pipelineFailure?.message ?? message);
     const unknownFailureCode = isPipelineApiCause
@@ -2603,7 +2608,6 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       phaseName,
       code: unknownFailureCode,
       cause: unknownFailureCause,
-      isEnvelopeCause: isPipelineApiCause || Boolean(pipelineFailure),
     });
     if (message === VIDEO_JOB_CANCELED_ERROR) {
       console.log(`[mcp-worker] job ${jobId} canceled by user at step=${phaseName} — stopping cleanly`);
