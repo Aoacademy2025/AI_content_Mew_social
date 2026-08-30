@@ -155,12 +155,14 @@ class HookRunner<T> {
 }
 
 type JobHook = {
-  job: { phase: string; queuePosition?: number | null };
+  job: { phase: string; jobId?: string | null; queuePosition?: number | null };
   submit(): Promise<{ ok: boolean; message?: string }>;
   submitExport(input: {
     sourceJobId: string;
     subtitleOverlayConfig: unknown;
   }): Promise<{ ok: boolean; message?: string }>;
+  adoptJob(input: { id: string; projectId?: string | null; contentPreflightId?: string | null }): void;
+  resumeFailedExportPreview(): void;
 };
 
 function deferred<T>() {
@@ -1185,6 +1187,7 @@ function mountAttemptJobHook(
       },
       addEventListener: () => undefined,
       removeEventListener: () => undefined,
+      dispatchEvent: () => true,
     },
     browserDocumentMock(),
     () => ({}) as unknown,
@@ -1227,6 +1230,122 @@ async function queuedPollSurfacesPosition(source: string): Promise<void> {
     runner.current.job.queuePosition,
     4,
     "a queued API response surfaces its 1-based queue position through the Editor V2 job state",
+  );
+  runner.unmount();
+}
+
+async function failedExportReturnsToLatestAdoptedBrollPreview(source: string): Promise<void> {
+  const project = makeJobRuntimeProject("export");
+  project.projectReady = false;
+  project.projectStatus = "post";
+  project.activeJobId = "stale-original-preview";
+  project.activeExportJobId = null;
+  const requestedUrls: string[] = [];
+  const submittedBodies: Array<Record<string, unknown>> = [];
+
+  const runner = mountAttemptJobHook(source, project, async (url, init = {}) => {
+    requestedUrls.push(url);
+    if (url === "/api/videos/jobs" && init.method === "POST") {
+      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+      submittedBodies.push(body);
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            jobId: "failed-export-after-broll",
+            idempotencyKey: body.idempotencyKey,
+            idempotencyFingerprint: runtimeRequestFingerprint("export", body),
+          };
+        },
+      };
+    }
+    if (url === "/api/videos/jobs/failed-export-after-broll") {
+      const body = submittedBodies[0];
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            id: "failed-export-after-broll",
+            projectId: project.projectId,
+            type: "export",
+            status: "failed",
+            currentStep: "burn",
+            progress: 15,
+            errorMessage: "export failed",
+            errorCode: "export_failed",
+            errorProvider: null,
+            idempotencyKey: body.idempotencyKey,
+            idempotencyFingerprint: runtimeRequestFingerprint("export", body),
+          };
+        },
+      };
+    }
+    if (url === "/api/videos/jobs/edited-broll-preview") {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            id: "edited-broll-preview",
+            projectId: project.projectId,
+            type: "create",
+            status: "done",
+            currentStep: "render",
+            progress: 100,
+            errorMessage: null,
+            errorCode: null,
+            errorProvider: null,
+            output: {
+              version: 2,
+              videoUrl: "/api/renders/edited-broll.mp4",
+              preview: {
+                captions: [{ text: "same narration", startMs: 0, endMs: 1_000 }],
+                config: { bgVideos: [{ src: "/api/renders/uploaded-replacement.mp4" }] },
+                voiceUrl: "/api/audio/voice.mp3",
+                audioDurationMs: 1_000,
+              },
+            },
+          };
+        },
+      };
+    }
+    throw new Error(`unexpected failed-export recovery request: ${url}`);
+  });
+
+  runner.current.adoptJob({ id: "edited-broll-preview", projectId: project.projectId });
+  runner.flush();
+  const submitted = await runner.current.submitExport({
+    sourceJobId: "edited-broll-preview",
+    subtitleOverlayConfig: { captions: [{ text: "same narration", startMs: 0 }] },
+  });
+  assert.equal(submitted.ok, true);
+  for (let index = 0; index < 8; index += 1) await Promise.resolve();
+  runner.flush();
+  assert.equal(runner.current.job.phase, "failed", "the fixture reaches the reporter's failed-export screen");
+
+  runner.current.resumeFailedExportPreview();
+  for (let index = 0; index < 20; index += 1) {
+    await Promise.resolve();
+    runner.flush();
+  }
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  runner.flush();
+
+  assert.equal(
+    submittedBodies[0]?.sourceJobId,
+    "edited-broll-preview",
+    "the first export uses the applied B-roll preview",
+  );
+  assert.equal(
+    runner.current.job.jobId,
+    "edited-broll-preview",
+    `back from a failed export restores the exact applied B-roll preview; requests=${JSON.stringify(requestedUrls)}`,
+  );
+  assert.ok(
+    !requestedUrls.includes("/api/videos/jobs/stale-original-preview"),
+    "failed-export recovery never polls the pre-edit project pointer",
   );
   runner.unmount();
 }
@@ -1842,7 +1961,12 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/broll-preferences") {
       return { normalizeBrollRegionPreference: () => null, normalizeBrollVisualStyle: () => null };
     }
-    if (specifier === "@/lib/editor-projects") return { assertEditorProjectOwner: async () => null };
+    if (specifier === "@/lib/editor-projects") {
+      return {
+        assertCurrentEditorExportSource: async () => undefined,
+        assertEditorProjectOwner: async () => null,
+      };
+    }
     if (specifier === "@/lib/broll-rerender") return { validateWindowEdits: () => ({ error: "unused" }) };
     if (specifier === "@/lib/brand-assets.server") return { BrandAssetError };
     if (specifier === "@/lib/logo-export.server") {
@@ -2072,6 +2196,7 @@ async function runExactReplayRouteScenario(input: {
     }
     if (specifier === "@/lib/editor-projects") {
       return {
+        assertCurrentEditorExportSource: async () => undefined,
         assertEditorProjectOwner: async (_userId: string, projectId: string) => {
           touchMutable("project-owner");
           return projectId;
@@ -2727,6 +2852,7 @@ export async function exactReplayIdentityPrecedesMutableGates(): Promise<void> {
 
 export async function verifyProjectJobRuntimeGate(): Promise<void> {
   await queuedPollSurfacesPosition(jobSource);
+  await failedExportReturnsToLatestAdoptedBrollPreview(jobSource);
   await sameTickConflictBlocksSubmitAndExport(jobSource);
   await archiveCompletionOwnsDeterministicTransition();
   await archiveUnmountInvalidatesLateCompletion();

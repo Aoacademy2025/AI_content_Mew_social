@@ -1370,6 +1370,49 @@ async function main() {
   const afterFinish = await prisma.editorProject.findUnique({ where: { id: p.id } });
   ok(afterFinish?.activeJobId === job.id && afterFinish?.status === "post", "finishJob moves preview project to post");
 
+  const sourceGuardProject = await projects.createEditorProject(alice.id, {
+    title: "Export source guard",
+  });
+  const originalSource = await jobs.createVideoJob(
+    alice.id,
+    { script: "original preview", previewMode: true },
+    undefined,
+    { projectId: sourceGuardProject.id },
+  );
+  await prisma.videoJob.update({ where: { id: originalSource.id }, data: { status: "processing" } });
+  await jobs.finishJob(originalSource.id, {
+    version: 2,
+    mode: "preview",
+    videoUrl: "/api/renders/original-preview.mp4",
+  });
+  const editedBrollSource = await jobs.createVideoJob(
+    alice.id,
+    { mode: "broll-rerender", sourceJobId: originalSource.id },
+    undefined,
+    { projectId: sourceGuardProject.id },
+  );
+  await prisma.videoJob.update({ where: { id: editedBrollSource.id }, data: { status: "processing" } });
+  await jobs.finishJob(editedBrollSource.id, {
+    version: 2,
+    mode: "preview",
+    videoUrl: "/api/renders/edited-broll-preview.mp4",
+  });
+  await assert.rejects(
+    () => projects.assertCurrentEditorExportSource(
+      alice.id,
+      sourceGuardProject.id,
+      originalSource.id,
+    ),
+    hasCode("stale_export_source"),
+    "export refuses the pre-edit preview after an applied B-roll job becomes active",
+  );
+  await projects.assertCurrentEditorExportSource(
+    alice.id,
+    sourceGuardProject.id,
+    editedBrollSource.id,
+  );
+  ok(true, "export accepts the project's exact active B-roll preview");
+
   const foreignPointerProject = await projects.createEditorProject(alice.id, {
     title: "Foreign pointer target",
   });
