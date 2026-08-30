@@ -103,16 +103,18 @@ npm run ops:render-drain -- status
 test ! -e .deploy-maintenance
 ```
 
-หลัง staging build สำเร็จ script จะทำ **Mandatory render drain** โดยอัตโนมัติ:
+ก่อน `npm ci` แตะ live `node_modules` script จะทำ **Mandatory render drain** โดยอัตโนมัติ:
 
-1. เปิด DB drain เพื่อปฏิเสธ parent job ใหม่
+1. ติดตั้ง cleanup trap แล้วเปิด DB drain เพื่อปฏิเสธ parent job ใหม่
 2. ปล่อย child `RenderJob` ของ `VideoJob` ที่เริ่มก่อน drain ทำงานต่อ
 3. รอทั้งสองคิวเป็นศูนย์แบบ fail-closed โดยไม่ cancel งาน
-4. เปิด maintenance barrier, สลับ build และ restart ทุก worker
-5. ปิด drain ก่อนเปิด ingress ใน cleanup เดียวกันทุก success/failure path
+4. ติดตั้ง dependency, sync schema และ build โดยคง drain ไว้ตลอด
+5. ตรวจคิวซ้ำ เปิด maintenance barrier, สลับ build และ restart ทุก worker
+6. ปิด drain ก่อนเปิด ingress ใน cleanup เดียวกันทุก success/failure path
 
-ค่าเริ่มต้นรอคิวได้สูงสุด 3,600 วินาที หากหมดเวลา script จะลบเฉพาะ staging,
-ไม่แตะ live `.next`, ไม่ restart PM2 และเปิดรับงานกลับเอง
+ค่าเริ่มต้นรอคิวได้สูงสุด 3,600 วินาที หากหมดเวลา script จะไม่แตะ dependency
+หรือ live `.next`, ไม่ restart PM2 และเปิดรับงานกลับเอง หาก fail ที่การตรวจซ้ำก่อน swap
+จะลบเฉพาะ staging และคง live `.next` ไว้
 
 ## 4. สำรองและตรวจฐานข้อมูล
 
@@ -136,7 +138,8 @@ cd /var/www/ai-content
 DEPLOY_BRANCH=main bash deploy/deploy.sh
 ```
 
-script จะ build ใน `.next-staging`, เปิด drain, รอคิวว่าง และตรวจซ้ำก่อน atomic swap
+script จะเปิด drain และรอคิวว่างก่อน `npm ci`, build ใน `.next-staging` โดยคง drain ไว้
+แล้วตรวจคิวซ้ำก่อน atomic swap
 หากคิวไม่ว่างตามเวลา หรืออ่าน DB ไม่ได้ จะลบเฉพาะ staging, ไม่แตะ live
 `.next`/`.next.old` และไม่ restart PM2
 
