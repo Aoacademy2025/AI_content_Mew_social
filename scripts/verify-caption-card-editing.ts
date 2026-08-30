@@ -69,6 +69,26 @@ assert.deepEqual(
 );
 assert.deepEqual(
   captionExportPreflight(
+    [{ text: "ข้อความจากคลิปที่ผู้เรียนตรวจแล้ว", startMs: 0, endMs: 2_000 }],
+    true,
+    "ข้อความถอดเสียงดิบอีกชุดจากผู้ให้บริการ",
+    "upload-transcript",
+  ),
+  { ok: true },
+  "uploaded-video captions are the approved Narrative Source instead of stale provider fullText",
+);
+assert.deepEqual(
+  captionExportPreflight(
+    [{ text: "ยอด 105 บาท", startMs: 0, endMs: 2_000 }],
+    true,
+    "ยอด 1.05 บาท",
+    "creator-script",
+  ),
+  { ok: false, reason: "spoken_content_changed", index: 0 },
+  "script-backed narration remains fail-closed after the upload-specific exception",
+);
+assert.deepEqual(
+  captionExportPreflight(
     [
       { text: "ประโยคแรก\n", startMs: 0, endMs: 1_000 },
       { text: "ประโยคที่สอง", startMs: 1_000, endMs: 2_000 },

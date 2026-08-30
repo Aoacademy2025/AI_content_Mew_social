@@ -44,6 +44,7 @@ import { HeadlineHookControls } from "./HeadlineHookControls";
 import { HeadlineHookPreview } from "./HeadlineHookPreview";
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
 import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
 import { FirstClipExportedViewSignal } from "@/components/convert/first-clip-exported-view-signal";
@@ -64,6 +65,7 @@ export function PostPhase({
   onNewProject,
   onPreviewError,
   projectId,
+  narrativeSourceKind,
   logoOverlay,
   onLogoOverlayChange,
   initialSubtitleConfig,
@@ -87,6 +89,7 @@ export function PostPhase({
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
+  narrativeSourceKind: EditorNarrativeSourceKind;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
   initialSubtitleConfig?: SubtitleStylePresetConfig;
@@ -117,6 +120,7 @@ export function PostPhase({
     onAdoptJob,
     onNewProject,
     projectId,
+    narrativeSourceKind,
     logoOverlay,
     onLogoOverlayChange,
     initialSubtitleConfig,

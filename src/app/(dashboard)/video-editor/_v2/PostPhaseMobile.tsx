@@ -46,6 +46,7 @@ import { trackEvent } from "@/lib/client-telemetry";
 import { avatarFadeApplies } from "@/lib/avatar-fade";
 import type { HeadlineHookConfig } from "@/lib/headline-hook";
 import type { SubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
+import type { EditorNarrativeSourceKind } from "@/lib/editor-default-draft";
 import { SaveProjectLookPrompt } from "./SaveProjectLookPrompt";
 import { SubtitleQaInlineBanner } from "./SubtitleQaInlineBanner";
 import { FirstClipExportedViewSignal } from "@/components/convert/first-clip-exported-view-signal";
@@ -69,6 +70,7 @@ export function PostPhaseMobile({
   onNewProject,
   onPreviewError,
   projectId,
+  narrativeSourceKind,
   logoOverlay,
   onLogoOverlayChange,
   initialSubtitleConfig,
@@ -92,6 +94,7 @@ export function PostPhaseMobile({
   onAdoptJob: (next: { id: string; projectId?: string | null; contentPreflightId?: string | null }) => void; onNewProject: () => void;
   onPreviewError: () => void;
   projectId: string | null;
+  narrativeSourceKind: EditorNarrativeSourceKind;
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
   initialSubtitleConfig?: SubtitleStylePresetConfig;
@@ -119,6 +122,7 @@ export function PostPhaseMobile({
     onAdoptJob,
     onNewProject,
     projectId,
+    narrativeSourceKind,
     logoOverlay,
     onLogoOverlayChange,
     initialSubtitleConfig,
