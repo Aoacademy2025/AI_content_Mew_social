@@ -413,6 +413,21 @@ check(
   changedNumber.status === "failed" && subtitleQualityShouldFailJob(changedNumber) === true,
 );
 
+const presentationOnlyTextChange = validateSubtitleQuality({
+  script: "จริงไหม? ราคา 5,000 บาท!",
+  captions: [{ text: "จริงไหม ราคา 5,000 บาท", startMs: 0, endMs: 2_400 }],
+  audioDurationMs: 2_500,
+  timingSource: "forced_alignment",
+  speechCoverage: { source: "silence_analysis", spokenEndMs: 2_400 },
+});
+check(
+  "ordinary punctuation edits remain releasable after server validation",
+  presentationOnlyTextChange.status === "passed"
+    && presentationOnlyTextChange.textExact === false
+    && subtitleQualityShouldFailJob(presentationOnlyTextChange) === false,
+  JSON.stringify(presentationOnlyTextChange),
+);
+
 const estimatedTiming = validateSubtitleQuality({
   script,
   captions,

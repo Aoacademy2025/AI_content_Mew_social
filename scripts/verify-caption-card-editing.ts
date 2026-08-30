@@ -12,6 +12,7 @@ import {
   shiftCaptionOverrides,
   undoCaptionHistory,
 } from "../src/lib/caption-card-editing";
+import { compareSubtitleContentToNarration } from "../src/lib/subtitle-content-contract";
 
 const captions = [
   { text: "หนึ่ง", startMs: 0, endMs: 1200, tag: "hook" },
@@ -20,9 +21,72 @@ const captions = [
 ];
 
 assert.deepEqual(
+  compareSubtitleContentToNarration(
+    "จริงไหม? ราคา 5,000 บาท!",
+    [{ text: "จริงไหม ราคา 5,000 บาท" }],
+  ),
+  { status: "equivalent", presentationChanged: true },
+  "ordinary punctuation edits preserve the spoken Narration Master content",
+);
+assert.deepEqual(
+  compareSubtitleContentToNarration(
+    "ยอด 1.05 บาท",
+    [{ text: "ยอด 105 บาท" }],
+  ),
+  { status: "content_mismatch", captionIndex: 0 },
+  "numeric punctuation that changes a spoken claim remains blocked",
+);
+assert.deepEqual(
+  compareSubtitleContentToNarration(
+    "รายได้ 5,000 บาท",
+    [{ text: "รายได้ห้าพันบาท" }],
+  ),
+  { status: "content_mismatch", captionIndex: 0 },
+  "changing authored digits into different letters remains fail-closed even when pronounced alike",
+);
+assert.deepEqual(
+  compareSubtitleContentToNarration(
+    "ประโยคแรก ประโยคที่สอง",
+    [{ text: "ประโยคแรก " }, { text: "เปลี่ยนคำที่สอง" }],
+  ),
+  { status: "content_mismatch", captionIndex: 1 },
+  "content mismatches identify the first affected caption",
+);
+
+assert.deepEqual(
   captionExportPreflight(captions, true),
   { ok: true },
   "non-empty captions are ready to export",
+);
+assert.deepEqual(
+  captionExportPreflight(
+    [{ text: "จริงไหม ราคา 5,000 บาท", startMs: 0, endMs: 2_000 }],
+    true,
+    "จริงไหม? ราคา 5,000 บาท!",
+  ),
+  { ok: true },
+  "presentation-only punctuation edits pass the client export preflight",
+);
+assert.deepEqual(
+  captionExportPreflight(
+    [
+      { text: "ประโยคแรก\n", startMs: 0, endMs: 1_000 },
+      { text: "ประโยคที่สอง", startMs: 1_000, endMs: 2_000 },
+    ],
+    true,
+    "ประโยคแรก ประโยคที่สอง",
+  ),
+  { ok: true },
+  "whitespace, line breaks, and caption boundaries remain presentation-only",
+);
+assert.deepEqual(
+  captionExportPreflight(
+    [{ text: "ยอด 105 บาท", startMs: 0, endMs: 2_000 }],
+    true,
+    "ยอด 1.05 บาท",
+  ),
+  { ok: false, reason: "spoken_content_changed", index: 0 },
+  "a changed spoken claim is stopped before an export job is created",
 );
 assert.deepEqual(
   captionExportPreflight([
@@ -36,9 +100,9 @@ assert.deepEqual(
 assert.deepEqual(
   captionExportPreflight([
     { text: "", startMs: 0, endMs: 1200, tag: "body" },
-  ], false),
+  ], false, "เสียงบรรยายคนละข้อความ"),
   { ok: true },
-  "a deliberately hidden subtitle layer does not block export",
+  "a deliberately hidden subtitle layer bypasses visible-caption content checks",
 );
 
 function assertNoOverlap(items: typeof captions) {
@@ -229,8 +293,8 @@ assert.match(mobile, /data-caption-action="delete"/, "mobile exposes Delete capt
 assert.match(timeline, /onRedo/, "Timeline exposes Redo beside Undo");
 assert.match(
   editorHook,
-  /captionExportPreflight\(captions, effectiveLayerVisibility\.subtitles\)[\s\S]+editCaptionFromTimeline\(captionPreflight\.index\)[\s\S]+กล่องซับ #\$\{captionPreflight\.index \+ 1\}[\s\S]+return;/,
-  "export preflight focuses the first blank visible card and returns",
+  /const narrationMasterText = preview\?\.fullText\?\.trim\(\) \|\| script\.trim\(\);[\s\S]+captionExportPreflight\([\s\S]+narrationMasterText,[\s\S]+editCaptionFromTimeline\(captionPreflight\.index\)[\s\S]+spoken_content_changed[\s\S]+สร้างเสียงใหม่[\s\S]+return;/,
+  "export preflight compares with the Narration Master, focuses a changed card, and explains how to recover",
 );
 const exportPreflightAt = editorHook.indexOf("const captionPreflight = captionExportPreflight");
 const exportSubmissionAt = editorHook.indexOf("const result = await onExportJob");

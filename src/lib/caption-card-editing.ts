@@ -1,3 +1,5 @@
+import { compareSubtitleContentToNarration } from "@/lib/subtitle-content-contract";
+
 export const MIN_CAPTION_CARD_MS = 300;
 export const DEFAULT_NEW_CAPTION_CARD_MS = 1000;
 
@@ -18,7 +20,7 @@ export type DeleteCaptionCardResult =
 
 export type CaptionExportPreflightResult =
   | { ok: true }
-  | { ok: false; reason: "blank_caption"; index: number };
+  | { ok: false; reason: "blank_caption" | "spoken_content_changed"; index: number };
 
 /**
  * Empty cards are useful while editing, but a visible empty subtitle cannot be
@@ -29,12 +31,24 @@ export type CaptionExportPreflightResult =
 export function captionExportPreflight(
   captions: readonly Pick<EditableCaptionCard, "text">[],
   subtitlesVisible: boolean,
+  narrationText?: string,
 ): CaptionExportPreflightResult {
   if (!subtitlesVisible) return { ok: true };
   const index = captions.findIndex((caption) => !caption.text.trim());
-  return index >= 0
-    ? { ok: false, reason: "blank_caption", index }
-    : { ok: true };
+  if (index >= 0) return { ok: false, reason: "blank_caption", index };
+
+  if (narrationText?.trim()) {
+    const comparison = compareSubtitleContentToNarration(narrationText, captions);
+    if (comparison.status === "content_mismatch") {
+      return {
+        ok: false,
+        reason: "spoken_content_changed",
+        index: comparison.captionIndex,
+      };
+    }
+  }
+
+  return { ok: true };
 }
 
 /**

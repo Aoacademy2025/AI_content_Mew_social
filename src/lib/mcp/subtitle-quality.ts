@@ -5,6 +5,7 @@ import {
   type TimedWord,
 } from "@/lib/tts-timing";
 import { prepareHeroVoiceSpeechText } from "@/lib/hero-voice-speech";
+import { compareSubtitleContentToNarration } from "@/lib/subtitle-content-contract";
 import {
   assessSubtitleSpeechCoverage,
   subtitleTimingRequiresSpeechCoverage,
@@ -22,7 +23,7 @@ export type SubtitleQualityReport =
   | {
       status: "passed";
       timingSource: SubtitleTimingSource;
-      textExact: true;
+      textExact: boolean;
       captionCount: number;
       audioDurationMs: number;
       speechCoverage?: SubtitleSpeechCoverage;
@@ -991,8 +992,8 @@ export function retimeCanonicalCaptionsFromAlignedWords<
  * Final, provider-independent subtitle release gate.
  *
  * This validates the exact captions that will be burned, not an earlier draft. Whitespace
- * reflow is allowed because cards intentionally collapse authored line breaks, but every
- * visible character/number/punctuation mark must survive unchanged.
+ * reflow and presentation-only punctuation edits are allowed, while every spoken word and
+ * numeric claim must still match the immutable Narration Master.
  */
 /** Presentation issues the creator can fix in the Post-phase editor.
  *  These must not fail the VideoJob — the clip still exports, with the report
@@ -1039,6 +1040,7 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
 
   const renderedText = input.captions.map((caption) => caption.text).join("");
   const textExact = canonicalVisibleText(renderedText) === canonicalVisibleText(script);
+  const contentComparison = compareSubtitleContentToNarration(script, input.captions);
   const emptyCaptionIndex = input.captions.findIndex((caption) => !caption.text.trim());
   if (emptyCaptionIndex >= 0) {
     return {
@@ -1049,8 +1051,14 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
       captionIndex: emptyCaptionIndex,
     };
   }
-  if (!textExact) {
-    return { status: "failed", timingSource: input.timingSource, textExact, code: "text_mismatch" };
+  if (contentComparison.status === "content_mismatch") {
+    return {
+      status: "failed",
+      timingSource: input.timingSource,
+      textExact,
+      code: "text_mismatch",
+      captionIndex: contentComparison.captionIndex,
+    };
   }
   if (input.timingSource === "tts_segment_timing" || input.timingSource === "avatar_script_clock") {
     return {
@@ -1112,16 +1120,18 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
     }
   }
 
-  const spacing = hasExactInternalSpacing(script, input.captions);
-  if (!spacing.passed) {
-    return {
-      status: "failed",
-      timingSource: input.timingSource,
-      textExact,
-      code: "spacing_mismatch",
-      captionIndex: spacing.captionIndex,
-      ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}),
-    };
+  if (!contentComparison.presentationChanged) {
+    const spacing = hasExactInternalSpacing(script, input.captions);
+    if (!spacing.passed) {
+      return {
+        status: "failed",
+        timingSource: input.timingSource,
+        textExact,
+        code: "spacing_mismatch",
+        captionIndex: spacing.captionIndex,
+        ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}),
+      };
+    }
   }
 
   for (let index = 0; index < input.captions.length; index += 1) {
@@ -1143,7 +1153,7 @@ export function validateSubtitleQuality(input: SubtitleQualityInput): SubtitleQu
   return {
     status: "passed",
     timingSource: input.timingSource,
-    textExact: true,
+    textExact,
     captionCount: input.captions.length,
     audioDurationMs: input.audioDurationMs,
     ...(input.speechCoverage ? { speechCoverage: input.speechCoverage } : {}),
