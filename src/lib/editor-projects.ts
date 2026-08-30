@@ -386,7 +386,10 @@ export async function assertEditorProjectOwner(userId: string, projectId: string
 
 /** Keep durable Export pinned to the latest preview the project has accepted.
  * Legacy projects without an active preview remain exportable, but once an
- * activeJobId exists an older preview must never be allowed to overwrite it. */
+ * activeJobId exists an older preview must never be allowed to overwrite it —
+ * unless sourceJobId is itself a newer, finished `create` render of the same
+ * project (e.g. a b-roll re-render child), in which case it IS the current
+ * render and is accepted too. */
 export async function assertCurrentEditorExportSource(
   userId: string,
   projectId: string,
@@ -394,7 +397,7 @@ export async function assertCurrentEditorExportSource(
 ): Promise<void> {
   const project = await prisma.editorProject.findFirst({
     where: { id: projectId, userId, status: { not: "archived" } },
-    select: { activeJobId: true },
+    select: { id: true, activeJobId: true },
   });
   if (!project) {
     const error = new Error("project_not_found");
@@ -402,8 +405,25 @@ export async function assertCurrentEditorExportSource(
     throw error;
   }
   if (project.activeJobId && project.activeJobId !== sourceJobId) {
-    const error = new Error("stale_export_source");
-    (error as { code?: string }).code = "stale_export_source";
-    throw error;
+    const [activeJob, sourceJob] = await Promise.all([
+      prisma.videoJob.findUnique({ where: { id: project.activeJobId }, select: { createdAt: true } }),
+      prisma.videoJob.findUnique({
+        where: { id: sourceJobId },
+        select: { projectId: true, status: true, type: true, createdAt: true },
+      }),
+    ]);
+    const isCurrentProjectRender = Boolean(
+      activeJob
+      && sourceJob
+      && sourceJob.projectId === project.id
+      && sourceJob.status === "done"
+      && sourceJob.type === "create"
+      && sourceJob.createdAt.getTime() >= activeJob.createdAt.getTime(),
+    );
+    if (!isCurrentProjectRender) {
+      const error = new Error("stale_export_source");
+      (error as { code?: string }).code = "stale_export_source";
+      throw error;
+    }
   }
 }

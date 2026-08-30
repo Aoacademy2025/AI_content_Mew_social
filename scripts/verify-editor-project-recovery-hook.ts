@@ -45,6 +45,8 @@ type RecoveryHookSeams = {
 
 const hookPath = "src/app/(dashboard)/video-editor/_v2/useV2Project.ts";
 const source = readFileSync(hookPath, "utf8");
+const shellPath = "src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx";
+const shellSource = readFileSync(shellPath, "utf8");
 
 function parseHook(value: string): ts.SourceFile {
   return ts.createSourceFile(hookPath, value, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -381,6 +383,15 @@ function verifyHookSource(value: string): void {
     "StrictMode cleanup cancels the first autosave setup before PATCH");
 }
 
+function verifyRenderButtonDisabledExplanation(value: string): void {
+  const handleRender = sourceBetween(value, "async function handleRender() {", "async function handleConfirmRender");
+  assert.match(
+    handleRender,
+    /if \(!p\.canRunProjectOperation\(\)\) \{\s*toast\.error\("โปรเจกต์กำลังกู้คืน\/โหลด — รอสักครู่แล้วกดเรนเดอร์อีกครั้ง"\);\s*return;\s*\}/,
+    "a disabled Render click explains that the project is recovering\/loading instead of doing nothing",
+  );
+}
+
 function verifyReviewerRegressions(): void {
   assert.deepEqual(decideEditorProjectBootstrap({
     projectId: "project-no-edit-retry",
@@ -485,6 +496,7 @@ async function verifyPureSeams(): Promise<void> {
 
 async function main(): Promise<void> {
   verifyHookSource(source);
+  verifyRenderButtonDisabledExplanation(shellSource);
   await verifyPureSeams();
   verifyReviewerRegressions();
   await verifyRuntimeHookContract();

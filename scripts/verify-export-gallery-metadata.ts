@@ -41,6 +41,7 @@ async function main() {
     recoverProcessingJobsAfterWorkerRestart,
   } = await import("../src/lib/mcp/video-job");
   const { persistExportGalleryVideo } = await import("../src/lib/export-gallery");
+  const { assertCurrentEditorExportSource } = await import("../src/lib/editor-projects");
 
   const user = await prisma.user.create({
     data: {
@@ -986,6 +987,77 @@ async function main() {
   check(
     (await prisma.video.count({ where: { projectId: checkpointProject.id } })) === 1,
     "checkpointed save-stage recovery still leaves one Gallery row",
+  );
+
+  // Task 7 (a): a b-roll re-render child VideoJob of the same project, created after the
+  // project's current export source, must still be accepted as export source even though
+  // it is not project.activeJobId.
+  const brollSourceProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "B-roll re-render export source", status: "post" },
+  });
+  const brollExportSource = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: brollSourceProject.id,
+      status: "done",
+      type: "create",
+      inputJson: JSON.stringify({ script: "ต้นฉบับก่อนแก้ b-roll", previewMode: true, voiceProvider: "gemini" }),
+      outputJson: JSON.stringify({ version: 2, mode: "preview" }),
+      progress: 100,
+      finishedAt: new Date(),
+    },
+  });
+  await prisma.editorProject.update({
+    where: { id: brollSourceProject.id },
+    data: { activeJobId: brollExportSource.id },
+  });
+  const brollRerender = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: brollSourceProject.id,
+      status: "done",
+      type: "create",
+      inputJson: JSON.stringify({ script: "แก้ b-roll แล้ว re-render", previewMode: true, voiceProvider: "gemini" }),
+      outputJson: JSON.stringify({ version: 2, mode: "preview" }),
+      progress: 100,
+      finishedAt: new Date(),
+    },
+  });
+  let brollRerenderAccepted = true;
+  try {
+    await assertCurrentEditorExportSource(user.id, brollSourceProject.id, brollRerender.id);
+  } catch {
+    brollRerenderAccepted = false;
+  }
+  check(
+    brollRerenderAccepted,
+    "export accepts a newer done create job of the same project as source even when it isn't activeJobId",
+  );
+
+  const otherProjectForSourceCheck = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Unrelated project", status: "post" },
+  });
+  const otherProjectJob = await prisma.videoJob.create({
+    data: {
+      userId: user.id,
+      projectId: otherProjectForSourceCheck.id,
+      status: "done",
+      type: "create",
+      inputJson: JSON.stringify({ script: "โปรเจกต์อื่น", previewMode: true, voiceProvider: "gemini" }),
+      outputJson: JSON.stringify({ version: 2, mode: "preview" }),
+      progress: 100,
+      finishedAt: new Date(),
+    },
+  });
+  let crossProjectSourceRejected = false;
+  try {
+    await assertCurrentEditorExportSource(user.id, brollSourceProject.id, otherProjectJob.id);
+  } catch (error) {
+    crossProjectSourceRejected = (error as { code?: string }).code === "stale_export_source";
+  }
+  check(
+    crossProjectSourceRejected,
+    "export still rejects a source job that belongs to a different project",
   );
 
   await prisma.$disconnect();
