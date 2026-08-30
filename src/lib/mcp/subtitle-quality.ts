@@ -1031,8 +1031,10 @@ export function subtitleQualityShouldFailJob(report: SubtitleQualityReport): boo
  * Deterministic, render-safe timing repair. Never changes text; drops blank cards;
  * clamps to [0, audioDurationMs]; enforces monotonic non-overlapping cards ≥ 240 ms.
  *
- * A tail card that cannot fit keeps its 240 ms floor and may overshoot the audio end by
- * < 240 ms — a zero-length card is a Remotion hazard, and text is never dropped for timing.
+ * A tail run of short cards is pulled back inside the audio by shortening the cards before
+ * it; only when cards × 240 ms exceeds the audio duration (cannot fit) is the forward-pass
+ * result kept and the tail may overshoot. A zero-length card is a Remotion hazard, so text
+ * is never dropped for timing.
  *
  * When `audioDurationMs` is not a positive finite number no bounds clamp is applied.
  * `repaired` only reports whether this function changed anything — it is not an
@@ -1059,6 +1061,28 @@ export function repairCaptionTiming<T extends { text: string; startMs: number; e
     out.push({ ...c, startMs: start, endMs: end });
     cursor = end;
   }
+
+  // Backward pass: a squeezed tail card pushed the cursor past the audio, so reclaim the
+  // time from the cards before it instead of pushing the tail further out. Cards only ever
+  // move earlier, which preserves both the order and the floor.
+  if (audioDurationMs > 0) {
+    const forward = out.slice();
+    let limit = audioDurationMs;
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      const c = out[i];
+      const end = Math.min(c.endMs, limit);
+      const start = Math.min(c.startMs, end - MIN_CARD_MS);
+      if (start < 0) {
+        // Cannot fit: cards × MIN_CARD_MS exceeds the audio. A bounded overshoot beats
+        // dropping text, so keep what the forward pass produced.
+        out.splice(0, out.length, ...forward);
+        break;
+      }
+      out[i] = { ...c, startMs: start, endMs: end };
+      limit = start;
+    }
+  }
+
   const repaired = dropped > 0 || out.some((c, i) => c.startMs !== kept[i].startMs || c.endMs !== kept[i].endMs);
   return { captions: repaired ? out : captions, repaired, dropped };
 }

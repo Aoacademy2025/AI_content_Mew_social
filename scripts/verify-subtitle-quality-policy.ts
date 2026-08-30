@@ -59,25 +59,71 @@ assert.deepEqual(fixed.captions.map((c) => c.tag), ["hook", "body", "cta"]);
 const nonFinite = repairCaptionTiming([{ text: "ก", startMs: Number.NaN, endMs: Number.NaN }], 3000);
 assert.equal(nonFinite.repaired, true);
 assert.deepEqual(nonFinite.captions, [{ text: "ก", startMs: 0, endMs: 240 }]);
-// 6d. a tail card that cannot fit keeps the 240 ms floor instead of collapsing.
-// A zero-length or 100 ms card is a Remotion Sequence hazard; overshooting the audio end
-// by < MIN_CARD_MS is the safe trade (text is never dropped for timing).
+/** Every card holds the 240 ms floor and no card starts before the previous one ends. */
+function assertRenderSafe(cards: Array<{ startMs: number; endMs: number }>, label: string) {
+  assert.ok(
+    cards.every((c, i, a) => c.endMs - c.startMs >= 240 && (i === 0 || c.startMs >= a[i - 1].endMs)),
+    `${label}: every card keeps the 240 ms floor and stays monotonic — ${JSON.stringify(cards)}`,
+  );
+}
+const timings = (r: { captions: Array<{ startMs: number; endMs: number }> }) =>
+  r.captions.map((c) => [c.startMs, c.endMs]);
+
+// 6d. a tail that cannot fit is pulled BACK inside the audio by shortening the cards
+// before it. A zero-length or 100 ms card is a Remotion Sequence hazard, and pushing the
+// tail past the composition end would simply never show it.
 for (const tail of [
   [{ text: "ก", startMs: 0, endMs: 2900, tag: "hook" as const }, { text: "ข", startMs: 2900, endMs: 3000, tag: "body" as const }],
   [{ text: "ก", startMs: 0, endMs: 3000, tag: "hook" as const }, { text: "ข", startMs: 3000, endMs: 3000, tag: "body" as const }],
 ]) {
   const squeezed = repairCaptionTiming(tail, 3000);
   assert.equal(squeezed.dropped, 0);
-  assert.equal(squeezed.captions.length, 2);
-  assert.ok(
-    squeezed.captions.every((c, i, a) => c.endMs - c.startMs >= 240 && (i === 0 || c.startMs >= a[i - 1].endMs)),
-    `every card keeps the 240 ms floor and stays monotonic: ${JSON.stringify(squeezed.captions)}`,
-  );
-  assert.ok(
-    squeezed.captions[squeezed.captions.length - 1].endMs <= 3000 + 240,
-    `the tail overshoot stays under one card floor: ${JSON.stringify(squeezed.captions)}`,
-  );
+  assert.equal(squeezed.repaired, true);
+  assertRenderSafe(squeezed.captions, "6d");
+  assert.deepEqual(timings(squeezed), [[0, 2760], [2760, 3000]], JSON.stringify(squeezed.captions));
 }
+
+// 6d-i. a RUN of short tail cards must not cascade: each squeezed card used to push the
+// next one a further 240 ms past the audio (measured: last end 3380 for this input).
+const shortTailRun = repairCaptionTiming([
+  { text: "ก", startMs: 0, endMs: 2900, tag: "hook" as const },
+  { text: "ข", startMs: 2900, endMs: 2950, tag: "body" as const },
+  { text: "ค", startMs: 2950, endMs: 3000, tag: "cta" as const },
+], 3000);
+assertRenderSafe(shortTailRun.captions, "6d-i");
+assert.equal(shortTailRun.captions.at(-1)?.endMs, 3000);
+assert.equal(shortTailRun.captions[0].endMs, 2520, "the card before the tail gives up its time");
+assert.deepEqual(timings(shortTailRun), [[0, 2520], [2520, 2760], [2760, 3000]]);
+
+// 6d-ii. six 20 ms cards after a long one (measured before the backward pass: last end 4320).
+const sixShortTail = repairCaptionTiming([
+  { text: "ก", startMs: 0, endMs: 2880, tag: "hook" as const },
+  { text: "ข", startMs: 2880, endMs: 2900, tag: "body" as const },
+  { text: "ค", startMs: 2900, endMs: 2920, tag: "body" as const },
+  { text: "ง", startMs: 2920, endMs: 2940, tag: "body" as const },
+  { text: "จ", startMs: 2940, endMs: 2960, tag: "body" as const },
+  { text: "ฉ", startMs: 2960, endMs: 2980, tag: "body" as const },
+  { text: "ช", startMs: 2980, endMs: 3000, tag: "cta" as const },
+], 3000);
+assertRenderSafe(sixShortTail.captions, "6d-ii");
+assert.equal(sixShortTail.captions.length, 7);
+assert.equal(sixShortTail.captions.at(-1)?.endMs, 3000);
+assert.equal(sixShortTail.captions[0].endMs, 1560, JSON.stringify(sixShortTail.captions));
+
+// 6d-iii. degenerate: 20 cards × 240 ms cannot fit in 3000 ms. Text is never dropped, so
+// the forward-pass result stands and the tail is allowed to overshoot.
+const cannotFit = repairCaptionTiming(
+  Array.from({ length: 20 }, (_, i) => ({ text: `ก${i}`, startMs: i * 20, endMs: i * 20 + 20, tag: "body" as const })),
+  3000,
+);
+assert.equal(cannotFit.dropped, 0);
+assert.equal(cannotFit.captions.length, 20);
+assertRenderSafe(cannotFit.captions, "6d-iii");
+assert.ok(
+  cannotFit.captions.at(-1)!.endMs > 3000,
+  "a set that cannot fit keeps its text and overshoots rather than collapsing",
+);
+
 // 6e. without a usable audio duration there is nothing to clamp against, and `repaired`
 // says only whether this function changed anything — it is not an in-bounds guarantee.
 assert.deepEqual(
