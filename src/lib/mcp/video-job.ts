@@ -166,19 +166,25 @@ export async function claimNextQueuedJob() {
 /**
  * Atomically claim either a due provider wait or the oldest queued job. Provider waits have
  * priority so a completed external job does not sit behind newly-created work.
+ *
+ * A provider wait is runnable when its poll time has come — or when it has NO poll time at
+ * all. The latter is a broken row (parked without a next poll): a `lte` filter can never
+ * match NULL, so such a job would sit in waiting_provider forever with no worker ever
+ * looking at it. Treat it as due now. SQLite orders NULLs first on ASC, so these
+ * never-scheduled rows are picked up ahead of scheduled ones.
  */
 export async function claimNextRunnableJob(now: Date = new Date()) {
+  const runnableWait: Prisma.VideoJobWhereInput = {
+    status: "waiting_provider",
+    OR: [{ providerNextPollAt: { lte: now } }, { providerNextPollAt: null }],
+  };
   const due = await prisma.videoJob.findFirst({
-    where: { status: "waiting_provider", providerNextPollAt: { lte: now } },
+    where: runnableWait,
     orderBy: [{ providerNextPollAt: "asc" }, { createdAt: "asc" }],
   });
   if (due) {
     const claimed = await withVideoJobSqliteRetry("claim provider wait", () => prisma.videoJob.updateMany({
-      where: {
-        id: due.id,
-        status: "waiting_provider",
-        providerNextPollAt: { lte: now },
-      },
+      where: { id: due.id, ...runnableWait },
       data: { status: "processing", providerNextPollAt: null },
     }));
     if (claimed.count === 1) return prisma.videoJob.findUnique({ where: { id: due.id } });

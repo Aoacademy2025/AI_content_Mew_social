@@ -56,6 +56,9 @@ jobs:
       - name: Verify editor job runtime (idempotency + project recovery)
         run: npm run verify:editor-job-runtime
 
+      - name: Verify VideoJob stall watchdog
+        run: npm run verify:video-job-watchdog
+
       - name: Verify editor style presets
         run: npm run verify:editor-style-presets
 
