@@ -50,7 +50,7 @@ export async function persistExportGalleryVideo(
     if (input.parentVideoJobId && !parent) {
       throw new Error("export_video_job_not_found");
     }
-    if (parent?.projectId !== input.projectId) {
+    if (parent && parent.projectId !== input.projectId) {
       throw new Error("export_project_mismatch");
     }
     if (parent?.videoId) {

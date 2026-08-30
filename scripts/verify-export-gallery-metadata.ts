@@ -54,6 +54,26 @@ async function main() {
     },
   });
 
+  const genericCreateGallery = await persistExportGalleryVideo({
+    userId: user.id,
+    projectId: null,
+    contentId: null,
+    avatarModel: "none",
+    voiceModel: "Puck",
+    imageModel: "imagen-4.0-generate-001",
+    sceneCount: 1,
+    script: "HeroAI Create ต้องส่งคลิปเข้า Gallery แม้ไม่มี Editor export parent",
+    sceneMapping: JSON.stringify([{ scene: 1, source: "generated" }]),
+    videoUrl: "/api/renders/generic-create-final.mp4",
+    audioUrl: "/api/renders/generic-create.wav",
+    avatarVideoUrl: null,
+    renderConfig: JSON.stringify({ durationInFrames: 30 }),
+    status: "COMPLETED",
+    expiresAt: new Date("2026-09-05T00:00:00Z"),
+  });
+  check(genericCreateGallery.created, "generic HeroAI Create without an export parent creates a Gallery row");
+  check(genericCreateGallery.video.projectId === null, "generic HeroAI Create keeps its Gallery project unset");
+
   const cases: Array<{
     label: string;
     input: SourceInput;
@@ -900,6 +920,19 @@ async function main() {
     status: "COMPLETED" as const,
     expiresAt: new Date("2026-09-05T00:00:00Z"),
   };
+  const mismatchedProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Different export project", status: "draft" },
+  });
+  let mismatchError: unknown = null;
+  try {
+    await persistExportGalleryVideo({ ...galleryInput, projectId: mismatchedProject.id });
+  } catch (error) {
+    mismatchError = error;
+  }
+  check(
+    mismatchError instanceof Error && mismatchError.message === "export_project_mismatch",
+    "Editor export still rejects a parent from a different project",
+  );
   const firstGallerySave = await persistExportGalleryVideo(galleryInput);
   const retriedGallerySave = await persistExportGalleryVideo(galleryInput);
   let checkpointParent = await prisma.videoJob.findUniqueOrThrow({ where: { id: checkpointExport.id } });

@@ -147,8 +147,71 @@ install -d -m 0755 "$MAINTENANCE_PAGE_DIR"
 install -m 0644 "$APP_DIR/deploy/maintenance.html" "$MAINTENANCE_PAGE_DIR/maintenance.html.next"
 mv "$MAINTENANCE_PAGE_DIR/maintenance.html.next" "$MAINTENANCE_PAGE_DIR/maintenance.html"
 
-echo "=== [2/6] Install dependencies ==="
 cd "$APP_DIR"
+
+raise_maintenance_barrier() {
+  # Idempotent. A stale flag from a killed deploy is cleared by the EXIT trap below,
+  # so the site can never be left stuck showing maintenance.
+  : > "$DEPLOY_MAINTENANCE_FLAG" 2>/dev/null || {
+    echo "WARN: could not raise the maintenance barrier ($DEPLOY_MAINTENANCE_FLAG) — continuing without it"
+    return 0
+  }
+  echo "Maintenance barrier raised — public requests get the styled 503 page until health passes"
+}
+
+lower_maintenance_barrier() {
+  rm -f "$DEPLOY_MAINTENANCE_FLAG" 2>/dev/null || true
+}
+
+DEPLOY_RENDER_DRAIN_OWNED=0
+cleanup_deploy_guards() {
+  # Open render admission before public ingress so the first customer request after
+  # maintenance can never land in a stale deploy-drain window. Both operations are
+  # idempotent and run on success, failure, Ctrl-C and health-check rollback.
+  if [ "$DEPLOY_RENDER_DRAIN_OWNED" = "1" ]; then
+    npm run ops:render-drain -- off >/dev/null 2>&1 || true
+    DEPLOY_RENDER_DRAIN_OWNED=0
+  fi
+  lower_maintenance_barrier
+}
+trap cleanup_deploy_guards EXIT
+
+wait_for_empty_render_queues() {
+  local deadline=$((SECONDS + DEPLOY_RENDER_DRAIN_TIMEOUT_SEC))
+  local queue_status
+  echo "Waiting up to ${DEPLOY_RENDER_DRAIN_TIMEOUT_SEC}s for active VideoJob/RenderJob work to finish"
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if npx tsx scripts/check-empty-render-queues.ts; then
+      return 0
+    else
+      queue_status=$?
+    fi
+    if [ "$queue_status" -ne 2 ]; then
+      echo "ERROR: render queue state is unreadable; refusing to deploy"
+      return 1
+    fi
+    sleep "$DEPLOY_RENDER_DRAIN_INTERVAL_SEC"
+  done
+  echo "ERROR: active render queues did not drain before timeout"
+  return 1
+}
+
+echo "=== [1c/6] Mandatory render drain before dependency mutation ==="
+# npm ci replaces the live node_modules tree. Block new parent work first, then
+# allow children of already-running VideoJobs to finish before any dependency can
+# disappear under a render worker. The EXIT trap above releases admission on every
+# success or failure path; no customer job is canceled.
+DEPLOY_RENDER_DRAIN_OWNED=1
+if ! npm run ops:render-drain -- on; then
+  echo "ERROR: could not enable render drain. Dependencies and live .next are untouched."
+  exit 1
+fi
+if ! wait_for_empty_render_queues; then
+  echo "ERROR: render queues are active or unreadable. Dependencies and live .next are untouched."
+  exit 1
+fi
+
+echo "=== [2/6] Install dependencies ==="
 # Reproduce the exact CI-reviewed lock graph. `npm install --package-lock=false`
 # resolves semver ranges again and can silently pick a newer provider SDK whose
 # pinned API types no longer match the reviewed source. The legacy peer flag is
@@ -313,63 +376,9 @@ echo "=== [5a/6] Normalize staged build permissions ==="
 # must be able to traverse directories and read static assets before the swap.
 chmod -R a+rX "$STAGING_DIR"
 
-raise_maintenance_barrier() {
-  # Idempotent. A stale flag from a killed deploy is cleared by the EXIT trap below,
-  # so the site can never be left stuck showing maintenance.
-  : > "$DEPLOY_MAINTENANCE_FLAG" 2>/dev/null || {
-    echo "WARN: could not raise the maintenance barrier ($DEPLOY_MAINTENANCE_FLAG) — continuing without it"
-    return 0
-  }
-  echo "Maintenance barrier raised — public requests get the styled 503 page until health passes"
-}
-
-lower_maintenance_barrier() {
-  rm -f "$DEPLOY_MAINTENANCE_FLAG" 2>/dev/null || true
-}
-
-DEPLOY_RENDER_DRAIN_OWNED=0
-cleanup_deploy_guards() {
-  # Open render admission before public ingress so the first customer request after
-  # maintenance can never land in a stale deploy-drain window. Both operations are
-  # idempotent and run on success, failure, Ctrl-C and health-check rollback.
-  if [ "$DEPLOY_RENDER_DRAIN_OWNED" = "1" ]; then
-    npm run ops:render-drain -- off >/dev/null 2>&1 || true
-    DEPLOY_RENDER_DRAIN_OWNED=0
-  fi
-  lower_maintenance_barrier
-}
-trap cleanup_deploy_guards EXIT
-
-wait_for_empty_render_queues() {
-  local deadline=$((SECONDS + DEPLOY_RENDER_DRAIN_TIMEOUT_SEC))
-  local queue_status
-  echo "Waiting up to ${DEPLOY_RENDER_DRAIN_TIMEOUT_SEC}s for active VideoJob/RenderJob work to finish"
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    if npx tsx scripts/check-empty-render-queues.ts; then
-      return 0
-    else
-      queue_status=$?
-    fi
-    if [ "$queue_status" -ne 2 ]; then
-      echo "ERROR: render queue state is unreadable; refusing to deploy"
-      return 1
-    fi
-    sleep "$DEPLOY_RENDER_DRAIN_INTERVAL_SEC"
-  done
-  echo "ERROR: active render queues did not drain before timeout"
-  return 1
-}
-
-echo "=== [5b/6] Mandatory render drain + empty queue gate ==="
-# This is deliberately not an opt-in flag. Block new parent jobs after the staged build
-# is ready, allow children of already-running VideoJobs to finish, then wait fail-closed
-# before touching live .next or restarting either worker.
-DEPLOY_RENDER_DRAIN_OWNED=1
-if ! npm run ops:render-drain -- on; then
-  rm -rf "$STAGING_DIR"
-  echo "ERROR: could not enable render drain. Old .next untouched; PM2 was not restarted."
-  exit 1
-fi
+echo "=== [5b/6] Final empty queue gate ==="
+# Admission has remained drained throughout dependency install and the staged
+# build. Recheck fail-closed immediately before touching live .next or workers.
 if ! wait_for_empty_render_queues; then
   rm -rf "$STAGING_DIR"
   echo "ERROR: render queues are active or unreadable. Old .next untouched; PM2 was not restarted."
