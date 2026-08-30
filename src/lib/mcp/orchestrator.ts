@@ -1141,6 +1141,11 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         version: 2,
         mode: "preview",
         videoUrl: rrFinalUrl,
+        // This derivative changes only visual windows. Keep the source's proven
+        // subtitle release decision and acoustic evidence so Export does not
+        // misclassify an upload preview as legacy and attempt to realign it.
+        ...(parsed.subtitleQa ? { subtitleQa: parsed.subtitleQa } : {}),
+        ...(parsed.subtitleEvidence ? { subtitleEvidence: parsed.subtitleEvidence } : {}),
         preview: {
           ...preview,
           config: rrBaseConfig,
