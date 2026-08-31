@@ -156,11 +156,22 @@ class HookRunner<T> {
 }
 
 type JobHook = {
-  job: { phase: string; jobId?: string | null; queuePosition?: number | null };
+  job: {
+    phase: string;
+    jobId?: string | null;
+    queuePosition?: number | null;
+    output?: {
+      preview?: {
+        captions?: Array<{ text: string }>;
+        config?: Record<string, unknown>;
+      } | null;
+    } | null;
+  };
   submit(): Promise<{ ok: boolean; message?: string }>;
   submitExport(input: {
     sourceJobId: string;
     subtitleOverlayConfig: unknown;
+    editorSnapshot?: unknown;
   }): Promise<{ ok: boolean; message?: string }>;
   adoptJob(input: { id: string; projectId?: string | null; contentPreflightId?: string | null }): void;
   resumeFailedExportPreview(): void;
@@ -708,6 +719,9 @@ export async function verifyPostExportEditStateResume(): Promise<void> {
     legacyResumedSourceJobs: ["legacy-source-preview-job"],
   }, "exports created before snapshot support retain the source-preview fallback");
   legacy.runner.unmount();
+
+  await failedExportReturnsToLatestAdoptedBrollPreview(jobSource);
+  await failedExportRecoverySurvivesProjectReopen(jobSource);
 }
 
 async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<void> {
@@ -1113,6 +1127,7 @@ function mountAttemptJobHook(
   source: string,
   project: ReturnType<typeof makeJobRuntimeProject>,
   fetchImpl: (url: string, init?: Record<string, unknown>) => Promise<unknown>,
+  storedJobId: string | null = null,
 ): HookRunner<JobHook> {
   const module = { exports: {} as Record<string, unknown> };
   const fakeReact: Record<string, unknown> = {};
@@ -1183,7 +1198,7 @@ function mountAttemptJobHook(
     fetchImpl,
     {
       localStorage: {
-        getItem: () => null,
+        getItem: () => storedJobId,
         setItem: () => undefined,
         removeItem: () => undefined,
       },
@@ -1236,6 +1251,47 @@ async function queuedPollSurfacesPosition(source: string): Promise<void> {
   runner.unmount();
 }
 
+function failedExportRecoveryPayload(sourceJobId: string) {
+  const correctedCaptions = [
+    { text: "แต่กลางวันบ้านยังมีตู้เย็น", startMs: 0, endMs: 500 },
+    { text: "ปั๊มน้ำ เราเตอร์", startMs: 500, endMs: 1_000 },
+  ];
+  return {
+    sourceJobId,
+    editSnapshot: {
+      version: 1,
+      videoUrl: "/api/renders/edited-broll.mp4",
+      preview: {
+        captions: correctedCaptions,
+        config: { bgVideos: [{ src: "/api/renders/uploaded-replacement.mp4" }] },
+        voiceUrl: "/api/audio/voice.mp3",
+        audioDurationMs: 1_000,
+      },
+      captions: correctedCaptions,
+      originalCaptions: [
+        { text: "แต่กลางวันบ้านยังมีตู้", startMs: 0, endMs: 500 },
+        { text: "เย็น ปั๊มน้ำ เราเตอร์", startMs: 500, endMs: 1_000 },
+      ],
+      subtitleConfig: {
+        preset: "plain",
+        effect: "none",
+        fontFamily: "Kanit",
+        bold: true,
+        fontWeight: 900,
+        fontSize: 80,
+        textColor: "#FFFFFF",
+        accentColor: "#FFE500",
+        shadow: false,
+        outline: false,
+        outlineSize: 0,
+        verticalPos: 82,
+      },
+      cardLen: "sentence",
+      captionOverrides: {},
+    },
+  };
+}
+
 async function failedExportReturnsToLatestAdoptedBrollPreview(source: string): Promise<void> {
   const project = makeJobRuntimeProject("export");
   project.projectReady = false;
@@ -1278,6 +1334,7 @@ async function failedExportReturnsToLatestAdoptedBrollPreview(source: string): P
             errorMessage: "export failed",
             errorCode: "export_failed",
             errorProvider: null,
+            failedExportRecovery: failedExportRecoveryPayload("edited-broll-preview"),
             idempotencyKey: body.idempotencyKey,
             idempotencyFingerprint: runtimeRequestFingerprint("export", body),
           };
@@ -1321,6 +1378,7 @@ async function failedExportReturnsToLatestAdoptedBrollPreview(source: string): P
   const submitted = await runner.current.submitExport({
     sourceJobId: "edited-broll-preview",
     subtitleOverlayConfig: { captions: [{ text: "same narration", startMs: 0 }] },
+    editorSnapshot: failedExportRecoveryPayload("edited-broll-preview").editSnapshot,
   });
   assert.equal(submitted.ok, true);
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
@@ -1348,6 +1406,64 @@ async function failedExportReturnsToLatestAdoptedBrollPreview(source: string): P
   assert.ok(
     !requestedUrls.includes("/api/videos/jobs/stale-original-preview"),
     "failed-export recovery never polls the pre-edit project pointer",
+  );
+  assert.ok(
+    !requestedUrls.includes("/api/videos/jobs/edited-broll-preview"),
+    "validated failed-export recovery restores locally instead of polling stale source captions",
+  );
+  assert.deepEqual(
+    runner.current.job.output?.preview?.captions?.map((caption) => caption.text),
+    ["แต่กลางวันบ้านยังมีตู้เย็น", "ปั๊มน้ำ เราเตอร์"],
+    "back from a failed export restores the exact corrected caption cards",
+  );
+  assert.deepEqual(
+    runner.current.job.output?.preview?.config?.bgVideos,
+    [{ src: "/api/renders/uploaded-replacement.mp4" }],
+    "failed export recovery keeps the submitted B-roll preview together with caption edits",
+  );
+  runner.unmount();
+}
+
+async function failedExportRecoverySurvivesProjectReopen(source: string): Promise<void> {
+  const project = makeJobRuntimeProject("export");
+  project.projectStatus = "post";
+  project.activeJobId = "stale-original-preview";
+  project.activeExportJobId = "failed-export-to-reopen";
+  const requestedUrls: string[] = [];
+  const runner = mountAttemptJobHook(source, project, async (url) => {
+    requestedUrls.push(url);
+    assert.equal(url, "/api/videos/jobs/failed-export-to-reopen");
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return {
+          id: "failed-export-to-reopen",
+          projectId: project.projectId,
+          type: "export",
+          status: "failed",
+          currentStep: "burn",
+          progress: 80,
+          errorMessage: "export failed",
+          errorCode: "export_failed",
+          errorProvider: null,
+          failedExportRecovery: failedExportRecoveryPayload("edited-broll-preview"),
+        };
+      },
+    };
+  }, "failed-export-to-reopen");
+  for (let index = 0; index < 12; index += 1) await Promise.resolve();
+  runner.flush();
+  assert.equal(runner.current.job.phase, "failed", "reopening a post project resumes its latest failed export");
+  assert.deepEqual(requestedUrls, ["/api/videos/jobs/failed-export-to-reopen"]);
+
+  runner.current.resumeFailedExportPreview();
+  runner.flush();
+  assert.equal(runner.current.job.jobId, "edited-broll-preview");
+  assert.deepEqual(
+    runner.current.job.output?.preview?.captions?.map((caption) => caption.text),
+    ["แต่กลางวันบ้านยังมีตู้เย็น", "ปั๊มน้ำ เราเตอร์"],
+    "reopening then returning to Post preserves the failed export's submitted captions",
   );
   runner.unmount();
 }
