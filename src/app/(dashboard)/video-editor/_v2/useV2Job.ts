@@ -8,7 +8,10 @@ import { isProviderErrorCode, type ProviderErrorCode } from "@/lib/provider-erro
 import type { HeygenProviderAction } from "@/lib/heygen-readiness";
 import type { RequiredKeyType } from "@/components/ui/api-key-modal";
 import type { ProjectMediaState } from "@/lib/media-retention";
-import type { EditorExportDraft } from "@/lib/editor-export-snapshot";
+import type {
+  EditorExportDraft,
+  FailedEditorExportRecovery,
+} from "@/lib/editor-export-snapshot";
 import { PRESET_WEIGHTS } from "./mix-presets";
 import {
   disclosedAutoMixAiSlotIndices,
@@ -99,6 +102,7 @@ export interface V2JobState {
   errorCode: string | null;
   errorProvider: string | null;
   output: ParsedVideoJobOutput | null;
+  failedExportRecovery?: FailedEditorExportRecovery | null;
   mediaState: ProjectMediaState | null;
 }
 
@@ -220,7 +224,7 @@ export function useV2Job(p: V2Project) {
   const applyStatus = useCallback((d: {
     id: string; projectId?: string | null; contentPreflightId?: string | null; sceneRerollCapability?: SceneRerollCapability | null; type?: string | null; status: string; currentStep: string | null; progress: number;
     queuePosition?: number | null;
-    errorMessage: string | null; errorCode?: string | null; errorProvider?: string | null; output?: ParsedVideoJobOutput | null; mediaState?: ProjectMediaState | null;
+    errorMessage: string | null; errorCode?: string | null; errorProvider?: string | null; output?: ParsedVideoJobOutput | null; failedExportRecovery?: FailedEditorExportRecovery | null; mediaState?: ProjectMediaState | null;
     idempotencyKey?: string | null; idempotencyFingerprint?: string | null;
   }) => {
     // done/failed ห้ามลบ jobId ที่จำไว้ — ไม่งั้นออกจากหน้าแล้วกลับมา งาน "หาย" ทั้งที่
@@ -247,7 +251,7 @@ export function useV2Job(p: V2Project) {
       });
     } else if (d.status === "failed" || d.status === "canceled") {
       stopPolling();
-      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: null, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, mediaState: null });
+      setJob({ phase: "failed", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: null, errorMessage: d.errorMessage ?? "งานไม่สำเร็จ", errorCode: d.errorCode ?? null, errorProvider: d.errorProvider ?? null, output: null, failedExportRecovery: d.failedExportRecovery ?? null, mediaState: null });
     } else {
       setJob({ phase: "rendering", jobId: d.id, jobType: d.type ?? null, projectId: d.projectId ?? null, contentPreflightId: d.contentPreflightId ?? null, sceneRerollCapability: d.sceneRerollCapability ?? null, currentStep: d.currentStep, progress: d.progress ?? 0, queuePosition: d.queuePosition ?? null, errorMessage: null, errorCode: null, errorProvider: null, output: null, mediaState: null });
     }
@@ -338,7 +342,15 @@ export function useV2Job(p: V2Project) {
         : p.activeJobId;
     let stored: string | null = null;
     try { stored = browserStorage()?.getItem(storageKey(p.projectId)) ?? null; } catch {}
-    const nextJobId = serverJobId ?? stored;
+    // A failed Export transitions the project back to `post`, but its exact editor
+    // snapshot remains on activeExportJobId. Prefer that row only when this browser's
+    // durable pointer still names it. Once the user returns to Post we repoint storage
+    // to the source preview, so a later/newer create job cannot be shadowed by an old export.
+    const failedExportResumeId = p.projectStatus === "post"
+      && stored === p.activeExportJobId
+      ? stored
+      : null;
+    const nextJobId = failedExportResumeId ?? serverJobId ?? stored;
     if (nextJobId && (nextJobId !== jobIdRef.current || pollRef.current === null)) {
       // Resume candidates can predate the current POST or belong to a different
       // operation. Polling is safe, but only matching key+fingerprint evidence in
@@ -703,15 +715,28 @@ export function useV2Job(p: V2Project) {
     startPolling(jobId);
   }, [p.projectId, startPolling]);
 
-  /** Return from a failed Export to the exact preview source that Export attempted.
+  /** Return from a failed Export to its exact submitted editor snapshot when available.
+   * Legacy exports fall back to polling the preview source that Export attempted.
    * `p.activeJobId` can still be the pre-edit project value in this mounted client after an
    * in-place B-roll re-render was adopted, so it is only a legacy fallback. */
   const resumeFailedExportPreview = useCallback(() => {
+    const restored = restorePostExportEditorState(
+      job,
+      lastPreviewJobIdRef.current ?? p.activeJobId,
+    );
+    if (restored?.jobId) {
+      stopPolling();
+      jobIdRef.current = restored.jobId;
+      lastPreviewJobIdRef.current = restored.jobId;
+      try { browserStorage()?.setItem(storageKey(p.projectId), restored.jobId); } catch {}
+      setJob(restored);
+      return;
+    }
     const previewJobId = lastPreviewJobIdRef.current ?? p.activeJobId;
     if (!previewJobId) return;
     try { browserStorage()?.setItem(storageKey(p.projectId), previewJobId); } catch {}
     startPolling(previewJobId);
-  }, [p.activeJobId, p.projectId, startPolling]);
+  }, [job, p.activeJobId, p.projectId, startPolling, stopPolling]);
 
   /** Restore the exact native editor state captured by a completed export. The active
    * source id moves back to the preview job for future edits/exports, while localStorage

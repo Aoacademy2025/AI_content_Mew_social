@@ -36,6 +36,12 @@ export type EditorExportSnapshot = EditorExportDraft & {
   preview: VideoJobPreviewData;
 };
 
+/** The narrow, validated subset of a failed export input that the editor may resume. */
+export type FailedEditorExportRecovery = {
+  sourceJobId: string;
+  editSnapshot: EditorExportSnapshot;
+};
+
 const CARD_LENS = new Set<EditorExportCardLen>(["sentence", "1", "2", "3", "4"]);
 const FONT_WEIGHTS = new Set([400, 600, 900]);
 
@@ -203,4 +209,25 @@ export function parseEditorExportSnapshot(value: unknown): EditorExportSnapshot 
       audioDurationMs: preview.audioDurationMs as number,
     },
   };
+}
+
+/**
+ * Read the durable editor state from a terminal export's private input payload.
+ * Callers expose only this validated projection; the full input can contain render config
+ * and must never be returned by the job polling API.
+ */
+export function parseFailedEditorExportRecovery(
+  inputJson: string | null | undefined,
+): FailedEditorExportRecovery | null {
+  if (!inputJson) return null;
+  try {
+    const input = record(JSON.parse(inputJson));
+    if (!input || input.mode !== "export") return null;
+    const sourceJobId = boundedString(input.sourceJobId, 120);
+    const editSnapshot = parseEditorExportSnapshot(input.editSnapshot);
+    if (!sourceJobId || !editSnapshot) return null;
+    return { sourceJobId, editSnapshot };
+  } catch {
+    return null;
+  }
 }

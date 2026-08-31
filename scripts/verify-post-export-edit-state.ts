@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { verifyPostExportEditStateResume } from "./editor-project-job-runtime-harness";
 import {
   createEditorExportSnapshot,
+  parseFailedEditorExportRecovery,
   parseEditorExportSnapshot,
 } from "../src/lib/editor-export-snapshot";
 import { restorePostExportEditorState } from "../src/app/(dashboard)/video-editor/_v2/export-edit-state";
@@ -47,6 +48,30 @@ function verifyDurableSnapshotContract(): void {
     snapshot,
     "the output reader preserves the snapshot after a durable JSON round trip",
   );
+  const failedRecovery = parseFailedEditorExportRecovery(JSON.stringify({
+    mode: "export",
+    sourceJobId: "source-preview-job",
+    editSnapshot: snapshot,
+    subtitleOverlayConfig: { privateRenderConfig: true },
+  }));
+  assert.deepEqual(failedRecovery, {
+    sourceJobId: "source-preview-job",
+    editSnapshot: snapshot,
+  }, "failed export input is reduced to the validated recovery projection");
+  assert.equal(
+    "subtitleOverlayConfig" in (failedRecovery ?? {}),
+    false,
+    "failed export recovery never exposes the private render input",
+  );
+  assert.equal(
+    parseFailedEditorExportRecovery(JSON.stringify({
+      mode: "export",
+      sourceJobId: "source-preview-job",
+      editSnapshot: { version: 999 },
+    })),
+    null,
+    "malformed failed export snapshots fail closed",
+  );
   const restored = restorePostExportEditorState({
     phase: "done",
     jobId: "export-job",
@@ -75,6 +100,44 @@ function verifyDurableSnapshotContract(): void {
     null,
     "rows without a snapshot remain on the legacy polling path",
   );
+
+  const failedRestored = restorePostExportEditorState({
+    phase: "failed",
+    jobId: "failed-export-job",
+    jobType: "export",
+    projectId: "project",
+    currentStep: "burn",
+    progress: 80,
+    queuePosition: null,
+    errorMessage: "export failed",
+    errorCode: "export_failed",
+    errorProvider: null,
+    output: null,
+    mediaState: null,
+    failedExportRecovery: {
+      sourceJobId: "source-preview-job",
+      editSnapshot: {
+        ...snapshot,
+        captions: [
+          { text: "แต่กลางวันบ้านยังมีตู้เย็น", startMs: 0, endMs: 500 },
+          { text: "ปั๊มน้ำ เราเตอร์", startMs: 500, endMs: 1_000 },
+        ],
+        preview: {
+          ...snapshot.preview,
+          captions: [
+            { text: "แต่กลางวันบ้านยังมีตู้เย็น", startMs: 0, endMs: 500 },
+            { text: "ปั๊มน้ำ เราเตอร์", startMs: 500, endMs: 1_000 },
+          ],
+        },
+      },
+    },
+  } as unknown as Parameters<typeof restorePostExportEditorState>[0], null);
+  assert.equal(failedRestored?.jobId, "source-preview-job");
+  assert.deepEqual(
+    failedRestored?.output?.preview?.captions.map((caption) => caption.text),
+    ["แต่กลางวันบ้านยังมีตู้เย็น", "ปั๊มน้ำ เราเตอร์"],
+    "failed export recovery restores the submitted caption cards instead of the stale source split",
+  );
   assert.equal(
     createEditorExportSnapshot({
       draft: { ...snapshot, subtitleConfig: { preset: "missing-required-fields" } },
@@ -90,7 +153,9 @@ function verifyDurableSnapshotContract(): void {
     ["src/app/api/videos/jobs/route.ts", "createEditorExportSnapshot({"],
     ["src/lib/mcp/orchestrator.ts", "editSnapshot: input.editSnapshot"],
     ["src/lib/mcp/video-job.ts", "parseEditorExportSnapshot(raw.editSnapshot)"],
+    ["src/app/api/videos/jobs/[id]/route.ts", "parseFailedEditorExportRecovery("],
     ["src/app/(dashboard)/video-editor/_v2/useV2Job.ts", "restorePostExportEditorState(job, p.activeJobId)"],
+    ["src/app/(dashboard)/video-editor/_v2/useV2Job.ts", "failedExportRecovery: d.failedExportRecovery ?? null"],
   ] as const;
   for (const [file, marker] of wires) {
     assert.match(readFileSync(file, "utf8"), new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));

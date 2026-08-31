@@ -14,19 +14,21 @@ import { refundVideoJobTerminalRenderReservations } from "@/lib/render/reservati
 import { parseProjectVisualContext } from "@/lib/project-look.server";
 import { refundVideoJobFunding } from "@/lib/mcp/video-job-funding";
 import { resolveSceneRerollCapability } from "@/lib/scene-reroll-capability";
+import { parseFailedEditorExportRecovery } from "@/lib/editor-export-snapshot";
 
 // GET /api/videos/jobs/[id] — Editor v2 background-render status poll (owner only).
-// Output is included only when done, parsed through the versioned reader (v1 + v2).
+// Output is included only when done. A terminal failed/canceled Export may additionally
+// return a validated editor recovery projection, never its full private input payload.
 export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
     const { id } = await ctx.params;
-    // PERF-APP-2: project only what this poll returns/needs. NEVER select `inputJson` (the
-    // full render config) — it was hydrated on every 5s/15s poll for nothing. `outputJson`
-    // is null until the job is done (written once by finishJob), so selecting it costs ~0
-    // pre-done and is decoded only when status === "done".
+    // PERF-APP-2: project only what the hot poll returns/needs. NEVER select `inputJson`
+    // here — the full render config was previously hydrated on every 5s/15s poll for
+    // nothing. A terminal failed/canceled Export does one narrow second read below so the
+    // API can project its validated editor snapshot without exposing the private input.
     const job = await prisma.videoJob.findFirst({
       where: { id, userId: user.id },
       select: {
@@ -62,6 +64,13 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
         : null;
 
     const output = job.status === "done" ? parseVideoJobOutput(job.outputJson) : null;
+    const failedExportRecovery = job.type === "export"
+      && (job.status === "failed" || job.status === "canceled")
+      ? parseFailedEditorExportRecovery((await prisma.videoJob.findFirst({
+          where: { id: job.id, userId: user.id, type: "export", status: job.status },
+          select: { inputJson: true },
+        }))?.inputJson)
+      : null;
     const projectVisualContext = parseProjectVisualContext(job.projectVisualContextJson);
     const mediaState = job.status === "done"
       ? await resolveProjectMediaState({
@@ -91,6 +100,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
       idempotencyFingerprint: job.idempotencyFingerprint,
       createdAt: job.createdAt.toISOString(),
       queuePosition,
+      ...(failedExportRecovery ? { failedExportRecovery } : {}),
       ...(job.status === "done" ? { output, mediaState } : {}),
     });
   } catch (err) {
