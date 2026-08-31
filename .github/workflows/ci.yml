@@ -74,6 +74,8 @@ jobs:
         run: npm run verify:deploy-maintenance
       - name: Verify gallery touch actions (#328)
         run: npm run verify:gallery-touch
+      - name: Verify Gallery project rename
+        run: npm run verify:gallery-project-rename
 
       - name: Verify first-clip path
         run: npm run verify:first-clip-path

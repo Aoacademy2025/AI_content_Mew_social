@@ -8,9 +8,13 @@ import {
 } from "@/lib/editor-project-brand-asset.server";
 import { observeEditorProjectBrandAssetVerificationStep } from "@/lib/editor-project-brand-asset-verification.server";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
+import { sanitizeEditorProjectTitle } from "@/lib/editor-project-title";
 
-export const DEFAULT_EDITOR_PROJECT_TITLE = "New Project";
-export const MAX_EDITOR_PROJECT_TITLE_LENGTH = 80;
+export {
+  DEFAULT_EDITOR_PROJECT_TITLE,
+  MAX_EDITOR_PROJECT_TITLE_LENGTH,
+  sanitizeEditorProjectTitle,
+} from "@/lib/editor-project-title";
 export const MAX_EDITOR_PROJECT_DRAFT_BYTES = 2 * 1024 * 1024;
 export const MAX_EDITOR_PROJECT_DRAFT_REVISION = 2_147_483_647;
 
@@ -18,12 +22,6 @@ export const EDITOR_PROJECT_STATUSES = ["draft", "rendering", "post", "exporting
 export type EditorProjectStatus = (typeof EDITOR_PROJECT_STATUSES)[number];
 
 type ProjectRow = Awaited<ReturnType<typeof prisma.editorProject.findFirst>>;
-
-export function sanitizeEditorProjectTitle(value: unknown): string {
-  const raw = typeof value === "string" ? value.trim() : "";
-  const title = raw || DEFAULT_EDITOR_PROJECT_TITLE;
-  return title.slice(0, MAX_EDITOR_PROJECT_TITLE_LENGTH);
-}
 
 export function normalizeEditorProjectStatus(value: unknown): EditorProjectStatus | null {
   if (typeof value !== "string") return null;
