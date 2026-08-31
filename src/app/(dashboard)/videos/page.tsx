@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useId, useRef } from "react";
 import {
   Loader2, Play, XCircle, Trash2, Download,
   Plus, Filter, ArrowUpDown, HardDrive, Cpu, Film,
-  RefreshCw, Clock, FolderOpen, Pencil,
+  RefreshCw, Clock, FolderOpen, Pencil, TextCursorInput, Check, X,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -23,6 +23,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { resolveVideoDisplayName, resolveVideoDownloadFilename } from "@/lib/video-export-name";
+import {
+  DEFAULT_EDITOR_PROJECT_TITLE,
+  MAX_EDITOR_PROJECT_TITLE_LENGTH,
+  validateEditorProjectRename,
+} from "@/lib/editor-project-title";
 
 interface VideoItem {
   id: string;
@@ -41,7 +46,7 @@ interface VideoItem {
   createdAt: string;
   expiresAt: string | null;
   content?: { headline: string | null } | null;
-  project?: { title: string } | null;
+  project?: { id: string; title: string } | null;
 }
 
 type NavigatorConnection = {
@@ -113,6 +118,7 @@ export default function VideosGalleryPage() {
   const [deleteProjectId, setDeleteProjectId] = useState<string | null>(null);
   const [sortLatest, setSortLatest] = useState(true);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [renameSavingIds, setRenameSavingIds] = useState<Set<string>>(() => new Set());
 
   const closePreview = useCallback(() => {
     setPreviewUrl(null);
@@ -184,6 +190,58 @@ export default function VideosGalleryPage() {
       toast.success("ลบฉบับร่างแล้ว");
     } catch { toast.error("ลบฉบับร่างไม่สำเร็จ"); }
     finally { setDeleteProjectId(null); }
+  }
+
+  const updateGalleryProjectTitle = useCallback((projectId: string, title: string) => {
+    setProjects(current => current.map(project => (
+      project.id === projectId ? { ...project, title } : project
+    )));
+    setVideos(current => current.map(video => (
+      video.project?.id === projectId
+        ? { ...video, project: { ...video.project, title } }
+        : video
+    )));
+  }, []);
+
+  async function handleRenameProject(projectId: string, requestedTitle: string): Promise<string> {
+    const validation = validateEditorProjectRename(requestedTitle);
+    if (!validation.ok) throw new Error(validation.message);
+    const { title } = validation;
+    const previousTitle = projects.find(project => project.id === projectId)?.title
+      ?? videos.find(video => video.project?.id === projectId)?.project?.title
+      ?? DEFAULT_EDITOR_PROJECT_TITLE;
+
+    setRenameSavingIds(current => {
+      const next = new Set(current);
+      next.add(projectId);
+      return next;
+    });
+    updateGalleryProjectTitle(projectId, title);
+    try {
+      const response = await fetch(`/api/editor-projects/${encodeURIComponent(projectId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error("เปลี่ยนชื่อไม่สำเร็จ กรุณาลองใหม่");
+      const persisted = validateEditorProjectRename(payload?.project?.title);
+      if (!persisted.ok) throw new Error("ระบบตอบกลับชื่อโปรเจกต์ไม่ถูกต้อง กรุณาลองใหม่");
+      updateGalleryProjectTitle(projectId, persisted.title);
+      toast.success("เปลี่ยนชื่อโปรเจกต์แล้ว");
+      return persisted.title;
+    } catch (error) {
+      updateGalleryProjectTitle(projectId, previousTitle);
+      const message = error instanceof Error ? error.message : "เปลี่ยนชื่อไม่สำเร็จ กรุณาลองใหม่";
+      toast.error(message);
+      throw error;
+    } finally {
+      setRenameSavingIds(current => {
+        const next = new Set(current);
+        next.delete(projectId);
+        return next;
+      });
+    }
   }
 
   const sorted = videos
@@ -314,6 +372,8 @@ export default function VideosGalleryPage() {
                     onDelete={() => setDeleteProjectId(project.id)}
                     onDeleteConfirm={() => handleDeleteProject(project.id)}
                     onDeleteCancel={() => setDeleteProjectId(null)}
+                    renameSaving={renameSavingIds.has(project.id)}
+                    onRename={title => handleRenameProject(project.id, title)}
                   />
                 ))}
                 <Link href="/video-editor?ui=v2">
@@ -357,6 +417,10 @@ export default function VideosGalleryPage() {
                   deleteConfirm={deleteId === video.id}
                   onDeleteConfirm={() => handleDelete(video.id)}
                   onDeleteCancel={() => setDeleteId(null)}
+                  renameSaving={video.project ? renameSavingIds.has(video.project.id) : false}
+                  onRename={video.project
+                    ? title => handleRenameProject(video.project!.id, title)
+                    : undefined}
                 />
               ))}
 
@@ -444,23 +508,26 @@ export default function VideosGalleryPage() {
 
 /* ── Project Card ── */
 function ProjectCard({
-  project, onDelete, deleteConfirm, onDeleteConfirm, onDeleteCancel,
+  project, onDelete, deleteConfirm, onDeleteConfirm, onDeleteCancel, onRename, renameSaving,
 }: {
   project: ProjectMenuItem;
   onDelete: () => void;
   deleteConfirm: boolean;
   onDeleteConfirm: () => void;
   onDeleteCancel: () => void;
+  onRename: (title: string) => Promise<string>;
+  renameSaving: boolean;
 }) {
   const updatedAt = project.lastOpenedAt || project.updatedAt || project.createdAt;
   const editHref = `/video-editor?ui=v2&projectId=${encodeURIComponent(project.id)}`;
   const router = useRouter();
+  const [renaming, setRenaming] = useState(false);
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={() => router.push(editHref)}
-      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); router.push(editHref); } }}
+      onClick={() => { if (!renaming) router.push(editHref); }}
+      onKeyDown={e => { if (!renaming && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); router.push(editHref); } }}
       className="group relative aspect-3/4 cursor-pointer overflow-hidden rounded-2xl transition-all hover:scale-[1.02] hover:shadow-xl"
       style={{ background: "var(--ui-card-bg-2)", border: "1px solid var(--ui-card-border)" }}
     >
@@ -492,8 +559,19 @@ function ProjectCard({
         </div>
       </div>
 
+      {renaming && (
+        <div className="absolute inset-2 z-30 flex items-end" onClick={e => e.stopPropagation()}>
+          <InlineProjectRename
+            title={project.title || DEFAULT_EDITOR_PROJECT_TITLE}
+            saving={renameSaving}
+            onSave={onRename}
+            onCancel={() => setRenaming(false)}
+          />
+        </div>
+      )}
+
       {/* Desktop: hover overlay (pointer devices only). Touch devices get the always-visible action row below. */}
-      <div className="absolute inset-0 hidden items-center justify-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 md:flex"
+      <div className={cn("absolute inset-0 hidden items-center justify-center gap-2 opacity-0 transition-opacity group-hover:opacity-100 md:flex", renaming && "pointer-events-none")}
         style={{ background: "rgba(0,0,0,0.54)" }} onClick={e => e.stopPropagation()}>
         <Link href={editHref}
           className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110"
@@ -501,6 +579,17 @@ function ProjectCard({
           title="เปิดฉบับร่าง">
           <Pencil className="h-4 w-4" />
         </Link>
+        <button
+          type="button"
+          onClick={() => setRenaming(true)}
+          disabled={renameSaving}
+          aria-label="เปลี่ยนชื่อโปรเจกต์"
+          className="flex h-10 w-10 items-center justify-center rounded-full text-white transition-all hover:scale-110 disabled:cursor-wait disabled:opacity-50"
+          style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)" }}
+          title="เปลี่ยนชื่อโปรเจกต์"
+        >
+          <TextCursorInput className="h-4 w-4" />
+        </button>
         {deleteConfirm ? (
           <div className="flex items-center gap-1.5 rounded-xl px-3 py-1.5"
             style={{ background: "rgba(0,0,0,0.8)", border: `1px solid ${STATUS_DANGER}66` }}>
@@ -520,7 +609,8 @@ function ProjectCard({
 
       {/* Touch: always-visible action row (tap on the card itself opens the draft). */}
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 px-2 pb-2 md:hidden"
-        onClick={e => e.stopPropagation()}>
+        onClick={e => e.stopPropagation()}
+        style={renaming ? { pointerEvents: "none", opacity: 0 } : undefined}>
         {deleteConfirm ? (
           <div className="flex items-center gap-2 rounded-xl px-3 py-2"
             style={{ background: "rgba(0,0,0,0.85)", border: `1px solid ${STATUS_DANGER}66` }}>
@@ -529,11 +619,23 @@ function ProjectCard({
             <button onClick={onDeleteCancel} className="min-h-11 px-2 text-xs text-white/60">ยกเลิก</button>
           </div>
         ) : (
-          <button onClick={onDelete} aria-label="ลบฉบับร่าง"
-            className="flex h-11 w-11 items-center justify-center rounded-full text-white/80"
-            style={{ background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)" }}>
-            <Trash2 className="h-4 w-4" />
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => setRenaming(true)}
+              disabled={renameSaving}
+              aria-label="เปลี่ยนชื่อโปรเจกต์"
+              className="flex h-11 w-11 items-center justify-center rounded-full text-white/80 disabled:cursor-wait disabled:opacity-50"
+              style={{ background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)" }}
+            >
+              <TextCursorInput className="h-4 w-4" />
+            </button>
+            <button onClick={onDelete} aria-label="ลบฉบับร่าง"
+              className="flex h-11 w-11 items-center justify-center rounded-full text-white/80"
+              style={{ background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)" }}>
+              <Trash2 className="h-4 w-4" />
+            </button>
+          </>
         )}
       </div>
     </div>
@@ -543,6 +645,7 @@ function ProjectCard({
 /* ── Video Card ── */
 function VideoCard({
   video, daysLeft, onPreview, onDelete, deleteConfirm, onDeleteConfirm, onDeleteCancel,
+  onRename, renameSaving,
 }: {
   video: VideoItem;
   daysLeft: number | null;
@@ -551,6 +654,8 @@ function VideoCard({
   deleteConfirm: boolean;
   onDeleteConfirm: () => void;
   onDeleteCancel: () => void;
+  onRename?: (title: string) => Promise<string>;
+  renameSaving: boolean;
 }) {
   const isReady = video.status === "COMPLETED";
   const isRendering = video.status === "PROCESSING" || video.status === "PENDING";
@@ -568,6 +673,7 @@ function VideoCard({
   // A thumbnail file can be swept off disk while the record survives — fall back to the
   // gradient placeholder on load error instead of showing a broken-image icon.
   const [thumbFailed, setThumbFailed] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const showThumb = !!video.thumbnail && !thumbFailed;
 
   const canPreview = isReady && !!previewSrc;
@@ -575,8 +681,8 @@ function VideoCard({
     <div
       role={canPreview ? "button" : undefined}
       tabIndex={canPreview ? 0 : undefined}
-      onClick={canPreview ? onPreview : undefined}
-      onKeyDown={canPreview ? (e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPreview(); } }) : undefined}
+      onClick={canPreview && !renaming ? onPreview : undefined}
+      onKeyDown={canPreview && !renaming ? (e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onPreview(); } }) : undefined}
       className="group relative aspect-3/4 cursor-pointer overflow-hidden rounded-2xl transition-all hover:scale-[1.02] hover:shadow-xl"
       style={{ background: "var(--ui-card-bg-2)", border: "1px solid var(--ui-card-border)" }}
     >
@@ -668,9 +774,20 @@ function VideoCard({
         </div>
       </div>
 
+      {renaming && onRename && video.project && (
+        <div className="absolute inset-2 z-30 flex items-end" onClick={e => e.stopPropagation()}>
+          <InlineProjectRename
+            title={video.project.title || DEFAULT_EDITOR_PROJECT_TITLE}
+            saving={renameSaving}
+            onSave={onRename}
+            onCancel={() => setRenaming(false)}
+          />
+        </div>
+      )}
+
       {/* Desktop hover actions (pointer devices only). On touch the centred overlay caught the first tap and
           fired the Download anchor (#328) — phones get the bottom action row instead. */}
-      <div className="absolute inset-0 hidden items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity md:flex"
+      <div className={cn("absolute inset-0 hidden items-center justify-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity md:flex", renaming && "pointer-events-none")}
         style={{ background: "rgba(0,0,0,0.5)" }} onClick={e => e.stopPropagation()}>
         {isReady && previewSrc && (
           <>
@@ -696,6 +813,19 @@ function VideoCard({
             <RefreshCw className="h-3.5 w-3.5" /> ทำต่อ
           </Link>
         )}
+        {onRename && (
+          <button
+            type="button"
+            onClick={() => setRenaming(true)}
+            disabled={renameSaving}
+            aria-label="เปลี่ยนชื่อโปรเจกต์"
+            className="flex h-10 w-10 items-center justify-center rounded-full text-white/80 transition-all hover:scale-110 disabled:cursor-wait disabled:opacity-50"
+            style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)" }}
+            title="เปลี่ยนชื่อโปรเจกต์"
+          >
+            <TextCursorInput className="h-4 w-4" />
+          </button>
+        )}
         {deleteConfirm ? (
           <div className="flex items-center gap-1.5 rounded-xl px-3 py-1.5"
             style={{ background: "rgba(0,0,0,0.8)", border: `1px solid ${STATUS_DANGER}66` }}>
@@ -714,7 +844,8 @@ function VideoCard({
 
       {/* Touch: always-visible action row. Tap on the card = preview; download/delete are explicit. */}
       <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-1 px-2 pb-2 md:hidden"
-        onClick={e => e.stopPropagation()}>
+        onClick={e => e.stopPropagation()}
+        style={renaming ? { pointerEvents: "none", opacity: 0 } : undefined}>
         {isRendering && (
           <Link href={`/video-editor?resume=${video.id}`}
             className="flex min-h-11 items-center gap-1 rounded-full px-3 text-xs font-semibold text-white"
@@ -728,6 +859,18 @@ function VideoCard({
             style={{ background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)" }}>
             <Download className="h-4 w-4" />
           </a>
+        )}
+        {onRename && !deleteConfirm && (
+          <button
+            type="button"
+            onClick={() => setRenaming(true)}
+            disabled={renameSaving}
+            aria-label="เปลี่ยนชื่อโปรเจกต์"
+            className="flex h-11 w-11 items-center justify-center rounded-full text-white/80 disabled:cursor-wait disabled:opacity-50"
+            style={{ background: "rgba(0,0,0,0.55)", border: "1px solid rgba(255,255,255,0.2)" }}
+          >
+            <TextCursorInput className="h-4 w-4" />
+          </button>
         )}
         {deleteConfirm ? (
           <div className="flex items-center gap-2 rounded-xl px-3 py-2"
@@ -745,6 +888,104 @@ function VideoCard({
         )}
       </div>
     </div>
+  );
+}
+
+function InlineProjectRename({
+  title,
+  saving,
+  onSave,
+  onCancel,
+}: {
+  title: string;
+  saving: boolean;
+  onSave: (title: string) => Promise<string>;
+  onCancel: () => void;
+}) {
+  const [draftTitle, setDraftTitle] = useState(title);
+  const [error, setError] = useState<string | null>(null);
+  const errorId = useId();
+
+  function validate() {
+    const result = validateEditorProjectRename(draftTitle);
+    setError(result.ok ? null : result.message);
+    return result;
+  }
+
+  async function submitRename(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    const result = validate();
+    if (!result.ok || saving) return;
+    try {
+      await onSave(result.title);
+      onCancel();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "เปลี่ยนชื่อไม่สำเร็จ กรุณาลองใหม่");
+    }
+  }
+
+  function handleRenameKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    event.stopPropagation();
+    if (event.key === "Escape" && !saving) {
+      event.preventDefault();
+      onCancel();
+    }
+  }
+
+  return (
+    <form
+      onSubmit={submitRename}
+      className="w-full rounded-xl p-3 shadow-xl"
+      style={{ background: "var(--ui-card-bg)", border: `1px solid ${VIOLET_TILE_BORDER}` }}
+    >
+      <label className="block text-[10px] font-semibold" style={{ color: VIOLET_LIGHT }}>
+        ชื่อโปรเจกต์
+        <input
+          autoFocus
+          aria-label="ชื่อโปรเจกต์"
+          aria-describedby={error ? errorId : undefined}
+          value={draftTitle}
+          maxLength={MAX_EDITOR_PROJECT_TITLE_LENGTH}
+          disabled={saving}
+          onChange={event => { setDraftTitle(event.target.value); if (error) setError(null); }}
+          onBlur={validate}
+          onKeyDown={handleRenameKeyDown}
+          className="mt-1.5 min-h-11 w-full rounded-lg px-3 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-violet-400 disabled:cursor-wait disabled:opacity-70"
+          style={{
+            background: "var(--ui-input-bg)",
+            border: `1px solid ${error ? STATUS_DANGER : "var(--ui-card-border)"}`,
+            color: "var(--ui-text-primary)",
+          }}
+        />
+      </label>
+      {error && (
+        <p id={errorId} role="alert" className="mt-1.5 text-[10px] leading-snug" style={{ color: STATUS_DANGER }}>
+          {error}
+        </p>
+      )}
+      <div className="mt-2 flex justify-end gap-1.5">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={saving}
+          aria-label="ยกเลิกเปลี่ยนชื่อ"
+          className="flex h-11 w-11 items-center justify-center rounded-lg transition-colors disabled:cursor-wait disabled:opacity-50"
+          style={{ color: "var(--ui-text-muted)", border: "1px solid var(--ui-card-border)" }}
+        >
+          <X className="h-4 w-4" />
+        </button>
+        <button
+          type="submit"
+          disabled={saving}
+          aria-label={saving ? "กำลังบันทึกชื่อโปรเจกต์" : "บันทึกชื่อโปรเจกต์"}
+          className="flex h-11 min-w-11 items-center justify-center rounded-lg px-3 text-white transition-transform hover:scale-[1.03] disabled:cursor-wait disabled:opacity-70"
+          style={{ background: VIOLET }}
+        >
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+        </button>
+      </div>
+    </form>
   );
 }
 

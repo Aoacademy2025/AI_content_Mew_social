@@ -38,7 +38,7 @@ export async function GET() {
         createdAt: true,
         expiresAt: true,
         content: { select: { headline: true } },
-        project: { select: { title: true } },
+        project: { select: { id: true, title: true } },
       },
       orderBy: { createdAt: "desc" },
     });

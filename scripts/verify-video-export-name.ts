@@ -69,8 +69,8 @@ const videosApiSource = readFileSync(
 );
 assert.match(
   videosApiSource,
-  /project:\s*\{\s*select:\s*\{\s*title:\s*true\s*\}\s*\}/,
-  "Gallery API selects the linked project title",
+  /project:\s*\{\s*select:\s*\{\s*id:\s*true,\s*title:\s*true\s*\}\s*\}/,
+  "Gallery API selects the linked project id and title",
 );
 
 const gallerySource = readFileSync(
