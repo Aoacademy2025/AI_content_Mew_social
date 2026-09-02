@@ -277,7 +277,7 @@ export function BrandLibraryClient() {
     } finally { setBusy(null); }
   }
 
-  useEffect(() => { load().catch((error) => { setNotice({ tone: "error", text: error.message }); setLoading(false); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load().catch((error) => { setNotice({ tone: "error", text: error.message }); setLoading(false); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect -- `load()` is async and only sets state after its awaited fetch resolves/rejects; this is the standard fetch-on-mount pattern, not a synchronous cascading render
 
   const resumePendingBrandPreviewOperation = useCallback(async (
     operation: PendingBrandPreviewOperation,
@@ -316,6 +316,7 @@ export function BrandLibraryClient() {
     resumedOperationForUserRef.current = userId;
     const operation = readPendingBrandPreviewOperation(storage, userId);
     if (!operation) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrates React state from a browser-only external system (localStorage) to resume an interrupted preview/reroll after mount; the read cannot happen during render (guarded by loading/ref), so this is the effect's whole purpose
     setPendingRecoveryOperation(operation);
     if (operation.kind === "preview") {
       try {
