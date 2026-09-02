@@ -53,6 +53,7 @@
     "verify:support-ticket-remediation": "tsx scripts/verify-support-ticket-remediation.ts",
     "verify:brand-visual-count-refresh": "tsx scripts/verify-brand-visual-count-refresh.ts",
     "verify:style-pack-catalog": "tsx scripts/verify-style-pack-catalog.ts",
+    "verify:style-pack-apply": "tsx scripts/verify-style-pack-apply.ts",
     "verify:preserve-trial-on-convert": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-preserve-trial-on-convert.ts",
     "verify:first-clip-convert": "tsx scripts/verify-first-clip-convert.ts && tsx scripts/verify-plan-change.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-first-clip-convert-server.ts",
     "verify:first-clip-path": "tsx scripts/verify-first-clip-path.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-first-clip-path-server.ts",
