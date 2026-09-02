@@ -14,13 +14,16 @@ Charted 2026-09-02 from the `/brands` review (`docs/audits/2026-09-02-brands-rev
 - V1 catalog = 12 packs in two waves (7 on existing treatments now, 5 on new treatments after qualification) — `docs/plans/2026-09-02-brands-wave1-style-packs.md` §Catalog.
 - A pack also fixes pacing (ช้า / ปกติ / เร็ว) through existing hold/Ken Burns knobs; no new Remotion effects in V1 — wave-1 plan Task 5.
 - Team feedback and prod numbers that drove the above — audit §1–§3.
+- Render-time readers take the pack from the job's pinned project context first, then the Brand Revision recipe snapshot, never the live catalog — wave-1 plan Task 4 (`stockMoodForProject`, ADR 0005).
+- A malformed Stock Mood in a request is ignored, never a 400: validation stays, renders fail open — wave-1 plan ruling R20.
+- Content Preflight ranking rule re-balanced; measured 2026-09-03: `expert-clarity` first on 25 % of the fixture set (was 79 % of prod pins) — `docs/research/2026-09-03-content-preflight-distribution-benchmark.md`.
 
 ## Sessions (one decision each)
 
 | Order | Plan | Status |
 |---|---|---|
 | 0 | `2026-09-02-brands-wave0-make-it-work.md` — existing feature works as promised (quote truth, access, Step-2 preferences, copy, dead code, CI) | approved, execution deferred to next session |
-| 1 | `2026-09-02-brands-wave1-style-packs.md` — 7 packs, stock mood, pacing, music mood, editor pack picker, recommendation rebalance | approved 2026-09-02, executing on `mew/brands-wave1` |
+| 1 | `2026-09-02-brands-wave1-style-packs.md` — 7 packs, stock mood, pacing, music mood, editor pack picker, recommendation rebalance | executed 2026-09-03 on `mew/brands-wave1` (PR pending Mew review) |
 | 2 | `2026-09-02-brands-wave2-new-treatments.md` — 5 new Treatment Presets + qualification benchmark + pack activation | drafted, approval pending (paid benchmark needs Mew's explicit go) |
 
 ## Not yet specified
