@@ -16,10 +16,14 @@ import {
 } from "@/lib/broll-profile";
 import { parseRelevanceSpec, type RelevanceSpec } from "@/lib/relevance-spec";
 import {
+  applyBrollPreferenceToSearchQuery,
   applyBrollPreferenceToSearchQueries,
   appendBrollPreferenceToDirection,
   augmentRelevanceSpecWithBrollPreference,
   brollPreferencePromptBlock,
+  normalizeBrollRegionPreference,
+  normalizeBrollVisualStyle,
+  type ApplyQueryOptions,
   type BrollPreferenceInput,
 } from "@/lib/broll-preferences";
 
@@ -264,7 +268,52 @@ export async function POST(req: Request) {
   } = body ?? {};
   const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
   const preferenceBlock = brollPreferencePromptBlock(brollPreference);
-  const withBrollPreference = (queries: string[]) => applyBrollPreferenceToSearchQueries(queries, brollPreference);
+  const preferenceRegion = normalizeBrollRegionPreference(brollRegionPreference);
+  const preferenceStyle = normalizeBrollVisualStyle(brollVisualStyle);
+  // The region qualifier only fires on people/place queries by design, so a
+  // script whose queries are all objects or abstractions gets "เน้นไทย" with
+  // nothing visibly changing (F7 cause #4). Count what the region actually
+  // touched so that no-op is measurable instead of invisible.
+  let primaryQueryCount = 0;
+  let regionChangedAPrimaryQuery = false;
+  /** role "primary" = a query the creator should see their style in; role
+   *  "fallback" = a heuristic/safe list that only runs when the primaries gave
+   *  nothing, so the style token must not narrow it again. */
+  const withBrollPreference = (queries: string[], options: ApplyQueryOptions = { role: "primary" }) => {
+    const applied = applyBrollPreferenceToSearchQueries(queries, brollPreference, options);
+    if (options.role === "primary" && preferenceRegion) {
+      primaryQueryCount += applied.length;
+      // Region-only comparison: style always rewrites a primary query, so
+      // comparing the full preference would hide a region that did nothing.
+      if (!regionChangedAPrimaryQuery) {
+        regionChangedAPrimaryQuery = queries.some(
+          (query) =>
+            applyBrollPreferenceToSearchQuery(query, { brollRegionPreference })
+            !== applyBrollPreferenceToSearchQuery(query, {}),
+        );
+      }
+    }
+    return applied;
+  };
+  let preferenceNoopReported = false;
+  /** Fires at most once per request, and ONLY when a region preference was set
+   *  and changed nothing in the final primary query list. */
+  function reportBrollPreferenceNoop() {
+    if (preferenceNoopReported || !preferenceRegion || regionChangedAPrimaryQuery) return;
+    preferenceNoopReported = true;
+    console.log(
+      `[extract-keywords] preference-noop region=${preferenceRegion} style=${preferenceStyle ?? "auto"} queries=${primaryQueryCount}`,
+    );
+    // `userId` is authUser.id captured above — a hoisted function declaration
+    // cannot see the null-narrowing of `authUser` from the guard at the top.
+    recordTelemetryEvent(userId, {
+      name: "broll_preference_noop",
+      category: "quality",
+      source: "server",
+      status: preferenceRegion,
+      properties: { style: preferenceStyle ?? null, queryCount: primaryQueryCount },
+    }).catch(() => {});
+  }
 
   // Cap input size server-side to bound LLM cost. scenes[] is the worst amplifier:
   // extract-keywords re-embeds the full script in every 15-item batch (L4 cost guard).
@@ -500,7 +549,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
 
       for (let i = 0; i < batch.length; i++) {
         const alts = withBrollPreference(rawAlts[i] ?? []);
-        const fallbackAlts = withBrollPreference(fallbackQueriesForText(batch[i] ?? fullScript, b * BATCH_SIZE + i, 3, visualDirection, contentProfile));
+        const fallbackAlts = withBrollPreference(fallbackQueriesForText(batch[i] ?? fullScript, b * BATCH_SIZE + i, 3, visualDirection, contentProfile), { role: "fallback" });
 
         // Pick first valid keyword — in perSubtitle mode allow similar keywords
         // because adjacent subtitles can legitimately share visual themes
@@ -536,6 +585,7 @@ ${batch.map((s, i) => `${b * BATCH_SIZE + i + 1}. ${s}`).join("\n")}`;
     }
 
     console.log(`[extract-keywords] done: ${allKeywords.length}/${subtitleList.length}`);
+    reportBrollPreferenceNoop();
     return NextResponse.json({
       keywords: allKeywords,
       keywordAlternatives: allAlternatives,
@@ -666,7 +716,7 @@ Exactly ${manualClips} distinct queries.`;
 
     // รวม keyword ที่ LLM ให้ + เติม fallback ถ้าไม่ครบ แล้ว dedup ให้ครบ ${manualClips}
     const flatKws = withBrollPreference(parsedFlat.map(g => g[0]).filter(Boolean));
-    const fallbackPool = withBrollPreference(fallbackQueriesForText(cleanScript, 0, manualClips * 2, visualDirection, contentProfile));
+    const fallbackPool = withBrollPreference(fallbackQueriesForText(cleanScript, 0, manualClips * 2, visualDirection, contentProfile), { role: "fallback" });
     const merged = [...flatKws, ...fallbackPool];
     const picked = pickDistinctKeywords(merged, merged.map(k => [k]), manualClips);
     // เติมจาก fallback อีกถ้ายังไม่ครบ (กันเคส LLM ให้น้อย + fallback ซ้ำ)
@@ -678,6 +728,7 @@ Exactly ${manualClips} distinct queries.`;
     }
 
     console.log(`[extract-keywords] manual mode: ${picked.keywords.length} distinct keywords (target ${manualClips})`);
+    reportBrollPreferenceNoop();
     return NextResponse.json({
       keywords: picked.keywords,
       keywordAlternatives: picked.alternatives,
@@ -757,7 +808,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     const allKeywords: string[] = [];
 
     for (let i = 0; i < numScenes; i++) {
-      const sceneAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile));
+      const sceneAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile), { role: "fallback" });
       for (let j = 0; j < kwPerScene; j++) {
         const picked = sceneAlts[j % sceneAlts.length];
         allKeywords.push(picked);
@@ -771,6 +822,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     const sceneDurations = sceneList.map(s => Math.max(5, Math.ceil(s.replace(/\s/g, "").length / 3)));
 
     console.log(`[extract-keywords] heuristic fallback: ${allKeywords.length} keywords for ${numScenes} scenes (${kwPerScene}/scene)`);
+    reportBrollPreferenceNoop();
     return NextResponse.json({
       keywords: allKeywords,
       keywordAlternatives: allAlternatives,
@@ -808,7 +860,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
       // แต่ละ scene → kwPerScene keywords แยกกัน
       for (let i = 0; i < numScenes; i++) {
         const sceneAlts = withBrollPreference((parsed[i] ?? []).filter(Boolean));
-        const fallbackAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile));
+        const fallbackAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, Math.max(kwPerScene, 3), visualDirection, contentProfile), { role: "fallback" });
         // เติมถ้า LLM ให้มาน้อยกว่า kwPerScene
         let fallbackIndex = 0;
         while (sceneAlts.length < kwPerScene) {
@@ -832,7 +884,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     } else {
       for (let i = 0; i < numScenes; i++) {
         const alts = withBrollPreference((parsed[i] ?? []).filter(Boolean));
-        const fallbackAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, 3, visualDirection, contentProfile));
+        const fallbackAlts = withBrollPreference(fallbackQueriesForText(sceneList[i] ?? cleanScript, i, 3, visualDirection, contentProfile), { role: "fallback" });
 
         let picked = "";
         for (const alt of alts) {
@@ -859,6 +911,7 @@ ${sceneList.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
     const sceneDurations = sceneList.map(s => Math.max(5, Math.ceil(s.replace(/\s/g, "").length / 3)));
 
     console.log(`[extract-keywords] ${allKeywords.length} keywords for ${numScenes} scenes (${kwPerScene}/scene, need ${keywordsNeeded})`);
+    reportBrollPreferenceNoop();
     return NextResponse.json({
       keywords: allKeywords,
       keywordAlternatives: allAlternatives,

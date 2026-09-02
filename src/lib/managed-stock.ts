@@ -352,15 +352,25 @@ export function summarizeManagedStockTelemetry(
  * Cache key for one provider search. Includes every parameter that changes the
  * result set, so a deeper `perPage` or a different `minDuration` can never be
  * served a narrower cached answer.
+ *
+ * `variant` carries the B-roll preference (see `brollPreferenceCacheVariant`):
+ * without it, changing "คนและสถานที่"/"สไตล์ฟุตเทจสต็อก" and re-rendering inside
+ * the 24h window returned byte-identical clips (F7 cause #2). An EMPTY variant
+ * is appended as nothing at all, so every cache entry written before this
+ * change stays valid for the no-preference case — a deploy must not cold-start
+ * the whole cache into a burst of live Pexels/Pixabay calls.
  */
 export function stockSearchCacheKey(input: {
   query: string;
   perPage: number;
   minDuration: number;
   page?: number;
+  variant?: string;
 }): string {
   const query = input.query.trim().toLowerCase().replace(/\s+/g, " ");
-  return `${query}|pp=${Math.trunc(input.perPage)}|md=${Math.trunc(input.minDuration)}|p=${Math.trunc(input.page ?? 1)}`;
+  const base = `${query}|pp=${Math.trunc(input.perPage)}|md=${Math.trunc(input.minDuration)}|p=${Math.trunc(input.page ?? 1)}`;
+  const variant = typeof input.variant === "string" ? input.variant.trim() : "";
+  return variant ? `${base}|v=${variant}` : base;
 }
 
 export function stockSearchCacheExpiry(nowMs: number): Date {

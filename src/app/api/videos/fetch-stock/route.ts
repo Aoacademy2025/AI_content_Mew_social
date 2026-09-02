@@ -78,7 +78,9 @@ import {
 import { parseAutoMixWeights } from "@/lib/automix-weights";
 import {
   applyBrollPreferenceToSearchQueries,
+  brollPreferenceCacheVariant,
   brollPreferenceInstruction,
+  type ApplyQueryOptions,
   type BrollPreferenceInput,
 } from "@/lib/broll-preferences";
 import {
@@ -1074,8 +1076,15 @@ export async function POST(req: Request) {
   // Beat assets are reused outside this count. Ignored unless it is a sane int 0–60.
   const maxAiImages = parseAutoMixReceiptImageCeiling(maxAiImagesRaw);
   const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
-  const withBrollPreference = (queries: string[]) => applyBrollPreferenceToSearchQueries(queries, brollPreference);
+  // role "primary" = the queries the creator should see their style in; role
+  // "fallback" = the widening/safety-net ladder that only runs when the
+  // primaries came back empty, so the style token must NOT narrow it again.
+  const withBrollPreference = (queries: string[], options: ApplyQueryOptions = { role: "primary" }) =>
+    applyBrollPreferenceToSearchQueries(queries, brollPreference, options);
   const preferenceInstruction = brollPreferenceInstruction(brollPreference);
+  // Discriminates the managed-stock 24h cache so two different Step-2
+  // preferences can never be served each other's cached clips (F7 cause #2).
+  const stockCacheVariant = brollPreferenceCacheVariant(brollPreference);
   const telemetryPipelineRunId = typeof pipelineRunId === "string" && pipelineRunId.trim()
     ? pipelineRunId.trim().slice(0, 120)
     : null;
@@ -1904,7 +1913,7 @@ export async function POST(req: Request) {
     params: { query: string; perPage: number; minDuration: number },
     run: () => Promise<T[]>,
   ): Promise<T[]> {
-    const cacheParams = { provider, ...params };
+    const cacheParams = { provider, ...params, variant: stockCacheVariant };
     const cached = await readStockSearchCache<T>(cacheParams);
     if (cached) {
       managedStats[provider].cacheHits++;
@@ -3068,7 +3077,7 @@ export async function POST(req: Request) {
       words.slice(0, 2).join(" "),
       words[0],
       words[words.length - 1],
-    ]).filter((query, index, arr) => query && query !== keyword && arr.indexOf(query) === index);
+    ], { role: "fallback" }).filter((query, index, arr) => query && query !== keyword && arr.indexOf(query) === index);
 
     for (const query of queries) {
       try {
@@ -3131,12 +3140,16 @@ export async function POST(req: Request) {
     async (keyword, ki): Promise<CandidateVideo[]> => {
       // Build list of queries to try: alternatives first, then broad fallbacks
       const alts = keywordAlternatives?.[ki] ?? [];
-      const allQueriesToTry = withBrollPreference([
-        ...alts.filter(Boolean),
-        keyword,
-        keyword.split(" ").slice(0, 2).join(" "),
-        keyword.split(" ")[0],
-      ]).filter((q, idx, arr) => q && arr.indexOf(q) === idx); // deduplicate
+      const allQueriesToTry = [
+        // primary: the scene's own query and its alternatives carry the style
+        ...withBrollPreference([...alts.filter(Boolean), keyword], { role: "primary" }),
+        // fallback: the widened 2-word / 1-word retries exist to BROADEN the
+        // search when the primaries found nothing — keep them style-free.
+        ...withBrollPreference([
+          keyword.split(" ").slice(0, 2).join(" "),
+          keyword.split(" ")[0],
+        ], { role: "fallback" }),
+      ].filter((q, idx, arr) => q && arr.indexOf(q) === idx); // deduplicate
       // Managed key: primary + at most 2 alternates per keyword (ADR 0025 caps).
       // BYOK keeps the full alternative ladder unchanged.
       const queriesToTry = usesManagedStock ? capManagedQueriesForKeyword(allQueriesToTry) : allQueriesToTry;

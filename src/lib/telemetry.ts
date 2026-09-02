@@ -9,7 +9,10 @@ import {
 
 export type TelemetryInput = {
   name: string;
-  category?: "product" | "pipeline" | "performance" | "error";
+  // "quality" is server-only (e.g. broll_preference_noop): the client ingest
+  // path in normalizeTelemetry() deliberately still collapses anything it does
+  // not recognise to "product".
+  category?: "product" | "pipeline" | "performance" | "error" | "quality";
   source?: "client" | "server";
   sessionId?: string | null;
   path?: string | null;

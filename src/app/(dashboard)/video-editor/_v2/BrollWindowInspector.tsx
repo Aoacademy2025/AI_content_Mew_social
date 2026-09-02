@@ -32,6 +32,7 @@ import { useIsMobile } from "./useIsMobile";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { canMoveBrollBoundaryExactly } from "@/lib/broll-timeline-boundary";
 import { canGenerateHeroBrollFromSource } from "@/lib/broll-window-hero";
+import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
 import {
   clearPendingBrollSceneReroll,
@@ -262,6 +263,8 @@ export function BrollWindowInspector({
   sceneRerollEnabled,
   sceneRerollUnavailableReason,
   starterImageAllowance,
+  brollRegionPreference,
+  brollVisualStyle,
 }: {
   ed: PostPhaseEditor;
   videoJobId: string | null;
@@ -269,6 +272,8 @@ export function BrollWindowInspector({
   sceneRerollEnabled: boolean;
   sceneRerollUnavailableReason?: string;
   starterImageAllowance?: StarterImageAllowance;
+  brollRegionPreference?: BrollRegionPreference;
+  brollVisualStyle?: BrollVisualStyle;
 }) {
   const isMobile = useIsMobile();
   const index = ed.selectedWindow;
@@ -482,7 +487,9 @@ export function BrollWindowInspector({
       const res = await fetch("/api/videos/broll-window/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keyword: kw }),
+        // The project's Step-2 choices qualify this search exactly as they do
+        // the render pipeline's — otherwise a swapped window silently ignores them.
+        body: JSON.stringify({ keyword: kw, brollRegionPreference, brollVisualStyle }),
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) { setSearchError(d?.message ?? `ค้นหาไม่สำเร็จ (${res.status})`); return; }
