@@ -1,5 +1,6 @@
 import type { TreatmentPresetId } from "@/lib/brand-treatment-catalog";
 import type { VisualFormatId } from "@/lib/brand-visual-system";
+import type { StylePackId } from "@/lib/style-pack-catalog";
 import { parseTtsProvider, type TtsProvider } from "@/lib/tts-providers";
 
 export type BrandProfileSeed = {
@@ -23,6 +24,10 @@ export type BrandProfileSeed = {
     primaryVisualFormatId: VisualFormatId;
     treatmentPolicy: "adaptive" | "locked";
     lockedTreatmentPresetId: TreatmentPresetId | null;
+    /** Which one-tap look resolved this visual identity, if any (ADR 0058).
+     * Null is a look the creator authored themselves. */
+    stylePackId: StylePackId | null;
+    stylePackVersion: "v1.0.0" | null;
     languageMode: "defined" | "none";
     palette: string[];
     personality: string;
@@ -93,6 +98,8 @@ export function createBlankBrandProfileSeed(): BrandProfileSeed {
       primaryVisualFormatId: "clear-infographic",
       treatmentPolicy: "adaptive",
       lockedTreatmentPresetId: null,
+      stylePackId: null,
+      stylePackVersion: null,
       languageMode: "defined",
       palette: ["#2B2926", "#F5F1E8", "#A8A29E"],
       personality: "สมดุล ชัดเจน และปรับให้เข้ากับแบรนด์ได้",

@@ -15,6 +15,7 @@ import { DEFAULT_AUTO_MIX_PROVIDERS } from "@/app/(dashboard)/video-editor/_comp
 import type { MixPreset } from "@/app/(dashboard)/video-editor/_v2/mix-presets";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
+import type { MusicMood, PacingLevel } from "@/lib/style-pack-catalog";
 import {
   DEFAULT_EDITOR_LAYER_VISIBILITY,
   type EditorLayerVisibility,
@@ -52,6 +53,10 @@ export interface EditorDefaultDraft {
   brollRegionPreference: BrollRegionPreference;
   brollVisualStyle: BrollVisualStyle;
   logoOverlay?: LogoOverlayConfig;
+  /** Project-level defaults a pinned Brand Revision may carry (ADR 0058).
+   * Absent on a draft no Brand Revision has been applied to. */
+  pacing?: PacingLevel;
+  musicMoodDefault?: MusicMood | null;
   layerVisibility: EditorLayerVisibility;
 }
 
