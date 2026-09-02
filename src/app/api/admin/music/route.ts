@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
+import { parseMusicMoodInput } from "@/lib/music-mood";
 import path from "path";
 import fs from "fs";
 
@@ -29,9 +30,12 @@ export async function POST(req: Request) {
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
   const title = (formData.get("title") as string | null)?.trim();
+  const moodResult = parseMusicMoodInput(formData.get("mood"));
 
   if (!file) return NextResponse.json({ error: "file required" }, { status: 400 });
   if (!title) return NextResponse.json({ error: "title required" }, { status: 400 });
+  if (!moodResult.ok) return NextResponse.json({ error: "อารมณ์เพลงไม่ถูกต้อง" }, { status: 400 });
+  const mood = moodResult.provided ? moodResult.mood : null;
 
   const ext = file.name.split(".").pop()?.toLowerCase() ?? "mp3";
   const filename = `${Date.now()}-${title.replace(/[^a-z0-9]/gi, "_").toLowerCase()}.${ext}`;
@@ -41,6 +45,6 @@ export async function POST(req: Request) {
   const bytes = await file.arrayBuffer();
   fs.writeFileSync(path.join(musicDir, filename), Buffer.from(bytes));
 
-  const track = await prisma.music.create({ data: { title, filename } });
+  const track = await prisma.music.create({ data: { title, filename, mood } });
   return NextResponse.json({ track });
 }
