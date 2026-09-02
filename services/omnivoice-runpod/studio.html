@@ -96,8 +96,6 @@
       <textarea id="ttsText" placeholder="พิมพ์ข้อความที่ต้องการให้พูด…">สวัสดีครับ ยินดีต้อนรับสู่ Hero Voice</textarea></div>
     <div class="row">
       <div><label>เอนจิน</label><select id="ttsEngine"></select></div>
-      <div id="emotionField" style="display:none"><label>อารมณ์ (emotion)</label>
-        <input id="ttsEmotion" placeholder="เช่น happy, sad, angry, excited"></div>
     </div>
     <div class="row3">
       <div><label>เสียง</label><select id="ttsVoice"></select></div>
@@ -236,16 +234,7 @@ async function loadEngines() {
   try {
     const engs = await fetch(`${API}/engines`, {headers:headers()}).then(r=>r.json());
     sel.innerHTML = "";
-    window._engEmotion = {};
-    engs.forEach(e => {
-      sel.appendChild(new Option(`${e.name}${e.supports_emotion?" (มีอารมณ์)":""}`, e.id));
-      window._engEmotion[e.id] = e.supports_emotion;
-    });
-    sel.onchange = () => {
-      document.getElementById("emotionField").style.display =
-        window._engEmotion[sel.value] ? "block" : "none";
-    };
-    sel.onchange();
+    engs.forEach(e => sel.appendChild(new Option(e.name, e.id)));
   } catch(e){}
 }
 async function loadCredits() {
@@ -315,7 +304,6 @@ async function doTTS() {
   if (!text || !voice_id) return toast("กรอกข้อความ + เลือกเสียง", true);
   const body = { text, voice_id,
     engine: document.getElementById("ttsEngine").value || "omnivoice",
-    emotion: document.getElementById("ttsEmotion").value.trim() || null,
     language: document.getElementById("ttsLang").value || null,
     speed: parseFloat(document.getElementById("ttsSpeed").value),
     num_step: parseInt(document.getElementById("ttsStep").value),

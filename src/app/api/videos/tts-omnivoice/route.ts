@@ -35,6 +35,7 @@ import type { OmniVoiceCustomRef } from "@/lib/omnivoice";
 import {
   mergeSegmentTiming,
   pcmDurationMs,
+  splitScriptForTts,
 } from "@/lib/tts-timing";
 import { audioDurationLimitViolation, videoExpiryFor } from "@/lib/plan-limits";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
@@ -179,6 +180,15 @@ export async function POST(request: Request) {
     const voiceId = typeof body?.voiceId === "string" && body.voiceId.trim() ? body.voiceId.trim() : "voice_01";
     const preview = body?.preview === true;
     const studio = body?.studio === true;
+    // ภาษา: "th" (ค่าเริ่มต้น) หรือ "lo" (ลาว) — โหมดลาวใช้ได้กับ backend hostinger
+    // เท่านั้น (worker RunPod ของ prod ล็อกภาษาไทยไว้ใน image)
+    const language: "th" | "lo" = body?.language === "lo" ? "lo" : "th";
+    if (language === "lo" && config.backend === "runpod") {
+      return NextResponse.json(
+        { error: "เสียงภาษาลาวยังไม่รองรับบน backend ปัจจุบัน", retryable: false },
+        { status: 400 },
+      );
+    }
     const parsedSpeed = typeof body?.speed === "number" ? body.speed : Number(body?.speed);
     const speed = Number.isFinite(parsedSpeed) ? Math.min(3, Math.max(0.3, parsedSpeed)) : 1;
 
@@ -207,12 +217,16 @@ export async function POST(request: Request) {
     // Silent pre-TTS polish (fail-open): the polished text replaces fullText
     // BEFORE chunking, so audio, timing segments, and subtitles all derive
     // from the same string — the spoken==displayed iron rule is preserved.
-    const polish = await polishScriptForTts(
-      { id: user.id, geminiKey: user.geminiKey, plan: user.plan },
-      fullText,
-      planScriptCap,
-    );
-    fullText = polish.text;
+    // (ข้ามเมื่อเป็นภาษาลาว — polish/normalizer ทั้งชุดเป็นกติกาอ่านภาษาไทย
+    // เอาไปครอบข้อความลาวจะแปลงเลข/คำเป็นคำอ่านไทยผิดภาษา)
+    if (language === "th") {
+      const polish = await polishScriptForTts(
+        { id: user.id, geminiKey: user.geminiKey, plan: user.plan },
+        fullText,
+        planScriptCap,
+      );
+      fullText = polish.text;
+    }
 
     const deadline = Date.now() + config.requestBudgetMs;
     const quota = await checkMinuteQuota(user.id);
@@ -220,7 +234,16 @@ export async function POST(request: Request) {
       return NextResponse.json({ code: "QUOTA_MINUTES", message: quota.message }, { status: 409 });
     }
 
-    const chunks = splitHeroVoiceScriptForTts(fullText, config.maxChunkChars);
+    // ลาว: ตัดท่อนตามข้อความดิบ (ไม่ผ่าน normalizer ไทย) — server จัดการอ่านเองด้วย language=Lao
+    const chunks = language === "lo"
+      ? splitScriptForTts(fullText, config.maxChunkChars).map((chunk) => ({
+          text: chunk.text,
+          speechText: chunk.text,
+          risks: [],
+          startChar: chunk.startChar,
+          endChar: chunk.startChar + chunk.text.length,
+        }))
+      : splitHeroVoiceScriptForTts(fullText, config.maxChunkChars);
     const speechRisks = [...new Map(
       chunks.flatMap((chunk) => chunk.risks).map((risk) => [risk.code, risk]),
     ).values()];
@@ -286,6 +309,7 @@ export async function POST(request: Request) {
           speed,
           deadline,
           voiceRef,
+          language === "lo" ? "Lao" : undefined,
         );
         if (!result.ok) {
           await recordTelemetryEvent(user.id, {

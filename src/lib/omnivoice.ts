@@ -320,6 +320,10 @@ function runpodTtsInput(
     speed,
     num_step: config.numStep,
     mixed_language: true,
+    // Worker defaults both to true when omitted (contract.py) — sent explicitly so a
+    // future change to that default can't silently change app behavior.
+    transliterate_english: true,
+    normalize_numbers: true,
   };
   // เสียงโคลนของผู้ใช้ไม่มีอยู่ใน manifest ของ worker — ต้องส่ง reference ไปด้วย
   // ผ่านโหมด clone (contract v2) ไม่ใช่โหมด tts ที่อ้าง voice_id ของเสียง stock
@@ -585,6 +589,7 @@ async function callHostingerOmniVoice(
   speed: number,
   deadline: number,
   voiceRef?: OmniVoiceCustomRef,
+  language?: string,
 ): Promise<OmniVoiceCallResult> {
   const remainingMs = deadline - Date.now();
   if (remainingMs < 1_000) return { ok: false, status: 504, reason: "request budget exhausted" };
@@ -606,6 +611,9 @@ async function callHostingerOmniVoice(
             field("text", text),
             field("num_step", String(config.numStep)),
             field("speed", String(speed)),
+            // ภาษาต้องส่งให้ /clone ด้วย ไม่งั้นโมเดล auto-detect เอง แล้วสคริปต์
+            // อักษรลาวจะถูกอ่านสำเนียงไทย — เสียงโคลนไม่มีทางพูดลาวได้เลย
+            ...(language ? [field("language", language)] : []),
             enc(`--${boundary}\r\nContent-Disposition: form-data; name="ref_audio"; filename="ref.wav"\r\nContent-Type: audio/wav\r\n\r\n`),
             Buffer.from(voiceRef.audioBase64, "base64"),
             enc("\r\n"),
@@ -625,7 +633,10 @@ async function callHostingerOmniVoice(
       : await fetch(`${config.baseUrl}/tts`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...omnivoiceAuthHeaders(config.apiKey) },
-          body: JSON.stringify(omniVoiceTtsInput(config, voiceId, text, speed)),
+          body: JSON.stringify({
+            ...omniVoiceTtsInput(config, voiceId, text, speed),
+            ...(language ? { language } : {}),
+          }),
           cache: "no-store",
           signal: AbortSignal.timeout(remainingMs),
         });
@@ -663,10 +674,13 @@ export function callOmniVoice(
   speed: number,
   deadline: number,
   voiceRef?: OmniVoiceCustomRef,
+  // ชื่อภาษาแบบที่ server เข้าใจ ("Thai" | "English" | "Lao") — รองรับเฉพาะ
+  // backend hostinger (worker RunPod ของ prod ล็อกภาษาไว้ฝั่ง image); ไม่ส่ง = auto
+  language?: string,
 ): Promise<OmniVoiceCallResult> {
   return config.backend === "runpod"
     ? callRunpodOmniVoice(config, voiceId, text, speed, deadline, voiceRef)
-    : callHostingerOmniVoice(config, voiceId, text, speed, deadline, voiceRef);
+    : callHostingerOmniVoice(config, voiceId, text, speed, deadline, voiceRef, language);
 }
 
 function clampInteger(value: string | undefined, min: number, max: number, fallback: number): number {

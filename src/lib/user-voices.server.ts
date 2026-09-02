@@ -80,18 +80,21 @@ async function toReferenceWav(sourceBuffer: Buffer): Promise<Buffer> {
   }
 }
 
+/**
+ * ต้นทาง (server.py `/voices`) เว้น ref_text ว่าง = ถอดอัตโนมัติด้วย ASR — ทำแบบเดียวกัน
+ * ที่นี่ด้วย Gemini (มี key อยู่แล้วจากการเช็ค refCheck) แทนที่จะบังคับให้ผู้ใช้พิมพ์เอง
+ * fail-closed เฉพาะตอนไม่มีทั้งข้อความที่พิมพ์เองและ Gemini key/ถอดไม่สำเร็จ — เพราะ
+ * worker ต้องมี ref_text ไปด้วยเสมอ (จะเว้นว่างส่งต่อให้ worker ถอดเองไม่ได้ในเส้นทางนี้)
+ */
 export async function createUserVoice(input: {
   userId: string;
   name: string;
   refText: string;
   audio: Buffer;
+  geminiKey?: string;
 }) {
   const name = input.name.trim().slice(0, 60);
-  const refText = input.refText.replace(/\s+/g, " ").trim().slice(0, 500);
   if (!name) throw new UserVoiceError("ตั้งชื่อเสียงก่อน", 400);
-  if (refText.length < 8) {
-    throw new UserVoiceError("พิมพ์ข้อความที่พูดในไฟล์เสียง (ต้องตรงกับเสียงจริง)", 400);
-  }
   if (!input.audio.length) throw new UserVoiceError("ไม่พบไฟล์เสียง", 400);
   if (input.audio.length > MAX_UPLOAD_BYTES) {
     throw new UserVoiceError("ไฟล์เสียงใหญ่เกิน 15MB", 413);
@@ -110,12 +113,42 @@ export async function createUserVoice(input: {
     throw new UserVoiceError("เสียงตัวอย่างยาวเกิน 30 วินาที — ตัดช่วงที่พูดชัด ๆ มา 10-20 วินาทีพอ", 422);
   }
 
+  let refText = input.refText.replace(/\s+/g, " ").trim().slice(0, 500);
+  let autoTranscribed = false;
+  if (refText.length < 8) {
+    if (!input.geminiKey) {
+      throw new UserVoiceError("พิมพ์ข้อความที่พูดในไฟล์เสียง (ต้องตรงกับเสียงจริง) หรือตั้งค่า Gemini API key เพื่อให้ระบบถอดให้อัตโนมัติ", 400);
+    }
+    const heard = await transcribeReferenceAudio(input.geminiKey, wav);
+    if (!heard || heard.length < 8) {
+      throw new UserVoiceError("ถอดข้อความจากไฟล์เสียงอัตโนมัติไม่สำเร็จ — ลองพิมพ์ข้อความที่พูดในไฟล์เองแทน", 422);
+    }
+    refText = heard;
+    autoTranscribed = true;
+  }
+
   const voice = await prisma.userVoice.create({
     data: { userId: input.userId, name, refText, filename: "pending", durationMs },
   });
   const filename = `${voice.id}.wav`;
   fs.writeFileSync(path.join(userVoicesDir(), filename), wav);
-  return prisma.userVoice.update({ where: { id: voice.id }, data: { filename } });
+  const updated = await prisma.userVoice.update({ where: { id: voice.id }, data: { filename } });
+  return { voice: updated, autoTranscribed };
+}
+
+/** ถอดเสียงอ้างอิงด้วย Gemini — fail-open: คืน null เมื่อถอดไม่ได้ (ผู้เรียกตัดสินใจต่อเอง) */
+async function transcribeReferenceAudio(geminiKey: string, wav: Buffer): Promise<string | null> {
+  try {
+    const { geminiTranscribeShortAudio } = await import("@/lib/gemini");
+    const heard = (await geminiTranscribeShortAudio(geminiKey, {
+      mimeType: "audio/wav",
+      dataBase64: wav.toString("base64"),
+    })).trim();
+    return heard || null;
+  } catch (error) {
+    console.warn("[user-voices] auto-transcribe failed:", error instanceof Error ? error.message : error);
+    return null;
+  }
 }
 
 export async function listUserVoices(userId: string) {

@@ -11,10 +11,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     TTS_MODEL_DIR=/app/model \
     TTS_VOICES_DIR=/app/voices \
+    TTS_LAO_VOICES_DIR=/app/voices_lao \
     TTS_CUSTOM_VOICES_DIR=/tmp/hero-voice-custom \
     TTS_VOICES_DB=/tmp/hero-voice-custom/voices.db \
     TTS_VOICE_IDS="" \
-    TTS_BASE_SPEED=1.4 \
+    TTS_BASE_SPEED=1.0 \
     TTS_MAX_TEXT_LENGTH=800 \
     TTS_MAX_WAV_BYTES=7000000 \
     TTS_MAX_CONCURRENCY=1
@@ -45,8 +46,13 @@ RUN python -c "from huggingface_hub import snapshot_download; snapshot_download(
 
 COPY --chown=worker:worker \
     contract.py handler.py server.py text_utils.py voice_similarity.py voice_library.py credits.py engine_indextts.py \
+    asr_engine.py watermark.py gemini_translit.py audio_enhance.py \
     /app/
+COPY --chown=worker:worker data/ /app/data/
 COPY --chown=worker:worker assets/voices/ /app/voices/
-RUN python -c "import json, soundfile as sf; from pathlib import Path; root=Path('/app/voices'); manifest=json.loads((root/'voices.json').read_text()); expected=[f'voice_{n:02d}' for n in range(1,49)]; ids=[v['id'] for v in manifest]; assert ids == expected, f'invalid voice IDs: {ids}'; required=('desc','instruct','ref_audio','ref_text','preview_text'); bad_meta=[v.get('id') for v in manifest if any(not isinstance(v.get(key), str) or not v[key].strip() for key in required)]; assert not bad_meta, f'invalid voice metadata: {bad_meta}'; missing=[v['ref_audio'] for v in manifest if not (root/v['ref_audio']).is_file()]; assert not missing, f'missing voice assets: {missing}'; infos=[(v['ref_audio'], sf.info(root/v['ref_audio'])) for v in manifest]; bad=[name for name, info in infos if info.samplerate != 24000 or info.channels != 1 or not 1.5 <= info.duration <= 10]; assert not bad, f'invalid voice assets: {bad}'"
+COPY --chown=worker:worker assets/voices_lao/ /app/voices_lao/
+# Manifest ชุดหลักตอนนี้เหลือ 33 เสียง (upstream 10649b5 ตัดเสียงสำเนียงต่างชาติ + เสียงกระซิบออก
+# — ต้องตรงกับ _FOREIGN_ACCENT_IDS ใน server.py) ส่วนชุดลาวแยกอยู่ /app/voices_lao (lao_01..08)
+RUN python -c "import json, soundfile as sf; from pathlib import Path; root=Path('/app/voices'); manifest=json.loads((root/'voices.json').read_text()); removed={16,27,28,29,30,31,32,33,38,39,40,41,42,43,48}; expected=[f'voice_{n:02d}' for n in range(1,49) if n not in removed]; ids=[v['id'] for v in manifest]; assert ids == expected, f'invalid voice IDs: {ids}'; required=('desc','instruct','ref_audio','ref_text');bad_meta=[v.get('id') for v in manifest if any(not isinstance(v.get(key), str) or not v[key].strip() for key in required)]; assert not bad_meta, f'invalid voice metadata: {bad_meta}'; missing=[v['ref_audio'] for v in manifest if not (root/v['ref_audio']).is_file()]; assert not missing, f'missing voice assets: {missing}'; infos=[(v['ref_audio'], sf.info(root/v['ref_audio'])) for v in manifest]; bad=[name for name, info in infos if info.samplerate != 24000 or info.channels != 1 or not 1.5 <= info.duration <= 10]; assert not bad, f'invalid voice assets: {bad}'; lao=Path('/app/voices_lao'); lao_manifest=json.loads((lao/'voices.json').read_text()); lao_ids=[v['id'] for v in lao_manifest]; assert lao_ids == [f'lao_{n:02d}' for n in range(1,len(lao_ids)+1)] and lao_ids, f'invalid lao voice IDs: {lao_ids}';lao_missing=[v['ref_audio'] for v in lao_manifest if not (lao/v['ref_audio']).is_file()]; assert not lao_missing, f'missing lao assets: {lao_missing}'; lao_bad=[v['ref_audio'] for v in lao_manifest if (lambda i: i.samplerate != 24000 or i.channels != 1)(sf.info(lao/v['ref_audio']))]; assert not lao_bad, f'invalid lao assets: {lao_bad}'"
 
 CMD ["python", "-u", "/app/handler.py"]

@@ -130,6 +130,9 @@ artifacts/brand-visual-quality-gate/
 # Python bytecode (omnivoice-runpod worker)
 __pycache__/
 
+# Gemini transliteration cache (runtime-generated, machine-specific)
+services/omnivoice-runpod/translit_cache.json
+
 # Local ops metrics + stray TTS test outputs at repo root
 /.ops-metrics/
 /tts-*.wav

@@ -12,3 +12,17 @@ uvicorn[standard]==0.35.0
 python-multipart==0.0.20
 resemblyzer==0.1.4
 webrtcvad==2.0.10
+
+# แปลงตัวเลข/จำนวนเงินเป็นคำอ่านไทยก่อนอ่าน (ดู text_utils.normalize_thai_numbers)
+pythainlp
+# เรียก Gemini API ตอนเปิด TTS_GEMINI_TRANSLITERATE=1 (ดู gemini_translit.py) — เบามาก
+requests
+# ASR (ดู asr_engine.py) — CTranslate2 backend เร็วกว่า transformers Whisper เดิมมาก
+faster-whisper
+# Watermark เสียงที่ generate ทุกตัว (ดู watermark.py) — ปิดได้ด้วย env TTS_ENABLE_WATERMARK=0
+audioseal
+# ลดเสียงรบกวนพื้นหลัง/เพิ่มความชัด (ดู audio_enhance.py, /enhance endpoint, enhance_ref
+# param ใน /clone และ /voices) — ไม่ติดตั้งก็ยังใช้ endpoint อื่นได้ปกติ (fallback แบบไม่แก้เสียง)
+demucs
+# Dev/test — เทส text_utils.py ไม่ต้องมี GPU/โมเดล (ดู tests/test_text_utils.py)
+pytest

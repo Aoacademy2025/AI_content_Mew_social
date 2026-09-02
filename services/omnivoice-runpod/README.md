@@ -24,13 +24,28 @@ Stock TTS:
     "text": "ข้อความสำหรับสร้างเสียง",
     "speed": 1.0,
     "num_step": 32,
-    "mixed_language": true
+    "mixed_language": true,
+    "transliterate_english": true,
+    "normalize_numbers": true
   }
 }
 ```
 
 One-shot cloning uses `mode: "clone"` with `ref_audio_b64`, `ref_text`, and `text`.
 Reference audio is normalized to mono 24 kHz WAV and must be 3–15 seconds.
+
+Before generation, `text` is preprocessed (both modes, each default `true` — see
+`text_utils.py` and [UPSTREAM.md](UPSTREAM.md)):
+
+- `transliterate_english` — known English words/brand names are rewritten as Thai
+  transliteration (curated dict + bundled `wannaphong` dictionary; optional Gemini
+  API fallback for unknown words, off unless `TTS_GEMINI_TRANSLITERATE=1`)
+- `normalize_numbers` — numbers/currency/phone numbers are rewritten as Thai number
+  words (`pythainlp`)
+
+Every generated clip is also watermarked (AudioSeal, `watermark.py`) — disable with
+`TTS_ENABLE_WATERMARK=0`. ASR (`/transcribe`, auto `ref_text`) runs on faster-whisper
+(`asr_engine.py`).
 
 Successful output is a 24 kHz mono PCM WAV in `audio_base64` plus duration,
 generation time, worker version, catalog version, language, and effective `num_step`.

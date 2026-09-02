@@ -26,7 +26,7 @@ import { QuotaStatus } from "@/components/quota-status";
 // ─── Refactored sub-components & utilities ────────────────────────────────
 import type {
   StepStatus, StepState, Caption, StockVideo, PipelineData,
-  SubPreset, SubTextEffect, EditorDraft, StockSource, KieImageModel, AutoMixImageProvider,
+  SubPreset, SubTextEffect, EditorDraft, StockSource, KieImageModel, AutoMixImageProvider, OmniVoiceLanguage,
 } from "./_components/types";
 import { DEFAULT_STEPS, DEFAULT_AUTO_MIX_PROVIDERS } from "./_components/types";
 import { loadDrafts, saveDrafts, newDraftId } from "./_components/draft-helpers";
@@ -291,6 +291,7 @@ function LegacyVideoEditorPage() {
   const [voiceId, setVoiceId] = useState("");
   const [geminiVoiceName, setGeminiVoiceName] = useState("Aoede");
   const [omniVoiceId, setOmniVoiceId] = useState("voice_01");
+  const [omniLanguage, setOmniLanguage] = useState<OmniVoiceLanguage>("th");
 
   // ── Stock ─────────────────────────────────────────────────────────────
   const [stockSource, setStockSource] = useState<StockSource>("both");
@@ -938,6 +939,7 @@ function LegacyVideoEditorPage() {
     if (d.voiceId) setVoiceId(d.voiceId);
     if (d.geminiVoiceName) setGeminiVoiceName(d.geminiVoiceName);
     if (d.omniVoiceId) setOmniVoiceId(d.omniVoiceId);
+    if (d.omniLanguage === "lo" || d.omniLanguage === "th") setOmniLanguage(d.omniLanguage);
 
     // Video + captions (preview)
     setVideoUrl(d.renderedUrl ?? "");
@@ -1078,7 +1080,7 @@ function LegacyVideoEditorPage() {
         burnedVideoUrl: v.videoUrl || undefined,
         compositeUrl: v.avatarVideoUrl || undefined,
         galleryVideoId: v.id,
-        ttsProvider, voiceId, geminiVoiceName, omniVoiceId,
+        ttsProvider, voiceId, geminiVoiceName, omniVoiceId, omniLanguage,
         captions: caps,
         voiceUrl: v.audioUrl || undefined,
         audioDurationMs: cfg?.durationInFrames ? Math.round((cfg.durationInFrames / fps) * 1000) : undefined,
@@ -1128,7 +1130,7 @@ function LegacyVideoEditorPage() {
       galleryVideoId: pipe.current.galleryVideoId,
       compositeUrl: pipe.current.compositeUrl,
 
-      ttsProvider, voiceId, geminiVoiceName, omniVoiceId,
+      ttsProvider, voiceId, geminiVoiceName, omniVoiceId, omniLanguage,
       captions: captionsRef.current,
       voiceUrl: pipe.current.voiceUrl,
       audioDurationMs: pipe.current.audioDurationMs,
@@ -1637,7 +1639,7 @@ function LegacyVideoEditorPage() {
       setStep("tts", "running", "Hero Voice TTS...");
       const res = await fetch("/api/videos/tts-omnivoice", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: scriptOverride.trim() || preprocessScript(script), voiceId: omniVoiceId }),
+        body: JSON.stringify({ text: scriptOverride.trim() || preprocessScript(script), voiceId: omniVoiceId, language: omniLanguage }),
         signal: abortControllerRef.current?.signal,
       });
       const data = await res.json();
@@ -3004,7 +3006,7 @@ function LegacyVideoEditorPage() {
       runningRef.current = false; setRunning(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [script, ttsProvider, voiceId, geminiVoiceName, omniVoiceId, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, directCompositeMode, avatarTiming, avatarBookendSecs, avatarTailSecs, avatarTailGreenUrl, avatarGreenUrl, lastGenSig, userPlan, ensureKeysReady]);
+  }, [script, ttsProvider, voiceId, geminiVoiceName, omniVoiceId, omniLanguage, subFontFamily, subFontSize, subFontWeight, subColor, subAccentColor, subPreset, subEffect, subPosition, subShadow, subOutline, subOutlineSize, bgmEnabled, bgmFile, bgmVolume, stockSource, kieModel, autoMixProviders, targetClipCount, useAvatar, avatarId, avatarInputMode, avatarDirectUrl, directCompositeMode, avatarTiming, avatarBookendSecs, avatarTailSecs, avatarTailGreenUrl, avatarGreenUrl, lastGenSig, userPlan, ensureKeysReady]);
 
   // Resume pipeline from a specific step — reuses cached data for earlier steps
   async function runFrom(startStep: keyof StepState) {
@@ -4662,6 +4664,7 @@ function LegacyVideoEditorPage() {
               ttsProvider={ttsProvider} geminiVoiceName={geminiVoiceName} voiceId={voiceId}
               setTtsProvider={setTtsProvider} setGeminiVoiceName={setGeminiVoiceName} setVoiceId={setVoiceId}
               omniVoiceId={omniVoiceId} setOmniVoiceId={setOmniVoiceId}
+              omniLanguage={omniLanguage} setOmniLanguage={setOmniLanguage}
               bgmEnabled={bgmEnabled} bgmFile={bgmFile} bgmVolume={bgmVolume}
               setBgmEnabled={setBgmEnabled} setBgmFile={setBgmFile} setBgmVolume={setBgmVolume}
               bgmUploading={bgmUploading} setBgmUploading={setBgmUploading} systemTracks={systemTracks}

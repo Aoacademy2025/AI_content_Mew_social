@@ -143,6 +143,8 @@ export type SubTextEffect =
 
 // ─── Draft (saved to localStorage) ────────────────────────────────────────
 
+export type OmniVoiceLanguage = "th" | "lo";
+
 export interface EditorDraft {
   id: string;
   name: string;
@@ -164,6 +166,8 @@ export interface EditorDraft {
   voiceId: string;
   geminiVoiceName: string;
   omniVoiceId?: string;
+  /** ภาษาที่ให้ Hero Voice อ่าน — "lo" ข้าม normalizer ไทยทั้งชุดฝั่ง server */
+  omniLanguage?: OmniVoiceLanguage;
   captions?: Caption[];
   voiceUrl?: string;
   audioDurationMs?: number;

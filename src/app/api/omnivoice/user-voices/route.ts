@@ -51,26 +51,35 @@ export async function POST(request: Request) {
     if (!form) return NextResponse.json({ error: "ต้องส่งเป็น multipart form" }, { status: 400 });
     const audio = form.get("audio");
     if (!(audio instanceof Blob)) return NextResponse.json({ error: "แนบไฟล์เสียงก่อน" }, { status: 400 });
-    const voice = await createUserVoice({
+
+    let geminiKey: string | undefined;
+    try {
+      geminiKey = resolveGeminiKey(gate.user).key;
+    } catch { /* no key configured — manual refText becomes required (createUserVoice enforces this) */ }
+
+    const { voice, autoTranscribed } = await createUserVoice({
       userId: gate.user.id,
       name: String(form.get("name") ?? ""),
       refText: String(form.get("refText") ?? ""),
       audio: Buffer.from(await audio.arrayBuffer()),
+      geminiKey,
     });
 
-    // ตรวจว่า refText ตรงกับเสียงจริงมั้ย (ตัวการหลักของ "โคลนไม่เหมือน") —
+    // ตรวจว่า refText ที่ผู้ใช้พิมพ์เองตรงกับเสียงจริงมั้ย (ตัวการหลักของ "โคลนไม่เหมือน") —
+    // ข้ามถ้า refText มาจากการถอดอัตโนมัติอยู่แล้ว (เทียบกับตัวเองมีแต่ตรง 100% เสมอ, เปลืองเปล่า ๆ)
     // fail-open: ไม่มี key/transcribe ล่ม ก็สร้างสำเร็จตามปกติ แค่ไม่มีคำเตือน
     let refCheck: { similarity: number; heard: string; warning: boolean } | null = null;
-    try {
-      const { key } = resolveGeminiKey(gate.user);
-      const stored = await readUserVoiceWav(gate.user.id, voice.id);
-      if (stored) {
-        const result = await checkRefTextMatch(key, stored.wav, voice.refText);
-        if (result) refCheck = { ...result, warning: result.similarity < 0.85 };
-      }
-    } catch { /* no key configured — skip the check */ }
+    if (!autoTranscribed && geminiKey) {
+      try {
+        const stored = await readUserVoiceWav(gate.user.id, voice.id);
+        if (stored) {
+          const result = await checkRefTextMatch(geminiKey, stored.wav, voice.refText);
+          if (result) refCheck = { ...result, warning: result.similarity < 0.85 };
+        }
+      } catch { /* transcribe failed — skip the check */ }
+    }
 
-    return NextResponse.json({ ...publicUserVoice(voice), refCheck }, { status: 201 });
+    return NextResponse.json({ ...publicUserVoice(voice), autoTranscribed, refCheck }, { status: 201 });
   } catch (error) {
     if (error instanceof UserVoiceError) {
       return NextResponse.json({ error: error.message }, { status: error.status });

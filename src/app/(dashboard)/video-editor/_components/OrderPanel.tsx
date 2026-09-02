@@ -5,7 +5,7 @@ import { ChevronDown, ChevronLeft, ChevronRight, Loader2, Music, Pause, Play, Up
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
-import type { StepState, StockSource, KieImageModel, StockVideo, AutoMixImageProvider } from "./types";
+import type { StepState, StockSource, KieImageModel, StockVideo, AutoMixImageProvider, OmniVoiceLanguage } from "./types";
 import { KIE_IMAGE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "./types";
 import { DirectAvatarUpload } from "./DirectAvatarUpload";
 import { VoicePreviewButton } from "./VoicePreviewButton";
@@ -15,6 +15,7 @@ import {
   type TtsProvider,
 } from "@/lib/tts-providers";
 import { useOmniVoiceAvailability } from "../_hooks/useOmniVoiceAvailability";
+import { heroVoicesForLanguage, heroVoiceCatalogsAreIdentical } from "@/lib/hero-voice-language";
 import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME, HERO_VOICE_TEASER_VISIBLE } from "@/lib/hero-voice-brand";
 
 type UserMusicTrack = { id: string; title: string; filename: string; sizeBytes?: number | null };
@@ -45,6 +46,7 @@ export interface OrderPanelProps {
   setTtsProvider: (v: TtsProvider) => void;
   setGeminiVoiceName: (v: string) => void; setVoiceId: (v: string) => void;
   omniVoiceId: string; setOmniVoiceId: (v: string) => void;
+  omniLanguage: OmniVoiceLanguage; setOmniLanguage: (v: OmniVoiceLanguage) => void;
   bgmEnabled: boolean; bgmFile: string; bgmVolume: number;
   setBgmEnabled: (v: boolean) => void; setBgmFile: (v: string) => void; setBgmVolume: (v: number) => void;
   bgmUploading: boolean; setBgmUploading: (v: boolean) => void;
@@ -127,7 +129,22 @@ export function OrderPanel(p: OrderPanelProps) {
   const [omniLoadAttempt, setOmniLoadAttempt] = React.useState(0);
   const omniVoiceAvailability = useOmniVoiceAvailability();
   const omniVoiceEnabled = omniVoiceAvailability === true;
-  const selectedOmniVoice = omniVoices.find((voice) => voice.voice_id === p.omniVoiceId);
+  // คลังเสียงของภาษาที่เลือก — ไทยเปิดครบ, ลาวตัดเสียงสำเนียงต่างชาติออก
+  const languageVoices = React.useMemo(
+    () => heroVoicesForLanguage(omniVoices, p.omniLanguage),
+    [omniVoices, p.omniLanguage],
+  );
+  const sharedCatalog = React.useMemo(() => heroVoiceCatalogsAreIdentical(omniVoices), [omniVoices]);
+  const selectedOmniVoice = languageVoices.find((voice) => voice.voice_id === p.omniVoiceId);
+
+  // สลับภาษาแล้วเสียงเดิมหลุดคลัง → เด้งไปเสียงแรก ไม่งั้น select โชว์ตัวแรกแต่ state ยังเป็นตัวเก่า
+  const setOmniVoiceId = p.setOmniVoiceId;
+  React.useEffect(() => {
+    if (!languageVoices.length) return;
+    if (!languageVoices.some((voice) => voice.voice_id === p.omniVoiceId)) {
+      setOmniVoiceId(languageVoices[0].voice_id);
+    }
+  }, [languageVoices, p.omniVoiceId, setOmniVoiceId]);
   React.useEffect(() => {
     if (!omniVoiceEnabled || p.ttsProvider !== "omnivoice") return;
     let alive = true;
@@ -616,6 +633,34 @@ export function OrderPanel(p: OrderPanelProps) {
             {p.ttsProvider === "omnivoice" && (
               <div className="mt-2 space-y-1.5">
                 <div className="text-[10px] leading-relaxed text-slate-400">ฟังตัวอย่างก่อนเลือก เพื่อหาโทนเสียงที่เข้ากับคลิปของคุณ</div>
+                {/* ภาษาที่อ่าน — โหมดลาวข้าม normalizer ไทย (แปลงเลข/คำอ่าน) ทั้งชุดฝั่ง server
+                    เสียงในแคตตาล็อกใช้ได้ทุกตัว โมเดลออกเสียงตามภาษาที่สั่ง ไม่ใช่ตามเสียง */}
+                <div role="radiogroup" aria-label="ภาษาที่ Hero Voice อ่าน" className="inline-flex rounded-xl border border-[#26262f] bg-[#15151b] p-1">
+                  {(["th", "lo"] as const).map((value) => {
+                    const active = p.omniLanguage === value;
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={active}
+                        onClick={() => p.setOmniLanguage(value)}
+                        className={`min-h-9 rounded-lg px-3 text-[10px] font-bold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-8 ${
+                          active ? "bg-violet-500/15 text-violet-200" : "text-slate-500 hover:text-slate-300"
+                        }`}
+                      >
+                        {value === "th" ? "ไทย" : "ลาว"}
+                      </button>
+                    );
+                  })}
+                </div>
+                {p.omniLanguage === "lo" && (
+                  <div className="rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-2 text-[10px] leading-relaxed text-amber-300">
+                    {sharedCatalog
+                      ? "โหมดลาวเป็นรุ่นทดลอง — ยังไม่มีเสียงลาวเฉพาะในคลัง ระบบใช้เสียงเดิมอ่านลาวและข้ามการปรับคำอ่านไทย"
+                      : "โหมดลาว — ใช้เสียงในคลังลาวโดยเฉพาะ และข้ามการปรับคำอ่านภาษาไทย"}
+                  </div>
+                )}
                 {!omniVoiceEnabled ? (
                   <div className="rounded-xl border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-[10px] text-amber-300">
                     {HERO_VOICE_NAME} กำลังเตรียมเปิดให้ใช้งานเร็ว ๆ นี้
@@ -625,18 +670,25 @@ export function OrderPanel(p: OrderPanelProps) {
                     <span className="text-[10px] text-red-400">{omniVoicesError}</span>
                     <button type="button" onClick={() => setOmniLoadAttempt(value => value + 1)} className="min-h-11 rounded-md px-2 text-[10px] font-bold text-violet-300 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-8">ลองใหม่</button>
                   </div>
-                ) : omniVoices.length === 0 ? (
-                  <div className="px-1 text-[10px] text-slate-400" role="status">กำลังเตรียมรายการเสียง…</div>
+                ) : languageVoices.length === 0 ? (
+                  <div className="px-1 text-[10px] text-slate-400" role="status">
+                    {omniVoices.length === 0 ? "กำลังเตรียมรายการเสียง…" : "ยังไม่มีเสียงในคลังภาษานี้"}
+                  </div>
                 ) : (
                   <>
-                    <label htmlFor="legacy-hero-voice-select" className="sr-only">เลือกเสียง {HERO_VOICE_NAME}</label>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <label htmlFor="legacy-hero-voice-select" className="text-[10px] font-bold uppercase tracking-wider text-slate-600">เสียง {HERO_VOICE_NAME}</label>
+                      <span className="text-[10px] text-slate-500">
+                        {sharedCatalog ? `ทุกภาษา · ${languageVoices.length}` : `คลัง${p.omniLanguage === "lo" ? "ลาว" : "ไทย"} · ${languageVoices.length}`}
+                      </span>
+                    </div>
                     <select
                       id="legacy-hero-voice-select"
                       value={p.omniVoiceId}
                       onChange={(event) => p.setOmniVoiceId(event.target.value)}
                       className="min-h-11 w-full rounded-xl border border-[#26262f] bg-[#15151b] px-3 py-2.5 text-[11px] font-semibold text-slate-300 outline-none focus:border-violet-500/40 focus-visible:outline-2 focus-visible:outline-offset-2 lg:min-h-9"
                     >
-                      {omniVoices.map((voice) => (
+                      {languageVoices.map((voice) => (
                         <option key={voice.voice_id} value={voice.voice_id}>{voice.desc || voice.voice_id}</option>
                       ))}
                     </select>

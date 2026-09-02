@@ -20,11 +20,11 @@ from server import (
     _CLONE_BEST_OF,
     clean_instruct,
 )
-from text_utils import split_by_language
+from text_utils import normalize_thai_numbers, split_by_language, transliterate_english
 
 
-VERSION = "hero-voice-ai-v2-565d0e6"
-CATALOG_VERSION = "hero-voice-ai-v2-2026-08-24"
+VERSION = "hero-voice-ai-v2-10649b5"
+CATALOG_VERSION = "hero-voice-ai-v2-2026-09-02"
 MAX_TEXT_LENGTH = max(100, min(800, int(os.environ.get("TTS_MAX_TEXT_LENGTH", "800"))))
 MAX_WAV_BYTES = max(1_000_000, min(7_000_000, int(os.environ.get("TTS_MAX_WAV_BYTES", "7000000"))))
 GENERATION_LOCK = threading.Lock()
@@ -60,7 +60,16 @@ def _generate_audio(
     num_step: int,
     guidance_scale: float | None,
     class_temperature: float | None = None,
+    transliterate_english_text: bool = True,
+    normalize_numbers_text: bool = True,
 ) -> tuple[np.ndarray, str]:
+    # ทับศัพท์คำอังกฤษ + แปลงตัวเลขเป็นคำอ่านไทยก่อน generate (ดู text_utils.py) —
+    # ลดเสียงเพี้ยน/สะดุดตอนสลับภาษา และกันสคริปต์กับเสียงไม่ตรงกันตอนมีตัวเลข
+    if transliterate_english_text:
+        text = transliterate_english(text)
+    if normalize_numbers_text:
+        text = normalize_thai_numbers(text)
+
     if mixed_language:
         segments = split_by_language(text)
     else:
@@ -140,6 +149,9 @@ def _do_tts(request: TtsInput) -> dict:
             speed=request.speed,
             num_step=request.num_step,
             guidance_scale=request.guidance_scale,
+            class_temperature=request.class_temperature,
+            transliterate_english_text=request.transliterate_english,
+            normalize_numbers_text=request.normalize_numbers,
         )
     generation_time = time.monotonic() - started
     return _response(
@@ -210,6 +222,8 @@ def _do_clone(request: CloneInput) -> dict:
                     num_step=request.num_step,
                     guidance_scale=request.guidance_scale,
                     class_temperature=_BEST_OF_CLASS_TEMPERATURE,
+                    transliterate_english_text=request.transliterate_english,
+                    normalize_numbers_text=request.normalize_numbers,
                 )
                 score = cosine_sim(reference_embedding, embed_array(audio, SAMPLE_RATE))
                 if score > best_score:

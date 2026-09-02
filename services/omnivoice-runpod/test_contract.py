@@ -126,15 +126,20 @@ class CatalogTest(unittest.TestCase):
     def setUpClass(cls):
         cls.manifest = json.loads((ROOT / "assets/voices/voices.json").read_text(encoding="utf-8"))
 
-    def test_catalog_has_exactly_48_ordered_voices(self):
+    # upstream 10649b5 ตัดเสียงสำเนียงต่างชาติ + เสียงกระซิบออกจาก manifest —
+    # ต้องตรงกับ _FOREIGN_ACCENT_IDS ใน server.py และ validation ใน Dockerfile
+    REMOVED_VOICE_NUMBERS = {16, 27, 28, 29, 30, 31, 32, 33, 38, 39, 40, 41, 42, 43, 48}
+
+    def test_catalog_has_exactly_33_ordered_voices(self):
         self.assertEqual(
             [voice["id"] for voice in self.manifest],
-            [f"voice_{index:02d}" for index in range(1, 49)],
+            [f"voice_{index:02d}" for index in range(1, 49) if index not in self.REMOVED_VOICE_NUMBERS],
         )
 
     def test_catalog_metadata_and_audio_are_complete(self):
         for voice in self.manifest:
-            for field in ("desc", "instruct", "ref_audio", "ref_text", "preview_text"):
+            # preview_text ถูกถอดออกใน upstream 10649b5 — พรีวิวสตรีมไฟล์ ref โดยตรง
+            for field in ("desc", "instruct", "ref_audio", "ref_text"):
                 self.assertIsInstance(voice[field], str)
                 self.assertTrue(voice[field].strip(), f"{voice['id']} missing {field}")
 
@@ -153,7 +158,7 @@ class CatalogTest(unittest.TestCase):
                 self.assertLessEqual(duration, 10)
 
     def test_voice_44_uses_the_new_completed_profile(self):
-        voice = self.manifest[43]
+        voice = next(v for v in self.manifest if v["id"] == "voice_44")
         self.assertEqual(voice["instruct"], "young adult, male, very high pitch")
         self.assertEqual(voice["ref_text"], "โอ้โห เยี่ยมไปเลยครับ ดีใจด้วยจริงๆ")
 

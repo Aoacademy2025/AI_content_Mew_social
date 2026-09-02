@@ -4,6 +4,11 @@ export interface OmniVoiceInfo {
   voice_id: string;
   desc: string;
   instruct: string;
+  /** ภาษาที่แคตตาล็อกกำหนดให้เสียงนี้ ("Thai" | "Lao" | …) — null/ไม่มี = เสียงกลาง
+   *  ใช้ได้ทุกภาษา worker รุ่นเก่าไม่ส่งฟิลด์นี้มา */
+  language?: string | null;
+  /** คำบรรยายสั้นๆ ว่าเป็นเสียงใคร/น้ำเสียงแบบไหน — โชว์ตัวเล็กใต้ชื่อใน dropdown */
+  brief?: string;
   preview_url: string;
 }
 

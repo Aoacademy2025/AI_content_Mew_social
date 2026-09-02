@@ -26,8 +26,11 @@ class TtsInput:
     num_step: int
     speed: float
     guidance_scale: float | None
+    class_temperature: float | None
     language: str | None
     mixed_language: bool
+    transliterate_english: bool
+    normalize_numbers: bool
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,8 @@ class CloneInput:
     guidance_scale: float
     language: str | None
     mixed_language: bool
+    transliterate_english: bool
+    normalize_numbers: bool
 
 
 WorkerInput = Union[TtsInput, CloneInput]
@@ -94,6 +99,20 @@ def _parse_guidance(payload: dict[str, Any], default: float | None) -> float | N
     return value
 
 
+def _parse_class_temperature(payload: dict[str, Any]) -> float | None:
+    # None (ไม่ส่งมา) → เอนจินใช้ DEFAULT_CLASS_TEMPERATURE ของ server (กันเสียงแบน/หุ่นยนต์
+    # จาก greedy decoding); 0.0 = greedy (ผลซ้ำเดิมทุกครั้ง) — ดูคอมเมนต์ใน server.py
+    raw = payload.get("class_temperature")
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise InputError("INVALID_CLASS_TEMPERATURE", "class_temperature must be a number from 0.0 to 2.0")
+    value = float(raw)
+    if not 0.0 <= value <= 2.0:
+        raise InputError("INVALID_CLASS_TEMPERATURE", "class_temperature must be a number from 0.0 to 2.0")
+    return value
+
+
 def _parse_language(payload: dict[str, Any]) -> str | None:
     raw = payload.get("language")
     if raw is None:
@@ -103,11 +122,15 @@ def _parse_language(payload: dict[str, Any]) -> str | None:
     return raw.strip()
 
 
-def _parse_mixed_language(payload: dict[str, Any]) -> bool:
-    raw = payload.get("mixed_language", True)
+def _parse_bool(payload: dict[str, Any], key: str, default: bool) -> bool:
+    raw = payload.get(key, default)
     if not isinstance(raw, bool):
-        raise InputError("INVALID_MIXED_LANGUAGE", "mixed_language must be a boolean")
+        raise InputError(f"INVALID_{key.upper()}", f"{key} must be a boolean")
     return raw
+
+
+def _parse_mixed_language(payload: dict[str, Any]) -> bool:
+    return _parse_bool(payload, "mixed_language", True)
 
 
 def parse_tts_input(payload: Any, max_text_length: int) -> TtsInput:
@@ -130,11 +153,17 @@ def parse_tts_input(payload: Any, max_text_length: int) -> TtsInput:
         text=text,
         voice_id=voice_id,
         instruct=instruct,
-        num_step=_parse_num_step(payload, 24),
+        # เดิม default=24 ต่ำกว่า num_step=32 ที่ใช้สร้างเสียงสต็อกใน build_voices.py
+        # (และต่ำกว่า default ของโมเดลเอง=32) ทำให้เสียงสต็อกไม่เป็นธรรมชาติ — ปรับให้ตรงกัน
+        # (อ้างอิง upstream commit f00358d)
+        num_step=_parse_num_step(payload, 32),
         speed=_parse_speed(payload),
         guidance_scale=_parse_guidance(payload, None),
+        class_temperature=_parse_class_temperature(payload),
         language=_parse_language(payload),
         mixed_language=_parse_mixed_language(payload),
+        transliterate_english=_parse_bool(payload, "transliterate_english", True),
+        normalize_numbers=_parse_bool(payload, "normalize_numbers", True),
     )
 
 
@@ -164,6 +193,8 @@ def parse_clone_input(payload: Any, max_text_length: int) -> CloneInput:
         guidance_scale=_parse_guidance(payload, 2.5) or 2.5,
         language=_parse_language(payload),
         mixed_language=_parse_mixed_language(payload),
+        transliterate_english=_parse_bool(payload, "transliterate_english", True),
+        normalize_numbers=_parse_bool(payload, "normalize_numbers", True),
     )
 
 
