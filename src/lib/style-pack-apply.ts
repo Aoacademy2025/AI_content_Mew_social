@@ -1,7 +1,7 @@
 import type { BrandProfilePayload } from "@/lib/brand-profile-library.server";
 import { createBlankBrandProfileSeed } from "@/lib/brand-profile-seed";
 import { TREATMENT_PRESET_IDS, type TreatmentPresetId } from "@/lib/brand-treatment-catalog";
-import { isStylePackId, stylePack, type StylePack } from "@/lib/style-pack-catalog";
+import { STYLE_PACKS, isStylePackId, stylePack, type StylePack } from "@/lib/style-pack-catalog";
 
 /** A pack is a one-tap layer over the EXISTING Brand Profile axes (ADR 0058):
  * it resolves Visual Format, narrative treatment, palette, personality,
@@ -22,9 +22,28 @@ function qualifiedTreatmentPresetId(pack: StylePack): TreatmentPresetId {
   return pack.treatmentPresetId as TreatmentPresetId;
 }
 
+let packOwnedTones: Set<string> | null = null;
+
+/** A tone nobody authored: the blank-seed default, or the tone some pack put
+ * there. Every other pack-resolved field is replaced on every apply, so tone
+ * must be too — otherwise the second pack a creator taps keeps speaking in the
+ * first pack's voice. Pending packs count as well: what matters is that the
+ * words came from the catalog, not from the creator. Anything else is their
+ * writing and is kept, no matter how many packs are tried on top. */
+function isPackOwnedTone(tone: string): boolean {
+  if (!packOwnedTones) {
+    packOwnedTones = new Set<string>([
+      createBlankBrandProfileSeed().script.tone,
+      ...STYLE_PACKS.map((pack) => pack.scriptTone),
+    ]);
+  }
+  return packOwnedTones.has(tone);
+}
+
 /** Apply one pack onto a Brand Profile payload. Pure: the caller's payload is
- * never mutated. Two creator-authored fields win over the pack:
- * a saved subtitle style (`subtitle.presetId`) and an authored `script.tone`. */
+ * never mutated. Two creator-authored fields win over the pack: a saved
+ * subtitle style (`subtitle.presetId`) and a tone the creator wrote themselves
+ * (anything `isPackOwnedTone` does not recognise). */
 export function applyStylePackToPayload(
   payload: BrandProfilePayload,
   pack: StylePack,
@@ -32,7 +51,7 @@ export function applyStylePackToPayload(
   if (pack.status !== "active") throw new Error(STYLE_PACK_UNAVAILABLE_MESSAGE);
   const lockedTreatmentPresetId = qualifiedTreatmentPresetId(pack);
   const keepsOwnSubtitle = Boolean(payload.subtitle.presetId);
-  const keepsOwnTone = payload.script.tone !== createBlankBrandProfileSeed().script.tone;
+  const keepsOwnTone = !isPackOwnedTone(payload.script.tone);
   return {
     ...payload,
     script: {

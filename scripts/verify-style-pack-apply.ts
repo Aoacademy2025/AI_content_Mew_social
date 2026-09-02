@@ -100,6 +100,47 @@ assert.equal(
   "thai-ghost",
 );
 
+// ── Swapping packs replaces the previous pack's tone ────────────────────────
+// A tone that came from a pack is pack-owned, not creator writing: every other
+// pack-resolved field is replaced on every apply, and tone must follow, or the
+// second pack a creator taps keeps speaking in the first pack's voice.
+const premiumPack = stylePack("premium-product");
+const swapped = applyStylePackToPayload(ghost, premiumPack);
+assert.equal(
+  swapped.script.tone,
+  premiumPack.scriptTone,
+  "applying a second pack replaces the first pack's script tone",
+);
+assert.equal(swapped.visual.stylePackId, "premium-product");
+assert.equal(swapped.visual.stylePackVersion, "v1.0.0");
+assert.equal(swapped.visual.lockedTreatmentPresetId, "premium-product-lifestyle");
+assert.deepEqual(swapped.visual.palette, [...premiumPack.palette]);
+assert.equal(swapped.visual.personality, premiumPack.personality);
+assert.deepEqual(swapped.subtitle.config, { ...premiumPack.subtitle });
+
+// pack → กำหนดเอง → pack: the tone is still pack-owned once the link is cut.
+const swappedAfterClear = applyStylePackToPayload(clearStylePack(ghost), premiumPack);
+assert.equal(
+  swappedAfterClear.script.tone,
+  premiumPack.scriptTone,
+  "clearing the pack link does not turn the previous pack's tone into creator writing",
+);
+assert.equal(swappedAfterClear.visual.stylePackId, "premium-product");
+
+// A creator's own tone survives any number of pack swaps.
+const authoredTonePayload: BrandProfilePayload = {
+  ...blankPayload(),
+  script: { ...blankPayload().script, tone: "พูดกับเพื่อนสนิท" },
+};
+assert.equal(
+  applyStylePackToPayload(
+    applyStylePackToPayload(authoredTonePayload, ghostPack),
+    premiumPack,
+  ).script.tone,
+  "พูดกับเพื่อนสนิท",
+  "a creator-authored tone is never replaced, however many packs are tried on top",
+);
+
 // ── Packs awaiting the benchmark are never selectable (ADR 0058) ────────────
 assert.throws(
   () => applyStylePackToPayload(blankPayload(), stylePack("dharma")),
