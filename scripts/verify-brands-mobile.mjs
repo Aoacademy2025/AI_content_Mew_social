@@ -25,21 +25,25 @@ import puppeteer from "puppeteer";
 
 import { BrandList } from "../src/app/(dashboard)/brands/_components/BrandList.tsx";
 import { BrandBasicsForm } from "../src/app/(dashboard)/brands/_components/BrandBasicsForm.tsx";
-import { VisualFormatPicker } from "../src/app/(dashboard)/brands/_components/VisualFormatPicker.tsx";
+import { StylePackPicker } from "../src/app/(dashboard)/brands/_components/StylePackPicker.tsx";
 import { AdvancedSettings } from "../src/app/(dashboard)/brands/_components/AdvancedSettings.tsx";
 import { BrandLookPreviewPanel } from "../src/app/(dashboard)/brands/_components/BrandLookPreviewPanel.tsx";
 import { Button } from "../src/components/ui/button.tsx";
 import { Card } from "../src/components/ui/card.tsx";
 import { createBlankBrandProfileSeed } from "../src/lib/brand-profile-seed.ts";
 import { VISUAL_FORMATS } from "../src/lib/brand-visual-system.ts";
+import { activeStylePacks } from "../src/lib/style-pack-catalog.ts";
 
 const root = process.cwd();
 const read = (relative) => fs.readFileSync(path.join(root, relative), "utf8");
 const h = React.createElement;
 const noop = () => {};
 
-/** Phone widths we support, plus the 500px viewport #338 was filed against. */
+/** Phone widths we support, plus the 500px viewport #338 was filed against.
+ * 320px (Task 3, Brands wave 1 — Style Packs) is the narrowest phone the
+ * StylePackPicker grid must fit without horizontal overflow. */
 const PHONE_VIEWPORTS = [
+  { width: 320, height: 690 },
   { width: 360, height: 800 },
   { width: 390, height: 844 },
   { width: 430, height: 932 },
@@ -112,6 +116,17 @@ const library = {
   subtitlePresets: [{ id: "preset-1", name: "ซับไวรัลคำต่อคำแบบเน้นคำสำคัญ", config: {} }],
   brandAssets: [{ id: "asset-1", name: "โลโก้แบรนด์หลัก-2026.png" }],
   defaults: seed,
+  // Real catalog, real Thai copy — the sample images never exist in this rig
+  // (they 404 in the browser too, same as prod until a later task ships
+  // them), which is exactly the CSS-gradient fallback path this fixture
+  // exercises.
+  stylePacks: activeStylePacks().map((pack) => ({
+    id: pack.id,
+    thaiLabel: pack.thaiLabel,
+    tagline: pack.tagline,
+    palette: pack.palette,
+    sampleImage: `/style-packs/${pack.id}.jpg`,
+  })),
 };
 
 function profile(id, name, extra = {}) {
@@ -187,28 +202,35 @@ function renderPage({ profiles, imageAccess, preview, allowance }) {
                     h(Card, { className: "p-5 md:p-6" },
                       h("div", { className: "space-y-6" },
                         h(BrandBasicsForm, { name: draft.name, onNameChange: noop, disabled: false }),
-                        h(VisualFormatPicker, {
-                          formats: library.visualFormats,
-                          value: draft.visual.primaryVisualFormatId,
-                          onChange: noop,
-                          disabled: false,
-                        }),
+                        h("div", { "data-stylepack-picker": "true" },
+                          h(StylePackPicker, {
+                            packs: library.stylePacks,
+                            value: draft.visual.stylePackId,
+                            onChange: noop,
+                            disabled: false,
+                          }),
+                        ),
                       ),
                     ),
-                    h(AdvancedSettings, {
-                      open: true,
-                      onOpenChange: noop,
-                      draft,
-                      setDraft: noop,
-                      updateVisual: noop,
-                      library,
-                      busy: null,
-                      disabled: false,
-                      proposal: null,
-                      onAskHelper: noop,
-                      onApplyProposal: noop,
-                      onUploadBrandMark: noop,
-                    }),
+                    // Scoped so the VisualFormatPicker nested inside AdvancedSettings'
+                    // "กำหนดเอง" section (Task 3) doesn't get swept into the
+                    // StylePackPicker's own radiogroup measurements below.
+                    h("div", { "data-advanced-settings-wrapper": "true" },
+                      h(AdvancedSettings, {
+                        open: true,
+                        onOpenChange: noop,
+                        draft,
+                        setDraft: noop,
+                        updateVisual: noop,
+                        library,
+                        busy: null,
+                        disabled: false,
+                        proposal: null,
+                        onAskHelper: noop,
+                        onApplyProposal: noop,
+                        onUploadBrandMark: noop,
+                      }),
+                    ),
                     h(BrandLookPreviewPanel, {
                       preview,
                       previewGenerationCount: 2,
@@ -294,7 +316,12 @@ function measure() {
   const mainColumn = document.querySelector("[data-brands-main]");
   const previewTiles = [...document.querySelectorAll("figure")];
   const rerollButtons = previewTiles.map((tile) => tile.parentElement.querySelector("button"));
-  const samples = [...document.querySelectorAll('[role="radiogroup"] [role="radio"] > div:first-of-type')];
+  // Scoped to the "กำหนดเอง" VisualFormatPicker (Task 3 moved it inside
+  // AdvancedSettings) so the StylePackPicker's own radiogroup below is never
+  // swept into these desktop-ratio measurements.
+  const samples = [...document.querySelectorAll('[data-advanced-settings-wrapper] [role="radiogroup"] [role="radio"] > div:first-of-type')];
+  const stylePackGroup = document.querySelector('[data-stylepack-picker] [role="radiogroup"]');
+  const stylePackCards = [...stylePackGroup.querySelectorAll('[role="radio"]')];
 
   const overflowing = [];
   for (const element of document.querySelectorAll("body *")) {
@@ -340,6 +367,9 @@ function measure() {
     })),
     sampleHeights: samples.map((sample) => rect(sample).height),
     sampleWidths: samples.map((sample) => rect(sample).width),
+    stylePackCardCount: stylePackCards.length,
+    stylePackGroupWidth: rect(stylePackGroup).width,
+    stylePackCardTops: stylePackCards.map((card) => Math.round(rect(card).top)),
     libraryButtons: libraryButtons.map((button) => ({
       height: rect(button).height,
       whiteSpace: getComputedStyle(button).whiteSpace,
@@ -419,6 +449,18 @@ try {
           `${where}: a Visual Format sample may not exceed 40dvh (got ${Math.round(height)} of ${found.innerHeight})`,
         );
       }
+
+      // Task 3 (Brands wave 1 — Style Packs): the default surface's
+      // StylePackPicker (`grid-cols-2 sm:grid-cols-3 lg:grid-cols-4`) must fit
+      // a 320px phone with no horizontal overflow and lay out 2 columns.
+      assert.ok(found.stylePackCardCount > 0, `${where}: the Style Pack picker must render its cards`);
+      assert.ok(
+        found.stylePackGroupWidth <= found.innerWidth + 0.5,
+        `${where}: the Style Pack picker must not overflow the viewport (${found.stylePackGroupWidth} > ${found.innerWidth})`,
+      );
+      const stylePackFirstRowTop = Math.min(...found.stylePackCardTops);
+      const stylePackFirstRowCount = found.stylePackCardTops.filter((top) => top === stylePackFirstRowTop).length;
+      assert.equal(stylePackFirstRowCount, 2, `${where}: the Style Pack picker must lay out 2 columns on phones`);
     }
 
     for (const viewport of DESKTOP_VIEWPORTS) {
@@ -460,6 +502,11 @@ try {
           `${where}: Visual Format samples must keep their 9:14 desktop ratio (got ${ratio.toFixed(3)})`,
         );
       }
+
+      // lg:grid-cols-4 — the desktop track for the Style Pack picker.
+      const stylePackFirstRowTopLg = Math.min(...found.stylePackCardTops);
+      const stylePackFirstRowCountLg = found.stylePackCardTops.filter((top) => top === stylePackFirstRowTopLg).length;
+      assert.equal(stylePackFirstRowCountLg, 4, `${where}: the Style Pack picker must lay out 4 columns on desktop`);
     }
 
     await tab.close();
