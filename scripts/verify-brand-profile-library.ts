@@ -1389,6 +1389,62 @@ async function main() {
   );
   assert.equal(noPackDraftDefaults.musicMoodDefault, null);
 
+  // Review fix (2026-09-03, Important finding 1): emitStylePackSelectedFromRevision
+  // is the shared fail-open helper the publish route now uses INSTEAD of an
+  // inline, unguarded `JSON.parse(revision.payloadJson)`. Exercised here with
+  // REAL persisted Revisions (not source-grep) — both the success path and
+  // every failure mode that must resolve silently rather than throw/reject.
+  const { emitStylePackSelectedFromRevision } = await import("../src/lib/style-pack-selected-telemetry");
+  const beforeSelectedCount = await prisma.telemetryEvent.count({
+    where: { userId: packUser.id, name: "style_pack_selected" },
+  });
+  await emitStylePackSelectedFromRevision(packUser.id, packCreated.revision, "brands.publish");
+  const selectedEvent = await prisma.telemetryEvent.findFirst({
+    where: { userId: packUser.id, name: "style_pack_selected" },
+    orderBy: { createdAt: "desc" },
+  });
+  assert.equal(
+    await prisma.telemetryEvent.count({ where: { userId: packUser.id, name: "style_pack_selected" } }),
+    beforeSelectedCount + 1,
+    "a real persisted Revision with a pinned pack emits exactly one style_pack_selected event",
+  );
+  assert.equal(selectedEvent?.step, "brands.publish");
+  const selectedProps = JSON.parse(selectedEvent?.properties ?? "{}") as Record<string, unknown>;
+  assert.deepEqual(
+    selectedProps,
+    { packId: "thai-ghost", surface: "brand", version: "v1.0.0" },
+    "the emitted event carries exactly packId/surface/version, read off the persisted payload",
+  );
+
+  // Fail-open: NONE of these malformed/legacy shapes may throw, reject, or
+  // write an event — a telemetry side-effect can never turn an
+  // already-successful publish/create into a reported failure.
+  await assert.doesNotReject(
+    emitStylePackSelectedFromRevision(packUser.id, { payloadJson: "{not valid json" }, "brands.publish"),
+    "malformed JSON never throws or rejects",
+  );
+  await assert.doesNotReject(
+    emitStylePackSelectedFromRevision(packUser.id, { payloadJson: "{}" }, "brands.publish"),
+    "a legacy payload missing `visual` entirely never throws or rejects",
+  );
+  await assert.doesNotReject(
+    emitStylePackSelectedFromRevision(packUser.id, { payloadJson: JSON.stringify({ visual: {} }) }, "brands.publish"),
+    "a payload with `visual` but no stylePackId never throws or rejects",
+  );
+  await assert.doesNotReject(
+    emitStylePackSelectedFromRevision(
+      packUser.id,
+      { payloadJson: JSON.stringify({ visual: { stylePackId: "not-a-real-pack" } }) },
+      "brands.publish",
+    ),
+    "a stylePackId outside the closed catalog never throws or rejects",
+  );
+  assert.equal(
+    await prisma.telemetryEvent.count({ where: { userId: packUser.id, name: "style_pack_selected" } }),
+    beforeSelectedCount + 1,
+    "none of the four fail-open cases above wrote a second event — only the one real pack did",
+  );
+
   // The /brands route is a server shell plus client islands; every source-level
   // contract below holds across the whole route, not one file.
   const brandsComponentsDirectory = "src/app/(dashboard)/brands/_components";

@@ -115,10 +115,20 @@ assert.match(
   /parsed\.data\.visual\.stylePackId[\s\S]{0,400}name:\s*"style_pack_selected"[\s\S]{0,300}source:\s*"server"[\s\S]{0,300}surface:\s*"brand"/,
   "creating a Brand with a pack emits style_pack_selected (surface: brand), gated on a non-null stylePackId",
 );
+// Review fix (2026-09-03, Important finding 1): the publish route's earlier
+// inline `JSON.parse(revision.payloadJson)` sat OUTSIDE any try/catch — a
+// malformed/legacy payload would throw into the route's outer catch and
+// report an already-successful publish as a failure. The whole parse+emit
+// now goes through one fail-open shared helper.
 assert.match(
   publishRoute,
-  /stylePackId[\s\S]{0,400}name:\s*"style_pack_selected"[\s\S]{0,300}source:\s*"server"[\s\S]{0,300}surface:\s*"brand"/,
-  "publishing a Brand Revision with a pack emits style_pack_selected (surface: brand)",
+  /emitStylePackSelectedFromRevision\(auth\.user\.id,\s*revision,\s*"brands\.publish"\)/,
+  "publishing a Brand Revision emits style_pack_selected through the fail-open shared helper",
+);
+assert.doesNotMatch(
+  publishRoute,
+  /JSON\.parse\(revision\.payloadJson\)/,
+  "the publish route never parses the persisted payload inline — a malformed/legacy payloadJson must never turn a successful publish into a reported failure",
 );
 assert.doesNotMatch(
   readFileSync("src/app/api/brand-library/[id]/draft/route.ts", "utf8"),
