@@ -344,4 +344,4 @@ export function stockMoodForProject(input: { projectVisualContextJson: string | 
 - Moving the region preference into the Brand Profile — revisit with telemetry.
 
 ## Status
-interviewed 2026-09-02 | approved: pending (Mew reviews after wave 0) | executed: - | delivered: -
+interviewed 2026-09-02 | approved: 2026-09-02 (Mew) | executed: started 2026-09-02 (branch mew/brands-wave1) | delivered: -
