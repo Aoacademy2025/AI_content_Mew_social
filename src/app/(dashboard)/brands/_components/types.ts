@@ -107,6 +107,8 @@ export type ProjectVisualSeed = {
     visualFormatId?: VisualFormatId;
     treatment?: string;
     brandVisualLanguage?: Partial<BrandPayload["visual"]> | null;
+    /** The ready-made style this clip's look was resolved from, if any. */
+    stylePack?: { id: BrandPayload["visual"]["stylePackId"] } | null;
   };
 };
 

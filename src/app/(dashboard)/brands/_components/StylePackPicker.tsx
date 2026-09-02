@@ -17,6 +17,8 @@ export function StylePackPicker({
   value,
   onChange,
   disabled,
+  title = "สไตล์ประจำแบรนด์",
+  description = "ทุกคลิปของแบรนด์นี้จะใช้สไตล์เดียวกัน เปลี่ยนทีหลังได้",
 }: {
   packs: Array<{
     id: StylePackId;
@@ -28,16 +30,18 @@ export function StylePackPicker({
   value: StylePackId | null;
   onChange: (id: StylePackId | null) => void;
   disabled?: boolean;
+  /** The editor picks a style for ONE clip, so it says so instead of
+   *  promising the creator that every clip of the brand will change. */
+  title?: string;
+  description?: string;
 }) {
   return (
     <div>
-      <p className="text-sm font-semibold text-foreground">สไตล์ประจำแบรนด์</p>
-      <p className="mt-1 text-xs text-muted-foreground">
-        ทุกคลิปของแบรนด์นี้จะใช้สไตล์เดียวกัน เปลี่ยนทีหลังได้
-      </p>
+      <p className="text-sm font-semibold text-foreground">{title}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
       <div
         role="radiogroup"
-        aria-label="สไตล์ประจำแบรนด์"
+        aria-label={title}
         className="mt-3 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4"
       >
         {packs.map((pack) => {

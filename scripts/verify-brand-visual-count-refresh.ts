@@ -268,6 +268,9 @@ const requireMock = (id: string): unknown => {
   if (id === "@/lib/scene-content-policy") {
     return { sceneContentPolicyFromPreference: (preference: string) => ({ preference }) };
   }
+  if (id === "@/app/(dashboard)/brands/_components/StylePackPicker") {
+    return { StylePackPicker: noopComponent };
+  }
   if (id === "./tokens") return { color, font: { heading: "sans-serif" }, radius: { card: 12 } };
   throw new Error(`Unexpected module import: ${id}`);
 };
@@ -307,11 +310,13 @@ const project = {
   mixPreset: "hero",
   brandVisualAllowed: true,
   hasPersistedVisualPin: false,
+  projectStylePack: null,
   heroAiBeta: false,
   isAdmin: false,
   starterAiImageAllowance: undefined,
   setBrandContentPreflightId(value: string | null) { preflightIdWrites.push(value); },
   setHasPersistedVisualPin() {},
+  setProjectStylePack() {},
   setMixPreset() {},
   flushPendingProjectDraft: async () => true,
   acceptAuthoritativeProjectSnapshot: () => acceptSnapshot,

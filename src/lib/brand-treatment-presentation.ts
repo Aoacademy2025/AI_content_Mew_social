@@ -32,11 +32,21 @@ export function buildTreatmentChoiceGroups(
   return { featured, all };
 }
 
+/** One line for "what does this clip look like". When the look came from a
+ * ready-made style, that style's own Thai name IS the answer — spelling out the
+ * image format and the narrative style underneath it would only repeat, in
+ * system vocabulary, what the style already says in the creator's. The suffix
+ * answers the question the creator asks next: is this clip's own choice, or the
+ * brand's — i.e. would changing it here affect every other clip. */
 export function buildVisualSummary(
   visualFormatLabel: string,
   treatmentLabel: string,
   legacyCustomTreatment = false,
+  stylePack?: { thaiLabel: string; source: "project" | "brand" } | null,
 ): string {
+  if (stylePack) {
+    return `${stylePack.thaiLabel} · ${stylePack.source === "project" ? "จากคลิปนี้" : "จากแบรนด์"}`;
+  }
   const compactFormatLabel = visualFormatLabel === "ภาพสมจริงแบบหนัง"
     ? "คนสมจริง"
     : visualFormatLabel;

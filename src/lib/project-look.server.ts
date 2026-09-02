@@ -22,11 +22,15 @@ import {
   brandVisualIdentityKey,
   compileBrandVisualPrompt,
   type ActiveVisualFormatId,
+  type BrandVisualLanguage,
   type CompiledBrandVisualPrompt,
   type SceneRenderingDirection,
   type VisualBeat,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
+import { stylePack, type StylePack } from "@/lib/style-pack-catalog";
+import { STYLE_PACK_UNAVAILABLE_MESSAGE } from "@/lib/style-pack-apply";
+import { stylePackSnapshotOf, type StylePackSnapshot } from "@/lib/style-pack-snapshot";
 import {
   brandLanguageSchema,
   parseProjectLook,
@@ -86,6 +90,38 @@ export {
 };
 export type { ProjectLookInput, ProjectLookSnapshot, ProjectVisualContext };
 
+/** The one place a Style Pack becomes a clip's look. A pack resolves the image
+ * format, the narrative treatment AND the visual language (palette +
+ * personality) — exactly the axes `applyStylePackToPayload` resolves on a Brand
+ * Profile, so that promoting this clip later produces the same look rather than
+ * a conflict. The client's own format/treatment are ignored on a pack request:
+ * the browser only ever knows the pack id. */
+function packResolvedLook(pack: StylePack): {
+  visualFormatId: ActiveVisualFormatId;
+  treatmentPresetId: TreatmentPresetId;
+  brandVisualLanguage: BrandVisualLanguage;
+  stylePack: StylePackSnapshot;
+} {
+  if (!(TREATMENT_PRESET_IDS as readonly string[]).includes(pack.treatmentPresetId)) {
+    // Only reachable if a catalog edit activates a pack before its narrative
+    // treatment ships. Refuse the look instead of pinning a treatment the
+    // compilers cannot render.
+    throw new ProjectLookError("INVALID_LOOK", STYLE_PACK_UNAVAILABLE_MESSAGE);
+  }
+  return {
+    visualFormatId: pack.visualFormatId,
+    treatmentPresetId: pack.treatmentPresetId as TreatmentPresetId,
+    brandVisualLanguage: {
+      palette: [...pack.palette],
+      personality: pack.personality,
+      peopleAndSetting: "",
+      memorableCues: [],
+      visualNotes: "",
+    },
+    stylePack: stylePackSnapshotOf(pack),
+  };
+}
+
 function snapshotForLook(
   look: ProjectLookInput,
   brandRevisionJson: string | null | undefined,
@@ -95,16 +131,26 @@ function snapshotForLook(
     throw new ProjectLookError("INVALID_LOOK", parsed.error.issues[0]?.message || "ข้อมูลแนวภาพไม่ครบ");
   }
   const brandRecipe = parseRevision(brandRevisionJson);
-  const treatmentPin = createCatalogTreatmentPin(parsed.data.treatmentPresetId, "creator");
+  const packed = parsed.data.stylePackId ? packResolvedLook(stylePack(parsed.data.stylePackId)) : null;
+  // The superRefine above guarantees both axes when there is no pack.
+  const visualFormatId = packed?.visualFormatId ?? parsed.data.visualFormatId!;
+  const treatmentPin = createCatalogTreatmentPin(
+    packed?.treatmentPresetId ?? parsed.data.treatmentPresetId!,
+    "creator",
+  );
   return {
     schemaVersion: 2,
-    visualFormatId: parsed.data.visualFormatId,
-    recipeVersion: recipeFor(parsed.data.visualFormatId),
+    visualFormatId,
+    recipeVersion: recipeFor(visualFormatId),
     treatment: treatmentPresetThaiLabel(treatmentPin),
     treatmentPin,
-    brandVisualLanguage: parsed.data.brandVisualLanguage === undefined
-      ? (brandRecipe?.brandVisualLanguage ?? null)
-      : parsed.data.brandVisualLanguage,
+    brandVisualLanguage: packed?.brandVisualLanguage
+      ?? (parsed.data.brandVisualLanguage === undefined
+        ? (brandRecipe?.brandVisualLanguage ?? null)
+        : parsed.data.brandVisualLanguage),
+    // Absent/`null` unlinks the pack while keeping everything it resolved —
+    // the clip's look does not change, it simply becomes the creator's own.
+    stylePack: packed?.stylePack ?? null,
   };
 }
 

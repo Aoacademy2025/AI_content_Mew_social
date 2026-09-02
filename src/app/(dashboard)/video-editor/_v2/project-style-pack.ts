@@ -8,5 +8,9 @@ import type { ResolvedStockMood } from "@/lib/broll-preferences";
 export type ProjectStylePack = {
   packId: string;
   thaiLabel: string;
+  /** Whether this clip chose the style itself, or inherited the brand's.
+   *  Purely for what the creator is told — the search uses the same mood
+   *  either way, because the server already applied the precedence. */
+  source: "project" | "brand";
   stockMood: ResolvedStockMood;
 };

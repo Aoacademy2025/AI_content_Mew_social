@@ -113,13 +113,21 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         },
       },
     });
-    // The pinned Style Pack, read out of the Revision's IMMUTABLE recipe
-    // snapshot (ADR 0005) — never re-resolved from the catalog. Editor uses it
-    // for the read-only Step-2 line and sends the same mood back on a per-window
-    // search, so what the creator is told is exactly what gets searched.
-    const pinnedPackSnapshot = stylePackSnapshotFromJson(
+    // The pinned Style Pack, read out of IMMUTABLE snapshots (ADR 0005) — never
+    // re-resolved from the catalog. Precedence mirrors `stockMoodForProject`
+    // exactly, so Step 2, the per-window search and the render can never
+    // disagree about which pack is in force: a pack the creator chose for THIS
+    // clip outranks the one the Brand supplies.
+    const projectPackSnapshot = context.source === "project-look"
+      ? context.stylePack ?? null
+      : null;
+    const brandPackSnapshot = stylePackSnapshotFromJson(
       projectSelection?.brandProfileRevision?.visualRecipeJson ?? null,
     );
+    const pinnedPackSnapshot = projectPackSnapshot ?? brandPackSnapshot;
+    const stylePackSource = pinnedPackSnapshot
+      ? (projectPackSnapshot ? ("project" as const) : ("brand" as const))
+      : null;
     const reusableAiSceneIndices = state.preflight
       ? await reusableProjectVisualBeatSceneIndices({
           userId: auth.user.id,
@@ -146,13 +154,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       preserveEstablishedAiDensity: reusableAiSceneIndices.length > 0 && outdatedImageCount === 0,
       quotedCreditsPerImage: HERO_AI_IMAGE_CREDITS,
       hasPersistedVisualPin,
-      stylePack: pinnedPackSnapshot
+      stylePack: pinnedPackSnapshot && stylePackSource
         ? {
             packId: pinnedPackSnapshot.id,
             thaiLabel: stylePack(pinnedPackSnapshot.id).thaiLabel,
+            // Where the pack came from, so Step 2 can say "จากคลิปนี้" instead
+            // of blaming the Brand for a choice made on this clip alone.
+            source: stylePackSource,
             stockMood: { packId: pinnedPackSnapshot.id, ...pinnedPackSnapshot.stockMood },
           }
         : null,
+      stylePackSource,
       // A per-video Project Look can override format/treatment while still
       // inheriting the immutable Brand Revision's visual language. Keep the
       // durable profile pin visible instead of making the creator think the
