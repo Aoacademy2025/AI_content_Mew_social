@@ -3,7 +3,7 @@ import {
   evaluateBrandVisualSafety,
   summarizeBrandVisualDailyCogs,
 } from "../src/lib/brand-visual-safety";
-import { summarizeStylePackAcceptance } from "../src/lib/brand-visual-rollout-health.server";
+import { summarizeStylePackAcceptance, stylePackAcceptanceForCohort } from "../src/lib/brand-visual-rollout-health.server";
 
 const passing = evaluateBrandVisualSafety({
   terminalJobs: 100,
@@ -112,5 +112,27 @@ const zeroExported = summarizeStylePackAcceptance({
   rejectedPackIds: ["dark-story"],
 });
 assert.equal(zeroExported[0]?.acceptanceRate, 0, "rejections with no exports → acceptanceRate 0, not null");
+
+// Fix-up: acceptance.byStylePack must apply the SAME cohort gate the rest of
+// the health payload uses (canary/jobs/settlement/leadingMetrics.rerolls all
+// filter to the current rollout's safetyCohort) — an event tagged with a
+// DIFFERENT cohort (or no cohort at all) must never count, exactly like
+// rerollCount's own `properties.cohort === safetyCohort` filter.
+const cohortEvents = [
+  { name: "first_pass_visual_exported" as const, packId: "thai-ghost", cohort: "treatment-50" },
+  { name: "first_pass_visual_exported" as const, packId: "thai-ghost", cohort: "treatment-10" }, // wrong cohort
+  { name: "first_pass_visual_exported" as const, packId: "thai-ghost", cohort: null }, // no cohort at all
+  { name: "first_pass_visual_rejected" as const, packId: "thai-ghost", cohort: "treatment-50" },
+  { name: "first_pass_visual_rejected" as const, packId: "thai-ghost", cohort: "internal" }, // wrong cohort
+];
+const gated = stylePackAcceptanceForCohort({ events: cohortEvents, safetyCohort: "treatment-50" });
+const gatedGhost = gated.find((segment) => segment.packId === "thai-ghost");
+assert.equal(gatedGhost?.exported, 1, "only the in-cohort export counts");
+assert.equal(gatedGhost?.rejected, 1, "only the in-cohort rejection counts");
+assert.equal(
+  stylePackAcceptanceForCohort({ events: cohortEvents, safetyCohort: null }).length,
+  0,
+  "no active safety cohort (rollout off) → no per-pack segments at all, same as the canary/reroll metrics",
+);
 
 console.log("brand visual rollout health verification: ok");

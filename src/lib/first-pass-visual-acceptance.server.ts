@@ -39,6 +39,10 @@ export function firstPassVisualRejectionEvent(input: {
   sceneIndex: number;
   reason: FirstPassVisualRejectionReason;
   projectVisualContextJson: string | null | undefined;
+  /** Task 9 (Telemetry, fix-up): the caller's own resolved Brand Visual
+   *  rollout cohort (e.g. "treatment-50"), so admin health can gate
+   *  per-pack acceptance the same way it gates every other rollout figure. */
+  cohort?: string | null;
 }): TelemetryInput | null {
   const pin = measurablePin(input.actor, input.projectVisualContextJson);
   if (!pin) return null;
@@ -56,6 +60,7 @@ export function firstPassVisualRejectionEvent(input: {
       treatmentPresetId: pin.presetId,
       treatmentPresetVersion: pin.version,
       packId: measurablePackId(input.projectVisualContextJson),
+      cohort: input.cohort ?? null,
     },
   };
 }
@@ -66,6 +71,8 @@ export function firstPassVisualExportEvent(input: {
   videoJobId: string;
   projectVisualContextJson: string | null | undefined;
   initialAiWindowCount: number;
+  /** Task 9 (Telemetry, fix-up): see `firstPassVisualRejectionEvent`. */
+  cohort?: string | null;
 }): TelemetryInput | null {
   const pin = measurablePin(input.actor, input.projectVisualContextJson);
   if (!pin || input.initialAiWindowCount <= 0) return null;
@@ -83,6 +90,7 @@ export function firstPassVisualExportEvent(input: {
       treatmentPresetId: pin.presetId,
       treatmentPresetVersion: pin.version,
       packId: measurablePackId(input.projectVisualContextJson),
+      cohort: input.cohort ?? null,
     },
   };
 }

@@ -17,6 +17,7 @@ const brandClient = readFileSync("src/app/(dashboard)/brands/_components/BrandLi
 const postPhase = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhase.tsx", "utf8");
 const libraryRoute = readFileSync("src/app/api/brand-library/route.ts", "utf8");
 const publishRoute = readFileSync("src/app/api/brand-library/[id]/publish/route.ts", "utf8");
+const fromProjectLookRoute = readFileSync("src/app/api/brand-library/from-project-look/route.ts", "utf8");
 const visualSuggestionRoute = readFileSync("src/app/api/brand-library/suggest-visual/route.ts", "utf8");
 const archiveRoute = readFileSync("src/app/api/brand-library/[id]/route.ts", "utf8");
 const previewServer = readFileSync("src/lib/brand-look-preview.server.ts", "utf8");
@@ -123,6 +124,11 @@ assert.doesNotMatch(
   readFileSync("src/app/api/brand-library/[id]/draft/route.ts", "utf8"),
   /style_pack_selected/,
   "draft autosave never emits style_pack_selected — only publish/create do",
+);
+assert.match(
+  fromProjectLookRoute,
+  /!promoted\.replayed[\s\S]{0,600}name:\s*"style_pack_selected"[\s\S]{0,300}source:\s*"server"[\s\S]{0,300}surface:\s*"brand"/,
+  "promoting a Project Look/completed clip to a Brand emits style_pack_selected (surface: brand) once per NEW profile, gated on !replayed",
 );
 
 console.log("Brand Library support-feature contracts passed");

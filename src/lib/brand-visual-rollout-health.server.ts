@@ -113,6 +113,35 @@ export function summarizeStylePackAcceptance(input: {
     .sort((left, right) => (right.exported + right.rejected) - (left.exported + left.rejected));
 }
 
+/** Task 9 (Telemetry, fix-up): gate `byStylePack` on the SAME `safetyCohort`
+ *  every other figure in this payload (canary/jobs/settlement/leadingMetrics.rerolls)
+ *  is scoped to, so per-pack numbers are comparable with the overall/per-treatment
+ *  ones — an event tagged with a different cohort, or carrying no cohort at
+ *  all, never counts. Mirrors `rerollCount`'s own
+ *  `properties(event.properties).cohort === safetyCohort` filter exactly.
+ *  No active safety cohort (rollout off, or an unrecognised percent) means NO
+ *  per-pack segments at all — same as the canary/reroll metrics collapsing to
+ *  empty rather than reporting an uncomparable, unscoped number. */
+export function stylePackAcceptanceForCohort(input: {
+  events: Array<{
+    name: "first_pass_visual_exported" | "first_pass_visual_rejected";
+    packId: string | null;
+    cohort: string | null;
+  }>;
+  safetyCohort: string | null;
+}): StylePackAcceptanceSegment[] {
+  if (!input.safetyCohort) return [];
+  const inCohort = input.events.filter((event) => event.cohort === input.safetyCohort);
+  return summarizeStylePackAcceptance({
+    exportedPackIds: inCohort
+      .filter((event) => event.name === "first_pass_visual_exported")
+      .map((event) => event.packId),
+    rejectedPackIds: inCohort
+      .filter((event) => event.name === "first_pass_visual_rejected")
+      .map((event) => event.packId),
+  });
+}
+
 function percentile(values: number[], target: number): number | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((left, right) => left - right);
@@ -548,27 +577,29 @@ export async function getBrandVisualRolloutHealth(input: {
     ? costSnapshot.costBahtPerImage * usable.length / activatedUsers
     : null;
   const funnel = await getBrandVisualFunnelHealth({ from, now });
-  // Task 9 (Telemetry): first-pass acceptance segmented by Style Pack. Not
-  // cohort-scoped like the canary jobs above — these events fire for every
-  // Brand Visual customer, not only the RunPod image safety sample.
-  const acceptanceEvents = await prisma.telemetryEvent.findMany({
-    where: {
-      name: { in: ["first_pass_visual_exported", "first_pass_visual_rejected"] },
-      createdAt: { gte: from, lt: now },
-    },
-    select: { name: true, properties: true },
-  });
-  const packIdOf = (event: (typeof acceptanceEvents)[number]): string | null => {
-    const value = properties(event.properties).packId;
-    return typeof value === "string" ? value : null;
-  };
-  const byStylePack = summarizeStylePackAcceptance({
-    exportedPackIds: acceptanceEvents
-      .filter((event) => event.name === "first_pass_visual_exported")
-      .map(packIdOf),
-    rejectedPackIds: acceptanceEvents
-      .filter((event) => event.name === "first_pass_visual_rejected")
-      .map(packIdOf),
+  // Task 9 (Telemetry, fix-up): first-pass acceptance segmented by Style Pack,
+  // gated on the SAME `safetyCohort` as canary/jobs/settlement/rerolls above —
+  // same reason those are gated: an unscoped number would not be comparable
+  // to the rest of this payload. Query gated exactly like `rerollEvents`.
+  const acceptanceEvents = safetyCohort
+    ? await prisma.telemetryEvent.findMany({
+        where: {
+          name: { in: ["first_pass_visual_exported", "first_pass_visual_rejected"] },
+          createdAt: { gte: from, lt: now },
+        },
+        select: { name: true, properties: true },
+      })
+    : [];
+  const byStylePack = stylePackAcceptanceForCohort({
+    events: acceptanceEvents.map((event) => {
+      const detail = properties(event.properties);
+      return {
+        name: event.name as "first_pass_visual_exported" | "first_pass_visual_rejected",
+        packId: typeof detail.packId === "string" ? detail.packId : null,
+        cohort: typeof detail.cohort === "string" ? detail.cohort : null,
+      };
+    }),
+    safetyCohort,
   });
   return {
     window: { from: from.toISOString(), to: now.toISOString(), days },

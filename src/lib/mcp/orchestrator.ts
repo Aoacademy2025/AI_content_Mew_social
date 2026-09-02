@@ -141,6 +141,7 @@ import {
   recordFirstPassVisualRejection,
   type FirstPassVisualRejectionReason,
 } from "@/lib/first-pass-visual-acceptance.server";
+import { resolveBrandVisualAccessByUserId } from "@/lib/brand-visual-rollout.server";
 import { brollExportCompletionProperties } from "@/lib/broll-growth-funnel";
 import {
   commitAppliedSceneRerollAssetsInTransaction,
@@ -1479,6 +1480,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             sceneIndex: edit.index,
             reason,
             projectVisualContextJson: src.projectVisualContextJson,
+            // Task 9 (Telemetry, fix-up): resolved once per rejected scene —
+            // admin health gates per-pack acceptance on this same cohort.
+            cohort: (await resolveBrandVisualAccessByUserId(user)).cohort,
           });
         })).catch((error) => {
           console.error("[mcp-worker] first-pass visual rejection telemetry failed:", error);
@@ -1711,6 +1715,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           videoJobId: src.id,
           projectVisualContextJson: src.projectVisualContextJson,
           initialAiWindowCount,
+          // Task 9 (Telemetry, fix-up): see the rejection call site above.
+          cohort: (await resolveBrandVisualAccessByUserId(user)).cohort,
         }).catch((error) => {
           console.error("[mcp-worker] first-pass visual export telemetry failed:", error);
         });

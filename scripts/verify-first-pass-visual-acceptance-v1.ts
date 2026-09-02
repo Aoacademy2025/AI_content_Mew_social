@@ -69,6 +69,18 @@ async function main() {
       projectVisualContextJson: contextWithPack,
     });
     assert.equal(eventWithPack?.properties?.packId, "thai-ghost", "a pinned pack rides along on the rejection event");
+    assert.equal(eventWithPack?.properties?.cohort, null, "no cohort passed in → cohort is null, not absent");
+
+    const eventWithCohort = firstPassVisualRejectionEvent({
+      actor: customer,
+      projectId: "project-1",
+      videoJobId: "job-1",
+      sceneIndex: 2,
+      reason,
+      projectVisualContextJson: contextWithPack,
+      cohort: "treatment-50",
+    });
+    assert.equal(eventWithCohort?.properties?.cohort, "treatment-50", "a passed-in cohort rides along on the rejection event");
   }
   assert.equal(firstPassVisualRejectionEvent({
     actor: { role: "ADMIN", email: "admin@example.test" }, projectId: "p", videoJobId: "j",
@@ -106,6 +118,17 @@ async function main() {
     initialAiWindowCount: 5,
   });
   assert.equal(exportedWithPack?.properties?.packId, "thai-ghost", "a pinned pack rides along on the export event");
+  assert.equal(exportedWithPack?.properties?.cohort, null, "no cohort passed in → cohort is null, not absent");
+
+  const exportedWithCohort = firstPassVisualExportEvent({
+    actor: customer,
+    projectId: "project-1",
+    videoJobId: "job-1",
+    projectVisualContextJson: contextWithPack,
+    initialAiWindowCount: 5,
+    cohort: "treatment-50",
+  });
+  assert.equal(exportedWithCohort?.properties?.cohort, "treatment-50", "a passed-in cohort rides along on the export event");
 
   const user = await prisma.user.create({
     data: { name: "Concurrent exporter", email: "first-pass-export@example.test" },
