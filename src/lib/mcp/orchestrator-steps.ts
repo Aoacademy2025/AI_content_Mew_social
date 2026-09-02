@@ -1,40 +1,65 @@
 // PURE request-payload builders that reproduce the video-editor's non-avatar
 // chain (verified against page.tsx 2026-06-13). No I/O — unit-testable.
 
-import { stockMoodForProject, type BrollPreferenceInput, type ResolvedStockMood } from "@/lib/broll-preferences";
+import { stockMoodForProject, pacingForProject, type BrollPreferenceInput, type ResolvedStockMood } from "@/lib/broll-preferences";
+import type { PacingLevel } from "@/lib/style-pack-catalog";
 import { buildHeroSubtitleOverlayConfig } from "@/lib/hero-editorial";
 
-/** Resolve the pinned Style Pack's Stock Mood for ONE video job, once.
+/** What one video job's pinned Style Pack resolves to at render time: the
+ *  Stock Mood driving B-roll search, and the Pacing driving window cadence /
+ *  AI-gen min-hold (Task 5). */
+export interface StylePackRenderResolver {
+  resolveStockMood: () => Promise<ResolvedStockMood | null>;
+  resolvePacing: () => Promise<PacingLevel>;
+}
+
+/** Resolve the pinned Style Pack snapshot for ONE video job, once, and expose
+ *  its render-time facets.
  *
  *  Both worker paths write the job's Project Visual Context AFTER the job row
  *  is read — the upload path through `pinProjectVisualContextToVideoJob`, the
  *  script path inside `ensureVideoJobContentPreflight` — and only then reach
- *  the keyword step. So the context must be read LAZILY here, at the moment the
- *  mood is asked for: resolving it from the row captured at job load would hand
- *  every upload-mode clip the PRE-PIN value and silently ignore the pack pinned
- *  for that clip. The reads are injected, so this module stays I/O-free.
+ *  the keyword step. So the context must be read LAZILY here, at the moment a
+ *  facet is asked for: resolving it from the row captured at job load would
+ *  hand every upload-mode clip the PRE-PIN value and silently ignore the pack
+ *  pinned for that clip. The reads are injected, so this module stays I/O-free.
  *
- *  Memoized (four payload sites ask for the same answer) and fail-open: any
- *  failing lookup yields `null`, because a mood is a flavour and never a reason
- *  for a render to stop. */
-export function createStockMoodResolver(load: {
+ *  Memoized (four keyword/stock payload sites ask `resolveStockMood` for the
+ *  same answer) and fail-open: any failing lookup yields `null` (mood) /
+ *  `"normal"` (pacing), because a pack is a flavour and never a reason for a
+ *  render to stop. `resolveStockMood` and `resolvePacing` both read the SAME
+ *  memoized snapshot load — one resolution, two readers — so a job can never
+ *  render one facet from a different snapshot than the other. */
+export function createStylePackRenderResolver(load: {
   projectVisualContextJson: () => Promise<string | null>;
   brandRevisionRecipeJson: () => Promise<string | null>;
-}): () => Promise<ResolvedStockMood | null> {
-  let resolution: Promise<ResolvedStockMood | null> | null = null;
-  return () => {
+}): StylePackRenderResolver {
+  let resolution: Promise<{ projectVisualContextJson: string | null; brandRevisionRecipeJson: string | null }> | null = null;
+  const resolveJson = () => {
     resolution ??= (async () => {
+      const [projectVisualContextJson, brandRevisionRecipeJson] = await Promise.all([
+        load.projectVisualContextJson(),
+        load.brandRevisionRecipeJson(),
+      ]);
+      return { projectVisualContextJson, brandRevisionRecipeJson };
+    })();
+    return resolution;
+  };
+  return {
+    resolveStockMood: async () => {
       try {
-        const [projectVisualContextJson, brandRevisionRecipeJson] = await Promise.all([
-          load.projectVisualContextJson(),
-          load.brandRevisionRecipeJson(),
-        ]);
-        return stockMoodForProject({ projectVisualContextJson, brandRevisionRecipeJson });
+        return stockMoodForProject(await resolveJson());
       } catch {
         return null;
       }
-    })();
-    return resolution;
+    },
+    resolvePacing: async () => {
+      try {
+        return pacingForProject(await resolveJson());
+      } catch {
+        return "normal";
+      }
+    },
   };
 }
 
@@ -125,6 +150,7 @@ export function buildConfigPayload(
   sceneClipCounts: number[],
   sceneDurations: number[],
   brollWindows: { startMs: number; endMs: number }[] = [],
+  minHoldSec?: number,
 ) {
   return {
     sceneCaptions: captions,
@@ -147,8 +173,13 @@ export function buildConfigPayload(
     // Window-mode b-roll cadence (parity with the web editor): one clip per ~4s window instead
     // of one per caption — generate-config takes its window branch when brollWindows is present.
     ...(brollWindows.length > 0 ? { brollWindows } : {}),
-    // NOTE(auto-mix): MCP uses DEFAULT_STOCK_SOURCE="both" (stock), so the AI/auto-mix minHoldSec
-    // cadence path isn't used here; window mode above governs stock cadence.
+    // AI-gen / auto-mix min-hold cadence (Task 5): generate-config's per-subtitle-top branch
+    // only reads minHoldSec when brollWindows is EMPTY (window mode above already governs
+    // cadence when present) — most MCP jobs run in window mode, so this is usually a no-op,
+    // but a job with window mode off and an AI-gen/auto-mix source still needs SOME cadence
+    // control instead of one paid image per caption. The pack's PACING_MIN_HOLD_SEC[pacing]
+    // is that default (falls back to `"normal"`'s 4s when no pack is pinned).
+    ...(brollWindows.length === 0 && typeof minHoldSec === "number" && minHoldSec > 0 ? { minHoldSec } : {}),
   };
 }
 

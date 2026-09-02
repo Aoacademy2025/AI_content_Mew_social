@@ -14,17 +14,31 @@ export type BrollWindow = {
  * Each window grows by including captions until its span reaches the cadence (cut on a
  * caption boundary); a caption longer than the cadence is its own window. Windows tile
  * [0, audioEnd] with no gaps/overlaps. Count ≈ ceil(audioDuration / cadenceSec).
+ *
+ * `options.cadenceMultiplier` scales the target cadence for a Style Pack's Pacing
+ * (`PACING_CADENCE_MULTIPLIER` — slow=1.6, normal=1, fast=0.7): a slower pack holds each
+ * window longer (fewer, longer windows), a faster pack cuts more often (more, shorter
+ * windows). The scaled cadence is clamped to [2, 10] s so an extreme multiplier can never
+ * strobe faster than 2s/cut or drag past 10s/cut. Omitting `options` (or passing a
+ * non-positive multiplier) reproduces the exact pre-wave-1 cadence — no behavior change for
+ * callers that don't pass it.
  */
 export function buildBrollWindows(
   captions: BrollWindowCaption[],
   cadenceSec: number,
   audioEndMs?: number,
+  options?: { cadenceMultiplier?: number },
 ): BrollWindow[] {
   const caps = (captions ?? []).filter(
     (c) => c && Number.isFinite(c.startMs) && Number.isFinite(c.endMs) && c.endMs > c.startMs,
   );
   if (caps.length === 0) return [];
-  const cadenceMs = Math.max(500, (cadenceSec > 0 ? cadenceSec : 4) * 1000);
+  const baseCadenceSec = cadenceSec > 0 ? cadenceSec : 4;
+  const multiplier = options?.cadenceMultiplier;
+  const effectiveCadenceSec = multiplier && multiplier > 0
+    ? Math.min(10, Math.max(2, baseCadenceSec * multiplier))
+    : baseCadenceSec;
+  const cadenceMs = Math.max(500, effectiveCadenceSec * 1000);
 
   const windows: BrollWindow[] = [];
   let i = 0;

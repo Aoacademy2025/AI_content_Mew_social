@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   buildKeywordsPayload,
   buildStockPayload,
-  createStockMoodResolver,
+  createStylePackRenderResolver,
 } from "../src/lib/mcp/orchestrator-steps";
 import { stylePack } from "../src/lib/style-pack-catalog";
 import type { ResolvedStockMood } from "../src/lib/broll-preferences";
@@ -17,7 +17,7 @@ function check(name: string, ok: boolean) {
 
 const ghostMood: ResolvedStockMood = { packId: "thai-ghost", ...stylePack("thai-ghost").stockMood };
 
-type PackId = "thai-ghost" | "thai-history";
+type PackId = "thai-ghost" | "thai-history" | "premium-product";
 
 function packSnapshot(id: PackId) {
   const pack = stylePack(id);
@@ -98,21 +98,24 @@ function verifyPayloadBuilders() {
 }
 
 // ---------------------------------------------------------------------------
-// createStockMoodResolver: BOTH worker paths pin the job's Project Visual
+// createStylePackRenderResolver: BOTH worker paths pin the job's Project Visual
 // Context (upload via pinProjectVisualContextToVideoJob, script via
 // ensureVideoJobContentPreflight) AFTER the job row was read, and only THEN
 // reach the keyword step. So the resolver must read the context LAZILY, at
 // resolve() time — reading it eagerly hands every upload-mode clip the pre-pin
 // value and silently ignores the pack pinned for that clip.
+//
+// resolveStockMood and resolvePacing (Task 5) read the SAME memoized snapshot,
+// so this verifies both facets share precedence, memoization, and fail-open.
 // ---------------------------------------------------------------------------
-async function verifyStockMoodResolver() {
+async function verifyStylePackRenderResolver() {
   {
     // The upload path's real ordering: the job row is read with no pinned
     // context, the pin lands mid-run, and only then does the keyword step ask.
     let pinnedContextJson: string | null = null;
     let contextReads = 0;
     let recipeReads = 0;
-    const resolve = createStockMoodResolver({
+    const { resolveStockMood, resolvePacing } = createStylePackRenderResolver({
       projectVisualContextJson: async () => { contextReads++; return pinnedContextJson; },
       brandRevisionRecipeJson: async () => { recipeReads++; return recipeJsonFor("thai-ghost"); },
     });
@@ -120,48 +123,79 @@ async function verifyStockMoodResolver() {
 
     pinnedContextJson = contextJsonFor("thai-history"); // pinProjectVisualContextToVideoJob
 
-    const mood = await resolve();
+    const mood = await resolveStockMood();
     assert.equal(mood?.packId, "thai-history", "the context pinned for THIS job wins over the Brand Revision");
     assert.equal(mood?.queryToken, stylePack("thai-history").stockMood.queryToken);
 
-    // memoized: the keyword payload and the stock payload must not re-read
-    await resolve();
-    await resolve();
-    check("the resolver reads each source at most once", contextReads === 1 && recipeReads === 1);
+    const pacing = await resolvePacing();
+    assert.equal(pacing, stylePack("thai-history").pacing, "pacing comes from the SAME pinned context as the mood");
+
+    // memoized: the keyword payload, the stock payload, and pacing must not re-read —
+    // resolveStockMood and resolvePacing share ONE snapshot load.
+    await resolveStockMood();
+    await resolvePacing();
+    check("the resolver reads each source at most once across BOTH facets", contextReads === 1 && recipeReads === 1);
   }
 
   {
-    // No per-clip pack pinned → the Brand Revision recipe still supplies one.
-    const resolve = createStockMoodResolver({
+    // No per-clip pack pinned → the Brand Revision recipe still supplies one, for
+    // both the mood and the pacing.
+    const { resolveStockMood, resolvePacing } = createStylePackRenderResolver({
       projectVisualContextJson: async () => null,
       brandRevisionRecipeJson: async () => recipeJsonFor("thai-ghost"),
     });
-    assert.equal((await resolve())?.packId, "thai-ghost");
+    assert.equal((await resolveStockMood())?.packId, "thai-ghost");
+    assert.equal(await resolvePacing(), stylePack("thai-ghost").pacing);
   }
 
   {
-    // Fail-open: a lookup that throws can never fail a render.
-    const contextDown = createStockMoodResolver({
+    // Neither source carries a pack → mood is null, pacing is the documented
+    // "normal" default (never a reason for a render to stop).
+    const { resolveStockMood, resolvePacing } = createStylePackRenderResolver({
+      projectVisualContextJson: async () => null,
+      brandRevisionRecipeJson: async () => null,
+    });
+    assert.equal(await resolveStockMood(), null, "no pack pinned anywhere → no mood");
+    assert.equal(await resolvePacing(), "normal", "no pack pinned anywhere → normal pacing");
+  }
+
+  {
+    // Fail-open: a lookup that throws can never fail a render, for either facet.
+    const contextDown = createStylePackRenderResolver({
       projectVisualContextJson: async () => { throw new Error("db down"); },
       brandRevisionRecipeJson: async () => recipeJsonFor("thai-ghost"),
     });
-    assert.equal(await contextDown(), null, "a failed lookup means no mood, never a thrown render");
-    const recipeDown = createStockMoodResolver({
+    assert.equal(await contextDown.resolveStockMood(), null, "a failed lookup means no mood, never a thrown render");
+    assert.equal(await contextDown.resolvePacing(), "normal", "a failed lookup means normal pacing, never a thrown render");
+
+    const recipeDown = createStylePackRenderResolver({
       projectVisualContextJson: async () => contextJsonFor("thai-history"),
       brandRevisionRecipeJson: async () => { throw new Error("db down"); },
     });
-    assert.equal(await recipeDown(), null);
+    assert.equal(await recipeDown.resolveStockMood(), null);
+    assert.equal(await recipeDown.resolvePacing(), "normal");
   }
-  console.log("PASS stock mood resolver: lazy post-pin read, precedence, memoization, fail-open");
+
+  {
+    // Independent pacing values are carried through correctly (not hard-coded to
+    // one pack's value) — premium-product is "slow".
+    const { resolvePacing } = createStylePackRenderResolver({
+      projectVisualContextJson: async () => contextJsonFor("premium-product"),
+      brandRevisionRecipeJson: async () => null,
+    });
+    assert.equal(await resolvePacing(), "slow");
+  }
+
+  console.log("PASS style pack render resolver: lazy post-pin read, precedence, memoization, fail-open (mood + pacing)");
 }
 
 // ---------------------------------------------------------------------------
-// Both worker paths must resolve the mood server-side, through that resolver.
-// The client never supplies it for a render.
+// Both worker paths must resolve the mood/pacing server-side, through that
+// resolver. The client never supplies them for a render.
 // ---------------------------------------------------------------------------
 function verifyOrchestratorWiring() {
   const source = readFileSync(new URL("../src/lib/mcp/orchestrator.ts", import.meta.url), "utf8");
-  check("orchestrator builds the lazy resolver", source.includes("createStockMoodResolver({"));
+  check("orchestrator builds the shared style pack resolver", source.includes("createStylePackRenderResolver({"));
   const resolutions = source.match(/stockMood:\s*await resolveStockMood\(\)/g) ?? [];
   check(
     `both the script and upload keyword/stock payloads resolve the mood (found ${resolutions.length})`,
@@ -172,11 +206,20 @@ function verifyOrchestratorWiring() {
     /projectVisualContextJson: async \(\) =>/.test(source)
       && /select: \{ projectVisualContextJson: true \}/.test(source),
   );
+  check(
+    "the script path resolves pacing and scales buildBrollWindows' cadenceMultiplier",
+    /const pacing = await resolvePacing\(\);/.test(source)
+      && /cadenceMultiplier: PACING_CADENCE_MULTIPLIER\[pacing\]/.test(source),
+  );
+  check(
+    "the script path's AI-gen/auto-mix config payload defaults minHoldSec from PACING_MIN_HOLD_SEC[pacing]",
+    /aiGenSource \? PACING_MIN_HOLD_SEC\[pacing\] : undefined/.test(source),
+  );
 }
 
 async function main() {
   verifyPayloadBuilders();
-  await verifyStockMoodResolver();
+  await verifyStylePackRenderResolver();
   verifyOrchestratorWiring();
   process.exit(failures ? 1 : 0);
 }
