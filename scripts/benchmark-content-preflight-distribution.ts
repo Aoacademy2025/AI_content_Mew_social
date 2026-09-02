@@ -12,8 +12,8 @@
  * calls) and stays locked behind CONTENT_PREFLIGHT_BENCHMARK_KEY, which is
  * only ever set after Mew's explicit go is recorded in the plan Status.
  *
- *   npx tsx scripts/benchmark-content-preflight-distribution.ts --dry-run
- *   CONTENT_PREFLIGHT_BENCHMARK_KEY=... npx tsx scripts/benchmark-content-preflight-distribution.ts
+ *   npm run benchmark:content-preflight-distribution -- --dry-run
+ *   CONTENT_PREFLIGHT_BENCHMARK_KEY=... npm run benchmark:content-preflight-distribution
  */
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
