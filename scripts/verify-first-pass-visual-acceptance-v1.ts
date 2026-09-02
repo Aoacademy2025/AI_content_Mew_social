@@ -16,6 +16,8 @@ async function main() {
     recordFirstPassVisualExport,
   } = await import("../src/lib/first-pass-visual-acceptance.server");
   const { prisma } = await import("../src/lib/prisma");
+  const { stylePack } = await import("../src/lib/style-pack-catalog");
+  const { stylePackSnapshotOf } = await import("../src/lib/style-pack-snapshot");
   const context = JSON.stringify({
     schemaVersion: 2,
     source: "suggested",
@@ -26,6 +28,21 @@ async function main() {
       kind: "catalog", presetId: "thai-supernatural-horror", version: "v1.0.0", source: "adaptive",
     },
     brandVisualLanguage: null,
+  });
+  // Same treatment pin ("thai-supernatural-horror"), now with the pinned
+  // Style Pack that resolves to it — packId must ride along on both event
+  // types once a pack is pinned for the clip.
+  const contextWithPack = JSON.stringify({
+    schemaVersion: 2,
+    source: "project-look",
+    visualFormatId: "cinematic-realism",
+    recipeVersion: "cinematic-realism-v4",
+    treatment: "หนังผีไทย",
+    treatmentPin: {
+      kind: "catalog", presetId: "thai-supernatural-horror", version: "v1.0.0", source: "adaptive",
+    },
+    brandVisualLanguage: null,
+    stylePack: stylePackSnapshotOf(stylePack("thai-ghost")),
   });
   const customer = { role: "USER", email: "creator@example.test" };
   for (const reason of ["scene_reroll", "stock_replacement", "upload_replacement", "broll_disabled"] as const) {
@@ -41,6 +58,17 @@ async function main() {
     assert.equal(event?.status, reason);
     assert.equal(event?.properties?.treatmentPresetId, "thai-supernatural-horror");
     assert.equal(event?.properties?.treatmentPresetVersion, "v1.0.0");
+    assert.equal(event?.properties?.packId, null, "no pack pinned on this context → packId is null, not absent");
+
+    const eventWithPack = firstPassVisualRejectionEvent({
+      actor: customer,
+      projectId: "project-1",
+      videoJobId: "job-1",
+      sceneIndex: 2,
+      reason,
+      projectVisualContextJson: contextWithPack,
+    });
+    assert.equal(eventWithPack?.properties?.packId, "thai-ghost", "a pinned pack rides along on the rejection event");
   }
   assert.equal(firstPassVisualRejectionEvent({
     actor: { role: "ADMIN", email: "admin@example.test" }, projectId: "p", videoJobId: "j",
@@ -68,6 +96,16 @@ async function main() {
   assert.equal(exported?.name, "first_pass_visual_exported");
   assert.equal(exported?.value, 5);
   assert.equal(exported?.properties?.treatmentPresetId, "thai-supernatural-horror");
+  assert.equal(exported?.properties?.packId, null, "no pack pinned on this context → packId is null, not absent");
+
+  const exportedWithPack = firstPassVisualExportEvent({
+    actor: customer,
+    projectId: "project-1",
+    videoJobId: "job-1",
+    projectVisualContextJson: contextWithPack,
+    initialAiWindowCount: 5,
+  });
+  assert.equal(exportedWithPack?.properties?.packId, "thai-ghost", "a pinned pack rides along on the export event");
 
   const user = await prisma.user.create({
     data: { name: "Concurrent exporter", email: "first-pass-export@example.test" },

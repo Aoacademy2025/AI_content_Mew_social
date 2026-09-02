@@ -3,6 +3,7 @@ import {
   evaluateBrandVisualSafety,
   summarizeBrandVisualDailyCogs,
 } from "../src/lib/brand-visual-safety";
+import { summarizeStylePackAcceptance } from "../src/lib/brand-visual-rollout-health.server";
 
 const passing = evaluateBrandVisualSafety({
   terminalJobs: 100,
@@ -74,5 +75,42 @@ const attributed = summarizeBrandVisualDailyCogs({
 });
 assert.ok(Math.abs((attributed.highestDailyCogsBahtPerImage ?? 0) - 0.175) < 1e-9);
 assert.deepEqual(attributed.unattributedCostDays, []);
+
+// Task 9 (Telemetry): admin health segments first-pass acceptance by packId —
+// a pure summarizer over the packId already carried on first_pass_visual_exported
+// / first_pass_visual_rejected, so the DB-backed health function stays a thin
+// query + this summary.
+const segments = summarizeStylePackAcceptance({
+  exportedPackIds: ["thai-ghost", "thai-ghost", "thai-history", null],
+  rejectedPackIds: ["thai-ghost", null],
+});
+const ghost = segments.find((segment) => segment.packId === "thai-ghost");
+assert.ok(ghost, "thai-ghost segment is present");
+assert.equal(ghost?.exported, 2);
+assert.equal(ghost?.rejected, 1);
+assert.ok(Math.abs((ghost?.acceptanceRate ?? 0) - (2 / 3)) < 1e-9, "acceptanceRate = exported / (exported + rejected)");
+
+const history = segments.find((segment) => segment.packId === "thai-history");
+assert.equal(history?.exported, 1);
+assert.equal(history?.rejected, 0);
+assert.equal(history?.acceptanceRate, 1, "no rejections at all → acceptanceRate 1");
+
+const none = segments.find((segment) => segment.packId === "none");
+assert.ok(none, "unpinned (packId: null) events roll up into a \"none\" segment");
+assert.equal(none?.exported, 1);
+assert.equal(none?.rejected, 1);
+assert.ok(Math.abs((none?.acceptanceRate ?? 0) - 0.5) < 1e-9);
+
+assert.equal(
+  summarizeStylePackAcceptance({ exportedPackIds: [], rejectedPackIds: [] }).length,
+  0,
+  "no events at all → no segments (never a fabricated zero-row)",
+);
+
+const zeroExported = summarizeStylePackAcceptance({
+  exportedPackIds: [],
+  rejectedPackIds: ["dark-story"],
+});
+assert.equal(zeroExported[0]?.acceptanceRate, 0, "rejections with no exports → acceptanceRate 0, not null");
 
 console.log("brand visual rollout health verification: ok");

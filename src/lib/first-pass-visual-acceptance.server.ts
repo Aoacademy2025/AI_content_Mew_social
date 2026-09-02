@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
 import { parseProjectVisualContext } from "@/lib/project-visual-context";
+import { stylePackSnapshotFromJson } from "@/lib/style-pack-snapshot";
 import {
   recordTelemetryEvent,
   recordTelemetryEventOnce,
@@ -21,6 +22,14 @@ function measurablePin(
 ) {
   if (actor.role === "ADMIN" || isInternalAiTester(actor)) return null;
   return parseProjectVisualContext(projectVisualContextJson)?.treatmentPin ?? null;
+}
+
+/** The pinned Style Pack's id (Task 9), read from the same immutable snapshot
+ * as `measurablePin` — `null` when no pack is pinned for this clip. Only ever
+ * read once `measurablePin` has already confirmed the event is measurable
+ * (customer, not Admin/QA), so no separate actor gate is needed here. */
+function measurablePackId(projectVisualContextJson: string | null | undefined) {
+  return stylePackSnapshotFromJson(projectVisualContextJson)?.id ?? null;
 }
 
 export function firstPassVisualRejectionEvent(input: {
@@ -46,6 +55,7 @@ export function firstPassVisualRejectionEvent(input: {
       sceneIndex: input.sceneIndex,
       treatmentPresetId: pin.presetId,
       treatmentPresetVersion: pin.version,
+      packId: measurablePackId(input.projectVisualContextJson),
     },
   };
 }
@@ -72,6 +82,7 @@ export function firstPassVisualExportEvent(input: {
       initialAiWindowCount: input.initialAiWindowCount,
       treatmentPresetId: pin.presetId,
       treatmentPresetVersion: pin.version,
+      packId: measurablePackId(input.projectVisualContextJson),
     },
   };
 }

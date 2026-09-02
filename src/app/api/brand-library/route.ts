@@ -225,6 +225,22 @@ export async function POST(req: Request) {
         }),
       },
     }).catch(() => {});
+    // Task 9 (Telemetry): a Brand is "published" the moment it is created
+    // with an active Revision (activeRevisionNumber: 1) — this is the
+    // promotion path createBrandProfileFromPayload serves, not a draft
+    // autosave, so a pack chosen here counts as selected.
+    if (parsed.data.visual.stylePackId) {
+      await recordTelemetryEvent(auth.user.id, {
+        name: "style_pack_selected",
+        source: "server",
+        step: "brands.publish",
+        properties: {
+          packId: parsed.data.visual.stylePackId,
+          surface: "brand",
+          version: parsed.data.visual.stylePackVersion,
+        },
+      }).catch(() => {});
+    }
     return NextResponse.json({
       profileId: created.profile.id,
       revisionId: created.revision.id,

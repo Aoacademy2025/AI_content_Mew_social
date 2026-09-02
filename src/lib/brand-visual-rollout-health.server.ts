@@ -9,6 +9,7 @@ import {
 } from "@/lib/brand-visual-safety";
 import { evaluateBrandVisualFunnel } from "@/lib/brand-visual-funnel";
 import { brandVisualRolloutFlags } from "@/lib/brand-visual-rollout.server";
+import { STYLE_PACK_IDS, type StylePackId } from "@/lib/style-pack-catalog";
 
 const THIRTY_MINUTES_MS = 30 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
@@ -71,6 +72,45 @@ function dayKey(date: Date): string {
 
 function rate(numerator: number, denominator: number): number | null {
   return denominator > 0 ? numerator / denominator : null;
+}
+
+export type StylePackAcceptanceSegment = {
+  packId: StylePackId | "none";
+  exported: number;
+  rejected: number;
+  acceptanceRate: number | null;
+};
+
+/** Task 9 (Telemetry): segment first-pass visual acceptance by the pinned
+ *  Style Pack. Pure over the `packId` already carried on
+ *  `first_pass_visual_exported` / `first_pass_visual_rejected` properties, so
+ *  `getBrandVisualRolloutHealth` stays a thin telemetry query + this summary.
+ *  A packId outside the current catalog (or `null` — no pack pinned for that
+ *  clip) rolls up into `"none"`, never a fabricated per-pack row. A pack with
+ *  no events at all is simply absent — never a zero-row nobody asked for. */
+export function summarizeStylePackAcceptance(input: {
+  exportedPackIds: Array<string | null>;
+  rejectedPackIds: Array<string | null>;
+}): StylePackAcceptanceSegment[] {
+  const counts = new Map<StylePackId | "none", { exported: number; rejected: number }>();
+  const normalizedPackId = (packId: string | null): StylePackId | "none" =>
+    packId && (STYLE_PACK_IDS as readonly string[]).includes(packId) ? (packId as StylePackId) : "none";
+  const bump = (packId: string | null, key: "exported" | "rejected") => {
+    const id = normalizedPackId(packId);
+    const current = counts.get(id) ?? { exported: 0, rejected: 0 };
+    current[key] += 1;
+    counts.set(id, current);
+  };
+  for (const packId of input.exportedPackIds) bump(packId, "exported");
+  for (const packId of input.rejectedPackIds) bump(packId, "rejected");
+  return [...counts.entries()]
+    .map(([packId, { exported, rejected }]) => ({
+      packId,
+      exported,
+      rejected,
+      acceptanceRate: rate(exported, exported + rejected),
+    }))
+    .sort((left, right) => (right.exported + right.rejected) - (left.exported + left.rejected));
 }
 
 function percentile(values: number[], target: number): number | null {
@@ -508,6 +548,28 @@ export async function getBrandVisualRolloutHealth(input: {
     ? costSnapshot.costBahtPerImage * usable.length / activatedUsers
     : null;
   const funnel = await getBrandVisualFunnelHealth({ from, now });
+  // Task 9 (Telemetry): first-pass acceptance segmented by Style Pack. Not
+  // cohort-scoped like the canary jobs above — these events fire for every
+  // Brand Visual customer, not only the RunPod image safety sample.
+  const acceptanceEvents = await prisma.telemetryEvent.findMany({
+    where: {
+      name: { in: ["first_pass_visual_exported", "first_pass_visual_rejected"] },
+      createdAt: { gte: from, lt: now },
+    },
+    select: { name: true, properties: true },
+  });
+  const packIdOf = (event: (typeof acceptanceEvents)[number]): string | null => {
+    const value = properties(event.properties).packId;
+    return typeof value === "string" ? value : null;
+  };
+  const byStylePack = summarizeStylePackAcceptance({
+    exportedPackIds: acceptanceEvents
+      .filter((event) => event.name === "first_pass_visual_exported")
+      .map(packIdOf),
+    rejectedPackIds: acceptanceEvents
+      .filter((event) => event.name === "first_pass_visual_rejected")
+      .map(packIdOf),
+  });
   return {
     window: { from: from.toISOString(), to: now.toISOString(), days },
     canary: {
@@ -553,6 +615,7 @@ export async function getBrandVisualRolloutHealth(input: {
     } : null,
     safety,
     funnel,
+    acceptance: { byStylePack },
     rollout: {
       percent: rollout.percent,
       canExpandFrom10To50: rollout.percent === 10 && safety.canExpand,

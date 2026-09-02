@@ -16,6 +16,7 @@ const brandList = readFileSync("src/app/(dashboard)/brands/_components/BrandList
 const brandClient = readFileSync("src/app/(dashboard)/brands/_components/BrandLibraryClient.tsx", "utf8");
 const postPhase = readFileSync("src/app/(dashboard)/video-editor/_v2/PostPhase.tsx", "utf8");
 const libraryRoute = readFileSync("src/app/api/brand-library/route.ts", "utf8");
+const publishRoute = readFileSync("src/app/api/brand-library/[id]/publish/route.ts", "utf8");
 const visualSuggestionRoute = readFileSync("src/app/api/brand-library/suggest-visual/route.ts", "utf8");
 const archiveRoute = readFileSync("src/app/api/brand-library/[id]/route.ts", "utf8");
 const previewServer = readFileSync("src/lib/brand-look-preview.server.ts", "utf8");
@@ -101,6 +102,27 @@ const reasonChain = panel.slice(panel.indexOf("const disabledReason"), panel.ind
 assert.ok(
   reasonChain.indexOf("!imageAccess.canUse") < reasonChain.indexOf("previewGenerationCount === null"),
   "a rejected account reads the image-gate reason instead of a quote that never arrives",
+);
+
+// Task 9 (Telemetry): style_pack_selected (surface: "brand") is emitted once
+// a Brand carries a pack — on manual/"save as brand" creation (POST
+// /api/brand-library) and on every publish (POST /api/brand-library/[id]/publish)
+// — never on a draft autosave, and never when no pack is chosen. Both sites
+// are server-sourced, next to the existing brand telemetry.
+assert.match(
+  libraryRoute,
+  /parsed\.data\.visual\.stylePackId[\s\S]{0,400}name:\s*"style_pack_selected"[\s\S]{0,300}source:\s*"server"[\s\S]{0,300}surface:\s*"brand"/,
+  "creating a Brand with a pack emits style_pack_selected (surface: brand), gated on a non-null stylePackId",
+);
+assert.match(
+  publishRoute,
+  /stylePackId[\s\S]{0,400}name:\s*"style_pack_selected"[\s\S]{0,300}source:\s*"server"[\s\S]{0,300}surface:\s*"brand"/,
+  "publishing a Brand Revision with a pack emits style_pack_selected (surface: brand)",
+);
+assert.doesNotMatch(
+  readFileSync("src/app/api/brand-library/[id]/draft/route.ts", "utf8"),
+  /style_pack_selected/,
+  "draft autosave never emits style_pack_selected — only publish/create do",
 );
 
 console.log("Brand Library support-feature contracts passed");

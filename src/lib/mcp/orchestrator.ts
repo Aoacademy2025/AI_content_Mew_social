@@ -961,6 +961,24 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         });
         return project?.brandProfileRevision?.visualRecipeJson ?? null;
       },
+    }, {
+      // Task 9: fired at most once per job, the first time the resolver above
+      // finds a pinned pack (upload or script path — both share this one
+      // resolver instance). Nothing fires when no pack is pinned.
+      onPinned: (detail) => {
+        emitTelemetry({
+          name: "style_pack_pinned",
+          source: "server",
+          step: "render.pin",
+          properties: {
+            packId: detail.packId,
+            version: detail.version,
+            jobId,
+            projectId: job.projectId ?? null,
+            source: detail.source,
+          },
+        });
+      },
     });
     let resumedHeroVoiceTts: HeroVoiceGenerationResult | null = null;
     let ttsStepAlreadyEntered = false;
