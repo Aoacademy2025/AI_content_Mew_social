@@ -1275,6 +1275,7 @@ model Music {
   title     String
   filename  String // file stored in public/music/
   duration  Float? // seconds
+  mood      String? // MusicMood (src/lib/style-pack-catalog.ts) — admin-tagged, null = unset
   createdAt DateTime @default(now())
 }
 
