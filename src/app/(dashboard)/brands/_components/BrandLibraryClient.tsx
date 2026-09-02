@@ -262,6 +262,19 @@ export function BrandLibraryClient() {
             visualNotes: typeof language?.visualNotes === "string" ? language.visualNotes : seeded.visual.visualNotes,
           },
         };
+        // A clip whose look came from a ready-made style keeps that link, and
+        // keeps it WHOLE: re-applying the style is what fills in the narrative
+        // policy, subtitle and tone the clip's own snapshot never carried, so
+        // the draft is never a half-linked look (ADR 0058). The style is
+        // re-applied only if it is still offered — a retired one promotes as
+        // the custom look it already is.
+        const seededPackId = libraryData.stylePacks
+          .find((pack) => pack.id === exactContext?.stylePack?.id)?.id ?? null;
+        if (seededPackId) {
+          seeded = fromStylePackPayload(
+            applyStylePackToPayload(toStylePackPayload(seeded), stylePack(seededPackId)),
+          );
+        }
       }
       setActiveId(null);
       setSourceProjectId(requestedProjectId);

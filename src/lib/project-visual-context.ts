@@ -7,6 +7,8 @@ import {
   type TreatmentPresetId,
 } from "@/lib/brand-treatment-catalog";
 import { stylePackSnapshotSchema, type StylePackSnapshot } from "@/lib/style-pack-snapshot";
+import { STYLE_PACK_IDS, stylePack } from "@/lib/style-pack-catalog";
+import { STYLE_PACK_UNAVAILABLE_MESSAGE } from "@/lib/style-pack-apply";
 import {
   SUPPORTED_VISUAL_FORMATS,
   SUPPORTED_VISUAL_FORMAT_IDS,
@@ -29,10 +31,33 @@ export const brandLanguageSchema = z.object({
   visualNotes: z.string().trim().max(800).nullable().optional(),
 });
 
+/** What one clip's own look request may say. A Style Pack is one tap over the
+ * two axes below, never a third axis (ADR 0058): naming a pack RESOLVES the
+ * image format and the narrative treatment server-side, so those two become
+ * unnecessary — and are ignored — on a pack request. A custom look ("กำหนดเอง")
+ * still states both, and carries `stylePackId: null` to unlink any pack the
+ * clip had. A pack still awaiting the Treatment Qualification Benchmark
+ * (ADR 0058) is refused here, in customer Thai. */
 export const projectLookInputSchema = z.object({
-  visualFormatId: z.enum(VISUAL_FORMAT_IDS),
-  treatmentPresetId: z.enum(TREATMENT_PRESET_IDS),
+  visualFormatId: z.enum(VISUAL_FORMAT_IDS).optional(),
+  treatmentPresetId: z.enum(TREATMENT_PRESET_IDS).optional(),
   brandVisualLanguage: brandLanguageSchema.nullable().optional(),
+  stylePackId: z
+    .enum(STYLE_PACK_IDS)
+    .nullable()
+    .optional()
+    .refine(
+      (id) => id === null || id === undefined || stylePack(id).status === "active",
+      STYLE_PACK_UNAVAILABLE_MESSAGE,
+    ),
+}).superRefine((look, context) => {
+  if (look.stylePackId) return;
+  if (!look.visualFormatId) {
+    context.addIssue({ code: "custom", path: ["visualFormatId"], message: "แนวภาพนี้ไม่อยู่ใน V1" });
+  }
+  if (!look.treatmentPresetId) {
+    context.addIssue({ code: "custom", path: ["treatmentPresetId"], message: "กรุณาเลือกแนวเล่าเรื่องของคลิปนี้" });
+  }
 });
 
 const legacyProjectLookSnapshotSchema = z.object({
@@ -50,6 +75,11 @@ const catalogProjectLookSnapshotSchema = z.object({
   treatment: z.string().min(1),
   treatmentPin: treatmentPinSchema,
   brandVisualLanguage: brandLanguageSchema.nullable(),
+  // The pack this clip's look was resolved from, frozen at save time. Same
+  // reason as the recipe below: these are plain (non-strict) z.objects, so
+  // WITHOUT the field the snapshot is silently STRIPPED on parse and the pin
+  // would hand the renderer a pack-less clip.
+  stylePack: stylePackSnapshotSchema.nullable().optional(),
 });
 
 export const projectLookSnapshotSchema = z.union([
@@ -218,6 +248,7 @@ export function resolveProjectVisualContextFromSnapshots(input: {
         treatment: treatmentPresetThaiLabel(brand.lockedTreatmentPin),
         treatmentPin: brand.lockedTreatmentPin,
         brandVisualLanguage: brand.brandVisualLanguage ?? null,
+        stylePack: brand.stylePack ?? null,
       };
     }
     return {
@@ -228,6 +259,7 @@ export function resolveProjectVisualContextFromSnapshots(input: {
       treatment: input.suggested.treatment.trim() || brand.defaultTreatment,
       ...(input.suggested.treatmentPin ? { treatmentPin: input.suggested.treatmentPin } : {}),
       brandVisualLanguage: brand.brandVisualLanguage ?? null,
+      stylePack: brand.stylePack ?? null,
     };
   }
   return {

@@ -4,6 +4,7 @@ import {
   STYLE_PACK_IDS,
   type PacingLevel,
   type StockMood,
+  type StylePack,
   type StylePackId,
 } from "@/lib/style-pack-catalog";
 
@@ -57,6 +58,28 @@ export const stylePackSnapshotSchema = z.object({
 });
 
 export type StylePackSnapshot = z.infer<typeof stylePackSnapshotSchema>;
+
+/** THE snapshot builder. Every surface that freezes a pack — a Brand Revision
+ * recipe at publish time, a per-clip Project Look — must go through here: the
+ * render-time reader (`stylePackSnapshotFromJson`) validates the whole shape
+ * and IGNORES a partial one, so a second hand-written copy that forgets
+ * `pacing` or `musicMood` would silently render as "no pack at all". Arrays are
+ * copied because the catalog's are `readonly` and shared process-wide. */
+export function stylePackSnapshotOf(pack: StylePack): StylePackSnapshot {
+  return {
+    id: pack.id,
+    version: pack.version,
+    stockMood: {
+      queryToken: pack.stockMood.queryToken,
+      positive: [...pack.stockMood.positive],
+      avoid: [...pack.stockMood.avoid],
+      direction: pack.stockMood.direction,
+      fallbackQueries: [...pack.stockMood.fallbackQueries],
+    },
+    pacing: pack.pacing,
+    musicMood: pack.musicMood,
+  };
+}
 
 /** One Stock Mood plus the pack it came from. `packId` rides along so the
  * managed-stock cache can discriminate two moods without hashing the whole

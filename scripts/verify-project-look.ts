@@ -839,6 +839,347 @@ async function main() {
   });
   assert.equal(restored.source, "brand-revision");
 
+  // ── Wave 1 Task 7: one Style Pack chosen for THIS clip ────────────────────
+  // A pack is one tap over the axes the Project Look already owns (ADR 0058):
+  // it resolves the image format and the narrative treatment, and it SNAPSHOTS
+  // itself into the look so the render-time readers (stock mood, pacing, music)
+  // read the pack the creator was shown, never the live catalog (ADR 0005).
+  const { stockMoodForProject } = await import("../src/lib/broll-preferences");
+  const { STYLE_PACK_UNAVAILABLE_MESSAGE } = await import("../src/lib/style-pack-apply");
+  const { stylePack: stylePackFromCatalog } = await import("../src/lib/style-pack-catalog");
+  const ghostPack = stylePackFromCatalog("thai-ghost");
+  const { promoteProjectLookToBrandProfile } = await import("../src/lib/brand-profile-library.server");
+
+  const packUser = await prisma.user.create({
+    data: { name: "Pack owner", email: "pack-look@example.test" },
+  });
+  const packProject = await prisma.editorProject.create({
+    data: { userId: packUser.id, title: "Per-clip Style Pack" },
+  });
+  const packLook = await saveProjectLook({
+    userId: packUser.id,
+    projectId: packProject.id,
+    look: { stylePackId: "thai-ghost" },
+  });
+  assert.equal(packLook.schemaVersion, 2);
+  assert.equal(packLook.visualFormatId, "cinematic-realism",
+    "the pack, not the client, decides the clip's image format");
+  assert.equal(packLook.schemaVersion === 2 ? packLook.treatmentPin.presetId : null,
+    "thai-supernatural-horror",
+    "the pack, not the client, decides the clip's narrative treatment");
+  assert.equal(packLook.schemaVersion === 2 ? packLook.treatmentPin.source : null, "creator",
+    "a per-clip pack is an explicit creator decision, so later analyses cannot overrule it");
+  assert.equal(packLook.stylePack?.id, "thai-ghost");
+  assert.equal(packLook.stylePack?.version, "v1.0.0");
+  assert.equal(packLook.stylePack?.stockMood.queryToken, "night");
+  assert.equal(packLook.stylePack?.pacing, "normal");
+  assert.equal(packLook.stylePack?.musicMood, "ominous");
+  assert.deepEqual(packLook.brandVisualLanguage?.palette, ["#0B0F1A", "#7C1D2B", "#C9A24C"],
+    "the pack resolves the clip's palette too, so promoting the clip keeps one look");
+  const packProjectRow = await prisma.editorProject.findUniqueOrThrow({ where: { id: packProject.id } });
+  assert.equal(packProjectRow.treatmentPresetId, "thai-supernatural-horror");
+  assert.equal(packProjectRow.treatmentPinSource, "creator");
+
+  const packContext = await resolveProjectVisualContext({
+    userId: packUser.id,
+    projectId: packProject.id,
+    suggested: { visualFormatId: "clear-infographic", treatment: "calm" },
+  });
+  assert.equal(packContext.source, "project-look");
+  assert.equal(packContext.stylePack?.id, "thai-ghost",
+    "the resolved per-clip context carries the pack so Step 2 and the render read the same one");
+
+  const packPreflight = await prisma.contentPreflight.create({
+    data: {
+      userId: packUser.id,
+      projectId: packProject.id,
+      narrativeSourceKind: "creator-script",
+      sourceHash: "style-pack-clip-v1",
+      contentDomain: "thai horror",
+      suggestedVisualFormatId: "clear-infographic",
+      suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "direct" }),
+      ...treatmentPlanFields,
+      visualBeats: {
+        create: {
+          userId: packUser.id,
+          projectId: packProject.id,
+          beatKey: "window-0",
+          sequence: 0,
+          sourceExcerptHash: "style-pack-window-0",
+          beatJson: JSON.stringify({ sourceExcerpt: "a dark corridor", subject: "corridor" }),
+        },
+      },
+    },
+  });
+  const packPin = await prepareProjectVisualPin({
+    userId: packUser.id,
+    projectId: packProject.id,
+    preflightId: packPreflight.id,
+  });
+  const pinnedMood = stockMoodForProject({
+    projectVisualContextJson: packPin.projectVisualContextJson,
+    brandRevisionRecipeJson: null,
+  });
+  assert.equal(pinnedMood?.packId, "thai-ghost",
+    "the pinned per-clip context is what the stock search reads, so the pack must survive the pin");
+  assert.equal(pinnedMood?.queryToken, "night");
+
+  // Precedence (already contracted in broll-preferences): the per-clip pack
+  // outranks the Brand's, because the creator overruled the brand for this clip.
+  const brandRecipeWithOtherPack = JSON.stringify({
+    schemaVersion: 1,
+    visualFormatId: "clear-infographic",
+    recipeVersion: "clear-infographic-v4",
+    brandVisualLanguage: null,
+    defaultTreatment: "clear",
+    treatmentPolicy: "adaptive",
+    lockedTreatmentPin: null,
+    stylePack: {
+      id: "finance-clear",
+      version: "v1.0.0",
+      stockMood: {
+        queryToken: "clean",
+        positive: ["chart"],
+        avoid: ["horror"],
+        direction: "clean modern financial clarity",
+        fallbackQueries: ["a", "b", "c", "d", "e"],
+      },
+      pacing: "fast",
+      musicMood: "upbeat",
+    },
+  });
+  assert.equal(
+    stockMoodForProject({
+      projectVisualContextJson: packPin.projectVisualContextJson,
+      brandRevisionRecipeJson: brandRecipeWithOtherPack,
+    })?.packId,
+    "thai-ghost",
+    "a pack chosen for this clip outranks the Brand's pack",
+  );
+
+  // A pack still awaiting the Treatment Qualification Benchmark is never
+  // selectable, and says so in customer Thai (ADR 0058).
+  await assert.rejects(
+    saveProjectLook({
+      userId: packUser.id,
+      projectId: packProject.id,
+      look: { stylePackId: "dark-story" },
+    }),
+    (error: unknown) => error instanceof Error
+      && error.message === STYLE_PACK_UNAVAILABLE_MESSAGE,
+    "a pending-benchmark pack cannot be chosen for a clip",
+  );
+
+  // กำหนดเอง: unlink the pack and keep EVERYTHING it resolved — format,
+  // treatment AND palette/personality — exactly like `clearStylePack` on
+  // /brands (controller ruling R23, amended). Only the snapshot is dropped.
+  // The project below is pinned to a Brand with its own blue palette, so a
+  // regression that "falls back to the brand" is visible rather than hidden
+  // behind a project that has no brand at all.
+  const packBrandProject = await prisma.editorProject.create({
+    data: { userId: packUser.id, title: "Pack over a brand", brandProfileRevisionId: revision.id },
+  });
+  await saveProjectLook({
+    userId: packUser.id,
+    projectId: packBrandProject.id,
+    look: { stylePackId: "thai-ghost" },
+  });
+  const customAfterPack = await saveProjectLook({
+    userId: packUser.id,
+    projectId: packBrandProject.id,
+    look: {
+      visualFormatId: "cinematic-realism",
+      treatmentPresetId: "thai-supernatural-horror",
+      stylePackId: null,
+    },
+  });
+  assert.equal(customAfterPack.stylePack, null,
+    "กำหนดเอง unlinks the pack");
+  assert.equal(customAfterPack.visualFormatId, "cinematic-realism",
+    "unlinking the pack keeps the look it already resolved");
+  assert.equal(
+    customAfterPack.schemaVersion === 2 ? customAfterPack.treatmentPin.presetId : null,
+    "thai-supernatural-horror",
+  );
+  assert.deepEqual(
+    customAfterPack.brandVisualLanguage?.palette,
+    ["#0B0F1A", "#7C1D2B", "#C9A24C"],
+    "the look the creator is looking at does not change when they unlink the style — the pack's palette stays, it simply becomes their own",
+  );
+  assert.equal(
+    customAfterPack.brandVisualLanguage?.personality,
+    ghostPack.personality,
+    "personality is a pack-resolved axis too, so unlinking keeps it rather than reverting to the Brand's",
+  );
+  // A look change on a project that never had a pack still follows the Brand.
+  const brandOnlyProject = await prisma.editorProject.create({
+    data: { userId: packUser.id, title: "No pack, brand language", brandProfileRevisionId: revision.id },
+  });
+  const brandOnlyLook = await saveProjectLook({
+    userId: packUser.id,
+    projectId: brandOnlyProject.id,
+    look: { visualFormatId: "cinematic-realism", treatmentPresetId: "thai-supernatural-horror" },
+  });
+  assert.deepEqual(
+    brandOnlyLook.brandVisualLanguage?.palette,
+    ["#111111", "#38BDF8"],
+    "keeping a pack's language must not change what a pack-less look inherits from its Brand",
+  );
+
+  await saveProjectLook({
+    userId: packUser.id,
+    projectId: packProject.id,
+    look: { stylePackId: "thai-ghost" },
+  });
+  await clearProjectLook({ userId: packUser.id, projectId: packProject.id });
+  const clearedPackContext = await resolveProjectVisualContext({
+    userId: packUser.id,
+    projectId: packProject.id,
+    suggested: { visualFormatId: "clear-infographic", treatment: "calm" },
+  });
+  assert.equal(clearedPackContext.stylePack ?? null, null,
+    "clearing the clip's look also removes its pack snapshot");
+
+  // Promotion: "save this clip's look as a brand" must carry the clip's pack
+  // into the new Revision's immutable recipe — resolved on the server, never
+  // taken from the client body.
+  const promotionProject = await prisma.editorProject.create({
+    data: { userId: packUser.id, title: "Promote the clip's pack" },
+  });
+  const promotionPreflight = await prisma.contentPreflight.create({
+    data: {
+      userId: packUser.id,
+      projectId: promotionProject.id,
+      narrativeSourceKind: "creator-script",
+      sourceHash: "style-pack-promotion-v1",
+      contentDomain: "thai horror",
+      suggestedVisualFormatId: "clear-infographic",
+      suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "direct" }),
+      ...treatmentPlanFields,
+      visualBeats: {
+        create: {
+          userId: packUser.id,
+          projectId: promotionProject.id,
+          beatKey: "window-0",
+          sequence: 0,
+          sourceExcerptHash: "style-pack-promotion-window-0",
+          beatJson: JSON.stringify({ sourceExcerpt: "a dark corridor", subject: "corridor" }),
+        },
+      },
+    },
+  });
+  const promotedLook = await saveProjectLook({
+    userId: packUser.id,
+    projectId: promotionProject.id,
+    look: { stylePackId: "thai-ghost" },
+  });
+  const promotionPayload = {
+    schemaVersion: 1 as const,
+    name: "แบรนด์หนังผีไทย",
+    niche: "thai horror",
+    audience: "Thai creators",
+    script: {
+      styleId: null,
+      tone: "เล่าเรื่องแบบของฉันเอง",
+      bannedWords: [],
+      ctaStyle: "follow",
+      language: "th",
+      analysisNotes: null,
+      sampleText: null,
+    },
+    voice: { provider: "gemini", voiceId: null },
+    subtitle: { presetId: null, config: {} },
+    brandMark: { assetId: null, enabled: false, position: "top-right", sizePct: 18, opacity: 0.9 },
+    visual: {
+      // Exactly what the /brands form seeds from the clip — the look, with NO
+      // pack id: the server must recognise the clip's pack on its own instead
+      // of trusting the body to carry it.
+      primaryVisualFormatId: promotedLook.visualFormatId,
+      treatmentPolicy: "adaptive" as const,
+      lockedTreatmentPresetId: null,
+      stylePackId: null,
+      stylePackVersion: null,
+      languageMode: "defined" as const,
+      palette: promotedLook.brandVisualLanguage?.palette ?? [],
+      personality: promotedLook.brandVisualLanguage?.personality ?? "",
+      peopleAndSetting: "",
+      memorableCues: [],
+      visualNotes: "",
+      defaultTreatment: promotedLook.treatment,
+    },
+  };
+  const promoted = await promoteProjectLookToBrandProfile({
+    userId: packUser.id,
+    projectId: promotionProject.id,
+    preflightId: promotionPreflight.id,
+    payload: promotionPayload,
+  });
+  const promotedRecipe = JSON.parse(promoted.revision.visualRecipeJson) as {
+    visualFormatId: string;
+    stylePack: { id: string; version: string; pacing: string; musicMood: string } | null;
+  };
+  assert.equal(promotedRecipe.stylePack?.id, "thai-ghost",
+    "promoting a clip whose look is a pack produces a Revision that keeps that pack");
+  assert.equal(promotedRecipe.stylePack?.musicMood, "ominous");
+  assert.equal(promotedRecipe.visualFormatId, "cinematic-realism",
+    "the promoted Revision keeps the pack's own image format");
+  assert.equal(
+    (JSON.parse(promoted.revision.payloadJson) as { visual: { stylePackId: string | null } })
+      .visual.stylePackId,
+    "thai-ghost",
+    "the promoted Brand stays linked to the pack, so editing it later unlinks explicitly",
+  );
+  // Re-linking must never overwrite an actual edit: a body that changed a
+  // pack-owned axis still gets the ordinary exact-promotion refusal, in Thai,
+  // instead of having the change silently reverted to the pack's values.
+  const editedProject = await prisma.editorProject.create({
+    data: { userId: packUser.id, title: "Edited pack promotion" },
+  });
+  const editedPreflight = await prisma.contentPreflight.create({
+    data: {
+      userId: packUser.id,
+      projectId: editedProject.id,
+      narrativeSourceKind: "creator-script",
+      sourceHash: "style-pack-edited-v1",
+      contentDomain: "thai horror",
+      suggestedVisualFormatId: "clear-infographic",
+      suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "direct" }),
+      ...treatmentPlanFields,
+      visualBeats: {
+        create: {
+          userId: packUser.id,
+          projectId: editedProject.id,
+          beatKey: "window-0",
+          sequence: 0,
+          sourceExcerptHash: "style-pack-edited-window-0",
+          beatJson: JSON.stringify({ sourceExcerpt: "a dark corridor", subject: "corridor" }),
+        },
+      },
+    },
+  });
+  await saveProjectLook({
+    userId: packUser.id,
+    projectId: editedProject.id,
+    look: { stylePackId: "thai-ghost" },
+  });
+  await assert.rejects(
+    promoteProjectLookToBrandProfile({
+      userId: packUser.id,
+      projectId: editedProject.id,
+      preflightId: editedPreflight.id,
+      payload: {
+        ...promotionPayload,
+        name: "แบรนด์ที่แก้สีเอง",
+        visual: { ...promotionPayload.visual, palette: ["#123456"] },
+      },
+    }),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "code" in error && error.code === "REVISION_CONFLICT",
+    ),
+    "an edited look is refused, not quietly reverted to the pack's own values",
+  );
+
+
   const selectorSource = readFileSync(
     "src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx",
     "utf8",

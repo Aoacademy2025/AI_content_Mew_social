@@ -509,7 +509,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                 <div className="flex flex-col gap-1.5">
                   <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
                     {p.projectStylePack
-                      ? `สไตล์ฟุตเทจ: ${p.projectStylePack.thaiLabel} · จากแบรนด์`
+                      ? `สไตล์ฟุตเทจ: ${p.projectStylePack.thaiLabel} · ${p.projectStylePack.source === "project" ? "จากคลิปนี้" : "จากแบรนด์"}`
                       : "สไตล์ฟุตเทจ: ตามเนื้อหา"}
                   </span>
                 </div>
