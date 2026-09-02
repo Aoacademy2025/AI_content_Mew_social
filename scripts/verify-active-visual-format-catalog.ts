@@ -47,8 +47,8 @@ assert.equal(VISUAL_FORMAT_IDS.includes("stick-figure-story" as never), false,
 assert.ok(SUPPORTED_VISUAL_FORMAT_IDS.includes("stick-figure-story"),
   "the persisted format union keeps legacy Stick Figure pins readable");
 assert.equal(visualFormatThaiLabel("simple-editorial-story"), "ภาพวาดเล่าเรื่องเรียบง่าย");
-assert.equal(visualFormatThaiLabel("stick-figure-story"), "ก้างปลาเล่าเรื่อง",
-  "legacy summaries never leak an internal ID when the active catalog hides Stick Figure");
+assert.equal(visualFormatThaiLabel("stick-figure-story"), "แนวภาพรุ่นเดิม",
+  "legacy summaries never leak an internal ID or the retired format name when the active catalog hides Stick Figure");
 assert.equal(existsSync("public/brand-visual-formats/simple-editorial-story.webp"), true,
   "the active format card has a local preview asset before it can be exposed by the API");
 

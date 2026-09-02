@@ -70,6 +70,12 @@ async function main() {
     "fresh uploads must render the image-format choices even without an analyzed treatment",
   );
   assert.doesNotMatch(selectorSource, /ก้างปลา/, "retired format name must not reach creators");
+  const brandVisualSystemSource = readFileSync("src/lib/brand-visual-system.ts", "utf8");
+  assert.doesNotMatch(
+    brandVisualSystemSource,
+    /ก้างปลา/,
+    "the retired format's catalog entry (label/description) must not reach creators via visualFormatThaiLabel or any format list",
+  );
   for (const file of [
     "src/app/(dashboard)/brands/_components/BrandVisualLockedPreview.tsx",
     "src/lib/brand-visual-access.server.ts",

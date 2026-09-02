@@ -72,9 +72,9 @@ export const VISUAL_FORMATS: readonly VisualFormat[] = [
 export const LEGACY_VISUAL_FORMATS: readonly VisualFormat[] = [
   {
     id: "stick-figure-story",
-    label: "ก้างปลาเล่าเรื่อง",
+    label: "แนวภาพรุ่นเดิม",
     recipeVersion: "stick-figure-story-v6",
-    description: "ลายเส้นคนก้างปลา เล่าเหตุและผลด้วยท่าทางชัดเจน",
+    description: "ลายเส้นคนแบบเรียบง่าย เล่าเหตุและผลด้วยท่าทางชัดเจน",
   },
 ] as const;
 
