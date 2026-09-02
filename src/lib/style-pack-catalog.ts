@@ -106,7 +106,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "ย้อนยุค อบอุ่น เล่าเรื่องเก่าให้มีชีวิต",
     visualFormatId: "retro-story",
     treatmentPresetId: "thai-history-period-storytelling",
-    palette: ["#2B1D12", "#B9863E", "#F5E6C8"],
+    palette: ["#3B2A1A", "#C8A86B", "#F1E6D0"],
     personality: "โทนซีเปีย กระดาษเก่า แสงอุ่น ภาพย้อนยุค",
     stockMood: {
       queryToken: "vintage",
@@ -128,7 +128,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "อบอุ่น จริงใจ เรื่องคนธรรมดาที่กระทบใจ",
     visualFormatId: "cinematic-realism",
     treatmentPresetId: "thai-human-drama",
-    palette: ["#33241A", "#C97B4A", "#FDE68A"],
+    palette: ["#1F2933", "#B45309", "#E7D8C4"],
     personality: "แสงธรรมชาติ โทนอุ่น ใกล้ชิด สมจริง",
     stockMood: {
       queryToken: "cinematic",
@@ -150,7 +150,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "สะอาด ชัด ตัวเลขเข้าใจได้ในครั้งเดียว",
     visualFormatId: "clear-infographic",
     treatmentPresetId: "expert-clarity",
-    palette: ["#0B1E3D", "#1E4FA3", "#FACC15"],
+    palette: ["#0F172A", "#2563EB", "#F8FAFC"],
     personality: "สะอาด ทันสมัย น้ำเงินเข้ม ตัวเลขเด่น",
     stockMood: {
       queryToken: "clean",
@@ -172,7 +172,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "เร็ว กระชับ สรุปประเด็นแบบข่าวด่วน",
     visualFormatId: "cinematic-realism",
     treatmentPresetId: "investigative-news-crime",
-    palette: ["#111111", "#DC2626", "#FFFFFF"],
+    palette: ["#111827", "#DC2626", "#E5E7EB"],
     personality: "คอนทราสต์สูง แดงเข้ม กระชับ เร่งด่วน",
     stockMood: {
       queryToken: "news",
@@ -194,7 +194,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "สว่าง สบายตา เรื่องสุขภาพที่เข้าใจง่าย",
     visualFormatId: "simple-editorial-story",
     treatmentPresetId: "expert-clarity",
-    palette: ["#F0FDF4", "#34D399", "#0F766E"],
+    palette: ["#ECFDF5", "#10B981", "#1F2937"],
     personality: "สว่าง สะอาด เขียวสดชื่น เป็นมิตร",
     stockMood: {
       queryToken: "healthy",
@@ -216,7 +216,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "หรู นิ่ง ใส่ใจรายละเอียดแบบพรีเมียม",
     visualFormatId: "cinematic-realism",
     treatmentPresetId: "premium-product-lifestyle",
-    palette: ["#0A0A0A", "#D4A017", "#F5E6C8"],
+    palette: ["#111111", "#D4A017", "#F5F5F4"],
     personality: "ดำ-ทอง แสงนุ่ม พื้นผิวหรู เนิบช้า",
     stockMood: {
       queryToken: "luxury",
@@ -238,7 +238,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "ดิบ มืด ตึงเครียด แบบเรื่องเล่าคดีดัง",
     visualFormatId: "cinematic-realism",
     treatmentPresetId: "dark-story-true-crime",
-    palette: ["#111214", "#3A3A3D", "#B91C1C"],
+    palette: ["#0A0A0A", "#6B7280", "#B91C1C"],
     personality: "มืด ดิบ เทาเข้ม แดงเลือดเป็นจุดเน้น",
     stockMood: {
       queryToken: "dark",
@@ -260,7 +260,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "จริงจัง เป็นกลาง เจาะประเด็นให้เห็นภาพ",
     visualFormatId: "cinematic-realism",
     treatmentPresetId: "political-commentary",
-    palette: ["#0B1730", "#1E3A8A", "#2563EB"],
+    palette: ["#1E293B", "#2563EB", "#F1F5F9"],
     personality: "น้ำเงินเข้ม เรียบ จริงจัง เป็นทางการ",
     stockMood: {
       queryToken: "editorial",
@@ -282,7 +282,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "ลึกลับ ชวนสงสัย ค่อย ๆ เปิดปม",
     visualFormatId: "cinematic-realism",
     treatmentPresetId: "mystery-unexplained",
-    palette: ["#0B1F1E", "#14B8A6", "#8A6D3B"],
+    palette: ["#061A1F", "#14B8A6", "#C89B3C"],
     personality: "เขียวน้ำเงินเข้ม แสงหมอก ทองหม่น ลึกลับ",
     stockMood: {
       queryToken: "mysterious",
@@ -304,7 +304,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "สงบ อบอุ่น เรื่องเล่าธรรมะที่เข้าใจง่าย",
     visualFormatId: "simple-editorial-story",
     treatmentPresetId: "dharma-storytelling",
-    palette: ["#4A1F1A", "#D4A017", "#FFF7E6"],
+    palette: ["#7C2D12", "#D4A017", "#FFF7E6"],
     personality: "ทอง-น้ำตาลแดง แสงอุ่น สงบ เรียบง่าย",
     stockMood: {
       queryToken: "temple",
@@ -326,7 +326,7 @@ export const STYLE_PACKS: readonly StylePack[] = [
     tagline: "ทรงพลัง ซีเนมาติก ปลุกใจให้ลุกขึ้นทำ",
     visualFormatId: "cinematic-realism",
     treatmentPresetId: "stoic-motivation",
-    palette: ["#0A1128", "#C98A2B", "#F2C572"],
+    palette: ["#0B1B2B", "#1D4ED8", "#E0B04A"],
     personality: "น้ำเงินเข้ม ทองอำพัน ยิ่งใหญ่ ซีเนมาติก",
     stockMood: {
       queryToken: "cinematic",
