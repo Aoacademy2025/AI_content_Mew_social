@@ -184,5 +184,10 @@ jobs:
       - name: Verify /brands fits phones and keeps its desktop layout
         run: npm run verify:brands-mobile
 
+      - name: Brand Library verify
+        run: npm run verify:brands-ci
+      - name: Brand Library lint
+        run: npm run lint:brands
+
       - name: Build
         run: npm run build

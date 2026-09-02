@@ -231,6 +231,7 @@ function HexColorField({
   const normalized = normalizeHexColor(draft);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resets local draft/error state to the external `value` prop on change; a key-based reset would change this field's identity/behavior, out of scope for a lint-only pass
     setDraft(value);
     setShowError(false);
   }, [value]);
