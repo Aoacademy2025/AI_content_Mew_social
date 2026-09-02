@@ -2384,6 +2384,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // resolve here: `ensureVideoJobContentPreflight` above (if it ran) already
     // pinned the job's Project Visual Context, so this is a post-pin read —
     // same guarantee `resolveStockMood` relies on at the keywords step below.
+    // `pacing` is `null` when no pack is pinned — the cadence multiplier below
+    // treats that as ×1 (same as "normal"), but the AI-gen/auto-mix minHoldSec
+    // default further down must NOT fire on `null` (see that call site).
     const pacing = await resolvePacing();
     const brollWindows = narrativeAlignedWindows
       ?? (brollWindowMode || manualBrollCount > 0
@@ -2397,7 +2400,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             timedCaptionInput,
             brollWindowSec,
             durMs,
-            { cadenceMultiplier: PACING_CADENCE_MULTIPLIER[pacing] },
+            { cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : 1 },
           )
         : []);
     const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
@@ -2468,7 +2471,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         // auto-mix source, hold each clip for the pack's PACING_MIN_HOLD_SEC[pacing] instead
         // of cutting on every caption — mirrors the web editor's targetCadenceSec(durationSec)
         // default (buildConfigPayload only includes it when brollWindows is empty).
-        aiGenSource ? PACING_MIN_HOLD_SEC[pacing] : undefined,
+        // No pack pinned (pacing === null) → omit minHoldSec entirely so the route's own
+        // STOCK_MIN_HOLD_SEC / legacy default applies, exactly as before this task.
+        aiGenSource && pacing ? PACING_MIN_HOLD_SEC[pacing] : undefined,
       ),
     );
 

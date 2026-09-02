@@ -4,9 +4,11 @@ import { readFileSync } from "node:fs";
 import {
   buildKeywordsPayload,
   buildStockPayload,
+  buildConfigPayload,
   createStylePackRenderResolver,
 } from "../src/lib/mcp/orchestrator-steps";
-import { stylePack } from "../src/lib/style-pack-catalog";
+import { buildBrollWindows } from "../src/lib/broll-windows";
+import { stylePack, PACING_CADENCE_MULTIPLIER, PACING_MIN_HOLD_SEC } from "../src/lib/style-pack-catalog";
 import type { ResolvedStockMood } from "../src/lib/broll-preferences";
 
 let failures = 0;
@@ -149,31 +151,35 @@ async function verifyStylePackRenderResolver() {
   }
 
   {
-    // Neither source carries a pack → mood is null, pacing is the documented
-    // "normal" default (never a reason for a render to stop).
+    // Neither source carries a pack → mood is null, pacing is null too (Fix
+    // round 1: NOT "normal" — a caller deciding whether to send an explicit
+    // minHoldSec override must be able to tell "no pack" apart from "a
+    // pinned pack whose pacing happens to be normal").
     const { resolveStockMood, resolvePacing } = createStylePackRenderResolver({
       projectVisualContextJson: async () => null,
       brandRevisionRecipeJson: async () => null,
     });
     assert.equal(await resolveStockMood(), null, "no pack pinned anywhere → no mood");
-    assert.equal(await resolvePacing(), "normal", "no pack pinned anywhere → normal pacing");
+    assert.equal(await resolvePacing(), null, "no pack pinned anywhere → null pacing (not \"normal\")");
   }
 
   {
     // Fail-open: a lookup that throws can never fail a render, for either facet.
+    // resolvePacing() fails open to null (Fix round 1) — NOT "normal" — so a
+    // failed lookup is indistinguishable from "no pack pinned" downstream.
     const contextDown = createStylePackRenderResolver({
       projectVisualContextJson: async () => { throw new Error("db down"); },
       brandRevisionRecipeJson: async () => recipeJsonFor("thai-ghost"),
     });
     assert.equal(await contextDown.resolveStockMood(), null, "a failed lookup means no mood, never a thrown render");
-    assert.equal(await contextDown.resolvePacing(), "normal", "a failed lookup means normal pacing, never a thrown render");
+    assert.equal(await contextDown.resolvePacing(), null, "a failed lookup means null pacing, never a thrown render");
 
     const recipeDown = createStylePackRenderResolver({
       projectVisualContextJson: async () => contextJsonFor("thai-history"),
       brandRevisionRecipeJson: async () => { throw new Error("db down"); },
     });
     assert.equal(await recipeDown.resolveStockMood(), null);
-    assert.equal(await recipeDown.resolvePacing(), "normal");
+    assert.equal(await recipeDown.resolvePacing(), null);
   }
 
   {
@@ -187,6 +193,90 @@ async function verifyStylePackRenderResolver() {
   }
 
   console.log("PASS style pack render resolver: lazy post-pin read, precedence, memoization, fail-open (mood + pacing)");
+}
+
+// ---------------------------------------------------------------------------
+// Fix round 1 (Important, plan-mandated): minHoldSec must be sent ONLY when
+// a pack is actually pinned — resolvePacing() returning "normal" for BOTH
+// "no pack" and "a pinned normal-pacing pack" made the orchestrator send
+// minHoldSec: 4 unconditionally for every AI-gen/auto-mix job, silently
+// overriding the operator's STOCK_MIN_HOLD_SEC env default even with no pack
+// pinned. These are REAL calls through buildConfigPayload/buildBrollWindows —
+// not source-text greps — exercising the exact orchestrator expressions:
+//   cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : 1
+//   aiGenSource && pacing ? PACING_MIN_HOLD_SEC[pacing] : undefined
+// ---------------------------------------------------------------------------
+async function verifyPacingDrivesConfigPayload() {
+  const captions = Array.from({ length: 12 }, (_, i) => ({
+    startMs: i * 1500,
+    endMs: (i + 1) * 1500,
+    text: `c${i}`,
+  }));
+  const durationMs = captions[captions.length - 1].endMs;
+  const aiGenSource = true; // AI-gen / auto-mix source, per the orchestrator's own gate
+
+  async function buildConfigFor(resolver: ReturnType<typeof createStylePackRenderResolver>) {
+    const pacing = await resolver.resolvePacing();
+    // Mirrors the orchestrator's script-path window build for the case that
+    // exercises minHoldSec: window mode off, no manual/narrative windows →
+    // brollWindows stays empty, so buildConfigPayload's minHoldSec gate applies.
+    const brollWindows: { startMs: number; endMs: number }[] = [];
+    return buildConfigPayload(
+      captions, [], "voice.mp3", durationMs, captions.map((c) => c.text),
+      5, [], [],
+      brollWindows,
+      aiGenSource && pacing ? PACING_MIN_HOLD_SEC[pacing] : undefined,
+    ) as Record<string, unknown>;
+  }
+
+  {
+    // (a) no pack pinned anywhere → the config payload has NO minHoldSec key
+    // at all, so the route's own STOCK_MIN_HOLD_SEC / legacy default applies —
+    // exactly as before this task.
+    const resolver = createStylePackRenderResolver({
+      projectVisualContextJson: async () => null,
+      brandRevisionRecipeJson: async () => null,
+    });
+    const cfg = await buildConfigFor(resolver);
+    check("(a) no pack pinned → generate-config payload has NO minHoldSec key", !("minHoldSec" in cfg));
+  }
+
+  {
+    // (b) a pack with pacing "slow" is pinned → minHoldSec === PACING_MIN_HOLD_SEC.slow (6).
+    assert.equal(stylePack("premium-product").pacing, "slow", "fixture sanity: premium-product is slow");
+    assert.equal(PACING_MIN_HOLD_SEC.slow, 6, "fixture sanity: slow min-hold is 6s");
+    const resolver = createStylePackRenderResolver({
+      projectVisualContextJson: async () => contextJsonFor("premium-product"),
+      brandRevisionRecipeJson: async () => null,
+    });
+    const cfg = await buildConfigFor(resolver);
+    check("(b) slow pack pinned → minHoldSec === 6", cfg.minHoldSec === 6, `${cfg.minHoldSec}`);
+  }
+
+  {
+    // (c) the resolver's loader throws → fail-open to null pacing → NO
+    // minHoldSec key (never a thrown render, and never a silent override of
+    // the operator's default), AND the window cadence multiplier falls back
+    // to exactly ×1 — identical windows to an explicit cadenceMultiplier: 1.
+    const resolver = createStylePackRenderResolver({
+      projectVisualContextJson: async () => { throw new Error("db down"); },
+      brandRevisionRecipeJson: async () => recipeJsonFor("premium-product"),
+    });
+    const cfg = await buildConfigFor(resolver);
+    check("(c) loader throws → no minHoldSec key (fail-open, no silent override)", !("minHoldSec" in cfg));
+
+    const pacing = await resolver.resolvePacing();
+    const explicitOne = buildBrollWindows(captions, 4, durationMs, { cadenceMultiplier: 1 });
+    const failOpen = buildBrollWindows(captions, 4, durationMs, {
+      cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : 1,
+    });
+    check(
+      "(c) loader throws → cadence multiplier falls back to ×1 (windows identical to explicit ×1)",
+      JSON.stringify(explicitOne) === JSON.stringify(failOpen),
+    );
+  }
+
+  console.log("PASS pacing → generate-config payload: minHoldSec ONLY when a pack is pinned; fail-open is ×1 / no key");
 }
 
 // ---------------------------------------------------------------------------
@@ -207,19 +297,20 @@ function verifyOrchestratorWiring() {
       && /select: \{ projectVisualContextJson: true \}/.test(source),
   );
   check(
-    "the script path resolves pacing and scales buildBrollWindows' cadenceMultiplier",
+    "the script path resolves pacing and scales buildBrollWindows' cadenceMultiplier, null-safe",
     /const pacing = await resolvePacing\(\);/.test(source)
-      && /cadenceMultiplier: PACING_CADENCE_MULTIPLIER\[pacing\]/.test(source),
+      && /cadenceMultiplier: pacing \? PACING_CADENCE_MULTIPLIER\[pacing\] : 1/.test(source),
   );
   check(
-    "the script path's AI-gen/auto-mix config payload defaults minHoldSec from PACING_MIN_HOLD_SEC[pacing]",
-    /aiGenSource \? PACING_MIN_HOLD_SEC\[pacing\] : undefined/.test(source),
+    "the script path's AI-gen/auto-mix config payload sends minHoldSec ONLY when a pack is pinned (pacing truthy)",
+    /aiGenSource && pacing \? PACING_MIN_HOLD_SEC\[pacing\] : undefined/.test(source),
   );
 }
 
 async function main() {
   verifyPayloadBuilders();
   await verifyStylePackRenderResolver();
+  await verifyPacingDrivesConfigPayload();
   verifyOrchestratorWiring();
   process.exit(failures ? 1 : 0);
 }

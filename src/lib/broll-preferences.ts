@@ -457,11 +457,19 @@ export function stockMoodForProject(input: {
 /** Resolve the Pacing one video job's B-roll window cadence and AI-gen/auto-mix
  *  min-hold should use — the SAME precedence and post-pin read as
  *  `stockMoodForProject` (see `resolvedStylePackSnapshot`), never a second
- *  lookup path. No pack pinned, or an unreadable snapshot, means `"normal"`:
- *  pacing is a cadence hint, never a reason for a render to stop. */
+ *  lookup path. `null` means "no pack pinned" (neither source carries one, or
+ *  the snapshot is unreadable) — deliberately NOT defaulted to `"normal"`
+ *  here: a caller that needs a cadence multiplier can treat `null` as ×1
+ *  (`"normal"`'s own multiplier), but a caller deciding whether to send an
+ *  explicit `minHoldSec` override MUST be able to tell "no pack, defer to the
+ *  operator's env default" apart from "a pack is pinned and its pacing
+ *  happens to be normal" — collapsing both to `"normal"` made the min-hold
+ *  override fire unconditionally and silently override `STOCK_MIN_HOLD_SEC`
+ *  even with no pack pinned at all. Pacing is a cadence hint, never a reason
+ *  for a render to stop. */
 export function pacingForProject(input: {
   projectVisualContextJson: string | null;
   brandRevisionRecipeJson: string | null;
-}): PacingLevel {
-  return resolvedStylePackSnapshot(input)?.pacing ?? "normal";
+}): PacingLevel | null {
+  return resolvedStylePackSnapshot(input)?.pacing ?? null;
 }

@@ -7,10 +7,14 @@ import { buildHeroSubtitleOverlayConfig } from "@/lib/hero-editorial";
 
 /** What one video job's pinned Style Pack resolves to at render time: the
  *  Stock Mood driving B-roll search, and the Pacing driving window cadence /
- *  AI-gen min-hold (Task 5). */
+ *  AI-gen min-hold (Task 5). `resolvePacing` returns `null` when no pack is
+ *  pinned (or the lookup failed) — NOT `"normal"` — so a caller that only
+ *  sends an override when a pack is actually pinned (e.g. `minHoldSec`) can
+ *  tell "no pack" apart from "a pinned pack whose pacing is normal". A caller
+ *  that only needs the cadence multiplier can still treat `null` as ×1. */
 export interface StylePackRenderResolver {
   resolveStockMood: () => Promise<ResolvedStockMood | null>;
-  resolvePacing: () => Promise<PacingLevel>;
+  resolvePacing: () => Promise<PacingLevel | null>;
 }
 
 /** Resolve the pinned Style Pack snapshot for ONE video job, once, and expose
@@ -25,11 +29,11 @@ export interface StylePackRenderResolver {
  *  pinned for that clip. The reads are injected, so this module stays I/O-free.
  *
  *  Memoized (four keyword/stock payload sites ask `resolveStockMood` for the
- *  same answer) and fail-open: any failing lookup yields `null` (mood) /
- *  `"normal"` (pacing), because a pack is a flavour and never a reason for a
- *  render to stop. `resolveStockMood` and `resolvePacing` both read the SAME
- *  memoized snapshot load — one resolution, two readers — so a job can never
- *  render one facet from a different snapshot than the other. */
+ *  same answer) and fail-open: any failing lookup yields `null` for BOTH
+ *  facets — no pack, never a reason for a render to stop. `resolveStockMood`
+ *  and `resolvePacing` both read the SAME memoized snapshot load — one
+ *  resolution, two readers — so a job can never render one facet from a
+ *  different snapshot than the other. */
 export function createStylePackRenderResolver(load: {
   projectVisualContextJson: () => Promise<string | null>;
   brandRevisionRecipeJson: () => Promise<string | null>;
@@ -57,7 +61,7 @@ export function createStylePackRenderResolver(load: {
       try {
         return pacingForProject(await resolveJson());
       } catch {
-        return "normal";
+        return null;
       }
     },
   };
