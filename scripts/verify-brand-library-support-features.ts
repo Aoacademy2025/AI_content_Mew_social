@@ -45,4 +45,8 @@ assert.match(heroScriptServer, /where:\s*\{\s*id:\s*brandProfileId,\s*userId,\s*
   "archived Brands cannot seed new Hero Script work");
 assert.match(schema, /archivedAt\s+DateTime\?/, "Brand Profile stores a recoverable archive timestamp");
 
+const panel = readFileSync("src/app/(dashboard)/brands/_components/BrandLookPreviewPanel.tsx", "utf8");
+assert.match(panel, /ตั้งชื่อแบรนด์ก่อนจึงจะทดลองภาพได้/, "panel must explain the no-name disabled state");
+assert.match(panel, /data-testid="preview-disabled-reason"/);
+
 console.log("Brand Library support-feature contracts passed");

@@ -53,20 +53,28 @@ export function BrandLookPreviewPanel({
     && allowance.remainingImages < imagesToGenerate;
   // ADR 0059: the Brand Library stays open to every plan — the paid/rollout gate
   // is disclosed here, on the button that actually spends an AI image.
-  const disabledReason: React.ReactNode = !imageAccess.canUse
-    ? imageAccess.reason === "payment_required"
-      ? (
-        <>
-          ภาพ AI ประจำแบรนด์ใช้ได้กับสมาชิก PRO และ BUSINESS{" "}
-          <Link href={imageAccess.upgradeUrl} className="font-semibold text-violet-500 underline underline-offset-4">
-            ดูแผนรายเดือน
-          </Link>
-        </>
-      )
-      : imageAccess.reason === "rollout_wait"
-        ? "ระบบกำลังทยอยเปิดภาพ AI ประจำแบรนด์ให้สมาชิก บัญชีนี้จะได้รับสิทธิ์ในรอบถัดไป"
-        : "ภาพ AI ประจำแบรนด์ยังไม่เปิดให้บัญชีนี้"
-    : null;
+  const disabledReason: React.ReactNode = busy !== null
+    ? null
+    : !canPublish
+      ? "ตั้งชื่อแบรนด์ก่อนจึงจะทดลองภาพได้"
+      : previewGenerationCount === null
+        ? "กำลังตรวจภาพเดิมและคำนวณสิทธิ์ที่ต้องใช้…"
+        : fundingInsufficient
+          ? "สิทธิ์ทดลองภาพไม่พอสำหรับจำนวนภาพที่ต้องสร้าง"
+          : !imageAccess.canUse
+            ? imageAccess.reason === "payment_required"
+              ? (
+                <>
+                  ภาพ AI ประจำแบรนด์ใช้ได้กับสมาชิก PRO และ BUSINESS{" "}
+                  <Link href={imageAccess.upgradeUrl} className="font-semibold text-violet-500 underline underline-offset-4">
+                    ดูแผนรายเดือน
+                  </Link>
+                </>
+              )
+              : imageAccess.reason === "rollout_wait"
+                ? "ระบบกำลังทยอยเปิดภาพ AI ประจำแบรนด์ให้สมาชิก บัญชีนี้จะได้รับสิทธิ์ในรอบถัดไป"
+                : "ภาพ AI ประจำแบรนด์ยังไม่เปิดให้บัญชีนี้"
+            : null;
 
   return (
     <Card className="p-5">
