@@ -1080,19 +1080,17 @@ export async function POST(req: Request) {
   const maxAiImages = parseAutoMixReceiptImageCeiling(maxAiImagesRaw);
   // Resolved SERVER-side by the worker from the pinned Style Pack snapshot, but
   // still an HTTP body — validated before it can reach a provider query, an LLM
-  // prompt, or the managed-stock cache key.
-  const stockMoodResult = parseStockMoodRequest(stockMoodRaw);
-  if (!stockMoodResult.ok) {
-    return NextResponse.json({ error: "invalid_stock_mood" }, { status: 400 });
-  }
+  // prompt, or the managed-stock cache key. A malformed mood is IGNORED, never
+  // a 400: this route renders paid clips and must not fail over a flavour.
+  const stockMood = parseStockMoodRequest(stockMoodRaw, { route: "POST /api/videos/fetch-stock" });
   const brollPreference: BrollPreferenceInput = {
     brollRegionPreference,
     // One style system (ADR 0057): a pinned Stock Mood retires the legacy style
     // for this request ENTIRELY — including the Hero/AutoMix image prompts,
     // which read this field directly instead of going through the pipe. A job
     // created from a pre-wave-1 draft can carry both; the pack wins.
-    brollVisualStyle: stockMoodResult.stockMood ? undefined : brollVisualStyle,
-    stockMood: stockMoodResult.stockMood,
+    brollVisualStyle: stockMood ? undefined : brollVisualStyle,
+    stockMood,
   };
   // role "primary" = the queries the creator should see their style in; role
   // "fallback" = the widening/safety-net ladder that only runs when the

@@ -100,19 +100,17 @@ export async function POST(req: Request) {
   const pixabayKey = user.pixabayKey ? decryptKey(user.pixabayKey) : null;
 
   // Unlike the render pipeline the editor client calls this route directly, so
-  // the Stock Mood it shows in Step 2 arrives in the body. Never trusted raw.
-  const stockMoodResult = parseStockMoodRequest(body?.stockMood);
-  if (!stockMoodResult.ok) {
-    return NextResponse.json(
-      { error: "invalid_stock_mood", message: "ข้อมูลสไตล์ฟุตเทจไม่ถูกต้อง" },
-      { status: 400 },
-    );
-  }
+  // the Stock Mood it shows in Step 2 arrives in the body. Never trusted raw —
+  // and a malformed one is IGNORED, so a bad mood degrades the search to the
+  // plain keyword instead of denying the creator a swap.
+  const stockMood = parseStockMoodRequest(body?.stockMood, { route: "POST /api/videos/broll-window/search" });
   const preference: BrollPreferenceInput = {
     brollRegionPreference: normalizeBrollRegionPreference(body?.brollRegionPreference),
-    // One style system (ADR 0057): the pack retires the legacy style outright.
-    brollVisualStyle: stockMoodResult.stockMood ? undefined : normalizeBrollVisualStyle(body?.brollVisualStyle),
-    stockMood: stockMoodResult.stockMood,
+    // The editor stopped sending this with the Step-2 menu; the route keeps
+    // accepting it so a browser tab still running pre-wave-1 JS across a deploy
+    // behaves as it did. One style system (ADR 0057): a pack retires it.
+    brollVisualStyle: stockMood ? undefined : normalizeBrollVisualStyle(body?.brollVisualStyle),
+    stockMood,
   };
   const styledKeyword = applyBrollPreferenceToSearchQuery(keyword, preference, { role: "primary" }) || keyword;
 

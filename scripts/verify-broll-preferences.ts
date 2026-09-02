@@ -412,27 +412,30 @@ check(
 // raw. Absent/null is a legitimate "no mood"; anything oversized is rejected.
 // ---------------------------------------------------------------------------
 {
+  const route = { route: "verify-broll-preferences" };
   const valid = { packId: "thai-ghost", ...stylePack("thai-ghost").stockMood };
-  assert.deepEqual(parseStockMoodRequest(valid), { ok: true, stockMood: valid });
-  assert.deepEqual(parseStockMoodRequest(undefined), { ok: true, stockMood: null });
-  assert.deepEqual(parseStockMoodRequest(null), { ok: true, stockMood: null });
-  assert.equal(parseStockMoodRequest({ ...valid, queryToken: "x".repeat(25) }).ok, false, "over-long token rejected");
-  assert.equal(parseStockMoodRequest({ ...valid, direction: "x".repeat(161) }).ok, false, "over-long direction rejected");
+  assert.deepEqual(parseStockMoodRequest(valid, route), valid);
+  assert.equal(parseStockMoodRequest(undefined, route), null);
+  assert.equal(parseStockMoodRequest(null, route), null);
+  // A malformed mood FAILS OPEN to no mood — bounded so it can never reach a
+  // provider query, ignored so it can never fail a render (R20).
+  assert.equal(parseStockMoodRequest({ ...valid, queryToken: "x".repeat(25) }, route), null, "over-long token ignored");
+  assert.equal(parseStockMoodRequest({ ...valid, direction: "x".repeat(161) }, route), null, "over-long direction ignored");
   assert.equal(
-    parseStockMoodRequest({ ...valid, positive: Array.from({ length: 13 }, (_, i) => `p${i}`) }).ok,
-    false,
-    "too many positives rejected",
+    parseStockMoodRequest({ ...valid, positive: Array.from({ length: 13 }, (_, i) => `p${i}`) }, route),
+    null,
+    "too many positives ignored",
   );
   assert.equal(
-    parseStockMoodRequest({ ...valid, avoid: Array.from({ length: 9 }, (_, i) => `a${i}`) }).ok,
-    false,
-    "too many avoids rejected",
+    parseStockMoodRequest({ ...valid, avoid: Array.from({ length: 9 }, (_, i) => `a${i}`) }, route),
+    null,
+    "too many avoids ignored",
   );
-  assert.equal(parseStockMoodRequest({ ...valid, fallbackQueries: ["a", "b"] }).ok, false, "wrong fallback count rejected");
-  assert.equal(parseStockMoodRequest({ ...valid, packId: "not-a-pack" }).ok, false, "unknown pack rejected");
-  assert.equal(parseStockMoodRequest("thai-ghost").ok, false, "a bare string is not a mood");
+  assert.equal(parseStockMoodRequest({ ...valid, fallbackQueries: ["a", "b"] }, route), null, "wrong fallback count ignored");
+  assert.equal(parseStockMoodRequest({ ...valid, packId: "not-a-pack" }, route), null, "unknown pack ignored");
+  assert.equal(parseStockMoodRequest("thai-ghost", route), null, "a bare string is not a mood");
 
-  console.log("PASS wave-1 task-4 stock mood request validation (node:assert)");
+  console.log("PASS wave-1 task-4 stock mood request validation fails open (node:assert)");
 }
 
 // ---------------------------------------------------------------------------
@@ -448,13 +451,15 @@ check(
   for (const route of routes) {
     const source = readFileSync(new URL(`../${route}`, import.meta.url), "utf8");
     check(`${route} validates stockMood with the shared parser`, source.includes("parseStockMoodRequest("));
-    check(`${route} answers 400 on an invalid stockMood`, /invalid_stock_mood/.test(source));
+    // R20: bounded, but never a 400 — a malformed mood degrades to no mood.
+    check(`${route} never rejects a request over a bad stockMood`, !/invalid_stock_mood/.test(source));
+    check(`${route} names itself in the ignore-warning`, /parseStockMoodRequest\([^)]*\{ route:/s.test(source));
     // ADR 0057: one style system. A pinned pack retires the legacy style for
     // the WHOLE request — including the image-prompt paths that read the field
     // directly instead of going through the preference pipe.
     check(
       `${route} retires the legacy style when a mood is present`,
-      /stockMoodResult\.stockMood \? undefined :/.test(source),
+      /stockMood \? undefined :/.test(source),
     );
   }
 }
@@ -469,8 +474,20 @@ check(
   check("Step 2 keeps the region control", step2.includes("BROLL_REGION_OPTIONS"));
   check("Step 2 shows the pinned pack read-only", step2.includes("สไตล์ฟุตเทจ:"));
   check("Step 2 falls back to content-led copy", step2.includes("ตามเนื้อหา"));
-  const useJob = readFileSync(new URL("../src/app/(dashboard)/video-editor/_v2/useV2Job.ts", import.meta.url), "utf8");
-  check("useV2Job stops sending brollVisualStyle", !useJob.includes("brollVisualStyle"));
+  // No editor surface may send the retired legacy style any more. useV2Project
+  // still HOLDS the draft field (a pre-wave-1 draft must round-trip), but no
+  // request may carry a style the creator can neither see nor change.
+  for (const file of [
+    "src/app/(dashboard)/video-editor/_v2/useV2Job.ts",
+    "src/app/(dashboard)/video-editor/_v2/BrollWindowInspector.tsx",
+    "src/app/(dashboard)/video-editor/_v2/PostPhase.tsx",
+    "src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx",
+    "src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx",
+    "src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx",
+  ]) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+    check(`${file} stops sending brollVisualStyle`, !source.includes("brollVisualStyle"));
+  }
 
   // The per-window search must reach the SAME pack Step 2 showed. Every hop is
   // an OPTIONAL prop, so a missing link type-checks silently — assert the chain.

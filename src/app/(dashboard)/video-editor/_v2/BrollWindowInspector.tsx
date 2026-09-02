@@ -32,7 +32,7 @@ import { useIsMobile } from "./useIsMobile";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { canMoveBrollBoundaryExactly } from "@/lib/broll-timeline-boundary";
 import { canGenerateHeroBrollFromSource } from "@/lib/broll-window-hero";
-import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { BrollRegionPreference } from "@/lib/broll-preferences";
 import type { ProjectStylePack } from "./project-style-pack";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
 import {
@@ -265,7 +265,6 @@ export function BrollWindowInspector({
   sceneRerollUnavailableReason,
   starterImageAllowance,
   brollRegionPreference,
-  brollVisualStyle,
   projectStylePack,
 }: {
   ed: PostPhaseEditor;
@@ -275,7 +274,6 @@ export function BrollWindowInspector({
   sceneRerollUnavailableReason?: string;
   starterImageAllowance?: StarterImageAllowance;
   brollRegionPreference?: BrollRegionPreference;
-  brollVisualStyle?: BrollVisualStyle;
   projectStylePack?: ProjectStylePack | null;
 }) {
   const isMobile = useIsMobile();
@@ -498,7 +496,6 @@ export function BrollWindowInspector({
         body: JSON.stringify({
           keyword: kw,
           brollRegionPreference,
-          brollVisualStyle,
           ...(projectStylePack ? { stockMood: projectStylePack.stockMood } : {}),
         }),
       });

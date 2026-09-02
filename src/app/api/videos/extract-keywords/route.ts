@@ -269,24 +269,22 @@ export async function POST(req: Request) {
     stockMood: stockMoodRaw,
   } = body ?? {};
   // The Stock Mood is resolved SERVER-side by the worker from the pinned Style
-  // Pack snapshot, but it still arrives over HTTP — validate it here so an
-  // oversized mood can never reach a provider query or an LLM prompt.
-  const stockMoodResult = parseStockMoodRequest(stockMoodRaw);
-  if (!stockMoodResult.ok) {
-    return NextResponse.json({ error: "invalid_stock_mood" }, { status: 400 });
-  }
+  // Pack snapshot, but it still arrives over HTTP — validated here so an
+  // oversized mood can never reach a provider query or an LLM prompt. A
+  // malformed one is IGNORED, never a 400: no render may fail over a flavour.
+  const stockMood = parseStockMoodRequest(stockMoodRaw, { route: "POST /api/videos/extract-keywords" });
   const brollPreference: BrollPreferenceInput = {
     brollRegionPreference,
     // One style system (ADR 0057): the pack retires the legacy style outright.
-    brollVisualStyle: stockMoodResult.stockMood ? undefined : brollVisualStyle,
-    stockMood: stockMoodResult.stockMood,
+    brollVisualStyle: stockMood ? undefined : brollVisualStyle,
+    stockMood,
   };
   const preferenceBlock = brollPreferencePromptBlock(brollPreference);
   const preferenceRegion = normalizeBrollRegionPreference(brollRegionPreference);
   // A pinned Stock Mood replaces the legacy style outright, so the no-op log
   // must not keep naming a style that had no effect on a single query.
-  const preferenceStyle = stockMoodResult.stockMood ? undefined : normalizeBrollVisualStyle(brollVisualStyle);
-  const preferencePackId = stockMoodResult.stockMood?.packId ?? null;
+  const preferenceStyle = stockMood ? undefined : normalizeBrollVisualStyle(brollVisualStyle);
+  const preferencePackId = stockMood?.packId ?? null;
   // The region qualifier only fires on people/place queries by design, so a
   // script whose queries are all objects or abstractions gets "เน้นไทย" with
   // nothing visibly changing (F7 cause #4). Count what the region actually

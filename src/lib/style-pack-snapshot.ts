@@ -68,20 +68,32 @@ export const stockMoodRequestSchema = stockMoodSchema.extend({
   packId: z.enum(STYLE_PACK_IDS),
 });
 
-export type StockMoodRequestResult =
-  | { ok: true; stockMood: ResolvedStockMood | null }
-  | { ok: false };
-
-/** Validate a `stockMood` field taken off a request body. A missing/null field
- * is a legitimate "no mood" (every mood path fails open to the no-mood
- * behaviour); anything present but malformed is rejected so an oversized mood
- * can never reach a provider query or an LLM prompt. */
-export function parseStockMoodRequest(raw: unknown): StockMoodRequestResult {
-  if (raw === undefined || raw === null) return { ok: true, stockMood: null };
+/** Validate a `stockMood` field taken off a request body, and return the mood
+ * only if it is genuinely well-formed.
+ *
+ * Two rules meet here and this is how they are reconciled: the mood is never
+ * trusted raw (it would otherwise reach a provider query, an LLM prompt and a
+ * cache key unbounded), and no render may fail because of a mood. So a
+ * malformed mood is IGNORED rather than rejected — the request proceeds with
+ * the no-mood behaviour, which is always safe, and one warning names the route
+ * so a client sending junk is still visible in the logs. A missing/null field
+ * is simply "no pack pinned" and warns about nothing. */
+export function parseStockMoodRequest(
+  raw: unknown,
+  context: { route: string },
+): ResolvedStockMood | null {
+  if (raw === undefined || raw === null) return null;
   const parsed = stockMoodRequestSchema.safeParse(raw);
-  if (!parsed.success) return { ok: false };
+  if (!parsed.success) {
+    // Only the pack id is echoed — never the mood's free text.
+    const claimedPackId = raw && typeof raw === "object" && typeof (raw as { packId?: unknown }).packId === "string"
+      ? (raw as { packId: string }).packId.slice(0, 32)
+      : "unknown";
+    console.warn(`[${context.route}] ignoring malformed stockMood (packId=${claimedPackId}) — continuing without a footage style`);
+    return null;
+  }
   const { packId, ...stockMood } = parsed.data;
-  return { ok: true, stockMood: { packId, ...stockMood } };
+  return { packId, ...stockMood };
 }
 
 /** Read the pack snapshot out of one stored recipe/context JSON blob. Fails

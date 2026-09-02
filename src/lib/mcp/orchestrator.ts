@@ -48,7 +48,7 @@ import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
 import { heroImageProviderRetryDirective } from "@/lib/mcp/hero-image-pipeline-retry";
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
-  buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
+  buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, createStockMoodResolver, type OrchCaption,
   cardsByWordCount, POSITION_TOP_PERCENT,
 } from "@/lib/mcp/orchestrator-steps";
 import {
@@ -128,7 +128,6 @@ import {
 import { getVideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
 import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
-import { stockMoodForProject, type ResolvedStockMood } from "@/lib/broll-preferences";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
 import {
   ContentPreflightError,
@@ -939,29 +938,29 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // ADR 0057: one style system drives every B-roll source. The pinned Style
     // Pack's Stock Mood is read ONCE per job from immutable snapshots — the
     // per-clip pinned Visual Context first, then the project's Brand Revision
-    // recipe — and never re-resolved from the catalog (ADR 0005). Both worker
-    // paths (script + upload) share this resolution, and every failure mode
-    // returns null: a mood is a flavour, never a reason for a render to stop.
-    let stockMoodResolution: Promise<ResolvedStockMood | null> | null = null;
-    const resolveStockMood = (): Promise<ResolvedStockMood | null> => {
-      stockMoodResolution ??= (async () => {
-        try {
-          const project = job.projectId
-            ? await prisma.editorProject.findFirst({
-                where: { id: job.projectId, userId },
-                select: { brandProfileRevision: { select: { visualRecipeJson: true } } },
-              })
-            : null;
-          return stockMoodForProject({
-            projectVisualContextJson: job.projectVisualContextJson,
-            brandRevisionRecipeJson: project?.brandProfileRevision?.visualRecipeJson ?? null,
-          });
-        } catch {
-          return null;
-        }
-      })();
-      return stockMoodResolution;
-    };
+    // recipe — and never re-resolved from the catalog (ADR 0005).
+    //
+    // The context column is re-read at resolve time, NOT taken from the `job`
+    // row above: both paths pin the job's visual context after that read and
+    // before the keyword step, so the row captured at job load is always the
+    // pre-pin value. Both lookups fail open to "no mood".
+    const resolveStockMood = createStockMoodResolver({
+      projectVisualContextJson: async () => {
+        const pinned = await prisma.videoJob.findFirst({
+          where: { id: jobId, userId },
+          select: { projectVisualContextJson: true },
+        });
+        return pinned?.projectVisualContextJson ?? job.projectVisualContextJson;
+      },
+      brandRevisionRecipeJson: async () => {
+        if (!job.projectId) return null;
+        const project = await prisma.editorProject.findFirst({
+          where: { id: job.projectId, userId },
+          select: { brandProfileRevision: { select: { visualRecipeJson: true } } },
+        });
+        return project?.brandProfileRevision?.visualRecipeJson ?? null;
+      },
+    });
     let resumedHeroVoiceTts: HeroVoiceGenerationResult | null = null;
     let ttsStepAlreadyEntered = false;
 

@@ -37,7 +37,7 @@ import {
   WindowEditsBottomBar,
 } from "./BrollWindowInspector";
 import type { MeData } from "@/lib/use-me";
-import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { BrollRegionPreference } from "@/lib/broll-preferences";
 import type { ProjectStylePack } from "./project-style-pack";
 import { trackEvent } from "@/lib/client-telemetry";
 import type { LogoOverlayConfig } from "@/lib/logo-overlay";
@@ -86,7 +86,6 @@ export function PostPhase({
   starterImageAllowance,
   downloadFilename,
   brollRegionPreference,
-  brollVisualStyle,
   projectStylePack,
 }: {
   job: V2JobState; script: string;
@@ -115,7 +114,6 @@ export function PostPhase({
   starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
   brollRegionPreference?: BrollRegionPreference;
-  brollVisualStyle?: BrollVisualStyle;
   projectStylePack?: ProjectStylePack | null;
 }) {
   const [rightTab, setRightTab] = useState<"hook" | "subtitle" | "logo">("hook");
@@ -796,7 +794,6 @@ export function PostPhase({
             sceneRerollUnavailableReason={sceneRerollUnavailableReason}
             starterImageAllowance={starterImageAllowance}
             brollRegionPreference={brollRegionPreference}
-            brollVisualStyle={brollVisualStyle}
             projectStylePack={projectStylePack}
           />
         )}
