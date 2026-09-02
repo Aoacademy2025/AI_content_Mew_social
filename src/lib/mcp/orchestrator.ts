@@ -1469,6 +1469,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         && src.projectId
         && src.projectVisualContextJson
       ) {
+        // Task 9 (Telemetry, fix-up): ONE entitlement read for the whole batch —
+        // admin health gates per-pack acceptance on this cohort, and resolving
+        // it per rejected scene re-read the same row once per scene. Guarded on
+        // its own: this runs after the re-render already reached `done`, so a
+        // transient DB failure degrades the cohort to null, never the job.
+        const rejectionCohort = await resolveBrandVisualAccessByUserId(user)
+          .then((access) => access.cohort)
+          .catch(() => null);
         await Promise.all(editsRes.map(async (edit) => {
           const reason: FirstPassVisualRejectionReason | null =
             firstPassVisualRejectionReasonForWindow(srcBgVideos[edit.index], edit);
@@ -1480,9 +1488,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             sceneIndex: edit.index,
             reason,
             projectVisualContextJson: src.projectVisualContextJson,
-            // Task 9 (Telemetry, fix-up): resolved once per rejected scene —
-            // admin health gates per-pack acceptance on this same cohort.
-            cohort: (await resolveBrandVisualAccessByUserId(user)).cohort,
+            cohort: rejectionCohort,
           });
         })).catch((error) => {
           console.error("[mcp-worker] first-pass visual rejection telemetry failed:", error);
@@ -1701,23 +1707,36 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         && src.contentPreflightId
         && src.projectVisualContextJson
       ) {
-        const initialAiWindowCount = await prisma.projectVisualBeat.count({
-          where: {
-            userId,
-            projectId: src.projectId,
-            preflightId: src.contentPreflightId,
-            existingImageJobId: { not: null },
-          },
-        });
-        await recordFirstPassVisualExport(userId, {
-          actor: user,
-          projectId: src.projectId,
-          videoJobId: src.id,
-          projectVisualContextJson: src.projectVisualContextJson,
-          initialAiWindowCount,
-          // Task 9 (Telemetry, fix-up): see the rejection call site above.
-          cohort: (await resolveBrandVisualAccessByUserId(user)).cohort,
-        }).catch((error) => {
+        // Task 9 (Telemetry, fix-up): the WHOLE block is inside the guarded
+        // chain, not just the recording call. The window count and the cohort
+        // lookup are Prisma reads evaluated while the argument object is being
+        // built — before `recordFirstPassVisualExport` returns the promise the
+        // `.catch()` attaches to — so a transient DB failure in either would
+        // throw into an export that already transitioned to `done`. Telemetry
+        // may never fail a finished export.
+        await (async () => {
+          const initialAiWindowCount = await prisma.projectVisualBeat.count({
+            where: {
+              userId,
+              // Non-null by the guard above; the narrowing does not survive
+              // into this closure (same as the rejection call site).
+              projectId: src.projectId!,
+              preflightId: src.contentPreflightId!,
+              existingImageJobId: { not: null },
+            },
+          });
+          const cohort = await resolveBrandVisualAccessByUserId(user)
+            .then((access) => access.cohort)
+            .catch(() => null);
+          await recordFirstPassVisualExport(userId, {
+            actor: user,
+            projectId: src.projectId!,
+            videoJobId: src.id,
+            projectVisualContextJson: src.projectVisualContextJson,
+            initialAiWindowCount,
+            cohort,
+          });
+        })().catch((error) => {
           console.error("[mcp-worker] first-pass visual export telemetry failed:", error);
         });
       }

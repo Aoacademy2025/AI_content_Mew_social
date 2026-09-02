@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   MUSIC_MOODS,
   STYLE_PACK_IDS,
+  isStylePackId,
   type PacingLevel,
   type StockMood,
   type StylePack,
@@ -108,10 +109,13 @@ export function parseStockMoodRequest(
   if (raw === undefined || raw === null) return null;
   const parsed = stockMoodRequestSchema.safeParse(raw);
   if (!parsed.success) {
-    // Only the pack id is echoed — never the mood's free text.
-    const claimedPackId = raw && typeof raw === "object" && typeof (raw as { packId?: unknown }).packId === "string"
-      ? (raw as { packId: string }).packId.slice(0, 32)
-      : "unknown";
+    // Only a RECOGNISED pack id is echoed — never the mood's free text, and
+    // never the client's raw string. `packId` is client-controlled: echoed
+    // verbatim, a newline in it forges a whole extra log line and any other
+    // junk lands in the logs unbounded. Matching it against the catalog is the
+    // whole sanitiser — anything else reads as the literal "unknown".
+    const claimed = raw && typeof raw === "object" ? (raw as { packId?: unknown }).packId : undefined;
+    const claimedPackId = isStylePackId(claimed) ? claimed : "unknown";
     console.warn(`[${context.route}] ignoring malformed stockMood (packId=${claimedPackId}) — continuing without a footage style`);
     return null;
   }

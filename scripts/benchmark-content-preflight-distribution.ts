@@ -193,6 +193,25 @@ async function runPaid(fixtures: Fixture[], benchmarkKey: string, onlyIds: strin
   delete process.env.GEMINI_SERVER_KEY;
 
   const directory = mkdtempSync(join(tmpdir(), "content-preflight-distribution-"));
+  // The benchmark key is written into that throwaway database, so it must go
+  // whatever ends the run. `finally` alone does not cover a signal — a Ctrl-C
+  // during a long paid run has already left one behind — so the same removal
+  // is registered on SIGINT/SIGTERM. It is idempotent, so the handler and the
+  // `finally` may both run; the handler then exits 128+signal, as a shell
+  // expects from a signalled process.
+  let removedDirectory = false;
+  const removeDirectory = () => {
+    if (removedDirectory) return;
+    removedDirectory = true;
+    rmSync(directory, { recursive: true, force: true });
+  };
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]] as const) {
+    process.once(signal, () => {
+      removeDirectory();
+      process.exit(code);
+    });
+  }
+
   process.env.DATABASE_URL = `file:${join(directory, "benchmark.db")}`;
   execFileSync("npx", ["prisma", "db", "push", "--skip-generate"], { stdio: "ignore", env: process.env });
 
@@ -244,8 +263,7 @@ async function runPaid(fixtures: Fixture[], benchmarkKey: string, onlyIds: strin
     }
     await prisma.$disconnect();
   } finally {
-    // The benchmark key was written into this throwaway database.
-    rmSync(directory, { recursive: true, force: true });
+    removeDirectory();
   }
 
   mkdirSync(OUTPUT_ROOT, { recursive: true });
