@@ -118,10 +118,13 @@ function shortFieldCapMessage(label: string): string {
 function longFieldCapMessage(label: string): string {
   return `กรุณาระบุ${label}ให้สั้นลง (สูงสุด ${BRAND_PROFILE_CAPS.longFieldChars.toLocaleString()} ตัวอักษร)`;
 }
+function audienceCapMessage(label: string): string {
+  return `กรุณาระบุ${label}ให้สั้นลง (สูงสุด ${BRAND_PROFILE_CAPS.audienceChars.toLocaleString()} ตัวอักษร)`;
+}
 const CREATOR_WRITE_TEXT_CAPS: BrandProfileTextCaps = {
   nameMax: BRAND_PROFILE_CAPS.shortFieldChars,
   nicheMax: BRAND_PROFILE_CAPS.shortFieldChars,
-  audienceMax: BRAND_PROFILE_CAPS.shortFieldChars,
+  audienceMax: BRAND_PROFILE_CAPS.audienceChars,
   toneMax: BRAND_PROFILE_CAPS.shortFieldChars,
   bannedWordsMax: BRAND_PROFILE_CAPS.bannedWords,
   bannedWordCharsMax: BRAND_PROFILE_CAPS.bannedWordChars,
@@ -129,7 +132,7 @@ const CREATOR_WRITE_TEXT_CAPS: BrandProfileTextCaps = {
   messages: {
     name: shortFieldCapMessage("ชื่อโปรไฟล์"),
     niche: shortFieldCapMessage("นิช"),
-    audience: shortFieldCapMessage("กลุ่มเป้าหมาย"),
+    audience: audienceCapMessage("กลุ่มเป้าหมาย"),
     tone: shortFieldCapMessage("โทนเสียง"),
     bannedWords: `กรุณาระบุคำต้องห้ามไม่เกิน ${BRAND_PROFILE_CAPS.bannedWords} คำ`,
     analysisNotes: longFieldCapMessage("โน้ตสไตล์การเขียน"),

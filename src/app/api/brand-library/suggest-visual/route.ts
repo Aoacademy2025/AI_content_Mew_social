@@ -28,7 +28,7 @@ export async function POST(req: Request) {
     // fields it is asked to advise on, so it can never be handed more text than
     // the profile itself may store.
     const niche = typeof body?.niche === "string" ? body.niche.trim().slice(0, BRAND_PROFILE_CAPS.shortFieldChars) : "";
-    const audience = typeof body?.audience === "string" ? body.audience.trim().slice(0, BRAND_PROFILE_CAPS.shortFieldChars) : "";
+    const audience = typeof body?.audience === "string" ? body.audience.trim().slice(0, BRAND_PROFILE_CAPS.audienceChars) : "";
     const sample = typeof body?.sample === "string" ? body.sample.trim().slice(0, BRAND_PROFILE_CAPS.longFieldChars) : "";
     if (!niche || !audience) {
       return NextResponse.json({ error: "กรุณาระบุนิชและกลุ่มเป้าหมาย" }, { status: 400 });

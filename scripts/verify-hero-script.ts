@@ -520,12 +520,14 @@ async function main() {
       "checkBrandProfileFieldLimits: absent fields are skipped (presence is the route's own check)");
 
     ok(BRAND_PROFILE_CAPS.shortFieldChars === 300, "BRAND_PROFILE_CAPS.shortFieldChars = 300");
+    ok(BRAND_PROFILE_CAPS.audienceChars === 500, "BRAND_PROFILE_CAPS.audienceChars = 500");
     ok(BRAND_PROFILE_CAPS.longFieldChars === 4000, "BRAND_PROFILE_CAPS.longFieldChars = 4,000");
     ok(BRAND_PROFILE_CAPS.urlChars === 2048, "BRAND_PROFILE_CAPS.urlChars = 2,048");
     ok(BRAND_PROFILE_CAPS.bannedWords === 20, "BRAND_PROFILE_CAPS.bannedWords = 20 items");
     ok(BRAND_PROFILE_CAPS.bannedWordChars === 50, "BRAND_PROFILE_CAPS.bannedWordChars = 50");
 
-    for (const key of ["name", "niche", "audience", "tone"] as const) {
+    // name / niche / tone stay on the 300-char shortFieldChars bound.
+    for (const key of ["name", "niche", "tone"] as const) {
       ok(checkBrandProfileFieldLimits({ ...base, [key]: "x".repeat(300) }).ok === true,
         `checkBrandProfileFieldLimits: ${key} at 300 chars → accepted (boundary inclusive)`);
       const over = checkBrandProfileFieldLimits({ ...base, [key]: "x".repeat(301) });
@@ -533,6 +535,14 @@ async function main() {
       ok(!over.ok && over.message.startsWith("กรุณาระบุ") && over.message.includes("300"),
         `checkBrandProfileFieldLimits: ${key} over-cap message is Thai and names the cap`);
     }
+
+    // audience has its own wider 500-char bound (production rows reach 411 chars).
+    ok(checkBrandProfileFieldLimits({ ...base, audience: "x".repeat(500) }).ok === true,
+      "checkBrandProfileFieldLimits: audience at 500 chars → accepted (boundary inclusive)");
+    const overAudience = checkBrandProfileFieldLimits({ ...base, audience: "x".repeat(501) });
+    ok(overAudience.ok === false, "checkBrandProfileFieldLimits: audience at 501 chars → rejected");
+    ok(!overAudience.ok && overAudience.message.startsWith("กรุณาระบุ") && overAudience.message.includes("500"),
+      "checkBrandProfileFieldLimits: audience over-cap message is Thai and names the 500 cap");
 
     for (const key of ["analysisNotes", "sampleText"] as const) {
       ok(checkBrandProfileFieldLimits({ ...base, [key]: "x".repeat(4000) }).ok === true,

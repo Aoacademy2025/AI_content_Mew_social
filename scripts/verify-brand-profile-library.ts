@@ -642,20 +642,54 @@ async function main() {
     "the stored-read boundary must accept the widest historical caps, not just the new shared creator-write caps",
   );
 
-  const wideCapsDraftMessage = checkBrandProfileFieldLimits({ audience: "a".repeat(301) }).ok === false
-    ? checkBrandProfileFieldLimits({ audience: "a".repeat(301) }).message
+  // audience has its own wider 500-char cap (BRAND_PROFILE_CAPS.audienceChars)
+  // — production rows reach 411 chars — while every other short field (name,
+  // niche, tone) keeps the 300-char shortFieldChars bound. A 500-char audience
+  // must be ACCEPTED by a NEW creator-write draft save on the same profile.
+  const acceptedAudienceDraft = await saveBrandProfileDraft({
+    userId: wideCapsUser.id,
+    profileId: wideCapsProfile.id,
+    payload: { ...basePayload, audience: "a".repeat(500) },
+  });
+  assert.equal(
+    (JSON.parse(acceptedAudienceDraft.payloadJson) as { audience: string }).audience.length,
+    500,
+    "a 500-char audience is accepted by the creator-write caps, not just the stored-read boundary",
+  );
+
+  // A 501-char audience must still be rejected, with the exact legacy message.
+  const overCapAudienceMessage = checkBrandProfileFieldLimits({ audience: "a".repeat(501) }).ok === false
+    ? checkBrandProfileFieldLimits({ audience: "a".repeat(501) }).message
     : null;
-  assert.ok(wideCapsDraftMessage, "checkBrandProfileFieldLimits must itself reject a 301-char audience");
+  assert.ok(overCapAudienceMessage, "checkBrandProfileFieldLimits must itself reject a 501-char audience");
   await assert.rejects(
     saveBrandProfileDraft({
       userId: wideCapsUser.id,
       profileId: wideCapsProfile.id,
-      payload: { ...basePayload, audience: "a".repeat(301) },
+      payload: { ...basePayload, audience: "a".repeat(501) },
     }),
     (error: unknown) => Boolean(
-      error && typeof error === "object" && "message" in error && error.message === wideCapsDraftMessage
+      error && typeof error === "object" && "message" in error && error.message === overCapAudienceMessage
     ),
-    "a NEW draft save on the same profile is still bounded by the tighter shared creator-write caps",
+    "a NEW draft save on the same profile still rejects an audience over the wider 500-char cap",
+  );
+
+  // The other short fields (proven here via tone) keep the 300-char bound —
+  // audience's wider cap must not have leaked onto them.
+  const overCapToneMessage = checkBrandProfileFieldLimits({ tone: "a".repeat(301) }).ok === false
+    ? checkBrandProfileFieldLimits({ tone: "a".repeat(301) }).message
+    : null;
+  assert.ok(overCapToneMessage, "checkBrandProfileFieldLimits must itself reject a 301-char tone");
+  await assert.rejects(
+    saveBrandProfileDraft({
+      userId: wideCapsUser.id,
+      profileId: wideCapsProfile.id,
+      payload: { ...basePayload, script: { ...basePayload.script, tone: "a".repeat(301) } },
+    }),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "message" in error && error.message === overCapToneMessage
+    ),
+    "a NEW draft save on the same profile is still bounded by the 300-char cap for tone",
   );
 
   await prisma.editorProject.update({

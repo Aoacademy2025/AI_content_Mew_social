@@ -432,7 +432,7 @@ export function AdvancedSettings({
               onChange={(value) => setDraft((current) => ({ ...current, audience: value }))}
               placeholder="ใครควรรู้สึกว่านี่ทำมาเพื่อเขา"
               disabled={disabled}
-              maxLength={BRAND_PROFILE_CAPS.shortFieldChars}
+              maxLength={BRAND_PROFILE_CAPS.audienceChars}
             />
           </div>
 

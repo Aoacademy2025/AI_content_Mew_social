@@ -14,8 +14,12 @@
 // scripts/verify-hero-script.ts all import this module directly.
 
 export const BRAND_PROFILE_CAPS = {
-  /** name / niche / audience / tone — same 300-char bound as validateTopic / validateNicheSeed. */
+  /** name / niche / tone — same 300-char bound as validateTopic / validateNicheSeed. */
   shortFieldChars: 300,
+  /** audience — its own wider bound: audience descriptions run long, 500 was
+   *  the /brands bound before wave 0, and a production check found 10 rows
+   *  between 301 and 411 chars (Mew's decision, 2026-09-02). */
+  audienceChars: 500,
   /** analysisNotes / sampleText — the analyze route's own 4,000-char truncation. */
   longFieldChars: 4000,
   /** sampleUrl — the practical URL length bound (IE/CDN de-facto limit). */
@@ -48,7 +52,7 @@ export interface BrandProfileFieldInput {
 const FIELD_RULES: readonly { key: keyof BrandProfileFieldInput; label: string; max: number }[] = [
   { key: "name", label: "ชื่อโปรไฟล์", max: BRAND_PROFILE_CAPS.shortFieldChars },
   { key: "niche", label: "นิช", max: BRAND_PROFILE_CAPS.shortFieldChars },
-  { key: "audience", label: "กลุ่มเป้าหมาย", max: BRAND_PROFILE_CAPS.shortFieldChars },
+  { key: "audience", label: "กลุ่มเป้าหมาย", max: BRAND_PROFILE_CAPS.audienceChars },
   { key: "tone", label: "โทนเสียง", max: BRAND_PROFILE_CAPS.shortFieldChars },
   { key: "analysisNotes", label: "โน้ตสไตล์การเขียน", max: BRAND_PROFILE_CAPS.longFieldChars },
   { key: "sampleText", label: "ข้อความตัวอย่าง", max: BRAND_PROFILE_CAPS.longFieldChars },
