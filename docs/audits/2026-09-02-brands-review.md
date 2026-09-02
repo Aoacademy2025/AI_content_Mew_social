@@ -167,3 +167,77 @@
 - แตะ subtitle timing (ADR 0056) — ชุดสไตล์เลือก *preset* ซับเท่านั้น
 - เอฟเฟกต์ motion ใหม่ (zoom punch/ตัดกระชาก) — fast-follow หลังเห็น telemetry wave 1
 - Character Identity Lock (ADR 0011 ยังเป็นอนาคต)
+
+---
+
+## F5 disposition — Content Preflight "สำเร็จ 63 % / invalid 9 %" (วินิจฉัย 2026-09-02, read-only prod)
+
+**คำตัดสิน:** ตัวเลข 63 % **ไม่ใช่บั๊ก แต่เป็นตัวชี้วัดที่นับผิดฐาน** (ตัวตั้งกับตัวหารมาจากคนละกลุ่มผู้ใช้) · ส่วน invalid 9 % **ส่วนใหญ่ถูกแก้ไปแล้ว** (สาเหตุอันดับ 1 คือชื่อเฉพาะรั่ว ซึ่ง #353 + v13–v15 ปิดไปเมื่อ 08-26/08-28) · เหลือ **บั๊กจริง 1 ข้อ** คือ *ผู้ให้บริการตอบกลับมาว่างเปล่า แล้วโค้ดตีความเป็น "JSON พัง"* → แก้แล้วในงานนี้ (ดู "การแก้")
+
+### F5.1 นับใหม่วันนี้ เทียบกับตัวเลขใน §3
+
+| ตัวชี้วัด (30 วัน) | §3 (audit) | นับใหม่ 2026-09-02 | หมายเหตุ |
+|---|---|---|---|
+| step2 (`editor_step2_reached`) | 952 | **794** (= ทั้งหมดตลอดอายุฟีเจอร์) | นิยามเดิมนับไม่ซ้ำอีกไม่ได้; ทุก definition ที่ลองแล้วไม่ได้ 952 |
+| preflight สำเร็จ (`brand_visual_preflight_resolved`) | 604 | **606** (analyzed 430 + cached 176) | ตรงกับ audit (โต 2 ระหว่างวัน) |
+| invalid (`brand_visual_preflight_invalid`) | 83 | **83** | ตรงเป๊ะ |
+| อัตราที่ audit สรุป | 63 % / 9 % | — | **ใช้ไม่ได้** ดู F5.2 |
+| อัตราที่ถูกต้อง (สำเร็จ/ครั้งที่วิเคราะห์จริง) | — | **430/513 = 83.8 %** ตลอดอายุ · **106/108 = 98.1 %** ตั้งแต่ v15 (28 ส.ค.) | invalid ต่อความพยายามวิเคราะห์ |
+
+### F5.2 ทำไม 63 % ถึงเป็นตัวเลขลวง — ตัวตั้งกับตัวหารเป็นคนละกลุ่ม
+
+| event | cohort ที่ยิงจริง | จำนวน |
+|---|---|---|
+| `editor_step2_reached` | `rollout-wait` 725 + `control` 69 · **internal/treatment-\* = 0** | 794 |
+| `brand_visual_preflight_resolved` | `internal` 395 · worker ไม่มี cohort (upload 123 + script 63) 186 · `rollout-wait` 25 | 606 |
+
+`Step2Elements.tsx` ยิง `editor_step2_reached` เฉพาะ cohort ที่ "วัดผลได้" ซึ่งวันนี้คือ rollout-wait/control — กลุ่มที่ `decideBrandVisualAccess` คืน `canUse:false` จึง **ยิง preflight ไม่ได้อยู่แล้ว** (route ตอบ `brandVisualLockedResponse` เว้นแต่โปรเจกต์มี pin เดิม) ส่วน 94 % ของ resolved มาจาก cohort `internal` และจาก worker ที่ไม่ยิง step-2 เลย → **หารกันไม่ได้โดยนิยาม**
+
+### F5.3 ช่องว่างเงียบ (952 vs 604+83) — แยกเป็น "ตามดีไซน์" กับ "บั๊ก"
+
+นับที่ระดับโปรเจกต์: 400 โปรเจกต์ที่มี `editor_step2_reached`
+
+| กลุ่ม | จำนวน | คำอธิบาย | ตัดสิน |
+|---|---|---|---|
+| มี VideoJob `stockSource ∈ (kie-image, auto-mix)` แต่ไม่มี ContentPreflight | **184** | เจ้าของอยู่นอก rollout → `ensureVideoJobContentPreflight` คืน `skipped: not-accepted` แล้วเรนเดอร์ด้วยเส้นทาง prompt เดิม | **ตามดีไซน์ของ rollout** (คือสิ่งที่ ADR 0059 / F4 เปิดให้ทุกแผน) |
+| งาน stock อย่างเดียว ไม่มี preflight | 164 | trigger ฝั่ง editor (`shouldLoadBrandVisualContext`) และ orchestrator (`needsAiVisualPlan`) ไม่แตะ stock-only | **ตามดีไซน์** |
+| ไม่เคยมี VideoJob เลย | 19 | เปิด Step 2 แล้วไม่เรนเดอร์ | **ตามดีไซน์** |
+| มี ContentPreflight | 33 | 19 ต้องใช้ภาพ AI + 14 เปิดแผงขั้นสูง | — |
+
+**ไม่พบ trigger ที่หายหรือ race:** งานที่ผู้ใช้อยู่ในเส้นทาง Brand Visual จริง (`projectVisualContextJson` ไม่ว่าง) และจบสถานะ `done` โดยไม่มี `contentPreflightId` = **0 งาน** → กติกาเงินของ ADR 0010 ("หยุดก่อนคิดเงินภาพ") ยังยืนอยู่ · งานที่ถูก preflight หยุดจริงตลอดอายุฟีเจอร์ = **14 งาน** (`CONTENT_PREFLIGHT_INVALID_ANALYSIS` 9 + `CONTENT_PREFLIGHT_NARRATIVE_MISMATCH` 5; ลูกค้า 9 / ทีม 5) และครั้งสุดท้ายของ INVALID_ANALYSIS คือ 08-27
+
+### F5.4 จำแนก 83 invalid events (จาก `properties.diagnostic` + เวลา + cohort)
+
+analyzer version: **v12 = 81 · v15 = 2** · cohort: **ทีม 78 / ลูกค้า 5** · ทุก event ใช้ครบ 3 attempts
+
+| # | คลาสความล้มเหลว (จากไม้สุดท้ายที่ตัดสิน) | events | % | อ่านว่าอะไร |
+|---|---|---|---|---|
+| 1 | `beats[].subject:custom` — ชื่อเฉพาะรั่วเข้า field ที่ส่งให้ผู้ให้บริการ | **39** | 47 % | ปัญหา v12 ที่ #353 (08-26) + v13–v15 ปิดไปแล้ว: ก่อน 08-26 มี 44 event หลัง 08-26 เหลือ **2** |
+| 2 | **`empty_provider_response`** — โมเดลตอบกลับมา **ว่างเปล่า (len=0) ครบทั้ง 3 ครั้ง** | **32** | 39 % | บั๊กจริง (F5.5) · 24 ครั้งเป็น burst วันเดียว 08-27, ยัง reproduce ได้ 09-01 |
+| 3 | `storyEntities[].renderingDescription:custom` | 5 | 6 % | ตระกูลเดียวกับ #1 |
+| 4 | `beats[].entityRefs[]:custom` (อ้าง entity ที่ไม่มี / real-person) | 3 | 4 % | 3 ใน 5 ของ event ฝั่งลูกค้าอยู่กลุ่มนี้ (08-26) |
+| 5 | `hardSceneFacts.{actions,essentialObjects,count}:too_big` | 4 | 5 % | เพดานความยาว/จำนวน ยังชนบ้าง |
+| — | `beat_count` ไม่ตรงจำนวนหน้าต่าง | ปนใน 3 event | — | ไม่เคยเป็นสาเหตุเดี่ยว |
+
+ความถี่ path ระดับ attempt: `beats[].subject:custom` 232 · `renderingDescription:custom` 22 · `hardSceneFacts.actions[]:too_big` 17 · `entityRefs[]:custom` 11 · `entityTypes[]:too_big` 8 · อื่น ๆ ≤4
+
+### F5.5 บั๊กที่พิสูจน์ได้ + การแก้
+
+**หลักฐาน:** attempt ที่ถูกบันทึกว่า `json_parse` มี **96 ครั้ง และทั้ง 96 ครั้ง `len=0`** — ไม่เคยมีสักครั้งที่เป็น JSON เพี้ยนจริง ๆ · เมื่อได้ body ว่าง ครั้งถัดไปก็ว่างทุกครั้ง (**0 จาก 64**) · โค้ดกลับส่ง correction prompt ว่า *"Your previous JSON was rejected because it could not be parsed"* ซึ่งเป็นการบรรยายคำตอบที่โมเดลไม่เคยส่ง แล้วเผาอีก 2 calls ที่รู้ผลอยู่แล้ว · ซ้ำร้าย `diagnostic` ถูกตัดที่ 1,200 ตัวอักษรแบบรวม ทำให้ **attempt สุดท้ายหายไปใน 29 จาก 83 event** และ telemetry ไม่มี field ที่ระบุคลาสความล้มเหลว (ต้อง parse ข้อความเอง)
+
+**แก้ (คงความหมาย ADR 0010 ทุกข้อ):** `src/lib/content-preflight.server.ts`
+
+1. body ว่าง = คลาสของตัวเอง `empty_provider_response` → **หยุดทันที** (ไม่มีอะไรให้แก้) — *ลด* จำนวน call ไม่ใช่เพิ่ม, ไม่มี fallback, ไม่มีการคิดเงินภาพ, ผู้ใช้ยังได้ปุ่มลองใหม่ครั้งเดียวเหมือนเดิม
+2. `brand_visual_preflight_invalid` เพิ่ม `reason` = `empty_provider_response | unparsable_json | beat_count_mismatch | schema_invalid` → query จำแนกได้ตรง ๆ
+3. ตัด `diagnostic` **ต่อ attempt** (380 ตัวอักษร) แทนการตัดรวม → attempt สุดท้ายไม่หายอีก
+4. ข้อความให้ผู้ใช้ของคลาสนี้แยกเป็น "ระบบวิเคราะห์แนวภาพไม่ได้รับผลลัพธ์กลับมา กรุณาลองใหม่อีกครั้ง" (ของเดิมพูดว่า "หลังลองแก้อัตโนมัติ" ซึ่งไม่จริงสำหรับคลาสนี้)
+
+fixture: `scripts/verify-content-preflight.ts` — body ว่าง (`""` และช่องว่างล้วน) ต้องเรียกผู้ให้บริการ **1 ครั้ง**, ล้มแบบ fail-closed, และทิ้ง `"reason":"empty_provider_response"` ไว้ใน telemetry
+
+### F5.6 งานต่อ (ticket ที่ควรเปิด)
+
+| # | เรื่อง | ทำไม | Wave |
+|---|---|---|---|
+| T1 | เลิกใช้ "step2 → preflight" เป็น funnel · วัด **สำเร็จ/ความพยายามวิเคราะห์** และแยกตาม cohort ที่ใช้ได้จริง (`brand-visual-rollout-health.server.ts`) | ตัวเลข 63 % หลอกทั้ง audit นี้ | 0 (เอกสาร) / 1 (โค้ด) |
+| T2 | ให้ `geminiGenerateText` ส่ง `finishReason` ออกมาเมื่อ body ว่าง เพื่อแยก safety-block กับ token-cap | ตอนนี้ระบุสาเหตุฝั่งผู้ให้บริการไม่ได้เลย; แตะ 14 call sites จึงเกินขอบเขต wave 0 | 1 |
+| T3 | วัดซ้ำ 7 วันหลัง deploy ด้วย `json_extract(properties,'$.reason')` — คาด `empty_provider_response` เป็นคลาสนำ ส่วน `subject:custom` ควรใกล้ 0 | ยืนยันว่า v15 ปิดตระกูลชื่อเฉพาะได้จริง | 0 (ops) |
