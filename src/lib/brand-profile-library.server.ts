@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 import {
   TREATMENT_PRESET_IDS,
   createCatalogTreatmentPin,
@@ -44,41 +45,121 @@ const creatorPaletteColorSchema = storedPaletteColorSchema.transform((value, con
   return normalized;
 });
 
-const brandProfilePayloadBaseSchema = z.object({
-  schemaVersion: z.literal(1),
-  name: z.string().trim().min(1).max(80),
-  // The /brands surface asks for a name and a Visual Format only; niche,
-  // audience and tone are optional refinements that may legitimately be empty.
-  niche: z.string().trim().max(300),
-  audience: z.string().trim().max(500),
-  script: z.object({
-    styleId: shortNullable,
-    tone: z.string().trim().max(500),
-    bannedWords: z.array(z.string().trim().min(1).max(80)).max(100),
-    ctaStyle: z.string().trim().min(1).max(40),
-    language: z.string().trim().min(1).max(20),
-    analysisNotes: z.string().trim().max(4_000).nullable().optional(),
-    sampleText: z.string().trim().max(4_000).nullable().optional(),
-  }),
-  voice: z.object({
-    provider: z.string().trim().min(1).max(40),
-    voiceId: shortNullable,
-  }),
-  subtitle: z.object({
-    presetId: shortNullable,
-    config: z.record(z.string().max(80), safeConfigValue).refine(
-      (value) => JSON.stringify(value).length <= 8_000,
-      "Subtitle defaults are too large",
-    ),
-  }),
-  brandMark: z.object({
-    assetId: shortNullable,
-    enabled: z.boolean(),
-    position: z.string().trim().min(1).max(40),
-    sizePct: z.number().min(1).max(100),
-    opacity: z.number().min(0).max(1),
-  }),
-});
+type BrandProfileTextCaps = {
+  nameMax: number;
+  nicheMax: number;
+  audienceMax: number;
+  toneMax: number;
+  bannedWordsMax: number;
+  bannedWordCharsMax: number;
+  longFieldMax: number;
+  messages?: {
+    name: string;
+    niche: string;
+    audience: string;
+    tone: string;
+    bannedWords: string;
+    analysisNotes: string;
+    sampleText: string;
+  };
+};
+
+function brandProfileBaseSchema(caps: BrandProfileTextCaps) {
+  const m = caps.messages;
+  return z.object({
+    schemaVersion: z.literal(1),
+    name: z.string().trim().min(1).max(caps.nameMax, m?.name),
+    // The /brands surface asks for a name and a Visual Format only; niche,
+    // audience and tone are optional refinements that may legitimately be empty.
+    niche: z.string().trim().max(caps.nicheMax, m?.niche),
+    audience: z.string().trim().max(caps.audienceMax, m?.audience),
+    script: z.object({
+      styleId: shortNullable,
+      tone: z.string().trim().max(caps.toneMax, m?.tone),
+      bannedWords: z.array(z.string().trim().min(1).max(caps.bannedWordCharsMax))
+        .max(caps.bannedWordsMax, m?.bannedWords),
+      ctaStyle: z.string().trim().min(1).max(40),
+      language: z.string().trim().min(1).max(20),
+      analysisNotes: z.string().trim()
+        .max(caps.longFieldMax, m?.analysisNotes)
+        .nullable().optional(),
+      sampleText: z.string().trim()
+        .max(caps.longFieldMax, m?.sampleText)
+        .nullable().optional(),
+    }),
+    voice: z.object({
+      provider: z.string().trim().min(1).max(40),
+      voiceId: shortNullable,
+    }),
+    subtitle: z.object({
+      presetId: shortNullable,
+      config: z.record(z.string().max(80), safeConfigValue).refine(
+        (value) => JSON.stringify(value).length <= 8_000,
+        "Subtitle defaults are too large",
+      ),
+    }),
+    brandMark: z.object({
+      assetId: shortNullable,
+      enabled: z.boolean(),
+      position: z.string().trim().min(1).max(40),
+      sizePct: z.number().min(1).max(100),
+      opacity: z.number().min(0).max(1),
+    }),
+  });
+}
+
+// Creator-write boundary: the shared caps from src/lib/brand-profile-limits.ts,
+// so this path and the legacy /api/brand-profiles write path
+// (checkBrandProfileFieldLimits) reject the same input with the same Thai
+// message on the columns both inject into the Hero Script prompt (F16).
+function shortFieldCapMessage(label: string): string {
+  return `กรุณาระบุ${label}ให้สั้นลง (สูงสุด ${BRAND_PROFILE_CAPS.shortFieldChars.toLocaleString()} ตัวอักษร)`;
+}
+function longFieldCapMessage(label: string): string {
+  return `กรุณาระบุ${label}ให้สั้นลง (สูงสุด ${BRAND_PROFILE_CAPS.longFieldChars.toLocaleString()} ตัวอักษร)`;
+}
+const CREATOR_WRITE_TEXT_CAPS: BrandProfileTextCaps = {
+  nameMax: BRAND_PROFILE_CAPS.shortFieldChars,
+  nicheMax: BRAND_PROFILE_CAPS.shortFieldChars,
+  audienceMax: BRAND_PROFILE_CAPS.shortFieldChars,
+  toneMax: BRAND_PROFILE_CAPS.shortFieldChars,
+  bannedWordsMax: BRAND_PROFILE_CAPS.bannedWords,
+  bannedWordCharsMax: BRAND_PROFILE_CAPS.bannedWordChars,
+  longFieldMax: BRAND_PROFILE_CAPS.longFieldChars,
+  messages: {
+    name: shortFieldCapMessage("ชื่อโปรไฟล์"),
+    niche: shortFieldCapMessage("นิช"),
+    audience: shortFieldCapMessage("กลุ่มเป้าหมาย"),
+    tone: shortFieldCapMessage("โทนเสียง"),
+    bannedWords: `กรุณาระบุคำต้องห้ามไม่เกิน ${BRAND_PROFILE_CAPS.bannedWords} คำ`,
+    analysisNotes: longFieldCapMessage("โน้ตสไตล์การเขียน"),
+    sampleText: longFieldCapMessage("ข้อความตัวอย่าง"),
+  },
+};
+
+// Persisted-read boundary: the WIDEST cap ever enforced on this column by
+// either write path — this library's own pre-shared-cap literals, or the
+// legacy /api/brand-profiles route's checkBrandProfileFieldLimits caps.
+// A row published before the shared caps landed (or via the legacy route,
+// which allows longer audience/tone and more banned words than this
+// library's creator-write schema) must still parse when a creator pins it
+// to a project or hands off from Hero Script — only NEW creator writes are
+// bounded by CREATOR_WRITE_TEXT_CAPS above. Mirrors the
+// SUPPORTED_VISUAL_FORMAT_IDS vs VISUAL_FORMAT_IDS split just below, for the
+// same reason (historical formats/values remain readable even though
+// creator-write schemas reject them for new writes).
+const STORED_READ_TEXT_CAPS: BrandProfileTextCaps = {
+  nameMax: 300,
+  nicheMax: 300,
+  audienceMax: 500,
+  toneMax: 500,
+  bannedWordsMax: 100,
+  bannedWordCharsMax: 80,
+  longFieldMax: 4_000,
+};
+
+const brandProfileCreatorWriteBaseSchema = brandProfileBaseSchema(CREATOR_WRITE_TEXT_CAPS);
+const brandProfileStoredReadBaseSchema = brandProfileBaseSchema(STORED_READ_TEXT_CAPS);
 
 function brandProfileVisualSchema<T extends z.ZodTypeAny, P extends z.ZodTypeAny>(
   formatIdSchema: T,
@@ -115,14 +196,18 @@ function brandProfileVisualSchema<T extends z.ZodTypeAny, P extends z.ZodTypeAny
 }
 
 /** Creator write boundary: retired formats cannot be selected for a new Draft,
- * Project Look or published Revision. */
-export const brandProfilePayloadSchema = brandProfilePayloadBaseSchema.extend({
+ * Project Look or published Revision, and text fields are bounded by the
+ * shared, tighter caps (F16). */
+export const brandProfilePayloadSchema = brandProfileCreatorWriteBaseSchema.extend({
   visual: brandProfileVisualSchema(z.enum(VISUAL_FORMAT_IDS), creatorPaletteColorSchema),
 });
 
-/** Persisted read boundary: historical revisions keep their exact format ID so
- * existing previews, projects and Scene Rerolls remain reproducible. */
-export const storedBrandProfilePayloadSchema = brandProfilePayloadBaseSchema.extend({
+/** Persisted read boundary: historical revisions keep their exact format ID
+ * AND their historically-widest text-field caps, so existing previews,
+ * projects and Scene Rerolls remain reproducible even for a row only the
+ * legacy /api/brand-profiles route (or this library before the shared caps
+ * landed) could have written. */
+export const storedBrandProfilePayloadSchema = brandProfileStoredReadBaseSchema.extend({
   visual: brandProfileVisualSchema(z.enum(SUPPORTED_VISUAL_FORMAT_IDS), storedPaletteColorSchema),
 });
 

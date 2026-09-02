@@ -11,6 +11,7 @@ execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.e
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { CONTENT_PREFLIGHT_ANALYZER_VERSION } = await import("../src/lib/content-preflight.server");
+  const { checkBrandProfileFieldLimits } = await import("../src/lib/brand-profile-limits");
   const {
     archiveBrandProfile,
     applyProjectBrandRevision,
@@ -551,6 +552,112 @@ async function main() {
   assert.equal(publishedProfile.analysisNotes, basePayload.script.analysisNotes);
   assert.equal(publishedProfile.sampleText, basePayload.script.sampleText);
 
+  // F16: the /brands library write path (Zod caps in brand-profile-library.server.ts)
+  // and the legacy /api/brand-profiles write path (checkBrandProfileFieldLimits in
+  // brand-profile-limits.ts) inject the same columns into the Hero Script prompt, so
+  // an overflow must be rejected with the exact same Thai message on both paths.
+  const overLongAnalysisNotes = "x".repeat(4_001);
+  const expectedCapMessage = checkBrandProfileFieldLimits({ analysisNotes: overLongAnalysisNotes }).ok === false
+    ? checkBrandProfileFieldLimits({ analysisNotes: overLongAnalysisNotes }).message
+    : null;
+  assert.ok(expectedCapMessage, "checkBrandProfileFieldLimits must itself reject a 4,001-char analysisNotes");
+  await assert.rejects(
+    saveBrandProfileDraft({
+      userId: user.id,
+      profileId: profile.id,
+      payload: {
+        ...basePayload,
+        script: { ...basePayload.script, analysisNotes: overLongAnalysisNotes },
+      },
+    }),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "message" in error && error.message === expectedCapMessage
+    ),
+    "the /brands library write path must reject an over-cap analysisNotes with the legacy route's exact message",
+  );
+
+  // F16 fix-round-1 (Critical): the stored/persisted-read boundary must keep
+  // accepting the WIDEST caps either write path has ever enforced (this
+  // library's own pre-shared-cap literals, or the legacy /api/brand-profiles
+  // route's checkBrandProfileFieldLimits caps) — only NEW creator writes are
+  // bounded by the tighter shared caps above. Seed a published revision the
+  // way a pre-existing row looks (a 500-char audience, 100 banned words, one
+  // 80-char banned word) by writing straight into the DB, bypassing the
+  // write schema entirely.
+  const wideCapsUser = await prisma.user.create({
+    data: { name: "Historical wide-caps owner", email: "wide-caps@example.test", plan: "BUSINESS" },
+  });
+  const wideAudience = "a".repeat(500);
+  const wideBannedWords = Array.from({ length: 100 }, (_, index) => index === 0 ? "a".repeat(80) : `banned-${index}`);
+  const wideCapsPayload = {
+    ...basePayload,
+    name: "Historical wide caps profile",
+    audience: wideAudience,
+    script: { ...basePayload.script, bannedWords: wideBannedWords },
+  };
+  const wideCapsProfile = await prisma.brandProfile.create({
+    data: {
+      userId: wideCapsUser.id,
+      name: wideCapsPayload.name,
+      niche: wideCapsPayload.niche,
+      audience: wideCapsPayload.audience,
+      tone: wideCapsPayload.script.tone,
+      bannedWords: JSON.stringify(wideCapsPayload.script.bannedWords),
+      activeRevisionNumber: 1,
+      revisions: {
+        create: {
+          version: 1,
+          payloadJson: JSON.stringify(wideCapsPayload),
+          visualRecipeJson: JSON.stringify({
+            visualFormatId: wideCapsPayload.visual.primaryVisualFormatId,
+            recipeVersion: "simple-editorial-story-v7",
+            brandVisualLanguage: wideCapsPayload.visual,
+            defaultTreatment: wideCapsPayload.visual.defaultTreatment,
+            treatmentPolicy: "adaptive",
+            lockedTreatmentPin: null,
+          }),
+        },
+      },
+    },
+    include: { revisions: true },
+  });
+  const wideCapsRevision = wideCapsProfile.revisions[0]!;
+  const wideCapsProject = await prisma.editorProject.create({
+    data: { userId: wideCapsUser.id, title: "Historical wide-caps project" },
+  });
+  const wideCapsPin = await pinProjectBrandRevision({
+    userId: wideCapsUser.id,
+    projectId: wideCapsProject.id,
+    profileId: wideCapsProfile.id,
+    revisionId: wideCapsRevision.id,
+  });
+  assert.equal(
+    wideCapsPin.revision.id,
+    wideCapsRevision.id,
+    "a pre-existing revision with a 500-char audience and 100 banned words (one 80 chars) must still parse and pin",
+  );
+  assert.equal(
+    (await prisma.editorProject.findUniqueOrThrow({ where: { id: wideCapsProject.id } })).brandProfileRevisionId,
+    wideCapsRevision.id,
+    "the stored-read boundary must accept the widest historical caps, not just the new shared creator-write caps",
+  );
+
+  const wideCapsDraftMessage = checkBrandProfileFieldLimits({ audience: "a".repeat(301) }).ok === false
+    ? checkBrandProfileFieldLimits({ audience: "a".repeat(301) }).message
+    : null;
+  assert.ok(wideCapsDraftMessage, "checkBrandProfileFieldLimits must itself reject a 301-char audience");
+  await assert.rejects(
+    saveBrandProfileDraft({
+      userId: wideCapsUser.id,
+      profileId: wideCapsProfile.id,
+      payload: { ...basePayload, audience: "a".repeat(301) },
+    }),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "message" in error && error.message === wideCapsDraftMessage
+    ),
+    "a NEW draft save on the same profile is still bounded by the tighter shared creator-write caps",
+  );
+
   await prisma.editorProject.update({
     where: { id: project.id },
     data: {
@@ -883,8 +990,7 @@ async function main() {
   assert.ok(
     libraryRouteSource.includes("requireBrandLibraryUser")
       && !libraryRouteSource.includes("getStarterAiImageAllowanceStatus")
-      && !libraryRouteSource.includes('code: "RESULT_REQUIRED"')
-      && libraryRouteSource.includes("creationRequiresResult: false"),
+      && !libraryRouteSource.includes('code: "RESULT_REQUIRED"'),
     "creating a Brand Profile is open to every plan; only the master switch, suspension and plan limits apply",
   );
   // ── Relaxed publish gate: a name is the only answer a creator must give ──

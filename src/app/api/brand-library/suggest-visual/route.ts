@@ -13,8 +13,6 @@ const suggestionSchema = z.object({
   primaryVisualFormatId: z.enum(VISUAL_FORMAT_IDS),
   palette: z.array(z.string().trim().min(1).max(64)).min(1).max(6),
   personality: z.string().trim().min(1).max(500),
-  peopleAndSetting: z.string().trim().max(500),
-  memorableCues: z.array(z.string().trim().min(1).max(160)).max(6),
   visualNotes: z.string().trim().max(800),
   rationale: z.string().trim().min(1).max(600),
 });
@@ -50,7 +48,7 @@ export async function POST(req: Request) {
       "Return JSON only. This is a proposal: never claim it has been applied and never include an image prompt.",
       `primaryVisualFormatId must be one of ${VISUAL_FORMAT_IDS.join(", ")}.`,
       "Every palette item must be exactly one six-digit HEX color such as #38BDF8. Return no color names, prose, usage notes or gradients inside palette.",
-      "Schema: {primaryVisualFormatId,palette:string[1..6],personality,peopleAndSetting,memorableCues:string[0..6],visualNotes,rationale}",
+      "Schema: {primaryVisualFormatId,palette:string[1..6],personality,visualNotes,rationale}",
       `Niche: ${niche}`,
       `Audience: ${audience}`,
       sample ? `Creator sample: ${sample}` : "",
