@@ -465,8 +465,10 @@ export async function brandLookPreviewGenerationCount(input: {
     if (!payload) {
       const sourceJson = input.useDraft ? profile?.draft?.payloadJson : revision?.payloadJson;
       if (!sourceJson) return 3;
-      payload = (input.useDraft ? brandProfilePayloadSchema : storedBrandProfilePayloadSchema)
-        .parse(JSON.parse(sourceJson));
+      // Draft and Revision are both persisted rows here, so both are read with
+      // the historical caps: a creator may not be locked out of quoting a look
+      // they saved before the tighter creator-write caps landed.
+      payload = storedBrandProfilePayloadSchema.parse(JSON.parse(sourceJson));
       recipeVersion = input.useDraft
         ? currentRecipeVersion(payload)
         : revision
@@ -904,8 +906,9 @@ export async function prepareBrandLookPreview(input: {
   if (profile.frozenAt) throw new Error("Brand Profile is frozen");
   const sourceJson = input.useDraft ? profile.draft?.payloadJson : profile.revisions[0]?.payloadJson;
   if (!sourceJson) throw new Error("Brand Profile has no previewable revision");
-  const payload = (input.useDraft ? brandProfilePayloadSchema : storedBrandProfilePayloadSchema)
-    .parse(JSON.parse(sourceJson));
+  // Same persisted-read boundary as the quote above: this parses a stored Draft
+  // or Revision row, never creator input.
+  const payload = storedBrandProfilePayloadSchema.parse(JSON.parse(sourceJson));
   const recipeVersion = input.useDraft
     ? currentRecipeVersion(payload)
     : storedRevisionRecipeVersion(payload, profile.revisions[0]!.visualRecipeJson);

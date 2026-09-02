@@ -27,4 +27,11 @@ gate and both downstream re-checks. Those two routes keep `requireBrandVisualUse
 creating, editing, publishing and deleting a Brand Profile is open to every plan exactly
 as decided above. Wave 1 must anchor the grandfather clause to the access decision
 recorded when the pin was written (an additive column), and honour `hasPersistedProjectPin`
-only when that decision was `canUse: true` — after which pinning can open to every plan too.
+only when that decision was `canUse: true` — after which pinning can open to every plan too. Two
+system-initiated pin writers remain outside the image guard and pre-date this wave: the
+First-Clip auto-spine (`ensureFirstClipProjectSpine` → `pinProjectBrandRevision` in
+`src/lib/first-clip-path.server.ts`, called from `POST /api/videos/jobs`) and the Hero
+Script send-to-editor handoff (`createEditorProject({ brandProfileRevisionId })` in
+`src/lib/hero-script.server.ts`), both of which can write a persisted pin for an account
+the image gate would reject. This wave did not close them, so wave 1's re-anchoring must
+cover these two writers as well, not only the two creator-initiated routes above.

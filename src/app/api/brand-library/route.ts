@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
+import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 import {
   BrandProfileLibraryError,
   brandProfilePayloadSchema,
@@ -134,11 +135,16 @@ export async function GET() {
       })),
       brandAssets: brandAssets.map((asset) => ({ id: asset.id, name: asset.originalName })),
       defaults: {
+        // This seed is copied verbatim into a create request by
+        // "สร้างแบรนด์จากค่าที่ใช้อยู่", so every field must already satisfy the
+        // creator-write caps — a longer Writing Style prompt would otherwise
+        // hand the creator a draft their own first save rejects with a 400.
         script: {
           styleId: writingStyle?.id ?? null,
-          tone: writingStyle?.instructionPrompt.slice(0, 500) || "ชัดเจน เป็นกันเอง และมีพลัง",
-          analysisNotes: writingStyle?.instructionPrompt.slice(0, 4_000) ?? null,
-          sampleText: writingStyle?.sampleText?.slice(0, 4_000) ?? null,
+          tone: writingStyle?.instructionPrompt.slice(0, BRAND_PROFILE_CAPS.shortFieldChars)
+            || "ชัดเจน เป็นกันเอง และมีพลัง",
+          analysisNotes: writingStyle?.instructionPrompt.slice(0, BRAND_PROFILE_CAPS.longFieldChars) ?? null,
+          sampleText: writingStyle?.sampleText?.slice(0, BRAND_PROFILE_CAPS.longFieldChars) ?? null,
         },
         voice: currentBrandVoiceDefaults(auth.user),
         subtitle: {

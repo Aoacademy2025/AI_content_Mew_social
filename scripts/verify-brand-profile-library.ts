@@ -1132,6 +1132,76 @@ async function main() {
     "an ambiguous archive response is safe to retry",
   );
 
+  // A Draft persisted BEFORE the creator-write caps landed (audience 301-500,
+  // more than 20 banned words) is stored data, not creator input: publishing it
+  // and quoting a preview for it must read it through the historical caps.
+  // Re-validating a stored row against CREATOR_WRITE_TEXT_CAPS locked the owner
+  // out of their own draft (INVALID_DRAFT on publish, a 500 on preview-quote).
+  const legacyDraftUser = await prisma.user.create({
+    data: { name: "Legacy draft owner", email: "brand-legacy-draft@example.test", plan: "BUSINESS" },
+  });
+  const legacyDraftCreated = await createBrandProfileFromPayload({
+    userId: legacyDraftUser.id,
+    payload: { ...basePayload, name: "Legacy wide draft" },
+  });
+  const legacyWideAudience = "ก".repeat(500);
+  const legacyWideBannedWords = Array.from({ length: 100 }, (_, index) => `คำต้องห้าม-${index}`);
+  const legacyWideDraftPayload = {
+    ...basePayload,
+    name: "Legacy wide draft",
+    audience: legacyWideAudience,
+    script: { ...basePayload.script, bannedWords: legacyWideBannedWords },
+  };
+  assert.equal(
+    brandProfilePayloadSchema.safeParse(legacyWideDraftPayload).success,
+    false,
+    "the tightened creator-write caps still reject this shape for a NEW write",
+  );
+  assert.equal(
+    storedBrandProfilePayloadSchema.safeParse(legacyWideDraftPayload).success,
+    true,
+    "the historical caps still read this shape once it is a stored row",
+  );
+  await prisma.brandProfileDraft.update({
+    where: { brandProfileId: legacyDraftCreated.profile.id },
+    data: { payloadJson: JSON.stringify(legacyWideDraftPayload) },
+  });
+  const { brandLookPreviewGenerationCount } = await import("../src/lib/brand-look-preview.server");
+  const legacyDraftQuote = await brandLookPreviewGenerationCount({
+    userId: legacyDraftUser.id,
+    profileId: legacyDraftCreated.profile.id,
+    useDraft: true,
+  });
+  assert.ok(
+    Number.isInteger(legacyDraftQuote) && legacyDraftQuote >= 0 && legacyDraftQuote <= 3,
+    "quoting a pre-cap draft answers with a count instead of throwing",
+  );
+  const { prepareBrandLookPreview } = await import("../src/lib/brand-look-preview.server");
+  const legacyDraftPrepared = await prepareBrandLookPreview({
+    userId: legacyDraftUser.id,
+    requestId: "legacy-wide-draft-request",
+    profileId: legacyDraftCreated.profile.id,
+    useDraft: true,
+  });
+  assert.ok(
+    Number.isInteger(legacyDraftPrepared.generationCount),
+    "preparing a preview for a pre-cap draft reads the stored row instead of throwing a 500",
+  );
+  const legacyDraftRevision = await publishBrandProfileDraft({
+    userId: legacyDraftUser.id,
+    profileId: legacyDraftCreated.profile.id,
+  });
+  assert.equal(
+    legacyDraftRevision.version,
+    legacyDraftCreated.revision.version + 1,
+    "a pre-cap draft still publishes the next immutable Revision",
+  );
+  assert.equal(
+    (JSON.parse(legacyDraftRevision.payloadJson) as { audience: string }).audience,
+    legacyWideAudience,
+    "publishing a pre-cap draft preserves the stored value byte-for-byte",
+  );
+
   // The /brands route is a server shell plus client islands; every source-level
   // contract below holds across the whole route, not one file.
   const brandsComponentsDirectory = "src/app/(dashboard)/brands/_components";

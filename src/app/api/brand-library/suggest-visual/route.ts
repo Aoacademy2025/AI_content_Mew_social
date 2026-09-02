@@ -3,6 +3,7 @@ import { z } from "zod";
 import { apiError } from "@/lib/api-error";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
 import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
+import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 import { VISUAL_FORMAT_IDS } from "@/lib/brand-visual-system";
 import { geminiGenerateText } from "@/lib/gemini";
 import { KeyRequiredError, resolveGeminiKey } from "@/lib/gemini-key";
@@ -23,9 +24,12 @@ export async function POST(req: Request) {
     const auth = await requireBrandLibraryUser();
     if (!auth.ok) return auth.response;
     const body = await req.json().catch(() => null);
-    const niche = typeof body?.niche === "string" ? body.niche.trim().slice(0, 300) : "";
-    const audience = typeof body?.audience === "string" ? body.audience.trim().slice(0, 500) : "";
-    const sample = typeof body?.sample === "string" ? body.sample.trim().slice(0, 4_000) : "";
+    // Same caps the creator-write boundary enforces: the helper reads the very
+    // fields it is asked to advise on, so it can never be handed more text than
+    // the profile itself may store.
+    const niche = typeof body?.niche === "string" ? body.niche.trim().slice(0, BRAND_PROFILE_CAPS.shortFieldChars) : "";
+    const audience = typeof body?.audience === "string" ? body.audience.trim().slice(0, BRAND_PROFILE_CAPS.shortFieldChars) : "";
+    const sample = typeof body?.sample === "string" ? body.sample.trim().slice(0, BRAND_PROFILE_CAPS.longFieldChars) : "";
     if (!niche || !audience) {
       return NextResponse.json({ error: "กรุณาระบุนิชและกลุ่มเป้าหมาย" }, { status: 400 });
     }

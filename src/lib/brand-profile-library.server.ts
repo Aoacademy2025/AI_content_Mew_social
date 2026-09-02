@@ -961,7 +961,11 @@ export async function publishBrandProfileDraft(input: {
       );
     }
 
-    const payload = parsedPayload(JSON.parse(profile.draft.payloadJson));
+    // The draft is a PERSISTED row, not creator input: a draft saved before the
+    // shared creator-write caps landed (or through the legacy write path) must
+    // still publish. saveBrandProfileDraft keeps the tighter write caps, so no
+    // NEW creator write can widen a field through here.
+    const payload = parsedStoredPayload(profile.draft.payloadJson);
     const version = profile.activeRevisionNumber + 1;
     const revision = await tx.brandProfileRevision.create({
       data: {
