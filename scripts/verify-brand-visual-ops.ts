@@ -180,13 +180,11 @@ async function verifyLibraryAndImageGuards() {
   assert.equal(listed.status, 200, "an unpaid, non-rollout account can read its own Brand Library");
   const listedBody = await listed.json() as {
     canCreate: boolean;
-    creationRequiresResult: boolean;
     imageAccess: { canUse: boolean; reason: string; upgradeUrl: string };
   };
   assert.equal(listedBody.imageAccess.canUse, false, "the image gate stays closed for an unpaid account");
   assert.equal(listedBody.imageAccess.upgradeUrl, "/pricing");
   assert.equal(listedBody.canCreate, true, "plan limits are the only cap on creating a Brand");
-  assert.equal(listedBody.creationRequiresResult, false, "the starter-allowance creation block is gone");
 
   const created = await library.POST(new Request("http://localhost/api/brand-library", {
     method: "POST",

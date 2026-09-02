@@ -69,6 +69,16 @@ async function main() {
     /canManageBrandVisual && \(selectedTreatmentPresetId \|\| canChooseFormatBeforeTranscript\)[\s\S]*formats\.map/,
     "fresh uploads must render the image-format choices even without an analyzed treatment",
   );
+  assert.doesNotMatch(selectorSource, /ก้างปลา/, "retired format name must not reach creators");
+  for (const file of [
+    "src/app/(dashboard)/brands/_components/BrandVisualLockedPreview.tsx",
+    "src/lib/brand-visual-access.server.ts",
+    "src/app/(dashboard)/brands/_components/BrandLookPreviewPanel.tsx",
+  ]) {
+    const src = readFileSync(file, "utf8");
+    assert.doesNotMatch(src, /Brand Visual|Hero AI Image|Video Editor/, `${file} leaks an English system name`);
+  }
+
   const visualContextRouteSource = readFileSync(
     "src/app/api/editor-projects/[id]/visual-context/route.ts",
     "utf8",

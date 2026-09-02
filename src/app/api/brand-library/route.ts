@@ -116,11 +116,9 @@ export async function GET() {
       })),
       cap: Number.isFinite(cap) ? cap : null,
       canCreate: !Number.isFinite(cap) || profiles.length < cap,
-      creationRequiresResult: false,
       // ADR 0059: the page never closes on entitlement — the image buttons do.
       imageAccess: { canUse: auth.access.canUse, reason: auth.access.reason, upgradeUrl: "/pricing" },
       availabilitySelectionRequired,
-      canRestoreAll: false,
       visualFormats: VISUAL_FORMATS.map((format) => ({
         ...format,
         previewUrl: visualFormatPreviewUrl(format.id),

@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 import {
   TREATMENT_PRESET_IDS,
   createCatalogTreatmentPin,
@@ -44,21 +45,37 @@ const creatorPaletteColorSchema = storedPaletteColorSchema.transform((value, con
   return normalized;
 });
 
+// Same caps and the same Thai messages as the legacy /api/brand-profiles
+// write path's checkBrandProfileFieldLimits (src/lib/brand-profile-limits.ts)
+// for the columns both paths inject into the Hero Script prompt — otherwise
+// one path could accept a value the other rejects (F16).
+function shortFieldCapMessage(label: string): string {
+  return `กรุณาระบุ${label}ให้สั้นลง (สูงสุด ${BRAND_PROFILE_CAPS.shortFieldChars.toLocaleString()} ตัวอักษร)`;
+}
+function longFieldCapMessage(label: string): string {
+  return `กรุณาระบุ${label}ให้สั้นลง (สูงสุด ${BRAND_PROFILE_CAPS.longFieldChars.toLocaleString()} ตัวอักษร)`;
+}
+
 const brandProfilePayloadBaseSchema = z.object({
   schemaVersion: z.literal(1),
-  name: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(BRAND_PROFILE_CAPS.shortFieldChars, shortFieldCapMessage("ชื่อโปรไฟล์")),
   // The /brands surface asks for a name and a Visual Format only; niche,
   // audience and tone are optional refinements that may legitimately be empty.
-  niche: z.string().trim().max(300),
-  audience: z.string().trim().max(500),
+  niche: z.string().trim().max(BRAND_PROFILE_CAPS.shortFieldChars, shortFieldCapMessage("นิช")),
+  audience: z.string().trim().max(BRAND_PROFILE_CAPS.shortFieldChars, shortFieldCapMessage("กลุ่มเป้าหมาย")),
   script: z.object({
     styleId: shortNullable,
-    tone: z.string().trim().max(500),
-    bannedWords: z.array(z.string().trim().min(1).max(80)).max(100),
+    tone: z.string().trim().max(BRAND_PROFILE_CAPS.shortFieldChars, shortFieldCapMessage("โทนเสียง")),
+    bannedWords: z.array(z.string().trim().min(1).max(BRAND_PROFILE_CAPS.bannedWordChars))
+      .max(BRAND_PROFILE_CAPS.bannedWords, `กรุณาระบุคำต้องห้ามไม่เกิน ${BRAND_PROFILE_CAPS.bannedWords} คำ`),
     ctaStyle: z.string().trim().min(1).max(40),
     language: z.string().trim().min(1).max(20),
-    analysisNotes: z.string().trim().max(4_000).nullable().optional(),
-    sampleText: z.string().trim().max(4_000).nullable().optional(),
+    analysisNotes: z.string().trim()
+      .max(BRAND_PROFILE_CAPS.longFieldChars, longFieldCapMessage("โน้ตสไตล์การเขียน"))
+      .nullable().optional(),
+    sampleText: z.string().trim()
+      .max(BRAND_PROFILE_CAPS.longFieldChars, longFieldCapMessage("ข้อความตัวอย่าง"))
+      .nullable().optional(),
   }),
   voice: z.object({
     provider: z.string().trim().min(1).max(40),

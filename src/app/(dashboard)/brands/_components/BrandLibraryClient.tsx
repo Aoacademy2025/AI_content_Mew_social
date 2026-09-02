@@ -111,7 +111,6 @@ export function BrandLibraryClient() {
   const [sourceProjectId, setSourceProjectId] = useState<string | null>(null);
   const [sourcePreflightId, setSourcePreflightId] = useState<string | null>(null);
   const [sourceVideoJobId, setSourceVideoJobId] = useState<string | null>(null);
-  const [, setSourceVisualContext] = useState<ProjectVisualSeed["context"] | null>(null);
   const [previewGenerationCount, setPreviewGenerationCount] = useState<number | null>(null);
   const [pendingRecoveryOperation, setPendingRecoveryOperation] = useState<PendingBrandPreviewOperation | null>(null);
   const resumedOperationForUserRef = useRef<string | null>(null);
@@ -160,19 +159,10 @@ export function BrandLibraryClient() {
   }, [previewQuoteInput]);
 
   async function load(preferredId?: string) {
-    let [libraryData, meData] = await Promise.all([
+    const [libraryData, meData] = await Promise.all([
       fetch("/api/brand-library", { cache: "no-store" }).then(responseJson) as Promise<LibraryResponse>,
       fetchMe(true),
     ]);
-    if (libraryData.canRestoreAll) {
-      await responseJson(await fetch("/api/brand-library/availability", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ preferredProfileIds: [] }),
-      }));
-      libraryData = await fetch("/api/brand-library", { cache: "no-store" })
-        .then(responseJson) as LibraryResponse;
-    }
     setLibrary(libraryData);
     setMe(meData);
     setAvailabilityChoice((current) => libraryData.availabilitySelectionRequired
@@ -240,7 +230,6 @@ export function BrandLibraryClient() {
       setSourceProjectId(requestedProjectId);
       setSourcePreflightId(resolvedSourcePreflightId);
       setSourceVideoJobId(requestedVideoJobId);
-      setSourceVisualContext(resolvedSourceVisualContext);
       setDraft(seeded);
       setAdvancedOpen(false);
       setProposal(null);
@@ -251,7 +240,6 @@ export function BrandLibraryClient() {
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
-    setSourceVisualContext(null);
     const requestedNextId = preferredId ?? activeId;
     const nextProfile = libraryData.profiles.find((profile) => profile.id === requestedNextId)
       ?? libraryData.profiles[0]
@@ -337,7 +325,6 @@ export function BrandLibraryClient() {
         setSourceProjectId(operation.surface.projectId);
         setSourcePreflightId(operation.surface.preflightId);
         setSourceVideoJobId(operation.surface.videoJobId);
-        setSourceVisualContext(null);
         setProposal(null);
         setPreview(null);
       } catch {
@@ -364,7 +351,6 @@ export function BrandLibraryClient() {
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
-    setSourceVisualContext(null);
     setActiveId(profile.id);
     const stored = profile.draft?.payload ?? profile.revisions[0]?.payload;
     const base = createBlankBrandProfileSeed();
@@ -393,7 +379,6 @@ export function BrandLibraryClient() {
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
-    setSourceVisualContext(null);
     setActiveId(null);
     setDraft(createBlankBrandProfileSeed());
     setAdvancedOpen(false);
@@ -408,7 +393,6 @@ export function BrandLibraryClient() {
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
-    setSourceVisualContext(null);
     setActiveId(null);
     setDraft(createBrandProfileSeedFromCurrentDefaults(library.defaults));
     setAdvancedOpen(false);

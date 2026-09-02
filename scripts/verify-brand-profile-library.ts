@@ -11,6 +11,7 @@ execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.e
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { CONTENT_PREFLIGHT_ANALYZER_VERSION } = await import("../src/lib/content-preflight.server");
+  const { checkBrandProfileFieldLimits } = await import("../src/lib/brand-profile-limits");
   const {
     archiveBrandProfile,
     applyProjectBrandRevision,
@@ -551,6 +552,30 @@ async function main() {
   assert.equal(publishedProfile.analysisNotes, basePayload.script.analysisNotes);
   assert.equal(publishedProfile.sampleText, basePayload.script.sampleText);
 
+  // F16: the /brands library write path (Zod caps in brand-profile-library.server.ts)
+  // and the legacy /api/brand-profiles write path (checkBrandProfileFieldLimits in
+  // brand-profile-limits.ts) inject the same columns into the Hero Script prompt, so
+  // an overflow must be rejected with the exact same Thai message on both paths.
+  const overLongAnalysisNotes = "x".repeat(4_001);
+  const expectedCapMessage = checkBrandProfileFieldLimits({ analysisNotes: overLongAnalysisNotes }).ok === false
+    ? checkBrandProfileFieldLimits({ analysisNotes: overLongAnalysisNotes }).message
+    : null;
+  assert.ok(expectedCapMessage, "checkBrandProfileFieldLimits must itself reject a 4,001-char analysisNotes");
+  await assert.rejects(
+    saveBrandProfileDraft({
+      userId: user.id,
+      profileId: profile.id,
+      payload: {
+        ...basePayload,
+        script: { ...basePayload.script, analysisNotes: overLongAnalysisNotes },
+      },
+    }),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "message" in error && error.message === expectedCapMessage
+    ),
+    "the /brands library write path must reject an over-cap analysisNotes with the legacy route's exact message",
+  );
+
   await prisma.editorProject.update({
     where: { id: project.id },
     data: {
@@ -883,8 +908,7 @@ async function main() {
   assert.ok(
     libraryRouteSource.includes("requireBrandLibraryUser")
       && !libraryRouteSource.includes("getStarterAiImageAllowanceStatus")
-      && !libraryRouteSource.includes('code: "RESULT_REQUIRED"')
-      && libraryRouteSource.includes("creationRequiresResult: false"),
+      && !libraryRouteSource.includes('code: "RESULT_REQUIRED"'),
     "creating a Brand Profile is open to every plan; only the master switch, suspension and plan limits apply",
   );
   // ── Relaxed publish gate: a name is the only answer a creator must give ──
