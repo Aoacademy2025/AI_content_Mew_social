@@ -878,11 +878,14 @@ async function main() {
     /activeRevisionNumber:\s*\{\s*gt:\s*0\s*\}/,
     "Brand Library and Editor must not present legacy revision-0 Hero Script rows as pinnable profiles",
   );
+  // ADR 0059 replaces the starter-allowance creation block: creating a Brand
+  // Profile now needs only the library guard, and plan limits are the only cap.
   assert.ok(
-    libraryRouteSource.includes("getStarterAiImageAllowanceStatus")
-      && libraryRouteSource.includes("creationRequiresResult")
-      && libraryRouteSource.includes('code: "RESULT_REQUIRED"'),
-    "Starter users cannot deep-create a Brand Profile before seeing a completed video result",
+    libraryRouteSource.includes("requireBrandLibraryUser")
+      && !libraryRouteSource.includes("getStarterAiImageAllowanceStatus")
+      && !libraryRouteSource.includes('code: "RESULT_REQUIRED"')
+      && libraryRouteSource.includes("creationRequiresResult: false"),
+    "creating a Brand Profile is open to every plan; only the master switch, suspension and plan limits apply",
   );
   // ── Relaxed publish gate: a name is the only answer a creator must give ──
   const minimalUser = await prisma.user.create({
@@ -1064,10 +1067,14 @@ async function main() {
       && brandLibraryPageSource.includes('/api/user/brand-assets'),
     "Brand Library lets an eligible Free creator upload the Brand Mark instead of only selecting an old asset",
   );
+  // ADR 0059: no creator is redirected out of the library any more. The paid /
+  // rollout gate is disclosed on the button that spends an AI image instead.
   assert.ok(
-    brandLibraryPageSource.includes("library.creationRequiresResult")
-      && brandLibraryPageSource.includes("สร้างคลิปแรก แล้วบันทึกแนวภาพจากผลงานจริง"),
-    "the Brand Library directs Starter users through the post-result save flow instead of deep setup",
+    !brandLibraryPageSource.includes("library.creationRequiresResult")
+      && !brandLibraryPageSource.includes("สร้างคลิปแรก แล้วบันทึกแนวภาพจากผลงานจริง")
+      && brandLibraryPageSource.includes("imageAccess={library.imageAccess}")
+      && brandLibraryPageSource.includes('data-testid="preview-disabled-reason"'),
+    "the Brand Library stays open to every plan and discloses the image gate on the image action",
   );
   assert.match(brandRevisionRouteSource, /editorProjectResponse\(pinned\.project\)/,
     "Brand Revision pin returns the authoritative draft revision committed with its defaults");

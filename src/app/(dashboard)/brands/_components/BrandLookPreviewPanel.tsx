@@ -5,7 +5,7 @@ import { Eye, ImageIcon, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { MeData } from "@/lib/use-me";
-import type { PreviewBatch } from "./types";
+import type { BrandImageAccess, PreviewBatch } from "./types";
 
 type Allowance = MeData["starterAiImageAllowance"];
 
@@ -25,6 +25,7 @@ export function BrandLookPreviewPanel({
   preview,
   previewGenerationCount,
   allowance,
+  imageAccess,
   canPublish,
   busy,
   disabled,
@@ -34,6 +35,7 @@ export function BrandLookPreviewPanel({
   preview: PreviewBatch | null;
   previewGenerationCount: number | null;
   allowance: Allowance;
+  imageAccess: BrandImageAccess;
   canPublish: boolean;
   busy: string | null;
   disabled: boolean;
@@ -49,6 +51,22 @@ export function BrandLookPreviewPanel({
       : `${imagesToGenerate * 2} เครดิต (${imagesToGenerate} ภาพ × 2 เครดิต)`;
   const fundingInsufficient = allowance?.eligible === true
     && allowance.remainingImages < imagesToGenerate;
+  // ADR 0059: the Brand Library stays open to every plan — the paid/rollout gate
+  // is disclosed here, on the button that actually spends an AI image.
+  const disabledReason: React.ReactNode = !imageAccess.canUse
+    ? imageAccess.reason === "payment_required"
+      ? (
+        <>
+          ภาพ AI ประจำแบรนด์ใช้ได้กับสมาชิก PRO และ BUSINESS{" "}
+          <Link href={imageAccess.upgradeUrl} className="font-semibold text-violet-500 underline underline-offset-4">
+            ดูแผนรายเดือน
+          </Link>
+        </>
+      )
+      : imageAccess.reason === "rollout_wait"
+        ? "ระบบกำลังทยอยเปิดภาพ AI ประจำแบรนด์ให้สมาชิก บัญชีนี้จะได้รับสิทธิ์ในรอบถัดไป"
+        : "ภาพ AI ประจำแบรนด์ยังไม่เปิดให้บัญชีนี้"
+    : null;
 
   return (
     <Card className="p-5">
@@ -67,7 +85,7 @@ export function BrandLookPreviewPanel({
         <Button
           type="button"
           onClick={onPreview}
-          disabled={disabled || busy !== null || !canPublish || previewGenerationCount === null || fundingInsufficient}
+          disabled={disabled || busy !== null || !canPublish || previewGenerationCount === null || fundingInsufficient || !imageAccess.canUse}
           className="h-10 bg-violet-600 text-white hover:bg-violet-600/90"
         >
           {busy === "preview" || previewGenerationCount === null ? (
@@ -78,6 +96,12 @@ export function BrandLookPreviewPanel({
           ทดลอง 3 ภาพ
         </Button>
       </div>
+
+      {disabledReason && (
+        <p data-testid="preview-disabled-reason" className="mt-2 text-xs text-muted-foreground">
+          {disabledReason}
+        </p>
+      )}
 
       {fundingInsufficient && (
         <Link

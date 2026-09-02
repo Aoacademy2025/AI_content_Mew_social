@@ -4,6 +4,7 @@ async function main() {
   const {
     brandVisualRolloutBucket,
     brandVisualRolloutFlags,
+    decideBrandLibraryAccess,
     decideBrandVisualAccess,
   } = await import("../src/lib/brand-visual-rollout.server");
 
@@ -20,7 +21,6 @@ async function main() {
   };
 
   assert.equal(decideBrandVisualAccess(owner, paid, { ...flags, enabled: false }).canUse, false, "master kill switch is fail-closed");
-  assert.equal(decideBrandVisualAccess(owner, unpaid, flags).cohort, "internal");
   assert.equal(decideBrandVisualAccess(admin, unpaid, flags).cohort, "internal");
   assert.equal(
     decideBrandVisualAccess(
@@ -50,7 +50,30 @@ async function main() {
   );
   assert.equal(brandVisualRolloutFlags({ BRAND_VISUAL_ROLLOUT_PERCENT: "50" } as NodeJS.ProcessEnv).enabled, false);
 
-  console.log("verify-brand-visual-rollout: PASS kill switch + stable staged cohorts");
+  // ADR 0059: the Brand Library is open to every plan — only the master switch
+  // and a suspension close it. The paid/rollout gates stay on AI-image actions.
+  const on = { enabled: true, percent: 0 as const, startedAt: null, testEmails: new Set<string>() };
+  assert.deepEqual(decideBrandLibraryAccess({ suspended: false }, on), { canUse: true, reason: "eligible" });
+  assert.deepEqual(decideBrandLibraryAccess({ suspended: true }, on), { canUse: false, reason: "suspended" });
+  assert.deepEqual(
+    decideBrandLibraryAccess({ suspended: false }, { ...on, enabled: false }),
+    { canUse: false, reason: "feature_off" },
+    "the master kill switch still closes the library",
+  );
+  assert.deepEqual(decideBrandLibraryAccess({}, on), { canUse: true, reason: "eligible" });
+  // owner e-mail is no longer a bypass; only ADMIN / test e-mails are internal
+  assert.equal(
+    decideBrandVisualAccess({ id: "u1", email: "duckyhero@gmail.com", role: "USER" }, unpaid, on).canUse,
+    false,
+    "a hard-coded owner e-mail must not bypass the image gate",
+  );
+  assert.equal(
+    decideBrandVisualAccess({ id: "u1", email: "t@x.com", role: "USER" }, unpaid, { ...on, testEmails: new Set(["t@x.com"]) }).canUse,
+    true,
+    "the reviewed BRAND_VISUAL_TEST_EMAILS list is the only e-mail bypass",
+  );
+
+  console.log("verify-brand-visual-rollout: PASS kill switch + stable staged cohorts + library/image guard split");
 }
 
 main().catch((error) => {

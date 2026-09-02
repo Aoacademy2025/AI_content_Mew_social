@@ -3,9 +3,8 @@
  * usable there (#330) — while desktop (>= lg) stays exactly as it shipped.
  *
  * Why this rig instead of driving the live route: /brands sits behind Clerk auth
- * AND the Brand Visual rollout gate AND a first-clip redirect, and the preview
- * tiles only exist once a paid image batch has actually been generated. None of
- * that is reproducible in CI. So we render the REAL client components
+ * and the master switch, and the preview tiles only exist once an image batch has
+ * actually been generated. None of that is reproducible in CI. So we render the REAL client components
  * (BrandList / VisualFormatPicker / AdvancedSettings / BrandLookPreviewPanel)
  * with react-dom/server, wrap them in the REAL layout shell — every wrapper
  * class string is READ OUT of dashboard-layout.tsx and BrandLibraryClient.tsx at
@@ -107,6 +106,7 @@ const library = {
   cap: 3,
   canCreate: true,
   creationRequiresResult: false,
+  imageAccess: { canUse: true, reason: "eligible", upgradeUrl: "/pricing" },
   availabilitySelectionRequired: false,
   canRestoreAll: false,
   visualFormats: VISUAL_FORMATS.map((format) => ({ ...format, previewUrl: `/brand-sample-${format.id}.jpg` })),
@@ -154,7 +154,7 @@ function previewBatch({ failing = false } = {}) {
   };
 }
 
-function renderPage({ profiles, creationRequiresResult, preview, allowance }) {
+function renderPage({ profiles, imageAccess, preview, allowance }) {
   return renderToStaticMarkup(
     h("div", { className: shell.root },
       h("div", { className: shell.row },
@@ -178,7 +178,6 @@ function renderPage({ profiles, creationRequiresResult, preview, allowance }) {
                     profiles,
                     cap: library.cap,
                     canCreate: true,
-                    creationRequiresResult,
                     activeId: profiles[0]?.id ?? null,
                     busy: false,
                     onOpen: noop,
@@ -216,6 +215,7 @@ function renderPage({ profiles, creationRequiresResult, preview, allowance }) {
                       preview,
                       previewGenerationCount: 2,
                       allowance,
+                      imageAccess,
                       canPublish: true,
                       busy: null,
                       disabled: false,
@@ -252,16 +252,16 @@ const FIXTURES = [
         profile("p1", "Mew Social"),
         profile("p2", "แบรนด์ทดสอบชื่อยาวมากสำหรับหน้าจอมือถือ", { frozen: true, activeRevisionNumber: 2 }),
       ],
-      creationRequiresResult: false,
+      imageAccess: library.imageAccess,
       preview: previewBatch(),
       allowance: { eligible: true, remainingImages: 8, limitImages: 10 },
     }),
   },
   {
-    name: "empty library on the first-clip path with a partially failed batch",
+    name: "empty library for an unpaid account (image gate disclosed inline) with a partially failed batch",
     body: renderPage({
       profiles: [],
-      creationRequiresResult: true,
+      imageAccess: { canUse: false, reason: "payment_required", upgradeUrl: "/pricing" },
       preview: previewBatch({ failing: true }),
       allowance: null,
     }),
