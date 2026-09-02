@@ -40,7 +40,8 @@ import {
   WindowEditsBottomBar,
 } from "./BrollWindowInspector";
 import type { MeData } from "@/lib/use-me";
-import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { BrollRegionPreference } from "@/lib/broll-preferences";
+import type { ProjectStylePack } from "./project-style-pack";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
 import type { EditorLayerVisibility } from "@/lib/editor-layer-visibility";
 import { trackEvent } from "@/lib/client-telemetry";
@@ -90,7 +91,7 @@ export function PostPhaseMobile({
   starterImageAllowance,
   downloadFilename,
   brollRegionPreference,
-  brollVisualStyle,
+  projectStylePack,
 }: {
   job: V2JobState; script: string;
   onExportJob: (input: SubmitExportInput) => Promise<{ ok: boolean; message?: string }>;
@@ -118,7 +119,7 @@ export function PostPhaseMobile({
   starterImageAllowance?: MeData["starterAiImageAllowance"];
   downloadFilename: string;
   brollRegionPreference?: BrollRegionPreference;
-  brollVisualStyle?: BrollVisualStyle;
+  projectStylePack?: ProjectStylePack | null;
 }) {
   const fullBrollEditEnabled = BROLL_WINDOW_EDIT || internalAiTester;
   const brollEditEnabled = fullBrollEditEnabled || sceneRerollEnabled;
@@ -1007,7 +1008,7 @@ export function PostPhaseMobile({
           sceneRerollUnavailableReason={sceneRerollUnavailableReason}
           starterImageAllowance={starterImageAllowance}
           brollRegionPreference={brollRegionPreference}
-          brollVisualStyle={brollVisualStyle}
+          projectStylePack={projectStylePack}
         />
       )}
     </div>

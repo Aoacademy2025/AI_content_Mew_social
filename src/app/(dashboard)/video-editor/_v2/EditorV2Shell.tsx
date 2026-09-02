@@ -436,7 +436,11 @@ export function EditorV2Shell() {
     // Step-2 preferences follow the project into the editor so a per-window
     // swap searches with the same qualifier the render used (F7 cause #3).
     brollRegionPreference: p.brollRegionPreference,
-    brollVisualStyle: p.brollVisualStyle,
+    // The pinned Style Pack follows the project into the post-render editor so a
+    // per-window swap searches with the SAME footage style Step 2 reported. The
+    // retired legacy style is deliberately NOT threaded: no surface can show or
+    // change it any more, so no surface may keep searching with it either.
+    projectStylePack: p.projectStylePack,
   };
   // jobs/route.ts sends the identical { error: "missing_voice_id" } shape for
   // ElevenLabs (no voiceId, :514) and OmniVoice/Hero Voice (no omniVoiceId, :493) —

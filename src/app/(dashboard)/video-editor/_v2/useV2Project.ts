@@ -8,6 +8,7 @@ import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
 import type { MusicMood } from "@/lib/style-pack-catalog";
 import { pickDefaultMusicTrack, decideMusicMoodHintCarry, type MusicTrackForMoodPick } from "@/lib/music-mood";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { ProjectStylePack } from "./project-style-pack";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
@@ -561,6 +562,12 @@ export function useV2Project() {
     NonNullable<NonNullable<MeData["featureAccess"]>["heroAiImage"]> | null
   >(null);
   const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
+  // The Style Pack pinned to this project, as reported by the visual-context
+  // endpoint (a snapshot, never re-resolved from the catalog). Server state, so
+  // it is NOT part of the saved draft: Step 2 only reads it, and the per-window
+  // search sends the same mood back so the creator searches with exactly the
+  // style the read-only line promised them.
+  const [projectStylePack, setProjectStylePack] = useState<ProjectStylePack | null>(null);
   const [brandVisualCohort, setBrandVisualCohort] = useState<NonNullable<MeData["brandVisualCohort"]>>("off");
   const [brandVisualRolloutBucket, setBrandVisualRolloutBucket] = useState<number | null>(null);
   const [starterAiImageAllowance, setStarterAiImageAllowance] = useState<MeData["starterAiImageAllowance"]>(null);
@@ -2371,6 +2378,7 @@ export function useV2Project() {
     usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     brandContentPreflightId, setBrandContentPreflightId,
+    projectStylePack, setProjectStylePack,
     saveStatus, retryProjectSave,
     flushPendingProjectDraft,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,

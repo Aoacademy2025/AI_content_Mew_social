@@ -15,9 +15,7 @@ import {
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import {
   BROLL_REGION_OPTIONS,
-  BROLL_STYLE_OPTIONS,
   type BrollRegionPreference,
-  type BrollVisualStyle,
 } from "@/lib/broll-preferences";
 import { KIE_IMAGE_MODEL_OPTIONS, PRICED_KIE_MODEL_OPTIONS, AUTO_MIX_PROVIDER_OPTIONS } from "../_components/types";
 import { color, font, radius } from "./tokens";
@@ -505,17 +503,15 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   </span>
                 </div>
               ) : (
+                /* ADR 0057: the footage style is no longer a separate menu here —
+                   it comes from the brand's pinned style, so this line only
+                   reports what is already in force. */
                 <div className="flex flex-col gap-1.5">
-                  <span style={{ fontSize: 11, color: color.textFaint }}>
-                    {p.brollSource === "automix" ? "สไตล์ฟุตเทจสต็อก (เฉพาะส่วนสต็อก)" : "สไตล์ฟุตเทจสต็อก"}
+                  <span style={{ fontSize: 10.5, color: color.textFaint, lineHeight: 1.6 }}>
+                    {p.projectStylePack
+                      ? `สไตล์ฟุตเทจ: ${p.projectStylePack.thaiLabel} · จากแบรนด์`
+                      : "สไตล์ฟุตเทจ: ตามเนื้อหา"}
                   </span>
-                  <Segmented
-                    value={p.brollVisualStyle}
-                    ariaLabel={p.brollSource === "automix" ? "สไตล์ฟุตเทจสต็อกเฉพาะส่วนสต็อก" : "สไตล์ฟุตเทจสต็อก"}
-                    onChange={(v) => p.setBrollVisualStyle(v as BrollVisualStyle)}
-                    options={BROLL_STYLE_OPTIONS}
-                    style={{ display: "flex", flexWrap: "wrap", width: "fit-content", maxWidth: "100%" }}
-                  />
                 </div>
               )}
               {p.heroAiImageEligible && p.brollSource === "kie-image" && (

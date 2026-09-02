@@ -25,6 +25,8 @@ import {
   saveUploadProjectVisualFormatAwaitingPreflight,
 } from "@/lib/project-look.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { stylePackSnapshotFromJson } from "@/lib/style-pack-snapshot";
+import { stylePack } from "@/lib/style-pack-catalog";
 import { VISUAL_FORMAT_IDS, brandLookIdentityKey, brandVisualIdentityKey, type VisualFormatId } from "@/lib/brand-visual-system";
 
 function parseOptionalJson(value: string | null | undefined): unknown | null {
@@ -105,11 +107,19 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
           select: {
             id: true,
             version: true,
+            visualRecipeJson: true,
             brandProfile: { select: { id: true, name: true } },
           },
         },
       },
     });
+    // The pinned Style Pack, read out of the Revision's IMMUTABLE recipe
+    // snapshot (ADR 0005) — never re-resolved from the catalog. Editor uses it
+    // for the read-only Step-2 line and sends the same mood back on a per-window
+    // search, so what the creator is told is exactly what gets searched.
+    const pinnedPackSnapshot = stylePackSnapshotFromJson(
+      projectSelection?.brandProfileRevision?.visualRecipeJson ?? null,
+    );
     const reusableAiSceneIndices = state.preflight
       ? await reusableProjectVisualBeatSceneIndices({
           userId: auth.user.id,
@@ -136,6 +146,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       preserveEstablishedAiDensity: reusableAiSceneIndices.length > 0 && outdatedImageCount === 0,
       quotedCreditsPerImage: HERO_AI_IMAGE_CREDITS,
       hasPersistedVisualPin,
+      stylePack: pinnedPackSnapshot
+        ? {
+            packId: pinnedPackSnapshot.id,
+            thaiLabel: stylePack(pinnedPackSnapshot.id).thaiLabel,
+            stockMood: { packId: pinnedPackSnapshot.id, ...pinnedPackSnapshot.stockMood },
+          }
+        : null,
       // A per-video Project Look can override format/treatment while still
       // inheriting the immutable Brand Revision's visual language. Keep the
       // durable profile pin visible instead of making the creator think the

@@ -33,7 +33,6 @@ import {
   type QuotaExceededInfo,
 } from "@/lib/quota-error";
 import { buildBgmSelectionInput } from "@/lib/bgm-selection";
-import { shouldSendLegacyBrollVisualStyle } from "@/lib/broll-preferences";
 import { avatarFullDurationViolation } from "@/lib/avatar-duration";
 import { createClientPoller, type ClientPoller } from "@/lib/client-polling";
 import {
@@ -445,9 +444,10 @@ export function useV2Job(p: V2Project) {
       stockSource: p.brollSource === "kie-image" ? "kie-image" : p.brollSource === "automix" ? "auto-mix" : "stock",
       ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
-      ...(p.brollVisualStyle !== "auto" && shouldSendLegacyBrollVisualStyle(p.brollSource)
-        ? { brollVisualStyle: p.brollVisualStyle }
-        : {}),
+      // ADR 0057: the footage style now comes from the project's pinned Style
+      // Pack, resolved server-side inside the worker. The client no longer has
+      // a style menu, so it submits no legacy style field at all. (The API
+      // still accepts that field for drafts saved before wave 1.)
       ...(p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
       ...(p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
       ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),
@@ -481,9 +481,10 @@ export function useV2Job(p: V2Project) {
         : {}),
       ...(submittedTargetClipCount > 0 ? { targetClipCount: submittedTargetClipCount } : {}),
       ...(p.brollRegionPreference !== "auto" ? { brollRegionPreference: p.brollRegionPreference } : {}),
-      ...(p.brollVisualStyle !== "auto" && shouldSendLegacyBrollVisualStyle(p.brollSource)
-        ? { brollVisualStyle: p.brollVisualStyle }
-        : {}),
+      // ADR 0057: the footage style now comes from the project's pinned Style
+      // Pack, resolved server-side inside the worker. The client no longer has
+      // a style menu, so it submits no legacy style field at all. (The API
+      // still accepts that field for drafts saved before wave 1.)
       ...(p.brollSource === "kie-image" ? { imageEngine: "runpod", imageModel: "z-image-turbo" } : {}),
       ...(p.kieModel && p.brollSource === "automix" ? { kieModel: p.kieModel } : {}),
       ...(p.brollSource === "automix" ? { autoMixProviders: p.autoMixProviders } : {}),

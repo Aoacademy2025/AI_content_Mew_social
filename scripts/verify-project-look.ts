@@ -40,14 +40,6 @@ async function main() {
   } as const;
   const { brandVisualIdentityKey } = await import("../src/lib/brand-visual-system");
   const { shouldLoadBrandVisualContext } = await import("../src/lib/automix-plan");
-  const { shouldSendLegacyBrollVisualStyle } = await import("../src/lib/broll-preferences");
-  assert.equal(shouldSendLegacyBrollVisualStyle("stock"), true);
-  assert.equal(shouldSendLegacyBrollVisualStyle("auto-mix"), true);
-  assert.equal(
-    shouldSendLegacyBrollVisualStyle("kie-image"),
-    false,
-    "Hero-only generation must not submit a legacy visual style that conflicts with Project Visual Context",
-  );
   assert.equal(shouldLoadBrandVisualContext({
     brollSource: "stock",
     mixPreset: "free",
@@ -874,10 +866,13 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/useV2Job.ts",
     "utf8",
   );
+  // ADR 0057 replaced the per-clip legacy style menu with the brand's pinned
+  // Style Pack, resolved server-side. The old conditional suppression for
+  // Hero-only images is now unconditional: the client submits no style at all.
   assert.equal(
-    (jobSource.match(/shouldSendLegacyBrollVisualStyle\(p\.brollSource\)/g) ?? []).length,
-    2,
-    "both upload and script submissions suppress legacy style for Hero-only images",
+    (jobSource.match(/brollVisualStyle/g) ?? []).length,
+    0,
+    "neither submission may send a legacy visual style that conflicts with Project Visual Context",
   );
   const step2Source = readFileSync(
     "src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx",

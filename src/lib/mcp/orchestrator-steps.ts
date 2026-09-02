@@ -1,8 +1,42 @@
 // PURE request-payload builders that reproduce the video-editor's non-avatar
 // chain (verified against page.tsx 2026-06-13). No I/O — unit-testable.
 
-import type { BrollPreferenceInput } from "@/lib/broll-preferences";
+import { stockMoodForProject, type BrollPreferenceInput, type ResolvedStockMood } from "@/lib/broll-preferences";
 import { buildHeroSubtitleOverlayConfig } from "@/lib/hero-editorial";
+
+/** Resolve the pinned Style Pack's Stock Mood for ONE video job, once.
+ *
+ *  Both worker paths write the job's Project Visual Context AFTER the job row
+ *  is read — the upload path through `pinProjectVisualContextToVideoJob`, the
+ *  script path inside `ensureVideoJobContentPreflight` — and only then reach
+ *  the keyword step. So the context must be read LAZILY here, at the moment the
+ *  mood is asked for: resolving it from the row captured at job load would hand
+ *  every upload-mode clip the PRE-PIN value and silently ignore the pack pinned
+ *  for that clip. The reads are injected, so this module stays I/O-free.
+ *
+ *  Memoized (four payload sites ask for the same answer) and fail-open: any
+ *  failing lookup yields `null`, because a mood is a flavour and never a reason
+ *  for a render to stop. */
+export function createStockMoodResolver(load: {
+  projectVisualContextJson: () => Promise<string | null>;
+  brandRevisionRecipeJson: () => Promise<string | null>;
+}): () => Promise<ResolvedStockMood | null> {
+  let resolution: Promise<ResolvedStockMood | null> | null = null;
+  return () => {
+    resolution ??= (async () => {
+      try {
+        const [projectVisualContextJson, brandRevisionRecipeJson] = await Promise.all([
+          load.projectVisualContextJson(),
+          load.brandRevisionRecipeJson(),
+        ]);
+        return stockMoodForProject({ projectVisualContextJson, brandRevisionRecipeJson });
+      } catch {
+        return null;
+      }
+    })();
+    return resolution;
+  };
+}
 
 export interface OrchCaption { text: string; startMs: number; endMs: number; tag: "hook" | "body" | "cta" }
 
@@ -39,6 +73,9 @@ export function buildKeywordsPayload(
     preferredLLM: null as string | null,
     ...(brollPreference?.brollRegionPreference ? { brollRegionPreference: brollPreference.brollRegionPreference } : {}),
     ...(brollPreference?.brollVisualStyle ? { brollVisualStyle: brollPreference.brollVisualStyle } : {}),
+    // Resolved server-side from the pinned Style Pack snapshot (ADR 0057). No
+    // pack = no key, so a pack-less project sends the pre-wave-1 body exactly.
+    ...(brollPreference?.stockMood ? { stockMood: brollPreference.stockMood } : {}),
   };
 }
 
@@ -73,6 +110,7 @@ export function buildStockPayload(
     ...(relevanceSpec ? { relevanceSpec } : {}),
     ...(brollPreference?.brollRegionPreference ? { brollRegionPreference: brollPreference.brollRegionPreference } : {}),
     ...(brollPreference?.brollVisualStyle ? { brollVisualStyle: brollPreference.brollVisualStyle } : {}),
+    ...(brollPreference?.stockMood ? { stockMood: brollPreference.stockMood } : {}),
     ...(scriptContext?.fullScript?.trim() ? { fullScript: scriptContext.fullScript.trim() } : {}),
   };
 }

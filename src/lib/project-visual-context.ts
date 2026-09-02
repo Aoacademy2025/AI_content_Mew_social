@@ -6,6 +6,7 @@ import {
   type TreatmentPin,
   type TreatmentPresetId,
 } from "@/lib/brand-treatment-catalog";
+import { stylePackSnapshotSchema, type StylePackSnapshot } from "@/lib/style-pack-snapshot";
 import {
   SUPPORTED_VISUAL_FORMATS,
   SUPPORTED_VISUAL_FORMAT_IDS,
@@ -65,6 +66,11 @@ export const revisionRecipeSchema = z.object({
   defaultTreatment: z.string(),
   treatmentPolicy: z.enum(["adaptive", "locked"]).default("adaptive"),
   lockedTreatmentPin: treatmentPinSchema.nullable().default(null),
+  // The Style Pack snapshot written at publish time (wave 1). These are plain
+  // (non-strict) z.objects, so WITHOUT this field the snapshot is silently
+  // STRIPPED on parse and every render-time reader sees a pack-less recipe.
+  // Optional + nullable: recipes written before wave 1 must still parse.
+  stylePack: stylePackSnapshotSchema.nullable().optional(),
 }).superRefine((recipe, context) => {
   if (recipe.treatmentPolicy === "locked" && !recipe.lockedTreatmentPin) {
     context.addIssue({ code: "custom", path: ["lockedTreatmentPin"], message: "Locked treatment pin is required" });
@@ -77,6 +83,7 @@ const legacyProjectVisualContextSchema = z.object({
   recipeVersion: z.string().min(1),
   treatment: z.string().min(1),
   brandVisualLanguage: brandLanguageSchema.nullable(),
+  stylePack: stylePackSnapshotSchema.nullable().optional(),
 });
 
 const catalogProjectVisualContextSchema = z.object({
@@ -87,6 +94,9 @@ const catalogProjectVisualContextSchema = z.object({
   treatment: z.string().min(1),
   treatmentPin: treatmentPinSchema,
   brandVisualLanguage: brandLanguageSchema.nullable(),
+  // A per-clip Style Pack pinned onto ONE video job. Same reason as the recipe
+  // above: without the field the snapshot would be stripped on parse.
+  stylePack: stylePackSnapshotSchema.nullable().optional(),
 });
 
 export const projectVisualContextSchema = z.union([
@@ -105,6 +115,7 @@ export type ProjectVisualContext = {
   legacyCustomTreatment?: boolean;
   schemaVersion?: 1 | 2;
   brandVisualLanguage: BrandVisualLanguage | null;
+  stylePack?: StylePackSnapshot | null;
 };
 
 export class ProjectLookError extends Error {

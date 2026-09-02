@@ -21,6 +21,7 @@ import {
   type SceneContentPolicyWarning,
 } from "@/lib/scene-content-policy";
 import type { V2Project } from "./useV2Project";
+import type { ProjectStylePack } from "./project-style-pack";
 import { color, font, radius } from "./tokens";
 
 type VisualFormat = { id: ActiveVisualFormatId; label: string; description: string; previewUrl: string };
@@ -233,6 +234,10 @@ export function BrandVisualSelector({
         setTreatmentPresets(visualResult.body.treatmentPresets);
       }
       setSelectedBrandProfile(visualResult.body.selectedBrandProfile ?? null);
+      // The pinned Style Pack drives Step 2's read-only footage-style line AND
+      // the per-window search body, so it is lifted into project state rather
+      // than kept local to this panel.
+      p.setProjectStylePack((visualResult.body.stylePack as ProjectStylePack | null) ?? null);
       p.setBrandContentPreflightId(resolvedPreflight?.id ?? null);
       if (narrative) onPreflightStatusChange?.("ready");
       else onPreflightStatusChange?.("idle");
@@ -247,6 +252,7 @@ export function BrandVisualSelector({
     } catch (caught) {
       if ((caught as Error).name !== "AbortError") {
         p.setBrandContentPreflightId(null);
+        p.setProjectStylePack(null);
         onPolicyWarningsChange?.([]);
         setError(caught instanceof Error ? caught.message : "โหลดแนวภาพไม่สำเร็จ");
         onPreflightStatusChange?.("error");
