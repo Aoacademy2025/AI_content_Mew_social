@@ -21,11 +21,14 @@ import {
   createBlankBrandProfileSeed,
   createBrandProfileSeedFromCurrentDefaults,
 } from "@/lib/brand-profile-seed";
+import { applyStylePackToPayload, clearStylePack } from "@/lib/style-pack-apply";
+import { stylePack, type StylePackId } from "@/lib/style-pack-catalog";
+import type { BrandProfilePayload } from "@/lib/brand-profile-library.server";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { BrandBasicsForm } from "./BrandBasicsForm";
 import { BrandList } from "./BrandList";
 import { BrandLookPreviewPanel } from "./BrandLookPreviewPanel";
-import { VisualFormatPicker } from "./VisualFormatPicker";
+import { StylePackPicker } from "./StylePackPicker";
 import {
   brandPreviewGenerateRequest,
   brandPreviewQuoteBody,
@@ -93,6 +96,33 @@ function withSeedFallbacks(draft: BrandPayload): BrandPayload {
       treatmentPolicy,
       lockedTreatmentPresetId,
     },
+  };
+}
+
+/** `BrandPayload` (`BrandProfileSeed`) and `BrandProfilePayload` (the
+ * persisted-read Zod-inferred type `applyStylePackToPayload`/`clearStylePack`
+ * are written against) describe the same Brand Profile document — they only
+ * diverge on three fields that `createBlankBrandProfileSeed()` always sets
+ * concretely but the client type leaves optional (`languageMode`) or unset
+ * (the two retired scene inputs, kept only so a pinned revision round-trips).
+ * These two converters are the one place that gap is bridged, so the Style
+ * Pack apply/clear functions stay pure and shared with the server. */
+function toStylePackPayload(payload: BrandPayload): BrandProfilePayload {
+  return {
+    ...payload,
+    visual: {
+      ...payload.visual,
+      languageMode: payload.visual.languageMode ?? "none",
+      peopleAndSetting: payload.visual.peopleAndSetting ?? "",
+      memorableCues: payload.visual.memorableCues ?? [],
+    },
+  };
+}
+
+function fromStylePackPayload(payload: BrandProfilePayload): BrandPayload {
+  return {
+    ...payload,
+    visual: { ...payload.visual, languageMode: payload.visual.languageMode ?? "none" },
   };
 }
 
@@ -413,18 +443,41 @@ export function BrandLibraryClient() {
     trackEvent("brand_profile_create_from_current_started", { path: "/brands" });
   }
 
+  /** ADR 0058: format, narrative-treatment policy/preset, palette and
+   * personality are the axes a Style Pack resolves — editing any of them
+   * while a pack is selected unlinks it first (`clearStylePack`) so the draft
+   * never shows a pack tag next to a look the pack no longer fully describes. */
   function updateVisual<K extends keyof BrandPayload["visual"]>(key: K, value: BrandPayload["visual"][K]) {
     const definesBrandLanguage = key === "palette"
       || key === "personality"
       || key === "visualNotes";
-    setDraft((current) => ({
-      ...current,
-      visual: {
-        ...current.visual,
-        [key]: value,
-        ...(definesBrandLanguage ? { languageMode: "defined" as const } : {}),
-      },
-    }));
+    const unlinksPack = key === "primaryVisualFormatId"
+      || key === "treatmentPolicy"
+      || key === "lockedTreatmentPresetId"
+      || key === "palette"
+      || key === "personality";
+    setDraft((current) => {
+      const base = unlinksPack && current.visual.stylePackId
+        ? fromStylePackPayload(clearStylePack(toStylePackPayload(current)))
+        : current;
+      return {
+        ...base,
+        visual: {
+          ...base.visual,
+          [key]: value,
+          ...(definesBrandLanguage ? { languageMode: "defined" as const } : {}),
+        },
+      };
+    });
+  }
+
+  function selectStylePack(id: StylePackId | null) {
+    setDraft((current) => fromStylePackPayload(
+      id
+        ? applyStylePackToPayload(toStylePackPayload(current), stylePack(id))
+        : clearStylePack(toStylePackPayload(current)),
+    ));
+    if (!id) setAdvancedOpen(true);
   }
 
   function applyProposal(next: VisualProposal) {
@@ -815,10 +868,10 @@ export function BrandLibraryClient() {
                   onNameChange={(value) => setDraft((current) => ({ ...current, name: value }))}
                   disabled={frozen}
                 />
-                <VisualFormatPicker
-                  formats={library.visualFormats}
-                  value={draft.visual.primaryVisualFormatId}
-                  onChange={(id) => updateVisual("primaryVisualFormatId", id)}
+                <StylePackPicker
+                  packs={library.stylePacks}
+                  value={draft.visual.stylePackId}
+                  onChange={selectStylePack}
                   disabled={frozen}
                 />
               </div>

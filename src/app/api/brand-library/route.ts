@@ -21,6 +21,7 @@ import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { TREATMENT_PRESETS } from "@/lib/brand-treatment-catalog";
 import { visualFormatPreviewUrl } from "@/lib/brand-visual-format-preview";
+import { activeStylePacks } from "@/lib/style-pack-catalog";
 
 function json(value: string | null | undefined) {
   if (!value) return null;
@@ -134,6 +135,16 @@ export async function GET() {
         config: json(preset.configJson) ?? {},
       })),
       brandAssets: brandAssets.map((asset) => ({ id: asset.id, name: asset.originalName })),
+      // ADR 0058: only ACTIVE packs ever reach the client — a
+      // `pending-benchmark` pack (wave 2) is never selectable.
+      stylePacks: activeStylePacks().map((pack) => ({
+        id: pack.id,
+        thaiLabel: pack.thaiLabel,
+        tagline: pack.tagline,
+        palette: pack.palette,
+        visualFormatId: pack.visualFormatId,
+        sampleImage: `/style-packs/${pack.id}.jpg`,
+      })),
       defaults: {
         // This seed is copied verbatim into a create request by
         // "สร้างแบรนด์จากค่าที่ใช้อยู่", so every field must already satisfy the

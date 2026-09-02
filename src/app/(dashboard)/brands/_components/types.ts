@@ -4,6 +4,7 @@ import type {
   CurrentBrandDefaults,
 } from "@/lib/brand-profile-seed";
 import type { TreatmentPresetId } from "@/lib/brand-treatment-catalog";
+import type { StylePackId } from "@/lib/style-pack-catalog";
 
 export type { VisualFormatId };
 export type BrandPayload = BrandProfileSeed;
@@ -49,6 +50,18 @@ export type SubtitlePresetOption = {
   config: Record<string, string | number | boolean | null>;
 };
 
+/** ADR 0058: card copy for the StylePackPicker default surface. Only ACTIVE
+ * packs ever reach this shape — a `pending-benchmark` pack is never
+ * customer-visible. */
+export type StylePackOption = {
+  id: StylePackId;
+  thaiLabel: string;
+  tagline: string;
+  palette: [string, string, string];
+  visualFormatId: VisualFormatId;
+  sampleImage: string;
+};
+
 /** ADR 0059: the library itself is open to every plan; this is the gate on the
  * AI-image actions inside it. */
 export type BrandImageAccess = {
@@ -67,6 +80,7 @@ export type LibraryResponse = {
   treatmentPresets: Array<{ id: TreatmentPresetId; label: string }>;
   subtitlePresets: SubtitlePresetOption[];
   brandAssets: Array<{ id: string; name: string }>;
+  stylePacks: StylePackOption[];
   defaults: BrandDefaults;
 };
 
