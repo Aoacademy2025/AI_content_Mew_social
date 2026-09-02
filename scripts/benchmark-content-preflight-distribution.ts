@@ -14,6 +14,12 @@
  *
  *   npm run benchmark:content-preflight-distribution -- --dry-run
  *   CONTENT_PREFLIGHT_BENCHMARK_KEY=... npm run benchmark:content-preflight-distribution
+ *
+ * `--only <id,id,...>` restricts the run to a comma-separated subset of fixture
+ * ids (e.g. `--only finance-03,health-01`) — for finishing a partial run without
+ * re-billing fixtures that already completed. The fixture set is still fully
+ * loaded and validated against the catalog either way; only the analyzed subset
+ * and the printed summary/gates narrow to the requested ids, and say so.
  */
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -68,6 +74,24 @@ type Outcome = {
 
 const dryRun = process.argv.includes("--dry-run");
 
+function parseOnlyIds(): string[] | null {
+  const idx = process.argv.indexOf("--only");
+  if (idx === -1) return null;
+  const raw = process.argv[idx + 1];
+  if (!raw || raw.startsWith("--")) {
+    throw new Error("--only requires a comma-separated list of fixture ids");
+  }
+  const ids = raw.split(",").map((id) => id.trim()).filter(Boolean);
+  if (!ids.length) throw new Error("--only requires a comma-separated list of fixture ids");
+  return ids;
+}
+
+function categoryCounts(fixtures: Fixture[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const fixture of fixtures) counts[fixture.category] = (counts[fixture.category] ?? 0) + 1;
+  return counts;
+}
+
 function loadFixtures(): Fixture[] {
   const parsed = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as FixtureFile;
   const entries = parsed.entries;
@@ -112,15 +136,15 @@ async function validateFixturesAgainstCatalog(fixtures: Fixture[]): Promise<void
   }
 }
 
-function printGates(fixtures: Fixture[]): void {
+function printGates(fixtures: Fixture[], onlyIds: string[] | null): void {
   const mustMatch = fixtures.filter((fixture) =>
     (MUST_MATCH_CATEGORIES as readonly string[]).includes(fixture.category));
-  console.log("Gates:");
+  console.log(`Gates:${onlyIds ? ` (subset of ${fixtures.length}: ${onlyIds.join(", ")})` : ""}`);
   console.log(`  1. expert-clarity first-ranked <= ${Math.round(MAX_EXPERT_CLARITY_SHARE * 100)}% (max ${Math.floor(fixtures.length * MAX_EXPERT_CLARITY_SHARE)} of ${fixtures.length} fixtures)`);
   console.log(`  2. every ghost/history/news fixture ranks its matching preset first (${mustMatch.length} fixtures)`);
 }
 
-function report(outcomes: Outcome[]): boolean {
+function report(outcomes: Outcome[], onlyIds: string[] | null): boolean {
   const analyzed = outcomes.filter((outcome) => outcome.firstRankedTreatmentPresetId);
   const failedCalls = outcomes.filter((outcome) => outcome.error);
   const distribution = new Map<string, number>();
@@ -128,7 +152,7 @@ function report(outcomes: Outcome[]): boolean {
     const key = outcome.firstRankedTreatmentPresetId!;
     distribution.set(key, (distribution.get(key) ?? 0) + 1);
   }
-  console.log("\nFirst-ranked treatment distribution:");
+  console.log(`\nFirst-ranked treatment distribution${onlyIds ? ` (subset of ${outcomes.length}: ${onlyIds.join(", ")})` : ""}:`);
   [...distribution.entries()]
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .forEach(([treatment, count]) => {
@@ -161,7 +185,7 @@ function report(outcomes: Outcome[]): boolean {
   return passed;
 }
 
-async function runPaid(fixtures: Fixture[], benchmarkKey: string): Promise<void> {
+async function runPaid(fixtures: Fixture[], benchmarkKey: string, onlyIds: string[] | null): Promise<void> {
   // Only the benchmark key may pay for this run. Managed mode is resolved
   // before BYOK inside resolveGeminiKey, so a managed server key left in .env
   // would silently bill the team's account instead.
@@ -232,17 +256,27 @@ async function runPaid(fixtures: Fixture[], benchmarkKey: string): Promise<void>
     benchmark: "content-preflight-distribution",
     generatedAt: new Date().toISOString(),
     windowsPerFixture: WINDOWS_PER_FIXTURE,
+    only: onlyIds,
     outcomes,
   }, null, 2)}\n`);
   renameSync(temporary, resultPath);
   console.log(`\nResults written to ${resultPath}`);
 
-  if (!report(outcomes)) process.exitCode = 1;
+  if (!report(outcomes, onlyIds)) process.exitCode = 1;
 }
 
 async function main(): Promise<void> {
-  const fixtures = loadFixtures();
-  await validateFixturesAgainstCatalog(fixtures);
+  const allFixtures = loadFixtures();
+  await validateFixturesAgainstCatalog(allFixtures);
+
+  const onlyIds = parseOnlyIds();
+  let fixtures = allFixtures;
+  if (onlyIds) {
+    const byId = new Map(allFixtures.map((fixture) => [fixture.id, fixture]));
+    const missing = onlyIds.filter((id) => !byId.has(id));
+    if (missing.length) throw new Error(`--only referenced unknown fixture id(s): ${missing.join(", ")}`);
+    fixtures = onlyIds.map((id) => byId.get(id)!);
+  }
 
   if (dryRun) {
     console.log(JSON.stringify({
@@ -250,12 +284,14 @@ async function main(): Promise<void> {
       benchmark: "content-preflight-distribution",
       fixturePath: FIXTURE_PATH,
       fixtures: fixtures.length,
-      categories: EXPECTED_CATEGORY_COUNTS,
+      totalFixtures: allFixtures.length,
+      only: onlyIds,
+      categories: onlyIds ? categoryCounts(fixtures) : EXPECTED_CATEGORY_COUNTS,
       windowsPerFixture: WINDOWS_PER_FIXTURE,
       paidCallsStarted: false,
     }, null, 2));
-    printGates(fixtures);
-    console.log("\nDry run only — no provider call was made.");
+    printGates(fixtures, onlyIds);
+    console.log(`\nDry run only — no provider call was made.${onlyIds ? ` (subset: ${onlyIds.join(", ")})` : ""}`);
     return;
   }
 
@@ -264,7 +300,7 @@ async function main(): Promise<void> {
     console.error("รันจริงยังถูกล็อกไว้: ต้องได้ go จาก Mew ก่อน แล้วค่อยตั้ง CONTENT_PREFLIGHT_BENCHMARK_KEY / Paid run is locked: it needs Mew's explicit go recorded in the plan Status before CONTENT_PREFLIGHT_BENCHMARK_KEY is set — use --dry-run meanwhile.");
     process.exit(1);
   }
-  await runPaid(fixtures, benchmarkKey);
+  await runPaid(fixtures, benchmarkKey, onlyIds);
 }
 
 main().catch((error) => {
