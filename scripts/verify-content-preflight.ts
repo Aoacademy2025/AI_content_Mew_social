@@ -1259,6 +1259,61 @@ async function main() {
     /Andrew|OpenClaw|ABCN News/,
     "preflight diagnostics contain only paths, sizes, and hashes — never narrative content",
   );
+  assert.match(
+    invalidTelemetry.properties ?? "",
+    /"reason":"schema_invalid"/,
+    "a semantic exhaustion is classified as a schema outcome, queryable without parsing the diagnostic",
+  );
+
+  // Prod replay (F5, 2026-09-02): every unparsable attempt recorded on prod was
+  // a BLANK provider body, never malformed JSON, and no blank body was ever
+  // followed by a non-blank retry. The self-correction prompt has nothing to
+  // correct, so the analyzer must stop on the first blank body instead of
+  // spending two more identical calls — while keeping ADR 0010 intact (fail
+  // closed before image generation, no generic fallback, one plain retry).
+  for (const blankBody of ["", "   \n\t "]) {
+    let blankBodyCalls = 0;
+    const blankBodyAnalyzer = createGeminiContentPreflightAnalyzer(
+      user.id,
+      async () => {
+        blankBodyCalls += 1;
+        return blankBody;
+      },
+    );
+    await assert.rejects(
+      () => blankBodyAnalyzer.analyze({
+        kind: "creator-script",
+        text: eightWindows.map((window) => window.text).join("\n"),
+        windows: eightWindows,
+      }),
+      (error: unknown) => error instanceof ContentPreflightError
+        && error.code === "INVALID_ANALYSIS"
+        && error.diagnostic === `a1:empty_provider_response:len=${blankBody.length}`
+        && !/หลังลองแก้อัตโนมัติ/.test(error.message),
+      "a blank provider body fails closed without claiming the model returned correctable JSON",
+    );
+    assert.equal(
+      blankBodyCalls,
+      1,
+      "a blank provider body must not spend two more identical provider calls",
+    );
+    const blankBodyTelemetry = await prisma.telemetryEvent.findFirst({
+      where: {
+        userId: user.id,
+        name: "brand_visual_preflight_invalid",
+        properties: { contains: '"reason":"empty_provider_response"' },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    assert.ok(blankBodyTelemetry, "a blank provider body still leaves a durable server diagnostic");
+    assert.match(
+      blankBodyTelemetry.properties ?? "",
+      /"reason":"empty_provider_response"/,
+      "a blank provider body is classified apart from a schema failure",
+    );
+    assert.match(blankBodyTelemetry.properties ?? "", /"attemptCount":1/);
+  }
+
   const priorRollout = {
     BRAND_VISUAL_SYSTEM_ENABLED: process.env.BRAND_VISUAL_SYSTEM_ENABLED,
     BRAND_VISUAL_ROLLOUT_PERCENT: process.env.BRAND_VISUAL_ROLLOUT_PERCENT,
