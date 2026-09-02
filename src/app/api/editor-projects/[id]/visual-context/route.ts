@@ -275,6 +275,22 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         cohort: auth.access.cohort,
       },
     }).catch(() => {});
+    // Task 9 (Telemetry): a pack CHOSEN for this clip, not a "กำหนดเอง"
+    // (custom, stylePackId: null) look that merely edited an axis — those
+    // never emit. `look.stylePack` is the persisted snapshot for the pack the
+    // request named, so packId/version always match what was actually saved.
+    if (parsed.data.stylePackId && "stylePack" in look && look.stylePack) {
+      await recordTelemetryEvent(auth.user.id, {
+        name: "style_pack_selected",
+        source: "server",
+        step: "editor.step2",
+        properties: {
+          packId: look.stylePack.id,
+          surface: "project",
+          version: look.stylePack.version,
+        },
+      }).catch(() => {});
+    }
     return NextResponse.json({
       look,
       preflightId: state.preflight?.id ?? null,

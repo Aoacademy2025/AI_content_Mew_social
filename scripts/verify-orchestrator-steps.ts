@@ -196,6 +196,96 @@ async function verifyStylePackRenderResolver() {
 }
 
 // ---------------------------------------------------------------------------
+// Task 9 (Telemetry): the resolver owns the once-per-job `style_pack_pinned`
+// accounting — `onPinned` fires exactly once, the first time EITHER facet
+// (resolveStockMood or resolvePacing, called in any order, any number of
+// times) resolves a non-null pack, and never at all when no pack is pinned
+// anywhere. It also exposes `version`/`source` (project vs brand), which
+// `ResolvedStockMood` alone does not carry.
+// ---------------------------------------------------------------------------
+async function verifyStylePackPinnedOnce() {
+  {
+    // project-look wins, fires once even though both facets are asked twice.
+    const pins: Array<{ packId: string; version: string; source: string }> = [];
+    const { resolveStockMood, resolvePacing } = createStylePackRenderResolver(
+      {
+        projectVisualContextJson: async () => contextJsonFor("thai-history"),
+        brandRevisionRecipeJson: async () => recipeJsonFor("thai-ghost"),
+      },
+      { onPinned: (detail) => pins.push(detail) },
+    );
+    await resolveStockMood();
+    await resolvePacing();
+    await resolveStockMood();
+    check("onPinned fires exactly once across repeated calls to both facets", pins.length === 1);
+    check(
+      "onPinned reports the per-clip pack (project), not the Brand fallback",
+      pins[0]?.packId === "thai-history" && pins[0]?.source === "project",
+    );
+    check("onPinned carries the pack's catalog version", pins[0]?.version === stylePack("thai-history").version);
+  }
+
+  {
+    // No per-clip pack, only the Brand Revision → source: "brand".
+    const pins: Array<{ packId: string; version: string; source: string }> = [];
+    const { resolveStockMood } = createStylePackRenderResolver(
+      {
+        projectVisualContextJson: async () => null,
+        brandRevisionRecipeJson: async () => recipeJsonFor("thai-ghost"),
+      },
+      { onPinned: (detail) => pins.push(detail) },
+    );
+    await resolveStockMood();
+    check(
+      "onPinned reports source: \"brand\" when only the Brand Revision carries a pack",
+      pins.length === 1 && pins[0].packId === "thai-ghost" && pins[0].source === "brand",
+    );
+  }
+
+  {
+    // No pack pinned anywhere → onPinned never fires.
+    const pins: unknown[] = [];
+    const { resolveStockMood, resolvePacing } = createStylePackRenderResolver(
+      {
+        projectVisualContextJson: async () => null,
+        brandRevisionRecipeJson: async () => null,
+      },
+      { onPinned: (detail) => pins.push(detail) },
+    );
+    await resolveStockMood();
+    await resolvePacing();
+    check("onPinned never fires when no pack is pinned anywhere", pins.length === 0);
+  }
+
+  {
+    // Fail-open: a throwing loader must never fire onPinned and never throw.
+    const pins: unknown[] = [];
+    const resolver = createStylePackRenderResolver(
+      {
+        projectVisualContextJson: async () => { throw new Error("db down"); },
+        brandRevisionRecipeJson: async () => recipeJsonFor("thai-ghost"),
+      },
+      { onPinned: (detail) => pins.push(detail) },
+    );
+    await resolver.resolveStockMood();
+    await resolver.resolvePacing();
+    check("a failing loader never fires onPinned (fail-open, never a reason for a render to stop)", pins.length === 0);
+  }
+
+  {
+    // No onPinned option at all (production call sites that don't need it,
+    // and every pre-Task-9 caller) must behave exactly as before — no crash.
+    const { resolveStockMood } = createStylePackRenderResolver({
+      projectVisualContextJson: async () => contextJsonFor("thai-ghost"),
+      brandRevisionRecipeJson: async () => null,
+    });
+    assert.equal((await resolveStockMood())?.packId, "thai-ghost", "resolver still works with no onPinned supplied");
+  }
+
+  console.log("PASS style_pack_pinned: once-per-job, project/brand source, fail-open, backward compatible");
+}
+
+// ---------------------------------------------------------------------------
 // Fix round 1 (Important, plan-mandated): minHoldSec must be sent ONLY when
 // a pack is actually pinned — resolvePacing() returning "normal" for BOTH
 // "no pack" and "a pinned normal-pacing pack" made the orchestrator send
@@ -310,6 +400,7 @@ function verifyOrchestratorWiring() {
 async function main() {
   verifyPayloadBuilders();
   await verifyStylePackRenderResolver();
+  await verifyStylePackPinnedOnce();
   await verifyPacingDrivesConfigPayload();
   verifyOrchestratorWiring();
   process.exit(failures ? 1 : 0);

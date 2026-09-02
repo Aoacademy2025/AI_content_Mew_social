@@ -2,7 +2,8 @@
 // chain (verified against page.tsx 2026-06-13). No I/O — unit-testable.
 
 import { stockMoodForProject, pacingForProject, type BrollPreferenceInput, type ResolvedStockMood } from "@/lib/broll-preferences";
-import type { PacingLevel } from "@/lib/style-pack-catalog";
+import type { PacingLevel, StylePackId } from "@/lib/style-pack-catalog";
+import { stylePackSnapshotFromJson } from "@/lib/style-pack-snapshot";
 import { buildHeroSubtitleOverlayConfig } from "@/lib/hero-editorial";
 
 /** What one video job's pinned Style Pack resolves to at render time: the
@@ -16,6 +17,16 @@ export interface StylePackRenderResolver {
   resolveStockMood: () => Promise<ResolvedStockMood | null>;
   resolvePacing: () => Promise<PacingLevel | null>;
 }
+
+/** The `style_pack_pinned` telemetry detail (Task 9) — `packId` and `version`
+ *  come straight off the pinned snapshot; `source` says which of the two
+ *  precedence layers supplied it, same vocabulary as the visual-context GET
+ *  route's `stylePackSource`. */
+export type StylePackPinnedDetail = {
+  packId: StylePackId;
+  version: string;
+  source: "project" | "brand";
+};
 
 /** Resolve the pinned Style Pack snapshot for ONE video job, once, and expose
  *  its render-time facets.
@@ -33,11 +44,27 @@ export interface StylePackRenderResolver {
  *  facets — no pack, never a reason for a render to stop. `resolveStockMood`
  *  and `resolvePacing` both read the SAME memoized snapshot load — one
  *  resolution, two readers — so a job can never render one facet from a
- *  different snapshot than the other. */
-export function createStylePackRenderResolver(load: {
-  projectVisualContextJson: () => Promise<string | null>;
-  brandRevisionRecipeJson: () => Promise<string | null>;
-}): StylePackRenderResolver {
+ *  different snapshot than the other.
+ *
+ *  `onPinned` (Task 9) is this resolver's own once-per-job accounting for the
+ *  `style_pack_pinned` telemetry event: it fires at most once per resolver
+ *  instance — the first time EITHER facet's read finds a non-null pack,
+ *  regardless of how many times `resolveStockMood`/`resolvePacing` are called
+ *  or in what order — and never at all when no pack is pinned anywhere. Kept
+ *  IN the resolver (not the orchestrator) because it shares the exact same
+ *  memoized read and precedence: a second, separately-computed "is a pack
+ *  pinned" check could disagree with the one `resolveStockMood` acted on.
+ *  Fails open like everything else here: a throwing `onPinned` (or a throwing
+ *  loader) can never surface past this function. */
+export function createStylePackRenderResolver(
+  load: {
+    projectVisualContextJson: () => Promise<string | null>;
+    brandRevisionRecipeJson: () => Promise<string | null>;
+  },
+  options?: {
+    onPinned?: (detail: StylePackPinnedDetail) => void;
+  },
+): StylePackRenderResolver {
   let resolution: Promise<{ projectVisualContextJson: string | null; brandRevisionRecipeJson: string | null }> | null = null;
   const resolveJson = () => {
     resolution ??= (async () => {
@@ -49,17 +76,42 @@ export function createStylePackRenderResolver(load: {
     })();
     return resolution;
   };
+  let pinnedNotified = false;
+  const notifyPinnedOnce = async () => {
+    if (pinnedNotified || !options?.onPinned) return;
+    try {
+      const { projectVisualContextJson, brandRevisionRecipeJson } = await resolveJson();
+      const projectSnapshot = stylePackSnapshotFromJson(projectVisualContextJson);
+      const detail: StylePackPinnedDetail | null = projectSnapshot
+        ? { packId: projectSnapshot.id, version: projectSnapshot.version, source: "project" }
+        : (() => {
+            const brandSnapshot = stylePackSnapshotFromJson(brandRevisionRecipeJson);
+            return brandSnapshot
+              ? { packId: brandSnapshot.id, version: brandSnapshot.version, source: "brand" as const }
+              : null;
+          })();
+      if (!detail) return;
+      pinnedNotified = true;
+      options.onPinned(detail);
+    } catch {
+      // A pin notification is a flavour, never a reason for a render to stop.
+    }
+  };
   return {
     resolveStockMood: async () => {
       try {
-        return stockMoodForProject(await resolveJson());
+        const mood = stockMoodForProject(await resolveJson());
+        await notifyPinnedOnce();
+        return mood;
       } catch {
         return null;
       }
     },
     resolvePacing: async () => {
       try {
-        return pacingForProject(await resolveJson());
+        const pacing = pacingForProject(await resolveJson());
+        await notifyPinnedOnce();
+        return pacing;
       } catch {
         return null;
       }

@@ -9,6 +9,7 @@ import {
 } from "@/lib/brand-visual-safety";
 import { evaluateBrandVisualFunnel } from "@/lib/brand-visual-funnel";
 import { brandVisualRolloutFlags } from "@/lib/brand-visual-rollout.server";
+import { STYLE_PACK_IDS, type StylePackId } from "@/lib/style-pack-catalog";
 
 const THIRTY_MINUTES_MS = 30 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
@@ -71,6 +72,74 @@ function dayKey(date: Date): string {
 
 function rate(numerator: number, denominator: number): number | null {
   return denominator > 0 ? numerator / denominator : null;
+}
+
+export type StylePackAcceptanceSegment = {
+  packId: StylePackId | "none";
+  exported: number;
+  rejected: number;
+  acceptanceRate: number | null;
+};
+
+/** Task 9 (Telemetry): segment first-pass visual acceptance by the pinned
+ *  Style Pack. Pure over the `packId` already carried on
+ *  `first_pass_visual_exported` / `first_pass_visual_rejected` properties, so
+ *  `getBrandVisualRolloutHealth` stays a thin telemetry query + this summary.
+ *  A packId outside the current catalog (or `null` — no pack pinned for that
+ *  clip) rolls up into `"none"`, never a fabricated per-pack row. A pack with
+ *  no events at all is simply absent — never a zero-row nobody asked for. */
+export function summarizeStylePackAcceptance(input: {
+  exportedPackIds: Array<string | null>;
+  rejectedPackIds: Array<string | null>;
+}): StylePackAcceptanceSegment[] {
+  const counts = new Map<StylePackId | "none", { exported: number; rejected: number }>();
+  const normalizedPackId = (packId: string | null): StylePackId | "none" =>
+    packId && (STYLE_PACK_IDS as readonly string[]).includes(packId) ? (packId as StylePackId) : "none";
+  const bump = (packId: string | null, key: "exported" | "rejected") => {
+    const id = normalizedPackId(packId);
+    const current = counts.get(id) ?? { exported: 0, rejected: 0 };
+    current[key] += 1;
+    counts.set(id, current);
+  };
+  for (const packId of input.exportedPackIds) bump(packId, "exported");
+  for (const packId of input.rejectedPackIds) bump(packId, "rejected");
+  return [...counts.entries()]
+    .map(([packId, { exported, rejected }]) => ({
+      packId,
+      exported,
+      rejected,
+      acceptanceRate: rate(exported, exported + rejected),
+    }))
+    .sort((left, right) => (right.exported + right.rejected) - (left.exported + left.rejected));
+}
+
+/** Task 9 (Telemetry, fix-up): gate `byStylePack` on the SAME `safetyCohort`
+ *  every other figure in this payload (canary/jobs/settlement/leadingMetrics.rerolls)
+ *  is scoped to, so per-pack numbers are comparable with the overall/per-treatment
+ *  ones — an event tagged with a different cohort, or carrying no cohort at
+ *  all, never counts. Mirrors `rerollCount`'s own
+ *  `properties(event.properties).cohort === safetyCohort` filter exactly.
+ *  No active safety cohort (rollout off, or an unrecognised percent) means NO
+ *  per-pack segments at all — same as the canary/reroll metrics collapsing to
+ *  empty rather than reporting an uncomparable, unscoped number. */
+export function stylePackAcceptanceForCohort(input: {
+  events: Array<{
+    name: "first_pass_visual_exported" | "first_pass_visual_rejected";
+    packId: string | null;
+    cohort: string | null;
+  }>;
+  safetyCohort: string | null;
+}): StylePackAcceptanceSegment[] {
+  if (!input.safetyCohort) return [];
+  const inCohort = input.events.filter((event) => event.cohort === input.safetyCohort);
+  return summarizeStylePackAcceptance({
+    exportedPackIds: inCohort
+      .filter((event) => event.name === "first_pass_visual_exported")
+      .map((event) => event.packId),
+    rejectedPackIds: inCohort
+      .filter((event) => event.name === "first_pass_visual_rejected")
+      .map((event) => event.packId),
+  });
 }
 
 function percentile(values: number[], target: number): number | null {
@@ -508,6 +577,30 @@ export async function getBrandVisualRolloutHealth(input: {
     ? costSnapshot.costBahtPerImage * usable.length / activatedUsers
     : null;
   const funnel = await getBrandVisualFunnelHealth({ from, now });
+  // Task 9 (Telemetry, fix-up): first-pass acceptance segmented by Style Pack,
+  // gated on the SAME `safetyCohort` as canary/jobs/settlement/rerolls above —
+  // same reason those are gated: an unscoped number would not be comparable
+  // to the rest of this payload. Query gated exactly like `rerollEvents`.
+  const acceptanceEvents = safetyCohort
+    ? await prisma.telemetryEvent.findMany({
+        where: {
+          name: { in: ["first_pass_visual_exported", "first_pass_visual_rejected"] },
+          createdAt: { gte: from, lt: now },
+        },
+        select: { name: true, properties: true },
+      })
+    : [];
+  const byStylePack = stylePackAcceptanceForCohort({
+    events: acceptanceEvents.map((event) => {
+      const detail = properties(event.properties);
+      return {
+        name: event.name as "first_pass_visual_exported" | "first_pass_visual_rejected",
+        packId: typeof detail.packId === "string" ? detail.packId : null,
+        cohort: typeof detail.cohort === "string" ? detail.cohort : null,
+      };
+    }),
+    safetyCohort,
+  });
   return {
     window: { from: from.toISOString(), to: now.toISOString(), days },
     canary: {
@@ -553,6 +646,7 @@ export async function getBrandVisualRolloutHealth(input: {
     } : null,
     safety,
     funnel,
+    acceptance: { byStylePack },
     rollout: {
       percent: rollout.percent,
       canExpandFrom10To50: rollout.percent === 10 && safety.canExpand,

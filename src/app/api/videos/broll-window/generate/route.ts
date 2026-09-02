@@ -307,6 +307,9 @@ export async function POST(req: Request) {
         sceneIndex: input.sceneIndex,
         reason: "scene_reroll",
         projectVisualContextJson: measuredContext?.projectVisualContextJson,
+        // Task 9 (Telemetry, fix-up): same cohort value `brand_look_scene_rerolled`
+        // below already carries — reused, not recomputed.
+        cohort: acceptance?.cohort ?? null,
       }).catch((error) => {
         console.error("[broll-window/generate] first-pass telemetry failed:", error);
       });

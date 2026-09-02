@@ -1180,6 +1180,25 @@ async function main() {
   );
 
 
+  // Task 9 (Telemetry): the visual-context PUT route emits style_pack_selected
+  // (surface: "project") server-side, next to the existing project_look_changed
+  // call, ONLY when the request actually carried a stylePackId — a "กำหนดเอง"
+  // (custom, stylePackId: null) look must never emit it.
+  const visualContextRouteSource = readFileSync(
+    "src/app/api/editor-projects/[id]/visual-context/route.ts",
+    "utf8",
+  );
+  assert.match(
+    visualContextRouteSource,
+    /parsed\.data\.stylePackId[\s\S]{0,400}name:\s*"style_pack_selected"[\s\S]{0,300}source:\s*"server"[\s\S]{0,300}surface:\s*"project"/,
+    "style_pack_selected (surface: project) is gated on the request actually carrying a stylePackId, and is a server-sourced event",
+  );
+  assert.match(
+    visualContextRouteSource,
+    /name:\s*"style_pack_selected"[\s\S]{0,200}step:\s*"editor\.step2"/,
+    "style_pack_selected on the project surface uses the same step vocabulary as project_look_changed",
+  );
+
   const selectorSource = readFileSync(
     "src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx",
     "utf8",

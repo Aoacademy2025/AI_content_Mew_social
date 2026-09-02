@@ -141,6 +141,7 @@ import {
   recordFirstPassVisualRejection,
   type FirstPassVisualRejectionReason,
 } from "@/lib/first-pass-visual-acceptance.server";
+import { resolveBrandVisualAccessByUserId } from "@/lib/brand-visual-rollout.server";
 import { brollExportCompletionProperties } from "@/lib/broll-growth-funnel";
 import {
   commitAppliedSceneRerollAssetsInTransaction,
@@ -961,6 +962,24 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         });
         return project?.brandProfileRevision?.visualRecipeJson ?? null;
       },
+    }, {
+      // Task 9: fired at most once per job, the first time the resolver above
+      // finds a pinned pack (upload or script path — both share this one
+      // resolver instance). Nothing fires when no pack is pinned.
+      onPinned: (detail) => {
+        emitTelemetry({
+          name: "style_pack_pinned",
+          source: "server",
+          step: "render.pin",
+          properties: {
+            packId: detail.packId,
+            version: detail.version,
+            jobId,
+            projectId: job.projectId ?? null,
+            source: detail.source,
+          },
+        });
+      },
     });
     let resumedHeroVoiceTts: HeroVoiceGenerationResult | null = null;
     let ttsStepAlreadyEntered = false;
@@ -1461,6 +1480,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             sceneIndex: edit.index,
             reason,
             projectVisualContextJson: src.projectVisualContextJson,
+            // Task 9 (Telemetry, fix-up): resolved once per rejected scene —
+            // admin health gates per-pack acceptance on this same cohort.
+            cohort: (await resolveBrandVisualAccessByUserId(user)).cohort,
           });
         })).catch((error) => {
           console.error("[mcp-worker] first-pass visual rejection telemetry failed:", error);
@@ -1693,6 +1715,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           videoJobId: src.id,
           projectVisualContextJson: src.projectVisualContextJson,
           initialAiWindowCount,
+          // Task 9 (Telemetry, fix-up): see the rejection call site above.
+          cohort: (await resolveBrandVisualAccessByUserId(user)).cohort,
         }).catch((error) => {
           console.error("[mcp-worker] first-pass visual export telemetry failed:", error);
         });
