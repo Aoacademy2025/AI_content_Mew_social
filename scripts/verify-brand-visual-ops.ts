@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const require = createRequire(import.meta.url);
 
@@ -81,11 +83,143 @@ async function wrapperExitFor(statusCode: number): Promise<number | null> {
   return exitCode;
 }
 
+// ── ADR 0059 guard matrix ────────────────────────────────────────────────────
+// The Brand Library is open to every authenticated, non-suspended account while
+// the master switch is on; the paid-equivalent and rollout gates stay on the
+// AI-image actions. Proved against the real route handlers and a throwaway DB
+// (no network): only the flag matrix and the acting user change between calls.
+const routeDirectory = mkdtempSync(join(tmpdir(), "brand-visual-ops-routes-"));
+process.env.DATABASE_URL = `file:${join(routeDirectory, "test.db")}`;
+execFileSync("npx", ["prisma", "db", "push", "--skip-generate"], { stdio: "ignore", env: process.env });
+
+// The routes authenticate through getCurrentUser(); Clerk itself needs a request
+// context, so the identity lookup is stubbed while the AUTHORIZATION under test
+// keeps reading the live user row (suspension included), exactly like production.
+let actingUserId: string | null = null;
+const clerkAuthModuleId = require.resolve("../src/lib/clerk-auth");
+require.cache[clerkAuthModuleId] = {
+  id: clerkAuthModuleId,
+  filename: clerkAuthModuleId,
+  loaded: true,
+  exports: {
+    getCurrentUser: async () => {
+      if (!actingUserId) return null;
+      const { prisma } = await import("../src/lib/prisma");
+      return prisma.user.findUnique({ where: { id: actingUserId } });
+    },
+    requireUser: async () => {
+      throw new Error("the Brand Library routes authenticate through getCurrentUser");
+    },
+  },
+} as never;
+
+const brandPayload = {
+  schemaVersion: 1 as const,
+  name: "Ops guard brand",
+  niche: "creator education",
+  audience: "Thai creators",
+  script: {
+    styleId: null,
+    tone: "direct and energetic",
+    bannedWords: [],
+    ctaStyle: "follow",
+    language: "th",
+    analysisNotes: "Short hook, direct explanation, one concrete CTA",
+    sampleText: "Creator writing sample retained for the next script",
+  },
+  voice: { provider: "gemini", voiceId: "kore" },
+  subtitle: {
+    presetId: null,
+    config: { fontFamily: "Kanit", preset: "stroke", effect: "karaoke", accentColor: "#38BDF8" },
+  },
+  brandMark: { assetId: null, enabled: false, position: "top-right", sizePct: 18, opacity: 0.9 },
+  visual: {
+    primaryVisualFormatId: "simple-editorial-story" as const,
+    palette: ["#111111", "#F8F5EE", "#38BDF8"],
+    personality: "bold raw energetic",
+    peopleAndSetting: "Thai creator contexts",
+    memorableCues: ["blue marker circle"],
+    visualNotes: "thick imperfect marker lines",
+    defaultTreatment: "clear and energetic",
+  },
+};
+
+function setRolloutFlags(enabled: boolean) {
+  if (enabled) process.env.BRAND_VISUAL_SYSTEM_ENABLED = "1";
+  else delete process.env.BRAND_VISUAL_SYSTEM_ENABLED;
+  // percent 0 keeps every non-internal account OUT of the image cohort
+  process.env.BRAND_VISUAL_ROLLOUT_PERCENT = "0";
+  process.env.BRAND_VISUAL_ROLLOUT_STARTED_AT = "2026-08-10T00:00:00.000Z";
+  process.env.BRAND_VISUAL_TEST_EMAILS = "";
+}
+
+async function verifyLibraryAndImageGuards() {
+  const { prisma } = await import("../src/lib/prisma");
+  const library = await import("../src/app/api/brand-library/route");
+  const previewQuote = await import("../src/app/api/brand-library/preview-quote/route");
+
+  const user = await prisma.user.create({
+    data: { name: "Unpaid library user", email: "ops-library@example.test", plan: "FREE" },
+  });
+  actingUserId = user.id;
+
+  setRolloutFlags(true);
+  const listed = await library.GET();
+  assert.equal(listed.status, 200, "an unpaid, non-rollout account can read its own Brand Library");
+  const listedBody = await listed.json() as {
+    canCreate: boolean;
+    creationRequiresResult: boolean;
+    imageAccess: { canUse: boolean; reason: string; upgradeUrl: string };
+  };
+  assert.equal(listedBody.imageAccess.canUse, false, "the image gate stays closed for an unpaid account");
+  assert.equal(listedBody.imageAccess.upgradeUrl, "/pricing");
+  assert.equal(listedBody.canCreate, true, "plan limits are the only cap on creating a Brand");
+  assert.equal(listedBody.creationRequiresResult, false, "the starter-allowance creation block is gone");
+
+  const created = await library.POST(new Request("http://localhost/api/brand-library", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ payload: brandPayload }),
+  }));
+  assert.equal(created.status, 201, "an unpaid account can create a Brand Profile");
+
+  const quoted = await previewQuote.POST(new Request("http://localhost/api/brand-library/preview-quote", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ payload: brandPayload }),
+  }));
+  assert.equal(quoted.status, 403, "AI-image actions keep the paid gate");
+  assert.equal((await quoted.json() as { code: string }).code, "PAYMENT_REQUIRED");
+
+  setRolloutFlags(false);
+  const lockedList = await library.GET();
+  assert.equal(lockedList.status, 403, "the master kill switch still closes the library");
+  assert.equal((await lockedList.json() as { code: string }).code, "BRAND_VISUAL_LOCKED");
+
+  setRolloutFlags(true);
+  actingUserId = null;
+  const anonymous = await library.GET();
+  assert.equal(anonymous.status, 401, "every Brand Library route still authenticates");
+
+  actingUserId = user.id;
+  await prisma.user.update({ where: { id: user.id }, data: { suspended: true } });
+  const suspended = await library.GET();
+  assert.equal(suspended.status, 403, "a suspended account is blocked everywhere");
+  assert.equal((await suspended.json() as { code: string }).code, "ACCOUNT_SUSPENDED");
+
+  await prisma.$disconnect();
+}
+
 async function main() {
   assert.equal(await wrapperExitFor(200), 0, "2xx cron response is successful");
   assert.equal(await wrapperExitFor(401), 1, "bad CRON_SECRET must fail the PM2 cron process");
   assert.equal(await wrapperExitFor(403), 1, "forbidden cron response must fail the PM2 cron process");
-  console.log("verify-brand-visual-ops: PASS deploy/heartbeat/auth failure gates");
+  try {
+    await verifyLibraryAndImageGuards();
+  } finally {
+    rmSync(routeDirectory, { recursive: true, force: true });
+  }
+  console.log("verify-brand-visual-ops: PASS deploy/heartbeat/auth failure gates + library/image guard matrix");
 }
 
 main().catch((error) => {

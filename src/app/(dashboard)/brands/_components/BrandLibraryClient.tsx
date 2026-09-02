@@ -761,7 +761,6 @@ export function BrandLibraryClient() {
             profiles={library.profiles}
             cap={library.cap}
             canCreate={library.canCreate}
-            creationRequiresResult={library.creationRequiresResult}
             activeId={activeId}
             busy={busy !== null}
             onOpen={openProfile}
@@ -839,6 +838,7 @@ export function BrandLibraryClient() {
               preview={preview}
               previewGenerationCount={previewGenerationCount}
               allowance={allowance}
+              imageAccess={library.imageAccess}
               canPublish={canPublish}
               busy={busy}
               disabled={frozen}

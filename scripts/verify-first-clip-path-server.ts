@@ -51,7 +51,13 @@ async function main() {
     "First-Clip Path must not redirect an entitled Hero Script visitor",
   );
   const brandsLayout = readFileSync("src/app/(dashboard)/brands/layout.tsx", "utf8");
-  assert.match(brandsLayout, /redirect\("\/video-editor"\)/, "brands redirects while on the path");
+  // ADR 0059: the Brand Library is open to every plan, a creator still on the
+  // First-Clip Path included — it must not bounce them back to the editor.
+  assert.doesNotMatch(
+    brandsLayout,
+    /resolveFirstClipPath|firstClip\.onPath/,
+    "First-Clip Path must not redirect a Brand Library visitor",
+  );
   const editor = readFileSync("src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx", "utf8");
   assert.match(editor, /firstClipPath=\{firstClipPath\}/, "editor passes First-Clip Path into the script rail");
   assert.match(editor, /requiresFirstClipScript/, "editor shares the server's first-clip upload policy");

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { apiError } from "@/lib/api-error";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
-import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
+import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
 import { VISUAL_FORMAT_IDS } from "@/lib/brand-visual-system";
 import { geminiGenerateText } from "@/lib/gemini";
 import { KeyRequiredError, resolveGeminiKey } from "@/lib/gemini-key";
@@ -22,7 +22,7 @@ const MAX_SEMANTIC_ATTEMPTS = 3;
 
 export async function POST(req: Request) {
   try {
-    const auth = await requireBrandVisualUser();
+    const auth = await requireBrandLibraryUser();
     if (!auth.ok) return auth.response;
     const body = await req.json().catch(() => null);
     const niche = typeof body?.niche === "string" ? body.niche.trim().slice(0, 300) : "";

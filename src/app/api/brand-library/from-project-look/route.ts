@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
-import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
+import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
 import {
   BrandProfileLibraryError,
   brandProfilePayloadSchema,
@@ -30,7 +30,7 @@ function libraryError(error: unknown) {
  * replay keys in BrandProfileRevision. */
 export async function POST(req: Request) {
   try {
-    const auth = await requireBrandVisualUser();
+    const auth = await requireBrandLibraryUser();
     if (!auth.ok) return auth.response;
     const body = await req.json().catch(() => null);
     const projectId = typeof body?.projectId === "string" ? body.projectId.trim() : "";
