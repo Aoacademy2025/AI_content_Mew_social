@@ -246,6 +246,48 @@ async function verifyLibraryAndImageGuards() {
   assert.equal(quoted.status, 403, "AI-image actions keep the paid gate");
   assert.equal((await quoted.json() as { code: string }).code, "PAYMENT_REQUIRED");
 
+  // "สร้างแบรนด์จากค่าที่ใช้อยู่": the seed this route hands the client is copied verbatim
+  // into a create request, so every defaults field must already satisfy the
+  // creator-write caps. A long Writing Style instruction prompt used to seed a
+  // 500-char tone, which the write schema then rejected with a 400.
+  const { createBrandProfileSeedFromCurrentDefaults } = await import("../src/lib/brand-profile-seed");
+  const { BRAND_PROFILE_CAPS } = await import("../src/lib/brand-profile-limits");
+  const defaultsUser = await prisma.user.create({
+    data: { name: "Defaults seed user", email: "ops-defaults@example.test", plan: "FREE" },
+  });
+  actingUserId = defaultsUser.id;
+  await prisma.style.create({
+    data: {
+      userId: defaultsUser.id,
+      name: "Long writing style",
+      instructionPrompt: "ก".repeat(1_000),
+      sampleText: "ข".repeat(5_000),
+    },
+  });
+  const withDefaults = await library.GET();
+  assert.equal(withDefaults.status, 200);
+  const defaults = (await withDefaults.json() as {
+    defaults: Parameters<typeof createBrandProfileSeedFromCurrentDefaults>[0];
+  }).defaults;
+  const seededDraft = createBrandProfileSeedFromCurrentDefaults(defaults);
+  assert.ok(
+    seededDraft.script.tone.length <= BRAND_PROFILE_CAPS.shortFieldChars
+      && (seededDraft.script.analysisNotes ?? "").length <= BRAND_PROFILE_CAPS.longFieldChars
+      && (seededDraft.script.sampleText ?? "").length <= BRAND_PROFILE_CAPS.longFieldChars,
+    "the current-defaults seed stays inside the creator-write caps",
+  );
+  const seededCreate = await library.POST(new Request("http://localhost/api/brand-library", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ payload: { ...seededDraft, name: "Brand from current defaults" } }),
+  }));
+  assert.equal(
+    seededCreate.status,
+    201,
+    "a Brand seeded from the account's current defaults saves without a length rejection",
+  );
+  actingUserId = user.id;
+
   setRolloutFlags(false);
   const lockedList = await library.GET();
   assert.equal(lockedList.status, 403, "the master kill switch still closes the library");

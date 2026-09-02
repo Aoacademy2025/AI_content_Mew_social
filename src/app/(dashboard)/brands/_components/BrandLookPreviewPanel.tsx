@@ -44,36 +44,42 @@ export function BrandLookPreviewPanel({
 }) {
   const imagesToGenerate = previewGenerationCount ?? 0;
   const imagesToReuse = 3 - imagesToGenerate;
+  // An account the image gate rejects is never quoted (the client skips
+  // preview-quote for it), so it is offered no cost line at all — least of all
+  // a trial-allowance one, which its own button would then refuse.
+  const quotePending = imageAccess.canUse && previewGenerationCount === null;
   const costLabel = imagesToGenerate === 0
     ? "นำภาพเดิมมาใช้ครบ โดยไม่หักสิทธิ์หรือเครดิต"
-    : allowance?.eligible
+    : allowance?.eligible && imageAccess.canUse
       ? `ใช้สิทธิ์ทดลอง ${imagesToGenerate} ภาพ`
       : `${imagesToGenerate * 2} เครดิต (${imagesToGenerate} ภาพ × 2 เครดิต)`;
   const fundingInsufficient = allowance?.eligible === true
     && allowance.remainingImages < imagesToGenerate;
   // ADR 0059: the Brand Library stays open to every plan — the paid/rollout gate
-  // is disclosed here, on the button that actually spends an AI image.
+  // is disclosed here, on the button that actually spends an AI image. The gate
+  // outranks the quote state: a rejected account has no quote coming, so it must
+  // read why the button is closed instead of an explanation that never resolves.
   const disabledReason: React.ReactNode = busy !== null
     ? null
     : !canPublish
       ? "ตั้งชื่อแบรนด์ก่อนจึงจะทดลองภาพได้"
-      : previewGenerationCount === null
-        ? "กำลังตรวจภาพเดิมและคำนวณสิทธิ์ที่ต้องใช้…"
-        : fundingInsufficient
-          ? "สิทธิ์ทดลองภาพไม่พอสำหรับจำนวนภาพที่ต้องสร้าง"
-          : !imageAccess.canUse
-            ? imageAccess.reason === "payment_required"
-              ? (
-                <>
-                  ภาพ AI ประจำแบรนด์ใช้ได้กับสมาชิก PRO และ BUSINESS{" "}
-                  <Link href={imageAccess.upgradeUrl} className="font-semibold text-violet-500 underline underline-offset-4">
-                    ดูแผนรายเดือน
-                  </Link>
-                </>
-              )
-              : imageAccess.reason === "rollout_wait"
-                ? "ระบบกำลังทยอยเปิดภาพ AI ประจำแบรนด์ให้สมาชิก บัญชีนี้จะได้รับสิทธิ์ในรอบถัดไป"
-                : "ภาพ AI ประจำแบรนด์ยังไม่เปิดให้บัญชีนี้"
+      : !imageAccess.canUse
+        ? imageAccess.reason === "payment_required"
+          ? (
+            <>
+              ภาพ AI ประจำแบรนด์ใช้ได้กับสมาชิก PRO และ BUSINESS{" "}
+              <Link href={imageAccess.upgradeUrl} className="font-semibold text-violet-500 underline underline-offset-4">
+                ดูแผนรายเดือน
+              </Link>
+            </>
+          )
+          : imageAccess.reason === "rollout_wait"
+            ? "ระบบกำลังทยอยเปิดภาพ AI ประจำแบรนด์ให้สมาชิก บัญชีนี้จะได้รับสิทธิ์ในรอบถัดไป"
+            : "ภาพ AI ประจำแบรนด์ยังไม่เปิดให้บัญชีนี้"
+        : previewGenerationCount === null
+          ? "กำลังตรวจภาพเดิมและคำนวณสิทธิ์ที่ต้องใช้…"
+          : fundingInsufficient
+            ? "สิทธิ์ทดลองภาพไม่พอสำหรับจำนวนภาพที่ต้องสร้าง"
             : null;
 
   return (
@@ -84,19 +90,21 @@ export function BrandLookPreviewPanel({
             <Eye className="h-4 w-4 text-violet-500" />
             ทดลองฉากเปิด · ฉากอธิบาย · ฉากปิด
           </p>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            {previewGenerationCount === null
-              ? "กำลังตรวจภาพเดิมและคำนวณสิทธิ์ที่ต้องใช้…"
-              : `${costLabel}${imagesToReuse > 0 ? ` · ใช้ภาพเดิม ${imagesToReuse} ภาพ` : ""}`}
-          </p>
+          {imageAccess.canUse && (
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+              {quotePending
+                ? "กำลังตรวจภาพเดิมและคำนวณสิทธิ์ที่ต้องใช้…"
+                : `${costLabel}${imagesToReuse > 0 ? ` · ใช้ภาพเดิม ${imagesToReuse} ภาพ` : ""}`}
+            </p>
+          )}
         </div>
         <Button
           type="button"
           onClick={onPreview}
-          disabled={disabled || busy !== null || !canPublish || previewGenerationCount === null || fundingInsufficient || !imageAccess.canUse}
+          disabled={disabled || busy !== null || !canPublish || !imageAccess.canUse || previewGenerationCount === null || fundingInsufficient}
           className="h-10 bg-violet-600 text-white hover:bg-violet-600/90"
         >
-          {busy === "preview" || previewGenerationCount === null ? (
+          {busy === "preview" || quotePending ? (
             <Loader2 className="h-4 w-4 animate-spin" />
           ) : (
             <ImageIcon className="h-4 w-4" />

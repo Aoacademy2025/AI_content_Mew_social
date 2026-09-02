@@ -131,10 +131,17 @@ export function BrandLibraryClient() {
     [payload, previewSource],
   );
 
+  // ADR 0059: only an account the image gate admits can spend a preview, and
+  // preview-quote is an image action behind that same gate. Quoting for a
+  // rejected account would answer 403 on every debounced keystroke; the count
+  // stays null and the button discloses the gate reason instead.
+  const canQuotePreview = library?.imageAccess.canUse === true;
+
   // Every look is quoted by the server with the lineage its generate call will
   // use. A saved profile promoted from a clip can reuse that clip's images, so
   // guessing three here overstated the cost and could block a free preview.
   useEffect(() => {
+    if (!canQuotePreview) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setPreviewGenerationCount(null);
@@ -156,7 +163,7 @@ export function BrandLibraryClient() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [previewQuoteInput]);
+  }, [canQuotePreview, previewQuoteInput]);
 
   async function load(preferredId?: string) {
     const [libraryData, meData] = await Promise.all([
@@ -686,30 +693,36 @@ export function BrandLibraryClient() {
               ตั้งชื่อแบรนด์ แล้วเลือกแนวภาพที่อยากให้คลิปของคุณเป็น ที่เหลือปรับทีหลังได้
             </p>
           </div>
-          <Card className="px-4 py-3">
-            {allowance?.eligible ? (
-              <>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  สิทธิ์ทดลองสร้างภาพ
-                </p>
-                <p className="mt-0.5 text-2xl font-bold tabular-nums text-foreground">
-                  {allowance.remainingImages}
-                  <span className="text-sm font-medium text-muted-foreground"> / {allowance.limitImages}</span>
-                </p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  คงเหลือในรอบนี้ · การวิเคราะห์และเลือกแนวภาพไม่ใช้สิทธิ์
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  เครดิตสำหรับสร้างภาพ
-                </p>
-                <p className="mt-0.5 text-sm font-semibold text-foreground">ใช้ยอดเครดิตเดียวกับบัญชี</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">ภาพ AI ราคา 2 เครดิตต่อภาพ</p>
-              </>
-            )}
-          </Card>
+          {/* ADR 0059: this card states what an image costs the account. An
+              account the image gate rejects can spend nothing here, so it makes
+              no cost or entitlement claim to them at all — the gate reason is
+              disclosed on the image button instead. */}
+          {library.imageAccess.canUse && (
+            <Card className="px-4 py-3">
+              {allowance?.eligible ? (
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    สิทธิ์ทดลองสร้างภาพ
+                  </p>
+                  <p className="mt-0.5 text-2xl font-bold tabular-nums text-foreground">
+                    {allowance.remainingImages}
+                    <span className="text-sm font-medium text-muted-foreground"> / {allowance.limitImages}</span>
+                  </p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    คงเหลือในรอบนี้ · การวิเคราะห์และเลือกแนวภาพไม่ใช้สิทธิ์
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    เครดิตสำหรับสร้างภาพ
+                  </p>
+                  <p className="mt-0.5 text-sm font-semibold text-foreground">ใช้ยอดเครดิตเดียวกับบัญชี</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">ภาพ AI ราคา 2 เครดิตต่อภาพ</p>
+                </>
+              )}
+            </Card>
+          )}
         </header>
 
         {library.availabilitySelectionRequired && library.cap !== null && (
