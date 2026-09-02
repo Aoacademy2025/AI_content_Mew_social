@@ -67,13 +67,20 @@ export function cyclePoolIndices(captionCount: number, poolSize: number): number
  * Target b-roll cut cadence (seconds per clip) for a video of the given length.
  * Anchors the product's "B-roll changes every 3–5s" promise. Used to (a) cap how many
  * AI images we pay to generate and (b) how long generate-config holds each clip.
- * Always within [3, 5] so cadence neither strobes nor drags.
+ * With the default `multiplier = 1`, always within [3, 5] so cadence neither strobes
+ * nor drags.
+ *
+ * `multiplier` scales the base cadence for a Style Pack's Pacing
+ * (`PACING_CADENCE_MULTIPLIER` — slow=1.6, normal=1, fast=0.7): a slower pack holds the
+ * clip longer, a faster pack cuts sooner. The scaled result is clamped to [2, 10] so an
+ * extreme multiplier can never strobe faster than 2s or drag past 10s — the same band
+ * `buildBrollWindows`'s `cadenceMultiplier` option enforces. A non-positive multiplier is
+ * treated as 1 (the pre-wave-1 default).
  */
-export function targetCadenceSec(durationSec: number): number {
-  if (!(durationSec > 0)) return 4;
-  if (durationSec <= 20) return 3.5;
-  if (durationSec <= 45) return 4;
-  return 4.5;
+export function targetCadenceSec(durationSec: number, multiplier = 1): number {
+  const base = !(durationSec > 0) ? 4 : durationSec <= 20 ? 3.5 : durationSec <= 45 ? 4 : 4.5;
+  const m = multiplier > 0 ? multiplier : 1;
+  return Math.min(10, Math.max(2, base * m));
 }
 
 /**

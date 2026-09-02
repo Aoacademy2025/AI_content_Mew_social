@@ -2,7 +2,9 @@ import type { RelevanceSpec } from "@/lib/relevance-spec";
 import {
   stylePackSnapshotFromJson,
   type ResolvedStockMood,
+  type StylePackSnapshot,
 } from "@/lib/style-pack-snapshot";
+import type { PacingLevel } from "@/lib/style-pack-catalog";
 
 export type { ResolvedStockMood } from "@/lib/style-pack-snapshot";
 
@@ -423,20 +425,51 @@ export function brollPreferenceCacheVariant(input: BrollPreferenceInput): string
   return [region ? `r=${region}` : "", flavour].filter(Boolean).join(";");
 }
 
-/** Resolve the Stock Mood one video job should search with, from immutable
+/** The pinned Style Pack snapshot one video job renders with, from immutable
  *  JSON snapshots only (ADR 0005 — never re-resolved from the catalog).
+ *  `stockMoodForProject` and `pacingForProject` are both readers over this ONE
+ *  precedence, so a pack can never show one facet from the per-clip context
+ *  and another from the Brand Revision recipe.
  *
  *  Precedence: the per-clip pinned Project Visual Context wins over the Brand
  *  Revision's recipe, because a creator who changed the pack for THIS clip has
- *  already overruled the brand default. Neither carrying a pack = no mood, and
- *  the whole pipeline behaves exactly as it did before wave 1. Every failure
- *  mode (missing, unreadable, wrong-shaped JSON) returns `null`: a mood is a
- *  flavour, never a reason for a render to stop. */
+ *  already overruled the brand default. Neither carrying a pack = no snapshot.
+ *  Every failure mode (missing, unreadable, wrong-shaped JSON) returns `null`:
+ *  a Style Pack is a flavour, never a reason for a render to stop. */
+function resolvedStylePackSnapshot(input: {
+  projectVisualContextJson: string | null;
+  brandRevisionRecipeJson: string | null;
+}): StylePackSnapshot | null {
+  return stylePackSnapshotFromJson(input.projectVisualContextJson)
+    ?? stylePackSnapshotFromJson(input.brandRevisionRecipeJson);
+}
+
+/** Resolve the Stock Mood one video job should search with. See
+ *  `resolvedStylePackSnapshot` for precedence and fail-open behaviour. */
 export function stockMoodForProject(input: {
   projectVisualContextJson: string | null;
   brandRevisionRecipeJson: string | null;
 }): ResolvedStockMood | null {
-  const snapshot = stylePackSnapshotFromJson(input.projectVisualContextJson)
-    ?? stylePackSnapshotFromJson(input.brandRevisionRecipeJson);
+  const snapshot = resolvedStylePackSnapshot(input);
   return snapshot ? { packId: snapshot.id, ...snapshot.stockMood } : null;
+}
+
+/** Resolve the Pacing one video job's B-roll window cadence and AI-gen/auto-mix
+ *  min-hold should use — the SAME precedence and post-pin read as
+ *  `stockMoodForProject` (see `resolvedStylePackSnapshot`), never a second
+ *  lookup path. `null` means "no pack pinned" (neither source carries one, or
+ *  the snapshot is unreadable) — deliberately NOT defaulted to `"normal"`
+ *  here: a caller that needs a cadence multiplier can treat `null` as ×1
+ *  (`"normal"`'s own multiplier), but a caller deciding whether to send an
+ *  explicit `minHoldSec` override MUST be able to tell "no pack, defer to the
+ *  operator's env default" apart from "a pack is pinned and its pacing
+ *  happens to be normal" — collapsing both to `"normal"` made the min-hold
+ *  override fire unconditionally and silently override `STOCK_MIN_HOLD_SEC`
+ *  even with no pack pinned at all. Pacing is a cadence hint, never a reason
+ *  for a render to stop. */
+export function pacingForProject(input: {
+  projectVisualContextJson: string | null;
+  brandRevisionRecipeJson: string | null;
+}): PacingLevel | null {
+  return resolvedStylePackSnapshot(input)?.pacing ?? null;
 }
