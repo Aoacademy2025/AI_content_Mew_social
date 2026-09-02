@@ -34,7 +34,7 @@ dotenv.config({ path: process.env.STYLE_PACK_CARDS_ENV || ".env", quiet: true })
  * no readable text, no logos — the treatment compiler adds the look. */
 const FIXED_SCENES: Record<StylePackId & string, string> = {
   "thai-ghost": "an old wooden Thai house at night, one lit window, thin fog, moonlight",
-  "thai-history": "a weathered old Thai temple wall with a faded mural, late afternoon light, aged paper texture",
+  "thai-history": "a weathered old Thai temple wall with a faded mural of gilded lotus flowers and kanok flame patterns, cracked aged plaster, late afternoon light, no figures, no people, no deities",
   "life-drama": "a quiet Thai street-side kitchen at dusk, one warm lamp, an empty chair, natural light",
   "finance-clear": "a clean modern desk with a laptop, a notebook and a coffee cup, bright daylight, minimal",
   "news-fast": "a city skyline at night with light trails on a highway, high contrast",
