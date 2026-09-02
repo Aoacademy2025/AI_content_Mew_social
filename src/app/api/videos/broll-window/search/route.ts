@@ -15,6 +15,7 @@ import {
   normalizeBrollVisualStyle,
   type BrollPreferenceInput,
 } from "@/lib/broll-preferences";
+import { parseStockMoodRequest } from "@/lib/style-pack-snapshot";
 import {
   searchWindowCandidatesWithDegrade,
   type WindowSearchOutcome,
@@ -81,7 +82,7 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json().catch(() => null)) as
-    | { keyword?: unknown; brollRegionPreference?: unknown; brollVisualStyle?: unknown }
+    | { keyword?: unknown; brollRegionPreference?: unknown; brollVisualStyle?: unknown; stockMood?: unknown }
     | null;
   const keyword = typeof body?.keyword === "string" ? body.keyword.trim().slice(0, 200) : "";
   if (!keyword) {
@@ -98,9 +99,20 @@ export async function POST(req: Request) {
   const pexelsKey = user.pexelsKey ? decryptKey(user.pexelsKey) : null;
   const pixabayKey = user.pixabayKey ? decryptKey(user.pixabayKey) : null;
 
+  // Unlike the render pipeline the editor client calls this route directly, so
+  // the Stock Mood it shows in Step 2 arrives in the body. Never trusted raw.
+  const stockMoodResult = parseStockMoodRequest(body?.stockMood);
+  if (!stockMoodResult.ok) {
+    return NextResponse.json(
+      { error: "invalid_stock_mood", message: "ข้อมูลสไตล์ฟุตเทจไม่ถูกต้อง" },
+      { status: 400 },
+    );
+  }
   const preference: BrollPreferenceInput = {
     brollRegionPreference: normalizeBrollRegionPreference(body?.brollRegionPreference),
-    brollVisualStyle: normalizeBrollVisualStyle(body?.brollVisualStyle),
+    // One style system (ADR 0057): the pack retires the legacy style outright.
+    brollVisualStyle: stockMoodResult.stockMood ? undefined : normalizeBrollVisualStyle(body?.brollVisualStyle),
+    stockMood: stockMoodResult.stockMood,
   };
   const styledKeyword = applyBrollPreferenceToSearchQuery(keyword, preference, { role: "primary" }) || keyword;
 

@@ -1,11 +1,23 @@
 import type { RelevanceSpec } from "@/lib/relevance-spec";
+import {
+  stylePackSnapshotFromJson,
+  type ResolvedStockMood,
+} from "@/lib/style-pack-snapshot";
+
+export type { ResolvedStockMood } from "@/lib/style-pack-snapshot";
 
 export type BrollRegionPreference = "auto" | "asian" | "thai" | "european" | "global" | "no-people";
 export type BrollVisualStyle = "auto" | "documentary" | "cinematic" | "business" | "lifestyle" | "tech" | "minimal" | "surreal";
 
 export type BrollPreferenceInput = {
   brollRegionPreference?: BrollRegionPreference | string | null;
+  /** Pre-Style-Pack Step-2 menu. Kept on the wire for drafts saved before wave
+   *  1; IGNORED entirely whenever a Stock Mood is present (ADR 0057: one style
+   *  system, never two vocabularies fighting over the same query). */
   brollVisualStyle?: BrollVisualStyle | string | null;
+  /** The pinned Style Pack's Stock Mood, snapshotted at publish time and
+   *  resolved server-side (`stockMoodForProject`). `null`/absent = no pack. */
+  stockMood?: ResolvedStockMood | null;
 };
 
 export const BROLL_REGION_OPTIONS: { value: BrollRegionPreference; label: string }[] = [
@@ -160,16 +172,35 @@ export function normalizeBrollVisualStyle(raw: unknown): Exclude<BrollVisualStyl
   return isVisualStyle(value) && value !== "auto" ? value : undefined;
 }
 
-/** Legacy stock-search styles are meaningful for stock and AutoMix footage.
- * Hero-only images get their identity from the pinned Brand/Project Visual
- * Context; sending both vocabularies lets the legacy style fight the selected
- * visual format in downstream prompts. */
-export function shouldSendLegacyBrollVisualStyle(source: unknown): boolean {
-  return source !== "kie-image";
+export function hasBrollPreference(input: BrollPreferenceInput): boolean {
+  return Boolean(
+    normalizeBrollRegionPreference(input.brollRegionPreference)
+    || effectiveStockMood(input)
+    || normalizeBrollVisualStyle(input.brollVisualStyle),
+  );
 }
 
-export function hasBrollPreference(input: BrollPreferenceInput): boolean {
-  return Boolean(normalizeBrollRegionPreference(input.brollRegionPreference) || normalizeBrollVisualStyle(input.brollVisualStyle));
+/** The mood, if the caller supplied one. A mood always wins over the legacy
+ *  style — every read of the style goes through `effectiveVisualStyle`. */
+function effectiveStockMood(input: BrollPreferenceInput): ResolvedStockMood | null {
+  return input.stockMood ?? null;
+}
+
+function effectiveVisualStyle(input: BrollPreferenceInput): Exclude<BrollVisualStyle, "auto"> | undefined {
+  return effectiveStockMood(input) ? undefined : normalizeBrollVisualStyle(input.brollVisualStyle);
+}
+
+/** The mood expressed in the same shape as a legacy style hint, so it lands on
+ *  exactly the wave-0 rails (prompt block, ranker spec, visual direction) with
+ *  no second code path to keep in sync. */
+function stockMoodHints(mood: ResolvedStockMood): PreferenceHints {
+  return {
+    instruction: mood.direction,
+    positive: mood.positive,
+    avoid: mood.avoid,
+    fallbackQueries: mood.fallbackQueries,
+    domainLabel: `${mood.queryToken} visual mood`,
+  };
 }
 
 function mergeUnique(...lists: Array<string[] | undefined>): string[] {
@@ -185,11 +216,13 @@ function mergeUnique(...lists: Array<string[] | undefined>): string[] {
 
 function collectPreferenceHints(input: BrollPreferenceInput): PreferenceHints | null {
   const region = normalizeBrollRegionPreference(input.brollRegionPreference);
-  const style = normalizeBrollVisualStyle(input.brollVisualStyle);
-  if (!region && !style) return null;
+  const mood = effectiveStockMood(input);
+  const style = effectiveVisualStyle(input);
+  if (!region && !mood && !style) return null;
 
   const regionHint = region ? REGION_HINTS[region] : null;
-  const styleHint = style ? STYLE_HINTS[style] : null;
+  // The mood occupies the style slot: same rails, one vocabulary.
+  const styleHint = mood ? stockMoodHints(mood) : style ? STYLE_HINTS[style] : null;
   return {
     instruction: [regionHint?.instruction, styleHint?.instruction].filter(Boolean).join(" "),
     positive: mergeUnique(regionHint?.positive, styleHint?.positive),
@@ -353,9 +386,12 @@ export function applyBrollPreferenceToSearchQuery(
     }
   }
 
-  const style = normalizeBrollVisualStyle(input.brollVisualStyle);
-  if (style && options.role === "primary") {
-    const token = STYLE_QUERY_TOKENS[style];
+  // One flavour token per primary query — the pinned pack's Stock Mood when the
+  // project has one, else the legacy Step-2 style. Never both.
+  const mood = effectiveStockMood(input);
+  const style = effectiveVisualStyle(input);
+  const token = mood ? mood.queryToken.trim().toLowerCase() : style ? STYLE_QUERY_TOKENS[style] : "";
+  if (token && options.role === "primary") {
     if (!hasConstraintAlias(out, [token])) out = `${out} ${token}`;
   }
   return out;
@@ -379,6 +415,28 @@ export function applyBrollPreferenceToSearchQueries(
  *  Empty for "no preference", which keeps every existing cache entry valid. */
 export function brollPreferenceCacheVariant(input: BrollPreferenceInput): string {
   const region = normalizeBrollRegionPreference(input.brollRegionPreference);
-  const style = normalizeBrollVisualStyle(input.brollVisualStyle);
-  return [region ? `r=${region}` : "", style ? `s=${style}` : ""].filter(Boolean).join(";");
+  const mood = effectiveStockMood(input);
+  const style = effectiveVisualStyle(input);
+  // "m=<packId>" REPLACES "s=<style>" when a pack is pinned: the two never
+  // co-exist in a query, so they must never co-exist in the cache key either.
+  const flavour = mood ? `m=${mood.packId}` : style ? `s=${style}` : "";
+  return [region ? `r=${region}` : "", flavour].filter(Boolean).join(";");
+}
+
+/** Resolve the Stock Mood one video job should search with, from immutable
+ *  JSON snapshots only (ADR 0005 — never re-resolved from the catalog).
+ *
+ *  Precedence: the per-clip pinned Project Visual Context wins over the Brand
+ *  Revision's recipe, because a creator who changed the pack for THIS clip has
+ *  already overruled the brand default. Neither carrying a pack = no mood, and
+ *  the whole pipeline behaves exactly as it did before wave 1. Every failure
+ *  mode (missing, unreadable, wrong-shaped JSON) returns `null`: a mood is a
+ *  flavour, never a reason for a render to stop. */
+export function stockMoodForProject(input: {
+  projectVisualContextJson: string | null;
+  brandRevisionRecipeJson: string | null;
+}): ResolvedStockMood | null {
+  const snapshot = stylePackSnapshotFromJson(input.projectVisualContextJson)
+    ?? stylePackSnapshotFromJson(input.brandRevisionRecipeJson);
+  return snapshot ? { packId: snapshot.id, ...snapshot.stockMood } : null;
 }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   appendBrollPreferenceToDirection,
@@ -6,8 +7,13 @@ import {
   augmentRelevanceSpecWithBrollPreference,
   brollPreferenceCacheVariant,
   brollPreferenceInstruction,
+  stockMoodForProject,
   PEOPLE_WORD_TEST_RE,
+  type ResolvedStockMood,
 } from "../src/lib/broll-preferences";
+import { parseStockMoodRequest } from "../src/lib/style-pack-snapshot";
+import { stylePack } from "../src/lib/style-pack-catalog";
+import { parseRevision, parseProjectVisualContext } from "../src/lib/project-visual-context";
 import type { RelevanceSpec } from "../src/lib/relevance-spec";
 
 let failures = 0;
@@ -213,5 +219,272 @@ check(
   assert.ok(spec!.positiveConcepts.slice(0, 12).includes("thailand"), "at least the first 4 positive hints must come first");
   console.log("PASS task-4 preference query/cache/ranker contract (node:assert)");
 }
+
+// ---------------------------------------------------------------------------
+// WAVE 1 TASK 4 (ADR 0057): the pinned Style Pack's Stock Mood rides the SAME
+// pipe the legacy Step-2 style used, and REPLACES it wherever both could speak
+// (query token, hints, direction, cache). Region guardrails are untouched: a
+// mood may never turn an object query into a people/place query.
+// ---------------------------------------------------------------------------
+{
+  const ghost = stylePack("thai-ghost");
+  const ghostMood: ResolvedStockMood = { packId: "thai-ghost", ...ghost.stockMood };
+  const historyMood: ResolvedStockMood = { packId: "thai-history", ...stylePack("thai-history").stockMood };
+
+  // (1) mood token reaches PRIMARY queries, never the widen/fallback ladder
+  assert.equal(
+    applyBrollPreferenceToSearchQuery("old house", { stockMood: ghostMood }, { role: "primary" }),
+    "old house night",
+  );
+  assert.equal(
+    applyBrollPreferenceToSearchQuery("old house", { stockMood: ghostMood }, { role: "fallback" }),
+    "old house",
+  );
+  assert.equal(
+    applyBrollPreferenceToSearchQuery("night market", { stockMood: ghostMood }, { role: "primary" }),
+    "night market",
+    "no duplicate mood token",
+  );
+
+  // (2) the mood REPLACES the legacy style everywhere both could speak
+  assert.equal(
+    applyBrollPreferenceToSearchQuery(
+      "old house",
+      { stockMood: ghostMood, brollVisualStyle: "cinematic" },
+      { role: "primary" },
+    ),
+    "old house night",
+    "legacy style must not survive next to a mood",
+  );
+  assert.equal(brollPreferenceCacheVariant({ stockMood: ghostMood, brollRegionPreference: "thai" }), "r=thai;m=thai-ghost");
+  assert.equal(brollPreferenceCacheVariant({ stockMood: ghostMood, brollVisualStyle: "cinematic" }), "m=thai-ghost");
+  assert.equal(brollPreferenceCacheVariant({ stockMood: null, brollVisualStyle: "cinematic" }), "s=cinematic");
+  assert.notEqual(
+    brollPreferenceCacheVariant({ stockMood: ghostMood }),
+    brollPreferenceCacheVariant({ stockMood: historyMood }),
+    "two packs must never share a managed-stock cache entry",
+  );
+  assert.equal(brollPreferenceInstruction({ stockMood: ghostMood, brollVisualStyle: "cinematic" }), ghost.stockMood.direction);
+
+  // (3) region still composes and still qualifies people/place queries ONLY
+  assert.equal(
+    applyBrollPreferenceToSearchQuery(
+      "office workers",
+      { stockMood: ghostMood, brollRegionPreference: "thai" },
+      { role: "primary" },
+    ),
+    "thai office workers night",
+  );
+  assert.equal(
+    applyBrollPreferenceToSearchQuery(
+      "growth chart",
+      { stockMood: ghostMood, brollRegionPreference: "thai" },
+      { role: "primary" },
+    ),
+    "growth chart night",
+    "a mood must never add the region qualifier to an object query",
+  );
+  assert.equal(
+    applyBrollPreferenceToSearchQuery(
+      "chef cooking",
+      { stockMood: ghostMood, brollRegionPreference: "no-people" },
+      { role: "primary" },
+    ),
+    "cooking no people night",
+    "no-people still strips the people word with a mood present",
+  );
+
+  // (4) hints: the mood's own vocabulary reaches the ranker and the direction
+  const moodSpec = augmentRelevanceSpecWithBrollPreference(null, { stockMood: ghostMood });
+  assert.ok(moodSpec, "a mood alone is a preference");
+  assert.ok(moodSpec!.positiveConcepts.includes("moonlight"), "mood positives reach the ranker");
+  assert.ok(moodSpec!.avoidConcepts.includes("bright daylight"), "mood avoids reach the ranker");
+  assert.ok(moodSpec!.safeFallbackQueries.includes("dark forest night"), "mood fallbacks reach the widen ladder");
+  const moodDirection = appendBrollPreferenceToDirection("x".repeat(300), { stockMood: ghostMood });
+  assert.ok(moodDirection.endsWith(ghost.stockMood.direction), "mood direction survives a long base");
+
+  // (5) no mood, no change: byte-identical passthrough
+  assert.equal(applyBrollPreferenceToSearchQuery("growth chart", { stockMood: null }), "growth chart");
+  assert.equal(brollPreferenceCacheVariant({ stockMood: null }), "");
+  assert.equal(augmentRelevanceSpecWithBrollPreference(passthroughSpec, { stockMood: null }), passthroughSpec);
+
+  console.log("PASS wave-1 task-4 stock mood pipe (node:assert)");
+}
+
+// ---------------------------------------------------------------------------
+// stockMoodForProject: the per-clip pinned context wins over the Brand
+// Revision's recipe; a recipe with no pack (a custom look) yields no mood.
+// ---------------------------------------------------------------------------
+{
+  const packSnapshot = (id: "thai-ghost" | "thai-history") => {
+    const pack = stylePack(id);
+    return {
+      id: pack.id,
+      version: pack.version,
+      stockMood: {
+        queryToken: pack.stockMood.queryToken,
+        positive: [...pack.stockMood.positive],
+        avoid: [...pack.stockMood.avoid],
+        direction: pack.stockMood.direction,
+        fallbackQueries: [...pack.stockMood.fallbackQueries],
+      },
+      pacing: pack.pacing,
+      musicMood: pack.musicMood,
+    };
+  };
+  const recipe = (stylePackValue: unknown) => JSON.stringify({
+    schemaVersion: 1,
+    visualFormatId: "cinematic-realism",
+    recipeVersion: "cinematic-realism@1",
+    brandVisualLanguage: null,
+    defaultTreatment: "clear",
+    treatmentPolicy: "adaptive",
+    lockedTreatmentPin: null,
+    ...(stylePackValue === undefined ? {} : { stylePack: stylePackValue }),
+  });
+  const context = (stylePackValue: unknown) => JSON.stringify({
+    schemaVersion: 2,
+    source: "brand-revision",
+    visualFormatId: "cinematic-realism",
+    recipeVersion: "cinematic-realism@1",
+    treatment: "สารคดีสืบสวน",
+    treatmentPin: { presetId: "investigative-news-crime", version: "v1.0.0", source: "adaptive" },
+    brandVisualLanguage: null,
+    ...(stylePackValue === undefined ? {} : { stylePack: stylePackValue }),
+  });
+
+  assert.equal(
+    stockMoodForProject({ projectVisualContextJson: null, brandRevisionRecipeJson: recipe(packSnapshot("thai-ghost")) })?.packId,
+    "thai-ghost",
+    "the Brand Revision's pack supplies the mood",
+  );
+  assert.equal(
+    stockMoodForProject({
+      projectVisualContextJson: context(packSnapshot("thai-history")),
+      brandRevisionRecipeJson: recipe(packSnapshot("thai-ghost")),
+    })?.packId,
+    "thai-history",
+    "the per-clip pinned context wins over the Brand Revision",
+  );
+  assert.equal(
+    stockMoodForProject({ projectVisualContextJson: context(undefined), brandRevisionRecipeJson: recipe(packSnapshot("thai-ghost")) })?.packId,
+    "thai-ghost",
+    "a context with no pack falls through to the Revision",
+  );
+  assert.equal(
+    stockMoodForProject({ projectVisualContextJson: null, brandRevisionRecipeJson: recipe(null) }),
+    null,
+    "a custom (no-pack) Revision has no mood",
+  );
+  assert.equal(
+    stockMoodForProject({ projectVisualContextJson: null, brandRevisionRecipeJson: recipe(undefined) }),
+    null,
+    "a pre-Style-Pack Revision has no mood",
+  );
+  assert.equal(
+    stockMoodForProject({ projectVisualContextJson: null, brandRevisionRecipeJson: "{not json" }),
+    null,
+    "unreadable JSON fails open to no mood",
+  );
+  assert.equal(
+    stockMoodForProject({ projectVisualContextJson: null, brandRevisionRecipeJson: null }),
+    null,
+  );
+  assert.deepEqual(
+    stockMoodForProject({ projectVisualContextJson: null, brandRevisionRecipeJson: recipe(packSnapshot("thai-ghost")) }),
+    { packId: "thai-ghost", ...stylePack("thai-ghost").stockMood },
+    "the mood is the SNAPSHOT, read out of the stored recipe",
+  );
+
+  // the schemas must carry the snapshot through (they are non-strict objects,
+  // so an unknown key would be stripped silently) and must still parse old JSON
+  assert.equal(parseRevision(recipe(packSnapshot("thai-ghost")))?.stylePack?.id, "thai-ghost");
+  assert.ok(parseRevision(recipe(undefined)), "a recipe with no stylePack still parses");
+  assert.equal(parseRevision(recipe(undefined))?.stylePack ?? null, null);
+  assert.equal(parseProjectVisualContext(context(packSnapshot("thai-ghost")))?.stylePack?.id, "thai-ghost");
+  assert.ok(parseProjectVisualContext(context(undefined)), "a context with no stylePack still parses");
+
+  console.log("PASS wave-1 task-4 stockMoodForProject precedence + schema passthrough (node:assert)");
+}
+
+// ---------------------------------------------------------------------------
+// Request validation: a Stock Mood arriving in a request body is never trusted
+// raw. Absent/null is a legitimate "no mood"; anything oversized is rejected.
+// ---------------------------------------------------------------------------
+{
+  const valid = { packId: "thai-ghost", ...stylePack("thai-ghost").stockMood };
+  assert.deepEqual(parseStockMoodRequest(valid), { ok: true, stockMood: valid });
+  assert.deepEqual(parseStockMoodRequest(undefined), { ok: true, stockMood: null });
+  assert.deepEqual(parseStockMoodRequest(null), { ok: true, stockMood: null });
+  assert.equal(parseStockMoodRequest({ ...valid, queryToken: "x".repeat(25) }).ok, false, "over-long token rejected");
+  assert.equal(parseStockMoodRequest({ ...valid, direction: "x".repeat(161) }).ok, false, "over-long direction rejected");
+  assert.equal(
+    parseStockMoodRequest({ ...valid, positive: Array.from({ length: 13 }, (_, i) => `p${i}`) }).ok,
+    false,
+    "too many positives rejected",
+  );
+  assert.equal(
+    parseStockMoodRequest({ ...valid, avoid: Array.from({ length: 9 }, (_, i) => `a${i}`) }).ok,
+    false,
+    "too many avoids rejected",
+  );
+  assert.equal(parseStockMoodRequest({ ...valid, fallbackQueries: ["a", "b"] }).ok, false, "wrong fallback count rejected");
+  assert.equal(parseStockMoodRequest({ ...valid, packId: "not-a-pack" }).ok, false, "unknown pack rejected");
+  assert.equal(parseStockMoodRequest("thai-ghost").ok, false, "a bare string is not a mood");
+
+  console.log("PASS wave-1 task-4 stock mood request validation (node:assert)");
+}
+
+// ---------------------------------------------------------------------------
+// The three routes that accept a Stock Mood must validate it before use and
+// answer 400 — never pass a raw body object into the preference pipe.
+// ---------------------------------------------------------------------------
+{
+  const routes = [
+    "src/app/api/videos/extract-keywords/route.ts",
+    "src/app/api/videos/fetch-stock/route.ts",
+    "src/app/api/videos/broll-window/search/route.ts",
+  ];
+  for (const route of routes) {
+    const source = readFileSync(new URL(`../${route}`, import.meta.url), "utf8");
+    check(`${route} validates stockMood with the shared parser`, source.includes("parseStockMoodRequest("));
+    check(`${route} answers 400 on an invalid stockMood`, /invalid_stock_mood/.test(source));
+    // ADR 0057: one style system. A pinned pack retires the legacy style for
+    // the WHOLE request — including the image-prompt paths that read the field
+    // directly instead of going through the preference pipe.
+    check(
+      `${route} retires the legacy style when a mood is present`,
+      /stockMoodResult\.stockMood \? undefined :/.test(source),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The Step-2 legacy style menu is gone: the editor no longer offers it and no
+// longer sends it. The server still ACCEPTS it for drafts saved before wave 1.
+// ---------------------------------------------------------------------------
+{
+  const step2 = readFileSync(new URL("../src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx", import.meta.url), "utf8");
+  check("Step 2 no longer renders the style menu", !step2.includes("BROLL_STYLE_OPTIONS"));
+  check("Step 2 keeps the region control", step2.includes("BROLL_REGION_OPTIONS"));
+  check("Step 2 shows the pinned pack read-only", step2.includes("สไตล์ฟุตเทจ:"));
+  check("Step 2 falls back to content-led copy", step2.includes("ตามเนื้อหา"));
+  const useJob = readFileSync(new URL("../src/app/(dashboard)/video-editor/_v2/useV2Job.ts", import.meta.url), "utf8");
+  check("useV2Job stops sending brollVisualStyle", !useJob.includes("brollVisualStyle"));
+
+  // The per-window search must reach the SAME pack Step 2 showed. Every hop is
+  // an OPTIONAL prop, so a missing link type-checks silently — assert the chain.
+  for (const [file, needle] of [
+    ["src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx", "p.setProjectStylePack("],
+    ["src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx", "projectStylePack: p.projectStylePack"],
+    ["src/app/(dashboard)/video-editor/_v2/PostPhase.tsx", "projectStylePack={projectStylePack}"],
+    ["src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx", "projectStylePack={projectStylePack}"],
+    ["src/app/(dashboard)/video-editor/_v2/BrollWindowInspector.tsx", "stockMood: projectStylePack.stockMood"],
+  ] as const) {
+    const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+    check(`${file} passes the pinned pack along`, source.includes(needle));
+  }
+}
+
 
 process.exit(failures ? 1 : 0);

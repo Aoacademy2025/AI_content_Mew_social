@@ -83,6 +83,7 @@ import {
   type ApplyQueryOptions,
   type BrollPreferenceInput,
 } from "@/lib/broll-preferences";
+import { parseStockMoodRequest } from "@/lib/style-pack-snapshot";
 import {
   kieCreateTask,
   kiePollResult,
@@ -1041,6 +1042,7 @@ export async function POST(req: Request) {
     relevanceSpec,
     brollRegionPreference,
     brollVisualStyle,
+    stockMood: stockMoodRaw,
     pipelineRunId,
     draftId,
   }: {
@@ -1069,13 +1071,29 @@ export async function POST(req: Request) {
     relevanceSpec?: RelevanceSpec | null;
     brollRegionPreference?: string;
     brollVisualStyle?: string;
+    stockMood?: unknown;
     pipelineRunId?: string;
     draftId?: string;
   } = body ?? {};
   // Hard ceiling on NEW paid AutoMix AI images for this request — current Visual
   // Beat assets are reused outside this count. Ignored unless it is a sane int 0–60.
   const maxAiImages = parseAutoMixReceiptImageCeiling(maxAiImagesRaw);
-  const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
+  // Resolved SERVER-side by the worker from the pinned Style Pack snapshot, but
+  // still an HTTP body — validated before it can reach a provider query, an LLM
+  // prompt, or the managed-stock cache key.
+  const stockMoodResult = parseStockMoodRequest(stockMoodRaw);
+  if (!stockMoodResult.ok) {
+    return NextResponse.json({ error: "invalid_stock_mood" }, { status: 400 });
+  }
+  const brollPreference: BrollPreferenceInput = {
+    brollRegionPreference,
+    // One style system (ADR 0057): a pinned Stock Mood retires the legacy style
+    // for this request ENTIRELY — including the Hero/AutoMix image prompts,
+    // which read this field directly instead of going through the pipe. A job
+    // created from a pre-wave-1 draft can carry both; the pack wins.
+    brollVisualStyle: stockMoodResult.stockMood ? undefined : brollVisualStyle,
+    stockMood: stockMoodResult.stockMood,
+  };
   // role "primary" = the queries the creator should see their style in; role
   // "fallback" = the widening/safety-net ladder that only runs when the
   // primaries came back empty, so the style token must NOT narrow it again.

@@ -437,6 +437,9 @@ export function EditorV2Shell() {
     // swap searches with the same qualifier the render used (F7 cause #3).
     brollRegionPreference: p.brollRegionPreference,
     brollVisualStyle: p.brollVisualStyle,
+    // The pinned Style Pack follows the project into the post-render editor so a
+    // per-window swap searches with the SAME footage style Step 2 reported.
+    projectStylePack: p.projectStylePack,
   };
   // jobs/route.ts sends the identical { error: "missing_voice_id" } shape for
   // ElevenLabs (no voiceId, :514) and OmniVoice/Hero Voice (no omniVoiceId, :493) —

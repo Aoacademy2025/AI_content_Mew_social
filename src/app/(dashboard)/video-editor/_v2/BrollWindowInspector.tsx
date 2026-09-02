@@ -33,6 +33,7 @@ import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { canMoveBrollBoundaryExactly } from "@/lib/broll-timeline-boundary";
 import { canGenerateHeroBrollFromSource } from "@/lib/broll-window-hero";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { ProjectStylePack } from "./project-style-pack";
 import type { PostPhaseEditor, WindowEditKind } from "./usePostPhaseEditor";
 import {
   clearPendingBrollSceneReroll,
@@ -265,6 +266,7 @@ export function BrollWindowInspector({
   starterImageAllowance,
   brollRegionPreference,
   brollVisualStyle,
+  projectStylePack,
 }: {
   ed: PostPhaseEditor;
   videoJobId: string | null;
@@ -274,6 +276,7 @@ export function BrollWindowInspector({
   starterImageAllowance?: StarterImageAllowance;
   brollRegionPreference?: BrollRegionPreference;
   brollVisualStyle?: BrollVisualStyle;
+  projectStylePack?: ProjectStylePack | null;
 }) {
   const isMobile = useIsMobile();
   const index = ed.selectedWindow;
@@ -489,7 +492,15 @@ export function BrollWindowInspector({
         headers: { "Content-Type": "application/json" },
         // The project's Step-2 choices qualify this search exactly as they do
         // the render pipeline's — otherwise a swapped window silently ignores them.
-        body: JSON.stringify({ keyword: kw, brollRegionPreference, brollVisualStyle }),
+        // The pinned Style Pack's Stock Mood is the SAME snapshot Step 2 shows
+        // read-only, so a swapped window is searched with the style the creator
+        // was promised; no pack = the pre-wave-1 body, unchanged.
+        body: JSON.stringify({
+          keyword: kw,
+          brollRegionPreference,
+          brollVisualStyle,
+          ...(projectStylePack ? { stockMood: projectStylePack.stockMood } : {}),
+        }),
       });
       const d = await res.json().catch(() => null);
       if (!res.ok) { setSearchError(d?.message ?? `ค้นหาไม่สำเร็จ (${res.status})`); return; }

@@ -39,6 +39,9 @@ export function buildKeywordsPayload(
     preferredLLM: null as string | null,
     ...(brollPreference?.brollRegionPreference ? { brollRegionPreference: brollPreference.brollRegionPreference } : {}),
     ...(brollPreference?.brollVisualStyle ? { brollVisualStyle: brollPreference.brollVisualStyle } : {}),
+    // Resolved server-side from the pinned Style Pack snapshot (ADR 0057). No
+    // pack = no key, so a pack-less project sends the pre-wave-1 body exactly.
+    ...(brollPreference?.stockMood ? { stockMood: brollPreference.stockMood } : {}),
   };
 }
 
@@ -73,6 +76,7 @@ export function buildStockPayload(
     ...(relevanceSpec ? { relevanceSpec } : {}),
     ...(brollPreference?.brollRegionPreference ? { brollRegionPreference: brollPreference.brollRegionPreference } : {}),
     ...(brollPreference?.brollVisualStyle ? { brollVisualStyle: brollPreference.brollVisualStyle } : {}),
+    ...(brollPreference?.stockMood ? { stockMood: brollPreference.stockMood } : {}),
     ...(scriptContext?.fullScript?.trim() ? { fullScript: scriptContext.fullScript.trim() } : {}),
   };
 }

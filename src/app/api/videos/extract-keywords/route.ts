@@ -26,6 +26,7 @@ import {
   type ApplyQueryOptions,
   type BrollPreferenceInput,
 } from "@/lib/broll-preferences";
+import { parseStockMoodRequest } from "@/lib/style-pack-snapshot";
 
 export const maxDuration = 300;
 export const runtime = "nodejs";
@@ -265,11 +266,27 @@ export async function POST(req: Request) {
     targetClipCount = 0,
     brollRegionPreference,
     brollVisualStyle,
+    stockMood: stockMoodRaw,
   } = body ?? {};
-  const brollPreference: BrollPreferenceInput = { brollRegionPreference, brollVisualStyle };
+  // The Stock Mood is resolved SERVER-side by the worker from the pinned Style
+  // Pack snapshot, but it still arrives over HTTP — validate it here so an
+  // oversized mood can never reach a provider query or an LLM prompt.
+  const stockMoodResult = parseStockMoodRequest(stockMoodRaw);
+  if (!stockMoodResult.ok) {
+    return NextResponse.json({ error: "invalid_stock_mood" }, { status: 400 });
+  }
+  const brollPreference: BrollPreferenceInput = {
+    brollRegionPreference,
+    // One style system (ADR 0057): the pack retires the legacy style outright.
+    brollVisualStyle: stockMoodResult.stockMood ? undefined : brollVisualStyle,
+    stockMood: stockMoodResult.stockMood,
+  };
   const preferenceBlock = brollPreferencePromptBlock(brollPreference);
   const preferenceRegion = normalizeBrollRegionPreference(brollRegionPreference);
-  const preferenceStyle = normalizeBrollVisualStyle(brollVisualStyle);
+  // A pinned Stock Mood replaces the legacy style outright, so the no-op log
+  // must not keep naming a style that had no effect on a single query.
+  const preferenceStyle = stockMoodResult.stockMood ? undefined : normalizeBrollVisualStyle(brollVisualStyle);
+  const preferencePackId = stockMoodResult.stockMood?.packId ?? null;
   // The region qualifier only fires on people/place queries by design, so a
   // script whose queries are all objects or abstractions gets "เน้นไทย" with
   // nothing visibly changing (F7 cause #4). Count what the region actually
@@ -302,7 +319,7 @@ export async function POST(req: Request) {
     if (preferenceNoopReported || !preferenceRegion || regionChangedAPrimaryQuery) return;
     preferenceNoopReported = true;
     console.log(
-      `[extract-keywords] preference-noop region=${preferenceRegion} style=${preferenceStyle ?? "auto"} queries=${primaryQueryCount}`,
+      `[extract-keywords] preference-noop region=${preferenceRegion} style=${preferenceStyle ?? "auto"} pack=${preferencePackId ?? "none"} queries=${primaryQueryCount}`,
     );
     // `userId` is authUser.id captured above — a hoisted function declaration
     // cannot see the null-narrowing of `authUser` from the guard at the top.
@@ -311,7 +328,7 @@ export async function POST(req: Request) {
       category: "quality",
       source: "server",
       status: preferenceRegion,
-      properties: { style: preferenceStyle ?? null, queryCount: primaryQueryCount },
+      properties: { style: preferenceStyle ?? null, packId: preferencePackId, queryCount: primaryQueryCount },
     }).catch(() => {});
   }
 

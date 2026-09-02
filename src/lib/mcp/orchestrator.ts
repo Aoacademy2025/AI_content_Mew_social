@@ -128,6 +128,7 @@ import {
 import { getVideoJobBillingReceipt } from "@/lib/mcp/billing-receipt";
 import { ensureUploadContentPreflight } from "@/lib/upload-content-preflight.server";
 import { sceneContentPolicyFromPreference, type SceneContentPolicy } from "@/lib/scene-content-policy";
+import { stockMoodForProject, type ResolvedStockMood } from "@/lib/broll-preferences";
 import { pinProjectVisualContextToVideoJob } from "@/lib/project-look.server";
 import {
   ContentPreflightError,
@@ -935,6 +936,32 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ กรุณาติดต่อทีมงานก่อนลองสร้างด้วย Hero Voice อีกครั้ง");
     }
     const provider = requestedProvider;
+    // ADR 0057: one style system drives every B-roll source. The pinned Style
+    // Pack's Stock Mood is read ONCE per job from immutable snapshots — the
+    // per-clip pinned Visual Context first, then the project's Brand Revision
+    // recipe — and never re-resolved from the catalog (ADR 0005). Both worker
+    // paths (script + upload) share this resolution, and every failure mode
+    // returns null: a mood is a flavour, never a reason for a render to stop.
+    let stockMoodResolution: Promise<ResolvedStockMood | null> | null = null;
+    const resolveStockMood = (): Promise<ResolvedStockMood | null> => {
+      stockMoodResolution ??= (async () => {
+        try {
+          const project = job.projectId
+            ? await prisma.editorProject.findFirst({
+                where: { id: job.projectId, userId },
+                select: { brandProfileRevision: { select: { visualRecipeJson: true } } },
+              })
+            : null;
+          return stockMoodForProject({
+            projectVisualContextJson: job.projectVisualContextJson,
+            brandRevisionRecipeJson: project?.brandProfileRevision?.visualRecipeJson ?? null,
+          });
+        } catch {
+          return null;
+        }
+      })();
+      return stockMoodResolution;
+    };
     let resumedHeroVoiceTts: HeroVoiceGenerationResult | null = null;
     let ttsStepAlreadyEntered = false;
 
@@ -1841,6 +1868,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               ...buildKeywordsPayload(upBrollUnits.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
                 brollRegionPreference: input.brollRegionPreference,
                 brollVisualStyle: input.brollVisualStyle,
+                stockMood: await resolveStockMood(),
               }),
               ...(upVisibleTargetCount > 0 ? { targetClipCount: upVisibleTargetCount } : {}),
             },
@@ -1867,6 +1895,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
                 brollRegionPreference: input.brollRegionPreference,
                 brollVisualStyle: input.brollVisualStyle,
+                stockMood: await resolveStockMood(),
               }, true, upAligned.windows, {
                 fullScript: upCaps.map((caption) => caption.text).join("\n"),
               }),
@@ -2366,6 +2395,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...buildKeywordsPayload(brollUnits.map((c) => c.text), input.script, durMs, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
+          stockMood: await resolveStockMood(),
         }),
         // v2 ขั้นสูง: จำนวนคลิปกำหนดเอง (extract-keywords รองรับ field นี้จาก web เดิมอยู่แล้ว)
         ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
@@ -2386,6 +2416,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
+          stockMood: await resolveStockMood(),
         }, aligned.windows.length > 0, aligned.windows, {
           fullScript: input.script,
         }),
