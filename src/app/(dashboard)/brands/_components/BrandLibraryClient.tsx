@@ -27,6 +27,11 @@ import { BrandList } from "./BrandList";
 import { BrandLookPreviewPanel } from "./BrandLookPreviewPanel";
 import { VisualFormatPicker } from "./VisualFormatPicker";
 import {
+  brandPreviewGenerateRequest,
+  brandPreviewQuoteBody,
+  type BrandPreviewSource,
+} from "./preview-request-body";
+import {
   DefinitivePreviewRequestError,
   browserStorage,
   postPreviewWithRecovery,
@@ -117,17 +122,20 @@ export function BrandLibraryClient() {
   );
   const allowance = me?.starterAiImageAllowance;
   const payload = useMemo(() => withSeedFallbacks(draft), [draft]);
-  const previewQuoteInput = useMemo(() => JSON.stringify({
-    payload,
+  const previewSource = useMemo<BrandPreviewSource>(() => ({
+    profileId: activeId,
     projectId: sourceProjectId,
     preflightId: sourcePreflightId,
-  }), [payload, sourceProjectId, sourcePreflightId]);
+  }), [activeId, sourceProjectId, sourcePreflightId]);
+  const previewQuoteInput = useMemo(
+    () => JSON.stringify(brandPreviewQuoteBody(previewSource, payload)),
+    [payload, previewSource],
+  );
 
+  // Every look is quoted by the server with the lineage its generate call will
+  // use. A saved profile promoted from a clip can reuse that clip's images, so
+  // guessing three here overstated the cost and could block a free preview.
   useEffect(() => {
-    if (!sourceProjectId) {
-      setPreviewGenerationCount(3);
-      return;
-    }
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setPreviewGenerationCount(null);
@@ -138,16 +146,18 @@ export function BrandLibraryClient() {
         signal: controller.signal,
       }).then(responseJson).then((value: { generationCount?: unknown }) => {
         const count = typeof value.generationCount === "number" ? value.generationCount : Number.NaN;
-        setPreviewGenerationCount(Number.isInteger(count) && count >= 0 && count <= 3 ? count : null);
+        // An unusable answer falls back to the worst case, never to a cheaper
+        // number than the creator could actually be charged.
+        setPreviewGenerationCount(Number.isInteger(count) && count >= 0 && count <= 3 ? count : 3);
       }).catch((error) => {
-        if ((error as Error).name !== "AbortError") setPreviewGenerationCount(null);
+        if ((error as Error).name !== "AbortError") setPreviewGenerationCount(3);
       });
     }, 250);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [previewQuoteInput, sourceProjectId]);
+  }, [previewQuoteInput]);
 
   async function load(preferredId?: string) {
     let [libraryData, meData] = await Promise.all([
@@ -598,17 +608,14 @@ export function BrandLibraryClient() {
       writePendingBrandPreviewOperation(storage, operation);
     }
     try {
-      let endpoint = "/api/brand-library/preview";
-      let body: Record<string, unknown> = { payload };
       if (activeId) {
         await responseJson(await fetch(`/api/brand-library/${activeId}/draft`, {
           method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ payload }),
         }));
-        endpoint = `/api/brand-library/${activeId}/preview`;
-        body = { useDraft: true, ...(sourceProjectId ? { projectId: sourceProjectId, preflightId: sourcePreflightId } : {}) };
-      } else if (sourceProjectId) {
-        body = { payload, projectId: sourceProjectId, preflightId: sourcePreflightId };
       }
+      // Built from the same lineage the quote priced, so the disclosed cost and
+      // the charge can never come from different inputs.
+      const { endpoint, body } = brandPreviewGenerateRequest(previewSource, payload);
       const value = await postPreviewWithRecovery(endpoint, body, requestId, setPreview);
       setPreview(value.batch);
       if (userId && storage) clearPendingBrandPreviewOperation(storage, userId, requestId);
