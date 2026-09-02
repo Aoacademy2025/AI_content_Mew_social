@@ -23,7 +23,7 @@ Charted 2026-09-02 from the `/brands` review (`docs/audits/2026-09-02-brands-rev
 | Order | Plan | Status |
 |---|---|---|
 | 0 | `2026-09-02-brands-wave0-make-it-work.md` — existing feature works as promised (quote truth, access, Step-2 preferences, copy, dead code, CI) | approved, execution deferred to next session |
-| 1 | `2026-09-02-brands-wave1-style-packs.md` — 7 packs, stock mood, pacing, music mood, editor pack picker, recommendation rebalance | executed 2026-09-03 on `mew/brands-wave1` (PR pending Mew review) |
+| 1 | `2026-09-02-brands-wave1-style-packs.md` — 7 packs, stock mood, pacing, music mood, editor pack picker, recommendation rebalance | executed 2026-09-03 on `mew/brands-wave1` (PR #434, pending Mew review) |
 | 2 | `2026-09-02-brands-wave2-new-treatments.md` — 5 new Treatment Presets + qualification benchmark + pack activation | drafted, approval pending (paid benchmark needs Mew's explicit go) |
 
 ## Not yet specified

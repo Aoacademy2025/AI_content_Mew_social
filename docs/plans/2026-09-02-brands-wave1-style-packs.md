@@ -344,7 +344,7 @@ export function stockMoodForProject(input: { projectVisualContextJson: string | 
 - Moving the region preference into the Brand Profile — revisit with telemetry.
 
 ## Status
-interviewed 2026-09-02 | approved: 2026-09-02 (Mew) | executed: 2026-09-03 (branch `mew/brands-wave1`, PR pending) | delivered: pending Mew review
+interviewed 2026-09-02 | approved: 2026-09-02 (Mew) | executed: 2026-09-03 (branch `mew/brands-wave1`, PR #434) | delivered: pending Mew review
 
 ### Execution record (2026-09-02 → 09-03)
 - Tasks 1–9 + 6b (CI harness registration) merged into `mew/brands-wave1`; every task passed a Tier-1 review (spec + quality) and, where needed, one scoped fix round. Ledger with all controller rulings R1–R31: `.superpowers/sdd/2026-09-02-brands-wave1-style-packs/progress.md` (git-ignored; summarised in the PR body).
