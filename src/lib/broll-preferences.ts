@@ -243,8 +243,14 @@ export function augmentRelevanceSpecWithBrollPreference(
   if (!hints) return spec;
   return {
     visualDomain: spec?.visualDomain || hints.domainLabel,
-    positiveConcepts: mergeUnique(spec?.positiveConcepts, hints.positive).slice(0, 24),
-    avoidConcepts: mergeUnique(spec?.avoidConcepts, hints.avoid).slice(0, 24),
+    // The ranker prompt only ever sees positiveConcepts.slice(0, 12) and
+    // avoidConcepts.slice(0, 8) (fetch-stock/route.ts), so appending the
+    // preference hints AFTER the model's own concepts sliced them straight back
+    // off again — the ranker never saw the preference at all (F7 cause #5).
+    // Lead with the strongest preference hints; the model's concepts keep the
+    // rest of the budget, and the remaining hints trail behind them.
+    positiveConcepts: mergeUnique(hints.positive.slice(0, 4), spec?.positiveConcepts, hints.positive).slice(0, 24),
+    avoidConcepts: mergeUnique(hints.avoid, spec?.avoidConcepts).slice(0, 24),
     safeFallbackQueries: mergeUnique(spec?.safeFallbackQueries, hints.fallbackQueries).slice(0, 14),
   };
 }
@@ -300,38 +306,79 @@ function hasConstraintAlias(query: string, aliases: string[]): boolean {
   return aliases.some((alias) => normalized.includes(` ${alias.toLowerCase()} `));
 }
 
-export function applyBrollPreferenceToSearchQuery(query: string, input: BrollPreferenceInput): string {
+/** One stock-search word per visual style — the ONE token that changes the
+ *  candidate pool on Pexels/Pixabay. Deliberately a single common word: stock
+ *  search engines match tags, so a phrase ("dramatic lighting shallow depth of
+ *  field") narrows a query to nothing while one tag word re-sorts the pool. */
+export const STYLE_QUERY_TOKENS: Record<Exclude<BrollVisualStyle, "auto">, string> = {
+  documentary: "documentary",
+  cinematic: "cinematic",
+  business: "business",
+  lifestyle: "lifestyle",
+  tech: "technology",
+  minimal: "minimal",
+  surreal: "surreal",
+};
+
+/** A PRIMARY query is one the creator should see their style in (the per-scene
+ *  query and its LLM alternatives). A FALLBACK query is a widening/safety net
+ *  that runs only because the primaries came back empty — narrowing it with the
+ *  style token would defeat the widening, so style is never applied there.
+ *  Region applies to BOTH: it is a correctness constraint, not a flavour. */
+export type ApplyQueryOptions = { role: "primary" | "fallback" };
+
+export function applyBrollPreferenceToSearchQuery(
+  query: string,
+  input: BrollPreferenceInput,
+  options: ApplyQueryOptions = { role: "primary" },
+): string {
   const clean = query.trim().replace(/\s+/g, " ").toLowerCase();
   if (!clean) return "";
 
+  let out = clean;
   const region = normalizeBrollRegionPreference(input.brollRegionPreference);
-  if (!region) return clean;
-
   if (region === "no-people") {
     const withoutPeople = clean.replace(PEOPLE_WORD_RE, "").replace(/\s+/g, " ").trim();
     const base = withoutPeople || clean;
-    return hasConstraintAlias(base, ["no people", "empty", "object", "objects", "hands", "workspace", "detail"])
+    out = hasConstraintAlias(base, ["no people", "empty", "object", "objects", "hands", "workspace", "detail"])
       ? base
       : `${base} no people`;
+  } else if (region) {
+    const constraint = REGION_SEARCH_CONSTRAINTS[region];
+    // Region is a qualifier for people/place shots — leave pure object, nature,
+    // and abstract queries untouched (e.g. "growth chart" must NOT become
+    // "asian growth chart", which returns photos of people on stock sites).
+    if (constraint && !hasConstraintAlias(clean, constraint.aliases) && mentionsPeopleOrPlace(clean)) {
+      out = `${constraint.required} ${clean}`;
+    }
   }
 
-  const constraint = REGION_SEARCH_CONSTRAINTS[region];
-  if (!constraint || hasConstraintAlias(clean, constraint.aliases)) return clean;
-  // Region is a qualifier for people/place shots — leave pure object, nature,
-  // and abstract queries untouched (e.g. "growth chart" must NOT become
-  // "asian growth chart", which returns photos of people on stock sites).
-  if (!mentionsPeopleOrPlace(clean)) return clean;
-  return `${constraint.required} ${clean}`;
+  const style = normalizeBrollVisualStyle(input.brollVisualStyle);
+  if (style && options.role === "primary") {
+    const token = STYLE_QUERY_TOKENS[style];
+    if (!hasConstraintAlias(out, [token])) out = `${out} ${token}`;
+  }
+  return out;
 }
 
 export function applyBrollPreferenceToSearchQueries(
   queries: string[],
   input: BrollPreferenceInput,
+  options: ApplyQueryOptions = { role: "primary" },
 ): string[] {
   const out: string[] = [];
   for (const query of queries) {
-    const preferred = applyBrollPreferenceToSearchQuery(query, input);
+    const preferred = applyBrollPreferenceToSearchQuery(query, input, options);
     if (preferred && !out.includes(preferred)) out.push(preferred);
   }
   return out;
+}
+
+/** Cache discriminator for the managed-stock 24h search cache: two different
+ *  preferences must never be served each other's cached answer (F7 cause #2).
+ *  Empty for "no preference", which keeps every existing cache entry valid. */
+export function brollPreferenceCacheVariant(input: BrollPreferenceInput): string {
+  const region = normalizeBrollRegionPreference(input.brollRegionPreference);
+  const style = normalizeBrollVisualStyle(input.brollVisualStyle);
+  return [region ? `r=${region}` : "", style ? `s=${style}` : ""].filter(Boolean).join(";");
 }

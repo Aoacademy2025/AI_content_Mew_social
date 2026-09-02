@@ -313,6 +313,9 @@ export type StockSearchCacheParams = {
   perPage: number;
   minDuration: number;
   page?: number;
+  /** B-roll preference discriminator (`brollPreferenceCacheVariant`) — two
+   *  different Step-2 preferences must never share one cached answer. */
+  variant?: string;
 };
 
 export async function readStockSearchCache<T>(

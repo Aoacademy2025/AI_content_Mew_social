@@ -1,7 +1,10 @@
+import assert from "node:assert/strict";
+
 import {
   appendBrollPreferenceToDirection,
   applyBrollPreferenceToSearchQuery,
   augmentRelevanceSpecWithBrollPreference,
+  brollPreferenceCacheVariant,
   brollPreferenceInstruction,
   PEOPLE_WORD_TEST_RE,
 } from "../src/lib/broll-preferences";
@@ -183,5 +186,32 @@ check(
   "no-people 'chef cooking' still strips the genuine people word",
   applyBrollPreferenceToSearchQuery("chef cooking", { brollRegionPreference: "no-people" }) === "cooking no people",
 );
+
+// ---------------------------------------------------------------------------
+// TASK 4 (F7): the Step-2 preferences must actually CHANGE results — style has
+// to reach the search query (primary queries only, never the widen/fallback
+// ladder), region + style must compose, the managed-stock cache must be keyed
+// by the preference, and the preference hints must survive the ranker's slice.
+// Uses node:assert so a regression names the exact broken contract.
+// ---------------------------------------------------------------------------
+{
+  // style token reaches PRIMARY queries, never FALLBACK queries
+  assert.equal(applyBrollPreferenceToSearchQuery("growth chart", { brollVisualStyle: "cinematic" }, { role: "primary" }), "growth chart cinematic");
+  assert.equal(applyBrollPreferenceToSearchQuery("growth chart", { brollVisualStyle: "cinematic" }, { role: "fallback" }), "growth chart");
+  assert.equal(applyBrollPreferenceToSearchQuery("cinematic city", { brollVisualStyle: "cinematic" }, { role: "primary" }), "cinematic city", "no duplicate token");
+  // region + style compose
+  assert.equal(applyBrollPreferenceToSearchQuery("office workers", { brollRegionPreference: "thai", brollVisualStyle: "documentary" }, { role: "primary" }), "thai office workers documentary");
+  // cache variant
+  assert.equal(brollPreferenceCacheVariant({}), "");
+  assert.equal(brollPreferenceCacheVariant({ brollRegionPreference: "thai", brollVisualStyle: "cinematic" }), "r=thai;s=cinematic");
+  // preference avoid terms survive the ranker slice(0, 8)
+  const spec = augmentRelevanceSpecWithBrollPreference(
+    { visualDomain: "x", positiveConcepts: Array.from({ length: 20 }, (_, i) => `p${i}`), avoidConcepts: Array.from({ length: 20 }, (_, i) => `a${i}`), safeFallbackQueries: [] },
+    { brollRegionPreference: "thai" },
+  );
+  assert.ok(spec!.avoidConcepts.slice(0, 8).includes("caucasian people"), "avoid hints must come first");
+  assert.ok(spec!.positiveConcepts.slice(0, 12).includes("thailand"), "at least the first 4 positive hints must come first");
+  console.log("PASS task-4 preference query/cache/ranker contract (node:assert)");
+}
 
 process.exit(failures ? 1 : 0);
