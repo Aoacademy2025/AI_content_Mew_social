@@ -158,6 +158,39 @@ async function main() {
     "the 90-day telemetry sweep retains durable exactly-once marker rows",
   );
 
+  // ── The orchestrator's cohort lookups may never fail a finished job ───────
+  // Both first-pass call sites run AFTER the job already transitioned to
+  // `done`. `resolveBrandVisualAccessByUserId` is a Prisma read, so a bare
+  // `(await resolveBrandVisualAccessByUserId(user)).cohort` written inside the
+  // argument object is evaluated BEFORE the recording promise exists — a
+  // transient DB failure throws past the `.catch()` and fails an export/
+  // re-render that already succeeded. Every lookup goes through one guarded
+  // chain instead.
+  const orchestratorSource = readFileSync("src/lib/mcp/orchestrator.ts", "utf8");
+  const cohortCallSites = orchestratorSource.match(/resolveBrandVisualAccessByUserId\(/g) ?? [];
+  assert.equal(cohortCallSites.length, 2,
+    "the orchestrator resolves the Brand Visual cohort at exactly the two first-pass telemetry call sites");
+  const guardedCohortLookups = orchestratorSource.match(
+    /resolveBrandVisualAccessByUserId\(user\)\s*\n\s*\.then\(\(access\) => access\.cohort\)\s*\n\s*\.catch\(\(\) => null\)/g,
+  ) ?? [];
+  assert.equal(guardedCohortLookups.length, cohortCallSites.length,
+    "every orchestrator cohort lookup resolves through the guarded .then/.catch(() => null) chain");
+
+  // One lookup per BATCH, not one per rejected scene.
+  const loopStart = orchestratorSource.indexOf("editsRes.map(async (edit)");
+  const loopEnd = orchestratorSource.indexOf("first-pass visual rejection telemetry failed");
+  assert.ok(loopStart > 0 && loopEnd > loopStart, "the per-scene rejection telemetry loop is still recognisable");
+  assert.ok(!orchestratorSource.slice(loopStart, loopEnd).includes("resolveBrandVisualAccessByUserId("),
+    "the per-scene rejection loop reuses one hoisted cohort instead of re-reading the entitlement per scene");
+
+  // The export block's own Prisma reads (window count + cohort) sit inside the
+  // guarded chain too — nothing in it can throw into the orchestrator.
+  assert.match(
+    orchestratorSource,
+    /await \(async \(\) => \{[\s\S]*?recordFirstPassVisualExport\(userId, \{[\s\S]*?\}\)\(\)\.catch\(/,
+    "the export telemetry block runs inside one .catch-guarded async chain",
+  );
+
   console.log("verify-first-pass-visual-acceptance-v1: PASS rejection paths, atomic export denominator, Admin/QA exclusion");
 }
 

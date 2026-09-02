@@ -435,6 +435,36 @@ check(
   assert.equal(parseStockMoodRequest({ ...valid, packId: "not-a-pack" }, route), null, "unknown pack ignored");
   assert.equal(parseStockMoodRequest("thai-ghost", route), null, "a bare string is not a mood");
 
+  // The fail-open warning echoes the claimed pack id ONLY when it is a real
+  // catalog id. A client controls that string: unsanitised, a newline in it
+  // forges a whole extra log line, and any other junk lands verbatim in the
+  // logs. Anything unrecognised must read as the literal "unknown".
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => { warnings.push(args.map((arg) => String(arg)).join(" ")); };
+  try {
+    assert.equal(
+      parseStockMoodRequest({ ...valid, packId: "thai-ghost\n[api/videos/fetch-stock] FORGED LINE" }, route),
+      null,
+      "a junk packId still fails open to no mood",
+    );
+    assert.equal(warnings.length, 1, "one warning per malformed mood");
+    assert.ok(!warnings[0].includes("\n"), "a newline in the claimed packId never reaches the warning text");
+    assert.ok(!warnings[0].includes("FORGED LINE"), "client-controlled junk never reaches the warning text");
+    assert.ok(warnings[0].includes("packId=unknown"), "an unrecognised packId logs as the literal \"unknown\"");
+
+    warnings.length = 0;
+    assert.equal(
+      parseStockMoodRequest({ ...valid, packId: "thai-ghost", queryToken: "x".repeat(25) }, route),
+      null,
+      "a real pack id with a malformed mood still fails open",
+    );
+    assert.equal(warnings.length, 1, "one warning per malformed mood");
+    assert.ok(warnings[0].includes("packId=thai-ghost"), "a RECOGNISED pack id is still echoed, so junk stays diagnosable");
+  } finally {
+    console.warn = originalWarn;
+  }
+
   console.log("PASS wave-1 task-4 stock mood request validation fails open (node:assert)");
 }
 
