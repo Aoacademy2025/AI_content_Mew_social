@@ -15,6 +15,10 @@ import {
   normalizeBrollVisualStyle,
   type BrollPreferenceInput,
 } from "@/lib/broll-preferences";
+import {
+  searchWindowCandidatesWithDegrade,
+  type WindowSearchOutcome,
+} from "@/lib/broll-window-search";
 
 // POST /api/videos/broll-window/search — Phase 2 "เปลี่ยนรูป" tab (Task 7).
 // Given the window's (editable) keyword, searches Pexels + Pixabay in parallel and
@@ -24,9 +28,11 @@ import {
 //
 // The project's Step-2 preferences ("คนและสถานที่" / "สไตล์ฟุตเทจสต็อก") qualify the
 // query here too — searching the raw keyword was why swapping a window ignored the
-// preferences entirely (F7 cause #3). If the qualified query finds nothing at all we
+// preferences entirely (F7 cause #3). If the qualified query GENUINELY finds nothing we
 // search the plain keyword once: the same degrade rule the render pipeline's fallback
 // queries use, on two FREE stock APIs — never a hidden retry of a paid generation.
+// A zero caused by every provider failing (outage, revoked or rate-limited key) is NOT
+// a genuine zero and must not widen — that would only double the failing calls.
 
 export const runtime = "nodejs";
 
@@ -98,7 +104,11 @@ export async function POST(req: Request) {
   };
   const styledKeyword = applyBrollPreferenceToSearchQuery(keyword, preference, { role: "primary" }) || keyword;
 
-  async function searchCandidates(query: string): Promise<Candidate[]> {
+  async function searchCandidates(query: string): Promise<WindowSearchOutcome<Candidate>> {
+    // Only a provider we actually hold a key for can succeed or fail; the other
+    // resolves [] without ever being asked.
+    const askedPexels = Boolean(pexelsKey);
+    const askedPixabay = Boolean(pixabayKey);
     const [pexelsRes, pixabayRes] = await Promise.allSettled([
       pexelsKey ? searchPexels(query, pexelsKey, MIN_DURATION_SEC, PER_PAGE) : Promise.resolve([] as PexelsVideo[]),
       pixabayKey ? searchPixabay(query, pixabayKey, MIN_DURATION_SEC, PER_PAGE) : Promise.resolve([] as PixabayVideo[]),
@@ -151,16 +161,27 @@ export async function POST(req: Request) {
       if (out.length >= MAX_CANDIDATES) break;
       if (pixabayCandidates[i]) out.push(pixabayCandidates[i]);
     }
-    return out.slice(0, MAX_CANDIDATES);
+    const asked = (askedPexels ? 1 : 0) + (askedPixabay ? 1 : 0);
+    const answered =
+      (askedPexels && pexelsRes.status === "fulfilled" ? 1 : 0)
+      + (askedPixabay && pixabayRes.status === "fulfilled" ? 1 : 0);
+    return {
+      candidates: out.slice(0, MAX_CANDIDATES),
+      allProvidersFailed: asked > 0 && answered === 0,
+    };
   }
 
-  let candidates = await searchCandidates(styledKeyword);
-  if (candidates.length === 0 && styledKeyword !== keyword) {
-    // Degrade, not retry: the qualified query found nothing, so widen back to
-    // exactly what the creator typed rather than showing them an empty tab.
-    console.log(`[broll-window/search] "${styledKeyword}" found 0 — degrading to the plain keyword`);
-    candidates = await searchCandidates(keyword);
-  }
+  // Degrade, not retry: a qualified query that genuinely found nothing widens
+  // back to exactly what the creator typed rather than showing an empty tab.
+  // An all-providers-failed zero keeps the existing behaviour — the warn above
+  // plus an empty list — without a second doomed round of calls.
+  const candidates = await searchWindowCandidatesWithDegrade<Candidate>({
+    styledQuery: styledKeyword,
+    plainKeyword: keyword,
+    search: searchCandidates,
+    onDegrade: (styled) =>
+      console.log(`[broll-window/search] "${styled}" found 0 — degrading to the plain keyword`),
+  });
 
   return NextResponse.json({ candidates });
 }

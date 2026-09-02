@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 
+import { searchWindowCandidatesWithDegrade } from "../src/lib/broll-window-search";
+
 const inspector = fs.readFileSync(
   "src/app/(dashboard)/video-editor/_v2/BrollWindowInspector.tsx",
   "utf8",
@@ -106,4 +108,93 @@ assert.doesNotMatch(pendingDialog, /แล้วเรนเดอร์ให�
 assert.match(editor, /editor_pending_broll_dialog_opened/u);
 assert.match(editor, /editor_pending_broll_action_selected/u);
 
-console.log("B-roll window management UI/render contract passed");
+// ── Per-window search degrade (Task 4 / F7, round-1 review fix) ─────────────
+// The "เปลี่ยนรูป" search runs the keyword qualified by the project's Step-2
+// preferences and widens back to the plain keyword when that finds nothing.
+// A zero caused by EVERY provider failing (outage, revoked or rate-limited key)
+// is not a genuine zero: widening there only doubles the failing calls and hides
+// the real cause from the creator. These count the actual searches performed.
+const windowSearchRoute = fs.readFileSync("src/app/api/videos/broll-window/search/route.ts", "utf8");
+assert.match(windowSearchRoute, /searchWindowCandidatesWithDegrade<Candidate>/u);
+// asked/answered: only a provider we hold a key for can succeed or fail.
+assert.match(windowSearchRoute, /allProvidersFailed: asked > 0 && answered === 0/u);
+// the outage-blind version of the rule must not come back
+assert.doesNotMatch(windowSearchRoute, /candidates\.length === 0 && styledKeyword !== keyword/u);
+assert.match(windowSearchRoute, /brollRegionPreference: normalizeBrollRegionPreference/u);
+
+type StubOutcome = { candidates: string[]; allProvidersFailed: boolean };
+function stubSearch(outcomes: Record<string, StubOutcome>) {
+  const calls: string[] = [];
+  const degraded: string[] = [];
+  return {
+    calls,
+    degraded,
+    search: async (query: string) => {
+      calls.push(query);
+      return outcomes[query] ?? { candidates: [], allProvidersFailed: false };
+    },
+    onDegrade: (query: string) => degraded.push(query),
+  };
+}
+
+async function verifyWindowSearchDegrade() {
+  const styled = "thai office workers cinematic";
+  const plain = "office workers";
+
+  // (a) every provider failed → the plain-keyword search must NOT fire
+  const outage = stubSearch({ [styled]: { candidates: [], allProvidersFailed: true } });
+  assert.deepEqual(
+    await searchWindowCandidatesWithDegrade({ styledQuery: styled, plainKeyword: plain, search: outage.search, onDegrade: outage.onDegrade }),
+    [],
+  );
+  assert.deepEqual(outage.calls, [styled], "a provider outage must never trigger the plain-keyword search");
+  assert.deepEqual(outage.degraded, [], "an outage is not a degrade");
+
+  // (b) genuine zero → exactly one widening search with the creator's keyword
+  const genuineZero = stubSearch({
+    [styled]: { candidates: [], allProvidersFailed: false },
+    [plain]: { candidates: ["clip-1"], allProvidersFailed: false },
+  });
+  assert.deepEqual(
+    await searchWindowCandidatesWithDegrade({ styledQuery: styled, plainKeyword: plain, search: genuineZero.search, onDegrade: genuineZero.onDegrade }),
+    ["clip-1"],
+  );
+  assert.deepEqual(genuineZero.calls, [styled, plain], "a genuine zero widens exactly once");
+  assert.deepEqual(genuineZero.degraded, [styled]);
+
+  // (c) the qualified query found footage → one search only
+  const hit = stubSearch({ [styled]: { candidates: ["clip-1"], allProvidersFailed: false } });
+  assert.deepEqual(
+    await searchWindowCandidatesWithDegrade({ styledQuery: styled, plainKeyword: plain, search: hit.search }),
+    ["clip-1"],
+  );
+  assert.deepEqual(hit.calls, [styled], "a successful styled query never searches twice");
+
+  // (d) no preference applied (styled === plain) → never a second search
+  const unqualified = stubSearch({ [plain]: { candidates: [], allProvidersFailed: false } });
+  assert.deepEqual(
+    await searchWindowCandidatesWithDegrade({ styledQuery: plain, plainKeyword: plain, search: unqualified.search }),
+    [],
+  );
+  assert.deepEqual(unqualified.calls, [plain], "an unqualified query is never searched twice");
+
+  // (e) the widening search failing returns an empty list — never a third call
+  const widenFails = stubSearch({
+    [styled]: { candidates: [], allProvidersFailed: false },
+    [plain]: { candidates: [], allProvidersFailed: true },
+  });
+  assert.deepEqual(
+    await searchWindowCandidatesWithDegrade({ styledQuery: styled, plainKeyword: plain, search: widenFails.search }),
+    [],
+  );
+  assert.deepEqual(widenFails.calls, [styled, plain], "the degrade never retries a third time");
+}
+
+verifyWindowSearchDegrade()
+  .then(() => {
+    console.log("B-roll window management UI/render contract passed");
+  })
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
