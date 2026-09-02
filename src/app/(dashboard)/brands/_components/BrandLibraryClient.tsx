@@ -443,10 +443,21 @@ export function BrandLibraryClient() {
     trackEvent("brand_profile_create_from_current_started", { path: "/brands" });
   }
 
+  /** ADR 0058: the shared unlink point every custom edit routes through — a
+   * pack-owned field written directly (bypassing `updateVisual`/`applyProposal`)
+   * is exactly how a half-pack would happen, so this stays the one place that
+   * decides whether an edit needs to unlink first. */
+  function clearStylePackIfLinked(payload: BrandPayload): BrandPayload {
+    return payload.visual.stylePackId
+      ? fromStylePackPayload(clearStylePack(toStylePackPayload(payload)))
+      : payload;
+  }
+
   /** ADR 0058: format, narrative-treatment policy/preset, palette and
    * personality are the axes a Style Pack resolves — editing any of them
-   * while a pack is selected unlinks it first (`clearStylePack`) so the draft
-   * never shows a pack tag next to a look the pack no longer fully describes. */
+   * while a pack is selected unlinks it first (`clearStylePackIfLinked`) so
+   * the draft never shows a pack tag next to a look the pack no longer fully
+   * describes. */
   function updateVisual<K extends keyof BrandPayload["visual"]>(key: K, value: BrandPayload["visual"][K]) {
     const definesBrandLanguage = key === "palette"
       || key === "personality"
@@ -457,9 +468,7 @@ export function BrandLibraryClient() {
       || key === "palette"
       || key === "personality";
     setDraft((current) => {
-      const base = unlinksPack && current.visual.stylePackId
-        ? fromStylePackPayload(clearStylePack(toStylePackPayload(current)))
-        : current;
+      const base = unlinksPack ? clearStylePackIfLinked(current) : current;
       return {
         ...base,
         visual: {
@@ -480,23 +489,31 @@ export function BrandLibraryClient() {
     if (!id) setAdvancedOpen(true);
   }
 
+  /** Applying the AI visual helper's proposal writes the same pack-owned axes
+   * `updateVisual` guards (format, palette, personality) — a selected pack
+   * must unlink here too, in the SAME `setDraft` as the proposal's fields, or
+   * a creator could tap a pack then "นำคำแนะนำมาใส่ในร่าง" and be left with a
+   * pack tag next to an AI-authored look the pack no longer describes. */
   function applyProposal(next: VisualProposal) {
     const palette = normalizeHexPalette(next.palette);
     if (!palette) {
       setNotice({ tone: "error", text: "AI ส่งสีมาไม่ใช่รูปแบบ HEX กรุณาขอคำแนะนำใหม่อีกครั้ง" });
       return;
     }
-    setDraft((current) => ({
-      ...current,
-      visual: {
-        ...current.visual,
-        primaryVisualFormatId: next.primaryVisualFormatId,
-        palette,
-        personality: next.personality,
-        visualNotes: next.visualNotes,
-        languageMode: "defined",
-      },
-    }));
+    setDraft((current) => {
+      const base = clearStylePackIfLinked(current);
+      return {
+        ...base,
+        visual: {
+          ...base.visual,
+          primaryVisualFormatId: next.primaryVisualFormatId,
+          palette,
+          personality: next.personality,
+          visualNotes: next.visualNotes,
+          languageMode: "defined",
+        },
+      };
+    });
     setProposal(null);
   }
 

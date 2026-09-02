@@ -57,6 +57,19 @@ assert.ok(
   "the default /brands surface renders StylePackPicker before AdvancedSettings",
 );
 
+// Fix-up: applying the AI visual-helper proposal writes the same pack-owned
+// axes (format/palette/personality) `updateVisual` guards — it must unlink a
+// selected Style Pack too, never leave a half-pack silently behind.
+const applyProposalBody = brandClient.slice(
+  brandClient.indexOf("function applyProposal"),
+  brandClient.indexOf("async function uploadBrandMark"),
+);
+assert.match(
+  applyProposalBody,
+  /clearStylePackIfLinked/,
+  "applying the AI look proposal unlinks a selected Style Pack before writing its fields",
+);
+
 const panel = readFileSync("src/app/(dashboard)/brands/_components/BrandLookPreviewPanel.tsx", "utf8");
 assert.match(panel, /ตั้งชื่อแบรนด์ก่อนจึงจะทดลองภาพได้/, "panel must explain the no-name disabled state");
 assert.match(panel, /data-testid="preview-disabled-reason"/);
