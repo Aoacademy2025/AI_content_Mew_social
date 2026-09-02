@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const directory = mkdtempSync(join(tmpdir(), "brand-look-preview-"));
-process.env.DATABASE_URL = `file:${join(directory, "test.db")}`;
-execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.env });
+import { createTempDatabase, seedProfilePromotedFromClip, seedUser } from "./_brand-preview-harness";
+
+createTempDatabase("brand-look-preview-");
 
 async function main() {
   const recoveryRouteSources = [
@@ -118,94 +117,9 @@ async function main() {
   const { admitBrandLookGeneration } = await import("../src/lib/brand-look-preview-admission.server");
   const { brandVisualIdentityKey, VISUAL_FORMATS } = await import("../src/lib/brand-visual-system");
   const { completeImageJob, createReservedImageJob, failAndRefundAiJob } = await import("../src/lib/ai-generation-jobs.server");
-  const user = await prisma.user.create({ data: { name: "Preview owner", email: "preview@example.test" } });
-  await prisma.creditBalance.create({ data: { userId: user.id, granted: 40, purchased: 0 } });
-  const payload = {
-    schemaVersion: 1 as const,
-    name: "Preview brand",
-    niche: "creator education",
-    audience: "Thai creators",
-    script: { styleId: null, tone: "direct", bannedWords: [], ctaStyle: "follow", language: "th" },
-    voice: { provider: "elevenlabs", voiceId: null },
-    subtitle: { presetId: null, config: {} },
-    brandMark: { assetId: null, enabled: false, position: "top-right", sizePct: 18, opacity: 0.9 },
-    visual: {
-      primaryVisualFormatId: "simple-editorial-story" as const,
-      palette: ["#111111", "#F8F5EE", "#38BDF8"],
-      personality: "bold handmade",
-      peopleAndSetting: "Thai creator contexts",
-      memorableCues: ["blue marker arrow"],
-      visualNotes: "rough lines",
-      defaultTreatment: "energetic",
-    },
-  };
-  const profile = await prisma.brandProfile.create({
-    data: { userId: user.id, name: payload.name, niche: payload.niche, audience: payload.audience, tone: payload.script.tone, activeRevisionNumber: 1 },
-  });
-  const revision = await prisma.brandProfileRevision.create({
-    data: {
-      brandProfileId: profile.id,
-      version: 1,
-      payloadJson: JSON.stringify(payload),
-      visualRecipeJson: JSON.stringify({ visualFormatId: "simple-editorial-story", recipeVersion: "simple-editorial-story-v7" }),
-    },
-  });
-  const previewIdentityKey = brandVisualIdentityKey({
-    visualFormatId: payload.visual.primaryVisualFormatId,
-    recipeVersion: "simple-editorial-story-v7",
-    treatment: payload.visual.defaultTreatment,
-    brandVisualLanguage: {
-      palette: payload.visual.palette,
-      personality: payload.visual.personality,
-      peopleAndSetting: payload.visual.peopleAndSetting,
-      memorableCues: payload.visual.memorableCues,
-      visualNotes: payload.visual.visualNotes,
-    },
-  });
-  const project = await prisma.editorProject.create({ data: { userId: user.id, title: "Existing video", brandProfileRevisionId: revision.id } });
-  const preflight = await prisma.contentPreflight.create({
-    data: {
-      userId: user.id,
-      projectId: project.id,
-      narrativeSourceKind: "creator-script",
-      sourceHash: "preview-source",
-      analyzerVersion: "brand-content-preflight-v1",
-      contentDomain: payload.niche,
-      suggestedVisualFormatId: "simple-editorial-story",
-      suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "bold" }),
-    },
-  });
-  await prisma.brandProfileRevision.update({
-    where: { id: revision.id },
-    data: { sourcePreflightId: preflight.id },
-  });
-  for (let index = 0; index < 3; index += 1) {
-    const imageJob = await prisma.aiGenerationJob.create({
-      data: {
-        userId: user.id,
-        kind: "image",
-        provider: "runpod",
-        model: "z-image-turbo",
-        status: "completed",
-        outputUrl: `/generated/existing-${index}.webp`,
-        inputJson: JSON.stringify({ brandVisualIdentityKey: previewIdentityKey }),
-        chargeState: "settled",
-      },
-    });
-    await prisma.projectVisualBeat.create({
-      data: {
-        userId: user.id,
-        projectId: project.id,
-        preflightId: preflight.id,
-        beatKey: `window-${index}`,
-        sequence: index,
-        sourceExcerptHash: `hash-${index}`,
-        beatJson: JSON.stringify({ subject: "creator", action: "explains", setting: "studio", emotion: "focused", emphasis: "one idea" }),
-        existingAssetUrl: `/generated/existing-${index}.webp`,
-        existingImageJobId: imageJob.id,
-      },
-    });
-  }
+  const user = await seedUser();
+  const { payload, profile, revision, previewIdentityKey, project, preflight } =
+    await seedProfilePromotedFromClip(user.id, "", { reusableImages: 3 });
   let generated = 0;
   assert.equal(await brandLookPreviewGenerationCount({
     userId: user.id,

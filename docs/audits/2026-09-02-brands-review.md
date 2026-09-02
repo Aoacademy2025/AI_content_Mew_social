@@ -75,28 +75,28 @@
 
 ระดับ: 🔴 กระทบเงินหรือบล็อกผู้ใช้ · 🟠 ผู้ใช้เห็นผิด/สับสน · 🟡 hygiene
 
-| ID | ระดับ | เรื่อง | ที่ | กระทบใคร | Wave |
-|---|---|---|---|---|---|
-| F1 | 🔴 | **ราคา Brand Look Preview บอกผิด**: client ตั้ง `previewGenerationCount = 3` ตายตัวเมื่อไม่มี `?projectId` แต่ server อาจ reuse ภาพจาก revision ที่ promote จากคลิป (`sourcePreflightId`/`sourceVideoJobId`) แล้วเจนน้อยกว่า → บอก 6 เครดิตทั้งที่หักน้อยกว่า และอาจโดน `fundingInsufficient` บล็อกทั้งที่ไม่ต้องจ่าย | `BrandLibraryClient.tsx:126-130`; `brand-look-preview.server.ts:398-429` | ทุกคนที่มีแบรนด์บันทึกแล้ว | 0 |
-| F2 | 🔴 | **quote กับ generate ใช้ input คนละชุด**: `preview-quote` รับ `{payload, projectId, preflightId}` ไม่มี `profileId/useDraft` ส่วน generate ยิง `[id]/preview` `{useDraft:true}` → ตัวเลขที่บอกกับที่หักได้ต่างกันโดยดีไซน์ | `BrandLibraryClient.tsx:120-124` vs `:607-608`; `preview-quote/route.ts` | เหมือน F1 | 0 |
-| F3 | 🔴 | **trial สร้างแบรนด์ไม่ได้ + first-clip redirect**: `canCreate = !starterAllowance.eligible && …` และ layout redirect คนบน First-Clip Path ไป `/video-editor` → ปุ่ม "+ สร้างแบรนด์จากคลิปนี้" เด้งกลับ | `api/brand-library/route.ts:120-121`; `brands/layout.tsx:11` | trial/ผู้ใช้ใหม่ทุกคน | 0 (ADR 0059) |
-| F4 | 🔴 | **หน้า `/brands` ปิดคน FREE + ตาม % rollout** ทั้งที่ plan-limits ให้ FREE 1 แบรนด์ | `brand-visual-rollout.server.ts:54-81`; `layout.tsx:12-16` | FREE 970 คน | 0 (ADR 0059) |
-| F5 | 🟠 | **Content Preflight สำเร็จ 63 %, invalid 9 %** (§3) — ต้อง root-cause (schema retry หมด? โมเดล? สคริปต์ยาว?) เพราะ render ที่ต้องใช้ภาพ AI จะหยุดก่อนคิดเงินตาม ADR 0010 แต่ผู้ใช้เห็นเป็น "ยังไม่สมบูรณ์ ลองใหม่" | `content-preflight.server.ts:871-936`; telemetry `brand_visual_preflight_invalid` | ผู้ใช้ภาพ AI | 0 (diagnose) |
-| F6 | 🟠 | **ปุ่ม "ทดลอง 3 ภาพ" disable เงียบ** เมื่อยังไม่ตั้งชื่อแบรนด์ (`!canPublish`) — อธิบายเฉพาะกรณีสิทธิ์ไม่พอ | `BrandLookPreviewPanel.tsx:70,82-89` | ผู้ใช้ใหม่ | 0 |
-| F7 | 🟠 | **Step 2 advanced ไม่มีผลที่เห็น** (5 สาเหตุ §4) | ดู §4 | ทุกคนที่ใช้ stock | 0 |
-| F8 | 🟠 | **AI แนะนำแนวเล่าเรื่องเอนไปทาง expert-clarity 74 %** และแนวภาพ clear-infographic 73 % — prompt ranking ไม่มี prior ต่อต้าน default และไม่มี fixture ตรวจ distribution | `content-preflight.server.ts:806-869` | ทุกคลิป AI | 1 |
-| F9 | 🟠 | **Copy หลุดชื่อระบบภาษาอังกฤษ**: "Brand Visual กำลังทยอยเปิด…", "Brand Visual เป็นฟีเจอร์สำหรับสมาชิก PRO/BUSINESS", "Hero AI Image และ Video Editor", eyebrow "Brand Visual" | `BrandVisualLockedPreview.tsx:30-51`; `brand-visual-access.server.ts:18-29` | ทุกคนที่โดน gate | 0 |
-| F10 | 🟠 | Copy "คลิปนี้ยังใช้**ก้างปลา**เล่าเรื่องรุ่นเดิม" — ชื่อ format ที่เลิกใช้แล้วโผล่ให้ลูกค้าเห็น | `BrandVisualSelector.tsx:527` | เจ้าของโปรเจกต์เก่า | 0 |
-| F11 | 🟡 | Dead code: `canRestoreAll` server hardcode `false` → client branch ตายทั้งก้อน | `api/brand-library/route.ts:123`; `BrandLibraryClient.tsx:157-165` | — | 0 |
-| F12 | 🟡 | Dead state `setSourceVisualContext` เขียน 6 ที่ ไม่เคยอ่าน | `BrandLibraryClient.tsx:109` | — | 0 |
-| F13 | 🟡 | `suggest-visual` บังคับโมเดลตอบ `peopleAndSetting`/`memorableCues` ที่ถูกทิ้งตาม ADR 0006 → จ่าย token ฟรี | `suggest-visual/route.ts:16-17,53`; `BrandLibraryClient.tsx:434-446` | ต้นทุน Gemini | 0 |
-| F14 | 🟡 | อีเมลเจ้าของ hardcode เป็น bypass ทุก gate (`PRODUCT_OWNER_EMAIL`) — ถอนไม่ได้โดยไม่ deploy | `brand-visual-rollout.server.ts:22,64` | security hygiene | 0 |
-| F15 | 🟡 | เอกสาร ops อ้าง "บัญชีที่สร้างก่อน `BRAND_VISUAL_ROLLOUT_STARTED_AT` เป็น control" แต่โค้ดไม่เคยเทียบ `createdAt` | `docs/ops/brand-visual-system-rollout.md:58-59` vs `rollout.server.ts:54-81` | ทีม ops | 0 (แก้เอกสาร) |
-| F16 | 🟡 | สอง write path ต่างขอบเขต caps บนคอลัมน์เดียวกันที่ถูกฉีดเข้า prompt Hero Script (`brand-profile-limits.ts` vs Zod ใน library) | `brand-profile-library.server.ts:100-105,890-904` | prompt cost | 0 |
-| F17 | 🟡 | verify script 3 ตัวไม่ได้ต่อ npm/CI (`verify-brand-library-support-features`, `verify-brand-asset-api`, `verify-brand-assets`) และ ESLint ไม่ครอบไฟล์ brand เลย (audit 08-18) | `package.json`; audit 08-18 §toolchain | regression risk | 0 |
-| F18 | 🟡 | `languageMode:"none"` ตั้งจาก UI ไม่ได้ (seed = defined, ทุก edit บังคับ defined) — field ตาย | `brand-profile-seed.ts:96`; `BrandLibraryClient.tsx:415-424` | — | 1 (ยุบเข้าชุดสไตล์) |
-| F19 | 🟡 | product brief สถานะเก่า "implementation: not started" ทั้งที่ ship แล้ว | `docs/plans/2026-08-09-brand-visual-system-product-brief.md:194-196` | ผู้อ่านเอกสาร | 0 |
-| F20 | 🟡 | ตาราง `Music` ไม่มี tag mood → ชุดสไตล์เลือกเพลงให้ไม่ได้ | `prisma/schema.prisma` Music | — | 1 |
+| ID | ระดับ | เรื่อง | ที่ | กระทบใคร | Wave | Disposition (wave 0, 2026-09-02) |
+|---|---|---|---|---|---|---|
+| F1 | 🔴 | **ราคา Brand Look Preview บอกผิด**: client ตั้ง `previewGenerationCount = 3` ตายตัวเมื่อไม่มี `?projectId` แต่ server อาจ reuse ภาพจาก revision ที่ promote จากคลิป (`sourcePreflightId`/`sourceVideoJobId`) แล้วเจนน้อยกว่า → บอก 6 เครดิตทั้งที่หักน้อยกว่า และอาจโดน `fundingInsufficient` บล็อกทั้งที่ไม่ต้องจ่าย | `BrandLibraryClient.tsx:126-130`; `brand-look-preview.server.ts:398-429` | ทุกคนที่มีแบรนด์บันทึกแล้ว | 0 | ✅ แก้แล้ว — Task 1 `e7536174`: quote ส่ง `profileId`/`useDraft` ชุดเดียวกับ generate, client ไม่ hard-code 3 อีก (ยกเว้น network error = worst case), verify `verify-brand-look-preview-quote` |
+| F2 | 🔴 | **quote กับ generate ใช้ input คนละชุด**: `preview-quote` รับ `{payload, projectId, preflightId}` ไม่มี `profileId/useDraft` ส่วน generate ยิง `[id]/preview` `{useDraft:true}` → ตัวเลขที่บอกกับที่หักได้ต่างกันโดยดีไซน์ | `BrandLibraryClient.tsx:120-124` vs `:607-608`; `preview-quote/route.ts` | เหมือน F1 | 0 | ✅ แก้แล้ว — `e7536174`: quote และ generate สร้าง body จาก lineage function เดียว (`preview-request-body.ts`) |
+| F3 | 🔴 | **trial สร้างแบรนด์ไม่ได้ + first-clip redirect**: `canCreate = !starterAllowance.eligible && …` และ layout redirect คนบน First-Clip Path ไป `/video-editor` → ปุ่ม "+ สร้างแบรนด์จากคลิปนี้" เด้งกลับ | `api/brand-library/route.ts:120-121`; `brands/layout.tsx:11` | trial/ผู้ใช้ใหม่ทุกคน | 0 (ADR 0059) | ✅ แก้แล้ว — Task 3 `da32b315`: ถอด layout redirect + starter-allowance block; `POST /api/brand-library` 201 ทุกแผน · ⚠️ pin เข้าโปรเจกต์ยังอยู่หลัง image guard (`a147c449`, ADR 0059 amendment: existing-pin acceptance จะปล่อยบัญชีไม่มีสิทธิ์เจนภาพ) |
+| F4 | 🔴 | **หน้า `/brands` ปิดคน FREE + ตาม % rollout** ทั้งที่ plan-limits ให้ FREE 1 แบรนด์ | `brand-visual-rollout.server.ts:54-81`; `layout.tsx:12-16` | FREE 970 คน | 0 (ADR 0059) | ✅ แก้แล้ว — `da32b315`: แยก library guard (auth + suspended + master switch) จาก image guard; `/brands` เปิดทุกแผน, locked preview เฉพาะ `feature_off`/`suspended` |
+| F5 | 🟠 | **Content Preflight สำเร็จ 63 %, invalid 9 %** (§3) — ต้อง root-cause (schema retry หมด? โมเดล? สคริปต์ยาว?) เพราะ render ที่ต้องใช้ภาพ AI จะหยุดก่อนคิดเงินตาม ADR 0010 แต่ผู้ใช้เห็นเป็น "ยังไม่สมบูรณ์ ลองใหม่" | `content-preflight.server.ts:871-936`; telemetry `brand_visual_preflight_invalid` | ผู้ใช้ภาพ AI | 0 (diagnose) | 🔍 วินิจฉัยแล้ว — Task 7 `0268ed44` (ดู §F5 disposition ท้ายเอกสาร) + fix `66f33df7`: body ว่างจาก provider จัดเป็น `empty_provider_response` (1 call แทน 3); 63 % เป็น metric artifact |
+| F6 | 🟠 | **ปุ่ม "ทดลอง 3 ภาพ" disable เงียบ** เมื่อยังไม่ตั้งชื่อแบรนด์ (`!canPublish`) — อธิบายเฉพาะกรณีสิทธิ์ไม่พอ | `BrandLookPreviewPanel.tsx:70,82-89` | ผู้ใช้ใหม่ | 0 | ✅ แก้แล้ว — Task 2 `63bb4725`: `preview-disabled-reason` อธิบายทุกกรณี (ยังไม่ตั้งชื่อ / กำลังคำนวณ / สิทธิ์ไม่พอ / ไม่มีสิทธิ์ภาพ AI) |
+| F7 | 🟠 | **Step 2 advanced ไม่มีผลที่เห็น** (5 สาเหตุ §4) | ดู §4 | ทุกคนที่ใช้ stock | 0 | ✅ แก้แล้ว — Task 4 `2309d2f9` + `f21a8065`: style token เข้า primary query, cache key มี variant, ranker คง hint, per-window search รับ preference; telemetry `broll_preference_noop` |
+| F8 | 🟠 | **AI แนะนำแนวเล่าเรื่องเอนไปทาง expert-clarity 74 %** และแนวภาพ clear-infographic 73 % — prompt ranking ไม่มี prior ต่อต้าน default และไม่มี fixture ตรวจ distribution | `content-preflight.server.ts:806-869` | ทุกคลิป AI | 1 | ⏭ wave 1 (ไม่แตะใน wave 0) |
+| F9 | 🟠 | **Copy หลุดชื่อระบบภาษาอังกฤษ**: "Brand Visual กำลังทยอยเปิด…", "Brand Visual เป็นฟีเจอร์สำหรับสมาชิก PRO/BUSINESS", "Hero AI Image และ Video Editor", eyebrow "Brand Visual" | `BrandVisualLockedPreview.tsx:30-51`; `brand-visual-access.server.ts:18-29` | ทุกคนที่โดน gate | 0 | ✅ แก้แล้ว — `da32b315`: copy gate/locked preview เป็นไทยล้วน, guard ใน `verify-brand-treatment-ui-v1` |
+| F10 | 🟠 | Copy "คลิปนี้ยังใช้**ก้างปลา**เล่าเรื่องรุ่นเดิม" — ชื่อ format ที่เลิกใช้แล้วโผล่ให้ลูกค้าเห็น | `BrandVisualSelector.tsx:527` | เจ้าของโปรเจกต์เก่า | 0 | ✅ แก้แล้ว — Task 5 `f764ab68` + `37de9305`: copy ที่ :527 และ label/description ของฟอร์แมตเลิกใช้ → "แนวภาพรุ่นเดิม"; guard ครอบ `brand-visual-system.ts` |
+| F11 | 🟡 | Dead code: `canRestoreAll` server hardcode `false` → client branch ตายทั้งก้อน | `api/brand-library/route.ts:123`; `BrandLibraryClient.tsx:157-165` | — | 0 | ✅ แก้แล้ว — `f764ab68`: ถอด `canRestoreAll` และ `creationRequiresResult` (ตายตั้งแต่ F3/F4) |
+| F12 | 🟡 | Dead state `setSourceVisualContext` เขียน 6 ที่ ไม่เคยอ่าน | `BrandLibraryClient.tsx:109` | — | 0 | ✅ แก้แล้ว — `f764ab68` |
+| F13 | 🟡 | `suggest-visual` บังคับโมเดลตอบ `peopleAndSetting`/`memorableCues` ที่ถูกทิ้งตาม ADR 0006 → จ่าย token ฟรี | `suggest-visual/route.ts:16-17,53`; `BrandLibraryClient.tsx:434-446` | ต้นทุน Gemini | 0 | ✅ แก้แล้ว — `f764ab68`: schema/prompt เหลือ 4 field |
+| F14 | 🟡 | อีเมลเจ้าของ hardcode เป็น bypass ทุก gate (`PRODUCT_OWNER_EMAIL`) — ถอนไม่ได้โดยไม่ deploy | `brand-visual-rollout.server.ts:22,64` | security hygiene | 0 | ✅ แก้แล้ว — `da32b315`: ถอด `PRODUCT_OWNER_EMAIL`; internal cohort = ADMIN + `BRAND_VISUAL_TEST_EMAILS` |
+| F15 | 🟡 | เอกสาร ops อ้าง "บัญชีที่สร้างก่อน `BRAND_VISUAL_ROLLOUT_STARTED_AT` เป็น control" แต่โค้ดไม่เคยเทียบ `createdAt` | `docs/ops/brand-visual-system-rollout.md:58-59` vs `rollout.server.ts:54-81` | ทีม ops | 0 (แก้เอกสาร) | ✅ แก้เอกสารแล้ว — `da32b315` / `a147c449` |
+| F16 | 🟡 | สอง write path ต่างขอบเขต caps บนคอลัมน์เดียวกันที่ถูกฉีดเข้า prompt Hero Script (`brand-profile-limits.ts` vs Zod ใน library) | `brand-profile-library.server.ts:100-105,890-904` | prompt cost | 0 | ✅ แก้แล้ว — `f764ab68` + `37de9305`: write schema ใช้ `BRAND_PROFILE_FIELD_LIMITS` (audience/tone 500→300, bannedWords 100→20); stored-read schema คง caps เดิม ⚠️ ตรวจข้อมูล prod ก่อน deploy (SQL ใน PR) |
+| F17 | 🟡 | verify script 3 ตัวไม่ได้ต่อ npm/CI (`verify-brand-library-support-features`, `verify-brand-asset-api`, `verify-brand-assets`) และ ESLint ไม่ครอบไฟล์ brand เลย (audit 08-18) | `package.json`; audit 08-18 §toolchain | regression risk | 0 | ✅ แก้แล้ว — Task 6 `099fb70e + 48510934`: `verify:brands-ci` + `lint:brands` ใน CI |
+| F18 | 🟡 | `languageMode:"none"` ตั้งจาก UI ไม่ได้ (seed = defined, ทุก edit บังคับ defined) — field ตาย | `brand-profile-seed.ts:96`; `BrandLibraryClient.tsx:415-424` | — | 1 (ยุบเข้าชุดสไตล์) | ⏭ wave 1 |
+| F19 | 🟡 | product brief สถานะเก่า "implementation: not started" ทั้งที่ ship แล้ว | `docs/plans/2026-08-09-brand-visual-system-product-brief.md:194-196` | ผู้อ่านเอกสาร | 0 | ✅ แก้แล้ว — `f764ab68` |
+| F20 | 🟡 | ตาราง `Music` ไม่มี tag mood → ชุดสไตล์เลือกเพลงให้ไม่ได้ | `prisma/schema.prisma` Music | — | 1 | ⏭ wave 1 |
 
 ---
 
@@ -167,3 +167,77 @@
 - แตะ subtitle timing (ADR 0056) — ชุดสไตล์เลือก *preset* ซับเท่านั้น
 - เอฟเฟกต์ motion ใหม่ (zoom punch/ตัดกระชาก) — fast-follow หลังเห็น telemetry wave 1
 - Character Identity Lock (ADR 0011 ยังเป็นอนาคต)
+
+---
+
+## F5 disposition — Content Preflight "สำเร็จ 63 % / invalid 9 %" (วินิจฉัย 2026-09-02, read-only prod)
+
+**คำตัดสิน:** ตัวเลข 63 % **ไม่ใช่บั๊ก แต่เป็นตัวชี้วัดที่นับผิดฐาน** (ตัวตั้งกับตัวหารมาจากคนละกลุ่มผู้ใช้) · ส่วน invalid 9 % **ส่วนใหญ่ถูกแก้ไปแล้ว** (สาเหตุอันดับ 1 คือชื่อเฉพาะรั่ว ซึ่ง #353 + v13–v15 ปิดไปเมื่อ 08-26/08-28) · เหลือ **บั๊กจริง 1 ข้อ** คือ *ผู้ให้บริการตอบกลับมาว่างเปล่า แล้วโค้ดตีความเป็น "JSON พัง"* → แก้แล้วในงานนี้ (ดู "การแก้")
+
+### F5.1 นับใหม่วันนี้ เทียบกับตัวเลขใน §3
+
+| ตัวชี้วัด (30 วัน) | §3 (audit) | นับใหม่ 2026-09-02 | หมายเหตุ |
+|---|---|---|---|
+| step2 (`editor_step2_reached`) | 952 | **794** (= ทั้งหมดตลอดอายุฟีเจอร์) | นิยามเดิมนับไม่ซ้ำอีกไม่ได้; ทุก definition ที่ลองแล้วไม่ได้ 952 |
+| preflight สำเร็จ (`brand_visual_preflight_resolved`) | 604 | **606** (analyzed 430 + cached 176) | ตรงกับ audit (โต 2 ระหว่างวัน) |
+| invalid (`brand_visual_preflight_invalid`) | 83 | **83** | ตรงเป๊ะ |
+| อัตราที่ audit สรุป | 63 % / 9 % | — | **ใช้ไม่ได้** ดู F5.2 |
+| อัตราที่ถูกต้อง (สำเร็จ/ครั้งที่วิเคราะห์จริง) | — | **430/513 = 83.8 %** ตลอดอายุ · **106/108 = 98.1 %** ตั้งแต่ v15 (28 ส.ค.) | invalid ต่อความพยายามวิเคราะห์ |
+
+### F5.2 ทำไม 63 % ถึงเป็นตัวเลขลวง — ตัวตั้งกับตัวหารเป็นคนละกลุ่ม
+
+| event | cohort ที่ยิงจริง | จำนวน |
+|---|---|---|
+| `editor_step2_reached` | `rollout-wait` 725 + `control` 69 · **internal/treatment-\* = 0** | 794 |
+| `brand_visual_preflight_resolved` | `internal` 395 · worker ไม่มี cohort (upload 123 + script 63) 186 · `rollout-wait` 25 | 606 |
+
+`Step2Elements.tsx` ยิง `editor_step2_reached` เฉพาะ cohort ที่ "วัดผลได้" ซึ่งวันนี้คือ rollout-wait/control — กลุ่มที่ `decideBrandVisualAccess` คืน `canUse:false` จึง **ยิง preflight ไม่ได้อยู่แล้ว** (route ตอบ `brandVisualLockedResponse` เว้นแต่โปรเจกต์มี pin เดิม) ส่วน 94 % ของ resolved มาจาก cohort `internal` และจาก worker ที่ไม่ยิง step-2 เลย → **หารกันไม่ได้โดยนิยาม**
+
+### F5.3 ช่องว่างเงียบ (952 vs 604+83) — แยกเป็น "ตามดีไซน์" กับ "บั๊ก"
+
+นับที่ระดับโปรเจกต์: 400 โปรเจกต์ที่มี `editor_step2_reached`
+
+| กลุ่ม | จำนวน | คำอธิบาย | ตัดสิน |
+|---|---|---|---|
+| มี VideoJob `stockSource ∈ (kie-image, auto-mix)` แต่ไม่มี ContentPreflight | **184** | เจ้าของอยู่นอก rollout → `ensureVideoJobContentPreflight` คืน `skipped: not-accepted` แล้วเรนเดอร์ด้วยเส้นทาง prompt เดิม | **ตามดีไซน์ของ rollout** (คือสิ่งที่ ADR 0059 / F4 เปิดให้ทุกแผน) |
+| งาน stock อย่างเดียว ไม่มี preflight | 164 | trigger ฝั่ง editor (`shouldLoadBrandVisualContext`) และ orchestrator (`needsAiVisualPlan`) ไม่แตะ stock-only | **ตามดีไซน์** |
+| ไม่เคยมี VideoJob เลย | 19 | เปิด Step 2 แล้วไม่เรนเดอร์ | **ตามดีไซน์** |
+| มี ContentPreflight | 33 | 19 ต้องใช้ภาพ AI + 14 เปิดแผงขั้นสูง | — |
+
+**ไม่พบ trigger ที่หายหรือ race:** งานที่ผู้ใช้อยู่ในเส้นทาง Brand Visual จริง (`projectVisualContextJson` ไม่ว่าง) และจบสถานะ `done` โดยไม่มี `contentPreflightId` = **0 งาน** → กติกาเงินของ ADR 0010 ("หยุดก่อนคิดเงินภาพ") ยังยืนอยู่ · งานที่ถูก preflight หยุดจริงตลอดอายุฟีเจอร์ = **14 งาน** (`CONTENT_PREFLIGHT_INVALID_ANALYSIS` 9 + `CONTENT_PREFLIGHT_NARRATIVE_MISMATCH` 5; ลูกค้า 9 / ทีม 5) และครั้งสุดท้ายของ INVALID_ANALYSIS คือ 08-27
+
+### F5.4 จำแนก 83 invalid events (จาก `properties.diagnostic` + เวลา + cohort)
+
+analyzer version: **v12 = 81 · v15 = 2** · cohort: **ทีม 78 / ลูกค้า 5** · ทุก event ใช้ครบ 3 attempts
+
+| # | คลาสความล้มเหลว (จากไม้สุดท้ายที่ตัดสิน) | events | % | อ่านว่าอะไร |
+|---|---|---|---|---|
+| 1 | `beats[].subject:custom` — ชื่อเฉพาะรั่วเข้า field ที่ส่งให้ผู้ให้บริการ | **39** | 47 % | ปัญหา v12 ที่ #353 (08-26) + v13–v15 ปิดไปแล้ว: ก่อน 08-26 มี 44 event หลัง 08-26 เหลือ **2** |
+| 2 | **`empty_provider_response`** — โมเดลตอบกลับมา **ว่างเปล่า (len=0) ครบทั้ง 3 ครั้ง** | **32** | 39 % | บั๊กจริง (F5.5) · 24 ครั้งเป็น burst วันเดียว 08-27, ยัง reproduce ได้ 09-01 |
+| 3 | `storyEntities[].renderingDescription:custom` | 5 | 6 % | ตระกูลเดียวกับ #1 |
+| 4 | `beats[].entityRefs[]:custom` (อ้าง entity ที่ไม่มี / real-person) | 3 | 4 % | 3 ใน 5 ของ event ฝั่งลูกค้าอยู่กลุ่มนี้ (08-26) |
+| 5 | `hardSceneFacts.{actions,essentialObjects,count}:too_big` | 4 | 5 % | เพดานความยาว/จำนวน ยังชนบ้าง |
+| — | `beat_count` ไม่ตรงจำนวนหน้าต่าง | ปนใน 3 event | — | ไม่เคยเป็นสาเหตุเดี่ยว |
+
+ความถี่ path ระดับ attempt: `beats[].subject:custom` 232 · `renderingDescription:custom` 22 · `hardSceneFacts.actions[]:too_big` 17 · `entityRefs[]:custom` 11 · `entityTypes[]:too_big` 8 · อื่น ๆ ≤4
+
+### F5.5 บั๊กที่พิสูจน์ได้ + การแก้
+
+**หลักฐาน:** attempt ที่ถูกบันทึกว่า `json_parse` มี **96 ครั้ง และทั้ง 96 ครั้ง `len=0`** — ไม่เคยมีสักครั้งที่เป็น JSON เพี้ยนจริง ๆ · เมื่อได้ body ว่าง ครั้งถัดไปก็ว่างทุกครั้ง (**0 จาก 64**) · โค้ดกลับส่ง correction prompt ว่า *"Your previous JSON was rejected because it could not be parsed"* ซึ่งเป็นการบรรยายคำตอบที่โมเดลไม่เคยส่ง แล้วเผาอีก 2 calls ที่รู้ผลอยู่แล้ว · ซ้ำร้าย `diagnostic` ถูกตัดที่ 1,200 ตัวอักษรแบบรวม ทำให้ **attempt สุดท้ายหายไปใน 29 จาก 83 event** และ telemetry ไม่มี field ที่ระบุคลาสความล้มเหลว (ต้อง parse ข้อความเอง)
+
+**แก้ (คงความหมาย ADR 0010 ทุกข้อ):** `src/lib/content-preflight.server.ts`
+
+1. body ว่าง = คลาสของตัวเอง `empty_provider_response` → **หยุดทันที** (ไม่มีอะไรให้แก้) — *ลด* จำนวน call ไม่ใช่เพิ่ม, ไม่มี fallback, ไม่มีการคิดเงินภาพ, ผู้ใช้ยังได้ปุ่มลองใหม่ครั้งเดียวเหมือนเดิม
+2. `brand_visual_preflight_invalid` เพิ่ม `reason` = `empty_provider_response | unparsable_json | beat_count_mismatch | schema_invalid` → query จำแนกได้ตรง ๆ
+3. ตัด `diagnostic` **ต่อ attempt** (380 ตัวอักษร) แทนการตัดรวม → attempt สุดท้ายไม่หายอีก
+4. ข้อความให้ผู้ใช้ของคลาสนี้แยกเป็น "ระบบวิเคราะห์แนวภาพไม่ได้รับผลลัพธ์กลับมา กรุณาลองใหม่อีกครั้ง" (ของเดิมพูดว่า "หลังลองแก้อัตโนมัติ" ซึ่งไม่จริงสำหรับคลาสนี้)
+
+fixture: `scripts/verify-content-preflight.ts` — body ว่าง (`""` และช่องว่างล้วน) ต้องเรียกผู้ให้บริการ **1 ครั้ง**, ล้มแบบ fail-closed, และทิ้ง `"reason":"empty_provider_response"` ไว้ใน telemetry
+
+### F5.6 งานต่อ (ticket ที่ควรเปิด)
+
+| # | เรื่อง | ทำไม | Wave |
+|---|---|---|---|
+| T1 | เลิกใช้ "step2 → preflight" เป็น funnel · วัด **สำเร็จ/ความพยายามวิเคราะห์** และแยกตาม cohort ที่ใช้ได้จริง (`brand-visual-rollout-health.server.ts`) | ตัวเลข 63 % หลอกทั้ง audit นี้ | 0 (เอกสาร) / 1 (โค้ด) |
+| T2 | ให้ `geminiGenerateText` ส่ง `finishReason` ออกมาเมื่อ body ว่าง เพื่อแยก safety-block กับ token-cap | ตอนนี้ระบุสาเหตุฝั่งผู้ให้บริการไม่ได้เลย; แตะ 14 call sites จึงเกินขอบเขต wave 0 | 1 |
+| T3 | วัดซ้ำ 7 วันหลัง deploy ด้วย `json_extract(properties,'$.reason')` — คาด `empty_provider_response` เป็นคลาสนำ ส่วน `subject:custom` ควรใกล้ 0 | ยืนยันว่า v15 ปิดตระกูลชื่อเฉพาะได้จริง | 0 (ops) |

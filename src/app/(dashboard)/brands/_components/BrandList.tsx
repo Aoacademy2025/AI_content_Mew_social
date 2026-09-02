@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import { LockKeyhole, Plus, Trash2, WandSparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -12,7 +11,6 @@ export function BrandList({
   profiles,
   cap,
   canCreate,
-  creationRequiresResult,
   activeId,
   busy,
   onOpen,
@@ -23,7 +21,6 @@ export function BrandList({
   profiles: BrandProfile[];
   cap: number | null;
   canCreate: boolean;
-  creationRequiresResult: boolean;
   activeId: string | null;
   busy: boolean;
   onOpen: (profile: BrandProfile) => void;
@@ -49,36 +46,27 @@ export function BrandList({
         </span>
       </div>
 
-      {creationRequiresResult ? (
-        <Button asChild variant="outline" className="mb-3 h-auto min-h-11 w-full whitespace-normal py-2.5 text-xs lg:min-h-0">
-          <Link href="/video-editor">
-            <WandSparkles className="h-4 w-4 shrink-0" />
-            สร้างคลิปแรก แล้วบันทึกแนวภาพจากผลงานจริง
-          </Link>
+      <div className="mb-3 space-y-2">
+        <Button
+          type="button"
+          onClick={onStartNew}
+          disabled={!canCreate || busy}
+          className="h-auto min-h-11 w-full whitespace-normal bg-violet-600 text-white hover:bg-violet-600/90 lg:h-10 lg:min-h-0"
+        >
+          <Plus className="h-4 w-4" />
+          สร้างแบรนด์ใหม่
         </Button>
-      ) : (
-        <div className="mb-3 space-y-2">
-          <Button
-            type="button"
-            onClick={onStartNew}
-            disabled={!canCreate || busy}
-            className="h-auto min-h-11 w-full whitespace-normal bg-violet-600 text-white hover:bg-violet-600/90 lg:h-10 lg:min-h-0"
-          >
-            <Plus className="h-4 w-4" />
-            สร้างแบรนด์ใหม่
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onStartFromCurrentDefaults}
-            disabled={!canCreate || busy}
-            className="h-auto min-h-11 w-full whitespace-normal text-xs lg:h-10 lg:min-h-0"
-          >
-            <WandSparkles className="h-4 w-4" />
-            สร้างแบรนด์จากค่าที่ใช้อยู่
-          </Button>
-        </div>
-      )}
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onStartFromCurrentDefaults}
+          disabled={!canCreate || busy}
+          className="h-auto min-h-11 w-full whitespace-normal text-xs lg:h-10 lg:min-h-0"
+        >
+          <WandSparkles className="h-4 w-4" />
+          สร้างแบรนด์จากค่าที่ใช้อยู่
+        </Button>
+      </div>
 
       <div className="space-y-1">
         {profiles.map((profile) => {

@@ -589,4 +589,4 @@ In `.github/workflows/ci.yml` add two steps after the existing verify steps:
 - Repo-wide ESLint cleanup (count reported, not fixed).
 
 ## Status
-interviewed 2026-09-02 | approved: 2026-09-02 (Mew: "approve แต่ execute จะไปทำ session หน้า") | executed: deferred — run `/mew-kickoff execute docs/plans/2026-09-02-brands-wave0-make-it-work.md` | delivered: -
+interviewed 2026-09-02 | approved: 2026-09-02 (Mew: "approve แต่ execute จะไปทำ session หน้า") | executed: 2026-09-02 (7 tasks + final fix wave on `mew/brands-wave0`, final gate green at `7402533f`: all brand suites, `lint:brands`, `tsc`, prod-style build) | delivered: PR #429 (https://github.com/Aoacademy2025/AI_content_Mew_social/pull/429) opened 2026-09-02 — merge + deploy = Mew

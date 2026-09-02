@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
-import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
+import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
+import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 import {
   BrandProfileLibraryError,
   brandProfilePayloadSchema,
@@ -18,7 +19,6 @@ import {
 import { currentBrandVoiceDefaults } from "@/lib/brand-profile-seed";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
-import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { TREATMENT_PRESETS } from "@/lib/brand-treatment-catalog";
 import { visualFormatPreviewUrl } from "@/lib/brand-visual-format-preview";
 
@@ -49,10 +49,10 @@ function profileError(error: unknown) {
 
 export async function GET() {
   try {
-    const auth = await requireBrandVisualUser();
+    const auth = await requireBrandLibraryUser();
     if (!auth.ok) return auth.response;
     const availability = await getBrandProfileAvailabilityState({ userId: auth.user.id });
-    const [profiles, brandPreference, subtitlePresets, writingStyle, brandAssets, starterAllowance] = await Promise.all([
+    const [profiles, brandPreference, subtitlePresets, writingStyle, brandAssets] = await Promise.all([
       prisma.brandProfile.findMany({
         where: { userId: auth.user.id, activeRevisionNumber: { gt: 0 }, archivedAt: null },
         orderBy: [{ frozenAt: "asc" }, { lastUsedAt: "desc" }, { updatedAt: "desc" }],
@@ -78,7 +78,6 @@ export async function GET() {
         orderBy: { updatedAt: "desc" },
         select: { id: true, originalName: true },
       }),
-      getStarterAiImageAllowanceStatus(auth.user.id),
     ]);
     const subtitlePreset = subtitlePresets[0];
     const cap = availability.cap;
@@ -117,10 +116,10 @@ export async function GET() {
         })),
       })),
       cap: Number.isFinite(cap) ? cap : null,
-      canCreate: !starterAllowance.eligible && (!Number.isFinite(cap) || profiles.length < cap),
-      creationRequiresResult: starterAllowance.eligible,
+      canCreate: !Number.isFinite(cap) || profiles.length < cap,
+      // ADR 0059: the page never closes on entitlement — the image buttons do.
+      imageAccess: { canUse: auth.access.canUse, reason: auth.access.reason, upgradeUrl: "/pricing" },
       availabilitySelectionRequired,
-      canRestoreAll: false,
       visualFormats: VISUAL_FORMATS.map((format) => ({
         ...format,
         previewUrl: visualFormatPreviewUrl(format.id),
@@ -136,11 +135,16 @@ export async function GET() {
       })),
       brandAssets: brandAssets.map((asset) => ({ id: asset.id, name: asset.originalName })),
       defaults: {
+        // This seed is copied verbatim into a create request by
+        // "สร้างแบรนด์จากค่าที่ใช้อยู่", so every field must already satisfy the
+        // creator-write caps — a longer Writing Style prompt would otherwise
+        // hand the creator a draft their own first save rejects with a 400.
         script: {
           styleId: writingStyle?.id ?? null,
-          tone: writingStyle?.instructionPrompt.slice(0, 500) || "ชัดเจน เป็นกันเอง และมีพลัง",
-          analysisNotes: writingStyle?.instructionPrompt.slice(0, 4_000) ?? null,
-          sampleText: writingStyle?.sampleText?.slice(0, 4_000) ?? null,
+          tone: writingStyle?.instructionPrompt.slice(0, BRAND_PROFILE_CAPS.shortFieldChars)
+            || "ชัดเจน เป็นกันเอง และมีพลัง",
+          analysisNotes: writingStyle?.instructionPrompt.slice(0, BRAND_PROFILE_CAPS.longFieldChars) ?? null,
+          sampleText: writingStyle?.sampleText?.slice(0, BRAND_PROFILE_CAPS.longFieldChars) ?? null,
         },
         voice: currentBrandVoiceDefaults(auth.user),
         subtitle: {
@@ -165,15 +169,8 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
-    const auth = await requireBrandVisualUser();
+    const auth = await requireBrandLibraryUser();
     if (!auth.ok) return auth.response;
-    const starterAllowance = await getStarterAiImageAllowanceStatus(auth.user.id);
-    if (starterAllowance.eligible) {
-      return NextResponse.json({
-        code: "RESULT_REQUIRED",
-        error: "สร้างคลิปให้เสร็จก่อน แล้วบันทึกแนวภาพจากผลงานจริงเป็นแบรนด์",
-      }, { status: 409 });
-    }
     const body = await req.json().catch(() => null);
     const parsed = brandProfilePayloadSchema.safeParse(body?.payload ?? body);
     if (!parsed.success) {

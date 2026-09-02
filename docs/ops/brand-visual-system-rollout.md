@@ -10,7 +10,9 @@ Status: Release hardening verified locally; preserve current paid-public access 
 - Conversion Trial accounts receive one shared Hero AI Image allowance of eight
   successfully delivered images during their seven-day Trial, once per protected
   identity. It never renews every 30 days and failed delivery restores allowance.
-  FREE accounts outside an active Conversion Trial see the locked preview.
+  FREE accounts outside an active Conversion Trial see the locked copy on the
+  AI-image actions and on pinning a Brand Profile to a project; creating and
+  editing Brand Profiles stays open to them (ADR 0059).
 - Reused current Visual Beats cost 0. A script or look edit never starts a job;
   new/outdated beats are charged only after an explicit render or reroll.
 - Each initial AI B-roll window receives one generated candidate. There is no
@@ -54,16 +56,26 @@ BRAND_VISUAL_TEST_EMAILS=
 
 - `BRAND_VISUAL_SYSTEM_ENABLED=1` enables the capability gate.
 - `BRAND_VISUAL_ROLLOUT_PERCENT` accepts only `0`, `10`, `50`, or `100`.
-- `BRAND_VISUAL_ROLLOUT_STARTED_AT` must be an ISO timestamp. Accounts created
-  before it remain control unless they are internal.
-- Admins, `duckyhero@gmail.com`, and comma-separated
-  `BRAND_VISUAL_TEST_EMAILS` are the internal canary while the master switch is
-  enabled, even at 0 percent.
+- `BRAND_VISUAL_ROLLOUT_STARTED_AT` must be an ISO timestamp. Admission reads
+  only the stable rollout bucket and the presence of a valid value here: while it
+  is unset or malformed nobody outside the internal canary is admitted, whatever
+  the percentage. Account creation date is not part of the decision.
+- Admins and the comma-separated `BRAND_VISUAL_TEST_EMAILS` are the internal
+  canary while the master switch is enabled, even at 0 percent. No e-mail is
+  hard-coded any more.
 - Cohorts use a stable `brand-visual-v1` hash; changing 10 → 50 → 100 expands
   the cohort without reshuffling prior treatment accounts.
 - Set `BRAND_VISUAL_50_PERCENT_STARTED_AT` once, to the ISO timestamp when the
   50% stage begins. It affects measurement only, never access. The health
   endpoint refuses to authorize 100% when this value is absent or invalid.
+
+Creating, editing, publishing and deleting a Brand Profile is open to every plan
+(ADR 0059). Attaching a profile to a project — `PUT /api/editor-projects/<id>/brand-revision`
+and `POST /api/brand-library/from-project-look` — and every AI-image action stay
+behind the entitlement + rollout gates in wave 0, because a persisted project pin
+is an unconditional grandfather clause in the render acceptance (cohort
+`existing-pin`). Before deploy add Mew's e-mail to `BRAND_VISUAL_TEST_EMAILS` if
+she needs the internal image cohort from a non-ADMIN account.
 
 ## Pre-deploy checks
 

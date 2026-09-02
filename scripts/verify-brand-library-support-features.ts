@@ -45,4 +45,37 @@ assert.match(heroScriptServer, /where:\s*\{\s*id:\s*brandProfileId,\s*userId,\s*
   "archived Brands cannot seed new Hero Script work");
 assert.match(schema, /archivedAt\s+DateTime\?/, "Brand Profile stores a recoverable archive timestamp");
 
+const panel = readFileSync("src/app/(dashboard)/brands/_components/BrandLookPreviewPanel.tsx", "utf8");
+assert.match(panel, /ตั้งชื่อแบรนด์ก่อนจึงจะทดลองภาพได้/, "panel must explain the no-name disabled state");
+assert.match(panel, /data-testid="preview-disabled-reason"/);
+
+// ADR 0059: the Brand Library stays open to every plan, so nothing on the page
+// may promise an image entitlement the button then refuses. The allowance card,
+// the allowance cost label and the preview quote itself all sit behind the same
+// image gate, and the gate reason outranks the quote spinner on the button.
+const allowanceCardIndex = brandClient.indexOf("สิทธิ์ทดลองสร้างภาพ");
+const headerIndex = brandClient.lastIndexOf("<header", allowanceCardIndex);
+assert.ok(
+  allowanceCardIndex > 0
+    && brandClient.lastIndexOf("library.imageAccess.canUse", allowanceCardIndex) > headerIndex,
+  "the starter-allowance card renders only for an account the image gate admits",
+);
+const quoteFetchIndex = brandClient.indexOf('"/api/brand-library/preview-quote"');
+assert.ok(
+  quoteFetchIndex > 0
+    && brandClient.lastIndexOf("canQuotePreview", quoteFetchIndex)
+      > brandClient.lastIndexOf("useEffect(", quoteFetchIndex),
+  "the debounced preview quote never fires for an account the image gate rejects",
+);
+const costLabelBlock = panel.slice(panel.indexOf("const costLabel"), panel.indexOf("const fundingInsufficient"));
+assert.ok(
+  costLabelBlock.includes("imageAccess.canUse"),
+  "the trial-allowance cost label is only offered to an account the image gate admits",
+);
+const reasonChain = panel.slice(panel.indexOf("const disabledReason"), panel.indexOf("return ("));
+assert.ok(
+  reasonChain.indexOf("!imageAccess.canUse") < reasonChain.indexOf("previewGenerationCount === null"),
+  "a rejected account reads the image-gate reason instead of a quote that never arrives",
+);
+
 console.log("Brand Library support-feature contracts passed");

@@ -24,7 +24,9 @@ function libraryError(error: unknown) {
   return NextResponse.json({ code: error.code, error: error.message }, { status });
 }
 
-/** Atomic Project Look -> Brand Revision promotion. The exact immutable
+/** Atomic Project Look -> Brand Revision promotion. It also writes the project
+ * pin, so it keeps the IMAGE guard for the same reason as `brand-revision`
+ * (ADR 0059 amendment). The exact immutable
  * preflight is always required; a completed VideoJob additionally proves which
  * rendered clip the post-result CTA came from. Both identities are durable
  * replay keys in BrandProfileRevision. */

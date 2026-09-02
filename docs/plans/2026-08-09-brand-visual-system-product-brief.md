@@ -193,7 +193,7 @@ North-star คืออัตราผู้สมัครใหม่ที่
 
 ## สถานะ
 
-interviewed: 2026-08-09 | product decisions: complete | implementation: not started
+interviewed: 2026-08-09 | product decisions: complete | implementation: shipped 2026-08-18 (see docs/audits/2026-08-18-brand-visual-v1-release-hardening.md) | superseded in part by ADR 0057–0059 (2026-09-02)
 
 ## แก้ไขภายหลัง (2026-08-10)
 

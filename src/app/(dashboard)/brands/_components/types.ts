@@ -49,13 +49,20 @@ export type SubtitlePresetOption = {
   config: Record<string, string | number | boolean | null>;
 };
 
+/** ADR 0059: the library itself is open to every plan; this is the gate on the
+ * AI-image actions inside it. */
+export type BrandImageAccess = {
+  canUse: boolean;
+  reason: "eligible" | "feature_off" | "payment_required" | "rollout_wait" | "suspended";
+  upgradeUrl: string;
+};
+
 export type LibraryResponse = {
   profiles: BrandProfile[];
   cap: number | null;
   canCreate: boolean;
-  creationRequiresResult: boolean;
+  imageAccess: BrandImageAccess;
   availabilitySelectionRequired: boolean;
-  canRestoreAll: boolean;
   visualFormats: VisualFormat[];
   treatmentPresets: Array<{ id: TreatmentPresetId; label: string }>;
   subtitlePresets: SubtitlePresetOption[];
@@ -92,7 +99,7 @@ export type ProjectVisualSeed = {
 /** The helper shapes stable brand rendering only; per-video storytelling is
  * selected from the reviewed catalog separately. */
 export type VisualProposal = Pick<BrandPayload["visual"],
-  "primaryVisualFormatId" | "palette" | "personality" | "peopleAndSetting" | "memorableCues" | "visualNotes"
+  "primaryVisualFormatId" | "palette" | "personality" | "visualNotes"
 > & { rationale?: string };
 
 export type Notice = { tone: "ok" | "error"; text: string };

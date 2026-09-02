@@ -27,6 +27,11 @@ import { BrandList } from "./BrandList";
 import { BrandLookPreviewPanel } from "./BrandLookPreviewPanel";
 import { VisualFormatPicker } from "./VisualFormatPicker";
 import {
+  brandPreviewGenerateRequest,
+  brandPreviewQuoteBody,
+  type BrandPreviewSource,
+} from "./preview-request-body";
+import {
   DefinitivePreviewRequestError,
   browserStorage,
   postPreviewWithRecovery,
@@ -106,7 +111,6 @@ export function BrandLibraryClient() {
   const [sourceProjectId, setSourceProjectId] = useState<string | null>(null);
   const [sourcePreflightId, setSourcePreflightId] = useState<string | null>(null);
   const [sourceVideoJobId, setSourceVideoJobId] = useState<string | null>(null);
-  const [, setSourceVisualContext] = useState<ProjectVisualSeed["context"] | null>(null);
   const [previewGenerationCount, setPreviewGenerationCount] = useState<number | null>(null);
   const [pendingRecoveryOperation, setPendingRecoveryOperation] = useState<PendingBrandPreviewOperation | null>(null);
   const resumedOperationForUserRef = useRef<string | null>(null);
@@ -117,17 +121,27 @@ export function BrandLibraryClient() {
   );
   const allowance = me?.starterAiImageAllowance;
   const payload = useMemo(() => withSeedFallbacks(draft), [draft]);
-  const previewQuoteInput = useMemo(() => JSON.stringify({
-    payload,
+  const previewSource = useMemo<BrandPreviewSource>(() => ({
+    profileId: activeId,
     projectId: sourceProjectId,
     preflightId: sourcePreflightId,
-  }), [payload, sourceProjectId, sourcePreflightId]);
+  }), [activeId, sourceProjectId, sourcePreflightId]);
+  const previewQuoteInput = useMemo(
+    () => JSON.stringify(brandPreviewQuoteBody(previewSource, payload)),
+    [payload, previewSource],
+  );
 
+  // ADR 0059: only an account the image gate admits can spend a preview, and
+  // preview-quote is an image action behind that same gate. Quoting for a
+  // rejected account would answer 403 on every debounced keystroke; the count
+  // stays null and the button discloses the gate reason instead.
+  const canQuotePreview = library?.imageAccess.canUse === true;
+
+  // Every look is quoted by the server with the lineage its generate call will
+  // use. A saved profile promoted from a clip can reuse that clip's images, so
+  // guessing three here overstated the cost and could block a free preview.
   useEffect(() => {
-    if (!sourceProjectId) {
-      setPreviewGenerationCount(3);
-      return;
-    }
+    if (!canQuotePreview) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setPreviewGenerationCount(null);
@@ -138,31 +152,24 @@ export function BrandLibraryClient() {
         signal: controller.signal,
       }).then(responseJson).then((value: { generationCount?: unknown }) => {
         const count = typeof value.generationCount === "number" ? value.generationCount : Number.NaN;
-        setPreviewGenerationCount(Number.isInteger(count) && count >= 0 && count <= 3 ? count : null);
+        // An unusable answer falls back to the worst case, never to a cheaper
+        // number than the creator could actually be charged.
+        setPreviewGenerationCount(Number.isInteger(count) && count >= 0 && count <= 3 ? count : 3);
       }).catch((error) => {
-        if ((error as Error).name !== "AbortError") setPreviewGenerationCount(null);
+        if ((error as Error).name !== "AbortError") setPreviewGenerationCount(3);
       });
     }, 250);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [previewQuoteInput, sourceProjectId]);
+  }, [canQuotePreview, previewQuoteInput]);
 
   async function load(preferredId?: string) {
-    let [libraryData, meData] = await Promise.all([
+    const [libraryData, meData] = await Promise.all([
       fetch("/api/brand-library", { cache: "no-store" }).then(responseJson) as Promise<LibraryResponse>,
       fetchMe(true),
     ]);
-    if (libraryData.canRestoreAll) {
-      await responseJson(await fetch("/api/brand-library/availability", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ preferredProfileIds: [] }),
-      }));
-      libraryData = await fetch("/api/brand-library", { cache: "no-store" })
-        .then(responseJson) as LibraryResponse;
-    }
     setLibrary(libraryData);
     setMe(meData);
     setAvailabilityChoice((current) => libraryData.availabilitySelectionRequired
@@ -230,7 +237,6 @@ export function BrandLibraryClient() {
       setSourceProjectId(requestedProjectId);
       setSourcePreflightId(resolvedSourcePreflightId);
       setSourceVideoJobId(requestedVideoJobId);
-      setSourceVisualContext(resolvedSourceVisualContext);
       setDraft(seeded);
       setAdvancedOpen(false);
       setProposal(null);
@@ -241,7 +247,6 @@ export function BrandLibraryClient() {
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
-    setSourceVisualContext(null);
     const requestedNextId = preferredId ?? activeId;
     const nextProfile = libraryData.profiles.find((profile) => profile.id === requestedNextId)
       ?? libraryData.profiles[0]
@@ -279,7 +284,7 @@ export function BrandLibraryClient() {
     } finally { setBusy(null); }
   }
 
-  useEffect(() => { load().catch((error) => { setNotice({ tone: "error", text: error.message }); setLoading(false); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load().catch((error) => { setNotice({ tone: "error", text: error.message }); setLoading(false); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect -- `load()` is async and only sets state after its awaited fetch resolves/rejects; this is the standard fetch-on-mount pattern, not a synchronous cascading render
 
   const resumePendingBrandPreviewOperation = useCallback(async (
     operation: PendingBrandPreviewOperation,
@@ -318,6 +323,7 @@ export function BrandLibraryClient() {
     resumedOperationForUserRef.current = userId;
     const operation = readPendingBrandPreviewOperation(storage, userId);
     if (!operation) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrates React state from a browser-only external system (localStorage) to resume an interrupted preview/reroll after mount; the read cannot happen during render (guarded by loading/ref), so this is the effect's whole purpose
     setPendingRecoveryOperation(operation);
     if (operation.kind === "preview") {
       try {
@@ -327,7 +333,6 @@ export function BrandLibraryClient() {
         setSourceProjectId(operation.surface.projectId);
         setSourcePreflightId(operation.surface.preflightId);
         setSourceVideoJobId(operation.surface.videoJobId);
-        setSourceVisualContext(null);
         setProposal(null);
         setPreview(null);
       } catch {
@@ -354,7 +359,6 @@ export function BrandLibraryClient() {
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
-    setSourceVisualContext(null);
     setActiveId(profile.id);
     const stored = profile.draft?.payload ?? profile.revisions[0]?.payload;
     const base = createBlankBrandProfileSeed();
@@ -383,7 +387,6 @@ export function BrandLibraryClient() {
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
-    setSourceVisualContext(null);
     setActiveId(null);
     setDraft(createBlankBrandProfileSeed());
     setAdvancedOpen(false);
@@ -398,7 +401,6 @@ export function BrandLibraryClient() {
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
-    setSourceVisualContext(null);
     setActiveId(null);
     setDraft(createBrandProfileSeedFromCurrentDefaults(library.defaults));
     setAdvancedOpen(false);
@@ -598,17 +600,14 @@ export function BrandLibraryClient() {
       writePendingBrandPreviewOperation(storage, operation);
     }
     try {
-      let endpoint = "/api/brand-library/preview";
-      let body: Record<string, unknown> = { payload };
       if (activeId) {
         await responseJson(await fetch(`/api/brand-library/${activeId}/draft`, {
           method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ payload }),
         }));
-        endpoint = `/api/brand-library/${activeId}/preview`;
-        body = { useDraft: true, ...(sourceProjectId ? { projectId: sourceProjectId, preflightId: sourcePreflightId } : {}) };
-      } else if (sourceProjectId) {
-        body = { payload, projectId: sourceProjectId, preflightId: sourcePreflightId };
       }
+      // Built from the same lineage the quote priced, so the disclosed cost and
+      // the charge can never come from different inputs.
+      const { endpoint, body } = brandPreviewGenerateRequest(previewSource, payload);
       const value = await postPreviewWithRecovery(endpoint, body, requestId, setPreview);
       setPreview(value.batch);
       if (userId && storage) clearPendingBrandPreviewOperation(storage, userId, requestId);
@@ -694,30 +693,36 @@ export function BrandLibraryClient() {
               ตั้งชื่อแบรนด์ แล้วเลือกแนวภาพที่อยากให้คลิปของคุณเป็น ที่เหลือปรับทีหลังได้
             </p>
           </div>
-          <Card className="px-4 py-3">
-            {allowance?.eligible ? (
-              <>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  สิทธิ์ทดลองสร้างภาพ
-                </p>
-                <p className="mt-0.5 text-2xl font-bold tabular-nums text-foreground">
-                  {allowance.remainingImages}
-                  <span className="text-sm font-medium text-muted-foreground"> / {allowance.limitImages}</span>
-                </p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  คงเหลือในรอบนี้ · การวิเคราะห์และเลือกแนวภาพไม่ใช้สิทธิ์
-                </p>
-              </>
-            ) : (
-              <>
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  เครดิตสำหรับสร้างภาพ
-                </p>
-                <p className="mt-0.5 text-sm font-semibold text-foreground">ใช้ยอดเครดิตเดียวกับบัญชี</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">ภาพ AI ราคา 2 เครดิตต่อภาพ</p>
-              </>
-            )}
-          </Card>
+          {/* ADR 0059: this card states what an image costs the account. An
+              account the image gate rejects can spend nothing here, so it makes
+              no cost or entitlement claim to them at all — the gate reason is
+              disclosed on the image button instead. */}
+          {library.imageAccess.canUse && (
+            <Card className="px-4 py-3">
+              {allowance?.eligible ? (
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    สิทธิ์ทดลองสร้างภาพ
+                  </p>
+                  <p className="mt-0.5 text-2xl font-bold tabular-nums text-foreground">
+                    {allowance.remainingImages}
+                    <span className="text-sm font-medium text-muted-foreground"> / {allowance.limitImages}</span>
+                  </p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    คงเหลือในรอบนี้ · การวิเคราะห์และเลือกแนวภาพไม่ใช้สิทธิ์
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    เครดิตสำหรับสร้างภาพ
+                  </p>
+                  <p className="mt-0.5 text-sm font-semibold text-foreground">ใช้ยอดเครดิตเดียวกับบัญชี</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">ภาพ AI ราคา 2 เครดิตต่อภาพ</p>
+                </>
+              )}
+            </Card>
+          )}
         </header>
 
         {library.availabilitySelectionRequired && library.cap !== null && (
@@ -761,7 +766,6 @@ export function BrandLibraryClient() {
             profiles={library.profiles}
             cap={library.cap}
             canCreate={library.canCreate}
-            creationRequiresResult={library.creationRequiresResult}
             activeId={activeId}
             busy={busy !== null}
             onOpen={openProfile}
@@ -839,6 +843,7 @@ export function BrandLibraryClient() {
               preview={preview}
               previewGenerationCount={previewGenerationCount}
               allowance={allowance}
+              imageAccess={library.imageAccess}
               canPublish={canPublish}
               busy={busy}
               disabled={frozen}

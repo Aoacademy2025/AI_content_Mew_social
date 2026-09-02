@@ -10,6 +10,13 @@ export type BrandVisualRolloutFlags = {
   startedAt: Date | null;
   testEmails: Set<string>;
 };
+/** ADR 0059: creating and editing a Brand Profile needs only an authenticated,
+ * non-suspended account under the master switch. The paid-equivalent and rollout
+ * gates below stay on the AI-image actions. */
+export type BrandLibraryAccessDecision = {
+  canUse: boolean;
+  reason: "eligible" | "feature_off" | "suspended";
+};
 export type BrandVisualAccessDecision = {
   canUse: boolean;
   cohort: "off" | "internal" | "not-entitled" | "rollout-wait" | "treatment-10" | "treatment-50" | "treatment-100";
@@ -18,8 +25,6 @@ export type BrandVisualAccessDecision = {
   bucket: number | null;
   entitlementSource: PaidEquivalentDecision["source"];
 };
-
-const PRODUCT_OWNER_EMAIL = "duckyhero@gmail.com";
 
 function values(raw: string | undefined): Set<string> {
   return new Set((raw ?? "").split(",").map((value) => value.trim().toLowerCase()).filter(Boolean));
@@ -51,6 +56,15 @@ export function brandVisualRolloutBucket(userId: string): number {
   return (hash >>> 0) % 100;
 }
 
+export function decideBrandLibraryAccess(
+  actor: { suspended?: boolean | null },
+  flags = brandVisualRolloutFlags(),
+): BrandLibraryAccessDecision {
+  if (!flags.enabled) return { canUse: false, reason: "feature_off" };
+  if (actor.suspended) return { canUse: false, reason: "suspended" };
+  return { canUse: true, reason: "eligible" };
+}
+
 export function decideBrandVisualAccess(
   actor: { id: string; email?: string | null; role?: string | null; suspended?: boolean | null },
   paidEquivalent: Pick<PaidEquivalentDecision, "canUsePaidFeatures" | "source">,
@@ -60,7 +74,7 @@ export function decideBrandVisualAccess(
   if (!flags.enabled) return { ...base, canUse: false, cohort: "off", mode: "preview", reason: "feature_off", bucket: null };
   if (actor.suspended) return { ...base, canUse: false, cohort: "not-entitled", mode: "preview", reason: "suspended", bucket: null };
   const email = actor.email?.trim().toLowerCase() ?? "";
-  if (actor.role === "ADMIN" || email === PRODUCT_OWNER_EMAIL || flags.testEmails.has(email)) {
+  if (actor.role === "ADMIN" || flags.testEmails.has(email)) {
     return { ...base, canUse: true, cohort: "internal", mode: "internal", reason: "eligible", bucket: null };
   }
   if (!paidEquivalent.canUsePaidFeatures) {
@@ -78,6 +92,10 @@ export function decideBrandVisualAccess(
     reason: "eligible",
     bucket,
   };
+}
+
+export async function resolveBrandLibraryAccess(user: User): Promise<BrandLibraryAccessDecision> {
+  return decideBrandLibraryAccess(user);
 }
 
 export async function resolveBrandVisualAccess(user: User): Promise<BrandVisualAccessDecision> {

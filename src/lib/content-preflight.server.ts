@@ -354,6 +354,20 @@ export function contentPreflightFailureDetails(
 type ContentPreflightTextGenerator = typeof geminiGenerateText;
 const MAX_CONTENT_PREFLIGHT_SEMANTIC_ATTEMPTS = 3;
 
+/** Stable failure classes for `brand_visual_preflight_invalid`. They are what a
+ * triage query groups by, so the free-text diagnostic never has to be parsed to
+ * tell a provider outcome apart from a schema outcome. */
+export type ContentPreflightFailureReason =
+  | "empty_provider_response"
+  | "unparsable_json"
+  | "beat_count_mismatch"
+  | "schema_invalid";
+
+/** Per-attempt cap for the recorded diagnostic. Three capped entries plus the
+ * separators stay inside the 1,200-char property budget, so the final attempt
+ * can no longer be truncated away by a verbose earlier one. */
+const MAX_ATTEMPT_DIAGNOSTIC_LENGTH = 380;
+
 function contentPreflightValidationFeedback(error: z.ZodError): string {
   return error.issues
     .slice(0, 8)
@@ -864,7 +878,14 @@ export function createGeminiContentPreflightAnalyzer(
       ].join("\n");
 
       let correction = "";
+      let failureReason: ContentPreflightFailureReason = "schema_invalid";
       const attemptDiagnostics: string[] = [];
+      const pushAttemptDiagnostic = (entry: string) => {
+        // Cap each entry, not the join: the single 1,200-char cap truncated the
+        // LAST attempt away in 29 of 83 recorded failures, and the last attempt
+        // is the one that decided the outcome.
+        attemptDiagnostics.push(entry.slice(0, MAX_ATTEMPT_DIAGNOSTIC_LENGTH));
+      };
       for (let attempt = 1; attempt <= MAX_CONTENT_PREFLIGHT_SEMANTIC_ATTEMPTS; attempt += 1) {
         const raw = await generateText(
           key,
@@ -876,13 +897,30 @@ export function createGeminiContentPreflightAnalyzer(
             responseJsonSchema: contentPreflightResponseJsonSchema(),
           },
         );
+        // A blank body is a provider outcome, not a schema outcome: there is no
+        // candidate JSON for the self-correction prompt to correct, and telling
+        // the model that its "previous JSON could not be parsed" describes a
+        // reply it never sent. Every one of the 96 unparsable attempts recorded
+        // on prod was a blank body, and not one blank body was followed by a
+        // non-blank retry (0 of 64) — the remaining attempts are two identical
+        // calls with an already known outcome. Stop here instead. ADR 0010 is
+        // unchanged: the render still stops before image generation and before
+        // any image credit is charged, there is still no generic fallback, and
+        // the creator still gets exactly one plain retry action. This can only
+        // spend fewer provider attempts, never more.
+        if (!raw.trim()) {
+          pushAttemptDiagnostic(`a${attempt}:empty_provider_response:len=${raw.length}`);
+          failureReason = "empty_provider_response";
+          break;
+        }
         let candidate: unknown;
         try {
           candidate = JSON.parse(raw.replace(/```json\s*/gi, "").replace(/```/g, "").trim());
         } catch {
-          attemptDiagnostics.push(
+          pushAttemptDiagnostic(
             `a${attempt}:json_parse:len=${raw.length}:sha=${createHash("sha256").update(raw).digest("hex").slice(0, 12)}`,
           );
+          failureReason = "unparsable_json";
           correction = [
             "Your previous JSON was rejected because it could not be parsed.",
             "Return one complete replacement JSON object matching the schema exactly.",
@@ -901,9 +939,10 @@ export function createGeminiContentPreflightAnalyzer(
             .slice(0, 4)
             .map((issue) => `${issue.path.join(".") || "root"}:${issue.code}`)
             .join(",");
-        attemptDiagnostics.push(
+        pushAttemptDiagnostic(
           `a${attempt}:${diagnostic}:len=${raw.length}:sha=${createHash("sha256").update(raw).digest("hex").slice(0, 12)}`,
         );
+        failureReason = wrongBeatCount ? "beat_count_mismatch" : "schema_invalid";
         const issues = parsed.success
           ? `beats: expected exactly ${input.windows.length}, received ${parsed.data.beats.length}`
           : contentPreflightValidationFeedback(parsed.error);
@@ -926,12 +965,17 @@ export function createGeminiContentPreflightAnalyzer(
           sourceKind: input.kind,
           windowCount: input.windows.length,
           attemptCount: attemptDiagnostics.length,
+          reason: failureReason,
           diagnostic,
         },
       }).catch(() => null);
       throw new ContentPreflightError(
         "INVALID_ANALYSIS",
-        "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง",
+        failureReason === "empty_provider_response"
+          // Saying "after automatic correction" would be untrue for this class:
+          // nothing came back to correct and only one attempt was spent.
+          ? "ระบบวิเคราะห์แนวภาพไม่ได้รับผลลัพธ์กลับมา กรุณาลองใหม่อีกครั้ง"
+          : "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์หลังลองแก้อัตโนมัติ กรุณาลองใหม่อีกครั้ง",
         diagnostic,
       );
     },

@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 import { normalizeHexColor } from "@/lib/hex-color";
 import type { BrandPayload, LibraryResponse, VisualProposal } from "./types";
 
@@ -231,6 +232,7 @@ function HexColorField({
   const normalized = normalizeHexColor(draft);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resets local draft/error state to the external `value` prop on change; a key-based reset would change this field's identity/behavior, out of scope for a lint-only pass
     setDraft(value);
     setShowError(false);
   }, [value]);
@@ -421,7 +423,7 @@ export function AdvancedSettings({
               onChange={(value) => setDraft((current) => ({ ...current, niche: value }))}
               placeholder="เช่น การตลาดสำหรับ Creator"
               disabled={disabled}
-              maxLength={300}
+              maxLength={BRAND_PROFILE_CAPS.shortFieldChars}
             />
             <TextField
               id="brand-audience"
@@ -430,7 +432,7 @@ export function AdvancedSettings({
               onChange={(value) => setDraft((current) => ({ ...current, audience: value }))}
               placeholder="ใครควรรู้สึกว่านี่ทำมาเพื่อเขา"
               disabled={disabled}
-              maxLength={500}
+              maxLength={BRAND_PROFILE_CAPS.audienceChars}
             />
           </div>
 
@@ -485,7 +487,7 @@ export function AdvancedSettings({
                 setDraft((current) => ({ ...current, script: { ...current.script, tone: value } }))
               }
               disabled={disabled}
-              maxLength={500}
+              maxLength={BRAND_PROFILE_CAPS.shortFieldChars}
             />
             <NotesField
               id="brand-analysis-notes"
@@ -500,7 +502,7 @@ export function AdvancedSettings({
               placeholder="ระบบเติมจาก Writing Style เดิมให้ตรวจและแก้ได้"
               disabled={disabled}
               rows={4}
-              maxLength={4000}
+              maxLength={BRAND_PROFILE_CAPS.longFieldChars}
             />
           </Group>
 

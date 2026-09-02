@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { apiError } from "@/lib/api-error";
 import { reserveAiTextCall } from "@/lib/ai-text-limits";
-import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
+import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
+import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 import { VISUAL_FORMAT_IDS } from "@/lib/brand-visual-system";
 import { geminiGenerateText } from "@/lib/gemini";
 import { KeyRequiredError, resolveGeminiKey } from "@/lib/gemini-key";
@@ -13,8 +14,6 @@ const suggestionSchema = z.object({
   primaryVisualFormatId: z.enum(VISUAL_FORMAT_IDS),
   palette: z.array(z.string().trim().min(1).max(64)).min(1).max(6),
   personality: z.string().trim().min(1).max(500),
-  peopleAndSetting: z.string().trim().max(500),
-  memorableCues: z.array(z.string().trim().min(1).max(160)).max(6),
   visualNotes: z.string().trim().max(800),
   rationale: z.string().trim().min(1).max(600),
 });
@@ -22,12 +21,15 @@ const MAX_SEMANTIC_ATTEMPTS = 3;
 
 export async function POST(req: Request) {
   try {
-    const auth = await requireBrandVisualUser();
+    const auth = await requireBrandLibraryUser();
     if (!auth.ok) return auth.response;
     const body = await req.json().catch(() => null);
-    const niche = typeof body?.niche === "string" ? body.niche.trim().slice(0, 300) : "";
-    const audience = typeof body?.audience === "string" ? body.audience.trim().slice(0, 500) : "";
-    const sample = typeof body?.sample === "string" ? body.sample.trim().slice(0, 4_000) : "";
+    // Same caps the creator-write boundary enforces: the helper reads the very
+    // fields it is asked to advise on, so it can never be handed more text than
+    // the profile itself may store.
+    const niche = typeof body?.niche === "string" ? body.niche.trim().slice(0, BRAND_PROFILE_CAPS.shortFieldChars) : "";
+    const audience = typeof body?.audience === "string" ? body.audience.trim().slice(0, BRAND_PROFILE_CAPS.audienceChars) : "";
+    const sample = typeof body?.sample === "string" ? body.sample.trim().slice(0, BRAND_PROFILE_CAPS.longFieldChars) : "";
     if (!niche || !audience) {
       return NextResponse.json({ error: "กรุณาระบุนิชและกลุ่มเป้าหมาย" }, { status: 400 });
     }
@@ -50,7 +52,7 @@ export async function POST(req: Request) {
       "Return JSON only. This is a proposal: never claim it has been applied and never include an image prompt.",
       `primaryVisualFormatId must be one of ${VISUAL_FORMAT_IDS.join(", ")}.`,
       "Every palette item must be exactly one six-digit HEX color such as #38BDF8. Return no color names, prose, usage notes or gradients inside palette.",
-      "Schema: {primaryVisualFormatId,palette:string[1..6],personality,peopleAndSetting,memorableCues:string[0..6],visualNotes,rationale}",
+      "Schema: {primaryVisualFormatId,palette:string[1..6],personality,visualNotes,rationale}",
       `Niche: ${niche}`,
       `Audience: ${audience}`,
       sample ? `Creator sample: ${sample}` : "",

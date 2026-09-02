@@ -243,11 +243,11 @@ export function Sidebar({ role: roleProp = "USER", collapsed = false, onToggle, 
       // the paid Hero Script entrypoint or the Trial locked preview.
       .filter((item) => item.href !== "/hero-script" || heroScriptAllowed || heroScriptPreview)
       .filter((item) => item.href !== "/brands" || !firstClipPath)
+      // ADR 0059: the Brand Library is open to every plan, so /brands never
+      // shows a PRO / รอเปิด gate badge here.
       .map((item) => item.href === "/hero-script" && !heroScriptAllowed
         ? { ...item, badgeText: "PRO" }
-        : item.href === "/brands" && !brandVisualAllowed
-          ? { ...item, badgeText: brandVisualCohort === "rollout-wait" ? "รอเปิด" : "PRO" }
-          : item);
+        : item);
   const userItems = internalItemsOnly(withUpdatesBadge(userNavItems));
   const adminItems = internalItemsOnly(adminStudioItems);
 
