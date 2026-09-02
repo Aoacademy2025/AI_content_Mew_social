@@ -132,6 +132,22 @@ async function main() {
     /STYLE_PACKS|activeStylePacks/,
     "the pack catalog must reach this client only through the server payload",
   );
+  // Every pending look change must have somewhere to be confirmed. A clip that
+  // already has AI images answers a style change with the all-or-cancel 409, so
+  // without this branch the creator gets a blocked Step 2 and a blank panel.
+  assert.match(
+    selectorSource,
+    /\{pending\?\.kind === "pack" && <PendingChangeConfirmation/u,
+    "a per-clip style change over existing images must render the same confirmation as every other look change",
+  );
+  // Changing format or treatment unlinks the pack SERVER-side, so the panel has
+  // to re-read the authoritative style; otherwise Step 2 keeps naming a pack
+  // that is gone and the per-window search keeps sending its stock mood.
+  assert.match(
+    selectorSource,
+    /await loadContext\(\);[^;]*?\n\s*toast\.success\([\s\S]{0,200}?บันทึกแนวภาพของคลิปนี้แล้ว/u,
+    "a format/treatment change must refresh the pinned style it just unlinked",
+  );
   // Customer copy is Thai. English SYSTEM names are the leak this guards: any
   // literal that already contains Thai is customer-facing, so an internal name
   // sitting inside one is a bug, while identifiers like `treatmentPresetId`

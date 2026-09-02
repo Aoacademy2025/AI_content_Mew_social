@@ -846,6 +846,8 @@ async function main() {
   // read the pack the creator was shown, never the live catalog (ADR 0005).
   const { stockMoodForProject } = await import("../src/lib/broll-preferences");
   const { STYLE_PACK_UNAVAILABLE_MESSAGE } = await import("../src/lib/style-pack-apply");
+  const { stylePack: stylePackFromCatalog } = await import("../src/lib/style-pack-catalog");
+  const ghostPack = stylePackFromCatalog("thai-ghost");
   const { promoteProjectLookToBrandProfile } = await import("../src/lib/brand-profile-library.server");
 
   const packUser = await prisma.user.create({
@@ -968,10 +970,23 @@ async function main() {
     "a pending-benchmark pack cannot be chosen for a clip",
   );
 
-  // กำหนดเอง: unlink the pack, keep the format/treatment the pack resolved.
+  // กำหนดเอง: unlink the pack and keep EVERYTHING it resolved — format,
+  // treatment AND palette/personality — exactly like `clearStylePack` on
+  // /brands (controller ruling R23, amended). Only the snapshot is dropped.
+  // The project below is pinned to a Brand with its own blue palette, so a
+  // regression that "falls back to the brand" is visible rather than hidden
+  // behind a project that has no brand at all.
+  const packBrandProject = await prisma.editorProject.create({
+    data: { userId: packUser.id, title: "Pack over a brand", brandProfileRevisionId: revision.id },
+  });
+  await saveProjectLook({
+    userId: packUser.id,
+    projectId: packBrandProject.id,
+    look: { stylePackId: "thai-ghost" },
+  });
   const customAfterPack = await saveProjectLook({
     userId: packUser.id,
-    projectId: packProject.id,
+    projectId: packBrandProject.id,
     look: {
       visualFormatId: "cinematic-realism",
       treatmentPresetId: "thai-supernatural-horror",
@@ -985,6 +1000,30 @@ async function main() {
   assert.equal(
     customAfterPack.schemaVersion === 2 ? customAfterPack.treatmentPin.presetId : null,
     "thai-supernatural-horror",
+  );
+  assert.deepEqual(
+    customAfterPack.brandVisualLanguage?.palette,
+    ["#0B0F1A", "#7C1D2B", "#C9A24C"],
+    "the look the creator is looking at does not change when they unlink the style — the pack's palette stays, it simply becomes their own",
+  );
+  assert.equal(
+    customAfterPack.brandVisualLanguage?.personality,
+    ghostPack.personality,
+    "personality is a pack-resolved axis too, so unlinking keeps it rather than reverting to the Brand's",
+  );
+  // A look change on a project that never had a pack still follows the Brand.
+  const brandOnlyProject = await prisma.editorProject.create({
+    data: { userId: packUser.id, title: "No pack, brand language", brandProfileRevisionId: revision.id },
+  });
+  const brandOnlyLook = await saveProjectLook({
+    userId: packUser.id,
+    projectId: brandOnlyProject.id,
+    look: { visualFormatId: "cinematic-realism", treatmentPresetId: "thai-supernatural-horror" },
+  });
+  assert.deepEqual(
+    brandOnlyLook.brandVisualLanguage?.palette,
+    ["#111111", "#38BDF8"],
+    "keeping a pack's language must not change what a pack-less look inherits from its Brand",
   );
 
   await saveProjectLook({

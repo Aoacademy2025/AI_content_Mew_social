@@ -374,6 +374,11 @@ export function BrandVisualSelector({
         treatmentPin: look?.treatmentPin,
       });
       p.setHasPersistedVisualPin(true);
+      // Choosing a format or a narrative style unlinks the ready-made style
+      // SERVER-side, so the panel must re-read what is actually pinned. Without
+      // this the summary keeps naming the old style, Step 2 keeps printing
+      // "จากคลิปนี้", and the per-window search keeps sending its stock mood.
+      await loadContext();
       toast.success(applyMode === "regenerate-all" ? "บันทึกแนวภาพแล้ว — รอคุณยืนยันฉากที่จะสร้างใหม่" : "บันทึกแนวภาพของคลิปนี้แล้ว");
     }
     setChanging(false);
@@ -645,6 +650,7 @@ export function BrandVisualSelector({
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight?.visualBeats.length ?? 0} ฉาก · การวิเคราะห์ไม่ใช้สิทธิ์หรือเครดิต</span><span className="flex flex-wrap gap-3">{canManageBrandVisual && !p.starterAiImageAllowance?.eligible && <Link href={p.projectId ? `/brands?new=1&projectId=${encodeURIComponent(p.projectId)}${preflight?.id ? `&preflightId=${encodeURIComponent(preflight.id)}` : ""}` : "/brands?new=1"} className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.infoText, fontWeight: 600 }}>+ สร้างแบรนด์จากคลิปนี้</Link>}<Link href="/brands" className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.textFaint, fontWeight: 600 }}>จัดการแบรนด์ของฉัน</Link></span></div>
       </>}
       {pending?.kind === "look" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
+      {pending?.kind === "pack" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
       {p.starterAiImageAllowance?.eligible && p.starterAiImageAllowance.remainingImages === 0 && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl p-3" style={{ background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.25)" }}><span className="flex items-center gap-2" style={{ fontSize: 11, color: color.dangerText }}><LockKeyhole size={14} /> ใช้สิทธิ์ทดลองภาพครบแล้ว ระบบจะไม่เปลี่ยนเป็น Stock เอง</span><span className="flex gap-2"><Link href="/pricing" className="rounded-lg bg-white px-3 py-2 text-[10.5px] font-bold text-black">อัปเกรดรายเดือน</Link><button onClick={() => p.setMixPreset("free")} className="rounded-lg px-3 py-2" style={{ border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 10.5 }}>ใช้ Stock ฟรี</button></span></div>}
     </div>}
   </section>;

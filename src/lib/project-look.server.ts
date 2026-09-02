@@ -125,6 +125,7 @@ function packResolvedLook(pack: StylePack): {
 function snapshotForLook(
   look: ProjectLookInput,
   brandRevisionJson: string | null | undefined,
+  currentLookJson?: string | null,
 ): ProjectLookSnapshot {
   const parsed = projectLookInputSchema.safeParse(look);
   if (!parsed.success) {
@@ -132,6 +133,17 @@ function snapshotForLook(
   }
   const brandRecipe = parseRevision(brandRevisionJson);
   const packed = parsed.data.stylePackId ? packResolvedLook(stylePack(parsed.data.stylePackId)) : null;
+  // Unlinking a pack ("กำหนดเอง", or simply editing one of its axes) must not
+  // change the look the creator is looking at — it only stops calling it a
+  // ready-made style. So the palette and personality the pack resolved stay,
+  // exactly as `clearStylePack` keeps them on /brands. Only a look that never
+  // had a pack still inherits its language from the Brand, unchanged.
+  const currentLook = parseProjectLook(currentLookJson);
+  const unlinkedPackLanguage = !packed
+    && currentLook?.schemaVersion === 2
+    && currentLook.stylePack
+    ? currentLook.brandVisualLanguage
+    : null;
   // The superRefine above guarantees both axes when there is no pack.
   const visualFormatId = packed?.visualFormatId ?? parsed.data.visualFormatId!;
   const treatmentPin = createCatalogTreatmentPin(
@@ -146,7 +158,7 @@ function snapshotForLook(
     treatmentPin,
     brandVisualLanguage: packed?.brandVisualLanguage
       ?? (parsed.data.brandVisualLanguage === undefined
-        ? (brandRecipe?.brandVisualLanguage ?? null)
+        ? (unlinkedPackLanguage ?? brandRecipe?.brandVisualLanguage ?? null)
         : parsed.data.brandVisualLanguage),
     // Absent/`null` unlinks the pack while keeping everything it resolved —
     // the clip's look does not change, it simply becomes the creator's own.
@@ -163,7 +175,11 @@ async function saveProjectLookInTransaction(
     include: { brandProfileRevision: { select: { visualRecipeJson: true } } },
   });
   if (!project) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
-  const snapshot = snapshotForLook(input.look, project.brandProfileRevision?.visualRecipeJson);
+  const snapshot = snapshotForLook(
+    input.look,
+    project.brandProfileRevision?.visualRecipeJson,
+    project.projectLookJson,
+  );
   await tx.editorProject.update({
     where: { id: project.id },
     data: {
