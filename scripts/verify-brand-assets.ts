@@ -1,5 +1,9 @@
-// Run with a disposable database that has already received `prisma db push`:
-// DATABASE_URL=file:/tmp/heroai-logo-model.db BRAND_ASSET_ROOT=/tmp/heroai-brand-assets npx tsx scripts/verify-brand-assets.ts
+// Self-provisions a disposable SQLite database (mirrors createTempDatabase in
+// ./_brand-preview-harness.ts): `DATABASE_URL` is pointed at a throwaway file
+// and `prisma db push` runs BEFORE any module that reads it (Prisma) is
+// imported below, so this script needs no pre-existing prisma/dev.db and no
+// external env vars. Run: npx tsx scripts/verify-brand-assets.ts
+import { execSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -11,6 +15,10 @@ const requestedRoot = process.env.BRAND_ASSET_ROOT || path.join(tmpdir(), "heroa
 const rootPrefix = path.resolve(`${requestedRoot}-`);
 const brandRoot = mkdtempSync(rootPrefix);
 process.env.BRAND_ASSET_ROOT = brandRoot;
+
+const dbDirectory = mkdtempSync(path.join(tmpdir(), "heroai-brand-assets-db-"));
+process.env.DATABASE_URL = `file:${path.join(dbDirectory, "test.db")}`;
+execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.env });
 
 const USER_A = "brand-user-a";
 const USER_B = "brand-user-b";
@@ -943,4 +951,5 @@ main()
   })
   .finally(() => {
     rmSync(brandRoot, { recursive: true, force: true });
+    rmSync(dbDirectory, { recursive: true, force: true });
   });
