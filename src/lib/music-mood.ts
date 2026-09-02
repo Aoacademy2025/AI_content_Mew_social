@@ -55,3 +55,27 @@ export function pickDefaultMusicTrack(
   const match = tracks.find((track) => track.mood === mood);
   return match ? match.filename : null;
 }
+
+export type MusicMoodHintCarryDecision = { carry: true; mood: MusicMood } | { carry: false };
+
+/** Fix round 1, finding 1: decide whether the Style Pack's suggested-mood hint
+ *  should still be carried in the draft (so a later save/load can retry picking
+ *  a default track), or dropped because it is already consumed.
+ *  - No hint at all -> never carry.
+ *  - A track is already chosen ("" and undefined both mean "not chosen yet";
+ *    anything else — including `null`, an explicit "no music" — counts as
+ *    chosen) -> drop, the hint is consumed.
+ *  - Otherwise (a hint exists and no track is chosen yet) -> keep carrying,
+ *    even if a prior pick attempt found no matching track: an admin may tag a
+ *    matching track later, and the next load should be able to retry. Never
+ *    throws. */
+export function decideMusicMoodHintCarry(input: {
+  musicMoodDefault: MusicMood | null | undefined;
+  musicTrack: string | null | undefined;
+}): MusicMoodHintCarryDecision {
+  const mood = input.musicMoodDefault;
+  if (!mood) return { carry: false };
+  const trackAlreadyChosen = input.musicTrack !== undefined && input.musicTrack !== "";
+  if (trackAlreadyChosen) return { carry: false };
+  return { carry: true, mood };
+}
