@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
-import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
+import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
 import {
   BrandProfileLibraryError,
   brandProfilePayloadSchema,
@@ -24,13 +24,15 @@ function libraryError(error: unknown) {
   return NextResponse.json({ code: error.code, error: error.message }, { status });
 }
 
-/** Atomic Project Look -> Brand Revision promotion. The exact immutable
+/** Atomic Project Look -> Brand Revision promotion. It also writes the project
+ * pin, so it keeps the IMAGE guard for the same reason as `brand-revision`
+ * (ADR 0059 amendment). The exact immutable
  * preflight is always required; a completed VideoJob additionally proves which
  * rendered clip the post-result CTA came from. Both identities are durable
  * replay keys in BrandProfileRevision. */
 export async function POST(req: Request) {
   try {
-    const auth = await requireBrandLibraryUser();
+    const auth = await requireBrandVisualUser();
     if (!auth.ok) return auth.response;
     const body = await req.json().catch(() => null);
     const projectId = typeof body?.projectId === "string" ? body.projectId.trim() : "";

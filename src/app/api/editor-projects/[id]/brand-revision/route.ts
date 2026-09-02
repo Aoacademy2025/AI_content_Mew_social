@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
-import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
+import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
 import { BrandProfileLibraryError, applyProjectBrandRevision } from "@/lib/brand-profile-library.server";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { prisma } from "@/lib/prisma";
@@ -9,9 +9,13 @@ import { brandLookIdentityKey, brandVisualIdentityKey, type BrandVisualLanguage,
 import { editorProjectResponse } from "@/lib/editor-projects";
 import { lookChangeConfirmation } from "@/lib/brand-treatment-presentation";
 
+/** Pinning a Brand Revision to a project keeps the IMAGE guard (ADR 0059
+ * amendment): the persisted pin is an unconditional grandfather clause in
+ * `brandVisualJobAcceptance` (cohort `existing-pin`), so opening this write
+ * would let a non-entitled account self-admit into AI-image rendering. */
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const auth = await requireBrandLibraryUser();
+    const auth = await requireBrandVisualUser();
     if (!auth.ok) return auth.response;
     const body = await req.json().catch(() => null);
     if (typeof body?.profileId !== "string") {

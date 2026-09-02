@@ -46,6 +46,18 @@ for (const processName of ["ai-content", "mcp-video-worker"]) {
   }
 }
 
+// A persisted project pin is an unconditional grandfather clause in
+// `resolveBrandVisualRenderAccess` (cohort `existing-pin`), so every write that
+// can set one must stay on the IMAGE guard (ADR 0059 amendment 2026-09-02).
+for (const pinWritingRoute of [
+  "src/app/api/editor-projects/[id]/brand-revision/route.ts",
+  "src/app/api/brand-library/from-project-look/route.ts",
+]) {
+  const source = readFileSync(pinWritingRoute, "utf8");
+  assert.match(source, /requireBrandVisualUser/, `${pinWritingRoute} must keep the AI-image guard`);
+  assert.doesNotMatch(source, /requireBrandLibraryUser/, `${pinWritingRoute} must not open on the library guard`);
+}
+
 const watchdog = readFileSync("scripts/ops-watchdog.sh", "utf8");
 const localMonitor = readFileSync("scripts/local-prod-monitor.sh", "utf8");
 const reconcileScript = readFileSync("scripts/reconcile-ai-images.js", "utf8");
@@ -182,6 +194,51 @@ async function verifyLibraryAndImageGuards() {
     body: JSON.stringify({ payload: brandPayload }),
   }));
   assert.equal(created.status, 201, "an unpaid account can create a Brand Profile");
+  const { profileId } = await created.json() as { profileId: string };
+
+  // …but it must NOT be able to attach that profile to a project. The pin is a
+  // grandfather clause for AI-image rendering, so an open pin write would let a
+  // non-entitled account self-admit into the managed image route.
+  const brandRevision = await import("../src/app/api/editor-projects/[id]/brand-revision/route");
+  const project = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Unpinned project" },
+  });
+  const pinAttempt = await brandRevision.PUT(
+    new Request(`http://localhost/api/editor-projects/${project.id}/brand-revision`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileId }),
+    }),
+    { params: Promise.resolve({ id: project.id }) },
+  );
+  assert.equal(pinAttempt.status, 403, "pinning a Brand Profile to a project keeps the AI-image gate");
+  assert.equal((await pinAttempt.json() as { code: string }).code, "PAYMENT_REQUIRED");
+  const afterPinAttempt = await prisma.editorProject.findUnique({
+    where: { id: project.id },
+    select: { brandProfileRevisionId: true },
+  });
+  assert.equal(
+    afterPinAttempt?.brandProfileRevisionId,
+    null,
+    "a refused pin must leave no persisted Revision on the project",
+  );
+
+  // The two seams the escalation chained: with no pin, the render acceptance
+  // returns no admission, which is what makes POST /api/videos/jobs answer 403
+  // on its Hero RunPod branch for this account.
+  const { projectHasPersistedVisualPin } = await import("../src/lib/project-look.server");
+  const { resolveBrandVisualRenderAccess } = await import("../src/lib/brand-visual-job-acceptance.server");
+  const { resolveBrandVisualAccess } = await import("../src/lib/brand-visual-rollout.server");
+  const liveUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
+  const hasPersistedProjectPin = await projectHasPersistedVisualPin({ userId: user.id, projectId: project.id });
+  assert.equal(hasPersistedProjectPin, false, "the refused pin leaves no persisted visual pin");
+  const liveAccess = await resolveBrandVisualAccess(liveUser);
+  assert.equal(liveAccess.canUse, false);
+  assert.equal(
+    resolveBrandVisualRenderAccess({ requestsBrandVisualImage: true, hasPersistedProjectPin, liveAccess }),
+    null,
+    "an unpaid account cannot reach the managed AI-image route through an existing-pin grandfather clause",
+  );
 
   const quoted = await previewQuote.POST(new Request("http://localhost/api/brand-library/preview-quote", {
     method: "POST",

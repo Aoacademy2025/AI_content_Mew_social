@@ -11,7 +11,8 @@ Status: Release hardening verified locally; preserve current paid-public access 
   successfully delivered images during their seven-day Trial, once per protected
   identity. It never renews every 30 days and failed delivery restores allowance.
   FREE accounts outside an active Conversion Trial see the locked copy on the
-  AI-image actions; the Brand Library itself stays open to them (ADR 0059).
+  AI-image actions and on pinning a Brand Profile to a project; creating and
+  editing Brand Profiles stays open to them (ADR 0059).
 - Reused current Visual Beats cost 0. A script or look edit never starts a job;
   new/outdated beats are charged only after an explicit render or reroll.
 - Each initial AI B-roll window receives one generated candidate. There is no
@@ -68,10 +69,13 @@ BRAND_VISUAL_TEST_EMAILS=
   50% stage begins. It affects measurement only, never access. The health
   endpoint refuses to authorize 100% when this value is absent or invalid.
 
-Brand Library CRUD is open to every plan (ADR 0059); the percent/entitlement
-gates apply to AI-image actions only. Before deploy add Mew's e-mail to
-`BRAND_VISUAL_TEST_EMAILS` if she needs the internal image cohort from a
-non-ADMIN account.
+Creating, editing, publishing and deleting a Brand Profile is open to every plan
+(ADR 0059). Attaching a profile to a project — `PUT /api/editor-projects/<id>/brand-revision`
+and `POST /api/brand-library/from-project-look` — and every AI-image action stay
+behind the entitlement + rollout gates in wave 0, because a persisted project pin
+is an unconditional grandfather clause in the render acceptance (cohort
+`existing-pin`). Before deploy add Mew's e-mail to `BRAND_VISUAL_TEST_EMAILS` if
+she needs the internal image cohort from a non-ADMIN account.
 
 ## Pre-deploy checks
 
