@@ -8,6 +8,10 @@ const directory = mkdtempSync(join(tmpdir(), "brand-treatment-preflight-"));
 process.env.DATABASE_URL = `file:${join(directory, "test.db")}`;
 execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.env });
 
+/** Verbatim ranking rule. `expert-clarity` was first-ranked for 79% of prod
+ * pins because the prompt never said when a neutral explainer may win. */
+const NEUTRAL_LAST_RESORT_RULE = "expert-clarity and practical-documentary are the neutral last resort: rank one first only when the Dominant Narrative Mode is a plain explanation with no supernatural, historical, investigative, emotional human-story, product or business-technology frame. When such a frame governs the whole source, the matching preset must rank first.";
+
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const {
@@ -15,6 +19,56 @@ async function main() {
     createGeminiContentPreflightAnalyzer,
     resolveContentPreflight,
   } = await import("../src/lib/content-preflight.server");
+  const { stylePackForRecommendation } = await import("../src/lib/style-pack-catalog");
+
+  // The suggestion is derived from the ranking, never chosen by the model.
+  // `expert-clarity` is shared by two ACTIVE packs, so the recommended Visual
+  // Format is the tie-break; a treatment with no ACTIVE pack suggests nothing.
+  assert.equal(
+    stylePackForRecommendation({
+      treatmentPresetId: "expert-clarity",
+      visualFormatId: "simple-editorial-story",
+    })?.id,
+    "health-simple",
+  );
+  assert.equal(
+    stylePackForRecommendation({
+      treatmentPresetId: "expert-clarity",
+      visualFormatId: "clear-infographic",
+    })?.id,
+    "finance-clear",
+  );
+  assert.equal(
+    stylePackForRecommendation({
+      treatmentPresetId: "expert-clarity",
+      visualFormatId: "dramatic-comic",
+    })?.id,
+    "finance-clear",
+    "an unmatched format falls back to the first ACTIVE pack for that treatment",
+  );
+  assert.equal(
+    stylePackForRecommendation({
+      treatmentPresetId: "thai-supernatural-horror",
+      visualFormatId: "cinematic-realism",
+    })?.id,
+    "thai-ghost",
+  );
+  assert.equal(
+    stylePackForRecommendation({
+      treatmentPresetId: "modern-business-technology",
+      visualFormatId: "cinematic-realism",
+    }),
+    null,
+    "a treatment with no ACTIVE Style Pack suggests nothing",
+  );
+  assert.equal(
+    stylePackForRecommendation({
+      treatmentPresetId: "dark-story-true-crime",
+      visualFormatId: "cinematic-realism",
+    }),
+    null,
+    "a pending-benchmark pack is never suggested",
+  );
 
   const user = await prisma.user.create({
     data: {
@@ -91,6 +145,10 @@ async function main() {
   });
   assert.match(capturedPrompt, /Dominant Narrative Mode governing the whole Narrative Source/);
   assert.match(capturedPrompt, /Never choose from one keyword, quotation, example or isolated metaphor/);
+  assert.ok(
+    capturedPrompt.includes(NEUTRAL_LAST_RESORT_RULE),
+    "the prompt must carry the neutral-last-resort ranking rule verbatim",
+  );
   assert.match(
     capturedPrompt,
     /When Hard Scene Facts specify an exact count, every flexible field must describe that same counted set/i,
@@ -153,6 +211,68 @@ async function main() {
   assert.equal(preflight.visualBeats[0].hardSceneFacts.timeOfDay, "night");
   assert.equal(preflight.visualBeats[0].sceneIntensity, "escalating tension");
   assert.equal(preflight.formatRecommendation?.visualFormatId, "dramatic-comic");
+  assert.equal(preflight.suggestedStylePackId, "thai-ghost");
+
+  // Same analysis shape, different recommendation: the suggested pack follows
+  // the first-ranked treatment and the recommended Visual Format, and nothing
+  // in the model-facing contract carries a Style Pack id.
+  const suggestedPackFor = async (input: {
+    title: string;
+    text: string;
+    suggestedVisualFormatId: string;
+    rankedTreatmentPresetIds: [string, string, string];
+  }) => {
+    const scopedProject = await prisma.editorProject.create({
+      data: { userId: user.id, title: input.title },
+    });
+    const resolvedPreflight = await resolveContentPreflight({
+      userId: user.id,
+      projectId: scopedProject.id,
+      narrativeSource: { kind: "creator-script", text: input.text, windowCount: 1 },
+      analyzer: {
+        analyze: async () => ({
+          ...analysis,
+          suggestedVisualFormatId: input.suggestedVisualFormatId,
+          rankedTreatmentPresetIds: input.rankedTreatmentPresetIds,
+        }) as never,
+      },
+    });
+    return resolvedPreflight.suggestedStylePackId;
+  };
+
+  assert.equal(
+    await suggestedPackFor({
+      title: "Health explainer",
+      text: "นอนไม่พอส่งผลกับร่างกายอย่างไร",
+      suggestedVisualFormatId: "simple-editorial-story",
+      rankedTreatmentPresetIds: ["expert-clarity", "practical-documentary", "thai-human-drama"],
+    }),
+    "health-simple",
+  );
+  assert.equal(
+    await suggestedPackFor({
+      title: "Finance explainer",
+      text: "ดอกเบี้ยทบต้นทำงานอย่างไร",
+      suggestedVisualFormatId: "clear-infographic",
+      rankedTreatmentPresetIds: ["expert-clarity", "practical-documentary", "thai-human-drama"],
+    }),
+    "finance-clear",
+  );
+  assert.equal(
+    await suggestedPackFor({
+      title: "No active pack",
+      text: "ระบบหลังบ้านของแอปทำงานอย่างไร",
+      suggestedVisualFormatId: "cinematic-realism",
+      rankedTreatmentPresetIds: ["modern-business-technology", "expert-clarity", "practical-documentary"],
+    }),
+    null,
+    "a first-ranked treatment with no ACTIVE Style Pack suggests nothing",
+  );
+  assert.doesNotMatch(
+    capturedPrompt,
+    /suggestedStylePackId|stylePackId/i,
+    "the Style Pack suggestion is derived server-side and never asked of the model",
+  );
 
   const unsafeProject = await prisma.editorProject.create({
     data: { userId: user.id, title: "Unsafe real-person depiction" },

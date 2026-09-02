@@ -363,6 +363,26 @@ export function stylePackForTreatment(treatmentPresetId: string): StylePack | nu
   return STYLE_PACKS.find((pack) => pack.status === "active" && pack.treatmentPresetId === treatmentPresetId) ?? null;
 }
 
+/** The Style Pack a Content Preflight recommendation points at. The suggestion
+ * is derived from the analysis, never chosen by the model.
+ *
+ * A Treatment does not identify a pack on its own: `expert-clarity` is shared
+ * by `finance-clear` (clear-infographic) and `health-simple`
+ * (simple-editorial-story), so `stylePackForTreatment` alone would hand every
+ * health explainer the finance pack. The recommended Visual Format breaks that
+ * tie; when it matches no ACTIVE pack for the Treatment the first one still
+ * wins, and a Treatment with no ACTIVE pack suggests nothing at all. */
+export function stylePackForRecommendation(input: {
+  treatmentPresetId: string;
+  visualFormatId?: string | null;
+}): StylePack | null {
+  const candidates = STYLE_PACKS.filter(
+    (pack) => pack.status === "active" && pack.treatmentPresetId === input.treatmentPresetId,
+  );
+  if (candidates.length === 0) return null;
+  return candidates.find((pack) => pack.visualFormatId === input.visualFormatId) ?? candidates[0];
+}
+
 export const PACING_CADENCE_MULTIPLIER: Record<PacingLevel, number> = {
   slow: 1.6,
   normal: 1,
