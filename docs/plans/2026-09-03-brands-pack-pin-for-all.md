@@ -21,9 +21,9 @@
 
 ## Decisions (Mew, 2026-09-03)
 
-- **D1 Who can pin:** every plan including FREE (FREE is already capped at 2 clips / 30 days; pinning costs nothing). — *pending Mew*
-- **D2 Content Preflight for non-admitted pinned renders:** run it (one managed-Gemini text call per job, same class as keyword extraction; gives beats + `suggestedStylePackId`; the compiled treatment is simply not used for images). — *pending Mew*
-- **D3 Legacy pins:** one-off backfill stamps existing pins whose OWNER currently has image access (`internal` / `treatment-*`); all other legacy pins stay unadmitted (their owners still get live access whenever entitled — only self-admitted `rollout-wait` accounts lose the grandfather, which is the point of #430). — *pending Mew*
+- **D1 Who can pin:** every plan including FREE (FREE is already capped at 2 clips / 30 days; pinning costs nothing). — *decided 2026-09-03: as recommended*
+- **D2 Content Preflight for non-admitted pinned renders:** run it (one managed-Gemini text call per job, same class as keyword extraction; gives beats + `suggestedStylePackId`; the compiled treatment is simply not used for images). — *decided 2026-09-03: as recommended*
+- **D3 Legacy pins:** one-off backfill stamps existing pins whose OWNER currently has image access (`internal` / `treatment-*`); all other legacy pins stay unadmitted (their owners still get live access whenever entitled — only self-admitted `rollout-wait` accounts lose the grandfather, which is the point of #430). — *decided 2026-09-03: as recommended*
 
 ## Execution Directive
 
@@ -100,4 +100,4 @@ Rules: every pin writer computes the writer's live image decision for the OWNER 
 - Wave 2 treatments; per-clip กำหนดเอง semantics (open product call from wave 1).
 
 ## Status
-interviewed 2026-09-03 | approved: pending (Mew — D1–D3 to confirm at execute time; recommendations recorded) | executed: deferred to the next session (`/mew-kickoff execute docs/plans/2026-09-03-brands-pack-pin-for-all.md`) | delivered: -
+interviewed 2026-09-03 | approved: 2026-09-03 (Mew: "execute ตามแนะนำ" — D1–D3 as recommended) | executed: started 2026-09-03 | delivered: -
