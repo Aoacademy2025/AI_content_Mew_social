@@ -17,12 +17,16 @@ import {
   type BrandVisualLanguage,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
+import { STYLE_PACK_IDS, stylePack, type StylePack, type StylePackId } from "@/lib/style-pack-catalog";
+import { STYLE_PACK_UNAVAILABLE_MESSAGE, applyStylePackToPayload, stylePackOfPayload } from "@/lib/style-pack-apply";
+import { stylePackSnapshotOf } from "@/lib/style-pack-snapshot";
 import { limitsForPlan } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
 import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
 import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { normalizeHexColor } from "@/lib/hex-color";
 import {
+  parseProjectLook,
   parseProjectVisualContext,
   parseRevision,
   resolveProjectVisualContextFromSnapshots,
@@ -164,14 +168,35 @@ const STORED_READ_TEXT_CAPS: BrandProfileTextCaps = {
 const brandProfileCreatorWriteBaseSchema = brandProfileBaseSchema(CREATOR_WRITE_TEXT_CAPS);
 const brandProfileStoredReadBaseSchema = brandProfileBaseSchema(STORED_READ_TEXT_CAPS);
 
-function brandProfileVisualSchema<T extends z.ZodTypeAny, P extends z.ZodTypeAny>(
+/** Creator write boundary: only a pack that has cleared the Treatment
+ * Qualification Benchmark can be chosen for a new Draft or Revision (ADR 0058). */
+const activeStylePackIdSchema = z.enum(STYLE_PACK_IDS).nullable().default(null).refine(
+  (id) => id === null || stylePack(id).status === "active",
+  STYLE_PACK_UNAVAILABLE_MESSAGE,
+);
+
+/** Persisted read boundary: the pack id stays a known catalog id, but its
+ * CURRENT status is not re-litigated — a Revision published while a pack was
+ * active must stay readable and pinnable if the catalog later demotes that
+ * pack (ADR 0005). Same creator-write/stored-read split as the retired Visual
+ * Formats below (VISUAL_FORMAT_IDS vs SUPPORTED_VISUAL_FORMAT_IDS). */
+const storedStylePackIdSchema = z.enum(STYLE_PACK_IDS).nullable().default(null);
+
+function brandProfileVisualSchema<T extends z.ZodTypeAny, P extends z.ZodTypeAny, S extends z.ZodTypeAny>(
   formatIdSchema: T,
   paletteColorSchema: P,
+  stylePackIdSchema: S,
 ) {
   return z.object({
     primaryVisualFormatId: formatIdSchema,
     treatmentPolicy: z.enum(["adaptive", "locked"]).default("adaptive"),
     lockedTreatmentPresetId: z.enum(TREATMENT_PRESET_IDS).nullable().default(null),
+    // A Style Pack is one tap over the two axes above, never a third axis
+    // (ADR 0058): the pack resolves INTO format + treatment + palette +
+    // subtitle + tone. These two columns only record which pack produced the
+    // look, and at which catalog version, so publish can snapshot it.
+    stylePackId: stylePackIdSchema,
+    stylePackVersion: z.literal("v1.0.0").nullable().default(null),
     languageMode: z.enum(["defined", "none"]).optional(),
     palette: z.array(paletteColorSchema).min(1).max(6),
     // No `.min(1)`: personality is editable inside ตั้งค่าเพิ่มเติม and a
@@ -202,7 +227,11 @@ function brandProfileVisualSchema<T extends z.ZodTypeAny, P extends z.ZodTypeAny
  * Project Look or published Revision, and text fields are bounded by the
  * shared, tighter caps (F16). */
 export const brandProfilePayloadSchema = brandProfileCreatorWriteBaseSchema.extend({
-  visual: brandProfileVisualSchema(z.enum(VISUAL_FORMAT_IDS), creatorPaletteColorSchema),
+  visual: brandProfileVisualSchema(
+    z.enum(VISUAL_FORMAT_IDS),
+    creatorPaletteColorSchema,
+    activeStylePackIdSchema,
+  ),
 });
 
 /** Persisted read boundary: historical revisions keep their exact format ID
@@ -211,7 +240,11 @@ export const brandProfilePayloadSchema = brandProfileCreatorWriteBaseSchema.exte
  * legacy /api/brand-profiles route (or this library before the shared caps
  * landed) could have written. */
 export const storedBrandProfilePayloadSchema = brandProfileStoredReadBaseSchema.extend({
-  visual: brandProfileVisualSchema(z.enum(SUPPORTED_VISUAL_FORMAT_IDS), storedPaletteColorSchema),
+  visual: brandProfileVisualSchema(
+    z.enum(SUPPORTED_VISUAL_FORMAT_IDS),
+    storedPaletteColorSchema,
+    storedStylePackIdSchema,
+  ),
 });
 
 export type BrandProfilePayload = z.infer<typeof storedBrandProfilePayloadSchema>;
@@ -340,6 +373,12 @@ export function applyBrandRevisionDefaultsToProjectDraft(input: {
   const logo = normalizeLogoOverlayConfig(payload.brandMark);
   if (logo) next.logoOverlay = logo;
   else delete next.logoOverlay;
+  // The pack's pacing and music mood are project-level defaults, not per-clip
+  // edits: a Revision without a pack states the editor's own normal pacing and
+  // no music mood rather than leaving a previous Brand's values behind.
+  const pack = stylePackOfPayload(payload);
+  next.pacing = pack?.pacing ?? "normal";
+  next.musicMoodDefault = pack?.musicMood ?? null;
   return next;
 }
 
@@ -363,7 +402,17 @@ function revisionRecipe(payload: BrandProfilePayload) {
     lockedTreatmentPin: treatmentPolicy.policy === "locked"
       ? createCatalogTreatmentPin(treatmentPolicy.treatmentPresetId, "locked")
       : null,
+    stylePack: stylePackSnapshot(payload),
   };
+}
+
+/** Copy the pack's rendering inputs INTO the immutable recipe at publish time.
+ * A Revision is a promise about what a clip will look like (ADR 0005), so a
+ * later catalog edit — new stock mood, different pacing, a demoted pack — must
+ * never reach back and change an existing Revision. */
+function stylePackSnapshot(payload: BrandProfilePayload) {
+  const pack = stylePackOfPayload(payload);
+  return pack ? stylePackSnapshotOf(pack) : null;
 }
 
 function completedJobPromotionRecipe(
@@ -417,6 +466,9 @@ function completedJobPromotionRecipe(
     defaultTreatment: context.treatment,
     treatmentPolicy: treatmentPolicy.policy,
     lockedTreatmentPin,
+    // Every Revision recipe carries the same pack key, so a reader never has to
+    // tell "no pack" apart from "recipe written by the promotion path".
+    stylePack: stylePackSnapshot(payload),
   };
 }
 
@@ -748,6 +800,68 @@ async function projectLookPromotionReplay(input: {
   };
 }
 
+/** The Style Pack the look being promoted is currently promising, read from
+ * the same immutable snapshot the promotion will copy: a rendered clip's own
+ * pinned context, otherwise the project's saved look.
+ *
+ * Promotion is deliberately server-resolved. The /brands form seeds itself
+ * from the clip and can be edited before "save as brand", so a body that
+ * simply forgot (or dropped) the pack would otherwise publish a Revision whose
+ * recipe has no pack — the render would then search with no Stock Mood while
+ * the creator believes they saved the look they were watching.
+ *
+ * A pack the catalog has since demoted (ADR 0058) is skipped rather than
+ * applied: the creator-write boundary refuses a non-active pack for a NEW
+ * Revision, and failing the whole promotion over a catalog decision the
+ * creator never made would be worse than promoting the same look unlinked. */
+async function promotedLookStylePackId(input: {
+  userId: string;
+  projectId: string;
+  videoJobId?: string;
+}): Promise<StylePackId | null> {
+  let packId: StylePackId | null = null;
+  if (input.videoJobId) {
+    // A rendered clip already froze its whole look, pack included.
+    const job = await prisma.videoJob.findFirst({
+      where: { id: input.videoJobId, userId: input.userId, projectId: input.projectId },
+      select: { projectVisualContextJson: true },
+    });
+    packId = parseProjectVisualContext(job?.projectVisualContextJson)?.stylePack?.id ?? null;
+  } else {
+    // Same precedence as every other reader: this clip's own look first, the
+    // Brand it is pinned to second (`resolveProjectVisualContextFromSnapshots`).
+    const project = await prisma.editorProject.findFirst({
+      where: { id: input.projectId, userId: input.userId },
+      select: {
+        projectLookJson: true,
+        brandProfileRevision: { select: { visualRecipeJson: true } },
+      },
+    });
+    const look = parseProjectLook(project?.projectLookJson);
+    packId = (look && "stylePack" in look ? look.stylePack?.id ?? null : null)
+      ?? parseRevision(project?.brandProfileRevision?.visualRecipeJson)?.stylePack?.id
+      ?? null;
+  }
+  if (!packId) return null;
+  return stylePack(packId).status === "active" ? packId : null;
+}
+
+/** Is this body still describing the SAME look the pack resolved for the clip?
+ *
+ * This decides whether the pack is re-linked for the creator (they never had to
+ * carry its id) or whether they have edited the look and must go through the
+ * normal exact-promotion conflict instead. Comparing the pack-owned visual axes
+ * is what tells the two apart: the /brands form seeds them straight from the
+ * clip, so an untouched body matches by construction, and any edit to format,
+ * palette or personality — the axes a pack owns — does not. Silently reapplying
+ * the pack over an edit would throw the creator's change away without a word. */
+function payloadStillWearsPack(payload: BrandProfilePayload, pack: StylePack): boolean {
+  return payload.visual.primaryVisualFormatId === pack.visualFormatId
+    && payload.visual.personality === pack.personality
+    && payload.visual.palette.length === pack.palette.length
+    && payload.visual.palette.every((color, index) => color === pack.palette[index]);
+}
+
 async function promoteProjectLookInOneTransaction(input: {
   userId: string;
   projectId: string;
@@ -755,7 +869,15 @@ async function promoteProjectLookInOneTransaction(input: {
   preflightId?: string;
   payload: BrandProfilePayload;
 }) {
-  const payload = parsedPayload(input.payload);
+  const submitted = parsedPayload(input.payload);
+  const promotedPackId = await promotedLookStylePackId(input);
+  const promotedPack = promotedPackId ? stylePack(promotedPackId) : null;
+  // Re-parsed so the pack's own palette is canonicalised exactly like a
+  // creator-typed one: `payloadJson` is this promotion's replay key, so the
+  // same request must always serialise to the same bytes.
+  const payload = promotedPack && payloadStillWearsPack(submitted, promotedPack)
+    ? parsedPayload(applyStylePackToPayload(submitted, promotedPack))
+    : submitted;
   const payloadJson = JSON.stringify(payload);
   const existing = await projectLookPromotionReplay({ ...input, payloadJson });
   if (existing) return existing;

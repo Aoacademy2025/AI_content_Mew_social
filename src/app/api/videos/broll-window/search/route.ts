@@ -15,6 +15,7 @@ import {
   normalizeBrollVisualStyle,
   type BrollPreferenceInput,
 } from "@/lib/broll-preferences";
+import { parseStockMoodRequest } from "@/lib/style-pack-snapshot";
 import {
   searchWindowCandidatesWithDegrade,
   type WindowSearchOutcome,
@@ -81,7 +82,7 @@ export async function POST(req: Request) {
   }
 
   const body = (await req.json().catch(() => null)) as
-    | { keyword?: unknown; brollRegionPreference?: unknown; brollVisualStyle?: unknown }
+    | { keyword?: unknown; brollRegionPreference?: unknown; brollVisualStyle?: unknown; stockMood?: unknown }
     | null;
   const keyword = typeof body?.keyword === "string" ? body.keyword.trim().slice(0, 200) : "";
   if (!keyword) {
@@ -98,9 +99,18 @@ export async function POST(req: Request) {
   const pexelsKey = user.pexelsKey ? decryptKey(user.pexelsKey) : null;
   const pixabayKey = user.pixabayKey ? decryptKey(user.pixabayKey) : null;
 
+  // Unlike the render pipeline the editor client calls this route directly, so
+  // the Stock Mood it shows in Step 2 arrives in the body. Never trusted raw —
+  // and a malformed one is IGNORED, so a bad mood degrades the search to the
+  // plain keyword instead of denying the creator a swap.
+  const stockMood = parseStockMoodRequest(body?.stockMood, { route: "POST /api/videos/broll-window/search" });
   const preference: BrollPreferenceInput = {
     brollRegionPreference: normalizeBrollRegionPreference(body?.brollRegionPreference),
-    brollVisualStyle: normalizeBrollVisualStyle(body?.brollVisualStyle),
+    // The editor stopped sending this with the Step-2 menu; the route keeps
+    // accepting it so a browser tab still running pre-wave-1 JS across a deploy
+    // behaves as it did. One style system (ADR 0057): a pack retires it.
+    brollVisualStyle: stockMood ? undefined : normalizeBrollVisualStyle(body?.brollVisualStyle),
+    stockMood,
   };
   const styledKeyword = applyBrollPreferenceToSearchQuery(keyword, preference, { role: "primary" }) || keyword;
 

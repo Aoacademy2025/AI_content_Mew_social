@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useId, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { ChevronDown, Loader2, Sparkles, Upload, WandSparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 import { normalizeHexColor } from "@/lib/hex-color";
+import { VisualFormatPicker } from "./VisualFormatPicker";
 import type { BrandPayload, LibraryResponse, VisualProposal } from "./types";
 
 const NO_SUBTITLE_PRESET = "__clip-default__";
@@ -355,6 +356,158 @@ function BrandMarkPreview({
   );
 }
 
+/** ADR 0058: the Visual Format × narrative-treatment axes a Style Pack
+ * resolves. Collapsed by default while a pack is selected — the pack already
+ * set these, so a creator opens this only to look or to go custom. Editing
+ * anything inside (`updateVisual` on a pack-owned field) unlinks the pack via
+ * the same call, so this section never shows a half-applied pack. */
+function CustomLookSection({
+  draft,
+  updateVisual,
+  library,
+  disabled,
+}: {
+  draft: BrandPayload;
+  updateVisual: <K extends keyof BrandPayload["visual"]>(
+    key: K,
+    value: BrandPayload["visual"][K],
+  ) => void;
+  library: LibraryResponse;
+  disabled: boolean;
+}) {
+  const hasPack = draft.visual.stylePackId != null;
+  const [open, setOpen] = useState(!hasPack);
+  const hadPackRef = useRef(hasPack);
+
+  useEffect(() => {
+    // Collapses/reopens this nested section only on the moment a pack becomes
+    // linked or unlinked; a manual toggle in between (hasPack unchanged) is
+    // left alone.
+    if (hasPack !== hadPackRef.current) {
+      setOpen(!hasPack);
+      hadPackRef.current = hasPack;
+    }
+  }, [hasPack]);
+
+  return (
+    <section className="rounded-lg border border-border bg-background/60">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="brand-custom-look-panel"
+        onClick={() => setOpen((current) => !current)}
+        className="flex w-full items-center justify-between gap-3 p-3 text-left transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-violet-500/50"
+      >
+        <span>
+          <span className="block text-[13px] font-semibold text-foreground">กำหนดเอง</span>
+          <span className="mt-1 block text-xs text-muted-foreground">
+            {hasPack ? "ใช้ค่าจากชุดสไตล์ · แก้เองได้ในกำหนดเอง" : "แนวภาพ สี และแนวเล่าเรื่องของแบรนด์"}
+          </span>
+        </span>
+        <ChevronDown
+          className={cn(
+            "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      {open && (
+        <div id="brand-custom-look-panel" className="space-y-4 border-t border-border p-3">
+          <VisualFormatPicker
+            formats={library.visualFormats}
+            value={draft.visual.primaryVisualFormatId}
+            onChange={(id) => updateVisual("primaryVisualFormatId", id)}
+            disabled={disabled}
+          />
+          <div>
+            <p className="text-[13px] font-semibold text-foreground">สีประจำแบรนด์</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              ระบบจะใช้สีเหล่านี้เป็นโทนของภาพ ไม่ใช่วาดเป็นวัตถุในภาพ
+            </p>
+            <div className="mt-3 grid gap-3 lg:grid-cols-3">
+              {draft.visual.palette.map((color, index) => (
+                <HexColorField
+                  key={index}
+                  value={color}
+                  index={index}
+                  disabled={disabled}
+                  onApply={(value) =>
+                    updateVisual(
+                      "palette",
+                      draft.visual.palette.map((item, itemIndex) =>
+                        itemIndex === index ? value : item,
+                      ),
+                    )
+                  }
+                />
+              ))}
+            </div>
+          </div>
+          <TextField
+            id="brand-visual-personality"
+            label="บุคลิกของภาพ"
+            value={draft.visual.personality}
+            onChange={(value) => updateVisual("personality", value)}
+            disabled={disabled}
+            maxLength={500}
+          />
+          <FieldShell
+            id="brand-treatment-policy"
+            label="แนวเล่าเรื่องของแต่ละคลิป"
+            helper="ค่าเริ่มต้นให้ AI อ่านทั้งเนื้อหาและเลือกจากแนวที่ตรวจแล้ว โดยไม่เพิ่มขั้นตอนก่อนสร้างคลิป"
+          >
+            <Select
+              value={draft.visual.treatmentPolicy}
+              disabled={disabled}
+              onValueChange={(value) => {
+                if (value === "adaptive") {
+                  updateVisual("treatmentPolicy", "adaptive");
+                  updateVisual("lockedTreatmentPresetId", null);
+                } else {
+                  updateVisual("treatmentPolicy", "locked");
+                  if (!draft.visual.lockedTreatmentPresetId) {
+                    updateVisual("lockedTreatmentPresetId", library.treatmentPresets[0]?.id ?? null);
+                  }
+                }
+              }}
+            >
+              <SelectTrigger id="brand-treatment-policy" className="h-10">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="adaptive">AI เลือกแนวเล่าเรื่องตามเนื้อหา</SelectItem>
+                <SelectItem value="locked">ใช้แนวเล่าเรื่องเดิมทุกคลิป</SelectItem>
+              </SelectContent>
+            </Select>
+          </FieldShell>
+          {draft.visual.treatmentPolicy === "locked" && (
+            <FieldShell id="brand-locked-treatment" label="แนวเล่าเรื่องที่ใช้ทุกคลิป">
+              <Select
+                value={draft.visual.lockedTreatmentPresetId ?? undefined}
+                disabled={disabled}
+                onValueChange={(value) => updateVisual(
+                  "lockedTreatmentPresetId",
+                  value as BrandPayload["visual"]["lockedTreatmentPresetId"],
+                )}
+              >
+                <SelectTrigger id="brand-locked-treatment" className="h-10">
+                  <SelectValue placeholder="เลือกแนวเล่าเรื่อง" />
+                </SelectTrigger>
+                <SelectContent>
+                  {library.treatmentPresets.map((preset) => (
+                    <SelectItem key={preset.id} value={preset.id}>{preset.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </FieldShell>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function AdvancedSettings({
   open,
   onOpenChange,
@@ -507,88 +660,12 @@ export function AdvancedSettings({
           </Group>
 
           <Group title="โทนภาพของแบรนด์">
-            <div>
-              <p className="text-[13px] font-semibold text-foreground">สีประจำแบรนด์</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                ระบบจะใช้สีเหล่านี้เป็นโทนของภาพ ไม่ใช่วาดเป็นวัตถุในภาพ
-              </p>
-              <div className="mt-3 grid gap-3 lg:grid-cols-3">
-                {draft.visual.palette.map((color, index) => (
-                  <HexColorField
-                    key={index}
-                    value={color}
-                    index={index}
-                    disabled={disabled}
-                    onApply={(value) =>
-                      updateVisual(
-                        "palette",
-                        draft.visual.palette.map((item, itemIndex) =>
-                          itemIndex === index ? value : item,
-                        ),
-                      )
-                    }
-                  />
-                ))}
-              </div>
-            </div>
-            <TextField
-              id="brand-visual-personality"
-              label="บุคลิกของภาพ"
-              value={draft.visual.personality}
-              onChange={(value) => updateVisual("personality", value)}
+            <CustomLookSection
+              draft={draft}
+              updateVisual={updateVisual}
+              library={library}
               disabled={disabled}
-              maxLength={500}
             />
-            <FieldShell
-              id="brand-treatment-policy"
-              label="แนวเล่าเรื่องของแต่ละคลิป"
-              helper="ค่าเริ่มต้นให้ AI อ่านทั้งเนื้อหาและเลือกจากแนวที่ตรวจแล้ว โดยไม่เพิ่มขั้นตอนก่อนสร้างคลิป"
-            >
-              <Select
-                value={draft.visual.treatmentPolicy}
-                disabled={disabled}
-                onValueChange={(value) => {
-                  if (value === "adaptive") {
-                    updateVisual("treatmentPolicy", "adaptive");
-                    updateVisual("lockedTreatmentPresetId", null);
-                  } else {
-                    updateVisual("treatmentPolicy", "locked");
-                    if (!draft.visual.lockedTreatmentPresetId) {
-                      updateVisual("lockedTreatmentPresetId", library.treatmentPresets[0]?.id ?? null);
-                    }
-                  }
-                }}
-              >
-                <SelectTrigger id="brand-treatment-policy" className="h-10">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="adaptive">AI เลือกแนวเล่าเรื่องตามเนื้อหา</SelectItem>
-                  <SelectItem value="locked">ใช้แนวเล่าเรื่องเดิมทุกคลิป</SelectItem>
-                </SelectContent>
-              </Select>
-            </FieldShell>
-            {draft.visual.treatmentPolicy === "locked" && (
-              <FieldShell id="brand-locked-treatment" label="แนวเล่าเรื่องที่ใช้ทุกคลิป">
-                <Select
-                  value={draft.visual.lockedTreatmentPresetId ?? undefined}
-                  disabled={disabled}
-                  onValueChange={(value) => updateVisual(
-                    "lockedTreatmentPresetId",
-                    value as BrandPayload["visual"]["lockedTreatmentPresetId"],
-                  )}
-                >
-                  <SelectTrigger id="brand-locked-treatment" className="h-10">
-                    <SelectValue placeholder="เลือกแนวเล่าเรื่อง" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {library.treatmentPresets.map((preset) => (
-                      <SelectItem key={preset.id} value={preset.id}>{preset.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </FieldShell>
-            )}
             <NotesField
               id="brand-visual-notes"
               label="โน้ตทิศทางภาพ"

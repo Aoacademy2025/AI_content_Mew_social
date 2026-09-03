@@ -8,6 +8,7 @@ import {
   promoteProjectLookToBrandProfile,
 } from "@/lib/brand-profile-library.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { stylePackSnapshotFromJson } from "@/lib/style-pack-snapshot";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import {
   brandLookIdentityKey,
@@ -105,6 +106,32 @@ export async function POST(req: Request) {
         }),
       },
     }).catch(() => {});
+
+    // Task 9 (Telemetry, fix-up): a pack CHOSEN for the clip being promoted is
+    // still a Brand-surface selection — this route is the OTHER "internal
+    // create variant" (createBrandProfileFromPayloadInTransaction with a
+    // visualRecipeOverride), so it must emit next to its own persisted
+    // revision, same as the publish/create routes. Read the ACTUAL persisted
+    // pack off the revision (not the raw request payload) — the override can
+    // differ from what the client submitted. `!promoted.replayed` keeps this
+    // to ONE emit per created profile: a replay reattaches an existing
+    // Revision, it never creates a new one, so the original creation already
+    // counted this selection.
+    if (!promoted.replayed) {
+      const pinnedPack = stylePackSnapshotFromJson(promoted.revision.visualRecipeJson);
+      if (pinnedPack) {
+        await recordTelemetryEvent(auth.user.id, {
+          name: "style_pack_selected",
+          source: "server",
+          step: "brands.publish",
+          properties: {
+            packId: pinnedPack.id,
+            surface: "brand",
+            version: pinnedPack.version,
+          },
+        }).catch(() => {});
+      }
+    }
 
     return NextResponse.json({
       profileId: promoted.profile.id,

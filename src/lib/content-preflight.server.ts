@@ -9,6 +9,7 @@ import {
   type TreatmentPresetId,
 } from "@/lib/brand-treatment-catalog";
 import { VISUAL_FORMAT_IDS, type VisualFormatId } from "@/lib/brand-visual-system";
+import { stylePackForRecommendation, type StylePackId } from "@/lib/style-pack-catalog";
 import { prisma } from "@/lib/prisma";
 import {
   linkCompletedVisualBeatAsset,
@@ -273,6 +274,10 @@ export type ResolvedContentPreflight = {
   dominantNarrativeMode: string;
   suggestedVisualFormatId: VisualFormatId;
   suggestedTreatment: SuggestedTreatment;
+  /** Derived server-side from the first-ranked treatment and the recommended
+   * Visual Format — never returned by the model, never part of its schema.
+   * Null when no ACTIVE Style Pack uses that treatment. */
+  suggestedStylePackId: StylePackId | null;
   rankedTreatmentPresetIds: TreatmentPresetId[];
   storyEntities: ContentPreflightAnalysis["storyEntities"];
   formatRecommendation: ContentPreflightAnalysis["formatRecommendation"];
@@ -831,6 +836,12 @@ export function createGeminiContentPreflightAnalyzer(
         `Choose suggestedVisualFormatId from: ${VISUAL_FORMAT_IDS.join(", ")}.`,
         `Rank exactly three distinct treatment IDs from: ${TREATMENT_PRESET_IDS.join(", ")}. The first ID is the single recommendation for the whole video.`,
         "Choose treatment from the Dominant Narrative Mode governing the whole Narrative Source. Never choose from one keyword, quotation, example or isolated metaphor. A ghost metaphor in a business explainer is not supernatural horror; a continuing supernatural frame may be.",
+        // Without this the ranking collapses into a monoculture: `expert-clarity`
+        // was first-ranked for 79% of pins on prod, including ghost, history and
+        // news sources whose frame governs the whole script. The rule names when
+        // a neutral explainer may win rather than adding per-genre keywords —
+        // the decision stays the Dominant Narrative Mode.
+        "expert-clarity and practical-documentary are the neutral last resort: rank one first only when the Dominant Narrative Mode is a plain explanation with no supernatural, historical, investigative, emotional human-story, product or business-technology frame. When such a frame governs the whole source, the matching preset must rank first.",
         "The server owns treatment versions. Return IDs only and never invent a treatment label, prompt or version.",
         "A Format Recommendation is optional guidance only. Return null when the inherited format is already strong. Never describe another qualified format as a conflict, warning or generation requirement.",
         "Resolve recurring named people, animals, objects and places as Story Entities. properName is an internal linkage key only. renderingDescription must lead with an unambiguous positive entity type and durable attributes; never use a bare proper name as the rendering description and never rely on negation such as 'not a gorilla'.",
@@ -1169,6 +1180,12 @@ function resolved(row: StoredPreflight, cached: boolean): ResolvedContentPreflig
       label: treatmentPresetThaiLabel(treatmentPin),
       rationale: row.treatmentRecommendationRationale,
     },
+    // Derived on read from two already-stored columns, so no stored row can
+    // ever hold a pack id that the catalog has since retired or paused.
+    suggestedStylePackId: stylePackForRecommendation({
+      treatmentPresetId: treatmentPin.presetId,
+      visualFormatId: row.suggestedVisualFormatId,
+    })?.id ?? null,
     rankedTreatmentPresetIds,
     storyEntities,
     formatRecommendation,

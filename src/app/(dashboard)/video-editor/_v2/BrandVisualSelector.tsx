@@ -16,14 +16,27 @@ import {
   buildTreatmentChoiceGroups,
   buildVisualSummary,
 } from "@/lib/brand-treatment-presentation";
+import { StylePackPicker } from "@/app/(dashboard)/brands/_components/StylePackPicker";
+import type { StylePackId } from "@/lib/style-pack-catalog";
 import {
   sceneContentPolicyFromPreference,
   type SceneContentPolicyWarning,
 } from "@/lib/scene-content-policy";
 import type { V2Project } from "./useV2Project";
+import type { ProjectStylePack } from "./project-style-pack";
 import { color, font, radius } from "./tokens";
 
 type VisualFormat = { id: ActiveVisualFormatId; label: string; description: string; previewUrl: string };
+/** Exactly what /api/brand-library publishes about a ready-made style. The
+ * catalog itself never ships to the browser: only ACTIVE styles are listed
+ * there (ADR 0058), so a style still awaiting its benchmark cannot be tapped. */
+type StylePackOption = {
+  id: StylePackId;
+  thaiLabel: string;
+  tagline: string;
+  palette: [string, string, string];
+  sampleImage: string;
+};
 type TreatmentOption = { id: TreatmentPresetId; label: string };
 type Profile = { id: string; name: string; frozen: boolean; legacyVisualFormat: boolean; activeRevisionNumber: number; activeRevisionId: string | null };
 type Preflight = {
@@ -47,6 +60,7 @@ type SelectedBrandProfile = { profileId: string; name: string; revisionId: strin
 export type BrandVisualPreflightStatus = "idle" | "loading" | "ready" | "error";
 type PendingChange =
   | { kind: "look"; formatId: ActiveVisualFormatId; treatmentPresetId: TreatmentPresetId; label: string; existingImageCount: number; quotedCredits: number }
+  | { kind: "pack"; packId: StylePackId | null; label: string; existingImageCount: number; quotedCredits: number }
   | { kind: "profile"; profileId: string; revisionId?: string; label: string; existingImageCount: number; quotedCredits: number };
 
 const TARGET_CLIP_COUNT_SETTLE_MS = 300;
@@ -120,6 +134,8 @@ export function BrandVisualSelector({
 }) {
   const [formats, setFormats] = useState<VisualFormat[]>([]);
   const [treatmentPresets, setTreatmentPresets] = useState<TreatmentOption[]>([]);
+  const [stylePacks, setStylePacks] = useState<StylePackOption[]>([]);
+  const [packPickerOpen, setPackPickerOpen] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [preflight, setPreflight] = useState<Preflight | null>(null);
   const [context, setContext] = useState<Context | null>(null);
@@ -186,6 +202,7 @@ export function BrandVisualSelector({
     setFormats(result.body.visualFormats ?? []);
     setTreatmentPresets(result.body.treatmentPresets ?? []);
     setProfiles(result.body.profiles ?? []);
+    setStylePacks((result.body.stylePacks ?? []) as StylePackOption[]);
   }
 
   async function loadContext(signal?: AbortSignal) {
@@ -233,6 +250,10 @@ export function BrandVisualSelector({
         setTreatmentPresets(visualResult.body.treatmentPresets);
       }
       setSelectedBrandProfile(visualResult.body.selectedBrandProfile ?? null);
+      // The pinned Style Pack drives Step 2's read-only footage-style line AND
+      // the per-window search body, so it is lifted into project state rather
+      // than kept local to this panel.
+      p.setProjectStylePack((visualResult.body.stylePack as ProjectStylePack | null) ?? null);
       p.setBrandContentPreflightId(resolvedPreflight?.id ?? null);
       if (narrative) onPreflightStatusChange?.("ready");
       else onPreflightStatusChange?.("idle");
@@ -247,6 +268,7 @@ export function BrandVisualSelector({
     } catch (caught) {
       if ((caught as Error).name !== "AbortError") {
         p.setBrandContentPreflightId(null);
+        p.setProjectStylePack(null);
         onPolicyWarningsChange?.([]);
         setError(caught instanceof Error ? caught.message : "โหลดแนวภาพไม่สำเร็จ");
         onPreflightStatusChange?.("error");
@@ -352,7 +374,74 @@ export function BrandVisualSelector({
         treatmentPin: look?.treatmentPin,
       });
       p.setHasPersistedVisualPin(true);
+      // Choosing a format or a narrative style unlinks the ready-made style
+      // SERVER-side, so the panel must re-read what is actually pinned. Without
+      // this the summary keeps naming the old style, Step 2 keeps printing
+      // "จากคลิปนี้", and the per-window search keeps sending its stock mood.
+      await loadContext();
       toast.success(applyMode === "regenerate-all" ? "บันทึกแนวภาพแล้ว — รอคุณยืนยันฉากที่จะสร้างใหม่" : "บันทึกแนวภาพของคลิปนี้แล้ว");
+    }
+    setChanging(false);
+  }
+
+  /** Choosing a ready-made style for THIS clip. It travels the same Project
+   * Look save path as the format/treatment controls below — same ownership
+   * check, same existing-image confirmation, same image guard (ADR 0059
+   * amendment). The server resolves the style: the browser sends only its id,
+   * never a format, treatment, palette or stock mood of its own.
+   *
+   * `null` is "กำหนดเอง": unlink the style but keep the look it resolved, then
+   * hand the creator the format/treatment controls that were always there.
+   *
+   * This is also the ONE seam every per-clip style choice passes through, so a
+   * later `style_pack_selected` / `surface: "project"` event has exactly one
+   * place to be emitted from. */
+  async function applyStylePackChoice(
+    packId: StylePackId | null,
+    applyMode?: "regenerate-all",
+  ) {
+    if (!p.projectId) return;
+    let look: { look: Record<string, unknown> };
+    if (packId) {
+      look = { look: { stylePackId: packId } };
+    } else {
+      setPackPickerOpen(false);
+      const keptFormatId = selectedActiveFormat?.id;
+      const keptTreatmentPresetId = selectedTreatmentPresetId;
+      // Nothing linked yet, or nothing resolved to keep: just reveal the
+      // controls instead of writing a look the creator never chose.
+      if (!p.projectStylePack || !keptFormatId || !keptTreatmentPresetId) return;
+      look = { look: { visualFormatId: keptFormatId, treatmentPresetId: keptTreatmentPresetId, stylePackId: null } };
+    }
+    setChanging(true); setPending(null);
+    const result = await payload(await fetch(`/api/editor-projects/${encodeURIComponent(p.projectId)}/visual-context`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...look, applyMode, preflightId: preflight?.id }),
+    }));
+    if (result.response.status === 409 && result.body.code === "LOOK_CHANGE_CONFIRMATION_REQUIRED") {
+      // Unlinking is a look change too: it must offer the same all-or-cancel
+      // confirmation, never a dead-end error the creator cannot act on.
+      setPending({
+        kind: "pack",
+        packId,
+        label: packId
+          ? stylePacks.find((pack) => pack.id === packId)?.thaiLabel ?? packId
+          : "กำหนดเอง",
+        existingImageCount: result.body.existingImageCount,
+        quotedCredits: result.body.quotedCredits,
+      });
+      setExpanded(true);
+    } else if (!result.response.ok) {
+      toast.error(result.body.error || "เปลี่ยนสไตล์ของคลิปนี้ไม่สำเร็จ");
+    } else {
+      p.setHasPersistedVisualPin(true);
+      setPackPickerOpen(false);
+      // The authoritative style — including the exact footage mood the
+      // per-window search must send back — is only known to the server, so the
+      // panel re-reads it instead of guessing from the card that was tapped.
+      await loadContext();
+      toast.success(packId ? "ใช้สไตล์นี้กับคลิปนี้แล้ว" : "คลิปนี้กำหนดแนวภาพเองแล้ว");
     }
     setChanging(false);
   }
@@ -427,9 +516,14 @@ export function BrandVisualSelector({
   const visibleTreatmentChoices = showAllTreatments
     ? treatmentChoices?.all ?? []
     : treatmentChoices?.featured ?? [];
-  const visualSummary = selectedFormatLabel
-    ? buildVisualSummary(selectedFormatLabel, treatment, context?.legacyCustomTreatment)
-    : treatment;
+  const activeStylePack = p.projectStylePack
+    ? { thaiLabel: p.projectStylePack.thaiLabel, source: p.projectStylePack.source }
+    : null;
+  const visualSummary = activeStylePack
+    ? buildVisualSummary("", treatment, false, activeStylePack)
+    : selectedFormatLabel
+      ? buildVisualSummary(selectedFormatLabel, treatment, context?.legacyCustomTreatment)
+      : treatment;
   const pendingBrandProfileId = pending?.kind === "profile" ? pending.profileId : null;
   const selectedLibraryProfile = selectedBrandProfile
     ? profiles.find((profile) => profile.id === selectedBrandProfile.profileId) ?? null
@@ -449,6 +543,8 @@ export function BrandVisualSelector({
     if (!pending) return;
     if (pending.kind === "look") {
       void applyLook(pending.formatId, pending.treatmentPresetId, "regenerate-all");
+    } else if (pending.kind === "pack") {
+      void applyStylePackChoice(pending.packId, "regenerate-all");
     } else {
       void pinProfile(pending.profileId, "regenerate-all", pending.revisionId);
     }
@@ -519,6 +615,32 @@ export function BrandVisualSelector({
       {error && <div role="alert" className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg px-3 py-2.5" style={{ background: "rgba(248,113,113,.09)", color: color.dangerText, fontSize: 11 }}><span className="min-w-0 flex-1"><span className="block">{error}</span><span className="mt-0.5 block" style={{ color: color.textSecondary, fontSize: 10 }}>ยังไม่มีการเปลี่ยนแบรนด์หรือคิดเครดิตภาพ</span></span><button type="button" onClick={() => void loadContext()} className="min-h-9 rounded-md px-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-300/70" style={{ border: "1px solid rgba(248,113,113,.32)", color: color.dangerText, fontWeight: 600 }}>ลองวิเคราะห์อีกครั้ง</button></div>}
       {!narrative && canLoadWithoutNarrative && <div className="mb-3 rounded-lg px-3 py-2" style={{ background: "rgba(56,189,248,.08)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>เลือกแบรนด์หรือแนวภาพล่วงหน้าได้ ระบบจะอ่านคำพูดจากเสียงหลังเริ่มสร้าง แล้วใช้ผลนั้นกับภาพของคลิปนี้</div>}
       {showInitialLoading ? <div className="flex items-center gap-2 py-5" style={{ color: color.textFaint, fontSize: 11 }}><Loader2 size={14} className="animate-spin" /> กำลังวิเคราะห์แนวภาพและฉากของคลิปครั้งแรก…</div> : <>
+        {canManageBrandVisual && stylePacks.length > 0 && <div className="mb-3 rounded-xl p-3" style={{ border: `1px solid ${color.cardBorder}`, background: "rgba(255,255,255,.025)" }}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="min-w-0">
+              <span className="block" style={{ color: color.textSecondary, font: `500 11px ${font.heading}` }}>สไตล์ของคลิปนี้</span>
+              <span className="mt-0.5 block" style={{ color: color.textFaint, fontSize: 10, lineHeight: 1.45 }}>{activeStylePack ? `${activeStylePack.thaiLabel} · ${activeStylePack.source === "project" ? "จากคลิปนี้" : "จากแบรนด์"}` : "ยังไม่ได้เลือกสไตล์สำเร็จรูป · ระบบเลือกจากเนื้อหาให้"}</span>
+            </span>
+            <button
+              type="button"
+              disabled={changing}
+              aria-expanded={packPickerOpen}
+              onClick={() => setPackPickerOpen((value) => !value)}
+              className="min-h-9 shrink-0 rounded-lg px-3 disabled:opacity-40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70"
+              style={{ border: `1px solid ${color.info}`, color: color.infoText, fontSize: 10.5, fontWeight: 600 }}
+            >เปลี่ยนเฉพาะคลิปนี้</button>
+          </div>
+          {packPickerOpen && <div className="mt-3">
+            <StylePackPicker
+              packs={stylePacks}
+              value={(p.projectStylePack?.packId ?? null) as StylePackId | null}
+              disabled={changing}
+              onChange={(id) => void applyStylePackChoice(id)}
+              title="สไตล์ของคลิปนี้"
+              description="เลือกสไตล์สำเร็จรูปให้คลิปนี้คลิปเดียว ไม่กระทบคลิปอื่นของแบรนด์ หรือเลือก กำหนดเอง เพื่อตั้งรูปแบบภาพและแนวเล่าเรื่องด้านล่างเอง"
+            />
+          </div>}
+        </div>}
         {preflight && <div className="mb-3 flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1 rounded-full px-2 py-1" style={{ background: "rgba(56,189,248,.10)", color: color.infoText, fontSize: 10 }}><Sparkles size={11} /> แนะนำหลัก · {preflight.suggestedTreatment.label}</span><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight.suggestedTreatment.rationale}</span></div>}
         {preflight?.formatRecommendation && preflight.formatRecommendation.visualFormatId !== selected && <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl px-3 py-2.5" style={{ border: `1px solid ${color.cardBorder}`, background: "rgba(255,255,255,.025)" }}><span style={{ color: color.textSecondary, fontSize: 10.5, lineHeight: 1.55 }}>รูปแบบภาพที่อาจเหมาะกับคลิปนี้: {formats.find((item) => item.id === preflight.formatRecommendation?.visualFormatId)?.label} · {preflight.formatRecommendation.reason}</span>{selectedTreatmentPresetId && <button type="button" disabled={changing} onClick={() => void applyLook(preflight.formatRecommendation!.visualFormatId, selectedTreatmentPresetId)} className="min-h-8 rounded-lg px-2.5" style={{ border: `1px solid ${color.info}`, color: color.infoText, fontSize: 10.5, fontWeight: 600 }}>เปลี่ยนเฉพาะคลิปนี้</button>}</div>}
         {outdatedBeatCount > 0 && <div className="mb-3 rounded-xl px-3 py-2.5" style={{ background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.25)" }}><p style={{ color: color.warningText, font: `600 11px ${font.heading}` }}>ฉากที่เนื้อหาเปลี่ยน {outdatedBeatCount} ฉาก · {imageFundingText(p, outdatedBeatCount)}</p><p className="mt-1" style={{ color: color.textSecondary, fontSize: 10.5, lineHeight: 1.55 }}>ภาพเดิมยังอยู่และยังไม่ถูกคิดซ้ำ เมื่อคุณยืนยันสร้างครั้งถัดไป ระบบจะใช้ภาพที่ยังตรงกับสคริปต์ซ้ำ และสร้างใหม่เฉพาะ {outdatedBeatCount} ภาพนี้</p></div>}
@@ -528,6 +650,7 @@ export function BrandVisualSelector({
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><span style={{ fontSize: 10.5, color: color.textFaint }}>{preflight?.visualBeats.length ?? 0} ฉาก · การวิเคราะห์ไม่ใช้สิทธิ์หรือเครดิต</span><span className="flex flex-wrap gap-3">{canManageBrandVisual && !p.starterAiImageAllowance?.eligible && <Link href={p.projectId ? `/brands?new=1&projectId=${encodeURIComponent(p.projectId)}${preflight?.id ? `&preflightId=${encodeURIComponent(preflight.id)}` : ""}` : "/brands?new=1"} className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.infoText, fontWeight: 600 }}>+ สร้างแบรนด์จากคลิปนี้</Link>}<Link href="/brands" className="inline-flex items-center gap-1" style={{ fontSize: 10.5, color: color.textFaint, fontWeight: 600 }}>จัดการแบรนด์ของฉัน</Link></span></div>
       </>}
       {pending?.kind === "look" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
+      {pending?.kind === "pack" && <PendingChangeConfirmation p={p} pending={pending} changing={changing} onConfirm={confirmPendingChange} onCancel={() => setPending(null)} />}
       {p.starterAiImageAllowance?.eligible && p.starterAiImageAllowance.remainingImages === 0 && <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl p-3" style={{ background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.25)" }}><span className="flex items-center gap-2" style={{ fontSize: 11, color: color.dangerText }}><LockKeyhole size={14} /> ใช้สิทธิ์ทดลองภาพครบแล้ว ระบบจะไม่เปลี่ยนเป็น Stock เอง</span><span className="flex gap-2"><Link href="/pricing" className="rounded-lg bg-white px-3 py-2 text-[10.5px] font-bold text-black">อัปเกรดรายเดือน</Link><button onClick={() => p.setMixPreset("free")} className="rounded-lg px-3 py-2" style={{ border: `1px solid ${color.cardBorder}`, color: color.text, fontSize: 10.5 }}>ใช้ Stock ฟรี</button></span></div>}
     </div>}
   </section>;

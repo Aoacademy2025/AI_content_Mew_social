@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+/** Every literal in a UI source that already contains Thai — i.e. the strings a
+ * customer actually reads. Comments and imports are stripped first so an
+ * explanatory comment about the Treatment catalog is not mistaken for copy. */
+function thaiCustomerCopy(source: string): string[] {
+  const withoutNoise = source
+    .replace(/^import [\s\S]*?;$/gmu, "")
+    .replace(/\/\*[\s\S]*?\*\//gu, "")
+    .replace(/^\s*\/\/.*$/gmu, "");
+  const literals = withoutNoise.match(/"[^"\n]*"|'[^'\n]*'|`[^`]*`|>[^<>{}]+</gu) ?? [];
+  return literals.filter((literal) => /[\u0E00-\u0E7F]/u.test(literal));
+}
+
 async function main() {
   const {
     buildTreatmentChoiceGroups,
@@ -29,6 +41,25 @@ async function main() {
     "the existing long catalog label must collapse to the plain-language project summary",
   );
   assert.equal(buildVisualSummary("คนสมจริง", "anything", true), "คนสมจริง · ใช้แนวที่ตั้งไว้เดิม");
+
+  // Wave 1 Task 7: when the clip's look IS a Style Pack, the summary says the
+  // pack's own Thai name and where it came from — the pack is the whole look,
+  // so repeating the format/treatment underneath it would only add noise.
+  assert.equal(
+    buildVisualSummary("คนสมจริง", "หนังผีไทย", false, { thaiLabel: "หนังผีไทย", source: "project" }),
+    "หนังผีไทย · จากคลิปนี้",
+    "a pack chosen for this clip is reported as this clip's own choice",
+  );
+  assert.equal(
+    buildVisualSummary("คนสมจริง", "หนังผีไทย", false, { thaiLabel: "หนังผีไทย", source: "brand" }),
+    "หนังผีไทย · จากแบรนด์",
+    "a pack inherited from the Brand says so, so the creator knows what changing it affects",
+  );
+  assert.equal(
+    buildVisualSummary("คนสมจริง", "หนังผีไทย", false, null),
+    "คนสมจริง · หนังผีไทย",
+    "a custom look keeps the existing format · treatment summary",
+  );
 
   const confirmation = lookChangeConfirmation(4, 2);
   assert.equal(confirmation.quotedCredits, 8);
@@ -70,6 +101,69 @@ async function main() {
     "fresh uploads must render the image-format choices even without an analyzed treatment",
   );
   assert.doesNotMatch(selectorSource, /ก้างปลา/, "retired format name must not reach creators");
+  // Wave 1 Task 7: the per-clip pack picker.
+  assert.match(
+    selectorSource,
+    /import \{ StylePackPicker \} from "@\/app\/\(dashboard\)\/brands\/_components\/StylePackPicker"/,
+    "the editor reuses the one pack picker instead of duplicating the catalog on the client",
+  );
+  assert.match(
+    selectorSource,
+    /setPackPickerOpen\(\(value\) => !value\)[\s\S]{0,600}?เปลี่ยนเฉพาะคลิปนี้/u,
+    "เปลี่ยนเฉพาะคลิปนี้ is the affordance that opens the ready-made style picker",
+  );
+  assert.match(
+    selectorSource,
+    /\{packPickerOpen && [\s\S]{0,200}?<StylePackPicker/u,
+    "the picker is what that affordance reveals",
+  );
+  assert.match(
+    selectorSource,
+    /look: \{ stylePackId: packId \}/,
+    "choosing a pack goes through the SAME Project Look save path, guard included",
+  );
+  assert.match(
+    selectorSource,
+    /stylePackId: null/,
+    "กำหนดเอง unlinks the pack through the same save path",
+  );
+  assert.doesNotMatch(
+    selectorSource,
+    /STYLE_PACKS|activeStylePacks/,
+    "the pack catalog must reach this client only through the server payload",
+  );
+  // Every pending look change must have somewhere to be confirmed. A clip that
+  // already has AI images answers a style change with the all-or-cancel 409, so
+  // without this branch the creator gets a blocked Step 2 and a blank panel.
+  assert.match(
+    selectorSource,
+    /\{pending\?\.kind === "pack" && <PendingChangeConfirmation/u,
+    "a per-clip style change over existing images must render the same confirmation as every other look change",
+  );
+  // Changing format or treatment unlinks the pack SERVER-side, so the panel has
+  // to re-read the authoritative style; otherwise Step 2 keeps naming a pack
+  // that is gone and the per-window search keeps sending its stock mood.
+  assert.match(
+    selectorSource,
+    /await loadContext\(\);[^;]*?\n\s*toast\.success\([\s\S]{0,200}?บันทึกแนวภาพของคลิปนี้แล้ว/u,
+    "a format/treatment change must refresh the pinned style it just unlinked",
+  );
+  // Customer copy is Thai. English SYSTEM names are the leak this guards: any
+  // literal that already contains Thai is customer-facing, so an internal name
+  // sitting inside one is a bug, while identifiers like `treatmentPresetId`
+  // are code and must stay readable.
+  for (const file of [
+    "src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx",
+    "src/app/(dashboard)/brands/_components/StylePackPicker.tsx",
+  ]) {
+    for (const copy of thaiCustomerCopy(readFileSync(file, "utf8"))) {
+      assert.doesNotMatch(
+        copy,
+        /Treatment|Preset|Pin|Trend Pack|Style Pack|Brand Visual|Hero AI Image|Video Editor|ก้างปลา/u,
+        `${file} leaks an English system name into customer copy: ${copy}`,
+      );
+    }
+  }
   const brandVisualSystemSource = readFileSync("src/lib/brand-visual-system.ts", "utf8");
   assert.doesNotMatch(
     brandVisualSystemSource,
@@ -93,6 +187,16 @@ async function main() {
     visualContextRouteSource,
     /deferTreatmentUntilPreflight === true[\s\S]*saveUploadProjectVisualFormatAwaitingPreflight/,
     "the Step 2 API must persist a pre-transcript image-format choice at the deferred server seam",
+  );
+  assert.match(
+    visualContextRouteSource,
+    /context\.source === "project-look"[\s\S]*stylePackSnapshotFromJson\([\s\S]*visualRecipeJson/,
+    "the per-clip pack pinned on the project context must be read BEFORE the Brand recipe",
+  );
+  assert.match(
+    visualContextRouteSource,
+    /return NextResponse\.json\(\{[\s\S]*\n\s+stylePackSource,\n/u,
+    "Step 2 must be told whether the pack came from this clip or from the Brand",
   );
 
   console.log("verify-brand-treatment-ui-v1: PASS Thai catalog, upload pre-transcript format choice, guarded brand selection, all-or-cancel");

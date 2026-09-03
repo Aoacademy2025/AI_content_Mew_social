@@ -48,9 +48,10 @@ import { GENERIC_ERROR_COPY } from "@/lib/error-copy";
 import { heroImageProviderRetryDirective } from "@/lib/mcp/hero-image-pipeline-retry";
 import {
   DEFAULT_STOCK_SOURCE, RENDER_FPS, RENDER_JPEG_QUALITY, maxCardCharsFor,
-  buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, type OrchCaption,
+  buildKeywordsPayload, buildStockPayload, buildConfigPayload, buildBurnConfig, createStylePackRenderResolver, type OrchCaption,
   cardsByWordCount, POSITION_TOP_PERCENT,
 } from "@/lib/mcp/orchestrator-steps";
+import { PACING_CADENCE_MULTIPLIER, PACING_MIN_HOLD_SEC } from "@/lib/style-pack-catalog";
 import {
   attemptAvatarComposite,
   generateAvatarVideo,
@@ -140,6 +141,7 @@ import {
   recordFirstPassVisualRejection,
   type FirstPassVisualRejectionReason,
 } from "@/lib/first-pass-visual-acceptance.server";
+import { resolveBrandVisualAccessByUserId } from "@/lib/brand-visual-rollout.server";
 import { brollExportCompletionProperties } from "@/lib/broll-growth-funnel";
 import {
   commitAppliedSceneRerollAssetsInTransaction,
@@ -935,6 +937,50 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       throw new Error("Hero Voice ยังไม่เปิดใช้งานสำหรับบัญชีนี้ กรุณาติดต่อทีมงานก่อนลองสร้างด้วย Hero Voice อีกครั้ง");
     }
     const provider = requestedProvider;
+    // ADR 0057 / Task 5: one style system drives every B-roll source. The pinned
+    // Style Pack's Stock Mood and Pacing are read ONCE per job from immutable
+    // snapshots — the per-clip pinned Visual Context first, then the project's
+    // Brand Revision recipe — and never re-resolved from the catalog (ADR 0005).
+    //
+    // The context column is re-read at resolve time, NOT taken from the `job`
+    // row above: both paths pin the job's visual context after that read and
+    // before the keyword step, so the row captured at job load is always the
+    // pre-pin value. Both lookups fail open to "no mood" / "normal" pacing.
+    const { resolveStockMood, resolvePacing } = createStylePackRenderResolver({
+      projectVisualContextJson: async () => {
+        const pinned = await prisma.videoJob.findFirst({
+          where: { id: jobId, userId },
+          select: { projectVisualContextJson: true },
+        });
+        return pinned?.projectVisualContextJson ?? job.projectVisualContextJson;
+      },
+      brandRevisionRecipeJson: async () => {
+        if (!job.projectId) return null;
+        const project = await prisma.editorProject.findFirst({
+          where: { id: job.projectId, userId },
+          select: { brandProfileRevision: { select: { visualRecipeJson: true } } },
+        });
+        return project?.brandProfileRevision?.visualRecipeJson ?? null;
+      },
+    }, {
+      // Task 9: fired at most once per job, the first time the resolver above
+      // finds a pinned pack (upload or script path — both share this one
+      // resolver instance). Nothing fires when no pack is pinned.
+      onPinned: (detail) => {
+        emitTelemetry({
+          name: "style_pack_pinned",
+          source: "server",
+          step: "render.pin",
+          properties: {
+            packId: detail.packId,
+            version: detail.version,
+            jobId,
+            projectId: job.projectId ?? null,
+            source: detail.source,
+          },
+        });
+      },
+    });
     let resumedHeroVoiceTts: HeroVoiceGenerationResult | null = null;
     let ttsStepAlreadyEntered = false;
 
@@ -1423,6 +1469,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         && src.projectId
         && src.projectVisualContextJson
       ) {
+        // Task 9 (Telemetry, fix-up): ONE entitlement read for the whole batch —
+        // admin health gates per-pack acceptance on this cohort, and resolving
+        // it per rejected scene re-read the same row once per scene. Guarded on
+        // its own: this runs after the re-render already reached `done`, so a
+        // transient DB failure degrades the cohort to null, never the job.
+        const rejectionCohort = await resolveBrandVisualAccessByUserId(user)
+          .then((access) => access.cohort)
+          .catch(() => null);
         await Promise.all(editsRes.map(async (edit) => {
           const reason: FirstPassVisualRejectionReason | null =
             firstPassVisualRejectionReasonForWindow(srcBgVideos[edit.index], edit);
@@ -1434,6 +1488,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             sceneIndex: edit.index,
             reason,
             projectVisualContextJson: src.projectVisualContextJson,
+            cohort: rejectionCohort,
           });
         })).catch((error) => {
           console.error("[mcp-worker] first-pass visual rejection telemetry failed:", error);
@@ -1652,21 +1707,36 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         && src.contentPreflightId
         && src.projectVisualContextJson
       ) {
-        const initialAiWindowCount = await prisma.projectVisualBeat.count({
-          where: {
-            userId,
-            projectId: src.projectId,
-            preflightId: src.contentPreflightId,
-            existingImageJobId: { not: null },
-          },
-        });
-        await recordFirstPassVisualExport(userId, {
-          actor: user,
-          projectId: src.projectId,
-          videoJobId: src.id,
-          projectVisualContextJson: src.projectVisualContextJson,
-          initialAiWindowCount,
-        }).catch((error) => {
+        // Task 9 (Telemetry, fix-up): the WHOLE block is inside the guarded
+        // chain, not just the recording call. The window count and the cohort
+        // lookup are Prisma reads evaluated while the argument object is being
+        // built — before `recordFirstPassVisualExport` returns the promise the
+        // `.catch()` attaches to — so a transient DB failure in either would
+        // throw into an export that already transitioned to `done`. Telemetry
+        // may never fail a finished export.
+        await (async () => {
+          const initialAiWindowCount = await prisma.projectVisualBeat.count({
+            where: {
+              userId,
+              // Non-null by the guard above; the narrowing does not survive
+              // into this closure (same as the rejection call site).
+              projectId: src.projectId!,
+              preflightId: src.contentPreflightId!,
+              existingImageJobId: { not: null },
+            },
+          });
+          const cohort = await resolveBrandVisualAccessByUserId(user)
+            .then((access) => access.cohort)
+            .catch(() => null);
+          await recordFirstPassVisualExport(userId, {
+            actor: user,
+            projectId: src.projectId!,
+            videoJobId: src.id,
+            projectVisualContextJson: src.projectVisualContextJson,
+            initialAiWindowCount,
+            cohort,
+          });
+        })().catch((error) => {
           console.error("[mcp-worker] first-pass visual export telemetry failed:", error);
         });
       }
@@ -1758,6 +1828,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       const upWindowSec = Number(process.env.NEXT_PUBLIC_BROLL_WINDOW_SEC) || 4;
       const upManualWindowCount = manualCutawayWindowCount(input.targetClipCount, upDurMs);
       const upVisibleTargetCount = effectiveManualCutawayPieceCount(input.targetClipCount, upDurMs);
+      // Task 5 SCOPE NOTE: cadenceMultiplier is intentionally NOT applied here. This
+      // upload/cutaway path pins the job's Project Visual Context (pinProjectVisualContextToVideoJob,
+      // below) only AFTER upWindows exists — the content preflight that resolves the pin
+      // needs these windows as its input. `resolvePacing`/`resolveStockMood` share ONE
+      // memoized snapshot read that must stay post-pin (see createStylePackRenderResolver);
+      // calling it here would freeze that shared snapshot at its pre-pin value for the
+      // REST of this job, including the later `resolveStockMood()` calls that must not
+      // regress to pre-pin data. Cadence here stays the pre-wave-1 env default.
       const upWindows = cutawayPieceLimit(upDurMs) === 0
         ? buildFixedCountBrollWindows(
             upCaps.map((c) => ({ startMs: c.startMs, endMs: c.endMs, text: c.text })),
@@ -1841,6 +1919,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               ...buildKeywordsPayload(upBrollUnits.map((c) => c.text), upCaps.map((c) => c.text).join("\n"), upDurMs, {
                 brollRegionPreference: input.brollRegionPreference,
                 brollVisualStyle: input.brollVisualStyle,
+                stockMood: await resolveStockMood(),
               }),
               ...(upVisibleTargetCount > 0 ? { targetClipCount: upVisibleTargetCount } : {}),
             },
@@ -1867,6 +1946,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
               ...buildStockPayload(upAligned.keywords, upTotalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, upAligned.units, upKw.visualDirection, upAligned.alternatives, upKw.relevanceSpec, {
                 brollRegionPreference: input.brollRegionPreference,
                 brollVisualStyle: input.brollVisualStyle,
+                stockMood: await resolveStockMood(),
               }, true, upAligned.windows, {
                 fullScript: upCaps.map((caption) => caption.text).join("\n"),
               }),
@@ -2342,6 +2422,15 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         "ข้อมูลฉากไม่ตรงกับเนื้อหาที่เสียงพูดจริง — กรุณาเตรียมแนวภาพใหม่",
       );
     }
+    // Task 5: the pinned Style Pack's Pacing scales the window cadence
+    // (PACING_CADENCE_MULTIPLIER — slow=1.6, normal=1, fast=0.7). Safe to
+    // resolve here: `ensureVideoJobContentPreflight` above (if it ran) already
+    // pinned the job's Project Visual Context, so this is a post-pin read —
+    // same guarantee `resolveStockMood` relies on at the keywords step below.
+    // `pacing` is `null` when no pack is pinned — the cadence multiplier below
+    // treats that as ×1 (same as "normal"), but the AI-gen/auto-mix minHoldSec
+    // default further down must NOT fire on `null` (see that call site).
+    const pacing = await resolvePacing();
     const brollWindows = narrativeAlignedWindows
       ?? (brollWindowMode || manualBrollCount > 0
         ? manualBrollCount > 0
@@ -2354,6 +2443,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
             timedCaptionInput,
             brollWindowSec,
             durMs,
+            { cadenceMultiplier: pacing ? PACING_CADENCE_MULTIPLIER[pacing] : 1 },
           )
         : []);
     const brollUnits = brollWindows.length > 0 ? brollWindowCaptions(brollWindows) : captions;
@@ -2366,6 +2456,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...buildKeywordsPayload(brollUnits.map((c) => c.text), input.script, durMs, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
+          stockMood: await resolveStockMood(),
         }),
         // v2 ขั้นสูง: จำนวนคลิปกำหนดเอง (extract-keywords รองรับ field นี้จาก web เดิมอยู่แล้ว)
         ...(input.targetClipCount && input.targetClipCount > 0 ? { targetClipCount: input.targetClipCount } : {}),
@@ -2386,6 +2477,7 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         ...buildStockPayload(aligned.keywords, totalDur, input.stockSource ?? DEFAULT_STOCK_SOURCE, aligned.units, kw.visualDirection, aligned.alternatives, kw.relevanceSpec, {
           brollRegionPreference: input.brollRegionPreference,
           brollVisualStyle: input.brollVisualStyle,
+          stockMood: await resolveStockMood(),
         }, aligned.windows.length > 0, aligned.windows, {
           fullScript: input.script,
         }),
@@ -2418,6 +2510,13 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         captions, stock.results ?? [], tts.voiceUrl, durMs, captions.map((c) => c.text),
         kw.keywordsPerScene ?? 5, sceneClipCounts, kw.sceneDurations ?? [],
         aligned.windows.map((w) => ({ startMs: w.startMs, endMs: w.endMs })),
+        // Task 5: when window mode is off (aligned.windows empty) and this is an AI-gen /
+        // auto-mix source, hold each clip for the pack's PACING_MIN_HOLD_SEC[pacing] instead
+        // of cutting on every caption — mirrors the web editor's targetCadenceSec(durationSec)
+        // default (buildConfigPayload only includes it when brollWindows is empty).
+        // No pack pinned (pacing === null) → omit minHoldSec entirely so the route's own
+        // STOCK_MIN_HOLD_SEC / legacy default applies, exactly as before this task.
+        aiGenSource && pacing ? PACING_MIN_HOLD_SEC[pacing] : undefined,
       ),
     );
 

@@ -1236,6 +1236,215 @@ async function main() {
     "publishing a pre-cap draft preserves the stored value byte-for-byte",
   );
 
+  // ── Style Packs (ADR 0058) ────────────────────────────────────────────────
+  // A pack is a one-tap layer over the EXISTING Visual Format × Treatment axes,
+  // snapshotted into the immutable Revision recipe (ADR 0005) so a later
+  // catalog edit can never change what an already-published Revision renders.
+  const { applyStylePackToPayload } = await import("../src/lib/style-pack-apply");
+  const { stylePack } = await import("../src/lib/style-pack-catalog");
+
+  const payloadWithoutPack = brandProfilePayloadSchema.parse(basePayload);
+  assert.equal(
+    payloadWithoutPack.visual.stylePackId,
+    null,
+    "a payload written before packs existed defaults to no pack instead of failing to parse",
+  );
+  assert.equal(payloadWithoutPack.visual.stylePackVersion, null);
+
+  const pendingPackPayload = {
+    ...basePayload,
+    visual: { ...basePayload.visual, stylePackId: "dharma", stylePackVersion: "v1.0.0" },
+  };
+  const pendingPackParse = brandProfilePayloadSchema.safeParse(pendingPackPayload);
+  assert.equal(
+    pendingPackParse.success,
+    false,
+    "a pack still awaiting the Treatment Qualification Benchmark is never selectable (ADR 0058)",
+  );
+  assert.equal(
+    pendingPackParse.success === false ? pendingPackParse.error.issues[0]?.message : null,
+    "ชุดสไตล์นี้ยังไม่เปิดให้ใช้",
+    "the creator-write refusal is Thai customer copy",
+  );
+  assert.equal(
+    brandProfilePayloadSchema.safeParse({
+      ...basePayload,
+      visual: { ...basePayload.visual, stylePackId: "not-a-pack" },
+    }).success,
+    false,
+    "an unknown pack id never reaches a Draft or Revision",
+  );
+  await assert.rejects(
+    saveBrandProfileDraft({
+      userId: user.id,
+      profileId: profile.id,
+      payload: pendingPackPayload as unknown as Parameters<typeof saveBrandProfileDraft>[0]["payload"],
+    }),
+    (error: unknown) => Boolean(
+      error && typeof error === "object" && "message" in error
+      && error.message === "ชุดสไตล์นี้ยังไม่เปิดให้ใช้"
+    ),
+    "the /brands write path refuses a pending pack with the same Thai message",
+  );
+  assert.equal(
+    storedBrandProfilePayloadSchema.safeParse(pendingPackPayload).success,
+    true,
+    "a Revision published while a pack was active stays readable if the catalog later demotes that pack (ADR 0005) — the same creator-write/stored-read split as SUPPORTED_VISUAL_FORMAT_IDS",
+  );
+
+  const packUser = await prisma.user.create({
+    data: { name: "Style pack owner", email: "style-pack@example.test", plan: "BUSINESS" },
+  });
+  const ghostPayload = applyStylePackToPayload(
+    brandProfilePayloadSchema.parse({ ...basePayload, name: "Ghost story brand" }),
+    stylePack("thai-ghost"),
+  );
+  const packCreated = await createBrandProfileFromPayload({
+    userId: packUser.id,
+    payload: ghostPayload,
+  });
+  type StylePackRecipe = {
+    lockedTreatmentPin: { presetId: string } | null;
+    stylePack: {
+      id: string;
+      version: string;
+      stockMood: { queryToken: string; positive: string[]; fallbackQueries: string[] };
+      pacing: string;
+      musicMood: string;
+    } | null;
+  };
+  const createdRecipe = JSON.parse(packCreated.revision.visualRecipeJson) as StylePackRecipe;
+  assert.equal(createdRecipe.stylePack?.id, "thai-ghost");
+  assert.equal(createdRecipe.stylePack?.version, "v1.0.0");
+  assert.equal(
+    createdRecipe.stylePack?.stockMood.queryToken,
+    "night",
+    "the recipe carries the pack's stock mood so b-roll selection reads the snapshot, not the live catalog",
+  );
+  assert.equal(createdRecipe.stylePack?.pacing, "normal");
+  assert.equal(createdRecipe.stylePack?.musicMood, "ominous");
+  assert.equal(
+    createdRecipe.lockedTreatmentPin?.presetId,
+    "thai-supernatural-horror",
+    "a pack pins its narrative treatment through the existing locked-treatment pin, not a new mechanism",
+  );
+
+  await saveBrandProfileDraft({
+    userId: packUser.id,
+    profileId: packCreated.profile.id,
+    payload: applyStylePackToPayload(
+      brandProfilePayloadSchema.parse({ ...basePayload, name: "Ghost story brand" }),
+      stylePack("premium-product"),
+    ),
+  });
+  const packRevisionTwo = await publishBrandProfileDraft({
+    userId: packUser.id,
+    profileId: packCreated.profile.id,
+  });
+  const publishedRecipe = JSON.parse(packRevisionTwo.visualRecipeJson) as StylePackRecipe;
+  assert.equal(publishedRecipe.stylePack?.id, "premium-product");
+  assert.equal(publishedRecipe.stylePack?.pacing, "slow");
+  assert.equal(publishedRecipe.stylePack?.musicMood, "lounge");
+  assert.equal(
+    JSON.parse(
+      (await prisma.brandProfileRevision.findUniqueOrThrow({ where: { id: packCreated.revision.id } }))
+        .visualRecipeJson,
+    ).stylePack.id,
+    "thai-ghost",
+    "publishing a new Revision never rewrites the pack snapshot of an existing one",
+  );
+
+  const noPackRecipe = JSON.parse(
+    (await createBrandProfileFromPayload({
+      userId: packUser.id,
+      payload: brandProfilePayloadSchema.parse({ ...basePayload, name: "No pack brand" }),
+    })).revision.visualRecipeJson,
+  ) as StylePackRecipe;
+  assert.equal(noPackRecipe.stylePack, null, "a brand without a pack snapshots no pack");
+
+  // A pinned Revision hands the Editor the pack's pacing and music mood.
+  const packDraftDefaults = applyBrandRevisionDefaultsToProjectDraft({
+    draft: {},
+    payload: ghostPayload,
+  });
+  assert.equal(packDraftDefaults.pacing, "normal");
+  assert.equal(packDraftDefaults.musicMoodDefault, "ominous");
+  const slowPackDraftDefaults = applyBrandRevisionDefaultsToProjectDraft({
+    draft: {},
+    payload: applyStylePackToPayload(
+      brandProfilePayloadSchema.parse(basePayload),
+      stylePack("premium-product"),
+    ),
+  });
+  assert.equal(slowPackDraftDefaults.pacing, "slow");
+  assert.equal(slowPackDraftDefaults.musicMoodDefault, "lounge");
+  const noPackDraftDefaults = applyBrandRevisionDefaultsToProjectDraft({
+    draft: {},
+    payload: payloadWithoutPack,
+  });
+  assert.equal(
+    noPackDraftDefaults.pacing,
+    "normal",
+    "a brand without a pack keeps the editor's normal pacing",
+  );
+  assert.equal(noPackDraftDefaults.musicMoodDefault, null);
+
+  // Review fix (2026-09-03, Important finding 1): emitStylePackSelectedFromRevision
+  // is the shared fail-open helper the publish route now uses INSTEAD of an
+  // inline, unguarded `JSON.parse(revision.payloadJson)`. Exercised here with
+  // REAL persisted Revisions (not source-grep) — both the success path and
+  // every failure mode that must resolve silently rather than throw/reject.
+  const { emitStylePackSelectedFromRevision } = await import("../src/lib/style-pack-selected-telemetry");
+  const beforeSelectedCount = await prisma.telemetryEvent.count({
+    where: { userId: packUser.id, name: "style_pack_selected" },
+  });
+  await emitStylePackSelectedFromRevision(packUser.id, packCreated.revision, "brands.publish");
+  const selectedEvent = await prisma.telemetryEvent.findFirst({
+    where: { userId: packUser.id, name: "style_pack_selected" },
+    orderBy: { createdAt: "desc" },
+  });
+  assert.equal(
+    await prisma.telemetryEvent.count({ where: { userId: packUser.id, name: "style_pack_selected" } }),
+    beforeSelectedCount + 1,
+    "a real persisted Revision with a pinned pack emits exactly one style_pack_selected event",
+  );
+  assert.equal(selectedEvent?.step, "brands.publish");
+  const selectedProps = JSON.parse(selectedEvent?.properties ?? "{}") as Record<string, unknown>;
+  assert.deepEqual(
+    selectedProps,
+    { packId: "thai-ghost", surface: "brand", version: "v1.0.0" },
+    "the emitted event carries exactly packId/surface/version, read off the persisted payload",
+  );
+
+  // Fail-open: NONE of these malformed/legacy shapes may throw, reject, or
+  // write an event — a telemetry side-effect can never turn an
+  // already-successful publish/create into a reported failure.
+  await assert.doesNotReject(
+    emitStylePackSelectedFromRevision(packUser.id, { payloadJson: "{not valid json" }, "brands.publish"),
+    "malformed JSON never throws or rejects",
+  );
+  await assert.doesNotReject(
+    emitStylePackSelectedFromRevision(packUser.id, { payloadJson: "{}" }, "brands.publish"),
+    "a legacy payload missing `visual` entirely never throws or rejects",
+  );
+  await assert.doesNotReject(
+    emitStylePackSelectedFromRevision(packUser.id, { payloadJson: JSON.stringify({ visual: {} }) }, "brands.publish"),
+    "a payload with `visual` but no stylePackId never throws or rejects",
+  );
+  await assert.doesNotReject(
+    emitStylePackSelectedFromRevision(
+      packUser.id,
+      { payloadJson: JSON.stringify({ visual: { stylePackId: "not-a-real-pack" } }) },
+      "brands.publish",
+    ),
+    "a stylePackId outside the closed catalog never throws or rejects",
+  );
+  assert.equal(
+    await prisma.telemetryEvent.count({ where: { userId: packUser.id, name: "style_pack_selected" } }),
+    beforeSelectedCount + 1,
+    "none of the four fail-open cases above wrote a second event — only the one real pack did",
+  );
+
   // The /brands route is a server shell plus client islands; every source-level
   // contract below holds across the whole route, not one file.
   const brandsComponentsDirectory = "src/app/(dashboard)/brands/_components";

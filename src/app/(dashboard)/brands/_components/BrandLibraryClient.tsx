@@ -21,11 +21,14 @@ import {
   createBlankBrandProfileSeed,
   createBrandProfileSeedFromCurrentDefaults,
 } from "@/lib/brand-profile-seed";
+import { applyStylePackToPayload, clearStylePack } from "@/lib/style-pack-apply";
+import { stylePack, type StylePackId } from "@/lib/style-pack-catalog";
+import type { BrandProfilePayload } from "@/lib/brand-profile-library.server";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { BrandBasicsForm } from "./BrandBasicsForm";
 import { BrandList } from "./BrandList";
 import { BrandLookPreviewPanel } from "./BrandLookPreviewPanel";
-import { VisualFormatPicker } from "./VisualFormatPicker";
+import { StylePackPicker } from "./StylePackPicker";
 import {
   brandPreviewGenerateRequest,
   brandPreviewQuoteBody,
@@ -93,6 +96,33 @@ function withSeedFallbacks(draft: BrandPayload): BrandPayload {
       treatmentPolicy,
       lockedTreatmentPresetId,
     },
+  };
+}
+
+/** `BrandPayload` (`BrandProfileSeed`) and `BrandProfilePayload` (the
+ * persisted-read Zod-inferred type `applyStylePackToPayload`/`clearStylePack`
+ * are written against) describe the same Brand Profile document — they only
+ * diverge on three fields that `createBlankBrandProfileSeed()` always sets
+ * concretely but the client type leaves optional (`languageMode`) or unset
+ * (the two retired scene inputs, kept only so a pinned revision round-trips).
+ * These two converters are the one place that gap is bridged, so the Style
+ * Pack apply/clear functions stay pure and shared with the server. */
+function toStylePackPayload(payload: BrandPayload): BrandProfilePayload {
+  return {
+    ...payload,
+    visual: {
+      ...payload.visual,
+      languageMode: payload.visual.languageMode ?? "none",
+      peopleAndSetting: payload.visual.peopleAndSetting ?? "",
+      memorableCues: payload.visual.memorableCues ?? [],
+    },
+  };
+}
+
+function fromStylePackPayload(payload: BrandProfilePayload): BrandPayload {
+  return {
+    ...payload,
+    visual: { ...payload.visual, languageMode: payload.visual.languageMode ?? "none" },
   };
 }
 
@@ -232,6 +262,19 @@ export function BrandLibraryClient() {
             visualNotes: typeof language?.visualNotes === "string" ? language.visualNotes : seeded.visual.visualNotes,
           },
         };
+        // A clip whose look came from a ready-made style keeps that link, and
+        // keeps it WHOLE: re-applying the style is what fills in the narrative
+        // policy, subtitle and tone the clip's own snapshot never carried, so
+        // the draft is never a half-linked look (ADR 0058). The style is
+        // re-applied only if it is still offered — a retired one promotes as
+        // the custom look it already is.
+        const seededPackId = libraryData.stylePacks
+          .find((pack) => pack.id === exactContext?.stylePack?.id)?.id ?? null;
+        if (seededPackId) {
+          seeded = fromStylePackPayload(
+            applyStylePackToPayload(toStylePackPayload(seeded), stylePack(seededPackId)),
+          );
+        }
       }
       setActiveId(null);
       setSourceProjectId(requestedProjectId);
@@ -413,37 +456,77 @@ export function BrandLibraryClient() {
     trackEvent("brand_profile_create_from_current_started", { path: "/brands" });
   }
 
+  /** ADR 0058: the shared unlink point every custom edit routes through — a
+   * pack-owned field written directly (bypassing `updateVisual`/`applyProposal`)
+   * is exactly how a half-pack would happen, so this stays the one place that
+   * decides whether an edit needs to unlink first. */
+  function clearStylePackIfLinked(payload: BrandPayload): BrandPayload {
+    return payload.visual.stylePackId
+      ? fromStylePackPayload(clearStylePack(toStylePackPayload(payload)))
+      : payload;
+  }
+
+  /** ADR 0058: format, narrative-treatment policy/preset, palette and
+   * personality are the axes a Style Pack resolves — editing any of them
+   * while a pack is selected unlinks it first (`clearStylePackIfLinked`) so
+   * the draft never shows a pack tag next to a look the pack no longer fully
+   * describes. */
   function updateVisual<K extends keyof BrandPayload["visual"]>(key: K, value: BrandPayload["visual"][K]) {
     const definesBrandLanguage = key === "palette"
       || key === "personality"
       || key === "visualNotes";
-    setDraft((current) => ({
-      ...current,
-      visual: {
-        ...current.visual,
-        [key]: value,
-        ...(definesBrandLanguage ? { languageMode: "defined" as const } : {}),
-      },
-    }));
+    const unlinksPack = key === "primaryVisualFormatId"
+      || key === "treatmentPolicy"
+      || key === "lockedTreatmentPresetId"
+      || key === "palette"
+      || key === "personality";
+    setDraft((current) => {
+      const base = unlinksPack ? clearStylePackIfLinked(current) : current;
+      return {
+        ...base,
+        visual: {
+          ...base.visual,
+          [key]: value,
+          ...(definesBrandLanguage ? { languageMode: "defined" as const } : {}),
+        },
+      };
+    });
   }
 
+  function selectStylePack(id: StylePackId | null) {
+    setDraft((current) => fromStylePackPayload(
+      id
+        ? applyStylePackToPayload(toStylePackPayload(current), stylePack(id))
+        : clearStylePack(toStylePackPayload(current)),
+    ));
+    if (!id) setAdvancedOpen(true);
+  }
+
+  /** Applying the AI visual helper's proposal writes the same pack-owned axes
+   * `updateVisual` guards (format, palette, personality) — a selected pack
+   * must unlink here too, in the SAME `setDraft` as the proposal's fields, or
+   * a creator could tap a pack then "นำคำแนะนำมาใส่ในร่าง" and be left with a
+   * pack tag next to an AI-authored look the pack no longer describes. */
   function applyProposal(next: VisualProposal) {
     const palette = normalizeHexPalette(next.palette);
     if (!palette) {
       setNotice({ tone: "error", text: "AI ส่งสีมาไม่ใช่รูปแบบ HEX กรุณาขอคำแนะนำใหม่อีกครั้ง" });
       return;
     }
-    setDraft((current) => ({
-      ...current,
-      visual: {
-        ...current.visual,
-        primaryVisualFormatId: next.primaryVisualFormatId,
-        palette,
-        personality: next.personality,
-        visualNotes: next.visualNotes,
-        languageMode: "defined",
-      },
-    }));
+    setDraft((current) => {
+      const base = clearStylePackIfLinked(current);
+      return {
+        ...base,
+        visual: {
+          ...base.visual,
+          primaryVisualFormatId: next.primaryVisualFormatId,
+          palette,
+          personality: next.personality,
+          visualNotes: next.visualNotes,
+          languageMode: "defined",
+        },
+      };
+    });
     setProposal(null);
   }
 
@@ -815,10 +898,10 @@ export function BrandLibraryClient() {
                   onNameChange={(value) => setDraft((current) => ({ ...current, name: value }))}
                   disabled={frozen}
                 />
-                <VisualFormatPicker
-                  formats={library.visualFormats}
-                  value={draft.visual.primaryVisualFormatId}
-                  onChange={(id) => updateVisual("primaryVisualFormatId", id)}
+                <StylePackPicker
+                  packs={library.stylePacks}
+                  value={draft.visual.stylePackId}
+                  onChange={selectStylePack}
                   disabled={frozen}
                 />
               </div>

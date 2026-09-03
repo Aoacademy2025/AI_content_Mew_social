@@ -10,6 +10,7 @@ import * as ttsProvidersModule from "../src/lib/tts-providers";
 import * as editorLayerVisibilityModule from "../src/lib/editor-layer-visibility";
 import * as editorDefaultDraftModule from "../src/lib/editor-default-draft";
 import * as editorStylePresetModule from "../src/lib/editor-style-preset-contract";
+import * as musicMoodModule from "../src/lib/music-mood";
 import {
   createEditorProjectSaveQueue,
   type EditorProjectSaveInput,
@@ -525,6 +526,9 @@ function createHarness(options: HarnessOptions = {}) {
     if (specifier === "@/lib/editor-style-preset-contract") return editorStylePresetModule;
     // Pure module — run the real parser so the harness sees production voice-engine coercion.
     if (specifier === "@/lib/tts-providers") return ttsProvidersModule;
+    // Pure module (mood label/parse/pick helpers, no server deps) — same class as
+    // tts-providers above, so run the real one instead of stubbing it.
+    if (specifier === "@/lib/music-mood") return musicMoodModule;
     if (specifier === "@/lib/video-account-defaults") {
       return { saveVideoAccountDefaults: async () => ({ ok: true }) };
     }

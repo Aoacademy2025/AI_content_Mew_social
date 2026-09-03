@@ -11,7 +11,7 @@ export async function GET() {
     const [tracks, userTracks] = await Promise.all([
       prisma.music.findMany({
         orderBy: { createdAt: "desc" },
-        select: { id: true, title: true, filename: true, duration: true, createdAt: true },
+        select: { id: true, title: true, filename: true, duration: true, createdAt: true, mood: true },
       }),
       prisma.userMusic.findMany({
         where: { userId: authUser.id },

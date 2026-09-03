@@ -5,7 +5,10 @@ import { fetchMe, resolveBrandVisualClientAccess, type MeData } from "@/lib/use-
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
+import type { MusicMood } from "@/lib/style-pack-catalog";
+import { pickDefaultMusicTrack, decideMusicMoodHintCarry, type MusicTrackForMoodPick } from "@/lib/music-mood";
 import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-preferences";
+import type { ProjectStylePack } from "./project-style-pack";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
 import {
@@ -71,6 +74,10 @@ interface V2Draft {
   mode?: V2Mode; script?: string; clipUrl?: string; clipDurationSec?: number; brollSource?: V2BrollSource;
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string; omniVoiceId?: string;
   musicTrack?: string | null; musicTrackKind?: "system" | "user"; bgmVolume?: number; useAvatar?: boolean; avatarId?: string;
+  /** Project-level default a pinned Brand Revision's Style Pack may carry (ADR 0058) —
+   *  consumed once in applyDraft() to pick a default system track; never itself persisted
+   *  back out by buildDraft(). */
+  musicMoodDefault?: MusicMood | null;
   targetClipCount?: number; avatarMode?: V2AvatarMode; avatarIntroSecs?: number; avatarTailSecs?: number;
   kieModel?: string; autoMixProviders?: AutoMixImageProvider[]; mixPreset?: MixPreset;
   brollRegionPreference?: BrollRegionPreference; brollVisualStyle?: BrollVisualStyle;
@@ -555,6 +562,12 @@ export function useV2Project() {
     NonNullable<NonNullable<MeData["featureAccess"]>["heroAiImage"]> | null
   >(null);
   const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
+  // The Style Pack pinned to this project, as reported by the visual-context
+  // endpoint (a snapshot, never re-resolved from the catalog). Server state, so
+  // it is NOT part of the saved draft: Step 2 only reads it, and the per-window
+  // search sends the same mood back so the creator searches with exactly the
+  // style the read-only line promised them.
+  const [projectStylePack, setProjectStylePack] = useState<ProjectStylePack | null>(null);
   const [brandVisualCohort, setBrandVisualCohort] = useState<NonNullable<MeData["brandVisualCohort"]>>("off");
   const [brandVisualRolloutBucket, setBrandVisualRolloutBucket] = useState<number | null>(null);
   const [starterAiImageAllowance, setStarterAiImageAllowance] = useState<MeData["starterAiImageAllowance"]>(null);
@@ -590,6 +603,57 @@ export function useV2Project() {
   const [musicTrackKind, setMusicTrackKind, setMusicTrackKindRaw] = useUserDraftState<"system" | "user">(
     d.musicTrackKind ?? "system", "musicTrackKind", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
+  // ── Style Pack default track (Task 6, ADR 0058; hint-carry fix round 1) ──
+  // applyDraft() stashes the pack's suggested mood here whenever an applied draft
+  // has no chosen musicTrack yet; this hook loads the system track list itself
+  // (independent of Step2Elements' own useBgm()) purely to resolve that one pick.
+  //
+  // `musicMoodDefaultHint` is real draft STATE (unlike the two refs below) so
+  // buildDraft() can include it in every autosave while the pick is still
+  // pending — otherwise a debounced autosave firing between applyDraft() and
+  // the /api/music fetch resolving would persist musicTrack:"" with the hint
+  // gone, permanently losing the retry. decideMusicMoodHintCarry() is the pure
+  // decision of whether to keep carrying it; it drops once a track exists
+  // (auto-picked or creator-chosen) and keeps carrying otherwise, even after a
+  // "no match" attempt, so a later admin mood-tag can still be picked up.
+  const [musicMoodDefaultHint, , setMusicMoodDefaultHintRaw] = useUserDraftState<MusicMood | null>(
+    d.musicMoodDefault ?? null, "musicMoodDefault", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
+  );
+  // Refs (not state) so a stale-closure applyDraft call still sees the latest data.
+  const musicMoodTracksRef = useRef<MusicTrackForMoodPick[] | null>(null);
+  const pendingMusicMoodDefaultRef = useRef<MusicMood | null>(null);
+  const applyMusicMoodDefaultIfPending = useCallback(() => {
+    const mood = pendingMusicMoodDefaultRef.current;
+    if (!mood) return;
+    const tracks = musicMoodTracksRef.current;
+    if (!tracks) return; // system track list not loaded yet — retried once it is
+    pendingMusicMoodDefaultRef.current = null;
+    // Never override a track the creator already chose (incl. an explicit "no music") —
+    // and if one now exists (a race with the creator's own pick), the hint is consumed.
+    const current = effectiveDraftRef.current.musicTrack;
+    if (current !== undefined && current !== "") {
+      setMusicMoodDefaultHintRaw(null);
+      return;
+    }
+    const picked = pickDefaultMusicTrack(tracks, mood);
+    if (picked) {
+      setMusicTrackRaw(picked);
+      setMusicTrackKindRaw("system");
+      setMusicMoodDefaultHintRaw(null); // consumed — a track is now chosen
+    }
+    // else: no match found — leave the hint carrying so a future load can retry.
+  }, [setMusicTrackRaw, setMusicTrackKindRaw, setMusicMoodDefaultHintRaw]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/music").then(r => r.json()).then(data => {
+      if (cancelled) return;
+      musicMoodTracksRef.current = Array.isArray(data?.tracks) ? data.tracks : [];
+      applyMusicMoodDefaultIfPending();
+    }).catch(() => {
+      if (!cancelled) musicMoodTracksRef.current = [];
+    });
+    return () => { cancelled = true; };
+  }, [applyMusicMoodDefaultIfPending]);
   /** ระดับเสียงเพลง 0–1 · default 0.12 (ตรงกับ pipeline + editor v1) — ใต้เสียงพูด */
   const [bgmVolume, setBgmVolume, setBgmVolumeRaw] = useUserDraftState(
     d.bgmVolume ?? 0.12, "bgmVolume", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
@@ -679,6 +743,7 @@ export function useV2Project() {
       mode, narrativeSourceKind, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
       projectTitle,
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
+      musicMoodDefault: musicMoodDefaultHint,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs,
       kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle,
       logoOverlay, brandSubtitleDefault, layerVisibility,
@@ -705,6 +770,27 @@ export function useV2Project() {
     if (next.omniVoiceId !== undefined) setOmniVoiceIdRaw(next.omniVoiceId);
     if (next.musicTrack !== undefined) setMusicTrackRaw(next.musicTrack);
     if (next.musicTrackKind) setMusicTrackKindRaw(next.musicTrackKind);
+    // Style Pack default track: decideMusicMoodHintCarry() is the single pure
+    // decision of whether this draft's mood hint is still "pending" (a hint
+    // exists and no track is chosen yet — "" or absent; never `null`, which is
+    // an explicit "no music" the creator already decided). While pending, the
+    // hint is mirrored into state (musicMoodDefaultHint) so every subsequent
+    // buildDraft()/autosave keeps carrying it until a pick actually lands —
+    // fixing the race where an early autosave could otherwise drop the hint
+    // for good. Resolves immediately if the system track list is already
+    // loaded, else the fetch effect resolves it once it lands.
+    const moodHintDecision = decideMusicMoodHintCarry({
+      musicMoodDefault: next.musicMoodDefault,
+      musicTrack: next.musicTrack,
+    });
+    if (moodHintDecision.carry) {
+      setMusicMoodDefaultHintRaw(moodHintDecision.mood);
+      pendingMusicMoodDefaultRef.current = moodHintDecision.mood;
+      applyMusicMoodDefaultIfPending();
+    } else {
+      setMusicMoodDefaultHintRaw(null);
+      pendingMusicMoodDefaultRef.current = null;
+    }
     if (next.bgmVolume !== undefined) setBgmVolumeRaw(next.bgmVolume);
     if (next.useAvatar !== undefined) setUseAvatarRaw(next.useAvatar);
     if (next.avatarId !== undefined) setAvatarIdRaw(next.avatarId);
@@ -2292,6 +2378,7 @@ export function useV2Project() {
     usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     brandContentPreflightId, setBrandContentPreflightId,
+    projectStylePack, setProjectStylePack,
     saveStatus, retryProjectSave,
     flushPendingProjectDraft,
     recovery, retryProjectBootstrap, chooseLocalProjectDraft, chooseServerProjectDraft, retryConflictServerRefresh,

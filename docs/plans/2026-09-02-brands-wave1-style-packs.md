@@ -111,7 +111,7 @@ export const PACING_CADENCE_MULTIPLIER: Record<PacingLevel, number>; // slow 1.6
 export const PACING_MIN_HOLD_SEC: Record<PacingLevel, number>;       // slow 6, normal 4, fast 2.5
 ```
 
-- [ ] **Step 1: Failing verify**
+- [x] **Step 1: Failing verify**
 
 ```ts
 // scripts/verify-style-pack-catalog.ts
@@ -138,9 +138,9 @@ assert.deepEqual(cat.PACING_CADENCE_MULTIPLIER, { slow: 1.6, normal: 1, fast: 0.
 console.log("verify-style-pack-catalog: ok");
 ```
 
-- [ ] **Step 2: Run** — `tsx scripts/verify-style-pack-catalog.ts` → FAIL (module missing).
+- [x] **Step 2: Run** — `tsx scripts/verify-style-pack-catalog.ts` → FAIL (module missing).
 
-- [ ] **Step 3: Write the module** — encode the §Catalog table. Full entry for the first pack (the other eleven follow the same shape with the values from the table and the audit §8 mood lists):
+- [x] **Step 3: Write the module** — encode the §Catalog table. Full entry for the first pack (the other eleven follow the same shape with the values from the table and the audit §8 mood lists):
 
 ```ts
 {
@@ -163,7 +163,7 @@ console.log("verify-style-pack-catalog: ok");
 
 Subtitle values for the rest: thai-history `retro/fade/4/Sarabun/700/60/#F5E6C8/#D4A017/shadow/78`; life-drama `shadow/fade/4/Kanit/700/60/#FFFFFF/#FDE68A/shadow/78`; finance-clear `box/pop/3/Kanit/800/64/#FFFFFF/#FACC15/no-shadow/76`; news-fast `news/quick/2/Kanit/900/68/#FFFFFF/#DC2626/no-shadow/76`; health-simple `box-rounded/pop/3/Prompt/700/60/#FFFFFF/#34D399/no-shadow/78`; premium-product `plain/fade/sentence/Prompt/bold:false 500/52/#FFFFFF/#D4A017/shadow/80`; dark-story `bold-shadow/quick/2/Kanit/900/66/#FFFFFF/#B91C1C/shadow/78`; politics `news/quick/3/Sarabun/800/62/#FFFFFF/#2563EB/no-shadow/76`; mystery `glow/fade/3/Kanit/700/62/#E5E7EB/#14B8A6/shadow/78`; dharma `plain/fade/sentence/Sarabun/700/58/#FFF7E6/#D4A017/shadow/50`; motivation `bold-shadow/fade/4/Kanit/900/64/#FFFFFF/#FFFFFF/shadow/78`. `outline: false, outlineSize: 2` everywhere. Mood word lists: take the "ต้องการ / เลี่ยง" columns of audit §8, extend to ≥ 8 positive / ≥ 4 avoid, and write 5 plain fallback phrases per pack.
 
-- [ ] **Step 4: Verify + commit** — `tsx scripts/verify-style-pack-catalog.ts` → PASS; add the npm script; `git commit -m "feat(brands): style pack catalog (12 packs, 7 active)"`.
+- [x] **Step 4: Verify + commit** — `tsx scripts/verify-style-pack-catalog.ts` → PASS; add the npm script; `git commit -m "feat(brands): style pack catalog (12 packs, 7 active)"`.
 
 ---
 
@@ -190,10 +190,10 @@ export function stylePackOfPayload(payload: BrandProfilePayload): StylePack | nu
 // Revision recipe snapshot (revisionRecipe) gains: { stylePack: { id, version, stockMood, pacing, musicMood } | null }
 ```
 
-- [ ] **Step 1: Failing test** — `verify-style-pack-apply.ts`: blank seed + `applyStylePackToPayload(seed, stylePack("thai-ghost"))` → `treatmentPolicy === "locked"`, `lockedTreatmentPresetId === "thai-supernatural-horror"`, `subtitle.config.preset === "bold-shadow"`, `script.tone` equals the pack tone; a payload with `subtitle.presetId = "mine"` keeps its own subtitle; a payload with a custom tone keeps it; `applyStylePackToPayload(seed, stylePack("dharma"))` throws `"Style Pack not available"` (pending). In `verify-brand-profile-library.ts`: publishing a payload with `stylePackId: "thai-ghost"` produces a revision whose `visualRecipeJson` contains `stylePack.id === "thai-ghost"` and `stylePack.stockMood.queryToken === "night"`; a payload with `stylePackId: "dharma"` is rejected at the Zod boundary.
-- [ ] **Step 2: Run** → FAIL.
-- [ ] **Step 3: Implement** — Zod: `stylePackId: z.enum(STYLE_PACK_IDS).nullable().default(null).refine(id => id === null || stylePack(id).status === "active", "Style Pack not available")`, `stylePackVersion: z.literal("v1.0.0").nullable().default(null)`. `revisionRecipe(payload)` adds the `stylePack` snapshot. `applyBrandRevisionDefaultsToProjectDraft` additionally writes `draft.pacing = recipe.stylePack?.pacing ?? "normal"` and `draft.musicMoodDefault = recipe.stylePack?.musicMood ?? null` (draft type extended in `editor-default-draft.ts` with those two optional fields).
-- [ ] **Step 4: Verify + commit** — both scripts PASS; `git commit -m "feat(brands): style pack applies onto the Brand Profile payload and revision recipe"`.
+- [x] **Step 1: Failing test** — `verify-style-pack-apply.ts`: blank seed + `applyStylePackToPayload(seed, stylePack("thai-ghost"))` → `treatmentPolicy === "locked"`, `lockedTreatmentPresetId === "thai-supernatural-horror"`, `subtitle.config.preset === "bold-shadow"`, `script.tone` equals the pack tone; a payload with `subtitle.presetId = "mine"` keeps its own subtitle; a payload with a custom tone keeps it; `applyStylePackToPayload(seed, stylePack("dharma"))` throws `"Style Pack not available"` (pending). In `verify-brand-profile-library.ts`: publishing a payload with `stylePackId: "thai-ghost"` produces a revision whose `visualRecipeJson` contains `stylePack.id === "thai-ghost"` and `stylePack.stockMood.queryToken === "night"`; a payload with `stylePackId: "dharma"` is rejected at the Zod boundary.
+- [x] **Step 2: Run** → FAIL.
+- [x] **Step 3: Implement** — Zod: `stylePackId: z.enum(STYLE_PACK_IDS).nullable().default(null).refine(id => id === null || stylePack(id).status === "active", "Style Pack not available")`, `stylePackVersion: z.literal("v1.0.0").nullable().default(null)`. `revisionRecipe(payload)` adds the `stylePack` snapshot. `applyBrandRevisionDefaultsToProjectDraft` additionally writes `draft.pacing = recipe.stylePack?.pacing ?? "normal"` and `draft.musicMoodDefault = recipe.stylePack?.musicMood ?? null` (draft type extended in `editor-default-draft.ts` with those two optional fields).
+- [x] **Step 4: Verify + commit** — both scripts PASS; `git commit -m "feat(brands): style pack applies onto the Brand Profile payload and revision recipe"`.
 
 ---
 
@@ -218,10 +218,10 @@ export function StylePackPicker(props: {
 
 Card grid: `grid-cols-2 sm:grid-cols-3 lg:grid-cols-4`, each card `<button role="radio" aria-checked>` with the sample image (falls back to a CSS gradient from `palette` when the image 404s via `onError`), `thaiLabel` bold, `tagline` muted; a final card `กำหนดเอง` (icon `SlidersHorizontal`) selects `null` and expands the advanced section. Heading `สไตล์ประจำแบรนด์`, sub `ทุกคลิปของแบรนด์นี้จะใช้สไตล์เดียวกัน เปลี่ยนทีหลังได้`.
 
-- [ ] **Step 1: Failing assertions** — `verify-brand-library-support-features.ts`: source of `StylePackPicker.tsx` contains `role="radio"` and `กำหนดเอง`; `BrandLibraryClient.tsx` renders `<StylePackPicker` before `<AdvancedSettings`. `verify-brands-mobile.mjs`: at 320 px the picker has no horizontal overflow (reuse its existing DOM harness).
-- [ ] **Step 2: Run** → FAIL.
-- [ ] **Step 3: Implement** — in `BrandLibraryClient`, `onChange(id)` calls `setDraft(id ? applyStylePackToPayload(draft, stylePack(id)) : clearStylePack(draft))`; `VisualFormatPicker` moves into the `กำหนดเอง` section; when a pack is selected the section header shows `ใช้ค่าจากชุดสไตล์ · แก้เองได้ในกำหนดเอง`. Editing any custom field while a pack is selected calls `clearStylePack` (the look becomes custom — never silently half-pack).
-- [ ] **Step 4: Verify + commit** — `npm run verify:brands-ci && npx tsc --noEmit --pretty false` → PASS; `git commit -m "feat(brands): one-tap style pack picker as the default surface"`.
+- [x] **Step 1: Failing assertions** — `verify-brand-library-support-features.ts`: source of `StylePackPicker.tsx` contains `role="radio"` and `กำหนดเอง`; `BrandLibraryClient.tsx` renders `<StylePackPicker` before `<AdvancedSettings`. `verify-brands-mobile.mjs`: at 320 px the picker has no horizontal overflow (reuse its existing DOM harness).
+- [x] **Step 2: Run** → FAIL.
+- [x] **Step 3: Implement** — in `BrandLibraryClient`, `onChange(id)` calls `setDraft(id ? applyStylePackToPayload(draft, stylePack(id)) : clearStylePack(draft))`; `VisualFormatPicker` moves into the `กำหนดเอง` section; when a pack is selected the section header shows `ใช้ค่าจากชุดสไตล์ · แก้เองได้ในกำหนดเอง`. Editing any custom field while a pack is selected calls `clearStylePack` (the look becomes custom — never silently half-pack).
+- [x] **Step 4: Verify + commit** — `npm run verify:brands-ci && npx tsc --noEmit --pretty false` → PASS; `git commit -m "feat(brands): one-tap style pack picker as the default surface"`.
 
 ---
 
@@ -246,10 +246,10 @@ export type BrollPreferenceInput = { brollRegionPreference?: …; brollVisualSty
 export function stockMoodForProject(input: { projectVisualContextJson: string | null; brandRevisionRecipeJson: string | null }): (StockMood & { packId: StylePackId }) | null;
 ```
 
-- [ ] **Step 1: Failing tests** — `applyBrollPreferenceToSearchQuery("old house", { stockMood: stylePack("thai-ghost").stockMood }, { role: "primary" }) === "old house night"`; `brollPreferenceCacheVariant({ stockMood, brollRegionPreference: "thai" }) === "r=thai;m=thai-ghost"` (mood carries `packId` — extend `StockMood` with `packId` at the pipe boundary); fallback role leaves the query untouched; `stockMoodForProject` returns the pack's mood from a project visual context that pins `thai-ghost`, `null` for a custom (no-pack) revision.
-- [ ] **Step 2: Run** → FAIL.
-- [ ] **Step 3: Implement** — orchestrator: right before the keyword step resolve `const stockMood = stockMoodForProject({ projectVisualContextJson: job.projectVisualContextJson, brandRevisionRecipeJson })` (the recipe is loaded where `pinnedBrandVisualWindows` is computed, `orchestrator.ts:2314`); pass it in both payload builders. Routes: `stockMood` in the request body is validated with a Zod schema mirroring `StockMood` (max lengths: token 24, 12 positives, 8 avoids, direction 160, 5 fallbacks) — never trusted raw. Step 2 UI: delete the style `Segmented`; keep the region control; add the read-only line. `useV2Job`: stop sending `brollVisualStyle`; keep accepting it server-side for old drafts (normalize → ignored when a mood exists).
-- [ ] **Step 4: Verify + commit** — `npm run verify:broll-preferences && npm run verify:broll-window-management && npx tsc --noEmit --pretty false` → PASS; `git commit -m "feat(broll): stock mood from the pinned style pack drives stock search; remove Step-2 style menu (ADR 0057)"`.
+- [x] **Step 1: Failing tests** — `applyBrollPreferenceToSearchQuery("old house", { stockMood: stylePack("thai-ghost").stockMood }, { role: "primary" }) === "old house night"`; `brollPreferenceCacheVariant({ stockMood, brollRegionPreference: "thai" }) === "r=thai;m=thai-ghost"` (mood carries `packId` — extend `StockMood` with `packId` at the pipe boundary); fallback role leaves the query untouched; `stockMoodForProject` returns the pack's mood from a project visual context that pins `thai-ghost`, `null` for a custom (no-pack) revision.
+- [x] **Step 2: Run** → FAIL.
+- [x] **Step 3: Implement** — orchestrator: right before the keyword step resolve `const stockMood = stockMoodForProject({ projectVisualContextJson: job.projectVisualContextJson, brandRevisionRecipeJson })` (the recipe is loaded where `pinnedBrandVisualWindows` is computed, `orchestrator.ts:2314`); pass it in both payload builders. Routes: `stockMood` in the request body is validated with a Zod schema mirroring `StockMood` (max lengths: token 24, 12 positives, 8 avoids, direction 160, 5 fallbacks) — never trusted raw. Step 2 UI: delete the style `Segmented`; keep the region control; add the read-only line. `useV2Job`: stop sending `brollVisualStyle`; keep accepting it server-side for old drafts (normalize → ignored when a mood exists).
+- [x] **Step 4: Verify + commit** — `npm run verify:broll-preferences && npm run verify:broll-window-management && npx tsc --noEmit --pretty false` → PASS; `git commit -m "feat(broll): stock mood from the pinned style pack drives stock search; remove Step-2 style menu (ADR 0057)"`.
 
 ---
 
@@ -260,8 +260,8 @@ export function stockMoodForProject(input: { projectVisualContextJson: string | 
 - Modify: `src/lib/mcp/orchestrator.ts` (read `pacing` from the pinned recipe via a new `pacingForProject(...)` next to `stockMoodForProject`; pass `cadenceMultiplier = PACING_CADENCE_MULTIPLIER[pacing]` to window building and `minHoldSec = PACING_MIN_HOLD_SEC[pacing]` where the editor currently sends `minHoldSec` for AI-gen / auto-mix pools — `generate-config/route.ts:378-383`)
 - Test: extend `scripts/verify-broll-windows.ts` and `scripts/verify-broll-cadence.ts`
 
-- [ ] **Step 1: Failing tests** — for a 60 s narration, windows built with multiplier 1.6 are fewer than with 1, and with 0.7 are more; no window shorter than 2 s or longer than 10 s at any multiplier; `targetCadenceSec(60, 0.7) < targetCadenceSec(60) < targetCadenceSec(60, 1.6)`.
-- [ ] **Step 2: Run** → FAIL. **Step 3: Implement** with clamps `[2, 10]` s. **Step 4:** `npm run verify:broll-windows && npm run verify:broll-cadence` → PASS; `git commit -m "feat(broll): style pack pacing scales window cadence and min-hold"`.
+- [x] **Step 1: Failing tests** — for a 60 s narration, windows built with multiplier 1.6 are fewer than with 1, and with 0.7 are more; no window shorter than 2 s or longer than 10 s at any multiplier; `targetCadenceSec(60, 0.7) < targetCadenceSec(60) < targetCadenceSec(60, 1.6)`.
+- [x] **Step 2: Run** → FAIL. **Step 3: Implement** with clamps `[2, 10]` s. **Step 4:** `npm run verify:broll-windows && npm run verify:broll-cadence` → PASS; `git commit -m "feat(broll): style pack pacing scales window cadence and min-hold"`.
 
 ---
 
@@ -273,7 +273,7 @@ export function stockMoodForProject(input: { projectVisualContextJson: string | 
 - Modify: `src/app/(dashboard)/video-editor/_v2/useV2Project.ts` — when a brand revision is applied and the draft has no `musicTrack`, pick the first system track whose `mood === draft.musicMoodDefault`
 - Test: `scripts/verify-music-mood.ts` (temp DB: admin PUT with invalid mood → 400; valid → stored; default-track picker returns the first match / null)
 
-- [ ] Steps: failing test → run → implement → verify → `git commit -m "feat(music): mood tag on system tracks; style pack suggests a default track"`.
+- [x] Steps: failing test → run → implement → verify → `git commit -m "feat(music): mood tag on system tracks; style pack suggests a default track"`.
 
 ---
 
@@ -284,7 +284,7 @@ export function stockMoodForProject(input: { projectVisualContextJson: string | 
 - Modify: `src/lib/project-look.server.ts` (Project Look accepts `{ stylePackId }` → sets project visual format override + treatment pin `source: "creator"` + stores `stylePack` snapshot in `projectVisualContextJson` so `stockMoodForProject`/`pacingForProject` see it); `src/app/api/brand-library/from-project-look/route.ts` (promotion carries `stylePackId` into the new profile payload via `applyStylePackToPayload`)
 - Test: extend `scripts/verify-project-look.ts` and `scripts/verify-brand-treatment-ui-v1.ts` (`buildVisualSummary` gains a pack branch)
 
-- [ ] Steps: failing tests (Project Look with `thai-ghost` pins `thai-supernatural-horror` + `cinematic-realism` and snapshots the pack; promotion produces a revision with `stylePack.id === "thai-ghost"`; summary copy) → implement → verify (`verify:brand-visual-system`, `verify:brand-treatment-v1`) → `git commit -m "feat(editor): pick a style pack per clip and promote it to the brand"`.
+- [x] Steps: failing tests (Project Look with `thai-ghost` pins `thai-supernatural-horror` + `cinematic-realism` and snapshots the pack; promotion produces a revision with `stylePack.id === "thai-ghost"`; summary copy) → implement → verify (`verify:brand-visual-system`, `verify:brand-treatment-v1`) → `git commit -m "feat(editor): pick a style pack per clip and promote it to the brand"`.
 
 ---
 
@@ -295,9 +295,9 @@ export function stockMoodForProject(input: { projectVisualContextJson: string | 
 - Create: `scripts/benchmark-content-preflight-distribution.ts` + fixtures `scripts/fixtures/content-preflight-distribution.json` (20 de-identified Thai scripts: 3 ghost, 3 history, 3 drama, 3 news/crime, 3 finance explainer, 2 health, 3 product)
 - Test: extend `scripts/verify-brand-treatment-content-preflight-v1.ts` (fake analyzer path) for `suggestedStylePackId`
 
-- [ ] **Step 1:** add to the prompt after the ranking rule: `"expert-clarity and practical-documentary are the neutral last resort: rank one first only when the Dominant Narrative Mode is a plain explanation with no supernatural, historical, investigative, emotional human-story, product or business-technology frame. When such a frame governs the whole source, the matching preset must rank first."`
-- [ ] **Step 2:** benchmark script calls the real analyzer with the team's managed Gemini key (env `CONTENT_PREFLIGHT_BENCHMARK_KEY`; ~20 text calls, < ฿5) and prints the distribution; gate: `expert-clarity` first-ranked ≤ 40 % on this fixture set, and each ghost/history/news fixture ranks its matching preset first. **Requires Mew's go before running** (paid text); record the run in the plan Status.
-- [ ] **Step 3:** verify + `git commit -m "feat(preflight): rebalance treatment ranking; suggest a style pack"`.
+- [x] **Step 1:** add to the prompt after the ranking rule: `"expert-clarity and practical-documentary are the neutral last resort: rank one first only when the Dominant Narrative Mode is a plain explanation with no supernatural, historical, investigative, emotional human-story, product or business-technology frame. When such a frame governs the whole source, the matching preset must rank first."`
+- [x] **Step 2:** benchmark script calls the real analyzer with the team's managed Gemini key (env `CONTENT_PREFLIGHT_BENCHMARK_KEY`; ~20 text calls, < ฿5) and prints the distribution; gate: `expert-clarity` first-ranked ≤ 40 % on this fixture set, and each ghost/history/news fixture ranks its matching preset first. **Requires Mew's go before running** (paid text); record the run in the plan Status.
+- [x] **Step 3:** verify + `git commit -m "feat(preflight): rebalance treatment ranking; suggest a style pack"`.
 
 ---
 
@@ -306,7 +306,7 @@ export function stockMoodForProject(input: { projectVisualContextJson: string | 
 - Events: `style_pack_selected` (`properties: { packId, surface: "brand" | "project", version }`), `style_pack_pinned` at job start (`packId`), and `packId` added to `first_pass_visual_exported` / `first_pass_visual_rejected` properties in `src/lib/first-pass-visual-acceptance.server.ts`.
 - Admin: `src/app/api/admin/brand-visual-health/route.ts` returns acceptance segmented by `packId`.
 - Test: extend `scripts/verify-first-pass-visual-acceptance-v1.ts` (event carries `packId`).
-- [ ] Steps: failing test → implement → verify → `git commit -m "feat(telemetry): style pack selection and per-pack acceptance"`.
+- [x] Steps: failing test → implement → verify → `git commit -m "feat(telemetry): style pack selection and per-pack acceptance"`.
 
 ---
 
@@ -319,23 +319,23 @@ export function stockMoodForProject(input: { projectVisualContextJson: string | 
 
 ### Task 11: Final gate (session)
 
-- [ ] `npm run verify:brand-visual-system && npm run verify:brand-treatment-v1 && npm run verify:brands-ci && npm run lint:brands && npx tsc --noEmit --pretty false && npm run build`.
-- [ ] Draft the `/updates` post (Thai, isPinned=true per memory `product-updates-posting`) in `docs/marketing/updates-2026-09-style-packs.md`.
-- [ ] Update this plan's Status and the map's "Decisions so far".
+- [x] `npm run verify:brand-visual-system && npm run verify:brand-treatment-v1 && npm run verify:brands-ci && npm run lint:brands && npx tsc --noEmit --pretty false && npm run build`.
+- [x] Draft the `/updates` post (Thai, isPinned=true per memory `product-updates-posting`) in `docs/marketing/updates-2026-09-style-packs.md`.
+- [x] Update this plan's Status and the map's "Decisions so far".
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] `/brands` default surface = name + 7 pack cards + กำหนดเอง; selecting a pack publishes a revision whose recipe snapshots `stylePack {id, version, stockMood, pacing, musicMood}`.
-- [ ] A clip rendered on a `หนังผีไทย` brand with stock B-roll sends `night`-token primary queries, mood-partitioned cache keys and mood avoid/positive terms to the ranker (verify scripts + one manual render on the QA rig).
-- [ ] Step 2 has no style menu; region control remains; the pack name is displayed.
-- [ ] Windows cadence differs measurably between `slow` and `fast` packs (verify script).
-- [ ] Admin can tag music moods; a new project on a pack gets a default track when one exists.
-- [ ] Editor per-clip pack choice pins the pack and promotion keeps it; no English internal terms in copy.
-- [ ] Content Preflight distribution benchmark (after Mew's go): `expert-clarity` ≤ 40 % first-rank on the fixture set.
-- [ ] Telemetry segmented by `packId`; `pending-benchmark` packs never appear in any picker or recommendation.
-- [ ] Exactly one additive schema change (`Music.mood`); all suites + build green; CI green.
+- [x] `/brands` default surface = name + 7 pack cards + กำหนดเอง; selecting a pack publishes a revision whose recipe snapshots `stylePack {id, version, stockMood, pacing, musicMood}`.
+- [ ] A clip rendered on a `หนังผีไทย` brand with stock B-roll sends `night`-token primary queries, mood-partitioned cache keys and mood avoid/positive terms to the ranker (verify scripts ✅ + one manual render on the QA rig — PENDING Mew QA).
+- [x] Step 2 has no style menu; region control remains; the pack name is displayed.
+- [x] Windows cadence differs measurably between `slow` and `fast` packs (verify script).
+- [x] Admin can tag music moods; a new project on a pack gets a default track when one exists.
+- [x] Editor per-clip pack choice pins the pack and promotion keeps it; no English internal terms in copy.
+- [x] Content Preflight distribution benchmark (after Mew's go): `expert-clarity` ≤ 40 % first-rank on the fixture set.
+- [x] Telemetry segmented by `packId`; `pending-benchmark` packs never appear in any picker or recommendation.
+- [x] Exactly one additive schema change (`Music.mood`); all suites + build green; CI green.
 
 ## Out of scope
 
@@ -344,4 +344,12 @@ export function stockMoodForProject(input: { projectVisualContextJson: string | 
 - Moving the region preference into the Brand Profile — revisit with telemetry.
 
 ## Status
-interviewed 2026-09-02 | approved: pending (Mew reviews after wave 0) | executed: - | delivered: -
+interviewed 2026-09-02 | approved: 2026-09-02 (Mew) | executed: 2026-09-03 (branch `mew/brands-wave1`, PR #434) | delivered: pending Mew review
+
+### Execution record (2026-09-02 → 09-03)
+- Tasks 1–9 + 6b (CI harness registration) merged into `mew/brands-wave1`; every task passed a Tier-1 review (spec + quality) and, where needed, one scoped fix round. Ledger with all controller rulings R1–R31: `.superpowers/sdd/2026-09-02-brands-wave1-style-packs/progress.md` (git-ignored; summarised in the PR body).
+- **Task 8 paid benchmark — Mew go 2026-09-03 ("approve").** Run 2026-09-03 over all 20 fixtures (0 failed calls, 20 Gemini calls): `expert-clarity` first-ranked **5/20 = 25 %** (gate ≤ 40 %) — PASS; ghost/history/news matching-first **9/9** — PASS; treatment match 20/20. Record: `docs/research/2026-09-03-content-preflight-distribution-benchmark.md`. Observation: both health fixtures resolve `suggestedStylePackId` to `finance-clear` (tie-break by suggested format) → follow-up #433.
+- **Task 10 card images — Mew go 2026-09-03.** 6/7 shipped in `public/style-packs/` (720×1280, ≤ 120 KB, 11 paid calls); `thai-history` stays on the gradient fallback (two generations showed Buddha figures / a human silhouette — rejected at the visual gate) → follow-up #433.
+- Deviations recorded as rulings: T5 blocked by T4; T6 blocked by T2; plan fontWeights 700/800/500 → 600/900/400 (contract enum); Thai error copy `ชุดสไตล์นี้ยังไม่เปิดให้ใช้`; stored-read schema keeps the pack enum without the active refine (ADR 0005); `suggestedStylePackId` tie-break prefers the suggested visual format; analyzer version not bumped; script.tone pack-owned when it equals any catalog tone; malformed `stockMood` fails open (never 400); upload/cutaway path cadence not pacing-scaled this wave; `กำหนดเอง` in the editor keeps the resolved palette/personality; `Music.mood` migration trimmed to its one `ALTER TABLE` (pre-existing migration drift filed separately).
+- Final gates 2026-09-03: full `ci.yml` step list + `tsc` 56/56 PASS on the final head; branch-wide security review — no findings; whole-branch review (Opus) "Ready after the listed fixes" → R31 fix wave (export-path telemetry fail-open, single cohort lookup, sanitized mood warning, pacing suites in `verify:brands-ci`, benchmark signal cleanup) merged after a scoped re-review. Product calls left to Mew: a per-clip กำหนดเอง look still inherits the brand pack's mood/pacing (UI consistent); upload/cutaway pacing (R21); pack-less legacy drafts send no AI-image style word (R18).
+- Acceptance criterion "one manual render on the QA rig" is NOT done by the pipeline — left for Mew's QA pass (interactive, paid TTS); every other criterion is covered by verify scripts and the CI-equivalent gate.

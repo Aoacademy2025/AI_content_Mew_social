@@ -25,6 +25,8 @@ import {
   saveUploadProjectVisualFormatAwaitingPreflight,
 } from "@/lib/project-look.server";
 import { recordTelemetryEvent } from "@/lib/telemetry";
+import { stylePackSnapshotFromJson } from "@/lib/style-pack-snapshot";
+import { stylePack } from "@/lib/style-pack-catalog";
 import { VISUAL_FORMAT_IDS, brandLookIdentityKey, brandVisualIdentityKey, type VisualFormatId } from "@/lib/brand-visual-system";
 
 function parseOptionalJson(value: string | null | undefined): unknown | null {
@@ -105,11 +107,27 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
           select: {
             id: true,
             version: true,
+            visualRecipeJson: true,
             brandProfile: { select: { id: true, name: true } },
           },
         },
       },
     });
+    // The pinned Style Pack, read out of IMMUTABLE snapshots (ADR 0005) — never
+    // re-resolved from the catalog. Precedence mirrors `stockMoodForProject`
+    // exactly, so Step 2, the per-window search and the render can never
+    // disagree about which pack is in force: a pack the creator chose for THIS
+    // clip outranks the one the Brand supplies.
+    const projectPackSnapshot = context.source === "project-look"
+      ? context.stylePack ?? null
+      : null;
+    const brandPackSnapshot = stylePackSnapshotFromJson(
+      projectSelection?.brandProfileRevision?.visualRecipeJson ?? null,
+    );
+    const pinnedPackSnapshot = projectPackSnapshot ?? brandPackSnapshot;
+    const stylePackSource = pinnedPackSnapshot
+      ? (projectPackSnapshot ? ("project" as const) : ("brand" as const))
+      : null;
     const reusableAiSceneIndices = state.preflight
       ? await reusableProjectVisualBeatSceneIndices({
           userId: auth.user.id,
@@ -136,6 +154,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       preserveEstablishedAiDensity: reusableAiSceneIndices.length > 0 && outdatedImageCount === 0,
       quotedCreditsPerImage: HERO_AI_IMAGE_CREDITS,
       hasPersistedVisualPin,
+      stylePack: pinnedPackSnapshot && stylePackSource
+        ? {
+            packId: pinnedPackSnapshot.id,
+            thaiLabel: stylePack(pinnedPackSnapshot.id).thaiLabel,
+            // Where the pack came from, so Step 2 can say "จากคลิปนี้" instead
+            // of blaming the Brand for a choice made on this clip alone.
+            source: stylePackSource,
+            stockMood: { packId: pinnedPackSnapshot.id, ...pinnedPackSnapshot.stockMood },
+          }
+        : null,
+      stylePackSource,
       // A per-video Project Look can override format/treatment while still
       // inheriting the immutable Brand Revision's visual language. Keep the
       // durable profile pin visible instead of making the creator think the
@@ -246,6 +275,22 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         cohort: auth.access.cohort,
       },
     }).catch(() => {});
+    // Task 9 (Telemetry): a pack CHOSEN for this clip, not a "กำหนดเอง"
+    // (custom, stylePackId: null) look that merely edited an axis — those
+    // never emit. `look.stylePack` is the persisted snapshot for the pack the
+    // request named, so packId/version always match what was actually saved.
+    if (parsed.data.stylePackId && "stylePack" in look && look.stylePack) {
+      await recordTelemetryEvent(auth.user.id, {
+        name: "style_pack_selected",
+        source: "server",
+        step: "editor.step2",
+        properties: {
+          packId: look.stylePack.id,
+          surface: "project",
+          version: look.stylePack.version,
+        },
+      }).catch(() => {});
+    }
     return NextResponse.json({
       look,
       preflightId: state.preflight?.id ?? null,

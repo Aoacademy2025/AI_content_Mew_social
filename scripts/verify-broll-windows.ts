@@ -81,5 +81,47 @@ check("upload planner can explicitly widen the internal cap to 120",
 check("empty → []", buildBrollWindows([], 4).length === 0);
 check("invalid caption filtered", buildBrollWindows([{ startMs: 5, endMs: 5, text: "bad" }], 4).length === 0);
 
+// ---------------------------------------------------------------------------
+// Task 5 — Pacing: cadenceMultiplier scales the window cadence. Task-5-brief
+// Step 1: for a 60s narration, slow (1.6) yields FEWER windows than normal
+// (1), fast (0.7) yields MORE; no window shorter than 2s or longer than 10s
+// at any multiplier (mirrors the file's own "except possibly last" idiom for
+// the final tiled window).
+// ---------------------------------------------------------------------------
+const sixtySec = caps(60, 1); // 60 × 1s captions = 60s narration
+const normalPacing = buildBrollWindows(sixtySec, 4, undefined, { cadenceMultiplier: 1 });
+const slowPacing = buildBrollWindows(sixtySec, 4, undefined, { cadenceMultiplier: 1.6 });
+const fastPacing = buildBrollWindows(sixtySec, 4, undefined, { cadenceMultiplier: 0.7 });
+check("slow (1.6) → fewer windows than normal (1)", slowPacing.length < normalPacing.length,
+  `slow=${slowPacing.length} normal=${normalPacing.length}`);
+check("fast (0.7) → more windows than normal (1)", fastPacing.length > normalPacing.length,
+  `fast=${fastPacing.length} normal=${normalPacing.length}`);
+check("no scaled window shorter than 2s or longer than 10s (slow, except possibly last)",
+  slowPacing.slice(0, -1).every((w) => w.endMs - w.startMs >= 2000 && w.endMs - w.startMs <= 10000));
+check("no scaled window shorter than 2s or longer than 10s (fast, except possibly last)",
+  fastPacing.slice(0, -1).every((w) => w.endMs - w.startMs >= 2000 && w.endMs - w.startMs <= 10000));
+
+// Extreme multipliers still clamp the cadence used for grouping into [2, 10]s —
+// an absurdly small/large multiplier can't collapse to sub-second strobing or
+// drag past a 10s hold.
+const extremeSlow = buildBrollWindows(sixtySec, 4, undefined, { cadenceMultiplier: 5 }); // 4*5=20s → clamped to 10s
+const extremeFast = buildBrollWindows(sixtySec, 4, undefined, { cadenceMultiplier: 0.1 }); // 4*0.1=0.4s → clamped to 2s
+check("extreme slow multiplier clamps cadence to 10s (except possibly last)",
+  extremeSlow.slice(0, -1).every((w) => w.endMs - w.startMs >= 10000 && w.endMs - w.startMs <= 10000 + 1000),
+  `windows=${JSON.stringify(extremeSlow.map((w) => w.endMs - w.startMs))}`);
+check("extreme fast multiplier clamps cadence to 2s (except possibly last)",
+  extremeFast.slice(0, -1).every((w) => w.endMs - w.startMs >= 2000 && w.endMs - w.startMs <= 2000 + 1000),
+  `windows=${JSON.stringify(extremeFast.map((w) => w.endMs - w.startMs))}`);
+
+// Omitting options (or a non-positive multiplier) reproduces the exact
+// pre-wave-1 3-arg cadence — no behavior change for callers that don't pass it.
+const threeArg = buildBrollWindows(caps(12, 1.5), 4);
+const fourArgNoOptions = buildBrollWindows(caps(12, 1.5), 4, undefined, {});
+const fourArgZeroMultiplier = buildBrollWindows(caps(12, 1.5), 4, undefined, { cadenceMultiplier: 0 });
+check("3-arg call unaffected by the new 4th param",
+  JSON.stringify(threeArg) === JSON.stringify(fourArgNoOptions));
+check("a non-positive multiplier falls back to the base cadence",
+  JSON.stringify(threeArg) === JSON.stringify(fourArgZeroMultiplier));
+
 if (failures) { console.error(`\n${failures} FAILED`); process.exit(1); }
 console.log("\nAll broll-windows checks passed.");

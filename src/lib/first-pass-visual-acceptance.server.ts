@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
 import { parseProjectVisualContext } from "@/lib/project-visual-context";
+import { stylePackSnapshotFromJson } from "@/lib/style-pack-snapshot";
 import {
   recordTelemetryEvent,
   recordTelemetryEventOnce,
@@ -23,6 +24,14 @@ function measurablePin(
   return parseProjectVisualContext(projectVisualContextJson)?.treatmentPin ?? null;
 }
 
+/** The pinned Style Pack's id (Task 9), read from the same immutable snapshot
+ * as `measurablePin` — `null` when no pack is pinned for this clip. Only ever
+ * read once `measurablePin` has already confirmed the event is measurable
+ * (customer, not Admin/QA), so no separate actor gate is needed here. */
+function measurablePackId(projectVisualContextJson: string | null | undefined) {
+  return stylePackSnapshotFromJson(projectVisualContextJson)?.id ?? null;
+}
+
 export function firstPassVisualRejectionEvent(input: {
   actor: MeasurableActor;
   projectId: string;
@@ -30,6 +39,10 @@ export function firstPassVisualRejectionEvent(input: {
   sceneIndex: number;
   reason: FirstPassVisualRejectionReason;
   projectVisualContextJson: string | null | undefined;
+  /** Task 9 (Telemetry, fix-up): the caller's own resolved Brand Visual
+   *  rollout cohort (e.g. "treatment-50"), so admin health can gate
+   *  per-pack acceptance the same way it gates every other rollout figure. */
+  cohort?: string | null;
 }): TelemetryInput | null {
   const pin = measurablePin(input.actor, input.projectVisualContextJson);
   if (!pin) return null;
@@ -46,6 +59,8 @@ export function firstPassVisualRejectionEvent(input: {
       sceneIndex: input.sceneIndex,
       treatmentPresetId: pin.presetId,
       treatmentPresetVersion: pin.version,
+      packId: measurablePackId(input.projectVisualContextJson),
+      cohort: input.cohort ?? null,
     },
   };
 }
@@ -56,6 +71,8 @@ export function firstPassVisualExportEvent(input: {
   videoJobId: string;
   projectVisualContextJson: string | null | undefined;
   initialAiWindowCount: number;
+  /** Task 9 (Telemetry, fix-up): see `firstPassVisualRejectionEvent`. */
+  cohort?: string | null;
 }): TelemetryInput | null {
   const pin = measurablePin(input.actor, input.projectVisualContextJson);
   if (!pin || input.initialAiWindowCount <= 0) return null;
@@ -72,6 +89,8 @@ export function firstPassVisualExportEvent(input: {
       initialAiWindowCount: input.initialAiWindowCount,
       treatmentPresetId: pin.presetId,
       treatmentPresetVersion: pin.version,
+      packId: measurablePackId(input.projectVisualContextJson),
+      cohort: input.cohort ?? null,
     },
   };
 }
