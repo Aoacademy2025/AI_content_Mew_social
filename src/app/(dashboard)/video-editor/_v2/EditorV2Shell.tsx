@@ -422,7 +422,10 @@ export function EditorV2Shell() {
     logoOverlay: p.logoOverlay,
     onLogoOverlayChange: p.setLogoOverlay,
     initialSubtitleConfig: p.brandSubtitleDefault,
-    brandVisualAllowed: p.brandVisualAllowed,
+    // "Save this look as a Brand" is a LIBRARY action, open to every plan
+    // since `from-project-look` moved to `requireBrandLibraryUser` (wave 1b
+    // D1) — not an AI-image affordance, so it follows library access.
+    brandLibraryAllowed: p.brandLibraryAllowed,
     layerVisibility: p.layerVisibility,
     onLayerVisibilityChange: p.setLayerVisibility,
     headlineHook: p.headlineHook,

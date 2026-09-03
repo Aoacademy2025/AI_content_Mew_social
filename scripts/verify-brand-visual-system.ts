@@ -83,8 +83,14 @@ assert.match(meRouteSource, /private, no-store, max-age=0/,
   "the entitlement response cannot be retained across a rolling deploy");
 assert.match(editorHookSource, /resolveBrandVisualClientAccess\(m\)/,
   "the Editor resolves admission from the boolean and durable rollout cohort");
-assert.match(brandVisualSelectorSource, /canProbeBrandLibrary\s*=\s*p\.brandVisualAllowed\s*\|\|\s*p\.isAdmin\s*\|\|\s*p\.heroAiBeta/,
+assert.match(editorHookSource, /resolveBrandLibraryClientAccess\(m\)/,
+  "the Editor resolves LIBRARY admission separately from AI-image admission (wave 1b D1)");
+// Wave 1b (D1): probing/managing the Brand Library is a LIBRARY action, open
+// to every plan — `brandVisualAllowed` stays the gate for AI-image actions.
+assert.match(brandVisualSelectorSource, /canProbeBrandLibrary\s*=\s*p\.brandLibraryAllowed\s*\|\|\s*p\.isAdmin\s*\|\|\s*p\.heroAiBeta/,
   "an internal Editor probes the authoritative Brand Library when its capability snapshot is stale");
+assert.match(brandVisualSelectorSource, /canManageBrandVisual\s*=\s*p\.brandLibraryAllowed\s*\|\|\s*libraryAuthorized/,
+  "managing the selector's picks follows library access, not the AI-image gate");
 assert.match(brandVisualSelectorSource, /status\s*===\s*401\s*\|\|\s*result\.response\.status\s*===\s*403[\s\S]*setLibraryAuthorized\(false\)/,
   "the direct Brand Library probe still fails closed when server admission is unavailable");
 assert.match(brandVisualSelectorSource, /setLibraryAuthorized\(true\)[\s\S]*setProfiles/,

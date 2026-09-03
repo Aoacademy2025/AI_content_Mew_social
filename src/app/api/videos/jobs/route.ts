@@ -387,8 +387,12 @@ export async function POST(req: Request) {
           staging: {
             userId: user.id,
             plan: user.plan,
+            // R12: the logo overlay stays a PRO/BUSINESS-plan feature. Wave 1b
+            // opened PINNING to every plan, so the bare pin no longer implies
+            // funded logo use — this reads the ADMITTED predicate, exactly
+            // like the render path below.
             brandVisualAllowed: brandVisualAccess.canUse
-              || await projectHasPersistedVisualPin({ userId: user.id, projectId: sourceProjectId }),
+              || await projectHasAdmittedPersistedPin({ userId: user.id, projectId: sourceProjectId }),
             projectId: sourceProjectId,
             rawLogoOverlay: rawLogoOverlay,
           },
@@ -863,7 +867,13 @@ export async function POST(req: Request) {
       // every project it touches — routing it through here instead would change
       // the sample clip's behaviour for no gain, so it keeps its own branch.
       && !onFirstClipPath
-      && await projectHasPersistedVisualPin({ userId: user.id, projectId }),
+      // M-5: fail open like every other read in this seam (ADR 0023) — a
+      // project that vanished between ownership checks must not turn this
+      // Boolean(...) into an unhandled ProjectLookError("NOT_FOUND").
+      && await projectHasPersistedVisualPin({ userId: user.id, projectId }).catch((error) => {
+        if (error instanceof ProjectLookError) return false;
+        throw error;
+      }),
     );
     const projectVisualPin = brandVisualRenderAccess
       ? await prepareProjectVisualSnapshot()

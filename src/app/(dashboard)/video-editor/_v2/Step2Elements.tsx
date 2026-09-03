@@ -194,7 +194,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
   const [brandPreflightStatus, setBrandPreflightStatus] = useState<BrandVisualPreflightStatus>("idle");
   const [brandPolicyWarnings, setBrandPolicyWarnings] = useState<SceneContentPolicyWarning[]>([]);
   const [brandSelectionBlocked, setBrandSelectionBlocked] = useState(false);
-  const requiresBrandPreflight = (p.brandVisualAllowed || p.hasPersistedVisualPin)
+  // R7: gates readiness for an AI-image brollSource — only reachable once the
+  // pin/account is ADMITTED, so this reads the admitted predicate, not the
+  // bare pin.
+  const requiresBrandPreflight = (p.brandVisualAllowed || p.hasAdmittedVisualPin)
     && p.mode !== "upload"
     && (
       p.brollSource === "kie-image"
@@ -1097,8 +1100,10 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
  * beta cohort OR HERO_AI_IMAGE_PUBLIC=1 + PRO/BUSINESS/active-trial) turns true. */
 function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; durationSec: number }) {
   const [lockedFeature, setLockedFeature] = useState<"hero_ai_image" | "automix" | null>(null);
-  const hasFunding = p.hasPersistedVisualPin || starterRemaining(p) === null || (starterRemaining(p) ?? 0) > 0;
-  const hasAiRenderAccess = p.heroAiImageEligible || p.hasPersistedVisualPin;
+  // R7: the AI-image source cards must never offer what an unadmitted pin
+  // would have the render refuse — reads the admitted predicate.
+  const hasFunding = p.hasAdmittedVisualPin || starterRemaining(p) === null || (starterRemaining(p) ?? 0) > 0;
+  const hasAiRenderAccess = p.heroAiImageEligible || p.hasAdmittedVisualPin;
   const heroImageUnlocked = hasAiRenderAccess && hasFunding;
   const autoMixUnlocked = hasAiRenderAccess && hasFunding;
   const heroDefaultN = heroDefaultImageCount(p, durationSec);
@@ -1272,7 +1277,8 @@ function MixPresetButtons({ p, durationSec }: { p: V2Project; durationSec: numbe
       {MIX_PRESETS.filter((preset) => preset.key !== "free").map((pr) => {
         // Same gate as the AutoMix card itself (Task 5 item 1) — a customer who can open
         // AutoMix can pick either intensity; only ineligible users see the lock.
-        const locked = !(p.heroAiImageEligible || p.hasPersistedVisualPin);
+        // R7: reads the admitted predicate, matching hasAiRenderAccess above.
+        const locked = !(p.heroAiImageEligible || p.hasAdmittedVisualPin);
         const selected = p.mixPreset === pr.key;
         // AutoMix "AI เด่น"/"แนะนำ" preset price (Task 5 item 4) — the SAME disclosed
         // count buildReceipt uses (manual targetClipCount when set, else the window

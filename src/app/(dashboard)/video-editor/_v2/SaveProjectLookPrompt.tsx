@@ -6,21 +6,25 @@ import { useEffect, useRef, useState } from "react";
 import { trackEvent } from "@/lib/client-telemetry";
 import { color, font } from "./tokens";
 
+// ADR 0059 amendment (wave 1b D1): saving a rendered look as a Brand is a
+// LIBRARY action — `from-project-look` accepts every library user, not only
+// an AI-image-admitted one — so this prompt follows library access, not the
+// AI-image gate.
 export function SaveProjectLookPrompt({
   projectId,
   videoJobId,
-  brandVisualAllowed,
+  brandLibraryAllowed,
 }: {
   projectId: string | null;
   videoJobId: string | null;
-  brandVisualAllowed: boolean;
+  brandLibraryAllowed: boolean;
 }) {
   const [source, setSource] = useState<"loading" | "brand-revision" | "project-look" | "suggested" | "error">("loading");
   const [preflightId, setPreflightId] = useState<string | null>(null);
   const tracked = useRef(false);
 
   useEffect(() => {
-    if (!projectId || !videoJobId || !brandVisualAllowed) return;
+    if (!projectId || !videoJobId || !brandLibraryAllowed) return;
     const controller = new AbortController();
     setSource("loading");
     setPreflightId(null);
@@ -51,9 +55,9 @@ export function SaveProjectLookPrompt({
       })
       .catch((error) => { if ((error as Error).name !== "AbortError") setSource("error"); });
     return () => controller.abort();
-  }, [brandVisualAllowed, projectId, videoJobId]);
+  }, [brandLibraryAllowed, projectId, videoJobId]);
 
-  if (!brandVisualAllowed || !projectId || !videoJobId || source === "brand-revision" || source === "error") return null;
+  if (!brandLibraryAllowed || !projectId || !videoJobId || source === "brand-revision" || source === "error") return null;
   if (source === "loading") {
     return <div className="flex min-h-10 items-center gap-2 px-4 text-[11px]" style={{ color: color.textFaint }}><Loader2 size={13} className="animate-spin" /> กำลังตรวจแนวภาพของคลิป…</div>;
   }

@@ -309,13 +309,19 @@ const project = {
   brollSource: "kie-image",
   mixPreset: "hero",
   brandVisualAllowed: true,
+  // wave 1b (D1): probing/managing the library now reads this separately
+  // from the AI-image gate above (BrandVisualSelector.tsx canProbeBrandLibrary
+  // / canManageBrandVisual) — an eligible account owns both here.
+  brandLibraryAllowed: true,
   hasPersistedVisualPin: false,
+  hasAdmittedVisualPin: false,
   projectStylePack: null,
   heroAiBeta: false,
   isAdmin: false,
   starterAiImageAllowance: undefined,
   setBrandContentPreflightId(value: string | null) { preflightIdWrites.push(value); },
   setHasPersistedVisualPin() {},
+  setHasAdmittedVisualPin() {},
   setProjectStylePack() {},
   setMixPreset() {},
   flushPendingProjectDraft: async () => true,

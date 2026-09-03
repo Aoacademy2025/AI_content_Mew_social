@@ -95,7 +95,9 @@ check("imports the shared credit-costs constant instead of a literal",
   /import\s*\{\s*HERO_AI_IMAGE_CREDITS\s*\}\s*from\s*["']@\/lib\/credit-costs["']/.test(step2));
 
 check("Hero AI Image + AutoMix cards unlock via the public-launch eligibility helper",
-  step2.includes("const hasAiRenderAccess = p.heroAiImageEligible || p.hasPersistedVisualPin")
+  // Wave 1b (D1/R7): every plan can own a pin now, so an AI-image affordance
+  // must read the ADMITTED predicate, not the bare pin.
+  step2.includes("const hasAiRenderAccess = p.heroAiImageEligible || p.hasAdmittedVisualPin")
     && step2.includes("const heroImageUnlocked = hasAiRenderAccess && hasFunding")
     && step2.includes("const autoMixUnlocked = hasAiRenderAccess && hasFunding"));
 check("locked cards use the pinned อัปเกรด badge + PRO/BUSINESS tooltip copy",

@@ -120,6 +120,17 @@ export function editorProjectResponse(project: NonNullable<ProjectRow>) {
     // the Editor must use before offering an AI-image action — it mirrors the
     // render-time one exactly, so the client can never offer what the render
     // would refuse.
+    //
+    // M-1: these two fields use DIFFERENT pin definitions and must not be
+    // reconciled. `hasPersistedVisualPin` above is (project look | brand
+    // revision) only. `hasAdmittedVisualPin` below is
+    // `hasAdmittedPersistedPin`, which is (project look | brand revision |
+    // treatment pin) AND an admission stamp recorded on the SAME pin. So
+    // `hasAdmittedVisualPin ⟹ hasPersistedVisualPin` does NOT hold — a
+    // treatment-only pin can be admitted while this `hasPersistedVisualPin`
+    // reads false. Do not change either expression to make them agree;
+    // `verify-brand-visual-job-acceptance.ts` pins `hasPersistedVisualPin`'s
+    // exact shape by regex.
     hasAdmittedVisualPin: hasAdmittedPersistedPin(project),
     lastOpenedAt: project.lastOpenedAt?.toISOString() ?? null,
     createdAt: project.createdAt.toISOString(),

@@ -465,7 +465,11 @@ async function main() {
     "…and 'library user WITH a pin' is exactly the widening D2 decided on");
   assert.match(projectHook, /hasPersistedVisualPin/,
     "the editor must retain established-pin capability from its authoritative project snapshot");
-  assert.match(receiptDialog, /p\.brandVisualAllowed\s*\|\|\s*p\.hasPersistedVisualPin/,
+  // Wave 1b (D1/R7): the retained-AI-scene quote is an AI-image signal, so it
+  // must read the ADMITTED predicate — a bare pin proves nothing about images
+  // once every plan can own one, and the ADMITTED one is what actually
+  // survives a master rollback for an already-admitted project (R6).
+  assert.match(receiptDialog, /p\.brandVisualAllowed\s*\|\|\s*p\.hasAdmittedVisualPin/,
     "the receipt must quote exact retained scenes for rollback-safe rerenders");
 
   await prisma.$disconnect();

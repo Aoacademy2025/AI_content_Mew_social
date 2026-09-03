@@ -76,7 +76,7 @@ export function PostPhaseMobile({
   logoOverlay,
   onLogoOverlayChange,
   initialSubtitleConfig,
-  brandVisualAllowed,
+  brandLibraryAllowed,
   layerVisibility,
   onLayerVisibilityChange,
   headlineHook,
@@ -102,7 +102,7 @@ export function PostPhaseMobile({
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
   initialSubtitleConfig?: SubtitleStylePresetConfig;
-  brandVisualAllowed: boolean;
+  brandLibraryAllowed: boolean;
   layerVisibility: EditorLayerVisibility;
   onLayerVisibilityChange: (
     next: EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility)
@@ -308,7 +308,7 @@ export function PostPhaseMobile({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandVisualAllowed={brandVisualAllowed} />
+      <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandLibraryAllowed={brandLibraryAllowed} />
       <SubtitleQaInlineBanner output={job.output} />
       {/* ── preview ติดบน + สครับ ── */}
       <div data-mobile-preview="true" className="shrink-0" style={{ background: "#000", borderBottom: `1px solid ${color.cardBorder}` }}>

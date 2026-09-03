@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
-import { fetchMe, resolveBrandVisualClientAccess, type MeData } from "@/lib/use-me";
+import { fetchMe, resolveBrandLibraryClientAccess, resolveBrandVisualClientAccess, type MeData } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
 import { PRESET_PROVIDERS, presetBrollSource, type MixPreset } from "./mix-presets";
 import { EDITOR_DEFAULT_DRAFT } from "@/lib/editor-default-draft";
@@ -466,6 +466,13 @@ export function useV2Project() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [brandContentPreflightId, setBrandContentPreflightId] = useState<string | null>(null);
   const [hasPersistedVisualPin, setHasPersistedVisualPin] = useState(false);
+  // ADR 0059 amendment + wave 1b (D1): a pin alone no longer says anything
+  // about AI images — every plan can own one. This mirrors the render-time
+  // predicate (`hasAdmittedPersistedPin`) exactly, so the Editor never offers
+  // an AI-image action the render would refuse. NOT implied by (and does not
+  // imply) `hasPersistedVisualPin` — see the comment on the server response
+  // shape in `editor-projects.ts`.
+  const [hasAdmittedVisualPin, setHasAdmittedVisualPin] = useState(false);
   const [projectReady, setProjectReadyRaw] = useState(false);
   const projectReadyRef = useRef(false);
   const setProjectReady = useCallback((next: boolean) => {
@@ -502,6 +509,7 @@ export function useV2Project() {
   useEffect(() => {
     setBrandContentPreflightId(null);
     setHasPersistedVisualPin(false);
+    setHasAdmittedVisualPin(false);
   }, [projectId]);
   const [latestVideoId, setLatestVideoId] = useState<string | null>(null);
   const [previewMediaState, setPreviewMediaState] = useState<ProjectMediaState | null>(null);
@@ -562,6 +570,10 @@ export function useV2Project() {
     NonNullable<NonNullable<MeData["featureAccess"]>["heroAiImage"]> | null
   >(null);
   const [brandVisualAllowed, setBrandVisualAllowed] = useState(false);
+  // The LIBRARY capability (ADR 0059, wave 1b D1): pinning a Brand or a
+  // ชุดสไตล์ is open to every plan. `brandVisualAllowed` stays the gate for
+  // AI-image actions alone — see `resolveBrandLibraryClientAccess`.
+  const [brandLibraryAllowed, setBrandLibraryAllowed] = useState(false);
   // The Style Pack pinned to this project, as reported by the visual-context
   // endpoint (a snapshot, never re-resolved from the catalog). Server state, so
   // it is NOT part of the saved draft: Step 2 only reads it, and the per-window
@@ -913,8 +925,11 @@ export function useV2Project() {
   const canUploadOwnMedia = plan === "PRO" || plan === "BUSINESS";
   // Brand Visual sells production capacity and profile count, not the ability
   // to express the profile. Treatment Free accounts may therefore inherit and
-  // override their Brand Mark just like paid accounts.
-  const logoEligible = brandVisualAllowed || hasPersistedVisualPin || plan === "PRO" || plan === "BUSINESS";
+  // override their Brand Mark just like paid accounts. R12: the logo overlay
+  // stays a PRO/BUSINESS-plan feature, so this reads the ADMITTED pin — every
+  // plan can now pin without funding it, and a bare pin must not widen the
+  // logo gate (mirrors `projectHasAdmittedPersistedPin` on the server).
+  const logoEligible = brandVisualAllowed || hasAdmittedVisualPin || plan === "PRO" || plan === "BUSINESS";
 
   function clearProjectRecoveryData(clearProjectId: string): void {
     const storage = browserStorage();
@@ -934,6 +949,7 @@ export function useV2Project() {
     setLatestVideoId(typeof project.latestVideoId === "string" ? project.latestVideoId : null);
     setPreviewMediaState((project.previewMediaState as ProjectMediaState | null | undefined) ?? null);
     setHasPersistedVisualPin(project.hasPersistedVisualPin === true);
+    setHasAdmittedVisualPin(project.hasAdmittedVisualPin === true);
   }
 
   function serverCandidateForProject(
@@ -2032,6 +2048,7 @@ export function useV2Project() {
       setHeroAiImageEligible(heroImageEligible);
       setHeroAiImageAccess(m?.featureAccess?.heroAiImage ?? null);
       setBrandVisualAllowed(resolveBrandVisualClientAccess(m));
+      setBrandLibraryAllowed(resolveBrandLibraryClientAccess(m));
       setBrandVisualCohort(m?.brandVisualCohort ?? "off");
       setBrandVisualRolloutBucket(typeof m?.brandVisualRolloutBucket === "number" ? m.brandVisualRolloutBucket : null);
       setStarterAiImageAllowance(m?.starterAiImageAllowance ?? null);
@@ -2375,7 +2392,7 @@ export function useV2Project() {
     layerVisibility, setLayerVisibility,
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
-    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
+    usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, brandLibraryAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, hasAdmittedVisualPin, setHasAdmittedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
     plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     brandContentPreflightId, setBrandContentPreflightId,
     projectStylePack, setProjectStylePack,

@@ -173,8 +173,11 @@ export function BrandVisualSelector({
   // Brand Library endpoint instead of permanently hiding the selector. The
   // endpoint remains authoritative: a kill switch/downgrade returns 403 and
   // `libraryAuthorized` stays false.
-  const canProbeBrandLibrary = p.brandVisualAllowed || p.isAdmin || p.heroAiBeta;
-  const canManageBrandVisual = p.brandVisualAllowed || libraryAuthorized;
+  // ADR 0059 amendment (wave 1b D1): probing and managing the Brand Library
+  // are LIBRARY actions, open to every plan — `brandVisualAllowed` stays the
+  // gate for AI-image-only affordances alone (R7).
+  const canProbeBrandLibrary = p.brandLibraryAllowed || p.isAdmin || p.heroAiBeta;
+  const canManageBrandVisual = p.brandLibraryAllowed || libraryAuthorized;
   const canRenderPersistedVisual = canManageBrandVisual || p.hasPersistedVisualPin;
   const visualSelectionEnabled = p.brollSource === "kie-image"
     || (p.brollSource === "automix" && p.mixPreset !== "free")
@@ -246,6 +249,10 @@ export function BrandVisualSelector({
       setPreflight(resolvedPreflight);
       onPolicyWarningsChange?.(resolvedPreflight?.policyWarnings ?? []);
       setContext(visualResult.body.context);
+      // R7a: the ADMITTED predicate the render itself will use, so an AI-image
+      // affordance this panel exposes can never drift from what the render
+      // would refuse.
+      p.setHasAdmittedVisualPin(visualResult.body.hasAdmittedVisualPin === true);
       if (Array.isArray(visualResult.body.treatmentPresets)) {
         setTreatmentPresets(visualResult.body.treatmentPresets);
       }
@@ -590,6 +597,12 @@ export function BrandVisualSelector({
         {!loading && !error && <ChevronDown size={15} aria-hidden="true" style={{ transform: expanded ? "rotate(180deg)" : undefined, transition: "transform 150ms" }} />}
       </button>}
     </div>
+    {/* R7: a pack is applied (stock mood, subtitles, pacing, music) on every
+       plan the moment it is pinned; AI images are a separate, still-gated
+       decision. This notice is the one place that gap is disclosed, so it
+       shows whenever a pin exists without image admission — independent of
+       whether this account can otherwise manage the library. */}
+    {p.hasPersistedVisualPin && !p.hasAdmittedVisualPin && <div className="border-t px-4 py-2.5" style={{ borderColor: color.cardBorder, background: "rgba(56,189,248,.06)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>คลิปนี้ใช้ชุดสไตล์กับฟุตเทจ ซับ และเพลงแล้ว · ภาพ AI ของแบรนด์ยังไม่เปิดสำหรับแผนนี้</div>}
     {canManageBrandVisual && profiles.length > 0 && <div className="border-t px-4 py-3" style={{ borderColor: color.cardBorder }}>
       <label className="flex max-w-sm flex-col gap-1.5">
         <span style={{ color: color.textFaint, fontSize: 10.5 }}>แบรนด์ที่ใช้ (ถ้ามี)</span>

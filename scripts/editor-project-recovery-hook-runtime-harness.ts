@@ -490,12 +490,21 @@ function createHarness(options: HarnessOptions = {}) {
   const requireMock = (specifier: string): unknown => {
     if (specifier === "react") return fakeReact;
     if (specifier === "@/lib/use-me") {
+      const resolveBrandVisualClientAccess = (account: JsonRecord | null | undefined) => {
+        const featureAccess = account?.featureAccess as JsonRecord | undefined;
+        const brandVisual = featureAccess?.brandVisual as JsonRecord | undefined;
+        return brandVisual?.canUse === true || account?.brandVisualAllowed === true;
+      };
       return {
         fetchMe: () => options.fetchMe ?? Promise.resolve({ role: "ADMIN" }),
-        resolveBrandVisualClientAccess: (account: JsonRecord | null | undefined) => {
-          const featureAccess = account?.featureAccess as JsonRecord | undefined;
-          const brandVisual = featureAccess?.brandVisual as JsonRecord | undefined;
-          return brandVisual?.canUse === true || account?.brandVisualAllowed === true;
+        resolveBrandVisualClientAccess,
+        // wave 1b (D1): mirrors the real `resolveBrandLibraryClientAccess` —
+        // the explicit library field wins, else falls back to the AI-image
+        // access helper above.
+        resolveBrandLibraryClientAccess: (account: JsonRecord | null | undefined) => {
+          if (account?.brandLibraryAllowed === true) return true;
+          if (account?.brandLibraryAllowed === false) return false;
+          return resolveBrandVisualClientAccess(account);
         },
       };
     }
