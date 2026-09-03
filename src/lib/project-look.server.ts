@@ -618,8 +618,11 @@ export async function prepareProjectVisualPin(input: {
       treatmentPin: repairPin,
       brandVisualLanguage: projectLook.brandVisualLanguage,
     };
-    await prisma.editorProject.update({
-      where: { id: input.projectId },
+    // M2: ownership is established above, but this statement now writes an
+    // AUTHORIZATION record too, so it carries the owner in its own WHERE —
+    // the same shape as the job-time materialization further down.
+    await prisma.editorProject.updateMany({
+      where: { id: input.projectId, userId: input.userId },
       data: {
         projectLookJson: JSON.stringify(repairedLook),
         projectLookUpdatedAt: new Date(),
@@ -656,8 +659,9 @@ export async function prepareProjectVisualPin(input: {
         legacyCustomTreatment: false,
       };
     } else if (context.treatmentPin) {
-      await prisma.editorProject.update({
-        where: { id: input.projectId },
+      // M2: ownership-scoped, like every other statement that writes the stamp.
+      await prisma.editorProject.updateMany({
+        where: { id: input.projectId, userId: input.userId },
         data: {
           treatmentPresetId: context.treatmentPin.presetId,
           treatmentPresetVersion: context.treatmentPin.version,
@@ -1050,8 +1054,11 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
       projectId: job.projectId,
     });
     await prisma.$transaction([
-      prisma.editorProject.update({
-        where: { id: job.projectId },
+      // M2: the third render-time stamp write in this file, ownership-scoped
+      // for the same reason as the two above — the owner is established through
+      // the job, but the statement writes an AUTHORIZATION record of its own.
+      prisma.editorProject.updateMany({
+        where: { id: job.projectId, userId: input.userId },
         data: {
           projectLookJson: JSON.stringify(repairedLook),
           projectLookUpdatedAt: new Date(),

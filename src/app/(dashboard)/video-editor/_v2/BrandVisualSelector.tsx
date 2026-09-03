@@ -179,15 +179,29 @@ export function BrandVisualSelector({
   const canProbeBrandLibrary = p.brandLibraryAllowed || p.isAdmin || p.heroAiBeta;
   const canManageBrandVisual = p.brandLibraryAllowed || libraryAuthorized;
   const canRenderPersistedVisual = canManageBrandVisual || p.hasPersistedVisualPin;
+  // Wave 1b C1 (#430): this predicate gates BOTH the options body and the
+  // disclosure button that opens it, so before wave 1b it was also, in effect,
+  // the pin gate — every account that could pin had an AI source or a pin.
+  // Opening the pin to every plan makes it the door: a FREE / rollout-waiting
+  // creator has neither (R7 keeps the AI sources shut), so library access has
+  // to be a door of its own or the ชุดสไตล์ picker can never be opened by the
+  // population this wave exists to open it to. This opens the DOOR only —
+  // every AI-image affordance inside still reads the ADMITTED predicate.
   const visualSelectionEnabled = p.brollSource === "kie-image"
     || (p.brollSource === "automix" && p.mixPreset !== "free")
     || p.hasPersistedVisualPin
+    || canManageBrandVisual
     || Boolean(pending);
   const shouldLoadVisualContext = shouldLoadBrandVisualContext({
     brollSource: p.brollSource,
     mixPreset: p.mixPreset,
     hasPersistedVisualPin: p.hasPersistedVisualPin,
     settingsOpen: expanded,
+    // The brand <select> below sits OUTSIDE the options body and is disabled
+    // until a current analysis exists. Without this trigger a library user who
+    // owns a Brand Profile reads "กำลังวิเคราะห์…" under a dropdown nothing is
+    // analyzing — strictly worse than wave 1, where the control was hidden.
+    libraryPickerVisible: canManageBrandVisual && profiles.length > 0,
   });
 
   async function loadLibrary(signal?: AbortSignal) {
@@ -601,8 +615,13 @@ export function BrandVisualSelector({
        plan the moment it is pinned; AI images are a separate, still-gated
        decision. This notice is the one place that gap is disclosed, so it
        shows whenever a pin exists without image admission — independent of
-       whether this account can otherwise manage the library. */}
-    {p.hasPersistedVisualPin && !p.hasAdmittedVisualPin && <div className="border-t px-4 py-2.5" style={{ borderColor: color.cardBorder, background: "rgba(56,189,248,.06)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>คลิปนี้ใช้ชุดสไตล์กับฟุตเทจ ซับ และเพลงแล้ว · ภาพ AI ของแบรนด์ยังไม่เปิดสำหรับแผนนี้</div>}
+       whether this account can otherwise manage the library.
+       M1: `hasAdmittedVisualPin` is only learned from the NEXT context load,
+       while the pin writers set `hasPersistedVisualPin` optimistically — so an
+       account the image gate ALREADY admits would read "images are not open
+       for this plan" for the length of that round trip, on its own first pin.
+       There is no gap to disclose to that account, so it never sees this. */}
+    {p.hasPersistedVisualPin && !p.hasAdmittedVisualPin && !p.brandVisualAllowed && <div className="border-t px-4 py-2.5" style={{ borderColor: color.cardBorder, background: "rgba(56,189,248,.06)", color: color.infoText, fontSize: 10.5, lineHeight: 1.55 }}>คลิปนี้ใช้ชุดสไตล์กับฟุตเทจ ซับ และเพลงแล้ว · ภาพ AI ของแบรนด์ยังไม่เปิดสำหรับแผนนี้</div>}
     {canManageBrandVisual && profiles.length > 0 && <div className="border-t px-4 py-3" style={{ borderColor: color.cardBorder }}>
       <label className="flex max-w-sm flex-col gap-1.5">
         <span style={{ color: color.textFaint, fontSize: 10.5 }}>แบรนด์ที่ใช้ (ถ้ามี)</span>

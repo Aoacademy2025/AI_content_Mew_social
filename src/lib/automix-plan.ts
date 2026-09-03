@@ -24,15 +24,31 @@ export function parseAutoMixReceiptImageCeiling(value: unknown): number | null {
 
 /** Product-level lazy trigger for Content Preflight. Loading the Brand Library
  * is cheap and independent; semantic scene analysis begins only when an AI
- * visual path, explicit settings, or an established immutable pin needs it. */
+ * visual path, explicit settings, an established immutable pin, or a picker
+ * that is already on screen and waiting for the analysis needs it. */
 export function shouldLoadBrandVisualContext(input: {
   brollSource: string;
   mixPreset: string;
   hasPersistedVisualPin: boolean;
   settingsOpen: boolean;
+  /**
+   * Wave 1b (#430): a LIBRARY user — every plan, FREE included — is already
+   * being offered a brand picker that this analysis is what unlocks. Before
+   * wave 1b the pinning cohort always had an AI source or a pin, so one of the
+   * triggers above was always true for anyone who could choose; a FREE account
+   * on stock B-roll with no pin has none of them and would sit under
+   * "กำลังวิเคราะห์เนื้อหาปัจจุบันก่อนเปิดให้เลือกแบรนด์" forever.
+   *
+   * It is deliberately the picker being VISIBLE, not bare library access: the
+   * analysis is one managed text call (bounded per account by
+   * `reserveAiTextCall` and cached per project + source hash), so it is spent
+   * for an account that is being shown a choice, not for every editor session.
+   */
+  libraryPickerVisible: boolean;
 }): boolean {
   return input.hasPersistedVisualPin
     || input.settingsOpen
+    || input.libraryPickerVisible
     || input.brollSource === "kie-image"
     || ((input.brollSource === "automix" || input.brollSource === "auto-mix")
       && input.mixPreset !== "free");

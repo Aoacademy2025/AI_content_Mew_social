@@ -72,13 +72,20 @@ const admittedLiveAccess = {
 async function main() {
   setRollout("0");
   const { prisma } = await import("../src/lib/prisma");
+  const pinAdmissionModule = await import("../src/lib/brand-visual-pin-admission.server");
   const {
     brandVisualPinAdmissionFields,
     hasAdmittedPersistedPin,
     pinAdmissionFromDecision,
-    recordBrandVisualPinAdmission,
     resolveOwnerPinAdmission,
-  } = await import("../src/lib/brand-visual-pin-admission.server");
+  } = pinAdmissionModule;
+  // M3: a helper that writes the stamp DECOUPLED from a pin statement is the
+  // exact coupling the rest of this design enforces — pin and stamp commit
+  // together or not at all. There must be no such writer to reach for.
+  assert.ok(
+    !("recordBrandVisualPinAdmission" in pinAdmissionModule),
+    "M3: no stamp writer may exist outside a pin's own statement",
+  );
   const { resolveBrandVisualRenderAccess } = await import("../src/lib/brand-visual-job-acceptance.server");
   const {
     applyProjectLook,
@@ -405,43 +412,13 @@ async function main() {
     "an omitted admission never admits the pin",
   );
 
-  // recordBrandVisualPinAdmission writes and clears both columns, and is
-  // OWNERSHIP-SCOPED (wave 1b Task 2): the stamp is an authorization record, so
-  // it may never be written through a project id alone.
-  await prisma.$transaction((tx) => recordBrandVisualPinAdmission(
-    tx,
-    { projectId: forgetfulProject.id, userId: admitted.id },
-    { cohort: "treatment-50", at: admittedAt },
-  ));
-  const stamped = await prisma.editorProject.findUniqueOrThrow({ where: { id: forgetfulProject.id } });
-  assert.equal(stamped.brandVisualPinAdmittedCohort, "treatment-50");
-  assert.equal(stamped.brandVisualPinAdmittedAt?.toISOString(), admittedAt.toISOString());
-  await prisma.$transaction((tx) => recordBrandVisualPinAdmission(
-    tx,
-    { projectId: forgetfulProject.id, userId: denied.id },
-    { cohort: "internal", at: admittedAt },
-  ));
-  assert.equal(
-    (await prisma.editorProject.findUniqueOrThrow({ where: { id: forgetfulProject.id } }))
-      .brandVisualPinAdmittedCohort,
-    "treatment-50",
-    "another account cannot stamp an admission onto a project it does not own",
-  );
-  await prisma.$transaction((tx) => recordBrandVisualPinAdmission(
-    tx,
-    { projectId: forgetfulProject.id, userId: admitted.id },
-    null,
-  ));
-  assert.equal(
-    (await prisma.editorProject.findUniqueOrThrow({ where: { id: forgetfulProject.id } }))
-      .brandVisualPinAdmittedAt,
-    null,
-  );
-
   // ── 5. Backfill (D3): stamp a legacy pin only when the OWNER can use images ─
-  const { backfillBrandVisualPinAdmission, modeFromArgs } = await import(
-    "../scripts/backfill-brand-visual-pin-admission"
-  );
+  const {
+    backfillBrandVisualPinAdmission,
+    backfillDivergenceWarning,
+    backfillFlagLine,
+    modeFromArgs,
+  } = await import("../scripts/backfill-brand-visual-pin-admission");
   assert.equal(modeFromArgs([]), "dry-run", "the backfill defaults to dry-run");
   assert.equal(modeFromArgs(["--apply"]), "apply");
   assert.throws(() => modeFromArgs(["--apply", "--dry-run"]));
@@ -505,6 +482,52 @@ async function main() {
 
   const secondApply = await backfillBrandVisualPinAdmission("apply");
   assert.equal(secondApply.stamped, 0, "the backfill is idempotent");
+
+  // ── 5a. M4: the counts must be readable, not merely printed ───────────────
+  // Run outside the app's env (CLAUDE.md's PM2 `env:` shadowing hazard) every
+  // owner resolves `feature_off` and the report reads `eligible: 0` — safe, but
+  // indistinguishable from "nobody qualifies". D3's go/no-go depends on
+  // trusting these numbers, so the run states the flags it actually resolved.
+  setRollout("100");
+  process.env.BRAND_VISUAL_TEST_EMAILS = "ops-one@example.test,ops-two@example.test";
+  const flagLine = backfillFlagLine();
+  assert.match(flagLine, /BRAND_VISUAL_SYSTEM_ENABLED=1/, "the report states the master switch it resolved");
+  assert.match(flagLine, /BRAND_VISUAL_ROLLOUT_PERCENT=100/, "the report states the rollout percent it resolved");
+  assert.match(flagLine, /BRAND_VISUAL_TEST_EMAILS=2/, "the report states HOW MANY test emails, as a count");
+  assert.doesNotMatch(
+    flagLine,
+    /@/u,
+    "the report must never print a customer's email address, only how many are listed",
+  );
+  delete process.env.BRAND_VISUAL_SYSTEM_ENABLED;
+  assert.match(
+    backfillFlagLine(),
+    /BRAND_VISUAL_SYSTEM_ENABLED=0/,
+    "an absent master switch is reported as off, so `eligible: 0` cannot be mistaken for a real answer",
+  );
+
+  // …and a run that stamped fewer pins than it found eligible has hit a race or
+  // a permission problem, so it must SAY so instead of reporting a tidy number.
+  assert.equal(
+    backfillDivergenceWarning("apply", { scanned: 9, owners: 3, eligible: 4, stamped: 4, skipped: 5 }),
+    null,
+    "a complete apply run warns about nothing",
+  );
+  assert.equal(
+    backfillDivergenceWarning("dry-run", { scanned: 9, owners: 3, eligible: 4, stamped: 0, skipped: 5 }),
+    null,
+    "a dry run writes nothing by design and must not cry wolf",
+  );
+  const divergence = backfillDivergenceWarning(
+    "apply",
+    { scanned: 9, owners: 3, eligible: 4, stamped: 2, skipped: 5 },
+  );
+  assert.ok(divergence, "an apply run that stamped fewer pins than it found eligible must warn");
+  assert.match(divergence, /2/, "the warning names how many were stamped");
+  assert.match(divergence, /4/, "the warning names how many were eligible");
+  // Restore the matrix the rest of this script runs under: percent 0 keeps
+  // every non-internal account OUT of the image cohort.
+  setRollout("0");
 
   // ── 5b. Render-time materialization stamps EXPLICITLY (wave 1b Task 2, R5) ─
   // Opening the pin to every plan means the render path itself now writes pin

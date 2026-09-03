@@ -460,9 +460,21 @@ async function main() {
   assert.match(visualContextRoute, /reusableAiSceneIndices = state\.preflight && mayQuoteRetainedAiScenes/,
     "retained AI scenes are quoted only to an owner the image route would actually admit");
   assert.match(contentPreflightRoute, /requireBrandVisualRecoveryUser[\s\S]+resolveContentPreflight\([\s\S]+analyzer:\s*mayAnalyzeNow/,
-    "the analyzer runs for a pinned library user (D2) but a master rollback still replays cache only");
-  assert.match(contentPreflightRoute, /const mayAnalyzeNow = auth\.access\.canUse \|\| \(library\.canUse && hasPersistedVisualPin\)/,
-    "…and 'library user WITH a pin' is exactly the widening D2 decided on");
+    "the analyzer runs for a library user (D2/R17) but a master rollback still replays cache only");
+  // R17 (final review C1): the widening is 'any LIBRARY user', pin or no pin —
+  // the analysis is what the picker needs before a FIRST pin can be written, so
+  // demanding a pin for it made the first pin unreachable in the editor. The
+  // image decision decides nothing here; it is strictly narrower than the
+  // library gate, so reading it could only refuse an account this route serves.
+  assert.match(contentPreflightRoute, /const mayAnalyzeNow = library\.canUse;/,
+    "…and that widening is 'any library user', which is what makes a first pin reachable");
+  assert.match(
+    contentPreflightRoute,
+    /if \(!library\.canUse && !hasPersistedVisualPin\) return brandLibraryLockedResponse\(library\);/,
+    "the only refusals left (feature_off / suspended) are library-shaped, and an established pin keeps its cached replay",
+  );
+  assert.doesNotMatch(contentPreflightRoute, /brandVisualLockedResponse/,
+    "I1: a creator refused a zero-cost ชุดสไตล์ must never be answered with the AI-image upsell");
   assert.match(projectHook, /hasPersistedVisualPin/,
     "the editor must retain established-pin capability from its authoritative project snapshot");
   // Wave 1b (D1/R7): the retained-AI-scene quote is an AI-image signal, so it

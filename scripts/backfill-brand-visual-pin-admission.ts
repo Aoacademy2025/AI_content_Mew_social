@@ -23,6 +23,7 @@
 import "dotenv/config";
 import { prisma } from "../src/lib/prisma";
 import { resolveOwnerPinAdmission } from "../src/lib/brand-visual-pin-admission.server";
+import { brandVisualRolloutFlags } from "../src/lib/brand-visual-rollout.server";
 
 export type BackfillMode = "dry-run" | "apply";
 
@@ -47,6 +48,42 @@ export type BackfillCounts = {
   /** Owners seen, so a run can be sanity-checked against the cohort report. */
   owners: number;
 };
+
+/**
+ * The rollout flags this run actually resolved, printed beside the counts.
+ *
+ * Every eligibility decision below reads them, and they come from
+ * `process.env`: run outside the app's environment (CLAUDE.md's PM2 `env:`
+ * shadowing hazard) every owner resolves `feature_off` and the run reports
+ * `eligible: 0` — safe, but indistinguishable from "nobody qualifies". D3's
+ * go/no-go depends on trusting these numbers, so the run has to say what it
+ * was reading. The test-email allowlist is reported as a COUNT: it is a list of
+ * real addresses and this output goes to a deploy log.
+ */
+export function backfillFlagLine(flags = brandVisualRolloutFlags()): string {
+  return [
+    `BRAND_VISUAL_SYSTEM_ENABLED=${flags.enabled ? "1" : "0"}`,
+    `BRAND_VISUAL_ROLLOUT_PERCENT=${flags.percent}`,
+    `BRAND_VISUAL_ROLLOUT_STARTED_AT=${flags.startedAt ? flags.startedAt.toISOString() : "unset"}`,
+    `BRAND_VISUAL_TEST_EMAILS=${flags.testEmails.size}`,
+  ].join(" · ");
+}
+
+/**
+ * An `--apply` run that stamped fewer pins than it found eligible lost rows to
+ * the CAS clause — a pin written by a live request while the run was in flight,
+ * or a row that vanished. That is not a failure (the live write keeps ITS OWN
+ * admission, which is the safer outcome), but the counts must not read as a
+ * tidy answer when they are not one. A dry run writes nothing by design.
+ */
+export function backfillDivergenceWarning(
+  mode: BackfillMode,
+  counts: BackfillCounts,
+): string | null {
+  if (mode !== "apply" || counts.stamped >= counts.eligible) return null;
+  return `stamped ${counts.stamped} of ${counts.eligible} eligible pins — `
+    + "the rest were re-pinned or removed while this run was in flight; re-run to settle";
+}
 
 const PAGE_SIZE = 500;
 
@@ -116,12 +153,17 @@ export async function backfillBrandVisualPinAdmission(
 async function main() {
   const mode = modeFromArgs(process.argv.slice(2));
   console.log(`[backfill-brand-visual-pin-admission] mode=${mode}`);
+  // Printed BEFORE the scan: every count below is only as meaningful as the
+  // flags the eligibility decision read.
+  console.log(`[backfill-brand-visual-pin-admission] resolved flags: ${backfillFlagLine()}`);
   const counts = await backfillBrandVisualPinAdmission(mode);
   console.log(`[backfill-brand-visual-pin-admission] unstamped pins scanned: ${counts.scanned}`);
   console.log(`[backfill-brand-visual-pin-admission] distinct owners: ${counts.owners}`);
   console.log(`[backfill-brand-visual-pin-admission] owner can use images today: ${counts.eligible}`);
   console.log(`[backfill-brand-visual-pin-admission] left unadmitted (D3): ${counts.skipped}`);
   console.log(`[backfill-brand-visual-pin-admission] stamped: ${counts.stamped}`);
+  const divergence = backfillDivergenceWarning(mode, counts);
+  if (divergence) console.warn(`[backfill-brand-visual-pin-admission] WARNING: ${divergence}`);
   if (mode === "dry-run") {
     console.log("[backfill-brand-visual-pin-admission] dry run — nothing was written. Re-run with --apply.");
   }

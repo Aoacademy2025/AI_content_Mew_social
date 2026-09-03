@@ -757,9 +757,16 @@ async function verifyVisualContextDisclosure() {
 }
 
 /**
- * D2: Content Preflight RUNS for a non-admitted pinned render — one managed text
- * call per job, the same class as keyword extraction. A master rollback still
- * replays only the cache (`ANALYZER_UNAVAILABLE`), never a fresh analysis.
+ * D2 + R17: Content Preflight RUNS for ANY library user — one managed text call
+ * per job, the same class as keyword extraction, bounded per account by
+ * `reserveAiTextCall` (FREE 125 calls / 30 days) and cached per
+ * project+sourceHash. R17 extends it to a library user with NO pin yet, because
+ * the analysis is exactly what the picker needs before a FIRST pin can be made
+ * (final review C1). The only refusals left are the library gate's own —
+ * `feature_off` and `suspended` — and they answer with the LIBRARY-shaped
+ * refusal, never the AI-image upsell (final review I1). A master rollback still
+ * replays only the cache for an established pin (`ANALYZER_UNAVAILABLE`), never
+ * a fresh analysis.
  */
 async function verifyContentPreflightForPinnedLibraryUsers() {
   setRolloutFlags(true);
@@ -819,14 +826,57 @@ async function verifyContentPreflightForPinnedLibraryUsers() {
   );
   setRolloutFlags(true);
 
-  // An account with neither image access nor a pin is unchanged.
+  // R17 (final review C1): a FREE library user with NO pin gets the analysis
+  // too — it is the input the pack/brand picker needs before a first pin can be
+  // written. Without this the editor demands an analysis to enable the picker
+  // that the route would only run once a pin already existed.
   const unpinnedProject = await prisma.editorProject.create({
     data: { userId: user.id, title: "Preflight unpinned" },
   });
-  const refused = await contentPreflight.POST(preflightRequest(unpinnedProject.id), {
+  const unpinned = await contentPreflight.POST(preflightRequest(unpinnedProject.id), {
     params: Promise.resolve({ id: unpinnedProject.id }),
   });
-  assert.equal(refused.status, 403, "Content Preflight is not opened to projects with no pin at all");
+  assert.equal(
+    (await unpinned.json() as { code: string }).code,
+    "KEY_REQUIRED",
+    "R17: a FREE library user WITHOUT a pin reaches the analyzer, so a first pin is reachable",
+  );
+
+  // I1: the refusals that remain are the LIBRARY gate's own, and they must not
+  // sell AI images to somebody who asked for a zero-cost ชุดสไตล์.
+  setRolloutFlags(false);
+  const featureOffProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Preflight feature off" },
+  });
+  const featureOff = await contentPreflight.POST(preflightRequest(featureOffProject.id), {
+    params: Promise.resolve({ id: featureOffProject.id }),
+  });
+  assert.equal(featureOff.status, 403, "the master switch still closes new analyses");
+  const featureOffBody = await featureOff.json() as { code: string; upgradeUrl?: string };
+  assert.equal(featureOffBody.code, "BRAND_VISUAL_LOCKED", "a closed master switch is a library refusal");
+  assert.equal(featureOffBody.upgradeUrl, undefined, "I1: a library refusal never carries the image upsell");
+  setRolloutFlags(true);
+
+  const suspended = await prisma.user.create({
+    data: {
+      name: "Preflight suspended",
+      email: "ops-preflight-suspended@example.test",
+      plan: "FREE",
+      suspended: true,
+    },
+  });
+  actingUserId = suspended.id;
+  const suspendedProject = await prisma.editorProject.create({
+    data: { userId: suspended.id, title: "Preflight suspended" },
+  });
+  const suspendedResponse = await contentPreflight.POST(preflightRequest(suspendedProject.id), {
+    params: Promise.resolve({ id: suspendedProject.id }),
+  });
+  assert.equal(suspendedResponse.status, 403, "a suspended account gets no new analysis");
+  const suspendedBody = await suspendedResponse.json() as { code: string; upgradeUrl?: string };
+  assert.equal(suspendedBody.code, "ACCOUNT_SUSPENDED", "a suspension is a library refusal");
+  assert.equal(suspendedBody.upgradeUrl, undefined, "I1: a suspension never carries the image upsell");
+  actingUserId = user.id;
 
   if (priorManagedGemini === undefined) delete process.env.MANAGED_GEMINI;
   else process.env.MANAGED_GEMINI = priorManagedGemini;

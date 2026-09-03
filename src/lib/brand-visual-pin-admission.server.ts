@@ -1,10 +1,8 @@
 import "server-only";
 
-import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resolveBrandVisualAccessByUserId } from "@/lib/brand-visual-rollout.server";
 import {
-  brandVisualPinAdmissionFields,
   pinAdmissionFromDecision,
   renderTimePinAdmissionFields,
   type BrandVisualPinAdmissionFields,
@@ -44,19 +42,12 @@ export const persistedPinAdmissionSelect = {
   brandVisualPinAdmittedAt: true,
 } as const;
 
-/** Stamp (or clear) an existing project's admission inside the pin's own
- * transaction. The stamp IS an authorization record, so it is ownership-scoped
- * in its own right instead of trusting the caller's project id. */
-export async function recordBrandVisualPinAdmission(
-  tx: Prisma.TransactionClient,
-  owner: { projectId: string; userId: string },
-  admission: PinAdmission | undefined,
-): Promise<void> {
-  await tx.editorProject.updateMany({
-    where: { id: owner.projectId, userId: owner.userId },
-    data: brandVisualPinAdmissionFields(admission),
-  });
-}
+// There is deliberately NO helper here that writes the stamp on its own. Every
+// pin writer merges `brandVisualPinAdmissionFields(...)` into the SAME
+// create/update statement that writes the pin, so the two can never commit
+// apart — and a standalone stamp writer is the one shape that would let them.
+// To stamp a new pin, add those fields to the pin's own statement; do not
+// reintroduce a separate write.
 
 /**
  * The image decision for a pin writer that only knows the OWNER's id — the two

@@ -45,21 +45,28 @@ async function main() {
     mixPreset: "free",
     hasPersistedVisualPin: false,
     settingsOpen: false,
+    libraryPickerVisible: false,
   }), false, "Stock + closed settings must not trigger Content Preflight");
   assert.equal(shouldLoadBrandVisualContext({
     brollSource: "automix",
     mixPreset: "free",
     hasPersistedVisualPin: false,
     settingsOpen: false,
+    libraryPickerVisible: false,
   }), false, "Stock-only AutoMix must remain lazy");
   for (const trigger of [
-    { brollSource: "automix", mixPreset: "recommended", hasPersistedVisualPin: false, settingsOpen: false },
-    { brollSource: "kie-image", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: false },
-    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: true },
-    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: true, settingsOpen: false },
+    { brollSource: "automix", mixPreset: "recommended", hasPersistedVisualPin: false, settingsOpen: false, libraryPickerVisible: false },
+    { brollSource: "kie-image", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: false, libraryPickerVisible: false },
+    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: true, libraryPickerVisible: false },
+    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: true, settingsOpen: false, libraryPickerVisible: false },
+    // Wave 1b C1 (#430): a library user is already being offered a brand
+    // picker that stays disabled until the analysis resolves. Without this
+    // trigger a FREE account with a Brand Profile sees a permanently disabled
+    // dropdown under "กำลังวิเคราะห์เนื้อหาปัจจุบันก่อนเปิดให้เลือกแบรนด์" that never resolves.
+    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: false, libraryPickerVisible: true },
   ]) {
     assert.equal(shouldLoadBrandVisualContext(trigger), true,
-      "AI selection, explicit settings or an established pin triggers lazy analysis");
+      "AI selection, explicit settings, an established pin or a library user's visible picker triggers lazy analysis");
   }
   const user = await prisma.user.create({ data: { name: "Look owner", email: "look@example.test" } });
   const profile = await prisma.brandProfile.create({

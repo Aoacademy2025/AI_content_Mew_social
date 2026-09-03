@@ -196,10 +196,39 @@ async function main() {
     /p\.hasPersistedVisualPin && !p\.hasAdmittedVisualPin[\s\S]{0,300}?คลิปนี้ใช้ชุดสไตล์กับฟุตเทจ/u,
     "the notice must key off a pin that exists without image admission, not off library access",
   );
+  // M1: `hasAdmittedVisualPin` is only learned from the NEXT context load, so
+  // an admitted owner's first pin would flash "images are not open for this
+  // plan" for as long as that round trip takes. An account the image gate
+  // already admits never sees the gap this notice discloses.
+  assert.match(
+    selectorSource,
+    /p\.hasPersistedVisualPin && !p\.hasAdmittedVisualPin && !p\.brandVisualAllowed/,
+    "M1: the notice must not flash for an account the image gate already admits",
+  );
   assert.match(
     selectorSource,
     /p\.setHasAdmittedVisualPin\(visualResult\.body\.hasAdmittedVisualPin === true\)/,
     "the panel must re-read the render-time admitted predicate from the server on every context load",
+  );
+
+  // C1 (#430): the pack/format/treatment body and the disclosure button that
+  // opens it both hang off `visualSelectionEnabled`. Wave 1b's whole promise is
+  // that a FREE or rollout-waiting account can choose a ชุดสไตล์, and that
+  // account has no AI b-roll source (R7) and no pin yet — so library access
+  // must be a door of its own, or the panel can never be opened by the
+  // population this wave opens it to.
+  assert.match(
+    selectorSource,
+    /const visualSelectionEnabled = [\s\S]{0,400}?\|\| canManageBrandVisual/u,
+    "C1: an account that may manage the library must be able to open the options panel",
+  );
+  // …and the analysis the picker demands must actually be requested for that
+  // account, otherwise the brand <select> outside the options body stays
+  // disabled forever under "กำลังวิเคราะห์เนื้อหาปัจจุบันก่อนเปิดให้เลือกแบรนด์".
+  assert.match(
+    selectorSource,
+    /shouldLoadBrandVisualContext\(\{[\s\S]{0,900}?libraryPickerVisible: canManageBrandVisual && profiles\.length > 0/u,
+    "C1: a library user already being offered a brand picker must trigger the content analysis",
   );
 
   const stepTwoElementsSource = readFileSync(
