@@ -9,7 +9,7 @@ import { checkMinuteQuota } from "@/lib/minute-limits";
 import { managedKieLaunchOn } from "@/lib/kie-image-guards";
 import { isHeroAiBetaUser, isInternalAiTester, resolveHeroAiImageAccess } from "@/lib/internal-ai-access";
 import { resolveHeroScriptAccess } from "@/lib/hero-script-rollout.server";
-import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { decideBrandLibraryAccess, resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { getStarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 import { shouldDefaultToRecommendedAutoMix } from "@/lib/automix-plan";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
@@ -108,6 +108,11 @@ export async function GET() {
       brandVisualAllowed: brandVisualAccess.canUse,
     });
 
+    // ADR 0059: the Brand Library is its own capability — only the master switch
+    // and a suspension close it. The Editor reads this to decide whether to show
+    // the Brand surfaces at all; `brandVisualAllowed` stays the AI-image gate.
+    const brandLibraryAccess = decideBrandLibraryAccess(authUser);
+
     const { stripeSubscriptionId, ...safeUser } = user as typeof user & { stripeSubscriptionId: string | null };
     return NextResponse.json({
       ...safeUser,
@@ -145,6 +150,7 @@ export async function GET() {
       heroScriptAllowed: heroScriptAccess.canUse,
       heroScriptPreview: heroScriptAccess.canPreview,
       heroScriptCohort: heroScriptAccess.cohort,
+      brandLibraryAllowed: brandLibraryAccess.canUse,
       brandVisualAllowed: brandVisualAccess.canUse,
       brandVisualCohort: brandVisualAccess.cohort,
       brandVisualRolloutBucket: brandVisualAccess.bucket,
@@ -161,6 +167,10 @@ export async function GET() {
           reason: heroScriptAccess.reason,
           canUse: heroScriptAccess.canUse,
           canPreview: heroScriptAccess.canPreview,
+        },
+        brandLibrary: {
+          reason: brandLibraryAccess.reason,
+          canUse: brandLibraryAccess.canUse,
         },
         brandVisual: {
           mode: brandVisualAccess.mode,

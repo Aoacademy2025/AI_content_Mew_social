@@ -66,8 +66,12 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
     return () => { alive = false; };
   }, [open]);
 
+  // R7: the retained-AI-scene quote is an AI-image signal, so it reads the
+  // admitted predicate (mirrors the server's `mayQuoteRetainedAiScenes`). An
+  // unadmitted pin renders stock; quoting retained AI scenes here would
+  // disclose work that cannot run.
   useEffect(() => {
-    if (!open || !(p.brandVisualAllowed || p.hasPersistedVisualPin) || !p.projectId || !p.brandContentPreflightId) {
+    if (!open || !(p.brandVisualAllowed || p.hasAdmittedVisualPin) || !p.projectId || !p.brandContentPreflightId) {
       setReusableAiSceneIndices([]);
       setPreserveEstablishedAiDensity(false);
       return;
@@ -85,7 +89,7 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
       setPreserveEstablishedAiDensity(result.data?.preserveEstablishedAiDensity === true);
     }).catch(() => {});
     return () => { alive = false; };
-  }, [open, p.brandVisualAllowed, p.hasPersistedVisualPin, p.projectId, p.brandContentPreflightId]);
+  }, [open, p.brandVisualAllowed, p.hasAdmittedVisualPin, p.projectId, p.brandContentPreflightId]);
 
   // Esc = กลับไปแก้ไข (blocked while submitting so we can't dismiss mid-submit).
   useEffect(() => {

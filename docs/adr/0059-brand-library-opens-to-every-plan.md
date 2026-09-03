@@ -35,3 +35,41 @@ Script send-to-editor handoff (`createEditorProject({ brandProfileRevisionId })`
 `src/lib/hero-script.server.ts`), both of which can write a persisted pin for an account
 the image gate would reject. This wave did not close them, so wave 1's re-anchoring must
 cover these two writers as well, not only the two creator-initiated routes above.
+
+## Amendment 2 — 2026-09-03 (wave 1b, #430)
+
+Attaching a Brand Profile or ชุดสไตล์ to a project now requires only the library guard
+(`requireBrandLibraryUser`): `PUT /api/editor-projects/<id>/brand-revision`,
+`PUT /api/editor-projects/<id>/visual-context` and `POST /api/brand-library/from-project-look`
+accept every plan, FREE included (plan limits are the only cap). The grandfather clause in
+`resolveBrandVisualRenderAccess` (synthetic cohort `existing-pin`) is anchored to a **Pin
+admission**: every pin writer — the three creator routes, the First-Clip auto-spine, the Hero
+Script send-to-editor handoff, promotion, and render-time materialization — records the
+owner's image-access decision at write time in the additive columns
+`EditorProject.brandVisualPinAdmittedCohort` / `brandVisualPinAdmittedAt` (null when the decision
+was not `canUse`). A persisted pin is honoured for rerenders only when that stamp is present;
+clearing any pin clears it, and every pin write re-stamps, so a pin can never be a self-service
+admission ticket (#430 closed). Job creation snapshots the pinned visual context for every
+library user — the pack's Stock Mood, subtitle default, pacing and music apply on stock renders —
+but writes `brandVisualAcceptanceJson` only for admitted users; the AI-image spend path
+(`fetch-stock`) still requires that envelope. Explicit AI-image actions keep their gate and
+answer a non-admitted request with the same locked response as any non-entitled account; the
+editor never offers them for an unadmitted pin. Legacy pins are back-filled once at deploy for
+owners whose current decision is `canUse` (D3); all other legacy pins stay unadmitted.
+
+Three consequences worth stating so nobody "fixes" them back. (1) Render-time
+materialization (treatment repair, job-context pinning, scene-prompt repair) stamps the
+owner's *live* decision when it is `canUse`, keeps an existing admitted stamp on the
+grandfather path, and writes null otherwise — so the stamp means "admitted at the most recent
+pin write by a live-admitted owner", and a stock-only render by an admitted owner does
+grandfather the project (established work stays rerenderable after a downgrade). (2) The three
+creator routes resolve the image decision explicitly (`resolveBrandVisualAccess(user)`) instead
+of reusing the guard's attached decision — one extra entitlement read per pin write, kept so the
+stamp source survives a future change to `requireBrandLibraryUser`. (3) Rollback: with
+`BRAND_VISUAL_SYSTEM_ENABLED=0` an unadmitted pinned project renders **without** its pack (no
+error, no notice); admitted projects keep the grandfather path. The export logo overlay stays a
+PRO/BUSINESS plan feature: a pinned-but-unadmitted project does not stage the brand mark.
+Content Preflight — the one managed text call that reads the script and suggests a ชุดสไตล์ —
+runs for every library user, pin or no pin, behind the existing per-user AI-text cap, because
+the editor needs that analysis before a first pin can be made; a refused caller
+(`feature_off` / `suspended`) gets the library-shaped notice, never the AI-image upgrade copy.

@@ -404,10 +404,13 @@ export function useV2Job(p: V2Project) {
       ? disclosedAutoMixAiSlotIndices(receiptEstSec, receiptWeights, quotedTargetClipCount)
       : null;
     let reusableAiImages = 0;
+    // R7: this fetch exists ONLY to size an AI-image-cost disclosure (how many
+    // reusable AI images offset maxAiImages) — an unadmitted pin renders stock
+    // regardless of what maxAiImages says, so it reads the admitted predicate.
     if (
       !existingAttempt
       && disclosedAiSlots !== null
-      && (p.brandVisualAllowed || p.hasPersistedVisualPin)
+      && (p.brandVisualAllowed || p.hasAdmittedVisualPin)
       && p.projectId
       && p.brandContentPreflightId
     ) {
@@ -462,6 +465,14 @@ export function useV2Job(p: V2Project) {
     } : {
       idempotencyKey,
       ...(p.projectId ? { projectId: p.projectId } : {}),
+      // NOT an AI-image affordance (R7 exception, by design — do not migrate
+      // to hasAdmittedVisualPin): D2 carries the pinned pack's stock mood,
+      // subtitles, pacing and music into the render for EVERY library user
+      // with a pin, admitted or not. `POST /api/videos/jobs`'s unadmitted
+      // library-pin branch (`snapshotForLibraryPin`) reads these exact
+      // `narrativeSourceKind`/`contentPreflightId` body fields to materialize
+      // that snapshot — dropping them here for an unadmitted pin would silently
+      // lose the pinned pack instead of only skipping AI images.
       ...((p.brandVisualAllowed || p.hasPersistedVisualPin) && p.projectId ? {
         narrativeSourceKind: p.narrativeSourceKind,
         ...(p.brandContentPreflightId ? { contentPreflightId: p.brandContentPreflightId } : {}),

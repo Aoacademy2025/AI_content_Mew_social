@@ -49,6 +49,13 @@ import {
 import { prisma } from "@/lib/prisma";
 import { reusableProjectVisualAssets } from "@/lib/project-visual-assets.server";
 import { hydrateBrandVisualJobAcceptanceReuse } from "@/lib/brand-visual-job-acceptance.server";
+import {
+  brandVisualPinAdmissionFields,
+  hasAdmittedPersistedPin,
+  hasPersistedProjectPin,
+  type PinAdmission,
+} from "@/lib/brand-visual-pin-admission";
+import { resolveRenderTimePinAdmissionFields } from "@/lib/brand-visual-pin-admission.server";
 import { CONTENT_PREFLIGHT_ANALYZER_VERSION } from "@/lib/content-preflight.server";
 
 const pendingUploadVisualContextSchema = z.discriminatedUnion("selection", [
@@ -168,7 +175,12 @@ function snapshotForLook(
 
 async function saveProjectLookInTransaction(
   tx: Prisma.TransactionClient,
-  input: { userId: string; projectId: string; look: ProjectLookInput },
+  input: {
+    userId: string;
+    projectId: string;
+    look: ProjectLookInput;
+    admission: PinAdmission;
+  },
 ): Promise<ProjectLookSnapshot> {
   const project = await tx.editorProject.findFirst({
     where: { id: input.projectId, userId: input.userId },
@@ -189,6 +201,8 @@ async function saveProjectLookInTransaction(
       treatmentPresetVersion: snapshot.schemaVersion === 2 ? snapshot.treatmentPin.version : null,
       treatmentPinSource: snapshot.schemaVersion === 2 ? snapshot.treatmentPin.source : null,
       treatmentPinnedAt: snapshot.schemaVersion === 2 ? new Date() : null,
+      // The pin and the image decision behind it commit together (#430).
+      ...brandVisualPinAdmissionFields(input.admission),
     },
   });
   return snapshot;
@@ -198,6 +212,7 @@ export async function saveProjectLook(input: {
   userId: string;
   projectId: string;
   look: ProjectLookInput;
+  admission: PinAdmission;
 }): Promise<ProjectLookSnapshot> {
   return prisma.$transaction((tx) => saveProjectLookInTransaction(tx, input));
 }
@@ -210,6 +225,7 @@ export async function saveUploadProjectVisualFormatAwaitingPreflight(input: {
   userId: string;
   projectId: string;
   visualFormatId: ActiveVisualFormatId;
+  admission: PinAdmission;
 }): Promise<ProjectLookSnapshot> {
   return prisma.$transaction(async (tx) => {
     const project = await tx.editorProject.findFirst({
@@ -237,6 +253,8 @@ export async function saveUploadProjectVisualFormatAwaitingPreflight(input: {
         treatmentPresetVersion: null,
         treatmentPinSource: null,
         treatmentPinnedAt: null,
+        // A temporary format pin is a pin: it records the same admission (#430).
+        ...brandVisualPinAdmissionFields(input.admission),
       },
     });
     return snapshot;
@@ -252,6 +270,7 @@ export async function applyProjectLook(input: {
   preflightId?: string;
   applyMode?: ProjectVisualApplyMode;
   look: ProjectLookInput;
+  admission: PinAdmission;
 }): Promise<{
   look: ProjectLookSnapshot;
   preflightId: string | null;
@@ -317,10 +336,22 @@ export async function clearProjectLook(input: { userId: string; projectId: strin
       treatmentPresetVersion: null,
       treatmentPinSource: null,
       treatmentPinnedAt: null,
+      // Clearing a pin clears the image admission that pin was granted (#430);
+      // the next pin write records the owner's decision at THAT moment.
+      ...brandVisualPinAdmissionFields(null),
     },
   });
   if (updated.count !== 1) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
 }
+
+const persistedVisualPinSelect = {
+  projectLookJson: true,
+  brandProfileRevisionId: true,
+  treatmentPresetId: true,
+  treatmentPresetVersion: true,
+  brandVisualPinAdmittedCohort: true,
+  brandVisualPinAdmittedAt: true,
+} as const;
 
 /** A persisted selection survives plan downgrade and feature rollback. This
  * check grants no mutation/adoption rights; it only lets VideoJob acceptance
@@ -331,19 +362,25 @@ export async function projectHasPersistedVisualPin(input: {
 }): Promise<boolean> {
   const project = await prisma.editorProject.findFirst({
     where: { id: input.projectId, userId: input.userId },
-    select: {
-      projectLookJson: true,
-      brandProfileRevisionId: true,
-      treatmentPresetId: true,
-      treatmentPresetVersion: true,
-    },
+    select: persistedVisualPinSelect,
   });
   if (!project) throw new ProjectLookError("NOT_FOUND", "ไม่พบโปรเจกต์นี้");
-  return Boolean(
-    project.projectLookJson
-    || project.brandProfileRevisionId
-    || (project.treatmentPresetId && project.treatmentPresetVersion),
-  );
+  return hasPersistedProjectPin(project);
+}
+
+/** The render-path question (#430): does this project own a pin that was
+ * written while its owner could use managed AI images? Ownership-scoped, and
+ * fail-closed — a project that does not exist (or is not the caller's) admits
+ * nothing instead of raising into a 500 on a render request. */
+export async function projectHasAdmittedPersistedPin(input: {
+  userId: string;
+  projectId: string;
+}): Promise<boolean> {
+  const project = await prisma.editorProject.findFirst({
+    where: { id: input.projectId, userId: input.userId },
+    select: persistedVisualPinSelect,
+  });
+  return project ? hasAdmittedPersistedPin(project) : false;
 }
 
 export async function resolveProjectVisualContext(input: {
@@ -581,8 +618,11 @@ export async function prepareProjectVisualPin(input: {
       treatmentPin: repairPin,
       brandVisualLanguage: projectLook.brandVisualLanguage,
     };
-    await prisma.editorProject.update({
-      where: { id: input.projectId },
+    // M2: ownership is established above, but this statement now writes an
+    // AUTHORIZATION record too, so it carries the owner in its own WHERE —
+    // the same shape as the job-time materialization further down.
+    await prisma.editorProject.updateMany({
+      where: { id: input.projectId, userId: input.userId },
       data: {
         projectLookJson: JSON.stringify(repairedLook),
         projectLookUpdatedAt: new Date(),
@@ -590,6 +630,13 @@ export async function prepareProjectVisualPin(input: {
         treatmentPresetVersion: repairPin.version,
         treatmentPinSource: repairPin.source,
         treatmentPinnedAt: new Date(),
+        // R5: a render-time pin write stamps its own admission in the SAME
+        // statement — from the owner's live image decision, else from an
+        // already-admitted pin, else nothing.
+        ...(await resolveRenderTimePinAdmissionFields({
+          userId: input.userId,
+          projectId: input.projectId,
+        })),
       },
     });
     context = { source: "project-look", ...repairedLook };
@@ -612,13 +659,20 @@ export async function prepareProjectVisualPin(input: {
         legacyCustomTreatment: false,
       };
     } else if (context.treatmentPin) {
-      await prisma.editorProject.update({
-        where: { id: input.projectId },
+      // M2: ownership-scoped, like every other statement that writes the stamp.
+      await prisma.editorProject.updateMany({
+        where: { id: input.projectId, userId: input.userId },
         data: {
           treatmentPresetId: context.treatmentPin.presetId,
           treatmentPresetVersion: context.treatmentPin.version,
           treatmentPinSource: context.treatmentPin.source,
           treatmentPinnedAt: new Date(),
+          // R5: materialising a treatment pin is a pin write, so it carries its
+          // own admission rather than inheriting whatever the row held.
+          ...(await resolveRenderTimePinAdmissionFields({
+            userId: input.userId,
+            projectId: input.projectId,
+          })),
         },
       });
     }
@@ -816,6 +870,13 @@ export async function pinProjectVisualContextToVideoJob(input: {
     contentPreflightId: preflight.id,
     projectVisualContextJson: JSON.stringify(projectVisualContextSchema.parse(context)),
   };
+  // R5: resolved before the transaction, exactly like a creator route resolves
+  // its image decision before its own write, and merged into the SAME statement
+  // that materialises the pin below.
+  const materializedPinAdmission = await resolveRenderTimePinAdmissionFields({
+    userId: input.userId,
+    projectId: input.projectId,
+  });
   const committedPin = await prisma.$transaction(async (tx) => {
     await advancePreflightVisualIdentityInTransaction(tx, {
       userId: input.userId,
@@ -844,6 +905,7 @@ export async function pinProjectVisualContextToVideoJob(input: {
           treatmentPresetVersion: context.treatmentPin.version,
           treatmentPinSource: context.treatmentPin.source,
           treatmentPinnedAt: new Date(),
+          ...materializedPinAdmission,
         },
       });
     }
@@ -985,9 +1047,18 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
       brandVisualLanguage: context.brandVisualLanguage,
     };
     context = { source: context.source, ...repairedLook };
+    // R5: the scene-prompt repair also writes pin columns, so it stamps in the
+    // same statement instead of leaving whatever the row happened to hold.
+    const repairedPinAdmission = await resolveRenderTimePinAdmissionFields({
+      userId: input.userId,
+      projectId: job.projectId,
+    });
     await prisma.$transaction([
-      prisma.editorProject.update({
-        where: { id: job.projectId },
+      // M2: the third render-time stamp write in this file, ownership-scoped
+      // for the same reason as the two above — the owner is established through
+      // the job, but the statement writes an AUTHORIZATION record of its own.
+      prisma.editorProject.updateMany({
+        where: { id: job.projectId, userId: input.userId },
         data: {
           projectLookJson: JSON.stringify(repairedLook),
           projectLookUpdatedAt: new Date(),
@@ -995,6 +1066,7 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
           treatmentPresetVersion: repairPin.version,
           treatmentPinSource: repairPin.source,
           treatmentPinnedAt: new Date(),
+          ...repairedPinAdmission,
         },
       }),
       prisma.videoJob.update({

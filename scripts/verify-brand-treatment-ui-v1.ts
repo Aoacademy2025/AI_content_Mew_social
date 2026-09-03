@@ -179,6 +179,181 @@ async function main() {
     assert.doesNotMatch(src, /Brand Visual|Hero AI Image|Video Editor/, `${file} leaks an English system name`);
   }
 
+  // ── Wave 1b Task 3 (#430): every plan can pin, AI images stay gated ────────
+  // R7: the client must never OFFER an AI-image affordance for an unadmitted
+  // pin — these source guards pin each migrated call site to the ADMITTED
+  // predicate (`hasAdmittedVisualPin` project-level / `brandVisualAllowed`
+  // account-level) instead of the bare pin, and freeze the one deliberate
+  // exception (D2's pack-context transmission, which must stay on the bare
+  // pin so an unadmitted pin still renders with its pinned style).
+  assert.match(
+    selectorSource,
+    /คลิปนี้ใช้ชุดสไตล์กับฟุตเทจ ซับ และเพลงแล้ว · ภาพ AI ของแบรนด์ยังไม่เปิดสำหรับแผนนี้/,
+    "a pinned-but-unadmitted project must disclose that images are not part of the pack, verbatim",
+  );
+  assert.match(
+    selectorSource,
+    /p\.hasPersistedVisualPin && !p\.hasAdmittedVisualPin[\s\S]{0,300}?คลิปนี้ใช้ชุดสไตล์กับฟุตเทจ/u,
+    "the notice must key off a pin that exists without image admission, not off library access",
+  );
+  // M1: `hasAdmittedVisualPin` is only learned from the NEXT context load, so
+  // an admitted owner's first pin would flash "images are not open for this
+  // plan" for as long as that round trip takes. An account the image gate
+  // already admits never sees the gap this notice discloses.
+  assert.match(
+    selectorSource,
+    /p\.hasPersistedVisualPin && !p\.hasAdmittedVisualPin && !p\.brandVisualAllowed/,
+    "M1: the notice must not flash for an account the image gate already admits",
+  );
+  assert.match(
+    selectorSource,
+    /p\.setHasAdmittedVisualPin\(visualResult\.body\.hasAdmittedVisualPin === true\)/,
+    "the panel must re-read the render-time admitted predicate from the server on every context load",
+  );
+
+  // C1 (#430): the pack/format/treatment body and the disclosure button that
+  // opens it both hang off `visualSelectionEnabled`. Wave 1b's whole promise is
+  // that a FREE or rollout-waiting account can choose a ชุดสไตล์, and that
+  // account has no AI b-roll source (R7) and no pin yet — so library access
+  // must be a door of its own, or the panel can never be opened by the
+  // population this wave opens it to.
+  assert.match(
+    selectorSource,
+    /const visualSelectionEnabled = [\s\S]{0,400}?\|\| canManageBrandVisual/u,
+    "C1: an account that may manage the library must be able to open the options panel",
+  );
+  // …and the analysis the picker demands must actually be requested for that
+  // account, otherwise the brand <select> outside the options body stays
+  // disabled forever under "กำลังวิเคราะห์เนื้อหาปัจจุบันก่อนเปิดให้เลือกแบรนด์".
+  assert.match(
+    selectorSource,
+    /shouldLoadBrandVisualContext\(\{[\s\S]{0,900}?libraryPickerVisible: canManageBrandVisual && profiles\.length > 0/u,
+    "C1: a library user already being offered a brand picker must trigger the content analysis",
+  );
+
+  const stepTwoElementsSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx",
+    "utf8",
+  );
+  assert.match(
+    stepTwoElementsSource,
+    /const hasFunding = p\.hasAdmittedVisualPin \|\| starterRemaining\(p\) === null/,
+    "the AI-image source cards' funding check must read the admitted pin",
+  );
+  assert.match(
+    stepTwoElementsSource,
+    /const hasAiRenderAccess = p\.heroAiImageEligible \|\| p\.hasAdmittedVisualPin/,
+    "the AI-image source cards' access check must read the admitted pin",
+  );
+  assert.match(
+    stepTwoElementsSource,
+    /const locked = !\(p\.heroAiImageEligible \|\| p\.hasAdmittedVisualPin\)/,
+    "the AutoMix intensity lock must read the admitted pin, matching the source cards",
+  );
+  assert.doesNotMatch(
+    stepTwoElementsSource,
+    /hasFunding = p\.hasPersistedVisualPin|hasAiRenderAccess = p\.heroAiImageEligible \|\| p\.hasPersistedVisualPin|locked = !\(p\.heroAiImageEligible \|\| p\.hasPersistedVisualPin\)/,
+    "no AI-image source affordance may fall back to reading the bare pin",
+  );
+
+  const editorJobSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/useV2Job.ts",
+    "utf8",
+  );
+  assert.match(
+    editorJobSource,
+    /disclosedAiSlots !== null\s*\n\s*&& \(p\.brandVisualAllowed \|\| p\.hasAdmittedVisualPin\)/,
+    "sizing the retained-AI-image disclosure must read the admitted pin",
+  );
+  // D2 exception (deliberate, do not migrate): the pinned pack's context must
+  // reach the render for a library user with a pin regardless of admission,
+  // so this ONE call site stays on the bare pin.
+  assert.match(
+    editorJobSource,
+    /\(p\.brandVisualAllowed \|\| p\.hasPersistedVisualPin\) && p\.projectId \? \{\s*\n\s*narrativeSourceKind: p\.narrativeSourceKind/,
+    "submitting the pinned pack's context (D2) must stay on the bare pin so an unadmitted pin still renders styled",
+  );
+
+  const renderReceiptSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/RenderReceiptDialog.tsx",
+    "utf8",
+  );
+  assert.match(
+    renderReceiptSource,
+    /!\(p\.brandVisualAllowed \|\| p\.hasAdmittedVisualPin\) \|\| !p\.projectId \|\| !p\.brandContentPreflightId/,
+    "the retained-AI-scene quote must read the admitted pin (R6/R7)",
+  );
+  assert.match(
+    renderReceiptSource,
+    /\}, \[open, p\.brandVisualAllowed, p\.hasAdmittedVisualPin, p\.projectId, p\.brandContentPreflightId\]\);/,
+    "the retained-AI-scene effect must re-run off the admitted pin, not the bare one",
+  );
+
+  const editorProjectHookSource = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/useV2Project.ts",
+    "utf8",
+  );
+  assert.match(
+    editorProjectHookSource,
+    /const logoEligible = brandVisualAllowed \|\| hasAdmittedVisualPin \|\| plan === "PRO" \|\| plan === "BUSINESS"/,
+    "R12: the logo overlay stays PRO\/BUSINESS-plan-gated — a bare pin must not widen it",
+  );
+  assert.match(
+    editorProjectHookSource,
+    /setHasAdmittedVisualPin\(project\.hasAdmittedVisualPin === true\)/,
+    "the project's admitted-pin flag must hydrate from the authoritative server snapshot",
+  );
+  assert.match(
+    editorProjectHookSource,
+    /setBrandLibraryAllowed\(resolveBrandLibraryClientAccess\(m\)\)/,
+    "the account's library capability must hydrate from /api/user/me",
+  );
+
+  const videoJobsRouteSourceForLogo = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
+  assert.match(
+    videoJobsRouteSourceForLogo,
+    /brandVisualAllowed: brandVisualAccess\.canUse\s*\n\s*\|\| await projectHasAdmittedPersistedPin\(\{ userId: user\.id, projectId: sourceProjectId \}\)/,
+    "R12: export logo staging must read the ADMITTED pin, not the bare one — the logo overlay is not widened by wave 1b",
+  );
+  assert.match(
+    videoJobsRouteSourceForLogo,
+    /&& await projectHasPersistedVisualPin\(\{ userId: user\.id, projectId \}\)\.catch\(\(error\) => \{\s*\n\s*if \(error instanceof ProjectLookError\) return false;/,
+    "M-5: the library-snapshot pin read must fail open on a vanished project instead of throwing",
+  );
+
+  const editorProjectsSource = readFileSync("src/lib/editor-projects.ts", "utf8");
+  assert.match(
+    editorProjectsSource,
+    /hasAdmittedVisualPin ⟹ hasPersistedVisualPin.*does NOT hold/u,
+    "M-1: the two pin fields' non-implication must be documented so they are never reconciled",
+  );
+
+  // "Save this look as a Brand" is a LIBRARY action (from-project-look accepts
+  // every library user), so it must follow library access, not the AI-image
+  // gate — otherwise a FREE creator who CAN save one never sees the prompt.
+  for (const [file, propType] of [
+    ["src/app/(dashboard)/video-editor/_v2/SaveProjectLookPrompt.tsx", /brandLibraryAllowed: boolean/],
+    ["src/app/(dashboard)/video-editor/_v2/PostPhase.tsx", /brandLibraryAllowed: boolean/],
+    ["src/app/(dashboard)/video-editor/_v2/PostPhaseMobile.tsx", /brandLibraryAllowed: boolean/],
+  ] as const) {
+    const src = readFileSync(file, "utf8");
+    assert.match(src, propType, `${file} must thread brandLibraryAllowed, not the AI-image gate`);
+    assert.doesNotMatch(
+      src,
+      /brandVisualAllowed/,
+      `${file} must not gate the save-as-Brand prompt on the AI-image gate`,
+    );
+  }
+  const shellSourceForSavePrompt = readFileSync(
+    "src/app/(dashboard)/video-editor/_v2/EditorV2Shell.tsx",
+    "utf8",
+  );
+  assert.match(
+    shellSourceForSavePrompt,
+    /brandLibraryAllowed: p\.brandLibraryAllowed,/,
+    "the shell must pass the library flag into the save-as-Brand prompt's prop chain",
+  );
+
   const visualContextRouteSource = readFileSync(
     "src/app/api/editor-projects/[id]/visual-context/route.ts",
     "utf8",
@@ -199,7 +374,7 @@ async function main() {
     "Step 2 must be told whether the pack came from this clip or from the Brand",
   );
 
-  console.log("verify-brand-treatment-ui-v1: PASS Thai catalog, upload pre-transcript format choice, guarded brand selection, all-or-cancel");
+  console.log("verify-brand-treatment-ui-v1: PASS Thai catalog, upload pre-transcript format choice, guarded brand selection, all-or-cancel, wave 1b pin/admission client guards");
 }
 
 main().catch((error) => {

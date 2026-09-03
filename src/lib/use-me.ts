@@ -43,6 +43,7 @@ export interface MeData {
   heroScriptAllowed?: boolean;
   heroScriptPreview?: boolean;
   heroScriptCohort?: "internal" | "paid" | "coupon" | "bundle" | "grant" | "trial" | "free" | "preview";
+  brandLibraryAllowed?: boolean;
   brandVisualAllowed?: boolean;
   brandVisualCohort?: "off" | "internal" | "not-entitled" | "rollout-wait" | "treatment-10" | "treatment-50" | "treatment-100";
   brandVisualRolloutBucket?: number | null;
@@ -61,6 +62,7 @@ export interface MeData {
     heroAiImage?: { canUse: boolean; canPreview: boolean; mode: string; source: string; reason: string; remainingTrialImages: number };
     heroAiScript?: { canUse: boolean; canPreview: boolean; mode: string; source: string; reason: string };
     brandVisual?: { canUse: boolean; mode: string; source: string; reason: string; rolloutBucket: number | null };
+    brandLibrary?: { canUse: boolean; reason: string };
   };
   [key: string]: unknown;
 }
@@ -84,6 +86,21 @@ export function resolveBrandVisualClientAccess(me: MeData | null | undefined): b
     || me?.brandVisualCohort === "treatment-10"
     || me?.brandVisualCohort === "treatment-50"
     || me?.brandVisualCohort === "treatment-100";
+}
+
+/**
+ * The LIBRARY capability (ADR 0059): owning, editing and PINNING a Brand or a
+ * ชุดสไตล์ is open to every plan, so this is what gates the Brand surfaces —
+ * `resolveBrandVisualClientAccess` stays the gate for AI-image actions alone.
+ * An account the IMAGE gate admits is necessarily inside the library, so a
+ * response cached across the deploy that added the boolean still resolves those
+ * users instead of hiding the surface. Everything else is fail-closed, so the
+ * master rollback still closes the library on the client too.
+ */
+export function resolveBrandLibraryClientAccess(me: MeData | null | undefined): boolean {
+  if (me?.brandLibraryAllowed === true) return true;
+  if (me?.brandLibraryAllowed === false) return false;
+  return resolveBrandVisualClientAccess(me);
 }
 
 /**

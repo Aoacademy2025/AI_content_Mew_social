@@ -9,6 +9,7 @@ import {
 } from "@/lib/first-clip-dashboard";
 import { isInternalNorthStarAccount } from "@/lib/subscription-north-star.server";
 import { resolvePaidEquivalentEntitlement } from "@/lib/paid-equivalent-entitlement.server";
+import { resolveOwnerPinAdmission } from "@/lib/brand-visual-pin-admission.server";
 import { createBlankBrandProfileSeed } from "@/lib/brand-profile-seed";
 import {
   brandProfilePayloadSchema,
@@ -107,16 +108,23 @@ export async function ensureFirstClipBrandRevision(userId: string) {
   return { profile: created.profile, revision: created.revision, created: true as const };
 }
 
+/** The auto-spine pins a Brand Revision on the account's behalf, without the
+ * creator ever passing through the AI-image guard. It therefore resolves the
+ * OWNER's own image decision and stamps it on the pin (#430): an account the
+ * image gate rejects still gets its first-clip spine, it simply does not gain
+ * the managed-image grandfather clause from it. */
 export async function ensureFirstClipProjectSpine(input: {
   userId: string;
   projectId: string;
 }) {
   const { profile, revision } = await ensureFirstClipBrandRevision(input.userId);
+  const admission = await resolveOwnerPinAdmission(input.userId);
   await pinProjectBrandRevision({
     userId: input.userId,
     projectId: input.projectId,
     profileId: profile.id,
     revisionId: revision.id,
+    admission,
   });
   return { profileId: profile.id, revisionId: revision.id };
 }

@@ -71,7 +71,7 @@ export function PostPhase({
   logoOverlay,
   onLogoOverlayChange,
   initialSubtitleConfig,
-  brandVisualAllowed,
+  brandLibraryAllowed,
   layerVisibility,
   onLayerVisibilityChange,
   headlineHook,
@@ -97,7 +97,7 @@ export function PostPhase({
   logoOverlay?: LogoOverlayConfig;
   onLogoOverlayChange: (next: LogoOverlayConfig | undefined) => void;
   initialSubtitleConfig?: SubtitleStylePresetConfig;
-  brandVisualAllowed: boolean;
+  brandLibraryAllowed: boolean;
   layerVisibility: EditorLayerVisibility;
   onLayerVisibilityChange: (
     next: EditorLayerVisibility | ((current: EditorLayerVisibility) => EditorLayerVisibility)
@@ -182,7 +182,7 @@ export function PostPhase({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandVisualAllowed={brandVisualAllowed} />
+      <SaveProjectLookPrompt projectId={projectId} videoJobId={job.jobId} brandLibraryAllowed={brandLibraryAllowed} />
       <SubtitleQaInlineBanner output={job.output} />
       {ed.exp.phase === "error" && (
         <div className="px-5 py-2" style={{ fontSize: 11.5, color: color.danger, borderBottom: `1px solid ${color.cardBorder}` }}>

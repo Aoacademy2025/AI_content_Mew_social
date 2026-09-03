@@ -7,6 +7,11 @@ import {
   prepareEditorProjectBrandAsset,
 } from "@/lib/editor-project-brand-asset.server";
 import { observeEditorProjectBrandAssetVerificationStep } from "@/lib/editor-project-brand-asset-verification.server";
+import {
+  brandVisualPinAdmissionFields,
+  hasAdmittedPersistedPin,
+  type PinAdmission,
+} from "@/lib/brand-visual-pin-admission";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import { sanitizeEditorProjectTitle } from "@/lib/editor-project-title";
 
@@ -110,6 +115,23 @@ export function editorProjectResponse(project: NonNullable<ProjectRow>) {
     latestVideoId: project.latestVideoId,
     brandProfileRevisionId: project.brandProfileRevisionId,
     hasPersistedVisualPin: Boolean(project.projectLookJson || project.brandProfileRevisionId),
+    // ADR 0059 amendment (#430) + wave 1b (D1): every plan can own a pin, so the
+    // pin alone no longer says anything about AI images. This is the predicate
+    // the Editor must use before offering an AI-image action — it mirrors the
+    // render-time one exactly, so the client can never offer what the render
+    // would refuse.
+    //
+    // M-1: these two fields use DIFFERENT pin definitions and must not be
+    // reconciled. `hasPersistedVisualPin` above is (project look | brand
+    // revision) only. `hasAdmittedVisualPin` below is
+    // `hasAdmittedPersistedPin`, which is (project look | brand revision |
+    // treatment pin) AND an admission stamp recorded on the SAME pin. So
+    // `hasAdmittedVisualPin ⟹ hasPersistedVisualPin` does NOT hold — a
+    // treatment-only pin can be admitted while this `hasPersistedVisualPin`
+    // reads false. Do not change either expression to make them agree;
+    // `verify-brand-visual-job-acceptance.ts` pins `hasPersistedVisualPin`'s
+    // exact shape by regex.
+    hasAdmittedVisualPin: hasAdmittedPersistedPin(project),
     lastOpenedAt: project.lastOpenedAt?.toISOString() ?? null,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
@@ -180,6 +202,10 @@ export async function createEditorProject(
     draft?: unknown;
     status?: unknown;
     brandProfileRevisionId?: unknown;
+    /** Only meaningful with `brandProfileRevisionId`: the owner's AI-image
+     * decision at pin time (#430). Omitted or null creates the pin WITHOUT the
+     * managed-image grandfather clause — the look still applies. */
+    brandVisualPinAdmission?: PinAdmission;
   } = {},
   tx?: Prisma.TransactionClient,
 ) {
@@ -209,6 +235,11 @@ export async function createEditorProject(
         draftJson: draftJson ?? null,
         brandProfileRevisionId: requestedRevisionId || null,
         lastOpenedAt: new Date(),
+        // A stamp without a pin admits nothing, so it is only written when this
+        // create actually persists a Revision pin (#430).
+        ...brandVisualPinAdmissionFields(
+          requestedRevisionId ? input.brandVisualPinAdmission : null,
+        ),
       },
     });
     await advanceEditorProjectBrandAsset(client, userId, assetFence);

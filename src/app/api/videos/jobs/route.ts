@@ -67,11 +67,12 @@ import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import { normalizeHeadlineHook } from "@/lib/headline-hook";
-import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { decideBrandLibraryAccess, resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
   prepareProjectVisualPin,
   prepareProjectVisualSnapshotAwaitingPreflight,
   prepareUploadProjectVisualSnapshot,
+  projectHasAdmittedPersistedPin,
   projectHasPersistedVisualPin,
   ProjectLookError,
 } from "@/lib/project-look.server";
@@ -386,8 +387,12 @@ export async function POST(req: Request) {
           staging: {
             userId: user.id,
             plan: user.plan,
+            // R12: the logo overlay stays a PRO/BUSINESS-plan feature. Wave 1b
+            // opened PINNING to every plan, so the bare pin no longer implies
+            // funded logo use — this reads the ADMITTED predicate, exactly
+            // like the render path below.
             brandVisualAllowed: brandVisualAccess.canUse
-              || await projectHasPersistedVisualPin({ userId: user.id, projectId: sourceProjectId }),
+              || await projectHasAdmittedPersistedPin({ userId: user.id, projectId: sourceProjectId }),
             projectId: sourceProjectId,
             rawLogoOverlay: rawLogoOverlay,
           },
@@ -723,13 +728,15 @@ export async function POST(req: Request) {
     );
     // Resolve an established immutable pin BEFORE the live Hero rollout gate.
     // Rollback closes new adoption, but must not reject a FREE/Trial project
-    // whose exact Project Look/Revision already exists (ADR-0005).
-    const hasPersistedProjectPin = requestsBrandVisualImage && projectId
-      ? await projectHasPersistedVisualPin({ userId: user.id, projectId })
+    // whose exact Project Look/Revision already exists (ADR-0005) AND was
+    // ADMITTED to managed images when it was pinned (#430) — an unadmitted pin
+    // keeps its look and renders with stock, it never buys image generation.
+    const hasAdmittedPersistedPin = requestsBrandVisualImage && projectId
+      ? await projectHasAdmittedPersistedPin({ userId: user.id, projectId })
       : false;
     const brandVisualRenderAccess = resolveBrandVisualRenderAccess({
       requestsBrandVisualImage,
-      hasPersistedProjectPin,
+      hasAdmittedPersistedPin,
       liveAccess: brandVisualAccess,
     });
     if (useHeroRunpodImage) {
@@ -822,38 +829,82 @@ export async function POST(req: Request) {
       || body.narrativeSourceKind === "creator-script"
       ? body.narrativeSourceKind
       : undefined;
+    const prepareProjectVisualSnapshot = async () => uploadMode
+      ? prepareUploadProjectVisualSnapshot({ userId: user.id, projectId: projectId! })
+      : requestedContentPreflightId
+        ? prepareProjectVisualPin({
+            userId: user.id,
+            projectId: projectId!,
+            preflightId: requestedContentPreflightId,
+            // Script-mode callers may originate from either authored or AI-assisted
+            // input. Both kinds hash the same normalized text independently; accept
+            // only an analysis of this request's narrative, never merely the newest
+            // analysis another tab happened to create.
+            sourceHashes: (requestedNarrativeSourceKind
+              ? [requestedNarrativeSourceKind]
+              : (["ai-script", "creator-script"] as const))
+              .map((kind) => contentPreflightSourceHash(kind, script, {
+                ...(targetClipCount ? { windowCount: targetClipCount } : {}),
+                sceneContentPolicy,
+              })),
+          })
+        : prepareProjectVisualSnapshotAwaitingPreflight({
+            userId: user.id,
+            projectId: projectId!,
+            narrativeSourceKind: requestedNarrativeSourceKind ?? "creator-script",
+          });
+    // ADR 0059 + amendment (wave 1b D1): pinning is a LIBRARY action, so a
+    // pinned project must carry its visual context into the job for EVERY plan —
+    // the pack's stock mood, subtitle preset, pacing and music are all read off
+    // `projectVisualContextJson`. Only the IMAGE decision below still decides
+    // whether the job also gets an acceptance envelope.
+    const brandLibraryAccess = decideBrandLibraryAccess(user);
+    const snapshotForLibraryPin = Boolean(
+      !brandVisualRenderAccess
+      && brandLibraryAccess.canUse
+      && projectId
+      // The First-Clip Path already snapshots below, and its auto-spine pins
+      // every project it touches — routing it through here instead would change
+      // the sample clip's behaviour for no gain, so it keeps its own branch.
+      && !onFirstClipPath
+      // M-5: fail open like every other read in this seam (ADR 0023) — a
+      // project that vanished between ownership checks must not turn this
+      // Boolean(...) into an unhandled ProjectLookError("NOT_FOUND").
+      && await projectHasPersistedVisualPin({ userId: user.id, projectId }).catch((error) => {
+        if (error instanceof ProjectLookError) return false;
+        throw error;
+      }),
+    );
     const projectVisualPin = brandVisualRenderAccess
-      ? uploadMode
-        ? await prepareUploadProjectVisualSnapshot({ userId: user.id, projectId: projectId! })
-        : requestedContentPreflightId
-          ? await prepareProjectVisualPin({
-              userId: user.id,
-              projectId: projectId!,
-              preflightId: requestedContentPreflightId,
-              // Script-mode callers may originate from either authored or AI-assisted
-              // input. Both kinds hash the same normalized text independently; accept
-              // only an analysis of this request's narrative, never merely the newest
-              // analysis another tab happened to create.
-              sourceHashes: (requestedNarrativeSourceKind
-                ? [requestedNarrativeSourceKind]
-                : (["ai-script", "creator-script"] as const))
-                .map((kind) => contentPreflightSourceHash(kind, script, {
-                  ...(targetClipCount ? { windowCount: targetClipCount } : {}),
-                  sceneContentPolicy,
-                })),
-            })
-          : await prepareProjectVisualSnapshotAwaitingPreflight({
+      ? await prepareProjectVisualSnapshot()
+      : snapshotForLibraryPin
+        // ADR 0023 fail-open: an unadmitted pin renders with stock, never an
+        // error. If its context cannot be prepared (no analysis yet, an
+        // incomplete preflight, the treatment emergency stop) the clip still
+        // renders — it only loses the pack's styling for this run.
+        ? await prepareProjectVisualSnapshot().catch(async (error) => {
+            if (!(error instanceof ProjectLookError)) throw error;
+            if (uploadMode || !requestedContentPreflightId) return null;
+            return prepareProjectVisualSnapshotAwaitingPreflight({
               userId: user.id,
               projectId: projectId!,
               narrativeSourceKind: requestedNarrativeSourceKind ?? "creator-script",
-            })
-      : (onFirstClipPath && projectId && !uploadMode)
-        ? await prepareProjectVisualSnapshotAwaitingPreflight({
-            userId: user.id,
-            projectId,
-            narrativeSourceKind: requestedNarrativeSourceKind ?? "creator-script",
+            }).catch((fallbackError) => {
+              if (fallbackError instanceof ProjectLookError) return null;
+              throw fallbackError;
+            });
           })
-        : null;
+        : (onFirstClipPath && projectId && !uploadMode)
+          ? await prepareProjectVisualSnapshotAwaitingPreflight({
+              userId: user.id,
+              projectId,
+              narrativeSourceKind: requestedNarrativeSourceKind ?? "creator-script",
+            })
+          : null;
+    // `prepareBrandVisualJobAcceptance` throws on a refused decision, and
+    // `fetch-stock` treats a missing envelope as "no managed image" — so an
+    // unadmitted pin gets a snapshot and NO envelope, which is exactly the
+    // stock-only render ADR 0023 asks for.
     const brandVisualAcceptanceJson = projectVisualPin && projectId && brandVisualRenderAccess
       ? await prepareBrandVisualJobAcceptance({
           userId: user.id,

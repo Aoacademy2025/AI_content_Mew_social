@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import {
-  brandVisualLockedResponse,
+  brandLibraryLockedResponse,
   requireBrandVisualRecoveryUser,
 } from "@/lib/brand-visual-access.server";
+import { decideBrandLibraryAccess } from "@/lib/brand-visual-rollout.server";
 import {
   ContentPreflightError,
   createGeminiContentPreflightAnalyzer,
@@ -39,7 +40,24 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       userId: auth.user.id,
       projectId: id,
     });
-    if (!auth.access.canUse && !hasPersistedVisualPin) return brandVisualLockedResponse(auth.access);
+    // Wave 1b D2 + R17: every plan can pin, and the analysis is what the pack /
+    // brand picker needs BEFORE a first pin can be written — so it is open to
+    // any library user, pin or no pin. One managed text call per job, the same
+    // class as keyword extraction, already bounded per account by
+    // `reserveAiTextCall` (FREE 125 calls / 30 days) inside the analyzer and
+    // cached per project + source hash. The image gate (`auth.access`) decides
+    // nothing here: it is a strictly narrower decision than the library gate,
+    // so reading it would only refuse accounts this route now serves.
+    //
+    // The refusals that remain are the LIBRARY gate's own — `feature_off` and
+    // `suspended` — and they answer with the library-shaped refusal: somebody
+    // who asked for a zero-cost ชุดสไตล์ must never be sold AI images (I1).
+    // A project that already carries a pin keeps its pre-existing owner
+    // recovery read through a master rollback: `mayAnalyzeNow` is false there,
+    // so it replays the cache and starts no new Gemini work.
+    const library = decideBrandLibraryAccess(auth.user);
+    if (!library.canUse && !hasPersistedVisualPin) return brandLibraryLockedResponse(library);
+    const mayAnalyzeNow = library.canUse;
     const rawWindowCount = body?.narrativeSource?.windowCount;
     const windowCount = Number.isFinite(rawWindowCount) && rawWindowCount > 0
       ? Math.min(60, Math.floor(rawWindowCount))
@@ -62,8 +80,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         sceneContentPolicy,
       },
       // Rollback keeps exact cached analyses readable for already-pinned
-      // projects but never launches new Gemini work after admission closes.
-      analyzer: auth.access.canUse
+      // projects but never launches new Gemini work after the master switch
+      // closes.
+      analyzer: mayAnalyzeNow
         ? createGeminiContentPreflightAnalyzer(auth.user.id)
         : undefined,
     });

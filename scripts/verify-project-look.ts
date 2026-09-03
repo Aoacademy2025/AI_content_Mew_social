@@ -45,21 +45,28 @@ async function main() {
     mixPreset: "free",
     hasPersistedVisualPin: false,
     settingsOpen: false,
+    libraryPickerVisible: false,
   }), false, "Stock + closed settings must not trigger Content Preflight");
   assert.equal(shouldLoadBrandVisualContext({
     brollSource: "automix",
     mixPreset: "free",
     hasPersistedVisualPin: false,
     settingsOpen: false,
+    libraryPickerVisible: false,
   }), false, "Stock-only AutoMix must remain lazy");
   for (const trigger of [
-    { brollSource: "automix", mixPreset: "recommended", hasPersistedVisualPin: false, settingsOpen: false },
-    { brollSource: "kie-image", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: false },
-    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: true },
-    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: true, settingsOpen: false },
+    { brollSource: "automix", mixPreset: "recommended", hasPersistedVisualPin: false, settingsOpen: false, libraryPickerVisible: false },
+    { brollSource: "kie-image", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: false, libraryPickerVisible: false },
+    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: true, libraryPickerVisible: false },
+    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: true, settingsOpen: false, libraryPickerVisible: false },
+    // Wave 1b C1 (#430): a library user is already being offered a brand
+    // picker that stays disabled until the analysis resolves. Without this
+    // trigger a FREE account with a Brand Profile sees a permanently disabled
+    // dropdown under "กำลังวิเคราะห์เนื้อหาปัจจุบันก่อนเปิดให้เลือกแบรนด์" that never resolves.
+    { brollSource: "stock", mixPreset: "free", hasPersistedVisualPin: false, settingsOpen: false, libraryPickerVisible: true },
   ]) {
     assert.equal(shouldLoadBrandVisualContext(trigger), true,
-      "AI selection, explicit settings or an established pin triggers lazy analysis");
+      "AI selection, explicit settings, an established pin or a library user's visible picker triggers lazy analysis");
   }
   const user = await prisma.user.create({ data: { name: "Look owner", email: "look@example.test" } });
   const profile = await prisma.brandProfile.create({
@@ -733,13 +740,26 @@ async function main() {
     "quote and accepted-job execution share the same current+settled reuse contract",
   );
 
+  // #430: the look IS a pin, so the write records the owner's image decision
+  // beside it. Anything that renders managed AI images off an "existing pin"
+  // reads that stamp, never the mere presence of a look.
   await applyProjectLook({
     userId: user.id,
     projectId: applyProject.id,
     preflightId: applyPreflight.id,
     applyMode: "regenerate-all",
     look: { visualFormatId: "retro-story", treatmentPresetId: "thai-history-period-storytelling" },
+    admission: { cohort: "treatment-100", at: new Date("2026-09-03T00:00:00.000Z") },
   });
+  const admittedLookProject = await prisma.editorProject.findUniqueOrThrow({
+    where: { id: applyProject.id },
+  });
+  assert.equal(admittedLookProject.brandVisualPinAdmittedCohort, "treatment-100",
+    "applying a Project Look stamps the image decision taken at pin time");
+  assert.equal(
+    admittedLookProject.brandVisualPinAdmittedAt?.toISOString(),
+    "2026-09-03T00:00:00.000Z",
+  );
   assert.deepEqual(
     await reusableProjectVisualBeatSceneIndices({
       userId: user.id,
@@ -826,12 +846,22 @@ async function main() {
     "only the currently selected identity can complete regeneration",
   );
 
+  await prisma.editorProject.update({
+    where: { id: project.id },
+    data: {
+      brandVisualPinAdmittedCohort: "treatment-100",
+      brandVisualPinAdmittedAt: new Date("2026-09-03T00:00:00.000Z"),
+    },
+  });
   await clearProjectLook({ userId: user.id, projectId: project.id });
   const clearedProject = await prisma.editorProject.findUniqueOrThrow({ where: { id: project.id } });
   assert.equal(clearedProject.treatmentPresetId, null,
     "clearing Project Look also clears its project-scoped treatment decision");
   assert.equal(clearedProject.treatmentPresetVersion, null);
   assert.equal(clearedProject.treatmentPinSource, null);
+  assert.equal(clearedProject.brandVisualPinAdmittedCohort, null,
+    "clearing a pin also clears the image admission it was granted (#430)");
+  assert.equal(clearedProject.brandVisualPinAdmittedAt, null);
   const restored = await resolveProjectVisualContext({
     userId: user.id,
     projectId: project.id,

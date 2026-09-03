@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
-import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
+import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
+import { pinAdmissionFromDecision } from "@/lib/brand-visual-pin-admission";
+import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import {
   BrandProfileLibraryError,
   brandProfilePayloadSchema,
@@ -26,15 +28,19 @@ function libraryError(error: unknown) {
 }
 
 /** Atomic Project Look -> Brand Revision promotion. It also writes the project
- * pin, so it keeps the IMAGE guard for the same reason as `brand-revision`
- * (ADR 0059 amendment). The exact immutable
- * preflight is always required; a completed VideoJob additionally proves which
- * rendered clip the post-result CTA came from. Both identities are durable
- * replay keys in BrandProfileRevision. */
+ * pin, which is a LIBRARY action for every plan (wave 1b D1) — the promoted
+ * pin records the IMAGE decision resolved here, so it can never become the
+ * self-service admission ticket ADR 0059's amendment warned about. The exact
+ * immutable preflight is always required; a completed VideoJob additionally
+ * proves which rendered clip the post-result CTA came from. Both identities are
+ * durable replay keys in BrandProfileRevision. */
 export async function POST(req: Request) {
   try {
-    const auth = await requireBrandVisualUser();
+    const auth = await requireBrandLibraryUser();
     if (!auth.ok) return auth.response;
+    // The guard above authorises the LIBRARY; the pin's stamp must be the IMAGE
+    // decision, resolved separately (#430).
+    const imageAccess = await resolveBrandVisualAccess(auth.user);
     const body = await req.json().catch(() => null);
     const projectId = typeof body?.projectId === "string" ? body.projectId.trim() : "";
     const preflightId = typeof body?.preflightId === "string" ? body.preflightId.trim() : "";
@@ -58,6 +64,9 @@ export async function POST(req: Request) {
       }
     }
 
+    // The promotion pins the new Revision to this project, so it records the
+    // IMAGE decision resolved above (#430).
+    const admission = pinAdmissionFromDecision(imageAccess);
     const promoted = videoJobId
       ? await promoteCompletedVideoJobToBrandProfile({
           userId: auth.user.id,
@@ -65,12 +74,14 @@ export async function POST(req: Request) {
           preflightId,
           videoJobId,
           payload: payload.data,
+          admission,
         })
       : await promoteProjectLookToBrandProfile({
           userId: auth.user.id,
           projectId,
           preflightId,
           payload: payload.data,
+          admission,
         });
     const visualRecipe = JSON.parse(promoted.revision.visualRecipeJson) as {
       visualFormatId: VisualFormatId;
@@ -90,7 +101,7 @@ export async function POST(req: Request) {
         projectId,
         preflightId,
         videoJobId: videoJobId || null,
-        cohort: auth.access.cohort,
+        cohort: imageAccess.cohort,
         visualFormatId: visualRecipe.visualFormatId,
         brandVisualIdentityKey: brandVisualIdentityKey({
           visualFormatId: visualRecipe.visualFormatId,

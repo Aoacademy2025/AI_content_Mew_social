@@ -17,6 +17,10 @@ import {
   type BrandVisualLanguage,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
+import {
+  brandVisualPinAdmissionFields,
+  type PinAdmission,
+} from "@/lib/brand-visual-pin-admission";
 import { STYLE_PACK_IDS, stylePack, type StylePack, type StylePackId } from "@/lib/style-pack-catalog";
 import { STYLE_PACK_UNAVAILABLE_MESSAGE, applyStylePackToPayload, stylePackOfPayload } from "@/lib/style-pack-apply";
 import { stylePackSnapshotOf } from "@/lib/style-pack-snapshot";
@@ -868,6 +872,7 @@ async function promoteProjectLookInOneTransaction(input: {
   videoJobId?: string;
   preflightId?: string;
   payload: BrandProfilePayload;
+  admission: PinAdmission;
 }) {
   const submitted = parsedPayload(input.payload);
   const promotedPackId = await promotedLookStylePackId(input);
@@ -999,6 +1004,7 @@ async function promoteProjectLookInOneTransaction(input: {
         projectId: input.projectId,
         profileId: created.profile.id,
         revisionId: created.revision.id,
+        admission: input.admission,
       });
       return {
         ...created,
@@ -1026,6 +1032,7 @@ export async function promoteCompletedVideoJobToBrandProfile(input: {
   videoJobId: string;
   preflightId?: string;
   payload: BrandProfilePayload;
+  admission: PinAdmission;
 }) {
   return promoteProjectLookInOneTransaction(input);
 }
@@ -1038,6 +1045,7 @@ export async function promoteProjectLookToBrandProfile(input: {
   projectId: string;
   preflightId: string;
   payload: BrandProfilePayload;
+  admission: PinAdmission;
 }) {
   return promoteProjectLookInOneTransaction(input);
 }
@@ -1129,6 +1137,11 @@ type ProjectBrandRevisionInput = {
   projectId: string;
   profileId: string;
   revisionId?: string;
+  /** The owner's AI-image decision at pin time (#430). Creator routes pass
+   * `pinAdmissionFromDecision(auth.access)`; a writer outside the image guard
+   * resolves the owner's own decision. `null` still pins the look — it only
+   * withholds the managed-image grandfather clause. */
+  admission: PinAdmission;
 };
 
 async function pinProjectBrandRevisionInTransaction(
@@ -1207,6 +1220,10 @@ async function pinProjectBrandRevisionInTransaction(
       treatmentPinnedAt: lockedTreatmentPin ? new Date() : null,
       draftJson: JSON.stringify(projectDraft),
       draftRevision: { increment: 1 },
+      // The pin and the image decision behind it commit together (#430). This
+      // also RE-stamps: an owner who lost image access cannot keep an older
+      // admission alive by pinning a new revision over it.
+      ...brandVisualPinAdmissionFields(input.admission),
     },
   });
   await tx.brandProfile.update({ where: { id: profile.id }, data: { lastUsedAt: new Date() } });

@@ -40,28 +40,31 @@ async function main() {
     storyEntitiesJson: "[]",
   } as const;
 
+  // The grandfather clause is anchored to the image decision recorded when the
+  // pin was written (#430): it preserves rerenders of work that was ALREADY
+  // admitted, and never turns a fresh pin into a self-service admission ticket.
   assert.deepEqual(
     resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: true,
-      hasPersistedProjectPin: true,
+      hasAdmittedPersistedPin: true,
       liveAccess: { canUse: false, cohort: "off", bucket: null },
     }),
     { canUse: true, cohort: "existing-pin", bucket: null },
-    "rollback preserves exact rerender access for a project that already owns an immutable pin",
+    "rollback preserves exact rerender access for a project that already owns an ADMITTED immutable pin",
   );
   assert.equal(
     resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: true,
-      hasPersistedProjectPin: false,
+      hasAdmittedPersistedPin: false,
       liveAccess: { canUse: false, cohort: "off", bucket: null },
     }),
     null,
-    "rollback cannot grant a new Brand Visual adoption when no pin exists",
+    "a pin whose write recorded no admission cannot reach the managed AI-image route",
   );
   assert.equal(
     resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: false,
-      hasPersistedProjectPin: true,
+      hasAdmittedPersistedPin: true,
       liveAccess: { canUse: false, cohort: "off", bucket: null },
     }),
     null,
@@ -414,13 +417,13 @@ async function main() {
 
   const jobsRoute = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
   assert.ok(
-    jobsRoute.includes("projectHasPersistedVisualPin")
+    jobsRoute.includes("projectHasAdmittedPersistedPin")
       && jobsRoute.includes("resolveBrandVisualRenderAccess({")
       && jobsRoute.includes("access: brandVisualRenderAccess"),
-    "VideoJob acceptance must preserve existing pins under rollback instead of silently dropping visual identity",
+    "VideoJob acceptance must preserve ADMITTED pins under rollback instead of silently dropping visual identity",
   );
   assert.ok(
-    jobsRoute.indexOf("const hasPersistedProjectPin")
+    jobsRoute.indexOf("const hasAdmittedPersistedPin")
       < jobsRoute.indexOf("if (useHeroRunpodImage)")
       && jobsRoute.includes("!heroAiImageAccess.canUse && !brandVisualRenderAccess")
       && jobsRoute.includes("!heroAiImageAccess.canUse && !canUseKieImages && !brandVisualRenderAccess"),
@@ -446,13 +449,39 @@ async function main() {
   );
   assert.match(projectModule, /hasPersistedVisualPin:\s*Boolean\(project\.projectLookJson\s*\|\|\s*project\.brandProfileRevisionId\)/,
     "project hydration must expose established render capability independently of the live rollout flag");
+  // Wave 1b: the AI-image predicate the client must read is the ADMITTED one —
+  // every plan can own a pin now, so a bare pin proves nothing about images.
+  assert.match(projectModule, /hasAdmittedVisualPin:\s*hasAdmittedPersistedPin\(project\)/,
+    "project hydration must expose AI-image admission separately from the pin itself");
   assert.match(visualContextRoute, /requireBrandVisualRecoveryUser[\s\S]+projectHasPersistedVisualPin/,
     "an owner must still read exact reuse state for a persisted pin after rollback");
-  assert.match(contentPreflightRoute, /requireBrandVisualRecoveryUser[\s\S]+resolveContentPreflight\([\s\S]+analyzer:\s*auth\.access\.canUse/,
-    "rollback may replay a cached preflight for an established pin but cannot run a new analyzer");
+  assert.match(visualContextRoute, /hasAdmittedVisualPin,/,
+    "the visual-context read must disclose AI-image admission separately from the pin");
+  assert.match(visualContextRoute, /reusableAiSceneIndices = state\.preflight && mayQuoteRetainedAiScenes/,
+    "retained AI scenes are quoted only to an owner the image route would actually admit");
+  assert.match(contentPreflightRoute, /requireBrandVisualRecoveryUser[\s\S]+resolveContentPreflight\([\s\S]+analyzer:\s*mayAnalyzeNow/,
+    "the analyzer runs for a library user (D2/R17) but a master rollback still replays cache only");
+  // R17 (final review C1): the widening is 'any LIBRARY user', pin or no pin —
+  // the analysis is what the picker needs before a FIRST pin can be written, so
+  // demanding a pin for it made the first pin unreachable in the editor. The
+  // image decision decides nothing here; it is strictly narrower than the
+  // library gate, so reading it could only refuse an account this route serves.
+  assert.match(contentPreflightRoute, /const mayAnalyzeNow = library\.canUse;/,
+    "…and that widening is 'any library user', which is what makes a first pin reachable");
+  assert.match(
+    contentPreflightRoute,
+    /if \(!library\.canUse && !hasPersistedVisualPin\) return brandLibraryLockedResponse\(library\);/,
+    "the only refusals left (feature_off / suspended) are library-shaped, and an established pin keeps its cached replay",
+  );
+  assert.doesNotMatch(contentPreflightRoute, /brandVisualLockedResponse/,
+    "I1: a creator refused a zero-cost ชุดสไตล์ must never be answered with the AI-image upsell");
   assert.match(projectHook, /hasPersistedVisualPin/,
     "the editor must retain established-pin capability from its authoritative project snapshot");
-  assert.match(receiptDialog, /p\.brandVisualAllowed\s*\|\|\s*p\.hasPersistedVisualPin/,
+  // Wave 1b (D1/R7): the retained-AI-scene quote is an AI-image signal, so it
+  // must read the ADMITTED predicate — a bare pin proves nothing about images
+  // once every plan can own one, and the ADMITTED one is what actually
+  // survives a master rollback for an already-admitted project (R6).
+  assert.match(receiptDialog, /p\.brandVisualAllowed\s*\|\|\s*p\.hasAdmittedVisualPin/,
     "the receipt must quote exact retained scenes for rollback-safe rerenders");
 
   await prisma.$disconnect();
