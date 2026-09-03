@@ -284,6 +284,13 @@ model EditorProject {
   treatmentPresetVersion  String?
   treatmentPinSource      String?
   treatmentPinnedAt       DateTime?
+  // The AI-image decision recorded WHEN this project's visual pin was written
+  // (ADR 0059 amendment 2026-09-02, #430). A persisted pin grandfathers managed
+  // AI-image rendering (synthetic cohort `existing-pin`) only when the owner was
+  // admitted at pin time; a pin written by a rejected account renders with stock
+  // only. Every pin write re-stamps these; clearing a pin clears them.
+  brandVisualPinAdmittedCohort String?
+  brandVisualPinAdmittedAt     DateTime?
   lastOpenedAt            DateTime?
   createdAt               DateTime                @default(now())
   updatedAt               DateTime                @updatedAt

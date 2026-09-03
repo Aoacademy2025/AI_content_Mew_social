@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
+import { pinAdmissionFromDecision } from "@/lib/brand-visual-pin-admission";
 import { BrandProfileLibraryError, applyProjectBrandRevision } from "@/lib/brand-profile-library.server";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { prisma } from "@/lib/prisma";
@@ -59,6 +60,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       revisionId: typeof body.revisionId === "string" ? body.revisionId : undefined,
       preflightId: requestedPreflightId,
       applyMode,
+      // The image decision this request already passed is recorded ON the pin,
+      // so the render-time grandfather clause can only honour an admitted one.
+      admission: pinAdmissionFromDecision(auth.access),
     });
     const visualRecipe = JSON.parse(pinned.revision.visualRecipeJson) as {
       visualFormatId: VisualFormatId;

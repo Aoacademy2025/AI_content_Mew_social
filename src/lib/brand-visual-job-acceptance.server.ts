@@ -47,15 +47,20 @@ export type BrandVisualRenderAccess = BrandVisualAccessDecision | {
 /** Rollback blocks new Brand Visual adoption while preserving deterministic
  * rerenders for projects that already own a Project Look/immutable Revision.
  * The synthetic cohort is excluded from rollout samples and exists only to
- * snapshot funding/reuse for that established pin. */
+ * snapshot funding/reuse for that established pin.
+ *
+ * `hasAdmittedPersistedPin` is the pin PLUS the image decision recorded when
+ * that pin was written (ADR 0059 amendment 2026-09-02, #430). Honouring a bare
+ * pin turned every pin writer — including the two system writers that sit
+ * outside the image guard — into a self-service admission ticket. */
 export function resolveBrandVisualRenderAccess(input: {
   requestsBrandVisualImage: boolean;
-  hasPersistedProjectPin: boolean;
+  hasAdmittedPersistedPin: boolean;
   liveAccess: BrandVisualAccessDecision;
 }): BrandVisualRenderAccess | null {
   if (!input.requestsBrandVisualImage) return null;
   if (input.liveAccess.canUse) return input.liveAccess;
-  return input.hasPersistedProjectPin
+  return input.hasAdmittedPersistedPin
     ? { canUse: true, cohort: "existing-pin", bucket: null }
     : null;
 }

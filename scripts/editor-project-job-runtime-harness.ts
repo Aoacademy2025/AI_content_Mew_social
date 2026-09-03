@@ -2380,13 +2380,13 @@ async function runExactReplayRouteScenario(input: {
       return {
         resolveBrandVisualRenderAccess: ({
           requestsBrandVisualImage,
-          hasPersistedProjectPin,
+          hasAdmittedPersistedPin,
           liveAccess,
         }: {
           requestsBrandVisualImage: boolean;
-          hasPersistedProjectPin: boolean;
+          hasAdmittedPersistedPin: boolean;
           liveAccess: { canUse?: boolean };
-        }) => requestsBrandVisualImage && (liveAccess.canUse || hasPersistedProjectPin)
+        }) => requestsBrandVisualImage && (liveAccess.canUse || hasAdmittedPersistedPin)
           ? liveAccess.canUse
             ? liveAccess
             : { canUse: true, cohort: "existing-pin", bucket: null }
@@ -2400,6 +2400,7 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/project-look.server") {
       return {
         projectHasPersistedVisualPin: async () => false,
+        projectHasAdmittedPersistedPin: async () => false,
         prepareProjectVisualPin: async () => {
           touchMutable("project-visual-pin");
           return null;

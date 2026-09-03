@@ -72,6 +72,7 @@ import {
   prepareProjectVisualPin,
   prepareProjectVisualSnapshotAwaitingPreflight,
   prepareUploadProjectVisualSnapshot,
+  projectHasAdmittedPersistedPin,
   projectHasPersistedVisualPin,
   ProjectLookError,
 } from "@/lib/project-look.server";
@@ -723,13 +724,15 @@ export async function POST(req: Request) {
     );
     // Resolve an established immutable pin BEFORE the live Hero rollout gate.
     // Rollback closes new adoption, but must not reject a FREE/Trial project
-    // whose exact Project Look/Revision already exists (ADR-0005).
-    const hasPersistedProjectPin = requestsBrandVisualImage && projectId
-      ? await projectHasPersistedVisualPin({ userId: user.id, projectId })
+    // whose exact Project Look/Revision already exists (ADR-0005) AND was
+    // ADMITTED to managed images when it was pinned (#430) — an unadmitted pin
+    // keeps its look and renders with stock, it never buys image generation.
+    const hasAdmittedPersistedPin = requestsBrandVisualImage && projectId
+      ? await projectHasAdmittedPersistedPin({ userId: user.id, projectId })
       : false;
     const brandVisualRenderAccess = resolveBrandVisualRenderAccess({
       requestsBrandVisualImage,
-      hasPersistedProjectPin,
+      hasAdmittedPersistedPin,
       liveAccess: brandVisualAccess,
     });
     if (useHeroRunpodImage) {

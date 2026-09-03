@@ -40,28 +40,31 @@ async function main() {
     storyEntitiesJson: "[]",
   } as const;
 
+  // The grandfather clause is anchored to the image decision recorded when the
+  // pin was written (#430): it preserves rerenders of work that was ALREADY
+  // admitted, and never turns a fresh pin into a self-service admission ticket.
   assert.deepEqual(
     resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: true,
-      hasPersistedProjectPin: true,
+      hasAdmittedPersistedPin: true,
       liveAccess: { canUse: false, cohort: "off", bucket: null },
     }),
     { canUse: true, cohort: "existing-pin", bucket: null },
-    "rollback preserves exact rerender access for a project that already owns an immutable pin",
+    "rollback preserves exact rerender access for a project that already owns an ADMITTED immutable pin",
   );
   assert.equal(
     resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: true,
-      hasPersistedProjectPin: false,
+      hasAdmittedPersistedPin: false,
       liveAccess: { canUse: false, cohort: "off", bucket: null },
     }),
     null,
-    "rollback cannot grant a new Brand Visual adoption when no pin exists",
+    "a pin whose write recorded no admission cannot reach the managed AI-image route",
   );
   assert.equal(
     resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: false,
-      hasPersistedProjectPin: true,
+      hasAdmittedPersistedPin: true,
       liveAccess: { canUse: false, cohort: "off", bucket: null },
     }),
     null,
@@ -414,13 +417,13 @@ async function main() {
 
   const jobsRoute = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");
   assert.ok(
-    jobsRoute.includes("projectHasPersistedVisualPin")
+    jobsRoute.includes("projectHasAdmittedPersistedPin")
       && jobsRoute.includes("resolveBrandVisualRenderAccess({")
       && jobsRoute.includes("access: brandVisualRenderAccess"),
-    "VideoJob acceptance must preserve existing pins under rollback instead of silently dropping visual identity",
+    "VideoJob acceptance must preserve ADMITTED pins under rollback instead of silently dropping visual identity",
   );
   assert.ok(
-    jobsRoute.indexOf("const hasPersistedProjectPin")
+    jobsRoute.indexOf("const hasAdmittedPersistedPin")
       < jobsRoute.indexOf("if (useHeroRunpodImage)")
       && jobsRoute.includes("!heroAiImageAccess.canUse && !brandVisualRenderAccess")
       && jobsRoute.includes("!heroAiImageAccess.canUse && !canUseKieImages && !brandVisualRenderAccess"),

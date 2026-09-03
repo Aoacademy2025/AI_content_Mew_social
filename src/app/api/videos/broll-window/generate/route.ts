@@ -24,7 +24,11 @@ import {
   prepareBrandVisualJobAcceptance,
   resolveBrandVisualRenderAccess,
 } from "@/lib/brand-visual-job-acceptance.server";
-import { parseProjectVisualContext, resolveProjectVisualPromptForVideoScene } from "@/lib/project-look.server";
+import {
+  parseProjectVisualContext,
+  projectHasAdmittedPersistedPin,
+  resolveProjectVisualPromptForVideoScene,
+} from "@/lib/project-look.server";
 import {
   CUTAWAY_PRESENTER_SCENE_REROLL_MESSAGE,
   cutawayTimelineSourceFromJob,
@@ -177,7 +181,11 @@ export async function POST(req: Request) {
     // identical for both source types.
     const access = resolveBrandVisualRenderAccess({
       requestsBrandVisualImage: true,
-      hasPersistedProjectPin: true,
+      // The pin's own recorded admission, never an assumed one (#430): the
+      // source job proves ownership, not entitlement to managed images.
+      hasAdmittedPersistedPin: projectId
+        ? await projectHasAdmittedPersistedPin({ userId: user.id, projectId })
+        : false,
       liveAccess: await resolveBrandVisualAccess(user),
     });
     if (!access) {

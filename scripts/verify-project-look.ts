@@ -733,13 +733,26 @@ async function main() {
     "quote and accepted-job execution share the same current+settled reuse contract",
   );
 
+  // #430: the look IS a pin, so the write records the owner's image decision
+  // beside it. Anything that renders managed AI images off an "existing pin"
+  // reads that stamp, never the mere presence of a look.
   await applyProjectLook({
     userId: user.id,
     projectId: applyProject.id,
     preflightId: applyPreflight.id,
     applyMode: "regenerate-all",
     look: { visualFormatId: "retro-story", treatmentPresetId: "thai-history-period-storytelling" },
+    admission: { cohort: "treatment-100", at: new Date("2026-09-03T00:00:00.000Z") },
   });
+  const admittedLookProject = await prisma.editorProject.findUniqueOrThrow({
+    where: { id: applyProject.id },
+  });
+  assert.equal(admittedLookProject.brandVisualPinAdmittedCohort, "treatment-100",
+    "applying a Project Look stamps the image decision taken at pin time");
+  assert.equal(
+    admittedLookProject.brandVisualPinAdmittedAt?.toISOString(),
+    "2026-09-03T00:00:00.000Z",
+  );
   assert.deepEqual(
     await reusableProjectVisualBeatSceneIndices({
       userId: user.id,
@@ -826,12 +839,22 @@ async function main() {
     "only the currently selected identity can complete regeneration",
   );
 
+  await prisma.editorProject.update({
+    where: { id: project.id },
+    data: {
+      brandVisualPinAdmittedCohort: "treatment-100",
+      brandVisualPinAdmittedAt: new Date("2026-09-03T00:00:00.000Z"),
+    },
+  });
   await clearProjectLook({ userId: user.id, projectId: project.id });
   const clearedProject = await prisma.editorProject.findUniqueOrThrow({ where: { id: project.id } });
   assert.equal(clearedProject.treatmentPresetId, null,
     "clearing Project Look also clears its project-scoped treatment decision");
   assert.equal(clearedProject.treatmentPresetVersion, null);
   assert.equal(clearedProject.treatmentPinSource, null);
+  assert.equal(clearedProject.brandVisualPinAdmittedCohort, null,
+    "clearing a pin also clears the image admission it was granted (#430)");
+  assert.equal(clearedProject.brandVisualPinAdmittedAt, null);
   const restored = await resolveProjectVisualContext({
     userId: user.id,
     projectId: project.id,

@@ -45,6 +45,7 @@ import {
   resolveBrandProfileRevisionForNewProjectInTransaction,
 } from "@/lib/brand-profile-library.server";
 import { brandLookIdentityKey, VISUAL_FORMATS } from "@/lib/brand-visual-system";
+import { resolveOwnerPinAdmission } from "@/lib/brand-visual-pin-admission.server";
 import {
   openRouterGenerateText,
   isOpenRouterAuthError,
@@ -1384,6 +1385,16 @@ export async function sendScriptToEditor(
     logoOverlay: brandDefault?.config,
   });
 
+  // The handoff persists a Brand Revision pin for an account that never passed
+  // through the AI-image guard, so it records that account's OWN image decision
+  // on the pin (#430). Resolved here — like a creator route resolves
+  // `auth.access` before its write — and stamped inside the transaction below,
+  // so the pin and its admission can only commit together. Skipped entirely
+  // when this script carries no brand: no pin is written, nothing to stamp.
+  const pinAdmission = script.brandProfileId
+    ? await resolveOwnerPinAdmission(userId)
+    : null;
+
   // Sentinel: thrown to roll the whole handoff back, never surfaced to callers.
   const scriptGone = new Error("hero_script_send_target_missing");
   try {
@@ -1401,6 +1412,7 @@ export async function sendScriptToEditor(
         title,
         draft,
         brandProfileRevisionId: revision?.revisionId,
+        brandVisualPinAdmission: pinAdmission,
       }, tx);
       // Ownership-scoped write — and the authoritative existence check: a
       // concurrent DELETE between the load above and here makes count 0, which

@@ -224,19 +224,154 @@ async function verifyLibraryAndImageGuards() {
   // The two seams the escalation chained: with no pin, the render acceptance
   // returns no admission, which is what makes POST /api/videos/jobs answer 403
   // on its Hero RunPod branch for this account.
-  const { projectHasPersistedVisualPin } = await import("../src/lib/project-look.server");
+  const { projectHasAdmittedPersistedPin, projectHasPersistedVisualPin } = await import(
+    "../src/lib/project-look.server"
+  );
   const { resolveBrandVisualRenderAccess } = await import("../src/lib/brand-visual-job-acceptance.server");
   const { resolveBrandVisualAccess } = await import("../src/lib/brand-visual-rollout.server");
   const liveUser = await prisma.user.findUniqueOrThrow({ where: { id: user.id } });
-  const hasPersistedProjectPin = await projectHasPersistedVisualPin({ userId: user.id, projectId: project.id });
-  assert.equal(hasPersistedProjectPin, false, "the refused pin leaves no persisted visual pin");
+  const hasAdmittedPersistedPin = await projectHasAdmittedPersistedPin({ userId: user.id, projectId: project.id });
+  assert.equal(hasAdmittedPersistedPin, false, "the refused pin leaves no admitted visual pin");
   const liveAccess = await resolveBrandVisualAccess(liveUser);
   assert.equal(liveAccess.canUse, false);
   assert.equal(
-    resolveBrandVisualRenderAccess({ requestsBrandVisualImage: true, hasPersistedProjectPin, liveAccess }),
+    resolveBrandVisualRenderAccess({ requestsBrandVisualImage: true, hasAdmittedPersistedPin, liveAccess }),
     null,
     "an unpaid account cannot reach the managed AI-image route through an existing-pin grandfather clause",
   );
+
+  // ── The two SYSTEM pin writers (ADR 0059 amendment 2026-09-02, #430) ──────
+  // Hero Script's send-to-editor and the First-Clip auto-spine sit OUTSIDE the
+  // image guard by design (they are system-initiated, not creator-initiated),
+  // so each can persist a pin for an account the image gate rejects. They must
+  // therefore record that account's image decision on the pin they write —
+  // otherwise the grandfather clause hands them the managed image route.
+  const { sendScriptToEditor } = await import("../src/lib/hero-script.server");
+  const { ensureFirstClipProjectSpine } = await import("../src/lib/first-clip-path.server");
+  const { createBrandProfileFromPayload } = await import("../src/lib/brand-profile-library.server");
+
+  // PRO unlocks the Video Editor (the send-to-editor precondition) while the
+  // IMAGE gate stays closed: no paid-equivalent evidence, no rollout bucket.
+  const systemWriterUser = await prisma.user.create({
+    data: { name: "Gate-rejected editor user", email: "ops-system-writer@example.test", plan: "PRO" },
+  });
+  const systemWriterBrand = await createBrandProfileFromPayload({
+    userId: systemWriterUser.id,
+    payload: { ...brandPayload, name: "System writer brand" },
+    source: "manual",
+  });
+  const rejectedLive = await resolveBrandVisualAccess(
+    await prisma.user.findUniqueOrThrow({ where: { id: systemWriterUser.id } }),
+  );
+  assert.equal(rejectedLive.canUse, false, "the system-writer account is rejected by the image gate");
+
+  const heroScriptRow = await prisma.script.create({
+    data: {
+      userId: systemWriterUser.id,
+      brandProfileId: systemWriterBrand.profile.id,
+      topic: "ทดสอบส่งสคริปต์ไปตัดต่อ",
+      hookText: "เปิดเรื่อง",
+      bodyText: "เนื้อหาหลัก",
+      ctaText: "กดติดตาม",
+    },
+  });
+  const handoff = await sendScriptToEditor(systemWriterUser.id, heroScriptRow.id);
+  assert.equal(handoff.ok, true, "send-to-editor still works for a PRO account outside the image cohort");
+  const handoffProjectId = handoff.ok ? handoff.projectId : "";
+  const handoffProject = await prisma.editorProject.findUniqueOrThrow({ where: { id: handoffProjectId } });
+  assert.equal(
+    handoffProject.brandProfileRevisionId,
+    systemWriterBrand.revision.id,
+    "the handoff still pins the Brand Revision it was asked to carry",
+  );
+  assert.equal(
+    handoffProject.brandVisualPinAdmittedCohort,
+    null,
+    "Hero Script's system pin records NO admission for an account the image gate rejects",
+  );
+  assert.equal(
+    resolveBrandVisualRenderAccess({
+      requestsBrandVisualImage: true,
+      hasAdmittedPersistedPin: await projectHasAdmittedPersistedPin({
+        userId: systemWriterUser.id,
+        projectId: handoffProjectId,
+      }),
+      liveAccess: rejectedLive,
+    }),
+    null,
+    "send-to-editor cannot become a self-service ticket into managed AI images",
+  );
+  assert.equal(
+    await projectHasPersistedVisualPin({ userId: systemWriterUser.id, projectId: handoffProjectId }),
+    true,
+    "the pin itself is still persisted — only its image admission is withheld",
+  );
+
+  const spineProject = await prisma.editorProject.create({
+    data: { userId: systemWriterUser.id, title: "First clip spine" },
+  });
+  await ensureFirstClipProjectSpine({ userId: systemWriterUser.id, projectId: spineProject.id });
+  const spineRow = await prisma.editorProject.findUniqueOrThrow({ where: { id: spineProject.id } });
+  assert.ok(spineRow.brandProfileRevisionId, "the First-Clip spine still pins a Brand Revision");
+  assert.equal(
+    spineRow.brandVisualPinAdmittedCohort,
+    null,
+    "the First-Clip auto-spine records NO admission for an account the image gate rejects",
+  );
+  assert.equal(
+    await projectHasAdmittedPersistedPin({ userId: systemWriterUser.id, projectId: spineProject.id }),
+    false,
+    "the auto-spine pin is not an admission ticket either",
+  );
+
+  // The same two writers on an INTERNAL account stamp the cohort they resolved.
+  const internalWriterUser = await prisma.user.create({
+    data: {
+      name: "Internal editor user",
+      email: "ops-system-writer-internal@example.test",
+      plan: "PRO",
+      role: "ADMIN",
+    },
+  });
+  const internalBrand = await createBrandProfileFromPayload({
+    userId: internalWriterUser.id,
+    payload: { ...brandPayload, name: "Internal writer brand" },
+    source: "manual",
+  });
+  const internalScriptRow = await prisma.script.create({
+    data: {
+      userId: internalWriterUser.id,
+      brandProfileId: internalBrand.profile.id,
+      topic: "ทดสอบทีมงาน",
+      hookText: "เปิดเรื่อง",
+      bodyText: "เนื้อหาหลัก",
+      ctaText: "กดติดตาม",
+    },
+  });
+  const internalHandoff = await sendScriptToEditor(internalWriterUser.id, internalScriptRow.id);
+  assert.equal(internalHandoff.ok, true);
+  const internalProjectId = internalHandoff.ok ? internalHandoff.projectId : "";
+  assert.equal(
+    (await prisma.editorProject.findUniqueOrThrow({ where: { id: internalProjectId } }))
+      .brandVisualPinAdmittedCohort,
+    "internal",
+    "an admitted owner's system pin records the cohort that admitted it",
+  );
+  const internalSpineProject = await prisma.editorProject.create({
+    data: { userId: internalWriterUser.id, title: "Internal first clip spine" },
+  });
+  await ensureFirstClipProjectSpine({
+    userId: internalWriterUser.id,
+    projectId: internalSpineProject.id,
+  });
+  assert.equal(
+    (await prisma.editorProject.findUniqueOrThrow({ where: { id: internalSpineProject.id } }))
+      .brandVisualPinAdmittedCohort,
+    "internal",
+    "the First-Clip auto-spine stamps an admitted owner exactly like a creator route",
+  );
+
+  actingUserId = user.id;
 
   const quoted = await previewQuote.POST(new Request("http://localhost/api/brand-library/preview-quote", {
     method: "POST",

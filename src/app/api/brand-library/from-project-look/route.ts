@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
+import { pinAdmissionFromDecision } from "@/lib/brand-visual-pin-admission";
 import {
   BrandProfileLibraryError,
   brandProfilePayloadSchema,
@@ -58,6 +59,9 @@ export async function POST(req: Request) {
       }
     }
 
+    // The promotion pins the new Revision to this project, so it records the
+    // image decision this request already passed (#430).
+    const admission = pinAdmissionFromDecision(auth.access);
     const promoted = videoJobId
       ? await promoteCompletedVideoJobToBrandProfile({
           userId: auth.user.id,
@@ -65,12 +69,14 @@ export async function POST(req: Request) {
           preflightId,
           videoJobId,
           payload: payload.data,
+          admission,
         })
       : await promoteProjectLookToBrandProfile({
           userId: auth.user.id,
           projectId,
           preflightId,
           payload: payload.data,
+          admission,
         });
     const visualRecipe = JSON.parse(promoted.revision.visualRecipeJson) as {
       visualFormatId: VisualFormatId;

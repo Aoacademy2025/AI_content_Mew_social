@@ -7,6 +7,10 @@ import {
   prepareEditorProjectBrandAsset,
 } from "@/lib/editor-project-brand-asset.server";
 import { observeEditorProjectBrandAssetVerificationStep } from "@/lib/editor-project-brand-asset-verification.server";
+import {
+  brandVisualPinAdmissionFields,
+  type PinAdmission,
+} from "@/lib/brand-visual-pin-admission";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
 import { sanitizeEditorProjectTitle } from "@/lib/editor-project-title";
 
@@ -180,6 +184,10 @@ export async function createEditorProject(
     draft?: unknown;
     status?: unknown;
     brandProfileRevisionId?: unknown;
+    /** Only meaningful with `brandProfileRevisionId`: the owner's AI-image
+     * decision at pin time (#430). Omitted or null creates the pin WITHOUT the
+     * managed-image grandfather clause — the look still applies. */
+    brandVisualPinAdmission?: PinAdmission;
   } = {},
   tx?: Prisma.TransactionClient,
 ) {
@@ -209,6 +217,11 @@ export async function createEditorProject(
         draftJson: draftJson ?? null,
         brandProfileRevisionId: requestedRevisionId || null,
         lastOpenedAt: new Date(),
+        // A stamp without a pin admits nothing, so it is only written when this
+        // create actually persists a Revision pin (#430).
+        ...brandVisualPinAdmissionFields(
+          requestedRevisionId ? input.brandVisualPinAdmission : null,
+        ),
       },
     });
     await advanceEditorProjectBrandAsset(client, userId, assetFence);

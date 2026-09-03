@@ -5,6 +5,7 @@ import {
   requireBrandVisualRecoveryUser,
   requireBrandVisualUser,
 } from "@/lib/brand-visual-access.server";
+import { pinAdmissionFromDecision } from "@/lib/brand-visual-pin-admission";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { prisma } from "@/lib/prisma";
 import {
@@ -209,6 +210,10 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         userId: auth.user.id,
         projectId: id,
         visualFormatId,
+        // The image decision this request already passed is recorded ON the pin
+        // (#430), so a later render honours the grandfather clause only for a
+        // pin that was admitted when it was written.
+        admission: pinAdmissionFromDecision(auth.access),
       });
       await recordTelemetryEvent(auth.user.id, {
         name: "project_look_changed",
@@ -258,6 +263,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       preflightId: requestedPreflightId,
       applyMode,
       look: parsed.data,
+      admission: pinAdmissionFromDecision(auth.access),
     });
     const look = applied.look;
     await recordTelemetryEvent(auth.user.id, {
