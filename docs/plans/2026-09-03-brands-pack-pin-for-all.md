@@ -100,4 +100,4 @@ Rules: every pin writer computes the writer's live image decision for the OWNER 
 - Wave 2 treatments; per-clip กำหนดเอง semantics (open product call from wave 1).
 
 ## Status
-interviewed 2026-09-03 | approved: 2026-09-03 (Mew: "execute ตามแนะนำ" — D1–D3 as recommended) | executed: started 2026-09-03 | delivered: -
+interviewed 2026-09-03 | approved: 2026-09-03 (Mew: "execute ตามแนะนำ" — D1–D3 as recommended) | executed: 2026-09-03 (T1 94a7de59 · T2 469f6e17 · T3 243f9b33 — 3 serial waves, every review clean) | delivered: pending final gate (PR to follow)
