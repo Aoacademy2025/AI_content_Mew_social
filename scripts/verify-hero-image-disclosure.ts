@@ -89,8 +89,10 @@ check("rate-limited body stays customer-owned instead of echoing provider diagno
 const step2Path = "src/app/(dashboard)/video-editor/_v2/Step2Elements.tsx";
 const step2 = readFileSync(step2Path, "utf8");
 
+// The audio-minute overage line ("… 2 เครดิต/นาที") is a different price and legitimately
+// shares the digit when HERO_AI_IMAGE_CREDITS happens to equal it — exclude the per-minute form.
 check("no hardcoded hero price literal — every credit figure interpolates HERO_AI_IMAGE_CREDITS",
-  !new RegExp(`${HERO_AI_IMAGE_CREDITS} เครดิต`).test(step2));
+  !new RegExp(`${HERO_AI_IMAGE_CREDITS} เครดิต(?!/นาที)`).test(step2));
 check("imports the shared credit-costs constant instead of a literal",
   /import\s*\{\s*HERO_AI_IMAGE_CREDITS\s*\}\s*from\s*["']@\/lib\/credit-costs["']/.test(step2));
 
