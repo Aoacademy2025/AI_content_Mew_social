@@ -69,3 +69,7 @@ stamp source survives a future change to `requireBrandLibraryUser`. (3) Rollback
 `BRAND_VISUAL_SYSTEM_ENABLED=0` an unadmitted pinned project renders **without** its pack (no
 error, no notice); admitted projects keep the grandfather path. The export logo overlay stays a
 PRO/BUSINESS plan feature: a pinned-but-unadmitted project does not stage the brand mark.
+Content Preflight — the one managed text call that reads the script and suggests a ชุดสไตล์ —
+runs for every library user, pin or no pin, behind the existing per-user AI-text cap, because
+the editor needs that analysis before a first pin can be made; a refused caller
+(`feature_off` / `suspended`) gets the library-shaped notice, never the AI-image upgrade copy.
