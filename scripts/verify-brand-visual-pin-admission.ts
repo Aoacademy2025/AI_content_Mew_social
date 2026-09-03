@@ -108,6 +108,24 @@ async function main() {
     { brandVisualPinAdmittedCohort: null, brandVisualPinAdmittedAt: null },
     "a denied decision clears both stamp columns rather than leaving a stale one",
   );
+  // Wave 1b Task 2: the stamp can only ever name a cohort that actually admits
+  // somebody. The synthetic `existing-pin` cohort is the grandfather clause's
+  // OUTPUT, never an input — stamping it would let one pin mint the next one.
+  assert.equal(
+    pinAdmissionFromDecision(
+      { canUse: true, cohort: "existing-pin" } as unknown as Parameters<typeof pinAdmissionFromDecision>[0],
+      admittedAt,
+    ),
+    null,
+    "the synthetic existing-pin cohort is never written onto a pin",
+  );
+  for (const cohort of ["internal", "treatment-10", "treatment-50", "treatment-100"] as const) {
+    assert.deepEqual(
+      pinAdmissionFromDecision({ canUse: true, cohort }, admittedAt),
+      { cohort, at: admittedAt },
+      `${cohort} is an admitted cohort and is stamped verbatim`,
+    );
+  }
 
   // ── 2. The predicate needs BOTH a real pin and a real stamp ───────────────
   const pinFields = {
@@ -115,6 +133,7 @@ async function main() {
     brandProfileRevisionId: "rev_1",
     treatmentPresetId: null,
     treatmentPresetVersion: null,
+    brandVisualPinAdmittedAt: admittedAt,
   };
   assert.equal(
     hasAdmittedPersistedPin({ ...pinFields, brandVisualPinAdmittedCohort: "treatment-100" }),
@@ -125,6 +144,22 @@ async function main() {
     false,
     "a pin written without an admission is not a grandfather clause",
   );
+  // Wave 1b Task 2: BOTH stamp columns are required. A half-written stamp (one
+  // column set by a partial/legacy write) must not admit anything.
+  assert.equal(
+    hasAdmittedPersistedPin({
+      ...pinFields,
+      brandVisualPinAdmittedAt: null,
+      brandVisualPinAdmittedCohort: "treatment-100",
+    }),
+    false,
+    "a cohort without an admission timestamp is not a complete stamp",
+  );
+  assert.equal(
+    hasAdmittedPersistedPin({ ...pinFields, brandVisualPinAdmittedCohort: "existing-pin" }),
+    false,
+    "a stamp naming the synthetic cohort admits nothing",
+  );
   assert.equal(
     hasAdmittedPersistedPin({
       projectLookJson: null,
@@ -132,6 +167,7 @@ async function main() {
       treatmentPresetId: null,
       treatmentPresetVersion: null,
       brandVisualPinAdmittedCohort: "internal",
+      brandVisualPinAdmittedAt: admittedAt,
     }),
     false,
     "a stamp left behind by a cleared pin admits nothing on its own",
@@ -369,13 +405,33 @@ async function main() {
     "an omitted admission never admits the pin",
   );
 
-  // recordBrandVisualPinAdmission writes and clears both columns.
-  await prisma.$transaction((tx) =>
-    recordBrandVisualPinAdmission(tx, forgetfulProject.id, { cohort: "treatment-50", at: admittedAt }));
+  // recordBrandVisualPinAdmission writes and clears both columns, and is
+  // OWNERSHIP-SCOPED (wave 1b Task 2): the stamp is an authorization record, so
+  // it may never be written through a project id alone.
+  await prisma.$transaction((tx) => recordBrandVisualPinAdmission(
+    tx,
+    { projectId: forgetfulProject.id, userId: admitted.id },
+    { cohort: "treatment-50", at: admittedAt },
+  ));
   const stamped = await prisma.editorProject.findUniqueOrThrow({ where: { id: forgetfulProject.id } });
   assert.equal(stamped.brandVisualPinAdmittedCohort, "treatment-50");
   assert.equal(stamped.brandVisualPinAdmittedAt?.toISOString(), admittedAt.toISOString());
-  await prisma.$transaction((tx) => recordBrandVisualPinAdmission(tx, forgetfulProject.id, null));
+  await prisma.$transaction((tx) => recordBrandVisualPinAdmission(
+    tx,
+    { projectId: forgetfulProject.id, userId: denied.id },
+    { cohort: "internal", at: admittedAt },
+  ));
+  assert.equal(
+    (await prisma.editorProject.findUniqueOrThrow({ where: { id: forgetfulProject.id } }))
+      .brandVisualPinAdmittedCohort,
+    "treatment-50",
+    "another account cannot stamp an admission onto a project it does not own",
+  );
+  await prisma.$transaction((tx) => recordBrandVisualPinAdmission(
+    tx,
+    { projectId: forgetfulProject.id, userId: admitted.id },
+    null,
+  ));
   assert.equal(
     (await prisma.editorProject.findUniqueOrThrow({ where: { id: forgetfulProject.id } }))
       .brandVisualPinAdmittedAt,
@@ -449,6 +505,225 @@ async function main() {
 
   const secondApply = await backfillBrandVisualPinAdmission("apply");
   assert.equal(secondApply.stamped, 0, "the backfill is idempotent");
+
+  // ── 5b. Render-time materialization stamps EXPLICITLY (wave 1b Task 2, R5) ─
+  // Opening the pin to every plan means the render path itself now writes pin
+  // columns for accounts the image gate rejects (`prepareProjectVisualPin`
+  // materializes a treatment pin, `pinProjectVisualContextToVideoJob`
+  // materializes an upload Project Look). Each of those writes must set the
+  // stamp in the SAME statement — from the job's LIVE access, otherwise from
+  // an already-admitted pin, otherwise null — so a render can never mint an
+  // admission and an ORPHAN stamp can never be recombined with a fresh pin.
+  const { CONTENT_PREFLIGHT_ANALYZER_VERSION } = await import("../src/lib/content-preflight.server");
+  const { prepareProjectVisualPin, prepareUploadProjectVisualSnapshot, pinProjectVisualContextToVideoJob } =
+    await import("../src/lib/project-look.server");
+  const { createVideoJob } = await import("../src/lib/mcp/video-job");
+
+  async function readyProject(ownerId: string, title: string) {
+    const project = await prisma.editorProject.create({ data: { userId: ownerId, title } });
+    const preflight = await prisma.contentPreflight.create({
+      data: {
+        userId: ownerId,
+        projectId: project.id,
+        narrativeSourceKind: "creator-script",
+        sourceHash: `${title}-hash`,
+        analyzerVersion: CONTENT_PREFLIGHT_ANALYZER_VERSION,
+        contentDomain: "creator education",
+        dominantNarrativeMode: "explainer",
+        suggestedVisualFormatId: "clear-infographic",
+        suggestedTreatmentJson: JSON.stringify({ label: "clear", mood: "warm" }),
+        suggestedTreatmentPresetId: "expert-clarity",
+        suggestedTreatmentPresetVersion: "v1.0.0",
+        rankedTreatmentPresetIdsJson: JSON.stringify(["expert-clarity"]),
+        treatmentRecommendationRationale: "A direct explainer.",
+        storyEntitiesJson: JSON.stringify([]),
+        visualBeats: {
+          create: {
+            userId: ownerId,
+            projectId: project.id,
+            beatKey: "window-0",
+            sequence: 0,
+            sourceExcerptHash: `${title}-beat`,
+            beatJson: JSON.stringify({
+              beatKey: "window-0",
+              sourceExcerpt: "สอนทำคลิป",
+              subject: "a creator",
+              action: "teaches",
+              setting: "a studio",
+              emotion: "warm",
+              emphasis: "the lesson",
+              hardSceneFacts: {
+                entityTypes: ["creator"], ages: [], genders: [], actions: ["teaches"],
+                locationTypes: ["studio"], timeOfDay: null, historicalPeriod: null,
+                count: 1, essentialObjects: [],
+              },
+              entityRefs: [],
+              sceneIntensity: "balanced",
+              safetyBoundary: "none",
+            }),
+          },
+        },
+      },
+    });
+    return { project, preflight };
+  }
+
+  const stampedByRender = await readyProject(admitted.id, "render materialization admitted");
+  await prepareProjectVisualPin({
+    userId: admitted.id,
+    projectId: stampedByRender.project.id,
+    preflightId: stampedByRender.preflight.id,
+  });
+  const stampedByRenderRow = await prisma.editorProject.findUniqueOrThrow({
+    where: { id: stampedByRender.project.id },
+  });
+  assert.equal(stampedByRenderRow.treatmentPresetId, "expert-clarity", "the render materialized a treatment pin");
+  assert.equal(
+    stampedByRenderRow.brandVisualPinAdmittedCohort,
+    "internal",
+    "a render-time pin write stamps the job's LIVE image decision",
+  );
+  assert.ok(stampedByRenderRow.brandVisualPinAdmittedAt instanceof Date);
+
+  const unstampedByRender = await readyProject(denied.id, "render materialization rollout-wait");
+  await prepareProjectVisualPin({
+    userId: denied.id,
+    projectId: unstampedByRender.project.id,
+    preflightId: unstampedByRender.preflight.id,
+  });
+  const unstampedByRenderRow = await prisma.editorProject.findUniqueOrThrow({
+    where: { id: unstampedByRender.project.id },
+  });
+  assert.equal(unstampedByRenderRow.treatmentPresetId, "expert-clarity", "the pack/treatment pin is still materialized");
+  assert.equal(
+    unstampedByRenderRow.brandVisualPinAdmittedCohort,
+    null,
+    "a rollout-waiting owner's render mints NO admission",
+  );
+  assert.equal(unstampedByRenderRow.brandVisualPinAdmittedAt, null);
+
+  // An ORPHAN stamp (e.g. left by BrandProfileRevision onDelete: SetNull) must
+  // not be recombined with a pin the render materializes afterwards.
+  const orphan = await readyProject(denied.id, "orphan stamp");
+  await prisma.editorProject.update({
+    where: { id: orphan.project.id },
+    data: {
+      brandVisualPinAdmittedCohort: "treatment-100",
+      brandVisualPinAdmittedAt: new Date("2026-08-01T00:00:00.000Z"),
+    },
+  });
+  await prepareProjectVisualPin({
+    userId: denied.id,
+    projectId: orphan.project.id,
+    preflightId: orphan.preflight.id,
+  });
+  const orphanRow = await prisma.editorProject.findUniqueOrThrow({ where: { id: orphan.project.id } });
+  assert.equal(
+    orphanRow.brandVisualPinAdmittedCohort,
+    null,
+    "an orphan stamp is cleared by the render write instead of adopting the fresh pin",
+  );
+  assert.equal(
+    await projectHasAdmittedPersistedPin({ userId: denied.id, projectId: orphan.project.id }),
+    false,
+    "the orphan stamp cannot be resurrected into a grandfather clause",
+  );
+
+  // An ALREADY-ADMITTED pin keeps its original stamp when the render
+  // re-materializes it after the owner lost live access (the existing-pin path).
+  const grandfathered = await readyProject(denied.id, "already admitted pin");
+  const grandfatheredAt = new Date("2026-08-02T00:00:00.000Z");
+  await prisma.editorProject.update({
+    where: { id: grandfathered.project.id },
+    data: {
+      projectLookJson: JSON.stringify({
+        schemaVersion: 2,
+        visualFormatId: "clear-infographic",
+        recipeVersion: "clear-infographic-v2",
+        treatment: "ชัดเจนแบบผู้เชี่ยวชาญ",
+        treatmentPin: { presetId: "expert-clarity", version: "v1.0.0", source: "explicit" },
+        brandVisualLanguage: null,
+      }),
+      projectLookUpdatedAt: grandfatheredAt,
+      treatmentPresetId: "expert-clarity",
+      treatmentPresetVersion: "v1.0.0",
+      treatmentPinSource: "explicit",
+      treatmentPinnedAt: grandfatheredAt,
+      brandVisualPinAdmittedCohort: "treatment-100",
+      brandVisualPinAdmittedAt: grandfatheredAt,
+    },
+  });
+  await prepareProjectVisualPin({
+    userId: denied.id,
+    projectId: grandfathered.project.id,
+    preflightId: grandfathered.preflight.id,
+  });
+  const grandfatheredRow = await prisma.editorProject.findUniqueOrThrow({
+    where: { id: grandfathered.project.id },
+  });
+  assert.equal(
+    grandfatheredRow.brandVisualPinAdmittedCohort,
+    "treatment-100",
+    "an already-admitted pin keeps the cohort it was admitted under",
+  );
+  assert.equal(
+    grandfatheredRow.brandVisualPinAdmittedAt?.toISOString(),
+    grandfatheredAt.toISOString(),
+    "…and its original admission time, never a fresh one minted by the render",
+  );
+
+  // The upload path materializes a Project Look inside the job transaction.
+  for (const owner of [
+    { id: admitted.id, label: "admitted", cohort: "internal" as string | null },
+    { id: denied.id, label: "rollout-wait", cohort: null },
+  ]) {
+    const upload = await readyProject(owner.id, `upload materialization ${owner.label}`);
+    await prisma.editorProject.update({
+      where: { id: upload.project.id },
+      data: {
+        projectLookJson: JSON.stringify({
+          schemaVersion: 1,
+          state: "awaiting-upload-preflight",
+          selection: "project-look",
+          narrativeSourceKind: "upload-transcript",
+          visualFormatId: "clear-infographic",
+          recipeVersion: "clear-infographic-v2",
+          brandVisualLanguage: null,
+        }),
+      },
+    });
+    const uploadPin = await prepareUploadProjectVisualSnapshot({
+      userId: owner.id,
+      projectId: upload.project.id,
+    });
+    await prisma.editorProject.update({
+      where: { id: upload.project.id },
+      data: { projectLookJson: null, brandVisualPinAdmittedCohort: null, brandVisualPinAdmittedAt: null },
+    });
+    const uploadJob = await createVideoJob(
+      owner.id,
+      { clipUrl: "/uploads/clip.mp4" },
+      `upload-materialization-${owner.label}`,
+      { projectId: upload.project.id, projectVisualPin: uploadPin },
+    );
+    await pinProjectVisualContextToVideoJob({
+      userId: owner.id,
+      projectId: upload.project.id,
+      videoJobId: uploadJob.id,
+      preflightId: upload.preflight.id,
+    });
+    const uploadRow = await prisma.editorProject.findUniqueOrThrow({ where: { id: upload.project.id } });
+    assert.equal(
+      uploadRow.treatmentPresetId,
+      "expert-clarity",
+      `${owner.label}: the upload render materializes the project's treatment pin`,
+    );
+    assert.equal(
+      uploadRow.brandVisualPinAdmittedCohort,
+      owner.cohort,
+      `${owner.label}: the upload materialization stamps the owner's live image decision`,
+    );
+  }
 
   // ── 6. Both render callers read the anchored value ────────────────────────
   const jobsRoute = readFileSync("src/app/api/videos/jobs/route.ts", "utf8");

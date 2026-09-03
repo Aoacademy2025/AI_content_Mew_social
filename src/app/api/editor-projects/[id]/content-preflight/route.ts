@@ -4,6 +4,7 @@ import {
   brandVisualLockedResponse,
   requireBrandVisualRecoveryUser,
 } from "@/lib/brand-visual-access.server";
+import { decideBrandLibraryAccess } from "@/lib/brand-visual-rollout.server";
 import {
   ContentPreflightError,
   createGeminiContentPreflightAnalyzer,
@@ -40,6 +41,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       projectId: id,
     });
     if (!auth.access.canUse && !hasPersistedVisualPin) return brandVisualLockedResponse(auth.access);
+    // Wave 1b D2: every plan can pin, and a pinned render needs its beats and
+    // suggested pack — one managed text call per job, the same class as keyword
+    // extraction. A master rollback/suspension still closes `library.canUse`,
+    // which is what keeps the rollback path to cached replay only.
+    const library = decideBrandLibraryAccess(auth.user);
+    const mayAnalyzeNow = auth.access.canUse || (library.canUse && hasPersistedVisualPin);
     const rawWindowCount = body?.narrativeSource?.windowCount;
     const windowCount = Number.isFinite(rawWindowCount) && rawWindowCount > 0
       ? Math.min(60, Math.floor(rawWindowCount))
@@ -62,8 +69,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         sceneContentPolicy,
       },
       // Rollback keeps exact cached analyses readable for already-pinned
-      // projects but never launches new Gemini work after admission closes.
-      analyzer: auth.access.canUse
+      // projects but never launches new Gemini work after the master switch
+      // closes.
+      analyzer: mayAnalyzeNow
         ? createGeminiContentPreflightAnalyzer(auth.user.id)
         : undefined,
     });

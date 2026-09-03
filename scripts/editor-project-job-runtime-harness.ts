@@ -2374,7 +2374,15 @@ async function runExactReplayRouteScenario(input: {
       return { createEditorExportSnapshot: () => null };
     }
     if (specifier === "@/lib/brand-visual-rollout.server") {
-      return { resolveBrandVisualAccess: async () => ({ canUse: false, reason: "disabled" }) };
+      return {
+        resolveBrandVisualAccess: async () => ({ canUse: false, reason: "disabled" }),
+        // Wave 1b: the route also asks whether the account owns the Brand
+        // LIBRARY, so a pinned project can carry its look into the job. This
+        // harness replays the no-pin posture (projectHasPersistedVisualPin is
+        // stubbed false), so the answer changes none of its assertions — but the
+        // export has to exist.
+        decideBrandLibraryAccess: () => ({ canUse: true, reason: "eligible" }),
+      };
     }
     if (specifier === "@/lib/brand-visual-job-acceptance.server") {
       return {

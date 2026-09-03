@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
-import { requireBrandVisualUser } from "@/lib/brand-visual-access.server";
+import { requireBrandLibraryUser } from "@/lib/brand-visual-access.server";
 import { pinAdmissionFromDecision } from "@/lib/brand-visual-pin-admission";
+import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { BrandProfileLibraryError, applyProjectBrandRevision } from "@/lib/brand-profile-library.server";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { prisma } from "@/lib/prisma";
@@ -10,14 +11,20 @@ import { brandLookIdentityKey, brandVisualIdentityKey, type BrandVisualLanguage,
 import { editorProjectResponse } from "@/lib/editor-projects";
 import { lookChangeConfirmation } from "@/lib/brand-treatment-presentation";
 
-/** Pinning a Brand Revision to a project keeps the IMAGE guard (ADR 0059
- * amendment): the persisted pin is an unconditional grandfather clause in
- * `brandVisualJobAcceptance` (cohort `existing-pin`), so opening this write
- * would let a non-entitled account self-admit into AI-image rendering. */
+/** Pinning a Brand Revision to a project is a LIBRARY action for every plan
+ * (ADR 0059 + its 2026-09-02 amendment, wave 1b D1): the pin styles free stock
+ * B-roll, subtitles, voice, logo and pacing at zero marginal cost. What it must
+ * not hand out is the AI-image grandfather clause, and it cannot: the pin
+ * carries the IMAGE decision resolved here, and only an ADMITTED stamp
+ * grandfathers anything (#430). */
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const auth = await requireBrandVisualUser();
+    const auth = await requireBrandLibraryUser();
     if (!auth.ok) return auth.response;
+    // The guard above authorises the LIBRARY. The stamp must be the IMAGE
+    // decision, resolved separately — stamping the guard's own decision would
+    // admit every plan and reopen #430.
+    const imageAccess = await resolveBrandVisualAccess(auth.user);
     const body = await req.json().catch(() => null);
     if (typeof body?.profileId !== "string") {
       return NextResponse.json({ code: "INVALID_PROFILE", error: "กรุณาเลือกแบรนด์" }, { status: 400 });
@@ -60,9 +67,9 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       revisionId: typeof body.revisionId === "string" ? body.revisionId : undefined,
       preflightId: requestedPreflightId,
       applyMode,
-      // The image decision this request already passed is recorded ON the pin,
-      // so the render-time grandfather clause can only honour an admitted one.
-      admission: pinAdmissionFromDecision(auth.access),
+      // The IMAGE decision resolved above is recorded ON the pin, so the
+      // render-time grandfather clause can only honour an admitted one.
+      admission: pinAdmissionFromDecision(imageAccess),
     });
     const visualRecipe = JSON.parse(pinned.revision.visualRecipeJson) as {
       visualFormatId: VisualFormatId;
@@ -93,7 +100,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           treatment: visualRecipe.defaultTreatment,
           brandVisualLanguage: visualRecipe.brandVisualLanguage ?? null,
         }),
-        cohort: auth.access.cohort,
+        cohort: imageAccess.cohort,
       },
     }).catch(() => {});
     return NextResponse.json({

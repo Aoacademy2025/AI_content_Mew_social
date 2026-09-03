@@ -449,10 +449,20 @@ async function main() {
   );
   assert.match(projectModule, /hasPersistedVisualPin:\s*Boolean\(project\.projectLookJson\s*\|\|\s*project\.brandProfileRevisionId\)/,
     "project hydration must expose established render capability independently of the live rollout flag");
+  // Wave 1b: the AI-image predicate the client must read is the ADMITTED one —
+  // every plan can own a pin now, so a bare pin proves nothing about images.
+  assert.match(projectModule, /hasAdmittedVisualPin:\s*hasAdmittedPersistedPin\(project\)/,
+    "project hydration must expose AI-image admission separately from the pin itself");
   assert.match(visualContextRoute, /requireBrandVisualRecoveryUser[\s\S]+projectHasPersistedVisualPin/,
     "an owner must still read exact reuse state for a persisted pin after rollback");
-  assert.match(contentPreflightRoute, /requireBrandVisualRecoveryUser[\s\S]+resolveContentPreflight\([\s\S]+analyzer:\s*auth\.access\.canUse/,
-    "rollback may replay a cached preflight for an established pin but cannot run a new analyzer");
+  assert.match(visualContextRoute, /hasAdmittedVisualPin,/,
+    "the visual-context read must disclose AI-image admission separately from the pin");
+  assert.match(visualContextRoute, /reusableAiSceneIndices = state\.preflight && mayQuoteRetainedAiScenes/,
+    "retained AI scenes are quoted only to an owner the image route would actually admit");
+  assert.match(contentPreflightRoute, /requireBrandVisualRecoveryUser[\s\S]+resolveContentPreflight\([\s\S]+analyzer:\s*mayAnalyzeNow/,
+    "the analyzer runs for a pinned library user (D2) but a master rollback still replays cache only");
+  assert.match(contentPreflightRoute, /const mayAnalyzeNow = auth\.access\.canUse \|\| \(library\.canUse && hasPersistedVisualPin\)/,
+    "…and 'library user WITH a pin' is exactly the widening D2 decided on");
   assert.match(projectHook, /hasPersistedVisualPin/,
     "the editor must retain established-pin capability from its authoritative project snapshot");
   assert.match(receiptDialog, /p\.brandVisualAllowed\s*\|\|\s*p\.hasPersistedVisualPin/,

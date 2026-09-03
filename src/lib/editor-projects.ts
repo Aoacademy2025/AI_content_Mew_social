@@ -9,6 +9,7 @@ import {
 import { observeEditorProjectBrandAssetVerificationStep } from "@/lib/editor-project-brand-asset-verification.server";
 import {
   brandVisualPinAdmissionFields,
+  hasAdmittedPersistedPin,
   type PinAdmission,
 } from "@/lib/brand-visual-pin-admission";
 import { withTransientSqliteRetry } from "@/lib/sqlite-retry";
@@ -114,6 +115,12 @@ export function editorProjectResponse(project: NonNullable<ProjectRow>) {
     latestVideoId: project.latestVideoId,
     brandProfileRevisionId: project.brandProfileRevisionId,
     hasPersistedVisualPin: Boolean(project.projectLookJson || project.brandProfileRevisionId),
+    // ADR 0059 amendment (#430) + wave 1b (D1): every plan can own a pin, so the
+    // pin alone no longer says anything about AI images. This is the predicate
+    // the Editor must use before offering an AI-image action — it mirrors the
+    // render-time one exactly, so the client can never offer what the render
+    // would refuse.
+    hasAdmittedVisualPin: hasAdmittedPersistedPin(project),
     lastOpenedAt: project.lastOpenedAt?.toISOString() ?? null,
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),

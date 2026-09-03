@@ -1,11 +1,12 @@
 import { NextResponse } from "next/server";
 import { apiError } from "@/lib/api-error";
 import {
-  brandVisualLockedResponse,
+  brandLibraryLockedResponse,
+  requireBrandLibraryUser,
   requireBrandVisualRecoveryUser,
-  requireBrandVisualUser,
 } from "@/lib/brand-visual-access.server";
 import { pinAdmissionFromDecision } from "@/lib/brand-visual-pin-admission";
+import { decideBrandLibraryAccess, resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
 import { HERO_AI_IMAGE_CREDITS } from "@/lib/credit-costs";
 import { prisma } from "@/lib/prisma";
 import {
@@ -19,6 +20,7 @@ import { lookChangeConfirmation } from "@/lib/brand-treatment-presentation";
 import {
   ProjectLookError,
   applyProjectLook,
+  projectHasAdmittedPersistedPin,
   projectHasPersistedVisualPin,
   projectLookInputSchema,
   reusableProjectVisualBeatSceneIndices,
@@ -93,11 +95,21 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const auth = await requireBrandVisualRecoveryUser();
     if (!auth.ok) return auth.response;
     const { id } = await params;
-    const hasPersistedVisualPin = await projectHasPersistedVisualPin({
-      userId: auth.user.id,
-      projectId: id,
-    });
-    if (!auth.access.canUse && !hasPersistedVisualPin) return brandVisualLockedResponse(auth.access);
+    const [hasPersistedVisualPin, hasAdmittedVisualPin] = await Promise.all([
+      projectHasPersistedVisualPin({ userId: auth.user.id, projectId: id }),
+      projectHasAdmittedPersistedPin({ userId: auth.user.id, projectId: id }),
+    ]);
+    // Wave 1b (D1): reading a project's own visual context is a LIBRARY action —
+    // a creator has to see the packs before it can choose one, so a pin is no
+    // longer the price of entry. The recovery guard (not the library guard) is
+    // still the one that authenticates, so an owner whose project already holds
+    // a pin keeps reading its exact reuse state through a master rollback.
+    const library = decideBrandLibraryAccess(auth.user);
+    if (!library.canUse && !hasPersistedVisualPin) return brandLibraryLockedResponse(library);
+    // R6: quoting retained AI scenes is an AI-image signal, so it stays on the
+    // ADMITTED predicate. An unadmitted pin renders stock; telling its Render
+    // Receipt that AI scenes will be retained would quote work that cannot run.
+    const mayQuoteRetainedAiScenes = auth.access.canUse || hasAdmittedVisualPin;
     const requestedPreflightId = new URL(req.url).searchParams.get("preflightId")?.trim() || undefined;
     const state = await currentVisualState(auth.user.id, id, requestedPreflightId);
     const context = await resolveProjectVisualContext({ userId: auth.user.id, projectId: id, suggested: state.suggested });
@@ -129,7 +141,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const stylePackSource = pinnedPackSnapshot
       ? (projectPackSnapshot ? ("project" as const) : ("brand" as const))
       : null;
-    const reusableAiSceneIndices = state.preflight
+    const reusableAiSceneIndices = state.preflight && mayQuoteRetainedAiScenes
       ? await reusableProjectVisualBeatSceneIndices({
           userId: auth.user.id,
           projectId: id,
@@ -155,6 +167,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       preserveEstablishedAiDensity: reusableAiSceneIndices.length > 0 && outdatedImageCount === 0,
       quotedCreditsPerImage: HERO_AI_IMAGE_CREDITS,
       hasPersistedVisualPin,
+      // The client's AI-image predicate (R7a): a pin is no longer proof that an
+      // AI action may be offered — only an ADMITTED pin is.
+      hasAdmittedVisualPin,
       stylePack: pinnedPackSnapshot && stylePackSource
         ? {
             packId: pinnedPackSnapshot.id,
@@ -187,10 +202,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
   }
 }
 
+/** Choosing a ชุดสไตล์ (or an explicit format/treatment) for one clip is a
+ * LIBRARY action for every plan (wave 1b D1). The pin it writes carries the
+ * IMAGE decision resolved here, so an unadmitted look styles stock B-roll,
+ * subtitles, pacing and music without admitting anyone to managed images. */
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const auth = await requireBrandVisualUser();
+    const auth = await requireBrandLibraryUser();
     if (!auth.ok) return auth.response;
+    // The guard above authorises the LIBRARY; the pin's stamp must be the IMAGE
+    // decision, resolved separately (#430).
+    const imageAccess = await resolveBrandVisualAccess(auth.user);
     const body = await req.json().catch(() => null);
     const { id } = await params;
     if (body?.deferTreatmentUntilPreflight === true) {
@@ -210,10 +232,10 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         userId: auth.user.id,
         projectId: id,
         visualFormatId,
-        // The image decision this request already passed is recorded ON the pin
-        // (#430), so a later render honours the grandfather clause only for a
-        // pin that was admitted when it was written.
-        admission: pinAdmissionFromDecision(auth.access),
+        // The IMAGE decision resolved above is recorded ON the pin (#430), so a
+        // later render honours the grandfather clause only for a pin that was
+        // admitted when it was written.
+        admission: pinAdmissionFromDecision(imageAccess),
       });
       await recordTelemetryEvent(auth.user.id, {
         name: "project_look_changed",
@@ -225,7 +247,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
           preflightId: null,
           visualFormatId: look.visualFormatId,
           existingImageCount: 0,
-          cohort: auth.access.cohort,
+          cohort: imageAccess.cohort,
         },
       }).catch(() => {});
       return NextResponse.json({
@@ -263,7 +285,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       preflightId: requestedPreflightId,
       applyMode,
       look: parsed.data,
-      admission: pinAdmissionFromDecision(auth.access),
+      admission: pinAdmissionFromDecision(imageAccess),
     });
     const look = applied.look;
     await recordTelemetryEvent(auth.user.id, {
@@ -278,7 +300,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
         brandVisualIdentityKey: brandVisualIdentityKey(look),
         brandLookIdentityKey: brandLookIdentityKey(look),
         existingImageCount: state.existingImageCount,
-        cohort: auth.access.cohort,
+        cohort: imageAccess.cohort,
       },
     }).catch(() => {});
     // Task 9 (Telemetry): a pack CHOSEN for this clip, not a "กำหนดเอง"

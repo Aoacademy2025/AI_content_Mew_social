@@ -10,7 +10,7 @@ import {
   VISUAL_FORMATS,
 } from "../src/lib/brand-visual-system";
 import { shouldDefaultToRecommendedAutoMix } from "../src/lib/automix-plan";
-import { resolveBrandVisualClientAccess } from "../src/lib/use-me";
+import { resolveBrandLibraryClientAccess, resolveBrandVisualClientAccess } from "../src/lib/use-me";
 import { AI_IMAGE_MODELS } from "../src/lib/ai-image-policy";
 
 assert.equal(resolveBrandVisualClientAccess({ brandVisualAllowed: true, brandVisualCohort: "off" }), true,
@@ -22,6 +22,30 @@ for (const brandVisualCohort of ["internal", "treatment-10", "treatment-50", "tr
 for (const brandVisualCohort of ["off", "control"] as const) {
   assert.equal(resolveBrandVisualClientAccess({ brandVisualAllowed: false, brandVisualCohort }), false,
     `${brandVisualCohort} remains fail-closed`);
+}
+
+// ADR 0059 + amendment (wave 1b, D1): the LIBRARY is a separate client-side
+// capability from the AI-image gate. Every plan can own a Brand and pin it;
+// only image actions still read `brandVisualAllowed`.
+assert.equal(resolveBrandLibraryClientAccess({ brandLibraryAllowed: true }), true,
+  "the explicit library admission field enables the Brand surfaces");
+assert.equal(
+  resolveBrandLibraryClientAccess({ brandLibraryAllowed: true, brandVisualAllowed: false, brandVisualCohort: "rollout-wait" }),
+  true,
+  "a rollout-waiting account still owns the library",
+);
+assert.equal(resolveBrandLibraryClientAccess(null), false, "no capability snapshot is fail-closed");
+assert.equal(
+  resolveBrandLibraryClientAccess({ brandLibraryAllowed: false, brandVisualAllowed: false, brandVisualCohort: "off" }),
+  false,
+  "the master kill switch closes the library on the client too",
+);
+for (const brandVisualCohort of ["internal", "treatment-10", "treatment-50", "treatment-100"] as const) {
+  assert.equal(
+    resolveBrandLibraryClientAccess({ brandVisualCohort }),
+    true,
+    `an admitted ${brandVisualCohort} account is necessarily inside the library, so a pre-deploy response shape still resolves it`,
+  );
 }
 
 assert.equal(shouldDefaultToRecommendedAutoMix({
@@ -53,6 +77,8 @@ const stepTwoSource = readFileSync("src/app/(dashboard)/video-editor/_v2/Step2El
 const brandVisualSelectorSource = readFileSync("src/app/(dashboard)/video-editor/_v2/BrandVisualSelector.tsx", "utf8");
 assert.match(meRouteSource, /recommendedAutoMixDefault/,
   "the user capability response exposes the public paid-plan default separately from kiePaidUnlocked");
+assert.match(meRouteSource, /brandLibraryAllowed:\s*brandLibraryAccess\.canUse/,
+  "the capability response exposes library admission separately from the AI-image gate (ADR 0059)");
 assert.match(meRouteSource, /private, no-store, max-age=0/,
   "the entitlement response cannot be retained across a rolling deploy");
 assert.match(editorHookSource, /resolveBrandVisualClientAccess\(m\)/,

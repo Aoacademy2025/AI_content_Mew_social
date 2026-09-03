@@ -55,6 +55,7 @@ import {
   hasPersistedProjectPin,
   type PinAdmission,
 } from "@/lib/brand-visual-pin-admission";
+import { resolveRenderTimePinAdmissionFields } from "@/lib/brand-visual-pin-admission.server";
 import { CONTENT_PREFLIGHT_ANALYZER_VERSION } from "@/lib/content-preflight.server";
 
 const pendingUploadVisualContextSchema = z.discriminatedUnion("selection", [
@@ -349,6 +350,7 @@ const persistedVisualPinSelect = {
   treatmentPresetId: true,
   treatmentPresetVersion: true,
   brandVisualPinAdmittedCohort: true,
+  brandVisualPinAdmittedAt: true,
 } as const;
 
 /** A persisted selection survives plan downgrade and feature rollback. This
@@ -625,6 +627,13 @@ export async function prepareProjectVisualPin(input: {
         treatmentPresetVersion: repairPin.version,
         treatmentPinSource: repairPin.source,
         treatmentPinnedAt: new Date(),
+        // R5: a render-time pin write stamps its own admission in the SAME
+        // statement — from the owner's live image decision, else from an
+        // already-admitted pin, else nothing.
+        ...(await resolveRenderTimePinAdmissionFields({
+          userId: input.userId,
+          projectId: input.projectId,
+        })),
       },
     });
     context = { source: "project-look", ...repairedLook };
@@ -654,6 +663,12 @@ export async function prepareProjectVisualPin(input: {
           treatmentPresetVersion: context.treatmentPin.version,
           treatmentPinSource: context.treatmentPin.source,
           treatmentPinnedAt: new Date(),
+          // R5: materialising a treatment pin is a pin write, so it carries its
+          // own admission rather than inheriting whatever the row held.
+          ...(await resolveRenderTimePinAdmissionFields({
+            userId: input.userId,
+            projectId: input.projectId,
+          })),
         },
       });
     }
@@ -851,6 +866,13 @@ export async function pinProjectVisualContextToVideoJob(input: {
     contentPreflightId: preflight.id,
     projectVisualContextJson: JSON.stringify(projectVisualContextSchema.parse(context)),
   };
+  // R5: resolved before the transaction, exactly like a creator route resolves
+  // its image decision before its own write, and merged into the SAME statement
+  // that materialises the pin below.
+  const materializedPinAdmission = await resolveRenderTimePinAdmissionFields({
+    userId: input.userId,
+    projectId: input.projectId,
+  });
   const committedPin = await prisma.$transaction(async (tx) => {
     await advancePreflightVisualIdentityInTransaction(tx, {
       userId: input.userId,
@@ -879,6 +901,7 @@ export async function pinProjectVisualContextToVideoJob(input: {
           treatmentPresetVersion: context.treatmentPin.version,
           treatmentPinSource: context.treatmentPin.source,
           treatmentPinnedAt: new Date(),
+          ...materializedPinAdmission,
         },
       });
     }
@@ -1020,6 +1043,12 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
       brandVisualLanguage: context.brandVisualLanguage,
     };
     context = { source: context.source, ...repairedLook };
+    // R5: the scene-prompt repair also writes pin columns, so it stamps in the
+    // same statement instead of leaving whatever the row happened to hold.
+    const repairedPinAdmission = await resolveRenderTimePinAdmissionFields({
+      userId: input.userId,
+      projectId: job.projectId,
+    });
     await prisma.$transaction([
       prisma.editorProject.update({
         where: { id: job.projectId },
@@ -1030,6 +1059,7 @@ export async function resolveProjectVisualPromptForVideoScene(input: {
           treatmentPresetVersion: repairPin.version,
           treatmentPinSource: repairPin.source,
           treatmentPinnedAt: new Date(),
+          ...repairedPinAdmission,
         },
       }),
       prisma.videoJob.update({
