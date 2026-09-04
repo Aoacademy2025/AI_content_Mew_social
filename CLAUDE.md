@@ -14,6 +14,7 @@
 | DB | **SQLite** via Prisma 6 — `prisma/dev.db` (NOT PostgreSQL) |
 | Hosting | **Hostinger VPS** (Ubuntu, 4 vCPU/15GB) + PM2 + Nginx + Let's Encrypt (NOT Vercel) |
 | Render | **Remotion + headless Chromium + ffmpeg**, runs locally on the VPS (software, no GPU) |
+| Observability | **Sentry** project `hero-studio-web` for errors + 5% traces; strict data collection lives in `src/lib/sentry-config.ts`, Session Replay defaults off. **Linear** is the work tracker; see `docs/ops/linear-sentry-observability.md`. |
 | AI | **BYOK by default** for the paid providers: Gemini (content/transcribe/keywords/TTS), HeyGen (avatar), ElevenLabs (TTS). **Managed exceptions:** OmniVoice audio-only worker (ADR 0003); Hero AI Image via RunPod; **Pexels/Pixabay stock — team key for any account without its own, behind `MANAGED_STOCK` (ADR 0025)**. |
 | Payments | Stripe — **subscription (auto-renew) + one-time/PromptPay LIVE 06-05**; **Founding-100 (50%/forever, first 100, coupon `FOUNDING100`) + Free trial (7-day PRO) LIVE 06-07**. Config in DB `SiteConfig` (NOT `.env`), loaded by `src/lib/load-stripe-config.ts` |
 | Plans | FREE / PRO / BUSINESS — limits in `src/lib/plan-limits.ts` |
