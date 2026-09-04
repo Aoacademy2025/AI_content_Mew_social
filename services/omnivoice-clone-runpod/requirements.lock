@@ -166,6 +166,10 @@ backoff==2.2.1 \
     --hash=sha256:03f829f5bb1923180821643f8753b0502c3b682293992485b0eef2807afa5cba \
     --hash=sha256:63579f9a0628e06278f7e47b7d7d5b6ce20dc65c5e96a6f3ca99a6adca0396e8
     # via -r requirements.in
+backports-tarfile==1.2.0 \
+    --hash=sha256:77e284d754527b01fb1e6fa8a1afe577858ebe4e9dad8919e34c862cb399bc34 \
+    --hash=sha256:d75e02c268746e1b8144c278978b6e98e85de6ad16f8e4b0844a154557eca991
+    # via jaraco-context
 backports-zstd==1.7.0 \
     --hash=sha256:02c4458f25f884131c59d54549a3bdfd649ca3384f1dd15204762171d9e24739 \
     --hash=sha256:02f2f6649a342d0901ddb35596ddadb7c3bb1cf6bb54d691e5e0285f1fa0674f \
@@ -1000,6 +1004,10 @@ invoke==3.0.3 \
     --hash=sha256:437b6a622223824380bfb4e64f612711a6b648c795f565efc8625af66fb57f0c \
     --hash=sha256:f11327165e5cbb89b2ad1d88d3292b5113332c43b8553b494da435d6ec6f5053
     # via paramiko
+jaraco-context==6.1.2 \
+    --hash=sha256:bf8150b79a2d5d91ae48629d8b427a8f7ba0e1097dd6202a9059f29a36379535 \
+    --hash=sha256:f1a6c9d391e661cc5b8d39861ff077a7dc24dc23833ccee564b234b81c82dfe3
+    # via -r requirements.in
 jinja2==3.1.6 \
     --hash=sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d \
     --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67
@@ -2377,6 +2385,10 @@ soundfile==0.14.0 \
     # via
     #   -r requirements.in
     #   librosa
+soupsieve==2.9.2 \
+    --hash=sha256:4a55d8cf158a9c2e587fa4922f1bbb91d68ac829e2d6f25403a85747c71daf74 \
+    --hash=sha256:8089a26fd974ca7a1f30276d3d8492ab266ab15af581642dfe8aa162e0c1c823
+    # via -r requirements.in
 soxr==1.1.0 \
     --hash=sha256:1577865e993f98ffb261257c3060fa76ec3db44ed3f181b16464268000424464 \
     --hash=sha256:26925618945f1a44dfbd783cc572874f0685e9ecdf46b96f4000f6b8c9c8b825 \

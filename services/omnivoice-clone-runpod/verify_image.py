@@ -19,7 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "d8e74d1da79fa7029387b691b6aa6114c8b1d317367939cccf45a82f916829fc"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "178ffa75b54963a18bec2cb2307e220a0d8bb808a7ce7ca63418ec3c54d7e45d"
 EXPECTED_RUNTIME_MANIFEST_SHA256 = "f686dbfdf6de18ee60f57f7bdc5b202e67cf7454d9f71b08d8256817916ec88e"
 APPROVED_SOURCE_REVISION = "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb"
 APPROVED_APPLICATION_BASE_REVISION = "1e6fee93a8dc7bc585afda7885b5edd666d9fc65"
@@ -684,7 +684,7 @@ def verify_static(root: Path = ROOT) -> None:
 
     lock = (root / "requirements.lock").read_text(encoding="utf-8")
     package_lines = [line for line in lock.splitlines() if re.match(r"^[a-zA-Z0-9_.-]+==", line)]
-    require(len(package_lines) == source_manifest.get("requirements_lock_package_count") == 111, "Python runtime lock is unexpectedly incomplete")
+    require(len(package_lines) == source_manifest.get("requirements_lock_package_count") == 114, "Python runtime lock is unexpectedly incomplete")
     require("--hash=sha256:" in lock, "Python hashes missing")
     require(not any(line.startswith("typing==") for line in lock.splitlines()), "obsolete Python typing backport is locked")
     require(

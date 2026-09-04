@@ -126,7 +126,7 @@ PY
 ```
 
 No real voice, provider request, GPU, or model download is used by these checks.
-The checked-in SPDX covers source, all 111 locked runtime distributions, the
+The checked-in SPDX covers source, all 114 locked runtime distributions, the
 separately locked RunPod SDK, all 9 locked source-build distributions, all 12
 model files, and declared base/system
 components and relationships; it is not the Task 6 final-image, digest-bound SBOM.

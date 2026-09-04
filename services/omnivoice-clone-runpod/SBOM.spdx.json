@@ -578,6 +578,17 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
+      "name": "backports-tarfile",
+      "SPDXID": "SPDXRef-Python-backports-tarfile",
+      "versionInfo": "1.2.0",
+      "downloadLocation": "pkg:pypi/backports-tarfile@1.2.0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
+    },
+    {
       "name": "backports-zstd",
       "SPDXID": "SPDXRef-Python-backports-zstd",
       "versionInfo": "1.7.0",
@@ -868,6 +879,17 @@
       "SPDXID": "SPDXRef-Python-invoke",
       "versionInfo": "3.0.3",
       "downloadLocation": "pkg:pypi/invoke@3.0.3",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
+    },
+    {
+      "name": "jaraco-context",
+      "SPDXID": "SPDXRef-Python-jaraco-context",
+      "versionInfo": "6.1.2",
+      "downloadLocation": "pkg:pypi/jaraco-context@6.1.2",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1447,6 +1469,17 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
+      "name": "soupsieve",
+      "SPDXID": "SPDXRef-Python-soupsieve",
+      "versionInfo": "2.9.2",
+      "downloadLocation": "pkg:pypi/soupsieve@2.9.2",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
+    },
+    {
       "name": "soxr",
       "SPDXID": "SPDXRef-Python-soxr",
       "versionInfo": "1.1.0",
@@ -1943,6 +1976,161 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Package-RunPod-Worker-SDK"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-flit-core",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-flit-core",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-flit-core",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-hatchling",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-hatchling",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-hatchling",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-packaging",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-packaging",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-packaging",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pathspec",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pathspec",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pathspec",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pip",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pip",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pip",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pluggy",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pluggy",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pluggy",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-setuptools",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-setuptools",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-setuptools",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-trove-classifiers",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-trove-classifiers",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-trove-classifiers",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-wheel",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-wheel",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-wheel",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-System-gpgv"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-System-libssl3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-System-openssl"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-accelerate"
     },
     {
@@ -1999,6 +2187,11 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-backoff"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Python-backports-tarfile"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2134,6 +2327,11 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-invoke"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Python-jaraco-context"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2398,6 +2596,11 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Python-soupsieve"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-soxr"
     },
     {
@@ -2494,161 +2697,6 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-yarl"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Package-RunPod-Worker-SDK"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-flit-core",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-flit-core",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-flit-core",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-hatchling",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-hatchling",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-hatchling",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-packaging",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-packaging",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-packaging",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-pathspec",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-pathspec",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-pathspec",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-pip",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-pip",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-pip",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-pluggy",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-pluggy",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-pluggy",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-setuptools",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-setuptools",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-setuptools",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-trove-classifiers",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-trove-classifiers",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-trove-classifiers",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-wheel",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-wheel",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-BuildPython-wheel",
-      "relationshipType": "BUILD_DEPENDENCY_OF",
-      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-System-gpgv"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-System-libssl3"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-System-openssl"
     }
   ]
 }
