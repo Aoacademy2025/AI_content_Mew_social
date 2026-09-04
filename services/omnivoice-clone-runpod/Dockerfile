@@ -9,8 +9,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        build-essential=12.9ubuntu3 \
-       ca-certificates=20240203~22.04.1 \
-       git=1:2.34.1-1ubuntu1.15 \
+       ca-certificates=20260601~22.04.1 \
+       git=1:2.34.1-1ubuntu1.17 \
        libsndfile1=1.0.31-2ubuntu0.2 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -165,7 +165,7 @@ LABEL org.opencontainers.image.source="https://github.com/Aoacademy2025/AI_conte
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates=20240203~22.04.1 \
+       ca-certificates=20260601~22.04.1 \
        libsndfile1=1.0.31-2ubuntu0.2 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin worker \
@@ -181,8 +181,8 @@ COPY --chown=worker:worker \
     /app/
 
 RUN test "$(sha256sum /app/MODEL_MANIFEST.json | cut -d' ' -f1)" = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb" \
-    && test "$(sha256sum /app/SOURCE_MANIFEST.json | cut -d' ' -f1)" = "ac7b4f5c3afc0a17dd634dfe8653a88168b7749a68036bac126474545acbf6a4" \
-    && python -c 'import json; json.dump({"schema_version":1,"worker_version":"hero-voice-clone-contract-v3-internal-eval-2","worker_kind":"clone-only","source_revision":"8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb","source_manifest_sha256":"ac7b4f5c3afc0a17dd634dfe8653a88168b7749a68036bac126474545acbf6a4","model_manifest_sha256":"ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb","base_image":"pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"},open("/app/BUILD_ATTESTATION.json","w"),sort_keys=True,separators=(",",":"))' \
+    && test "$(sha256sum /app/SOURCE_MANIFEST.json | cut -d' ' -f1)" = "a7f1451ecfe73cf787fced34f4e68d5e148067c9195444b0c37765bc0f08d5e5" \
+    && python -c 'import json; json.dump({"schema_version":1,"worker_version":"hero-voice-clone-contract-v3-internal-eval-2","worker_kind":"clone-only","source_revision":"8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb","source_manifest_sha256":"a7f1451ecfe73cf787fced34f4e68d5e148067c9195444b0c37765bc0f08d5e5","model_manifest_sha256":"ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb","base_image":"pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"},open("/app/BUILD_ATTESTATION.json","w"),sort_keys=True,separators=(",",":"))' \
     && chmod 0444 /app/BUILD_ATTESTATION.json \
     && ! find /app /opt/models /opt/venv -type d -name .git -print -quit | grep -q . \
     && /opt/venv/bin/pip check \

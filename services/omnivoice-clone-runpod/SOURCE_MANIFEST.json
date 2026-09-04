@@ -28,8 +28,8 @@
   },
   "system_packages": {
     "build-essential": "12.9ubuntu3",
-    "ca-certificates": "20240203~22.04.1",
-    "git": "1:2.34.1-1ubuntu1.15",
+    "ca-certificates": "20260601~22.04.1",
+    "git": "1:2.34.1-1ubuntu1.17",
     "libsndfile1": "1.0.31-2ubuntu0.2"
   },
   "requirements_lock_sha256": "72a4b8419772e0a83061d05ea073ec7ffa19a821c2b873071d99679d4c96012d",

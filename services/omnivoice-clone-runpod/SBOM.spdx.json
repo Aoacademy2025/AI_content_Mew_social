@@ -177,7 +177,7 @@
     {
       "name": "ca-certificates",
       "SPDXID": "SPDXRef-System-ca-certificates",
-      "versionInfo": "20240203~22.04.1",
+      "versionInfo": "20260601~22.04.1",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -188,7 +188,7 @@
     {
       "name": "git",
       "SPDXID": "SPDXRef-System-git",
-      "versionInfo": "1:2.34.1-1ubuntu1.15",
+      "versionInfo": "1:2.34.1-1ubuntu1.17",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
