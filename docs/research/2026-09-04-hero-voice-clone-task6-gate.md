@@ -10,9 +10,9 @@ Decision: **NO-GO — paid submission and staging mutation remain disabled**
 - Task 4 deletion/upload crash matrices and Task 5 review-preparation/publication/artifact crash recovery passed.
 - Prisma validate/generate, a fresh schema push, and all 20 migrations passed on throwaway SQLite databases.
 - TypeScript, focused changed-scope ESLint, production build (184/184 pages), client source-map/private-sentinel scan, sensitive-audio status scan, and `git diff --check` passed.
-- The final private candidate image was built from commit `2abeebf8a0daad82f1484aebb7f64646e0c21b9e`. Registry readback fixed OCI index `sha256:c40fa76893fe1e0deab29fd8664d6ec32999496e57ce7b08becf5aba7edd7abc` and Linux/amd64 manifest `sha256:5b46143871655d4613b2ed5dff0cd414aba9d8994abbf2918addea00b99adffd`.
+- The final private candidate image was built from commit `3ba4824fb28a411bc3037a562f133b07dcea05f7`. Registry readback fixed OCI index `sha256:9c7b9592ce066d94669b030900b499d262160b3d7f3954c13ff3f7b928d664b7` and Linux/amd64 manifest `sha256:8afa2ae52d8fa113692f03740005ffd0f407d775ae5d1a53722ddb20fbd69106`.
 - The authenticated OCI verifier passed the complete final image: every descriptor, size, digest, diff ID, tar stream, layer and merged filesystem; secret/key/audio/catalog/Git/cache absence; exact source/runtime/model manifests; all 12 model files; patched package metadata; and build attestation.
-- Registry attestations were independently downloaded and checked. The 4,362,831-byte SPDX in-toto statement is `sha256:2a35cfa2a3348044bf139c51ebe5d163675ed62ccf72752dc8482c36831729e9`; the 70,250-byte SLSA provenance statement is `sha256:7904f56f6c95343f1752e1a4df960f118f9fd5ab869293f68eee684a0d85ff21`. Both subjects are the exact Linux/amd64 manifest above. Provenance also binds build commit `2abeebf8a0daad82f1484aebb7f64646e0c21b9e`, builder run `33901610331`, and base digest `sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee`.
+- Registry attestations were independently downloaded and checked. The 4,362,831-byte SPDX in-toto statement is `sha256:b958c9defc73477533f853a7465bbaca13244d42abb684b5d93d5467dc9dcd7b`; the 69,262-byte SLSA provenance statement is `sha256:ce7b570184a5312582e219005a3a4df4d13f905e67a46eab1c8ae7959e9ee521`. Both subjects are the exact Linux/amd64 manifest above. Provenance also binds build commit `3ba4824fb28a411bc3037a562f133b07dcea05f7`, builder run `33906949902`, and base digest `sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee`.
 - The 44-slot runner remains dry/evidence-gated. Tests use synthetic WAVs, fake provider transport, throwaway private storage, and offline Git authorities only.
 - The named private GHCR image and feature branch were intentionally created. No RunPod endpoint/template/job/queue, production endpoint, Hostinger/PM2 state, DNS, deployed file, billing system, or real audio was mutated.
 
@@ -65,18 +65,18 @@ fail-open surfaces.
 
 ## Immutable candidate image readback
 
-- Feature commit: `2abeebf8a0daad82f1484aebb7f64646e0c21b9e`
-- GitHub Actions CI run: `33901613626` (`success`)
-- GitHub Actions image/attestation run: `33901610331` (`success`)
+- Feature commit: `3ba4824fb28a411bc3037a562f133b07dcea05f7`
+- GitHub Actions CI run: `33906954064` (`success`)
+- GitHub Actions image/attestation run: `33906949902` (`success`)
 - Feature-branch PR: [#440](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/440) (`OPEN`, unmerged, `NO-GO` recorded)
-- Private image tag: `ghcr.io/mewic/heroai-omnivoice-clone:2abeebf8a0daad82f1484aebb7f64646e0c21b9e`
-- OCI index: `sha256:c40fa76893fe1e0deab29fd8664d6ec32999496e57ce7b08becf5aba7edd7abc`
-- Linux/amd64 manifest: `sha256:5b46143871655d4613b2ed5dff0cd414aba9d8994abbf2918addea00b99adffd`
-- Attestation manifest: `sha256:acd675a4627d427bda426dd6588b818d21f1ec18799d85167303027c70b22db6`
-- SPDX statement: `sha256:2a35cfa2a3348044bf139c51ebe5d163675ed62ccf72752dc8482c36831729e9`
-- SLSA provenance statement: `sha256:7904f56f6c95343f1752e1a4df960f118f9fd5ab869293f68eee684a0d85ff21`
+- Private image tag: `ghcr.io/mewic/heroai-omnivoice-clone:3ba4824fb28a411bc3037a562f133b07dcea05f7`
+- OCI index: `sha256:9c7b9592ce066d94669b030900b499d262160b3d7f3954c13ff3f7b928d664b7`
+- Linux/amd64 manifest: `sha256:8afa2ae52d8fa113692f03740005ffd0f407d775ae5d1a53722ddb20fbd69106`
+- Attestation manifest: `sha256:c2bed704719e52495380a7eb781860d5b029c8a13268773786dad161429df603`
+- SPDX statement: `sha256:b958c9defc73477533f853a7465bbaca13244d42abb684b5d93d5467dc9dcd7b`
+- SLSA provenance statement: `sha256:ce7b570184a5312582e219005a3a4df4d13f905e67a46eab1c8ae7959e9ee521`
 - Full authenticated OCI verification: `PASS`
-- Final Trivy vulnerability scan: `PASS` for the zero-unresolved-critical/high gate (Critical 0, High 0, Medium 151, Low 57); raw owner-only report SHA-256 `8707313c9a1867ebb9af13946c490010271815e28f691b550a77f4f303e0017d`
+- Final Trivy vulnerability scan: `PASS` for the zero-unresolved-critical/high gate (Critical 0, High 0, Medium 151, Low 57); raw owner-only report SHA-256 `71954792e68712b9931540737498b61dcc517ac13c9ed7b1c344153b072c8ced`
 
 This clears the build/publish, manifest capture, SBOM/provenance capture, and
 filesystem/layer-scan portion of Task 6 only. The plan checkbox remains open

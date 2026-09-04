@@ -35,9 +35,9 @@ overall gate therefore remains NO-GO.
 
 On 2026-09-05, Trivy 0.74.0 scanned the final locally authenticated OCI layout
 for index
-`sha256:c40fa76893fe1e0deab29fd8664d6ec32999496e57ce7b08becf5aba7edd7abc`
+`sha256:9c7b9592ce066d94669b030900b499d262160b3d7f3954c13ff3f7b928d664b7`
 and Linux/amd64 manifest
-`sha256:5b46143871655d4613b2ed5dff0cd414aba9d8994abbf2918addea00b99adffd`.
+`sha256:8afa2ae52d8fa113692f03740005ffd0f407d775ae5d1a53722ddb20fbd69106`.
 After upgrading to the pinned PyTorch 2.6.0/CUDA 12.4 base, removing vulnerable
 base packages, and updating vendored build tooling, the final scan found zero
 critical and zero high vulnerabilities. It reported 151 medium and 57 low
@@ -50,9 +50,9 @@ classifications rather than CVEs and are not by themselves a legal conclusion.
 Each affected runtime package and its distribution obligations must still be
 reviewed before clearance. The owner-only raw JSON evidence is mode `0600`,
 SHA-256
-`8707313c9a1867ebb9af13946c490010271815e28f691b550a77f4f303e0017d`, and
+`71954792e68712b9931540737498b61dcc517ac13c9ed7b1c344153b072c8ced`, and
 is intentionally outside Git. The final SPDX statement is
-`sha256:2a35cfa2a3348044bf139c51ebe5d163675ed62ccf72752dc8482c36831729e9`;
+`sha256:b958c9defc73477533f853a7465bbaca13244d42abb684b5d93d5467dc9dcd7b`;
 its subject matches the exact Linux/amd64 manifest.
 
 The vulnerability sub-gate is now technically clear. The overall license gate
