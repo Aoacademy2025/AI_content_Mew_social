@@ -1,27 +1,53 @@
-import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { ensureMonthlyGrant, getBalance } from "@/lib/credits";
 import { publicAiGenerationJob } from "@/lib/ai-generation-jobs.server";
 import { apiError } from "@/lib/api-error";
-import { isInternalAiTester } from "@/lib/internal-ai-access";
+import {
+  heroVoiceCloneCanaryAccessDecision,
+  isHeroVoiceCloneGenerationJob,
+} from "@/lib/omnivoice-policy";
+import {
+  heroVoiceClonePrivateJson,
+  heroVoiceClonePrivateResponse,
+} from "@/lib/hero-voice-clone-response.server";
+import { normalizeHeroVoiceClonePublicJob } from "@/lib/hero-voice-clone-state";
 
 export async function GET() {
   try {
     const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (!isInternalAiTester(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const access = heroVoiceCloneCanaryAccessDecision(user);
+    if (!access.allowed) {
+      return heroVoiceClonePrivateJson(
+        { error: access.status === 401 ? "Unauthorized" : "Not found" },
+        { status: access.status },
+      );
+    }
+    if (!user) throw new Error("clone canary access decision admitted a missing actor");
     await ensureMonthlyGrant(user.id);
     const [jobs, balance] = await Promise.all([
       prisma.aiGenerationJob.findMany({
-        where: { userId: user.id },
+        where: {
+          userId: user.id,
+          OR: [
+            { kind: "image" },
+            { kind: "voice", providerModel: "omnivoice-clone", model: { startsWith: "user_" } },
+          ],
+        },
         orderBy: { createdAt: "desc" },
         take: 40,
       }),
       getBalance(user.id),
     ]);
-    return NextResponse.json({ jobs: jobs.map(publicAiGenerationJob), balance });
+    const visibleJobs = jobs.filter((job) => job.kind === "image" || isHeroVoiceCloneGenerationJob(job));
+    return heroVoiceClonePrivateJson({
+      jobs: visibleJobs.map((job) => {
+        const publicJob = publicAiGenerationJob(job);
+        return job.kind === "voice" ? normalizeHeroVoiceClonePublicJob(publicJob) : publicJob;
+      }),
+      balance,
+    });
   } catch (error) {
-    return apiError({ route: "ai-studio/jobs", error });
+    return heroVoiceClonePrivateResponse(apiError({ route: "ai-studio/jobs", error }));
   }
 }

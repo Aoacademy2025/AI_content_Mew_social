@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "purpose": "internal-evaluation-only",
+  "runtime_network": "forbidden",
+  "artifacts": [
+    {
+      "component": "OmniVoice configuration",
+      "path": "omnivoice/config.json",
+      "size": 2238,
+      "sha256": "5e359117e13b420c5e0c925d4aba650d624767131f1d1746928f8b850d5dc372",
+      "source_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+      "license": "CC-BY-NC; commercial use blocked"
+    },
+    {
+      "component": "OmniVoice",
+      "path": "omnivoice/model.safetensors",
+      "size": 2450344112,
+      "sha256": "730839316de585f4c8298ec0e1712efc10fb19c6fa4e36eb741cb8d51ebcf6aa",
+      "source_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+      "license": "CC-BY-NC; commercial use blocked"
+    },
+    {
+      "component": "OmniVoice tokenizer",
+      "path": "omnivoice/tokenizer.json",
+      "size": 11423986,
+      "sha256": "408f669b7e2b045fdf54201d815bd364e6667dbd845115da81239c40bc6dcfd1",
+      "source_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+      "license": "CC-BY-NC; commercial use blocked"
+    },
+    {
+      "component": "OmniVoice tokenizer configuration",
+      "path": "omnivoice/tokenizer_config.json",
+      "size": 533,
+      "sha256": "49f78845596a82bf15c83673794bdf9f76f812b11f60ab6a2239d9be65b00676",
+      "source_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+      "license": "CC-BY-NC; commercial use blocked"
+    },
+    {
+      "component": "OmniVoice chat template",
+      "path": "omnivoice/chat_template.jinja",
+      "size": 4168,
+      "sha256": "a55ee1b1660128b7098723e0abcd92caa0788061051c62d51cbe87d9cf1974d8",
+      "source_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+      "license": "CC-BY-NC; commercial use blocked"
+    },
+    {
+      "component": "Boson Higgs Audio Tokenizer configuration",
+      "path": "omnivoice/audio_tokenizer/config.json",
+      "size": 2531,
+      "sha256": "eefb20806f7104e77c9a5277c9df0f9bb8826b08eb1d4e8ab2b9829b6ef9fac1",
+      "source_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+      "license": "Boson Higgs Audio 2 Community License; notice/AUP/scale obligations"
+    },
+    {
+      "component": "Boson Higgs Audio Tokenizer",
+      "path": "omnivoice/audio_tokenizer/model.safetensors",
+      "size": 805665628,
+      "sha256": "fe7c5e8785e0a05833e1bfc3e002ec7f55af21e306b2e7154a448c1f54ccfb0d",
+      "source_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+      "license": "Boson Higgs Audio 2 Community License; notice/AUP/scale obligations"
+    },
+    {
+      "component": "Boson Higgs Audio Tokenizer preprocessor configuration",
+      "path": "omnivoice/audio_tokenizer/preprocessor_config.json",
+      "size": 206,
+      "sha256": "ae61eea88558608ee2fa86d2aec9fce8d99a5ff75d09cb7651ccce21ae1d9084",
+      "source_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+      "license": "Boson Higgs Audio 2 Community License; notice/AUP/scale obligations"
+    },
+    {
+      "component": "Demucs htdemucs 955717e8",
+      "path": "demucs/955717e8-8726e21a.th",
+      "size": 84141911,
+      "sha256": "8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4",
+      "source_revision": "e976d93ecc3865e5757426930257e200846a520a",
+      "license": "weight license not separately specified; redistribution/commercial use blocked"
+    },
+    {
+      "component": "AudioSeal 16-bit generator",
+      "path": "audioseal/generator_base.pth",
+      "size": 58805980,
+      "sha256": "7a845b5fbe9364a63a3909d8ab3fe064d13a76ae4c2e983573e08c69b7b51748",
+      "source_revision": "3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba",
+      "license": "MIT"
+    },
+    {
+      "component": "AudioSeal 16-bit detector",
+      "path": "audioseal/detector_base.pth",
+      "size": 34667641,
+      "sha256": "8a78e8a83584113523e161fc599fcab10fd0e94c04d2eb9d2fa1e9ec91ab69d9",
+      "source_revision": "3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba",
+      "license": "MIT"
+    },
+    {
+      "component": "Resemblyzer VoiceEncoder",
+      "path": "resemblyzer/pretrained.pt",
+      "size": 17090379,
+      "sha256": "39373b86598fa3da9fcddee6142382efe09777e8d37dc9c0561f41f0070f134e",
+      "source_revision": "PyPI resemblyzer 0.1.4 wheel locked in requirements.lock",
+      "license": "Apache-2.0"
+    }
+  ]
+}

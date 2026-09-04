@@ -1,5 +1,23 @@
 import { isOmniVoiceServerEnabled } from "@/lib/omnivoice-policy";
-import { isValidOmniVoiceId } from "@/lib/omnivoice-core";
+import { isValidOmniVoiceId, pcmFromWav as parsePcmFromWav } from "@/lib/omnivoice-core";
+import {
+  HeroVoiceCloneConfigError,
+  resolveHeroVoiceCloneConfig,
+  resolveHeroVoiceCloneHumanDataGate,
+  type HeroVoiceCloneConfig,
+  type HeroVoiceCloneHumanDataGate,
+} from "@/lib/hero-voice-clone-config";
+import {
+  heroVoiceCloneRequestCommitment,
+  jcsBytes,
+  parseCandidateAiStudioV3Snapshot,
+  type CandidateAiStudioV3Snapshot,
+} from "@/lib/hero-voice-clone-snapshot";
+import {
+  sha256Hex,
+  validateCandidateV3Response,
+  type CandidateV3Success,
+} from "@/lib/hero-voice-clone-runners";
 
 export type { OmniVoiceInfo } from "@/lib/tts-providers";
 export {
@@ -13,6 +31,9 @@ export {
 } from "@/lib/omnivoice-policy";
 
 export type OmniVoiceBackend = "hostinger" | "runpod";
+
+export { HeroVoiceCloneConfigError } from "@/lib/hero-voice-clone-config";
+export type { HeroVoiceCloneConfig, HeroVoiceCloneHumanDataGate } from "@/lib/hero-voice-clone-config";
 
 export interface OmniTtsResponse {
   contract_version?: number;
@@ -107,6 +128,10 @@ const RUNPOD_QUEUE_API = "https://api.runpod.ai/v2";
 const RUNPOD_REST_API = "https://rest.runpod.io/v1";
 const OMNIVOICE_QUALITY_NUM_STEP = 32;
 const HERO_VOICE_RUNPOD_CONTRACT_VERSION = 2;
+const CLONE_SUBMIT_RESPONSE_MAX_BYTES = 64 * 1024;
+const CLONE_CANCEL_RESPONSE_MAX_BYTES = 64 * 1024;
+const CLONE_STATUS_RESPONSE_MAX_BYTES = 10_000_000;
+const SAFE_RUNPOD_ID = /^[A-Za-z0-9_-]{1,160}$/;
 
 export class OmniVoiceConfigError extends Error {
   constructor(message: string) {
@@ -123,6 +148,22 @@ export class OmniVoiceProviderError extends Error {
   ) {
     super(message);
     this.name = "OmniVoiceProviderError";
+  }
+}
+
+export class HeroVoiceCloneProviderError extends Error {
+  constructor(
+    public readonly kind:
+      | "submit_rejected"
+      | "submit_unknown"
+      | "poll_transport"
+      | "provider_missing"
+      | "provider_status"
+      | "identity"
+      | "output",
+  ) {
+    super(`Hero Voice clone provider ${kind.replaceAll("_", " ")}`);
+    this.name = "HeroVoiceCloneProviderError";
   }
 }
 
@@ -188,12 +229,357 @@ export function omnivoiceConfig(pinnedBackend?: OmniVoiceBackend): OmniVoiceConf
   return { backend, baseUrl, apiKey, ...common };
 }
 
+/** The only application clone endpoint resolver. It deliberately reads exactly
+ * the five dedicated deployment inputs and never consults the stock endpoint,
+ * OMNIVOICE_BACKEND, a baseline endpoint, or a profile override. */
+export function heroVoiceCloneConfig(): HeroVoiceCloneConfig {
+  return resolveHeroVoiceCloneConfig({
+    RUNPOD_HERO_VOICE_CLONE_ENDPOINT_ID: process.env.RUNPOD_HERO_VOICE_CLONE_ENDPOINT_ID,
+    RUNPOD_HERO_VOICE_CLONE_IMAGE_DIGEST: process.env.RUNPOD_HERO_VOICE_CLONE_IMAGE_DIGEST,
+    RUNPOD_HERO_VOICE_CLONE_SOURCE_REVISION: process.env.RUNPOD_HERO_VOICE_CLONE_SOURCE_REVISION,
+    RUNPOD_HERO_VOICE_CLONE_MODEL_MANIFEST_SHA256: process.env.RUNPOD_HERO_VOICE_CLONE_MODEL_MANIFEST_SHA256,
+    RUNPOD_API_KEY: process.env.RUNPOD_API_KEY,
+  });
+}
+
+/** No caller can turn this into a browser-controlled flag. Task 6 must leave a
+ * private evidence digest out of band and the local process must be explicitly
+ * in canary execution mode. Production always fails closed. */
+export function heroVoiceCloneHumanDataGate(): HeroVoiceCloneHumanDataGate {
+  return resolveHeroVoiceCloneHumanDataGate({
+    nodeEnv: process.env.NODE_ENV,
+    executionMode: process.env.HERO_VOICE_CANARY_EXECUTION_MODE,
+    task6GateSha256: process.env.HERO_VOICE_CANARY_TASK6_GATE_SHA256,
+  });
+}
+
+/** Resume/poll obtains only the current credential from process state. Every
+ * routable or response identity value comes from the persisted snapshot. */
+export function heroVoiceCloneTransportConfigFromSnapshot(
+  snapshot: CandidateAiStudioV3Snapshot,
+): Pick<HeroVoiceCloneConfig, "backend" | "endpointId" | "apiKey"> {
+  const parsed = parseCandidateAiStudioV3Snapshot(snapshot);
+  const apiKey = (process.env.RUNPOD_API_KEY ?? "").trim();
+  if (!parsed || !apiKey) throw new HeroVoiceCloneConfigError();
+  return { backend: "runpod", endpointId: parsed.endpointId, apiKey };
+}
+
 export function omnivoiceAuthHeaders(apiKey: string): Record<string, string> {
   return { "X-API-Key": apiKey };
 }
 
 function runpodHeaders(apiKey: string): Record<string, string> {
   return { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
+}
+
+type HeroVoiceCloneRunpodJob = {
+  id?: unknown;
+  status?: unknown;
+  output?: unknown;
+  delayTime?: unknown;
+  executionTime?: unknown;
+};
+
+export type HeroVoiceCloneProviderSnapshot =
+  | { status: "IN_QUEUE" | "IN_PROGRESS"; providerJobId: string; delayTimeMs: number; executionTimeMs: number }
+  | { status: "COMPLETED"; providerJobId: string; response: CandidateV3Success; audio: Buffer; delayTimeMs: number; executionTimeMs: number }
+  | { status: "FAILED" | "TIMED_OUT" | "CANCELLED"; providerJobId: string; delayTimeMs: number; executionTimeMs: number };
+
+function finiteMilliseconds(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
+}
+
+class HeroVoiceCloneResponseReadError extends Error {}
+
+async function cloneResponseJson(
+  response: Response,
+  maximumBytes: number,
+): Promise<HeroVoiceCloneRunpodJob | null> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null
+    && (!/^(?:0|[1-9][0-9]*)$/.test(declaredLength) || Number(declaredLength) > maximumBytes)) {
+    throw new HeroVoiceCloneResponseReadError();
+  }
+  if (!response.body) return null;
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      length += part.value.byteLength;
+      if (length > maximumBytes) {
+        await reader.cancel().catch(() => {});
+        throw new HeroVoiceCloneResponseReadError();
+      }
+      chunks.push(part.value);
+    }
+  } catch (error) {
+    if (error instanceof HeroVoiceCloneResponseReadError) throw error;
+    throw new HeroVoiceCloneResponseReadError();
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as HeroVoiceCloneRunpodJob
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function safeCloneEndpointId(value: string): string | null {
+  const endpointId = value.trim();
+  return SAFE_RUNPOD_ID.test(endpointId) ? endpointId : null;
+}
+
+function currentRunpodApiKey(): string | null {
+  const apiKey = (process.env.RUNPOD_API_KEY ?? "").trim();
+  return apiKey || null;
+}
+
+export async function cancelRunpodHeroVoiceCloneJobAtEndpoint(
+  endpointValue: string,
+  providerJobId: string,
+): Promise<boolean> {
+  const endpointId = safeCloneEndpointId(endpointValue);
+  const apiKey = currentRunpodApiKey();
+  if (!endpointId || !SAFE_RUNPOD_ID.test(providerJobId) || !apiKey) return false;
+  let response: Response;
+  try {
+    response = await fetch(
+      `${RUNPOD_QUEUE_API}/${encodeURIComponent(endpointId)}/cancel/${encodeURIComponent(providerJobId)}`,
+      { method: "POST", headers: runpodHeaders(apiKey), cache: "no-store", signal: AbortSignal.timeout(10_000) },
+    );
+  } catch {
+    return false;
+  }
+  let body: HeroVoiceCloneRunpodJob | null;
+  try {
+    body = await cloneResponseJson(response, CLONE_CANCEL_RESPONSE_MAX_BYTES);
+  } catch {
+    return false;
+  }
+  return response.ok && body?.id === providerJobId && body.status === "CANCELLED";
+}
+
+function validCloneProviderJobId(value: unknown): value is string {
+  return typeof value === "string" && SAFE_RUNPOD_ID.test(value);
+}
+
+function cloneInputFromSnapshot(
+  snapshot: CandidateAiStudioV3Snapshot,
+  sensitive: { text: string; refAudioBase64: string; refText: string },
+) {
+  const decodedRef = Buffer.from(sensitive.refAudioBase64, "base64");
+  let referenceDurationSamples24000 = 0;
+  try {
+    const parsedReference = parsePcmFromWav(decodedRef);
+    referenceDurationSamples24000 = Math.round(
+      (parsedReference.pcm.length / 2) * 24_000 / parsedReference.sampleRate,
+    );
+  } catch {
+    throw new HeroVoiceCloneProviderError("identity");
+  }
+  if (!sensitive.refAudioBase64 || decodedRef.toString("base64") !== sensitive.refAudioBase64
+    || sha256Hex(decodedRef) !== snapshot.referenceSha256
+    || referenceDurationSamples24000 !== snapshot.referenceDurationSamples24000
+    || sha256Hex(sensitive.text) !== snapshot.synthesis.textSha256
+    || heroVoiceCloneRequestCommitment({
+      refAudioSha256: sha256Hex(decodedRef),
+      refText: sensitive.refText,
+      text: sensitive.text,
+      speed: snapshot.synthesis.speed,
+      numStep: snapshot.synthesis.numStep,
+      seed: snapshot.synthesis.seed,
+      experimentProfile: snapshot.experimentProfile,
+      normalizerVersion: snapshot.normalizerVersion,
+    }) !== snapshot.synthesis.requestCommitmentSha256) {
+    throw new HeroVoiceCloneProviderError("identity");
+  }
+  return {
+    contract_version: snapshot.contractVersion,
+    mode: "clone" as const,
+    ref_audio_b64: sensitive.refAudioBase64,
+    ref_text: sensitive.refText,
+    text: sensitive.text,
+    speed: snapshot.synthesis.speed,
+    num_step: snapshot.synthesis.numStep,
+    mixed_language: snapshot.synthesis.mixedLanguage,
+    seed: snapshot.synthesis.seed,
+    experiment_profile: snapshot.experimentProfile,
+    normalizer_version: snapshot.normalizerVersion,
+    request_commitment_sha256: snapshot.synthesis.requestCommitmentSha256,
+    matched_settings_sha256: snapshot.synthesis.matchedSettingsSha256,
+  };
+}
+
+export type PreparedRunpodHeroVoiceCloneRequest = Readonly<{
+  bytes: Buffer;
+  sha256: string;
+  endpointId: string;
+  attemptId: string;
+}>;
+
+/** Builds and locally verifies the complete JCS request before any durable
+ * dispatch intent is committed. The returned Buffer is the network body. */
+export function prepareRunpodHeroVoiceCloneJob(input: {
+  snapshot: CandidateAiStudioV3Snapshot;
+  gate: HeroVoiceCloneHumanDataGate;
+  text: string;
+  refAudioBase64: string;
+  refText: string;
+}): PreparedRunpodHeroVoiceCloneRequest {
+  if (input.gate.kind !== "task6-human-data-gate") throw new HeroVoiceCloneConfigError();
+  const snapshot = parseCandidateAiStudioV3Snapshot(input.snapshot);
+  if (!snapshot) throw new HeroVoiceCloneProviderError("identity");
+  const config = heroVoiceCloneTransportConfigFromSnapshot(snapshot);
+  const bytes = jcsBytes({
+    input: cloneInputFromSnapshot(snapshot, input),
+    policy: snapshot.policy,
+  });
+  return Object.freeze({
+    bytes,
+    sha256: sha256Hex(bytes),
+    endpointId: config.endpointId,
+    attemptId: snapshot.attemptId,
+  });
+}
+
+/** One and only one application contract-v3 submission attempt. The mandatory
+ * callback is the durability boundary: it must commit/confirm the intent before
+ * fetch. The exact prepared Buffer is reverified after the callback and handed
+ * unchanged to fetch. A transport exception or malformed 2xx is ambiguous and
+ * is never replayed. */
+export async function submitRunpodHeroVoiceCloneJob(input: {
+  snapshot: CandidateAiStudioV3Snapshot;
+  gate: HeroVoiceCloneHumanDataGate;
+  text: string;
+  refAudioBase64: string;
+  refText: string;
+  prepared: PreparedRunpodHeroVoiceCloneRequest;
+  beforeDispatch: (prepared: PreparedRunpodHeroVoiceCloneRequest) => Promise<void>;
+}): Promise<{ providerJobId: string; status: "IN_QUEUE" | "IN_PROGRESS" }> {
+  const expected = prepareRunpodHeroVoiceCloneJob(input);
+  if (input.prepared.attemptId !== expected.attemptId
+    || input.prepared.endpointId !== expected.endpointId
+    || input.prepared.sha256 !== expected.sha256
+    || !input.prepared.bytes.equals(expected.bytes)) {
+    throw new HeroVoiceCloneProviderError("identity");
+  }
+  await input.beforeDispatch(input.prepared);
+  const reverified = prepareRunpodHeroVoiceCloneJob(input);
+  if (input.prepared.sha256 !== sha256Hex(input.prepared.bytes)
+    || input.prepared.sha256 !== reverified.sha256
+    || !input.prepared.bytes.equals(reverified.bytes)) {
+    throw new HeroVoiceCloneProviderError("submit_unknown");
+  }
+  const config = heroVoiceCloneTransportConfigFromSnapshot(input.snapshot);
+  let response: Response;
+  try {
+    response = await fetch(`${RUNPOD_QUEUE_API}/${encodeURIComponent(config.endpointId)}/run`, {
+      method: "POST",
+      headers: runpodHeaders(config.apiKey),
+      body: input.prepared.bytes as unknown as BodyInit,
+      cache: "no-store",
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    throw new HeroVoiceCloneProviderError("submit_unknown");
+  }
+  let body: HeroVoiceCloneRunpodJob | null;
+  try {
+    body = await cloneResponseJson(response, CLONE_SUBMIT_RESPONSE_MAX_BYTES);
+  } catch {
+    throw new HeroVoiceCloneProviderError("submit_unknown");
+  }
+  if (!response.ok) throw new HeroVoiceCloneProviderError("submit_rejected");
+  if (!body || !validCloneProviderJobId(body.id)
+    || (body.status !== "IN_QUEUE" && body.status !== "IN_PROGRESS")) {
+    throw new HeroVoiceCloneProviderError("submit_unknown");
+  }
+  return { providerJobId: body.id, status: body.status };
+}
+
+export async function pollRunpodHeroVoiceCloneJob(
+  snapshot: CandidateAiStudioV3Snapshot,
+  providerJobId: string,
+): Promise<HeroVoiceCloneProviderSnapshot> {
+  const parsedSnapshot = parseCandidateAiStudioV3Snapshot(snapshot);
+  if (!parsedSnapshot) throw new HeroVoiceCloneProviderError("identity");
+  const config = heroVoiceCloneTransportConfigFromSnapshot(parsedSnapshot);
+  let response: Response;
+  try {
+    response = await fetch(
+      `${RUNPOD_QUEUE_API}/${encodeURIComponent(config.endpointId)}/status/${encodeURIComponent(providerJobId)}`,
+      { headers: runpodHeaders(config.apiKey), cache: "no-store", signal: AbortSignal.timeout(20_000) },
+    );
+  } catch {
+    throw new HeroVoiceCloneProviderError("poll_transport");
+  }
+  if (response.status === 404) throw new HeroVoiceCloneProviderError("provider_missing");
+  let body: HeroVoiceCloneRunpodJob | null;
+  try {
+    body = await cloneResponseJson(response, CLONE_STATUS_RESPONSE_MAX_BYTES);
+  } catch {
+    throw new HeroVoiceCloneProviderError("poll_transport");
+  }
+  if (!response.ok) {
+    if (response.status >= 500 || response.status === 429) throw new HeroVoiceCloneProviderError("poll_transport");
+    throw new HeroVoiceCloneProviderError("provider_status");
+  }
+  if (!body || typeof body.id !== "string" || body.id !== providerJobId
+    || typeof body.status !== "string"
+    || !["IN_QUEUE", "IN_PROGRESS", "COMPLETED", "FAILED", "TIMED_OUT", "CANCELLED"].includes(body.status)) {
+    throw new HeroVoiceCloneProviderError("provider_status");
+  }
+  const common = {
+    providerJobId,
+    delayTimeMs: finiteMilliseconds(body.delayTime),
+    executionTimeMs: finiteMilliseconds(body.executionTime),
+  };
+  if (body.status === "IN_QUEUE" || body.status === "IN_PROGRESS") return { ...common, status: body.status };
+  if (body.status === "FAILED" || body.status === "TIMED_OUT" || body.status === "CANCELLED") {
+    return { ...common, status: body.status };
+  }
+  const validated = validateCandidateV3Response(body.output, {
+    workerVersion: parsedSnapshot.workerVersion,
+    imageDigest: parsedSnapshot.imageDigest,
+    sourceRevision: parsedSnapshot.sourceRevision,
+    modelManifestSha256: parsedSnapshot.modelManifestSha256,
+    experimentProfile: parsedSnapshot.experimentProfile,
+    normalizerVersion: parsedSnapshot.normalizerVersion,
+    requestCommitmentSha256: parsedSnapshot.synthesis.requestCommitmentSha256,
+    matchedSettingsSha256: parsedSnapshot.synthesis.matchedSettingsSha256,
+    referenceSha256: parsedSnapshot.referenceSha256,
+    referenceDurationSamples24000: parsedSnapshot.referenceDurationSamples24000,
+  });
+  if (!validated.ok) throw new HeroVoiceCloneProviderError(validated.failure);
+  return { ...common, status: "COMPLETED", response: validated.response, audio: validated.audio };
+}
+
+export async function cancelRunpodHeroVoiceCloneJob(
+  snapshot: CandidateAiStudioV3Snapshot,
+  providerJobId: string,
+): Promise<boolean> {
+  const parsedSnapshot = parseCandidateAiStudioV3Snapshot(snapshot);
+  if (!parsedSnapshot) return false;
+  return cancelRunpodHeroVoiceCloneJobAtEndpoint(parsedSnapshot.endpointId, providerJobId);
 }
 
 export async function checkOmniVoiceReady(

@@ -1,0 +1,10 @@
+diff --git a/requirements_minimal.txt b/requirements_minimal.txt
+index 05d0704..06aeb91 100644
+--- a/requirements_minimal.txt
++++ b/requirements_minimal.txt
+@@ -7,5 +7,5 @@ openunmix
+ pyyaml
+ torch>=1.8.1
+-torchaudio>=0.8,<2.1
++torchaudio>=0.8
+ tqdm

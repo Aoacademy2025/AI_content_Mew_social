@@ -1,0 +1,34 @@
+# Resolve for CPython 3.11 on linux/amd64. The digest-pinned parent supplies the
+# final three packages; keeping them here constrains the whole graph to that exact
+# CUDA ABI. `bash compile_requirements.sh` omits only artifacts already supplied
+# and asserted from that parent (torch/torchaudio/triton/CUDA component wheels).
+# Dockerfile asserts these versions/imports before and after installing the lock.
+torch==2.4.1
+torchaudio==2.4.1
+triton==3.0.0
+
+# OmniVoice inference imports. Gradio is metadata-only for this worker, but the
+# pinned upstream distribution requires it, so it remains locked for pip-check.
+accelerate==1.14.0
+gradio==6.9.0
+huggingface-hub==1.23.0
+librosa==0.11.0
+numpy==2.2.6
+soundfile==0.14.0
+tensorboardX==2.6.5
+transformers==5.13.1
+webdataset==1.0.2
+pydub==0.25.1
+
+# Worker and experiment-stage imports. AudioSeal itself is built from the exact
+# source commit with the separately hash-locked backend environment.
+dora-search==0.1.12
+einops==0.8.2
+julius==0.2.7
+lameenc==1.8.1
+openunmix==1.3.0
+omegaconf==2.3.0
+resemblyzer==0.1.4
+runpod==1.10.0
+scipy==1.17.1
+webrtcvad==2.0.10

@@ -1,0 +1,58 @@
+{
+  "schema_version": 3,
+  "purpose": "internal-evaluation-only",
+  "worker_version": "hero-voice-clone-contract-v3-internal-eval-2",
+  "source_revision": "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb",
+  "application_base_revision": "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb",
+  "team_voice_source": {
+    "repository": "https://github.com/Aoacademy2025/Hero-Voice-Ai",
+    "branch": "main",
+    "revision": "f9b6c0a4a9adcf2fb44f35c9b35a44c007127c37",
+    "control_revision": "565d0e62e1d4269099a4c3fba8a2ecef9167eeea",
+    "integration_policy": "selective-hardened-clone-only-port",
+    "selected_files": [
+      "core/audio_enhance.py",
+      "core/server.py",
+      "core/text_utils.py",
+      "core/watermark.py"
+    ]
+  },
+  "base_image": "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126",
+  "base_runtime": {
+    "python": "3.11",
+    "torch": "2.4.1",
+    "torchaudio": "2.4.1",
+    "triton": "3.0.0",
+    "cuda": "12.1",
+    "cudnn_major": 9
+  },
+  "system_packages": {
+    "build-essential": "12.9ubuntu3",
+    "ca-certificates": "20240203~22.04.1",
+    "git": "1:2.34.1-1ubuntu1.15",
+    "libsndfile1": "1.0.31-2ubuntu0.2"
+  },
+  "requirements_lock_sha256": "72a4b8419772e0a83061d05ea073ec7ffa19a821c2b873071d99679d4c96012d",
+  "requirements_lock_package_count": 148,
+  "build_requirements_lock_sha256": "6357035223092dd3ccc13ab5b161e1ddbf27599804609029c9d5bd18a6e60c68",
+  "build_requirements_lock_package_count": 9,
+  "runtime_manifest_sha256": "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020",
+  "model_manifest_sha256": "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb",
+  "demucs_runtime_compatibility": {
+    "status": "metadata-patched-pending-gpu-runtime",
+    "declared_requirement": "torchaudio>=0.8,<2.1",
+    "patched_requirement": "torchaudio>=0.8",
+    "base_requirement": "torchaudio==2.4.1",
+    "patch_path": "demucs-torchaudio-2.4-compat.patch",
+    "patch_sha256": "5c394eb15ef74c27f63da9b09ca47da352af25dc52bcdf1cb5e41201af2db0f9",
+    "scope": "one-line distribution metadata upper-bound removal; inference source unchanged",
+    "policy": "enhancement execution remains gated on immutable-image import, offline model-load, and real GPU/audio fixtures"
+  },
+  "sources": {
+    "omnivoice": "346bb75330980a236540d61a0808d00767c0973b",
+    "omnivoice_model": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+    "demucs": "e976d93ecc3865e5757426930257e200846a520a",
+    "audioseal": "e63a8a0e5cdf7bb797159c92ba15961557fe9bd2",
+    "audioseal_model": "3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba"
+  }
+}

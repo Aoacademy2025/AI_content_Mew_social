@@ -1,0 +1,57 @@
+name: Hero Voice clone canary image
+
+on:
+  push:
+    branches:
+      - mewic/hero-voice-clone-prod-audit
+    paths:
+      - .github/workflows/hero-voice-clone-canary-image.yml
+      - services/omnivoice-clone-runpod/**
+
+concurrency:
+  group: hero-voice-clone-canary-image-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build immutable linux/amd64 canary image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Log in to Mew's private GHCR namespace
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: mewic
+          password: ${{ secrets.GHCR_MEWIC_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build and publish commit-addressed image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: services/omnivoice-clone-runpod
+          file: services/omnivoice-clone-runpod/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/mewic/heroai-omnivoice-clone:${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=hero-voice-clone-canary-amd64
+          cache-to: type=gha,mode=max,scope=hero-voice-clone-canary-amd64
+
+      - name: Record immutable digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          test -n "$IMAGE_DIGEST"
+          test "${IMAGE_DIGEST#sha256:}" != "$IMAGE_DIGEST"
+          printf 'Image: `ghcr.io/mewic/heroai-omnivoice-clone@%s`\n' "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

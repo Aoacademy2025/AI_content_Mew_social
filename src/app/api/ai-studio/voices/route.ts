@@ -7,20 +7,41 @@ import {
 } from "@/lib/hero-voice-generation.server";
 import { publicAiGenerationJob } from "@/lib/ai-generation-jobs.server";
 import {
-  isOmniVoiceUserAllowed,
-  isValidOmniVoiceId,
+  HeroVoiceCloneConfigError,
   OmniVoiceConfigError,
 } from "@/lib/omnivoice";
+import { normalizeHeroVoiceClonePublicJob } from "@/lib/hero-voice-clone-state";
 import { isUserVoiceId } from "@/lib/user-voices.server";
-import { isHeroVoiceCloningEnabled } from "@/lib/omnivoice-policy";
+import { heroVoiceCloneCanaryAccessDecision } from "@/lib/omnivoice-policy";
+import { heroVoiceCanaryDeletionConfigured } from "@/lib/hero-voice-canary-storage.server";
 
 export const runtime = "nodejs";
 
+const PRIVATE_NO_STORE = { "Cache-Control": "private, no-store" };
+
+function privateJson(body: unknown, init?: ResponseInit) {
+  const headers = new Headers(init?.headers);
+  headers.set("Cache-Control", PRIVATE_NO_STORE["Cache-Control"]);
+  return NextResponse.json(body, { ...init, headers });
+}
+
 export async function POST(request: Request) {
   try {
+    // The fully marked harness has one mutation entrance: submit-by-slot. Do
+    // this before ordinary auth so the canary cannot trigger lazy Clerk/trial
+    // writes through the customer route.
+    if (process.env.HERO_VOICE_CANARY_EXECUTION_MODE === "1" && heroVoiceCanaryDeletionConfigured()) {
+      return privateJson({ error: "Not found" }, { status: 404 });
+    }
     const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (!isOmniVoiceUserAllowed(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    const access = heroVoiceCloneCanaryAccessDecision(user);
+    if (!access.allowed) {
+      return privateJson(
+        { error: access.status === 401 ? "Unauthorized" : "Not found" },
+        { status: access.status },
+      );
+    }
+    if (!user) throw new Error("clone canary access decision admitted a missing actor");
 
     const body = await request.json().catch(() => null) as Record<string, unknown> | null;
     const text = typeof body?.text === "string" ? body.text.trim() : "";
@@ -28,14 +49,13 @@ export async function POST(request: Request) {
     const idempotencyKey = typeof body?.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
     const parsedSpeed = typeof body?.speed === "number" ? body.speed : Number(body?.speed);
     const speed = Number.isFinite(parsedSpeed) ? Math.min(3, Math.max(0.3, parsedSpeed)) : 1;
-    if (!isValidOmniVoiceId(voiceId)) {
-      return NextResponse.json({ error: "voiceId ไม่ถูกต้อง" }, { status: 400 });
-    }
-    if (isUserVoiceId(voiceId) && (!isHeroVoiceCloningEnabled() || user.role !== "ADMIN")) {
-      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    // Stock IDs and malformed/non-owned clone IDs are deliberately
+    // indistinguishable from missing resources on this canary-only surface.
+    if (!isUserVoiceId(voiceId)) {
+      return privateJson({ error: "Not found" }, { status: 404 });
     }
     if (!/^[A-Za-z0-9:_-]{8,107}$/.test(idempotencyKey)) {
-      return NextResponse.json({ error: "idempotencyKey ไม่ถูกต้อง" }, { status: 400 });
+      return privateJson({ error: "idempotencyKey ไม่ถูกต้อง" }, { status: 400 });
     }
     // Namespace the caller-minted key server-side — the same rule AI Studio images
     // already apply (`studio:`). Without it a caller could mint `video:<jobId>:scene:0`
@@ -52,24 +72,32 @@ export async function POST(request: Request) {
       voiceId,
       speed,
       studio: true,
+      cloneCanarySurface: "ai-studio",
       idempotencyKey: storedIdempotencyKey,
     });
-    return NextResponse.json(
-      { job: publicAiGenerationJob(result.job) },
+    return privateJson(
+      { job: normalizeHeroVoiceClonePublicJob(publicAiGenerationJob(result.job)) },
       { status: result.job.status === "completed" ? 200 : 202 },
     );
   } catch (error) {
     if (error instanceof HeroVoiceGenerationError) {
-      return NextResponse.json({
+      return privateJson({
         error: error.message,
         code: error.code,
         retryable: error.retryable,
       }, { status: error.status });
     }
+    if (error instanceof HeroVoiceCloneConfigError) {
+      return privateJson({
+        error: "Hero Voice clone ยังไม่พร้อมใช้งาน",
+        code: error.code,
+        retryable: false,
+      }, { status: 503 });
+    }
     if (error instanceof OmniVoiceConfigError) {
-      return NextResponse.json({ error: "Hero Voice ยังไม่พร้อมใช้งาน", retryable: true }, { status: 503 });
+      return privateJson({ error: "Hero Voice ยังไม่พร้อมใช้งาน", retryable: true }, { status: 503 });
     }
     console.error("[ai-studio/voices] request failed:", error);
-    return NextResponse.json({ error: "ส่งงานสร้างเสียงไม่สำเร็จ", retryable: true }, { status: 500 });
+    return privateJson({ error: "ส่งงานสร้างเสียงไม่สำเร็จ", retryable: true }, { status: 500 });
   }
 }

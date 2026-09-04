@@ -1,0 +1,192 @@
+# syntax=docker/dockerfile:1.7
+# check=skip=InvalidBaseImagePlatform
+FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       build-essential=12.9ubuntu3 \
+       ca-certificates=20240203~22.04.1 \
+       git=1:2.34.1-1ubuntu1.15 \
+       libsndfile1=1.0.31-2ubuntu0.2 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build/context
+COPY build-requirements.lock build-requirements.in requirements.lock requirements.in MODEL_MANIFEST.json SOURCE_MANIFEST.json demucs-torchaudio-2.4-compat.patch ./
+RUN python -m venv --system-site-packages /opt/venv \
+    && /opt/venv/bin/pip install --require-hashes -r build-requirements.lock
+
+# These are the only dependency artifacts inherited from the parent rather than
+# emitted into requirements.lock. Assert the exact ABI before source builds.
+RUN /opt/venv/bin/python - <<'PY'
+import torch
+import torchaudio
+import triton
+
+assert torch.__version__.split("+")[0] == "2.4.1", torch.__version__
+assert torchaudio.__version__.split("+")[0] == "2.4.1", torchaudio.__version__
+assert triton.__version__ == "3.0.0", triton.__version__
+assert torch.version.cuda == "12.1", torch.version.cuda
+assert torch.backends.cudnn.version() // 1000 == 9, torch.backends.cudnn.version()
+PY
+
+RUN git init /build/OmniVoice \
+    && git -C /build/OmniVoice remote add origin https://github.com/k2-fsa/OmniVoice.git \
+    && git -C /build/OmniVoice fetch --depth=1 origin 346bb75330980a236540d61a0808d00767c0973b \
+    && git -C /build/OmniVoice checkout --detach FETCH_HEAD \
+    && test "$(git -C /build/OmniVoice rev-parse HEAD)" = "346bb75330980a236540d61a0808d00767c0973b" \
+    && /opt/venv/bin/pip wheel --no-deps --no-build-isolation --wheel-dir /build/wheels /build/OmniVoice
+
+RUN git init /build/audioseal \
+    && git -C /build/audioseal remote add origin https://github.com/facebookresearch/audioseal.git \
+    && git -C /build/audioseal fetch --depth=1 origin e63a8a0e5cdf7bb797159c92ba15961557fe9bd2 \
+    && git -C /build/audioseal checkout --detach FETCH_HEAD \
+    && test "$(git -C /build/audioseal rev-parse HEAD)" = "e63a8a0e5cdf7bb797159c92ba15961557fe9bd2" \
+    && /opt/venv/bin/pip wheel --no-deps --no-build-isolation --wheel-dir /build/wheels /build/audioseal
+
+# Demucs only imports torchaudio on this inference path; tensor resampling is
+# performed by Julius. Apply the reviewable one-line metadata compatibility
+# patch, then build and install the exact pinned source without dependency drift.
+RUN git init /build/demucs \
+    && git -C /build/demucs remote add origin https://github.com/facebookresearch/demucs.git \
+    && git -C /build/demucs fetch --depth=1 origin e976d93ecc3865e5757426930257e200846a520a \
+    && git -C /build/demucs checkout --detach FETCH_HEAD \
+    && test "$(git -C /build/demucs rev-parse HEAD)" = "e976d93ecc3865e5757426930257e200846a520a" \
+    && grep -Fx 'torchaudio>=0.8,<2.1' /build/demucs/requirements_minimal.txt \
+    && git -C /build/demucs apply --check /build/context/demucs-torchaudio-2.4-compat.patch \
+    && git -C /build/demucs apply /build/context/demucs-torchaudio-2.4-compat.patch \
+    && grep -Fx 'torchaudio>=0.8' /build/demucs/requirements_minimal.txt \
+    && test "$(git -C /build/demucs diff --numstat requirements_minimal.txt)" = "$(printf '1\t1\trequirements_minimal.txt')" \
+    && /opt/venv/bin/pip wheel --no-deps --no-build-isolation --wheel-dir /build/wheels /build/demucs
+
+RUN /opt/venv/bin/pip install --require-hashes --no-build-isolation -r requirements.lock \
+    && /opt/venv/bin/pip install --no-deps /build/wheels/omnivoice-0.1.5-py3-none-any.whl /build/wheels/audioseal-0.2.0-py3-none-any.whl /build/wheels/demucs-4.1.0a2-py3-none-any.whl \
+    && /opt/venv/bin/pip check
+
+RUN /opt/venv/bin/python - <<'PY'
+from huggingface_hub import hf_hub_download, snapshot_download
+
+snapshot_download(
+    repo_id="k2-fsa/OmniVoice",
+    revision="c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+    local_dir="/opt/models/omnivoice",
+    allow_patterns=[
+        "config.json",
+        "model.safetensors",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "chat_template.jinja",
+        "audio_tokenizer/config.json",
+        "audio_tokenizer/model.safetensors",
+        "audio_tokenizer/preprocessor_config.json",
+    ],
+)
+hf_hub_download(
+    repo_id="facebook/audioseal",
+    revision="3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba",
+    filename="generator_base.pth",
+    local_dir="/opt/models/audioseal",
+)
+hf_hub_download(
+    repo_id="facebook/audioseal",
+    revision="3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba",
+    filename="detector_base.pth",
+    local_dir="/opt/models/audioseal",
+)
+PY
+
+RUN install -d /opt/models/demucs \
+    && /opt/venv/bin/python - <<'PY'
+from pathlib import Path
+from urllib.request import urlopen
+
+target = Path("/opt/models/demucs/955717e8-8726e21a.th")
+with urlopen("https://dl.fbaipublicfiles.com/demucs/hybrid_transformer/955717e8-8726e21a.th") as source:
+    with target.open("wb") as destination:
+        while block := source.read(1024 * 1024):
+            destination.write(block)
+PY
+
+RUN install -d /opt/models/resemblyzer \
+    && cp /opt/venv/lib/python3.11/site-packages/resemblyzer/pretrained.pt /opt/models/resemblyzer/pretrained.pt \
+    && find /opt/venv/lib/python3.11/site-packages/resemblyzer -maxdepth 1 -type f -name pretrained.pt -delete \
+    && find /opt/models -type d -name .cache -prune -exec rm -rf {} + \
+    && /opt/venv/bin/python - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+
+root = Path("/opt/models")
+manifest = json.loads(Path("/build/context/MODEL_MANIFEST.json").read_text())
+expected = {artifact["path"] for artifact in manifest["artifacts"]}
+present = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
+assert present == expected, sorted(present ^ expected)
+for artifact in manifest["artifacts"]:
+    path = root / artifact["path"]
+    assert path.stat().st_size == artifact["size"], artifact["path"]
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == artifact["sha256"], artifact["path"]
+PY
+
+# The source distributions are now installed with pinned build backends and no
+# isolation. pip-check and imports prove closure before anything enters runtime.
+RUN /opt/venv/bin/pip check \
+    && /opt/venv/bin/python - <<'PY'
+import importlib
+
+for name in (
+    "accelerate", "audioseal", "demucs", "gradio", "huggingface_hub", "librosa",
+    "numpy", "omnivoice", "pydub", "resemblyzer", "runpod", "scipy",
+    "soundfile", "tensorboardX", "torch", "torchaudio", "transformers",
+    "triton", "webdataset", "webrtcvad",
+):
+    importlib.import_module(name)
+PY
+
+FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126 AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH=/opt/venv/bin:$PATH \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
+    HF_HOME=/opt/models/.offline-hf-home \
+    TORCH_HOME=/opt/models/.offline-torch-home \
+    XDG_CACHE_HOME=/tmp/hero-voice-clone-cache \
+    HERO_VOICE_EAGER_LOAD=1
+
+LABEL org.opencontainers.image.source="https://github.com/Aoacademy2025/AI_content_Mew_social" \
+      org.opencontainers.image.revision="8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb" \
+      org.opencontainers.image.base.digest="sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates=20240203~22.04.1 \
+       libsndfile1=1.0.31-2ubuntu0.2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin worker \
+    && install -d -o worker -g worker -m 0700 /tmp/hero-voice-clone-cache
+
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/models /opt/models
+WORKDIR /app
+COPY --chown=worker:worker \
+    contract.py handler.py identity.py language.py pipeline.py runtime.py \
+    MODEL_MANIFEST.json SOURCE_MANIFEST.json RUNTIME_MANIFEST.json THIRD_PARTY_NOTICES.md UPSTREAM.md \
+    build-requirements.lock requirements.lock SBOM.spdx.json verify_image.py \
+    /app/
+
+RUN test "$(sha256sum /app/MODEL_MANIFEST.json | cut -d' ' -f1)" = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb" \
+    && test "$(sha256sum /app/SOURCE_MANIFEST.json | cut -d' ' -f1)" = "ac7b4f5c3afc0a17dd634dfe8653a88168b7749a68036bac126474545acbf6a4" \
+    && python -c 'import json; json.dump({"schema_version":1,"worker_version":"hero-voice-clone-contract-v3-internal-eval-2","worker_kind":"clone-only","source_revision":"8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb","source_manifest_sha256":"ac7b4f5c3afc0a17dd634dfe8653a88168b7749a68036bac126474545acbf6a4","model_manifest_sha256":"ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb","base_image":"pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"},open("/app/BUILD_ATTESTATION.json","w"),sort_keys=True,separators=(",",":"))' \
+    && chmod 0444 /app/BUILD_ATTESTATION.json \
+    && ! find /app /opt/models /opt/venv -type d -name .git -print -quit | grep -q . \
+    && /opt/venv/bin/pip check \
+    && /opt/venv/bin/python -c 'import contract,handler,identity,language,pipeline,runtime'
+
+USER worker
+CMD ["python", "-u", "/app/handler.py"]

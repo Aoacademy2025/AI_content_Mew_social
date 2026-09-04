@@ -1,0 +1,4 @@
+# TASK 5 FAIL-CLOSED PLACEHOLDER — NOT AN INSTALLABLE LOCK.
+# Task 6 must generate the complete linux/arm64 transitive closure with hashes,
+# record its SHA-256 in RUNTIME_LOCK.json, and set pythonLockComplete=true.
+# No package installer consumes this file while that gate is false.

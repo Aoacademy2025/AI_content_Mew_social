@@ -1,0 +1,275 @@
+import {
+  issueHeroVoiceCanarySubmitCapability,
+  type SignedHeroVoiceCanarySubmitCapability,
+} from "@/lib/hero-voice-canary-admission.server";
+import {
+  heroVoiceCanaryJcsBytes,
+  parseHeroVoiceCanaryStrictJson,
+} from "@/lib/hero-voice-canary-canonical";
+import {
+  assertHeroVoiceCanaryTask6ApplyEvidence,
+  createHeroVoiceCanaryRun,
+  dispatchNextHeroVoiceCanarySlot,
+  finalizeHeroVoiceCanaryRun,
+  recordHeroVoiceCanaryObjectiveObservation,
+  recordHeroVoiceCanaryCerBatch,
+  recordHeroVoiceCanaryResult,
+  reconcileHeroVoiceCanaryRun,
+  type HeroVoiceCanaryAcceptedOutcome,
+  type HeroVoiceCanaryCancelDisposition,
+  type HeroVoiceCanaryCerBatchResult,
+  type HeroVoiceCanaryEvaluatorEvidence,
+} from "@/lib/hero-voice-canary-ledger.server";
+import { captureHeroVoiceCanaryObjectiveEvidenceAuthority } from "@/lib/hero-voice-canary-objective-evidence.server";
+import {
+  HERO_VOICE_CANARY_REFERENCE_TRANSCRIPT,
+  type HeroVoiceCanaryManifest,
+  type HeroVoiceCanarySlot,
+} from "@/lib/hero-voice-canary-manifest";
+import { prepareHeroVoiceCanaryWireRequest } from "@/lib/hero-voice-canary-wire";
+import { awaitHeroVoiceCanaryApplicationTerminal } from "@/lib/hero-voice-generation.server";
+
+export type HeroVoiceCanaryAdapterResult = Readonly<{
+  outcome: HeroVoiceCanaryAcceptedOutcome;
+  primaryStatus: "completed" | "failed" | "cancelled" | "timed_out" | "unknown";
+  cancelDisposition?: HeroVoiceCanaryCancelDisposition;
+  audioSha256?: string;
+  durationMs?: number;
+  delayTimeMs?: number;
+  executionTimeMs?: number;
+}>;
+
+export type HeroVoiceCanaryBatch = Readonly<{
+  evidence: HeroVoiceCanaryEvaluatorEvidence;
+  results: readonly HeroVoiceCanaryCerBatchResult[];
+  objectiveRows: unknown;
+}>;
+
+/** The real Task 7 adapter implements this boundary using the already-pinned
+ * RunPod/AiStudio transports. Task 5's verifier supplies a deterministic fake;
+ * the orchestration code is identical and never retries a submission. */
+export interface HeroVoiceCanaryApplyAdapter {
+  dispatchDirect(slot: HeroVoiceCanarySlot, exactJcsBytes: Buffer): Promise<
+    | { disposition: "provider_accepted"; providerJobId: string }
+    | { disposition: "provider_rejected" }
+    | { disposition: "transport_unknown" }
+  >;
+  submitCandidate(slot: HeroVoiceCanarySlot, signed: SignedHeroVoiceCanarySubmitCapability): Promise<
+    | { disposition: "application_accepted"; applicationJobId: string }
+    | { disposition: "application_rejected" }
+    | { disposition: "transport_unknown" }
+  >;
+  awaitDirectTerminal(slot: HeroVoiceCanarySlot, providerJobId: string): Promise<HeroVoiceCanaryAdapterResult>;
+  evaluateBatch(
+    kind: "ablation-8" | "final-36",
+    slots: readonly HeroVoiceCanarySlot[],
+  ): Promise<HeroVoiceCanaryBatch>;
+  dispose?(): Promise<void>;
+}
+
+export async function runHeroVoiceCanaryApply(input: {
+  runId: string;
+  ownerHmac: string;
+  referenceVoiceId: string;
+  referenceWav: Buffer;
+  manifest: HeroVoiceCanaryManifest;
+  manifestSha256: string;
+  task6EvidenceBytes: Uint8Array;
+  task6EvidenceSha256: string;
+  adapter?: HeroVoiceCanaryApplyAdapter;
+  adapterFactory?: () => Promise<HeroVoiceCanaryApplyAdapter>;
+}): Promise<"reviewable" | "completed_no_go" | "aborted_no_go"> {
+  // Authorization is checked before the first durable mutation. The evidence
+  // is manifest-bound, authenticated, expiring, and enumerates every Task 6
+  // gate, so this runner is executable without becoming an evidence bypass.
+  assertHeroVoiceCanaryTask6ApplyEvidence({
+    evidenceBytes: input.task6EvidenceBytes,
+    expectedSha256: input.task6EvidenceSha256,
+    manifestSha256: input.manifestSha256,
+  });
+  const objectiveAuthority = captureHeroVoiceCanaryObjectiveEvidenceAuthority();
+  if (Boolean(input.adapter) === Boolean(input.adapterFactory)) throw new Error("canary_apply_adapter_invalid");
+  const adapter = input.adapter ?? await input.adapterFactory!();
+  try {
+    await createHeroVoiceCanaryRun(input);
+  let acceptedProviderJobId: string | null = null;
+  const dispatchPhase = async (phase: HeroVoiceCanarySlot["phase"]): Promise<boolean> => {
+    const slots = input.manifest.slots.filter((slot) => slot.phase === phase);
+    for (const slot of slots) {
+      let handle: Readonly<{ kind: "provider" | "application"; id: string }> | null = null;
+      if (slot.runnerKind === "CandidateAiStudioV3") {
+        // CandidateAiStudioV3 owns its intent in generation's mandatory
+        // beforeDispatch callback. The runner owns only the one-use admission;
+        // preclaiming here would create the exact double-intent bug this seam
+        // is designed to make impossible.
+        const signed = await issueHeroVoiceCanarySubmitCapability({
+          runId: input.runId,
+          ownerHmac: input.ownerHmac,
+          slotId: slot.slotId,
+        });
+        const submitted = await adapter.submitCandidate(slot, signed);
+        if (submitted.disposition !== "application_accepted") return false;
+        const reconciled = await reconcileHeroVoiceCanaryRun({ runId: input.runId, ownerHmac: input.ownerHmac });
+        if (!reconciled.resumableProviderJobId
+          || reconciled.runState === "aborted_no_go" || reconciled.runState === "completed_no_go") return false;
+        handle = Object.freeze({ kind: "application", id: submitted.applicationJobId });
+      } else {
+        acceptedProviderJobId = null;
+        const prepared = prepareHeroVoiceCanaryWireRequest({
+          slot, referenceWav: input.referenceWav, refText: HERO_VOICE_CANARY_REFERENCE_TRANSCRIPT,
+        });
+        await dispatchNextHeroVoiceCanarySlot({
+          runId: input.runId,
+          ownerHmac: input.ownerHmac,
+          slotId: slot.slotId,
+          prepared,
+          dispatch: async (bytes) => {
+            if (bytes !== prepared.bytes) throw new Error("canary_exact_buffer_identity_lost");
+            const result = await adapter.dispatchDirect(slot, bytes);
+            if (result.disposition === "provider_accepted") acceptedProviderJobId = result.providerJobId;
+            return result;
+          },
+        });
+        if (!acceptedProviderJobId) return false;
+        handle = Object.freeze({ kind: "provider", id: acceptedProviderJobId });
+      }
+      const terminal = handle.kind === "application"
+        ? await awaitHeroVoiceCanaryApplicationTerminal({
+            runId: input.runId,
+            ownerHmac: input.ownerHmac,
+            slot,
+            applicationJobId: handle.id,
+          })
+        : await adapter.awaitDirectTerminal(slot, handle.id);
+      await recordHeroVoiceCanaryResult({
+        runId: input.runId, ownerHmac: input.ownerHmac, slotId: slot.slotId, ...terminal,
+      });
+      if (terminal.outcome !== "valid_completed") return false;
+      // Slot 27 is the first and only candidate smoke. Nothing after it can be
+      // submitted until its terminal application validation has succeeded.
+      if (slot.smoke && slot.ordinal !== 27) throw new Error("canary_smoke_identity_invalid");
+    }
+    return true;
+  };
+
+  if (!await dispatchPhase("ablation")) return "aborted_no_go";
+  const ablationSlots = input.manifest.slots.filter((slot) => slot.phase === "ablation");
+  const ablation = await adapter.evaluateBatch("ablation-8", ablationSlots);
+  await recordHeroVoiceCanaryCerBatch({
+    runId: input.runId, ownerHmac: input.ownerHmac, evidence: ablation.evidence, results: ablation.results,
+  });
+  const ablationObjective = await recordHeroVoiceCanaryObjectiveObservation({
+    runId: input.runId,
+    ownerHmac: input.ownerHmac,
+    phase: "ablation-8",
+    rows: ablation.objectiveRows,
+    authority: objectiveAuthority,
+  });
+  const ablationState = await finalizeHeroVoiceCanaryRun({
+    runId: input.runId, ownerHmac: input.ownerHmac, evidence: ablation.evidence,
+    objectiveEvidenceBytes: ablationObjective.bytes,
+    objectiveEvidenceSha256: ablationObjective.sha256,
+    objectiveEvidenceHmac: ablationObjective.hmac,
+    objectiveAuthority,
+  });
+  if (ablationState !== "running_baseline") return ablationState as "completed_no_go" | "aborted_no_go";
+
+  if (!await dispatchPhase("baseline")) return "aborted_no_go";
+  const baselineState = await finalizeHeroVoiceCanaryRun({
+    runId: input.runId, ownerHmac: input.ownerHmac, evidence: ablation.evidence,
+  });
+  if (baselineState !== "running_candidate") return baselineState as "completed_no_go" | "aborted_no_go";
+
+  if (!await dispatchPhase("candidate")) return "aborted_no_go";
+  const finalSlots = input.manifest.slots.filter((slot) => slot.phase !== "ablation");
+  const final = await adapter.evaluateBatch("final-36", finalSlots);
+  await recordHeroVoiceCanaryCerBatch({
+    runId: input.runId, ownerHmac: input.ownerHmac, evidence: final.evidence, results: final.results,
+  });
+  const finalObjective = await recordHeroVoiceCanaryObjectiveObservation({
+    runId: input.runId,
+    ownerHmac: input.ownerHmac,
+    phase: "final-36",
+    rows: final.objectiveRows,
+    authority: objectiveAuthority,
+  });
+  const finalState = await finalizeHeroVoiceCanaryRun({
+    runId: input.runId, ownerHmac: input.ownerHmac, evidence: final.evidence,
+    objectiveEvidenceBytes: finalObjective.bytes,
+    objectiveEvidenceSha256: finalObjective.sha256,
+    objectiveEvidenceHmac: finalObjective.hmac,
+    objectiveAuthority,
+  });
+    return finalState === "reviewable" ? "reviewable"
+      : finalState === "aborted_no_go" ? "aborted_no_go" : "completed_no_go";
+  } finally {
+    await adapter.dispose?.();
+  }
+}
+
+/** Actual private app-path client used by the Task 7 adapter for all 18
+ * CandidateAiStudioV3 slots. The origin is parsed independently and must be an
+ * explicit IPv4 loopback binding; Host/forwarded headers are never authority. */
+export async function submitHeroVoiceCanaryCandidateViaLoopback(input: {
+  origin: string;
+  attestation: string;
+  cookieHeader: string;
+  slot: HeroVoiceCanarySlot;
+  signed: SignedHeroVoiceCanarySubmitCapability;
+  fetchImpl?: typeof fetch;
+}): Promise<{ disposition: "application_accepted"; applicationJobId: string }> {
+  let origin: URL;
+  try { origin = new URL(input.origin); } catch { throw new Error("canary_loopback_origin_invalid"); }
+  if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1" || !origin.port
+    || origin.pathname !== "/" || origin.search || origin.hash
+    || input.slot.runnerKind !== "CandidateAiStudioV3") {
+    throw new Error("canary_loopback_origin_invalid");
+  }
+  const body = heroVoiceCanaryJcsBytes({
+    capability: input.signed.capability,
+    submitHmac: input.signed.submitHmac,
+  });
+  const url = new URL(
+    `/api/ai-studio/voice-clone-canary/runs/${encodeURIComponent(input.signed.capability.runId)}`
+      + `/slots/${encodeURIComponent(input.signed.capability.slotId)}/submit`,
+    origin,
+  );
+  const response = await (input.fetchImpl ?? fetch)(url, {
+    method: "POST",
+    redirect: "error",
+    headers: {
+      "content-type": "application/json",
+      "content-length": String(body.length),
+      "x-hero-voice-canary-loopback-attestation": input.attestation,
+      cookie: input.cookieHeader,
+    },
+    body: body.toString("utf8"),
+  });
+  const responseBytes = Buffer.from(await response.arrayBuffer());
+  if (response.status !== 202 || responseBytes.length < 1 || responseBytes.length > 4_096) {
+    throw new Error("canary_loopback_submit_rejected");
+  }
+  let parsed: unknown;
+  try { parsed = parseHeroVoiceCanaryStrictJson(responseBytes); } catch {
+    throw new Error("canary_loopback_submit_response_invalid");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+    || Object.keys(parsed).length !== 1 || !("job" in parsed)) {
+    throw new Error("canary_loopback_submit_response_invalid");
+  }
+  const job = (parsed as { job?: unknown }).job;
+  if (!job || typeof job !== "object" || Array.isArray(job)
+    || Object.keys(job).sort().join(",") !== "id,status"
+    || typeof (job as { id?: unknown }).id !== "string"
+    || !/^[A-Za-z0-9_-]{8,160}$/u.test((job as { id: string }).id)
+    || typeof (job as { status?: unknown }).status !== "string") {
+    throw new Error("canary_loopback_submit_response_invalid");
+  }
+  return { disposition: "application_accepted", applicationJobId: (job as { id: string }).id };
+}
+
+/** Restart entrypoint used before Task 7 resumes polling. A provider-accepted
+ * ID is returned; unresolved intent is atomically terminalized unknown/no-go. */
+export async function resumeHeroVoiceCanaryApply(input: { runId: string; ownerHmac: string }) {
+  return reconcileHeroVoiceCanaryRun(input);
+}

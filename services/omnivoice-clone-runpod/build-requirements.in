@@ -1,0 +1,6 @@
+flit-core==3.9.0
+hatchling==1.22.5
+packaging==23.2
+pip==24.2
+setuptools==67.8.0
+wheel==0.40.0

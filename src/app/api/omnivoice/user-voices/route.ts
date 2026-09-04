@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { isHeroVoiceCloningEnabled, isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
+import { heroVoiceCloneCanaryAccessDecision } from "@/lib/omnivoice-policy";
 import {
   createUserVoice,
   listUserVoices,
@@ -13,13 +13,26 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-async function requireCloneAdmin() {
+const PRIVATE_NO_STORE = { "Cache-Control": "private, no-store" };
+
+function privateJson(body: unknown, init?: ResponseInit) {
+  const headers = new Headers(init?.headers);
+  headers.set("Cache-Control", PRIVATE_NO_STORE["Cache-Control"]);
+  return NextResponse.json(body, { ...init, headers });
+}
+
+async function requireCloneCanaryUser() {
   const user = await getCurrentUser();
-  if (!user) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) } as const;
-  if (!isHeroVoiceCloningEnabled() || user.role !== "ADMIN" || !isOmniVoiceUserAllowed(user)) {
-    return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) } as const;
+  const access = heroVoiceCloneCanaryAccessDecision(user);
+  if (!access.allowed) {
+    return {
+      error: privateJson(
+        { error: access.status === 401 ? "Unauthorized" : "Not found" },
+        { status: access.status },
+      ),
+    } as const;
   }
-  return { user } as const;
+  return { user: user! } as const;
 }
 
 function publicUserVoice(voice: {
@@ -39,31 +52,29 @@ function publicUserVoice(voice: {
 }
 
 export async function GET() {
-  const gate = await requireCloneAdmin();
+  const gate = await requireCloneCanaryUser();
   if ("error" in gate) return gate.error;
   const voices = await listUserVoices(gate.user.id);
-  return NextResponse.json(voices.map(publicUserVoice), {
-    headers: { "Cache-Control": "private, no-store" },
-  });
+  return privateJson(voices.map(publicUserVoice));
 }
 
 export async function POST(request: Request) {
-  const gate = await requireCloneAdmin();
+  const gate = await requireCloneCanaryUser();
   if ("error" in gate) return gate.error;
   const contentLength = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES + 1024 * 1024) {
-    return NextResponse.json({ error: "ไฟล์เสียงใหญ่เกิน 15 MB" }, { status: 413 });
+    return privateJson({ error: "ไฟล์เสียงใหญ่เกิน 15 MB" }, { status: 413 });
   }
 
   try {
     const form = await request.formData().catch(() => null);
-    if (!form) return NextResponse.json({ error: "ต้องส่งเป็น multipart form" }, { status: 400 });
+    if (!form) return privateJson({ error: "ต้องส่งเป็น multipart form" }, { status: 400 });
     const audio = form.get("audio");
     if (!(audio instanceof Blob)) {
-      return NextResponse.json({ error: "แนบไฟล์เสียงก่อน" }, { status: 400 });
+      return privateJson({ error: "แนบไฟล์เสียงก่อน" }, { status: 400 });
     }
     if (audio.size > MAX_UPLOAD_BYTES) {
-      return NextResponse.json({ error: "ไฟล์เสียงใหญ่เกิน 15 MB" }, { status: 413 });
+      return privateJson({ error: "ไฟล์เสียงใหญ่เกิน 15 MB" }, { status: 413 });
     }
     const voice = await createUserVoice({
       userId: gate.user.id,
@@ -72,15 +83,14 @@ export async function POST(request: Request) {
       audio: Buffer.from(await audio.arrayBuffer()),
       consent: form.get("consent") === "true",
     });
-    return NextResponse.json(publicUserVoice(voice), {
+    return privateJson(publicUserVoice(voice), {
       status: 201,
-      headers: { "Cache-Control": "private, no-store" },
     });
   } catch (error) {
     if (error instanceof UserVoiceError) {
-      return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+      return privateJson({ error: error.message, code: error.code }, { status: error.status });
     }
     console.error("[omnivoice/user-voices] create failed:", error);
-    return NextResponse.json({ error: "สร้างเสียงโคลนไม่สำเร็จ" }, { status: 500 });
+    return privateJson({ error: "สร้างเสียงโคลนไม่สำเร็จ" }, { status: 500 });
   }
 }

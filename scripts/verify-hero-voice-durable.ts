@@ -22,19 +22,22 @@ try {
     process.exit(pushed.status ?? 1);
   }
 
-  const verified = spawnSync(
-    process.execPath,
-    [
-      "--conditions=react-server",
-      "--import",
-      "tsx",
-      "scripts/verify-hero-voice-durable-runtime.ts",
-    ],
-    { cwd: process.cwd(), env, encoding: "utf8" },
-  );
-  process.stdout.write(verified.stdout);
-  process.stderr.write(verified.stderr);
-  process.exitCode = verified.status ?? 1;
+  for (const script of [
+    "scripts/verify-hero-voice-durable-runtime.ts",
+    "scripts/verify-hero-voice-clone-task2-runtime.ts",
+  ]) {
+    const verified = spawnSync(
+      process.execPath,
+      ["--conditions=react-server", "--import", "tsx", script],
+      { cwd: process.cwd(), env, encoding: "utf8" },
+    );
+    process.stdout.write(verified.stdout);
+    process.stderr.write(verified.stderr);
+    if (verified.status !== 0) {
+      process.exitCode = verified.status ?? 1;
+      break;
+    }
+  }
 } finally {
   fs.rmSync(temporaryDirectory, { recursive: true, force: true });
 }
