@@ -44,7 +44,7 @@
     "patched_requirement": "torchaudio>=0.8",
     "base_requirement": "torchaudio==2.4.1",
     "patch_path": "demucs-torchaudio-2.4-compat.patch",
-    "patch_sha256": "5c394eb15ef74c27f63da9b09ca47da352af25dc52bcdf1cb5e41201af2db0f9",
+    "patch_sha256": "815723bb776e2ab6f31fd0669ea52c5288e70d43db72e9da5e6223ab88caa082",
     "scope": "one-line distribution metadata upper-bound removal; inference source unchanged",
     "policy": "enhancement execution remains gated on immutable-image import, offline model-load, and real GPU/audio fixtures"
   },
