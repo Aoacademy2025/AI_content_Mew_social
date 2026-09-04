@@ -11,6 +11,7 @@ execSync("npx prisma db push --skip-generate", { stdio: "ignore", env: process.e
 async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { buildNarrativeAlignedBrollWindows } = await import("../src/lib/broll-windows");
+  const { compileBrandVisualPrompt } = await import("../src/lib/brand-visual-system");
   const { tokenizeWords } = await import("../src/lib/tts-timing");
   const {
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
@@ -167,6 +168,9 @@ async function main() {
     startMs: index * 4_000,
     endMs: (index + 1) * 4_000,
   }));
+  const compilerBoundaryAction =
+    "the rider carefully controls speed direction balance and braking ".repeat(3).trim();
+  assert.ok(compilerBoundaryAction.length > 180 && compilerBoundaryAction.length <= 240);
   const validEightBeatAnalysis = completeAnalysis({
     contentDomain: "education",
     suggestedVisualFormatId: "clear-infographic",
@@ -437,13 +441,13 @@ async function main() {
    * from cache — the policy would silently apply to new sources only. */
   assert.equal(
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
-    "brand-content-preflight-v15-generic-concept-entity-guard",
+    "brand-content-preflight-v16-action-fact-boundary",
     "changing what a beat contains must publish a new analyzer version",
   );
   const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");
   assert.match(
     preflightSource,
-    /COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = \[[\s\S]*?"brand-content-preflight-v6-treatment-plan"[\s\S]*?"brand-content-preflight-v5-latin-lettering"[\s\S]*?"brand-content-preflight-v4-focal-subject"/,
+    /COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = \[[\s\S]*?"brand-content-preflight-v15-generic-concept-entity-guard"[\s\S]*?"brand-content-preflight-v6-treatment-plan"[\s\S]*?"brand-content-preflight-v5-latin-lettering"[\s\S]*?"brand-content-preflight-v4-focal-subject"/,
     "the superseded version stays readable as lineage, so a bump costs a re-analysis and never a generated image",
   );
   const project = await prisma.editorProject.create({
@@ -541,6 +545,72 @@ async function main() {
   assert.equal(first.visualBeats.length, 2);
   assert.equal(analyzedWindowCount, 2, "the analyzer receives the authoritative B-roll window plan");
   assert.equal(await prisma.contentPreflight.count(), 1);
+
+  const actionBoundaryProject = await prisma.editorProject.create({
+    data: { userId: user.id, title: "Action boundary cache replay" },
+  });
+  let actionBoundaryAnalysisCalls = 0;
+  const actionBoundaryRequest = {
+    userId: user.id,
+    projectId: actionBoundaryProject.id,
+    narrativeSource: {
+      kind: "creator-script" as const,
+      text: "ควบคุมรถอย่างระมัดระวัง",
+      windows: [{ text: "ควบคุมรถอย่างระมัดระวัง" }],
+    },
+    analyzer: {
+      async analyze() {
+        actionBoundaryAnalysisCalls += 1;
+        return completeAnalysis({
+          contentDomain: "rider safety",
+          suggestedVisualFormatId: "cinematic-realism" as const,
+          beats: [{
+            beatKey: "window-0",
+            sourceExcerpt: "ควบคุมรถอย่างระมัดระวัง",
+            subject: "an adult rider",
+            action: compilerBoundaryAction,
+            setting: "a closed training course",
+            emotion: "focused",
+            emphasis: "safe control",
+          }],
+        });
+      },
+    },
+  };
+  const currentBoundaryPreflight = await resolveContentPreflight(actionBoundaryRequest);
+  await prisma.contentPreflight.update({
+    where: { id: currentBoundaryPreflight.id },
+    data: { analyzerVersion: "brand-content-preflight-v15-generic-concept-entity-guard" },
+  });
+  const oldBoundaryBeat = currentBoundaryPreflight.visualBeats[0];
+  await prisma.projectVisualBeat.update({
+    where: { id: oldBoundaryBeat.id },
+    data: {
+      beatJson: JSON.stringify({
+        ...oldBoundaryBeat,
+        hardSceneFacts: {
+          ...oldBoundaryBeat.hardSceneFacts,
+          actions: [compilerBoundaryAction],
+        },
+      }),
+    },
+  });
+  const refreshedBoundaryPreflight = await resolveContentPreflight(actionBoundaryRequest);
+  assert.equal(
+    actionBoundaryAnalysisCalls,
+    2,
+    "a matching v15 cache row is re-analyzed after the action-boundary version bump",
+  );
+  assert.notEqual(
+    refreshedBoundaryPreflight.id,
+    currentBoundaryPreflight.id,
+    "the stale v15 row cannot bypass current action normalization",
+  );
+  assert.equal(
+    refreshedBoundaryPreflight.visualBeats[0].hardSceneFacts.actions.join(" "),
+    compilerBoundaryAction,
+    "the refreshed v16 row preserves the complete compiler-boundary action",
+  );
 
   // Scene content policy is part of immutable preflight/asset identity. The
   // same story with a new people/location choice must be re-analyzed, compiled
@@ -1174,6 +1244,172 @@ async function main() {
     repairedEssentialObjects.join(" "),
     overlongEssentialObject,
     "repair preserves every essential-object word instead of truncating a Hard Scene Fact",
+  );
+  // Production replay 2026-09-04: Gemini returned one otherwise-valid Beat
+  // whose Hard Scene Fact action exceeded the 240-character storage boundary.
+  // Three correction calls moved the same violation between array indexes. This
+  // is mechanically repairable, but the existing bounded splitter was applied
+  // only to essentialObjects, so a customer with a valid script received no
+  // render. Preserve the complete action text and repair it in the first call.
+  const overlongAction = "the rider carefully controls speed direction balance and braking ".repeat(5).trim();
+  assert.ok(overlongAction.length > 240);
+  const overlongActionCandidate = JSON.parse(
+    JSON.stringify(productionReplayAnalysis),
+  ) as typeof productionReplayAnalysis;
+  overlongActionCandidate.beats[0].hardSceneFacts.actions = [overlongAction];
+  let overlongActionCalls = 0;
+  const overlongActionAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      overlongActionCalls += 1;
+      return JSON.stringify(overlongActionCandidate);
+    },
+  );
+  const repairedOverlongAction = await overlongActionAnalyzer.analyze({
+    kind: "upload-transcript",
+    text: eightWindows.map((window) => window.text).join("\n"),
+    windows: eightWindows,
+  });
+  const repairedActions = repairedOverlongAction.beats[0].hardSceneFacts.actions;
+  assert.equal(
+    overlongActionCalls,
+    1,
+    "an overlong action is repaired deterministically instead of exhausting provider retries",
+  );
+  assert.ok(
+    repairedActions.every((fact) => fact.length <= 180),
+    "every repaired action respects the effective Brand Visual compiler boundary",
+  );
+  assert.equal(
+    repairedActions.join(" "),
+    overlongAction,
+    "action repair preserves every Hard Scene Fact word instead of truncating quality context",
+  );
+  const repairedBeat = repairedOverlongAction.beats[0];
+  const compiledRepairedAction = compileBrandVisualPrompt({
+    visualFormatId: "cinematic-realism",
+    contentDomain: repairedOverlongAction.contentDomain,
+    visualBeat: {
+      phase: "hook",
+      subject: repairedBeat.subject,
+      action: repairedBeat.action,
+      setting: repairedBeat.setting,
+      emotion: repairedBeat.emotion,
+      emphasis: repairedBeat.emphasis,
+      hardSceneFacts: repairedBeat.hardSceneFacts,
+      sceneIntensity: repairedBeat.sceneIntensity,
+      safetyBoundary: repairedBeat.safetyBoundary,
+    },
+  });
+  assert.ok(
+    repairedActions.every((fact) => compiledRepairedAction.positive.includes(fact)),
+    "the current image prompt retains every repaired action chunk without downstream truncation",
+  );
+
+  const schemaValidLongActionCandidate = JSON.parse(
+    JSON.stringify(validEightBeatAnalysis),
+  ) as typeof validEightBeatAnalysis;
+  schemaValidLongActionCandidate.beats[0].hardSceneFacts.actions = [compilerBoundaryAction];
+  let schemaValidLongActionCalls = 0;
+  const schemaValidLongActionAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      schemaValidLongActionCalls += 1;
+      return JSON.stringify(schemaValidLongActionCandidate);
+    },
+  );
+  const repairedSchemaValidLongAction = await schemaValidLongActionAnalyzer.analyze({
+    kind: "upload-transcript",
+    text: eightWindows.map((window) => window.text).join("\n"),
+    windows: eightWindows,
+  });
+  const schemaValidActionBeat = repairedSchemaValidLongAction.beats[0];
+  const schemaValidActionChunks = schemaValidActionBeat.hardSceneFacts.actions;
+  assert.equal(
+    schemaValidLongActionCalls,
+    1,
+    "a 181–240 character action is normalized before its wider storage schema can bypass repair",
+  );
+  assert.equal(
+    schemaValidActionChunks.join(" "),
+    compilerBoundaryAction,
+    "compiler-boundary repair preserves the complete schema-valid action",
+  );
+  const compiledSchemaValidAction = compileBrandVisualPrompt({
+    visualFormatId: "cinematic-realism",
+    contentDomain: repairedSchemaValidLongAction.contentDomain,
+    visualBeat: {
+      phase: "hook",
+      subject: schemaValidActionBeat.subject,
+      action: schemaValidActionBeat.action,
+      setting: schemaValidActionBeat.setting,
+      emotion: schemaValidActionBeat.emotion,
+      emphasis: schemaValidActionBeat.emphasis,
+      hardSceneFacts: schemaValidActionBeat.hardSceneFacts,
+      sceneIntensity: schemaValidActionBeat.sceneIntensity,
+      safetyBoundary: schemaValidActionBeat.safetyBoundary,
+    },
+  });
+  assert.ok(
+    schemaValidActionChunks.every((fact) => compiledSchemaValidAction.positive.includes(fact)),
+    "the current image prompt retains every 181–240 character action chunk",
+  );
+
+  const actionOverflowCandidate = JSON.parse(
+    JSON.stringify(productionReplayAnalysis),
+  ) as typeof productionReplayAnalysis;
+  actionOverflowCandidate.beats[0].hardSceneFacts.actions = Array.from(
+    { length: 7 },
+    (_, index) => `action ${index} ` + "detail ".repeat(40).trim(),
+  );
+  let actionOverflowCalls = 0;
+  const actionOverflowAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      actionOverflowCalls += 1;
+      return JSON.stringify(actionOverflowCandidate);
+    },
+  );
+  await assert.rejects(
+    actionOverflowAnalyzer.analyze({
+      kind: "upload-transcript",
+      text: eightWindows.map((window) => window.text).join("\n"),
+      windows: eightWindows,
+    }),
+    (error: unknown) => error instanceof ContentPreflightError && error.code === "INVALID_ANALYSIS",
+    "repair must fail closed rather than discard facts when bounded action chunks exceed the 12-item limit",
+  );
+  assert.equal(
+    actionOverflowCalls,
+    3,
+    "irreducible action cardinality retains the existing bounded correction policy",
+  );
+
+  const actionWithEmptyFactCandidate = JSON.parse(
+    JSON.stringify(productionReplayAnalysis),
+  ) as typeof productionReplayAnalysis;
+  actionWithEmptyFactCandidate.beats[0].hardSceneFacts.actions = [overlongAction, "   "];
+  let actionWithEmptyFactCalls = 0;
+  const actionWithEmptyFactAnalyzer = createGeminiContentPreflightAnalyzer(
+    user.id,
+    async () => {
+      actionWithEmptyFactCalls += 1;
+      return JSON.stringify(actionWithEmptyFactCandidate);
+    },
+  );
+  await assert.rejects(
+    actionWithEmptyFactAnalyzer.analyze({
+      kind: "upload-transcript",
+      text: eightWindows.map((window) => window.text).join("\n"),
+      windows: eightWindows,
+    }),
+    (error: unknown) => error instanceof ContentPreflightError && error.code === "INVALID_ANALYSIS",
+    "repair must not erase an empty provider action to make an invalid analysis pass",
+  );
+  assert.equal(
+    actionWithEmptyFactCalls,
+    3,
+    "an empty action retains the existing bounded correction policy",
   );
   for (const explicitCount of [101, 500]) {
     const largeCountCandidate = JSON.parse(

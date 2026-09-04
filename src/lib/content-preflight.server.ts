@@ -34,12 +34,13 @@ import { recordTelemetryEvent } from "@/lib/telemetry";
  * Format, so a cached recommendation cannot keep creating retired formats.
  * Later versions keep the active format while tightening hard-fact extraction;
  * older rows remain only as asset-carry-forward lineage (ADR 0017/0018). */
-export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v15-generic-concept-entity-guard";
+export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v16-action-fact-boundary";
 /** Read-only lineage. A superseded row is still a valid source of a previous
  * beat's generated asset, so a bump costs one re-analysis and never an image:
  * beats whose `sourceExcerptHash` is unchanged carry their asset forward. */
 const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
   CONTENT_PREFLIGHT_ANALYZER_VERSION,
+  "brand-content-preflight-v15-generic-concept-entity-guard",
   "brand-content-preflight-v14-generic-role-entity-guard",
   "brand-content-preflight-v13-common-noun-entity-guard",
   "brand-content-preflight-v12-semantic-self-correction",
@@ -58,12 +59,19 @@ export type NarrativeSourceKind = "ai-script" | "creator-script" | "upload-trans
 export type NarrativeVisualWindow = { text: string; startMs?: number; endMs?: number };
 
 const MAX_ESSENTIAL_OBJECT_LENGTH = 160;
+const MAX_HARD_SCENE_ACTION_LENGTH = 240;
+// Current Brand Visual compilers sanitize each action at 180 characters before
+// provider submission. Split at that effective boundary so schema-valid
+// repair cannot preserve text in storage only to lose its tail in the image
+// prompt. The wider schema cap remains compatible with historical rows.
+const MAX_COMPILED_HARD_SCENE_ACTION_LENGTH = 180;
+const MAX_HARD_SCENE_ACTIONS = 12;
 
 const hardSceneFactsSchema = z.object({
   entityTypes: z.array(z.string().trim().min(1).max(120)).max(12),
   ages: z.array(z.string().trim().min(1).max(80)).max(12),
   genders: z.array(z.string().trim().min(1).max(80)).max(12),
-  actions: z.array(z.string().trim().min(1).max(240)).max(12),
+  actions: z.array(z.string().trim().min(1).max(MAX_HARD_SCENE_ACTION_LENGTH)).max(MAX_HARD_SCENE_ACTIONS),
   locationTypes: z.array(z.string().trim().min(1).max(160)).max(12),
   timeOfDay: z.string().trim().min(1).max(80).nullable(),
   historicalPeriod: z.string().trim().min(1).max(160).nullable(),
@@ -497,6 +505,50 @@ function splitBoundedProviderFact(value: string, maxLength: number): string[] {
   return chunks;
 }
 
+function boundedHardSceneActions(actions: unknown[]): unknown[] {
+  return actions.flatMap((action) => {
+    if (typeof action !== "string") return [action];
+    const chunks = splitBoundedProviderFact(
+      action,
+      MAX_COMPILED_HARD_SCENE_ACTION_LENGTH,
+    );
+    // Preserve an empty value so schema min(1) rejects it instead of silently
+    // erasing a malformed Hard Scene Fact.
+    return chunks.length > 0 ? chunks : [action];
+  });
+}
+
+/** Normalize action facts to the tightest current downstream prompt boundary
+ * before schema admission. The storage schema remains wider for historical
+ * compatibility, while an expanded array beyond its item limit remains
+ * invalid and enters the provider correction loop without losing any fact. */
+function repairContentPreflightActionBounds(candidate: unknown): unknown {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+  const record = candidate as Record<string, unknown>;
+  if (!Array.isArray(record.beats)) return candidate;
+  return {
+    ...record,
+    beats: record.beats.map((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const beat = value as Record<string, unknown>;
+      if (
+        !beat.hardSceneFacts
+        || typeof beat.hardSceneFacts !== "object"
+        || Array.isArray(beat.hardSceneFacts)
+      ) return value;
+      const hardSceneFacts = beat.hardSceneFacts as Record<string, unknown>;
+      if (!Array.isArray(hardSceneFacts.actions)) return value;
+      return {
+        ...beat,
+        hardSceneFacts: {
+          ...hardSceneFacts,
+          actions: boundedHardSceneActions(hardSceneFacts.actions),
+        },
+      };
+    }),
+  };
+}
+
 /** Gemini occasionally promotes generic roles into Story Entities and copies
  * internal proper-name linkage into provider-facing prose. Retrying the same
  * prompt is unreliable for that mechanically repairable output. This pass is
@@ -581,6 +633,10 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
     const cleanStringArray = (items: unknown): unknown => Array.isArray(items)
       ? items.map(cleanProviderText)
       : items;
+    const cleanBoundedActions = (items: unknown): unknown => {
+      if (!Array.isArray(items)) return items;
+      return boundedHardSceneActions(items.map(cleanProviderText));
+    };
     const cleanEssentialObjects = (items: unknown): unknown => Array.isArray(items)
       ? items.flatMap((item) => {
         const cleaned = cleanProviderText(item);
@@ -608,7 +664,7 @@ function repairContentPreflightSemantics(candidate: unknown): unknown {
           entityTypes: cleanStringArray(hardSceneFacts.entityTypes),
           ages: cleanStringArray(hardSceneFacts.ages),
           genders: cleanStringArray(hardSceneFacts.genders),
-          actions: cleanStringArray(hardSceneFacts.actions),
+          actions: cleanBoundedActions(hardSceneFacts.actions),
           locationTypes: cleanStringArray(hardSceneFacts.locationTypes),
           timeOfDay: cleanProviderText(hardSceneFacts.timeOfDay),
           historicalPeriod: cleanProviderText(hardSceneFacts.historicalPeriod),
@@ -938,9 +994,10 @@ export function createGeminiContentPreflightAnalyzer(
           ].join(" ");
           continue;
         }
-        let parsed = analysisSchema.safeParse(candidate);
+        const boundedCandidate = repairContentPreflightActionBounds(candidate);
+        let parsed = analysisSchema.safeParse(boundedCandidate);
         if (!parsed.success) {
-          parsed = analysisSchema.safeParse(repairContentPreflightSemantics(candidate));
+          parsed = analysisSchema.safeParse(repairContentPreflightSemantics(boundedCandidate));
         }
         const wrongBeatCount = parsed.success && parsed.data.beats.length !== input.windows.length;
         if (parsed.success && !wrongBeatCount) return parsed.data;
@@ -1352,12 +1409,15 @@ export async function resolveContentPreflight(input: {
     throw new ContentPreflightError("ANALYZER_UNAVAILABLE", "ยังไม่ได้เชื่อมตัววิเคราะห์เนื้อหา");
   }
 
-  const analyzed = analysisSchema.safeParse(await input.analyzer.analyze({
+  const analyzerResult = await input.analyzer.analyze({
     kind: input.narrativeSource.kind,
     text,
     windows,
     sceneContentPolicy,
-  }));
+  });
+  const analyzed = analysisSchema.safeParse(
+    repairContentPreflightActionBounds(analyzerResult),
+  );
   if (!analyzed.success) {
     throw new ContentPreflightError(
       "INVALID_ANALYSIS",
