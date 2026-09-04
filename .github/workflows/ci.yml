@@ -192,5 +192,8 @@ jobs:
       - name: Verify Sentry privacy and sampling configuration
         run: npm run verify:sentry-config
 
+      - name: Verify signed Sentry alerts are safely formatted for LINE
+        run: npm run verify:sentry-line-alert
+
       - name: Build
         run: npm run build

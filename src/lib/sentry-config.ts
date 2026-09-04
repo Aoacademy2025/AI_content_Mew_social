@@ -65,7 +65,7 @@ function withoutQueryString(value: string): string {
   }
 }
 
-function sanitizeText(value: string): string {
+export function sanitizeSentryText(value: string): string {
   return value
     .replace(URL_IN_TEXT, (url) => withoutQueryString(url))
     .replace(PATH_QUERY_IN_TEXT, "$1$2")
@@ -80,7 +80,7 @@ function sanitizeValue(value: unknown, key?: string, depth = 0): unknown {
   if (typeof value === "string") {
     return key && URL_KEY.test(key)
       ? withoutQueryString(value)
-      : sanitizeText(value);
+      : sanitizeSentryText(value);
   }
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeValue(item, undefined, depth + 1));
@@ -116,15 +116,15 @@ export function beforeSendSentryEvent(event: ErrorEvent): ErrorEvent | null {
 
   delete event.user;
 
-  if (event.message) event.message = sanitizeText(event.message);
+  if (event.message) event.message = sanitizeSentryText(event.message);
   if (event.logentry?.message) {
-    event.logentry.message = sanitizeText(event.logentry.message);
+    event.logentry.message = sanitizeSentryText(event.logentry.message);
   }
   if (event.logentry?.params) {
     event.logentry.params = sanitizeValue(event.logentry.params) as unknown[];
   }
   for (const exception of event.exception?.values ?? []) {
-    if (exception.value) exception.value = sanitizeText(exception.value);
+    if (exception.value) exception.value = sanitizeSentryText(exception.value);
   }
 
   if (event.request) {
@@ -162,7 +162,7 @@ export function beforeSentryBreadcrumb(
   }
 
   if (breadcrumb.message) {
-    breadcrumb.message = sanitizeText(breadcrumb.message);
+    breadcrumb.message = sanitizeSentryText(breadcrumb.message);
   }
   if (breadcrumb.data) {
     breadcrumb.data = sanitizeValue(breadcrumb.data) as Breadcrumb["data"];
