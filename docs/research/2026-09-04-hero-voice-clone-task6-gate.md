@@ -62,6 +62,7 @@ fail-open surfaces.
 
 - Feature commit: `3f76a2de672d75a1b800edf60c0bd0e61eb1a6ca`
 - GitHub Actions run: `33869314926` (`success`)
+- Feature-branch PR: [#440](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/440) (`OPEN`, unmerged, `NO-GO` recorded)
 - Private image tag: `ghcr.io/mewic/heroai-omnivoice-clone:3f76a2de672d75a1b800edf60c0bd0e61eb1a6ca`
 - OCI index: `sha256:d2703cde6b5aa9e0514022af2bf000d79dc7969d446200fff32239034d7b7d7d`
 - Linux/amd64 manifest: `sha256:7f4594d9bf4e3a90495e1f7a8a84dd4244112b5b13fc1719cfb6565c3e8649aa`

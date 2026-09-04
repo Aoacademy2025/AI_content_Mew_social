@@ -408,7 +408,7 @@ Strictly validate base64; reference ≤8 MB and decoded duration 5–15 seconds;
   - Build/publish and capture are complete for commit `3f76a2de`: OCI index `sha256:d2703cde6b5aa9e0514022af2bf000d79dc7969d446200fff32239034d7b7d7d`, Linux/amd64 manifest `sha256:7f4594d9bf4e3a90495e1f7a8a84dd4244112b5b13fc1719cfb6565c3e8649aa`, digest-bound SPDX/SLSA attestations, and full authenticated OCI scan all passed. This item stays unchecked until a dedicated candidate template is created and read back using the immutable digest.
 - [ ] Provision two staging-only endpoints: audited v13 baseline digest and candidate digest; names unmistakably include canary/baseline or canary/candidate; exactly one shared fixed GPU type, `workersMin=0`, `workersMax=1`, execution timeout 540 seconds, idle timeout 60 seconds.
 - [ ] Read back endpoint/template/digest/GPU/scaling/timeout/queue state plus local canary DB/auth/credit/storage bindings, and prove production endpoint IDs, Hostinger/PM2 env, DNS, database, and deployed files are unchanged.
-- [ ] Open/update a feature-branch PR with code/tests/sanitized docs and do not merge it. Any failed pin, gate, test, or review keeps the canary `NO-GO` and prevents paid submission.
+- [x] Open/update feature-branch PR [#440](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/440) with code/tests/sanitized docs and do not merge it. The PR records `NO-GO`; failed or missing gates continue to prevent paid submission.
 
 ## Task 7 — Run the 44-slot canary, hand off, and stop
 
