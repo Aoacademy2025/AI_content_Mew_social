@@ -1,7 +1,7 @@
 # Hero Voice clone license gate
 
 Date: 2026-09-04
-Decision: **NO-GO for image publication, paid execution, customer use, or commercial use**
+Decision: **NO-GO for candidate execution, public distribution, customer use, or commercial use**
 
 This is an engineering release gate, not legal advice. A component is marked
 clear only when the pinned source and the exact bundled weights/assets have an
@@ -12,7 +12,9 @@ Mew later narrowed the requested execution to a private, non-commercial
 personal evaluation. That removes commercial release from the immediate test
 purpose, but it does not create rights for unlicensed wrapper material or an
 unverified checkpoint, permit public image distribution, or clear provider
-handling of the reference voice. The overall gate therefore remains NO-GO.
+handling of the reference voice. A private, commit-addressed GHCR image now
+exists only as a gated CI/inspection artifact and has not been executed. The
+overall gate therefore remains NO-GO.
 
 ## Component decisions
 
@@ -25,7 +27,7 @@ handling of the reference voice. The overall gate therefore remains NO-GO.
 | Demucs source | `facebookresearch/demucs@e976d93ecc3865e5757426930257e200846a520a`; code license is MIT. | Code notice is clear; runtime is still technically blocked. |
 | Demucs `955717e8` checkpoint | SHA-256 `8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4`; no separate checkpoint grant was established. | **Redistribution/publication blocked pending written weight rights.** |
 | AudioSeal source and official weights | Source `e63a8a0e5cdf7bb797159c92ba15961557fe9bd2`, weights revision `3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba`; upstream states MIT includes model weights. | Conditionally clear with the MIT notice and exact-hash readback. |
-| Resemblyzer, Librosa, SciPy, NumPy, RunPod SDK and remaining packages | Exact package inventory is in `SBOM.spdx.json` and the two hash locks. | Individual notices are recorded, but **final clearance remains blocked** until an OCI-digest-bound SBOM and vulnerability/license scan exist. |
+| Resemblyzer, Librosa, SciPy, NumPy, RunPod SDK and remaining packages | Exact package inventory is in `SBOM.spdx.json` and the two hash locks. The final OCI has a digest-bound SPDX attestation whose exact statement digest is recorded in the Task 6 readback. | Individual notices and the generated SBOM are recorded, but **final clearance remains blocked** until an independent vulnerability/license scan has zero unresolved high/critical findings. |
 | CER evaluator Whisper model and Linux/arm64 dependency closure | Runtime lock deliberately records missing base, wheel, FFmpeg, model, and non-emulation evidence. | **Blocked; no canonical image may be built or claimed.** |
 | Mew reference and generated outputs | No audio is in Git. Mew authorized private, non-commercial personal evaluation; the Drive source was hash/transcript/duration validated and canonicalized to an owner-only local WAV under the Task 4 deletion authority. | **Blocked from provider submission** until the remaining human-data/DPA/retention gate passes. |
 
@@ -44,7 +46,7 @@ handling of the reference voice. The overall gate therefore remains NO-GO.
 1. Written commercial/internal-evaluation rights for the OmniVoice checkpoint and Boson tokenizer, or replacement components followed by full requalification.
 2. Written wrapper provenance/permission and Demucs checkpoint redistribution/use rights.
 3. Counsel sign-off on all notice, acceptable-use, consent, biometric-style, and provider-processing obligations.
-4. A built immutable OCI digest with its own generated SBOM, license scan, and zero unresolved critical/high vulnerability findings.
+4. The immutable OCI digest and its generated digest-bound SBOM now exist; an independent license/vulnerability scan with zero unresolved critical/high findings remains required.
 5. The binding RunPod DPA and the written retention, backup-deletion, access, and data-center answers required by the separate human-data gate.
 
 Until all five items are evidenced, the repository must retain the

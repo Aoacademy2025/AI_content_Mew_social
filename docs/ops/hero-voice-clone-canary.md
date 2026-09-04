@@ -1,6 +1,6 @@
 # Hero Voice Clone canary harness
 
-Status: Task 5 implementation and synthetic dry-run only. Paid execution, real Mew audio, external provider calls, endpoint mutation, GitHub push, deployment, and production data are prohibited. The canonical `--apply` path is fail-closed until Task 6 supplies independently reviewed evidence for every gate.
+Status: Task 6 partial evidence only. The feature branch and private, commit-addressed candidate image have been built and fully OCI-scanned, but no RunPod template/endpoint/job exists for it. Paid execution, real Mew audio, provider job calls, RunPod mutation, deployment, and production data remain prohibited. The canonical `--apply` path is fail-closed until Task 6 supplies independently reviewed evidence for every gate.
 
 ## Private inputs
 
@@ -38,10 +38,10 @@ Closing after reveal invokes Task 4’s crash-recoverable deletion protocol. It 
 ## Current mandatory blockers
 
 - Control now preserves audited-v13 reference preprocessing; real GPU/audio parity still requires immutable-image evidence.
-- Demucs has a pinned metadata-only torchaudio compatibility patch; immutable-image import, offline model-load, and real GPU/audio fixtures remain required.
+- Demucs has a pinned metadata-only torchaudio compatibility patch; the final image passed its full authenticated filesystem/layer scan, while network-blocked cold import/model load and real GPU/audio fixtures remain required.
 - No local Docker/Podman or independently attested non-emulated Linux/arm64 Whisper runtime is available.
 - The exact Clerk test issuer/audience/two real sessions are not evidenced.
 - Script 3 now has a frozen deterministic, local meaningful-delta transform; its independent approval/evidence row is still absent.
-- GitHub authority/object readback, provider/legal/rate/license and retention evidence remain Task 6 work.
+- GitHub review-object authority/readback, provider/legal/rate/license and retention evidence remain Task 6 work. Candidate image index `sha256:d2703cde6b5aa9e0514022af2bf000d79dc7969d446200fff32239034d7b7d7d` and Linux/amd64 manifest `sha256:7f4594d9bf4e3a90495e1f7a8a84dd4244112b5b13fc1719cfb6565c3e8649aa` are inspection evidence only and are not referenced by any RunPod template.
 
 Any one of these keeps the decision `NO-GO` and prevents human audio from leaving the Mac.

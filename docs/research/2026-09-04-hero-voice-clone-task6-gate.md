@@ -10,8 +10,11 @@ Decision: **NO-GO — paid submission and staging mutation remain disabled**
 - Task 4 deletion/upload crash matrices and Task 5 review-preparation/publication/artifact crash recovery passed.
 - Prisma validate/generate, a fresh schema push, and all 20 migrations passed on throwaway SQLite databases.
 - TypeScript, focused changed-scope ESLint, production build (184/184 pages), client source-map/private-sentinel scan, sensitive-audio status scan, and `git diff --check` passed.
+- The final private candidate image was built from commit `3f76a2de672d75a1b800edf60c0bd0e61eb1a6ca`. Registry readback fixed OCI index `sha256:d2703cde6b5aa9e0514022af2bf000d79dc7969d446200fff32239034d7b7d7d` and Linux/amd64 manifest `sha256:7f4594d9bf4e3a90495e1f7a8a84dd4244112b5b13fc1719cfb6565c3e8649aa`.
+- The authenticated OCI verifier passed the complete final image: every descriptor, size, digest, diff ID, tar stream, layer and merged filesystem; secret/key/audio/catalog/Git/cache absence; exact source/runtime/model manifests; all 12 model files; patched package metadata; and build attestation.
+- Registry attestations were independently downloaded and hashed. The 6,507,021-byte SPDX in-toto statement is `sha256:cac31f3eb90233c1afe57117163fe7949913b24bec91ae514df2f841ab11413e`; the 64,440-byte SLSA provenance statement is `sha256:8071b7babedd07dad34bac175b5de2d85cc4aee75c8427b59e8982a3cb1db6a9`. Both subjects are the exact Linux/amd64 manifest above.
 - The 44-slot runner remains dry/evidence-gated. Tests use synthetic WAVs, fake provider transport, throwaway private storage, and offline Git authorities only.
-- No production endpoint, Hostinger/PM2 state, DNS, deployed file, provider queue, registry image, GitHub ref, billing system, or real audio was mutated.
+- The named private GHCR image and feature branch were intentionally created. No RunPod endpoint/template/job/queue, production endpoint, Hostinger/PM2 state, DNS, deployed file, billing system, or real audio was mutated.
 
 ## Data inventory
 
@@ -28,13 +31,13 @@ Decision: **NO-GO — paid submission and staging mutation remain disabled**
 
 ## Hard blockers observed
 
-1. No Docker, Podman, Colima, or Lima runtime is installed. The candidate OCI image and canonical non-emulated Linux/arm64 evaluator cannot be built or executed here.
+1. No Docker, Podman, Colima, or Lima runtime is installed. The candidate was built in pinned GitHub CI and fully inspected as an authenticated OCI layout locally, but its network-blocked cold import/model load and real GPU execution cannot run here. The canonical non-emulated Linux/arm64 evaluator also remains unavailable.
 2. The evaluator lock is intentionally blocked on the authoritative arm64 base digest, fully hashed transitive wheel closure, FFmpeg package/build/binary identity, and non-emulated runtime attestation.
-3. Control now preserves the audited-v13 preprocessing boundary, and Demucs has a hash-pinned metadata-only torchaudio compatibility patch. Neither is runtime-proven yet: the immutable image, offline model load, real GPU/audio parity, and enhancement fixtures remain required before paid execution.
+3. Control now preserves the audited-v13 preprocessing boundary, and Demucs has a hash-pinned metadata-only torchaudio compatibility patch. The immutable image is fully filesystem-verified, but offline model load, real GPU/audio parity, and enhancement fixtures remain required before paid execution.
 4. No Task 6 evidence key/digest, objective/review keys, exact test Clerk issuer/audience/two-session attestation, GitHub repository-node/askpass credentials, or RunPod restricted credential is present in the current process.
-5. The [license gate](./2026-09-04-hero-voice-clone-license-gate.md) is NO-GO for candidate-image publication/use.
+5. The [license gate](./2026-09-04-hero-voice-clone-license-gate.md) is NO-GO for candidate execution, public distribution, customer use, or commercial use. The private registry artifact exists for gated inspection only.
 6. The [RunPod payload-retention audit](./2026-09-04-runpod-serverless-payload-retention.md) remains NO-GO for sending a real person's reference until a binding DPA/legal basis and written input/history/log/backup deletion plus data-center answers exist.
-7. No immutable GPU rate, 660-second billing/forced-park proof, bounded non-GPU reserve evidence, built OCI digest, staging endpoint/template readback, capacity proof, or final whole-branch independent review exists.
+7. No immutable GPU rate, 660-second billing/forced-park proof, bounded non-GPU reserve evidence, staging endpoint/template readback, capacity proof, or final whole-branch independent review exists. The private candidate OCI digest, digest-bound SPDX SBOM, SLSA provenance, and full filesystem scan now exist; no template references the image yet.
 8. The supplied private Google Drive folder and legacy pointer were read without changing sharing. The downloaded source matched the out-of-band SHA-256, duration, format, and approved transcript; it was converted locally to the exact 10.000-second mono 24 kHz PCM16 canary WAV. The canonical exact-JCS pointer and WAV are owner-only, Git-ignored/outside the checkout, and the temporary download was removed. No human audio has been sent to RunPod.
 
 ## Scope and branch update
@@ -55,11 +58,28 @@ ranking/watermark provenance files. The hardened clone-only implementation is
 still used instead of merging the upstream FastAPI, stock/Lao, storage, or
 fail-open surfaces.
 
+## Immutable candidate image readback
+
+- Feature commit: `3f76a2de672d75a1b800edf60c0bd0e61eb1a6ca`
+- GitHub Actions run: `33869314926` (`success`)
+- Private image tag: `ghcr.io/mewic/heroai-omnivoice-clone:3f76a2de672d75a1b800edf60c0bd0e61eb1a6ca`
+- OCI index: `sha256:d2703cde6b5aa9e0514022af2bf000d79dc7969d446200fff32239034d7b7d7d`
+- Linux/amd64 manifest: `sha256:7f4594d9bf4e3a90495e1f7a8a84dd4244112b5b13fc1719cfb6565c3e8649aa`
+- Attestation manifest: `sha256:e7024520ff705baf812d9128d3167499fa93bebb883f92e98d6a15ef853d1ef7`
+- SPDX statement: `sha256:cac31f3eb90233c1afe57117163fe7949913b24bec91ae514df2f841ab11413e`
+- SLSA provenance statement: `sha256:8071b7babedd07dad34bac175b5de2d85cc4aee75c8427b59e8982a3cb1db6a9`
+- Full authenticated OCI verification: `PASS`
+
+This clears the build/publish, manifest capture, SBOM/provenance capture, and
+filesystem/layer-scan portion of Task 6 only. The plan checkbox remains open
+because no dedicated candidate template has been created or read back by
+digest, and cold-import/GPU evidence is still absent.
+
 ## Consequence
 
 No Task 6 evidence bundle may be signed, no `--apply` command may pass, and Task
 7 must not start. The next authorized work requires external evidence and
 credentials: resolve runtime/parity/licenses, execute the DPA and consent gates,
-freeze rate/cost, build and scan the immutable image, provision two isolated
-staging endpoints, read every binding back, and complete a final independent
+freeze rate/cost, provision two isolated staging endpoints only after those
+gates permit it, read every binding back, and complete a final independent
 branch review. Only then may the 44-slot paid canary be considered.
