@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 import type { ImageFundingSnapshot } from "@/lib/ai-generation-jobs.server";
+import type { HeroAiImageAccessDecision } from "@/lib/internal-ai-access";
 import type { BrandVisualAccessDecision } from "@/lib/brand-visual-rollout.server";
 import type { ProjectVisualPin } from "@/lib/project-look.server";
 import {
@@ -199,6 +200,35 @@ export function imageFundingSnapshotFromBrandVisualAcceptance(
         windowStartedAt: new Date(acceptance.funding.windowStartedAt),
       }
     : { fundingSource: "credits" };
+}
+
+export async function resolveVideoJobImageFundingStatus(input: {
+  userId: string;
+  acceptance: BrandVisualJobAcceptance | null;
+  heroAiImageAccess: Pick<HeroAiImageAccessDecision, "canUse" | "mode" | "source">;
+}) {
+  // A Conversion Trial owns Hero AI Image independently from Brand Visual
+  // (ADR 0008). fetch-stock and the eventual reservation must therefore agree
+  // on Starter funding even though an unadmitted Style Pack correctly carries
+  // no Brand Visual envelope. All other null-envelope jobs remain credits-only:
+  // neither a raw plan label nor a bare pin can manufacture this decision.
+  if (!input.acceptance) {
+    if (
+      input.heroAiImageAccess.canUse
+      && input.heroAiImageAccess.mode === "trial"
+      && input.heroAiImageAccess.source === "conversion_trial"
+    ) {
+      return getStarterAiImageAllowanceStatus(input.userId);
+    }
+    return { eligible: false as const, fundingSource: "credits" as const, remainingImages: 0 };
+  }
+  if (input.acceptance.funding.source === "credits") {
+    return { eligible: false as const, fundingSource: "credits" as const, remainingImages: 0 };
+  }
+  return getStarterAiImageAllowanceWindowStatus(
+    input.userId,
+    new Date(input.acceptance.funding.windowStartedAt),
+  );
 }
 
 /** Freeze the money/reuse decisions disclosed when a render is accepted.
