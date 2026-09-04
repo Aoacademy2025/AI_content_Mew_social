@@ -1,0 +1,4 @@
+interface:
+  display_name: "HERO Studio Ops"
+  short_description: "Audit support and deliver fixes through Linear"
+  default_prompt: "Use $hero-studio-ops to audit and sync today's HERO Studio support work."
