@@ -1,6 +1,6 @@
 # Hero Voice clone license gate
 
-Date: 2026-09-04
+Date: 2026-09-04 (final image evidence refreshed 2026-09-05)
 Decision: **NO-GO for candidate execution, public distribution, customer use, or commercial use**
 
 This is an engineering release gate, not legal advice. A component is marked
@@ -27,35 +27,37 @@ overall gate therefore remains NO-GO.
 | Demucs source | `facebookresearch/demucs@e976d93ecc3865e5757426930257e200846a520a`; code license is MIT. | Code notice is clear; runtime is still technically blocked. |
 | Demucs `955717e8` checkpoint | SHA-256 `8726e21a993978c7ba086d3872e7608d7d5bfca646ca4aca459ffda844faa8b4`; no separate checkpoint grant was established. | **Redistribution/publication blocked pending written weight rights.** |
 | AudioSeal source and official weights | Source `e63a8a0e5cdf7bb797159c92ba15961557fe9bd2`, weights revision `3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba`; upstream states MIT includes model weights. | Conditionally clear with the MIT notice and exact-hash readback. |
-| Resemblyzer, Librosa, SciPy, NumPy, RunPod SDK and remaining packages | Exact package inventory is in `SBOM.spdx.json` and the two hash locks. The final OCI has a digest-bound SPDX attestation whose exact statement digest is recorded in the Task 6 readback. Trivy 0.74.0 scanned the authenticated OCI layout directly. | Individual notices and the generated SBOM are recorded, but the independent scan found unresolved high/critical vulnerabilities and restricted-license identifiers requiring package-level review. **Final clearance remains blocked.** |
+| Resemblyzer, Librosa, SciPy, NumPy, RunPod SDK and remaining packages | Exact package inventory is in `SBOM.spdx.json` and the hash locks. The final OCI has a digest-bound SPDX attestation whose exact statement digest is recorded in the Task 6 readback. Trivy 0.74.0 scanned the authenticated OCI layout directly. | The final scan has zero critical/high vulnerabilities, but restricted-license identifiers still require package-level review. Individual notices and the generated SBOM are recorded; **final license clearance remains blocked.** |
 | CER evaluator Whisper model and Linux/arm64 dependency closure | Runtime lock deliberately records missing base, wheel, FFmpeg, model, and non-emulation evidence. | **Blocked; no canonical image may be built or claimed.** |
 | Mew reference and generated outputs | No audio is in Git. Mew authorized private, non-commercial personal evaluation; the Drive source was hash/transcript/duration validated and canonicalized to an owner-only local WAV under the Task 4 deletion authority. | **Blocked from provider submission** until the remaining human-data/DPA/retention gate passes. |
 
 ## Independent immutable-image scan
 
-On 2026-09-04, Trivy 0.74.0 scanned the locally authenticated OCI layout for
-index `sha256:dcbc9d852fed7798bef4081def51e09ab3e483f71416d756c42a59303614a40d`
-with vulnerability database version 2 updated at 2026-09-04 13:08:55 UTC. The
-scan found 546 high/critical findings: 28 critical and 518 high. Of these, 515
-are attributed to the old `linux-libc-dev` package inherited from the pinned
-2024 PyTorch base image. The language-package results contain one critical
-finding in `torch 2.4.1+cu121` with a fixed version of 2.6.0, plus 27 high
-findings across Brotli, Pillow, setuptools, soupsieve, Starlette, urllib3, and
-wheel. Across all findings, 342 have a published fixed version and 204 are
-currently marked affected without one.
+On 2026-09-05, Trivy 0.74.0 scanned the final locally authenticated OCI layout
+for index
+`sha256:c40fa76893fe1e0deab29fd8664d6ec32999496e57ce7b08becf5aba7edd7abc`
+and Linux/amd64 manifest
+`sha256:5b46143871655d4613b2ed5dff0cd414aba9d8994abbf2918addea00b99adffd`.
+After upgrading to the pinned PyTorch 2.6.0/CUDA 12.4 base, removing vulnerable
+base packages, and updating vendored build tooling, the final scan found zero
+critical and zero high vulnerabilities. It reported 151 medium and 57 low
+vulnerabilities. This clears the plan's zero-unresolved-critical/high technical
+scan threshold; it does not waive medium/low triage or any license gate.
 
-The license scan produced 308 package/license observations covering 14
-GPL/LGPL identifiers classified as restricted by Trivy. Those identifiers are
-not by themselves a legal conclusion, but each affected runtime package and
-its distribution obligations must be reviewed before clearance. The owner-only
-raw JSON evidence is mode `0600`, SHA-256
-`25e36a96e0ce972db1261f87e6e430aa37e62870118a5828884baaba1b2163b3`, and
-is intentionally outside Git. A preliminary SBOM-only scan returned zero
-results because it did not recognize the language packages; it was rejected
-as insufficient and is not used for the decision.
+The license scan produced 754 observations: 300 high, 7 medium, 312 low, and
+135 unknown under Trivy's license policy. The high items are restricted-license
+classifications rather than CVEs and are not by themselves a legal conclusion.
+Each affected runtime package and its distribution obligations must still be
+reviewed before clearance. The owner-only raw JSON evidence is mode `0600`,
+SHA-256
+`8707313c9a1867ebb9af13946c490010271815e28f691b550a77f4f303e0017d`, and
+is intentionally outside Git. The final SPDX statement is
+`sha256:2a35cfa2a3348044bf139c51ebe5d163675ed62ccf72752dc8482c36831729e9`;
+its subject matches the exact Linux/amd64 manifest.
 
-This independently confirms the gate is **NO-GO**. Private/personal purpose
-does not satisfy the plan's zero-unresolved-high/critical requirement.
+The vulnerability sub-gate is now technically clear. The overall license gate
+remains **NO-GO** because component rights and written approvals below are
+independent requirements.
 
 ## Primary evidence
 
@@ -72,7 +74,7 @@ does not satisfy the plan's zero-unresolved-high/critical requirement.
 1. Written commercial/internal-evaluation rights for the OmniVoice checkpoint and Boson tokenizer, or replacement components followed by full requalification.
 2. Written wrapper provenance/permission and Demucs checkpoint redistribution/use rights.
 3. Counsel sign-off on all notice, acceptable-use, consent, biometric-style, and provider-processing obligations.
-4. Triage and remediate the independent OCI scan findings, rebuild from a maintained immutable CUDA/PyTorch base, requalify model/runtime parity, and produce a repeat scan with zero unresolved critical/high findings. No suppression or exception may be treated as clearance without evidence-backed independent review.
+4. Complete package-level review of all restricted/unknown license observations and retain the final zero-critical/high OCI scan as immutable evidence. Requalify model/runtime parity on real GPU hardware; no suppression or exception may be treated as clearance without evidence-backed independent review.
 5. The binding RunPod DPA and the written retention, backup-deletion, access, and data-center answers required by the separate human-data gate.
 
 Until all five items are evidenced, the repository must retain the
