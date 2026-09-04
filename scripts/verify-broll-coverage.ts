@@ -274,6 +274,60 @@ assert.equal(probed.droppedAssetCount, 1);
 assert.ok(probed.segments.every((segment) => segment.src === "/short.mp4"));
 assert.ok(probed.segments.every((segment) => segment.clipDuration === 4.5));
 
+// Production replay 2026-09-04: an uploaded presenter clip measured 6.16s and
+// owned the same 6.16s timeline. Render preflight subtracted the reusable-stock
+// safety margin anyway, invented a 0.5s tail, and rejected the job before a
+// RenderJob existed. Timeline-aligned media is authoritative and must remain
+// aligned instead of being shortened or looped like reusable stock.
+for (const supportedFps of [24, 30, 50, 60]) {
+  const exactUploadDurationSec = 6.16;
+  const exactUpload = coverProbedBrollTimeline(
+    [{
+      asset: {
+        src: "/uploaded-presenter.mp4",
+        start: 0,
+        end: exactUploadDurationSec,
+        clipOffset: 0,
+        timelineAligned: true,
+      },
+      actualDurationSec: exactUploadDurationSec,
+      probeRequired: true,
+    }],
+    exactUploadDurationSec,
+    supportedFps,
+  );
+  assert.equal(
+    exactUpload.complete,
+    true,
+    `an exact-duration timeline-aligned upload remains renderable at ${supportedFps}fps`,
+  );
+  assert.ok(
+    exactUpload.metrics.uncoveredTailSec <= 1 / supportedFps,
+    "accepted upload coverage never hides more than the one-frame rounding tolerance",
+  );
+
+  const materiallyShortUpload = coverProbedBrollTimeline(
+    [{
+      asset: {
+        src: "/short-uploaded-presenter.mp4",
+        start: 0,
+        end: exactUploadDurationSec,
+        clipOffset: 0,
+        timelineAligned: true,
+      },
+      actualDurationSec: exactUploadDurationSec - 3 / supportedFps,
+      probeRequired: true,
+    }],
+    exactUploadDurationSec,
+    supportedFps,
+  );
+  assert.equal(
+    materiallyShortUpload.complete,
+    false,
+    `a timeline-aligned upload short by three frames still fails closed at ${supportedFps}fps`,
+  );
+}
+
 const allMissing = coverProbedBrollTimeline(
   [{ asset: { src: "/missing.mp4", start: 0, end: 30 }, actualDurationSec: null, probeRequired: true }],
   30,

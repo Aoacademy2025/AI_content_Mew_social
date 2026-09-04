@@ -491,9 +491,18 @@ export function coverProbedBrollTimeline(
 
     probedAssetCount += 1;
     const actualDurationSec = entry.actualDurationSec;
+    // Reusable stock may be cut from arbitrary offsets and crossfaded, so keep
+    // the conservative probe margin that protects decoder tails. A
+    // timeline-aligned upload is different: its source clock is the timeline
+    // clock, and playableDuration intentionally lets it reach the final frame.
+    // Subtracting the stock margin here invents a missing tail on every exact-
+    // duration presenter upload and blocks the RenderJob before Remotion runs.
+    const probeSafetyMarginSec = entry.asset.timelineAligned === true
+      ? 0
+      : BROLL_PROBE_SAFETY_MARGIN_SEC;
     const safeDurationSec =
       typeof actualDurationSec === "number" && Number.isFinite(actualDurationSec)
-        ? actualDurationSec - BROLL_PROBE_SAFETY_MARGIN_SEC
+        ? actualDurationSec - probeSafetyMarginSec
         : Number.NaN;
     if (!Number.isFinite(safeDurationSec) || safeDurationSec < minimumSafeDurationSec) {
       droppedAssetCount += 1;
