@@ -17,32 +17,37 @@
       "core/watermark.py"
     ]
   },
-  "base_image": "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126",
+  "base_image": "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee",
   "base_runtime": {
     "python": "3.11",
-    "torch": "2.4.1",
-    "torchaudio": "2.4.1",
-    "triton": "3.0.0",
-    "cuda": "12.1",
+    "torch": "2.6.0",
+    "torchaudio": "2.6.0",
+    "triton": "3.2.0",
+    "cuda": "12.4",
     "cudnn_major": 9
   },
   "system_packages": {
     "build-essential": "12.9ubuntu3",
     "ca-certificates": "20260601~22.04.1",
     "git": "1:2.34.1-1ubuntu1.17",
-    "libsndfile1": "1.0.31-2ubuntu0.2"
+    "gpgv": "2.2.27-3ubuntu2.5",
+    "libsndfile1": "1.0.31-2ubuntu0.2",
+    "libssl3": "3.0.2-0ubuntu1.25",
+    "openssl": "3.0.2-0ubuntu1.25"
   },
-  "requirements_lock_sha256": "d8859924b01c3765d6d75b65d879d73c4ea188e11b61ed117d788dcd84e0d127",
-  "requirements_lock_package_count": 136,
-  "build_requirements_lock_sha256": "6357035223092dd3ccc13ab5b161e1ddbf27599804609029c9d5bd18a6e60c68",
+  "requirements_lock_sha256": "fcd81a2403dd2b62b9c7b5420bcda2701ce3d3935c12c7cc9f739f0ab4f6eb4b",
+  "requirements_lock_package_count": 111,
+  "build_requirements_lock_sha256": "69631b729db5fc9e23c13db42474223fe1d00057eccadd541969aea94fa4de76",
   "build_requirements_lock_package_count": 9,
-  "runtime_manifest_sha256": "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020",
+  "runpod_requirement_lock_sha256": "a97ca9f44f0d30a715604270474144dbcfa72541603b44431acd56c039e64c49",
+  "runpod_requirement_lock_package_count": 1,
+  "runtime_manifest_sha256": "f686dbfdf6de18ee60f57f7bdc5b202e67cf7454d9f71b08d8256817916ec88e",
   "model_manifest_sha256": "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb",
   "demucs_runtime_compatibility": {
     "status": "metadata-patched-pending-gpu-runtime",
     "declared_requirement": "torchaudio>=0.8,<2.1",
     "patched_requirement": "torchaudio>=0.8",
-    "base_requirement": "torchaudio==2.4.1",
+    "base_requirement": "torchaudio==2.6.0",
     "patch_path": "demucs-torchaudio-2.4-compat.patch",
     "patch_sha256": "815723bb776e2ab6f31fd0669ea52c5288e70d43db72e9da5e6223ab88caa082",
     "scope": "one-line distribution metadata upper-bound removal; inference source unchanged",
@@ -66,6 +71,16 @@
     "scope": "one-line distribution metadata removal; inference source unchanged",
     "rationale": "Gradio is used only by the excluded interactive demo; omitting its graph prevents demo media assets from entering any worker layer"
   },
+  "runpod_runtime_compatibility": {
+    "status": "metadata-patched",
+    "version": "1.12.0",
+    "wheel_sha256": "2c52d5ad4268879bd4d8288f84a9861488abc756ffc5195d95f1cffe4c4f3454",
+    "removed_requirement": "fastapi[all]>=0.141.1",
+    "original_metadata_sha256": "7766c4b844c749ed119a34e37d09a6e7635e331984bb1776507f8219af5936a4",
+    "patched_metadata_sha256": "8eef34ce6018c84bb4febfeff7967a33aea0a07ce5a7f95a94279885b6505b78",
+    "scope": "one-line distribution metadata removal; serverless source unchanged",
+    "rationale": "FastAPI is imported only for the excluded local API/realtime server path; the official serverless queue worker uses the separately locked non-FastAPI dependency closure"
+  },
   "base_image_scanner_exceptions": {
     "status": "exact-public-fixtures-only",
     "raw_mpeg_content_minimum_milliseconds": 1000,
@@ -79,24 +94,18 @@
       "usr/lib/x86_64-linux-gnu/libgnutls.so.30.31.0": "79be57f85922e4f839de9a3ebc21993f57c39f94a2e95b7805feabe446c7cb2f"
     },
     "known_public_secret_fixture_containers_sha256": {
-      "opt/conda/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "517cd51965556674c6d2f9ed752851bf8e3ca79257e6e94e6f7f1ead665f95dc",
+      "opt/conda/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "4a4bf06d622e52ba507abc178034324aa5cd8afd2fe1de51b61f6cefc65a98cb",
       "opt/conda/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
-      "opt/conda/pkgs/python-3.11.9-hb806964_0_cpython/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "517cd51965556674c6d2f9ed752851bf8e3ca79257e6e94e6f7f1ead665f95dc",
-      "opt/conda/pkgs/python-3.11.9-hb806964_0_cpython/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
-      "opt/conda/pkgs/setuptools-73.0.1-pyhd8ed1ab_0/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107",
-      "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/__pycache__/test_upload.cpython-311.pyc": "afb66bb085fb52e4ecc940ce6bfadac53c5b33c2112a031ae2f4c3d31c801494",
-      "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107",
-      "opt/venv/lib/python3.11/site-packages/runpod-1.10.0.dist-info/METADATA": "9a4fdc594b37ad414736ffa12652fd8b01c64f1e5c36db8c8f3b572c84d0bbca"
+      "opt/venv/lib/python3.11/site-packages/runpod-1.12.0.dist-info/METADATA": "8eef34ce6018c84bb4febfeff7967a33aea0a07ce5a7f95a94279885b6505b78"
     },
     "known_nonvoice_audio_fixtures_sha256": {
-      "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e",
-      "opt/conda/pkgs/ipython-8.27.0-pyh707e725_0/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e"
+      "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e"
     },
     "known_nonvoice_audio_hardlinks": {
-      "opt/conda/pkgs/ipython-8.27.0-pyh707e725_0/site-packages/IPython/lib/tests/test.wav": "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav"
+      "opt/conda/pkgs/ipython-8.31.0-pyh707e725_0/site-packages/IPython/lib/tests/test.wav": "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav"
     },
     "known_python_path_config_hardlinks": {
-      "opt/conda/pkgs/setuptools-73.0.1-pyhd8ed1ab_0/site-packages/distutils-precedence.pth": "opt/conda/lib/python3.11/site-packages/distutils-precedence.pth"
+      "opt/conda/pkgs/setuptools-75.8.0-pyhff2d567_0/site-packages/distutils-precedence.pth": "opt/conda/lib/python3.11/site-packages/distutils-precedence.pth"
     },
     "policy": "all exceptions require exact path plus full-file hash or exact hardlink target; all other audio, credential, key, catalog, and model-link evidence fails closed"
   },

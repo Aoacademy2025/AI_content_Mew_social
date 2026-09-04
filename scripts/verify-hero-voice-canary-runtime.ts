@@ -329,7 +329,7 @@ function syntheticObjectiveEvidence(
       templateId: run.manifest.identities.candidate.templateId,
     },
     stageAttestationSha256: heroVoiceCanarySha256(heroVoiceCanaryJcsBytes({
-      sourceManifestSha256: "cca5a8845c5823dbb7dff7710dc9bf2759a9e01f60dc1ca2cb9aae0dd2bca4ca",
+      sourceManifestSha256: "78f8cd2a3d5608a5028560ac6a8c1469e8c0a5f445c7620d69373ee3fc42a3e0",
       modelManifestSha256: "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb",
       combinedStages: [
         "speech_text_attestation", "reference_decode", "demucs_reference_enhancement", "reference_peak_normalize",

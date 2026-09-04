@@ -198,7 +198,9 @@ def synthetic_oci_layout(
         {
             "architecture": config_architecture,
             "os": "linux",
-            "config": {"Env": [] if config_environment is None else config_environment},
+            "config": {
+                "Env": ["RUNPOD_LOG_LEVEL=INFO"] if config_environment is None else config_environment
+            },
             "rootfs": {"type": "layers", "diff_ids": diff_ids if config_diff_ids is None else config_diff_ids},
             "history": (
                 [{"created_by": f"synthetic layer {index}"} for index in range(layer_count)]
@@ -1290,7 +1292,16 @@ class StaticAndAbsenceTests(unittest.TestCase):
     def test_authenticated_config_platform_diff_ids_env_and_history_are_bound(self):
         cases = (
             ({"config_architecture": "arm64"}, "platform"),
-            ({"config_environment": ["RUNPOD_API_KEY=abcdefghijklmnopqrstuvwxyz012345"]}, "secret/payload"),
+            ({"config_environment": []}, "RunPod INFO log level"),
+            (
+                {
+                    "config_environment": [
+                        "RUNPOD_LOG_LEVEL=INFO",
+                        "RUNPOD_API_KEY=abcdefghijklmnopqrstuvwxyz012345",
+                    ]
+                },
+                "secret/payload",
+            ),
             ({"config_history": [{"created_by": "RUN ref_audio_b64=forbidden"}]}, "secret/payload"),
             ({"config_diff_ids": ["sha256:" + "0" * 64]}, "diff_ids"),
             ({"config_history": [{"created_by": "metadata only", "empty_layer": True}]}, "history/layer count"),

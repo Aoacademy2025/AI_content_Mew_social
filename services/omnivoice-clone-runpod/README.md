@@ -84,12 +84,17 @@ bound by `RUNTIME_MANIFEST.json` through the hard-coded source-manifest digest.
 Environment variables and dependency-injected identities cannot override these
 values. The final OCI digest remains an external immutable runtime attestation.
 
-`requirements.lock` contains every non-parent Python distribution with hashes.
-The parent-supplied `torch==2.4.1`, `torchaudio==2.4.1`, `triton==3.0.0`, CUDA
-12.1, and cuDNN 9 are constrained in `requirements.in` and asserted before/after
-installation. Build backends have their own hash lock; both source installs use
-`--no-build-isolation`; builder and runtime execute `pip check` and import smoke.
-Regenerate both locks with `bash compile_requirements.sh`.
+`requirements.lock` contains every non-parent, non-RunPod Python distribution
+with hashes. The official RunPod SDK 1.12.0 wheel has its own one-package hash
+lock and an exact metadata-only patch removes its unused FastAPI local/realtime
+server dependency; `RUNPOD_LOG_LEVEL=INFO` prevents result payloads from entering
+SDK DEBUG logs. The parent-supplied `torch==2.6.0`, `torchaudio==2.6.0`,
+`triton==3.2.0`, CUDA 12.4, and cuDNN 9 are constrained in `requirements.in` and
+asserted before/after installation. Build backends have their own hash lock; all
+source installs use `--no-build-isolation`; builder and runtime execute `pip
+check` and import smoke. Regenerate the runtime and build locks with `bash
+compile_requirements.sh`; the separately audited RunPod wheel lock is updated
+only after its metadata is reviewed.
 
 For Task 6, `verify_image.py --oci-layout OCI --expected-manifest-digest
 sha256:...` verifies the OCI index, selected linux/amd64 manifest, config, every
@@ -121,8 +126,9 @@ PY
 ```
 
 No real voice, provider request, GPU, or model download is used by these checks.
-The checked-in SPDX covers source, all 136 locked runtime distributions, all 9
-locked source-build distributions, all 12 model files, and declared base/system
+The checked-in SPDX covers source, all 111 locked runtime distributions, the
+separately locked RunPod SDK, all 9 locked source-build distributions, all 12
+model files, and declared base/system
 components and relationships; it is not the Task 6 final-image, digest-bound SBOM.
 See `THIRD_PARTY_NOTICES.md`: all use remains internal evaluation only, and the
 OmniVoice/Demucs/wrapper rights gaps block publication and commercial release.

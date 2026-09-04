@@ -110,6 +110,8 @@ handler = handle_job
 if __name__ == "__main__":
     if os.environ.get("HERO_VOICE_EAGER_LOAD") != "1":
         raise RuntimeError("HERO_VOICE_EAGER_LOAD=1 is required in the release image")
+    if os.environ.get("RUNPOD_LOG_LEVEL") != "INFO":
+        raise RuntimeError("RUNPOD_LOG_LEVEL=INFO is required in the release image")
     load_worker_identity()
     _default_runtime()
     import runpod

@@ -22,14 +22,17 @@ authorize publication, customer use, or commercial use.
   pending written confirmation.
   Its distribution metadata declares `torchaudio>=0.8,<2.1`; this build applies
   the hash-pinned one-line metadata patch recorded in `SOURCE_MANIFEST.json` and
-  installs the otherwise unchanged source against `torch/torchaudio==2.4.1`.
+  installs the otherwise unchanged source against `torch/torchaudio==2.6.0`.
   Runtime compatibility still requires the immutable-image and real GPU/audio gates.
 - AudioSeal package 0.2.0, source at
   `e63a8a0e5cdf7bb797159c92ba15961557fe9bd2`, and official generator/detector
   weights at revision `3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba` are MIT. Preserve the
   MIT notice.
 - Resemblyzer is Apache-2.0. Librosa is ISC. SciPy is BSD-3-Clause. NumPy is
-  BSD-3-Clause. RunPod's SDK and all remaining Python/system dependencies retain
+  BSD-3-Clause. RunPod SDK 1.12.0 is separately hash-locked; its FastAPI-only
+  local/realtime-server requirement is removed by the exact metadata-only patch
+  recorded in `SOURCE_MANIFEST.json`, while its serverless source is unchanged.
+  RunPod's SDK and all remaining Python/system dependencies retain
   their own upstream terms as recorded in the complete checked-in source/runtime
   SPDX and hash locks. That SPDX is not the final-image SBOM; Task 6 must generate
   a separate OCI-digest-bound inventory and scan.

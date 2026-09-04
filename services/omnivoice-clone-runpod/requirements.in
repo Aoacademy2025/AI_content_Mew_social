@@ -3,9 +3,9 @@
 # CUDA ABI. `bash compile_requirements.sh` omits only artifacts already supplied
 # and asserted from that parent (torch/torchaudio/triton/CUDA component wheels).
 # Dockerfile asserts these versions/imports before and after installing the lock.
-torch==2.4.1
-torchaudio==2.4.1
-triton==3.0.0
+torch==2.6.0
+torchaudio==2.6.0
+triton==3.2.0
 
 # OmniVoice inference imports. The upstream Gradio dependency serves only its
 # interactive demo and is removed by an exact hash-checked METADATA patch.
@@ -28,6 +28,28 @@ lameenc==1.8.1
 openunmix==1.3.0
 omegaconf==2.3.0
 resemblyzer==0.1.4
-runpod==1.10.0
+# RunPod is installed from runpod-requirement.lock with --no-deps after an
+# exact METADATA patch removes its unused FastAPI control-plane/API-server
+# extra. Keep the complete non-FastAPI direct dependency closure explicit so
+# importing the official serverless worker remains deterministic.
+aiohttp[speedups]>=3.14.3
+aiohttp-retry>=2.9.1
+backoff>=2.2.1
+boto3>=1.43.66
+click>=8.4.2
+colorama>=0.4.6,<0.4.7
+cryptography>=50.0.0
+paramiko>=5.0.0
+prettytable>=3.18.0
+psutil>=7.2.2
+py-cpuinfo>=9.0.0
+inquirerpy==0.3.4
+requests>=2.34.2
+tomli>=2.4.1
+tomlkit>=0.15.1
+tqdm-loggable>=0.4.1
+urllib3>=2.7.0
+watchdog>=6.0.0
+pillow==12.3.0
 scipy==1.17.1
 webrtcvad==2.0.10

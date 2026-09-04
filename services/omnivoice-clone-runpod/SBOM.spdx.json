@@ -28,7 +28,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020"
+          "checksumValue": "f686dbfdf6de18ee60f57f7bdc5b202e67cf7454d9f71b08d8256817916ec88e"
         }
       ],
       "comment": "Checked-in source/runtime inventory for internal evaluation. This is not the digest-bound final-image SBOM; Task 6 must generate and attest that separately. Wrapper and model rights remain unresolved."
@@ -36,8 +36,8 @@
     {
       "name": "pytorch-pytorch-runtime-base",
       "SPDXID": "SPDXRef-Package-BaseImage",
-      "versionInfo": "2.4.1-cuda12.1-cudnn9",
-      "downloadLocation": "pkg:docker/pytorch/pytorch@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126",
+      "versionInfo": "2.6.0-cuda12.4-cudnn9",
+      "downloadLocation": "pkg:docker/pytorch/pytorch@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -112,7 +112,7 @@
     {
       "name": "PyTorch",
       "SPDXID": "SPDXRef-Runtime-Torch",
-      "versionInfo": "2.4.1",
+      "versionInfo": "2.6.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -123,7 +123,7 @@
     {
       "name": "torchaudio",
       "SPDXID": "SPDXRef-Runtime-Torchaudio",
-      "versionInfo": "2.4.1",
+      "versionInfo": "2.6.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -134,7 +134,7 @@
     {
       "name": "Triton",
       "SPDXID": "SPDXRef-Runtime-Triton",
-      "versionInfo": "3.0.0",
+      "versionInfo": "3.2.0",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -145,7 +145,7 @@
     {
       "name": "NVIDIA-CUDA",
       "SPDXID": "SPDXRef-Runtime-CUDA",
-      "versionInfo": "12.1",
+      "versionInfo": "12.4",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -201,6 +201,39 @@
       "name": "libsndfile1",
       "SPDXID": "SPDXRef-System-libsndfile1",
       "versionInfo": "1.0.31-2ubuntu0.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Exact apt pin asserted by SOURCE_MANIFEST.json/Dockerfile; final installed-package attestation remains Task 6."
+    },
+    {
+      "name": "gpgv",
+      "SPDXID": "SPDXRef-System-gpgv",
+      "versionInfo": "2.2.27-3ubuntu2.5",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Exact apt pin asserted by SOURCE_MANIFEST.json/Dockerfile; final installed-package attestation remains Task 6."
+    },
+    {
+      "name": "libssl3",
+      "SPDXID": "SPDXRef-System-libssl3",
+      "versionInfo": "3.0.2-0ubuntu1.25",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Exact apt pin asserted by SOURCE_MANIFEST.json/Dockerfile; final installed-package attestation remains Task 6."
+    },
+    {
+      "name": "openssl",
+      "SPDXID": "SPDXRef-System-openssl",
+      "versionInfo": "3.0.2-0ubuntu1.25",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -424,17 +457,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "agent-detector",
-      "SPDXID": "SPDXRef-Python-agent-detector",
-      "versionInfo": "2.0.0",
-      "downloadLocation": "pkg:pypi/agent-detector@2.0.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "aiodns",
       "SPDXID": "SPDXRef-Python-aiodns",
       "versionInfo": "4.0.4",
@@ -494,17 +516,6 @@
       "SPDXID": "SPDXRef-Python-annotated-doc",
       "versionInfo": "0.0.5",
       "downloadLocation": "pkg:pypi/annotated-doc@0.0.5",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "annotated-types",
-      "SPDXID": "SPDXRef-Python-annotated-types",
-      "versionInfo": "0.8.0",
-      "downloadLocation": "pkg:pypi/annotated-types@0.8.0",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -721,28 +732,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "detect-installer",
-      "SPDXID": "SPDXRef-Python-detect-installer",
-      "versionInfo": "0.2.1",
-      "downloadLocation": "pkg:pypi/detect-installer@0.2.1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "dnspython",
-      "SPDXID": "SPDXRef-Python-dnspython",
-      "versionInfo": "2.8.0",
-      "downloadLocation": "pkg:pypi/dnspython@2.8.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "dora-search",
       "SPDXID": "SPDXRef-Python-dora-search",
       "versionInfo": "0.1.12",
@@ -758,61 +747,6 @@
       "SPDXID": "SPDXRef-Python-einops",
       "versionInfo": "0.8.2",
       "downloadLocation": "pkg:pypi/einops@0.8.2",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "email-validator",
-      "SPDXID": "SPDXRef-Python-email-validator",
-      "versionInfo": "2.3.0",
-      "downloadLocation": "pkg:pypi/email-validator@2.3.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "fastapi",
-      "SPDXID": "SPDXRef-Python-fastapi",
-      "versionInfo": "0.141.1",
-      "downloadLocation": "pkg:pypi/fastapi@0.141.1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "fastapi-cli",
-      "SPDXID": "SPDXRef-Python-fastapi-cli",
-      "versionInfo": "0.0.32",
-      "downloadLocation": "pkg:pypi/fastapi-cli@0.0.32",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "fastapi-cloud-cli",
-      "SPDXID": "SPDXRef-Python-fastapi-cloud-cli",
-      "versionInfo": "0.25.0",
-      "downloadLocation": "pkg:pypi/fastapi-cloud-cli@0.25.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "fastar",
-      "SPDXID": "SPDXRef-Python-fastar",
-      "versionInfo": "0.12.0",
-      "downloadLocation": "pkg:pypi/fastar@0.12.0",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -886,17 +820,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "httptools",
-      "SPDXID": "SPDXRef-Python-httptools",
-      "versionInfo": "0.8.0",
-      "downloadLocation": "pkg:pypi/httptools@0.8.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "httpx",
       "SPDXID": "SPDXRef-Python-httpx",
       "versionInfo": "0.28.1",
@@ -945,17 +868,6 @@
       "SPDXID": "SPDXRef-Python-invoke",
       "versionInfo": "3.0.3",
       "downloadLocation": "pkg:pypi/invoke@3.0.3",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "itsdangerous",
-      "SPDXID": "SPDXRef-Python-itsdangerous",
-      "versionInfo": "2.2.0",
-      "downloadLocation": "pkg:pypi/itsdangerous@2.2.0",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1161,6 +1073,17 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
+      "name": "nvidia-cusparselt-cu12",
+      "SPDXID": "SPDXRef-Python-nvidia-cusparselt-cu12",
+      "versionInfo": "0.6.2",
+      "downloadLocation": "pkg:pypi/nvidia-cusparselt-cu12@0.6.2",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
+    },
+    {
       "name": "omegaconf",
       "SPDXID": "SPDXRef-Python-omegaconf",
       "versionInfo": "2.3.0",
@@ -1209,6 +1132,17 @@
       "SPDXID": "SPDXRef-Python-pfzy",
       "versionInfo": "0.3.4",
       "downloadLocation": "pkg:pypi/pfzy@0.3.4",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
+    },
+    {
+      "name": "pillow",
+      "SPDXID": "SPDXRef-Python-pillow",
+      "versionInfo": "12.3.0",
+      "downloadLocation": "pkg:pypi/pillow@12.3.0",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1326,50 +1260,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "pydantic",
-      "SPDXID": "SPDXRef-Python-pydantic",
-      "versionInfo": "2.13.5",
-      "downloadLocation": "pkg:pypi/pydantic@2.13.5",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "pydantic-core",
-      "SPDXID": "SPDXRef-Python-pydantic-core",
-      "versionInfo": "2.46.5",
-      "downloadLocation": "pkg:pypi/pydantic-core@2.46.5",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "pydantic-extra-types",
-      "SPDXID": "SPDXRef-Python-pydantic-extra-types",
-      "versionInfo": "2.11.1",
-      "downloadLocation": "pkg:pypi/pydantic-extra-types@2.11.1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "pydantic-settings",
-      "SPDXID": "SPDXRef-Python-pydantic-settings",
-      "versionInfo": "2.15.0",
-      "downloadLocation": "pkg:pypi/pydantic-settings@2.15.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "pydub",
       "SPDXID": "SPDXRef-Python-pydub",
       "versionInfo": "0.25.1",
@@ -1407,28 +1297,6 @@
       "SPDXID": "SPDXRef-Python-python-dateutil",
       "versionInfo": "2.9.0.post0",
       "downloadLocation": "pkg:pypi/python-dateutil@2.9.0.post0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "python-dotenv",
-      "SPDXID": "SPDXRef-Python-python-dotenv",
-      "versionInfo": "1.2.3",
-      "downloadLocation": "pkg:pypi/python-dotenv@1.2.3",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "python-multipart",
-      "SPDXID": "SPDXRef-Python-python-multipart",
-      "versionInfo": "0.0.32",
-      "downloadLocation": "pkg:pypi/python-multipart@0.0.32",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1502,39 +1370,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "rich-toolkit",
-      "SPDXID": "SPDXRef-Python-rich-toolkit",
-      "versionInfo": "0.20.3",
-      "downloadLocation": "pkg:pypi/rich-toolkit@0.20.3",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "rignore",
-      "SPDXID": "SPDXRef-Python-rignore",
-      "versionInfo": "0.8.1",
-      "downloadLocation": "pkg:pypi/rignore@0.8.1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "runpod",
-      "SPDXID": "SPDXRef-Python-runpod",
-      "versionInfo": "1.10.0",
-      "downloadLocation": "pkg:pypi/runpod@1.10.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "s3transfer",
       "SPDXID": "SPDXRef-Python-s3transfer",
       "versionInfo": "0.19.2",
@@ -1572,17 +1407,6 @@
       "SPDXID": "SPDXRef-Python-scipy",
       "versionInfo": "1.17.1",
       "downloadLocation": "pkg:pypi/scipy@1.17.1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "sentry-sdk",
-      "SPDXID": "SPDXRef-Python-sentry-sdk",
-      "versionInfo": "2.68.1",
-      "downloadLocation": "pkg:pypi/sentry-sdk@2.68.1",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1634,17 +1458,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "starlette",
-      "SPDXID": "SPDXRef-Python-starlette",
-      "versionInfo": "0.52.1",
-      "downloadLocation": "pkg:pypi/starlette@0.52.1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "submitit",
       "SPDXID": "SPDXRef-Python-submitit",
       "versionInfo": "1.5.4",
@@ -1658,8 +1471,8 @@
     {
       "name": "sympy",
       "SPDXID": "SPDXRef-Python-sympy",
-      "versionInfo": "1.14.0",
-      "downloadLocation": "pkg:pypi/sympy@1.14.0",
+      "versionInfo": "1.13.1",
+      "downloadLocation": "pkg:pypi/sympy@1.13.1",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1713,8 +1526,8 @@
     {
       "name": "tomlkit",
       "SPDXID": "SPDXRef-Python-tomlkit",
-      "versionInfo": "0.13.3",
-      "downloadLocation": "pkg:pypi/tomlkit@0.13.3",
+      "versionInfo": "0.15.1",
+      "downloadLocation": "pkg:pypi/tomlkit@0.15.1",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1788,17 +1601,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "typing-inspection",
-      "SPDXID": "SPDXRef-Python-typing-inspection",
-      "versionInfo": "0.4.4",
-      "downloadLocation": "pkg:pypi/typing-inspection@0.4.4",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "urllib3",
       "SPDXID": "SPDXRef-Python-urllib3",
       "versionInfo": "2.7.0",
@@ -1810,43 +1612,10 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "uvicorn",
-      "SPDXID": "SPDXRef-Python-uvicorn",
-      "versionInfo": "0.52.4",
-      "downloadLocation": "pkg:pypi/uvicorn@0.52.4",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "uvloop",
-      "SPDXID": "SPDXRef-Python-uvloop",
-      "versionInfo": "0.22.1",
-      "downloadLocation": "pkg:pypi/uvloop@0.22.1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "watchdog",
       "SPDXID": "SPDXRef-Python-watchdog",
       "versionInfo": "6.0.0",
       "downloadLocation": "pkg:pypi/watchdog@6.0.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "watchfiles",
-      "SPDXID": "SPDXRef-Python-watchfiles",
-      "versionInfo": "1.2.0",
-      "downloadLocation": "pkg:pypi/watchfiles@1.2.0",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1887,17 +1656,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "websockets",
-      "SPDXID": "SPDXRef-Python-websockets",
-      "versionInfo": "17.1",
-      "downloadLocation": "pkg:pypi/websockets@17.1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "yarl",
       "SPDXID": "SPDXRef-Python-yarl",
       "versionInfo": "1.24.5",
@@ -1907,6 +1665,23 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
+    },
+    {
+      "name": "runpod",
+      "SPDXID": "SPDXRef-Package-RunPod-Worker-SDK",
+      "versionInfo": "1.12.0",
+      "downloadLocation": "pkg:pypi/runpod@1.12.0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "2c52d5ad4268879bd4d8288f84a9861488abc756ffc5195d95f1cffe4c4f3454"
+        }
+      ],
+      "comment": "Installed from runpod-requirement.lock with --no-deps. An exact before/after hash-checked METADATA patch removes only the FastAPI local/realtime server dependency; the official serverless queue worker source is unchanged."
     },
     {
       "name": "flit-core",
@@ -1933,8 +1708,8 @@
     {
       "name": "packaging",
       "SPDXID": "SPDXRef-BuildPython-packaging",
-      "versionInfo": "23.2",
-      "downloadLocation": "pkg:pypi/packaging@23.2",
+      "versionInfo": "24.2",
+      "downloadLocation": "pkg:pypi/packaging@24.2",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1977,8 +1752,8 @@
     {
       "name": "setuptools",
       "SPDXID": "SPDXRef-BuildPython-setuptools",
-      "versionInfo": "67.8.0",
-      "downloadLocation": "pkg:pypi/setuptools@67.8.0",
+      "versionInfo": "78.1.1",
+      "downloadLocation": "pkg:pypi/setuptools@78.1.1",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1999,8 +1774,8 @@
     {
       "name": "wheel",
       "SPDXID": "SPDXRef-BuildPython-wheel",
-      "versionInfo": "0.40.0",
-      "downloadLocation": "pkg:pypi/wheel@0.40.0",
+      "versionInfo": "0.46.2",
+      "downloadLocation": "pkg:pypi/wheel@0.46.2",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -2173,11 +1948,6 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-agent-detector"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-aiodns"
     },
     {
@@ -2204,11 +1974,6 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-annotated-doc"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-annotated-types"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2308,47 +2073,12 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-detect-installer"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-dnspython"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-dora-search"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-einops"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-email-validator"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-fastapi"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-fastapi-cli"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-fastapi-cloud-cli"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-fastar"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2383,11 +2113,6 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-httptools"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-httpx"
     },
     {
@@ -2409,11 +2134,6 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-invoke"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-itsdangerous"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2508,6 +2228,11 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Python-nvidia-cusparselt-cu12"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-omegaconf"
     },
     {
@@ -2529,6 +2254,11 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-pfzy"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-Python-pillow"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2583,26 +2313,6 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-pydantic"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-pydantic-core"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-pydantic-extra-types"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-pydantic-settings"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-pydub"
     },
     {
@@ -2619,16 +2329,6 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-python-dateutil"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-python-dotenv"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-python-multipart"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2663,21 +2363,6 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-rich-toolkit"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-rignore"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-runpod"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-s3transfer"
     },
     {
@@ -2698,11 +2383,6 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-sentry-sdk"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-shellingham"
     },
     {
@@ -2719,11 +2399,6 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-soxr"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-starlette"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2793,32 +2468,12 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-typing-inspection"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-urllib3"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-uvicorn"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-uvloop"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-watchdog"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-watchfiles"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2838,12 +2493,12 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-websockets"
+      "relatedSpdxElement": "SPDXRef-Python-yarl"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-yarl"
+      "relatedSpdxElement": "SPDXRef-Package-RunPod-Worker-SDK"
     },
     {
       "spdxElementId": "SPDXRef-BuildPython-flit-core",
@@ -2856,6 +2511,11 @@
       "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
     },
     {
+      "spdxElementId": "SPDXRef-BuildPython-flit-core",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
       "spdxElementId": "SPDXRef-BuildPython-hatchling",
       "relationshipType": "BUILD_DEPENDENCY_OF",
       "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
@@ -2864,6 +2524,11 @@
       "spdxElementId": "SPDXRef-BuildPython-hatchling",
       "relationshipType": "BUILD_DEPENDENCY_OF",
       "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-hatchling",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
     },
     {
       "spdxElementId": "SPDXRef-BuildPython-packaging",
@@ -2876,6 +2541,11 @@
       "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
     },
     {
+      "spdxElementId": "SPDXRef-BuildPython-packaging",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
       "spdxElementId": "SPDXRef-BuildPython-pathspec",
       "relationshipType": "BUILD_DEPENDENCY_OF",
       "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
@@ -2884,6 +2554,11 @@
       "spdxElementId": "SPDXRef-BuildPython-pathspec",
       "relationshipType": "BUILD_DEPENDENCY_OF",
       "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pathspec",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
     },
     {
       "spdxElementId": "SPDXRef-BuildPython-pip",
@@ -2896,6 +2571,11 @@
       "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
     },
     {
+      "spdxElementId": "SPDXRef-BuildPython-pip",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
       "spdxElementId": "SPDXRef-BuildPython-pluggy",
       "relationshipType": "BUILD_DEPENDENCY_OF",
       "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
@@ -2904,6 +2584,11 @@
       "spdxElementId": "SPDXRef-BuildPython-pluggy",
       "relationshipType": "BUILD_DEPENDENCY_OF",
       "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-pluggy",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
     },
     {
       "spdxElementId": "SPDXRef-BuildPython-setuptools",
@@ -2916,6 +2601,11 @@
       "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
     },
     {
+      "spdxElementId": "SPDXRef-BuildPython-setuptools",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
       "spdxElementId": "SPDXRef-BuildPython-trove-classifiers",
       "relationshipType": "BUILD_DEPENDENCY_OF",
       "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
@@ -2926,6 +2616,11 @@
       "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
     },
     {
+      "spdxElementId": "SPDXRef-BuildPython-trove-classifiers",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
       "spdxElementId": "SPDXRef-BuildPython-wheel",
       "relationshipType": "BUILD_DEPENDENCY_OF",
       "relatedSpdxElement": "SPDXRef-Package-OmniVoice-Source"
@@ -2934,6 +2629,26 @@
       "spdxElementId": "SPDXRef-BuildPython-wheel",
       "relationshipType": "BUILD_DEPENDENCY_OF",
       "relatedSpdxElement": "SPDXRef-Package-AudioSeal-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-BuildPython-wheel",
+      "relationshipType": "BUILD_DEPENDENCY_OF",
+      "relatedSpdxElement": "SPDXRef-Package-Demucs-Source"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-System-gpgv"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-System-libssl3"
+    },
+    {
+      "spdxElementId": "SPDXRef-Package-Worker",
+      "relationshipType": "DEPENDS_ON",
+      "relatedSpdxElement": "SPDXRef-System-openssl"
     }
   ]
 }

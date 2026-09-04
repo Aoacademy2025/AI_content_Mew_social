@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # check=skip=InvalidBaseImagePlatform
-FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126 AS builder
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -15,7 +15,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/context
-COPY build-requirements.lock build-requirements.in requirements.lock requirements.in MODEL_MANIFEST.json SOURCE_MANIFEST.json demucs-torchaudio-2.4-compat.patch ./
+COPY build-requirements.lock build-requirements.in requirements.lock requirements.in runpod-requirement.lock MODEL_MANIFEST.json SOURCE_MANIFEST.json demucs-torchaudio-2.4-compat.patch ./
 RUN python -m venv --system-site-packages /opt/venv \
     && /opt/venv/bin/pip install --require-hashes -r build-requirements.lock
 
@@ -26,10 +26,10 @@ import torch
 import torchaudio
 import triton
 
-assert torch.__version__.split("+")[0] == "2.4.1", torch.__version__
-assert torchaudio.__version__.split("+")[0] == "2.4.1", torchaudio.__version__
-assert triton.__version__ == "3.0.0", triton.__version__
-assert torch.version.cuda == "12.1", torch.version.cuda
+assert torch.__version__.split("+")[0] == "2.6.0", torch.__version__
+assert torchaudio.__version__.split("+")[0] == "2.6.0", torchaudio.__version__
+assert triton.__version__ == "3.2.0", triton.__version__
+assert torch.version.cuda == "12.4", torch.version.cuda
 assert torch.backends.cudnn.version() // 10_000 == 9, torch.backends.cudnn.version()
 PY
 
@@ -63,6 +63,7 @@ RUN git init /build/demucs \
     && /opt/venv/bin/pip wheel --no-deps --no-build-isolation --wheel-dir /build/wheels /build/demucs
 
 RUN /opt/venv/bin/pip install --require-hashes --no-deps --no-build-isolation -r requirements.lock \
+    && /opt/venv/bin/pip install --require-hashes --no-deps -r runpod-requirement.lock \
     && /opt/venv/bin/pip install --no-deps /build/wheels/omnivoice-0.1.5-py3-none-any.whl /build/wheels/audioseal-0.2.0-py3-none-any.whl /build/wheels/demucs-4.1.0a2-py3-none-any.whl \
     && /opt/venv/bin/python - <<'PY'
 import hashlib
@@ -77,6 +78,15 @@ assert omnivoice_raw.count(omnivoice_obsolete) == 1
 omnivoice_patched = omnivoice_raw.replace(omnivoice_obsolete, b"")
 assert hashlib.sha256(omnivoice_patched).hexdigest() == "f72051fb59f8967c0dd7dc6dd1cf2ca02c038dd6b1293fa5e5cb82481793d660"
 omnivoice_metadata.write_bytes(omnivoice_patched)
+
+runpod_metadata = Path("/opt/venv/lib/python3.11/site-packages/runpod-1.12.0.dist-info/METADATA")
+runpod_raw = runpod_metadata.read_bytes()
+assert hashlib.sha256(runpod_raw).hexdigest() == "7766c4b844c749ed119a34e37d09a6e7635e331984bb1776507f8219af5936a4"
+runpod_unused = b"Requires-Dist: fastapi[all]>=0.141.1\n"
+assert runpod_raw.count(runpod_unused) == 1
+runpod_patched = runpod_raw.replace(runpod_unused, b"")
+assert hashlib.sha256(runpod_patched).hexdigest() == "8eef34ce6018c84bb4febfeff7967a33aea0a07ce5a7f95a94279885b6505b78"
+runpod_metadata.write_bytes(runpod_patched)
 
 metadata = Path("/opt/venv/lib/python3.11/site-packages/Resemblyzer-0.1.4.dist-info/METADATA")
 raw = metadata.read_bytes()
@@ -173,7 +183,7 @@ for name in (
     importlib.import_module(name)
 PY
 
-FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126 AS runtime
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -185,17 +195,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/opt/models/.offline-hf-home \
     TORCH_HOME=/opt/models/.offline-torch-home \
     XDG_CACHE_HOME=/tmp/hero-voice-clone-cache \
-    HERO_VOICE_EAGER_LOAD=1
+    HERO_VOICE_EAGER_LOAD=1 \
+    RUNPOD_LOG_LEVEL=INFO
 
 LABEL org.opencontainers.image.source="https://github.com/Aoacademy2025/AI_content_Mew_social" \
       org.opencontainers.image.revision="8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb" \
-      org.opencontainers.image.base.digest="sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"
+      org.opencontainers.image.base.digest="sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ca-certificates=20260601~22.04.1 \
+       gpgv=2.2.27-3ubuntu2.5 \
        libsndfile1=1.0.31-2ubuntu0.2 \
+       libssl3=3.0.2-0ubuntu1.25 \
+       openssl=3.0.2-0ubuntu1.25 \
+    && apt-get purge -y linux-libc-dev \
     && rm -rf /var/lib/apt/lists/* \
+    && /opt/conda/bin/pip uninstall -y Brotli IPython jaraco.context pillow setuptools soupsieve urllib3 wheel \
+    && rm -rf /opt/conda/pkgs \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin worker \
     && install -d -o worker -g worker -m 0700 /tmp/hero-voice-clone-cache
 
@@ -205,12 +222,12 @@ WORKDIR /app
 COPY --chown=worker:worker \
     contract.py handler.py identity.py language.py pipeline.py runtime.py \
     MODEL_MANIFEST.json SOURCE_MANIFEST.json RUNTIME_MANIFEST.json THIRD_PARTY_NOTICES.md UPSTREAM.md \
-    build-requirements.lock requirements.lock SBOM.spdx.json verify_image.py \
+    build-requirements.lock requirements.lock runpod-requirement.lock SBOM.spdx.json verify_image.py \
     /app/
 
 RUN test "$(sha256sum /app/MODEL_MANIFEST.json | cut -d' ' -f1)" = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb" \
-    && test "$(sha256sum /app/SOURCE_MANIFEST.json | cut -d' ' -f1)" = "cca5a8845c5823dbb7dff7710dc9bf2759a9e01f60dc1ca2cb9aae0dd2bca4ca" \
-    && python -c 'import json; json.dump({"schema_version":1,"worker_version":"hero-voice-clone-contract-v3-internal-eval-2","worker_kind":"clone-only","source_revision":"8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb","source_manifest_sha256":"cca5a8845c5823dbb7dff7710dc9bf2759a9e01f60dc1ca2cb9aae0dd2bca4ca","model_manifest_sha256":"ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb","base_image":"pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"},open("/app/BUILD_ATTESTATION.json","w"),sort_keys=True,separators=(",",":"))' \
+    && test "$(sha256sum /app/SOURCE_MANIFEST.json | cut -d' ' -f1)" = "78f8cd2a3d5608a5028560ac6a8c1469e8c0a5f445c7620d69373ee3fc42a3e0" \
+    && python -c 'import json; json.dump({"schema_version":1,"worker_version":"hero-voice-clone-contract-v3-internal-eval-2","worker_kind":"clone-only","source_revision":"8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb","source_manifest_sha256":"78f8cd2a3d5608a5028560ac6a8c1469e8c0a5f445c7620d69373ee3fc42a3e0","model_manifest_sha256":"ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb","base_image":"pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee"},open("/app/BUILD_ATTESTATION.json","w"),sort_keys=True,separators=(",",":"))' \
     && chmod 0444 /app/BUILD_ATTESTATION.json \
     && ! find /app /opt/models /opt/venv -type d -name .git -print -quit | grep -q . \
     && /opt/venv/bin/pip check \

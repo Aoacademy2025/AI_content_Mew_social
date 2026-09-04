@@ -19,13 +19,13 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "cca5a8845c5823dbb7dff7710dc9bf2759a9e01f60dc1ca2cb9aae0dd2bca4ca"
-EXPECTED_RUNTIME_MANIFEST_SHA256 = "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "78f8cd2a3d5608a5028560ac6a8c1469e8c0a5f445c7620d69373ee3fc42a3e0"
+EXPECTED_RUNTIME_MANIFEST_SHA256 = "f686dbfdf6de18ee60f57f7bdc5b202e67cf7454d9f71b08d8256817916ec88e"
 APPROVED_SOURCE_REVISION = "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb"
 APPROVED_APPLICATION_BASE_REVISION = "1e6fee93a8dc7bc585afda7885b5edd666d9fc65"
 PINNED_BASE = (
-    "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@"
-    "sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"
+    "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@"
+    "sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee"
 )
 ALLOWED_APP_FILES = {
     "BUILD_ATTESTATION.json",
@@ -41,6 +41,7 @@ ALLOWED_APP_FILES = {
     "UPSTREAM.md",
     "build-requirements.lock",
     "requirements.lock",
+    "runpod-requirement.lock",
     "RUNTIME_MANIFEST.json",
     "SBOM.spdx.json",
     "verify_image.py",
@@ -61,25 +62,19 @@ KNOWN_PUBLIC_TEST_KEY_CONTAINERS_SHA256 = {
     "usr/lib/x86_64-linux-gnu/libgnutls.so.30.31.0": "79be57f85922e4f839de9a3ebc21993f57c39f94a2e95b7805feabe446c7cb2f",
 }
 KNOWN_PUBLIC_SECRET_FIXTURE_CONTAINERS_SHA256 = {
-    "opt/conda/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "517cd51965556674c6d2f9ed752851bf8e3ca79257e6e94e6f7f1ead665f95dc",
+    "opt/conda/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "4a4bf06d622e52ba507abc178034324aa5cd8afd2fe1de51b61f6cefc65a98cb",
     "opt/conda/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
-    "opt/conda/pkgs/python-3.11.9-hb806964_0_cpython/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "517cd51965556674c6d2f9ed752851bf8e3ca79257e6e94e6f7f1ead665f95dc",
-    "opt/conda/pkgs/python-3.11.9-hb806964_0_cpython/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
-    "opt/conda/pkgs/setuptools-73.0.1-pyhd8ed1ab_0/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107",
-    "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/__pycache__/test_upload.cpython-311.pyc": "afb66bb085fb52e4ecc940ce6bfadac53c5b33c2112a031ae2f4c3d31c801494",
-    "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107",
-    "opt/venv/lib/python3.11/site-packages/runpod-1.10.0.dist-info/METADATA": "9a4fdc594b37ad414736ffa12652fd8b01c64f1e5c36db8c8f3b572c84d0bbca",
+    "opt/venv/lib/python3.11/site-packages/runpod-1.12.0.dist-info/METADATA": "8eef34ce6018c84bb4febfeff7967a33aea0a07ce5a7f95a94279885b6505b78",
 }
 KNOWN_NONVOICE_AUDIO_FIXTURES_SHA256 = {
     "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e",
-    "opt/conda/pkgs/ipython-8.27.0-pyh707e725_0/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e",
 }
 KNOWN_NONVOICE_AUDIO_HARDLINKS = {
-    "opt/conda/pkgs/ipython-8.27.0-pyh707e725_0/site-packages/IPython/lib/tests/test.wav":
+    "opt/conda/pkgs/ipython-8.31.0-pyh707e725_0/site-packages/IPython/lib/tests/test.wav":
         "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav",
 }
 KNOWN_PYTHON_PATH_CONFIG_HARDLINKS = {
-    "opt/conda/pkgs/setuptools-73.0.1-pyhd8ed1ab_0/site-packages/distutils-precedence.pth":
+    "opt/conda/pkgs/setuptools-75.8.0-pyhff2d567_0/site-packages/distutils-precedence.pth":
         "opt/conda/lib/python3.11/site-packages/distutils-precedence.pth",
 }
 SECRET_ASSIGNMENT = re.compile(
@@ -408,6 +403,7 @@ def _verify_oci_config(config_bytes: bytes, *, expected_diff_ids: tuple[str, ...
     require(isinstance(environment, list), "invalid OCI config Env")
     for index, value in enumerate(environment):
         _scan_authenticated_config_text(value, label=f"Env[{index}]")
+    require("RUNPOD_LOG_LEVEL=INFO" in environment, "authenticated OCI config lacks RunPod INFO log level")
     require(isinstance(history, list), "authenticated OCI config history is required")
     nonempty_history = 0
     for index, entry in enumerate(history):
@@ -556,6 +552,11 @@ def verify_static(root: Path = ROOT) -> None:
         and source_manifest.get("build_requirements_lock_package_count") == 9,
         "build requirements lock drift",
     )
+    require(
+        source_manifest.get("runpod_requirement_lock_sha256") == _sha256(root / "runpod-requirement.lock")
+        and source_manifest.get("runpod_requirement_lock_package_count") == 1,
+        "RunPod requirement lock drift",
+    )
     require(source_manifest.get("model_manifest_sha256") == EXPECTED_MODEL_MANIFEST_SHA256, "source/model manifest mismatch")
     runtime_manifest_path = root / "RUNTIME_MANIFEST.json"
     require(_sha256(runtime_manifest_path) == EXPECTED_RUNTIME_MANIFEST_SHA256, "runtime manifest digest drift")
@@ -578,7 +579,7 @@ def verify_static(root: Path = ROOT) -> None:
         compatibility.get("status") == "metadata-patched-pending-gpu-runtime"
         and compatibility.get("declared_requirement") == "torchaudio>=0.8,<2.1"
         and compatibility.get("patched_requirement") == "torchaudio>=0.8"
-        and compatibility.get("base_requirement") == "torchaudio==2.4.1",
+        and compatibility.get("base_requirement") == "torchaudio==2.6.0",
         "Demucs compatibility resolution drift",
     )
     compatibility_patch = root / str(compatibility.get("patch_path", ""))
@@ -611,6 +612,19 @@ def verify_static(root: Path = ROOT) -> None:
         and omnivoice_compatibility.get("patched_metadata_sha256")
         == "f72051fb59f8967c0dd7dc6dd1cf2ca02c038dd6b1293fa5e5cb82481793d660",
         "OmniVoice compatibility resolution drift",
+    )
+    runpod_compatibility = source_manifest.get("runpod_runtime_compatibility", {})
+    require(
+        runpod_compatibility.get("status") == "metadata-patched"
+        and runpod_compatibility.get("version") == "1.12.0"
+        and runpod_compatibility.get("wheel_sha256")
+        == "2c52d5ad4268879bd4d8288f84a9861488abc756ffc5195d95f1cffe4c4f3454"
+        and runpod_compatibility.get("removed_requirement") == "fastapi[all]>=0.141.1"
+        and runpod_compatibility.get("original_metadata_sha256")
+        == "7766c4b844c749ed119a34e37d09a6e7635e331984bb1776507f8219af5936a4"
+        and runpod_compatibility.get("patched_metadata_sha256")
+        == "8eef34ce6018c84bb4febfeff7967a33aea0a07ce5a7f95a94279885b6505b78",
+        "RunPod compatibility resolution drift",
     )
     scanner_exceptions = source_manifest.get("base_image_scanner_exceptions", {})
     require(
@@ -649,11 +663,14 @@ def verify_static(root: Path = ROOT) -> None:
         "f72051fb59f8967c0dd7dc6dd1cf2ca02c038dd6b1293fa5e5cb82481793d660",
         "a8dca4f91c66d1594216af85080202fc6475f09f8a0e4c5822ce0b60bf401eb2",
         "9171b44fb93d82cfd945f403d890c4d0f77cb241a483996133b95eb1fe2ea146",
+        "7766c4b844c749ed119a34e37d09a6e7635e331984bb1776507f8219af5936a4",
+        "8eef34ce6018c84bb4febfeff7967a33aea0a07ce5a7f95a94279885b6505b78",
     ):
-        require(metadata_hash in dockerfile, f"Resemblyzer metadata hash missing from build: {metadata_hash}")
+        require(metadata_hash in dockerfile, f"metadata compatibility hash missing from build: {metadata_hash}")
     require(dockerfile.count("pip check") >= 2, "builder/runtime pip-check assertions missing")
     require("importlib.import_module" in dockerfile and '"pydub"' in dockerfile, "runtime import smoke missing")
     require("HF_HUB_OFFLINE=1" in dockerfile and "TRANSFORMERS_OFFLINE=1" in dockerfile, "offline runtime flags missing")
+    require("RUNPOD_LOG_LEVEL=INFO" in dockerfile, "RunPod INFO-only release log level missing")
     require('CMD ["python", "-u", "/app/handler.py"]' in dockerfile, "release command is not the v3 handler")
     require("assets/" not in dockerfile and "voices/" not in dockerfile, "voice assets copied into image")
     for immutable_pin in (
@@ -667,25 +684,37 @@ def verify_static(root: Path = ROOT) -> None:
 
     lock = (root / "requirements.lock").read_text(encoding="utf-8")
     package_lines = [line for line in lock.splitlines() if re.match(r"^[a-zA-Z0-9_.-]+==", line)]
-    require(len(package_lines) == source_manifest.get("requirements_lock_package_count") == 136, "Python runtime lock is unexpectedly incomplete")
+    require(len(package_lines) == source_manifest.get("requirements_lock_package_count") == 111, "Python runtime lock is unexpectedly incomplete")
     require("--hash=sha256:" in lock, "Python hashes missing")
     require(not any(line.startswith("typing==") for line in lock.splitlines()), "obsolete Python typing backport is locked")
     require(
         not any(line.startswith(("gradio==", "gradio-client==")) for line in lock.splitlines()),
         "excluded Gradio demo dependency remains locked",
     )
+    require(
+        not any(line.startswith(("runpod==", "fastapi==", "starlette==")) for line in lock.splitlines()),
+        "separately locked RunPod or excluded FastAPI dependency remains in the runtime closure",
+    )
     for direct in ("pydub==0.25.1", "einops==0.8.2", "omegaconf==2.3.0"):
         require(direct in lock, f"required runtime pin missing: {direct}")
     build_lock = (root / "build-requirements.lock").read_text(encoding="utf-8")
     for direct in (
-        "flit-core==3.9.0", "hatchling==1.22.5", "packaging==23.2",
-        "pip==24.2", "setuptools==67.8.0", "wheel==0.40.0",
+        "flit-core==3.9.0", "hatchling==1.22.5", "packaging==24.2",
+        "pip==24.2", "setuptools==78.1.1", "wheel==0.46.2",
     ):
         require(direct in build_lock, f"required build-backend pin missing: {direct}")
+    runpod_lock = (root / "runpod-requirement.lock").read_text(encoding="utf-8")
+    runpod_lines = [line for line in runpod_lock.splitlines() if re.match(r"^[a-zA-Z0-9_.-]+==", line)]
+    require(
+        len(runpod_lines) == 1
+        and runpod_lines[0].startswith("runpod==1.12.0")
+        and "--hash=sha256:2c52d5ad4268879bd4d8288f84a9861488abc756ffc5195d95f1cffe4c4f3454" in runpod_lock,
+        "RunPod SDK lock is not exact",
+    )
     for inherited in ("torch==", "torchaudio==", "triton==", "nvidia-cuda-runtime-cu12=="):
         require(not any(line.startswith(inherited) for line in lock.splitlines()), f"base package would be overwritten: {inherited}")
     requirements_input = (root / "requirements.in").read_text(encoding="utf-8")
-    for constraint in ("torch==2.4.1", "torchaudio==2.4.1", "triton==3.0.0", "pydub==0.25.1"):
+    for constraint in ("torch==2.6.0", "torchaudio==2.6.0", "triton==3.2.0", "pydub==0.25.1"):
         require(constraint in requirements_input, f"base/runtime constraint missing: {constraint}")
 
     runtime_names = ("contract.py", "handler.py", "identity.py", "language.py", "pipeline.py", "runtime.py")
@@ -720,6 +749,7 @@ def verify_static(root: Path = ROOT) -> None:
     build_lines = [line for line in build_lock.splitlines() if re.match(r"^[a-zA-Z0-9_.-]+==", line)]
     build_entries = [lock_entry(line) for line in build_lines]
     require(len(build_entries) == 9, "SPDX build-lock source is incomplete")
+    runpod_entries = [lock_entry(line) for line in runpod_lines]
 
     def spdx_suffix(name: str) -> str:
         return re.sub(r"[^a-z0-9.-]+", "-", name.lower().replace("_", "-")).strip("-")
@@ -731,8 +761,24 @@ def verify_static(root: Path = ROOT) -> None:
                 package is not None and package.get("name") == name and package.get("versionInfo") == version,
                 f"SPDX omits or misstates locked package: {prefix}{name}",
             )
+    require(
+        len([identifier for identifier in package_ids if identifier.startswith("SPDXRef-Python-")])
+        == len(runtime_entries)
+        and len([identifier for identifier in package_ids if identifier.startswith("SPDXRef-BuildPython-")])
+        == len(build_entries),
+        "SPDX lock-derived package count drift",
+    )
+    runpod_package = by_id.get("SPDXRef-Package-RunPod-Worker-SDK")
+    require(
+        runpod_entries == [("runpod", "1.12.0")]
+        and runpod_package is not None
+        and runpod_package.get("name") == "runpod"
+        and runpod_package.get("versionInfo") == "1.12.0",
+        "SPDX omits or misstates separately locked RunPod SDK",
+    )
     required_ids = {
         "SPDXRef-Package-Worker", "SPDXRef-Package-BaseImage",
+        "SPDXRef-Package-RunPod-Worker-SDK",
         "SPDXRef-Package-OmniVoice-Source", "SPDXRef-Package-AudioSeal-Source",
         "SPDXRef-Package-Demucs-Source", "SPDXRef-Package-AuditedV13",
         *(f"SPDXRef-Model-{index:02d}" for index in range(1, 13)),
@@ -761,6 +807,11 @@ def verify_static(root: Path = ROOT) -> None:
             in relationship_set,
             f"SPDX runtime relationship missing: {name}",
         )
+    require(
+        ("SPDXRef-Package-Worker", "DEPENDS_ON", "SPDXRef-Package-RunPod-Worker-SDK")
+        in relationship_set,
+        "SPDX RunPod runtime relationship missing",
+    )
     for name, _version in build_entries:
         build_id = "SPDXRef-BuildPython-" + spdx_suffix(name)
         for source_id in ("SPDXRef-Package-OmniVoice-Source", "SPDXRef-Package-AudioSeal-Source"):
@@ -1181,6 +1232,18 @@ def _verify_extracted_rootfs(rootfs: Path) -> None:
     require(
         b"Requires-Dist: gradio\n" not in omnivoice_metadata.read_bytes(),
         "excluded OmniVoice Gradio dependency remains installed",
+    )
+
+    runpod_metadata = rootfs / "opt" / "venv" / "lib" / "python3.11" / "site-packages" / "runpod-1.12.0.dist-info" / "METADATA"
+    runpod_metadata_mode = _path_mode(runpod_metadata)
+    require(runpod_metadata_mode is not None and stat.S_ISREG(runpod_metadata_mode), "RunPod METADATA missing or linked")
+    require(
+        _sha256(runpod_metadata) == "8eef34ce6018c84bb4febfeff7967a33aea0a07ce5a7f95a94279885b6505b78",
+        "RunPod METADATA compatibility patch drift",
+    )
+    require(
+        b"Requires-Dist: fastapi[all]>=0.141.1\n" not in runpod_metadata.read_bytes(),
+        "excluded RunPod FastAPI dependency remains installed",
     )
 
     model_root = rootfs / "opt" / "models"

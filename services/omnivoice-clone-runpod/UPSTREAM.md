@@ -20,7 +20,7 @@ The experimental Demucs and AudioSeal procedures come from their primary-source
 pins in `MODEL_MANIFEST.json`, not from the comparison wrapper. Optional-stage
 load or inference failure is terminal; no profile silently falls back to control.
 The current Demucs commit's own metadata requires `torchaudio<2.1`, while the
-pinned OmniVoice base uses 2.4.1. The build applies the hash-pinned one-line
+pinned hardened base uses 2.6.0. The build applies the hash-pinned one-line
 `demucs-torchaudio-2.4-compat.patch`, which removes only that stale metadata upper
 bound; inference source stays at the exact upstream commit. Runnable
 compatibility is not inferred from the patch: immutable-image import, offline
@@ -31,6 +31,14 @@ worker imports no demo or public-server surface. The build removes that single
 METADATA requirement with exact before/after SHA-256 assertions and omits the
 entire Gradio dependency graph so its bundled media assets never enter a worker
 layer. Inference source remains unchanged.
+
+RunPod SDK 1.12.0 declares FastAPI for its local/realtime API-server path, which
+this queue-only worker never imports or enables. The SDK wheel is separately
+hash-locked and installed without dependency resolution; an exact before/after
+METADATA patch removes only that FastAPI requirement. Its complete non-FastAPI
+serverless dependency closure remains in `requirements.lock`, and the release
+environment fixes SDK logging at INFO so request/result payloads are not emitted
+by DEBUG logging.
 
 The latest team-source files used as design provenance are
 `core/audio_enhance.py`, `core/server.py`, `core/text_utils.py`, and
