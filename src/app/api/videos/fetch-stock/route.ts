@@ -143,12 +143,10 @@ import {
 import { getRunpodEndpointHealth } from "@/lib/runpod-serverless";
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
-import {
-  getStarterAiImageAllowanceWindowStatus,
-} from "@/lib/starter-ai-image-allowance.server";
 import { reusableVisualBeatAssetsForVideoJob } from "@/lib/content-preflight.server";
 import {
   resolveBrandVisualJobAcceptanceEnvelope,
+  resolveVideoJobImageFundingStatus,
   validateBrandVisualAcceptedReuse,
   type BrandVisualJobAcceptance,
 } from "@/lib/brand-visual-job-acceptance.server";
@@ -1188,20 +1186,11 @@ export async function POST(req: Request) {
     brandVisualAcceptanceEnvelope.state === "accepted"
       ? brandVisualAcceptanceEnvelope.acceptance
       : null;
-  const imageFundingStatusForRequest = async () => {
-    // A null snapshot is a legacy/non-Brand-Visual job. Its generic image path
-    // reserves credits-only, so admission must never advertise Starter quota.
-    if (!brandVisualAcceptance) {
-      return { eligible: false as const, fundingSource: "credits" as const, remainingImages: 0 };
-    }
-    if (brandVisualAcceptance.funding.source === "credits") {
-      return { eligible: false as const, fundingSource: "credits" as const, remainingImages: 0 };
-    }
-    return getStarterAiImageAllowanceWindowStatus(
-      userId,
-      new Date(brandVisualAcceptance.funding.windowStartedAt),
-    );
-  };
+  const imageFundingStatusForRequest = () => resolveVideoJobImageFundingStatus({
+    userId,
+    acceptance: brandVisualAcceptance,
+    heroAiImageAccess,
+  });
   const heroAiEligible = liveHeroAiEligible || Boolean(brandVisualAcceptance);
   const heroProviderAttempt = Number.isInteger(heroProviderAttemptRaw)
     && Number(heroProviderAttemptRaw) >= 0

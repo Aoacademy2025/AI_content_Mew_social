@@ -899,6 +899,10 @@ async function verifyPinnedJobCreation() {
     MANAGED_PEXELS_API_KEY: process.env.MANAGED_PEXELS_API_KEY,
     CREDITS_LIVE: process.env.CREDITS_LIVE,
     MINUTE_QUOTA: process.env.MINUTE_QUOTA,
+    HERO_AI_IMAGE_PUBLIC: process.env.HERO_AI_IMAGE_PUBLIC,
+    AI_STUDIO_IMAGE_ENABLED: process.env.AI_STUDIO_IMAGE_ENABLED,
+    AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED: process.env.AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED,
+    RUNPOD_API_KEY: process.env.RUNPOD_API_KEY,
   };
   Object.assign(process.env, {
     MANAGED_GEMINI: "1",
@@ -913,6 +917,16 @@ async function verifyPinnedJobCreation() {
   const jobs = await import("../src/app/api/videos/jobs/route");
   const visualContext = await import("../src/app/api/editor-projects/[id]/visual-context/route");
   const { stylePackSnapshotFromJson } = await import("../src/lib/style-pack-snapshot");
+  const {
+    resolveBrandVisualJobAcceptanceEnvelope,
+    resolveVideoJobImageFundingStatus,
+  } = await import(
+    "../src/lib/brand-visual-job-acceptance.server"
+  );
+  const { resolveHeroAiImageAccess } = await import("../src/lib/internal-ai-access");
+  const { getStarterAiImageAllowanceStatus } = await import(
+    "../src/lib/starter-ai-image-allowance.server"
+  );
 
   const script = "วันนี้เรามาคุยเรื่องการทำคลิปสั้นให้ปัง แล้วมาดูกันว่าจะเริ่มยังไงดี";
 
@@ -949,6 +963,92 @@ async function verifyPinnedJobCreation() {
     assert.equal(looked.status, 200);
     return { user, project };
   }
+
+  // Regression: #435 correctly stopped a bare Style Pack pin from granting
+  // Brand Visual image access, but First-Clip Trial already owns an independent
+  // Hero AI Image entitlement. Dropping the acceptance envelope here made
+  // fetch-stock treat the request as credits-only and return 402 even with all
+  // eight Starter images available.
+  Object.assign(process.env, {
+    HERO_AI_IMAGE_PUBLIC: "1",
+    AI_STUDIO_IMAGE_ENABLED: "1",
+    AI_STUDIO_Z_IMAGE_PUBLIC_ENABLED: "1",
+    RUNPOD_API_KEY: "ops-test-runpod",
+    CREDITS_LIVE: "1",
+  });
+  const trialNow = new Date();
+  const trial = await prisma.user.create({
+    data: {
+      name: "Unadmitted First-Clip Trial",
+      email: "ops-job-trial@example.test",
+      plan: "PRO",
+      trialStartedAt: new Date(trialNow.getTime() - 86_400_000),
+      trialEndsAt: new Date(trialNow.getTime() + 6 * 86_400_000),
+    },
+  });
+  await prisma.creditBalance.create({ data: { userId: trial.id, granted: 0, purchased: 0 } });
+  const trialProject = await prisma.editorProject.create({
+    data: { userId: trial.id, title: "Trial acceptance regression" },
+  });
+  actingUserId = trial.id;
+  const trialJob = await jobs.POST(new Request("http://localhost/api/videos/jobs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      projectId: trialProject.id,
+      script,
+      stockSource: "stock",
+      targetClipCount: 1,
+      confirmedMeteredMinutes: 1,
+      idempotencyKey: "ops-pin-trial-first-clip",
+    }),
+  }));
+  assert.equal(trialJob.status, 200, JSON.stringify(await trialJob.clone().json()));
+  const trialJobBody = await trialJob.json() as { jobId: string };
+  const [trialJobRow, trialProjectRow, trialAllowance] = await Promise.all([
+    prisma.videoJob.findUniqueOrThrow({
+      where: { id: trialJobBody.jobId },
+      select: { inputJson: true, brandVisualAcceptanceJson: true },
+    }),
+    prisma.editorProject.findUniqueOrThrow({
+      where: { id: trialProject.id },
+      select: { brandVisualPinAdmittedAt: true },
+    }),
+    getStarterAiImageAllowanceStatus(trial.id),
+  ]);
+  assert.equal(trialProjectRow.brandVisualPinAdmittedAt, null, "trial pin remains outside Brand Visual admission");
+  assert.equal(trialAllowance.remainingImages, 8, "the regression fixture owns the full Starter allowance");
+  assert.equal(JSON.parse(trialJobRow.inputJson).stockSource, "kie-image", "First-Clip Trial still requests Hero AI Image");
+  const trialAcceptance = resolveBrandVisualJobAcceptanceEnvelope(trialJobRow.brandVisualAcceptanceJson);
+  assert.equal(
+    trialAcceptance.state,
+    "legacy",
+    "First-Clip Trial must not forge Brand Visual admission from its independent Hero allowance",
+  );
+  const trialFunding = await resolveVideoJobImageFundingStatus({
+    userId: trial.id,
+    acceptance: null,
+    heroAiImageAccess: await resolveHeroAiImageAccess(trial),
+  });
+  assert.equal(
+    trialFunding.eligible,
+    true,
+    "fetch-stock preflight must honor the independent Conversion Trial allowance without Brand Visual acceptance",
+  );
+  assert.equal(trialFunding.fundingSource, "starter_allowance");
+  assert.equal(trialFunding.remainingImages, 8);
+  assert.deepEqual(
+    await resolveVideoJobImageFundingStatus({
+      userId: trial.id,
+      acceptance: null,
+      heroAiImageAccess: { canUse: true, mode: "paid", source: "subscription" },
+    }),
+    { eligible: false, fundingSource: "credits", remainingImages: 0 },
+    "a null envelope plus a raw paid-looking decision never manufactures Starter funding",
+  );
+  process.env.CREDITS_LIVE = "0";
+  if (priorEnv.HERO_AI_IMAGE_PUBLIC === undefined) delete process.env.HERO_AI_IMAGE_PUBLIC;
+  else process.env.HERO_AI_IMAGE_PUBLIC = priorEnv.HERO_AI_IMAGE_PUBLIC;
 
   // ── An unadmitted pin renders with the pack, on stock ─────────────────────
   const free = await pinnedProjectFor("free", "ops-job-free@example.test");
@@ -1028,10 +1128,12 @@ async function verifyPinnedJobCreation() {
   // fetch-stock is the second, authoritative check: without that envelope the
   // image path refuses regardless of what the job asked for.
   const { authorizeHeroVideoMint } = await import("../src/lib/hero-image-namespace");
-  const { resolveBrandVisualJobAcceptanceEnvelope } = await import(
-    "../src/lib/brand-visual-job-acceptance.server"
-  );
   const fetchStockSource = readFileSync("src/app/api/videos/fetch-stock/route.ts", "utf8");
+  assert.match(
+    fetchStockSource,
+    /resolveVideoJobImageFundingStatus\(\{[\s\S]+heroAiImageAccess,/,
+    "fetch-stock preflight delegates funding to the allowance-aware VideoJob policy",
+  );
   assert.match(
     fetchStockSource,
     /const heroAiEligible = liveHeroAiEligible \|\| Boolean\(brandVisualAcceptance\)/,
