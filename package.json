@@ -53,6 +53,7 @@
     "verify:hero-script": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-hero-script.ts && node --conditions=react-server --import tsx scripts/verify-hero-script-access.ts",
     "verify:support-ticket-ui-regressions": "tsx scripts/verify-support-ticket-ui-regressions.ts",
     "verify:support-ticket-remediation": "tsx scripts/verify-support-ticket-remediation.ts",
+    "verify:support-observability-links": "tsx scripts/verify-support-observability-links.ts",
     "verify:brand-visual-count-refresh": "tsx scripts/verify-brand-visual-count-refresh.ts",
     "verify:style-pack-catalog": "tsx scripts/verify-style-pack-catalog.ts",
     "verify:style-pack-apply": "tsx scripts/verify-style-pack-apply.ts",

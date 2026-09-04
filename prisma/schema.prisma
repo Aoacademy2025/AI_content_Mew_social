@@ -1034,12 +1034,16 @@ model SupportTicket {
   recommendedAction String?
   auditNote         String?
   impactNote        String?
+  sentryIssueId     String?
+  linearIssueIdentifier String?
   auditedAt         DateTime?
   repliedAt         DateTime?
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
 
   @@index([status, createdAt])
+  @@index([sentryIssueId])
+  @@index([linearIssueIdentifier])
 }
 
 enum SupportTicketStatus {
