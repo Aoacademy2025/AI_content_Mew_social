@@ -1415,6 +1415,34 @@ class StaticAndAbsenceTests(unittest.TestCase):
                 with self.assertRaises(SystemExit):
                     scan_oci_layer_blob(blob, label="verified-layer", model_artifacts={})
 
+    def test_layer_scanner_allows_only_pinned_public_conda_git_pointer_fixture(self):
+        pointer_path = "opt/conda/etc/conda/test-files/referencing/1/suite/.git"
+        hardlink_path = (
+            "opt/conda/pkgs/referencing-0.36.2-pyh29332c3_0/"
+            "etc/conda/test-files/referencing/1/suite/.git"
+        )
+        pointer = b"gitdir: ../.git/modules/suite\n"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            blob = Path(temp_dir) / "layer.tar.gz"
+            with tarfile.open(blob, "w:gz") as archive:
+                pointer_info = tarfile.TarInfo(pointer_path)
+                pointer_info.size = len(pointer)
+                archive.addfile(pointer_info, io.BytesIO(pointer))
+                hardlink_info = tarfile.TarInfo(hardlink_path)
+                hardlink_info.type = tarfile.LNKTYPE
+                hardlink_info.linkname = pointer_path
+                archive.addfile(hardlink_info)
+            scan_oci_layer_blob(blob, label="pinned-base-layer", model_artifacts={})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            blob = Path(temp_dir) / "layer.tar.gz"
+            with tarfile.open(blob, "w:gz") as archive:
+                pointer_info = tarfile.TarInfo(pointer_path)
+                pointer_info.size = len(pointer) + 1
+                archive.addfile(pointer_info, io.BytesIO(pointer + b"x"))
+            with self.assertRaisesRegex(SystemExit, "unrecognized public Git pointer fixture"):
+                scan_oci_layer_blob(blob, label="modified-base-layer", model_artifacts={})
+
     def test_layer_scanner_rejects_sensitive_and_model_symlinks(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

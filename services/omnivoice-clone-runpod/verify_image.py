@@ -19,7 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "178ffa75b54963a18bec2cb2307e220a0d8bb808a7ce7ca63418ec3c54d7e45d"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "e6f95b00ba5482fcda706286103d20ad63890a4eed8b5e0b67f28cc158ca495b"
 EXPECTED_RUNTIME_MANIFEST_SHA256 = "f686dbfdf6de18ee60f57f7bdc5b202e67cf7454d9f71b08d8256817916ec88e"
 APPROVED_SOURCE_REVISION = "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb"
 APPROVED_APPLICATION_BASE_REVISION = "1e6fee93a8dc7bc585afda7885b5edd666d9fc65"
@@ -76,6 +76,14 @@ KNOWN_NONVOICE_AUDIO_HARDLINKS = {
 KNOWN_PYTHON_PATH_CONFIG_HARDLINKS = {
     "opt/conda/pkgs/setuptools-75.8.0-pyhff2d567_0/site-packages/distutils-precedence.pth":
         "opt/conda/lib/python3.11/site-packages/distutils-precedence.pth",
+}
+KNOWN_PUBLIC_GIT_POINTER_FIXTURES_SHA256 = {
+    "opt/conda/etc/conda/test-files/referencing/1/suite/.git":
+        "f84dcd4d4573c431d1db25db9a3cc188850e81a7a46a5c5983db56f528d2101f",
+}
+KNOWN_PUBLIC_GIT_POINTER_HARDLINKS = {
+    "opt/conda/pkgs/referencing-0.36.2-pyh29332c3_0/etc/conda/test-files/referencing/1/suite/.git":
+        "opt/conda/etc/conda/test-files/referencing/1/suite/.git",
 }
 SECRET_ASSIGNMENT = re.compile(
     rb"(?i)(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|client[_-]?secret)"
@@ -963,13 +971,26 @@ def scan_oci_layer_blob(blob: Path, *, label: str, model_artifacts: dict[str, di
             require(relative not in {"", "."}, f"invalid archive path in {label}: {member.name}")
             parts = {part.lower() for part in PurePosixPath(relative).parts}
             lowered = relative.lower()
-            require(".git" not in parts and ".gitconfig" not in parts, f"Git metadata found in {label}: {relative}")
+            git_metadata = ".git" in parts or ".gitconfig" in parts
+            known_public_git_fixture = (
+                (member.isfile() and relative in KNOWN_PUBLIC_GIT_POINTER_FIXTURES_SHA256)
+                or (
+                    member.islnk()
+                    and KNOWN_PUBLIC_GIT_POINTER_HARDLINKS.get(relative) == member.linkname
+                )
+            )
+            require(
+                not git_metadata or known_public_git_fixture,
+                f"Git metadata found in {label}: {relative}",
+            )
             require(not STOCK_OR_LAO_PATH.search(lowered), f"stock/Lao asset or catalog found in {label}: {relative}")
             name = PurePosixPath(relative).name.lower()
             require(name not in CREDENTIAL_NAMES and not name.startswith(".env."), f"credential-like path in {label}: {relative}")
             require(not SENSITIVE_PATH.search(lowered), f"sensitive credential path in {label}: {relative}")
             suffix = PurePosixPath(relative).suffix.lower()
             if member.issym() or member.islnk():
+                if member.islnk() and KNOWN_PUBLIC_GIT_POINTER_HARDLINKS.get(relative) == member.linkname:
+                    continue
                 if suffix in AUDIO_SUFFIXES:
                     require(
                         member.islnk() and KNOWN_NONVOICE_AUDIO_HARDLINKS.get(relative) == member.linkname,
@@ -998,6 +1019,12 @@ def scan_oci_layer_blob(blob: Path, *, label: str, model_artifacts: dict[str, di
                 continue
             handle = archive.extractfile(member)
             require(handle is not None, f"cannot inspect {label}:{relative}")
+            if relative in KNOWN_PUBLIC_GIT_POINTER_FIXTURES_SHA256:
+                require(
+                    KNOWN_PUBLIC_GIT_POINTER_FIXTURES_SHA256[relative] == _sha256_stream(handle),
+                    f"unrecognized public Git pointer fixture in {label}: {relative}",
+                )
+                continue
             captured = _scan_content(
                 handle,
                 label=label,

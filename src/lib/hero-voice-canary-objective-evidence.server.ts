@@ -24,7 +24,7 @@ const AUDIOSEAL_MODEL_REVISION = "3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba";
 const AUDIOSEAL_GENERATOR_SHA256 = "7a845b5fbe9364a63a3909d8ab3fe064d13a76ae4c2e983573e08c69b7b51748";
 const AUDIOSEAL_DETECTOR_SHA256 = "8a78e8a83584113523e161fc599fcab10fd0e94c04d2eb9d2fa1e9ec91ab69d9";
 const AUDIOSEAL_MESSAGE = "1011001011010110";
-const SOURCE_MANIFEST_SHA256 = "178ffa75b54963a18bec2cb2307e220a0d8bb808a7ce7ca63418ec3c54d7e45d";
+const SOURCE_MANIFEST_SHA256 = "e6f95b00ba5482fcda706286103d20ad63890a4eed8b5e0b67f28cc158ca495b";
 const MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb";
 const FINAL_COMBINED_STAGES = Object.freeze([
   "speech_text_attestation", "reference_decode", "demucs_reference_enhancement", "reference_peak_normalize",

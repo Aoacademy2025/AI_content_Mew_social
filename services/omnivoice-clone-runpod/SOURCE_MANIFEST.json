@@ -107,6 +107,12 @@
     "known_python_path_config_hardlinks": {
       "opt/conda/pkgs/setuptools-75.8.0-pyhff2d567_0/site-packages/distutils-precedence.pth": "opt/conda/lib/python3.11/site-packages/distutils-precedence.pth"
     },
+    "known_public_git_pointer_fixtures_sha256": {
+      "opt/conda/etc/conda/test-files/referencing/1/suite/.git": "f84dcd4d4573c431d1db25db9a3cc188850e81a7a46a5c5983db56f528d2101f"
+    },
+    "known_public_git_pointer_hardlinks": {
+      "opt/conda/pkgs/referencing-0.36.2-pyh29332c3_0/etc/conda/test-files/referencing/1/suite/.git": "opt/conda/etc/conda/test-files/referencing/1/suite/.git"
+    },
     "policy": "all exceptions require exact path plus full-file hash or exact hardlink target; all other audio, credential, key, catalog, and model-link evidence fails closed"
   },
   "sources": {
