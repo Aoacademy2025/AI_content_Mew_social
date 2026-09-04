@@ -80,6 +80,7 @@ from runtime import (  # noqa: E402
 )
 from verify_image import (  # noqa: E402
     ALLOWED_APP_FILES,
+    APPROVED_APPLICATION_BASE_REVISION,
     _extract_authenticated_layer,
     _verify_extracted_rootfs,
     load_oci_image_evidence,
@@ -1108,7 +1109,7 @@ class StaticAndAbsenceTests(unittest.TestCase):
         self.assertGreaterEqual(dockerfile.count(APPROVED_SOURCE_REVISION), 2)
         source_manifest = json.loads((ROOT / "SOURCE_MANIFEST.json").read_text(encoding="utf-8"))
         self.assertEqual(source_manifest["source_revision"], APPROVED_SOURCE_REVISION)
-        self.assertEqual(source_manifest["application_base_revision"], APPROVED_SOURCE_REVISION)
+        self.assertEqual(source_manifest["application_base_revision"], APPROVED_APPLICATION_BASE_REVISION)
         self.assertEqual(
             source_manifest["team_voice_source"],
             {

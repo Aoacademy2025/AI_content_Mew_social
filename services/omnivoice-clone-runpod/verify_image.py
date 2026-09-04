@@ -19,9 +19,10 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "44d96d03d2723cf0a9afe16920ec924e28b787622d5bbf15119c14611bb240ec"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "cca5a8845c5823dbb7dff7710dc9bf2759a9e01f60dc1ca2cb9aae0dd2bca4ca"
 EXPECTED_RUNTIME_MANIFEST_SHA256 = "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020"
 APPROVED_SOURCE_REVISION = "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb"
+APPROVED_APPLICATION_BASE_REVISION = "1e6fee93a8dc7bc585afda7885b5edd666d9fc65"
 PINNED_BASE = (
     "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@"
     "sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"
@@ -530,7 +531,10 @@ def verify_static(root: Path = ROOT) -> None:
     source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
     require(source_manifest.get("schema_version") == 3, "source manifest schema drift")
     require(source_manifest.get("source_revision") == APPROVED_SOURCE_REVISION, "source revision manifest drift")
-    require(source_manifest.get("application_base_revision") == APPROVED_SOURCE_REVISION, "application base revision drift")
+    require(
+        source_manifest.get("application_base_revision") == APPROVED_APPLICATION_BASE_REVISION,
+        "application base revision drift",
+    )
     team_source = source_manifest.get("team_voice_source", {})
     require(
         team_source.get("repository") == "https://github.com/Aoacademy2025/Hero-Voice-Ai"
