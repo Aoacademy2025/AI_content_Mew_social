@@ -195,5 +195,8 @@ jobs:
       - name: Verify signed Sentry alerts are safely formatted for LINE
         run: npm run verify:sentry-line-alert
 
+      - name: Verify support tickets link to trusted Sentry and Linear issues
+        run: npm run verify:support-observability-links
+
       - name: Build
         run: npm run build
