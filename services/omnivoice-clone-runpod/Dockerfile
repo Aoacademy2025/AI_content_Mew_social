@@ -226,8 +226,8 @@ COPY --chown=worker:worker \
     /app/
 
 RUN test "$(sha256sum /app/MODEL_MANIFEST.json | cut -d' ' -f1)" = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb" \
-    && test "$(sha256sum /app/SOURCE_MANIFEST.json | cut -d' ' -f1)" = "e6f95b00ba5482fcda706286103d20ad63890a4eed8b5e0b67f28cc158ca495b" \
-    && python -c 'import json; json.dump({"schema_version":1,"worker_version":"hero-voice-clone-contract-v3-internal-eval-2","worker_kind":"clone-only","source_revision":"8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb","source_manifest_sha256":"e6f95b00ba5482fcda706286103d20ad63890a4eed8b5e0b67f28cc158ca495b","model_manifest_sha256":"ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb","base_image":"pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee"},open("/app/BUILD_ATTESTATION.json","w"),sort_keys=True,separators=(",",":"))' \
+    && test "$(sha256sum /app/SOURCE_MANIFEST.json | cut -d' ' -f1)" = "f337c00369ce9a1982bfd876634543c9fa4b46b9d754d29c469bc56a2c9c0e8e" \
+    && python -c 'import json; json.dump({"schema_version":1,"worker_version":"hero-voice-clone-contract-v3-internal-eval-2","worker_kind":"clone-only","source_revision":"8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb","source_manifest_sha256":"f337c00369ce9a1982bfd876634543c9fa4b46b9d754d29c469bc56a2c9c0e8e","model_manifest_sha256":"ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb","base_image":"pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee"},open("/app/BUILD_ATTESTATION.json","w"),sort_keys=True,separators=(",",":"))' \
     && chmod 0444 /app/BUILD_ATTESTATION.json \
     && ! find /app /opt/models /opt/venv -type d -name .git -print -quit | grep -q . \
     && /opt/venv/bin/pip check \

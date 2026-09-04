@@ -1785,8 +1785,8 @@
     {
       "name": "setuptools",
       "SPDXID": "SPDXRef-BuildPython-setuptools",
-      "versionInfo": "78.1.1",
-      "downloadLocation": "pkg:pypi/setuptools@78.1.1",
+      "versionInfo": "84.0.0",
+      "downloadLocation": "pkg:pypi/setuptools@84.0.0",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",

@@ -19,7 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "e6f95b00ba5482fcda706286103d20ad63890a4eed8b5e0b67f28cc158ca495b"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "f337c00369ce9a1982bfd876634543c9fa4b46b9d754d29c469bc56a2c9c0e8e"
 EXPECTED_RUNTIME_MANIFEST_SHA256 = "f686dbfdf6de18ee60f57f7bdc5b202e67cf7454d9f71b08d8256817916ec88e"
 APPROVED_SOURCE_REVISION = "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb"
 APPROVED_APPLICATION_BASE_REVISION = "1e6fee93a8dc7bc585afda7885b5edd666d9fc65"
@@ -708,7 +708,7 @@ def verify_static(root: Path = ROOT) -> None:
     build_lock = (root / "build-requirements.lock").read_text(encoding="utf-8")
     for direct in (
         "flit-core==3.9.0", "hatchling==1.22.5", "packaging==24.2",
-        "pip==24.2", "setuptools==78.1.1", "wheel==0.46.2",
+        "pip==24.2", "setuptools==84.0.0", "wheel==0.46.2",
     ):
         require(direct in build_lock, f"required build-backend pin missing: {direct}")
     runpod_lock = (root / "runpod-requirement.lock").read_text(encoding="utf-8")

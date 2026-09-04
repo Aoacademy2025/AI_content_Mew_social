@@ -37,7 +37,7 @@
   },
   "requirements_lock_sha256": "80000726ed72d654358af23e906857379bdbac4f74f105f993757e4c57f06254",
   "requirements_lock_package_count": 114,
-  "build_requirements_lock_sha256": "69631b729db5fc9e23c13db42474223fe1d00057eccadd541969aea94fa4de76",
+  "build_requirements_lock_sha256": "4f1034bac314ab1a18aae604b3c20fd41b98472d8771030415848dedfc1b238b",
   "build_requirements_lock_package_count": 9,
   "runpod_requirement_lock_sha256": "a97ca9f44f0d30a715604270474144dbcfa72541603b44431acd56c039e64c49",
   "runpod_requirement_lock_package_count": 1,
