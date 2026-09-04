@@ -19,7 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "77e5c637c7ec686efc150a0069441d8317fe560c916978436fb9a3ea9a401f5f"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "fe87411562b8f1e9cc9fab7b831e8c12a772db760d69a0bf945c02b6c64d0967"
 EXPECTED_RUNTIME_MANIFEST_SHA256 = "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020"
 APPROVED_SOURCE_REVISION = "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb"
 PINNED_BASE = (
@@ -454,6 +454,19 @@ def verify_static(root: Path = ROOT) -> None:
         and compatibility.get("patch_sha256") == _sha256(compatibility_patch),
         "Demucs compatibility patch drift",
     )
+    resemblyzer_compatibility = source_manifest.get("resemblyzer_runtime_compatibility", {})
+    require(
+        resemblyzer_compatibility.get("status") == "metadata-patched"
+        and resemblyzer_compatibility.get("version") == "0.1.4"
+        and resemblyzer_compatibility.get("wheel_sha256")
+        == "8f12eb2f1a9982d32e8db7856de754709b59c93a77bcf0ff536584b619a9dd1f"
+        and resemblyzer_compatibility.get("obsolete_requirement") == "typing"
+        and resemblyzer_compatibility.get("original_metadata_sha256")
+        == "a8dca4f91c66d1594216af85080202fc6475f09f8a0e4c5822ce0b60bf401eb2"
+        and resemblyzer_compatibility.get("patched_metadata_sha256")
+        == "9171b44fb93d82cfd945f403d890c4d0f77cb241a483996133b95eb1fe2ea146",
+        "Resemblyzer compatibility resolution drift",
+    )
 
     dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
     require(dockerfile.count(f"FROM {PINNED_BASE}") == 2, "both stages must hard-code the pinned base")
@@ -467,6 +480,12 @@ def verify_static(root: Path = ROOT) -> None:
     require(dockerfile.count(APPROVED_SOURCE_REVISION) >= 2, "approved source revision is not hard-coded")
     require(":latest" not in dockerfile, "mutable image tag found")
     require("--no-build-isolation" in dockerfile, "source install can fetch build dependencies")
+    require("pip install --require-hashes --no-deps --no-build-isolation" in dockerfile, "runtime lock install is not dependency-closed")
+    for metadata_hash in (
+        "a8dca4f91c66d1594216af85080202fc6475f09f8a0e4c5822ce0b60bf401eb2",
+        "9171b44fb93d82cfd945f403d890c4d0f77cb241a483996133b95eb1fe2ea146",
+    ):
+        require(metadata_hash in dockerfile, f"Resemblyzer metadata hash missing from build: {metadata_hash}")
     require(dockerfile.count("pip check") >= 2, "builder/runtime pip-check assertions missing")
     require("importlib.import_module" in dockerfile and '"pydub"' in dockerfile, "runtime import smoke missing")
     require("HF_HUB_OFFLINE=1" in dockerfile and "TRANSFORMERS_OFFLINE=1" in dockerfile, "offline runtime flags missing")
@@ -483,8 +502,9 @@ def verify_static(root: Path = ROOT) -> None:
 
     lock = (root / "requirements.lock").read_text(encoding="utf-8")
     package_lines = [line for line in lock.splitlines() if re.match(r"^[a-zA-Z0-9_.-]+==", line)]
-    require(len(package_lines) == source_manifest.get("requirements_lock_package_count") == 148, "Python runtime lock is unexpectedly incomplete")
+    require(len(package_lines) == source_manifest.get("requirements_lock_package_count") == 147, "Python runtime lock is unexpectedly incomplete")
     require("--hash=sha256:" in lock, "Python hashes missing")
+    require(not any(line.startswith("typing==") for line in lock.splitlines()), "obsolete Python typing backport is locked")
     for direct in ("pydub==0.25.1", "einops==0.8.2", "omegaconf==2.3.0"):
         require(direct in lock, f"required runtime pin missing: {direct}")
     build_lock = (root / "build-requirements.lock").read_text(encoding="utf-8")
@@ -930,6 +950,18 @@ def _verify_extracted_rootfs(rootfs: Path) -> None:
     expected_runtime_manifest = json.loads((ROOT / "RUNTIME_MANIFEST.json").read_text(encoding="utf-8"))
     for relative, expected_sha256 in expected_runtime_manifest["files"].items():
         require(_sha256(app / relative) == expected_sha256, f"runtime source differs from checked-in manifest: {relative}")
+
+    resemblyzer_metadata = rootfs / "opt" / "venv" / "lib" / "python3.11" / "site-packages" / "Resemblyzer-0.1.4.dist-info" / "METADATA"
+    metadata_mode = _path_mode(resemblyzer_metadata)
+    require(metadata_mode is not None and stat.S_ISREG(metadata_mode), "Resemblyzer METADATA missing or linked")
+    require(
+        _sha256(resemblyzer_metadata) == "9171b44fb93d82cfd945f403d890c4d0f77cb241a483996133b95eb1fe2ea146",
+        "Resemblyzer METADATA compatibility patch drift",
+    )
+    require(
+        b"Requires-Dist: typing\r\n" not in resemblyzer_metadata.read_bytes(),
+        "obsolete Resemblyzer typing dependency remains installed",
+    )
 
     model_root = rootfs / "opt" / "models"
     model_root_mode = _path_mode(model_root)

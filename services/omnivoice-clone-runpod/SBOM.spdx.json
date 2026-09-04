@@ -1575,7 +1575,7 @@
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
+      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock. The obsolete Python 3 typing backport dependency is removed from installed METADATA by an exact before/after hash-checked patch documented in SOURCE_MANIFEST.json."
     },
     {
       "name": "retrying",
@@ -1890,17 +1890,6 @@
       "SPDXID": "SPDXRef-Python-typer",
       "versionInfo": "0.27.2",
       "downloadLocation": "pkg:pypi/typer@0.27.2",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "typing",
-      "SPDXID": "SPDXRef-Python-typing",
-      "versionInfo": "3.10.0.0",
-      "downloadLocation": "pkg:pypi/typing@3.10.0.0",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -2970,11 +2959,6 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-typer"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-typing"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",

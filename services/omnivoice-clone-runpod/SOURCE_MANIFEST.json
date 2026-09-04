@@ -32,8 +32,8 @@
     "git": "1:2.34.1-1ubuntu1.17",
     "libsndfile1": "1.0.31-2ubuntu0.2"
   },
-  "requirements_lock_sha256": "72a4b8419772e0a83061d05ea073ec7ffa19a821c2b873071d99679d4c96012d",
-  "requirements_lock_package_count": 148,
+  "requirements_lock_sha256": "5ba18a5e0d9745b2da3d64015abf3df66b96e5b17434e0c94023fc9279413c5f",
+  "requirements_lock_package_count": 147,
   "build_requirements_lock_sha256": "6357035223092dd3ccc13ab5b161e1ddbf27599804609029c9d5bd18a6e60c68",
   "build_requirements_lock_package_count": 9,
   "runtime_manifest_sha256": "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020",
@@ -47,6 +47,15 @@
     "patch_sha256": "815723bb776e2ab6f31fd0669ea52c5288e70d43db72e9da5e6223ab88caa082",
     "scope": "one-line distribution metadata upper-bound removal; inference source unchanged",
     "policy": "enhancement execution remains gated on immutable-image import, offline model-load, and real GPU/audio fixtures"
+  },
+  "resemblyzer_runtime_compatibility": {
+    "status": "metadata-patched",
+    "version": "0.1.4",
+    "wheel_sha256": "8f12eb2f1a9982d32e8db7856de754709b59c93a77bcf0ff536584b619a9dd1f",
+    "obsolete_requirement": "typing",
+    "original_metadata_sha256": "a8dca4f91c66d1594216af85080202fc6475f09f8a0e4c5822ce0b60bf401eb2",
+    "patched_metadata_sha256": "9171b44fb93d82cfd945f403d890c4d0f77cb241a483996133b95eb1fe2ea146",
+    "rationale": "typing is standard library in Python 3.11; obsolete backport omitted"
   },
   "sources": {
     "omnivoice": "346bb75330980a236540d61a0808d00767c0973b",

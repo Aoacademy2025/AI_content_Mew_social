@@ -27,5 +27,6 @@ uv pip compile requirements.in \
   --no-emit-package nvidia-nccl-cu12 \
   --no-emit-package nvidia-nvjitlink-cu12 \
   --no-emit-package nvidia-nvtx-cu12 \
+  --no-emit-package typing \
   --refresh \
   --output-file requirements.lock
