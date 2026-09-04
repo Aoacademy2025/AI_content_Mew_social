@@ -222,7 +222,7 @@
     {
       "name": "libssl3",
       "SPDXID": "SPDXRef-System-libssl3",
-      "versionInfo": "3.0.2-0ubuntu1.25",
+      "versionInfo": "3.0.2-0ubuntu1.29",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
@@ -233,7 +233,7 @@
     {
       "name": "openssl",
       "SPDXID": "SPDXRef-System-openssl",
-      "versionInfo": "3.0.2-0ubuntu1.25",
+      "versionInfo": "3.0.2-0ubuntu1.29",
       "downloadLocation": "NOASSERTION",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
