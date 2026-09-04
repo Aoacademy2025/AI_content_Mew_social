@@ -52,7 +52,8 @@
       "filesAnalyzed": false,
       "licenseConcluded": "Apache-2.0",
       "licenseDeclared": "Apache-2.0",
-      "copyrightText": "NOASSERTION"
+      "copyrightText": "NOASSERTION",
+      "comment": "Installed from the exact pinned source after an exact before/after hash-checked METADATA patch removes only the excluded Gradio demo dependency; inference source is unchanged and the Gradio graph is absent from requirements.lock."
     },
     {
       "name": "AudioSeal",
@@ -445,17 +446,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "aiofiles",
-      "SPDXID": "SPDXRef-Python-aiofiles",
-      "versionInfo": "24.1.0",
-      "downloadLocation": "pkg:pypi/aiofiles@24.1.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "aiohappyeyeballs",
       "SPDXID": "SPDXRef-Python-aiohappyeyeballs",
       "versionInfo": "2.7.1",
@@ -830,17 +820,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "ffmpy",
-      "SPDXID": "SPDXRef-Python-ffmpy",
-      "versionInfo": "1.0.0",
-      "downloadLocation": "pkg:pypi/ffmpy@1.0.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "filelock",
       "SPDXID": "SPDXRef-Python-filelock",
       "versionInfo": "3.32.5",
@@ -867,39 +846,6 @@
       "SPDXID": "SPDXRef-Python-fsspec",
       "versionInfo": "2026.7.0",
       "downloadLocation": "pkg:pypi/fsspec@2026.7.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "gradio",
-      "SPDXID": "SPDXRef-Python-gradio",
-      "versionInfo": "6.9.0",
-      "downloadLocation": "pkg:pypi/gradio@6.9.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "gradio-client",
-      "SPDXID": "SPDXRef-Python-gradio-client",
-      "versionInfo": "2.3.0",
-      "downloadLocation": "pkg:pypi/gradio-client@2.3.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "groovy",
-      "SPDXID": "SPDXRef-Python-groovy",
-      "versionInfo": "0.1.2",
-      "downloadLocation": "pkg:pypi/groovy@0.1.2",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1237,32 +1183,10 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "orjson",
-      "SPDXID": "SPDXRef-Python-orjson",
-      "versionInfo": "3.12.0",
-      "downloadLocation": "pkg:pypi/orjson@3.12.0",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "packaging",
       "SPDXID": "SPDXRef-Python-packaging",
       "versionInfo": "26.3",
       "downloadLocation": "pkg:pypi/packaging@26.3",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "pandas",
-      "SPDXID": "SPDXRef-Python-pandas",
-      "versionInfo": "3.0.5",
-      "downloadLocation": "pkg:pypi/pandas@3.0.5",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1285,17 +1209,6 @@
       "SPDXID": "SPDXRef-Python-pfzy",
       "versionInfo": "0.3.4",
       "downloadLocation": "pkg:pypi/pfzy@0.3.4",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "pillow",
-      "SPDXID": "SPDXRef-Python-pillow",
-      "versionInfo": "12.3.0",
-      "downloadLocation": "pkg:pypi/pillow@12.3.0",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -1523,17 +1436,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "pytz",
-      "SPDXID": "SPDXRef-Python-pytz",
-      "versionInfo": "2026.3.post1",
-      "downloadLocation": "pkg:pypi/pytz@2026.3.post1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "pyyaml",
       "SPDXID": "SPDXRef-Python-pyyaml",
       "versionInfo": "6.0.3",
@@ -1644,17 +1546,6 @@
       "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
     },
     {
-      "name": "safehttpx",
-      "SPDXID": "SPDXRef-Python-safehttpx",
-      "versionInfo": "0.1.7",
-      "downloadLocation": "pkg:pypi/safehttpx@0.1.7",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
       "name": "safetensors",
       "SPDXID": "SPDXRef-Python-safetensors",
       "versionInfo": "0.8.0",
@@ -1681,17 +1572,6 @@
       "SPDXID": "SPDXRef-Python-scipy",
       "versionInfo": "1.17.1",
       "downloadLocation": "pkg:pypi/scipy@1.17.1",
-      "filesAnalyzed": false,
-      "licenseConcluded": "NOASSERTION",
-      "licenseDeclared": "NOASSERTION",
-      "copyrightText": "NOASSERTION",
-      "comment": "Runtime distribution; exact accepted artifact hashes are recorded in requirements.lock."
-    },
-    {
-      "name": "semantic-version",
-      "SPDXID": "SPDXRef-Python-semantic-version",
-      "versionInfo": "2.10.0",
-      "downloadLocation": "pkg:pypi/semantic-version@2.10.0",
       "filesAnalyzed": false,
       "licenseConcluded": "NOASSERTION",
       "licenseDeclared": "NOASSERTION",
@@ -2303,11 +2183,6 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-aiofiles"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-aiohappyeyeballs"
     },
     {
@@ -2478,11 +2353,6 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-ffmpy"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-filelock"
     },
     {
@@ -2494,21 +2364,6 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-fsspec"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-gradio"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-gradio-client"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-groovy"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2663,17 +2518,7 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-orjson"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-packaging"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-pandas"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2684,11 +2529,6 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-pfzy"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-pillow"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",
@@ -2793,11 +2633,6 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-pytz"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-pyyaml"
     },
     {
@@ -2848,11 +2683,6 @@
     {
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-safehttpx"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-safetensors"
     },
     {
@@ -2864,11 +2694,6 @@
       "spdxElementId": "SPDXRef-Package-Worker",
       "relationshipType": "DEPENDS_ON",
       "relatedSpdxElement": "SPDXRef-Python-scipy"
-    },
-    {
-      "spdxElementId": "SPDXRef-Package-Worker",
-      "relationshipType": "DEPENDS_ON",
-      "relatedSpdxElement": "SPDXRef-Python-semantic-version"
     },
     {
       "spdxElementId": "SPDXRef-Package-Worker",

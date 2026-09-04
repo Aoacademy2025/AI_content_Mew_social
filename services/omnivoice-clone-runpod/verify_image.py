@@ -19,7 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "fe87411562b8f1e9cc9fab7b831e8c12a772db760d69a0bf945c02b6c64d0967"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "b959073d8dcb083aacc306c2a23aa2a3a12a31115dc7d79d402ebf311a1c59b9"
 EXPECTED_RUNTIME_MANIFEST_SHA256 = "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020"
 APPROVED_SOURCE_REVISION = "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb"
 PINNED_BASE = (
@@ -51,10 +51,38 @@ CREDENTIAL_NAMES = {
     "credentials", "credentials.json", "docker-config.json", "config.json.gpg",
 }
 PRIVATE_KEY_MARKERS = (b"-----BEGIN PRIVATE KEY-----", b"-----BEGIN OPENSSH PRIVATE KEY-----")
+PRIVATE_KEY_PEM = re.compile(
+    rb"-----BEGIN ((?:(?:RSA|DSA|EC|OPENSSH) )?PRIVATE KEY)-----\r?\n"
+    rb"(?:[A-Za-z0-9+/=]{4,128}\r?\n){2,}"
+    rb"-----END \1-----"
+)
+KNOWN_PUBLIC_TEST_KEY_CONTAINERS_SHA256 = {
+    "usr/lib/x86_64-linux-gnu/libgnutls.so.30.31.0": "79be57f85922e4f839de9a3ebc21993f57c39f94a2e95b7805feabe446c7cb2f",
+}
+KNOWN_PUBLIC_SECRET_FIXTURE_CONTAINERS_SHA256 = {
+    "opt/conda/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "517cd51965556674c6d2f9ed752851bf8e3ca79257e6e94e6f7f1ead665f95dc",
+    "opt/conda/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
+    "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/__pycache__/test_upload.cpython-311.pyc": "afb66bb085fb52e4ecc940ce6bfadac53c5b33c2112a031ae2f4c3d31c801494",
+    "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107",
+}
+KNOWN_NONVOICE_AUDIO_FIXTURES_SHA256 = {
+    "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e",
+    "opt/conda/pkgs/ipython-8.27.0-pyh707e725_0/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e",
+}
+KNOWN_NONVOICE_AUDIO_HARDLINKS = {
+    "opt/conda/pkgs/ipython-8.27.0-pyh707e725_0/site-packages/IPython/lib/tests/test.wav":
+        "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav",
+}
+KNOWN_PYTHON_PATH_CONFIG_HARDLINKS = {
+    "opt/conda/pkgs/setuptools-73.0.1-pyhd8ed1ab_0/site-packages/distutils-precedence.pth":
+        "opt/conda/lib/python3.11/site-packages/distutils-precedence.pth",
+}
 SECRET_ASSIGNMENT = re.compile(
     rb"(?i)(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|client[_-]?secret)"
-    rb"\s*[:=]\s*['\"]?[A-Za-z0-9_+./=-]{20,}"
+    rb"\s*[:=]\s*(?P<quote>['\"]?)(?P<secret_value>[A-Za-z0-9_+./=-]{20,})"
 )
+PYTHON_REFERENCE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
+KNOWN_NON_SECRET_IDENTIFIER_LITERALS = {b"AWS_CONTAINER_AUTHORIZATION_TOKEN"}
 STOCK_OR_LAO_PATH = re.compile(
     r"(?:^|/)(?:voices_lao|stock[_-]?voices?|voice[_-]?catalog|voices\.json)(?:/|$)|"
     r"(?:^|/)voice_0[1-9](?:\.|/|$)|"
@@ -69,7 +97,7 @@ SENSITIVE_PATH = re.compile(
     re.IGNORECASE,
 )
 CONTENT_SCAN_BLOCK = 1024 * 1024
-CONTENT_SCAN_OVERLAP = 512
+CONTENT_SCAN_OVERLAP = 65_536
 OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 OCI_INDEX_MEDIA_TYPES = {
     "application/vnd.oci.image.index.v1+json",
@@ -120,6 +148,13 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _sha256_stream(handle) -> str:
+    digest = hashlib.sha256()
+    for block in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(block)
+    return digest.hexdigest()
+
+
 def _contains_audio_signature(content: bytes) -> bool:
     offset = content.find(b"RIFF")
     while offset >= 0:
@@ -139,14 +174,109 @@ def _contains_audio_signature(content: bytes) -> bool:
         offset = content.find(b"ID3", offset + 1)
     offset = content.find(b"fLaC")
     while offset >= 0:
-        if len(content) >= offset + 8 and (content[offset + 4] & 0x7F) <= 6:
-            return True
+        if len(content) >= offset + 42:
+            block_header = content[offset + 4 : offset + 8]
+            if block_header[0] & 0x7F == 0 and int.from_bytes(block_header[1:4], "big") == 34:
+                return True
         offset = content.find(b"fLaC", offset + 1)
     offset = content.find(b"OggS")
     while offset >= 0:
         if len(content) >= offset + 27 and content[offset + 4] == 0 and content[offset + 5] <= 7:
             return True
         offset = content.find(b"OggS", offset + 1)
+    return _contains_mpeg_audio_frames(content)
+
+
+def _mpeg_frame_length(content: bytes, offset: int) -> int | None:
+    if offset < 0 or len(content) < offset + 4:
+        return None
+    first, second, third, fourth = content[offset : offset + 4]
+    if first != 0xFF or second & 0xE0 != 0xE0:
+        return None
+    version_bits = (second >> 3) & 0x03
+    layer_bits = (second >> 1) & 0x03
+    bitrate_index = (third >> 4) & 0x0F
+    sample_rate_index = (third >> 2) & 0x03
+    if (
+        version_bits == 1
+        or layer_bits != 1
+        or bitrate_index in {0, 15}
+        or sample_rate_index == 3
+        or fourth & 0x03 == 2
+    ):
+        return None
+    mpeg1_bitrates = {
+        3: (0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448),
+        2: (0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384),
+        1: (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
+    }
+    mpeg2_bitrates = {
+        3: (0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256),
+        2: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
+        1: (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
+    }
+    bitrate = (mpeg1_bitrates if version_bits == 3 else mpeg2_bitrates)[layer_bits][bitrate_index] * 1000
+    sample_rate = (44_100, 48_000, 32_000)[sample_rate_index]
+    if version_bits == 2:
+        sample_rate //= 2
+    elif version_bits == 0:
+        sample_rate //= 4
+    padding = (third >> 1) & 0x01
+    if layer_bits == 3:
+        return ((12 * bitrate // sample_rate) + padding) * 4
+    coefficient = 144 if layer_bits == 2 or version_bits == 3 else 72
+    return coefficient * bitrate // sample_rate + padding
+
+
+def _contains_mpeg_audio_frames(content: bytes) -> bool:
+    offset = content.find(b"\xff")
+    while offset >= 0:
+        first_length = _mpeg_frame_length(content, offset)
+        if first_length is not None:
+            second = content[offset + 1]
+            third = content[offset + 2]
+            version_bits = (second >> 3) & 0x03
+            layer_bits = (second >> 1) & 0x03
+            sample_rate_index = (third >> 2) & 0x03
+            signature = (version_bits, layer_bits, sample_rate_index)
+            sample_rate = (44_100, 48_000, 32_000)[sample_rate_index]
+            if version_bits == 2:
+                sample_rate //= 2
+            elif version_bits == 0:
+                sample_rate //= 4
+            samples_per_frame = 384 if layer_bits == 3 else (1_152 if layer_bits == 2 or version_bits == 3 else 576)
+            required_frames = (sample_rate + samples_per_frame - 1) // samples_per_frame
+            current = offset
+            consecutive = 0
+            while consecutive < required_frames:
+                frame_length = _mpeg_frame_length(content, current)
+                if frame_length is None:
+                    break
+                frame_second = content[current + 1]
+                frame_third = content[current + 2]
+                frame_signature = (
+                    (frame_second >> 3) & 0x03,
+                    (frame_second >> 1) & 0x03,
+                    (frame_third >> 2) & 0x03,
+                )
+                if frame_signature != signature:
+                    break
+                consecutive += 1
+                current += frame_length
+            if consecutive == required_frames:
+                return True
+        offset = content.find(b"\xff", offset + 1)
+    return False
+
+
+def _contains_secret_assignment(content: bytes, *, allow_python_reference: bool = False) -> bool:
+    for match in SECRET_ASSIGNMENT.finditer(content):
+        value = match.group("secret_value")
+        if value in KNOWN_NON_SECRET_IDENTIFIER_LITERALS:
+            continue
+        if allow_python_reference and not match.group("quote") and PYTHON_REFERENCE.fullmatch(value) is not None:
+            continue
+        return True
     return False
 
 
@@ -235,7 +365,7 @@ def _scan_authenticated_config_text(value: str, *, label: str) -> None:
         not any(marker in lowered for marker in FORBIDDEN_CONFIG_MARKERS),
         f"secret/payload marker in authenticated OCI config {label}",
     )
-    require(not SECRET_ASSIGNMENT.search(encoded), f"credential value in authenticated OCI config {label}")
+    require(not _contains_secret_assignment(encoded), f"credential value in authenticated OCI config {label}")
     require(not any(marker in encoded for marker in PRIVATE_KEY_MARKERS), f"private key in authenticated OCI config {label}")
     require(not _contains_audio_signature(encoded), f"audio payload in authenticated OCI config {label}")
     require(not _contains_catalog_identifier(encoded), f"stock/Lao catalog in authenticated OCI config {label}")
@@ -467,6 +597,33 @@ def verify_static(root: Path = ROOT) -> None:
         == "9171b44fb93d82cfd945f403d890c4d0f77cb241a483996133b95eb1fe2ea146",
         "Resemblyzer compatibility resolution drift",
     )
+    omnivoice_compatibility = source_manifest.get("omnivoice_runtime_compatibility", {})
+    require(
+        omnivoice_compatibility.get("status") == "metadata-patched"
+        and omnivoice_compatibility.get("version") == "0.1.5"
+        and omnivoice_compatibility.get("removed_requirement") == "gradio"
+        and omnivoice_compatibility.get("original_metadata_sha256")
+        == "c26956459797f59a2ba40f015d991aaefd07d7e7fa6f864ce29f707927502ad6"
+        and omnivoice_compatibility.get("patched_metadata_sha256")
+        == "f72051fb59f8967c0dd7dc6dd1cf2ca02c038dd6b1293fa5e5cb82481793d660",
+        "OmniVoice compatibility resolution drift",
+    )
+    scanner_exceptions = source_manifest.get("base_image_scanner_exceptions", {})
+    require(
+        scanner_exceptions.get("status") == "exact-public-fixtures-only"
+        and scanner_exceptions.get("raw_mpeg_content_minimum_milliseconds") == 1000
+        and scanner_exceptions.get("known_non_secret_identifier_literals")
+        == [value.decode("ascii") for value in sorted(KNOWN_NON_SECRET_IDENTIFIER_LITERALS)]
+        and scanner_exceptions.get("known_public_test_key_containers_sha256")
+        == KNOWN_PUBLIC_TEST_KEY_CONTAINERS_SHA256
+        and scanner_exceptions.get("known_public_secret_fixture_containers_sha256")
+        == KNOWN_PUBLIC_SECRET_FIXTURE_CONTAINERS_SHA256
+        and scanner_exceptions.get("known_nonvoice_audio_fixtures_sha256")
+        == KNOWN_NONVOICE_AUDIO_FIXTURES_SHA256
+        and scanner_exceptions.get("known_nonvoice_audio_hardlinks") == KNOWN_NONVOICE_AUDIO_HARDLINKS
+        and scanner_exceptions.get("known_python_path_config_hardlinks") == KNOWN_PYTHON_PATH_CONFIG_HARDLINKS,
+        "base-image scanner exception attestation drift",
+    )
 
     dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
     require(dockerfile.count(f"FROM {PINNED_BASE}") == 2, "both stages must hard-code the pinned base")
@@ -482,6 +639,8 @@ def verify_static(root: Path = ROOT) -> None:
     require("--no-build-isolation" in dockerfile, "source install can fetch build dependencies")
     require("pip install --require-hashes --no-deps --no-build-isolation" in dockerfile, "runtime lock install is not dependency-closed")
     for metadata_hash in (
+        "c26956459797f59a2ba40f015d991aaefd07d7e7fa6f864ce29f707927502ad6",
+        "f72051fb59f8967c0dd7dc6dd1cf2ca02c038dd6b1293fa5e5cb82481793d660",
         "a8dca4f91c66d1594216af85080202fc6475f09f8a0e4c5822ce0b60bf401eb2",
         "9171b44fb93d82cfd945f403d890c4d0f77cb241a483996133b95eb1fe2ea146",
     ):
@@ -502,9 +661,13 @@ def verify_static(root: Path = ROOT) -> None:
 
     lock = (root / "requirements.lock").read_text(encoding="utf-8")
     package_lines = [line for line in lock.splitlines() if re.match(r"^[a-zA-Z0-9_.-]+==", line)]
-    require(len(package_lines) == source_manifest.get("requirements_lock_package_count") == 147, "Python runtime lock is unexpectedly incomplete")
+    require(len(package_lines) == source_manifest.get("requirements_lock_package_count") == 136, "Python runtime lock is unexpectedly incomplete")
     require("--hash=sha256:" in lock, "Python hashes missing")
     require(not any(line.startswith("typing==") for line in lock.splitlines()), "obsolete Python typing backport is locked")
+    require(
+        not any(line.startswith(("gradio==", "gradio-client==")) for line in lock.splitlines()),
+        "excluded Gradio demo dependency remains locked",
+    )
     for direct in ("pydub==0.25.1", "einops==0.8.2", "omegaconf==2.3.0"):
         require(direct in lock, f"required runtime pin missing: {direct}")
     build_lock = (root / "build-requirements.lock").read_text(encoding="utf-8")
@@ -605,7 +768,7 @@ def _relative(root: Path, path: Path) -> str:
 def _looks_like_audio(header: bytes) -> bool:
     return (
         header.startswith((b"RIFF", b"ID3", b"fLaC", b"OggS"))
-        or (len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0)
+        or _contains_mpeg_audio_frames(header)
     )
 
 
@@ -644,23 +807,40 @@ def _is_python_path_configuration_content(content: bytes) -> bool:
 
 def _scan_content(handle, *, label: str, relative: str, capture_limit: int = 0) -> bytes:
     captured = b""
+    content_digest = hashlib.sha256()
+    private_key_found = False
+    secret_assignment_found = False
     try:
         header = handle.read(4096)
         require(not _looks_like_audio(header), f"audio magic found in {label}: {relative}")
         previous = b""
         block = header
         while block:
+            content_digest.update(block)
             if capture_limit and len(captured) <= capture_limit:
                 captured += block[: capture_limit + 1 - len(captured)]
             searchable = previous + block
             require(not _contains_audio_signature(searchable), f"embedded audio magic found in {label}: {relative}")
             require(not _contains_catalog_identifier(searchable), f"stock/Lao catalog content found in {label}: {relative}")
-            require(not any(marker in searchable for marker in PRIVATE_KEY_MARKERS), f"private key found in {label}: {relative}")
-            require(not SECRET_ASSIGNMENT.search(searchable), f"credential value found in {label}: {relative}")
+            private_key_found = private_key_found or PRIVATE_KEY_PEM.search(searchable) is not None
+            secret_assignment_found = secret_assignment_found or _contains_secret_assignment(
+                searchable,
+                allow_python_reference=relative.endswith((".py", ".pyi")),
+            )
             previous = searchable[-CONTENT_SCAN_OVERLAP:]
             block = handle.read(CONTENT_SCAN_BLOCK)
     except OSError as error:
         raise SystemExit(f"cannot inspect {label}:{relative}") from error
+    if private_key_found:
+        require(
+            KNOWN_PUBLIC_TEST_KEY_CONTAINERS_SHA256.get(relative) == content_digest.hexdigest(),
+            f"private key found in {label}: {relative}",
+        )
+    if secret_assignment_found:
+        require(
+            KNOWN_PUBLIC_SECRET_FIXTURE_CONTAINERS_SHA256.get(relative) == content_digest.hexdigest(),
+            f"credential value found in {label}: {relative}",
+        )
     return captured
 
 
@@ -696,7 +876,11 @@ def scan_filesystem(rootfs: Path, *, label: str, model_artifacts: dict[str, dict
         if not path.is_file():
             continue
         if path.suffix.lower() in AUDIO_SUFFIXES:
-            raise SystemExit(f"source/voice audio found in {label}: {relative}")
+            require(
+                KNOWN_NONVOICE_AUDIO_FIXTURES_SHA256.get(relative) == _sha256(path),
+                f"source/voice audio found in {label}: {relative}",
+            )
+            continue
         if path.suffix.lower() in MODEL_SUFFIXES:
             is_path_config = path.suffix.lower() == ".pth" and _is_python_path_configuration(path)
             require(
@@ -729,6 +913,18 @@ def scan_oci_layer_blob(blob: Path, *, label: str, model_artifacts: dict[str, di
             require(not SENSITIVE_PATH.search(lowered), f"sensitive credential path in {label}: {relative}")
             suffix = PurePosixPath(relative).suffix.lower()
             if member.issym() or member.islnk():
+                if suffix in AUDIO_SUFFIXES:
+                    require(
+                        member.islnk() and KNOWN_NONVOICE_AUDIO_HARDLINKS.get(relative) == member.linkname,
+                        f"linked source/voice audio in {label}: {relative}",
+                    )
+                    continue
+                if suffix == ".pth":
+                    require(
+                        member.islnk() and KNOWN_PYTHON_PATH_CONFIG_HARDLINKS.get(relative) == member.linkname,
+                        f"linked model artifact in {label}: {relative}",
+                    )
+                    continue
                 _scan_link_target(member.linkname, label=label, relative=relative)
                 require(suffix not in AUDIO_SUFFIXES, f"linked source/voice audio in {label}: {relative}")
                 require(suffix not in MODEL_SUFFIXES, f"linked model artifact in {label}: {relative}")
@@ -736,7 +932,13 @@ def scan_oci_layer_blob(blob: Path, *, label: str, model_artifacts: dict[str, di
             if not member.isfile():
                 continue
             if suffix in AUDIO_SUFFIXES:
-                raise SystemExit(f"source/voice audio found in {label}: {relative}")
+                handle = archive.extractfile(member)
+                require(handle is not None, f"cannot inspect {label}:{relative}")
+                require(
+                    KNOWN_NONVOICE_AUDIO_FIXTURES_SHA256.get(relative) == _sha256_stream(handle),
+                    f"source/voice audio found in {label}: {relative}",
+                )
+                continue
             handle = archive.extractfile(member)
             require(handle is not None, f"cannot inspect {label}:{relative}")
             captured = _scan_content(
@@ -961,6 +1163,18 @@ def _verify_extracted_rootfs(rootfs: Path) -> None:
     require(
         b"Requires-Dist: typing\r\n" not in resemblyzer_metadata.read_bytes(),
         "obsolete Resemblyzer typing dependency remains installed",
+    )
+
+    omnivoice_metadata = rootfs / "opt" / "venv" / "lib" / "python3.11" / "site-packages" / "omnivoice-0.1.5.dist-info" / "METADATA"
+    omnivoice_metadata_mode = _path_mode(omnivoice_metadata)
+    require(omnivoice_metadata_mode is not None and stat.S_ISREG(omnivoice_metadata_mode), "OmniVoice METADATA missing or linked")
+    require(
+        _sha256(omnivoice_metadata) == "f72051fb59f8967c0dd7dc6dd1cf2ca02c038dd6b1293fa5e5cb82481793d660",
+        "OmniVoice METADATA compatibility patch drift",
+    )
+    require(
+        b"Requires-Dist: gradio\n" not in omnivoice_metadata.read_bytes(),
+        "excluded OmniVoice Gradio dependency remains installed",
     )
 
     model_root = rootfs / "opt" / "models"

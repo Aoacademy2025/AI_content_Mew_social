@@ -5,7 +5,9 @@ authorize publication, customer use, or commercial use.
 
 - OmniVoice source is pinned to `k2-fsa/OmniVoice` commit
   `346bb75330980a236540d61a0808d00767c0973b` and is Apache-2.0. Preserve its
-  upstream license and notices.
+  upstream license and notices. Its excluded Gradio demo dependency is removed
+  by the exact hash-checked metadata-only patch in `SOURCE_MANIFEST.json`;
+  inference source is unchanged.
 - The pinned OmniVoice pretrained checkpoint revision
   `c5fdb5ccb189668d56333f77ba2629f4cd7535f4` is described by its official model
   card as CC-BY-NC because of training-data constraints. Commercial use is

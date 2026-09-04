@@ -1131,7 +1131,9 @@ class StaticAndAbsenceTests(unittest.TestCase):
             ".git/config": b"clean",
             "tmp/reference.wav": b"clean",
             "tmp/disguised.bin": b"RIFF\x00\x00\x00\x00WAVE",
+            "tmp/disguised-flac.bin": b"fLaC\x80\x00\x00\x22" + b"\x00" * 34,
             "tmp/late-audio.bin": b"x" * 8_192 + b"RIFF\x00\x00\x00\x00WAVE",
+            "tmp/raw-mp3.bin": (b"\xff\xfb\x90\x64" + b"\x00" * 413) * 39,
             "tmp/opaque-primary.bin": b'[{"id":"voice_01","ref_audio":"sample.bin"}]',
             "tmp/opaque-lao.bin": b'[{"id":"lao_01","language":"Lao"}]',
             "root/.env.production": b"TOKEN=not-printed",
@@ -1140,8 +1142,15 @@ class StaticAndAbsenceTests(unittest.TestCase):
             "app/voice-stock-premium.dat": b"clean",
             "opt/models/extra.pth": b"weights",
             "tmp/config.txt": b'api_key="abcdefghijklmnopqrstuvwxyz012345"',
+            "tmp/embedded_secret.py": b'api_key = "abcdefghijklmnopqrstuvwxyz012345"',
             "tmp/late-secret.txt": b"x" * 8_192 + b'client_secret="abcdefghijklmnopqrstuvwxyz012345"',
-            "tmp/key.txt": b"-----BEGIN PRIVATE KEY-----",
+            "tmp/key.txt": (
+                b"-----BEGIN PRIVATE KEY-----\n"
+                + b"A" * 64
+                + b"\n"
+                + b"B" * 64
+                + b"\n-----END PRIVATE KEY-----\n"
+            ),
             "root/.docker/config.json": b"{}",
         }
         for relative, content in cases.items():
@@ -1152,6 +1161,48 @@ class StaticAndAbsenceTests(unittest.TestCase):
                 offender.write_bytes(content)
                 with self.assertRaises(SystemExit):
                     scan_filesystem(root, label="adversarial-layer", model_artifacts={})
+
+    def test_layer_scanner_does_not_mistake_private_key_parser_literals_for_key_material(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = root / "usr/lib/libcrypto-parser.so"
+            library.parent.mkdir(parents=True)
+            library.write_bytes(
+                b"\x7fELF\x00-----BEGIN PRIVATE KEY-----\x00parser literal\x00-----END PRIVATE KEY-----\x00"
+            )
+            scan_filesystem(root, label="synthetic-base-layer", model_artifacts={})
+
+    def test_layer_scanner_does_not_mistake_python_attribute_assignment_for_secret(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "opt/conda/lib/python3.11/distutils/command/upload.py"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"self.password = self.distribution.password\n")
+            scan_filesystem(root, label="synthetic-base-layer", model_artifacts={})
+
+    def test_layer_scanner_does_not_mistake_aws_environment_variable_name_for_token_value(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "opt/venv/lib/python3.11/site-packages/botocore/credentials.py"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"ENV_VAR_AUTH_TOKEN = 'AWS_CONTAINER_AUTHORIZATION_TOKEN'\n")
+            scan_filesystem(root, label="synthetic-worker-layer", model_artifacts={})
+
+    def test_layer_scanner_does_not_mistake_utf16_bom_for_raw_mp3(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            text = root / "opt/conda/lib/python3.11/site-packages/example/utf-16.file"
+            text.parent.mkdir(parents=True)
+            text.write_bytes("Hello, UTF-16 world".encode("utf-16"))
+            scan_filesystem(root, label="synthetic-base-layer", model_artifacts={})
+
+    def test_layer_scanner_does_not_mistake_flac_parser_literal_for_streaminfo(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            library = root / "usr/lib/libsndfile.so"
+            library.parent.mkdir(parents=True)
+            library.write_bytes(b"\x7fELF\x00fLaC\x00Flac0\x00PCM\x00")
+            scan_filesystem(root, label="synthetic-base-layer", model_artifacts={})
 
     def test_layer_scanner_accepts_only_manifested_model_path(self):
         with tempfile.TemporaryDirectory() as temp_dir:

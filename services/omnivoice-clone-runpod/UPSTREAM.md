@@ -26,6 +26,12 @@ bound; inference source stays at the exact upstream commit. Runnable
 compatibility is not inferred from the patch: immutable-image import, offline
 model loading, and real GPU/audio fixtures remain mandatory gates.
 
+OmniVoice 0.1.5 declares Gradio for its interactive demo, but this clone-only
+worker imports no demo or public-server surface. The build removes that single
+METADATA requirement with exact before/after SHA-256 assertions and omits the
+entire Gradio dependency graph so its bundled media assets never enter a worker
+layer. Inference source remains unchanged.
+
 The latest team-source files used as design provenance are
 `core/audio_enhance.py`, `core/server.py`, `core/text_utils.py`, and
 `core/watermark.py`. Their enhancement, normalization, ranking, and watermark

@@ -7,10 +7,9 @@ torch==2.4.1
 torchaudio==2.4.1
 triton==3.0.0
 
-# OmniVoice inference imports. Gradio is metadata-only for this worker, but the
-# pinned upstream distribution requires it, so it remains locked for pip-check.
+# OmniVoice inference imports. The upstream Gradio dependency serves only its
+# interactive demo and is removed by an exact hash-checked METADATA patch.
 accelerate==1.14.0
-gradio==6.9.0
 huggingface-hub==1.23.0
 librosa==0.11.0
 numpy==2.2.6
