@@ -211,7 +211,7 @@ RUN apt-get update \
        openssl=3.0.2-0ubuntu1.29 \
     && apt-get purge -y linux-libc-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && /opt/conda/bin/pip uninstall -y Brotli IPython jaraco.context pillow setuptools soupsieve urllib3 wheel \
+    && /opt/conda/bin/pip uninstall -y beautifulsoup4 Brotli IPython jaraco.context pillow setuptools soupsieve urllib3 wheel \
     && rm -rf /opt/conda/pkgs \
     && useradd --create-home --uid 10001 --shell /usr/sbin/nologin worker \
     && install -d -o worker -g worker -m 0700 /tmp/hero-voice-clone-cache
