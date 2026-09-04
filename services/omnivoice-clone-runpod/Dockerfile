@@ -30,7 +30,7 @@ assert torch.__version__.split("+")[0] == "2.4.1", torch.__version__
 assert torchaudio.__version__.split("+")[0] == "2.4.1", torchaudio.__version__
 assert triton.__version__ == "3.0.0", triton.__version__
 assert torch.version.cuda == "12.1", torch.version.cuda
-assert torch.backends.cudnn.version() // 1000 == 9, torch.backends.cudnn.version()
+assert torch.backends.cudnn.version() // 10_000 == 9, torch.backends.cudnn.version()
 PY
 
 RUN git init /build/OmniVoice \
