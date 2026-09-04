@@ -19,7 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "79713c18e53261ec917c73076d123b673972b873266578f1af40857833ee100e"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "44d96d03d2723cf0a9afe16920ec924e28b787622d5bbf15119c14611bb240ec"
 EXPECTED_RUNTIME_MANIFEST_SHA256 = "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020"
 APPROVED_SOURCE_REVISION = "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb"
 PINNED_BASE = (
@@ -62,6 +62,9 @@ KNOWN_PUBLIC_TEST_KEY_CONTAINERS_SHA256 = {
 KNOWN_PUBLIC_SECRET_FIXTURE_CONTAINERS_SHA256 = {
     "opt/conda/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "517cd51965556674c6d2f9ed752851bf8e3ca79257e6e94e6f7f1ead665f95dc",
     "opt/conda/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
+    "opt/conda/pkgs/python-3.11.9-hb806964_0_cpython/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "517cd51965556674c6d2f9ed752851bf8e3ca79257e6e94e6f7f1ead665f95dc",
+    "opt/conda/pkgs/python-3.11.9-hb806964_0_cpython/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
+    "opt/conda/pkgs/setuptools-73.0.1-pyhd8ed1ab_0/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107",
     "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/__pycache__/test_upload.cpython-311.pyc": "afb66bb085fb52e4ecc940ce6bfadac53c5b33c2112a031ae2f4c3d31c801494",
     "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107",
     "opt/venv/lib/python3.11/site-packages/runpod-1.10.0.dist-info/METADATA": "9a4fdc594b37ad414736ffa12652fd8b01c64f1e5c36db8c8f3b572c84d0bbca",
