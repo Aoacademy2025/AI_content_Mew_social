@@ -42,6 +42,6 @@ Closing after reveal invokes Task 4’s crash-recoverable deletion protocol. It 
 - No local Docker/Podman or independently attested non-emulated Linux/arm64 Whisper runtime is available.
 - The exact Clerk test issuer/audience/two real sessions are not evidenced.
 - Script 3 now has a frozen deterministic, local meaningful-delta transform; its independent approval/evidence row is still absent.
-- GitHub review-object authority/readback, provider/legal/rate/license and retention evidence remain Task 6 work. Candidate image index `sha256:d2703cde6b5aa9e0514022af2bf000d79dc7969d446200fff32239034d7b7d7d` and Linux/amd64 manifest `sha256:7f4594d9bf4e3a90495e1f7a8a84dd4244112b5b13fc1719cfb6565c3e8649aa` are inspection evidence only and are not referenced by any RunPod template.
+- GitHub review-object authority/readback, provider/legal/rate/license and retention evidence remain Task 6 work. Candidate image index `sha256:dcbc9d852fed7798bef4081def51e09ab3e483f71416d756c42a59303614a40d` and Linux/amd64 manifest `sha256:2137e25614548f3f1a31405ca9f48b277775dd76f41c5fc8c0d4b49a1df23a6c` are inspection evidence only and are not referenced by any RunPod template.
 
 Any one of these keeps the decision `NO-GO` and prevents human audio from leaving the Mac.

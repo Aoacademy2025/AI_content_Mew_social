@@ -6,13 +6,13 @@ Decision: **NO-GO — paid submission and staging mutation remain disabled**
 
 ## Verified locally
 
-- Tasks 1–5 focused verification passed. Task 3 passed 49/49 Python tests plus static/AST/JSON/shell checks.
+- Tasks 1–5 focused verification passed. The clone worker passed 56/56 Python tests plus static/AST/JSON/shell checks.
 - Task 4 deletion/upload crash matrices and Task 5 review-preparation/publication/artifact crash recovery passed.
 - Prisma validate/generate, a fresh schema push, and all 20 migrations passed on throwaway SQLite databases.
 - TypeScript, focused changed-scope ESLint, production build (184/184 pages), client source-map/private-sentinel scan, sensitive-audio status scan, and `git diff --check` passed.
-- The final private candidate image was built from commit `3f76a2de672d75a1b800edf60c0bd0e61eb1a6ca`. Registry readback fixed OCI index `sha256:d2703cde6b5aa9e0514022af2bf000d79dc7969d446200fff32239034d7b7d7d` and Linux/amd64 manifest `sha256:7f4594d9bf4e3a90495e1f7a8a84dd4244112b5b13fc1719cfb6565c3e8649aa`.
+- The final private candidate image was built from commit `3ae5658f055346af8c4a6ccd40fd9dcd98250e3b`. Registry readback fixed OCI index `sha256:dcbc9d852fed7798bef4081def51e09ab3e483f71416d756c42a59303614a40d` and Linux/amd64 manifest `sha256:2137e25614548f3f1a31405ca9f48b277775dd76f41c5fc8c0d4b49a1df23a6c`.
 - The authenticated OCI verifier passed the complete final image: every descriptor, size, digest, diff ID, tar stream, layer and merged filesystem; secret/key/audio/catalog/Git/cache absence; exact source/runtime/model manifests; all 12 model files; patched package metadata; and build attestation.
-- Registry attestations were independently downloaded and hashed. The 6,507,021-byte SPDX in-toto statement is `sha256:cac31f3eb90233c1afe57117163fe7949913b24bec91ae514df2f841ab11413e`; the 64,440-byte SLSA provenance statement is `sha256:8071b7babedd07dad34bac175b5de2d85cc4aee75c8427b59e8982a3cb1db6a9`. Both subjects are the exact Linux/amd64 manifest above.
+- Registry attestations were independently downloaded and hashed. The 6,507,021-byte SPDX in-toto statement is `sha256:c422cd6c32cf973ad730c515de72361a780b6e96542e9e97012d34df4b0df4cf`; the 67,576-byte SLSA provenance statement is `sha256:3fdf71f03bec5bc51bb64eeaf0856638e7755a76320cb5bfd6eeb88f940f5922`. Both subjects are the exact Linux/amd64 manifest above.
 - The 44-slot runner remains dry/evidence-gated. Tests use synthetic WAVs, fake provider transport, throwaway private storage, and offline Git authorities only.
 - The named private GHCR image and feature branch were intentionally created. No RunPod endpoint/template/job/queue, production endpoint, Hostinger/PM2 state, DNS, deployed file, billing system, or real audio was mutated.
 
@@ -43,12 +43,16 @@ Decision: **NO-GO — paid submission and staging mutation remain disabled**
 ## Scope and branch update
 
 Mew subsequently authorized a private, non-commercial personal evaluation and
-the private report records the bounded purpose/consent. A fresh remote fetch
-also proved the worktree base equals the latest `origin/main` exactly at
-`8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb` (divergence `0 0`); no team voice
-branch was merged. These two facts clear the owner-scope and branch-provenance
-questions only. They do not clear provider retention, candidate runtime,
-immutable staging, cost, credential, or review evidence.
+the private report records the bounded purpose/consent. The initial remote
+fetch proved the worktree base equaled `origin/main` at
+`8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb`. While Task 6 was running,
+`origin/main` advanced to `1e6fee93a8dc7bc585afda7885b5edd666d9fc65` through unrelated video fixes.
+That latest main was merged cleanly, with no overlap in canary or Hero Voice
+paths. The candidate therefore records source revision `8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb`
+and application base revision `1e6fee93a8dc7bc585afda7885b5edd666d9fc65` separately. No team voice branch
+was merged. These facts clear the owner-scope and branch-provenance questions
+only. They do not clear provider retention, candidate runtime, immutable
+staging, cost, credential, or review evidence.
 
 The source check also established the separate voice authority:
 `Aoacademy2025/Hero-Voice-Ai` has only/default branch `main` at
@@ -60,15 +64,15 @@ fail-open surfaces.
 
 ## Immutable candidate image readback
 
-- Feature commit: `3f76a2de672d75a1b800edf60c0bd0e61eb1a6ca`
-- GitHub Actions run: `33869314926` (`success`)
+- Feature commit: `3ae5658f055346af8c4a6ccd40fd9dcd98250e3b`
+- GitHub Actions run: `33875112473` (`success`)
 - Feature-branch PR: [#440](https://github.com/Aoacademy2025/AI_content_Mew_social/pull/440) (`OPEN`, unmerged, `NO-GO` recorded)
-- Private image tag: `ghcr.io/mewic/heroai-omnivoice-clone:3f76a2de672d75a1b800edf60c0bd0e61eb1a6ca`
-- OCI index: `sha256:d2703cde6b5aa9e0514022af2bf000d79dc7969d446200fff32239034d7b7d7d`
-- Linux/amd64 manifest: `sha256:7f4594d9bf4e3a90495e1f7a8a84dd4244112b5b13fc1719cfb6565c3e8649aa`
-- Attestation manifest: `sha256:e7024520ff705baf812d9128d3167499fa93bebb883f92e98d6a15ef853d1ef7`
-- SPDX statement: `sha256:cac31f3eb90233c1afe57117163fe7949913b24bec91ae514df2f841ab11413e`
-- SLSA provenance statement: `sha256:8071b7babedd07dad34bac175b5de2d85cc4aee75c8427b59e8982a3cb1db6a9`
+- Private image tag: `ghcr.io/mewic/heroai-omnivoice-clone:3ae5658f055346af8c4a6ccd40fd9dcd98250e3b`
+- OCI index: `sha256:dcbc9d852fed7798bef4081def51e09ab3e483f71416d756c42a59303614a40d`
+- Linux/amd64 manifest: `sha256:2137e25614548f3f1a31405ca9f48b277775dd76f41c5fc8c0d4b49a1df23a6c`
+- Attestation manifest: `sha256:23249559d8271ad46983c4e1f15253bf706c04081d7adad099300b9558220af0`
+- SPDX statement: `sha256:c422cd6c32cf973ad730c515de72361a780b6e96542e9e97012d34df4b0df4cf`
+- SLSA provenance statement: `sha256:3fdf71f03bec5bc51bb64eeaf0856638e7755a76320cb5bfd6eeb88f940f5922`
 - Full authenticated OCI verification: `PASS`
 
 This clears the build/publish, manifest capture, SBOM/provenance capture, and
