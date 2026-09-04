@@ -189,5 +189,8 @@ jobs:
       - name: Brand Library lint
         run: npm run lint:brands
 
+      - name: Verify Sentry privacy and sampling configuration
+        run: npm run verify:sentry-config
+
       - name: Build
         run: npm run build
