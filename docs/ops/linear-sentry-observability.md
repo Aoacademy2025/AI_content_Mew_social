@@ -59,11 +59,24 @@ NEXT_PUBLIC_SENTRY_REPLAY_ERROR_RATE=0
 SENTRY_ORG=<organization slug>
 SENTRY_PROJECT=hero-studio-web
 SENTRY_AUTH_TOKEN=<build-only token with release/source-map scope>
+
+# Sentry event.alert -> LINE OA (server-only)
+SENTRY_LINE_ALERTS_ENABLED=1
+SENTRY_SERVICE_HOOK_ID=<project service-hook GUID>
+SENTRY_SERVICE_HOOK_SECRET=<project service-hook signing secret>
+LINE_CHANNEL_ACCESS_TOKEN=<existing Content Deck LINE OA token>
+LINE_TARGET_USER_ID=<Mew LINE user ID>
 ```
 
 The DSN is intentionally available to the browser and is not an authorization token. `SENTRY_AUTH_TOKEN` is sensitive, must never use a `NEXT_PUBLIC_` prefix, and is needed only while building/uploading source maps.
 
 After changing production environment values, use the repository's normal deploy procedure so the public variables are embedded in the client build and PM2 receives updated server variables.
+
+The LINE bridge is `/api/webhooks/sentry-line`. Register one Sentry project service
+hook for `event.alert` only. The route verifies `X-ServiceHook-Signature` over the
+raw request body and requires the matching `X-ServiceHook-GUID`. It ignores
+non-production events and forwards only the error type, level, scrubbed culprit, and canonical
+Sentry issue link. Keep email alerts enabled as a fallback.
 
 ## Alert-to-issue policy
 

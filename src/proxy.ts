@@ -12,6 +12,7 @@ const isPublicRoute = createRouteMatcher([
   "/pricing(.*)",
   "/api/clerk-webhook(.*)",
   "/api/payments/webhook(.*)",
+  "/api/webhooks/sentry-line", // Sentry HMAC + hook GUID authenticated inside route
   "/api/internal/bundle-entitlement", // BUNDLE_SYNC_SECRET-authenticated inside route
   "/api/internal/story-film-worker(.*)", // STORY_FILM_WORKER_TOKEN-authenticated pull worker
   "/api/internal/story-film-media(.*)", // owner session or STORY_FILM_WORKER_TOKEN enforced inside route

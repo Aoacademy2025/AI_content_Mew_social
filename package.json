@@ -16,6 +16,7 @@
     "verify:disk-watch": "tsx scripts/verify-disk-watch.ts",
     "verify:storage-health": "tsx scripts/verify-storage-health.ts",
     "verify:sentry-config": "tsx scripts/verify-sentry-config.ts",
+    "verify:sentry-line-alert": "tsx scripts/verify-sentry-line-alert.ts",
     "verify:admin-insights-revenue": "tsx scripts/verify-admin-insights-revenue-clarity.ts",
     "verify:revenue-growth": "tsx scripts/verify-revenue-growth.ts",
     "verify:media-storage": "tsx scripts/verify-media-storage-foundation.ts && tsx scripts/verify-media-storage-r2.ts && tsx scripts/verify-media-storage-rollout.ts && tsx scripts/verify-media-serving.ts && tsx scripts/verify-media-catalog.ts && tsx scripts/verify-media-local-missing-reconcile.ts && tsx scripts/verify-media-remote-gc.ts && tsx scripts/verify-media-r2-orphan-gc.ts",
