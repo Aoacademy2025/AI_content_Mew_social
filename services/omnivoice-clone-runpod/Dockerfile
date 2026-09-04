@@ -66,6 +66,7 @@ RUN /opt/venv/bin/pip install --require-hashes --no-deps --no-build-isolation -r
     && /opt/venv/bin/pip install --no-deps /build/wheels/omnivoice-0.1.5-py3-none-any.whl /build/wheels/audioseal-0.2.0-py3-none-any.whl /build/wheels/demucs-4.1.0a2-py3-none-any.whl \
     && /opt/venv/bin/python - <<'PY'
 import hashlib
+import shutil
 from pathlib import Path
 
 omnivoice_metadata = Path("/opt/venv/lib/python3.11/site-packages/omnivoice-0.1.5.dist-info/METADATA")
@@ -85,6 +86,11 @@ assert raw.count(obsolete) == 1
 patched = raw.replace(obsolete, b"")
 assert hashlib.sha256(patched).hexdigest() == "9171b44fb93d82cfd945f403d890c4d0f77cb241a483996133b95eb1fe2ea146"
 metadata.write_bytes(patched)
+
+scipy_audio_test_data = Path("/opt/venv/lib/python3.11/site-packages/scipy/io/tests/data")
+assert scipy_audio_test_data.is_dir()
+shutil.rmtree(scipy_audio_test_data)
+assert not scipy_audio_test_data.exists()
 PY
 RUN /opt/venv/bin/pip check
 
@@ -203,8 +209,8 @@ COPY --chown=worker:worker \
     /app/
 
 RUN test "$(sha256sum /app/MODEL_MANIFEST.json | cut -d' ' -f1)" = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb" \
-    && test "$(sha256sum /app/SOURCE_MANIFEST.json | cut -d' ' -f1)" = "b959073d8dcb083aacc306c2a23aa2a3a12a31115dc7d79d402ebf311a1c59b9" \
-    && python -c 'import json; json.dump({"schema_version":1,"worker_version":"hero-voice-clone-contract-v3-internal-eval-2","worker_kind":"clone-only","source_revision":"8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb","source_manifest_sha256":"b959073d8dcb083aacc306c2a23aa2a3a12a31115dc7d79d402ebf311a1c59b9","model_manifest_sha256":"ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb","base_image":"pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"},open("/app/BUILD_ATTESTATION.json","w"),sort_keys=True,separators=(",",":"))' \
+    && test "$(sha256sum /app/SOURCE_MANIFEST.json | cut -d' ' -f1)" = "79713c18e53261ec917c73076d123b673972b873266578f1af40857833ee100e" \
+    && python -c 'import json; json.dump({"schema_version":1,"worker_version":"hero-voice-clone-contract-v3-internal-eval-2","worker_kind":"clone-only","source_revision":"8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb","source_manifest_sha256":"79713c18e53261ec917c73076d123b673972b873266578f1af40857833ee100e","model_manifest_sha256":"ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb","base_image":"pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime@sha256:ac7c098a81512e719afa5d2d497f812d7db3498f340a4b819c69cb7b3b257126"},open("/app/BUILD_ATTESTATION.json","w"),sort_keys=True,separators=(",",":"))' \
     && chmod 0444 /app/BUILD_ATTESTATION.json \
     && ! find /app /opt/models /opt/venv -type d -name .git -print -quit | grep -q . \
     && /opt/venv/bin/pip check \

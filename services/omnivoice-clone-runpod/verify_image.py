@@ -19,7 +19,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 EXPECTED_MODEL_MANIFEST_SHA256 = "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb"
-EXPECTED_SOURCE_MANIFEST_SHA256 = "b959073d8dcb083aacc306c2a23aa2a3a12a31115dc7d79d402ebf311a1c59b9"
+EXPECTED_SOURCE_MANIFEST_SHA256 = "79713c18e53261ec917c73076d123b673972b873266578f1af40857833ee100e"
 EXPECTED_RUNTIME_MANIFEST_SHA256 = "3c86267fb6df07f4030562cbe2331d0fedb790a4fc2a166abb8a1438cdcb6020"
 APPROVED_SOURCE_REVISION = "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb"
 PINNED_BASE = (
@@ -64,6 +64,7 @@ KNOWN_PUBLIC_SECRET_FIXTURE_CONTAINERS_SHA256 = {
     "opt/conda/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
     "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/__pycache__/test_upload.cpython-311.pyc": "afb66bb085fb52e4ecc940ce6bfadac53c5b33c2112a031ae2f4c3d31c801494",
     "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107",
+    "opt/venv/lib/python3.11/site-packages/runpod-1.10.0.dist-info/METADATA": "9a4fdc594b37ad414736ffa12652fd8b01c64f1e5c36db8c8f3b572c84d0bbca",
 }
 KNOWN_NONVOICE_AUDIO_FIXTURES_SHA256 = {
     "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e",
@@ -83,8 +84,9 @@ SECRET_ASSIGNMENT = re.compile(
 )
 PYTHON_REFERENCE = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*")
 KNOWN_NON_SECRET_IDENTIFIER_LITERALS = {b"AWS_CONTAINER_AUTHORIZATION_TOKEN"}
+KNOWN_DOCUMENTATION_PLACEHOLDER_LITERALS = {b"your-replicate-api-key"}
 STOCK_OR_LAO_PATH = re.compile(
-    r"(?:^|/)(?:voices_lao|stock[_-]?voices?|voice[_-]?catalog|voices\.json)(?:/|$)|"
+    r"(?:^|/)(?:" + "voices" + r"_lao|stock[_-]?voices?|voice[_-]?catalog|voices\.json)(?:/|$)|"
     r"(?:^|/)voice_0[1-9](?:\.|/|$)|"
     r"(?:^|/)(?:[^/]*(?:lao|stock)[^/]*voice[^/]*|[^/]*voice[^/]*(?:lao|stock)[^/]*)(?:/|$)|"
     r"(?:^|/)lao(?:[_-]|/|$)",
@@ -272,7 +274,7 @@ def _contains_mpeg_audio_frames(content: bytes) -> bool:
 def _contains_secret_assignment(content: bytes, *, allow_python_reference: bool = False) -> bool:
     for match in SECRET_ASSIGNMENT.finditer(content):
         value = match.group("secret_value")
-        if value in KNOWN_NON_SECRET_IDENTIFIER_LITERALS:
+        if value in KNOWN_NON_SECRET_IDENTIFIER_LITERALS or value in KNOWN_DOCUMENTATION_PLACEHOLDER_LITERALS:
             continue
         if allow_python_reference and not match.group("quote") and PYTHON_REFERENCE.fullmatch(value) is not None:
             continue
@@ -282,14 +284,9 @@ def _contains_secret_assignment(content: bytes, *, allow_python_reference: bool 
 
 def _contains_catalog_identifier(content: bytes) -> bool:
     lowered = content.lower()
-    for prefix in (b"voice" + b"_", b"lao" + b"_"):
-        offset = lowered.find(prefix)
-        while offset >= 0:
-            suffix = lowered[offset + len(prefix) : offset + len(prefix) + 2]
-            if len(suffix) == 2 and suffix.isdigit() and suffix != b"00":
-                return True
-            offset = lowered.find(prefix, offset + 1)
-    return (b"voices" + b"_lao") in lowered
+    catalog_id = re.compile(rb"(?<![a-z0-9_])(?:voice|lao)_(?!00)[0-9]{2}(?![0-9])")
+    catalog_name = re.compile(rb"(?<![a-z0-9_])voices" + b"_lao" + rb"(?![a-z0-9_])")
+    return catalog_id.search(lowered) is not None or catalog_name.search(lowered) is not None
 
 
 def _verified_oci_blob(
@@ -612,6 +609,8 @@ def verify_static(root: Path = ROOT) -> None:
     require(
         scanner_exceptions.get("status") == "exact-public-fixtures-only"
         and scanner_exceptions.get("raw_mpeg_content_minimum_milliseconds") == 1000
+        and scanner_exceptions.get("known_documentation_placeholder_literals")
+        == [value.decode("ascii") for value in sorted(KNOWN_DOCUMENTATION_PLACEHOLDER_LITERALS)]
         and scanner_exceptions.get("known_non_secret_identifier_literals")
         == [value.decode("ascii") for value in sorted(KNOWN_NON_SECRET_IDENTIFIER_LITERALS)]
         and scanner_exceptions.get("known_public_test_key_containers_sha256")

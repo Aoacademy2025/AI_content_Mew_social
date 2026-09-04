@@ -1188,6 +1188,26 @@ class StaticAndAbsenceTests(unittest.TestCase):
             source.write_bytes(b"ENV_VAR_AUTH_TOKEN = 'AWS_CONTAINER_AUTHORIZATION_TOKEN'\n")
             scan_filesystem(root, label="synthetic-worker-layer", model_artifacts={})
 
+    def test_layer_scanner_accepts_only_exact_documentation_secret_placeholder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "opt/venv/lib/python3.11/site-packages/example/client.py"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b'api_key="your-replicate-api-key"\n')
+            scan_filesystem(root, label="synthetic-worker-layer", model_artifacts={})
+
+            source.write_bytes(b'api_key="your-replicate-api-key-live"\n')
+            with self.assertRaises(SystemExit):
+                scan_filesystem(root, label="synthetic-worker-layer", model_artifacts={})
+
+    def test_layer_scanner_does_not_mistake_common_voice_dataset_name_for_catalog(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            scanner = root / "opt" / "venv" / "example.py"
+            scanner.parent.mkdir(parents=True)
+            scanner.write_bytes(b'dataset = "common_voice_11_0"\n')
+            scan_filesystem(root, label="synthetic-worker-layer", model_artifacts={})
+
     def test_layer_scanner_does_not_mistake_utf16_bom_for_raw_mp3(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

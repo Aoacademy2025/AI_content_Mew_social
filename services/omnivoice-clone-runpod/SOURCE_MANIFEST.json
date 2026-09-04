@@ -69,6 +69,9 @@
   "base_image_scanner_exceptions": {
     "status": "exact-public-fixtures-only",
     "raw_mpeg_content_minimum_milliseconds": 1000,
+    "known_documentation_placeholder_literals": [
+      "your-replicate-api-key"
+    ],
     "known_non_secret_identifier_literals": [
       "AWS_CONTAINER_AUTHORIZATION_TOKEN"
     ],
@@ -79,7 +82,8 @@
       "opt/conda/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "517cd51965556674c6d2f9ed752851bf8e3ca79257e6e94e6f7f1ead665f95dc",
       "opt/conda/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
       "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/__pycache__/test_upload.cpython-311.pyc": "afb66bb085fb52e4ecc940ce6bfadac53c5b33c2112a031ae2f4c3d31c801494",
-      "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107"
+      "opt/conda/lib/python3.11/site-packages/setuptools/_distutils/tests/test_upload.py": "3ac320a895fe528b083fb7907c0cb156d1811fb7a5d873580403fbab3b29d107",
+      "opt/venv/lib/python3.11/site-packages/runpod-1.10.0.dist-info/METADATA": "9a4fdc594b37ad414736ffa12652fd8b01c64f1e5c36db8c8f3b572c84d0bbca"
     },
     "known_nonvoice_audio_fixtures_sha256": {
       "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e",
@@ -91,7 +95,7 @@
     "known_python_path_config_hardlinks": {
       "opt/conda/pkgs/setuptools-73.0.1-pyhd8ed1ab_0/site-packages/distutils-precedence.pth": "opt/conda/lib/python3.11/site-packages/distutils-precedence.pth"
     },
-    "policy": "all exceptions require exact path plus full-file hash or exact hardlink target; all other audio, credential, key, and model-link evidence fails closed"
+    "policy": "all exceptions require exact path plus full-file hash or exact hardlink target; all other audio, credential, key, catalog, and model-link evidence fails closed"
   },
   "sources": {
     "omnivoice": "346bb75330980a236540d61a0808d00767c0973b",
