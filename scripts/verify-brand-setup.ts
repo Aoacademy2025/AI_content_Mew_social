@@ -43,6 +43,7 @@ async function main() {
   assert.equal(project.brandVisualPinAdmittedCohort, null, "library setup must not admit AI images");
   const draft = JSON.parse(project.draftJson!);
   assert.equal(draft.geminiVoiceName, "Kore");
+  assert.equal(draft.brollSource, "kie-image", "Brand-created clips start with images generated in the pinned style");
   assert.equal(draft.brandSubtitleDefault.fontFamily, "Sarabun");
   assert.equal(draft.script, "");
   assert.equal(project.activeJobId, null, "setup never starts a render");

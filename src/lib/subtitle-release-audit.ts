@@ -68,7 +68,7 @@ export function auditSubtitleReleaseRecord(record: SubtitleReleaseAuditRecord): 
       || qa.code === "card_too_short";
     issues.push({ jobId: record.id, code: "failed_subtitle_qa", severity: presentationOnly ? "p1" : "p0" });
   }
-  if (qa?.timingSource === "tts_segment_timing" || qa?.timingSource === "avatar_script_clock") {
+  if (qa?.timingSource === "tts_segment_timing" || qa?.timingSource === "avatar_script_clock" || qa?.timingSource === "partial_forced_alignment") {
     // A degraded (not word-accurate) clock is a releasable timing source, not a release blocker.
     issues.push({ jobId: record.id, code: "unverified_alignment", severity: "p1" });
   }

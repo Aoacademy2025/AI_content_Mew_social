@@ -27,7 +27,7 @@ export function parseSubtitleSpeechCoverage(value: unknown): SubtitleSpeechCover
 }
 
 export function subtitleTimingRequiresSpeechCoverage(timingSource: string): boolean {
-  return timingSource === "forced_alignment" || timingSource === "upload_transcription";
+  return timingSource === "forced_alignment" || timingSource === "partial_forced_alignment" || timingSource === "upload_transcription";
 }
 
 /** Shared runtime/audit invariant for the spoken tail of an acoustic timeline. */

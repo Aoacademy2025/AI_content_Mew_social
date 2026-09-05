@@ -3,9 +3,9 @@ import { buildCanonicalCaptionsFromAlignedWords } from "@/lib/mcp/subtitle-quali
 import { projectAcousticClock, type AcousticEvidence } from "@/lib/acoustic-subtitle-clock";
 import type { AcousticWorkerResult } from "@/lib/acoustic-subtitle-worker";
 
-/** Promotion policy is independent of subprocess/cache availability. A partial
- * acoustic result can repair an estimated clock, but cannot downgrade a clock
- * that already has complete acoustic/provider alignment. */
+/** Partial lexical coverage preserves existing complete alignment. A narrowly
+ * bounded Thai repetition mark may bridge otherwise verified Thai words, while
+ * keeping its partial provenance. Provider-supplied alignment stays protected. */
 export function selectAcousticSubtitleClock(args: {
   text: string;
   maxCardChars: number;
@@ -39,7 +39,12 @@ export function selectAcousticSubtitleClock(args: {
   if (evidence.mode !== "apply") return { evidence };
   const canRepairEstimate = args.existingTimingSource === "tts_segment_timing"
     || args.existingTimingSource === "avatar_script_clock";
-  if (projected.uncertainRanges.length && !canRepairEstimate) return { evidence };
+  const onlyBoundedRepeats = args.existingTimingSource === "forced_alignment"
+    && projected.uncertainRanges.every(range =>
+      args.text.slice(range.startChar, range.endChar).trim() === "ๆ"
+      && range.startMs > 0 && range.endMs < clock.audioDurationMs
+      && range.endMs - range.startMs <= 1500);
+  if (projected.uncertainRanges.length && !canRepairEstimate && !onlyBoundedRepeats) return { evidence };
   const captions = buildCanonicalCaptionsFromAlignedWords(args.text, projected.words, args.maxCardChars);
   if (!captions) return { evidence };
   evidence.applied = true;

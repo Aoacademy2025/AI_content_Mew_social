@@ -34,12 +34,13 @@ import { recordTelemetryEvent } from "@/lib/telemetry";
  * Format, so a cached recommendation cannot keep creating retired formats.
  * Later versions keep the active format while tightening hard-fact extraction;
  * older rows remain only as asset-carry-forward lineage (ADR 0017/0018). */
-export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v16-action-fact-boundary";
+export const CONTENT_PREFLIGHT_ANALYZER_VERSION = "brand-content-preflight-v17-scene-continuity";
 /** Read-only lineage. A superseded row is still a valid source of a previous
  * beat's generated asset, so a bump costs one re-analysis and never an image:
  * beats whose `sourceExcerptHash` is unchanged carry their asset forward. */
 const COMPATIBLE_CONTENT_PREFLIGHT_ANALYZER_VERSIONS = [
   CONTENT_PREFLIGHT_ANALYZER_VERSION,
+  "brand-content-preflight-v16-action-fact-boundary",
   "brand-content-preflight-v15-generic-concept-entity-guard",
   "brand-content-preflight-v14-generic-role-entity-guard",
   "brand-content-preflight-v13-common-noun-entity-guard",
@@ -902,6 +903,7 @@ export function createGeminiContentPreflightAnalyzer(
         "A Format Recommendation is optional guidance only. Return null when the inherited format is already strong. Never describe another qualified format as a conflict, warning or generation requirement.",
         "Resolve recurring named people, animals, objects and places as Story Entities. properName is an internal linkage key only. renderingDescription must lead with an unambiguous positive entity type and durable attributes; never use a bare proper name as the rendering description and never rely on negation such as 'not a gorilla'.",
         "Do not create Story Entities for generic roles or types such as AI Agent, company, customer, employee, software or a job title unless the Narrative Source explicitly gives that one entity a unique proper name.",
+        "When the source follows the same unnamed person across beats, repeat one consistent physical description, clothing and setting in those beat fields without creating a named Story Entity. Preserve source-stated attributes; keep any invented visual details neutral and consistent. This is visual continuity, not a guarantee of exact face identity.",
         "Create recurringCharacterDescription only when the same entity appears in at least two beats. It preserves semantic type and durable attributes, not face identity.",
         "For every beat, separate explicit Hard Scene Facts from flexible art direction. Preserve entity type, stated age/gender, action, location type, time of day, historical period, count and essential objects exactly when the source states them.",
         "Use hardSceneFacts.count only for one homogeneous counted entity set, such as two hands or three boats. Keep bottles, drops, lamps, bags and other objects with different quantities in essentialObjects with each quantity written explicitly.",
@@ -929,6 +931,7 @@ export function createGeminiContentPreflightAnalyzer(
         // be read, and its wording is requested in English whatever language the
         // source is in. `v3PositiveArtDirectionValue` in `brand-visual-system.ts`
         // is the deterministic backstop if a beat comes back in Thai anyway.
+        "When a note or message matters through the recipient's emotion rather than its visible wording, make the face and hands the focal subject and show the reverse of the paper. Let the narration carry the message. Background walls and incidental surfaces stay plain unless their lettering is required by the source; essential readable signs still follow the exact-English-wording rule.",
         "Each beat must describe one frozen visual moment — people, objects, places, light and physical action — not a montage and not typography.",
         "Write every field in English, whatever language the Narrative Source is written in.",
         "A sign, banner, poster, screen or page may be what a beat is about when the source is genuinely about what it displays. Whenever a beat describes something that is read, give its wording in English using the Latin alphabet and quote the exact English words. Describe lettering in no other writing system.",

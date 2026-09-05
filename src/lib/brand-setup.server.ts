@@ -88,7 +88,8 @@ export async function completeBrandSetup(userId: string, raw: unknown, admission
     if (input.action !== "save") {
       const project = await createEditorProject(userId, {
         title: `คลิปใหม่ · ${payload.name}`,
-        draft: applyBrandRevisionDefaultsToProjectDraft({ draft: { ...EDITOR_DEFAULT_DRAFT, projectTitle: `คลิปใหม่ · ${payload.name}` }, payload }),
+        draft: applyBrandRevisionDefaultsToProjectDraft({ draft: { ...EDITOR_DEFAULT_DRAFT,
+          brollSource: "kie-image", projectTitle: `คลิปใหม่ · ${payload.name}` }, payload }),
         brandProfileRevisionId: revision.id,
         brandVisualPinAdmission: admission,
       }, tx);
