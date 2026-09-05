@@ -39,8 +39,8 @@ export function BrandStyleWorkspace({ draft, library, disabled, onSelect, onCust
         </div>
       </fieldset>
       <div className="flex flex-wrap gap-1">
-        <Button type="button" variant="ghost" disabled={disabled} onClick={() => setShowAll(!showAll)} className="min-h-11 text-sm">{showAll ? "แสดงสไตล์เริ่มต้น" : "ดูสไตล์ทั้งหมด"}</Button>
-        <Button type="button" variant="ghost" disabled={disabled} onClick={() => { onSelect(null); onCustomize(); }} className="min-h-11 text-sm"><SlidersHorizontal className="h-4 w-4" />ปรับสไตล์เอง · การ์ตูนและแนวภาพอื่น</Button>
+        <Button type="button" variant="ghost" disabled={disabled} onClick={() => setShowAll(!showAll)} className="h-auto min-h-11 max-w-full whitespace-normal py-3 text-left text-sm">{showAll ? "แสดงสไตล์เริ่มต้น" : "ดูสไตล์ทั้งหมด"}</Button>
+        <Button type="button" variant="ghost" disabled={disabled} onClick={() => { onSelect(null); onCustomize(); }} className="h-auto min-h-11 max-w-full whitespace-normal py-3 text-left text-sm"><SlidersHorizontal className="h-4 w-4" />ปรับสไตล์เอง · การ์ตูนและแนวภาพอื่น</Button>
       </div>
       <p className="text-xs leading-5 text-muted-foreground">เป็นค่าเริ่มต้นสำหรับคลิปใหม่ เปลี่ยนรายคลิปได้ คลิปเดิมคงเดิม</p>
     </div>
@@ -54,7 +54,7 @@ export function BrandStyleWorkspace({ draft, library, disabled, onSelect, onCust
           {imageUrl ? <img src={imageUrl} alt={`ภาพประกอบแนวทาง ${selected?.thaiLabel}`} className="h-full w-full object-cover" onError={() => setFailedUrl(imageUrl)} /> : <div className="flex h-full flex-col items-center justify-center gap-2 p-3 text-center text-xs leading-5 text-muted-foreground"><ImageOff className="h-5 w-5" />ภาพตัวอย่างยังไม่พร้อม</div>}
         </figure>
         <div className="min-w-0">
-          <dl className="grid grid-cols-[40px_minmax(0,1fr)] gap-x-3 gap-y-2 text-xs leading-5" aria-live="polite">
+          <dl className="grid grid-cols-[40px_minmax(0,1fr)] gap-x-3 gap-y-2 break-words text-xs leading-5" aria-live="polite">
             <dt className="text-muted-foreground">ภาพ</dt><dd>{format?.label ?? "แนวภาพที่เลือก"}</dd>
             <dt className="text-muted-foreground">เสียง</dt><dd className="break-words">{voice}{draft.voice.voiceId ? ` · ${draft.voice.provider === "gemini" ? draft.voice.voiceId : "เสียงที่บันทึกไว้"}` : " · ค่าเริ่มต้นบัญชี"}</dd>
             <dt className="text-muted-foreground">ซับ</dt><dd>{library.subtitlePresets.find((item) => item.id === draft.subtitle.presetId)?.name ?? (pack ? "ซับของชุดสไตล์" : "ค่าที่เลือกไว้")}</dd>

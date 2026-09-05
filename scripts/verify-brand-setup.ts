@@ -64,6 +64,8 @@ async function main() {
   assert.equal(await prisma.brandProfile.count({ where: { userId: owner.id } }), countBefore, "invalid asset rolls back profile creation");
   assert.equal(await prisma.brandLibraryOperation.count({ where: { userId: owner.id, requestId: broken.requestId } }), 0);
   await assert.rejects(() => completeBrandSetup(owner.id, { requestId: randomUUID(), action: "save", payload: { ...payload, voice: { provider: "gemini", voiceId: "retired-voice" } } }, null), /เสียง/);
+  await assert.rejects(() => completeBrandSetup(other.id, { requestId: randomUUID(), action: "create-clip", payload: { ...payload, voice: { provider: "elevenlabs", voiceId: "saved-before-downgrade" } } }, null), /ElevenLabs/);
+  assert.equal(await prisma.brandProfile.count({ where: { userId: other.id } }), 0, "an inaccessible voice cannot consume a FREE brand slot");
   const free = await completeBrandSetup(other.id, { requestId: randomUUID(), action: "create-clip", payload }, null);
   assert.ok(free.projectId, "FREE may create a brand and a project");
   await assert.rejects(() => completeBrandSetup(other.id, { requestId: randomUUID(), action: "save", payload }, null), /บันทึกแบรนด์ได้/);

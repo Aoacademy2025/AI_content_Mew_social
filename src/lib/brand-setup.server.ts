@@ -7,6 +7,7 @@ import {
   createBrandProfileFromPayloadInTransaction, saveBrandProfileDraft, publishBrandProfileDraft,
   resolveBrandProfileRevisionForNewProjectInTransaction, applyBrandRevisionDefaultsToProjectDraft,
 } from "@/lib/brand-profile-library.server";
+import { isPaid } from "@/lib/plan-limits";
 import { GEMINI_VOICES } from "@/lib/gemini-voices";
 import { isOmniVoiceUserAllowed, isHeroVoiceCloningEnabled } from "@/lib/omnivoice-policy";
 import { RUNPOD_HERO_VOICES } from "@/lib/hero-voice-preview";
@@ -69,6 +70,10 @@ export async function completeBrandSetup(userId: string, raw: unknown, admission
     const { provider, voiceId } = payload.voice;
     if (!["gemini", "elevenlabs", "omnivoice"].includes(provider) || provider === "gemini" && voiceId && !GEMINI_VOICES.some((v) => v.id === voiceId)) {
       throw new BrandProfileLibraryError("INVALID_DRAFT", "เสียงนี้ใช้ไม่ได้แล้ว กรุณาเลือกเสียงใหม่ในปรับรายละเอียด");
+    }
+    if (provider === "elevenlabs") {
+      const user = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { plan: true, elevenlabsKey: true } });
+      if (!isPaid(user.plan) || !user.elevenlabsKey) throw new BrandProfileLibraryError("INVALID_DRAFT", "ElevenLabs ยังไม่พร้อมสำหรับบัญชีนี้ กรุณาเลือกเสียง AI หรือเชื่อมต่อ ElevenLabs ในตั้งค่า");
     }
     if (provider === "omnivoice") {
       const user = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { id: true, email: true, role: true } });

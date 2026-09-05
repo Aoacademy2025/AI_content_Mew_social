@@ -103,9 +103,9 @@ const css = (await compile(read("src/app/globals.css"), { base: root, onDependen
 const browser = await puppeteer.launch({ headless: true, args: process.env.CI ? ["--no-sandbox", "--disable-setuid-sandbox"] : [] });
 try {
   const tab = await browser.newPage();
-  for (const [fixture, body] of bodies.entries()) for (const width of [320, 360, 390, 500, 768, 1024, 1280]) {
+  for (const [fixture, body] of bodies.entries()) for (const width of [320, 360, 390, 500, 768, 1024, 1280]) for (const fontSize of [16, 20]) {
     await tab.setViewport({ width, height: 844 });
-    await tab.setContent(`<!doctype html><html lang="th" class="dark"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><body>${body}</body></html>`);
+    await tab.setContent(`<!doctype html><html lang="th" class="dark" style="font-size:${fontSize}px"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style><body>${body}</body></html>`);
     if (process.env.BRANDS_MOBILE_SCREENSHOT_DIR && fixture === 0 && [390, 1280].includes(width)) {
       fs.mkdirSync(process.env.BRANDS_MOBILE_SCREENSHOT_DIR, { recursive: true });
       await tab.screenshot({ path: path.join(process.env.BRANDS_MOBILE_SCREENSHOT_DIR, `chooser-${width}.png`), fullPage: true });
@@ -114,13 +114,14 @@ try {
       const rect = e => e.getBoundingClientRect();
       return {
         overflow: document.documentElement.scrollWidth > innerWidth,
+        overflowingElements: [...document.querySelectorAll('body *')].filter(e => rect(e).right > innerWidth + 1).slice(0, 8).map(e => ({ tag: e.tagName, className: e.className, right: rect(e).right })),
         radios: [...document.querySelectorAll('input[type="radio"]')].map(e => ({ height: rect(e.closest('label')).height, checked: e.checked })),
         preview: [...document.querySelectorAll('[data-preview] figure')].map(e => ({ top: rect(e).top, bottom: rect(e).bottom, button: (() => { const b = e.parentElement.querySelector('button'); return b ? { height: rect(b).height, top: rect(b).top, fits: b.scrollWidth <= b.clientWidth + 1 } : null; })() })),
         workspace: (() => { const aside = document.querySelector('aside'); const fieldset = document.querySelector('fieldset'); return aside && fieldset ? { asideTop: rect(aside).top, optionsTop: rect(fieldset).top, asideLeft: rect(aside).left, optionsLeft: rect(fieldset).left } : null; })(),
       };
     });
-    const where = `fixture ${fixture} at ${width}px`;
-    assert.equal(found.overflow, false, `${where}: no horizontal overflow`);
+    const where = `fixture ${fixture} at ${width}px, root text ${fontSize}px`;
+    assert.equal(found.overflow, false, `${where}: no horizontal overflow: ${JSON.stringify(found.overflowingElements)}`);
     if (fixture === 0) {
       assert.equal(found.radios.length, 3, `${where}: three starting choices`);
       assert.equal(found.radios.filter(r => r.checked).length, 1, `${where}: one selected default`);
