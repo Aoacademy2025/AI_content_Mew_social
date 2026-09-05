@@ -106,6 +106,16 @@ digest, and cold-import/GPU evidence is still absent.
 - The plan and operator guide now use the final candidate image evidence above.
   Remote branch/PR updates await credential rotation; no authenticated GitHub
   write or new image build/publication was performed in this continuation.
+- Independent Standards/Spec review found three additional code issues:
+  ungated future image publication, ordinary auth/credit mutation inside marked
+  execution, and filename-bearing audio errors escaping the handler. Corrections
+  in `e2b4f6c4` freeze the local workflow, enforce isolated existing-user auth
+  while preserving authenticated-denied 404s, suppress monthly grants in catalog
+  and job history, and return generic private audio errors. Regression tests
+  reproduced the auth/error/publication failures before the fixes and now pass.
+  [Full review and remaining advisories](../plans/reports/2026-09-05-hero-voice-clone-continuation-review.md).
+- Final build of `e2b4f6c4` passed compilation, TypeScript, and all 184 pages
+  against a throwaway SQLite database with fake auth and no Sentry upload.
 
 ## Consequence after continuation
 
