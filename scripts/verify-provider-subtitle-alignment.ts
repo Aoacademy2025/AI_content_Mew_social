@@ -840,6 +840,79 @@ async function main() {
       `M: the empty word clock is recorded by name (got ${String(verification.status)}/${String(verification.code)})`);
   }
 
+  // N. Opt-in local timing retains ADR-0056 completion and source identity.
+  let acousticExportSourceId = "";
+  const previousAcousticMode = process.env.SUBTITLE_ACOUSTIC_MODE;
+  const previousAcousticPercent = process.env.SUBTITLE_ACOUSTIC_ROLLOUT_PERCENT;
+  process.env.SUBTITLE_ACOUSTIC_ROLLOUT_PERCENT = "100";
+  for (const variant of ["off", "shadow", "apply", "partial"] as const) {
+    process.env.SUBTITLE_ACOUSTIC_MODE = variant === "partial" ? "apply" : variant;
+    const speech = "แมว กิน ปลา";
+    const calls: Call[] = [];
+    const job = await createJob({ script: speech, previewMode: true, voiceProvider: "gemini", subtitleMode: "1" });
+    const pipeline = geminiPipeline({ calls, speech, durationMs: 5000,
+      voiceUrl: "/api/renders/acoustic-fixture.wav",
+      transcribe: async () => { throw new Error("fixture_transcribe_unavailable"); } });
+    let localCalls = 0;
+    await runOrchestrator(job.id, user.id, { caller: pipeline.caller, refundOneClip: async () => {}, sleep: async () => {},
+      acousticWorker: async () => {
+        localCalls++;
+        const positions = [0, 1, 2, 4, 5, 6, 8, 9, 10];
+        return {
+          evidence: { status: "unavailable", mode: variant === "shadow" ? "shadow" : "apply", applied: false,
+            version: "thai-ctc-v1", modelRevision: "fixture", durationMs: 10, audioHash: "fixture-audio", textHash: "fixture-text" },
+          clock: { version: "thai-ctc-v1", modelRevision: "fixture", audioHash: "fixture-audio", textHash: "fixture-text",
+            audioDurationMs: 5000, characters: positions.map((startChar, i) => ({
+              startChar, endChar: startChar + 1, startMs: 200 + i * 100, endMs: 300 + i * 100, confidence: .99,
+            })).filter(c => variant !== "partial" || c.startChar < 4 || c.startChar >= 8) },
+        };
+      },
+    });
+    const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    const output = parseOutput(completed.outputJson);
+    const v = verificationOf(output);
+    check(completed.status === "done", `N/${variant}: rendering completes`);
+    check(countCalls(calls, "/api/videos/tts-gemini") === 1 && countCalls(calls, "/api/videos/transcribe") === 1,
+      `N/${variant}: local timing adds no provider calls or regeneration`);
+    check(localCalls === (variant === "off" ? 0 : 1), `N/${variant}: local work respects the flag`);
+    if (variant === "off" || variant === "shadow") {
+      check(output.subtitleQa?.timingSource === "tts_segment_timing", `N/${variant}: original render clock is preserved`);
+      check(v.acoustic?.applied !== true, `N/${variant}: acoustic timing is never marked applied`);
+    } else {
+      check(renderedCaptions(output)[0]?.startMs === 200, `N/${variant}: preview uses the acoustic start`);
+      check(v.acoustic?.applied === true, `N/${variant}: selected clock identity is persisted`);
+      if (variant === "partial") {
+        check(output.subtitleQa?.status === "warning", "N/partial: approximate spans are not certified passed");
+        check((v.acoustic?.uncertainRanges?.length ?? 0) === 1, "N/partial: the uncertain span remains visible in evidence");
+      } else acousticExportSourceId = job.id;
+    }
+  }
+  if (previousAcousticPercent === undefined) delete process.env.SUBTITLE_ACOUSTIC_ROLLOUT_PERCENT;
+  else process.env.SUBTITLE_ACOUSTIC_ROLLOUT_PERCENT = previousAcousticPercent;
+  if (previousAcousticMode === undefined) delete process.env.SUBTITLE_ACOUSTIC_MODE;
+  else process.env.SUBTITLE_ACOUSTIC_MODE = previousAcousticMode;
+  {
+    const calls: Call[] = [];
+    const source = await prisma.videoJob.findUniqueOrThrow({ where: { id: acousticExportSourceId } });
+    const sourceOutput = parseOutput(source.outputJson);
+    const captions = renderedCaptions(sourceOutput);
+    const job = await prisma.videoJob.create({ data: { userId: user.id, status: "processing", type: "export",
+      inputJson: JSON.stringify({ mode: "export", sourceJobId: source.id,
+        subtitleOverlayConfig: { videoUrl: "/renders/acoustic-source.mp4", durationInFrames: 150,
+          keywordPopups: captions.map(c => ({ text: c.text, start: Math.round(c.startMs * .03), end: Math.round(c.endMs * .03) })) },
+        editSnapshot: { captions },
+      }) } });
+    await runOrchestrator(job.id, user.id, { caller: exportPipeline(calls), refundOneClip: async () => {}, sleep: async () => {},
+      acousticWorker: async () => { throw new Error("export must not invoke local alignment"); } });
+    const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
+    const output = JSON.parse(completed.outputJson ?? "{}");
+    check(completed.status === "done", "N/export: acoustic preview exports successfully");
+    check(output.subtitleEvidence?.sourceAcoustic?.audioHash === "fixture-audio", "N/export: original audio identity is retained");
+    check(JSON.stringify(output.subtitleEvidence?.captions?.map((c: { startMs: number }) => c.startMs))
+      === JSON.stringify(captions.map(c => c.startMs)), "N/export: preview timing survives the export");
+    check(countCalls(calls, "/api/videos/transcribe") === 0, "N/export: no repeated acoustic work");
+  }
+
   await prisma.$disconnect();
   console.log(`\n${failures === 0 ? "ALL PASS" : "FAILURES"}`);
   process.exit(failures === 0 ? 0 : 1);

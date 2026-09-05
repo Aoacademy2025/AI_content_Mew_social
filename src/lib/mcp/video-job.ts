@@ -417,7 +417,8 @@ export type SubtitleVerification = {
   status: "aligned" | "failed" | "skipped" | "timeout";
   /** Alignment failure code when status === "failed", or "card_count_mismatch" info. */
   code?: string;
-  method?: "exact" | "fuzzy";
+  method?: "exact" | "fuzzy" | "ctc";
+  acoustic?: import("@/lib/acoustic-subtitle-clock").AcousticEvidence;
   similarityPermille?: number;
   durationMs: number;
   /** Provider-clock cards — the timing that renders unless the alignment above succeeded. */
@@ -437,6 +438,8 @@ export interface SubtitleAuditEvidence {
   speechCoverage?: SubtitleSpeechCoverage;
   /** The single alignment attempt's evidence — absent on paths that never attempt one. */
   verification?: SubtitleVerification;
+  /** Original preview clock identity; does not certify a creator-edited export track. */
+  sourceAcoustic?: import("@/lib/acoustic-subtitle-clock").AcousticEvidence;
   /** Export only: whether the burned overlay was retimed to the delivered captions. */
   overlayRetimed?: boolean;
   /** Upload/cutaway only: spans the transcriber could not prove complete (never a failure). */

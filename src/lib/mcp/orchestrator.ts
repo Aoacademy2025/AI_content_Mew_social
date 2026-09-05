@@ -1,4 +1,8 @@
 import type { User } from "@prisma/client";
+import { acousticSubtitleMode, runAcousticSubtitleWorker } from "@/lib/acoustic-subtitle-worker";
+import { SUBTITLE_MIN_CARD_MS } from "@/lib/mcp/subtitle-quality";
+import { selectAcousticSubtitleClock } from "@/lib/acoustic-subtitle-selection";
+import { mergeUncertainCaptionCards, mergeShortAcousticCards } from "@/lib/acoustic-subtitle-clock";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
 import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
 import type { TranscribeWarning } from "@/lib/transcribe-partial-coverage";
@@ -180,6 +184,7 @@ class SubtitleAlignmentFailureError extends Error {
 }
 
 export interface OrchestratorDeps {
+  acousticWorker?: typeof runAcousticSubtitleWorker;
   caller?: PipelineCaller;
   refundOneClip?: (userId: string) => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
@@ -475,6 +480,7 @@ function subtitleVerificationEvidence(attempt: SubtitleAlignmentAttempt): Subtit
     status: attempt.status,
     durationMs: attempt.durationMs,
     ttsCaptions: attempt.ttsCaptions,
+    ...(attempt.acoustic ? { acoustic: attempt.acoustic } : {}),
     ...(attempt.code ? { code: attempt.code } : {}),
     ...(attempt.method ? { method: attempt.method } : {}),
     ...(attempt.similarityPermille !== undefined ? { similarityPermille: attempt.similarityPermille } : {}),
@@ -1693,6 +1699,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           // Export never aligns, so the row says so itself instead of leaving a reader to
           // infer it from a missing field.
           verification: { status: "skipped", durationMs: 0, ttsCaptions: [] },
+          // Source provenance only: creator edits need not match the original
+          // text hash, and export has not performed a new acoustic verification.
+          ...(parsed?.subtitleEvidence?.verification?.acoustic
+            ? { sourceAcoustic: parsed.subtitleEvidence.verification.acoustic } : {}),
           // false ⇒ the burned overlay kept its submitted card times while these captions
           // are the repaired ones (the projection could not map the track).
           overlayRetimed,
@@ -2231,6 +2241,14 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // 2. ONE bounded acoustic alignment (Gemini / Hero AI Voice — ElevenLabs already ships
     //    real word timing). Success promotes it to the render clock; anything else keeps the
     //    provider clock and is recorded. It never retries, never regenerates the narration.
+    // Local acoustic work shares the existing verification wall-clock window.
+    // Off is byte-for-byte legacy timing. Shadow never changes a rendered clock.
+    const acousticMode = provider === "gemini" ? acousticSubtitleMode(userId) : "off";
+    const acousticAttempt = acousticMode !== "off"
+      ? (deps.acousticWorker ?? runAcousticSubtitleWorker)({ audioUrl: tts.voiceUrl, text: narrationText,
+          audioDurationMs, mode: acousticMode,
+          budgetMs: Math.min(subtitleVerifyBudgetMs(), Number(process.env.SUBTITLE_ACOUSTIC_BUDGET_MS) || 45_000) })
+      : null;
     let verification: SubtitleAlignmentAttempt = { status: "skipped", durationMs: 0, ttsCaptions };
     if (provider !== "elevenlabs") {
       verification = await alignNarrationOnce({
@@ -2268,12 +2286,38 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
         subtitleSpeechCoverage = verification.speechCoverage;
       }
     }
+    if (acousticAttempt) {
+      const selection = selectAcousticSubtitleClock({ text: narrationText,
+        maxCardChars: maxCardCharsFor(), existingTimingSource: subtitleTimingSource,
+        result: await acousticAttempt });
+      verification.acoustic = selection.evidence;
+      if (selection.replacement) {
+        capRes = selection.replacement;
+        if (selection.evidence.status === "aligned") {
+          subtitleTimingSource = "forced_alignment";
+          verification = { status: "aligned", method: "ctc", ttsCaptions,
+            durationMs: selection.evidence.durationMs, acoustic: selection.evidence };
+        }
+      }
+      emitTelemetry({ name: "subtitle_acoustic_done", category: "pipeline", source: "server",
+        step: "captions", status: selection.evidence.status, value: selection.evidence.durationMs,
+        properties: { jobId, provider, mode: acousticMode, applied: selection.evidence.applied,
+          cacheHit: selection.evidence.cacheHit ?? false,
+          verifiedWordCount: selection.evidence.verifiedWordCount ?? 0,
+          totalWordCount: selection.evidence.totalWordCount ?? 0,
+          modelRevision: selection.evidence.modelRevision } });
+    }
     const subtitleVerification = subtitleVerificationEvidence(verification);
 
     const baseCaptions = capRes.captions as OrchCaption[];
-    const wordModeCaptions = (input.subtitleMode && input.subtitleMode !== "sentence")
+    const rawWordModeCaptions = (input.subtitleMode && input.subtitleMode !== "sentence")
       ? cardsByWordCount(capRes.words, parseInt(input.subtitleMode), capRes.fullText)
       : baseCaptions;
+    const wordModeCaptions = verification.acoustic?.applied
+      ? mergeShortAcousticCards(mergeUncertainCaptionCards(rawWordModeCaptions,
+          verification.acoustic.uncertainRanges ?? [], capRes.fullText, maxCardCharsFor()),
+          capRes.fullText, SUBTITLE_MIN_CARD_MS)
+      : rawWordModeCaptions;
     const durMs = capRes.audioDurationMs || audioDurationMs;
     // 3. Deterministic timing repair: blank cards dropped, cards clamped inside the audio,
     //    monotonic, never shorter than the render floor.
@@ -2538,10 +2582,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     // which refund this retained base reservation exactly once.
 
     // 6b. Avatar (optional) — generate + composite onto the base render.
-    let finalBase = baseUrl;
-    let avatarModel = "none";
-    let avatarVideoUrl: string | null = null;
-    let tailAvatarUrl: string | null = null;
+    const finalBase = baseUrl;
+    const avatarModel = "none";
+    const avatarVideoUrl: string | null = null;
+    const tailAvatarUrl: string | null = null;
     if (input.avatarMode) {
       // Defense-in-depth: the route only ever persists avatarMode together with a
       // resolved avatarId, but the worker reads inputJson directly — fail cleanly on a
