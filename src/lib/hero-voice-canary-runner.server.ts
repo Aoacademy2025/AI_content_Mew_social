@@ -2,10 +2,7 @@ import {
   issueHeroVoiceCanarySubmitCapability,
   type SignedHeroVoiceCanarySubmitCapability,
 } from "@/lib/hero-voice-canary-admission.server";
-import {
-  heroVoiceCanaryJcsBytes,
-  parseHeroVoiceCanaryStrictJson,
-} from "@/lib/hero-voice-canary-canonical";
+export { submitHeroVoiceCanaryCandidateViaLoopback } from "@/lib/hero-voice-canary-loopback-transport";
 import {
   assertHeroVoiceCanaryTask6ApplyEvidence,
   createHeroVoiceCanaryRun,
@@ -205,67 +202,6 @@ export async function runHeroVoiceCanaryApply(input: {
   } finally {
     await adapter.dispose?.();
   }
-}
-
-/** Actual private app-path client used by the Task 7 adapter for all 18
- * CandidateAiStudioV3 slots. The origin is parsed independently and must be an
- * explicit IPv4 loopback binding; Host/forwarded headers are never authority. */
-export async function submitHeroVoiceCanaryCandidateViaLoopback(input: {
-  origin: string;
-  attestation: string;
-  cookieHeader: string;
-  slot: HeroVoiceCanarySlot;
-  signed: SignedHeroVoiceCanarySubmitCapability;
-  fetchImpl?: typeof fetch;
-}): Promise<{ disposition: "application_accepted"; applicationJobId: string }> {
-  let origin: URL;
-  try { origin = new URL(input.origin); } catch { throw new Error("canary_loopback_origin_invalid"); }
-  if (origin.protocol !== "http:" || origin.hostname !== "127.0.0.1" || !origin.port
-    || origin.pathname !== "/" || origin.search || origin.hash
-    || input.slot.runnerKind !== "CandidateAiStudioV3") {
-    throw new Error("canary_loopback_origin_invalid");
-  }
-  const body = heroVoiceCanaryJcsBytes({
-    capability: input.signed.capability,
-    submitHmac: input.signed.submitHmac,
-  });
-  const url = new URL(
-    `/api/ai-studio/voice-clone-canary/runs/${encodeURIComponent(input.signed.capability.runId)}`
-      + `/slots/${encodeURIComponent(input.signed.capability.slotId)}/submit`,
-    origin,
-  );
-  const response = await (input.fetchImpl ?? fetch)(url, {
-    method: "POST",
-    redirect: "error",
-    headers: {
-      "content-type": "application/json",
-      "content-length": String(body.length),
-      "x-hero-voice-canary-loopback-attestation": input.attestation,
-      cookie: input.cookieHeader,
-    },
-    body: body.toString("utf8"),
-  });
-  const responseBytes = Buffer.from(await response.arrayBuffer());
-  if (response.status !== 202 || responseBytes.length < 1 || responseBytes.length > 4_096) {
-    throw new Error("canary_loopback_submit_rejected");
-  }
-  let parsed: unknown;
-  try { parsed = parseHeroVoiceCanaryStrictJson(responseBytes); } catch {
-    throw new Error("canary_loopback_submit_response_invalid");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
-    || Object.keys(parsed).length !== 1 || !("job" in parsed)) {
-    throw new Error("canary_loopback_submit_response_invalid");
-  }
-  const job = (parsed as { job?: unknown }).job;
-  if (!job || typeof job !== "object" || Array.isArray(job)
-    || Object.keys(job).sort().join(",") !== "id,status"
-    || typeof (job as { id?: unknown }).id !== "string"
-    || !/^[A-Za-z0-9_-]{8,160}$/u.test((job as { id: string }).id)
-    || typeof (job as { status?: unknown }).status !== "string") {
-    throw new Error("canary_loopback_submit_response_invalid");
-  }
-  return { disposition: "application_accepted", applicationJobId: (job as { id: string }).id };
 }
 
 /** Restart entrypoint used before Task 7 resumes polling. A provider-accepted

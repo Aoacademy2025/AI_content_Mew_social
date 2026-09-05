@@ -32,7 +32,9 @@ async function main(): Promise<void> {
       const parsed = parseHeroVoiceCanaryStrictJson(Buffer.from(line, "utf8"));
       if (!heroVoiceCanaryJcsBytes(parsed).equals(Buffer.from(line, "utf8"))
         || !exactObject(parsed, ["id", "method", "value"])
-        || typeof parsed.id !== "string" || typeof parsed.method !== "string" || !exactObject(parsed.value,
+        || typeof parsed.id !== "string" || typeof parsed.method !== "string"
+        || !["dispatchDirect", "submitCandidate", "awaitDirectTerminal", "evaluateBatch"].includes(parsed.method)
+        || !exactObject(parsed.value,
           parsed.method === "dispatchDirect" ? ["exactJcsBase64", "slot"]
             : parsed.method === "submitCandidate" ? ["signed", "slot"]
               : parsed.method === "awaitDirectTerminal" ? ["providerJobId", "slot"]
@@ -40,9 +42,23 @@ async function main(): Promise<void> {
       id = parsed.id;
       const method = adapter[parsed.method];
       if (typeof method !== "function") throw new Error("invalid");
+      let signed: unknown;
+      if (parsed.method === "submitCandidate") {
+        const wireSigned = parsed.value.signed;
+        if (!exactObject(wireSigned, ["capability", "submitHmac"])
+          || typeof wireSigned.submitHmac !== "string" || !/^[0-9a-f]{64}$/u.test(wireSigned.submitHmac)) {
+          throw new Error("invalid");
+        }
+        signed = { ...wireSigned, capabilityBytes: heroVoiceCanaryJcsBytes(wireSigned.capability) };
+      }
+      if (parsed.method === "dispatchDirect"
+        && (typeof parsed.value.exactJcsBase64 !== "string"
+          || Buffer.from(parsed.value.exactJcsBase64, "base64").toString("base64") !== parsed.value.exactJcsBase64)) {
+        throw new Error("invalid");
+      }
       const args = parsed.method === "dispatchDirect"
         ? [parsed.value.slot, Buffer.from(String(parsed.value.exactJcsBase64), "base64")]
-        : parsed.method === "submitCandidate" ? [parsed.value.slot, parsed.value.signed]
+        : parsed.method === "submitCandidate" ? [parsed.value.slot, signed]
           : parsed.method === "awaitDirectTerminal" ? [parsed.value.slot, parsed.value.providerJobId]
             : [parsed.value.kind, parsed.value.slots];
       const value = await method.apply(adapter, args as never);

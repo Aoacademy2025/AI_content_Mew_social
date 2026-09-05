@@ -14,8 +14,8 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Callable, Sequence
 
-from canonical import dumps_jcs, loads_exact_jcs
-from verify_lock import lock_is_complete
+from canonical import dumps_jcs, loads_exact_jcs, loads_strict
+from verify_lock import lock_is_complete, verify_installed_runtime
 
 MODEL_SHA256 = "aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a"
 MODEL_NAME = "large-v3-turbo.pt"
@@ -124,6 +124,10 @@ def assert_canonical_runtime(model_path: Path, network_marker: Path) -> None:
         raise EvaluatorContractError("thread environment mismatch")
     if not model_path.is_file() or model_path.name != MODEL_NAME or sha256_file(model_path) != MODEL_SHA256:
         raise EvaluatorContractError("Whisper model identity mismatch")
+    try:
+        verify_installed_runtime(Path(__file__).resolve().parent)
+    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        raise EvaluatorContractError("installed evaluator runtime verification failed") from exc
 
 
 def configure_torch() -> None:
@@ -234,7 +238,9 @@ def capture_runtime_fingerprint(model_path: Path, root: Path) -> tuple[bytes, st
     """Captures the exact canonical fingerprint; it cannot run while Task 6's
     image/FFmpeg/transitive locks and non-emulated runtime evidence are absent."""
     assert_canonical_runtime(model_path, Path("/run/hero-voice-evaluator/network-disabled"))
-    lock = loads_exact_jcs((root / "RUNTIME_LOCK.json").read_bytes())
+    # The reviewed source lock permits one terminal newline; evidence remains
+    # exact JCS. Installed verification has already checked the source bytes.
+    lock = loads_strict((root / "RUNTIME_LOCK.json").read_bytes())
     requirements = root / "requirements.lock"
     ffmpeg = shutil.which("ffmpeg")
     if not isinstance(lock, dict) or not ffmpeg or not requirements.is_file():

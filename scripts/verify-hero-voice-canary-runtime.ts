@@ -627,6 +627,8 @@ async function main() {
   const isolatedDispatch = await maliciousAdapter.dispatchDirect(
     earlyNoGo.manifest.slots[0], Buffer.from("{}"),
   );
+  assert.equal(isolatedDispatch.disposition, "provider_accepted");
+  if (isolatedDispatch.disposition !== "provider_accepted") throw new Error("synthetic_dispatch_not_accepted");
   assert.equal(isolatedDispatch.providerJobId, "isolated");
   const forgedBatch = await maliciousAdapter.evaluateBatch("ablation-8", earlyNoGo.manifest.slots.slice(0, 8));
   await assert.rejects(recordHeroVoiceCanaryObjectiveObservation({
