@@ -43,4 +43,7 @@ assert.deepEqual(metadata, {
 assert.deepEqual(heroVoiceCanaryTerminalMetadata({ ...result, outcome: "provider_terminal_failed", primaryStatus: "failed" }), {
   outcome: "provider_terminal_failed", primaryStatus: "failed",
 });
+assert.deepEqual(heroVoiceCanaryTerminalMetadata({ ...result, outcome: "application_validation_failed", cancelDisposition: "confirmed" }), {
+  outcome: "application_validation_failed", primaryStatus: "completed", cancelDisposition: "confirmed",
+});
 console.log("Hero Voice canary direct-audio validation and ledger projection passed (synthetic)");

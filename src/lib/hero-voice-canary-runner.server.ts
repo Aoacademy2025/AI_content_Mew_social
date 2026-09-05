@@ -152,9 +152,7 @@ export async function runHeroVoiceCanaryApply(input: {
         try {
           audio = readHeroVoiceCanaryDirectAudio(delivered);
         } catch {
-          terminal = {
-            outcome: "application_validation_failed", primaryStatus: "completed",
-          };
+          terminal = heroVoiceCanaryTerminalMetadata({ ...terminal, outcome: "application_validation_failed" });
         }
         if (audio) {
           // The durable, parent-owned creation intent precedes sensitive bytes;
