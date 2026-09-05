@@ -1154,13 +1154,14 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
   }
 
   function selectSource(value: "stock" | "kie-image" | "automix") {
-    if (p.brollSource === value) return;
     if (value === "stock") {
+      if (p.brollSource === value) return;
       p.setMixPreset("free");
       return;
     }
     if (value === "kie-image") {
       if (!heroImageUnlocked) return showLockedPreview("hero_ai_image");
+      if (p.brollSource === value) return;
       p.setBrollSource("kie-image");
       // Hero defaults to 8 and clamps to remaining starter allowance — a fresh
       // selection lands on a concrete, budget-safe quote. Once the user has touched the count
@@ -1173,6 +1174,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
       return;
     }
     if (!autoMixUnlocked) return showLockedPreview("automix");
+    if (p.brollSource === value) return;
     p.setMixPreset(p.mixPreset === "full" ? "full" : "recommended");
   }
 
