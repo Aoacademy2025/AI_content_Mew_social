@@ -35,7 +35,7 @@ export function groupTimedCaptionWords(words: readonly CaptionTimedWord[], n: nu
       const previous = group[group.length - 1];
       const gap = fullText.slice(previous.endChar, word.startChar);
       // Times, decimals, dates and grouped numbers are one readable value.
-      const timeAbbreviation = /^\s*$/.test(gap) && /^น\.?$/.test(word.word)
+      const timeAbbreviation = /^[^\S\r\n]*$/.test(gap) && /^น\.?$/.test(word.word)
         && fullText.slice(word.startChar, word.endChar + 1).startsWith("น.")
         && /[0-9๐-๙]{1,2}:[0-9๐-๙]{2}\s*$/.test(fullText.slice(textCursor, word.startChar));
       const numericJoin = timeAbbreviation || (/^[.,:/-]$/.test(gap)

@@ -24,3 +24,11 @@ for (const line of ['มิวพูดว่า "พักก่อน" แล�
  if(line.includes('"'))assert.ok(cards.some(c=>c.text.includes('"พักก่อน"')),'balanced straight quotation stays with dialogue');
 }
 console.log('PASS: opening dialogue punctuation belongs to the following card');
+
+for (const separator of ['\n','\r\n']) {
+ const line=`เวลา 08:30${separator}น. แล้วไป`;
+ const timed=tokenizeWords(line).map((w,i)=>({...w,startMs:i*300,endMs:(i+1)*300}));
+ const cards=cardsByWordCount(timed,3,line);
+ assert.ok(cards.every(c=>!c.text.includes('08:30 น.')),'authored line break still separates time abbreviation');
+}
+console.log('PASS: time abbreviation grouping preserves authored line boundaries');
