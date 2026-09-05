@@ -80,3 +80,35 @@ independent requirements.
 Until all five items are evidenced, the repository must retain the
 `internal-evaluation-only` label and must not publish or execute the candidate
 image with real human audio.
+
+## Public primary-source recheck — 2026-09-05
+
+Scope: unauthenticated public metadata and text only; no credentials, model
+downloads, candidate execution, provider jobs, or reference audio were used.
+
+- **Wrapper:** the [license endpoint at the exact pinned revision](https://api.github.com/repos/Aoacademy2025/Hero-Voice-Ai/license?ref=f9b6c0a4a9adcf2fb44f35c9b35a44c007127c37)
+  returns HTTP 404, while the [complete revision tree](https://api.github.com/repos/Aoacademy2025/Hero-Voice-Ai/git/trees/f9b6c0a4a9adcf2fb44f35c9b35a44c007127c37?recursive=1)
+  is accessible and untruncated. No repository license file was found. The
+  [pinned README's License section](https://github.com/Aoacademy2025/Hero-Voice-Ai/blob/f9b6c0a4a9adcf2fb44f35c9b35a44c007127c37/README.md#license)
+  asserts ownership of the project's code, without granting use or distribution
+  rights to recipients; its OmniVoice statement does not grant wrapper rights.
+  The [data notice](https://github.com/Aoacademy2025/Hero-Voice-Ai/blob/f9b6c0a4a9adcf2fb44f35c9b35a44c007127c37/data/NOTICE.md)
+  covers only the third-party transliteration dictionary. None of these supplies
+  the missing permission/provenance for the four selected wrapper files.
+- **Demucs checkpoint:** the [pinned model configuration](https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/demucs/remote/htdemucs.yaml)
+  maps `htdemucs` to `955717e8`; the [pinned download index](https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/demucs/remote/files.txt)
+  names `hybrid_transformer/955717e8-8726e21a.th`. Neither supplies a weight
+  license. In a [2022-05-23 maintainer statement](https://github.com/facebookresearch/demucs/issues/327#issuecomment-1134828611),
+  Alexandre Defossez explicitly excludes pretrained weights from MIT and limits
+  their provision to scientific purposes; this was reverified through the
+  [public comments API](https://api.github.com/repos/facebookresearch/demucs/issues/327/comments?per_page=100).
+  The statement predates the [November 2022 v4 release](https://github.com/facebookresearch/demucs/blob/e976d93ecc3865e5757426930257e200846a520a/README.md#important-news-if-you-are-already-using-demucs),
+  so it does not establish the precise terms for this later checkpoint.
+
+**Gate assessment:** these sources do not clear either remaining rights gap.
+The inference that private, non-commercial personal evaluation qualifies as
+scientific use is unsupported by the evidence checked. Obtain an applicable
+wrapper owner grant or documented clean-room provenance, plus rights-holder
+confirmation covering the exact `955717e8` checkpoint and intended evaluation;
+public image publication additionally needs explicit distribution scope.
+This recheck changes no execution, publication, merge, or deployment gate.

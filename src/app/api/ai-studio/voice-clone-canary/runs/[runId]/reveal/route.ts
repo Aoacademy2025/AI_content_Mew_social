@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { heroVoiceClonePrivateJson } from "@/lib/hero-voice-clone-response.server";
 
 import {
   authenticateHeroVoiceCanaryHttpRequest,
@@ -20,12 +20,12 @@ export async function POST(request: Request, context: { params: Promise<{ runId:
       runId, ownerHmac: actor.ownerHmac, expectedRevision: parseHeroVoiceCanaryIfMatch(request),
       authority: heroVoiceCanaryGitAuthority(),
     });
-    return NextResponse.json(result, { headers: { "Cache-Control": "private, no-store" } });
+    return heroVoiceClonePrivateJson(result);
   } catch (error) {
     const status = error instanceof HeroVoiceCanaryHttpError ? error.status
       : error instanceof HeroVoiceCanaryReviewError ? error.status : 409;
-    return NextResponse.json({ error: status === 401 ? "Unauthorized" : status === 404 ? "Not found" : "Review conflict" }, {
-      status, headers: { "Cache-Control": "private, no-store" },
+    return heroVoiceClonePrivateJson({ error: status === 401 ? "Unauthorized" : status === 404 ? "Not found" : "Review conflict" }, {
+      status,
     });
   }
 }

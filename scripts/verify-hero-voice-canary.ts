@@ -272,7 +272,7 @@ for (const route of reviewRoutes) {
   assert.ok(fs.existsSync(filename));
   const source = fs.readFileSync(filename, "utf8");
   assert.match(source, /dynamic = "force-dynamic"/u);
-  assert.match(source, /Cache-Control["']?:?\s*["']private, no-store/u);
+  assert.match(source, /heroVoiceClonePrivateJson/u);
   assert.match(source, /authenticateHeroVoiceCanaryHttpRequest/u);
   assert.doesNotMatch(source, /Content-Disposition|filename=/u);
 }

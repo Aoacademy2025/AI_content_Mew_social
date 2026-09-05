@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { heroVoiceClonePrivateJson } from "@/lib/hero-voice-clone-response.server";
 
 import {
   assertHeroVoiceCanaryLoopbackSubmitRequest,
@@ -11,14 +11,8 @@ import { heroVoiceCloneCanaryAccessDecision } from "@/lib/omnivoice-policy";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const PRIVATE_HEADERS = { "Cache-Control": "private, no-store" };
-
-function response(body: unknown, status: number): NextResponse {
-  return NextResponse.json(body, { status, headers: PRIVATE_HEADERS });
-}
-
-function notFound(): NextResponse {
-  return response({ error: "Not found" }, 404);
+function notFound(): Response {
+  return heroVoiceClonePrivateJson({ error: "Not found" }, { status: 404 });
 }
 
 export async function POST(
@@ -38,15 +32,15 @@ export async function POST(
       slotId,
       requestBytes: Buffer.from(await request.arrayBuffer()),
     });
-    return response({ job }, 202);
+    return heroVoiceClonePrivateJson({ job }, { status: 202 });
   } catch (error) {
     if (error instanceof HeroVoiceCanaryHttpError) {
-      return error.status === 401 ? response({ error: "Unauthorized" }, 401) : notFound();
+      return error.status === 401 ? heroVoiceClonePrivateJson({ error: "Unauthorized" }, { status: 401 }) : notFound();
     }
     if (error instanceof HeroVoiceGenerationError) {
-      return error.status === 404 ? notFound() : response({ error: "Canary submission failed" }, error.status);
+      return error.status === 404 ? notFound() : heroVoiceClonePrivateJson({ error: "Canary submission failed" }, { status: error.status });
     }
     if (error instanceof Error && error.message === "canary_submit_not_found") return notFound();
-    return response({ error: "Canary submission failed" }, 500);
+    return heroVoiceClonePrivateJson({ error: "Canary submission failed" }, { status: 500 });
   }
 }

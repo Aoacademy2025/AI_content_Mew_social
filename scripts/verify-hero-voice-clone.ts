@@ -191,7 +191,7 @@ for (const route of [collectionRoute, itemRoute, catalogRoute, studioVoiceRoute,
 assert.match(studioVoiceAudioRoute, /heroVoiceCloneCanaryAccessDecision\(user\)/);
 assert.match(studioVoiceAudioRoute, /access\.status === 401 \? ["']Unauthorized["'] : ["']Not found["']/);
 assert.match(studioVoiceAudioRoute, /privateJson\([\s\S]{0,140}access\.status/);
-assert.match(studioVoiceAudioRoute, /private, no-store/);
+assert.match(studioVoiceAudioRoute, /heroVoiceClonePrivateResponse/);
 
 assert.match(collectionRoute, /listUserVoices\(gate\.user\.id\)/,
   "clone lists are owner scoped");

@@ -1,7 +1,7 @@
 # Hero Voice clone Task 6 gate readback
 
 Date: 2026-09-04 (final image evidence refreshed 2026-09-05)
-Branch: `mewic/hero-voice-clone-prod-audit`
+Local branch: `codex/hero-voice-clone-prod-audit` (renamed 2026-09-05; PR #440 remote remains `mewic/hero-voice-clone-prod-audit` pending credential rotation)
 Decision: **NO-GO — paid submission and staging mutation remain disabled**
 
 ## Verified locally
@@ -78,12 +78,36 @@ fail-open surfaces.
 - Full authenticated OCI verification: `PASS`
 - Final Trivy vulnerability scan: `PASS` for the zero-unresolved-critical/high gate (Critical 0, High 0, Medium 151, Low 57); raw owner-only report SHA-256 `71954792e68712b9931540737498b61dcc517ac13c9ed7b1c344153b072c8ced`
 
-This clears the build/publish, manifest capture, SBOM/provenance capture, and
-filesystem/layer-scan portion of Task 6 only. The plan checkbox remains open
+This records the historical build/publication, manifest capture, SBOM/provenance
+capture, and filesystem/layer-scan evidence only. Publication before rights
+clearance remains an unresolved spec finding; these technical results do not
+clear that finding or authorize any further publication. The plan checkbox remains open
 because no dedicated candidate template has been created or read back by
 digest, and cold-import/GPU evidence is still absent.
 
-## Consequence
+## 2026-09-05 continuation verification
+
+- Unauthenticated remote-tip checks and application-main fetch found no drift:
+  application `main` remains `a6fd30ce00005e4c8177bf0e36cba552ae430ae7`,
+  team voice `main` remains `f9b6c0a4a9adcf2fb44f35c9b35a44c007127c37`,
+  and PR #440 remains open and unmerged at `8cf4869a587e31590dd0aa28cb0fef50ccc05823`.
+- Twelve clone/catalog/review routes now use the existing private JSON/response
+  helpers. The catalog error response also receives `private, no-store`.
+  The worker build context and immutable image pins did not change.
+- `verify:hero-voice-clone`, `verify:hero-voice-clone-task2`, and
+  `verify:hero-voice-canary` passed, including synthetic storage, provider/crash/
+  settlement and 18-pair review lifecycle checks, and all 11 evaluator tests.
+  The canonical evaluator still reports its four expected missing attestations;
+  synthetic test success does not supply real GPU/evaluator evidence.
+- TypeScript initially found stale generated Prisma types for unrelated support
+  fields. Regenerating the worktree-local Prisma client from the current schema
+  resolved them; `tsc --noEmit`, changed-scope ESLint, and `git diff --check`
+  then passed. No database was migrated.
+- The plan and operator guide now use the final candidate image evidence above.
+  Remote branch/PR updates await credential rotation; no authenticated GitHub
+  write or new image build/publication was performed in this continuation.
+
+## Consequence after continuation
 
 No Task 6 evidence bundle may be signed, no `--apply` command may pass, and Task
 7 must not start. The next authorized work requires external evidence and

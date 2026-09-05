@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { heroVoiceClonePrivateJson as privateJson } from "@/lib/hero-voice-clone-response.server";
 
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { heroVoiceCloneCanaryAccessDecision } from "@/lib/omnivoice-policy";
@@ -12,14 +12,6 @@ import {
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
-
-const PRIVATE_NO_STORE = { "Cache-Control": "private, no-store" };
-
-function privateJson(body: unknown, init?: ResponseInit) {
-  const headers = new Headers(init?.headers);
-  headers.set("Cache-Control", PRIVATE_NO_STORE["Cache-Control"]);
-  return NextResponse.json(body, { ...init, headers });
-}
 
 async function requireCloneCanaryUser() {
   const user = await getCurrentUser();

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 
 import { NextResponse } from "next/server";
+import { heroVoiceClonePrivateJson as privateJson, heroVoiceClonePrivateResponse } from "@/lib/hero-voice-clone-response.server";
 
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { heroVoiceCloneAudioFilePath } from "@/lib/hero-voice-clone-audio.server";
@@ -13,19 +14,11 @@ import { prisma } from "@/lib/prisma";
 export const runtime = "nodejs";
 
 const PRIVATE_HEADERS = {
-  "Cache-Control": "private, no-store",
   "Content-Type": "audio/wav",
   "Content-Disposition": "inline",
   "X-Content-Type-Options": "nosniff",
   "Accept-Ranges": "bytes",
 };
-
-function privateJson(body: unknown, status: number) {
-  return NextResponse.json(body, {
-    status,
-    headers: { "Cache-Control": PRIVATE_HEADERS["Cache-Control"] },
-  });
-}
 
 function parseRange(value: string | null, size: number): { start: number; end: number } | null {
   if (!value) return { start: 0, end: size - 1 };
@@ -47,7 +40,7 @@ export async function GET(
   if (!access.allowed) {
     return privateJson(
       { error: access.status === 401 ? "Unauthorized" : "Not found" },
-      access.status,
+      { status: access.status },
     );
   }
   if (!user) throw new Error("clone canary access decision admitted a missing actor");
@@ -59,34 +52,34 @@ export async function GET(
     || !isHeroVoiceCloneGenerationJob(job)
     || job.status !== "completed"
     || job.outputUrl !== expectedUrl) {
-    return privateJson({ error: "Not found" }, 404);
+    return privateJson({ error: "Not found" }, { status: 404 });
   }
 
   const filename = heroVoiceCloneAudioFilePath(job.id);
-  if (!filename) return privateJson({ error: "Not found" }, 404);
+  if (!filename) return privateJson({ error: "Not found" }, { status: 404 });
   let stat: fs.Stats;
   try {
     stat = fs.statSync(filename);
   } catch {
-    return privateJson({ error: "Not found" }, 404);
+    return privateJson({ error: "Not found" }, { status: 404 });
   }
-  if (!stat.isFile() || stat.size < 44) return privateJson({ error: "Not found" }, 404);
+  if (!stat.isFile() || stat.size < 44) return privateJson({ error: "Not found" }, { status: 404 });
 
   const rangeValue = request.headers.get("range");
   const range = parseRange(rangeValue, stat.size);
   if (!range) {
-    return new NextResponse(null, {
+    return heroVoiceClonePrivateResponse(new NextResponse(null, {
       status: 416,
       headers: { ...PRIVATE_HEADERS, "Content-Range": `bytes */${stat.size}` },
-    });
+    }));
   }
   const body = fs.readFileSync(filename).subarray(range.start, range.end + 1);
-  return new NextResponse(new Uint8Array(body), {
+  return heroVoiceClonePrivateResponse(new NextResponse(new Uint8Array(body), {
     status: rangeValue ? 206 : 200,
     headers: {
       ...PRIVATE_HEADERS,
       "Content-Length": String(body.length),
       ...(rangeValue ? { "Content-Range": `bytes ${range.start}-${range.end}/${stat.size}` } : {}),
     },
-  });
+  }));
 }

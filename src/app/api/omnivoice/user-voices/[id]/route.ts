@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { heroVoiceClonePrivateJson as privateJson, heroVoiceClonePrivateResponse } from "@/lib/hero-voice-clone-response.server";
 
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { heroVoiceCloneCanaryAccessDecision } from "@/lib/omnivoice-policy";
@@ -9,14 +10,6 @@ import {
 } from "@/lib/user-voices.server";
 
 export const runtime = "nodejs";
-
-const PRIVATE_NO_STORE = { "Cache-Control": "private, no-store" };
-
-function privateJson(body: unknown, init?: ResponseInit) {
-  const headers = new Headers(init?.headers);
-  headers.set("Cache-Control", PRIVATE_NO_STORE["Cache-Control"]);
-  return NextResponse.json(body, { ...init, headers });
-}
 
 async function requireCloneCanaryUser() {
   const user = await getCurrentUser();
@@ -41,15 +34,14 @@ export async function GET(
   const { id } = await params;
   const voice = await readUserVoiceWav(gate.user.id, id);
   if (!voice) return privateJson({ error: "Not found" }, { status: 404 });
-  return new NextResponse(new Uint8Array(voice.wav), {
+  return heroVoiceClonePrivateResponse(new NextResponse(new Uint8Array(voice.wav), {
     headers: {
       "Content-Type": "audio/wav",
       "Content-Length": String(voice.wav.length),
-      "Cache-Control": "private, no-store",
       "Content-Disposition": "inline",
       "X-Content-Type-Options": "nosniff",
     },
-  });
+  }));
 }
 
 export async function DELETE(

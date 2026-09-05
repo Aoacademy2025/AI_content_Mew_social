@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { heroVoiceClonePrivateJson } from "@/lib/hero-voice-clone-response.server";
 
 import { heroVoiceCanaryJcsBytes, parseHeroVoiceCanaryStrictJson } from "@/lib/hero-voice-canary-canonical";
 import {
@@ -26,12 +26,12 @@ export async function PUT(request: Request, context: { params: Promise<{ runId: 
     if (!heroVoiceCanaryJcsBytes(parsed).equals(bytes)) throw new HeroVoiceCanaryReviewError("CANARY_SCORE_INVALID", 400);
     const score = parseHeroVoiceCanaryScore(parsed, pairId);
     const result = await putHeroVoiceCanaryScore({ runId, pairId, ownerHmac: actor.ownerHmac, expectedRevision, score });
-    return NextResponse.json(result, { headers: { "Cache-Control": "private, no-store" } });
+    return heroVoiceClonePrivateJson(result);
   } catch (error) {
     const status = error instanceof HeroVoiceCanaryHttpError ? error.status
       : error instanceof HeroVoiceCanaryReviewError ? error.status : 409;
-    return NextResponse.json({ error: status === 401 ? "Unauthorized" : status === 404 ? "Not found" : "Review conflict" }, {
-      status, headers: { "Cache-Control": "private, no-store" },
+    return heroVoiceClonePrivateJson({ error: status === 401 ? "Unauthorized" : status === 404 ? "Not found" : "Review conflict" }, {
+      status,
     });
   }
 }

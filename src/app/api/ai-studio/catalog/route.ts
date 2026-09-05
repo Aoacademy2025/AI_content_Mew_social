@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { heroVoiceClonePrivateJson, heroVoiceClonePrivateResponse } from "@/lib/hero-voice-clone-response.server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { ensureMonthlyGrant, getBalance } from "@/lib/credits";
@@ -8,22 +8,20 @@ import { heroVoiceCloneCanaryAccessDecision } from "@/lib/omnivoice-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { apiError } from "@/lib/api-error";
 
-const PRIVATE_NO_STORE = { "Cache-Control": "private, no-store" };
-
 export async function GET() {
   try {
     const user = await getCurrentUser();
     const access = heroVoiceCloneCanaryAccessDecision(user);
     if (!access.allowed) {
-      return NextResponse.json(
+      return heroVoiceClonePrivateJson(
         { error: access.status === 401 ? "Unauthorized" : "Not found" },
-        { status: access.status, headers: PRIVATE_NO_STORE },
+        { status: access.status },
       );
     }
     if (!user) throw new Error("clone canary access decision admitted a missing actor");
     await ensureMonthlyGrant(user.id);
     const balance = await getBalance(user.id);
-    return NextResponse.json({
+    return heroVoiceClonePrivateJson({
       imageModels: AI_IMAGE_MODELS.map((model) => {
         const offer = describeImageOffer(model);
         return {
@@ -48,8 +46,8 @@ export async function GET() {
       },
       plan: user.plan,
       balance,
-    }, { headers: PRIVATE_NO_STORE });
+    });
   } catch (error) {
-    return apiError({ route: "ai-studio/catalog", error });
+    return heroVoiceClonePrivateResponse(await apiError({ route: "ai-studio/catalog", error }));
   }
 }
