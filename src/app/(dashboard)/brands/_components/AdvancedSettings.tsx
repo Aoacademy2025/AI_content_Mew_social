@@ -17,6 +17,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { BRAND_PROFILE_CAPS } from "@/lib/brand-profile-limits";
 import { normalizeHexColor } from "@/lib/hex-color";
+import { BrandVoicePicker } from "./BrandVoicePicker";
 import { VisualFormatPicker } from "./VisualFormatPicker";
 import type { BrandPayload, LibraryResponse, VisualProposal } from "./types";
 
@@ -678,43 +679,7 @@ export function AdvancedSettings({
           </Group>
 
           <Group title="เสียงเริ่มต้นของแบรนด์">
-            <div className="grid gap-4 md:grid-cols-2">
-              <FieldShell id="brand-voice-provider" label="ผู้ให้บริการเสียง">
-                <Select
-                  value={draft.voice.provider}
-                  disabled={disabled}
-                  onValueChange={(value) =>
-                    setDraft((current) => ({ ...current, voice: { provider: value, voiceId: null } }))
-                  }
-                >
-                  <SelectTrigger id="brand-voice-provider" className="h-10">
-                    <SelectValue placeholder="เลือกผู้ให้บริการเสียง" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="elevenlabs">ElevenLabs</SelectItem>
-                    <SelectItem value="gemini">Gemini</SelectItem>
-                    <SelectItem value="omnivoice">Hero Voice</SelectItem>
-                  </SelectContent>
-                </Select>
-              </FieldShell>
-              <TextField
-                id="brand-voice-id"
-                label={draft.voice.provider === "gemini" ? "ชื่อเสียง Gemini" : "Voice ID"}
-                value={draft.voice.voiceId ?? ""}
-                onChange={(value) =>
-                  setDraft((current) => ({
-                    ...current,
-                    voice: { ...current.voice, voiceId: value.trim() ? value : null },
-                  }))
-                }
-                placeholder="เว้นว่างเพื่อใช้ค่าเริ่มต้นบัญชี"
-                disabled={disabled}
-                maxLength={180}
-              />
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              โปรเจกต์ใหม่รับค่านี้เป็นค่าเริ่มต้น และยังเลือกเสียงอื่นรายคลิปได้
-            </p>
+            <BrandVoicePicker value={draft.voice} disabled={disabled} onChange={(voice) => setDraft((current) => ({ ...current, voice }))} />
           </Group>
 
           <Group title="ซับเริ่มต้น">

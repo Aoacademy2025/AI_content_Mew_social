@@ -1,7 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Loader2, Save, SwatchBook } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { ArrowLeft, ArrowRight, Check, Loader2, Save, SwatchBook } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { trackEvent } from "@/lib/client-telemetry";
@@ -19,16 +21,17 @@ import {
 } from "@/lib/brand-preview-client-state";
 import {
   createBlankBrandProfileSeed,
-  createBrandProfileSeedFromCurrentDefaults,
 } from "@/lib/brand-profile-seed";
 import { applyStylePackToPayload, clearStylePack } from "@/lib/style-pack-apply";
 import { stylePack, type StylePackId } from "@/lib/style-pack-catalog";
 import type { BrandProfilePayload } from "@/lib/brand-profile-library.server";
 import { AdvancedSettings } from "./AdvancedSettings";
 import { BrandBasicsForm } from "./BrandBasicsForm";
-import { BrandList } from "./BrandList";
+import { BrandLibraryOverview } from "./BrandLibraryOverview";
+import { BrandStyleWorkspace } from "./BrandStyleWorkspace";
+import { brandPreviewInputKey, createBrandSetupSeed, nextBrandName, type BrandSetupRequest, type BrandSetupResult } from "@/lib/brand-setup";
+import { isBrandSetupResult, readBrandSetupReceipt, writeBrandSetupReceipt, clearBrandSetupReceipt, readBrandSetupDraft, writeBrandSetupDraft, clearBrandSetupDraft, readBrandSetupRequest, writeBrandSetupRequest, clearBrandSetupRequest, type BrandSetupDraft } from "@/lib/brand-setup-client-state";
 import { BrandLookPreviewPanel } from "./BrandLookPreviewPanel";
-import { StylePackPicker } from "./StylePackPicker";
 import {
   brandPreviewGenerateRequest,
   brandPreviewQuoteBody,
@@ -127,6 +130,20 @@ function fromStylePackPayload(payload: BrandProfilePayload): BrandPayload {
 }
 
 export function BrandLibraryClient() {
+  const router = useRouter();
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [returnProjectId, setReturnProjectId] = useState<string | null>(null);
+  const [cleanDraftJson, setCleanDraftJson] = useState("");
+  const [expectedRevision, setExpectedRevision] = useState<number | null>(null);
+  const [recoverableDraft, setRecoverableDraft] = useState<BrandSetupDraft | null>(null);
+  const [localSavedJson, setLocalSavedJson] = useState("");
+  const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
+  const [completedSetup, setCompletedSetup] = useState<BrandSetupResult | null>(null);
+  const [pendingSetup, setPendingSetup] = useState<BrandSetupRequest | null>(null);
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
+  const [previewExpanded, setPreviewExpanded] = useState(false);
+  const allowNavigation = useRef(false);
+  const setupRunning = useRef(false);
   const [library, setLibrary] = useState<LibraryResponse | null>(null);
   const [me, setMe] = useState<MeData | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -144,13 +161,120 @@ export function BrandLibraryClient() {
   const [previewGenerationCount, setPreviewGenerationCount] = useState<number | null>(null);
   const [pendingRecoveryOperation, setPendingRecoveryOperation] = useState<PendingBrandPreviewOperation | null>(null);
   const resumedOperationForUserRef = useRef<string | null>(null);
+  const measuredEntry = useRef(false);
+  useEffect(() => {
+    if (!library || loading || measuredEntry.current) return;
+    measuredEntry.current = true;
+    trackEvent("brand_setup_started", { path: "/brands", properties: { returning: library.profiles.length > 0, cohort: library.cohort ?? null } });
+  }, [library, loading]);
 
   const activeProfile = useMemo(
     () => library?.profiles.find((profile) => profile.id === activeId) ?? null,
     [activeId, library],
   );
   const allowance = me?.starterAiImageAllowance;
-  const payload = useMemo(() => withSeedFallbacks(draft), [draft]);
+  const payload = useMemo(() => withSeedFallbacks({ ...draft, name: draft.name.trim() || nextBrandName(library?.profiles.filter((p) => p.id !== activeId).map((p) => p.name) ?? []) }), [draft, library, activeId]);
+  const localSaved = localSavedJson === JSON.stringify(draft);
+  const dirty = editorOpen && JSON.stringify(draft) !== cleanDraftJson;
+
+  function clearLocalDraft() {
+    const storage = browserStorage();
+    if (storage && me?.id) clearBrandSetupDraft(storage, me.id, activeId, sourceProjectId);
+    setCleanDraftJson(JSON.stringify(draft));
+    setRecoverableDraft(null);
+  }
+
+  function navigateFromDraft(action: () => void) {
+    if (pendingSetup || busy) return;
+    if (dirty) setPendingNavigation(() => action);
+    else action();
+  }
+
+  function keepDraftAndContinue() {
+    const storage = browserStorage();
+    if (!storage || !me?.id || !writeBrandSetupDraft(storage, { userId: me.id, profileId: activeId, projectId: sourceProjectId, expectedRevision, payload: draft, savedAt: Date.now() })) {
+      setNotice({ tone: "error", text: "เก็บร่างในเครื่องไม่สำเร็จ กรุณาบันทึกก่อนออกจากหน้านี้" });
+      return;
+    }
+    setPendingNavigation(null);
+    pendingNavigation?.();
+  }
+
+  useEffect(() => {
+    if (loading || !me?.id || !dirty || recoverableDraft || pendingSetup) return;
+    const timer = window.setTimeout(() => {
+      const storage = browserStorage();
+      setLocalSavedJson(storage && writeBrandSetupDraft(storage, { userId: me.id!, profileId: activeId, projectId: sourceProjectId, expectedRevision, payload: draft, savedAt: Date.now() }) ? JSON.stringify(draft) : "");
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [loading, me?.id, dirty, draft, activeId, sourceProjectId, expectedRevision, recoverableDraft, pendingSetup]);
+
+  useEffect(() => {
+    if (!dirty && !pendingSetup) return;
+    const beforeUnload = (event: BeforeUnloadEvent) => {
+      if (allowNavigation.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const onLink = (event: MouseEvent) => {
+      const link = (event.target as Element | null)?.closest?.("a[href]");
+      if (!link || allowNavigation.current || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || link.getAttribute("target") === "_blank" || !link.getAttribute("href")?.startsWith("/")) return;
+      event.preventDefault(); event.stopPropagation();
+      if (!pendingSetup) {
+        const href = link.getAttribute("href");
+        if (href?.startsWith("/")) setPendingNavigation(() => () => { allowNavigation.current = true; router.push(href); });
+      }
+    };
+    window.addEventListener("beforeunload", beforeUnload);
+    document.addEventListener("click", onLink, true);
+    return () => { window.removeEventListener("beforeunload", beforeUnload); document.removeEventListener("click", onLink, true); };
+  }, [dirty, pendingSetup, router]);
+
+  async function submitSetup(request: BrandSetupRequest) {
+    if (!me?.id || setupRunning.current) return;
+    const operation = pendingSetup ?? request;
+    const storage = browserStorage();
+    if (!storage || !writeBrandSetupRequest(storage, me.id, operation)) {
+      setNotice({ tone: "error", text: "บันทึกคำขอในเบราว์เซอร์ไม่ได้ กรุณาเปิดการจัดเก็บข้อมูลก่อนลองอีกครั้ง เพื่อให้ติดตามผลได้หากการเชื่อมต่อขาด" });
+      return;
+    }
+    setupRunning.current = true;
+    setPendingSetup(operation);
+    setBusy("setup"); setNotice(null);
+    try {
+      const response = await fetch("/api/brand-library/setup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(operation), signal: AbortSignal.timeout(45_000) });
+      if (!response.ok) {
+        if ([400, 401, 403, 404, 409, 422].includes(response.status)) { clearBrandSetupRequest(storage, me.id); setPendingSetup(null); }
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.error || "ยังยืนยันผลบันทึกไม่ได้ กดติดตามคำขอเดิมได้โดยไม่สร้างซ้ำ");
+      }
+      const result: unknown = await response.json();
+      if (!isBrandSetupResult(result) || (operation.action !== "save" && !result.projectId)) throw new Error("ยังยืนยันข้อมูลคลิปไม่ได้ กรุณาติดตามคำขอเดิม");
+      if (!writeBrandSetupReceipt(storage, me.id, result)) throw new Error("บันทึกสำเร็จแล้ว แต่เก็บทางไปต่อไม่ได้ กรุณาติดตามคำขอเดิม");
+      setCompletedSetup(result);
+      clearBrandSetupRequest(storage, me.id); setPendingSetup(null);
+      clearLocalDraft();
+      trackEvent("brand_setup_completed", { properties: { profileId: result.profileId, revisionId: result.revisionId, projectId: result.projectId } });
+      if (result.projectId) {
+        allowNavigation.current = true;
+        router.push(`/video-editor?projectId=${encodeURIComponent(result.projectId)}`);
+      } else {
+        try { await load(result.profileId); }
+        catch { setNotice({ tone: "error", text: "บันทึกแบรนด์แล้ว แต่โหลดคลังไม่สำเร็จ กรุณาลองโหลดคลังอีกครั้ง" }); return; }
+        setEditorOpen(false);
+        clearBrandSetupReceipt(storage, me.id); setCompletedSetup(null);
+        setNotice({ tone: "ok", text: "บันทึกแบรนด์แล้ว เลือกสร้างคลิปได้เลย" });
+      }
+    } catch (error) {
+      setNotice({ tone: "error", text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ ร่างของคุณยังอยู่" });
+    } finally { setupRunning.current = false; setBusy(null); }
+  }
+
+  function useSavedBrand(profile: BrandProfile) {
+    const revision = profile.revisions.find((item) => item.version === profile.activeRevisionNumber);
+    if (!revision) return;
+    void submitSetup({ requestId: crypto.randomUUID(), action: "use-brand", profileId: profile.id, revisionId: revision.id });
+  }
   const previewSource = useMemo<BrandPreviewSource>(() => ({
     profileId: activeId,
     projectId: sourceProjectId,
@@ -165,7 +289,7 @@ export function BrandLibraryClient() {
   // preview-quote is an image action behind that same gate. Quoting for a
   // rejected account would answer 403 on every debounced keystroke; the count
   // stays null and the button discloses the gate reason instead.
-  const canQuotePreview = library?.imageAccess.canUse === true;
+  const canQuotePreview = editorOpen && previewExpanded && library?.imageAccess.canUse === true;
 
   // Every look is quoted by the server with the lineage its generate call will
   // use. A saved profile promoted from a clip can reuse that clip's images, so
@@ -202,18 +326,25 @@ export function BrandLibraryClient() {
     ]);
     setLibrary(libraryData);
     setMe(meData);
+    const storage = browserStorage();
+    if (storage && meData?.id) {
+      setPendingSetup(readBrandSetupRequest(storage, meData.id));
+      setCompletedSetup(readBrandSetupReceipt(storage, meData.id));
+    }
     setAvailabilityChoice((current) => libraryData.availabilitySelectionRequired
       ? current.filter((id) => libraryData.profiles.some((profile) => profile.id === id))
       : []);
     const params = typeof window === "undefined" ? null : new URLSearchParams(window.location.search);
     const requestedProjectId = params?.get("projectId")?.trim() || null;
+    setReturnProjectId(params?.get("returnProjectId")?.trim() || null);
     const requestedPreflightId = params?.get("preflightId")?.trim() || null;
     const requestedVideoJobId = params?.get("videoJobId")?.trim() || null;
     let resolvedSourcePreflightId = requestedPreflightId;
     let resolvedSourceVisualContext: ProjectVisualSeed["context"] | null = null;
     if (!preferredId && params?.get("new") === "1") {
-      let seeded = createBlankBrandProfileSeed();
+      let seeded = createBrandSetupSeed(libraryData.defaults, libraryData.profiles.map((item) => item.name));
       if (requestedProjectId) {
+        seeded = { ...seeded, visual: createBlankBrandProfileSeed().visual };
         if (requestedVideoJobId) {
           const sourceJob = await fetch(`/api/videos/jobs/${encodeURIComponent(requestedVideoJobId)}`, {
             cache: "no-store",
@@ -281,6 +412,10 @@ export function BrandLibraryClient() {
       setSourcePreflightId(resolvedSourcePreflightId);
       setSourceVideoJobId(requestedVideoJobId);
       setDraft(seeded);
+      setCleanDraftJson(JSON.stringify(seeded));
+      setExpectedRevision(null);
+      setEditorOpen(true);
+      if (storage && meData?.id) setRecoverableDraft(readBrandSetupDraft(storage, meData.id, null, requestedProjectId));
       setAdvancedOpen(false);
       setProposal(null);
       setPreview(null);
@@ -294,10 +429,18 @@ export function BrandLibraryClient() {
     const nextProfile = libraryData.profiles.find((profile) => profile.id === requestedNextId)
       ?? libraryData.profiles[0]
       ?? null;
-    if (nextProfile) openProfile(nextProfile);
+    if (nextProfile) {
+      openProfile(nextProfile, true, meData?.id);
+      setEditorOpen(Boolean(preferredId));
+    }
     else {
       setActiveId(null);
-      setDraft(createBlankBrandProfileSeed());
+      const seed = createBrandSetupSeed(libraryData.defaults, []);
+      setDraft(seed);
+      setCleanDraftJson(JSON.stringify(seed));
+      setExpectedRevision(null);
+      setEditorOpen(true);
+      if (storage && meData?.id) setRecoverableDraft(readBrandSetupDraft(storage, meData.id, null, null));
     }
     setLoading(false);
   }
@@ -327,7 +470,7 @@ export function BrandLibraryClient() {
     } finally { setBusy(null); }
   }
 
-  useEffect(() => { load().catch((error) => { setNotice({ tone: "error", text: error.message }); setLoading(false); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect -- `load()` is async and only sets state after its awaited fetch resolves/rejects; this is the standard fetch-on-mount pattern, not a synchronous cascading render
+  useEffect(() => { load().catch((error) => { setNotice({ tone: "error", text: error.message }); setLoading(false); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps -- `load()` is async and only sets state after its awaited fetch resolves/rejects; this is the standard fetch-on-mount pattern, not a synchronous cascading render
 
   const resumePendingBrandPreviewOperation = useCallback(async (
     operation: PendingBrandPreviewOperation,
@@ -342,6 +485,9 @@ export function BrandLibraryClient() {
         ? await recoverPreviewByRequestId(operation.requestId, setPreview)
         : await postRerollWithRecovery(operation.itemId, operation.batchId, operation.requestId, setPreview);
       setPreview(value.batch);
+      setEditorOpen(true);
+      setPreviewExpanded(true);
+      setPreviewKey(operation.kind === "preview" ? brandPreviewInputKey(JSON.parse(operation.surface.payloadJson)) : null);
       clearPendingBrandPreviewOperation(storage, userId, operation.requestId);
       setPendingRecoveryOperation(null);
       await fetchMe(true).then(setMe);
@@ -368,21 +514,8 @@ export function BrandLibraryClient() {
     if (!operation) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrates React state from a browser-only external system (localStorage) to resume an interrupted preview/reroll after mount; the read cannot happen during render (guarded by loading/ref), so this is the effect's whole purpose
     setPendingRecoveryOperation(operation);
-    if (operation.kind === "preview") {
-      try {
-        const restoredDraft = JSON.parse(operation.surface.payloadJson) as BrandPayload;
-        setActiveId(operation.surface.profileId);
-        setDraft(restoredDraft);
-        setSourceProjectId(operation.surface.projectId);
-        setSourcePreflightId(operation.surface.preflightId);
-        setSourceVideoJobId(operation.surface.videoJobId);
-        setProposal(null);
-        setPreview(null);
-      } catch {
-        clearPendingBrandPreviewOperation(storage, userId, operation.requestId);
-        return;
-      }
-    }
+    // Recovery owns its original request snapshot. Do not replace a newer
+    // brand draft with an old paid-preview snapshot on page load.
     if (!pendingBrandPreviewCanAutoResume(operation)) {
       setNotice({
         tone: "error",
@@ -398,14 +531,20 @@ export function BrandLibraryClient() {
     void resumePendingBrandPreviewOperation(attempted);
   }, [loading, me?.id, resumePendingBrandPreviewOperation]);
 
-  function openProfile(profile: BrandProfile) {
+  function openProfile(profile: BrandProfile, force = false, userId = me?.id) {
+    if (!force && dirty) { navigateFromDraft(() => openProfile(profile, true, userId)); return; }
+    setEditorOpen(true);
+    setExpectedRevision(profile.draft?.baseRevisionNumber ?? profile.activeRevisionNumber);
+    setPreviewKey(null);
+    const storage = browserStorage();
+    setRecoverableDraft(storage && userId ? readBrandSetupDraft(storage, userId, profile.id, null) : null);
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
     setActiveId(profile.id);
     const stored = profile.draft?.payload ?? profile.revisions[0]?.payload;
     const base = createBlankBrandProfileSeed();
-    setDraft(stored ?? {
+    const next = stored ?? {
       ...base,
       name: profile.name,
       niche: profile.niche,
@@ -419,41 +558,34 @@ export function BrandLibraryClient() {
         analysisNotes: profile.analysisNotes,
         sampleText: profile.sampleText,
       },
-    });
+    };
+    setDraft(next);
+    setCleanDraftJson(JSON.stringify(next));
     setAdvancedOpen(false);
     setProposal(null);
     setPreview(null);
     setNotice(null);
   }
 
-  function startNew() {
+  function startNew(force = false) {
+    if (!library || !library.canCreate) return;
+    if (!force && dirty) { navigateFromDraft(() => startNew(true)); return; }
+    setEditorOpen(true);
+    setExpectedRevision(null);
+    const seed = createBrandSetupSeed(library.defaults, library.profiles.map((item) => item.name));
+    setCleanDraftJson(JSON.stringify(seed));
+    const storage = browserStorage();
+    setRecoverableDraft(storage && me?.id ? readBrandSetupDraft(storage, me.id, null, null) : null);
     setSourceProjectId(null);
     setSourcePreflightId(null);
     setSourceVideoJobId(null);
     setActiveId(null);
-    setDraft(createBlankBrandProfileSeed());
+    setDraft(seed);
     setAdvancedOpen(false);
     setProposal(null);
     setPreview(null);
     setNotice(null);
     trackEvent("brand_profile_create_started", { path: "/brands" });
-  }
-
-  function startFromCurrentDefaults() {
-    if (!library) return;
-    setSourceProjectId(null);
-    setSourcePreflightId(null);
-    setSourceVideoJobId(null);
-    setActiveId(null);
-    setDraft(createBrandProfileSeedFromCurrentDefaults(library.defaults));
-    setAdvancedOpen(false);
-    setProposal(null);
-    setPreview(null);
-    setNotice({
-      tone: "ok",
-      text: "เติมสไตล์การเขียน เสียง ซับ และลายน้ำที่ใช้อยู่แล้ว กรุณาตรวจและกำหนดแนวภาพก่อนบันทึก",
-    });
-    trackEvent("brand_profile_create_from_current_started", { path: "/brands" });
   }
 
   /** ADR 0058: the shared unlink point every custom edit routes through — a
@@ -500,6 +632,7 @@ export function BrandLibraryClient() {
         : clearStylePack(toStylePackPayload(current)),
     ));
     if (!id) setAdvancedOpen(true);
+    trackEvent("brand_setup_style_changed", { properties: { packId: id } });
   }
 
   /** Applying the AI visual helper's proposal writes the same pack-owned axes
@@ -571,52 +704,41 @@ export function BrandLibraryClient() {
       await responseJson(await fetch(`/api/brand-library/${activeId}/draft`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ payload }),
       }));
+      clearLocalDraft();
       await load(activeId);
       setNotice({ tone: "ok", text: "บันทึกร่างแล้ว งานเดิมและแนวภาพรุ่นที่ใช้อยู่ยังไม่เปลี่ยน" });
     } catch (error) { setNotice({ tone: "error", text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ" }); }
     finally { setBusy(null); }
   }
 
-  async function publishOrCreate() {
-    setBusy("publish");
-    setNotice(null);
+  async function publishOrCreate(goToEditor = false) {
+    if (!sourceProjectId || activeId) {
+      await submitSetup({ requestId: crypto.randomUUID(), action: goToEditor ? "create-clip" : "save", ...(activeId ? { profileId: activeId, expectedRevision: expectedRevision ?? undefined } : {}), payload });
+      return;
+    }
+    setBusy("publish"); setNotice(null);
+    const originId = sourceProjectId;
     try {
-      if (activeId) {
-        await responseJson(await fetch(`/api/brand-library/${activeId}/draft`, {
-          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ payload }),
-        }));
-        await responseJson(await fetch(`/api/brand-library/${activeId}/publish`, { method: "POST" }));
-        await load(activeId);
-        setNotice({ tone: "ok", text: "สร้างแนวภาพรุ่นใหม่แล้ว คลิปเดิมยังใช้รุ่นเดิมจนกว่าคุณจะเลือกเปลี่ยน" });
-      } else {
-        const created = sourceProjectId
-          ? await responseJson(await fetch("/api/brand-library/from-project-look", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              payload,
-              projectId: sourceProjectId,
-              preflightId: sourcePreflightId,
-              videoJobId: sourceVideoJobId,
-            }),
-          }))
-          : await responseJson(await fetch("/api/brand-library", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ payload }),
-            }));
-        if (sourceProjectId) {
-          window.history.replaceState({}, "", "/brands");
-        }
-        await load(created.profileId);
-        setNotice({
-          tone: "ok",
-          text: sourceProjectId
-            ? "บันทึกแบรนด์และเลือกแนวภาพรุ่นนี้ให้คลิปแล้ว ภาพเดิมไม่ถูกสร้างซ้ำ"
-            : "บันทึกแนวภาพเข้าคลังแบรนด์แล้ว",
-        });
+      const created = await responseJson(await fetch("/api/brand-library/from-project-look", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payload, projectId: originId, preflightId: sourcePreflightId, videoJobId: sourceVideoJobId }),
+      }));
+      const result = { ...created, projectId: originId };
+      if (isBrandSetupResult(result)) {
+        const storage = browserStorage();
+        if (storage && me?.id) writeBrandSetupReceipt(storage, me.id, result);
+        setCompletedSetup(result);
       }
-    } catch (error) { setNotice({ tone: "error", text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ" }); }
+      clearLocalDraft();
+      if (goToEditor) {
+        allowNavigation.current = true;
+        router.push(`/video-editor?projectId=${encodeURIComponent(originId)}`);
+        return;
+      }
+      window.history.replaceState({}, "", "/brands");
+      await load(created.profileId);
+      setNotice({ tone: "ok", text: "บันทึกแบรนด์และใช้กับคลิปนี้แล้ว ภาพเดิมไม่ถูกสร้างซ้ำ" });
+    } catch (error) { setNotice({ tone: "error", text: error instanceof Error ? error.message : "บันทึกไม่สำเร็จ ร่างของคุณยังอยู่" }); }
     finally { setBusy(null); }
   }
 
@@ -630,6 +752,7 @@ export function BrandLibraryClient() {
       }));
       const nextId = library?.profiles.find((item) => item.id !== profile.id)?.id;
       await load(nextId);
+      setEditorOpen(false);
       setNotice({
         tone: "ok",
         text: `ลบ ${profile.name} ออกจากคลังแล้ว คลิปเดิมยังใช้แนวภาพรุ่นเดิมได้`,
@@ -654,7 +777,7 @@ export function BrandLibraryClient() {
   }
 
   async function previewLook() {
-    setBusy("preview"); setPreview(null); setNotice(null);
+    setBusy("preview"); setPreview(null); setPreviewKey(brandPreviewInputKey(payload)); setNotice(null);
     const userId = me?.id;
     const storage = browserStorage();
     const surface: PendingBrandPreviewSurface = {
@@ -755,241 +878,59 @@ export function BrandLibraryClient() {
       </div>
     );
   }
-  if (!library) return <div className="p-8 text-sm text-destructive">โหลดคลังแบรนด์ไม่สำเร็จ</div>;
+  if (!library) return <div className="space-y-4 p-8 text-sm"><p role="alert">{notice?.text ?? "โหลดคลังแบรนด์ไม่สำเร็จ"}</p><Button onClick={() => { setLoading(true); void load().catch(() => setLoading(false)); }}>ลองโหลดอีกครั้ง</Button></div>;
 
-  const canPublish = draft.name.trim().length > 0;
+  const canPublish = payload.name.trim().length > 0;
   const frozen = activeProfile?.frozen === true;
+  const locked = frozen || busy !== null || pendingSetup !== null;
+  const disabled = locked || recoverableDraft !== null;
 
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
       <div className="mx-auto max-w-[1200px] px-4 pb-16 pt-5 md:px-7 md:pt-8">
-        <header className="ve-rise mb-6 flex flex-wrap items-end justify-between gap-4">
+        <header className="mb-7 flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-violet-500">
-              <SwatchBook className="h-3.5 w-3.5" />
-              คลังแบรนด์
-            </p>
-            <h1 className="text-3xl font-bold tracking-tight text-foreground md:text-[38px]">
-              แบรนด์ของฉัน
-            </h1>
-            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
-              ตั้งชื่อแบรนด์ แล้วเลือกแนวภาพที่อยากให้คลิปของคุณเป็น ที่เหลือปรับทีหลังได้
-            </p>
+            <p className="mb-2 flex items-center gap-2 text-xs font-semibold text-violet-500"><SwatchBook className="h-4 w-4" />แบรนด์ของฉัน</p>
+            <h1 className="text-2xl font-bold leading-tight tracking-tight md:text-3xl">{!editorOpen ? "เลือกแบรนด์ แล้วสร้างคลิปต่อ" : activeId ? "ปรับแบรนด์สำหรับคลิปใหม่" : "เลือกสไตล์ แล้วเริ่มคลิปแรก"}</h1>
+            <p className="mt-3 text-sm leading-6 text-muted-foreground">{editorOpen ? "เราเติมค่าเริ่มต้นให้แล้ว เลือกสไตล์แล้วไปต่อได้ เปลี่ยนรายละเอียดทีหลังได้" : "ภาพ เสียง และซับที่บันทึกไว้ พร้อมใช้กับคลิปถัดไป"}</p>
           </div>
-          {/* ADR 0059: this card states what an image costs the account. An
-              account the image gate rejects can spend nothing here, so it makes
-              no cost or entitlement claim to them at all — the gate reason is
-              disclosed on the image button instead. */}
-          {library.imageAccess.canUse && (
-            <Card className="px-4 py-3">
-              {allowance?.eligible ? (
-                <>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    สิทธิ์ทดลองสร้างภาพ
-                  </p>
-                  <p className="mt-0.5 text-2xl font-bold tabular-nums text-foreground">
-                    {allowance.remainingImages}
-                    <span className="text-sm font-medium text-muted-foreground"> / {allowance.limitImages}</span>
-                  </p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    คงเหลือในรอบนี้ · การวิเคราะห์และเลือกแนวภาพไม่ใช้สิทธิ์
-                  </p>
-                </>
-              ) : (
-                <>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    เครดิตสำหรับสร้างภาพ
-                  </p>
-                  <p className="mt-0.5 text-sm font-semibold text-foreground">ใช้ยอดเครดิตเดียวกับบัญชี</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">ภาพ AI ราคา 2 เครดิตต่อภาพ</p>
-                </>
-              )}
-            </Card>
-          )}
+          {editorOpen && library.profiles.length > 0 && <Button variant="ghost" disabled={busy !== null || !!pendingSetup} onClick={() => navigateFromDraft(() => setEditorOpen(false))} className="min-h-11"><ArrowLeft className="h-4 w-4" />กลับคลังแบรนด์</Button>}
         </header>
 
-        {library.availabilitySelectionRequired && library.cap !== null && (
-          <Card className="mb-5 border-amber-500/45 bg-amber-500/10 p-4">
-            <p className="text-sm font-semibold text-foreground">เลือก {library.cap} แบรนด์สำหรับงานใหม่</p>
-            <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              แผนปัจจุบันรองรับน้อยกว่าจำนวนที่มี ระบบไม่ลบข้อมูลใด และคลิปเดิมยังสร้างซ้ำด้วยแนวภาพรุ่นที่เลือกไว้ได้
-            </p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {library.profiles.map((profile) => {
-                const selected = availabilityChoice.includes(profile.id);
-                return (
-                  <Button
-                    key={profile.id}
-                    type="button"
-                    size="sm"
-                    variant={selected ? "default" : "outline"}
-                    onClick={() => toggleAvailability(profile.id)}
-                    className={selected ? "bg-violet-600 text-white hover:bg-violet-600/90" : undefined}
-                  >
-                    {selected && <Check className="h-3.5 w-3.5" />}
-                    {profile.name}
-                  </Button>
-                );
-              })}
-            </div>
-            <Button
-              type="button"
-              onClick={confirmAvailability}
-              disabled={busy !== null || availabilityChoice.length !== library.cap}
-              className="mt-3 h-10 bg-violet-600 text-white hover:bg-violet-600/90"
-            >
-              {busy === "availability" && <Loader2 className="h-4 w-4 animate-spin" />}
-              ยืนยันแบรนด์ที่ใช้ต่อ
-            </Button>
-          </Card>
-        )}
+        {returnProjectId && <Link href={`/video-editor?projectId=${encodeURIComponent(returnProjectId)}`} className="mb-5 inline-block py-2 text-sm underline underline-offset-4">กลับคลิปเดิม · คลิปนี้ยังใช้เวอร์ชันเดิม</Link>}
+        {library.availabilitySelectionRequired && library.cap !== null && <Card className="mb-6 p-5">
+          <h2 className="font-semibold">เลือก {library.cap} แบรนด์สำหรับงานใหม่</h2><p className="mt-2 text-sm text-muted-foreground">แผนปัจจุบันรองรับน้อยกว่าจำนวนที่มี คลิปเดิมยังใช้เวอร์ชันเดิมได้</p>
+          <div className="my-4 flex flex-wrap gap-2">{library.profiles.map((profile) => <Button key={profile.id} disabled={busy !== null} variant={availabilityChoice.includes(profile.id) ? "default" : "outline"} onClick={() => toggleAvailability(profile.id)}>{availabilityChoice.includes(profile.id) && <Check className="h-4 w-4" />}{profile.name}</Button>)}</div>
+          <Button disabled={busy !== null || availabilityChoice.length !== library.cap} onClick={confirmAvailability}>ยืนยันแบรนด์ที่ใช้ต่อ</Button>
+        </Card>}
 
-        <div className="grid gap-5 lg:grid-cols-[248px_minmax(0,1fr)]">
-          <BrandList
-            profiles={library.profiles}
-            cap={library.cap}
-            canCreate={library.canCreate}
-            activeId={activeId}
-            busy={busy !== null}
-            onOpen={openProfile}
-            onArchive={(profile) => void archiveProfile(profile)}
-            onStartNew={startNew}
-            onStartFromCurrentDefaults={startFromCurrentDefaults}
-          />
+        {pendingNavigation && <div role="alert" className="mb-5 rounded-lg border border-violet-500/40 bg-card p-4 text-sm"><p>ยังมีร่างที่ไม่ได้เผยแพร่ เก็บไว้ในเครื่องแล้วไปต่อได้</p><div className="mt-3 flex flex-wrap gap-2"><Button onClick={keepDraftAndContinue} className="min-h-11">เก็บร่างแล้วไปต่อ</Button><Button variant="outline" onClick={() => setPendingNavigation(null)} className="min-h-11">แก้ไขต่อ</Button></div></div>}
+        {notice && <div role="status" className={`mb-5 rounded-lg border p-4 text-sm leading-6 ${notice.tone === "error" ? "border-destructive/40 bg-destructive/5" : "border-border bg-muted/40"}`}>{notice.text}</div>}
+        {completedSetup && !pendingSetup && <div role="status" className="mb-5 rounded-lg border border-border p-4 text-sm"><p>บันทึกแบรนด์สำเร็จแล้ว{completedSetup.projectId ? " และมีคลิปที่สร้างไว้" : ""}</p><div className="mt-3 flex flex-wrap gap-3">{completedSetup.projectId ? <Link className="py-2 underline" href={`/video-editor?projectId=${encodeURIComponent(completedSetup.projectId)}`}>ไปคลิปที่สร้างไว้</Link> : <Button variant="outline" onClick={() => void load(completedSetup.profileId).catch(() => setNotice({ tone: "error", text: "โหลดคลังไม่สำเร็จ กรุณาลองอีกครั้ง" }))}>โหลดคลังอีกครั้ง</Button>}<Button variant="ghost" onClick={() => { const storage = browserStorage(); if (storage && me?.id) clearBrandSetupReceipt(storage, me.id); setCompletedSetup(null); }}>ปิดข้อความ</Button></div></div>}
+        {pendingSetup && <div className="mb-5 rounded-lg border border-amber-500/40 p-4 text-sm"><p>มีคำขอบันทึก{pendingSetup.payload?.name ? ` “${pendingSetup.payload.name}”` : ""}ที่ยังไม่ได้ยืนยันผล ติดตามคำขอเดิมได้โดยไม่สร้างแบรนด์หรือคลิปซ้ำ</p><Button variant="outline" className="mt-3 min-h-11" disabled={busy !== null} onClick={() => void submitSetup(pendingSetup)}>{busy === "setup" && <Loader2 className="h-4 w-4 animate-spin" />}ติดตามคำขอบันทึกเดิม</Button></div>}
+        {pendingRecoveryOperation && <Button variant="outline" className="mb-5 min-h-11" disabled={busy !== null} onClick={() => void resumePendingBrandPreviewOperation(pendingRecoveryOperation)}>ติดตามคำขอทดลองภาพเดิม</Button>}
 
-          <div className="min-w-0 space-y-4">
-            {sourceProjectId && (
-              <Card className="border-violet-500/40 bg-violet-500/10 p-4 text-xs leading-5 text-muted-foreground">
-                <span className="font-semibold text-foreground">เริ่มจากคลิปที่คุณเพิ่งสร้าง</span>
-                {" "}— ระบบเติมแนวภาพและบริบทของเนื้อหาให้ตรวจแล้ว การบันทึกจะสร้างโปรไฟล์แบรนด์และเลือกแนวภาพรุ่นนี้ให้คลิปโดยตรง
-              </Card>
-            )}
-
-            {frozen && (
-              <Card className="border-amber-500/45 bg-amber-500/10 p-4">
-                <p className="text-sm font-semibold text-foreground">แบรนด์นี้อยู่ในโหมดอ่านอย่างเดียว</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  คลิปเดิมยังสร้างซ้ำด้วยแนวภาพรุ่นที่เลือกไว้ได้ อัปเกรดเพื่อแก้หรือใช้กับคลิปใหม่
-                </p>
-              </Card>
-            )}
-
-            <Card className="p-5 md:p-6">
-              <div className="mb-5 flex flex-wrap items-baseline justify-between gap-2">
-                <h2 className="text-lg font-semibold text-foreground">
-                  {activeProfile?.name || "ออกแบบแนวภาพใหม่"}
-                </h2>
-                {activeProfile && (
-                  <span className="text-xs text-muted-foreground">
-                    แนวภาพรุ่น {activeProfile.activeRevisionNumber}
-                  </span>
-                )}
-              </div>
-
-              {!library.profiles.length && (
-                <p className="mb-5 text-sm leading-relaxed text-muted-foreground">
-                  สร้างแบรนด์แรกของคุณ — ตั้งชื่อ แล้วเลือกแนวภาพที่อยากให้คลิปของคุณเป็น
-                </p>
-              )}
-
-              <div className="space-y-6">
-                <BrandBasicsForm
-                  name={draft.name}
-                  onNameChange={(value) => setDraft((current) => ({ ...current, name: value }))}
-                  disabled={frozen}
-                />
-                <StylePackPicker
-                  packs={library.stylePacks}
-                  value={draft.visual.stylePackId}
-                  onChange={selectStylePack}
-                  disabled={frozen}
-                />
-              </div>
-            </Card>
-
-            <AdvancedSettings
-              open={advancedOpen}
-              onOpenChange={setAdvancedOpen}
-              draft={draft}
-              setDraft={setDraft}
-              updateVisual={updateVisual}
-              library={library}
-              busy={busy}
-              disabled={frozen}
-              proposal={proposal}
-              onAskHelper={askVisualHelper}
-              onApplyProposal={applyProposal}
-              onUploadBrandMark={(file) => void uploadBrandMark(file)}
-            />
-
-            <BrandLookPreviewPanel
-              preview={preview}
-              previewGenerationCount={previewGenerationCount}
-              allowance={allowance}
-              imageAccess={library.imageAccess}
-              canPublish={canPublish}
-              busy={busy}
-              disabled={frozen}
-              onPreview={previewLook}
-              onReroll={rerollPreviewItem}
-            />
-
-            {notice && (
-              <div
-                role="status"
-                className={`rounded-lg border-l-4 p-3 text-sm ${
-                  notice.tone === "ok"
-                    ? "border-emerald-500 bg-emerald-500/10 text-foreground"
-                    : "border-destructive bg-destructive/10 text-foreground"
-                }`}
-              >
-                <div>{notice.text}</div>
-                {pendingRecoveryOperation && (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={busy !== null}
-                    onClick={() => void resumePendingBrandPreviewOperation(pendingRecoveryOperation)}
-                    className="mt-3"
-                  >
-                    {busy !== null && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                    ติดตามคำขอเดิม
-                  </Button>
-                )}
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
-              <p className="max-w-xl text-[11px] leading-5 text-muted-foreground">
-                การแก้ร่างหรือทดลองภาพยังไม่เปลี่ยนแนวภาพรุ่นที่โปรเจกต์ใช้อยู่ ภาพเดิมจะไม่ถูกสร้างใหม่อัตโนมัติ
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {activeId && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={saveDraftOnly}
-                    disabled={busy !== null || !canPublish || frozen}
-                    className="h-10"
-                  >
-                    {busy === "save" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                    บันทึกร่าง
-                  </Button>
-                )}
-                <Button
-                  type="button"
-                  onClick={publishOrCreate}
-                  disabled={busy !== null || !canPublish || frozen}
-                  className="h-10 bg-violet-600 text-white hover:bg-violet-600/90"
-                >
-                  {busy === "publish" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
-                  {activeId ? "ใช้แนวภาพใหม่นี้" : "บันทึกเข้าคลังแบรนด์"}
-                </Button>
-              </div>
+        {!editorOpen ? <BrandLibraryOverview library={library} busy={busy !== null || !!pendingSetup} onNew={() => startNew()} onOpen={openProfile} onUse={useSavedBrand} onArchive={archiveProfile} /> : <div className="space-y-6">
+          {recoverableDraft && <div className="rounded-lg border border-amber-500/40 p-4 text-sm"><p>พบร่างที่ยังไม่ได้เผยแพร่จากอุปกรณ์นี้</p><div className="mt-3 flex flex-wrap gap-2"><Button disabled={locked} variant="outline" onClick={() => { setDraft(recoverableDraft.payload); setExpectedRevision(recoverableDraft.expectedRevision); setRecoverableDraft(null); }}>กู้คืนร่าง</Button><Button disabled={locked} variant="ghost" onClick={() => { clearLocalDraft(); }}>ใช้ข้อมูลที่บันทึกไว้</Button></div></div>}
+          {sourceProjectId && <div className="rounded-lg border border-border p-4 text-sm">กำลังบันทึกสไตล์จากคลิปนี้ ภาพเดิมจะไม่ถูกสร้างซ้ำ <Link href={`/video-editor?projectId=${encodeURIComponent(sourceProjectId)}`} className="ml-2 underline underline-offset-4">กลับคลิปต้นทาง</Link></div>}
+          {frozen && <p className="text-sm text-muted-foreground">แบรนด์นี้เป็นแบบอ่านอย่างเดียวตามแผนปัจจุบัน</p>}
+          <BrandStyleWorkspace draft={payload} library={library} disabled={disabled} onSelect={selectStylePack} onCustomize={() => setAdvancedOpen(true)} />
+          <details className="border-t border-border pt-3"><summary className="cursor-pointer py-3 text-sm font-semibold">ชื่อแบรนด์ · {payload.name}</summary><div className="pb-4"><BrandBasicsForm name={draft.name} onNameChange={(value) => setDraft((current) => ({ ...current, name: value }))} disabled={disabled} /><p className="mt-2 text-xs text-muted-foreground">ไม่ต้องเปลี่ยนชื่อก็เริ่มสร้างคลิปได้</p></div></details>
+          <AdvancedSettings open={advancedOpen} onOpenChange={setAdvancedOpen} draft={draft} setDraft={setDraft} updateVisual={updateVisual} library={library} busy={busy} disabled={disabled} proposal={proposal} onAskHelper={askVisualHelper} onApplyProposal={applyProposal} onUploadBrandMark={(file) => void uploadBrandMark(file)} />
+          <details open={previewExpanded} onToggle={(event) => setPreviewExpanded(event.currentTarget.open)} className="border-t border-border pt-3"><summary className="cursor-pointer py-3 text-sm font-semibold">{sourceProjectId ? "ทดลองภาพกับคลิปนี้" : "ทดสอบสไตล์กับ 3 แบบฉาก"} · ไม่จำเป็นต้องทดลองก่อนบันทึก</summary>
+            <p className="mb-3 text-xs leading-5 text-muted-foreground">{sourceProjectId ? "ใช้บริบทจากคลิปที่เลือก ตรวจสิทธิ์และราคาก่อนสร้างภาพ" : "ใช้ฉากทดสอบมาตรฐาน: ภาพกว้าง มือกับวัตถุ และภาพคน ไม่ใช่บทของคุณ หากต้องการทดลองกับเรื่องของคุณ ให้สร้างคลิปก่อน"}</p>
+            <BrandLookPreviewPanel preview={preview} stale={!!preview && previewKey !== brandPreviewInputKey(payload)} previewGenerationCount={previewGenerationCount} allowance={allowance} imageAccess={library.imageAccess} canPublish={canPublish} busy={busy} disabled={disabled} onPreview={previewLook} onReroll={rerollPreviewItem} />
+          </details>
+          <div className="sticky bottom-0 z-20 -mx-4 flex flex-wrap items-center justify-between gap-4 border-t border-border bg-background px-4 py-4 lg:mx-0 lg:px-0">
+            <div><p className="break-words text-sm font-semibold">{payload.name}</p><p className="mt-1 text-xs text-muted-foreground">ตั้งค่าแบรนด์ไม่ใช้เครดิต · {dirty ? localSaved ? "เก็บร่างในเครื่องแล้ว ยังไม่เผยแพร่" : "ยังไม่บันทึก" : "พร้อมใช้งาน"}</p></div>
+            <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+              {activeId && <Button variant="ghost" disabled={disabled} onClick={saveDraftOnly} className="min-h-11"><Save className="h-4 w-4" />เก็บร่าง</Button>}
+              {!sourceProjectId && <Button variant="outline" disabled={disabled || !canPublish} onClick={() => void publishOrCreate(false)} className="min-h-11">{activeId ? "บันทึกสำหรับคลิปใหม่" : "บันทึกไว้ก่อน"}</Button>}
+              <Button disabled={disabled || !canPublish} onClick={() => void publishOrCreate(true)} className="min-h-11 flex-1 whitespace-normal bg-violet-600 text-white hover:bg-violet-600/90 sm:flex-initial">{busy === "setup" || busy === "publish" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}{sourceProjectId ? "บันทึกและใช้กับคลิปนี้" : "ใช้แบรนด์นี้สร้างคลิป"}</Button>
             </div>
           </div>
-        </div>
+          {!sourceProjectId && <Link href="/video-editor?empty=1" className="inline-block py-3 text-sm text-muted-foreground underline underline-offset-4">ไปสร้างคลิปก่อน โดยยังไม่ใช้แบรนด์</Link>}
+        </div>}
       </div>
     </div>
   );

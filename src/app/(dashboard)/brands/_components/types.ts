@@ -71,6 +71,7 @@ export type BrandImageAccess = {
 };
 
 export type LibraryResponse = {
+  cohort?: string;
   profiles: BrandProfile[];
   cap: number | null;
   canCreate: boolean;

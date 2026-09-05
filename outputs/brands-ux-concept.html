@@ -1,0 +1,97 @@
+<style>
+#hero-brand-concept{color-scheme:light dark;--hb-bg:light-dark(#f8f7fb,#111015);--hb-panel:light-dark(#ffffff,#1a181f);--hb-text:light-dark(#26222e,#f1edf7);--hb-muted:light-dark(#696171,#b4adbf);--hb-line:light-dark(#ded9e5,#39333f);--hb-accent:light-dark(#6d3bc5,#b999f0);--hb-cta:light-dark(#6734bf,#b999f0);--hb-on:light-dark(#fffaff,#211331);font-family:'Sarabun','Thonburi',sans-serif;color:var(--hb-text);background:var(--hb-bg);border:1px solid var(--hb-line);border-radius:14px;overflow:hidden;font-size:15px;line-height:1.65}
+#hero-brand-concept *{box-sizing:border-box}
+#hero-brand-concept [hidden]{display:none!important}
+#hero-brand-concept button,#hero-brand-concept input{font:inherit}
+#hero-brand-concept button{cursor:pointer;color:inherit}
+#hero-brand-concept .hb-concept{padding:10px 20px;background:var(--hb-panel);color:var(--hb-muted);font-size:12px;border-bottom:1px solid var(--hb-line)}
+#hero-brand-concept .hb-top{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:16px 24px;border-bottom:1px solid var(--hb-line)}
+#hero-brand-concept .hb-logo{font-weight:700;letter-spacing:2px;font-size:18px}
+#hero-brand-concept .hb-nav{display:flex;gap:8px;flex-wrap:wrap}
+#hero-brand-concept .hb-nav button,#hero-brand-concept .hb-link{background:transparent;border:0;padding:9px 12px;min-height:44px;border-radius:6px;text-decoration:underline;text-underline-offset:5px;color:var(--hb-muted)}
+#hero-brand-concept .hb-nav button[aria-pressed=true]{background:var(--hb-bg);color:var(--hb-text);text-decoration:none}
+#hero-brand-concept .hb-main{padding:28px 26px}
+#hero-brand-concept h2{font-size:26px;line-height:1.4;margin:0 0 7px;font-weight:650;letter-spacing:-.5px}
+#hero-brand-concept h3{font-size:17px;margin:0 0 10px}
+#hero-brand-concept p{margin:0}
+#hero-brand-concept .hb-sub{color:var(--hb-muted);font-size:14px}
+#hero-brand-concept .hb-layout{display:grid;grid-template-columns:minmax(0,1.08fr) minmax(0,1fr);gap:28px;margin-top:24px;align-items:start}
+#hero-brand-concept .hb-choices{border-top:1px solid var(--hb-line)}
+#hero-brand-concept .hb-option{display:flex;align-items:center;gap:12px;padding:15px 8px;border-bottom:1px solid var(--hb-line);cursor:pointer;min-height:72px}
+#hero-brand-concept .hb-option:has(input:checked){background:color-mix(in srgb,var(--hb-accent) 9%,var(--hb-panel));border-radius:6px}
+#hero-brand-concept input[type=radio]{accent-color:var(--hb-accent);width:18px;height:18px;flex:none}
+#hero-brand-concept .hb-choice-copy{flex:1;min-width:0}
+#hero-brand-concept .hb-choice-copy strong{display:block;font-size:15px}
+#hero-brand-concept .hb-choice-copy small{display:block;color:var(--hb-muted);font-size:12px;margin-top:2px}
+#hero-brand-concept .hb-selected{font-size:11px;color:var(--hb-accent);white-space:nowrap}
+#hero-brand-concept .hb-option:not(:has(input:checked)) .hb-selected{visibility:hidden}
+#hero-brand-concept .hb-demo{background:var(--hb-panel);border:1px solid var(--hb-line);border-radius:10px;padding:14px}
+#hero-brand-concept .hb-demo-title{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:12px;margin-bottom:12px;color:var(--hb-muted)}
+#hero-brand-concept .hb-preview{aspect-ratio:9/10;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:var(--hb-bg);border:1px dashed var(--hb-line);border-radius:6px;padding:20px;text-align:center}
+#hero-brand-concept .hb-play{height:44px;width:44px;display:grid;place-items:center;border:1px solid var(--hb-line);border-radius:50%;font-size:16px;color:var(--hb-muted)}
+#hero-brand-concept .hb-preview small{color:var(--hb-muted);font-size:12px}
+#hero-brand-concept .hb-summary{margin:16px 0 0;display:grid;grid-template-columns:54px 1fr;gap:7px 8px;font-size:13px}
+#hero-brand-concept dt{color:var(--hb-muted)}
+#hero-brand-concept dd{margin:0}
+#hero-brand-concept details{border-top:1px solid var(--hb-line);margin-top:18px;padding-top:6px}
+#hero-brand-concept summary{cursor:pointer;padding:10px 0;min-height:44px;font-size:14px}
+#hero-brand-concept .hb-details-content{padding:8px 0 10px}
+#hero-brand-concept .hb-details-content label{display:block;font-size:13px;margin-bottom:5px}
+#hero-brand-concept input[type=text]{width:100%;font-size:16px;min-height:44px;padding:10px;background:var(--hb-panel);color:var(--hb-text);border:1px solid var(--hb-line);border-radius:6px}
+#hero-brand-concept .hb-bottom{border-top:1px solid var(--hb-line);padding:18px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;background:var(--hb-panel)}
+#hero-brand-concept .hb-actions{display:flex;gap:6px;flex-wrap:wrap}
+#hero-brand-concept .hb-primary{background:var(--hb-cta);color:var(--hb-on);border:0;border-radius:7px;padding:12px 17px;min-height:46px;font-weight:600}
+#hero-brand-concept .hb-secondary{background:transparent;border:1px solid var(--hb-line);border-radius:7px;padding:10px 14px;min-height:44px}
+#hero-brand-concept .hb-row{display:flex;justify-content:space-between;align-items:center;gap:15px;flex-wrap:wrap;padding:22px 0;border-bottom:1px solid var(--hb-line)}
+#hero-brand-concept .hb-row strong{display:block}
+#hero-brand-concept .hb-row small{color:var(--hb-muted)}
+#hero-brand-concept .hb-banner{padding:14px 16px;border:1px solid var(--hb-line);border-radius:8px;background:var(--hb-panel);margin:22px 0}
+#hero-brand-concept .hb-banner strong{display:block}
+#hero-brand-concept .hb-empty-script{border:1px dashed var(--hb-line);border-radius:8px;padding:28px 18px;color:var(--hb-muted);text-align:center}
+#hero-brand-concept .hb-notice{font-size:13px;color:var(--hb-muted);padding:0 24px 16px;background:var(--hb-panel)}
+@media(max-width:540px){#hero-brand-concept .hb-main{padding:22px 16px}#hero-brand-concept .hb-top{padding:12px 16px}#hero-brand-concept .hb-layout{grid-template-columns:1fr;gap:20px}#hero-brand-concept .hb-demo{grid-row:1;display:grid;grid-template-columns:100px 1fr;gap:12px}#hero-brand-concept .hb-demo-title{grid-column:1/-1;margin:0}#hero-brand-concept .hb-preview{aspect-ratio:9/14;padding:8px;gap:7px}#hero-brand-concept .hb-preview strong{font-size:12px}#hero-brand-concept .hb-preview small{font-size:11px}#hero-brand-concept .hb-summary{margin:0;align-content:center;grid-template-columns:40px 1fr;font-size:12px}#hero-brand-concept h2{font-size:23px}#hero-brand-concept .hb-bottom{padding:16px}#hero-brand-concept .hb-actions{width:100%}#hero-brand-concept .hb-primary{flex:1}#hero-brand-concept .hb-notice{padding:0 16px 16px}}
+</style>
+<div id="hero-brand-concept">
+  <div class="hb-concept">แบบร่างทดลอง UX · การบันทึกและไป editor เป็นการจำลอง · ยังไม่มีคลิปตัวอย่างจริงในแบบนี้</div>
+  <div class="hb-top"><span class="hb-logo">HERO</span><div class="hb-nav" aria-label="ทดลองสถานะหน้า"><button type="button" data-view="new" aria-pressed="true">สร้างแบรนด์ใหม่</button><button type="button" data-view="library" aria-pressed="false">มีแบรนด์แล้ว</button></div></div>
+  <section class="hb-main" data-screen="new">
+    <h2>เลือกสไตล์ แล้วเริ่มคลิปแรก</h2><p class="hb-sub">เริ่มด้วยค่าที่เตรียมให้ เปลี่ยนทีหลังได้</p>
+    <div class="hb-layout">
+      <div><h3>สไตล์เริ่มต้น</h3><div class="hb-choices">
+        <label class="hb-option"><input type="radio" name="hb-style" value="life" checked><span class="hb-choice-copy"><strong>ดราม่าชีวิตจริง</strong><small>ภาพสมจริง · อบอุ่น · จังหวะปกติ</small></span><span class="hb-selected" aria-hidden="true">เลือกอยู่</span></label>
+        <label class="hb-option"><input type="radio" name="hb-style" value="finance"><span class="hb-choice-copy"><strong>ธุรกิจ–การเงินชัดเจน</strong><small>ภาพอธิบาย · สะอาด · จังหวะเร็ว</small></span><span class="hb-selected" aria-hidden="true">เลือกอยู่</span></label>
+        <label class="hb-option"><input type="radio" name="hb-style" value="health"><span class="hb-choice-copy"><strong>สุขภาพเข้าใจง่าย</strong><small>ภาพวาดเรียบง่าย · สว่าง · สบายตา</small></span><span class="hb-selected" aria-hidden="true">เลือกอยู่</span></label>
+      </div>
+      <details><summary>ดูสไตล์อื่น</summary><div class="hb-choices">
+        <label class="hb-option"><input type="radio" name="hb-style" value="ghost"><span class="hb-choice-copy"><strong>หนังผีไทย</strong><small>ภาพสมจริง · มืด · หลอน</small></span><span class="hb-selected" aria-hidden="true">เลือกอยู่</span></label>
+        <label class="hb-option"><input type="radio" name="hb-style" value="history"><span class="hb-choice-copy"><strong>ประวัติศาสตร์ย้อนยุค</strong><small>ภาพย้อนยุค · โทนอุ่น</small></span><span class="hb-selected" aria-hidden="true">เลือกอยู่</span></label>
+        <label class="hb-option"><input type="radio" name="hb-style" value="news"><span class="hb-choice-copy"><strong>ข่าวสรุปเร็ว</strong><small>ภาพสมจริง · กระชับ · เร่งด่วน</small></span><span class="hb-selected" aria-hidden="true">เลือกอยู่</span></label>
+        <label class="hb-option"><input type="radio" name="hb-style" value="product"><span class="hb-choice-copy"><strong>โฆษณาสินค้าพรีเมียม</strong><small>ภาพสมจริง · หรู · จังหวะช้า</small></span><span class="hb-selected" aria-hidden="true">เลือกอยู่</span></label>
+      </div></details>
+      <details><summary>ปรับชื่อแบรนด์</summary><div class="hb-details-content"><label for="hb-brand-name">ชื่อแบรนด์</label><input id="hb-brand-name" type="text" value="แบรนด์ของฉัน" maxlength="80" autocomplete="off"></div></details>
+      </div>
+      <div class="hb-demo" aria-live="polite"><div class="hb-demo-title"><span>ตัวอย่างก่อนเลือก</span><span>ดูได้โดยไม่ใช้เครดิต</span></div><div class="hb-preview"><span class="hb-play" aria-hidden="true">▷</span><strong id="hb-preview-name">ดราม่าชีวิตจริง</strong><small>พื้นที่คลิปตัวอย่าง<br>ที่ผ่านการตรวจ</small></div><dl class="hb-summary"><dt>ภาพ</dt><dd id="hb-look">สมจริง โทนอุ่น</dd><dt>เสียง</dt><dd>ค่าเริ่มต้นบัญชี</dd><dt>ซับ</dt><dd id="hb-subtitle">ตัวขาว เงานุ่ม</dd><dt>จังหวะ</dt><dd id="hb-pace">ปกติ</dd></dl></div>
+    </div>
+  </section>
+  <section class="hb-main" data-screen="library" hidden><h2>แบรนด์ของฉัน</h2><p class="hb-sub">เลือกแบรนด์ แล้วสร้างคลิปต่อได้เลย</p><div class="hb-row"><div><strong id="hb-library-name">แบรนด์ของฉัน</strong><small id="hb-library-style">ดราม่าชีวิตจริง · เสียงเริ่มต้นบัญชี</small></div><div class="hb-actions"><button type="button" class="hb-link" id="hb-edit">แก้ไข</button><button type="button" class="hb-primary" id="hb-use-existing">สร้างคลิป</button></div></div></section>
+  <section class="hb-main" data-screen="editor" hidden><h2>คลิปใหม่ของคุณ</h2><p class="hb-sub">นำแบรนด์ที่เลือกมาให้แล้ว</p><div class="hb-banner"><strong id="hb-editor-name">แบรนด์ของฉัน</strong><span id="hb-editor-style">ดราม่าชีวิตจริง</span></div><div class="hb-empty-script">ขั้นถัดไปใน editor: ใส่บทหรือใช้คลิปที่มี</div><button type="button" class="hb-link" id="hb-back">กลับไปดูแบรนด์</button></section>
+  <div class="hb-bottom" id="hb-footer"><div><strong id="hb-summary-name">แบรนด์ของฉัน</strong><p class="hb-sub">ตั้งค่าแบรนด์ไม่ใช้เครดิต</p></div><div class="hb-actions"><button type="button" class="hb-link" id="hb-save">บันทึกไว้ก่อน</button><button type="button" class="hb-primary" id="hb-create">ใช้แบรนด์นี้สร้างคลิป →</button></div></div>
+  <p class="hb-notice" id="hb-status" role="status">ค่าเสียงในตัวอย่างเป็นข้อมูลสมมติสำหรับแสดง flow</p>
+</div>
+<script>
+(()=>{
+ const root=document.getElementById('hero-brand-concept');
+ const get=id=>root.querySelector('#'+id);
+ const styles={life:['ดราม่าชีวิตจริง','สมจริง โทนอุ่น','ตัวขาว เงานุ่ม','ปกติ'],finance:['ธุรกิจ–การเงินชัดเจน','ภาพอธิบาย สีน้ำเงิน','กล่องซับ ตัวหนา','เร็ว'],health:['สุขภาพเข้าใจง่าย','ภาพวาดเรียบง่าย สีเขียว','กล่องมน อ่านง่าย','ปกติ'],ghost:['หนังผีไทย','สมจริง มืดและเย็น','ตัวหนา เงาชัด','ปกติ'],history:['ประวัติศาสตร์ย้อนยุค','ภาพย้อนยุค สีซีเปีย','ซับย้อนยุค','ปกติ'],news:['ข่าวสรุปเร็ว','สมจริง คอนทราสต์สูง','ซับข่าว ตัวหนา','เร็ว'],product:['โฆษณาสินค้าพรีเมียม','สมจริง สีดำ–ทอง','ซับเรียบ บางเบา','ช้า']};
+ let selected='life';
+ function brandName(){return get('hb-brand-name').value.trim()||'แบรนด์ของฉัน';}
+ function sync(){const s=styles[selected];get('hb-preview-name').textContent=s[0];get('hb-look').textContent=s[1];get('hb-subtitle').textContent=s[2];get('hb-pace').textContent=s[3];get('hb-summary-name').textContent=brandName();get('hb-library-name').textContent=brandName();get('hb-library-style').textContent=s[0]+' · เสียงเริ่มต้นบัญชี';get('hb-editor-name').textContent=brandName();get('hb-editor-style').textContent=s[0]+' · '+s[2];}
+ function show(view){root.querySelectorAll('[data-screen]').forEach(el=>el.hidden=el.dataset.screen!==view);root.querySelectorAll('[data-view]').forEach(el=>el.setAttribute('aria-pressed',String(el.dataset.view===view)));get('hb-footer').hidden=view!=='new';sync();}
+ root.querySelectorAll('input[name="hb-style"]').forEach(input=>input.addEventListener('change',()=>{selected=input.value;sync();get('hb-status').textContent='ปรับตัวเลือกในแบบร่างแล้ว ยังไม่มีการสร้างภาพหรือบันทึกข้อมูลจริง';}));
+ root.querySelectorAll('[data-view]').forEach(button=>button.addEventListener('click',()=>show(button.dataset.view)));
+ get('hb-brand-name').addEventListener('input',sync);
+ get('hb-save').addEventListener('click',()=>{show('library');get('hb-status').textContent='จำลอง: บันทึกแล้ว ครั้งต่อไปเลือกแบรนด์และสร้างคลิปได้ทันที';});
+ function editor(){show('editor');get('hb-status').textContent='จำลอง: ส่งแบรนด์ไป editor โดยไม่เริ่ม render หรือคิดเครดิต';}
+ get('hb-create').addEventListener('click',editor);get('hb-use-existing').addEventListener('click',editor);get('hb-edit').addEventListener('click',()=>show('new'));get('hb-back').addEventListener('click',()=>show('library'));sync();
+})();
+</script>

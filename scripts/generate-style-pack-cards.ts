@@ -1,8 +1,8 @@
 /**
  * Task 10 (Brands wave 1 — Style Packs): generate one 720x1280 card sample
- * image per ACTIVE Style Pack (`src/lib/style-pack-catalog.ts`), saved as
- * `public/style-packs/<id>.jpg`, so the `/brands` picker's real `<img>` loads
- * instead of falling back to the palette gradient (Task 3).
+ * image per ACTIVE Style Pack (`src/lib/style-pack-catalog.ts`), saved in
+ * a review directory, for inspection before versioned public promotion
+ * with explicit unavailable states until a sample passes review.
  *
  * Safe default: `--dry-run` (or no flags) compiles and prints the 7 prompts
  * without any network call. Paid execution requires BOTH `--execute-paid`
@@ -34,7 +34,7 @@ dotenv.config({ path: process.env.STYLE_PACK_CARDS_ENV || ".env", quiet: true })
  * no readable text, no logos — the treatment compiler adds the look. */
 const FIXED_SCENES: Record<StylePackId & string, string> = {
   "thai-ghost": "an old wooden Thai house at night, one lit window, thin fog, moonlight",
-  "thai-history": "a weathered old Thai temple wall with a faded mural of gilded lotus flowers and kanok flame patterns, cracked aged plaster, late afternoon light, no figures, no people, no deities",
+  "thai-history": "a close-up of weathered terracotta bricks and gilded lotus-flower tiles on an old Thai temple wall, cracked aged plaster in late afternoon light",
   "life-drama": "a quiet Thai street-side kitchen at dusk, one warm lamp, an empty chair, natural light",
   "finance-clear": "a clean modern desk with a laptop, a notebook and a coffee cup, bright daylight, minimal",
   "news-fast": "a city skyline at night with light trails on a highway, high contrast",
@@ -54,24 +54,23 @@ const CONTENT_DOMAINS: Record<StylePackId & string, string> = {
   "premium-product": "premium product lifestyle",
 } as Record<StylePackId & string, string>;
 
-/** Round-1 generation showed the compiler will still add a human, statue or
- * pictogram figure to fill a scene unless the beat says so more than once:
- * `finance-clear` got a seated pictogram person, `health-simple` a headless
- * torso reaching for the glass, `thai-history` a kneeling silhouette in front
- * of the mural. This round-2 wording repeats "no people" across subject,
- * action AND emphasis instead of once, without touching the fixed scene text
- * itself (task brief: scene descriptions are verbatim). */
+/** Describe the positive composition once. Repeated negations naming people
+ * and statues contaminated the September review batch with those subjects. */
 function sceneVisualBeat(pack: StylePack): VisualBeat {
   const scene = FIXED_SCENES[pack.id];
   if (!scene) throw new Error(`No fixed scene defined for pack ${pack.id}`);
-  const noPeople = "completely empty of any person, human figure, human silhouette, statue of a person or human-shaped icon";
   return {
     phase: "hook",
-    subject: `${scene} — the frame is ${noPeople}`,
-    action: `nothing moves and no one is present; the scene is ${noPeople}, showing only the stated inanimate objects and architecture`,
-    setting: scene,
+    subject: scene,
+    action: "still-life study of the stated objects and architecture",
+    setting: "a tightly composed environmental detail study",
     emotion: pack.personality,
-    emphasis: `${scene}, with the frame kept ${noPeople}`,
+    hardSceneFacts: {
+      entityTypes: ["architectural and still-life objects"], ages: [], genders: [],
+      actions: ["static environmental detail"], locationTypes: [scene],
+      timeOfDay: null, historicalPeriod: null, count: null, essentialObjects: [scene],
+    },
+    emphasis: "the stated objects fill the composition; material, light and color tell the story",
     safetyBoundary: "none",
   };
 }
@@ -117,7 +116,7 @@ const paidAcknowledged = process.env.ALLOW_PAID_STYLE_PACK_CARDS === "1";
 
 const outputRoot = resolve(process.env.STYLE_PACK_CARDS_OUTPUT || "artifacts/style-pack-cards");
 const manifestPath = join(outputRoot, "manifest.json");
-const publicDir = resolve("public", "style-packs");
+const publicDir = resolve(process.env.STYLE_PACK_CARDS_PUBLIC_OUTPUT || join(outputRoot, "review"));
 const MAX_BYTES = 120 * 1024;
 const QUALITY_LADDER = [90, 85, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30];
 
@@ -139,7 +138,7 @@ const compiledEntries: Entry[] = allPacks.map((pack) => {
     contentDomain: CONTENT_DOMAINS[pack.id] ?? pack.id,
     treatmentPin,
     visualBeat: sceneVisualBeat(pack),
-    brandVisualLanguage: null,
+    brandVisualLanguage: { palette: [...pack.palette], personality: pack.personality, visualNotes: "" },
   });
   return {
     id: pack.id,

@@ -3,8 +3,7 @@
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-/** The default /brands surface asks for one thing in words: the brand name.
- * Everything else a creator could answer badly lives behind ตั้งค่าเพิ่มเติม. */
+/** Optional rename. The setup flow supplies a valid name before this is opened. */
 export function BrandBasicsForm({
   name,
   onNameChange,

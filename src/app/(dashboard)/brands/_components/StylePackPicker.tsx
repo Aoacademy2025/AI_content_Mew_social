@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import { stylePackSample } from "@/lib/style-pack-samples";
 import { SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { StylePackId } from "@/lib/style-pack-catalog";
@@ -9,16 +11,15 @@ import type { StylePackId } from "@/lib/style-pack-catalog";
  * exist; they move under "กำหนดเอง" (the last card here, which selects
  * `null`) instead of disappearing.
  *
- * Sample images do not exist yet (`/style-packs/*.jpg`) — `onError` swaps in
- * a three-stop gradient built from the pack's own palette so the card still
- * reads as a deliberate look, not a broken image. */
+ * Samples have versioned provenance; unavailable or failed images are
+ * explicitly labeled rather than replaced with decorative gradients. */
 export function StylePackPicker({
   packs,
   value,
   onChange,
   disabled,
   title = "สไตล์ประจำแบรนด์",
-  description = "ทุกคลิปของแบรนด์นี้จะใช้สไตล์เดียวกัน เปลี่ยนทีหลังได้",
+  description = "ค่าเริ่มต้นสำหรับคลิปใหม่ เปลี่ยนรายคลิปได้ ภาพประกอบอาจต่างจากคลิปจริง",
 }: {
   packs: Array<{
     id: StylePackId;
@@ -35,6 +36,7 @@ export function StylePackPicker({
   title?: string;
   description?: string;
 }) {
+  const [failedImages, setFailedImages] = useState<string[]>([]);
   return (
     <div>
       <p className="text-sm font-semibold text-foreground">{title}</p>
@@ -46,6 +48,8 @@ export function StylePackPicker({
       >
         {packs.map((pack) => {
           const selected = value === pack.id;
+          const sample = stylePackSample(pack.id);
+          const showImage = sample.imageUrl && !failedImages.includes(pack.id);
           return (
             <button
               key={pack.id}
@@ -69,20 +73,13 @@ export function StylePackPicker({
                     onError gradient fallback needs a plain <img>; next/image
                     cannot swap its own container's background from a load
                     failure the way this does. */}
-                <img
-                  src={pack.sampleImage}
-                  alt={`ตัวอย่างสไตล์ ${pack.thaiLabel}`}
+                {showImage ? <img
+                  src={sample.imageUrl!}
+                  alt={`ภาพประกอบแนวทาง ${pack.thaiLabel}`}
                   className="absolute inset-0 h-full w-full object-cover"
-                  onError={(event) => {
-                    const image = event.currentTarget;
-                    image.style.display = "none";
-                    const container = image.parentElement;
-                    if (container) {
-                      container.style.background =
-                        `linear-gradient(155deg, ${pack.palette[0]} 0%, ${pack.palette[1]} 55%, ${pack.palette[2]} 100%)`;
-                    }
-                  }}
-                />
+                  onError={() => setFailedImages((current) => [...current, pack.id])}
+                /> : <div className="flex h-full items-center justify-center p-4 pb-16 text-center text-xs leading-5 text-muted-foreground">ภาพตัวอย่างยังไม่พร้อม</div>}
+
               </div>
               <div
                 className={cn(

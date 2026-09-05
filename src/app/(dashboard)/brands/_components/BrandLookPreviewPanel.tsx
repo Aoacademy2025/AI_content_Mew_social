@@ -31,6 +31,7 @@ export function BrandLookPreviewPanel({
   disabled,
   onPreview,
   onReroll,
+  stale = false,
 }: {
   preview: PreviewBatch | null;
   previewGenerationCount: number | null;
@@ -41,6 +42,7 @@ export function BrandLookPreviewPanel({
   disabled: boolean;
   onPreview: () => void;
   onReroll: (itemId: string) => void;
+  stale?: boolean;
 }) {
   const imagesToGenerate = previewGenerationCount ?? 0;
   const imagesToReuse = 3 - imagesToGenerate;
@@ -88,7 +90,7 @@ export function BrandLookPreviewPanel({
         <div className="min-w-0">
           <p className="flex items-center gap-2 text-sm font-semibold text-foreground">
             <Eye className="h-4 w-4 text-violet-500" />
-            ทดลองฉากเปิด · ฉากอธิบาย · ฉากปิด
+            ทดลองสไตล์กับ 3 แบบฉาก
           </p>
           {imageAccess.canUse && (
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
@@ -130,6 +132,7 @@ export function BrandLookPreviewPanel({
 
       {preview && (
         <div className="mt-5 border-t border-border pt-4">
+          {stale && <p role="status" className="mb-3 rounded-lg border border-amber-500/40 p-3 text-sm">ตัวอย่างจากการตั้งค่าก่อนหน้า · กดทดลองเพื่อดูสไตล์ปัจจุบัน การลองภาพเดิมใหม่ยังใช้การตั้งค่าเดิม</p>}
           <div className="mb-3 flex items-center justify-between gap-3">
             <p className="text-sm font-semibold text-foreground">ภาพทดลองแนวประจำแบรนด์</p>
             <span className="text-[11px] text-muted-foreground">

@@ -16,11 +16,12 @@ import {
   type BrandVisualLanguage,
   type VisualFormatId,
 } from "@/lib/brand-visual-system";
-import { currentBrandVoiceDefaults } from "@/lib/brand-profile-seed";
+import { createBlankBrandProfileSeed, currentBrandVoiceDefaults } from "@/lib/brand-profile-seed";
 import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { TREATMENT_PRESETS } from "@/lib/brand-treatment-catalog";
 import { visualFormatPreviewUrl } from "@/lib/brand-visual-format-preview";
+import { stylePackSample } from "@/lib/style-pack-samples";
 import { activeStylePacks } from "@/lib/style-pack-catalog";
 
 function json(value: string | null | undefined) {
@@ -143,7 +144,7 @@ export async function GET() {
         tagline: pack.tagline,
         palette: pack.palette,
         visualFormatId: pack.visualFormatId,
-        sampleImage: `/style-packs/${pack.id}.jpg`,
+        sampleImage: stylePackSample(pack.id).imageUrl ?? "",
       })),
       defaults: {
         // This seed is copied verbatim into a create request by
@@ -152,8 +153,8 @@ export async function GET() {
         // hand the creator a draft their own first save rejects with a 400.
         script: {
           styleId: writingStyle?.id ?? null,
-          tone: writingStyle?.instructionPrompt.slice(0, BRAND_PROFILE_CAPS.shortFieldChars)
-            || "ชัดเจน เป็นกันเอง และมีพลัง",
+          tone: writingStyle?.instructionPrompt.trim().slice(0, BRAND_PROFILE_CAPS.shortFieldChars)
+            || createBlankBrandProfileSeed().script.tone,
           analysisNotes: writingStyle?.instructionPrompt.slice(0, BRAND_PROFILE_CAPS.longFieldChars) ?? null,
           sampleText: writingStyle?.sampleText?.slice(0, BRAND_PROFILE_CAPS.longFieldChars) ?? null,
         },
