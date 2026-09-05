@@ -6,13 +6,13 @@ import { parseHeroVoiceCanaryManifest } from "@/lib/hero-voice-canary-manifest";
 import { verifyHeroVoiceCanaryLedger } from "@/lib/hero-voice-canary-ledger.server";
 import { validatePcm16MonoWav } from "@/lib/hero-voice-clone-runners";
 import {
+  heroVoiceCanaryRunAcceptsDirectOutput,
   persistHeroVoiceCanaryRunOutputWithinSerializedMutation,
   runHeroVoiceCanarySerializedMutation,
 } from "@/lib/hero-voice-deletion-coordinator.server";
 import { artifactSourcePath, heroVoiceCanaryStorageContext, readPrivateFileNoFollow } from "@/lib/hero-voice-canary-storage.server";
 
 type Scope = Readonly<{ runId: string; ownerHmac: string; slotId: string }>;
-const TERMINAL = new Set(["aborted_no_go", "completed_no_go", "reviewable", "review_passed_pending_mew_approval"]);
 
 function invalid(): never { throw new Error("CANARY_RUN_OUTPUT_INVALID"); }
 
@@ -64,7 +64,7 @@ export async function writeHeroVoiceCanaryRunOutput(input: Scope & {
       if (!stored.equals(audio)) invalid();
       return metadata;
     }
-    if (run.state !== "collecting" || TERMINAL.has(run.runState) || run.inFlightSlotId !== input.slotId) invalid();
+    if (!heroVoiceCanaryRunAcceptsDirectOutput(run, input.slotId)) invalid();
     await persistHeroVoiceCanaryRunOutputWithinSerializedMutation({ ...input, audio, ...metadata });
     return metadata;
   });

@@ -270,7 +270,7 @@ POST /api/ai-studio/voice-clone-canary/runs/[runId]/close
 
 The score body is exactly `{choice:"A"|"B"|"tie", flagsBySide:{A:string[],B:string[]}}`, with flag values restricted to `wrong_identity`, `missing_text`, `severe_distortion`, and `privacy_anomaly`. Lock requires exactly 18 complete condition-matched pair records and verifies the exact ciphertext-envelope bytes/digest against the commitment at the recorded remote Git object. It writes an HMAC over JCS canonical `{version,experimentId,slotManifestSha256,revealCiphertextSha256,scores}` and makes scores immutable. Reveal is allowed only from `locked`: verify the recorded Git object/commitment and locked HMAC, reserialize and verify the envelope digest, verify AAD hash, decrypt, then validate the exact condition-matched bijection/schema against frozen slots/audio hashes. No new commitment may be pushed after review enters `reviewing`; tests compare the recorded Git object ID. State transitions are one-way: `collecting → reviewing → locked → revealed → closed`.
 
-Authenticated owner `close` requires `If-Match` and is allowed only from `revealed`; it triggers the crash-recoverable review-artifact quarantine/delete protocol and emits a sanitized receipt. An account-hard-delete system call may force-close owner-HMAC-matched runs from any state using the same protocol. Before lock, the API/DOM/source maps/network payloads/filenames/order/timing-visible metadata contain no endpoint, arm, digest, profile, provider job ID, or reveal information. Another otherwise eligible user receives owner-scoped `404`.
+Authenticated owner `close` requires `If-Match` and normally follows `revealed`; it triggers the crash-recoverable review-artifact quarantine/delete protocol and emits a sanitized receipt. The approved direct-output lifecycle continuation also permits `collecting → closed` for a never-dispatched `planned` run, or a terminal `aborted_no_go`/`completed_no_go` run with confirmed parking. These early closes require no in-flight slot or active application job, never fabricate listening aggregates, and retain the same sanitized `ReviewRun` row. They do not permit skipping lock/reveal on an open blind review (`preparing`, `reviewing`, or `locked`); an active or unconfirmed-park run cannot use this path. An account-hard-delete system call may force-close owner-HMAC-matched runs from any state using the same protocol. Before lock, the API/DOM/source maps/network payloads/filenames/order/timing-visible metadata contain no endpoint, arm, digest, profile, provider job ID, or reveal information. Another otherwise eligible user receives owner-scoped `404`.
 
 ### Privacy inventory, teardown, and deletion recovery
 
@@ -498,3 +498,13 @@ hash-domain evidence, evaluator input transfer, and parent-owned absolute
 cancellation/parking deadlines remain required. See the updated
 [two-axis review and exact remaining seams](reports/2026-09-05-hero-voice-clone-continuation-review.md).
 No paid run, human-audio submission, push, merge, or deployment was performed.
+
+Later 2026-09-05 approval, implementation `5991c3c6`: the direct-output lifecycle
+seam above is now implemented. All 26 direct slots must deliver bounded WAV
+bytes over IPC; the parent validates, journals, and registers the file before
+recording completion. Registry files and declared intermediates participate in
+owner-close/account-delete recovery, separately from the final blind pack.
+The schema migration only adds `CanaryRunOutput`; no live database was changed.
+Actual candidate observations, evaluator-input transfer, objective hash-domain
+reconciliation, absolute parking controls, and the real adapter/native runtime
+remain incomplete. The existing hard gates still prohibit paid/private execution.

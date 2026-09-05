@@ -1082,6 +1082,16 @@ async function finishRunOutputCreation(transactionId: string): Promise<void> {
   });
 }
 
+/** Shared creation predicate, rechecked inside Transaction B. Review/terminal
+ * phases can read immutable output but cannot create another direct artifact. */
+export function heroVoiceCanaryRunAcceptsDirectOutput(
+  run: { state: string; runState: string; inFlightSlotId: string | null },
+  slotId: string,
+): boolean {
+  return run.state === "collecting" && ["running_ablation", "running_baseline"].includes(run.runState)
+    && run.inFlightSlotId === slotId;
+}
+
 /** Internal parent persistence boundary; caller holds the coordinator lock and
  * has verified the signed frozen manifest/provider-accepted ledger authority. */
 export async function persistHeroVoiceCanaryRunOutputWithinSerializedMutation(input: {
@@ -1113,7 +1123,7 @@ export async function persistHeroVoiceCanaryRunOutputWithinSerializedMutation(in
     const run = await tx.reviewRun.findFirst({
       where: { id: input.runId, ownerHmac: input.ownerHmac, state: "collecting", inFlightSlotId: input.slotId },
     });
-    if (!run || ["aborted_no_go", "completed_no_go", "reviewable", "review_passed_pending_mew_approval"].includes(run.runState)) {
+    if (!run || !heroVoiceCanaryRunAcceptsDirectOutput(run, input.slotId)) {
       throw new Error("run_output_authority_changed");
     }
     await tx.canaryRunOutput.create({ data: {

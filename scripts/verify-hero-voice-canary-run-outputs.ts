@@ -12,6 +12,7 @@ import { createHeroVoiceCanaryRun, commitHeroVoiceCanaryDispatchIntent, recordHe
 import { prepareHeroVoiceCanaryWireRequest } from "../src/lib/hero-voice-canary-wire";
 import {
   initializeHeroVoiceDeletionCoordinator, computeHeroVoiceCanaryOwnerHmac,
+  heroVoiceCanaryRunAcceptsDirectOutput,
   resetHeroVoiceDeletionCoordinatorForTests, closeHeroVoiceCanaryReviewRun,
   hardDeleteHeroVoiceCanaryAccount, setHeroVoiceDeletionCrashObserverForTests,
   HeroVoiceDeletionSimulatedCrash, type HeroVoiceDeletionCrashStep,
@@ -20,6 +21,12 @@ import { setHeroVoiceCanaryFileOperationObserverForTests } from "../src/lib/hero
 
 assert.equal(typeof writeHeroVoiceCanaryRunOutput, "function");
 assert.equal(typeof readHeroVoiceCanaryRunOutput, "function");
+for (const runState of ["planned", "running_candidate", "aborted_no_go", "completed_no_go", "reviewable", "review_passed_pending_mew_approval", "unknown"]) {
+  assert.equal(heroVoiceCanaryRunAcceptsDirectOutput({ state: "collecting", runState, inFlightSlotId: "synthetic-slot" }, "synthetic-slot"), false);
+}
+for (const runState of ["running_ablation", "running_baseline"]) {
+  assert.equal(heroVoiceCanaryRunAcceptsDirectOutput({ state: "collecting", runState, inFlightSlotId: "synthetic-slot" }, "synthetic-slot"), true);
+}
 
 function wav(fill = 1) {
   const bytes = Buffer.alloc(92, fill);
