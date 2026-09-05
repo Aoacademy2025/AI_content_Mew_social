@@ -42,7 +42,7 @@ const bCards = cardsByWordCount(boundaryWords, 10, boundaryFullText);
 assert(bCards.length === 3, "boundary flush splits 7 words into 3 cards at the . and \\n boundaries, ignoring the n=10 word cap");
 assert(!bCards.some((c) => c.text.includes("\n")), "FIX A: no card text contains a raw newline");
 assert(!bCards.some((c) => /  /.test(c.text)), "FIX A: no card text contains an interior double-space (collapsed to single)");
-assert(bCards[0].text === "ดู คลิปนี้", "FIX A: the group-interior double space (non-boundary) collapses to a single space");
+assert(bCards[0].text === "ดู คลิปนี้.", "FIX A: the group-interior double space (non-boundary) collapses to a single space");
 // FIX B: the words straddling each boundary must land in DIFFERENT cards.
 const cardIndexOfWord = (w: string) => bCards.findIndex((c) => c.text.includes(w));
 assert(cardIndexOfWord("นี้") !== cardIndexOfWord("ชอบ"), "FIX B: words either side of the '.' sentence boundary are in different cards");

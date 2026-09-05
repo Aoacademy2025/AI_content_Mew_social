@@ -150,7 +150,7 @@ check("the old hardcoded AutoMix แนะนำ range copy is gone",
   !step2.includes("~6–9 เครดิต/คลิป"));
 
 check("admin Hero card description carries the same total-price info as the customer card",
-  /o\.value === "kie-image"[\s\S]{0,200}imageFundingLine\(p, heroDefaultN\)/.test(step2));
+  /o\.value === "kie-image"[\s\S]{0,200}heroCardFundingLine\(p, displaySec\)/.test(step2));
 
 // ── 5. Static checks — RenderReceiptDialog.tsx ───────────────────────────────
 const receiptDialogPath = "src/app/(dashboard)/video-editor/_v2/RenderReceiptDialog.tsx";

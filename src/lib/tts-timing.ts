@@ -870,7 +870,12 @@ export function mapCardTextsToRangesTolerant(
 // neighbor, so total coverage — and the iron rule — are preserved exactly.
 export function snapCardsToWordBoundaries(cards: ScriptCard[], fullText: string): ScriptCard[] {
   if (cards.length === 0) return cards;
-  const bounds = wordBoundaries(fullText);
+  // A repetition mark modifies the preceding word. ICU exposes a boundary
+  // before it (and before its whitespace), but neither is a readable card edge.
+  // Restrict caption edges only; the narration/word timing stays untouched.
+  const bounds = wordBoundaries(fullText).filter((boundary) => (
+    !/^\s*ๆ/u.test(fullText.slice(boundary))
+  ));
   if (bounds.length === 0) return cards;
 
   const startPos = cards[0].startChar;

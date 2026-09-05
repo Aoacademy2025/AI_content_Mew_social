@@ -481,16 +481,23 @@ export function renderSubtitle(
     }
 
     if (textEffect === "typewriter") {
-      const totalChars = sourceText.length;
-      // frame < 0 = resting/static preview → show full text (no reveal animation).
-      const charsToShow = frame < 0
-        ? totalChars
-        : Math.max(0, Math.min(totalChars, Math.floor((frame / Math.max(1, captionDurFrames)) * totalChars) + 1));
+      // Reveal a complete grapheme: UTF-16 slicing can separate Thai tone marks
+      // from their base or cut a surrogate/ZWJ emoji between differently colored spans.
+      // Without Segmenter, show the whole caption rather than corrupting its text.
+      const segmenter = getSegmenter("th", "grapheme");
+      const graphemes = segmenter ? Array.from(segmenter.segment(sourceText)) : [];
+      const count = frame < 0
+        ? graphemes.length
+        : Math.max(0, Math.min(graphemes.length, Math.floor((frame / Math.max(1, captionDurFrames)) * graphemes.length) + 1));
+      const lastVisible = graphemes[count - 1];
+      const charsToShow = !segmenter || frame < 0
+        ? sourceText.length
+        : lastVisible ? lastVisible.index + lastVisible.segment.length : 0;
       const stroke = "-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 2px 8px rgba(0,0,0,0.95)";
       const inner = (
         <span style={withDecorations({ ...base, display: "inline", textShadow: stroke })}>
           <span style={{ color }}>{protectSubtitleWordBreaks(sourceText.slice(0, charsToShow))}</span>
-          <span style={{ color: "transparent" }}>{protectSubtitleWordBreaks(sourceText.slice(charsToShow))}</span>
+          <span style={{ visibility: "hidden" }}>{protectSubtitleWordBreaks(sourceText.slice(charsToShow))}</span>
         </span>
       );
       if (preset === "box") return <div style={{ display: "inline-block", background: "rgba(0,0,0,0.65)", padding: "6px 20px 8px", borderRadius: 4 }}>{inner}</div>;

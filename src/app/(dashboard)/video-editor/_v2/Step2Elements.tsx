@@ -29,6 +29,7 @@ import {
   disclosedAutoMixAiImageCount,
   heroDefaultTargetClipCount,
   heroHoldLengthSec,
+  heroImageCardCount,
 } from "./estimate";
 import { minutesFromSeconds } from "@/lib/minute-round";
 import {
@@ -100,6 +101,19 @@ function heroDefaultImageCount(p: V2Project, durationSec = 0): number {
   return p.mode === "upload" && durationSec > 0
     ? estimatedCutawayPieceCount(defaultCount, durationSec * 1_000)
     : defaultCount;
+}
+
+function heroCardFundingLine(p: V2Project, durationSec: number): string {
+  const count = heroImageCardCount({
+    durationSec,
+    targetClipCount: p.targetClipCount,
+    selected: p.brollSource === "kie-image",
+    countTouched: p.heroCountTouched,
+    starterRemaining: starterRemaining(p),
+    upload: p.mode === "upload",
+  });
+  const automatic = p.targetClipCount <= 0 && (p.brollSource === "kie-image" || p.heroCountTouched);
+  return `${imageFundingLine(p, count, automatic)} · ดูยอดหลังหักภาพที่ใช้ซ้ำก่อนสร้าง`;
 }
 
 function durationSafeTargetClipCount(p: V2Project, durationSec: number, requested: number): number {
@@ -342,10 +356,9 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
             {BROLL_OPTIONS.map((o) => {
               // Beta = admin เสมอ · paid (managed-kie) ปลดล็อกภาพ AI/AutoMix · วิดีโอ AI (comingSoon) ยังไม่เปิดให้ใคร
               const locked = o.comingSoon || (o.beta && !p.isAdmin && !p.isPaidManagedKie);
-              // Admin card parity (Task 5 item 5): same total-price info as the customer
-              // card, using the same fresh-selection default (8 รูป) the click below applies.
+              // Keep the card in sync with the active count, including automatic mode.
               const desc = o.value === "kie-image"
-                ? `${o.desc} · ${imageFundingLine(p, heroDefaultN)}`
+                ? `${o.desc} · ${heroCardFundingLine(p, displaySec)}`
                 : o.desc;
               return (
                 <button
@@ -1113,15 +1126,13 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
   const hasAiRenderAccess = p.heroAiImageEligible || p.hasAdmittedVisualPin;
   const heroImageUnlocked = hasAiRenderAccess && hasFunding;
   const autoMixUnlocked = hasAiRenderAccess && hasFunding;
-  const heroDefaultN = heroDefaultImageCount(p, durationSec);
   const options: { value: "stock" | "kie-image" | "automix"; title: string; desc: string; icon: React.ReactNode }[] = [
     { value: "stock", title: "สต็อกฟรี", desc: "0 เครดิต AI · Pexels/Pixabay", icon: <Film size={16} strokeWidth={1.6} /> },
     {
       value: "kie-image",
       title: "Hero AI Image",
-      // Total-price disclosure (Task 5 item 3): the fresh-selection default (8 รูป)
-      // this card applies on click, priced out — never a bare per-image number.
-      desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · ${imageFundingLine(p, heroDefaultN)}`,
+      // Quote the count this choice will apply, not a fixed eight-image example.
+      desc: `ภาพ AI ล้วน · ไม่ใช้สต็อก · ${heroCardFundingLine(p, durationSec)}`,
       icon: <ImagePlus size={16} strokeWidth={1.6} />,
     },
     { value: "automix", title: "AutoMix", desc: "วิดีโอสต็อก + ภาพสต็อก + AI", icon: <Shuffle size={16} strokeWidth={1.6} /> },
