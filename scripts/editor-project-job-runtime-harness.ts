@@ -222,7 +222,7 @@ const jobsRouteSource = readFileSync(jobsRoutePath, "utf8");
 // useV2Job computes its `maxAiImages` disclose-then-charge ceiling from the REAL
 // ./estimate module rather than a stub — the number it sends the server must match
 // the number the Render Receipt already showed the user (see useV2Job.ts comment on
-// `submit`). estimate.ts and its two dependencies are pure (no DOM/network/React), so
+// `submit`). estimate.ts and its dependencies are pure (no DOM/network/React), so
 // they're loaded and transpiled the same way jobSource/shellSource are above, instead
 // of hand-rolling a mock that could drift from the real disclose math.
 function compilePlainModule(source: string, fileName: string): string {
@@ -275,6 +275,7 @@ const estimateModule = loadPlainModule(
   (specifier) => {
     if (specifier === "../_lib/preprocess-script") return preprocessScriptModule;
     if (specifier === "@/lib/automix-plan") return automixPlanModule;
+    if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     throw new Error(`unhandled estimate module import: ${specifier}`);
   },
 );
@@ -2076,6 +2077,7 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
     if (specifier === "@/lib/kie-image-guards") return { resolveKieImageAccess: () => ({ kiePaidUnlocked: false }) };
     if (specifier === "@/lib/automix-weights") return { parseAutoMixWeights: () => null };
     if (specifier === "@/lib/automix-plan") return automixPlanModule;
+    if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     if (specifier === "@/lib/broll-preferences") {
       return { normalizeBrollRegionPreference: () => null, normalizeBrollVisualStyle: () => null };
     }
@@ -2309,6 +2311,7 @@ async function runExactReplayRouteScenario(input: {
     if (specifier === "@/lib/kie-image-guards") return { resolveKieImageAccess: () => ({ kiePaidUnlocked: false }) };
     if (specifier === "@/lib/automix-weights") return { parseAutoMixWeights: () => null };
     if (specifier === "@/lib/automix-plan") return automixPlanModule;
+    if (specifier === "@/lib/cutaway-plan") return cutawayPlanModule;
     if (specifier === "@/lib/broll-preferences") {
       return { normalizeBrollRegionPreference: () => null, normalizeBrollVisualStyle: () => null };
     }
