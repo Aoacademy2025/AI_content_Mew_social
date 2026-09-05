@@ -77,7 +77,8 @@ export interface TranscriptWord {
 
 const THAI_COMBINING_MARK_AT_START = /^[\u0E31\u0E34-\u0E3A\u0E47-\u0E4E]/u;
 const PUNCTUATION_OR_SYMBOLS_ONLY = /^[\p{P}\p{S}\s]+$/u;
-const MIN_CARD_MS = 240;
+export const SUBTITLE_MIN_CARD_MS = 240;
+const MIN_CARD_MS = SUBTITLE_MIN_CARD_MS;
 const AUDIO_END_TOLERANCE_MS = 250;
 
 function canonicalVisibleText(value: string): string {
