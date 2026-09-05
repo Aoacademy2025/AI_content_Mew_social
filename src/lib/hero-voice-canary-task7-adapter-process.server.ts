@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { heroVoiceCanaryJcsBytes, parseHeroVoiceCanaryStrictJson } from "@/lib/hero-voice-canary-canonical";
 import type {
-  HeroVoiceCanaryAdapterResult,
+  HeroVoiceCanaryDirectAdapterResult,
   HeroVoiceCanaryApplyAdapter,
   HeroVoiceCanaryBatch,
 } from "@/lib/hero-voice-canary-runner.server";
@@ -14,7 +14,9 @@ import type { HeroVoiceCanarySlot } from "@/lib/hero-voice-canary-manifest";
 const FIXED_TASK7_MODULE = "scripts/hero-voice-clone-canary-task7-adapter.ts";
 const FIXED_CHILD = "scripts/hero-voice-clone-canary-adapter-child.ts";
 const SAFE_PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,159}$/u;
-const MAX_REPLY_BYTES = 1_048_576;
+// 7 MB WAV as base64 plus bounded terminal metadata. This does not allow a
+// batch of files in one frame; evaluation transfer needs its own bounded seam.
+const MAX_REPLY_BYTES = 10_000_000;
 const MAX_REQUEST_BYTES = 16_777_216;
 const RPC_TIMEOUT_MS: Readonly<Record<string, number>> = {
   dispatchDirect: 30_000,
@@ -82,7 +84,8 @@ export class HeroVoiceCanaryTask7AdapterProcess implements HeroVoiceCanaryApplyA
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly pending = new Map<string, Pending>();
   private closed = false;
-  private replyBytes: Buffer = Buffer.alloc(0);
+  private replyChunks: Buffer[] = [];
+  private replySize = 0;
   private readonly timeoutMsForTests?: number;
 
   constructor(input?: { modulePath?: string; testOnly?: boolean; timeoutMsForTests?: number }) {
@@ -121,15 +124,17 @@ export class HeroVoiceCanaryTask7AdapterProcess implements HeroVoiceCanaryApplyA
   private receiveBytes(bytes: Buffer): void {
     if (this.closed) return;
     // Bound buffering before parsing, including a peer that never emits LF.
-    if (this.replyBytes.length + bytes.length > MAX_REPLY_BYTES) return this.failAll();
-    this.replyBytes = Buffer.concat([this.replyBytes, bytes]);
-    const newline = this.replyBytes.indexOf(10);
+    if (this.replySize + bytes.length > MAX_REPLY_BYTES) return this.failAll();
+    const newline = bytes.indexOf(10);
+    this.replySize += bytes.length;
+    this.replyChunks.push(newline < 0 ? bytes : bytes.subarray(0, newline));
     if (newline < 0) return;
     // The protocol is strictly one-in-flight: trailing bytes cannot be a reply
     // to a request that the parent has not sent yet.
-    if (newline !== this.replyBytes.length - 1) return this.failAll();
-    const line = this.replyBytes.subarray(0, newline);
-    this.replyBytes = Buffer.alloc(0);
+    if (newline !== bytes.length - 1) return this.failAll();
+    const line = Buffer.concat(this.replyChunks, this.replySize - 1);
+    this.replyChunks = [];
+    this.replySize = 0;
     this.receive(line);
   }
 
@@ -151,7 +156,8 @@ export class HeroVoiceCanaryTask7AdapterProcess implements HeroVoiceCanaryApplyA
     if (this.closed) return;
     this.closed = true;
     this.child.kill("SIGKILL");
-    this.replyBytes = Buffer.alloc(0);
+    this.replyChunks = [];
+    this.replySize = 0;
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(new Error(code));
@@ -209,8 +215,8 @@ export class HeroVoiceCanaryTask7AdapterProcess implements HeroVoiceCanaryApplyA
     return { disposition: "application_accepted" as const, applicationJobId: value.applicationJobId };
   }
 
-  async awaitDirectTerminal(slot: HeroVoiceCanarySlot, providerJobId: string): Promise<HeroVoiceCanaryAdapterResult> {
-    return await this.call("awaitDirectTerminal", { slot, providerJobId }) as HeroVoiceCanaryAdapterResult;
+  async awaitDirectTerminal(slot: HeroVoiceCanarySlot, providerJobId: string): Promise<HeroVoiceCanaryDirectAdapterResult> {
+    return await this.call("awaitDirectTerminal", { slot, providerJobId }) as HeroVoiceCanaryDirectAdapterResult;
   }
 
   async evaluateBatch(kind: "ablation-8" | "final-36", slots: readonly HeroVoiceCanarySlot[]): Promise<HeroVoiceCanaryBatch> {

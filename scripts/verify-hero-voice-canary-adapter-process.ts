@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { SignedHeroVoiceCanarySubmitCapability } from "../src/lib/hero-voice-canary-admission.server";
 import type { HeroVoiceCanarySlot } from "../src/lib/hero-voice-canary-manifest";
 import { heroVoiceCanaryJcsBytes } from "../src/lib/hero-voice-canary-canonical";
+import { readHeroVoiceCanaryDirectAudio } from "../src/lib/hero-voice-canary-direct-audio";
 import { HeroVoiceCanaryTask7AdapterProcess } from "../src/lib/hero-voice-canary-task7-adapter-process.server";
 
 const slot = (slotId: string) => ({ slotId }) as HeroVoiceCanarySlot;
@@ -40,6 +41,7 @@ async function main() {
     assert.deepEqual(await adapter.submitCandidate(slot("unknown"), signed), {
       disposition: "transport_unknown",
     });
+    assert.equal(readHeroVoiceCanaryDirectAudio(await adapter.awaitDirectTerminal(slot("maximum-audio"), "synthetic-provider")).length, 7_000_000);
     await assert.rejects(adapter.dispatchDirect(slot("malformed"), Buffer.from("{}")), /task7_adapter_result_invalid/);
     await assert.rejects(adapter.submitCandidate(slot("malformed"), signed), /task7_adapter_result_invalid/);
   } finally {
@@ -64,7 +66,7 @@ async function main() {
       await child.dispose();
     }
   }
-  console.log("Hero Voice canary adapter IPC checks passed: dispositions, malformed/oversized frames, exit, timeout, disposal, one-in-flight (synthetic, no network)");
+  console.log("Hero Voice canary adapter IPC checks passed: dispositions, 7 MB WAV transfer, malformed/oversized frames, exit, timeout, disposal, one-in-flight (synthetic, no network)");
 }
 
 void main().catch(() => {

@@ -181,12 +181,32 @@ model ReviewRun {
   updatedAt                   DateTime  @updatedAt
   ledgerRecords               CanaryLedgerRecord[]
   objectiveObservations       CanaryObjectiveObservation[]
+  directOutputs               CanaryRunOutput[]
   submitNonces                CanarySubmitNonce[]
   canaryJobs                  AiGenerationJob[] @relation("CanaryReviewRunJobs")
 
   @@index([ownerHmac, state])
   @@index([runState, createdAt])
   @@index([receiptId])
+}
+
+// Parent-owned private direct-provider WAVs, separate from the final blind pack.
+// A creation intent owns both deterministic paths before any bytes are written.
+model CanaryRunOutput {
+  id                  String    @id
+  runId               String
+  run                 ReviewRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  ownerHmac           String
+  slotId              String
+  providerJobId       String
+  storageKey          String    @unique
+  stagingStorageKey   String    @unique
+  audioSha256         String
+  durationMs          Int
+  createdAt           DateTime  @default(now())
+
+  @@unique([runId, slotId])
+  @@index([ownerHmac, runId])
 }
 
 // Sanitized authority-owned observations are committed before objective

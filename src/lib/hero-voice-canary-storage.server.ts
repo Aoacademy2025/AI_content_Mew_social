@@ -435,10 +435,20 @@ export function fsyncPrivateFile(filename: string): void {
   }
 }
 
-export function readPrivateFileNoFollow(filename: string): Buffer {
+export function readPrivateFileNoFollow(filename: string, maxBytes?: number): Buffer {
   const { descriptor, metadata } = openStablePrivateFile(filename);
   try {
-    const bytes = fs.readFileSync(descriptor);
+    if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || metadata.size > maxBytes)) invalidStorage();
+    const bytes = maxBytes === undefined ? fs.readFileSync(descriptor) : Buffer.alloc(metadata.size);
+    if (maxBytes !== undefined) {
+      let offset = 0;
+      while (offset < bytes.length) {
+        const count = fs.readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+        if (count === 0) invalidStorage();
+        offset += count;
+      }
+      if (fs.fstatSync(descriptor).size !== metadata.size) invalidStorage();
+    }
     assertStablePathname(filename, metadata);
     return bytes;
   } catch (error) {

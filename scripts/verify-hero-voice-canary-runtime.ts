@@ -66,6 +66,7 @@ import {
   submitHeroVoiceCanaryCandidateViaLoopback,
 } from "../src/lib/hero-voice-canary-runner.server";
 import { submitHeroVoiceCanarySlotRequest } from "../src/lib/hero-voice-canary-submit.server";
+import { readHeroVoiceCanaryRunOutput } from "../src/lib/hero-voice-canary-run-outputs.server";
 import {
   HERO_VOICE_CANARY_DATABASE_MARKER_KEY,
   HERO_VOICE_CANARY_DATABASE_MARKER_VALUE,
@@ -824,6 +825,7 @@ async function main() {
         return {
           outcome: "valid_completed" as const,
           primaryStatus: "completed" as const,
+          audioBase64: wav.toString("base64"),
           audioSha256: heroVoiceCanarySha256(wav), durationMs: 1, delayTimeMs: 0, executionTimeMs: 1,
         };
       },
@@ -845,6 +847,42 @@ async function main() {
     },
   }), /canary job (?:identity is invalid|is unavailable)/u);
   assert.deepEqual(dispatchedOrdinals, Array.from({ length: 27 }, (_, index) => index + 1));
+
+  for (const malformed of ["missing-bytes", "wrong-hash"] as const) {
+    const rejectedOutput = { runId: `run-${randomUUID()}`, ...built(`reject-output-${malformed}`) };
+    const unsigned = { ...applyEvidenceUnsigned, manifestSha256: rejectedOutput.manifestSha256,
+      issuedAtMs: Date.now() - 1_000, expiresAtMs: Date.now() + 60_000 };
+    const evidenceBytes = heroVoiceCanaryJcsBytes({ ...unsigned, evidenceHmac: signHeroVoiceCanaryTask6EvidenceForTests(unsigned) });
+    const evidenceSha256 = heroVoiceCanarySha256(evidenceBytes);
+    process.env.HERO_VOICE_CANARY_TASK6_GATE_SHA256 = evidenceSha256;
+    let submissions = 0;
+    let disposed = false;
+    const state = await runHeroVoiceCanaryApply({
+      ...rejectedOutput, ownerHmac, referenceVoiceId: `user_${randomUUID()}`, referenceWav: reference,
+      task6EvidenceBytes: evidenceBytes, task6EvidenceSha256: evidenceSha256,
+      adapter: {
+        async dispatchDirect() { submissions++; return { disposition: "provider_accepted", providerJobId: "synthetic-invalid-output" }; },
+        async submitCandidate() { throw new Error("must not reach candidate after invalid direct output"); },
+        async awaitDirectTerminal() {
+          return { outcome: "valid_completed", primaryStatus: "completed", audioSha256: "0".repeat(64),
+            durationMs: 1, delayTimeMs: 0, executionTimeMs: 1,
+            ...(malformed === "wrong-hash" ? { audioBase64: syntheticWav(1).toString("base64") } : {}),
+          };
+        },
+        async evaluateBatch() { throw new Error("must not evaluate invalid direct output"); },
+        async dispose() { disposed = true; },
+      },
+    });
+    assert.equal(state, "aborted_no_go");
+    assert.equal(submissions, 1);
+    assert.equal(disposed, true);
+    assert.equal(await prisma.canaryRunOutput.count({ where: { runId: rejectedOutput.runId } }), 0);
+    const counters = heroVoiceCanaryCounters(await verifyHeroVoiceCanaryLedger({ runId: rejectedOutput.runId, ownerHmac }));
+    assert.equal(counters.dispatchIntents, 1);
+    assert.equal(counters.providerAccepted, 1);
+    assert.equal(counters.validCompleted, 0);
+    assert.equal(counters.notStarted, 43);
+  }
 
   // Execute the complete runner through the real authenticated request
   // parser, admission, generation, mandatory beforeDispatch and atomic
@@ -978,6 +1016,7 @@ async function main() {
           return {
             outcome: "valid_completed" as const,
             primaryStatus: "completed" as const,
+            audioBase64: wav.toString("base64"),
             audioSha256: heroVoiceCanarySha256(wav), durationMs: 1, delayTimeMs: 0, executionTimeMs: 1,
           };
         },
@@ -1007,6 +1046,13 @@ async function main() {
   assert.equal(integratedRecords.filter(({ record }) => record.type === "dispatch_intent").length, 44);
   assert.equal(new Set(integratedRecords.filter(({ record }) => record.type === "dispatch_intent")
     .map(({ record }) => "slotId" in record ? record.slotId : "")).size, 44);
+  const directOutputs = await prisma.canaryRunOutput.findMany({ where: { runId: integrated.runId } });
+  assert.equal(directOutputs.length, 26);
+  for (const output of directOutputs) {
+    assert.deepEqual(await readHeroVoiceCanaryRunOutput({ runId: integrated.runId, ownerHmac, slotId: output.slotId }),
+      integratedOutputs.get(output.slotId));
+  }
+  assert.equal(/"(?:audioBase64|storageKey)":/u.test(JSON.stringify(integratedRecords)), false);
   const integratedJobs = await prisma.aiGenerationJob.findMany({
     where: { canaryRunId: integrated.runId }, include: { attempts: true }, orderBy: { canarySlotId: "asc" },
   });

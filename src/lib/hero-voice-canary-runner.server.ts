@@ -25,6 +25,8 @@ import {
 } from "@/lib/hero-voice-canary-manifest";
 import { prepareHeroVoiceCanaryWireRequest } from "@/lib/hero-voice-canary-wire";
 import { awaitHeroVoiceCanaryApplicationTerminal } from "@/lib/hero-voice-generation.server";
+import { readHeroVoiceCanaryDirectAudio, heroVoiceCanaryTerminalMetadata } from "@/lib/hero-voice-canary-direct-audio";
+import { writeHeroVoiceCanaryRunOutput } from "@/lib/hero-voice-canary-run-outputs.server";
 
 export type HeroVoiceCanaryAdapterResult = Readonly<{
   outcome: HeroVoiceCanaryAcceptedOutcome;
@@ -34,6 +36,12 @@ export type HeroVoiceCanaryAdapterResult = Readonly<{
   durationMs?: number;
   delayTimeMs?: number;
   executionTimeMs?: number;
+}>;
+
+/** Only the direct child-to-parent terminal reply may contain the WAV payload.
+ * A valid-completed reply without exact delivered bytes is rejected by parent. */
+export type HeroVoiceCanaryDirectAdapterResult = HeroVoiceCanaryAdapterResult & Readonly<{
+  audioBase64?: string;
 }>;
 
 export type HeroVoiceCanaryBatch = Readonly<{
@@ -56,7 +64,7 @@ export interface HeroVoiceCanaryApplyAdapter {
     | { disposition: "application_rejected" }
     | { disposition: "transport_unknown" }
   >;
-  awaitDirectTerminal(slot: HeroVoiceCanarySlot, providerJobId: string): Promise<HeroVoiceCanaryAdapterResult>;
+  awaitDirectTerminal(slot: HeroVoiceCanarySlot, providerJobId: string): Promise<HeroVoiceCanaryDirectAdapterResult>;
   evaluateBatch(
     kind: "ablation-8" | "final-36",
     slots: readonly HeroVoiceCanarySlot[],
@@ -130,7 +138,7 @@ export async function runHeroVoiceCanaryApply(input: {
         if (!acceptedProviderJobId) return false;
         handle = Object.freeze({ kind: "provider", id: acceptedProviderJobId });
       }
-      const terminal = handle.kind === "application"
+      const delivered = handle.kind === "application"
         ? await awaitHeroVoiceCanaryApplicationTerminal({
             runId: input.runId,
             ownerHmac: input.ownerHmac,
@@ -138,6 +146,26 @@ export async function runHeroVoiceCanaryApply(input: {
             applicationJobId: handle.id,
           })
         : await adapter.awaitDirectTerminal(slot, handle.id);
+      let terminal = heroVoiceCanaryTerminalMetadata(delivered);
+      if (handle.kind === "provider" && delivered.outcome === "valid_completed") {
+        let audio: Buffer | undefined;
+        try {
+          audio = readHeroVoiceCanaryDirectAudio(delivered);
+        } catch {
+          terminal = {
+            outcome: "application_validation_failed", primaryStatus: "completed",
+          };
+        }
+        if (audio) {
+          // The durable, parent-owned creation intent precedes sensitive bytes;
+          // a crash cannot leave a ledger-valid output outside deletion scope.
+          const stored = await writeHeroVoiceCanaryRunOutput({
+            runId: input.runId, ownerHmac: input.ownerHmac, slotId: slot.slotId,
+            providerJobId: handle.id, audio,
+          });
+          terminal = { ...terminal, audioSha256: stored.audioSha256, durationMs: stored.durationMs };
+        }
+      }
       await recordHeroVoiceCanaryResult({
         runId: input.runId, ownerHmac: input.ownerHmac, slotId: slot.slotId, ...terminal,
       });

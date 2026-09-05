@@ -8,6 +8,7 @@ import {
   artifactQuarantinePath,
   artifactSourcePath,
   type DeletionArtifactRootKind,
+  durableWritePrivateFile,
   fsyncDirectory,
   HERO_VOICE_CANARY_DATABASE_MARKER_KEY,
   HERO_VOICE_CANARY_DATABASE_MARKER_VALUE,
@@ -32,7 +33,7 @@ export const HERO_VOICE_CANARY_STORAGE_BINDING_KEY = "hero_voice_canary_storage_
 const HERO_VOICE_CANARY_LEDGER_MUTATION_GUARD_KEY = "hero_voice_canary_ledger_mutation_guard_v1";
 
 type OperationKind = "single_voice_delete" | "owner_review_close" | "account_hard_delete";
-type CoordinatorOperationKind = OperationKind | "voice_upload" | "review_artifact_create";
+type CoordinatorOperationKind = OperationKind | "voice_upload" | "review_artifact_create" | "run_output_create";
 type PlannedArtifact = Readonly<{
   id: string;
   rootKind: DeletionArtifactRootKind;
@@ -51,6 +52,7 @@ export type HeroVoiceDeletionCrashStep =
   | "before-upload-conversion" | "after-upload-normalized"
   | "after-upload-final-rename"
   | "after-upload-row-commit"
+  | "after-run-output-intent" | "after-run-output-bytes" | "after-run-output-row-commit"
   | "after-review-preparation-commit"
   | "after-review-remote-push-before-local-commit"
   | "after-review-cas-before-intent-commit";
@@ -710,14 +712,13 @@ async function commitTransactionB(transactionId: string): Promise<void> {
         where: {
           id: transaction.scopeReviewRunId,
           ownerHmac: transaction.scopeOwnerHmac,
-          state: "revealed",
+          state: { in: ["revealed", "collecting"] },
         },
-        select: { sanitizedAggregatesJson: true },
       });
       if (!currentRun) throw new Error("review_close_authority_changed");
-      const sanitizedAggregatesJson = JSON.stringify(
-        parseSanitizedReviewAggregates(currentRun.sanitizedAggregatesJson),
-      );
+      assertClosableRun(currentRun);
+      await assertNoActiveRunJobs(tx, currentRun.id);
+      const sanitizedAggregatesJson = closeAggregates(currentRun);
       await tx.siteConfig.upsert({
         where: { key: HERO_VOICE_CANARY_LEDGER_MUTATION_GUARD_KEY },
         create: { key: HERO_VOICE_CANARY_LEDGER_MUTATION_GUARD_KEY, value: transaction.scopeReviewRunId },
@@ -725,12 +726,13 @@ async function commitTransactionB(transactionId: string): Promise<void> {
       });
       await tx.canarySubmitNonce.deleteMany({ where: { runId: transaction.scopeReviewRunId } });
       await tx.canaryObjectiveObservation.deleteMany({ where: { runId: transaction.scopeReviewRunId } });
+      await tx.canaryRunOutput.deleteMany({ where: { runId: transaction.scopeReviewRunId } });
       await tx.canaryLedgerRecord.deleteMany({ where: { runId: transaction.scopeReviewRunId } });
       const closed = await tx.reviewRun.updateMany({
         where: {
           id: transaction.scopeReviewRunId,
           ownerHmac: transaction.scopeOwnerHmac,
-          state: "revealed",
+          state: currentRun.state,
         },
         data: {
           state: "closed",
@@ -1035,6 +1037,113 @@ async function finishReviewArtifactCreation(transactionId: string): Promise<void
   });
 }
 
+async function finishRunOutputCreation(transactionId: string): Promise<void> {
+  const intent = await prisma.deletionTransaction.findUniqueOrThrow({
+    where: { id: transactionId }, include: { artifacts: true },
+  });
+  if (!intent.configurationHmac || !ownerHmacMatches(intent.configurationHmac, reviewConfigurationHmac())
+    || intent.operationKind !== "run_output_create" || intent.artifacts.length !== 2) {
+    throw new Error("run_output_intent_invalid");
+  }
+  const output = await prisma.canaryRunOutput.findUnique({ where: { id: intent.id } });
+  const context = heroVoiceCanaryStorageContext();
+  const storageKey = `direct-${intent.id}.wav`;
+  const stagingStorageKey = `direct-${intent.id}.bin`;
+  if (intent.artifacts.some((artifact) => artifact.rootKind !== "review_private"
+    || ![storageKey, stagingStorageKey].includes(artifact.storageKey))) {
+    throw new Error("run_output_intent_invalid");
+  }
+  if (!output) {
+    if (intent.status !== "planned") throw new Error("run_output_authority_missing");
+    for (const artifact of intent.artifacts) {
+      const filename = artifactSourcePath(context, "review_private", artifact.storageKey);
+      // The durable intent owns partial files, whose final hash cannot yet match.
+      if (privateFileExists(filename)) unlinkPrivateFileNoFollow(filename);
+    }
+    await prisma.deletionTransaction.update({
+      where: { id: intent.id },
+      data: { status: "rolled_back", rolledBackAt: new Date(), scopeReviewRunId: null, scopeOwnerHmac: null },
+    });
+    return;
+  }
+  if (output.runId !== intent.scopeReviewRunId || output.ownerHmac !== intent.scopeOwnerHmac
+    || output.storageKey !== storageKey || output.stagingStorageKey !== stagingStorageKey
+    || intent.artifacts.some((artifact) => artifact.expectedSha256 !== output.audioSha256)
+    || privateFileExists(artifactSourcePath(context, "review_private", stagingStorageKey))
+    || sha256File(artifactSourcePath(context, "review_private", storageKey)) !== output.audioSha256) {
+    throw new Error("run_output_readback_invalid");
+  }
+  await prisma.$transaction(async (tx) => {
+    await tx.deletionArtifact.updateMany({ where: { deletionTransactionId: intent.id }, data: { status: "committed" } });
+    await tx.deletionTransaction.update({
+      where: { id: intent.id },
+      data: { status: "done", doneAt: new Date(), scopeReviewRunId: null, scopeOwnerHmac: null },
+    });
+  });
+}
+
+/** Internal parent persistence boundary; caller holds the coordinator lock and
+ * has verified the signed frozen manifest/provider-accepted ledger authority. */
+export async function persistHeroVoiceCanaryRunOutputWithinSerializedMutation(input: {
+  runId: string; ownerHmac: string; slotId: string; providerJobId: string;
+  audio: Buffer; audioSha256: string; durationMs: number;
+}): Promise<void> {
+  await assertNoUnresolvedIntent();
+  const id = randomUUID();
+  const storageKey = `direct-${id}.wav`;
+  const stagingStorageKey = `direct-${id}.bin`;
+  const context = heroVoiceCanaryStorageContext();
+  const destination = artifactSourcePath(context, "review_private", storageKey);
+  const staging = artifactSourcePath(context, "review_private", stagingStorageKey);
+  await prisma.deletionTransaction.create({
+    data: {
+      id, operationKind: "run_output_create" satisfies CoordinatorOperationKind,
+      intendedOutcome: "private_direct_output_created", scopeReviewRunId: input.runId,
+      scopeOwnerHmac: input.ownerHmac, configurationHmac: reviewConfigurationHmac(), receiptId: randomUUID(),
+      artifacts: { create: [storageKey, stagingStorageKey].map((key) => ({
+        id: randomUUID(), rootKind: "review_private", storageKey: key, expectedSha256: input.audioSha256,
+      })) },
+    },
+  });
+  observe("after-run-output-intent", id);
+  durableWritePrivateFile(staging, destination, input.audio);
+  observe("after-run-output-bytes", id);
+  if (sha256File(destination) !== input.audioSha256) throw new Error("run_output_readback_invalid");
+  await prisma.$transaction(async (tx) => {
+    const run = await tx.reviewRun.findFirst({
+      where: { id: input.runId, ownerHmac: input.ownerHmac, state: "collecting", inFlightSlotId: input.slotId },
+    });
+    if (!run || ["aborted_no_go", "completed_no_go", "reviewable", "review_passed_pending_mew_approval"].includes(run.runState)) {
+      throw new Error("run_output_authority_changed");
+    }
+    await tx.canaryRunOutput.create({ data: {
+      id, runId: input.runId, ownerHmac: input.ownerHmac, slotId: input.slotId,
+      providerJobId: input.providerJobId, storageKey, stagingStorageKey,
+      audioSha256: input.audioSha256, durationMs: input.durationMs,
+    } });
+    await tx.deletionTransaction.update({ where: { id }, data: { status: "db_committed", dbCommittedAt: new Date() } });
+  });
+  observe("after-run-output-row-commit", id);
+  await finishRunOutputCreation(id);
+}
+
+async function directOutputPlannedArtifacts(runId: string): Promise<PlannedArtifact[]> {
+  const outputs = await prisma.canaryRunOutput.findMany({ where: { runId } });
+  const artifacts: PlannedArtifact[] = [];
+  for (const output of outputs) {
+    for (const storageKey of [output.storageKey, output.stagingStorageKey]) {
+      const artifact = plannedArtifact("review_private", storageKey);
+      if (artifact) {
+        if (storageKey === output.storageKey && artifact.expectedSha256 !== output.audioSha256) {
+          throw new Error("run_output_readback_invalid");
+        }
+        artifacts.push(artifact);
+      }
+    }
+  }
+  return artifacts;
+}
+
 async function finishTransaction(transactionId: string): Promise<void> {
   const initial = await prisma.deletionTransaction.findUniqueOrThrow({ where: { id: transactionId } });
   if (initial.status === "done" || initial.status === "rolled_back") return;
@@ -1044,6 +1153,10 @@ async function finishTransaction(transactionId: string): Promise<void> {
   }
   if (initial.operationKind === "review_artifact_create") {
     await finishReviewArtifactCreation(transactionId);
+    return;
+  }
+  if (initial.operationKind === "run_output_create") {
+    await finishRunOutputCreation(transactionId);
     return;
   }
   const currentConfigurationHmac = initial.operationKind === "single_voice_delete"
@@ -1365,6 +1478,27 @@ export async function deleteHeroVoiceCanaryVoice(userId: string, voiceId: string
   });
 }
 
+function assertClosableRun(run: { state: string; runState: string; inFlightSlotId: string | null; parkDisposition: string; ledgerSequence: number }): void {
+  const unfinished = run.state === "collecting";
+  const safelyStopped = ["aborted_no_go", "completed_no_go"].includes(run.runState)
+    && run.parkDisposition === "confirmed";
+  const neverDispatched = run.runState === "planned" && run.ledgerSequence <= 1;
+  if (run.inFlightSlotId !== null || !["revealed", "collecting"].includes(run.state)
+    || (unfinished && !safelyStopped && !neverDispatched)) {
+    throw new HeroVoiceDeletionError("Review revision conflict", "REVIEW_RUN_REVISION_CONFLICT", 409);
+  }
+}
+
+function closeAggregates(run: { state: string; sanitizedAggregatesJson: string | null }): string | null {
+  return run.state === "revealed" ? JSON.stringify(parseSanitizedReviewAggregates(run.sanitizedAggregatesJson)) : null;
+}
+
+async function assertNoActiveRunJobs(tx: Prisma.TransactionClient, runId: string): Promise<void> {
+  if (await tx.aiGenerationJob.count({ where: { canaryRunId: runId, status: { in: ["queued", "in_progress"] } } })) {
+    throw new HeroVoiceDeletionError("Voice is currently in use", "USER_VOICE_IN_USE", 409);
+  }
+}
+
 export async function closeHeroVoiceCanaryReviewRun(input: {
   runId: string;
   ownerHmac: string;
@@ -1380,12 +1514,12 @@ export async function closeHeroVoiceCanaryReviewRun(input: {
     await reconcileNonterminalTransactionsUnlocked();
     const run = await prisma.reviewRun.findFirst({ where: { id: input.runId, ownerHmac: input.ownerHmac } });
     if (!run) throw new HeroVoiceDeletionError("Review run not found", "REVIEW_RUN_NOT_FOUND", 404);
-    if (run.state !== "revealed" || run.revision !== input.expectedRevision) {
+    assertClosableRun(run);
+    await assertNoActiveRunJobs(prisma, run.id);
+    if (run.revision !== input.expectedRevision) {
       throw new HeroVoiceDeletionError("Review revision conflict", "REVIEW_RUN_REVISION_CONFLICT", 409);
     }
-    const sanitizedAggregatesJson = JSON.stringify(
-      parseSanitizedReviewAggregates(run.sanitizedAggregatesJson),
-    );
+    const sanitizedAggregatesJson = closeAggregates(run);
     const reviewArtifacts = reviewPlannedArtifacts(run.privateArtifactManifestJson);
     const runJobs = await prisma.aiGenerationJob.findMany({
       where: { canaryRunId: run.id },
@@ -1394,13 +1528,13 @@ export async function closeHeroVoiceCanaryReviewRun(input: {
     const generatedArtifacts = listCloneGeneratedStorageKeys(runJobs.map((job) => job.id))
       .map((storageKey) => plannedArtifact("clone_generated", storageKey))
       .filter((artifact): artifact is PlannedArtifact => artifact !== null);
-    const artifacts = [...reviewArtifacts, ...generatedArtifacts];
+    const artifacts = [...reviewArtifacts, ...generatedArtifacts, ...await directOutputPlannedArtifacts(run.id)];
     const transactionId = randomUUID();
     const receiptId = randomUUID();
     observe("before-transaction-a", transactionId);
     await prisma.$transaction(async (tx) => {
       const current = await tx.reviewRun.findFirst({
-        where: { id: run.id, ownerHmac: input.ownerHmac, state: "revealed", revision: input.expectedRevision },
+        where: { id: run.id, ownerHmac: input.ownerHmac, state: run.state, revision: input.expectedRevision },
         select: { id: true },
       });
       if (!current) throw new HeroVoiceDeletionError("Review revision conflict", "REVIEW_RUN_REVISION_CONFLICT", 409);
@@ -1421,10 +1555,11 @@ export async function closeHeroVoiceCanaryReviewRun(input: {
     await finishTransaction(transactionId);
     await assertNoUnresolvedIntent();
     const closed = await prisma.reviewRun.findUniqueOrThrow({ where: { id: run.id } });
-    const [remainingLedger, remainingNonces, remainingObservations] = await Promise.all([
+    const [remainingLedger, remainingNonces, remainingObservations, remainingDirectOutputs] = await Promise.all([
       prisma.canaryLedgerRecord.count({ where: { runId: run.id } }),
       prisma.canarySubmitNonce.count({ where: { runId: run.id } }),
       prisma.canaryObjectiveObservation.count({ where: { runId: run.id } }),
+      prisma.canaryRunOutput.count({ where: { runId: run.id } }),
     ]);
     if (closed.state !== "closed" || closed.receiptId !== receiptId
       || closed.privateArtifactManifestJson !== null || closed.rawScoresJson !== null
@@ -1434,7 +1569,7 @@ export async function closeHeroVoiceCanaryReviewRun(input: {
       || closed.reviewPreparationJson !== null
       || closed.publicReviewJson !== null || closed.gitCommitSha !== null
       || closed.ledgerHeadHmac !== null || closed.sanitizedAggregatesJson !== sanitizedAggregatesJson
-      || remainingLedger !== 0 || remainingNonces !== 0 || remainingObservations !== 0) {
+      || remainingLedger !== 0 || remainingNonces !== 0 || remainingObservations !== 0 || remainingDirectOutputs !== 0) {
       throw new Error("review_close_invariant_failed");
     }
     return { revision: closed.revision, receiptId };
@@ -1482,7 +1617,9 @@ export async function hardDeleteHeroVoiceCanaryAccount(input: {
       const artifact = plannedArtifact("clone_generated", storageKey);
       if (artifact) artifacts.push(artifact);
     }
-    for (const run of reviewRuns) artifacts.push(...reviewPlannedArtifacts(run.privateArtifactManifestJson));
+    for (const run of reviewRuns) {
+      artifacts.push(...reviewPlannedArtifacts(run.privateArtifactManifestJson), ...await directOutputPlannedArtifacts(run.id));
+    }
     const uniqueArtifacts = [...new Map(
       artifacts.map((artifact) => [`${artifact.rootKind}:${artifact.storageKey}`, artifact]),
     ).values()];
