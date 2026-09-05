@@ -487,3 +487,14 @@ Five frontier waves: `{1,3}` → `{2,4}` → `{5}` → `{6}` → `{7}`. Tasks th
 ## Status
 
 interviewed 2026-09-04 | approved: 2026-09-04 | executed: blocked at Task 6 (NO-GO) | delivered: -
+
+2026-09-05 approved continuation: local preparation commit `654185e5` fixes
+adapter IPC dispositions/canonical-capability transfer and bounded loopback
+transport, and adds strict evaluator dependency preparation/installation checks.
+Local synthetic suites and a 184-page build pass; canonical execution remains
+disabled and the real Task 7 adapter is still absent. Coding is not complete:
+parent-owned direct-output lifecycle, actual candidate observations, compatible
+hash-domain evidence, evaluator input transfer, and parent-owned absolute
+cancellation/parking deadlines remain required. See the updated
+[two-axis review and exact remaining seams](reports/2026-09-05-hero-voice-clone-continuation-review.md).
+No paid run, human-audio submission, push, merge, or deployment was performed.

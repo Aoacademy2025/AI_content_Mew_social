@@ -2,6 +2,11 @@
 
 Date: 2026-09-05. Decision: **NO-GO for Task 7, merge, or deployment.**
 
+Latest approved preparation increment: `654185e5`. **Coding is not complete.**
+The production Task 7 adapter is still absent; synthetic harness success is not
+evidence that the actual 44-slot run can execute. The new checks below prepare
+that boundary without bypassing the existing Task 6 gates.
+
 Compared `git diff a6fd30ce00005e4c8177bf0e36cba552ae430ae7...HEAD`.
 Initial review examined implementation `dcfb9591`; independent follow-up reviewed
 the corrections now committed as `e2b4f6c4`. Standards and Spec were reviewed
@@ -9,6 +14,12 @@ by separate agents. The explicit canary plan supplies the spec because
 `docs/agents/issue-tracker.md` is absent.
 
 ## Standards
+
+Independent review of `654185e5`: **0 new hard violations, 0 new advisories**.
+The dependency-free loopback client has a concrete child-isolation purpose;
+bounded RPC and evaluator preparation introduce no substantiated new smell.
+The reviewer independently passed both synthetic transport harnesses and all
+16 evaluator tests. The two carried branch advisories below are unchanged.
 
 No hard violations identified against `CLAUDE.md`. The shared private-response
 helpers preserve explicit status codes, bodies, custom headers, and no-store
@@ -35,6 +46,39 @@ Standards: **0 hard violations, 2 advisories**; the more consequential advisory
 is duplicate canonical serialization.
 
 ## Spec
+
+Independent review of `654185e5`: **0 confirmed new defects or scope creep**.
+Preparation stays fail-closed. Two reviewed execution requirements remain
+partial: actual native evaluator qualification and a parent-owned absolute
+provider/parking deadline. The 660-second RPC watchdog only bounds a stuck
+child; it does **not** meet the plan's first-park-by-dispatch-plus-600-seconds
+requirement. Do not enable execution until cancellation/parking survives a
+hung or terminated adapter child.
+
+Concrete remaining coding seams, confirmed from the current source:
+
+- Direct terminal results carry hashes/timing but no parent-owned durable WAV
+  registration. Add a run/slot-linked creation intent, recovery, and owner/
+  account-close enumeration before transferring real bytes. Existing review
+  creation is rigidly the 74-artifact/37-final-file blind pack and cannot be
+  reused for the preceding 26 direct outputs.
+- Candidate generation currently retains envelope/audio digests, not the actual
+  validated stage/metric observations needed later. Capture bounded allowed
+  observations at validation and transfer audio/observations for evaluation
+  without exposing DB roots, deletion authority, or HMAC keys to the child.
+- Objective ranking currently equates a float32-sample hash with a whole-WAV
+  hash; reference observations also have distinct WAV/PCM-frame domains.
+  Rounded micros can change a near-tied ranking compared with worker binary64
+  selection, and the required vocals-stem digest is not emitted by the worker.
+  Reconcile/version the observation schema and any worker contract/pin change;
+  never synthesize missing observations from the expected manifest.
+- Current source/model manifest byte hashes match their verifier constants.
+  That is not an observed runtime source-manifest attestation. Complete actual
+  evidence capture, evaluator input transfer, and endpoint parking before
+  implementing the fixed production adapter entrypoint.
+
+The earlier reviewed corrections follow; their completeness claims concern
+those fixes, not completion of the overall plan.
 
 Three code findings were corrected:
 
@@ -68,6 +112,35 @@ acceptance gates remain open.** No remaining blocking code finding was identifie
 in the final corrections; this review is not a signed Task 6 evidence bundle.
 
 ## Verification and delivery boundary
+
+Latest increment (`654185e5`):
+
+- Fixed real IPC failures: non-accepted dispositions were rejected as malformed;
+  signed capability Buffers were outside the JCS domain. The bridge now preserves
+  the exact canonical capability bytes, bounds frames/time, enforces one call
+  in flight, settles pending calls on disposal/exit, and suppresses diagnostics.
+- Extracted the loopback client without runtime DB/auth imports; added origin/
+  slot/capability validation, response-stream limits and deadlines, no retry,
+  and generic errors. Regression tests were observed failing before fixes.
+- Evaluator schema 2 binds exact dependency-lock bytes and validates every
+  distribution pin/hash. Offline wheel inventory, separate preparation gates,
+  installed closure/FFmpeg checks, and the Docker canonical-import fix are
+  implemented. No real base/wheel/FFmpeg pin or runtime attestation was invented;
+  canonical execution remains disabled. The lock checker now also diagnoses
+  invalid placeholder pins and the missing dependency-lock digest.
+- Canary/ledger/blind-review suite, both new IPC/loopback harnesses, all 16
+  evaluator tests, clone/private-route/storage suite, and Task 2 durable/crash
+  suite passed. TypeScript, changed-scope ESLint, and diff checks passed.
+- Final production build passed all 184 pages using a fresh synthetic SQLite DB,
+  fake Clerk values, masked environment-file values, and no Sentry upload.
+  Browser static scan found zero source maps and zero server-authority sentinel
+  files. This is a local build, not a deployment or runtime qualification.
+- No worker/model/image pin changed. No authenticated GitHub operation, push,
+  provider mutation, paid job, real audio submission, image publication, merge,
+  or deployment occurred. The earlier remote status below was not re-queried
+  during this increment; the local publication freeze is still not on GitHub.
+
+Earlier increment verification:
 
 - Clone policy/route/storage tests, new real-entrypoint auth/credit/error/freeze
   regression tests, Task 2 settlement/crash checks, deletion/upload recovery,
