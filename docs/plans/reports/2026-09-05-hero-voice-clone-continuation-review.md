@@ -2,7 +2,9 @@
 
 Date: 2026-09-05. Decision: **NO-GO for Task 7, merge, or deployment.**
 
-Latest approved preparation increment: `654185e5`. **Coding is not complete.**
+Latest approved direct-output increment: `5991c3c6`, with reviewed follow-ups
+`debd5578` and `397d679f`. Earlier preparation increment: `654185e5`.
+**Coding is not complete.**
 The production Task 7 adapter is still absent; synthetic harness success is not
 evidence that the actual 44-slot run can execute. The new checks below prepare
 that boundary without bypassing the existing Task 6 gates.
@@ -14,6 +16,14 @@ by separate agents. The explicit canary plan supplies the spec because
 `docs/agents/issue-tracker.md` is absent.
 
 ## Standards
+
+Direct-output increment: **0 hard violations; 1 new advisory resolved**.
+The independent reviewer found duplicated terminal-state definitions. Both
+initial authority checking and the transactional recheck now use one positive
+creation predicate, accepting only `collecting` direct ablation/baseline phases
+with the exact in-flight slot. The SQLite suite tests rejected unknown and
+non-direct phases. Follow-up confirmed resolution; the two older branch
+advisories below remain, with no new unresolved standards finding.
 
 Independent review of `654185e5`: **0 new hard violations, 0 new advisories**.
 The dependency-free loopback client has a concrete child-isolation purpose;
@@ -47,6 +57,16 @@ is duplicate canonical serialization.
 
 ## Spec
 
+Direct-output increment: **0 new implementation defects; 1 documentation
+mismatch resolved**. The plan now states the approved early-close exception
+for never-dispatched or terminal/parked collecting runs, with no in-flight slot
+or active app job. It retains a sanitized closed `ReviewRun`, never fabricates
+listening aggregates, and does not skip lock/reveal on an open blind review.
+Account deletion also enumerates the new registry and its declared staging
+paths. Follow-up confirmed the documentation and shared creation guard, and
+confirmed that invalid delivered audio preserves primary state and the separate
+cancellation disposition. No unresolved new Spec finding remains.
+
 Independent review of `654185e5`: **0 confirmed new defects or scope creep**.
 Preparation stays fail-closed. Two reviewed execution requirements remain
 partial: actual native evaluator qualification and a parent-owned absolute
@@ -55,13 +75,16 @@ child; it does **not** meet the plan's first-park-by-dispatch-plus-600-seconds
 requirement. Do not enable execution until cancellation/parking survives a
 hung or terminated adapter child.
 
-Concrete remaining coding seams, confirmed from the current source:
+Concrete coding seams, confirmed from the current source:
 
-- Direct terminal results carry hashes/timing but no parent-owned durable WAV
-  registration. Add a run/slot-linked creation intent, recovery, and owner/
-  account-close enumeration before transferring real bytes. Existing review
-  creation is rigidly the 74-artifact/37-final-file blind pack and cannot be
-  reused for the preceding 26 direct outputs.
+- **Direct-output registration resolved in this increment.** A bounded WAV
+  payload crosses IPC, the parent verifies actual format/hash/duration, and a
+  separate run/slot-linked creation intent owns both final/staging paths before
+  bytes are written. Signed ledger/provider acceptance binds the immutable
+  registry row. Normal and interrupted owner/account close enumerate these
+  files without changing the rigid 74-artifact/37-final-file blind pack.
+  Worker response/stage observations and evaluator-input transfer are still
+  separate missing seams; WAV persistence does not stand in for them.
 - Candidate generation currently retains envelope/audio digests, not the actual
   validated stage/metric observations needed later. Capture bounded allowed
   observations at validation and transfer audio/observations for evaluation
@@ -113,7 +136,40 @@ in the final corrections; this review is not a signed Task 6 evidence bundle.
 
 ## Verification and delivery boundary
 
-Latest increment (`654185e5`):
+Direct-output increment:
+
+- Real runner integration registers all 26 synthetic direct outputs and reads
+  their exact bytes back. Missing bytes and mismatched hashes each stop after
+  one accepted intent, zero valid outputs, and 43 unstarted slots; no evaluator
+  call follows. Ledger payload projection excludes audio and storage keys.
+- Maximum 7 MB WAV validation and real child-process transfer pass. Framing
+  buffers chunks linearly and remains bounded; base64 canonical roundtrip
+  avoids regex stack overflow at the allowed maximum size.
+- New disposable SQLite suite checks cross-owner/run/slot/provider denial,
+  immutable repeated writes, corrupt readback, invalid format/size/duration,
+  six creation crash points including partial writes and rename, four close
+  crash points, and account-deletion recovery with a declared intermediate.
+  Recovery is also exercised in fresh Node processes.
+- Full canary suite, all 16 evaluator Python tests, clone/private-route/storage,
+  Task 2 durable/crash, and existing deletion recovery tests pass. TypeScript,
+  scoped ESLint, and diff checks pass. Independent reviewers repeated scoped
+  SQLite, direct-audio, and IPC checks.
+- Local production builds through `debd5578` pass all 184 pages using fresh
+  synthetic SQLite/fake Clerk and masked environment files, with no Sentry
+  upload. Browser scan reports zero source maps and authority sentinel files.
+  The subsequent `397d679f` CLI metadata correction is covered by the direct-
+  audio, full canary, and TypeScript checks; no route/UI behavior changed.
+- The additive `CanaryRunOutput` migration is checked in and Prisma regenerated
+  locally. No existing column was removed/renamed and no live database was
+  touched. `codebase-design` informed the small parent-only read/write interface
+  and centralized deletion ownership; `code-review` supplied the two independent
+  review axes above.
+- No push, authenticated GitHub action, provider mutation, paid job, real voice,
+  worker/image pin change, image publication, merge, or deployment occurred.
+  The native evaluator and fixed production adapter remain unavailable; the
+  parent-owned absolute cancel/park control is still an execution prerequisite.
+
+Earlier preparation increment (`654185e5`):
 
 - Fixed real IPC failures: non-accepted dispositions were rejected as malformed;
   signed capability Buffers were outside the JCS domain. The bridge now preserves
