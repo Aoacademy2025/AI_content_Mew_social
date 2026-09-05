@@ -4,6 +4,10 @@ import { prisma } from "@/lib/prisma";
 import { createNotification } from "@/lib/notifications";
 import { apiError } from "@/lib/api-error";
 import { sendSupportReplyEmail } from "@/lib/send-email";
+import {
+  buildSupportObservabilityLinks,
+  parseSupportObservabilityUpdate,
+} from "@/lib/support-observability-links";
 
 const SUPPORT_STATUSES = ["OPEN", "CLOSED"] as const;
 const SUPPORT_CATEGORIES = ["BUG_CONFIRMED", "FEATURE_REQUEST", "USER_CONFUSION", "NEED_MORE_INFO", "NOT_A_BUG"] as const;
@@ -61,6 +65,8 @@ export async function GET(req: Request) {
         recommendedAction: true,
         auditNote: true,
         impactNote: true,
+        sentryIssueId: true,
+        linearIssueIdentifier: true,
         auditedAt: true,
         repliedAt: true,
         createdAt: true,
@@ -71,7 +77,10 @@ export async function GET(req: Request) {
       take: 50,
     });
 
-    return NextResponse.json(tickets);
+    return NextResponse.json(tickets.map(ticket => ({
+      ...ticket,
+      ...buildSupportObservabilityLinks(ticket),
+    })));
   } catch (error) {
     return apiError({ route: "GET /api/admin/support", error });
   }
@@ -101,9 +110,18 @@ export async function PATCH(req: Request) {
     if (auditNote instanceof NextResponse) return auditNote;
     const impactNote = cleanNullableText(body.impactNote, 800, "impactNote");
     if (impactNote instanceof NextResponse) return impactNote;
+    const observability = parseSupportObservabilityUpdate(body);
+    if (!observability.ok) {
+      return NextResponse.json(
+        { error: observability.error, field: observability.field },
+        { status: 400 },
+      );
+    }
     const cleanReply = typeof reply === "string" ? reply.trim() : "";
     const hasAuditUpdate = category !== undefined || severity !== undefined || recommendedAction !== undefined
-      || auditNote !== undefined || impactNote !== undefined;
+      || auditNote !== undefined || impactNote !== undefined
+      || observability.data.sentryIssueId !== undefined
+      || observability.data.linearIssueIdentifier !== undefined;
 
     const ticket = await prisma.supportTicket.update({
       where: { id: ticketId },
@@ -116,6 +134,8 @@ export async function PATCH(req: Request) {
         recommendedAction: recommendedAction === undefined ? undefined : recommendedAction,
         auditNote: auditNote === undefined ? undefined : auditNote,
         impactNote: impactNote === undefined ? undefined : impactNote,
+        sentryIssueId: observability.data.sentryIssueId,
+        linearIssueIdentifier: observability.data.linearIssueIdentifier,
         auditedAt: hasAuditUpdate ? new Date() : undefined,
       },
       include: { user: { select: { id: true, name: true, email: true, plan: true } } },
@@ -140,7 +160,13 @@ export async function PATCH(req: Request) {
       }
     }
 
-    return NextResponse.json({ ok: true, ticket });
+    return NextResponse.json({
+      ok: true,
+      ticket: {
+        ...ticket,
+        ...buildSupportObservabilityLinks(ticket),
+      },
+    });
   } catch (error) {
     return apiError({ route: "PATCH /api/admin/support", error });
   }

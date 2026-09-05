@@ -1,9 +1,8 @@
+import * as Sentry from "@sentry/nextjs";
+
 declare global {
-  // eslint-disable-next-line no-var
   var __heroAiUnhandledRejectionGuardInstalled: boolean | undefined;
-  // eslint-disable-next-line no-var
   var __heroAiRemotionTargetClosedRejections: number | undefined;
-  // eslint-disable-next-line no-var
   var __heroAiRemotionTargetClosedLastLogAt: number | undefined;
 }
 
@@ -62,6 +61,7 @@ function installUnhandledRejectionGuard() {
 
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    await import("../sentry.server.config");
     installUnhandledRejectionGuard();
 
     const { prisma } = await import("@/lib/prisma");
@@ -106,5 +106,9 @@ export async function register() {
     } catch (e) {
       console.error("[instrumentation] Failed to load server Gemini key from DB:", e);
     }
+  } else if (process.env.NEXT_RUNTIME === "edge") {
+    await import("../sentry.edge.config");
   }
 }
+
+export const onRequestError = Sentry.captureRequestError;

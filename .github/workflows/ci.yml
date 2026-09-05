@@ -44,6 +44,19 @@ jobs:
       - name: Verify acoustic subtitle and export release gates
         run: npm run verify:subtitle-audio-sync
 
+      - name: Verify bounded acoustic subtitle clock
+        run: npm run verify:acoustic-subtitle-clock
+
+      - name: Setup Python for acoustic path tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify CTC path without downloading model weights
+        run: |
+          python -m pip install numpy==2.4.6
+          python scripts/subtitle-alignment/test_engine.py
+
       - name: Verify upload transcription keeps real word timing
         run: npm run verify:transcribe-alignment
 
@@ -188,6 +201,15 @@ jobs:
         run: npm run verify:brands-ci
       - name: Brand Library lint
         run: npm run lint:brands
+
+      - name: Verify Sentry privacy and sampling configuration
+        run: npm run verify:sentry-config
+
+      - name: Verify signed Sentry alerts are safely formatted for LINE
+        run: npm run verify:sentry-line-alert
+
+      - name: Verify support tickets link to trusted Sentry and Linear issues
+        run: npm run verify:support-observability-links
 
       - name: Build
         run: npm run build

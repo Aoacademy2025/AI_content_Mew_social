@@ -15,6 +15,7 @@ import {
   Trash2, HardDrive, ShieldCheck, AlertTriangle, Music, Upload, X,
   CreditCard, Key, Eye, EyeOff, Tag, Plus, GripVertical, Zap, Building2,
   Bug, Lightbulb, SearchCheck, Maximize2, ClipboardCheck, Save, Languages, BarChart3,
+  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
@@ -160,6 +161,10 @@ interface SupportTicket {
   recommendedAction: SupportRecommendation | null;
   auditNote: string | null;
   impactNote: string | null;
+  sentryIssueId: string | null;
+  sentryIssueUrl: string | null;
+  linearIssueIdentifier: string | null;
+  linearIssueUrl: string | null;
   auditedAt: string | null;
   createdAt: string;
   user: { name: string; email: string; plan: string };
@@ -175,6 +180,8 @@ type TriageDraft = {
   recommendedAction: SupportRecommendation | "";
   auditNote: string;
   impactNote: string;
+  sentryIssueReference: string;
+  linearIssueReference: string;
 };
 
 const CATEGORY_OPTIONS: Array<{ value: SupportTicketCategory; label: string; icon: ReactNode }> = [
@@ -858,6 +865,8 @@ export default function AdminDashboardPage() {
       recommendedAction: ticket.recommendedAction ?? "",
       auditNote: ticket.auditNote ?? "",
       impactNote: ticket.impactNote ?? "",
+      sentryIssueReference: ticket.sentryIssueId ?? "",
+      linearIssueReference: ticket.linearIssueIdentifier ?? "",
     };
   }
 
@@ -886,6 +895,8 @@ export default function AdminDashboardPage() {
           recommendedAction: draft.recommendedAction || null,
           auditNote: draft.auditNote,
           impactNote: draft.impactNote,
+          sentryIssueId: draft.sentryIssueReference,
+          linearIssueIdentifier: draft.linearIssueReference,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -1253,6 +1264,56 @@ export default function AdminDashboardPage() {
                               </select>
                             </label>
                           </div>
+
+                          <div className="mt-2 grid gap-2 md:grid-cols-2">
+                            <label className="space-y-1">
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Sentry issue</span>
+                              <input
+                                value={draft.sentryIssueReference}
+                                onChange={e => updateTriageDraft(ticket, { sentryIssueReference: e.target.value })}
+                                placeholder="Issue ID หรือ URL จาก Sentry"
+                                inputMode="url"
+                                autoComplete="off"
+                                className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-2 py-2 text-xs text-zinc-200 placeholder:text-zinc-700 outline-none focus:border-violet-500/50"
+                              />
+                            </label>
+                            <label className="space-y-1">
+                              <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Linear issue</span>
+                              <input
+                                value={draft.linearIssueReference}
+                                onChange={e => updateTriageDraft(ticket, { linearIssueReference: e.target.value })}
+                                placeholder="HERO-123 หรือ URL จาก Linear"
+                                inputMode="url"
+                                autoComplete="off"
+                                className="w-full rounded-lg border border-[var(--ui-input-border)] bg-[var(--ui-input-bg)] px-2 py-2 text-xs text-zinc-200 placeholder:text-zinc-700 outline-none focus:border-violet-500/50"
+                              />
+                            </label>
+                          </div>
+
+                          {(ticket.sentryIssueUrl || ticket.linearIssueUrl) && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {ticket.sentryIssueUrl && (
+                                <a
+                                  href={ticket.sentryIssueUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 rounded-lg border border-red-500/25 bg-red-500/10 px-2 py-1 text-[10px] font-semibold text-red-200 transition-colors hover:bg-red-500/15"
+                                >
+                                  Sentry #{ticket.sentryIssueId} <ExternalLink className="h-3 w-3" />
+                                </a>
+                              )}
+                              {ticket.linearIssueUrl && (
+                                <a
+                                  href={ticket.linearIssueUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 rounded-lg border border-violet-500/25 bg-violet-500/10 px-2 py-1 text-[10px] font-semibold text-violet-200 transition-colors hover:bg-violet-500/15"
+                                >
+                                  {ticket.linearIssueIdentifier} <ExternalLink className="h-3 w-3" />
+                                </a>
+                              )}
+                            </div>
+                          )}
 
                           <div className="mt-2 grid gap-2 md:grid-cols-2">
                             <label className="space-y-1">
