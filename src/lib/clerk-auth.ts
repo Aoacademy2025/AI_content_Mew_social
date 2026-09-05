@@ -8,6 +8,10 @@ import { syncUserEntitlement, classifyEntitlement } from "@/lib/entitlements";
 import { resolveServiceActor } from "@/lib/mcp/service-actor";
 import { AFF_COOKIE, sanitizeRefCode } from "@/lib/affiliate-ref";
 import {
+  assertHeroVoiceCanaryIsolatedEnvironment,
+  resolveHeroVoiceCanarySessionUser,
+} from "@/lib/hero-voice-canary-auth.server";
+import {
   ensureHeroVoiceCanaryReadReady,
   runHeroVoiceCanarySerializedMutation,
 } from "@/lib/hero-voice-deletion-coordinator.server";
@@ -182,6 +186,18 @@ async function getCurrentUserForClerkId(userId: string): Promise<User | null> {
 }
 
 export async function getCurrentUser(): Promise<User | null> {
+  // The marked evaluator has its own Clerk authority and prebootstrapped user.
+  // Authenticate there before ordinary service actors, lazy user creation,
+  // role/entitlement sync, or trial grants can run.
+  if (process.env.HERO_VOICE_CANARY_EXECUTION_MODE === "1") {
+    try {
+      assertHeroVoiceCanaryIsolatedEnvironment({ requireAuthAttestation: true });
+      await ensureHeroVoiceCanaryReadReady();
+      return await resolveHeroVoiceCanarySessionUser(await auth());
+    } catch {
+      return null;
+    }
+  }
   const deletionStartup = await ensureHeroVoiceCanaryReadReady();
   // Additive: internal service calls (MCP orchestrator) act as a given user via a
   // server-only secret header. Browsers can't set it → the Clerk path below is unchanged.

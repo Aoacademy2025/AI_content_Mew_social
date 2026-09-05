@@ -24,7 +24,7 @@ export async function GET() {
       );
     }
     if (!user) throw new Error("clone canary access decision admitted a missing actor");
-    await ensureMonthlyGrant(user.id);
+    if (process.env.HERO_VOICE_CANARY_EXECUTION_MODE !== "1") await ensureMonthlyGrant(user.id);
     const [jobs, balance] = await Promise.all([
       prisma.aiGenerationJob.findMany({
         where: {

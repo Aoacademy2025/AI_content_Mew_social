@@ -31,7 +31,7 @@ function parseRange(value: string | null, size: number): { start: number; end: n
   return { start, end };
 }
 
-export async function GET(
+async function readPrivateAudio(
   request: Request,
   { params }: { params: Promise<{ jobId: string }> },
 ) {
@@ -82,4 +82,17 @@ export async function GET(
       ...(rangeValue ? { "Content-Range": `bytes ${range.start}-${range.end}/${stat.size}` } : {}),
     },
   }));
+}
+
+export async function GET(
+  request: Request,
+  context: { params: Promise<{ jobId: string }> },
+) {
+  try {
+    return await readPrivateAudio(request, context);
+  } catch {
+    // Files can disappear during owner/account deletion. Never forward a
+    // filename-bearing I/O or storage/auth exception to framework telemetry.
+    return privateJson({ error: "Audio unavailable" }, { status: 503 });
+  }
 }

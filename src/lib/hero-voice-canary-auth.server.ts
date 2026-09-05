@@ -153,7 +153,7 @@ export function assertHeroVoiceCanaryIsolatedEnvironment(options: { requireAuthA
   if (options.requireAuthAttestation) readAuthAttestation();
 }
 
-export async function verifiedHeroVoiceCanaryClaims(claimsInput: HeroVoiceCanaryClaims): Promise<HeroVoiceCanaryClaims> {
+async function readBoundHeroVoiceCanaryActor(claimsInput: HeroVoiceCanaryClaims) {
   assertHeroVoiceCanaryIsolatedEnvironment({ requireAuthAttestation: true });
   const claims = validateCanonicalClaims(claimsInput);
   const marker = await prisma.siteConfig.findUnique({ where: { key: HERO_VOICE_CANARY_BOOTSTRAP_MARKER_KEY } });
@@ -165,18 +165,30 @@ export async function verifiedHeroVoiceCanaryClaims(claimsInput: HeroVoiceCanary
     ownerHmac: computeHeroVoiceCanaryOwnerHmac(claims),
     creditPolicy: "isolated-finite-canary-v1",
   })) : "";
-  if (!user || users !== 1 || marker?.value !== expectedMarker || user.suspended
+  if (!user || users !== 1 || marker?.value !== expectedMarker
     || user.stripeCustomerId || user.stripeSubscriptionId || user.trialStartedAt || user.trialEndsAt) {
     throw new HeroVoiceCanaryAuthError();
   }
-  return claims;
+  return { user, claims, ownerHmac: computeHeroVoiceCanaryOwnerHmac(claims) };
+}
+
+export async function verifiedHeroVoiceCanaryClaims(claimsInput: HeroVoiceCanaryClaims): Promise<HeroVoiceCanaryClaims> {
+  const actor = await getBootstrappedHeroVoiceCanaryUser(claimsInput);
+  return actor.claims;
 }
 
 export async function getBootstrappedHeroVoiceCanaryUser(claimsInput: HeroVoiceCanaryClaims) {
-  const claims = await verifiedHeroVoiceCanaryClaims(claimsInput);
-  const user = await prisma.user.findUnique({ where: { clerkId: claims.authSubject } });
-  if (!user) throw new HeroVoiceCanaryAuthError();
-  return { user, claims, ownerHmac: computeHeroVoiceCanaryOwnerHmac(claims) };
+  const actor = await readBoundHeroVoiceCanaryActor(claimsInput);
+  if (actor.user.suspended) throw new HeroVoiceCanaryAuthError();
+  return actor;
+}
+
+/** Identity only for ordinary routes; their shared access policy must still
+ * distinguish an authenticated suspended/denied user (404) from no user (401). */
+export async function resolveHeroVoiceCanarySessionUser(authState: HeroVoiceCanaryAuthState) {
+  if (!authState.userId) return null;
+  const claims = parseHeroVoiceCanaryClerkClaims(authState.sessionClaims, authState.userId);
+  return (await readBoundHeroVoiceCanaryActor(claims)).user;
 }
 
 export async function authenticateHeroVoiceCanaryAuthState(authState: HeroVoiceCanaryAuthState) {

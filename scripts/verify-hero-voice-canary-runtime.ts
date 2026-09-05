@@ -12,6 +12,7 @@ import {
   authenticateHeroVoiceCanaryAuthState,
   bootstrapHeroVoiceCanaryUser,
   HeroVoiceCanaryAuthError,
+  resolveHeroVoiceCanarySessionUser,
 } from "../src/lib/hero-voice-canary-auth.server";
 import {
   heroVoiceCanaryJcsBytes,
@@ -436,6 +437,15 @@ async function main() {
   process.env.HERO_VOICE_CANARY_TEST_OWNER_HMAC = ownerHmac;
   const actor = await authenticateHeroVoiceCanaryAuthState({ userId: subject, sessionClaims: claims });
   assert.equal(actor.ownerHmac, ownerHmac);
+  assert.equal((await resolveHeroVoiceCanarySessionUser({ userId: subject, sessionClaims: claims }))?.id, actor.user.id);
+  await prisma.user.update({ where: { id: actor.user.id }, data: { suspended: true } });
+  const suspendedActor = await resolveHeroVoiceCanarySessionUser({ userId: subject, sessionClaims: claims });
+  assert.equal(suspendedActor?.suspended, true, "identity resolution preserves authenticated policy denial");
+  await assert.rejects(
+    authenticateHeroVoiceCanaryAuthState({ userId: subject, sessionClaims: claims }),
+    (error: unknown) => error instanceof HeroVoiceCanaryAuthError && error.status === 404,
+  );
+  await prisma.user.update({ where: { id: actor.user.id }, data: { suspended: false } });
   await assert.rejects(
     authenticateHeroVoiceCanaryAuthState({ userId: null, sessionClaims: null }),
     (error: unknown) => error instanceof HeroVoiceCanaryAuthError && error.status === 401,
@@ -445,6 +455,7 @@ async function main() {
     { ...claims, sub: "user_wrong" },
     { ...claims, aud: "wrong-audience" },
   ]) {
+    await assert.rejects(resolveHeroVoiceCanarySessionUser({ userId: subject, sessionClaims: badClaims }));
     await assert.rejects(
       authenticateHeroVoiceCanaryAuthState({ userId: subject, sessionClaims: badClaims }),
       (error: unknown) => error instanceof HeroVoiceCanaryAuthError && error.status === 404,

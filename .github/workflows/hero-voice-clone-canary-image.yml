@@ -17,6 +17,8 @@ permissions:
 
 jobs:
   build:
+    # Task 6 rights are NO-GO. Re-enabling publication requires reviewed evidence.
+    if: ${{ false }}
     name: Build immutable linux/amd64 canary image
     runs-on: ubuntu-24.04
     timeout-minutes: 120
