@@ -23,6 +23,8 @@ async function main() {
   assert.equal(payload.voice.voiceId, "Kore");
   assert.equal(payload.subtitle.presetId, "authored-style");
   assert.equal(payload.script.tone, defaults.script.tone);
+  const unowned = createBrandSetupSeed({ ...defaults, script: { styleId: null, tone: blank.script.tone, analysisNotes: null, sampleText: null } }, []);
+  assert.equal(unowned.script.tone, stylePack("life-drama").scriptTone, "unowned server defaults acquire the selected pack's writing tone");
   assert.equal(nextBrandName(["แบรนด์ของฉัน", "แบรนด์ของฉัน 2"]), "แบรนด์ของฉัน 3");
   assert.equal(brandPreviewInputKey(payload), brandPreviewInputKey({ ...payload, name: "rename" }));
   assert.notEqual(brandPreviewInputKey(payload), brandPreviewInputKey({ ...payload, visual: { ...payload.visual, palette: ["#FFFFFF"] } }));
