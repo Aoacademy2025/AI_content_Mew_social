@@ -109,7 +109,7 @@ export function createBlankBrandProfileSeed(): BrandProfileSeed {
   };
 }
 
-/** Importing account defaults is an explicit creator action. Only persisted
+/** Copy account defaults for an explicit import or the new-brand setup seed. Only persisted
  * writing/voice/subtitle/mark settings are copied; visual identity stays
  * neutral because V1 has no authoritative legacy visual-language mapping. */
 export function createBrandProfileSeedFromCurrentDefaults(

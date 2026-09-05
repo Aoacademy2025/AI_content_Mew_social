@@ -706,7 +706,7 @@ export async function createBrandProfileFromPayload(input: {
   }));
 }
 
-async function createBrandProfileFromPayloadInTransaction(
+export async function createBrandProfileFromPayloadInTransaction(
   tx: Prisma.TransactionClient,
   input: {
     userId: string;
@@ -1054,9 +1054,9 @@ export async function saveBrandProfileDraft(input: {
   userId: string;
   profileId: string;
   payload: BrandProfilePayload;
-}) {
+}, transaction?: Prisma.TransactionClient) {
   const payload = parsedPayload(input.payload);
-  return prisma.$transaction(async (tx) => {
+  const run = async (tx: Prisma.TransactionClient) => {
     const profile = await tx.brandProfile.findFirst({
       where: { id: input.profileId, userId: input.userId, archivedAt: null },
     });
@@ -1071,15 +1071,16 @@ export async function saveBrandProfileDraft(input: {
       },
       update: { payloadJson: JSON.stringify(payload) },
     });
-  });
+  };
+  return transaction ? run(transaction) : prisma.$transaction(run);
 }
 
 export async function publishBrandProfileDraft(input: {
   userId: string;
   profileId: string;
   source?: "manual" | "project-look";
-}) {
-  return prisma.$transaction(async (tx) => {
+}, transaction?: Prisma.TransactionClient) {
+  const run = async (tx: Prisma.TransactionClient) => {
     const profile = await tx.brandProfile.findFirst({
       where: { id: input.profileId, userId: input.userId, archivedAt: null },
       include: { draft: true },
@@ -1129,7 +1130,8 @@ export async function publishBrandProfileDraft(input: {
       data: { baseRevisionNumber: version },
     });
     return revision;
-  });
+  };
+  return transaction ? run(transaction) : prisma.$transaction(run);
 }
 
 type ProjectBrandRevisionInput = {

@@ -102,6 +102,7 @@ model User {
   editorStylePresets              EditorStylePreset[]
   aiGenerationJobs                AiGenerationJob[]
   brandProfiles                   BrandProfile[]
+  brandLibraryOperations BrandLibraryOperation[]
   scripts                         Script[]
   scriptGenerationUsages          ScriptGenerationUsage[]
   contentPreflights               ContentPreflight[]
@@ -1615,4 +1616,17 @@ model StockSearchCache {
 
   @@unique([provider, queryKey])
   @@index([expiresAt])
+}
+
+// A completed setup action and its result commit together. No prompts or secrets.
+model BrandLibraryOperation {
+  id          String   @id @default(cuid())
+  userId      String
+  requestId   String
+  fingerprint String
+  resultJson  String
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, requestId])
 }

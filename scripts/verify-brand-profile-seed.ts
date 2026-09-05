@@ -83,7 +83,8 @@ const pageSource = [
   ...componentFiles.map((file) => readFileSync(join(componentsDirectory, file), "utf8")),
 ].join("\n");
 assert.ok(pageSource.includes("สร้างแบรนด์จากค่าที่ใช้อยู่"));
-assert.ok(pageSource.includes("createBrandProfileSeedFromCurrentDefaults"));
+assert.ok(pageSource.includes("createBrandSetupSeed"));
+assert.ok(readFileSync("src/lib/brand-setup.ts", "utf8").includes("createBrandProfileSeedFromCurrentDefaults"));
 assert.ok(
   !pageSource.match(/#38BDF8|วงกลมเน้นจุดสำคัญ|ลูกศรนำสายตา/),
   "the Brand Library page must not hard-code the gate-only Mewsocial brief",
@@ -110,8 +111,8 @@ assert.ok(
     && pageSource.includes("ทุกคลิปของแบรนด์นี้จะใช้แนวภาพเดียวกัน เปลี่ยนทีหลังได้"),
 );
 assert.ok(
-  pageSource.includes("สร้างแบรนด์แรกของคุณ — ตั้งชื่อ แล้วเลือกแนวภาพที่อยากให้คลิปของคุณเป็น"),
-  "the empty state names the two decisions a new creator has to make",
+  pageSource.includes("เลือกสไตล์ แล้วเริ่มคลิปแรก"),
+  "the empty state leads with choosing a style and starting a clip",
 );
 assert.ok(
   pageSource.includes("ตั้งค่าเพิ่มเติม")
@@ -125,8 +126,8 @@ assert.ok(
 );
 assert.match(
   pageSource,
-  /const canPublish = draft\.name\.trim\(\)\.length > 0/,
-  "a brand can be published with only a name filled in",
+  /const canPublish = payload\.name\.trim\(\)\.length > 0/,
+  "the resolved default name allows zero typed fields",
 );
 assert.ok(
   pageSource.includes("draft.visual.personality.trim()")
@@ -144,4 +145,4 @@ for (const source of [advancedSource, basicsSource]) {
   );
 }
 
-console.log("verify-brand-profile-seed: PASS neutral blank + explicit legacy import + 2-input surface");
+console.log("verify-brand-profile-seed: PASS neutral blank + explicit legacy import + zero-typing setup surface");

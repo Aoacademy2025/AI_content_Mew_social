@@ -64,6 +64,8 @@ next-env.d.ts
 /prisma/*.db-wal
 /prisma/*.db-shm
 *.jpg
+# Reviewed, versioned Brand setup sample assets.
+!/public/style-packs/2026-09-06/*.jpg
 
 # ── Dev-only files that should NOT be deployed to VPS ──────────────
 # Node CPU profiles (created when running with --prof)

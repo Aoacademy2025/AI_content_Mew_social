@@ -52,11 +52,11 @@ assert.match(schema, /archivedAt\s+DateTime\?/, "Brand Profile stores a recovera
 const stylePackPicker = readFileSync("src/app/(dashboard)/brands/_components/StylePackPicker.tsx", "utf8");
 assert.match(stylePackPicker, /role="radio"/, "each Style Pack card is a radio button");
 assert.match(stylePackPicker, /กำหนดเอง/, "a final card opts out to the custom (non-pack) look");
-const stylePackPickerIndex = brandClient.indexOf("<StylePackPicker");
+const stylePackPickerIndex = brandClient.indexOf("<BrandStyleWorkspace");
 const advancedSettingsIndex = brandClient.indexOf("<AdvancedSettings");
 assert.ok(
   stylePackPickerIndex > 0 && advancedSettingsIndex > stylePackPickerIndex,
-  "the default /brands surface renders StylePackPicker before AdvancedSettings",
+  "the default /brands surface renders the outcome workspace before optional settings",
 );
 
 // Fix-up: applying the AI visual-helper proposal writes the same pack-owned
@@ -80,13 +80,7 @@ assert.match(panel, /data-testid="preview-disabled-reason"/);
 // may promise an image entitlement the button then refuses. The allowance card,
 // the allowance cost label and the preview quote itself all sit behind the same
 // image gate, and the gate reason outranks the quote spinner on the button.
-const allowanceCardIndex = brandClient.indexOf("สิทธิ์ทดลองสร้างภาพ");
-const headerIndex = brandClient.lastIndexOf("<header", allowanceCardIndex);
-assert.ok(
-  allowanceCardIndex > 0
-    && brandClient.lastIndexOf("library.imageAccess.canUse", allowanceCardIndex) > headerIndex,
-  "the starter-allowance card renders only for an account the image gate admits",
-);
+assert.doesNotMatch(brandClient, /สิทธิ์ทดลองสร้างภาพ/, "the primary setup surface no longer leads with paid-image funding");
 const quoteFetchIndex = brandClient.indexOf('"/api/brand-library/preview-quote"');
 assert.ok(
   quoteFetchIndex > 0

@@ -21,6 +21,7 @@ import { prisma } from "@/lib/prisma";
 import { recordTelemetryEvent } from "@/lib/telemetry";
 import { TREATMENT_PRESETS } from "@/lib/brand-treatment-catalog";
 import { visualFormatPreviewUrl } from "@/lib/brand-visual-format-preview";
+import { stylePackSample } from "@/lib/style-pack-samples";
 import { activeStylePacks } from "@/lib/style-pack-catalog";
 
 function json(value: string | null | undefined) {
@@ -143,7 +144,7 @@ export async function GET() {
         tagline: pack.tagline,
         palette: pack.palette,
         visualFormatId: pack.visualFormatId,
-        sampleImage: `/style-packs/${pack.id}.jpg`,
+        sampleImage: stylePackSample(pack.id).imageUrl ?? "",
       })),
       defaults: {
         // This seed is copied verbatim into a create request by
