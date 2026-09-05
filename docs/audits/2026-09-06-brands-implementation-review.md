@@ -30,6 +30,7 @@ The earlier design brief proposed an 8–12 second multi-scene audiovisual demo.
 
 - `npm run verify:brands-ci`: pass, including the new SQLite setup contract tests, real-client browser regression, sample integrity checks, mobile geometry, existing library/asset/style/treatment/pin/quote/rollout and render-preflight checks.
 - `npm run build`: pass (production webpack build and TypeScript).
+- `prisma migrate deploy` on a fresh isolated SQLite database: the complete migration chain, including the new operation table, applied successfully.
 - `npm run lint:brands`: pass with one existing plain-image warning in AdvancedSettings.
 - The narrowly changed editor selector still has two pre-existing `set-state-in-effect` lint findings when linted independently. Its text/link change introduces no new lint finding. This is not a claim that the repository-wide lint suite is clean.
 - Two pre-existing type errors in ignored local `artifacts/ops-close-*` scripts came from literal-key Map inference. Their local Map key annotations were widened to `string` for the local build; those ignored scripts are not part of this branch or deployed application.
