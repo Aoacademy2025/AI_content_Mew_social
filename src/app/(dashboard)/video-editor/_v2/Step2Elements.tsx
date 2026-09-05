@@ -365,7 +365,7 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
                   key={o.value}
                   disabled={locked}
                   onClick={() => {
-                    if (locked) return;
+                    if (locked || p.brollSource === o.value) return;
                     p.setBrollSource(o.value);
                     // The funding-aware default only applies while the user hasn't touched the count
                     // control themselves — otherwise re-selecting Hero AI Image after
@@ -1154,6 +1154,7 @@ function CustomerBrollSourceButtons({ p, durationSec }: { p: V2Project; duration
   }
 
   function selectSource(value: "stock" | "kie-image" | "automix") {
+    if (p.brollSource === value) return;
     if (value === "stock") {
       p.setMixPreset("free");
       return;
