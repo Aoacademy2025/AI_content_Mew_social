@@ -44,6 +44,9 @@ jobs:
       - name: Verify acoustic subtitle and export release gates
         run: npm run verify:subtitle-audio-sync
 
+      - name: Verify concurrent AI image materialization
+        run: node --conditions=react-server --import tsx scripts/verify-stock-image-isolation.ts
+
       - name: Verify bounded acoustic subtitle clock
         run: npm run verify:acoustic-subtitle-clock
 

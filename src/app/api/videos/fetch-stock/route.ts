@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { createStockImagePrefix } from "@/lib/stock-image-paths";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { decryptKey } from "@/lib/key-crypto";
@@ -1826,6 +1827,7 @@ export async function POST(req: Request) {
   fs.mkdirSync(rendersDir, { recursive: true });
 
   const userPrefix = `stock-${userId}-`;
+  const imagePrefix = createStockImagePrefix(userId, videoJobId);
   const staleTempDeleted = cleanupStaleTempFiles(rendersDir, userPrefix, 30 * 60 * 1000);
   if (staleTempDeleted > 0) {
     console.log(`[fetch-stock] cleaned ${staleTempDeleted} stale temp files`);
@@ -2424,9 +2426,9 @@ export async function POST(req: Request) {
       async ({ keyword, sourceIndex, kenBurnsDurationSec, asset }) => {
         const startedAt = Date.now();
         const id = HERO_RUNPOD_ID_OFFSET + sourceIndex;
-        const imageFile = `${userPrefix}${id}.src.png`;
+        const imageFile = `${imagePrefix}${id}.src.png`;
         const imagePath = path.join(rendersDir, imageFile);
-        const outFile = `${userPrefix}${id}.mp4`;
+        const outFile = `${imagePrefix}${id}.mp4`;
         const outPath = path.join(rendersDir, outFile);
         try {
           if (download) {
@@ -2609,9 +2611,9 @@ export async function POST(req: Request) {
           providerStyle,
         }) => {
           const id = HERO_RUNPOD_ID_OFFSET + sourceIndex;
-          const imageFile = `${userPrefix}${id}.src.png`;
+          const imageFile = `${imagePrefix}${id}.src.png`;
           const imagePath = path.join(rendersDir, imageFile);
-          const outFile = `${userPrefix}${id}.mp4`;
+          const outFile = `${imagePrefix}${id}.mp4`;
           const outPath = path.join(rendersDir, outFile);
           try {
             if (download) {
@@ -2837,7 +2839,7 @@ export async function POST(req: Request) {
       async ({ keyword, sourceIndex }) => {
         const query = subtitleTexts?.[sourceIndex] || keyword;
         const id = KIE_ID_OFFSET + sourceIndex;
-        const imageFile = `${userPrefix}${id}.src.jpg`;
+        const imageFile = `${imagePrefix}${id}.src.jpg`;
         const imagePath = path.join(rendersDir, imageFile);
         // Spend-before-generate. Skipped (credits/rate/cap) → no generation.
         const gate = await attemptImageSpend();
@@ -2848,7 +2850,7 @@ export async function POST(req: Request) {
         let failureReason: string | null = null;
         try {
           if (download) {
-            const outFile = `${userPrefix}${id}.mp4`;
+            const outFile = `${imagePrefix}${id}.mp4`;
             const outPath = path.join(rendersDir, outFile);
             try {
               const genPrompt = promptFor(buildKieImagePrompt(keyword, {
@@ -3532,9 +3534,9 @@ export async function POST(req: Request) {
           if (provider === "met" && !canUseMetFallback) continue;
 
           const id = IMAGE_PROVIDER_OFFSET[provider] + slot;
-          const imageFile = `${userPrefix}${id}.src.jpg`;
+          const imageFile = `${imagePrefix}${id}.src.jpg`;
           const imagePath = path.join(rendersDir, imageFile);
-          const outFile = `${userPrefix}${id}.mp4`;
+          const outFile = `${imagePrefix}${id}.mp4`;
           const outPath = path.join(rendersDir, outFile);
           try {
             let fallback: ImageFallbackResult | null = null;
@@ -3575,9 +3577,9 @@ export async function POST(req: Request) {
           if (retained) {
             const startedAt = Date.now();
             const id = AUTOMIX_RUNPOD_ID_OFFSET + slot;
-            const imageFile = `${userPrefix}${id}.src.png`;
+            const imageFile = `${imagePrefix}${id}.src.png`;
             const imagePath = path.join(rendersDir, imageFile);
-            const outFile = `${userPrefix}${id}.mp4`;
+            const outFile = `${imagePrefix}${id}.mp4`;
             const outPath = path.join(rendersDir, outFile);
             try {
               await materializeRetainedBrandImage({
@@ -3638,9 +3640,9 @@ export async function POST(req: Request) {
           aiTelemetry.aiGenAttemptCount++;
           const aiStartedAt = Date.now();
           const id = AUTOMIX_RUNPOD_ID_OFFSET + slot;
-          const imageFile = `${userPrefix}${id}.src.png`;
+          const imageFile = `${imagePrefix}${id}.src.png`;
           const imagePath = path.join(rendersDir, imageFile);
-          const outFile = `${userPrefix}${id}.mp4`;
+          const outFile = `${imagePrefix}${id}.mp4`;
           const outPath = path.join(rendersDir, outFile);
           let generated: HeroImageGenerationResult | null = null;
           let success = false;
@@ -3779,9 +3781,9 @@ export async function POST(req: Request) {
           aiTelemetry.aiGenAttemptCount++;
           const aiStartedAt = Date.now();
           const id = KIE_ID_OFFSET + slot;
-          const imageFile = `${userPrefix}${id}.src.jpg`;
+          const imageFile = `${imagePrefix}${id}.src.jpg`;
           const imagePath = path.join(rendersDir, imageFile);
-          const outFile = `${userPrefix}${id}.mp4`;
+          const outFile = `${imagePrefix}${id}.mp4`;
           const outPath = path.join(rendersDir, outFile);
           let success = false;
           let failureReason: string | null = null;

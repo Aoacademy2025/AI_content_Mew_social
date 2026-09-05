@@ -17,6 +17,7 @@ export type SubtitleTimingSource =
   | "tts_segment_timing"
   | "generated_tts_fallback"
   | "forced_alignment"
+  | "partial_forced_alignment"
   | "upload_transcription"
   | "avatar_script_clock";
 
@@ -1138,7 +1139,8 @@ function classifySubtitleQuality(input: SubtitleQualityInput): SubtitleQualityRe
       captionIndex: contentComparison.captionIndex,
     };
   }
-  if (input.timingSource === "tts_segment_timing" || input.timingSource === "avatar_script_clock") {
+  if (input.timingSource === "tts_segment_timing" || input.timingSource === "avatar_script_clock"
+    || input.timingSource === "partial_forced_alignment") {
     return {
       status: "failed",
       timingSource: input.timingSource,

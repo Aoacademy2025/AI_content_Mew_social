@@ -6,6 +6,7 @@
 // evidence. No subtitle verdict may fail a job, retry a provider, or spend on a second
 // TTS generation, and Export never re-aligns.
 
+import { tokenizeWords } from "../src/lib/tts-timing";
 import type { SubtitleVerification } from "../src/lib/mcp/video-job";
 
 import { execSync } from "node:child_process";
@@ -845,25 +846,32 @@ async function main() {
   const previousAcousticMode = process.env.SUBTITLE_ACOUSTIC_MODE;
   const previousAcousticPercent = process.env.SUBTITLE_ACOUSTIC_ROLLOUT_PERCENT;
   process.env.SUBTITLE_ACOUSTIC_ROLLOUT_PERCENT = "100";
-  for (const variant of ["off", "shadow", "apply", "partial"] as const) {
-    process.env.SUBTITLE_ACOUSTIC_MODE = variant === "partial" ? "apply" : variant;
-    const speech = "แมว กิน ปลา";
+  for (const variant of ["off", "shadow", "apply", "partial", "repeat"] as const) {
+    process.env.SUBTITLE_ACOUSTIC_MODE = variant === "partial" || variant === "repeat" ? "apply" : variant;
+    const speech = variant === "repeat" ? "แมวเล็ก ๆ กินปลา" : "แมว กิน ปลา";
     const calls: Call[] = [];
     const job = await createJob({ script: speech, previewMode: true, voiceProvider: "gemini", subtitleMode: "1" });
     const pipeline = geminiPipeline({ calls, speech, durationMs: 5000,
       voiceUrl: "/api/renders/acoustic-fixture.wav",
-      transcribe: async () => { throw new Error("fixture_transcribe_unavailable"); } });
+      transcribe: async () => {
+        if (variant !== "repeat") throw new Error("fixture_transcribe_unavailable");
+        return { words: tokenizeWords(speech).map(w => ({ word: w.word,
+          startMs: 1000 + w.startChar * 100, endMs: 1000 + w.endChar * 100 })),
+          audioDurationMs: 5000, speechCoverage: { source: "silence_analysis", spokenEndMs: 2600 } };
+      } });
     let localCalls = 0;
     await runOrchestrator(job.id, user.id, { caller: pipeline.caller, refundOneClip: async () => {}, sleep: async () => {},
       acousticWorker: async () => {
         localCalls++;
-        const positions = [0, 1, 2, 4, 5, 6, 8, 9, 10];
+        const positions = variant === "repeat"
+          ? [...speech].flatMap((c, i) => /[\p{L}\p{M}]/u.test(c) && c !== "ๆ" ? [i] : [])
+          : [0, 1, 2, 4, 5, 6, 8, 9, 10];
         return {
           evidence: { status: "unavailable", mode: variant === "shadow" ? "shadow" : "apply", applied: false,
             version: "thai-ctc-v1", modelRevision: "fixture", durationMs: 10, audioHash: "fixture-audio", textHash: "fixture-text" },
           clock: { version: "thai-ctc-v1", modelRevision: "fixture", audioHash: "fixture-audio", textHash: "fixture-text",
             audioDurationMs: 5000, characters: positions.map((startChar, i) => ({
-              startChar, endChar: startChar + 1, startMs: 200 + i * 100, endMs: 300 + i * 100, confidence: .99,
+              startChar, endChar: startChar + 1, startMs: 200 + (variant === "repeat" ? startChar : i) * 100, endMs: 300 + (variant === "repeat" ? startChar : i) * 100, confidence: .99,
             })).filter(c => variant !== "partial" || c.startChar < 4 || c.startChar >= 8) },
         };
       },
@@ -881,8 +889,10 @@ async function main() {
     } else {
       check(renderedCaptions(output)[0]?.startMs === 200, `N/${variant}: preview uses the acoustic start`);
       check(v.acoustic?.applied === true, `N/${variant}: selected clock identity is persisted`);
-      if (variant === "partial") {
-        check(output.subtitleQa?.status === "warning", "N/partial: approximate spans are not certified passed");
+      if (variant === "partial" || variant === "repeat") {
+        check(output.subtitleQa?.status === "warning", `N/${variant}: approximate spans are not certified passed`);
+        check(output.subtitleQa?.timingSource === "partial_forced_alignment", `N/${variant}: partial identity persists`);
+        if (variant === "repeat") acousticExportSourceId = job.id;
         check((v.acoustic?.uncertainRanges?.length ?? 0) === 1, "N/partial: the uncertain span remains visible in evidence");
       } else acousticExportSourceId = job.id;
     }
@@ -907,6 +917,7 @@ async function main() {
     const completed = await prisma.videoJob.findUniqueOrThrow({ where: { id: job.id } });
     const output = JSON.parse(completed.outputJson ?? "{}");
     check(completed.status === "done", "N/export: acoustic preview exports successfully");
+    check(output.subtitleQa?.status === "warning" && output.subtitleQa?.timingSource === "partial_forced_alignment", "N/export: partial timing stays warning after export");
     check(output.subtitleEvidence?.sourceAcoustic?.audioHash === "fixture-audio", "N/export: original audio identity is retained");
     check(JSON.stringify(output.subtitleEvidence?.captions?.map((c: { startMs: number }) => c.startMs))
       === JSON.stringify(captions.map(c => c.startMs)), "N/export: preview timing survives the export");

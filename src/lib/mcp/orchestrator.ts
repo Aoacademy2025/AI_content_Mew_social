@@ -2293,6 +2293,9 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
       verification.acoustic = selection.evidence;
       if (selection.replacement) {
         capRes = selection.replacement;
+        // Interpolated spans must retain warning provenance through checkpoints
+        // and export, even when the previous remote clock was fully aligned.
+        subtitleTimingSource = "partial_forced_alignment";
         if (selection.evidence.status === "aligned") {
           subtitleTimingSource = "forced_alignment";
           verification = { status: "aligned", method: "ctc", ttsCaptions,

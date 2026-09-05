@@ -328,6 +328,13 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
 
         {/* 1 · บีโรล */}
         <Group title="บีโรล" desc="ภาพประกอบที่สลับทุก 3–5 วิ ระหว่างเสียงพูด">
+          <p style={{ fontSize: 12, color: color.textSecondary, lineHeight: 1.6 }}>
+            {p.brollSource === "kie-image"
+              ? "สร้างภาพใหม่ตามเนื้อหาและสไตล์ Brand ที่เลือก แล้วแพนและซูมภาพประกอบเสียงบรรยาย · ดูจำนวนภาพและค่าใช้จ่ายก่อนเริ่มสร้าง"
+              : p.brollSource === "stock"
+                ? "เลือกวิดีโอที่มีอยู่แล้วจากคลังสต็อกตามเนื้อหาและโทน หากต้องการสร้างภาพตามสไตล์ Brand ให้เลือก Hero AI Image"
+                : p.brollSource === "automix" ? "AutoMix ผสมสต็อกกับภาพ AI ตามสัดส่วนที่เลือก" : "วิดีโอ AI เคลื่อนไหวตามฉากที่เลือก"}
+          </p>
           {/* Customers see the product choices by their public names. Internal admins keep
               the raw beta controls (including the unreleased AI-video source). */}
           {p.isAdmin ? (

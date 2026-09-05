@@ -441,9 +441,11 @@ async function main() {
    * from cache — the policy would silently apply to new sources only. */
   assert.equal(
     CONTENT_PREFLIGHT_ANALYZER_VERSION,
-    "brand-content-preflight-v16-action-fact-boundary",
+    "brand-content-preflight-v17-scene-continuity",
     "changing what a beat contains must publish a new analyzer version",
   );
+  assert.match(capturedPreflightPrompt, /same unnamed person across beats/);
+  assert.match(capturedPreflightPrompt, /show the reverse of the paper/);
   const preflightSource = readFileSync("src/lib/content-preflight.server.ts", "utf8");
   assert.match(
     preflightSource,

@@ -209,7 +209,7 @@
     "verify:brand-setup": "node --conditions=react-server --import tsx scripts/verify-brand-setup.ts",
     "verify:style-pack-samples": "tsx scripts/verify-style-pack-samples.ts",
     "verify:brand-setup-ui": "node --import tsx scripts/verify-brand-setup-ui.mts",
-    "verify:acoustic-subtitle-clock": "tsx scripts/verify-acoustic-subtitle-clock.ts && tsx scripts/verify-acoustic-subtitle-worker.ts"
+    "verify:acoustic-subtitle-clock": "tsx scripts/verify-acoustic-repeat-selection.ts && tsx scripts/verify-acoustic-subtitle-clock.ts && tsx scripts/verify-acoustic-subtitle-worker.ts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"
