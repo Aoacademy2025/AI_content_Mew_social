@@ -10,6 +10,7 @@ import * as ttsProvidersModule from "../src/lib/tts-providers";
 import * as editorLayerVisibilityModule from "../src/lib/editor-layer-visibility";
 import * as editorDefaultDraftModule from "../src/lib/editor-default-draft";
 import * as editorStylePresetModule from "../src/lib/editor-style-preset-contract";
+import * as heroScriptDurationModule from "../src/lib/hero-script-duration";
 import * as musicMoodModule from "../src/lib/music-mood";
 import {
   createEditorProjectSaveQueue,
@@ -398,6 +399,7 @@ type ProjectHook = {
   clipUrl: string;
   setClipUrl(url: string): void;
   clipDurationSec: number;
+  scriptTargetDurationSec: number | null;
   setClipDurationSec(value: number): void;
   brollSource: string;
   autoMixProviders: string[];
@@ -521,6 +523,7 @@ function createHarness(options: HarnessOptions = {}) {
         presetBrollSource: (preset: string) => preset === "free" ? "stock" : "automix",
       };
     }
+    if (specifier === "@/lib/hero-script-duration") return heroScriptDurationModule;
     if (specifier === "@/lib/editor-default-draft") return editorDefaultDraftModule;
     if (specifier === "@/lib/editor-project-save-queue") return { editorProjectSaveQueue: queue };
     if (specifier === "@/lib/editor-project-bootstrap") return bootstrapModule;
@@ -2795,9 +2798,41 @@ async function revisionExhaustionRestoresConflict(): Promise<void> {
   assert.ok(harness.runner.current.recovery.error, "revision exhaustion returns a retryable immutable conflict");
 }
 
+async function narrationTargetSurvivesEditingAndReload(): Promise<void> {
+  const server = new SharedEditorServer();
+  server.setProject("narration-target", 0, { script: "original script", scriptTargetDurationSec: 30 });
+  const first = createHarness({ search: "?projectId=narration-target", server });
+  first.runner.mount();
+  await settle(first.runner);
+  assert.equal(first.runner.current.scriptTargetDurationSec, 30, "hydrate target from the real project draft");
+  first.runner.current.setScript("edited script");
+  first.runner.flush();
+  first.clock.advance(1_000);
+  await settle(first.runner);
+  const bodies = patchBodies(first.fetchMock);
+  assert.equal((bodies[bodies.length - 1].draft as JsonRecord).scriptTargetDurationSec, 30,
+    "autosave retains the narration target after a script edit");
+  first.runner.unmount();
+  const reopened = createHarness({ search: "?projectId=narration-target", server });
+  reopened.runner.mount();
+  await settle(reopened.runner);
+  assert.equal(reopened.runner.current.scriptTargetDurationSec, 30, "reopening preserves target");
+  await reopened.runner.current.resetProject();
+  await settle(reopened.runner);
+  assert.equal(reopened.runner.current.scriptTargetDurationSec, null, "new project clears old narration target");
+  reopened.runner.unmount();
+  server.setProject("old-no-target", 0, { script: "legacy draft" });
+  const legacy = createHarness({ search: "?projectId=old-no-target", server });
+  legacy.runner.mount();
+  await settle(legacy.runner);
+  assert.equal(legacy.runner.current.scriptTargetDurationSec, null, "legacy project has no invented target");
+  legacy.runner.unmount();
+}
+
 export async function verifyRuntimeHookContract(): Promise<void> {
   activeCompiledHook = compileHook(hookSource);
   const cases: Array<[string, () => Promise<void>]> = [
+    ["narration-target-edit-reload-reset", narrationTargetSurvivesEditingAndReload],
     ["two-independent-clients", twoIndependentClientsCannotOverwrite],
     ["same-tick-conflict-mutation-gate", conflictBlocksSettersBeforeRecoveryRerender],
     ["timeout-committed", timeoutCommittedIsAcknowledgedByFingerprint],

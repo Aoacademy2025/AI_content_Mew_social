@@ -1,5 +1,6 @@
 "use client";
 
+import { scriptTargetDuration } from "@/lib/hero-script-duration";
 import { useCallback, useEffect, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { fetchMe, resolveBrandLibraryClientAccess, resolveBrandVisualClientAccess, type MeData } from "@/lib/use-me";
 import { DEFAULT_AUTO_MIX_PROVIDERS, type AutoMixImageProvider, type KieImageModel } from "../_components/types";
@@ -70,6 +71,7 @@ function scopedProjectIdKey(accountId: string | null): string {
 }
 
 interface V2Draft {
+  scriptTargetDurationSec?: number | null;
   projectTitle?: string; narrativeSourceKind?: V2NarrativeSourceKind;
   mode?: V2Mode; script?: string; clipUrl?: string; clipDurationSec?: number; brollSource?: V2BrollSource;
   voiceEngine?: V2VoiceEngine; geminiVoiceName?: string; voiceId?: string; omniVoiceId?: string;
@@ -528,6 +530,10 @@ export function useV2Project() {
     canAcceptUserMutation,
     markUserDraftMutation,
   );
+  // Handoff metadata is hydrated/reset with the project, never edited by a public setter.
+  const [scriptTargetDurationSec, setScriptTargetDurationSecRaw] = useState<number | null>(
+    () => scriptTargetDuration(d.scriptTargetDurationSec),
+  );
   const [script, setScript, setScriptRaw] = useUserDraftState(
     d.script ?? "", "script", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -752,7 +758,7 @@ export function useV2Project() {
 
   function buildDraft(): V2Draft {
     return {
-      mode, narrativeSourceKind, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
+      mode, narrativeSourceKind, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId,
       projectTitle,
       musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       musicMoodDefault: musicMoodDefaultHint,
@@ -769,6 +775,7 @@ export function useV2Project() {
     if (next.mode) setModeRaw(next.mode);
     if (next.narrativeSourceKind) setNarrativeSourceKindRaw(next.narrativeSourceKind);
     if (next.script !== undefined) setScriptRaw(next.script);
+    setScriptTargetDurationSecRaw(scriptTargetDuration(next.scriptTargetDurationSec));
     if (next.clipUrl !== undefined) setClipUrlStateRaw(next.clipUrl);
     if (next.clipDurationSec !== undefined) {
       setClipDurationSecStateRaw(Number.isFinite(next.clipDurationSec) && next.clipDurationSec > 0
@@ -1346,6 +1353,7 @@ export function useV2Project() {
     setModeRaw(DEFAULT_PROJECT.mode);
     setProjectTitleRaw(DEFAULT_PROJECT.projectTitle);
     setScriptRaw(DEFAULT_PROJECT.script);
+    setScriptTargetDurationSecRaw(null);
     setClipUrlStateRaw(DEFAULT_PROJECT.clipUrl);
     setClipDurationSecStateRaw(DEFAULT_PROJECT.clipDurationSec);
     setVoiceEngineRaw(accountVideoDefaults.voiceEngine);
@@ -2319,7 +2327,7 @@ export function useV2Project() {
       latestQueuedSaveRef.current = { projectId: saveProjectId, revision };
     }, 1000);
     return () => { clearTimeout(t); };
-  }, [mode, projectTitle, script, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
+  }, [mode, projectTitle, script, scriptTargetDurationSec, clipUrl, clipDurationSec, brollSource, voiceEngine, geminiVoiceName, voiceId, omniVoiceId, musicTrack, musicTrackKind, bgmVolume, useAvatar, avatarId,
       targetClipCount, avatarMode, avatarIntroSecs, avatarTailSecs, kieModel, autoMixProviders, mixPreset, brollRegionPreference, brollVisualStyle, logoOverlay, brandSubtitleDefault, layerVisibility, headlineHook, projectId, projectReady,
       acknowledgeAutosaveCandidate, materializeAutosaveConflict, ownsAutosaveLineage, setRecoveryState, saveRevision]);
 
@@ -2365,7 +2373,7 @@ export function useV2Project() {
 
   return {
     projectTitle, setProjectTitle,
-    mode, setMode, narrativeSourceKind,
+    mode, setMode, narrativeSourceKind, scriptTargetDurationSec,
     script, setScript,
     clipUrl, setClipUrl, clipDurationSec, setClipDurationSec,
     brollSource, setBrollSource,

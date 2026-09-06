@@ -303,3 +303,15 @@ export function buildScriptLengthRetryNote(params: {
 ${params.editableText}
 ตอบด้วย JSON รูปแบบเดิมเท่านั้น`;
 }
+
+/** Several complete lengths in one correction call let the server use its
+ * real Thai tokenizer to select an answer, rather than trusting model counts. */
+export function buildScriptCorrectionOptionsNote(wordBudget: number): string {
+  const budgets = [0.7, 0.85, 1].map((scale) => Math.round(wordBudget * scale));
+  return `\nสำหรับการแก้รอบนี้ ให้ส่ง 3 ฉบับที่เล่าใจความครบ แต่ต่างกันด้านปริมาณรายละเอียดอย่างชัดเจน
+จำนวนคำรวมทั้งคลิปของแต่ละฉบับ: ${budgets.join(" / ")} คำ รวมส่วนเดิมที่ห้ามแก้แล้ว
+ใช้เป้าของแต่ละฉบับนี้ในการแก้รอบนี้ ระบบจะนับคำจริงและเลือกฉบับที่ใกล้เป้าหมายเวลาที่สุด
+ทุกฉบับต้องรักษาส่วนที่ห้ามแก้ ข้อเท็จจริง และบทสรุป ไม่ตัดกลางประโยคหรือเติมคำซ้ำ
+อย่าใส่ชื่อฉบับ ตัวเลขงบ หรือข้อมูลการนับคำในข้อความพูด
+แทนที่รูปแบบ JSON ก่อนหน้า ให้ตอบอ็อบเจ็กต์ที่มีคีย์ candidates เป็นอาร์เรย์ 3 รายการ แต่ละรายการใช้รูปแบบผลลัพธ์ JSON เดิมทุกฟิลด์`;
+}

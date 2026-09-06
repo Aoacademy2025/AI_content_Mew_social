@@ -86,3 +86,33 @@ Two additional diagnostic takes kept script text, Gemini model and single-chunk 
 Independent ffprobe measurements confirm the new PCM durations. This is exploratory evidence from one take per condition: stochastic generation remains a confounder, and these differences are not a calibrated per-voice coefficient. The results show why word count alone cannot certify audio duration. They do not establish that OpenRouter is involved, nor justify silently changing a creator's voice.
 
 These two takes are retained in addition to the earlier thirteen artifacts. The original five-story validation remains 2/5; alternate voices are not substituted into that score. No additional production code changes were made in this follow-up. The next controlled duration experiment can proceed independently of any OpenRouter access.
+
+## Approved continuation: correction options and Editor preflight
+
+Mew approved continuing the rewrite fix, measuring narration pace using fixed scripts, checking the target with the selected voice before TTS, a new five-story QA run, and review/CI before proposing merge/deploy. No merge, deploy or production SSH is authorized by this continuation.
+
+- Duration correction now requests three complete drafts in the existing single correction callback. The server validates each independently and selects by banned-word safety, then measured distance from the word budget. The original remains eligible so a worse correction cannot replace it. No sentences or sections are spliced between candidates. Invalid correction output retains the first valid result and its warning.
+- Callback count stays bounded: one initial generation plus at most one correction, each using the existing JSON validator. The correction output cap is 4,096 tokens for 30 seconds and 8,192 for 60/90 seconds. Provider token cost can increase, although the application call reservation and number of provider round-trips are unchanged.
+- Hero Script's selected duration was previously lost at Editor handoff. It now travels as nullable `scriptTargetDurationSec` inside the existing draft JSON, survives edits/autosave/reopen, and clears on a new project. No database schema migration. Uploaded media duration remains independent.
+- The voice-selection step shows an advisory target notice that follows the current script and voice. It never calls TTS, changes text/voice, blocks submission or changes billing estimates. Old drafts without a target show no invented target.
+- Fixed-script voice comparison now covers all five prior validation scripts with Kore and Aoede. Rounded empirical pace centers/envelopes are Kore 3 words/s (2.9–3.5) and Aoede 2.8 words/s (2.5–3.5). These are approximate observations, not confidence intervals or guarantees. They apply only to predominantly Thai, direct Gemini narration; other voices, languages and avatar narration receive an explicit unknown estimate.
+
+### New validation set
+
+Five different scenarios were frozen before generation. Each used the local configured Gemini writing model and one audio take per resulting script, with the same production generation/guard/validator/TTS helpers. This is local service integration QA, not production Browser E2E. No effective production writing-provider claim is made.
+
+| Scenario | Target | Words | Word band | Actual seconds | ±10% audio |
+|---|---:|---:|---|---:|---|
+| laundry-30 (Kore) | 30 | 102 | FAIL | 31.210958 | PASS |
+| train-30 (Aoede) | 30 | 97 | PASS | 34.370958 | FAIL |
+| photo-30 (Kore) | 30 | 92 | PASS | 28.330958 | PASS |
+| fridge-60 (Kore) | 60 | 195 | PASS | 56.490958 | PASS |
+| bench-90 (Aoede) | 90 | 253 | PASS | 71.501917 | FAIL |
+
+Word-band compliance is 5/5; actual narration is 3/5. The two failures remain failures. A separate, unprompted ASR check against all five files yields 98.1–100% ordered character coverage after punctuation/combining-mark normalization. It provides no evidence of a large missing passage in the short 90-second story. ASR is not human listening, pronunciation certification or proof of word-perfect coverage, and it triggers no TTS regeneration.
+
+The earlier validation score is not replaced. All 23 local audio files are retained across the baseline, calibration, validation and crossover experiments. The new five-story results do not demonstrate a reliable ±10% audio guarantee. PR449 remains Draft pending the remaining narration-duration acceptance question.
+
+### Continuation verification
+
+Regression tests first failed for correction selection (541 passed / 2 failed) and for lost handoff duration (543 passed / 1 failed). The resulting verification covers complete-candidate selection, callback bounds, invalid/worse-candidate fallback, real SQLite handoff, selected-voice feedback and unknown calibration. The real Editor hook harness verifies target hydration, editing/autosave, reopening and reset. Browser component QA and final checks/reviews are recorded in the local artifact directory and PR body when complete.

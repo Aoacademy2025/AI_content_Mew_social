@@ -4,10 +4,12 @@ import { isValidHookFormulaKey } from "@/lib/viral-frameworks";
 import {
   buildGeneratePrompt,
   type BrandProfileForPrompt,
+  buildScriptCorrectionOptionsNote,
 } from "@/lib/prompts/hero-script";
 import {
   generateValidatedJson,
   generateWithScriptGuard,
+  validateScriptCorrectionOptions,
   heroScriptLlmErrorResponse,
   isValidDurationSec,
   requireHeroScriptUser,
@@ -146,6 +148,13 @@ export async function POST(req: Request) {
           seconds: durationSec,
           assemble: (r) => `${hookText}\n${stripEchoedHook(r.bodyText, hookText)}\n${r.ctaText}`,
         },
+        correct: (note) => generateValidatedJson({
+          apiKey,
+          prompt: `${prompt}${note}${buildScriptCorrectionOptionsNote(wordBudgetForDuration(durationSec))}`,
+          maxOutputTokens: durationSec === 30 ? 4096 : 8192,
+          tier: "pro",
+          validate: (data) => validateScriptCorrectionOptions(data, validateGenerateResponse),
+        }),
         generate: (sternNote) =>
           generateValidatedJson({
             apiKey,

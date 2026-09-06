@@ -952,6 +952,8 @@ export async function generateWithScriptGuard<T>(params: {
   extractText: (result: T) => string;
   duration?: { seconds: number; assemble: (result: T) => string };
   generate: (correctionNote: string) => Promise<T | null>;
+  /** Alternative complete drafts from the same single correction request. */
+  correct?: (correctionNote: string) => Promise<T[] | null>;
 }): Promise<GuardedGeneration<T> | null> {
   const { bannedWords, extractText, duration, generate } = params;
   function inspect(result: T) {
@@ -975,9 +977,32 @@ export async function generateWithScriptGuard<T>(params: {
       editableText: extractText(first),
       editableWords: countWords(extractText(first)),
     }) : "");
-  const result = await generate(note) ?? first;
+  let result: T;
+  if (check.timing && !check.timing.withinTarget && params.correct) {
+    const candidates = await params.correct(note);
+    // Keep the first draft eligible: a correction must not replace it with a
+    // worse length or introduce a banned word just because it arrived later.
+    const ranked = [first, ...(candidates ?? []).slice(0, 3)].map((candidate) => ({
+      candidate, check: inspect(candidate),
+    }));
+    ranked.sort((a, b) => Number(Boolean(a.check.banned)) - Number(Boolean(b.check.banned)) ||
+      Math.abs((a.check.timing?.words ?? 0) - (a.check.timing?.budget ?? 0)) -
+      Math.abs((b.check.timing?.words ?? 0) - (b.check.timing?.budget ?? 0)));
+    result = ranked[0].candidate;
+  } else {
+    result = await generate(note) ?? first;
+  }
   const { warning } = inspect(result);
   return { result, ...(warning ? { warning } : {}) };
+}
+
+/** Validate complete correction drafts independently; never merge their parts. */
+export function validateScriptCorrectionOptions<T>(data: unknown, validate: (value: unknown) => T | null): T[] | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const candidates = (data as Record<string, unknown>).candidates;
+  if (!Array.isArray(candidates) || candidates.length < 1 || candidates.length > 3) return null;
+  const valid = candidates.map(validate).filter((candidate): candidate is T => candidate !== null);
+  return valid.length ? valid : null;
 }
 
 // ── GENERATE / REGEN response validators ───────────────────────────────────
@@ -1388,6 +1413,7 @@ export async function sendScriptToEditor(
   const brandDefault = await getDefaultBrandPreference(userId);
   const accountDraft = buildScriptHandoffDraft({
     script: text,
+    targetDurationSec: script.durationSec,
     projectTitle: title,
     accountDefaults: {
       // Mirrors the editor's loadAccountVideoDefaults() (/api/user/video-settings).

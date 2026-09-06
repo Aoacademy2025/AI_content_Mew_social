@@ -20,6 +20,7 @@ import {
   DEFAULT_EDITOR_LAYER_VISIBILITY,
   type EditorLayerVisibility,
 } from "@/lib/editor-layer-visibility";
+import { scriptTargetDuration } from "@/lib/hero-script-duration";
 import type { TtsProvider } from "@/lib/tts-providers";
 
 /** Editor step-1 mode: write a script vs upload your own clip. Mirrors V2Mode. */
@@ -34,6 +35,8 @@ export interface EditorDefaultDraft {
   script: string;
   clipUrl: string;
   clipDurationSec: number;
+  /** Narration target from Hero Script; independent of uploaded media duration. */
+  scriptTargetDurationSec?: number | null;
   voiceEngine: TtsProvider;
   geminiVoiceName: string;
   voiceId: string;
@@ -106,17 +109,20 @@ export interface EditorAccountVideoDefaults {
  *  line into 1 Segment. */
 export function buildScriptHandoffDraft(params: {
   script: string;
+  targetDurationSec?: number;
   projectTitle: string;
   accountDefaults?: EditorAccountVideoDefaults;
   logoOverlay?: LogoOverlayConfig;
 }): EditorDefaultDraft {
   const { script, projectTitle, accountDefaults, logoOverlay } = params;
+  const target = scriptTargetDuration(params.targetDurationSec);
   return {
     ...EDITOR_DEFAULT_DRAFT,
     autoMixProviders: [...EDITOR_DEFAULT_DRAFT.autoMixProviders],
     projectTitle,
     mode: "script",
     narrativeSourceKind: "ai-script",
+    ...(target ? { scriptTargetDurationSec: target } : {}),
     script,
     voiceEngine: accountDefaults?.voiceEngine ?? EDITOR_DEFAULT_DRAFT.voiceEngine,
     geminiVoiceName: accountDefaults?.geminiVoiceName ?? EDITOR_DEFAULT_DRAFT.geminiVoiceName,
