@@ -345,7 +345,7 @@ Golden set (ส่วนตัว `/tmp/hero-voice-text-stage-2026-09-06/golden/
 ไฟล์: `src/lib/hero-voice-asr-ears.server.ts` (หูสองข้าง), `src/lib/hero-voice-generation.server.ts`
 (ต่อ gate ใน `advanceHeroVoiceGenerationUnlocked` หลังเขียน part WAV + `replaceRejectedCloneAttempt`),
 `scripts/verify-hero-voice-asr-gate-runtime.ts` (fake RunPod + fake Gemini ที่ขอบ `fetch`, 7 กรณี)
-รันใน `verify:hero-voice-clone-task2` และเพิ่ม suite นั้นเข้า CI (`ci.yml`) ซึ่งก่อนหน้านี้ไม่ได้รัน
+รันใน `verify:hero-voice-clone-task2` และเพิ่ม `scripts/verify-hero-voice-durable.ts` (ครึ่ง Node ของ suite นั้น) เข้า CI (`ci.yml`) ซึ่งก่อนหน้านี้ไม่ได้รัน — ทั้ง suite ใส่ไม่ได้เพราะครึ่ง Python ต้องการ `pydub` บน runner
 
 | ข้อใน 11.5 | ที่ทำจริง |
 | --- | --- |
