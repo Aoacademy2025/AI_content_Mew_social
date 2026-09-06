@@ -26,6 +26,27 @@ function ok(cond: boolean, msg: string) {
 }
 
 async function main() {
+  {
+    const { narrationTargetFeedback, scriptTargetDuration } = await import("../src/lib/narration-target");
+    const words = (count: number) => Array(count).fill("ปากกา").join(" ");
+    const common = { text: words(96), targetSec: 30, voiceEngine: "gemini" };
+    ok(narrationTargetFeedback({ ...common, voiceName: "Kore" })?.outsideTarget === false &&
+      narrationTargetFeedback({ ...common, voiceName: "Aoede" })?.outsideTarget === true,
+      "pre-TTS feedback follows the currently selected voice without changing text");
+    ok(narrationTargetFeedback({ ...common, voiceName: "Kore", text: words(130) })?.outsideTarget === true,
+      "pre-TTS feedback updates when the creator edits the script");
+    ok(narrationTargetFeedback({ ...common, voiceName: "Kore", targetSec: null }) === null &&
+      scriptTargetDuration(120) === null && scriptTargetDuration("30") === null,
+      "old drafts and invalid targets do not inherit an invented duration goal");
+    ok(narrationTargetFeedback({ ...common, voiceName: "unmeasured" })?.outsideTarget === null &&
+      narrationTargetFeedback({ ...common, voiceName: "Kore", voiceEngine: "omnivoice" })?.outsideTarget === null,
+      "unmeasured voices do not borrow another voice's calibrated estimate");
+    ok(narrationTargetFeedback({ ...common, voiceName: "Kore", text: "English text without Thai" })?.outsideTarget === null &&
+      narrationTargetFeedback({ ...common, voiceName: "__proto__" })?.outsideTarget === null,
+      "Thai voice calibration does not claim other languages or inherited object names");
+  }
+
+
   const {
     parseBannedWords,
     serializeBannedWords,
@@ -1939,6 +1960,8 @@ async function main() {
         "Hero Script handoff pins the exact active immutable Brand Revision");
       const draft = (project?.draft ?? {}) as Record<string, unknown>;
       ok(draft.mode === "script", "handoff draftJson has mode: 'script'");
+      ok(draft.scriptTargetDurationSec === paidScript.durationSec,
+        "handoff retains the selected narration target for pre-TTS feedback");
       ok(draft.narrativeSourceKind === "ai-script",
         "Hero Script handoff preserves AI-script provenance for Content Preflight");
       ok(draft.script === "hook ที่เลือกไว้\nประโยค 1\nประโยค 2\nประโยค 3\nตามไว้เลย",

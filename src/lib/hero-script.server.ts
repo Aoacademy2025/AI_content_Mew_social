@@ -1393,6 +1393,7 @@ export async function sendScriptToEditor(
   const brandDefault = await getDefaultBrandPreference(userId);
   const accountDraft = buildScriptHandoffDraft({
     script: text,
+    targetDurationSec: script.durationSec,
     projectTitle: title,
     accountDefaults: {
       // Mirrors the editor's loadAccountVideoDefaults() (/api/user/video-settings).
