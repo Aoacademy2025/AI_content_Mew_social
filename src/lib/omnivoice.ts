@@ -3,6 +3,7 @@ import { isValidOmniVoiceId, pcmFromWav as parsePcmFromWav } from "@/lib/omnivoi
 import {
   HeroVoiceCloneConfigError,
   resolveHeroVoiceCloneConfig,
+  HERO_VOICE_CLONE_GATE_KINDS,
   resolveHeroVoiceCloneHumanDataGate,
   type HeroVoiceCloneConfig,
   type HeroVoiceCloneHumanDataGate,
@@ -242,14 +243,17 @@ export function heroVoiceCloneConfig(): HeroVoiceCloneConfig {
   });
 }
 
-/** No caller can turn this into a browser-controlled flag. Task 6 must leave a
- * private evidence digest out of band and the local process must be explicitly
- * in canary execution mode. Production always fails closed. */
+/** No caller can turn this into a browser-controlled flag. Either Task 6 left a
+ * private evidence digest out of band and the local process is explicitly in
+ * canary execution mode (never in production), or the deployment carries the
+ * ADR 0061 owner-consent opt-in `HERO_VOICE_CLONE_PRODUCTION=1`. Otherwise the
+ * clone transport fails closed. */
 export function heroVoiceCloneHumanDataGate(): HeroVoiceCloneHumanDataGate {
   return resolveHeroVoiceCloneHumanDataGate({
     nodeEnv: process.env.NODE_ENV,
     executionMode: process.env.HERO_VOICE_CANARY_EXECUTION_MODE,
     task6GateSha256: process.env.HERO_VOICE_CANARY_TASK6_GATE_SHA256,
+    productionOptIn: process.env.HERO_VOICE_CLONE_PRODUCTION,
   });
 }
 
@@ -445,7 +449,7 @@ export function prepareRunpodHeroVoiceCloneJob(input: {
   refAudioBase64: string;
   refText: string;
 }): PreparedRunpodHeroVoiceCloneRequest {
-  if (input.gate.kind !== "task6-human-data-gate") throw new HeroVoiceCloneConfigError();
+  if (!HERO_VOICE_CLONE_GATE_KINDS.has(input.gate.kind)) throw new HeroVoiceCloneConfigError();
   const snapshot = parseCandidateAiStudioV3Snapshot(input.snapshot);
   if (!snapshot) throw new HeroVoiceCloneProviderError("identity");
   const config = heroVoiceCloneTransportConfigFromSnapshot(snapshot);

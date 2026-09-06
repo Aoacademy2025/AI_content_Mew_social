@@ -1,6 +1,6 @@
 # Hero Voice Clone — private canary boundary
 
-Status: internal-evaluation code only. Production rollout, merge, deployment,
+Status: internal-evaluation code, plus the ADR 0061 owner-only production opt-in (see the last section). Production rollout, merge, deployment,
 customer access, and commercial release are out of scope.
 
 The authoritative boundary is [ADR 0060](../adr/0060-isolate-hero-voice-clone-canary.md).
@@ -222,6 +222,45 @@ Do not delete references, database rows, or active provider state as an ad-hoc
 rollback. Use the coordinator interfaces and require their sanitized `done`
 readback before claiming application-side deletion.
 
-Production enablement requires a new explicit cutover/rollback plan, completed
-rights and processor gates, immutable RunPod readback, green review checks, and
-a separate human deployment decision.
+## Production: owner account only (ADR 0061)
+
+Production is fail-closed unless the deployment carries the owner-consent
+opt-in. The gate resolver returns `owner-consent-production-gate` only when
+`HERO_VOICE_CLONE_PRODUCTION=1` and no canary variable
+(`HERO_VOICE_CANARY_EXECUTION_MODE`, `HERO_VOICE_CANARY_TASK6_GATE_SHA256`,
+`HERO_VOICE_CANARY_ROOT`) is set; any other value, or the two decisions combined,
+throws `CLONE_CONFIG_UNAVAILABLE` and AI Studio shows "Hero Voice clone
+ยังไม่พร้อมใช้งาน". `scripts/verify-hero-voice-durable.ts` runs the whole clone
+state machine a second time under this gate with `NODE_ENV=production` and no
+canary variable, so no other production-only closure can hide in the path.
+
+Production `.env` for the owner cutover (the five ADR 0060 inputs plus the opt-in):
+
+```
+RUNPOD_HERO_VOICE_CLONE_ENDPOINT_ID=<persistent scale-to-zero endpoint>
+RUNPOD_HERO_VOICE_CLONE_IMAGE_DIGEST=sha256:<pinned image digest>
+RUNPOD_HERO_VOICE_CLONE_SOURCE_REVISION=<approved source revision>
+RUNPOD_HERO_VOICE_CLONE_MODEL_MANIFEST_SHA256=<sha256 of MODEL_MANIFEST.json>
+RUNPOD_API_KEY=<existing>
+HERO_VOICE_CLONING_ENABLED=1
+HERO_VOICE_CLONE_PRODUCTION=1
+HERO_VOICE_ASR_GATE=1
+```
+
+Also required and already present for stock Hero Voice: `OMNIVOICE_ENABLED=1`,
+`OMNIVOICE_ALLOWED_USER_IDS` (must contain the owner's user id),
+`GEMINI_SERVER_KEY` (ASR ears). References live under `USER_VOICE_STORAGE_DIR`
+or, when unset, `<cwd>/uploads/user-voices` (mode 700, outside `public/`).
+Restart with `pm2 restart ai-content --update-env`.
+
+Endpoint shape: the pinned image with its default entrypoint, env
+`HERO_VOICE_CLONE_IMAGE_DIGEST` / `RUNPOD_LOG_LEVEL=INFO` / `HERO_VOICE_EAGER_LOAD=1`,
+GPUs A40 / RTX A6000, `workersMin 0`, `workersMax 1`, idle timeout 60 s,
+execution timeout ≥ 540 s (the application policy), FlashBoot off, no volume.
+First job of a session pays the cold start (2–3 min); keep-warm is deliberately
+not used.
+
+Rollback: remove `HERO_VOICE_CLONE_PRODUCTION` from `.env` and restart. Nothing
+else changes; the endpoint at zero workers costs nothing and may be deleted
+later. Opening the transport to any voice other than the owner's remains a
+separate rights decision (ADR 0060 NO-GO still applies to everyone else).
