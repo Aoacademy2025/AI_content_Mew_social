@@ -29,13 +29,45 @@ The provider-call ceiling and billing reservation remain unchanged: at most two 
 
 Calibration used five predefined synthetic scenarios, then validation used five different, predefined scenarios. Each produced one audio take per final script; all outcomes are retained, including failures. Text generation used the locally configured Gemini `gemini-pro-latest`, not the production OpenRouter configuration; speech used the actual Gemini TTS provider function with Kore/Aoede. Multi-chunk results concatenate unchanged PCM at one sample rate with a pinned model. This is local service/provider QA, not a Browser E2E, production route, billing or render test.
 
-**Measurement is still running. Final results and readiness will be recorded before the PR is handed over.**
+Calibration (initial 2.8 words/second estimate, before the percentage-based correction note):
+
+| Scenario | Target | Words | Text warning | Actual seconds | Within ±10% |
+|---|---:|---:|---|---:|---|
+| desk-30 (Kore) | 30 | 83 | no | 26.130958 | FAIL |
+| coffee-30 (Aoede) | 30 | 109 | yes | 37.610958 | FAIL |
+| backup-30 (Kore) | 30 | 91 | no | 28.250958 | PASS |
+| plant-60 (Kore) | 60 | 216 | yes | 65.581917 | PASS |
+| umbrella-90 (Aoede) | 90 | 310 | yes | 85.141917 | PASS |
+
+Validation (3 words/second and percentage-based correction, five new stories frozen before generation):
+
+| Scenario | Target | Words | Text warning | Actual seconds | Within ±10% |
+|---|---:|---:|---|---:|---|
+| keys-30 (Kore) | 30 | 94 | no | 26.890958 | FAIL |
+| lunch-30 (Aoede) | 30 | 104 | yes | 39.850958 | FAIL |
+| files-30 (Kore) | 30 | 82 | no | 27.570958 | PASS |
+| bag-60 (Kore) | 60 | 166 | no | 54.610958 | PASS |
+| book-90 (Aoede) | 90 | 314 | yes | 111.981917 | FAIL |
+
+Validation passed **2/5** actual-duration targets. Keys-30 is a strict failure even though it misses the lower bound by only 0.109042 seconds; no rounding into a pass. Lunch and Book remain over the word budget after correction and correctly return warnings. Keys shows that an in-range word count is not sufficient to guarantee audio duration. Calibration and validation used different stories, so their pass rates are not a controlled before/after comparison.
+
+All 13 local audio artifacts are retained: two baseline outputs, one newline diagnostic, five calibration outputs, five validation outputs. Multi-chunk synthesis used 16 successful provider invocations in total, each on the first provider attempt. No audio take was discarded or regenerated to meet duration. The original retained production video is additional evidence, not one of these local generations.
+
+## Readiness and next investigation
+
+**Keep PR #449 in Draft. Do not merge or deploy this as a completed audio-duration fix.** The deterministic screening/correction behavior is implemented, but measured narration still misses the target in 3/5 validation stories. Neither passing code checks nor warnings close this QA gap.
+
+The remaining work has two separate signals: Thai text correction sometimes still exceeds the requested word band (104 vs maximum 99; 314 vs maximum 297), and narration pacing varies enough that an in-band script can miss the audio band. The next experiment should first verify stronger text-budget compliance without increasing the correction allowance, then isolate narration pacing using fixed compliant scripts across the chosen voices. Hero Script does not know the final voice selected in the Editor, so a voice-specific duration promise cannot be justified at this stage. Avoid fitting a per-voice estimate to one stochastic take or widening tolerance to hide failures.
+
+This PR has not been merged or deployed. No Linear or Sentry records changed; the earlier MP4 incident remains tracked separately as HERO-7.
+
 
 ## Verification
 
-- Regression, boundary, combined-retry, fallback, fixed-section and echoed-hook verification: recorded in the local artifact directory.
-- TypeScript check passed before the last prompt-only refinement; final build/check pending.
+- `npm run verify:hero-script` on Node 22.22.2: 541 passed / 0 failed, plus access verification passed. Covers word boundaries, combined-retry limits, fallback, fixed sections and echoed hooks.
+- TypeScript `--noEmit` passed on the final code. Node 22.22.2 local production build passed before the last echoed-hook extraction refinement; GitHub CI checks the final commit separately.
 - Scoped lint found six existing React compiler purity/ref findings in ScriptEditorStep. The untouched base version produces the same six findings. No new lint finding in the changed server/prompt/helper/test files.
+- Standards review: 0 blocking / 0 advisory findings. Spec code review: 0 blocking / 0 advisory findings. Both distinguish code conformance from the failed actual-audio target.
 - No human listening, pronunciation scoring, subtitle synchronization or image relevance QA is claimed by this duration measurement.
 
 Local evidence: `/Users/mewsocialmacmini/orca/artifacts/hero-script-duration-2026-09-06` (raw synthetic scripts/audio, calibration/validation manifests, regression red/green logs and build/check logs). No provider credentials or customer content are included in this document.
