@@ -3010,6 +3010,11 @@ async function narrationReviewRequiresDeliberateConfirmedSubmit(): Promise<void>
     (find("RenderReceiptDialog")!.props.onCancel as () => void)(); runner.flush();
     assert.ok(find("PostPhase"), "cancel keeps the delivered preview");
     assert.equal(submissions, 0);
+    const originalProject = project;
+    project = makeShellProject("another-project", () => true); runner.flush();
+    assert.equal(find("RenderReceiptDialog")?.props.regeneration ?? false, false,
+      "unconfirmed regeneration intent cannot cross project boundaries");
+    project = originalProject; runner.flush();
     (find("NarrationDurationReview")!.props.onEdit as () => void)(); runner.flush();
     assert.equal(resets, 1);
     assert.ok(find("Step1Script"), "edit returns to the real script step");
