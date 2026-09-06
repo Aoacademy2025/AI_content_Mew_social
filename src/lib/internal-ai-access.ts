@@ -1,6 +1,6 @@
 import type { User } from "@prisma/client";
-import { resolvePaidEquivalentEntitlement, type PaidEquivalentDecision } from "@/lib/paid-equivalent-entitlement.server";
-import { getStarterAiImageAllowanceStatus, type StarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
+import type { PaidEquivalentDecision } from "@/lib/paid-equivalent-entitlement.server";
+import type { StarterAiImageAllowanceStatus } from "@/lib/starter-ai-image-allowance.server";
 
 /**
  * Private beta access for GPU-backed features that are not ready for customers.
@@ -146,6 +146,16 @@ export async function resolveHeroAiImageAccess(
       effectivePlan: user.plan === "BUSINESS" ? "BUSINESS" : "PRO", reason: "eligible", remainingTrialImages: 0,
     };
   }
+  // Keep the pure tester predicates importable by policy verifiers and
+  // standalone workers without eagerly initializing Prisma/server-only image
+  // entitlement modules. The database-backed branch loads them only on use.
+  const [
+    { resolvePaidEquivalentEntitlement },
+    { getStarterAiImageAllowanceStatus },
+  ] = await Promise.all([
+    import("@/lib/paid-equivalent-entitlement.server"),
+    import("@/lib/starter-ai-image-allowance.server"),
+  ]);
   const paidEquivalent = await resolvePaidEquivalentEntitlement(user.id);
   const allowance = await getStarterAiImageAllowanceStatus(user.id);
   if (process.env.HERO_AI_IMAGE_PUBLIC !== "1") {

@@ -27,7 +27,6 @@ type CloneVoice = {
 type Props = {
   maxScriptChars: number;
   onJobCreated: (job: unknown) => void;
-  onVoicesChanged: () => Promise<void>;
 };
 
 const ACCENT = "#8B5CF6";
@@ -63,7 +62,7 @@ async function readAudioDuration(file: File): Promise<number | null> {
   }
 }
 
-export default function HeroVoiceClonePanel({ maxScriptChars, onJobCreated, onVoicesChanged }: Props) {
+export default function HeroVoiceClonePanel({ maxScriptChars, onJobCreated }: Props) {
   const [voices, setVoices] = useState<CloneVoice[]>([]);
   const [loadingVoices, setLoadingVoices] = useState(true);
   const [name, setName] = useState("");
@@ -96,6 +95,8 @@ export default function HeroVoiceClonePanel({ maxScriptChars, onJobCreated, onVo
   }, []);
 
   useEffect(() => {
+    // Loading begins on mount, but state changes only after the fetch resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadVoices()
       .catch((error) => toast.error(error instanceof Error ? error.message : "โหลดเสียงโคลนไม่สำเร็จ"))
       .finally(() => setLoadingVoices(false));
@@ -200,7 +201,7 @@ export default function HeroVoiceClonePanel({ maxScriptChars, onJobCreated, onVo
       setFileDurationSec(null);
       setConsent(false);
       setSelectedVoiceId((data as CloneVoice).voiceId);
-      await Promise.all([loadVoices(), onVoicesChanged()]);
+      await loadVoices();
       toast.success("บันทึกเสียงโคลนแล้ว พร้อมนำไปสร้างเสียง");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "สร้างเสียงโคลนไม่สำเร็จ");
@@ -216,7 +217,7 @@ export default function HeroVoiceClonePanel({ maxScriptChars, onJobCreated, onVo
       const response = await fetch(`/api/omnivoice/user-voices/${encodeURIComponent(voice.id)}`, { method: "DELETE" });
       const data = await response.json();
       if (!response.ok) throw new Error(apiMessage(data, "ลบเสียงโคลนไม่สำเร็จ"));
-      await Promise.all([loadVoices(), onVoicesChanged()]);
+      await loadVoices();
       toast.success("ลบเสียงโคลนและไฟล์อ้างอิงแล้ว");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "ลบเสียงโคลนไม่สำเร็จ");

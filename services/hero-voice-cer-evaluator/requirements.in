@@ -1,0 +1,4 @@
+openai-whisper==20250625
+# Task 6 must approve exact direct NumPy/PyTorch versions and generate their
+# complete linux/arm64 transitive --require-hashes closure. Unbounded direct
+# constraints are intentionally absent rather than silently resolved.

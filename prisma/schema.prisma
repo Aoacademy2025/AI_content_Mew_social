@@ -129,9 +129,190 @@ model UserVoice {
   durationMs     Int
   consentAt      DateTime @default(now())
   consentVersion String   @default("voice-clone-v1")
+  // A deletion claim is written in the same SQLite transaction that checks for
+  // active generation jobs. Generation checks the same field when it creates a
+  // job, which makes the winner of generation-vs-delete deterministic.
+  deletionTransactionId String?
+  deletionClaimedAt     DateTime?
   createdAt      DateTime @default(now())
 
   @@index([userId, createdAt])
+  @@index([deletionTransactionId])
+}
+
+// Private canary review lifecycle seam. Task 5 adds the blind-review/ledger
+// details, while Task 4 owns the one-way close and account-forced-close
+// boundary. Owner identity is an HMAC of verified auth claims, never a raw user
+// id, email, issuer, or subject.
+model ReviewRun {
+  id                          String    @id @default(cuid())
+  ownerHmac                   String
+  experimentId                String?   @unique
+  slotManifestSha256          String?
+  slotManifestJson            String?
+  referenceVoiceId            String?
+  runState                    String    @default("planned")
+  state                       String    @default("collecting")
+  revision                    Int       @default(1)
+  inFlightSlotId              String?
+  parkDisposition             String    @default("not_required")
+  reviewPreparationJson       String?
+  publicReviewJson            String?
+  privateArtifactManifestJson String?
+  rawScoresJson               String?
+  revealCiphertextJson        String?
+  revealCiphertextSha256      String?
+  scoreSheetHmac              String?
+  gitRepositoryNodeId         String?
+  gitCanonicalUrl             String?
+  gitRef                      String?
+  gitCommitSha                String?
+  gitBlobOid                  String?
+  gitCommitmentPath           String?
+  gitBlobSha256               String?
+  evaluatorEvidenceJson       String?
+  costEvidenceJson            String?
+  ledgerSequence              Int       @default(0)
+  ledgerHeadHmac              String?
+  sanitizedAggregatesJson     String?
+  receiptId                   String?
+  closedAt                    DateTime?
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
+  ledgerRecords               CanaryLedgerRecord[]
+  objectiveObservations       CanaryObjectiveObservation[]
+  directOutputs               CanaryRunOutput[]
+  submitNonces                CanarySubmitNonce[]
+  canaryJobs                  AiGenerationJob[] @relation("CanaryReviewRunJobs")
+
+  @@index([ownerHmac, state])
+  @@index([runState, createdAt])
+  @@index([receiptId])
+}
+
+// Parent-owned private direct-provider WAVs, separate from the final blind pack.
+// A creation intent owns both deterministic paths before any bytes are written.
+model CanaryRunOutput {
+  id                  String    @id
+  runId               String
+  run                 ReviewRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  ownerHmac           String
+  slotId              String
+  providerJobId       String
+  storageKey          String    @unique
+  stagingStorageKey   String    @unique
+  audioSha256         String
+  durationMs          Int
+  createdAt           DateTime  @default(now())
+
+  @@unique([runId, slotId])
+  @@index([ownerHmac, runId])
+}
+
+// Sanitized authority-owned observations are committed before objective
+// evidence is signed. Task 7 cannot write HMACs or expected digests and a
+// restart reuses the exact observed rows rather than asking an adapter again.
+model CanaryObjectiveObservation {
+  id                    String    @id @default(cuid())
+  runId                 String
+  run                   ReviewRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  ownerHmac             String
+  batchKind             String
+  observationJson       String
+  observationSha256     String
+  evidenceSha256        String?
+  evidenceHmac          String?
+  createdAt             DateTime  @default(now())
+  signedAt              DateTime?
+
+  @@unique([runId, batchKind])
+  @@index([ownerHmac, runId])
+}
+
+// Owner-scoped append-only Task 5 evidence. SQLite triggers reject record
+// mutation/deletion outside the explicit Task 4 close/account-delete guard.
+model CanaryLedgerRecord {
+  id         String    @id @default(cuid())
+  runId      String
+  run        ReviewRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  ownerHmac  String
+  sequence   Int
+  recordJson String
+  recordHmac String
+  createdAt  DateTime  @default(now())
+
+  @@unique([runId, sequence])
+  @@index([ownerHmac, runId])
+}
+
+// One five-minute canary submit capability. Only its SHA-256 is stored; the
+// unpadded base64url nonce stays in the out-of-band loopback harness request.
+model CanarySubmitNonce {
+  id                 String    @id @default(cuid())
+  runId              String
+  run                ReviewRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  ownerHmac          String
+  slotId             String
+  revision           Int
+  slotManifestSha256 String
+  nonceSha256        String    @unique
+  issuedAtMs         BigInt
+  expiresAtMs        BigInt
+  usedAt             DateTime?
+  jobId              String?   @unique
+  createdAt          DateTime  @default(now())
+
+  @@unique([runId, slotId])
+  @@index([runId, usedAt, expiresAtMs])
+  @@index([ownerHmac, runId])
+}
+
+// The same marked canary SQLite database is the only deletion authority. Scope
+// fields exist only while an intent is unresolved and are scrubbed when their
+// authoritative row is deleted. receiptJson is sanitized and unlinked.
+model DeletionTransaction {
+  id                 String             @id @default(cuid())
+  operationKind      String
+  intendedOutcome    String
+  status             String             @default("planned")
+  scopeUserId        String?
+  scopeVoiceId       String?
+  scopeReviewRunId   String?
+  scopeOwnerHmac     String?
+  configurationHmac  String?
+  receiptId          String             @unique
+  receiptJson        String?
+  plannedAt          DateTime           @default(now())
+  dbCommittedAt      DateTime?
+  doneAt             DateTime?
+  rolledBackAt       DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  artifacts          DeletionArtifact[]
+
+  @@index([status, plannedAt])
+  @@index([scopeUserId])
+  @@index([scopeVoiceId])
+  @@index([scopeReviewRunId])
+  @@index([scopeOwnerHmac])
+}
+
+model DeletionArtifact {
+  id                    String              @id @default(cuid())
+  deletionTransactionId String
+  deletionTransaction   DeletionTransaction @relation(fields: [deletionTransactionId], references: [id], onDelete: Cascade)
+  rootKind               String
+  storageKey             String
+  expectedSha256         String
+  status                 String              @default("planned")
+  quarantinedAt          DateTime?
+  unlinkedAt             DateTime?
+  restoredAt             DateTime?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  @@unique([deletionTransactionId, rootKind, storageKey])
+  @@index([deletionTransactionId, status])
 }
 
 /// Explicit non-cash access granted by an administrator. A paid-looking value
@@ -1354,11 +1535,19 @@ model AiGenerationJob {
   allowanceUnits                Int                   @default(0)
   allowanceWindowStartedAt      DateTime?
   chargeState                   String                @default("pending") // pending | reserved | settled | refunded | none
+  reservedAiAudioMinutes        Float                 @default(0) // trusted reservation quantity; never reconstructed from inputJson
+  reservedStudioMinutes         Float                 @default(0) // trusted reservation quantity; never reconstructed from inputJson
+  cancelDisposition             String                @default("not_requested") // clone canary: not_requested | confirmed | rejected_or_unknown
+  cancelAttemptedAt             DateTime? // durable at-most-once claim before the one provider cancel request
+  externalRunDisposition        String                @default("not_required") // Task 5 seam: not_required | abort_required; no ledger is claimed here
   errorCode                     String?
   errorMessage                  String?
   delayTimeMs                   Int?
   executionTimeMs               Int?
   idempotencyKey                String?
+  canaryRunId                   String?
+  canarySlotId                  String?
+  canaryRun                     ReviewRun?            @relation("CanaryReviewRunJobs", fields: [canaryRunId], references: [id], onDelete: SetNull)
   createdAt                     DateTime              @default(now())
   updatedAt                     DateTime              @updatedAt
   startedAt                     DateTime?
@@ -1371,6 +1560,7 @@ model AiGenerationJob {
   brandLookPreviewItem          BrandLookPreviewItem?
 
   @@unique([userId, idempotencyKey])
+  @@unique([canaryRunId, canarySlotId])
   @@index([userId, createdAt])
   @@index([providerJobId])
   @@index([status, kind])
@@ -1379,6 +1569,7 @@ model AiGenerationJob {
   // scans kind + chargeState against an updatedAt cutoff every 15 minutes.
   @@index([kind, chargeState, updatedAt])
   @@index([productSurface, status, finishedAt])
+  @@index([canaryRunId, canarySlotId])
 }
 
 // Legacy activation windows retained for audit and settlement compatibility.
@@ -1447,6 +1638,17 @@ model AiGenerationAttempt {
   providerEndpoint              String?
   providerJobId                 String?
   status                        String          @default("planned") // planned | submitting | submitted | queued | in_progress | completed | failed | canceled
+  inputJson                     String? // exact versioned, allowlisted immutable provider snapshot; never payload/reference data or credentials
+  dispatchIntentAt              DateTime? // committed before the single provider POST
+  dispatchLeaseExpiresAt        DateTime? // prevents a crash observer from declaring submit-unknown while POST is still bounded in flight
+  submissionDisposition         String          @default("not_dispatched") // not_dispatched | intent_committed | provider_accepted | provider_rejected | transport_unknown
+  providerResponseAt            DateTime?
+  pollFailureCount              Int             @default(0)
+  nextPollAt                    DateTime?
+  pollLeaseToken                String? // durable single-poller CAS owner; opaque random UUID
+  pollLeaseExpiresAt            DateTime?
+  cancelDisposition             String          @default("not_requested") // not_requested | confirmed | rejected_or_unknown
+  cancelAttemptedAt             DateTime?
   estimatedCostUsdMicros        Int
   providerReportedCostUsdMicros Int?
   providerReportedCredits       Float?

@@ -1,6 +1,6 @@
 // This module is also imported by standalone background workers through the
 // durable Hero Voice pipeline, so it deliberately avoids `server-only`.
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -8,6 +8,33 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import {
+  assertHeroVoiceCanaryMutationReady,
+  assertNoCanaryAccountDeletionInTransaction,
+  beginHeroVoiceCanaryUploadIntent,
+  commitHeroVoiceCanaryUploadRow,
+  deleteHeroVoiceCanaryVoice,
+  ensureHeroVoiceCanaryReadReady,
+  finishHeroVoiceCanaryUpload,
+  HeroVoiceDeletionSimulatedCrash,
+  HeroVoiceDeletionError,
+  observeHeroVoiceCanaryCrashForTests,
+  rollBackHeroVoiceCanaryUpload,
+  runHeroVoiceCanarySerializedMutation,
+} from "@/lib/hero-voice-deletion-coordinator.server";
+import {
+  durableWritePrivateFile,
+  fsyncDirectory,
+  fsyncPrivateFile,
+  HeroVoiceCanaryStorageError,
+  heroVoiceCanaryDeletionConfigured,
+  heroVoiceCanaryStorageContext,
+  heroVoiceCanaryUploadPaths,
+  readPrivateFileNoFollow,
+  renamePrivateFileNoFollow,
+  sha256File,
+  writeNewPrivateFileNoFollow,
+} from "@/lib/hero-voice-canary-storage.server";
 import { pcmFromWav } from "@/lib/omnivoice-core";
 import { prisma } from "@/lib/prisma";
 import { pcmDurationMs } from "@/lib/tts-timing";
@@ -25,6 +52,20 @@ const TARGET_SAMPLE_RATE = 24_000;
 const SAFE_FILENAME = /^[A-Fa-f0-9-]{36}\.wav$/;
 const ACTIVE_JOB_STATUSES = ["queued", "in_progress"] as const;
 
+export type HeroVoiceCanaryConversionStep = "after-secure-input-read" | "before-secure-output-write";
+type HeroVoiceCanaryConversionObserver = (
+  step: HeroVoiceCanaryConversionStep,
+  paths: Readonly<{ rawSource: string; normalizedWav: string; stagingDirectory: string }>,
+) => void;
+let canaryConversionObserver: HeroVoiceCanaryConversionObserver | undefined;
+
+export function setHeroVoiceCanaryConversionObserverForTests(
+  observer?: HeroVoiceCanaryConversionObserver,
+): void {
+  if (process.env.NODE_ENV === "production") throw new Error("test conversion injection is disabled");
+  canaryConversionObserver = observer;
+}
+
 export class UserVoiceError extends Error {
   constructor(
     message: string,
@@ -37,6 +78,17 @@ export class UserVoiceError extends Error {
 }
 
 export function userVoicesDir(): string {
+  if (heroVoiceCanaryDeletionConfigured()) {
+    try {
+      return heroVoiceCanaryStorageContext().userVoiceRoot;
+    } catch {
+      throw new UserVoiceError(
+        "User voice storage is unavailable",
+        500,
+        "USER_VOICE_STORAGE_INVALID",
+      );
+    }
+  }
   const configured = process.env.USER_VOICE_STORAGE_DIR?.trim();
   if (configured && !path.isAbsolute(configured)) {
     throw new UserVoiceError(
@@ -84,7 +136,7 @@ export function userVoiceIdFor(id: string): string {
   return `${USER_VOICE_PREFIX}${id}`;
 }
 
-async function toReferenceWav(sourceBuffer: Buffer): Promise<Buffer> {
+async function toLegacyReferenceWav(sourceBuffer: Buffer): Promise<Buffer> {
   const stamp = `${Date.now()}-${randomUUID()}`;
   const sourcePath = path.join(os.tmpdir(), `hero-user-voice-source-${stamp}`);
   const targetPath = path.join(os.tmpdir(), `hero-user-voice-reference-${stamp}.wav`);
@@ -124,13 +176,188 @@ async function toReferenceWav(sourceBuffer: Buffer): Promise<Buffer> {
   }
 }
 
-export async function createUserVoice(input: {
+function monoPcm16Wav(pcm: Buffer): Buffer {
+  if (pcm.length === 0 || pcm.length % 2 !== 0 || pcm.length + 44 > MAX_WORKER_REF_BYTES) {
+    throw new Error("canary_ffmpeg_output_invalid");
+  }
+  const wav = Buffer.allocUnsafe(44 + pcm.length);
+  wav.write("RIFF", 0, "ascii");
+  wav.writeUInt32LE(36 + pcm.length, 4);
+  wav.write("WAVEfmt ", 8, "ascii");
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(TARGET_SAMPLE_RATE, 24);
+  wav.writeUInt32LE(TARGET_SAMPLE_RATE * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36, "ascii");
+  wav.writeUInt32LE(pcm.length, 40);
+  pcm.copy(wav, 44);
+  return wav;
+}
+
+/** FFmpeg receives no private pathname. The securely-read source bytes travel
+ * over stdin and raw PCM returns over stdout; only our protected storage layer
+ * later creates the normalized pathname. */
+function normalizeCanaryReferenceWav(source: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(getFfmpegPath(), [
+      "-nostdin",
+      "-i", "pipe:0",
+      "-t", "17",
+      "-vn", "-sn", "-dn",
+      "-ac", "1",
+      "-ar", String(TARGET_SAMPLE_RATE),
+      "-c:a", "pcm_s16le",
+      "-map_metadata", "-1",
+      "-af",
+      "silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.15,"
+        + "areverse,silenceremove=start_periods=1:start_threshold=-40dB:start_silence=0.15,"
+        + "areverse,loudnorm=I=-18:TP=-2:LRA=7",
+      "-f", "s16le",
+      "pipe:1",
+    ], { stdio: ["pipe", "pipe", "ignore"] });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let outputTooLarge = false;
+    let settled = false;
+    const timer = setTimeout(() => child.kill("SIGKILL"), 60_000);
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    child.on("error", fail);
+    child.stdout.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size + 44 > MAX_WORKER_REF_BYTES) {
+        outputTooLarge = true;
+        child.kill("SIGKILL");
+        return;
+      }
+      chunks.push(chunk);
+    });
+    child.on("close", (code) => {
+      if (settled) return;
+      if (code !== 0 || outputTooLarge) {
+        fail(new Error("canary_ffmpeg_failed"));
+        return;
+      }
+      try {
+        const wav = monoPcm16Wav(Buffer.concat(chunks, size));
+        settled = true;
+        clearTimeout(timer);
+        resolve(wav);
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error("canary_ffmpeg_failed"));
+      }
+    });
+    // An invalid input may close fd 0 early; the process close status is the
+    // single opaque conversion result and the stream error carries no path.
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(source);
+  });
+}
+
+async function createCanaryUserVoice(input: CreateUserVoiceInput, name: string, refText: string) {
+  const transactionId = await beginHeroVoiceCanaryUploadIntent(input.userId);
+  const context = heroVoiceCanaryStorageContext();
+  const upload = heroVoiceCanaryUploadPaths(context, transactionId, true);
+  try {
+    writeNewPrivateFileNoFollow(upload.rawSource, input.audio);
+    observeHeroVoiceCanaryCrashForTests("after-upload-raw", transactionId);
+
+    const rawSource = readPrivateFileNoFollow(upload.rawSource);
+    canaryConversionObserver?.("after-secure-input-read", upload);
+    observeHeroVoiceCanaryCrashForTests("before-upload-conversion", transactionId);
+    let wav: Buffer;
+    try {
+      wav = await normalizeCanaryReferenceWav(rawSource);
+    } catch {
+      throw new UserVoiceError(
+        "แปลงไฟล์เสียงไม่สำเร็จ — รองรับ mp3, wav, m4a และ webm",
+        422,
+        "USER_VOICE_AUDIO_INVALID",
+      );
+    }
+    canaryConversionObserver?.("before-secure-output-write", upload);
+    writeNewPrivateFileNoFollow(upload.normalizedWav, wav);
+    fsyncPrivateFile(upload.normalizedWav);
+    fsyncDirectory(upload.stagingDirectory);
+    observeHeroVoiceCanaryCrashForTests("after-upload-normalized", transactionId);
+
+    wav = readPrivateFileNoFollow(upload.normalizedWav);
+    let durationMs: number;
+    try {
+      const { pcm, sampleRate } = pcmFromWav(wav);
+      durationMs = Math.round(pcmDurationMs(pcm.length, sampleRate));
+    } catch {
+      throw new UserVoiceError("ไฟล์เสียงไม่ถูกต้อง", 422, "USER_VOICE_AUDIO_INVALID");
+    }
+    if (durationMs < MIN_REF_MS) {
+      throw new UserVoiceError(
+        "ช่วงที่พูดชัดเจนสั้นเกินไป — ต้องมีเสียงพูดต่อเนื่องอย่างน้อย 5 วินาที",
+        422,
+        "USER_VOICE_REFERENCE_TOO_SHORT",
+      );
+    }
+    if (durationMs > MAX_REF_MS) {
+      throw new UserVoiceError(
+        "เสียงอ้างอิงยาวเกิน 15 วินาที — เลือกช่วงที่พูดชัดเจน 5–15 วินาที",
+        422,
+        "USER_VOICE_REFERENCE_TOO_LONG",
+      );
+    }
+
+    renamePrivateFileNoFollow(upload.normalizedWav, upload.finalReference, sha256File(upload.normalizedWav));
+    fsyncDirectory(upload.stagingDirectory);
+    fsyncDirectory(context.userVoiceRoot);
+    observeHeroVoiceCanaryCrashForTests("after-upload-final-rename", transactionId);
+    await commitHeroVoiceCanaryUploadRow({
+      transactionId,
+      userId: input.userId,
+      name,
+      refText,
+      durationMs,
+      consentVersion: USER_VOICE_CONSENT_VERSION,
+    });
+    await finishHeroVoiceCanaryUpload(transactionId);
+    return prisma.userVoice.findUniqueOrThrow({ where: { id: transactionId } });
+  } catch (error) {
+    if (error instanceof HeroVoiceDeletionSimulatedCrash) throw error;
+    try {
+      await rollBackHeroVoiceCanaryUpload(transactionId);
+    } catch {
+      throw new UserVoiceError(
+        "จัดเก็บเสียงโคลนไม่สำเร็จ",
+        500,
+        "USER_VOICE_STORAGE_FAILED",
+      );
+    }
+    if (error instanceof UserVoiceError) throw error;
+    if (error instanceof HeroVoiceDeletionError) {
+      throw new UserVoiceError(error.message, error.status, error.code);
+    }
+    throw new UserVoiceError(
+      "จัดเก็บเสียงโคลนไม่สำเร็จ",
+      500,
+      "USER_VOICE_STORAGE_FAILED",
+    );
+  }
+}
+
+export type CreateUserVoiceInput = {
   userId: string;
   name: string;
   refText: string;
   audio: Buffer;
   consent: boolean;
-}) {
+};
+
+async function createUserVoiceUnlocked(input: CreateUserVoiceInput) {
+  await assertHeroVoiceCanaryMutationReady();
   const name = input.name.replace(/[\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
   const refText = input.refText.replace(/[\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
   if (!input.consent) {
@@ -152,7 +379,9 @@ export async function createUserVoice(input: {
   if (input.audio.length > MAX_UPLOAD_BYTES) {
     throw new UserVoiceError("ไฟล์เสียงใหญ่เกิน 15 MB", 413, "USER_VOICE_UPLOAD_TOO_LARGE");
   }
-  const voiceCount = await prisma.userVoice.count({ where: { userId: input.userId } });
+  const voiceCount = await prisma.userVoice.count({
+    where: { userId: input.userId, deletionTransactionId: null },
+  });
   if (voiceCount >= USER_VOICE_MAX_COUNT) {
     throw new UserVoiceError(
       `เก็บเสียงโคลนได้สูงสุด ${USER_VOICE_MAX_COUNT} เสียง กรุณาลบเสียงที่ไม่ใช้ก่อน`,
@@ -161,7 +390,11 @@ export async function createUserVoice(input: {
     );
   }
 
-  const wav = await toReferenceWav(input.audio);
+  if (heroVoiceCanaryDeletionConfigured()) {
+    return createCanaryUserVoice(input, name, refText);
+  }
+
+  const wav = await toLegacyReferenceWav(input.audio);
   let durationMs: number;
   try {
     const { pcm, sampleRate } = pcmFromWav(wav);
@@ -189,17 +422,19 @@ export async function createUserVoice(input: {
   if (!destination) throw new UserVoiceError("จัดเก็บไฟล์เสียงไม่สำเร็จ", 500, "USER_VOICE_STORAGE_INVALID");
   const temporary = `${destination}.pending-${randomUUID()}`;
   try {
-    fs.writeFileSync(temporary, wav, { flag: "wx", mode: 0o600 });
-    fs.renameSync(temporary, destination);
-    return await prisma.userVoice.create({
-      data: {
-        userId: input.userId,
-        name,
-        refText,
-        filename,
-        durationMs,
-        consentVersion: USER_VOICE_CONSENT_VERSION,
-      },
+    durableWritePrivateFile(temporary, destination, wav);
+    return await prisma.$transaction(async (tx) => {
+      await assertNoCanaryAccountDeletionInTransaction(tx, input.userId);
+      return tx.userVoice.create({
+        data: {
+          userId: input.userId,
+          name,
+          refText,
+          filename,
+          durationMs,
+          consentVersion: USER_VOICE_CONSENT_VERSION,
+        },
+      });
     });
   } catch (error) {
     for (const target of [temporary, destination]) {
@@ -210,14 +445,42 @@ export async function createUserVoice(input: {
   }
 }
 
-export function listUserVoices(userId: string) {
+export async function createUserVoice(input: CreateUserVoiceInput) {
+  return runHeroVoiceCanarySerializedMutation(() => createUserVoiceUnlocked(input));
+}
+
+export async function listUserVoices(userId: string) {
+  await ensureHeroVoiceCanaryReadReady();
   return prisma.userVoice.findMany({
-    where: { userId },
+    where: { userId, deletionTransactionId: null },
     orderBy: { createdAt: "desc" },
   });
 }
 
 export async function deleteUserVoice(userId: string, id: string): Promise<boolean> {
+  if (heroVoiceCanaryDeletionConfigured()) {
+    try {
+      return await deleteHeroVoiceCanaryVoice(userId, id);
+    } catch (error) {
+      if (error instanceof HeroVoiceDeletionError) {
+        throw new UserVoiceError(
+          error.code === "USER_VOICE_IN_USE"
+            ? "เสียงนี้กำลังถูกใช้สร้างงาน รอให้งานเสร็จก่อนแล้วจึงลบได้"
+            : error.message,
+          error.status,
+          error.code,
+        );
+      }
+      if (error instanceof HeroVoiceCanaryStorageError) {
+        throw new UserVoiceError(
+          "ลบเสียงโคลนไม่สำเร็จ",
+          500,
+          "USER_VOICE_STORAGE_FAILED",
+        );
+      }
+      throw error;
+    }
+  }
   const voice = await prisma.userVoice.findFirst({ where: { id, userId } });
   if (!voice) return false;
   const voiceId = userVoiceIdFor(voice.id);
@@ -252,12 +515,15 @@ export async function readUserVoiceWav(
   userId: string,
   id: string,
 ): Promise<{ wav: Buffer; name: string } | null> {
-  const voice = await prisma.userVoice.findFirst({ where: { id, userId } });
+  await ensureHeroVoiceCanaryReadReady();
+  const voice = await prisma.userVoice.findFirst({ where: { id, userId, deletionTransactionId: null } });
   if (!voice) return null;
   const filename = voiceFilePath(voice.filename);
   if (!filename) return null;
   try {
-    const wav = fs.readFileSync(filename);
+    const wav = heroVoiceCanaryDeletionConfigured()
+      ? readPrivateFileNoFollow(filename)
+      : fs.readFileSync(filename);
     if (!wav.length || wav.length > MAX_WORKER_REF_BYTES) return null;
     return { wav, name: voice.name };
   } catch {
@@ -273,14 +539,17 @@ export type UserVoiceRef = {
 };
 
 export async function loadUserVoiceRef(userId: string, voiceId: string): Promise<UserVoiceRef | null> {
+  await ensureHeroVoiceCanaryReadReady();
   if (!isUserVoiceId(voiceId)) return null;
   const id = voiceId.slice(USER_VOICE_PREFIX.length);
-  const voice = await prisma.userVoice.findFirst({ where: { id, userId } });
+  const voice = await prisma.userVoice.findFirst({ where: { id, userId, deletionTransactionId: null } });
   if (!voice) return null;
   const filename = voiceFilePath(voice.filename);
   if (!filename) return null;
   try {
-    const wav = fs.readFileSync(filename);
+    const wav = heroVoiceCanaryDeletionConfigured()
+      ? readPrivateFileNoFollow(filename)
+      : fs.readFileSync(filename);
     if (!wav.length || wav.length > MAX_WORKER_REF_BYTES) return null;
     return {
       audioBase64: wav.toString("base64"),

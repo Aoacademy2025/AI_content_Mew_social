@@ -6,6 +6,11 @@ import {
   createClerkAssetCleanupStore,
   type ClerkAssetCleanupStore,
 } from "@/lib/clerk-asset-cleanup-receipt.server";
+import {
+  hardDeleteHeroVoiceCanaryAccount,
+  HeroVoiceDeletionError,
+} from "@/lib/hero-voice-deletion-coordinator.server";
+import { heroVoiceCanaryDeletionConfigured } from "@/lib/hero-voice-canary-storage.server";
 import { prisma } from "@/lib/prisma";
 
 type ClerkUserTarget = {
@@ -372,6 +377,13 @@ export async function deleteClerkUserAndBrandAssetDirectory(
 export async function hardDeleteUserWithBrandAssets(
   userId: string,
 ): Promise<boolean> {
+  if (heroVoiceCanaryDeletionConfigured()) {
+    throw new HeroVoiceDeletionError(
+      "Verified authentication claims are required for canary account deletion",
+      "CANARY_AUTH_CLAIMS_REQUIRED",
+      400,
+    );
+  }
   return deleteUserAndBrandAssetDirectory(userId, {
     deleteUser: async (id) => {
       const deleted = await prisma.user.deleteMany({ where: { id } });
@@ -387,6 +399,13 @@ export async function hardDeleteUserWithBrandAssets(
 export async function hardDeleteClerkUserWithBrandAssets(
   clerkId: string,
 ): Promise<boolean> {
+  if (heroVoiceCanaryDeletionConfigured()) {
+    throw new HeroVoiceDeletionError(
+      "Clerk webhook deletion is disabled for the isolated canary",
+      "CANARY_VERIFIED_ACCOUNT_DELETE_REQUIRED",
+      503,
+    );
+  }
   return deleteClerkUserAndBrandAssetDirectory(clerkId, {
     findUserByClerkId: (id) => prisma.user.findUnique({
       where: { clerkId: id },
@@ -404,4 +423,15 @@ export async function hardDeleteClerkUserWithBrandAssets(
       return deleted.count === 1;
     },
   });
+}
+
+/** Isolated-canary account hard-delete. The caller must pass the exact verified
+ * JWT issuer and subject; production admin IDs, email, or webhook inference are
+ * deliberately not accepted as an identity substitute. */
+export async function hardDeleteUserWithHeroVoiceCanaryArtifacts(input: {
+  userId: string;
+  authIssuer: string;
+  authSubject: string;
+}): Promise<boolean> {
+  return hardDeleteHeroVoiceCanaryAccount(input);
 }

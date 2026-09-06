@@ -199,7 +199,10 @@ jobs:
         run: npm run verify:runpod-image-cost
 
       - name: Verify Hero Voice stock and clone contracts
-        run: npm run verify:omnivoice && npm run verify:hero-voice-clone
+        # verify:hero-voice-clone-task2 also shells out to a Python fixture generator that
+        # needs pydub (not on this runner); the durable runner below is the Node-only half
+        # (durable TTS/clone runtime, Task 2 terminal matrix, ASR content gate).
+        run: npm run verify:omnivoice && npm run verify:hero-voice-clone && npx tsx scripts/verify-hero-voice-durable.ts
 
       - name: Verify managed stock key eligibility, caps, monthly ceiling, and throttling
         run: npm run verify:managed-stock

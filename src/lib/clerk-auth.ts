@@ -7,6 +7,14 @@ import { grantTrial, TRIAL_DAYS_PUBLIC } from "@/lib/trial";
 import { syncUserEntitlement, classifyEntitlement } from "@/lib/entitlements";
 import { resolveServiceActor } from "@/lib/mcp/service-actor";
 import { AFF_COOKIE, sanitizeRefCode } from "@/lib/affiliate-ref";
+import {
+  assertHeroVoiceCanaryIsolatedEnvironment,
+  resolveHeroVoiceCanarySessionUser,
+} from "@/lib/hero-voice-canary-auth.server";
+import {
+  ensureHeroVoiceCanaryReadReady,
+  runHeroVoiceCanarySerializedMutation,
+} from "@/lib/hero-voice-deletion-coordinator.server";
 
 // ── Admin trust root (SEC-11 hardening) ──────────────────────────────────────
 // ADMIN is granted ONLY from an email Clerk has VERIFIED as the account's PRIMARY,
@@ -83,15 +91,7 @@ async function demoteLapsedPaidPlan(user: User | null): Promise<User | null> {
  * - Falls back to email match (for users migrated from NextAuth)
  * - Auto-creates Prisma row for brand-new Clerk signups
  */
-export async function getCurrentUser(): Promise<User | null> {
-  // Additive: internal service calls (MCP orchestrator) act as a given user via a
-  // server-only secret header. Browsers can't set it → the Clerk path below is unchanged.
-  const serviceActor = await resolveServiceActor();
-  if (serviceActor) return serviceActor;
-
-  const { userId } = await auth();
-  if (!userId) return null;
-
+async function getCurrentUserForClerkId(userId: string): Promise<User | null> {
   // Fast path: already linked
   let user = await prisma.user.findUnique({ where: { clerkId: userId } });
   if (user) {
@@ -183,6 +183,40 @@ export async function getCurrentUser(): Promise<User | null> {
   // email-backed grant is claimed here so the first dashboard response is PRO.
   await syncUserEntitlement(created.id);
   return prisma.user.findUnique({ where: { id: created.id } }) as Promise<typeof created>;
+}
+
+export async function getCurrentUser(): Promise<User | null> {
+  // The marked evaluator has its own Clerk authority and prebootstrapped user.
+  // Authenticate there before ordinary service actors, lazy user creation,
+  // role/entitlement sync, or trial grants can run.
+  if (process.env.HERO_VOICE_CANARY_EXECUTION_MODE === "1") {
+    try {
+      assertHeroVoiceCanaryIsolatedEnvironment({ requireAuthAttestation: true });
+      await ensureHeroVoiceCanaryReadReady();
+      return await resolveHeroVoiceCanarySessionUser(await auth());
+    } catch {
+      return null;
+    }
+  }
+  const deletionStartup = await ensureHeroVoiceCanaryReadReady();
+  // Additive: internal service calls (MCP orchestrator) act as a given user via a
+  // server-only secret header. Browsers can't set it → the Clerk path below is unchanged.
+  const serviceActor = await resolveServiceActor();
+  if (serviceActor) return serviceActor;
+
+  const { userId } = await auth();
+  if (!userId) return null;
+
+  // A failed canary recovery permits only an existing-row auth read. It cannot
+  // link/create users, grant a trial, sync entitlements, or change an admin role.
+  if (deletionStartup.mode === "read_only") {
+    return prisma.user.findUnique({ where: { clerkId: userId } });
+  }
+
+  // Existing-user entitlement/role sync and brand-new Clerk bootstrap can write
+  // owner rows, so they share the same coordinator boundary as generation and
+  // review mutations. An account delete cannot race a local user recreation.
+  return runHeroVoiceCanarySerializedMutation(() => getCurrentUserForClerkId(userId));
 }
 
 /**

@@ -64,6 +64,18 @@ export async function register() {
     await import("../sentry.server.config");
     installUnhandledRejectionGuard();
 
+    // The marked local canary must finish every durable deletion intent before
+    // auth bootstrap, generation, review, or another delete can mutate state.
+    // Failure is intentionally sticky for this process: reads remain possible,
+    // while every canary mutation boundary fails closed.
+    const { initializeHeroVoiceDeletionCoordinator } = await import(
+      "@/lib/hero-voice-deletion-coordinator.server"
+    );
+    const deletionStartup = await initializeHeroVoiceDeletionCoordinator();
+    if (deletionStartup.mode === "read_only") {
+      console.error("[instrumentation] Hero Voice canary is read-only: deletion recovery incomplete");
+    }
+
     const { prisma } = await import("@/lib/prisma");
     const { resetStripeClient } = await import("@/lib/stripe");
 

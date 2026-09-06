@@ -79,7 +79,7 @@ const THAI_SPEECH_UNIT_RE = new RegExp(
   "giu",
 );
 
-export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-07-24.1";
+export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-09-07.1";
 
 export type HeroVoiceSpeechRiskCode =
   | "ambiguous_numeric_slash"
@@ -289,6 +289,25 @@ function normalizeThaiSpeechUnits(text: string): string {
   );
 }
 
+/** Letter+digit codes such as A07 or MP3 are spelled letter by letter and digit by digit. */
+function normalizeThaiSpeechCodes(text: string): string {
+  return text.replace(
+    /(?<![\p{L}\p{M}\p{N}])([A-Za-z]{1,4})(\d{1,6})(?![\p{L}\p{M}\p{N}])/gu,
+    (_match, letters: string, digits: string) => [
+      ...[...letters.toUpperCase()].map((letter) => THAI_ENGLISH_LETTER_NAMES[letter]),
+      ...[...digits].map((digit) => THAI_DIGIT_WORDS[Number(digit)]),
+    ].join(" "),
+  );
+}
+
+/** Dimensions such as 1920 x 1080 are read as multiplication, not as the letter x. */
+function normalizeThaiSpeechDimensions(text: string): string {
+  return text.replace(
+    new RegExp(`(${NUMBER_SOURCE})\\s*(?<![A-Za-z])[x×X](?![A-Za-z])\\s*(${NUMBER_SOURCE})`, "gu"),
+    (_match, left: string, right: string) => `${left} คูณ ${right}`,
+  );
+}
+
 function normalizeThaiSpeechNumbers(text: string): string {
   return text
     .replace(
@@ -339,13 +358,18 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function applyThaiAccentPronunciations(text: string): string {
-  const aliased = THAI_ACCENT_PRONUNCIATIONS.reduce((result, entry) => {
+/** Reviewed English→Thai readings (data/hero-voice/thai-pronunciations.json), longest match first. */
+function applyThaiPronunciationDictionary(text: string): string {
+  return THAI_ACCENT_PRONUNCIATIONS.reduce((result, entry) => {
     const phrase = escapeRegExp(entry.match).replace(/\s+/g, "\\s+");
     const pattern = new RegExp(`(^|[^A-Za-z])${phrase}(?=$|[^A-Za-z])`, "giu");
     return result.replace(pattern, (_match, prefix: string) => `${prefix}${entry.spoken}`);
   }, text);
-  return aliased.replace(/\b[A-Z]{2,6}\b/g, (acronym) => (
+}
+
+/** Acronyms with no reviewed reading are spelled with Thai letter names. */
+function spellUnlistedAcronyms(text: string): string {
+  return text.replace(/\b[A-Z]{2,6}\b/g, (acronym) => (
     [...acronym].map((letter) => THAI_ENGLISH_LETTER_NAMES[letter]).join(" ")
   ));
 }
@@ -376,23 +400,88 @@ function speechRisks(displayText: string, speechText: string): HeroVoiceSpeechRi
   return [...risks].map(([code, severity]) => ({ code, severity }));
 }
 
-/** Build the provider text and privacy-safe risk categories without changing display text. */
-export function prepareHeroVoiceSpeech(displayText: string): HeroVoiceSpeechPreparation {
-  const unicodeText = normalizeThaiDigits(displayText.normalize("NFC"));
+const THAI_ONLY_TOKEN_RE = /^[\p{Script=Thai}]+$/u;
+const NUMERIC_TOKEN_RE = /^[+-]?\d[\d,.]*%?$/u;
+const NON_THAI_CHAR_RE = /[^\p{Script=Thai}\s]/u;
+
+function normalizeSpeechSegment(segment: string): string {
   const structuredText = normalizeThaiSpeechUnits(
     normalizeThaiSpeechPercents(
       normalizeThaiSpeechCurrencies(
         normalizeThaiSpeechRanges(
-          normalizeThaiSpeechAbbreviations(
-            normalizeThaiSpeechDates(
-              normalizeThaiSpeechTimes(expandThaiRepetitionMarks(unicodeText)),
+          normalizeThaiSpeechDimensions(
+            normalizeThaiSpeechCodes(
+              normalizeThaiSpeechAbbreviations(
+                normalizeThaiSpeechDates(
+                  normalizeThaiSpeechTimes(
+                    expandThaiRepetitionMarks(applyThaiPronunciationDictionary(segment)),
+                  ),
+                ),
+              ),
             ),
           ),
         ),
       ),
     ),
   );
-  const speechText = applyThaiAccentPronunciations(normalizeThaiSpeechNumbers(structuredText));
+  return spellUnlistedAcronyms(normalizeThaiSpeechNumbers(structuredText));
+}
+
+/**
+ * Glue rule (Mew-approved by ear, 2026-09-06): OmniVoice reads spelled-out numbers
+ * and transliterated words correctly only when they are written attached to their
+ * Thai neighbours, the way Thai is written by hand ("มีสินค้ายี่สิบเอ็ดชิ้น"). So a
+ * source space survives only between two Thai-only words, after punctuation, or
+ * between two bare numbers; every other space (around digits, Latin, symbols) is
+ * removed after normalization. Normalization runs per surviving segment so that
+ * multi-token rules (1920 x 1080, วันที่ 5 กันยายน 2026, Hero AI Studio) stay intact.
+ */
+function keepsSpaceBefore(previous: string, token: string): boolean {
+  if (token === "ๆ" || token === "%") return false;
+  if (previous === "%") return NUMERIC_TOKEN_RE.test(token);
+  if (THAI_ONLY_TOKEN_RE.test(previous) && THAI_ONLY_TOKEN_RE.test(token)) return true;
+  if (/[,.;:!?]$/u.test(previous)) return true;
+  return NUMERIC_TOKEN_RE.test(previous) && NUMERIC_TOKEN_RE.test(token);
+}
+
+function normalizeSpeechText(unicodeText: string): string {
+  const parts = unicodeText.split(/(\s+)/u);
+  const tokens: string[] = [];
+  const gaps: string[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    if (index % 2 === 0) {
+      if (parts[index]) tokens.push(parts[index]);
+    } else if (tokens.length > 0) {
+      gaps[tokens.length - 1] = parts[index];
+    }
+  }
+  if (tokens.length === 0) return normalizeSpeechSegment(unicodeText);
+  const leading = /^\s+/u.exec(unicodeText)?.[0] ?? "";
+  const trailing = /\s+$/u.exec(unicodeText)?.[0] ?? "";
+  const segments: Array<{ text: string; gapAfter: string }> = [];
+  let current = tokens[0];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const gap = gaps[index - 1] ?? " ";
+    if (keepsSpaceBefore(tokens[index - 1], tokens[index])) {
+      segments.push({ text: current, gapAfter: gap });
+      current = tokens[index];
+    } else {
+      current += `${gap}${tokens[index]}`;
+    }
+  }
+  segments.push({ text: current, gapAfter: "" });
+  const rendered = segments.map(({ text, gapAfter }) => {
+    const normalized = normalizeSpeechSegment(text);
+    const glued = NON_THAI_CHAR_RE.test(text) ? normalized.replace(/\s+/gu, "") : normalized;
+    return `${glued}${gapAfter}`;
+  });
+  return `${leading}${rendered.join("")}${trailing}`;
+}
+
+/** Build the provider text and privacy-safe risk categories without changing display text. */
+export function prepareHeroVoiceSpeech(displayText: string): HeroVoiceSpeechPreparation {
+  const unicodeText = normalizeThaiDigits(displayText.normalize("NFC"));
+  const speechText = normalizeSpeechText(unicodeText);
   return {
     speechText,
     risks: speechRisks(displayText, speechText),
@@ -464,12 +553,52 @@ function refineSpeechChunk(
 }
 
 /** Split on display-text boundaries while enforcing the provider's speech-text limit. */
+/**
+ * Sentence boundaries for OmniVoice chunking: a Thai sentence-final particle or
+ * terminal punctuation followed by whitespace, or a line break. The whitespace
+ * stays with the preceding chunk so chunks still concatenate to the display text.
+ */
+const SENTENCE_END_RE = /(?:ครับ|ค่ะ|คะ|[.!?…])\s+|\n+/gu;
+const MIN_SENTENCE_CHUNK_CHARS = 10;
+
+interface DisplaySpan { text: string; startChar: number; endChar: number; }
+
+/**
+ * Mew-approved by ear (2026-09-06): OmniVoice rushes and slurs toward the end of a
+ * long single generation, and the fix is generating one sentence at a time and
+ * concatenating. Tiny fragments (a lone "ครับ") are merged into the previous
+ * sentence so the model never gets a one-word job.
+ */
+function splitDisplaySentences(displayText: string): DisplaySpan[] {
+  const spans: DisplaySpan[] = [];
+  let position = 0;
+  const push = (end: number) => {
+    if (end <= position) return;
+    const text = displayText.slice(position, end);
+    const previous = spans[spans.length - 1];
+    if (previous && text.trim().length < MIN_SENTENCE_CHUNK_CHARS) {
+      previous.text += text;
+      previous.endChar = end;
+    } else {
+      spans.push({ text, startChar: position, endChar: end });
+    }
+    position = end;
+  };
+  for (const match of displayText.matchAll(SENTENCE_END_RE)) {
+    push((match.index ?? 0) + match[0].length);
+  }
+  push(displayText.length);
+  return spans;
+}
+
 export function splitHeroVoiceScriptForTts(
   displayText: string,
   maxSpeechChars: number,
 ): HeroVoiceSpeechChunk[] {
   const limit = Math.max(1, Math.floor(maxSpeechChars));
-  return splitScriptForTts(displayText, limit).flatMap((chunk) => (
-    refineSpeechChunk(chunk.text, chunk.startChar, limit)
+  return splitDisplaySentences(displayText).flatMap((sentence) => (
+    splitScriptForTts(sentence.text, limit).flatMap((chunk) => (
+      refineSpeechChunk(chunk.text, sentence.startChar + chunk.startChar, limit)
+    ))
   ));
 }

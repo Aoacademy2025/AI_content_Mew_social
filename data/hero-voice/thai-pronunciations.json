@@ -124,5 +124,185 @@
     "source": "support-ticket-2026-07-24",
     "reviewedBy": "Mew",
     "reviewedAt": "2026-07-24"
+  },
+  {
+    "match": "Hero AI Studio",
+    "spoken": "ฮีโร่ เอไอ สตูดิโอ",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "short video",
+    "spoken": "ช็อต วิดีโอ",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "YouTube",
+    "spoken": "ยูทูบ",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "TikTok",
+    "spoken": "ติ๊กต่อก",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "content",
+    "spoken": "คอนเทนต์",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "video",
+    "spoken": "วิดีโอ",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "voice cloning",
+    "spoken": "วอยซ์ โคลนนิ่ง",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "preview",
+    "spoken": "พรีวิว",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "export",
+    "spoken": "เอ็กซ์พอร์ต",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "RunPod",
+    "spoken": "รันพ็อด",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "Serverless",
+    "spoken": "เซิร์ฟเวอร์เลส",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "OmniVoice",
+    "spoken": "ออมนิวอยซ์",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "Gemini",
+    "spoken": "เจมิไน",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "ElevenLabs",
+    "spoken": "อีเลเว่น แล็บส์",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "Remotion",
+    "spoken": "รีโมชัน",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "dashboard",
+    "spoken": "แดชบอร์ด",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "WAV",
+    "spoken": "เวฟ",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "MP3",
+    "spoken": "เอ็มพีสาม",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "API",
+    "spoken": "เอพีไอ",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "GPU",
+    "spoken": "จีพียู",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "hero-voice-text-stage-2026-09-06",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
   }
 ]

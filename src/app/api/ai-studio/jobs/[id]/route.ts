@@ -1,4 +1,3 @@
-import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
@@ -17,8 +16,21 @@ import {
 import { runpodImageModelConfig } from "@/lib/runpod-serverless";
 import { apiError } from "@/lib/api-error";
 import { isInternalAiTester } from "@/lib/internal-ai-access";
-import { isOmniVoiceUserAllowed } from "@/lib/omnivoice";
 import { advanceHeroVoiceGeneration } from "@/lib/hero-voice-generation.server";
+import {
+  isHeroVoiceCloneCanaryUser,
+  isHeroVoiceCloneGenerationJob,
+} from "@/lib/omnivoice-policy";
+import {
+  heroVoiceClonePrivateJson,
+  heroVoiceClonePrivateResponse,
+} from "@/lib/hero-voice-clone-response.server";
+import {
+  heroVoiceCloneFailureHttpStatus,
+  isHeroVoiceCloneDurableRecord,
+  isHeroVoiceCloneTerminalStatus,
+  normalizeHeroVoiceClonePublicJob,
+} from "@/lib/hero-voice-clone-state";
 
 export const runtime = "nodejs";
 
@@ -30,18 +42,34 @@ export async function GET(
 ) {
   try {
     const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    if (!user) return heroVoiceClonePrivateJson({ error: "Unauthorized" }, { status: 401 });
     const { id } = await params;
     let job = await prisma.aiGenerationJob.findFirst({ where: { id, userId: user.id } });
-    if (!job) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (!job) return heroVoiceClonePrivateJson({ error: "Not found" }, { status: 404 });
     if (job.kind === "voice") {
-      if (!isOmniVoiceUserAllowed(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
-      if (!TERMINAL.has(job.status)) job = await advanceHeroVoiceGeneration(user.id, job.id);
-      return NextResponse.json({ job: publicAiGenerationJob(job) });
+      const cloneCanaryJob = isHeroVoiceCloneGenerationJob(job) || isHeroVoiceCloneDurableRecord(job);
+      if (!cloneCanaryJob || !isHeroVoiceCloneCanaryUser(user)) {
+        return heroVoiceClonePrivateJson({ error: "Not found" }, { status: 404 });
+      }
+      const previousStatus = job.status;
+      // The durable boundary also reconciles a crash after the at-most-once
+      // cancel claim. Calling it for terminal clone rows cannot resubmit work.
+      job = await advanceHeroVoiceGeneration(user.id, job.id);
+      const failureStatus = heroVoiceCloneFailureHttpStatus(job.errorCode);
+      if (!isHeroVoiceCloneTerminalStatus(previousStatus) && failureStatus !== 200) {
+        return heroVoiceClonePrivateJson({
+          error: job.errorMessage ?? "Hero Voice clone status failed",
+          code: job.errorCode,
+          retryable: false,
+        }, { status: failureStatus });
+      }
+      return heroVoiceClonePrivateJson({
+        job: normalizeHeroVoiceClonePublicJob(publicAiGenerationJob(job)),
+      });
     }
-    if (!isInternalAiTester(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if (!isInternalAiTester(user)) return heroVoiceClonePrivateJson({ error: "Not found" }, { status: 404 });
     if (job.kind !== "image" || TERMINAL.has(job.status)) {
-      return NextResponse.json({ job: publicAiGenerationJob(job) });
+      return heroVoiceClonePrivateJson({ job: publicAiGenerationJob(job) });
     }
     const providerJobId = job.providerJobId;
     if (!providerJobId) {
@@ -50,7 +78,7 @@ export async function GET(
         const failed = await failAndRefundAiJob(user.id, job.id, "SUBMIT_TIMEOUT", "Provider job id was not recorded");
         if (failed) job = failed;
       }
-      return NextResponse.json({ job: publicAiGenerationJob(job) });
+      return heroVoiceClonePrivateJson({ job: publicAiGenerationJob(job) });
     }
 
     const durableAttempt = await latestImageGenerationAttempt(user.id, job.id);
@@ -79,7 +107,7 @@ export async function GET(
       }
     }
     if (!attemptRef) {
-      return NextResponse.json({ error: "ข้อมูล provider attempt ของงานนี้ไม่ครบ", retryable: true }, { status: 503 });
+      return heroVoiceClonePrivateJson({ error: "ข้อมูล provider attempt ของงานนี้ไม่ครบ", retryable: true }, { status: 503 });
     }
 
     let provider;
@@ -87,7 +115,7 @@ export async function GET(
       provider = await pollImageGenerationAttempt(attemptRef);
     } catch (error) {
       console.error(`[ai-studio/job] provider poll failed job=${job.id}:`, error instanceof Error ? error.message : error);
-      return NextResponse.json({ error: "ตรวจสถานะผู้ให้บริการไม่สำเร็จ", retryable: true }, { status: 502 });
+      return heroVoiceClonePrivateJson({ error: "ตรวจสถานะผู้ให้บริการไม่สำเร็จ", retryable: true }, { status: 502 });
     }
 
     if (provider.status === "IN_QUEUE" || provider.status === "IN_PROGRESS") {
@@ -98,7 +126,7 @@ export async function GET(
         inProgress: provider.status === "IN_PROGRESS",
         delayTimeMs: provider.delayTimeMs,
       }) ?? job;
-      return NextResponse.json({ job: publicAiGenerationJob(job) });
+      return heroVoiceClonePrivateJson({ job: publicAiGenerationJob(job) });
     }
 
     if (provider.status === "COMPLETED") {
@@ -122,7 +150,7 @@ export async function GET(
           error instanceof Error ? error.message : "Runpod output could not be stored",
         ) ?? job;
       }
-      return NextResponse.json({ job: publicAiGenerationJob(job) });
+      return heroVoiceClonePrivateJson({ job: publicAiGenerationJob(job) });
     }
 
     if (provider.status === "FAILED" || provider.status === "TIMED_OUT" || provider.status === "CANCELLED") {
@@ -132,11 +160,11 @@ export async function GET(
         `${attemptRef.provider.toUpperCase()}_${provider.status}`,
         provider.error || `${attemptRef.provider} job ${provider.status.toLowerCase()}`,
       ) ?? job;
-      return NextResponse.json({ job: publicAiGenerationJob(job) });
+      return heroVoiceClonePrivateJson({ job: publicAiGenerationJob(job) });
     }
 
-    return NextResponse.json({ job: publicAiGenerationJob(job) });
+    return heroVoiceClonePrivateJson({ job: publicAiGenerationJob(job) });
   } catch (error) {
-    return apiError({ route: "ai-studio/jobs/[id]", error });
+    return heroVoiceClonePrivateResponse(apiError({ route: "ai-studio/jobs/[id]", error }));
   }
 }

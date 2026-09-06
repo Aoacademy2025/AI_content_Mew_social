@@ -3,7 +3,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
-  AudioLines,
   Check,
   Cloud,
   Coins,
@@ -21,7 +20,7 @@ import { customerGenerationErrorCopy } from "@/lib/customer-generation-error";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import HeroVoiceClonePanel from "./HeroVoiceClonePanel";
 
-type StudioMode = "image" | "voice" | "cloning";
+type StudioMode = "image" | "cloning";
 type ImageEngine = "runpod" | "cloud";
 type ImageModel = {
   id: string;
@@ -37,11 +36,10 @@ type ImageModel = {
 };
 type Catalog = {
   imageModels: ImageModel[];
-  voice: { available: boolean; cloning: boolean; maxDurationSec: number; maxScriptChars: number };
+  voice: { cloning: true; maxDurationSec: number; maxScriptChars: number };
   plan: string;
   balance: { granted: number; promotional: number; purchased: number; total: number };
 };
-type Voice = { voice_id: string; desc: string; instruct: string; preview_url: string };
 type StudioJob = {
   id: string;
   kind: "image" | "voice";
@@ -179,10 +177,6 @@ export default function AiStudioPage() {
   const [model, setModel] = useState("z-image-turbo");
   const [style, setStyle] = useState<(typeof IMAGE_STYLES)[number][0]>("photoreal");
   const [aspectRatio, setAspectRatio] = useState<(typeof ASPECTS)[number]>("4:5");
-  const [voices, setVoices] = useState<Voice[]>([]);
-  const [voiceId, setVoiceId] = useState("");
-  const [script, setScript] = useState("");
-  const [speed, setSpeed] = useState(1);
 
   const loadCatalog = useCallback(async () => {
     const response = await fetch("/api/ai-studio/catalog", { cache: "no-store" });
@@ -205,25 +199,13 @@ export default function AiStudioPage() {
   }, []);
 
   useEffect(() => {
+    // The async loaders synchronize this client with server-owned Studio state;
+    // their state writes happen only after network promises resolve.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     Promise.all([loadCatalog(), loadJobs()])
       .catch((error) => toast.error(error instanceof Error ? error.message : "เปิด AI Studio ไม่สำเร็จ"))
       .finally(() => setLoading(false));
   }, [loadCatalog, loadJobs]);
-
-  const loadVoices = useCallback(async () => {
-    const response = await fetch("/api/omnivoice/voices", { cache: "no-store" });
-    const data = await response.json();
-    if (!response.ok || !Array.isArray(data)) throw new Error(apiMessage(data, "โหลดรายการเสียงไม่สำเร็จ"));
-    setVoices(data as Voice[]);
-    setVoiceId((current) => (data as Voice[]).some((voice) => voice.voice_id === current)
-      ? current
-      : (data[0] as Voice | undefined)?.voice_id ?? "");
-  }, []);
-
-  useEffect(() => {
-    if (!catalog?.voice.available) return;
-    loadVoices().catch((error) => toast.error(error instanceof Error ? error.message : "โหลดรายการเสียงไม่สำเร็จ"));
-  }, [catalog?.voice.available, loadVoices]);
 
   const activeKey = useMemo(
     () => jobs.filter((job) => ACTIVE_JOB_STATUS.has(job.status)).map((job) => job.id).join(","),
@@ -261,8 +243,6 @@ export default function AiStudioPage() {
     [catalog?.imageModels, imageEngine],
   );
   const selectedModel = engineModels.find((item) => item.id === model);
-  const scriptRatio = Math.min(100, ((script.length || 0) / Math.max(1, catalog?.voice.maxScriptChars ?? 1)) * 100);
-  const estimatedVoiceMinutes = script.replace(/\s+/g, "").length / (14 * 60);
 
   async function submitImage(event: FormEvent) {
     event.preventDefault();
@@ -304,34 +284,6 @@ export default function AiStudioPage() {
     if (nextModel) setModel(nextModel.id);
   }
 
-  async function submitVoice(event: FormEvent) {
-    event.preventDefault();
-    if (!script.trim() || !voiceId) return;
-    setSubmitting(true);
-    try {
-      const response = await fetch("/api/ai-studio/voices", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: script,
-          voiceId,
-          speed,
-          idempotencyKey: crypto.randomUUID(),
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(apiMessage(data, "สร้างเสียงไม่สำเร็จ"));
-      const job = data.job as StudioJob;
-      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-      toast.success(job.status === "completed" ? "สร้างเสียงสำเร็จ" : "ส่งงานสร้างเสียงแล้ว");
-      setScript("");
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "สร้างเสียงไม่สำเร็จ");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
   return (
     <div className="ve-no-padding relative flex-1 overflow-y-auto isolate">
       <div className="mx-auto max-w-[1380px] px-4 pb-16 pt-5 md:px-7 md:pt-8">
@@ -344,7 +296,7 @@ export default function AiStudioPage() {
               AI Studio
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-relaxed" style={{ color: "var(--ui-text-secondary)" }}>
-              สร้างภาพ สร้างเสียง และจัดการเสียงโคลนส่วนตัวจากพื้นที่เดียว
+              สร้างภาพและจัดการเสียงโคลนส่วนตัวสำหรับ canary ภายในจากพื้นที่เดียว
             </p>
           </div>
           <div className="flex items-center gap-3 rounded-full px-4 py-2.5" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" }}>
@@ -359,7 +311,6 @@ export default function AiStudioPage() {
         <div className="mb-6 inline-flex rounded-xl p-1" style={{ background: "var(--ui-badge-neutral-bg)", border: "1px solid var(--ui-card-border)" }}>
           {([
             ["image", "สร้างภาพ", ImageIcon],
-            ["voice", "สร้างเสียง", AudioLines],
             ...(catalog?.voice.cloning ? [["cloning", "โคลนเสียง", WandSparkles]] as const : []),
           ] as ReadonlyArray<readonly [StudioMode, string, typeof ImageIcon]>).map(([value, label, Icon]) => (
             <button
@@ -504,56 +455,9 @@ export default function AiStudioPage() {
                   งานนี้ใช้เฉพาะ {imageEngine === "runpod" ? "RunPod AI" : "Cloud API"} หากไม่สำเร็จระบบจะคืนเครดิตและไม่ส่งต่อไปอีก Engine
                 </p>
               </form>
-            ) : mode === "voice" ? (
-              <form onSubmit={submitVoice} className="space-y-7">
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl px-4 py-3" style={{ background: "rgba(139,92,246,.08)", border: "1px solid rgba(139,92,246,.24)" }}>
-                  <p className="text-sm font-medium" style={{ color: "var(--ui-text-primary)" }}>{catalog?.plan} · ยาวสุด {(catalog?.voice.maxDurationSec ?? 0) / 60} นาทีต่อเสียง</p>
-                  <p className="text-xs" style={{ color: "#B9A6FF" }}>คิดตามโควตานาทีแพ็กเกจ</p>
-                </div>
-
-                {!catalog?.voice.available ? (
-                  <div className="rounded-2xl border border-dashed p-10 text-center" style={{ borderColor: "var(--ui-card-border)" }}>
-                    <AudioLines className="mx-auto mb-3 h-6 w-6" style={{ color: "var(--ui-text-muted)" }} />
-                    <p className="text-sm" style={{ color: "var(--ui-text-secondary)" }}>Hero Voice ยังไม่เปิดให้บัญชีนี้</p>
-                  </div>
-                ) : (
-                  <>
-                    <div>
-                      <div className="mb-2 flex items-center justify-between">
-                        <label htmlFor="voice-script" className="text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>สคริปต์เสียง</label>
-                        <span className="text-[11px]" style={{ color: scriptRatio > 90 ? "#FBBF24" : "var(--ui-text-muted)" }}>{script.length.toLocaleString("th-TH")}/{catalog.voice.maxScriptChars.toLocaleString("th-TH")}</span>
-                      </div>
-                      <textarea id="voice-script" value={script} onChange={(event) => setScript(event.target.value.slice(0, catalog.voice.maxScriptChars))} rows={10} placeholder="วางสคริปต์ภาษาไทยที่ต้องการสร้างเสียง..." className="w-full resize-none rounded-2xl px-5 py-4 text-[15px] leading-7 outline-none transition-shadow focus:ring-2 focus:ring-violet-500/50" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }} />
-                      <div className="mt-2 h-1 overflow-hidden rounded-full" style={{ background: "var(--ui-divider)" }}><div className="h-full rounded-full transition-transform" style={{ width: `${scriptRatio}%`, background: scriptRatio > 90 ? "#FBBF24" : ACCENT }} /></div>
-                      <p className="mt-2 text-xs" style={{ color: "var(--ui-text-muted)" }}>คาดการณ์ประมาณ {estimatedVoiceMinutes.toFixed(1)} นาที · ระบบจะแบ่งสคริปต์ส่ง GPU และรวมเสียงให้อัตโนมัติ</p>
-                    </div>
-
-                    <div className="grid gap-6 md:grid-cols-[1fr_180px]">
-                      <div>
-                        <label htmlFor="voice-id" className="mb-2 block text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>เสียง</label>
-                        <select id="voice-id" value={voiceId} onChange={(event) => setVoiceId(event.target.value)} className="h-12 w-full rounded-xl px-4 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }}>
-                          {voices.map((voice) => <option key={voice.voice_id} value={voice.voice_id}>{voice.desc || voice.voice_id}</option>)}
-                        </select>
-                        {voices.find((voice) => voice.voice_id === voiceId)?.preview_url && <audio className="mt-3 h-9 w-full" controls preload="none" src={voices.find((voice) => voice.voice_id === voiceId)!.preview_url} />}
-                      </div>
-                      <div>
-                        <label htmlFor="voice-speed" className="mb-2 block text-sm font-semibold" style={{ color: "var(--ui-text-primary)" }}>ความเร็ว</label>
-                        <select id="voice-speed" value={speed} onChange={(event) => setSpeed(Number(event.target.value))} className="h-12 w-full rounded-xl px-4 text-sm outline-none" style={{ background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }}>
-                          <option value={0.85}>ช้า · 0.85×</option><option value={1}>ปกติ · 1×</option><option value={1.15}>เร็ว · 1.15×</option><option value={1.3}>เร็วมาก · 1.3×</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    <button type="submit" disabled={submitting || !script.trim() || !voiceId} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-45" style={{ background: "linear-gradient(180deg,#8B66F8,#6C4CF4)" }}>
-                      {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}สร้างเสียง Hero Voice
-                    </button>
-                  </>
-                )}
-              </form>
             ) : (
               <HeroVoiceClonePanel
                 maxScriptChars={catalog?.voice.maxScriptChars ?? 500}
-                onVoicesChanged={loadVoices}
                 onJobCreated={(created) => {
                   const job = created as StudioJob;
                   setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);

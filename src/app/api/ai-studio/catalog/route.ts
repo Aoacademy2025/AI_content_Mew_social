@@ -1,22 +1,27 @@
-import { NextResponse } from "next/server";
+import { heroVoiceClonePrivateJson, heroVoiceClonePrivateResponse } from "@/lib/hero-voice-clone-response.server";
 import { getCurrentUser } from "@/lib/clerk-auth";
 import { AI_IMAGE_MODELS } from "@/lib/ai-image-policy";
 import { ensureMonthlyGrant, getBalance } from "@/lib/credits";
 import { durationCapSecFor } from "@/lib/plan-limits";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
-import { isHeroVoiceCloningEnabled, isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
+import { heroVoiceCloneCanaryAccessDecision } from "@/lib/omnivoice-policy";
 import { describeImageOffer } from "@/lib/image-generation-provider.server";
 import { apiError } from "@/lib/api-error";
-import { isInternalAiTester } from "@/lib/internal-ai-access";
 
 export async function GET() {
   try {
     const user = await getCurrentUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    if (!isInternalAiTester(user)) return NextResponse.json({ error: "Not found" }, { status: 404 });
-    await ensureMonthlyGrant(user.id);
+    const access = heroVoiceCloneCanaryAccessDecision(user);
+    if (!access.allowed) {
+      return heroVoiceClonePrivateJson(
+        { error: access.status === 401 ? "Unauthorized" : "Not found" },
+        { status: access.status },
+      );
+    }
+    if (!user) throw new Error("clone canary access decision admitted a missing actor");
+    if (process.env.HERO_VOICE_CANARY_EXECUTION_MODE !== "1") await ensureMonthlyGrant(user.id);
     const balance = await getBalance(user.id);
-    return NextResponse.json({
+    return heroVoiceClonePrivateJson({
       imageModels: AI_IMAGE_MODELS.map((model) => {
         const offer = describeImageOffer(model);
         return {
@@ -33,8 +38,9 @@ export async function GET() {
         };
       }),
       voice: {
-        available: isOmniVoiceUserAllowed(user),
-        cloning: isHeroVoiceCloningEnabled() && user.role === "ADMIN" && isOmniVoiceUserAllowed(user),
+        // AI Studio exposes only the account-owned clone canary. Stock Hero
+        // Voice remains on its existing non-Studio surfaces.
+        cloning: true,
         maxDurationSec: durationCapSecFor(user.plan),
         maxScriptChars: omnivoiceScriptCharCapForPlan(user.plan),
       },
@@ -42,6 +48,6 @@ export async function GET() {
       balance,
     });
   } catch (error) {
-    return apiError({ route: "ai-studio/catalog", error });
+    return heroVoiceClonePrivateResponse(await apiError({ route: "ai-studio/catalog", error }));
   }
 }

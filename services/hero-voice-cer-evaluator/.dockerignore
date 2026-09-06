@@ -1,0 +1,9 @@
+**
+!Dockerfile
+!RUNTIME_LOCK.json
+!requirements.lock
+!canonical.py
+!verify_lock.py
+!evaluator.py
+!wheelhouse/
+!wheelhouse/*.whl

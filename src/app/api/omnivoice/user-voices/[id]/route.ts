@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
+import { heroVoiceClonePrivateJson as privateJson, heroVoiceClonePrivateResponse } from "@/lib/hero-voice-clone-response.server";
 
 import { getCurrentUser } from "@/lib/clerk-auth";
-import { isHeroVoiceCloningEnabled, isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
+import { heroVoiceCloneCanaryAccessDecision } from "@/lib/omnivoice-policy";
 import {
   deleteUserVoice,
   readUserVoiceWav,
@@ -10,53 +11,55 @@ import {
 
 export const runtime = "nodejs";
 
-async function requireCloneAdmin() {
+async function requireCloneCanaryUser() {
   const user = await getCurrentUser();
-  if (!user) return { error: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) } as const;
-  if (!isHeroVoiceCloningEnabled() || user.role !== "ADMIN" || !isOmniVoiceUserAllowed(user)) {
-    return { error: NextResponse.json({ error: "Not found" }, { status: 404 }) } as const;
+  const access = heroVoiceCloneCanaryAccessDecision(user);
+  if (!access.allowed) {
+    return {
+      error: privateJson(
+        { error: access.status === 401 ? "Unauthorized" : "Not found" },
+        { status: access.status },
+      ),
+    } as const;
   }
-  return { user } as const;
+  return { user: user! } as const;
 }
 
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const gate = await requireCloneAdmin();
+  const gate = await requireCloneCanaryUser();
   if ("error" in gate) return gate.error;
   const { id } = await params;
   const voice = await readUserVoiceWav(gate.user.id, id);
-  if (!voice) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return new NextResponse(new Uint8Array(voice.wav), {
+  if (!voice) return privateJson({ error: "Not found" }, { status: 404 });
+  return heroVoiceClonePrivateResponse(new NextResponse(new Uint8Array(voice.wav), {
     headers: {
       "Content-Type": "audio/wav",
       "Content-Length": String(voice.wav.length),
-      "Cache-Control": "private, no-store",
       "Content-Disposition": "inline",
       "X-Content-Type-Options": "nosniff",
     },
-  });
+  }));
 }
 
 export async function DELETE(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const gate = await requireCloneAdmin();
+  const gate = await requireCloneCanaryUser();
   if ("error" in gate) return gate.error;
   const { id } = await params;
   try {
     const removed = await deleteUserVoice(gate.user.id, id);
-    if (!removed) return NextResponse.json({ error: "Not found" }, { status: 404 });
-    return NextResponse.json({ ok: true }, {
-      headers: { "Cache-Control": "private, no-store" },
-    });
+    if (!removed) return privateJson({ error: "Not found" }, { status: 404 });
+    return privateJson({ ok: true });
   } catch (error) {
     if (error instanceof UserVoiceError) {
-      return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+      return privateJson({ error: error.message, code: error.code }, { status: error.status });
     }
     console.error("[omnivoice/user-voices] delete failed:", error);
-    return NextResponse.json({ error: "ลบเสียงโคลนไม่สำเร็จ" }, { status: 500 });
+    return privateJson({ error: "ลบเสียงโคลนไม่สำเร็จ" }, { status: 500 });
   }
 }

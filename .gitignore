@@ -136,3 +136,4 @@ artifacts/brand-visual-quality-gate/
 .playwright-mcp/
 __pycache__/
 artifacts/
+/.tmp/hero-voice-clone-canary-reference.json

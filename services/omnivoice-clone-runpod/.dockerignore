@@ -1,0 +1,10 @@
+**/.git
+**/__pycache__
+**/*.py[cod]
+**/*.wav
+**/*.mp3
+**/*.m4a
+**/*.flac
+**/*.sqlite*
+**/.env*
+test_contract.py

@@ -1,0 +1,125 @@
+{
+  "schema_version": 3,
+  "purpose": "internal-evaluation-only",
+  "worker_version": "hero-voice-clone-contract-v3-internal-eval-2",
+  "source_revision": "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb",
+  "application_base_revision": "a6fd30ce00005e4c8177bf0e36cba552ae430ae7",
+  "team_voice_source": {
+    "repository": "https://github.com/Aoacademy2025/Hero-Voice-Ai",
+    "branch": "main",
+    "revision": "f9b6c0a4a9adcf2fb44f35c9b35a44c007127c37",
+    "control_revision": "565d0e62e1d4269099a4c3fba8a2ecef9167eeea",
+    "integration_policy": "selective-hardened-clone-only-port",
+    "selected_files": [
+      "core/audio_enhance.py",
+      "core/server.py",
+      "core/text_utils.py",
+      "core/watermark.py"
+    ]
+  },
+  "base_image": "pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime@sha256:77f17f843507062875ce8be2a6f76aa6aa3df7f9ef1e31d9d7432f4b0f563dee",
+  "base_runtime": {
+    "python": "3.11",
+    "torch": "2.6.0",
+    "torchaudio": "2.6.0",
+    "triton": "3.2.0",
+    "cuda": "12.4",
+    "cudnn_major": 9
+  },
+  "system_packages": {
+    "build-essential": "12.9ubuntu3",
+    "ca-certificates": "20260601~22.04.1",
+    "git": "1:2.34.1-1ubuntu1.17",
+    "gpgv": "2.2.27-3ubuntu2.5",
+    "libsndfile1": "1.0.31-2ubuntu0.2",
+    "libssl3": "3.0.2-0ubuntu1.29",
+    "openssl": "3.0.2-0ubuntu1.29"
+  },
+  "requirements_lock_sha256": "80000726ed72d654358af23e906857379bdbac4f74f105f993757e4c57f06254",
+  "requirements_lock_package_count": 114,
+  "build_requirements_lock_sha256": "4f1034bac314ab1a18aae604b3c20fd41b98472d8771030415848dedfc1b238b",
+  "build_requirements_lock_package_count": 9,
+  "runpod_requirement_lock_sha256": "a97ca9f44f0d30a715604270474144dbcfa72541603b44431acd56c039e64c49",
+  "runpod_requirement_lock_package_count": 1,
+  "runtime_manifest_sha256": "900c8df14d8d43ef1bd8e747689274679e69acfe517a6864439ff6a7cdf7a037",
+  "model_manifest_sha256": "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb",
+  "demucs_runtime_compatibility": {
+    "status": "metadata-patched-pending-gpu-runtime",
+    "declared_requirement": "torchaudio>=0.8,<2.1",
+    "patched_requirement": "torchaudio>=0.8",
+    "base_requirement": "torchaudio==2.6.0",
+    "patch_path": "demucs-torchaudio-2.4-compat.patch",
+    "patch_sha256": "815723bb776e2ab6f31fd0669ea52c5288e70d43db72e9da5e6223ab88caa082",
+    "scope": "one-line distribution metadata upper-bound removal; inference source unchanged",
+    "policy": "enhancement execution remains gated on immutable-image import, offline model-load, and real GPU/audio fixtures"
+  },
+  "resemblyzer_runtime_compatibility": {
+    "status": "metadata-patched",
+    "version": "0.1.4",
+    "wheel_sha256": "8f12eb2f1a9982d32e8db7856de754709b59c93a77bcf0ff536584b619a9dd1f",
+    "obsolete_requirement": "typing",
+    "original_metadata_sha256": "a8dca4f91c66d1594216af85080202fc6475f09f8a0e4c5822ce0b60bf401eb2",
+    "patched_metadata_sha256": "9171b44fb93d82cfd945f403d890c4d0f77cb241a483996133b95eb1fe2ea146",
+    "rationale": "typing is standard library in Python 3.11; obsolete backport omitted"
+  },
+  "omnivoice_runtime_compatibility": {
+    "status": "metadata-patched",
+    "version": "0.1.5",
+    "removed_requirement": "gradio",
+    "original_metadata_sha256": "c26956459797f59a2ba40f015d991aaefd07d7e7fa6f864ce29f707927502ad6",
+    "patched_metadata_sha256": "f72051fb59f8967c0dd7dc6dd1cf2ca02c038dd6b1293fa5e5cb82481793d660",
+    "scope": "one-line distribution metadata removal; inference source unchanged",
+    "rationale": "Gradio is used only by the excluded interactive demo; omitting its graph prevents demo media assets from entering any worker layer"
+  },
+  "runpod_runtime_compatibility": {
+    "status": "metadata-patched",
+    "version": "1.12.0",
+    "wheel_sha256": "2c52d5ad4268879bd4d8288f84a9861488abc756ffc5195d95f1cffe4c4f3454",
+    "removed_requirement": "fastapi[all]>=0.141.1",
+    "original_metadata_sha256": "7766c4b844c749ed119a34e37d09a6e7635e331984bb1776507f8219af5936a4",
+    "patched_metadata_sha256": "8eef34ce6018c84bb4febfeff7967a33aea0a07ce5a7f95a94279885b6505b78",
+    "scope": "one-line distribution metadata removal; serverless source unchanged",
+    "rationale": "FastAPI is imported only for the excluded local API/realtime server path; the official serverless queue worker uses the separately locked non-FastAPI dependency closure"
+  },
+  "base_image_scanner_exceptions": {
+    "status": "exact-public-fixtures-only",
+    "raw_mpeg_content_minimum_milliseconds": 1000,
+    "known_documentation_placeholder_literals": [
+      "your-replicate-api-key"
+    ],
+    "known_non_secret_identifier_literals": [
+      "AWS_CONTAINER_AUTHORIZATION_TOKEN"
+    ],
+    "known_public_test_key_containers_sha256": {
+      "usr/lib/x86_64-linux-gnu/libgnutls.so.30.31.0": "79be57f85922e4f839de9a3ebc21993f57c39f94a2e95b7805feabe446c7cb2f"
+    },
+    "known_public_secret_fixture_containers_sha256": {
+      "opt/conda/lib/python3.11/distutils/tests/__pycache__/test_upload.cpython-311.pyc": "4a4bf06d622e52ba507abc178034324aa5cd8afd2fe1de51b61f6cefc65a98cb",
+      "opt/conda/lib/python3.11/distutils/tests/test_upload.py": "d094eeda8954fb1b99189996312733f7b4a1142c7dbac60b8e9d4700adcca157",
+      "opt/venv/lib/python3.11/site-packages/runpod-1.12.0.dist-info/METADATA": "8eef34ce6018c84bb4febfeff7967a33aea0a07ce5a7f95a94279885b6505b78"
+    },
+    "known_nonvoice_audio_fixtures_sha256": {
+      "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav": "cba3bce8287c39fcc17d789c3bcc86df50f26227c6a5830f2609fe3538f5392e"
+    },
+    "known_nonvoice_audio_hardlinks": {
+      "opt/conda/pkgs/ipython-8.31.0-pyh707e725_0/site-packages/IPython/lib/tests/test.wav": "opt/conda/lib/python3.11/site-packages/IPython/lib/tests/test.wav"
+    },
+    "known_python_path_config_hardlinks": {
+      "opt/conda/pkgs/setuptools-75.8.0-pyhff2d567_0/site-packages/distutils-precedence.pth": "opt/conda/lib/python3.11/site-packages/distutils-precedence.pth"
+    },
+    "known_public_git_pointer_fixtures_sha256": {
+      "opt/conda/etc/conda/test-files/referencing/1/suite/.git": "f84dcd4d4573c431d1db25db9a3cc188850e81a7a46a5c5983db56f528d2101f"
+    },
+    "known_public_git_pointer_hardlinks": {
+      "opt/conda/pkgs/referencing-0.36.2-pyh29332c3_0/etc/conda/test-files/referencing/1/suite/.git": "opt/conda/etc/conda/test-files/referencing/1/suite/.git"
+    },
+    "policy": "all exceptions require exact path plus full-file hash or exact hardlink target; all other audio, credential, key, catalog, and model-link evidence fails closed"
+  },
+  "sources": {
+    "omnivoice": "346bb75330980a236540d61a0808d00767c0973b",
+    "omnivoice_model": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4",
+    "demucs": "e976d93ecc3865e5757426930257e200846a520a",
+    "audioseal": "e63a8a0e5cdf7bb797159c92ba15961557fe9bd2",
+    "audioseal_model": "3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba"
+  }
+}
