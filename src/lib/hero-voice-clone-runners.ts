@@ -54,7 +54,8 @@ export type CandidateExperimentV3Direct = {
     | "reference-enhancement-v1"
     | "text-normalization-v1"
     | "guidance-ranking-v1"
-    | "watermark-v1";
+    | "watermark-v1"
+    | "combined-quality-thai-dominant-v1";
 };
 
 export type CandidateAiStudioV3 = {
@@ -153,8 +154,8 @@ const BASELINE_KEYS = [
   "contract_version", "mode", "worker_version", "catalog_version", "similarity_score", "audio_base64",
   "format", "sample_rate", "duration", "generation_time",
 ] as const;
-const PITCH_PROFILES = new Set(["guidance-ranking-v1", "combined-quality-v1"]);
-const ENHANCED_PROFILES = new Set(["reference-enhancement-v1", "combined-quality-v1"]);
+const PITCH_PROFILES = new Set(["guidance-ranking-v1", "combined-quality-v1", "combined-quality-thai-dominant-v1"]);
+const ENHANCED_PROFILES = new Set(["reference-enhancement-v1", "combined-quality-v1", "combined-quality-thai-dominant-v1"]);
 const WATERMARK_BITS = "1011001011010110";
 const STAGES: Record<string, readonly string[]> = {
   "control-v1": [
@@ -184,6 +185,11 @@ const STAGES: Record<string, readonly string[]> = {
     "reference_resample_24000", "omnivoice_prompt", "omnivoice_generate_three", "speaker_pitch_rank",
     "output_validate_pcm16",
   ],
+  "combined-quality-thai-dominant-v1": [
+    "speech_text_attestation", "thai_dominant_segmentation", "reference_decode", "demucs_reference_enhancement",
+    "reference_peak_normalize", "reference_resample_24000", "omnivoice_prompt", "omnivoice_generate_three",
+    "speaker_pitch_rank", "output_validate_pcm16",
+  ],
 };
 
 const STAGE_IDENTITIES: Record<string, string> = {
@@ -195,6 +201,7 @@ const STAGE_IDENTITIES: Record<string, string> = {
   omnivoice_prompt: "omnivoice/346bb75330980a236540d61a0808d00767c0973b/zero-shot-clone-prompt",
   omnivoice_generate_three: "omnivoice/c5fdb5ccb189668d56333f77ba2629f4cd7535f4/best-of-3/temperature-0.8/seed-sequence-v1",
   speaker_cosine_rank: "resemblyzer/cosine/max-v1",
+  thai_dominant_segmentation: "thai-english-v13/merge-english-runs-max4words-into-thai-v1",
   speaker_pitch_rank: "resemblyzer+librosa.pyin-C2-C6/cosine+0.15*pitch-v1",
   audioseal_resample_16000: "scipy-resample-poly/mono-16000-v1",
   audioseal_embed: "audioseal-0.2.0/e63a8a0e5cdf7bb797159c92ba15961557fe9bd2/3c19eba53390776cf2cc9ed5f6c9ac67ce72ecba/16bits/message-1011001011010110/alpha-1.0",

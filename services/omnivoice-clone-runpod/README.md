@@ -81,6 +81,14 @@ source baseline `8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb` is hard-coded in the
 source manifest, image label, build attestation, and runtime identity verifier;
 there is no source-revision build argument. Runtime module bytes are separately
 bound by `RUNTIME_MANIFEST.json` through the hard-coded source-manifest digest.
+After editing any runtime module (`contract.py`, `handler.py`, `identity.py`,
+`language.py`, `pipeline.py`, `runtime.py`): recompute every `files` entry in
+`RUNTIME_MANIFEST.json` (sorted keys, two-space indent, trailing newline), copy
+its SHA-256 into `SOURCE_MANIFEST.json` `runtime_manifest_sha256`, then copy the
+new `SOURCE_MANIFEST.json` SHA-256 into `verify_image.py`
+`EXPECTED_SOURCE_MANIFEST_SHA256`, both Dockerfile attestation literals, and the
+runtime-manifest checksum in `SBOM.spdx.json`. `python3 -m unittest test_contract`
+fails closed on any stale digest.
 Environment variables and dependency-injected identities cannot override these
 values. The final OCI digest remains an external immutable runtime attestation.
 

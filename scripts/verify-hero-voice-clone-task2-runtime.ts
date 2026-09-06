@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { HERO_VOICE_SPEECH_NORMALIZER_VERSION } from "../src/lib/hero-voice-speech";
 
 function pcm16Wav(durationMs: number): Buffer {
   const samples = Math.round(24_000 * durationMs / 1_000);
@@ -79,7 +80,7 @@ function successEnvelope(request: Record<string, unknown>, overrides: Record<str
     source_revision: SOURCE_REVISION,
     model_manifest_sha256: "3".repeat(64),
     experiment_profile: "combined-quality-v1",
-    normalizer_version: "2026-07-24.1",
+    normalizer_version: HERO_VOICE_SPEECH_NORMALIZER_VERSION,
     mixed_language: true,
     request_commitment_sha256: request.request_commitment_sha256,
     matched_settings_sha256: request.matched_settings_sha256,
@@ -732,7 +733,7 @@ async function main() {
     config: crashConfig,
     attemptId: crashAttemptId,
     sequence: 1,
-    normalizerVersion: "2026-07-24.1",
+    normalizerVersion: HERO_VOICE_SPEECH_NORMALIZER_VERSION,
     speed: 1,
     seed: 130363,
     text: crashText,
@@ -750,7 +751,7 @@ async function main() {
     providerDeadlineAt: new Date(Date.now() + 540_000).toISOString(),
     aiReservedMin: 0.1,
     studioReservedMin: 1,
-    speechNormalizerVersion: "2026-07-24.1",
+    speechNormalizerVersion: HERO_VOICE_SPEECH_NORMALIZER_VERSION,
     speechRiskCategories: [],
     chunks: [{ text: crashText, speechText: crashText }],
     cloneSnapshots: [crashSnapshot],
@@ -811,7 +812,7 @@ async function main() {
     config: crashConfig,
     attemptId: unreservedAttemptId,
     sequence: 1,
-    normalizerVersion: "2026-07-24.1",
+    normalizerVersion: HERO_VOICE_SPEECH_NORMALIZER_VERSION,
     speed: 1,
     seed: 170141,
     text: unreservedText,

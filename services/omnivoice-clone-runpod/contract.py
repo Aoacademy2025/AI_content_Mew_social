@@ -42,6 +42,7 @@ EXPERIMENT_PROFILES = frozenset(
         "guidance-ranking-v1",
         "watermark-v1",
         "combined-quality-v1",
+        "combined-quality-thai-dominant-v1",
     }
 )
 

@@ -16,7 +16,7 @@ import numpy as np
 
 from contract import ContractError, inspect_pcm_wav
 from identity import verify_model_artifacts
-from language import split_by_language
+from language import split_by_language, split_thai_dominant
 from pipeline import ReferenceArtifact, WatermarkArtifact
 
 
@@ -303,6 +303,7 @@ class CloneRuntime:
         guidance: float,
         class_temperature: float,
         mixed_language: bool,
+        segmentation: str,
         count: int,
     ) -> list[np.ndarray]:
         import torch
@@ -310,10 +311,16 @@ class CloneRuntime:
 
         if mixed_language is not True or count != 3:
             raise ValueError("invalid fixed generation settings")
+        if segmentation == "thai-english-v13":
+            split = split_by_language
+        elif segmentation == "thai-dominant-v1":
+            split = split_thai_dominant
+        else:
+            raise ValueError("invalid segmentation policy")
         candidates: list[np.ndarray] = []
         for _ in range(count):
             segments: list[np.ndarray] = []
-            for segment, language in split_by_language(text):
+            for segment, language in split(text):
                 config = OmniVoiceGenerationConfig(num_step=num_step)
                 config.guidance_scale = guidance
                 config.class_temperature = class_temperature

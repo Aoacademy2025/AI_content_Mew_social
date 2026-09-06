@@ -651,13 +651,13 @@ class PipelineTests(unittest.TestCase):
                 runtime = FakeRuntime()
                 result = run_pipeline(self.request(profile), runtime)
                 self.assertEqual([stage["name"] for stage in result.stages], list(PROFILE_STAGES[profile]))
-                self.assertEqual(runtime.prepare_enhance, profile in {"reference-enhancement-v1", "combined-quality-v1"})
+                self.assertEqual(runtime.prepare_enhance, profile in {"reference-enhancement-v1", "combined-quality-v1", "combined-quality-thai-dominant-v1"})
                 self.assertEqual(runtime.watermark_calls, int(profile == "watermark-v1"))
                 self.assertEqual(
                     result.metrics["generation"],
                     {
                         "candidate_count": 3,
-                        "guidance": 2.0 if profile in {"guidance-ranking-v1", "combined-quality-v1"} else 2.5,
+                        "guidance": 2.0 if profile in {"guidance-ranking-v1", "combined-quality-v1", "combined-quality-thai-dominant-v1"} else 2.5,
                         "class_temperature": 0.8,
                     },
                 )
@@ -668,6 +668,31 @@ class PipelineTests(unittest.TestCase):
                         for metric in result.metrics["candidates"]
                     )
                 )
+
+    def test_thai_dominant_profile_declares_its_stage_and_passes_the_policy_to_the_runtime(self):
+        runtime = FakeRuntime()
+        result = run_pipeline(self.request("combined-quality-thai-dominant-v1"), runtime)
+        self.assertEqual(
+            [stage["name"] for stage in result.stages],
+            [
+                "speech_text_attestation",
+                "thai_dominant_segmentation",
+                "reference_decode",
+                "demucs_reference_enhancement",
+                "reference_peak_normalize",
+                "reference_resample_24000",
+                "omnivoice_prompt",
+                "omnivoice_generate_three",
+                "speaker_pitch_rank",
+                "output_validate_pcm16",
+            ],
+        )
+        self.assertEqual(runtime.generate_call["segmentation"], "thai-dominant-v1")
+        self.assertEqual(runtime.generate_call["guidance"], QUALITY_GUIDANCE)
+        self.assertTrue(runtime.prepare_enhance)
+        control = FakeRuntime()
+        run_pipeline(self.request("combined-quality-v1"), control)
+        self.assertEqual(control.generate_call["segmentation"], "thai-english-v13")
 
     def test_combined_stage_order_and_no_watermark(self):
         runtime = FakeRuntime()
@@ -1488,6 +1513,32 @@ class StaticAndAbsenceTests(unittest.TestCase):
         segments = split_by_language(text)
         self.assertEqual("".join(segment for segment, _language in segments), text)
         self.assertEqual([language for _segment, language in segments], ["Thai", "English", "Thai", "English", "Thai"])
+
+    def test_thai_dominant_segmentation_merges_short_english_runs_into_thai(self):
+        from language import split_thai_dominant
+
+        text = "วันนี้มิวใช้ Hero AI Studio สร้าง short video สำหรับ YouTube และ TikTok ครับ"
+        self.assertEqual(split_thai_dominant(text), [(text, "Thai")])
+
+    def test_thai_dominant_segmentation_keeps_long_english_runs_english(self):
+        from language import split_thai_dominant
+
+        english = "Hello, my name is Mew. Today we are testing pronunciation. Thank you "
+        self.assertEqual(split_thai_dominant(english + "ครับ"), [(english, "English"), ("ครับ", "Thai")])
+
+    def test_thai_dominant_segmentation_leaves_single_script_text_unchanged(self):
+        from language import split_thai_dominant
+
+        for text in ("Hello world from Mew", "สวัสดีครับ วันนี้อากาศดี"):
+            self.assertEqual(split_thai_dominant(text), split_by_language(text))
+
+    def test_thai_dominant_segmentation_preserves_every_input_character(self):
+        from language import split_thai_dominant
+
+        text = "ไทย one two three four five six ไทย OpenAI ไทย"
+        segments = split_thai_dominant(text)
+        self.assertEqual("".join(segment for segment, _language in segments), text)
+        self.assertEqual([language for _segment, language in segments], ["Thai", "English", "Thai"])
 
     def test_model_manifest_and_spdx_are_well_formed_and_internal_only(self):
         manifest = json.loads((ROOT / "MODEL_MANIFEST.json").read_text(encoding="utf-8"))

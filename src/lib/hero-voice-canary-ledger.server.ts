@@ -243,7 +243,8 @@ function parseLedgerDescriptor(value: unknown): PreparedHeroVoiceCanaryWireReque
     || value.arm.contractVersion !== value.contractVersion || value.arm.candidateCount !== 3
     || value.arm.temperature !== 0.8
     || !["baseline-v13", "control-v1", "reference-enhancement-v1", "text-normalization-v1",
-      "guidance-ranking-v1", "watermark-v1", "combined-quality-v1"].includes(String(value.arm.profile))
+      "guidance-ranking-v1", "watermark-v1", "combined-quality-v1",
+      "combined-quality-thai-dominant-v1"].includes(String(value.arm.profile))
     || !["speaker-cosine-max", "speaker-cosine-plus-0.15-pitch"].includes(String(value.arm.ranking))
     || !["audited-v13-reference", "demucs-then-peak-0.95"].includes(String(value.arm.referenceTreatment))
     || !["unsupported-v2", "explicit-v3"].includes(String(value.arm.seedSupport))

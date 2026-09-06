@@ -28,7 +28,8 @@ export type HeroVoiceCanaryProfile =
   | "text-normalization-v1"
   | "guidance-ranking-v1"
   | "watermark-v1"
-  | "combined-quality-v1";
+  | "combined-quality-v1"
+  | "combined-quality-thai-dominant-v1";
 export type HeroVoiceCanaryRunnerKind =
   | "BaselineV13Direct"
   | "CandidateExperimentV3Direct"

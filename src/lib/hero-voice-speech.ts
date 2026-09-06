@@ -79,7 +79,7 @@ const THAI_SPEECH_UNIT_RE = new RegExp(
   "giu",
 );
 
-export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-07-24.1";
+export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-09-06.1";
 
 export type HeroVoiceSpeechRiskCode =
   | "ambiguous_numeric_slash"
@@ -289,6 +289,25 @@ function normalizeThaiSpeechUnits(text: string): string {
   );
 }
 
+/** Letter+digit codes such as A07 or MP3 are spelled letter by letter and digit by digit. */
+function normalizeThaiSpeechCodes(text: string): string {
+  return text.replace(
+    /(?<![\p{L}\p{M}\p{N}])([A-Za-z]{1,4})(\d{1,6})(?![\p{L}\p{M}\p{N}])/gu,
+    (_match, letters: string, digits: string) => [
+      ...[...letters.toUpperCase()].map((letter) => THAI_ENGLISH_LETTER_NAMES[letter]),
+      ...[...digits].map((digit) => THAI_DIGIT_WORDS[Number(digit)]),
+    ].join(" "),
+  );
+}
+
+/** Dimensions such as 1920 x 1080 are read as multiplication, not as the letter x. */
+function normalizeThaiSpeechDimensions(text: string): string {
+  return text.replace(
+    new RegExp(`(${NUMBER_SOURCE})\\s*(?<![A-Za-z])[x×X](?![A-Za-z])\\s*(${NUMBER_SOURCE})`, "gu"),
+    (_match, left: string, right: string) => `${left} คูณ ${right}`,
+  );
+}
+
 function normalizeThaiSpeechNumbers(text: string): string {
   return text
     .replace(
@@ -383,9 +402,13 @@ export function prepareHeroVoiceSpeech(displayText: string): HeroVoiceSpeechPrep
     normalizeThaiSpeechPercents(
       normalizeThaiSpeechCurrencies(
         normalizeThaiSpeechRanges(
-          normalizeThaiSpeechAbbreviations(
-            normalizeThaiSpeechDates(
-              normalizeThaiSpeechTimes(expandThaiRepetitionMarks(unicodeText)),
+          normalizeThaiSpeechDimensions(
+            normalizeThaiSpeechCodes(
+              normalizeThaiSpeechAbbreviations(
+                normalizeThaiSpeechDates(
+                  normalizeThaiSpeechTimes(expandThaiRepetitionMarks(unicodeText)),
+                ),
+              ),
             ),
           ),
         ),

@@ -88,10 +88,11 @@ function armFromParsed(input: JsonRecord): HeroVoiceCanaryArmFields {
   const profile = input.experiment_profile;
   if (typeof profile !== "string" || ![
     "control-v1", "reference-enhancement-v1", "text-normalization-v1",
-    "guidance-ranking-v1", "watermark-v1", "combined-quality-v1",
+    "guidance-ranking-v1", "watermark-v1", "combined-quality-v1", "combined-quality-thai-dominant-v1",
   ].includes(profile)) throw new Error("canary_wire_invalid");
-  const ranked = profile === "guidance-ranking-v1" || profile === "combined-quality-v1";
-  const enhanced = profile === "reference-enhancement-v1" || profile === "combined-quality-v1";
+  const thaiDominant = profile === "combined-quality-thai-dominant-v1";
+  const ranked = profile === "guidance-ranking-v1" || profile === "combined-quality-v1" || thaiDominant;
+  const enhanced = profile === "reference-enhancement-v1" || profile === "combined-quality-v1" || thaiDominant;
   return Object.freeze({
     contractVersion: 3,
     seedSupport: "explicit-v3",

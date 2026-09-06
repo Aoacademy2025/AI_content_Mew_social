@@ -28,7 +28,7 @@
       "checksums": [
         {
           "algorithm": "SHA256",
-          "checksumValue": "f686dbfdf6de18ee60f57f7bdc5b202e67cf7454d9f71b08d8256817916ec88e"
+          "checksumValue": "900c8df14d8d43ef1bd8e747689274679e69acfe517a6864439ff6a7cdf7a037"
         }
       ],
       "comment": "Checked-in source/runtime inventory for internal evaluation. This is not the digest-bound final-image SBOM; Task 6 must generate and attest that separately. Wrapper and model rights remain unresolved."

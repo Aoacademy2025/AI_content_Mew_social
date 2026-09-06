@@ -41,7 +41,7 @@
   "build_requirements_lock_package_count": 9,
   "runpod_requirement_lock_sha256": "a97ca9f44f0d30a715604270474144dbcfa72541603b44431acd56c039e64c49",
   "runpod_requirement_lock_package_count": 1,
-  "runtime_manifest_sha256": "f686dbfdf6de18ee60f57f7bdc5b202e67cf7454d9f71b08d8256817916ec88e",
+  "runtime_manifest_sha256": "900c8df14d8d43ef1bd8e747689274679e69acfe517a6864439ff6a7cdf7a037",
   "model_manifest_sha256": "ca609f414c72cf2d574e198d7268ce528f309b5cde6eff25cf3cd1a824af33bb",
   "demucs_runtime_compatibility": {
     "status": "metadata-patched-pending-gpu-runtime",

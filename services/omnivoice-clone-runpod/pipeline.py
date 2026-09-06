@@ -54,6 +54,7 @@ STAGE_IDENTITIES = {
         f"omnivoice/{OMNIVOICE_MODEL_REVISION}/best-of-3/temperature-0.8/seed-sequence-v1"
     ),
     "speaker_cosine_rank": "resemblyzer/cosine/max-v1",
+    "thai_dominant_segmentation": "thai-english-v13/merge-english-runs-max4words-into-thai-v1",
     "speaker_pitch_rank": "resemblyzer+librosa.pyin-C2-C6/cosine+0.15*pitch-v1",
     "audioseal_resample_16000": "scipy-resample-poly/mono-16000-v1",
     "audioseal_embed": (
@@ -104,6 +105,18 @@ PROFILE_STAGES = {
     ),
     "combined-quality-v1": (
         "speech_text_attestation",
+        "reference_decode",
+        "demucs_reference_enhancement",
+        "reference_peak_normalize",
+        "reference_resample_24000",
+        "omnivoice_prompt",
+        "omnivoice_generate_three",
+        "speaker_pitch_rank",
+        "output_validate_pcm16",
+    ),
+    "combined-quality-thai-dominant-v1": (
+        "speech_text_attestation",
+        "thai_dominant_segmentation",
         "reference_decode",
         "demucs_reference_enhancement",
         "reference_peak_normalize",
@@ -232,9 +245,22 @@ def run_pipeline(
 ) -> PipelineResult:
     profile = request.experiment_profile
     expected_stages = PROFILE_STAGES[profile]
-    enhance_reference = profile in {"reference-enhancement-v1", "combined-quality-v1"}
-    pitch_ranking = profile in {"guidance-ranking-v1", "combined-quality-v1"}
+    enhance_reference = profile in {
+        "reference-enhancement-v1",
+        "combined-quality-v1",
+        "combined-quality-thai-dominant-v1",
+    }
+    pitch_ranking = profile in {
+        "guidance-ranking-v1",
+        "combined-quality-v1",
+        "combined-quality-thai-dominant-v1",
+    }
     apply_watermark = profile == "watermark-v1"
+    segmentation = (
+        "thai-dominant-v1"
+        if profile == "combined-quality-thai-dominant-v1"
+        else "thai-english-v13"
+    )
     guidance = QUALITY_GUIDANCE if pitch_ranking else CONTROL_GUIDANCE
     timings = {
         "reference": 0,
@@ -374,6 +400,7 @@ def run_pipeline(
                     guidance=guidance,
                     class_temperature=CLASS_TEMPERATURE,
                     mixed_language=True,
+                    segmentation=segmentation,
                     count=BEST_OF,
                 )
             except Exception as error:

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { HERO_VOICE_SPEECH_NORMALIZER_VERSION } from "../src/lib/hero-voice-speech";
 
 function monoPcm16Wav(sampleRate = 24_000, durationMs = 1_000): Buffer {
   const samples = Math.round(sampleRate * durationMs / 1_000);
@@ -115,7 +116,7 @@ globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => 
         source_revision: "8b8eb9e3d31c9d47c91170bd2dc89d11f3c4e4bb",
         model_manifest_sha256: "3".repeat(64),
         experiment_profile: "combined-quality-v1",
-        normalizer_version: "2026-07-24.1",
+        normalizer_version: HERO_VOICE_SPEECH_NORMALIZER_VERSION,
         mixed_language: true,
         request_commitment_sha256: cloneInput.request_commitment_sha256,
         matched_settings_sha256: cloneInput.matched_settings_sha256,
