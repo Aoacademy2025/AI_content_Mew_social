@@ -497,7 +497,7 @@ export function PostPhaseMobile({
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: color.success, flex: "none" }} />
             <span style={{ fontSize: 12, color: color.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>เรนเดอร์เสร็จแล้ว · แก้ซับเห็นผลทันที</span>
           </span>
-          <button onClick={ed.requestNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer", flex: "none" }}>เรนเดอร์ใหม่</button>
+          <button onClick={ed.requestNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer", flex: "none" }}>เริ่มโปรเจกต์ใหม่</button>
         </div>
 
         {ed.exp.phase === "error" && (

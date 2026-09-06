@@ -1,5 +1,6 @@
 import { cleanScriptLine } from "../_lib/preprocess-script";
 import { planAutoMixSources } from "@/lib/automix-plan";
+import { estimatedCutawayPieceCount } from "@/lib/cutaway-plan";
 
 /** b-roll window length (วิ/ช่วง) — SAME knob the real window planner reads
  *  (video-editor/page.tsx:56, mcp/orchestrator.ts). Default 4. Keeping the estimator on
@@ -147,4 +148,24 @@ export function heroDefaultTargetClipCount(current: number, starterRemaining: nu
 export function heroHoldLengthSec(durationSec: number, n: number): number {
   if (!(n > 0) || !(durationSec >= 0)) return 0;
   return Math.round(durationSec / n);
+}
+
+/** The count a Hero Image source card will use if selected now. Preserve an
+ * active/explicit automatic choice and manual counts; default only a fresh choice.
+ * Uses the same planners as the final receipt, including uploaded cutaways. */
+export function heroImageCardCount(input: {
+  durationSec: number;
+  targetClipCount: number;
+  selected: boolean;
+  countTouched: boolean;
+  starterRemaining: number | null;
+  upload: boolean;
+}): number {
+  const target = input.selected || input.countTouched || input.targetClipCount > 0
+    ? input.targetClipCount
+    : heroDefaultTargetClipCount(0, input.starterRemaining);
+  if (input.upload && input.durationSec > 0) {
+    return estimatedCutawayPieceCount(target, input.durationSec * 1_000);
+  }
+  return disclosedAutoMixAiImageCount(input.durationSec, { video: 0, photo: 0, ai: 1 }, target);
 }

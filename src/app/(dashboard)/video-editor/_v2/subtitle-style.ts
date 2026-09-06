@@ -1,3 +1,4 @@
+import { groupTimedCaptionWords } from "@/lib/word-caption-groups";
 /**
  * v2 subtitle styling (จอ 4b) — ใช้ preset/effect/font ชุดเดียวกับ v1 (import จาก
  * _components/constants — ห้าม hardcode ซ้ำ) + โปรไฟล์ด่วน 4 แบบตามดีไซน์
@@ -161,29 +162,6 @@ export const V2_CARD_LEN_OPTIONS: { value: V2CardLen; label: string }[] = [
 
 type V2TimedWord = { word: string; startMs: number; endMs: number; startChar: number; endChar: number };
 
-// A gap (in fullText, between two consecutive words) that contains a line break or a
-// sentence-final punctuation mark is a HARD card boundary — never pair words across it.
-// LOCKSTEP with the server copy in src/lib/mcp/orchestrator-steps.ts
-// (SENTENCE_BOUNDARY_RE / cardsByWordCount) — แก้ที่นึงต้องแก้อีกที่.
-const SENTENCE_BOUNDARY_RE = /[\n,.!?…ฯ;:，；：]/;
-
-// LOCKSTEP with src/lib/mcp/orchestrator-steps.ts. Thai word segmentation is
-// much finer than what a viewer perceives as a phrase, so permit a bounded
-// N+1 (or mode-2 N+2 closing auxiliary) rather than stranding a function word.
-const THAI_BINDS_NEXT = new Set([
-  "ไม่", "ได้", "จะ", "กำลัง", "ต้อง", "ควร", "อยาก", "ให้", "ใน", "จาก",
-  "ของ", "กับ", "เพื่อ", "โดย", "เพราะ", "ถ้า", "เมื่อ", "คือ", "เป็น", "อย่าง", "ทุก",
-  "ช่วง", "ซับ", "นำ", "งาน",
-]);
-const THAI_BINDS_PREVIOUS = new Set([
-  "เดียว", "แล้ว", "อยู่", "ไว้", "มาก", "ขึ้น", "ลง", "ก่อน", "หลัง", "ทันที", "เสมอ", "จริง", "ได้",
-]);
-const THAI_FINAL_CLOSING_TOKENS = new Set(["ได้"]);
-
-function completesNaturalThaiPhrase(previous: string, current: string): boolean {
-  return THAI_BINDS_NEXT.has(previous) || THAI_BINDS_PREVIOUS.has(current);
-}
-
 function tagCards(cards: V2Caption[]): V2Caption[] {
   return cards.map((c, i) => ({ ...c, tag: i === 0 ? "hook" : i === cards.length - 1 ? "cta" : "body" }));
 }
@@ -202,7 +180,7 @@ function segmentWords(text: string): string[] {
  * - "sentence" → ชุดต้นฉบับจาก pipeline
  * - "1"–"4"  → การ์ด ≤N คำ: มี `words` (word timeline จาก TTS ใน preview payload)
  *   → ตัดด้วย timing เป๊ะ, text slice จาก fullText (สูตรเดียวกับ orchestrator-steps.ts
- *   cardsByWordCount — คัดลอกไว้เพราะไฟล์นั้นอยู่ฝั่ง server; แก้ที่โน่นต้องแก้ที่นี่ด้วย);
+ *   ใช้ groupTimedCaptionWords ร่วมกับ pipeline เพื่อให้ข้อความและจังหวะตรงกัน);
  *   ไม่มี words (งานเก่า/cutaway) → แบ่งตามสัดส่วนตัวอักษรรายการ์ด (fallback เดียวกับ v1)
  */
 export function regroupCaptions(
@@ -214,38 +192,9 @@ export function regroupCaptions(
   if (len === "sentence") return original.map((c) => ({ ...c }));
   const n = parseInt(len, 10);
   if (words?.length && fullText) {
-    const ft = fullText;
-    const out: V2Caption[] = [];
-    let grp: V2TimedWord[] = [];
-    const flush = () => {
-      if (!grp.length) return;
-      // FIX A: collapse any interior whitespace/newline sliced into the card (a script
-      // line break) to a single space so a card never stacks two lines.
-      const text = ft.slice(grp[0].startChar, grp[grp.length - 1].endChar).replace(/\s+/g, " ").trim();
-      if (text) out.push({ text, startMs: grp[0].startMs, endMs: grp[grp.length - 1].endMs, tag: "body" });
-      grp = [];
-    };
-    for (let i = 0; i < words.length; i++) {
-      if (grp.length > 0) {
-        // FIX B: never cross a sentence/line boundary (gap between words in fullText).
-        const hardBoundary = SENTENCE_BOUNDARY_RE.test(
-          ft.slice(grp[grp.length - 1].endChar, words[i].startChar),
-        );
-        if (hardBoundary) {
-          flush();
-        } else if (grp.length >= n) {
-          const allowOneNaturalToken = n <= 3 && grp.length === n
-            && completesNaturalThaiPhrase(grp[grp.length - 1].word, words[i].word);
-          const allowFinalClosingToken = n <= 2 && grp.length === n + 1
-            && THAI_FINAL_CLOSING_TOKENS.has(words[i].word);
-          if (!allowOneNaturalToken && !allowFinalClosingToken) flush();
-        }
-      }
-      grp.push(words[i]);
-    }
-    flush();
-    return tagCards(out);
+    return tagCards(groupTimedCaptionWords(words, n, fullText).map((card) => ({ ...card, tag: "body" })));
   }
+
   // fallback: interpolate เวลาในการ์ดเดิมตามสัดส่วนคำ (v1 page.tsx:3546-3561)
   const out: V2Caption[] = [];
   for (const cap of original) {

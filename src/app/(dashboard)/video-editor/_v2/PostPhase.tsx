@@ -813,7 +813,7 @@ export function PostPhase({
         {!ed.adjustingAvatar && (
           <div className="flex items-center gap-3">
             <button onClick={ed.requestNewProject} style={{ fontSize: 12, color: color.link, background: "none", border: "none", cursor: "pointer" }}>
-              เรนเดอร์ใหม่
+              เริ่มโปรเจกต์ใหม่
             </button>
             <BtnPrimary
               onClick={() => void ed.exportVideo()}

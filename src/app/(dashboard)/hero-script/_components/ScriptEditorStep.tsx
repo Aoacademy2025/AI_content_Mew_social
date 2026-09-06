@@ -122,6 +122,7 @@ export function ScriptEditorStep({
 }: ScriptEditorStepProps) {
   const router = useRouter();
   const [generating, setGenerating] = useState(false);
+  const [generationError, setGenerationError] = useState<string | null>(null);
   const [regenTarget, setRegenTarget] = useState<RegenTarget | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [sending, setSending] = useState(false);
@@ -265,6 +266,7 @@ export function ScriptEditorStep({
       properties: { durationSec, profileUsed: Boolean(selectedProfileId), hookFormula: selectedHook.formula },
     });
     setGenerating(true);
+    setGenerationError(null);
     try {
       const res = await authenticatedFetch("/api/scripts/generate", {
         method: "POST",
@@ -282,6 +284,10 @@ export function ScriptEditorStep({
           category: "error", status: "error", durationMs: performance.now() - startedAt,
           properties: { httpStatus: res.status, durationSec, profileUsed: Boolean(selectedProfileId) },
         });
+        const errorBody = await res.clone().json().catch(() => null);
+        setGenerationError(typeof errorBody?.error === "string" && errorBody.error.trim()
+          ? errorBody.error
+          : "สร้างสคริปต์ไม่สำเร็จ กรุณาลองอีกครั้ง");
         await toastErrorResponse(res, "สร้างสคริปต์ไม่สำเร็จ", { onUpgrade: goToPricing });
         return;
       }
@@ -318,6 +324,7 @@ export function ScriptEditorStep({
         category: "error", status: "error", durationMs: performance.now() - startedAt,
         properties: { failure: "network", durationSec, profileUsed: Boolean(selectedProfileId) },
       });
+      setGenerationError("เชื่อมต่อไม่สำเร็จ กรุณาลองอีกครั้ง");
       toast.error("สร้างสคริปต์ไม่สำเร็จ");
     } finally {
       setGenerating(false);
@@ -481,10 +488,17 @@ export function ScriptEditorStep({
             style={{ background: VIOLET }}
           >
             {generating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-            สร้างสคริปต์เต็ม
+            {generating ? "กำลังสร้างสคริปต์…" : "สร้างสคริปต์เต็ม"}
           </Button>
         </div>
       </div>
+
+      {generationError && (
+        <p role="alert" className="mb-4 text-sm" style={{ color: "var(--ui-text-primary)" }}>
+          {generationError} · หัวข้อและ Hook ยังอยู่ กดสร้างสคริปต์เต็มเพื่อลองอีกครั้ง
+        </p>
+      )}
+      {generating && <p role="status" className="mb-4 text-sm">AI กำลังเขียนจาก Hook ที่เลือก กรุณารอสักครู่</p>}
 
       {draft && (
         <div className="space-y-4">

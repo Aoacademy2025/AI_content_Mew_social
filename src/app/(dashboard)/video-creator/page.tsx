@@ -3055,7 +3055,7 @@ export default function ShortVideoPage() {
                           { value: "quick",      label: "สั้น",      desc: "กระชับรวดเร็ว" },
                           { value: "glow-pulse", label: "เรืองแสง",  desc: "กะพริบเรืองแสง" },
                           { value: "slide",      label: "สไตล์",     desc: "เลื่อนขึ้นจากล่าง" },
-                          { value: "flip",       label: "หมุนชุม",   desc: "พลิกมุมมอง" },
+                          { value: "flip",       label: "พลิก",   desc: "พลิกมุมมอง" },
                           { value: "highlight",  label: "ไฮไลท์",    desc: "แถบไฮไลท์" },
                           { value: "karaoke",    label: "คาราโอเกะ", desc: "ทีละคำ" },
                           { value: "typewriter", label: "พิมพ์ดีด",  desc: "ทีละตัว" },
