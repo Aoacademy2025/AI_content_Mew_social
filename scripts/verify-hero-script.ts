@@ -51,7 +51,7 @@ async function main() {
     containsBannedWord,
     findBannedWord,
     bannedWordWarning,
-    generateWithBannedWordGuard,
+    generateWithScriptGuard,
     heroScriptModel,
     validateGenerateResponse,
     validateRegenResponse,
@@ -136,6 +136,150 @@ async function main() {
   const { FREE_LIMITS, PRO_LIMITS, BUSINESS_LIMITS } = await import("../src/lib/plan-limits");
   const { encryptKey } = await import("../src/lib/key-crypto");
   const { isHeroScriptAllowedEmail } = await import("../src/lib/hero-script-access");
+
+  // A valid JSON script must still be screened against the complete spoken
+  // budget, including the creator's fixed hook and CTA. The correction shares
+  // the existing one-retry budget with banned words.
+  {
+    const fixedHook = "ทำไมเราถึงหาของบนโต๊ะไม่เจอ";
+    const oversized = { bodyText: Array(180).fill("ปากกา").join(" "), ctaText: "ติดตามไว้" };
+    const shorter = { bodyText: Array(75).fill("ปากกา").join(" "), ctaText: "ติดตามไว้" };
+    const notes: string[] = [];
+    const guarded = await generateWithScriptGuard({
+      bannedWords: [],
+      extractText: (result: typeof oversized) => `${result.bodyText}\n${result.ctaText}`,
+      duration: {
+        seconds: 30,
+        assemble: (result: typeof oversized) => `${fixedHook}\n${result.bodyText}\n${result.ctaText}`,
+      },
+      generate: async (note: string) => {
+        notes.push(note);
+        return notes.length === 1 ? oversized : shorter;
+      },
+    });
+    ok(notes.length === 2 && guarded?.result === shorter,
+      "script duration: oversized full output triggers one bounded text correction");
+    ok(notes[1]?.includes("30") === true,
+      "script duration: correction supplies the requested duration");
+  }
+
+  {
+    const { assessScriptDuration, scriptDurationWarning } = await import("../src/lib/hero-script-duration");
+    const words = (count: number) => Array(count).fill("pen").join(" ");
+    for (const [count, expected] of [[80, false], [81, true], [99, true], [100, false]] as const) {
+      ok(assessScriptDuration(words(count), 30).withinTarget === expected,
+        `script duration: inclusive integer word boundary ${count}`);
+    }
+    ok(scriptDurationWarning(assessScriptDuration(words(10), 30))?.includes("สั้น") === true,
+      "script duration: an edited or reopened short draft has a persistent warning");
+    ok(scriptDurationWarning(assessScriptDuration(words(84), 30)) === undefined,
+      "script duration: editing into range clears the warning");
+
+    const run = async (first: string, second: string | null, bannedWords: string[] = []) => {
+      const notes: string[] = [];
+      const result = await generateWithScriptGuard({
+        bannedWords,
+        extractText: (text: string) => text,
+        duration: { seconds: 30, assemble: (text: string) => text },
+        generate: async (note) => { notes.push(note); return notes.length === 1 ? first : second; },
+      });
+      return { result, notes };
+    };
+    const clean = await run(words(84), null);
+    ok(clean.notes.length === 1 && !clean.result?.warning,
+      "script duration: in-range output needs no correction");
+    const short = await run(words(10), words(84));
+    ok(short.notes.length === 2 && !short.result?.warning,
+      "script duration: undersized output gets one text correction");
+    const combined = await run(`${words(180)} forbidden`, words(84), ["forbidden"]);
+    ok(combined.notes.length === 2 && !combined.result?.warning,
+      "script duration and banned words share one successful correction");
+    ok(combined.notes[1].includes("forbidden") && combined.notes[1].includes("30"),
+      "combined correction names both constraints in the same prompt");
+    const stillBad = await run(`${words(180)} forbidden`, `${words(100)} forbidden`, ["forbidden"]);
+    ok(stillBad.notes.length === 2 && stillBad.result?.warning?.includes("30") === true &&
+      stillBad.result.warning.includes("forbidden"),
+      "both surviving warnings are returned after one correction without blocking");
+    const invalid = await run(words(180), null);
+    ok(invalid.notes.length === 2 && invalid.result?.result === words(180) && Boolean(invalid.result.warning),
+      "script duration: unusable correction preserves the first valid output with warning");
+
+    // Only the body is editable; the other sections still consume the budget.
+    const current = { hookText: words(15), bodyText: words(80), ctaText: words(5) };
+    let calls = 0;
+    const section = await generateWithScriptGuard({
+      bannedWords: [], extractText: (r: { text: string }) => r.text,
+      duration: { seconds: 30, assemble: (r) => assembleScript({ ...current, bodyText: r.text }) },
+      generate: async () => ({ text: ++calls === 1 ? words(80) : words(64) }),
+    });
+    ok(calls === 2 && !section?.warning && current.hookText === words(15) && current.ctaText === words(5),
+      "section correction includes fixed hook and CTA while preserving both");
+
+    calls = 0;
+    const echoed = await generateWithScriptGuard({
+      bannedWords: [], extractText: (r: { bodyText: string }) => r.bodyText,
+      duration: { seconds: 30, assemble: (r) => assembleScript({ ...current,
+        bodyText: stripEchoedHook(r.bodyText, current.hookText) }) },
+      generate: async () => { calls++; return { bodyText: `${current.hookText}\n${words(64)}` }; },
+    });
+    ok(calls === 1 && !echoed?.warning,
+      "full generation assesses the delivered text after removing an echoed fixed hook");
+  }
+
+  {
+    const words = (count: number) => Array(count).fill("pen").join(" ");
+    let generateCalls = 0;
+    let correctionCalls = 0;
+    const nearest = await generateWithScriptGuard({
+      bannedWords: ["forbidden"], extractText: (r: { text: string }) => r.text,
+      duration: { seconds: 30, assemble: (r) => r.text },
+      generate: async () => { generateCalls++; return { text: words(180) }; },
+      correct: async () => { correctionCalls++; return [
+        { text: `${words(89)} forbidden` }, { text: words(92) }, { text: words(140) },
+      ]; },
+    });
+    ok(nearest?.result.text === words(92) && !nearest.warning,
+      "duration correction selects a complete clean candidate using measured words");
+    ok(generateCalls === 1 && correctionCalls === 1,
+      "duration options consume one generation and one correction callback");
+  }
+
+  {
+    const { narrationTargetFeedback, scriptTargetDuration } = await import("../src/lib/hero-script-duration");
+    const { validateScriptCorrectionOptions } = await import("../src/lib/hero-script.server");
+    const words = (count: number) => Array(count).fill("ปากกา").join(" ");
+    const common = { text: words(96), targetSec: 30, voiceEngine: "gemini" };
+    ok(narrationTargetFeedback({ ...common, voiceName: "Kore" })?.outsideTarget === false &&
+      narrationTargetFeedback({ ...common, voiceName: "Aoede" })?.outsideTarget === true,
+      "pre-TTS feedback follows the currently selected voice without changing text");
+    ok(narrationTargetFeedback({ ...common, voiceName: "Kore", text: words(130) })?.outsideTarget === true,
+      "pre-TTS feedback updates when the creator edits the script");
+    ok(narrationTargetFeedback({ ...common, voiceName: "Kore", targetSec: null }) === null &&
+      scriptTargetDuration(120) === null && scriptTargetDuration("30") === null,
+      "old drafts and invalid targets do not inherit an invented duration goal");
+    ok(narrationTargetFeedback({ ...common, voiceName: "unmeasured" })?.outsideTarget === null &&
+      narrationTargetFeedback({ ...common, voiceName: "Kore", voiceEngine: "omnivoice" })?.outsideTarget === null,
+      "unmeasured voices do not borrow another voice's calibrated estimate");
+    ok(narrationTargetFeedback({ ...common, voiceName: "Kore", text: "English text without Thai" })?.outsideTarget === null &&
+      narrationTargetFeedback({ ...common, voiceName: "__proto__" })?.outsideTarget === null,
+      "Thai voice calibration does not claim other languages or inherited object names");
+    const validate = (raw: unknown) => typeof raw === "string" ? raw : null;
+    ok(validateScriptCorrectionOptions({ candidates: ["a", null, "b"] }, validate)?.join() === "a,b",
+      "correction options validate each complete candidate independently");
+    ok(validateScriptCorrectionOptions({ candidates: [1, 2] }, validate) === null &&
+      validateScriptCorrectionOptions({ candidates: ["a", "b", "c", "d"] }, validate) === null,
+      "unusable or over-limit candidate payloads are rejected by the JSON validator");
+    const first = { text: words(105) };
+    let generated = 0;
+    const retained = await generateWithScriptGuard({
+      bannedWords: [], extractText: (r: typeof first) => r.text,
+      duration: { seconds: 30, assemble: (r) => r.text },
+      generate: async () => { generated++; return first; },
+      correct: async () => [{ text: words(150) }, { text: words(10) }],
+    });
+    ok(generated === 1 && retained?.result === first && Boolean(retained.warning),
+      "a worse correction cannot replace the closest original draft or trigger another call");
+  }
 
   // A legacy profile needs only one owned, unarchived snapshot. Replay the
   // production P2028 expired-COMMIT failure against real Prisma to ensure
@@ -816,10 +960,10 @@ async function main() {
       "buildHooksPrompt embeds the brand block + banned words when a profile is given");
   }
 
-  // ── wordBudgetForDuration: reuses content-generator.ts's TTS pacing ─────
-  ok(wordBudgetForDuration(60) === 240, "wordBudgetForDuration(60) ≈ 240 (durationSec × 4 คำ/วินาที)");
-  ok(wordBudgetForDuration(30) === 120, "wordBudgetForDuration(30) = 120");
-  ok(wordBudgetForDuration(90) === 360, "wordBudgetForDuration(90) = 360");
+  // ── Hero Script writing budget including narration pauses ─────
+  ok(wordBudgetForDuration(60) === 180, "wordBudgetForDuration(60) = 180 including narration pauses");
+  ok(wordBudgetForDuration(30) === 90, "wordBudgetForDuration(30) = 90");
+  ok(wordBudgetForDuration(90) === 270, "wordBudgetForDuration(90) = 270");
 
   // ── validateTopic / isValidDurationSec ───────────────────────────────────
   ok(TOPIC_MAX_CHARS === 300, "TOPIC_MAX_CHARS = 300");
@@ -1304,7 +1448,7 @@ async function main() {
     ok(prompt.includes(`"${hookText}"`), "buildGeneratePrompt embeds the chosen hook VERBATIM (quoted)");
     ok(prompt.includes("Hook ที่ผู้ใช้เลือก (ห้ามแก้แม้แต่คำเดียว จะถูกใช้เป็นบรรทัดแรกเสมอ)"),
       "buildGeneratePrompt includes the do-not-touch-the-hook line from the spec");
-    ok(prompt.includes("งบคำทั้งคลิป ~240 คำ (±15%)"), "buildGeneratePrompt states the word budget with ±15%");
+    ok(prompt.includes("งบคำทั้งคลิป ~180 คำ รวม hook+body+cta (162–198 คำ)"), "buildGeneratePrompt counts hook+body+CTA in the shared duration budget");
     ok(prompt.includes("ความยาว 60 วินาที"), "buildGeneratePrompt states the duration");
     ok(prompt.includes("ทำไมคลิปไม่ปัง"), "buildGeneratePrompt embeds the topic");
     for (const s of STORY_STRUCTURES) {
@@ -1445,21 +1589,21 @@ async function main() {
     ok(stripEchoedHook("", hook) === "", "stripEchoedHook('') → ''");
   }
 
-  // ── generateWithBannedWordGuard: retry once, then warn (never block) ────
+  // ── generateWithScriptGuard: retry once, then warn (never block) ────
   {
     const calls: string[] = [];
-    const clean = await generateWithBannedWordGuard<{ text: string }>({
+    const clean = await generateWithScriptGuard<{ text: string }>({
       bannedWords: ["กดไลก์"],
       extractText: (r) => r.text,
       generate: async (note) => { calls.push(note); return { text: "ข้อความสะอาด" }; },
     });
     ok(clean?.result.text === "ข้อความสะอาด" && clean?.warning === undefined,
-      "generateWithBannedWordGuard: clean first attempt → no warning");
-    ok(calls.length === 1, "generateWithBannedWordGuard: clean first attempt → exactly 1 LLM call");
+      "generateWithScriptGuard: clean first attempt → no warning");
+    ok(calls.length === 1, "generateWithScriptGuard: clean first attempt → exactly 1 LLM call");
   }
   {
     const calls: string[] = [];
-    const retried = await generateWithBannedWordGuard<{ text: string }>({
+    const retried = await generateWithScriptGuard<{ text: string }>({
       bannedWords: ["กดไลก์"],
       extractText: (r) => r.text,
       generate: async (note) => {
@@ -1467,40 +1611,40 @@ async function main() {
         return { text: calls.length === 1 ? "อย่าลืมกดไลก์" : "ข้อความสะอาด" };
       },
     });
-    ok(calls.length === 2, "generateWithBannedWordGuard: banned hit → exactly 1 retry");
+    ok(calls.length === 2, "generateWithScriptGuard: banned hit → exactly 1 retry");
     ok(calls[0] === "" && calls[1].includes("กดไลก์"),
-      "generateWithBannedWordGuard: the retry appends the stern banned-words note");
+      "generateWithScriptGuard: the retry appends the stern banned-words note");
     ok(retried?.result.text === "ข้อความสะอาด" && retried?.warning === undefined,
-      "generateWithBannedWordGuard: clean retry → returns the retry result with no warning");
+      "generateWithScriptGuard: clean retry → returns the retry result with no warning");
   }
   {
     const calls: string[] = [];
-    const stillDirty = await generateWithBannedWordGuard<{ text: string }>({
+    const stillDirty = await generateWithScriptGuard<{ text: string }>({
       bannedWords: ["กดไลก์"],
       extractText: (r) => r.text,
       generate: async (note) => { calls.push(note); return { text: "อย่าลืมกดไลก์" }; },
     });
-    ok(calls.length === 2, "generateWithBannedWordGuard: still dirty → stops after the 1 retry");
-    ok(stillDirty?.result.text === "อย่าลืมกดไลก์", "generateWithBannedWordGuard never blocks the user");
+    ok(calls.length === 2, "generateWithScriptGuard: still dirty → stops after the 1 retry");
+    ok(stillDirty?.result.text === "อย่าลืมกดไลก์", "generateWithScriptGuard never blocks the user");
     ok(stillDirty?.warning === "มีคำต้องห้ามหลุดมา: กดไลก์",
-      "generateWithBannedWordGuard returns the spec's Thai warning when the word survives the retry");
+      "generateWithScriptGuard returns the spec's Thai warning when the word survives the retry");
   }
   {
-    const nulled = await generateWithBannedWordGuard<{ text: string }>({
+    const nulled = await generateWithScriptGuard<{ text: string }>({
       bannedWords: [], extractText: (r) => r.text, generate: async () => null,
     });
-    ok(nulled === null, "generateWithBannedWordGuard: unusable LLM output → null (route 502s)");
+    ok(nulled === null, "generateWithScriptGuard: unusable LLM output → null (route 502s)");
   }
   {
     // Retry itself fails to produce anything → keep the first result + warn.
     let n = 0;
-    const firstOnly = await generateWithBannedWordGuard<{ text: string }>({
+    const firstOnly = await generateWithScriptGuard<{ text: string }>({
       bannedWords: ["กดไลก์"],
       extractText: (r) => r.text,
       generate: async () => (++n === 1 ? { text: "อย่าลืมกดไลก์" } : null),
     });
     ok(firstOnly?.result.text === "อย่าลืมกดไลก์" && firstOnly?.warning === "มีคำต้องห้ามหลุดมา: กดไลก์",
-      "generateWithBannedWordGuard: failed retry → first result kept, warning attached");
+      "generateWithScriptGuard: failed retry → first result kept, warning attached");
   }
 
   // ── Script CRUD roundtrip (service layer, throwaway SQLite) ─────────────
@@ -1939,6 +2083,8 @@ async function main() {
         "Hero Script handoff pins the exact active immutable Brand Revision");
       const draft = (project?.draft ?? {}) as Record<string, unknown>;
       ok(draft.mode === "script", "handoff draftJson has mode: 'script'");
+      ok(draft.scriptTargetDurationSec === paidScript.durationSec,
+        "handoff retains the selected narration target for pre-TTS feedback");
       ok(draft.narrativeSourceKind === "ai-script",
         "Hero Script handoff preserves AI-script provenance for Content Preflight");
       ok(draft.script === "hook ที่เลือกไว้\nประโยค 1\nประโยค 2\nประโยค 3\nตามไว้เลย",

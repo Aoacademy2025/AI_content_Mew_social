@@ -1,9 +1,7 @@
 // Enhanced prompt template for content generation
 
-// TTS speaking pace used to derive word-count targets from a video's duration
-// (Thai/English TTS averages ~4 words/sec). Single source of truth — reused by
-// Hero Script's wordBudgetForDuration (src/lib/hero-script.server.ts) so that
-// module doesn't invent a second pacing table.
+// Legacy content-generation pacing. Hero Script uses its own measured writing
+// budget in hero-script-duration.ts, including narration pauses.
 export const TTS_WORDS_PER_SECOND = 4;
 
 export interface ContentGenerationParams {

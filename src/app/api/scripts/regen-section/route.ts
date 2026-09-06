@@ -4,11 +4,13 @@ import { isValidHookFormulaKey } from "@/lib/viral-frameworks";
 import {
   buildRegenPrompt,
   type BrandProfileForPrompt,
+  buildScriptCorrectionOptionsNote,
 } from "@/lib/prompts/hero-script";
 import {
   assembleScript,
   generateValidatedJson,
-  generateWithBannedWordGuard,
+  generateWithScriptGuard,
+  validateScriptCorrectionOptions,
   heroScriptLlmErrorResponse,
   isValidDurationSec,
   isValidRegenTarget,
@@ -111,9 +113,20 @@ export async function POST(req: Request) {
 
     let guarded: GuardedGeneration<RegenSectionResult> | null;
     try {
-      guarded = await generateWithBannedWordGuard<RegenSectionResult>({
+      guarded = await generateWithScriptGuard<RegenSectionResult>({
         bannedWords,
         extractText: (r) => r.text,
+        duration: {
+          seconds: durationSec,
+          assemble: (r) => assembleScript({ ...current, [`${target}Text`]: r.text }),
+        },
+        correct: (note) => generateValidatedJson({
+          apiKey,
+          prompt: `${prompt}${note}${buildScriptCorrectionOptionsNote(wordBudgetForDuration(durationSec))}`,
+          maxOutputTokens: durationSec === 30 ? 4096 : 8192,
+          tier: "pro",
+          validate: (data) => validateScriptCorrectionOptions(data, (data) => validateRegenResponse(data, { target, currentFormula: currentFormula || null })),
+        }),
         generate: (sternNote) =>
           generateValidatedJson({
             apiKey,
