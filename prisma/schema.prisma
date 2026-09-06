@@ -1634,3 +1634,19 @@ model BrandLibraryOperation {
 
   @@unique([userId, requestId])
 }
+
+// ClipForge Device Seat. New table only — userId is an application-level owner
+// key (no User relation / FK rewrite) so `prisma db push` stays additive.
+model DeviceSeat {
+  id         String    @id @default(cuid())
+  userId     String
+  deviceId   String    @unique
+  name       String
+  platform   String
+  appVersion String
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime
+  revokedAt  DateTime?
+
+  @@index([userId])
+}
