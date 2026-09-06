@@ -63,6 +63,13 @@ async function verifyCancellation(file: string) {
   const broken = new Readable({ read() { this.destroy(failure); } });
   await assert.rejects(new Response(mediaWebStream(broken)).arrayBuffer(), (error) => error === failure);
 
+  const earlyFailure = new Error("synthetic failure before consumer reads");
+  const early = new Readable({ read() {} });
+  const earlyBody = mediaWebStream(early);
+  early.destroy(earlyFailure);
+  await delay(5);
+  await assert.rejects(new Response(earlyBody).arrayBuffer(), (error) => error === earlyFailure);
+
   let reads = 0;
   const bounded = new Readable({ highWaterMark: 16384, read() { reads++; this.push(Buffer.alloc(16384)); } });
   const reader = mediaWebStream(bounded).getReader();
