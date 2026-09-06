@@ -50,6 +50,7 @@ import { Step2Elements } from "./Step2Elements";
 import { RenderingScreen } from "./RenderingScreen";
 import { FirstClipExportedViewSignal } from "@/components/convert/first-clip-exported-view-signal";
 import { emitFirstClipViewed } from "@/lib/first-clip-convert-events";
+import { NarrationDurationReview } from "./NarrationDurationReview";
 import { PostPhase } from "./PostPhase";
 import { PostPhaseMobile } from "./PostPhaseMobile";
 import { ExpiredPreviewView, prepareExpiredPreviewRerender, shouldShowUnavailablePreview } from "./ExpiredPreviewView";
@@ -118,6 +119,8 @@ export function EditorV2Shell() {
   // is on; with it off handleRender submits directly (byte-identical to before).
   const [receiptOpen, setReceiptOpen] = useState(false);
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+  const [regenerationProjectId, setRegenerationProjectId] = useState<string | null>(null);
+  const reviewingRegeneration = !!p.projectId && regenerationProjectId === p.projectId;
   const [heygenQuotaAlert, setHeygenQuotaAlert] = useState<string | null>(null);
   // Missing-key preflight (Task 2): jobs/route.ts answers a Render/Confirm submit with
   // { error: "missing_key", missingKey } BEFORE creating any VideoJob — no client-side
@@ -251,7 +254,7 @@ export function EditorV2Shell() {
       toast.error("โปรเจกต์กำลังกู้คืน/โหลด — รอสักครู่แล้วกดเรนเดอร์อีกครั้ง");
       return;
     }
-    if (!CREDITS_LIVE_CLIENT) {
+    if (!CREDITS_LIVE_CLIENT && !reviewingRegeneration) {
       const r = await submit();
       handleSubmitResult(r, { kind: "render" });
       return;
@@ -267,7 +270,8 @@ export function EditorV2Shell() {
     confirmingRef.current = true;
     setConfirmSubmitting(true);
     try {
-      const r = await submit(confirmedMeteredMinutes);
+      const r = await submit(CREDITS_LIVE_CLIENT ? confirmedMeteredMinutes : undefined);
+      if (r.ok) setRegenerationProjectId(null);
       handleSubmitResult(r, { kind: "confirm", minutes: confirmedMeteredMinutes });
     } finally {
       confirmingRef.current = false;
@@ -744,6 +748,25 @@ export function EditorV2Shell() {
         </div>
       ) : null}
 
+      {job.phase === "done" && job.output?.preview && p.mode === "script" &&
+        !shouldShowUnavailablePreview(job.phase, job.mediaState) ? (
+        <NarrationDurationReview
+          targetSec={p.scriptTargetDurationSec}
+          audioDurationMs={job.output.preview.audioDurationMs}
+          voiceUrl={job.output.preview.voiceUrl}
+          onEdit={() => {
+            setRegenerationProjectId(p.projectId);
+            reset();
+            setStep(0);
+          }}
+          onRegenerate={() => {
+            if (!p.canRunProjectOperation()) return;
+            setRegenerationProjectId(p.projectId);
+            setReceiptOpen(true);
+          }}
+        />
+      ) : null}
+
       {emptyProjectState ? (
         <EmptyProjectView onCreate={() => void handleNewProject()} />
       ) : isRendering ? (
@@ -811,9 +834,10 @@ export function EditorV2Shell() {
         <Step2Elements p={p} onRender={handleRender} />
       )}
 
-      {CREDITS_LIVE_CLIENT && (
+      {(CREDITS_LIVE_CLIENT || reviewingRegeneration) && (
         <RenderReceiptDialog
           p={p}
+          regeneration={reviewingRegeneration}
           open={receiptOpen && !editorBlocked}
           submitting={confirmSubmitting}
           onConfirm={(confirmedMeteredMinutes) => void handleConfirmRender(confirmedMeteredMinutes)}

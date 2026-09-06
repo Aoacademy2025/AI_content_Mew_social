@@ -32,6 +32,9 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
+      - name: Verify narration comparison and regeneration disclosure
+        run: npm run verify:narration-comparison && npm run verify:render-receipt
+
       - name: Verify post-launch stability hotfixes
         run: npm run verify:launch-stability-hotfix
 

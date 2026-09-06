@@ -40,3 +40,15 @@ export function narrationTargetFeedback(params: {
     outsideTarget,
   };
 }
+
+/** Compare the measured take without rounding the acceptance boundary. */
+export function compareNarrationDuration(targetSec: unknown, audioDurationMs: number) {
+  const target = scriptTargetDuration(targetSec);
+  if (!target || !Number.isFinite(audioDurationMs) || audioDurationMs <= 0) return null;
+  return {
+    targetSec: target,
+    actualSec: audioDurationMs / 1000,
+    deltaSec: audioDurationMs / 1000 - target,
+    withinTarget: audioDurationMs >= target * 900 && audioDurationMs <= target * 1100,
+  };
+}
