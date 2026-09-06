@@ -98,6 +98,14 @@ export async function reserveAiTextCall(
   return { allowed: true, used: newUsed, ceiling, remaining: Math.max(0, ceiling - newUsed) };
 }
 
+/** Record one text-LLM call that was actually made. Desktop plan routes use this
+ *  so failures before any model call cost nothing, while each Gemini invocation
+ *  (including JSON retries and Distinctness regeneration passes) counts once.
+ *  Always enforces the monthly ceiling (Managed AI). */
+export async function recordAiTextCall(userId: string): Promise<AiTextReserveResult> {
+  return reserveAiTextCall(userId, { enforce: true, count: 1 });
+}
+
 /** Give back text-LLM calls (e.g. an admin correction). Clamps at 0 — never
  *  goes negative. Routes deliberately do NOT refund on Gemini failure (see
  *  reserveAiTextCall) — this exists for completeness / parity with the audio guard. */
