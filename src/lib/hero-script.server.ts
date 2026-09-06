@@ -143,6 +143,23 @@ export type HeroScriptBrandProfileResolution =
     }
   | { ok: false; code: "NOT_FOUND" | "UNAVAILABLE"; message: string };
 
+function resolveLegacyScriptBrandProfile(row: BrandProfile): HeroScriptBrandProfileResolution {
+  if (row.frozenAt) {
+    return {
+      ok: false,
+      code: "UNAVAILABLE",
+      message: "แบรนด์นี้อยู่ในโหมดอ่านอย่างเดียวตามแผนปัจจุบัน",
+    };
+  }
+  const profile = toBrandProfileDTO(row);
+  return {
+    ok: true,
+    profile,
+    bannedWords: profile.bannedWords,
+    ctaStyle: row.ctaStyle || "follow",
+  };
+}
+
 /** Resolve brand writing defaults for a NEW Hero Script operation.
  *
  * Legacy revision-0 rows keep their historical mutable behavior until the
@@ -155,6 +172,21 @@ export async function resolveHeroScriptBrandProfile(
   brandProfileId: string,
 ): Promise<HeroScriptBrandProfileResolution> {
   try {
+    // Legacy defaults are one consistent row snapshot with no writes. An
+    // interactive transaction adds a commit timeout to an otherwise valid read.
+    const snapshot = await prisma.brandProfile.findFirst({
+      where: { id: brandProfileId, userId, archivedAt: null },
+    });
+    if (!snapshot) {
+      return { ok: false, code: "NOT_FOUND", message: "ไม่พบโปรไฟล์แบรนด์" };
+    }
+    if (snapshot.activeRevisionNumber <= 0) {
+      return resolveLegacyScriptBrandProfile(snapshot);
+    }
+
+    // Published profiles reconcile plan availability (writes) and resolve the
+    // immutable Revision atomically. Re-read ownership/archive/revision here;
+    // the preliminary snapshot must not authorize this transaction's work.
     return await prisma.$transaction(async (tx) => {
       const row = await tx.brandProfile.findFirst({
         where: { id: brandProfileId, userId, archivedAt: null },
@@ -163,20 +195,7 @@ export async function resolveHeroScriptBrandProfile(
         return { ok: false as const, code: "NOT_FOUND" as const, message: "ไม่พบโปรไฟล์แบรนด์" };
       }
       if (row.activeRevisionNumber <= 0) {
-        if (row.frozenAt) {
-          return {
-            ok: false as const,
-            code: "UNAVAILABLE" as const,
-            message: "แบรนด์นี้อยู่ในโหมดอ่านอย่างเดียวตามแผนปัจจุบัน",
-          };
-        }
-        const profile = toBrandProfileDTO(row);
-        return {
-          ok: true as const,
-          profile,
-          bannedWords: profile.bannedWords,
-          ctaStyle: row.ctaStyle || "follow",
-        };
+        return resolveLegacyScriptBrandProfile(row);
       }
 
       const resolved = await resolveBrandProfileRevisionForNewProjectInTransaction(tx, {

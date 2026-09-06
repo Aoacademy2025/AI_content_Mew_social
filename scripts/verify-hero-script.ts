@@ -12,6 +12,7 @@ import { execSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Prisma } from "@prisma/client";
 
 const dir = mkdtempSync(join(tmpdir(), "heroscript-"));
 process.env.DATABASE_URL = `file:${join(dir, "test.db")}`;
@@ -135,6 +136,76 @@ async function main() {
   const { FREE_LIMITS, PRO_LIMITS, BUSINESS_LIMITS } = await import("../src/lib/plan-limits");
   const { encryptKey } = await import("../src/lib/key-crypto");
   const { isHeroScriptAllowedEmail } = await import("../src/lib/hero-script-access");
+
+  // A legacy profile needs only one owned, unarchived snapshot. Replay the
+  // production P2028 expired-COMMIT failure against real Prisma to ensure
+  // this read does not depend on an interactive transaction's commit budget.
+  // The injected delay models the failure boundary, not its production cause.
+  {
+    const userId = "hs-profile-read";
+    await prisma.user.create({
+      data: { id: userId, name: "Profile read QA", email: "profile-read@example.invalid" },
+    });
+    const profile = await prisma.brandProfile.create({
+      data: {
+        userId, name: "Legacy QA", niche: "fiction", audience: "adults", tone: "warm",
+        bannedWords: JSON.stringify(["guaranteed"]), ctaStyle: "comment",
+        analysisNotes: "Short sentences",
+      },
+    });
+    const originalTransaction = prisma.$transaction;
+    const expiredCommit = async (callback: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
+      originalTransaction.call(prisma, async (tx: Prisma.TransactionClient) => {
+        const result = await callback(tx);
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return result;
+      }, { timeout: 500 });
+    try {
+      // Sanity check: the real engine must reach the observed expired-COMMIT
+      // failure, so a changed Prisma timeout behavior cannot give a false pass.
+      let replayedCommitExpiry = false;
+      try {
+        await expiredCommit((tx) => tx.brandProfile.findFirst({ where: { id: profile.id } }));
+      } catch (error) {
+        replayedCommitExpiry = error instanceof Error
+          && "code" in error && error.code === "P2028"
+          && error.message.includes("A commit cannot be executed on an expired transaction");
+      }
+      ok(replayedCommitExpiry, "profile regression: real Prisma replays expired COMMIT (P2028)");
+      prisma.$transaction = expiredCommit as typeof prisma.$transaction;
+      const resolved = await resolveHeroScriptBrandProfile(userId, profile.id);
+      ok(resolved.ok && resolved.profile.tone === "warm"
+        && resolved.profile.niche === "fiction" && resolved.profile.audience === "adults"
+        && resolved.profile.analysisNotes === "Short sentences"
+        && resolved.bannedWords.join(",") === "guaranteed" && resolved.ctaStyle === "comment",
+      "legacy profile: writing defaults survive an expired interactive COMMIT budget");
+    } catch (error) {
+      ok(false, `legacy profile: reading defaults failed: ${error instanceof Error ? error.message : "unknown error"}`);
+    } finally {
+      prisma.$transaction = originalTransaction;
+    }
+
+    const foreign = await resolveHeroScriptBrandProfile("another-owner", profile.id);
+    ok(!foreign.ok && foreign.code === "NOT_FOUND", "legacy profile: another owner's ID is hidden");
+    const missing = await resolveHeroScriptBrandProfile(userId, "missing-profile");
+    ok(!missing.ok && missing.code === "NOT_FOUND", "legacy profile: missing ID is NOT_FOUND");
+    await prisma.brandProfile.update({ where: { id: profile.id }, data: { frozenAt: new Date() } });
+    const frozen = await resolveHeroScriptBrandProfile(userId, profile.id);
+    ok(!frozen.ok && frozen.code === "UNAVAILABLE", "legacy profile: frozen row is unavailable");
+    await prisma.brandProfile.update({
+      where: { id: profile.id }, data: { frozenAt: null, archivedAt: new Date() },
+    });
+    const archived = await resolveHeroScriptBrandProfile(userId, profile.id);
+    ok(!archived.ok && archived.code === "NOT_FOUND", "legacy profile: archived row is hidden");
+    await prisma.brandProfile.update({
+      where: { id: profile.id },
+      data: { archivedAt: null, tone: "updated", bannedWords: "malformed", ctaStyle: "" },
+    });
+    const updated = await resolveHeroScriptBrandProfile(userId, profile.id);
+    ok(updated.ok && updated.profile.tone === "updated"
+      && updated.bannedWords.length === 0 && updated.ctaStyle === "follow",
+    "legacy profile: later operations see mutable edits and retain safe defaults");
+  }
 
   // ── Post-review amendment (2026-07-31): Hero Script internal-beta allowlist
   // matcher — exact match, ANCHORED @-domain match (not a raw string suffix —
@@ -1788,6 +1859,51 @@ async function main() {
         "versioned Hero Script reads banned words from the immutable active Revision");
       ok(immutableScriptDefaults.ctaStyle === "follow",
         "versioned Hero Script reads CTA style from the immutable active Revision");
+    }
+
+    // The preliminary read must not become authorization for published work.
+    // Mutate the row immediately before Prisma starts the real transaction.
+    for (const change of [{ archivedAt: new Date() }, { userId: "hs4-free" }]) {
+      const originalTransaction = prisma.$transaction;
+      try {
+        prisma.$transaction = new Proxy(originalTransaction, {
+          async apply(target, thisArg, args) {
+            await prisma.brandProfile.update({ where: { id: handoffBrand.profile.id }, data: change });
+            return Reflect.apply(target, thisArg, args);
+          },
+        });
+        const changed = await resolveHeroScriptBrandProfile("hs4-pro", handoffBrand.profile.id);
+        ok(!changed.ok && changed.code === "NOT_FOUND",
+          `versioned Hero Script rechecks ${"archivedAt" in change ? "archive state" : "ownership"} inside its transaction`);
+      } finally {
+        prisma.$transaction = originalTransaction;
+        await prisma.brandProfile.update({
+          where: { id: handoffBrand.profile.id }, data: { userId: "hs4-pro", archivedAt: null },
+        });
+      }
+    }
+
+    const overflow = await prisma.brandProfile.create({
+      data: {
+        userId: "hs4-pro", name: "Overflow QA", niche: "fiction", audience: "adults",
+        tone: "warm", activeRevisionNumber: 1,
+      },
+    });
+    try {
+      await prisma.user.update({ where: { id: "hs4-pro" }, data: { plan: "FREE" } });
+      const needsSelection = await resolveHeroScriptBrandProfile("hs4-pro", handoffBrand.profile.id);
+      ok(!needsSelection.ok && needsSelection.code === "UNAVAILABLE",
+        "versioned Hero Script still enforces plan downgrade selection");
+      await prisma.brandProfile.update({
+        where: { id: handoffBrand.profile.id }, data: { frozenAt: new Date() },
+      });
+      const frozen = await resolveHeroScriptBrandProfile("hs4-pro", handoffBrand.profile.id);
+      ok(!frozen.ok && frozen.code === "UNAVAILABLE",
+        "versioned Hero Script refuses a frozen overflow profile instead of mutable defaults");
+    } finally {
+      await prisma.user.update({ where: { id: "hs4-pro" }, data: { plan: "PRO" } });
+      await prisma.brandProfile.delete({ where: { id: overflow.id } });
+      await prisma.brandProfile.update({ where: { id: handoffBrand.profile.id }, data: { frozenAt: null } });
     }
 
     const paidScript = await createScript("hs4-pro", {
