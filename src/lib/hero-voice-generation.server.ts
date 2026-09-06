@@ -111,6 +111,9 @@ const ASR_GATE_LEASE_EXTENSION_MS = 45_000;
 const ASR_GATE_STATE_KEYS = ["version", "chunks"] as const;
 const ASR_GATE_CHUNK_KEYS = ["sequence", "attempts", "droppedRun", "ears", "rejected"] as const;
 const ASR_GATE_REJECTION_KEYS = ["attemptId", "providerJobId", "seed", "droppedRun"] as const;
+// `insertedRun` joined the record on 2026-09-07 (round-5 "จริงๆ" defect); records written
+// before that carry only the keys above and stay valid.
+const ASR_GATE_OPTIONAL_KEYS = ["insertedRun"] as const;
 const CLONE_CHUNK_KEYS = new Set([
   "text", "speechText", "providerJobId", "partFilename", "durationMs", "sampleRate", "generationTimeMs",
   "delayTimeMs", "executionTimeMs", "workerVersion", "catalogVersion", "language", "numStep",
@@ -140,6 +143,8 @@ type HeroVoiceAsrGateRejection = {
   providerJobId: string;
   seed: number;
   droppedRun: number;
+  /** Longest run every ear heard that the script never asked for (repeated word). */
+  insertedRun?: number;
 };
 
 type HeroVoiceAsrGateChunkState = {
@@ -148,6 +153,8 @@ type HeroVoiceAsrGateChunkState = {
   attempts: number;
   /** Best dropped run of the accepted audio; null while pending or when no ear answered. */
   droppedRun: number | null;
+  /** Best inserted run of the accepted audio; null while pending or when no ear answered. */
+  insertedRun?: number | null;
   /** Ears that produced a transcript for the accepted audio. */
   ears: number;
   rejected: HeroVoiceAsrGateRejection[];
@@ -221,6 +228,13 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
     && [...expected].sort().every((key, index) => actual[index] === key);
 }
 
+/** Exact required keys plus any subset of the optional ones; nothing else. */
+function hasKeysWithin(value: Record<string, unknown>, required: readonly string[], optional: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return required.every((key) => key in value)
+    && actual.every((key) => required.includes(key) || optional.includes(key));
+}
+
 function validOptionalFinite(value: unknown): boolean {
   return value === undefined || isFiniteNonNegative(value);
 }
@@ -233,14 +247,16 @@ function validAsrGateState(value: unknown): boolean {
   if (value === undefined) return true;
   if (!isRecord(value) || !hasExactKeys(value, ASR_GATE_STATE_KEYS) || value.version !== 1
     || !Array.isArray(value.chunks)) return false;
-  return value.chunks.every((chunk) => isRecord(chunk) && hasExactKeys(chunk, ASR_GATE_CHUNK_KEYS)
+  return value.chunks.every((chunk) => isRecord(chunk) && hasKeysWithin(chunk, ASR_GATE_CHUNK_KEYS, ASR_GATE_OPTIONAL_KEYS)
     && isCountAtLeast(chunk.sequence, 1) && isCountAtLeast(chunk.attempts, 1)
     && (chunk.droppedRun === null || isFiniteNonNegative(chunk.droppedRun))
+    && (chunk.insertedRun === undefined || chunk.insertedRun === null || isFiniteNonNegative(chunk.insertedRun))
     && isCountAtLeast(chunk.ears, 0)
     && Array.isArray(chunk.rejected)
-    && chunk.rejected.every((rejection) => isRecord(rejection) && hasExactKeys(rejection, ASR_GATE_REJECTION_KEYS)
+    && chunk.rejected.every((rejection) => isRecord(rejection) && hasKeysWithin(rejection, ASR_GATE_REJECTION_KEYS, ASR_GATE_OPTIONAL_KEYS)
       && typeof rejection.attemptId === "string" && typeof rejection.providerJobId === "string"
-      && isCountAtLeast(rejection.seed, 0) && isFiniteNonNegative(rejection.droppedRun)));
+      && isCountAtLeast(rejection.seed, 0) && isFiniteNonNegative(rejection.droppedRun)
+      && validOptionalFinite(rejection.insertedRun)));
 }
 
 function mergeAsrGateChunk(
@@ -1754,6 +1770,7 @@ async function replaceRejectedCloneAttempt(input: {
       sequence: attempt.sequence,
       attempts: input.priorRejected.length + 2,
       droppedRun: null,
+      insertedRun: null,
       ears: 0,
       rejected: [...input.priorRejected, input.rejection],
     }),
@@ -2209,18 +2226,27 @@ async function advanceHeroVoiceGenerationUnlocked(userId: string, jobId: string)
         sequence,
         failures: heard.failures.join(","),
       });
-      asrGateChunk = { sequence, attempts: rejected.length + 1, droppedRun: null, ears: 0, rejected };
+      asrGateChunk = { sequence, attempts: rejected.length + 1, droppedRun: null, insertedRun: null, ears: 0, rejected };
     } else {
       const verdict = evaluateHeroVoiceTranscripts(chunk.speechText, heard.transcripts);
       if (verdict.pass) {
-        asrGateChunk = { sequence, attempts: rejected.length + 1, droppedRun: verdict.droppedRun, ears: heard.ears, rejected };
+        asrGateChunk = {
+          sequence,
+          attempts: rejected.length + 1,
+          droppedRun: verdict.droppedRun,
+          insertedRun: verdict.insertedRun,
+          ears: heard.ears,
+          rejected,
+        };
       } else {
         const currentSnapshot = cloneSnapshotForAttempt(job, state, attempt);
         await recordVoiceEvent(userId, "omnivoice_asr_gate_rejected", {
           aiGenerationJobId: job.id,
           providerJobId,
           sequence,
+          reason: verdict.reason,
           droppedRun: verdict.droppedRun,
+          insertedRun: verdict.insertedRun,
           ears: heard.ears,
           generation: rejected.length + 1,
         });
@@ -2230,7 +2256,9 @@ async function advanceHeroVoiceGenerationUnlocked(userId: string, jobId: string)
             job,
             state,
             "OMNIVOICE_CONTENT_DROPPED",
-            "Hero Voice อ่านข้ามคำในสคริปต์แม้สร้างซ้ำแล้ว งานนี้ไม่ถูกส่งออก และคืนนาทีให้แล้ว",
+            verdict.reason === "inserted"
+              ? "Hero Voice อ่านเติมคำที่ไม่มีในสคริปต์แม้สร้างซ้ำแล้ว งานนี้ไม่ถูกส่งออก และคืนนาทีให้แล้ว"
+              : "Hero Voice อ่านข้ามคำในสคริปต์แม้สร้างซ้ำแล้ว งานนี้ไม่ถูกส่งออก และคืนนาทีให้แล้ว",
             "failed_output",
           );
         }
@@ -2240,7 +2268,13 @@ async function advanceHeroVoiceGenerationUnlocked(userId: string, jobId: string)
           attempt,
           chunk,
           currentSnapshot,
-          rejection: { attemptId: attempt.id, providerJobId, seed: currentSnapshot.synthesis.seed, droppedRun: verdict.droppedRun },
+          rejection: {
+            attemptId: attempt.id,
+            providerJobId,
+            seed: currentSnapshot.synthesis.seed,
+            droppedRun: verdict.droppedRun,
+            insertedRun: verdict.insertedRun,
+          },
           priorRejected: rejected,
           pollLeaseToken: pollLeaseToken!,
           pollFailureCountAtLease: pollFailureCountAtLease!,

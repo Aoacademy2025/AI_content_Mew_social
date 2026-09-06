@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { droppedLetterRun } from "../src/lib/hero-voice-asr-gate";
+import { droppedLetterRun, insertedLetterRun } from "../src/lib/hero-voice-asr-gate";
 import { HERO_VOICE_SPEECH_NORMALIZER_VERSION } from "../src/lib/hero-voice-speech";
 
 /**
@@ -32,8 +32,22 @@ process.env.RUNPOD_HERO_VOICE_CLONE_SOURCE_REVISION = SOURCE_REVISION;
 process.env.RUNPOD_HERO_VOICE_CLONE_MODEL_MANIFEST_SHA256 = "3".repeat(64);
 process.env.RUNPOD_API_KEY = API_SECRET_SENTINEL;
 process.env.GEMINI_SERVER_KEY = GEMINI_SECRET_SENTINEL;
-process.env.HERO_VOICE_CANARY_EXECUTION_MODE = "1";
-process.env.HERO_VOICE_CANARY_TASK6_GATE_SHA256 = "4".repeat(64);
+// Two passes share this file: the canary gate (Task 6 digest + execution mode) and,
+// with HERO_VOICE_TEST_GATE_MODE=production, the ADR 0061 owner-consent production gate
+// under NODE_ENV=production with no canary variable at all. Every scenario below must
+// hold in both, so no other production-only closure can hide in the clone state machine.
+const PRODUCTION_GATE = process.env.HERO_VOICE_TEST_GATE_MODE === "production";
+if (PRODUCTION_GATE) {
+  assert.equal(process.env.NODE_ENV, "production", "the production-gate pass runs with NODE_ENV=production");
+  delete process.env.HERO_VOICE_CANARY_EXECUTION_MODE;
+  delete process.env.HERO_VOICE_CANARY_TASK6_GATE_SHA256;
+  delete process.env.HERO_VOICE_CANARY_ROOT;
+  process.env.HERO_VOICE_CLONE_PRODUCTION = "1";
+} else {
+  process.env.HERO_VOICE_CANARY_EXECUTION_MODE = "1";
+  process.env.HERO_VOICE_CANARY_TASK6_GATE_SHA256 = "4".repeat(64);
+  delete process.env.HERO_VOICE_CLONE_PRODUCTION;
+}
 const storage = fs.mkdtempSync(path.join(os.tmpdir(), "hero-asr-gate-runtime-"));
 process.env.USER_VOICE_STORAGE_DIR = storage;
 
@@ -71,6 +85,12 @@ function decodeGeneration(wav: Buffer): { chunkIndex: number; seedOffset: number
 function dropPhrase(text: string): string {
   const middle = Math.floor(text.length / 2);
   return `${text.slice(0, middle)}${text.slice(middle + 8)}`;
+}
+
+/** Read a word twice (the round-5 "จริง" → "จริงๆ" defect): six letters nobody asked for. */
+function repeatPhrase(text: string): string {
+  const middle = Math.floor(text.length / 2);
+  return `${text.slice(0, middle)}ประโยค${text.slice(middle)}`;
 }
 
 type EarPlan = {
@@ -222,8 +242,9 @@ type AsrGateState = {
     sequence: number;
     attempts: number;
     droppedRun: number | null;
+    insertedRun: number | null;
     ears: number;
-    rejected: Array<{ attemptId: string; providerJobId: string; seed: number; droppedRun: number }>;
+    rejected: Array<{ attemptId: string; providerJobId: string; seed: number; droppedRun: number; insertedRun: number }>;
   }>;
 };
 
@@ -263,6 +284,9 @@ async function main() {
   assert.equal(planned.length, 2, "the fixture script splits into two sentence chunks");
   const expectedDrop = droppedLetterRun(planned[0].speechText, dropPhrase(planned[0].speechText));
   assert.ok(expectedDrop >= 5, "the fixture drop is long enough to fail the gate");
+  const expectedInsertion = insertedLetterRun(planned[1].speechText, repeatPhrase(planned[1].speechText));
+  assert.ok(expectedInsertion >= 3, "the fixture repeat is long enough to fail the insertion gate");
+  assert.equal(droppedLetterRun(planned[1].speechText, repeatPhrase(planned[1].speechText)), 0, "a pure insertion drops nothing");
 
   const usage = async () => prisma.user.findUniqueOrThrow({
     where: { id: user.id }, select: { aiAudioMinutesUsed: true, minutesUsed: true },
@@ -343,8 +367,8 @@ async function main() {
   assert.deepEqual(cleanState.asrGate, {
     version: 1,
     chunks: [
-      { sequence: 1, attempts: 1, droppedRun: 0, ears: 2, rejected: [] },
-      { sequence: 2, attempts: 1, droppedRun: 0, ears: 2, rejected: [] },
+      { sequence: 1, attempts: 1, droppedRun: 0, insertedRun: 0, ears: 2, rejected: [] },
+      { sequence: 2, attempts: 1, droppedRun: 0, insertedRun: 0, ears: 2, rejected: [] },
     ],
   });
   assert.equal(cleanState.cloneSnapshots[0].attemptId, originalCleanAttempt.id, "a passing part keeps its original attempt");
@@ -385,10 +409,11 @@ async function main() {
         sequence: 1,
         attempts: 2,
         droppedRun: 0,
+        insertedRun: 0,
         ears: 2,
-        rejected: [{ attemptId: originalRetryAttempt.id, providerJobId: `gen-${serial - 2}`, seed: BASE_SEED, droppedRun: expectedDrop }],
+        rejected: [{ attemptId: originalRetryAttempt.id, providerJobId: `gen-${serial - 2}`, seed: BASE_SEED, droppedRun: expectedDrop, insertedRun: 0 }],
       },
-      { sequence: 2, attempts: 1, droppedRun: 0, ears: 2, rejected: [] },
+      { sequence: 2, attempts: 1, droppedRun: 0, insertedRun: 0, ears: 2, rejected: [] },
     ],
   });
   assert.equal(earCalls.length, 6, "three generations, two ears each");
@@ -396,6 +421,46 @@ async function main() {
   const retryReplay = await hero.advanceHeroVoiceGeneration(user.id, retry.id);
   assert.equal(retryReplay.status, "completed", "replaced attempt identity round-trips on replay");
   noPartsLeft(retry.id);
+
+  // 3b. First generation of chunk 2 reads a word twice (both ears agree): seed+1 reads it
+  //     as written. Chunk 1 is clean and keeps its seed. (Round 5: "จริง" → "จริงๆ".)
+  await resetPlan(planned.map((chunk) => chunk.speechText), {
+    transcript: (index, seedOffset) => index === 1 && seedOffset === 0 ? repeatPhrase(chunkTexts[1]) : chunkTexts[index],
+  });
+  const submissionsBeforeInsert = requests.size;
+  const insertStarted = await start("insertion");
+  const insertion = await runToTerminal(insertStarted.job.id);
+  assert.equal(insertion.status, "completed", "a chunk regenerated after an insertion completes normally");
+  assert.equal(requests.size - submissionsBeforeInsert, 3, "one extra provider job for the one inserted part");
+  assert.deepEqual(
+    [...requests.values()].slice(-3).map((request) => `${chunkTexts.indexOf(request.text)}:${request.seed - BASE_SEED}`),
+    ["0:0", "1:0", "1:1"],
+    "the inserted chunk is re-dispatched with seed+1",
+  );
+  const insertionState = stateOf(insertion.inputJson);
+  assert.equal(insertionState.cloneSnapshots[0].synthesis.seed, BASE_SEED, "the clean chunk keeps its seed");
+  assert.equal(insertionState.cloneSnapshots[1].synthesis.seed, BASE_SEED + 1);
+  assert.deepEqual(insertionState.asrGate?.chunks.map((chunk) => ({ ...chunk, rejected: chunk.rejected.map((r) => ({ seed: r.seed, droppedRun: r.droppedRun, insertedRun: r.insertedRun })) })), [
+    { sequence: 1, attempts: 1, droppedRun: 0, insertedRun: 0, ears: 2, rejected: [] },
+    { sequence: 2, attempts: 2, droppedRun: 0, insertedRun: 0, ears: 2, rejected: [{ seed: BASE_SEED, droppedRun: 0, insertedRun: expectedInsertion }] },
+  ]);
+  const insertionEvents = await prisma.telemetryEvent.findMany({
+    where: { userId: user.id, name: "omnivoice_asr_gate_rejected" }, orderBy: { createdAt: "desc" }, take: 1,
+  });
+  assert.equal(insertionEvents.length, 1);
+  assert.match(insertionEvents[0].properties ?? "", /"reason":"inserted"/, "the rejection telemetry names the insertion");
+  assert.match(insertionEvents[0].properties ?? "", new RegExp(`"insertedRun":${expectedInsertion}`));
+  noPartsLeft(insertion.id);
+
+  // 4b. Only one ear hears the repeat: that is ASR noise, not a misread. No regeneration.
+  await resetPlan(planned.map((chunk) => chunk.speechText), {
+    transcript: (index, _seedOffset, ear) => ear === "verbatim" ? repeatPhrase(chunkTexts[index]) : chunkTexts[index],
+  });
+  const submissionsBeforeOneEar = requests.size;
+  const oneEar = await runToTerminal((await start("one-ear-insertion")).job.id);
+  assert.equal(oneEar.status, "completed");
+  assert.equal(requests.size - submissionsBeforeOneEar, 2, "a repeat only one ear heard is not regenerated");
+  assert.deepEqual(stateOf(oneEar.inputJson).asrGate?.chunks.map((chunk) => chunk.insertedRun), [0, 0]);
 
   // 4. One ear hears everything, the other drops a phrase: the best ear wins, no regeneration.
   await resetPlan(planned.map((chunk) => chunk.speechText), {
@@ -447,8 +512,8 @@ async function main() {
   assert.deepEqual(stateOf(deaf.inputJson).asrGate, {
     version: 1,
     chunks: [
-      { sequence: 1, attempts: 1, droppedRun: null, ears: 0, rejected: [] },
-      { sequence: 2, attempts: 1, droppedRun: null, ears: 0, rejected: [] },
+      { sequence: 1, attempts: 1, droppedRun: null, insertedRun: null, ears: 0, rejected: [] },
+      { sequence: 2, attempts: 1, droppedRun: null, insertedRun: null, ears: 0, rejected: [] },
     ],
   });
   const outageEvents = await prisma.telemetryEvent.count({ where: { userId: user.id, name: "omnivoice_asr_gate_unavailable" } });
@@ -472,9 +537,17 @@ async function main() {
   for (const secret of [refText, GEMINI_SECRET_SENTINEL, referenceBase64]) {
     assert.equal(persistedJobs.includes(secret), false, "durable state carries no reference data or key");
   }
+  if (PRODUCTION_GATE) {
+    // 8. Rollback is one variable: without the opt-in, production refuses to start a clone job.
+    delete process.env.HERO_VOICE_CLONE_PRODUCTION;
+    await resetPlan(planned.map((chunk) => chunk.speechText), { transcript: (index) => chunkTexts[index] });
+    await assert.rejects(start("opt-in-removed"), (error: unknown) => (error as { code?: string })?.code === "CLONE_CONFIG_UNAVAILABLE",
+      "NODE_ENV=production without HERO_VOICE_CLONE_PRODUCTION cannot start a clone job");
+    process.env.HERO_VOICE_CLONE_PRODUCTION = "1";
+  }
   await prisma.user.delete({ where: { id: user.id } });
   await prisma.$disconnect();
-  console.log("Hero Voice ASR gate runtime checks passed.");
+  console.log(`Hero Voice ASR gate runtime checks passed (${PRODUCTION_GATE ? "owner-consent production gate, NODE_ENV=production" : "canary gate"}).`);
 }
 
 main().finally(() => {

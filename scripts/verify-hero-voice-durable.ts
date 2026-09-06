@@ -22,15 +22,18 @@ try {
     process.exit(pushed.status ?? 1);
   }
 
-  for (const script of [
-    "scripts/verify-hero-voice-durable-runtime.ts",
-    "scripts/verify-hero-voice-clone-task2-runtime.ts",
-    "scripts/verify-hero-voice-asr-gate-runtime.ts",
-  ]) {
+  for (const [script, extraEnv] of [
+    ["scripts/verify-hero-voice-durable-runtime.ts", {}],
+    ["scripts/verify-hero-voice-clone-task2-runtime.ts", {}],
+    ["scripts/verify-hero-voice-asr-gate-runtime.ts", {}],
+    // ADR 0061: the same clone state machine under the owner-consent production gate,
+    // NODE_ENV=production, no canary variable.
+    ["scripts/verify-hero-voice-asr-gate-runtime.ts", { NODE_ENV: "production", HERO_VOICE_TEST_GATE_MODE: "production" }],
+  ] as const) {
     const verified = spawnSync(
       process.execPath,
       ["--conditions=react-server", "--import", "tsx", script],
-      { cwd: process.cwd(), env, encoding: "utf8" },
+      { cwd: process.cwd(), env: { ...env, ...extraEnv }, encoding: "utf8" },
     );
     process.stdout.write(verified.stdout);
     process.stderr.write(verified.stderr);
