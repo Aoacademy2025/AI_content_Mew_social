@@ -2,7 +2,7 @@
 //   node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-desktop-session.ts
 //   npm run verify:desktop-session
 import { execSync } from "node:child_process";
-import { mkdtempSync, readdirSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -49,6 +49,18 @@ function collectDesktopRouteFiles(root: string): string[] {
 }
 
 async function main() {
+  const proxySource = readFileSync(join(process.cwd(), "src/proxy.ts"), "utf8");
+  const publicBlock = proxySource.match(/const isPublicRoute = createRouteMatcher\(\[([\s\S]*?)\]\);/);
+  assert(!!publicBlock, "isPublicRoute matcher exists in src/proxy.ts");
+  assert(
+    publicBlock![1].includes('"/api/mcp(.*)"'),
+    '"/api/mcp(.*)" is in isPublicRoute',
+  );
+  assert(
+    publicBlock![1].includes('"/api/desktop(.*)"'),
+    '"/api/desktop(.*)" is in isPublicRoute like /api/mcp so cookie-less Bearer reaches withDesktop',
+  );
+
   const { prisma } = await import("../src/lib/prisma");
   const { createMcpToken, revokeMcpToken } = await import("../src/lib/mcp/token");
   const { isDesktopEnabled, isDesktopInvited } = await import("../src/lib/desktop/flag");

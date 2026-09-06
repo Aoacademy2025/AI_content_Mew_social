@@ -25,6 +25,7 @@ const isPublicRoute = createRouteMatcher([
   "/api/telemetry(.*)",
   "/api/cron(.*)",  // protected by CRON_SECRET inside each route
   "/api/mcp(.*)",   // MCP server — authed by PAT/OAuth (Bearer) inside the route, no Clerk session
+  "/api/desktop(.*)", // ClipForge desktop — PAT/Clerk OAuth Bearer inside withDesktop, no Clerk session cookie
   "/api/story-film(.*)", // internal Story Film MCP — PAT/OAuth + internal cohort enforced inside the route
   "/.well-known/(.*)", // OAuth discovery metadata for MCP (fetched unauthenticated by clients)
 ]);
