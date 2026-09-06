@@ -17,6 +17,7 @@ import {
   splitHeroVoiceScriptForTts,
 } from "../src/lib/hero-voice-speech";
 import { parseTtsProvider, resolveJobTtsProvider } from "../src/lib/tts-providers";
+import { evaluateHeroVoiceTranscripts } from "../src/lib/hero-voice-asr-gate";
 import { omnivoiceScriptCharCapForPlan } from "../src/lib/omnivoice-limits";
 
 let failures = 0;
@@ -213,6 +214,35 @@ check(
   JSON.stringify(mixedChunks.map((chunk) => chunk.text))
     === JSON.stringify(["ประโยคแรกค่ะ ", "ประโยคสองครับ\n", "บรรทัดใหม่. ", "Final line? ครับ"]),
   JSON.stringify(mixedChunks.map((chunk) => chunk.text)),
+);
+
+// ASR content gate (Mew-approved loop, 2026-09-06): the worker's best-of-3 ranking
+// picks by speaker similarity and can select a candidate that skipped words, so
+// every chunk is transcribed and compared to the intended speech text.
+const chunkTwo = "ระบบเชื่อมต่อผ่านเอพีไอใช้จีพียูประมวลผล แล้วส่งไฟล์เวฟและเอ็มพีสามกลับมาที่แดชบอร์ดครับ";
+check(
+  "asr gate: a transcript missing a whole phrase fails",
+  evaluateHeroVoiceTranscripts(chunkTwo, ["ครับ API ใช้ GPU ประมวลผล แล้วส่งไฟล์ .wav และ .mp3 กลับมาที่แดชบอร์ดครับ"]).pass === false,
+);
+check(
+  "asr gate: passes when any ear heard every word, even with English spellings from the other ear",
+  evaluateHeroVoiceTranscripts(
+    "ทดสอบคำว่ารันพ็อดเซิร์ฟเวอร์เลส, ออมนิวอยซ์, เจมิไน, อีเลเว่นแล็บส์และรีโมชันครับ",
+    ["ทดสอบคำว่า RunPod, Serverless, OmniVoice, Gemini, ElevenLabs และ Remotion ครับ",
+     "ทดสอบคำว่า รันพอด เซิร์ฟเวอร์เลส ออมนิวอยซ์ เจมินาย อีเลฟเว่นแล็บส์ และ รีโมชั่น ครับ"],
+  ).pass === true,
+);
+check(
+  "asr gate: numerals in the transcript are read through the normalizer before comparing",
+  evaluateHeroVoiceTranscripts(
+    "สินค้าราคาหนึ่งพันสองร้อยห้าสิบบาทห้าสิบสตางค์ ลดสิบห้าเปอร์เซ็นต์เหลือหนึ่งพันหกสิบสองจุดเก้าสองห้าบาทครับ",
+    ["สินค้า ราคา 1,250 บาท 50 สตางค์ ลด 15% เหลือ 1,062.925 บาท ครับ"],
+  ).pass === true,
+);
+check(
+  "asr gate: a one-word slip is tolerated, a five-letter run is not",
+  evaluateHeroVoiceTranscripts("วันนี้อากาศดีมากครับ", ["วันนี้อากาศดีครับ"]).pass === true
+    && evaluateHeroVoiceTranscripts("วันนี้อากาศดีมากครับ", ["วันนี้ครับ"]).pass === false,
 );
 
 const pcm = Buffer.from([0, 0, 1, 0, 255, 255, 2, 0]);
