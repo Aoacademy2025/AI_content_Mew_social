@@ -531,9 +531,13 @@ export function useV2Project() {
     markUserDraftMutation,
   );
   // Handoff metadata is hydrated/reset with the project, never edited by a public setter.
-  const [scriptTargetDurationSec, setScriptTargetDurationSecRaw] = useState<number | null>(
-    () => scriptTargetDuration(d.scriptTargetDurationSec),
-  );
+  const [scriptTargetDurationSec, setScriptTargetDurationSecState] = useState<number | null>(null);
+  const setScriptTargetDurationSecRaw = useCallback((value: number | null) => {
+    // User edits stage effectiveDraftRef before the debounced buildDraft path.
+    // Hydrated metadata must therefore travel with that snapshot as well as state.
+    effectiveDraftRef.current = withUserDraftField(effectiveDraftRef.current, "scriptTargetDurationSec", value);
+    setScriptTargetDurationSecState(value);
+  }, []);
   const [script, setScript, setScriptRaw] = useUserDraftState(
     d.script ?? "", "script", effectiveDraftRef, canAcceptUserMutation, markUserDraftMutation,
   );
@@ -1385,7 +1389,7 @@ export function useV2Project() {
       isCurrent: isCurrentReset,
       signal: resetController.signal,
     });
-  }, [createServerProject, invalidateAutosaveLineage, invalidateLocalChoiceRequest, projectId, recommendedAutoMixDefault, saveRevision, setProjectInitialization, setRecoveryState]);
+  }, [createServerProject, invalidateAutosaveLineage, invalidateLocalChoiceRequest, projectId, recommendedAutoMixDefault, saveRevision, setProjectInitialization, setRecoveryState, setScriptTargetDurationSecRaw]);
 
   useEffect(() => {
     let alive = true;
