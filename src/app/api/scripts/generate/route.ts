@@ -7,7 +7,7 @@ import {
 } from "@/lib/prompts/hero-script";
 import {
   generateValidatedJson,
-  generateWithBannedWordGuard,
+  generateWithScriptGuard,
   heroScriptLlmErrorResponse,
   isValidDurationSec,
   requireHeroScriptUser,
@@ -136,13 +136,16 @@ export async function POST(req: Request) {
       profile,
     });
 
-    // Banned-words guard: generate → screen → 1 retry with the stern note →
-    // still there? return it WITH a warning (never block the user).
+    // Duration and banned words share one bounded text correction.
     let guarded: GuardedGeneration<GenerateScriptResult> | null;
     try {
-      guarded = await generateWithBannedWordGuard<GenerateScriptResult>({
+      guarded = await generateWithScriptGuard<GenerateScriptResult>({
         bannedWords,
-        extractText: (r) => `${r.bodyText}\n${r.ctaText}`,
+        extractText: (r) => `${stripEchoedHook(r.bodyText, hookText)}\n${r.ctaText}`,
+        duration: {
+          seconds: durationSec,
+          assemble: (r) => `${hookText}\n${stripEchoedHook(r.bodyText, hookText)}\n${r.ctaText}`,
+        },
         generate: (sternNote) =>
           generateValidatedJson({
             apiKey,

@@ -20,9 +20,8 @@ import { toast } from "sonner";
 import { Check, Loader2, Lock, RefreshCw, Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { tokenizeWords } from "@/lib/tts-timing";
+import { assessScriptDuration, scriptDurationWarning } from "@/lib/hero-script-duration";
 import { limitsForPlan } from "@/lib/plan-limits";
-import { TTS_WORDS_PER_SECOND } from "@/lib/prompts/content-generator";
 import { authenticatedFetch } from "@/lib/authenticated-fetch";
 import { trackEvent } from "@/lib/client-telemetry";
 import { hookContextKey, type HookChoice } from "./HookStep";
@@ -42,8 +41,6 @@ const MODEL_UNAVAILABLE_MESSAGE =
   "โมเดล AI สำหรับเขียนสคริปต์ไม่พร้อมใช้งานชั่วคราว โปรดลองใหม่อีกครั้งหรือแจ้งทีมงาน";
 
 const AUTOSAVE_DELAY_MS = 1200;
-/** ±15% — the tolerance the GENERATE prompt states around the word budget. */
-const BUDGET_TOLERANCE = 0.15;
 
 /** The step-4 working copy of a Script. `id` is null until the first autosave
  *  has created the row. */
@@ -453,12 +450,9 @@ export function ScriptEditorStep({
   const hookMatchesCurrentInputs = selectedHook?.contextKey === hookContextKey(topic, durationSec, selectedProfileId);
 
   const budgetDuration = draft?.durationSec ?? durationSec;
-  // Same formula as wordBudgetForDuration() on the server — one pacing constant.
-  const wordBudget = Math.round(budgetDuration * TTS_WORDS_PER_SECOND);
-  const wordCount = draft ? tokenizeWords(assembleForCount(draft)).length : 0;
-  const withinBudget =
-    wordCount >= Math.round(wordBudget * (1 - BUDGET_TOLERANCE)) &&
-    wordCount <= Math.round(wordBudget * (1 + BUDGET_TOLERANCE));
+  const assessment = assessScriptDuration(draft ? assembleForCount(draft) : "", budgetDuration);
+  const { words: wordCount, budget: wordBudget, withinTarget: withinBudget } = assessment;
+  const durationWarning = draft ? scriptDurationWarning(assessment) : undefined;
 
   const sections: { key: RegenTarget; label: string; value: string; rows: number; onChange: (v: string) => void }[] = draft
     ? [
@@ -477,7 +471,7 @@ export function ScriptEditorStep({
         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {draft && (
             <span className="text-[11px]" style={{ color: withinBudget ? VIOLET : "var(--ui-text-muted)" }}>
-              {wordCount} คำ / งบคำ ~{wordBudget} คำ (±15%)
+              {wordCount} คำ / งบคำ ~{wordBudget} คำ (±10%)
             </span>
           )}
           <Button
@@ -492,6 +486,13 @@ export function ScriptEditorStep({
           </Button>
         </div>
       </div>
+
+      {draft && (
+        <p className="mb-4 text-xs" style={{ color: "var(--ui-text-muted)" }} aria-live="polite">
+          {durationWarning ?? `ประมาณ ${Math.round(assessment.estimatedSec)} วินาที / เป้าหมาย ${budgetDuration} วินาที (±10%)`}
+          {" — ความยาวจริงขึ้นกับเสียงและจังหวะพูด"}
+        </p>
+      )}
 
       {generationError && (
         <p role="alert" className="mb-4 text-sm" style={{ color: "var(--ui-text-primary)" }}>

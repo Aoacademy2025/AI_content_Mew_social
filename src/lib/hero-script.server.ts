@@ -64,9 +64,11 @@ import {
   isValidHookFormulaKey,
   isValidStoryStructureKey,
 } from "@/lib/viral-frameworks";
-import { TTS_WORDS_PER_SECOND } from "@/lib/prompts/content-generator";
+import { assessScriptDuration, scriptDurationWarning } from "@/lib/hero-script-duration";
+export { wordBudgetForDuration } from "@/lib/hero-script-duration";
 import {
   buildBannedWordRetryNote,
+  buildScriptLengthRetryNote,
   type BrandProfileForPrompt,
 } from "@/lib/prompts/hero-script";
 
@@ -700,17 +702,6 @@ export async function resolveLlmTriad(
   return { ok: true, apiKey, provider, geminiMode };
 }
 
-// ── Word budget (Task 2) ────────────────────────────────────────────────────
-
-/** Target word count for a script of `durationSec` — durationSec × TTS pacing
- *  (reuses content-generator.ts's TTS_WORDS_PER_SECOND, the same ~4 words/sec
- *  figure its own videoPacing table is built on — do NOT invent a second
- *  pacing table here). The GENERATE prompt applies the spec's ±15% tolerance
- *  around this figure; this function returns the center value. */
-export function wordBudgetForDuration(durationSec: number): number {
-  return Math.round(durationSec * TTS_WORDS_PER_SECOND);
-}
-
 // ── Continuity query (Task 2 — IDEAS prompt's CONTINUITY_BLOCK) ────────────
 
 /** Last `limit` Script topics of `brandProfileId` (owned by `userId`), newest
@@ -949,40 +940,44 @@ export function bannedWordWarning(word: string): string {
 
 export interface GuardedGeneration<T> {
   result: T;
-  /** Set only when a banned word survived the retry (spec: warn, never block). */
+  /** Quality warnings never block saving or the editor handoff. */
   warning?: string;
 }
 
-/** Banned-words guard shared by /api/scripts/generate and /regen-section:
- *  generate → check → on a hit, ONE retry with the stern banned-words note
- *  appended to the prompt → if the word is still there, return the result
- *  anyway with the Thai `warning` (the user is never blocked).
- *
- *  `generate(sternNote)` is the caller's LLM round-trip: it appends `sternNote`
- *  (empty string on the first attempt) to its prompt and returns the validated
- *  payload, or null when the LLM output was unusable. `extractText` returns the
- *  part of the payload that must be screened. Returns null only when the FIRST
- *  attempt produced nothing usable — that's the caller's 502. */
-export async function generateWithBannedWordGuard<T>(params: {
+/** Screen editable text for banned words and the complete script for duration.
+ * Both checks share ONE correction, preserving the existing provider-call bound.
+ * An unusable correction retains the first valid output with its warnings. */
+export async function generateWithScriptGuard<T>(params: {
   bannedWords: readonly string[];
   extractText: (result: T) => string;
-  generate: (sternNote: string) => Promise<T | null>;
+  duration?: { seconds: number; assemble: (result: T) => string };
+  generate: (correctionNote: string) => Promise<T | null>;
 }): Promise<GuardedGeneration<T> | null> {
-  const { bannedWords, extractText, generate } = params;
+  const { bannedWords, extractText, duration, generate } = params;
+  function inspect(result: T) {
+    const banned = findBannedWord(extractText(result), bannedWords);
+    const timing = duration ? assessScriptDuration(duration.assemble(result), duration.seconds) : undefined;
+    const warning = [banned ? bannedWordWarning(banned) : undefined,
+      timing ? scriptDurationWarning(timing) : undefined].filter(Boolean).join("\n") || undefined;
+    return { banned, timing, warning };
+  }
 
   const first = await generate("");
   if (!first) return null;
+  const check = inspect(first);
+  if (!check.warning) return { result: first };
 
-  const firstHit = findBannedWord(extractText(first), bannedWords);
-  if (!firstHit) return { result: first };
-
-  const retried = await generate(buildBannedWordRetryNote(bannedWords));
-  // Retry produced nothing usable → keep what we have, warn about it.
-  if (!retried) return { result: first, warning: bannedWordWarning(firstHit) };
-
-  const retryHit = findBannedWord(extractText(retried), bannedWords);
-  if (!retryHit) return { result: retried };
-  return { result: retried, warning: bannedWordWarning(retryHit) };
+  const note = (check.banned ? buildBannedWordRetryNote(bannedWords) : "") +
+    (check.timing && !check.timing.withinTarget ? buildScriptLengthRetryNote({
+      words: check.timing.words,
+      wordBudget: check.timing.budget,
+      durationSec: check.timing.targetSec,
+      editableText: extractText(first),
+      editableWords: countWords(extractText(first)),
+    }) : "");
+  const result = await generate(note) ?? first;
+  const { warning } = inspect(result);
+  return { result, ...(warning ? { warning } : {}) };
 }
 
 // ── GENERATE / REGEN response validators ───────────────────────────────────

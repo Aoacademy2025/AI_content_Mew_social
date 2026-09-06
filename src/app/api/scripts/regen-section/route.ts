@@ -8,7 +8,7 @@ import {
 import {
   assembleScript,
   generateValidatedJson,
-  generateWithBannedWordGuard,
+  generateWithScriptGuard,
   heroScriptLlmErrorResponse,
   isValidDurationSec,
   isValidRegenTarget,
@@ -111,9 +111,13 @@ export async function POST(req: Request) {
 
     let guarded: GuardedGeneration<RegenSectionResult> | null;
     try {
-      guarded = await generateWithBannedWordGuard<RegenSectionResult>({
+      guarded = await generateWithScriptGuard<RegenSectionResult>({
         bannedWords,
         extractText: (r) => r.text,
+        duration: {
+          seconds: durationSec,
+          assemble: (r) => assembleScript({ ...current, [`${target}Text`]: r.text }),
+        },
         generate: (sternNote) =>
           generateValidatedJson({
             apiKey,

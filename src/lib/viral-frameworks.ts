@@ -148,7 +148,7 @@ export function getStoryStructure(key: string): StoryStructure | undefined {
 
 /** RETENTION_RULES — injected into every generate prompt (GENERATE/REGEN). */
 export const RETENTION_RULES: string[] = [
-  "ประโยคสั้น ภาษาพูด ~4 คำ/วินาที; 1 บรรทัด = 1 ประโยคที่พูดจริง",
+  "ประโยคกระชับและสมบูรณ์ เผื่อจังหวะหยุดในงบเวลาที่กำหนด; 1 บรรทัด = 1 ประโยคที่พูดจริง",
   "ทุก 3–5 วินาทีต้องมีเหตุผลให้ดูต่อ (open loop, คำถามค้าง, \"เดี๋ยวข้อต่อไปหนักกว่า\")",
   "ห้ามอารัมภบททุกชนิด (\"สวัสดีครับ วันนี้เราจะมาพูดถึง…\" = ห้าม) — ประโยคแรกคือ hook เสมอ",
   "ใช้คำที่กลุ่มเป้าหมาย (audience) ใช้จริง หลีกเลี่ยงภาษาทางการ/ภาษาเขียน",

@@ -7,13 +7,9 @@
 // REGEN builders (used by /api/scripts/generate and /api/scripts/regen-section)
 // plus the banned-words retry note.
 //
-// Copy is verbatim from `.superpowers/sdd/2026-07-31-hero-script-v1/shared-spec.md`
-// ("Prompt copy" section). The only non-verbatim addition is the literal
-// insertion point for the caller-supplied sample text in buildAnalyzePrompt —
-// the spec states the instruction copy but does not show a `{...}` marker for
-// where the sample itself goes (unlike the other builders), so it is embedded
-// between the instruction line and the JSON-contract line, delimited the same
-// way the codebase's other analyze prompts (e.g. styles/analyze) embed samples.
+// Original copy comes from the Hero Script v1 shared spec. The duration target
+// and bounded correction were revised after measured narration exceeded the
+// selected length; see docs/audits/2026-09-06-hero-script-duration.md.
 
 import {
   HOOK_FORMULAS,
@@ -22,6 +18,7 @@ import {
   RETENTION_RULES,
   getCtaStyle,
 } from "@/lib/viral-frameworks";
+import { scriptWordRange } from "@/lib/hero-script-duration";
 
 /**
  * ANALYZE (flash). `sample` is the already-truncated (≤4,000 chars) source
@@ -147,7 +144,7 @@ ${brandBlock}
 //
 // Both prompts open with the same three context blocks the spec calls for
 // ("include STORY_STRUCTURES + RETENTION_RULES + CTA style ที่เลือก"), then the
-// per-prompt instruction copy — verbatim from the spec. The framework blocks
+// per-prompt instructions. The framework blocks
 // are rendered from src/lib/viral-frameworks.ts so the product copy has exactly
 // one home.
 
@@ -189,10 +186,12 @@ function buildScriptContext(params: {
   profile?: BrandProfileForPrompt | null;
 }): string {
   const { topic, durationSec, wordBudget, ctaStyle, profile } = params;
+  const range = scriptWordRange(wordBudget);
   return `${renderStoryStructuresBlock()}
 ${renderRetentionRulesBlock()}
 ${renderCtaStyleBlock(ctaStyle)}
-หัวข้อคลิป: ${topic} | ความยาว ${durationSec} วินาที | งบคำทั้งคลิป ~${wordBudget} คำ (±15%)
+หัวข้อคลิป: ${topic} | เป้าหมายความยาว ${durationSec} วินาที (±10%) | งบคำทั้งคลิป ~${wordBudget} คำ รวม hook+body+cta (${range.min}–${range.max} คำ)
+เผื่อเวลาพูดและหยุดหายใจด้วย ใช้ประโยคสมบูรณ์ กระชับ ไม่แยกทุกวลีสั้นเป็นคนละบรรทัด
 ${buildBrandBlock(profile)}`;
 }
 
@@ -215,6 +214,7 @@ export function buildGeneratePrompt(params: {
 Hook ที่ผู้ใช้เลือก (ห้ามแก้แม้แต่คำเดียว จะถูกใช้เป็นบรรทัดแรกเสมอ): "${hookText}"
 เลือกโครงเรื่องที่เหมาะที่สุด 1 โครงจากรายการข้างบน แล้วเขียนเนื้อหา (body) ต่อจาก hook และปิดด้วย CTA สไตล์ ${ctaStyleLabel(ctaStyle)}
 กติกา body: 1 บรรทัด = 1 ประโยคที่พูดจริง, ทำตาม RETENTION_RULES ทุกข้อ, งบคำรวม (hook+body+cta) อยู่ในกรอบ
+นับ Hook ที่เลือกไว้ในงบก่อน แล้วใช้คำที่เหลือสำหรับ body และ CTA อย่าเติมรายละเอียดหรือ open loop จนเกินเวลา
 ตอบเป็น JSON เท่านั้น: {"structure":"<key>","bodyText":"บรรทัดละประโยค\\nคั่นด้วย \\\\n","ctaText":"..."}`;
 }
 
@@ -279,5 +279,27 @@ export function buildBannedWordRetryNote(bannedWords: readonly string[]): string
   const words = bannedWords.map((w) => w.trim()).filter(Boolean);
   if (words.length === 0) return "";
   return `\nคำเตือนสำคัญ: ผลลัพธ์ครั้งก่อนมีคำต้องห้ามหลุดมา ห้ามใช้คำเหล่านี้หรือรูปแปรของมันเด็ดขาดแม้แต่คำเดียว: ${words.join(", ")}
-เขียนใหม่ทั้งหมดโดยเลี่ยงคำเหล่านี้ และตรวจซ้ำก่อนตอบ`;
+เขียนใหม่เฉพาะส่วนที่ขอโดยเลี่ยงคำเหล่านี้ และตรวจซ้ำก่อนตอบ`;
+}
+
+export function buildScriptLengthRetryNote(params: {
+  words: number;
+  wordBudget: number;
+  durationSec: number;
+  editableText: string;
+  editableWords: number;
+}): string {
+  const range = scriptWordRange(params.wordBudget);
+  const fixedWords = Math.max(0, params.words - params.editableWords);
+  const editableBudget = Math.max(0, params.wordBudget - fixedWords);
+  const change = editableBudget < params.editableWords ? "ลด" : "เพิ่ม";
+  const percent = Math.round(Math.abs(editableBudget - params.editableWords) / Math.max(1, params.editableWords) * 100);
+  return `\nผลก่อนหน้ารวมทุกส่วนได้ ${params.words} คำ จากตัวนับคำภาษาไทยของระบบ สำหรับเป้าหมาย ${params.durationSec} วินาที
+ส่วนที่คงเดิมใช้ ${fixedWords} คำ จึงเหลืองบส่วนที่แก้ได้ประมาณ ${editableBudget} คำ จากเดิม ${params.editableWords} คำ: ${change}เนื้อหาส่วนนี้ประมาณ ${percent}%
+ถ้าต้องลด ให้ตัดรายละเอียดรองและรวมประโยค ไม่ใช่แค่เปลี่ยนคำพ้องความหมาย
+ปรับเฉพาะส่วนที่คำขอให้เขียนใหม่ ให้ทั้งสคริปต์ใกล้ ${params.wordBudget} คำ (${range.min}–${range.max} คำ) รวมส่วนเดิมที่ห้ามแก้แล้ว
+รักษาใจความและข้อเท็จจริง ใช้ประโยคพูดที่สมบูรณ์ ไม่ตัดกลางคำหรือเติมคำซ้ำเพื่อให้ครบงบ คงส่วนที่ไม่ได้ขอแก้ตามเดิม
+ข้อความจากผลก่อนหน้าที่แก้ได้:
+${params.editableText}
+ตอบด้วย JSON รูปแบบเดิมเท่านั้น`;
 }
