@@ -317,3 +317,25 @@ Golden set (ส่วนตัว `/tmp/hero-voice-text-stage-2026-09-06/golden/
 
 ผลกระทบ: (1) Story Film production ใช้ normalizer เดียวกัน → glue rule มีผลกับเสียง OmniVoice ทุกงานทันทีที่ deploy (ดี แต่ต้อง QA คลิปจริง 1 คลิปก่อน) (2) chunk สั้นลง = จำนวน job ต่อคลิปเพิ่ม ~5 เท่า เวลารวมเพิ่มเล็กน้อย (ranking ต่อ job ~5 s) ค่าใช้จ่ายแทบเท่าเดิม (3) ASR gate เพิ่ม Gemini call ต่อ chunk (เศษสตางค์) และเวลา ~6 s ต่อ chunk
 ไม่ทำในรอบนี้: แขน B, weights, ต่อ ElevenLabs migration UI
+
+### 11.4 สถานะ port (2026-09-07 01:40)
+
+| ชิ้น | สถานะ | commit |
+| --- | --- | --- |
+| glue rule + dictionary 20 คำ + normalizer `2026-09-07.1` | **เสร็จ** fixtures 4 ชุดจากคลิปที่อนุมัติ + fixtures เดิม 11 ชุด re-approve ระยะห่าง | `e7a1fea5` |
+| ตัดประโยค (`splitHeroVoiceScriptForTts`) | **เสร็จ** ตัดที่ ครับ/ค่ะ/คะ/[.!?]/newline, tail <10 ตัวอักษรรวมกลับ | `e7a1fea5` |
+| ASR gate ตัวประเมิน (`hero-voice-asr-gate.ts`) | **เสร็จ** LCS dropped-run ≥5 = ตก, normalize transcript ก่อนเทียบ, รับหลายหูเลือกดีสุด | (commit ถัดไป) |
+| ASR gate **wiring** เข้า state machine | **ยังไม่ทำ** ดู 11.5 | — |
+
+ผ่าน: verify:omnivoice, verify:hero-voice-clone(-task2), verify:hero-voice-canary/ui/deletion, worker unittest, tsc, eslint
+
+### 11.5 แผน wiring ASR gate (ชิ้นสุดท้าย ต้องออกแบบก่อนแตะ)
+
+จุดต่อ: `advanceHeroVoiceGenerationUnlocked` ใน `hero-voice-generation.server.ts` หลังรับ part WAV ของ chunk
+1. flag `HERO_VOICE_ASR_GATE=1` (ปิด = พฤติกรรมเดิม)
+2. ถอดเสียง part ด้วย `gemini-3.5-transcribe` (audio-only, part `audioTranscription.text`) + `gemini-3.8-flash` prompt ดิบ ผ่าน `GEMINI_SERVER_KEY`; ส่งเฉพาะเสียงที่สร้าง ไม่ส่ง reference
+3. `evaluateHeroVoiceTranscripts(chunk.speechText, [t35, tVerbatim])` ตก → สร้าง snapshot ใหม่ของ chunk เดิม (attemptId ใหม่, seed+1, sequence เดิม) แล้ว submit ใหม่ สูงสุด 2 ครั้ง; บันทึก `asrGate: {attempts, droppedRun}` ใน state (ต้องเพิ่ม optional key ใน `parseState`/`hasExactKeys` + fixtures ของ verify-hero-voice-clone-task2-runtime)
+4. ตกครบ 3 ครั้ง → fail job รหัส `OMNIVOICE_CONTENT_DROPPED` + refund นาที (ผ่าน `failAndRefundVoiceJob`) ไม่ส่งเสียงที่ข้ามคำให้ผู้ใช้
+5. ต้นทุน: Gemini ~เศษสตางค์/chunk, เวลา +6–10 s/chunk; retry = job OmniVoice เพิ่ม 1 ต่อครั้ง
+6. เทสต์: fake ASR ใน verify script: chunk ที่หายคำถูก regenerate ด้วย seed+1 และ chunk ดีไม่ถูกแตะ; state roundtrip; refund เมื่อตกครบ
+ความเสี่ยง: canary manifest/ledger ตรวจ seed ต่อ slot แบบตรึง (`snapshot.synthesis.seed !== slot.arm.seed`) → gate ต้อง**ปิด**ในเส้นทาง canary admission เสมอ
