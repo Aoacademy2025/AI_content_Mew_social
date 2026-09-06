@@ -157,7 +157,8 @@ const receiptDialogPath = "src/app/(dashboard)/video-editor/_v2/RenderReceiptDia
 const receiptDialog = readFileSync(receiptDialogPath, "utf8");
 
 check("the render CTA disables on a credit deficit (reuses the receipt's own insufficient line)",
-  /const insufficientCredits = model\.lines\.some\(\(l\) => l\.key === "insufficient" \|\| l\.key === "allowance-insufficient"\)/.test(receiptDialog)
+  /const insufficientCredits = disclosedLines\.some\(\(l\) => l\.key === "insufficient" \|\| l\.key === "allowance-insufficient"\)/.test(receiptDialog)
+    && /const disclosedLines = CREDITS_LIVE_CLIENT \? model\.lines : model\.lines\.filter/.test(receiptDialog)
     && /disabled=\{submitting \|\| insufficientCredits\}/.test(receiptDialog));
 check("the disabled render CTA carries the deficit tooltip copy",
   receiptDialog.includes('"เครดิตไม่พอ — เติมเครดิตก่อนเริ่มเรนเดอร์"'));

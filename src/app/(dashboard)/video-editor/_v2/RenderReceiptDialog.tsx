@@ -5,8 +5,9 @@
  * Sits between the render click and the actual submit: it discloses the estimated
  * minutes + AI credit spend (and any overflow) BEFORE the server's overflow auto-spend
  * (minute-credits.ts) runs. Numbers are estimates; the authoritative receipt is the
- * post-render fireCreditReceipt toast. Only mounted when NEXT_PUBLIC_CREDITS_LIVE==="1"
- * (the caller gates it), so with the flag off there is no behavioural change.
+ * post-render fireCreditReceipt toast. Explicit narration regeneration also uses
+ * this dialog with credits off; then it shows minutes, AI image/allowance and
+ * provider costs without promising credit-funded minute overflow.
  *
  * Pure decision logic (which lines show + the interpolated values) lives in receipt.ts;
  * this component only wires live data (usage minutes, credit balance, selected model
@@ -32,8 +33,9 @@ type VisualContextResponse = {
   preserveEstablishedAiDensity?: boolean;
 };
 
-export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }: {
+export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel, regeneration = false }: {
   p: V2Project;
+  regeneration?: boolean;
   open: boolean;
   /** True while the confirmed submit is in flight — locks both buttons. */
   submitting: boolean;
@@ -161,7 +163,9 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
   // Deficit disables the render CTA (Task 5 item B) — buildReceipt already computed
   // the exact "Hero credits ไม่พอ" line above; reuse that decision instead of
   // re-deriving a second insufficiency check that could drift from it.
-  const insufficientCredits = model.lines.some((l) => l.key === "insufficient" || l.key === "allowance-insufficient");
+  const disclosedLines = CREDITS_LIVE_CLIENT ? model.lines : model.lines.filter((line) =>
+    ["minutes", "ai", "allowance-insufficient", "avatar", "duration-over-plan"].includes(line.key));
+  const insufficientCredits = disclosedLines.some((l) => l.key === "insufficient" || l.key === "allowance-insufficient");
 
   if (!open) return null;
 
@@ -181,9 +185,15 @@ export function RenderReceiptDialog({ p, open, submitting, onConfirm, onCancel }
         <div className="px-5 pb-1 pt-4"><GroupLabel>สรุปก่อนเรนเดอร์</GroupLabel></div>
 
         <div className="flex flex-col gap-2 px-5 pb-4 pt-2">
+          {regeneration && (
+            <p className="text-xs leading-relaxed" style={{ color: color.textSecondary }}>
+              การสร้างใหม่จะสร้างเสียงและวิดีโออีกชุด ใช้โควตาสร้างคลิปอีกครั้ง และอาจมีค่าบริการเสียง/อวตารจากผู้ให้บริการตามบัญชีและคีย์ที่เลือก
+              ระบบยังระบุยอดค่าบริการภายนอกล่วงหน้าไม่ได้ โปรดตรวจอัตราในบัญชีผู้ให้บริการก่อนยืนยัน
+            </p>
+          )}
           {[
-            ...model.lines.filter((l) => l.key === "credits" || l.key === "insufficient"),
-            ...model.lines.filter((l) => l.key !== "credits" && l.key !== "insufficient"),
+            ...disclosedLines.filter((l) => l.key === "credits" || l.key === "insufficient"),
+            ...disclosedLines.filter((l) => l.key !== "credits" && l.key !== "insufficient"),
           ].map((l) => (
             <div
               key={l.key}

@@ -430,6 +430,8 @@ function mountEditorShell(input: {
   job?: Record<string, unknown>;
   resumeJob?: (jobId: string) => void;
   resumeExportEditSnapshot?: () => void;
+  creditsLive?: boolean;
+  resetJob?: () => void;
 }) {
   const markers = new Map<string, { displayName: string }>();
   const marker = (name: string) => {
@@ -459,7 +461,7 @@ function mountEditorShell(input: {
     submit: input.submit,
     submitExport: async () => ({ ok: true }),
     cancel: async () => ({ ok: true }),
-    reset: () => undefined,
+    reset: () => { if (input.resetJob) { jobApi.job.phase = "idle"; input.resetJob(); } },
     adoptJob: () => undefined,
     resumeJob: input.resumeJob ?? (() => undefined),
     resumeExportEditSnapshot: input.resumeExportEditSnapshot ?? (() => undefined),
@@ -536,6 +538,7 @@ function mountEditorShell(input: {
     if (specifier === "./Step1Script") return { Step1Script: marker("Step1Script") };
     if (specifier === "./Step2Elements") return { Step2Elements: marker("Step2Elements") };
     if (specifier === "./RenderingScreen") return { RenderingScreen: marker("RenderingScreen") };
+    if (specifier === "./NarrationDurationReview") return { NarrationDurationReview: marker("NarrationDurationReview") };
     if (specifier === "./PostPhase") return { PostPhase: marker("PostPhase") };
     if (specifier === "./PostPhaseMobile") return { PostPhaseMobile: marker("PostPhaseMobile") };
     if (specifier === "./ExpiredPreviewView") {
@@ -549,7 +552,7 @@ function mountEditorShell(input: {
     if (specifier === "./RenderReceiptDialog") return { RenderReceiptDialog: marker("RenderReceiptDialog") };
     if (specifier === "./EditorProjectRecoveryDialog") return { EditorProjectRecoveryDialog: marker("EditorProjectRecoveryDialog") };
     if (specifier === "./useIsMobile") return { useIsMobile: () => false };
-    if (specifier === "../_hooks/useCreditsQuota") return { CREDITS_LIVE_CLIENT: true };
+    if (specifier === "../_hooks/useCreditsQuota") return { CREDITS_LIVE_CLIENT: input.creditsLive ?? true };
     if (specifier === "./project-menu") {
       return {
         PROJECT_STATUS_FILTER_LABEL: { all: "all" },
@@ -2981,7 +2984,57 @@ export async function exactReplayIdentityPrecedesMutableGates(): Promise<void> {
   );
 }
 
+async function narrationReviewRequiresDeliberateConfirmedSubmit(): Promise<void> {
+  for (const creditsLive of [false, true]) {
+    let project = makeShellProject("narration-review", () => true);
+    project.scriptTargetDurationSec = 30;
+    let submissions = 0;
+    let resets = 0;
+    const pending = deferred<{ ok: boolean }>();
+    const { runner, marker } = mountEditorShell({
+      getProject: () => project, creditsLive,
+      submit: () => { submissions++; return pending.promise; },
+      resetJob: () => { resets++; },
+      fetch: async () => ({ ok: true, json: async () => ({ projects: [] }) }),
+      navigations: [],
+      job: { phase: "done", projectId: project.projectId, jobId: "delivered-take", jobType: "create",
+        output: { preview: { audioDurationMs: 34370.958, voiceUrl: "/delivered.wav" } } },
+    });
+    const find = (name: string) => runtimeNodes(runner.current).find((node) => node.type === marker(name));
+    assert.equal(submissions, 0, "mounting a failed-duration take never submits");
+    const review = find("NarrationDurationReview");
+    assert.ok(review);
+    (review.props.onRegenerate as () => void)(); runner.flush();
+    assert.equal(find("RenderReceiptDialog")?.props.open, true, "manual generation opens disclosure with either credit flag");
+    assert.equal(submissions, 0, "opening disclosure never generates");
+    (find("RenderReceiptDialog")!.props.onCancel as () => void)(); runner.flush();
+    assert.ok(find("PostPhase"), "cancel keeps the delivered preview");
+    assert.equal(submissions, 0);
+    const originalProject = project;
+    project = makeShellProject("another-project", () => true); runner.rerender();
+    assert.equal(find("RenderReceiptDialog")?.props.regeneration ?? false, false,
+      "unconfirmed regeneration intent cannot cross project boundaries");
+    project = originalProject; runner.rerender();
+    (find("NarrationDurationReview")!.props.onEdit as () => void)(); runner.flush();
+    assert.equal(resets, 1);
+    assert.ok(find("Step1Script"), "edit returns to the real script step");
+    (find("Step1Script")!.props.onNext as () => void)(); runner.flush();
+    await (find("Step2Elements")!.props.onRender as () => Promise<void>)(); runner.flush();
+    assert.equal(find("RenderReceiptDialog")?.props.open, true, "Edit -> Render still discloses cost");
+    assert.equal(submissions, 0);
+    const confirm = find("RenderReceiptDialog")!.props.onConfirm as (minutes: number) => void;
+    confirm(1); confirm(1); runner.flush();
+    assert.equal(submissions, 1, "same-tick double confirm submits exactly once");
+    pending.resolve({ ok: true }); await settleShell(runner);
+    assert.equal(find("RenderReceiptDialog")?.props.open ?? false, false);
+    project = makeShellProject("another-project", () => true); runner.rerender();
+    assert.equal(find("RenderReceiptDialog")?.props.regeneration ?? false, false, "regeneration intent cannot cross project boundaries");
+    runner.unmount();
+  }
+}
+
 export async function verifyProjectJobRuntimeGate(): Promise<void> {
+  await narrationReviewRequiresDeliberateConfirmedSubmit();
   await queuedPollSurfacesPosition(jobSource);
   await failedExportReturnsToLatestAdoptedBrollPreview(jobSource);
   await sameTickConflictBlocksSubmitAndExport(jobSource);
