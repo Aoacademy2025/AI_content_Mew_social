@@ -13,112 +13,166 @@
     "id": "thai-digit-percent",
     "category": "percent",
     "display": "๓๐% และ ๙๐% เพิ่มขึ้น +5%",
-    "spoken": "สามสิบเปอร์เซ็นต์ และ เก้าสิบเปอร์เซ็นต์ เพิ่มขึ้น บวกห้าเปอร์เซ็นต์",
+    "spoken": "สามสิบเปอร์เซ็นต์และเก้าสิบเปอร์เซ็นต์เพิ่มขึ้นบวกห้าเปอร์เซ็นต์",
     "requiredTokens": [
       "เปอร์เซ็นต์"
     ],
-    "source": "support-ticket-2026-07-24"
+    "source": "support-ticket-2026-07-24",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "thai-digit-address",
     "category": "number-context",
     "display": "ซอย ๑๕ เลขที่ ๑๕๐",
-    "spoken": "ซอย สิบห้า เลขที่ หนึ่งร้อยห้าสิบ",
+    "spoken": "ซอยสิบห้าเลขที่หนึ่งร้อยห้าสิบ",
     "requiredTokens": [],
-    "source": "anticipated-thai-digits"
+    "source": "anticipated-thai-digits",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "baht-amounts",
     "category": "currency",
     "display": "฿1,500 1,500 บาท 1,500.50 บาท 0.50 บาท",
-    "spoken": "หนึ่งพันห้าร้อยบาท หนึ่งพันห้าร้อยบาท หนึ่งพันห้าร้อยบาทห้าสิบสตางค์ ห้าสิบสตางค์",
+    "spoken": "หนึ่งพันห้าร้อยบาทหนึ่งพันห้าร้อยบาทหนึ่งพันห้าร้อยบาทห้าสิบสตางค์ห้าสิบสตางค์",
     "requiredTokens": [
       "บาท",
       "สตางค์"
     ],
-    "source": "anticipated-commerce-scripts"
+    "source": "anticipated-commerce-scripts",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "foreign-currency-symbols",
     "category": "currency",
     "display": "$25 €10 £8",
-    "spoken": "ยี่สิบห้าดอลลาร์ สิบยูโร แปดปอนด์",
+    "spoken": "ยี่สิบห้าดอลลาร์สิบยูโรแปดปอนด์",
     "requiredTokens": [
       "ดอลลาร์",
       "ยูโร",
       "ปอนด์"
     ],
-    "source": "anticipated-commerce-scripts"
+    "source": "anticipated-commerce-scripts",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "clock-time",
     "category": "time",
     "display": "เวลา 09:30 น. และ 14:00 น.",
-    "spoken": "เวลา เก้านาฬิกาสามสิบนาที และ สิบสี่นาฬิกา",
+    "spoken": "เวลาเก้านาฬิกาสามสิบนาที และสิบสี่นาฬิกา",
     "requiredTokens": [
       "นาฬิกา"
     ],
-    "source": "anticipated-scheduling-scripts"
+    "source": "anticipated-scheduling-scripts",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "calendar-dates-and-years",
     "category": "date",
     "display": "วันที่ 24/07/2569 และ 2026-07-24 พ.ศ. 2569 ค.ศ. 2026",
-    "spoken": "วันที่ ยี่สิบสี่ กรกฎาคม ปี สองพันห้าร้อยหกสิบเก้า และ วันที่ ยี่สิบสี่ กรกฎาคม ปี สองพันยี่สิบหก พุทธศักราช สองพันห้าร้อยหกสิบเก้า คริสต์ศักราช สองพันยี่สิบหก",
+    "spoken": "วันที่ยี่สิบสี่กรกฎาคมปีสองพันห้าร้อยหกสิบเก้าและวันที่ยี่สิบสี่กรกฎาคมปีสองพันยี่สิบหกพุทธศักราช สองพันห้าร้อยหกสิบเก้าคริสต์ศักราช สองพันยี่สิบหก",
     "requiredTokens": [
       "กรกฎาคม",
       "พุทธศักราช",
       "คริสต์ศักราช"
     ],
-    "source": "anticipated-scheduling-scripts"
+    "source": "anticipated-scheduling-scripts",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "common-units",
     "category": "unit",
     "display": "5 kg 10 km 25°C 16 GB 512 MB 2 กก. 3 กม.",
-    "spoken": "ห้ากิโลกรัม สิบกิโลเมตร ยี่สิบห้าองศาเซลเซียส สิบหกกิกะไบต์ ห้าร้อยสิบสองเมกะไบต์ สองกิโลกรัม สามกิโลเมตร",
+    "spoken": "ห้ากิโลกรัมสิบกิโลเมตรยี่สิบห้าองศาเซลเซียสสิบหกกิกะไบต์ห้าร้อยสิบสองเมกะไบต์สองกิโลกรัม สามกิโลเมตร",
     "requiredTokens": [
       "กิโลกรัม",
       "กิโลเมตร"
     ],
-    "source": "anticipated-measurement-scripts"
+    "source": "anticipated-measurement-scripts",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "numeric-ranges",
     "category": "range",
     "display": "10–20 คน และ 5 - 7 วัน",
-    "spoken": "สิบถึงยี่สิบ คน และ ห้าถึงเจ็ด วัน",
+    "spoken": "สิบถึงยี่สิบคน และห้าถึงเจ็ดวัน",
     "requiredTokens": [
       "ถึง"
     ],
-    "source": "anticipated-statistics-scripts"
+    "source": "anticipated-statistics-scripts",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "codes-and-accounts",
     "category": "digit-sequence",
     "display": "รหัส 042 เลขบัญชี 012-345",
-    "spoken": "รหัส ศูนย์สี่สอง เลขบัญชี ศูนย์หนึ่งสอง-สามสี่ห้า",
+    "spoken": "รหัสศูนย์สี่สองเลขบัญชีศูนย์หนึ่งสอง-สามสี่ห้า",
     "requiredTokens": [],
-    "source": "anticipated-code-scripts"
+    "source": "anticipated-code-scripts",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "alphanumeric-codes",
     "category": "code",
     "display": "รหัสทดสอบ A07 ไฟล์ MP3 ตอน ep2 และ GPT-5",
-    "spoken": "รหัสทดสอบ เอ ศูนย์ เจ็ด ไฟล์ เอ็ม พี สาม ตอน อี พี สอง และ จี พี ที-ห้า",
+    "spoken": "รหัสทดสอบเอศูนย์เจ็ดไฟล์เอ็มพีสามตอนอีพีสองและจีพีที-ห้า",
     "requiredTokens": [
       "ศูนย์"
     ],
-    "source": "spec-2026-09-06-hero-voice-text-stage"
+    "source": "spec-2026-09-06-hero-voice-text-stage",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
   },
   {
     "id": "pixel-dimensions",
     "category": "dimension",
     "display": "ขนาด 1920 x 1080 พิกเซล และ 1280×720",
-    "spoken": "ขนาด หนึ่งพันเก้าร้อยยี่สิบ คูณ หนึ่งพันแปดสิบ พิกเซล และ หนึ่งพันสองร้อยแปดสิบ คูณ เจ็ดร้อยยี่สิบ",
+    "spoken": "ขนาดหนึ่งพันเก้าร้อยยี่สิบคูณหนึ่งพันแปดสิบพิกเซล และหนึ่งพันสองร้อยแปดสิบคูณเจ็ดร้อยยี่สิบ",
     "requiredTokens": [
       "คูณ"
     ],
-    "source": "spec-2026-09-06-hero-voice-text-stage"
+    "source": "spec-2026-09-06-hero-voice-text-stage",
+    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
+  },
+  {
+    "id": "approved-04-numbers-tight",
+    "category": "glue",
+    "display": "สินค้าราคา 1,250.50 บาท ลด 15% เหลือ 1,062.925 บาทครับ มีสินค้า 21 ชิ้น ผู้ติดตาม 10,001 คน และยอดเข้าชม 1,000,000 ครั้งครับ",
+    "spoken": "สินค้าราคาหนึ่งพันสองร้อยห้าสิบบาทห้าสิบสตางค์ ลดสิบห้าเปอร์เซ็นต์เหลือหนึ่งพันหกสิบสองจุดเก้าสองห้าบาทครับ มีสินค้ายี่สิบเอ็ดชิ้น ผู้ติดตามหนึ่งหมื่นเอ็ดคน และยอดเข้าชมหนึ่งล้านครั้งครับ",
+    "requiredTokens": [
+      "จุดเก้าสองห้าบาท"
+    ],
+    "source": "mew-approved-listening-2026-09-06"
+  },
+  {
+    "id": "approved-06-dates-units-tight",
+    "category": "glue",
+    "display": "นัดวันที่ 5 กันยายน 2026 เวลา 09:30 น. ครับ ระยะทาง 3.5 กม. อุณหภูมิ 37.5 องศาเซลเซียส ขนาด 1920 x 1080 พิกเซล และรหัสทดสอบ A07 ครับ",
+    "spoken": "นัดวันที่ห้ากันยายนสองพันยี่สิบหกเวลาเก้านาฬิกาสามสิบนาที ครับ ระยะทางสามจุดห้ากิโลเมตร อุณหภูมิสามสิบเจ็ดจุดห้าองศาเซลเซียส ขนาดหนึ่งพันเก้าร้อยยี่สิบคูณหนึ่งพันแปดสิบพิกเซล และรหัสทดสอบเอศูนย์เจ็ดครับ",
+    "requiredTokens": [
+      "คูณ",
+      "เอศูนย์เจ็ด"
+    ],
+    "source": "mew-approved-listening-2026-09-06"
+  },
+  {
+    "id": "approved-03-mixed-dictionary-tight",
+    "category": "glue",
+    "display": "วันนี้มิวใช้ Hero AI Studio สร้าง short video สำหรับ YouTube และ TikTok ครับ เริ่มจากเขียน content แล้วเลือก voice cloning ก่อนกด preview และ export เป็นไฟล์ video ครับ",
+    "spoken": "วันนี้มิวใช้ฮีโร่เอไอสตูดิโอสร้างช็อตวิดีโอสำหรับยูทูบและติ๊กต่อกครับ เริ่มจากเขียนคอนเทนต์แล้วเลือกวอยซ์โคลนนิ่งก่อนกดพรีวิวและเอ็กซ์พอร์ตเป็นไฟล์วิดีโอครับ",
+    "requiredTokens": [
+      "ฮีโร่เอไอสตูดิโอ",
+      "ติ๊กต่อก"
+    ],
+    "source": "mew-approved-listening-2026-09-06"
+  },
+  {
+    "id": "approved-08-technical-dictionary-tight",
+    "category": "glue",
+    "display": "ทดสอบคำว่า RunPod Serverless, OmniVoice, Gemini, ElevenLabs และ Remotion ครับ ระบบเชื่อมต่อผ่าน API ใช้ GPU ประมวลผล แล้วส่งไฟล์ WAV และ MP3 กลับมาที่ dashboard ครับ",
+    "spoken": "ทดสอบคำว่ารันพ็อดเซิร์ฟเวอร์เลส, ออมนิวอยซ์, เจมิไน, อีเลเว่นแล็บส์และรีโมชันครับ ระบบเชื่อมต่อผ่านเอพีไอใช้จีพียูประมวลผล แล้วส่งไฟล์เวฟและเอ็มพีสามกลับมาที่แดชบอร์ดครับ",
+    "requiredTokens": [
+      "เวฟ",
+      "เอ็มพีสาม"
+    ],
+    "source": "mew-approved-listening-2026-09-06"
   }
 ]

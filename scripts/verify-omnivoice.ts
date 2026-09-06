@@ -87,7 +87,7 @@ check("voice payload: rejects invalid id", !isOmniVoiceInfo({
 check(
   "speech text: Thai cardinal numbers follow the approved reading",
   prepareHeroVoiceSpeechText("ซอย15 เลขที่150 และมากกว่า 150 เท่า")
-    === "ซอยสิบห้า เลขที่หนึ่งร้อยห้าสิบ และมากกว่า หนึ่งร้อยห้าสิบ เท่า",
+    === "ซอยสิบห้าเลขที่หนึ่งร้อยห้าสิบและมากกว่าหนึ่งร้อยห้าสิบเท่า",
 );
 check(
   "speech text: Thai cardinal grammar covers zero, tens, millions, decimals, and negatives",
@@ -103,26 +103,22 @@ check(
   "speech text: audited English names use Thai-accent pronunciations",
   prepareHeroVoiceSpeechText(
     "ChatGPT MIT Your Brain on ChatGPT Google Roske AI Richard Benjamins AI Telefonica",
-  ) === [
-    "แชต จี พี ที",
-    "เอ็ม ไอ ที",
-    "ยัวร์ เบรน ออน แชต จี พี ที",
-    "กูเกิล",
-    "รอสก์ เอไอ",
-    "ริชาร์ด เบนจามินส์",
-    "เอไอ",
-    "เทเลโฟนิกา",
-  ].join(" "),
+  ) === "แชตจีพีทีเอ็มไอทียัวร์เบรนออนแชตจีพีทีกูเกิลรอสก์เอไอริชาร์ดเบนจามินส์เอไอเทเลโฟนิกา",
 );
 check(
-  "speech text: unlisted English acronyms are spelled with Thai letter names",
+  "speech text: transliterated names are glued to their Thai neighbours (Mew-approved glue rule)",
+  prepareHeroVoiceSpeechText("คุณ Richard Benjamins จาก Telefonica พูดถึง ChatGPT")
+    === "คุณริชาร์ดเบนจามินส์จากเทเลโฟนิกาพูดถึงแชตจีพีที",
+);
+check(
+  "speech text: listed acronyms use their colloquial reading, unlisted ones are spelled",
   prepareHeroVoiceSpeechText("CEO ใช้ API และ GPT-5")
-    === "ซี อี โอ ใช้ เอ พี ไอ และ จี พี ที-ห้า",
+    === "ซีอีโอใช้เอพีไอและจีพีที-ห้า",
 );
 check(
   "speech text: phone and one-time codes are read digit by digit",
   prepareHeroVoiceSpeechText("เบอร์โทร 081-234-5678 OTP 150 PIN 042")
-    === "เบอร์โทร ศูนย์แปดหนึ่ง-สองสามสี่-ห้าหกเจ็ดแปด โอ ที พี หนึ่งห้าศูนย์ พี ไอ เอ็น ศูนย์สี่สอง",
+    === "เบอร์โทรศูนย์แปดหนึ่ง-สองสามสี่-ห้าหกเจ็ดแปดโอทีพีหนึ่งห้าศูนย์พีไอเอ็นศูนย์สี่สอง",
 );
 for (const fixture of thaiSpeechCases) {
   const actual = prepareHeroVoiceSpeechText(fixture.display);
@@ -197,6 +193,26 @@ check(
   "speech chunks: Thai-accent pronunciation survives an English phrase boundary",
   crossBoundaryEnglish.map((chunk) => chunk.text).join("") === "Your Brain on ChatGPT"
     && crossBoundaryEnglish.every((chunk) => !/[A-Za-z]/.test(chunk.speechText)),
+);
+
+const twoSentences = "วันนี้มิวใช้ Hero AI Studio สร้าง short video สำหรับ YouTube และ TikTok ครับ เริ่มจากเขียน content แล้วเลือก voice cloning ก่อนกด preview และ export เป็นไฟล์ video ครับ";
+const sentenceChunks = splitHeroVoiceScriptForTts(twoSentences, 800);
+check(
+  "speech chunks: sentence-final ครับ starts a new chunk even under the char cap (Mew-approved: short chunks stop end-of-clip slurring)",
+  sentenceChunks.length === 2
+    && sentenceChunks.map((chunk) => chunk.text).join("") === twoSentences
+    && sentenceChunks[0].text.endsWith("ครับ ")
+    && sentenceChunks[1].text.startsWith("เริ่มจาก")
+    && sentenceChunks[1].startChar === sentenceChunks[0].endChar,
+  `got ${sentenceChunks.length} chunks: ${JSON.stringify(sentenceChunks.map((chunk) => chunk.text))}`,
+);
+const mixedEndings = "ประโยคแรกค่ะ ประโยคสองครับ\nบรรทัดใหม่. Final line? ครับ";
+const mixedChunks = splitHeroVoiceScriptForTts(mixedEndings, 800);
+check(
+  "speech chunks: ค่ะ, newline, and terminal punctuation are sentence boundaries; a tiny tail merges into the previous chunk",
+  JSON.stringify(mixedChunks.map((chunk) => chunk.text))
+    === JSON.stringify(["ประโยคแรกค่ะ ", "ประโยคสองครับ\n", "บรรทัดใหม่. ", "Final line? ครับ"]),
+  JSON.stringify(mixedChunks.map((chunk) => chunk.text)),
 );
 
 const pcm = Buffer.from([0, 0, 1, 0, 255, 255, 2, 0]);
