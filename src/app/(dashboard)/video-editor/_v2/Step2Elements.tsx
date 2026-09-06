@@ -6,6 +6,7 @@
  * ปุ่มเรนเดอร์จริง = P4 (VideoJob preview mode) — ตอนนี้เป็น stub แจ้งชัด
  */
 
+import { NarrationTargetNotice } from "./NarrationTargetNotice";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -24,6 +25,7 @@ import { VoicePreviewButton } from "../_components/VoicePreviewButton";
 import { HERO_VOICE_COMING_SOON, HERO_VOICE_NAME, HERO_VOICE_TEASER_VISIBLE } from "@/lib/hero-voice-brand";
 import { OMNIVOICE_UI_ENABLED } from "@/lib/tts-providers";
 import {
+  cleanForCount,
   estimateClipSecV2,
   estimateAutoMixAiImageCount,
   disclosedAutoMixAiImageCount,
@@ -608,6 +610,12 @@ export function Step2Elements({ p, onRender }: { p: V2Project; onRender: () => P
         {/* 2 · เสียงพากย์ */}
         {p.mode !== "upload" && (
         <Group title="เสียงพากย์" desc="เสียง AI อ่านสคริปต์ของคุณ">
+          <NarrationTargetNotice
+            text={cleanForCount(p.script)}
+            targetSec={p.scriptTargetDurationSec}
+            voiceEngine={p.useAvatar ? "avatar" : p.voiceEngine}
+            voiceName={p.geminiVoiceName}
+          />
           <Segmented<V2VoiceEngine>
             value={p.voiceEngine}
             onChange={(engine) => {
