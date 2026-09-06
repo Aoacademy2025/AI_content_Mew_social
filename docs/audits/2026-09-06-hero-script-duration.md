@@ -27,7 +27,7 @@ The provider-call ceiling and billing reservation remain unchanged: at most two 
 
 ## Local provider measurement
 
-Calibration used five predefined synthetic scenarios, then validation used five different, predefined scenarios. Each produced one audio take per final script; all outcomes are retained, including failures. Text generation used the locally configured Gemini `gemini-pro-latest`, not the production OpenRouter configuration; speech used the actual Gemini TTS provider function with Kore/Aoede. Multi-chunk results concatenate unchanged PCM at one sample rate with a pinned model. This is local service/provider QA, not a Browser E2E, production route, billing or render test.
+Calibration used five predefined synthetic scenarios, then validation used five different, predefined scenarios. Each produced one audio take per final script; all outcomes are retained, including failures. Text generation used the locally configured Gemini `gemini-pro-latest`; production’s effective provider/model has not been verified. Speech used the actual Gemini TTS provider function with Kore/Aoede. Multi-chunk results concatenate unchanged PCM at one sample rate with a pinned model. This is local service/provider QA, not a Browser E2E, production route, billing or render test.
 
 Calibration (initial 2.8 words/second estimate, before the percentage-based correction note):
 
@@ -71,3 +71,18 @@ This PR has not been merged or deployed. No Linear or Sentry records changed; th
 - No human listening, pronunciation scoring, subtitle synchronization or image relevance QA is claimed by this duration measurement.
 
 Local evidence: `/Users/mewsocialmacmini/orca/artifacts/hero-script-duration-2026-09-06` (raw synthetic scripts/audio, calibration/validation manifests, regression red/green logs and build/check logs). No provider credentials or customer content are included in this document.
+
+Provider evidence correction: the earlier production audit explicitly states that effective text-provider configuration was not read (`hero-sentry-audit-2026-09-06/PRODUCTION-LOG-FINDINGS.md`, line 19). The claim that production uses OpenRouter is withdrawn. Repository support for OpenRouter does not establish which provider production currently uses, and OpenRouter access is not a prerequisite for the independent narration measurements.
+
+## Follow-up: fixed-script voice comparison
+
+Two additional diagnostic takes kept script text, Gemini model and single-chunk flow fixed, and changed only the selected voice:
+
+| Script | Words | Previous voice / seconds | Alternate voice / seconds |
+|---|---:|---|---|
+| lunch-30 | 104 | Aoede / 39.850958 | Kore / 29.890958 |
+| keys-30 | 94 | Kore / 26.890958 | Aoede / 27.210958 |
+
+Independent ffprobe measurements confirm the new PCM durations. This is exploratory evidence from one take per condition: stochastic generation remains a confounder, and these differences are not a calibrated per-voice coefficient. The results show why word count alone cannot certify audio duration. They do not establish that OpenRouter is involved, nor justify silently changing a creator's voice.
+
+These two takes are retained in addition to the earlier thirteen artifacts. The original five-story validation remains 2/5; alternate voices are not substituted into that score. No additional production code changes were made in this follow-up. The next controlled duration experiment can proceed independently of any OpenRouter access.
