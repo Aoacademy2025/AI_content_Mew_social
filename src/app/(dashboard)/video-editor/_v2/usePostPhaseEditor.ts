@@ -899,6 +899,9 @@ export function usePostPhaseEditor(
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
+      // Native media controls own Space/arrow keys (including shadow-DOM controls,
+      // whose events are retargeted to the audio/video element).
+      if (e.defaultPrevented || tag === "AUDIO" || tag === "VIDEO") return;
       const typing = tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT";
       const command = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();

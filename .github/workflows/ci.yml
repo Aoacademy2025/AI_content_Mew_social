@@ -35,6 +35,9 @@ jobs:
       - name: Verify narration comparison and regeneration disclosure
         run: npm run verify:narration-comparison && npm run verify:render-receipt
 
+      - name: Verify editor native media keyboard isolation
+        run: npm run verify:editor-media-keys
+
       - name: Verify post-launch stability hotfixes
         run: npm run verify:launch-stability-hotfix
 
