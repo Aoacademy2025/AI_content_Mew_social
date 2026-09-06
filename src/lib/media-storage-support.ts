@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { lstat } from "node:fs/promises";
 import path from "node:path";
-import { Readable } from "node:stream";
+import type { Readable } from "node:stream";
+import { ReadableStream as NodeReadableStream } from "node:stream/web";
 import type {
   MediaArea,
   MediaByteRange,
@@ -113,5 +114,24 @@ export function checkedMediaRange(
 }
 
 export function mediaWebStream(stream: Readable): ReadableStream<Uint8Array> {
-  return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+  // Node's toWeb data listener can enqueue after cancellation during a queued
+  // resume cycle (HERO-7). Pull through the async iterator instead.
+  const iterator = stream[Symbol.asyncIterator]();
+  // The iterator subscribes to errors on its first next(). Retain earlier
+  // source failures for the reader instead of leaving an unhandled error event.
+  let earlyError: Error | undefined;
+  const rememberError = (error: Error) => { earlyError = error; };
+  stream.once("error", rememberError);
+  stream.once("close", () => stream.off("error", rememberError));
+  return NodeReadableStream.from<Uint8Array>({
+    [Symbol.asyncIterator]: () => ({
+      next: () => earlyError ? Promise.reject(earlyError) : iterator.next(),
+      return: () => {
+        // Destroy before awaiting return: an unstarted iterator's return does
+        // not close the source, and a pending next may otherwise wait forever.
+        stream.destroy();
+        return iterator.return!();
+      },
+    }),
+  }) as ReadableStream<Uint8Array>;
 }

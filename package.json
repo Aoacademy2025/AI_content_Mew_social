@@ -93,6 +93,7 @@
     "verify:render-receipt": "tsx scripts/verify-render-receipt.ts",
     "verify:narration-comparison": "tsx scripts/verify-narration-comparison.ts",
     "verify:editor-media-keys": "tsx scripts/verify-editor-media-keys.ts",
+    "verify:media-stream-cancel": "tsx scripts/verify-media-stream-cancel.ts",
     "verify:founding-copy-truth": "tsx scripts/verify-founding-copy-truth.ts",
     "verify:arr-revenue-shape": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-arr-revenue-shape.ts",
     "verify:plan-cash-vs-credits": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-plan-cash-vs-credits.ts",
