@@ -78,12 +78,19 @@ async function main() {
   const settingsPage = readFileSync(join(ROOT, "src/app/(dashboard)/settings/page.tsx"), "utf8");
   const settingsSection = readFileSync(join(ROOT, "src/components/settings/desktop-devices-section.tsx"), "utf8");
   assert(settingsPage.includes("DesktopDevicesSection"), "Settings page mounts DesktopDevicesSection");
+  assert(
+    /export const dynamic\s*=\s*["']force-dynamic["']/.test(settingsPage),
+    "Settings page is dynamic so Device Seats cannot be statically prerendered away",
+  );
   assert(settingsSection.includes("อุปกรณ์ที่ล็อกอิน"), "Settings section title is Thai อุปกรณ์ที่ล็อกอิน");
   assert(settingsSection.includes("ลบ"), "Settings section has ลบ");
   assert(
     settingsSection.includes("isDesktopEnabled") && settingsSection.includes("isDesktopInvited"),
     "Settings section is gated by isDesktopEnabled && isDesktopInvited",
   );
+  const authAt = settingsSection.indexOf("getCurrentUser");
+  const flagAt = settingsSection.indexOf("isDesktopEnabled()");
+  assert(authAt >= 0 && authAt < flagAt, "section is decided after auth at request time");
 
   const desktopRouteFiles = collectRouteFiles(join(ROOT, "src/app/api/desktop"));
   assert(desktopRouteFiles.length >= 4, "session + register + heartbeat + revoke routes exist");

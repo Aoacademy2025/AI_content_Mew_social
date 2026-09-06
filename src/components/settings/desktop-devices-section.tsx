@@ -16,9 +16,8 @@ async function revokeOwnDesktopSeat(seatId: string) {
 }
 
 export async function DesktopDevicesSection() {
-  if (!isDesktopEnabled()) return null;
   const user = await getCurrentUser();
-  if (!user || !isDesktopInvited(user.id)) return null;
+  if (!user || !isDesktopEnabled() || !isDesktopInvited(user.id)) return null;
 
   const seats = await prisma.deviceSeat.findMany({
     where: { userId: user.id, revokedAt: null },
