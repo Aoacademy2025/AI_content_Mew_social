@@ -114,6 +114,7 @@
     "verify:waveform-snap": "tsx scripts/verify-waveform-snap.ts",
     "verify:render-duration-bill": "tsx scripts/verify-render-duration-bill.ts",
     "verify:mcp-parity": "tsx scripts/verify-mcp-parity.ts",
+    "verify:desktop-session": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-desktop-session.ts",
     "verify:first-export-walls": "node --conditions=react-server --import tsx scripts/verify-orchestrator-timing-fallback.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-wallet-funded-video-job.ts",
     "verify:mcp-perfect": "node --conditions=react-server --import tsx scripts/verify-mcp-create-input.ts && node --conditions=react-server --import tsx scripts/verify-orchestrator-timing-fallback.ts && node --conditions=react-server --import tsx scripts/verify-mcp-billing-receipt.ts && node --conditions=react-server --import tsx scripts/verify-mcp-release-gates.ts && node --conditions=react-server --import tsx scripts/verify-mcp-hotfix-policies.ts && node --conditions=react-server --import tsx scripts/verify-mcp-avatar-duration-guard.ts && node --conditions=react-server --import tsx scripts/verify-mcp-tools.ts && node --conditions=react-server --import tsx scripts/verify-video-options.ts && node --conditions=react-server --import tsx scripts/verify-subtitle-cards.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-pipeline-error-specificity.ts",
     "verify:editor-projects": "tsx scripts/verify-editor-projects.ts",

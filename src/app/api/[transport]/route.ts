@@ -2,8 +2,7 @@ import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import { resolveMcpPrincipal, resolveMcpPrincipalByClerkId, mcpAccessAllowed, type McpPrincipal } from "@/lib/mcp/auth";
-import { auth } from "@clerk/nextjs/server";
-import { verifyClerkToken } from "@clerk/mcp-tools/next";
+import { verifyClerkOAuthAccessToken } from "@/lib/mcp/clerk-token";
 import { recordToolCall, isInBandError } from "@/lib/mcp/audit";
 import { SERVER_INSTRUCTIONS, missingKeyError, missingVoiceIdError } from "@/lib/mcp/onboarding";
 import { resolveGeminiKey, KeyRequiredError } from "@/lib/gemini-key";
@@ -261,16 +260,10 @@ const verifyToken = async (_req: Request, bearerToken?: string): Promise<AuthInf
   if (patPrincipal) return principalAuthInfo(bearerToken!, patPrincipal);
 
   // 2. Clerk OAuth access token (desktop app)
-  try {
-    const clerkAuth = await auth({ acceptsToken: "oauth_token" });
-    const verified = await verifyClerkToken(clerkAuth, bearerToken);
-    if (verified) {
-      const clerkUserId = (verified.extra as { userId?: string } | undefined)?.userId ?? verified.clientId;
-      const principal = await resolveMcpPrincipalByClerkId(clerkUserId);
-      if (principal) return principalAuthInfo(bearerToken!, principal);
-    }
-  } catch {
-    // not a valid Clerk OAuth token → fall through to 401
+  const clerkUserId = await verifyClerkOAuthAccessToken(bearerToken);
+  if (clerkUserId) {
+    const principal = await resolveMcpPrincipalByClerkId(clerkUserId);
+    if (principal) return principalAuthInfo(bearerToken!, principal);
   }
   return undefined;
 };
