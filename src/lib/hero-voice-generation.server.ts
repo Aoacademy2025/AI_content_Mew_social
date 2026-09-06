@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 
 import { aiAudioCeilingFor, estimateTtsAudioMinutes } from "@/lib/ai-spend-limits";
 import { getFfmpegPath } from "@/lib/ffmpeg-path";
+import { evaluateHeroVoiceTranscripts } from "@/lib/hero-voice-asr-gate";
+import { heroVoiceAsrGateEnabled, listenToHeroVoicePart } from "@/lib/hero-voice-asr-ears.server";
 import {
   heroVoiceCloneAudioFilePath,
   heroVoiceClonePartFilePath,
@@ -101,6 +103,14 @@ const CLONE_STATE_KEYS = [
   "aiReservedMin", "studioReservedMin", "speechNormalizerVersion", "speechRiskCategories", "chunks",
   "cloneSnapshots",
 ] as const;
+// ASR content gate (spec §11.5): a chunk whose transcript misses a run of letters is
+// regenerated with the next seed at most this many times before the job fails.
+const ASR_GATE_MAX_RETRIES = 2;
+// Listening to a part takes seconds; the poll lease is extended by this much first.
+const ASR_GATE_LEASE_EXTENSION_MS = 45_000;
+const ASR_GATE_STATE_KEYS = ["version", "chunks"] as const;
+const ASR_GATE_CHUNK_KEYS = ["sequence", "attempts", "droppedRun", "ears", "rejected"] as const;
+const ASR_GATE_REJECTION_KEYS = ["attemptId", "providerJobId", "seed", "droppedRun"] as const;
 const CLONE_CHUNK_KEYS = new Set([
   "text", "speechText", "providerJobId", "partFilename", "durationMs", "sampleRate", "generationTimeMs",
   "delayTimeMs", "executionTimeMs", "workerVersion", "catalogVersion", "language", "numStep",
@@ -125,6 +135,29 @@ type HeroVoiceChunkState = {
   outputAudioSha256?: string;
 };
 
+type HeroVoiceAsrGateRejection = {
+  attemptId: string;
+  providerJobId: string;
+  seed: number;
+  droppedRun: number;
+};
+
+type HeroVoiceAsrGateChunkState = {
+  sequence: number;
+  /** Generations consumed for this chunk, the in-flight or accepted one included. */
+  attempts: number;
+  /** Best dropped run of the accepted audio; null while pending or when no ear answered. */
+  droppedRun: number | null;
+  /** Ears that produced a transcript for the accepted audio. */
+  ears: number;
+  rejected: HeroVoiceAsrGateRejection[];
+};
+
+type HeroVoiceAsrGateState = {
+  version: 1;
+  chunks: HeroVoiceAsrGateChunkState[];
+};
+
 type HeroVoiceGenerationStateV1 = {
   version: typeof STATE_VERSION;
   // Optional for backward compatibility with durable TTS jobs accepted before
@@ -141,6 +174,8 @@ type HeroVoiceGenerationStateV1 = {
   speechRiskCategories: string[];
   chunks: HeroVoiceChunkState[];
   cloneSnapshots?: CandidateAiStudioV3Snapshot[];
+  /** Present only after the ASR gate has judged at least one chunk (clone mode). */
+  asrGate?: HeroVoiceAsrGateState;
   result?: HeroVoiceGenerationResult;
 };
 
@@ -190,6 +225,34 @@ function validOptionalFinite(value: unknown): boolean {
   return value === undefined || isFiniteNonNegative(value);
 }
 
+function isCountAtLeast(value: unknown, minimum: number): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= minimum;
+}
+
+function validAsrGateState(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value) || !hasExactKeys(value, ASR_GATE_STATE_KEYS) || value.version !== 1
+    || !Array.isArray(value.chunks)) return false;
+  return value.chunks.every((chunk) => isRecord(chunk) && hasExactKeys(chunk, ASR_GATE_CHUNK_KEYS)
+    && isCountAtLeast(chunk.sequence, 1) && isCountAtLeast(chunk.attempts, 1)
+    && (chunk.droppedRun === null || isFiniteNonNegative(chunk.droppedRun))
+    && isCountAtLeast(chunk.ears, 0)
+    && Array.isArray(chunk.rejected)
+    && chunk.rejected.every((rejection) => isRecord(rejection) && hasExactKeys(rejection, ASR_GATE_REJECTION_KEYS)
+      && typeof rejection.attemptId === "string" && typeof rejection.providerJobId === "string"
+      && isCountAtLeast(rejection.seed, 0) && isFiniteNonNegative(rejection.droppedRun)));
+}
+
+function mergeAsrGateChunk(
+  current: HeroVoiceAsrGateState | undefined,
+  chunk: HeroVoiceAsrGateChunkState,
+): HeroVoiceAsrGateState {
+  const chunks = (current?.chunks ?? []).filter((item) => item.sequence !== chunk.sequence);
+  chunks.push(chunk);
+  chunks.sort((a, b) => a.sequence - b.sequence);
+  return { version: 1, chunks };
+}
+
 function parseState(value: string | null): HeroVoiceGenerationStateV1 | null {
   if (!value) return null;
   let parsed: unknown;
@@ -227,8 +290,13 @@ function parseState(value: string | null): HeroVoiceGenerationStateV1 | null {
     }
   }
   if (parsed.mode === "clone") {
-    const expectedStateKeys = parsed.result === undefined ? CLONE_STATE_KEYS : [...CLONE_STATE_KEYS, "result"];
+    const expectedStateKeys = [
+      ...CLONE_STATE_KEYS,
+      ...(parsed.result === undefined ? [] : ["result"]),
+      ...(parsed.asrGate === undefined ? [] : ["asrGate"]),
+    ];
     if (!hasExactKeys(parsed, expectedStateKeys)
+      || !validAsrGateState(parsed.asrGate)
       || parsed.voiceId.length === 0
       || !parsed.voiceId.startsWith("user_")
       || parsed.speed < 0.3 || parsed.speed > 3
@@ -252,7 +320,7 @@ function parseState(value: string | null): HeroVoiceGenerationStateV1 | null {
         const candidate = parseCandidateAiStudioV3Snapshot(snapshot);
         return !candidate || candidate.sequence !== index + 1;
       })) return null;
-  } else if (parsed.cloneSnapshots !== undefined) {
+  } else if (parsed.cloneSnapshots !== undefined || parsed.asrGate !== undefined) {
     return null;
   }
   return parsed as unknown as HeroVoiceGenerationStateV1;
@@ -1627,6 +1695,109 @@ async function finalizeVoiceJobTerminally(
   }
 }
 
+/**
+ * The ASR gate rejected the audio of the current chunk: swap its immutable
+ * snapshot for one with the next seed (new attempt id, same sequence), replace
+ * the attempt row under the poll lease, and dispatch it. The rejected
+ * generation stays on record in `state.asrGate` (attempt id, provider job id,
+ * seed, dropped run) since its attempt row is replaced.
+ */
+async function replaceRejectedCloneAttempt(input: {
+  job: AiGenerationJob;
+  state: HeroVoiceGenerationStateV1;
+  attempt: AiGenerationAttempt;
+  chunk: HeroVoiceChunkState;
+  currentSnapshot: CandidateAiStudioV3Snapshot;
+  rejection: HeroVoiceAsrGateRejection;
+  priorRejected: HeroVoiceAsrGateRejection[];
+  pollLeaseToken: string;
+  pollFailureCountAtLease: number;
+}): Promise<AiGenerationJob> {
+  const { job, state, attempt, chunk, currentSnapshot } = input;
+  const cloneRef = await loadUserVoiceRef(job.userId, state.voiceId);
+  if (!cloneRef) {
+    return failAndRefundVoiceJob(job, state, "USER_VOICE_REFERENCE_MISSING", "ไม่พบไฟล์อ้างอิงของเสียงโคลนนี้", "failed_identity");
+  }
+  let replacement: CandidateAiStudioV3Snapshot;
+  try {
+    replacement = createCandidateAiStudioV3Snapshot({
+      // Pin every identity field to the rejected snapshot so the retry differs by seed only.
+      config: {
+        ...heroVoiceCloneConfig(),
+        endpointId: currentSnapshot.endpointId,
+        imageDigest: currentSnapshot.imageDigest,
+        sourceRevision: currentSnapshot.sourceRevision,
+        modelManifestSha256: currentSnapshot.modelManifestSha256,
+        experimentProfile: currentSnapshot.experimentProfile,
+      },
+      attemptId: randomUUID(),
+      sequence: attempt.sequence,
+      normalizerVersion: currentSnapshot.normalizerVersion,
+      speed: currentSnapshot.synthesis.speed,
+      seed: (currentSnapshot.synthesis.seed + 1) % 2_147_483_648,
+      text: chunk.speechText,
+      refAudioSha256: currentSnapshot.referenceSha256,
+      refDurationSamples24000: currentSnapshot.referenceDurationSamples24000,
+      refText: cloneRef.refText,
+    });
+    if (!parseCandidateAiStudioV3Snapshot(replacement) || snapshotContainsForbiddenReferenceData(replacement)) {
+      throw new HeroVoiceGenerationError("Hero Voice clone snapshot ไม่ถูกต้อง", "CLONE_SNAPSHOT_INVALID", 500);
+    }
+  } catch (error) {
+    const code = error instanceof HeroVoiceCloneConfigError ? "CLONE_CONFIG_UNAVAILABLE" : "CLONE_SNAPSHOT_INVALID";
+    return failAndRefundVoiceJob(job, state, code, "Hero Voice clone cannot be regenerated", "failed_identity");
+  }
+  const replacedState: HeroVoiceGenerationStateV1 = {
+    ...state,
+    cloneSnapshots: (state.cloneSnapshots ?? []).map((snapshot, index) => index === attempt.sequence - 1 ? replacement : snapshot),
+    asrGate: mergeAsrGateChunk(state.asrGate, {
+      sequence: attempt.sequence,
+      attempts: input.priorRejected.length + 2,
+      droppedRun: null,
+      ears: 0,
+      rejected: [...input.priorRejected, input.rejection],
+    }),
+  };
+  const replaced = await prisma.$transaction(async (tx) => {
+    const removed = await tx.aiGenerationAttempt.deleteMany({
+      where: {
+        id: attempt.id,
+        pollLeaseToken: input.pollLeaseToken,
+        pollFailureCount: input.pollFailureCountAtLease,
+        status: { in: [...ACTIVE_CLONE_ATTEMPT_STATUSES] },
+      },
+    });
+    if (removed.count !== 1) return false;
+    await tx.aiGenerationAttempt.create({
+      data: {
+        id: replacement.attemptId,
+        inputJson: JSON.stringify(replacement),
+        jobId: job.id,
+        sequence: attempt.sequence,
+        provider: "runpod",
+        providerModel: "omnivoice-clone",
+        providerRoute: "runpod-custom",
+        providerEndpoint: job.providerEndpoint,
+        estimatedCostUsdMicros: 0,
+      },
+    });
+    const updated = await tx.aiGenerationJob.updateMany({
+      where: { id: job.id, status: { in: [...ACTIVE_CLONE_JOB_STATUSES] }, chargeState: "reserved" },
+      data: { status: "in_progress", providerJobId: null, inputJson: serializeState(replacedState) },
+    });
+    if (updated.count !== 1) {
+      throw new HeroVoiceGenerationError("Hero Voice job changed during poll", "CLONE_POLL_STALE", 409);
+    }
+    return true;
+  }).catch((error) => {
+    if (error instanceof HeroVoiceGenerationError && error.code === "CLONE_POLL_STALE") return false;
+    throw error;
+  });
+  const current = await prisma.aiGenerationJob.findUniqueOrThrow({ where: { id: job.id } });
+  if (!replaced) return current;
+  return submitPendingAttempt(current);
+}
+
 async function advanceHeroVoiceGenerationUnlocked(userId: string, jobId: string): Promise<AiGenerationJob> {
   let job = await prisma.aiGenerationJob.findFirst({ where: { id: jobId, userId } });
   if (!job || job.kind !== "voice") {
@@ -2011,8 +2182,75 @@ async function advanceHeroVoiceGenerationUnlocked(userId: string, jobId: string)
   }
   const chunk = state.chunks[sequence - 1];
   if (!chunk) return failAndRefundVoiceJob(job, state, "OMNIVOICE_CHUNK_MISSING", "ไม่พบ Hero Voice chunk");
+  let asrGateChunk: HeroVoiceAsrGateChunkState | null = null;
+  // The gate is clone-only (stock TTS has no seed to walk) and never runs on the
+  // canary admission path, whose manifests pin one seed per slot.
+  if (mode === "clone" && heroVoiceAsrGateEnabled() && job.canaryRunId === null) {
+    const rejected = state.asrGate?.chunks.find((item) => item.sequence === sequence)?.rejected ?? [];
+    const leaseExtended = await prisma.aiGenerationAttempt.updateMany({
+      where: {
+        id: attempt.id,
+        pollLeaseToken: pollLeaseToken!,
+        pollFailureCount: pollFailureCountAtLease!,
+        status: { in: [...ACTIVE_CLONE_ATTEMPT_STATUSES] },
+      },
+      data: { pollLeaseExpiresAt: new Date(Date.now() + ASR_GATE_LEASE_EXTENSION_MS) },
+    });
+    if (leaseExtended.count !== 1) {
+      try { fs.unlinkSync(generationPartFilePath(job.id, sequence, state)); } catch {}
+      return prisma.aiGenerationJob.findUniqueOrThrow({ where: { id: job.id } });
+    }
+    const heard = await listenToHeroVoicePart(audio);
+    if (heard.ears === 0) {
+      // An ASR outage is not a content failure: keep the part, record it as unverified.
+      await recordVoiceEvent(userId, "omnivoice_asr_gate_unavailable", {
+        aiGenerationJobId: job.id,
+        providerJobId,
+        sequence,
+        failures: heard.failures.join(","),
+      });
+      asrGateChunk = { sequence, attempts: rejected.length + 1, droppedRun: null, ears: 0, rejected };
+    } else {
+      const verdict = evaluateHeroVoiceTranscripts(chunk.speechText, heard.transcripts);
+      if (verdict.pass) {
+        asrGateChunk = { sequence, attempts: rejected.length + 1, droppedRun: verdict.droppedRun, ears: heard.ears, rejected };
+      } else {
+        const currentSnapshot = cloneSnapshotForAttempt(job, state, attempt);
+        await recordVoiceEvent(userId, "omnivoice_asr_gate_rejected", {
+          aiGenerationJobId: job.id,
+          providerJobId,
+          sequence,
+          droppedRun: verdict.droppedRun,
+          ears: heard.ears,
+          generation: rejected.length + 1,
+        });
+        try { fs.unlinkSync(generationPartFilePath(job.id, sequence, state)); } catch {}
+        if (rejected.length >= ASR_GATE_MAX_RETRIES) {
+          return failAndRefundVoiceJob(
+            job,
+            state,
+            "OMNIVOICE_CONTENT_DROPPED",
+            "Hero Voice อ่านข้ามคำในสคริปต์แม้สร้างซ้ำแล้ว งานนี้ไม่ถูกส่งออก และคืนนาทีให้แล้ว",
+            "failed_output",
+          );
+        }
+        return replaceRejectedCloneAttempt({
+          job,
+          state,
+          attempt,
+          chunk,
+          currentSnapshot,
+          rejection: { attemptId: attempt.id, providerJobId, seed: currentSnapshot.synthesis.seed, droppedRun: verdict.droppedRun },
+          priorRejected: rejected,
+          pollLeaseToken: pollLeaseToken!,
+          pollFailureCountAtLease: pollFailureCountAtLease!,
+        });
+      }
+    }
+  }
   const nextState: HeroVoiceGenerationStateV1 = {
     ...state,
+    ...(asrGateChunk ? { asrGate: mergeAsrGateChunk(state.asrGate, asrGateChunk) } : {}),
     chunks: state.chunks.map((item, index) => index === sequence - 1
       ? {
           ...item,

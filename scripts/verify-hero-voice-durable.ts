@@ -25,6 +25,7 @@ try {
   for (const script of [
     "scripts/verify-hero-voice-durable-runtime.ts",
     "scripts/verify-hero-voice-clone-task2-runtime.ts",
+    "scripts/verify-hero-voice-asr-gate-runtime.ts",
   ]) {
     const verified = spawnSync(
       process.execPath,

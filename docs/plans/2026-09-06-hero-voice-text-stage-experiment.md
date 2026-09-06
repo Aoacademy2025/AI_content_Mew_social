@@ -325,7 +325,7 @@ Golden set (ส่วนตัว `/tmp/hero-voice-text-stage-2026-09-06/golden/
 | glue rule + dictionary 20 คำ + normalizer `2026-09-07.1` | **เสร็จ** fixtures 4 ชุดจากคลิปที่อนุมัติ + fixtures เดิม 11 ชุด re-approve ระยะห่าง | `e7a1fea5` |
 | ตัดประโยค (`splitHeroVoiceScriptForTts`) | **เสร็จ** ตัดที่ ครับ/ค่ะ/คะ/[.!?]/newline, tail <10 ตัวอักษรรวมกลับ | `e7a1fea5` |
 | ASR gate ตัวประเมิน (`hero-voice-asr-gate.ts`) | **เสร็จ** LCS dropped-run ≥5 = ตก, normalize transcript ก่อนเทียบ, รับหลายหูเลือกดีสุด | (commit ถัดไป) |
-| ASR gate **wiring** เข้า state machine | **ยังไม่ทำ** ดู 11.5 | — |
+| ASR gate **wiring** เข้า state machine | **เสร็จ** (2026-09-07) ดู 11.6 | (commit ถัดไป) |
 
 ผ่าน: verify:omnivoice, verify:hero-voice-clone(-task2), verify:hero-voice-canary/ui/deletion, worker unittest, tsc, eslint
 
@@ -339,3 +339,24 @@ Golden set (ส่วนตัว `/tmp/hero-voice-text-stage-2026-09-06/golden/
 5. ต้นทุน: Gemini ~เศษสตางค์/chunk, เวลา +6–10 s/chunk; retry = job OmniVoice เพิ่ม 1 ต่อครั้ง
 6. เทสต์: fake ASR ใน verify script: chunk ที่หายคำถูก regenerate ด้วย seed+1 และ chunk ดีไม่ถูกแตะ; state roundtrip; refund เมื่อตกครบ
 ความเสี่ยง: canary manifest/ledger ตรวจ seed ต่อ slot แบบตรึง (`snapshot.synthesis.seed !== slot.arm.seed`) → gate ต้อง**ปิด**ในเส้นทาง canary admission เสมอ
+
+### 11.6 สถานะ wiring ASR gate (2026-09-07) — ทำตาม 11.5 พร้อมข้อตัดสินใจที่พบตอนแตะโค้ด
+
+ไฟล์: `src/lib/hero-voice-asr-ears.server.ts` (หูสองข้าง), `src/lib/hero-voice-generation.server.ts`
+(ต่อ gate ใน `advanceHeroVoiceGenerationUnlocked` หลังเขียน part WAV + `replaceRejectedCloneAttempt`),
+`scripts/verify-hero-voice-asr-gate-runtime.ts` (fake RunPod + fake Gemini ที่ขอบ `fetch`, 7 กรณี)
+รันใน `verify:hero-voice-clone-task2` และเพิ่ม suite นั้นเข้า CI (`ci.yml`) ซึ่งก่อนหน้านี้ไม่ได้รัน
+
+| ข้อใน 11.5 | ที่ทำจริง |
+| --- | --- |
+| flag | `HERO_VOICE_ASR_GATE=1` ปิด = พฤติกรรมเดิมไบต์ต่อไบต์ (ไม่มี key `asrGate` ใน state) |
+| หู | `gemini-3.5-transcribe` (เสียงอย่างเดียว, อ่าน `audioTranscription.text`) + `gemini-3.8-flash` prompt บอด ขนานกัน, timeout ข้างละ 20 s, ใช้ `GEMINI_SERVER_KEY`; ส่งเฉพาะเสียงที่สร้าง — verify ยืนยันว่า body ไม่มี reference/refText และ prompt ไม่มีสคริปต์ |
+| ตก → seed+1 | snapshot ใหม่ (attemptId ใหม่, seed+1, sequence เดิม, identity fields ตรึงจาก snapshot เดิม) — **แถว attempt ถูกลบแล้วสร้างใหม่** ใน transaction เดียวภายใต้ poll lease เพราะ `@@unique([jobId, sequence])` + `validateCloneDurableIdentity` ไม่อนุญาตให้มีสอง attempt ต่อ sequence; ประวัติ generation ที่ถูกปฏิเสธเก็บใน `state.asrGate.chunks[].rejected` (attemptId, providerJobId, seed, droppedRun) |
+| ≤2 retry | ครั้งที่ 3 ตก → `failAndRefundVoiceJob(..., "OMNIVOICE_CONTENT_DROPPED", "failed_output")` ไม่มี part ใดหลงเหลือ |
+| state key | `asrGate: {version:1, chunks:[{sequence, attempts, droppedRun, ears, rejected[]}]}` optional เฉพาะ clone mode, `parseState` ตรวจ exact keys; tts mode มี key นี้ = corrupt |
+| canary | ข้าม gate เมื่อ `job.canaryRunId !== null` (manifest ตรึง seed ต่อ slot) และข้าม tts mode ทั้งหมด (stock ไม่มี seed ให้ขยับ) |
+| lease | ก่อนฟังต่อ `pollLeaseExpiresAt` +45 s ด้วย CAS บน token; ต่อไม่ได้ = ทิ้ง part แล้วคืนงานตามเดิม |
+
+**ข้อตัดสินใจเพิ่ม (ไม่อยู่ใน 11.5):** หูล่มทั้งสองข้าง (5xx/timeout/ไม่มี key) = ปัญหาโครงสร้าง ไม่ใช่เนื้อหา →
+**fail-open**: เก็บ part ไว้, บันทึก `droppedRun: null, ears: 0` + telemetry `omnivoice_asr_gate_unavailable`,
+ไม่เผา retry ไม่คืนเงิน. ถ้ามิวต้องการให้ล่ม = บล็อก ให้เปลี่ยนสาขา `heard.ears === 0` เป็นเส้นทางเดียวกับตก.

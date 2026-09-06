@@ -199,7 +199,7 @@ jobs:
         run: npm run verify:runpod-image-cost
 
       - name: Verify Hero Voice stock and clone contracts
-        run: npm run verify:omnivoice && npm run verify:hero-voice-clone
+        run: npm run verify:omnivoice && npm run verify:hero-voice-clone && npm run verify:hero-voice-clone-task2
 
       - name: Verify managed stock key eligibility, caps, monthly ceiling, and throttling
         run: npm run verify:managed-stock
