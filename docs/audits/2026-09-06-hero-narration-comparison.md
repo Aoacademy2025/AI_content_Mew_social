@@ -21,6 +21,20 @@ candidate policy or tolerance relaxation. PR449's frozen real takes still score
 3/5; this workflow makes the outcome visible and user-controlled, not reliable.
 
 Scoped tests exercise exact boundaries, both failed real takes, passive audio
-review, no submission on cost-display render, submit locking and image allowance
-blocking with both credit flag values. Full application browser interaction
-remains pending local authentication; component rendering is not reported as E2E.
+review, cost disclosure and image allowance blocking with both credit flags.
+The actual Editor shell runtime exercises Cancel, Edit -> Render, same-tick double
+confirmation, and project replacement while unconfirmed regeneration intent remains.
+
+Full-application Browser QA passes on desktop and 390px mobile: the completed-job
+fixture plays the original 34.370958-second failed take, shows 34.37 versus 30,
+keeps export available and preserves preview on receipt cancellation. Edit ->
+Render displays cost before submission. Gateway evidence records zero job requests
+before confirmation and one after a deliberate confirmation; the local gateway
+rejects that request before any provider call. This tests dispatch, not a new
+paid generation or its billing settlement.
+
+The app and APIs run unchanged against synthetic SQLite data through the existing
+service-actor authentication seam. Clerk login and production are not covered.
+The completed VideoJob and neutral video are fixtures, while the WAV is retained
+from PR449. No provider spend, new TTS take or modified acceptance score occurred.
+Production build, review and final CI status are recorded in the PR.
