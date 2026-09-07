@@ -389,3 +389,14 @@ optional (record เก่าที่ไม่มี key ยังผ่าน 
 รอบที่สองด้วย `NODE_ENV=production` + `HERO_VOICE_TEST_GATE_MODE=production` (ไม่มี canary env) ครบทุกกรณี
 + กรณี 8: เอา opt-in ออก → start ตก `CLONE_CONFIG_UNAVAILABLE`. runbook: `docs/ops/hero-voice-clone-rollout.md`
 ส่วนท้าย; env prod ที่ต้องเพิ่มอยู่ใน handoff.
+
+### 11.8 prod QA ครั้งแรก (2026-09-08) → rule ใหม่: "100,000+" อ่าน "หนึ่งแสนกว่า"
+
+สคริปต์แรกของมิวบน prod โดน gate รับงาน (`OMNIVOICE_SPEECH_TOKEN_UNSUPPORTED`) เพราะ "100,000+ ตัว" →
+normalizer แปลงเลขได้แต่ `+` ค้างเป็น `unexpanded_math_symbol` (block). เพิ่ม `normalizeThaiSpeechPlusSuffix`
+(normalizer `2026-09-08.1`): เลขที่ตามด้วย `+` แล้ว**ไม่**ตามด้วยเลขอีกตัว → `<เลข>กว่า` ("หนึ่งแสนกว่าตัว",
+"เก้าสิบเก้ากว่าบาท"); `+` ระหว่างเลข (1+1) ยังเป็นคณิตและยัง block; `+5` ที่ติดตัวเลขยังเป็นเครื่องหมาย.
+fixture `plus-suffix-means-kwa` ใน `data/hero-voice/thai-speech-cases.json`. ข้อสังเกตจากสคริปต์เดียวกัน:
+ชื่ออังกฤษที่ไม่อยู่ในพจนานุกรม (Jensen Huang, Astra, Grace Blackwell, NVLink, OpenAI) ถูกอ่านแบบอังกฤษ —
+มิวพิมพ์ไทยเองได้ หรือเสนอเข้าพจนานุกรมภายหลัง.
+
