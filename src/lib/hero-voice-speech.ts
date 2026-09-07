@@ -79,7 +79,7 @@ const THAI_SPEECH_UNIT_RE = new RegExp(
   "giu",
 );
 
-export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-09-08.1";
+export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-09-08.2";
 
 export type HeroVoiceSpeechRiskCode =
   | "ambiguous_numeric_slash"
@@ -368,13 +368,32 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Reviewed English→Thai readings (data/hero-voice/thai-pronunciations.json), longest match first. */
+/**
+ * Reviewed English→Thai readings (data/hero-voice/thai-pronunciations.json), longest match first.
+ * Runs on the whole text BEFORE the glue rule (Mew-approved by ear 2026-09-07, rounds 11-13): the
+ * writer's spaces around a transliterated word survive as breath points, while the reading itself
+ * is written as one Thai word ("ฮิวแมนรีวิว", never a spaced island) the way round 4 locked it.
+ */
 function applyThaiPronunciationDictionary(text: string): string {
   return THAI_ACCENT_PRONUNCIATIONS.reduce((result, entry) => {
     const phrase = escapeRegExp(entry.match).replace(/\s+/g, "\\s+");
     const pattern = new RegExp(`(^|[^A-Za-z])${phrase}(?=$|[^A-Za-z])`, "giu");
-    return result.replace(pattern, (_match, prefix: string) => `${prefix}${entry.spoken}`);
+    const spoken = entry.spoken.replace(/\s+/gu, "");
+    return result.replace(pattern, (_match, prefix: string) => `${prefix}${spoken}`);
   }, text);
+}
+
+/**
+ * Punctuation the model must not "read" (Mew-approved by ear 2026-09-07, rounds 8-13): an ellipsis
+ * is a breath inside the sentence, a bang ends a sentence but is never voiced, and an arrow between
+ * steps ("Ask Me → Agent") is read the way Mew says it, "ไป".
+ */
+function normalizeSpeechPunctuation(text: string): string {
+  return text
+    .replace(/[ \t]*(?:\.{2,}|…+)[ \t]*/gu, " ")
+    .replace(/!+/gu, "")
+    .replace(/[ \t]*→[ \t]*/gu, " ไป ")
+    .replace(/ {2,}/gu, " ");
 }
 
 /** Acronyms with no reviewed reading are spelled with Thai letter names. */
@@ -412,7 +431,9 @@ function speechRisks(displayText: string, speechText: string): HeroVoiceSpeechRi
 
 const THAI_ONLY_TOKEN_RE = /^[\p{Script=Thai}]+$/u;
 const NUMERIC_TOKEN_RE = /^[+-]?\d[\d,.]*%?$/u;
-const NON_THAI_CHAR_RE = /[^\p{Script=Thai}\s]/u;
+// Punctuation is neutral: only digits, Latin and symbols pull a segment into the glue rule, so a
+// second normalization pass of already-Thai text ("จีพีที-ห้า", "รันพ็อด เซิร์ฟเวอร์เลส,") is a no-op.
+const NON_THAI_CHAR_RE = /[^\p{Script=Thai}\s\p{P}]/u;
 
 function normalizeSpeechSegment(segment: string): string {
   const structuredText = normalizeThaiSpeechUnits(
@@ -425,7 +446,7 @@ function normalizeSpeechSegment(segment: string): string {
               normalizeThaiSpeechAbbreviations(
                 normalizeThaiSpeechDates(
                   normalizeThaiSpeechTimes(
-                    expandThaiRepetitionMarks(applyThaiPronunciationDictionary(segment)),
+                    expandThaiRepetitionMarks(segment),
                   ),
                 ),
               ),
@@ -456,7 +477,8 @@ function keepsSpaceBefore(previous: string, token: string): boolean {
   return NUMERIC_TOKEN_RE.test(previous) && NUMERIC_TOKEN_RE.test(token);
 }
 
-function normalizeSpeechText(unicodeText: string): string {
+function normalizeSpeechText(rawText: string): string {
+  const unicodeText = applyThaiPronunciationDictionary(normalizeSpeechPunctuation(rawText));
   const parts = unicodeText.split(/(\s+)/u);
   const tokens: string[] = [];
   const gaps: string[] = [];
@@ -570,7 +592,9 @@ function refineSpeechChunk(
  * terminal punctuation followed by whitespace, or a line break. The whitespace
  * stays with the preceding chunk so chunks still concatenate to the display text.
  */
-const SENTENCE_END_RE = /(?:ครับ|ค่ะ|คะ|[.!?…])\s+|\n+/gu;
+// A lone ".", "!" or "?" ends a sentence; "..." / "…" is a breath inside it (Mew-approved by ear
+// 2026-09-07, round 8: splitting there produced 3-word chunks and hard seams = กระตุก).
+const SENTENCE_END_RE = /(?:ครับ|ค่ะ|คะ|(?<![.…])[.!?](?![.…]))\s+|\n+/gu;
 const MIN_SENTENCE_CHUNK_CHARS = 10;
 
 interface DisplaySpan { text: string; startChar: number; endChar: number; }

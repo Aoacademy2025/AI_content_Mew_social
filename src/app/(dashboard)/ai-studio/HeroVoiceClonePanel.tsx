@@ -74,7 +74,7 @@ export default function HeroVoiceClonePanel({ maxScriptChars, onJobCreated }: Pr
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [selectedVoiceId, setSelectedVoiceId] = useState("");
   const [script, setScript] = useState("");
-  const [speed, setSpeed] = useState(1);
+  const [speed, setSpeed] = useState(0.9); // V90: Mew-approved by ear 2026-09-07 (round 13)
   const [generating, setGenerating] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recordSec, setRecordSec] = useState(0);
@@ -379,7 +379,7 @@ export default function HeroVoiceClonePanel({ maxScriptChars, onJobCreated }: Pr
             <div>
               <label htmlFor="clone-speed" className="mb-2 block text-xs font-semibold" style={{ color: "var(--ui-text-primary)" }}>ความเร็ว</label>
               <select id="clone-speed" value={speed} onChange={(event) => setSpeed(Number(event.target.value))} className="h-11 w-full rounded-xl px-3 text-sm outline-none focus:ring-2 focus:ring-violet-500/50" style={{ background: "var(--ui-badge-neutral-bg)", border: "1px solid var(--ui-card-border)", color: "var(--ui-text-primary)" }}>
-                <option value={0.85}>ช้า · 0.85×</option><option value={1}>ปกติ · 1×</option><option value={1.15}>เร็ว · 1.15×</option><option value={1.3}>เร็วมาก · 1.3×</option>
+                <option value={0.85}>ช้า · 0.85×</option><option value={0.9}>แนะนำ · 0.9×</option><option value={1}>ปกติ · 1×</option><option value={1.15}>เร็ว · 1.15×</option><option value={1.3}>เร็วมาก · 1.3×</option>
               </select>
             </div>
           </div>
