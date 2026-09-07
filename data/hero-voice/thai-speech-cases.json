@@ -114,12 +114,12 @@
     "id": "alphanumeric-codes",
     "category": "code",
     "display": "รหัสทดสอบ A07 ไฟล์ MP3 ตอน ep2 และ GPT-5",
-    "spoken": "รหัสทดสอบเอศูนย์เจ็ดไฟล์เอ็มพีสามตอนอีพีสองและจีพีที-ห้า",
+    "spoken": "รหัสทดสอบเอศูนย์เจ็ดไฟล์ เอ็มพีสาม ตอนอีพีสองและจีพีที-ห้า",
     "requiredTokens": [
       "ศูนย์"
     ],
     "source": "spec-2026-09-06-hero-voice-text-stage",
-    "note": "spacing re-approved by ear 2026-09-06 (glue rule); readings unchanged"
+    "note": "dictionary-word spacing re-approved by ear 2026-09-07 (rounds 11-13: writer's spaces around transliterated words = breath points); readings unchanged"
   },
   {
     "id": "pixel-dimensions",
@@ -157,23 +157,25 @@
     "id": "approved-03-mixed-dictionary-tight",
     "category": "glue",
     "display": "วันนี้มิวใช้ Hero AI Studio สร้าง short video สำหรับ YouTube และ TikTok ครับ เริ่มจากเขียน content แล้วเลือก voice cloning ก่อนกด preview และ export เป็นไฟล์ video ครับ",
-    "spoken": "วันนี้มิวใช้ฮีโร่เอไอสตูดิโอสร้างช็อตวิดีโอสำหรับยูทูบและติ๊กต่อกครับ เริ่มจากเขียนคอนเทนต์แล้วเลือกวอยซ์โคลนนิ่งก่อนกดพรีวิวและเอ็กซ์พอร์ตเป็นไฟล์วิดีโอครับ",
+    "spoken": "วันนี้มิวใช้ ฮีโร่เอไอสตูดิโอ สร้าง ช็อตวิดีโอ สำหรับ ยูทูบ และ ติ๊กต่อก ครับ เริ่มจากเขียน คอนเทนต์ แล้วเลือก วอยซ์โคลนนิ่ง ก่อนกด พรีวิว และ เอ็กซ์พอร์ต เป็นไฟล์ วิดีโอ ครับ",
     "requiredTokens": [
       "ฮีโร่เอไอสตูดิโอ",
       "ติ๊กต่อก"
     ],
-    "source": "mew-approved-listening-2026-09-06"
+    "source": "mew-approved-listening-2026-09-06",
+    "note": "dictionary-word spacing re-approved by ear 2026-09-07 (rounds 11-13: writer's spaces around transliterated words = breath points); readings unchanged"
   },
   {
     "id": "approved-08-technical-dictionary-tight",
     "category": "glue",
     "display": "ทดสอบคำว่า RunPod Serverless, OmniVoice, Gemini, ElevenLabs และ Remotion ครับ ระบบเชื่อมต่อผ่าน API ใช้ GPU ประมวลผล แล้วส่งไฟล์ WAV และ MP3 กลับมาที่ dashboard ครับ",
-    "spoken": "ทดสอบคำว่ารันพ็อดเซิร์ฟเวอร์เลส, ออมนิวอยซ์, เจมิไน, อีเลเว่นแล็บส์และรีโมชันครับ ระบบเชื่อมต่อผ่านเอพีไอใช้จีพียูประมวลผล แล้วส่งไฟล์เวฟและเอ็มพีสามกลับมาที่แดชบอร์ดครับ",
+    "spoken": "ทดสอบคำว่า รันพ็อด เซิร์ฟเวอร์เลส, ออมนิวอยซ์, เจมิไน, อีเลเว่นแล็บส์ และ รีโมชัน ครับ ระบบเชื่อมต่อผ่าน เอพีไอ ใช้ จีพียู ประมวลผล แล้วส่งไฟล์ เวฟ และ เอ็มพีสาม กลับมาที่ แดชบอร์ด ครับ",
     "requiredTokens": [
       "เวฟ",
       "เอ็มพีสาม"
     ],
-    "source": "mew-approved-listening-2026-09-06"
+    "source": "mew-approved-listening-2026-09-06",
+    "note": "dictionary-word spacing re-approved by ear 2026-09-07 (rounds 11-13: writer's spaces around transliterated words = breath points); readings unchanged"
   },
   {
     "id": "plus-suffix-means-kwa",

@@ -104,17 +104,45 @@ check(
   "speech text: audited English names use Thai-accent pronunciations",
   prepareHeroVoiceSpeechText(
     "ChatGPT MIT Your Brain on ChatGPT Google Roske AI Richard Benjamins AI Telefonica",
-  ) === "แชตจีพีทีเอ็มไอทียัวร์เบรนออนแชตจีพีทีกูเกิลรอสก์เอไอริชาร์ดเบนจามินส์เอไอเทเลโฟนิกา",
+  ) === "แชตจีพีที เอ็มไอที ยัวร์เบรนออนแชตจีพีที กูเกิล รอสก์เอไอ ริชาร์ดเบนจามินส์ เอไอ เทเลโฟนิกา",
 );
 check(
-  "speech text: transliterated names are glued to their Thai neighbours (Mew-approved glue rule)",
+  "speech text: dictionary words keep the writer's spaces as breath points; each reading is glued inside (Mew-approved by ear 2026-09-07, rounds 11-13)",
   prepareHeroVoiceSpeechText("คุณ Richard Benjamins จาก Telefonica พูดถึง ChatGPT")
-    === "คุณริชาร์ดเบนจามินส์จากเทเลโฟนิกาพูดถึงแชตจีพีที",
+    === "คุณ ริชาร์ดเบนจามินส์ จาก เทเลโฟนิกา พูดถึง แชตจีพีที",
 );
+check(
+  "speech text: an ellipsis is a breath, not a stop, and a bang is never spoken (Mew-approved by ear 2026-09-07, round 8)",
+  prepareHeroVoiceSpeechText("ปล่อย AI ทำงาน... โดยมีคนคุมคุณภาพ 100% ลุยขั้นตอนการรันงานจริง! ไปต่อ…เลย")
+    === "ปล่อย เอไอ ทำงาน โดยมีคนคุมคุณภาพหนึ่งร้อยเปอร์เซ็นต์ลุยขั้นตอนการรันงานจริง ไปต่อ เลย",
+);
+check(
+  "speech text: an arrow between steps is read as ไป (Mew-approved by ear 2026-09-07, rounds 11-13)",
+  prepareHeroVoiceSpeechText("หลักการ Ask Me → Agent → Human Review ให้ได้ Draft ชิ้นงาน")
+    === "หลักการ แอสก์มี ไป เอเจนต์ ไป ฮิวแมนรีวิว ให้ได้ ดราฟต์ ชิ้นงาน",
+);
+{
+  const chunks = splitHeroVoiceScriptForTts(
+    "ปล่อย AI ทำงาน... โดยมีคนคุมคุณภาพ 100% \nลุยขั้นตอนการรันงานจริง! Ep3 นี้เน้นหลักการ Ask Me → Agent",
+    800,
+  );
+  check(
+    "sentence chunking: ellipsis does not end a sentence, bang and line break do (round-8 choppiness fix)",
+    chunks.map((chunk) => chunk.text).join("|")
+      === "ปล่อย AI ทำงาน... โดยมีคนคุมคุณภาพ 100% \n|ลุยขั้นตอนการรันงานจริง! |Ep3 นี้เน้นหลักการ Ask Me → Agent",
+    chunks.map((chunk) => chunk.text).join("|"),
+  );
+  check(
+    "sentence chunking: chunk speech text drops the bang and reads the arrow",
+    chunks.map((chunk) => chunk.speechText.trim()).join("|")
+      === "ปล่อย เอไอ ทำงาน โดยมีคนคุมคุณภาพหนึ่งร้อยเปอร์เซ็นต์|ลุยขั้นตอนการรันงานจริง|อีพีสามนี้เน้นหลักการ แอสก์มี ไป เอเจนต์",
+    chunks.map((chunk) => chunk.speechText.trim()).join("|"),
+  );
+}
 check(
   "speech text: listed acronyms use their colloquial reading, unlisted ones are spelled",
   prepareHeroVoiceSpeechText("CEO ใช้ API และ GPT-5")
-    === "ซีอีโอใช้เอพีไอและจีพีที-ห้า",
+    === "ซีอีโอใช้ เอพีไอ และจีพีที-ห้า",
 );
 check(
   "speech text: phone and one-time codes are read digit by digit",

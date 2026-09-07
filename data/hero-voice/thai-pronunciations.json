@@ -304,5 +304,41 @@
     "source": "hero-voice-text-stage-2026-09-06",
     "reviewedBy": "Mew",
     "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "Ask Me",
+    "spoken": "แอสก์มี",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "mew-listening-2026-09-07-rounds-11-13",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "Human Review",
+    "spoken": "ฮิวแมนรีวิว",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "mew-listening-2026-09-07-rounds-11-13",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "Agent",
+    "spoken": "เอเจนต์",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "mew-listening-2026-09-07-rounds-11-13",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
+  },
+  {
+    "match": "Draft",
+    "spoken": "ดราฟต์",
+    "locale": "en",
+    "casePolicy": "insensitive",
+    "source": "mew-listening-2026-09-07-rounds-11-13",
+    "reviewedBy": "Mew",
+    "reviewedAt": "2026-09-07"
   }
 ]
