@@ -253,12 +253,60 @@ Also required and already present for stock Hero Voice: `OMNIVOICE_ENABLED=1`,
 or, when unset, `<cwd>/uploads/user-voices` (mode 700, outside `public/`).
 Restart with `pm2 restart ai-content --update-env`.
 
-Endpoint shape: the pinned image with its default entrypoint, env
-`HERO_VOICE_CLONE_IMAGE_DIGEST` / `RUNPOD_LOG_LEVEL=INFO` / `HERO_VOICE_EAGER_LOAD=1`,
-GPUs A40 / RTX A6000, `workersMin 0`, `workersMax 1`, idle timeout 60 s,
-execution timeout ≥ 540 s (the application policy), FlashBoot off, no volume.
-First job of a session pays the cold start (2–3 min); keep-warm is deliberately
-not used.
+Endpoint shape: the pinned image, env `HERO_VOICE_CLONE_IMAGE_DIGEST` /
+`RUNPOD_LOG_LEVEL=INFO` / `HERO_VOICE_EAGER_LOAD=1`, GPUs A40 / RTX A6000 (the 24 GB
+tier is a pool that can hand out Blackwell MIG slices the image's PyTorch cannot run
+on), `workersMin 0`, `workersMax 1`, idle timeout 60 s, execution timeout ≥ 540 s
+(the application policy), FlashBoot off, no volume. First job of a session pays the
+cold start (2–3 min); keep-warm is deliberately not used.
+
+**Start command — do NOT use the image default.** On `python /app/handler.py` the
+pinned image `8afa2ae5…` accepts the job and then fails lazy model loading (the demucs
+checkpoint needs `torch.serialization.safe_globals` under PyTorch ≥ 2.6, and
+resemblyzer's `import webrtcvad` needs a `pkg_resources` shim), so every job answers
+`{"ok": false}` in under a second and the application records
+`CLONE_OUTPUT_INVALID` + refund. This is how the first production job failed on
+2026-09-08. Every successful GPU run used the boot script below as the template's
+`dockerStartCmd` (`["python", "-u", "-c", <script>]`); reapply it whenever the
+template or endpoint is recreated. The long-term fix is to bake both workarounds into
+the image through the frozen image workflow so the default CMD works.
+
+```python
+import os, sys
+sys.path.insert(0, '/app')
+from identity import load_worker_identity
+from handler import _default_runtime, handle_job
+load_worker_identity()
+r=_default_runtime()
+from torch.serialization import safe_globals
+from demucs.htdemucs import HTDemucs
+from fractions import Fraction
+import numpy as np
+from numpy.core.multiarray import scalar
+with safe_globals([HTDemucs, Fraction, (scalar, "numpy.core.multiarray.scalar"), np.dtype, np.dtypes.Float64DType, np.dtypes.Float32DType]):
+    r._get_demucs()
+import importlib.metadata, types
+assert importlib.metadata.version('webrtcvad') == '2.0.10'
+assert 'pkg_resources' not in sys.modules
+compat_pkg=types.ModuleType('pkg_resources')
+def webrtcvad_distribution(name):
+    if name != 'webrtcvad': raise RuntimeError('unexpected_distribution_lookup')
+    return importlib.metadata.distribution(name)
+compat_pkg.get_distribution=webrtcvad_distribution
+sys.modules['pkg_resources']=compat_pkg
+try:
+    import webrtcvad
+finally:
+    del sys.modules['pkg_resources']
+r._get_speaker_encoder()
+print('HERO_VOICE_PROD_MODEL_LOAD_READY', flush=True)
+import runpod
+runpod.serverless.start({'handler': handle_job})
+```
+
+Verification after any template change: submit one contract-v3 job and expect
+`ok: true` with real audio; `{"ok": false}` within ~1 s means the boot script is
+missing.
 
 Rollback: remove `HERO_VOICE_CLONE_PRODUCTION` from `.env` and restart. Nothing
 else changes; the endpoint at zero workers costs nothing and may be deleted
