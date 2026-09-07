@@ -327,7 +327,19 @@ const expectedIdentity = {
   referenceDurationSamples24000: snapshot.referenceDurationSamples24000,
 };
 assert.equal(validateCandidateV3Response(candidateResponse, expectedIdentity).ok, true);
+// The worker peak-normalizes to 0.95 at the demucs rate and reports post_peak AFTER
+// resampling to 24 kHz (runtime.py: _peak_normalize → _resample → _audio_stats), so the
+// real envelope carries 0.9489 (Mew's first production job, 2026-09-08), not 0.95.
+for (const realPostPeak of [0.94891357, 0.905, 0.99]) {
+  assert.equal(
+    validateCandidateV3Response(mutateAtPath(candidateResponse, ["metrics", "reference", "post_peak"], realPostPeak), expectedIdentity).ok,
+    true,
+    `post_peak ${realPostPeak} after resampling is a valid peak-0.95 attestation`,
+  );
+}
 for (const [path, invalid, label] of [
+  [["metrics", "reference", "post_peak"], 0.89,
+    "post_peak more than 5 % below the 0.95 target is not a resampling artefact"],
   [["metrics", "reference", "effective_sha256"], candidateResponse.metrics.reference.canonical_sha256,
     "enhancement must change the exact prompt-domain PCM16 hash"],
   [["metrics", "reference", "post_peak"], 0.7,

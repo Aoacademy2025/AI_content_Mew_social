@@ -16,6 +16,10 @@ const MAX_PIPELINE_TIMING_MS = 540_000;
 const MAX_WATERMARK_FRAME_PROBABILITIES = 4_096;
 const PITCH_WEIGHT = 0.15;
 const REFERENCE_PEAK_TARGET = 0.95;
+/** Enhanced profiles peak-normalize at the demucs rate and report `post_peak` after the
+ * polyphase resample to 24 kHz, which moves the sample peak by a few percent (the first
+ * production job reported 0.9489). Anything within 5 % of the target is that stage. */
+const REFERENCE_PEAK_RESAMPLE_TOLERANCE = 0.05;
 const PCM16_LEVEL = 1 / 32_768;
 const CANDIDATE_AUDIO_HASH_DOMAIN = "float32-le-mono-24000-v1";
 const WATERMARK_INTERNAL_HASH_DOMAIN = "float32-le-mono-16000-v1";
@@ -292,7 +296,7 @@ function validateReferenceMetrics(
     || value.enhanced !== enhanced
     || !finiteNumber(value.pre_peak, 0, prePeakMaximum) || !finiteNumber(value.post_peak, 0, 1)
     || (enhanced
-      ? Math.abs((value.post_peak as number) - REFERENCE_PEAK_TARGET) > PCM16_LEVEL
+      ? Math.abs((value.post_peak as number) - REFERENCE_PEAK_TARGET) > REFERENCE_PEAK_RESAMPLE_TOLERANCE
       : Math.abs((value.post_peak as number) - (value.pre_peak as number)) > PCM16_LEVEL)
     || !finiteNumber(value.pre_rms, 0, prePeakMaximum) || (value.pre_rms as number) > (value.pre_peak as number)
     || !finiteNumber(value.post_rms, 0, 1) || (value.post_rms as number) > (value.post_peak as number)
