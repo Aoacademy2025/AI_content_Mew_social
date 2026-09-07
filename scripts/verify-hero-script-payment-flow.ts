@@ -28,9 +28,12 @@ async function main() {
   const { activatePaidCheckout } = await import("../src/lib/checkout-plan-activation");
   const { findPlanPaymentConfirmation } = await import("../src/lib/payment-confirmation");
   const { resolveHeroScriptAccess } = await import("../src/lib/hero-script-rollout.server");
-  const now = new Date("2026-08-07T04:00:00.000Z");
+  // Fixture clock is relative to the real clock: resolveHeroScriptAccess reads the
+  // entitlement against Date.now(), so a fixed period end (previously 2026-09-07)
+  // silently expired and turned this proof red on that date.
   const dayMs = 24 * 60 * 60 * 1000;
-  const cardPeriodEnd = new Date("2026-09-07T04:00:00.000Z");
+  const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+  const cardPeriodEnd = new Date(now.getTime() + 31 * dayMs);
 
   // Card subscription: the same transaction must activate the plan and mark
   // the reservation PAID, which is the evidence Hero Script consumes.
