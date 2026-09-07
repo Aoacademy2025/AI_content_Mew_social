@@ -174,5 +174,17 @@
       "เอ็มพีสาม"
     ],
     "source": "mew-approved-listening-2026-09-06"
+  },
+  {
+    "id": "plus-suffix-means-kwa",
+    "category": "number",
+    "display": "ประมาณ 100,000+ ตัว และอีก 400,000 ตัว ราคา 99+ บาท ผู้ใช้ 1,000+ คน",
+    "spoken": "ประมาณหนึ่งแสนกว่าตัว และอีกสี่แสนตัว ราคาเก้าสิบเก้ากว่าบาท ผู้ใช้หนึ่งพันกว่าคน",
+    "requiredTokens": [
+      "หนึ่งแสนกว่า",
+      "เก้าสิบเก้ากว่า",
+      "หนึ่งพันกว่า"
+    ],
+    "source": "mew-qa-2026-09-08 (Jensen Huang script: 100,000+ blocked as unexpanded_math_symbol)"
   }
 ]

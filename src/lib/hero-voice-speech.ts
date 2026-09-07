@@ -79,7 +79,7 @@ const THAI_SPEECH_UNIT_RE = new RegExp(
   "giu",
 );
 
-export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-09-07.1";
+export const HERO_VOICE_SPEECH_NORMALIZER_VERSION = "2026-09-08.1";
 
 export type HeroVoiceSpeechRiskCode =
   | "ambiguous_numeric_slash"
@@ -273,6 +273,16 @@ function normalizeThaiSpeechCurrencies(text: string): string {
   );
 }
 
+/** "100,000+ ตัว" means "a hundred thousand or more": a trailing plus after a number
+ * is read กว่า (Mew QA 2026-09-08). A plus BETWEEN numbers stays arithmetic and is
+ * still blocked as an unread math symbol; a plus glued to a following digit is a sign. */
+function normalizeThaiSpeechPlusSuffix(text: string): string {
+  return text.replace(
+    new RegExp(String.raw`(\d[\d,]*(?:\.\d+)?)\s*\+(?![\d+.]|\s*\d)`, "g"),
+    (_match, number: string) => `${thaiNumberWords(number)}กว่า`,
+  );
+}
+
 function normalizeThaiSpeechPercents(text: string): string {
   return text.replace(
     new RegExp(`(${NUMBER_SOURCE})\\s*%`, "g"),
@@ -406,6 +416,7 @@ const NON_THAI_CHAR_RE = /[^\p{Script=Thai}\s]/u;
 
 function normalizeSpeechSegment(segment: string): string {
   const structuredText = normalizeThaiSpeechUnits(
+    normalizeThaiSpeechPlusSuffix(
     normalizeThaiSpeechPercents(
       normalizeThaiSpeechCurrencies(
         normalizeThaiSpeechRanges(
@@ -422,6 +433,7 @@ function normalizeSpeechSegment(segment: string): string {
           ),
         ),
       ),
+    ),
     ),
   );
   return spellUnlistedAcronyms(normalizeThaiSpeechNumbers(structuredText));
