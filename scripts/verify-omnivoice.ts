@@ -17,7 +17,7 @@ import {
   splitHeroVoiceScriptForTts,
 } from "../src/lib/hero-voice-speech";
 import { parseTtsProvider, resolveJobTtsProvider } from "../src/lib/tts-providers";
-import { evaluateHeroVoiceTranscripts } from "../src/lib/hero-voice-asr-gate";
+import { droppedLetterRun, evaluateHeroVoiceTranscripts, insertedLetterRun } from "../src/lib/hero-voice-asr-gate";
 import { omnivoiceScriptCharCapForPlan } from "../src/lib/omnivoice-limits";
 
 let failures = 0;
@@ -243,6 +243,40 @@ check(
   "asr gate: a one-word slip is tolerated, a five-letter run is not",
   evaluateHeroVoiceTranscripts("วันนี้อากาศดีมากครับ", ["วันนี้อากาศดีครับ"]).pass === true
     && evaluateHeroVoiceTranscripts("วันนี้อากาศดีมากครับ", ["วันนี้ครับ"]).pass === false,
+);
+
+// Round 5 (2026-09-07): the model read a sentence-final "จริง" as "จริงๆ" and the drop-only
+// gate could not see it. A run of letters that EVERY ear heard but the script never asked
+// for now fails the chunk too (both ears must agree so one ear's hallucination cannot).
+const sentenceFinal = "มันกดเมาส์ พิมพ์คีย์บอร์ด แล้วสลับโปรแกรมแทนเราได้จริง";
+const insertion = evaluateHeroVoiceTranscripts(sentenceFinal, [
+  "มันกดเมาส์ พิมพ์คีย์บอร์ด แล้วสลับโปรแกรมแทนเราได้จริงๆ",
+  "มันกดเมาส์ พิมพ์คีย์บอร์ด แล้วสลับโปรแกรมแทนเราได้จริง ๆ",
+]);
+check(
+  "asr gate: a repeated word both ears heard (จริงๆ) fails as an insertion",
+  insertion.pass === false && insertion.reason === "inserted" && insertion.droppedRun === 0 && insertion.insertedRun >= 3,
+  JSON.stringify(insertion),
+);
+check(
+  "asr gate: an insertion only one ear heard is ASR noise, not a misread",
+  evaluateHeroVoiceTranscripts(sentenceFinal, [`${sentenceFinal}ๆ`, sentenceFinal]).pass === true,
+);
+check(
+  "asr gate: a two-letter filler both ears heard stays below the insertion threshold",
+  evaluateHeroVoiceTranscripts("วันนี้อากาศดีมากครับ", ["วันนี้อากาศดีมากนะครับ", "วันนี้อากาศดีมากนะครับ"]).pass === true,
+);
+const dropWins = evaluateHeroVoiceTranscripts("วันนี้อากาศดีมากครับ", ["วันนี้ครับจริงจริง"]);
+check(
+  "asr gate: when both a drop and an insertion fail, the verdict names the drop",
+  dropWins.pass === false && dropWins.reason === "dropped" && dropWins.insertedRun >= 3,
+  JSON.stringify(dropWins),
+);
+check(
+  "asr gate: insertedLetterRun mirrors droppedLetterRun with the arguments swapped",
+  insertedLetterRun("ก", "กขคง") === droppedLetterRun("กขคง", "ก")
+    && insertedLetterRun("กขคง", "กขคง") === 0
+    && evaluateHeroVoiceTranscripts("กขคง", ["กขคง"]).reason === undefined,
 );
 
 const pcm = Buffer.from([0, 0, 1, 0, 255, 255, 2, 0]);

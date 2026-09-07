@@ -81,19 +81,36 @@ export function resolveHeroVoiceCloneConfig(input: HeroVoiceCloneConfigInput): H
   };
 }
 
-export type HeroVoiceCloneHumanDataGate = Readonly<{
-  kind: "task6-human-data-gate";
-  evidenceSha256: string;
-}>;
+export type HeroVoiceCloneHumanDataGate =
+  | Readonly<{ kind: "task6-human-data-gate"; evidenceSha256: string }>
+  /** ADR 0061: the data subject (the allowlisted owner account) accepted sending
+   * their own reference recording to the pinned RunPod worker. Opened per
+   * deployment by `HERO_VOICE_CLONE_PRODUCTION=1`; rollback = unset it. */
+  | Readonly<{ kind: "owner-consent-production-gate"; adr: "0061" }>;
 
-/** The application transport remains inert until Task 6 records a private
- * evidence digest and the local canary execution process opts in. This gate is
- * deliberately separate from the exact five-input endpoint resolver. */
+export const HERO_VOICE_CLONE_GATE_KINDS: ReadonlySet<HeroVoiceCloneHumanDataGate["kind"]> = new Set([
+  "task6-human-data-gate",
+  "owner-consent-production-gate",
+]);
+
+/** The application transport remains inert unless exactly one of two explicit
+ * decisions is present: (a) the isolated canary — Task 6 evidence digest plus the
+ * local canary execution mode, never in production (ADR 0060); or (b) the
+ * owner-consent production opt-in (ADR 0061), which never combines with the
+ * canary execution mode. Without either, every environment fails closed. This
+ * gate is deliberately separate from the exact five-input endpoint resolver. */
 export function resolveHeroVoiceCloneHumanDataGate(input: {
   nodeEnv: string | undefined;
   executionMode: string | undefined;
   task6GateSha256: string | undefined;
+  productionOptIn?: string | undefined;
 }): HeroVoiceCloneHumanDataGate {
+  if (input.productionOptIn === "1") {
+    if (input.executionMode !== undefined || input.task6GateSha256 !== undefined) {
+      throw new HeroVoiceCloneConfigError();
+    }
+    return Object.freeze({ kind: "owner-consent-production-gate", adr: "0061" });
+  }
   const evidenceSha256 = (input.task6GateSha256 ?? "").trim();
   if (input.nodeEnv === "production" || input.executionMode !== "1" || !SHA256.test(evidenceSha256)) {
     throw new HeroVoiceCloneConfigError();

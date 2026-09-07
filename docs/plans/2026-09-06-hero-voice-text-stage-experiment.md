@@ -360,3 +360,32 @@ Golden set (ส่วนตัว `/tmp/hero-voice-text-stage-2026-09-06/golden/
 **ข้อตัดสินใจเพิ่ม (ไม่อยู่ใน 11.5):** หูล่มทั้งสองข้าง (5xx/timeout/ไม่มี key) = ปัญหาโครงสร้าง ไม่ใช่เนื้อหา →
 **fail-open**: เก็บ part ไว้, บันทึก `droppedRun: null, ears: 0` + telemetry `omnivoice_asr_gate_unavailable`,
 ไม่เผา retry ไม่คืนเงิน. ถ้ามิวต้องการให้ล่ม = บล็อก ให้เปลี่ยนสาขา `heard.ears === 0` เป็นเส้นทางเดียวกับตก.
+
+### 11.7 รอบ 6 (loop iteration 3, 2026-09-07 กลางดึก) + insertion gate + เปิด clone บน prod
+
+**รอบ 6 (15 งาน, endpoint ทิ้งแล้ว, A40):** สคริปต์จริงของมิวแก้ "เดโม", 3 seeds/chunk (20260905/06/07),
+เพิ่ม variant รวม chunk 1+2 (MEWM). ผลจากหูสองข้าง: chunk 1/3/4 ผ่านทุก seed; **chunk 2 ("…แทนเราได้จริง")
+seed 05 และ 06 อ่านเป็น "จริงๆ", seed 07 อ่านตรง**; ก้อนรวม 1+2 seed 05 ตรง, 06/07 อ่าน "จริงๆ" → 4 ใน 6
+generation ของประโยคนี้เติม ๆ — โมเดลชอบปิดประโยคที่จบด้วย "ได้จริง" แบบเน้น ไม่ใช่โชคของ seed เดียว.
+ผู้ชนะ: MEW.wav 26.2 s (seed 07 ทุก chunk, สั้นกว่ารอบ 5 0.5 s) และ MEWM.wav 25.2 s. ส่งให้มิวฟังแล้ว
+(`mew-voice-tune6-*` ใน ~/Downloads). tooling: `build-cases-r6.ts`, `armA_operator_r6.py`, `select-r6.py`
+(เพิ่ม insertion gate + เลือกอันสั้นสุดเมื่อคะแนนเท่ากัน; ตัว proxy ขยาย ๆ ของ selector หยาบกว่าแอป — เลข 28/52
+ใน selection.json คือ artefact ของ regex ไม่ใช่คำเกินจริง แต่คำตัดสิน FAIL ถูก).
+
+**Insertion gate ในแอป (commit นี้):** `insertedLetterRun = droppedLetterRun(heard, intended)`; verdict มี
+`insertedRun/insertedRuns/reason`; ตกเมื่อ min ข้ามหู ≥ `HERO_VOICE_ASR_MAX_INSERTED_RUN = 3` (drop ชนะ
+insertion ในการตั้งชื่อ reason). state `asrGate.chunks[].insertedRun` และ `rejected[].insertedRun` เป็น key
+optional (record เก่าที่ไม่มี key ยังผ่าน `validAsrGateState`). telemetry `omnivoice_asr_gate_rejected` เพิ่ม
+`reason` + `insertedRun`. รหัส terminal ยังเป็น `OMNIVOICE_CONTENT_DROPPED` ข้อความแยกตาม reason.
+ทดสอบ: verify-omnivoice (5 กรณี), runtime 3b (เติมคำทั้งสองหู → seed+1), 4b (หูเดียว → ไม่ regen).
+
+**ข้อสังเกตสำหรับมิว:** ถ้าสคริปต์จบประโยคด้วย "…ได้จริง" โมเดลเติม ๆ ราว 2 ใน 3 ครั้ง → gate จะเผา retry
+และมีโอกาส ~30 % ที่ 3 generation ตกหมด (fail + refund). ทางแก้ที่ถูกคือแก้ข้อความ (เช่น "…ได้จริงครับ")
+ไม่ใช่ผ่อน gate.
+
+**เปิด clone บน prod (ADR 0061):** `resolveHeroVoiceCloneHumanDataGate` รับ `productionOptIn`
+(`HERO_VOICE_CLONE_PRODUCTION`) → `owner-consent-production-gate` เมื่อ = "1" และไม่มีตัวแปร canary;
+`prepareRunpodHeroVoiceCloneJob` รับ gate ทั้งสองชนิด. `verify-hero-voice-durable.ts` รัน asr-gate runtime
+รอบที่สองด้วย `NODE_ENV=production` + `HERO_VOICE_TEST_GATE_MODE=production` (ไม่มี canary env) ครบทุกกรณี
++ กรณี 8: เอา opt-in ออก → start ตก `CLONE_CONFIG_UNAVAILABLE`. runbook: `docs/ops/hero-voice-clone-rollout.md`
+ส่วนท้าย; env prod ที่ต้องเพิ่มอยู่ใน handoff.

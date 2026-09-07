@@ -16,6 +16,7 @@ import {
   parseCandidateAiStudioV3Snapshot,
   snapshotContainsForbiddenReferenceData,
 } from "../src/lib/hero-voice-clone-snapshot";
+import { heroVoiceCloneHumanDataGate } from "../src/lib/omnivoice";
 import {
   BASELINE_V13_CATALOG_VERSION,
   BASELINE_V13_WORKER_VERSION,
@@ -100,6 +101,54 @@ assert.equal(resolveHeroVoiceCloneHumanDataGate({
   executionMode: "1",
   task6GateSha256: "4".repeat(64),
 }).kind, "task6-human-data-gate");
+
+// ADR 0061: the owner-consent production gate opens only through its own explicit
+// input, and only when the canary execution mode is NOT set. Without it, production
+// stays fail-closed exactly as ADR 0060 left it.
+const noCanary = { executionMode: undefined, task6GateSha256: undefined } as const;
+assert.equal(resolveHeroVoiceCloneHumanDataGate({
+  nodeEnv: "production", ...noCanary, productionOptIn: "1",
+}).kind, "owner-consent-production-gate");
+assert.throws(() => resolveHeroVoiceCloneHumanDataGate({
+  nodeEnv: "production", ...noCanary, productionOptIn: undefined,
+}), HeroVoiceCloneConfigError, "production without the opt-in stays fail-closed");
+for (const value of ["0", "true", "yes", " 1", "", "1 "]) {
+  assert.throws(() => resolveHeroVoiceCloneHumanDataGate({
+    nodeEnv: "production", ...noCanary, productionOptIn: value,
+  }), HeroVoiceCloneConfigError, `opt-in value ${JSON.stringify(value)} is not an opt-in`);
+}
+assert.throws(() => resolveHeroVoiceCloneHumanDataGate({
+  nodeEnv: "production", executionMode: "1", task6GateSha256: "4".repeat(64), productionOptIn: "1",
+}), HeroVoiceCloneConfigError, "the canary execution mode never combines with the production opt-in");
+assert.throws(() => resolveHeroVoiceCloneHumanDataGate({
+  nodeEnv: "development", executionMode: "1", task6GateSha256: "4".repeat(64), productionOptIn: "1",
+}), HeroVoiceCloneConfigError);
+assert.equal(resolveHeroVoiceCloneHumanDataGate({
+  nodeEnv: "development", ...noCanary, productionOptIn: "1",
+}).kind, "owner-consent-production-gate", "the opt-in is a deployment decision, not a NODE_ENV one (local smoke tests share the path)");
+assert.equal(resolveHeroVoiceCloneHumanDataGate({
+  nodeEnv: "development", executionMode: "1", task6GateSha256: "4".repeat(64), productionOptIn: undefined,
+}).kind, "task6-human-data-gate", "the canary path is unchanged when the opt-in is absent");
+{
+  // Process-level readback: the application gate reads the opt-in from the environment.
+  const env = process.env as Record<string, string | undefined>;
+  const saved = {
+    NODE_ENV: env.NODE_ENV,
+    HERO_VOICE_CANARY_EXECUTION_MODE: env.HERO_VOICE_CANARY_EXECUTION_MODE,
+    HERO_VOICE_CANARY_TASK6_GATE_SHA256: env.HERO_VOICE_CANARY_TASK6_GATE_SHA256,
+    HERO_VOICE_CLONE_PRODUCTION: env.HERO_VOICE_CLONE_PRODUCTION,
+  };
+  env.NODE_ENV = "production";
+  delete env.HERO_VOICE_CANARY_EXECUTION_MODE;
+  delete env.HERO_VOICE_CANARY_TASK6_GATE_SHA256;
+  delete env.HERO_VOICE_CLONE_PRODUCTION;
+  assert.throws(() => heroVoiceCloneHumanDataGate(), HeroVoiceCloneConfigError, "NODE_ENV=production without HERO_VOICE_CLONE_PRODUCTION fails closed");
+  env.HERO_VOICE_CLONE_PRODUCTION = "1";
+  assert.equal(heroVoiceCloneHumanDataGate().kind, "owner-consent-production-gate", "NODE_ENV=production + HERO_VOICE_CLONE_PRODUCTION=1 opens the owner gate");
+  for (const [key, value] of Object.entries(saved)) {
+    if (value === undefined) delete env[key]; else env[key] = value;
+  }
+}
 
 const requestCommitment = heroVoiceCloneRequestCommitment({
   refAudioSha256: "a".repeat(64),
@@ -719,6 +768,10 @@ assert.deepEqual(
   "application clone resolution reads exactly the five declared inputs",
 );
 assert.doesNotMatch(resolverSource, /RUNPOD_OMNIVOICE_ENDPOINT_ID|BASELINE|OMNIVOICE_BACKEND/);
+assert.equal(
+  [...omnivoiceSource.matchAll(/process\.env\.HERO_VOICE_CLONE_PRODUCTION/g)].length, 1,
+  "the production opt-in is read once, inside heroVoiceCloneHumanDataGate()",
+);
 assert.match(omnivoiceSource, /process\.env\.RUNPOD_OMNIVOICE_ENDPOINT_ID/,
   "stock endpoint configuration remains on its existing variable");
 assert.match(omnivoiceSource, /policy:\s*snapshot\.policy/);

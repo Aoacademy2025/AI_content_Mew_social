@@ -10,6 +10,10 @@ import { prepareHeroVoiceSpeechText } from "@/lib/hero-voice-speech";
  * the chunk when a run of letters is missing, so the caller can regenerate it with
  * another seed instead of shipping audio with dropped words.
  *
+ * Round 5 (2026-09-07) showed the mirror defect: a sentence-final "จริง" read as
+ * "จริงๆ". A run of letters that every ear heard but the script never asked for
+ * (a repeated word, a stuttered syllable) therefore fails the chunk as well.
+ *
  * What it deliberately does NOT judge: accent, tone, pacing. Transcripts are
  * normalized through the same speech normalizer first, so numerals ("1,250 บาท")
  * and reviewed English spellings compare equal to the Thai readings the model was
@@ -23,9 +27,19 @@ export interface HeroVoiceTranscriptVerdict {
   droppedRun: number;
   /** Per-transcript dropped runs in the order given. */
   droppedRuns: number[];
+  /** Longest run of heard letters/digits that EVERY transcript contains but the script does not. */
+  insertedRun: number;
+  /** Per-transcript inserted runs in the order given. */
+  insertedRuns: number[];
+  /** Which limit failed; absent when the verdict passes. A drop outranks an insertion. */
+  reason?: "dropped" | "inserted";
 }
 
 export const HERO_VOICE_ASR_MAX_DROPPED_RUN = 5;
+/** Three letters: long enough for a repeated Thai word (จริง, ครับ, มาก), short enough
+ * that a two-letter filler one ear imagines (นะ) never costs a regeneration. Both ears
+ * must hear the insertion because the minimum across transcripts is what is judged. */
+export const HERO_VOICE_ASR_MAX_INSERTED_RUN = 3;
 
 function letters(text: string): string[] {
   return [...prepareHeroVoiceSpeechText(text).normalize("NFC")].filter((character) => (
@@ -73,13 +87,22 @@ export function droppedLetterRun(intended: string, heard: string): number {
   return longest;
 }
 
+/** Longest consecutive run of heard characters that the intended text never asked for. */
+export function insertedLetterRun(intended: string, heard: string): number {
+  return droppedLetterRun(heard, intended);
+}
+
 export function evaluateHeroVoiceTranscripts(
   intendedSpeechText: string,
   transcripts: readonly string[],
-  options: { maxDroppedRun?: number } = {},
+  options: { maxDroppedRun?: number; maxInsertedRun?: number } = {},
 ): HeroVoiceTranscriptVerdict {
   const maxDroppedRun = options.maxDroppedRun ?? HERO_VOICE_ASR_MAX_DROPPED_RUN;
+  const maxInsertedRun = options.maxInsertedRun ?? HERO_VOICE_ASR_MAX_INSERTED_RUN;
   const droppedRuns = transcripts.map((heard) => droppedLetterRun(intendedSpeechText, heard));
+  const insertedRuns = transcripts.map((heard) => insertedLetterRun(intendedSpeechText, heard));
   const droppedRun = droppedRuns.length > 0 ? Math.min(...droppedRuns) : Number.POSITIVE_INFINITY;
-  return { pass: droppedRun < maxDroppedRun, droppedRun, droppedRuns };
+  const insertedRun = insertedRuns.length > 0 ? Math.min(...insertedRuns) : Number.POSITIVE_INFINITY;
+  const reason = droppedRun >= maxDroppedRun ? "dropped" : insertedRun >= maxInsertedRun ? "inserted" : undefined;
+  return { pass: reason === undefined, droppedRun, droppedRuns, insertedRun, insertedRuns, ...(reason ? { reason } : {}) };
 }
