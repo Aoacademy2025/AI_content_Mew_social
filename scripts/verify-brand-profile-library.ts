@@ -857,6 +857,130 @@ async function main() {
       brandProfileRevisionId: overflowRevision.id,
     },
   });
+  // ---- HERO-10: the steady state is a READ, not a write ---------------
+  // getBrandProfileAvailabilityState runs on EVERY GET /api/brand-library. It
+  // used to open a transaction and issue an unconditional thaw updateMany even
+  // when nothing was frozen, which made the app's most frequent read its most
+  // frequent write-lock acquisition — and brand-library the top victim in
+  // production's SQLite lock-timeout logs. A read must never queue behind the
+  // single SQLite writer.
+  function countTransactions() {
+    const target = prisma as unknown as Record<string, unknown>;
+    const original = prisma.$transaction as unknown as (...args: never[]) => unknown;
+    let calls = 0;
+    target.$transaction = (...args: never[]) => {
+      calls += 1;
+      return original.apply(prisma, args);
+    };
+    assert.notEqual(
+      target.$transaction,
+      original,
+      "the counting wrapper must actually be installed, or this assertion proves nothing",
+    );
+    return {
+      get calls() { return calls; },
+      restore() {
+        target.$transaction = original;
+        assert.equal(prisma.$transaction, original, "the real $transaction must be back in place");
+      },
+    };
+  }
+
+  const steadyUser = await prisma.user.create({
+    data: { name: "Steady reader", email: "brand-steady-read@example.test", plan: "PRO" },
+  });
+  await prisma.brandProfile.createMany({
+    data: Array.from({ length: 3 }, (_, index) => ({
+      userId: steadyUser.id,
+      name: `Steady brand ${index + 1}`,
+      niche: "creator education",
+      audience: "Thai creators",
+      tone: "direct",
+      activeRevisionNumber: 1,
+    })),
+  });
+  const steadyBefore = await prisma.brandProfile.findMany({
+    where: { userId: steadyUser.id },
+    orderBy: { name: "asc" },
+    select: { id: true, updatedAt: true },
+  });
+  const steadyCounter = countTransactions();
+  let steadyState;
+  try {
+    steadyState = await getBrandProfileAvailabilityState({ userId: steadyUser.id });
+  } finally {
+    steadyCounter.restore();
+  }
+  assert.equal(
+    steadyCounter.calls,
+    0,
+    "profiles under cap with nothing frozen must be answered by plain reads — no transaction, no write lock",
+  );
+  assert.equal(steadyState.cap, 5, "the no-write path still reports the PRO cap");
+  assert.equal(steadyState.selectionRequired, false);
+  assert.deepEqual(
+    [...steadyState.activeProfileIds].sort(),
+    steadyBefore.map((profile) => profile.id).sort(),
+    "the no-write path reports exactly the same active profiles",
+  );
+  assert.deepEqual(steadyState.frozenProfileIds, []);
+  const steadyAfter = await prisma.brandProfile.findMany({
+    where: { userId: steadyUser.id },
+    orderBy: { name: "asc" },
+    select: { id: true, updatedAt: true },
+  });
+  assert.deepEqual(
+    steadyAfter.map((profile) => `${profile.id}@${profile.updatedAt.toISOString()}`),
+    steadyBefore.map((profile) => `${profile.id}@${profile.updatedAt.toISOString()}`),
+    "reading availability must not touch a single row",
+  );
+
+  // …but a profile that genuinely needs thawing still gets its one transaction.
+  const thawUser = await prisma.user.create({
+    data: { name: "Thaw reader", email: "brand-thaw-read@example.test", plan: "PRO" },
+  });
+  await prisma.brandProfile.createMany({
+    data: [
+      {
+        userId: thawUser.id,
+        name: "Thaw brand active",
+        niche: "creator education",
+        audience: "Thai creators",
+        tone: "direct",
+        activeRevisionNumber: 1,
+      },
+      {
+        userId: thawUser.id,
+        name: "Thaw brand frozen",
+        niche: "creator education",
+        audience: "Thai creators",
+        tone: "direct",
+        activeRevisionNumber: 1,
+        frozenAt: new Date(),
+      },
+    ],
+  });
+  const thawCounter = countTransactions();
+  let thawState;
+  try {
+    thawState = await getBrandProfileAvailabilityState({ userId: thawUser.id });
+  } finally {
+    thawCounter.restore();
+  }
+  assert.equal(
+    thawCounter.calls,
+    1,
+    "an upgrade that must thaw a frozen profile still reconciles inside exactly one transaction",
+  );
+  assert.equal(thawState.selectionRequired, false);
+  assert.equal(thawState.activeProfileIds.length, 2);
+  assert.deepEqual(thawState.frozenProfileIds, []);
+  assert.equal(
+    await prisma.brandProfile.count({ where: { userId: thawUser.id, frozenAt: { not: null } } }),
+    0,
+    "the thaw itself is unchanged — profiles under the new cap come back automatically",
+  );
+
   await prisma.user.update({ where: { id: user.id }, data: { plan: "FREE" } });
   const unresolvedDowngrade = await getBrandProfileAvailabilityState({ userId: user.id });
   assert.equal(unresolvedDowngrade.selectionRequired, true);

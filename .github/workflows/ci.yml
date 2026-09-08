@@ -198,8 +198,8 @@ jobs:
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
 
-      - name: Verify Hero AI Image transient-DB retry and bounded in-batch scene retry
-        run: npm run verify:prisma-transient-retry && npm run verify:hero-image-scene-retry
+      - name: Verify SQLite queueing budgets, transient-DB retry, and bounded in-batch scene retry
+        run: npm run verify:prisma-options && npm run verify:prisma-transient-retry && npm run verify:hero-image-scene-retry
 
       - name: Verify Hero Voice stock and clone contracts
         # verify:hero-voice-clone-task2 also shells out to a Python fixture generator that
