@@ -26,6 +26,7 @@ import { STYLE_PACK_UNAVAILABLE_MESSAGE, applyStylePackToPayload, stylePackOfPay
 import { stylePackSnapshotOf } from "@/lib/style-pack-snapshot";
 import { limitsForPlan } from "@/lib/plan-limits";
 import { prisma } from "@/lib/prisma";
+import { withTransientDbRetry } from "@/lib/prisma-transient-retry";
 import { normalizeLogoOverlayConfig } from "@/lib/logo-overlay";
 import { normalizeSubtitleStylePresetConfig } from "@/lib/editor-style-preset-contract";
 import { normalizeHexColor } from "@/lib/hex-color";
@@ -483,6 +484,19 @@ export type BrandProfileAvailabilityState = {
   frozenProfileIds: string[];
 };
 
+/** The exact set of profiles that count against the plan cap. Shared by the
+ *  transactional reconcile and by the read-only fast path below so the two can
+ *  never disagree about which rows are "active". */
+function activeBrandProfileWhere(userId: string): Prisma.BrandProfileWhereInput {
+  return { userId, activeRevisionNumber: { gt: 0 }, archivedAt: null };
+}
+
+const ACTIVE_BRAND_PROFILE_ORDER: Prisma.BrandProfileOrderByWithRelationInput[] = [
+  { lastUsedAt: "desc" },
+  { updatedAt: "desc" },
+  { createdAt: "asc" },
+];
+
 /** Plan-authoritative availability used by every read and mutation surface.
  * Downgrades with too many currently-active profiles pause ALL mutations until
  * the creator chooses; upgrades automatically thaw as many profiles as the new
@@ -495,15 +509,21 @@ async function reconcileBrandProfileAvailabilityForPlanInTransaction(
   const user = await tx.user.findUnique({ where: { id: userId }, select: { plan: true } });
   if (!user) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบบัญชีนี้");
   const profiles = await tx.brandProfile.findMany({
-    where: { userId, activeRevisionNumber: { gt: 0 }, archivedAt: null },
-    orderBy: [{ lastUsedAt: "desc" }, { updatedAt: "desc" }, { createdAt: "asc" }],
+    where: activeBrandProfileWhere(userId),
+    orderBy: ACTIVE_BRAND_PROFILE_ORDER,
   });
   const cap = limitsForPlan(user.plan).brandProfiles;
   if (!Number.isFinite(cap) || profiles.length <= cap) {
-    await tx.brandProfile.updateMany({
-      where: { userId, activeRevisionNumber: { gt: 0 }, archivedAt: null, frozenAt: { not: null } },
-      data: { frozenAt: null },
-    });
+    // Only take the write lock when there is actually something to thaw. This
+    // updateMany used to run unconditionally, so every availability check —
+    // including the one on every GET /api/brand-library — queued for the single
+    // SQLite writer even when it matched zero rows (HERO-10).
+    if (profiles.some((profile) => profile.frozenAt)) {
+      await tx.brandProfile.updateMany({
+        where: { userId, activeRevisionNumber: { gt: 0 }, archivedAt: null, frozenAt: { not: null } },
+        data: { frozenAt: null },
+      });
+    }
     return {
       cap,
       selectionRequired: false,
@@ -597,8 +617,38 @@ async function reconcileBrandProfileAvailabilityForPlanInTransaction(
 export async function getBrandProfileAvailabilityState(input: {
   userId: string;
 }): Promise<BrandProfileAvailabilityState> {
-  return prisma.$transaction((tx) =>
-    reconcileBrandProfileAvailabilityForPlanInTransaction(tx, input.userId));
+  // This runs on EVERY GET /api/brand-library. In the steady state — profiles
+  // within the plan cap and nothing frozen — reconciliation has nothing to do,
+  // so answer it from plain reads and keep the app's most frequent read out of
+  // the single SQLite writer's queue entirely (HERO-10).
+  const user = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { plan: true },
+  });
+  if (!user) throw new BrandProfileLibraryError("NOT_FOUND", "ไม่พบบัญชีนี้");
+  const profiles = await prisma.brandProfile.findMany({
+    where: activeBrandProfileWhere(input.userId),
+    orderBy: ACTIVE_BRAND_PROFILE_ORDER,
+    select: { id: true, frozenAt: true },
+  });
+  const cap = limitsForPlan(user.plan).brandProfiles;
+  const withinCap = !Number.isFinite(cap) || profiles.length <= cap;
+  if (withinCap && !profiles.some((profile) => profile.frozenAt)) {
+    return {
+      cap,
+      selectionRequired: false,
+      activeProfileIds: profiles.map((profile) => profile.id),
+      frozenProfileIds: [],
+    };
+  }
+  // Something really does need reconciling (a downgrade to resolve, or frozen
+  // profiles an upgrade should bring back). Reconciliation is idempotent, so a
+  // lost race against another writer is worth retrying rather than failing.
+  return withTransientDbRetry(
+    () => prisma.$transaction((tx) =>
+      reconcileBrandProfileAvailabilityForPlanInTransaction(tx, input.userId)),
+    { label: "getBrandProfileAvailabilityState" },
+  );
 }
 
 /**
@@ -1333,22 +1383,27 @@ export async function reconcileBrandProfileAvailability(input: {
   preferredProfileId?: string;
   preferredProfileIds?: string[];
 }) {
-  return prisma.$transaction(async (tx) => {
-    const requested = [
-      ...(input.preferredProfileIds ?? []),
-      ...(input.preferredProfileId ? [input.preferredProfileId] : []),
-    ].filter((id, index, values) => values.indexOf(id) === index);
-    const state = await reconcileBrandProfileAvailabilityForPlanInTransaction(
-      tx,
-      input.userId,
-      requested.length ? requested : undefined,
-    );
-    if (state.selectionRequired) {
-      throw new BrandProfileLibraryError(
-        "PREFERRED_REQUIRED",
-        `กรุณาเลือก ${state.cap} แบรนด์ที่จะใช้กับงานใหม่ตามแผนปัจจุบัน`,
+  // Idempotent: it recomputes the same freeze/thaw from the rows as they stand,
+  // so a transaction lost to SQLite write contention is safe to run again.
+  return withTransientDbRetry(
+    () => prisma.$transaction(async (tx) => {
+      const requested = [
+        ...(input.preferredProfileIds ?? []),
+        ...(input.preferredProfileId ? [input.preferredProfileId] : []),
+      ].filter((id, index, values) => values.indexOf(id) === index);
+      const state = await reconcileBrandProfileAvailabilityForPlanInTransaction(
+        tx,
+        input.userId,
+        requested.length ? requested : undefined,
       );
-    }
-    return state;
-  });
+      if (state.selectionRequired) {
+        throw new BrandProfileLibraryError(
+          "PREFERRED_REQUIRED",
+          `กรุณาเลือก ${state.cap} แบรนด์ที่จะใช้กับงานใหม่ตามแผนปัจจุบัน`,
+        );
+      }
+      return state;
+    }),
+    { label: "reconcileBrandProfileAvailability" },
+  );
 }
