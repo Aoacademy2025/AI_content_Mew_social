@@ -30,6 +30,11 @@ export type AcousticEvidence = {
   verifiedWordCount?: number;
   totalWordCount?: number;
   uncertainRanges?: AcousticRange[];
+  /** How far the clock that was already rendering disagreed with the acoustic one,
+   * over verified words only. Recorded for every projection — shadow included — so
+   * a clock is measured before it is trusted, never used as a gate. */
+  disagreementMaxMs?: number;
+  disagreementMedianMs?: number;
 };
 
 /** Preserve reliable acoustic islands. Missing words get a bounded, explicitly
