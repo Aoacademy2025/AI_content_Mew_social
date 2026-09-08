@@ -2289,7 +2289,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
     if (acousticAttempt) {
       const selection = selectAcousticSubtitleClock({ text: narrationText,
         maxCardChars: maxCardCharsFor(), existingTimingSource: subtitleTimingSource,
-        result: await acousticAttempt });
+        result: await acousticAttempt,
+        // Measure the remote alignment against the acoustic clock before either
+        // renders. Report only — the selection above does not read it.
+        ...(subtitleTimingSource === "forced_alignment" ? { existingWords: capRes.words } : {}) });
       verification.acoustic = selection.evidence;
       if (selection.replacement) {
         capRes = selection.replacement;
@@ -2308,6 +2311,10 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           cacheHit: selection.evidence.cacheHit ?? false,
           verifiedWordCount: selection.evidence.verifiedWordCount ?? 0,
           totalWordCount: selection.evidence.totalWordCount ?? 0,
+          ...(selection.evidence.disagreementMaxMs !== undefined
+            ? { disagreementMaxMs: selection.evidence.disagreementMaxMs } : {}),
+          ...(selection.evidence.disagreementMedianMs !== undefined
+            ? { disagreementMedianMs: selection.evidence.disagreementMedianMs } : {}),
           modelRevision: selection.evidence.modelRevision } });
     }
     const subtitleVerification = subtitleVerificationEvidence(verification);
