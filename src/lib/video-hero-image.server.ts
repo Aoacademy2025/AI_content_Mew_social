@@ -27,6 +27,7 @@ import {
   type BrandVisualJobAcceptance,
 } from "@/lib/brand-visual-job-acceptance.server";
 import { persistAiGenerationImage } from "@/lib/ai-generation-media.server";
+import { withTransientDbRetry } from "@/lib/prisma-transient-retry";
 import {
   ImageGenerationConfigError,
   describeImageOffer,
@@ -595,17 +596,24 @@ export async function generateHeroImageForVideo(
       if (snapshot.status === "COMPLETED") {
         try {
           if (!snapshot.image) throw new Error("RunPod completed without an image");
+          // Persist the file ONCE, outside the retry: the provider work is paid
+          // for and the bytes are already ours. Only the bookkeeping write is
+          // retried, because SQLite's single writer can expire this interactive
+          // transaction under render load — a contention signal, not a bad image.
           const outputUrl = await persistAiGenerationImage(snapshot.image);
-          job = await completeImageJob({
-            userId: input.userId,
-            jobId: job.id,
-            outputUrl,
-            delayTimeMs: snapshot.delayTimeMs,
-            executionTimeMs: snapshot.executionTimeMs,
-            providerReportedCostUsdMicros: snapshot.providerReportedCostUsdMicros,
-            providerReportedCredits: snapshot.providerReportedCredits,
-            sceneTitle: input.sceneTitle || `Video ${input.videoJobId} · scene ${input.sceneIndex + 1}`,
-          }) ?? job;
+          job = await withTransientDbRetry(
+            () => completeImageJob({
+              userId: input.userId,
+              jobId: job.id,
+              outputUrl,
+              delayTimeMs: snapshot.delayTimeMs,
+              executionTimeMs: snapshot.executionTimeMs,
+              providerReportedCostUsdMicros: snapshot.providerReportedCostUsdMicros,
+              providerReportedCredits: snapshot.providerReportedCredits,
+              sceneTitle: input.sceneTitle || `Video ${input.videoJobId} · scene ${input.sceneIndex + 1}`,
+            }),
+            { label: "completeImageJob" },
+          ) ?? job;
           recordHeroRunpodSuccess();
           return completedResult(job);
         } catch (error) {

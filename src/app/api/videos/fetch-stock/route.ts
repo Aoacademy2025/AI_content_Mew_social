@@ -141,6 +141,10 @@ import {
   forEachInFailFastBatches,
   heroRunpodCircuitState,
 } from "@/lib/hero-image-resilience";
+import {
+  DEFAULT_HERO_IMAGE_SCENE_RETRY_MAX,
+  selectSceneRetries,
+} from "@/lib/hero-image-scene-retry";
 import { getRunpodEndpointHealth } from "@/lib/runpod-serverless";
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
@@ -173,6 +177,16 @@ function readIntEnv(name: string, fallback: number, min: number, max: number): n
 const SEARCH_CONCURRENCY = readConcurrencyEnv("STOCK_SEARCH_CONCURRENCY", 8, 20);
 const DOWNLOAD_CONCURRENCY = readConcurrencyEnv("STOCK_DOWNLOAD_CONCURRENCY", 2, 6);
 const HERO_RUNPOD_CONCURRENCY = readConcurrencyEnv("HERO_RUNPOD_CONCURRENCY", 2, 2);
+// How many isolated, retryable Hero AI Image scenes may be re-run once inside a
+// single batch before the whole batch is refunded. Small on purpose: it rescues
+// the one-scene-of-eight case without doubling the provider bill on a batch that
+// is broadly broken. 0 disables in-batch scene retry.
+const HERO_IMAGE_SCENE_RETRY_MAX = readIntEnv(
+  "HERO_IMAGE_SCENE_RETRY_MAX",
+  DEFAULT_HERO_IMAGE_SCENE_RETRY_MAX,
+  0,
+  8,
+);
 const PER_SUBTITLE_DOWNLOAD_LIMIT = readIntEnv("STOCK_PER_SUBTITLE_DOWNLOAD_LIMIT", 36, 6, 120);
 
 type StockProvider = "pexels" | "pixabay";
@@ -1427,6 +1441,10 @@ export async function POST(req: Request) {
     aiCreditsRefundedGranted: 0,
     aiCreditsRefundedPurchased: 0,
     aiLastCreditBalanceAfterSpend: null as number | null,
+    // Hero AI Image only: scenes re-run once inside the batch, and how many of
+    // those recovered a batch that would otherwise have been refunded whole.
+    heroSceneRetryCount: 0,
+    heroSceneRetryRecoveredCount: 0,
   };
 
   function trackAiSkip(reason: AiSkipReason, count = 1) {
@@ -2486,98 +2504,111 @@ export async function POST(req: Request) {
       () => false,
     );
 
+    // One provider attempt for one scene. Named (rather than inline) so the
+    // bounded in-batch retry below can re-run exactly this work for a scene that
+    // failed in isolation, under its own idempotency key.
+    const runHeroSceneJob = async (
+      { keyword, sourceIndex, kenBurnsDurationSec }: (typeof directJobs)[number],
+      sceneRetry: 0 | 1,
+    ): Promise<{ stopBatch: boolean }> => {
+      const startedAt = Date.now();
+      aiTelemetry.aiGenAttemptCount++;
+      try {
+        const brief = heroBriefByScene.get(sourceIndex);
+        if (!brief) throw new Error(`Hero scene brief missing for scene ${sourceIndex}`);
+        const prompt = buildHeroImagePrompt(brief, {
+          region: brollPreference.brollRegionPreference,
+          style: brollPreference.brollVisualStyle,
+        });
+        const providerStyle = resolveHeroImageProviderStyle(
+          brief,
+          brollPreference.brollVisualStyle,
+        );
+        const generated = await generateHeroImageForVideo({
+          userId,
+          plan: user?.plan ?? "FREE",
+          prompt,
+          // One `video:` mint site, exactly as the namespace guard requires: the
+          // retry only appends a suffix, so a retried scene reserves (and can be
+          // swept) as its own job instead of adopting the refunded original.
+          idempotencyKey: `video:${videoJobId}:scene:${sourceIndex}:provider-attempt:${heroProviderAttempt}`
+            + (sceneRetry > 0 ? `:scene-retry:${sceneRetry}` : ""),
+          videoJobId: videoJobId!,
+          sceneIndex: sourceIndex,
+          sceneTitle: subtitleTexts?.[sourceIndex] || keyword,
+          style: providerStyle,
+          interfaceExpected: brief.includesInterface,
+          sceneRenderingDirection: {
+            storytellingMode: brief.visualMode,
+            camera: brief.camera,
+            lighting: brief.lighting,
+            palette: brief.palette,
+          },
+          brandVisualAcceptance: brandVisualAcceptance ?? undefined,
+          productSurface: "hero_video",
+        });
+        generatedScenes.push({
+          keyword,
+          sourceIndex,
+          kenBurnsDurationSec,
+          startedAt,
+          generated,
+          briefVisualMode: brief.visualMode,
+          providerStyle,
+        });
+        aiTelemetry.aiChargedCount++;
+        aiTelemetry.aiCreditsSpent += generated.fundingSource === "credits" ? generated.creditCost : 0;
+        aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted + generated.creditsFromPromotional;
+        aiTelemetry.aiCreditsSpentPurchased += generated.creditsFromPurchased;
+        return { stopBatch: false };
+      } catch (error) {
+        stockTelemetry.downloadFailCount++;
+        aiTelemetry.aiGenFailedCount++;
+        const code = error instanceof HeroImageGenerationError ? error.code : "OUTPUT_INVALID";
+        const message = error instanceof Error ? error.message : "Hero AI Image failed";
+        const providerFailure = error instanceof HeroImageGenerationError
+          ? error.providerFailure
+          : undefined;
+        failures.push({
+          sourceIndex,
+          code,
+          message,
+          providerCode: providerFailure?.code,
+          systemic: providerFailure?.systemic ?? false,
+          retryable: providerFailure?.retryable ?? true,
+          stopBatch: providerFailure?.stopBatch ?? providerFailure?.systemic ?? false,
+        });
+        await recordTelemetryEvent(userId, {
+          name: "hero_ai_image_video_scene_error",
+          category: "error",
+          source: "server",
+          step: "fetchStock.heroAiImage",
+          status: "error",
+          durationMs: Date.now() - startedAt,
+          properties: {
+            videoJobId,
+            sceneIndex: sourceIndex,
+            aiProvider: "runpod",
+            aiModel: "z-image-turbo",
+            errorCode: code,
+            providerErrorCode: providerFailure?.code,
+            systemicProviderFailure: providerFailure?.systemic ?? false,
+            ...(sceneRetry > 0 ? { sceneRetry } : {}),
+          },
+        }).catch(() => {});
+        return {
+          stopBatch: providerFailure?.stopBatch ?? providerFailure?.systemic ?? false,
+        };
+      }
+    };
+
     // Provider phase first: keep both RunPod workers fed continuously. Local
     // downloads and ffmpeg Ken Burns run only after the provider queue drains,
     // so CPU work cannot make the GPU endpoint repeatedly scale to zero.
     const batchOutcome = await forEachInFailFastBatches(
       directJobs,
       HERO_RUNPOD_CONCURRENCY,
-      async ({ keyword, sourceIndex, kenBurnsDurationSec }) => {
-        const startedAt = Date.now();
-        aiTelemetry.aiGenAttemptCount++;
-        try {
-          const brief = heroBriefByScene.get(sourceIndex);
-          if (!brief) throw new Error(`Hero scene brief missing for scene ${sourceIndex}`);
-          const prompt = buildHeroImagePrompt(brief, {
-            region: brollPreference.brollRegionPreference,
-            style: brollPreference.brollVisualStyle,
-          });
-          const providerStyle = resolveHeroImageProviderStyle(
-            brief,
-            brollPreference.brollVisualStyle,
-          );
-          const generated = await generateHeroImageForVideo({
-            userId,
-            plan: user?.plan ?? "FREE",
-            prompt,
-            idempotencyKey: `video:${videoJobId}:scene:${sourceIndex}:provider-attempt:${heroProviderAttempt}`,
-            videoJobId: videoJobId!,
-            sceneIndex: sourceIndex,
-            sceneTitle: subtitleTexts?.[sourceIndex] || keyword,
-            style: providerStyle,
-            interfaceExpected: brief.includesInterface,
-            sceneRenderingDirection: {
-              storytellingMode: brief.visualMode,
-              camera: brief.camera,
-              lighting: brief.lighting,
-              palette: brief.palette,
-            },
-            brandVisualAcceptance: brandVisualAcceptance ?? undefined,
-            productSurface: "hero_video",
-          });
-          generatedScenes.push({
-            keyword,
-            sourceIndex,
-            kenBurnsDurationSec,
-            startedAt,
-            generated,
-            briefVisualMode: brief.visualMode,
-            providerStyle,
-          });
-          aiTelemetry.aiChargedCount++;
-          aiTelemetry.aiCreditsSpent += generated.fundingSource === "credits" ? generated.creditCost : 0;
-          aiTelemetry.aiCreditsSpentGranted += generated.creditsFromGranted + generated.creditsFromPromotional;
-          aiTelemetry.aiCreditsSpentPurchased += generated.creditsFromPurchased;
-          return { stopBatch: false };
-        } catch (error) {
-          stockTelemetry.downloadFailCount++;
-          aiTelemetry.aiGenFailedCount++;
-          const code = error instanceof HeroImageGenerationError ? error.code : "OUTPUT_INVALID";
-          const message = error instanceof Error ? error.message : "Hero AI Image failed";
-          const providerFailure = error instanceof HeroImageGenerationError
-            ? error.providerFailure
-            : undefined;
-          failures.push({
-            sourceIndex,
-            code,
-            message,
-            providerCode: providerFailure?.code,
-            systemic: providerFailure?.systemic ?? false,
-            retryable: providerFailure?.retryable ?? true,
-            stopBatch: providerFailure?.stopBatch ?? providerFailure?.systemic ?? false,
-          });
-          await recordTelemetryEvent(userId, {
-            name: "hero_ai_image_video_scene_error",
-            category: "error",
-            source: "server",
-            step: "fetchStock.heroAiImage",
-            status: "error",
-            durationMs: Date.now() - startedAt,
-            properties: {
-              videoJobId,
-              sceneIndex: sourceIndex,
-              aiProvider: "runpod",
-              aiModel: "z-image-turbo",
-              errorCode: code,
-              providerErrorCode: providerFailure?.code,
-              systemicProviderFailure: providerFailure?.systemic ?? false,
-            },
-          }).catch(() => {});
-          return {
-            stopBatch: providerFailure?.stopBatch ?? providerFailure?.systemic ?? false,
-          };
-        }
-      },
+      (job) => runHeroSceneJob(job, 0),
       (outcome) => outcome.stopBatch,
     );
     if (batchOutcome.skipped.length > 0) {
@@ -2594,6 +2625,43 @@ export async function POST(req: Request) {
           retryable: stoppingFailure?.retryable ?? true,
           stopBatch: true,
         });
+      }
+    }
+
+    // One scene that lost a race with SQLite's single writer must not throw
+    // away the seven images the provider already delivered (and we already paid
+    // for). When the batch ran to the end and the only losers are isolated,
+    // retryable failures, re-run at most HERO_IMAGE_SCENE_RETRY_MAX of them
+    // once, under a fresh idempotency key so the refunded job is never reused.
+    // Systemic and batch-stopping failures are deliberately excluded: re-driving
+    // them is exactly the load that opened the circuit. Anything not selected
+    // keeps its failure entry, so the batch-refund path below is unchanged.
+    if (!batchOutcome.stopped && failures.length > 0 && HERO_IMAGE_SCENE_RETRY_MAX > 0) {
+      const directJobBySceneIndex = new Map(directJobs.map((job) => [job.sourceIndex, job]));
+      const selection = selectSceneRetries(failures, {
+        max: HERO_IMAGE_SCENE_RETRY_MAX,
+        eligibleSourceIndexes: directJobBySceneIndex.keys(),
+      });
+      const retryJobs = selection.retrySourceIndexes.flatMap((sourceIndex) => {
+        const job = directJobBySceneIndex.get(sourceIndex);
+        return job ? [job] : [];
+      });
+      if (retryJobs.length > 0 && retryJobs.length === selection.retrySourceIndexes.length) {
+        failures.splice(0, failures.length, ...selection.remainingFailures);
+        aiTelemetry.heroSceneRetryCount += retryJobs.length;
+        const failureCountBeforeRetry = failures.length;
+        // No fail-fast on this pass: every selected scene must be attempted so a
+        // scene that fails twice always leaves its failure entry behind.
+        await forEachInFailFastBatches(
+          retryJobs,
+          HERO_RUNPOD_CONCURRENCY,
+          (job) => runHeroSceneJob(job, 1),
+          () => false,
+        );
+        aiTelemetry.heroSceneRetryRecoveredCount += Math.max(
+          0,
+          retryJobs.length - (failures.length - failureCountBeforeRetry),
+        );
       }
     }
 
