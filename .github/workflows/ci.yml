@@ -38,6 +38,9 @@ jobs:
       - name: Verify editor native media keyboard isolation
         run: npm run verify:editor-media-keys
 
+      - name: Verify media stream cancellation and storage contracts
+        run: npm run verify:media-stream-cancel && npm run verify:media-storage
+
       - name: Verify post-launch stability hotfixes
         run: npm run verify:launch-stability-hotfix
 

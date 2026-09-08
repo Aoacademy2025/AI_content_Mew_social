@@ -230,6 +230,9 @@ function isPreconditionFailure(error: unknown): boolean {
 }
 
 function bodyAsWebStream(body: unknown): ReadableStream<Uint8Array> {
+  // SDK Node bodies also expose transformToWebStream, which uses toWeb and
+  // would bypass the cancellation-safe adapter (HERO-7).
+  if (body instanceof Readable) return mediaWebStream(body);
   if (
     body &&
     typeof (body as { transformToWebStream?: unknown }).transformToWebStream === "function"
@@ -237,7 +240,6 @@ function bodyAsWebStream(body: unknown): ReadableStream<Uint8Array> {
     return (body as { transformToWebStream: () => ReadableStream<Uint8Array> })
       .transformToWebStream();
   }
-  if (body instanceof Readable) return mediaWebStream(body);
   throw new R2VerificationError();
 }
 
