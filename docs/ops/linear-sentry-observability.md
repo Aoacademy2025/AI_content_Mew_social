@@ -42,6 +42,17 @@ Branch and pull request titles must include the Linear issue key, for example `H
 - Source maps: uploaded only during the production build, then removed from the public build output.
 - Active email alerts: Sentry's high-priority issue rule plus `New issue or regression` for the `HERO Studio` team.
 
+## Noise filtering
+
+`beforeSend` in `src/lib/sentry-config.ts` drops two classes of event before they leave the process.
+
+- **Remotion shutdown noise.** `ProtocolError` around a closed Chromium target during render teardown.
+- **Third-party browser noise.** Errors thrown by browser extensions and by in-app WebView hosts inside a visitor's browser. An event is dropped when its message names a browser API this application never calls (MetaMask, the Android WebView bridge, `window.webkit.messageHandlers`), or when its stack has at least one injected-origin frame (`chrome-extension://`, `webkit-masked-url:`, `app://<host>`, `app:///scripts/`) and no frame of ours.
+
+These are unactionable, and each new host variant otherwise opens a fresh Sentry group and sends a fresh alert. In the 14 days to 2026-09-09 they were 177 of 192 events in the project.
+
+The filter must never drop an event whose stack touches this application. `npm run verify:sentry-config` asserts both directions, including a mixed stack where an extension frame sits above our own code. Before adding a message pattern, confirm the named API is absent from `src/`; that absence is what makes matching on message text safe.
+
 The SDK explicitly disables collection of cookies, HTTP headers and bodies, URL query parameters, GraphQL documents and variables, generative-AI inputs and outputs, database query data, user information, and stack-frame local variables. The `beforeSend` guard removes user data and redacts secret-like keys as a second boundary.
 
 ## Production environment

@@ -112,7 +112,72 @@ function main() {
     null,
   );
 
-  console.log("verify-sentry-config: 23/23 passed");
+  // Third-party browser noise, using frame origins observed in production.
+  const injected = (value: string, filenames: string[]) =>
+    beforeSendSentryEvent({
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value,
+            stacktrace: { frames: filenames.map((filename) => ({ filename })) },
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    injected("Error invoking postMessage: Java object is gone", [
+      "app://navigation_performance_logger_android:1:10198",
+      "app://navigation_performance_logger_android:1:16565",
+    ]),
+    null,
+    "Android in-app WebView bridge noise must be dropped",
+  );
+  assert.strictEqual(
+    injected("Failed to connect to MetaMask", [
+      "app:///scripts/inpage.js:7:84292",
+    ]),
+    null,
+    "browser extension noise must be dropped",
+  );
+  assert.strictEqual(
+    injected(
+      "undefined is not an object (evaluating 'window.webkit.messageHandlers.x')",
+      [],
+    ),
+    null,
+    "iOS in-app WebView bridge noise must be dropped without frames",
+  );
+  assert.strictEqual(
+    injected("boom", ["chrome-extension://abcdef/contentscript.js:1:1"]),
+    null,
+    "extension-only stacks must be dropped",
+  );
+
+  assert(
+    injected("render failed", ["app:///_next/static/chunks/main-abc.js:1:1"]),
+    "our own client error must be kept",
+  );
+  assert(
+    injected("Invalid state: Controller is already closed", [
+      "node:internal/webstreams/readablestream:1077:13",
+    ]),
+    "our own server error must be kept",
+  );
+  assert(
+    injected("render failed", [
+      "chrome-extension://abcdef/contentscript.js:1:1",
+      "app:///_next/static/chunks/main-abc.js:1:1",
+    ]),
+    "an error that touches our code must be kept even with an extension frame",
+  );
+  assert(
+    beforeSendSentryEvent({ message: "checkout failed" }),
+    "an error without frames must be kept",
+  );
+
+  console.log("verify-sentry-config: 31/31 passed");
 }
 
 main();
