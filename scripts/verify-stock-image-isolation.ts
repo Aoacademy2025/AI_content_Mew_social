@@ -52,8 +52,10 @@ async function main() {
     // free photo) shares this namespace; stock video caching retains its key.
     const route = readFileSync("src/app/api/videos/fetch-stock/route.ts", "utf8");
     assert(route.includes("createStockImagePrefix(userId, videoJobId)"));
-    assert.equal((route.match(/const imageFile = `\$\{imagePrefix\}/g) ?? []).length, 7);
-    assert.equal((route.match(/const outFile = `\$\{imagePrefix\}/g) ?? []).length, 7);
+    // 8 branches since HERO-12: the coverage branch mints its own isolated
+    // pair for a window that borrows a delivered scene's image.
+    assert.equal((route.match(/const imageFile = `\$\{imagePrefix\}/g) ?? []).length, 8);
+    assert.equal((route.match(/const outFile = `\$\{imagePrefix\}/g) ?? []).length, 8);
     assert.equal((route.match(/const outFile = `\$\{userPrefix\}/g) ?? []).length, 1);
     console.log("stock image isolation PASS: concurrent retained scenes, real ffmpeg, retry, cleanup, all image branches");
   } finally { rmSync(root, { recursive: true, force: true }); }
