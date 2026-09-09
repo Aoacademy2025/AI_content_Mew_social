@@ -17,6 +17,7 @@ import { join } from "node:path";
 async function main() {
   const {
     SQLITE_CACHE_SIZE_KIB,
+    slowTransactionThresholdMsFromEnv,
     sqliteBusyTimeoutSecondsFromEnv,
     sqliteCacheSizeKibFromEnv,
     transactionOptionsFromEnv,
@@ -122,6 +123,75 @@ async function main() {
     "file:/abs/db?x=socket_timeout=1",
     "the already-set check is a substring match on the parameter, deliberately conservative",
   );
+
+  // ---- slow-transaction threshold (HERO-10 lock visibility) ----------
+  assert.equal(
+    slowTransactionThresholdMsFromEnv({}),
+    2_000,
+    "the default must be high enough that a healthy transaction never logs",
+  );
+  assert.equal(
+    slowTransactionThresholdMsFromEnv({ PRISMA_SLOW_TX_MS: "0" }),
+    0,
+    "0 must be honoured — it is the switch that removes the timer entirely",
+  );
+  assert.equal(
+    slowTransactionThresholdMsFromEnv({ PRISMA_SLOW_TX_MS: "5000" }),
+    5_000,
+    "an operator value is used as given",
+  );
+  assert.equal(
+    slowTransactionThresholdMsFromEnv({ PRISMA_SLOW_TX_MS: "-1" }),
+    0,
+    "negative clamps to off, never to a threshold that logs every transaction",
+  );
+  assert.equal(
+    slowTransactionThresholdMsFromEnv({ PRISMA_SLOW_TX_MS: "2s" }),
+    2_000,
+    "a typo falls back to the default rather than coercing",
+  );
+  assert.equal(
+    slowTransactionThresholdMsFromEnv({ PRISMA_SLOW_TX_MS: "999999999" }),
+    600_000,
+    "an absurd value clamps to the ceiling",
+  );
+
+  // The instrumentation stays log-only and never prints row data.
+  {
+    const client = readFileSync(join(process.cwd(), "src/lib/prisma.ts"), "utf8");
+    assert.match(
+      client,
+      /\[prisma-slow-tx\]/,
+      "prisma.ts must carry the marker the runbook greps for",
+    );
+    assert.doesNotMatch(
+      client,
+      /console\.(warn|log|error)\([^)]*\bargs\b/,
+      "the timer must never log transaction arguments",
+    );
+  }
+
+  // ---- pm2 gives every log line a timestamp --------------------------
+  {
+    const ecosystem = readFileSync(join(process.cwd(), "ecosystem.config.js"), "utf8");
+    assert.match(
+      ecosystem,
+      /log_date_format/,
+      "without a timestamp per line, a failure cannot be joined to its cause",
+    );
+    // ecosystem.config.js is CommonJS, so an ESM import lands on `default`.
+    const loaded = await import("../ecosystem.config.js");
+    const apps = ((loaded as { default?: { apps?: unknown } }).default ?? loaded)
+      .apps as { name?: string; log_date_format?: string }[] | undefined;
+    assert(Array.isArray(apps) && apps.length > 0, "ecosystem must expose apps");
+    for (const app of apps) {
+      assert.equal(
+        app.log_date_format,
+        "YYYY-MM-DDTHH:mm:ss.SSSZ",
+        `every pm2 app needs timestamped logs, including ${app.name ?? "an unnamed app"}`,
+      );
+    }
+  }
 
   // ---- the URL is a secret: this module must never print it ----------
   const source = readFileSync(join(process.cwd(), "src/lib/prisma-options.ts"), "utf8");

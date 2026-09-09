@@ -127,6 +127,13 @@ const compositeStabilityRuntimeEnv = Object.freeze({
   COMPOSITE_ADMISSION_ENABLED: process.env.COMPOSITE_ADMISSION_ENABLED === "0" ? "0" : "1",
 });
 
+// PM2 writes application stdout/stderr through verbatim, with no time of its
+// own. Two investigations (HERO-7, HERO-10) had to infer ordering from how
+// close lines sat in one interleaved stream, which is adjacency, not evidence.
+// One timestamp per line is what lets a failure be joined to what caused it.
+// An app may still override this by setting its own log_date_format.
+const LOG_DATE_FORMAT = "YYYY-MM-DDTHH:mm:ss.SSSZ";
+
 module.exports = {
   apps: [
   {
@@ -479,5 +486,5 @@ module.exports = {
         ...compositeStabilityRuntimeEnv,
       },
     },
-  ],
+  ].map((app) => ({ log_date_format: LOG_DATE_FORMAT, ...app })),
 };

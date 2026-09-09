@@ -87,6 +87,26 @@ export function sqliteBusyTimeoutSecondsFromEnv(env: EnvLike = process.env): num
   );
 }
 
+/**
+ * Log any transaction that stays open at least this long, in ms.
+ *
+ * SQLite holds the write lock from a transaction's first write until it
+ * commits, so a single long transaction is what makes unrelated requests wait.
+ * Production shows writers giving up after the 20 s socket timeout while the
+ * box is almost idle, and the holder is not identifiable from the logs. This
+ * threshold is high enough that a healthy transaction never logs.
+ *
+ * Env: `PRISMA_SLOW_TX_MS`; 0 disables the timer entirely.
+ */
+export const PRISMA_SLOW_TX_MS = 2_000;
+const SLOW_TX_MAX_MS = 600_000;
+
+/** ms before a transaction is logged as slow. 0 = off.
+ *  Env: `PRISMA_SLOW_TX_MS` (clamped 0-600000). */
+export function slowTransactionThresholdMsFromEnv(env: EnvLike = process.env): number {
+  return clampedInt(env.PRISMA_SLOW_TX_MS, PRISMA_SLOW_TX_MS, 0, SLOW_TX_MAX_MS);
+}
+
 /** Page cache in KiB. Env: `SQLITE_CACHE_SIZE_KIB` (clamped 2 MB-512 MB). */
 export function sqliteCacheSizeKibFromEnv(env: EnvLike = process.env): number {
   return clampedInt(

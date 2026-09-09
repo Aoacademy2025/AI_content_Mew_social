@@ -217,6 +217,9 @@ jobs:
       - name: Brand Library lint
         run: npm run lint:brands
 
+      - name: Verify the SQLite slow-transaction timer fires
+        run: npm run verify:prisma-options && npm run verify:prisma-slow-tx
+
       - name: Verify media streams survive client cancellation
         run: npm run verify:media-stream
 

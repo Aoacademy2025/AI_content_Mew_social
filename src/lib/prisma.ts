@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import {
+  slowTransactionThresholdMsFromEnv,
   sqliteBusyTimeoutSecondsFromEnv,
   sqliteCacheSizeKibFromEnv,
   transactionOptionsFromEnv,
@@ -66,6 +67,41 @@ if (isNewClient) {
   prisma
     .$queryRawUnsafe(`PRAGMA cache_size = -${cacheSizeKib}`)
     .catch((e) => console.warn("[prisma] could not set cache_size:", e));
+}
+
+// HERO-10. SQLite holds the write lock from a transaction's first write until
+// it commits, so one long transaction is what makes unrelated requests wait.
+// Production still loses ~11 writes a day to the 20 s socket timeout on a box
+// with a load average under 1, and the logs name only the victims
+// (`prisma.user.updateMany()` behind /api/videos/split-script and tts-gemini),
+// never the holder. Timing the transaction boundary is what tells them apart:
+// a victim shows as a failed query, a holder shows up here.
+//
+// Log-only, and the timer is a Date.now() pair around a call that already
+// awaits the database. Set PRISMA_SLOW_TX_MS=0 to remove it entirely.
+const slowTransactionMs = slowTransactionThresholdMsFromEnv();
+
+if (isNewClient && slowTransactionMs > 0) {
+  type TransactionFn = (...args: unknown[]) => Promise<unknown>;
+  const runTransaction = prisma.$transaction.bind(prisma) as TransactionFn;
+  let sequence = 0;
+
+  (prisma as unknown as { $transaction: TransactionFn }).$transaction = async (
+    ...args: unknown[]
+  ) => {
+    const id = (sequence += 1);
+    const startedAt = Date.now();
+    try {
+      return await runTransaction(...args);
+    } finally {
+      const heldMs = Date.now() - startedAt;
+      if (heldMs >= slowTransactionMs) {
+        // No arguments, no model names, no row data — a duration and a counter
+        // are enough to correlate against the timestamped lines around them.
+        console.warn(`[prisma-slow-tx] #${id} held ${heldMs}ms`);
+      }
+    }
+  };
 }
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
