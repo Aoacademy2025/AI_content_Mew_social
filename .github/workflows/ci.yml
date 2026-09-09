@@ -217,6 +217,9 @@ jobs:
       - name: Brand Library lint
         run: npm run lint:brands
 
+      - name: Verify media streams survive client cancellation
+        run: npm run verify:media-stream
+
       - name: Verify Sentry privacy and sampling configuration
         run: npm run verify:sentry-config
 

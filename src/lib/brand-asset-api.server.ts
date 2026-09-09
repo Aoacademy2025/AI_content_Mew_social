@@ -1,5 +1,4 @@
 import { open } from "node:fs/promises";
-import { Readable } from "node:stream";
 import { NextResponse } from "next/server";
 import {
   BrandAssetError,
@@ -13,6 +12,7 @@ import {
 } from "@/lib/brand-assets.server";
 import type { User } from "@prisma/client";
 import { resolveBrandVisualAccess } from "@/lib/brand-visual-rollout.server";
+import { mediaWebStream } from "@/lib/media-storage-support";
 import {
   normalizeLogoOverlayConfig,
   type BrandAssetView,
@@ -288,7 +288,8 @@ export async function getBrandAssetImage(
   }
 
   const nodeStream = file.createReadStream();
-  const webStream = Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>;
+  // Same cancellation-safe adapter the media routes use (HERO-7).
+  const webStream = mediaWebStream(nodeStream);
   return new NextResponse(webStream, {
     headers: {
       "Content-Type": "image/webp",
