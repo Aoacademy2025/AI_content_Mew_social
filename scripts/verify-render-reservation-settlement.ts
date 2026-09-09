@@ -291,6 +291,116 @@ async function main() {
   );
   assert.equal((await checkMinuteQuota(minuteUser.id)).used, 0);
 
+  // HERO-15: the HERO-14 incident. A job that died at `intro_wait` because the
+  // orchestrator refused a checkpoint it had written itself is owed its minutes for
+  // the same reason the quota incident is — HeyGen generated and billed the intro
+  // video and we abandoned the render. Unlike the legacy unknown-outcome path this
+  // needs no human attestation: the stored checkpoint proves provider engagement.
+  {
+    const checkpointStart = new Date("2026-09-09T15:28:00.000Z");
+    const checkpoint = {
+      version: 1, provider: "heygen", phase: "intro_wait",
+      providerStartedAt: "2026-09-09T15:37:51.724Z",
+      providerDeadlineAt: "2026-09-09T17:37:51.724Z",
+      baseUrl: "/api/renders/ckpt-base.mp4", voiceUrl: "/api/renders/ckpt-tts.wav",
+      audioDurationMs: 98073, captions: [{ text: "หนึ่ง", startMs: 0, endMs: 900 }],
+      words: [], fullText: "หนึ่ง",
+      subtitleTimingSource: "partial_forced_alignment",
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 98170 },
+      baseConfig: {},
+      avatar: {
+        mode: "bookend", id: "avatar-1", introSecs: 5, tailSecs: 5,
+        layout: { scale: 1, offsetX: 0, offsetY: 0 },
+        introAudioUrl: "/api/renders/ckpt-intro.wav",
+        introVideoId: "05ec14ca3b424c6fae15c4d03e2ee6a7",
+      },
+    };
+    await prisma.user.update({ where: { id: minuteUser.id }, data: { minutesUsed: 2 } });
+    const makeJob = async (id: string, providerCheckpointJson: string | null) => {
+      await prisma.videoJob.create({
+        data: {
+          id, userId: minuteUser.id, status: "failed", currentStep: "avatar",
+          inputJson: JSON.stringify({ script: "incident", avatarMode: "bookend", avatarId: "avatar-1" }),
+          errorMessage: "เกิดข้อผิดพลาด (startup_unknown): invalid avatar provider checkpoint - manual recovery required",
+          providerCheckpointJson,
+          createdAt: checkpointStart, startedAt: checkpointStart,
+          finishedAt: new Date("2026-09-09T15:50:00.000Z"),
+        },
+      });
+      await prisma.renderJob.create({
+        data: {
+          id: `${id}-render`, userId: minuteUser.id, type: "RENDER", status: "DONE",
+          payload: "{}", reservedQuota: true, reservedMinutes: 2,
+          createdAt: new Date("2026-09-09T15:40:00.000Z"),
+        },
+      });
+    };
+
+    // Evidence missing → refuse, with its own reason. Never silently refund.
+    await makeJob("ckpt-no-evidence-job", null);
+    assert.deepEqual(
+      await inspectAvatarQuotaRefund({
+        videoJobId: "ckpt-no-evidence-job", renderJobId: "ckpt-no-evidence-job-render",
+      }),
+      { kind: "rejected", videoJobId: "ckpt-no-evidence-job", reason: "checkpoint_provider_engagement_not_confirmed" },
+      "a checkpoint failure with no stored checkpoint proves nothing and must not open the money path",
+    );
+
+    // A checkpoint that never reached HeyGen (no intro video id) is equally unproven.
+    await makeJob("ckpt-no-intro-job", JSON.stringify({
+      ...checkpoint, phase: "intro_generate",
+      avatar: { ...checkpoint.avatar, introVideoId: undefined },
+    }));
+    assert.equal(
+      (await inspectAvatarQuotaRefund({
+        videoJobId: "ckpt-no-intro-job", renderJobId: "ckpt-no-intro-job-render",
+      })).kind,
+      "rejected",
+      "no intro video id means HeyGen was never billed, so there is nothing to compensate",
+    );
+
+    // The real shape: refundable, with NO --confirmed-heygen-402 attestation.
+    await makeJob("ckpt-job", JSON.stringify(checkpoint));
+    const ckptIncident = await inspectAvatarQuotaRefund({
+      videoJobId: "ckpt-job", renderJobId: "ckpt-job-render",
+    });
+    assert.equal(ckptIncident.kind, "ready", JSON.stringify(ckptIncident));
+    assert.equal(ckptIncident.kind === "ready" ? ckptIncident.incident : null, "checkpoint_unreadable");
+    assert.equal(ckptIncident.kind === "ready" ? ckptIncident.amount : null, 2);
+    assert.equal(ckptIncident.kind === "ready" ? ckptIncident.funding : null, "minutes");
+    assert.equal(
+      ckptIncident.kind === "ready" ? (await applyAvatarQuotaRefund(ckptIncident)).kind : null,
+      "refunded",
+    );
+    assert.equal((await checkMinuteQuota(minuteUser.id)).used, 0, "the 2 minutes come back");
+
+    // The incident record must stay truthful: the quota path normalises error codes,
+    // the checkpoint path must not be refiled as a HeyGen quota event.
+    const ckptJob = await prisma.videoJob.findUniqueOrThrow({ where: { id: "ckpt-job" } });
+    assert.equal(ckptJob.errorCode, null, "a checkpoint failure is never restamped as a quota error");
+    assert.equal(ckptJob.errorProvider, null, "a checkpoint failure is never restamped as a heygen error");
+
+    // Idempotent: a second pass is a no-op, not a second refund.
+    const repeat = await inspectAvatarQuotaRefund({
+      videoJobId: "ckpt-job", renderJobId: "ckpt-job-render",
+    });
+    assert.equal(repeat.kind, "already_settled", JSON.stringify(repeat));
+    assert.equal(
+      repeat.kind === "already_settled" ? (await applyAvatarQuotaRefund(repeat)).kind : null,
+      "already_settled",
+    );
+    assert.equal((await checkMinuteQuota(minuteUser.id)).used, 0, "a repeat run never refunds twice");
+
+    // Unchanged guards: a mismatched reviewed render is still refused.
+    assert.equal(
+      (await inspectAvatarQuotaRefund({
+        videoJobId: "ckpt-job", renderJobId: "legacy-avatar-quota-render",
+      })).kind,
+      "rejected",
+      "the reviewed render job must still match",
+    );
+  }
+
   // R32/R34: avatar-steps.ts:147 throws this English cause, and the orchestrator's terminal
   // catch now labels unknown step failures as "<prefix> (<code>): <cause>". The refund gate
   // matches by substring so BOTH shapes still open the money path — the wrapped message is
