@@ -417,7 +417,13 @@ export type SubtitleVerification = {
   status: "aligned" | "failed" | "skipped" | "timeout";
   /** Alignment failure code when status === "failed", or "card_count_mismatch" info. */
   code?: string;
-  method?: "exact" | "fuzzy" | "ctc";
+  /** "partial" (HERO-13): the exact walk measured only part of the script and the
+   *  rest was spanned between the measured words. */
+  method?: "exact" | "fuzzy" | "ctc" | "partial";
+  /** HERO-13: share of the script's words carrying a measured timestamp, in
+   *  permille, when `method === "partial"`. Emitted so the apply threshold can be
+   *  tuned from production data. */
+  partialCoveragePermille?: number;
   acoustic?: import("@/lib/acoustic-subtitle-clock").AcousticEvidence;
   similarityPermille?: number;
   durationMs: number;

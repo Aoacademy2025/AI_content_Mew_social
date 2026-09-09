@@ -139,7 +139,18 @@ export type TranscriptAlignmentFailureCode =
 
 export type TranscriptAlignmentResult =
   | { status: "aligned"; words: TimedWord[]; method: "exact" | "fuzzy"; similarity: number }
-  | { status: "failed"; code: TranscriptAlignmentFailureCode };
+  | {
+      status: "failed";
+      code: TranscriptAlignmentFailureCode;
+      /**
+       * HERO-13: the words the exact walk DID measure before it ran out of
+       * transcript. Present only for `incomplete_alignment`, where the matcher
+       * stopped because one side ended rather than because the two texts
+       * diverged. The caller may project these onto the script and span the
+       * rest; it is evidence, never a clock on its own.
+       */
+      partialWords?: TimedWord[];
+    };
 
 const MIN_FUZZY_ALIGNMENT_SIMILARITY = 0.92;
 const MAX_FUZZY_ALIGNMENT_CELLS = 12_000_000;
@@ -456,9 +467,13 @@ function alignTranscriptWordsExactly(
       });
     }
   }
-  return sourceIndex === sourceWords.length && transcriptIndex === usableTranscript.length
-    ? { status: "aligned", words: aligned, method: "exact", similarity: 1 }
-    : { status: "failed", code: "incomplete_alignment" };
+  if (sourceIndex === sourceWords.length && transcriptIndex === usableTranscript.length) {
+    return { status: "aligned", words: aligned, method: "exact", similarity: 1 };
+  }
+  // HERO-13: one side ran out. The words matched up to that point are real
+  // measurements — hand them back so a long clip whose transcript lost a chunk
+  // keeps the timing it did earn instead of falling all the way to the estimate.
+  return { status: "failed", code: "incomplete_alignment", ...(aligned.length ? { partialWords: aligned } : {}) };
 }
 
 /**
@@ -803,7 +818,13 @@ export function alignTranscriptWordsToSourceDetailed(
   }
   if (exact.code !== "text_mismatch" && exact.code !== "incomplete_alignment") return exact;
   const fuzzy = alignTranscriptWordsFuzzily(fullText, sourceWords, usableTranscript);
-  if (fuzzy.status !== "aligned") return fuzzy;
+  // HERO-13: a failed fuzzy pass must not discard the exact pass's partial
+  // measurements. Carry them on the failure so the caller can decide.
+  if (fuzzy.status !== "aligned") {
+    return exact.partialWords?.length && fuzzy.status === "failed" && !fuzzy.partialWords?.length
+      ? { ...fuzzy, partialWords: exact.partialWords }
+      : fuzzy;
+  }
   return hasPlausibleAlignedWordTiming(fuzzy.words)
     ? fuzzy
     : { status: "failed", code: "implausible_timing_density" };

@@ -54,7 +54,7 @@ jobs:
         run: node --conditions=react-server --import tsx scripts/verify-stock-image-isolation.ts
 
       - name: Verify bounded acoustic subtitle clock
-        run: npm run verify:acoustic-subtitle-clock
+        run: npm run verify:acoustic-subtitle-clock && npm run verify:partial-alignment
 
       - name: Setup Python for acoustic path tests
         uses: actions/setup-python@v5
