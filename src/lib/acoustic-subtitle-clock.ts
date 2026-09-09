@@ -82,6 +82,24 @@ export function projectAcousticClock(args: {
       verified,
     };
   });
+  return fillUnverifiedSpans(words, audioDurationMs);
+}
+
+/**
+ * Span the words no evidence reached, between the measured islands around them.
+ * HERO-13 extracted this from `projectAcousticClock` so the partial forced-
+ * alignment clock fills its gaps by exactly the same rule the acoustic clock
+ * uses — one definition, per the repairer/validator lesson in CLAUDE.md.
+ *
+ * Every unverified run is stretched proportionally to word length between its
+ * verified neighbours (or the clip edges), and recorded in `uncertainRanges` so
+ * callers can group those cards instead of flashing them. Returns null when no
+ * word is verified, or when a run is too tight to give each word a millisecond.
+ */
+export function fillUnverifiedSpans(
+  words: Array<TimedWord & { verified: boolean }>,
+  audioDurationMs: number,
+): AcousticClock | null {
   const verifiedWordCount = words.filter(w => w.verified).length;
   if (!verifiedWordCount) return null;
   const uncertainRanges: AcousticRange[] = [];

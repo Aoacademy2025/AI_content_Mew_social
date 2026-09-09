@@ -3,6 +3,7 @@ import { acousticSubtitleMode, runAcousticSubtitleWorker } from "@/lib/acoustic-
 import { SUBTITLE_MIN_CARD_MS } from "@/lib/mcp/subtitle-quality";
 import { selectAcousticSubtitleClock } from "@/lib/acoustic-subtitle-selection";
 import { mergeUncertainCaptionCards, mergeShortAcousticCards } from "@/lib/acoustic-subtitle-clock";
+import { buildPartialAlignmentClock } from "@/lib/mcp/partial-alignment";
 import { isOmniVoiceUserAllowed } from "@/lib/omnivoice-policy";
 import type { SubtitleSpeechCoverage } from "@/lib/subtitle-speech-coverage";
 import type { TranscribeWarning } from "@/lib/transcribe-partial-coverage";
@@ -124,6 +125,7 @@ import {
 import {
   alignTranscriptWordsToSourceDetailed,
   buildCanonicalCaptionsFromAlignedWords,
+  hasPlausibleAlignedWordTiming,
   repairCaptionTiming,
   resolveUploadTranscriptWords,
   subtitleQualityShouldFailJob,
@@ -483,6 +485,8 @@ function subtitleVerificationEvidence(attempt: SubtitleAlignmentAttempt): Subtit
     ...(attempt.acoustic ? { acoustic: attempt.acoustic } : {}),
     ...(attempt.code ? { code: attempt.code } : {}),
     ...(attempt.method ? { method: attempt.method } : {}),
+    ...(attempt.partialCoveragePermille !== undefined
+      ? { partialCoveragePermille: attempt.partialCoveragePermille } : {}),
     ...(attempt.similarityPermille !== undefined ? { similarityPermille: attempt.similarityPermille } : {}),
     ...(attempt.medianAbsStartDeltaMs !== undefined ? { medianAbsStartDeltaMs: attempt.medianAbsStartDeltaMs } : {}),
     ...(attempt.maxAbsStartDeltaMs !== undefined ? { maxAbsStartDeltaMs: attempt.maxAbsStartDeltaMs } : {}),
@@ -649,6 +653,49 @@ async function alignNarrationOnce(args: {
     }
     const alignment = alignTranscriptWordsToSourceDetailed(args.narrationText, responseWords);
     if (alignment.status !== "aligned") {
+      // HERO-13: one bad chunk of a multi-chunk transcript used to discard every
+      // word the other chunks measured. Keep the measured part and span the rest
+      // between it, exactly as the acoustic clock does, when enough of the script
+      // is covered. Below the threshold this is null and the ladder is unchanged.
+      const partial = alignment.partialWords?.length
+        ? buildPartialAlignmentClock({
+            fullText: args.narrationText,
+            measuredWords: alignment.partialWords,
+            audioDurationMs: args.audioDurationMs,
+          })
+        : null;
+      const partialCaptions = partial
+        ? buildCanonicalCaptionsFromAlignedWords(args.narrationText, partial.words, args.maxCardChars)
+        : null;
+      if (partial && partialCaptions?.length && hasPlausibleAlignedWordTiming(partial.words)) {
+        // Group the spanned stretch into fewer, longer cards: an approximate
+        // span read one short card at a time is what looks broken to a viewer.
+        const captions = mergeUncertainCaptionCards(
+          partialCaptions,
+          partial.uncertainRanges,
+          args.narrationText,
+          args.maxCardChars,
+        );
+        return {
+          status: "aligned",
+          method: "partial",
+          durationMs: Date.now() - startedAt,
+          ttsCaptions,
+          code: alignment.code,
+          partialCoveragePermille: Math.round(partial.coverage * 1_000),
+          ...(startDeltaStats(captions, ttsCaptions) ?? {}),
+          capRes: {
+            captions,
+            words: partial.words,
+            audioDurationMs: Number(response.audioDurationMs) > 0
+              ? Math.round(Number(response.audioDurationMs))
+              : args.audioDurationMs,
+            fullText: args.narrationText,
+          },
+          speechCoverage: response.speechCoverage,
+          ...evidence,
+        };
+      }
       return { status: "failed", code: alignment.code, durationMs: Date.now() - startedAt, ttsCaptions, ...evidence };
     }
     // Reuse only proven word timestamps; every visible character still comes from the
@@ -2274,6 +2321,8 @@ export async function runOrchestrator(jobId: string, userId: string, deps: Orche
           provider,
           durationMs: verification.durationMs,
           ...(verification.method ? { method: verification.method } : {}),
+          ...(verification.partialCoveragePermille !== undefined
+            ? { partialCoveragePermille: verification.partialCoveragePermille } : {}),
           ...(verification.similarityPermille !== undefined ? { similarityPermille: verification.similarityPermille } : {}),
           ...(verification.medianAbsStartDeltaMs !== undefined ? { medianAbsStartDeltaMs: verification.medianAbsStartDeltaMs } : {}),
           ...(verification.maxAbsStartDeltaMs !== undefined ? { maxAbsStartDeltaMs: verification.maxAbsStartDeltaMs } : {}),
