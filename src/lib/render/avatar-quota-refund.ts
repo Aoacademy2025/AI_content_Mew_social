@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { parseAvatarProviderCheckpoint } from "@/lib/mcp/avatar-provider-checkpoint";
 import {
   refundRenderReservationById,
   summarizeRenderReservationFunding,
@@ -6,6 +7,13 @@ import {
 } from "@/lib/render/reservation-settlement";
 
 const LEGACY_UNKNOWN_OUTCOME = "avatar generate has unknown provider outcome - manual recovery required";
+/**
+ * HERO-14: the orchestrator refused a checkpoint it had written itself, and the job
+ * died at `intro_wait` after HeyGen had generated and billed the intro video. The
+ * customer is owed those minutes for the same reason the quota incident owes them —
+ * we engaged the paid provider and then abandoned the render through our own fault.
+ */
+const CHECKPOINT_UNREADABLE = "invalid avatar provider checkpoint - manual recovery required";
 
 export type AvatarQuotaRefundInspection =
   | { kind: "rejected"; videoJobId: string; reason: string }
@@ -14,6 +22,10 @@ export type AvatarQuotaRefundInspection =
       videoJobId: string;
       renderJobId: string;
       userId: string;
+      /** Which incident opened the gate — the refund reason and any error-code
+       *  normalisation follow from this, so a checkpoint failure is never filed
+       *  as a HeyGen quota event. */
+      incident: "heygen_quota" | "checkpoint_unreadable";
       funding: "minutes" | "credits" | "clips";
       amount: number;
       legacyEvidenceRequired: boolean;
@@ -49,6 +61,18 @@ export async function inspectAvatarQuotaRefund(input: {
   }
   if (!avatarInput(job.inputJson)) return rejected(job.id, "avatar_input_not_confirmed");
 
+  // The checkpoint incident proves itself and needs no human attestation: a job that
+  // failed on this message still stores the checkpoint, and an `intro_wait` phase
+  // carrying `avatar.introVideoId` is machine-checkable evidence that HeyGen accepted
+  // and generated the intro video before we abandoned it. That is stronger than the
+  // flag the legacy unknown-outcome path has to rely on.
+  const checkpointUnreadable = job.errorMessage?.includes(CHECKPOINT_UNREADABLE) ?? false;
+  if (checkpointUnreadable) {
+    const checkpoint = parseAvatarProviderCheckpoint(job.providerCheckpointJson);
+    if (!checkpoint?.avatar.introVideoId) {
+      return rejected(job.id, "checkpoint_provider_engagement_not_confirmed");
+    }
+  }
   const structuredQuota = job.errorProvider === "heygen" && job.errorCode === "quota";
   // R32: the orchestrator's terminal catch (Task 5 / R31) may now wrap this exact
   // internal (non-Thai, non-envelope) cause in a "<prefix> (<code>): <cause>" form —
@@ -56,8 +80,10 @@ export async function inspectAvatarQuotaRefund(input: {
   // directly, or produced before this wrapping existed) and the wrapped form still gate
   // this money-refund path correctly.
   const legacyUnknown = job.errorMessage?.includes(LEGACY_UNKNOWN_OUTCOME) ?? false;
-  if (!structuredQuota && !legacyUnknown) return rejected(job.id, "heygen_quota_error_not_confirmed");
-  if (!structuredQuota && legacyUnknown && !input.confirmedLegacyHeygen402) {
+  if (!structuredQuota && !legacyUnknown && !checkpointUnreadable) {
+    return rejected(job.id, "heygen_quota_error_not_confirmed");
+  }
+  if (!structuredQuota && !checkpointUnreadable && legacyUnknown && !input.confirmedLegacyHeygen402) {
     return rejected(job.id, "legacy_unknown_requires_confirmed_heygen_402");
   }
 
@@ -82,6 +108,7 @@ export async function inspectAvatarQuotaRefund(input: {
     videoJobId: job.id,
     renderJobId: render.id,
     userId: job.userId,
+    incident: checkpointUnreadable && !structuredQuota ? "checkpoint_unreadable" : "heygen_quota",
     ...funding,
     legacyEvidenceRequired: legacyUnknown,
     guard: {
@@ -112,9 +139,16 @@ export async function applyAvatarQuotaRefund(
   const result = await refundRenderReservationById({
     renderJobId: inspection.renderJobId,
     userId: inspection.userId,
-    reason: "legacy-avatar-heygen-quota",
+    reason: inspection.incident === "checkpoint_unreadable"
+      ? "avatar-checkpoint-unreadable"
+      : "legacy-avatar-heygen-quota",
   });
-  if (result.kind === "refunded" || result.kind === "already_settled") {
+  // The quota path normalises the legacy free-text failure into structured codes.
+  // The checkpoint path must NOT: its codes already describe what happened, and
+  // restamping it as a HeyGen quota event would falsify the incident record the
+  // HERO-14 observation window reads.
+  if (inspection.incident === "heygen_quota"
+    && (result.kind === "refunded" || result.kind === "already_settled")) {
     await prisma.videoJob.updateMany({
       where: { id: inspection.videoJobId, userId: inspection.userId, status: "failed" },
       data: { errorCode: "quota", errorProvider: "heygen" },
