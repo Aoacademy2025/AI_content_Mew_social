@@ -79,16 +79,38 @@ function isOptionalString(value: unknown): value is string | undefined {
   return value === undefined || isNonEmptyString(value);
 }
 
+/**
+ * Every `SubtitleTimingSource` a checkpoint may carry — which is all of them,
+ * because a checkpoint records whatever clock the job actually settled on.
+ *
+ * Typed as a TOTAL `Record`, deliberately: adding a member to the union without
+ * adding it here is a compile error, not a production incident. A hand-written
+ * `||` chain was the shape here before, and it has now failed twice the same
+ * way — `avatar_script_clock` (fixed in the 2026-08-30 audit) and
+ * `partial_forced_alignment` (HERO-14). Both times an avatar job wrote a
+ * checkpoint this parser then refused, and the job died at `intro_wait` AFTER
+ * HeyGen had generated and billed the intro video. Do not turn this back into a
+ * list a human has to remember to update.
+ */
+export const CHECKPOINT_SUBTITLE_TIMING_SOURCES: Record<SubtitleTimingSource, true> = {
+  provider_alignment: true,
+  tts_segment_timing: true,
+  generated_tts_fallback: true,
+  forced_alignment: true,
+  // Set when the CTC acoustic clock replaces the render clock with an
+  // interpolated result (`orchestrator.ts`). Rare until HERO-8 made the partial
+  // acoustic clock the common outcome, which is what exposed HERO-14.
+  partial_forced_alignment: true,
+  upload_transcription: true,
+  // Rung 3 of the ADR 0056 ladder: an avatar job whose provider returned no timing renders
+  // on the spoken-script clock, and its checkpoint must survive the provider wait.
+  avatar_script_clock: true,
+};
+
 function isOptionalSubtitleTimingSource(value: unknown): value is SubtitleTimingSource | undefined {
   return value === undefined
-    || value === "provider_alignment"
-    || value === "tts_segment_timing"
-    || value === "generated_tts_fallback"
-    || value === "forced_alignment"
-    || value === "upload_transcription"
-    // Rung 3 of the ADR 0056 ladder: an avatar job whose provider returned no timing renders
-    // on the spoken-script clock, and its checkpoint must survive the provider wait.
-    || value === "avatar_script_clock";
+    || (typeof value === "string"
+      && Object.prototype.hasOwnProperty.call(CHECKPOINT_SUBTITLE_TIMING_SOURCES, value));
 }
 
 function isOptionalSubtitleSpeechCoverage(value: unknown): value is SubtitleSpeechCoverage | undefined {
