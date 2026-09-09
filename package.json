@@ -162,6 +162,7 @@
     "verify:prisma-slow-tx": "rm -rf /tmp/heroai-slow-tx.db && DATABASE_URL=file:/tmp/heroai-slow-tx.db npx prisma db push --skip-generate && DATABASE_URL=file:/tmp/heroai-slow-tx.db PRISMA_SLOW_TX_MS=50 tsx scripts/verify-prisma-slow-tx.ts",
     "verify:prisma-transient-retry": "tsx scripts/verify-prisma-transient-retry.ts",
     "verify:hero-image-scene-retry": "tsx scripts/verify-hero-image-scene-retry.ts",
+    "verify:hero-image-scene-coverage": "tsx scripts/verify-hero-image-scene-coverage.ts",
     "verify:runpod-image-cost": "tsx scripts/verify-runpod-image-cost.ts && tsx scripts/verify-runpod-image-cost-db.ts",
     "sync:runpod-image-cost": "node --conditions=react-server --import tsx scripts/sync-runpod-image-cost.ts",
     "check:ghcr-pull-token": "tsx scripts/check-ghcr-pull-token.ts",

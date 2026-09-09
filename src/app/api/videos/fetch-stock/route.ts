@@ -145,6 +145,7 @@ import {
   DEFAULT_HERO_IMAGE_SCENE_RETRY_MAX,
   selectSceneRetries,
 } from "@/lib/hero-image-scene-retry";
+import { selectSceneCoverage } from "@/lib/hero-image-scene-coverage";
 import { getRunpodEndpointHealth } from "@/lib/runpod-serverless";
 import { isHeroRunpodRoute, usesCustomRunpodEndpoint } from "@/lib/hero-image-route-policy";
 import { getRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
@@ -1445,6 +1446,9 @@ export async function POST(req: Request) {
     // those recovered a batch that would otherwise have been refunded whole.
     heroSceneRetryCount: 0,
     heroSceneRetryRecoveredCount: 0,
+    // HERO-12: windows whose own image never arrived and that were covered by a
+    // delivered in-batch image instead of failing the video.
+    fallbackSceneCount: 0,
   };
 
   function trackAiSkip(reason: AiSkipReason, count = 1) {
@@ -2665,7 +2669,13 @@ export async function POST(req: Request) {
       }
     }
 
-    if (failures.length === 0) {
+    // HERO-12: the provider phase is billed per scene, so images already
+    // delivered must reach disk even when a sibling scene failed. Only a
+    // systemic or batch-stopping failure still skips the download phase
+    // wholesale — that is the load that opened the circuit, and re-driving it
+    // helps nobody.
+    const heroBatchBlocked = failures.some((failure) => failure.systemic || failure.stopBatch);
+    if (!heroBatchBlocked) {
       await forEachInFailFastBatches(
         generatedScenes,
         DOWNLOAD_CONCURRENCY,
@@ -2765,6 +2775,97 @@ export async function POST(req: Request) {
         },
         () => false,
       );
+
+      // HERO-12: whatever is still uncovered borrows the nearest delivered
+      // image rather than costing the customer the whole video. A borrowed
+      // window is a fresh Ken Burns move over an image the batch already paid
+      // for, so it adds no provider call and no charge, and it stays on the
+      // same generated look a stock photo would break. Windows covered here
+      // drop their failure entry, so the refund path below sees only what is
+      // genuinely missing. No Visual Beat is recorded for a borrowed window, so
+      // the next confirmed render generates its own image.
+      const coveredSourceIndexes = results.flatMap(
+        (result) => (typeof result.sourceIndex === "number" ? [result.sourceIndex] : []),
+      );
+      const coverage = selectSceneCoverage({
+        coveredSourceIndexes,
+        missingSourceIndexes: failures.map((failure) => failure.sourceIndex),
+      });
+      if (coverage.length > 0) {
+        const resultBySourceIndex = new Map(
+          results.flatMap((result) => (
+            typeof result.sourceIndex === "number" ? [[result.sourceIndex, result] as const] : []
+          )),
+        );
+        const windowBySourceIndex = new Map(
+          [...directJobs, ...reusedJobs].map((job) => [job.sourceIndex, job]),
+        );
+        const covered = new Set<number>();
+        for (const { sourceIndex, coveredFromSourceIndex } of coverage) {
+          const source = resultBySourceIndex.get(coveredFromSourceIndex);
+          const window = windowBySourceIndex.get(sourceIndex);
+          if (!source || !window) continue;
+          const id = HERO_RUNPOD_ID_OFFSET + sourceIndex;
+          const imageFile = `${imagePrefix}${id}.src.png`;
+          const imagePath = path.join(rendersDir, imageFile);
+          const outFile = `${imagePrefix}${id}.mp4`;
+          const outPath = path.join(rendersDir, outFile);
+          try {
+            if (download) {
+              const sourceId = HERO_RUNPOD_ID_OFFSET + coveredFromSourceIndex;
+              const sourceImagePath = path.join(rendersDir, `${imagePrefix}${sourceId}.src.png`);
+              if (!fs.existsSync(sourceImagePath)) throw new Error("covering scene image is missing");
+              fs.copyFileSync(sourceImagePath, imagePath);
+              // Its own Ken Burns pass: the borrowed still must span THIS
+              // window's duration, not the one it was generated for.
+              await applyKenBurns(imagePath, outPath, window.kenBurnsDurationSec);
+              if (!isValidMp4Path(outPath)) throw new Error("covered scene Ken Burns output is invalid");
+              try { fs.writeFileSync(normalizedMarkerPath(outPath), ""); } catch {}
+            }
+            results.push({
+              keyword: window.keyword,
+              sourceIndex,
+              pexelsId: id,
+              duration: window.kenBurnsDurationSec,
+              videoUrl: source.videoUrl,
+              ...(download ? {
+                localPath: outPath,
+                localUrl: `/api/stocks/${outFile}`,
+                imageLocalUrl: `/api/stocks/${imageFile}`,
+              } : {}),
+              imageUrl: source.imageUrl,
+              assetMeta: source.assetMeta,
+            });
+            covered.add(sourceIndex);
+            aiTelemetry.fallbackSceneCount++;
+            await recordTelemetryEvent(userId, {
+              name: "hero_ai_image_video_scene_covered",
+              category: "performance",
+              source: "server",
+              step: "fetchStock.heroAiImage",
+              status: "done",
+              properties: {
+                videoJobId,
+                sceneIndex: sourceIndex,
+                coveredFromSceneIndex: coveredFromSourceIndex,
+                originalErrorCode: failures.find((failure) => failure.sourceIndex === sourceIndex)?.code,
+              },
+            }).catch(() => {});
+          } catch (error) {
+            safeUnlink(imagePath);
+            safeUnlink(outPath);
+            safeUnlink(normalizedMarkerPath(outPath));
+            console.warn(
+              `[fetch-stock] could not cover Hero scene ${sourceIndex} from scene ${coveredFromSourceIndex}: `
+                + (error instanceof Error ? error.message : "unknown error"),
+            );
+          }
+        }
+        if (covered.size > 0) {
+          const remaining = failures.filter((failure) => !covered.has(failure.sourceIndex));
+          failures.splice(0, failures.length, ...remaining);
+        }
+      }
     }
 
     results.sort((a, b) => (a.sourceIndex ?? 0) - (b.sourceIndex ?? 0));
