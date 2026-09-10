@@ -486,6 +486,131 @@ async function main() {
     console.log("ok: the avatar refund gate recognises both the bare and the step-prefixed legacy cause");
   }
 
+  // HERO-18: the same legacy cause also covers a generate the provider DEFINITIVELY refused
+  // (HeyGen 404, laundered into our own 500) and a generate whose response was lost. Both
+  // stop at `intro_generate` with no `avatar.introVideoId`, which proves no provider video
+  // was ever delivered — stronger evidence than the --confirmed-heygen-402 attestation, so
+  // this shape opens the gate on its own. A checkpoint that DOES carry an intro video id is
+  // not this incident and must still ask for the attestation.
+  {
+    const unfulfilledUser = await prisma.user.create({
+      data: {
+        id: "unfulfilled-generate-user",
+        name: "Unfulfilled Generate User",
+        email: "unfulfilled-generate@example.com",
+        plan: "PRO",
+        minutesUsed: 3,
+        minutesLimit: 80,
+        usagePeriodStartedAt: new Date(),
+      },
+    });
+    const start = new Date("2026-09-09T15:15:41.000Z");
+    const baseCheckpoint = {
+      version: 1, provider: "heygen",
+      providerStartedAt: "2026-09-09T15:23:42.989Z",
+      providerDeadlineAt: "2026-09-09T17:23:42.989Z",
+      baseUrl: "/api/renders/unfulfilled-base.mp4",
+      voiceUrl: "/api/renders/unfulfilled-tts.wav",
+      audioDurationMs: 98073,
+      captions: [{ text: "หนึ่ง", startMs: 0, endMs: 900 }],
+      words: [], fullText: "หนึ่ง",
+      subtitleTimingSource: "partial_forced_alignment",
+      speechCoverage: { source: "silence_analysis", spokenEndMs: 98170 },
+      baseConfig: {},
+      avatar: {
+        mode: "bookend", id: "avatar-1", introSecs: 5, tailSecs: 5,
+        layout: { scale: 1, offsetX: 0, offsetY: 0 },
+        introAudioUrl: "/api/renders/unfulfilled-intro.wav",
+      },
+    };
+    const seed = async (id: string, checkpoint: unknown, minutes: number) => {
+      await prisma.videoJob.create({
+        data: {
+          id, userId: unfulfilledUser.id, status: "failed", currentStep: "avatar",
+          inputJson: JSON.stringify({ script: "incident", avatarMode: "bookend", avatarId: "avatar-1" }),
+          errorMessage: "avatar generate has unknown provider outcome - manual recovery required",
+          errorProvider: "heygen",
+          providerCheckpointJson: JSON.stringify(checkpoint),
+          createdAt: start, startedAt: start,
+          finishedAt: new Date("2026-09-09T15:30:00.000Z"),
+        },
+      });
+      await prisma.renderJob.create({
+        data: {
+          id: `${id}-render`, userId: unfulfilledUser.id, type: "RENDER", status: "DONE",
+          payload: "{}", reservedQuota: true, reservedMinutes: minutes,
+          createdAt: new Date("2026-09-09T15:20:00.000Z"),
+        },
+      });
+    };
+
+    // Engagement PROVEN (intro video id present) → not this incident, attestation still required.
+    await seed("engaged-generate-job", {
+      ...baseCheckpoint, phase: "intro_wait",
+      avatar: { ...baseCheckpoint.avatar, introVideoId: "05ec14ca3b424c6fae15c4d03e2ee6a7" },
+    }, 1);
+    assert.deepEqual(
+      await inspectAvatarQuotaRefund({
+        videoJobId: "engaged-generate-job", renderJobId: "engaged-generate-job-render",
+      }),
+      {
+        kind: "rejected",
+        videoJobId: "engaged-generate-job",
+        reason: "legacy_unknown_requires_confirmed_heygen_402",
+      },
+      "a checkpoint carrying an intro video id is a different incident and keeps its attestation",
+    );
+
+    // The HERO-18 shape: refused at generate, nothing delivered, no attestation needed.
+    await seed("unfulfilled-generate-job", { ...baseCheckpoint, phase: "intro_generate" }, 2);
+    const minutesUsedBefore = (await prisma.user.findUniqueOrThrow({ where: { id: unfulfilledUser.id } })).minutesUsed;
+    assert.equal(minutesUsedBefore, 3, "the account starts holding the charge for both jobs");
+    const unfulfilled = await inspectAvatarQuotaRefund({
+      videoJobId: "unfulfilled-generate-job", renderJobId: "unfulfilled-generate-job-render",
+    });
+    assert.equal(unfulfilled.kind, "ready", JSON.stringify(unfulfilled));
+    assert.equal(
+      unfulfilled.kind === "ready" ? unfulfilled.incident : null,
+      "provider_generate_unfulfilled",
+      "an unfulfilled generate is filed as itself, never as a HeyGen quota event",
+    );
+    assert.equal(unfulfilled.kind === "ready" ? unfulfilled.amount : null, 2);
+    assert.equal(unfulfilled.kind === "ready" ? unfulfilled.funding : null, "minutes");
+    assert.equal(
+      unfulfilled.kind === "ready" ? (await applyAvatarQuotaRefund(unfulfilled)).kind : null,
+      "refunded",
+    );
+    assert.equal(
+      (await prisma.user.findUniqueOrThrow({ where: { id: unfulfilledUser.id } })).minutesUsed,
+      1,
+      "exactly the 2 minutes reserved by the unfulfilled generate come back, and the engaged job keeps its 1",
+    );
+    assert.equal(
+      (await prisma.renderJob.findUniqueOrThrow({ where: { id: "unfulfilled-generate-job-render" } })).reservedQuota,
+      false,
+      "the settled reservation is released, so a rerun cannot refund it again",
+    );
+
+    const unfulfilledJob = await prisma.videoJob.findUniqueOrThrow({ where: { id: "unfulfilled-generate-job" } });
+    assert.equal(unfulfilledJob.errorCode, null, "an unfulfilled generate is never restamped as a quota error");
+    assert.equal(unfulfilledJob.errorProvider, "heygen", "the original provider record stays untouched");
+
+    const repeatUnfulfilled = await inspectAvatarQuotaRefund({
+      videoJobId: "unfulfilled-generate-job", renderJobId: "unfulfilled-generate-job-render",
+    });
+    assert.equal(repeatUnfulfilled.kind, "already_settled", JSON.stringify(repeatUnfulfilled));
+    assert.equal(
+      repeatUnfulfilled.kind === "already_settled" ? (await applyAvatarQuotaRefund(repeatUnfulfilled)).kind : null,
+      "already_settled",
+    );
+    assert.equal(
+      (await prisma.user.findUniqueOrThrow({ where: { id: unfulfilledUser.id } })).minutesUsed,
+      1,
+      "a repeat run never refunds twice",
+    );
+    console.log("ok: a generate the provider never fulfilled refunds its minutes without an attestation");
+  }
+
   await prisma.user.update({ where: { id: minuteUser.id }, data: { minutesUsed: 2 } });
   await prisma.videoJob.create({
     data: {

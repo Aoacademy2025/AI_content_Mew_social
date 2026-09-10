@@ -1068,6 +1068,7 @@ function FailedView({ job, exportMode = false, plan, onTrial, onBack, onSwitchFa
   // not just a regex over this component's source.
   const kind = classifyFailure(job);
   const isHeygenQuota = kind === "heygen-quota";
+  const isHeygenAvatarRejected = kind === "heygen-avatar-rejected";
   const isProviderKey = kind === "provider-key";
   const isProviderQuota = kind === "provider-quota";
   const isHeygenKey = isProviderKey && job.errorProvider === "heygen";
@@ -1105,6 +1106,13 @@ function FailedView({ job, exportMode = false, plan, onTrial, onBack, onSwitchFa
               <BtnSecondary>เติมเครดิต HeyGen</BtnSecondary>
             </a>
             <BtnPrimary onClick={onSwitchFaceless}>เปลี่ยนเป็น Faceless แล้วลองใหม่</BtnPrimary>
+          </div>
+        ) : isHeygenAvatarRejected ? (
+          <div className="flex flex-wrap items-center justify-center gap-3">
+            <Link href="/settings">
+              <BtnSecondary>เลือก Avatar ใหม่</BtnSecondary>
+            </Link>
+            <BtnPrimary onClick={onSwitchFaceless}>ปิด Avatar แล้วลองใหม่</BtnPrimary>
           </div>
         ) : isProviderKey || isProviderQuota ? (
           <div className="flex flex-wrap items-center justify-center gap-3">

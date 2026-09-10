@@ -15,6 +15,21 @@ const LEGACY_UNKNOWN_OUTCOME = "avatar generate has unknown provider outcome - m
  */
 const CHECKPOINT_UNREADABLE = "invalid avatar provider checkpoint - manual recovery required";
 
+/**
+ * HERO-18: the legacy unknown-outcome message also covers generate calls the provider
+ * definitively refused (a 404 that our own route reported as a 500) and generate calls
+ * whose response was lost. Both leave the checkpoint at `intro_generate` with no
+ * `avatar.introVideoId`, which is machine-checkable proof that no provider video was
+ * ever delivered to us and therefore that nothing was rendered for the customer. That
+ * is a stronger fact than the `--confirmed-heygen-402` attestation the legacy path asks
+ * for, so this shape needs no human evidence. A `tail_generate` checkpoint is excluded
+ * on purpose: it can only exist after the intro was delivered.
+ */
+function generateUnfulfilled(providerCheckpointJson: string | null): boolean {
+  const checkpoint = parseAvatarProviderCheckpoint(providerCheckpointJson);
+  return checkpoint?.phase === "intro_generate" && !checkpoint.avatar.introVideoId;
+}
+
 export type AvatarQuotaRefundInspection =
   | { kind: "rejected"; videoJobId: string; reason: string }
   | {
@@ -25,7 +40,7 @@ export type AvatarQuotaRefundInspection =
       /** Which incident opened the gate — the refund reason and any error-code
        *  normalisation follow from this, so a checkpoint failure is never filed
        *  as a HeyGen quota event. */
-      incident: "heygen_quota" | "checkpoint_unreadable";
+      incident: "heygen_quota" | "checkpoint_unreadable" | "provider_generate_unfulfilled";
       funding: "minutes" | "credits" | "clips";
       amount: number;
       legacyEvidenceRequired: boolean;
@@ -80,10 +95,17 @@ export async function inspectAvatarQuotaRefund(input: {
   // directly, or produced before this wrapping existed) and the wrapped form still gate
   // this money-refund path correctly.
   const legacyUnknown = job.errorMessage?.includes(LEGACY_UNKNOWN_OUTCOME) ?? false;
+  const unfulfilledGenerate = legacyUnknown && !checkpointUnreadable && generateUnfulfilled(job.providerCheckpointJson);
   if (!structuredQuota && !legacyUnknown && !checkpointUnreadable) {
     return rejected(job.id, "heygen_quota_error_not_confirmed");
   }
-  if (!structuredQuota && !checkpointUnreadable && legacyUnknown && !input.confirmedLegacyHeygen402) {
+  if (
+    !structuredQuota
+    && !checkpointUnreadable
+    && !unfulfilledGenerate
+    && legacyUnknown
+    && !input.confirmedLegacyHeygen402
+  ) {
     return rejected(job.id, "legacy_unknown_requires_confirmed_heygen_402");
   }
 
@@ -108,7 +130,13 @@ export async function inspectAvatarQuotaRefund(input: {
     videoJobId: job.id,
     renderJobId: render.id,
     userId: job.userId,
-    incident: checkpointUnreadable && !structuredQuota ? "checkpoint_unreadable" : "heygen_quota",
+    incident: structuredQuota
+      ? "heygen_quota"
+      : checkpointUnreadable
+        ? "checkpoint_unreadable"
+        : unfulfilledGenerate
+          ? "provider_generate_unfulfilled"
+          : "heygen_quota",
     ...funding,
     legacyEvidenceRequired: legacyUnknown,
     guard: {
@@ -141,12 +169,14 @@ export async function applyAvatarQuotaRefund(
     userId: inspection.userId,
     reason: inspection.incident === "checkpoint_unreadable"
       ? "avatar-checkpoint-unreadable"
-      : "legacy-avatar-heygen-quota",
+      : inspection.incident === "provider_generate_unfulfilled"
+        ? "avatar-generate-unfulfilled"
+        : "legacy-avatar-heygen-quota",
   });
   // The quota path normalises the legacy free-text failure into structured codes.
-  // The checkpoint path must NOT: its codes already describe what happened, and
-  // restamping it as a HeyGen quota event would falsify the incident record the
-  // HERO-14 observation window reads.
+  // The checkpoint and unfulfilled-generate paths must NOT: their codes already
+  // describe what happened, and restamping either as a HeyGen quota event would
+  // falsify the incident record the HERO-14 and HERO-18 observation windows read.
   if (inspection.incident === "heygen_quota"
     && (result.kind === "refunded" || result.kind === "already_settled")) {
     await prisma.videoJob.updateMany({
