@@ -44,10 +44,11 @@ Branch and pull request titles must include the Linear issue key, for example `H
 
 ## Noise filtering
 
-`beforeSend` in `src/lib/sentry-config.ts` drops two classes of event before they leave the process.
+`beforeSend` in `src/lib/sentry-config.ts` drops three classes of event before they leave the process.
 
 - **Remotion shutdown noise.** `ProtocolError` around a closed Chromium target during render teardown.
 - **Third-party browser noise.** Errors thrown by browser extensions and by in-app WebView hosts inside a visitor's browser. An event is dropped when its message names a browser API this application never calls (MetaMask, the Android WebView bridge, `window.webkit.messageHandlers`), or when its stack has at least one injected-origin frame (`chrome-extension://`, `webkit-masked-url:`, `app://<host>`, `app:///scripts/`) and no frame of ours.
+- **Visitor network failures reaching Clerk.** `clerk.<our domain>` is a CNAME to Clerk's frontend API on their CDN, so nothing on that request path is ours. An event is dropped only when all three hold: the message is a `ClerkJS: Network error`, the endpoint is the unattended session keep-alive or token refresh (`/v1/client/sessions/<id>/touch`, `.../tokens`, or `/v1/client`), and the cause is a browser fetch failure (`Load failed`, `Failed to fetch`, `NetworkError when attempting to fetch resource`, connection lost, offline). A failed sign-in or sign-up is never dropped, so a Clerk outage that blocks people from logging in cannot hide behind this rule.
 
 These are unactionable, and each new host variant otherwise opens a fresh Sentry group and sends a fresh alert. In the 14 days to 2026-09-09 they were 177 of 192 events in the project.
 
