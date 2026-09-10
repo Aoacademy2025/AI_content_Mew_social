@@ -435,6 +435,7 @@ export function EditorV2Shell() {
     headlineHook: p.headlineHook,
     onHeadlineHookChange: p.setHeadlineHook,
     logoEligible: p.canUseLogoOverlay,
+    logoEntitlement: p.logoEntitlement,
     projectSaveStatus: p.saveStatus,
     onRetryProjectSave: p.retryProjectSave,
     // M2: lets the style-preset "apply" toast check readiness before claiming success

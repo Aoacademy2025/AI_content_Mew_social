@@ -10,6 +10,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
+import type { LogoEntitlementState } from "@/lib/logo-entitlement";
 import {
   LOGO_POSITIONS,
   MAX_LOGO_OPACITY,
@@ -65,6 +66,24 @@ function LockedNotice() {
   );
 }
 
+/**
+ * HERO-16: shown while the account's plan has not been resolved yet. It says
+ * "checking", never "upgrade" — a paying customer whose `/api/user/me` request
+ * failed must not be handed an upsell for a feature they already bought. The
+ * controls stay disabled here exactly as they are when locked.
+ */
+function ResolvingNotice() {
+  return (
+    <div className="logo-controls__locked" role="status" aria-live="polite">
+      <RefreshCw size={17} aria-hidden="true" />
+      <div>
+        <strong>กำลังตรวจสอบสิทธิ์การใช้งาน</strong>
+        <span>ยังโหลดข้อมูลแผนของคุณไม่สำเร็จ ระบบกำลังลองใหม่ให้อัตโนมัติ</span>
+      </div>
+    </div>
+  );
+}
+
 function LogoSwitch({
   checked,
   disabled,
@@ -97,10 +116,15 @@ function LogoSwitch({
 export function LogoOverlayControls({
   value,
   eligible,
+  entitlement = eligible ? "eligible" : "locked",
   editor,
 }: {
   value: LogoOverlayConfig | undefined;
   eligible: boolean;
+  /** HERO-16: `locked` and `resolving` both disable the controls; only `locked`
+   *  may show the upgrade notice. Defaults to the old two-state behaviour so a
+   *  caller that has not been wired up yet cannot change silently. */
+  entitlement?: LogoEntitlementState;
   editor: LogoOverlayEditor;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -138,7 +162,8 @@ export function LogoOverlayControls({
         onChange={onFileSelected}
       />
 
-      {!eligible && <LockedNotice />}
+      {entitlement === "locked" && <LockedNotice />}
+      {entitlement === "resolving" && <ResolvingNotice />}
 
       {!config ? (
         <div className="logo-controls__empty">

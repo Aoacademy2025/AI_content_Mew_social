@@ -84,6 +84,9 @@ jobs:
       - name: Verify editor style presets
         run: npm run verify:editor-style-presets
 
+      - name: Verify logo entitlement resolution
+        run: npm run verify:logo-entitlement
+
       - name: Verify caption card editing
         run: npm run verify:caption-card-editing
 
