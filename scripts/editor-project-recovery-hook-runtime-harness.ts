@@ -12,6 +12,7 @@ import * as editorDefaultDraftModule from "../src/lib/editor-default-draft";
 import * as editorStylePresetModule from "../src/lib/editor-style-preset-contract";
 import * as narrationTargetModule from "../src/lib/narration-target";
 import * as musicMoodModule from "../src/lib/music-mood";
+import * as logoEntitlementModule from "../src/lib/logo-entitlement";
 import {
   createEditorProjectSaveQueue,
   type EditorProjectSaveInput,
@@ -541,6 +542,9 @@ function createHarness(options: HarnessOptions = {}) {
     // Pure module (mood label/parse/pick helpers, no server deps) — same class as
     // tts-providers above, so run the real one instead of stubbing it.
     if (specifier === "@/lib/music-mood") return musicMoodModule;
+    // Pure module (HERO-16 logo entitlement truth table, no deps) — same class as
+    // music-mood above, so the harness runs the real gate rather than a stub.
+    if (specifier === "@/lib/logo-entitlement") return logoEntitlementModule;
     if (specifier === "@/lib/video-account-defaults") {
       return { saveVideoAccountDefaults: async () => ({ ok: true }) };
     }
