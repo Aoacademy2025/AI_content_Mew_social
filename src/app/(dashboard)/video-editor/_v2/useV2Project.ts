@@ -12,6 +12,7 @@ import type { BrollRegionPreference, BrollVisualStyle } from "@/lib/broll-prefer
 import type { ProjectStylePack } from "./project-style-pack";
 import type { ProjectMediaState } from "@/lib/media-retention";
 import { editorProjectSaveQueue } from "@/lib/editor-project-save-queue";
+import { resolveLogoEntitlement, type LogoEntitlementState } from "@/lib/logo-entitlement";
 import {
   createEditorProjectAutosaveCandidate,
   createEditorProjectAutosaveSnapshot,
@@ -65,6 +66,9 @@ import {
 const DRAFT_KEY = "editor-v2-project";
 const PROJECT_ID_KEY = "editor-v2-project-id";
 const PROJECT_ACCOUNT_KEY = "editor-v2-project-account";
+/** HERO-16: backoff for a failed `/api/user/me`. Bounded on purpose — the point
+ *  is to survive one dropped request, not to hammer a database under load. */
+const ME_RETRY_DELAYS_MS = [1_500, 5_000, 15_000];
 
 function scopedProjectIdKey(accountId: string | null): string {
   return accountId ? `${PROJECT_ID_KEY}:${accountId}` : PROJECT_ID_KEY;
@@ -598,6 +602,10 @@ export function useV2Project() {
   const [isPaidManagedKie, setIsPaidManagedKie] = useState(false);
   const [recommendedAutoMixDefault, setRecommendedAutoMixDefault] = useState(false);
   const [plan, setPlan] = useState<string | null>(null);
+  /** HERO-16: false until a `/api/user/me` response has actually delivered a plan.
+   *  A plan we never received must not be rendered as a plan that lacks a feature. */
+  const [planResolved, setPlanResolved] = useState(false);
+  const meRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** Task 7 badge: server launch-state signal (MANAGED_KIE && CREDITS_LIVE), independent
    *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
    *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
@@ -940,7 +948,17 @@ export function useV2Project() {
   // stays a PRO/BUSINESS-plan feature, so this reads the ADMITTED pin — every
   // plan can now pin without funding it, and a bare pin must not widen the
   // logo gate (mirrors `projectHasAdmittedPersistedPin` on the server).
-  const logoEligible = brandVisualAllowed || hasAdmittedVisualPin || plan === "PRO" || plan === "BUSINESS";
+  // HERO-16: an unresolved plan is its own state. `logoEligible` keeps meaning
+  // "known to be entitled", so nothing here widens the gate; `logoEntitlement`
+  // carries the third value so the panel can say "checking" instead of showing
+  // a paying customer an upgrade prompt for a feature they already bought.
+  const logoEntitlement: LogoEntitlementState = resolveLogoEntitlement({
+    planResolved,
+    plan,
+    brandVisualAllowed,
+    hasAdmittedVisualPin,
+  });
+  const logoEligible = logoEntitlement === "eligible";
 
   function clearProjectRecoveryData(clearProjectId: string): void {
     const storage = browserStorage();
@@ -2036,7 +2054,7 @@ export function useV2Project() {
     fetchClientJson<V2Usage>("/api/videos/usage").then(r => r.ok ? r.data : null).then(u => {
       if (u) setUsage(u);
     }).catch(() => {});
-    fetchMe().then(m => {
+    const applyMe = (m: Awaited<ReturnType<typeof fetchMe>>) => {
       const accountId = typeof m?.id === "string" && m.id ? m.id : null;
       if (accountId) {
         const storage = browserStorage();
@@ -2065,7 +2083,14 @@ export function useV2Project() {
       setBrandVisualRolloutBucket(typeof m?.brandVisualRolloutBucket === "number" ? m.brandVisualRolloutBucket : null);
       setStarterAiImageAllowance(m?.starterAiImageAllowance ?? null);
       setIsActiveTrial(Number.isFinite(trialEndMs) && trialEndMs > Date.now());
-      setPlan(typeof m?.plan === "string" ? m.plan : "FREE");
+      // HERO-16: only a plan the server actually delivered may resolve the
+      // entitlement. A response without one leaves the editor "unknown" and the
+      // retry ladder below keeps asking, rather than pinning the session to FREE.
+      const deliveredPlan = typeof m?.plan === "string" ? m.plan : null;
+      if (deliveredPlan) {
+        setPlan(deliveredPlan);
+        setPlanResolved(true);
+      }
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
       // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
       const paid = !!m?.kiePaidUnlocked;
@@ -2089,7 +2114,35 @@ export function useV2Project() {
           if (providers) setAutoMixProvidersRaw(providers);
         }
       }
-    }).catch(() => {});
+    };
+    // HERO-16: `fetchMe` returns its cache (null on a cold load) whenever the
+    // request fails, so one dropped /api/user/me used to leave the whole editor
+    // on FREE defaults for the life of the tab. Ask again instead; each retry
+    // forces past the module TTL so it is a real request, not the failed cache.
+    let cancelled = false;
+    const loadMe = (attempt: number) => {
+      fetchMe(attempt > 0).then(m => {
+        if (cancelled) return;
+        if (!m) {
+          if (attempt < ME_RETRY_DELAYS_MS.length) {
+            meRetryTimerRef.current = setTimeout(
+              () => loadMe(attempt + 1),
+              ME_RETRY_DELAYS_MS[attempt],
+            );
+          }
+          return;
+        }
+        applyMe(m);
+      }).catch(() => {});
+    };
+    loadMe(0);
+    return () => {
+      cancelled = true;
+      if (meRetryTimerRef.current) {
+        clearTimeout(meRetryTimerRef.current);
+        meRetryTimerRef.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2405,7 +2458,7 @@ export function useV2Project() {
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, brandLibraryAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, hasAdmittedVisualPin, setHasAdmittedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
-    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
+    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, logoEntitlement, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     brandContentPreflightId, setBrandContentPreflightId,
     projectStylePack, setProjectStylePack,
     saveStatus, retryProjectSave,

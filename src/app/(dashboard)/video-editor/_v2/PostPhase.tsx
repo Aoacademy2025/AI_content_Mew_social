@@ -29,6 +29,7 @@ import { V2CaptionOverlay } from "./V2CaptionOverlay";
 import { AvatarAdjustOverlay } from "./AvatarAdjustOverlay";
 import { usePostPhaseEditor } from "./usePostPhaseEditor";
 import { LogoOverlayControls } from "./LogoOverlayControls";
+import type { LogoEntitlementState } from "@/lib/logo-entitlement";
 import { LogoOverlayPreview } from "./LogoOverlayPreview";
 import { EditorStylePresetShelf } from "./EditorStylePresetShelf";
 import {
@@ -77,6 +78,7 @@ export function PostPhase({
   headlineHook,
   onHeadlineHookChange,
   logoEligible,
+  logoEntitlement,
   projectSaveStatus,
   onRetryProjectSave,
   canRunProjectOperation,
@@ -105,6 +107,7 @@ export function PostPhase({
   headlineHook?: HeadlineHookConfig;
   onHeadlineHookChange: (next: HeadlineHookConfig | undefined) => void;
   logoEligible: boolean;
+  logoEntitlement: LogoEntitlementState;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   canRunProjectOperation?: () => boolean;
@@ -779,6 +782,7 @@ export function PostPhase({
               <LogoOverlayControls
                 value={logoOverlay}
                 eligible={logoEligible}
+                entitlement={logoEntitlement}
                 editor={ed.logo}
               />
             </div>

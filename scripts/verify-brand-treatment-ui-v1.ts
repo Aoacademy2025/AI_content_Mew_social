@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
+import { resolveLogoEntitlement } from "../src/lib/logo-entitlement";
+
 /** Every literal in a UI source that already contains Thai — i.e. the strings a
  * customer actually reads. Comments and imports are stripped first so an
  * explanatory comment about the Treatment catalog is not mistaken for copy. */
@@ -293,10 +295,65 @@ async function main() {
     "src/app/(dashboard)/video-editor/_v2/useV2Project.ts",
     "utf8",
   );
+  // R12 still holds, but HERO-16 moved the expression into a shared helper so an
+  // unresolved plan stops reading as a denial. Assert the same invariant on both
+  // halves: the editor must feed the ADMITTED pin in, and the helper must keep
+  // PRO/BUSINESS as the only plans that grant the overlay.
   assert.match(
     editorProjectHookSource,
-    /const logoEligible = brandVisualAllowed \|\| hasAdmittedVisualPin \|\| plan === "PRO" \|\| plan === "BUSINESS"/,
-    "R12: the logo overlay stays PRO\/BUSINESS-plan-gated — a bare pin must not widen it",
+    /const logoEntitlement: LogoEntitlementState = resolveLogoEntitlement\(\{\s*planResolved,\s*plan,\s*brandVisualAllowed,\s*hasAdmittedVisualPin,\s*\}\);/,
+    "R12: the logo overlay must resolve through the shared entitlement helper, fed by the ADMITTED pin",
+  );
+  assert.match(
+    editorProjectHookSource,
+    /const logoEligible = logoEntitlement === "eligible";/,
+    "R12: only a resolved, entitled account may enable the logo overlay",
+  );
+  assert.equal(
+    /resolveLogoEntitlement\([^)]*hasPersistedVisualPin/.test(editorProjectHookSource),
+    false,
+    "R12: a bare pin must not widen the logo gate",
+  );
+
+  const logoEntitlementSource = readFileSync("src/lib/logo-entitlement.ts", "utf8");
+  assert.match(
+    logoEntitlementSource,
+    /input\.plan === "PRO" \|\| input\.plan === "BUSINESS"/,
+    "R12: PRO and BUSINESS stay the only plans that grant the logo overlay",
+  );
+  assert.match(
+    logoEntitlementSource,
+    /if \(!input\.planResolved \|\| input\.plan === null\) return "resolving";/,
+    "HERO-16: an unresolved plan is its own state, never a denial",
+  );
+  assert.match(
+    logoEntitlementSource,
+    /return "locked";/,
+    "R12: a resolved plan without the feature still locks the overlay",
+  );
+  // Behaviour, not just shape: a source pattern alone would still match if a
+  // third plan were appended to the grant.
+  for (const plan of ["FREE", "TRIAL", "", "pro"]) {
+    assert.equal(
+      resolveLogoEntitlement({
+        planResolved: true,
+        plan,
+        brandVisualAllowed: false,
+        hasAdmittedVisualPin: false,
+      }),
+      "locked",
+      `R12: plan ${JSON.stringify(plan)} must not reach the logo overlay`,
+    );
+  }
+  assert.equal(
+    resolveLogoEntitlement({
+      planResolved: false,
+      plan: null,
+      brandVisualAllowed: false,
+      hasAdmittedVisualPin: false,
+    }),
+    "resolving",
+    "HERO-16: a plan we never received must not be rendered as a denial",
   );
   assert.match(
     editorProjectHookSource,
