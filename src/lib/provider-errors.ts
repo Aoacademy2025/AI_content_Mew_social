@@ -169,6 +169,13 @@ export interface ProviderErrorBody {
   retryable?: boolean;
   /** Set on invalid_key so the existing fix-your-key modal opens (same field routes already use). */
   missingKey?: string;
+  /**
+   * The UPSTREAM provider's HTTP status, when there was one. Our own route status is a
+   * taxonomy translation (`fatal` → 500), so a definitive upstream 404 and a genuine
+   * failure inside our route both leave as 500. Callers that must tell "the provider
+   * refused" from "we broke" read this, never the response status alone.
+   */
+  providerStatus?: number;
 }
 
 /** Build the JSON body + HTTP status for an API route response. */
@@ -184,6 +191,7 @@ export function toErrorResponse(err: ProviderError): { body: ProviderErrorBody; 
       // invalid_key: missingKey opens the key modal; legacy `retryable` is
       // omitted because retryable===false would suppress that modal (see above).
       ...(err.code === "invalid_key" ? { missingKey: err.provider } : { retryable: err.retryable }),
+      ...(typeof err.status === "number" ? { providerStatus: err.status } : {}),
     },
     status: httpStatusForCode(err.code),
   };

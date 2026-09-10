@@ -127,11 +127,19 @@ export async function generateAvatarVideo(caller: PipelineCaller, avatarId: stri
     if (!(error instanceof PipelineHttpError)) return { kind: "unknown" };
     const body = record(error.body);
     const rawCode = body?.code;
-    const code = isProviderErrorCode(rawCode)
-      ? rawCode
-      : classifyHttpStatus(error.status);
+    // A code in the body is the provider route's own verdict on the UPSTREAM response.
+    const definitive = isProviderErrorCode(rawCode) ? rawCode : null;
+    // `fatal` (e.g. HeyGen 404 "avatar look not found") is definitive, yet our route
+    // answers it with 500 because that is the taxonomy's HTTP mapping. Deciding on
+    // `error.status` alone therefore turned every definitive 4xx into an unknown
+    // outcome: the job died as "manual recovery required", the customer was told to
+    // check credits, and the retained render reservation was never refunded (HERO-18).
+    // Only a response that carries no verdict of its own — or an explicitly transient
+    // one — leaves the outcome genuinely unproven.
+    const providerStatus = typeof body?.providerStatus === "number" ? body.providerStatus : error.status;
+    const code = definitive ?? classifyHttpStatus(providerStatus);
     // A transport/5xx response cannot prove whether the paid generate was accepted.
-    if (code === "transient" || error.status >= 500) return { kind: "unknown" };
+    if (code === "transient" || (!definitive && providerStatus >= 500)) return { kind: "unknown" };
     const message = typeof body?.userAction === "string"
       ? body.userAction
       : typeof body?.error === "string"

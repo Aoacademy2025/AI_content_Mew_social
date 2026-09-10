@@ -43,6 +43,28 @@ assert.equal(heygenCopy.heading, "เครดิต HeyGen ไม่เพี�
 assert.match(heygenCopy.body, /คนละส่วนกับเครดิต Hero/);
 assert.match(heygenCopy.body, /เติมเครดิต.*HeyGen|ปิด Avatar/);
 
+// HERO-18: HeyGen refused the avatar itself (404 "avatar look not found"). The generic
+// avatar copy told this customer to check their API key and credits, and they opened a
+// ticket reporting a HeyGen credit problem that never existed. The refusal owns its own
+// copy, and that copy must never send anyone to top up credits.
+const avatarRefusedMessage = 'HeyGen generate failed (404): {"code":"internal_error","message":"avatar look not found, look_id: xxx, space_id: yyy"}';
+const avatarRefusedJob = videoJob({
+  currentStep: "avatar",
+  errorProvider: "heygen",
+  errorCode: "fatal",
+  errorMessage: avatarRefusedMessage,
+});
+assert.equal(classifyFailure(avatarRefusedJob), "heygen-avatar-rejected");
+const avatarRefusedCopy = failureViewCopy(classifyFailure(avatarRefusedJob), avatarRefusedJob, false);
+assertCustomerSafe(avatarRefusedCopy, avatarRefusedMessage);
+assert.match(avatarRefusedCopy.heading, /Avatar/);
+assert.doesNotMatch(
+  avatarRefusedCopy.body,
+  /เติมเครดิต|ตรวจสอบ API Key|เครดิตไม่เพียงพอ/,
+  "an avatar the provider refused is not a credit or key problem",
+);
+assert.match(avatarRefusedCopy.body, /เลือก Avatar ใหม่|ปิด Avatar/);
+
 const invalidKeyMessage = "HeyGen returned HTTP 401: invalid api key";
 const invalidKeyJob = videoJob({
   currentStep: "avatar",

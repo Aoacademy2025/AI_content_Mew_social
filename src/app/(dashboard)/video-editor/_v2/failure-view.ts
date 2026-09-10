@@ -9,6 +9,7 @@
 
 export type FailureKind =
   | "heygen-quota"
+  | "heygen-avatar-rejected"
   | "provider-key"
   | "provider-quota"
   | "plan-quota"
@@ -44,6 +45,11 @@ export function classifyFailure(job: FailureJobLike): FailureKind {
   ) return "heygen-quota";
   if (job.errorCode === "invalid_key") return "provider-key";
   if (job.errorCode === "quota") return "provider-quota";
+  // HERO-18: a definitive HeyGen refusal that is neither key, credit, nor rate limit —
+  // in practice the selected avatar is gone from the space behind the key (404 "avatar
+  // look not found"). It reaches here as the taxonomy's `fatal`, and it must never fall
+  // through to the generic avatar copy, which tells the customer to check their credits.
+  if (job.errorProvider === "heygen" && job.errorCode === "fatal") return "heygen-avatar-rejected";
   // The Hero plan's OWN minute/clip quota, not a third party's. Reaches a failed job when
   // /api/videos/render refuses mid-pipeline (a concurrent render drained the window after
   // this job was accepted); pipelineFailureDetails carries the envelope's `code` through
@@ -131,6 +137,12 @@ export function failureViewCopy(kind: FailureKind, job: FailureJobLike, exportMo
     return {
       heading: "เครดิต HeyGen ไม่เพียงพอ",
       body: "เครดิต API ของ HeyGen เป็นคนละส่วนกับเครดิต Hero งานนี้หยุดที่ขั้น Avatar และระบบคืนสิทธิ์เรนเดอร์ของ Hero แล้ว — เติมเครดิตในบัญชี HeyGen หรือปิด Avatar แล้วลองใหม่",
+    };
+  }
+  if (kind === "heygen-avatar-rejected") {
+    return {
+      heading: "HeyGen ปฏิเสธ Avatar ที่เลือกไว้",
+      body: "บัญชี HeyGen ที่เชื่อมอยู่ใช้ Avatar ตัวนี้ไม่ได้ — อาจถูกลบไปแล้ว หรืออยู่คนละบัญชีกับ API Key ที่ตั้งไว้ ระบบหยุดก่อนใช้เครดิต HeyGen และคืนนาทีเรนเดอร์ของ Hero ให้แล้ว เลือก Avatar ใหม่ในหน้าตั้งค่า หรือปิด Avatar แล้วลองใหม่",
     };
   }
   if (kind === "provider-key") {
