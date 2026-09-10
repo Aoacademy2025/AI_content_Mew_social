@@ -177,7 +177,76 @@ function main() {
     "an error without frames must be kept",
   );
 
-  console.log("verify-sentry-config: 31/31 passed");
+  // A visitor's browser failing to reach Clerk's own hosted API. `clerk.<domain>`
+  // is a CNAME to Clerk's frontend API on their CDN, so no part of that request
+  // path is ours. Only the unattended keep-alive and token refresh are dropped.
+  const clerkFrames = [
+    "app:///npm/@clerk/clerk-js@6.31.0/dist/clerk.browser.js:18:192554",
+    "app:///npm/@clerk/clerk-js@6.31.0/dist/clerk.browser.js:17:8005",
+  ];
+  const clerk = (value: string) =>
+    beforeSendSentryEvent({
+      exception: {
+        values: [
+          {
+            type: "Error",
+            value,
+            stacktrace: {
+              frames: clerkFrames.map((filename) => ({ filename })),
+            },
+          },
+        ],
+      },
+    });
+
+  assert.strictEqual(
+    clerk(
+      'ClerkJS: Network error at "https://clerk.studio.example.com/v1/client/sessions/sess_abc123/touch" - TypeError: Load failed (clerk.studio.example.com). Please try again.',
+    ),
+    null,
+    "a failed session keep-alive is the visitor's network, not ours",
+  );
+  assert.strictEqual(
+    clerk(
+      'ClerkJS: Network error at "https://clerk.studio.example.com/v1/client/sessions/sess_abc123/tokens" - TypeError: Failed to fetch. Please try again.',
+    ),
+    null,
+    "a failed token refresh is the same class",
+  );
+  assert.strictEqual(
+    clerk(
+      'ClerkJS: Network error at "https://clerk.studio.example.com/v1/client" - TypeError: NetworkError when attempting to fetch resource.',
+    ),
+    null,
+    "a failed client refresh is the same class",
+  );
+
+  assert(
+    clerk(
+      'ClerkJS: Network error at "https://clerk.studio.example.com/v1/client/sign_ins/sia_abc123/attempt" - TypeError: Load failed. Please try again.',
+    ),
+    "a failed sign-in must still be reported, so a Clerk outage can never hide behind this rule",
+  );
+  assert(
+    clerk(
+      'ClerkJS: Network error at "https://clerk.studio.example.com/v1/client/sign_ups" - TypeError: Failed to fetch.',
+    ),
+    "a failed sign-up must still be reported",
+  );
+  assert(
+    clerk(
+      'ClerkJS: Something went wrong at "https://clerk.studio.example.com/v1/client/sessions/sess_abc123/touch" - Error: 500 Internal Server Error',
+    ),
+    "a Clerk failure that is not a network error must still be reported",
+  );
+  assert(
+    injected("TypeError: Failed to fetch", [
+      "app:///_next/static/chunks/main-abc.js:1:1",
+    ]),
+    "our own failed fetch must still be reported",
+  );
+
+  console.log("verify-sentry-config: 38/38 passed");
 }
 
 main();

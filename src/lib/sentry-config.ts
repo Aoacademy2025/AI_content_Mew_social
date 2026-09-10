@@ -144,6 +144,29 @@ function isThirdPartyBrowserNoise(event: ErrorEvent): boolean {
   );
 }
 
+// Clerk's browser SDK reports a failed request to its own hosted API as a
+// ClerkJS network error. `clerk.<our domain>` is a CNAME to Clerk's frontend
+// API served from their CDN, so no part of that request path is ours: these are
+// dropped connections, suspended tabs, ad blockers and VPNs, and each variant
+// opens a fresh Sentry group. Only the unattended session keep-alive and token
+// refresh are filtered. A failed sign-in or sign-up stays reported, so a Clerk
+// outage that blocks people from logging in can never hide behind this rule.
+const CLERK_NETWORK_ERROR = /ClerkJS:\s*Network error/i;
+const CLERK_SESSION_KEEPALIVE_ENDPOINT =
+  /\/v1\/client\/sessions\/[^/"\s]+\/(?:touch|tokens)|\/v1\/client(?=["?\s]|$)/i;
+const VISITOR_FETCH_FAILURE =
+  /(?:Load failed|Failed to fetch|NetworkError when attempting to fetch resource|The network connection was lost|The Internet connection appears to be offline)/i;
+
+function isClerkSessionKeepAliveNetworkNoise(event: ErrorEvent): boolean {
+  const text = errorText(event);
+
+  return (
+    CLERK_NETWORK_ERROR.test(text) &&
+    CLERK_SESSION_KEEPALIVE_ENDPOINT.test(text) &&
+    VISITOR_FETCH_FAILURE.test(text)
+  );
+}
+
 function isKnownRemotionShutdownNoise(event: ErrorEvent): boolean {
   const text = errorText(event);
 
@@ -158,6 +181,7 @@ function isKnownRemotionShutdownNoise(event: ErrorEvent): boolean {
 export function beforeSendSentryEvent(event: ErrorEvent): ErrorEvent | null {
   if (isKnownRemotionShutdownNoise(event)) return null;
   if (isThirdPartyBrowserNoise(event)) return null;
+  if (isClerkSessionKeepAliveNetworkNoise(event)) return null;
 
   delete event.user;
 
