@@ -15,6 +15,7 @@ import { CouponBox } from "@/components/settings/coupon-box";
 import { ManageSubscriptionButton } from "@/components/settings/manage-subscription-button";
 import { SwitchToAnnualButton } from "@/components/settings/switch-to-annual-button";
 import { ReactivateBanner } from "@/components/settings/reactivate-banner";
+import { CancelSubscriptionLink } from "@/components/settings/cancel-subscription-link";
 import { McpAccessSettings } from "@/components/settings/mcp-access-settings";
 import { QuotaStatus } from "@/components/quota-status";
 import { CreditsBillingSection } from "@/components/settings/credits-billing-section";
@@ -144,6 +145,7 @@ function BillingTab() {
       <ReactivateBanner />
       <SwitchToAnnualButton />
       <ManageSubscriptionButton />
+      <CancelSubscriptionLink />
 
       {/* Credits section — visible only when NEXT_PUBLIC_CREDITS_LIVE === "1" */}
       {process.env.NEXT_PUBLIC_CREDITS_LIVE === "1" && <CreditsBillingSection />}

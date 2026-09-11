@@ -75,3 +75,28 @@ export function cancellationDateLabel(
   if (!at) return "สิ้นรอบบิล";
   return at.toLocaleDateString("th-TH", { day: "numeric", month: "long", year: "numeric" });
 }
+
+/**
+ * Read a Stripe subscription's cancellation schedule into the two fields we store.
+ *
+ * Stripe is the authority on whether a cancellation took. Both the cancel and the undo
+ * paths mirror whatever this returns rather than writing what they hoped would happen,
+ * which is what kept HERO-20's customer from ever learning their cancellation had
+ * registered. Deliberately takes a structural type, so it stays usable from a test
+ * without a Stripe client.
+ */
+export function readStripeSchedule(
+  sub: { cancel_at_period_end?: boolean | null; cancel_at?: number | null } | null | undefined,
+): { cancelAtPeriodEnd: boolean; cancelAt: Date | null } {
+  const cancelAtPeriodEnd = sub?.cancel_at_period_end === true;
+  const seconds = typeof sub?.cancel_at === "number" ? sub.cancel_at : null;
+  return { cancelAtPeriodEnd, cancelAt: seconds ? new Date(seconds * 1000) : null };
+}
+
+/** Does Stripe's own object show a cancellation on the books, in either shape? */
+export function stripeShowsSchedule(
+  sub: { cancel_at_period_end?: boolean | null; cancel_at?: number | null } | null | undefined,
+): boolean {
+  const { cancelAtPeriodEnd, cancelAt } = readStripeSchedule(sub);
+  return cancelAtPeriodEnd || cancelAt !== null;
+}
