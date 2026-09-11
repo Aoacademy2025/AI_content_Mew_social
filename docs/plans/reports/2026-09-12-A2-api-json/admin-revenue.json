@@ -1,0 +1,12 @@
+{
+  "route": "/api/admin/revenue",
+  "status": 200,
+  "note": "Sanitized: PII stripped, nested objects beyond depth 2 collapsed. This route is the one page constitutionally allowed to show money (ADR 0062).",
+  "sample": {
+    "range": {"days": 30, "since": "2026-08-12T21:09:45.947Z", "until": "2026-09-11T21:09:45.947Z"},
+    "northStar": {"metric": "MAPC", "activeCreators": 20, "activePayingCustomers": 28, "activeRecurringPayers": 15, "creatorRatePct": 71, "monthlyCreators": 7, "annualCreators": 13, "asOf": "2026-09-11T21:09:45.947Z"},
+    "goal": {"monthlyRevenueTarget": 100000, "last30DaysGross": 31346, "progressPct": 31, "gap": 68654},
+    "cash": {"currentGross": 31346, "previousGross": 15026.95, "changePct": 108.6, "stripeGross": 31945, "stripeNet": 31346, "manual": 0, "refunds": 599, "transactions": 23, "newPayers": 28, "repeatPayers": 6},
+    "base": {"activePayingCustomers": 39, "recurringMonthly": 8312.99, "prepaidMonthlyEquivalent": 9739.5, "activeMonthlyValue": 18052.5, "arr": 99755.95, "deferredRevenue": 35569.96, "creditRevenue": 1295}
+  }
+}

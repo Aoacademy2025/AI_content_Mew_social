@@ -1,0 +1,6 @@
+{
+  "route": "/api/updates?summary=1",
+  "status": 200,
+  "note": "Sanitized: PII stripped, arrays reduced to length only.",
+  "sample": {"currentVersion":"v1.8.1","unreadCount":0,"total":28,"attentionUpdate":null,"updates":{"_arrayTruncated":true,"_originalLength":0}}
+}

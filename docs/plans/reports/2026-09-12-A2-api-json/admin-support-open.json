@@ -1,0 +1,6 @@
+{
+  "route": "/api/admin/support?status=OPEN",
+  "status": 200,
+  "note": "Sanitized: array of 2 open tickets, contents (subject/message) stripped per policy, count only.",
+  "sample": {"_arrayTruncated": true, "_originalLength": 2}
+}

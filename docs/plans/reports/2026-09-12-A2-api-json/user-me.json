@@ -1,0 +1,6 @@
+{
+  "route": "/api/user/me",
+  "status": 200,
+  "note": "Sanitized: PII fields (email/name/etc.) and long/nested values stripped; capped to top 10 keys per object level, depth 2. Timing captured separately in the A2 report (n=20, run before this snapshot).",
+  "sample": {"id":"cmoycf2v8000elcv0aka8u7p2","role":"ADMIN","plan":"BUSINESS","usageCount":0,"usageLimit":300,"usagePeriodStartedAt":"2026-08-18T06:50:33.865Z","cancelAtPeriodEnd":false,"cancelAt":null,"trialStartedAt":null,"trialEndsAt":null,"_moreKeys":31}
+}

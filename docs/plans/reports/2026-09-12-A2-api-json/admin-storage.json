@@ -1,0 +1,6 @@
+{
+  "route": "/api/admin/storage",
+  "status": 200,
+  "note": "Sanitized: directory list reduced to length only.",
+  "sample": {"checkedAt":"2026-09-11T21:10:22.987Z","status":"ok","thresholds":{"warning":75,"high":85,"critical":90},"disk":{"totalGb":387.5,"usedGb":255.2,"availableGb":132.3,"usedPercent":66},"directories":{"_arrayTruncated":true,"_originalLength":4}}
+}

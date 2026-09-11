@@ -1,0 +1,15 @@
+{
+  "route": "/api/admin/cleanup (default page params: olderThanDays=3, includeStocks=false, includeTmp=false)",
+  "status": 200,
+  "note": "Sanitized: file-path/key/fingerprint fields dropped, arrays reduced to length only. This route does a full disk walk (35,091 files / ~159GB scanned per the tallies below) which is the confirmed cause of its ~10s latency.",
+  "sample": {
+    "renders": {"total": {"count": 13433, "sizeMb": 114647}, "older1d": {"count": 12182, "sizeMb": 98023}, "older3d": {"count": 9708, "sizeMb": 68167}, "older7d": {"count": 7529, "sizeMb": 46212}},
+    "stocks": {"total": {"count": 21658, "sizeMb": 37458}, "older1d": {"count": 20034, "sizeMb": 29559}, "older3d": {"count": 16606, "sizeMb": 14524}, "older7d": {"count": 14074, "sizeMb": 4495}, "older14d": {"count": 11072, "sizeMb": 124}},
+    "tmp": {"count": 13, "sizeMb": 279},
+    "selected": {"olderThanDays": 3, "includeStocks": false, "includeTmp": false, "renders": {"count": 37, "sizeMb": 169}, "stocks": {"count": 0, "sizeMb": 0}, "tmp": {"count": 0, "sizeMb": 0}, "total": {"count": 37, "sizeMb": 169}},
+    "protectedCount": 22070,
+    "protected": {"renders": 13396, "stocks": 8674},
+    "generatedAt": "2026-09-11T21:05:51.666Z",
+    "tallies": {"scanned": {"count": 35091, "sizeBytes": 159494181370}, "protected": {"count": 22070, "sizeBytes": 159316215765}, "expired": {"count": 13021, "sizeBytes": 177965605}}
+  }
+}

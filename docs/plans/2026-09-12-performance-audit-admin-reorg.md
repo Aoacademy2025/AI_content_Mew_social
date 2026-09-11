@@ -252,7 +252,13 @@ Decision table — the session copies the matching row(s) into "Chosen rows" aft
 | Stale `prisma/dev.db.*` backups measured in GB (§A1.3) | Mew deletes them by hand (list in report); not a code task | `du -sh prisma/` |
 | **Evidence matches none of the above** | Stop. No code change. The session presents the ranked cause to Mew at Gate A with a proposed remedy as a *new* interview item. | — |
 
-**Chosen rows:** _(written by the session at Gate A; ≤ 3)_
+**Chosen rows** (written by the session 2026-09-12 from A1 §A1.2–§A1.4, A1b §A1.5/§A1.5b, A3 §A3.1/§A3.3 — **rows 2 and 3 await Mew's yes at Gate A**; row 1 is policy-approved):
+
+1. **Additive index on `Notification`** (decision-table row "SCAN on a > 10 k-row table"): A1b §A1.5 shows `/api/notifications` doing a full SCAN of 16,537 rows (PK only). Add the `@@index` matching the route's `where`/`orderBy` shape (A3 §A3.7 item 9). Verify: `EXPLAIN` on a temp DB shows `SEARCH … USING INDEX`; `prisma db push` on deploy. Safe quick-win (Q6).
+2. **`story-film-system-worker` read-first poll** — *new remedy, not in the table*: A1 §A1.8 #2 measured ≈ 21,600 write-first interactive transactions/day from `leaseStoryFilmGenerationJobs` on a 114-row table, 25 `P1008` lease failures/day, 65 % of the worker's lines inside slow-tx windows. Remedy: one cheap read-only pre-check (`count` of expired leases + queued jobs) outside the transaction; open the existing write transaction only when it is non-zero; transaction body and `POLL_MS` unchanged. Verify: extended `verify-prisma-slow-tx` (idle poll issues 0 writes; a queued job is still leased within one poll); prod `P1008` in the worker log = 0 for 24 h. Does not touch render output or billing.
+3. **No-op write elimination in `syncUserEntitlement`** — *conflicts with B3's "no early returns" text, so Mew rules*: A3 §A3.1 + A1b §A1.5b: 107 / 249 PRO/BUSINESS accounts (43 %) run `BEGIN IMMEDIATE; UPDATE User … (0 rows); COMMIT` on every authenticated request (twice on `/api/user/me`, even on 403). Remedy: compute as today, then skip the `UPDATE` when every field it would write equals the stored value — the stored outcome is byte-identical by construction. Folded into B3 with a **sixth golden fixture** (PRO, `subStatus="active"`, no qualifying `Payment` row) and test (c) extended to it. Reviewed on opus + security review like the rest of B3.
+
+Not chosen, with the evidence: WAL row — WAL steady at 35 MB (8.5× threshold) but flat across three samples and slow-tx do **not** cluster around the 02:00 backup → advisory only (`wal_checkpoint(TRUNCATE)` after backup is cheap; Mew may add it later). TelemetryEvent row — 28.3 % of the DB, below the 50 % trigger → **no retention change and no VACUUM** (Q7). `$transaction` I/O row — refuted (A3 §A3.3: 0 of 122 sites). Stale snapshots — 64 files / 19 GB listed in A1 §A1.3 for Mew's hand.
 
 - [ ] Steps per chosen row: failing verify → change → PASS → its own PR → Mew deploys (D3.n) → session reads prod logs 24 h later (read-only) and records slow-tx/socket-timeout counts in report §8 → next row only after the count moved.
 
@@ -366,7 +372,16 @@ const adminGroups: Array<{ label: string; items: SidebarNavItem[] }> = [
 
 Pre-registered suspects (A4 confirms or clears each): `todayStart`/`weekStart` computed with `setHours(0,0,0,0)` in server TZ (`src/app/api/admin/stats/route.ts:15-20`); `totalVideos = prisma.video.count()` vs delivered renders; MAPC snapshot staleness when the `north-star-snapshot` cron misses a night; MRR from `Payment.amount` anywhere outside `revenue-cash.ts`; funnel double counting between VideoJob and telemetry.
 
-**Chosen fixes:** _(written by the session at Gate A; ≤ 6)_
+**Chosen fixes** (written by the session 2026-09-12 from A4 §9; each is one PR with its own verify script; **awaiting Mew's yes at Gate A** because every one changes a number Mew reads):
+
+1. **`จ่ายจริง` = cash only** — `revenue-cohorts.ts` requires `amount > 0` for cash evidence (the North Star already does) → 39 becomes 28 and the two figures on `/admin/revenue` agree. Verify: a PRO user whose only `Payment` is ฿0 is excluded from `payingTotal`.
+2. **MRR never falls back to list price** — `computeRevenueCohorts` contributes 0 for a payer with no `monthlyRevenueByUser` entry → removes ฿6,389.33 of fiction from MRR, `prepaidMrr`, `deferredRevenue`, margin, break-even. Verify: the ฿0 fixture contributes 0 to every derived figure.
+3. **Bangkok day boundaries in code** — `admin/stats` `newToday`/`newThisWeek` (true 7-day window) and `costs/route.ts` `dateLabel` use the existing `bangkokDate()` helper. Verify: fixtures at 16:59 Z / 17:00 Z straddle the boundary. *Ops half for Mew's hand (not code):* the north-star cron fires 07:15 Bangkok, not 00:15 — change `cron_restart` (`15 17 * * *`) or set `TZ` on the cron app; both are `ecosystem.config.js` edits outside this plan's code tasks.
+4. **Bound the insights telemetry queries** — replace the `take: 20_000` sample (102,501 rows in 30 d; previous window unordered) with server-side aggregation per window, or at minimum `orderBy` on both windows plus a `truncated: true` flag the UI renders. Verify: 25,000 fixture rows → counts equal the full-window truth. Also fixes cause 5 (826 ms).
+5. **One money source in `CostMarginPanel`** — stop counting ฿0 `Payment` rows in `newPayers`/`repeatPayers`; label the internal ledger explicitly as ledger (Stripe truth stays on `/admin/revenue`, ADR 0062). Verify: ฿0 fixture excluded; label string present.
+6. **Definitions cluster (one PR)** — "Video completed" tile and Health Score video terms read `VideoJob` (since `Video` is 100 % `COMPLETED` by construction); add `canceled` to `jobOutcomes`; remove the dead `เนื้อหาทั้งหมด` card and `Styles` tile. Verify: fixtures with canceled jobs are counted; the removed strings are absent.
+
+Deferred with reason (report §3): MAPC denominator — the shipped number is exact; CONTEXT.md:202 wording is reconciled in C6 instead, and the numerator tightening (`Script` drafts, `Video.updatedAt`) is a **North Star definition change → Mew decides** separately. Three "internal team" rules, 300 vs 365-day thresholds, `failAfterHours` 3 vs 24 — follow-up issue (A5 umbrella).
 
 - [ ] Steps per fix: failing verify → fix → PASS → commit `fix(admin): <number> means <definition>`.
 
