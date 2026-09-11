@@ -5,9 +5,11 @@
  * `BrollVideo` in `src/remotion/types.ts`) — there is no `scenes[]` field. This lib
  * converts that into per-window spans (ms) for the timeline lane.
  *
- * Pure + client-safe: no imports beyond types, so it's safe to use from the
- * client-component TimelinePanel.
+ * Pure + client-safe: types plus the shared millisecond reader, so it's safe to use
+ * from the client-component TimelinePanel.
  */
+
+import { boundaryMs } from "./broll-timeline-boundary";
 
 export type BrollWindowSpan = {
   index: number;
@@ -49,8 +51,11 @@ export function brollWindowSpans(
       const startSec = Number(raw.start);
       const endSec = Number(raw.end);
       if (!Number.isFinite(startSec) || !Number.isFinite(endSec)) return;
-      const startMs = Math.min(safeDurMs, Math.max(0, startSec * 1000));
-      const endMs = Math.min(safeDurMs, Math.max(0, endSec * 1000));
+      // Whole milliseconds, so two windows describing one shared boundary land on one value
+      // here too — otherwise upstream float drift follows the timeline into the editor and
+      // makes that boundary undraggable (HERO-21).
+      const startMs = Math.min(safeDurMs, Math.max(0, boundaryMs(startSec)));
+      const endMs = Math.min(safeDurMs, Math.max(0, boundaryMs(endSec)));
       if (endMs <= startMs) return; // zero/negative-width after clamp
       const src = typeof raw.src === "string" ? raw.src : "";
       const keyword = typeof raw.keyword === "string" && raw.keyword ? raw.keyword : null;

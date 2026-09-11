@@ -137,7 +137,7 @@
     "verify:broll-spans": "tsx scripts/verify-broll-spans.ts",
     "verify:broll-window-gen": "tsx scripts/verify-broll-window-gen.ts",
     "verify:hero-broll-window-migration": "tsx scripts/verify-hero-broll-window-migration.ts",
-    "verify:broll-timeline": "tsx scripts/verify-broll-timeline-boundary.ts",
+    "verify:broll-timeline": "tsx scripts/verify-broll-timeline-boundary.ts && tsx scripts/verify-broll-boundary-drift.ts",
     "verify:broll-rerender": "tsx scripts/verify-broll-rerender.ts && node --conditions=react-server --import tsx scripts/verify-scene-reroll-apply.ts",
     "verify:avatar-fade": "tsx scripts/verify-avatar-fade.ts",
     "verify:broll-window-management": "npm run verify:broll-timeline && tsx scripts/verify-broll-window-management.ts && tsx scripts/verify-broll-pending-actions.ts && tsx scripts/verify-cutaway-plan.ts && npm run verify:avatar-fade",
