@@ -1,0 +1,6 @@
+{
+  "route": "/api/notifications",
+  "status": 200,
+  "note": "Sanitized: top-level payload was itself an array of 50 notification objects; contents stripped per policy (would contain message/title text), only the count is retained.",
+  "sample": {"_arrayTruncated":true,"_originalLength":50}
+}

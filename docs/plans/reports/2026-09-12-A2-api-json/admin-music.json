@@ -1,0 +1,6 @@
+{
+  "route": "/api/admin/music",
+  "status": 200,
+  "note": "Sanitized: 21 track objects, titles/urls stripped per policy, count only.",
+  "sample": {"tracks": {"_arrayTruncated": true, "_originalLength": 21}}
+}

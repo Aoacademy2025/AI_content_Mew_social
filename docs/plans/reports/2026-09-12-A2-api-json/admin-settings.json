@@ -1,0 +1,16 @@
+{
+  "route": "/api/admin/settings",
+  "status": 200,
+  "note": "Sanitized further than the general policy: stripe_publishable_key (Stripe's client-safe key, already public by Stripe design) redacted anyway out of caution; stripe_secret_key/stripe_webhook_secret were already returned as {set:true,last4} redacted by the API itself. Long Thai plan-copy strings capped at 80 chars.",
+  "sample": {
+    "stripe_publishable_key": "[REDACTED_BY_AUDIT]",
+    "stripe_secret_key": {"set": true, "last4": "[REDACTED]"},
+    "stripe_webhook_secret": {"set": true, "last4": "[REDACTED]"},
+    "stripe_price_pro": "price_1Teh9eL39kyExJWOHcLan8a3",
+    "stripe_price_business": "price_1Teh9pL39kyExJWOGL1XcRAo",
+    "plan_free_price": "",
+    "plan_pro_price": "",
+    "plan_business_price": "",
+    "_moreKeys": 22
+  }
+}

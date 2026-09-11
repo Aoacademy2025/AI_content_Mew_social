@@ -1,0 +1,6 @@
+{
+  "route": "/api/videos",
+  "status": 200,
+  "note": "Sanitized: top-level payload is an array of 24 video job records, contents stripped per policy (script/prompt/url/name fields), count only.",
+  "sample": {"_arrayTruncated": true, "_originalLength": 24}
+}

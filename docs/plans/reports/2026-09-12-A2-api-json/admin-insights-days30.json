@@ -1,0 +1,12 @@
+{
+  "route": "/api/admin/insights?days=30",
+  "status": 200,
+  "note": "Sanitized: PII stripped, nested objects beyond depth 2 collapsed. NOT slow in this session (cold 1041ms, warm p50 826ms) despite the brief's expectation of a slow disk/scan cost -- see A2 report deviation note.",
+  "sample": {
+    "range": {"days": 30, "since": "2026-08-12T21:10:44.494Z", "until": "2026-09-11T21:10:44.494Z"},
+    "northStar": {"metric": "MAPC", "label": "Monthly Active Paying Creators", "activeRecurringPayers": 15, "activePayingCustomers": 28, "activeCreators": 20, "creatorRatePct": 71, "monthlyCreators": 7, "annualCreators": 13},
+    "activation": {"managed": true, "signups": 1260, "internalTeam": 15, "hasGeminiKey": 125, "hasStockKey": 352, "paidTotal": 39, "creditRevenue": 1295, "creditBuyers": 5, "recurringMrr": 6514.99, "prepaidMrr": 9739.5},
+    "renderStats": {"total": 1246, "done": 1244, "failed": 2, "running": 0, "queued": 0, "cancelled": 0, "web": 37, "mcp": 1209, "successPct": 100, "p50Ms": 209411},
+    "jobOutcomes": {"total": 1704, "done": 1395, "failed": 254, "processing": 0, "waitingProvider": 0, "queued": 0, "systemFailed": 245, "byokFailed": 0, "quotaFailed": 8, "noiseFailed": 1}
+  }
+}

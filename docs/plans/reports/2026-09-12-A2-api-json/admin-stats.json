@@ -1,0 +1,6 @@
+{
+  "route": "/api/admin/stats",
+  "status": 200,
+  "note": "Sanitized: capped to top 10 keys; 10 additional numeric keys present but not shown (see _moreKeys).",
+  "sample": {"totalUsers":1275,"freeUsers":1026,"paidUsers":249,"suspendedUsers":1,"totalContents":3,"totalVideos":1585,"totalImages":5639,"newToday":9,"newThisWeek":107,"payingTotal":39,"_moreKeys":10}
+}

@@ -1,0 +1,6 @@
+{
+  "route": "/api/editor-projects",
+  "status": 200,
+  "note": "Sanitized: 36 project records, contents stripped per policy, count only.",
+  "sample": {"projects": {"_arrayTruncated": true, "_originalLength": 36}}
+}

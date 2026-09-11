@@ -1,0 +1,13 @@
+{
+  "title": "Brand visual preflight rejects the analyzer response on 47 runs in 11 days, mostly schema_invalid",
+  "description": "## Customer impact\n\nThe visual-direction preflight refuses the analyzer result and the affected step stops. Inside the 14-day window this hit **13 distinct accounts**, and `pipeline_step_error` shows the customer-visible half: 9 `captions`-step failures across 5 accounts whose message is the Thai visual-analysis-incomplete text.\n\n## Evidence (14 Bangkok days to 2026-09-12, read-only production SQL, counts only)\n\n`TelemetryEvent name='brand_visual_preflight_invalid'`, 47 events / 13 users:\n\n| reason | sourceKind | events | users |\n|---|---|---:|---:|\n| `schema_invalid` | creator-script | 23 | 5 |\n| `empty_provider_response` | creator-script | 13 | 3 |\n| `schema_invalid` | ai-script | 4 | 1 |\n| `beat_count_mismatch` | creator-script | 3 | 2 |\n| `beat_count_mismatch` | ai-script | 2 | 2 |\n| `beat_count_mismatch` | upload-transcript | 1 | 1 |\n| (no reason recorded) | creator-script | 1 | 1 |\n\nPer Bangkok day: 09-01 1, 09-03 4, 09-04 1, 09-07 9, 09-08 4, 09-09 10, 09-10 6, **09-11 12 (5 users)**. The trend is up.\n\n## Relationship to HERO-26\n\nHERO-26 fixed `beat_count_mismatch` (one beat too many) and is Done and deployed. That class is now 6 of 47 events and is the agreed symptom watch. **The other 41 events are a different failure**: the analyzer response either does not match the schema at all (27) or is empty (13). Those are not covered by HERO-26 and have no issue.\n\n## Root-cause confidence\n\n**Unconfirmed.** `empty_provider_response` points at the provider call returning nothing (timeout, truncation or a refusal), `schema_invalid` at the response shape. `attemptCount`, `analyzerVersion`, `windowCount` and `diagnostic` are all recorded on the event, so the split can be settled without any new instrumentation.\n\n## Expected / actual\n\nExpected: the preflight either gets a schema-valid plan or degrades in a way the customer never notices. Actual: it is rejected on 47 runs and the Thai visual-analysis-incomplete error reaches the customer on 9 of them.\n\n## Acceptance criteria\n\n* `schema_invalid` plus `empty_provider_response` fall below 1 per Bangkok day for 7 consecutive days at current traffic, or the preflight degrades without a customer-visible error.\n* The `captions`-step visual-analysis-incomplete failures go to 0 for the same window.\n* A verify script covers the repair or fallback path for both reasons.",
+  "state": "Triage",
+  "priority": 3,
+  "assignee": "me",
+  "labels": [
+    "Bug",
+    "Area / Brand",
+    "Execution / Agent-ready",
+    "Risk / Production"
+  ]
+}

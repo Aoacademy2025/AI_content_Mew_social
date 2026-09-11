@@ -1,0 +1,6 @@
+{
+  "route": "/api/user/stats",
+  "status": 200,
+  "note": "Sanitized: arrays reduced to length only.",
+  "sample": {"plan":"BUSINESS","proExpiresAt":null,"styleCount":0,"contentCount":0,"videoCount":177,"limits":{"styles":null,"contents":null,"images":null},"recentContents":{"_arrayTruncated":true,"_originalLength":0},"recentVideos":{"_arrayTruncated":true,"_originalLength":5}}
+}
