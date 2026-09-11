@@ -6,6 +6,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 
 import { mediaWebStream } from "../src/lib/media-storage-support";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 
 // HERO-7: serving a rendered MP4 threw `Invalid state: Controller is already
 // closed` as an uncaught exception when a viewer disconnected mid-download.
@@ -110,10 +111,46 @@ async function main() {
         .join(", ")}`,
     );
 
-    console.log("verify-media-stream: 9/9 passed (402 cancellation cases)");
+    verifyNoRawToWebAdapter();
+
+    console.log("verify-media-stream: 10/10 passed (402 cancellation cases, 0 raw toWeb adapters)");
   } finally {
     await rm(directory, { force: true, recursive: true });
   }
+}
+
+/**
+ * HERO-7, second pass. `mediaWebStream` was written to replace `Readable.toWeb`
+ * because that adapter enqueues into a controller the consumer has already
+ * released. The media, R2 and brand-asset paths were migrated — and
+ * `/api/music/[filename]` was missed, so one range-serving route kept the
+ * throwing adapter for six weeks while the issue was investigated against the
+ * routes that had already been fixed.
+ *
+ * A helper only helps where it is used. This pins the invariant repo-wide so the
+ * next streaming route cannot quietly reintroduce the same adapter: nothing under
+ * src/ may hand a Node stream to `Readable.toWeb`.
+ */
+function verifyNoRawToWebAdapter(): void {
+  const offenders: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir)) {
+      if (entry === "node_modules" || entry.startsWith(".")) continue;
+      const full = path.join(dir, entry);
+      if (statSync(full).isDirectory()) { walk(full); continue; }
+      if (!/\.(ts|tsx)$/.test(entry)) continue;
+      const source = readFileSync(full, "utf8");
+      // The definition in media-storage-support.ts only names it in a comment.
+      const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+      if (/Readable\s*\.\s*toWeb\s*\(/.test(code)) offenders.push(full);
+    }
+  };
+  walk(path.join(process.cwd(), "src"));
+  assert.deepStrictEqual(
+    offenders.map((file) => path.relative(process.cwd(), file)),
+    [],
+    "every streaming route must use mediaWebStream; Readable.toWeb drops the cancellation guard (HERO-7)",
+  );
 }
 
 main().catch((error) => {
