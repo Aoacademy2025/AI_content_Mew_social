@@ -42,6 +42,7 @@ import { ActiveCaptionOverlay } from "./_components/ActiveCaptionOverlay";
 import { playbackTime } from "./_lib/playback-time";
 import { findActiveCaptionIdx } from "./_lib/find-active-caption";
 import { trackEvent } from "@/lib/client-telemetry";
+import { startPlayback } from "@/lib/media-playback";
 import { useVideoPlaybackTelemetry } from "@/lib/use-video-playback-telemetry";
 import { boundWordsForSplit } from "@/lib/transcribe-timeline";
 import { captionsFromSpokenScript, captionsFromTtsTiming } from "./_components/tts-timing-captions";
@@ -3681,7 +3682,7 @@ function LegacyVideoEditorPage() {
     const v = videoRef.current;
     if (!v) return;
     if (v.paused || v.ended) {
-      void v.play();
+      void startPlayback(v);
     } else {
       v.pause();
     }
