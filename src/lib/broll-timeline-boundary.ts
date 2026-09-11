@@ -23,8 +23,20 @@ export const MIN_BROLL_TIMELINE_WINDOW_MS = 1_000;
 // A shared boundary is one value written to both adjacent windows, so any difference is a gap or
 // overlap rather than harmless rounding. Keep the policy exact on client and server.
 export const BROLL_TIMELINE_TOLERANCE_MS = 0;
-export const MIN_BROLL_TIMELINE_WINDOW_SECONDS = MIN_BROLL_TIMELINE_WINDOW_MS / 1_000;
-export const BROLL_TIMELINE_TOLERANCE_SECONDS = BROLL_TIMELINE_TOLERANCE_MS / 1_000;
+
+/**
+ * Read a timeline value stored in seconds as the whole millisecond the product actually
+ * works in. Everything downstream — this editor, the render clock, the boundary policy
+ * above — is millisecond-resolution, while `bgVideos[]` stores seconds as doubles computed
+ * upstream. Two numbers that describe one shared boundary can therefore differ in their last
+ * bits: production has a preview whose window 8 ends at 42.23333333333333 and whose window 9
+ * starts at 42.233333333333334, about 3.6e-15 seconds apart. Compared as raw doubles under a
+ * zero tolerance that reads as a gap, and it made every timing edit on that video impossible
+ * (HERO-21). Compare boundaries through this, never as raw seconds.
+ */
+export function boundaryMs(seconds: number): number {
+  return Math.round(seconds * 1_000);
+}
 
 export function moveBrollBoundary(
   windows: readonly BrollTimelineWindow[],

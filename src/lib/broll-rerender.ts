@@ -14,8 +14,9 @@
 //    (no traversal, no external host, no nested path). Visibility-only edits do not need src.
 
 import {
-  BROLL_TIMELINE_TOLERANCE_SECONDS,
-  MIN_BROLL_TIMELINE_WINDOW_SECONDS,
+  BROLL_TIMELINE_TOLERANCE_MS,
+  MIN_BROLL_TIMELINE_WINDOW_MS,
+  boundaryMs,
 } from "./broll-timeline-boundary";
 
 export type WindowEdit = {
@@ -264,8 +265,8 @@ export function mergeWindowEdits(
     if (
       !Number.isFinite(sourceStart)
       || !Number.isFinite(sourceEnd)
-      || Math.abs(mergedStart - sourceStart) > BROLL_TIMELINE_TOLERANCE_SECONDS
-      || Math.abs(mergedEnd - sourceEnd) > BROLL_TIMELINE_TOLERANCE_SECONDS
+      || Math.abs(boundaryMs(mergedStart) - boundaryMs(sourceStart)) > BROLL_TIMELINE_TOLERANCE_MS
+      || Math.abs(boundaryMs(mergedEnd) - boundaryMs(sourceEnd)) > BROLL_TIMELINE_TOLERANCE_MS
     ) {
       return { error: "ปรับได้เฉพาะเส้นแบ่งด้านในของ B-roll" };
     }
@@ -279,13 +280,13 @@ export function mergeWindowEdits(
       if (
         byIndex.has(index)
         && (byIndex.get(index)?.start !== undefined || byIndex.get(index)?.end !== undefined)
-        && end - start < MIN_BROLL_TIMELINE_WINDOW_SECONDS
+        && boundaryMs(end) - boundaryMs(start) < MIN_BROLL_TIMELINE_WINDOW_MS
       ) {
         return { error: "แต่ละช่วง B-roll ต้องยาวอย่างน้อย 1 วินาที" };
       }
       if (index > 0) {
         const previousEnd = Number(merged[index - 1]?.end);
-        if (Math.abs(previousEnd - start) > BROLL_TIMELINE_TOLERANCE_SECONDS) {
+        if (Math.abs(boundaryMs(previousEnd) - boundaryMs(start)) > BROLL_TIMELINE_TOLERANCE_MS) {
           return { error: "เส้นแบ่ง B-roll ต้องต่อเนื่องและห้ามซ้อนกัน" };
         }
       }
