@@ -15,6 +15,7 @@ import { useAudioPeaks } from "../_components/useAudioPeaks";
 import { WaveformCanvas } from "../_components/WaveformCanvas";
 import { snapPointsFromPeaks, snapToNearest } from "../_components/waveform-snap";
 import { brollWindowSpans, type BrollWindowSpan } from "@/lib/broll-spans";
+import { startPlayback } from "@/lib/media-playback";
 import {
   BROLL_TIMELINE_TOLERANCE_MS,
   moveBrollBoundary,
@@ -194,7 +195,7 @@ export function TimelinePanel({
   function togglePlay() {
     const v = videoRef.current;
     if (!v) return;
-    if (v.paused) { void v.play(); setPlaying(true); } else { v.pause(); setPlaying(false); }
+    if (v.paused) { void startPlayback(v).then(setPlaying); } else { v.pause(); setPlaying(false); }
   }
 
   /** จุด snap: จุดเปลี่ยนเสียงพูด (ก่อน) > ขอบการ์ดข้างเคียง > วินาทีเต็ม */

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 
+import { startPlayback } from "../src/lib/media-playback";
+
 // Execute the real hook's window-keydown effect, including registration/cleanup.
 // Native media playback itself is covered by browser QA; here we assert that a
 // bubbled media key never changes the timeline or cancels the native default.
@@ -29,11 +31,14 @@ let undos = 0;
 let redos = 0;
 const video = {
   paused: true, ended: false, currentTime: 10, duration: 30,
-  play() { plays++; this.paused = false; return Promise.resolve(); },
+  play(): Promise<void> { plays++; this.paused = false; return Promise.resolve(); },
   pause() { pauses++; this.paused = true; },
 };
-const mount = new Function("window", "videoRef", "undoCaptions", "redoCaptions", `${compiled}\nreturn mount;`)(
-  target, { current: video }, () => undos++, () => redos++,
+// The effect reaches the shared HERO-27 playback guard, not video.play()
+// directly, so the sandbox has to supply the real one: it calls play()
+// synchronously, so the counters below still mean what they say.
+const mount = new Function("window", "videoRef", "undoCaptions", "redoCaptions", "startPlayback", `${compiled}\nreturn mount;`)(
+  target, { current: video }, () => undos++, () => redos++, startPlayback,
 ) as () => () => void;
 const cleanup = mount();
 function press(tagName: string, key: string, modifiers: Record<string, boolean> = {}, prevented = false) {

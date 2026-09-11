@@ -17,6 +17,7 @@ import {
 } from "./subtitle-style";
 import { loanwordSpans } from "@/lib/thai-loanwords";
 import { trackEvent } from "@/lib/client-telemetry";
+import { startPlayback } from "@/lib/media-playback";
 import { customerApiErrorMessage } from "@/lib/customer-api-error";
 import {
   captionExportPreflight,
@@ -923,7 +924,7 @@ export function usePostPhaseEditor(
       if (!v) return;
       if (e.key === " ") {
         e.preventDefault();
-        if (v.paused || v.ended) void v.play(); else v.pause();
+        if (v.paused || v.ended) void startPlayback(v); else v.pause();
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
         v.currentTime = Math.max(0, v.currentTime - 1);

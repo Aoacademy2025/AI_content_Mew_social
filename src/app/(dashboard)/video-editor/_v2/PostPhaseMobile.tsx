@@ -41,6 +41,7 @@ import {
   WindowEditsBottomBar,
 } from "./BrollWindowInspector";
 import type { MeData } from "@/lib/use-me";
+import { startPlayback } from "@/lib/media-playback";
 import type { BrollRegionPreference } from "@/lib/broll-preferences";
 import type { ProjectStylePack } from "./project-style-pack";
 import { normalizeLogoOverlayConfig, type LogoOverlayConfig } from "@/lib/logo-overlay";
@@ -187,7 +188,7 @@ export function PostPhaseMobile({
   function togglePlay() {
     const v = ed.videoRef.current;
     if (!v) return;
-    if (v.paused || v.ended) void v.play(); else v.pause();
+    if (v.paused || v.ended) void startPlayback(v); else v.pause();
   }
   function seekTrack(e: React.MouseEvent<HTMLDivElement>) {
     const v = ed.videoRef.current;

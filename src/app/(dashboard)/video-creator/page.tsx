@@ -17,6 +17,7 @@ import { HEYGEN_GEN_FRAMING } from "@/lib/avatar-gen-framing";
 import { ApiKeyModal, detectMissingKeyType, type RequiredKeyType } from "@/components/ui/api-key-modal";
 import { KeyOnboardingWizard } from "@/components/onboarding/KeyOnboardingWizard";
 import { isManagedStockClientEnabled } from "@/lib/managed-stock";
+import { startPlayback } from "@/lib/media-playback";
 import { resolveManagedStockActive } from "@/lib/use-me";
 import { QuotaStatus } from "@/components/quota-status";
 import { BackgroundRemovalPanel } from "./_panels/BackgroundRemovalPanel";
@@ -2893,7 +2894,7 @@ export default function ShortVideoPage() {
                               const data = await res.json();
                               if (res.ok) {
                                 const url = data.voiceUrl ?? data.url ?? data.audioUrl;
-                                if (url) new Audio(url.startsWith("http") ? url : `${window.location.origin}${url}`).play();
+                                if (url) void startPlayback(new Audio(url.startsWith("http") ? url : `${window.location.origin}${url}`));
                               } else {
                                 const keyType = detectMissingKeyType(data);
                                 if (keyType) { setMissingKey({ type: keyType, retryStep: "tts" }); }
@@ -2951,7 +2952,7 @@ export default function ShortVideoPage() {
                                   const data = await res.json();
                                   if (res.ok) {
                                     const url = data.voiceUrl;
-                                    if (url) new Audio(url.startsWith("http") ? url : `${window.location.origin}${url}`).play();
+                                    if (url) void startPlayback(new Audio(url.startsWith("http") ? url : `${window.location.origin}${url}`));
                                   } else {
                                     const keyType = detectMissingKeyType(data);
                                     if (keyType) { setMissingKey({ type: keyType, retryStep: "tts" }); }
