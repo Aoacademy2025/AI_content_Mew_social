@@ -52,7 +52,12 @@ import {
   type OmniVoiceBackend,
 } from "@/lib/omnivoice";
 import { omnivoiceScriptCharCapForPlan } from "@/lib/omnivoice-limits";
-import { voiceProviderPlanViolation } from "@/lib/render-plan-preflight";
+import {
+  aiAudioCeilingRefusal,
+  managedAudioCeilingApplies,
+  voiceProviderPlanViolation,
+} from "@/lib/render-plan-preflight";
+import { checkAiAudioCeiling } from "@/lib/ai-spend-limits";
 import { prepareHeroVoiceSpeech } from "@/lib/hero-voice-speech";
 import {
   HERO_AI_IMAGE_PLAN_REQUIRED_RESPONSE,
@@ -629,10 +634,39 @@ export async function POST(req: Request) {
     if (useEleven && !voiceId && !user.elevenlabsVoiceId) {
       return NextResponse.json({ error: "missing_voice_id", message: "ต้องระบุ ElevenLabs Voice ID" }, { status: 400 });
     }
-    try { resolveGeminiKey(user); }
+    let geminiKeyMode: "managed" | "byok" = "byok";
+    try { geminiKeyMode = resolveGeminiKey(user).mode; }
     catch (e) {
       if (e instanceof KeyRequiredError) return NextResponse.json({ error: "missing_key", missingKey: "gemini", message: "ต้องใส่ Gemini API key ก่อน (Settings → API Keys)" }, { status: 400 });
       throw e;
+    }
+
+    // AI-audio ceiling BEFORE the job row exists (HERO-25). The reserve in
+    // /api/videos/tts-gemini and /api/videos/tts-omnivoice stays the authoritative gate,
+    // but it only refuses once the pipeline has reached the TTS step: the customer has
+    // waited, the refusal lands in VideoJob.errorMessage with no CTA, and nothing stops
+    // the next attempt. Two accounts collected seven such failures in one morning.
+    // Only an EXHAUSTED ceiling refuses here — never an estimate of this script's length.
+    const narrationEngine = uploadMode
+      ? "upload"
+      : useEleven
+        ? "elevenlabs"
+        : voiceProvider === "omnivoice"
+          ? "omnivoice"
+          : "gemini";
+    if (managedAudioCeilingApplies(narrationEngine, geminiKeyMode)) {
+      const audioCeiling = await checkAiAudioCeiling(user.id, { enforce: true });
+      const refusal = aiAudioCeilingRefusal(audioCeiling, user.plan);
+      if (refusal) {
+        return NextResponse.json({
+          error: refusal.code,
+          // The editor toast renders `message` only (apiErrorMessage in useV2Job), so the
+          // way out has to live in it — `userAction` stays for structured consumers.
+          message: `${refusal.message} — ${refusal.userAction}`,
+          userAction: refusal.userAction,
+          neededPlan: refusal.neededPlan,
+        }, { status: 429 });
+      }
     }
     // Managed stock key (#297, ADR 0025 + Amendment 2026-08-26) — flag-gated
     // exception to the BYOK gate. MANAGED_STOCK unset/0 → resolveManagedStockAccess
