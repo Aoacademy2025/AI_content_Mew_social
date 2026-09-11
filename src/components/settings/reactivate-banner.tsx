@@ -4,11 +4,21 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { fetchMe } from "@/lib/use-me";
+import {
+  cancellationDateLabel,
+  hasScheduledCancellation,
+  type CancellationState,
+} from "@/lib/subscription-cancellation";
 
-type SubState = { plan?: string; cancelAtPeriodEnd?: boolean; cancelAt?: string | null };
+type SubState = CancellationState & { plan?: string };
 
 // Shows when a card subscription is scheduled to cancel; lets the user undo it in-app.
 // Renders nothing when there is no scheduled cancellation.
+//
+// HERO-20: this used to gate on `cancelAtPeriodEnd` alone. Stripe reports the
+// schedule as a `cancel_at` date instead, so the boolean was false for every
+// production subscriber and this banner had never rendered for anyone. Both
+// shapes now go through the shared reader.
 export function ReactivateBanner() {
   const [state, setState] = useState<SubState | null>(null);
   const [loading, setLoading] = useState(false);
@@ -17,12 +27,10 @@ export function ReactivateBanner() {
     fetchMe().then(d => { if (d) setState(d as SubState); }).catch(() => {});
   }, []);
 
-  if (!state?.cancelAtPeriodEnd) return null;
+  if (!hasScheduledCancellation(state)) return null;
 
-  const plan = state.plan ?? "PRO";
-  const dateLabel = state.cancelAt
-    ? new Date(state.cancelAt).toLocaleDateString("th-TH", { day: "numeric", month: "long", year: "numeric" })
-    : "สิ้นรอบบิล";
+  const plan = state?.plan ?? "PRO";
+  const dateLabel = cancellationDateLabel(state);
 
   async function reactivate() {
     setLoading(true);
@@ -30,6 +38,7 @@ export function ReactivateBanner() {
       const res = await fetch("/api/payments/reactivate", { method: "POST" });
       const data = await res.json();
       if (!res.ok) { toast.error(data.error ?? "ทำรายการไม่สำเร็จ"); return; }
+      // Clear both shapes, or the banner would stay up on the shape we did not clear.
       setState(s => (s ? { ...s, cancelAtPeriodEnd: false, cancelAt: null } : s));
       toast.success(`ใช้แพ็ก ${plan} ต่อแล้ว — ยกเลิกการยกเลิกเรียบร้อย`);
     } catch {
