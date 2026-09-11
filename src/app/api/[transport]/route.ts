@@ -19,7 +19,12 @@ import {
   createVideoJob,
   VIDEO_JOB_INFLIGHT_STATUSES,
 } from "@/lib/mcp/video-job";
-import { voiceProviderPlanViolation } from "@/lib/render-plan-preflight";
+import {
+  aiAudioCeilingRefusal,
+  managedAudioCeilingApplies,
+  voiceProviderPlanViolation,
+} from "@/lib/render-plan-preflight";
+import { checkAiAudioCeiling } from "@/lib/ai-spend-limits";
 import { checkClipQuota } from "@/lib/usage-limits";
 import { resolveAvatarRequest } from "@/lib/mcp/avatar-steps";
 import { getAvatarPreset, resolveAvatarLayout } from "@/lib/avatar-preset";
@@ -165,8 +170,27 @@ const handler = createMcpHandler(
           }
           if (useEleven && !u.elevenlabsKey) return missingKeyError("elevenlabs");
           if (useEleven && !args.voiceId && !u.elevenlabsVoiceId) return missingVoiceIdError();
-          try { resolveGeminiKey(u); }
+          let geminiKeyMode: "managed" | "byok" = "byok";
+          try { geminiKeyMode = resolveGeminiKey(u).mode; }
           catch (e) { if (e instanceof KeyRequiredError) return missingKeyError("gemini"); throw e; }
+          // Same AI-audio ceiling gate the web create path runs (HERO-25). MCP has no
+          // toast to read an error out of, so an in-pipeline 429 is even less visible
+          // here than it is in the editor.
+          // MCP exposes only gemini and elevenlabs (createVideoJobInputShape), so there is
+          // no Hero Voice branch to write here.
+          if (managedAudioCeilingApplies(useEleven ? "elevenlabs" : "gemini", geminiKeyMode)) {
+            const audioRefusal = aiAudioCeilingRefusal(
+              await checkAiAudioCeiling(u.id, { enforce: true }),
+              u.plan,
+            );
+            if (audioRefusal) {
+              return {
+                error: audioRefusal.code,
+                message: `${audioRefusal.message} — ${audioRefusal.userAction}`,
+                neededPlan: audioRefusal.neededPlan,
+              };
+            }
+          }
           if (!u.pexelsKey && !u.pixabayKey) return missingKeyError("broll");
           // Key VALIDITY preflight (Task 7, 2026-07-16 stability audit) — mirrors the
           // same guard in /api/videos/jobs (web). See @/lib/key-preflight for the

@@ -96,3 +96,67 @@ export function estimatedDurationPlanWarning(
     capSec,
   };
 }
+
+/** Which engine will produce this render's narration. `upload` is a clip that carries its
+ *  own audio and runs no TTS at all. */
+export type NarrationEngine = "gemini" | "omnivoice" | "elevenlabs" | "upload";
+
+/**
+ * Does this render's narration draw on the managed AI-audio ceiling (HERO-25)?
+ *
+ * Deterministic, so callers may block on it:
+ *  - managed Gemini spends the server key, which is what the ceiling exists to bound;
+ *  - Hero Voice is the platform's own worker (ADR 0003) and reserves with `enforce: true`
+ *    whatever the Gemini key mode is;
+ *  - ElevenLabs narration is the customer's own key. The ceiling can still be reached
+ *    later by an alignment transcribe, but every alignment layer fails OPEN (ADR 0056) and
+ *    the clip renders without forced alignment — refusing it here would block a render
+ *    that succeeds today;
+ *  - an uploaded clip runs no TTS.
+ */
+export function managedAudioCeilingApplies(
+  engine: NarrationEngine,
+  geminiMode: "managed" | "byok",
+): boolean {
+  if (engine === "upload" || engine === "elevenlabs") return false;
+  if (engine === "omnivoice") return true;
+  return geminiMode === "managed";
+}
+
+export interface AiAudioCeilingRefusal {
+  code: "QUOTA_AI_AUDIO";
+  /** What went wrong — the ceiling wording the pipeline already shows. */
+  message: string;
+  /** What the customer can do about it — always paired with a CTA in the UI. */
+  userAction: string;
+  plan: string;
+  neededPlan: "PRO" | "BUSINESS" | null;
+}
+
+/**
+ * Turn an exhausted AI-audio ceiling into a refusal the customer can act on, BEFORE the
+ * job row exists.
+ *
+ * Only an exhausted ceiling refuses. Whether the remaining allowance covers THIS script is
+ * deliberately not asked: the only honest number for a script's audio length is the one
+ * the TTS step measures, and `reserveAiAudioMinutes` is still the authoritative gate. This
+ * keeps the same asymmetry `estimatedDurationPlanWarning` above already follows — refuse
+ * on a fact, never on an estimate.
+ */
+export function aiAudioCeilingRefusal(
+  ceiling: { allowed: boolean; message?: string },
+  plan: string,
+): AiAudioCeilingRefusal | null {
+  if (ceiling.allowed) return null;
+  const neededPlan = nextPlanFor(plan);
+  const upgrade = neededPlan ? `อัปเกรดเป็น ${PLAN_LABEL[neededPlan]} ` : "";
+  return {
+    code: "QUOTA_AI_AUDIO",
+    message: ceiling.message ?? "ใช้เสียง AI (สร้างเสียง/ถอดเสียง) ครบเพดานรอบนี้แล้ว",
+    // The editor toast renders `message` only, so the way out is appended there too;
+    // `userAction` stays for structured consumers.
+    userAction: `${upgrade}เพื่อใช้เสียง AI ต่อ หรือรอรอบถัดไป — เรนเดอร์วิดีโอที่ทำไว้แล้วยังทำได้ตามปกติ`,
+    plan,
+    neededPlan,
+  };
+}
