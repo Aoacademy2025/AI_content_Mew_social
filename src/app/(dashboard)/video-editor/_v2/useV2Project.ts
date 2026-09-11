@@ -606,6 +606,15 @@ export function useV2Project() {
    *  A plan we never received must not be rendered as a plan that lacks a feature. */
   const [planResolved, setPlanResolved] = useState(false);
   const meRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** HERO-17: true once ME_RETRY_DELAYS_MS is spent with the plan still unknown.
+   *  Until then an automatic attempt really is coming and the panel may say so. */
+  const [meRetriesExhausted, setMeRetriesExhausted] = useState(false);
+  const [meRetryPending, setMeRetryPending] = useState(false);
+  /** Filled by the me-loading effect below so the manual retry applies a response
+   *  through exactly the same path as the automatic one — two copies of that
+   *  function would drift, and this one sets fifteen pieces of editor state. */
+  const applyMeRef = useRef<((m: Awaited<ReturnType<typeof fetchMe>>) => void) | null>(null);
+  const meRetryPendingRef = useRef(false);
   /** Task 7 badge: server launch-state signal (MANAGED_KIE && CREDITS_LIVE), independent
    *  of plan — lets locked AI-image UI show "เร็ว ๆ นี้" (not launched) instead of the
    *  "อัปเกรดเพื่อใช้ภาพ AI" upsell when the feature simply isn't live yet. */
@@ -959,6 +968,26 @@ export function useV2Project() {
     hasAdmittedVisualPin,
   });
   const logoEligible = logoEntitlement === "eligible";
+  /** HERO-17: one more attempt, on the customer's initiative, after the automatic
+   *  ladder has been spent. Bounded by construction — a single forced request per
+   *  press and no timer, so this can never become a poll against a database
+   *  HERO-10 already showed is contended. Undefined while an automatic retry is
+   *  still coming, which is what lets the panel tell the truth about which it is. */
+  const retryEntitlement = useCallback(async () => {
+    if (meRetryPendingRef.current) return;
+    meRetryPendingRef.current = true;
+    setMeRetryPending(true);
+    try {
+      const m = await fetchMe(true);
+      if (m) applyMeRef.current?.(m);
+    } catch {
+      // A failed manual retry leaves the panel exactly as it was: still stalled,
+      // still offering the button. Nothing to report that the panel does not say.
+    } finally {
+      meRetryPendingRef.current = false;
+      setMeRetryPending(false);
+    }
+  }, []);
 
   function clearProjectRecoveryData(clearProjectId: string): void {
     const storage = browserStorage();
@@ -2090,6 +2119,7 @@ export function useV2Project() {
       if (deliveredPlan) {
         setPlan(deliveredPlan);
         setPlanResolved(true);
+        setMeRetriesExhausted(false);
       }
       // Managed-kie: paid (PRO/BUSINESS) users un-gated for AI image sources when
       // the flags are on. Server (fetch-stock) is authoritative; this is UX only.
@@ -2129,15 +2159,21 @@ export function useV2Project() {
               () => loadMe(attempt + 1),
               ME_RETRY_DELAYS_MS[attempt],
             );
+            return;
           }
+          // HERO-17: the ladder is spent. Stop claiming an automatic retry is
+          // coming — the panel switches to an honest message with a manual one.
+          setMeRetriesExhausted(true);
           return;
         }
         applyMe(m);
       }).catch(() => {});
     };
+    applyMeRef.current = applyMe;
     loadMe(0);
     return () => {
       cancelled = true;
+      applyMeRef.current = null;
       if (meRetryTimerRef.current) {
         clearTimeout(meRetryTimerRef.current);
         meRetryTimerRef.current = null;
@@ -2458,7 +2494,7 @@ export function useV2Project() {
     headlineHook, setHeadlineHook,
     mixPreset, setMixPreset,
     usage, avatarInfo, elevenVoices, omniVoices, omniVoiceEnabled, retryOmniVoices, internalAiTester, heroAiBeta, heroAiImageEligible, heroAiImageAccess, brandVisualAllowed, brandLibraryAllowed, hasPersistedVisualPin, setHasPersistedVisualPin, hasAdmittedVisualPin, setHasAdmittedVisualPin, brandVisualCohort, brandVisualRolloutBucket, starterAiImageAllowance, isActiveTrial, isAdmin, isPaidManagedKie, recommendedAutoMixDefault, managedKieOn, managedStockKeyHint,
-    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, logoEntitlement, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
+    plan, canUploadOwnMedia, canUseLogoOverlay: logoEligible, logoEntitlement, logoEntitlementStalled: meRetriesExhausted, logoEntitlementRetrying: meRetryPending, retryEntitlement, projectId, projectReady, projectInitialization, projectStatus, activeJobId, activeExportJobId, latestVideoId, previewMediaState, resetProject, completeArchivedProject,
     brandContentPreflightId, setBrandContentPreflightId,
     projectStylePack, setProjectStylePack,
     saveStatus, retryProjectSave,
