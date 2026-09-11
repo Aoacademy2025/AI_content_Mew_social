@@ -382,6 +382,52 @@ export type ContentPreflightFailureReason =
  * can no longer be truncated away by a verbose earlier one. */
 const MAX_ATTEMPT_DIAGNOSTIC_LENGTH = 380;
 
+/** Normalize a window text or a claimed excerpt for comparison. The analyzer is asked to
+ * copy the window text verbatim; whitespace is the only difference worth forgiving. */
+function normalizedExcerpt(value: string | null | undefined): string {
+  return (value ?? "").replace(/\s+/gu, " ").trim();
+}
+
+/** Drop surplus beats when the analyzer returns more than one per window (HERO-26).
+ *
+ * Production never saw the analyzer come back SHORT. It came back over, almost always by
+ * exactly one — 27/26, 40/39, 42/41, 52/51, 61/60 — on every one of the three attempts,
+ * so the self-correction loop could not clear it and the video was refused. Counting to
+ * forty-one is the part a language model does not do on demand.
+ *
+ * Beats are positional: `resolveContentPreflight` overwrites each beat's `sourceExcerpt`,
+ * `startMs` and `endMs` from `windows[index]`. A surplus beat is therefore spare material,
+ * and dropping it is safe — but only if every window keeps the beat written FOR it. A
+ * blind `slice` would hand window 3 the beat written for window 2 whenever the surplus sat
+ * in the middle, and since the excerpt is overwritten by index nothing downstream could
+ * ever notice.
+ *
+ * So the excerpt the analyzer was told to copy is used to place the beats, and the blind
+ * trailing trim is the fallback for a model that paraphrased instead of copying. The
+ * fallback matches every shape production has recorded, and for that input the alternative
+ * today is a failed job.
+ *
+ * Returns null when there is nothing to trim, so the caller's count check still refuses a
+ * SHORT analysis: a window with no beat has no material and filling it would invent a
+ * scene.
+ */
+export function trimSurplusVisualBeats<T extends { sourceExcerpt?: string | null }>(
+  beats: readonly T[],
+  windows: readonly NarrativeVisualWindow[],
+): T[] | null {
+  if (beats.length <= windows.length) return null;
+  const remaining = [...beats];
+  const placed: T[] = [];
+  for (const window of windows) {
+    const wanted = normalizedExcerpt(window.text);
+    const match = remaining.findIndex((beat) => normalizedExcerpt(beat.sourceExcerpt) === wanted);
+    if (match === -1) return beats.slice(0, windows.length);
+    placed.push(remaining[match]);
+    remaining.splice(0, match + 1);
+  }
+  return placed;
+}
+
 function contentPreflightValidationFeedback(error: z.ZodError): string {
   return error.issues
     .slice(0, 8)
@@ -1002,10 +1048,14 @@ export function createGeminiContentPreflightAnalyzer(
         if (!parsed.success) {
           parsed = analysisSchema.safeParse(repairContentPreflightSemantics(boundedCandidate));
         }
-        const wrongBeatCount = parsed.success && parsed.data.beats.length !== input.windows.length;
-        if (parsed.success && !wrongBeatCount) return parsed.data;
+        const trimmedBeats = parsed.success
+          ? trimSurplusVisualBeats(parsed.data.beats, input.windows)
+          : null;
+        const beats = trimmedBeats ?? (parsed.success ? parsed.data.beats : []);
+        const wrongBeatCount = parsed.success && beats.length !== input.windows.length;
+        if (parsed.success && !wrongBeatCount) return { ...parsed.data, beats };
         const diagnostic = parsed.success
-          ? `beat_count:${parsed.data.beats.length}/${input.windows.length}`
+          ? `beat_count:${beats.length}/${input.windows.length}`
           : parsed.error.issues
             .slice(0, 4)
             .map((issue) => `${issue.path.join(".") || "root"}:${issue.code}`)
@@ -1015,7 +1065,7 @@ export function createGeminiContentPreflightAnalyzer(
         );
         failureReason = wrongBeatCount ? "beat_count_mismatch" : "schema_invalid";
         const issues = parsed.success
-          ? `beats: expected exactly ${input.windows.length}, received ${parsed.data.beats.length}`
+          ? `beats: expected exactly ${input.windows.length}, received ${beats.length}`
           : contentPreflightValidationFeedback(parsed.error);
         correction = [
           "Your previous JSON was rejected by semantic validation.",
@@ -1427,13 +1477,16 @@ export async function resolveContentPreflight(input: {
       "ผลวิเคราะห์แนวภาพยังไม่สมบูรณ์ กรุณาลองใหม่อีกครั้ง",
     );
   }
-  if (analyzed.data.beats.length !== windows.length) {
+  // An analyzer that is not the Gemini adapter reaches this gate untrimmed, so the same
+  // surplus rule applies here. A short analysis is still refused.
+  const analyzedBeats = trimSurplusVisualBeats(analyzed.data.beats, windows) ?? analyzed.data.beats;
+  if (analyzedBeats.length !== windows.length) {
     throw new ContentPreflightError(
       "INVALID_ANALYSIS",
       `ผลวิเคราะห์ต้องมีข้อมูลครบทั้ง ${windows.length} ฉาก`,
     );
   }
-  const policyApplied = applySceneContentPolicy(analyzed.data.beats, sceneContentPolicy);
+  const policyApplied = applySceneContentPolicy(analyzedBeats, sceneContentPolicy);
   const analysis: ContentPreflightAnalysis = {
     ...analyzed.data,
     beats: policyApplied.beats.map((beat, index) => ({
