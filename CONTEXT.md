@@ -203,6 +203,13 @@ Glossary of domain terms. Definitions only — no implementation details.
 - **Subscription North Star** — increasing Monthly Active Paying Creators is the primary product outcome. Trial sampling, course entitlements, coupons and Administrator Grants remain supporting acquisition or fulfillment mechanisms and must be measured by how clearly they preserve or improve conversion into recurring subscribers.
 - **Metric Help** — plain-language guidance attached to every specialized term on Insights. The visible label states the business meaning; an accessible tooltip or equivalent detail view explains the exact formula, time window, denominator, included and excluded cohorts, and authoritative data source on hover, keyboard focus and mobile tap.
 
+## Operations & Admin
+
+(Added 2026-09-12 during the performance audit + admin re-organisation. Vocabulary for the admin surfaces — definitions only; the one-question-per-page rule is ADR 0062.)
+
+- **Job Failure Class / ประเภทความล้มเหลวของงาน** — the single taxonomy every admin surface uses for a failed video job: **system** (ฝั่งเรา — our code or our managed key hitting a ceiling), **byok** (ฝั่งลูกค้า — the customer's own provider key or credit), **quota** (ฝั่งลูกค้า — the customer's plan cap, a pricing signal not a bug), **noise** (superseded or cancelled work, never counted). Admin copy groups byok + quota as "ฝั่งลูกค้า" and system as "ฝั่งเรา". _Avoid_: error type, failure reason.
+- **Daily Trend / แนวโน้มรายวัน** — a per-day count series on the admin overview whose day boundary is Asia/Bangkok midnight and whose comparison period is the equal-length window immediately before it. The four series are สมัครใหม่, สร้างคลิป (Base Render สำเร็จ and Export สำเร็จ side by side), จ่ายจริง (count of paid payments, never amounts), and งานล้มเหลว (by Job Failure Class).
+
 ## Hero Script
 
 - **Hero Script** — the viral script writer at `/hero-script` (menu: "เขียนสคริปต์ AI"): topic → hook variants → full script → 1-click handoff into the editor. Sibling of Hero AI Image / Hero AI Voice.
@@ -223,10 +230,10 @@ Glossary of domain terms. Definitions only — no implementation details.
 
 (Added 2026-08-25 during the UX/conversion audit. Vocabulary for funnel analysis — definitions only.)
 
-- **North Star (การแปลงเป็นสมาชิก)** — the share of Trials that become a **Recurring Subscriber**. Traffic and one-time purchases are inputs and outcomes around it, not the metric itself.
+- **Trial Conversion Rate (อัตราแปลง Trial เป็นสมาชิก)** — the share of Trials that become a **Recurring Subscriber**. A supporting acquisition funnel that feeds the Subscription North Star (MAPC); traffic and one-time purchases are inputs and outcomes around it. _Avoid_: North Star (reserved for MAPC — reconciled 2026-09-12).
 - **Trial** — the 7-day PRO-equivalent access granted automatically at signup (one per protected email identity). It ends by expiry or by conversion; a Trial that expires without payment reverts the account to FREE.
 - **Recurring Subscriber** — a customer whose plan is backed by an active auto-renewing Stripe subscription (monthly or annual). A one-time/PromptPay annual purchase, a bundle, a coupon grant or an admin grant makes someone a **Paid-Equivalent** user, not a Recurring Subscriber.
-- **Paid Conversion** — the moment a user's first successful payment is recorded. Sub-types: recurring (counts toward the North Star), one-time, credit-pack only.
+- **Paid Conversion** — the moment a user's first successful payment is recorded. Sub-types: recurring (counts toward the Trial Conversion Rate and, once the customer creates, toward MAPC), one-time, credit-pack only.
 - **Activation (คลิปแรกออก)** — the first successful **Export/Burn** of a video — the user holds a postable file. A completed Preview Mode render is a precursor step, not Activation.
 - **First-Clip Path** — the guided route from signup to Activation with every setting defaulted and no external API key required. Managed Gemini voice + managed B-roll make this route Zero-Setup; a user-supplied stock key only upgrades the B-roll library.
 - **Zero-Setup** — the property that a brand-new account can reach Activation without leaving the product (no external signup, no key). Anything presented as "จำเป็น" before Activation must actually be required by the pipeline.
