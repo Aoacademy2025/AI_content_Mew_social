@@ -12,6 +12,20 @@ import * as headlineHookModule from "../src/lib/headline-hook";
 import * as sceneContentPolicyModule from "../src/lib/scene-content-policy";
 import * as firstClipPathModule from "../src/lib/first-clip-path";
 import * as exportEditStateModule from "../src/app/(dashboard)/video-editor/_v2/export-edit-state";
+
+/** The AI-audio ceiling preflight (HERO-25) reads the user's usage window through prisma.
+ *  This harness replays the create route to prove idempotency and project recovery, not
+ *  quota behaviour, so the ceiling is stubbed open. The gate has its own coverage in
+ *  `npm run verify:ai-audio-preflight`, which pins that both create paths run it above the
+ *  line that writes the job row. */
+const aiSpendLimitsModule = {
+  checkAiAudioCeiling: async () => ({
+    allowed: true,
+    used: 0,
+    ceiling: Number.POSITIVE_INFINITY,
+    remaining: Number.POSITIVE_INFINITY,
+  }),
+};
 import {
   canonicalVideoJobRequest,
   fingerprintVideoJobRequest,
@@ -519,6 +533,7 @@ function mountEditorShell(input: {
     if (specifier === "@/components/ui/upgrade-modal") return { UpgradeModal: marker("UpgradeModal") };
     if (specifier === "@/lib/client-telemetry") return { trackEvent: () => undefined };
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
+    if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/components/ui/dropdown-menu") {
@@ -820,6 +835,7 @@ async function sameTickConflictBlocksSubmitAndExport(source: string): Promise<vo
       return { createClientPoller: createImmediateClientPoller };
     }
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
+    if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
@@ -1002,6 +1018,7 @@ async function recoveryCannotDuplicateOwnedBillableSubmit(source: string): Promi
       return { createClientPoller: createImmediateClientPoller };
     }
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
+    if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
@@ -1175,6 +1192,7 @@ function mountAttemptJobHook(
       return { createClientPoller: createImmediateClientPoller };
     }
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
+    if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     if (specifier === "@/lib/bgm-selection") return bgmSelectionModule;
@@ -2099,6 +2117,7 @@ async function jobsRouteReplaysSameUserIdempotentJob(source: string): Promise<vo
       return { getRunpodImageCostSnapshot: async () => ({ admitted: true }) };
     }
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
+    if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     throw new Error(`unhandled jobs route import: ${specifier}`);
@@ -2457,6 +2476,7 @@ async function runExactReplayRouteScenario(input: {
       };
     }
     if (specifier === "@/lib/render-plan-preflight") return renderPlanPreflightModule;
+    if (specifier === "@/lib/ai-spend-limits") return aiSpendLimitsModule;
     if (specifier === "@/lib/avatar-duration") return avatarDurationModule;
     if (specifier === "@/lib/quota-error") return quotaErrorModule;
     throw new Error(`unhandled exact-replay route import: ${specifier}`);
