@@ -636,6 +636,23 @@ The same pattern is visible on cheaper endpoints — `/api/user/stats` (18 state
 
 That makes the §A3.1 finding the better explanation for HERO-10: **not one long holder, but a very large number of very short `BEGIN IMMEDIATE` write transactions** issued by `syncUserEntitlement` on the authentication path of every request from an affected account, against a single-process web app (`ecosystem.config.js` gives `ai-content` no `instances` key → one fork) sharing one SQLite file with 2 × `render-worker`, `mcp-video-worker` and `story-film-system-worker`. A1b should read this section together with §A3.1 rather than looking for a long transaction.
 
+**§A3.4 What is loaded, globally** (source: A3 §A3.4)
+
+#### What is loaded, globally
+
+`src/app/layout.tsx:20` declares one `GOOGLE_FONTS_URL` with **24 families**, linked as a **render-blocking stylesheet on every route** (`layout.tsx:52`), plus `Inter` via `next/font/google` (self-hosted, not blocking).
+
+Measured (Chrome UA, `display=swap`):
+
+| Variant | CSS bytes | `@font-face` blocks | distinct `.woff2` URLs |
+|---|---|---|---|
+| **current, 24 families** | **109,637 B (107.1 KB)** | **278** | **240** |
+| 24 − the 5 with no consumer anywhere | 98,794 B (96.5 KB) | 251 | 221 |
+| the 12 editor-picker families (editor routes only) | 71,261 B (69.6 KB) | 182 | 167 |
+| Bai Jamjuree + IBM Plex Sans Thai only (what non-editor routes need) | **11,294 B (11.0 KB)** | 28 | 28 |
+
+Every prerendered route in the build carries this link — verified by grepping `fonts.googleapis.com/css2` in all 26 prerendered HTML files (`true` for all except `/_global-error`).
+
 **§A3.4 Family → consumer → route map** (source: A3 §A3.4)
 
 #### Family → consumer → route map
@@ -763,6 +780,39 @@ Cross-ranking of A1 §A1.8 (measured on prod) and A3 §A3.8 (measured in code). 
 
 **Full A4 table — sections 1-5** (source: A4 §1-§5)
 
+### §3.0 Verdict tally (A4 §0)
+
+(source: A4 §0)
+
+| verdict | count | rows |
+|---|---:|---|
+| Numbers audited | **119** | #1–#119 |
+| **Match `Y`** — value and definition both correct | **79** | of which **5** are "definition is right, label is misleading": #37, #64, #65, #97, #107 |
+| **Match `Y (drift)`** — differs only by the 25–45 min capture gap | **5** | #21, #22, #38, #73, #74 |
+| **Mismatch `N`** — the number does not mean what the label says, or is not the number it claims | **26** | #8, #9, #15, #18, #31, #40, #43, #45, #51, #52, #53, #69, #70, #71, #72, #76, #82, #84, #86, #92, #94, #95, #96, #101, #102, #106 |
+| **Mixed** — arithmetic correct, meaning wrong (or one half of a pair wrong) | **9** | #6, #10, #16, #41, #58, #60, #79, #100, #116 |
+
+Of the 26 mismatches, **4 are inherited** from the MRR defect (#18, #45, #95, #96) and **8 are the single
+telemetry-sampling defect** (#51, #52, #70, #71, #72, #82, #86, #92) — so they collapse into the 6 fix
+candidates in §9 rather than 26 independent bugs.
+
+The three findings that change what Mew believes about the business:
+
+1. **`จ่ายจริง` is two different numbers on the same page, and the bigger one is wrong.** `/admin` and
+   `/admin/insights` show **39**; the North Star on the *same* `/admin/revenue` page shows **28**. The gap
+   is exactly **11 accounts whose only plan `Payment` rows are ฿0**. `revenue-cohorts.ts` treats *any*
+   non-credit `PAID` row as cash evidence regardless of amount; `subscription-north-star.server.ts`
+   requires `amount > 0`. 28 is right.
+2. **35 % of the MRR figure is money nobody paid.** Those same 11 zero-฿ accounts fall through
+   `monthlyRevenueByUser` (only populated for `amount > 0`) onto the **list price**, contributing
+   **฿6,389.33 of the ฿18,052.50 MRR** and **฿6,389.33 of the ฿9,739.50 `prepaidMrr`** — which then
+   inflates `deferredRevenue` (฿35,569.96) too. `arr` is clean (recurring only).
+3. **Every telemetry-derived number on the 7-day and 30-day `/admin/insights` view is a ~4-day sample.**
+   The query is `take: 20_000` over a window that holds **102,501** rows at 30 days; the newest 20,000
+   reach back only to 2026-09-08 16:06 Bangkok. The *previous*-window query has the same cap **with no
+   `orderBy`**, so it takes the *oldest* 20,000 — current and previous are not comparable at all. The
+   24-hour view (5,175 rows) is intact.
+
 ### 1. `/admin` overview cards — `GET /api/admin/stats`
 
 Shown values from `admin-stats.json`, captured 2026-09-11 21:08 UTC. The A2 sanitiser capped the payload
@@ -777,7 +827,7 @@ and derived independently (marked *not captured*).
 | 3 | `/admin` · (note line) บนแผน PRO/BUSINESS | 249 | `stats/route.ts:34` `user.count({plan in [PRO,BUSINESS]})` | `… WHERE plan IN ('PRO','BUSINESS')` | 249 | **Y** | — | — |
 | 4 | `/admin` · ถูกระงับการใช้งาน | 1 | `stats/route.ts:35` `user.count({suspended:true})` | `… WHERE suspended=1` | 1 | **Y** | — | — |
 | 5 | `/admin` · เนื้อหาทั้งหมด | 3 | `stats/route.ts:36` `prisma.content.count()` | `SELECT COUNT(*) FROM Content` | 3 | **Y** | correct count of a **dead table** — newest `Content` row is 2026-05-29 | **C5**: drop the card (see Candidate 5) |
-| 6 | `/admin` · **วิดีโอทั้งหมด** | 1585 | `stats/route.ts:37` `prisma.video.count()` → all `Video` rows | `SELECT COUNT(*) FROM Video` = 1585; `RenderJob type='RENDER' status='DONE'` = 2758; `VideoJob status='done'` = 3406 | 1585 | **Y** (number) / **definition disputed** | three defensible "videos created" exist and they differ by 2× | **C5** — see §3 "What วิดีโอที่สร้าง should mean" |
+| 6 | `/admin` · **วิดีโอทั้งหมด** | 1585 | `stats/route.ts:37` `prisma.video.count()` → all `Video` rows | `SELECT COUNT(*) FROM Video` = 1585; `RenderJob type='RENDER' status='DONE'` = 2758; `VideoJob status='done'` = 3406 | 1585 | **Y** (number) / **definition disputed** | three defensible "videos created" exist and they differ by 2× | **C5** — see §3.7 |
 | 7 | `/admin` · รูปภาพทั้งหมด | 5639 | `stats/route.ts:38` `prisma.generatedImage.count()` | `SELECT COUNT(*) FROM GeneratedImage` = 5639; cross-check `AiGenerationJob kind='image' generatedImageId NOT NULL` = 5639 | 5639 | **Y** | — | — |
 | 8 | `/admin` · **สมัครใช้งานวันนี้** | **9** | `stats/route.ts:15-16,39` `new Date(); setHours(0,0,0,0)` in **server TZ**; A1 §A1.7: `TZ` is **not set** → `Etc/UTC` | Bangkok today: `date(createdAt/1000,'unixepoch','+7 hours') = date('now','+7 hours')` | **0** | **N** | "today" starts at **07:00 Bangkok**, not 00:00. At 04:34 Bangkok the card shows 9 signups that all happened *yesterday* (Bangkok 09-11 after 07:00). Bangkok 09-11 total was 11, of which 2 fell in the 00:00–07:00 blind slice. | **C5** — day boundary |
 | 9 | `/admin` · สมัครใช้งาน 7 วัน / "ย้อนหลัง 1 สัปดาห์" | 107 | `stats/route.ts:18-20,40` `now−7d` then `setHours(0,0,0,0)` (server TZ) | Bangkok 8 calendar days: 104 · Bangkok 7 calendar days: 102 | 104 / 102 | **N** | two errors compound: the 7 h shift **and** the window is 8 calendar days (`D-7` midnight → now), not 7. Label says 7. | **C5** — day boundary |
@@ -809,7 +859,7 @@ Shown values from `admin-revenue.json`, captured 2026-09-11 21:09:45 UTC, `days=
 
 | # | Label | Shown | Code definition | Independent SQL | Actual | Match | Cause | Fix |
 |---|---|---|---|---|---|---|---|---|
-| 24 | **North Star · คนจ่ายที่กลับมาสร้างจริง (MAPC)** | 20 | `revenue-growth.server.ts:275` ← `subscription-north-star.server.ts:148-193`: payers (`activePayingBillingCohort`, `:111`) ∩ (completed video ∪ script ∪ Hero image) in trailing 30 d | full replay (Q3) | **20** | **Y** | number reproduces exactly | but see §4 — the *denominator* does not match CONTEXT.md |
+| 24 | **North Star · คนจ่ายที่กลับมาสร้างจริง (MAPC)** | 20 | `revenue-growth.server.ts:275` ← `subscription-north-star.server.ts:148-193`: payers (`activePayingBillingCohort`, `:111`) ∩ (completed video ∪ script ∪ Hero image) in trailing 30 d | full replay (Q3) | **20** | **Y** | number reproduces exactly | but see §3.8 — the *denominator* does not match CONTEXT.md |
 | 25 | ลูกค้าจ่ายจริงที่ยังมีสิทธิ์ (`northStar.activePayingCustomers`) | 28 | `:180` `payerIds.size` — requires a `PAID` payment with **`amount>0 AND periodDays>0 AND note<>'credits' AND plan IN (PRO,BUSINESS)`** (`:116-121`), excludes suspended + ADMIN/`aoacademy.co`/`<owner-email>@` | Q3 | 28 | **Y** | **this is the correct "จ่ายจริง"** | — |
 | 26 | กลับมา % (`creatorRatePct`) | 71 | `:182` `round(creators/payers*100)` = 20/28 | Q3 | 71 | **Y** | — | — |
 | 27 | ต่ออายุอัตโนมัติ (`activeRecurringPayers`) | 15 | `:160` ← `recurringBillingCohort:68` (live Stripe sub + `subStatus='active'` + `planExpiresAt>now`, or live paid bundle) | Q3 | 15 | **Y** | — | — |
@@ -1109,6 +1159,69 @@ The session picks ≤ 6 at Gate A.
 
 ---
 
+### §3.7 What `วิดีโอที่สร้าง` should mean (A4 §7, mandated check)
+
+(source: A4 §7)
+
+Three tables answer "a video was created" and they differ by **2.2×**:
+
+| source | all-time | what it actually counts |
+|---|---:|---|
+| `Video` rows (what `/admin` shows today) | **1,585** | one row per **delivered gallery asset**. Every row is `COMPLETED` with an output URL; failures and cancellations never appear. |
+| `RenderJob type='RENDER' status='DONE'` | **2,758** | one row per **successful base render**, including re-renders of the same clip (avatar re-composite, timeline edit, free re-render). Excludes the 1,939 `BURN` jobs. |
+| `VideoJob status='done'` | **3,406** | one row per **successful orchestrated job**, and it mixes `create` (1,142 in 30 d) with `export` (561 in 30 d) — a clip that is created once and exported twice counts three times. |
+
+**Recommendation:** `วิดีโอที่สร้าง` on `/admin` should stay **`Video` rows** — it is the only one of the three
+that answers "how many finished videos do our customers have", it is the unit the customer sees in their
+gallery, and it never double-counts a re-render. But it must be relabelled and split, because as it stands
+it is silently a *success-only* count sitting next to failure counts that use a different denominator:
+
+- keep **`Video` rows** as **"คลิปที่ส่งมอบ"** (delivered clips) — the outcome number;
+- add **`VideoJob` `type='create'`** as **"งานสร้าง"** with its own done/failed/canceled split — the effort
+  number, and the one the funnel and `jobOutcomes` should both be built on (they already are);
+- keep **`RenderJob`** in the dev drawer only — it is an infrastructure counter, not a product one.
+
+The same three-way split explains #110: the admin's own dashboard says 177 videos while that account ran
+366 successful jobs. Neither number is wrong; they answer different questions and only one is labelled.
+
+---
+
+### §3.8 MAPC vs the CONTEXT.md definition (A4 §8, mandated check)
+
+(source: A4 §8)
+
+CONTEXT.md:202 — *"unique customers with an **active recurring monthly or annual paid entitlement** who
+complete at least one Core Creation Outcome within the trailing 30 days."*
+
+| | CONTEXT.md | as implemented | measured |
+|---|---|---|---|
+| denominator | active **recurring** paid entitlement | `activePayingBillingCohort` (`subscription-north-star.server.ts:111-146`) — accepts a live Stripe sub **or** a still-valid prepaid term **or** `planExpiresAt IS NULL AND stripeSubscriptionId IS NULL` | **28** (of which 13 are prepaid one-time terms, 0 via the no-expiry branch) |
+| the literal CONTEXT.md denominator | — | `recurringBillingCohort` (`:68-104`) exists and is already computed | **15** |
+| numerator (Core Creation Outcome) | completed video · saved-or-Editor-bound Hero Script · usable Hero AI Image | `:221-244` — `Video COMPLETED` with a URL and **`updatedAt >= since`**; **any** `Script` row `createdAt >= since`; `AiGenerationJob` image completed+settled+URL on `hero_video`/`automix`/`scene_reroll` | **20** (video 18 · script 11 · image 19) |
+| exclusions | Trials, coupons, Administrator Grants | enforced — `amount > 0 AND periodDays > 0 AND note<>'credits' AND plan IN (PRO,BUSINESS)`; plus suspended, ADMIN, `<owner-email>@`, `aoacademy.co` | ✓ |
+
+**Verdict: the shipped number (20) is arithmetically exact — my independent replay returns 20/28/15/7/13
+identically — but the denominator is broader than CONTEXT.md's wording.** The code makes a deliberate,
+documented product argument for it (`:106-110`: "a customer who paid for an annual term up front is still a
+paying customer for the life of that term"), and I think that argument is right. The defect is that
+**CONTEXT.md and the code disagree in writing**, and the two numbers (28 and 15) both render on the same
+page with different labels. Two smaller numerator gaps:
+
+- **`Script`**: CONTEXT.md says "**saved or Editor-bound** Hero Script"; the query counts every `Script`
+  row created in the window, including the 25 still at `status='draft'`. A draft is not a saved outcome.
+- **`Video.updatedAt`**: the window test is on `updatedAt`, not on when the video completed. Any later
+  touch of an old row (a thumbnail edit, a reconcile) pulls a months-old video into the trailing 30 days.
+
+**Recommendation for C5:** do not change the shipped MAPC denominator. Instead (a) reconcile CONTEXT.md:202
+to say "active paid entitlement (recurring **or** a prepaid term still running)" and name
+`activeRecurringPayers` as the separate recurring-only figure, and (b) tighten the numerator to
+`Script.status='sent' OR editorProjectId IS NOT NULL` and to a completion timestamp rather than `updatedAt`.
+
+**`NorthStarDailySnapshot` freshness:** 30 rows, 2026-08-13 → 2026-09-11, **no gaps**. The table is healthy.
+The problem is *when* it is written (07:15 Bangkok, not the documented 00:15) — see #31.
+
+---
+
 ### §3.9 Deferred with reason (not in the six C5 fixes)
 
 | A4 row | Defect | Why deferred | Filed |
@@ -1211,6 +1324,60 @@ Error Source Class: `ours` (โค้ดเรา ไม่ว่ารันท
 | `[API Error] ... ERROR_SYSTEM (capacity)` | 0 | 26 × `GET /api/brand-library`, 8 × `user/me`, 6 × `POST /api/scripts/generate`, 6 × `GET /api/credits/balance` ฯลฯ | ปลายทางของแถวที่ 1 ที่ผู้ใช้เห็นจริง ไม่มีอันไหนขึ้น Sentry |
 
 **สรุป**: Sentry ครอบคลุมเฉพาะ error ฝั่งเบราว์เซอร์และ exception ฝั่ง Node ที่หลุดขึ้นไปถึง top level เท่านั้น ห้ามใช้ event count ของ Sentry เป็นตัวชี้วัดสุขภาพระบบ — ต้องอ่านคู่กับ PM2 และ `TelemetryEvent` เสมอ
+
+**ตัวกรอง noise: Sentry ทำแล้ว แต่ `TelemetryEvent` ยังไม่ทำ** (source: A5 §4)
+
+### 4. ตัวกรอง noise: Sentry ทำแล้ว แต่ `TelemetryEvent` ยังไม่ทำ
+
+PR #463 (`5b861bf8`, merge 2026-09-09T14:29 +07 = 07:29 UTC) เริ่มทิ้ง third-party browser noise ก่อนส่งขึ้น Sentry
+
+| | ก่อน 2026-09-09T07:45Z | หลัง 2026-09-09T07:45Z |
+|---|---:|---:|
+| Sentry — WebView bridge / MetaMask (event สุดท้าย 09-09T07:44Z) | มี | **0** |
+| `TelemetryEvent` — WebView bridge | 331 | **62** |
+| `TelemetryEvent` — MetaMask | 8 | **10** |
+| `TelemetryEvent` — iOS bridge | 1 | **1** |
+| `TelemetryEvent` — `frontend_error` ทั้งหมด | 418 | 102 |
+
+หลังตัวกรองลง prod แล้ว **73 จาก 102 แถว (72 %)** ที่ `TelemetryEvent` ยังเขียนอยู่คือ noise ชุดเดียวกับที่ Sentry ทิ้งไปแล้ว
+`src/components/telemetry/telemetry-provider.tsx` ไม่มีตัวกรองใด ๆ และ `benignTelemetryReason()` (`src/app/api/admin/insights/route.ts:288`) ไม่มีกฎสำหรับ WebView bridge หรือ extension frame → **413 จาก 520 แถว (79.4 %) ถูกนับเป็น error ของเราบน `/admin/insights`**
+
+ย้ำข้อบังคับ: **ห้าม** ใส่ `failed_to_load_clerk_js` หรือ error ของ sign-in/sign-up ลง `beforeSend` ไม่ว่าในกรณีใด (แถวที่ 6)
+
+---
+
+**HERO-10 — ทำไมจึงร่างให้เปิดใหม่** (source: A5 §5)
+
+### 5. HERO-10 — ทำไมจึงร่างให้เปิดใหม่
+
+เกณฑ์ปิดเดิม: *contention signature ใน PM2 error log < 5 ครั้ง/วัน ติดกัน 7 วัน* — **ยังไม่ผ่าน ไม่ว่าจะนับแบบไหน**
+
+| วัน (กรุงเทพฯ) | slow-tx (1 บรรทัด = 1 event) | ที่ ≥ 5 s | p50 | p90 | max | `Socket timeout` + `Tx closed` + `P1008` (บรรทัด) |
+|---|---:|---:|---:|---:|---:|---:|
+| 09-09 (ตั้งแต่ 18:31) | 42 | 42 | 29,497 ms | 39,215 ms | 45,572 ms | 26 |
+| 09-10 | 99 | 98 | 20,241 ms | 30,147 ms | 46,302 ms | 18 |
+| 09-11 | 72 | 71 | 27,035 ms | 30,137 ms | 45,284 ms | 9 |
+| 09-12 (ถึง 03:47) | 4 | 4 | 20,701 ms | 30,062 ms | 30,089 ms | — |
+
+รวม 2.40 วัน (n = 217): p50 **25,166 ms** · p90 **30,191 ms** · max **46,302 ms** · 150 จาก 219 (68.5 %) ตกอยู่ภายใน ±500 ms ของ timeout ที่ตั้งไว้
+
+- เกณฑ์คือ < 5/วัน แต่วัดได้ **42 / 98 / 71** ต่อวัน (นับแบบ 1 บรรทัด = 1 event ไม่มีการพองจาก stack)
+- แม้หารบรรทัด marker ด้วย 3 ตามที่ comment เดิมเตือนไว้ ก็ยังได้ ≈ 8.7 / 6.0 / 3.0 ต่อวัน → 2 ใน 3 วันยังไม่ผ่าน
+- เกณฑ์ข้อสาม (telemetry ไม่โต) ก็ยังไม่ผ่าน: `TelemetryEvent` = 149.41 MB = **28.3 %** ของ DB, 305,452 แถว, **66 % เก่ากว่า 30 วัน**, ยังไม่มี retention job ใน `ecosystem.config.js`
+
+ร่าง comment: `docs/plans/reports/linear-drafts/HERO-10-reopen-comment.md`
+
+คำสั่งที่ **ตั้งใจจะรัน** (ยังไม่ได้รัน และห้ามรันจนกว่า Mew จะสั่ง):
+
+```bash
+cd /Users/mewsocialmacmini/projects/AI_content_Mew_social-perf-audit-reports
+LINEAR_CLI=.agents/skills/hero-studio-ops/scripts/linear.mjs
+node "$LINEAR_CLI" comment HERO-10 --file docs/plans/reports/linear-drafts/HERO-10-reopen-comment.md   # preview
+node "$LINEAR_CLI" transition HERO-10 "Triage"                                                          # preview
+# --apply เฉพาะเมื่อ Mew สั่งในข้อความนั้น ๆ
+```
+
+---
 
 **§6 ร่าง Linear ทั้งหมด — six draft files** (source: A5 §6)
 
@@ -1856,6 +2023,48 @@ SELECT COUNT(*) FROM User WHERE plan IN ('PRO','BUSINESS');
 date -u
 ls -l /var/www/ai-content/prisma/dev.db*
 ```
+
+### A2 (browser — read-only GETs from the logged-in admin session)
+
+(source: A2 process report — Method per number, Incident section; task-A2-report.md)
+
+### Method per number
+
+- **Nav timing** (TTFB/DCL/load): `performance.getEntriesByType('navigation')[0]`, read once per navigation.
+- **Time-to-usable**: identified the one `fetch`/`xhr` resource-timing entry per page whose data drives the page's headline numbers/list (documented per page in the main report), used its `responseEnd` (cold: relative to navigation start; warm: relative to a `performance.now()` mark taken immediately before the link's `.click()`, since Next.js client transitions don't create a new Navigation Timing entry).
+- **Per-endpoint timing (Step 2)**: `for` loop of `fetch(url, {credentials:'include', cache:'no-store'})` wrapped in `performance.now()`, executed from the browser console of an already-authenticated tab (not necessarily the page that normally calls that endpoint — cookies are shared across same-origin tabs, so this is equivalent). n=20 per the brief, run 1 reported separately as "cold", runs 2-20 sorted for p50/p95/max, for 12 of the 14 routes. See "What could not be measured" for the other two.
+- **Response bodies for A4**: captured from the same fetch loop's first response, sanitized in-page (recursive strip of `email/name/script/prompt/url/title/message/subject/avatar/image/thumbnail/key/fingerprint` keys, any string matching an email or `http(s)://`/`data:` pattern, and any string matching an absolute filesystem path e.g. `/var/www/...` — the last one added ad hoc after `/api/admin/cleanup`'s response turned out to be an inventory of server file paths), arrays collapsed to `{_arrayTruncated, _originalLength}`, objects capped to depth 2 and 10 keys per level to keep the JS-tool-to-text round trip from truncating mid-JSON. Saved as 14 files under `docs/plans/reports/2026-09-12-A2-api-json/`.
+- **Lighthouse**: not run — see below.
+- **LCP/CLS/long tasks**: attempted via both direct `performance.getEntriesByType()` and a fresh `PerformanceObserver({buffered:true})` per type, immediately after each cold load. Both returned empty arrays consistently, including for `paint` (`first-paint`/`first-contentful-paint`), which is normally always populated. Diagnosis: Chrome's Paint Timing / LCP / CLS / long-task APIs are suppressed for background (non-visible) tabs, and the automation tabs opened via `claude-in-chrome` are not the foreground tab of the browser window. This is a tool/environment limitation, not a page issue — confirmed because Nav Timing and Resource Timing (which are not visibility-gated) worked normally throughout.
+
+### Incident: concurrent load on `/api/admin/cleanup` and collateral slowdown
+
+While measuring `/api/admin/cleanup` with the planned n=20 loop, a single `await fetch()` loop call exceeded the `javascript_tool`'s ~45s synchronous-return timeout (the CDP `Runtime.evaluate` call itself timed out, with a "renderer may be frozen" message — this was a tool-call-timeout artifact, not an actual frozen renderer, confirmed because immediately-following quick JS calls on the same tab returned instantly). The fix attempted was to fire the loop without awaiting it in the tool call (`promise.then(...)`) and poll a flag — this avoided the tool timeout but the loop itself did not finish within ~5.5 minutes of waiting (multiple `sleep` background timers totaling ~325s). A second, bounded version (`AbortController`, 20s per-request timeout, n=6) was started in the same tab without first confirming the original loop had actually stopped — so for a period, **two concurrent loops were both hitting `/api/admin/cleanup`**.
+
+During this window, an isolated single fetch to `/api/admin/stats` (normally 100-400ms) measured 20,955ms and then 23,494ms. This is a real, reproducible finding, not a measurement artifact: `/api/admin/cleanup`'s own response body shows it walks 35,091 files (~159GB) on every call with no caching, and Node.js is single-threaded, so synchronous or long-running I/O in that route handler would block the event loop for every other concurrent request on the process. This should be flagged prominently for A3.
+
+**Corrective action taken:** the tab was navigated away (a real top-level `navigate()`), which aborts client-side fetches and destroys the JS realm, killing both loops. A quick recovery check (`/api/admin/stats` in isolation) showed 1,062ms then 23,494ms again, then a clean 204ms after ~90 more seconds — consistent with residual server-side load draining rather than an instant fix. From that point on, `/api/admin/cleanup` and `/api/admin/insights?days=30` were each measured with a single request (not 20×) to avoid repeating the load; `/api/admin/insights?days=30` turned out to be fast and safe (see main report), so it was subsequently run for the full n=20 after all.
+
+**Side effect / data loss:** navigating the tab away also destroyed the in-memory `window.__store` object that held the sanitized response bodies for the 10 endpoints measured just before the incident (their timing numbers were already printed to the conversation and are not lost, but their bodies had to be re-fetched once, single-shot, afterward — an acceptable low-cost redo since it's one extra GET per route, not 20).
+
+**Endpoints measured (14, from audit §1.2, first column)**
+
+- `/api/user/me`
+- `/api/updates?summary=1`
+- `/api/notifications`
+- `/api/admin/stats`
+- `/api/admin/settings`
+- `/api/admin/storage`
+- `/api/admin/cleanup?olderThanDays=3&includeStocks=false&includeTmp=false`
+- `/api/admin/support?status=OPEN`
+- `/api/admin/music`
+- `/api/admin/insights?days=30`
+- `/api/user/stats`
+- `/api/videos`
+- `/api/editor-projects`
+- `/api/admin/revenue`
+
+**Fetch-loop snippet:** Exact console snippet not preserved by A2; method described above.
 
 #### A4
 
