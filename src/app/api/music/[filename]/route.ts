@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
-import { Readable } from "stream";
+
+import { mediaWebStream } from "@/lib/media-storage-support";
 
 export const runtime = "nodejs";
 
@@ -27,8 +28,14 @@ const cors = {
   "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
 };
 
+// HERO-7: this route served audio through `Readable.toWeb`, the adapter that
+// enqueues one more chunk after the consumer has released the controller and
+// throws ERR_INVALID_STATE as an uncaught exception. The media, R2 and
+// brand-asset paths were moved to `mediaWebStream` for exactly that reason; this
+// one was missed, leaving the app's only range-serving route on the unsafe
+// adapter. Seeking or closing a track mid-download is enough to lose the race.
 function streamBody(stream: fs.ReadStream) {
-  return Readable.toWeb(stream) as ReadableStream<Uint8Array>;
+  return mediaWebStream(stream);
 }
 
 function baseHeaders(contentType: string, total: number) {
