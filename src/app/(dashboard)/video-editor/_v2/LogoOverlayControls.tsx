@@ -21,7 +21,7 @@ import {
   type LogoOverlayConfig,
   type LogoPosition,
 } from "@/lib/logo-overlay";
-import { color, font, radius } from "./tokens";
+import { color, font, fx, radius } from "./tokens";
 import {
   LOGO_PICKER_ACCEPT,
   LOGO_PICKER_FORMAT_LABEL,
@@ -71,14 +71,45 @@ function LockedNotice() {
  * "checking", never "upgrade" — a paying customer whose `/api/user/me` request
  * failed must not be handed an upsell for a feature they already bought. The
  * controls stay disabled here exactly as they are when locked.
+ *
+ * HERO-17: that state used to be terminal. Once the editor's retry ladder was
+ * spent nothing asked again, so the panel sat here until the page was reloaded
+ * while its second line still promised an automatic retry. The promise is now
+ * made only while one is actually coming; after that the notice says what is
+ * true and hands the customer the retry itself.
  */
-function ResolvingNotice() {
+function ResolvingNotice({
+  onRetry,
+  retrying,
+}: {
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
+  const stalled = typeof onRetry === "function";
   return (
     <div className="logo-controls__locked" role="status" aria-live="polite">
-      <RefreshCw size={17} aria-hidden="true" />
+      <RefreshCw
+        size={17}
+        aria-hidden="true"
+        className={retrying ? "logo-controls__spin" : undefined}
+      />
       <div>
         <strong>กำลังตรวจสอบสิทธิ์การใช้งาน</strong>
-        <span>ยังโหลดข้อมูลแผนของคุณไม่สำเร็จ ระบบกำลังลองใหม่ให้อัตโนมัติ</span>
+        <span>
+          {stalled
+            ? "ยังโหลดข้อมูลแผนของคุณไม่สำเร็จ กดลองอีกครั้งเพื่อตรวจสอบใหม่"
+            : "ยังโหลดข้อมูลแผนของคุณไม่สำเร็จ ระบบกำลังลองใหม่ให้อัตโนมัติ"}
+        </span>
+        {stalled && (
+          <button
+            type="button"
+            className="logo-controls__retry"
+            onClick={onRetry}
+            disabled={retrying}
+          >
+            {retrying ? "กำลังตรวจสอบ…" : "ลองอีกครั้ง"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -117,6 +148,8 @@ export function LogoOverlayControls({
   value,
   eligible,
   entitlement = eligible ? "eligible" : "locked",
+  onRetryEntitlement,
+  entitlementRetrying = false,
   editor,
 }: {
   value: LogoOverlayConfig | undefined;
@@ -125,6 +158,11 @@ export function LogoOverlayControls({
    *  may show the upgrade notice. Defaults to the old two-state behaviour so a
    *  caller that has not been wired up yet cannot change silently. */
   entitlement?: LogoEntitlementState;
+  /** HERO-17: supplied ONLY once the automatic retry ladder is spent. Its absence
+   *  is what tells the resolving notice that an automatic attempt is still coming,
+   *  so the panel never promises a retry that is not going to happen. */
+  onRetryEntitlement?: () => void;
+  entitlementRetrying?: boolean;
   editor: LogoOverlayEditor;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -163,7 +201,7 @@ export function LogoOverlayControls({
       />
 
       {entitlement === "locked" && <LockedNotice />}
-      {entitlement === "resolving" && <ResolvingNotice />}
+      {entitlement === "resolving" && <ResolvingNotice onRetry={onRetryEntitlement} retrying={entitlementRetrying} />}
 
       {!config ? (
         <div className="logo-controls__empty">
@@ -378,6 +416,26 @@ export function LogoOverlayControls({
         .logo-controls__locked div { display: grid; gap: 3px; }
         .logo-controls__locked strong { color: ${color.text}; font: 600 13px ${font.heading}; }
         .logo-controls__locked span { color: ${color.textSecondary}; font-size: 12px; line-height: 1.5; }
+        /* HERO-17: the retry the stalled resolving notice offers. Sized like the
+           other inline actions in this panel; it never enables a control, it only
+           asks for the plan again. */
+        .logo-controls__retry {
+          justify-self: start;
+          margin-top: 6px;
+          min-height: 32px;
+          padding: 6px 14px;
+          border-radius: ${radius.pill}px;
+          color: ${color.primary300};
+          background: ${color.selectedBg};
+          border: 1px solid ${color.selectedBorder};
+          font: 600 12px ${font.heading};
+          cursor: pointer;
+          transition: ${fx.transition};
+        }
+        .logo-controls__retry:hover:not(:disabled) { filter: ${fx.hoverBrightness}; }
+        .logo-controls__retry:disabled { opacity: .6; cursor: default; }
+        .logo-controls__spin { animation: logo-controls-spin 1s linear infinite; }
+        @keyframes logo-controls-spin { to { transform: rotate(360deg); } }
         .logo-controls__empty {
           min-height: 220px;
           display: flex;

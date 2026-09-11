@@ -151,10 +151,78 @@ function verifySourceTraps(): void {
   );
 }
 
+/**
+ * HERO-17: the `resolving` state HERO-16 introduced is terminal. Once
+ * ME_RETRY_DELAYS_MS is spent (three attempts, 1.5 s / 5 s / 15 s) nothing ever
+ * asks for the plan again, so the panel sits on "checking your access" until the
+ * customer reloads the page — while its own second line promises that the system
+ * is retrying automatically, which by then is untrue.
+ *
+ * The fix is the honest half of the issue's two options: once the ladder ends the
+ * copy stops promising an automatic retry and offers a manual one. A
+ * customer-initiated retry is bounded by construction — one request per click,
+ * no timer, nothing to poll a database HERO-10 already showed is contended.
+ */
+function verifyStalledRecovery(): void {
+  const hook = readFileSync(
+    join(ROOT, "src/app/(dashboard)/video-editor/_v2/useV2Project.ts"),
+    "utf8",
+  );
+  assert.ok(
+    hook.includes("meRetriesExhausted"),
+    "the editor must know when its retry ladder has been spent",
+  );
+  assert.ok(
+    hook.includes("retryEntitlement"),
+    "the editor must expose a way to ask for the plan again once the ladder ends",
+  );
+  // Bounded: the manual path is a single forced request, never a new timer.
+  const retryBody = hook.slice(hook.indexOf("const retryEntitlement"), hook.indexOf("const retryEntitlement") + 900);
+  assert.equal(
+    /setInterval|setTimeout/.test(retryBody),
+    false,
+    "the manual retry must not arm a timer — one request per click, nothing to poll",
+  );
+
+  const panel = readFileSync(
+    join(ROOT, "src/app/(dashboard)/video-editor/_v2/LogoOverlayControls.tsx"),
+    "utf8",
+  );
+  assert.ok(
+    panel.includes("onRetryEntitlement"),
+    "the panel must accept a retry action for the stalled state",
+  );
+  // The promise of an automatic retry may only be made while one is actually coming.
+  const autoPromise = "ระบบกำลังลองใหม่ให้อัตโนมัติ";
+  assert.ok(panel.includes(autoPromise), "the auto-retry copy still exists for the retrying state");
+  const stalledCopy = panel.slice(panel.indexOf("function ResolvingNotice"), panel.indexOf("function LogoSwitch"));
+  assert.ok(
+    /onRetry/.test(stalledCopy),
+    "the resolving notice must render a retry control when no retry is coming",
+  );
+  assert.ok(
+    stalledCopy.includes("ลองอีกครั้ง"),
+    "the stalled state must give the customer a button they can press",
+  );
+
+  // Nothing widens: the stalled state is still not permission.
+  assert.equal(logoControlsEnabled("resolving"), false, "a stalled resolving state still disables the controls");
+
+  // Both surfaces have to pass the action through, or the mobile sheet keeps the dead end.
+  for (const file of ["PostPhase.tsx", "PostPhaseMobile.tsx"]) {
+    const src = readFileSync(join(ROOT, "src/app/(dashboard)/video-editor/_v2", file), "utf8");
+    assert.ok(
+      src.includes("onRetryEntitlement"),
+      `${file} must pass the retry action to the logo panel`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
   verifyEntitlementStates();
   await verifyFetchMeFailureContract();
   verifySourceTraps();
+  verifyStalledRecovery();
   console.log("verify-logo-entitlement: OK");
 }
 

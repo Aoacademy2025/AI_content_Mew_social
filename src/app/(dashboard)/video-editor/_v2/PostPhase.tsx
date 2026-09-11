@@ -79,6 +79,9 @@ export function PostPhase({
   onHeadlineHookChange,
   logoEligible,
   logoEntitlement,
+  logoEntitlementStalled,
+  logoEntitlementRetrying,
+  retryEntitlement,
   projectSaveStatus,
   onRetryProjectSave,
   canRunProjectOperation,
@@ -108,6 +111,10 @@ export function PostPhase({
   onHeadlineHookChange: (next: HeadlineHookConfig | undefined) => void;
   logoEligible: boolean;
   logoEntitlement: LogoEntitlementState;
+  /** HERO-17: the automatic retry ladder is spent, so the panel must offer a manual one. */
+  logoEntitlementStalled: boolean;
+  logoEntitlementRetrying: boolean;
+  retryEntitlement: () => void;
   projectSaveStatus: "idle" | "saving" | "saved" | "error";
   onRetryProjectSave: () => void;
   canRunProjectOperation?: () => boolean;
@@ -783,6 +790,8 @@ export function PostPhase({
                 value={logoOverlay}
                 eligible={logoEligible}
                 entitlement={logoEntitlement}
+                onRetryEntitlement={logoEntitlementStalled ? retryEntitlement : undefined}
+                entitlementRetrying={logoEntitlementRetrying}
                 editor={ed.logo}
               />
             </div>
