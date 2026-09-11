@@ -9,9 +9,11 @@
 **ใครทำให้คิวยาว (เรียงตามหลักฐาน)**
 1. **ทุก request ของลูกค้าจ่ายเงิน 107 จาก 249 บัญชี (43 %) เปิด write transaction ที่ไม่ได้เปลี่ยนอะไรเลย** (`UPDATE User` 0 แถว ใน `entitlements.ts`) — เพราะไม่มีแถว `Payment` ที่เข้าเกณฑ์ ระบบจึง "sync" ใหม่ทุกครั้ง แม้แต่ตอนตอบ 403
 2. **`story-film-system-worker` เปิด write transaction ทุก 4 วินาที** (~21,600 ครั้ง/วัน) บนตารางที่มี 114 แถว และล้มเหลว (`P1008`) วันละ 25 ครั้ง — 65 % ของ log worker นี้อยู่ในช่วงที่มี slow-tx (36 เท่าของค่าปกติ)
-3. **auth path อ่านซ้ำ**: `/api/user/me` ยิง **34 statements** (อ่าน `User` แถวเดียวกัน 15 ครั้ง) ทุกหน้ายิงมัน; ลดได้เหลือ ~10
-4. **`/admin` เดินไฟล์ทั้งดิสก์ทุกครั้งที่เปิด** (`/api/admin/cleanup` เดิน 35,091 ไฟล์ ≈ 10 วินาที) และ **ระหว่างนั้น API admin อื่นค้างตามไปด้วย** (ระหว่างวัด `/api/admin/stats` กระโดดจาก 0.2 s เป็น 23 s) — ADR 0062 เอาสิ่งนี้ออกจากหน้า `/admin` อยู่แล้ว
-5. **font ซับ 24 ตระกูล (107 KB, block การวาดหน้าแรก) โหลดทุก route** ทั้งที่หน้าปกติใช้ 2 ตระกูล — ลดเหลือ 11 KB ได้ใน route ที่ไม่มีซับ
+3. **auth path อ่านซ้ำ**: `/api/user/me` ของบัญชีลูกค้าจ่ายเงิน (ไม่ใช่ admin) ยิง **34 statements** (อ่าน `User` แถวเดียวกัน 15 ครั้ง) ทุกหน้ายิงมัน; ลดได้เหลือ ~10
+4. **`/admin` เดินไฟล์ทั้งดิสก์ทุกครั้งที่เปิด** (`/api/admin/cleanup` เดิน 35,091 ไฟล์ ≈ 10 วินาที) และ **ระหว่างนั้น API admin อื่นค้างตามไปด้วย** (ระหว่างวัด `/api/admin/stats` กระโดดจาก 0.2 s เป็น 23 s) — ADR 0062 ย้ายสิ่งนี้ออกจากหน้า `/admin` ไปหน้า `/admin/storage` **แต่ย้ายไม่ใช่แก้**: หน้านั้นยังรอ ~10 วิ เท่าเดิม การแก้จริง (จำกัด scan / ทำเบื้องหลัง) เป็น follow-up
+5. **font ซับ 24 ตระกูล (107 KB CSS ที่ block การวาดครั้งแรก) โหลดทุก route** ทั้งที่หน้าปกติใช้ 2 ตระกูล — เป็นน้ำหนักหน้าเว็บที่ลดได้ (→ 11 KB ใน route ที่ไม่มีซับ) **ไม่ใช่สาเหตุของอาการช้าที่วัดได้** (สไตล์ชีตใช้ 0–21 ms เมื่อ cache แล้ว)
+
+นอกคิวเขียน: **`/admin/revenue` คือหน้าที่ช้าที่สุดที่มิวใช้จริง** (1.7 วิ warm / 3.0 วิ cold) เพราะเรียก Stripe สด ๆ ทุกครั้งโดยไม่มี cache — แผนนี้**ไม่แก้** (เป็น route เงิน ต้องถามมิวก่อน) และ `/api/admin/insights` 0.8 วิ จะดีขึ้นเมื่อแก้ตัวเลข (C5 ข้อ 4)
 
 **ตัวเลขที่เชื่อไม่ได้ (ตรวจ 119 ตัว ผิดความหมาย 26 + ครึ่งผิด 9)**
 - **"จ่ายจริง 39" ผิด — ตัวจริงคือ 28** (11 บัญชีมีแค่ `Payment` ฿0) และ North Star บนหน้าเดียวกันก็บอก 28 อยู่แล้ว
@@ -22,12 +24,17 @@
 
 **Error 14 วัน:** 22 กลุ่ม — แก้ 4 · เฝ้าดู 15 · noise 3. Sentry **ไม่เห็น** กลุ่มที่ใหญ่ที่สุดเลย (คิว SQLite 369 slow-tx อยู่ใน PM2 เท่านั้น) กลุ่มที่ต้องแก้: คิว SQLite (HERO-10 ร่างเปิดใหม่), Hero AI Image `OUTPUT_INVALID` 84 ครั้ง/20 บัญชี แนวโน้มขึ้น, brand visual preflight ปฏิเสธ 41 ครั้ง/13 บัญชี, 401 storm บน endpoint ที่ poll เบื้องหลัง 1,730 events. ร่าง Linear 6 ไฟล์ ยังไม่ apply
 
-**สิ่งที่ยืนยันว่าไม่ใช่สาเหตุ:** backup `VACUUM INTO` (0/217 ช่วง), `cleanup-videos`, render-worker, CPU/RAM/ดิสก์, Google Fonts ใน `/dashboard` (0–21 ms), และ **ไม่มี transaction ไหนถือ network/ffmpeg ไว้ข้างใน** (ตรวจ 122 จุด) — สมมติฐานเดิมของ HERO-10 ผิด
+**สิ่งที่ยืนยันว่าไม่ใช่สาเหตุ:** backup `VACUUM INTO` (ทับ 0 จาก 217 ช่วง slow-tx; มี 1 ใน 219 เหตุการณ์ที่*เริ่ม*ระหว่าง VACUUM คืนเดียว), `cleanup-videos`, render-worker, CPU/RAM/ดิสก์, Google Fonts ใน `/dashboard` (0–21 ms), และ **ไม่มี transaction ในเส้นทางหลักที่ถือ network/ffmpeg ไว้ข้างใน** (ตรวจ 122 จุด; จุดเดียวที่มี network อยู่ใน canary review ที่ไม่ใช่ทางร้อน) — สมมติฐานเดิมของ HERO-10 ผิด
 
 **จะแก้ยังไง:** Phase B ตามนโยบาย quick-win (cache ดิสก์ 10 นาที, อ่าน SiteConfig ครั้งเดียว, ส่งแถว `User` ที่โหลดแล้วต่อกันไป, font เฉพาะ route ที่วาดซับ, updates ครั้งเดียว) + B6 สามแถวที่เลือกจากหลักฐาน (index `Notification`, worker story-film อ่านก่อนค่อยเขียน, ตัด write เปล่าใน entitlements) — สองแถวหลังต้องให้มิวตัดสินใจก่อน. Phase C ทำ `/admin` ใหม่ + แก้ตัวเลข 6 รายการ. ตัวเลขก่อน/หลังอยู่ที่ §8
 
+**ต้องการคำตอบจากมิว 3 เรื่องที่ Gate A:** (1) B6 แถว 2 — worker story-film อ่านก่อนค่อยเขียน, (2) B6 แถว 3 — ตัด write เปล่าใน entitlements (รวมใน B3), (3) แก้ตัวเลข 6 รายการ C5 ตามรายการในแผน. **สิ่งที่ต้องให้มิวลงมือเอง (ไม่มีใครทำแทนได้):** ลบ snapshot เก่า 64 ไฟล์ (19 GB) ใน `prisma/`, ตั้ง `BACKUP_RSYNC_TARGET` ให้มีสำเนานอกเครื่อง, และเลื่อน cron North Star ให้ตรง 00:15 กรุงเทพ (`ecosystem.config.js`). **ถ้าทำครบ "ดีขึ้น" หน้าตาเป็นแบบนี้:** อาการค้าง 20–40 วิ แบบสุ่มหายไป (slow-tx ≥ 5 s = 0/วัน), `/admin` เปิดโดยไม่เดินดิสก์, ตัวเลขเงินตรงกันทุกหน้า (จ่ายจริง 28, MRR ไม่มีราคาป้าย), และ "วันนี้" คือวันนี้จริง ๆ
+
 
 ## 1. Baseline measured
+
+**Incidents during measurement (disclosed):** (a) *Production, A2* — the brief-mandated 20× loop on `/api/admin/cleanup` overlapped with a second loop and degraded the admin API for ~2–3 min (`/api/admin/stats` 204 ms → 23,494 ms); the worker aborted it and cut that route to single measurements — see the incident note in §1.2. (b) *Local Mac only, A3* — while stopping its own dev servers the A3 worker ran `pkill -f "next dev"`, which also killed an unrelated Next 14 dev server on port 3011 (a different repo); its supervisor restarted it within seconds. **No process on production was signalled at any point**; §9 holds every production command.
+
 
 #### 1.1 Production (A1)
 
@@ -736,20 +743,20 @@ Cross-ranking of A1 §A1.8 (measured on prod) and A3 §A3.8 (measured in code). 
 |---|---|---|---|---|---|
 | 1 | **SQLite writer-queue contention** — many short `BEGIN IMMEDIATE` writes from several processes on one file; a blocked transaction sits 20–40 s until a timeout | 219 slow-tx / 2.40 d (42 / 98 / 71 per day ≥ 5 s); p50 hold 25.2 s, max 46.3 s; 68.5 % pinned at a timeout; bursts across `ai-content` + `story-film-system-worker`; box idle | no `$transaction` awaits I/O (122 sites); the transactions are short and DB-only | all (random 20–40 s stalls) | B3 + B6 rows 2–3 |
 | 1a | ↳ **no-op `UPDATE User` on every authenticated request from paid accounts without a qualifying `Payment` row** (`entitlements.ts:365`, runs twice on `/api/user/me`, even on 403) | cohort = **107 / 249 PRO/BUSINESS (43 %)** (§A1.5b) | §A3.1 no-evidence table: +4 reads and **1 write transaction** per request | all | B6 row 3 (via B3) |
-| 1b | ↳ **`story-film-system-worker` 4 s poll opens a write-first interactive transaction** (`leaseStoryFilmGenerationJobs`) | ≈ 21,600 write tx/day on a 114-row table; 196 own slow-tx; 25 / 24 / 25 `P1008` lease failures per day; 65.2 % of its lines inside slow-tx windows (36× baseline) | relation filter compiles to a correlated sub-query inside the transaction | all | B6 row 2 |
-| 1c | ↳ **budgets unset on prod** (`maxWait` 10 s, `timeout` 30 s, socket 20 s) turn a wait into a 20–40 s stall instead of a fast failure | no `PRISMA_*`/`SQLITE_*` keys (§A1.7) | `prisma-options.ts` defaults | all | advisory (HERO-10 comment); not changed in this plan |
+| 1b | ↳ **`story-film-system-worker` 4 s poll opens a write-first interactive transaction** (`leaseStoryFilmGenerationJobs`) | ≈ 21,600 write tx/day on a 114-row table; 196 own slow-tx ≥ 2 s (152 ≥ 5 s); 25 / 24 / 25 `P1008` lease failures per day; 65.2 % of its lines inside slow-tx windows (36× baseline) | relation filter compiles to a correlated sub-query inside the transaction | all | B6 row 2 |
+| 1c | ↳ **budgets unset on prod** (`maxWait` 10 s, `timeout` 30 s, socket 20 s) turn a wait into a 20–40 s stall instead of a fast failure | no `PRISMA_*`/`SQLITE_*` keys (§A1.7) | `prisma-options.ts` defaults | all | advisory — the decision table's remedy for this row (`withSqliteConnectionParams` + `transactionOptionsFromEnv`, i.e. shorter budgets) changes failure timing for every process and needs its own measurement window, so it is recorded in the HERO-10 comment instead; the story-film cause (1b) is addressed at its source (B6 row 2) |
 | 2 | **Entitlement chain re-reads** — same `User` row read up to 15× per request, evidence bundle 5× | `/api/user/me` warm p50 182 ms, cold 338 ms; called on every page | auth prefix 8 statements; `/api/user/me` 34 → ~10 possible | all, `/dashboard` most (bimodal warm 541 ms vs 3,342 ms = contention, not code) | B3 |
-| 3 | **`/api/admin/cleanup` synchronous disk walk + 6 unbounded scans** on `/admin` open; degrades every other admin request while it runs | 10.2–10.7 s per call (35,091 files / 159 GB); collateral `/api/admin/stats` 204 ms → 23,494 ms during the walk (A2 incident) | `readdirSync`/`lstatSync` on the single web process; `findMany` without `take` (§A3.6 F3–F5) | `/admin` | B1 (cache) + ADR 0062 (C3 moves it off `/admin`); bounding the scans = follow-up |
+| 3 | **`/api/admin/cleanup` synchronous disk walk + 6 unbounded scans** on `/admin` open; degrades every other admin request while it runs | 10.2–10.7 s per call (35,091 files / 159 GB); collateral `/api/admin/stats` 204 ms → 23,494 ms during the walk (A2 incident) | `readdirSync`/`lstatSync` on the single web process; `findMany` without `take` (§A3.6 F3–F5). Reconciliation with §A1.6: `du -sk` of the same directories takes 0.072 s — the 10 s is the route's own synchronous walk plus six unbounded scans, not the filesystem | `/admin` | ADR 0062 / C3 moves it off `/admin` (**relocated, not fixed** — the new `/admin/storage` page still pays ~10 s); B1 caches only `/api/admin/storage` (269 ms); bounding the six scans = follow-up |
 | 4 | **`/api/admin/revenue` live Stripe pagination per request, no cache** | cold 2,953 ms, warm p50 1,704 ms, max 1,853 ms — misses the 350 / 500 ms targets | unbounded charges + refunds + one invoice list per bundle sub (§A3.6 F6) | `/admin/revenue` | follow-up (cache/window) — money route, ask Mew |
 | 5 | **`/api/admin/insights` unbounded telemetry scans** | warm p50 826 ms, max 996 ms — misses 350 / 500 ms | two 20 000-row windows + an all-time `editor_opened` distinct scan; 30 statements | `/admin/insights` | C5 fix 4 (bound + aggregate); the same defect makes the numbers wrong |
 | 6 | **24-family Google Fonts sheet on every route** (107 KB render-blocking CSS, 278 `@font-face`) | stylesheet duration 0–21 ms warm (cached) — cheap when cached, paid on every cold first paint | 5 families used by nothing, 7 only by Remotion (self-loading) | first paint everywhere | B4 |
 | 7 | **`Notification` full-table SCAN** on `/api/notifications` (16,537 rows, PK only) | cold 226–1,170 ms; 50 full objects, no pagination | only SCAN > 10 k rows in §A1.5 | all (bell poll) | B6 row 1 (`@@index`) |
 | 8 | **Sidebar refetches the updates summary on every navigation** | `/api/updates?summary=1` ≈ 95 ms × every route change | effect deps include `pathname` | all (warm nav) | B5 |
-| 9 | **32 `SiteConfig` reads as 32 queries** on `/api/admin/settings` | warm p50 100 ms | `Promise.all(KEYS.map(getConfig))` | `/admin` settings | B2 |
+| 9 | **32 `SiteConfig` `findUnique` calls on `/api/admin/settings`** — Prisma batches them into one `IN` query (A3 §A3.2; A1b §A1.5 #8), so this is code clarity, not a measured latency cause; 9 of the route's 11 statements are the auth prefix (cause 2) | warm p50 100 ms | `Promise.all(KEYS.map(getConfig))` | `/admin` settings | B2 (no latency win expected) |
 | 10 | **No code splitting** — `/video-editor` 2,234 KB raw / 658 KB gzip, 0 `next/dynamic` | `/video-editor` cold 880 ms, warm 860 ms — **within the 3.0 s target** on office network | §A3.5 | `/video-editor` | out of scope (recorded; only becomes a plan if the target is missed) |
-| — | **DB size 528 MB**: TelemetryEvent 149 MB (28 %), SupportTicket 54 MB for 223 rows (`imageBase64` inline), WAL steady at 35 MB (8.5× autocheckpoint), 64 stale snapshots = 19 GB in `prisma/` | §A1.3 / §A1.4 | — | cost + blast radius, not latency | Telemetry < 50 % → no retention change, no VACUUM (Q7); snapshots = Mew's hand |
+| — | **DB file 555.75 MB (`page_count × page_size`), 527.52 MB live per `dbstat`**: TelemetryEvent 149 MB (28 %), SupportTicket 54 MB for 223 rows (`imageBase64` inline), WAL steady at 35 MB (8.5× autocheckpoint), 64 stale snapshots = 19 GB in `prisma/` | §A1.3 / §A1.4 | — | cost + blast radius, not latency | Telemetry < 50 % → no retention change, no VACUUM (Q7); snapshots = Mew's hand |
 
-**What the A2 page numbers say about the targets (Q3):** cold medians `/admin` 1,038 ms · `/dashboard` 674 ms · `/videos` 684 ms · `/admin/insights` 874 ms · `/video-editor` 880 ms are all inside their targets **when the writer queue is quiet**. The "ง่วง" is (a) the random 20–40 s contention stall (cause 1), (b) `/dashboard` warm bimodality (541 ms vs 3.3 s, seen twice in three runs during a contention window), (c) `/admin`'s 10 s disk walk making the disk tab unusable, and (d) two API routes above the 350/500 ms line (`/api/admin/revenue`, `/api/admin/insights`). LCP/CLS/Lighthouse could not be captured this session (background-tab suppression; devtools MCP attached to a logged-out profile) — re-measure at Gate B with a foreground tab.
+**What the A2 page numbers say about the targets (Q3):** cold medians `/admin` 1,038 ms · `/dashboard` 674 ms · `/videos` 684 ms · `/admin/insights` 874 ms · `/video-editor` 880 ms are all inside their targets **when the writer queue is quiet**. The "ง่วง" is (a) the random 20–40 s contention stall (cause 1), (b) `/dashboard` warm bimodality (541 ms vs 3.3 s, seen twice in three runs during a contention window), (c) `/admin`'s 10 s disk walk making the disk tab unusable, and (d) three API routes miss Q3: `/api/admin/revenue` (1,704 ms) and `/api/admin/insights` (826 ms) above the 350 ms median line, `/api/admin/storage` above the 500 ms max line (528 ms); `/api/admin/cleanup` is the plan's recorded known cold cost. LCP/CLS/Lighthouse could not be captured this session (background-tab suppression; devtools MCP attached to a logged-out profile) — re-measure at Gate B with a foreground tab.
 
 
 ## 3. Number accuracy (A4)
@@ -1102,6 +1109,18 @@ The session picks ≤ 6 at Gate A.
 
 ---
 
+### §3.9 Deferred with reason (not in the six C5 fixes)
+
+| A4 row | Defect | Why deferred | Filed |
+|---|---|---|---|
+| #79/#80 | creation funnel mixes `create` and `export` jobs (86 % shown vs 82 % real) | funnel is rebuilt as the `/admin` trend cards (C1 counts renders and exports separately, ADR 0062); the insights funnel is pruned in the post-C4 follow-up | insights-payload follow-up (plan "Out of scope") |
+| #101 | "Render Web / MCP" counts `BURN` too (52/2,085 next to 37/1,209) | same surface as #79; C1's series use `type='RENDER'` / `type='BURN'` explicitly | same follow-up |
+| #102 | "ครีเอเตอร์ active 39" = anyone who emitted any telemetry (CONTEXT.md creator count = 92) | definition change of a Growth term → Mew decides; C2's North Star card uses `NorthStarDailySnapshot.activeCreators` instead | Gate A question / A5 umbrella |
+| #116 | `/api/user/me` still ships the dead `usageCount`/`usageLimit` meter | touching the `/api/user/me` payload belongs to B3's review scope (auth hot path); dropping fields is a contract change for the dashboard client → done with B3 if the reviewer clears it, else follow-up | B3 / A5 umbrella |
+| #55 | three different "internal team" rules | one-line each; grouped into the definitions follow-up so one PR carries one rule | A5 umbrella |
+| #84, #98 | `failAfterHours` 3 vs 24; annual threshold 300 vs 365 days | same | A5 umbrella |
+| MAPC denominator (§3.8) | code counts prepaid terms still running; CONTEXT.md:202 says recurring | the shipped number is exact and the code's argument is sound → reconcile CONTEXT.md wording in C6; numerator tightening (`Script` drafts, `Video.updatedAt`) is a North Star definition change → Mew decides | C6 + Gate A question |
+
 ## 4. Error summary — 14 days (A5)
 
 **§0 ช่วงเวลาที่วัดได้จริง (window caveat)** (source: A5 §0)
@@ -1210,20 +1229,20 @@ Error Source Class: `ours` (โค้ดเรา ไม่ว่ารันท
 
 | Cause (§2) | Task | Change | Expected gain (measured basis) | Policy |
 |---|---|---|---|---|
-| 3 | **B1** | `getStorageHealth` cached 10 min per `cwd`; `?refresh=1` bypasses; export `readDisk` | `/api/admin/storage` 269 ms → ~1 ms warm; the walk runs ≤ 6×/h instead of per open | quick-win (cache) |
-| 9 | **B2** | `getConfigs(keys)` one `IN` query | `/api/admin/settings` 32 → 1 SELECT (100 ms → ~20 ms) | quick-win (fewer duplicate queries) |
+| 3 (storage half only) | **B1** | `getStorageHealth` cached 10 min per `cwd`; `?refresh=1` bypasses; export `readDisk` | `/api/admin/storage` 269 ms → ~1 ms warm (estimate); the `du` walk runs ≤ 6×/h instead of per open. **Does not touch the 10 s `/api/admin/cleanup` walk** (relocated by C3; bounding it = follow-up) | quick-win (cache) |
+| 9 | **B2** | `getConfigs(keys)` one explicit `IN` query | none measurable — Prisma already batches the 32 `findUnique` calls into one `IN` query; kept as a code-clarity quick-win that removes the batching assumption | quick-win (fewer duplicate queries) |
 | 2, 1a | **B3** | pass the loaded `User` row into `syncUserEntitlement` / bundle / paid-equivalent; `/api/user/me` reuses `authUser` | auth prefix 8 → 5 statements on every request; `/api/user/me` 34 → ~10 (with per-request memo); ~40–50 fewer statements per dashboard load | quick-win (fewer duplicate queries); the 1a write elimination is B6 row 3 and needs Mew |
 | 6 | **B4** | subtitle font sheet only on routes that draw subtitles; root keeps Inter + Bai Jamjuree | non-editor routes 107 KB → 11 KB blocking CSS (−90 %); editor 107 → 70 KB | quick-win (per-route fonts) |
 | 8 | **B5** | updates summary fetched once per session | −1 request per navigation | quick-win |
-| 7 | **B6 row 1** | `@@index` on `Notification` for the `/api/notifications` shape | SCAN → SEARCH on 16.5 k rows; cold 226–1,170 ms → < 50 ms DB time | quick-win (additive index) |
+| 7 | **B6 row 1** | `@@index` on `Notification` for the `/api/notifications` shape | SCAN → SEARCH on 16.5 k rows (the 226–1,170 ms cold figure is total request time; DB-time saving unquantified until measured) | quick-win (additive index) |
 | 1b | **B6 row 2** (Mew decides) | `leaseStoryFilmGenerationJobs`: cheap read-only pre-check outside the transaction; open the write transaction only when there is expired-lease or queued work; body unchanged | removes ~21,000 idle write-lock acquisitions/day; `P1008` lease failures 25/day → ~0 | outside the decision table → Gate A question |
 | 1a | **B6 row 3** (Mew decides) | `syncUserEntitlement`: skip the `UPDATE User` when every computed field equals the stored value (outcome-neutral; golden test with a sixth fixture proves it) | removes 1–2 write-lock acquisitions per request for 107 accounts (43 % of paid) | B3 says "no early returns" → Gate A question |
-| 1c | advisory | `PRISMA_TX_MAX_WAIT_MS` / socket budgets — fail fast instead of 20–40 s | shorter stalls, same contention | HERO-10 comment; not in this plan |
+| 1c | advisory | `PRISMA_TX_MAX_WAIT_MS` / socket budgets (the decision table's row-5 remedy) — fail fast instead of 20–40 s | shorter stalls, same contention; changes failure timing for every process → needs its own measurement window, so not chosen while 1a/1b remove the contention at its source | HERO-10 comment; not in this plan |
 | 5 | **C5 fix 4** | bound the insights telemetry queries (aggregate server-side, `orderBy` on the previous window, `truncated` flag) | `/api/admin/insights` 826 ms → target < 350 ms; numbers become 30-day, not 4-day | high-assurance (numbers) |
 | 4 | follow-up | cache / window the Stripe pagination on `/api/admin/revenue` | 1,704 ms → target; money route, ask Mew | out of this plan |
 | 3 (scans) | follow-up | `take:` on the six cleanup graph scans | bounded DB time inside the walk | out of this plan |
 | 10 | out of scope | code-splitting `/video-editor` | target already met (880 ms) | own plan if ever missed |
-| — | Mew's hand | delete 64 stale `prisma/dev.db.*` snapshots (19 GB); set `BACKUP_RSYNC_TARGET` | disk 66 % → ~40 %; off-box copy exists | ops, listed in §1.1 |
+| — | Mew's hand | delete 64 stale `prisma/dev.db.*` snapshots (19 GB); set `BACKUP_RSYNC_TARGET` | −19 GB (disk 66 % → ~61 %); off-box copy exists | ops, listed in §1.1 |
 
 Number-accuracy fixes (C5, ≤ 6, from A4 §9) and the admin re-organisation (C1–C4) are in the plan's Phase C; §3 carries the per-number evidence.
 
@@ -1273,11 +1292,11 @@ Read: `src/lib/render/run-render.ts`, `scripts/render-worker.ts`, `scripts/mcp-v
 ## 7. Positives (do not touch)
 
 - **The render pipeline is not the bottleneck and was not touched.** `render-worker` (both instances): 0 slow-tx; `[Render]` lines appear in slow-tx windows at 0.97× baseline. Remotion loads its own fonts (`captionStyles.ts`, `SubtitleOverlayComposition.tsx`, `VideoComposition.tsx`) and imports nothing from the app layout — B4 cannot affect rendered output.
-- **Nightly backup is harmless to latency** — `VACUUM INTO` overlaps 0 of 217 slow-tx windows; `cleanup-videos` (03:00 UTC) overlaps none. Keep both schedules.
+- **Nightly backup is harmless to latency** — `VACUUM INTO` overlaps 0 of 217 slow-tx windows (1 of 219 events *started* inside a VACUUM, on 1 of 6 nights — A1's verdict: negligible); `cleanup-videos` (03:00 UTC) overlaps none. Keep both schedules.
 - **The host is healthy**: 8 vCPU / 32 GB, load ≤ 1.09, event-loop p95 2.26 ms, HTTP mean 18 ms, freelist 0.47 %. No hardware or Postgres discussion is warranted by this evidence.
 - **The North Star arithmetic is exact** — the independent replay reproduces 20 / 28 / 15 / 7 / 13 identically; `NorthStarDailySnapshot` has 30 rows with no gaps. Only the wording in CONTEXT.md and the cron hour are off.
 - **Most page medians already meet Q3 when the writer queue is quiet** (§2) — the fix list is about removing the stalls and the two slow admin routes, not rewriting pages.
-- **Sentry's noise filter works** (Remotion shutdown, third-party browser, Clerk `/touch`); `failed_to_load_clerk_js` stays visible by design. 12 of 14 API routes sit at warm p50 < 200 ms.
+- **Sentry's noise filter works** (Remotion shutdown, third-party browser, Clerk `/touch`); `failed_to_load_clerk_js` stays visible by design. 10 of 14 API routes sit at warm p50 < 200 ms (11 of 14 meet the 350 ms median target).
 - **`prisma-slow-tx` instrumentation (HERO-10, PRs #462/#465) is what made this audit possible** — keep it; the follow-up is to log queue-wait separately from held time, not to remove it.
 
 
@@ -1296,7 +1315,7 @@ Read: `src/lib/render/run-render.ts`, `scripts/render-worker.ts`, `scripts/mcp-v
 | `/api/admin/stats` (warm p50/max ms) | 190 / 209 | — | — | — |
 | `/api/admin/settings` (warm p50/max ms) | 100 / 232 | — | — | — |
 | `/api/admin/storage` (warm p50/max ms) | 269 / 528 | — | — | — |
-| `/api/admin/cleanup` (warm p50/max ms) | n/a / n/a | — | — | — |
+| `/api/admin/cleanup` (warm p50/max ms) | 10,164–10,738 (cold, one-shot ×3; no warm series by design) | — | — | — |
 | `/api/admin/support?status=OPEN` (warm p50/max ms) | 93 / 169 | — | — | — |
 | `/api/admin/music` (warm p50/max ms) | 91 / 160 | — | — | — |
 | `/api/admin/insights?days=30` (warm p50/max ms) | 826 / 996 | — | — | — |
@@ -1304,7 +1323,7 @@ Read: `src/lib/render/run-render.ts`, `scripts/render-worker.ts`, `scripts/mcp-v
 | `/api/videos` (warm p50/max ms) | 99 / 160 | — | — | — |
 | `/api/editor-projects` (warm p50/max ms) | 93 / 155 | — | — | — |
 | `/api/admin/revenue` (warm p50/max ms) | 1704 / 1853 | — | — | — |
-| Slow-tx ≥ 5 s per day (ai-content, 09-09/09-10/09-11/09-12) | 42/98/71/4 | — | — | — |
+| Slow-tx ≥ 5 s per day (ai-content, 09-09/09-10/09-11/09-12) | 42 / 98 / 71 / 4 (09-09 partial from 18:31 · 09-10 full · 09-11 full · 09-12 partial to 03:47; **judge AC3 against full days: 98, 71**) | — | — | — |
 | Socket timeout per day (ai-content, 09-09/09-10/09-11; total incl. untimestamped era) | 17 / 11 / 5 (total 73) | — | — | — |
 | P1008 per day (all apps: ai-content / story-film / mcp-video-worker / render-worker-12 / render-worker-13; ai-content total incl. untimestamped era) | ai-content 7 / 3 / 3 (total 23) · story-film 25 / 24 / 25 (total 102) · mcp-video-worker 1 / 2 / 1 (total 5) · render-worker-12 total 1 · render-worker-13 total 2 | — | — | — |
 | WAL high-water | 35,201,312 B (8.54×) | — | — | — |
@@ -1837,8 +1856,6 @@ SELECT COUNT(*) FROM User WHERE plan IN ('PRO','BUSINESS');
 date -u
 ls -l /var/www/ai-content/prisma/dev.db*
 ```
-</content>
-</invoke>
 
 #### A4
 
@@ -2230,18 +2247,18 @@ SQL
 sqlite3 -readonly "file:/var/www/ai-content/prisma/dev.db?mode=ro" <<"SQL"
 .mode list
 .separator |
-SELECT "admin_id_prefix", substr(id,1,8), role, plan, usageCount, usageLimit, minutesUsed, minutesLimit, datetime(usagePeriodStartedAt/1000,"unixepoch","+7 hours") FROM User WHERE id="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_videoCount", COUNT(*) FROM Video WHERE userId="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_video_completed", COUNT(*) FROM Video WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND status="COMPLETED";
-SELECT "admin_styleCount", COUNT(*) FROM Style WHERE userId="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_contentCount", COUNT(*) FROM Content WHERE userId="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_videoJobs_all", COUNT(*) FROM VideoJob WHERE userId="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_videoJobs_done", COUNT(*) FROM VideoJob WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND status="done";
-SELECT "admin_renderJob_RENDER_DONE", COUNT(*) FROM RenderJob WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND type="RENDER" AND status="DONE";
-SELECT "admin_chargedClips_30d_minutes", IFNULL(SUM(chargedMinutes),0) FROM ChargedClip WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND createdAt >= strftime("%s","now")*1000 - 30*86400000;
-SELECT "admin_chargedClips_sinceUsagePeriod_minutes", IFNULL(SUM(chargedMinutes),0) FROM ChargedClip WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND createdAt >= (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v8000elcv0aka8u7p2");
-SELECT "admin_chargedClips_count_sinceUsagePeriod", COUNT(*) FROM ChargedClip WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND createdAt >= (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v8000elcv0aka8u7p2");
-SELECT "usagePeriod_age_days", ROUND((strftime("%s","now")*1000 - (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v8000elcv0aka8u7p2"))/86400000.0, 2);
+SELECT "admin_id_prefix", substr(id,1,8), role, plan, usageCount, usageLimit, minutesUsed, minutesLimit, datetime(usagePeriodStartedAt/1000,"unixepoch","+7 hours") FROM User WHERE id="cmoycf2v…";
+SELECT "admin_videoCount", COUNT(*) FROM Video WHERE userId="cmoycf2v…";
+SELECT "admin_video_completed", COUNT(*) FROM Video WHERE userId="cmoycf2v…" AND status="COMPLETED";
+SELECT "admin_styleCount", COUNT(*) FROM Style WHERE userId="cmoycf2v…";
+SELECT "admin_contentCount", COUNT(*) FROM Content WHERE userId="cmoycf2v…";
+SELECT "admin_videoJobs_all", COUNT(*) FROM VideoJob WHERE userId="cmoycf2v…";
+SELECT "admin_videoJobs_done", COUNT(*) FROM VideoJob WHERE userId="cmoycf2v…" AND status="done";
+SELECT "admin_renderJob_RENDER_DONE", COUNT(*) FROM RenderJob WHERE userId="cmoycf2v…" AND type="RENDER" AND status="DONE";
+SELECT "admin_chargedClips_30d_minutes", IFNULL(SUM(chargedMinutes),0) FROM ChargedClip WHERE userId="cmoycf2v…" AND createdAt >= strftime("%s","now")*1000 - 30*86400000;
+SELECT "admin_chargedClips_sinceUsagePeriod_minutes", IFNULL(SUM(chargedMinutes),0) FROM ChargedClip WHERE userId="cmoycf2v…" AND createdAt >= (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v…");
+SELECT "admin_chargedClips_count_sinceUsagePeriod", COUNT(*) FROM ChargedClip WHERE userId="cmoycf2v…" AND createdAt >= (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v…");
+SELECT "usagePeriod_age_days", ROUND((strftime("%s","now")*1000 - (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v…"))/86400000.0, 2);
 SQL
 
 # Q15 — plan/cost SiteConfig rows (are prices actually admin-set on prod?)

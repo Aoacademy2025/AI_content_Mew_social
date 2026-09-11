@@ -97,7 +97,7 @@ Shown values from `admin-revenue.json`, captured 2026-09-11 21:09:45 UTC, `days=
 | # | Label | Shown | Code definition | Independent SQL | Actual | Match | Cause | Fix |
 |---|---|---|---|---|---|---|---|---|
 | 24 | **North Star · คนจ่ายที่กลับมาสร้างจริง (MAPC)** | 20 | `revenue-growth.server.ts:275` ← `subscription-north-star.server.ts:148-193`: payers (`activePayingBillingCohort`, `:111`) ∩ (completed video ∪ script ∪ Hero image) in trailing 30 d | full replay (Q3) | **20** | **Y** | number reproduces exactly | but see §4 — the *denominator* does not match CONTEXT.md |
-| 25 | ลูกค้าจ่ายจริงที่ยังมีสิทธิ์ (`northStar.activePayingCustomers`) | 28 | `:180` `payerIds.size` — requires a `PAID` payment with **`amount>0 AND periodDays>0 AND note<>'credits' AND plan IN (PRO,BUSINESS)`** (`:116-121`), excludes suspended + ADMIN/`aoacademy.co`/`duckyhero@` | Q3 | 28 | **Y** | **this is the correct "จ่ายจริง"** | — |
+| 25 | ลูกค้าจ่ายจริงที่ยังมีสิทธิ์ (`northStar.activePayingCustomers`) | 28 | `:180` `payerIds.size` — requires a `PAID` payment with **`amount>0 AND periodDays>0 AND note<>'credits' AND plan IN (PRO,BUSINESS)`** (`:116-121`), excludes suspended + ADMIN/`aoacademy.co`/`<owner-email>@` | Q3 | 28 | **Y** | **this is the correct "จ่ายจริง"** | — |
 | 26 | กลับมา % (`creatorRatePct`) | 71 | `:182` `round(creators/payers*100)` = 20/28 | Q3 | 71 | **Y** | — | — |
 | 27 | ต่ออายุอัตโนมัติ (`activeRecurringPayers`) | 15 | `:160` ← `recurringBillingCohort:68` (live Stripe sub + `subStatus='active'` + `planExpiresAt>now`, or live paid bundle) | Q3 | 15 | **Y** | — | — |
 | 28 | MAPC รายเดือน / รายปี | 7 / 13 | `:167-172` cohort of each creator | Q3 | 7 / 13 | **Y** | — | — |
@@ -154,7 +154,7 @@ monthlyCreators 7 · annualCreators 13` — all **Y**.
 | # | Label | Shown | Code definition | Independent SQL | Actual | Match | Cause | Fix |
 |---|---|---|---|---|---|---|---|---|
 | 54 | สมัคร (`activation.signups`) | 1260 | `insights/route.ts:460-497` `users.length − internalIds.size`, internal = `email.includes('@aoacademy')` (**substring**) | `1275 − COUNT(email LIKE '%@aoacademy%')` = `1275 − 15` | 1260 | **Y** | all-time, not windowed — the panel says so | — |
-| 55 | หมายเหตุ · ตัดบัญชีทีมงาน (`internalTeam`) | 15 | `revenue-cohorts.ts:313` same substring rule | `COUNT(*) WHERE email LIKE '%@aoacademy%'` | 15 | **Y** | **three different "internal" definitions ship together**: substring `@aoacademy` (funnel + cohorts), exact domain `aoacademy.co` **+ role ADMIN + duckyhero@** (North Star, `subscription-north-star.server.ts:57`), and none at all (`/admin/stats`). They do not produce the same exclusions. | **C5 — Candidate 6** |
+| 55 | หมายเหตุ · ตัดบัญชีทีมงาน (`internalTeam`) | 15 | `revenue-cohorts.ts:313` same substring rule | `COUNT(*) WHERE email LIKE '%@aoacademy%'` | 15 | **Y** | **three different "internal" definitions ship together**: substring `@aoacademy` (funnel + cohorts), exact domain `aoacademy.co` **+ role ADMIN + <owner-email>@** (North Star, `subscription-north-star.server.ts:57`), and none at all (`/admin/stats`). They do not produce the same exclusions. | **C5 — Candidate 6** |
 | 56 | hasGeminiKey | 125 | `:983` non-empty `geminiKey` | `TRIM(IFNULL(geminiKey,''))<>''` | 125 | **Y** | — | — |
 | 57 | hasStockKey | 352 | `:984` non-empty `pexelsKey` OR `pixabayKey` | same | 352 | **Y** | — | — |
 | 58 | **จ่ายจริง (`activation.paidTotal`)** | 39 | `:986` = `cohorts.payingTotal` | Q4 | 39 | **Y** (arithmetic) / **N** (meaning) | on this page it sits **directly under** the North Star block that says 28 | **Candidate 1** |
@@ -386,7 +386,7 @@ complete at least one Core Creation Outcome within the trailing 30 days."*
 | denominator | active **recurring** paid entitlement | `activePayingBillingCohort` (`subscription-north-star.server.ts:111-146`) — accepts a live Stripe sub **or** a still-valid prepaid term **or** `planExpiresAt IS NULL AND stripeSubscriptionId IS NULL` | **28** (of which 13 are prepaid one-time terms, 0 via the no-expiry branch) |
 | the literal CONTEXT.md denominator | — | `recurringBillingCohort` (`:68-104`) exists and is already computed | **15** |
 | numerator (Core Creation Outcome) | completed video · saved-or-Editor-bound Hero Script · usable Hero AI Image | `:221-244` — `Video COMPLETED` with a URL and **`updatedAt >= since`**; **any** `Script` row `createdAt >= since`; `AiGenerationJob` image completed+settled+URL on `hero_video`/`automix`/`scene_reroll` | **20** (video 18 · script 11 · image 19) |
-| exclusions | Trials, coupons, Administrator Grants | enforced — `amount > 0 AND periodDays > 0 AND note<>'credits' AND plan IN (PRO,BUSINESS)`; plus suspended, ADMIN, `duckyhero@`, `aoacademy.co` | ✓ |
+| exclusions | Trials, coupons, Administrator Grants | enforced — `amount > 0 AND periodDays > 0 AND note<>'credits' AND plan IN (PRO,BUSINESS)`; plus suspended, ADMIN, `<owner-email>@`, `aoacademy.co` | ✓ |
 
 **Verdict: the shipped number (20) is arithmetically exact — my independent replay returns 20/28/15/7/13
 identically — but the denominator is broader than CONTEXT.md's wording.** The code makes a deliberate,
@@ -839,18 +839,18 @@ SQL
 sqlite3 -readonly "file:/var/www/ai-content/prisma/dev.db?mode=ro" <<"SQL"
 .mode list
 .separator |
-SELECT "admin_id_prefix", substr(id,1,8), role, plan, usageCount, usageLimit, minutesUsed, minutesLimit, datetime(usagePeriodStartedAt/1000,"unixepoch","+7 hours") FROM User WHERE id="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_videoCount", COUNT(*) FROM Video WHERE userId="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_video_completed", COUNT(*) FROM Video WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND status="COMPLETED";
-SELECT "admin_styleCount", COUNT(*) FROM Style WHERE userId="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_contentCount", COUNT(*) FROM Content WHERE userId="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_videoJobs_all", COUNT(*) FROM VideoJob WHERE userId="cmoycf2v8000elcv0aka8u7p2";
-SELECT "admin_videoJobs_done", COUNT(*) FROM VideoJob WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND status="done";
-SELECT "admin_renderJob_RENDER_DONE", COUNT(*) FROM RenderJob WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND type="RENDER" AND status="DONE";
-SELECT "admin_chargedClips_30d_minutes", IFNULL(SUM(chargedMinutes),0) FROM ChargedClip WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND createdAt >= strftime("%s","now")*1000 - 30*86400000;
-SELECT "admin_chargedClips_sinceUsagePeriod_minutes", IFNULL(SUM(chargedMinutes),0) FROM ChargedClip WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND createdAt >= (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v8000elcv0aka8u7p2");
-SELECT "admin_chargedClips_count_sinceUsagePeriod", COUNT(*) FROM ChargedClip WHERE userId="cmoycf2v8000elcv0aka8u7p2" AND createdAt >= (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v8000elcv0aka8u7p2");
-SELECT "usagePeriod_age_days", ROUND((strftime("%s","now")*1000 - (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v8000elcv0aka8u7p2"))/86400000.0, 2);
+SELECT "admin_id_prefix", substr(id,1,8), role, plan, usageCount, usageLimit, minutesUsed, minutesLimit, datetime(usagePeriodStartedAt/1000,"unixepoch","+7 hours") FROM User WHERE id="cmoycf2v…";
+SELECT "admin_videoCount", COUNT(*) FROM Video WHERE userId="cmoycf2v…";
+SELECT "admin_video_completed", COUNT(*) FROM Video WHERE userId="cmoycf2v…" AND status="COMPLETED";
+SELECT "admin_styleCount", COUNT(*) FROM Style WHERE userId="cmoycf2v…";
+SELECT "admin_contentCount", COUNT(*) FROM Content WHERE userId="cmoycf2v…";
+SELECT "admin_videoJobs_all", COUNT(*) FROM VideoJob WHERE userId="cmoycf2v…";
+SELECT "admin_videoJobs_done", COUNT(*) FROM VideoJob WHERE userId="cmoycf2v…" AND status="done";
+SELECT "admin_renderJob_RENDER_DONE", COUNT(*) FROM RenderJob WHERE userId="cmoycf2v…" AND type="RENDER" AND status="DONE";
+SELECT "admin_chargedClips_30d_minutes", IFNULL(SUM(chargedMinutes),0) FROM ChargedClip WHERE userId="cmoycf2v…" AND createdAt >= strftime("%s","now")*1000 - 30*86400000;
+SELECT "admin_chargedClips_sinceUsagePeriod_minutes", IFNULL(SUM(chargedMinutes),0) FROM ChargedClip WHERE userId="cmoycf2v…" AND createdAt >= (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v…");
+SELECT "admin_chargedClips_count_sinceUsagePeriod", COUNT(*) FROM ChargedClip WHERE userId="cmoycf2v…" AND createdAt >= (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v…");
+SELECT "usagePeriod_age_days", ROUND((strftime("%s","now")*1000 - (SELECT usagePeriodStartedAt FROM User WHERE id="cmoycf2v…"))/86400000.0, 2);
 SQL
 
 # Q15 — plan/cost SiteConfig rows (are prices actually admin-set on prod?)

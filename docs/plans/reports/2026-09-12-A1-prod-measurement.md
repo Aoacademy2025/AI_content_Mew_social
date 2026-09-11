@@ -1134,5 +1134,3 @@ SELECT COUNT(*) FROM User WHERE plan IN ('PRO','BUSINESS');
 date -u
 ls -l /var/www/ai-content/prisma/dev.db*
 ```
-</content>
-</invoke>
