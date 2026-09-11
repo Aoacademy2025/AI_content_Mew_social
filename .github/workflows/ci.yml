@@ -135,6 +135,9 @@ jobs:
       - name: Verify cash-backed renewal reminders and delivery dedupe
         run: npm run verify:renewal-reminders
 
+      - name: Verify a scheduled cancellation stays visible (HERO-20)
+        run: npm run verify:cancellation-visible
+
       - name: Verify Avatar caption fail-open
         run: npm run verify:avatar-caption-fallback
 

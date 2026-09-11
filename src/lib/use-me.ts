@@ -24,6 +24,8 @@ export interface MeData {
   avatar?: string | null;
   cancelAtPeriodEnd?: boolean;
   cancelAt?: string | null;
+  /** HERO-20: the raw subscription id never reaches the browser, only this. */
+  hasStripeSubscription?: boolean;
   trialStartedAt?: string | null;
   trialEndsAt?: string | null;
   internalAiTester?: boolean;
