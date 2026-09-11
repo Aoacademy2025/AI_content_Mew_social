@@ -74,7 +74,7 @@
     "verify:brands-mobile": "tsx scripts/verify-brands-mobile.mjs",
     "verify:day21-convert-reminder": "tsx scripts/verify-day21-convert-reminder.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-day21-convert-reminder-server.ts",
     "verify:trial-reminders": "tsx scripts/verify-trial-reminders.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-trial-reminders-server.ts",
-    "verify:cancellation-visible": "tsx scripts/verify-subscription-cancellation-visible.ts && tsx scripts/verify-cancel-subscription.ts",
+    "verify:cancellation-visible": "tsx scripts/verify-subscription-cancellation-visible.ts && tsx scripts/verify-cancel-subscription.ts && tsx scripts/verify-billing-copy-and-refund.ts",
     "verify:renewal-reminders": "tsx scripts/verify-renewal-reminder-reliability.ts && node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-renewal-reminder-server.ts",
     "verify:avatar-caption-fallback": "tsx scripts/verify-avatar-caption-fallback.ts",
     "verify:admin-error-notify": "tsx scripts/verify-admin-error-notify.ts",

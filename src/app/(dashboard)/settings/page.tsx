@@ -99,7 +99,9 @@ function BillingTab() {
       });
       const data = await res.json();
       if (!res.ok) { toast.error(data.error ?? "ยกเลิกไม่สำเร็จ"); return; }
-      toast.success("ยกเลิกการชำระเงินแล้ว");
+      // HERO-22: name the pending attempt. "ยกเลิกการชำระเงินแล้ว" read as "your plan is
+      // cancelled" to customers hunting for a cancel control, which is what this is not.
+      toast.success("ทิ้งรายการชำระเงินที่ค้างแล้ว — ไม่กระทบการต่ออายุแพ็ก");
       loadPayments();
     } catch {
       toast.error("เกิดข้อผิดพลาด");
@@ -221,7 +223,7 @@ function BillingTab() {
                         }}
                       >
                         <XCircle className="h-3.5 w-3.5" strokeWidth={2} />
-                        ยกเลิก
+                        ทิ้งรายการนี้
                       </button>
                     </div>
                   )}

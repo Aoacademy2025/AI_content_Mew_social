@@ -32,6 +32,12 @@ export const config = { api: { bodyParser: false } };
  *  tell it apart from the initial checkout row. */
 const RENEWAL_PAYMENT_NOTE = "renewal";
 
+/** The status the settings page already renders as "คืนเงิน" (`STATUS_CONFIG`). Until HERO-23
+ *  nothing in the app ever wrote it. */
+const REFUNDED_PAYMENT_STATUS = "REFUNDED";
+const REFUND_NOTE = "refunded";
+const PARTIAL_REFUND_NOTE = "partial refund";
+
 function invoiceSubId(inv: any): string | null {
   return inv.subscription ?? inv.parent?.subscription_details?.subscription ?? null;
 }
@@ -464,6 +470,50 @@ export async function POST(req: Request) {
             body: "บัตรของคุณถูกปฏิเสธ — อัปเดตวิธีจ่ายเพื่อใช้งานต่อ",
           }).catch(() => {});
         }
+      }
+    }
+
+    // ── Refund issued → stop showing the charge as paid ──────────────────────
+    // HERO-23. Nothing here ever wrote REFUNDED, so a refunded charge kept reading
+    // "ชำระแล้ว" in the customer's own billing history and support could not tell one
+    // from a live charge. The settings page has rendered the status all along.
+    //
+    // Two row shapes have to be found: a checkout row carries the payment intent, while a
+    // renewal row is keyed on the invoice id in `stripeSessionId` (this API version does not
+    // put the payment intent on the invoice, so renewals were written without one).
+    //
+    // Revenue is unaffected either way — revenue-cash.ts reads Stripe's charge ledger, not
+    // Payment.amount.
+    if (event.type === "charge.refunded") {
+      const charge = event.data.object as any;
+      const idOf = (v: any): string | null => (typeof v === "string" ? v : typeof v?.id === "string" ? v.id : null);
+      const paymentIntent = idOf(charge.payment_intent);
+      const invoiceId = idOf(charge.invoice);
+      const keys = [
+        ...(paymentIntent ? [{ stripePaymentIntent: paymentIntent }] : []),
+        ...(invoiceId ? [{ stripeSessionId: invoiceId }] : []),
+      ];
+      if (keys.length === 0) {
+        console.warn("[stripe-webhook] charge.refunded with no payment intent or invoice — cannot match a Payment row");
+      } else {
+        const refunded = typeof charge.amount_refunded === "number" ? charge.amount_refunded : 0;
+        const total = typeof charge.amount === "number" ? charge.amount : 0;
+        // A partial refund is not a refunded charge. Saying so would tell a customer they got
+        // all their money back when they did not, so the row stays PAID and records the amount.
+        const full = total > 0 && refunded >= total;
+        const rows = await prisma.payment.findMany({ where: { OR: keys }, select: { id: true, note: true, status: true } });
+        if (rows.length === 0) {
+          console.warn("[stripe-webhook] charge.refunded matched no Payment row", paymentIntent ?? invoiceId);
+        }
+        for (const row of rows) {
+          const stamp = full ? REFUND_NOTE : `${PARTIAL_REFUND_NOTE} ${refunded}/${total}`;
+          const note = row.note?.includes(stamp) ? row.note : [row.note, stamp].filter(Boolean).join(" · ");
+          await prisma.payment.update({
+            where: { id: row.id },
+            data: { ...(full ? { status: REFUNDED_PAYMENT_STATUS } : {}), note },
+          });
+        }
+        console.log(`[stripe-webhook] charge.refunded ${full ? "full" : "partial"} → ${rows.length} payment row(s)`);
       }
     }
 
