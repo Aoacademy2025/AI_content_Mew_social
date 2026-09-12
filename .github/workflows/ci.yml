@@ -230,6 +230,9 @@ jobs:
       - name: Verify จ่ายจริง counts only payments above zero baht
         run: npm run verify:admin-number-paying-cash-only
 
+      - name: Verify MRR is priced from real cash, never the tier list price
+        run: npm run verify:admin-number-mrr-actual-cash
+
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
 

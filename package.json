@@ -25,6 +25,7 @@
     "verify:revenue-growth": "tsx scripts/verify-revenue-growth.ts",
     "verify:money-only-on-revenue": "tsx scripts/verify-money-only-on-revenue.ts",
     "verify:admin-number-paying-cash-only": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-admin-number-paying-cash-only.ts",
+    "verify:admin-number-mrr-actual-cash": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-admin-number-mrr-actual-cash.ts",
     "verify:media-stream": "tsx scripts/verify-media-stream.ts",
     "verify:media-storage": "tsx scripts/verify-media-stream.ts && tsx scripts/verify-media-storage-foundation.ts && tsx scripts/verify-media-storage-r2.ts && tsx scripts/verify-media-storage-rollout.ts && tsx scripts/verify-media-serving.ts && tsx scripts/verify-media-catalog.ts && tsx scripts/verify-media-local-missing-reconcile.ts && tsx scripts/verify-media-remote-gc.ts && tsx scripts/verify-media-r2-orphan-gc.ts",
     "smoke:r2-staging": "tsx scripts/smoke-r2-staging.ts",

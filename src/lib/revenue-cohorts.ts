@@ -65,7 +65,8 @@ export type RevenueCohorts = {
   /** Active Hero AI Bundle buyers with Studio access. */
   bundleActive: number;
   payingByTier: { pro: number; business: number };
-  /** Monthly run-rate over active paying customers, annual normalized. List-price based. */
+  /** Monthly run-rate over active paying customers, annual normalized. Built only from cash
+   *  customers actually paid (`monthlyRevenueByUser`) — never from the tier list price. */
   mrr: number;
   /** Studio-native MRR and Bundle MRR, both included in `mrr`. */
   directMrr: number;
@@ -151,17 +152,9 @@ export type RevenueCohorts = {
 function isAnnual(billingPeriod: string | null): boolean {
   return billingPeriod === "annual";
 }
-function monthlyEquiv(tierMonthlyPrice: number, billingPeriod: string | null): number {
-  return isAnnual(billingPeriod) ? (tierMonthlyPrice * ANNUAL_PRICE_MONTHS) / 12 : tierMonthlyPrice;
-}
 function bundleMonthlyEquiv(amountThb: number | null | undefined, billingPeriod: string | null | undefined): number {
   const amount = typeof amountThb === "number" && Number.isFinite(amountThb) ? amountThb : 0;
   return billingPeriod === "annual" ? amount / 12 : amount;
-}
-function tierPrice(prices: TierPrices, plan: string): number {
-  if (plan === "BUSINESS") return prices.business;
-  if (plan === "PRO") return prices.pro;
-  return 0;
 }
 
 /** A PAID Payment row, reduced to what revenue classification needs. */
@@ -249,13 +242,15 @@ export function summarizePlanCash(rows: readonly PlanCashRow[]): PlanCashSummary
  * Pure cohort computation — no DB access, fully testable.
  * @param users        Every user row (minimal fields, incl. id).
  * @param paidUserIds  Set of user ids that have ≥1 PAID Payment above ฿0 (the cash ground truth).
- * @param prices       Monthly tier prices (฿).
+ * @param _listPrices  Monthly tier LIST prices (฿). Deliberately unused: MRR is priced from
+ *                     `monthlyRevenueByUser` alone. Kept in the signature so existing callers
+ *                     compile unchanged; delete it only together with every call site.
  * @param now          Reference time.
  */
 export function computeRevenueCohorts(
   users: CohortUser[],
   paidUserIds: Set<string>,
-  prices: TierPrices,
+  _listPrices: TierPrices,
   now: Date = new Date(),
   opts: {
     couponUserIds?: Set<string>;
@@ -263,11 +258,10 @@ export function computeRevenueCohorts(
     /**
      * userId → the monthly-equivalent of what this customer ACTUALLY paid for their plan (฿).
      *
-     * Without it MRR is priced off the tier list price, which overstates every discounted
-     * customer: a Founding annual buyer pays 2,995฿/year (250฿/month) but was counted at
-     * 599 × 10 / 12 = 499฿. On prod that inflated Studio MRR by ~3,565฿/month across
-     * thirteen payers. A user absent from the map falls back to the list price, so callers
-     * that cannot compute it keep the previous behaviour.
+     * This map is the ONLY source of MRR. A payer absent from it contributes 0 — there is no
+     * list-price fallback, because pricing an unknown at list is how ฿6,389.33/month of
+     * fiction reached the dashboard (audit A4, 2026-09-12). A caller that cannot build this
+     * map will under-report MRR, which is the intended failure direction.
      */
     monthlyRevenueByUser?: Map<string, number>;
     /** One-time credit-pack cash, kept outside every MRR figure. */
@@ -369,10 +363,13 @@ export function computeRevenueCohorts(
           if (isAnnual(u.billingPeriod)) paying.oneTimeAnnual++;
           else paying.oneTimeMonthly++;
         }
+        // No known amount → no revenue. This used to fall back to the tier LIST price, which
+        // invented ฿6,389.33 of the ฿18,052.50 MRR on prod (audit A4, 2026-09-12) and carried
+        // the fiction into prepaidMrr, deferredRevenue, gross margin %, AI-cost % and the
+        // break-even target. Under-reporting is recoverable; pricing a customer we were never
+        // paid by is not.
         const actual = monthlyRevenueByUser?.get(u.id);
-        const add = typeof actual === "number" && Number.isFinite(actual) && actual >= 0
-          ? actual
-          : monthlyEquiv(tierPrice(prices, plan), u.billingPeriod);
+        const add = typeof actual === "number" && Number.isFinite(actual) && actual >= 0 ? actual : 0;
         directMrr += add;
         mrr += add;
 

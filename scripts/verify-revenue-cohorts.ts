@@ -51,7 +51,16 @@ const users: CohortUser[] = [
 
 const paidUserIds = new Set(["u1", "u2", "u3", "u4", "u12", "u13", "u17"]);
 const couponUserIds = new Set(["u11"]);
-const c = computeRevenueCohorts(users, paidUserIds, PRICES, now, { couponUserIds });
+// MRR is priced ONLY from what each customer actually paid — there is no list-price fallback
+// (that fallback invented ฿6,389.33/month on prod; audit A4, 2026-09-12). These fixtures all
+// paid list, so the expected figures below are unchanged; the map is now how they get there.
+const annualProMonthly = (599 * ANNUAL_PRICE_MONTHS) / 12; // 2026 founding-era annual PRO
+const annualBizMonthly = (990 * ANNUAL_PRICE_MONTHS) / 12;
+const monthlyRevenueByUser = new Map<string, number>([
+  ["u1", 599], ["u2", annualBizMonthly], ["u3", annualProMonthly], ["u4", 599],
+  ["u13", annualProMonthly], ["u17", 599],
+]);
+const c = computeRevenueCohorts(users, paidUserIds, PRICES, now, { couponUserIds, monthlyRevenueByUser });
 
 // ── Paying = cash-backed + currently entitled ────────────────────────────────
 ok(c.payingTotal === 8, `payingTotal = 8 unique people (one pays both sources) → ${c.payingTotal}`);
@@ -90,6 +99,17 @@ ok(approx(c.mrr, expectedMrr), `mrr = ${expectedMrr.toFixed(2)} (annual normaliz
 ok(approx(c.directMrr, expectedDirectMrr), `directMrr = ${expectedDirectMrr.toFixed(2)} → ${c.directMrr.toFixed(2)}`);
 ok(approx(c.bundleMrr, expectedBundleMrr), `bundleMrr = ${expectedBundleMrr.toFixed(2)} → ${c.bundleMrr.toFixed(2)}`);
 ok(approx(c.mrrByTier.business, annualBiz), `mrrByTier.business = ${annualBiz} → ${c.mrrByTier.business.toFixed(2)}`);
+
+// ── A payer we cannot price contributes nothing, rather than a list price ────
+const unpriced = computeRevenueCohorts(
+  [u("u-unpriced", { plan: "PRO", billingPeriod: "monthly", planExpiresAt: future })],
+  new Set(["u-unpriced"]),
+  PRICES,
+  now,
+  { monthlyRevenueByUser: new Map() },
+);
+ok(unpriced.payingTotal === 1, `an unpriced payer is still a customer → ${unpriced.payingTotal}`);
+ok(unpriced.mrr === 0, `…but adds ฿0 to MRR instead of the ฿599 list price → ${unpriced.mrr}`);
 
 // ── Regression guards ────────────────────────────────────────────────────────
 ok(c.payingTotal !== 11, "comped (team/coupon/other) are NOT counted as paying");
