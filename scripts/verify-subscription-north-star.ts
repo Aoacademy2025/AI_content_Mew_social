@@ -33,7 +33,8 @@ async function main() {
 
   const annual = await user("annual", { plan: "BUSINESS", subStatus: "active", stripeSubscriptionId: "sub_annual", billingPeriod: "annual", planExpiresAt: future });
   await payment(annual.id, "BUSINESS");
-  await prisma.script.create({ data: { userId: annual.id, topic: "Saved", hookText: "Hook", bodyText: "Body", ctaText: "CTA" } });
+  // "Saved" is the asserted intent: a Hero Script outcome is a sent or Editor-bound script (Task C10).
+  await prisma.script.create({ data: { userId: annual.id, topic: "Saved", hookText: "Hook", bodyText: "Body", ctaText: "CTA", status: "sent", editorProjectId: "proj_annual" } });
   await prisma.aiGenerationJob.create({ data: {
     userId: annual.id, kind: "image", provider: "runpod", model: "z-image-turbo",
     status: "completed", outputUrl: "/outputs/annual.png", chargeState: "settled",
@@ -69,6 +70,7 @@ async function main() {
   } });
   await prisma.script.create({ data: {
     userId: prepaid.id, topic: "Prepaid value", hookText: "Hook", bodyText: "Body", ctaText: "CTA",
+    status: "sent", editorProjectId: "proj_prepaid",
   } });
 
   const creditOnly = await user("credit-only", { plan: "PRO" });

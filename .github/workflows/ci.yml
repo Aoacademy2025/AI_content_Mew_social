@@ -244,6 +244,8 @@ jobs:
       - name: Verify new/repeat payer counts are cash and the ledger figure says so
         run: npm run verify:admin-number-ledger-source
 
+      - name: Verify the MAPC numerator matches the Core Creation Outcome definition
+        run: npm run verify:admin-number-mapc-definition && npm run verify:north-star
       - name: Verify committed-trialing customers show separately from จ่ายจริง
         run: npm run verify:admin-number-committed-trialing
 

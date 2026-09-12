@@ -4,7 +4,7 @@ import type { AdminTrends } from "@/lib/admin-trends.server";
 
 const cardStyle: React.CSSProperties = { background: "var(--ui-card-bg)", border: "1px solid var(--ui-card-border)" };
 const TITLE = "ลูกค้าจ่ายที่กลับมาสร้างคลิป (MAPC)";
-const FOOTNOTE = "อัปเดตทุกคืน 00:15 · นิยาม: จ่ายแบบต่ออายุ + สร้างงานสำเร็จอย่างน้อย 1 ชิ้นใน 30 วัน";
+const FOOTNOTE = "อัปเดตทุกคืน 00:15 · นิยาม: จ่ายอยู่ (ต่ออายุหรือซื้อรายปีที่ยังไม่หมดอายุ) + สร้างงานสำเร็จอย่างน้อย 1 ชิ้นใน 30 วัน";
 
 function deltaChip(delta: number | null): string {
   if (delta === null) return "— ยังไม่มีข้อมูลเทียบ";
