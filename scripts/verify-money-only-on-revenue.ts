@@ -20,6 +20,8 @@ const MONEY_STRINGS = [
   "จ่ายจริง (จ่ายเงินสด)",
   "Comped (แจกสิทธิ์)",
   "CostMarginPanel",
+  // Task C8 — "รอเก็บเงินครั้งแรก" (committed-trialing card).
+  "รอเก็บเงินครั้งแรก (trial ผูกบัตรแล้ว)",
 ];
 
 for (const needle of MONEY_STRINGS) {

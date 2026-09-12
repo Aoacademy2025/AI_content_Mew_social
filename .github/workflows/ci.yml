@@ -244,6 +244,9 @@ jobs:
       - name: Verify new/repeat payer counts are cash and the ledger figure says so
         run: npm run verify:admin-number-ledger-source
 
+      - name: Verify committed-trialing customers show separately from จ่ายจริง
+        run: npm run verify:admin-number-committed-trialing
+
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
 
