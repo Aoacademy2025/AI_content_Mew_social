@@ -7,6 +7,7 @@ import { computeRevenueCohorts, summarizePlanCash } from "@/lib/revenue-cohorts"
 import { getPlanConfig } from "@/lib/plan-config";
 import { getSubscriptionNorthStar } from "@/lib/subscription-north-star.server";
 import { byokReasonFromText, classifyJobError, quotaReasonFromText } from "@/lib/job-failure-class";
+import { summarizeCreationJobs, type CreationJobRow } from "@/lib/insights-creation-jobs";
 import {
   countInsightsTelemetry,
   readInsightsTelemetryRows,
@@ -216,33 +217,6 @@ const EMPTY_PROCESSING_SUMMARY: ProcessingReconcileSummary = {
   missingOutput: 0,
   oldestAgeMinutes: null,
 };
-
-function hasVideoOutput(video: VideoRow) {
-  return Boolean(video.videoUrl?.trim() || video.avatarVideoUrl?.trim());
-}
-
-function summarizeVideoJobs(videos: VideoRow[]) {
-  const completed = videos.filter((video) => video.status === "COMPLETED").length;
-  const processing = videos.filter((video) => video.status === "PROCESSING").length;
-  const failed = videos.filter((video) => video.status === "FAILED").length;
-  const pending = videos.filter((video) => video.status === "PENDING").length;
-  const outputReady = videos.filter(hasVideoOutput).length;
-  const statusStuckWithOutput = videos.filter((video) => video.status === "PROCESSING" && hasVideoOutput(video)).length;
-  const processingWithoutOutput = videos.filter((video) => video.status === "PROCESSING" && !hasVideoOutput(video)).length;
-
-  return {
-    total: videos.length,
-    completed,
-    processing,
-    failed,
-    pending,
-    outputReady,
-    statusStuckWithOutput,
-    processingWithoutOutput,
-    completionPct: pct(completed, videos.length),
-    outputReadyPct: pct(outputReady, videos.length),
-  };
-}
 
 function playbackGroupKey(row: TelemetryRow) {
   return [
@@ -574,12 +548,15 @@ function parseRangeDays(value: string | null) {
 
 function summarize(
   rows: TelemetryRow[],
-  videos: VideoRow[],
+  creationJobs: CreationJobRow[],
   processingSummary: ProcessingReconcileSummary = EMPTY_PROCESSING_SUMMARY,
   jobFunnel?: ReturnType<typeof summarizeJobFunnel>,
   windowTotals?: TelemetryWindowTotals,
 ) {
-  const videoJobs = summarizeVideoJobs(videos);
+  // "Video completed" counts creation jobs (VideoJob type=create, status=done), not the `Video`
+  // table — every Video row on prod is COMPLETED, so that tile was the constant 100 % and the
+  // Health Score's two video penalty terms could never fire. See insights-creation-jobs.ts.
+  const videoJobs = summarizeCreationJobs(creationJobs);
   // Prefer the full-window SQL counts; fall back to the rows only when no window totals are supplied
   // (keeps summarize() callable from a test with a plain row array).
   const sessions = windowTotals?.sessions ?? uniqueNonNullCount(rows.map((row) => row.sessionId));
@@ -712,7 +689,7 @@ function summarize(
       ? `พบ error จากคีย์ลูกค้า (BYOK) ${byokErrorRows.length} ครั้ง เช่น "${byokErrors[0]?.label ?? ""}" — ไม่ใช่บั๊กระบบ ควรแจ้ง/ช่วยลูกค้าตั้งค่า ไม่ใช่งาน dev`
       : null,
     videoJobs.statusStuckWithOutput > 0
-      ? `มีวิดีโอ ${videoJobs.statusStuckWithOutput} งานที่มี output แล้วแต่ status ยังเป็น PROCESSING ควร reconcile เพื่อให้ dashboard ตรงกับไฟล์จริง`
+      ? `มีงานสร้างวิดีโอ ${videoJobs.statusStuckWithOutput} งานที่มีไฟล์ output แล้วแต่สถานะยังค้างอยู่ (queued/processing) ควร reconcile เพื่อให้ dashboard ตรงกับไฟล์จริง`
       : null,
     processingSummary.total > 0
       ? `ตรวจพบ status PROCESSING ค้าง ${processingSummary.total} งาน: complete ได้ ${processingSummary.completeCandidates}, fail ได้ ${processingSummary.failCandidates}`
@@ -859,7 +836,7 @@ export async function GET(req: Request) {
       // Also drives the creation funnel (progress/status) — see summarizeJobFunnel.
       prisma.videoJob.findMany({
         where: { createdAt: { gte: since } },
-        select: { userId: true, status: true, currentStep: true, errorMessage: true, progress: true, startedAt: true, finishedAt: true },
+        select: { userId: true, status: true, type: true, outputJson: true, currentStep: true, errorMessage: true, progress: true, startedAt: true, finishedAt: true },
       }),
       getPlanConfig(),
       // Render throughput (window) from RenderJob — the source of truth for editor-v2/worker renders.
@@ -879,7 +856,7 @@ export async function GET(req: Request) {
       // Previous-window VideoJobs — so previous.funnel is also job-derived (apples-to-apples).
       prisma.videoJob.findMany({
         where: { createdAt: { gte: previousSince, lt: since } },
-        select: { userId: true, status: true, progress: true },
+        select: { userId: true, status: true, type: true, outputJson: true, progress: true },
       }),
       // Server-truth "started pipeline": distinct users who ever created a VideoJob (any time).
       // Replaces the v1-only editor_script_ready telemetry, which editor v2 never emits.
@@ -949,6 +926,7 @@ export async function GET(req: Request) {
     const customerCurrentVideos = currentVideos.filter((video) => !internalUserIds.has(video.userId));
     const customerPreviousVideos = previousVideos.filter((video) => !internalUserIds.has(video.userId));
     const customerCurrentJobs = currentJobs.filter((job) => !internalUserIds.has(job.userId));
+    const customerPreviousJobs = previousJobs.filter((job) => !internalUserIds.has(job.userId));
 
     // Creation funnel input — VideoJob rows (server truth), internal team excluded.
     const currentJobsForFunnel = currentJobs
@@ -1024,6 +1002,9 @@ export async function GET(req: Request) {
       processing: customerCurrentJobs.filter((j) => j.status === "processing" || j.status === "waiting_provider").length,
       waitingProvider: customerCurrentJobs.filter((j) => j.status === "waiting_provider").length,
       queued: customerCurrentJobs.filter((j) => j.status === "queued").length,
+      // Without this the tiles were short by every canceled job (55 in a 30-day window on prod)
+      // and a reader adding them up found jobs that were rendered nowhere.
+      canceled: customerCurrentJobs.filter((j) => j.status === "canceled").length,
       systemFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "system").length,
       byokFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "byok").length,
       quotaFailed: failedJobs.filter((j) => classifyJobError(j.errorMessage, managedGemini) === "quota").length,
@@ -1071,8 +1052,8 @@ export async function GET(req: Request) {
       renderStats,
       jobOutcomes,
       managedStock,
-      current: summarize(customerCurrentRows, customerCurrentVideos, processingPlan.summary, summarizeJobFunnel(currentJobsForFunnel), currentTelemetryTotals),
-      previous: summarize(customerPreviousRows, customerPreviousVideos, undefined, summarizeJobFunnel(previousJobsForFunnel), previousTelemetryTotals),
+      current: summarize(customerCurrentRows, customerCurrentJobs, processingPlan.summary, summarizeJobFunnel(currentJobsForFunnel), currentTelemetryTotals),
+      previous: summarize(customerPreviousRows, customerPreviousJobs, undefined, summarizeJobFunnel(previousJobsForFunnel), previousTelemetryTotals),
       processingReconcile: { dryRun: true, ...processingPlan },
     });
   } catch (error) {

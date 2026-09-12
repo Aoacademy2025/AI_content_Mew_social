@@ -32,7 +32,7 @@ type InsightSummary = {
     noiseEvents: number; frontendErrors: number; serverErrors: number; renderSuccessPct: number;
     videoCompletionPct: number; renderTaskSuccessPct: number; healthScore: number;
     funnelMode: "run" | "event" | "session" | "job"; funnelRuns: number;
-    videoJobs: { total: number; completed: number; processing: number; failed: number; pending: number; outputReady: number; statusStuckWithOutput: number; processingWithoutOutput: number; completionPct: number; outputReadyPct: number };
+    videoJobs: { total: number; completed: number; processing: number; failed: number; pending: number; canceled: number; outputReady: number; statusStuckWithOutput: number; processingWithoutOutput: number; completionPct: number; outputReadyPct: number };
   };
   funnel: FunnelRow[];
   steps: StepRow[];
@@ -71,7 +71,7 @@ type RenderStats = {
 };
 
 type JobOutcomes = {
-  total: number; done: number; failed: number; processing: number; queued: number;
+  total: number; done: number; failed: number; processing: number; queued: number; canceled: number;
   systemFailed: number; byokFailed: number; quotaFailed: number; noiseFailed: number;
   failedByStage: Array<{ stage: string; stageLabel: string; kind: "system" | "byok" | "quota" | "noise"; count: number; sample: string }>;
 };
@@ -135,7 +135,7 @@ const metricHelp: Record<string, string> = {
   "CLS": "คะแนนหน้ากระโดดหรือเลื่อนเอง ถ้าสูง ผู้ใช้อาจกดผิดหรืออ่านยาก",
   "First frame": "เวลาจากการกด play จนวิดีโอเริ่มแสดงภาพจริง ถ้าสูง ผู้ใช้จะรู้สึกว่าคลิปเปิดช้า",
   "Buffering sessions": "เปอร์เซ็นต์ session ที่มี waiting หรือ stalled ระหว่างดู ใช้วัดอาการกระตุกจริง",
-  "Video completed": "เปอร์เซ็นต์งานจากตาราง Video ที่ status เป็น COMPLETED ในช่วงเวลาที่เลือก",
+  "Video completed": "เปอร์เซ็นต์งานสร้างวิดีโอที่ทำสำเร็จ นับจาก VideoJob (type=create) ที่ status เป็น done หารด้วยงานสร้างทั้งหมดในช่วงเวลาที่เลือก — เดิมอ่านจากตาราง Video ซึ่งมีแต่แถว COMPLETED จึงขึ้น 100% ตลอดไม่ว่าระบบจะพังแค่ไหน",
 };
 
 function InfoTip({ label }: { label: keyof typeof metricHelp | string }) {
@@ -501,7 +501,7 @@ export default function AdminInsightsPage() {
             {/* ── 4. System health metric tiles ─────────────────────────────────── */}
             <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
               <MetricTile label="Health Score" value={`${current.totals.healthScore}`} helper={`ช่วงก่อนหน้า ${previous?.totals.healthScore ?? 0}`} icon={Gauge} tone={statusTone(current.totals.healthScore)} />
-              <MetricTile label="Video completed" value={`${current.totals.videoCompletionPct}%`} helper={`${formatNumber(current.totals.videoJobs.completed)}/${formatNumber(current.totals.videoJobs.total)} jobs · output ready ${formatNumber(current.totals.videoJobs.outputReady)}`} icon={CheckCircle2} tone="border-emerald-400/20 bg-emerald-500/12 text-emerald-300" />
+              <MetricTile label="Video completed" value={`${current.totals.videoCompletionPct}%`} helper={`${formatNumber(current.totals.videoJobs.completed)}/${formatNumber(current.totals.videoJobs.total)} งานสร้าง · ล้มเหลว ${formatNumber(current.totals.videoJobs.failed)} · ยกเลิก ${formatNumber(current.totals.videoJobs.canceled)}`} icon={CheckCircle2} tone="border-emerald-400/20 bg-emerald-500/12 text-emerald-300" />
               <MetricTile label="Error telemetry" value={formatNumber(current.totals.errors)} helper={`เหตุการณ์ telemetry (client+server) · คีย์ลูกค้า ${formatNumber(current.totals.byokErrorCount)} · โควต้า ${formatNumber(current.totals.quotaErrorCount)} · noise ${formatNumber(current.totals.noiseEvents)} · บั๊กชี้ขาดดูแผง 'งานจริง (server)'`} icon={AlertTriangle} tone="border-rose-400/20 bg-rose-500/12 text-rose-300" />
               <MetricTile label="เปิด Editor (ครั้ง)" value={formatNumber(current.totals.editorOpens)} helper={`${formatNumber(current.totals.users)} users · ${formatNumber(current.totals.sessions)} sessions · jobs ${formatNumber(current.totals.pipelineJobs)}`} icon={Users} tone="border-sky-400/20 bg-sky-500/12 text-sky-300" />
             </section>
@@ -515,7 +515,7 @@ export default function AdminInsightsPage() {
                 </div>
                 <p className="mb-4 text-xs text-slate-500">แผงนี้คือจำนวนบั๊กระบบที่เชื่อถือได้ (authoritative) — นับจาก VideoJob ที่ล้มเหลวจริงฝั่ง server ไม่ใช่ telemetry ฝั่ง client</p>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                  <div className="rounded-md border border-white/10 bg-black/20 p-3"><div className="text-xs text-slate-500">งานทั้งหมด</div><div className="mt-1 text-2xl font-semibold text-white">{formatNumber(jobOutcomes.total)}</div><div className="mt-1 text-xs text-slate-500">done {formatNumber(jobOutcomes.done)} · processing {formatNumber(jobOutcomes.processing)}</div></div>
+                  <div className="rounded-md border border-white/10 bg-black/20 p-3"><div className="text-xs text-slate-500">งานทั้งหมด</div><div className="mt-1 text-2xl font-semibold text-white">{formatNumber(jobOutcomes.total)}</div><div className="mt-1 text-xs text-slate-500">done {formatNumber(jobOutcomes.done)} · processing {formatNumber(jobOutcomes.processing)} · คิว {formatNumber(jobOutcomes.queued)} · ยกเลิก {formatNumber(jobOutcomes.canceled)}</div></div>
                   <div className="rounded-md border border-rose-400/20 bg-rose-500/[0.07] p-3"><div className="text-xs text-rose-300/80">ล้มเหลว: บั๊กระบบ</div><div className="mt-1 text-2xl font-semibold text-rose-200">{formatNumber(jobOutcomes.systemFailed)}</div><div className="mt-1 text-xs text-rose-300/70">ของเรา → แก้โค้ด</div></div>
                   <div className="rounded-md border border-violet-400/20 bg-violet-500/[0.07] p-3"><div className="text-xs text-violet-300/80">ชนเพดานแผน (โควต้า)</div><div className="mt-1 text-2xl font-semibold text-violet-200">{formatNumber(jobOutcomes.quotaFailed)}</div><div className="mt-1 text-xs text-violet-300/70">ชนเพดานนาที/คลิป — สัญญาณราคา/อัปเกรด ไม่ใช่บั๊ก</div></div>
                   <div className="rounded-md border border-amber-400/20 bg-amber-500/[0.07] p-3"><div className="text-xs text-amber-300/80">ล้มเหลว: คีย์ลูกค้า</div><div className="mt-1 text-2xl font-semibold text-amber-200">{formatNumber(jobOutcomes.byokFailed)}</div><div className="mt-1 text-xs text-amber-300/70">BYOK → แจ้งลูกค้า</div></div>

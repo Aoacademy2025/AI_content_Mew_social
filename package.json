@@ -23,6 +23,7 @@
     "verify:admin-trends": "tsx scripts/verify-admin-trends.ts",
     "verify:admin-overview": "tsx scripts/verify-admin-overview.ts",
     "verify:admin-number-telemetry-window": "tsx scripts/verify-admin-number-telemetry-window.ts",
+    "verify:admin-number-video-completed": "tsx scripts/verify-admin-number-video-completed.ts",
     "verify:revenue-growth": "tsx scripts/verify-revenue-growth.ts",
     "verify:money-only-on-revenue": "tsx scripts/verify-money-only-on-revenue.ts",
     "verify:admin-number-paying-cash-only": "node --import ./scripts/register-server-only-node.mjs --import tsx scripts/verify-admin-number-paying-cash-only.ts",
