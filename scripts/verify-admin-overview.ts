@@ -68,6 +68,20 @@ assert.match(chartSource, /tabIndex=\{0\}/, "TrendBarChart.tsx's hit-rects must 
 assert.match(chartSource, /role="button"/, "TrendBarChart.tsx's hit-rects need role=\"button\" for the keyboard/AT path");
 assert.match(chartSource, /role="img"/, "TrendBarChart.tsx's <svg> keeps role=\"img\" (unaffected by the tooltip fix)");
 assert.match(chartSource, /aria-live="polite"/, "TrendBarChart.tsx's tooltip element needs aria-live=\"polite\"");
+// Fix round 2 (C2 re-review): on touch, pointerenter fires BEFORE pointerdown on the same target,
+// so an unconditional "enter opens, down toggles" pair opens then immediately closes on one tap.
+// Mouse must rely on hover (enter/leave); touch/pen must rely on the down-toggle instead. A cheap
+// gate for this whole bug class: both handlers must branch on pointerType.
+assert.match(
+  chartSource,
+  /onPointerEnter=\{[^}]*pointerType\s*===\s*"mouse"/,
+  "TrendBarChart.tsx's onPointerEnter must only open the tooltip for pointerType===\"mouse\" (touch fires enter before down)",
+);
+assert.match(
+  chartSource,
+  /onPointerDown=\{[^]*?pointerType\s*===\s*"mouse"/,
+  "TrendBarChart.tsx's onPointerDown must branch on pointerType===\"mouse\" so touch/pen toggle instead of colliding with the hover-open",
+);
 assert.match(chartSource, /useState<number \| null>\(null\)/, "TrendBarChart.tsx tracks the active day in React state, not via <title>");
 
 // ── 4. the initial trends fetch waits for the viewport (days) decision — no double-fetch race ──

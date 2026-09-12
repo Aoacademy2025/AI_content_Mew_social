@@ -141,11 +141,25 @@ export function TrendBarChart({ dates, bars, overlay, layout, tooltipText, ariaL
                 tabIndex={0}
                 role="button"
                 aria-label={tooltipText(i)}
-                onPointerEnter={() => setActiveDay(i)}
-                onPointerLeave={() => setActiveDay((cur) => (cur === i ? null : cur))}
-                onPointerDown={(e) => { e.stopPropagation(); setActiveDay((cur) => (cur === i ? null : i)); }}
+                // pointerType-aware: on touch (Chromium/Android confirmed), pointerenter fires
+                // BEFORE pointerdown on the same target, so an unconditional enter-then-toggle pair
+                // opens the tooltip on enter and immediately closes it again on the very same tap's
+                // pointerdown. Mouse relies on hover (enter/leave); touch/pen rely on a tap toggle.
+                onPointerEnter={(e) => { if (e.pointerType === "mouse") setActiveDay(i); }}
+                onPointerLeave={(e) => { if (e.pointerType === "mouse") setActiveDay((cur) => (cur === i ? null : cur)); }}
+                onPointerDown={(e) => {
+                  if (e.pointerType === "mouse") return;
+                  e.stopPropagation();
+                  setActiveDay((cur) => (cur === i ? null : i));
+                }}
                 onFocus={() => setActiveDay(i)}
                 onBlur={() => setActiveDay((cur) => (cur === i ? null : cur))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    setActiveDay((cur) => (cur === i ? null : i));
+                  }
+                }}
               />
             </g>
           );
