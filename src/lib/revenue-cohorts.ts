@@ -9,7 +9,8 @@ import { getPlanConfig } from "@/lib/plan-config";
  *   1. ENTITLEMENT (does this user have PRO/BUSINESS access right now?) — from classifyEntitlement.
  *      A 7-day free trial ALSO sets plan=PRO, and coupons/admin-grants set a paid plan with an
  *      expiry but NO payment. So "plan=PRO" ≠ "paying".
- *   2. CASH (has this user ever completed a PAID Payment?) — the real revenue signal.
+ *   2. CASH (has this user ever completed a PAID Payment for MORE than ฿0?) — the real revenue
+ *      signal. A ฿0 PAID row is a ledger artefact, not money, and never makes someone paying.
  *
  * "Paying" here means BOTH: currently entitled AND has paid cash. Comped/admin/coupon users
  * (entitled, never paid) are surfaced separately as `compedPaid` (a cost, not revenue), and
@@ -178,7 +179,8 @@ export const CREDIT_PACK_NOTE = "credits";
 const ANNUAL_PERIOD_DAYS = 300;
 
 export interface PlanCashSummary {
-  /** Users with real PLAN cash — the ground truth for "is a paying customer". */
+  /** Users with real PLAN cash (a non-credit PAID row above ฿0) — the ground truth for
+   *  "is a paying customer". */
   paidUserIds: Set<string>;
   /** userId → monthly-equivalent of what they actually paid for their plan (฿). */
   monthlyRevenueByUser: Map<string, number>;
@@ -214,8 +216,14 @@ export function summarizePlanCash(rows: readonly PlanCashRow[]): PlanCashSummary
       creditBuyerIds.add(row.userId);
       continue;
     }
-    paidUserIds.add(row.userId);
+    // Cash evidence is money, not a row. A ฿0 PAID row is a ledger artefact (a grant recorded
+    // through the payment path, a zero-amount receipt) whose owner never paid us anything, so it
+    // must not make them a paying customer. `subscription-north-star.server.ts:116-121` has
+    // always required `amount > 0`; this is the same rule, and applying it here is what closed
+    // the 39-vs-28 split between จ่ายจริง and the North Star on the same page (audit A4,
+    // 2026-09-12: 11 of the 39 had only ฿0 plan rows).
     if (row.amount <= 0) continue;
+    paidUserIds.add(row.userId);
     const baht = row.amount / 100;
     const monthly = row.periodDays >= ANNUAL_PERIOD_DAYS ? baht / 12 : baht;
     // A customer can hold several plan rows — a monthly term, then an annual conversion. The
@@ -240,7 +248,7 @@ export function summarizePlanCash(rows: readonly PlanCashRow[]): PlanCashSummary
 /**
  * Pure cohort computation — no DB access, fully testable.
  * @param users        Every user row (minimal fields, incl. id).
- * @param paidUserIds  Set of user ids that have ≥1 PAID Payment (the cash ground truth).
+ * @param paidUserIds  Set of user ids that have ≥1 PAID Payment above ฿0 (the cash ground truth).
  * @param prices       Monthly tier prices (฿).
  * @param now          Reference time.
  */

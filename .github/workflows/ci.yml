@@ -227,6 +227,8 @@ jobs:
 
       - name: Verify money renders only on /admin/revenue
         run: npm run verify:money-only-on-revenue
+      - name: Verify จ่ายจริง counts only payments above zero baht
+        run: npm run verify:admin-number-paying-cash-only
 
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost
