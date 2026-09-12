@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/clerk-auth";
 import { prisma } from "@/lib/prisma";
 import { apiError } from "@/lib/api-error";
 import { resetStripeClient } from "@/lib/stripe";
+import { getConfigs } from "@/lib/site-config";
 
 const KEYS = [
   "support_email",
@@ -60,10 +61,14 @@ function maskSecret(value: string): { set: boolean; last4?: string } {
   return { set: true, last4: value.slice(-4) };
 }
 
-async function getConfig(key: SettingKey): Promise<string> {
-  const row = await prisma.siteConfig.findUnique({ where: { key } });
-  if (row) return row.value;
-  // fallback to env
+// Pure — no DB access, no async. Given a key and whatever getConfigs() resolved
+// for it (`null` when the SiteConfig row doesn't exist), returns the same value
+// the old per-key getConfig(key) returned: the DB value when present, else the
+// key's env-var fallback (7 of the 32 keys have one), else "". Exported only for
+// scripts/verify-site-config-batch.ts (same pattern as classifyJobError exported
+// from admin/insights/route.ts for its own verify script).
+export function resolveSettingValue(key: SettingKey, dbValue: string | null): string {
+  if (dbValue != null) return dbValue;
   const envMap: Partial<Record<SettingKey, string | undefined>> = {
     support_email: process.env.SUPPORT_EMAIL,
     stripe_publishable_key: process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY,
@@ -106,9 +111,10 @@ export async function GET() {
     const me = await prisma.user.findUnique({ where: { id: authUser.id }, select: { role: true } });
     if (me?.role !== "ADMIN") return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-    const results = await Promise.all(KEYS.map(async k => [k, await getConfig(k)] as const));
+    const dbValues = await getConfigs(KEYS);
     const settings: Record<string, unknown> = {};
-    for (const [k, v] of results) {
+    for (const k of KEYS) {
+      const v = resolveSettingValue(k, dbValues[k]);
       settings[k] = SECRET_KEYS.has(k) ? maskSecret(v) : v;
     }
 
