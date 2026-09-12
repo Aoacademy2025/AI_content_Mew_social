@@ -43,6 +43,12 @@ const ACCENT = "linear-gradient(135deg,#9D7BFF 0%,#7857F6 55%,#6844EF 100%)";
 const HEAD = { fontFamily: "'Bai Jamjuree', sans-serif" } as const;
 const BODY = { fontFamily: "'IBM Plex Sans Thai', sans-serif" } as const;
 
+// Sale page only needs two families (headings=Bai Jamjuree, body=IBM Plex Sans
+// Thai) — a minimal link instead of the 24-family subtitle sheet. See
+// docs/plans/reports/2026-09-12-A3-code-audit.md §A3.4.
+const MARKETING_FONTS_URL =
+  "https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap";
+
 async function getFounding() {
   try {
     const coupon = await getFoundingCoupon();
@@ -157,6 +163,10 @@ export default async function Home() {
   const filled = founding ? Math.round(((founding.total - founding.remaining) / founding.total) * 100) : 0;
 
   return (
+    <>
+      <link rel="preconnect" href="https://fonts.googleapis.com" />
+      <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+      <link href={MARKETING_FONTS_URL} rel="stylesheet" />
     <div
       className="sale-v2 relative min-h-screen overflow-x-hidden bg-[#08070c] text-[#f7f4ff] selection:bg-violet-400/30 selection:text-white"
       style={BODY}
@@ -452,5 +462,6 @@ export default async function Home() {
       <MobileStickyCta />
       <Script src="https://affiliate.heroaiengine.com/scripts/affiliate-tracking.js" strategy="afterInteractive" />
     </div>
+    </>
   );
 }

@@ -254,6 +254,8 @@ jobs:
         run: npm run verify:sidebar-updates-summary-once
       - name: Verify storage health caches du and disk reads for 10 minutes
         run: npm run verify:storage-health
+      - name: Verify the subtitle font sheet loads only where subtitles render
+        run: npm run verify:subtitle-fonts-scope
 
       - name: Build
         run: npm run build
