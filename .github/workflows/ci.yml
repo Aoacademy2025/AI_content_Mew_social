@@ -227,6 +227,17 @@ jobs:
 
       - name: Verify money renders only on /admin/revenue
         run: npm run verify:money-only-on-revenue
+      - name: Verify จ่ายจริง counts only payments above zero baht
+        run: npm run verify:admin-number-paying-cash-only
+
+      - name: Verify MRR is priced from real cash, never the tier list price
+        run: npm run verify:admin-number-mrr-actual-cash
+
+      - name: Verify admin "today" and daily labels use Asia/Bangkok days
+        run: npm run verify:admin-number-bangkok-day
+
+      - name: Verify new/repeat payer counts are cash and the ledger figure says so
+        run: npm run verify:admin-number-ledger-source
 
       - name: Verify RunPod image active-route COGS
         run: npm run verify:runpod-image-cost

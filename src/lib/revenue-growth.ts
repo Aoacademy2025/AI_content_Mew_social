@@ -1,3 +1,6 @@
+// One definition of the Asia/Bangkok day boundary, shared with the admin stats and cost routes.
+import { bangkokDate } from "@/lib/bangkok-day";
+
 export const REVENUE_RANGE_DAYS = [7, 30, 90] as const;
 export type RevenueRangeDays = (typeof REVENUE_RANGE_DAYS)[number];
 
@@ -36,7 +39,10 @@ export type RevenuePeriodSummary = {
   manual: number;
   refunds: number;
   transactions: number;
+  /** Distinct customers whose FIRST payment above ฿0 landed in this window. ฿0 ledger rows
+   *  are excluded — they are not people paying. */
   newPayers: number;
+  /** Distinct customers who paid above ฿0 in this window and had paid before it. */
   repeatPayers: number;
   mix: RevenueMix;
   trend: Array<{ date: string; label: string; current: number; previous: number }>;
@@ -79,15 +85,6 @@ function sumCash(events: readonly RevenueCashEvent[], from: Date, until: Date) {
   };
 }
 
-function bangkokDate(date: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Bangkok",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(date);
-}
-
 function shortBangkokDate(date: Date): string {
   return new Intl.DateTimeFormat("th-TH", {
     timeZone: "Asia/Bangkok",
@@ -128,8 +125,15 @@ export function summarizeRevenuePeriod(input: {
     refunds: current.refunds,
     reconciliation: 0,
   };
+  // A ฿0 `Payment` row is a ledger artefact, not a customer paying. 15 of the 36 rows in the
+  // 30-day window were ฿0 on prod, so "ลูกค้าใหม่ 28" counted people who had paid nothing, one
+  // line under a Stripe-truth gross (audit A4 row #38). Dropping them from the *first-ever*
+  // index too is deliberate: a customer's first REAL payment is their Paid Conversion, so an
+  // earlier ฿0 row must not demote it to a repeat purchase.
+  const cashReceipts = input.receipts.filter((receipt) => finiteMoney(receipt.amountBaht) > 0);
+
   const earliestByCustomer = new Map<string, number>();
-  for (const receipt of input.receipts) {
+  for (const receipt of cashReceipts) {
     const key = receipt.customerKey.trim().toLowerCase();
     if (!key) continue;
     const time = receipt.at.getTime();
@@ -138,7 +142,7 @@ export function summarizeRevenuePeriod(input: {
   }
 
   const currentCustomers = new Map<string, number>();
-  for (const receipt of input.receipts) {
+  for (const receipt of cashReceipts) {
     if (!inWindow(receipt.at, from, until)) continue;
     const amount = finiteMoney(receipt.amountBaht);
     mix[receipt.source] += amount;

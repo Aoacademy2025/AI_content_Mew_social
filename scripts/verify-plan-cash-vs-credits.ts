@@ -78,22 +78,28 @@ check("C1: the founding annual buyer is priced at what they paid", near(fixed.mr
 check("C2: the credit-only buyer adds nothing to MRR", near(fixed.mrr, 2995 / 12));
 check("C3: only the plan payer counts as paying", fixed.payingTotal === 1, `${fixed.payingTotal}`);
 
-// The old behaviour, for contrast: list price, and credits treated as plan cash.
-const legacy = computeRevenueCohorts(
+// Without the map there is no price to use — and there is no list-price fallback to invent one
+// (removed 2026-09-12, audit A4: the fallback fabricated ฿6,389.33/month of the reported MRR).
+const unpriced = computeRevenueCohorts(
   users,
   new Set(["u-annual-founding", "u-credit-only"]),
   prices,
   new Date(),
 );
 check(
-  "C4: the fix genuinely lowers MRR versus the list-price behaviour",
-  legacy.mrr > fixed.mrr,
-  `legacy=${Math.round(legacy.mrr)} fixed=${Math.round(fixed.mrr)}`,
+  "C4: no map supplied → ฿0 MRR, never the tier list price",
+  unpriced.mrr === 0,
+  `${unpriced.mrr}`,
 );
 check(
-  "C5: no map supplied → previous list-price behaviour is preserved",
-  near(legacy.mrr, (599 * 10) / 12 + 599),
-  `${legacy.mrr}`,
+  "C5: …and the customers themselves are still counted",
+  unpriced.payingTotal === 2,
+  `${unpriced.payingTotal}`,
+);
+check(
+  "C6: pricing from real cash is still strictly below the old list-price figure",
+  fixed.mrr < (599 * 10) / 12,
+  `fixed=${Math.round(fixed.mrr)} old-list=${Math.round((599 * 10) / 12)}`,
 );
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);

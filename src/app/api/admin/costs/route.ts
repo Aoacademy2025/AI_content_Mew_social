@@ -9,6 +9,7 @@ import {
   computeBreakEvenTarget,
 } from "@/lib/cost-rates";
 import { getRevenueCohorts } from "@/lib/revenue-cohorts";
+import { bangkokDate } from "@/lib/bangkok-day";
 import { getLifetimeCashCollected } from "@/lib/revenue-cash.server";
 import { getActiveRunpodImageCostSnapshot } from "@/lib/runpod-image-cost.server";
 import {
@@ -57,8 +58,11 @@ function parseDays(raw: string | null): number {
   return Math.min(Math.floor(n), 365);
 }
 
+// Daily trend buckets are Asia/Bangkok days. `toISOString()` labelled them in UTC, so on a
+// dashboard read in Bangkok every bucket held 07:00→07:00 of the named day (audit A4, and the
+// plan's global day-boundary rule).
 function dateLabel(d: Date): string {
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  return bangkokDate(d); // YYYY-MM-DD, Asia/Bangkok
 }
 
 export async function GET(req: Request) {
