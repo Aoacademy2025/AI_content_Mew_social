@@ -32,19 +32,28 @@ export function SubtitleFonts() {
 }
 
 // App-shell families only, at only the weights actually referenced outside
-// subtitle previews (checked against source, perf audit Task B4 fix round 1):
-//   - Bai Jamjuree 600/700 — globals.css:974 (.sale-v2-eyebrow, 600),
+// subtitle previews (checked against source, perf audit Task B4 — see
+// scripts/verify-subtitle-fonts-scope.ts's APP_SHELL_WEIGHT_REQUIREMENTS for
+// the file-by-file evidence this list is a superset of):
+//   - Bai Jamjuree 500/600/700 — globals.css:974 (.sale-v2-eyebrow, 600),
 //     first-clip-hero.tsx (600), sale page + auth-shell headings (600/700),
-//     docs h1 (700), pricing-toggle.tsx/youtube-lite.tsx (600).
-//   - Kanit 600/700 — top-nav.tsx logo badge (600), pricing-client.tsx labels
-//     (600), dashboard/videos/settings/pricing/admin/admin-users/admin-coupons
-//     headings (700). No non-editor consumer uses 900 — that stays in the
+//     docs h1 (700), pricing-toggle.tsx/youtube-lite.tsx (600), and (fix
+//     round 2) page.tsx:188 — a font-medium(500) "CREATOR STUDIO" span
+//     nested, with no fontFamily override, inside the Bai-Jamjuree-styled
+//     logo span — inherits Bai Jamjuree at 500, so 500 must load too.
+//   - Kanit 400/600/700 — top-nav.tsx logo badge (600), pricing-client.tsx
+//     labels (600), dashboard/videos/settings/pricing/admin/admin-users/
+//     admin-coupons headings (700), and (fix round 2) a font-normal(400)
+//     "/ เดือน" or unit suffix span nested, with no fontFamily override,
+//     inside a Kanit-styled ancestor in revenue-growth-dashboard.tsx:364,401,
+//     videos/page.tsx:461-463, and pricing-client.tsx:343-348 — inherits
+//     Kanit at 400. No non-editor consumer uses 800/900 — those stay in the
 //     subtitle-only sheet above for the editor's own default.
 //   - IBM Plex Sans Thai 400/500/600/700 — sale page + auth-shell body text
 //     (400 default; 500/600 on nested elements; 700 on Clerk's headerTitle,
 //     which inherits the shell's body font rather than the Bai Jamjuree HEAD).
 const APP_SHELL_FONTS_URL =
-  "https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@600;700&family=Kanit:wght@600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap";
+  "https://fonts.googleapis.com/css2?family=Bai+Jamjuree:wght@500;600;700&family=Kanit:wght@400;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap";
 
 /**
  * Global app-shell fonts (Bai Jamjuree, Kanit, IBM Plex Sans Thai) — every

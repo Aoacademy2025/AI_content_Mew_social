@@ -110,6 +110,48 @@ for (const family of SUBTITLE_ONLY_FAMILIES) {
 assert.match(appShellFontsBody, /rel="preconnect"[\s\S]*fonts\.googleapis\.com/, "AppShellFonts must render the fonts.googleapis.com preconnect");
 assert.match(appShellFontsBody, /rel="preconnect"[\s\S]*fonts\.gstatic\.com/, "AppShellFonts must render the fonts.gstatic.com preconnect");
 
+// ── 2b. Weight gate (fix round 2): every weight a non-editor consumer
+//        actually renders — including a lighter Tailwind class (font-normal/
+//        font-medium/etc.) on a descendant that inherits an app-shell family
+//        from an ancestor's inline style without overriding it — must be
+//        present in AppShellFonts' per-family wght list, or the browser
+//        synthesizes ("faux") that weight instead of loading the real cut.
+//        This table is the file-by-file evidence; extend it whenever a new
+//        inherited-family + explicit-weight case is found (see brief:
+//        `grep -nE "font-thin|font-extralight|font-light|font-normal|
+//        font-medium|fontWeight: *[1-5]00"` in every file that also sets
+//        Kanit/Bai Jamjuree/IBM Plex Sans Thai as an ancestor's fontFamily).
+type AppShellFamily = "Bai+Jamjuree" | "Kanit" | "IBM+Plex+Sans+Thai";
+const APP_SHELL_WEIGHT_REQUIREMENTS: Array<{ family: AppShellFamily; weight: string; evidence: string }> = [
+  { family: "Kanit", weight: "400", evidence: "revenue-growth-dashboard.tsx:364,401 + videos/page.tsx:461-463 + pricing-client.tsx:343-348 — font-normal span nested (no fontFamily override) inside a Kanit-styled ancestor" },
+  { family: "Kanit", weight: "600", evidence: "top-nav.tsx logo badge + pricing-client.tsx HEAD labels — font-semibold" },
+  { family: "Kanit", weight: "700", evidence: "dashboard/videos/settings/pricing/admin/admin-users/admin-coupons page headings — font-bold" },
+  { family: "Bai+Jamjuree", weight: "500", evidence: "page.tsx:187-188 — font-medium \"CREATOR STUDIO\" span nested (no fontFamily override) inside the Bai-Jamjuree-styled logo span" },
+  { family: "Bai+Jamjuree", weight: "600", evidence: "globals.css:974 .sale-v2-eyebrow, first-clip-hero.tsx, sale-page/auth-shell/pricing-toggle/youtube-lite headings — font-semibold" },
+  { family: "Bai+Jamjuree", weight: "700", evidence: "sale-page/auth-shell headings (font-bold), docs h1 (font-bold)" },
+  { family: "IBM+Plex+Sans+Thai", weight: "400", evidence: "sale-page/auth-shell default body fontFamily (no weight class = browser normal)" },
+  { family: "IBM+Plex+Sans+Thai", weight: "500", evidence: "sale-page/auth-shell body text + Clerk formFieldLabel/socialButtonsBlockButtonText — font-medium" },
+  { family: "IBM+Plex+Sans+Thai", weight: "600", evidence: "sale-page/auth-shell body text + Clerk formButtonPrimary — font-semibold" },
+  { family: "IBM+Plex+Sans+Thai", weight: "700", evidence: "Clerk headerTitle — font-bold, inherits the shell's IBM Plex Sans Thai body font (not the Bai Jamjuree HEAD style)" },
+];
+
+function weightsForFamily(url: string, family: string): string[] {
+  const match = url.match(new RegExp(`family=${family.replace(/\+/g, "\\+")}(?::wght@([0-9;]+))?(?:&|$)`));
+  assert.ok(match, `AppShellFonts URL must contain a family=${family} segment`);
+  return match![1] ? match![1].split(";") : [];
+}
+
+for (const family of APP_SHELL_FAMILIES.map((f) => f.replace(/\\\+/g, "+")) as AppShellFamily[]) {
+  const loadedWeights = weightsForFamily(appShellFontsBody, family);
+  const required = APP_SHELL_WEIGHT_REQUIREMENTS.filter((r) => r.family === family);
+  for (const { weight, evidence } of required) {
+    assert.ok(
+      loadedWeights.includes(weight),
+      `AppShellFonts must load ${family.replace(/\+/g, " ")} weight ${weight} (evidence: ${evidence}) — loaded weights are [${loadedWeights.join(";")}]`,
+    );
+  }
+}
+
 // ── 3. Every A3 §A3.4 file that renders a SUBTITLE-ONLY family sits under
 //       route coverage (Bai Jamjuree/Kanit/IBM Plex Sans Thai consumers are
 //       covered globally by the root's AppShellFonts and need no per-route
