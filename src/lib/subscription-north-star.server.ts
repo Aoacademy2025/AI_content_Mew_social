@@ -220,15 +220,28 @@ export async function getSubscriptionNorthStar(now: Date = new Date()): Promise<
 
   const [videoRows, scriptRows, imageRows] = await Promise.all([
     prisma.video.findMany({
+      // A video outcome is dated by when it was DELIVERED, not by the last time the row was
+      // touched. `Video` carries no completion column, but the delivery path (`POST /api/videos`
+      // → `persistExportGalleryVideo`) INSERTs the row already COMPLETED and already carrying its
+      // output URL, so `createdAt` is the delivery instant. Reading `updatedAt` instead let any
+      // later touch of an old row — a thumbnail edit, `video-reconcile` — drag a months-old video
+      // into the trailing 30 days.
       where: {
-        userId: { in: payerIds }, status: "COMPLETED", updatedAt: { gte: since },
+        userId: { in: payerIds }, status: "COMPLETED", createdAt: { gte: since },
         OR: [{ videoUrl: { not: null } }, { avatarVideoUrl: { not: null } }],
       },
       select: { userId: true, videoUrl: true, avatarVideoUrl: true },
       distinct: ["userId"],
     }),
     prisma.script.findMany({
-      where: { userId: { in: payerIds }, createdAt: { gte: since } },
+      // A Hero Script outcome is a SAVED or EDITOR-BOUND script, per the Core Creation Outcome
+      // definition — a draft is work in progress, not delivered value. Only the send-to-editor
+      // path writes `{ status: "sent", editorProjectId }` (hero-script.server.ts); the OR arm
+      // keeps any legacy row that reached the editor before the pair was written together.
+      where: {
+        userId: { in: payerIds }, createdAt: { gte: since },
+        OR: [{ status: "sent" }, { editorProjectId: { not: null } }],
+      },
       select: { userId: true },
       distinct: ["userId"],
     }),

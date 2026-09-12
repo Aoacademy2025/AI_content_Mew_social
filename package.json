@@ -218,6 +218,7 @@
     "backfill:administrator-grants": "node --conditions=react-server --import tsx scripts/backfill-administrator-grants.ts",
     "migrate:conversion-trial-allowance": "node --conditions=react-server --import tsx scripts/migrate-conversion-trial-allowance.ts",
     "verify:north-star": "node --conditions=react-server --import tsx scripts/verify-subscription-north-star.ts",
+    "verify:admin-number-mapc-definition": "node --conditions=react-server --import tsx scripts/verify-admin-number-mapc-definition.ts",
     "verify:trial-taste-grant": "node --conditions=react-server --import tsx scripts/verify-trial-taste-grant.ts",
     "verify:ai-image-reconcile": "node --conditions=react-server --import tsx scripts/verify-ai-image-reconcile.ts",
     "verify:runpod-public-image": "tsx scripts/verify-runpod-public-image.ts",
