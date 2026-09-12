@@ -252,6 +252,8 @@ jobs:
 
       - name: Verify the sidebar updates summary fetches once per session, not per navigation
         run: npm run verify:sidebar-updates-summary-once
+      - name: Verify storage health caches du and disk reads for 10 minutes
+        run: npm run verify:storage-health
 
       - name: Build
         run: npm run build

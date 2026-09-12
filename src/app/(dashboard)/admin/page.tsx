@@ -752,7 +752,7 @@ export default function AdminDashboardPage() {
 
   function loadStorageHealth() {
     setStorageLoading(true);
-    fetch("/api/admin/storage", { cache: "no-store" })
+    fetch("/api/admin/storage?refresh=1", { cache: "no-store" })
       .then(r => r.json())
       .then(d => {
         if (!d.error) setStorageHealth(d);
